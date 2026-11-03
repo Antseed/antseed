@@ -18,10 +18,12 @@ interface Props {
   autoOpen?: boolean;
   onStarted?: () => void;
   onCancel?: () => void;
+  /** Current epoch when a selected position is earning in it: withdrawal ends its power this epoch. */
+  forfeitsEpoch?: number | null;
 }
 
 /** Withdraw flow: preview first (synchronous), then an explicit slashing acknowledgement when exiting early. */
-export function WithdrawAction({ positionId, positionIds, size, autoOpen = false, onStarted, onCancel }: Props) {
+export function WithdrawAction({ positionId, positionIds, size, autoOpen = false, onStarted, onCancel, forfeitsEpoch = null }: Props) {
   const ids = positionIds ?? (positionId !== undefined ? [positionId] : []);
   const jobs = useJobs();
   const block = useActionBlock();
@@ -132,6 +134,7 @@ export function WithdrawAction({ positionId, positionIds, size, autoOpen = false
             </div>
           ) : null}
           {preview?.simulationError && <div className="error-text">Withdrawal cannot execute: {preview.simulationError}</div>}
+          {preview && forfeitsEpoch !== null ? <div className="hint">Withdrawal stops earning immediately: {ids.length > 1 ? 'active positions earn' : 'this position earns'} nothing for the current epoch ({forfeitsEpoch}). Rewards from completed epochs are kept. Moving the allocation to another seller instead keeps it earning this epoch.</div> : null}
           {preview ? <div className="hint">Rewards to claim separately: {formatAnts(preview.pendingRewards, 4)} ANTS. {preview.transfersRestricted ? 'Returned ANTS remain transfer-restricted in this wallet. Ending a position does not enable token transfers. Consider moving your allocation directly to another seller.' : 'ANTS transfers are currently enabled for this wallet.'}</div> : null}
           {preview ? (
             <div className="stack">

@@ -158,6 +158,14 @@ describe('dashboard API', () => {
     expect(service.builders.mock.calls[0]![1]).toEqual([3, 9]);
   });
 
+  it('caps builder agent ids in requested order, so a later id never displaces an earlier one', async () => {
+    const app = setup(true);
+    service.builders.mockResolvedValue({ available: true, agents: [] });
+    const tracked = [...Array.from({ length: 20 }, (_, index) => index + 10), 1];
+    await app.inject(`/api/builders?agentIds=${tracked.join(',')}`);
+    expect(service.builders.mock.calls.at(-1)![1]).toEqual(tracked.slice(0, 20));
+  });
+
   it('serves referred buyers from one cached Antscan read', async () => {
     const app = setup(true);
     const view = { available: true, buyers: [{ buyer: '0xabc', boundEpoch: 3, points: '10', ants: '5', pendingPoints: '0' }] };
@@ -191,5 +199,44 @@ describe('dashboard API', () => {
     const response = await setup().inject({ method: 'POST', url: '/api/referrals/invite' });
     expect(response.statusCode).toBe(400);
     expect(response.json().error).toContain('1 USDC');
+  });
+});
+
+describe('free-tier codes', () => {
+  function withSigner(wallet: import('ethers').Wallet | import('ethers').HDNodeWallet | null, browserSigning = false) {
+    const app = Fastify();
+    apps.push(app);
+    const ctx = { signer: wallet ?? undefined, address: wallet?.address ?? '0x0000000000000000000000000000000000000abc', chain: { chainId: 'base-local', evmChainId: 31337 }, invalidate: vi.fn() } as unknown as AntsContext;
+    registerRoutes(app, { ctx, jobs: new JobRunner(), views: new ViewCache(), readOnly: !wallet, dataDir: null, originBuyer: ctx.address, ...(browserSigning ? { browserSigning: {} as never } : {}) });
+    return app;
+  }
+  const buyer = `0x${'11'.repeat(20)}`;
+  const later = () => Math.floor(Date.now() / 1000) + 86_400;
+
+  it('signs with the dashboard key and returns a code the buyer can accept', async () => {
+    const { Wallet } = await import('ethers');
+    const { acceptFreeTierDelegationCode } = await import('@antseed/node');
+    const staker = Wallet.createRandom();
+    const expiresAt = later();
+    const response = await withSigner(staker).inject({ method: 'POST', url: '/api/free-tier/code', payload: { buyer, expiresAt } });
+    const { code } = response.json().data;
+    expect(acceptFreeTierDelegationCode(code, buyer, 31337)).toMatchObject({ staker: staker.address, expiresAt });
+  });
+
+  it('accepts a browser wallet signature only from the connected staker', async () => {
+    const { Wallet } = await import('ethers');
+    const { FREE_TIER_DELEGATION_TYPES, freeTierDelegationMessage, makeFreeTierDelegationDomain } = await import('@antseed/node');
+    const staker = Wallet.createRandom();
+    const other = Wallet.createRandom();
+    const expiresAt = later();
+    const sign = (wallet: typeof staker) => wallet.signTypedData(makeFreeTierDelegationDomain(31337), FREE_TIER_DELEGATION_TYPES, freeTierDelegationMessage({ staker: staker.address, buyer, expiresAt }));
+    const app = withSigner(staker, true);
+    expect((await app.inject({ method: 'POST', url: '/api/free-tier/code', payload: { buyer, expiresAt, signature: await sign(staker) } })).json().ok).toBe(true);
+    const forged = await app.inject({ method: 'POST', url: '/api/free-tier/code', payload: { buyer, expiresAt, signature: await sign(other) } });
+    expect(forged.json().error).toMatch(/not from staker/);
+    const unsigned = await app.inject({ method: 'POST', url: '/api/free-tier/code', payload: { buyer, expiresAt } });
+    expect(unsigned.json().error).toMatch(/Connect the staking wallet/);
+    const badBuyer = await app.inject({ method: 'POST', url: '/api/free-tier/code', payload: { buyer: 'nope', expiresAt } });
+    expect(badBuyer.json().error).toMatch(/buyer address/);
   });
 });

@@ -141,8 +141,7 @@ export function AppShell() {
   }, [handleSelectView]);
 
   // antseed://invite/<invite>: prefill the invite field (setup screen, or
-  // Rewards once the app is in use; Preferences shares the same field). A
-  // pending invite that never bound opens its replace field for the link.
+  // Rewards once the app is in use; Preferences shares the same field).
   const showSetupRef = useRef(showSetup);
   showSetupRef.current = showSetup;
   useEffect(() => {
@@ -152,8 +151,11 @@ export function AppShell() {
       receiveInviteLink(invite);
       if (!showSetupRef.current) handleSelectView('rewards');
     };
+    // Subscribe first: asking for the held invite tells the main process this
+    // renderer is listening, so later links are pushed instead of held.
+    const unsubscribe = bridge?.onReferralDeepLink?.(open);
     void bridge?.referralTakeDeepLink?.().then(open).catch(() => {});
-    return bridge?.onReferralDeepLink?.(open);
+    return unsubscribe;
   }, [handleSelectView]);
 
   useEffect(() => {

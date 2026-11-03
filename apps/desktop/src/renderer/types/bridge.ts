@@ -1,3 +1,4 @@
+import type { FreeTierStakeView } from '@antseed/node/free-tier-program';
 export type RuntimeMode = 'connect' | 'system-proxy' | 'tunnel';
 
 /** This wallet as a referee: who invited it, or the invite it carries until bound. */
@@ -23,11 +24,16 @@ export type ReferralInvites = {
   /** `pendingPoints`: usage in weeks that are not claimable yet (no ANTS value yet). */
   buyers: Array<{ buyer: string; points: string; ants: string; pendingPoints: string }>;
   totals: { points: string; ants: string; pendingPoints: string };
+  /** Inviter rewards payable now (decimal ANTS), claimed on the rewards dashboard. */
+  payable: string;
+  /** Epochs with a payable inviter reward; empty when nothing is claimable. */
+  claimableEpochs: number[];
   error: string | null;
 };
 
 export type CreateInviteResult =
-  | { ok: true; invite: string; link: string; left: number; quota: number; expiresEpoch: number }
+  /** `epoch`: the on-chain week the invite was issued in (it can be ahead of Antscan's allowance). */
+  | { ok: true; invite: string; link: string; epoch: number; left: number; quota: number; expiresEpoch: number }
   | { ok: false; reason: string; noQuota: boolean };
 
 /** The referee bonus (from Antscan); payable is a decimal ANTS string paid to the operator. */
@@ -269,6 +275,20 @@ export type ChatAiStreamStopReason = {
   message: string;
   statusCode?: number;
   errorCode?: string;
+  /** Set when a seller's free tier ran out: its limit and staked tiers (only stake in that seller's pool counts). */
+  freeTier?: {
+    peerId: string | null;
+    /** `stake_required`: the model is free on that seller only for its stakers. */
+    limitedBy: 'address' | 'ip' | 'stake' | 'stake_required';
+    limit: number | null;
+    windowMs: number | null;
+    retryAfterSeconds: number | null;
+    stakeTiers: Array<{ minPower: number; multiplier: number | 'unlimited' }>;
+    stakePower: number;
+    /** Requests per window the tier multipliers apply to; null from sellers that don't send it. */
+    baseLimit: number | null;
+    stakersOnly: boolean;
+  };
 };
 
 export type RawChatAttachment = {
@@ -319,7 +339,7 @@ export type PreparedChatAttachment = {
   name: string;
   mimeType: string;
   size: number;
-  kind: 'image' | 'text' | 'archive' | 'error';
+  kind: 'image' | 'video' | 'text' | 'archive' | 'error';
   status: 'ready' | 'error';
   text?: string;
   image?: { type: 'image'; data: string; mimeType: string };
@@ -446,6 +466,7 @@ export type DesktopBridge = {
   referralGetStatus?: () => Promise<ReferralStatus>;
   referralCheckInvite?: (value: string) => Promise<InviteCheckResult>;
   referralRedeemInvite?: (value: string) => Promise<InviteCheckResult>;
+  referralClearInvite?: () => Promise<ReferralStatus>;
   referralGetInvites?: () => Promise<ReferralInvites>;
   referralCreateInvite?: () => Promise<CreateInviteResult>;
   referralGetReferee?: () => Promise<RefereeBonus>;
@@ -492,13 +513,21 @@ export type DesktopBridge = {
     error?: string;
   }>;
 
-  stakingOpen?: (options?: { page?: 'stake' | 'rewards' }) => Promise<{ ok: boolean; error?: string }>;
-  stakingCopyLink?: (options?: { page?: 'stake' | 'rewards' }) => Promise<{ ok: boolean; error?: string }>;
+  /** `pool` opens that seller's pool (agent id) on the stake page. */
+  stakingOpen?: (options?: { page?: 'stake' | 'rewards'; pool?: number }) => Promise<{ ok: boolean; error?: string }>;
+  stakingCopyLink?: (options?: { page?: 'stake' | 'rewards'; pool?: number }) => Promise<{ ok: boolean; error?: string }>;
+  freeTierList?: () => Promise<{ ok: boolean; data?: FreeTierSharing; error?: string }>;
+  freeTierAdd?: (code: string) => Promise<{ ok: boolean; data?: FreeTierSharing; error?: string }>;
+  freeTierRemove?: (staker: string) => Promise<{ ok: boolean; data?: FreeTierSharing; error?: string }>;
+  /** This buyer's counted seller-pool stake (its own plus shared), by pool. */
+  freeTierStake?: () => Promise<{ ok: boolean; data?: FreeTierStakeView & { buyer: string }; error?: string }>;
   paymentsOpenPayPage?: (opts: { kind?: 'deposit' | 'withdraw' | 'authorize' | 'claim' | 'close-channel'; amountUsdc?: string; channelId?: string }) => Promise<{ ok: boolean; url?: string; error?: string }>;
   paymentsCardProviders?: () => Promise<{ ok: boolean; data?: Array<{ id: string; label: string }>; error?: string }>;
   paymentsOpenCardProvider?: (opts?: { providerId?: string; amountUsdc?: string }) => Promise<{ ok: boolean; url?: string; error?: string }>;
   /** Closes any app-owned Fun checkout/sign-in popup windows (login-only flows produce no deposit, so the deposit watcher can't close them). */
   paymentsCloseCheckoutWindows?: () => Promise<{ ok: boolean }>;
+  /** The buyer proxy's metering stats for one seller; null when the proxy is unreachable. */
+  paymentsGetPeerMetering?: (peerId: string) => Promise<Record<string, unknown> | null>;
   paymentsGetBuyerUsage?: () => Promise<{ ok: boolean; data: DesktopBuyerUsageTotals | null; error: string | null; lastActivityAt?: number | null }>;
   paymentsGetBuyerSpendHistory?: () => Promise<{ ok: boolean; data: DesktopBuyerSpendHistory | null; error: string | null }>;
   paymentsGetChannels?: (opts?: { fresh?: boolean }) => Promise<{ ok: boolean; data: DesktopPaymentChannelSummary[]; error: string | null }>;
@@ -709,3 +738,9 @@ export type VprFloatAction =
   | { type: 'pin-chat-model'; conversationId: string; provider: string; serviceId: string }
   | { type: 'open-chat-app'; conversationId: string }
   | { type: 'set-compact'; compact: boolean };
+
+/** Stakers sharing their seller-pool stake with this buyer (staked free tier). */
+export interface FreeTierSharing {
+  buyer: string;
+  stakers: Array<{ staker: string; expiresAt: number; expired: boolean }>;
+}

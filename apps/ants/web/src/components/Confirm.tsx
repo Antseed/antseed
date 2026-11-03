@@ -124,13 +124,12 @@ export function useActionBlock(buyerAction = false): { blocked: boolean; reason:
   return { blocked: false, reason: undefined };
 }
 
-/** Permissionless referral claims that pay the account's Deposits operator: the selected account or its operator may send them. */
-const REFERRAL_CLAIM_PATHS = new Set(['/api/referrals/claim', '/api/referrals/referee/claim']);
-
 export function ActionButton(props: ActionButtonProps) {
   const jobs = useJobs();
   const body = props.body as { scope?: string; side?: string } | null;
-  const buyerAction = REFERRAL_CLAIM_PATHS.has(props.path) || (props.path === '/api/rewards/claim' && body?.scope === 'buyer') || (props.path === '/api/rewards/stake-usage' && body?.side === 'buyer');
+  // Buyer actions the selected buyer's operator may send (the server rechecks the operator).
+  const buyerAction = (props.path === '/api/rewards/claim' && body?.scope === 'buyer') || (props.path === '/api/rewards/stake-usage' && body?.side === 'buyer')
+    || props.path === '/api/referrals/claim' || props.path === '/api/referrals/referee/claim';
   const block = useActionBlock(buyerAction);
   const [open, setOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);

@@ -15,6 +15,12 @@
  * one, and a small share probes sellers the buyer has not heard from lately,
  * so failover always has fresh data and recovered sellers are noticed.
  *
+ * A seller also announces how each model served all its buyers in the last
+ * hour. Until this buyer has its own record of the seller on a model, those
+ * figures stand in for the defaults: the reported success rate replaces the
+ * prior (capped, since sellers grade themselves) and the reported speed
+ * replaces the network typical. The buyer's own requests outweigh it quickly.
+ *
  * Nothing here talks to anyone: it is local state plus public metadata.
  */
 
@@ -39,6 +45,10 @@ export const SELLER_STALE_AFTER_MS = 10 * 60_000
 export const NEW_RESERVE_SECONDS = 5
 /** Below this chance of success a seller is tried only after every healthier one. */
 export const UNHEALTHY_SUCCESS_PROBABILITY = 0.5
+/** A seller-reported success rate counts once it covers this many requests. */
+export const MIN_REPORTED_REQUESTS = 10
+/** Sellers grade themselves: a reported success rate never makes the prior better than this. */
+export const MAX_REPORTED_SUCCESS_PRIOR = 0.95
 
 /** Weight of a seller's record on its other models, for a model with no data of its own. */
 const SELLER_WIDE_WEIGHT = 0.5
@@ -272,6 +282,22 @@ export type AdaptiveRouteInput = {
    * with room, never drawn for spreading.
    */
   saturated?: boolean
+  /** How the seller says this model served all its buyers lately (its signed metadata). */
+  reported?: ReportedPerformance | null
+}
+
+/** The seller-announced figures routing uses; see `ServicePerformance`. */
+export type ReportedPerformance = {
+  requests: number
+  successRate: number
+  firstTokenMsP50?: number
+  tokensPerSecondP50?: number
+}
+
+/** The success prior for a seller: its reported rate when it covers enough requests, else the default. */
+export function reportedSuccessPrior(reported: ReportedPerformance | null | undefined): number | null {
+  if (!reported || reported.requests < MIN_REPORTED_REQUESTS || !Number.isFinite(reported.successRate)) return null
+  return Math.min(MAX_REPORTED_SUCCESS_PRIOR, Math.max(0, reported.successRate))
 }
 
 export type AdaptiveRouteScore = {
@@ -312,9 +338,9 @@ export function scoreAdaptiveRoute(
   now: number,
   timeValueUsdPerSecond = DEFAULT_TIME_VALUE_USD_PER_SECOND,
 ): AdaptiveRouteScore {
-  const probability = successProbability(stats)
-  const firstTokenMs = stats?.firstTokenMs ?? network.firstTokenMs
-  const tokensPerSecond = stats?.tokensPerSecond ?? network.tokensPerSecond
+  const probability = successProbability(stats, reportedSuccessPrior(input.reported) ?? SELLER_SUCCESS_PRIOR)
+  const firstTokenMs = stats?.firstTokenMs ?? input.reported?.firstTokenMsP50 ?? network.firstTokenMs
+  const tokensPerSecond = stats?.tokensPerSecond ?? input.reported?.tokensPerSecondP50 ?? network.tokensPerSecond
   const expectedSeconds = firstTokenMs / 1000 + shape.outputTokens / Math.max(1, tokensPerSecond)
     + (input.channelOpen === false ? NEW_RESERVE_SECONDS : 0)
   const expectedPriceUsd = finiteNonNegative(input.requestUsd)

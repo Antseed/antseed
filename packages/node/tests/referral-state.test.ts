@@ -1,30 +1,32 @@
-import { access, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Wallet } from 'ethers';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import Database from 'better-sqlite3';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
   clearReferralInvite,
-  issuedInviteIndices,
   pendingInvite,
+  readIssuedInviteIndices,
   readReferralState,
   recordIssuedInvite,
+  REFERRAL_CHAIN_RECHECK_MAX_MS,
+  REFERRAL_CHAIN_RECHECK_MIN_MS,
+  referrerOfLookup,
   saveReferralInvite,
   syncReferralState,
-  takeOverStaleLock,
-  updateReferralState,
-  withIssuedInvite,
   writeReferralState,
 } from '../src/payments/referral-state.js';
-import { encodeInvite, signInvite } from '../src/payments/invites.js';
+import { encodeInvite } from '../src/payments/invites.js';
 
 const REFERRER = '0x1111111111111111111111111111111111111111';
+const OTHER_REFERRER = '0x3333333333333333333333333333333333333333';
 const BUYER = '0x2222222222222222222222222222222222222222';
+const SCOPE = { wallet: BUYER, chainId: 8453, referralsAddress: '0x4444444444444444444444444444444444444444' };
+const OTHER_DEPLOYMENT = { ...SCOPE, referralsAddress: '0x5555555555555555555555555555555555555555' };
+const OTHER_CHAIN = { ...SCOPE, chainId: 84532 };
 const INVITE = { epoch: 42n, index: 7n, r: `0x${'aa'.repeat(32)}`, vs: `0x${'bb'.repeat(32)}` };
 const ENCODED = encodeInvite(INVITE);
-const SCOPE = { chainId: 8453, referralsAddress: '0x3333333333333333333333333333333333333333', wallet: BUYER };
-const OTHER_SCOPE = { chainId: 84532, referralsAddress: '0x4444444444444444444444444444444444444444', wallet: BUYER };
-const ZERO = '0x0000000000000000000000000000000000000000';
+const ENCODED_2 = encodeInvite({ ...INVITE, index: 8n });
 
 const dirs: string[] = [];
 async function dataDir(): Promise<string> {
@@ -35,6 +37,12 @@ async function dataDir(): Promise<string> {
 afterEach(async () => {
   await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
+
+/** A lookup that counts its calls. */
+function counted(answer: () => Promise<string | null | undefined>) {
+  const lookup = Object.assign(async () => { lookup.calls += 1; return answer(); }, { calls: 0 });
+  return lookup;
+}
 
 describe('referral state', () => {
   it('saves a redeemed invite as pending and carries it until bound', async () => {
@@ -49,302 +57,249 @@ describe('referral state', () => {
     expect(pendingInvite(null)).toBeNull();
   });
 
-  it('records a binding once the contract confirms what Antscan reports', async () => {
+  it('records a binding only once referrerOf confirms what Antscan reports', async () => {
     const dir = await dataDir();
     await saveReferralInvite(dir, SCOPE, ENCODED, REFERRER);
-    const notYet = async () => null;
-    expect(await syncReferralState(dir, SCOPE, async () => null, notYet)).toMatchObject({ state: 'invited' });
-    const bound = await syncReferralState(dir, SCOPE, async () => REFERRER.toLowerCase(), async () => REFERRER.toLowerCase());
+    let onChain: string | null = null;
+    const chain = counted(async () => onChain);
+    const now = () => 0;
+    // The first sync reconciles with the chain once; until the backoff
+    // elapses, only an Antscan hint reads it again.
+    expect(await syncReferralState(dir, SCOPE, { explorer: async () => null, chain }, { now })).toMatchObject({ state: 'invited' });
+    expect(chain.calls).toBe(1);
+    expect(await syncReferralState(dir, SCOPE, { explorer: async () => undefined, chain }, { now })).toMatchObject({ state: 'invited' });
+    expect(await syncReferralState(dir, SCOPE, { explorer: async () => { throw new Error('offline'); }, chain }, { now })).toMatchObject({ state: 'invited' });
+    expect(chain.calls).toBe(1);
+
+    onChain = REFERRER.toLowerCase();
+    const bound = await syncReferralState(dir, SCOPE, { explorer: async () => REFERRER, chain }, { now });
+    expect(chain.calls).toBe(2);
     expect(bound).toMatchObject({ state: 'bound', referrer: REFERRER });
     expect(bound?.invite).toBeUndefined();
     expect(pendingInvite(await readReferralState(dir, SCOPE))).toBeNull();
   });
 
-  it('falls back to the contract when Antscan fails or cannot say', async () => {
-    for (const explorer of [async () => undefined, async () => { throw new Error('offline'); }]) {
-      const dir = await dataDir();
-      await saveReferralInvite(dir, SCOPE, ENCODED, REFERRER);
-      expect(await syncReferralState(dir, SCOPE, explorer, async () => REFERRER)).toMatchObject({ state: 'bound', referrer: REFERRER });
-    }
-  });
-
-  it('re-checks a stale "not bound" from Antscan on-chain at a bounded cadence', async () => {
+  it('binds a pending invite with only the chain lookup', async () => {
     const dir = await dataDir();
     await saveReferralInvite(dir, SCOPE, ENCODED, REFERRER);
-    let now = 1_000_000;
-    let onChain: string | null = null;
-    let checks = 0;
-    const verify = async () => { checks += 1; return onChain; };
-    const stale = async () => null;
-    const options = { recheckMs: 60_000, now: () => now };
-    expect(await syncReferralState(dir, SCOPE, stale, verify, options)).toMatchObject({ state: 'invited' });
-    expect(checks).toBe(1);
-    onChain = REFERRER;
-    now += 30_000;
-    expect(await syncReferralState(dir, SCOPE, stale, verify, options)).toMatchObject({ state: 'invited' });
-    expect(checks).toBe(1);
-    now += 30_000;
-    expect(await syncReferralState(dir, SCOPE, stale, verify, options)).toMatchObject({ state: 'bound', referrer: REFERRER });
-    expect(checks).toBe(2);
+    expect(await syncReferralState(dir, SCOPE, { explorer: null, chain: async () => REFERRER })).toMatchObject({ state: 'bound', referrer: REFERRER });
+    expect(pendingInvite(await readReferralState(dir, SCOPE))).toBeNull();
+
+    const chainOnly = await dataDir();
+    await saveReferralInvite(chainOnly, SCOPE, ENCODED, REFERRER);
+    expect(await syncReferralState(chainOnly, SCOPE, { chain: async () => REFERRER })).toMatchObject({ state: 'bound', referrer: REFERRER });
   });
 
-  it('keeps the invite pending when Antscan reports a binding the contract does not', async () => {
+  it('reconciles with the chain while the explorer is down', async () => {
+    const dir = await dataDir();
+    await saveReferralInvite(dir, SCOPE, ENCODED, REFERRER);
+    let onChain: string | null = null;
+    const chain = counted(async () => onChain);
+    const explorer = async (): Promise<string | null> => { throw new Error('offline'); };
+    let clock = 0;
+    const now = () => clock;
+    expect(await syncReferralState(dir, SCOPE, { explorer, chain }, { now })).toMatchObject({ state: 'invited' });
+    onChain = REFERRER; // a settlement binds it
+    clock = REFERRAL_CHAIN_RECHECK_MIN_MS - 1;
+    expect(await syncReferralState(dir, SCOPE, { explorer, chain }, { now })).toMatchObject({ state: 'invited' });
+    clock = REFERRAL_CHAIN_RECHECK_MIN_MS;
+    expect(await syncReferralState(dir, SCOPE, { explorer, chain }, { now })).toMatchObject({ state: 'bound', referrer: REFERRER });
+    expect(chain.calls).toBe(2);
+  });
+
+  it('backs off referrerOf reads while Antscan does not report a binding', async () => {
+    const dir = await dataDir();
+    await saveReferralInvite(dir, SCOPE, ENCODED, REFERRER);
+    const chain = counted(async () => null);
+    let hint: string | null = null;
+    const lookups = { explorer: async () => hint, chain };
+    const minute = 60_000;
+    const callsAt = async (minutes: number[]) => {
+      const calls: number[] = [];
+      for (const at of minutes) {
+        await syncReferralState(dir, SCOPE, lookups, { now: () => at * minute });
+        calls.push(chain.calls);
+      }
+      return calls;
+    };
+    // Every minute for over two hours: reads at 0, 10, 30, 70, then hourly.
+    const minutes = Array.from({ length: 131 }, (_, at) => at);
+    const calls = await callsAt(minutes);
+    expect(minutes.filter((at) => calls[at] !== (calls[at - 1] ?? 0))).toEqual([0, 10, 30, 70, 130]);
+    expect(REFERRAL_CHAIN_RECHECK_MAX_MS).toBe(60 * minute);
+
+    // A hint reads it at once, but a hint the chain keeps denying waits.
+    hint = REFERRER;
+    expect(await callsAt([131, 132, 133])).toEqual([6, 6, 6]);
+    // A newly redeemed invite starts over.
+    await saveReferralInvite(dir, SCOPE, ENCODED_2, OTHER_REFERRER);
+    hint = null;
+    expect(await callsAt([134, 135])).toEqual([7, 7]);
+  });
+
+  it('keeps the pending invite when the configured contract does not confirm the binding', async () => {
     const dir = await dataDir();
     await saveReferralInvite(dir, SCOPE, ENCODED, REFERRER);
     const explorer = async () => REFERRER;
-    expect(await syncReferralState(dir, SCOPE, explorer, async () => ZERO)).toMatchObject({ state: 'invited', invite: ENCODED });
-    expect(await syncReferralState(dir, SCOPE, explorer, async () => { throw new Error('rpc down'); })).toMatchObject({ state: 'invited' });
-    expect(await syncReferralState(dir, SCOPE, explorer, null)).toMatchObject({ state: 'invited' });
+    let clock = 0;
+    const now = () => clock;
+    // Antscan indexes another deployment, or is wrong.
+    const denies = counted(async () => null);
+    expect(await syncReferralState(dir, SCOPE, { explorer, chain: denies }, { now })).toMatchObject({ state: 'invited', invite: ENCODED });
+    expect(denies.calls).toBe(1);
+    // referrerOf unavailable, once the backoff lets it be read again.
+    clock = REFERRAL_CHAIN_RECHECK_MIN_MS;
+    const down = counted(async () => { throw new Error('rpc down'); });
+    expect(await syncReferralState(dir, SCOPE, { explorer, chain: down }, { now })).toMatchObject({ state: 'invited' });
+    expect(down.calls).toBe(1);
+    expect(await syncReferralState(dir, SCOPE, { explorer }, { now })).toMatchObject({ state: 'invited' });
     expect(pendingInvite(await readReferralState(dir, SCOPE))).toEqual(INVITE);
   });
 
-  it('asks the contract directly without an explorer', async () => {
+  it('only asks while an invite is pending or a binding is unverified', async () => {
     const dir = await dataDir();
-    await saveReferralInvite(dir, SCOPE, ENCODED, REFERRER);
-    expect(await syncReferralState(dir, SCOPE, null, async () => REFERRER)).toMatchObject({ state: 'bound', referrer: REFERRER });
+    await writeReferralState(dir, SCOPE, { state: 'none' });
+    const explorer = counted(async () => REFERRER);
+    const chain = counted(async () => REFERRER);
+    await syncReferralState(dir, SCOPE, { explorer, chain });
+    await writeReferralState(dir, SCOPE, { state: 'bound', referrer: REFERRER });
+    await syncReferralState(dir, SCOPE, { explorer, chain });
+    expect([explorer.calls, chain.calls]).toEqual([0, 0]);
   });
 
-  it('never asks again once bound', async () => {
+  it('never replaces a binding on the same deployment', async () => {
     const dir = await dataDir();
     await writeReferralState(dir, SCOPE, { state: 'bound', referrer: REFERRER });
-    let calls = 0;
-    const count = async () => { calls += 1; return REFERRER; };
-    await syncReferralState(dir, SCOPE, count, count);
-    expect(calls).toBe(0);
-  });
-
-  it('records a binding the contract already holds for a wallet with nothing on record', async () => {
-    // A bound wallet imported into a fresh data dir: no file at all.
-    const dir = await dataDir();
-    let explorerCalls = 0;
-    const explorer = async () => { explorerCalls += 1; return null; };
-    expect(await syncReferralState(dir, SCOPE, explorer, async () => REFERRER.toLowerCase())).toMatchObject({ state: 'bound', referrer: REFERRER });
-    expect(await readReferralState(dir, SCOPE)).toMatchObject({ state: 'bound', referrer: REFERRER });
-    expect(explorerCalls).toBe(0);
-
-    // A cleared invite ('none') is checked too, and issued indices survive.
-    const other = await dataDir();
-    await writeReferralState(other, SCOPE, { state: 'none', issued: { epoch: 30, indices: [1] } });
-    expect(await syncReferralState(other, SCOPE, null, async () => REFERRER)).toMatchObject({ state: 'bound', issued: { epoch: 30, indices: [1] } });
-
-    // Unbound or unknown on-chain leaves nothing recorded.
-    const unbound = await dataDir();
-    expect(await syncReferralState(unbound, SCOPE, null, async () => ZERO)).toBeNull();
-    expect(await syncReferralState(unbound, SCOPE, null, async () => { throw new Error('rpc down'); })).toBeNull();
-    expect(await readReferralState(unbound, SCOPE)).toBeNull();
-  });
-
-  it('keeps writes made while a binding was being checked', async () => {
-    const dir = await dataDir();
-    await saveReferralInvite(dir, SCOPE, ENCODED, REFERRER);
-    const bound = await syncReferralState(dir, SCOPE, null, async () => {
-      await recordIssuedInvite(dir, SCOPE, 30, 4);
-      return REFERRER;
-    });
-    expect(bound).toMatchObject({ state: 'bound', issued: { epoch: 30, indices: [4] } });
-    expect(issuedInviteIndices(await readReferralState(dir, SCOPE), 30)).toEqual([4]);
-  });
-
-  it('never replaces a binding', async () => {
-    const dir = await dataDir();
-    await writeReferralState(dir, SCOPE, { state: 'bound', referrer: REFERRER });
-    expect(await saveReferralInvite(dir, SCOPE, ENCODED, BUYER)).toMatchObject({ state: 'bound', referrer: REFERRER });
+    expect(await saveReferralInvite(dir, SCOPE, ENCODED, OTHER_REFERRER)).toMatchObject({ state: 'bound', referrer: REFERRER });
     expect(await clearReferralInvite(dir, SCOPE)).toMatchObject({ state: 'bound', referrer: REFERRER });
   });
 
-  it('clears a pending invite', async () => {
+  it('replaces or clears a pending invite', async () => {
     const dir = await dataDir();
     await saveReferralInvite(dir, SCOPE, ENCODED, REFERRER);
+    expect(await saveReferralInvite(dir, SCOPE, ENCODED_2, OTHER_REFERRER)).toMatchObject({ state: 'invited', invite: ENCODED_2, referrer: OTHER_REFERRER });
     expect(await clearReferralInvite(dir, SCOPE)).toMatchObject({ state: 'none' });
   });
 
-  it('remembers invites handed out in the latest epoch only', async () => {
+  it('keeps bindings per chain, deployment and buyer in one data directory', async () => {
     const dir = await dataDir();
-    await recordIssuedInvite(dir, SCOPE, 30, 0);
-    await recordIssuedInvite(dir, SCOPE, 30, 1);
-    expect(issuedInviteIndices(await readReferralState(dir, SCOPE), 30)).toEqual([0, 1]);
     await saveReferralInvite(dir, SCOPE, ENCODED, REFERRER);
-    expect(issuedInviteIndices(await readReferralState(dir, SCOPE), 30)).toEqual([0, 1]);
-    await recordIssuedInvite(dir, SCOPE, 31, 0);
-    const state = await readReferralState(dir, SCOPE);
-    expect(issuedInviteIndices(state, 30)).toEqual([]);
-    expect(issuedInviteIndices(state, 31)).toEqual([0]);
-    expect(state?.state).toBe('invited');
+    await syncReferralState(dir, SCOPE, { explorer: async () => REFERRER, chain: async () => REFERRER });
+
+    // Switching deployment: the binding on the first one does not block a new invite.
+    expect(await readReferralState(dir, OTHER_DEPLOYMENT)).toBeNull();
+    expect(await saveReferralInvite(dir, OTHER_DEPLOYMENT, ENCODED_2, OTHER_REFERRER)).toMatchObject({ state: 'invited', invite: ENCODED_2 });
+    expect(pendingInvite(await readReferralState(dir, OTHER_DEPLOYMENT))).toEqual({ ...INVITE, index: 8n });
+    expect(await readReferralState(dir, OTHER_CHAIN)).toBeNull();
+    expect(await readReferralState(dir, { ...SCOPE, wallet: OTHER_REFERRER })).toBeNull();
+
+    // Switching back finds the first binding intact, checksummed or not.
+    expect(await readReferralState(dir, { ...SCOPE, wallet: BUYER.toLowerCase(), referralsAddress: SCOPE.referralsAddress.toLowerCase() }))
+      .toMatchObject({ state: 'bound', referrer: REFERRER });
+  });
+
+  it('treats an unscoped legacy binding as unverified until referrerOf confirms it', async () => {
+    const dir = await dataDir();
+    await writeFile(join(dir, 'referral.json'), JSON.stringify({ state: 'bound', referrer: REFERRER, issued: { epoch: 30, indices: [1] } }));
+    expect(await readReferralState(dir, SCOPE)).toMatchObject({ state: 'bound', referrer: REFERRER, unverified: true });
+
+    // Not authoritative: a new invite can replace it.
+    expect(await saveReferralInvite(dir, OTHER_DEPLOYMENT, ENCODED_2, OTHER_REFERRER)).toMatchObject({ state: 'invited' });
+
+    const legacyDir = await dataDir();
+    await writeFile(join(legacyDir, 'referral.json'), JSON.stringify({ state: 'bound', referrer: REFERRER }));
+    expect(await syncReferralState(legacyDir, SCOPE, { chain: async () => { throw new Error('rpc down'); } })).toMatchObject({ unverified: true });
+    expect(await syncReferralState(legacyDir, SCOPE, { chain: async () => null })).toMatchObject({ state: 'none' });
+    expect((await readReferralState(legacyDir, SCOPE))?.unverified).toBeUndefined();
+
+    const confirmedDir = await dataDir();
+    await writeFile(join(confirmedDir, 'referral.json'), JSON.stringify({ state: 'bound', referrer: REFERRER }));
+    expect(await syncReferralState(confirmedDir, SCOPE, { chain: async () => OTHER_REFERRER })).toEqual(expect.objectContaining({ state: 'bound', referrer: OTHER_REFERRER }));
+    expect(await readReferralState(confirmedDir, SCOPE)).not.toHaveProperty('unverified');
+  });
+
+  it('maps referrerOf to a lookup: zero address is unbound, errors reject', async () => {
+    expect(await referrerOfLookup({ referrerOf: async () => '0x0000000000000000000000000000000000000000' })(BUYER)).toBeNull();
+    expect(await referrerOfLookup({ referrerOf: async () => REFERRER.toLowerCase() })(BUYER)).toBe(REFERRER);
+    await expect(referrerOfLookup({ referrerOf: async () => { throw new Error('rpc down'); } })(BUYER)).rejects.toThrow('rpc down');
+  });
+
+  it('remembers invites handed out in the latest epoch per signer and deployment', async () => {
+    const dir = await dataDir();
+    const signer = { ...SCOPE, wallet: REFERRER };
+    await recordIssuedInvite(dir, signer, 30, 0);
+    await recordIssuedInvite(dir, signer, 30, 1);
+    expect(await readIssuedInviteIndices(dir, signer, 30)).toEqual([0, 1]);
+    expect(await readIssuedInviteIndices(dir, { ...signer, wallet: OTHER_REFERRER }, 30)).toEqual([]);
+    expect(await readIssuedInviteIndices(dir, { ...OTHER_DEPLOYMENT, wallet: REFERRER }, 30)).toEqual([]);
+    await saveReferralInvite(dir, SCOPE, ENCODED, REFERRER);
+    expect(await readIssuedInviteIndices(dir, signer, 30)).toEqual([0, 1]);
+    await recordIssuedInvite(dir, signer, 31, 0);
+    expect(await readIssuedInviteIndices(dir, signer, 30)).toEqual([]);
+    expect(await readIssuedInviteIndices(dir, signer, 31)).toEqual([0]);
+    expect((await readReferralState(dir, SCOPE))?.state).toBe('invited');
+  });
+
+  it('still counts legacy issued indices so an invite is never handed out twice', async () => {
+    const dir = await dataDir();
+    await writeFile(join(dir, 'referral.json'), JSON.stringify({ state: 'none', issued: { epoch: 30, indices: [2] } }));
+    const signer = { ...SCOPE, wallet: REFERRER };
+    expect(await readIssuedInviteIndices(dir, signer, 30)).toEqual([2]);
+    expect(await recordIssuedInvite(dir, signer, 30, 0)).toEqual([0, 2]);
+    expect(JSON.parse(await readFile(join(dir, 'referral.json'), 'utf8')).legacy?.issued).toBeUndefined();
+  });
+
+  it('keeps every overlapping update: issued invites and referee records all survive', async () => {
+    const dir = await dataDir();
+    const signer = { ...SCOPE, wallet: REFERRER };
+    const otherBuyer = { ...SCOPE, wallet: OTHER_REFERRER };
+    await saveReferralInvite(dir, otherBuyer, ENCODED_2, REFERRER);
+    await Promise.all([
+      ...Array.from({ length: 12 }, (_, index) => recordIssuedInvite(dir, signer, 30, index)),
+      saveReferralInvite(dir, SCOPE, ENCODED, REFERRER),
+      clearReferralInvite(dir, otherBuyer),
+      writeReferralState(dir, OTHER_CHAIN, { state: 'bound', referrer: REFERRER }),
+    ]);
+    expect(await readIssuedInviteIndices(dir, signer, 30)).toEqual(Array.from({ length: 12 }, (_, index) => index));
+    expect(await readReferralState(dir, SCOPE)).toMatchObject({ state: 'invited', invite: ENCODED });
+    expect(await readReferralState(dir, otherBuyer)).toMatchObject({ state: 'none' });
+    expect(await readReferralState(dir, OTHER_CHAIN)).toMatchObject({ state: 'bound', referrer: REFERRER });
+    expect((await readdir(dir)).sort()).toEqual(['referral.json', 'referral.json.lock']); // no temporary files left
+  });
+
+  it('waits for another process holding the referral lock before writing', async () => {
+    const dir = await dataDir();
+    const signer = { ...SCOPE, wallet: REFERRER };
+    // Another process holds the lock: an exclusive transaction on its lock file.
+    const holder = new Database(join(dir, 'referral.json.lock'));
+    holder.exec('BEGIN EXCLUSIVE');
+    let saved = false;
+    const saving = saveReferralInvite(dir, SCOPE, ENCODED, REFERRER).then(() => { saved = true; });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(saved).toBe(false);
+    // The other process records an issued invite, then releases the lock.
+    await writeFile(join(dir, 'referral.json'), JSON.stringify({ version: 2, referees: {}, issued: { [`8453:${SCOPE.referralsAddress}:${REFERRER}`]: { epoch: 30, indices: [4] } } }));
+    holder.exec('ROLLBACK');
+    holder.close();
+    await saving;
+    expect(await readIssuedInviteIndices(dir, signer, 30)).toEqual([4]);
+    expect((await readReferralState(dir, SCOPE))?.state).toBe('invited');
+  });
+
+  it('never lets a legacy check erase an invite redeemed while it ran', async () => {
+    const dir = await dataDir();
+    await writeFile(join(dir, 'referral.json'), JSON.stringify({ state: 'bound', referrer: REFERRER }));
+    const chain = async () => {
+      await saveReferralInvite(dir, SCOPE, ENCODED, OTHER_REFERRER);
+      return null; // unbound on this deployment
+    };
+    await syncReferralState(dir, SCOPE, { chain });
+    expect(await readReferralState(dir, SCOPE)).toMatchObject({ state: 'invited', invite: ENCODED, referrer: OTHER_REFERRER });
   });
 
   it('ignores files from the retired network-matching design', async () => {
     const dir = await dataDir();
     await writeFile(join(dir, 'referral.json'), JSON.stringify({ state: 'accepted', referrer: REFERRER }));
     expect(await readReferralState(dir, SCOPE)).toBeNull();
-  });
-
-  it('keeps each deployment separate in one data dir', async () => {
-    const dir = await dataDir();
-    await writeReferralState(dir, SCOPE, { state: 'bound', referrer: REFERRER });
-    await recordIssuedInvite(dir, SCOPE, 30, 2);
-    expect(await readReferralState(dir, OTHER_SCOPE)).toBeNull();
-    expect(await saveReferralInvite(dir, OTHER_SCOPE, ENCODED, REFERRER)).toMatchObject({ state: 'invited', invite: ENCODED });
-    expect(issuedInviteIndices(await readReferralState(dir, OTHER_SCOPE), 30)).toEqual([]);
-    expect(await readReferralState(dir, SCOPE)).toMatchObject({ state: 'bound', referrer: REFERRER, issued: { epoch: 30, indices: [2] } });
-    // Scope keys ignore address casing.
-    expect(await readReferralState(dir, { ...SCOPE, referralsAddress: SCOPE.referralsAddress.toUpperCase().replace('0X', '0x') })).toMatchObject({ state: 'bound' });
-  });
-
-  it('keeps each wallet separate when the data dir changes hands', async () => {
-    const dir = await dataDir();
-    const other = { ...SCOPE, wallet: REFERRER };
-    await writeReferralState(dir, SCOPE, { state: 'bound', referrer: REFERRER });
-    await recordIssuedInvite(dir, SCOPE, 30, 2);
-    expect(await readReferralState(dir, other)).toBeNull();
-    expect(await saveReferralInvite(dir, other, ENCODED, REFERRER)).toMatchObject({ state: 'invited', invite: ENCODED });
-    expect(issuedInviteIndices(await readReferralState(dir, other), 30)).toEqual([]);
-    expect(await readReferralState(dir, SCOPE)).toMatchObject({ state: 'bound', issued: { epoch: 30, indices: [2] } });
-    // Scope keys ignore wallet casing.
-    expect(await readReferralState(dir, { ...SCOPE, wallet: BUYER.toUpperCase().replace('0X', '0x') })).toMatchObject({ state: 'bound' });
-  });
-
-  it('adopts a pre-scoped pending invite only into the deployment that signed it', async () => {
-    const dir = await dataDir();
-    const referrer = Wallet.createRandom();
-    const signed = encodeInvite(await signInvite(referrer, SCOPE, 30, 1));
-    await writeFile(join(dir, 'referral.json'), JSON.stringify({ state: 'invited', invite: signed, referrer: referrer.address }));
-    expect(await readReferralState(dir, OTHER_SCOPE)).toBeNull();
-    expect(await readReferralState(dir, SCOPE)).toMatchObject({ state: 'invited', invite: signed, referrer: referrer.address });
-    await recordIssuedInvite(dir, OTHER_SCOPE, 30, 0);
-    expect(await readReferralState(dir, SCOPE)).toMatchObject({ state: 'invited', invite: signed });
-    await recordIssuedInvite(dir, SCOPE, 30, 3);
-    const file = JSON.parse(await readFile(join(dir, 'referral.json'), 'utf8'));
-    expect(file.legacy).toBeUndefined();
-    expect(await readReferralState(dir, SCOPE)).toMatchObject({ state: 'invited', invite: signed, issued: { epoch: 30, indices: [3] } });
-  });
-
-  it('never treats a pre-scoped binding as bound on any deployment', async () => {
-    const dir = await dataDir();
-    await writeFile(join(dir, 'referral.json'), JSON.stringify({ state: 'bound', referrer: REFERRER }));
-    expect(await readReferralState(dir, SCOPE)).toBeNull();
-    expect(await saveReferralInvite(dir, SCOPE, ENCODED, REFERRER)).toMatchObject({ state: 'invited' });
-  });
-
-  it('serializes concurrent writers without losing updates', async () => {
-    const dir = await dataDir();
-    await Promise.all(Array.from({ length: 20 }, (_, index) => recordIssuedInvite(dir, SCOPE, 30, index)));
-    expect(issuedInviteIndices(await readReferralState(dir, SCOPE), 30)).toEqual(Array.from({ length: 20 }, (_, index) => index));
-  });
-
-  it('allocates a single remaining slot to exactly one of two concurrent issuers', async () => {
-    const dir = await dataDir();
-    await recordIssuedInvite(dir, SCOPE, 30, 0);
-    const allocate = () => {
-      let index: number | null = null;
-      return updateReferralState(dir, SCOPE, async (current) => {
-        const taken = issuedInviteIndices(current, 30);
-        if (taken.includes(1)) return null;
-        await new Promise((resolve) => setTimeout(resolve, 20));
-        index = 1;
-        return withIssuedInvite(current, 30, 1);
-      }).then(() => index);
-    };
-    const results = await Promise.all([allocate(), allocate()]);
-    expect(results.filter((index) => index === 1)).toHaveLength(1);
-  });
-
-  it('waits for another process holding the lock and takes over a stale one', async () => {
-    const dir = await dataDir();
-    const lock = join(dir, 'referral.json.lock');
-    await writeFile(lock, '1\n');
-    let done = false;
-    const write = recordIssuedInvite(dir, SCOPE, 30, 0).then(() => { done = true; });
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    expect(done).toBe(false);
-    await rm(lock);
-    await write;
-    expect(issuedInviteIndices(await readReferralState(dir, SCOPE), 30)).toEqual([0]);
-
-    await writeFile(lock, '1\n');
-    const old = new Date(Date.now() - 60_000);
-    await utimes(lock, old, old);
-    await recordIssuedInvite(dir, SCOPE, 30, 1);
-    expect(issuedInviteIndices(await readReferralState(dir, SCOPE), 30)).toEqual([0, 1]);
-    await expect(access(lock)).rejects.toThrow();
-  });
-
-  // Fresh module instances share no in-process queue, so they contend on the
-  // lock file exactly as separate CLI, Desktop and daemon processes do.
-  async function separateWriter(): Promise<typeof import('../src/payments/referral-state.js')> {
-    vi.resetModules();
-    return import('../src/payments/referral-state.js');
-  }
-
-  it('lets exactly one of two writers recovering the same stale lock take the last slot', async () => {
-    const dir = await dataDir();
-    const lock = join(dir, 'referral.json.lock');
-    for (let round = 0; round < 5; round += 1) {
-      await rm(join(dir, 'referral.json'), { force: true });
-      await recordIssuedInvite(dir, SCOPE, 30, 0);
-      await writeFile(lock, 'crashed-holder\n');
-      const old = new Date(Date.now() - 60_000);
-      await utimes(lock, old, old);
-      const writers = await Promise.all([separateWriter(), separateWriter()]);
-      const allocate = (writer: (typeof writers)[number]) => {
-        let won = false;
-        return writer.updateReferralState(dir, SCOPE, async (current) => {
-          if (writer.issuedInviteIndices(current, 30).includes(1)) return null;
-          await new Promise((resolve) => setTimeout(resolve, 15));
-          won = true;
-          return writer.withIssuedInvite(current, 30, 1);
-        }).then(() => won);
-      };
-      const results = await Promise.all(writers.map(allocate));
-      expect(results.filter(Boolean)).toHaveLength(1);
-      expect(issuedInviteIndices(await readReferralState(dir, SCOPE), 30)).toEqual([0, 1]);
-      await expect(access(lock)).rejects.toThrow();
-    }
-  });
-
-  it('keeps every update from writers in separate processes', async () => {
-    const dir = await dataDir();
-    const writers = await Promise.all([separateWriter(), separateWriter(), separateWriter()]);
-    await Promise.all(Array.from({ length: 15 }, (_, index) => writers[index % 3]!.recordIssuedInvite(dir, SCOPE, 30, index)));
-    expect(issuedInviteIndices(await readReferralState(dir, SCOPE), 30)).toEqual(Array.from({ length: 15 }, (_, index) => index));
-  });
-
-  it('never removes a lock another holder now owns', async () => {
-    const dir = await dataDir();
-    const lock = join(dir, 'referral.json.lock');
-    const writer = await separateWriter();
-    let release: () => void = () => {};
-    const held = writer.updateReferralState(dir, SCOPE, () => new Promise((resolve) => {
-      release = () => resolve(null);
-    }));
-    while (!(await readFile(lock, 'utf8').catch(() => ''))) await new Promise((resolve) => setTimeout(resolve, 5));
-    // Someone replaces the lock (e.g. after taking it over); the first holder's release must leave it.
-    await writeFile(lock, 'other-holder\n');
-    release();
-    await held;
-    expect((await readFile(lock, 'utf8')).trim()).toBe('other-holder');
-  });
-
-  it('recovers a stale lock only while it is still the same stale lock', async () => {
-    const dir = await dataDir();
-    const lock = join(dir, 'referral.json.lock');
-    const old = new Date(Date.now() - 60_000);
-    // Seen stale as "crashed", but another recoverer already replaced it with its own lock.
-    await writeFile(lock, 'fresh-holder\n');
-    await takeOverStaleLock(lock, 'crashed');
-    expect((await readFile(lock, 'utf8')).trim()).toBe('fresh-holder');
-    // Same holder, but its heartbeat refreshed it since.
-    await writeFile(lock, 'crashed\n');
-    await takeOverStaleLock(lock, 'crashed');
-    expect((await readFile(lock, 'utf8')).trim()).toBe('crashed');
-    // Another recovery is in progress: leave it to that one.
-    await utimes(lock, old, old);
-    await writeFile(`${lock}.takeover`, 'other-recoverer\n');
-    await takeOverStaleLock(lock, 'crashed');
-    expect((await readFile(lock, 'utf8')).trim()).toBe('crashed');
-    await rm(`${lock}.takeover`);
-    // Still the same stale lock: removed.
-    await takeOverStaleLock(lock, 'crashed');
-    await expect(access(lock)).rejects.toThrow();
-    await expect(access(`${lock}.takeover`)).rejects.toThrow();
   });
 });

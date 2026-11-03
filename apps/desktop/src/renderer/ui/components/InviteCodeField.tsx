@@ -16,12 +16,7 @@ export function receiveInviteLink(invite: string): void {
   for (const listener of listeners) listener(invite);
 }
 
-/** Drop a link's invite the user chose not to use, so it stops opening invite fields. */
-export function dismissIncomingInvite(): void {
-  incomingInvite = null;
-}
-
-/** Calls `onInvite` with a pending link's invite on mount and with each new link. */
+/** Calls `onInvite` with a link's invite: the one already waiting, then each new one. */
 export function useIncomingInvite(onInvite: (invite: string) => void): void {
   useEffect(() => {
     if (incomingInvite) onInvite(incomingInvite);
@@ -33,9 +28,7 @@ export function useIncomingInvite(onInvite: (invite: string) => void): void {
 type Props = {
   /** Called after an invite was saved as pending. */
   onRedeemed?: (result: Extract<InviteCheckResult, { ok: true }>) => void;
-  /** Replaces the default prompt under the field. */
-  prompt?: string;
-  /** Shows a Cancel action (e.g. when replacing a pending invite). */
+  /** Shows a Cancel link (replacing a pending invite: keep the current one). */
   onCancel?: () => void;
 };
 
@@ -44,7 +37,7 @@ type Props = {
  * (through IPC) as it is entered, then saves it as pending: the buyer daemon
  * carries it until the first settlement binds it.
  */
-export function InviteCodeField({ onRedeemed, prompt = INVITE_PROMPT, onCancel }: Props) {
+export function InviteCodeField({ onRedeemed, onCancel }: Props) {
   // Start from a link that arrived before this field mounted (navigating to it).
   const [value, setValue] = useState(() => incomingInvite ?? '');
   const [check, setCheck] = useState<InviteCheckResult | null>(null);
@@ -56,8 +49,8 @@ export function InviteCodeField({ onRedeemed, prompt = INVITE_PROMPT, onCancel }
 
   useEffect(() => {
     const trimmed = value.trim();
+    // A check still running for the previous value no longer applies.
     setCheck(null);
-    // A check still running for the previous value no longer reports back.
     setChecking(false);
     if (!trimmed) return undefined;
     let cancelled = false;
@@ -99,7 +92,7 @@ export function InviteCodeField({ onRedeemed, prompt = INVITE_PROMPT, onCancel }
     );
   }
 
-  let hint = prompt;
+  let hint = INVITE_PROMPT;
   if (checking) hint = 'Checking…';
   else if (check?.ok) hint = `Invite from ${shortAddress(check.referrer)}.`;
 
@@ -120,7 +113,7 @@ export function InviteCodeField({ onRedeemed, prompt = INVITE_PROMPT, onCancel }
       <Button size="sm" onClick={() => void redeem()} disabled={!check?.ok || saving} aria-busy={saving}>
         {saving ? 'Saving…' : 'Use invite'}
       </Button>
-      {onCancel ? <Button size="sm" variant="link" onClick={onCancel} disabled={saving}>Cancel</Button> : null}
+      {onCancel ? <Button size="sm" variant="link" onClick={onCancel}>Cancel</Button> : null}
     </div>
   );
 }

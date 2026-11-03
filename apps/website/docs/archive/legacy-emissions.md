@@ -64,17 +64,41 @@ seller's locked rewards, not a `10 / 65` adjustment to the legacy seller bucket.
 For example, 1,000 ANTS cumulatively locked permits 100 ANTS in total releases;
 repeating a claim does not release another 10%. The remainder stays locked.
 
-Sellers proven as wash traders by the configured wash-trading registry, or
-flagged manually by the claim-policy owner, receive **zero** from this policy.
-This restriction is separate from starter-position initialization, which is
-not blocked by historical wash flags.
+Sellers that `isProvenWashTrader` reports as proven wash traders on the
+[wash-trading registry](/docs/reward-policies) receive **zero** from this
+policy; their rewards stay locked. The policy has no owner, no manual seller
+flags, and no setters: the release percentage and the registry address are
+fixed when it is deployed, and there is no vesting. This restriction is
+separate from starter-position initialization, which is not blocked by
+historical wash flags.
 
 M002 is a separate deployment after M001 activation. It installs the
-legacy seller claim policy and enables the locked-rewards pool to transfer ANTS
-before global token transfers are enabled. The September 10 protocol start does
-not automatically unlock these rewards. Claims through the pool become
-available only after M002 is installed; its default is an immediate
-10% entitlement, with release and vesting parameters verified at deployment.
+legacy seller claim policy on `AntseedSellerRewardsPool` and whitelists the
+pool on ANTSToken so it can send ANTS before global token transfers are
+enabled. The September 10 protocol start does not automatically unlock these
+rewards; claims through the pool become available only after M002 is
+installed.
+
+**Status:** M002 is installed on Base mainnet. The claim policy is
+`AntseedLegacySellerClaimPolicy` at
+`0xB3ae8460481976Ad996EaFf71715c7bAeFb1D829` (last locked epoch 21, release
+1000 bps), and the pool is whitelisted on ANTSToken.
+
+### Claiming locked rewards
+
+From the seller address that earned the rewards:
+
+```bash
+antseed ants rewards              # shows "Locked legacy pool (claimable)"
+antseed ants rewards claim --locked
+antseed ants rewards claim --locked --recipient 0xYOUR_ADDRESS
+```
+
+The ANTS dashboard shows the same balance under rewards. Both call
+`claim(recipient)` on `AntseedSellerRewardsPool`, which pays the claimable
+amount in one transaction. A second claim reverts with `NothingToClaim` until
+more rewards are locked for that seller. Until ANTS transfers are enabled,
+the recipient can hold the released ANTS but cannot transfer it.
 
 ## Escrow and flushes {#escrow-and-flushes}
 
@@ -117,6 +141,7 @@ not support the old USDC stake/unstake methods.
 | AntseedEmissionsV2 | `0xF13bE52c4A3afC6AE29536f073588d01A0564088` |
 | AntseedEmissions V1 | `0x36877fBa8Fa333aa46a1c57b66D132E4995C86b5` |
 | AntseedSellerRewardsPool | `0xA065C0dE80dbd3d824F7b584E231b76b9fefB261` |
+| AntseedLegacySellerClaimPolicy | `0xB3ae8460481976Ad996EaFf71715c7bAeFb1D829` |
 | AntseedLegacyEmissionsEscrow | `0x4d0fC3C0BBb5233Af6c4Ce33223e5330c34db9ab` |
 
 Buyer deposits, Channels, and ANTSToken are shared with the

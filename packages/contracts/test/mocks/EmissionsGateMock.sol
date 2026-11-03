@@ -18,6 +18,11 @@ contract EmissionsGateMock is ERC20 {
     mapping(address => mapping(uint256 => uint256)) private _budget;
     mapping(address => mapping(uint256 => uint256)) public minted;
     mapping(uint256 => uint256) private _epochEmission;
+    /// Per-epoch burn cap override shared by every controller. Unset, the cap
+    /// is the real gate's `BURN_CAP_BPS` share of the epoch emission (0 when
+    /// that is unset too: nothing burns, so tests model the cap explicitly).
+    mapping(uint256 => uint256) public epochBurnCap;
+    /// Burn already consumed this epoch by any controller's remainder.
     mapping(uint256 => uint256) public epochBurnedAmount;
 
     error EpochNotFinalized();
@@ -43,6 +48,15 @@ contract EmissionsGateMock is ERC20 {
         return _epochEmission[epoch];
     }
 
+    function setEpochBurnCap(uint256 epoch, uint256 cap) external {
+        epochBurnCap[epoch] = cap;
+    }
+
+    /// Simulate other controllers having already burned part of the cap.
+    function setEpochBurned(uint256 epoch, uint256 amount) external {
+        epochBurnedAmount[epoch] = amount;
+    }
+
     function controllerEpochBudget(address controller, uint256 epoch) external view returns (uint256) {
         return _budget[controller][epoch];
     }
@@ -52,14 +66,17 @@ contract EmissionsGateMock is ERC20 {
         _mint(recipient, amount);
     }
 
+    /// Mirrors AntseedEmissionsGate.claimRemainder: burn up to whatever is
+    /// left of the epoch's shared burn cap, reserve the excess.
     function claimRemainder(uint256 epoch, address reserveRecipient, uint256 amount)
         external
         returns (uint256 burnedAmount, uint256 reserveAmount)
     {
         if (reserveRecipient != emissionsReserve) revert InvalidValue();
         _charge(epoch, amount);
-
-        uint256 burnCap = (getEpochEmission(epoch) * BURN_CAP_BPS) / SHARE_DENOMINATOR;
+        uint256 burnCap = epochBurnCap[epoch] != 0
+            ? epochBurnCap[epoch]
+            : (getEpochEmission(epoch) * BURN_CAP_BPS) / SHARE_DENOMINATOR;
         uint256 alreadyBurned = epochBurnedAmount[epoch];
         if (alreadyBurned < burnCap) {
             uint256 remainingBurn = burnCap - alreadyBurned;
@@ -67,7 +84,6 @@ contract EmissionsGateMock is ERC20 {
             epochBurnedAmount[epoch] = alreadyBurned + burnedAmount;
         }
         reserveAmount = amount - burnedAmount;
-
         if (burnedAmount != 0) _mint(DEAD_ADDRESS, burnedAmount);
         if (reserveAmount != 0) _mint(reserveRecipient, reserveAmount);
     }

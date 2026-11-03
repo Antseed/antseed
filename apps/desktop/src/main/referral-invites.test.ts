@@ -18,7 +18,7 @@ test('a failing referred-buyer list keeps the allowance the contract reported', 
 
 test('an explorer that does not list referrals keeps the allowance without an error', () => {
   const invites = combineInviteReads(ok(card), ok<ReferredBuyersView>({ available: false, buyers: [] }));
-  assert.deepEqual(invites, { available: true, listed: false, allowance, buyers: [], totals: { points: '0', ants: '0', pendingPoints: '0' }, error: null });
+  assert.deepEqual(invites, { available: true, listed: false, allowance, buyers: [], totals: { points: '0', ants: '0', pendingPoints: '0' }, payable: '0', claimableEpochs: [], error: null });
 });
 
 test('a listed explorer sums the referred buyers', () => {
@@ -36,4 +36,14 @@ test('a listed explorer sums the referred buyers', () => {
 test('a failing contract read without a listing leaves invites usable with no allowance', () => {
   const invites = combineInviteReads(failed<ReferralView>(new Error('boom')), ok<ReferredBuyersView>({ available: false, buyers: [] }));
   assert.equal(invites.allowance, null);
+});
+
+test('inviter rewards Antscan reports pass through, also when the referred-buyer list fails', () => {
+  const indexed: ReferralView = { ...card, indexed: true, payable: '2500000000000000000', claimableEpochs: [28, 29] };
+  const listed = combineInviteReads(ok(indexed), ok<ReferredBuyersView>({ available: true, buyers: [] }));
+  assert.equal(listed.payable, '2.5');
+  assert.deepEqual(listed.claimableEpochs, [28, 29]);
+  const listFailed = combineInviteReads(ok(indexed), failed<ReferredBuyersView>(new Error('HTTP 500')));
+  assert.equal(listFailed.payable, '2.5');
+  assert.deepEqual(listFailed.claimableEpochs, [28, 29]);
 });

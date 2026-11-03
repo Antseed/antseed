@@ -1,5 +1,5 @@
 import { StakingButton } from '../StakingButton';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button } from '@antseed/ui';
 import { shallowEqual, useUiSelector } from '../../hooks/useUiSelector';
 import { useActions } from '../../hooks/useActions';
@@ -9,6 +9,7 @@ import type { CreateInviteResult, RefereeBonus, ReferralInvites, ReferralStatus 
 import { ReferralStatusRow } from '../ReferralStatusRow';
 import { VprBadge, VprCard, VprPage, VprSettingRow } from '../vpr/VprKit';
 import breakdown from './BalanceBreakdown.module.scss';
+import { VprFreeTierCard } from './VprFreeTierCard';
 import styles from './VprRewardsView.module.scss';
 
 const PAYMENT_SUMMARY_POLL_MS = 60_000;
@@ -40,37 +41,28 @@ export function VprRewardsView({ onSelectView }: Props) {
   // Force-refresh on entry and whenever the window regains focus — after
   // claiming in the browser pay popup the user lands straight back here, and
   // the 55s summary throttle would otherwise show the pre-claim numbers. The
-  // invite bonus and invites (claimed on the same page) follow the same cycle.
+  // invite bonus and invites are claimed and created the same way, so they
+  // follow the summary.
   const [invites, setInvites] = useState<ReferralInvites | null>(null);
   const [bonus, setBonus] = useState<RefereeBonus | null>(null);
+  const invitesLoader = useRef<LatestOnly | null>(null);
   useEffect(() => {
-    let cancelled = false;
-    let latest = 0;
-    // Only the newest read lands, so a slow pre-claim response can't win.
-    const loadReferralRewards = () => {
-      const request = ++latest;
-      const current = () => !cancelled && request === latest;
-      void window.antseedDesktop?.referralGetInvites?.()
-        .then((next) => { if (current()) setInvites(next); })
-        .catch(() => {});
-      void window.antseedDesktop?.referralGetReferee?.()
-        .then((next) => { if (current()) setBonus(next); })
-        .catch(() => {});
-    };
-    const refresh = (force: boolean) => {
+    const loadInvites = latestOnly(() => window.antseedDesktop?.referralGetInvites?.(), setInvites);
+    const loadBonus = latestOnly(() => window.antseedDesktop?.referralGetReferee?.(), setBonus);
+    invitesLoader.current = loadInvites;
+    const stop = startRewardsRefresh((force) => {
       actions.refreshPaymentSummary(force);
-      loadReferralRewards();
-    };
-    refresh(true);
-    const timer = window.setInterval(() => refresh(false), PAYMENT_SUMMARY_POLL_MS);
-    const onFocus = () => refresh(true);
-    window.addEventListener('focus', onFocus);
+      loadInvites.run();
+      loadBonus.run();
+    }, PAYMENT_SUMMARY_POLL_MS);
     return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-      window.removeEventListener('focus', onFocus);
+      stop();
+      loadInvites.dispose();
+      loadBonus.dispose();
+      invitesLoader.current = null;
     };
   }, [actions]);
+  const reloadInvites = useCallback(() => invitesLoader.current?.run(), []);
 
   // Re-read after redeeming: the field gives way to the pending inviter.
   const [referral, setReferral] = useState<ReferralStatus | null>(null);
@@ -126,7 +118,8 @@ export function VprRewardsView({ onSelectView }: Props) {
 
         <span className={styles.errorNote}>Copy a link to use your wallet in another browser.</span>
 
-        <VprInvitesCard invites={invites} />
+        <VprInvitesCard invites={invites} onCreated={reloadInvites} />
+        <VprFreeTierCard />
 
         <VprCard className={styles.aboutCard}>
           <span className={styles.aboutTitle}>About $ANTS</span>
@@ -142,6 +135,44 @@ export function VprRewardsView({ onSelectView }: Props) {
       </VprPage>
     </section>
   );
+}
+
+type RefreshTarget = Pick<Window, 'addEventListener' | 'removeEventListener' | 'setInterval' | 'clearInterval'>;
+
+/**
+ * Run `refresh(true)` now and whenever the window regains focus, and
+ * `refresh(false)` every `intervalMs`. Returns the cleanup.
+ */
+export function startRewardsRefresh(refresh: (force: boolean) => void, intervalMs: number, target: RefreshTarget = window): () => void {
+  refresh(true);
+  const timer = target.setInterval(() => refresh(false), intervalMs);
+  const onFocus = () => refresh(true);
+  target.addEventListener('focus', onFocus);
+  return () => {
+    target.clearInterval(timer);
+    target.removeEventListener('focus', onFocus);
+  };
+}
+
+export type LatestOnly = { run(): void; dispose(): void };
+
+/**
+ * Re-runnable read whose result is applied only when it is the latest one
+ * started and the view is still mounted, so a slow earlier response cannot
+ * overwrite a newer one. Failures keep the current value.
+ */
+export function latestOnly<T>(load: () => Promise<T> | undefined, apply: (value: T) => void): LatestOnly {
+  let generation = 0;
+  let disposed = false;
+  return {
+    run() {
+      const current = ++generation;
+      void load()
+        ?.then((value) => { if (!disposed && current === generation) apply(value); })
+        .catch(() => {});
+    },
+    dispose() { disposed = true; },
+  };
 }
 
 /**
@@ -172,89 +203,139 @@ function invitePoints(points: string, pendingPoints: string): string {
     : `${formatInt(points)} pts`;
 }
 
-type IssuedInvite = Extract<CreateInviteResult, { ok: true }>;
-type CreateFailure = Extract<CreateInviteResult, { ok: false }>;
-/**
- * The allowance week a creation result belongs to: the reported epoch, or,
- * when no allowance is reported, the read it was made against. Without an
- * epoch there is no telling whether a week has turned, so a result then holds
- * only until the next refresh, and creating again lets the RPC-backed
- * creation enforce the quota (its error is shown).
- */
-type Week = number | ReferralInvites;
-const weekOf = (invites: ReferralInvites): Week => invites.allowance?.epoch ?? invites;
-/** A creation result tagged with the week it was made in. */
-type InWeek<T> = T & { week: Week };
+/** The latest create attempt on this card, with the allowance week it was made in. */
+export type CreatedInvite = { result: CreateInviteResult; epoch: number | null };
+
+/** The card's create history: the latest link, and the latest failure since (with the allowance week it was tried in). */
+export type InviteCreation = {
+  latest: CreatedInvite | null;
+  failure: { reason: string; noQuota: boolean; epoch: number | null } | null;
+};
+
+export const NO_INVITE_CREATION: InviteCreation = { latest: null, failure: null };
+
+/** Fold a create attempt in: a new link replaces the old one; a failure keeps it. */
+export function nextInviteCreation(current: InviteCreation, attempt: CreatedInvite): InviteCreation {
+  return attempt.result.ok
+    ? { latest: attempt, failure: null }
+    : { latest: current.latest, failure: { reason: attempt.result.reason, noQuota: attempt.result.noQuota, epoch: attempt.epoch } };
+}
 
 /**
- * Invites left this week. A creation's counts only apply in the week it was
- * issued, and only while the refreshed allowance predates it (reports more
- * left); a newer week, or invites issued elsewhere, show as the server reports.
+ * Create one invite; a failure becomes a result the card shows. A created
+ * invite is dated by the on-chain week it was issued in; a failure by the
+ * allowance week shown when it was tried.
  */
-function inviteAllowance(
-  invites: ReferralInvites,
-  issued: InWeek<IssuedInvite> | null,
-): { left: number | null; quota: number | null } {
-  const allowance = invites.allowance;
-  if (!issued || issued.week !== weekOf(invites)) {
-    return { left: allowance?.left ?? null, quota: allowance?.quota ?? null };
+export async function createInviteOnce(
+  createInvite: () => Promise<CreateInviteResult>,
+  epoch: number | null,
+): Promise<CreatedInvite> {
+  try {
+    const result = await createInvite();
+    return { result, epoch: result.ok && typeof result.epoch === 'number' ? result.epoch : epoch };
+  } catch (error) {
+    return { result: { ok: false, reason: error instanceof Error ? error.message : String(error), noQuota: false }, epoch };
   }
-  return allowance
-    ? { left: Math.min(allowance.left, issued.left), quota: allowance.quota }
-    : { left: issued.left, quota: issued.quota };
+}
+
+/** Whether the latest failure still describes the allowance week shown; a newer week's allowance supersedes it. */
+export function inviteFailureCurrent(invites: ReferralInvites, creation: InviteCreation): boolean {
+  const failure = creation.failure;
+  const allowance = invites.allowance;
+  return !!failure && (!allowance || failure.epoch === null || failure.epoch >= allowance.epoch);
+}
+
+/**
+ * What the invite row shows: the latest link, the invites left this week and
+ * whether another can be created. The count from the latest creation wins
+ * over a lagging Antscan allowance for the same week; a new week resets it,
+ * and clears a no-quota answer from an earlier week. None of this is final:
+ * when creation looks unavailable the card still offers "Check again", since
+ * the main process reads the epoch and quota on-chain before signing.
+ */
+export function inviteCardState(invites: ReferralInvites, creation: InviteCreation): {
+  link: string | null;
+  left: number | null;
+  quota: number | null;
+  noQuota: boolean;
+  canCreate: boolean;
+} {
+  const allowance = invites.allowance;
+  const latest = creation.latest;
+  const result = latest?.result.ok ? latest.result : null;
+  const link = result?.link ?? null;
+  // A creation for the allowance's week, or a later one Antscan has not reached, stands in for it.
+  const createdWeek = latest?.epoch ?? null;
+  const sameWeek = !!allowance && createdWeek === allowance.epoch;
+  const laterWeek = !!result && (!allowance || (createdWeek !== null && createdWeek > allowance.epoch));
+  const left = result && sameWeek ? Math.min(result.left, allowance!.left)
+    : result && laterWeek ? result.left
+      : allowance?.left ?? null;
+  const quota = result && laterWeek ? result.quota : allowance?.quota ?? null;
+  const noQuota = (!laterWeek && allowance?.quota === 0) || (inviteFailureCurrent(invites, creation) && !!creation.failure?.noQuota);
+  return { link, left, quota, noQuota, canCreate: !noQuota && left !== 0 };
 }
 
 /**
  * Referrer view: the invite link and what each invited buyer brought in
  * (from Antscan), laid out like the balance breakdown rows with a total.
- * Hidden without referrals; the list is hidden without an explorer.
+ * Hidden without referrals; the list is hidden without an explorer. Each
+ * link is single-use, so another can be created while invites are left.
  */
-export function VprInvitesCard({ invites }: { invites: ReferralInvites | null }) {
-  // The latest invite stays copyable across refreshes, weeks and failed retries.
-  const [issued, setIssued] = useState<InWeek<IssuedInvite> | null>(null);
-  const [failure, setFailure] = useState<InWeek<CreateFailure> | null>(null);
+export function VprInvitesCard({ invites, onCreated }: { invites: ReferralInvites | null; onCreated?: () => void }) {
+  const [creation, setCreation] = useState<InviteCreation>(NO_INVITE_CREATION);
   const [creating, setCreating] = useState(false);
   const [copied, setCopied] = useState(false);
   if (!invites?.available) return null;
-  const allowance = invites.allowance;
-  const week = weekOf(invites);
-  const link = issued?.link ?? null;
-  const { left, quota } = inviteAllowance(invites, issued);
-  // A failure (e.g. no quota) only holds for the week it happened in.
-  const failed = failure && failure.week === week ? failure : null;
-  const noQuota = allowance?.quota === 0 || !!failed?.noQuota;
   const create = async () => {
     const createInvite = window.antseedDesktop?.referralCreateInvite;
     if (!createInvite || creating) return;
     setCreating(true);
     try {
-      const result = await createInvite();
-      if (result.ok) {
-        setIssued({ ...result, week });
-        setFailure(null);
+      const attempt = await createInviteOnce(createInvite, invites.allowance?.epoch ?? null);
+      setCreation((current) => nextInviteCreation(current, attempt));
+      if (attempt.result.ok) {
         setCopied(false);
-      } else {
-        setFailure({ ...result, week });
+        onCreated?.();
       }
-    } catch (error) {
-      setFailure({ ok: false, reason: error instanceof Error ? error.message : String(error), noQuota: false, week });
     } finally {
       setCreating(false);
     }
   };
-  const copy = () => {
-    if (!link) return;
+  const copy = (link: string) => {
     void navigator.clipboard.writeText(link).then(() => {
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1500);
     });
   };
+  return (
+    <VprInvitesCardBody
+      invites={invites}
+      creation={creation}
+      creating={creating}
+      copied={copied}
+      onCreate={() => void create()}
+      onCopy={copy}
+    />
+  );
+}
+
+export function VprInvitesCardBody({ invites, creation, creating, copied, onCreate, onCopy }: {
+  invites: ReferralInvites;
+  creation: InviteCreation;
+  creating: boolean;
+  copied: boolean;
+  onCreate: () => void;
+  onCopy: (link: string) => void;
+}) {
+  const { link, left, quota, noQuota, canCreate } = inviteCardState(invites, creation);
   const leftHint = left !== null && quota !== null ? `${formatInt(left)} of ${formatInt(quota)} left this week.` : null;
   const hint = noQuota
     ? NO_QUOTA_HINT
     : link
       ? [shortInviteLink(link), leftHint].filter(Boolean).join(' · ')
       : leftHint ?? 'Single-use link, valid for 4 weeks.';
+  const failure = creation.failure && !creation.failure.noQuota && inviteFailureCurrent(invites, creation) ? creation.failure.reason : null;
   const count = invites.buyers.length;
   return (
     <VprCard className={styles.aboutCard}>
@@ -265,18 +346,25 @@ export function VprInvitesCard({ invites }: { invites: ReferralInvites | null })
       <VprSettingRow
         title="Invite someone"
         hint={hint}
-        control={(
-          <>
-            {link ? <Button size="sm" variant="outline" onClick={copy}>{copied ? 'Copied' : 'Copy'}</Button> : null}
-            {link && (noQuota || left === 0) ? null : (
-              <Button size="sm" variant={link ? 'link' : 'outline'} onClick={() => void create()} disabled={creating || noQuota || left === 0} aria-busy={creating}>
-                {creating ? 'Creating…' : link ? 'Create another link' : 'Create link'}
-              </Button>
-            )}
-          </>
+        control={link ? (
+          <span className={styles.inviteActions}>
+            <Button size="sm" variant="link" onClick={onCreate} disabled={creating} aria-busy={creating}>
+              {creating ? (canCreate ? 'Creating…' : 'Checking…') : canCreate ? 'Create another' : 'Check again'}
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => onCopy(link)}>{copied ? 'Copied' : 'Copy'}</Button>
+          </span>
+        ) : canCreate ? (
+          <Button size="sm" variant="outline" onClick={onCreate} disabled={creating} aria-busy={creating}>
+            {creating ? 'Creating…' : 'Create link'}
+          </Button>
+        ) : (
+          // The allowance can lag a new week; the main process checks it on-chain.
+          <Button size="sm" variant="link" onClick={onCreate} disabled={creating} aria-busy={creating}>
+            {creating ? 'Checking…' : 'Check again'}
+          </Button>
         )}
       />
-      {failed && !failed.noQuota ? <span className={styles.errorNote}>{failed.reason}</span> : null}
+      {failure ? <span className={styles.errorNote}>{failure}</span> : null}
       {invites.listed && count > 0 ? (
         <div className={`${breakdown.breakdown} ${styles.invites}`} role="table" aria-label="Invited wallets">
           <div className={`${breakdown.row} ${styles.inviteHeader}`} role="row">
@@ -300,6 +388,18 @@ export function VprInvitesCard({ invites }: { invites: ReferralInvites | null })
             Earned is claimed plus claimable now. Pending points earn $ANTS once their week becomes claimable.
           </span>
         </div>
+      ) : null}
+      {invites.claimableEpochs.length > 0 ? (
+        // Inviter rewards are not in the buyer summary behind "Claim rewards".
+        <VprSettingRow
+          title={`${formatCredits(invites.payable)} $ANTS payable`}
+          hint="From your invites. Paid to your authorized wallet."
+          control={(
+            <StakingButton page="rewards" className={styles.claimButton}>
+              Claim ↗
+            </StakingButton>
+          )}
+        />
       ) : null}
       {invites.listed && count === 0 && !invites.error
         ? <span className={styles.aboutText}>No one has joined with your invites yet.</span>
@@ -326,28 +426,10 @@ export function VprReferralCard({ status, onRedeemed }: { status: ReferralStatus
 /**
  * Referee view: the bonus this wallet earns for being invited (from Antscan).
  * Claiming pays the authorized wallet (operator), so like the buyer rewards
- * it opens the shared rewards dashboard. Hidden until bound. Without Antscan
- * the amount is unknown and Claim stays available: the dashboard finds the
- * payable weeks on-chain.
+ * it opens the shared rewards dashboard. Hidden until bound.
  */
 export function VprRefereeBonusCard({ bonus }: { bonus: RefereeBonus | null }) {
   if (!bonus?.available) return null;
-  if (!bonus.indexed) {
-    return (
-      <VprCard className={styles.aboutCard}>
-        <span className={styles.aboutTitle}>Invite bonus</span>
-        <VprSettingRow
-          title="Payable amount unknown"
-          hint="From your inviter. The rewards dashboard finds what is payable on-chain. Paid to your authorized wallet."
-          control={(
-            <StakingButton page="rewards" className={styles.claimButton}>
-              Claim ↗
-            </StakingButton>
-          )}
-        />
-      </VprCard>
-    );
-  }
   const claimable = bonus.claimableEpochs.length > 0;
   const windowHint = bonus.weeksLeft === null
     ? 'From your inviter.'

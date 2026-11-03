@@ -12,6 +12,7 @@ import { resolveBuyerProxyPort } from '../runtime/active-config.js';
 import { getCachedChannelsClient, loadCachedCryptoConfig, setCachedChannelsClient } from './credits.js';
 import { sharedChainProvider } from './shared-chain.js';
 import { CHANNELS_FRESH_MS, cachedRead, readKeys, refreshFresh } from './read-cache.js';
+export { EMPTY_REWARDS_SUMMARY, type DesktopRewardsSummary } from './rewards-summary.js';
 import {
   applyChannelOnChainSnapshot,
   normalizePaymentChannelSummary,
@@ -70,14 +71,6 @@ export type DesktopPaymentChannelSummary = {
   inputTokens: string;
   outputTokens: string;
   cooperativeCloseSupported: boolean;
-};
-
-export type DesktopRewardsSummary = {
-  available: boolean;
-  pendingAnts: string;
-  currentEpoch: number | null;
-  transfersEnabled: boolean;
-  error: string | null;
 };
 
 export const MAX_SPENDING_AUTH_BASE_UNITS = 5_000_000n;

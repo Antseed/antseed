@@ -129,7 +129,7 @@ function claimable(found: DiscoveredRewards): ClaimableRewards {
 export async function discoverReferralClaims(ctx: AntsContext): Promise<ReferralClaimables> {
   if (!ctx.chain.referralsAddress) throw new ConsoleError(409, 'referrals_unavailable', 'Referrals are not available on this network.')
   try {
-    const [referrer, referee] = await Promise.all([discoverReferrerEpochs(ctx, ctx.address), discoverRefereeEpochs(ctx, ctx.buyerAddress)])
+    const [referrer, referee] = await Promise.all([discoverReferrerEpochs(ctx, ctx.buyerAddress), discoverRefereeEpochs(ctx, ctx.buyerAddress)])
     return { referrer: claimable(referrer), referee: claimable(referee) }
   } catch (err) {
     throw new ConsoleError(502, 'rewards_unreadable', `Payable rewards could not be read from the chain: ${errorMessage(err)}`)
@@ -290,7 +290,7 @@ export async function readBuilders(ctx: AntsContext, configPath: string, buyer: 
 function parseAgentId(value: unknown): number | null {
   if (value === null) return null
   const id = parseClientAgentId(value)
-  if (id === undefined) {
+  if (id === null) {
     throw new ConsoleError(400, 'invalid_agent', 'agentId must be a positive integer ERC-8004 agent id, or null to clear it.')
   }
   return id

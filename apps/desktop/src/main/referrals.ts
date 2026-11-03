@@ -6,15 +6,19 @@
  * bind, save it as pending in `<connect data dir>/referral.json` (shared with
  * the CLI via @antseed/node). The buyer daemon carries it in the metadata it
  * signs until AntseedStatsV2 binds it on a settlement; Antscan reports the
- * binding and the Referrals contract confirms it. State is kept per network
- * (chain id + Referrals contract) in that file. Inviting: we sign a fresh invite with the identity wallet (no
+ * binding and one `referrerOf` read confirms it. State is scoped to the
+ * wallet and the configured referrals deployment. Until it binds, a pending
+ * invite can be replaced or removed. Inviting: we sign a fresh invite with the identity wallet (no
  * transaction). Lists and payable amounts come from Antscan only.
  */
 import { getAddress } from 'ethers';
 import {
   checkInvite,
+  clearReferralInvite,
+  referrerOfLookup,
   saveReferralInvite,
   syncReferralState,
+  type ReferralScope,
 } from '@antseed/node';
 import {
   AntsContext,
@@ -25,7 +29,6 @@ import {
   referral,
   referralBindingFromExplorer,
   referredBuyers,
-  referralScope,
   type AntsChainConfig,
 } from '@antseed/ants/service';
 import { ensureSecureIdentity, getSecureIdentity } from './identity.js';
@@ -52,7 +55,8 @@ export type InviteCheckResult =
 export type { InviteAllowance, ReferralInvites } from './referral-invites.js';
 
 export type CreateInviteResult =
-  | { ok: true; invite: string; link: string; left: number; quota: number; expiresEpoch: number }
+  /** `epoch`: the on-chain week the invite was issued in (it can be ahead of Antscan's allowance). */
+  | { ok: true; invite: string; link: string; epoch: number; left: number; quota: number; expiresEpoch: number }
   | { ok: false; reason: string; noQuota: boolean };
 
 /** The two-sided bonus this wallet earns as a referee (from Antscan). Payable is a decimal ANTS string. */
@@ -82,23 +86,32 @@ async function referralContext(): Promise<{ chain: AntsChainConfig & { referrals
   return { chain: chain as AntsChainConfig & { referralsAddress: string }, wallet: identity.wallet };
 }
 
-export async function getReferralStatus(): Promise<ReferralStatus> {
-  const context = await referralContext().catch(() => null);
-  if (!context) return DARK_STATUS;
-  const { chain, wallet } = context;
-  const contract = new AntsContext({ chain, address: wallet.address }).referrals();
-  const state = await syncReferralState(
-    resolveConnectDataDir(),
-    referralScope({ chain }, wallet.address)!,
-    (buyer) => referralBindingFromExplorer(chain.explorerApiUrl, buyer),
-    contract ? (buyer) => contract.referrerOf(buyer) : null,
-  );
+function scopeOf(context: NonNullable<Awaited<ReturnType<typeof referralContext>>>): ReferralScope {
+  return { wallet: context.wallet.address, chainId: context.chain.evmChainId, referralsAddress: context.chain.referralsAddress };
+}
+
+function statusOf(state: Awaited<ReturnType<typeof syncReferralState>>): ReferralStatus {
   return {
     configured: true,
     state: state?.state ?? 'none',
     referrer: state?.state === 'none' ? null : state?.referrer ?? null,
     invite: state?.state === 'invited' ? state.invite ?? null : null,
   };
+}
+
+export async function getReferralStatus(): Promise<ReferralStatus> {
+  const context = await referralContext().catch(() => null);
+  if (!context) return DARK_STATUS;
+  const { chain, wallet } = context;
+  // Antscan only hints the binding; `referrerOf` on the configured contract
+  // confirms it before the pending invite is dropped, and is also read on a
+  // backoff while Antscan is missing, failing or still reports it unbound.
+  const client = new AntsContext({ chain, address: wallet.address }).referrals();
+  const state = await syncReferralState(resolveConnectDataDir(), scopeOf(context), {
+    explorer: (buyer) => referralBindingFromExplorer(chain.explorerApiUrl, buyer),
+    chain: client ? referrerOfLookup(client) : null,
+  });
+  return statusOf(state);
 }
 
 /** Decode an invite or link and run `previewInvite` for this wallet (one view call). */
@@ -117,19 +130,26 @@ export async function checkReferralInvite(value: string): Promise<InviteCheckRes
   }
 }
 
-/** Check the invite again and save it as pending so the buyer daemon carries it. */
+/** Check the invite again and save it as pending (replacing an unbound one) so the buyer daemon carries it. */
 export async function redeemReferralInvite(value: string): Promise<InviteCheckResult> {
   const checked = await checkReferralInvite(value);
   if (!checked.ok) return checked;
   try {
     const context = await referralContext();
     if (!context) return { ok: false, reason: 'Invites are not available on this network.' };
-    const saved = await saveReferralInvite(resolveConnectDataDir(), referralScope(context, context.wallet.address)!, checked.invite, checked.referrer);
+    const saved = await saveReferralInvite(resolveConnectDataDir(), scopeOf(context), checked.invite, checked.referrer);
     if (saved.state === 'bound') return { ok: false, reason: 'This wallet already has an inviter.' };
     return checked;
   } catch (error) {
     return { ok: false, reason: errorText(error) };
   }
+}
+
+/** Drop the pending invite (expired, or used by someone else first). A binding is kept. */
+export async function clearPendingReferralInvite(): Promise<ReferralStatus> {
+  const context = await referralContext().catch(() => null);
+  if (!context) return DARK_STATUS;
+  return statusOf(await clearReferralInvite(resolveConnectDataDir(), scopeOf(context)));
 }
 
 /**
@@ -162,7 +182,7 @@ export async function createReferralInvite(): Promise<CreateInviteResult> {
       referralsAddress: context.chain.referralsAddress,
       dataDir: resolveConnectDataDir(),
     });
-    return { ok: true, invite: created.invite, link: created.link, left: created.left, quota: created.quota, expiresEpoch: created.expiresEpoch };
+    return { ok: true, invite: created.invite, link: created.link, epoch: created.epoch, left: created.left, quota: created.quota, expiresEpoch: created.expiresEpoch };
   } catch (error) {
     return { ok: false, reason: errorText(error), noQuota: error instanceof InviteQuotaError && error.quota === 0 };
   }

@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { after, before, test } from 'node:test'
 import { Wallet, type AbstractSigner } from 'ethers'
 import type { AntsChainConfig, AntsContext } from '@antseed/ants'
-import { decodeInvite, encodeInvite, readReferralState, recoverInviter, referralStateMtimeMs, signInvite, type InvitePreview } from '@antseed/node'
+import { decodeInvite, encodeInvite, readIssuedInviteIndices, readReferralState, recoverInviter, referralStateMtimeMs, signInvite, type InvitePreview } from '@antseed/node'
 import { buyerIdentityDir } from '../../../buyer-identities/store.js'
 import { ConsoleError, ConsoleRouter } from '../router.js'
 import { addActiveMember, memberPrincipal, tempDataDir, testDeps } from '../test-support.js'
@@ -174,8 +174,7 @@ test('an invite is signed by the workspace wallet and remembered in its own refe
   assert.equal(recoverInviter(decodeInvite(created.invite), DOMAIN), TEAM_WALLET.address)
   assert.equal(created.epoch, 20)
   assert.equal(created.expiresEpoch, 24)
-  const state = await readReferralState(buyerIdentityDir(dir, 'team-a'), TEAM_SCOPE)
-  assert.deepEqual(state?.issued, { epoch: 20, indices: [created.index] })
+  assert.deepEqual(await readIssuedInviteIndices(buyerIdentityDir(dir, 'team-a'), TEAM_SCOPE, 20), [created.index])
   // Nothing was written to the default wallet's file.
   assert.equal(await referralStateMtimeMs(dir), null)
   const view = await call(router, 'GET', `/workspaces/${team.id}/referrals`, asAdmin()) as Referrals

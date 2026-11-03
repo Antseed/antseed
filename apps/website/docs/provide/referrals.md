@@ -118,11 +118,13 @@ it cannot be used. The field appears:
 
 The field is shown only while your wallet has no inviter and no pending invite.
 After that, Rewards and Preferences show **Invited by** with the inviter's
-address, marked pending until the first request binds it.
+address, marked pending until the first request binds it. While it is pending,
+**Change** replaces it with another invite and **Remove** drops it (for example
+when it expired or someone else used it first); once bound it cannot change.
 
 The `antseed://invite/<invite>` deep link fills the same field: during
 onboarding on the setup screen, afterwards by opening **Rewards** with the
-invite prefilled.
+invite prefilled (over a pending invite too, to replace it).
 
 ### CLI
 
@@ -136,9 +138,10 @@ Binds with your first paid or free request through `antseed buyer start` (before
 Then you earn bonus $ANTS on your usage for 12 weeks.
 ```
 
-The invite is stored in `<data-dir>/referral.json`, kept separately for each wallet and
-network, and `antseed buyer start` carries it until the Referrals contract
-shows it bound. `antseed referral status` shows your inviter, your
+The invite is stored in `<data-dir>/referral.json` for your wallet and the
+configured network and referrals contract, so switching networks keeps each
+one's invite and binding apart. `antseed buyer start` carries it until it binds;
+redeeming another invite replaces a pending one. `antseed referral status` shows your inviter, your
 bonus and your own invites:
 
 ```text
@@ -150,7 +153,9 @@ Your invites: <n> invited · <amount> ANTS payable · <left> of <quota> invites 
 Referred-buyer lists and payable amounts come from the Antscan explorer.
 Without one, your inviter, how many buyers you invited and this week's invites
 left are read from the Referrals contract instead, and claims find the payable
-weeks on-chain.
+weeks on-chain. Before your client stops carrying the invite, it confirms the
+binding Antscan reports with one `referrerOf` read on the configured referrals
+contract.
 
 ## What both sides earn
 

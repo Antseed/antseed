@@ -1,72 +1,87 @@
-import { useCallback, useState, type ReactNode } from 'react';
+import { useCallback, useState } from 'react';
 import { Button } from '@antseed/ui';
 import { shortAddress } from '../../core/format';
 import type { ReferralStatus } from '../../types/bridge';
-import { InviteCodeField, dismissIncomingInvite, useIncomingInvite } from './InviteCodeField';
+import { InviteCodeField, useIncomingInvite } from './InviteCodeField';
 import { VprBadge, VprSettingRow } from './vpr/VprKit';
+import styles from './ReferralStatusRow.module.scss';
 
 const REFERRAL_HINTS: Record<Exclude<ReferralStatus['state'], 'none'>, string> = {
   bound: 'Bound on-chain. You both earn bonus $ANTS for 12 weeks.',
   invited: 'Pending. Binds with your first paid or free request.',
 };
 
+export const REMOVE_FAILED = 'Could not remove it. Try again.';
+
+/**
+ * Remove the pending invite; returns the error to show, or null once removed
+ * (`onRemoved` then reloads the status). A failure keeps the invite pending.
+ */
+export async function removePendingInvite(clearInvite: () => Promise<unknown>, onRemoved?: () => void): Promise<string | null> {
+  try {
+    await clearInvite();
+  } catch {
+    return REMOVE_FAILED;
+  }
+  onRemoved?.();
+  return null;
+}
+
+type Props = {
+  status: ReferralStatus;
+  /** Called after the pending invite was saved, replaced or removed (reload the status). */
+  onRedeemed?: () => void;
+  /** Start with the invite field open over a pending invite (tests). */
+  initialChanging?: boolean;
+};
+
 /**
  * This wallet's side of a referral, shared by Preferences and Rewards: the
  * invite field while it has neither an inviter nor a pending invite, else who
- * invited it (pending until the first settlement binds it). A bound inviter
- * is final; a pending invite can be replaced, since it may have expired or
- * been used before it bound.
+ * invited it. Only a binding is final: a pending invite can expire or be used
+ * by someone else first, so it can be changed (an antseed://invite link opens
+ * the field prefilled) or removed until the first settlement binds it.
  */
-export function ReferralStatusRow({ status, onRedeemed }: { status: ReferralStatus; onRedeemed?: () => void }) {
-  if (status.state === 'none' || !status.referrer) return <InviteCodeField onRedeemed={onRedeemed} />;
-  if (status.state === 'bound') return <InviterRow referrer={status.referrer} state="bound" />;
-  // Keyed by the pending invite: once a replacement is saved and re-read, the row starts over.
-  return <PendingReferralRow key={status.invite ?? status.referrer} referrer={status.referrer} onRedeemed={onRedeemed} />;
-}
+export function ReferralStatusRow({ status, onRedeemed, initialChanging = false }: Props) {
+  const [changing, setChanging] = useState(initialChanging);
+  const [removing, setRemoving] = useState(false);
+  const [removeError, setRemoveError] = useState<string | null>(null);
+  const pending = status.state === 'invited';
 
-/**
- * A pending (unbound) invite with a Replace invite action. An antseed://invite
- * link opens the field too, prefilled with the link's invite. Saving goes
- * through the same checked redemption as a first invite.
- */
-export function PendingReferralRow({ referrer, onRedeemed }: { referrer: string; onRedeemed?: () => void }) {
-  const [replacing, setReplacing] = useState(false);
-  const openReplace = useCallback(() => setReplacing(true), []);
-  useIncomingInvite(openReplace);
+  useIncomingInvite(useCallback(() => setChanging(true), []));
+  const saved = () => { setChanging(false); onRedeemed?.(); };
 
-  if (replacing) {
-    return (
-      <InviteCodeField
-        prompt={`Replaces the pending invite from ${shortAddress(referrer)}.`}
-        onRedeemed={onRedeemed}
-        onCancel={() => {
-          dismissIncomingInvite();
-          setReplacing(false);
-        }}
-      />
-    );
-  }
-  return (
-    <InviterRow
-      referrer={referrer}
-      state="invited"
-      action={<Button size="sm" variant="link" onClick={openReplace}>Replace invite</Button>}
-    />
-  );
-}
+  if (status.state === 'none' || !status.referrer) return <InviteCodeField onRedeemed={saved} />;
+  if (pending && changing) return <InviteCodeField onRedeemed={saved} onCancel={() => setChanging(false)} />;
 
-function InviterRow({ referrer, state, action }: { referrer: string; state: 'invited' | 'bound'; action?: ReactNode }) {
+  const remove = async () => {
+    const clearInvite = window.antseedDesktop?.referralClearInvite;
+    if (!clearInvite) return;
+    setRemoving(true);
+    setRemoveError(null);
+    setRemoveError(await removePendingInvite(clearInvite, onRedeemed));
+    setRemoving(false);
+  };
+
   return (
     <VprSettingRow
       title="Invited by"
-      hint={REFERRAL_HINTS[state]}
+      hint={REFERRAL_HINTS[status.state]}
       control={(
-        <>
-          <span title={referrer}>
-            <VprBadge tone={state === 'bound' ? 'green' : 'neutral'}>{shortAddress(referrer)}</VprBadge>
+        <span className={styles.actions}>
+          <span title={status.referrer}>
+            <VprBadge tone={status.state === 'bound' ? 'green' : 'neutral'}>{shortAddress(status.referrer)}</VprBadge>
           </span>
-          {action}
-        </>
+          {pending ? (
+            <>
+              {removeError ? <span role="alert" className={styles.error}>{removeError}</span> : null}
+              <Button size="sm" variant="link" onClick={() => setChanging(true)} disabled={removing}>Change</Button>
+              <Button size="sm" variant="link" onClick={() => void remove()} disabled={removing} aria-busy={removing}>
+                {removing ? 'Removing…' : 'Remove'}
+              </Button>
+            </>
+          ) : null}
+        </span>
       )}
     />
   );

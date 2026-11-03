@@ -1,12 +1,24 @@
 import { renderToStaticMarkup } from 'react-dom/server';
-import { afterEach, expect, it, vi } from 'vitest';
-import { shallowRender, textOf, type AnyElement } from '../../test/shallowRender';
+import { expect, it, vi } from 'vitest';
 import { receiveInviteLink } from '../InviteCodeField';
-import { VprInvitesCard, VprRefereeBonusCard, VprReferralCard, VprRewardsView, pendingHeadline } from './VprRewardsView';
+import {
+  NO_INVITE_CREATION,
+  VprInvitesCard,
+  VprInvitesCardBody,
+  VprRefereeBonusCard,
+  VprReferralCard,
+  VprRewardsView,
+  createInviteOnce,
+  inviteCardState,
+  latestOnly,
+  nextInviteCreation,
+  pendingHeadline,
+  startRewardsRefresh,
+  type InviteCreation,
+} from './VprRewardsView';
+import type { CreateInviteResult, RefereeBonus, ReferralInvites } from '../../../types/bridge';
 
-// One stable actions object, like the real hook, so effects keyed on it don't re-run every render.
-const actions = vi.hoisted(() => ({ refreshPaymentSummary: vi.fn() }));
-vi.mock('../../hooks/useActions', () => ({ useActions: () => actions }));
+vi.mock('../../hooks/useActions', () => ({ useActions: () => ({ refreshPaymentSummary: vi.fn() }) }));
 vi.mock('../../hooks/useUiSelector', () => ({ shallowEqual: () => true, useUiSelector: () => ({ rewards: { available: true, pendingAnts: '12', currentEpoch: 24, transfersEnabled: false }, loading: false }) }));
 vi.mock('../StakingButton', () => ({ StakingButton: ({ children, page = 'stake', disabled }: { children: React.ReactNode; page?: string; disabled?: boolean }) => <button data-dashboard-page={page} disabled={disabled}>{children}</button> }));
 vi.mock('../vpr/VprKit', () => ({ VprPage: ({ children }: { children: React.ReactNode }) => <main>{children}</main>, VprCard: ({ children }: { children: React.ReactNode }) => <div>{children}</div>, VprBadge: ({ children }: { children: React.ReactNode }) => <span>{children}</span>, VprSettingRow: ({ title, hint, control }: { title: string; hint?: string; control: React.ReactNode }) => <div data-row={title}>{hint}{control}</div> }));
@@ -15,49 +27,6 @@ it('opens buyer claims and staking through the shared dashboard at their respect
   const html = renderToStaticMarkup(<VprRewardsView />);
   expect(html).toContain('data-dashboard-page="rewards">Claim rewards');
   expect(html).toContain('data-dashboard-page="stake">Manage staking');
-});
-
-it('refreshes the invite bonus with usage rewards when the window regains focus after a claim', async () => {
-  const unclaimed = { available: true, indexed: true, weeksLeft: 9, payable: '4.5', claimableEpochs: [28] };
-  const claimed = { available: true, indexed: true, weeksLeft: 9, payable: '0', claimableEpochs: [] };
-  let bonus = unclaimed;
-  const referralGetReferee = vi.fn(async () => bonus);
-  const referralGetInvites = vi.fn(async () => null);
-  const win = Object.assign(new EventTarget(), {
-    antseedDesktop: { referralGetReferee, referralGetInvites },
-    setInterval: globalThis.setInterval.bind(globalThis),
-    clearInterval: globalThis.clearInterval.bind(globalThis),
-  });
-  vi.stubGlobal('window', win);
-  actions.refreshPaymentSummary.mockClear();
-
-  const view = shallowRender(<VprRewardsView />);
-  const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
-  // The value right after the "Pending $ANTS" label in the hero.
-  const pendingTotal = () => {
-    const hero = view.findAll((el) => Array.isArray(el.props.children) && textOf(el.props.children[0]) === 'Pending $ANTS')[0]!;
-    return textOf((hero.props.children as unknown[])[1]);
-  };
-  const bonusCard = () => renderToStaticMarkup(view.findAll((el) => el.type === VprRefereeBonusCard)[0]!);
-  await settle();
-  // Usage pending 12 plus the 4.5 bonus, claimable.
-  expect(pendingTotal()).toBe('16.50');
-  expect(bonusCard()).toMatch(/<button data-dashboard-page="rewards">Claim/);
-
-  // Claimed in the browser dashboard, then back to the app.
-  bonus = claimed;
-  win.dispatchEvent(new Event('focus'));
-  await settle();
-  expect(actions.refreshPaymentSummary).toHaveBeenLastCalledWith(true);
-  expect(referralGetReferee).toHaveBeenCalledTimes(2);
-  expect(referralGetInvites).toHaveBeenCalledTimes(2);
-  expect(pendingTotal()).toBe('12.00');
-  expect(bonusCard()).toMatch(/<button data-dashboard-page="rewards" disabled="">Claim/);
-
-  // Unmounted: no more focus refreshes.
-  view.unmount();
-  win.dispatchEvent(new Event('focus'));
-  expect(referralGetReferee).toHaveBeenCalledTimes(2);
 });
 
 const BUYER = '0x2222222222222222222222222222222222222222';
@@ -76,6 +45,8 @@ it('lists each invited buyer with points, pending points and ANTS earned, plus a
       { buyer: OTHER, points: '250', ants: '0', pendingPoints: '250' },
     ],
     totals: { points: '12750', ants: '3.456', pendingPoints: '250' },
+    payable: '0',
+    claimableEpochs: [],
     error: null,
   }} />);
   expect(html).toContain('Your invites');
@@ -93,7 +64,7 @@ it('lists each invited buyer with points, pending points and ANTS earned, plus a
 });
 
 it('offers to create an invite with the invites left this week', () => {
-  const html = renderToStaticMarkup(<VprInvitesCard invites={{ available: true, listed: true, allowance: ALLOWANCE, buyers: [], totals: TOTALS, error: null }} />);
+  const html = renderToStaticMarkup(<VprInvitesCard invites={{ available: true, listed: true, allowance: ALLOWANCE, buyers: [], totals: TOTALS, payable: '0', claimableEpochs: [], error: null }} />);
   expect(html).toContain('data-row="Invite someone"');
   expect(html).toContain('3 of 5 left this week.');
   expect(html).toContain('Create link');
@@ -101,173 +72,38 @@ it('offers to create an invite with the invites left this week', () => {
   expect(html).not.toContain('Total ·');
 });
 
-afterEach(() => {
-  vi.unstubAllGlobals();
-});
-
-it('keeps Copy and offers another link after each invite while quota remains', async () => {
-  const issued = ['first', 'second', 'third'].map((invite, index) => ({
-    ok: true as const, invite, link: `https://antseed.com/invite/${invite}`, left: 2 - index, quota: 5, expiresEpoch: 34,
-  }));
-  const referralCreateInvite = vi.fn(async () => issued[referralCreateInvite.mock.calls.length - 1]!);
-  const writeText = vi.fn(async () => {});
-  vi.stubGlobal('window', globalThis);
-  vi.stubGlobal('antseedDesktop', { referralCreateInvite });
-  vi.stubGlobal('navigator', { clipboard: { writeText } });
-
-  const card = shallowRender(<VprInvitesCard invites={{ available: true, listed: true, allowance: ALLOWANCE, buyers: [], totals: TOTALS, error: null }} />);
-  const row = () => card.findAll((el) => el.props.title === 'Invite someone')[0] as AnyElement;
-  const click = async (label: string) => {
-    (card.button(label).props.onClick as () => void)();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  };
-  expect(row().props.hint).toBe('3 of 5 left this week.');
-  expect(card.hasButton('Copy')).toBe(false);
-
-  await click('Create link');
-  expect(row().props.hint).toBe('https://antseed.com/invite/first · 2 of 5 left this week.');
-  expect(card.hasButton('Copy')).toBe(true);
-
-  await click('Create another link');
-  expect(row().props.hint).toBe('https://antseed.com/invite/second · 1 of 5 left this week.');
-  await click('Copy');
-  expect(writeText).toHaveBeenCalledWith('https://antseed.com/invite/second');
-
-  // The last invite of the week: Copy stays, Create another goes away.
-  await click('Create another link');
-  expect(row().props.hint).toBe('https://antseed.com/invite/third · 0 of 5 left this week.');
-  expect(card.hasButton('Copy')).toBe(true);
-  expect(card.hasButton('Create another link')).toBe(false);
-  expect(referralCreateInvite).toHaveBeenCalledTimes(3);
-  card.unmount();
-});
-
-const invitesIn = (allowance: { epoch: number; quota: number; used: number; left: number }) => ({ available: true, listed: true, allowance, buyers: [], totals: TOTALS, error: null });
-
-it('offers another link once a new week brings invites after the last one was created', async () => {
-  const referralCreateInvite = vi.fn(async () => ({ ok: true as const, invite: 'last', link: 'https://antseed.com/invite/last', left: 0, quota: 5, expiresEpoch: 34 }));
-  vi.stubGlobal('window', globalThis);
-  vi.stubGlobal('antseedDesktop', { referralCreateInvite });
-
-  const card = shallowRender(<VprInvitesCard invites={invitesIn({ epoch: 30, quota: 5, used: 4, left: 1 })} />);
-  const row = () => card.findAll((el) => el.props.title === 'Invite someone')[0] as AnyElement;
-  (card.button('Create link').props.onClick as () => void)();
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  expect(row().props.hint).toBe('https://antseed.com/invite/last · 0 of 5 left this week.');
-  expect(card.hasButton('Create another link')).toBe(false);
-
-  // A refresh read before the invite was created doesn't bring the used invite back.
-  card.rerender(<VprInvitesCard invites={invitesIn({ epoch: 30, quota: 5, used: 4, left: 1 })} />);
-  expect(row().props.hint).toBe('https://antseed.com/invite/last · 0 of 5 left this week.');
-  expect(card.hasButton('Create another link')).toBe(false);
-
-  // The minute/focus refresh after the rollover: the new week's allowance wins, the link stays copyable.
-  card.rerender(<VprInvitesCard invites={invitesIn({ epoch: 31, quota: 3, used: 0, left: 3 })} />);
-  expect(row().props.hint).toBe('https://antseed.com/invite/last · 3 of 3 left this week.');
-  expect(card.hasButton('Copy')).toBe(true);
-  expect(card.button('Create another link').props.disabled).toBe(false);
-  card.unmount();
-});
-
-it('keeps a no-quota failure to the week it happened in', async () => {
-  const referralCreateInvite = vi.fn(async () => ({ ok: false as const, reason: 'No invites this week.', noQuota: true }));
-  vi.stubGlobal('window', globalThis);
-  vi.stubGlobal('antseedDesktop', { referralCreateInvite });
-
-  const card = shallowRender(<VprInvitesCard invites={invitesIn({ epoch: 30, quota: 5, used: 4, left: 1 })} />);
-  const row = () => card.findAll((el) => el.props.title === 'Invite someone')[0] as AnyElement;
-  (card.button('Create link').props.onClick as () => void)();
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  expect(row().props.hint).toBe('Invites unlock after at least 1 USDC of usage or sales in the previous week.');
-  expect(card.button('Create link').props.disabled).toBe(true);
-
-  card.rerender(<VprInvitesCard invites={invitesIn({ epoch: 31, quota: 2, used: 0, left: 2 })} />);
-  expect(row().props.hint).toBe('2 of 2 left this week.');
-  expect(card.button('Create link').props.disabled).toBe(false);
-  card.unmount();
-});
-
-// Without an explorer the allowance is null, so a refresh can't tell whether a week has turned.
-const unlisted = () => ({ available: true, listed: false, allowance: null, buyers: [], totals: TOTALS, error: null });
-
-it('offers a retry after a no-quota failure once a refresh reports no allowance', async () => {
-  const referralCreateInvite = vi.fn(async () => ({ ok: false as const, reason: 'No invites this week.', noQuota: true }));
-  vi.stubGlobal('window', globalThis);
-  vi.stubGlobal('antseedDesktop', { referralCreateInvite });
-
-  const card = shallowRender(<VprInvitesCard invites={unlisted()} />);
-  const row = () => card.findAll((el) => el.props.title === 'Invite someone')[0] as AnyElement;
-  (card.button('Create link').props.onClick as () => void)();
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  expect(row().props.hint).toBe('Invites unlock after at least 1 USDC of usage or sales in the previous week.');
-  expect(card.button('Create link').props.disabled).toBe(true);
-
-  // The next refresh (maybe in a new week): the retry is back and creation enforces the quota.
-  card.rerender(<VprInvitesCard invites={unlisted()} />);
-  expect(row().props.hint).toBe('Single-use link, valid for 4 weeks.');
-  expect(card.button('Create link').props.disabled).toBe(false);
-  (card.button('Create link').props.onClick as () => void)();
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  expect(referralCreateInvite).toHaveBeenCalledTimes(2);
-  card.unmount();
-});
-
-it('offers another link after the last one once a refresh reports no allowance, keeping it copyable', async () => {
-  const referralCreateInvite = vi.fn(async () => ({ ok: true as const, invite: 'last', link: 'https://antseed.com/invite/last', left: 0, quota: 5, expiresEpoch: 34 }));
-  vi.stubGlobal('window', globalThis);
-  vi.stubGlobal('antseedDesktop', { referralCreateInvite });
-
-  const card = shallowRender(<VprInvitesCard invites={unlisted()} />);
-  const row = () => card.findAll((el) => el.props.title === 'Invite someone')[0] as AnyElement;
-  (card.button('Create link').props.onClick as () => void)();
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  expect(row().props.hint).toBe('https://antseed.com/invite/last · 0 of 5 left this week.');
-  expect(card.hasButton('Create another link')).toBe(false);
-
-  card.rerender(<VprInvitesCard invites={unlisted()} />);
-  expect(row().props.hint).toBe('https://antseed.com/invite/last');
-  expect(card.hasButton('Copy')).toBe(true);
-  expect(card.button('Create another link').props.disabled).toBe(false);
-  card.unmount();
-});
-
 it('explains why there are no invites without last week\'s activity', () => {
-  const html = renderToStaticMarkup(<VprInvitesCard invites={{ available: true, listed: true, allowance: { epoch: 30, quota: 0, used: 0, left: 0 }, buyers: [], totals: TOTALS, error: null }} />);
+  const html = renderToStaticMarkup(<VprInvitesCard invites={{ available: true, listed: true, allowance: { epoch: 30, quota: 0, used: 0, left: 0 }, buyers: [], totals: TOTALS, payable: '0', claimableEpochs: [], error: null }} />);
   expect(html).toContain('Invites unlock after at least 1 USDC of usage or sales in the previous week.');
-  expect(html).toMatch(/disabled=""[^>]*><span class="as-button__label">Create link/);
+  // Antscan's allowance is advisory: the on-chain recheck stays one click away.
+  expect(html).not.toContain('Create link');
+  expect(html).toContain('Check again');
+  expect(html).not.toMatch(/disabled=""[^>]*><span class="as-button__label">Check again/);
 });
 
 it('still offers invites when no explorer lists referrals', () => {
-  const html = renderToStaticMarkup(<VprInvitesCard invites={{ available: true, listed: false, allowance: null, buyers: [], totals: TOTALS, error: null }} />);
+  const html = renderToStaticMarkup(<VprInvitesCard invites={{ available: true, listed: false, allowance: null, buyers: [], totals: TOTALS, payable: '0', claimableEpochs: [], error: null }} />);
   expect(html).toContain('Create link');
   expect(html).not.toContain('No one has joined');
   expect(html).not.toContain('Invited wallet');
 });
 
 it('hides invites when referrals are not configured', () => {
-  expect(renderToStaticMarkup(<VprInvitesCard invites={{ available: false, listed: false, allowance: null, buyers: [], totals: TOTALS, error: null }} />)).toBe('');
+  expect(renderToStaticMarkup(<VprInvitesCard invites={{ available: false, listed: false, allowance: null, buyers: [], totals: TOTALS, payable: '0', claimableEpochs: [], error: null }} />)).toBe('');
   expect(renderToStaticMarkup(<VprInvitesCard invites={null} />)).toBe('');
 });
 
 it('shows the referee bonus with weeks left and claims through the rewards dashboard', () => {
-  const html = renderToStaticMarkup(<VprRefereeBonusCard bonus={{ available: true, indexed: true, weeksLeft: 9, payable: '4.5', claimableEpochs: [28] }} />);
+  const html = renderToStaticMarkup(<VprRefereeBonusCard bonus={{ available: true, weeksLeft: 9, payable: '4.5', claimableEpochs: [28] }} />);
   expect(html).toContain('Invite bonus');
   expect(html).toContain('4.50 $ANTS payable');
   expect(html).toContain('9 weeks left.');
   expect(html).toContain('data-dashboard-page="rewards">Claim');
-  expect(renderToStaticMarkup(<VprRefereeBonusCard bonus={{ available: false, indexed: false, weeksLeft: null, payable: '0', claimableEpochs: [] }} />)).toBe('');
-});
-
-it('keeps the invite-bonus claim without Antscan, with the amount unknown', () => {
-  const html = renderToStaticMarkup(<VprRefereeBonusCard bonus={{ available: true, indexed: false, weeksLeft: null, payable: '0', claimableEpochs: [] }} />);
-  expect(html).toContain('Payable amount unknown');
-  expect(html).toContain('finds what is payable on-chain');
-  expect(html).toContain('data-dashboard-page="rewards">Claim');
-  expect(html).not.toContain('disabled');
+  expect(renderToStaticMarkup(<VprRefereeBonusCard bonus={{ available: false, weeksLeft: null, payable: '0', claimableEpochs: [] }} />)).toBe('');
 });
 
 it('counts the invite bonus in the Pending $ANTS headline', () => {
-  const bonus = { available: true, indexed: true, weeksLeft: 10, payable: '300', claimableEpochs: [20] };
+  const bonus = { available: true, weeksLeft: 10, payable: '300', claimableEpochs: [20] };
   expect(pendingHeadline({ available: true, pendingAnts: '0' }, bonus)).toEqual({ pending: '300', bonusPayable: 300 });
   expect(pendingHeadline({ available: true, pendingAnts: '12.5' }, bonus).pending).toBe('312.5');
   expect(pendingHeadline({ available: true, pendingAnts: '12.5' }, null).pending).toBe('12.5');
@@ -285,18 +121,16 @@ it('offers "Have an invite?" on Rewards while the wallet has no inviter and no p
   expect(html).not.toContain('Invited by');
 });
 
-it('shows the inviter instead of the field once an invite is pending (replaceable) or bound', () => {
+it('shows the inviter instead of the field once an invite is pending or bound', () => {
   const pending = renderToStaticMarkup(<VprReferralCard status={{ ...REFERRAL, state: 'invited', referrer: INVITER, invite: 'abc' }} />);
   expect(pending).toContain('data-row="Invited by"');
   expect(pending).toContain('0x1111...1111');
   expect(pending).toContain('Pending. Binds with your first paid or free request.');
-  expect(pending).toContain('Replace invite');
   expect(pending).not.toContain('Invite code');
 
   const bound = renderToStaticMarkup(<VprReferralCard status={{ ...REFERRAL, state: 'bound', referrer: INVITER }} />);
   expect(bound).toContain('Bound on-chain.');
   expect(bound).not.toContain('Use invite');
-  expect(bound).not.toContain('Replace invite');
 });
 
 it('hides the invite card until the status loads and on networks without referrals', () => {
@@ -308,4 +142,174 @@ it('prefills the Rewards invite field from an antseed://invite link', () => {
   receiveInviteLink('AbCdEf_invite');
   const html = renderToStaticMarkup(<VprReferralCard status={{ ...REFERRAL, state: 'none' }} />);
   expect(html).toContain('value="AbCdEf_invite"');
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => { resolve = r; });
+  return { promise, resolve };
+}
+
+function refreshTarget() {
+  const events = new EventTarget();
+  return {
+    addEventListener: events.addEventListener.bind(events),
+    removeEventListener: events.removeEventListener.bind(events),
+    setInterval: (fn: () => void, ms: number) => setInterval(fn, ms) as unknown as number,
+    clearInterval: (id: number) => clearInterval(id),
+    focus: () => events.dispatchEvent(new Event('focus')),
+  } as unknown as Window & { focus(): void };
+}
+
+it('refreshes on entry, on window focus and on the poll interval, and stops on cleanup', () => {
+  vi.useFakeTimers();
+  try {
+    const target = refreshTarget();
+    const calls: boolean[] = [];
+    const stop = startRewardsRefresh((force) => calls.push(force), 60_000, target);
+    expect(calls).toEqual([true]);
+    target.focus();
+    expect(calls).toEqual([true, true]);
+    vi.advanceTimersByTime(60_000);
+    expect(calls).toEqual([true, true, false]);
+    stop();
+    target.focus();
+    vi.advanceTimersByTime(120_000);
+    expect(calls).toEqual([true, true, false]);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('picks up a claimed invite bonus on focus, ignoring a slower earlier response', async () => {
+  const before: RefereeBonus = { available: true, weeksLeft: 9, payable: '4.5', claimableEpochs: [28] };
+  const after: RefereeBonus = { available: true, weeksLeft: 9, payable: '0', claimableEpochs: [] };
+  const responses = [deferred<RefereeBonus>(), deferred<RefereeBonus>()];
+  let call = 0;
+  let bonus: RefereeBonus | null = null;
+  const loader = latestOnly(() => responses[call++]!.promise, (next) => { bonus = next; });
+  const target = refreshTarget();
+  const stop = startRewardsRefresh(() => loader.run(), 60_000, target);
+  // Back from the browser claim: focus starts a second read.
+  target.focus();
+  responses[1]!.resolve(after);
+  await responses[1]!.promise;
+  responses[0]!.resolve(before);
+  await responses[0]!.promise;
+  await Promise.resolve();
+  expect(bonus).toEqual(after);
+  expect(pendingHeadline({ available: true, pendingAnts: '12' }, bonus).pending).toBe('12');
+  const html = renderToStaticMarkup(<VprRefereeBonusCard bonus={bonus} />);
+  expect(html).toContain('0.00 $ANTS payable');
+  expect(html).toMatch(/disabled=""[^>]*>Claim/);
+  stop();
+
+  // Nothing lands after unmount.
+  const late = deferred<RefereeBonus>();
+  const disposed = latestOnly(() => late.promise, (next) => { bonus = next; });
+  disposed.run();
+  disposed.dispose();
+  late.resolve(before);
+  await late.promise;
+  await Promise.resolve();
+  expect(bonus).toEqual(after);
+});
+
+const INVITES: ReferralInvites = { available: true, listed: true, allowance: ALLOWANCE, buyers: [], totals: TOTALS, payable: '0', claimableEpochs: [], error: null };
+
+it('creates two single-use invites in a row on the same card', async () => {
+  const results: CreateInviteResult[] = [
+    { ok: true, invite: 'one', link: 'https://antseed.com/invite/FirstInviteCode01', epoch: 30, left: 2, quota: 5, expiresEpoch: 34 },
+    { ok: true, invite: 'two', link: 'https://antseed.com/invite/SecondInviteCode2', epoch: 30, left: 1, quota: 5, expiresEpoch: 34 },
+  ];
+  const createInvite = vi.fn(async () => results.shift()!);
+  let creation: InviteCreation = NO_INVITE_CREATION;
+  const render = () => renderToStaticMarkup(
+    <VprInvitesCardBody invites={INVITES} creation={creation} creating={false} copied={false} onCreate={() => {}} onCopy={() => {}} />,
+  );
+  expect(render()).toContain('Create link');
+
+  creation = nextInviteCreation(creation, await createInviteOnce(createInvite, ALLOWANCE.epoch));
+  let html = render();
+  expect(html).toContain('antseed.com/invite/FirstI…de01');
+  expect(html).toContain('2 of 5 left this week.');
+  expect(html).toContain('Copy');
+  expect(html).toContain('Create another');
+
+  // Antscan still reports the pre-creation allowance: the creation's count wins.
+  creation = nextInviteCreation(creation, await createInviteOnce(createInvite, ALLOWANCE.epoch));
+  html = render();
+  expect(createInvite).toHaveBeenCalledTimes(2);
+  expect(html).toContain('antseed.com/invite/Second…ode2');
+  expect(html).toContain('1 of 5 left this week.');
+  expect(html).toContain('Create another');
+});
+
+it('drops "Create another" once the week\'s invites are used, and keeps the link after a failed create', async () => {
+  const last: CreateInviteResult = { ok: true, invite: 'x', link: 'https://antseed.com/invite/LastInviteCodeXY', epoch: 30, left: 0, quota: 5, expiresEpoch: 34 };
+  let creation = nextInviteCreation(NO_INVITE_CREATION, { result: last, epoch: ALLOWANCE.epoch });
+  expect(inviteCardState(INVITES, creation)).toMatchObject({ left: 0, canCreate: false });
+  expect(renderToStaticMarkup(
+    <VprInvitesCardBody invites={INVITES} creation={creation} creating={false} copied={false} onCreate={() => {}} onCopy={() => {}} />,
+  )).not.toContain('Create another');
+  expect(renderToStaticMarkup(
+    <VprInvitesCardBody invites={INVITES} creation={creation} creating={false} copied={false} onCreate={() => {}} onCopy={() => {}} />,
+  )).toContain('Check again');
+
+  // A new week resets the count from the refreshed allowance.
+  expect(inviteCardState({ ...INVITES, allowance: { epoch: 31, quota: 5, used: 0, left: 5 } }, creation)).toMatchObject({ left: 5, canCreate: true });
+
+  const failed = await createInviteOnce(async () => { throw new Error('signer locked'); }, ALLOWANCE.epoch);
+  creation = nextInviteCreation(creation, failed);
+  const html = renderToStaticMarkup(
+    <VprInvitesCardBody invites={INVITES} creation={creation} creating={false} copied={false} onCreate={() => {}} onCopy={() => {}} />,
+  );
+  expect(html).toContain('antseed.com/invite/LastIn…deXY');
+  expect(html).toContain('signer locked');
+});
+
+it('keeps an on-chain recheck when Antscan still reports an exhausted previous week', async () => {
+  // Antscan is still on week 30 with nothing left; the chain has moved to week 31.
+  const stale: ReferralInvites = { ...INVITES, allowance: { epoch: 30, quota: 5, used: 5, left: 0 } };
+  expect(inviteCardState(stale, NO_INVITE_CREATION)).toMatchObject({ left: 0, canCreate: false });
+  const onCreate = vi.fn();
+  const html = renderToStaticMarkup(<VprInvitesCardBody invites={stale} creation={NO_INVITE_CREATION} creating={false} copied={false} onCreate={onCreate} onCopy={() => {}} />);
+  expect(html).toContain('Check again');
+  expect(html).not.toMatch(/disabled=""[^>]*><span class="as-button__label">Check again/);
+
+  // The recheck goes through the main-process create, which answers from the chain.
+  const fresh: CreateInviteResult = { ok: true, invite: 'n', link: 'https://antseed.com/invite/NewWeekInviteCode', epoch: 31, left: 4, quota: 5, expiresEpoch: 35 };
+  const creation = nextInviteCreation(NO_INVITE_CREATION, await createInviteOnce(async () => fresh, 30));
+  // The new week's count stands in for the lagging allowance, so another can be created.
+  expect(inviteCardState(stale, creation)).toMatchObject({ link: fresh.link, left: 4, quota: 5, canCreate: true });
+  const html2 = renderToStaticMarkup(<VprInvitesCardBody invites={stale} creation={creation} creating={false} copied={false} onCreate={onCreate} onCopy={() => {}} />);
+  expect(html2).toContain('antseed.com/invite/NewWee…Code');
+  expect(html2).toContain('4 of 5 left this week.');
+  expect(html2).toContain('Create another');
+});
+
+it('clears a no-quota answer once a newer week\'s allowance has invites', async () => {
+  const noQuota: CreateInviteResult = { ok: false, reason: 'Invites unlock after at least 1 USDC of usage or sales in the previous week.', noQuota: true };
+  const creation = nextInviteCreation(NO_INVITE_CREATION, await createInviteOnce(async () => noQuota, 30));
+  expect(creation.failure).toMatchObject({ noQuota: true, epoch: 30 });
+  // Same week: the chain's answer stands, but the recheck is still offered.
+  expect(inviteCardState(INVITES, creation)).toMatchObject({ noQuota: true, canCreate: false });
+  expect(renderToStaticMarkup(<VprInvitesCardBody invites={INVITES} creation={creation} creating={false} copied={false} onCreate={() => {}} onCopy={() => {}} />)).toContain('Check again');
+
+  // The next poll brings week 31 with a fresh quota: creation is back.
+  const refreshed: ReferralInvites = { ...INVITES, allowance: { epoch: 31, quota: 3, used: 0, left: 3 } };
+  expect(inviteCardState(refreshed, creation)).toMatchObject({ noQuota: false, left: 3, canCreate: true });
+  const html = renderToStaticMarkup(<VprInvitesCardBody invites={refreshed} creation={creation} creating={false} copied={false} onCreate={() => {}} onCopy={() => {}} />);
+  expect(html).toContain('Create link');
+  expect(html).toContain('3 of 3 left this week.');
+  expect(html).not.toContain('Invites unlock after');
+});
+
+it('inviter rewards get their own claim action, even with no buyer rewards or invite bonus', () => {
+  const payable = renderToStaticMarkup(<VprInvitesCard invites={{ ...INVITES, payable: '2.5', claimableEpochs: [28, 29] }} />);
+  expect(payable).toContain('2.50 $ANTS payable');
+  expect(payable).toContain('From your invites. Paid to your authorized wallet.');
+  expect(payable).toContain('Claim ↗');
+  const nothing = renderToStaticMarkup(<VprInvitesCard invites={INVITES} />);
+  expect(nothing).not.toContain('From your invites.');
 });

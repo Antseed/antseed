@@ -1,7 +1,7 @@
-import type { BuilderAgentView, BuildersView } from './api-types.js';
+import { MAX_BUILDER_AGENTS, type BuilderAgentView, type BuildersView } from './api-types.js';
 
 /** Each agent costs an ownerOf read; one `/api/builders` request carries at most this many ids. */
-export const MAX_BUILDER_AGENTS = 20;
+export { MAX_BUILDER_AGENTS };
 
 /**
  * Builders card order: agents this wallet is paid for first (first-party

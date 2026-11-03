@@ -7,7 +7,6 @@ import {
   issueInvite,
   refereeBonusFromExplorer,
   referral,
-  referralScope,
   type AntsChainConfig,
   type CreatedInviteView,
   type RefereeView,
@@ -27,7 +26,7 @@ import {
 import { getGlobalOptions } from './types.js'
 import { loadConfig } from '../../config/loader.js'
 import { loadCryptoContext, requireCryptoConfig } from '../payment-utils.js'
-import { referralLookup, referralVerifier, shortWallet } from '../referral-state.js'
+import { referralLookups, referralScope, shortWallet } from '../referral-state.js'
 import { printJson } from './ants/shared.js'
 
 /**
@@ -59,15 +58,10 @@ function requireReferrals(context: ReferralCommandContext): ReferralsClient {
   return client
 }
 
-function requireScope(context: ReferralCommandContext): ReferralScope {
-  const scope = referralScope(context.ctx, context.ctx.address)
-  if (!scope) throw new Error(NOT_AVAILABLE)
-  return scope
-}
-
 // ─── invite ─────────────────────────────────────────────────────────
 
-export async function createReferralInvite(context: ReferralCommandContext): Promise<CreatedInviteView> {
+/** `random` picks among the free indices (tests). */
+export async function createReferralInvite(context: ReferralCommandContext, random?: () => number): Promise<CreatedInviteView> {
   const client = requireReferrals(context)
   return issueInvite({
     client,
@@ -76,6 +70,7 @@ export async function createReferralInvite(context: ReferralCommandContext): Pro
     chainId: context.chain.evmChainId,
     referralsAddress: context.chain.referralsAddress!,
     dataDir: context.dataDir,
+    ...(random ? { random } : {}),
   })
 }
 
@@ -93,8 +88,9 @@ export function formatInviteCreated(created: CreatedInviteView): string[] {
 // ─── redeem ─────────────────────────────────────────────────────────
 
 /**
- * Decode `value` (invite or link), run `previewInvite` for `buyer`, and save
- * a valid invite as pending so the buyer daemon carries it.
+ * Decode `value` (invite or link), run `previewInvite` for the buyer
+ * (`scope.wallet`) on the configured deployment, and save a valid invite as
+ * pending there so the buyer daemon carries it.
  */
 export async function redeemReferralInvite(options: {
   client: Pick<ReferralsClient, 'previewInvite'>
@@ -129,12 +125,11 @@ export type ReferralStatus = {
 
 export async function referralStatus(context: ReferralCommandContext): Promise<ReferralStatus> {
   const { ctx, chain, dataDir } = context
-  const scope = referralScope(ctx, ctx.address)
+  const scope = referralScope(chain, ctx.address)
   const configured = !!scope
-  const lookup = referralLookup(chain)
-  const verify = referralVerifier(ctx.referrals())
+  const lookups = referralLookups({ explorerApiUrl: chain.explorerApiUrl, client: ctx.referrals() })
   const [state, referee, invites] = await Promise.all([
-    scope ? syncReferralState(dataDir, scope, lookup, verify).catch(() => readReferralState(dataDir, scope)) : null,
+    scope ? syncReferralState(dataDir, scope, lookups).catch(() => readReferralState(dataDir, scope)) : null,
     configured ? refereeBonusFromExplorer(chain.explorerApiUrl, ctx.address) : null,
     configured ? referral(ctx, dataDir).catch(() => null) : null,
   ])
@@ -228,7 +223,9 @@ How it works:
     .description('Use an invite (code or link) for 12 weeks of bonus $ANTS; binds with your first paid or free request (new wallets only)')
     .option('--json', 'output as JSON', false)
     .action(async (value: string, options: { json?: boolean }, command: Command) => run(command, async (context) => {
-      const result = await redeemReferralInvite({ client: requireReferrals(context), dataDir: context.dataDir, scope: requireScope(context), value })
+      const client = requireReferrals(context)
+      const scope = referralScope(context.chain, context.ctx.address)!
+      const result = await redeemReferralInvite({ client, dataDir: context.dataDir, scope, value })
       if (!result.ok) process.exitCode = 1
       if (options.json) return printJson(result)
       for (const line of formatRedeemResult(result)) console.log(line)

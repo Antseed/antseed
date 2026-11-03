@@ -91,7 +91,7 @@ export class BuyerFreeUsageManager {
   }
 
   private _sanitizeMetadata(metadata: FreeUsageMetadata): FreeUsageMetadata {
-    const { attribution: _previous, ...base }: FreeUsageMetadata = this._disableMetadataV2Services
+    const base: FreeUsageMetadata = this._disableMetadataV2Services
       ? {
           cumulativeInputTokens: metadata.cumulativeInputTokens,
           cumulativeOutputTokens: metadata.cumulativeOutputTokens,
@@ -99,9 +99,10 @@ export class BuyerFreeUsageManager {
           services: [],
         }
       : metadata;
-    // Attribution always comes from the current setting, so clearing it drops
-    // a previous client or invite instead of carrying it into the next auth.
-    return this._attribution ? { ...base, attribution: this._attribution } : base;
+    // The current attribution replaces whatever earlier metadata carried, so
+    // clearing it (or hydrating without one) stops signing the old client/invite.
+    const { attribution: _previous, ...rest } = base;
+    return this._attribution ? { ...rest, attribution: this._attribution } : rest;
   }
 
   private _advanceUsageMetadata(
@@ -148,7 +149,11 @@ export class BuyerFreeUsageManager {
     this._requestService.track(requestId, service);
   }
 
-  async prepareOpen(peer: BuyerPeerView, paymentMux: PaymentMux): Promise<void> {
+  /**
+   * Open a free usage channel with `peer`. `freeTierDelegations` is this
+   * buyer's delegations header, sent so the seller's admission counts delegated stake.
+   */
+  async prepareOpen(peer: BuyerPeerView, paymentMux: PaymentMux, freeTierDelegations?: string | null): Promise<void> {
     const existing = this._sessions.get(peer.peerId);
     const nowSec = Math.floor(Date.now() / 1000);
     if (existing && existing.deadline > nowSec + 30) return;
@@ -184,7 +189,7 @@ export class BuyerFreeUsageManager {
     };
     this._sessions.set(peer.peerId, session);
     try {
-      paymentMux.sendFreeUsageOpen({ channelId, salt, deadline, openSig });
+      paymentMux.sendFreeUsageOpen({ channelId, salt, deadline, openSig, ...(freeTierDelegations ? { freeTierDelegations } : {}) });
     } catch (err) {
       if (existing) {
         this._sessions.set(peer.peerId, existing);

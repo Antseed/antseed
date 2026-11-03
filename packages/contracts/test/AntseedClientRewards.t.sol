@@ -74,9 +74,16 @@ contract AntseedClientRewardsTest is Test {
         assertTrue(rewards.claimed(desktop, 10));
         assertFalse(rewards.claimed(cli, 10));
 
+        // 6 of the epoch's shared 10-ether burn cap is already consumed by
+        // other controllers: 4 burns, the other 6 go to the reserve.
+        gate.setEpochBurnCap(11, 10 ether);
+        gate.setEpochBurned(11, 6 ether);
         (uint256 burned, uint256 reserved) = rewards.settleEpochRemainder(11);
-        assertEq(burned + reserved, 10 ether);
-        assertEq(gate.balanceOf(gate.emissionsReserve()), reserved);
+        assertEq(burned, 4 ether);
+        assertEq(reserved, 6 ether);
+        assertEq(gate.balanceOf(gate.DEAD_ADDRESS()), 4 ether);
+        assertEq(gate.balanceOf(gate.emissionsReserve()), 6 ether);
+        assertEq(gate.epochBurnedAmount(11), 10 ether);
     }
 
     function test_waitsOneGraceEpochBeforeAnEpochIsClaimable() public {

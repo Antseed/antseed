@@ -170,6 +170,8 @@ export interface SellerModelsView {
 export interface PoolYield {
   reward?: string | null;
   power?: string | null;
+  /** Staker budget for the epoch; lets a new stake's own points join the pool's share. */
+  budget?: string | null;
   minLockEpochs?: number | null;
   maxLockEpochs?: number | null;
   epoch: number;
@@ -199,6 +201,8 @@ export interface PoolView {
   totalPositions?: number;
   stakers?: number | null;
   yield?: PoolYield;
+  /** The epoch in progress: its reward is the pool's running share of this epoch's staker budget. */
+  liveYield?: PoolYield;
   statsUpdatedAt?: number;
   volumeStatus?: 'available' | 'unavailable' | 'stale';
   agentId: number;
@@ -227,6 +231,9 @@ export interface PoolView {
   projectedRewardPer1kPower: string | null;
   /** Stake in open positions that activates at a later epoch (indexer-sourced; absent from chain-only rows). */
   pendingStake?: string;
+  /** Pool stake and power next epoch, read on-chain at the pool's last snapshot (indexer-sourced; absent when unknown). */
+  nextActiveStake?: string;
+  nextWeight?: string;
   yourStake: string;
   /** Your stake in this pool whose activation epoch is still ahead. */
   yourPendingStake: string;
@@ -482,6 +489,9 @@ export interface BuilderAgentView {
   /** Epochs with a payable reward, oldest first; each is its own claim transaction. */
   claimableEpochs: number[];
 }
+
+/** Client agent ids one builders read covers (each costs an ownerOf read); the card tracks at most this many. */
+export const MAX_BUILDER_AGENTS = 20;
 
 export interface BuildersView {
   /** The chain has a client rewards contract: registration and claims work, with or without Antscan. */

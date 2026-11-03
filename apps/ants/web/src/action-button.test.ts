@@ -52,7 +52,7 @@ describe('direct action submission', () => {
     { path: '/api/rewards/stake-usage', body: { side: 'buyer', stakeAgentId: 42, epochs: 4 } },
     { path: '/api/referrals/claim', body: {} },
     { path: '/api/referrals/referee/claim', body: {} },
-  ])('allows buyer and referral claims using the operator gas balance: $path', async request => {
+  ])('allows buyer actions using the operator gas balance: $path', async request => {
     mocks.app.mockReturnValue({ config: { readOnly: false, selectedAddress: '0xaaa', walletAddress: '0xbbb' }, overview: { wallet: { eth: '0', signingWalletEth: '1' } } });
     const { button } = renderButton(request);
     expect(button.disabled).toBeFalsy();

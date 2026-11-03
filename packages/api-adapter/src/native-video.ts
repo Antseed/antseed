@@ -1,5 +1,6 @@
 import type { NativeVideoProtocol, SerializedHttpRequest, SerializedHttpResponse } from './types.js';
 import { extractRequestBodyFields, parseJsonObject } from './utils.js';
+import { inlineVideoSeconds } from './mp4.js';
 
 export type { NativeVideoProtocol };
 
@@ -149,4 +150,19 @@ function positiveInteger(value: unknown): number | undefined | null {
   if (value === undefined) return undefined;
   const parsed = typeof value === 'string' && /^[0-9]+$/.test(value.trim()) ? Number(value.trim()) : value;
   return typeof parsed === 'number' && Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+/**
+ * Why a video edit can't go upstream, or null. The buyer pays for its
+ * `duration`, but the upstream bills at least the whole source, and an output
+ * cut short by the source is never charged (VIDEO_MIN_DURATION_RATIO). So the
+ * source must be an inline video the seller can measure and `duration` its
+ * length in whole seconds, rounded down (at least 1).
+ */
+export function videoSourceLengthProblem(videoUrl: unknown, duration: unknown): string | null {
+  const seconds = inlineVideoSeconds(videoUrl);
+  if (seconds === null) return 'A video edit is paid by its source length: send the source inline as a regular (not fragmented) MP4 data:video/mp4;base64 URL, so the seller can measure its length';
+  const expected = Math.max(seconds, 1);
+  const declared = typeof duration === 'string' ? Number(duration.trim().replace(/s$/, '')) : duration;
+  return declared === expected ? null : `duration must be the source length in whole seconds, rounded down: ${expected}`;
 }

@@ -95,35 +95,15 @@ describe('builders card tracked agents', () => {
   });
 
   it('still tracks a later registration after an earlier one was removed', () => {
-    state.jobs = [registration];
+    // Handled registrations outlive a page load, so this test uses its own job ids.
+    const earlier = { ...registration, id: 'register-3' };
+    state.jobs = [earlier];
     mount();
     state.buttons.find((button) => button.children === 'Remove')!.onClick!();
 
-    state.jobs = [{ ...registration, id: 'register-2', result: { agentId: 78 } }, registration];
+    state.jobs = [{ ...registration, id: 'register-4', result: { agentId: 78 } }, earlier];
     expect(mount()).toContain('Agent #78');
     expect(tracked()).toEqual([78]);
-  });
-
-  it('lists and can remove agents beyond one request: a 21st added id and a newly registered one', async () => {
-    const added = Array.from({ length: 21 }, (_, i) => 101 + i); // what Add persisted
-    storage.set(`antseed.ants.builderAgentIds:${chainId}`, JSON.stringify(added));
-    state.jobs = [registration];
-    mount();
-    expect(tracked()).toEqual([...added, 77]);
-
-    mount();
-    state.view = await state.load!();
-    expect(state.requests.map((batch) => batch.length)).toEqual([20, 2]);
-    expect(state.view.agents.map((agent) => agent.agentId)).toEqual([5, ...added, 77]);
-
-    const markup = mount();
-    expect(markup).toContain('Agent #121');
-    expect(markup).toContain('Agent #77');
-    // Every tracked id has a Remove control; the owned first-party agent leads without one.
-    const removes = state.buttons.filter((button) => button.children === 'Remove');
-    expect(removes).toHaveLength(22);
-    removes[21]!.onClick!();
-    expect(tracked()).toEqual(added);
   });
 });
 

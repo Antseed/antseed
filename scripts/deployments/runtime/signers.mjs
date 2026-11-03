@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { homedir } from 'node:os';
@@ -22,6 +23,14 @@ import { requireEnvironment } from './env.mjs';
 
 const DEFAULT_KEYSTORES = process.env.FOUNDRY_KEYSTORES ?? path.join(homedir(), '.foundry', 'keystores');
 
+function keystoreAddress(file) {
+  const args = ['wallet', 'address', '--keystore', file];
+  if (process.env.ETH_PASSWORD) args.push('--password', process.env.ETH_PASSWORD);
+  const result = spawnSync('cast', args, { encoding: 'utf8', stdio: ['inherit', 'pipe', 'inherit'] });
+  if (result.status !== 0) throw new Error(`Could not read the address of keystore ${file}`);
+  return result.stdout.trim();
+}
+
 export async function resolveSigner(spec, { rpcUrl } = {}) {
   const [kind, ...rest] = spec.split(':');
   const value = rest.join(':');
@@ -30,7 +39,10 @@ export async function resolveSigner(spec, { rpcUrl } = {}) {
     case 'account': {
       const file = kind === 'account' ? path.join(DEFAULT_KEYSTORES, value) : path.resolve(value);
       const { address } = JSON.parse(await readFile(file, 'utf8'));
-      const checksummed = capture('cast', ['to-check-sum-address', address.startsWith('0x') ? address : `0x${address}`]);
+      // Keystores made by `cast wallet import` store no address; decrypting is then the only way
+      // to learn it, so cast asks for the password (or reads ETH_PASSWORD).
+      const stored = address ?? keystoreAddress(file);
+      const checksummed = capture('cast', ['to-check-sum-address', stored.startsWith('0x') ? stored : `0x${stored}`]);
       return {
         spec,
         address: checksummed,

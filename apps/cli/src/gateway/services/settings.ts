@@ -1,7 +1,3 @@
-import { randomBytes } from 'node:crypto'
-import { chmod, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
-import { homedir } from 'node:os'
-import { resolve } from 'node:path'
 import { configFromObject, loadConfig } from '../../config/loader.js'
 import type { AntseedConfig } from '../../config/types.js'
 import { redact } from '../../proxy/chain-rpc.js'
@@ -12,6 +8,9 @@ import type { AuthConfig, BuyerSettings, BuyerSettingsInput, ObservabilitySettin
 import { errorMessage } from '../errors.js'
 import { OBSERVABILITY_SETTING, observabilitySettings } from '../observability.js'
 import { recordAudit, type Actor, type ServiceContext } from './context.js'
+import { patchConfigFile } from '../../config/patch.js'
+
+export { patchConfigFile }
 
 const MAX_OTLP_HEADERS = 20
 /** What header values look like to callers who may not read them. */
@@ -27,10 +26,6 @@ export interface SettingsContext extends ServiceContext {
   authConfig?: () => Promise<AuthConfig> | AuthConfig
 }
 
-function resolveConfigPath(configPath: string): string {
-  return configPath.startsWith('~') ? resolve(homedir(), configPath.slice(2)) : resolve(configPath)
-}
-
 type JsonObject = Record<string, unknown>
 
 function childObject(parent: JsonObject, key: string): JsonObject {
@@ -39,78 +34,6 @@ function childObject(parent: JsonObject, key: string): JsonObject {
   const created: JsonObject = {}
   parent[key] = created
   return created
-}
-
-/** Config edits in flight, per file: each waits for the previous one so concurrent PATCHes never lose an update. */
-const configLocks = new Map<string, Promise<void>>()
-
-async function withConfigLock<T>(path: string, task: () => Promise<T>): Promise<T> {
-  const previous = configLocks.get(path) ?? Promise.resolve()
-  const run = previous.then(task, task)
-  const settled = run.then(() => undefined, () => undefined)
-  configLocks.set(path, settled)
-  try {
-    return await run
-  } finally {
-    if (configLocks.get(path) === settled) configLocks.delete(path)
-  }
-}
-
-/** The file a (possibly symlinked) config path points at, so the edit replaces the target rather than the link. */
-async function configTarget(path: string): Promise<string> {
-  try {
-    return await realpath(path)
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return path
-    throw error
-  }
-}
-
-/**
- * Edits the config file in place: reads the raw JSON, lets `mutate` touch
- * only the fields it changes (so everything else, defaults left implicit
- * included, stays as the operator wrote it), and replaces the file
- * atomically with the same mode. A file that does not parse is never
- * overwritten; a missing one is created with just the changed fields.
- * Edits are serialized in-process, and a symlinked config is written
- * through to its target.
- */
-export async function patchConfigFile(configPath: string, mutate: (config: JsonObject) => void): Promise<void> {
-  const target = await configTarget(resolveConfigPath(configPath))
-  await withConfigLock(target, () => patchConfigTarget(target, mutate))
-}
-
-async function patchConfigTarget(path: string, mutate: (config: JsonObject) => void): Promise<void> {
-  let raw: string | null = null
-  try {
-    raw = await readFile(path, 'utf8')
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-  }
-  let config: JsonObject = {}
-  if (raw !== null && raw.trim() !== '') {
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(raw)
-    } catch {
-      throw new ConsoleError(409, 'config_unreadable', `The config file ${path} is not valid JSON; fix it before changing settings here`)
-    }
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      throw new ConsoleError(409, 'config_unreadable', `The config file ${path} is not a JSON object`)
-    }
-    config = parsed as JsonObject
-  }
-  mutate(config)
-  const mode = raw === null ? 0o600 : (await stat(path)).mode & 0o777
-  const temp = `${path}.${randomBytes(6).toString('hex')}.tmp`
-  try {
-    await writeFile(temp, `${JSON.stringify(config, null, 2)}\n`, { mode })
-    await chmod(temp, mode)
-    await rename(temp, path)
-  } catch (error) {
-    await rm(temp, { force: true })
-    throw error
-  }
 }
 
 async function authConfig(deps: SettingsContext): Promise<AuthConfig> {

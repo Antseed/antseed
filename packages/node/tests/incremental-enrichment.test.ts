@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { AntseedNode, ON_CHAIN_STATS_MISS_TTL_MS, ON_CHAIN_STATS_TTL_MS, type PeerInfo } from '../src/node.js';
+import { AntseedNode, ON_CHAIN_STATS_MISS_TTL_MS, ON_CHAIN_STATS_TTL_MS, VERIFICATION_STATUS_STALE_MAX_MS, VERIFICATION_STATUS_TTL_MS, type PeerInfo } from '../src/node.js';
 import { GITHUB_VERIFICATION_PROOF_TYPE } from '../src/discovery/github-verification.js';
 import * as publicJson from '../src/reputation/public-json.js';
 
@@ -383,5 +383,76 @@ describe('AntseedNode incremental discovery enrichment', () => {
     (node as any)._attachCachedExternalVerificationResults([peer]);
 
     expect(peer.verificationResults).toBe(results);
+  });
+
+  describe('verification status (live DIFF verdicts)', () => {
+    function pricedPeer(peerId: string, services: string[]): PeerInfo {
+      const peer = makePeer(peerId);
+      peer.providerPricing = {
+        openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, services: Object.fromEntries(services.map((s) => [s, { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }])) },
+      } as PeerInfo['providerPricing'];
+      return peer;
+    }
+
+    function setup(readDiffServices: ReturnType<typeof vi.fn>) {
+      const node = new AntseedNode({ role: 'buyer' });
+      const agentOf: Record<string, number> = { ['a'.repeat(40)]: 7, ['b'.repeat(40)]: 8 };
+      (node as any)._trustSignalsClient = trustClient(async (sellers: string[]) => new Map(sellers
+        .filter((seller) => agentOf[seller.replace(/^0x/, '')] !== undefined)
+        .map((seller) => [seller, signals({ agentId: agentOf[seller.replace(/^0x/, '')] })])));
+      (node as any)._verificationSignalsClient = { readDiffServices };
+      return node;
+    }
+
+    it('marks only the services with a live DIFF verdict, per seller', async () => {
+      const readDiffServices = vi.fn(async () => new Map([[7, ['gpt-6.1-sol']], [8, []]]));
+      const node = setup(readDiffServices);
+      const a = pricedPeer('a'.repeat(40), ['GPT-6.1-Sol', 'claude-opus-5.5']);
+      const b = pricedPeer('b'.repeat(40), ['gpt-6.1-sol']);
+      const unregistered = pricedPeer('c'.repeat(40), ['gpt-6.1-sol']);
+
+      await (node as any)._enrichPeersWithOnChainStats([a, b, unregistered]);
+
+      expect(readDiffServices).toHaveBeenCalledTimes(1);
+      expect(readDiffServices.mock.calls[0]![0]).toEqual([
+        { agentId: 7, services: ['claude-opus-5.5', 'gpt-6.1-sol'] },
+        { agentId: 8, services: ['gpt-6.1-sol'] },
+      ]);
+      expect(a.onChainDiffServices).toEqual(['gpt-6.1-sol']);
+      expect(b.onChainDiffServices).toEqual([]);
+      expect(unregistered.onChainDiffServices).toBeUndefined();
+    });
+
+    it('reuses a fresh read and refreshes after the TTL', async () => {
+      const readDiffServices = vi.fn(async () => new Map([[7, ['gpt-6.1-sol']]]));
+      const node = setup(readDiffServices);
+      await (node as any)._enrichPeersWithOnChainStats([pricedPeer('a'.repeat(40), ['gpt-6.1-sol'])]);
+      await (node as any)._enrichPeersWithOnChainStats([pricedPeer('a'.repeat(40), ['gpt-6.1-sol'])]);
+      expect(readDiffServices).toHaveBeenCalledTimes(1);
+
+      const cached = (node as any)._verificationStatusCache.get(7);
+      cached.fetchedAt -= VERIFICATION_STATUS_TTL_MS + 1;
+      await (node as any)._enrichPeersWithOnChainStats([pricedPeer('a'.repeat(40), ['gpt-6.1-sol'])]);
+      expect(readDiffServices).toHaveBeenCalledTimes(2);
+    });
+
+    it('keeps the last good answer on a failed read, then fails open', async () => {
+      const readDiffServices = vi.fn(async () => new Map([[7, ['gpt-6.1-sol']]]));
+      const node = setup(readDiffServices);
+      await (node as any)._enrichPeersWithOnChainStats([pricedPeer('a'.repeat(40), ['gpt-6.1-sol'])]);
+
+      readDiffServices.mockRejectedValue(new Error('rpc down'));
+      const cached = (node as any)._verificationStatusCache.get(7);
+      cached.fetchedAt -= VERIFICATION_STATUS_TTL_MS + 1;
+      const stillPenalized = pricedPeer('a'.repeat(40), ['gpt-6.1-sol']);
+      await (node as any)._enrichPeersWithOnChainStats([stillPenalized]);
+      expect(stillPenalized.onChainDiffServices).toEqual(['gpt-6.1-sol']);
+
+      cached.fetchedAt -= VERIFICATION_STATUS_STALE_MAX_MS;
+      const failedOpen = pricedPeer('a'.repeat(40), ['gpt-6.1-sol']);
+      failedOpen.onChainDiffServices = ['gpt-6.1-sol'];
+      await (node as any)._enrichPeersWithOnChainStats([failedOpen]);
+      expect(failedOpen.onChainDiffServices).toBeUndefined();
+    });
   });
 });

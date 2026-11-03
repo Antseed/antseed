@@ -1,5 +1,12 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
-import { ZeroAddress } from 'ethers';
+import { ZeroAddress, isAddress } from 'ethers';
+import {
+  FREE_TIER_DELEGATION_TYPES,
+  encodeFreeTierDelegationCode,
+  freeTierDelegationMessage,
+  isFreeTierDelegationSigned,
+  makeFreeTierDelegationDomain,
+} from '@antseed/node';
 import { IndexerSyncingError } from './read-state.js';
 import { networkSnapshot, networkLegacy } from './service/network.js';
 import type { AntsContext } from './service/context.js';
@@ -17,6 +24,7 @@ import type {
   StakeRequest, MoveRequest, SplitRequest, MergeRequest, ExtendRequest, MaxLockRequest, WithdrawRequest,
   ClaimRequest, RestakeRequest, StakeUsageRequest, SubmitProofRequest, CompoundRequest, BuilderClaimRequest,
 } from './api-types.js';
+import { MAX_BUILDER_AGENTS } from './api-types.js';
 
 export interface RouteContext {
   ctx: AntsContext;
@@ -69,6 +77,26 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext): voi
     await context.onAuthorize(); return {};
   }));
 
+  // A staker shares its staking power with a buyer: sign (or check the browser
+  // wallet's signature) and hand back a code the buyer pastes into its node.
+  app.post<{ Body: { buyer?: string; expiresAt?: number; signature?: string } }>('/api/free-tier/code', (request, reply) => respond(reply, async () => {
+    const { buyer, expiresAt, signature } = request.body ?? {};
+    if (!buyer || !isAddress(buyer)) throw new Error('Enter the buyer address to share with.');
+    if (!Number.isSafeInteger(expiresAt) || (expiresAt as number) * 1000 <= Date.now()) throw new Error('Choose an expiry in the future.');
+    const unsigned = { staker: ctx.address, buyer, expiresAt: expiresAt as number };
+    const chainId = ctx.chain.evmChainId;
+    let signed: string;
+    if (signature) {
+      signed = signature;
+    } else {
+      if (context.browserSigning || !ctx.signer) throw new Error('Connect the staking wallet to sign.');
+      signed = await ctx.signer.signTypedData(makeFreeTierDelegationDomain(chainId), FREE_TIER_DELEGATION_TYPES, freeTierDelegationMessage(unsigned));
+    }
+    const delegation = { ...unsigned, signature: signed };
+    if (!isFreeTierDelegationSigned(delegation, chainId)) throw new Error(`The signature is not from staker ${ctx.address}.`);
+    return { code: encodeFreeTierDelegationCode(delegation), staker: ctx.address, buyer, expiresAt };
+  }));
+
   app.get('/api/overview', (_request, reply) => respond(reply, () => cached('overview', () => overview(ctx))));
   app.get('/api/positions', (_request, reply) => respond(reply, () => cached('positions', () => positions(ctx))));
   app.get('/api/rewards', (_request, reply) => respond(reply, () => cached('rewards', () => rewards(ctx))));
@@ -96,7 +124,9 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext): voi
   });
   app.get('/api/referrals/buyers', (_request, reply) => respond(reply, () => cached('referrals:buyers', () => referredBuyers(ctx))));
   app.get<{ Querystring: { agentIds?: string } }>('/api/builders', (request, reply) => {
-    const agentIds = [...new Set((request.query.agentIds ?? '').split(',').map(Number).filter((id) => Number.isSafeInteger(id) && id > 0))].sort((a, b) => a - b);
+    // Cap in requested order before sorting for the cache key, so a later id never displaces an earlier one.
+    const agentIds = [...new Set((request.query.agentIds ?? '').split(',').map(Number).filter((id) => Number.isSafeInteger(id) && id > 0))]
+      .slice(0, MAX_BUILDER_AGENTS).sort((a, b) => a - b);
     return respond(reply, () => cached(`builders:${agentIds.join(',')}`, () => builders(ctx, agentIds)));
   });
   app.post<{ Body: { positionIds: number[] } }>('/api/positions/withdraw/preview', (request, reply) => respond(reply, () => previewWithdraw(ctx, request.body?.positionIds ?? [])));
@@ -121,9 +151,11 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext): voi
               const buyerOnly = (kind === 'claim' && body.scope === 'buyer') || (kind === 'stake-usage' && body.side === 'buyer');
               // Referral claims are permissionless and always pay the account's Deposits operator,
               // so the selected account or its operator may send them.
-              const eitherRole = kind === 'referral-claim' || kind === 'referee-claim';
               const wallet = await ctx.requireSigner().getAddress();
-              await assertSelectedWallet(ctx, context.selectedAddress, wallet, buyerOnly ? 'buyer' : eitherRole ? 'connection' : 'wallet');
+              // Referral and referee claims always pay the selected account's Deposits
+              // operator, so either the selected wallet or that operator may send them.
+              const referralClaim = kind === 'referral-claim' || kind === 'referee-claim';
+              await assertSelectedWallet(ctx, context.selectedAddress, wallet, referralClaim ? 'connection' : buyerOnly ? 'buyer' : 'wallet');
               if (kind === 'claim' && body.scope !== 'wallet' && body.buckets?.includes('buyer')) {
                 await assertSelectedWallet(ctx, context.selectedAddress, wallet, 'buyer');
               }

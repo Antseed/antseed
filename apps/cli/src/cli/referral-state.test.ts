@@ -1,16 +1,11 @@
 import assert from 'node:assert/strict';
-import fs, { mkdtempSync, rmSync } from 'node:fs';
-import { syncBuiltinESMExports } from 'node:module';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import test from 'node:test';
-import { clearReferralInvite, encodeInvite, readReferralState, saveReferralInvite } from '@antseed/node';
-import { BuyerAttributionSync, resolveBuyerAttribution, resolveClientAgentId } from './referral-state.js';
+import { encodeInvite } from '@antseed/node';
+import { referralLookups, referralScope, resolveBuyerAttribution, watchReferralAttribution } from './referral-state.js';
 
 const REFERRER = '0x1111111111111111111111111111111111111111';
+const BUYER = '0x2222222222222222222222222222222222222222';
 const INVITE = { epoch: 42n, index: 7n, r: `0x${'aa'.repeat(32)}`, vs: `0x${'bb'.repeat(32)}` };
-const DEPLOYMENT = { chainId: 8453, referralsAddress: '0x4444444444444444444444444444444444444444' };
-const scopeOf = (wallet: string) => ({ ...DEPLOYMENT, wallet });
 
 test('buyer attribution resolves the client agent id from env, config, then chain config', () => {
   const chain = { cli: 11, desktop: 12 };
@@ -20,10 +15,6 @@ test('buyer attribution resolves the client agent id from env, config, then chai
 
   const fromConfig = resolveBuyerAttribution({ referralState: null, clientAgentId: 5, clientAgentIds: chain, env: {} });
   assert.equal(BigInt(fromConfig.clientId!), 5n);
-  for (const invalid of ['7garbage', '7.5', '9007199254740993', '1e3']) {
-    const ignored = resolveBuyerAttribution({ referralState: null, clientAgentId: 5, clientAgentIds: chain, env: { ANTSEED_CLIENT_AGENT_ID: invalid } });
-    assert.equal(BigInt(ignored.clientId!), 5n, `env ${invalid} was used`);
-  }
 
   const cli = resolveBuyerAttribution({ referralState: null, clientAgentIds: chain, env: {} });
   assert.equal(BigInt(cli.clientId!), 11n);
@@ -34,13 +25,11 @@ test('buyer attribution resolves the client agent id from env, config, then chai
   assert.deepEqual(none, {});
 });
 
-test('the client agent resolver reports where the id came from and which client default applies', () => {
-  const chain = { cli: 11, desktop: 12 };
-  assert.deepEqual(resolveClientAgentId({ clientAgentId: 5, clientAgentIds: chain }, { ANTSEED_CLIENT_AGENT_ID: '7' }), { agentId: 7, source: 'env', client: 'cli' });
-  assert.deepEqual(resolveClientAgentId({ clientAgentId: 5, clientAgentIds: chain }, {}), { agentId: 5, source: 'config', client: 'cli' });
-  assert.deepEqual(resolveClientAgentId({ clientAgentIds: chain }, {}), { agentId: 11, source: 'default', client: 'cli' });
-  assert.deepEqual(resolveClientAgentId({ clientAgentIds: chain }, { ANTSEED_CLIENT_KIND: 'desktop' }), { agentId: 12, source: 'default', client: 'desktop' });
-  assert.deepEqual(resolveClientAgentId({}, {}), { agentId: null, source: 'none', client: 'cli' });
+test('buyer attribution ignores a malformed ANTSEED_CLIENT_AGENT_ID and falls back to the configured id', () => {
+  for (const value of ['12.5', '12junk', '1e3', '0x0c', '-4', '0', '9007199254740993']) {
+    const resolved = resolveBuyerAttribution({ referralState: null, clientAgentId: 5, env: { ANTSEED_CLIENT_AGENT_ID: value } });
+    assert.equal(BigInt(resolved.clientId!), 5n, `${value} is not an agent id`);
+  }
 });
 
 test('buyer attribution carries a pending invite until it is bound, keeping the client', () => {
@@ -53,133 +42,103 @@ test('buyer attribution carries a pending invite until it is bound, keeping the 
   assert.equal(BigInt(bound.clientId!), 5n);
 });
 
-test('attribution sync gives each wallet its own invite and drops it once bound', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'antseed-attribution-'));
-  const identityDir = join(root, 'buyer-identities', 'team-a');
-  const DEFAULT_WALLET = '0x2222222222222222222222222222222222222222';
-  const TEAM_WALLET = '0x3333333333333333333333333333333333333333';
+test('referral scope and lookups follow the configured referrals contract', async () => {
+  assert.equal(referralScope({ evmChainId: 8453 }, REFERRER), null);
+  assert.deepEqual(referralScope({ evmChainId: 8453, referralsAddress: REFERRER }, BUYER), { wallet: BUYER, chainId: 8453, referralsAddress: REFERRER });
+
+  assert.deepEqual(referralLookups({ explorerApiUrl: 'https://antscan.example', client: null }), {});
+  const noExplorer = referralLookups({ client: { referrerOf: async () => '0x0000000000000000000000000000000000000000' } });
+  assert.equal(noExplorer.explorer, null);
+  assert.equal(await noExplorer.chain!(BUYER), null);
+  const withExplorer = referralLookups({ explorerApiUrl: 'https://antscan.example', client: { referrerOf: async () => REFERRER } });
+  assert.equal(typeof withExplorer.explorer, 'function');
+  assert.equal(await withExplorer.chain!(BUYER), REFERRER);
+});
+
+test('the saved invite is applied before the explorer answers, and the background sync drops it once bound', async () => {
+  const { mkdtemp, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { saveReferralInvite } = await import('@antseed/node');
+  const dataDir = await mkdtemp(join(tmpdir(), 'antseed-referral-watch-'));
+  const scope = { wallet: BUYER, chainId: 8453, referralsAddress: REFERRER };
   try {
-    await saveReferralInvite(identityDir, scopeOf(TEAM_WALLET), encodeInvite(INVITE), REFERRER);
-    const bound = new Map<string, string>();
-    const applied: Array<{ identity: string | undefined; invite: boolean; clientId: string | undefined }> = [];
-    const sync = new BuyerAttributionSync({
-      clientAgentId: 5,
-      deployment: DEPLOYMENT,
-      lookup: async (buyer) => bound.get(buyer) ?? null,
-      verify: async (buyer) => bound.get(buyer) ?? null,
-      apply: (attribution, identity) => applied.push({ identity, invite: !!attribution.invite, clientId: attribution.clientId }),
-    });
-    await sync.track(undefined, root, DEFAULT_WALLET);
-    await sync.track('team-a', identityDir, TEAM_WALLET);
-    assert.deepEqual(applied.map(({ identity, invite }) => [identity, invite]), [[undefined, false], ['team-a', true]]);
-    assert.ok(applied.every((entry) => BigInt(entry.clientId!) === 5n));
+    await saveReferralInvite(dataDir, scope, encodeInvite(INVITE), REFERRER);
+    let answerExplorer!: (referrer: string | null) => void;
+    let markExplorerCalled!: () => void;
+    const explorerCalled = new Promise<void>((resolve) => { markExplorerCalled = resolve; });
+    const lookups = {
+      explorer: () => {
+        markExplorerCalled();
+        return new Promise<string | null>((resolve) => { answerExplorer = resolve; });
+      },
+      chain: async () => REFERRER,
+    };
+    const applied: Array<ReturnType<typeof resolveBuyerAttribution>> = [];
+    const watch = await watchReferralAttribution({ dataDir, scope, lookups, clientAgentId: 5, env: {}, apply: (a) => applied.push(a) });
+    try {
+      // Startup (the proxy) continues here: the invite is already installed
+      // although the explorer has not answered yet.
+      assert.equal(applied.length, 1);
+      assert.deepEqual(applied[0]!.invite, INVITE);
+      assert.equal(BigInt(applied[0]!.clientId!), 5n);
 
-    // The default wallet's unchanged file is skipped; the carried invite is re-checked every poll.
-    applied.length = 0;
-    await sync.refreshAll();
-    assert.deepEqual(applied.map(({ identity, invite }) => [identity, invite]), [['team-a', true]]);
-
-    bound.set(TEAM_WALLET, REFERRER);
-    applied.length = 0;
-    await sync.refreshAll();
-    assert.deepEqual(applied.map(({ identity, invite }) => [identity, invite]), [['team-a', false]]);
-    assert.equal((await readReferralState(identityDir, scopeOf(TEAM_WALLET)))?.state, 'bound');
+      await explorerCalled;
+      answerExplorer(REFERRER);
+      await watch.synced;
+      assert.equal(applied.length, 2);
+      assert.equal(applied[1]!.invite, undefined);
+      assert.equal(BigInt(applied[1]!.clientId!), 5n);
+    } finally {
+      watch.stop();
+    }
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true });
   }
 });
 
-test('a tracked wallet carries its saved invite before a slow explorer answers', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'antseed-attribution-'));
-  const TEAM_WALLET = '0x3333333333333333333333333333333333333333';
+test('an invite saved while the watcher reads the state is applied by a later poll', async () => {
+  const { mkdtemp, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { saveReferralInvite, syncReferralState, writeReferralState } = await import('@antseed/node');
+  const dataDir = await mkdtemp(join(tmpdir(), 'antseed-referral-watch-'));
+  const scope = { wallet: BUYER, chainId: 8453, referralsAddress: REFERRER };
   try {
-    await saveReferralInvite(root, scopeOf(TEAM_WALLET), encodeInvite(INVITE), REFERRER);
-    let answer: (value: string | null) => void = () => {};
-    const explorer = new Promise<string | null>((resolve) => { answer = resolve; });
-    const applied: boolean[] = [];
-    const sync = new BuyerAttributionSync({
-      deployment: DEPLOYMENT,
-      lookup: () => explorer,
-      verify: async () => null,
-      apply: (attribution) => applied.push(!!attribution.invite),
-    });
-    // Resolves while the explorer lookup is still pending.
-    await sync.track('team-a', root, TEAM_WALLET);
-    assert.deepEqual(applied, [true]);
-    answer(null);
-    await sync.refreshAll();
-    assert.ok(applied.every(Boolean));
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test('attribution sync keeps a carried invite when only the explorer reports a binding', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'antseed-attribution-'));
-  try {
-    await saveReferralInvite(root, scopeOf('0x2222222222222222222222222222222222222222'), encodeInvite(INVITE), REFERRER);
-    const applied: boolean[] = [];
-    const sync = new BuyerAttributionSync({
-      deployment: DEPLOYMENT,
-      lookup: async () => REFERRER,
-      verify: async () => '0x0000000000000000000000000000000000000000',
-      apply: (attribution) => applied.push(!!attribution.invite),
-    });
-    await sync.track(undefined, root, '0x2222222222222222222222222222222222222222');
-    await sync.refreshAll();
-    assert.ok(applied.length >= 2 && applied.every(Boolean));
-    assert.equal((await readReferralState(root, scopeOf('0x2222222222222222222222222222222222222222')))?.state, 'invited');
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test('a replacement saved while a poll reads the state is applied by the next poll', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'antseed-attribution-'));
-  const realStat = fs.promises.stat;
-  try {
-    await saveReferralInvite(root, scopeOf('0x2222222222222222222222222222222222222222'), encodeInvite(INVITE), REFERRER);
-    await clearReferralInvite(root, scopeOf('0x2222222222222222222222222222222222222222'));
-    const applied: boolean[] = [];
-    const sync = new BuyerAttributionSync({ deployment: DEPLOYMENT, lookup: null, verify: null, apply: (attribution) => applied.push(!!attribution.invite) });
-    await sync.track(undefined, root, '0x2222222222222222222222222222222222222222');
-    await sync.refreshAll(); // lets the background check started by track settle
-    assert.deepEqual(applied, [false]);
-
-    // Another process saves a new invite right as the poll stats the state file.
-    let armed = true;
-    fs.promises.stat = (async (...args: Parameters<typeof realStat>) => {
-      if (armed && String(args[0]).endsWith('referral.json')) {
-        armed = false;
-        await new Promise((resolve) => setTimeout(resolve, 20));
-        await saveReferralInvite(root, scopeOf('0x2222222222222222222222222222222222222222'), encodeInvite({ ...INVITE, index: 8n }), REFERRER);
+    await writeReferralState(dataDir, scope, { state: 'none' });
+    let raced = false
+    // The first sync reads "none"; another process redeems an invite before
+    // the watcher looks at the file again.
+    const syncState: typeof syncReferralState = async (...args) => {
+      const state = await syncReferralState(...args)
+      if (!raced) {
+        raced = true
+        await new Promise((resolve) => setTimeout(resolve, 10))
+        await saveReferralInvite(dataDir, scope, encodeInvite(INVITE), REFERRER)
       }
-      return realStat(...args);
-    }) as typeof realStat;
-    syncBuiltinESMExports();
-    await sync.refreshAll(true);
-    fs.promises.stat = realStat;
-    syncBuiltinESMExports();
-
-    await sync.refreshAll();
-    assert.equal(applied.at(-1), true);
+      return state
+    }
+    const applied: Array<ReturnType<typeof resolveBuyerAttribution>> = [];
+    const watch = await watchReferralAttribution({ dataDir, scope, lookups: {}, clientAgentId: 5, env: {}, intervalMs: 100, syncState, apply: (a) => applied.push(a) });
+    try {
+      await watch.synced;
+      assert.equal(applied[0]!.invite, undefined);
+      const deadline = Date.now() + 2_000;
+      while (!applied.at(-1)!.invite && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+      assert.deepEqual(applied.at(-1)!.invite, INVITE);
+    } finally {
+      watch.stop();
+    }
   } finally {
-    fs.promises.stat = realStat;
-    syncBuiltinESMExports();
-    rmSync(root, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true });
   }
 });
 
-test('a different wallet using the same data dir never carries the previous wallet\'s invite', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'antseed-attribution-'));
-  try {
-    await saveReferralInvite(root, scopeOf('0x2222222222222222222222222222222222222222'), encodeInvite(INVITE), REFERRER);
-    const applied: boolean[] = [];
-    const sync = new BuyerAttributionSync({ deployment: DEPLOYMENT, lookup: null, verify: null, apply: (attribution) => applied.push(!!attribution.invite) });
-    await sync.track(undefined, root, '0x5555555555555555555555555555555555555555');
-    await sync.refreshAll(true);
-    assert.deepEqual(applied, [false, false]);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
+test('referral attribution without a referrals deployment applies only the client id', async () => {
+  const applied: Array<ReturnType<typeof resolveBuyerAttribution>> = [];
+  const watch = await watchReferralAttribution({ dataDir: '/nonexistent-antseed-dir', scope: null, lookups: {}, clientAgentId: 5, env: {}, apply: (a) => applied.push(a) });
+  await watch.synced;
+  watch.stop();
+  assert.ok(applied.length >= 1);
+  for (const attribution of applied) assert.equal(attribution.invite, undefined);
 });

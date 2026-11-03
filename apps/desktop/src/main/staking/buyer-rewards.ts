@@ -1,15 +1,10 @@
 import { formatAntsExact, rewards, type AntsChainConfig } from '@antseed/ants/service';
 import type { DesktopRewardsSummary } from '../payments/buyer-channels.js';
 import { sharedChainContext } from '../payments/shared-chain.js';
+import { EMPTY_REWARDS_SUMMARY } from '../payments/rewards-summary.js';
 import { friendlyNetworkError } from '../utils.js';
 
-export const EMPTY_REWARDS_SUMMARY: DesktopRewardsSummary = {
-  available: false,
-  pendingAnts: '0',
-  currentEpoch: null,
-  transfersEnabled: false,
-  error: null,
-};
+export { EMPTY_REWARDS_SUMMARY };
 
 /** The summary shown when reading rewards fails: nothing pending, with a short error (RPC trouble reads as a retry hint). */
 export function rewardsErrorSummary(error: unknown): DesktopRewardsSummary {

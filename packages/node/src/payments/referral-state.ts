@@ -1,42 +1,56 @@
-import { randomUUID } from 'node:crypto';
-import { mkdir, open, readFile, rename, rm, stat, utimes, writeFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { getAddress, ZeroAddress } from 'ethers';
 import type { ReferralInvite } from '@antseed/protocol/signatures';
-import { decodeInvite, recoverInviter, type InviteDomain } from './invites.js';
+import type { ReferralsClient } from './evm/referrals-client.js';
+import { decodeInvite } from './invites.js';
+import { withFileLock } from '../utils/file-lock.js';
 
 /**
  * Local referral state shared by Desktop and the CLI, stored at
  * `<dataDir>/referral.json`. Redeeming an invite (after `previewInvite`
  * passed) saves it as `invited`; the buyer daemon carries it in the metadata
- * it signs until AntseedStatsV2 binds it on a settlement, and the Referrals
- * contract confirms the binding, which is recorded as `bound`. Nothing here
+ * it signs until AntseedStatsV2 binds it on a settlement, which Antscan hints
+ * and `referrerOf` confirms before it is recorded as `bound`. Nothing here
  * signs or sends anything on-chain.
  *
  *   none → invited (pending first settlement) → bound
  *
- * `issued` remembers the invites this wallet handed out in its latest issue
- * epoch, so the next one gets a fresh index even before either is used.
+ * Every record is scoped to a wallet on one AntseedReferrals deployment
+ * (`ReferralScope`), so switching networks or deployments with the same data
+ * directory neither carries an invite signed for another deployment nor
+ * blocks a new one with a binding made elsewhere. The issued-invite indices
+ * are scoped the same way, by the signing wallet.
  *
- * Each wallet keeps its own state per Referrals deployment (chain id +
- * contract, the invite's EIP-712 domain), so neither switching networks nor
- * replacing the wallet that uses the data directory reuses another
- * binding, pending invite or issued indices.
+ * Every read-modify-write of the file runs under `referral.json.lock` (see
+ * `updateFile`), shared by every process using the data directory, so a
+ * redemption, a daemon sync and an invite allocation never drop each
+ * other's updates. That lock is only held for local file IO and never
+ * nests another lock; callers that need a longer critical section (invite
+ * allocation) take their own lock first and update the file inside it.
  */
 export type ReferralState = {
   state: 'none' | 'invited' | 'bound';
   /** The redeemed invite string, while `invited`. */
   invite?: string;
-  /** The inviter: recovered from the invite while `invited`, per the Referrals contract once `bound`. */
+  /** The inviter: recovered from the invite while `invited`, confirmed on-chain once `bound`. */
   referrer?: string;
-  /** Invite indices handed out for `issued.epoch`. */
-  issued?: { epoch: number; indices: number[] };
+  /**
+   * Read from a record written before state was scoped: it may belong to
+   * another wallet or deployment, so a `bound` one is checked on-chain (see
+   * `syncReferralState`) and can be replaced by a new invite meanwhile.
+   */
+  unverified?: true;
   /** ISO timestamp of the last write. */
   updatedAt?: string;
 };
 
-/** Whose state it is: the wallet, on a Referrals deployment (the invite's EIP-712 domain). */
-export type ReferralScope = InviteDomain & { wallet: string };
+/** A wallet (the buyer as referee, the signer as referrer) on one referrals deployment. */
+export type ReferralScope = {
+  wallet: string;
+  chainId: number;
+  referralsAddress: string;
+};
 
 /**
  * The buyer's bound referrer: an address, null while unbound, or undefined
@@ -44,23 +58,43 @@ export type ReferralScope = InviteDomain & { wallet: string };
  */
 export type ReferralLookup = (buyer: string) => Promise<string | null | undefined>;
 
-type ReferralStateFile = {
+/** How `syncReferralState` learns about a binding. */
+export type ReferralLookups = {
+  /** Advisory and free of RPC (Antscan): asked first, never trusted alone. */
+  explorer?: ReferralLookup | null;
+  /** Authoritative: `referrerOf` on the configured deployment (see `referrerOfLookup`). */
+  chain?: ReferralLookup | null;
+};
+
+type IssuedInvites = { epoch: number; indices: number[] };
+
+type ReferralFile = {
   version: 2;
-  deployments: Record<string, ReferralState>;
-  /** A pre-scoped file's state, kept until the deployment it belongs to adopts it. */
-  legacy?: ReferralState;
+  /** Referee state by `scopeKey(buyer scope)`. */
+  referees: Record<string, ReferralState>;
+  /** Invite indices handed out in each signer's latest issue epoch, by `scopeKey(signer scope)`. */
+  issued: Record<string, IssuedInvites>;
+  /** The unscoped record of a version-1 file, until a scoped write replaces it. */
+  legacy?: { state?: ReferralState; issued?: IssuedInvites };
 };
 
 const STATES: ReadonlyArray<ReferralState['state']> = ['none', 'invited', 'bound'];
 
-/** Checksummed wallet, or null when `value` is not an address (or is the zero address). */
+/** Checksummed wallet, or null when `value` is not an address. */
 export function normalizeReferrer(value: string | null | undefined): string | null {
   try {
-    const address = getAddress(value?.trim() ?? '');
-    return address === ZeroAddress ? null : address;
+    return getAddress(value?.trim() ?? '');
   } catch {
     return null;
   }
+}
+
+/** `referrerOf(buyer)` as a lookup: null while unbound (zero address); a failed read rejects. */
+export function referrerOfLookup(client: Pick<ReferralsClient, 'referrerOf'>): ReferralLookup {
+  return async (buyer) => {
+    const referrer = await client.referrerOf(buyer);
+    return referrer === ZeroAddress ? null : getAddress(referrer);
+  };
 }
 
 function referralStatePath(dataDir: string): string {
@@ -68,65 +102,47 @@ function referralStatePath(dataDir: string): string {
 }
 
 function scopeKey(scope: ReferralScope): string {
-  return `${scope.chainId}:${getAddress(scope.referralsAddress).toLowerCase()}:${getAddress(scope.wallet).toLowerCase()}`;
+  return `${scope.chainId}:${getAddress(scope.referralsAddress)}:${getAddress(scope.wallet)}`;
 }
 
-function validState(value: unknown): ReferralState | null {
-  const state = value as ReferralState | null;
-  return state && typeof state === 'object' && STATES.includes(state.state) ? state : null;
+function validState(value: unknown): ReferralState | undefined {
+  const state = value as ReferralState | null | undefined;
+  return state && STATES.includes(state.state) ? state : undefined;
 }
 
-async function readStateFile(dataDir: string): Promise<ReferralStateFile> {
-  let parsed: unknown;
+function validIssued(value: unknown): IssuedInvites | undefined {
+  const issued = value as IssuedInvites | null | undefined;
+  return issued && Number.isInteger(issued.epoch) && Array.isArray(issued.indices) ? issued : undefined;
+}
+
+async function readFileState(dataDir: string): Promise<ReferralFile> {
+  let parsed: Record<string, unknown>;
   try {
-    parsed = JSON.parse(await readFile(referralStatePath(dataDir), 'utf8'));
+    parsed = JSON.parse(await readFile(referralStatePath(dataDir), 'utf8')) as Record<string, unknown>;
   } catch {
-    return { version: 2, deployments: {} };
+    return { version: 2, referees: {}, issued: {} };
   }
-  const file = parsed as Partial<ReferralStateFile> | null;
-  if (file?.version === 2 && file.deployments && typeof file.deployments === 'object') {
-    const legacy = validState(file.legacy);
-    return { version: 2, deployments: file.deployments, ...(legacy ? { legacy } : {}) };
+  if (parsed?.['version'] === 2) {
+    const file = parsed as unknown as ReferralFile;
+    return { version: 2, referees: file.referees ?? {}, issued: file.issued ?? {}, ...(file.legacy ? { legacy: file.legacy } : {}) };
   }
-  // Written before states were scoped to a deployment.
-  const legacy = validState(parsed);
-  return { version: 2, deployments: {}, ...(legacy ? { legacy } : {}) };
+  // Version 1: one unscoped record, kept as unverified legacy state.
+  const state = validState(parsed);
+  const issued = validIssued(parsed?.['issued']);
+  const legacy = {
+    ...(state ? { state: { state: state.state, ...(state.invite ? { invite: state.invite } : {}), ...(state.referrer ? { referrer: state.referrer } : {}) } } : {}),
+    ...(issued ? { issued } : {}),
+  };
+  return { version: 2, referees: {}, issued: {}, ...(state || issued ? { legacy } : {}) };
 }
 
-/**
- * A pre-scoped state belongs to `scope` only when it holds a pending invite
- * signed for that deployment by the recorded referrer (the first wallet that
- * writes its state there takes it over). A bound state carries
- * nothing that names its deployment, so it is never assumed bound on any of
- * them: the wallet reads as unbound and redemption is checked on-chain again.
- */
-function adoptLegacy(legacy: ReferralState | undefined, scope: ReferralScope): ReferralState | null {
-  if (legacy?.state !== 'invited' || !legacy.invite || !legacy.referrer) return null;
-  let invite: ReferralInvite;
-  try {
-    invite = decodeInvite(legacy.invite);
-  } catch {
-    return null;
-  }
-  const signer = recoverInviter(invite, { chainId: scope.chainId, referralsAddress: scope.referralsAddress });
-  return signer && signer === normalizeReferrer(legacy.referrer) ? legacy : null;
-}
-
-function stateIn(file: ReferralStateFile, scope: ReferralScope): ReferralState | null {
-  return validState(file.deployments[scopeKey(scope)]) ?? adoptLegacy(file.legacy, scope);
-}
-
-export async function readReferralState(dataDir: string, scope: ReferralScope): Promise<ReferralState | null> {
-  return stateIn(await readStateFile(dataDir), scope);
-}
-
-async function writeStateFile(dataDir: string, file: ReferralStateFile): Promise<void> {
+async function writeFileState(dataDir: string, file: ReferralFile): Promise<void> {
   const filePath = referralStatePath(dataDir);
   await mkdir(dirname(filePath), { recursive: true });
-  // Unique per write: concurrent writers never share (or rename away) each other's file.
-  const temporaryPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+  // Unique per writer, so overlapping writes never rename each other's file.
+  const temporaryPath = `${filePath}.${process.pid}.${Date.now().toString(36)}${Math.random().toString(36).slice(2)}.tmp`;
+  await writeFile(temporaryPath, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600 });
   try {
-    await writeFile(temporaryPath, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600 });
     await rename(temporaryPath, filePath);
   } catch (error) {
     await rm(temporaryPath, { force: true });
@@ -134,151 +150,57 @@ async function writeStateFile(dataDir: string, file: ReferralStateFile): Promise
   }
 }
 
-const LOCK_STALE_MS = 30_000;
-const LOCK_HEARTBEAT_MS = 5_000;
-const LOCK_TIMEOUT_MS = 45_000;
-const LOCK_RETRY_MS = 25;
-/** The takeover lock is held for a few file operations only. */
-const TAKEOVER_STALE_MS = 10_000;
-
-/** In-process queue per state file, so this process waits on a promise rather than polling its own lock. */
-const localLocks = new Map<string, Promise<unknown>>();
-
 /**
- * Run `fn` holding the data dir's referral lock: one writer at a time across
- * this process and every other (CLI, Desktop, buyer daemon, dashboard) that
- * shares the directory. The lock file names its holder with a random token
- * and is refreshed while held; one left by a crashed process is taken over
- * once it goes stale (see `takeOverStaleLock`), and release removes it only
- * while it still holds this holder's token.
+ * Read the file, apply `change`, and write it back when `change` asks to,
+ * all under the shared referral lock.
  */
-async function withReferralLock<T>(dataDir: string, fn: () => Promise<T>): Promise<T> {
-  const lockPath = `${referralStatePath(dataDir)}.lock`;
-  const previous = localLocks.get(lockPath) ?? Promise.resolve();
-  const run = previous.catch(() => {}).then(async () => {
-    const token = await acquireFileLock(lockPath);
-    const heartbeat = setInterval(() => {
-      const now = new Date();
-      void utimes(lockPath, now, now).catch(() => {});
-    }, LOCK_HEARTBEAT_MS);
-    heartbeat.unref?.();
-    try {
-      return await fn();
-    } finally {
-      clearInterval(heartbeat);
-      await releaseFileLock(lockPath, token);
-    }
+async function updateFile<T>(dataDir: string, change: (file: ReferralFile) => { result: T; write: boolean }): Promise<T> {
+  // The lock file lives next to the state file; a workspace wallet's directory may not exist yet.
+  await mkdir(dataDir, { recursive: true });
+  return withFileLock(referralStatePath(dataDir), async () => {
+    const file = await readFileState(dataDir);
+    const { result, write } = change(file);
+    if (write) await writeFileState(dataDir, file);
+    return result;
   });
-  localLocks.set(lockPath, run);
-  try {
-    return await run;
-  } finally {
-    if (localLocks.get(lockPath) === run) localLocks.delete(lockPath);
-  }
 }
 
-/** Create `path` exclusively holding `token`; false when it already exists. */
-async function createExclusive(path: string, token: string): Promise<boolean> {
-  try {
-    const handle = await open(path, 'wx', 0o600);
-    try {
-      await handle.writeFile(`${token}\n`);
-    } finally {
-      await handle.close();
-    }
-    return true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
-    throw error;
-  }
+/** This scope's referee state; an unscoped legacy record is returned as `unverified`. */
+export async function readReferralState(dataDir: string, scope: ReferralScope): Promise<ReferralState | null> {
+  return refereeState(await readFileState(dataDir), scope);
 }
 
-/** The lock's holder token and age, or null when there is no lock. */
-async function inspectLock(path: string): Promise<{ token: string; ageMs: number } | null> {
-  try {
-    const [content, info] = await Promise.all([readFile(path, 'utf8'), stat(path)]);
-    return { token: content.trim(), ageMs: Date.now() - info.mtimeMs };
-  } catch {
-    return null;
-  }
+function refereeState(file: ReferralFile, scope: ReferralScope): ReferralState | null {
+  const scoped = validState(file.referees[scopeKey(scope)]);
+  if (scoped) return scoped;
+  const legacy = validState(file.legacy?.state);
+  return legacy ? { ...legacy, unverified: true } : null;
 }
 
-async function acquireFileLock(lockPath: string): Promise<string> {
-  await mkdir(dirname(lockPath), { recursive: true });
-  const token = `${process.pid}:${randomUUID()}`;
-  const deadline = Date.now() + LOCK_TIMEOUT_MS;
-  for (;;) {
-    if (await createExclusive(lockPath, token)) return token;
-    const held = await inspectLock(lockPath);
-    if (held && held.ageMs > LOCK_STALE_MS) {
-      await takeOverStaleLock(lockPath, held.token);
-      continue;
-    }
-    if (Date.now() > deadline) throw new Error('Referral state is busy; try again.');
-    await new Promise((resolve) => setTimeout(resolve, LOCK_RETRY_MS));
-  }
+/** Replace this scope's referee state. The legacy record is dropped: this scope has adopted or replaced it. */
+export async function writeReferralState(dataDir: string, scope: ReferralScope, state: ReferralState): Promise<ReferralState> {
+  return (await updateRefereeState(dataDir, scope, () => state))!;
 }
 
 /**
- * Remove a stale lock without racing another recoverer. Checking a lock's
- * age and removing it are separate steps, so two processes that both saw
- * it stale could otherwise both remove it, the second deleting the fresh
- * lock the first just took. Removal therefore happens only under a
- * takeover lock, and only after re-checking, under it, that the lock is
- * still the same stale one (same holder token, still stale): a fresh lock
- * cannot appear in between, because nothing creates the lock while the
- * stale one exists and only a takeover holder removes it. Exported for tests;
- * not part of the package API.
+ * Atomically replace this scope's referee state with `next(current)`, or
+ * keep it (returned unchanged) when `next` returns null.
  */
-export async function takeOverStaleLock(lockPath: string, staleToken: string): Promise<void> {
-  const takeoverPath = `${lockPath}.takeover`;
-  const token = `${process.pid}:${randomUUID()}`;
-  if (!(await createExclusive(takeoverPath, token))) {
-    // Another process is recovering it; a takeover lock left by a crash mid-recovery is cleared.
-    const takeover = await inspectLock(takeoverPath);
-    if (takeover && takeover.ageMs > TAKEOVER_STALE_MS) await releaseFileLock(takeoverPath, takeover.token);
-    return;
-  }
-  try {
-    const held = await inspectLock(lockPath);
-    if (held && held.token === staleToken && held.ageMs > LOCK_STALE_MS) await rm(lockPath, { force: true });
-  } finally {
-    await releaseFileLock(takeoverPath, token);
-  }
-}
-
-/** Remove `path` only while it still names `token` as its holder. */
-async function releaseFileLock(path: string, token: string): Promise<void> {
-  const held = await inspectLock(path);
-  if (held?.token === token) await rm(path, { force: true });
-}
-
-/**
- * Read-modify-write `scope`'s state under the data dir's lock. `update` gets
- * the latest stored state and returns the next one, or null to leave it as
- * is; the result is the state now stored.
- */
-export async function updateReferralState(
+async function updateRefereeState(
   dataDir: string,
   scope: ReferralScope,
-  update: (current: ReferralState | null) => ReferralState | null | Promise<ReferralState | null>,
+  next: (current: ReferralState | null) => ReferralState | null,
 ): Promise<ReferralState | null> {
-  return withReferralLock(dataDir, async () => {
-    const file = await readStateFile(dataDir);
-    const current = stateIn(file, scope);
-    const next = await update(current);
-    if (!next) return current;
-    const stored: ReferralState = { ...next, updatedAt: new Date().toISOString() };
-    const deployments = { ...file.deployments, [scopeKey(scope)]: stored };
-    // A legacy state this deployment adopted is now stored under it.
-    const legacy = file.legacy && !adoptLegacy(file.legacy, scope) ? file.legacy : undefined;
-    await writeStateFile(dataDir, { version: 2, deployments, ...(legacy ? { legacy } : {}) });
-    return stored;
+  return updateFile<ReferralState | null>(dataDir, (file) => {
+    const current = refereeState(file, scope);
+    const state = next(current);
+    if (!state) return { result: current, write: false };
+    const { unverified: _unverified, ...rest } = state;
+    const stored: ReferralState = { ...rest, updatedAt: new Date().toISOString() };
+    file.referees[scopeKey(scope)] = stored;
+    if (file.legacy?.state) delete file.legacy.state;
+    return { result: stored, write: true };
   });
-}
-
-export async function writeReferralState(dataDir: string, scope: ReferralScope, state: ReferralState): Promise<ReferralState> {
-  return (await updateReferralState(dataDir, scope, () => state))!;
 }
 
 export async function referralStateMtimeMs(dataDir: string): Promise<number | null> {
@@ -299,109 +221,136 @@ export function pendingInvite(state: ReferralState | null): ReferralInvite | nul
   }
 }
 
+/** A binding for this exact scope; it cannot change. */
+function isFinal(state: ReferralState | null): state is ReferralState {
+  return state?.state === 'bound' && !state.unverified;
+}
+
 /**
- * Save a checked invite (see `checkInvite`) as pending so the buyer daemon
- * carries it. A bound referral is kept and returned instead: it cannot change.
+ * Save a checked invite (see `checkInvite`) as pending for `scope` so the
+ * buyer daemon carries it, replacing an earlier pending one. A binding on
+ * this deployment is kept and returned instead: it cannot change.
  */
 export async function saveReferralInvite(dataDir: string, scope: ReferralScope, invite: string, referrer: string): Promise<ReferralState> {
-  const stored = await updateReferralState(dataDir, scope, (current) =>
-    current?.state === 'bound' ? null : { ...keepIssued(current), state: 'invited', invite, referrer: getAddress(referrer) });
-  return stored!;
+  const checksummed = getAddress(referrer);
+  // Kept only when final, so never null.
+  return (await updateRefereeState(dataDir, scope, (stored) => (isFinal(stored) ? null : { state: 'invited', invite, referrer: checksummed })))!;
 }
 
-/** Drop a pending invite. A bound referral is kept. */
+/** Drop a pending invite. A binding on this deployment is kept. */
 export async function clearReferralInvite(dataDir: string, scope: ReferralScope): Promise<ReferralState> {
-  const stored = await updateReferralState(dataDir, scope, (current) =>
-    current?.state === 'bound' ? null : { ...keepIssued(current), state: 'none' });
-  return stored!;
-}
-
-/** Invite indices this install already handed out for `epoch`. */
-export function issuedInviteIndices(state: ReferralState | null, epoch: number): number[] {
-  return state?.issued?.epoch === epoch ? state.issued.indices : [];
-}
-
-/** `state` with invite (epoch, index) recorded as handed out; older epochs are forgotten. */
-export function withIssuedInvite(state: ReferralState | null, epoch: number, index: number): ReferralState {
-  const indices = [...new Set([...issuedInviteIndices(state, epoch), index])].sort((a, b) => a - b);
-  return { ...(state ?? { state: 'none' }), issued: { epoch, indices } };
-}
-
-/** Remember that invite (epoch, index) was handed out; older epochs are forgotten. */
-export async function recordIssuedInvite(dataDir: string, scope: ReferralScope, epoch: number, index: number): Promise<ReferralState> {
-  return (await updateReferralState(dataDir, scope, (current) => withIssuedInvite(current, epoch, index)))!;
-}
-
-function keepIssued(state: ReferralState | null): Pick<ReferralState, 'issued'> {
-  return state?.issued ? { issued: state.issued } : {};
-}
-
-/** How often an explorer's "not bound yet" is double-checked on-chain. */
-export const REFERRAL_RECHECK_MS = 10 * 60_000;
-const lastOnChainCheck = new Map<string, number>();
-
-export interface SyncReferralOptions {
-  /** Minimum time between on-chain checks while the explorer reports no binding. */
-  recheckMs?: number;
-  now?: () => number;
+  return (await updateRefereeState(dataDir, scope, (stored) => (isFinal(stored) ? null : { state: 'none' })))!;
 }
 
 /**
- * Re-read the state file and, once a pending invite is bound, record it so
- * the daemon stops carrying the invite. The binding is recorded only once
- * `verify` (the Referrals contract's `referrerOf`) confirms it; without a
- * verifier the invite stays pending. `lookup` (Antscan, no RPC) is a fast
- * path: a reported binding is verified right away, an explorer failure or
- * unknown answer falls back to `verify`, and "not bound" is still checked
- * on-chain every `recheckMs`, so a lagging or broken explorer cannot keep a
- * bound invite pending. An unknown answer from `verify` keeps the local state.
+ * Invite indices this install already handed out for `epoch`, signed by
+ * `scope.wallet` for its deployment. Indices from an unscoped legacy record
+ * count too: reusing one could hand out an invite twice.
+ */
+export async function readIssuedInviteIndices(dataDir: string, scope: ReferralScope, epoch: number): Promise<number[]> {
+  const file = await readFileState(dataDir);
+  return issuedIndices(file, scope, epoch);
+}
+
+function issuedIndices(file: ReferralFile, scope: ReferralScope, epoch: number): number[] {
+  const scoped = validIssued(file.issued[scopeKey(scope)]);
+  const legacy = validIssued(file.legacy?.issued);
+  return [...new Set([
+    ...(scoped?.epoch === epoch ? scoped.indices : []),
+    ...(legacy?.epoch === epoch ? legacy.indices : []),
+  ])].sort((a, b) => a - b);
+}
+
+/** Remember that invite (epoch, index) was handed out for `scope`; older epochs are forgotten. */
+export async function recordIssuedInvite(dataDir: string, scope: ReferralScope, epoch: number, index: number): Promise<number[]> {
+  return updateFile(dataDir, (file) => {
+    const indices = [...new Set([...issuedIndices(file, scope, epoch), index])].sort((a, b) => a - b);
+    file.issued[scopeKey(scope)] = { epoch, indices };
+    if (file.legacy?.issued) delete file.legacy.issued;
+    return { result: indices, write: true };
+  });
+}
+
+async function ask(lookup: ReferralLookup | null | undefined, buyer: string): Promise<string | null | undefined> {
+  if (!lookup) return undefined;
+  const answer = await lookup(buyer).catch(() => undefined);
+  if (answer === null) return null;
+  const referrer = normalizeReferrer(answer);
+  return referrer === ZeroAddress ? null : referrer ?? undefined;
+}
+
+/** Shortest and longest wait between `referrerOf` reads while Antscan does not report a binding. */
+export const REFERRAL_CHAIN_RECHECK_MIN_MS = 10 * 60_000;
+export const REFERRAL_CHAIN_RECHECK_MAX_MS = 60 * 60_000;
+
+/**
+ * When `referrerOf` may next be read for a pending invite, by data directory
+ * and scope. Kept in memory: each process reads at most once per backoff
+ * window (plus once per Antscan hint), and a restart only costs one read.
+ */
+type ChainRecheck = { invite: string; nextAt: number; delayMs: number; hinted: boolean };
+const chainRechecks = new Map<string, ChainRecheck>();
+
+export type SyncReferralOptions = {
+  /** Clock for the `referrerOf` backoff; tests only. */
+  now?: () => number;
+};
+
+/**
+ * Re-read this scope's state and record a binding once it is confirmed on
+ * the configured deployment, so the daemon stops carrying the invite.
  *
- * With no pending invite on record (no state, or `none`), the contract is
- * asked directly: a wallet imported into a fresh data dir, or bound from
- * another install, may already be bound, and that binding is recorded.
+ * While an invite is pending, Antscan (`explorer`) is the cheap trigger: when
+ * it reports a binding, `referrerOf` (`chain`) is read, and only its answer
+ * is persisted. Antscan may be absent, down, or not index this deployment,
+ * so `referrerOf` is also read on a backoff while Antscan does not report a
+ * binding: at once, then after REFERRAL_CHAIN_RECHECK_MIN_MS, doubling up to
+ * REFERRAL_CHAIN_RECHECK_MAX_MS. A hint Antscan repeats without the chain
+ * confirming it waits for that schedule too, so RPC reads stay bounded. An
+ * unknown or unconfirmed answer keeps the invite. A legacy `bound` record is
+ * checked with `referrerOf` directly and becomes this scope's binding, or
+ * `none` when the buyer is unbound here.
  */
 export async function syncReferralState(
   dataDir: string,
   scope: ReferralScope,
-  lookup: ReferralLookup | null,
-  verify: ReferralLookup | null = null,
+  lookups: ReferralLookups,
   options: SyncReferralOptions = {},
 ): Promise<ReferralState | null> {
+  const now = options.now ?? Date.now;
   const state = await readReferralState(dataDir, scope);
-  if (state?.state === 'bound' || !verify) return state;
-  if (state?.state !== 'invited') return recordExistingBinding(dataDir, scope, state, verify);
-  if (lookup) {
-    const hinted = await lookup(scope.wallet).catch(() => undefined);
-    if (hinted === null || (hinted !== undefined && !normalizeReferrer(hinted))) {
-      const key = `${resolve(dataDir)}|${scopeKey(scope)}`;
-      const now = (options.now ?? Date.now)();
-      const last = lastOnChainCheck.get(key);
-      if (last !== undefined && now - last < (options.recheckMs ?? REFERRAL_RECHECK_MS)) return state;
-      lastOnChainCheck.set(key, now);
+  const recheckKey = `${dataDir}\0${scopeKey(scope)}`;
+  if (state?.state !== 'invited') chainRechecks.delete(recheckKey);
+  if (state?.state === 'invited') {
+    const hint = await ask(lookups.explorer, scope.wallet);
+    if (!lookups.chain) return state;
+    let recheck = chainRechecks.get(recheckKey);
+    if (!recheck || recheck.invite !== state.invite) {
+      recheck = { invite: state.invite ?? '', nextAt: 0, delayMs: REFERRAL_CHAIN_RECHECK_MIN_MS, hinted: false };
+      chainRechecks.set(recheckKey, recheck);
     }
+    const due = now() >= recheck.nextAt;
+    if (!due && !(hint && !recheck.hinted)) return state;
+    // Book the read before awaiting it, so concurrent syncs do not repeat it.
+    if (due) {
+      recheck.nextAt = now() + recheck.delayMs;
+      recheck.delayMs = Math.min(recheck.delayMs * 2, REFERRAL_CHAIN_RECHECK_MAX_MS);
+    }
+    recheck.hinted = !!hint;
+    const bound = await ask(lookups.chain, scope.wallet);
+    if (!bound) return state;
+    chainRechecks.delete(recheckKey);
+    // A confirmed binding is final, whatever was saved during the lookups.
+    const boundState: ReferralState = { state: 'bound', referrer: bound };
+    return writeReferralState(dataDir, scope, boundState).catch(() => boundState);
   }
-  const bound = normalizeReferrer(await verify(scope.wallet).catch(() => undefined));
-  if (!bound) return state;
-  const boundState: ReferralState = { ...keepIssued(state), state: 'bound', referrer: bound };
-  // Applied to the latest state: a write made while the lookups ran (an
-  // issued index, a replaced invite) is kept, not overwritten.
-  return updateReferralState(dataDir, scope, (latest) =>
-    latest?.state === 'invited' && latest.invite === state.invite ? { ...boundState, ...keepIssued(latest) } : null,
-  ).catch(() => boundState);
-}
-
-/** Record a binding the contract already holds for a wallet with nothing pending here. */
-async function recordExistingBinding(
-  dataDir: string,
-  scope: ReferralScope,
-  state: ReferralState | null,
-  verify: ReferralLookup,
-): Promise<ReferralState | null> {
-  const bound = normalizeReferrer(await verify(scope.wallet).catch(() => undefined));
-  if (!bound) return state;
-  const boundState: ReferralState = { ...keepIssued(state), state: 'bound', referrer: bound };
-  // A binding is final: it replaces whatever was written meanwhile, keeping issued indices.
-  return updateReferralState(dataDir, scope, (latest) =>
-    latest?.state === 'bound' ? null : { ...boundState, ...keepIssued(latest) },
-  ).catch(() => boundState);
+  if (state?.state === 'bound' && state.unverified) {
+    const bound = await ask(lookups.chain, scope.wallet);
+    if (bound === undefined) return state;
+    const verified: ReferralState = bound ? { state: 'bound', referrer: bound } : { state: 'none' };
+    // "Unbound here" only replaces the legacy record it checked, never an
+    // invite redeemed for this scope during the lookup.
+    return updateRefereeState(dataDir, scope, (current) => (bound || current?.unverified ? verified : null)).catch(() => verified);
+  }
+  return state;
 }

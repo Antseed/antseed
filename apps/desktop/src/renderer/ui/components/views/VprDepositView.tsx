@@ -18,7 +18,7 @@ import { VprCard, VprPage } from '../vpr/VprKit';
 import type { DepositWatchStatus } from '../../../types/bridge';
 import { BalanceSummaryCard } from './BalanceSummaryCard';
 import { FundingStatusNotice } from './FundingStatusNotice';
-import { formatUsd, shortfallBaseUnits, usdcToBaseUnits } from './funding-status';
+import { formatUsd, shortfallBaseUnits, sweepAmountNeeded, usdcToBaseUnits } from './funding-status';
 import { useFundingStatus } from '../../hooks/useFundingStatus';
 import styles from './VprDepositView.module.scss';
 import { recordUserAction } from '../../../modules/telemetry/actions';
@@ -526,16 +526,16 @@ export function VprDepositView({ onSelectView }: Props) {
     </div>
   );
 
-  // What this amount still has to clear: the first-deposit floor (net of what
-  // already sits in the wallet). Later top-ups only need to beat the fee.
+  // What this amount still has to clear: every deposit's floor (minimum plus
+  // network fee), net of what already sits in the wallet. Top-ups too: the
+  // watcher leaves a smaller amount in the wallet.
   const amountBaseUnits = usdcToBaseUnits(amount);
   const walletBaseUnits = usdcToBaseUnits(snap.wallet);
-  const amountNeeded = isFirstDeposit ? shortfallBaseUnits(firstDepositNeeds, walletBaseUnits) : feeBaseUnits + 1n;
+  const amountNeeded = sweepAmountNeeded(usdcToBaseUnits(snap.minFirstDeposit), feeBaseUnits, walletBaseUnits);
   const amountBelowMinimum = amount !== '' && amountBaseUnits < amountNeeded;
   const amountHint = (() => {
-    if (!isFirstDeposit) return `1 credit = 1 USDC · ${formatUsd(feeBaseUnits)} network fee per deposit`;
-    if (walletBaseUnits > 0n) return `You've sent ${formatUsd(walletBaseUnits)} · ${formatUsd(amountNeeded, 'up')} more to go`;
-    return `1 credit = 1 USDC · first deposit ${formatUsd(firstDepositNeeds)} minimum, incl. ${formatUsd(feeBaseUnits)} network fee`;
+    if (walletBaseUnits > 0n && amountNeeded > 0n) return `You've sent ${formatUsd(walletBaseUnits)} · ${formatUsd(amountNeeded, 'up')} more to go`;
+    return `1 credit = 1 USDC · ${isFirstDeposit ? 'first deposit' : 'each deposit'} ${formatUsd(firstDepositNeeds)} minimum, incl. ${formatUsd(feeBaseUnits)} network fee`;
   })();
 
   const amountForm = (

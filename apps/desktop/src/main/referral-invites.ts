@@ -15,11 +15,15 @@ export type ReferralInvites = {
   buyers: Array<{ buyer: string; points: string; ants: string; pendingPoints: string }>;
   /** Sums over `buyers`. */
   totals: { points: string; ants: string; pendingPoints: string };
+  /** Inviter rewards payable now (from Antscan; '0' when it does not report them), claimed on the rewards dashboard. */
+  payable: string;
+  /** Epochs with a payable inviter reward; empty when nothing is claimable or Antscan does not report them. */
+  claimableEpochs: number[];
   error: string | null;
 };
 
 const NO_TOTALS = { points: '0', ants: '0', pendingPoints: '0' };
-export const NO_INVITES: ReferralInvites = { available: false, listed: false, allowance: null, buyers: [], totals: NO_TOTALS, error: null };
+export const NO_INVITES: ReferralInvites = { available: false, listed: false, allowance: null, buyers: [], totals: NO_TOTALS, payable: '0', claimableEpochs: [], error: null };
 
 /**
  * The card (allowance) and the referred-buyer list are read independently:
@@ -31,13 +35,15 @@ export function combineInviteReads(
   cardRead: PromiseSettledResult<ReferralView>,
   listRead: PromiseSettledResult<ReferredBuyersView>,
 ): ReferralInvites {
-  const allowance = cardRead.status === 'fulfilled' ? cardRead.value.invites : null;
+  const card = cardRead.status === 'fulfilled' ? cardRead.value : null;
+  const allowance = card?.invites ?? null;
+  const rewards = card?.indexed ? { payable: formatAntsExact(card.payable), claimableEpochs: card.claimableEpochs } : {};
   const cardError = cardRead.status === 'rejected' ? friendlyNetworkError(cardRead.reason) : null;
   if (listRead.status === 'rejected') {
-    return { ...NO_INVITES, available: true, listed: true, allowance, error: cardError ?? friendlyNetworkError(listRead.reason) };
+    return { ...NO_INVITES, ...rewards, available: true, listed: true, allowance, error: cardError ?? friendlyNetworkError(listRead.reason) };
   }
   const list = listRead.value;
-  if (!list.available) return { ...NO_INVITES, available: true, allowance };
+  if (!list.available) return { ...NO_INVITES, ...rewards, available: true, allowance };
   const sum = (key: 'points' | 'ants' | 'pendingPoints') => list.buyers.reduce((total, row) => total + BigInt(row[key]), 0n).toString();
   return {
     available: true,
@@ -45,6 +51,9 @@ export function combineInviteReads(
     allowance,
     buyers: list.buyers.map((row) => ({ buyer: getAddress(row.buyer), points: row.points, ants: formatAntsExact(row.ants), pendingPoints: row.pendingPoints })),
     totals: { points: sum('points'), ants: formatAntsExact(sum('ants')), pendingPoints: sum('pendingPoints') },
+    payable: '0',
+    claimableEpochs: [],
+    ...rewards,
     error: cardError,
   };
 }
