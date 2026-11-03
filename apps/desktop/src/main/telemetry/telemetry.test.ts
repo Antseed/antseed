@@ -10,6 +10,8 @@ import {
   POSTHOG_PROJECT_API_KEY_ENV,
   INSTALL_SOURCE_ENV,
   createTelemetryService,
+  CONNECTED_APP_FIRST_REQUEST_WINDOW_MS,
+  CONNECTED_APP_FINAL_CHECK_GRACE_MS,
   type TelemetryService,
   uuidV7,
 } from './telemetry.js';
@@ -45,7 +47,7 @@ import {
   ttftBucket,
 } from './events.js';
 import { classifyChatStreamFailure } from '../chat/stream-stop.js';
-import { conversationsShowRequestSince } from './connected-app-requests.js';
+import { conversationsShowRequestSince, startFirstRequestWatch } from './connected-app-requests.js';
 import type { PostHogCapturePayload } from './posthog.js';
 import { TELEMETRY_ACTION_SURFACES, TELEMETRY_USER_ACTIONS } from '../../shared/telemetry.js';
 
@@ -1407,6 +1409,82 @@ test('connected_app_first_request reports the first request or none at shutdown'
   assert.equal(opencode?.['secs_since_connect'], '1_5m');
   assert.equal(codex?.['outcome'], 'no_request');
   assert.equal(codex?.['secs_since_connect'], 'none');
+});
+
+test('connected_app_first_request waits past the window for the final check', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const dir = await makeTempDir(t);
+  const captured: Captured = { payloads: [] };
+  const service = await createTelemetryService(baseOptions(dir, captured));
+  await service.recordAppStarted(0);
+  await service.recordConnectedAppConnected('opencode', 0);
+  t.mock.timers.tick(CONNECTED_APP_FIRST_REQUEST_WINDOW_MS);
+  // The watcher's check at the deadline finds the request inside the grace period.
+  await service.recordConnectedAppRequest('opencode', CONNECTED_APP_FIRST_REQUEST_WINDOW_MS + 1_000);
+  t.mock.timers.tick(CONNECTED_APP_FINAL_CHECK_GRACE_MS);
+  await new Promise((resolve) => setImmediate(resolve));
+  const events = eventsNamed(captured, 'connected_app_first_request').map((payload) => payload.properties);
+  assert.deepEqual(events.map((props) => props['outcome']), ['request_seen']);
+});
+
+const settle = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+test('first-request watch checks once more at the deadline', async () => {
+  let requestSent = false;
+  let checks = 0;
+  let seen = 0;
+  startFirstRequestWatch({
+    deadlineMs: Date.now() + 40,
+    pollIntervalMs: 25,
+    check: async () => { checks += 1; return requestSent; },
+    onSeen: () => { seen += 1; },
+  });
+  await settle(30); // one regular check ran and found nothing
+  requestSent = true; // lands after the last regular check
+  await settle(60);
+  assert.equal(seen, 1);
+  const after = checks;
+  await settle(60);
+  assert.equal(checks, after, 'the watch stops after the request is seen');
+});
+
+test('first-request watch stops after the deadline check finds nothing', async () => {
+  let checks = 0;
+  let seen = 0;
+  startFirstRequestWatch({
+    deadlineMs: Date.now() + 30,
+    pollIntervalMs: 10,
+    check: async () => { checks += 1; return false; },
+    onSeen: () => { seen += 1; },
+  });
+  await settle(60);
+  const after = checks;
+  assert.ok(after >= 2);
+  await settle(50);
+  assert.equal(checks, after);
+  assert.equal(seen, 0);
+});
+
+test('first-request watch runs the deadline check after one still in flight', async () => {
+  let requestSent = false;
+  let calls = 0;
+  let seen = 0;
+  startFirstRequestWatch({
+    deadlineMs: Date.now() + 20,
+    pollIntervalMs: 10,
+    check: async () => {
+      calls += 1;
+      const result = requestSent;
+      if (calls === 1) await settle(40); // slow check spans the deadline, saw no request
+      return result;
+    },
+    onSeen: () => { seen += 1; },
+  });
+  await settle(15);
+  requestSent = true;
+  await settle(80);
+  assert.equal(seen, 1);
+  assert.equal(calls, 2);
 });
 
 test('runtime_stopped_on_window_close waits for delivery', async (t) => {

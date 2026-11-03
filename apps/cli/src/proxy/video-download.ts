@@ -71,7 +71,6 @@ function sellerErrorCode(body: Uint8Array): string | null {
   }
 }
 
-/** Streams a finished video from the seller that owns the job to the client. */
 /**
  * Streams a finished video, or answers the job's status. Before an answer that
  * ends the job (it failed, including a JSON `completed` with no video, or the
@@ -79,6 +78,9 @@ function sellerErrorCode(body: Uint8Array): string | null {
  * retire it; that answer then carries VIDEO_JOB_RETIRED_HEADER. When the job
  * cannot be retired, the answer is a retryable `unknown` instead, so no caller
  * treats the job as finished while it can still be charged.
+ * `onSellerDropped` runs when a started MP4 stream is cut off for a reason
+ * other than the client leaving, before the connection is destroyed, so the
+ * request is reported as a failure, not a cancellation.
  */
 export async function downloadVideo(
   request: SerializedHttpRequest,
@@ -86,6 +88,7 @@ export async function downloadVideo(
   send: SendDownload,
   clientSignal: AbortSignal,
   retire: () => Promise<boolean> = async () => true,
+  onSellerDropped: () => void = () => {},
 ): Promise<void> {
   const reply = (httpStatus: number, body: Record<string, unknown>, extraHeaders: Record<string, string> = {}) => {
     response.writeHead(httpStatus, { 'content-type': 'application/json', 'cache-control': 'no-store', ...extraHeaders })
@@ -161,7 +164,10 @@ export async function downloadVideo(
     }
     response.end()
   } catch {
-    if (response.headersSent || clientSignal.aborted) response.destroy()
+    if (response.headersSent || clientSignal.aborted) {
+      if (!clientSignal.aborted) onSellerDropped()
+      response.destroy()
+    }
     else if (sellerAnswered) error(502, 'video_download_failed')
     else pending(signal.aborted ? 504 : 502, 'seller_unreachable', 'video_download_failed', 'The seller holding this video job could not be reached; the job is kept, poll again later')
   } finally {

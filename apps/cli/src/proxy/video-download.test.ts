@@ -10,11 +10,11 @@ const start: SerializedHttpResponse = { requestId: request.requestId, statusCode
 /** The final answer once the buyer accepted the file as the finished video. */
 const accepted: SerializedHttpResponse = { ...start, headers: { ...start.headers, 'x-antseed-video-delivered': '1' } }
 
-async function serve(send: (request: SerializedHttpRequest, callbacks: RequestStreamCallbacks, signal: AbortSignal) => Promise<SerializedHttpResponse>, run: (url: string) => Promise<void>, retire?: () => Promise<boolean>) {
+async function serve(send: (request: SerializedHttpRequest, callbacks: RequestStreamCallbacks, signal: AbortSignal) => Promise<SerializedHttpResponse>, run: (url: string) => Promise<void>, retire?: () => Promise<boolean>, onSellerDropped?: () => void) {
   const server = createServer((_incoming, response) => {
     const abort = new AbortController()
     response.on('close', () => abort.abort())
-    void downloadVideo(request, response, send, abort.signal, retire)
+    void downloadVideo(request, response, send, abort.signal, retire, onSellerDropped)
   })
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
   try { await run(`http://127.0.0.1:${(server.address() as { port: number }).port}`) }
@@ -97,17 +97,21 @@ test('rejects missing and oversized lengths', async () => {
   }
 })
 
-test('destroys truncated streams instead of appending JSON', async () => {
+test('destroys truncated streams instead of appending JSON, reported as a seller drop', async () => {
+  let dropped = 0
   await serve(async (_request, callbacks) => {
     callbacks.onResponseStart!(start, { streaming: true })
     await callbacks.onResponseChunk!({ requestId: request.requestId, data: video.subarray(0, 65536), done: false })
     throw new Error('upstream failed')
   }, async url => {
     await assert.rejects(async () => { const response = await fetch(url); await response.arrayBuffer() })
-  })
+  }, undefined, () => { dropped += 1 })
+  // Telemetry must count this as the seller failing, not the client cancelling.
+  assert.equal(dropped, 1)
 })
 
 test('propagates client disconnect to the single download request', async () => {
+  let dropped = 0
   let cancelled!: () => void
   const cancellation = new Promise<void>(resolve => { cancelled = resolve })
   await serve(async (_request, callbacks, signal) => {
@@ -119,7 +123,10 @@ test('propagates client disconnect to the single download request', async () => 
     const response = await fetch(url)
     await response.body!.cancel()
     await cancellation
-  })
+  }, undefined, () => { dropped += 1 })
+  await new Promise(resolve => setImmediate(resolve))
+  // The client left: a cancellation, not a seller drop.
+  assert.equal(dropped, 0)
 })
 
 test('forwards a POST download body and passes JSON status answers through', async () => {

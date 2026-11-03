@@ -28,3 +28,63 @@ export function conversationsShowRequestSince(
       && record['lastActiveAt'] >= sinceMs;
   });
 }
+
+export interface FirstRequestWatchOptions {
+  /** One look at the proxy: true when the app's request has shown up. */
+  check: () => Promise<boolean>;
+  /** Called once, when a check finds the request. */
+  onSeen: () => void;
+  deadlineMs: number;
+  pollIntervalMs: number;
+  nowMs?: () => number;
+}
+
+/**
+ * Checks every `pollIntervalMs` and once more at the deadline, so a request
+ * that lands after the last regular check still counts before the window
+ * closes. A check already running at the deadline is the last one. Returns a
+ * function that stops the watch.
+ */
+export function startFirstRequestWatch(options: FirstRequestWatchOptions): () => void {
+  const now = options.nowMs ?? (() => Date.now());
+  let stopped = false;
+  let checking = false;
+  let finalPending = false;
+  const stop = (): void => {
+    stopped = true;
+    clearInterval(interval);
+    clearTimeout(finalTimer);
+  };
+  const runCheck = (final: boolean): void => {
+    if (stopped) return;
+    if (checking) {
+      if (final) finalPending = true;
+      return;
+    }
+    checking = true;
+    void options.check()
+      .then((seen) => {
+        if (stopped || !seen) return;
+        stop();
+        options.onSeen();
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        checking = false;
+        if (finalPending && !stopped) {
+          finalPending = false;
+          runCheck(true);
+          return;
+        }
+        if (final) stop();
+      });
+  };
+  const interval = setInterval(() => {
+    if (now() >= options.deadlineMs) return;
+    runCheck(false);
+  }, options.pollIntervalMs);
+  const finalTimer = setTimeout(() => runCheck(true), Math.max(0, options.deadlineMs - now()));
+  interval.unref?.();
+  finalTimer.unref?.();
+  return stop;
+}

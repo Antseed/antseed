@@ -13,11 +13,11 @@ import { LOCALHOST_URL } from '../constants.js';
 import { CONNECTED_APP_FIRST_REQUEST_WINDOW_MS } from './telemetry.js';
 import { getTelemetryService } from './runtime.js';
 import type { TelemetryAppName } from '../../shared/telemetry.js';
-import { conversationsShowRequestSince } from './connected-app-requests.js';
+import { conversationsShowRequestSince, startFirstRequestWatch } from './connected-app-requests.js';
 
 const POLL_INTERVAL_MS = 30_000;
 
-const watches = new Map<TelemetryAppName, NodeJS.Timeout>();
+const watches = new Map<TelemetryAppName, () => void>();
 
 function toolSlugsFor(app: TelemetryAppName): string[] {
   const profile = SYSTEM_PROXY_PROFILES.find((entry) => entry.name === app);
@@ -37,35 +37,24 @@ async function listConversations(): Promise<unknown> {
 
 /**
  * Polls the local proxy until the app's first request shows up or the
- * window closes. Apps without packaged slugs (Telegram, custom apps) are
- * not watched; their pending entry ends as `no_request`.
+ * window closes, with one last check at the deadline (the telemetry service
+ * waits CONNECTED_APP_FINAL_CHECK_GRACE_MS past it before `no_request`).
+ * Apps without packaged slugs (Telegram, custom apps) are not watched; their
+ * pending entry ends as `no_request`.
  */
 export function watchConnectedAppFirstRequest(app: TelemetryAppName, connectedAtMs = Date.now()): void {
-  const existing = watches.get(app);
-  if (existing) clearInterval(existing);
+  watches.get(app)?.();
   watches.delete(app);
   const slugs = toolSlugsFor(app);
   if (slugs.length === 0) return;
-  const deadline = connectedAtMs + CONNECTED_APP_FIRST_REQUEST_WINDOW_MS;
-  let polling = false;
-  const timer = setInterval(() => {
-    if (polling) return;
-    if (Date.now() > deadline) {
-      clearInterval(timer);
-      watches.delete(app);
-      return;
-    }
-    polling = true;
-    void listConversations()
-      .then((conversations) => {
-        if (!conversationsShowRequestSince(conversations, slugs, connectedAtMs)) return;
-        clearInterval(timer);
-        watches.delete(app);
-        void getTelemetryService()?.recordConnectedAppRequest(app);
-      })
-      .catch(() => undefined)
-      .finally(() => { polling = false; });
-  }, POLL_INTERVAL_MS);
-  timer.unref?.();
-  watches.set(app, timer);
+  const stop = startFirstRequestWatch({
+    deadlineMs: connectedAtMs + CONNECTED_APP_FIRST_REQUEST_WINDOW_MS,
+    pollIntervalMs: POLL_INTERVAL_MS,
+    check: async () => conversationsShowRequestSince(await listConversations(), slugs, connectedAtMs),
+    onSeen: () => {
+      if (watches.get(app) === stop) watches.delete(app);
+      void getTelemetryService()?.recordConnectedAppRequest(app);
+    },
+  });
+  watches.set(app, stop);
 }

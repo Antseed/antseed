@@ -55,6 +55,11 @@ export const DEFAULT_STARTUP_TIMEOUT_MS = 3 * 60_000;
 
 /** How long a connected app has to send its first request before `no_request`. */
 export const CONNECTED_APP_FIRST_REQUEST_WINDOW_MS = 30 * 60_000;
+/**
+ * How long past the window `no_request` waits, so the watcher's last check
+ * at the deadline (a proxy fetch with a 3s timeout) can still report the request.
+ */
+export const CONNECTED_APP_FINAL_CHECK_GRACE_MS = 10_000;
 
 const USDC_BASE_UNITS = 1_000_000n;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -652,7 +657,7 @@ export async function createTelemetryService(
       if (existing?.timer) clearTimeout(existing.timer);
       const timer = setTimeout(() => {
         void finishConnectedApp(app, 'no_request', now());
-      }, CONNECTED_APP_FIRST_REQUEST_WINDOW_MS);
+      }, CONNECTED_APP_FIRST_REQUEST_WINDOW_MS + CONNECTED_APP_FINAL_CHECK_GRACE_MS);
       timer.unref?.();
       pendingConnectedApps.set(app, { connectedAtMs: nowMs, timer });
     },

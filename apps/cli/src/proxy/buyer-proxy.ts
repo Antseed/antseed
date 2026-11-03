@@ -5147,7 +5147,10 @@ export class BuyerProxy {
         }
         await downloadVideo(requestForPeer, res, (request, callbacks, signal) => this._node.sendRequestStream(selectedPeer, request, callbacks, {
           signal, pinned: true, ...(buyerIdentity ? { buyerIdentity } : {}),
-        }), requestSignal, () => this._retireVideoJob(protocol, resourceId))
+        }), requestSignal, () => this._retireVideoJob(protocol, resourceId), () => {
+          const trace = traceFor(res)
+          if (trace) trace.interrupted = 'seller'
+        })
       })
       return { done: true }
     }
