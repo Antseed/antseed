@@ -247,14 +247,17 @@ function normalizedUnitCount(usage: UnitBillingUsage, unit: UnitBillingUnitV1): 
   return value;
 }
 
+/** Whether a component applies to a request with these attributes: every `match` entry must equal one. */
+export function componentMatchesAttributes(
+  component: Pick<UnitBillingComponentV1, 'match'>,
+  attributes: UnitBillingContext['attributes'] = {},
+): boolean {
+  return (Object.entries(component.match ?? {}) as Array<[UnitBillingMatchKeyV1, string]>)
+    .every(([key, expected]) => attributes[key] === expected);
+}
+
 function componentMatchesContext(component: UnitBillingComponentV1, context: UnitBillingContext): boolean {
-  const match = component.match;
-  if (!match || Object.keys(match).length === 0) return true;
-  const requestAttributes = context.attributes ?? {};
-  for (const [key, expected] of Object.entries(match) as Array<[UnitBillingMatchKeyV1, string]>) {
-    if (requestAttributes[key] !== expected) return false;
-  }
-  return true;
+  return componentMatchesAttributes(component, context.attributes);
 }
 
 function validateUsageWithinRequestLimits(usage: UnitBillingUsage, context: UnitBillingContext): void {

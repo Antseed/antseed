@@ -3,6 +3,7 @@ import { parseVerifierCapabilities } from './verifier-capabilities.js';
 import { AUDIO_SPEECH_PROTOCOLS, NATIVE_VIDEO_PROTOCOLS, isAudioSpeechProtocol, isNativeVideoProtocol, isRoutingProtocol, type AudioSpeechProtocol, type NativeVideoProtocol } from '@antseed/protocol/service-api';
 import { isServiceHealthFailing, providerServiceHealthFor, providerServicePerformanceFor, type ServiceHealth, type ServicePerformance, type SpeechOptions, type VideoOptions } from '@antseed/protocol/peer-metadata';
 import type { ProviderServiceHealthMatrixEntry, ProviderServicePerformanceMatrixEntry } from '@antseed/protocol/peer-pricing';
+import { componentMatchesAttributes } from '@antseed/protocol/billing';
 
 export type CatalogServiceProtocol =
   | 'anthropic-messages'
@@ -255,10 +256,10 @@ export function buildNetworkServiceOffers(
  */
 function speechUsdPerCharacter(offer: NetworkServiceOffer): number {
   const model = offer.protocol ? offer.unitBillingModels?.[offer.protocol] : undefined;
-  const attributes: Record<string, string> = { model: offer.serviceId };
+  const attributes = { model: offer.serviceId };
   const applicable = (model?.components ?? []).filter((component) =>
     component.unit === 'input_characters'
-    && Object.entries(component.match ?? {}).every(([key, value]) => attributes[key] === value)
+    && componentMatchesAttributes(component, attributes)
     && Number.isFinite(component.priceUsd)
     && component.priceUsd >= 0);
   return applicable.length > 0
