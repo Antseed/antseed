@@ -38,7 +38,7 @@ export const SERVICE_PERFORMANCE_METADATA_VERSION = 14;
 /**
  * First version that may carry speech services: the `openai-audio-speech`
  * protocol, the `input_characters` billing unit and `capabilities.speech`.
- * Older documents leave such services out (see `withoutSpeechServices`).
+ * Older documents leave such services out (see each version's vocabulary).
  */
 export const SPEECH_METADATA_VERSION = 15;
 export const WELL_KNOWN_SERVICE_CATEGORIES = [

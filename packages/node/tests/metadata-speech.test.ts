@@ -123,7 +123,7 @@ describe('speech services in peer metadata', () => {
     const messages = validateMetadata(older).map((error) => error.message);
     expect(messages).toContain('Service API protocol "openai-audio-speech" requires metadata version 15');
     expect(messages).toContain('Billing unit "input_characters" requires metadata version 15');
-    expect(messages).toContain('Speech capabilities require metadata version 15');
+    expect(messages).toContain('Service capability "speech" requires metadata version 15');
     expect(() => encodeMetadataForSigning(older)).toThrow('Speech capabilities require metadata version 15');
   });
 

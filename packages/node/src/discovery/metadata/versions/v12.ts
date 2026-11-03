@@ -4,12 +4,12 @@ import { providerLoadField } from "../fields/provider-basics.js";
 import { serviceCapabilitiesField } from "../fields/service-capabilities.js";
 import { V11_LAYOUT } from "./v11.js";
 import { pruneServiceMaps } from "./prune-service-maps.js";
-import { withoutSpeechServices } from "./without-speech.js";
 
 /** v12: per-service capability hints and u16 service entry counts. */
 export const V12_LAYOUT: MetadataLayout = {
   providerFields: insertBefore(V11_LAYOUT.providerFields, providerLoadField, serviceCapabilitiesField),
   peerFields: V11_LAYOUT.peerFields,
+  vocabulary: V11_LAYOUT.vocabulary,
 };
 
 /** Per-service maps that must not mention a service missing from `services`. */
@@ -57,6 +57,7 @@ function withoutFailingServices(latest: PeerMetadata): PeerMetadata {
 export const metadataV12 = defineMetadataVersion({
   version: 12,
   wideServiceCounts: true,
+  servable: true,
   ...V12_LAYOUT,
-  fromLatest: (latest) => withoutFailingServices(withoutSpeechServices(latest)),
+  fromLatest: withoutFailingServices,
 });
