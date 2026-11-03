@@ -99,7 +99,7 @@ describe('VerifierClient audit ABI', () => {
       'modelHash', 'verdict', 'updatedAt', 'epoch', 'source',
     ]);
     expect(results.getEvent('ServiceStatusChanged')?.inputs.map((input) => input.name)).toEqual([
-      'agentId', 'serviceHash', 'modelHash', 'previous', 'current', 'source', 'evidenceHash',
+      'agentId', 'serviceHash', 'modelHash', 'previous', 'current', 'source',
     ]);
     expect(results.getFunction('claimRewards')?.inputs.map((input) => input.type)).toEqual(['address', 'uint256[]']);
     expect(results.getFunction('pendingReward')?.inputs.map((input) => input.name)).toEqual(['source', 'auditor', 'epoch']);

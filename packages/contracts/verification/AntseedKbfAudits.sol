@@ -219,7 +219,7 @@ contract AntseedKbfAudits is IAntseedKbfAudits, Ownable2Step {
             }
             previousService = result.serviceHash;
             if (skipAgent) continue;
-            _report(result.agentId, result.serviceHash, modelHash, result.verdict, epoch, evidenceHash);
+            _report(result.agentId, result.serviceHash, modelHash, result.verdict, epoch);
         }
 
         emit ModelAudited(modelHash, msg.sender, expectedEpoch, evidenceHash, evidenceUri, count);
@@ -279,8 +279,7 @@ contract AntseedKbfAudits is IAntseedKbfAudits, Ownable2Step {
         bytes32 serviceHash,
         bytes32 modelHash,
         IAntseedVerificationResults.Verdict verdict,
-        uint256 epoch,
-        bytes32 evidenceHash
+        uint256 epoch
     ) private {
         uint256 round = reportRound(agentId, serviceHash);
         bytes32 key = reportKey(epoch, agentId, serviceHash, modelHash, round);
@@ -304,7 +303,7 @@ contract AntseedKbfAudits is IAntseedKbfAudits, Ownable2Step {
         emit ServiceAudited(agentId, serviceHash, msg.sender, modelHash, verdict, round, reports, required);
         if (reports < required || (!addsSupport && required != 1)) return;
 
-        results.record(agentId, serviceHash, modelHash, verdict, evidenceHash);
+        results.record(agentId, serviceHash, modelHash, verdict);
     }
 
     /// @dev One credit per audit, up to the per-model cap here and the source's caps in the results layer.

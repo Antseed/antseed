@@ -750,7 +750,7 @@ are no longer left unminted: they go to the reserve and the remainder route.
   approved sources (`setSource`, at most `MAX_SOURCES` = 32 ever listed) can `record` and
   `credit`; the latest record from any source wins, and how a verdict is reached is the source's
   business. The owner can `clearServiceStatuses`, which bumps `serviceClears` so sources drop
-  reports made before the clear. `ServiceStatusChanged` gains `source` and `evidenceHash`.
+  reports made before the clear. `ServiceStatusChanged` gains `source`; the evidence stays in the source's own events (KBF: `ModelAudited`).
   As the minter controller of the verification bucket it splits each epoch's budget between
   sources by `sourceShareBps` (sum at most 10,000; a change applies from the next epoch, so a
   running or finished epoch's split never moves; `sourceShareBpsAt(source, epoch)`). Per source:

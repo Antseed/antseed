@@ -136,7 +136,7 @@ contract AntseedVerificationResultsTest is Test {
 
     function test_recordRejectsNonSources() public {
         vm.expectRevert(AntseedVerificationResults.NotSource.selector);
-        results.record(agentId, SERVICE_A, MODEL_A, SAME, bytes32(0));
+        results.record(agentId, SERVICE_A, MODEL_A, SAME);
     }
 
     function test_creditRejectsNonSources() public {
@@ -166,11 +166,11 @@ contract AntseedVerificationResultsTest is Test {
     function test_recordValidatesItsInput() public {
         vm.startPrank(address(sourceA));
         vm.expectRevert(AntseedVerificationResults.InvalidValue.selector);
-        results.record(agentId, bytes32(0), MODEL_A, SAME, bytes32(0));
+        results.record(agentId, bytes32(0), MODEL_A, SAME);
         vm.expectRevert(AntseedVerificationResults.InvalidValue.selector);
-        results.record(agentId, SERVICE_A, bytes32(0), SAME, bytes32(0));
+        results.record(agentId, SERVICE_A, bytes32(0), SAME);
         vm.expectRevert(AntseedVerificationResults.InvalidValue.selector);
-        results.record(agentId, SERVICE_A, MODEL_A, NONE, bytes32(0));
+        results.record(agentId, SERVICE_A, MODEL_A, NONE);
         vm.stopPrank();
     }
 
@@ -181,12 +181,9 @@ contract AntseedVerificationResultsTest is Test {
 
     // ── verdicts ─────────────────────────────────────────────────────
 
-    function test_statusChangesCarryTheSourceAndEvidence() public {
-        bytes32 evidence = sourceA.EVIDENCE();
+    function test_statusChangesCarryTheSource() public {
         vm.expectEmit(true, true, false, true, address(results));
-        emit AntseedVerificationResults.ServiceStatusChanged(
-            agentId, SERVICE_A, MODEL_A, NONE, SAME, address(sourceA), evidence
-        );
+        emit AntseedVerificationResults.ServiceStatusChanged(agentId, SERVICE_A, MODEL_A, NONE, SAME, address(sourceA));
         vm.expectEmit(true, false, false, true, address(results));
         emit AntseedVerificationResults.AgentStatusChanged(agentId, 1, 0);
         sourceA.record(agentId, SERVICE_A, MODEL_A, SAME);
@@ -200,7 +197,7 @@ contract AntseedVerificationResultsTest is Test {
         assertEq(uint8(results.liveVerdict(agentId, SERVICE_A)), uint8(SAME));
 
         vm.expectEmit(true, true, false, true, address(results));
-        emit AntseedVerificationResults.ServiceStatusChanged(agentId, SERVICE_A, MODEL_A, SAME, NONE, address(0), 0);
+        emit AntseedVerificationResults.ServiceStatusChanged(agentId, SERVICE_A, MODEL_A, SAME, NONE, address(0));
         _clear(agentId, SERVICE_A);
         status = results.serviceStatus(agentId, SERVICE_A);
         assertEq(uint8(status.verdict), uint8(NONE));
@@ -230,7 +227,7 @@ contract AntseedVerificationResultsTest is Test {
         vm.warp(block.timestamp + 1 days);
         vm.expectEmit(true, true, false, true, address(results));
         emit AntseedVerificationResults.ServiceStatusChanged(
-            agentId, SERVICE_A, MODEL_A, SAME, SAME, address(sourceB), MockVerificationSource(address(sourceB)).EVIDENCE()
+            agentId, SERVICE_A, MODEL_A, SAME, SAME, address(sourceB)
         );
         sourceB.record(agentId, SERVICE_A, MODEL_A, SAME);
         IAntseedVerificationResults.ServiceStatus memory status = results.serviceStatus(agentId, SERVICE_A);
@@ -245,7 +242,7 @@ contract AntseedVerificationResultsTest is Test {
 
         vm.expectEmit(true, true, false, true, address(results));
         emit AntseedVerificationResults.ServiceStatusChanged(
-            agentId, SERVICE_A, MODEL_A, DIFF, SAME, address(sourceB), sourceB.EVIDENCE()
+            agentId, SERVICE_A, MODEL_A, DIFF, SAME, address(sourceB)
         );
         sourceB.record(agentId, SERVICE_A, MODEL_A, SAME);
         IAntseedVerificationResults.ServiceStatus memory status = results.serviceStatus(agentId, SERVICE_A);
@@ -265,11 +262,11 @@ contract AntseedVerificationResultsTest is Test {
         sourceA.record(agentId, SERVICE_A, MODEL_A, DIFF);
         vm.expectEmit(true, true, false, true, address(results));
         emit AntseedVerificationResults.ServiceStatusChanged(
-            agentId, SERVICE_A, MODEL_A, DIFF, NONE, address(sourceA), sourceA.EVIDENCE()
+            agentId, SERVICE_A, MODEL_A, DIFF, NONE, address(sourceA)
         );
         vm.expectEmit(true, true, false, true, address(results));
         emit AntseedVerificationResults.ServiceStatusChanged(
-            agentId, SERVICE_A, MODEL_B, NONE, DIFF, address(sourceA), sourceA.EVIDENCE()
+            agentId, SERVICE_A, MODEL_B, NONE, DIFF, address(sourceA)
         );
         sourceA.record(agentId, SERVICE_A, MODEL_B, DIFF);
         assertEq(results.agentStatus(agentId).diffCount, 1, "counted once");

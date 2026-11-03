@@ -110,15 +110,14 @@ contract AntseedVerificationResults is IAntseedVerificationResults, Ownable2Step
     event MaxCreditsPerAuditorPerEpochSet(address indexed source, uint32 maxCredits);
     event ValidityEpochsSet(uint8 validityEpochs);
     /// @param source The source that recorded `current`; zero when the owner cleared the service.
-    /// @param evidenceHash Evidence the recording source cited; zero when none.
+    ///        The source's own events (e.g. KBF's `ModelAudited`) carry the evidence behind it.
     event ServiceStatusChanged(
         uint256 indexed agentId,
         bytes32 indexed serviceHash,
         bytes32 modelHash,
         Verdict previous,
         Verdict current,
-        address source,
-        bytes32 evidenceHash
+        address source
     );
     event AgentStatusChanged(uint256 indexed agentId, uint16 verifiedCount, uint16 diffCount);
     event Credited(address indexed source, uint256 indexed epoch, address indexed auditor, uint256 credits);
@@ -233,7 +232,7 @@ contract AntseedVerificationResults is IAntseedVerificationResults, Ownable2Step
         for (uint256 i = 0; i < count; i++) {
             serviceClears[agentIds[i]][serviceHashes[i]] += 1;
             _resetService(
-                agentIds[i], serviceHashes[i], _serviceStatus[agentIds[i]][serviceHashes[i]], epoch, address(0), 0
+                agentIds[i], serviceHashes[i], _serviceStatus[agentIds[i]][serviceHashes[i]], epoch, address(0)
             );
         }
     }
@@ -255,17 +254,14 @@ contract AntseedVerificationResults is IAntseedVerificationResults, Ownable2Step
     //                        VERDICTS (sources)
     // ═══════════════════════════════════════════════════════════════════
 
-    function record(uint256 agentId, bytes32 serviceHash, bytes32 modelHash, Verdict verdict, bytes32 evidenceHash)
-        external
-        override
-    {
+    function record(uint256 agentId, bytes32 serviceHash, bytes32 modelHash, Verdict verdict) external override {
         if (!isSource[msg.sender]) revert NotSource();
         if (serviceHash == bytes32(0) || modelHash == bytes32(0) || verdict == Verdict.NONE) revert InvalidValue();
         uint256 epoch = emissionsGate.currentEpoch();
         ServiceStatus storage service = _serviceStatus[agentId][serviceHash];
         if (service.modelHash != modelHash) {
             if (service.modelHash != bytes32(0)) {
-                _resetService(agentId, serviceHash, service, epoch, msg.sender, evidenceHash);
+                _resetService(agentId, serviceHash, service, epoch, msg.sender);
             }
             service.modelHash = modelHash;
         }
@@ -283,7 +279,7 @@ contract AntseedVerificationResults is IAntseedVerificationResults, Ownable2Step
         if (previous != verdict) service.updatedAt = uint64(block.timestamp);
         else if (previousSource == msg.sender) return;
         // Emitted whenever the live verdict or the source behind it changes.
-        _emitServiceChange(agentId, serviceHash, service, previous, epoch, msg.sender, evidenceHash);
+        _emitServiceChange(agentId, serviceHash, service, previous, epoch, msg.sender);
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -474,8 +470,7 @@ contract AntseedVerificationResults is IAntseedVerificationResults, Ownable2Step
         bytes32 serviceHash,
         ServiceStatus storage service,
         uint256 epoch,
-        address source,
-        bytes32 evidenceHash
+        address source
     ) private {
         Verdict previous = _liveVerdict(service, epoch);
         _uncount(agentId, service);
@@ -484,7 +479,7 @@ contract AntseedVerificationResults is IAntseedVerificationResults, Ownable2Step
         service.source = address(0);
         service.updatedAt = uint64(block.timestamp);
         if (previous != Verdict.NONE) {
-            _emitServiceChange(agentId, serviceHash, service, previous, epoch, source, evidenceHash);
+            _emitServiceChange(agentId, serviceHash, service, previous, epoch, source);
         }
     }
 
@@ -523,8 +518,7 @@ contract AntseedVerificationResults is IAntseedVerificationResults, Ownable2Step
         ServiceStatus storage service,
         Verdict previous,
         uint256 epoch,
-        address source,
-        bytes32 evidenceHash
+        address source
     ) private {
         // Counted for every source and for owner clears, so a source's report rounds can start over
         // whenever the service's DIFF state moves, whoever moved it.
@@ -532,9 +526,7 @@ contract AntseedVerificationResults is IAntseedVerificationResults, Ownable2Step
         if (previous != current && (previous == Verdict.DIFF || current == Verdict.DIFF)) {
             diffChanges[agentId][serviceHash] += 1;
         }
-        emit ServiceStatusChanged(
-            agentId, serviceHash, service.modelHash, previous, service.verdict, source, evidenceHash
-        );
+        emit ServiceStatusChanged(agentId, serviceHash, service.modelHash, previous, service.verdict, source);
         AgentStatus memory agent = _agentStatusAt(agentId, epoch);
         emit AgentStatusChanged(agentId, agent.verifiedCount, agent.diffCount);
     }

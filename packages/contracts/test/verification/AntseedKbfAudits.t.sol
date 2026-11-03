@@ -142,7 +142,7 @@ contract AntseedKbfAuditsTest is Test {
         _advance(2);
         vm.expectEmit(true, true, false, true, address(results));
         emit AntseedVerificationResults.ServiceStatusChanged(
-            agentId, SERVICE_A, MODEL_A, NONE, SAME, address(kbf), _nextEvidence()
+            agentId, SERVICE_A, MODEL_A, NONE, SAME, address(kbf)
         );
         vm.expectEmit(true, false, false, true, address(results));
         emit AntseedVerificationResults.AgentStatusChanged(agentId, 1, 0);
@@ -227,7 +227,7 @@ contract AntseedKbfAuditsTest is Test {
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
         vm.expectEmit(true, true, false, true, address(results));
         emit AntseedVerificationResults.ServiceStatusChanged(
-            agentId, SERVICE_A, MODEL_A, SAME, DIFF, address(kbf), _nextEvidence()
+            agentId, SERVICE_A, MODEL_A, SAME, DIFF, address(kbf)
         );
         _audit(auditorB, MODEL_A, agentId, SERVICE_A, DIFF);
         assertEq(results.agentStatus(agentId).diffCount, 1, "one auditor's DIFF counts");
@@ -260,7 +260,7 @@ contract AntseedKbfAuditsTest is Test {
         _advance(1);
         vm.expectEmit(true, true, false, true, address(results));
         emit AntseedVerificationResults.ServiceStatusChanged(
-            agentId, SERVICE_A, MODEL_A, SAME, UNDETERMINED, address(kbf), _nextEvidence()
+            agentId, SERVICE_A, MODEL_A, SAME, UNDETERMINED, address(kbf)
         );
         vm.expectEmit(true, false, false, true, address(results));
         emit AntseedVerificationResults.AgentStatusChanged(agentId, 0, 0);
@@ -800,7 +800,7 @@ contract AntseedKbfAuditsTest is Test {
         emit AntseedKbfAudits.ServiceAudited(agentId, SERVICE_A, auditorC, MODEL_A, DIFF, 0, 2, 2);
         vm.expectEmit(true, true, false, true, address(results));
         emit AntseedVerificationResults.ServiceStatusChanged(
-            agentId, SERVICE_A, MODEL_A, SAME, DIFF, address(kbf), _nextEvidence()
+            agentId, SERVICE_A, MODEL_A, SAME, DIFF, address(kbf)
         );
         _audit(auditorC, MODEL_A, agentId, SERVICE_A, DIFF);
         assertFalse(results.isVerified(agentId));

@@ -204,7 +204,7 @@ export const VERIFICATION_RESULTS_ABI = [
   'function claimRewards(address source,uint256[] epochs) external returns (uint256)',
   'function pendingReward(address source,address auditor,uint256 epoch) external view returns (uint256)',
   'function settleEpochRemainder(uint256 epoch) external returns (uint256 burnedAmount,uint256 reserveAmount)',
-  'event ServiceStatusChanged(uint256 indexed agentId,bytes32 indexed serviceHash,bytes32 modelHash,uint8 previous,uint8 current,address source,bytes32 evidenceHash)',
+  'event ServiceStatusChanged(uint256 indexed agentId,bytes32 indexed serviceHash,bytes32 modelHash,uint8 previous,uint8 current,address source)',
   'event AgentStatusChanged(uint256 indexed agentId,uint16 verifiedCount,uint16 diffCount)',
   'event Credited(address indexed source,uint256 indexed epoch,address indexed auditor,uint256 credits)',
   'event CreditsVoided(address indexed source,uint256 indexed epoch,address indexed auditor,uint256 credits)',

@@ -75,9 +75,9 @@ interface IAntseedVerificationResults {
     /// @notice Records a verdict for (agentId, serviceHash) under `modelHash` in the current epoch,
     ///         replacing whatever was there. Sources only. Reverts on a NONE verdict or a zero
     ///         service or model hash; the source is responsible for everything else (which agents
-    ///         exist, how many verifiers had to agree). `evidenceHash` is emitted, not stored.
-    function record(uint256 agentId, bytes32 serviceHash, bytes32 modelHash, Verdict verdict, bytes32 evidenceHash)
-        external;
+    ///         exist, how many verifiers had to agree, where the evidence is: a source emits its
+    ///         own evidence events).
+    function record(uint256 agentId, bytes32 serviceHash, bytes32 modelHash, Verdict verdict) external;
 
     function serviceStatus(uint256 agentId, bytes32 serviceHash) external view returns (ServiceStatus memory);
     /// @notice Times the owner cleared this service with `clearServiceStatuses`. Sources fold it into

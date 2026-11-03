@@ -6,8 +6,6 @@ import { IAntseedVerificationResults } from "../../interfaces/IAntseedVerificati
 /// @notice Stands in for a verification method other than KBF: forwards `record` and `credit` to the
 ///         results layer as its own source, with no consensus or reward rules of its own.
 contract MockVerificationSource {
-    bytes32 public constant EVIDENCE = keccak256("mock-source-evidence");
-
     IAntseedVerificationResults public immutable results;
 
     constructor(address results_) {
@@ -20,7 +18,7 @@ contract MockVerificationSource {
         bytes32 modelHash,
         IAntseedVerificationResults.Verdict verdict
     ) external {
-        results.record(agentId, serviceHash, modelHash, verdict, EVIDENCE);
+        results.record(agentId, serviceHash, modelHash, verdict);
     }
 
     function credit(address auditor, uint256 credits) external returns (uint256) {
