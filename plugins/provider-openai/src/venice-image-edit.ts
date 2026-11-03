@@ -4,7 +4,7 @@ import type {
   SerializedHttpRequest,
   SerializedHttpResponse,
 } from '@antseed/node';
-import { requestBodyService } from '@antseed/node';
+import { requestBodyFields, requestBodyService } from '@antseed/node';
 import { getHeader, withPinnedUpstreamModel } from '@antseed/provider-core';
 
 const OPENAI_IMAGE_EDIT_PATH = '/v1/images/edits';
@@ -122,6 +122,17 @@ async function adaptRequest(
   for (const field of form.keys()) {
     if (!OPENAI_IMAGE_EDIT_FIELDS.has(field)) {
       return reject(400, `Venice image edits do not support the "${field}" field.`, field);
+    }
+  }
+
+  // The seller priced this request from its own reading of the text fields, which
+  // skips oversized ones and keeps the first of a name. Anything it read
+  // differently (a padded quality, a repeated field) could buy a dearer edit than
+  // the one billed, so it is refused.
+  const billed = requestBodyFields(request) ?? {};
+  for (const [field, value] of form.entries()) {
+    if (typeof value === 'string' && billed[field] !== value) {
+      return reject(400, `The "${field}" field is too long or repeated.`, field);
     }
   }
 

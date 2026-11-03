@@ -276,6 +276,16 @@ describe('Venice image edits', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it.each(['quality', 'resolution'])('refuses a %s field the seller would not price by', async (field) => {
+    const fetchMock = mockFetch(neverCalled);
+    const provider = await plugin.createProvider(coverArtConfig);
+    // Over 4 KiB: the seller skips it and prices the default; trimmed, it would ask Venice for more.
+    const response = await sendImageEdit(provider, imageEditForm('cover-art', { [field]: `${' '.repeat(5000)}high` }));
+    expect(response.statusCode).toBe(400);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(JSON.parse(new TextDecoder().decode(response.body)).error).toMatchObject({ param: field, message: `The "${field}" field is too long or repeated.` });
+  });
+
   it('keeps first-prompt Venice generation on the configured generation model', async () => {
     const fetchMock = mockFetch(() => new Response(JSON.stringify({ data: [{ b64_json: 'generated-image' }] }), {
       status: 200,
