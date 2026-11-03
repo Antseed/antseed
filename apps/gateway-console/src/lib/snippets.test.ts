@@ -126,8 +126,18 @@ describe('model API calls', () => {
     expect(modelCallFormat('text', offer(['openai-responses']))).toBe('openai-responses')
     expect(modelCallFormat('image')).toBe('openai-images')
     expect(modelCallFormat('image', offer(['openai-chat-completions']))).toBe('openai-images')
+    expect(modelCallFormat('speech')).toBe('openai-audio-speech')
     expect(modelCallFormat('video')).toBeNull()
     expect(modelCallFormat('decision', offer(['typesafe-systemone']))).toBeNull()
+  })
+  it('curl alone for a speech model, saving the audio file', () => {
+    const tabs = apiCallTabs(BASE, 'peer@tts-kokoro', 'openai-audio-speech')
+    expect(tabs.map((tab) => tab.id)).toEqual(['curl'])
+    expect(tabs[0]!.code).toContain(`curl ${BASE}/v1/audio/speech`)
+    expect(tabs[0]!.code).toContain('"input":"Hello from Antseed."')
+    expect(tabs[0]!.code.endsWith('-o speech.mp3')).toBe(true)
+    expect(connectTabs(BASE, 'peer', 'tts-kokoro', 'openai-audio-speech', null).map((tab) => tab.id)).toEqual(['curl'])
+    expect(modelSnippets(BASE, 'peer', 'tts-kokoro', 'openai-audio-speech').map((snippet) => snippet.id)).toEqual(['model', 'curl'])
   })
   it('recognizes image sellers', () => {
     expect(serviceApiFormat({ provider: 'fal', apiProtocols: ['openai-images'] })).toBe('openai-images')

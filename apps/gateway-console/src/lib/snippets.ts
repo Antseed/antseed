@@ -38,7 +38,7 @@ export function pinnedModelId(peerId: string, model: string): string {
   return `${peerId.trim().toLowerCase().replace(/^0x/, '')}@${model.trim()}`
 }
 
-export type ApiFormat = 'anthropic-messages' | 'openai-responses' | 'openai-chat-completions' | 'openai-images'
+export type ApiFormat = 'anthropic-messages' | 'openai-responses' | 'openai-chat-completions' | 'openai-images' | 'openai-audio-speech'
 
 type Service = Pick<Peer['services'][number], 'provider'> & { apiProtocols?: readonly string[] }
 
@@ -64,16 +64,18 @@ export const API_PATHS: Record<ApiFormat, string> = {
   'openai-responses': '/v1/responses',
   'openai-chat-completions': '/v1/chat/completions',
   'openai-images': '/v1/images/generations',
+  'openai-audio-speech': '/v1/audio/speech',
 }
 
 /**
  * The API to call a network model on through the gateway, or null when the
  * gateway does not serve that kind of model (video, decision). Images go to
- * the images API; a text model pinned to one seller uses the API that seller
- * speaks, and an unpinned one chat completions.
+ * the images API and speech to the speech API; a text model pinned to one
+ * seller uses the API that seller speaks, and an unpinned one chat completions.
  */
 export function modelCallFormat(type: NetworkModelType, offer?: Pick<NetworkModelOffer, 'provider' | 'protocols'> | null): ApiFormat | null {
   if (type === 'image') return 'openai-images'
+  if (type === 'speech') return 'openai-audio-speech'
   if (type !== 'text') return null
   if (!offer) return 'openai-chat-completions'
   const format = serviceApiFormat({ provider: offer.provider, apiProtocols: offer.protocols })
@@ -81,11 +83,14 @@ export function modelCallFormat(type: NetworkModelType, offer?: Pick<NetworkMode
 }
 
 const IMAGE_PROMPT = 'A lighthouse on a cliff at dawn, watercolor'
+const SPEECH_INPUT = 'Hello from Antseed.'
 
 function requestBody(format: ApiFormat, model: string): string {
   if (format === 'anthropic-messages') return JSON.stringify({ model, max_tokens: 1024, messages: [{ role: 'user', content: 'Hello' }] })
   if (format === 'openai-responses') return JSON.stringify({ model, input: 'Hello' })
   if (format === 'openai-images') return JSON.stringify({ model, prompt: IMAGE_PROMPT, n: 1 })
+  // Without `voice` the seller uses the model's default voice.
+  if (format === 'openai-audio-speech') return JSON.stringify({ model, input: SPEECH_INPUT })
   return JSON.stringify({ model, messages: [{ role: 'user', content: 'Hello' }] })
 }
 
@@ -95,7 +100,9 @@ export function curlSnippet(baseUrl: string, model: string, format: ApiFormat = 
     `curl ${baseUrl}${API_PATHS[format]} \\`,
     ...(key ? [`  -H "Authorization: Bearer ${shellKey(key)}" \\`] : []),
     '  -H "Content-Type: application/json" \\',
-    `  -d '${requestBody(format, model).replaceAll("'", `'\\''`)}'`,
+    `  -d '${requestBody(format, model).replaceAll("'", `'\\''`)}'${format === 'openai-audio-speech' ? ' \\' : ''}`,
+    // Speech answers with the audio file itself.
+    ...(format === 'openai-audio-speech' ? ['  -o speech.mp3'] : []),
   ].join('\n')
 }
 
@@ -208,20 +215,25 @@ export function modelSnippets(baseUrl: string, peerId: string, model: string, fo
   return [
     { id: 'model', label: 'Copy model id', code: modelId },
     { id: 'curl', label: 'Copy curl', code: curlSnippet(baseUrl, modelId, format) },
-    format === 'anthropic-messages'
-      ? { id: 'sdk', label: 'Copy for Anthropic SDK', code: anthropicJsSnippet(baseUrl, modelId) }
-      : { id: 'sdk', label: 'Copy for OpenAI SDK', code: openAiJsSnippet(baseUrl, modelId, format) },
+    ...(format === 'openai-audio-speech'
+      ? []
+      : [format === 'anthropic-messages'
+        ? { id: 'sdk', label: 'Copy for Anthropic SDK', code: anthropicJsSnippet(baseUrl, modelId) }
+        : { id: 'sdk', label: 'Copy for OpenAI SDK', code: openAiJsSnippet(baseUrl, modelId, format) }]),
   ]
 }
 
 /**
  * A ready-to-run call for `model` (a network model id, `<peerId>@<model>` or
  * a preset): curl and the OpenAI SDKs, plus the Anthropic SDK for a model
- * that speaks Messages. The key is always `$ANTSEED_API_KEY`.
+ * that speaks Messages; curl alone for speech, whose SDK calls require a
+ * voice. The key is always `$ANTSEED_API_KEY`.
  */
 export function apiCallTabs(baseUrl: string, model: string, format: ApiFormat): ConnectTab[] {
+  const curl: ConnectTab = { id: 'curl', label: 'curl', language: 'shell', code: curlSnippet(baseUrl, model, format) }
+  if (format === 'openai-audio-speech') return [curl]
   const tabs: ConnectTab[] = [
-    { id: 'curl', label: 'curl', language: 'shell', code: curlSnippet(baseUrl, model, format) },
+    curl,
     { id: 'openai-python', label: 'Python', language: 'python', code: openAiPythonSnippet(baseUrl, model, format) },
     { id: 'openai-js', label: 'JavaScript', language: 'javascript', code: openAiJsSnippet(baseUrl, model, format) },
   ]
@@ -246,7 +258,7 @@ export function connectTabs(baseUrl: string, peerId: string, model: string, form
   const modelId = pinnedModelId(peerId, model)
   const tabs = apiCallTabs(baseUrl, modelId, format)
   // Coding tools only speak the text APIs.
-  if (format === 'openai-images') return tabs
+  if (format === 'openai-images' || format === 'openai-audio-speech') return tabs
   tabs.push(
     { id: 'codex', label: 'Codex', language: 'toml', code: codexSnippet(baseUrl, codexModel ?? '@preset/<your-preset>') },
     { id: 'claude-code', label: 'Claude Code', language: 'shell', code: claudeCodeSnippet(baseUrl, modelId) },

@@ -30,6 +30,7 @@ const FORMAT_LABELS: Record<ApiFormat, string> = {
   'openai-responses': 'Responses',
   'anthropic-messages': 'Messages',
   'openai-images': 'Images',
+  'openai-audio-speech': 'Speech',
 }
 
 function score(value: number | null): string {
