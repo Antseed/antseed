@@ -69,12 +69,15 @@ export interface PeerStat {
 
 /**
  * USD per million `input` characters a speech offer charges: the components
- * speech billing applies (no `match`, or one naming the service), summed; null
- * when the offer publishes none.
+ * speech billing applies (no `match`, or one naming the service), summed; 0
+ * for a model with no components (free); null when the offer publishes none.
  */
 function speechUsdPerMillionCharacters(unitBillingModels: unknown, serviceId: string): number | null {
   const rates = Object.values(asRecord(unitBillingModels)).flatMap((model) => {
-    const applicable = rows(asRecord(model)['components']).filter((component) => {
+    const components = asRecord(model)['components']
+    // A model with no components is explicitly free.
+    if (Array.isArray(components) && components.length === 0) return [0]
+    const applicable = rows(components).filter((component) => {
       const match = asRecord(component['match'])
       return component['unit'] === 'input_characters'
         && Object.entries(match).every(([key, value]) => key === 'model' && value === serviceId)
