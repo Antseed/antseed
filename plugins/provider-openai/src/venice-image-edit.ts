@@ -354,6 +354,7 @@ export class VeniceImageEditProvider implements Provider {
   constructor(
     private readonly delegate: Provider,
     private readonly editModelMap: Readonly<Record<string, string>>,
+    private readonly afterInit?: () => Promise<void>,
   ) {
     this.name = delegate.name;
     this.services = delegate.services;
@@ -367,6 +368,7 @@ export class VeniceImageEditProvider implements Provider {
 
   async init(): Promise<void> {
     await this.delegate.init?.();
+    await this.afterInit?.();
   }
 
   async handleRequest(request: SerializedHttpRequest): Promise<SerializedHttpResponse> {

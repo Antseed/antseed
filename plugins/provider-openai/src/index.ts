@@ -286,24 +286,18 @@ const plugin: AntseedProviderPlugin = {
         ...(fallbackUpstreams ? { fallbackUpstreams } : {}),
       },
     });
-    const provider: Provider = flavor === 'venice'
-      ? new VeniceImageEditProvider(baseProvider, imageEditModelMap ?? {})
-      : baseProvider;
-    if (flavor === 'venice' && serviceCapabilities) {
-      // Venice lists each speech model's voices; announce them unless the seller listed its own.
-      const init = provider.init?.bind(provider);
-      provider.init = async () => {
-        await init?.();
-        await announceVeniceSpeechVoices(
+    if (flavor !== 'venice') return baseProvider;
+    // Venice lists each speech model's voices; announce them unless the seller listed its own.
+    const announceSpeechVoices = serviceCapabilities
+      ? () => announceVeniceSpeechVoices(
           baseUrl,
           allowedServices,
           serviceApiProtocols,
           serviceCapabilities,
           (service) => serviceRewriteMap?.[service.trim().toLowerCase()] ?? service,
-        );
-      };
-    }
-    return provider;
+        )
+      : undefined;
+    return new VeniceImageEditProvider(baseProvider, imageEditModelMap ?? {}, announceSpeechVoices);
   },
 };
 
