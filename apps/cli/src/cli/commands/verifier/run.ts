@@ -72,6 +72,7 @@ import { buyerCapShortfall, describeAuditPriceCap, requiredBuyerCap, resolveAudi
 import { loadHighestEndpointPrice, loadVerifierModelCatalog } from '../../../verifier/openrouter-catalog.js'
 import {
   inspectSellerProbeCapacity,
+  missingBankReferenceExchanges,
   loadModelAuditReservation,
   reserveExtensionReference,
   reserveModelAuditReference,
@@ -1098,6 +1099,8 @@ async function runVerifierRound(
         const maxConcurrentBatches = config.verifier?.auditMaxConcurrentBatches ?? 24
         const maxConcurrentBatchesPerPeer = config.verifier?.auditMaxConcurrentBatchesPerPeer ?? 2
         const batchLimiter = new ConcurrencyLimiter(maxConcurrentBatches)
+        // Each seller's thinking suppression, discovered once per run (see `ProxyVerificationContext.sellerThinking`).
+        const sellerThinking: NonNullable<ProxyVerificationContext['sellerThinking']> = new Map()
         const sellerLimiter = new KeyedSerialLimiter()
         const statusQueue = new SerialOperationQueue()
         const eventQueue = new SerialOperationQueue()
@@ -1170,6 +1173,7 @@ async function runVerifierRound(
             ),
             batchConcurrencyPromotionLatencyMs: config.verifier?.auditConcurrencyPromotionLatencyMs ?? 30_000,
             batchLimiter,
+            sellerThinking,
           })
           const outcomes = await mapConcurrently(targets, maxConcurrentPeersPerModel, async (target) => {
             if (target.pendingExtension) {
@@ -1675,6 +1679,12 @@ async function collectPreRunProblems(input: {
         continue
       }
       problems.push(...probeBankProblems({ model, sellers: capacity.sellers, enrollIfNeeded: input.enrollIfNeeded }))
+      const missing = await missingBankReferenceExchanges(input.banksDir, model)
+      if (missing.length > 0) {
+        problems.push(`${model}: the probe bank's reference evidence is missing (${missing.slice(0, 3).join(', ')}`
+          + `${missing.length > 3 ? `, and ${missing.length - 3} more` : ''}), so the submission would fail after the run; `
+          + 'restore the bank\'s reference-evidence folder')
+      }
     } catch (error) {
       problems.push(`${model}: the probe bank can't be used (${asError(error).message}); `
         + `rebuild it with antseed verifier reference build ${model}`)

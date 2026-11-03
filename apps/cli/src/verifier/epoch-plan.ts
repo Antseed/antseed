@@ -21,8 +21,9 @@ import { normalized } from './utils.js'
 
 /**
  * Who caused a failed or UNDETERMINED audit. `auditor` failures (our buyer refused the seller, our
- * deposit or payment channel, our probe bank) are always retried; `seller` and `unclear` failures
- * are retried once per epoch.
+ * deposit or payment channel, our probe bank) don't use up the seller's retry: they are retried up
+ * to `AUDITOR_FAILURE_ATTEMPTS` times per epoch, unless retrying cannot help, and an UNDETERMINED
+ * they cause is never submitted. `seller` and `unclear` failures are retried once per epoch.
  */
 export type FailureBlame = 'seller' | 'auditor' | 'unclear'
 
@@ -43,6 +44,17 @@ const AUDITOR_TEXT = [
   /reference (?:endpoint|credits?)/i,
   /buyer proxy/i,
 ]
+
+/** Auditor failures that the same configuration repeats on every attempt, so they are not retried. */
+const PERMANENT_AUDITOR_TEXT = [
+  /outside your buyer routing policy/i,
+]
+
+/** Whether an auditor failure would repeat on every attempt this epoch (see `PERMANENT_AUDITOR_TEXT`). */
+export function permanentAuditorFailure(reason: ReasonLike | null | undefined, text?: string | null): boolean {
+  const summary = [reason?.summary ?? '', text ?? ''].join(' ')
+  return PERMANENT_AUDITOR_TEXT.some((pattern) => pattern.test(summary))
+}
 
 const SELLER_CODES = new Set([
   'transport_error',
@@ -77,8 +89,15 @@ export interface EpochCell {
   peerId: string
   runId: string
   state: EpochCellState
-  /** Audits that reached the seller this epoch (results and failures, not skips). */
+  /**
+   * Audits that count toward the seller's retries this epoch: results and failures, and skips found
+   * at runtime, but not failures caused by the auditor (`auditorAttempts`).
+   */
   attempts: number
+  /** Audits this epoch that failed because of the auditor; they have their own limit. */
+  auditorAttempts: number
+  /** The auditor failure repeats on every attempt (`permanentAuditorFailure`), so it is not retried. */
+  permanent: boolean
   blame: FailureBlame | null
   reason: string | null
   skipCode: string | null
@@ -99,6 +118,13 @@ export function epochCellKey(model: string, peerId: string): string {
 
 /** Seller and unclear failures get this many audits per epoch (the first plus one retry). */
 export const SELLER_FAILURE_ATTEMPTS = 2
+
+/**
+ * Audits per epoch that may fail because of the auditor before the seller is left alone for the
+ * epoch. Without a limit, a cause that lasts (a refusing buyer, an empty deposit) would audit the
+ * same seller every run.
+ */
+export const AUDITOR_FAILURE_ATTEMPTS = 3
 
 /**
  * Audits per epoch for a seller whose DIFF waits for this auditor's confirmation and whose audit
@@ -138,7 +164,9 @@ export function epochCellAction(cell: Omit<EpochCell, 'action'>): EpochCellActio
       if (cell.result.extension && !cell.result.confirmsDiff) return 'done'
       // falls through
     case 'failed':
-      if (cell.blame === 'auditor') return 'retry'
+      if (cell.blame === 'auditor') {
+        return !cell.permanent && cell.auditorAttempts < AUDITOR_FAILURE_ATTEMPTS ? 'retry' : 'done'
+      }
       return cell.attempts < (cell.result?.confirmsDiff ? CONFIRMATION_ATTEMPTS : SELLER_FAILURE_ATTEMPTS) ? 'retry' : 'done'
   }
 }
@@ -167,6 +195,7 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
     peerId: string
     runId: string
     attempts: number
+    auditorAttempts: number
     result: ModelVerificationTargetResult | null
     resultRunId: string | null
     pending: { result: ModelVerificationTargetResult; runId: string } | null
@@ -180,7 +209,7 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
     let entry = acc.get(key)
     if (!entry) {
       entry = {
-        model, peerId, runId, attempts: 0, result: null, resultRunId: null,
+        model, peerId, runId, attempts: 0, auditorAttempts: 0, result: null, resultRunId: null,
         pending: null, failure: null, skip: null, last: 'skip',
       }
       acc.set(key, entry)
@@ -192,7 +221,8 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
       if (summary.epoch !== epoch || summary.runId !== manifest.runId) continue
       for (const result of summary.results ?? []) {
         const entry = get(summary.model, result.peerId, manifest.runId)
-        entry.attempts += 1
+        if (result.outcomeReason && failureBlame(result.outcomeReason) === 'auditor') entry.auditorAttempts += 1
+        else entry.attempts += 1
         if (finalAuditVerdict(result) === null) {
           entry.pending = { result, runId: manifest.runId }
           entry.last = 'pending'
@@ -206,13 +236,17 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
       for (const failure of summary.failures ?? []) {
         if (failure.peerId.startsWith('model:')) continue
         const entry = get(summary.model, failure.peerId, manifest.runId)
-        entry.attempts += 1
+        if (failureBlame(failure.outcomeReason, failure.reason) === 'auditor') entry.auditorAttempts += 1
+        else entry.attempts += 1
         entry.failure = { entry: failure, runId: manifest.runId }
         entry.last = 'failure'
       }
       for (const skip of summary.skipped ?? []) {
         const entry = get(summary.model, skip.peerId, manifest.runId)
-        if (skip.source === 'runtime') entry.attempts += 1
+        if (skip.source === 'runtime') {
+          if (failureBlame(skip.outcomeReason, skip.reason) === 'auditor') entry.auditorAttempts += 1
+          else entry.attempts += 1
+        }
         entry.skip = { entry: skip, runId: manifest.runId }
         entry.last = 'skip'
       }
@@ -222,7 +256,10 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
   const cells = new Map<string, EpochCell>()
   for (const [key, entry] of acc) {
     let cell: Omit<EpochCell, 'action'>
-    const base = { model: entry.model, peerId: entry.peerId, attempts: entry.attempts, skipCode: null }
+    const base = {
+      model: entry.model, peerId: entry.peerId, attempts: entry.attempts, auditorAttempts: entry.auditorAttempts,
+      permanent: false, skipCode: null,
+    }
     if (entry.pending) {
       // A close call newer than any submittable result: its extra questions decide the cell.
       cell = {
@@ -237,12 +274,14 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
       cell = {
         ...base, runId: entry.resultRunId!, state, result: entry.result,
         blame: state === 'undetermined' ? failureBlame(reason) : null,
+        permanent: state === 'undetermined' && permanentAuditorFailure(reason),
         reason: reason?.summary ?? null,
       }
     } else if (entry.failure && (entry.last === 'failure' || !entry.skip)) {
       cell = {
         ...base, runId: entry.failure.runId, state: 'failed', result: null,
         blame: failureBlame(entry.failure.entry.outcomeReason, entry.failure.entry.reason),
+        permanent: permanentAuditorFailure(entry.failure.entry.outcomeReason, entry.failure.entry.reason),
         reason: entry.failure.entry.reason,
       }
     } else {
@@ -395,6 +434,21 @@ export async function writeEpochSubmissionManifest(
           status: 'FAILED',
           reason: `held: UNDETERMINED (${cell.reason ?? 'audit failed'}) on a DIFF waiting for this auditor's confirmation; `
             + `audited again before it is submitted (attempt ${cell.attempts} of ${CONFIRMATION_ATTEMPTS})`,
+          ...(result.outcomeReason ? { outcomeReason: result.outcomeReason } : {}),
+        })
+      } else if (cell.result && cell.state === 'undetermined' && cell.blame === 'auditor') {
+        // The auditor's own failure says nothing about the seller's model: never submitted.
+        const result = cell.result
+        failures.push({
+          peerId: result.peerId,
+          displayName: result.displayName,
+          agentId: result.agentId,
+          service: result.service,
+          status: 'FAILED',
+          reason: `not submitted: UNDETERMINED caused by this auditor (${cell.reason ?? 'audit failed'})`
+            + (cell.action === 'retry'
+              ? `; audited again (attempt ${cell.auditorAttempts} of ${AUDITOR_FAILURE_ATTEMPTS})`
+              : cell.permanent ? '; not retried, since every attempt would fail the same way' : ''),
           ...(result.outcomeReason ? { outcomeReason: result.outcomeReason } : {}),
         })
       } else if (cell.result) {

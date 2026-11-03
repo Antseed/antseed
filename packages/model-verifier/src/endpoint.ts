@@ -14,6 +14,11 @@ export interface ModelBatchRequest {
   extraBody?: Record<string, unknown>
   /** Assistant prefill from the reference (`prefill` strategy; OpenAI Chat Completions only). */
   assistantPrefill?: string
+  /**
+   * Overrides the endpoint's own timeout for this request: thinking discovery and endpoints that
+   * think on every request (`bare-expanded`) get the reference code's 600 s.
+   */
+  timeoutMs?: number
 }
 
 export interface ModelCallSuccess {
@@ -40,5 +45,10 @@ export type ModelCallResult = ModelCallSuccess | ModelCallFailure
 export interface ModelEndpoint {
   /** Human-readable target description for reports, e.g. the base URL. */
   readonly label: string
+  /**
+   * Whether `assistantPrefill` reaches the model (OpenAI Chat Completions). Thinking discovery
+   * skips the `prefill` strategy when false, as the KBF reference code does. Default true.
+   */
+  readonly supportsPrefill?: boolean
   call(request: ModelBatchRequest, signal?: AbortSignal): Promise<ModelCallResult>
 }

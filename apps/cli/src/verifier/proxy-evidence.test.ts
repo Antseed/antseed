@@ -10,8 +10,10 @@ import {
   emptyAuditCostSummary,
   parseProxyAuditExchangeCost,
   proxyAuditEvidenceHash,
+  summarizeAuditExchangeCosts,
   verifyProxyAuditEvidenceFile,
   writeProxyAuditEvidence,
+  type ProxyAuditEvidenceExchangeV1,
   type ProxyAuditEvidenceV1,
 } from './proxy-evidence.js'
 
@@ -151,6 +153,22 @@ test('proxy telemetry headers produce additive audit costs', () => {
   })
   assert.ok(Math.abs(total.estimatedCostUsd - 0.00021) < 1e-12)
   assert.equal(parseProxyAuditExchangeCost({ 'x-antseed-input-tokens': '100' }), null)
+})
+
+test('an exchange retried several times counts once, priced or not', () => {
+  const cost = {
+    inputTokens: 10, outputTokens: 5, totalTokens: 15, inputUsdPerMillion: 1, outputUsdPerMillion: 2,
+    estimatedCostUsd: 0.00002, tokenSource: null, provider: null, service: null,
+  }
+  const exchanges = [
+    { attemptCosts: [cost, cost, cost] },
+    { cost },
+    {},
+  ] as unknown as ProxyAuditEvidenceExchangeV1[]
+  const summary = summarizeAuditExchangeCosts(exchanges)
+  assert.equal(summary.pricedExchangeCount, 2)
+  assert.equal(summary.missingCostExchangeCount, 1)
+  assert.equal(summary.inputTokens, 40)
 })
 
 test('proxy evidence verification rejects non-canonical files', async () => {

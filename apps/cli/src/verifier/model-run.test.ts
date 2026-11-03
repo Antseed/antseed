@@ -672,9 +672,19 @@ test('target eligibility refuses cached input priced above input, as the buyer r
     eligible: false,
     code: 'policy_rejected',
     service: 'GPT-5.6-SOL',
-    reason: 'could not read a valid advertised price for GPT-5.6-SOL',
+    reason: 'the advertised price for GPT-5.6-SOL is invalid (cached input $4.5 per 1M is above input $4), so the buyer refuses it · not audited',
   })
   assert.equal(classifyVerificationTarget(pricedAt(5, 30, 5), 'gpt-5.6-sol', targetPolicy).eligible, true)
+})
+
+test('an invalid offer for the model is not replaced by the seller\'s valid default price', () => {
+  // As NovaRoute AI in epoch 29: deepseek-v4-pro at $0.0068 input but $0.594 cached input, next to
+  // valid defaults. The buyer refuses the model's own offer, so every audit request would fail.
+  const peer = { ...pricedAt(0.0068, 0.0137, 0.594), defaultInputUsdPerMillion: 0.02, defaultOutputUsdPerMillion: 0.12 }
+  const result = classifyVerificationTarget(peer, 'gpt-5.6-sol', targetPolicy)
+  assert.equal(result.eligible, false)
+  assert.equal((result as { code?: string }).code, 'policy_rejected')
+  assert.match((result as { reason?: string }).reason ?? '', /cached input \$0\.594 per 1M is above input \$0\.0068/)
 })
 
 test('auditPriceRatio allows sellers up to that multiple of the reference price', () => {
@@ -879,7 +889,7 @@ test('audits send the reference thinking suppression but no other reference-endp
     // sellers reject `n`, and several upstreams reject `top_p` (Kimi K3, Opus 5, Opus 4.6).
     assert.equal(body.n, undefined)
     assert.equal(body.top_p, undefined)
-    // As in the KBF reference code, the target gets the reference's thinking suppression.
+    // Without per-seller discovery (`sellerThinking` unset), the target gets the reference's suppression.
     assert.equal(body.reasoning_effort, 'none')
     assert.deepEqual(body.reasoning, { effort: 'low' })
     assert.equal(body.provider, undefined)
@@ -1256,3 +1266,184 @@ for (const authMode of ['missing', 'unverified', 'wrong-request', 'wrong-seller'
     assert.match(run.evidence.result.verdictReason ?? '', /lacked valid verified ResponseAuth/)
   })
 }
+
+// ── Seller thinking discovery (KBF reference code `discover_thinking_strategy`, per endpoint) ──
+
+type FakeSeller = (body: Record<string, unknown>) => { content: string; reasoningTokens: number; finishReason?: string } | Response
+
+function verifiedReader(): ResponseAuthReader {
+  return {
+    async waitForVerified(input) {
+      const record = {
+        version: 1 as const, requestId: input.requestId, buyerPeerId: '22'.repeat(20), sellerPeerId: input.sellerPeerId,
+        advertisedService: input.advertisedService, provider: 'test', statusCode: 200,
+        requestHash: `0x${'44'.repeat(32)}`, responseHash: `0x${'55'.repeat(32)}`,
+        responseStartedAt: Date.now(), responseCompletedAt: Date.now(), signature: `0x${'66'.repeat(65)}`,
+        receivedAt: Date.now(), verified: true, verificationError: null, requestPreimage: null, responsePreimage: null,
+      }
+      return {
+        requestId: input.requestId, status: 'verified', responseAuth: record,
+        signedPreimages: {
+          encoding: 'antseed-http-codec-v1', signatureEncoding: 'antseed-response-auth-signing-v1',
+          requestBase64: 'AA==', responseBase64: 'AA==', responseAuthSigningBase64: 'AA==',
+          requestHash: record.requestHash, responseHash: record.responseHash,
+        },
+        failureReason: null,
+      }
+    },
+    close() {},
+  }
+}
+
+/** Correct answers to whatever the request asks: the test probes, or the fixed discovery batch. */
+function correctAnswers(body: Record<string, unknown>): string {
+  const prompt = (body.messages as Array<{ role: string; content: string }>).filter((message) => message.role !== 'assistant').at(-1)!.content
+  const probes = [...prompt.matchAll(/test probe (\d+) value is ___/g)].map((match) => Number(match[1]))
+  const values = probes.length > 0 ? probes : [78.37, 79, 299792458, 1538, 206, 12, 100, 9.81, 8, 0]
+  return values.map((value, index) => `(${index + 1}) ${value}`).join('\n')
+}
+
+const isDiscovery = (body: Record<string, unknown>) => JSON.stringify(body.messages).includes('atomic number of gold')
+
+/** A seller whose model thinks whatever it is told and needs ~3,000 tokens before answering. */
+const thinkingSeller: FakeSeller = (body) => (body.max_tokens as number) < 4_000
+  ? { content: '', reasoningTokens: body.max_tokens as number, finishReason: 'length' }
+  : { content: correctAnswers(body), reasoningTokens: 3_000 }
+
+async function auditWithDiscovery(
+  seller: FakeSeller,
+  options: { cache?: Map<string, Promise<import('./proxy-evidence.js').SellerThinkingDiscoveryV1>>; count?: number } = {},
+) {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-verifier-thinking-'))
+  const bodies: Array<Record<string, unknown>> = []
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(new TextDecoder().decode(init!.body as Uint8Array)) as Record<string, unknown>
+    bodies.push(body)
+    const requestId = new Headers(init?.headers).get('x-antseed-request-id')!
+    const reply = seller(body)
+    if (reply instanceof Response) return reply
+    return Response.json({
+      choices: [{ message: { content: reply.content }, finish_reason: reply.finishReason ?? 'stop' }],
+      usage: { completion_tokens: reply.reasoningTokens + 20, completion_tokens_details: { reasoning_tokens: reply.reasoningTokens } },
+    }, { headers: {
+      'x-antseed-request-id': requestId,
+      'x-antseed-input-tokens': '100', 'x-antseed-output-tokens': '20', 'x-antseed-total-tokens': '120',
+      'x-antseed-input-usd-per-million': '1', 'x-antseed-output-usd-per-million': '2',
+      'x-antseed-estimated-cost-usd': '0.00014', 'x-antseed-token-source': 'usage',
+      'x-antseed-provider': 'test', 'x-antseed-service': 'GPT-5.6-SOL',
+    } })
+  }
+  const count = options.count ?? 40
+  try {
+    const result = await verifyModelTarget({
+      context: {
+        proxy: { baseUrl: 'http://127.0.0.1:8377', statePath: join(directory, 'buyer.state.json'), pid: process.pid, peers: [peer()] },
+        evidenceDir: directory,
+        requestTimeoutMs: 10_000,
+        auditTimeoutMs: 10_000,
+        responseAuthReader: verifiedReader(),
+        batchConcurrency: 2,
+        batchConcurrencyPromotionLatencyMs: 30_000,
+        batchLimiter: new ConcurrencyLimiter(2),
+        fetchFn,
+        sleepFn: async () => undefined,
+        sellerThinking: options.cache ?? new Map(),
+      },
+      target: peer(),
+      service: 'GPT-5.6-SOL',
+      reference: reference(count),
+    })
+    if (result.status === 'SKIPPED') throw new Error(`unexpected skip: ${result.reason}`)
+    const evidence = JSON.parse(await readFile(result.evidencePath, 'utf8')) as ProxyAuditEvidenceV1
+    return {
+      result,
+      evidence,
+      discoveryBodies: bodies.filter(isDiscovery),
+      batchBodies: bodies.filter((body) => !isDiscovery(body)),
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+}
+
+test('a seller that thinks whatever it is told is audited with 50x the token budget, as in the KBF reference code', async () => {
+  const cache = new Map()
+  const run = await auditWithDiscovery(thinkingSeller, { cache })
+  const discovery = run.evidence.sellerThinking!
+  assert.equal(discovery.method, 'kbf-reference-code-2026-09-30')
+  assert.equal(discovery.strategy, 'bare-expanded')
+  assert.deepEqual(discovery.attempts.map((attempt) => attempt.strategy), [
+    'reasoning-effort-none', 'reasoning-effort-minimal', 'disable-thinking', 'enable-thinking-false', 'prefill', 'bare', 'bare-expanded',
+  ])
+  assert.deepEqual(discovery.attempts.map((attempt) => attempt.maxTokens), [800, 800, 800, 800, 800, 800, 40_000])
+  assert.equal(discovery.attempts.at(-1)!.validAnswers, 10)
+  for (const attempt of discovery.attempts) assert.equal(attempt.requestIds.length, 1)
+  assert.equal(run.discoveryBodies.length, 7)
+  // Every batch gets the room to think and answer, without suppression fields.
+  assert.equal(discovery.maxTokens, 40_000)
+  for (const body of run.batchBodies) {
+    assert.equal(body.max_tokens, 40_000)
+    assert.equal('reasoning' in body, false)
+  }
+  assert.equal(run.result.status, 'SAME')
+  assert.equal(run.result.parsedProbeCount, 40)
+  // The discovery requests are paid for and counted with the audit's batches.
+  assert.equal(run.result.cost.pricedExchangeCount, 7 + run.batchBodies.length)
+
+  // The seller's next audit in the run (e.g. a close call's extra set) reuses the discovery.
+  const next = await auditWithDiscovery(thinkingSeller, { cache })
+  assert.equal(next.discoveryBodies.length, 0)
+  assert.equal(next.evidence.sellerThinking!.reused, true)
+  assert.equal(next.evidence.sellerThinking!.strategy, 'bare-expanded')
+  assert.equal(next.result.cost.pricedExchangeCount, next.batchBodies.length)
+  for (const body of next.batchBodies) assert.equal(body.max_tokens, 40_000)
+})
+
+test('the first strategy a seller honours is used, and its batches keep the reference budget', async () => {
+  // Honours `reasoning: {effort: "none"}`; would think through anything else.
+  const run = await auditWithDiscovery((body) => (body.reasoning as { effort?: string } | undefined)?.effort === 'none'
+    ? { content: correctAnswers(body), reasoningTokens: 0 }
+    : thinkingSeller(body))
+  assert.equal(run.evidence.sellerThinking!.strategy, 'reasoning-effort-none')
+  assert.equal(run.discoveryBodies.length, 1)
+  for (const body of run.batchBodies) {
+    assert.deepEqual(body.reasoning, { effort: 'none' })
+    assert.equal(body.max_tokens, reference(40).queryProfile.maxTokensPerRequest)
+  }
+  assert.equal(run.result.status, 'SAME')
+})
+
+test('a strategy the seller accepts but ignores (reasoning tokens > 0) is passed over', async () => {
+  // Accepts `reasoning` but still thinks a little; only `thinking: {type: "disabled"}` works.
+  const run = await auditWithDiscovery((body) => body.thinking
+    ? { content: correctAnswers(body), reasoningTokens: 0 }
+    : { content: correctAnswers(body), reasoningTokens: 120 })
+  const discovery = run.evidence.sellerThinking!
+  assert.deepEqual(discovery.attempts.map((attempt) => [attempt.strategy, attempt.validAnswers, attempt.reasoningTokens]), [
+    ['reasoning-effort-none', 10, 120],
+    ['reasoning-effort-minimal', 10, 120],
+    ['disable-thinking', 10, 0],
+  ])
+  assert.equal(discovery.strategy, 'disable-thinking')
+  for (const body of run.batchBodies) assert.deepEqual(body.thinking, { type: 'disabled' })
+})
+
+test('discovery stops at an unreachable seller and the audit falls back to the reference suppression', async () => {
+  const run = await auditWithDiscovery(() => new Response('unavailable', { status: 502 }))
+  const discovery = run.evidence.sellerThinking!
+  assert.equal(discovery.strategy, null)
+  assert.match(discovery.failure ?? '', /HTTP 502/)
+  // Three tries of the first strategy, then nothing more is sent.
+  assert.equal(run.discoveryBodies.length, 3)
+  assert.deepEqual(discovery.attempts.map((attempt) => attempt.requestIds.length), [3, 0, 0, 0, 0, 0, 0])
+  assert.equal(run.result.status, 'UNDETERMINED')
+  for (const body of run.batchBodies) assert.equal(body.max_tokens, reference(40).queryProfile.maxTokensPerRequest)
+})
+
+test('answers inside a <think> block are ignored, as the reference code strips them before parsing', async () => {
+  const run = await auditWithDiscovery((body) => isDiscovery(body)
+    ? { content: correctAnswers(body), reasoningTokens: 0 }
+    : { content: `<think>${correctAnswers(body).replace(/\) \d+/g, ') 999')}</think>\n${correctAnswers(body)}`, reasoningTokens: 0 })
+  assert.equal(run.result.status, 'SAME')
+  assert.equal(run.result.parsedProbeCount, 40)
+})

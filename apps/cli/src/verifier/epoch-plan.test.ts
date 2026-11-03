@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import type { ModelAuditSummaryV1, VerifierRunManifestV1 } from './audit-artifacts.js'
 import {
+  AUDITOR_FAILURE_ATTEMPTS,
   CONFIRMATION_ATTEMPTS,
   countPlan,
   epochCellKey,
@@ -90,8 +91,10 @@ test('the latest result per model and seller wins and decides the action', () =>
   ])
   const action = (peer: string) => cells.get(epochCellKey('m', peer))!
   assert.equal(action('a').action, 'done')
-  assert.equal(action('b').action, 'retry', 'our buyer refused it: retried every run')
-  assert.equal(action('b').attempts, 2)
+  assert.equal(action('b').action, 'done', 'our buyer refuses it on every attempt: not retried')
+  assert.equal(action('b').permanent, true)
+  assert.equal(action('b').attempts, 0, 'failures caused by the auditor do not use up the seller\'s retries')
+  assert.equal(action('b').auditorAttempts, 2)
   assert.equal(action('c').action, 'retry', 'seller failed once: one retry')
   assert.equal(action('d').action, 'done', 'seller failed twice: finished for this epoch')
   assert.equal(action('e').state, 'diff', 'a first DIFF is final for this auditor; another auditor confirms it')
@@ -102,7 +105,82 @@ test('the latest result per model and seller wins and decides the action', () =>
   assert.equal(action('h').action, 'audit', 'a price skip is re-evaluated each run')
   assert.equal(action('i').action, 'retry')
   assert.equal(action('i').blame, 'auditor')
-  assert.deepEqual(countPlan(cells.values()), { done: 5, retryAuditor: 2, retrySeller: 1, extend: 0, audit: 1 })
+  assert.deepEqual(countPlan(cells.values()), { done: 6, retryAuditor: 1, retrySeller: 1, extend: 0, audit: 1 })
+})
+
+test('a failure caused by the auditor does not use up the seller\'s retry', () => {
+  // Epoch 29 on mainnet: our buyer proxy mixed up request IDs, then the seller timed out once.
+  const ourAuthBug = {
+    code: 'response_auth_invalid', source: 'response_auth', retryable: true, affectedBatchCount: 21, totalBatchCount: 21,
+    nextAction: 'resume audit', summary: 'buyer proxy request ID mismatch (a06e1ead != b7ecb4bc)',
+  } as const
+  const deadline = { ...sellerDown, code: 'deadline_exceeded', summary: 'seller audit deadline exceeded after 600000ms' } as const
+  const cell = (...reasons: Array<typeof ourAuthBug | typeof deadline>) => mergeEpochRuns(EPOCH, reasons.map((reason, index) => (
+    run(`r${index}`, `2026-10-28T2${index}:00:00.000Z`, [{ model: 'm', results: [result('a', 'UNDETERMINED', { outcomeReason: reason })] }])
+  ))).get(epochCellKey('m', 'a'))!
+
+  const afterOurBug = cell(ourAuthBug, ourAuthBug, deadline)
+  assert.equal(afterOurBug.blame, 'seller')
+  assert.equal(afterOurBug.attempts, 1)
+  assert.equal(afterOurBug.action, 'retry', 'only one of the three audits was the seller\'s failure')
+  assert.equal(cell(ourAuthBug, deadline, deadline).action, 'done', 'two seller failures finish the cell')
+
+  // Failures and runtime skips caused by the auditor are left out too.
+  const cells = mergeEpochRuns(EPOCH, [run('r0', '2026-10-28T20:00:00.000Z', [{
+    model: 'm',
+    failures: [
+      { peerId: 'b', agentId: '2', service: 'svc', status: 'FAILED', reason: 'no probe bank exists for m' },
+      { peerId: 'c', agentId: '3', service: 'svc', status: 'FAILED', reason: 'seller closed the stream', outcomeReason: sellerDown },
+    ],
+  }])])
+  assert.equal(cells.get(epochCellKey('m', 'b'))!.attempts, 0)
+  assert.equal(cells.get(epochCellKey('m', 'c'))!.attempts, 1)
+})
+
+test('failures caused by the auditor are retried up to AUDITOR_FAILURE_ATTEMPTS times per epoch', () => {
+  // Epoch 29 e2e: a seller our side kept failing was audited again every five-minute run.
+  const ourTimeout = {
+    code: 'request_timeout', source: 'transport', retryable: true, affectedBatchCount: 17, totalBatchCount: 17,
+    nextAction: 'resume audit', summary: 'buyer proxy request timed out after 120000ms',
+  } as const
+  const cell = (count: number) => mergeEpochRuns(EPOCH, Array.from({ length: count }, (_, index) => (
+    run(`r${index}`, `2026-10-28T2${index}:00:00.000Z`, [{ model: 'm', results: [result('a', 'UNDETERMINED', { outcomeReason: ourTimeout })] }])
+  ))).get(epochCellKey('m', 'a'))!
+  assert.equal(AUDITOR_FAILURE_ATTEMPTS, 3)
+  assert.equal(cell(AUDITOR_FAILURE_ATTEMPTS - 1).action, 'retry')
+  assert.equal(cell(AUDITOR_FAILURE_ATTEMPTS).action, 'done')
+  assert.equal(cell(AUDITOR_FAILURE_ATTEMPTS).attempts, 0, 'still none of the seller\'s retries used')
+  // A failure that repeats on every attempt is not retried at all.
+  const refused = mergeEpochRuns(EPOCH, [run('r0', '2026-10-28T20:00:00.000Z', [{
+    model: 'm',
+    failures: [{ peerId: 'b', agentId: '2', service: 'svc', status: 'FAILED', reason: buyerRefused.summary, outcomeReason: buyerRefused }],
+  }])]).get(epochCellKey('m', 'b'))!
+  assert.equal(refused.blame, 'auditor')
+  assert.equal(refused.action, 'done')
+})
+
+test('an UNDETERMINED caused by the auditor is never submitted', async () => {
+  // Epoch 29 e2e: our buyer refused NovaRoute AI, and its "coverage 0" UNDETERMINED was submitted.
+  const directory = await mkdtemp(join(tmpdir(), 'epoch-plan-auditor-'))
+  try {
+    const runs = [run('r1', '2026-10-28T20:00:00.000Z', [{ model: 'm', results: [
+      result('a', 'UNDETERMINED', { outcomeReason: buyerRefused }),
+      result('b', 'UNDETERMINED', { outcomeReason: sellerDown }),
+      result('c', 'SAME'),
+    ] }])]
+    const state = { epoch: EPOCH, manifests: runs.map((entry) => entry.manifest), cells: mergeEpochRuns(EPOCH, runs) }
+    const { writeJsonAtomic } = await import('./atomic-files.js')
+    const path = join(directory, 'r1.summary.json')
+    await writeJsonAtomic(path, runs[0]!.summaries[0])
+    runs[0]!.manifest.models = [{ model: 'm', summaryPath: path } as VerifierRunManifestV1['models'][number]]
+    const manifest = await writeEpochSubmissionManifest(directory, state)
+    const summary = JSON.parse(await readFile(manifest.models[0]!.summaryPath, 'utf8')) as ModelAuditSummaryV1
+    assert.deepEqual(summary.results.map((entry) => entry.peerId), ['b', 'c'], 'the seller\'s own failure and the SAME are submitted')
+    assert.deepEqual(summary.failures.map((entry) => entry.peerId), ['a'])
+    assert.match(summary.failures[0]!.reason, /^not submitted: UNDETERMINED caused by this auditor .*not retried/)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
 })
 
 test('a later SAME replaces an earlier UNDETERMINED, and a later first DIFF replaces a SAME', () => {
