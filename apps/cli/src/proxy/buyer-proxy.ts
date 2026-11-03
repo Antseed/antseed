@@ -2715,7 +2715,7 @@ export class BuyerProxy {
         onChainSybilRisk: p.onChainSybilRisk ?? null,
         onChainSybilFlags: p.onChainSybilFlags ?? null,
         onChainStatsFetchedAt: p.onChainStatsFetchedAt ?? null,
-        // Services with a live DIFF verdict on AntseedKbfVerification; their
+        // Services with a live DIFF verdict on AntseedVerificationResults; their
         // effective reputation keeps 10%.
         onChainDiffServices: p.onChainDiffServices ?? null,
         onChainVerificationFetchedAt: p.onChainVerificationFetchedAt ?? null,

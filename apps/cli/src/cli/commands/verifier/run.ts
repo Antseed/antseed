@@ -221,8 +221,8 @@ export function enrollmentRequestBudget(options: RunOptions): number | null {
 }
 
 /**
- * Reads the epoch the verification contract checks on submit (`registry.emissions()`). Without a
- * configured verification contract it falls back to the configured emissions gate.
+ * Reads the epoch the KBF audits contract checks on submit (the results layer's pinned gate). Without a
+ * configured KBF audits contract it falls back to the configured emissions gate.
  */
 export function auditEpochReader(config: AntseedConfig): OnchainEpochReader {
   let verifier: ReturnType<typeof createVerifierClient> | null = null
@@ -271,7 +271,7 @@ export function resolveAssignedAuditModels(
   return roundRobinAssignmentFor(auditor, { auditors: approvedAuditors, epoch: epoch.epoch, availableModels })
 }
 
-/** Auditors approved when the epoch started, from the verification contract's `AuditorSet` events. */
+/** Auditors approved when the epoch started, from the KBF audits contract's `AuditorSet` events. */
 export async function loadApprovedAuditors(config: AntseedConfig, dataDir: string, epoch: AuditEpochWindow): Promise<string[]> {
   const events = await loadAuditorSetEvents(createVerifierClient(config), dataDir, (message) => console.log(chalk.dim(message)))
   return approvedAuditorsAt(events, epoch.startedAt)
@@ -282,7 +282,7 @@ export async function loadApprovedAuditors(config: AntseedConfig, dataDir: strin
  * the sellers to audit per model. Confirmations rotate like the assignment
  * (`auditorRotationForModel`): the first auditor in a model's rotation that has not reported on the
  * seller confirms it, and from halfway through the epoch any auditor that has not may. Nothing when
- * the epoch is not on-chain or no verification contract is configured; a failed read is a warning,
+ * the epoch is not on-chain or no KBF audits contract is configured; a failed read is a warning,
  * not a stop.
  */
 /** A confirmation assigned to this auditor that this run does not audit, and why. */

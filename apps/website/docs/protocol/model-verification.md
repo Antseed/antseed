@@ -88,10 +88,28 @@ its approval.
 ## What goes on-chain
 
 ```
-seller audit ──► evidence on IPFS ──► AntseedKbfVerification ◄── second auditor's audit (for a DIFF)
+seller audit ──► evidence on IPFS ──► AntseedKbfAudits ◄── second auditor's audit (for a DIFF)
+                                            │ once enough auditors agree
+                                            ▼
+                               AntseedVerificationResults ──► buyers, points policy
 ```
 
-`AntseedKbfVerification` keeps one result per seller service (one model offer of one
+Two contracts share the work:
+
+- **`AntseedKbfAudits`** takes the auditors' KBF submissions, counts the reports for each
+  seller service and records a verdict once enough auditors agree (one for a SAME, two for
+  a DIFF). The owner approves and revokes auditors on it with `setAuditor`. It earns each
+  auditor one credit per audited model.
+- **`AntseedVerificationResults`** holds the recorded verdicts, whatever verification
+  method produced them, and pays verifiers from the verification emissions bucket. KBF is
+  the first method writing to it; each later method is its own contract next to
+  `AntseedKbfAudits`, with its own share of the bucket.
+
+These replace the single `AntseedKbfVerification` contract (migration M003) with the same
+KBF rules; until the replacement is deployed on Base mainnet, `AntseedKbfVerification` stays
+on-chain but the CLI and SDK no longer read it.
+
+`AntseedVerificationResults` keeps one result per seller service (one model offer of one
 seller):
 
 - **The latest result wins**, whichever approved auditor submitted it. A new SAME replaces
@@ -101,11 +119,14 @@ seller):
   its model recovers at the next audit.
 - **A DIFF only affects that one service.** A seller's other verified models are not
   touched.
+- **A DIFF stays until its own method clears it.** A DIFF recorded by one method can only be
+  replaced by that method (or a DIFF from another method, or the owner), so one method's
+  consensus is never undone by another's.
 - Auditors cannot audit sellers they own.
 
 ## How buyers use results
 
-Buyers read each seller service's recorded result from `AntseedKbfVerification`. A
+Buyers read each seller service's recorded result from `AntseedVerificationResults`. A
 service with a live **DIFF** keeps 10% of its effective reputation, so automatic routing
 skips it under the default minimum trust score, and the desktop app explains the cut
 in the seller's reputation tooltip. Only a recorded DIFF counts: a DIFF from one auditor

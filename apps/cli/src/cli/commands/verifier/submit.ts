@@ -131,15 +131,26 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
         console.warn(chalk.yellow(message))
       }
 
-      const [window, network, approved, limits] = await Promise.all([
+      const [window, network, approved, limits, minActiveEpochs, activeSince] = await Promise.all([
         verifierClient.currentEpochWindow(),
         verifierClient.provider.getNetwork(),
         verifierClient.approvedAuditor(address),
         verifierClient.creditLimits(),
+        verifierClient.minActiveEpochs(),
+        verifierClient.activeSinceEpoch(address),
       ])
       validateRunEpoch(manifest, window)
       if (!options.dryRun && !approved) {
-        throw new Error(`auditor wallet ${address} is not approved by the verification contract`)
+        throw new Error(
+          `auditor wallet ${address} is not approved by the KBF audits contract ${getAddress(verifierClient.contractAddress)}`,
+        )
+      }
+      const firstAcceptedEpoch = activeSince + BigInt(minActiveEpochs)
+      if (!options.dryRun && approved && minActiveEpochs > 0 && firstAcceptedEpoch > window.epoch) {
+        throw new Error(
+          `auditor wallet ${address} became active in epoch ${activeSince}; the KBF audits contract accepts its audits `
+          + `from epoch ${firstAcceptedEpoch} (minActiveEpochs ${minActiveEpochs})`,
+        )
       }
       const contract = getAddress(verifierClient.contractAddress)
       const ledgerPath = modelAuditLedgerPath(evidenceDir, manifest.runId, network.chainId, contract)
@@ -156,7 +167,7 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
       // Read at most once: the delta filter needs it only for results this auditor already reported.
       let auditorSetEventsRead: Promise<AuditorSetEvent[]> | null = null
       const auditorSetEvents = (): Promise<AuditorSetEvent[]> => (
-        auditorSetEventsRead ??= verifierClient.queryAuditorSetEvents(verifierClient.deploymentBlock)
+        auditorSetEventsRead ??= verifierClient.queryAuditorSetEvents()
       )
       const epochEvents = await loadEpochAuditEvents({
         reader: verifierClient, epochStartedAt: window.startedAt, deploymentBlock: verifierClient.deploymentBlock,

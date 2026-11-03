@@ -13,13 +13,30 @@ import { runMigration } from './runtime/runner.mjs';
 import { clearPlan } from './runtime/plan.mjs';
 import { CONTRACTS_ROOT } from './runtime/paths.mjs';
 
-export const RELEASE = '003-kbf-verification';
-export const POLICY_NOTE = 'M003 deploys the KBF verification contract and its points policy only. The policy is not '
-  + 'registered in the points policy registry by M003; the registry owner registers it separately, so verdicts change '
-  + 'no seller points until then.';
+/**
+ * The split verification deployment. It replaces M003's earlier single-contract deployment, whose
+ * record (`003-kbf-verification`) stays in the append-only history; that release has no owner now.
+ */
+export const RELEASE = '003-verification-split';
+export const POLICY_NOTE = 'M003 deploys the verification results layer, the KBF audit source and '
+  + 'the verification points policy, and wires KBF as a source with the whole verification bucket. It approves no '
+  + 'auditors and does not register the policy in the points policy registry; the owners do that separately, so '
+  + 'verdicts change no seller points until then.';
 const ZERO = '0x0000000000000000000000000000000000000000';
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
-const CONTRACT_NAMES = { AntseedKbfVerification: 'kbfVerification', AntseedKbfVerificationPointsPolicy: 'kbfVerificationPointsPolicy' };
+/** Solidity contract name → ledger key, in deployment (nonce) order. */
+const CONTRACT_NAMES = {
+  AntseedVerificationResults: 'verificationResults',
+  AntseedKbfAudits: 'kbfAudits',
+  AntseedVerificationPointsPolicy: 'verificationPointsPolicy',
+};
+/** Ledger key → checkpoint address field, in deployment (nonce) order. */
+export const DEPLOYMENTS = [
+  ['verificationResults', 'resultsAddress'],
+  ['kbfAudits', 'kbfAddress'],
+  ['verificationPointsPolicy', 'policyAddress'],
+];
+const KBF_SHARE_BPS = 10_000;
 export const DEFAULT_BONUS_BPS = 0;
 const MAX_BONUS_BPS = 5_000;
 const TARGET = 'script/migrations/M003VerificationRegistry/Deploy.s.sol:M003DeployVerificationRegistry';
@@ -37,7 +54,7 @@ export function rejectAuditorList(value = process.env.VERIFICATION_AUDITORS) {
 }
 
 /**
- * The wallet that deploys and owns both contracts. M003 only deploys, so it need not own the
+ * The wallet that deploys and owns all three contracts. M003 only deploys, so it need not own the
  * points policy registry; the registry owner registers the policy later as a separate step.
  */
 export function verificationOwner(value = process.env.VERIFICATION_OWNER) {
@@ -63,28 +80,33 @@ export function validateBaseline(canonical) {
   }
 }
 
+function constructorMatches(contract, expected) {
+  const actual = contract.constructorArguments ?? [];
+  return actual.length === expected.length && expected.every((value, index) => (
+    ADDRESS.test(String(value)) ? sameAddress(actual[index], value) : String(actual[index]) === String(value)
+  ));
+}
+
 export function recordErrors(record) {
   const config = record.verificationConfiguration?.verificationRegistry;
-  const contract = record.contracts?.kbfVerification;
-  const policy = record.contracts?.kbfVerificationPointsPolicy;
-  if (!config || !contract || !policy) return ['M003 requires verification contracts and configuration'];
+  const contracts = record.contracts ?? {};
+  if (!config || DEPLOYMENTS.some(([key]) => !contracts[key])) return ['M003 requires verification contracts and configuration'];
   const errors = [];
-  for (const key of ['registry', 'identityRegistry', 'sellerPools', 'usageAccounting', 'pointsPolicyRegistry', 'owner', 'address', 'policyAddress']) {
+  for (const key of ['registry', 'identityRegistry', 'sellerPools', 'usageAccounting', 'pointsPolicyRegistry', 'owner',
+    ...DEPLOYMENTS.map(([, field]) => field)]) {
     if (!ADDRESS.test(config[key] ?? '') || sameAddress(config[key], ZERO)) errors.push(`M003 invalid ${key}`);
   }
-  if (!sameAddress(contract.address, config.address)) errors.push('M003 verification address mismatch');
-  if (!sameAddress(contract.owner, config.owner)) errors.push('M003 verification owner mismatch');
-  if (contract.constructorArguments?.length !== 2 || !sameAddress(contract.constructorArguments[0], config.registry)
-    || !sameAddress(contract.constructorArguments[1], config.sellerPools)) {
-    errors.push('M003 verification constructor mismatch');
+  for (const [key, field] of DEPLOYMENTS) {
+    if (!sameAddress(contracts[key].address, config[field])) errors.push(`M003 ${key} address mismatch`);
+    if (!sameAddress(contracts[key].owner, config.owner)) errors.push(`M003 ${key} owner mismatch`);
   }
-  if (!sameAddress(policy.address, config.policyAddress)) errors.push('M003 points policy address mismatch');
-  if (!sameAddress(policy.owner, config.owner)) errors.push('M003 points policy owner mismatch');
-  const policyArguments = policy.constructorArguments ?? [];
-  if (policyArguments.length !== 4 || !sameAddress(policyArguments[0], config.address)
-    || !sameAddress(policyArguments[1], config.usageAccounting) || String(policyArguments[2]) !== String(config.bonusBps)
-    || !sameAddress(policyArguments[3], config.owner)) {
-    errors.push('M003 points policy constructor mismatch');
+  const expectedArguments = {
+    verificationResults: [config.registry, config.sellerPools],
+    kbfAudits: [config.resultsAddress],
+    verificationPointsPolicy: [config.resultsAddress, config.usageAccounting, config.bonusBps, config.owner],
+  };
+  for (const [key] of DEPLOYMENTS) {
+    if (!constructorMatches(contracts[key], expectedArguments[key])) errors.push(`M003 ${key} constructor mismatch`);
   }
   try { parseBonusBps(String(config.bonusBps)); } catch (error) { errors.push(error.message); }
   if (!Number.isSafeInteger(config.deploymentNonce) || config.deploymentNonce < 0) errors.push('M003 invalid nonce');
@@ -96,25 +118,42 @@ async function collectReceipts(context, checkpoint) {
   const file = receiptFile(context);
   if (!(await fileExists(file))) return checkpoint;
   const parsed = await parseBroadcast(file, context.rpcUrl, CONTRACT_NAMES);
-  const creation = parsed.contracts.kbfVerification;
-  const policyCreation = parsed.contracts.kbfVerificationPointsPolicy;
-  if (creation && !sameAddress(creation.address, checkpoint.address)) return checkpoint;
-  if (policyCreation && !sameAddress(policyCreation.address, checkpoint.policyAddress)) return checkpoint;
+  for (const [key, field] of DEPLOYMENTS) {
+    if (parsed.contracts[key] && !sameAddress(parsed.contracts[key].address, checkpoint[field])) return checkpoint;
+  }
+  const creations = DEPLOYMENTS.map(([key]) => parsed.contracts[key]?.transactionHash).filter(Boolean);
   const transactions = parsed.transactions.filter((transaction) =>
-    sameAddress(transaction.to, checkpoint.address) || sameAddress(transaction.to, checkpoint.policyAddress)
-    || transaction.hash === creation?.transactionHash || transaction.hash === policyCreation?.transactionHash);
+    DEPLOYMENTS.some(([, field]) => sameAddress(transaction.to, checkpoint[field])) || creations.includes(transaction.hash));
   if (!transactions.length) return checkpoint;
   if (transactions.some((transaction) => !transactionSucceeded(context.rpcUrl, transaction.hash))) {
     throw new Error('M003 receipts are not confirmed on this chain');
   }
-  const combined = { ...checkpoint, ...mergeBroadcast(checkpoint, {
-    transactions, contracts: {
-      ...(creation ? { kbfVerification: creation } : {}),
-      ...(policyCreation ? { kbfVerificationPointsPolicy: policyCreation } : {}),
-    },
-  }) };
+  const contracts = Object.fromEntries(DEPLOYMENTS.flatMap(([key]) => (parsed.contracts[key] ? [[key, parsed.contracts[key]]] : [])));
+  const combined = { ...checkpoint, ...mergeBroadcast(checkpoint, { transactions, contracts }) };
   await writeCheckpoint(context, combined);
   return combined;
+}
+
+/** The three CREATE addresses from `owner` at nonces N..N+2. */
+function predictAddresses(rpcUrl, owner, deploymentNonce) {
+  return Object.fromEntries(DEPLOYMENTS.map(([, field], offset) => {
+    const address = cast(rpcUrl, ['compute-address', owner, '--nonce', String(deploymentNonce + offset)]).match(/0x[0-9a-fA-F]{40}/)?.[0];
+    if (!address) throw new Error('M003 could not compute deployment address');
+    return [field, address];
+  }));
+}
+
+async function checkDeployed(context, checkpoint, key, field, wiring) {
+  const { rpcUrl } = context;
+  const address = checkpoint[field];
+  const found = await findArtifact(await buildArtifactIndex(), key);
+  if (!found) throw new Error(`M003 missing ${key} artifact; run forge build`);
+  const mismatch = compareRuntimeCode(rpcUrl, address, found.artifact);
+  if (mismatch) throw new Error(`M003 ${key} ${mismatch}`);
+  const reads = { 'owner()(address)': checkpoint.owner, 'pendingOwner()(address)': ZERO, ...wiring };
+  for (const [signature, expected] of Object.entries(reads)) {
+    if (!sameAddress(call(rpcUrl, address, signature), expected)) throw new Error(`M003 ${key} wiring or ownership mismatch`);
+  }
 }
 
 async function observe(context) {
@@ -135,7 +174,7 @@ async function observe(context) {
     sourceCommit: record.sourceCommit, contracts: record.contracts, transactions: record.transactions,
   }));
   if (!checkpoint) {
-    if (canonical.contracts.kbfVerification) throw new Error('M003 verification exists without its history record');
+    if (DEPLOYMENTS.some(([key]) => canonical.contracts[key])) throw new Error('M003 verification exists without its history record');
     const file = receiptFile(context);
     if (await fileExists(file)) {
       const broadcast = await readJson(file);
@@ -145,11 +184,8 @@ async function observe(context) {
     }
     const owner = verificationOwner();
     const deploymentNonce = numberValue(cast(rpcUrl, ['nonce', owner]));
-    const address = cast(rpcUrl, ['compute-address', owner, '--nonce', String(deploymentNonce)]).match(/0x[0-9a-fA-F]{40}/)?.[0];
-    const policyAddress = cast(rpcUrl, ['compute-address', owner, '--nonce', String(deploymentNonce + 1)]).match(/0x[0-9a-fA-F]{40}/)?.[0];
-    if (!address || !policyAddress) throw new Error('M003 could not compute deployment address');
     checkpoint = {
-      ...expected, owner, deploymentNonce, address, policyAddress,
+      ...expected, owner, deploymentNonce, ...predictAddresses(rpcUrl, owner, deploymentNonce),
       bonusBps: parseBonusBps(process.env.VERIFICATION_BONUS_BPS),
       sourceCommit: sourceCommit(), contracts: {}, transactions: [],
     };
@@ -169,52 +205,32 @@ async function observe(context) {
   if (process.env.VERIFICATION_OWNER !== undefined && !sameAddress(verificationOwner(), checkpoint.owner)) {
     throw new Error('M003 VERIFICATION_OWNER differs from the original deployment');
   }
-  const verification = checkpoint.address;
-  const policy = checkpoint.policyAddress;
-  let state = 'ready';
-  if (hasCode(rpcUrl, verification)) {
-    const found = await findArtifact(await buildArtifactIndex(), 'kbfVerification');
-    if (!found) throw new Error('M003 missing AntseedKbfVerification artifact; run forge build');
-    const mismatch = compareRuntimeCode(rpcUrl, verification, found.artifact);
-    if (mismatch) throw new Error(`M003 ${mismatch}`);
-    if (!sameAddress(call(rpcUrl, verification, 'registry()(address)'), expected.registry)
-      || !sameAddress(call(rpcUrl, verification, 'sellerPools()(address)'), expected.sellerPools)
-      || !sameAddress(call(rpcUrl, verification, 'owner()(address)'), checkpoint.owner)
-      || !sameAddress(call(rpcUrl, verification, 'pendingOwner()(address)'), ZERO)) {
-      throw new Error('M003 verification registry or ownership mismatch');
-    }
-    if (!checkpoint.contracts.kbfVerification) throw new Error('M003 restore confirmed deployment receipts before continuing');
-    state = await observePolicy(context, checkpoint) ? 'active' : 'ready';
-  } else if (checkpoint.contracts.kbfVerification || hasCode(rpcUrl, policy)
-    || numberValue(cast(rpcUrl, ['nonce', checkpoint.owner, '--block', 'pending'])) !== checkpoint.deploymentNonce) {
+  // Contracts deploy in nonce order, so the deployed ones are a prefix; the rest must still be sendable.
+  const deployed = DEPLOYMENTS.map(([, field]) => hasCode(rpcUrl, checkpoint[field]));
+  const count = deployed.filter(Boolean).length;
+  if (deployed.some((present, index) => present !== index < count)
+    || DEPLOYMENTS.slice(count).some(([key]) => checkpoint.contracts[key])
+    || (count < DEPLOYMENTS.length
+      && numberValue(cast(rpcUrl, ['nonce', checkpoint.owner, '--block', 'pending'])) !== checkpoint.deploymentNonce + count)) {
     throw new Error('M003 deployment is missing or its nonce is in use; reconcile the original broadcast');
   }
+  const wiring = {
+    verificationResults: { 'registry()(address)': expected.registry, 'sellerPools()(address)': expected.sellerPools },
+    kbfAudits: { 'results()(address)': checkpoint.resultsAddress },
+    verificationPointsPolicy: { 'results()(address)': checkpoint.resultsAddress, 'usageAccounting()(address)': checkpoint.usageAccounting },
+  };
+  for (const [key, field] of DEPLOYMENTS.slice(0, count)) await checkDeployed(context, checkpoint, key, field, wiring[key]);
+  for (const [key] of DEPLOYMENTS.slice(0, count)) {
+    if (!checkpoint.contracts[key]) throw new Error(`M003 restore confirmed ${key} deployment receipts before continuing`);
+  }
+  let state = 'ready';
+  if (count === DEPLOYMENTS.length) {
+    const isSource = call(rpcUrl, checkpoint.resultsAddress, 'isSource(address)(bool)', [checkpoint.kbfAddress]);
+    const share = numberValue(call(rpcUrl, checkpoint.resultsAddress, 'sourceShareBps(address)(uint16)', [checkpoint.kbfAddress]));
+    if (String(isSource) === 'true' && share === KBF_SHARE_BPS) state = 'active';
+  }
+  // Approving auditors, the minter controller and registering the policy are manual steps outside M003.
   return { state, deployment: { checkpoint } };
-}
-
-async function observePolicy(context, checkpoint) {
-  const { rpcUrl } = context;
-  const policy = checkpoint.policyAddress;
-  if (!hasCode(rpcUrl, policy)) {
-    if (checkpoint.contracts.kbfVerificationPointsPolicy
-      || numberValue(cast(rpcUrl, ['nonce', checkpoint.owner, '--block', 'pending'])) !== checkpoint.deploymentNonce + 1) {
-      throw new Error('M003 points policy is missing or its nonce is in use; reconcile the original broadcast');
-    }
-    return false;
-  }
-  const found = await findArtifact(await buildArtifactIndex(), 'kbfVerificationPointsPolicy');
-  if (!found) throw new Error('M003 missing AntseedKbfVerificationPointsPolicy artifact; run forge build');
-  const mismatch = compareRuntimeCode(rpcUrl, policy, found.artifact);
-  if (mismatch) throw new Error(`M003 points policy ${mismatch}`);
-  if (!sameAddress(call(rpcUrl, policy, 'verification()(address)'), checkpoint.address)
-    || !sameAddress(call(rpcUrl, policy, 'usageAccounting()(address)'), checkpoint.usageAccounting)
-    || !sameAddress(call(rpcUrl, policy, 'owner()(address)'), checkpoint.owner)
-    || !sameAddress(call(rpcUrl, policy, 'pendingOwner()(address)'), ZERO)) {
-    throw new Error('M003 points policy wiring or ownership mismatch');
-  }
-  if (!checkpoint.contracts.kbfVerificationPointsPolicy) throw new Error('M003 restore confirmed policy deployment receipts before continuing');
-  // Registering the policy in the points policy registry is a manual step outside M003.
-  return true;
 }
 
 export function activationRecords(context, checkpoint) {
@@ -235,18 +251,18 @@ async function finalize(context, observation, mode) {
   if (mode !== 'broadcast' || observation.state !== 'active') return false;
   const checkpoint = observation.deployment.checkpoint;
   if (await historyRecordExists(context, RELEASE)
-    && sameAddress(context.canonical.contracts.kbfVerification?.address, checkpoint.address)) {
+    && sameAddress(context.canonical.contracts.kbfAudits?.address, checkpoint.kbfAddress)) {
     await clearPlan(context, RELEASE);
     return false;
   }
-  if (!checkpoint.contracts.kbfVerification?.transactionHash || !checkpoint.contracts.kbfVerificationPointsPolicy?.transactionHash) {
+  if (DEPLOYMENTS.some(([key]) => !checkpoint.contracts[key]?.transactionHash)) {
     throw new Error('M003 confirmed creation receipts required');
   }
   const { record, current } = activationRecords(context, checkpoint);
   if (recordErrors(record).length) throw new Error(recordErrors(record).join('\n'));
   if (await historyRecordExists(context, RELEASE)) {
     const recorded = await readJson(historyFile(context, RELEASE));
-    if (!sameAddress(recorded.contracts.kbfVerification.address, checkpoint.address)) throw new Error('M003 history address mismatch');
+    if (!sameAddress(recorded.contracts.kbfAudits?.address, checkpoint.kbfAddress)) throw new Error('M003 history address mismatch');
   }
   await writeActivationRecords(context, record, current);
   await clearPlan(context, RELEASE);
@@ -260,14 +276,11 @@ const deployPhase = {
   plan: (context, observation) => ({
     release: RELEASE, phaseId: 'deploy', simulationFile: receiptFile(context, true),
     pointerChanges: {
-      'current.contracts.kbfVerification': {
-        before: context.canonical.contracts.kbfVerification?.address ?? 'not deployed',
-        after: observation.deployment.checkpoint.address,
-      },
-      'current.contracts.kbfVerificationPointsPolicy': {
-        before: context.canonical.contracts.kbfVerificationPointsPolicy?.address ?? 'not deployed',
-        after: observation.deployment.checkpoint.policyAddress,
-      },
+      ...Object.fromEntries(DEPLOYMENTS.map(([key, field]) => [`current.contracts.${key}`, {
+        before: context.canonical.contracts[key]?.address ?? 'not deployed',
+        after: observation.deployment.checkpoint[field],
+      }])),
+      'verificationResults.sources': { before: 'none', after: 'kbfAudits at 10000 bps' },
       'pointsPolicyRegistry.policies': {
         before: 'unchanged',
         after: 'unchanged (register the policy manually later)',
@@ -291,7 +304,6 @@ const deployPhase = {
     }
   },
 };
-
 export const migration = {
   id: 'M003',
   networks: ['base-sepolia', 'base-mainnet'],
@@ -351,8 +363,7 @@ export const migration = {
         else process.env.VERIFICATION_OWNER = previous;
       }
       if (first.state !== 'active' || second.state !== 'active'
-        || !sameAddress(first.deployment.checkpoint.address, second.deployment.checkpoint.address)
-        || !sameAddress(first.deployment.checkpoint.policyAddress, second.deployment.checkpoint.policyAddress)
+        || DEPLOYMENTS.some(([, field]) => !sameAddress(first.deployment.checkpoint[field], second.deployment.checkpoint[field]))
         || first.deployment.checkpoint.transactions.length !== second.deployment.checkpoint.transactions.length) {
         throw new Error('M003 rehearsal must deploy once and repeat as an active no-op');
       }

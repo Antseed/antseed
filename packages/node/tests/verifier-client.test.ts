@@ -1,7 +1,8 @@
-import { EventLog, Interface, Wallet } from 'ethers';
+import { EventLog, Interface, Wallet, getAddress } from 'ethers';
 import { describe, expect, it, vi } from 'vitest';
 import {
-  VERIFICATION_ABI,
+  KBF_AUDITS_ABI,
+  VERIFICATION_RESULTS_ABI,
   VerifierClient,
   VERIFIER_VERDICT,
   modelHash,
@@ -11,6 +12,7 @@ import {
 import { queryInBlockChunks, resolveScanFromBlock } from '../src/payments/evm/block-range.js';
 
 const VERIFICATION_ADDRESS = '0x' + '10'.repeat(20);
+const RESULTS_ADDRESS = '0x' + '20'.repeat(20);
 
 describe('VerifierClient audit ABI', () => {
   const results = [
@@ -49,7 +51,7 @@ describe('VerifierClient audit ABI', () => {
     })).resolves.toBe('0xsubmit');
     expect(execWrite).toHaveBeenCalledWith(
       signer,
-      VERIFICATION_ABI,
+      KBF_AUDITS_ABI,
       'submitModelAudit',
       7n,
       modelHash('model-a'),
@@ -57,12 +59,12 @@ describe('VerifierClient audit ABI', () => {
       'ipfs://bafytest',
       sortServiceResults(results).map((result) => [result.agentId, result.serviceHash, result.verdict]),
     );
-    const encoded = new Interface(VERIFICATION_ABI).encodeFunctionData('submitModelAudit', execWrite.mock.calls[0]!.slice(3));
+    const encoded = new Interface(KBF_AUDITS_ABI).encodeFunctionData('submitModelAudit', execWrite.mock.calls[0]!.slice(3));
     expect(encoded.startsWith('0x')).toBe(true);
   });
 
   it('exposes model and service audit events', () => {
-    const iface = new Interface(VERIFICATION_ABI);
+    const iface = new Interface(KBF_AUDITS_ABI);
     expect(iface.getEvent('ServiceAudited')?.inputs.map((input) => input.name)).toEqual([
       'agentId',
       'serviceHash',
@@ -82,7 +84,119 @@ describe('VerifierClient audit ABI', () => {
       'resultCount',
     ]);
     expect(iface.getFunction('submitAudit')).toBeNull();
-    expect(iface.getFunction('auditorEpochCredits')).not.toBeNull();
+    expect(iface.getFunction('reportKey')).not.toBeNull();
+    expect(iface.getFunction('evidenceAuditor')).not.toBeNull();
+    expect(iface.getFunction('auditorEpochCredits')).toBeNull();
+  });
+
+  it('splits the ABI across the KBF source and the results layer', () => {
+    const results = new Interface(VERIFICATION_RESULTS_ABI);
+    expect(results.getFunction('serviceStatus')?.outputs[0]?.components?.map((part) => part.name)).toEqual([
+      'modelHash', 'verdict', 'updatedAt', 'epoch', 'source',
+    ]);
+    expect(results.getEvent('ServiceStatusChanged')?.inputs.map((input) => input.name)).toEqual([
+      'agentId', 'serviceHash', 'modelHash', 'previous', 'current', 'source', 'evidenceHash',
+    ]);
+    expect(results.getFunction('claimRewards')?.inputs.map((input) => input.type)).toEqual(['address', 'uint256[]']);
+    expect(results.getFunction('pendingReward')?.inputs.map((input) => input.name)).toEqual(['source', 'auditor', 'epoch']);
+    expect(results.getFunction('submitModelAudit')).toBeNull();
+    const kbf = new Interface(KBF_AUDITS_ABI);
+    expect(kbf.getEvent('AuditorSet')?.inputs.map((input) => input.name)).toEqual(['auditor', 'approved']);
+    expect(kbf.getFunction('approvedAuditors')).not.toBeNull();
+    expect(kbf.getFunction('verifierSet')).toBeNull();
+  });
+});
+
+describe('VerifierClient contract routing', () => {
+  /** Answers eth_call for the three contracts from `answers[address][method]`. */
+  function stubProvider(client: VerifierClient, answers: Record<string, Record<string, (args: unknown[]) => unknown[]>>) {
+    const ifaces = [new Interface(KBF_AUDITS_ABI), new Interface(VERIFICATION_RESULTS_ABI)];
+    const calls: Array<{ to: string; method: string; args: unknown[] }> = [];
+    const call = vi.fn(async (tx: { to: string; data: string }) => {
+      const to = tx.to.toLowerCase();
+      for (const iface of ifaces) {
+        const parsed = iface.parseTransaction({ data: tx.data });
+        const answer = parsed && answers[to]?.[parsed.name];
+        if (!parsed || !answer) continue;
+        calls.push({ to, method: parsed.name, args: [...parsed.args] });
+        return iface.encodeFunctionResult(parsed.fragment, answer([...parsed.args]));
+      }
+      throw new Error(`unexpected call to ${to}`);
+    });
+    const provider = {
+      call,
+      resolveName: async (name: string) => name,
+      getNetwork: async () => ({ chainId: 8453n }),
+      provider: undefined as unknown,
+    };
+    provider.provider = provider;
+    (client as unknown as { _provider: unknown })._provider = provider;
+    return calls;
+  }
+
+  it('discovers the results layer from the KBF contract once and reads auditors from the KBF contract', async () => {
+    const client = new VerifierClient({ rpcUrl: 'http://127.0.0.1:1', contractAddress: VERIFICATION_ADDRESS });
+    const auditor = '0x' + '44'.repeat(20);
+    const calls = stubProvider(client, {
+      [VERIFICATION_ADDRESS]: {
+        results: () => [RESULTS_ADDRESS],
+        modelCredits: () => [1n],
+        maxCreditsPerModelPerEpoch: () => [1n],
+        approvedAuditors: () => [true],
+        activeSinceEpoch: () => [3n],
+      },
+      [RESULTS_ADDRESS]: {
+        pendingReward: () => [5n],
+        auditorEpochCredits: () => [2n],
+        epochCredits: () => [4n],
+        maxCreditsPerAuditorPerEpoch: () => [100n],
+        serviceStatus: () => [['0x' + 'aa'.repeat(32), 2n, 7n, 9n, VERIFICATION_ADDRESS]],
+      },
+    });
+
+    expect(await client.resultsAddress()).toBe(getAddress(RESULTS_ADDRESS));
+    expect(await client.pendingAuditorReward(auditor, 8)).toBe(5n);
+    expect(await client.auditCredits(auditor, 8)).toEqual({ auditor: 2n, total: 4n });
+    expect(await client.creditLimits()).toEqual({ perAuditor: 100n, perModel: 1n });
+    expect(await client.approvedAuditor(auditor)).toBe(true);
+    expect(await client.activeSinceEpoch(auditor)).toBe(3n);
+    expect(await client.serviceStatusByHash(1n, '0x' + '01'.repeat(32))).toEqual({
+      modelHash: '0x' + 'aa'.repeat(32), verdict: 2, updatedAt: 7n, epoch: 9n, source: getAddress(VERIFICATION_ADDRESS),
+    });
+
+    expect(calls.filter((entry) => entry.method === 'results')).toHaveLength(1);
+    const kbf = getAddress(VERIFICATION_ADDRESS);
+    expect(calls.find((entry) => entry.method === 'pendingReward')).toMatchObject({ to: RESULTS_ADDRESS, args: [kbf, getAddress(auditor), 8n] });
+    expect(calls.find((entry) => entry.method === 'auditorEpochCredits')).toMatchObject({ args: [kbf, 8n, getAddress(auditor)] });
+    expect(calls.find((entry) => entry.method === 'epochCredits')).toMatchObject({ args: [kbf, 8n] });
+    expect(calls.find((entry) => entry.method === 'approvedAuditors')).toMatchObject({ to: VERIFICATION_ADDRESS });
+  });
+
+  it('uses a configured results address without asking the KBF contract', async () => {
+    const client = new VerifierClient({
+      rpcUrl: 'http://127.0.0.1:1', contractAddress: VERIFICATION_ADDRESS, resultsAddress: RESULTS_ADDRESS,
+    });
+    const calls = stubProvider(client, { [RESULTS_ADDRESS]: { validityEpochs: () => [2n] } });
+    expect(await client.validityEpochs()).toBe(2);
+    expect(calls.map((entry) => entry.to)).toEqual([RESULTS_ADDRESS]);
+  });
+
+  it('claims KBF rewards on the results contract with the KBF contract as the source', async () => {
+    const client = new VerifierClient({ rpcUrl: 'http://127.0.0.1:1', contractAddress: VERIFICATION_ADDRESS, resultsAddress: RESULTS_ADDRESS });
+    const execWrite = vi.fn().mockResolvedValue('0xclaim');
+    const writerPrototype = Object.getPrototypeOf(Object.getPrototypeOf(client)) as { _execWrite: unknown };
+    const spy = vi.spyOn(writerPrototype as { _execWrite: typeof execWrite }, '_execWrite').mockImplementation(async function (this: { contractAddress: string }, ...args: unknown[]) {
+      return execWrite(this.contractAddress, ...args);
+    });
+    try {
+      const signer = Wallet.createRandom();
+      await expect(client.claimAuditorRewards(signer, [3, 4n])).resolves.toBe('0xclaim');
+      expect(execWrite).toHaveBeenCalledWith(
+        getAddress(RESULTS_ADDRESS), signer, VERIFICATION_RESULTS_ABI, 'claimRewards', getAddress(VERIFICATION_ADDRESS), [3n, 4n],
+      );
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 
@@ -165,7 +279,7 @@ describe('verifier event block ranges', () => {
 
   it('reads AuditorSet events in order with their block timestamps', async () => {
     const client = new VerifierClient({ rpcUrl: 'http://127.0.0.1:1', contractAddress: VERIFICATION_ADDRESS, deploymentBlock: 10 });
-    const iface = new Interface(VERIFICATION_ABI);
+    const iface = new Interface(KBF_AUDITS_ABI);
     const fragment = iface.getEvent('AuditorSet')!;
     const log = (auditor: string, approved: boolean, blockNumber: number, index: number) => {
       const encoded = iface.encodeEventLog(fragment, [auditor, approved]);
@@ -176,7 +290,7 @@ describe('verifier event block ranges', () => {
     };
     const a = '0x' + '11'.repeat(20);
     const b = '0x' + '22'.repeat(20);
-    const queryFilter = vi.fn(async () => [log(b, true, 30, 1), log(a, true, 20, 0), log(a, false, 30, 0)]);
+    const queryFilter = vi.fn(async (_event: unknown, _from: number, _to: number | 'latest') => [log(b, true, 30, 1), log(a, true, 20, 0), log(a, false, 30, 0)]);
     const getBlock = vi.fn(async (blockNumber: number) => ({ timestamp: blockNumber * 2 }));
     const internals = client as unknown as { _contract(): unknown; _provider: unknown };
     internals._contract = () => ({ filters: { AuditorSet: () => 'auditor-filter' }, queryFilter });
@@ -189,5 +303,6 @@ describe('verifier event block ranges', () => {
       [b, true, 30, 1, 60],
     ]);
     expect(getBlock).toHaveBeenCalledTimes(2);
+    expect(queryFilter.mock.calls[0]?.[1]).toBe(10); // scans from the KBF deployment block
   });
 });

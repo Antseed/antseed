@@ -34,7 +34,7 @@ export function normalizedModelReputationScore(source: ModelReputationSource): n
 }
 
 /**
- * The service name exactly as `AntseedKbfVerification` hashes it
+ * The service name exactly as `AntseedVerificationResults` hashes it
  * (`keccak256(lowercase(trim(service)))`), so a verdict only ever matches the
  * service it was given for.
  */

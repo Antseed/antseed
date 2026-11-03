@@ -13,18 +13,24 @@ import { queryInBlockChunks, resolveScanFromBlock } from './block-range.js';
 export interface VerifierClientConfig {
   rpcUrl: string;
   fallbackRpcUrls?: string[];
+  /**
+   * The `AntseedKbfAudits` contract: the KBF source auditors submit audits to, which also holds the
+   * approved auditors. The results layer is discovered from it (`results()`) unless given below.
+   */
   contractAddress: string;
   evmChainId?: number;
   /**
-   * Block the verification contract was deployed at. Default lower bound for
+   * Block the KBF audits contract was deployed at. Default lower bound for
    * event queries; without it, queries require an explicit `fromBlock`.
    */
   deploymentBlock?: number;
+  /** `AntseedVerificationResults` address; read from `kbf.results()` when absent. */
+  resultsAddress?: string;
   /** Max blocks per `eth_getLogs` window (defaults to 10k). */
   logQueryChunkBlocks?: number;
 }
 
-/** Mirrors IAntseedKbfVerification.Verdict. */
+/** Mirrors IAntseedVerificationResults.Verdict. */
 export const VERIFIER_VERDICT = {
   NONE: 0,
   SAME: 1,
@@ -39,7 +45,7 @@ export function verifierVerdict(name: VerifierVerdictName): VerifierVerdict {
   return VERIFIER_VERDICT[name];
 }
 
-/** AntseedKbfVerification.MAX_RESULTS_PER_AUDIT. */
+/** AntseedKbfAudits.MAX_RESULTS_PER_AUDIT. */
 export const MAX_RESULTS_PER_MODEL_AUDIT = 256;
 
 export interface ServiceResultInput {
@@ -62,7 +68,7 @@ export interface ServiceAuditedEvent {
   auditor: string;
   modelHash: string;
   verdict: VerifierVerdict;
-  /** The service's report round: it moves on whenever the service's verdict moves into or out of DIFF, and only reports of the current round count. */
+  /** The service's report round: it moves on whenever the service's verdict moves into or out of DIFF or an auditor is revoked; only reports of the current round count. */
   round: number;
   /** Distinct auditors reporting `verdict` for this service and model in the epoch and round, this report included. */
   reports: number;
@@ -107,31 +113,59 @@ export interface AuditorCredits {
   total: bigint;
 }
 
-export const VERIFICATION_ABI = [
+/** `AntseedKbfAudits`: the KBF source verifiers submit to. */
+export const KBF_AUDITS_ABI = [
   'function submitModelAudit(uint256 expectedEpoch,bytes32 modelHash,bytes32 evidenceHash,string evidenceUri,(uint256 agentId,bytes32 serviceHash,uint8 verdict)[] results) external',
-  'function serviceStatus(uint256 agentId,bytes32 serviceHash) external view returns ((bytes32 modelHash,uint8 verdict,uint64 updatedAt,uint64 epoch))',
+  'function requiredReports(uint8 verdict) external view returns (uint8)',
+  'function reportRound(uint256 agentId,bytes32 serviceHash) external view returns (uint256)',
+  'function reportKey(uint256 epoch,uint256 agentId,bytes32 serviceHash,bytes32 modelHash,uint256 round) external pure returns (bytes32)',
+  'function reportOf(bytes32 key,address auditor) external view returns (uint8)',
+  'function reportCount(bytes32 key,uint8 verdict) external view returns (uint256)',
+  'function modelCredits(uint256 epoch,address auditor,bytes32 modelHash) external view returns (uint256)',
+  'function maxCreditsPerModelPerEpoch() external view returns (uint32)',
+  'function minActiveEpochs() external view returns (uint8)',
+  'function evidenceAuditor(bytes32 evidenceHash) external view returns (address)',
+  'function results() external view returns (address)',
+  'function approvedAuditors(address auditor) external view returns (bool)',
+  'function activeSinceEpoch(address auditor) external view returns (uint256)',
+  'function auditorRevocations() external view returns (uint256)',
+  'event AuditorSet(address indexed auditor,bool approved)',
+  'event ModelAudited(bytes32 indexed modelHash,address indexed auditor,uint256 indexed epoch,bytes32 evidenceHash,string evidenceUri,uint256 resultCount)',
+  'event ServiceAudited(uint256 indexed agentId,bytes32 indexed serviceHash,address indexed auditor,bytes32 modelHash,uint8 verdict,uint256 round,uint256 reports,uint256 required)',
+  'event AuditCredited(uint256 indexed epoch,address indexed auditor,bytes32 indexed modelHash)',
+  'event ServiceRecordLocked(uint256 indexed agentId,bytes32 indexed serviceHash,bytes32 modelHash,uint8 verdict)',
+  'event UnknownAgentSkipped(uint256 indexed agentId,bytes32 indexed modelHash)',
+] as const;
+
+/** `AntseedVerificationResults`: verdicts and verification rewards, for every source. */
+export const VERIFICATION_RESULTS_ABI = [
+  'function serviceStatus(uint256 agentId,bytes32 serviceHash) external view returns ((bytes32 modelHash,uint8 verdict,uint64 updatedAt,uint64 epoch,address source))',
   'function agentStatus(uint256 agentId) external view returns ((uint16 verifiedCount,uint16 diffCount))',
   'function isVerified(uint256 agentId) external view returns (bool)',
-  'function claimAuditorRewards(uint256[] epochs) external returns (uint256)',
-  'function pendingAuditorReward(address auditor,uint256 epoch) external view returns (uint256)',
-  'function epochCredits(uint256 epoch) external view returns (uint256)',
-  'function auditorEpochCredits(uint256 epoch,address auditor) external view returns (uint256)',
-  'function modelCredits(uint256 epoch,address auditor,bytes32 modelHash) external view returns (uint256)',
-  'function maxCreditsPerAuditorPerEpoch() external view returns (uint32)',
-  'function maxCreditsPerModelPerEpoch() external view returns (uint32)',
+  'function liveVerdict(uint256 agentId,bytes32 serviceHash) external view returns (uint8)',
+  'function diffChanges(uint256 agentId,bytes32 serviceHash) external view returns (uint256)',
   'function validityEpochs() external view returns (uint8)',
   'function emissionsGate() external view returns (address)',
   'function registry() external view returns (address)',
   'function sellerPools() external view returns (address)',
-  'function approvedAuditors(address auditor) external view returns (bool)',
-  'function requiredReports(uint8 verdict) external view returns (uint8)',
-  'function reportRound(uint256 agentId,bytes32 serviceHash) external view returns (uint256)',
-  'event AuditorSet(address indexed auditor,bool approved)',
-  'event ModelAudited(bytes32 indexed modelHash,address indexed auditor,uint256 indexed epoch,bytes32 evidenceHash,string evidenceUri,uint256 resultCount)',
-  'event ServiceAudited(uint256 indexed agentId,bytes32 indexed serviceHash,address indexed auditor,bytes32 modelHash,uint8 verdict,uint256 round,uint256 reports,uint256 required)',
-  'event ServiceStatusChanged(uint256 indexed agentId,bytes32 indexed serviceHash,bytes32 modelHash,uint8 previous,uint8 current)',
-  'event AuditCredited(uint256 indexed epoch,address indexed auditor,bytes32 indexed modelHash)',
+  'function currentEpoch() external view returns (uint256)',
+  'function isSource(address source) external view returns (bool)',
+  'function sourceShareBps(address source) external view returns (uint16)',
+  'function rewardsStartEpoch() external view returns (uint256)',
+  'function maxCreditsPerAuditorPerEpoch() external view returns (uint32)',
+  'function maxAuditorShareBps() external view returns (uint16)',
+  'function epochCredits(address source,uint256 epoch) external view returns (uint256)',
+  'function auditorEpochCredits(address source,uint256 epoch,address auditor) external view returns (uint256)',
+  'function auditorEpochClaimed(address source,uint256 epoch,address auditor) external view returns (bool)',
+  'function claimRewards(address source,uint256[] epochs) external returns (uint256)',
+  'function pendingReward(address source,address auditor,uint256 epoch) external view returns (uint256)',
+  'event ServiceStatusChanged(uint256 indexed agentId,bytes32 indexed serviceHash,bytes32 modelHash,uint8 previous,uint8 current,address source,bytes32 evidenceHash)',
+  'event AgentStatusChanged(uint256 indexed agentId,uint16 verifiedCount,uint16 diffCount)',
+  'event Credited(address indexed source,uint256 indexed epoch,address indexed auditor,uint256 credits)',
+  'event RewardClaimed(address indexed source,uint256 indexed epoch,address indexed auditor,uint256 amount)',
+  'event RecordLocked(uint256 indexed agentId,bytes32 indexed serviceHash,address indexed source,uint8 verdict)',
 ] as const;
+
 
 const EMISSIONS_GATE_EPOCH_ABI = [
   'function currentEpoch() external view returns (uint256)',
@@ -174,34 +208,66 @@ export interface VerifierServiceStatus {
   updatedAt: bigint;
   /** Emissions epoch the verdict was given in; it counts while `currentEpoch < epoch + validityEpochs`. 0 when there is none. */
   epoch: bigint;
+  /** Source contract that recorded the verdict (e.g. the KBF audits contract); the zero address when there is none. */
+  source: string;
 }
 
+/**
+ * Reads and writes the split verification contracts on behalf of a KBF verifier:
+ *
+ * - `AntseedKbfAudits` (`contractAddress`): approved auditors (`AuditorSet` events), audits, report
+ *   tallies, per-model credits;
+ * - `AntseedVerificationResults` (`kbf.results()`): verdicts, epochs, credits and reward claims,
+ *   keyed by the KBF contract as the source.
+ *
+ * The results address is discovered from the KBF contract on first use and cached.
+ */
 export class VerifierClient extends BaseEvmClient {
   private _contractInstance: Contract | null = null;
+  private _resultsInstance: Promise<Contract> | null = null;
+  private readonly _config: VerifierClientConfig;
   private readonly _deploymentBlock: number | undefined;
   private readonly _logQueryChunkBlocks: number | undefined;
 
   constructor(config: VerifierClientConfig) {
     super(config.rpcUrl, config.contractAddress, config.fallbackRpcUrls, config.evmChainId);
+    this._config = config;
     this._deploymentBlock = config.deploymentBlock;
     this._logQueryChunkBlocks = config.logQueryChunkBlocks;
   }
 
-  /** Block the verification contract was deployed at, when configured. */
+  /** Block the KBF audits contract was deployed at, when configured. */
   get deploymentBlock(): number | undefined {
     return this._deploymentBlock;
   }
 
+  /** The `AntseedKbfAudits` contract. */
   private _contract(): Contract {
-    this._contractInstance ??= new Contract(this._contractAddress, VERIFICATION_ABI, this._provider);
+    this._contractInstance ??= new Contract(this._contractAddress, KBF_AUDITS_ABI, this._provider);
     return this._contractInstance;
   }
 
-  /** Records one auditor's results for every seller audited as one model. */
+  /** The `AntseedVerificationResults` contract the KBF contract records into. */
+  private _results(): Promise<Contract> {
+    this._resultsInstance ??= (async () => {
+      const address = this._config.resultsAddress
+        ?? String(await this._contract().getFunction('results')());
+      return new Contract(getAddress(address), VERIFICATION_RESULTS_ABI, this._provider);
+    })();
+    this._resultsInstance.catch(() => { this._resultsInstance = null; });
+    return this._resultsInstance;
+  }
+
+  /** `AntseedVerificationResults` address (configured, or read from the KBF contract). */
+  async resultsAddress(): Promise<string> {
+    return getAddress(String((await this._results()).target));
+  }
+
+  /** Records one auditor's results for every seller audited as one model, on the KBF contract. */
   async submitModelAudit(signer: AbstractSigner, input: SubmitModelAuditInput): Promise<string> {
     return this._execWrite(
       signer,
-      VERIFICATION_ABI,
+      KBF_AUDITS_ABI,
       'submitModelAudit',
       input.expectedEpoch,
       input.modelHash,
@@ -211,20 +277,24 @@ export class VerifierClient extends BaseEvmClient {
     );
   }
 
+  /** Claims KBF rewards for `epochs` on the results contract: `results.claimRewards(kbf, epochs)`. */
   async claimAuditorRewards(signer: AbstractSigner, epochs: readonly (number | bigint)[]): Promise<string> {
-    return this._execWrite(signer, VERIFICATION_ABI, 'claimAuditorRewards', epochs.map((epoch) => BigInt(epoch)));
+    const writer = new ResultsWriter(this._config, await this.resultsAddress()).withProvider(this._provider);
+    return writer.claimRewards(signer, getAddress(this._contractAddress), epochs.map((epoch) => BigInt(epoch)));
   }
 
+  /** Claimable KBF reward of a finalized epoch: `results.pendingReward(kbf, auditor, epoch)`. */
   async pendingAuditorReward(auditor: string, epoch: number | bigint): Promise<bigint> {
-    return BigInt(await this._contract().getFunction('pendingAuditorReward')(getAddress(auditor), BigInt(epoch)));
+    const results = await this._results();
+    return BigInt(await results.getFunction('pendingReward')(this._contractAddress, getAddress(auditor), BigInt(epoch)));
   }
 
-  /** Credits the auditor earned in `epoch`, and the epoch's total. */
+  /** KBF credits the auditor earned in `epoch`, and the epoch's KBF total, from the results contract. */
   async auditCredits(auditor: string, epoch: number | bigint): Promise<AuditorCredits> {
-    const contract = this._contract();
+    const results = await this._results();
     const [auditorCredits, total] = await Promise.all([
-      contract.getFunction('auditorEpochCredits')(BigInt(epoch), getAddress(auditor)),
-      contract.getFunction('epochCredits')(BigInt(epoch)),
+      results.getFunction('auditorEpochCredits')(this._contractAddress, BigInt(epoch), getAddress(auditor)),
+      results.getFunction('epochCredits')(this._contractAddress, BigInt(epoch)),
     ]);
     return { auditor: BigInt(auditorCredits), total: BigInt(total) };
   }
@@ -233,22 +303,33 @@ export class VerifierClient extends BaseEvmClient {
     return BigInt(await this._contract().getFunction('modelCredits')(BigInt(epoch), getAddress(auditor), model));
   }
 
+  /** Per-auditor cap (results layer, per source and epoch) and per-model cap (KBF contract). */
   async creditLimits(): Promise<{ perAuditor: bigint; perModel: bigint }> {
-    const contract = this._contract();
+    const results = await this._results();
     const [perAuditor, perModel] = await Promise.all([
-      contract.getFunction('maxCreditsPerAuditorPerEpoch')(),
-      contract.getFunction('maxCreditsPerModelPerEpoch')(),
+      results.getFunction('maxCreditsPerAuditorPerEpoch')(),
+      this._contract().getFunction('maxCreditsPerModelPerEpoch')(),
     ]);
     return { perAuditor: BigInt(perAuditor), perModel: BigInt(perModel) };
   }
 
-  /** The emissions gate pinned by the contract at deployment; `expectedEpoch` is checked against it. */
+  /** Epochs a verifier must have been active before the KBF contract accepts its audits (0: none). */
+  async minActiveEpochs(): Promise<number> {
+    return Number(await this._contract().getFunction('minActiveEpochs')());
+  }
+
+  /** Epoch `auditor` was last approved on the KBF contract; 0 while not approved. */
+  async activeSinceEpoch(auditor: string): Promise<bigint> {
+    return BigInt(await this._contract().getFunction('activeSinceEpoch')(getAddress(auditor)));
+  }
+
+  /** The emissions gate the results contract pinned at deployment; `expectedEpoch` is checked against it. */
   async emissionsGate(): Promise<string> {
-    return getAddress(String(await this._contract().getFunction('emissionsGate')()));
+    return getAddress(String(await (await this._results()).getFunction('emissionsGate')()));
   }
 
   async validityEpochs(): Promise<number> {
-    return Number(await this._contract().getFunction('validityEpochs')());
+    return Number(await (await this._results()).getFunction('validityEpochs')());
   }
 
   /** The current epoch exactly as `submitModelAudit` checks it. */
@@ -264,12 +345,12 @@ export class VerifierClient extends BaseEvmClient {
   }
 
   async isVerified(agentId: number | bigint): Promise<boolean> {
-    return Boolean(await this._contract().getFunction('isVerified')(BigInt(agentId)));
+    return Boolean(await (await this._results()).getFunction('isVerified')(BigInt(agentId)));
   }
 
   /** SAME and DIFF services whose verdicts are still within `validityEpochs`. */
   async agentStatus(agentId: number | bigint): Promise<{ verifiedCount: number; diffCount: number }> {
-    const status = await this._contract().getFunction('agentStatus')(BigInt(agentId));
+    const status = await (await this._results()).getFunction('agentStatus')(BigInt(agentId));
     return {
       verifiedCount: Number(status.verifiedCount ?? status[0]),
       diffCount: Number(status.diffCount ?? status[1]),
@@ -281,21 +362,23 @@ export class VerifierClient extends BaseEvmClient {
   }
 
   async serviceStatusByHash(agentId: number | bigint, hash: string): Promise<VerifierServiceStatus> {
-    const status = await this._contract().getFunction('serviceStatus')(BigInt(agentId), hash);
+    const status = await (await this._results()).getFunction('serviceStatus')(BigInt(agentId), hash);
     return {
       modelHash: String(status.modelHash ?? status[0]),
       verdict: Number(status.verdict ?? status[1]) as VerifierVerdict,
       updatedAt: BigInt(status.updatedAt ?? status[2]),
       epoch: BigInt(status.epoch ?? status[3]),
+      source: getAddress(String(status.source ?? status[4])),
     };
   }
 
+  /** Whether `auditor` is approved on the KBF contract. */
   async approvedAuditor(auditor: string): Promise<boolean> {
     return Boolean(await this._contract().getFunction('approvedAuditors')(getAddress(auditor)));
   }
 
   async registry(): Promise<string> {
-    return getAddress(String(await this._contract().getFunction('registry')()));
+    return getAddress(String(await (await this._results()).getFunction('registry')()));
   }
 
   async identityRegistry(): Promise<string> {
@@ -336,7 +419,7 @@ export class VerifierClient extends BaseEvmClient {
   ): Promise<ServiceAuditedEvent[]> {
     const contract = this._contract();
     const filterFactory = contract.filters.ServiceAudited;
-    if (!filterFactory) throw new Error('ServiceAudited event is missing from verification ABI');
+    if (!filterFactory) throw new Error('ServiceAudited event is missing from the KBF audits ABI');
     const logs = await this._queryEvents(
       contract,
       filterFactory(agentId === null ? null : BigInt(agentId), service === null ? null : serviceHash(service)),
@@ -369,7 +452,7 @@ export class VerifierClient extends BaseEvmClient {
   ): Promise<ModelAuditedEvent[]> {
     const contract = this._contract();
     const filterFactory = contract.filters.ModelAudited;
-    if (!filterFactory) throw new Error('ModelAudited event is missing from verification ABI');
+    if (!filterFactory) throw new Error('ModelAudited event is missing from the KBF audits ABI');
     const logs = await this._queryEvents(
       contract,
       filterFactory(filter.model ?? null, filter.auditor ? getAddress(filter.auditor) : null),
@@ -393,13 +476,14 @@ export class VerifierClient extends BaseEvmClient {
   }
 
   /**
-   * Every `AuditorSet` change in block order, with its block timestamp. The contract cannot list
-   * its auditors, so replaying these events is how to rebuild the approved set at a point in time.
+   * Every `AuditorSet` change of the KBF contract in block order, with its block timestamp. The
+   * contract cannot list its auditors, so replaying these events is how to rebuild the approved set
+   * at a point in time.
    */
   async queryAuditorSetEvents(fromBlock?: number, toBlock: number | 'latest' = 'latest'): Promise<AuditorSetEvent[]> {
     const contract = this._contract();
     const filterFactory = contract.filters.AuditorSet;
-    if (!filterFactory) throw new Error('AuditorSet event is missing from verification ABI');
+    if (!filterFactory) throw new Error('AuditorSet event is missing from the KBF audits ABI');
     const logs = await this._queryEvents(contract, filterFactory(), fromBlock, toBlock);
     const timestamps = new Map<number, number>();
     const events: AuditorSetEvent[] = [];
@@ -465,5 +549,16 @@ export class VerifierClient extends BaseEvmClient {
       (start, end) => contract.queryFilter(event, start, end),
       { chunkBlocks: this._logQueryChunkBlocks, openEnded },
     );
+  }
+}
+
+/** Sends `claimRewards` to the results contract on the same provider and nonce scope as the client. */
+class ResultsWriter extends BaseEvmClient {
+  constructor(config: VerifierClientConfig, resultsAddress: string) {
+    super(config.rpcUrl, resultsAddress, config.fallbackRpcUrls, config.evmChainId);
+  }
+
+  claimRewards(signer: AbstractSigner, source: string, epochs: bigint[]): Promise<string> {
+    return this._execWrite(signer, VERIFICATION_RESULTS_ABI, 'claimRewards', source, epochs);
   }
 }

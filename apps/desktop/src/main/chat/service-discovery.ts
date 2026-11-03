@@ -87,7 +87,7 @@ export type DiscoverRowEntry = {
   onChainReputationScore: number | null;
   /** Wash-trading registry verdict; `null` when the registry was unavailable. */
   washFlagged: boolean | null;
-  /** True when this service has a live DIFF verdict on AntseedKbfVerification (its reputation keeps 10%). */
+  /** True when this service has a live DIFF verdict on AntseedVerificationResults (its reputation keeps 10%). */
   verificationDiff: boolean;
   effectiveReputationScore: number | null;
   onChainSybilRisk: number | null;

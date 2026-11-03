@@ -70,18 +70,14 @@ test('an approved auditor submits one audit per model, earns credits, and a re-r
     const poolsAddress = deployContract(rpcUrl, 'test/mocks/MockVerificationSellerPools.sol:MockVerificationSellerPools')
     castSend(rpcUrl, registryAddress, 'setIdentityRegistry(address)', [identityRegistryAddress])
     castSend(rpcUrl, registryAddress, 'setEmissions(address)', [gateAddress])
-    // The constructor pins the gate behind `registry.emissions()`, so wire the registry first.
-    const verificationAddress = deployContract(
-      rpcUrl,
-      'verification/AntseedKbfVerification.sol:AntseedKbfVerification',
-      [registryAddress, poolsAddress],
-    )
+    // The results constructor pins the gate behind `registry.emissions()`, so wire the registry first.
+    const { resultsAddress, kbfAddress: verificationAddress } = deployVerification(rpcUrl, registryAddress, poolsAddress)
     castSend(rpcUrl, gateAddress, 'setCurrentEpoch(uint256)', [String(AUDIT_EPOCH)])
     castSend(rpcUrl, gateAddress, 'setSchedule(uint256,uint256)', [String(GENESIS), String(EPOCH_DURATION)])
     const auditor = new Wallet(`0x${AUDITOR_PRIVATE_KEY}`)
     castSend(rpcUrl, verificationAddress, 'setAuditor(address,bool)', [auditor.address, 'true'])
     // Rewards are off until the owner sets a start epoch.
-    castSend(rpcUrl, verificationAddress, 'setRewardsStartEpoch(uint256)', ['0'])
+    castSend(rpcUrl, resultsAddress, 'setRewardsStartEpoch(uint256)', ['0'])
     // Agent 3 belongs to the auditor, who must not audit it.
     const owners = [...SELLER_OWNERS, auditor.address]
     for (const [index, owner] of owners.entries()) {
@@ -214,12 +210,8 @@ test('two auditors confirm each other\'s DIFFs: one SAME is recorded at once, a 
     const poolsAddress = deployContract(rpcUrl, 'test/mocks/MockVerificationSellerPools.sol:MockVerificationSellerPools')
     castSend(rpcUrl, registryAddress, 'setIdentityRegistry(address)', [identityRegistryAddress])
     castSend(rpcUrl, registryAddress, 'setEmissions(address)', [gateAddress])
-    const verificationAddress = deployContract(
-      rpcUrl,
-      'verification/AntseedKbfVerification.sol:AntseedKbfVerification',
-      [registryAddress, poolsAddress],
-    )
-    castSend(rpcUrl, verificationAddress, 'setRewardsStartEpoch(uint256)', ['0'])
+    const { resultsAddress, kbfAddress: verificationAddress } = deployVerification(rpcUrl, registryAddress, poolsAddress)
+    castSend(rpcUrl, resultsAddress, 'setRewardsStartEpoch(uint256)', ['0'])
     castSend(rpcUrl, gateAddress, 'setCurrentEpoch(uint256)', [String(AUDIT_EPOCH)])
     castSend(rpcUrl, gateAddress, 'setSchedule(uint256,uint256)', [String(GENESIS), String(EPOCH_DURATION)])
     const auditorA = new Wallet(`0x${AUDITOR_PRIVATE_KEY}`)
@@ -399,6 +391,19 @@ globalThis.fetch = async (input, init) => {
 function requireCommand(command: string): void {
   const result = spawnSync('which', [command], { encoding: 'utf8' })
   if (result.status !== 0) throw new Error(`required command not found: ${command}`)
+}
+
+/** The verification contracts as M003 wires them: the results layer and the KBF source at the whole bucket. */
+function deployVerification(rpcUrl: string, registryAddress: string, poolsAddress: string) {
+  const resultsAddress = deployContract(
+    rpcUrl,
+    'verification/AntseedVerificationResults.sol:AntseedVerificationResults',
+    [registryAddress, poolsAddress],
+  )
+  const kbfAddress = deployContract(rpcUrl, 'verification/AntseedKbfAudits.sol:AntseedKbfAudits', [resultsAddress])
+  castSend(rpcUrl, resultsAddress, 'setSource(address,bool)', [kbfAddress, 'true'])
+  castSend(rpcUrl, resultsAddress, 'setSourceShareBps(address,uint16)', [kbfAddress, '10000'])
+  return { resultsAddress, kbfAddress }
 }
 
 function deployContract(rpcUrl: string, contract: string, constructorArgs: string[] = []): string {
