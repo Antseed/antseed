@@ -65,6 +65,29 @@ describe('Venice multi-image edits', () => {
     expect(typeof payload.created).toBe('number');
   });
 
+  it('keeps the form order of images sent under both field names, so the base stays first', async () => {
+    const fetchMock = mockFetch(() => new Response(new Uint8Array([1]), { status: 200, headers: { 'content-type': 'image/png' } }));
+    const provider = await plugin.createProvider(veniceEditConfig);
+    const form = new FormData();
+    form.append('model', 'nano-banana-pro');
+    form.append('prompt', 'put the cat on the sofa');
+    form.append('image[]', new Blob([new Uint8Array([1])], { type: 'image/png' }), 'sofa.png');
+    form.append('image', new Blob([new Uint8Array([2])], { type: 'image/png' }), 'cat.png');
+    const encoded = await serializeForm(form);
+
+    await provider.handleRequest({
+      requestId: 'req-mixed',
+      method: 'POST',
+      path: '/v1/images/edits',
+      headers: { 'content-type': encoded.contentType },
+      body: encoded.body,
+    });
+
+    const { form: sent } = await upstreamForm(fetchMock);
+    const images = sent.getAll('images') as Blob[];
+    expect(await Promise.all(images.map(async (image) => Array.from(new Uint8Array(await image.arrayBuffer()))))).toEqual([[1], [2]]);
+  });
+
   it('sends a single image with quality to /image/multi-edit, which is the Venice edit that takes quality', async () => {
     const fetchMock = mockFetch(() => new Response(new Uint8Array([1]), { status: 200, headers: { 'content-type': 'image/jpeg' } }));
     const provider = await plugin.createProvider(veniceEditConfig);

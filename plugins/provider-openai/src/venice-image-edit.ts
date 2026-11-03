@@ -162,7 +162,9 @@ async function adaptRequest(
     };
   }
 
-  const entries = IMAGE_FIELDS.flatMap((field) => form.getAll(field));
+  // In form order: Venice takes the first image as the base, whatever its field name.
+  const imageFields = new Set<string>(IMAGE_FIELDS);
+  const entries = [...form.entries()].flatMap(([field, value]) => (imageFields.has(field) ? [value] : []));
   const images = entries.flatMap((image) => (typeof image === 'string' ? [] : [image as unknown as Blob]));
   if (images.length === 0 || images.length !== entries.length) {
     return {
