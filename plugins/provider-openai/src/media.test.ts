@@ -286,6 +286,18 @@ describe('Venice image edits', () => {
     expect(JSON.parse(new TextDecoder().decode(response.body)).error).toMatchObject({ param: field, message: `The "${field}" field is too long or repeated.` });
   });
 
+  it.each(['make the sky warmer 🌅', '让天空更温暖', 'Ψ €™ — ok'])('sends the prompt %s upstream unchanged', async (prompt) => {
+    const fetchMock = mockFetch(() => new Response(new Uint8Array([1]), { status: 200, headers: { 'content-type': 'image/png' } }));
+    const provider = await plugin.createProvider(coverArtConfig);
+    const form = new FormData();
+    form.append('model', 'cover-art');
+    form.append('prompt', prompt);
+    form.append('image', new Blob([new Uint8Array([1])], { type: 'image/png' }), 'source.png');
+
+    expect((await sendImageEdit(provider, form)).statusCode).toBe(200);
+    expect((await upstreamForm(fetchMock)).form.get('prompt')).toBe(prompt);
+  });
+
   it('keeps first-prompt Venice generation on the configured generation model', async () => {
     const fetchMock = mockFetch(() => new Response(JSON.stringify({ data: [{ b64_json: 'generated-image' }] }), {
       status: 200,
