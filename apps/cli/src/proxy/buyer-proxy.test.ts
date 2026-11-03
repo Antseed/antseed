@@ -59,6 +59,17 @@ function makePeer(seed: string, providers: string[]): PeerInfo {
   }
 }
 
+/** A seller of the `tts-kokoro` speech service with `voices`. */
+function makeSpeechPeer(seed: string, voices: string[], reputation?: number): PeerInfo {
+  const peer = makePeer(seed, ['openai'])
+  if (reputation !== undefined) peer.reputationScore = reputation
+  peer.providerServiceApiProtocols = { openai: { services: { 'tts-kokoro': ['openai-audio-speech'] } } }
+  peer.providerServiceCapabilities = {
+    openai: { services: { 'tts-kokoro': { inputs: ['text'], outputs: ['audio'], speech: { voices } } } },
+  }
+  return peer
+}
+
 test('the buyer switches between a model and a routing service without replacing the plugin', async () => {
   const inferencePeer = makeRankedRoutingFixture().peers[0]!
   const routingPeer = makePeer('d', ['alpha'])
@@ -6813,12 +6824,7 @@ test('speech requests route only to speech services and return the audio unchang
   const chat = makePeer('a', ['openai'])
   chat.reputationScore = 95
   chat.providerServiceApiProtocols = { openai: { services: { 'tts-kokoro': ['openai-chat-completions'] } } }
-  const speech = makePeer('b', ['openai'])
-  speech.reputationScore = 50
-  speech.providerServiceApiProtocols = { openai: { services: { 'tts-kokoro': ['openai-audio-speech'] } } }
-  speech.providerServiceCapabilities = {
-    openai: { services: { 'tts-kokoro': { inputs: ['text'], outputs: ['audio'], speech: { voices: ['af_sky'] } } as any } },
-  }
+  const speech = makeSpeechPeer('b', ['af_sky'], 50)
   const proxy = makeBuyerProxyWithPeers([chat, speech], [chat, speech], permissiveRouter())
   const sent: Array<{ peer: string; path: string; body: Record<string, unknown> }> = []
   ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string; path: string; body: Uint8Array }) => {
@@ -6841,19 +6847,10 @@ test('speech requests route only to speech services and return the audio unchang
 })
 
 test('speech requests route only to sellers that offer the requested voice', async () => {
-  const seller = (seed: string, reputation: number, voices: string[]) => {
-    const p = makePeer(seed, ['openai'])
-    p.reputationScore = reputation
-    p.providerServiceApiProtocols = { openai: { services: { 'tts-kokoro': ['openai-audio-speech'] } } }
-    p.providerServiceCapabilities = {
-      openai: { services: { 'tts-kokoro': { inputs: ['text'], outputs: ['audio'], speech: { voices } } as any } },
-    }
-    return p
-  }
   // The two best-ranked sellers do not offer the voice; only the third does.
-  const first = seller('a', 95, ['am_adam'])
-  const second = seller('b', 90, ['am_adam'])
-  const third = seller('c', 50, ['af_sky', 'am_adam'])
+  const first = makeSpeechPeer('a', ['am_adam'], 95)
+  const second = makeSpeechPeer('b', ['am_adam'], 90)
+  const third = makeSpeechPeer('c', ['af_sky', 'am_adam'], 50)
   const proxy = makeBuyerProxyWithPeers([first, second, third], [first, second, third], permissiveRouter())
   const sent: string[] = []
   ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
@@ -6871,15 +6868,7 @@ test('speech requests route only to sellers that offer the requested voice', asy
 })
 
 test('a voice no seller offers is refused with the voices that are available', async () => {
-  const seller = (seed: string, voices: string[]) => {
-    const p = makePeer(seed, ['openai'])
-    p.providerServiceApiProtocols = { openai: { services: { 'tts-kokoro': ['openai-audio-speech'] } } }
-    p.providerServiceCapabilities = {
-      openai: { services: { 'tts-kokoro': { inputs: ['text'], outputs: ['audio'], speech: { voices } } as any } },
-    }
-    return p
-  }
-  const peers = [seller('a', ['am_adam']), seller('b', ['af_sky', 'am_adam'])]
+  const peers = [makeSpeechPeer('a', ['am_adam']), makeSpeechPeer('b', ['af_sky', 'am_adam'])]
   const proxy = makeBuyerProxyWithPeers(peers, peers, permissiveRouter())
   let sent = 0
   ;(proxy as any)._node.sendRequest = async () => { sent += 1; throw new Error('must not be sent') }
