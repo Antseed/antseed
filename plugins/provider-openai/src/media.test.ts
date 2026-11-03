@@ -45,15 +45,7 @@ describe('Venice multi-image edits', () => {
     form.append('prompt', 'put the cat from the second image on the sofa');
     form.append('image[]', new Blob([new Uint8Array([1])], { type: 'image/png' }), 'sofa.png');
     form.append('image[]', new Blob([new Uint8Array([2])], { type: 'image/png' }), 'cat.png');
-    const encoded = await serializeForm(form);
-
-    const response = await provider.handleRequest({
-      requestId: 'req-multi',
-      method: 'POST',
-      path: '/v1/images/edits',
-      headers: { 'content-type': encoded.contentType },
-      body: encoded.body,
-    });
+    const response = await sendImageEdit(provider, form, {}, 'req-multi');
 
     const { url, form: sent } = await upstreamForm(fetchMock);
     expect(url).toBe('https://api.venice.ai/api/v1/image/multi-edit');
@@ -75,15 +67,7 @@ describe('Venice multi-image edits', () => {
     form.append('prompt', 'put the cat on the sofa');
     form.append('image[]', new Blob([new Uint8Array([1])], { type: 'image/png' }), 'sofa.png');
     form.append('image', new Blob([new Uint8Array([2])], { type: 'image/png' }), 'cat.png');
-    const encoded = await serializeForm(form);
-
-    await provider.handleRequest({
-      requestId: 'req-mixed',
-      method: 'POST',
-      path: '/v1/images/edits',
-      headers: { 'content-type': encoded.contentType },
-      body: encoded.body,
-    });
+    await sendImageEdit(provider, form, {}, 'req-mixed');
 
     const { form: sent } = await upstreamForm(fetchMock);
     const images = sent.getAll('images') as Blob[];
@@ -98,15 +82,7 @@ describe('Venice multi-image edits', () => {
     form.append('prompt', 'make it night');
     form.append('quality', 'low');
     form.append('image', new Blob([new Uint8Array([7])], { type: 'image/png' }), 'source.png');
-    const encoded = await serializeForm(form);
-
-    await provider.handleRequest({
-      requestId: 'req-quality',
-      method: 'POST',
-      path: '/v1/images/edits',
-      headers: { 'content-type': encoded.contentType },
-      body: encoded.body,
-    });
+    await sendImageEdit(provider, form, {}, 'req-quality');
 
     const { url, form: sent } = await upstreamForm(fetchMock);
     expect(url).toBe('https://api.venice.ai/api/v1/image/multi-edit');
@@ -121,15 +97,7 @@ describe('Venice multi-image edits', () => {
     form.append('model', 'nano-banana-pro');
     form.append('prompt', 'x');
     form.append('image', new Blob([new Uint8Array([7])], { type: 'image/png' }), 'source.png');
-    const encoded = await serializeForm(form);
-
-    const response = await provider.handleRequest({
-      requestId: 'req-error',
-      method: 'POST',
-      path: '/v1/images/edits',
-      headers: { 'content-type': encoded.contentType },
-      body: encoded.body,
-    });
+    const response = await sendImageEdit(provider, form, {}, 'req-error');
 
     expect(response.statusCode).toBe(400);
     const payload = JSON.parse(new TextDecoder().decode(response.body)) as { data?: unknown; error: { message: string } };
@@ -166,10 +134,11 @@ async function sendImageEdit(
   provider: Awaited<ReturnType<typeof plugin.createProvider>>,
   form: FormData,
   headers: Record<string, string> = {},
+  requestId = 'req-venice-edit',
 ) {
   const encoded = await serializeForm(form);
   return provider.handleRequest({
-    requestId: 'req-venice-edit',
+    requestId,
     method: 'POST',
     path: '/v1/images/edits',
     headers: { 'content-type': encoded.contentType, ...headers },
