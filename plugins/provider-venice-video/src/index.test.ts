@@ -62,6 +62,32 @@ it('derives each model\'s queue fields from Venice constraints and the announced
   expect(veniceInputParameters(undefined)).toBeNull();
 });
 
+it('announces audio_url for models that take an audio input, following the announced inputs', () => {
+  const lipSync = veniceModel('seedance-2-5-reference-to-video-basic', {
+    model_type: 'image-to-video', resolutions: ['1080p', '720p'], aspect_ratios: ['16:9'], audio_configurable: true, audio_input: true,
+  });
+  // Inputs not announced: Venice's audio_input decides.
+  expect(veniceInputParameters(lipSync)).toEqual(['aspect_ratio', 'audio', 'audio_url', 'duration', 'image_url', 'prompt', 'resolution']);
+  // Announced inputs are the complete list: audio only when listed.
+  expect(veniceInputParameters(lipSync, ['first_frame', 'reference_image', 'audio']))
+    .toEqual(['aspect_ratio', 'audio', 'audio_url', 'duration', 'image_url', 'prompt', 'reference_image_urls', 'resolution']);
+  expect(veniceInputParameters(lipSync, ['first_frame'])).toEqual(['aspect_ratio', 'audio', 'duration', 'image_url', 'prompt', 'resolution']);
+  const silent = veniceModel('kling', { model_type: 'image-to-video', resolutions: ['720p'], aspect_ratios: [], audio_input: false });
+  expect(veniceInputParameters(silent)).toEqual(['duration', 'image_url', 'prompt', 'resolution']);
+});
+
+it('relays the audio_url of a lip-synced video create to Venice unchanged', async () => {
+  const fetchMock = vi.fn().mockResolvedValue(Response.json({ model: 'wan-2.5', queue_id: 'queue-9' }));
+  vi.stubGlobal('fetch', fetchMock);
+  const provider = plugin.createProvider(config) as Provider;
+  const body = { model: 'wan-2.5', prompt: 'she says hello', duration: '5s', image_url: 'https://example.com/face.png', audio_url: 'https://example.com/hello.mp3' };
+  const response = await provider.handleRequest(request('/api/v1/video/queue', body));
+  expect(response.statusCode).toBe(200);
+  const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+  expect(url).toBe('https://api.venice.ai/api/v1/video/queue');
+  expect(JSON.parse(Buffer.from(init.body as Uint8Array).toString())).toEqual(body);
+});
+
 it('announces queue fields from the Venice model list and keeps configured ones', async () => {
   const fetchMock = vi.fn().mockResolvedValue(Response.json({ data: [
     veniceModel('wan-2.5', { model_type: 'image-to-video', resolutions: ['720p'], aspect_ratios: [], audio_configurable: false }),

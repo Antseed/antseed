@@ -7,6 +7,8 @@ import type {
 
 const OPENAI_IMAGE_EDIT_PATH = '/v1/images/edits';
 const VENICE_IMAGE_EDIT_PATH = '/v1/image/edit';
+/** Venice's edit of several images: the first is the base, the rest are layers or references. */
+const VENICE_IMAGE_MULTI_EDIT_PATH = '/v1/image/multi-edit';
 const VENICE_EDIT_PARAMETERS = [
   'aspect_ratio',
   'disable_prompt_optimization_thinking',
@@ -16,11 +18,13 @@ const VENICE_EDIT_PARAMETERS = [
   'resolution',
   'safe_mode',
 ] as const;
+/** OpenAI clients send several images as repeated `image[]` parts, one image as `image`. */
+const IMAGE_FIELDS = ['image', 'image[]'] as const;
 const OPENAI_IMAGE_EDIT_FIELDS = new Set([
   'model',
   'service',
   'prompt',
-  'image',
+  ...IMAGE_FIELDS,
   'mask',
   'n',
   'response_format',
@@ -166,13 +170,14 @@ async function adaptRequest(
     };
   }
 
-  const images = form.getAll('image');
-  if (images.length !== 1 || !(images[0] instanceof Blob)) {
+  const entries = IMAGE_FIELDS.flatMap((field) => form.getAll(field));
+  const images = entries.flatMap((image) => (typeof image === 'string' ? [] : [image as unknown as Blob]));
+  if (images.length === 0 || images.length !== entries.length) {
     return {
       response: openAiError(
         request.requestId,
         400,
-        'Venice single-image edits require exactly one image file.',
+        'Venice image edits require one or more image files.',
         'image',
       ),
     };
@@ -182,7 +187,7 @@ async function adaptRequest(
       response: openAiError(
         request.requestId,
         400,
-        'Venice single-image edits do not support the OpenAI mask field.',
+        'Venice image edits do not support the OpenAI mask field.',
         'mask',
       ),
     };
@@ -194,7 +199,7 @@ async function adaptRequest(
       response: openAiError(
         request.requestId,
         400,
-        'Venice single-image edits support only n=1.',
+        'Venice image edits support only n=1.',
         'n',
       ),
     };
@@ -212,10 +217,13 @@ async function adaptRequest(
     };
   }
 
+  // Venice's single-image edit takes no `quality`; its multi-image edit does,
+  // and names the images `images` and the model `modelId`.
+  const multi = images.length > 1 || textField(form, 'quality') !== '';
   const upstreamForm = new FormData();
-  appendBlob(upstreamForm, 'image', images[0]);
+  for (const image of images) appendBlob(upstreamForm, multi ? 'images' : 'image', image);
   upstreamForm.append('prompt', prompt);
-  upstreamForm.append('model', editModel);
+  upstreamForm.append(multi ? 'modelId' : 'model', editModel);
   for (const parameter of VENICE_EDIT_PARAMETERS) {
     const value = textField(form, parameter);
     if (value) upstreamForm.append(parameter, value);
@@ -261,7 +269,7 @@ async function adaptRequest(
     adapted: {
       request: {
         ...request,
-        path: VENICE_IMAGE_EDIT_PATH,
+        path: multi ? VENICE_IMAGE_MULTI_EDIT_PATH : VENICE_IMAGE_EDIT_PATH,
         headers: routedHeaders,
         body: new Uint8Array(await encoded.arrayBuffer()),
       },

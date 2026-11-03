@@ -194,6 +194,38 @@ export function extractImageRequestFacts(input: {
   return facts;
 }
 
+/** What an OpenAI `POST /v1/audio/speech` request asks for. */
+export interface SpeechRequestFacts {
+  /** Unicode code points of `input`: the text read aloud, which speech services bill by. */
+  characters: number;
+  voice?: string;
+  responseFormat?: string;
+}
+
+/** Speech request facts from a JSON body, or null when `input` is missing or not text. */
+export function extractSpeechRequestFacts(body: Record<string, unknown> | null | undefined): SpeechRequestFacts | null {
+  const input = body?.input;
+  if (typeof input !== 'string' || input.length === 0) return null;
+  let characters = 0;
+  for (const _ of input) characters += 1;
+  return {
+    characters,
+    ...(typeof body?.voice === 'string' ? { voice: body.voice } : {}),
+    ...(typeof body?.response_format === 'string' ? { responseFormat: body.response_format } : {}),
+  };
+}
+
+/**
+ * Whether a speech response delivered audio: a 2xx answer with a body that is
+ * not a JSON or SSE document. Some upstreams label JSON errors `audio/mpeg`,
+ * so the status decides first.
+ */
+export function speechAudioDelivered(response: Pick<SerializedHttpResponse, 'statusCode' | 'headers' | 'body'>): boolean {
+  if (response.statusCode < 200 || response.statusCode >= 300 || response.body.length === 0) return false;
+  const contentType = (Object.entries(response.headers).find(([key]) => key.toLowerCase() === 'content-type')?.[1] ?? '').toLowerCase();
+  return !contentType.includes('json') && !contentType.includes('text/event-stream') && !contentType.startsWith('text/');
+}
+
 /** Text fields larger than this are dropped — billing fields are all short. */
 const MAX_MULTIPART_TEXT_FIELD_BYTES = 4096;
 

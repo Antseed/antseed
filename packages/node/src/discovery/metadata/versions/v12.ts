@@ -3,6 +3,7 @@ import { defineMetadataVersion, insertBefore, type MetadataLayout } from "../def
 import { providerLoadField } from "../fields/provider-basics.js";
 import { serviceCapabilitiesField } from "../fields/service-capabilities.js";
 import { V11_LAYOUT } from "./v11.js";
+import { withoutSpeechServices } from "./without-speech.js";
 
 /** v12: per-service capability hints and u16 service entry counts. */
 export const V12_LAYOUT: MetadataLayout = {
@@ -62,5 +63,5 @@ export const metadataV12 = defineMetadataVersion({
   version: 12,
   wideServiceCounts: true,
   ...V12_LAYOUT,
-  fromLatest: withoutFailingServices,
+  fromLatest: (latest) => withoutFailingServices(withoutSpeechServices(latest)),
 });

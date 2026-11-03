@@ -275,7 +275,7 @@ describe('provider-openai plugin', () => {
     expect(provider.serviceCapabilities?.['grok-imagine-image-quality']).toEqual({
       outputs: ['image'],
       inputs: ['text', 'image'],
-      supportedParameters: ['quality', 'moderation'],
+      supportedParameters: ['image', 'moderation', 'quality'],
     });
     expect(provider.serviceCapabilities?.['venice-sd35']).toEqual({
       outputs: ['image'],
@@ -310,7 +310,7 @@ describe('provider-openai plugin', () => {
       form.append('n', '1');
       form.append('response_format', 'b64_json');
       form.append('moderation', 'low');
-      form.append('quality', 'high');
+      form.append('resolution', '1K');
       form.append('image', new Blob([new Uint8Array([4, 5, 6])], { type: 'image/png' }), 'source.png');
       const encoded = await serializeForm(form);
 
@@ -336,7 +336,8 @@ describe('provider-openai plugin', () => {
       expect(upstreamForm.get('model')).toBe('grok-imagine-quality-edit');
       expect(upstreamForm.get('prompt')).toBe('make the sky warmer');
       expect(upstreamForm.get('safe_mode')).toBe('false');
-      expect(upstreamForm.get('quality')).toBe('high');
+      expect(upstreamForm.get('resolution')).toBe('1K');
+      expect(upstreamForm.has('quality')).toBe(false);
       expect(upstreamForm.has('n')).toBe(false);
       expect(upstreamForm.has('response_format')).toBe(false);
       expect(upstreamForm.has('moderation')).toBe(false);

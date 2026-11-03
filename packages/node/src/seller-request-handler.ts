@@ -52,6 +52,7 @@ import { nativeVideoAcceptance, nativeVideoDelivered, nativeVideoRoute, requestS
 import type { PendingResourceCharge, ResourceOwnershipStore } from './resources/resource-ownership-store.js';
 import type { ServiceApiProtocol } from './types/service-api.js';
 import { isNativeVideoProtocol } from '@antseed/protocol/service-api';
+import { speechVoiceProblem } from '@antseed/protocol/peer-metadata';
 import {
   detectRequestServiceApiProtocol,
   extractRequestBodyFields,
@@ -391,6 +392,15 @@ export class SellerRequestHandler {
       } catch (error) {
         this._sendJsonError(mux, request.requestId, 400, 'invalid_billing_request', error instanceof Error ? error.message : String(error));
         return;
+      }
+      const speechFacts = requestBilling?.requestFacts.kind === 'speech' ? requestBilling.requestFacts.speech : null;
+      if (requestBilling && speechFacts) {
+        // A buyer that asked for a voice gets that voice or an error, never another voice.
+        const refused = speechVoiceProblem(provider.serviceCapabilities?.[requestBilling.context.service]?.speech, speechFacts.voice);
+        if (refused) {
+          this._sendJsonError(mux, request.requestId, 400, 'unsupported_voice', refused);
+          return;
+        }
       }
       const videoRoute = nativeVideoRoute(request);
       if (videoRoute && this._handleVideoPrecheck(mux, request, videoRoute, buyerPeerId, unitBillingModel)) return;

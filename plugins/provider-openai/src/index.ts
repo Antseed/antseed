@@ -3,6 +3,7 @@ import {
   BaseProvider,
   StaticTokenProvider,
   isImageModelId,
+  isSpeechModelId,
   parseCsv,
   parseFallbackUpstreamsJson,
   parseJsonObject,
@@ -14,6 +15,7 @@ import {
 } from '@antseed/provider-core';
 import type { ServiceApiProtocol, ServiceCapabilities } from '@antseed/node';
 import { VeniceImageEditProvider } from './venice-image-edit.js';
+import { announceVeniceSpeechVoices, withSpeechServiceCapabilityDefaults } from './speech.js';
 
 const SPECIAL_OPENAI_COMPAT_PROVIDERS = ['openrouter', 'venice'] as const;
 type OpenAiCompatFlavor = 'generic' | (typeof SPECIAL_OPENAI_COMPAT_PROVIDERS)[number];
@@ -77,6 +79,10 @@ function getAdvertisedServiceProtocol(
     }
     return 'openai-images';
   }
+  if (isSpeechModelId(service)) {
+    // OpenRouter has no `/v1/audio/speech`.
+    return flavor === 'openrouter' ? null : 'openai-audio-speech';
+  }
   return 'openai-chat-completions';
 }
 
@@ -120,7 +126,8 @@ function withImageServiceCapabilityDefaults(
     const configured = merged[service];
     const hasVeniceEditModel = Boolean(imageEditModelMap?.[service.trim().toLowerCase()]);
     const supportedParameters = hasVeniceEditModel
-      ? Array.from(new Set([...(configured?.supportedParameters ?? []), 'moderation']))
+      // `image` is what buyers require of an edit route (see buyer routing).
+      ? Array.from(new Set([...(configured?.supportedParameters ?? []), 'image', 'moderation'])).sort()
       : configured?.supportedParameters;
     merged[service] = {
       outputs: ['image'],
@@ -253,12 +260,12 @@ const plugin: AntseedProviderPlugin = {
     const imageEditModelMap = parseImageEditModelMap(config['ANTSEED_SERVICE_IMAGE_EDIT_MODEL_MAP_JSON']);
     validateVeniceEditModelMap(flavor, allowedServices, serviceApiProtocols, imageEditModelMap);
     const serviceUnitBillingModels = parseServiceUnitBillingModelsJson(config['ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON']);
-    const serviceCapabilities = withImageServiceCapabilityDefaults(
+    const serviceCapabilities = withSpeechServiceCapabilityDefaults(serviceApiProtocols, withImageServiceCapabilityDefaults(
       serviceApiProtocols,
       parseServiceCapabilitiesJson(config['ANTSEED_SERVICE_CAPABILITIES_JSON']),
       flavor,
       imageEditModelMap,
-    );
+    ));
     const pathRewrite = parseJsonObject(config['OPENAI_PATH_REWRITE_JSON'], 'OPENAI_PATH_REWRITE_JSON') as Record<string, string> | undefined;
     const fallbackUpstreams = parseFallbackUpstreamsJson(config['ANTSEED_FALLBACK_UPSTREAMS_JSON'])?.map((fallback) => ({
       baseUrl: fallback.baseUrl,
@@ -292,9 +299,24 @@ const plugin: AntseedProviderPlugin = {
         ...(fallbackUpstreams ? { fallbackUpstreams } : {}),
       },
     });
-    return flavor === 'venice'
+    const provider: Provider = flavor === 'venice'
       ? new VeniceImageEditProvider(baseProvider, imageEditModelMap ?? {})
       : baseProvider;
+    if (flavor === 'venice' && serviceCapabilities) {
+      // Venice lists each speech model's voices; announce them unless the seller listed its own.
+      const init = provider.init?.bind(provider);
+      provider.init = async () => {
+        await init?.();
+        await announceVeniceSpeechVoices(
+          baseUrl,
+          allowedServices,
+          serviceApiProtocols,
+          serviceCapabilities,
+          (service) => serviceRewriteMap?.[service.trim().toLowerCase()] ?? service,
+        );
+      };
+    }
+    return provider;
   },
 };
 

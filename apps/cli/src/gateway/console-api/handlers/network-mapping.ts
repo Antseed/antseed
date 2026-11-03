@@ -231,7 +231,7 @@ export function enrichCandidates(candidates: unknown, peers: unknown): RoutePrev
   })
 }
 
-const MODEL_TYPES: readonly NetworkModelType[] = ['text', 'image', 'decision', 'video']
+const MODEL_TYPES: readonly NetworkModelType[] = ['text', 'image', 'decision', 'video', 'speech']
 
 function range(values: Array<number | null>): { min: number; max: number } | null {
   const known = values.filter((value): value is number => value !== null)

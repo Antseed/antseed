@@ -17,11 +17,12 @@ import { metadataV11 } from "./versions/v11.js";
 import { metadataV12 } from "./versions/v12.js";
 import { metadataV13 } from "./versions/v13.js";
 import { metadataV14 } from "./versions/v14.js";
+import { metadataV15 } from "./versions/v15.js";
 
 export type { MetadataVersionCodec } from "./define-version.js";
 
 const CODECS = new Map<number, MetadataVersionCodec>(
-  [metadataV10, metadataV11, metadataV12, metadataV13, metadataV14].map((codec) => [codec.version, codec]),
+  [metadataV10, metadataV11, metadataV12, metadataV13, metadataV14, metadataV15].map((codec) => [codec.version, codec]),
 );
 
 if (!CODECS.has(METADATA_VERSION)) {

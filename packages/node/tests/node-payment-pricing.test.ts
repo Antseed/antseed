@@ -2128,3 +2128,61 @@ it('waits for a running top-up before treating a channel at its ceiling as exhau
     expect(settleSession).not.toHaveBeenCalled();
   }
 });
+
+describe('speech seller payments', () => {
+  function setup(providerResponse?: { statusCode: number; contentType: string; body: Uint8Array }) {
+    let spend = 0n;
+    const provider = makeProvider(0.1, 0.45, { name: 'openai', services: ['tts-kokoro'] });
+    provider.serviceApiProtocols = { 'tts-kokoro': ['openai-audio-speech'] };
+    // $62.50 per million characters.
+    provider.serviceUnitBillingModels = { 'tts-kokoro': { 'openai-audio-speech': { version: 1, components: [{ unit: 'input_characters', priceUsd: 0.0000625 }] } } };
+    provider.serviceCapabilities = { 'tts-kokoro': { inputs: ['text'], outputs: ['audio'], speech: { voices: ['af_sky', 'am_adam'] } } };
+    const answer = providerResponse ?? { statusCode: 200, contentType: 'audio/mpeg', body: new Uint8Array([0x49, 0x44, 0x33, 1]) };
+    provider.handleRequest = vi.fn(async request => ({ requestId: request.requestId, statusCode: answer.statusCode, headers: { 'content-type': answer.contentType }, body: answer.body }));
+    delete (provider as Partial<Provider>).handleRequestStream;
+    const spm = makeSpmMock({
+      recordSpend: vi.fn((_channel: string, amount: bigint) => { spend += amount; }),
+      getCumulativeSpend: () => spend, getAcceptedCumulative: () => spend,
+    });
+    const frames: Uint8Array[] = [];
+    const paymentMux = { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() };
+    const handler = makeSellerRequestHandler({ providers: [provider], sellerPaymentManager: spm, sessionTracker: null, channelsClient: {} as any, announcer: null, emit: () => false });
+    const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), paymentMux as any);
+    const send = async (body: Record<string, unknown>, requestId = 'speech') => {
+      await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({
+        requestId, method: 'POST', path: '/v1/audio/speech',
+        headers: { 'content-type': 'application/json' },
+        body: new TextEncoder().encode(JSON.stringify(body)),
+      }) });
+      return frames.map(frame => decodeHttpResponse(decodeFrame(frame).message!.payload)).reverse().find(response => response.requestId === requestId)!;
+    };
+    return { provider, spm, paymentMux, send };
+  }
+
+  it('charges the characters of a delivered speech and passes the audio through', async () => {
+    const harness = setup();
+    const response = await harness.send({ model: 'tts-kokoro', input: 'a'.repeat(1000), voice: 'af_sky' });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-type']).toBe('audio/mpeg');
+    expect(Array.from(response.body)).toEqual([0x49, 0x44, 0x33, 1]);
+    expect(harness.spm.recordSpend).toHaveBeenCalledWith('session-1', 62_500n);
+    expect(harness.paymentMux.sendNeedAuth).toHaveBeenCalledWith(expect.objectContaining({ lastRequestCost: '62500', billingUsage: { version: 1, units: { input_characters: '1000' } } }));
+  });
+
+  it('refuses a voice the service does not offer before reaching the upstream or charging', async () => {
+    const harness = setup();
+    const response = await harness.send({ model: 'tts-kokoro', input: 'Hello', voice: 'alloy' });
+    expect(response.statusCode).toBe(400);
+    expect(JSON.parse(new TextDecoder().decode(response.body))).toEqual({
+      error: { code: 'unsupported_voice', message: 'Voice "alloy" is not offered by this service. Available voices: af_sky, am_adam' },
+    });
+    expect(harness.provider.handleRequest).not.toHaveBeenCalled();
+    expect(harness.spm.recordSpend).not.toHaveBeenCalled();
+  });
+
+  it('charges nothing when the upstream refuses, even with an audio content type', async () => {
+    const harness = setup({ statusCode: 400, contentType: 'audio/mpeg; charset=utf-8', body: new TextEncoder().encode('{"error":"Voice is not supported"}') });
+    expect((await harness.send({ model: 'tts-kokoro', input: 'Hello', voice: 'af_sky' })).statusCode).toBe(400);
+    expect(harness.spm.recordSpend).toHaveBeenCalledWith('session-1', 0n);
+  });
+});

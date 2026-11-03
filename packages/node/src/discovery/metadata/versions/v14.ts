@@ -2,6 +2,7 @@ import { defineMetadataVersion, insertBefore, type MetadataLayout } from "../def
 import { providerLoadField } from "../fields/provider-basics.js";
 import { servicePerformanceField } from "../fields/service-performance.js";
 import { V13_LAYOUT } from "./v13.js";
+import { withoutSpeechServices } from "./without-speech.js";
 
 /** v14: per-service performance the seller measured on its buyer traffic. */
 export const V14_LAYOUT: MetadataLayout = {
@@ -13,5 +14,5 @@ export const metadataV14 = defineMetadataVersion({
   version: 14,
   wideServiceCounts: true,
   ...V14_LAYOUT,
-  fromLatest: (latest) => latest,
+  fromLatest: withoutSpeechServices,
 });

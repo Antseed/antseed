@@ -101,6 +101,8 @@ const ALLOWED_ROUTES: ReadonlyArray<{ method: string; prefix: string; paid: bool
   { method: 'POST', prefix: '/v1/responses', paid: true },
   { method: 'POST', prefix: '/v1/images/generations', paid: true },
   { method: 'POST', prefix: '/v1/images/edits', paid: true },
+  // Text to speech: JSON in, the audio file streamed back as it is.
+  { method: 'POST', prefix: '/v1/audio/speech', paid: true },
   // Native video jobs, as the buyer serves them: queue, then poll retrieve until it streams the MP4 (charged on delivery).
   { method: 'POST', prefix: '/api/v1/video/queue', paid: true },
   { method: 'POST', prefix: '/api/v1/video/retrieve', paid: true },
@@ -709,7 +711,7 @@ export class GatewayServer {
           if (observability.logContent) responseChunks = collectPrefix(upstreamRes, MAX_LOGGED_CONTENT_BYTES)
           if (status >= 400) errorChunks = collectPrefix(upstreamRes, MAX_ERROR_BODY_BYTES)
           // A delivered video is an MP4 stream with no usage to read.
-          else if (request.model !== null && !contentType.startsWith('video/')) usageReader = readUsage(upstreamRes, (message) => this._log(message))
+          else if (request.model !== null && !contentType.startsWith('video/') && !contentType.startsWith('audio/')) usageReader = readUsage(upstreamRes, (message) => this._log(message))
           const responseHeaders: http.OutgoingHttpHeaders = {}
           for (const [name, value] of Object.entries(upstreamRes.headers)) {
             if (!HOP_BY_HOP.has(name.toLowerCase()) && value !== undefined) responseHeaders[name] = value

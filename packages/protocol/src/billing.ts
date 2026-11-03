@@ -5,6 +5,8 @@ export const UNIT_BILLING_UNITS_V1 = [
   'completed_requests',
   'video_generations',
   'video_seconds',
+  /** Characters of text a speech service read aloud (`input` of `POST /v1/audio/speech`). */
+  'input_characters',
 ] as const;
 
 export const UNIT_BILLING_MATCH_KEYS_V1 = [

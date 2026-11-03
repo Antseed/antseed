@@ -17,6 +17,7 @@ export {
   parseJsonObject,
   buildServiceApiProtocols,
   isImageModelId,
+  isSpeechModelId,
 } from './config-utils.js';
 export {
   stripRelayRequestHeaders,

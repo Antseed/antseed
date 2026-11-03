@@ -295,6 +295,7 @@ function selectAdvertisedServiceByProtocol(
         || protocol === 'openai-chat-completions'
         || protocol === 'openai-responses'
         || protocol === 'openai-images'
+        || protocol === 'openai-audio-speech'
         || protocol === 'typesafe-systemone'
         || isNativeVideoProtocol(protocol)
       ))
@@ -407,6 +408,7 @@ export function selectCandidatePeersForRouting(
 // extras, not the fields every request on that protocol carries.
 const PROTOCOL_BASELINE_FIELDS: Partial<Record<ServiceApiProtocol, readonly string[]>> = {
   'openai-images': ['model', 'prompt', 'image', 'mask', 'n', 'stream'],
+  'openai-audio-speech': ['model', 'input', 'voice'],
   'openai-chat-completions': ['model', 'messages', 'stream'],
   'openai-responses': ['model', 'input', 'stream'],
   'anthropic-messages': ['model', 'messages', 'max_tokens', 'stream'],

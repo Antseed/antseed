@@ -391,7 +391,12 @@ export class HttpRelay {
         if (requestedService) {
           const rewrittenService = upstream.serviceRewriteMap?.[requestedService.toLowerCase()]?.trim();
           const upstreamModel = rewrittenService || requestedService;
-          const rewrittenBody = setMultipartTextField(swappedRequest.body, contentType, 'model', upstreamModel);
+          // Venice's multi-image edit names the model `modelId` and rejects a `model` field.
+          const modelField = readMultipartTextField(swappedRequest.body, contentType, 'model') === null
+            && readMultipartTextField(swappedRequest.body, contentType, 'modelId') !== null
+            ? 'modelId'
+            : 'model';
+          const rewrittenBody = setMultipartTextField(swappedRequest.body, contentType, modelField, upstreamModel);
           if (rewrittenBody) swappedRequest = { ...swappedRequest, body: rewrittenBody };
         }
       } else {
@@ -439,8 +444,11 @@ export class HttpRelay {
             }
           }
 
-          const isImageRequest = request.path.toLowerCase().startsWith('/v1/images/');
-          const merged = this._config.injectJsonFields && !isImageRequest
+          // Body injection targets chat-style APIs. Image and speech APIs
+          // reject unknown fields (Venice validates them strictly).
+          const lowerPath = request.path.toLowerCase();
+          const isMediaRequest = lowerPath.startsWith('/v1/images/') || lowerPath.startsWith('/v1/audio/');
+          const merged = this._config.injectJsonFields && !isMediaRequest
             ? deepMerge(transformed, this._config.injectJsonFields)
             : transformed;
 

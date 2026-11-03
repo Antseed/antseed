@@ -1,5 +1,5 @@
 import type { DomainVerificationMethod, PeerMetadata } from "./peer-metadata.js";
-import { isServiceHealthTime, MAX_SERVICE_HEALTH_TIME_MS, METADATA_VERSION, MIN_SUPPORTED_METADATA_VERSION, SERVICE_CAPABILITIES_METADATA_VERSION, SERVICE_HEALTH_METADATA_VERSION, SERVICE_HEALTH_REASONS, SERVICE_HEALTH_SOURCES, SERVICE_HEALTH_STATUSES, SERVICE_PERFORMANCE_METADATA_VERSION, SERVICE_UNIT_BILLING_METADATA_VERSION, WELL_KNOWN_SERVICE_API_PROTOCOLS, validateServiceCapabilityFields, parseServicePerformance, type ServiceHealth } from "./peer-metadata.js";
+import { isServiceHealthTime, MAX_SERVICE_HEALTH_TIME_MS, METADATA_VERSION, MIN_SUPPORTED_METADATA_VERSION, SERVICE_CAPABILITIES_METADATA_VERSION, SERVICE_HEALTH_METADATA_VERSION, SERVICE_HEALTH_REASONS, SERVICE_HEALTH_SOURCES, SERVICE_HEALTH_STATUSES, SERVICE_PERFORMANCE_METADATA_VERSION, SERVICE_UNIT_BILLING_METADATA_VERSION, SPEECH_METADATA_VERSION, AUDIO_SPEECH_PROTOCOLS, WELL_KNOWN_SERVICE_API_PROTOCOLS, validateServiceCapabilityFields, parseServicePerformance, type ServiceHealth } from "./peer-metadata.js";
 import { encodeMetadata } from "./metadata-codec.js";
 import { MAX_PUBLIC_ADDRESS_LENGTH, parsePublicAddress } from "./public-address.js";
 import { isUnitBilledProtocol, validateUnitBillingModelForProtocolV1, validateUnitBillingModelV1 } from "../billing/unit.js";
@@ -34,6 +34,7 @@ const GITHUB_REPOSITORY_PATTERN = /^[a-z0-9._-]+$/;
 const VERIFICATION_NAMESPACES = new Set(["domains", "github"]);
 const PEER_CAPABILITY_PATTERN = /^[a-z0-9][a-z0-9.-]*$/;
 const SERVICE_API_PROTOCOL_SET = new Set<string>(WELL_KNOWN_SERVICE_API_PROTOCOLS);
+const SPEECH_PROTOCOL_SET = new Set<string>(AUDIO_SPEECH_PROTOCOLS);
 const SERVICE_HEALTH_STATUS_SET = new Set<string>(SERVICE_HEALTH_STATUSES);
 const SERVICE_HEALTH_REASON_SET = new Set<string>(SERVICE_HEALTH_REASONS);
 const SERVICE_HEALTH_SOURCE_SET = new Set<string>(SERVICE_HEALTH_SOURCES);
@@ -533,6 +534,12 @@ export function validateMetadata(metadata: PeerMetadata): ValidationError[] {
               message: "Service API protocol values must be unique per service",
             });
           }
+          if (SPEECH_PROTOCOL_SET.has(normalized) && metadata.version < SPEECH_METADATA_VERSION) {
+            errors.push({
+              field: `providers[${i}].serviceApiProtocols.${serviceName}[${j}]`,
+              message: `Service API protocol "${normalized}" requires metadata version ${SPEECH_METADATA_VERSION}`,
+            });
+          }
           deduped.add(normalized);
         }
       }
@@ -601,6 +608,12 @@ export function validateMetadata(metadata: PeerMetadata): ValidationError[] {
             });
           }
           model.components.forEach((component, componentIndex) => {
+            if (component.unit === "input_characters" && metadata.version < SPEECH_METADATA_VERSION) {
+              errors.push({
+                field: `providers[${i}].serviceUnitBillingModels.${serviceName}.${protocol}.components[${componentIndex}].unit`,
+                message: `Billing unit "input_characters" requires metadata version ${SPEECH_METADATA_VERSION}`,
+              });
+            }
             const matchEntries = Object.entries(component.match ?? {});
             if (matchEntries.length > MAX_BILLING_MATCH_ENTRIES_PER_COMPONENT) {
               errors.push({
@@ -662,6 +675,9 @@ export function validateMetadata(metadata: PeerMetadata): ValidationError[] {
         }
         for (const message of validateServiceCapabilityFields(caps)) {
           errors.push({ field, message });
+        }
+        if (caps.speech !== undefined && metadata.version < SPEECH_METADATA_VERSION) {
+          errors.push({ field, message: `Speech capabilities require metadata version ${SPEECH_METADATA_VERSION}` });
         }
       }
     }

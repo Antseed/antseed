@@ -16,7 +16,7 @@ import {
 } from './service-api.js';
 
 /** Newest metadata version this build signs and understands. */
-export const METADATA_VERSION = 14;
+export const METADATA_VERSION = 15;
 /** Oldest announced metadata version buyers still accept from sellers. */
 export const MIN_SUPPORTED_METADATA_VERSION = 10;
 /**
@@ -35,6 +35,12 @@ export const SERVICE_UNIT_BILLING_METADATA_VERSION = 11;
 export const SERVICE_CAPABILITIES_METADATA_VERSION = 12;
 export const SERVICE_HEALTH_METADATA_VERSION = 13;
 export const SERVICE_PERFORMANCE_METADATA_VERSION = 14;
+/**
+ * First version that may carry speech services: the `openai-audio-speech`
+ * protocol, the `input_characters` billing unit and `capabilities.speech`.
+ * Older documents leave such services out (see `withoutSpeechServices`).
+ */
+export const SPEECH_METADATA_VERSION = 15;
 export const WELL_KNOWN_SERVICE_CATEGORIES = [
   "privacy",
   "legal",
@@ -73,12 +79,27 @@ export interface VideoOptions {
 }
 
 /**
+ * Options of a text-to-speech service. `voices` is the complete list of voice
+ * names the service accepts; a request naming another voice is refused, never
+ * served in a different voice. `customVoices` means the upstream also takes
+ * account-specific voice IDs that are not listed. `formats` lists the
+ * `response_format` values it can return.
+ */
+export interface SpeechOptions {
+  voices?: string[];
+  customVoices?: boolean;
+  formats?: string[];
+}
+
+/**
  * Per-service model capability hints announced by sellers. Every field is
  * optional: absent means unknown, so buyers fall back to their own defaults.
  */
 export interface ServiceCapabilities {
   /** Options accepted by a native video model. */
   video?: VideoOptions;
+  /** Voices and formats of a text-to-speech service (metadata v15+). */
+  speech?: SpeechOptions;
   /** Total context window in tokens. */
   contextWindow?: number;
   /** Maximum output tokens per response. */
@@ -112,6 +133,51 @@ const CAPABILITY_PARAMETER_PATTERN = /^[a-z][a-z0-9_]*$/;
 const SERVICE_CAPABILITY_MODALITY_SET = new Set<string>(SERVICE_CAPABILITY_MODALITIES);
 const VIDEO_INPUT_KIND_SET = new Set<string>(VIDEO_INPUT_KINDS);
 const VIDEO_OPTION_PATTERN = /^[A-Za-z0-9:._-]+$/;
+export const MAX_SPEECH_VOICES = 128;
+export const MAX_SPEECH_VOICE_LENGTH = 64;
+export const MAX_SPEECH_FORMATS = 16;
+const SPEECH_VOICE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9 ._:'-]*$/;
+const SPEECH_FORMAT_PATTERN = /^[a-z0-9][a-z0-9_-]{0,15}$/;
+
+function validateSpeechOptions(speech: SpeechOptions): string[] {
+  if (!speech || typeof speech !== "object" || Array.isArray(speech)) return ["speech must be an object"];
+  const errors: string[] = [];
+  const list = (field: "voices" | "formats", max: number, valid: (value: string) => boolean) => {
+    const values = speech[field];
+    if (values === undefined) return;
+    if (!Array.isArray(values) || values.length === 0 || values.length > max) {
+      errors.push(`speech.${field} must contain 1-${max} values`);
+      return;
+    }
+    const seen = new Set<string>();
+    for (const value of values) {
+      if (typeof value !== "string" || !valid(value)) errors.push(`Invalid speech.${field} value ${JSON.stringify(value)}`);
+      else if (seen.has(value)) errors.push(`Duplicate speech.${field} value ${JSON.stringify(value)}`);
+      seen.add(value);
+    }
+  };
+  list("voices", MAX_SPEECH_VOICES, value => value.length <= MAX_SPEECH_VOICE_LENGTH && SPEECH_VOICE_PATTERN.test(value));
+  list("formats", MAX_SPEECH_FORMATS, value => SPEECH_FORMAT_PATTERN.test(value));
+  if (speech.customVoices !== undefined && typeof speech.customVoices !== "boolean") errors.push("speech.customVoices must be a boolean");
+  const known = new Set(["voices", "customVoices", "formats"]);
+  for (const key of Object.keys(speech)) if (!known.has(key)) errors.push(`Unsupported speech option ${key}`);
+  if (Object.keys(speech).length === 0) errors.push("speech must announce at least one option");
+  return errors;
+}
+
+/**
+ * Why a speech request's voice can't be served, or null. A service that lists
+ * its voices refuses any other voice unless it also takes custom voice IDs:
+ * a buyer that asked for a voice must never get a different one.
+ */
+export function speechVoiceProblem(speech: SpeechOptions | undefined, voice: unknown): string | null {
+  if (voice === undefined) return null;
+  if (typeof voice !== "string" || voice.trim().length === 0) return "voice must be a non-empty string";
+  const voices = speech?.voices;
+  if (!voices || speech?.customVoices === true || voices.includes(voice)) return null;
+  const shown = voices.slice(0, 40).join(", ");
+  return `Voice "${voice}" is not offered by this service. Available voices: ${shown}${voices.length > 40 ? ", ..." : ""}`;
+}
 
 function validateVideoOptions(video: VideoOptions): string[] {
   const errors: string[] = [];
@@ -152,6 +218,7 @@ function validateVideoOptions(video: VideoOptions): string[] {
 export function validateServiceCapabilityFields(caps: ServiceCapabilities): string[] {
   const errors: string[] = [];
   if (caps.video !== undefined) errors.push(...validateVideoOptions(caps.video));
+  if (caps.speech !== undefined) errors.push(...validateSpeechOptions(caps.speech));
   for (const key of ["contextWindow", "maxOutputTokens"] as const) {
     const value = caps[key];
     if (value === undefined) continue;

@@ -832,7 +832,7 @@ export interface Peer {
   requests24h: number
 }
 
-export type NetworkModelType = 'text' | 'image' | 'decision' | 'video'
+export type NetworkModelType = 'text' | 'image' | 'decision' | 'video' | 'speech'
 
 /** A feature at least one seller of the model advertises. */
 export type NetworkModelCapability = 'toolUse' | 'reasoning' | 'structuredOutput' | 'vision'

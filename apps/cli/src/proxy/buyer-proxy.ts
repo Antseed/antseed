@@ -753,6 +753,7 @@ function adaptOpenAICompatibleErrorResponse(
     requestProtocol !== 'openai-responses'
     && requestProtocol !== 'openai-chat-completions'
     && requestProtocol !== 'openai-images'
+    && requestProtocol !== 'openai-audio-speech'
   ) {
     return response;
   }
@@ -3727,7 +3728,7 @@ export class BuyerProxy {
       res.writeHead(400, responseHeaders)
       res.end(JSON.stringify({
         error: {
-          message: `Unknown model type "${url.searchParams.get('type') ?? ''}" — expected "text", "images", "decisions", "videos", or "routers".`,
+          message: `Unknown model type "${url.searchParams.get('type') ?? ''}" — expected "text", "images", "decisions", "videos", "speech", or "routers".`,
           type: 'invalid_request_error',
           param: 'type',
         },
@@ -3833,6 +3834,7 @@ export class BuyerProxy {
       normalizedPath.startsWith('/v1/responses') ||
       normalizedPath.startsWith('/v1/images/generations') ||
       normalizedPath.startsWith('/v1/images/edits') ||
+      normalizedPath === '/v1/audio/speech' ||
       normalizedPath.startsWith('/v1/systemone') ||
       normalizedPath.startsWith('/v1/models')
     if (!isKnownApiPath) {
@@ -4488,10 +4490,11 @@ export class BuyerProxy {
         ? [...requiredParameters, 'image']
         : [...requiredParameters]
       // Likewise a video edit needs a seller whose model takes the source
-      // (or reference) videos the create sends.
+      // (or reference) videos the create sends, and a lip-synced video one
+      // whose model takes the audio.
       if (nativeVideo?.action === 'create') {
         const fields = extractRequestBodyFields(serializedReq.headers, serializedReq.body)
-        for (const field of ['video_url', 'reference_video_urls']) {
+        for (const field of ['video_url', 'reference_video_urls', 'audio_url']) {
           const value = fields?.[field]
           if ((typeof value === 'string' || Array.isArray(value)) && value.length > 0
             && !routeRequiredParameters.includes(field)) routeRequiredParameters.push(field)

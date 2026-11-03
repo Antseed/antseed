@@ -39,6 +39,9 @@ export {
   extractRequestBodyFields,
   parseJsonObject,
   parseMultipartFormFields,
+  extractSpeechRequestFacts,
+  speechAudioDelivered,
+  type SpeechRequestFacts,
   toNonNegativeInt,
   type StreamingResponseAdapter,
 } from './utils.js';
@@ -50,10 +53,13 @@ export {
   type ServiceApiProtocol,
   type NativeVideoProtocol,
   type RoutingProtocol,
+  type AudioSpeechProtocol,
   WELL_KNOWN_SERVICE_API_PROTOCOLS,
   NATIVE_VIDEO_PROTOCOLS,
   ROUTING_PROTOCOLS,
+  AUDIO_SPEECH_PROTOCOLS,
   isKnownServiceApiProtocol,
   isNativeVideoProtocol,
   isRoutingProtocol,
+  isAudioSpeechProtocol,
 } from './types.js';
