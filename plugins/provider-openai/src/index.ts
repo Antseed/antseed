@@ -167,13 +167,14 @@ function validateVeniceEditModelMap(
     throw new Error('ANTSEED_SERVICE_IMAGE_EDIT_MODEL_MAP_JSON is supported only for Venice upstreams');
   }
 
-  const allowed = new Set(allowedServices.map((service) => service.trim().toLowerCase()));
+  // Normalized name → the service as advertised.
+  const advertised = new Map(allowedServices.map((service) => [service.trim().toLowerCase(), service]));
   for (const service of Object.keys(imageEditModelMap)) {
-    if (!allowed.has(service)) {
+    const advertisedService = advertised.get(service);
+    if (advertisedService === undefined) {
       throw new Error(`Venice image edit model configured for unknown service "${service}"`);
     }
-    const advertisedService = allowedServices.find((candidate) => candidate.trim().toLowerCase() === service);
-    if (!advertisedService || !serviceApiProtocols?.[advertisedService]?.includes('openai-images')) {
+    if (!serviceApiProtocols?.[advertisedService]?.includes('openai-images')) {
       throw new Error(`Venice image edit model configured for non-image service "${service}"`);
     }
   }
