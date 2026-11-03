@@ -46,7 +46,10 @@ describe('speech requests', () => {
   const flacHeader = concat('fLaC', [0x80, 0, 0, 34], [0x10, 0x00, 0x10, 0x00], zeros(6), [0x0a, 0xc4, 0x40], zeros(21));
   const flac = concat(flacHeader, [0xff, 0xf8], zeros(100));
   const oggPage = (payload: Uint8Array) => concat('OggS', [0, 0], zeros(8), zeros(4), zeros(4), zeros(4), [1, payload.length], payload);
-  const ogg = concat(oggPage(concat('OpusHead', zeros(11))), oggPage(zeros(120)));
+  const opusHead = oggPage(concat('OpusHead', zeros(11)));
+  const opusTags = oggPage(concat('OpusTags', zeros(40)));
+  const ogg = concat(opusHead, opusTags, oggPage(zeros(120)));
+  const vorbisHeaders = concat(oggPage(concat([1], 'vorbis', zeros(23))), oggPage(concat([3], 'vorbis', zeros(30))), oggPage(concat([5], 'vorbis', zeros(30))));
   const mp4 = concat(u32be(20), 'ftypM4A ', zeros(4), 'M4A ', u32be(16), 'moov', zeros(8), u32be(200), 'mdat', zeros(192));
   const webm = concat([0x1a, 0x45, 0xdf, 0xa3, 0x84], zeros(4), [0x18, 0x53, 0x80, 0x67, 0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
     [0x1f, 0x43, 0xb6, 0x75, 0x40, 0x64], zeros(100));
@@ -70,6 +73,7 @@ describe('speech requests', () => {
     expect(delivered(wav(200))).toBe(true);
     expect(delivered(flac)).toBe(true);
     expect(delivered(ogg)).toBe(true);
+    expect(delivered(concat(vorbisHeaders, oggPage(zeros(120))))).toBe(true);
     expect(delivered(mp4)).toBe(true);
     expect(delivered(webm)).toBe(true);
     // Raw PCM has no header: whole 16-bit samples, when the request asked for pcm.
@@ -99,7 +103,10 @@ describe('speech requests', () => {
     expect(delivered(mp3Frames(1))).toBe(false);
     expect(delivered(wav(200).slice(0, 44))).toBe(false); // no samples
     expect(delivered(concat(flacHeader, zeros(60)))).toBe(false); // no frame
-    expect(delivered(ogg.slice(0, ogg.length - 10))).toBe(false); // the second page is incomplete
+    expect(delivered(ogg.slice(0, ogg.length - 10))).toBe(false); // the audio page is incomplete
+    // Codec headers and nothing to play.
+    expect(delivered(concat(opusHead, opusTags))).toBe(false);
+    expect(delivered(vorbisHeaders)).toBe(false);
     expect(delivered(mp4.slice(0, mp4.length - 50))).toBe(false); // mdat runs past the end
   });
 });

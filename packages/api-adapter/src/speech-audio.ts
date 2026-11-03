@@ -147,15 +147,49 @@ function oggPageLength(body: Uint8Array, offset: number): number | null {
   return body.length >= offset + length ? length : null;
 }
 
-/** A whole Opus or Vorbis identification page, then at least one more whole page. */
-function isOgg(body: Uint8Array): boolean {
-  const first = oggPageLength(body, 0);
-  if (first === null) return false;
-  const payloadStart = 27 + body[26]!;
-  if (!ascii(body, payloadStart, 'OpusHead') && !(body[payloadStart] === 0x01 && ascii(body, payloadStart + 1, 'vorbis'))) {
-    return false;
+/**
+ * The complete packets of the whole Ogg pages in `body`, in order, as
+ * [offset, length] pairs (a packet may span pages; one cut off is left out).
+ */
+function oggPackets(body: Uint8Array): Array<[number, number]> {
+  const packets: Array<[number, number]> = [];
+  let parts: Array<[number, number]> = [];
+  for (let page = 0; ;) {
+    const length = oggPageLength(body, page);
+    if (length === null) break;
+    const segments = body[page + 26]!;
+    let data = page + 27 + segments;
+    for (let i = 0; i < segments; i += 1) {
+      const lacing = body[page + 27 + i]!;
+      parts.push([data, lacing]);
+      data += lacing;
+      if (lacing < 255) {
+        // A packet's parts are contiguous within a page; across pages only the length matters here.
+        packets.push([parts[0]![0], parts.reduce((sum, [, size]) => sum + size, 0)]);
+        parts = [];
+      }
+    }
+    page += length;
   }
-  return oggPageLength(body, first) !== null;
+  return packets;
+}
+
+/**
+ * Ogg Opus (OpusHead, OpusTags) or Vorbis (identification, comment, setup)
+ * whose codec headers are followed by at least one complete, non-empty audio
+ * packet: headers alone hold nothing to play.
+ */
+function isOgg(body: Uint8Array): boolean {
+  const packets = oggPackets(body);
+  const [first] = packets;
+  if (!first) return false;
+  const headerPackets = ascii(body, first[0], 'OpusHead')
+    ? 2
+    : body[first[0]] === 0x01 && ascii(body, first[0] + 1, 'vorbis')
+      ? 3
+      : null;
+  if (headerPackets === null) return false;
+  return packets.slice(headerPackets).some(([, length]) => length > 0);
 }
 
 // ── MP4 / M4A ────────────────────────────────────────────────────

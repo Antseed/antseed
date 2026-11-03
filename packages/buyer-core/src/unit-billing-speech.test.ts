@@ -69,6 +69,11 @@ describe('speech billing', () => {
     // Bytes that are not audio are free whatever their label: a stub, an error document.
     expect(cost(audio(200, 'audio/mpeg', new Uint8Array([0xff]))).costUsdc).toBe(0n);
     expect(cost(audio(200, 'audio/mpeg', new TextEncoder().encode(JSON.stringify({ error: { message: 'x'.repeat(80) } })))).costUsdc).toBe(0n);
+    // An Ogg Opus stream cut off right after its codec headers holds no audio.
+    const page = (payload: number[]) => [0x4f, 0x67, 0x67, 0x53, 0, 0, ...new Array(20).fill(0), 1, payload.length, ...payload];
+    const ascii = (text: string) => [...text].map((char) => char.charCodeAt(0));
+    const headersOnly = new Uint8Array([...page([...ascii('OpusHead'), ...new Array(11).fill(0)]), ...page([...ascii('OpusTags'), ...new Array(40).fill(0)])]);
+    expect(cost(audio(200, 'audio/ogg', headersOnly)).costUsdc).toBe(0n);
   });
 
   it('charges raw pcm only when the request asked for pcm', () => {
