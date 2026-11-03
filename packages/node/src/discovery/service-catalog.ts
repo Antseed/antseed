@@ -260,6 +260,8 @@ export function buildNetworkServiceOffers(
  */
 function speechUsdPerCharacter(offer: NetworkServiceOffer): number {
   const model = offer.protocol ? offer.unitBillingModels?.[offer.protocol] : undefined;
+  // A billing model with no components charges nothing: the offer is free.
+  if (model && model.components.length === 0) return 0;
   const attributes = { model: offer.serviceId };
   const applicable = (model?.components ?? []).filter((component) =>
     component.unit === 'input_characters'

@@ -181,6 +181,22 @@ describe('speech services in peer metadata', () => {
     expect(selectLowestPricedNetworkServiceOffer(offers)?.provider).toBe('zeta');
   });
 
+  it('ranks a speech offer with an empty billing model as free', () => {
+    const offers = buildNetworkServiceOffers([{
+      peerId: 'a'.repeat(40),
+      providers: ['alpha', 'zeta'],
+      providerServiceApiProtocols: {
+        alpha: { services: { 'tts-kokoro': ['openai-audio-speech'] } },
+        zeta: { services: { 'tts-kokoro': ['openai-audio-speech'] } },
+      },
+      providerServiceUnitBillingModels: {
+        alpha: { services: { 'tts-kokoro': { 'openai-audio-speech': { version: 1, components: [{ unit: 'input_characters', priceUsd: 0.000001 }] } } } },
+        zeta: { services: { 'tts-kokoro': { 'openai-audio-speech': { version: 1, components: [] } } } },
+      },
+    }]);
+    expect(selectLowestPricedNetworkServiceOffer(offers)?.provider).toBe('zeta');
+  });
+
   it('never health-probes speech services, which would cost money', () => {
     expect(supportsHealthProbe('openai-audio-speech')).toBe(false);
     expect(supportsHealthProbe('openai-chat-completions')).toBe(true);
