@@ -557,7 +557,7 @@ Deposits reserved:           0 USDC → 1 USDC`,
     modelHints: {
       suggested: ['deepseek-v4.1-flash', 'glm-5.3-flash', 'glm-5.2', 'kimi-k3'],
       note:
-        'The extension auto-discovers from `GET /v1/models` after Pi loads, so every model on the network shows up under `antseed/...`. Run `/reload` in Pi to refresh the list as the network changes. To stay on one seller, pick its entry in the picker (`antseed/<model>@<seller>`, for example `antseed/deepseek-v4.1-flash@1d90f467689d-open-forge-rep76`).',
+        'The extension auto-discovers from `GET /v1/models` after Pi loads, so every model on the network shows up under `antseed/...`. Run `/reload` in Pi to refresh the list as the network changes. To stay on one seller, pick its entry in the picker (`antseed/<model>@<seller>`).',
     },
     test: [
       {
@@ -570,7 +570,7 @@ Deposits reserved:           0 USDC → 1 USDC`,
         label: 'Open the model picker and pick an Antseed-routed model',
         command: '/model',
         note:
-          'Or press Ctrl+L. The picker is fuzzy-searchable; type "antseed" to filter. You should see one entry per seller and model, such as `antseed/deepseek-v4.1-flash@1d90f467689d-open-forge-rep76`.',
+          'Or press Ctrl+L. The picker is fuzzy-searchable; type "antseed" to filter. You should see one entry per seller and model, such as `antseed/deepseek-v4.1-flash@<seller>`, where `<seller>` is the seller\'s short peer id, name and reputation.',
       },
       {
         label: 'Or switch directly via slash command',
