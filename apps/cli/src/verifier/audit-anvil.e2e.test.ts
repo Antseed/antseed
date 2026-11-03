@@ -77,7 +77,7 @@ test('an approved auditor submits one audit per model, earns credits, and a re-r
     const auditor = new Wallet(`0x${AUDITOR_PRIVATE_KEY}`)
     castSend(rpcUrl, verificationAddress, 'setAuditor(address,bool)', [auditor.address, 'true'])
     // Rewards are off until the owner sets a start epoch.
-    castSend(rpcUrl, resultsAddress, 'setRewardsStartEpoch(uint256)', ['0'])
+    castSend(rpcUrl, resultsAddress, 'setRewardsStartEpoch(address,uint64)', [verificationAddress, '0'])
     // Agent 3 belongs to the auditor, who must not audit it.
     const owners = [...SELLER_OWNERS, auditor.address]
     for (const [index, owner] of owners.entries()) {
@@ -211,7 +211,7 @@ test('two auditors confirm each other\'s DIFFs: one SAME is recorded at once, a 
     castSend(rpcUrl, registryAddress, 'setIdentityRegistry(address)', [identityRegistryAddress])
     castSend(rpcUrl, registryAddress, 'setEmissions(address)', [gateAddress])
     const { resultsAddress, kbfAddress: verificationAddress } = deployVerification(rpcUrl, registryAddress, poolsAddress)
-    castSend(rpcUrl, resultsAddress, 'setRewardsStartEpoch(uint256)', ['0'])
+    castSend(rpcUrl, resultsAddress, 'setRewardsStartEpoch(address,uint64)', [verificationAddress, '0'])
     castSend(rpcUrl, gateAddress, 'setCurrentEpoch(uint256)', [String(AUDIT_EPOCH)])
     castSend(rpcUrl, gateAddress, 'setSchedule(uint256,uint256)', [String(GENESIS), String(EPOCH_DURATION)])
     const auditorA = new Wallet(`0x${AUDITOR_PRIVATE_KEY}`)
@@ -398,9 +398,9 @@ function deployVerification(rpcUrl: string, registryAddress: string, poolsAddres
   const resultsAddress = deployContract(
     rpcUrl,
     'verification/AntseedVerificationResults.sol:AntseedVerificationResults',
-    [registryAddress, poolsAddress],
+    [registryAddress],
   )
-  const kbfAddress = deployContract(rpcUrl, 'verification/AntseedKbfAudits.sol:AntseedKbfAudits', [resultsAddress])
+  const kbfAddress = deployContract(rpcUrl, 'verification/AntseedKbfAudits.sol:AntseedKbfAudits', [resultsAddress, poolsAddress])
   castSend(rpcUrl, resultsAddress, 'setSource(address,bool)', [kbfAddress, 'true'])
   castSend(rpcUrl, resultsAddress, 'setSourceShareBps(address,uint16)', [kbfAddress, '10000'])
   return { resultsAddress, kbfAddress }

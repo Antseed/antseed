@@ -762,16 +762,18 @@ are no longer left unminted: they go to the reserve and the remainder route.
   `AntseedUsageRewards`, and a claim with overflow reverts while the gate has no reserve.
   `settleEpochRemainder(epoch)` is permissionless and sends what no verifier can ever claim
   (budget assigned to no source, sources without credits, budget freed by `voidCredits`) through
-  the gate's `claimRemainder` (burn up to the gate's cap, then the reserve). It can run again when
+  the gate's `claimRemainder` (burn up to the gate's cap, then the reserve). `diffChanges` counts
+  every move of a service's live verdict into or out of DIFF, by any source or an owner clear. It can run again when
   a later void frees more, and never asks the gate for more than is left of the bucket
   (`unclaimableRemainder`). `voidCredits(source, epoch, auditor)` removes unclaimed farmed credits.
 - **`AntseedKbfAudits`** (KBF source). `submitModelAudit` and `setAuditor` have the same signatures
   and rules as before (`approvedAuditors`, `AuditorSet` on every call, `auditorRevocations`); it
-  holds `sellerPools` for the staking check and keeps its own `diffChanges`, so the report round is
-  `diffChanges + auditorRevocations + results.serviceClears`. A SAME or UNDETERMINED replacing a
-  live DIFF from any source still needs the DIFF quorum. The tallies are public (`reportKey`,
-  `reportOf`, `reportCount`). New: an evidence hash belongs to the auditor that first submits it
-  (`evidenceAuditor`; `EvidenceReused`), `agentOwner(agentId)`, and a self-service auditor profile
+  holds `sellerPools` for the staking check. Its report round is
+  `results.diffChanges + results.serviceClears + auditorRevocations`: the results layer counts every
+  move into or out of DIFF by any source, so support given before another source's DIFF can't clear
+  it. A SAME or UNDETERMINED replacing a live DIFF from any source still needs the DIFF quorum. The
+  tallies are public (`reportKey`, `reportOf`, `reportCount`). Any auditor may submit any evidence
+  hash, as on the old contract. New: `agentOwner(agentId)` and a self-service auditor profile
   (`setAuditorProfile(name, iconUri, url)`, `auditorProfile`, `AuditorProfileSet`; approved auditors
   only; links must be `https://` or `ipfs://`; the owner can `clearAuditorProfile`). Per-model credit
   caps stay here (`maxCreditsPerModelPerEpoch`); credits go to `results.credit`.

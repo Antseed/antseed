@@ -1087,19 +1087,14 @@ contract AntseedKbfAuditsTest is Test {
         assertEq(profile.url, "");
     }
 
-    function test_evidenceBelongsToTheVerifierThatFirstSubmitsIt() public {
+    function test_anyAuditorMaySubmitAnEvidenceHashSoNoneCanBeSquatted() public {
         bytes32 evidence = keccak256("shared-evidence");
+        IAntseedKbfAudits.ServiceResult[] memory unknownAgent = _single(999, SERVICE_A, SAME);
+        vm.prank(auditorB); // e.g. copied from auditor A's pending transaction, against an unknown agent
+        kbf.submitModelAudit(EPOCH, MODEL_A, evidence, "", unknownAgent);
         vm.prank(auditorA);
         kbf.submitModelAudit(EPOCH, MODEL_A, evidence, "", _single(agentId, SERVICE_A, SAME));
-        assertEq(kbf.evidenceAuditor(evidence), auditorA);
-
-        vm.prank(auditorB);
-        vm.expectRevert(AntseedKbfAudits.EvidenceReused.selector);
-        kbf.submitModelAudit(EPOCH, MODEL_A, evidence, "", _single(agentId, SERVICE_A, SAME));
-
-        vm.prank(auditorA);
-        kbf.submitModelAudit(EPOCH, MODEL_A, evidence, "", _single(agentId, SERVICE_A, SAME)); // retries are fine
-        assertEq(kbf.evidenceAuditor(evidence), auditorA);
+        assertTrue(results.isVerified(agentId), "the original audit still records");
     }
 
     function test_approvalEmitsOnEveryCallAndOnlyRevocationsCount() public {
@@ -1141,10 +1136,10 @@ contract AntseedKbfAuditsTest is Test {
         MockVerificationSource probes = new MockVerificationSource(address(results));
         results.setSource(address(probes), true);
         probes.record(agentId, SERVICE_A, MODEL_A, DIFF);
-        assertEq(kbf.diffChanges(agentId, SERVICE_A), 0, "another source's DIFF moves no KBF round");
+        assertEq(results.diffChanges(agentId, SERVICE_A), 1, "another source's DIFF moves the KBF round too");
 
         vm.expectEmit(true, true, true, true, address(kbf));
-        emit AntseedKbfAudits.ServiceAudited(agentId, SERVICE_A, auditorA, MODEL_A, SAME, 0, 1, 2);
+        emit AntseedKbfAudits.ServiceAudited(agentId, SERVICE_A, auditorA, MODEL_A, SAME, 1, 1, 2);
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
         IAntseedVerificationResults.ServiceStatus memory status = results.serviceStatus(agentId, SERVICE_A);
         assertEq(uint8(status.verdict), uint8(DIFF), "one SAME does not clear a live DIFF");
@@ -1155,8 +1150,23 @@ contract AntseedKbfAuditsTest is Test {
         status = results.serviceStatus(agentId, SERVICE_A);
         assertEq(uint8(status.verdict), uint8(SAME), "a DIFF-sized quorum clears it");
         assertEq(status.source, address(kbf));
-        assertEq(kbf.diffChanges(agentId, SERVICE_A), 1, "clearing a DIFF here starts a new round");
+        assertEq(results.diffChanges(agentId, SERVICE_A), 2, "clearing the DIFF starts a new round");
         assertTrue(results.isVerified(agentId));
+    }
+
+    function test_supportFromBeforeAnotherSourcesDiffCannotClearIt() public {
+        kbf.setRequiredReports(DIFF, 2);
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME); // recorded: SAME needs one report
+        MockVerificationSource probes = new MockVerificationSource(address(results));
+        results.setSource(address(probes), true);
+        probes.record(agentId, SERVICE_A, MODEL_A, DIFF);
+
+        _audit(auditorB, MODEL_A, agentId, SERVICE_A, SAME);
+        assertEq(
+            uint8(results.serviceStatus(agentId, SERVICE_A).verdict), uint8(DIFF), "A's SAME from before the DIFF does not count"
+        );
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
+        assertEq(uint8(results.serviceStatus(agentId, SERVICE_A).verdict), uint8(SAME), "two fresh reports clear it");
     }
 
     function test_anotherSourceCanOverwriteKbfVerdicts() public {
@@ -1168,22 +1178,22 @@ contract AntseedKbfAuditsTest is Test {
         assertTrue(results.isVerified(agentId), "the results layer takes the latest record from any source");
     }
 
-    function test_roundsMoveOnlyWhenKbfMovesAServiceIntoOrOutOfDiff() public {
+    function test_roundsMoveOnlyWhenAServiceMovesIntoOrOutOfDiff() public {
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
-        assertEq(kbf.diffChanges(agentId, SERVICE_A), 0);
+        assertEq(results.diffChanges(agentId, SERVICE_A), 0);
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, DIFF);
-        assertEq(kbf.diffChanges(agentId, SERVICE_A), 1, "into DIFF");
+        assertEq(results.diffChanges(agentId, SERVICE_A), 1, "into DIFF");
         _audit(auditorB, MODEL_A, agentId, SERVICE_A, DIFF);
-        assertEq(kbf.diffChanges(agentId, SERVICE_A), 1, "still DIFF");
+        assertEq(results.diffChanges(agentId, SERVICE_A), 1, "still DIFF");
         _audit(auditorB, MODEL_B, agentId, SERVICE_A, DIFF);
-        assertEq(kbf.diffChanges(agentId, SERVICE_A), 2, "a DIFF under a new model replaces the old one");
+        assertEq(results.diffChanges(agentId, SERVICE_A), 3, "a new model resets the DIFF (out) before recording its DIFF (in)");
         _audit(auditorC, MODEL_B, agentId, SERVICE_A, UNDETERMINED);
-        assertEq(kbf.diffChanges(agentId, SERVICE_A), 3, "out of DIFF");
+        assertEq(results.diffChanges(agentId, SERVICE_A), 4, "out of DIFF");
         _audit(auditorC, MODEL_B, agentId, SERVICE_A, SAME);
-        assertEq(kbf.diffChanges(agentId, SERVICE_A), 3, "no DIFF involved");
-        assertEq(kbf.reportRound(agentId, SERVICE_A), 3);
+        assertEq(results.diffChanges(agentId, SERVICE_A), 4, "no DIFF involved");
+        assertEq(kbf.reportRound(agentId, SERVICE_A), 4);
         kbf.setAuditor(auditorD, false);
-        assertEq(kbf.reportRound(agentId, SERVICE_A), 4, "a revocation moves every round");
+        assertEq(kbf.reportRound(agentId, SERVICE_A), 5, "a revocation moves every round");
     }
 
     function test_clearingADiffStartsANewRound() public {
@@ -1199,7 +1209,7 @@ contract AntseedKbfAuditsTest is Test {
         agents[0] = agentId;
         services[0] = SERVICE_A;
         results.clearServiceStatuses(agents, services);
-        assertEq(kbf.reportRound(agentId, SERVICE_A), roundBefore + 1, "a clear moves the round");
+        assertGt(kbf.reportRound(agentId, SERVICE_A), roundBefore, "a clear moves the round");
 
         _audit(auditorD, MODEL_A, agentId, SERVICE_A, DIFF);
         assertEq(

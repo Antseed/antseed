@@ -82,6 +82,8 @@ contract AntseedVerificationResults is IAntseedVerificationResults, Ownable2Step
     mapping(uint256 agentId => mapping(bytes32 serviceHash => ServiceStatus status)) private _serviceStatus;
     /// @inheritdoc IAntseedVerificationResults
     mapping(uint256 agentId => mapping(bytes32 serviceHash => uint256 clears)) public override serviceClears;
+    /// @inheritdoc IAntseedVerificationResults
+    mapping(uint256 agentId => mapping(bytes32 serviceHash => uint256 changes)) public override diffChanges;
     // Latest SAME/DIFF verdicts given in each epoch; a verdict moves out when the service gets a new one.
     mapping(uint256 agentId => mapping(uint256 epoch => EpochCounts counts)) private _epochCounts;
 
@@ -516,6 +518,12 @@ contract AntseedVerificationResults is IAntseedVerificationResults, Ownable2Step
         address source,
         bytes32 evidenceHash
     ) private {
+        // Counted for every source and for owner clears, so a source's report rounds can start over
+        // whenever the service's DIFF state moves, whoever moved it.
+        Verdict current = service.verdict;
+        if (previous != current && (previous == Verdict.DIFF || current == Verdict.DIFF)) {
+            diffChanges[agentId][serviceHash] += 1;
+        }
         emit ServiceStatusChanged(
             agentId, serviceHash, service.modelHash, previous, service.verdict, source, evidenceHash
         );

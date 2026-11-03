@@ -83,6 +83,10 @@ interface IAntseedVerificationResults {
     /// @notice Times the owner cleared this service with `clearServiceStatuses`. Sources fold it into
     ///         their report rounds so reports made before a clear stop counting.
     function serviceClears(uint256 agentId, bytes32 serviceHash) external view returns (uint256);
+    /// @notice Times the service's live verdict moved into or out of DIFF, by any source or an owner
+    ///         clear. Sources fold it into their report rounds so support given before a DIFF was
+    ///         recorded can't clear it, and support given before it was cleared can't restore it.
+    function diffChanges(uint256 agentId, bytes32 serviceHash) external view returns (uint256);
     /// @notice The service's verdict if it is live in the current epoch, else NONE.
     function liveVerdict(uint256 agentId, bytes32 serviceHash) external view returns (Verdict);
     function agentStatus(uint256 agentId) external view returns (AgentStatus memory);

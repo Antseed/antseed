@@ -12,10 +12,10 @@ import { IAntseedVerificationResults } from "./IAntseedVerificationResults.sol";
 /// @dev Confirmations: a result is recorded once `requiredReports[verdict]` distinct approved
 ///      auditors report it for the same (agent, service, model) in the same epoch and report
 ///      round. Replacing a live DIFF (from any source) needs as many reports as a DIFF does. Reports
-///      count per epoch only, and only in the current round: `reportRound` moves on whenever a
-///      result this contract records moves the service's live verdict into or out of DIFF
-///      (`diffChanges`), whenever an auditor is revoked (`auditorRevocations`), and whenever the
-///      results owner clears the service (`results.serviceClears`).
+///      count per epoch only, and only in the current round: `reportRound` moves on whenever the
+///      service's live verdict moves into or out of DIFF, by any source (`results.diffChanges`),
+///      whenever the results owner clears the service (`results.serviceClears`), and whenever an
+///      auditor is revoked (`auditorRevocations`).
 ///
 ///      Credits: one credit per model audit that covers at least one agent with staked pool power,
 ///      at most `maxCreditsPerModelPerEpoch` per model, granted through `results.credit`. The results
@@ -75,12 +75,9 @@ interface IAntseedKbfAudits {
 
     /// @notice Distinct approved auditors that must report a verdict in one epoch before it is recorded.
     function requiredReports(IAntseedVerificationResults.Verdict verdict) external view returns (uint8);
-    /// @notice Auditor that first submitted an evidence hash; nobody else may submit it.
-    function evidenceAuditor(bytes32 evidenceHash) external view returns (address);
 
     /// @notice Records one auditor's KBF results for every seller audited as `modelHash`.
-    /// @dev Reverts unless the caller is an approved auditor, `expectedEpoch` is the results layer's current epoch, `evidenceHash` is non-zero and not
-    ///      another auditor's, and `results` is non-empty, bounded, and strictly ordered by
+    /// @dev Reverts unless the caller is an approved auditor, `expectedEpoch` is the results layer's current epoch, `evidenceHash` is non-zero, and `results` is non-empty, bounded, and strictly ordered by
     ///      (agentId, serviceHash).
     function submitModelAudit(
         uint256 expectedEpoch,
@@ -90,8 +87,6 @@ interface IAntseedKbfAudits {
         ServiceResult[] calldata results
     ) external;
 
-    /// @notice Times a result recorded by this contract moved the service's live verdict into or out of DIFF.
-    function diffChanges(uint256 agentId, bytes32 serviceHash) external view returns (uint256);
     /// @notice The service's report round: only reports made in it count.
     function reportRound(uint256 agentId, bytes32 serviceHash) external view returns (uint256);
     /// @notice Key of one tally: (epoch, agent, service, model, round).

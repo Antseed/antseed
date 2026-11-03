@@ -87,7 +87,9 @@ describe('VerifierClient audit ABI', () => {
     ]);
     expect(iface.getFunction('submitAudit')).toBeNull();
     expect(iface.getFunction('reportKey')).not.toBeNull();
-    expect(iface.getFunction('evidenceAuditor')).not.toBeNull();
+    expect(iface.getFunction('evidenceAuditor')).toBeNull();
+    expect(iface.getFunction('diffChanges')).toBeNull();
+    expect(new Interface(VERIFICATION_RESULTS_ABI).getFunction('diffChanges')).not.toBeNull();
     expect(iface.getFunction('auditorEpochCredits')).toBeNull();
   });
 

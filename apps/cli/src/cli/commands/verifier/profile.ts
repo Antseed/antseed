@@ -62,7 +62,10 @@ export function registerVerifierProfileCommand(verifierCmd: Command): void {
           throw new Error(`auditor wallet ${auditor} is not approved by the KBF audits contract ${getAddress(verifierClient.contractAddress)}`)
         }
         const transactionHash = await verifierClient.setAuditorProfile(signer!.wallet, next)
-        console.log(chalk.green(`Updated the auditor profile of ${auditor} (${transactionHash})`))
+        // Keep stdout one JSON object with --json; the confirmation goes to stderr there.
+        const confirmation = `Updated the auditor profile of ${auditor} (${transactionHash})`
+        if (options.json) console.error(confirmation)
+        else console.log(chalk.green(confirmation))
       }
       const profile = next ?? current
       if (options.json) {

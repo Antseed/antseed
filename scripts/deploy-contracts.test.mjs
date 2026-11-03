@@ -2334,6 +2334,38 @@ function mockM003Chain(t, options, context) {
   });
 }
 
+test('M003 keeps its checkpoint apart from the earlier M003 release and rejects a legacy one', async (t) => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'antseed-m003-checkpoint-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await fsPromises.mkdir(path.join(directory, 'base-mainnet'), { recursive: true });
+  await writeJsonAtomic(path.join(directory, 'base-mainnet', 'current.json'), { chainId: 8453, contracts: {} });
+  const context = await loadContext(
+    { id: m003.id, checkpointName: m003.checkpointName, expectedState: () => ({}) },
+    'base-mainnet',
+    { canonicalRoot: directory, outputRoot: directory, rpcUrl: 'http://127.0.0.1:0' },
+  );
+  assert.equal(path.basename(context.checkpointFile), 'm003-verification-split-base-mainnet.json');
+  assert.notEqual(path.basename(context.checkpointFile), 'm003-base-mainnet.json');
+
+  // A legacy-shaped checkpoint at this release's path still stops before any transaction.
+  const legacy = m003Checkpoint();
+  delete legacy.resultsAddress;
+  delete legacy.kbfAddress;
+  legacy.address = M003.results;
+  const legacyContext = await m003Context(t, legacy);
+  mockCast(t, (args) => {
+    if (args[0] === 'chain-id') return '8453';
+    if (args[0] === 'code') return '0x01';
+    if (args[0] === 'call') {
+      if (args[2] === 'sellerPools()(address)') return ADDRESS.sellerRewardsPool;
+      if (args[2] === 'pointsPolicy()(address)') return ADDRESS.pointsPolicyRegistry;
+      return ADDRESS.channels;
+    }
+    assert.fail(`unexpected cast ${args}`);
+  });
+  await assert.rejects(m003.observe(legacyContext), /is not a 003-verification-split checkpoint/);
+});
+
 test('M003 recovers partial receipts and retains CREATE provenance through a resumed deployment', async (t) => {
   const checkpoint = m003Checkpoint();
   checkpoint.contracts = {};

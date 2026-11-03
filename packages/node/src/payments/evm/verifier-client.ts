@@ -68,7 +68,7 @@ export interface ServiceAuditedEvent {
   auditor: string;
   modelHash: string;
   verdict: VerifierVerdict;
-  /** The service's report round: it moves on whenever KBF moves the service's verdict into or out of DIFF, an auditor is revoked, or the results owner clears the service; only reports of the current round count. */
+  /** The service's report round: it moves on whenever any source moves the service's verdict into or out of DIFF, an auditor is revoked, or the results owner clears the service; only reports of the current round count. */
   round: number;
   /** Distinct auditors reporting `verdict` for this service and model in the epoch and round, this report included. */
   reports: number;
@@ -160,12 +160,10 @@ export const KBF_AUDITS_ABI = [
   'function reportCount(bytes32 key,uint8 verdict) external view returns (uint256)',
   'function modelCredits(uint256 epoch,address auditor,bytes32 modelHash) external view returns (uint256)',
   'function maxCreditsPerModelPerEpoch() external view returns (uint32)',
-  'function evidenceAuditor(bytes32 evidenceHash) external view returns (address)',
   'function results() external view returns (address)',
   'function sellerPools() external view returns (address)',
   'function approvedAuditors(address auditor) external view returns (bool)',
   'function auditorRevocations() external view returns (uint256)',
-  'function diffChanges(uint256 agentId,bytes32 serviceHash) external view returns (uint256)',
   'function agentOwner(uint256 agentId) external view returns (bool known,address owner)',
   'function auditorProfile(address auditor) external view returns ((string name,string iconUri,string url))',
   'function setAuditorProfile(string name,string iconUri,string url) external',
@@ -184,6 +182,7 @@ export const VERIFICATION_RESULTS_ABI = [
   'function isVerified(uint256 agentId) external view returns (bool)',
   'function liveVerdict(uint256 agentId,bytes32 serviceHash) external view returns (uint8)',
   'function serviceClears(uint256 agentId,bytes32 serviceHash) external view returns (uint256)',
+  'function diffChanges(uint256 agentId,bytes32 serviceHash) external view returns (uint256)',
   'function validityEpochs() external view returns (uint8)',
   'function emissionsGate() external view returns (address)',
   'function registry() external view returns (address)',
@@ -474,9 +473,9 @@ export class VerifierClient extends BaseEvmClient {
   }
 
   /**
-   * The service's current report round: only reports made in it count. It moves on whenever KBF
-   * moves the service's verdict into or out of DIFF, an auditor is revoked, or the results owner
-   * clears the service.
+   * The service's current report round: only reports made in it count. It moves on whenever any
+   * source moves the service's verdict into or out of DIFF, an auditor is revoked, or the results
+   * owner clears the service.
    */
   async reportRound(agentId: number | bigint, serviceHashValue: string): Promise<number> {
     return Number(await this._contract().getFunction('reportRound')(BigInt(agentId), serviceHashValue));

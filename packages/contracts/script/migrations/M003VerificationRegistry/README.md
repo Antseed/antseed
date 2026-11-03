@@ -160,7 +160,9 @@ fixture to prepare a disposable chain and verifies a repeated M003 apply is a no
 
 The checkpoint saves the original deployment nonce, the three predicted CREATE addresses (results,
 KBF audits, policy at N to N+2), owner, seller pools, usage accounting, points policy
-registry, and bonus before broadcast. Keep the checkpoint and Foundry receipts until the history
+registry, and bonus before broadcast, in `.deployments/m003-verification-split-<network>.json`
+(not the earlier release's `m003-<network>.json`, which this release never reads; a checkpoint
+without the split addresses stops the run). Keep the checkpoint and Foundry receipts until the history
 record is committed. Resume with the same command: existing deployments are checked against the
 local artifacts and their wiring; only the missing deployments and wiring are sent.
 

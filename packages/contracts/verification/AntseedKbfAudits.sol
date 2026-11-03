@@ -53,10 +53,6 @@ contract AntseedKbfAudits is IAntseedKbfAudits, Ownable2Step {
     mapping(address auditor => AuditorProfile profile) private _profiles;
     /// @notice Distinct approved auditors that must report a verdict in one epoch before it is recorded.
     mapping(IAntseedVerificationResults.Verdict verdict => uint8 reports) public override requiredReports;
-    /// @inheritdoc IAntseedKbfAudits
-    mapping(bytes32 evidenceHash => address auditor) public override evidenceAuditor;
-    /// @inheritdoc IAntseedKbfAudits
-    mapping(uint256 agentId => mapping(bytes32 serviceHash => uint256 changes)) public override diffChanges;
 
     /// @notice Safety limit: credited audits of the same model per auditor and epoch (default 1).
     ///         Stops an auditor from earning repeatedly by re-auditing one model.
@@ -101,7 +97,6 @@ contract AntseedKbfAudits is IAntseedKbfAudits, Ownable2Step {
     error InvalidAddress();
     error InvalidValue();
     error NotApprovedAuditor();
-    error EvidenceReused();
     error InvalidEvidenceUri();
     error InvalidProfile();
     error InvalidResults();
@@ -199,9 +194,6 @@ contract AntseedKbfAudits is IAntseedKbfAudits, Ownable2Step {
         uint256 epoch = results.currentEpoch();
         if (epoch != expectedEpoch) revert EpochChanged();
 
-        address evidenceOwner = evidenceAuditor[evidenceHash];
-        if (evidenceOwner == address(0)) evidenceAuditor[evidenceHash] = msg.sender;
-        else if (evidenceOwner != msg.sender) revert EvidenceReused();
 
         IERC8004Registry identity = IERC8004Registry(results.registry().identityRegistry());
         bool staked;
@@ -246,7 +238,7 @@ contract AntseedKbfAudits is IAntseedKbfAudits, Ownable2Step {
     ///         result recorded here moves the service's verdict into or out of DIFF, and whenever an
     ///         auditor is revoked. Both only grow, so a round never comes back.
     function reportRound(uint256 agentId, bytes32 serviceHash) public view override returns (uint256) {
-        return diffChanges[agentId][serviceHash] + auditorRevocations + results.serviceClears(agentId, serviceHash);
+        return results.diffChanges(agentId, serviceHash) + results.serviceClears(agentId, serviceHash) + auditorRevocations;
     }
 
     function reportKey(uint256 epoch, uint256 agentId, bytes32 serviceHash, bytes32 modelHash, uint256 round)
@@ -311,14 +303,6 @@ contract AntseedKbfAudits is IAntseedKbfAudits, Ownable2Step {
         emit ServiceAudited(agentId, serviceHash, msg.sender, modelHash, verdict, round, reports, required);
         if (reports < required || (!addsSupport && required != 1)) return;
 
-        // A DIFF given or cleared here (including one replaced under a new model) starts a new round.
-        if (
-            live == IAntseedVerificationResults.Verdict.DIFF || verdict == IAntseedVerificationResults.Verdict.DIFF
-        ) {
-            if (live != verdict || results.serviceStatus(agentId, serviceHash).modelHash != modelHash) {
-                diffChanges[agentId][serviceHash] += 1;
-            }
-        }
         results.record(agentId, serviceHash, modelHash, verdict, evidenceHash);
     }
 

@@ -143,10 +143,10 @@ function predictAddresses(rpcUrl, owner, deploymentNonce) {
   }));
 }
 
-async function checkDeployed(context, checkpoint, key, field, wiring) {
+async function checkDeployed(context, checkpoint, key, field, wiring, artifacts) {
   const { rpcUrl } = context;
   const address = checkpoint[field];
-  const found = await findArtifact(await buildArtifactIndex(), key);
+  const found = await findArtifact(artifacts, key);
   if (!found) throw new Error(`M003 missing ${key} artifact; run forge build`);
   const mismatch = compareRuntimeCode(rpcUrl, address, found.artifact);
   if (mismatch) throw new Error(`M003 ${key} ${mismatch}`);
@@ -173,6 +173,9 @@ async function observe(context) {
     ...record.verificationConfiguration.verificationRegistry,
     sourceCommit: record.sourceCommit, contracts: record.contracts, transactions: record.transactions,
   }));
+  if (checkpoint && (!checkpoint.resultsAddress || !checkpoint.kbfAddress || !checkpoint.policyAddress)) {
+    throw new Error(`M003 checkpoint ${context.checkpointFile} is not a ${RELEASE} checkpoint (an earlier M003 release?); move it aside`);
+  }
   if (!checkpoint) {
     if (DEPLOYMENTS.some(([key]) => canonical.contracts[key])) throw new Error('M003 verification exists without its history record');
     const file = receiptFile(context);
@@ -219,7 +222,11 @@ async function observe(context) {
     kbfAudits: { 'results()(address)': checkpoint.resultsAddress, 'sellerPools()(address)': expected.sellerPools },
     verificationPointsPolicy: { 'results()(address)': checkpoint.resultsAddress, 'usageAccounting()(address)': checkpoint.usageAccounting },
   };
-  for (const [key, field] of DEPLOYMENTS.slice(0, count)) await checkDeployed(context, checkpoint, key, field, wiring[key]);
+  // One artifact index per observation, built only when something is deployed.
+  const artifacts = count > 0 ? await buildArtifactIndex() : null;
+  for (const [key, field] of DEPLOYMENTS.slice(0, count)) {
+    await checkDeployed(context, checkpoint, key, field, wiring[key], artifacts);
+  }
   for (const [key] of DEPLOYMENTS.slice(0, count)) {
     if (!checkpoint.contracts[key]) throw new Error(`M003 restore confirmed ${key} deployment receipts before continuing`);
   }
@@ -306,6 +313,9 @@ const deployPhase = {
 };
 export const migration = {
   id: 'M003',
+  // The earlier M003 release (a single AntseedKbfVerification) kept its checkpoint at
+  // `.deployments/m003-<network>.json`; this release must not read it.
+  checkpointName: 'm003-verification-split',
   networks: ['base-sepolia', 'base-mainnet'],
   releases: [RELEASE],
   phases: [deployPhase],
