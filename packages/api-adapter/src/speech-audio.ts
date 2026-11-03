@@ -114,7 +114,19 @@ function isWav(body: Uint8Array): boolean {
 
 // ── FLAC ─────────────────────────────────────────────────────────
 
-/** `fLaC`, a STREAMINFO block first, the metadata blocks whole, then a frame sync code. */
+/**
+ * A FLAC frame header at `offset`: the sync code, then no reserved block size,
+ * sample rate, channel assignment or sample size, and frame data after it.
+ */
+function isFlacFrameHeader(body: Uint8Array, offset: number): boolean {
+  if (body.length < offset + 16) return false;
+  const [b0, b1, b2, b3] = [body[offset]!, body[offset + 1]!, body[offset + 2]!, body[offset + 3]!];
+  if (b0 !== 0xff || (b1 & 0xfe) !== 0xf8) return false;
+  const sampleSize = (b3 >> 1) & 0x07;
+  return (b2 >> 4) !== 0 && (b2 & 0x0f) !== 0x0f && (b3 >> 4) < 11 && sampleSize !== 3 && sampleSize !== 7 && (b3 & 0x01) === 0;
+}
+
+/** `fLaC`, a STREAMINFO block first, the metadata blocks whole, then a valid frame header. */
 function isFlac(body: Uint8Array): boolean {
   if (!ascii(body, 0, 'fLaC') || body.length < 8 + 34) return false;
   if ((body[4]! & 0x7f) !== 0) return false; // the first block must be STREAMINFO
@@ -131,7 +143,7 @@ function isFlac(body: Uint8Array): boolean {
     offset += 4 + length;
     if (last) break;
   }
-  return body.length >= offset + 2 && body[offset] === 0xff && (body[offset + 1]! & 0xfe) === 0xf8;
+  return isFlacFrameHeader(body, offset);
 }
 
 // ── Ogg (Opus, Vorbis) ───────────────────────────────────────────

@@ -44,7 +44,8 @@ describe('speech requests', () => {
   const wav = (samples: number) => concat('RIFF', u32le(36 + samples * 2), 'WAVE',
     'fmt ', u32le(16), [1, 0, 1, 0], u32le(24_000), u32le(48_000), [2, 0, 16, 0], 'data', u32le(samples * 2), zeros(samples * 2));
   const flacHeader = concat('fLaC', [0x80, 0, 0, 34], [0x10, 0x00, 0x10, 0x00], zeros(6), [0x0a, 0xc4, 0x40], zeros(21));
-  const flac = concat(flacHeader, [0xff, 0xf8], zeros(100));
+  /** A frame: sync, 4096-sample blocks at the STREAMINFO rate, mono, 16-bit. */
+  const flac = concat(flacHeader, [0xff, 0xf8, 0xc0, 0x08], zeros(100));
   const oggPage = (payload: Uint8Array) => concat('OggS', [0, 0], zeros(8), zeros(4), zeros(4), zeros(4), [1, payload.length], payload);
   const opusHead = oggPage(concat('OpusHead', zeros(11)));
   const opusTags = oggPage(concat('OpusTags', zeros(40)));
@@ -114,6 +115,8 @@ describe('speech requests', () => {
     expect(delivered(mp3Frames(1))).toBe(false);
     expect(delivered(wav(200).slice(0, 44))).toBe(false); // no samples
     expect(delivered(concat(flacHeader, zeros(60)))).toBe(false); // no frame
+    expect(delivered(concat(flacHeader, [0xff, 0xf8], zeros(100)))).toBe(false); // sync, then a reserved block size
+    expect(delivered(concat(flacHeader, [0xff, 0xf8, 0xc0, 0x08], zeros(4)))).toBe(false); // a frame header, cut off
     expect(delivered(ogg.slice(0, ogg.length - 10))).toBe(false); // the audio page is incomplete
     // Codec headers and nothing to play.
     expect(delivered(concat(opusHead, opusTags))).toBe(false);
