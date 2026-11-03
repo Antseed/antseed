@@ -4,7 +4,7 @@ import type {
   SerializedHttpRequest,
   SerializedHttpResponse,
 } from '@antseed/node';
-import { withPinnedUpstreamModel } from '@antseed/provider-core';
+import { getHeader, withPinnedUpstreamModel } from '@antseed/provider-core';
 
 const OPENAI_IMAGE_EDIT_PATH = '/v1/images/edits';
 const VENICE_IMAGE_EDIT_PATH = '/v1/image/edit';
@@ -33,18 +33,9 @@ const OPENAI_IMAGE_EDIT_FIELDS = new Set([
   ...VENICE_EDIT_PARAMETERS,
 ]);
 
-type AdaptedRequest = {
-  request: SerializedHttpRequest;
-};
-
 type AdaptRequestResult =
-  | { adapted: AdaptedRequest }
+  | { adapted: SerializedHttpRequest }
   | { response: SerializedHttpResponse };
-
-function getHeader(headers: Record<string, string>, name: string): string {
-  const entry = Object.entries(headers).find(([key]) => key.toLowerCase() === name.toLowerCase());
-  return entry?.[1] ?? '';
-}
 
 function replaceHeader(
   headers: Record<string, string>,
@@ -269,14 +260,12 @@ async function adaptRequest(
   // header; only the model sent upstream is the native edit model.
   const headers = replaceHeader(request.headers, 'content-type', upstreamContentType);
   return {
-    adapted: {
-      request: withPinnedUpstreamModel({
-        ...request,
-        path: multi ? VENICE_IMAGE_MULTI_EDIT_PATH : VENICE_IMAGE_EDIT_PATH,
-        headers: replaceHeader(headers, 'x-antseed-service', requestedService),
-        body: new Uint8Array(await encoded.arrayBuffer()),
-      }, editModel),
-    },
+    adapted: withPinnedUpstreamModel({
+      ...request,
+      path: multi ? VENICE_IMAGE_MULTI_EDIT_PATH : VENICE_IMAGE_EDIT_PATH,
+      headers: replaceHeader(headers, 'x-antseed-service', requestedService),
+      body: new Uint8Array(await encoded.arrayBuffer()),
+    }, editModel),
   };
 }
 
@@ -380,7 +369,7 @@ export class VeniceImageEditProvider implements Provider {
 
     const result = await adaptRequest(request, this.editModelMap);
     if ('response' in result) return result.response;
-    const response = await this.delegate.handleRequest(result.adapted.request);
+    const response = await this.delegate.handleRequest(result.adapted);
     return adaptResponse(response);
   }
 
