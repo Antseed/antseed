@@ -17,14 +17,6 @@ function ascii(body: Uint8Array, offset: number, text: string): boolean {
   return true;
 }
 
-function u32le(body: Uint8Array, offset: number): number {
-  return (body[offset]! | (body[offset + 1]! << 8) | (body[offset + 2]! << 16)) + ((body[offset + 3]! << 24) >>> 0);
-}
-
-function u16le(body: Uint8Array, offset: number): number {
-  return body[offset]! | (body[offset + 1]! << 8);
-}
-
 // ── MPEG audio (MP3) and ADTS (AAC) ─────────────────────────────
 
 /** kbps by `<1 for MPEG-1, 2 for MPEG-2/2.5>-<layer>`, indexed by the header's bitrate index. */
@@ -89,15 +81,17 @@ function isMp3OrAac(body: Uint8Array): boolean {
 /** RIFF/WAVE with a PCM-family `fmt ` chunk and a `data` chunk holding at least one sample frame. */
 function isWav(body: Uint8Array): boolean {
   if (!ascii(body, 0, 'RIFF') || !ascii(body, 8, 'WAVE')) return false;
+  // RIFF integers are little-endian.
+  const view = new DataView(body.buffer, body.byteOffset, body.byteLength);
   let blockAlign = 0;
   for (let offset = 12; offset + 8 <= body.length;) {
-    const size = u32le(body, offset + 4);
+    const size = view.getUint32(offset + 4, true);
     if (ascii(body, offset, 'fmt ')) {
       if (size < 16 || body.length < offset + 8 + 16) return false;
-      const format = u16le(body, offset + 8);
-      const channels = u16le(body, offset + 10);
-      const sampleRate = u32le(body, offset + 12);
-      blockAlign = u16le(body, offset + 20);
+      const format = view.getUint16(offset + 8, true);
+      const channels = view.getUint16(offset + 10, true);
+      const sampleRate = view.getUint32(offset + 12, true);
+      blockAlign = view.getUint16(offset + 20, true);
       if (![1, 3, 0xfffe].includes(format) || channels === 0 || sampleRate === 0 || blockAlign === 0) return false;
     } else if (ascii(body, offset, 'data')) {
       // A streamed WAV may not know its data size yet (0 or 0xFFFFFFFF); the bytes present decide.
