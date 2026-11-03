@@ -288,9 +288,7 @@ const plugin: AntseedProviderPlugin = {
         authHeaderValue: `Bearer ${apiKey}`,
         tokenProvider,
         maxConcurrency,
-        allowedServices: flavor === 'venice'
-          ? [...allowedServices, ...Object.values(imageEditModelMap ?? {})]
-          : allowedServices,
+        allowedServices,
         ...(serviceRewriteMap ? { serviceRewriteMap } : {}),
         ...(effectiveStripHeaderPrefixes.length > 0 ? { stripHeaderPrefixes: effectiveStripHeaderPrefixes } : {}),
         ...(Object.keys(bodyInject).length > 0 ? { injectJsonFields: bodyInject } : {}),

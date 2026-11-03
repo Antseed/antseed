@@ -4,6 +4,7 @@ import { ANTSEED_STREAMING_RESPONSE_HEADER } from '@antseed/node';
 import { swapAuthHeader, validateRequestService } from './auth-swap.js';
 import Bottleneck from 'bottleneck';
 import { stripRelayRequestHeaders, stripRelayResponseHeaders } from './http-headers.js';
+import { pinnedUpstreamModel } from './pinned-upstream-model.js';
 
 export const DEFAULT_HTTP_TIMEOUT_MS = 5 * 60_000;
 
@@ -377,6 +378,7 @@ export class HttpRelay {
 
     // Swap auth headers
     let swappedRequest = swapAuthHeader(request, effectiveConfig);
+    const pinnedModel = pinnedUpstreamModel(request);
 
     // Normalize the requested service into the upstream model for both JSON
     // and multipart Images API requests. Multipart edits otherwise bypass
@@ -390,7 +392,7 @@ export class HttpRelay {
           || '';
         if (requestedService) {
           const rewrittenService = upstream.serviceRewriteMap?.[requestedService.toLowerCase()]?.trim();
-          const upstreamModel = rewrittenService || requestedService;
+          const upstreamModel = pinnedModel || rewrittenService || requestedService;
           // Venice's multi-image edit names the model `modelId` and rejects a `model` field.
           const modelField = readMultipartTextField(swappedRequest.body, contentType, 'model') === null
             && readMultipartTextField(swappedRequest.body, contentType, 'modelId') !== null
@@ -412,6 +414,10 @@ export class HttpRelay {
             if (typeof rewrittenService === 'string' && rewrittenService.trim().length > 0) {
               transformed.model = rewrittenService.trim();
             }
+          }
+
+          if (pinnedModel) {
+            transformed.model = pinnedModel;
           }
 
           // Normalize: if client sent "service" without "model", copy to "model" for upstream API compat.

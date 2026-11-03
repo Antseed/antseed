@@ -359,6 +359,58 @@ describe('provider-openai plugin', () => {
     }
   });
 
+  it('fails Venice edits over to a service-scoped backup with the native edit model', async () => {
+    const originalFetch = globalThis.fetch;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response('{"error":"quota"}', { status: 429, headers: { 'content-type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { 'content-type': 'image/png' } }));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    try {
+      const provider = await plugin.createProvider({
+        OPENAI_API_KEY: 'sk-main',
+        OPENAI_BASE_URL: 'https://api.venice.ai/api',
+        ANTSEED_ALLOWED_SERVICES: 'cover-art',
+        ANTSEED_SERVICE_ALIAS_MAP_JSON: '{"cover-art":"grok-imagine-image-quality"}',
+        ANTSEED_SERVICE_IMAGE_EDIT_MODEL_MAP_JSON: '{"cover-art":"grok-imagine-quality-edit"}',
+        ANTSEED_FALLBACK_UPSTREAMS_JSON: JSON.stringify([{
+          baseUrl: 'https://backup.venice.example/api',
+          apiKey: 'sk-backup',
+          services: ['cover-art'],
+          serviceAliasMap: { 'cover-art': 'backup-generation-model' },
+        }]),
+      });
+      const form = new FormData();
+      form.append('model', 'cover-art');
+      form.append('prompt', 'make the sky warmer');
+      form.append('image', new Blob([new Uint8Array([4, 5, 6])], { type: 'image/png' }), 'source.png');
+      const encoded = await serializeForm(form);
+
+      const response = await provider.handleRequest({
+        requestId: 'req-venice-edit-fallback',
+        method: 'POST',
+        path: '/v1/images/edits',
+        headers: { 'content-type': encoded.contentType, 'x-antseed-service': 'cover-art' },
+        body: encoded.body,
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      const [url, requestInit] = fetchMock.mock.calls[1] as [string, RequestInit];
+      expect(url).toBe('https://backup.venice.example/api/v1/image/edit');
+      expect((requestInit.headers as Record<string, string>)['authorization']).toBe('Bearer sk-backup');
+      const upstreamForm = await new Request(url, {
+        method: 'POST',
+        headers: requestInit.headers,
+        body: requestInit.body,
+      }).formData();
+      expect(upstreamForm.get('model')).toBe('grok-imagine-quality-edit');
+    } finally {
+      globalThis.fetch = originalFetch;
+      warn.mockRestore();
+    }
+  });
+
   it('keeps first-prompt Venice generation on the configured generation model', async () => {
     const originalFetch = globalThis.fetch;
     const fetchMock = vi.fn().mockResolvedValue(

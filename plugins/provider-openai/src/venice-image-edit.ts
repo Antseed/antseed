@@ -4,6 +4,7 @@ import type {
   SerializedHttpRequest,
   SerializedHttpResponse,
 } from '@antseed/node';
+import { withPinnedUpstreamModel } from '@antseed/provider-core';
 
 const OPENAI_IMAGE_EDIT_PATH = '/v1/images/edits';
 const VENICE_IMAGE_EDIT_PATH = '/v1/image/edit';
@@ -263,16 +264,16 @@ async function adaptRequest(
     return { response: openAiError(request.requestId, 500, 'Could not encode Venice image edit request.') };
   }
 
-  const headers = replaceHeader(request.headers, 'content-type', upstreamContentType);
-  const routedHeaders = replaceHeader(headers, 'x-antseed-service', editModel);
+  // The relay keeps selecting upstreams (and fallbacks) by the advertised
+  // service; only the model it sends upstream is the native edit model.
   return {
     adapted: {
-      request: {
+      request: withPinnedUpstreamModel({
         ...request,
         path: multi ? VENICE_IMAGE_MULTI_EDIT_PATH : VENICE_IMAGE_EDIT_PATH,
-        headers: routedHeaders,
+        headers: replaceHeader(request.headers, 'content-type', upstreamContentType),
         body: new Uint8Array(await encoded.arrayBuffer()),
-      },
+      }, editModel),
     },
   };
 }
