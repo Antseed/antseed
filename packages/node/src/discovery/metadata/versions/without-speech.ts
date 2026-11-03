@@ -39,23 +39,37 @@ function withoutSpeechCapabilities(capabilities: Record<string, ServiceCapabilit
   return out;
 }
 
+/** Services a provider describes in any per-service map. */
+function describedServices(provider: ProviderAnnouncement): string[] {
+  const services = new Set<string>();
+  for (const key of PER_SERVICE_KEYS) {
+    for (const service of Object.keys(provider[key] ?? {})) services.add(service);
+  }
+  return [...services];
+}
+
 /**
  * Builds a document older buyers accept from the newest metadata. Buyers before
  * v15 reject a whole peer whose metadata names a protocol or billing unit they
  * don't know, so speech services are left out of v14 and older documents
  * (along with `capabilities.speech`), and the rest of the seller stays visible.
  * A provider whose services are all speech services is left out entirely,
- * because an empty service list means "any service".
+ * because an empty service list means "any service". A wildcard provider
+ * (`services: []`) keeps its wildcard; only its speech map entries go.
  */
 export function withoutSpeechServices(latest: PeerMetadata): PeerMetadata {
   const providers: ProviderAnnouncement[] = [];
   for (const provider of latest.providers) {
-    const speech = new Set(provider.services.filter((service) => usesSpeech(provider, service)));
+    const wildcard = provider.services.length === 0;
+    const candidates = wildcard ? describedServices(provider) : provider.services;
+    const speech = new Set(candidates.filter((service) => usesSpeech(provider, service)));
     const next: ProviderAnnouncement = { ...provider };
     if (speech.size > 0) {
-      const services = provider.services.filter((service) => !speech.has(service));
-      if (services.length === 0) continue;
-      next.services = services;
+      if (!wildcard) {
+        const services = provider.services.filter((service) => !speech.has(service));
+        if (services.length === 0) continue;
+        next.services = services;
+      }
       for (const key of PER_SERVICE_KEYS) {
         const map = provider[key] as Record<string, unknown> | undefined;
         if (!map) continue;

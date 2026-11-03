@@ -104,6 +104,20 @@ describe('speech services in peer metadata', () => {
     expect(getMetadataCodec(14).fromLatest(latest).providers).toEqual([]);
   });
 
+  it('strips speech entries from a wildcard provider and keeps its wildcard', () => {
+    const latest = speechMetadata();
+    latest.providers = [{ ...latest.providers[0]!, services: [] }];
+    expect(validateMetadata(latest)).toEqual([]);
+    const older = getMetadataCodec(14).fromLatest(latest);
+    const provider = older.providers[0]!;
+    expect(provider.services).toEqual([]);
+    expect(Object.keys(provider.serviceApiProtocols ?? {})).toEqual(['kimi-k3', 'nano-banana-pro']);
+    expect(Object.keys(provider.serviceUnitBillingModels ?? {})).toEqual(['nano-banana-pro']);
+    expect(Object.values(provider.serviceCapabilities ?? {}).some((caps) => caps.speech !== undefined)).toBe(false);
+    expect(validateMetadata({ ...older, signature: 'b'.repeat(130) })).toEqual([]);
+    expect(() => encodeMetadataForSigning(older)).not.toThrow();
+  });
+
   it('refuses speech fields in documents older than v15', () => {
     const older = { ...speechMetadata(), version: 14 };
     const messages = validateMetadata(older).map((error) => error.message);
