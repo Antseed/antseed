@@ -578,14 +578,10 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
           for (const warning of [
             getUnsupportedUnitBillingWarning(providerName, providerCfg, configFields),
             getUnsupportedFallbackUpstreamsWarning(providerName, providerCfg, configFields),
+            getImageEditUnitBillingWarning(providerName, providerCfg),
           ]) {
             if (!warning) continue
             spinner.warn(chalk.yellow(warning))
-            spinner.start(`Loading provider plugin "${packageName}" for "${providerName}"...`)
-          }
-          const imageEditBillingWarning = getImageEditUnitBillingWarning(providerName, providerCfg)
-          if (imageEditBillingWarning) {
-            spinner.warn(chalk.yellow(imageEditBillingWarning))
             spinner.start(`Loading provider plugin "${packageName}" for "${providerName}"...`)
           }
           const runtimeEnv = buildSellerPluginRuntimeEnv(effectiveSellerConfig, providerName)
