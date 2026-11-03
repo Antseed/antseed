@@ -53,6 +53,7 @@ export function serviceApiFormat(service: Service): ApiFormat {
   if (announced.includes('anthropic-messages')) return 'anthropic-messages'
   if (announced.includes('openai-responses')) return 'openai-responses'
   if (announced.includes('openai-images')) return 'openai-images'
+  if (announced.includes('openai-audio-speech')) return 'openai-audio-speech'
   const provider = service.provider.toLowerCase()
   if (provider.includes('anthropic') || provider.includes('claude')) return 'anthropic-messages'
   if (provider.includes('responses')) return 'openai-responses'
@@ -84,23 +85,28 @@ export function modelCallFormat(type: NetworkModelType, offer?: Pick<NetworkMode
 
 const IMAGE_PROMPT = 'A lighthouse on a cliff at dawn, watercolor'
 const SPEECH_INPUT = 'Hello from Antseed.'
+/** Stands in for a voice when the seller announces none: some upstreams (OpenAI) require one. */
+export const SPEECH_VOICE_PLACEHOLDER = '<voice>'
 
-function requestBody(format: ApiFormat, model: string): string {
+function requestBody(format: ApiFormat, model: string, voice?: string): string {
   if (format === 'anthropic-messages') return JSON.stringify({ model, max_tokens: 1024, messages: [{ role: 'user', content: 'Hello' }] })
   if (format === 'openai-responses') return JSON.stringify({ model, input: 'Hello' })
   if (format === 'openai-images') return JSON.stringify({ model, prompt: IMAGE_PROMPT, n: 1 })
-  // Without `voice` the seller uses the model's default voice.
-  if (format === 'openai-audio-speech') return JSON.stringify({ model, input: SPEECH_INPUT })
+  if (format === 'openai-audio-speech') return JSON.stringify({ model, input: SPEECH_INPUT, voice: voice ?? SPEECH_VOICE_PLACEHOLDER })
   return JSON.stringify({ model, messages: [{ role: 'user', content: 'Hello' }] })
 }
 
-/** A ready-to-run curl request; single quotes in the body are escaped for the shell. `key: null` for a local buyer, which takes none. */
-export function curlSnippet(baseUrl: string, model: string, format: ApiFormat = 'openai-chat-completions', key: KeyRef | null = ENV_KEY): string {
+/**
+ * A ready-to-run curl request; single quotes in the body are escaped for the
+ * shell. `key: null` for a local buyer, which takes none. `voice` is the voice
+ * a speech request asks for, a placeholder when omitted.
+ */
+export function curlSnippet(baseUrl: string, model: string, format: ApiFormat = 'openai-chat-completions', key: KeyRef | null = ENV_KEY, voice?: string): string {
   return [
     `curl ${baseUrl}${API_PATHS[format]} \\`,
     ...(key ? [`  -H "Authorization: Bearer ${shellKey(key)}" \\`] : []),
     '  -H "Content-Type: application/json" \\',
-    `  -d '${requestBody(format, model).replaceAll("'", `'\\''`)}'${format === 'openai-audio-speech' ? ' \\' : ''}`,
+    `  -d '${requestBody(format, model, voice).replaceAll("'", `'\\''`)}'${format === 'openai-audio-speech' ? ' \\' : ''}`,
     // Speech answers with the audio file itself.
     ...(format === 'openai-audio-speech' ? ['  -o speech.mp3'] : []),
   ].join('\n')
@@ -209,28 +215,28 @@ export function keySnippets(baseUrl: string, secret: string, model = '<model>'):
   ]
 }
 
-/** The per-model copy menu: model id, curl and the matching SDK call. */
-export function modelSnippets(baseUrl: string, peerId: string, model: string, format: ApiFormat): Snippet[] {
+/** The per-model copy menu: model id, curl and the matching SDK call; `voice` as in {@link curlSnippet}. */
+export function modelSnippets(baseUrl: string, peerId: string, model: string, format: ApiFormat, voice?: string): Snippet[] {
   const modelId = pinnedModelId(peerId, model)
-  return [
+  const snippets: Snippet[] = [
     { id: 'model', label: 'Copy model id', code: modelId },
-    { id: 'curl', label: 'Copy curl', code: curlSnippet(baseUrl, modelId, format) },
-    ...(format === 'openai-audio-speech'
-      ? []
-      : [format === 'anthropic-messages'
-        ? { id: 'sdk', label: 'Copy for Anthropic SDK', code: anthropicJsSnippet(baseUrl, modelId) }
-        : { id: 'sdk', label: 'Copy for OpenAI SDK', code: openAiJsSnippet(baseUrl, modelId, format) }]),
+    { id: 'curl', label: 'Copy curl', code: curlSnippet(baseUrl, modelId, format, ENV_KEY, voice) },
   ]
+  if (format === 'openai-audio-speech') return snippets
+  snippets.push(format === 'anthropic-messages'
+    ? { id: 'sdk', label: 'Copy for Anthropic SDK', code: anthropicJsSnippet(baseUrl, modelId) }
+    : { id: 'sdk', label: 'Copy for OpenAI SDK', code: openAiJsSnippet(baseUrl, modelId, format) })
+  return snippets
 }
 
 /**
  * A ready-to-run call for `model` (a network model id, `<peerId>@<model>` or
  * a preset): curl and the OpenAI SDKs, plus the Anthropic SDK for a model
- * that speaks Messages; curl alone for speech, whose SDK calls require a
- * voice. The key is always `$ANTSEED_API_KEY`.
+ * that speaks Messages; curl alone for speech, asking for `voice` (see
+ * {@link curlSnippet}). The key is always `$ANTSEED_API_KEY`.
  */
-export function apiCallTabs(baseUrl: string, model: string, format: ApiFormat): ConnectTab[] {
-  const curl: ConnectTab = { id: 'curl', label: 'curl', language: 'shell', code: curlSnippet(baseUrl, model, format) }
+export function apiCallTabs(baseUrl: string, model: string, format: ApiFormat, voice?: string): ConnectTab[] {
+  const curl: ConnectTab = { id: 'curl', label: 'curl', language: 'shell', code: curlSnippet(baseUrl, model, format, ENV_KEY, voice) }
   if (format === 'openai-audio-speech') return [curl]
   const tabs: ConnectTab[] = [
     curl,
@@ -252,11 +258,12 @@ export interface ConnectTab {
 
 /**
  * The seller page's Connect tabs for one model. `codexModel` is the preset
- * to put in the Codex config (`@preset/<slug>`), or null when none exists yet.
+ * to put in the Codex config (`@preset/<slug>`), or null when none exists
+ * yet; `voice` is the voice a speech model's call asks for.
  */
-export function connectTabs(baseUrl: string, peerId: string, model: string, format: ApiFormat, codexModel: string | null): ConnectTab[] {
+export function connectTabs(baseUrl: string, peerId: string, model: string, format: ApiFormat, codexModel: string | null, voice?: string): ConnectTab[] {
   const modelId = pinnedModelId(peerId, model)
-  const tabs = apiCallTabs(baseUrl, modelId, format)
+  const tabs = apiCallTabs(baseUrl, modelId, format, voice)
   // Coding tools only speak the text APIs.
   if (format === 'openai-images' || format === 'openai-audio-speech') return tabs
   tabs.push(

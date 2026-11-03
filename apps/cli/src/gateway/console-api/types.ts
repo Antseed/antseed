@@ -801,6 +801,8 @@ export interface Peer {
     health?: ServiceHealthView
     /** The seller's measured performance in the last hour. Absent when not announced. */
     performance?: ServicePerformanceView
+    /** Speech services: the voices the seller accepts. Absent when not announced. */
+    voices?: string[]
   }>
   trustScore: number | null
   reputationScore: number | null
@@ -924,6 +926,8 @@ export interface NetworkModelOffer {
   health?: ServiceHealthView
   /** The seller's measured performance in the last hour. */
   performance?: ServicePerformanceView
+  /** Speech models: the voices this seller accepts. Absent when not announced. */
+  voices?: string[]
 }
 
 /** A model on the network, merged across the sellers that offer it (aliases included). */
@@ -953,6 +957,8 @@ export interface NetworkModel {
   verifiedSellers: number
   /** In the buyer's routing order. */
   offers: NetworkModelOffer[]
+  /** Speech models: the voices every offer accepts. Absent when none is known to be. */
+  voices?: string[]
 }
 
 /**

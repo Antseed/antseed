@@ -274,6 +274,24 @@ test('peer services and model offers carry the seller\'s measured performance', 
   assert.equal(model!.offers[0]!.performance?.requests, 312)
 })
 
+test('peer services, model offers and models carry the voices speech services accept', () => {
+  const row = {
+    ...PEERS_BODY.peers[0],
+    providerServiceCapabilities: { openai: { services: {
+      'open-model-a': { speech: { voices: ['af_sky', 'am_adam'] } },
+      'open-model-b': { outputs: ['text'] },
+    } } },
+  }
+  const services = peerServices(row as Record<string, unknown>)
+  assert.deepEqual(services.find((entry) => entry.service === 'open-model-a')?.voices, ['af_sky', 'am_adam'])
+  assert.equal(services.find((entry) => entry.service === 'open-model-b')?.voices, undefined)
+  const [model] = mapNetworkModels({ data: [{ id: 'tts-kokoro', type: 'speech', voices: ['af_sky'], peers: [
+    { peerId: PEER_A, serviceId: 'tts-kokoro', capabilities: { speech: { voices: ['af_sky', 'am_adam'] } } },
+  ] }] }, [])
+  assert.deepEqual(model!.voices, ['af_sky'])
+  assert.deepEqual(model!.offers[0]!.voices, ['af_sky', 'am_adam'])
+})
+
 test('peer services give a paid unit-billed service no seller-wide program', () => {
   const row = {
     ...PEERS_BODY.peers[0],

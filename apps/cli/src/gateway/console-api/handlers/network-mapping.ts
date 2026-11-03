@@ -67,6 +67,11 @@ export interface PeerStat {
   tokensPerSecondP50?: number | null
 }
 
+/** The voices a speech service's announced capabilities list; empty when none. */
+function speechVoices(capabilities: unknown): string[] {
+  return strings(asRecord(asRecord(capabilities)['speech'])['voices'])
+}
+
 /** One entry per advertised service, priced from the service's own entry or the provider default. */
 export function peerServices(row: Row): Peer['services'] {
   const pricing = asRecord(row['providerPricing'])
@@ -75,6 +80,7 @@ export function peerServices(row: Row): Peer['services'] {
   const unitModels = asRecord(row['providerServiceUnitBillingModels'])
   const health = asRecord(row['providerServiceHealth'])
   const performance = asRecord(row['providerServicePerformance'])
+  const serviceCapabilities = asRecord(row['providerServiceCapabilities'])
   const capabilities = strings(row['capabilities'])
   const providers = new Set<string>([
     ...(Array.isArray(row['providers']) ? row['providers'].filter((p): p is string => typeof p === 'string') : []),
@@ -100,6 +106,7 @@ export function peerServices(row: Row): Peer['services'] {
         unitBillingModels: billing && typeof billing === 'object' ? billing as Record<string, { components?: Array<{ priceUsd: number }> }> : null,
       })
       const video = Array.isArray(apis) && apis.some(isNativeVideoProtocol)
+      const voices = speechVoices(asRecord(asRecord(serviceCapabilities[provider])['services'])[service])
       services.push({
         provider,
         service,
@@ -113,6 +120,7 @@ export function peerServices(row: Row): Peer['services'] {
         freeTier: freeTierProgramForService(capabilities, service, paid, { video }),
         ...serviceHealthField(asRecord(asRecord(health[provider])['services'])[service]),
         ...servicePerformanceField(asRecord(asRecord(performance[provider])['services'])[service]),
+        ...(voices.length > 0 ? { voices } : {}),
       })
     }
   }
@@ -305,6 +313,7 @@ export function mapNetworkModels(body: unknown, peers: readonly Peer[]): Network
       const minImage = num(offer['minImageUsdPerImage'])
       const maxImage = num(offer['maxImageUsdPerImage']) ?? minImage
       const tokenPriced = input !== null || output !== null
+      const voices = speechVoices(capabilities)
       return [{
         peerId,
         displayName: str(offer['displayName']) ?? peer?.displayName ?? null,
@@ -334,6 +343,7 @@ export function mapNetworkModels(body: unknown, peers: readonly Peer[]): Network
         tokensPerSecondP50: peer?.tokensPerSecondP50 ?? null,
         ...serviceHealthField(offer['health']),
         ...servicePerformanceField(offer['performance']),
+        ...(voices.length > 0 ? { voices } : {}),
       }]
     })
     const capabilityRows = rows(row['peers']).map((offer) => asRecord(offer['capabilities']))
@@ -343,6 +353,7 @@ export function mapNetworkModels(body: unknown, peers: readonly Peer[]): Network
     if (capabilityRows.some((caps) => caps['structuredOutput'] === true)) capabilities.push('structuredOutput')
     if (capabilityRows.some((caps) => strings(caps['inputs']).includes('image'))) capabilities.push('vision')
     const type = MODEL_TYPES.find((value) => value === row['type']) ?? 'text'
+    const voices = strings(row['voices'])
     return [{
       id,
       name: str(row['name']) ?? id,
@@ -362,6 +373,7 @@ export function mapNetworkModels(body: unknown, peers: readonly Peer[]): Network
       fullTeeSellers: offers.filter((offer) => offer.teeScope === 'end-to-end').length,
       verifiedSellers: offers.filter((offer) => offer.verified).length,
       offers,
+      ...(voices.length > 0 ? { voices } : {}),
     }]
   })
 }

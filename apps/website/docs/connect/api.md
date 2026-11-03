@@ -143,7 +143,7 @@ curl http://localhost:8377/v1/audio/speech \
   -o hello.mp3
 ```
 
-You pay per character of `input`, only when audio comes back. A voice the seller does not offer is refused with `400 unsupported_voice` and the list of its voices; you never get a different voice than the one you asked for. Without `voice`, the model's default voice is used.
+You pay per character of `input`, only when audio comes back. A voice the seller does not offer is refused with `400 unsupported_voice` and the list of its voices; you never get a different voice than the one you asked for. Without `voice`, the seller's upstream picks its default voice; some upstreams (OpenAI) require one, so send a voice the seller lists.
 
 ## Choose the model and seller
 

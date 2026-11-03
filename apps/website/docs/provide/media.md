@@ -162,7 +162,7 @@ Each speech service announces its voices under `capabilities.speech`:
 | `customVoices` | `true` when the upstream also takes account-specific voice IDs that are not listed |
 | `formats` | `response_format` values it can return, for example `["mp3","wav"]` |
 
-A Venice speech service reads all three from Venice's model list at startup, unless you set `capabilities.speech.voices` yourself. Buyers see them in `GET /v1/models?type=speech`. When a service lists its voices and does not take custom voice IDs, the seller refuses any other voice with `400 unsupported_voice` and the list of voices, before calling the upstream or charging: a buyer never gets a different voice than the one it asked for. A request without `voice` gets the upstream's default voice.
+A Venice speech service reads all three from Venice's model list at startup, unless you set `capabilities.speech.voices` yourself. Buyers see them in `GET /v1/models?type=speech`. When a service lists its voices and does not take custom voice IDs, the seller refuses any other voice with `400 unsupported_voice` and the list of voices, before calling the upstream or charging: a buyer never gets a different voice than the one it asked for. A request without `voice` gets the upstream's default voice where it has one; OpenAI requires a voice.
 
 Speech services need metadata v15. Sellers leave them out of the metadata they serve to buyers that predate it, so those buyers keep seeing the seller's other services.
 
