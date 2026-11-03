@@ -115,7 +115,7 @@ export interface ReceiveAuthorizationMessage {
 // =========================================================================
 
 /**
- * SpendingAuth metadata v4.
+ * SpendingAuth metadata v5.
  *
  * ABI layout:
  *   abi.encode(
@@ -126,6 +126,7 @@ export interface ReceiveAuthorizationMessage {
  *     uint256 cumulativeOutputImages,
  *     uint256 cumulativeVideoGenerations,
  *     uint256 cumulativeVideoSeconds,
+ *     uint256 cumulativeInputCharacters,
  *     ServiceTotal[] services
  *   )
  *
@@ -133,8 +134,13 @@ export interface ReceiveAuthorizationMessage {
  * aggregate token/request counters by decoding only those fields. Service
  * entries are buyer-side attribution metadata for indexers: input tokens
  * include cached input, with cached input broken out separately. The service
- * tuple appends image and video counters after the v2 fields; decoders must
- * switch on the leading version word before decoding the services array.
+ * tuple appends image, video and (v5) speech character counters after the v2
+ * fields; decoders must switch on the leading version word before decoding the
+ * rest (see decodeSpendingAuthMetadata). v4 is v5 without the character
+ * counters.
+ *
+ * cumulativeInputCharacters counts the `input` characters of speech requests
+ * whose audio was delivered; a failed speech request adds none.
  *
  * Generated images are counted twice, deliberately:
  *   - cumulativeOutputImages holds the raw image count (ground truth),
@@ -157,6 +163,7 @@ export interface SpendingAuthMetadata {
   cumulativeOutputImages?: bigint;
   cumulativeVideoGenerations?: bigint;
   cumulativeVideoSeconds?: bigint;
+  cumulativeInputCharacters?: bigint;
   services?: SpendingAuthServiceMetadata[];
 }
 
@@ -170,9 +177,13 @@ export interface SpendingAuthServiceMetadata {
   cumulativeOutputImages: bigint;
   cumulativeVideoGenerations?: bigint;
   cumulativeVideoSeconds?: bigint;
+  cumulativeInputCharacters?: bigint;
 }
 
-export const METADATA_VERSION = 4n;
+export const METADATA_VERSION = 5n;
+
+/** The previous SpendingAuth metadata version: v5 without the speech character counters. */
+export const METADATA_VERSION_V4 = 4n;
 
 /**
  * Flat output-token equivalent credited per generated image in payment metadata
@@ -182,7 +193,14 @@ export const METADATA_VERSION = 4n;
 export const OUTPUT_IMAGE_TOKEN_EQUIVALENT = 1290n;
 
 const SERVICE_METADATA_ABI_TYPE =
+  'tuple(bytes32 serviceId,uint256 cumulativeAmount,uint256 cumulativeInputTokens,uint256 cumulativeCachedInputTokens,uint256 cumulativeOutputTokens,uint256 cumulativeRequestCount,uint256 cumulativeOutputImages,uint256 cumulativeVideoGenerations,uint256 cumulativeVideoSeconds,uint256 cumulativeInputCharacters)[]';
+
+/** v4 service tuple: v5 without cumulativeInputCharacters. */
+const SERVICE_METADATA_ABI_TYPE_V4 =
   'tuple(bytes32 serviceId,uint256 cumulativeAmount,uint256 cumulativeInputTokens,uint256 cumulativeCachedInputTokens,uint256 cumulativeOutputTokens,uint256 cumulativeRequestCount,uint256 cumulativeOutputImages,uint256 cumulativeVideoGenerations,uint256 cumulativeVideoSeconds)[]';
+
+/** Top-level words before the services array, by version (the version word included). */
+const METADATA_HEAD_WORDS: Record<string, number> = { '4': 7, '5': 8 };
 
 /** v2 service tuple, still used by FreeUsage metadata v1 (no image counter). */
 const SERVICE_METADATA_ABI_TYPE_V2 =
@@ -196,9 +214,10 @@ export function encodeMetadata(metadata: SpendingAuthMetadata): string {
     ...service,
     cumulativeVideoGenerations: service.cumulativeVideoGenerations ?? 0n,
     cumulativeVideoSeconds: service.cumulativeVideoSeconds ?? 0n,
+    cumulativeInputCharacters: service.cumulativeInputCharacters ?? 0n,
   }));
   return coder.encode(
-    ['uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256', SERVICE_METADATA_ABI_TYPE],
+    ['uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256', SERVICE_METADATA_ABI_TYPE],
     [
       METADATA_VERSION,
       metadata.cumulativeInputTokens,
@@ -207,9 +226,56 @@ export function encodeMetadata(metadata: SpendingAuthMetadata): string {
       metadata.cumulativeOutputImages ?? 0n,
       metadata.cumulativeVideoGenerations ?? 0n,
       metadata.cumulativeVideoSeconds ?? 0n,
+      metadata.cumulativeInputCharacters ?? 0n,
       services,
     ],
   );
+}
+
+export interface DecodedSpendingAuthMetadata extends Required<Omit<SpendingAuthMetadata, 'services'>> {
+  version: bigint;
+  services: Required<SpendingAuthServiceMetadata>[];
+}
+
+/**
+ * Decode SpendingAuth metadata of version 4 or 5 (encodeMetadata's output and
+ * the version before it). Counters a version does not carry decode as 0. Throws
+ * on any other version or on bytes that do not match the version's layout.
+ */
+export function decodeSpendingAuthMetadata(encoded: string): DecodedSpendingAuthMetadata {
+  const coder = AbiCoder.defaultAbiCoder();
+  const [version] = coder.decode(['uint256'], encoded) as unknown as [bigint];
+  const headWords = METADATA_HEAD_WORDS[version.toString()];
+  if (headWords === undefined) throw new Error(`Unsupported SpendingAuth metadata version ${version}`);
+  const v5 = version === METADATA_VERSION;
+  const words = coder.decode(
+    [...Array<string>(headWords).fill('uint256'), v5 ? SERVICE_METADATA_ABI_TYPE : SERVICE_METADATA_ABI_TYPE_V4],
+    encoded,
+  );
+  const word = (index: number) => words[index] as bigint;
+  const services = (words[headWords] as Array<Record<string, unknown>>).map((service) => ({
+    serviceId: service.serviceId as string,
+    cumulativeAmount: service.cumulativeAmount as bigint,
+    cumulativeInputTokens: service.cumulativeInputTokens as bigint,
+    cumulativeCachedInputTokens: service.cumulativeCachedInputTokens as bigint,
+    cumulativeOutputTokens: service.cumulativeOutputTokens as bigint,
+    cumulativeRequestCount: service.cumulativeRequestCount as bigint,
+    cumulativeOutputImages: service.cumulativeOutputImages as bigint,
+    cumulativeVideoGenerations: service.cumulativeVideoGenerations as bigint,
+    cumulativeVideoSeconds: service.cumulativeVideoSeconds as bigint,
+    cumulativeInputCharacters: v5 ? service.cumulativeInputCharacters as bigint : 0n,
+  }));
+  return {
+    version,
+    cumulativeInputTokens: word(1),
+    cumulativeOutputTokens: word(2),
+    cumulativeRequestCount: word(3),
+    cumulativeOutputImages: word(4),
+    cumulativeVideoGenerations: word(5),
+    cumulativeVideoSeconds: word(6),
+    cumulativeInputCharacters: v5 ? word(7) : 0n,
+    services,
+  };
 }
 
 export function getServiceMetadataId(service: string): string {
@@ -225,6 +291,7 @@ export interface ServiceMetadataDelta {
   outputImages: bigint;
   videoGenerations?: bigint;
   videoSeconds?: bigint;
+  inputCharacters?: bigint;
 }
 
 /**
@@ -256,6 +323,7 @@ function addServiceTotals(
     cumulativeOutputImages: target.cumulativeOutputImages + source.cumulativeOutputImages,
     cumulativeVideoGenerations: (target.cumulativeVideoGenerations ?? 0n) + (source.cumulativeVideoGenerations ?? 0n),
     cumulativeVideoSeconds: (target.cumulativeVideoSeconds ?? 0n) + (source.cumulativeVideoSeconds ?? 0n),
+    cumulativeInputCharacters: (target.cumulativeInputCharacters ?? 0n) + (source.cumulativeInputCharacters ?? 0n),
   };
 }
 
@@ -270,6 +338,7 @@ function emptyServiceTotals(serviceId: string): SpendingAuthServiceMetadata {
     cumulativeOutputImages: 0n,
     cumulativeVideoGenerations: 0n,
     cumulativeVideoSeconds: 0n,
+    cumulativeInputCharacters: 0n,
   };
 }
 
@@ -337,6 +406,7 @@ export function withServiceMetadata<T extends { services?: SpendingAuthServiceMe
     cumulativeOutputImages: (existing.cumulativeOutputImages ?? 0n) + delta.outputImages,
     cumulativeVideoGenerations: (existing.cumulativeVideoGenerations ?? 0n) + (delta.videoGenerations ?? 0n),
     cumulativeVideoSeconds: (existing.cumulativeVideoSeconds ?? 0n) + (delta.videoSeconds ?? 0n),
+    cumulativeInputCharacters: (existing.cumulativeInputCharacters ?? 0n) + (delta.inputCharacters ?? 0n),
   });
 
   return { ...metadata, services: sortServices(byServiceId.values()) };
@@ -353,6 +423,7 @@ export const ZERO_METADATA: SpendingAuthMetadata = {
   cumulativeOutputImages: 0n,
   cumulativeVideoGenerations: 0n,
   cumulativeVideoSeconds: 0n,
+  cumulativeInputCharacters: 0n,
   services: [],
 };
 

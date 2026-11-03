@@ -87,6 +87,11 @@ function countVideoSeconds(usage: UnitBillingUsage | undefined): bigint {
   return BigInt(Math.max(0, Math.floor(usage?.units.video_seconds ?? 0)));
 }
 
+/** Speech `input` characters; speech billing reports none for undelivered audio. */
+function countInputCharacters(usage: UnitBillingUsage | undefined): bigint {
+  return BigInt(Math.max(0, Math.floor(usage?.units.input_characters ?? 0)));
+}
+
 function validateUnitNormalizedCost(
   model: UnitBillingModelV1,
   context: UnitBillingContext,
@@ -508,6 +513,7 @@ export class BuyerPaymentManager {
       cumulativeOutputImages: current.cumulativeOutputImages ?? 0n,
       cumulativeVideoGenerations: current.cumulativeVideoGenerations ?? 0n,
       cumulativeVideoSeconds: current.cumulativeVideoSeconds ?? 0n,
+      cumulativeInputCharacters: current.cumulativeInputCharacters ?? 0n,
       services: [],
     };
   }
@@ -1607,6 +1613,7 @@ export class BuyerPaymentManager {
     const estimatedOutputImages = countOutputImages(responseStats.unitUsage);
     const estimatedVideoGenerations = countVideoGenerations(responseStats.unitUsage);
     const estimatedVideoSeconds = countVideoSeconds(responseStats.unitUsage);
+    const estimatedInputCharacters = countInputCharacters(responseStats.unitUsage);
     if (estimatedOutputImages > 0n) {
       if (byteEstimatedTokens) {
         // Byte estimates of an image response are base64 noise, not tokens.
@@ -1684,6 +1691,7 @@ export class BuyerPaymentManager {
           outputImages: estimatedOutputImages,
           videoGenerations: estimatedVideoGenerations,
           videoSeconds: estimatedVideoSeconds,
+          inputCharacters: estimatedInputCharacters,
         }, { deliveredResponse: true, alreadyCounted }),
         // Any remainder of a NeedAuth-counted request is still this service's amount.
         amount: signedDelta,
@@ -1846,6 +1854,7 @@ export class BuyerPaymentManager {
     let acceptedOutputImages = 0n;
     let acceptedVideoGenerations = 0n;
     let acceptedVideoSeconds = 0n;
+    let acceptedInputCharacters = 0n;
     let verifiedCostDelta = 0n;
     const reportedInputTokens = BigInt(payload.inputTokens ?? '0');
     const reportedCachedInputTokens = BigInt(payload.cachedInputTokens ?? '0');
@@ -1900,6 +1909,7 @@ export class BuyerPaymentManager {
           acceptedOutputImages = countOutputImages(acceptedUnitUsage);
           acceptedVideoGenerations = countVideoGenerations(acceptedUnitUsage);
           acceptedVideoSeconds = countVideoSeconds(acceptedUnitUsage);
+          acceptedInputCharacters = countInputCharacters(acceptedUnitUsage);
         }
 
         const buyerEstimate = tokenEstimate + acceptedUnitCost;
@@ -2049,6 +2059,7 @@ export class BuyerPaymentManager {
         outputImages: acceptedOutputImages,
         videoGenerations: acceptedVideoGenerations,
         videoSeconds: acceptedVideoSeconds,
+        inputCharacters: acceptedInputCharacters,
       }, { deliveredResponse, alreadyCounted }),
     );
     // Persistence and transport failures must propagate to the connection
@@ -2445,6 +2456,7 @@ export class BuyerPaymentManager {
       outputImages: 0n,
       videoGenerations: countVideoGenerations(usage),
       videoSeconds: countVideoSeconds(usage),
+      inputCharacters: countInputCharacters(usage),
     });
     const spendingAuth = await this._signAndCommitSpendingAuth(channel, state.price, metadata);
     this._reportUnitSpend(sellerPeerId, requestId, state.price - state.cumulative);
