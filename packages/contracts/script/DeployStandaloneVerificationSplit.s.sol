@@ -11,8 +11,7 @@ import { AntseedVerificationResults } from "../verification/AntseedVerificationR
 
 /// @title DeployStandaloneVerificationSplit
 /// @notice Deploys the split verification contracts (results layer, KBF audit
-///         source, points policy) without registering the policy or enabling rewards. The split
-///         counterpart of `DeployStandaloneVerification`.
+///         source, points policy) without registering the policy or enabling rewards.
 ///
 /// Separate from M003. It only reads the existing registry, seller-pools and usage-accounting
 /// addresses, deploys three independently owned contracts, wires the KBF source on the results layer

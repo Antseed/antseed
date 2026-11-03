@@ -13,11 +13,11 @@ import { MockERC8004Registry } from "../mocks/MockERC8004Registry.sol";
 import { MockVerificationEmissionsGate } from "../mocks/MockVerificationEmissionsGate.sol";
 import { MockVerificationSellerPools } from "../mocks/MockVerificationSellerPools.sol";
 import { MockVerificationSource } from "../mocks/MockVerificationSource.sol";
-import { UsageAccountingFront, VerificationPointsAccounting } from "./AntseedKbfVerification.t.sol";
+import { UsageAccountingFront, VerificationPointsAccounting } from "../mocks/MockVerificationAccounting.sol";
 
-/// @dev The KBF source on the results layer. Ported from
-///      `AntseedKbfVerification.t.sol`: same cases and names, with each call on the contract that now
-///      owns it, plus the cases the split adds (auditor epochs, evidence ownership, locked records).
+/// @dev The KBF source on the results layer: confirmations, report rounds, credits and the
+///      checks KBF owns (auditor epochs, evidence ownership, self-audits, staked agents), with
+///      rewards claimed on the results layer.
 contract AntseedKbfAuditsTest is Test {
     uint256 private constant EPOCH = 5;
     bytes32 private constant MODEL_A = keccak256("model-a");

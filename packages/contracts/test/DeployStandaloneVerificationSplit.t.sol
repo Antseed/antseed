@@ -8,7 +8,7 @@ import { DeployStandaloneVerificationSplit } from "../script/DeployStandaloneVer
 import { MockERC8004Registry } from "./mocks/MockERC8004Registry.sol";
 import { MockVerificationEmissionsGate } from "./mocks/MockVerificationEmissionsGate.sol";
 import { MockVerificationSellerPools } from "./mocks/MockVerificationSellerPools.sol";
-import { VerificationPointsAccounting } from "./verification/AntseedKbfVerification.t.sol";
+import { VerificationPointsAccounting } from "./mocks/MockVerificationAccounting.sol";
 
 contract DeployStandaloneVerificationSplitTest is Test {
     AntseedRegistry private registry;

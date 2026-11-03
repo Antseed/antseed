@@ -864,40 +864,28 @@ Local anvil chain (chain ID 31337) for development. Deploy with `forge script sc
 ### Standalone verification deployment (no policy or rewards)
 
 When the AntSeed deployer key is unavailable, a separate wallet can deploy the
-verification registry without installing `AntseedKbfVerificationPointsPolicy` or
-touching the existing points-policy/rewards wiring. Use
-`script/DeployStandaloneVerification.s.sol` with an existing compatible
-registry and seller-pools address:
+verification contracts (`AntseedVerificationResults`, `AntseedKbfAudits`,
+`AntseedVerificationPointsPolicy`) without registering the policy or touching the
+existing points-policy/rewards wiring. Use `script/DeployStandaloneVerificationSplit.s.sol`
+with an existing compatible registry, seller-pools and usage-accounting address
+(`USAGE_ACCOUNTING`: any contract exposing `sellerPools()`, read by the policy):
 
 ```bash
 cd packages/contracts
 export EXPECTED_CHAIN_ID=84532 # or the intended chain
 export ANTSEED_REGISTRY=0x...
 export SELLER_POOLS=0x...
+export USAGE_ACCOUNTING=0x...
 export STANDALONE_OWNER=0x... # address of the new signer
-forge script script/DeployStandaloneVerification.s.sol \
+forge script script/DeployStandaloneVerificationSplit.s.sol \
   --rpc-url "$RPC_URL" --sender "$STANDALONE_OWNER" --via-ir
 ```
 
 Review the dry-run output, then repeat with a new keystore or hardware-wallet
-signer and `--broadcast`. The script deploys only `AntseedKbfVerification`,
-optionally approves the supplied `VERIFICATION_AUDITORS`, leaves
-`rewardsStartEpoch` at `type(uint256).max`, and makes no policy-registry,
-usage-accounting, emissions-gate, or existing-registry writes. The new owner
-still needs gas, and the verification contract remains read-coupled to the
-registry's emissions source and seller-pools contract. This is not a fresh
-replacement for the complete AntSeed protocol stack.
-
-`script/DeployStandaloneVerificationSplit.s.sol` does the same for the split contracts
-(`AntseedVerificationResults`, `AntseedKbfAudits`,
-`AntseedVerificationPointsPolicy`). It takes the same variables plus `USAGE_ACCOUNTING`
-(any contract exposing `sellerPools()`, read by the policy) and optional
-`VERIFICATION_BONUS_BPS`, wires the KBF source on the results layer (`setSource`, a
-10,000 bps share), approves `VERIFICATION_AUDITORS` on the KBF contract, and leaves rewards off
-and the policy unregistered:
-
-```bash
-export USAGE_ACCOUNTING=0x...
-forge script script/DeployStandaloneVerificationSplit.s.sol \
-  --rpc-url "$RPC_URL" --sender "$STANDALONE_OWNER" --via-ir
-```
+signer and `--broadcast`. The script wires the KBF source on the results layer
+(`setSource`, a 10,000 bps share) with its rewards off, optionally approves the
+supplied `VERIFICATION_AUDITORS` on the KBF contract and sets `VERIFICATION_BONUS_BPS`
+on the policy, and makes no policy-registry, usage-accounting, emissions-gate, or
+existing-registry writes. The new owner still needs gas, and the contracts remain
+read-coupled to the registry's emissions source and seller-pools contract. This is
+not a fresh replacement for the complete AntSeed protocol stack.
