@@ -124,11 +124,17 @@ async function adaptRequest(
     }
   }
 
-  const requestedService = getHeader(request.headers, 'x-antseed-service').trim()
-    || textField(form, 'service')
-    || textField(form, 'model');
+  // The service the seller priced and bills this request by: the form's `service`,
+  // else its `model`, as the seller reads them. A routing header naming another
+  // service must not pick that service's (possibly dearer) edit model.
+  const named = form.get('service') ?? form.get('model');
+  const requestedService = typeof named === 'string' ? named.trim() : '';
   if (!requestedService) {
     return reject(400, 'Image edit model is required.', 'model');
+  }
+  const headerService = getHeader(request.headers, 'x-antseed-service').trim();
+  if (headerService && headerService.toLowerCase() !== requestedService.toLowerCase()) {
+    return reject(400, `x-antseed-service "${headerService}" does not match the requested model "${requestedService}".`, 'model');
   }
 
   const editModel = editModelMap[requestedService.toLowerCase()];

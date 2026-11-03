@@ -237,6 +237,26 @@ describe('Venice image edits', () => {
     });
   }
 
+  it('refuses a service header that names another service than the form the seller bills by', async () => {
+    const fetchMock = mockFetch(neverCalled);
+    const provider = await plugin.createProvider({
+      ...coverArtConfig,
+      ANTSEED_ALLOWED_SERVICES: 'cover-art,cover-art-pro',
+      ANTSEED_SERVICE_ALIAS_MAP_JSON: '{"cover-art":"grok-imagine-image-quality","cover-art-pro":"grok-imagine-image-pro"}',
+      ANTSEED_SERVICE_IMAGE_EDIT_MODEL_MAP_JSON: '{"cover-art":"grok-imagine-quality-edit","cover-art-pro":"grok-imagine-pro-edit"}',
+    });
+
+    const response = await sendImageEdit(provider, imageEditForm('cover-art'), { 'x-antseed-service': 'cover-art-pro' });
+
+    expect(response.statusCode).toBe(400);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(new TextDecoder().decode(response.body)).toContain('does not match the requested model');
+    // The same header in another case is the same service.
+    const ok = mockFetch(() => new Response(new Uint8Array([1]), { status: 200, headers: { 'content-type': 'image/png' } }));
+    expect((await sendImageEdit(provider, imageEditForm('cover-art'), { 'x-antseed-service': 'Cover-Art' })).statusCode).toBe(200);
+    expect((await upstreamForm(ok)).form.get('model')).toBe('grok-imagine-quality-edit');
+  });
+
   it('keeps first-prompt Venice generation on the configured generation model', async () => {
     const fetchMock = mockFetch(() => new Response(JSON.stringify({ data: [{ b64_json: 'generated-image' }] }), {
       status: 200,
