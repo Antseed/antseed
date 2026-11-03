@@ -5,7 +5,8 @@ import { shallowEqual, useUiSelector } from '../../hooks/useUiSelector';
 import { useActions } from '../../hooks/useActions';
 import { formatCredits, formatInt, shortAddress } from '../../../core/format';
 import type { RendererUiState } from '../../../core/state';
-import type { CreateInviteResult, RefereeBonus, ReferralInvites, ReferralStatus } from '../../../types/bridge';
+import type { CreateInviteResult, RefereeBonus, ReferralInvites } from '../../../types/bridge';
+import { useReferralStatus } from '../../hooks/useReferralStatus';
 import { ReferralStatusRow } from '../ReferralStatusRow';
 import { VprBadge, VprCard, VprPage, VprSettingRow } from '../vpr/VprKit';
 import breakdown from './BalanceBreakdown.module.scss';
@@ -65,15 +66,7 @@ export function VprRewardsView({ onSelectView }: Props) {
   const reloadInvites = useCallback(() => invitesLoader.current?.run(), []);
 
   // Re-read after redeeming: the field gives way to the pending inviter.
-  const [referral, setReferral] = useState<ReferralStatus | null>(null);
-  const loadReferral = useCallback(() => {
-    let cancelled = false;
-    void window.antseedDesktop?.referralGetStatus?.()
-      .then((status) => { if (!cancelled) setReferral(status); })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, []);
-  useEffect(loadReferral, [loadReferral]);
+  const { status: referral, reload: loadReferral } = useReferralStatus();
 
   const rewards = snap.rewards;
   const { pending, bonusPayable } = pendingHeadline(rewards, bonus);

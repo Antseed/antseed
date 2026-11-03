@@ -37,37 +37,14 @@ import { readConfig } from './runtime/config-io.js';
 import { ACTIVE_CONFIG_PATH } from './runtime/active-config.js';
 import { resolveStakingChain } from './staking/configuration.js';
 import { friendlyNetworkError } from './utils.js';
-import { combineInviteReads, NO_INVITES, type ReferralInvites } from './referral-invites.js';
-
-/** This wallet as a referee: who invited it, or the invite it carries until bound. */
-export type ReferralStatus = {
-  /** False when referrals are not deployed on this network (UI hides referral pieces). */
-  configured: boolean;
-  state: 'none' | 'invited' | 'bound';
-  referrer: string | null;
-  invite: string | null;
-};
-
-export type InviteCheckResult =
-  | { ok: true; referrer: string; invite: string }
-  | { ok: false; reason: string };
-
-export type { InviteAllowance, ReferralInvites } from './referral-invites.js';
-
-export type CreateInviteResult =
-  /** `epoch`: the on-chain week the invite was issued in (it can be ahead of Antscan's allowance). */
-  | { ok: true; invite: string; link: string; epoch: number; left: number; quota: number; expiresEpoch: number }
-  | { ok: false; reason: string; noQuota: boolean };
-
-/** The two-sided bonus this wallet earns as a referee (from Antscan). Payable is a decimal ANTS string. */
-export type RefereeBonus = {
-  available: boolean;
-  /** Antscan reports the bonus; when false the wallet is bound on-chain and `payable`/`weeksLeft` are unknown. */
-  indexed: boolean;
-  weeksLeft: number | null;
-  payable: string;
-  claimableEpochs: number[];
-};
+import { combineInviteReads, NO_INVITES } from './referral-invites.js';
+import type {
+  CreateInviteResult,
+  InviteCheckResult,
+  RefereeBonus,
+  ReferralInvites,
+  ReferralStatus,
+} from '../shared/referrals.js';
 
 const DARK_STATUS: ReferralStatus = { configured: false, state: 'none', referrer: null, invite: null };
 const NO_BONUS: RefereeBonus = { available: false, indexed: false, weeksLeft: null, payable: '0', claimableEpochs: [] };

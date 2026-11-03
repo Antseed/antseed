@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
 import { GlobalIcon, Moon02Icon, Sun02Icon, Tick02Icon } from '@hugeicons/core-free-icons';
 import { routesForSelectedModel } from '../../../modules/catalog/view-models';
@@ -9,7 +9,7 @@ import { shallowEqual, useUiSelector } from '../../hooks/useUiSelector';
 import { useActions } from '../../hooks/useActions';
 import { activeThemeMode, applyThemeMode, type ThemeMode } from '../../lib/theme';
 import type { TelemetryStatus } from '../../../../shared/telemetry';
-import type { ReferralStatus } from '../../../types/bridge';
+import { useReferralStatus } from '../../hooks/useReferralStatus';
 import { ReferralStatusRow } from '../ReferralStatusRow';
 import { formatUsdShort, VprCard, VprPage, VprSettingRow, VprSlider, VprToggle } from '../vpr/VprKit';
 import { VprPeerAccessDialog } from './VprPeerAccessDialog';
@@ -34,17 +34,8 @@ export function VprPreferencesView({ onSelectView }: Props) {
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => activeThemeMode());
   const [accessOpen, setAccessOpen] = useState(false);
   const [telemetryStatus, setTelemetryStatus] = useState<TelemetryStatus | null>(null);
-  const [referral, setReferral] = useState<ReferralStatus | null>(null);
-
-  // Re-read on entry: a pending invite binds with the first paid or free request.
-  const loadReferral = useCallback(() => {
-    let cancelled = false;
-    void window.antseedDesktop?.referralGetStatus?.()
-      .then((status) => { if (!cancelled) setReferral(status); })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, []);
-  useEffect(loadReferral, [loadReferral]);
+  // Read on entry: a pending invite binds with the first paid or free request.
+  const { status: referral, reload: loadReferral } = useReferralStatus();
 
   useEffect(() => {
     let cancelled = false;
