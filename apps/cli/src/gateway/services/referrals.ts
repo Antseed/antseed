@@ -13,6 +13,7 @@
  * `discoverBuilderClaim`), found over RPC by the shared on-chain discovery.
  */
 import {
+  agentOwner,
   builders as readBuilderAgents,
   createInvite,
   discoverBuilderEpochs,
@@ -248,18 +249,6 @@ export async function readBuilderAgent(ctx: AntsContext, agentId: number | null)
       }
     : null
   return { available: view.available, indexed: view.indexed, agent }
-}
-
-/** The ERC-8004 owner of `agentId`, or null when it is not registered (ownerOf reverts). */
-async function agentOwner(ctx: AntsContext, agentId: number): Promise<string | null> {
-  const identity = ctx.identity()
-  if (!identity) return null
-  try {
-    return await identity.getAgentWallet(agentId)
-  } catch (err) {
-    if (isError(err, 'CALL_EXCEPTION')) return null
-    throw err
-  }
 }
 
 /**

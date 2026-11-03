@@ -9,7 +9,7 @@ import { assertAgentId, silentReporter, type StepReporter } from './steps.js';
 export { MAX_BUILDER_AGENTS };
 
 /** ERC-8004 owner of `agentId`, or null when the id is not minted (ownerOf reverts). */
-async function agentOwner(ctx: AntsContext, agentId: number): Promise<string | null> {
+export async function agentOwner(ctx: AntsContext, agentId: number): Promise<string | null> {
   const identity = ctx.identity();
   if (!identity) return null;
   try {
