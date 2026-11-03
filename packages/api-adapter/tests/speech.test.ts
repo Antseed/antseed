@@ -55,13 +55,11 @@ describe('speech requests', () => {
   const moov = (handler: string | null) => concat(u32be(8 + (handler ? 32 : 8)), 'moov', handler ? hdlr(handler) : zeros(8));
   const ftyp = concat(u32be(20), 'ftypM4A ', zeros(4), 'M4A ');
   const mdat = concat(u32be(200), 'mdat', zeros(192));
-  const mp4 = concat(ftyp, moov('soun'), mdat);
-  /** WebM with one track of `trackType` (1 video, 2 audio), then a cluster. */
-  const webmWith = (trackType: number) => concat([0x1a, 0x45, 0xdf, 0xa3, 0x84], zeros(4),
+  /** WebM with one audio track, then a cluster. */
+  const webm = concat([0x1a, 0x45, 0xdf, 0xa3, 0x84], zeros(4),
     [0x18, 0x53, 0x80, 0x67, 0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
-    [0x16, 0x54, 0xae, 0x6b, 0x85, 0xae, 0x83, 0x83, 0x81, trackType],
+    [0x16, 0x54, 0xae, 0x6b, 0x85, 0xae, 0x83, 0x83, 0x81, 0x02],
     [0x1f, 0x43, 0xb6, 0x75, 0x40, 0x64], zeros(100));
-  const webm = webmWith(2);
   const delivered = (body: Uint8Array, format?: string) => speechAudioDelivered({ statusCode: 200, headers: { 'content-type': 'audio/mpeg' }, body }, format);
 
   it('counts only a 2xx answer that is audio as delivered', () => {
@@ -83,8 +81,6 @@ describe('speech requests', () => {
     expect(delivered(flac)).toBe(true);
     expect(delivered(ogg)).toBe(true);
     expect(delivered(concat(vorbisHeaders, oggPage(zeros(120))))).toBe(true);
-    expect(delivered(mp4)).toBe(true);
-    expect(delivered(webm)).toBe(true);
     // Raw PCM has no header: whole 16-bit samples, when the request asked for pcm.
     expect(delivered(zeros(256).fill(7), 'pcm')).toBe(true);
     expect(delivered(zeros(256).fill(7))).toBe(false);
@@ -97,7 +93,7 @@ describe('speech requests', () => {
     expect(delivered(jsonError)).toBe(false);
     expect(delivered(jsonError, 'pcm')).toBe(false);
     // A signature followed by padding.
-    for (const signature of ['ID3', 'RIFF', 'fLaC', 'OggS', '\0\0\0\x20ftyp']) {
+    for (const signature of ['ID3', 'RIFF', 'fLaC', 'OggS']) {
       expect(delivered(concat(signature, zeros(256))), signature).toBe(false);
     }
     expect(delivered(concat([0xff, 0xfb, 0x90, 0x00], zeros(252)))).toBe(false);
@@ -106,10 +102,9 @@ describe('speech requests', () => {
     expect(delivered(concat('RIFF', u32le(100), 'WAVE', 'data', u32le(200), zeros(200)))).toBe(false); // no fmt chunk
     expect(delivered(concat('fLaC', [0x80, 0, 0, 10], zeros(200)))).toBe(false); // no STREAMINFO
     expect(delivered(concat(oggPage(zeros(40)), oggPage(zeros(40))))).toBe(false); // no codec header
-    expect(delivered(concat(ftyp, mdat))).toBe(false); // no moov
-    expect(delivered(concat(ftyp, moov(null), mdat))).toBe(false); // no track
-    expect(delivered(concat(ftyp, moov('vide'), mdat))).toBe(false); // a video track only
-    expect(delivered(webmWith(1))).toBe(false); // a video track only
+    // Containers no speech API returns.
+    expect(delivered(concat(ftyp, moov('soun'), mdat))).toBe(false);
+    expect(delivered(webm)).toBe(false);
     // Cut off.
     expect(delivered(mp3Frames(2).slice(0, 600))).toBe(false); // the second frame is incomplete
     expect(delivered(mp3Frames(1))).toBe(false);
@@ -121,6 +116,5 @@ describe('speech requests', () => {
     // Codec headers and nothing to play.
     expect(delivered(concat(opusHead, opusTags))).toBe(false);
     expect(delivered(vorbisHeaders)).toBe(false);
-    expect(delivered(mp4.slice(0, mp4.length - 50))).toBe(false); // mdat runs past the end
   });
 });

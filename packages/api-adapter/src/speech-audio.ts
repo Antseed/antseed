@@ -17,10 +17,6 @@ function ascii(body: Uint8Array, offset: number, text: string): boolean {
   return true;
 }
 
-function u32be(body: Uint8Array, offset: number): number {
-  return ((body[offset]! << 24) >>> 0) + (body[offset + 1]! << 16) + (body[offset + 2]! << 8) + body[offset + 3]!;
-}
-
 function u32le(body: Uint8Array, offset: number): number {
   return (body[offset]! | (body[offset + 1]! << 8) | (body[offset + 2]! << 16)) + ((body[offset + 3]! << 24) >>> 0);
 }
@@ -207,84 +203,6 @@ function isOgg(body: Uint8Array): boolean {
   return false;
 }
 
-// ── MP4 / M4A ────────────────────────────────────────────────────
-
-/** Whether `body[from, to)` holds `needle` with `value` at `valueAt` bytes from the needle's start. */
-function contains(body: Uint8Array, from: number, to: number, needle: readonly number[], valueAt: number, value: readonly number[]): boolean {
-  for (let offset = from; offset + Math.max(needle.length, valueAt + value.length) <= to; offset += 1) {
-    if (bytesAt(body, offset, needle) && bytesAt(body, offset + valueAt, value)) return true;
-  }
-  return false;
-}
-
-const HDLR = [0x68, 0x64, 0x6c, 0x72]; // 'hdlr'
-const SOUN = [0x73, 0x6f, 0x75, 0x6e]; // 'soun'
-
-/**
- * Top-level boxes that fit the body, starting with `ftyp`, a `moov` with a
- * sound track (an `hdlr` of type `soun`) and a non-empty `mdat`.
- */
-function isMp4(body: Uint8Array): boolean {
-  if (!ascii(body, 4, 'ftyp')) return false;
-  let soundTrack = false;
-  let media = false;
-  for (let offset = 0; offset + 8 <= body.length;) {
-    let size = u32be(body, offset);
-    let header = 8;
-    if (size === 1) {
-      if (offset + 16 > body.length) return false;
-      size = u32be(body, offset + 8) * 2 ** 32 + u32be(body, offset + 12);
-      header = 16;
-    } else if (size === 0) {
-      size = body.length - offset; // the last box runs to the end
-    }
-    if (size < header || offset + size > body.length) return false;
-    // hdlr: type, version and flags, pre_defined, then the handler type.
-    if (ascii(body, offset + 4, 'moov')) soundTrack ||= contains(body, offset + header, offset + size, HDLR, 12, SOUN);
-    if (ascii(body, offset + 4, 'mdat') && size > header) media = true;
-    offset += size;
-  }
-  return soundTrack && media;
-}
-
-// ── WebM / Matroska ──────────────────────────────────────────────
-
-/** An EBML variable-length size at `offset`: its byte width and value, or null. */
-function ebmlSize(body: Uint8Array, offset: number): { width: number; value: number } | null {
-  const first = body[offset];
-  if (first === undefined || first === 0) return null;
-  const width = Math.clz32(first) - 23;
-  if (width > 8 || body.length < offset + width) return null;
-  let value = first & (0xff >> width);
-  for (let i = 1; i < width; i += 1) value = value * 256 + body[offset + i]!;
-  return { width, value };
-}
-
-const EBML_ID = [0x1a, 0x45, 0xdf, 0xa3];
-/** TrackType (0x83), one byte long, 2: an audio track. */
-const AUDIO_TRACK_TYPE = [0x83, 0x81, 0x02];
-const SEGMENT_ID = [0x18, 0x53, 0x80, 0x67];
-const CLUSTER_ID = [0x1f, 0x43, 0xb6, 0x75];
-
-function bytesAt(body: Uint8Array, offset: number, bytes: readonly number[]): boolean {
-  return bytes.every((byte, i) => body[offset + i] === byte);
-}
-
-/** A whole EBML header, then a Segment with an audio track before a Cluster (where the audio is). */
-function isWebm(body: Uint8Array): boolean {
-  if (!bytesAt(body, 0, EBML_ID)) return false;
-  const header = ebmlSize(body, 4);
-  if (!header) return false;
-  const segment = 4 + header.width + header.value;
-  if (!bytesAt(body, segment, SEGMENT_ID)) return false;
-  for (let offset = segment + 4; offset + 4 <= body.length; offset += 1) {
-    if (bytesAt(body, offset, CLUSTER_ID)) {
-      return body.length > offset + 8 && contains(body, segment + 4, offset, AUDIO_TRACK_TYPE, 0, []);
-    }
-  }
-  return false;
-}
-
 /** Whether a body is a JSON document (an error answer), whatever its label. */
 function isJsonDocument(body: Uint8Array): boolean {
   const first = body.find((byte) => byte !== 0x20 && byte !== 0x09 && byte !== 0x0a && byte !== 0x0d);
@@ -298,13 +216,14 @@ function isJsonDocument(body: Uint8Array): boolean {
 }
 
 /**
- * Whether `body` is audio a speech API returns: MP3, AAC (ADTS), WAV, FLAC,
- * Ogg Opus or Vorbis, MP4/M4A or WebM, each with its required header and the
- * start of real audio data; or, when the request asked for headerless `pcm`,
- * whole 16-bit samples that are not a JSON document.
+ * Whether `body` is audio in a format the speech APIs return (`mp3`, `aac`,
+ * `wav`, `flac`, `opus`, `pcm`): MP3, AAC (ADTS), WAV, FLAC or Ogg Opus/Vorbis,
+ * each with its required header and the start of real audio data; or, when
+ * the request asked for headerless `pcm`, whole 16-bit samples that are not a
+ * JSON document. Other containers (MP4, WebM) are not speech formats.
  */
 export function isSpeechAudio(body: Uint8Array, responseFormat?: string): boolean {
   if (body.length < MIN_SPEECH_AUDIO_BYTES) return false;
-  if (isMp3OrAac(body) || isWav(body) || isFlac(body) || isOgg(body) || isMp4(body) || isWebm(body)) return true;
+  if (isMp3OrAac(body) || isWav(body) || isFlac(body) || isOgg(body)) return true;
   return responseFormat?.trim().toLowerCase() === 'pcm' && body.length % 2 === 0 && !isJsonDocument(body);
 }
