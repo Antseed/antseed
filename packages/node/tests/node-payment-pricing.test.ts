@@ -2129,6 +2129,11 @@ it('waits for a running top-up before treating a channel at its ceiling as exhau
   }
 });
 
+
+/** A speech answer: an MP3 frame header, then frame data. */
+const SPEECH_MP3 = new Uint8Array(256);
+SPEECH_MP3.set([0xff, 0xfb, 0x90, 0x64]);
+
 describe('speech seller payments', () => {
   function setup(providerResponse?: { statusCode: number; contentType: string; body: Uint8Array }) {
     let spend = 0n;
@@ -2137,7 +2142,7 @@ describe('speech seller payments', () => {
     // $62.50 per million characters.
     provider.serviceUnitBillingModels = { 'tts-kokoro': { 'openai-audio-speech': { version: 1, components: [{ unit: 'input_characters', priceUsd: 0.0000625 }] } } };
     provider.serviceCapabilities = { 'tts-kokoro': { inputs: ['text'], outputs: ['audio'], speech: { voices: ['af_sky', 'am_adam'] } } };
-    const answer = providerResponse ?? { statusCode: 200, contentType: 'audio/mpeg', body: new Uint8Array([0x49, 0x44, 0x33, 1]) };
+    const answer = providerResponse ?? { statusCode: 200, contentType: 'audio/mpeg', body: SPEECH_MP3 };
     provider.handleRequest = vi.fn(async request => ({ requestId: request.requestId, statusCode: answer.statusCode, headers: { 'content-type': answer.contentType }, body: answer.body }));
     delete (provider as Partial<Provider>).handleRequestStream;
     const spm = makeSpmMock({
@@ -2164,7 +2169,7 @@ describe('speech seller payments', () => {
     const response = await harness.send({ model: 'tts-kokoro', input: 'a'.repeat(1000), voice: 'af_sky' });
     expect(response.statusCode).toBe(200);
     expect(response.headers['content-type']).toBe('audio/mpeg');
-    expect(Array.from(response.body)).toEqual([0x49, 0x44, 0x33, 1]);
+    expect(Array.from(response.body)).toEqual(Array.from(SPEECH_MP3));
     expect(harness.spm.recordSpend).toHaveBeenCalledWith('session-1', 62_500n);
     expect(harness.paymentMux.sendNeedAuth).toHaveBeenCalledWith(expect.objectContaining({ lastRequestCost: '62500', billingUsage: { version: 1, units: { input_characters: '1000' } } }));
   });

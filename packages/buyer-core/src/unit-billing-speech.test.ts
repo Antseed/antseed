@@ -32,8 +32,12 @@ function capture(body: Record<string, unknown> = { model: 'tts-elevenlabs-turbo-
   });
 }
 
-const audio = (statusCode: number, contentType = 'audio/mpeg') => ({
-  requestId: 'r', statusCode, headers: { 'content-type': contentType }, body: new Uint8Array([0x49, 0x44, 0x33, 4]),
+/** An MP3: a frame header, then frame data. */
+const MP3 = new Uint8Array(256);
+MP3.set([0xff, 0xfb, 0x90, 0x64]);
+
+const audio = (statusCode: number, contentType = 'audio/mpeg', body: Uint8Array = MP3) => ({
+  requestId: 'r', statusCode, headers: { 'content-type': contentType }, body,
 });
 
 describe('speech billing', () => {
@@ -62,6 +66,17 @@ describe('speech billing', () => {
     expect(cost(audio(400, 'audio/mpeg; charset=utf-8')).costUsdc).toBe(0n);
     expect(cost(audio(500)).costUsdc).toBe(0n);
     expect(cost(audio(200, 'application/json')).costUsdc).toBe(0n);
+    // Bytes that are not audio are free whatever their label: a stub, an error document.
+    expect(cost(audio(200, 'audio/mpeg', new Uint8Array([0xff]))).costUsdc).toBe(0n);
+    expect(cost(audio(200, 'audio/mpeg', new TextEncoder().encode(JSON.stringify({ error: { message: 'x'.repeat(80) } })))).costUsdc).toBe(0n);
+  });
+
+  it('charges raw pcm only when the request asked for pcm', () => {
+    const pcm = audio(200, 'audio/pcm', new Uint8Array(256).fill(7));
+    const asked = capture({ model: 'tts-elevenlabs-turbo-v2-5', input: 'a'.repeat(1000), response_format: 'pcm' });
+    expect(computeFinalUnitBilling(perCharacter, asked.context, pcm, asked.requestFacts).costUsdc).toBe(62_500n);
+    const mp3Asked = capture();
+    expect(computeFinalUnitBilling(perCharacter, mp3Asked.context, pcm, mp3Asked.requestFacts).costUsdc).toBe(0n);
   });
 
   it('lets the buyer refuse a seller claim beyond the characters it sent', () => {

@@ -153,7 +153,7 @@ const speechBillingAdapter: UnitBillingAdapter = {
   },
   measure: (response, requestFacts) => {
     if (requestFacts.kind !== 'speech') return wrongFacts('speech billing', requestFacts);
-    const delivered = speechAudioDelivered(response);
+    const delivered = speechAudioDelivered(response, requestFacts.speech.responseFormat);
     return { usage: { units: { input_characters: delivered ? requestFacts.speech.characters : 0 } }, tokenUsage: ZERO_TOKEN_USAGE };
   },
 };
