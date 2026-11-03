@@ -305,8 +305,6 @@ export interface NodePaymentsConfig {
   disableMetadataV2Services?: boolean;
   /** Deployed AntseedDepositRelay contract address (gasless deposit sweeps). */
   depositRelayAddress?: string;
-  /** Deployed AntseedReferrals contract address (emission-funded referral rewards). */
-  referralsAddress?: string;
   /**
    * Buyer-side attribution appended to every signed SpendingAuth / FreeUsage
    * metadata blob: the bytes32 client id of this software and, until the

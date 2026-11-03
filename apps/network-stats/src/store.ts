@@ -44,6 +44,8 @@ interface BuyerOrChannelRow {
   first_settled_block: number;
 }
 
+type ChannelRow = BuyerOrChannelRow & { buyer: string; last_contract_address: string | null };
+
 interface SellerTotalsRow {
   total_request_count: string;
   total_input_tokens: string;
@@ -68,7 +70,7 @@ export class SqliteStore {
   private _upsertSeller!: Database.Statement<[number, string, string, string, number, number, number, number | null, number | null, number]>;
   private _selectBuyer!: Database.Statement<[number, string], BuyerOrChannelRow>;
   private _upsertBuyer!: Database.Statement<[number, string, string, string, string, number, number, number]>;
-  private _selectChannel!: Database.Statement<[number, string], BuyerOrChannelRow & { buyer: string; last_contract_address: string | null }>;
+  private _selectChannel!: Database.Statement<[number, string], ChannelRow>;
   private _upsertChannel!: Database.Statement<[number, string, string, string, string, string, number, number, number, string]>;
   private _selectOtherCheckpoint!: Database.Statement<[string, string], { contract_address: string }>;
   private _backfillChannelContract!: Database.Statement<[string]>;
@@ -246,17 +248,19 @@ export class SqliteStore {
       }
 
       for (const rawEvent of events) {
-        const event = this._netCutoverReport(contract, rawEvent);
         // uint256 → number narrowing. In practice agentIds are sequential and small,
         // but the ERC-8004 IdentityRegistry is uint256, so guard against a pathological
         // future value that would silently collide or miss the PK lookup.
-        if (event.agentId > BigInt(Number.MAX_SAFE_INTEGER)) {
-          console.warn(`[store] agentId ${event.agentId} exceeds MAX_SAFE_INTEGER — skipping event`);
+        if (rawEvent.agentId > BigInt(Number.MAX_SAFE_INTEGER)) {
+          console.warn(`[store] agentId ${rawEvent.agentId} exceeds MAX_SAFE_INTEGER — skipping event`);
           continue;
         }
-        const agentId = Number(event.agentId);
+        const agentId = Number(rawEvent.agentId);
+        const channelId = rawEvent.channelId.toLowerCase();
+        // Read once: nothing below writes the channel row before its own upsert.
+        const existingChannel = this._selectChannel.get(agentId, channelId);
+        const event = this._netCutoverReport(contract, rawEvent, existingChannel);
         const buyer = event.buyer.toLowerCase();
-        const channelId = event.channelId.toLowerCase();
         const now = Math.floor(Date.now() / 1000);
 
         // ── seller_metadata_totals ───────────────────────────────────
@@ -307,7 +311,6 @@ export class SqliteStore {
         );
 
         // ── seller_channel_totals ────────────────────────────────────
-        const existingChannel = this._selectChannel.get(agentId, channelId);
         const prevChannelInput = existingChannel ? BigInt(existingChannel.total_input_tokens) : 0n;
         const prevChannelOutput = existingChannel ? BigInt(existingChannel.total_output_tokens) : 0n;
         const prevChannelCount = existingChannel ? BigInt(existingChannel.total_request_count) : 0n;
@@ -344,9 +347,7 @@ export class SqliteStore {
    * When the channel was last reported by a different contract, net out what
    * is already indexed so totals keep counting real growth only.
    */
-  private _netCutoverReport(contract: string, event: DecodedMetadataRecorded): DecodedMetadataRecorded {
-    if (event.agentId > BigInt(Number.MAX_SAFE_INTEGER)) return event;
-    const existing = this._selectChannel.get(Number(event.agentId), event.channelId.toLowerCase());
+  private _netCutoverReport(contract: string, event: DecodedMetadataRecorded, existing: ChannelRow | undefined): DecodedMetadataRecorded {
     if (!existing || existing.last_contract_address === null || existing.last_contract_address === contract) return event;
     const net = (reported: bigint, indexed: string): bigint => {
       const already = BigInt(indexed);

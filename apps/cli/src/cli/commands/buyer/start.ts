@@ -391,7 +391,6 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
           // without them the usage, stake and wash parts of the score stay null.
           ...(chainConfig.stakingContractAddress ? { stakingAddress: chainConfig.stakingContractAddress } : {}),
           ...(chainConfig.identityRegistryAddress ? { identityRegistryAddress: chainConfig.identityRegistryAddress } : {}),
-          ...(chainConfig.referralsAddress ? { referralsAddress: chainConfig.referralsAddress } : {}),
           attribution: initialAttribution,
           ...(chainConfig.sellerPoolsAddress ? { sellerPoolsAddress: chainConfig.sellerPoolsAddress } : {}),
           ...(chainConfig.usageAccountingAddress ? { usageAccountingAddress: chainConfig.usageAccountingAddress } : {}),
