@@ -86,6 +86,8 @@ const SPEND_FEED_UNAVAILABLE_MESSAGES: Record<Exclude<SpendFeedState, 'reporting
 }
 const KEY_INFO_PATH = '/v1/key'
 const SPEECH_PATH = '/v1/audio/speech'
+/** Set by the buyer: `1` when the served service also charges per unit, `0` when it does not. */
+const UNIT_PRICED_HEADER = 'x-antseed-unit-priced'
 const TOPUP_PATH = '/v1/key/topup'
 
 /**
@@ -700,12 +702,15 @@ export class GatewayServer {
           firstTokenMs = status < 400 ? latencyHeader(firstHeader(upstreamRes.headers['x-antseed-first-token-ms'])) : null
           respondedAt = Date.now()
           const contentType = firstHeader(upstreamRes.headers['content-type']).toLowerCase()
-          // Videos and speech are priced per second or character, not per token: zero
-          // token prices do not make them free. A priced model's response the seller's
-          // free allowance covered is free too (speech included; video jobs are not).
-          const speech = request.requestPath === SPEECH_PATH
+          // Videos are priced per second, not per token: zero token prices do not make them
+          // free. Other services are free at zero token prices unless the buyer says a unit
+          // price applies (images, speech characters); a buyer too old to say so is trusted
+          // for everything but speech, which only it can price. A priced model's response the
+          // seller's free allowance covered is free too (video jobs excepted).
+          const unitPriced = firstHeader(upstreamRes.headers[UNIT_PRICED_HEADER])
+          const perUnit = unitPriced === '1' || (unitPriced !== '0' && request.requestPath === SPEECH_PATH)
           servedFree = !request.video
-            && (coveredByFreeAllowance(upstreamRes.headers) || (!speech && freeSellerPricing(upstreamRes.headers)))
+            && (coveredByFreeAllowance(upstreamRes.headers) || (!perUnit && freeSellerPricing(upstreamRes.headers)))
           if (request.video?.action === 'create' && status >= 200 && status < 300) {
             videoCreateChunks = collectPrefix(upstreamRes, MAX_ERROR_BODY_BYTES)
             videoPriceHeader = firstHeader(upstreamRes.headers[VIDEO_PRICE_HEADER])

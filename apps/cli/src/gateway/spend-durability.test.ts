@@ -307,6 +307,8 @@ test('a request a free seller or free allowance served costs $0 and is not pendi
     ['paid output', { 'x-antseed-input-usd-per-million': '0', 'x-antseed-output-usd-per-million': '2' }, false],
     ['paid cache reads', { 'x-antseed-input-usd-per-million': '0', 'x-antseed-output-usd-per-million': '0', 'x-antseed-cached-input-usd-per-million': '0.1' }, false],
     ['no prices', {}, false],
+    // Zero token prices but a per-image price: the spend will arrive.
+    ['zero token prices, a unit price', { 'x-antseed-input-usd-per-million': '0', 'x-antseed-output-usd-per-million': '0', 'x-antseed-unit-priced': '1' }, false],
     // A priced model the seller's free allowance covered: no spend will ever arrive for it.
     ['covered by a free allowance', { 'x-antseed-input-usd-per-million': '0.6', 'x-antseed-output-usd-per-million': '2.5', 'X-Antseed-Free-Tier': 'covered' }, true],
   ]
@@ -328,14 +330,16 @@ test('a request a free seller or free allowance served costs $0 and is not pendi
   }
 })
 
-test('a speech request with zero token prices stays pending: it is priced per character', async (context) => {
+test('a speech request is free only when its buyer says no unit price applies, or an allowance covered it', async (context) => {
   const { dir, cleanup } = tempDir('antseed-gateway-')
   const store = new GatewayStore(dir)
   context.after(() => { store.close(); cleanup() })
   const { secret } = store.createKey({ label: 'k', limits: NO_LIMITS, expiresAt: null })
   const cases: Array<[string, Record<string, string>, boolean]> = [
-    ['zero token prices', { 'x-antseed-input-usd-per-million': '0', 'x-antseed-output-usd-per-million': '0' }, false],
-    ['covered by a free allowance', { 'x-antseed-input-usd-per-million': '0', 'x-antseed-output-usd-per-million': '0', 'X-Antseed-Free-Tier': 'covered' }, true],
+    ['zero token prices, a per-character price', { 'x-antseed-input-usd-per-million': '0', 'x-antseed-output-usd-per-million': '0', 'x-antseed-unit-priced': '1' }, false],
+    ['zero token prices from a buyer that does not say', { 'x-antseed-input-usd-per-million': '0', 'x-antseed-output-usd-per-million': '0' }, false],
+    ['free speech: zero token and unit prices', { 'x-antseed-input-usd-per-million': '0', 'x-antseed-output-usd-per-million': '0', 'x-antseed-unit-priced': '0' }, true],
+    ['covered by a free allowance', { 'x-antseed-input-usd-per-million': '0', 'x-antseed-output-usd-per-million': '0', 'x-antseed-unit-priced': '1', 'X-Antseed-Free-Tier': 'covered' }, true],
   ]
   const seen = new Set<string>()
   for (const [name, pricing, free] of cases) {
