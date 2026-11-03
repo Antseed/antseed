@@ -248,8 +248,26 @@ export function buildNetworkServiceOffers(
   return offers;
 }
 
+/**
+ * USD per input character a speech request is billed. Speech requests carry no
+ * billing match attributes, so only components without a `match` apply, and
+ * every applicable component is charged.
+ */
+function speechUsdPerCharacter(offer: NetworkServiceOffer): number {
+  const model = offer.protocol ? offer.unitBillingModels?.[offer.protocol] : undefined;
+  const applicable = (model?.components ?? []).filter((component) =>
+    component.unit === 'input_characters'
+    && Object.keys(component.match ?? {}).length === 0
+    && Number.isFinite(component.priceUsd)
+    && component.priceUsd >= 0);
+  return applicable.length > 0
+    ? applicable.reduce((sum, component) => sum + component.priceUsd, 0)
+    : Number.POSITIVE_INFINITY;
+}
+
 function comparableOfferPrice(offer: NetworkServiceOffer): number {
   if (offer.type === 'image') return offer.minImageUsdPerImage ?? Number.POSITIVE_INFINITY;
+  if (offer.type === 'speech') return speechUsdPerCharacter(offer);
   if (offer.inputUsdPerMillion === undefined || offer.outputUsdPerMillion === undefined) {
     return Number.POSITIVE_INFINITY;
   }

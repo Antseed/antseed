@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { decodeMetadata, encodeMetadata, encodeMetadataForSigning, getMetadataCodec, negotiateMetadataVersion, SERVED_METADATA_VERSIONS } from '../src/discovery/metadata-codec.js';
 import { validateMetadata } from '../src/discovery/metadata-validator.js';
 import { METADATA_VERSION, SPEECH_METADATA_VERSION, type PeerMetadata } from '../src/discovery/peer-metadata.js';
-import { buildNetworkServiceOffers } from '../src/discovery/service-catalog.js';
+import { buildNetworkServiceOffers, selectLowestPricedNetworkServiceOffer } from '../src/discovery/service-catalog.js';
 import { supportsHealthProbe } from '../src/health/model-health-checker.js';
 
 /** A Venice-style seller: chat, an image service with edits, and two speech services. */
@@ -141,6 +141,23 @@ describe('speech services in peer metadata', () => {
     expect(offers[0]!.inputUsdPerMillion).toBeUndefined();
     expect(offers[0]!.unitBillingModels?.['openai-audio-speech']?.components[0]?.unit).toBe('input_characters');
     expect(offers[0]!.capabilities?.speech?.voices).toEqual(['af_sky']);
+  });
+
+  it('selects the cheaper per-character speech offer even when it sorts later', () => {
+    const speechPeer = (provider: string, priceUsd: number) => ({
+      providerServiceApiProtocols: { [provider]: { services: { 'tts-kokoro': ['openai-audio-speech'] } } },
+      providerServiceUnitBillingModels: { [provider]: { services: { 'tts-kokoro': { 'openai-audio-speech': { version: 1, components: [{ unit: 'input_characters', priceUsd }] } } } } },
+    });
+    const expensive = speechPeer('alpha', 0.00005);
+    const cheap = speechPeer('zeta', 0.00001);
+    const offers = buildNetworkServiceOffers([{
+      peerId: 'a'.repeat(40),
+      providers: ['alpha', 'zeta'],
+      providerServiceApiProtocols: { ...expensive.providerServiceApiProtocols, ...cheap.providerServiceApiProtocols },
+      providerServiceUnitBillingModels: { ...expensive.providerServiceUnitBillingModels, ...cheap.providerServiceUnitBillingModels },
+    }]);
+    expect(offers.map((offer) => offer.provider)).toEqual(['alpha', 'zeta']);
+    expect(selectLowestPricedNetworkServiceOffer(offers)?.provider).toBe('zeta');
   });
 
   it('never health-probes speech services, which would cost money', () => {
