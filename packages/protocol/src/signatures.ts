@@ -427,7 +427,9 @@ export const ZERO_METADATA: SpendingAuthMetadata = {
   services: [],
 };
 
-export const ZERO_METADATA_HASH: string = computeMetadataHash(ZERO_METADATA);
+const ZERO_METADATA_ENCODED = encodeMetadata(ZERO_METADATA);
+
+export const ZERO_METADATA_HASH: string = keccak256(ZERO_METADATA_ENCODED);
 
 /** Zero metadata as v4 encodes it, still signed by buyers that have not upgraded. */
 const ZERO_METADATA_V4_ENCODED = AbiCoder.defaultAbiCoder().encode(
@@ -435,15 +437,18 @@ const ZERO_METADATA_V4_ENCODED = AbiCoder.defaultAbiCoder().encode(
   [METADATA_VERSION_V4, 0n, 0n, 0n, 0n, 0n, 0n, []],
 );
 
+const ZERO_METADATA_BY_HASH = new Map([
+  [ZERO_METADATA_HASH.toLowerCase(), ZERO_METADATA_ENCODED],
+  [keccak256(ZERO_METADATA_V4_ENCODED).toLowerCase(), ZERO_METADATA_V4_ENCODED],
+]);
+
 /**
  * The zero metadata, in whichever accepted version (v5 or v4) `metadataHash`
  * is the hash of, or undefined. For a SpendingAuth sent without its metadata
  * bytes: the seller must settle with the exact bytes the buyer signed.
  */
 export function zeroMetadataForHash(metadataHash: string): string | undefined {
-  const hash = metadataHash.toLowerCase();
-  return [encodeMetadata(ZERO_METADATA), ZERO_METADATA_V4_ENCODED]
-    .find((encoded) => keccak256(encoded).toLowerCase() === hash);
+  return ZERO_METADATA_BY_HASH.get(metadataHash.toLowerCase());
 }
 
 /**
