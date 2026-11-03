@@ -2399,11 +2399,7 @@ describe('SellerPaymentManager', () => {
     it('closes with the v4 zero metadata a stored auth without metadata bytes was signed over', async () => {
       const channelId = makeChannelId(40);
       // Stored before the seller kept the bytes of an auth sent without metadata.
-      const zeroV4 = AbiCoder.defaultAbiCoder().encode(
-        ['uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256',
-          'tuple(bytes32 serviceId,uint256 cumulativeAmount,uint256 cumulativeInputTokens,uint256 cumulativeCachedInputTokens,uint256 cumulativeOutputTokens,uint256 cumulativeRequestCount,uint256 cumulativeOutputImages,uint256 cumulativeVideoGenerations,uint256 cumulativeVideoSeconds)[]'],
-        [4n, 0n, 0n, 0n, 0n, 0n, 0n, []],
-      );
+      const zeroV4 = encodeMetadataV4(0n, 0n, 0n);
       const sig = await signSpendingAuth(buyerIdentity.wallet, makeChannelsDomain(CHAIN_ID, CONTRACT_ADDR), {
         channelId, cumulativeAmount: 1_000_000n, metadataHash: keccak256(zeroV4),
       });
