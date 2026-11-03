@@ -111,7 +111,7 @@ test('the latest result per model and seller wins and decides the action', () =>
 })
 
 test('a failure caused by the auditor does not use up the seller\'s retry', () => {
-  // Epoch 29 on mainnet: our buyer proxy mixed up request IDs, then the seller timed out once.
+  // Our buyer proxy mixed up request IDs, then the seller timed out once.
   const ourAuthBug = {
     code: 'response_auth_invalid', source: 'response_auth', retryable: true, affectedBatchCount: 21, totalBatchCount: 21,
     nextAction: 'resume audit', summary: 'buyer proxy request ID mismatch (a06e1ead != b7ecb4bc)',
@@ -141,7 +141,7 @@ test('a failure caused by the auditor does not use up the seller\'s retry', () =
 })
 
 test('seller failures less than SELLER_RETRY_SPACING_SECONDS apart count as one, and the retry waits for it', () => {
-  // Epoch 29: GesundAI's upstream usage limit was still on when its retry ran two hours later.
+  // A seller's upstream usage limit can outlast a retry two hours later.
   const failure = (runId: string, at: string) => run(runId, at, [{
     model: 'm', results: [result('a', 'UNDETERMINED', { outcomeReason: sellerDown })],
   }])
@@ -168,7 +168,7 @@ test('the fixed audit deadline of earlier releases was the auditor\'s limit; no 
 })
 
 test('failures caused by the auditor are retried up to AUDITOR_FAILURE_ATTEMPTS times per epoch', () => {
-  // Epoch 29 e2e: a seller our side kept failing was audited again every five-minute run.
+  // Without a limit, a seller our side keeps failing is audited again every run.
   const ourTimeout = {
     code: 'request_timeout', source: 'transport', retryable: true, affectedBatchCount: 17, totalBatchCount: 17,
     nextAction: 'resume audit', summary: 'buyer proxy request timed out after 120000ms',
@@ -190,7 +190,7 @@ test('failures caused by the auditor are retried up to AUDITOR_FAILURE_ATTEMPTS 
 })
 
 test('an UNDETERMINED caused by the auditor is never submitted', async () => {
-  // Epoch 29 e2e: our buyer refused NovaRoute AI, and its "coverage 0" UNDETERMINED was submitted.
+  // Our buyer refuses the seller: its "coverage 0" UNDETERMINED says nothing about the model.
   const directory = await mkdtemp(join(tmpdir(), 'epoch-plan-auditor-'))
   try {
     const runs = [run('r1', '2026-10-28T20:00:00.000Z', [{ model: 'm', results: [

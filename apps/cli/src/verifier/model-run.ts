@@ -100,7 +100,7 @@ function exportedResponseAuthRecord(record: StoredResponseAuth): Omit<StoredResp
 /**
  * When a seller audit gives up: after `idleMs` without an answered batch, or `maxMs` after its first
  * request. A slow seller that keeps answering finishes its batches; a fixed total cut off honest
- * reasoning models whose 16 to 23 batches take 30 to 90 seconds each (epoch 29).
+ * reasoning models whose 16 to 23 batches take 30 to 90 seconds each.
  */
 class LazyAuditDeadline {
   readonly controller = new AbortController()
@@ -1181,8 +1181,8 @@ async function sellerThinkingFor(
 const DISCOVERY_RETRY_DELAYS_MS = [5_000, 15_000] as const
 /**
  * Strategies in a row that must fail every try with no answer before the seller counts as down and
- * the remaining strategies are not sent. One failed strategy is not enough: in epoch 29 one 502 from
- * a seller that answered its first batch seconds later dropped its discovery.
+ * the remaining strategies are not sent. One failed strategy is not enough: a single 502 from a
+ * seller that answers its first batch seconds later would drop its discovery.
  */
 const DISCOVERY_OUTAGE_STRATEGIES = 2
 

@@ -80,8 +80,8 @@ const DEFAULT_RETRY_BASE_DELAY_MS = 500
 /**
  * First wait after a 429 that gives no Retry-After, doubling per attempt up to
  * `REFERENCE_THROTTLE_MAX_DELAY_MS`. An upstream provider's rate limit (OpenRouter's "Provider
- * returned error" 429) outlasts the half-second backoff of other errors: in epoch 29 four quick
- * retries all hit it and a close call's enrollment failed.
+ * returned error" 429) outlasts the half-second backoff of other errors, so quick retries all hit
+ * it and the enrollment fails.
  */
 const REFERENCE_THROTTLE_BASE_DELAY_MS = 10_000
 const REFERENCE_THROTTLE_MAX_DELAY_MS = 60_000

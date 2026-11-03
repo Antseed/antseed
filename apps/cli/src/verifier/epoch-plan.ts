@@ -128,8 +128,8 @@ export const SELLER_FAILURE_ATTEMPTS = 2
 /**
  * A seller or unclear failure is retried no sooner than this after the audit that failed, and
  * audits closer together than this count as one attempt. A seller's outage (an upstream rate or
- * usage limit, a failing self-health check) usually lasts hours: GesundAI's limit in epoch 29 was
- * still on when its retry ran two hours later, which used up its retry. The epoch lasts a week.
+ * usage limit, a failing self-health check) usually lasts hours, so a retry minutes later fails the
+ * same way and uses up the seller's retry. The epoch lasts a week.
  */
 export const SELLER_RETRY_SPACING_SECONDS = 3 * 60 * 60
 

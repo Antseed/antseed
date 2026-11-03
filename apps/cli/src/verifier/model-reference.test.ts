@@ -1822,7 +1822,7 @@ test('reference requests retry nested Undici socket failures', async () => {
 })
 
 test('a 429 without Retry-After backs off for seconds, not milliseconds', () => {
-  // Epoch 29 e2e: OpenRouter's DeepSeek returned 429 four times in a row; 0.5-2 s waits all hit it.
+  // A provider rate limit outlasts 0.5-2 s waits: quick retries all hit it.
   const providerThrottle = new ReferenceEndpointError(429, null, '{"error":{"message":"Provider returned error","code":429}}')
   assert.deepEqual([1, 2, 3, 4].map((attempt) => retryDelayMs(providerThrottle, 500, attempt)), [10_000, 20_000, 40_000, 60_000])
   // A Retry-After the endpoint sends is honoured as before.

@@ -185,7 +185,7 @@ test('a bank of any size gives a valid settings seed for enrollment', async () =
 })
 
 test('missing reference evidence of a bank is reported before a run', async () => {
-  // Epoch 29 e2e: banks copied without reference-evidence/ failed every submission after the run.
+  // A bank copied without reference-evidence/ would fail every submission after the run.
   const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-'))
   try {
     const appended = await appendReference(directory)

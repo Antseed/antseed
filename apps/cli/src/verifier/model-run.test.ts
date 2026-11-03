@@ -678,8 +678,8 @@ test('target eligibility refuses cached input priced above input, as the buyer r
 })
 
 test('an invalid offer for the model is not replaced by the seller\'s valid default price', () => {
-  // As NovaRoute AI in epoch 29: deepseek-v4-pro at $0.0068 input but $0.594 cached input, next to
-  // valid defaults. The buyer refuses the model's own offer, so every audit request would fail.
+  // The model's own offer is invalid ($0.594 cached input against $0.0068 input), next to valid
+  // defaults. The buyer refuses that offer, so every audit request would fail.
   const peer = { ...pricedAt(0.0068, 0.0137, 0.594), defaultInputUsdPerMillion: 0.02, defaultOutputUsdPerMillion: 0.12 }
   const result = classifyVerificationTarget(peer, 'gpt-5.6-sol', targetPolicy)
   assert.equal(result.eligible, false)
@@ -1459,7 +1459,7 @@ test('discovery stops at an unreachable seller and the audit falls back to the r
 })
 
 test('a slow seller that keeps answering finishes its audit past the idle limit', async () => {
-  // Epoch 29: Kimi sellers took 30-90 s per batch, so 17 batches outlasted a fixed 10-minute total.
+  // Reasoning models take 30-90 s per batch, so 17 batches outlast a fixed 10-minute total.
   const honest: FakeSeller = (body) => ({ content: correctAnswers(body), reasoningTokens: 0 })
   const run = await auditWithDiscovery(honest, { batchDelayMs: 60, auditTimeoutMs: 150, batchConcurrency: 1 })
   // Four batches one after another take ~240 ms, more than the 150 ms idle limit, but each answers in time.
@@ -1479,7 +1479,7 @@ test('an audit stops at its total time limit, and says it was the auditor\'s lim
 })
 
 test('one failed discovery strategy does not end the discovery', async () => {
-  // Epoch 29: one 502 from a seller that answered its first batch seconds later dropped its discovery.
+  // One 502 from a seller that answers its first batch seconds later must not drop its discovery.
   let discoveryRequests = 0
   const flaky: FakeSeller = (body) => {
     if (isDiscovery(body) && (discoveryRequests += 1) <= 3) return new Response('bad gateway', { status: 502 })
