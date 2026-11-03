@@ -112,7 +112,8 @@ function deepMerge(target: Record<string, unknown>, source: Record<string, unkno
   return out;
 }
 
-function getHeader(headers: Record<string, string>, name: string): string {
+/** Case-insensitive header lookup; '' when the header is absent. */
+export function getHeader(headers: Record<string, string>, name: string): string {
   const entry = Object.entries(headers).find(([key]) => key.toLowerCase() === name.toLowerCase());
   return entry?.[1] ?? '';
 }
@@ -701,11 +702,11 @@ function serviceOfRequest(request: SerializedHttpRequest): string {
   if (request.method === 'GET' || request.method === 'HEAD') return '';
   const contentType = getHeader(request.headers, 'content-type');
   if (/^multipart\/form-data/i.test(contentType.trim())) {
+    // The header wins, so an image-bearing body is only scanned without one.
+    const fromHeader = getHeader(request.headers, 'x-antseed-service').trim();
+    if (fromHeader) return fromHeader.toLowerCase();
     const fields = readMultipartTextFields(request.body, contentType, ['service', 'model']);
-    return (getHeader(request.headers, 'x-antseed-service').trim()
-      || fields.get('service')
-      || fields.get('model')
-      || '').toLowerCase();
+    return (fields.get('service') || fields.get('model') || '').toLowerCase();
   }
   try {
     const decoded = JSON.parse(new TextDecoder().decode(request.body)) as Record<string, unknown> | null;
