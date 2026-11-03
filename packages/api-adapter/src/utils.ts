@@ -215,6 +215,11 @@ export function extractSpeechRequestFacts(body: Record<string, unknown> | null |
   };
 }
 
+/** Case-insensitive header lookup (`name` in lowercase); '' when absent. */
+export function headerValue(headers: Record<string, string>, name: string): string {
+  return Object.entries(headers).find(([key]) => key.toLowerCase() === name)?.[1] ?? '';
+}
+
 /**
  * Whether a speech response delivered audio: a 2xx answer with a body that is
  * not a JSON or SSE document. Some upstreams label JSON errors `audio/mpeg`,
@@ -222,7 +227,7 @@ export function extractSpeechRequestFacts(body: Record<string, unknown> | null |
  */
 export function speechAudioDelivered(response: Pick<SerializedHttpResponse, 'statusCode' | 'headers' | 'body'>): boolean {
   if (response.statusCode < 200 || response.statusCode >= 300 || response.body.length === 0) return false;
-  const contentType = (Object.entries(response.headers).find(([key]) => key.toLowerCase() === 'content-type')?.[1] ?? '').toLowerCase();
+  const contentType = headerValue(response.headers, 'content-type').toLowerCase();
   return !contentType.includes('json') && !contentType.includes('text/event-stream') && !contentType.startsWith('text/');
 }
 
@@ -281,8 +286,7 @@ export function extractRequestBodyFields(
   headers: Record<string, string>,
   body: Uint8Array,
 ): Record<string, unknown> | null {
-  const contentType = Object.entries(headers)
-    .find(([key]) => key.toLowerCase() === 'content-type')?.[1];
+  const contentType = headerValue(headers, 'content-type');
   if (contentType && /^multipart\/form-data/i.test(contentType.trim())) {
     return parseMultipartFormFields(body, contentType);
   }
