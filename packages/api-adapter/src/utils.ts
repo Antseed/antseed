@@ -273,9 +273,9 @@ export function parseMultipartFormFields(
     const dispositionParams = /content-disposition:\s*form-data\s*;([^\r\n]*)/i.exec(headerBlock)?.[1];
     if (dispositionParams !== undefined && !/filename\s*=/i.test(dispositionParams)) {
       const name = /name="([^"]*)"/.exec(dispositionParams)?.[1];
-      const value = text.slice(headerEnd + 4, next);
-      if (name && !(name in fields) && value.length <= MAX_MULTIPART_TEXT_FIELD_BYTES) {
-        fields[name] = decoder.decode(Uint8Array.from(value, (c) => c.charCodeAt(0)));
+      // Latin-1 offsets are byte offsets: decode the field's own bytes as UTF-8.
+      if (name && !(name in fields) && next - (headerEnd + 4) <= MAX_MULTIPART_TEXT_FIELD_BYTES) {
+        fields[name] = decoder.decode(body.subarray(headerEnd + 4, next));
       }
     }
     index = next + 2;
