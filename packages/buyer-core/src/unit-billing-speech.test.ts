@@ -32,9 +32,9 @@ function capture(body: Record<string, unknown> = { model: 'tts-elevenlabs-turbo-
   });
 }
 
-/** An MP3: a frame header, then frame data. */
-const MP3 = new Uint8Array(256);
-MP3.set([0xff, 0xfb, 0x90, 0x64]);
+/** An MP3: three 417-byte MPEG-1 layer III frames (128 kbps, 44.1 kHz). */
+const MP3 = new Uint8Array(417 * 3);
+for (const offset of [0, 417, 834]) MP3.set([0xff, 0xfb, 0x90, 0x00], offset);
 
 const audio = (statusCode: number, contentType = 'audio/mpeg', body: Uint8Array = MP3) => ({
   requestId: 'r', statusCode, headers: { 'content-type': contentType }, body,

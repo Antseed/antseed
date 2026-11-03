@@ -1,5 +1,6 @@
 import { estimateTokenCount } from 'tokenx';
 import type { SerializedHttpResponse, SerializedHttpResponseChunk } from './types.js';
+import { isSpeechAudio } from './speech-audio.js';
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -220,74 +221,20 @@ export function headerValue(headers: Record<string, string>, name: string): stri
   return Object.entries(headers).find(([key]) => key.toLowerCase() === name)?.[1] ?? '';
 }
 
-/** Smallest body counted as speech audio: even a one-word answer is several times larger. */
-const MIN_SPEECH_AUDIO_BYTES = 64;
-
-function startsWithAscii(body: Uint8Array, offset: number, text: string): boolean {
-  if (body.length < offset + text.length) return false;
-  for (let i = 0; i < text.length; i += 1) {
-    if (body[offset + i] !== text.charCodeAt(i)) return false;
-  }
-  return true;
-}
-
-/** An MPEG audio (MP3) or ADTS (AAC) frame header at `offset`. */
-function isAudioFrameHeader(body: Uint8Array, offset: number): boolean {
-  const [b0, b1, b2] = [body[offset], body[offset + 1], body[offset + 2]];
-  if (b0 === undefined || b1 === undefined || b2 === undefined) return false;
-  if (b0 !== 0xff || (b1 & 0xe0) !== 0xe0) return false;
-  // ADTS: 12 sync bits, layer 00, a defined sampling frequency index.
-  if ((b1 & 0xf6) === 0xf0) return ((b2 >> 2) & 0x0f) < 13;
-  // MPEG audio: no reserved version or layer, bitrate or sample rate.
-  return ((b1 >> 3) & 0x03) !== 1 && ((b1 >> 1) & 0x03) !== 0 && (b2 >> 4) !== 0x0f && ((b2 >> 2) & 0x03) !== 3;
-}
-
-/** Whether `body` is framed like an audio file a speech API returns. */
-function isEncodedAudio(body: Uint8Array): boolean {
-  if (startsWithAscii(body, 0, 'ID3')) {
-    // An ID3v2 tag (syncsafe size, plus a footer when flagged), then the first frame.
-    const tagSize = ((body[6]! & 0x7f) << 21) | ((body[7]! & 0x7f) << 14) | ((body[8]! & 0x7f) << 7) | (body[9]! & 0x7f);
-    const footer = (body[5]! & 0x10) !== 0 ? 10 : 0;
-    return isAudioFrameHeader(body, 10 + tagSize + footer);
-  }
-  if (isAudioFrameHeader(body, 0)) return true;
-  if (startsWithAscii(body, 0, 'RIFF')) return startsWithAscii(body, 8, 'WAVE') && startsWithAscii(body, 12, 'fmt ');
-  return startsWithAscii(body, 0, 'fLaC') // FLAC
-    || startsWithAscii(body, 0, 'OggS') // Ogg (Opus, Vorbis)
-    || startsWithAscii(body, 4, 'ftyp') // MP4 / M4A
-    || (body[0] === 0x1a && body[1] === 0x45 && body[2] === 0xdf && body[3] === 0xa3); // WebM
-}
-
-/** Whether a body is a JSON document (an error answer), whatever its label. */
-function isJsonDocument(body: Uint8Array): boolean {
-  const first = body.find((byte) => byte !== 0x20 && byte !== 0x09 && byte !== 0x0a && byte !== 0x0d);
-  if (first !== 0x7b && first !== 0x5b) return false;
-  try {
-    JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(body));
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /**
  * Whether a speech response delivered audio: a 2xx answer, not labelled JSON,
- * SSE or text, whose body is framed like an audio file (MP3, AAC, WAV, FLAC,
- * Ogg/Opus, MP4, WebM) and is not a token-sized stub. Raw `pcm`
- * (`responseFormat` from the request) has no header, so it only has to be
- * whole 16-bit samples that are not a JSON document. Some upstreams label JSON
- * errors `audio/mpeg`, so the status and the bytes decide, not the label.
+ * SSE or text, whose bytes are audio a player can decode (see isSpeechAudio).
+ * Some upstreams label JSON errors `audio/mpeg`, so the status and the bytes
+ * decide, not the label. `responseFormat` is the request's, for headerless pcm.
  */
 export function speechAudioDelivered(
   response: Pick<SerializedHttpResponse, 'statusCode' | 'headers' | 'body'>,
   responseFormat?: string,
 ): boolean {
-  const { body } = response;
-  if (response.statusCode < 200 || response.statusCode >= 300 || body.length < MIN_SPEECH_AUDIO_BYTES) return false;
+  if (response.statusCode < 200 || response.statusCode >= 300) return false;
   const contentType = headerValue(response.headers, 'content-type').toLowerCase();
   if (contentType.includes('json') || contentType.includes('text/event-stream') || contentType.startsWith('text/')) return false;
-  if (isEncodedAudio(body)) return true;
-  return responseFormat?.trim().toLowerCase() === 'pcm' && body.length % 2 === 0 && !isJsonDocument(body);
+  return isSpeechAudio(response.body, responseFormat);
 }
 
 /** Text fields larger than this are dropped — billing fields are all short. */

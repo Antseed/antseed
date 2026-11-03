@@ -2130,9 +2130,9 @@ it('waits for a running top-up before treating a channel at its ceiling as exhau
 });
 
 
-/** A speech answer: an MP3 frame header, then frame data. */
-const SPEECH_MP3 = new Uint8Array(256);
-SPEECH_MP3.set([0xff, 0xfb, 0x90, 0x64]);
+/** A speech answer: three 417-byte MPEG-1 layer III frames (128 kbps, 44.1 kHz). */
+const SPEECH_MP3 = new Uint8Array(417 * 3);
+for (const offset of [0, 417, 834]) SPEECH_MP3.set([0xff, 0xfb, 0x90, 0x00], offset);
 
 describe('speech seller payments', () => {
   function setup(providerResponse?: { statusCode: number; contentType: string; body: Uint8Array }) {

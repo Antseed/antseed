@@ -24,15 +24,36 @@ describe('speech requests', () => {
     expect(extractSpeechRequestFacts(null)).toBeNull();
   });
 
-  /** `head` padded to a body the size of a short real answer. */
-  const file = (head: number[] | string, size = 256) => {
-    const bytes = new Uint8Array(size);
-    bytes.set(typeof head === 'string' ? new TextEncoder().encode(head) : head);
-    return bytes;
+  const concat = (...parts: Array<Uint8Array | number[] | string>) => {
+    const chunks = parts.map((part) => typeof part === 'string' ? new TextEncoder().encode(part) : Uint8Array.from(part));
+    const out = new Uint8Array(chunks.reduce((sum, chunk) => sum + chunk.length, 0));
+    let offset = 0;
+    for (const chunk of chunks) { out.set(chunk, offset); offset += chunk.length; }
+    return out;
   };
-  const mp3 = file([0xff, 0xfb, 0x90, 0x64]);
+  const zeros = (n: number) => new Uint8Array(n);
+  const u32le = (n: number) => [n & 0xff, (n >> 8) & 0xff, (n >> 16) & 0xff, (n >>> 24) & 0xff];
+  const u32be = (n: number) => [(n >>> 24) & 0xff, (n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff];
 
-  it('counts only a 2xx answer framed like audio as delivered', () => {
+  /** MPEG-1 layer III, 128 kbps, 44.1 kHz: 417-byte frames. */
+  const mp3Frames = (count: number) => concat(...Array.from({ length: count }, () => concat([0xff, 0xfb, 0x90, 0x00], zeros(413))));
+  /** AAC in ADTS frames of 200 bytes. */
+  const adtsFrames = (count: number) => concat(...Array.from({ length: count }, () =>
+    concat([0xff, 0xf1, 0x50, 0x80 | ((200 >> 11) & 0x03), (200 >> 3) & 0xff, ((200 & 0x07) << 5) | 0x1f, 0xfc], zeros(193))));
+  /** 16-bit mono PCM at 24 kHz. */
+  const wav = (samples: number) => concat('RIFF', u32le(36 + samples * 2), 'WAVE',
+    'fmt ', u32le(16), [1, 0, 1, 0], u32le(24_000), u32le(48_000), [2, 0, 16, 0], 'data', u32le(samples * 2), zeros(samples * 2));
+  const flacHeader = concat('fLaC', [0x80, 0, 0, 34], [0x10, 0x00, 0x10, 0x00], zeros(6), [0x0a, 0xc4, 0x40], zeros(21));
+  const flac = concat(flacHeader, [0xff, 0xf8], zeros(100));
+  const oggPage = (payload: Uint8Array) => concat('OggS', [0, 0], zeros(8), zeros(4), zeros(4), zeros(4), [1, payload.length], payload);
+  const ogg = concat(oggPage(concat('OpusHead', zeros(11))), oggPage(zeros(120)));
+  const mp4 = concat(u32be(20), 'ftypM4A ', zeros(4), 'M4A ', u32be(16), 'moov', zeros(8), u32be(200), 'mdat', zeros(192));
+  const webm = concat([0x1a, 0x45, 0xdf, 0xa3, 0x84], zeros(4), [0x18, 0x53, 0x80, 0x67, 0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
+    [0x1f, 0x43, 0xb6, 0x75, 0x40, 0x64], zeros(100));
+  const delivered = (body: Uint8Array, format?: string) => speechAudioDelivered({ statusCode: 200, headers: { 'content-type': 'audio/mpeg' }, body }, format);
+
+  it('counts only a 2xx answer that is audio as delivered', () => {
+    const mp3 = mp3Frames(3);
     expect(speechAudioDelivered({ statusCode: 200, headers: { 'content-type': 'audio/mpeg' }, body: mp3 })).toBe(true);
     expect(speechAudioDelivered({ statusCode: 200, headers: {}, body: mp3 })).toBe(true);
     // Venice labels its JSON errors audio/mpeg: the status decides.
@@ -43,33 +64,42 @@ describe('speech requests', () => {
   });
 
   it('recognises each audio format a speech API returns', () => {
-    const delivered = (body: Uint8Array, format?: string) => speechAudioDelivered({ statusCode: 200, headers: { 'content-type': 'audio/mpeg' }, body }, format);
-    // An ID3 tag of 20 bytes, then the first MPEG frame.
-    const id3 = file([0x49, 0x44, 0x33, 4, 0, 0, 0, 0, 0, 20]);
-    id3.set([0xff, 0xfb, 0x90, 0x64], 30);
-    expect(delivered(id3)).toBe(true);
-    expect(delivered(file([0xff, 0xf1, 0x50, 0x80]))).toBe(true); // AAC (ADTS)
-    expect(delivered(file('RIFF\0\0\0\0WAVEfmt '))).toBe(true);
-    expect(delivered(file('fLaC'))).toBe(true);
-    expect(delivered(file('OggS'))).toBe(true);
-    expect(delivered(file('\0\0\0\x20ftypM4A '))).toBe(true);
-    expect(delivered(file([0x1a, 0x45, 0xdf, 0xa3]))).toBe(true);
+    expect(delivered(mp3Frames(3))).toBe(true);
+    expect(delivered(concat([0x49, 0x44, 0x33, 4, 0, 0, 0, 0, 0, 20], zeros(20), mp3Frames(2)))).toBe(true); // ID3 tag first
+    expect(delivered(adtsFrames(3))).toBe(true);
+    expect(delivered(wav(200))).toBe(true);
+    expect(delivered(flac)).toBe(true);
+    expect(delivered(ogg)).toBe(true);
+    expect(delivered(mp4)).toBe(true);
+    expect(delivered(webm)).toBe(true);
     // Raw PCM has no header: whole 16-bit samples, when the request asked for pcm.
-    expect(delivered(file([1, 2, 3, 4]), 'pcm')).toBe(true);
-    expect(delivered(file([1, 2, 3, 4]))).toBe(false);
-    expect(delivered(file([1, 2, 3, 4], 257), 'pcm')).toBe(false);
+    expect(delivered(zeros(256).fill(7), 'pcm')).toBe(true);
+    expect(delivered(zeros(256).fill(7))).toBe(false);
+    expect(delivered(zeros(257).fill(7), 'pcm')).toBe(false);
   });
 
-  it('counts no characters for a stub or an error document labelled as audio', () => {
-    const delivered = (body: Uint8Array, format?: string) => speechAudioDelivered({ statusCode: 200, headers: { 'content-type': 'audio/mpeg' }, body }, format);
+  it('counts no characters for a stub, a padded signature, missing metadata or a cut-off file', () => {
     expect(delivered(new Uint8Array([0xff]))).toBe(false);
-    expect(delivered(new Uint8Array([0x49, 0x44, 0x33, 1]))).toBe(false);
-    const jsonError = new TextEncoder().encode(JSON.stringify({ error: { message: 'Voice is not supported', type: 'invalid_request_error', code: 'voice' }, detail: 'x'.repeat(80) }));
+    const jsonError = new TextEncoder().encode(JSON.stringify({ error: { message: 'Voice is not supported', type: 'invalid_request_error' }, detail: 'x'.repeat(80) }));
     expect(delivered(jsonError)).toBe(false);
     expect(delivered(jsonError, 'pcm')).toBe(false);
-    // Framing that is not audio: an ID3 tag with no frame after it, a RIFF that is not WAVE.
-    expect(delivered(file([0x49, 0x44, 0x33, 4, 0, 0, 0, 0, 0, 20]))).toBe(false);
-    expect(delivered(file('RIFF\0\0\0\0AVI LIST'))).toBe(false);
-    expect(delivered(file([0xff, 0xff, 0xff, 0xff]))).toBe(false);
+    // A signature followed by padding.
+    for (const signature of ['ID3', 'RIFF', 'fLaC', 'OggS', '\0\0\0\x20ftyp']) {
+      expect(delivered(concat(signature, zeros(256))), signature).toBe(false);
+    }
+    expect(delivered(concat([0xff, 0xfb, 0x90, 0x00], zeros(252)))).toBe(false);
+    expect(delivered(concat([0x1a, 0x45, 0xdf, 0xa3], zeros(252)))).toBe(false);
+    // Missing required metadata.
+    expect(delivered(concat('RIFF', u32le(100), 'WAVE', 'data', u32le(200), zeros(200)))).toBe(false); // no fmt chunk
+    expect(delivered(concat('fLaC', [0x80, 0, 0, 10], zeros(200)))).toBe(false); // no STREAMINFO
+    expect(delivered(concat(oggPage(zeros(40)), oggPage(zeros(40))))).toBe(false); // no codec header
+    expect(delivered(concat(u32be(20), 'ftypM4A ', zeros(4), 'M4A ', u32be(200), 'mdat', zeros(192)))).toBe(false); // no moov
+    // Cut off.
+    expect(delivered(mp3Frames(2).slice(0, 600))).toBe(false); // the second frame is incomplete
+    expect(delivered(mp3Frames(1))).toBe(false);
+    expect(delivered(wav(200).slice(0, 44))).toBe(false); // no samples
+    expect(delivered(concat(flacHeader, zeros(60)))).toBe(false); // no frame
+    expect(delivered(ogg.slice(0, ogg.length - 10))).toBe(false); // the second page is incomplete
+    expect(delivered(mp4.slice(0, mp4.length - 50))).toBe(false); // mdat runs past the end
   });
 });
