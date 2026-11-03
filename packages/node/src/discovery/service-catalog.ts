@@ -195,6 +195,18 @@ function resolveImagePriceRange(peer: NetworkServiceCatalogPeer, provider: strin
     : {};
 }
 
+/** What an offer is, by its protocol first and then, for image models served elsewhere, its outputs. */
+function serviceOfferType(
+  protocol: CatalogServiceProtocol | null,
+  capabilities: CatalogServiceCapabilities | undefined,
+): NetworkServiceOfferType {
+  if (isNativeVideoProtocol(protocol)) return 'video';
+  if (isAudioSpeechProtocol(protocol)) return 'speech';
+  if (protocol === 'typesafe-systemone') return 'decision';
+  if (protocol === 'openai-images' || capabilities?.outputs?.includes('image')) return 'image';
+  return 'text';
+}
+
 export function buildNetworkServiceOffers(
   peers: NetworkServiceCatalogPeer[],
   options: BuildNetworkServiceOffersOptions = {},
@@ -212,15 +224,7 @@ export function buildNetworkServiceOffers(
         const capabilities = peer.providerServiceCapabilities?.[provider]?.services?.[serviceId];
         const categories = peer.providerServiceCategories?.[provider]?.services?.[serviceId];
         const protocol = resolveServiceProtocol(protocols, provider);
-        const type: NetworkServiceOfferType = isNativeVideoProtocol(protocol)
-          ? 'video'
-          : isAudioSpeechProtocol(protocol)
-          ? 'speech'
-          : protocol === 'typesafe-systemone'
-          ? 'decision'
-          : protocol === 'openai-images' || capabilities?.outputs?.includes('image')
-            ? 'image'
-            : 'text';
+        const type = serviceOfferType(protocol, capabilities);
         const pricing = resolvePricing(peer, provider, serviceId);
         const unitPriced = type === 'video' || type === 'speech';
         offers.push({
