@@ -135,10 +135,10 @@ async function fileBuyer(dataDir: string, port: number, respond: (res: http.Serv
   }
 }
 
-async function postJson(port: number, key: string, body: unknown): Promise<{ status: number; body: string }> {
+async function postJson(port: number, key: string, body: unknown, path = '/v1/chat/completions'): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
     const req = http.request({
-      hostname: '127.0.0.1', port, path: '/v1/chat/completions', method: 'POST',
+      hostname: '127.0.0.1', port, path, method: 'POST',
       headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
     }, (res) => {
       const chunks: Buffer[] = []
@@ -323,6 +323,32 @@ test('a request a free seller or free allowance served costs $0 and is not pendi
     const row = listRequestPage(store, { keyIds: null }).requests.find((entry) => !seen.has(entry.tag))
     seen.add(row!.tag)
     assert.equal(row!.spent, null, name)
+    assert.equal(row!.servedFree, free ? true : undefined, name)
+    assert.equal(row!.costPending, free ? undefined : true, name)
+  }
+})
+
+test('a speech request with zero token prices stays pending: it is priced per character', async (context) => {
+  const { dir, cleanup } = tempDir('antseed-gateway-')
+  const store = new GatewayStore(dir)
+  context.after(() => { store.close(); cleanup() })
+  const { secret } = store.createKey({ label: 'k', limits: NO_LIMITS, expiresAt: null })
+  const cases: Array<[string, Record<string, string>, boolean]> = [
+    ['zero token prices', { 'x-antseed-input-usd-per-million': '0', 'x-antseed-output-usd-per-million': '0' }, false],
+    ['covered by a free allowance', { 'x-antseed-input-usd-per-million': '0', 'x-antseed-output-usd-per-million': '0', 'X-Antseed-Free-Tier': 'covered' }, true],
+  ]
+  const seen = new Set<string>()
+  for (const [name, pricing, free] of cases) {
+    const buyer = await pricedBuyer(pricing)
+    const gateway = await gatewayFor(store, buyer.port)
+    try {
+      assert.equal((await postJson(gateway.port, secret, { model: 'tts-model', input: 'Hello', voice: 'alloy' }, '/v1/audio/speech')).status, 200)
+    } finally {
+      await gateway.stop()
+      await buyer.stop()
+    }
+    const row = listRequestPage(store, { keyIds: null }).requests.find((entry) => !seen.has(entry.tag))
+    seen.add(row!.tag)
     assert.equal(row!.servedFree, free ? true : undefined, name)
     assert.equal(row!.costPending, free ? undefined : true, name)
   }

@@ -85,6 +85,7 @@ const SPEND_FEED_UNAVAILABLE_MESSAGES: Record<Exclude<SpendFeedState, 'reporting
   unreachable: 'The buyer for this API key is not reachable',
 }
 const KEY_INFO_PATH = '/v1/key'
+const SPEECH_PATH = '/v1/audio/speech'
 const TOPUP_PATH = '/v1/key/topup'
 
 /**
@@ -102,7 +103,7 @@ const ALLOWED_ROUTES: ReadonlyArray<{ method: string; prefix: string; paid: bool
   { method: 'POST', prefix: '/v1/images/generations', paid: true },
   { method: 'POST', prefix: '/v1/images/edits', paid: true },
   // Text to speech: JSON in, the audio file streamed back as it is.
-  { method: 'POST', prefix: '/v1/audio/speech', paid: true },
+  { method: 'POST', prefix: SPEECH_PATH, paid: true },
   // Native video jobs, as the buyer serves them: queue, then poll retrieve until it streams the MP4 (charged on delivery).
   { method: 'POST', prefix: '/api/v1/video/queue', paid: true },
   { method: 'POST', prefix: '/api/v1/video/retrieve', paid: true },
@@ -699,9 +700,12 @@ export class GatewayServer {
           firstTokenMs = status < 400 ? latencyHeader(firstHeader(upstreamRes.headers['x-antseed-first-token-ms'])) : null
           respondedAt = Date.now()
           const contentType = firstHeader(upstreamRes.headers['content-type']).toLowerCase()
-          // A video is priced per second, not per token: zero token prices do not make it free.
-          // A priced model's response the seller's free allowance covered is free too.
-          servedFree = !request.video && (freeSellerPricing(upstreamRes.headers) || coveredByFreeAllowance(upstreamRes.headers))
+          // Videos and speech are priced per second or character, not per token: zero
+          // token prices do not make them free. A priced model's response the seller's
+          // free allowance covered is free too (speech included; video jobs are not).
+          const speech = request.requestPath === SPEECH_PATH
+          servedFree = !request.video
+            && (coveredByFreeAllowance(upstreamRes.headers) || (!speech && freeSellerPricing(upstreamRes.headers)))
           if (request.video?.action === 'create' && status >= 200 && status < 300) {
             videoCreateChunks = collectPrefix(upstreamRes, MAX_ERROR_BODY_BYTES)
             videoPriceHeader = firstHeader(upstreamRes.headers[VIDEO_PRICE_HEADER])
