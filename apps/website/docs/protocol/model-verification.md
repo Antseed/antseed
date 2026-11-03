@@ -105,6 +105,14 @@ Two contracts share the work:
   the first method writing to it; each later method is its own contract next to
   `AntseedKbfAudits`, with its own share of the bucket.
 
+Auditor rewards come from KBF's share of the verification bucket. After an epoch ends, each
+auditor's share follows its credits, capped at 20% of KBF's share per auditor; the part above the
+cap goes to the emissions reserve, as with the other ANTS reward contracts. Budget nobody can
+claim (for example in an epoch without credits) is burned or sent to the reserve by
+`settleEpochRemainder`, which anyone can call. Rewards stay off until the owner turns them on.
+Auditors claim with `antseed verifier rewards --claim` and can publish a display name, icon and
+link with `antseed verifier profile`.
+
 These replace the single `AntseedKbfVerification` contract (migration M003) with the same
 KBF rules; until the replacement is deployed on Base mainnet, `AntseedKbfVerification` stays
 on-chain but the CLI and SDK no longer read it.
@@ -119,9 +127,9 @@ seller):
   its model recovers at the next audit.
 - **A DIFF only affects that one service.** A seller's other verified models are not
   touched.
-- **A DIFF stays until its own method clears it.** A DIFF recorded by one method can only be
-  replaced by that method (or a DIFF from another method, or the owner), so one method's
-  consensus is never undone by another's.
+- **Replacing a DIFF takes two auditors.** Within KBF, a SAME or UNDETERMINED replaces a live
+  DIFF only once as many auditors report it as a DIFF needs. If the owner clears a wrong result,
+  reports made before the clear stop counting.
 - Auditors cannot audit sellers they own.
 
 ## How buyers use results

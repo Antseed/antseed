@@ -167,10 +167,9 @@ contract AntseedKbfAudits is IAntseedKbfAudits, Ownable2Step {
         override
     {
         if (!approvedAuditors[msg.sender]) revert NotApprovedAuditor();
-        if (
-            bytes(name).length > MAX_PROFILE_NAME_BYTES || bytes(iconUri).length > MAX_PROFILE_URI_BYTES
-                || bytes(url).length > MAX_PROFILE_URI_BYTES
-        ) revert InvalidProfile();
+        if (bytes(name).length > MAX_PROFILE_NAME_BYTES || !_isPlainText(bytes(name))) revert InvalidProfile();
+        _validateProfileUri(iconUri);
+        _validateProfileUri(url);
         _profiles[msg.sender] = AuditorProfile(name, iconUri, url);
         emit AuditorProfileSet(msg.sender, name, iconUri, url);
     }
@@ -247,7 +246,7 @@ contract AntseedKbfAudits is IAntseedKbfAudits, Ownable2Step {
     ///         result recorded here moves the service's verdict into or out of DIFF, and whenever an
     ///         auditor is revoked. Both only grow, so a round never comes back.
     function reportRound(uint256 agentId, bytes32 serviceHash) public view override returns (uint256) {
-        return diffChanges[agentId][serviceHash] + auditorRevocations;
+        return diffChanges[agentId][serviceHash] + auditorRevocations + results.serviceClears(agentId, serviceHash);
     }
 
     function reportKey(uint256 epoch, uint256 agentId, bytes32 serviceHash, bytes32 modelHash, uint256 round)
@@ -357,6 +356,33 @@ contract AntseedKbfAudits is IAntseedKbfAudits, Ownable2Step {
         if (sellerPools_.code.length == 0) revert InvalidAddress();
         sellerPools = IAntseedSellerPools(sellerPools_);
         emit SellerPoolsSet(sellerPools_);
+    }
+
+    /// @dev Empty, or an `https://` / `ipfs://` link of at most `MAX_PROFILE_URI_BYTES` with no spaces,
+    ///      control characters, quotes, angle brackets, backslashes or backticks, so a UI can put it in
+    ///      an `href` or `src` without it turning into script or markup.
+    function _validateProfileUri(string calldata uri) private pure {
+        bytes calldata b = bytes(uri);
+        uint256 length = b.length;
+        if (length == 0) return;
+        if (length > MAX_PROFILE_URI_BYTES) revert InvalidProfile();
+        bool https = length > 8 && bytes8(b[:8]) == bytes8("https://");
+        bool ipfs = length > 7 && bytes7(b[:7]) == bytes7("ipfs://");
+        if (!https && !ipfs) revert InvalidProfile();
+        for (uint256 i = 0; i < length; i++) {
+            bytes1 c = b[i];
+            if (
+                c <= 0x20 || c == 0x7f || c == '"' || c == "'" || c == "<" || c == ">" || c == "\\" || c == "`"
+            ) revert InvalidProfile();
+        }
+    }
+
+    /// @dev No control characters (UTF-8 multibyte characters are fine).
+    function _isPlainText(bytes calldata b) private pure returns (bool) {
+        for (uint256 i = 0; i < b.length; i++) {
+            if (b[i] < 0x20 || b[i] == 0x7f) return false;
+        }
+        return true;
     }
 
     function _validateEvidenceUri(string calldata evidenceUri) private pure {

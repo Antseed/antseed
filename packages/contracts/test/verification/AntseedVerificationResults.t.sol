@@ -208,12 +208,34 @@ contract AntseedVerificationResultsTest is Test {
         assertEq(status.epoch, 0);
     }
 
-    function test_aRepeatFromAnotherSourceMovesTheSource() public {
+    function test_aRepeatInTheSameEpochChangesNothingNotEvenTheSource() public {
         sourceA.record(agentId, SERVICE_A, MODEL_A, SAME);
         vm.recordLogs();
         sourceB.record(agentId, SERVICE_A, MODEL_A, SAME);
-        assertEq(vm.getRecordedLogs().length, 0, "same verdict, same epoch: no change to report");
-        assertEq(results.serviceStatus(agentId, SERVICE_A).source, address(sourceB));
+        assertEq(vm.getRecordedLogs().length, 0, "same verdict, same epoch: nothing changes");
+        assertEq(results.serviceStatus(agentId, SERVICE_A).source, address(sourceA), "attribution stays");
+        assertEq(results.agentStatus(agentId).verifiedCount, 1);
+    }
+
+    function test_aRepeatFromAnotherSourceLaterMovesTheSourceWithAnEvent() public {
+        sourceA.record(agentId, SERVICE_A, MODEL_A, SAME);
+        gate.setCurrentEpoch(EPOCH + 1);
+        vm.recordLogs();
+        sourceA.record(agentId, SERVICE_A, MODEL_A, SAME);
+        assertEq(vm.getRecordedLogs().length, 0, "the same source refreshing its verdict: nothing to report");
+        assertEq(results.serviceStatus(agentId, SERVICE_A).epoch, EPOCH + 1);
+
+        gate.setCurrentEpoch(EPOCH + 2);
+        uint256 updatedAt = results.serviceStatus(agentId, SERVICE_A).updatedAt;
+        vm.warp(block.timestamp + 1 days);
+        vm.expectEmit(true, true, false, true, address(results));
+        emit AntseedVerificationResults.ServiceStatusChanged(
+            agentId, SERVICE_A, MODEL_A, SAME, SAME, address(sourceB), MockVerificationSource(address(sourceB)).EVIDENCE()
+        );
+        sourceB.record(agentId, SERVICE_A, MODEL_A, SAME);
+        IAntseedVerificationResults.ServiceStatus memory status = results.serviceStatus(agentId, SERVICE_A);
+        assertEq(status.source, address(sourceB));
+        assertEq(status.updatedAt, updatedAt, "the verdict itself did not change");
         assertEq(results.agentStatus(agentId).verifiedCount, 1);
     }
 
@@ -290,7 +312,7 @@ contract AntseedVerificationResultsTest is Test {
         assertEq(results.totalSourceShareBps(), 10_000);
 
         vm.expectEmit(true, false, false, true, address(results));
-        emit AntseedVerificationResults.SourceShareBpsSet(address(sourceA), 5_000);
+        emit AntseedVerificationResults.SourceShareBpsSet(address(sourceA), 5_000, EPOCH + 1);
         results.setSourceShareBps(address(sourceA), 5_000);
         results.setSourceShareBps(address(sourceB), 5_000); // lowering A freed room for B
         assertEq(results.totalSourceShareBps(), 10_000);
@@ -375,14 +397,29 @@ contract AntseedVerificationResultsTest is Test {
         assertEq(gate.epochMinted(EPOCH), 1_000_000 ether, "the whole budget is accounted for");
     }
 
-    function test_withoutAReserveTheOverflowIsNotMinted() public {
+    function test_withoutAReserveACappedClaimReverts() public {
         gate.setEmissionsReserve(address(0));
         _enable(address(sourceA), 10_000);
         gate.setBudget(address(results), EPOCH, 1_000 ether);
         sourceA.credit(verifierA, 1);
         gate.setCurrentEpoch(EPOCH + 1);
-        assertEq(_claim(address(sourceA), verifierA, EPOCH), 200 ether, "claims still work");
-        assertEq(gate.epochMinted(EPOCH), 200 ether);
+        uint256[] memory epochs = new uint256[](1);
+        epochs[0] = EPOCH;
+        vm.prank(verifierA);
+        vm.expectRevert(AntseedVerificationResults.InvalidAddress.selector);
+        results.claimRewards(address(sourceA), epochs);
+
+        results.setMaxAuditorShareBps(address(sourceA), 10_000);
+        assertEq(_claim(address(sourceA), verifierA, EPOCH), 1_000 ether, "an uncapped claim needs no reserve");
+    }
+
+    function test_clearingAServiceBumpsItsClearCount() public {
+        _enable(address(sourceA), 10_000);
+        assertEq(results.serviceClears(agentId, SERVICE_A), 0);
+        _clear(agentId, SERVICE_A);
+        _clear(agentId, SERVICE_A);
+        assertEq(results.serviceClears(agentId, SERVICE_A), 2);
+        assertEq(results.serviceClears(agentId, SERVICE_B), 0, "other services are untouched");
     }
 
     function test_claimsOnlyFinalizedEpochs() public {
@@ -406,40 +443,52 @@ contract AntseedVerificationResultsTest is Test {
         assertEq(_claim(address(sourceA), verifierA, EPOCH), 20 ether);
     }
 
-    // ── freezing ─────────────────────────────────────────────────────
+    // ── share checkpoints ────────────────────────────────────────────
 
-    function test_sharesFreezeOnTheFirstClaim() public {
+    function test_shareChangesApplyFromTheNextEpoch() public {
         _enable(address(sourceA), 10_000);
         results.setMaxAuditorShareBps(address(sourceA), 10_000);
         gate.setBudget(address(results), EPOCH, 1_000 ether);
+        gate.setBudget(address(results), EPOCH + 1, 1_000 ether);
+        gate.setBudget(address(results), EPOCH + 2, 1_000 ether);
         sourceA.credit(verifierA, 1);
         sourceA.credit(verifierB, 1);
         gate.setCurrentEpoch(EPOCH + 1);
 
-        results.setSourceShareBps(address(sourceA), 8_000);
-        assertEq(results.sourceBudget(address(sourceA), EPOCH), 800 ether, "not frozen yet: live share");
-        results.setSourceShareBps(address(sourceA), 10_000);
-
         vm.expectEmit(true, false, false, true, address(results));
-        emit AntseedVerificationResults.EpochSharesFrozen(EPOCH);
-        assertEq(_claim(address(sourceA), verifierA, EPOCH), 500 ether);
-        assertTrue(results.epochSharesFrozen(EPOCH));
-
+        emit AntseedVerificationResults.SourceShareBpsSet(address(sourceA), 2_000, EPOCH + 2);
         results.setSourceShareBps(address(sourceA), 2_000);
         results.setSourceShareBps(address(sourceB), 8_000);
-        assertEq(results.sourceBudget(address(sourceA), EPOCH), 1_000 ether, "a frozen epoch keeps its split");
+        assertEq(results.sourceShareBps(address(sourceA)), 2_000, "the latest setting");
+        assertEq(results.sourceShareBpsAt(address(sourceA), EPOCH), 10_000);
+        assertEq(results.sourceShareBpsAt(address(sourceA), EPOCH + 1), 10_000, "the running epoch keeps its split");
+        assertEq(results.sourceShareBpsAt(address(sourceA), EPOCH + 2), 2_000);
+        assertEq(results.sourceBudget(address(sourceA), EPOCH), 1_000 ether, "a finished epoch keeps its split");
         assertEq(results.sourceBudget(address(sourceB), EPOCH), 0);
+        assertEq(results.sourceBudget(address(sourceA), EPOCH + 2), 200 ether);
+
+        assertEq(_claim(address(sourceA), verifierA, EPOCH), 500 ether);
+        results.setSourceShareBps(address(sourceA), 0);
         assertEq(_claim(address(sourceA), verifierB, EPOCH), 500 ether, "B is paid as A was");
-        gate.setBudget(address(results), EPOCH + 1, 1_000 ether);
-        assertEq(results.sourceBudget(address(sourceA), EPOCH + 1), 200 ether, "later epochs use the new split");
     }
 
-    function test_anEmptyClaimDoesNotFreeze() public {
+    function test_settingAShareTwiceInOneEpochKeepsTheLast() public {
+        results.setSourceShareBps(address(sourceA), 3_000);
+        results.setSourceShareBps(address(sourceA), 4_000);
+        assertEq(results.sourceShareBpsAt(address(sourceA), EPOCH), 0, "nothing for the running epoch");
+        assertEq(results.sourceShareBpsAt(address(sourceA), EPOCH + 1), 4_000);
+        assertEq(results.totalSourceShareBps(), 4_000);
+    }
+
+    function test_anEmptyClaimChangesNothing() public {
         _enable(address(sourceA), 10_000);
         sourceA.credit(verifierA, 1);
         gate.setCurrentEpoch(EPOCH + 1);
         assertEq(_claim(address(sourceA), verifierA, EPOCH), 0, "no budget yet");
-        assertFalse(results.epochSharesFrozen(EPOCH));
+        assertFalse(results.auditorEpochClaimed(address(sourceA), EPOCH, verifierA));
+        assertEq(results.claimedCredits(address(sourceA), EPOCH), 0);
+        gate.setBudget(address(results), EPOCH, 100 ether);
+        assertEq(_claim(address(sourceA), verifierA, EPOCH), 20 ether, "claimable once funded");
     }
 
     function test_voidingNeverLetsEarlierClaimsOverspend() public {
@@ -477,8 +526,9 @@ contract AntseedVerificationResultsTest is Test {
         (uint256 burned, uint256 reserved) = results.settleEpochRemainder(EPOCH);
         assertEq(burned + reserved, 500 ether, "B's 300 with no credits plus the unassigned 200");
         assertEq(gate.remainderClaimed(EPOCH), 500 ether);
-        assertTrue(results.epochRemainderSettled(EPOCH));
-        vm.expectRevert(AntseedVerificationResults.AlreadySettled.selector);
+        assertEq(results.settledRemainder(EPOCH), 500 ether);
+        assertEq(results.unclaimableRemainder(EPOCH), 0);
+        vm.expectRevert(AntseedVerificationResults.NothingToSettle.selector);
         results.settleEpochRemainder(EPOCH);
 
         results.setMaxAuditorShareBps(address(sourceA), 10_000);
@@ -506,14 +556,94 @@ contract AntseedVerificationResultsTest is Test {
         results.settleEpochRemainder(EPOCH);
     }
 
-    function test_settlingFreezesTheSplit() public {
-        _enable(address(sourceA), 10_000);
+    function test_voidingAfterSettlementFreesTheBudgetAgain() public {
+        _enable(address(sourceA), 5_000);
+        _enable(address(sourceB), 5_000);
         gate.setBudget(address(results), EPOCH, 1_000 ether);
+        sourceA.credit(verifierA, 1);
         gate.setCurrentEpoch(EPOCH + 1);
         results.settleEpochRemainder(EPOCH);
-        assertTrue(results.epochSharesFrozen(EPOCH));
-        results.setSourceShareBps(address(sourceA), 0);
-        assertEq(results.sourceBudget(address(sourceA), EPOCH), 1_000 ether);
+        assertEq(gate.remainderClaimed(EPOCH), 500 ether, "B's share");
+
+        results.voidCredits(address(sourceA), EPOCH, verifierA);
+        assertEq(results.unclaimableRemainder(EPOCH), 500 ether, "A's share is free now");
+        results.settleEpochRemainder(EPOCH);
+        assertEq(gate.epochMinted(EPOCH), 1_000 ether, "nothing is stranded");
+        assertEq(results.settledRemainder(EPOCH), 1_000 ether);
+    }
+
+    function test_voidingAfterAPartialClaimSettlesTheRest() public {
+        _enable(address(sourceA), 10_000);
+        results.setMaxAuditorShareBps(address(sourceA), 10_000);
+        gate.setBudget(address(results), EPOCH, 1_000 ether);
+        sourceA.credit(verifierA, 1);
+        sourceA.credit(verifierB, 1);
+        gate.setCurrentEpoch(EPOCH + 1);
+        assertEq(_claim(address(sourceA), verifierA, EPOCH), 500 ether);
+        assertEq(results.claimedCredits(address(sourceA), EPOCH), 1);
+        assertEq(results.paidRewards(address(sourceA), EPOCH), 500 ether);
+        vm.expectRevert(AntseedVerificationResults.NothingToSettle.selector);
+        results.settleEpochRemainder(EPOCH); // B's 500 is still reserved
+
+        results.voidCredits(address(sourceA), EPOCH, verifierB);
+        (, uint256 reserved) = results.settleEpochRemainder(EPOCH);
+        assertEq(reserved, 500 ether, "what B can no longer claim");
+        assertEq(gate.epochMinted(EPOCH), 1_000 ether);
+    }
+
+    function test_settlementIsCappedByWhatTheGateHasLeft() public {
+        _enable(address(sourceA), 10_000);
+        gate.setBudget(address(results), EPOCH, 1_000 ether);
+        gate.setPriorMinted(EPOCH, 400 ether); // e.g. an earlier controller of the same minter id
+        gate.setCurrentEpoch(EPOCH + 1);
+        assertEq(results.unclaimableRemainder(EPOCH), 600 ether);
+        (, uint256 reserved) = results.settleEpochRemainder(EPOCH);
+        assertEq(reserved, 600 ether);
+        vm.expectRevert(AntseedVerificationResults.NothingToSettle.selector);
+        results.settleEpochRemainder(EPOCH);
+    }
+
+    /// @dev Any order of claims, voids and settlements stays inside the budget, and once everyone
+    ///      claimed and everything is settled the budget is fully minted (up to rounding dust).
+    function testFuzz_claimsVoidsAndSettlementsNeverOverspend(
+        uint8 creditsA,
+        uint8 creditsB,
+        uint8 creditsC,
+        uint16 shareA,
+        uint16 capBps,
+        uint8 order
+    ) public {
+        shareA = uint16(bound(shareA, 0, 10_000));
+        capBps = uint16(bound(capBps, 1, 10_000));
+        _enable(address(sourceA), shareA);
+        _enable(address(sourceB), uint16(10_000 - shareA));
+        results.setMaxAuditorShareBps(address(sourceA), capBps);
+        uint256 budget = 1_000_003 ether + 7;
+        gate.setBudget(address(results), EPOCH, budget);
+        if (creditsA != 0) sourceA.credit(verifierA, creditsA);
+        if (creditsB != 0) sourceA.credit(verifierB, creditsB);
+        if (creditsC != 0) sourceA.credit(seller, creditsC);
+        gate.setCurrentEpoch(EPOCH + 1);
+
+        address[3] memory verifiers = [verifierA, verifierB, seller];
+        for (uint256 step = 0; step < 6; step++) {
+            uint256 action = (uint256(order) >> step) % 3;
+            address verifier = verifiers[(uint256(order) + step) % 3];
+            if (action == 0) {
+                _claim(address(sourceA), verifier, EPOCH);
+            } else if (action == 1 && !results.auditorEpochClaimed(address(sourceA), EPOCH, verifier)) {
+                results.voidCredits(address(sourceA), EPOCH, verifier);
+            } else if (results.unclaimableRemainder(EPOCH) != 0) {
+                results.settleEpochRemainder(EPOCH);
+            }
+            assertLe(gate.epochMinted(EPOCH), budget);
+        }
+        for (uint256 i = 0; i < 3; i++) {
+            _claim(address(sourceA), verifiers[i], EPOCH);
+        }
+        if (results.unclaimableRemainder(EPOCH) != 0) results.settleEpochRemainder(EPOCH);
+        assertLe(gate.epochMinted(EPOCH), budget);
+        assertGe(gate.epochMinted(EPOCH) + 10, budget, "everything but rounding dust is minted");
     }
 
     function test_onlyOwnerConfigures() public {
@@ -535,9 +665,13 @@ contract AntseedVerificationResultsTest is Test {
 
     // ── helpers ──────────────────────────────────────────────────────
 
-    /// @dev Gives `source` a share and turns its rewards on from epoch 0.
+    /// @dev Gives `source` a share for the current epoch on (set during the previous one, since a
+    ///      share applies from the next epoch) and turns its rewards on from epoch 0.
     function _enable(address source, uint16 shareBps) private {
+        uint256 epoch = gate.currentEpoch();
+        gate.setCurrentEpoch(epoch - 1);
         results.setSourceShareBps(source, shareBps);
+        gate.setCurrentEpoch(epoch);
         results.setRewardsStartEpoch(source, 0);
     }
 

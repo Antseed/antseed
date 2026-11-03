@@ -23,10 +23,11 @@ import { IAntseedRegistry } from "./IAntseedRegistry.sol";
 ///      `credit`; once an epoch is final a verifier claims, per source,
 ///      `gross = sourceBudget * credits / sourceCredits`, receiving at most
 ///      `sourceBudget * maxAuditorShareBps / BPS`; anything above that cap goes to the emissions
-///      reserve in the same claim. Budget no verifier can claim (sources with no credits that
-///      epoch, and any part of the bucket assigned to no source) is swept through the gate's
-///      remainder route (burn, then reserve) by anyone with `settleEpochRemainder`. Each epoch's
-///      source shares freeze the first time the epoch is claimed from or settled.
+///      reserve in the same claim. Budget no verifier can ever claim (sources with no credits that
+///      epoch, any part of the bucket assigned to no source, and what voided credits free up) is
+///      swept through the gate's remainder route (burn, then reserve) by anyone with
+///      `settleEpochRemainder`. Source shares are checkpointed per epoch: a change applies from the
+///      next epoch, so a running or finished epoch's split never moves.
 interface IAntseedVerificationResults {
     enum Verdict {
         NONE,
@@ -79,6 +80,9 @@ interface IAntseedVerificationResults {
         external;
 
     function serviceStatus(uint256 agentId, bytes32 serviceHash) external view returns (ServiceStatus memory);
+    /// @notice Times the owner cleared this service with `clearServiceStatuses`. Sources fold it into
+    ///         their report rounds so reports made before a clear stop counting.
+    function serviceClears(uint256 agentId, bytes32 serviceHash) external view returns (uint256);
     /// @notice The service's verdict if it is live in the current epoch, else NONE.
     function liveVerdict(uint256 agentId, bytes32 serviceHash) external view returns (Verdict);
     function agentStatus(uint256 agentId) external view returns (AgentStatus memory);
@@ -87,8 +91,11 @@ interface IAntseedVerificationResults {
 
     // ───────────────────────────── rewards ────────────────────────────
 
-    /// @notice The source's live share of the bucket's epoch budget, in bps of 10,000. Shares sum to at most 10,000.
+    /// @notice The source's latest share of the bucket's epoch budget, in bps of 10,000: what applies
+    ///         from the next epoch on. Shares sum to at most 10,000.
     function sourceShareBps(address source) external view returns (uint16);
+    /// @notice The source's share for `epoch`.
+    function sourceShareBpsAt(address source, uint256 epoch) external view returns (uint16);
     /// @notice First epoch whose credits from `source` count; `type(uint64).max` while its rewards are off.
     function rewardsStartEpoch(address source) external view returns (uint64);
     /// @notice Most of `source`'s epoch budget one verifier can receive, in bps of 10,000.
@@ -96,13 +103,20 @@ interface IAntseedVerificationResults {
     /// @notice Safety limit: credits one verifier can earn from `source` per epoch.
     function maxCreditsPerAuditorPerEpoch(address source) external view returns (uint32);
     /// @notice What `source`'s verifiers share for `epoch`: the bucket's budget times the source's
-    ///         share (frozen once the epoch was first claimed from or settled).
+    ///         share for that epoch.
     function sourceBudget(address source, uint256 epoch) external view returns (uint256);
 
     function epochCredits(address source, uint256 epoch) external view returns (uint256);
     function auditorEpochCredits(address source, uint256 epoch, address auditor) external view returns (uint256);
     function auditorEpochClaimed(address source, uint256 epoch, address auditor) external view returns (bool);
-    function epochRemainderSettled(uint256 epoch) external view returns (bool);
+    /// @notice Credits of verifiers that already claimed from `source` for `epoch`.
+    function claimedCredits(address source, uint256 epoch) external view returns (uint256);
+    /// @notice Minted from `source`'s share for `epoch` so far, overflow to the reserve included.
+    function paidRewards(address source, uint256 epoch) external view returns (uint256);
+    /// @notice Swept through `settleEpochRemainder` for `epoch` so far.
+    function settledRemainder(uint256 epoch) external view returns (uint256);
+    /// @notice What `settleEpochRemainder(epoch)` would sweep now; 0 for the current epoch.
+    function unclaimableRemainder(uint256 epoch) external view returns (uint256);
 
     /// @notice Grants `credits` to `auditor` for the current epoch, from the calling source. Sources
     ///         only. Nothing is credited before the source's rewards start epoch; the amount is
@@ -116,8 +130,9 @@ interface IAntseedVerificationResults {
     /// @notice What the verifier would receive from `source` for a finalized epoch; 0 for the current epoch.
     function pendingReward(address source, address auditor, uint256 epoch) external view returns (uint256);
 
-    /// @notice Sweeps a finalized epoch's budget no verifier can claim (sources without credits, and
-    ///         the part of the bucket assigned to no source) through the gate's remainder route.
-    ///         Anyone may call it, once per epoch.
+    /// @notice Sweeps a finalized epoch's budget no verifier can ever claim (sources without credits,
+    ///         the part of the bucket assigned to no source, budget freed by voided credits) through the
+    ///         gate's remainder route. Anyone may call it, again whenever more is freed; reverts
+    ///         `NothingToSettle` when there is nothing to sweep.
     function settleEpochRemainder(uint256 epoch) external returns (uint256 burnedAmount, uint256 reserveAmount);
 }

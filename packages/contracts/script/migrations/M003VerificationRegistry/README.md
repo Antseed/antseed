@@ -4,8 +4,8 @@ Deploys the verification contracts, and nothing else outside them:
 
 | Nonce | Contract | Constructor |
 |---|---|---|
-| N | `AntseedVerificationResults` | `(registry, sellerPools)` |
-| N+1 | `AntseedKbfAudits` | `(results)` |
+| N | `AntseedVerificationResults` | `(registry)` |
+| N+1 | `AntseedKbfAudits` | `(results, sellerPools)` |
 | N+2 | `AntseedVerificationPointsPolicy` | `(results, usageAccounting, bonusBps, owner)` |
 
 N is `VERIFICATION_DEPLOYMENT_NONCE`, the deployer's next nonce. All three are deployed from
@@ -14,7 +14,9 @@ verification owner can do on its own:
 
 - `results.setSource(kbf, true)`: the KBF audit source may record verdicts and grant credits;
 - `results.setSourceShareBps(kbf, 10_000)`: KBF gets the whole verification bucket until a second
-  verification method is added.
+  verification method is added. Share changes apply from the next epoch, so KBF's share starts the
+  epoch after the deploy; the deploy epoch's bucket (if the results layer already controls it) goes
+  to `settleEpochRemainder`.
 
 It approves **no** auditors, does **not** register the policy in the `AntseedPointsPolicyRegistry`,
 and does not touch the emissions gate, staking, or protocol registry pointers. M002 is not a
@@ -39,13 +41,23 @@ readers and the reward bucket stay put.
 - **A DIFF needs a second auditor.** `kbf.requiredReports` sets how many distinct approved auditors
   must report a verdict before it is recorded: SAME 1, DIFF 2, UNDETERMINED 1
   (`setRequiredReports`). Until a second auditor confirms it, a DIFF only waits.
-- **One method can't undo another's DIFF.** A live DIFF is replaced only by the source that
-  recorded it, a DIFF from any source, or the owner (`results.clearServiceStatuses`).
-- **Rewards stay off** until `results.setRewardsStartEpoch(epoch)`. Each model audit that covers a
-  staked seller earns one credit (`kbf.maxCreditsPerModelPerEpoch`, default 1;
-  `results.maxCreditsPerAuditorPerEpoch`, default 100). A finished epoch's KBF share is split by
-  credits; each auditor gets at most `maxAuditorShareBps` of it (default 2,000 = 20%). Auditors claim
-  with `results.claimRewards(kbf, epochs)`.
+- **The latest verdict from any source wins.** The results layer does not judge what a source
+  records. Within KBF, replacing a live DIFF (from any source) needs the DIFF quorum. A second
+  source added later can overwrite KBF's verdicts, so it must bring its own rules for that. The owner
+  can reset services with `results.clearServiceStatuses`; KBF then drops reports made before the
+  clear.
+- **Rewards stay off** until `results.setRewardsStartEpoch(kbf, epoch)`. Each model audit that covers
+  a staked seller earns one credit (`kbf.maxCreditsPerModelPerEpoch`, default 1;
+  `results.maxCreditsPerAuditorPerEpoch(kbf)`, default 100). A finished epoch's KBF share is split by
+  credits; each auditor gets at most `maxAuditorShareBps(kbf)` of it (default 2,000 = 20%) and the
+  rest of its reward goes to the emissions reserve in the same claim. Auditors claim with
+  `results.claimRewards(kbf, epochs)` (`antseed verifier rewards --claim`).
+- **Unclaimable budget is swept, not stranded.** Anyone can call `results.settleEpochRemainder(epoch)`
+  for a finished epoch: budget no auditor can ever claim (no credits, no source, voided credits)
+  goes through the gate's remainder route, burn up to the gate's cap and then the reserve, like the
+  other emission controllers. The gate must have an emissions reserve configured.
+- **Auditors can publish a profile.** `kbf.setAuditorProfile(name, iconUri, url)` (`antseed verifier
+  profile`) stores a display name and `https://` / `ipfs://` links for UIs.
 - **The emissions gate is pinned.** The results constructor reads the gate behind
   `registry.emissions()` (usage accounting's `emissionsGate()`) and keeps it for life.
 
@@ -94,7 +106,7 @@ verifiers), verdicts change no points (the policy is not registered), and audits
    kbf.setAuditor(auditor, true);
    ```
 
-   With `minActiveEpochs` at its default 0 they can submit in the epoch they are approved.
+   They can submit in the epoch they are approved.
 3. **Points policy registry owner:** swap the policy (skip `removePolicy` if the old policy was never
    registered):
 
@@ -104,14 +116,14 @@ verifiers), verdicts change no points (the policy is not registered), and audits
    ```
 
    Then set the new policy's rates (`setBonusBps`, `setPenaltyBps`) as they were on the old one.
-4. **Verification owner:** turn rewards on from the launch epoch:
+4. **Verification owner:** turn rewards on from the launch epoch (at least the epoch after the
+   deploy, when KBF's share applies):
 
    ```solidity
-   results.setRewardsStartEpoch(epoch);
+   results.setRewardsStartEpoch(kbf, epoch);
    ```
 
-5. **Optional, later (KBF owner):** `kbf.setMinActiveEpochs(epochs)` to hold back newly approved
-   auditors for some epochs before their audits are accepted.
+After a finished epoch, anyone can sweep its unclaimable part with `results.settleEpochRemainder(epoch)`.
 
 ## Configuration
 

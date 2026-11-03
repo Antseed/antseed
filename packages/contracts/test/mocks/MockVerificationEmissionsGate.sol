@@ -34,6 +34,20 @@ contract MockVerificationEmissionsGate {
         emissionsReserve = reserve;
     }
 
+    /// @notice One minter id per controller; the mock tracks minted amounts per epoch only.
+    function controllerMinterIds(address controller) external pure returns (bytes32) {
+        return keccak256(abi.encode(controller));
+    }
+
+    function minterEpochMinted(bytes32, uint256 epoch) external view returns (uint256) {
+        return epochMinted[epoch];
+    }
+
+    /// @notice Simulates an earlier controller of the same minter id having minted `amount` for `epoch`.
+    function setPriorMinted(uint256 epoch, uint256 amount) external {
+        epochMinted[epoch] += amount;
+    }
+
     /// @notice Burn is not modelled: the whole remainder goes to the reserve.
     function claimRemainder(uint256 epoch, address reserveRecipient, uint256 amount)
         external

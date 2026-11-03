@@ -3,6 +3,7 @@ import chalk from 'chalk'
 import Table from 'cli-table3'
 import type { Command } from 'commander'
 import { formatUnits, getAddress } from 'ethers'
+import { VERIFICATION_REWARDS_OFF } from '@antseed/node/payments'
 import { loadConfig } from '../../../config/loader.js'
 import { createVerifierClient } from '../../payment-utils.js'
 import { resolveAuditorAddress, resolveAuditorSigner } from './auditor-identity.js'
@@ -61,6 +62,7 @@ export function registerVerifierRewardsCommand(verifierCmd: Command): void {
 
       const resultsAddress = await verifierClient.resultsAddress()
       const source = getAddress(verifierClient.contractAddress)
+      const settings = await verifierClient.rewardSettings()
       const pending = await Promise.all(epochs.map(async (epoch) => {
         const [amount, credits] = await Promise.all([
           verifierClient.pendingAuditorReward(auditor, epoch),
@@ -83,6 +85,7 @@ export function registerVerifierRewardsCommand(verifierCmd: Command): void {
       console.log(`Source: KBF audits ${source}`)
       console.log(`Verification results: ${resultsAddress}`)
       console.log(`Total pending: ${formatUnits(total, ANTS_DECIMALS)} ANTS`)
+      console.log(describeRewardSettings(settings))
       if (!options.claim) return
 
       const claimable = pending.filter((entry) => entry.amount > 0n).map((entry) => entry.epoch)
@@ -97,6 +100,15 @@ export function registerVerifierRewardsCommand(verifierCmd: Command): void {
         + `(source ${source}) (${transactionHash})`,
       ))
     })
+}
+
+/** One line on KBF's reward settings: whether audits earn credits yet, its share, and the per-auditor cap. */
+export function describeRewardSettings(settings: { rewardsStartEpoch: bigint; shareBps: number; maxAuditorShareBps: number }): string {
+  const start = settings.rewardsStartEpoch === VERIFICATION_REWARDS_OFF
+    ? 'KBF rewards are off: audits earn no credits yet'
+    : `audits earn credits from epoch ${settings.rewardsStartEpoch}`
+  return `Rewards: ${start}; KBF share ${settings.shareBps / 100}% of the verification bucket (latest setting), `
+    + `at most ${settings.maxAuditorShareBps / 100}% of it per auditor and epoch; anything above goes to the emissions reserve.`
 }
 
 function formatShare(part: bigint, total: bigint): string {

@@ -47,7 +47,7 @@ test('verifier exposes run, assignment, models, overview, reference, status, sub
   assert.ok(verifier)
   assert.deepEqual(
     verifier.commands.map((entry) => entry.name()).sort(),
-    ['assignment', 'check', 'models', 'overview', 'reference', 'rewards', 'run', 'status', 'submit', 'watch'],
+    ['assignment', 'check', 'models', 'overview', 'profile', 'reference', 'rewards', 'run', 'status', 'submit', 'watch'],
   )
 })
 

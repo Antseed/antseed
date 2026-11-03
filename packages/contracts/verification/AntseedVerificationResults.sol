@@ -4,6 +4,7 @@ pragma solidity ^0.8.24;
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
 import { Ownable2Step } from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import { ReentrancyGuard } from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import { Checkpoints } from "@openzeppelin/contracts/utils/structs/Checkpoints.sol";
 
 import { IAntseedEmissionsGate } from "../interfaces/IAntseedEmissionsGate.sol";
 import { IAntseedRegistry } from "../interfaces/IAntseedRegistry.sol";
@@ -32,18 +33,22 @@ interface IEmissionsGateSource {
 ///         rewards start epoch (default off), a per-verifier credit cap per epoch (default 100), and a
 ///         per-verifier share cap (default 20%). A verifier's gross reward is
 ///         `sourceBudget * credits / sourceCredits`; it receives up to the share cap and the rest is
-///         minted to the emissions reserve in the same claim. `settleEpochRemainder` sweeps what no
-///         verifier can claim (sources with no credits, and budget assigned to no source) through the
-///         gate's remainder route. An epoch's shares freeze the first time it is claimed from or
-///         settled, so later share changes never reshuffle an epoch that is being paid out. The share
-///         cap and credit cap in force at claim or credit time apply. Integer rounding dust is never
-///         minted.
+///         minted to the emissions reserve in the same claim. Share changes take effect from the
+///         next epoch, like the gate's own minter shares, so a running or finished epoch's split never
+///         changes. The share cap and credit cap in force at claim or credit time apply.
+///
+///         `settleEpochRemainder` sweeps what no verifier can ever claim through the gate's remainder
+///         route (burn, then reserve): budget assigned to no source, sources without credits, and
+///         what voided credits free up. It can be called again whenever more is freed. Rounding dust
+///         of credited sources stays unminted.
 ///
 ///         Epochs come from the emissions gate pinned at deployment; sources read `currentEpoch`
 ///         here so verdicts, credits and claims can never disagree about the epoch.
 contract AntseedVerificationResults is IAntseedVerificationResults, Ownable2Step, ReentrancyGuard {
+    using Checkpoints for Checkpoints.Trace256;
+
     uint8 public constant MAX_VALIDITY_EPOCHS = 4;
-    uint256 public constant MAX_SOURCES = 8;
+    uint256 public constant MAX_SOURCES = 32;
     uint256 public constant BPS = 10_000;
     uint16 public constant DEFAULT_MAX_AUDITOR_SHARE_BPS = 2_000;
     uint32 public constant DEFAULT_MAX_CREDITS_PER_AUDITOR_PER_EPOCH = 100;
@@ -56,7 +61,6 @@ contract AntseedVerificationResults is IAntseedVerificationResults, Ownable2Step
 
     struct SourceConfig {
         bool listed;
-        uint16 shareBps;
         uint16 maxAuditorShareBps;
         uint32 maxCreditsPerAuditorPerEpoch;
         uint64 rewardsStartEpoch;
@@ -65,15 +69,19 @@ contract AntseedVerificationResults is IAntseedVerificationResults, Ownable2Step
     IAntseedRegistry public immutable override registry;
     IAntseedEmissionsGate public immutable override emissionsGate;
     uint8 public override validityEpochs = 2;
-    /// @notice Sum of every source's live share; never above BPS.
+    /// @notice Sum of every source's latest share (what applies from the next epoch); never above BPS.
     uint256 public totalSourceShareBps;
 
     mapping(address source => bool approved) public override isSource;
     mapping(address source => SourceConfig config) private _sources;
+    // Share in bps per source, checkpointed by the epoch it applies from.
+    mapping(address source => Checkpoints.Trace256 shares) private _shares;
     /// @notice Every source ever approved, in order; at most `MAX_SOURCES`.
     address[] public sourceList;
 
     mapping(uint256 agentId => mapping(bytes32 serviceHash => ServiceStatus status)) private _serviceStatus;
+    /// @inheritdoc IAntseedVerificationResults
+    mapping(uint256 agentId => mapping(bytes32 serviceHash => uint256 clears)) public override serviceClears;
     // Latest SAME/DIFF verdicts given in each epoch; a verdict moves out when the service gets a new one.
     mapping(uint256 agentId => mapping(uint256 epoch => EpochCounts counts)) private _epochCounts;
 
@@ -84,13 +92,15 @@ contract AntseedVerificationResults is IAntseedVerificationResults, Ownable2Step
     mapping(address source => mapping(uint256 epoch => mapping(address auditor => bool claimed)))
         public
         override auditorEpochClaimed;
-    /// @notice True once an epoch's source shares are frozen (first claim or settlement).
-    mapping(uint256 epoch => bool frozen) public epochSharesFrozen;
-    mapping(uint256 epoch => mapping(address source => uint16 shareBps)) private _frozenShareBps;
-    mapping(uint256 epoch => bool settled) public override epochRemainderSettled;
+    /// @inheritdoc IAntseedVerificationResults
+    mapping(address source => mapping(uint256 epoch => uint256 credits)) public override claimedCredits;
+    /// @inheritdoc IAntseedVerificationResults
+    mapping(address source => mapping(uint256 epoch => uint256 amount)) public override paidRewards;
+    /// @inheritdoc IAntseedVerificationResults
+    mapping(uint256 epoch => uint256 amount) public override settledRemainder;
 
     event SourceSet(address indexed source, bool approved);
-    event SourceShareBpsSet(address indexed source, uint16 shareBps);
+    event SourceShareBpsSet(address indexed source, uint16 shareBps, uint256 fromEpoch);
     event RewardsStartEpochSet(address indexed source, uint64 epoch);
     event MaxAuditorShareBpsSet(address indexed source, uint16 shareBps);
     event MaxCreditsPerAuditorPerEpochSet(address indexed source, uint32 maxCredits);
@@ -109,7 +119,6 @@ contract AntseedVerificationResults is IAntseedVerificationResults, Ownable2Step
     event AgentStatusChanged(uint256 indexed agentId, uint16 verifiedCount, uint16 diffCount);
     event Credited(address indexed source, uint256 indexed epoch, address indexed auditor, uint256 credits);
     event CreditsVoided(address indexed source, uint256 indexed epoch, address indexed auditor, uint256 credits);
-    event EpochSharesFrozen(uint256 indexed epoch);
     /// @param amount What the verifier received. @param reserveAmount Its gross reward above the cap,
     ///        minted to the emissions reserve.
     event RewardClaimed(
@@ -125,7 +134,6 @@ contract AntseedVerificationResults is IAntseedVerificationResults, Ownable2Step
     error SharesExceedBps();
     error EpochNotFinalized();
     error AlreadyClaimed();
-    error AlreadySettled();
     error NothingToSettle();
 
     /// @dev Pins the emissions gate behind `registry.emissions()`. After M001 the registry points at
@@ -166,15 +174,17 @@ contract AntseedVerificationResults is IAntseedVerificationResults, Ownable2Step
         emit SourceSet(source, approved);
     }
 
-    /// @notice Sets a listed source's share of the bucket. Shares sum to at most BPS. Applies to every
-    ///         epoch whose shares are not frozen yet.
+    /// @notice Sets a listed source's share of the bucket from the next epoch on; the current and
+    ///         past epochs keep theirs. Shares sum to at most BPS.
     function setSourceShareBps(address source, uint16 shareBps) external onlyOwner {
-        SourceConfig storage config = _listed(source);
-        uint256 total = totalSourceShareBps - config.shareBps + shareBps;
+        _listed(source);
+        Checkpoints.Trace256 storage shares = _shares[source];
+        uint256 total = totalSourceShareBps - shares.latest() + shareBps;
         if (total > BPS) revert SharesExceedBps();
         totalSourceShareBps = total;
-        config.shareBps = shareBps;
-        emit SourceShareBpsSet(source, shareBps);
+        uint256 fromEpoch = emissionsGate.currentEpoch() + 1;
+        shares.push(fromEpoch, shareBps);
+        emit SourceShareBpsSet(source, shareBps, fromEpoch);
     }
 
     /// @notice Credits from `source` count from this epoch on. Set it to the epoch the source's
@@ -209,12 +219,14 @@ contract AntseedVerificationResults is IAntseedVerificationResults, Ownable2Step
     }
 
     /// @notice Remediation for wrong results, e.g. from a removed source or a bad verifier: resets
-    ///         each listed service's verdict. `agentIds[i]` pairs with `serviceHashes[i]`.
+    ///         each listed service's verdict and bumps its `serviceClears`, so sources can drop
+    ///         reports made before the clear. `agentIds[i]` pairs with `serviceHashes[i]`.
     function clearServiceStatuses(uint256[] calldata agentIds, bytes32[] calldata serviceHashes) external onlyOwner {
         uint256 count = agentIds.length;
         if (count != serviceHashes.length) revert InvalidValue();
         uint256 epoch = emissionsGate.currentEpoch();
         for (uint256 i = 0; i < count; i++) {
+            serviceClears[agentIds[i]][serviceHashes[i]] += 1;
             _resetService(
                 agentIds[i], serviceHashes[i], _serviceStatus[agentIds[i]][serviceHashes[i]], epoch, address(0), 0
             );
@@ -223,7 +235,8 @@ contract AntseedVerificationResults is IAntseedVerificationResults, Ownable2Step
 
     /// @notice Remediation for credit farming: removes a verifier's unclaimed credits from a source
     ///         for an epoch so they no longer dilute others. Claimed credits cannot be voided. Voiding
-    ///         only ever raises the other verifiers' shares, so earlier claims never overspend.
+    ///         only ever raises the other verifiers' shares, so earlier claims never overspend; budget
+    ///         it frees that nobody can claim any more becomes settleable again.
     function voidCredits(address source, uint256 epoch, address auditor) external onlyOwner {
         if (auditorEpochClaimed[source][epoch][auditor]) revert AlreadyClaimed();
         uint256 credits = auditorEpochCredits[source][epoch][auditor];
@@ -251,17 +264,20 @@ contract AntseedVerificationResults is IAntseedVerificationResults, Ownable2Step
             }
             service.modelHash = modelHash;
         }
-        Verdict previous = _liveVerdict(service, epoch);
-        service.source = msg.sender;
+        // The same verdict again in the same epoch changes nothing, attribution included.
         if (service.verdict == verdict && service.epoch == epoch) return;
+        Verdict previous = _liveVerdict(service, epoch);
+        address previousSource = service.source;
         _uncount(agentId, service);
         EpochCounts storage counts = _epochCounts[agentId][epoch];
         if (verdict == Verdict.SAME) counts.same += 1;
         else if (verdict == Verdict.DIFF) counts.diff += 1;
         service.verdict = verdict;
         service.epoch = uint64(epoch);
-        if (previous == verdict) return;
-        service.updatedAt = uint64(block.timestamp);
+        service.source = msg.sender;
+        if (previous != verdict) service.updatedAt = uint64(block.timestamp);
+        else if (previousSource == msg.sender) return;
+        // Emitted whenever the live verdict or the source behind it changes.
         _emitServiceChange(agentId, serviceHash, service, previous, epoch, msg.sender, evidenceHash);
     }
 
@@ -295,7 +311,11 @@ contract AntseedVerificationResults is IAntseedVerificationResults, Ownable2Step
     }
 
     function sourceShareBps(address source) external view override returns (uint16) {
-        return _sources[source].shareBps;
+        return uint16(_shares[source].latest());
+    }
+
+    function sourceShareBpsAt(address source, uint256 epoch) public view override returns (uint16) {
+        return uint16(_shares[source].upperLookupRecent(epoch));
     }
 
     function rewardsStartEpoch(address source) external view override returns (uint64) {
@@ -311,8 +331,24 @@ contract AntseedVerificationResults is IAntseedVerificationResults, Ownable2Step
     }
 
     function sourceBudget(address source, uint256 epoch) public view override returns (uint256) {
-        uint256 shareBps = epochSharesFrozen[epoch] ? _frozenShareBps[epoch][source] : _sources[source].shareBps;
-        return (emissionsGate.controllerEpochBudget(address(this), epoch) * shareBps) / BPS;
+        return (emissionsGate.controllerEpochBudget(address(this), epoch) * sourceShareBpsAt(source, epoch)) / BPS;
+    }
+
+    function unclaimableRemainder(uint256 epoch) public view override returns (uint256) {
+        IAntseedEmissionsGate gate = emissionsGate;
+        if (epoch >= gate.currentEpoch()) return 0;
+        uint256 budget = gate.controllerEpochBudget(address(this), epoch);
+        uint256 reserved;
+        uint256 count = sourceList.length;
+        for (uint256 i = 0; i < count; i++) {
+            reserved += _reservedFor(sourceList[i], epoch, budget);
+        }
+        uint256 owed = budget - reserved - settledRemainder[epoch];
+        // Never ask the gate for more than is left of the bucket, e.g. after an earlier controller of
+        // the same minter id minted for this epoch.
+        uint256 minted = gate.minterEpochMinted(gate.controllerMinterIds(address(this)), epoch);
+        uint256 left = budget > minted ? budget - minted : 0;
+        return owed < left ? owed : left;
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -342,27 +378,28 @@ contract AntseedVerificationResults is IAntseedVerificationResults, Ownable2Step
         nonReentrant
         returns (uint256 total)
     {
-        IAntseedEmissionsGate gate = emissionsGate;
-        uint256 current = gate.currentEpoch();
-        address reserve = gate.emissionsReserve();
+        uint256 current = emissionsGate.currentEpoch();
         for (uint256 i = 0; i < epochs.length; i++) {
-            uint256 epoch = epochs[i];
-            if (epoch >= current) revert EpochNotFinalized();
-            if (auditorEpochClaimed[source][epoch][msg.sender] || auditorEpochCredits[source][epoch][msg.sender] == 0) {
-                continue;
-            }
-            (uint256 amount, uint256 overflow) = _reward(source, msg.sender, epoch);
-            if (amount == 0) continue;
-            // Freeze only once something is paid, so an empty claim never locks in a zero share.
-            _freezeShares(epoch);
-            // With no reserve configured on the gate, the overflow is not minted.
-            if (reserve == address(0)) overflow = 0;
-            auditorEpochClaimed[source][epoch][msg.sender] = true;
-            total += amount;
-            gate.claim(epoch, msg.sender, amount);
-            if (overflow != 0) gate.claim(epoch, reserve, overflow);
-            emit RewardClaimed(source, epoch, msg.sender, amount, overflow);
+            if (epochs[i] >= current) revert EpochNotFinalized();
+            total += _claimEpoch(source, epochs[i]);
         }
+    }
+
+    /// @dev Pays the caller's reward for one finalized epoch; 0 (and nothing changes) when there is none.
+    function _claimEpoch(address source, uint256 epoch) private returns (uint256 amount) {
+        if (auditorEpochClaimed[source][epoch][msg.sender] || auditorEpochCredits[source][epoch][msg.sender] == 0) {
+            return 0;
+        }
+        uint256 overflow;
+        (amount, overflow) = _reward(source, msg.sender, epoch);
+        if (amount == 0) return 0;
+        auditorEpochClaimed[source][epoch][msg.sender] = true;
+        claimedCredits[source][epoch] += auditorEpochCredits[source][epoch][msg.sender];
+        paidRewards[source][epoch] += amount + overflow;
+        IAntseedEmissionsGate gate = emissionsGate;
+        gate.claim(epoch, msg.sender, amount);
+        if (overflow != 0) gate.claim(epoch, _emissionsReserve(gate), overflow);
+        emit RewardClaimed(source, epoch, msg.sender, amount, overflow);
     }
 
     function pendingReward(address source, address auditor, uint256 epoch) external view override returns (uint256) {
@@ -377,21 +414,12 @@ contract AntseedVerificationResults is IAntseedVerificationResults, Ownable2Step
         nonReentrant
         returns (uint256 burnedAmount, uint256 reserveAmount)
     {
-        if (epochRemainderSettled[epoch]) revert AlreadySettled();
         IAntseedEmissionsGate gate = emissionsGate;
         if (epoch >= gate.currentEpoch()) revert EpochNotFinalized();
-        _freezeShares(epoch);
-        uint256 budget = gate.controllerEpochBudget(address(this), epoch);
-        uint256 allocated;
-        uint256 count = sourceList.length;
-        for (uint256 i = 0; i < count; i++) {
-            address source = sourceList[i];
-            if (epochCredits[source][epoch] != 0) allocated += (budget * _frozenShareBps[epoch][source]) / BPS;
-        }
-        if (allocated >= budget) revert NothingToSettle();
-        uint256 amount = budget - allocated;
-        epochRemainderSettled[epoch] = true;
-        (burnedAmount, reserveAmount) = gate.claimRemainder(epoch, gate.emissionsReserve(), amount);
+        uint256 amount = unclaimableRemainder(epoch);
+        if (amount == 0) revert NothingToSettle();
+        settledRemainder[epoch] += amount;
+        (burnedAmount, reserveAmount) = gate.claimRemainder(epoch, _emissionsReserve(gate), amount);
         emit EpochRemainderSettled(epoch, amount, burnedAmount, reserveAmount);
     }
 
@@ -404,16 +432,16 @@ contract AntseedVerificationResults is IAntseedVerificationResults, Ownable2Step
         if (!config.listed) revert UnknownSource();
     }
 
-    /// @dev Records every listed source's share for `epoch` the first time the epoch is paid from.
-    function _freezeShares(uint256 epoch) private {
-        if (epochSharesFrozen[epoch]) return;
-        epochSharesFrozen[epoch] = true;
-        uint256 count = sourceList.length;
-        for (uint256 i = 0; i < count; i++) {
-            address source = sourceList[i];
-            _frozenShareBps[epoch][source] = _sources[source].shareBps;
-        }
-        emit EpochSharesFrozen(epoch);
+    /// @dev What `source` may still mint for a finalized `epoch`, plus what it already minted: its paid
+    ///      rewards plus the gross of every unclaimed credit. Claims only ever lower it (a claim pays
+    ///      at most the floor it reserved) and so do voids (fewer unclaimed credits over fewer credits),
+    ///      so whatever settlement sweeps can never be needed by a later claim.
+    function _reservedFor(address source, uint256 epoch, uint256 budget) private view returns (uint256) {
+        uint256 credits = epochCredits[source][epoch];
+        uint256 paid = paidRewards[source][epoch];
+        if (credits == 0) return paid;
+        uint256 sourceShare = (budget * sourceShareBpsAt(source, epoch)) / BPS;
+        return paid + (sourceShare * (credits - claimedCredits[source][epoch])) / credits;
     }
 
     /// @dev The verifier's capped reward and the overflow above the cap, at the current share and caps.
@@ -493,5 +521,11 @@ contract AntseedVerificationResults is IAntseedVerificationResults, Ownable2Step
         );
         AgentStatus memory agent = _agentStatusAt(agentId, epoch);
         emit AgentStatusChanged(agentId, agent.verifiedCount, agent.diffCount);
+    }
+
+    /// @dev Like the other emission controllers: a reserve must be configured to route overflow or remainders.
+    function _emissionsReserve(IAntseedEmissionsGate gate) private view returns (address reserve) {
+        reserve = gate.emissionsReserve();
+        if (reserve == address(0)) revert InvalidAddress();
     }
 }

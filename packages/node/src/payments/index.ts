@@ -49,6 +49,10 @@ export {
   verifierVerdict,
   VERIFIER_VERDICT,
   MAX_RESULTS_PER_MODEL_AUDIT,
+  MAX_AUDITOR_PROFILE_NAME_BYTES,
+  MAX_AUDITOR_PROFILE_URI_BYTES,
+  VERIFICATION_REWARDS_OFF,
+  validateAuditorProfile,
 } from './evm/verifier-client.js';
 export {
   DEFAULT_LOG_QUERY_CHUNK_BLOCKS,
@@ -64,6 +68,7 @@ export type {
   ModelAuditedEvent,
   AuditorSetEvent,
   AuditorCredits,
+  AuditorProfile,
   RequiredReports,
   VerifierServiceStatus,
   VerifierVerdict,

@@ -42,6 +42,7 @@ contract M003VerificationRegistryTest is Test {
         pools = new MockVerificationSellerPools();
         registry.setIdentityRegistry(address(identity));
         gate = new MockVerificationEmissionsGate();
+        gate.setEmissionsReserve(address(0x5E5E));
         pointsPolicyRegistry = new AntseedPointsPolicyRegistry(owner);
         accounting = new M003UsageAccounting(address(pools), address(pointsPolicyRegistry), address(gate));
         registry.setEmissions(address(accounting));
@@ -235,7 +236,10 @@ contract M003VerificationRegistryTest is Test {
     /// @dev The manual steps from the README, then one audit end to end: verdict, points, reward.
     function test_manualStepsThenAnAuditVerifiesAndPays() public {
         M003DeployVerificationRegistry.Deployment memory d = script.runWith(config());
-        gate.setBudget(address(d.results), 0, 1_000 ether); // stands in for setMinterController
+        assertEq(d.results.sourceShareBpsAt(address(d.kbf), 0), 0, "KBF's share starts the epoch after deploy");
+        assertEq(d.results.sourceShareBpsAt(address(d.kbf), 1), 10_000);
+        gate.setCurrentEpoch(1);
+        gate.setBudget(address(d.results), 1, 1_000 ether); // stands in for setMinterController
         vm.startPrank(owner);
         d.kbf.setAuditor(auditor, true);
         pointsPolicyRegistry.registerPolicy(address(d.policy));
@@ -246,13 +250,13 @@ contract M003VerificationRegistryTest is Test {
         vm.prank(seller);
         uint256 agentId = identity.register();
         pools.setSeller(seller, agentId);
-        pools.setPower(agentId, 0, 1);
+        pools.setPower(agentId, 1, 1);
         IAntseedKbfAudits.ServiceResult[] memory batch = new IAntseedKbfAudits.ServiceResult[](1);
         batch[0] = IAntseedKbfAudits.ServiceResult({
             agentId: agentId, serviceHash: keccak256("service"), verdict: IAntseedVerificationResults.Verdict.SAME
         });
         vm.prank(auditor);
-        d.kbf.submitModelAudit(0, keccak256("model"), keccak256("evidence"), "ipfs://evidence", batch);
+        d.kbf.submitModelAudit(1, keccak256("model"), keccak256("evidence"), "ipfs://evidence", batch);
         assertTrue(d.results.isVerified(agentId));
         (uint256 sellerPoints,) = pointsPolicyRegistry.points(bytes32(0), address(0xB0), seller, 1_000_000);
         assertEq(sellerPoints, 1_010_000, "the deployed bonus applies at once");
@@ -262,8 +266,9 @@ contract M003VerificationRegistryTest is Test {
         (sellerPoints,) = pointsPolicyRegistry.points(bytes32(0), address(0xB0), seller, 1_000_000);
         assertEq(sellerPoints, 1_000_000, "zero rates leave points unchanged");
 
-        gate.setCurrentEpoch(1);
+        gate.setCurrentEpoch(2);
         uint256[] memory epochs = new uint256[](1);
+        epochs[0] = 1;
         vm.prank(auditor);
         assertEq(d.results.claimRewards(address(d.kbf), epochs), 200 ether, "20% cap of the KBF share");
     }

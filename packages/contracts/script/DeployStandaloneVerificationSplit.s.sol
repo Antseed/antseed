@@ -9,6 +9,10 @@ import { AntseedVerificationPointsPolicy } from "../policies/AntseedVerification
 import { AntseedKbfAudits } from "../verification/AntseedKbfAudits.sol";
 import { AntseedVerificationResults } from "../verification/AntseedVerificationResults.sol";
 
+interface IStandaloneUsageAccounting {
+    function sellerPools() external view returns (address);
+}
+
 /// @title DeployStandaloneVerificationSplit
 /// @notice Deploys the split verification contracts (results layer, KBF audit
 ///         source, points policy) without registering the policy or enabling rewards.
@@ -125,6 +129,12 @@ contract DeployStandaloneVerificationSplit is Script {
         require(config.registry.code.length != 0, "standalone: missing registry");
         require(config.sellerPools.code.length != 0, "standalone: missing seller pools");
         require(config.usageAccounting.code.length != 0, "standalone: missing usage accounting");
+        // The points policy reads seller pools through usage accounting; KBF's staking check reads
+        // SELLER_POOLS. Both must be the same contract.
+        require(
+            IStandaloneUsageAccounting(config.usageAccounting).sellerPools() == config.sellerPools,
+            "standalone: usage accounting uses other seller pools"
+        );
         require(config.bonusBps <= 5_000, "standalone: bonus above cap");
 
         address emissions = IAntseedRegistry(config.registry).emissions();

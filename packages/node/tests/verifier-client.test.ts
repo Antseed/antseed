@@ -4,7 +4,9 @@ import {
   KBF_AUDITS_ABI,
   VERIFICATION_RESULTS_ABI,
   VerifierClient,
+  VERIFICATION_REWARDS_OFF,
   VERIFIER_VERDICT,
+  validateAuditorProfile,
   modelHash,
   serviceHash,
   sortServiceResults,
@@ -143,13 +145,18 @@ describe('VerifierClient contract routing', () => {
         modelCredits: () => [1n],
         maxCreditsPerModelPerEpoch: () => [1n],
         approvedAuditors: () => [true],
-        activeSinceEpoch: () => [3n],
+        auditorProfile: () => [['Acme Labs', 'ipfs://icon', 'https://acme.example']],
       },
       [RESULTS_ADDRESS]: {
         pendingReward: () => [5n],
         auditorEpochCredits: () => [2n],
         epochCredits: () => [4n],
         maxCreditsPerAuditorPerEpoch: () => [100n],
+        rewardsStartEpoch: () => [VERIFICATION_REWARDS_OFF],
+        sourceShareBps: () => [10_000n],
+        sourceShareBpsAt: () => [5_000n],
+        maxAuditorShareBps: () => [2_000n],
+        unclaimableRemainder: () => [42n],
         serviceStatus: () => [['0x' + 'aa'.repeat(32), 2n, 7n, 9n, VERIFICATION_ADDRESS]],
       },
     });
@@ -159,7 +166,14 @@ describe('VerifierClient contract routing', () => {
     expect(await client.auditCredits(auditor, 8)).toEqual({ auditor: 2n, total: 4n });
     expect(await client.creditLimits()).toEqual({ perAuditor: 100n, perModel: 1n });
     expect(await client.approvedAuditor(auditor)).toBe(true);
-    expect(await client.activeSinceEpoch(auditor)).toBe(3n);
+    expect(await client.auditorProfile(auditor)).toEqual({
+      name: 'Acme Labs', iconUri: 'ipfs://icon', url: 'https://acme.example',
+    });
+    expect(await client.rewardSettings()).toEqual({
+      rewardsStartEpoch: VERIFICATION_REWARDS_OFF, shareBps: 10_000, maxAuditorShareBps: 2_000,
+    });
+    expect((await client.rewardSettings(8)).shareBps).toBe(5_000);
+    expect(await client.unclaimableRemainder(8)).toBe(42n);
     expect(await client.serviceStatusByHash(1n, '0x' + '01'.repeat(32))).toEqual({
       modelHash: '0x' + 'aa'.repeat(32), verdict: 2, updatedAt: 7n, epoch: 9n, source: getAddress(VERIFICATION_ADDRESS),
     });
@@ -170,6 +184,43 @@ describe('VerifierClient contract routing', () => {
     expect(calls.find((entry) => entry.method === 'auditorEpochCredits')).toMatchObject({ args: [kbf, 8n, getAddress(auditor)] });
     expect(calls.find((entry) => entry.method === 'epochCredits')).toMatchObject({ args: [kbf, 8n] });
     expect(calls.find((entry) => entry.method === 'approvedAuditors')).toMatchObject({ to: VERIFICATION_ADDRESS });
+    expect(calls.find((entry) => entry.method === 'maxCreditsPerAuditorPerEpoch')).toMatchObject({ to: RESULTS_ADDRESS, args: [kbf] });
+    expect(calls.find((entry) => entry.method === 'rewardsStartEpoch')).toMatchObject({ args: [kbf] });
+    expect(calls.find((entry) => entry.method === 'sourceShareBpsAt')).toMatchObject({ args: [kbf, 8n] });
+  });
+
+  it('validates auditor profiles the way the KBF contract does', () => {
+    expect(() => validateAuditorProfile({ name: 'Acme ✓', iconUri: 'ipfs://bafy', url: 'https://acme.example/a?b=1' })).not.toThrow();
+    expect(() => validateAuditorProfile({ name: '', iconUri: '', url: '' })).not.toThrow();
+    expect(() => validateAuditorProfile({ name: 'a'.repeat(65), iconUri: '', url: '' })).toThrow(/longer than 64/);
+    expect(() => validateAuditorProfile({ name: 'a\nb', iconUri: '', url: '' })).toThrow(/control/);
+    for (const bad of ['javascript:alert(1)', 'http://x.example', 'https://', 'https://x.example/a b', 'https://x.example/"x', 'https://x.example/<x>']) {
+      expect(() => validateAuditorProfile({ name: '', iconUri: bad, url: '' }), bad).toThrow(/profile icon/);
+    }
+    expect(() => validateAuditorProfile({ name: '', iconUri: '', url: `https://${'a'.repeat(250)}` })).toThrow(/longer than 256/);
+  });
+
+  it('sets the profile on the KBF contract and settles remainders on the results contract', async () => {
+    const client = new VerifierClient({ rpcUrl: 'http://127.0.0.1:1', contractAddress: VERIFICATION_ADDRESS, resultsAddress: RESULTS_ADDRESS });
+    const execWrite = vi.fn().mockResolvedValue('0xtx');
+    const writerPrototype = Object.getPrototypeOf(Object.getPrototypeOf(client)) as { _execWrite: unknown };
+    const spy = vi.spyOn(writerPrototype as { _execWrite: typeof execWrite }, '_execWrite').mockImplementation(async function (this: { contractAddress: string }, ...args: unknown[]) {
+      return execWrite(this.contractAddress, ...args);
+    });
+    try {
+      const signer = Wallet.createRandom();
+      await client.setAuditorProfile(signer, { name: 'Acme', iconUri: 'ipfs://icon', url: '' });
+      expect(execWrite).toHaveBeenCalledWith(
+        getAddress(VERIFICATION_ADDRESS), signer, KBF_AUDITS_ABI, 'setAuditorProfile', 'Acme', 'ipfs://icon', '',
+      );
+      await expect(client.setAuditorProfile(signer, { name: '', iconUri: 'javascript:x', url: '' })).rejects.toThrow(/https/);
+      await client.settleEpochRemainder(signer, 7);
+      expect(execWrite).toHaveBeenLastCalledWith(
+        getAddress(RESULTS_ADDRESS), signer, VERIFICATION_RESULTS_ABI, 'settleEpochRemainder', 7n,
+      );
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('uses a configured results address without asking the KBF contract', async () => {

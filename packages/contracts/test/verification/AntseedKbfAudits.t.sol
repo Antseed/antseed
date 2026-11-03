@@ -52,11 +52,14 @@ contract AntseedKbfAuditsTest is Test {
         registry = new AntseedRegistry();
         identityRegistry = new MockERC8004Registry();
         gate = new MockVerificationEmissionsGate();
+        gate.setEmissionsReserve(address(0x5E5E));
         pools = new MockVerificationSellerPools();
         registry.setIdentityRegistry(address(identityRegistry));
         registry.setEmissions(address(gate));
-        gate.setCurrentEpoch(EPOCH);
+        // Deployed the epoch before, so KBF's share (which applies from the next epoch) covers EPOCH.
+        gate.setCurrentEpoch(EPOCH - 1);
         (results, kbf) = _deploy();
+        gate.setCurrentEpoch(EPOCH);
         kbf.setAuditor(auditorA, true);
         kbf.setAuditor(auditorB, true);
         kbf.setAuditor(auditorC, true);
@@ -564,7 +567,9 @@ contract AntseedKbfAuditsTest is Test {
 
     function test_usesTheGateBehindUsageAccounting() public {
         registry.setEmissions(address(new UsageAccountingFront(address(gate))));
+        gate.setCurrentEpoch(EPOCH - 1);
         (results, kbf) = _deploy();
+        gate.setCurrentEpoch(EPOCH);
         kbf.setAuditor(auditorA, true);
         results.setRewardsStartEpoch(address(kbf), uint64(0));
         results.setMaxAuditorShareBps(address(kbf), 10_000);
@@ -667,7 +672,8 @@ contract AntseedKbfAuditsTest is Test {
         assertEq(results.pendingReward(address(kbf), auditorB, EPOCH), 180 ether, "225 capped at 20% of 900");
         assertEq(_claim(auditorA), 180 ether);
         assertEq(_claim(auditorB), 180 ether);
-        assertEq(gate.epochMinted(EPOCH), 360 ether, "the rest of the bucket is never minted");
+        assertEq(gate.minted(address(0x5E5E)), 540 ether, "the capped part goes to the reserve");
+        assertEq(gate.epochMinted(EPOCH), 900 ether, "the whole bucket is accounted for");
     }
 
     function test_shareCapAppliesAtClaimTime() public {
@@ -1024,10 +1030,10 @@ contract AntseedKbfAuditsTest is Test {
     function test_profileFieldsAreLengthLimited() public {
         uint256 nameMax = kbf.MAX_PROFILE_NAME_BYTES();
         uint256 uriMax = kbf.MAX_PROFILE_URI_BYTES();
-        string memory name = string(new bytes(nameMax));
-        string memory uri = string(new bytes(uriMax));
-        string memory longName = string(new bytes(nameMax + 1));
-        string memory longUri = string(new bytes(uriMax + 1));
+        string memory name = _text("", nameMax);
+        string memory uri = _text("https://", uriMax);
+        string memory longName = _text("", nameMax + 1);
+        string memory longUri = _text("https://", uriMax + 1);
         vm.startPrank(auditorA);
         kbf.setAuditorProfile(name, uri, uri); // at the limits
         vm.expectRevert(AntseedKbfAudits.InvalidProfile.selector);
@@ -1037,6 +1043,32 @@ contract AntseedKbfAuditsTest is Test {
         vm.expectRevert(AntseedKbfAudits.InvalidProfile.selector);
         kbf.setAuditorProfile("", "", longUri);
         vm.stopPrank();
+    }
+
+    function test_profileLinksMustBeHttpsOrIpfsAndSafe() public {
+        string[9] memory bad = [
+            "javascript:alert(1)",
+            "data:image/png;base64,AAAA",
+            "http://insecure.example",
+            "https://",
+            "https://a.example/x y",
+            "https://a.example/\"onerror=x",
+            "https://a.example/<script>",
+            "https://a.example/'x",
+            "https://a.example/`x"
+        ];
+        vm.startPrank(auditorA);
+        for (uint256 i = 0; i < bad.length; i++) {
+            vm.expectRevert(AntseedKbfAudits.InvalidProfile.selector);
+            kbf.setAuditorProfile("", bad[i], "");
+            vm.expectRevert(AntseedKbfAudits.InvalidProfile.selector);
+            kbf.setAuditorProfile("", "", bad[i]);
+        }
+        vm.expectRevert(AntseedKbfAudits.InvalidProfile.selector);
+        kbf.setAuditorProfile("bad\nname", "", "");
+        kbf.setAuditorProfile(unicode"Ünïcode Labs ✓", "ipfs://bafyicon", "https://acme.example/team?x=1#top");
+        vm.stopPrank();
+        assertEq(kbf.auditorProfile(auditorA).iconUri, "ipfs://bafyicon");
     }
 
     function test_ownerClearsAProfile() public {
@@ -1154,6 +1186,29 @@ contract AntseedKbfAuditsTest is Test {
         assertEq(kbf.reportRound(agentId, SERVICE_A), 4, "a revocation moves every round");
     }
 
+    function test_clearingADiffStartsANewRound() public {
+        kbf.setRequiredReports(DIFF, 2);
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, DIFF);
+        _audit(auditorB, MODEL_A, agentId, SERVICE_A, DIFF);
+        assertEq(uint8(results.serviceStatus(agentId, SERVICE_A).verdict), uint8(DIFF));
+        _audit(auditorC, MODEL_A, agentId, SERVICE_A, DIFF); // waits in the round after the DIFF
+        uint256 roundBefore = kbf.reportRound(agentId, SERVICE_A);
+
+        uint256[] memory agents = new uint256[](1);
+        bytes32[] memory services = new bytes32[](1);
+        agents[0] = agentId;
+        services[0] = SERVICE_A;
+        results.clearServiceStatuses(agents, services);
+        assertEq(kbf.reportRound(agentId, SERVICE_A), roundBefore + 1, "a clear moves the round");
+
+        _audit(auditorD, MODEL_A, agentId, SERVICE_A, DIFF);
+        assertEq(
+            uint8(results.serviceStatus(agentId, SERVICE_A).verdict), uint8(NONE), "reports from before the clear do not count"
+        );
+        _audit(auditorC, MODEL_A, agentId, SERVICE_A, DIFF);
+        assertEq(uint8(results.serviceStatus(agentId, SERVICE_A).verdict), uint8(DIFF), "two fresh reports record it");
+    }
+
     function test_agentOwnerIsUnknownForZeroUnregisteredAndBurnedAgents() public {
         (bool known, address owner) = kbf.agentOwner(agentId);
         assertTrue(known);
@@ -1172,15 +1227,23 @@ contract AntseedKbfAuditsTest is Test {
         assertEq(owner, address(0));
     }
 
-    function test_claimSkipsWhileTheSourceHasNoShare() public {
-        _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
+    function test_anEpochWithoutAKbfShareSkipsClaimsAndSettlesInFull() public {
+        results.setSourceShareBps(address(kbf), 0); // from EPOCH + 1 on
         gate.setCurrentEpoch(EPOCH + 1);
-        results.setSourceShareBps(address(kbf), 0);
-        assertEq(results.pendingReward(address(kbf), auditorA, EPOCH), 0, "no share, nothing pending");
-        assertEq(_claim(auditorA), 0, "skipped and stays claimable");
-        assertFalse(results.auditorEpochClaimed(address(kbf), EPOCH, auditorA));
-        results.setSourceShareBps(address(kbf), 10_000);
-        assertEq(_claim(auditorA), 900 ether);
+        gate.setBudget(address(results), EPOCH + 1, 900 ether);
+        pools.setPower(agentId, EPOCH + 1, 300);
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
+        assertEq(results.auditorEpochCredits(address(kbf), EPOCH + 1, auditorA), 1, "still credited");
+
+        gate.setCurrentEpoch(EPOCH + 2);
+        assertEq(results.pendingReward(address(kbf), auditorA, EPOCH + 1), 0, "no share, nothing pending");
+        uint256[] memory epochs = new uint256[](1);
+        epochs[0] = EPOCH + 1;
+        vm.prank(auditorA);
+        assertEq(results.claimRewards(address(kbf), epochs), 0, "skipped");
+        assertFalse(results.auditorEpochClaimed(address(kbf), EPOCH + 1, auditorA));
+        (, uint256 reserved) = results.settleEpochRemainder(EPOCH + 1);
+        assertEq(reserved, 900 ether, "the unassigned bucket goes to the remainder route");
     }
 
     function test_reportViewsReflectTheTally() public {
@@ -1375,5 +1438,15 @@ contract AntseedKbfAuditsTest is Test {
         vm.prank(auditorA);
         vm.expectRevert(AntseedKbfAudits.InvalidResults.selector);
         kbf.submitModelAudit(EPOCH, MODEL_A, _evidence(), "", batch);
+    }
+
+    /// @dev `prefix` padded with "a" to `length` bytes.
+    function _text(string memory prefix, uint256 length) private pure returns (string memory) {
+        bytes memory out = new bytes(length);
+        bytes memory head = bytes(prefix);
+        for (uint256 i = 0; i < length; i++) {
+            out[i] = i < head.length ? head[i] : bytes1("a");
+        }
+        return string(out);
     }
 }

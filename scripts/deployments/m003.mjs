@@ -101,8 +101,8 @@ export function recordErrors(record) {
     if (!sameAddress(contracts[key].owner, config.owner)) errors.push(`M003 ${key} owner mismatch`);
   }
   const expectedArguments = {
-    verificationResults: [config.registry, config.sellerPools],
-    kbfAudits: [config.resultsAddress],
+    verificationResults: [config.registry],
+    kbfAudits: [config.resultsAddress, config.sellerPools],
     verificationPointsPolicy: [config.resultsAddress, config.usageAccounting, config.bonusBps, config.owner],
   };
   for (const [key] of DEPLOYMENTS) {
@@ -215,8 +215,8 @@ async function observe(context) {
     throw new Error('M003 deployment is missing or its nonce is in use; reconcile the original broadcast');
   }
   const wiring = {
-    verificationResults: { 'registry()(address)': expected.registry, 'sellerPools()(address)': expected.sellerPools },
-    kbfAudits: { 'results()(address)': checkpoint.resultsAddress },
+    verificationResults: { 'registry()(address)': expected.registry },
+    kbfAudits: { 'results()(address)': checkpoint.resultsAddress, 'sellerPools()(address)': expected.sellerPools },
     verificationPointsPolicy: { 'results()(address)': checkpoint.resultsAddress, 'usageAccounting()(address)': checkpoint.usageAccounting },
   };
   for (const [key, field] of DEPLOYMENTS.slice(0, count)) await checkDeployed(context, checkpoint, key, field, wiring[key]);

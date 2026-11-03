@@ -14,7 +14,8 @@ import { IAntseedVerificationResults } from "./IAntseedVerificationResults.sol";
 ///      round. Replacing a live DIFF (from any source) needs as many reports as a DIFF does. Reports
 ///      count per epoch only, and only in the current round: `reportRound` moves on whenever a
 ///      result this contract records moves the service's live verdict into or out of DIFF
-///      (`diffChanges`), and whenever an auditor is revoked (`auditorRevocations`).
+///      (`diffChanges`), whenever an auditor is revoked (`auditorRevocations`), and whenever the
+///      results owner clears the service (`results.serviceClears`).
 ///
 ///      Credits: one credit per model audit that covers at least one agent with staked pool power,
 ///      at most `maxCreditsPerModelPerEpoch` per model, granted through `results.credit`. The results
@@ -31,10 +32,13 @@ interface IAntseedKbfAudits {
         IAntseedVerificationResults.Verdict verdict;
     }
 
-    /// @notice How an auditor shows itself in UIs. All fields are plain UTF-8 and may be empty.
-    /// @param name Display name, at most `MAX_PROFILE_NAME_BYTES`.
-    /// @param iconUri Link to a square image (https:// or ipfs://), at most `MAX_PROFILE_URI_BYTES`.
-    /// @param url Website or profile link, at most `MAX_PROFILE_URI_BYTES`.
+    /// @notice How an auditor shows itself in UIs. Every field may be empty. The contract rejects
+    ///         control characters and limits links to safe characters, but UIs must still escape
+    ///         `name` like any user input.
+    /// @param name Display name, UTF-8 without control characters, at most `MAX_PROFILE_NAME_BYTES`.
+    /// @param iconUri Link to a square image: `https://` or `ipfs://`, at most `MAX_PROFILE_URI_BYTES`,
+    ///        no spaces, quotes, angle brackets, backslashes or backticks.
+    /// @param url Website or profile link, same rules as `iconUri`.
     struct AuditorProfile {
         string name;
         string iconUri;
@@ -59,7 +63,7 @@ interface IAntseedKbfAudits {
     /// @notice The auditor's display profile; empty fields when it never set one.
     function auditorProfile(address auditor) external view returns (AuditorProfile memory);
     /// @notice Sets the caller's display profile. Approved auditors only; a revoked auditor's profile
-    ///         stays readable but can no longer be changed. Reverts on a field over its length limit.
+    ///         stays readable but can no longer be changed. Reverts `InvalidProfile` on a field over its length limit or breaking the rules above.
     function setAuditorProfile(string calldata name, string calldata iconUri, string calldata url) external;
     /// @notice Clears an auditor's profile (e.g. for abusive content). Owner only.
     function clearAuditorProfile(address auditor) external;

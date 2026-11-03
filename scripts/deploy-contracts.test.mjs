@@ -2119,8 +2119,8 @@ function m003Checkpoint() {
     bonusBps: 100,
     sourceCommit: 'a'.repeat(40),
     contracts: {
-      verificationResults: m003Contract(M003.results, [ADDRESS.registry, ADDRESS.sellerRewardsPool], '1'),
-      kbfAudits: m003Contract(M003.kbf, [M003.results], '3'),
+      verificationResults: m003Contract(M003.results, [ADDRESS.registry], '1'),
+      kbfAudits: m003Contract(M003.kbf, [M003.results, ADDRESS.sellerRewardsPool], '3'),
       verificationPointsPolicy: m003Contract(M003.policy, [M003.results, ADDRESS.usageAccounting, '100', ADDRESS.ants], '4'),
     },
     transactions: [],
@@ -2343,7 +2343,7 @@ test('M003 recovers partial receipts and retains CREATE provenance through a res
     transaction: { hash: hashes[index], transactionType: 'CREATE', contractName: name, contractAddress: address, arguments: args },
     receipt: { transactionHash: hashes[index], status: '0x1', blockNumber: `0x${block.toString(16)}`, from: checkpoint.owner, to: null },
   });
-  const first = [creation(0, 'AntseedVerificationResults', M003.results, [checkpoint.registry, checkpoint.sellerPools], 10)];
+  const first = [creation(0, 'AntseedVerificationResults', M003.results, [checkpoint.registry], 10)];
   const options = { deployed: 1, nonce: '8', broadcast: {
     transactions: first.map((entry) => entry.transaction), receipts: first.map((entry) => entry.receipt),
   } };
@@ -2356,7 +2356,7 @@ test('M003 recovers partial receipts and retains CREATE provenance through a res
   assert.equal(partial.deployment.checkpoint.contracts.verificationResults.transactionHash, hashes[0]);
 
   const rest = [
-    creation(1, 'AntseedKbfAudits', M003.kbf, [M003.results], 11),
+    creation(1, 'AntseedKbfAudits', M003.kbf, [M003.results, checkpoint.sellerPools], 11),
     creation(2, 'AntseedVerificationPointsPolicy', M003.policy, [M003.results, checkpoint.usageAccounting, '100', checkpoint.owner], 11),
   ];
   const wiring = [3, 4].map((index) => ({

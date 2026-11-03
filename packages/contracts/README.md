@@ -742,27 +742,39 @@ unchanged: every model audit earns one, confirmed or not.
 M003 deploys `AntseedKbfVerification`'s replacement: a results layer and a KBF audit source, so
 readers depend on one stable contract and verification methods can be added or replaced underneath
 it; a KBF source with a different auditor rule is just a new source on the same results layer. KBF behaviour (confirmations, report rounds, one credit per model audit, the audit
-events) is unchanged.
+events) is unchanged. Unlike the old contract, reward above the per-auditor cap and unclaimable budget
+are no longer left unminted: they go to the reserve and the remainder route.
 
-- **`AntseedVerificationResults`** (results layer). Holds each service's verdict (`serviceStatus`,
-  now with the recording `source`), the per-epoch counters behind `agentStatus` / `isVerified`, the
-  `validityEpochs` window and `diffChanges`. Only approved sources (`setSource`) can `record` and
-  `credit`. A live DIFF is replaced only by the source that recorded it, a DIFF from any source,
-  or the owner (`clearServiceStatuses`); otherwise `record` returns false and emits `RecordLocked`.
-  `ServiceStatusChanged` gains `source` and `evidenceHash`. It is the minter controller of the
-  verification bucket: each source has `sourceShareBps` of it (shares sum to at most 10,000), credits
-  are kept per (source, epoch, verifier) and capped by `maxCreditsPerAuditorPerEpoch`, and verifiers
-  claim per source with `claimRewards(source, epochs)` / `pendingReward(source, auditor, epoch)`,
-  each capped at `maxAuditorShareBps` of the source's share. `voidCredits(source, epoch, auditor)`
-  removes farmed credits.
+- **`AntseedVerificationResults`** (results layer). A verdict registry and the verification
+  bucket. It holds each service's verdict (`serviceStatus`, now with the recording `source`), the
+  per-epoch counters behind `agentStatus` / `isVerified` and the `validityEpochs` window. Only
+  approved sources (`setSource`, at most `MAX_SOURCES` = 32 ever listed) can `record` and
+  `credit`; the latest record from any source wins, and how a verdict is reached is the source's
+  business. The owner can `clearServiceStatuses`, which bumps `serviceClears` so sources drop
+  reports made before the clear. `ServiceStatusChanged` gains `source` and `evidenceHash`.
+  As the minter controller of the verification bucket it splits each epoch's budget between
+  sources by `sourceShareBps` (sum at most 10,000; a change applies from the next epoch, so a
+  running or finished epoch's split never moves; `sourceShareBpsAt(source, epoch)`). Per source:
+  `rewardsStartEpoch` (default `REWARDS_OFF`), `maxCreditsPerAuditorPerEpoch` (default 100) and
+  `maxAuditorShareBps` (default 2,000). Verifiers claim per source after an epoch ends with
+  `claimRewards(source, epochs)` / `pendingReward(source, auditor, epoch)`; the part of a reward
+  above the per-verifier cap is minted to the emissions reserve in the same claim, as in
+  `AntseedUsageRewards`, and a claim with overflow reverts while the gate has no reserve.
+  `settleEpochRemainder(epoch)` is permissionless and sends what no verifier can ever claim
+  (budget assigned to no source, sources without credits, budget freed by `voidCredits`) through
+  the gate's `claimRemainder` (burn up to the gate's cap, then the reserve). It can run again when
+  a later void frees more, and never asks the gate for more than is left of the bucket
+  (`unclaimableRemainder`). `voidCredits(source, epoch, auditor)` removes unclaimed farmed credits.
 - **`AntseedKbfAudits`** (KBF source). `submitModelAudit` and `setAuditor` have the same signatures
-  and rules as before (`approvedAuditors`, `AuditorSet` on every call, `auditorRevocations`); the
-  report round is `results.diffChanges + auditorRevocations`, and the tallies are public
-  (`reportKey`, `reportOf`, `reportCount`). New: approval stamps `activeSinceEpoch` and
-  `minActiveEpochs` (default 0; `AuditorTooNew`) can hold back newly approved auditors, an evidence
-  hash belongs to the auditor that first submits it (`evidenceAuditor`; `EvidenceReused`), and
-  `ServiceRecordLocked` reports a confirmed verdict another source's DIFF kept out. Per-model credit
-  caps stay here (`maxCreditsPerModelPerEpoch`).
+  and rules as before (`approvedAuditors`, `AuditorSet` on every call, `auditorRevocations`); it
+  holds `sellerPools` for the staking check and keeps its own `diffChanges`, so the report round is
+  `diffChanges + auditorRevocations + results.serviceClears`. A SAME or UNDETERMINED replacing a
+  live DIFF from any source still needs the DIFF quorum. The tallies are public (`reportKey`,
+  `reportOf`, `reportCount`). New: an evidence hash belongs to the auditor that first submits it
+  (`evidenceAuditor`; `EvidenceReused`), `agentOwner(agentId)`, and a self-service auditor profile
+  (`setAuditorProfile(name, iconUri, url)`, `auditorProfile`, `AuditorProfileSet`; approved auditors
+  only; links must be `https://` or `ipfs://`; the owner can `clearAuditorProfile`). Per-model credit
+  caps stay here (`maxCreditsPerModelPerEpoch`); credits go to `results.credit`.
 - **`AntseedVerificationPointsPolicy`**: the same formula as `AntseedKbfVerificationPointsPolicy`,
   reading `results.agentStatus`.
 
