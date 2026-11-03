@@ -160,6 +160,27 @@ describe('speech services in peer metadata', () => {
     expect(selectLowestPricedNetworkServiceOffer(offers)?.provider).toBe('zeta');
   });
 
+  it('adds model-matched speech charges when comparing per-character prices', () => {
+    const offers = buildNetworkServiceOffers([{
+      peerId: 'a'.repeat(40),
+      providers: ['alpha', 'zeta'],
+      providerServiceApiProtocols: {
+        alpha: { services: { 'tts-kokoro': ['openai-audio-speech'] } },
+        zeta: { services: { 'tts-kokoro': ['openai-audio-speech'] } },
+      },
+      providerServiceUnitBillingModels: {
+        // 0.000001 + 0.0001 per character for this model: dearer than zeta.
+        alpha: { services: { 'tts-kokoro': { 'openai-audio-speech': { version: 1, components: [
+          { unit: 'input_characters', priceUsd: 0.000001 },
+          { unit: 'input_characters', priceUsd: 0.0001, match: { model: 'tts-kokoro' } },
+          { unit: 'input_characters', priceUsd: 0.5, match: { model: 'another-voice-model' } },
+        ] } } } },
+        zeta: { services: { 'tts-kokoro': { 'openai-audio-speech': { version: 1, components: [{ unit: 'input_characters', priceUsd: 0.00001 }] } } } },
+      },
+    }]);
+    expect(selectLowestPricedNetworkServiceOffer(offers)?.provider).toBe('zeta');
+  });
+
   it('never health-probes speech services, which would cost money', () => {
     expect(supportsHealthProbe('openai-audio-speech')).toBe(false);
     expect(supportsHealthProbe('openai-chat-completions')).toBe(true);

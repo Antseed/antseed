@@ -249,15 +249,16 @@ export function buildNetworkServiceOffers(
 }
 
 /**
- * USD per input character a speech request is billed. Speech requests carry no
- * billing match attributes, so only components without a `match` apply, and
- * every applicable component is charged.
+ * USD per input character a speech request is billed. Speech billing matches
+ * components against `{ model: <service> }`, and every component that applies
+ * is charged, so their prices add up.
  */
 function speechUsdPerCharacter(offer: NetworkServiceOffer): number {
   const model = offer.protocol ? offer.unitBillingModels?.[offer.protocol] : undefined;
+  const attributes: Record<string, string> = { model: offer.serviceId };
   const applicable = (model?.components ?? []).filter((component) =>
     component.unit === 'input_characters'
-    && Object.keys(component.match ?? {}).length === 0
+    && Object.entries(component.match ?? {}).every(([key, value]) => attributes[key] === value)
     && Number.isFinite(component.priceUsd)
     && component.priceUsd >= 0);
   return applicable.length > 0
