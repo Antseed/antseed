@@ -2396,6 +2396,32 @@ describe('SellerPaymentManager', () => {
       return new SellerPaymentManager(sellerIdentity, config, store);
     }
 
+    it('closes with the v4 zero metadata a stored auth without metadata bytes was signed over', async () => {
+      const channelId = makeChannelId(40);
+      // Stored before the seller kept the bytes of an auth sent without metadata.
+      const zeroV4 = AbiCoder.defaultAbiCoder().encode(
+        ['uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256',
+          'tuple(bytes32 serviceId,uint256 cumulativeAmount,uint256 cumulativeInputTokens,uint256 cumulativeCachedInputTokens,uint256 cumulativeOutputTokens,uint256 cumulativeRequestCount,uint256 cumulativeOutputImages,uint256 cumulativeVideoGenerations,uint256 cumulativeVideoSeconds)[]'],
+        [4n, 0n, 0n, 0n, 0n, 0n, 0n, []],
+      );
+      const sig = await signSpendingAuth(buyerIdentity.wallet, makeChannelsDomain(CHAIN_ID, CONTRACT_ADDR), {
+        channelId, cumulativeAmount: 1_000_000n, metadataHash: keccak256(zeroV4),
+      });
+      seedChannel(store, channelId, buyerIdentity, sellerIdentity, { latestSpendingAuthSig: sig, latestMetadata: null });
+
+      const mgr = makeFreshManager();
+      vi.spyOn(mgr.channelsClient, 'getSession').mockResolvedValue(makeOnChainChannel(buyerIdentity, sellerIdentity, { settled: 0n }));
+      const close = vi.spyOn(mgr.channelsClient, 'close').mockResolvedValue('0xclose-hash');
+      await mgr.validateHydratedChannels();
+      expect(store.getChannel(channelId)!.latestMetadata).toBe(zeroV4);
+
+      await mgr.settleSession(buyerIdentity.peerId);
+
+      expect(close).toHaveBeenCalled();
+      const [, closedChannel, amount, metadata, closeSig] = close.mock.calls[0]!;
+      expect([closedChannel, amount, metadata, closeSig]).toEqual([channelId, 1_000_000n, zeroV4, sig]);
+    });
+
     it('evicts channel that no longer exists on-chain', async () => {
       const channelId = makeChannelId(30);
       seedChannel(store, channelId, buyerIdentity, sellerIdentity, { reservedAt: Date.now() - RESERVE_VISIBILITY_GRACE_MS - 1 });

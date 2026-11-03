@@ -451,6 +451,9 @@ export function zeroMetadataForHash(metadataHash: string): string | undefined {
   return ZERO_METADATA_BY_HASH.get(metadataHash.toLowerCase());
 }
 
+/** The metadata hash of the zero metadata in each accepted version (v5, then v4). */
+export const ZERO_METADATA_HASHES: readonly string[] = [...ZERO_METADATA_BY_HASH.keys()];
+
 /**
  * FreeUsage metadata v1.
  *
