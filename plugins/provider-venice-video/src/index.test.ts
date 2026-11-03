@@ -338,6 +338,7 @@ describe('video-to-video models', () => {
   const WAN = veniceModel('wan-2-7-video-to-video', { model_type: 'video', aspect_ratios: [], resolutions: ['1080p', '720p'], durations: ['Auto'], audio_configurable: false, video_input: true });
   const GROK = veniceModel('grok-imagine-video-to-video-private', { model_type: 'video', aspect_ratios: [], resolutions: ['480p', '720p'], durations: ['5s', '10s', '15s'], video_input: true });
   const TEXT = veniceModel('wan-2.5-preview-text-to-video', { model_type: 'text-to-video', aspect_ratios: ['16:9'], resolutions: ['720p'], durations: ['5s'] });
+  const LIPSYNC = veniceModel('lipsync-video-to-video', { model_type: 'video', aspect_ratios: [], resolutions: [], durations: ['Auto'], audio_configurable: false, video_input: true, audio_input: true });
   // Venice's validation answers to an empty `reference_image_urls` (captured 2026-10-23).
   const referenceAnswer = (model: string) => Response.json({ error: 'Invalid request parameters', details: {
     _errors: [], duration: { _errors: ['duration must not exceed 300 seconds for upscale models'] },
@@ -352,7 +353,7 @@ describe('video-to-video models', () => {
   });
   const ready = async (model: { id: string }, capabilities?: object) => {
     const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
-      if (String(url).endsWith('/api/v1/models?type=video')) return Response.json({ data: [RECAST, MOTION, WAN, GROK, TEXT] });
+      if (String(url).endsWith('/api/v1/models?type=video')) return Response.json({ data: [RECAST, MOTION, WAN, GROK, TEXT, LIPSYNC] });
       if (String(url).endsWith('/api/v1/video/queue')) {
         const body = JSON.parse(String(init?.body));
         return body.duration === '999s' ? referenceAnswer(body.model) : Response.json({ model: body.model, queue_id: 'queue-1' });
@@ -400,6 +401,15 @@ describe('video-to-video models', () => {
     expect(wan?.video).toEqual({ inputs: ['video', 'reference_image'], requiredInputs: ['video'], resolutions: ['1080p', '720p'] });
     expect(veniceEditCapabilities({ video: { inputs: ['video'], requiredInputs: ['video'], durationsSeconds: [5], resolutions: ['768P'] } }, RECAST, 'required').video)
       .toEqual({ inputs: ['video', 'reference_image'], requiredInputs: ['video'], durationsSeconds: [5], resolutions: ['768P'] });
+  });
+
+  it('announces audio_url for an edit model Venice says takes audio, unless inputs are configured', async () => {
+    const lipsync = (await ready(LIPSYNC)).provider.serviceCapabilities?.[LIPSYNC.id];
+    expect(lipsync?.video?.inputs).toEqual(['video', 'reference_image', 'audio']);
+    expect(lipsync?.supportedParameters).toContain('audio_url');
+    const configured = (await ready(LIPSYNC, { video: { inputs: ['video'] } })).provider.serviceCapabilities?.[LIPSYNC.id];
+    expect(configured?.video?.inputs).toEqual(['video', 'reference_image']);
+    expect(configured?.supportedParameters).not.toContain('audio_url');
   });
 
   it('forwards a create as sent', async () => {

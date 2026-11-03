@@ -93,9 +93,11 @@ export function isVeniceEditModel(model: unknown): boolean {
  * are kept.
  */
 export function veniceEditCapabilities(capabilities: ServiceCapabilities, model: unknown, references: VeniceReferenceImages | null): ServiceCapabilities {
-  const kinds: VideoInputKind[] = ['video', 'reference_image'];
-  const required: VideoInputKind[] = ['video', ...(references === 'required' ? ['reference_image' as const] : [])];
   const configured = capabilities.video ?? {};
+  // Audio follows the seller's inputs when it announced them, else Venice's `audio_input`.
+  const audio = !configured.inputs && veniceConstraints(model)?.audio_input === true;
+  const kinds: VideoInputKind[] = ['video', 'reference_image', ...(audio ? ['audio' as const] : [])];
+  const required: VideoInputKind[] = ['video', ...(references === 'required' ? ['reference_image' as const] : [])];
   // Case-sensitive, as Venice lists them (`768P` for Recast, `720p` for Wan).
   const listed = veniceConstraints(model)?.resolutions;
   const resolutions = Array.isArray(listed) && listed.length > 0 && listed.length <= 16
