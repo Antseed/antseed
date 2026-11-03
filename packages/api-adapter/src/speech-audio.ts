@@ -150,28 +150,29 @@ function oggPageLength(body: Uint8Array, offset: number): number | null {
 /**
  * The complete packets of the whole Ogg pages in `body`, in order, as
  * [offset, length] pairs (a packet may span pages; one cut off is left out).
+ * Lazy, so a caller can stop at the packet it needs.
  */
-function oggPackets(body: Uint8Array): Array<[number, number]> {
-  const packets: Array<[number, number]> = [];
-  let parts: Array<[number, number]> = [];
+function* oggPackets(body: Uint8Array): Generator<[number, number]> {
+  let start: number | null = null;
+  let size = 0;
   for (let page = 0; ;) {
     const length = oggPageLength(body, page);
-    if (length === null) break;
+    if (length === null) return;
     const segments = body[page + 26]!;
     let data = page + 27 + segments;
     for (let i = 0; i < segments; i += 1) {
       const lacing = body[page + 27 + i]!;
-      parts.push([data, lacing]);
+      start ??= data;
+      size += lacing;
       data += lacing;
       if (lacing < 255) {
-        // A packet's parts are contiguous within a page; across pages only the length matters here.
-        packets.push([parts[0]![0], parts.reduce((sum, [, size]) => sum + size, 0)]);
-        parts = [];
+        yield [start, size];
+        start = null;
+        size = 0;
       }
     }
     page += length;
   }
-  return packets;
 }
 
 /**
@@ -180,24 +181,40 @@ function oggPackets(body: Uint8Array): Array<[number, number]> {
  * packet: headers alone hold nothing to play.
  */
 function isOgg(body: Uint8Array): boolean {
-  const packets = oggPackets(body);
-  const [first] = packets;
-  if (!first) return false;
-  const headerPackets = ascii(body, first[0], 'OpusHead')
-    ? 2
-    : body[first[0]] === 0x01 && ascii(body, first[0] + 1, 'vorbis')
-      ? 3
-      : null;
-  if (headerPackets === null) return false;
-  return packets.slice(headerPackets).some(([, length]) => length > 0);
+  let headerPackets: number | null = null;
+  let index = 0;
+  for (const [offset, length] of oggPackets(body)) {
+    if (index === 0) {
+      headerPackets = ascii(body, offset, 'OpusHead') ? 2 : body[offset] === 0x01 && ascii(body, offset + 1, 'vorbis') ? 3 : null;
+      if (headerPackets === null) return false;
+    } else if (index >= headerPackets! && length > 0) {
+      return true;
+    }
+    index += 1;
+  }
+  return false;
 }
 
 // ── MP4 / M4A ────────────────────────────────────────────────────
 
-/** Top-level boxes that fit the body, starting with `ftyp`, with a `moov` or `moof` and a non-empty `mdat`. */
+/** Whether `body[from, to)` holds `needle` with `value` at `valueAt` bytes from the needle's start. */
+function contains(body: Uint8Array, from: number, to: number, needle: readonly number[], valueAt: number, value: readonly number[]): boolean {
+  for (let offset = from; offset + Math.max(needle.length, valueAt + value.length) <= to; offset += 1) {
+    if (bytesAt(body, offset, needle) && bytesAt(body, offset + valueAt, value)) return true;
+  }
+  return false;
+}
+
+const HDLR = [0x68, 0x64, 0x6c, 0x72]; // 'hdlr'
+const SOUN = [0x73, 0x6f, 0x75, 0x6e]; // 'soun'
+
+/**
+ * Top-level boxes that fit the body, starting with `ftyp`, a `moov` with a
+ * sound track (an `hdlr` of type `soun`) and a non-empty `mdat`.
+ */
 function isMp4(body: Uint8Array): boolean {
   if (!ascii(body, 4, 'ftyp')) return false;
-  let movie = false;
+  let soundTrack = false;
   let media = false;
   for (let offset = 0; offset + 8 <= body.length;) {
     let size = u32be(body, offset);
@@ -210,11 +227,12 @@ function isMp4(body: Uint8Array): boolean {
       size = body.length - offset; // the last box runs to the end
     }
     if (size < header || offset + size > body.length) return false;
-    if (ascii(body, offset + 4, 'moov') || ascii(body, offset + 4, 'moof')) movie = true;
+    // hdlr: type, version and flags, pre_defined, then the handler type.
+    if (ascii(body, offset + 4, 'moov')) soundTrack ||= contains(body, offset + header, offset + size, HDLR, 12, SOUN);
     if (ascii(body, offset + 4, 'mdat') && size > header) media = true;
     offset += size;
   }
-  return movie && media;
+  return soundTrack && media;
 }
 
 // ── WebM / Matroska ──────────────────────────────────────────────
@@ -231,6 +249,8 @@ function ebmlSize(body: Uint8Array, offset: number): { width: number; value: num
 }
 
 const EBML_ID = [0x1a, 0x45, 0xdf, 0xa3];
+/** TrackType (0x83), one byte long, 2: an audio track. */
+const AUDIO_TRACK_TYPE = [0x83, 0x81, 0x02];
 const SEGMENT_ID = [0x18, 0x53, 0x80, 0x67];
 const CLUSTER_ID = [0x1f, 0x43, 0xb6, 0x75];
 
@@ -238,7 +258,7 @@ function bytesAt(body: Uint8Array, offset: number, bytes: readonly number[]): bo
   return bytes.every((byte, i) => body[offset + i] === byte);
 }
 
-/** A whole EBML header, then a Segment that holds a Cluster (where the audio is). */
+/** A whole EBML header, then a Segment with an audio track before a Cluster (where the audio is). */
 function isWebm(body: Uint8Array): boolean {
   if (!bytesAt(body, 0, EBML_ID)) return false;
   const header = ebmlSize(body, 4);
@@ -246,7 +266,9 @@ function isWebm(body: Uint8Array): boolean {
   const segment = 4 + header.width + header.value;
   if (!bytesAt(body, segment, SEGMENT_ID)) return false;
   for (let offset = segment + 4; offset + 4 <= body.length; offset += 1) {
-    if (bytesAt(body, offset, CLUSTER_ID)) return body.length > offset + 8;
+    if (bytesAt(body, offset, CLUSTER_ID)) {
+      return body.length > offset + 8 && contains(body, segment + 4, offset, AUDIO_TRACK_TYPE, 0, []);
+    }
   }
   return false;
 }
