@@ -10,7 +10,7 @@ import type { Identity } from '../src/p2p/identity.js';
 import type { SpendingAuthPayload } from '../src/types/protocol.js';
 import { bytesToHex } from '../src/utils/hex.js';
 import { toPeerId } from '../src/types/peer.js';
-import { Wallet } from 'ethers';
+import { AbiCoder, keccak256, Wallet } from 'ethers';
 import { signSpendingAuth, signReserveAuth, makeChannelsDomain, computeMetadataHash, encodeMetadata, ZERO_METADATA, ZERO_METADATA_HASH } from '../src/payments/evm/signatures.js';
 import type { SpendingAuthMessage, ReserveAuthMessage, SpendingAuthMetadata } from '../src/payments/evm/signatures.js';
 
@@ -489,6 +489,42 @@ describe('SellerPaymentManager', () => {
     expect(manager.channelsClient.reserve).toHaveBeenCalledOnce();
     expect(mux.sentAuthAcks.length).toBe(1);
     expect(store.getChannel(channelId)!.latestMetadata).toBe(encodeMetadata(ZERO_METADATA));
+  });
+
+  /** Metadata as a buyer that has not upgraded to v5 signs it (no speech characters). */
+  const encodeMetadataV4 = (inputTokens: bigint, outputTokens: bigint, requests: bigint) => AbiCoder.defaultAbiCoder().encode(
+    ['uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256',
+      'tuple(bytes32 serviceId,uint256 cumulativeAmount,uint256 cumulativeInputTokens,uint256 cumulativeCachedInputTokens,uint256 cumulativeOutputTokens,uint256 cumulativeRequestCount,uint256 cumulativeOutputImages,uint256 cumulativeVideoGenerations,uint256 cumulativeVideoSeconds)[]'],
+    [4n, inputTokens, outputTokens, requests, 0n, 0n, 0n, []],
+  );
+
+  it('accepts a SpendingAuth signed over v4 metadata and keeps its bytes for settlement', async () => {
+    const channelId = makeChannelId(26);
+    await manager.handleSpendingAuth(buyerIdentity.peerId, await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, { isReserve: true }), mux);
+
+    const metadata = encodeMetadataV4(100n, 50n, 1n);
+    const metadataHash = keccak256(metadata);
+    const spendingAuthSig = await signSpendingAuth(buyerIdentity.wallet, makeChannelsDomain(CHAIN_ID, CONTRACT_ADDR), {
+      channelId, cumulativeAmount: 200_000n, metadataHash,
+    });
+    const result = await manager.handleSpendingAuth(buyerIdentity.peerId, {
+      channelId, cumulativeAmount: '200000', metadataHash, metadata, spendingAuthSig,
+    }, mux);
+
+    expect(result).toBe('accepted');
+    expect(manager.getAcceptedCumulative(channelId)).toBe(200_000n);
+    expect(store.getChannel(channelId)!.latestMetadata).toBe(metadata);
+  });
+
+  it('fills in the v4 zero metadata a buyer signed without sending its bytes', async () => {
+    const channelId = makeChannelId(27);
+    const payload = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, { isReserve: true });
+    const zeroV4 = encodeMetadataV4(0n, 0n, 0n);
+    payload.metadata = '';
+    payload.metadataHash = keccak256(zeroV4);
+
+    expect(await manager.handleSpendingAuth(buyerIdentity.peerId, payload, mux)).toBe('reserved');
+    expect(store.getChannel(channelId)!.latestMetadata).toBe(zeroV4);
   });
 
   it('rejects SpendingAuth when raw metadata does not match signed metadataHash', async () => {

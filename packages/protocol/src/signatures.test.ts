@@ -16,6 +16,7 @@ import {
   computeMetadataHash,
   decodeSpendingAuthMetadata,
   encodeMetadata,
+  zeroMetadataForHash,
   METADATA_VERSION,
   getServiceMetadataId,
   makeChannelsDomain,
@@ -181,6 +182,14 @@ describe('SpendingAuth metadata versions', () => {
     expect(decoded.services.map((service) => service.cumulativeInputCharacters)).toEqual([0n, 0n]);
     const video = decoded.services.find((service) => service.serviceId === usageFixture.services[1]!.serviceId);
     expect(video).toEqual({ ...usageFixture.services[1]!, cumulativeInputCharacters: 0n });
+  });
+
+  it('finds the zero metadata a hash belongs to in v5 or v4', () => {
+    const zeroV4 = encodeMetadataV4({ ...usageFixture, cumulativeInputTokens: 0n, cumulativeOutputTokens: 0n, cumulativeRequestCount: 0n,
+      cumulativeOutputImages: 0n, cumulativeVideoGenerations: 0n, cumulativeVideoSeconds: 0n, services: [] });
+    expect(zeroMetadataForHash(ZERO_METADATA_HASH)).toBe(encodeMetadata({ cumulativeInputTokens: 0n, cumulativeOutputTokens: 0n, cumulativeRequestCount: 0n }));
+    expect(zeroMetadataForHash(keccak256(zeroV4).toUpperCase().replace('0X', '0x'))).toBe(zeroV4);
+    expect(zeroMetadataForHash('0x' + '22'.repeat(32))).toBeUndefined();
   });
 
   it('refuses versions it does not know', () => {

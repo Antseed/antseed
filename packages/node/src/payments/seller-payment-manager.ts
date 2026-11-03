@@ -17,6 +17,7 @@ import {
   makeChannelsDomain,
   encodeMetadata,
   ZERO_METADATA,
+  zeroMetadataForHash,
 } from './evm/signatures.js';
 import { debugLog, debugWarn } from '../utils/debug.js';
 import { peerIdToAddress } from '../types/peer.js';
@@ -1411,10 +1412,20 @@ export class SellerPaymentManager {
     }
   }
 
+  /**
+   * Whether the payload's metadata hashes to its metadataHash. A payload sent
+   * without metadata bytes matches when its hash is the zero metadata's in an
+   * accepted version (v5 or v4); those bytes are filled in, so the stored auth
+   * settles with exactly what the buyer signed.
+   */
   private _metadataMatchesHash(payload: SpendingAuthPayload): boolean {
     try {
-      const metadata = payload.metadata || encodeMetadata(ZERO_METADATA);
-      return keccak256(metadata).toLowerCase() === payload.metadataHash.toLowerCase();
+      if (!payload.metadata) {
+        const zero = zeroMetadataForHash(payload.metadataHash);
+        if (zero) payload.metadata = zero;
+        return zero !== undefined;
+      }
+      return keccak256(payload.metadata).toLowerCase() === payload.metadataHash.toLowerCase();
     } catch (err) {
       debugWarn(`[SellerPayment] Invalid metadata payload: ${err instanceof Error ? err.message : err}`);
       return false;
