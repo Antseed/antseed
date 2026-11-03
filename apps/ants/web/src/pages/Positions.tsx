@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { api } from '../api';
 import { useConfig } from '../app-context';
 import { ErrorBox } from '../components/Feedback';
+import { FreeTierShare } from '../components/FreeTierShare';
 import { sortPools } from '../components/Pools';
 import { PositionsCard } from '../components/Positions';
 import { StatTile, Tiles } from '../components/StatTile';
@@ -76,6 +77,7 @@ export function PositionsPage() {
         />
       </Tiles>
       <PositionsCard pools={sortedPools} enabled={canViewPositions} />
+      <FreeTierShare />
     </>
   );
 }

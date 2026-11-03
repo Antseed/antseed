@@ -361,6 +361,11 @@ export function registerPaymentsIpc(): void {
     }
   });
 
+  ipcMain.handle('payments:get-peer-metering', async (_event, peerId: unknown): Promise<Record<string, unknown> | null> => {
+    if (typeof peerId !== 'string' || peerId.length === 0) return null;
+    return fetchBuyerProxyJson(`/_antseed/metering/${encodeURIComponent(peerId)}`);
+  });
+
   ipcMain.handle('payments:get-buyer-usage', async (): Promise<{ ok: boolean; data: DesktopBuyerUsageTotals | null; error: string | null; lastActivityAt: number | null }> => {
     const body = await fetchBuyerProxyJson('/_antseed/buyer-usage');
     if (!body) {

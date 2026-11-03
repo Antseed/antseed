@@ -14,12 +14,13 @@ import {
   parseUsdcToBaseUnits,
 } from '../../payment-utils.js'
 import { AntseedNode, peerRelaysSweeps } from '@antseed/node'
-import type { SweepReceiptPayload } from '@antseed/node'
 import { parseBootstrapList, toBootstrapConfig } from '@antseed/node/discovery'
 import { buildBuyerBootstrapEntries } from './start.js'
 import {
   DepositWatcher,
   reserveBaseUnits,
+  supersedesSweepReceipt,
+  type AttributedSweepReceipt,
   type DepositWatchEvent,
 } from '../../../proxy/deposit-watcher.js'
 import { daemonDepositsStatus, daemonSetWatchMode } from './daemon.js'
@@ -243,7 +244,7 @@ async function watchStandalone(
   const { config, address } = ctx
 
   let node: AntseedNode | null = null
-  let latestReceipt: SweepReceiptPayload | null = null
+  let latestReceipt: AttributedSweepReceipt | null = null
   const ensureNode = async (): Promise<AntseedNode> => {
     if (node) return node
     const bootstrapNodes = toBootstrapConfig(
@@ -251,8 +252,8 @@ async function watchStandalone(
     )
     node = new AntseedNode({ role: 'buyer', bootstrapNodes, allowPrivateIPs: true, dataDir, autoReconcileBuyerChannels: false })
     await node.start()
-    node.on('sweep:receipt', (event: { peerId: string; payload: SweepReceiptPayload }) => {
-      latestReceipt = event.payload
+    node.on('sweep:receipt', (event: AttributedSweepReceipt) => {
+      if (supersedesSweepReceipt(latestReceipt, event)) latestReceipt = event
     })
     const relayers = (await node.discoverPeers()).filter(peerRelaysSweeps)
     await Promise.allSettled(relayers.slice(0, MAX_PEERS_TO_CONNECT).map((peer) => node!.connectToPeer(peer)))
@@ -276,7 +277,7 @@ async function watchStandalone(
       await Promise.allSettled(relayers.slice(0, MAX_PEERS_TO_CONNECT).map((peer) => n.connectToPeer(peer)))
     },
     getReceipt: async (authNonce) =>
-      latestReceipt && latestReceipt.authNonce === authNonce ? latestReceipt : null,
+      latestReceipt && latestReceipt.payload.authNonce === authNonce ? latestReceipt.payload : null,
     onEvent: (event) => {
       if (renderEvent(spinner, event)) credited = true
     },

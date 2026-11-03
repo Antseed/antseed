@@ -701,6 +701,35 @@ States: `ready` (M001 active, at least one install missing), `active`,
 
 ## Configuration
 
+### KBF verification
+
+`AntseedKbfVerification` records KBF model-verification audits from approved auditors and pays
+them from the verification emission bucket by audit credits, capped per model, per
+auditor and by each auditor's share of the epoch budget. Rewards stay off until the owner
+sets `rewardsStartEpoch`. Every audit it records is a KBF audit.
+KBF is one of the first verification methods: each later method gets its own
+contract, points policy and emissions bucket, and the verification bucket share
+is split between them with `setMinter` from the next epoch.
+
+#### Confirmations
+
+Each submitted result is a report. A verdict is recorded once `requiredReports(verdict)`
+distinct approved auditors report it for the same agent, service and model in the same
+epoch: by default 1 for SAME and UNDETERMINED and 2 for DIFF (`setRequiredReports`). A SAME
+or UNDETERMINED that would replace a live DIFF needs as many reports as a DIFF, whatever
+model it is reported as, so one auditor can neither give nor clear a DIFF. Reports count
+per epoch only, and only within the service's current report round (`reportRound`): it moves
+on whenever the service's verdict moves into or out of DIFF, so support given before a DIFF
+was confirmed can't clear it and support given before it was cleared can't restore it. Changes
+between SAME and UNDETERMINED don't move it, so one auditor can't reset a DIFF that waits for its
+second report. Revoking an auditor (`setAuditor(auditor, false)`) moves every service's round on
+(`auditorRevocations`), so a revoked auditor's waiting reports never help record a verdict;
+recorded verdicts stay. An auditor's later report replaces its earlier one, and repeating a report adds
+no support (it records again only where one report is enough). `ServiceAudited` carries the
+`round`, `reports` (distinct auditors reporting that verdict so far this epoch and round) and `required`;
+`antseed verifier run` reads it to find DIFFs waiting for a confirmation. Credits are
+unchanged: every model audit earns one, confirmed or not.
+
 Administrative parameters use their contract's dedicated setters where available.
 The emissions gate's schedule constants are immutable; do not treat legacy
 owner-configurable emissions parameters as configuration for the standard gate.
@@ -790,3 +819,30 @@ Used for testing and development. Uses MockUSDC with permissionless minting. See
 #### Base Local (Development)
 
 Local anvil chain (chain ID 31337) for development. Deploy with `forge script script/Deploy.s.sol`.
+
+### Standalone verification deployment (no policy or rewards)
+
+When the AntSeed deployer key is unavailable, a separate wallet can deploy the
+verification registry without installing `AntseedKbfVerificationPointsPolicy` or
+touching the existing points-policy/rewards wiring. Use
+`script/DeployStandaloneVerification.s.sol` with an existing compatible
+registry and seller-pools address:
+
+```bash
+cd packages/contracts
+export EXPECTED_CHAIN_ID=84532 # or the intended chain
+export ANTSEED_REGISTRY=0x...
+export SELLER_POOLS=0x...
+export STANDALONE_OWNER=0x... # address of the new signer
+forge script script/DeployStandaloneVerification.s.sol \
+  --rpc-url "$RPC_URL" --sender "$STANDALONE_OWNER" --via-ir
+```
+
+Review the dry-run output, then repeat with a new keystore or hardware-wallet
+signer and `--broadcast`. The script deploys only `AntseedKbfVerification`,
+optionally approves the supplied `VERIFICATION_AUDITORS`, leaves
+`rewardsStartEpoch` at `type(uint256).max`, and makes no policy-registry,
+usage-accounting, emissions-gate, or existing-registry writes. The new owner
+still needs gas, and the verification contract remains read-coupled to the
+registry's emissions source and seller-pools contract. This is not a fresh
+replacement for the complete AntSeed protocol stack.

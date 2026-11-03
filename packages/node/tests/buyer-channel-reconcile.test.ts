@@ -468,6 +468,25 @@ describe('buyer channel reconcile against the chain', () => {
       },
     },
     {
+      work: 'a paid request to the seller is still running',
+      start: async () => {
+        bpm.beginPaidRequest(SELLER);
+        return async () => { bpm.endPaidRequest(SELLER); };
+      },
+    },
+    {
+      work: 'a reserve top-up is being signed',
+      start: async () => {
+        const held = holdSignatures();
+        const topUp = bpm.topUpReserve(SELLER, negotiator.getOrCreatePaymentMux(SELLER, sellerConn));
+        await held.signing;
+        return async () => {
+          held.release();
+          await topUp;
+        };
+      },
+    },
+    {
       work: 'an external SpendingAuth waits for the seller\'s AuthAck',
       seed: { reserveAuthPending: true, confirmedReserveAmount: '0' },
       start: async () => {

@@ -3,6 +3,7 @@
 import type { DiscoverRow, TrustBreakdown } from '../../core/state';
 import { formatUsdShort } from '../../core/format';
 import { isNativeVideoProtocol } from './model-capabilities';
+import { freeTierHeadline } from './free-tier';
 
 /** Effective model reputation is 0-100; the UI shows it on a 10-point scale. */
 export function sellerReputationLabel(route: DiscoverRow): string {
@@ -22,6 +23,13 @@ const IDENTITY_KIND_LABELS: Record<NonNullable<TrustBreakdown['identity']>['kind
  * Flagged sellers read `Trust 0/10: flagged as a proven wash trader by the on-chain registry.`
  */
 export function sellerReputationExplanation(route: DiscoverRow): string {
+  const base = sellerTrustExplanation(route);
+  if (!route.verificationDiff) return base;
+  const sentence = base.endsWith('.') ? base : `${base}.`;
+  return `${sentence} Model verification: DIFF. An on-chain audit suspects this service is not the model it claims, so its reputation is cut to 10% (${sellerReputationLabel(route)}/10).`;
+}
+
+function sellerTrustExplanation(route: DiscoverRow): string {
   const trust = route.trust;
   if (!trust) return `Trust: ${sellerReputationLabel(route)}/10`;
   if (trust.washFlagged) return 'Trust 0/10: flagged as a proven wash trader by the on-chain registry.';
@@ -67,7 +75,7 @@ export function isFreeRoute(route: DiscoverRow): boolean {
 export function sellerMetaLabel(route: DiscoverRow): string {
   const parts: string[] = [];
   if (isFreeRoute(route)) {
-    parts.push('Free');
+    parts.push(route.freeTier ? freeTierHeadline(route.freeTier, false) : 'Free');
   } else if (isNativeVideoProtocol(route.protocol)) {
     const perSecond = usdRange(route.minVideoUsdPerSecond, route.maxVideoUsdPerSecond);
     const perVideo = usdRange(route.minVideoUsdPerVideo, route.maxVideoUsdPerVideo);
@@ -88,5 +96,7 @@ export function sellerMetaLabel(route: DiscoverRow): string {
   } else {
     parts.push('Price unknown');
   }
+  // A priced route's own free allowance, before its price applies.
+  if (!isFreeRoute(route) && route.freeTier) parts.push(freeTierHeadline(route.freeTier, true));
   return parts.join(' · ');
 }

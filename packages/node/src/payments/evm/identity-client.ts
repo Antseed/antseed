@@ -1,4 +1,4 @@
-import { Contract, id as keccak256, type AbstractSigner } from 'ethers';
+import { Contract, id as keccak256, type AbstractSigner, type ContractTransactionResponse } from 'ethers';
 import { BaseEvmClient } from './base-evm-client.js';
 
 export interface IdentityClientConfig {
@@ -41,14 +41,13 @@ export class IdentityClient extends BaseEvmClient {
     const signerAddress = await connected.getAddress();
     const contract = new Contract(this._contractAddress, IDENTITY_REGISTRY_ABI, connected);
 
-    let tx: { wait(): Promise<{ hash: string; logs: Array<{ topics: string[]; data: string }> } | null> };
+    let tx: ContractTransactionResponse;
     if (metadataURI) {
       tx = await this._sendWithNonce(signerAddress, (nonce) => contract.getFunction('register(string)')(metadataURI, { nonce }));
     } else {
       tx = await this._sendWithNonce(signerAddress, (nonce) => contract.getFunction('register()')({ nonce }));
     }
-    const receipt = await tx.wait();
-    if (!receipt) throw new Error('Transaction was dropped or replaced');
+    const receipt = await this._waitForReceipt(tx);
 
     // Extract agentId from Transfer event (ERC-721 Transfer(address,address,uint256))
     const transferLog = receipt.logs.find((l) => l.topics?.[0] === keccak256('Transfer(address,address,uint256)'));

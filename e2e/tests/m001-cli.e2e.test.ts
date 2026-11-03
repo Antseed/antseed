@@ -76,7 +76,6 @@ describe.skipIf(!enabled)('M001 CLI sandbox', () => {
     out = existingSandboxOut ? resolve(existingSandboxOut) : await mkdtemp(join(tmpdir(), 'antseed-m001-sandbox-'));
     dataDir = await mkdtemp(join(tmpdir(), 'antseed-m001-cli-'));
     config = join(out, 'cli-config.json');
-    await execFile('pnpm', ['--filter', '@antseed/cli', 'build'], { cwd: root, env: process.env });
     const identity = await loadOrCreateIdentity(dataDir);
     walletAddress = identity.wallet.address;
     if (ownsSandbox) {

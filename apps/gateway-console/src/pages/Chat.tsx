@@ -8,7 +8,7 @@ import { Drawer } from '@antseed/ui'
 import { API_BASE, CSRF_HEADER, api } from '../api'
 import type { ChatMessageMetadata, ChatModel, ChatModelPeer, ChatThread, RoutePreview } from '../api/types'
 import {
-  autoPick, isFreeOffer, MODEL_FILTERS, MODEL_SORTS, PEER_FILTERS, PEER_SORTS, pickModels, pickPeers, verdictsFrom,
+  autoPick, isFreeOffer, isStakerFreeOffer, MODEL_FILTERS, MODEL_SORTS, PEER_FILTERS, PEER_SORTS, pickModels, pickPeers, verdictsFrom,
   type ModelFilter, type ModelSort, type PeerFilter, type PeerSort,
 } from '../lib/chat-pick'
 import { useConsole } from '../app/context'
@@ -16,6 +16,7 @@ import { isOrgAdmin, isWorkspaceAdmin } from '../lib/nav'
 import { qk, useModels, useWallet } from '../lib/queries'
 import { findModel } from '../lib/models'
 import { recordSummary } from '../lib/selection'
+import { FreeTierLimitNotice, parseChatFreeTierError } from '../components/FreeTierLimitNotice'
 import { ModelDetails } from '../components/ModelDetails'
 import { SellerSelection } from '../components/SellerSelection'
 import { LoadingRows } from '../components/ui'
@@ -319,10 +320,11 @@ function FilterBar<F extends string, S extends string>({ filters, active, onTogg
 }
 
 /** Small capability tags after a name. */
-function Tags({ free, tools, reasoning, vision, tee }: { free?: boolean; tools?: boolean; reasoning?: boolean; vision?: boolean; tee?: boolean }) {
+function Tags({ free, stakers, tools, reasoning, vision, tee }: { free?: boolean; stakers?: boolean; tools?: boolean; reasoning?: boolean; vision?: boolean; tee?: boolean }) {
   return (
     <span className="flex flex-wrap gap-1">
       {free && <Pill tone="free">Free</Pill>}
+      {!free && stakers && <Pill tone="free" title="Free for buyers staked on the seller">Free for stakers</Pill>}
       {tee && <Pill tone="tee">TEE</Pill>}
       {tools && <Pill>Tools</Pill>}
       {reasoning && <Pill>Reasoning</Pill>}
@@ -380,7 +382,7 @@ function ModelPicker({ models, value, onChange, className }: { models: ChatModel
               <ModelSelectorItem key={model.id} value={`${model.name} ${model.id}`} onSelect={() => { onChange(model.id); setOpen(false) }} className="items-start py-2">
                 <span className="flex min-w-0 flex-col gap-1">
                   <ModelSelectorName>{model.name}</ModelSelectorName>
-                  <Tags free={model.free} tools={model.toolUse} reasoning={model.reasoning} vision={model.vision} tee={model.tee} />
+                  <Tags free={model.free} stakers={model.freeForStakers} tools={model.toolUse} reasoning={model.reasoning} vision={model.vision} tee={model.tee} />
                 </span>
                 <span className="ml-auto shrink-0 text-right text-muted-foreground text-xs">
                   {model.offers} seller{model.offers === 1 ? '' : 's'}
@@ -499,7 +501,7 @@ function PeerPicker({ model, value, onChange, preview, previewLoading, unfunded,
                       <ModelSelectorName>{peerLabel(peer)}</ModelSelectorName>
                       {verdict?.eligible && verdict.rank !== null && <span className="text-muted-foreground text-xs">#{verdict.rank}</span>}
                     </span>
-                    <Tags free={isFreeOffer(peer)} tools={peer.toolUse} reasoning={peer.reasoning} vision={peer.vision} tee={peer.tee} />
+                    <Tags free={isFreeOffer(peer)} stakers={isStakerFreeOffer(peer)} tools={peer.toolUse} reasoning={peer.reasoning} vision={peer.vision} tee={peer.tee} />
                     {skipped && <span className="text-muted-foreground text-xs">Auto skips it: {verdict.reasons[0] ?? 'not eligible'}. You can still pin it.</span>}
                     {verdict?.selection && (
                       <span className="text-muted-foreground text-xs">
@@ -706,6 +708,7 @@ export default function Chat() {
   }, [error])
 
   const busy = status === 'submitted' || status === 'streaming'
+  const freeTierError = error ? parseChatFreeTierError(error.message) : null
   // This conversation's estimated cost so far; null once any answer's cost is unknown.
   const chatCost = messages.reduce<number | null>((sum, message) => {
     const cost = message.metadata?.costUsd
@@ -885,7 +888,8 @@ export default function Chat() {
           {busy && isWaitingForModel(messages.at(-1)) && (
             <div className="-mt-4 text-muted-foreground text-sm" role="status"><Shimmer duration={1}>Thinking…</Shimmer></div>
           )}
-          {error && (
+          {freeTierError && <FreeTierLimitNotice error={freeTierError} onAuto={peerId ? () => setPeerId(null) : null} />}
+          {error && !freeTierError && (
             <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm">
               {/out of AntSeed credits|insufficient_deposits/i.test(error.message)
                 ? (

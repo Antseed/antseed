@@ -527,7 +527,9 @@ describe('a payment write that awaited while the seller channel moved on', () =>
     manager.recordObservedUnitUsage('req-image', { units: { output_images: 2 } });
   }
 
-  describe('in BuyerPaymentManager, a NeedAuth that a later one signed past', () => {
+  // NeedAuths for one seller are judged one at a time, in arrival order: a
+  // later one waits behind an earlier one held at the usage wait or the signer.
+  describe('in BuyerPaymentManager, a NeedAuth that arrives while an earlier one is held', () => {
     beforeEach(() => setup());
 
     function signedOn(channelId: string, sentBefore: number): Record<string, unknown> {
@@ -538,46 +540,46 @@ describe('a payment write that awaited while the seller channel moved on', () =>
       };
     }
 
-    it('held at the usage wait, leaves the higher cumulative committed and in memory', async () => {
+    it('held at the usage wait, signs both in order and leaves the higher cumulative committed and in memory', async () => {
       const channelId = await openChannel();
       const sentBefore = mux.sent.length;
       manager.trackRequestBilling('req-image', IMAGE_BILLING);
       const earlier = manager.handleNeedAuth(SELLER, imageNeedAuth(channelId, 8_000n), mux);
-      await manager.handleNeedAuth(SELLER, needAuth(channelId, 28_000n), mux);
+      const later = manager.handleNeedAuth(SELLER, needAuth(channelId, 28_000n), mux);
       deliverImages();
-      await earlier;
+      await Promise.all([earlier, later]);
 
-      expect(signedOn(channelId, sentBefore)).toEqual({ committed: '28000', inMemory: 28_000n, sent: ['28000'] });
+      expect(signedOn(channelId, sentBefore)).toEqual({ committed: '28000', inMemory: 28_000n, sent: ['8000', '28000'] });
     });
 
-    it('held at the signer, leaves the higher cumulative committed and in memory', async () => {
+    it('held at the signer, signs both in order and leaves the higher cumulative committed and in memory', async () => {
       const channelId = await openChannel();
       const sentBefore = mux.sent.length;
       const held = signer.holdNextSignature();
       const earlier = manager.handleNeedAuth(SELLER, needAuth(channelId, 8_000n), mux);
       await held.arrived;
-      await manager.handleNeedAuth(SELLER, needAuth(channelId, 28_000n), mux);
+      const later = manager.handleNeedAuth(SELLER, needAuth(channelId, 28_000n), mux);
       held.open();
-      await earlier;
+      await Promise.all([earlier, later]);
 
-      expect(signedOn(channelId, sentBefore)).toEqual({ committed: '28000', inMemory: 28_000n, sent: ['28000'] });
+      expect(signedOn(channelId, sentBefore)).toEqual({ committed: '28000', inMemory: 28_000n, sent: ['8000', '28000'] });
     });
 
-    it('held at the usage wait, signs and reports only what the later one left', async () => {
+    it('held at the usage wait, a lower later one is stale and nothing lower is signed or reported', async () => {
       const channelId = await openChannel();
       const sentBefore = mux.sent.length;
       const reported: bigint[] = [];
       manager.setSpendListener((event) => { reported.push(BigInt(event.amountUsdc)); });
       manager.trackRequestBilling('req-image', IMAGE_BILLING);
       const earlier = manager.handleNeedAuth(SELLER, imageNeedAuth(channelId, 28_000n), mux);
-      await manager.handleNeedAuth(SELLER, needAuth(channelId, 20_000n), mux);
+      const later = manager.handleNeedAuth(SELLER, needAuth(channelId, 20_000n), mux);
       deliverImages();
-      await earlier;
+      await Promise.all([earlier, later]);
 
       expect({
         ...signedOn(channelId, sentBefore),
         reported: reported.reduce((sum, amount) => sum + amount, 0n),
-      }).toEqual({ committed: '28000', inMemory: 28_000n, sent: ['20000', '28000'], reported: 28_000n });
+      }).toEqual({ committed: '28000', inMemory: 28_000n, sent: ['28000'], reported: 28_000n });
     });
   });
 
@@ -585,9 +587,10 @@ describe('a payment write that awaited while the seller channel moved on', () =>
     beforeEach(() => setup());
 
     it.each([
-      { write: 'resent SpendingAuth (resendCurrentSpendingAuth)', start: () => manager.resendCurrentSpendingAuth(SELLER, mux), outcome: 'completed' },
-      { write: 'close authorization (buildCloseChannelRequest)', start: () => manager.buildCloseChannelRequest(SELLER), outcome: 'buyer-session-state' },
-    ])('$write keeps the higher authorization stored and sends nothing lower', async ({ start, outcome: expected }) => {
+      // Waits behind the commit (same seller lock), then resends that higher authorization.
+      { write: 'resent SpendingAuth (resendCurrentSpendingAuth)', start: () => manager.resendCurrentSpendingAuth(SELLER, mux), outcome: 'completed', sent: ['38000', '38000'] },
+      { write: 'close authorization (buildCloseChannelRequest)', start: () => manager.buildCloseChannelRequest(SELLER), outcome: 'buyer-session-state', sent: ['38000'] },
+    ])('$write keeps the higher authorization stored and sends nothing lower', async ({ start, outcome: expected, sent: expectedSent }) => {
       const channelId = await openChannel();
       await spend(channelId, 10_000n);
       const sentBefore = mux.sent.length;
@@ -608,7 +611,7 @@ describe('a payment write that awaited while the seller channel moved on', () =>
         latestSpendingAuthSig: stored?.latestSpendingAuthSig,
         sent: mux.sent.slice(sentBefore).map((payload) => payload.cumulativeAmount),
         outcome,
-      }).toEqual({ authMax: '38000', latestSpendingAuthSig: higher?.spendingAuthSig, sent: ['38000'], outcome: expected });
+      }).toEqual({ authMax: '38000', latestSpendingAuthSig: higher?.spendingAuthSig, sent: expectedSent, outcome: expected });
     });
   });
 
@@ -803,10 +806,12 @@ describe('a payment write that awaited while the seller channel moved on', () =>
       const held = heldSignature();
       const write = actionOf(negotiator.handle402(make402({ minBudgetPerRequest: '10000', requiredCumulativeAmount: '20000' }), PEER, conn, REQUEST));
       await held.arrived;
-      await manager.handleNeedAuth(SELLER, needAuth(channelId, 28_000n), pmux);
+      // Queued behind the catch-up on the seller lock: signs after it, higher.
+      const higher = manager.handleNeedAuth(SELLER, needAuth(channelId, 28_000n), pmux);
       held.release();
+      const [outcome] = await Promise.all([write, higher]);
 
-      expect(afterCatchUp(channelId, await write, sent)).toEqual(caughtUp);
+      expect(afterCatchUp(channelId, outcome, sent)).toEqual({ ...caughtUp, sent: ['20000', '38000'] });
     });
 
     it('402 catch-up while the seller\'s higher catch-up NeedAuth is still being saved', async () => {
@@ -826,12 +831,21 @@ describe('a payment write that awaited while the seller channel moved on', () =>
       });
       const higher = manager.handleNeedAuth(SELLER, needAuth(channelId, 28_000n), pmux);
       await saving.arrived;
+      // The catch-up reaches the seller lock while the NeedAuth still holds it,
+      // so it signs only after the higher one is saved, from that cumulative.
+      const extend = manager.extendCurrentSpendingAuth.bind(manager);
+      vi.spyOn(manager, 'extendCurrentSpendingAuth').mockImplementationOnce((...args) => {
+        const run = extend(...args);
+        saving.open();
+        return run;
+      });
 
-      const outcome = await actionOf(negotiator.handle402(make402({ minBudgetPerRequest: '10000', requiredCumulativeAmount: '20000' }), PEER, conn, REQUEST));
-      saving.open();
-      await higher;
+      const [outcome] = await Promise.all([
+        actionOf(negotiator.handle402(make402({ minBudgetPerRequest: '10000', requiredCumulativeAmount: '20000' }), PEER, conn, REQUEST)),
+        higher,
+      ]);
 
-      expect(afterCatchUp(channelId, outcome, sent)).toEqual(caughtUp);
+      expect(afterCatchUp(channelId, outcome, sent)).toEqual({ ...caughtUp, committed: '48000', inMemory: 48_000n, sent: ['38000', '48000'] });
     });
 
     /** Replace the seller's channel, then handle a 402 the seller sent about the old one. */

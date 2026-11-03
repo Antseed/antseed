@@ -5,7 +5,7 @@
  * format the buyer accepts. Snippets for a model use `$ANTSEED_API_KEY`;
  * only the key-created dialog puts a (new) secret in them.
  */
-import type { NetworkModelOffer, NetworkModelType, Peer } from '../api/types'
+import type { NetworkModelOffer, NetworkModelType, Peer, SellerServiceKind } from '../api/types'
 
 export function gatewayBaseUrl(publicUrl: string | null | undefined, origin: string): string {
   return (publicUrl || origin).replace(/\/+$/, '')
@@ -89,11 +89,11 @@ function requestBody(format: ApiFormat, model: string): string {
   return JSON.stringify({ model, messages: [{ role: 'user', content: 'Hello' }] })
 }
 
-/** A ready-to-run curl request; single quotes in the body are escaped for the shell. */
-export function curlSnippet(baseUrl: string, model: string, format: ApiFormat = 'openai-chat-completions', key: KeyRef = ENV_KEY): string {
+/** A ready-to-run curl request; single quotes in the body are escaped for the shell. `key: null` for a local buyer, which takes none. */
+export function curlSnippet(baseUrl: string, model: string, format: ApiFormat = 'openai-chat-completions', key: KeyRef | null = ENV_KEY): string {
   return [
     `curl ${baseUrl}${API_PATHS[format]} \\`,
-    `  -H "Authorization: Bearer ${shellKey(key)}" \\`,
+    ...(key ? [`  -H "Authorization: Bearer ${shellKey(key)}" \\`] : []),
     '  -H "Content-Type: application/json" \\',
     `  -d '${requestBody(format, model).replaceAll("'", `'\\''`)}'`,
   ].join('\n')
@@ -253,4 +253,22 @@ export function connectTabs(baseUrl: string, peerId: string, model: string, form
     { id: 'openai-compatible', label: 'Cursor / OpenAI-compatible', language: 'text', code: openAiCompatibleSnippet(baseUrl, modelId) },
   )
   return tabs
+}
+
+/** Where `antseed buyer start` listens by default. */
+export const LOCAL_BUYER_URL = 'http://localhost:8377'
+
+const MODEL_TYPE: Record<SellerServiceKind, NetworkModelType> = { text: 'text', image: 'image', video: 'video', other: 'decision' }
+
+/**
+ * A seller's example request through a local buyer, pinned to it: a text
+ * model when it sells one, else an image model, on the API that model is
+ * called on. `code` is null when the model kind has no example request
+ * (video, decision): buyers call those on their own APIs.
+ */
+export function localBuyerExample(peerId: string, services: ReadonlyArray<{ provider: string; service: string; kind: SellerServiceKind; apiProtocols: readonly string[] }>, baseUrl = LOCAL_BUYER_URL): { service: string; code: string | null } | null {
+  const pick = services.find((service) => service.kind === 'text') ?? services.find((service) => service.kind === 'image') ?? services[0]
+  if (!pick) return null
+  const format = modelCallFormat(MODEL_TYPE[pick.kind], { provider: pick.provider, protocols: [...pick.apiProtocols] })
+  return { service: pick.service, code: format ? curlSnippet(baseUrl, pinnedModelId(peerId, pick.service), format, null) : null }
 }

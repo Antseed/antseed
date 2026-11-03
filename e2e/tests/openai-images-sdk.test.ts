@@ -1,17 +1,13 @@
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import OpenAI from 'openai';
 import { createServer } from 'node:net';
-import { execFile } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { promisify } from 'node:util';
 import { AntseedNode } from '@antseed/node';
 import type { PeerInfo } from '@antseed/node';
 import { createLocalBootstrap } from './helpers/local-bootstrap.js';
 import { MockOpenAIImageProvider } from './helpers/mock-openai-provider.js';
-
-const execFileAsync = promisify(execFile);
 
 async function waitForPeers(
   node: AntseedNode,
@@ -57,9 +53,6 @@ describe('OpenAI SDK integration: Images API over buyer proxy', () => {
     tempHomeDir = await mkdtemp(join(tmpdir(), 'antseed-home-'));
     process.env['HOME'] = tempHomeDir;
     process.env['USERPROFILE'] = tempHomeDir;
-    await execFileAsync('pnpm', ['--filter', '@antseed/node', 'build'], {
-      cwd: join(import.meta.dirname, '..', '..'),
-    });
   });
 
   afterEach(async () => {

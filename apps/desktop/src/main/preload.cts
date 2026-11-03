@@ -101,7 +101,7 @@ type PreparedChatAttachment = {
   name: string;
   mimeType: string;
   size: number;
-  kind: 'image' | 'text' | 'archive' | 'error';
+  kind: 'image' | 'video' | 'text' | 'archive' | 'error';
   status: 'ready' | 'error';
   text?: string;
   image?: { type: 'image'; data: string; mimeType: string };
@@ -173,6 +173,20 @@ type ChatAiStreamStopReason = {
   message: string;
   statusCode?: number;
   errorCode?: string;
+  /** Set when a seller's free tier ran out: its limit and staked tiers (only stake in that seller's pool counts). */
+  freeTier?: {
+    peerId: string | null;
+    /** `stake_required`: the model is free on that seller only for its stakers. */
+    limitedBy: 'address' | 'ip' | 'stake' | 'stake_required';
+    limit: number | null;
+    windowMs: number | null;
+    retryAfterSeconds: number | null;
+    stakeTiers: Array<{ minPower: number; multiplier: number | 'unlimited' }>;
+    stakePower: number;
+    /** Requests per window the tier multipliers apply to; null from sellers that don't send it. */
+    baseLimit: number | null;
+    stakersOnly: boolean;
+  };
 };
 
 const api = {
@@ -565,13 +579,18 @@ const api = {
   identityImportKey: (privateKeyHex: string) => ipcRenderer.invoke('identity:import-key', privateKeyHex),
   paymentsSignSpendingAuth: (params: unknown) => ipcRenderer.invoke('payments:sign-spending-auth', params),
   paymentsGetPeerInfo: (peerId: string) => ipcRenderer.invoke('payments:get-peer-info', peerId),
-  stakingOpen: (options?: { page?: 'stake' | 'rewards' }) => ipcRenderer.invoke('staking:open', options),
-  stakingCopyLink: (options?: { page?: 'stake' | 'rewards' }) => ipcRenderer.invoke('staking:copyLink', options),
+  stakingOpen: (options?: { page?: 'stake' | 'rewards'; pool?: number }) => ipcRenderer.invoke('staking:open', options),
+  stakingCopyLink: (options?: { page?: 'stake' | 'rewards'; pool?: number }) => ipcRenderer.invoke('staking:copyLink', options),
+  freeTierList: () => ipcRenderer.invoke('freeTier:list'),
+  freeTierAdd: (code: string) => ipcRenderer.invoke('freeTier:add', code),
+  freeTierRemove: (staker: string) => ipcRenderer.invoke('freeTier:remove', staker),
+  freeTierStake: () => ipcRenderer.invoke('freeTier:stake'),
   paymentsOpenPayPage: (opts: { kind?: string; amountUsdc?: string; channelId?: string }) => ipcRenderer.invoke('payments:open-pay-page', opts),
   paymentsCardProviders: () => ipcRenderer.invoke('payments:card-providers'),
   paymentsOpenCardProvider: (opts?: { providerId?: string; amountUsdc?: string }) => ipcRenderer.invoke('payments:open-card-provider', opts),
   paymentsCloseCheckoutWindows: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('payments:close-checkout-windows') as Promise<{ ok: boolean }>,
   paymentsGetBuyerUsage: () => ipcRenderer.invoke('payments:get-buyer-usage'),
+  paymentsGetPeerMetering: (peerId: string) => ipcRenderer.invoke('payments:get-peer-metering', peerId),
   paymentsGetBuyerSpendHistory: () => ipcRenderer.invoke('payments:get-buyer-spend-history'),
   paymentsGetChannels: (opts?: { fresh?: boolean }) => ipcRenderer.invoke('payments:get-channels', opts),
   paymentsRequestCooperativeClose: (opts: { peerId: string; channelId?: string }) => ipcRenderer.invoke('payments:request-cooperative-close', opts),

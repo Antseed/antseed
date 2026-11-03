@@ -20,6 +20,45 @@ describe('provider-openai plugin', () => {
     expect(keys).toContain('ANTSEED_OUTPUT_USD_PER_MILLION');
     expect(keys).toContain('ANTSEED_MAX_CONCURRENCY');
     expect(keys).toContain('ANTSEED_ALLOWED_SERVICES');
+    expect(keys).toContain('ANTSEED_FALLBACK_UPSTREAMS_JSON');
+  });
+
+  it('serves a service from a fallback upstream when the main upstream is out of quota', async () => {
+    const originalFetch = globalThis.fetch;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response('{"error":"quota"}', { status: 429, headers: { 'content-type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response('{"id":"ok"}', { status: 200, headers: { 'content-type': 'application/json' } }));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    try {
+      const provider = await plugin.createProvider({
+        OPENAI_API_KEY: 'sk-main',
+        OPENAI_BASE_URL: 'https://api.moonshot.example',
+        ANTSEED_ALLOWED_SERVICES: 'kimi-k3.1-pro',
+        ANTSEED_FALLBACK_UPSTREAMS_JSON: JSON.stringify([{
+          baseUrl: 'https://openrouter.example/api',
+          apiKey: 'sk-backup',
+          serviceAliasMap: { 'kimi-k3.1-pro': 'moonshotai/kimi-k3.1-pro' },
+        }]),
+      });
+
+      const response = await provider.handleRequest({
+        requestId: 'req-kimi-1',
+        method: 'POST',
+        path: '/v1/chat/completions',
+        headers: { 'content-type': 'application/json' },
+        body: new TextEncoder().encode(JSON.stringify({ model: 'kimi-k3.1-pro', messages: [] })),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const [url, requestInit] = fetchMock.mock.calls[1] as [string, RequestInit];
+      expect(url).toBe('https://openrouter.example/api/v1/chat/completions');
+      expect((requestInit.headers as Record<string, string>)['authorization']).toBe('Bearer sk-backup');
+      expect(JSON.parse(new TextDecoder().decode(requestInit.body as Uint8Array)).model).toBe('moonshotai/kimi-k3.1-pro');
+    } finally {
+      globalThis.fetch = originalFetch;
+      warn.mockRestore();
+    }
   });
 
   it('creates provider with valid config', async () => {
