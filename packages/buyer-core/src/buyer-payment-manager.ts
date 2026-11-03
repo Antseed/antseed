@@ -39,7 +39,7 @@ import {
   computeCostUsdc,
   type ServicePricing,
 } from './pricing.js';
-import type { UnitBillingContext, UnitBillingModelV1, UnitBillingUsage } from '@antseed/protocol/billing';
+import type { UnitBillingContext, UnitBillingModelV1, UnitBillingUnitV1, UnitBillingUsage } from '@antseed/protocol/billing';
 import type { BillingRequestFacts } from './unit-billing.js';
 import { evaluateUnitBilling, unitUsageFromReport, validateUnitBillingUsage } from '@antseed/protocol/billing';
 import { isUnitBilledProtocol, nativeVideoUnitUsage } from './unit-billing.js';
@@ -75,21 +75,12 @@ const MAX_REQUEST_BILLING_ENTRIES = 512;
  *  to record delivered unit usage before rejecting a positive claim. */
 const OBSERVED_UNIT_USAGE_WAIT_MS = 5_000;
 
-function countOutputImages(usage: UnitBillingUsage | undefined): bigint {
-  return BigInt(Math.max(0, Math.floor(usage?.units.output_images ?? 0)));
-}
-
-function countVideoGenerations(usage: UnitBillingUsage | undefined): bigint {
-  return BigInt(Math.max(0, Math.floor(usage?.units.video_generations ?? 0)));
-}
-
-function countVideoSeconds(usage: UnitBillingUsage | undefined): bigint {
-  return BigInt(Math.max(0, Math.floor(usage?.units.video_seconds ?? 0)));
-}
-
-/** Speech `input` characters; speech billing reports none for undelivered audio. */
-function countInputCharacters(usage: UnitBillingUsage | undefined): bigint {
-  return BigInt(Math.max(0, Math.floor(usage?.units.input_characters ?? 0)));
+/**
+ * Whole units of `unit` in `usage`, never negative. Speech billing reports no
+ * `input_characters` for undelivered audio.
+ */
+function countUnits(usage: UnitBillingUsage | undefined, unit: UnitBillingUnitV1): bigint {
+  return BigInt(Math.max(0, Math.floor(usage?.units[unit] ?? 0)));
 }
 
 function validateUnitNormalizedCost(
@@ -1610,10 +1601,10 @@ export class BuyerPaymentManager {
     // Image attribution (metadata/stats only — never cost). The count is the
     // buyer's own observation of the delivered response, so it survives a
     // headroom NeedAuth having already consumed the request-billing entry.
-    const estimatedOutputImages = countOutputImages(responseStats.unitUsage);
-    const estimatedVideoGenerations = countVideoGenerations(responseStats.unitUsage);
-    const estimatedVideoSeconds = countVideoSeconds(responseStats.unitUsage);
-    const estimatedInputCharacters = countInputCharacters(responseStats.unitUsage);
+    const estimatedOutputImages = countUnits(responseStats.unitUsage, 'output_images');
+    const estimatedVideoGenerations = countUnits(responseStats.unitUsage, 'video_generations');
+    const estimatedVideoSeconds = countUnits(responseStats.unitUsage, 'video_seconds');
+    const estimatedInputCharacters = countUnits(responseStats.unitUsage, 'input_characters');
     if (estimatedOutputImages > 0n) {
       if (byteEstimatedTokens) {
         // Byte estimates of an image response are base64 noise, not tokens.
@@ -1906,10 +1897,10 @@ export class BuyerPaymentManager {
             observedUnitUsage,
           );
           const acceptedUnitUsage = unitUsageFromReport(payload.billingUsage);
-          acceptedOutputImages = countOutputImages(acceptedUnitUsage);
-          acceptedVideoGenerations = countVideoGenerations(acceptedUnitUsage);
-          acceptedVideoSeconds = countVideoSeconds(acceptedUnitUsage);
-          acceptedInputCharacters = countInputCharacters(acceptedUnitUsage);
+          acceptedOutputImages = countUnits(acceptedUnitUsage, 'output_images');
+          acceptedVideoGenerations = countUnits(acceptedUnitUsage, 'video_generations');
+          acceptedVideoSeconds = countUnits(acceptedUnitUsage, 'video_seconds');
+          acceptedInputCharacters = countUnits(acceptedUnitUsage, 'input_characters');
         }
 
         const buyerEstimate = tokenEstimate + acceptedUnitCost;
@@ -2454,9 +2445,9 @@ export class BuyerPaymentManager {
       outputTokens: 0n,
       requests: 1n,
       outputImages: 0n,
-      videoGenerations: countVideoGenerations(usage),
-      videoSeconds: countVideoSeconds(usage),
-      inputCharacters: countInputCharacters(usage),
+      videoGenerations: countUnits(usage, 'video_generations'),
+      videoSeconds: countUnits(usage, 'video_seconds'),
+      inputCharacters: countUnits(usage, 'input_characters'),
     });
     const spendingAuth = await this._signAndCommitSpendingAuth(channel, state.price, metadata);
     this._reportUnitSpend(sellerPeerId, requestId, state.price - state.cumulative);
