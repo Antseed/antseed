@@ -6867,6 +6867,38 @@ test('speech requests route only to sellers that offer the requested voice', asy
   assert.deepEqual(sent, [third.peerId])
 })
 
+test('a speech request uses the peer provider that offers its voice, even when another is cheaper', async () => {
+  const peer = makePeer('a', ['cheap', 'voiced'])
+  const service = (voices: string[]) => ({ inputs: ['text' as const], outputs: ['audio' as const], speech: { voices } })
+  const perCharacter = (priceUsd: number) => ({ 'openai-audio-speech': { version: 1 as const, components: [{ unit: 'input_characters' as const, priceUsd }] } })
+  peer.providerServiceApiProtocols = {
+    cheap: { services: { 'tts-kokoro': ['openai-audio-speech'] } },
+    voiced: { services: { 'tts-kokoro': ['openai-audio-speech'] } },
+  }
+  peer.providerServiceCapabilities = {
+    cheap: { services: { 'tts-kokoro': service(['am_adam']) } },
+    voiced: { services: { 'tts-kokoro': service(['af_sky']) } },
+  }
+  peer.providerServiceUnitBillingModels = {
+    cheap: { services: { 'tts-kokoro': perCharacter(0.000001) } },
+    voiced: { services: { 'tts-kokoro': perCharacter(0.00002) } },
+  }
+  const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
+  const providers: string[] = []
+  ;(proxy as any)._node.sendRequest = async (_peer: PeerInfo, request: { requestId: string; headers: Record<string, string> }) => {
+    providers.push(request.headers['x-antseed-provider'] ?? '')
+    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'audio/mpeg' }, body: Buffer.from('audio') }
+  }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({
+    path: '/v1/audio/speech',
+    body: { model: 'tts-kokoro', input: 'Hello there.', voice: 'af_sky' },
+  }))
+
+  assert.equal(res.statusCode, 200, res.body)
+  assert.deepEqual(providers, ['voiced'])
+})
+
 test('a voice no seller offers is refused with the voices that are available', async () => {
   const peers = [makeSpeechPeer('a', ['am_adam']), makeSpeechPeer('b', ['af_sky', 'am_adam'])]
   const proxy = makeBuyerProxyWithPeers(peers, peers, permissiveRouter())

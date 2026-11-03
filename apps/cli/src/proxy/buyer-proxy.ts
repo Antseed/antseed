@@ -1739,7 +1739,7 @@ export class BuyerProxy {
       : undefined
     for (const peer of modelPeers) {
       const plan = modelPlans.get(peer.peerId)
-        ?? resolvePeerRoutePlan(peer, requestProtocol, requestedService, explicitProvider, 'strict')
+        ?? resolvePeerRoutePlan(peer, requestProtocol, requestedService, explicitProvider, 'strict', voice)
       if (!plan?.serviceId) continue
       const offer = findAdvertisedServiceOffer(peer, plan.provider, plan.serviceId)
       if (!offer) continue
@@ -4513,8 +4513,12 @@ export class BuyerProxy {
             && !routeRequiredParameters.includes(field)) routeRequiredParameters.push(field)
         }
       }
+      // A speech request prefers, on each peer, a provider that offers its voice.
+      const requestedVoice = requestProtocol === 'openai-audio-speech'
+        ? extractRequestBodyFields(serializedReq.headers, serializedReq.body)?.['voice']
+        : undefined
       const selectModelPeers = (candidateSources: PeerInfo[]): CandidatePeerRouteSelection =>
-        selectCandidatePeersForRouting(candidateSources, requestProtocol, requestedService, explicitProvider, 'strict')
+        selectCandidatePeersForRouting(candidateSources, requestProtocol, requestedService, explicitProvider, 'strict', requestedVoice)
       let discoveredPeers = peers
       let { candidatePeers: modelPeers, routePlanByPeerId: modelPlans } = selectModelPeers(discoveredPeers)
       const cacheAgeMs = Date.now() - this._cacheLastUpdatedAtMs
