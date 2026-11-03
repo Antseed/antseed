@@ -6840,6 +6840,36 @@ test('speech requests route only to speech services and return the audio unchang
   assert.equal(sent[0]!.body.input, 'Hello there.')
 })
 
+test('speech requests route only to sellers that offer the requested voice', async () => {
+  const seller = (seed: string, reputation: number, voices: string[]) => {
+    const p = makePeer(seed, ['openai'])
+    p.reputationScore = reputation
+    p.providerServiceApiProtocols = { openai: { services: { 'tts-kokoro': ['openai-audio-speech'] } } }
+    p.providerServiceCapabilities = {
+      openai: { services: { 'tts-kokoro': { inputs: ['text'], outputs: ['audio'], speech: { voices } } as any } },
+    }
+    return p
+  }
+  // The two best-ranked sellers do not offer the voice; only the third does.
+  const first = seller('a', 95, ['am_adam'])
+  const second = seller('b', 90, ['am_adam'])
+  const third = seller('c', 50, ['af_sky', 'am_adam'])
+  const proxy = makeBuyerProxyWithPeers([first, second, third], [first, second, third], permissiveRouter())
+  const sent: string[] = []
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
+    sent.push(peer.peerId)
+    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'audio/mpeg' }, body: Buffer.from('audio') }
+  }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({
+    path: '/v1/audio/speech',
+    body: { model: 'tts-kokoro', input: 'Hello there.', voice: 'af_sky' },
+  }))
+
+  assert.equal(res.statusCode, 200, res.body)
+  assert.deepEqual(sent, [third.peerId])
+})
+
 test('lip-synced video creates route only to sellers whose model takes audio_url', async () => {
   const peer = (seed: string, reputation: number, supportedParameters: string[]) => {
     const p = makePeer(seed, ['venice-video'])

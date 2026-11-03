@@ -39,6 +39,7 @@ import {
   reportedSuccessPrior,
   adaptiveFirstTokenTimeoutMs,
   sanitizePeerDisplayName,
+  speechVoiceProblem,
   type AntseedNode,
   type FaultAttribution,
   type BuyerSpendEvent,
@@ -1729,6 +1730,10 @@ export class BuyerProxy {
     const effectivePolicy = requestPolicy ? narrowPolicy(this._buyerPolicy(), requestPolicy) : null
     const verdicts = new Map<string, ModelRouteVerdict>()
     const routeCandidates = []
+    // A speech seller refuses a voice it does not list, so it is not a route for one.
+    const voice = requestProtocol === 'openai-audio-speech'
+      ? extractRequestBodyFields(request.headers, request.body)?.['voice']
+      : undefined
     for (const peer of modelPeers) {
       const plan = modelPlans.get(peer.peerId)
         ?? resolvePeerRoutePlan(peer, requestProtocol, requestedService, explicitProvider, 'strict')
@@ -1744,6 +1749,11 @@ export class BuyerProxy {
           + `missing required parameter(s): ${missingRequired.join(', ')}`,
         )
         verdict.reasons.push(`missing required parameter(s): ${missingRequired.join(', ')}`)
+        continue
+      }
+      if (voice !== undefined && speechVoiceProblem(offer.capabilities?.speech, voice)) {
+        log(`Voice filter: peer ${peer.peerId.slice(0, 12)}... service="${plan.serviceId}" does not offer the requested voice`)
+        verdict.reasons.push('does not offer the requested voice')
         continue
       }
       const requestForPolicy = withRoutedModel(request, plan.serviceId)
