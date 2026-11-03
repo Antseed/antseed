@@ -122,13 +122,24 @@ function multipartBoundary(contentType: string): string {
   return (match?.[1] ?? match?.[2] ?? '').trim();
 }
 
-function readMultipartTextField(body: Uint8Array, contentType: string, fieldName: string): string | null {
+/**
+ * First non-file value of each named multipart field, trimmed, in one pass over
+ * the body. A field missing from the body is missing from the map; an empty
+ * one maps to ''.
+ */
+function readMultipartTextFields(
+  body: Uint8Array,
+  contentType: string,
+  fieldNames: readonly string[],
+): Map<string, string> {
+  const fields = new Map<string, string>();
   const boundary = multipartBoundary(contentType);
-  if (!boundary) return null;
+  if (!boundary) return fields;
+  const wanted = new Set(fieldNames);
   const text = new TextDecoder('latin1').decode(body);
   const delimiter = `--${boundary}`;
   let index = text.indexOf(delimiter);
-  while (index !== -1) {
+  while (index !== -1 && fields.size < wanted.size) {
     index += delimiter.length;
     if (text.startsWith('--', index)) break;
     const headerEnd = text.indexOf('\r\n\r\n', index);
@@ -138,13 +149,12 @@ function readMultipartTextField(body: Uint8Array, contentType: string, fieldName
     const headers = text.slice(index, headerEnd);
     const params = /content-disposition:\s*form-data\s*;([^\r\n]*)/i.exec(headers)?.[1] ?? '';
     const name = /name="([^"]*)"/i.exec(params)?.[1] ?? '';
-    if (name === fieldName && !/filename\s*=/i.test(params)) {
-      const raw = body.subarray(headerEnd + 4, next);
-      return new TextDecoder().decode(raw).trim();
+    if (wanted.has(name) && !fields.has(name) && !/filename\s*=/i.test(params)) {
+      fields.set(name, new TextDecoder().decode(body.subarray(headerEnd + 4, next)).trim());
     }
     index = next + 2;
   }
-  return null;
+  return fields;
 }
 
 function setMultipartTextField(
@@ -386,18 +396,16 @@ export class HttpRelay {
     if (swappedRequest.method !== 'GET' && swappedRequest.method !== 'HEAD') {
       const contentType = getHeader(swappedRequest.headers, 'content-type');
       if (/^multipart\/form-data/i.test(contentType.trim())) {
+        const fields = readMultipartTextFields(swappedRequest.body, contentType, ['service', 'model', 'modelId']);
         const requestedService = getHeader(swappedRequest.headers, 'x-antseed-service').trim()
-          || readMultipartTextField(swappedRequest.body, contentType, 'service')
-          || readMultipartTextField(swappedRequest.body, contentType, 'model')
+          || fields.get('service')
+          || fields.get('model')
           || '';
         if (requestedService) {
           const rewrittenService = upstream.serviceRewriteMap?.[requestedService.toLowerCase()]?.trim();
           const upstreamModel = pinnedModel || rewrittenService || requestedService;
           // Venice's multi-image edit names the model `modelId` and rejects a `model` field.
-          const modelField = readMultipartTextField(swappedRequest.body, contentType, 'model') === null
-            && readMultipartTextField(swappedRequest.body, contentType, 'modelId') !== null
-            ? 'modelId'
-            : 'model';
+          const modelField = !fields.has('model') && fields.has('modelId') ? 'modelId' : 'model';
           const rewrittenBody = setMultipartTextField(swappedRequest.body, contentType, modelField, upstreamModel);
           if (rewrittenBody) swappedRequest = { ...swappedRequest, body: rewrittenBody };
         }
@@ -693,9 +701,10 @@ function serviceOfRequest(request: SerializedHttpRequest): string {
   if (request.method === 'GET' || request.method === 'HEAD') return '';
   const contentType = getHeader(request.headers, 'content-type');
   if (/^multipart\/form-data/i.test(contentType.trim())) {
+    const fields = readMultipartTextFields(request.body, contentType, ['service', 'model']);
     return (getHeader(request.headers, 'x-antseed-service').trim()
-      || readMultipartTextField(request.body, contentType, 'service')
-      || readMultipartTextField(request.body, contentType, 'model')
+      || fields.get('service')
+      || fields.get('model')
       || '').toLowerCase();
   }
   try {
