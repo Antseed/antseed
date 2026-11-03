@@ -21,6 +21,12 @@ import { announceVeniceSpeechVoices, withSpeechServiceCapabilityDefaults } from 
 const SPECIAL_OPENAI_COMPAT_PROVIDERS = ['openrouter', 'venice'] as const;
 type OpenAiCompatFlavor = 'generic' | (typeof SPECIAL_OPENAI_COMPAT_PROVIDERS)[number];
 
+const DEFAULT_BASE_URLS: Record<OpenAiCompatFlavor, string> = {
+  generic: 'https://api.openai.com',
+  openrouter: 'https://openrouter.ai/api',
+  venice: 'https://api.venice.ai/api',
+};
+
 function parseExtraHeaders(raw: string | undefined): Record<string, string> | undefined {
   const parsed = parseJsonObject(raw, 'OPENAI_EXTRA_HEADERS_JSON');
   if (!parsed) {
@@ -227,11 +233,7 @@ const plugin: AntseedProviderPlugin = {
     const flavor = resolveFlavor(config['OPENAI_PROVIDER_FLAVOR'], configuredBaseUrl);
     const baseUrl = configuredBaseUrl && configuredBaseUrl.length > 0
       ? configuredBaseUrl
-      : (flavor === 'openrouter'
-          ? 'https://openrouter.ai/api'
-          : flavor === 'venice'
-            ? 'https://api.venice.ai/api'
-            : 'https://api.openai.com');
+      : DEFAULT_BASE_URLS[flavor];
     const upstreamProvider = config['OPENAI_UPSTREAM_PROVIDER']?.trim();
     const bodyInject = parseJsonObject(config['OPENAI_BODY_INJECT_JSON'], 'OPENAI_BODY_INJECT_JSON') ?? {};
     if (flavor === 'openrouter' && upstreamProvider) {
