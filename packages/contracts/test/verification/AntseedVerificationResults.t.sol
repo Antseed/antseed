@@ -603,6 +603,21 @@ contract AntseedVerificationResultsTest is Test {
         results.settleEpochRemainder(EPOCH);
     }
 
+    function test_settlementLeavesEnoughForUnpaidClaimsAfterAnEarlierControllerMinted() public {
+        _enable(address(sourceA), 5_000);
+        results.setMaxAuditorShareBps(address(sourceA), 10_000);
+        gate.setBudget(address(results), EPOCH, 500 ether);
+        sourceA.credit(verifierA, 1); // owed A's whole 250 share
+        gate.setPriorMinted(EPOCH, 200 ether); // e.g. an earlier controller of the same minter id
+        gate.setCurrentEpoch(EPOCH + 1);
+
+        assertEq(results.unclaimableRemainder(EPOCH), 50 ether, "300 left on the gate minus the 250 still owed");
+        results.settleEpochRemainder(EPOCH);
+        assertEq(_claim(address(sourceA), verifierA, EPOCH), 250 ether, "the claim is still paid in full");
+        vm.expectRevert(AntseedVerificationResults.NothingToSettle.selector);
+        results.settleEpochRemainder(EPOCH);
+    }
+
     /// @dev Any order of claims, voids and settlements stays inside the budget, and once everyone
     ///      claimed and everything is settled the budget is fully minted (up to rounding dust).
     function testFuzz_claimsVoidsAndSettlementsNeverOverspend(

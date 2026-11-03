@@ -26,8 +26,9 @@ interface IEmissionsGateSource {
 ///         reached is the source's business: the latest record from any approved source wins.
 ///
 ///         Sources: contracts approved with `setSource` (at most `MAX_SOURCES` ever listed). Removing a
-///         source stops its writes and new credits; credits it already granted stay claimable
-///         until its share is set to 0.
+///         source stops its writes and new credits; credits it already granted stay claimable from
+///         the shares of the epochs they were earned in. Setting its share to 0 only affects later
+///         epochs; `voidCredits` removes unclaimed credits.
 ///
 ///         Rewards, per source: a share of the bucket's epoch budget (shares sum to at most 100%), a
 ///         rewards start epoch (default off), a per-verifier credit cap per epoch (default 100), and a
@@ -39,8 +40,9 @@ interface IEmissionsGateSource {
 ///
 ///         `settleEpochRemainder` sweeps what no verifier can ever claim through the gate's remainder
 ///         route (burn, then reserve): budget assigned to no source, sources without credits, and
-///         what voided credits free up. It can be called again whenever more is freed. Rounding dust
-///         of credited sources stays unminted.
+///         what voided credits free up. It can be called again whenever more is freed, and always
+///         leaves enough of the bucket on the gate for every unpaid claim. Rounding dust that unpaid
+///         claims could still need stays reserved.
 ///
 ///         Epochs come from the emissions gate pinned at deployment; sources read `currentEpoch`
 ///         here so verdicts, credits and claims can never disagree about the epoch.
@@ -160,7 +162,8 @@ contract AntseedVerificationResults is IAntseedVerificationResults, Ownable2Step
 
     /// @notice Approves or removes a source contract. The first approval lists it with the default
     ///         caps and its rewards off. A removed source keeps its settings, so credits it granted
-    ///         stay claimable; set its share to 0 to stop that and free it for other sources.
+    ///         stay claimable. Setting its share to 0 frees that share for other sources from the next
+    ///         epoch on; it does not touch earlier epochs (use `voidCredits` for bad unclaimed credits).
     function setSource(address source, bool approved) external onlyOwner {
         if (source.code.length == 0) revert InvalidAddress();
         SourceConfig storage config = _sources[source];
@@ -341,16 +344,21 @@ contract AntseedVerificationResults is IAntseedVerificationResults, Ownable2Step
         if (epoch >= gate.currentEpoch()) return 0;
         uint256 budget = gate.controllerEpochBudget(address(this), epoch);
         uint256 reserved;
+        uint256 unpaid;
         uint256 count = sourceList.length;
         for (uint256 i = 0; i < count; i++) {
-            reserved += _reservedFor(sourceList[i], epoch, budget);
+            address source = sourceList[i];
+            uint256 sourceReserved = _reservedFor(source, epoch, budget);
+            reserved += sourceReserved;
+            unpaid += sourceReserved - paidRewards[source][epoch];
         }
         uint256 owed = budget - reserved - settledRemainder[epoch];
-        // Never ask the gate for more than is left of the bucket, e.g. after an earlier controller of
-        // the same minter id minted for this epoch.
+        // What is still left of the bucket on the gate (an earlier controller of the same minter id
+        // may have minted for this epoch) must keep covering every unpaid claim.
         uint256 minted = gate.minterEpochMinted(gate.controllerMinterIds(address(this)), epoch);
         uint256 left = budget > minted ? budget - minted : 0;
-        return owed < left ? owed : left;
+        uint256 spare = left > unpaid ? left - unpaid : 0;
+        return owed < spare ? owed : spare;
     }
 
     // ═══════════════════════════════════════════════════════════════════

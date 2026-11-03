@@ -96,8 +96,12 @@ verifiers), verdicts change no points (the policy is not registered), and audits
    gate.setMinterController(keccak256("antseed.emissions.verification.v1"), results);
    ```
 
-   `gate.claim` then accepts claims from `results` only: let auditors of the old contract claim its
-   finished epochs first.
+   `gate.claim` then accepts claims from `results` only, for every epoch. Before moving it, make
+   sure the old contract owes nothing: its `rewardsStartEpoch` must still be off
+   (`type(uint256).max`, as on Base mainnet at the time of writing) or, if its rewards were ever
+   on, set it off, wait until its last credited epoch has ended and its auditors have claimed it.
+   Credits left on the old contract can't be paid afterwards, and the new results layer treats that
+   budget as unclaimed.
 2. **Verification owner:** approve every auditor that is approved on the old contract. Read them by
    replaying its `AuditorSet(address indexed auditor, bool approved)` events from block 53,419,391
    and keeping the last value per address; then for each approved one:

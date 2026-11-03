@@ -24,14 +24,15 @@ import { IERC8004Registry } from "../interfaces/IERC8004Registry.sol";
 ///         Report rounds: a result recorded here that moves the service's live verdict into or out
 ///         of DIFF starts a new round, so support given before a DIFF was confirmed cannot clear it
 ///         and support given before a DIFF was cleared cannot restore it. Revoking an auditor starts
-///         a new round everywhere. Verdict changes made by other sources or by the results owner do
-///         not move KBF rounds; KBF still reads the live verdict, so any live DIFF needs DIFF-level
-///         support to replace.
+///         a new round everywhere. The results layer counts moves into or out of DIFF made by any
+///         source (`diffChanges`) and owner clears (`serviceClears`), and both move KBF rounds too,
+///         so support given before another source's DIFF or an owner clear never counts after it.
+///         Any live DIFF, whoever recorded it, needs DIFF-level support to replace.
 ///
 ///         Results for agents the identity registry cannot resolve are skipped with
 ///         `UnknownAgentSkipped`, so one stale agent does not fail the whole audit. An auditor
-///         cannot audit its own agent. An evidence hash belongs to the auditor that first submits
-///         it; another auditor submitting it reverts.
+///         cannot audit its own agent. Any auditor may submit any evidence hash (as in the earlier
+///         contract), so nobody can block another auditor's evidence by submitting its hash first.
 ///
 ///         Credits: a model audit that covers at least one agent with staked pool power earns the
 ///         auditor one credit through `results.credit`, at most `maxCreditsPerModelPerEpoch` per

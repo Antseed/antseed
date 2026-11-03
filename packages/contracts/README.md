@@ -708,15 +708,14 @@ States: `ready` (M001 active, at least one install missing), `active`,
 
 ## Configuration
 
-### KBF verification
+### KBF verification (deployed `AntseedKbfVerification`, replaced by M003)
 
-`AntseedKbfVerification` records KBF model-verification audits from approved auditors and pays
-them from the verification emission bucket by audit credits, capped per model, per
-auditor and by each auditor's share of the epoch budget. Rewards stay off until the owner
-sets `rewardsStartEpoch`. Every audit it records is a KBF audit.
-KBF is one of the first verification methods: each later method gets its own
-contract, points policy and emissions bucket, and the verification bucket share
-is split between them with `setMinter` from the next epoch.
+The contract on Base mainnet today, `AntseedKbfVerification`, records KBF model-verification audits
+from approved auditors and pays them from the verification emission bucket by audit credits, capped
+per model, per auditor and by each auditor's share of the epoch budget. Rewards stay off until the
+owner sets `rewardsStartEpoch`. Its source is removed from this tree; M003 below replaces it with a
+shared results layer, where later verification methods are further sources sharing the same
+bucket and points policy. The confirmation rules below carry over unchanged.
 
 #### Confirmations
 
@@ -764,7 +763,7 @@ are no longer left unminted: they go to the reserve and the remainder route.
   (budget assigned to no source, sources without credits, budget freed by `voidCredits`) through
   the gate's `claimRemainder` (burn up to the gate's cap, then the reserve). `diffChanges` counts
   every move of a service's live verdict into or out of DIFF, by any source or an owner clear. It can run again when
-  a later void frees more, and never asks the gate for more than is left of the bucket
+  a later void frees more, and always leaves enough of the bucket on the gate for every unpaid claim
   (`unclaimableRemainder`). `voidCredits(source, epoch, auditor)` removes unclaimed farmed credits.
 - **`AntseedKbfAudits`** (KBF source). `submitModelAudit` and `setAuditor` have the same signatures
   and rules as before (`approvedAuditors`, `AuditorSet` on every call, `auditorRevocations`); it

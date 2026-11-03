@@ -230,8 +230,16 @@ export function resolveChainConfig(overrides?: {
   const rpcOverridden = !!overrides?.rpcUrl;
   const resolvedFallbacks = overrides?.fallbackRpcUrls
     ?? (rpcOverridden ? [] : base.fallbackRpcUrls);
+  // The results address belongs to the KBF deployment it came with. A caller that points at another
+  // KBF contract without naming its results contract gets none, so readers discover it through
+  // `kbf.results()` instead of reading verdicts from an unrelated default deployment.
+  const kbfOverridden = !!overrides?.verificationContractAddress
+    && overrides.verificationContractAddress.toLowerCase() !== base.verificationContractAddress?.toLowerCase();
+  const { verificationResultsAddress: defaultResultsAddress, ...baseWithoutResults } = base;
+  const inheritedResults = kbfOverridden || !defaultResultsAddress ? {} : { verificationResultsAddress: defaultResultsAddress };
   return {
-    ...base,
+    ...baseWithoutResults,
+    ...inheritedResults,
     ...(overrides?.rpcUrl ? { rpcUrl: overrides.rpcUrl } : {}),
     ...(resolvedFallbacks !== undefined ? { fallbackRpcUrls: resolvedFallbacks } : {}),
     ...(overrides?.depositsContractAddress ? { depositsContractAddress: overrides.depositsContractAddress } : {}),
