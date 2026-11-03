@@ -257,6 +257,25 @@ describe('Venice image edits', () => {
     expect((await upstreamForm(ok)).form.get('model')).toBe('grok-imagine-quality-edit');
   });
 
+  it('refuses a form whose oversized service field the seller would not bill by', async () => {
+    const fetchMock = mockFetch(neverCalled);
+    const provider = await plugin.createProvider({
+      ...coverArtConfig,
+      ANTSEED_ALLOWED_SERVICES: 'cover-art,cover-art-pro',
+      ANTSEED_SERVICE_ALIAS_MAP_JSON: '{"cover-art":"grok-imagine-image-quality","cover-art-pro":"grok-imagine-image-pro"}',
+      ANTSEED_SERVICE_IMAGE_EDIT_MODEL_MAP_JSON: '{"cover-art":"grok-imagine-quality-edit","cover-art-pro":"grok-imagine-pro-edit"}',
+    });
+    // The seller drops text fields over 4 KiB, so it bills `model` (cover-art);
+    // the padded `service` field must not pick cover-art-pro's edit model.
+    const form = imageEditForm('cover-art');
+    form.append('service', `${' '.repeat(5000)}cover-art-pro`);
+
+    const response = await sendImageEdit(provider, form);
+
+    expect(response.statusCode).toBe(400);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('keeps first-prompt Venice generation on the configured generation model', async () => {
     const fetchMock = mockFetch(() => new Response(JSON.stringify({ data: [{ b64_json: 'generated-image' }] }), {
       status: 200,

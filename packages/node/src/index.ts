@@ -30,6 +30,7 @@ export {
   type UpstreamAccountEvent,
 } from './health/model-health-checker.js';
 export { isUpstreamOutOfCredit } from './health/upstream-credit.js';
+export { requestBodyService } from './requested-service.js';
 export {
   GasHealthMonitor,
   DEFAULT_GAS_CHECK_INTERVAL_MS,

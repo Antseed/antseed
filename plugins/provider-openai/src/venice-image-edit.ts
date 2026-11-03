@@ -4,6 +4,7 @@ import type {
   SerializedHttpRequest,
   SerializedHttpResponse,
 } from '@antseed/node';
+import { requestBodyService } from '@antseed/node';
 import { getHeader, withPinnedUpstreamModel } from '@antseed/provider-core';
 
 const OPENAI_IMAGE_EDIT_PATH = '/v1/images/edits';
@@ -124,13 +125,16 @@ async function adaptRequest(
     }
   }
 
-  // The service the seller priced and bills this request by: the form's `service`,
-  // else its `model`, as the seller reads them. A routing header naming another
-  // service must not pick that service's (possibly dearer) edit model.
-  const named = form.get('service') ?? form.get('model');
-  const requestedService = typeof named === 'string' ? named.trim() : '';
+  // The service the seller priced and bills this request by, read by the seller's
+  // own parser. The form as read here, and any routing header, must name the same
+  // service, so an edit never runs another (possibly dearer) service's edit model.
+  const requestedService = requestBodyService(request);
   if (!requestedService) {
     return reject(400, 'Image edit model is required.', 'model');
+  }
+  const named = form.get('service') ?? form.get('model');
+  if (typeof named !== 'string' || named.trim() !== requestedService) {
+    return reject(400, 'The image edit form names its service ambiguously.', 'model');
   }
   const headerService = getHeader(request.headers, 'x-antseed-service').trim();
   if (headerService && headerService.toLowerCase() !== requestedService.toLowerCase()) {

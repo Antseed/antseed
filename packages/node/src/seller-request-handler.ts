@@ -55,10 +55,10 @@ import { isNativeVideoProtocol } from '@antseed/protocol/service-api';
 import { speechVoiceProblem } from '@antseed/protocol/peer-metadata';
 import {
   detectRequestServiceApiProtocol,
-  extractRequestBodyFields,
   selectTargetProtocolForRequest,
 } from '@antseed/api-adapter';
 import { parseResponseUsage } from './utils/response-usage.js';
+import { requestBodyService } from './requested-service.js';
 import { buildSelfHealthErrorResponse, buildUpstreamUnavailableResponse, isUpstreamAccountError, isUpstreamFailureStatus } from './health/self-health-error.js';
 import type { ServicePerformanceTracker } from './health/service-performance.js';
 import { StreamOutcome } from './health/stream-outcome.js';
@@ -1470,12 +1470,7 @@ export class SellerRequestHandler {
       return routingServices(this._deps.providers, routingProtocol)[0]?.service ?? null;
     }
     if (nativeVideoRoute(request)) return requestService(request) ?? null;
-    const body = extractRequestBodyFields(request.headers, request.body);
-    const service = body?.["service"] ?? body?.["model"];
-    if (typeof service !== "string" || service.trim().length === 0) {
-      return null;
-    }
-    return service.trim();
+    return requestBodyService(request);
   }
 
   private _extractRequestedProvider(request: SerializedHttpRequest): string | null {
