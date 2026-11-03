@@ -139,25 +139,35 @@ export const MAX_SPEECH_FORMATS = 16;
 const SPEECH_VOICE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9 ._:'-]*$/;
 const SPEECH_FORMAT_PATTERN = /^[a-z0-9][a-z0-9_-]{0,15}$/;
 
+/** Problems with a bounded, duplicate-free option list (`field` names it in messages); none when absent. */
+function validateOptionList(
+  field: string,
+  values: unknown,
+  max: number,
+  valid: (value: unknown) => boolean,
+  allowEmpty = false,
+): string[] {
+  if (values === undefined) return [];
+  if (!Array.isArray(values) || (!allowEmpty && values.length === 0) || values.length > max) {
+    return [`${field} must contain ${allowEmpty ? 0 : 1}-${max} values`];
+  }
+  const errors: string[] = [];
+  const seen = new Set<unknown>();
+  for (const value of values) {
+    if (!valid(value)) errors.push(`Invalid ${field} value ${JSON.stringify(value)}`);
+    else if (seen.has(value)) errors.push(`Duplicate ${field} value ${JSON.stringify(value)}`);
+    seen.add(value);
+  }
+  return errors;
+}
+
 function validateSpeechOptions(speech: SpeechOptions): string[] {
   if (!speech || typeof speech !== "object" || Array.isArray(speech)) return ["speech must be an object"];
   const errors: string[] = [];
-  const list = (field: "voices" | "formats", max: number, valid: (value: string) => boolean) => {
-    const values = speech[field];
-    if (values === undefined) return;
-    if (!Array.isArray(values) || values.length === 0 || values.length > max) {
-      errors.push(`speech.${field} must contain 1-${max} values`);
-      return;
-    }
-    const seen = new Set<string>();
-    for (const value of values) {
-      if (typeof value !== "string" || !valid(value)) errors.push(`Invalid speech.${field} value ${JSON.stringify(value)}`);
-      else if (seen.has(value)) errors.push(`Duplicate speech.${field} value ${JSON.stringify(value)}`);
-      seen.add(value);
-    }
-  };
-  list("voices", MAX_SPEECH_VOICES, value => value.length <= MAX_SPEECH_VOICE_LENGTH && SPEECH_VOICE_PATTERN.test(value));
-  list("formats", MAX_SPEECH_FORMATS, value => SPEECH_FORMAT_PATTERN.test(value));
+  errors.push(...validateOptionList("speech.voices", speech.voices, MAX_SPEECH_VOICES,
+    value => typeof value === "string" && value.length <= MAX_SPEECH_VOICE_LENGTH && SPEECH_VOICE_PATTERN.test(value)));
+  errors.push(...validateOptionList("speech.formats", speech.formats, MAX_SPEECH_FORMATS,
+    value => typeof value === "string" && SPEECH_FORMAT_PATTERN.test(value)));
   if (speech.customVoices !== undefined && typeof speech.customVoices !== "boolean") errors.push("speech.customVoices must be a boolean");
   const known = new Set(["voices", "customVoices", "formats"]);
   for (const key of Object.keys(speech)) if (!known.has(key)) errors.push(`Unsupported speech option ${key}`);
@@ -183,17 +193,7 @@ function validateVideoOptions(video: VideoOptions): string[] {
   const errors: string[] = [];
   if (!video || typeof video !== "object" || Array.isArray(video)) return ["video must be an object"];
   const unique = (field: string, values: unknown, valid: (value: unknown) => boolean, allowEmpty = false) => {
-    if (values === undefined) return;
-    if (!Array.isArray(values) || (!allowEmpty && values.length === 0) || values.length > MAX_VIDEO_OPTION_VALUES) {
-      errors.push(`video.${field} must contain ${allowEmpty ? 0 : 1}-${MAX_VIDEO_OPTION_VALUES} values`);
-      return;
-    }
-    const seen = new Set<unknown>();
-    for (const value of values) {
-      if (!valid(value)) errors.push(`Invalid video.${field} value ${JSON.stringify(value)}`);
-      else if (seen.has(value)) errors.push(`Duplicate video.${field} value ${JSON.stringify(value)}`);
-      seen.add(value);
-    }
+    errors.push(...validateOptionList(`video.${field}`, values, MAX_VIDEO_OPTION_VALUES, valid, allowEmpty));
   };
   unique("durationsSeconds", video.durationsSeconds, value => typeof value === "number" && Number.isInteger(value) && value > 0 && value <= 3600);
   for (const field of ["resolutions", "aspectRatios"] as const) {
