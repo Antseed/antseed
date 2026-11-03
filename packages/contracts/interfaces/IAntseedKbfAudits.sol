@@ -31,7 +31,18 @@ interface IAntseedKbfAudits {
         IAntseedVerificationResults.Verdict verdict;
     }
 
+    /// @notice How an auditor shows itself in UIs. All fields are plain UTF-8 and may be empty.
+    /// @param name Display name, at most `MAX_PROFILE_NAME_BYTES`.
+    /// @param iconUri Link to a square image (https:// or ipfs://), at most `MAX_PROFILE_URI_BYTES`.
+    /// @param url Website or profile link, at most `MAX_PROFILE_URI_BYTES`.
+    struct AuditorProfile {
+        string name;
+        string iconUri;
+        string url;
+    }
+
     event AuditorSet(address indexed auditor, bool approved);
+    event AuditorProfileSet(address indexed auditor, string name, string iconUri, string url);
 
     function results() external view returns (IAntseedVerificationResults);
     function sellerPools() external view returns (IAntseedSellerPools);
@@ -40,15 +51,18 @@ interface IAntseedKbfAudits {
 
     /// @notice True while `auditor` may submit audits.
     function approvedAuditors(address auditor) external view returns (bool);
-    /// @notice Epoch (of the results layer) in which `auditor` was last approved; zero while not approved.
-    function activeSinceEpoch(address auditor) external view returns (uint256);
     /// @notice Auditors revoked so far; folded into every report round so a revoked auditor's
     ///         waiting reports stop counting.
     function auditorRevocations() external view returns (uint256);
     /// @notice Approves or revokes an auditor. Owner only. Emits `AuditorSet` on every call.
     function setAuditor(address auditor, bool approved) external;
-    /// @notice Epochs an auditor must have been active before its audits are accepted (0: none).
-    function minActiveEpochs() external view returns (uint8);
+    /// @notice The auditor's display profile; empty fields when it never set one.
+    function auditorProfile(address auditor) external view returns (AuditorProfile memory);
+    /// @notice Sets the caller's display profile. Approved auditors only; a revoked auditor's profile
+    ///         stays readable but can no longer be changed. Reverts on a field over its length limit.
+    function setAuditorProfile(string calldata name, string calldata iconUri, string calldata url) external;
+    /// @notice Clears an auditor's profile (e.g. for abusive content). Owner only.
+    function clearAuditorProfile(address auditor) external;
     /// @notice Resolves the agent's owner through the identity registry. `known` is false for
     ///         agents the registry cannot resolve (e.g. burned, or id 0); never reverts.
     function agentOwner(uint256 agentId) external view returns (bool known, address owner);
@@ -61,8 +75,7 @@ interface IAntseedKbfAudits {
     function evidenceAuditor(bytes32 evidenceHash) external view returns (address);
 
     /// @notice Records one auditor's KBF results for every seller audited as `modelHash`.
-    /// @dev Reverts unless the caller is an approved auditor for at least `minActiveEpochs`,
-    ///      `expectedEpoch` is the results layer's current epoch, `evidenceHash` is non-zero and not
+    /// @dev Reverts unless the caller is an approved auditor, `expectedEpoch` is the results layer's current epoch, `evidenceHash` is non-zero and not
     ///      another auditor's, and `results` is non-empty, bounded, and strictly ordered by
     ///      (agentId, serviceHash).
     function submitModelAudit(

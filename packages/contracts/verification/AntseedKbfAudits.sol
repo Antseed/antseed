@@ -40,6 +40,8 @@ import { IERC8004Registry } from "../interfaces/IERC8004Registry.sol";
 contract AntseedKbfAudits is IAntseedKbfAudits, Ownable2Step {
     uint256 public constant MAX_RESULTS_PER_AUDIT = 256;
     uint256 public constant MAX_EVIDENCE_URI_BYTES = 200;
+    uint256 public constant MAX_PROFILE_NAME_BYTES = 64;
+    uint256 public constant MAX_PROFILE_URI_BYTES = 256;
 
     IAntseedVerificationResults public immutable override results;
     IAntseedSellerPools public override sellerPools;
@@ -47,11 +49,8 @@ contract AntseedKbfAudits is IAntseedKbfAudits, Ownable2Step {
     /// @inheritdoc IAntseedKbfAudits
     mapping(address auditor => bool approved) public override approvedAuditors;
     /// @inheritdoc IAntseedKbfAudits
-    mapping(address auditor => uint256 epoch) public override activeSinceEpoch;
-    /// @inheritdoc IAntseedKbfAudits
     uint256 public override auditorRevocations;
-    /// @inheritdoc IAntseedKbfAudits
-    uint8 public override minActiveEpochs = 0;
+    mapping(address auditor => AuditorProfile profile) private _profiles;
     /// @notice Distinct approved auditors that must report a verdict in one epoch before it is recorded.
     mapping(IAntseedVerificationResults.Verdict verdict => uint8 reports) public override requiredReports;
     /// @inheritdoc IAntseedKbfAudits
@@ -74,7 +73,6 @@ contract AntseedKbfAudits is IAntseedKbfAudits, Ownable2Step {
 
     event SellerPoolsSet(address sellerPools);
     event RequiredReportsSet(IAntseedVerificationResults.Verdict indexed verdict, uint8 reports);
-    event MinActiveEpochsSet(uint8 epochs);
     event MaxCreditsPerModelPerEpochSet(uint32 maxCredits);
     event ModelAudited(
         bytes32 indexed modelHash,
@@ -103,9 +101,9 @@ contract AntseedKbfAudits is IAntseedKbfAudits, Ownable2Step {
     error InvalidAddress();
     error InvalidValue();
     error NotApprovedAuditor();
-    error AuditorTooNew();
     error EvidenceReused();
     error InvalidEvidenceUri();
+    error InvalidProfile();
     error InvalidResults();
     error UnknownAgent();
     error SelfAudit();
@@ -124,22 +122,20 @@ contract AntseedKbfAudits is IAntseedKbfAudits, Ownable2Step {
     //                        ADMIN
     // ═══════════════════════════════════════════════════════════════════
 
-    /// @notice Approves or revokes an auditor. Approval stamps `activeSinceEpoch` with the results
-    ///         layer's epoch (re-approving an approved auditor keeps it). Revoking zeroes it and bumps
-    ///         `auditorRevocations`, so the auditor's waiting reports stop counting; recorded verdicts
-    ///         are not touched. Emits `AuditorSet` on every call: off-chain assignment rebuilds the
+    /// @notice Approves or revokes an auditor. Revoking bumps `auditorRevocations`, so the auditor's
+    ///         waiting reports stop counting; recorded verdicts and granted credits are not touched. Emits `AuditorSet` on every call: off-chain assignment rebuilds the
     ///         auditor set at an epoch's start from these events.
     function setAuditor(address auditor, bool approved) external override onlyOwner {
         if (auditor == address(0)) revert InvalidAddress();
-        bool active = approvedAuditors[auditor];
-        if (active && !approved) {
-            auditorRevocations += 1;
-            activeSinceEpoch[auditor] = 0;
-        } else if (!active && approved) {
-            activeSinceEpoch[auditor] = results.currentEpoch();
-        }
+        if (approvedAuditors[auditor] && !approved) auditorRevocations += 1;
         approvedAuditors[auditor] = approved;
         emit AuditorSet(auditor, approved);
+    }
+
+    /// @inheritdoc IAntseedKbfAudits
+    function clearAuditorProfile(address auditor) external override onlyOwner {
+        delete _profiles[auditor];
+        emit AuditorProfileSet(auditor, "", "", "");
     }
 
     function setSellerPools(address sellerPools_) external onlyOwner {
@@ -154,18 +150,34 @@ contract AntseedKbfAudits is IAntseedKbfAudits, Ownable2Step {
         emit RequiredReportsSet(verdict, reports);
     }
 
-    /// @notice Epochs an auditor must have been active before its audits are accepted. 0 accepts
-    ///         an auditor in the epoch it is approved.
-    function setMinActiveEpochs(uint8 epochs) external onlyOwner {
-        minActiveEpochs = epochs;
-        emit MinActiveEpochsSet(epochs);
-    }
-
     /// @notice Sets the per-model safety limit on credited audits per auditor and epoch.
     function setMaxCreditsPerModelPerEpoch(uint32 maxCredits) external onlyOwner {
         if (maxCredits == 0) revert InvalidValue();
         maxCreditsPerModelPerEpoch = maxCredits;
         emit MaxCreditsPerModelPerEpochSet(maxCredits);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //                        PROFILES
+    // ═══════════════════════════════════════════════════════════════════
+
+    /// @inheritdoc IAntseedKbfAudits
+    function setAuditorProfile(string calldata name, string calldata iconUri, string calldata url)
+        external
+        override
+    {
+        if (!approvedAuditors[msg.sender]) revert NotApprovedAuditor();
+        if (
+            bytes(name).length > MAX_PROFILE_NAME_BYTES || bytes(iconUri).length > MAX_PROFILE_URI_BYTES
+                || bytes(url).length > MAX_PROFILE_URI_BYTES
+        ) revert InvalidProfile();
+        _profiles[msg.sender] = AuditorProfile(name, iconUri, url);
+        emit AuditorProfileSet(msg.sender, name, iconUri, url);
+    }
+
+    /// @inheritdoc IAntseedKbfAudits
+    function auditorProfile(address auditor) external view override returns (AuditorProfile memory) {
+        return _profiles[auditor];
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -187,8 +199,6 @@ contract AntseedKbfAudits is IAntseedKbfAudits, Ownable2Step {
 
         uint256 epoch = results.currentEpoch();
         if (epoch != expectedEpoch) revert EpochChanged();
-        uint256 minActive = minActiveEpochs;
-        if (minActive != 0 && activeSinceEpoch[msg.sender] + minActive > epoch) revert AuditorTooNew();
 
         address evidenceOwner = evidenceAuditor[evidenceHash];
         if (evidenceOwner == address(0)) evidenceAuditor[evidenceHash] = msg.sender;

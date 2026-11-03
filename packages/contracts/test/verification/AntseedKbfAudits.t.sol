@@ -989,28 +989,70 @@ contract AntseedKbfAuditsTest is Test {
         assertTrue(results.isVerified(agentId));
     }
 
-    function test_minActiveEpochsHoldsBackNewVerifiers() public {
-        assertEq(kbf.minActiveEpochs(), 0);
-        address newcomer = address(0xE5);
-        kbf.setAuditor(newcomer, true);
-        assertEq(kbf.activeSinceEpoch(newcomer), EPOCH);
-        _audit(newcomer, MODEL_A, agentId, SERVICE_A, SAME); // 0: accepted in the epoch it joins
+    function test_approvedAuditorsSetAndUpdateTheirOwnProfile() public {
+        vm.expectEmit(true, false, false, true, address(kbf));
+        emit IAntseedKbfAudits.AuditorProfileSet(auditorA, "Acme Labs", "ipfs://icon", "https://acme.example");
+        vm.prank(auditorA);
+        kbf.setAuditorProfile("Acme Labs", "ipfs://icon", "https://acme.example");
+        IAntseedKbfAudits.AuditorProfile memory profile = kbf.auditorProfile(auditorA);
+        assertEq(profile.name, "Acme Labs");
+        assertEq(profile.iconUri, "ipfs://icon");
+        assertEq(profile.url, "https://acme.example");
+        assertEq(kbf.auditorProfile(auditorB).name, "", "others are untouched");
 
-        vm.expectEmit(address(kbf));
-        emit AntseedKbfAudits.MinActiveEpochsSet(1);
-        kbf.setMinActiveEpochs(1);
-        _expectAuditRevert(AntseedKbfAudits.AuditorTooNew.selector);
-        _audit(newcomer, MODEL_B, agentId, SERVICE_B, SAME);
-        _advance(1);
-        _audit(newcomer, MODEL_B, agentId, SERVICE_B, SAME);
-        assertEq(uint8(results.serviceStatus(agentId, SERVICE_B).verdict), uint8(SAME), "accepted the next epoch");
+        vm.prank(auditorA);
+        kbf.setAuditorProfile("Acme", "", "");
+        profile = kbf.auditorProfile(auditorA);
+        assertEq(profile.name, "Acme");
+        assertEq(profile.iconUri, "", "every call replaces the whole profile");
+    }
 
-        // Re-approving later restarts the wait.
-        kbf.setAuditor(newcomer, false);
-        kbf.setAuditor(newcomer, true);
-        assertEq(kbf.activeSinceEpoch(newcomer), EPOCH + 1);
-        _expectAuditRevert(AntseedKbfAudits.AuditorTooNew.selector);
-        _audit(newcomer, MODEL_A, agentId, SERVICE_A, SAME);
+    function test_onlyApprovedAuditorsSetAProfileAndRevokedOnesKeepIt() public {
+        vm.prank(address(0xE5));
+        vm.expectRevert(AntseedKbfAudits.NotApprovedAuditor.selector);
+        kbf.setAuditorProfile("Stranger", "", "");
+
+        vm.prank(auditorA);
+        kbf.setAuditorProfile("Acme", "", "");
+        kbf.setAuditor(auditorA, false);
+        assertEq(kbf.auditorProfile(auditorA).name, "Acme", "still readable after revocation");
+        vm.prank(auditorA);
+        vm.expectRevert(AntseedKbfAudits.NotApprovedAuditor.selector);
+        kbf.setAuditorProfile("Changed", "", "");
+    }
+
+    function test_profileFieldsAreLengthLimited() public {
+        uint256 nameMax = kbf.MAX_PROFILE_NAME_BYTES();
+        uint256 uriMax = kbf.MAX_PROFILE_URI_BYTES();
+        string memory name = string(new bytes(nameMax));
+        string memory uri = string(new bytes(uriMax));
+        string memory longName = string(new bytes(nameMax + 1));
+        string memory longUri = string(new bytes(uriMax + 1));
+        vm.startPrank(auditorA);
+        kbf.setAuditorProfile(name, uri, uri); // at the limits
+        vm.expectRevert(AntseedKbfAudits.InvalidProfile.selector);
+        kbf.setAuditorProfile(longName, "", "");
+        vm.expectRevert(AntseedKbfAudits.InvalidProfile.selector);
+        kbf.setAuditorProfile("", longUri, "");
+        vm.expectRevert(AntseedKbfAudits.InvalidProfile.selector);
+        kbf.setAuditorProfile("", "", longUri);
+        vm.stopPrank();
+    }
+
+    function test_ownerClearsAProfile() public {
+        vm.prank(auditorA);
+        kbf.setAuditorProfile("Acme", "ipfs://icon", "https://acme.example");
+        vm.prank(auditorB);
+        vm.expectRevert();
+        kbf.clearAuditorProfile(auditorA);
+
+        vm.expectEmit(true, false, false, true, address(kbf));
+        emit IAntseedKbfAudits.AuditorProfileSet(auditorA, "", "", "");
+        kbf.clearAuditorProfile(auditorA);
+        IAntseedKbfAudits.AuditorProfile memory profile = kbf.auditorProfile(auditorA);
+        assertEq(profile.name, "");
+        assertEq(profile.iconUri, "");
+        assertEq(profile.url, "");
     }
 
     function test_evidenceBelongsToTheVerifierThatFirstSubmitsIt() public {
@@ -1028,44 +1070,34 @@ contract AntseedKbfAuditsTest is Test {
         assertEq(kbf.evidenceAuditor(evidence), auditorA);
     }
 
-    function test_approvalStampsTheResultsEpochAndEmitsOnEveryCall() public {
+    function test_approvalEmitsOnEveryCallAndOnlyRevocationsCount() public {
         address newcomer = address(0xE5);
         assertFalse(kbf.approvedAuditors(newcomer));
-        assertEq(kbf.activeSinceEpoch(newcomer), 0);
         vm.expectEmit(true, false, false, true, address(kbf));
         emit IAntseedKbfAudits.AuditorSet(newcomer, true);
         kbf.setAuditor(newcomer, true);
         assertTrue(kbf.approvedAuditors(newcomer));
-        assertEq(kbf.activeSinceEpoch(newcomer), EPOCH);
-
-        _advance(3);
-        vm.expectEmit(true, false, false, true, address(kbf));
-        emit IAntseedKbfAudits.AuditorSet(newcomer, true);
-        kbf.setAuditor(newcomer, true);
-        assertEq(kbf.activeSinceEpoch(newcomer), EPOCH, "re-approving an approved auditor keeps its epoch");
 
         uint256 revocations = kbf.auditorRevocations();
         vm.expectEmit(true, false, false, true, address(kbf));
+        emit IAntseedKbfAudits.AuditorSet(newcomer, true);
+        kbf.setAuditor(newcomer, true); // already approved: still emits, counts nothing
+        assertEq(kbf.auditorRevocations(), revocations);
+        vm.expectEmit(true, false, false, true, address(kbf));
         emit IAntseedKbfAudits.AuditorSet(newcomer, false);
         kbf.setAuditor(newcomer, false);
-        assertEq(kbf.activeSinceEpoch(newcomer), 0, "revoking zeroes it");
+        assertFalse(kbf.approvedAuditors(newcomer));
         assertEq(kbf.auditorRevocations(), revocations + 1);
         vm.expectEmit(true, false, false, true, address(kbf));
         emit IAntseedKbfAudits.AuditorSet(newcomer, false);
         kbf.setAuditor(newcomer, false); // already revoked: still emits, counts nothing
         assertEq(kbf.auditorRevocations(), revocations + 1);
-
-        kbf.setAuditor(newcomer, true);
-        assertEq(kbf.activeSinceEpoch(newcomer), EPOCH + 3, "re-approval after a revocation restamps");
     }
 
-    function test_onlyOwnerApprovesOrHoldsBackAuditors() public {
-        vm.startPrank(auditorA);
+    function test_onlyOwnerApprovesAuditors() public {
+        vm.prank(auditorA);
         vm.expectRevert();
         kbf.setAuditor(address(0xB0B), true);
-        vm.expectRevert();
-        kbf.setMinActiveEpochs(1);
-        vm.stopPrank();
         vm.expectRevert(AntseedKbfAudits.InvalidAddress.selector);
         kbf.setAuditor(address(0), true);
         vm.expectRevert(AntseedKbfAudits.InvalidAddress.selector);
