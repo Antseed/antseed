@@ -400,7 +400,7 @@ Read and change `~/.antseed/config.json`. Guides: [Buyer configuration](/docs/bu
 | `antseed config seller set <key> <value>` | Set a seller value | |
 | `antseed config seller add-provider <name>` | Add a provider (installs its plugin) | `--plugin <name>`, `--base-url`, `--input`, `--output`, `--cached` |
 | `antseed config seller remove-provider <name>` | Remove a provider | |
-| `antseed config seller add-service <provider> <serviceId>` | Add a service under a provider | `--upstream`, `--input`, `--output`, `--cached`, `--categories`, `--capabilities <json>`, `--unit-billing-models <json>`, `--base-url` |
+| `antseed config seller add-service <provider> <serviceId>` | Add a service under a provider | `--upstream`, `--venice-edit-model <model>` (Venice only: the native edit model that serves `/v1/images/edits` for this image service; see [Venice image edits](/docs/provide/media#venice-image-edits)), `--input`, `--output`, `--cached`, `--categories`, `--capabilities <json>`, `--unit-billing-models <json>`, `--base-url` |
 | `antseed config seller remove-service <provider> <serviceId>` | Remove a service | |
 
 </CommandTable>

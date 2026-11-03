@@ -94,7 +94,7 @@ costUSD = (freshInputTokens × inputUsdPerMillion
          + outputTokens × outputUsdPerMillion) / 1,000,000
 ```
 
-`cachedInputUsdPerMillion` defaults to `inputUsdPerMillion` when the seller does not set it. Image and video services add a per-unit charge (`output_images`, `video_generations`, or `video_seconds`) from the billing model in their metadata; see [Media billing](/docs/provide/media). Each paid video gets its own one-off channel bound to that request.
+`cachedInputUsdPerMillion` defaults to `inputUsdPerMillion` when the seller does not set it. Image, video and speech services add a per-unit charge (`output_images`, `video_generations`, `video_seconds`, or `input_characters`) from the billing model in their metadata; see [Media billing](/docs/provide/media). Each paid video gets its own one-off channel bound to that request.
 
 ### SpendingAuth metadata
 

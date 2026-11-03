@@ -35,7 +35,7 @@ Click a model to open its panel:
 - **Providers**: every provider offering the model, with its price, trust score, time to first token and output speed on this gateway, its last self check (when it last served a buyer or passed its own health check), and how the model served the provider's buyers in the last hour: requests, success rate, time to first token and speed, as the provider measured them. A provider whose self check reports the model failing is never routed to; **All** lists it with since when it fails and why (for example the upstream timed out, with the HTTP status and the failed checks in a row). Each row has a copy button for the pinned id `<peerId>@<model>`, verified domain or GitHub links when the provider has them, and a link to the provider on **Providers**.
 - **API call**: a request for the model. The selector defaults to **Best provider (automatic)**. Pick a provider in it, or click **Pin** on a provider row, to get the pinned version instead.
 
-Image models get a `/v1/images/generations` call. Video models are served through the gateway's [video job routes](/docs/gateway/api#supported-routes), which the panel does not generate a call for yet.
+Image models get a `/v1/images/generations` call. Video models are served through the gateway's [video job routes](/docs/gateway/api#supported-routes), and speech models through `/v1/audio/speech`; the panel does not generate a call for those yet.
 
 The Models page shows the whole network, without any routing policy applied. A client calling `GET /v1/models` with an API key that has an allow list of models only sees the models that key may use.
 

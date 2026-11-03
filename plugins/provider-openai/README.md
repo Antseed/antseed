@@ -84,9 +84,20 @@ antseed config seller add-service venice grok-imagine-image-quality \
 
 The shared image-unit price applies to both generation and edits without changing discovery metadata. The example price reflects Venice's catalog when written; check the current `type=image` and `type=inpaint` results from Venice's Models API before advertising prices.
 
-The public service remains `grok-imagine-image-quality` for both generation and follow-up edits. For `POST /v1/images/edits`, the provider sends the multipart request to Venice's `/api/v1/image/edit`, substitutes `grok-imagine-quality-edit`, and converts Venice's raw image response to the OpenAI Images `b64_json` shape. Explicit `response_format=url` and unsupported multipart fields are rejected locally instead of being silently dropped.
+The public service remains `grok-imagine-image-quality` for both generation and follow-up edits. For `POST /v1/images/edits`, the provider sends the multipart request to Venice's `/api/v1/image/edit` (or `/api/v1/image/multi-edit` when the request has several images, as repeated `image` or `image[]` parts, or a `quality` field), substitutes `grok-imagine-quality-edit`, and converts Venice's raw image response to the OpenAI Images `b64_json` shape. Explicit `response_format=url` and unsupported multipart fields are rejected locally instead of being silently dropped.
 
-Only Venice services with `--venice-edit-model` advertise `inputs: ["text", "image"]`. Venice image services without that option advertise `inputs: ["text"]`, remain available for generation, and reject edits locally without calling an invalid upstream endpoint. The CLI stores the selected model as `imageEditModel` in the service's durable seller config; seller startup loads that field and passes it to the provider. Edit pairings must be configured per service; the provider never guesses compatibility from generation model names. Seller startup warns when an edit pairing has no explicit `openai-images` billing model.
+Only Venice services with `--venice-edit-model` advertise `inputs: ["text", "image"]`, and they add `image` and `moderation` to `supportedParameters` (buyers route edits automatically only to services that list `image`). Venice image services without that option advertise `inputs: ["text"]`, remain available for generation, and reject edits locally without calling an invalid upstream endpoint. The CLI stores the selected model as `imageEditModel` in the service's durable seller config; seller startup loads that field and passes it to the provider. Edit pairings must be configured per service; the provider never guesses compatibility from generation model names. Seller startup warns when an edit pairing has no explicit `openai-images` billing model.
+
+### Text to speech
+
+Services whose upstream model is a text-to-speech model (`tts-1`, `tts-1-hd`, `gpt-4o-mini-tts`, Venice `tts-…`) are advertised as `openai-audio-speech` and served on `POST /v1/audio/speech`, billed per character with `input_characters`:
+
+```bash
+antseed config seller add-service venice tts-kokoro \
+  --unit-billing-models '{"openai-audio-speech":{"version":1,"components":[{"unit":"input_characters","priceUsd":0.0000035}]}}'
+```
+
+On Venice the provider reads each speech model's voices from `GET /api/v1/models?type=tts` at startup and announces them as `capabilities.speech`, unless the service config sets `capabilities.speech.voices`. The seller refuses a voice that is not listed. Body injection (`OPENAI_BODY_INJECT_JSON`) is not applied to speech requests.
 
 ## How It Works
 
