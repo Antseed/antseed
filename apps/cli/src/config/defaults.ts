@@ -66,6 +66,7 @@ export function createDefaultConfig(): AntseedConfig {
       auditMaxConcurrentBatchesPerPeer: 2,
       auditConcurrencyPromotionLatencyMs: 30_000,
       auditPeerTimeoutMs: 600_000,
+      auditPeerMaxTimeoutMs: 3_600_000,
       contrastSelection: {
         inputWeight: 0.9,
         maxPriceRatio: 0.3,

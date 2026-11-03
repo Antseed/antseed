@@ -183,7 +183,10 @@ export const VerifierConfigSchema = strictObject({
   auditMaxConcurrentBatches: positiveIntegerSchema.optional(),
   auditMaxConcurrentBatchesPerPeer: positiveIntegerSchema.optional(),
   auditConcurrencyPromotionLatencyMs: positiveIntegerSchema.optional(),
+  /** How long one seller audit waits for its next answered batch before it gives up (default 10 minutes). */
   auditPeerTimeoutMs: positiveIntegerSchema.optional(),
+  /** The longest one seller audit may take in total, while the seller keeps answering (default 60 minutes). */
+  auditPeerMaxTimeoutMs: positiveIntegerSchema.optional(),
   /**
    * Close calls (first-audit p-value from 0.005 up to 0.20) get extra sets of never-seen probes and
    * are decided on the sets pooled: 2 (default, `kbf-extension-v2`: a second extra set when the first

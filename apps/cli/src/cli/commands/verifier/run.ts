@@ -55,6 +55,7 @@ import {
   loadBuyerProxySnapshot,
   readModelAuditCheckpoints,
   verifyModelTarget,
+  DEFAULT_AUDIT_MAX_TIMEOUT_MS,
   type ModelVerificationFailure,
   type ModelVerificationResumeInput,
   type ModelVerificationSkip,
@@ -72,6 +73,7 @@ import { buyerCapShortfall, describeAuditPriceCap, requiredBuyerCap, resolveAudi
 import { loadHighestEndpointPrice, loadVerifierModelCatalog } from '../../../verifier/openrouter-catalog.js'
 import {
   inspectSellerProbeCapacity,
+  missingBankReferenceExchanges,
   loadModelAuditReservation,
   reserveExtensionReference,
   reserveModelAuditReference,
@@ -88,6 +90,7 @@ import { writeEpochOverview } from '../../../verifier/epoch-overview.js'
 import {
   CONFIRMATION_ATTEMPTS,
   CONFIRMATION_RECHECK_SPACING_SECONDS,
+  sellerRetryDueAt,
   countPlan,
   epochCellKey,
   heldForConfirmationRecheck,
@@ -928,6 +931,14 @@ async function runVerifierRound(
                 + `is audited again from ${new Date(recheckDueAt * 1_000).toISOString()}`)
               return []
             }
+            const cell = epochCellFor(model, peer.peerId)
+            const retryDueAt = cell ? sellerRetryDueAt(cell) : null
+            if (!resumeCandidate && retryDueAt !== null && retryDueAt > Date.now() / 1_000) {
+              // A seller's outage usually lasts hours: its one retry waits instead of failing again.
+              doneCount += 1
+              notAudited(`its failed audit is retried from ${new Date(retryDueAt * 1_000).toISOString()}`)
+              return []
+            }
             if (!pendingExtension && finished(model, peer)) {
               doneCount += 1
               if (confirmationKey) auditedConfirmations.add(confirmationKey)
@@ -1098,6 +1109,8 @@ async function runVerifierRound(
         const maxConcurrentBatches = config.verifier?.auditMaxConcurrentBatches ?? 24
         const maxConcurrentBatchesPerPeer = config.verifier?.auditMaxConcurrentBatchesPerPeer ?? 2
         const batchLimiter = new ConcurrencyLimiter(maxConcurrentBatches)
+        // Each seller's thinking suppression, discovered once per run (see `ProxyVerificationContext.sellerThinking`).
+        const sellerThinking: NonNullable<ProxyVerificationContext['sellerThinking']> = new Map()
         const sellerLimiter = new KeyedSerialLimiter()
         const statusQueue = new SerialOperationQueue()
         const eventQueue = new SerialOperationQueue()
@@ -1163,6 +1176,7 @@ async function runVerifierRound(
             checkpointRootDir: modelAuditsDirectory(evidenceDir, epoch, model, runId),
             requestTimeoutMs: config.verifier?.probeRequestTimeoutMs ?? 120_000,
             auditTimeoutMs: config.verifier?.auditPeerTimeoutMs ?? 600_000,
+            auditMaxTimeoutMs: config.verifier?.auditPeerMaxTimeoutMs ?? DEFAULT_AUDIT_MAX_TIMEOUT_MS,
             responseAuthReader: responseAuthReader!,
             batchConcurrency: Math.min(
               maxConcurrentBatchesPerPeer,
@@ -1170,6 +1184,7 @@ async function runVerifierRound(
             ),
             batchConcurrencyPromotionLatencyMs: config.verifier?.auditConcurrencyPromotionLatencyMs ?? 30_000,
             batchLimiter,
+            sellerThinking,
           })
           const outcomes = await mapConcurrently(targets, maxConcurrentPeersPerModel, async (target) => {
             if (target.pendingExtension) {
@@ -1675,6 +1690,12 @@ async function collectPreRunProblems(input: {
         continue
       }
       problems.push(...probeBankProblems({ model, sellers: capacity.sellers, enrollIfNeeded: input.enrollIfNeeded }))
+      const missing = await missingBankReferenceExchanges(input.banksDir, model)
+      if (missing.length > 0) {
+        problems.push(`${model}: the probe bank's reference evidence is missing (${missing.slice(0, 3).join(', ')}`
+          + `${missing.length > 3 ? `, and ${missing.length - 3} more` : ''}), so the submission would fail after the run; `
+          + 'restore the bank\'s reference-evidence folder')
+      }
     } catch (error) {
       problems.push(`${model}: the probe bank can't be used (${asError(error).message}); `
         + `rebuild it with antseed verifier reference build ${model}`)

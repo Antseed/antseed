@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { auditEndpoint, selectProbes } from '../src/audit.js'
-import { FakeEndpoint, testReference } from './fixtures.js'
+import { FakeEndpoint, answerDiscovery, testReference } from './fixtures.js'
 
 describe('auditEndpoint', () => {
   it('returns SAME for an endpoint serving the reference model', async () => {
@@ -19,7 +19,7 @@ describe('auditEndpoint', () => {
 
   it('treats failed batches as missing, not wrong, and reports UNDETERMINED below half coverage', async () => {
     const flaky = new FakeEndpoint(() => false, (callIndex) => callIndex % 4 !== 0)
-    const result = await auditEndpoint({ endpoint: flaky, reference: testReference(), probeCount: 100, concurrency: 1 })
+    const result = await auditEndpoint({ endpoint: flaky, reference: testReference(), probeCount: 100, concurrency: 1, discoverThinking: false })
     expect(result.evaluation.verdict).toBe('UNDETERMINED')
     expect(result.evaluation.matchVector.filter((entry) => entry === null)).toHaveLength(70)
     expect(result.evaluation.stats.targetHamming).toBe(0)
@@ -27,7 +27,7 @@ describe('auditEndpoint', () => {
 
   it('reaches a verdict when half the probes are scored', async () => {
     const flaky = new FakeEndpoint(() => false, (callIndex) => callIndex % 2 === 0)
-    const result = await auditEndpoint({ endpoint: flaky, reference: testReference(), probeCount: 100, concurrency: 1 })
+    const result = await auditEndpoint({ endpoint: flaky, reference: testReference(), probeCount: 100, concurrency: 1, discoverThinking: false })
     expect(result.evaluation.verdict).toBe('SAME')
     expect(result.evaluation.stats.targetTotal).toBe(50)
   })
@@ -45,7 +45,7 @@ describe('auditEndpoint', () => {
       const text = result.text.split('\n').slice(0, keep).join('\n')
       return { ...result, text }
     }
-    const result = await auditEndpoint({ endpoint, reference: testReference(), probeCount: 10, concurrency: 1 })
+    const result = await auditEndpoint({ endpoint, reference: testReference(), probeCount: 10, concurrency: 1, discoverThinking: false })
     expect(calls).toBe(3)
     expect(result.batches[0]!.attempts).toBe(3)
     expect(result.batches[0]!.answers.filter((value) => value !== null)).toHaveLength(10)
@@ -65,7 +65,7 @@ describe('auditEndpoint', () => {
       if (!result.ok) return result
       return { ...result, text: result.text.split('\n').slice(0, keep).join('\n') }
     }
-    const result = await auditEndpoint({ endpoint, reference: testReference(), probeCount: 10, concurrency: 1 })
+    const result = await auditEndpoint({ endpoint, reference: testReference(), probeCount: 10, concurrency: 1, discoverThinking: false })
     expect(calls).toBe(3)
     expect(result.batches[0]!.attempts).toBe(3)
     expect(result.batches[0]!.answers.filter((value) => value !== null)).toHaveLength(4)
@@ -88,7 +88,7 @@ describe('auditEndpoint', () => {
 
   it('sends canonical audit settings and the requested model', async () => {
     const endpoint = new FakeEndpoint()
-    await auditEndpoint({ endpoint, reference: testReference(), model: 'vendor/open-model', probeCount: 20 })
+    await auditEndpoint({ endpoint, reference: testReference(), model: 'vendor/open-model', probeCount: 20, discoverThinking: false })
     expect(endpoint.requests).toHaveLength(2)
     for (const request of endpoint.requests) {
       expect(request.model).toBe('vendor/open-model')
@@ -113,7 +113,7 @@ describe('auditEndpoint', () => {
     }
   })
 
-  it('sends the reference thinking suppression like the KBF reference code, and drops it when refused', async () => {
+  it('without discovery, sends the reference thinking suppression and drops it when refused', async () => {
     const reference = testReference()
     reference.generator.params.referenceEndpointRequest = {
       reasoningStrategy: 'reasoning-effort-none',
@@ -121,7 +121,7 @@ describe('auditEndpoint', () => {
       requestOmissions: ['top_p'],
     }
     const accepting = new FakeEndpoint()
-    await auditEndpoint({ endpoint: accepting, reference, probeCount: 20, concurrency: 1 })
+    await auditEndpoint({ endpoint: accepting, reference, probeCount: 20, concurrency: 1, discoverThinking: false })
     expect(accepting.requests.every((request) => JSON.stringify(request.extraBody) === JSON.stringify({ reasoning: { effort: 'none' } }))).toBe(true)
 
     const refusing = new FakeEndpoint()
@@ -129,7 +129,7 @@ describe('auditEndpoint', () => {
     refusing.call = async (request, signal) => request.extraBody
       ? { ok: false, status: 400, retryable: false, message: 'HTTP 400: Reasoning is mandatory for this endpoint and cannot be disabled.' }
       : answer(request, signal)
-    const result = await auditEndpoint({ endpoint: refusing, reference, probeCount: 20, concurrency: 1 })
+    const result = await auditEndpoint({ endpoint: refusing, reference, probeCount: 20, concurrency: 1, discoverThinking: false })
     expect(result.evaluation.verdict).toBe('SAME')
     for (const batch of result.batches) {
       expect(batch.attempts).toBe(2)
@@ -157,5 +157,99 @@ describe('selectProbes', () => {
 
   it('rejects probe counts that are not whole batches', () => {
     expect(() => selectProbes(testReference(), { draw: () => 0, minimumPower: 0.9, probeCount: 15 })).toThrow()
+  })
+
+  describe('thinking discovery (KBF reference code, per endpoint)', () => {
+    it('uses the first strategy the endpoint honours and records the discovery', async () => {
+      const endpoint = new FakeEndpoint()
+      const result = await auditEndpoint({ endpoint, reference: testReference(), probeCount: 20 })
+      expect(result.thinkingDiscovery?.strategy).toBe('reasoning-effort-none')
+      expect(result.thinkingDiscovery?.attempts).toHaveLength(1)
+      const batches = endpoint.requests.filter((request) => !request.user.includes('atomic number of gold'))
+      expect(batches).toHaveLength(2)
+      for (const request of batches) {
+        expect(request.extraBody).toEqual({ reasoning: { effort: 'none' } })
+        expect(request.maxTokens).toBe(testReference().queryProfile.maxTokensPerRequest)
+      }
+      expect(result.evaluation.verdict).toBe('SAME')
+    })
+
+    it('gives an endpoint that thinks whatever it is told 50x the token budget', async () => {
+      const endpoint = new FakeEndpoint()
+      const answer = endpoint.call.bind(endpoint)
+      // Thinks ~3,000 tokens before answering, whatever the request says: below that budget the
+      // completion is empty, which the HTTP layer reports as a retryable failure with status 200.
+      endpoint.call = async (request, signal) => {
+        if (request.maxTokens < 4_000) {
+          endpoint.requests.push(request)
+          return { ok: false, status: 200, retryable: true, message: 'response has no completion text' }
+        }
+        if (request.user.includes('atomic number of gold')) {
+          endpoint.requests.push(request)
+          return answerDiscovery(request, 3_000)
+        }
+        return answer(request, signal)
+      }
+      const result = await auditEndpoint({ endpoint, reference: testReference(), probeCount: 20, concurrency: 1 })
+      expect(result.thinkingDiscovery?.strategy).toBe('bare-expanded')
+      expect(result.thinkingDiscovery?.attempts.map((attempt) => attempt.strategy)).toEqual([
+        'reasoning-effort-none', 'reasoning-effort-minimal', 'disable-thinking', 'enable-thinking-false', 'prefill', 'bare', 'bare-expanded',
+      ])
+      // An empty reply is an answer with nothing parseable, sent once, not a failure retried three times.
+      expect(result.thinkingDiscovery?.attempts.slice(0, 6).every((attempt) => attempt.validAnswers === 0)).toBe(true)
+      expect(result.thinkingDiscovery?.maxTokens).toBe(40_000)
+      const batches = endpoint.requests.filter((request) => !request.user.includes('atomic number of gold'))
+      expect(batches.every((request) => request.maxTokens === 40_000 && request.extraBody === undefined)).toBe(true)
+      expect(result.evaluation.verdict).toBe('SAME')
+      expect(result.evaluation.stats.targetTotal).toBe(20)
+    })
+
+    it('skips the prefill strategy on endpoints that cannot carry it', async () => {
+      const endpoint = Object.assign(new FakeEndpoint(), { supportsPrefill: false })
+      const answer = endpoint.call.bind(endpoint)
+      endpoint.call = async (request, signal) => request.user.includes('atomic number of gold') && request.maxTokens < 4_000
+        ? (endpoint.requests.push(request), { ok: true as const, text: '', finishReason: 'length', raw: { request: new Uint8Array(), response: new Uint8Array(), status: 200 } })
+        : answer(request, signal)
+      const result = await auditEndpoint({ endpoint, reference: testReference(), probeCount: 20 })
+      expect(result.thinkingDiscovery?.attempts.map((attempt) => attempt.strategy)).not.toContain('prefill')
+    })
+
+    it('falls back to the reference suppression when the endpoint is down, after two strategies', async () => {
+      const endpoint = new FakeEndpoint()
+      const answer = endpoint.call.bind(endpoint)
+      endpoint.call = async (request, signal) => request.user.includes('atomic number of gold')
+        ? (endpoint.requests.push(request), { ok: false as const, status: 503, retryable: true, retryAfterMs: 0, message: 'HTTP 503: unavailable' })
+        : answer(request, signal)
+      const result = await auditEndpoint({ endpoint, reference: testReference(), probeCount: 20 })
+      expect(result.thinkingDiscovery?.strategy).toBeNull()
+      expect(result.thinkingDiscovery?.failure).toMatch(/503/)
+      expect(endpoint.requests.filter((request) => request.user.includes('atomic number of gold'))).toHaveLength(6)
+      expect(result.evaluation.verdict).toBe('SAME')
+    })
+
+    it('keeps discovering after one strategy fails during a brief outage', async () => {
+      const endpoint = new FakeEndpoint()
+      const answer = endpoint.call.bind(endpoint)
+      let discoveryCalls = 0
+      endpoint.call = async (request, signal) => request.user.includes('atomic number of gold') && (discoveryCalls += 1) <= 3
+        ? (endpoint.requests.push(request), { ok: false as const, status: 502, retryable: true, retryAfterMs: 0, message: 'HTTP 502: bad gateway' })
+        : answer(request, signal)
+      const result = await auditEndpoint({ endpoint, reference: testReference(), probeCount: 20 })
+      expect(result.thinkingDiscovery?.strategy).toBe('reasoning-effort-minimal')
+      expect(result.evaluation.verdict).toBe('SAME')
+    })
+
+    it('ignores answers inside <think> blocks, as the reference code does', async () => {
+      const endpoint = new FakeEndpoint()
+      const answer = endpoint.call.bind(endpoint)
+      endpoint.call = async (request, signal) => {
+        const result = await answer(request, signal)
+        if (!result.ok || request.user.includes('atomic number of gold')) return result
+        return { ...result, text: `<think>${result.text.replace(/\) \d+/g, ') 99999')}</think>\n${result.text}` }
+      }
+      const result = await auditEndpoint({ endpoint, reference: testReference(), probeCount: 20 })
+      expect(result.evaluation.verdict).toBe('SAME')
+      expect(result.evaluation.stats.targetHamming).toBe(0)
+    })
   })
 })

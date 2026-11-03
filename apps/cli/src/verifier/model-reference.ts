@@ -77,6 +77,14 @@ const CANDIDATE_BATCH_SIZE = 20
 const DEFAULT_MAX_REQUESTS_PER_BUILD = 2_000
 const DEFAULT_BATCH_RETRY_COUNT = 3
 const DEFAULT_RETRY_BASE_DELAY_MS = 500
+/**
+ * First wait after a 429 that gives no Retry-After, doubling per attempt up to
+ * `REFERENCE_THROTTLE_MAX_DELAY_MS`. An upstream provider's rate limit (OpenRouter's "Provider
+ * returned error" 429) outlasts the half-second backoff of other errors, so quick retries all hit
+ * it and the enrollment fails.
+ */
+const REFERENCE_THROTTLE_BASE_DELAY_MS = 10_000
+const REFERENCE_THROTTLE_MAX_DELAY_MS = 60_000
 const DEFAULT_MAX_NO_PROGRESS_ROUNDS = 3
 /** Layout-filter passes for a new bank, as `generate_probes.py --layout-filter 1` in the KBF reference code. */
 const DEFAULT_LAYOUT_FILTER_PASSES = 1
@@ -2222,7 +2230,18 @@ async function postChatCompletion(
       status: response.status,
       responseBody,
     }
-    const parsed = parseCompletion(anthropic, responseBody)
+    let parsed: ReturnType<typeof parseCompletion>
+    try {
+      parsed = parseCompletion(anthropic, responseBody)
+    } catch (error) {
+      // A 200 whose body is not JSON, such as OpenRouter's whitespace keep-alive padding left
+      // alone when the upstream drops, is a broken gateway response: retry it like a 502.
+      throw new ReferenceEndpointError(
+        502,
+        null,
+        `HTTP ${response.status} body (${responseBody.length} bytes) was not valid JSON: ${asError(error).message}`,
+      )
+    }
     assertPinnedProvider(route, parsed.provider)
     if (parsed.content === null) {
       throw new EmptyReferenceResponseError(
@@ -2377,7 +2396,7 @@ export function resolveReferenceRequestOverrides(
   return { reasoning: { effort, exclude: true } }
 }
 
-class ReferenceEndpointError extends Error {
+export class ReferenceEndpointError extends Error {
   constructor(
     readonly status: number,
     readonly retryAfterMs: number | null,
@@ -2699,10 +2718,13 @@ function isNewAccountRateLimit(error: unknown): boolean {
     && normalized(error.detail).includes('new-account-rpm')
 }
 
-function retryDelayMs(error: unknown, baseDelayMs: number, attempt: number): number {
+/** How long to wait before retry `attempt` (1-based) of a reference request that failed with `error`. */
+export function retryDelayMs(error: unknown, baseDelayMs: number, attempt: number): number {
   if (error instanceof ReferenceEndpointError && error.retryAfterMs !== null) return error.retryAfterMs
   if (isNewAccountRateLimit(error)) return NEW_ACCOUNT_MINIMUM_REQUEST_INTERVAL_MS
-  return Math.min(30_000, baseDelayMs * 2 ** Math.max(0, attempt - 1))
+  const doubling = 2 ** Math.max(0, attempt - 1)
+  if (isThrottleError(error)) return Math.min(REFERENCE_THROTTLE_MAX_DELAY_MS, REFERENCE_THROTTLE_BASE_DELAY_MS * doubling)
+  return Math.min(30_000, baseDelayMs * doubling)
 }
 
 function parseRetryAfterMs(value: string | null): number | null {
