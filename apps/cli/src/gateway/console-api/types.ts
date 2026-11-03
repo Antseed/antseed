@@ -896,6 +896,8 @@ export interface NetworkModelOffer {
   cachedInputUsdPerMillion: number | null
   /** Image models: price per image, cheapest to dearest; null when not advertised. */
   usdPerImage: { min: number; max: number } | null
+  /** Speech models: USD per million characters of `input`; absent when not advertised. */
+  usdPerMillionCharacters?: number
   contextLength: number | null
   free: boolean
   /**

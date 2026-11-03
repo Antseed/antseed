@@ -67,6 +67,26 @@ export interface PeerStat {
   tokensPerSecondP50?: number | null
 }
 
+/**
+ * USD per million `input` characters a speech offer charges: the components
+ * speech billing applies (no `match`, or one naming the service), summed; null
+ * when the offer publishes none.
+ */
+function speechUsdPerMillionCharacters(unitBillingModels: unknown, serviceId: string): number | null {
+  const rates = Object.values(asRecord(unitBillingModels)).flatMap((model) => {
+    const applicable = rows(asRecord(model)['components']).filter((component) => {
+      const match = asRecord(component['match'])
+      return component['unit'] === 'input_characters'
+        && Object.entries(match).every(([key, value]) => key === 'model' && value === serviceId)
+    })
+    const prices = applicable.map((component) => num(component['priceUsd']))
+    return applicable.length > 0 && prices.every((price): price is number => price !== null)
+      ? [prices.reduce((sum, price) => sum + price, 0) * 1_000_000]
+      : []
+  })
+  return rates.length > 0 ? Math.min(...rates) : null
+}
+
 /** The voices a speech service's announced capabilities list; empty when none. */
 function speechVoices(capabilities: unknown): string[] {
   return strings(asRecord(asRecord(capabilities)['speech'])['voices'])
@@ -314,19 +334,23 @@ export function mapNetworkModels(body: unknown, peers: readonly Peer[]): Network
       const maxImage = num(offer['maxImageUsdPerImage']) ?? minImage
       const tokenPriced = input !== null || output !== null
       const voices = speechVoices(capabilities)
+      const serviceId = str(offer['serviceId']) ?? id
+      const perMillionCharacters = speechUsdPerMillionCharacters(offer['unitBillingModels'], serviceId)
       return [{
         peerId,
         displayName: str(offer['displayName']) ?? peer?.displayName ?? null,
-        serviceId: str(offer['serviceId']) ?? id,
+        serviceId,
         provider: str(offer['provider']) ?? '',
         protocols: [...new Set([str(offer['protocol']), ...strings(offer['protocols'])].filter((value): value is string => value !== null))],
         inputUsdPerMillion: input,
         outputUsdPerMillion: output,
         cachedInputUsdPerMillion: num(offer['cachedInputUsdPerMillion']),
         usdPerImage: minImage !== null && maxImage !== null ? { min: Math.min(minImage, maxImage), max: Math.max(minImage, maxImage) } : null,
+        ...(perMillionCharacters !== null ? { usdPerMillionCharacters: perMillionCharacters } : {}),
         contextLength: num(capabilities['contextWindow']),
         // Free when every advertised price is zero, and at least one is advertised.
-        free: (tokenPriced || minImage !== null) && (input ?? 0) === 0 && (output ?? 0) === 0 && (maxImage ?? 0) === 0,
+        free: (tokenPriced || minImage !== null || perMillionCharacters !== null)
+          && (input ?? 0) === 0 && (output ?? 0) === 0 && (maxImage ?? 0) === 0 && (perMillionCharacters ?? 0) === 0,
         agentId: peer?.agentId ?? null,
         // The program this model is served under: its own, else the seller-wide
         // one, which only covers free models. A priced model's own program is a free allowance.

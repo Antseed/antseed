@@ -16,14 +16,18 @@ export function findModel(models: readonly NetworkModel[] | undefined, id: strin
     ?? null
 }
 
-/** One line of price for a seller's offer: free, per image, or input and output per million tokens. */
+/** One line of price for a seller's offer: free, per image, per million speech characters, or input and output per million tokens. */
 export function priceSummary(price: {
   inputUsdPerMillion: number | null
   outputUsdPerMillion: number | null
   usdPerImage?: { min: number; max: number } | null
+  usdPerMillionCharacters?: number
   free?: boolean
 }): string {
   if (price.usdPerImage) return price.usdPerImage.max === 0 ? 'Free' : `${formatPriceRange(price.usdPerImage)} per image`
+  if (price.usdPerMillionCharacters !== undefined) {
+    return price.usdPerMillionCharacters === 0 ? 'Free' : `${formatPricePerMillion(price.usdPerMillionCharacters)} /M characters`
+  }
   const { inputUsdPerMillion: input, outputUsdPerMillion: output } = price
   if (input === null && output === null) return price.free ? 'Free' : 'No price advertised'
   if ((input ?? 0) === 0 && (output ?? 0) === 0) return 'Free'

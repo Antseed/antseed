@@ -292,6 +292,24 @@ test('peer services, model offers and models carry the voices speech services ac
   assert.deepEqual(model!.offers[0]!.voices, ['af_sky', 'am_adam'])
 })
 
+test('speech offers keep their per-character price and are free only when it is zero', () => {
+  const speechOffer = (peerId: string, priceUsd: number) => ({
+    peerId, provider: 'openai', serviceId: 'tts-model', protocol: 'openai-audio-speech',
+    unitBillingModels: { 'openai-audio-speech': { version: 1, components: [
+      { unit: 'input_characters', priceUsd },
+      // A component for another model does not apply.
+      { unit: 'input_characters', priceUsd: 1, match: { model: 'other-model' } },
+    ] } },
+  })
+  const [model] = mapNetworkModels({ data: [{ id: 'tts-model', type: 'speech', peers: [speechOffer(PEER_A, 0.000015), speechOffer('b'.repeat(40), 0)] }] }, [])
+  const [paid, free] = model!.offers
+  assert.ok(Math.abs(paid!.usdPerMillionCharacters! - 15) < 1e-9)
+  assert.equal(paid!.free, false)
+  assert.equal(free!.usdPerMillionCharacters, 0)
+  assert.equal(free!.free, true)
+  assert.equal(model!.free, true)
+})
+
 test('peer services give a paid unit-billed service no seller-wide program', () => {
   const row = {
     ...PEERS_BODY.peers[0],
