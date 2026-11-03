@@ -214,7 +214,7 @@ describe('selectProbes', () => {
       expect(result.thinkingDiscovery?.attempts.map((attempt) => attempt.strategy)).not.toContain('prefill')
     })
 
-    it('falls back to the reference suppression when the endpoint is down, after one strategy', async () => {
+    it('falls back to the reference suppression when the endpoint is down, after two strategies', async () => {
       const endpoint = new FakeEndpoint()
       const answer = endpoint.call.bind(endpoint)
       endpoint.call = async (request, signal) => request.user.includes('atomic number of gold')
@@ -223,7 +223,19 @@ describe('selectProbes', () => {
       const result = await auditEndpoint({ endpoint, reference: testReference(), probeCount: 20 })
       expect(result.thinkingDiscovery?.strategy).toBeNull()
       expect(result.thinkingDiscovery?.failure).toMatch(/503/)
-      expect(endpoint.requests.filter((request) => request.user.includes('atomic number of gold'))).toHaveLength(3)
+      expect(endpoint.requests.filter((request) => request.user.includes('atomic number of gold'))).toHaveLength(6)
+      expect(result.evaluation.verdict).toBe('SAME')
+    })
+
+    it('keeps discovering after one strategy fails during a brief outage', async () => {
+      const endpoint = new FakeEndpoint()
+      const answer = endpoint.call.bind(endpoint)
+      let discoveryCalls = 0
+      endpoint.call = async (request, signal) => request.user.includes('atomic number of gold') && (discoveryCalls += 1) <= 3
+        ? (endpoint.requests.push(request), { ok: false as const, status: 502, retryable: true, retryAfterMs: 0, message: 'HTTP 502: bad gateway' })
+        : answer(request, signal)
+      const result = await auditEndpoint({ endpoint, reference: testReference(), probeCount: 20 })
+      expect(result.thinkingDiscovery?.strategy).toBe('reasoning-effort-minimal')
       expect(result.evaluation.verdict).toBe('SAME')
     })
 

@@ -1247,7 +1247,7 @@ test('seller audit deadline aborts all remaining batches', async () => {
   assert.equal(run.result.parsedProbeCount, 0)
   assert.equal(Date.now() - startedAt < 1_000, true)
   assert.equal(run.evidence.exchanges.every((exchange) => (
-    exchange.failureReason?.includes('seller audit deadline exceeded')
+    exchange.failureReason?.includes('seller sent no answer for 25ms')
   )), true)
 })
 
@@ -1312,7 +1312,15 @@ const thinkingSeller: FakeSeller = (body) => (body.max_tokens as number) < 4_000
 
 async function auditWithDiscovery(
   seller: FakeSeller,
-  options: { cache?: Map<string, Promise<import('./proxy-evidence.js').SellerThinkingDiscoveryV1>>; count?: number } = {},
+  options: {
+    cache?: Map<string, Promise<import('./proxy-evidence.js').SellerThinkingDiscoveryV1>>
+    count?: number
+    /** Each batch request takes this long before the seller answers. */
+    batchDelayMs?: number
+    auditTimeoutMs?: number
+    auditMaxTimeoutMs?: number
+    batchConcurrency?: number
+  } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-verifier-thinking-'))
   const bodies: Array<Record<string, unknown>> = []
@@ -1320,6 +1328,15 @@ async function auditWithDiscovery(
     const body = JSON.parse(new TextDecoder().decode(init!.body as Uint8Array)) as Record<string, unknown>
     bodies.push(body)
     const requestId = new Headers(init?.headers).get('x-antseed-request-id')!
+    if (options.batchDelayMs && !isDiscovery(body)) {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(resolve, options.batchDelayMs)
+        init?.signal?.addEventListener('abort', () => {
+          clearTimeout(timer)
+          reject(new DOMException('aborted', 'AbortError'))
+        }, { once: true })
+      })
+    }
     const reply = seller(body)
     if (reply instanceof Response) return reply
     return Response.json({
@@ -1340,9 +1357,10 @@ async function auditWithDiscovery(
         proxy: { baseUrl: 'http://127.0.0.1:8377', statePath: join(directory, 'buyer.state.json'), pid: process.pid, peers: [peer()] },
         evidenceDir: directory,
         requestTimeoutMs: 10_000,
-        auditTimeoutMs: 10_000,
+        auditTimeoutMs: options.auditTimeoutMs ?? 10_000,
+        ...(options.auditMaxTimeoutMs ? { auditMaxTimeoutMs: options.auditMaxTimeoutMs } : {}),
         responseAuthReader: verifiedReader(),
-        batchConcurrency: 2,
+        batchConcurrency: options.batchConcurrency ?? 2,
         batchConcurrencyPromotionLatencyMs: 30_000,
         batchLimiter: new ConcurrencyLimiter(2),
         fetchFn,
@@ -1433,11 +1451,60 @@ test('discovery stops at an unreachable seller and the audit falls back to the r
   const discovery = run.evidence.sellerThinking!
   assert.equal(discovery.strategy, null)
   assert.match(discovery.failure ?? '', /HTTP 502/)
-  // Three tries of the first strategy, then nothing more is sent.
-  assert.equal(run.discoveryBodies.length, 3)
-  assert.deepEqual(discovery.attempts.map((attempt) => attempt.requestIds.length), [3, 0, 0, 0, 0, 0, 0])
+  // Three tries each of the first two strategies, then nothing more is sent.
+  assert.equal(run.discoveryBodies.length, 6)
+  assert.deepEqual(discovery.attempts.map((attempt) => attempt.requestIds.length), [3, 3, 0, 0, 0, 0, 0])
   assert.equal(run.result.status, 'UNDETERMINED')
   for (const body of run.batchBodies) assert.equal(body.max_tokens, reference(40).queryProfile.maxTokensPerRequest)
+})
+
+test('a slow seller that keeps answering finishes its audit past the idle limit', async () => {
+  // Epoch 29: Kimi sellers took 30-90 s per batch, so 17 batches outlasted a fixed 10-minute total.
+  const honest: FakeSeller = (body) => ({ content: correctAnswers(body), reasoningTokens: 0 })
+  const run = await auditWithDiscovery(honest, { batchDelayMs: 60, auditTimeoutMs: 150, batchConcurrency: 1 })
+  // Four batches one after another take ~240 ms, more than the 150 ms idle limit, but each answers in time.
+  assert.equal(run.result.status, 'SAME')
+  assert.equal(run.result.parsedProbeCount, 40)
+})
+
+test('an audit stops at its total time limit, and says it was the auditor\'s limit', async () => {
+  const honest: FakeSeller = (body) => ({ content: correctAnswers(body), reasoningTokens: 0 })
+  const run = await auditWithDiscovery(honest, { batchDelayMs: 60, auditTimeoutMs: 150, auditMaxTimeoutMs: 170, batchConcurrency: 1 })
+  // Two of four batches answer before the 170 ms limit; the rest stop there.
+  assert.deepEqual(run.evidence.exchanges.map((exchange) => exchange.status), ['succeeded', 'succeeded', 'failed', 'failed'])
+  for (const exchange of run.evidence.exchanges.slice(2)) {
+    assert.equal(exchange.failureReason, 'seller audit reached its time limit of 170ms')
+  }
+  assert.equal(run.result.parsedProbeCount, 20)
+})
+
+test('one failed discovery strategy does not end the discovery', async () => {
+  // Epoch 29: one 502 from a seller that answered its first batch seconds later dropped its discovery.
+  let discoveryRequests = 0
+  const flaky: FakeSeller = (body) => {
+    if (isDiscovery(body) && (discoveryRequests += 1) <= 3) return new Response('bad gateway', { status: 502 })
+    return { content: correctAnswers(body), reasoningTokens: 0 }
+  }
+  const run = await auditWithDiscovery(flaky)
+  const discovery = run.evidence.sellerThinking!
+  assert.equal(discovery.strategy, 'reasoning-effort-minimal')
+  assert.deepEqual(discovery.attempts.map((attempt) => attempt.status), [502, null])
+  assert.equal(run.result.status, 'SAME')
+})
+
+test('a failed discovery is not reused by the next audit of the seller', async () => {
+  const cache: NonNullable<Parameters<typeof auditWithDiscovery>[1]>['cache'] = new Map()
+  let down = true
+  const seller: FakeSeller = (body) => isDiscovery(body) && down
+    ? new Response('unavailable', { status: 503 })
+    : { content: correctAnswers(body), reasoningTokens: 0 }
+  const first = await auditWithDiscovery(seller, { cache })
+  assert.equal(first.evidence.sellerThinking!.strategy, null)
+  assert.equal(cache.size, 0)
+  down = false
+  const second = await auditWithDiscovery(seller, { cache })
+  assert.equal(second.evidence.sellerThinking!.strategy, 'reasoning-effort-none')
+  assert.equal(second.evidence.sellerThinking!.reused, undefined)
 })
 
 test('answers inside a <think> block are ignored, as the reference code strips them before parsing', async () => {

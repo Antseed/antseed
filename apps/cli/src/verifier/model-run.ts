@@ -97,21 +97,63 @@ function exportedResponseAuthRecord(record: StoredResponseAuth): Omit<StoredResp
   return exported
 }
 
+/**
+ * When a seller audit gives up: after `idleMs` without an answered batch, or `maxMs` after its first
+ * request. A slow seller that keeps answering finishes its batches; a fixed total cut off honest
+ * reasoning models whose 16 to 23 batches take 30 to 90 seconds each (epoch 29).
+ */
 class LazyAuditDeadline {
   readonly controller = new AbortController()
-  private timer: ReturnType<typeof setTimeout> | null = null
+  private idleTimer: ReturnType<typeof setTimeout> | null = null
+  private maxTimer: ReturnType<typeof setTimeout> | null = null
+  private cause: 'idle' | 'max' | null = null
 
-  constructor(readonly timeoutMs: number) {}
+  constructor(readonly idleMs: number, readonly maxMs: number) {}
 
   start(): AbortSignal {
-    this.timer ??= setTimeout(() => this.controller.abort(), this.timeoutMs)
+    if (!this.maxTimer && !this.controller.signal.aborted) {
+      this.maxTimer = setTimeout(() => this.abort('max'), this.maxMs)
+      this.resetIdle()
+    }
     return this.controller.signal
   }
 
+  /** A batch was answered: the seller gets another `idleMs` for the next one. */
+  progress(): void {
+    if (this.maxTimer && !this.controller.signal.aborted) this.resetIdle()
+  }
+
+  /** Why the audit stopped, for its outcome reason. */
+  describe(): string {
+    return this.cause === 'max'
+      ? `${AUDIT_MAX_TIME_TEXT} ${this.maxMs}ms`
+      : `${AUDIT_IDLE_TEXT} ${this.idleMs}ms`
+  }
+
   close(): void {
-    if (this.timer) clearTimeout(this.timer)
+    if (this.idleTimer) clearTimeout(this.idleTimer)
+    if (this.maxTimer) clearTimeout(this.maxTimer)
+  }
+
+  private resetIdle(): void {
+    if (this.idleTimer) clearTimeout(this.idleTimer)
+    this.idleTimer = setTimeout(() => this.abort('idle'), this.idleMs)
+  }
+
+  private abort(cause: 'idle' | 'max'): void {
+    if (this.controller.signal.aborted) return
+    this.cause = cause
+    this.close()
+    this.controller.abort()
   }
 }
+
+/** Outcome text of an audit stopped because the seller answered nothing for the idle limit. */
+export const AUDIT_IDLE_TEXT = 'seller sent no answer for'
+/** Outcome text of an audit stopped at its total time limit (the auditor's limit, not the seller's fault). */
+export const AUDIT_MAX_TIME_TEXT = 'seller audit reached its time limit of'
+/** Default total time limit of one seller audit. */
+export const DEFAULT_AUDIT_MAX_TIMEOUT_MS = 60 * 60_000
 
 export interface BuyerProxySnapshot {
   baseUrl: string
@@ -127,7 +169,10 @@ export interface ProxyVerificationContext {
   evidenceDir: string
   checkpointRootDir?: string
   requestTimeoutMs: number
+  /** How long a seller audit waits for its next answered batch before it gives up. */
   auditTimeoutMs: number
+  /** The longest a seller audit may take in total; defaults to `DEFAULT_AUDIT_MAX_TIMEOUT_MS`. */
+  auditMaxTimeoutMs?: number
   responseAuthReader: ResponseAuthReader
   batchConcurrency: number
   batchConcurrencyPromotionLatencyMs: number
@@ -511,7 +556,10 @@ export async function verifyModelTarget(input: {
     KBF_PROBES_PER_REQUEST,
     (values) => [...values],
   )
-  const deadline = new LazyAuditDeadline(input.context.auditTimeoutMs)
+  const deadline = new LazyAuditDeadline(
+    input.context.auditTimeoutMs,
+    Math.max(input.context.auditTimeoutMs, input.context.auditMaxTimeoutMs ?? DEFAULT_AUDIT_MAX_TIMEOUT_MS),
+  )
   const auditId = input.auditId ?? canonicalHashBytes32({
     domain: 'antseed-verifier-provisional-audit-v1',
     peerId: input.target.peerId,
@@ -592,7 +640,7 @@ export async function verifyModelTarget(input: {
       async ({ probes, batchIndex }, _pendingIndex, control) => input.context.batchLimiter.run(async () => {
         if (checkpointFailure) throw checkpointFailure
         const exchange = await executeProxyProbeBatch(
-        { ...input.context, signal: deadline.start() },
+        { ...input.context, signal: deadline.start(), describeDeadline: () => deadline.describe() },
         input.target,
         input.service,
         input.reference,
@@ -603,6 +651,7 @@ export async function verifyModelTarget(input: {
         sampling,
         )
         exchangeByBatch.set(batchIndex, exchange)
+        if (exchange.status === 'succeeded') deadline.progress()
         await persistCheckpoint()
         if (batchIndex === 0 && exchange.status === 'failed' && exchange.outcomeReason?.retryable) {
           throw new VerificationTerminalTransientSignal(exchange)
@@ -830,7 +879,7 @@ export async function readModelAuditCheckpoints(
 }
 
 async function executeProxyProbeBatch(
-  context: ProxyVerificationContext & { signal: AbortSignal },
+  context: ProxyVerificationContext & { signal: AbortSignal; describeDeadline?: () => string },
   target: PeerInfo,
   service: string,
   reference: KbfReferenceV1,
@@ -1051,12 +1100,12 @@ async function executeProxyProbeBatch(
     } catch (error) {
       if (error instanceof VerificationSkipSignal) throw error
       lastFailure = context.signal.aborted
-        ? `seller audit deadline exceeded after ${context.auditTimeoutMs}ms`
+        ? deadlineText(context)
         : controller.signal.aborted
           ? `buyer proxy request timed out after ${settings.requestTimeoutMs}ms`
         : asError(error).message
       lastOutcomeReason = context.signal.aborted
-        ? deadlineReason(context.auditTimeoutMs)
+        ? deadlineReason(deadlineText(context))
         : controller.signal.aborted
           ? requestTimeoutReason(settings.requestTimeoutMs)
           : lastOutcomeReason.summary === 'proxy request failed'
@@ -1073,8 +1122,8 @@ async function executeProxyProbeBatch(
   }
   if (best) return finalizeBest(best)
   if (context.signal.aborted) {
-    lastFailure = `seller audit deadline exceeded after ${context.auditTimeoutMs}ms`
-    lastOutcomeReason = deadlineReason(context.auditTimeoutMs)
+    lastFailure = deadlineText(context)
+    lastOutcomeReason = deadlineReason(lastFailure)
   }
   const completedAt = Date.now()
   return {
@@ -1121,8 +1170,21 @@ async function sellerThinkingFor(
   if (cached) return { record: await cached, fresh: false }
   const discovered = discoverSellerThinking(context, target, service, reference, sampling)
   cache.set(key, discovered)
-  return { record: await discovered, fresh: true }
+  const record = await discovered
+  // A failed discovery (the seller was down for a moment) is not reused: the next audit of the
+  // seller discovers again instead of sending its batches without suppression.
+  if (record.strategy === null && cache.get(key) === discovered) cache.delete(key)
+  return { record, fresh: true }
 }
+
+/** Waits between the tries of one discovery strategy after a 429, 5xx or network error. */
+const DISCOVERY_RETRY_DELAYS_MS = [5_000, 15_000] as const
+/**
+ * Strategies in a row that must fail every try with no answer before the seller counts as down and
+ * the remaining strategies are not sent. One failed strategy is not enough: in epoch 29 one 502 from
+ * a seller that answered its first batch seconds later dropped its discovery.
+ */
+const DISCOVERY_OUTAGE_STRATEGIES = 2
 
 /**
  * `discover_thinking_strategy` from the KBF reference code, run on the seller as the reference code
@@ -1146,9 +1208,11 @@ async function discoverSellerThinking(
   const overall = new AbortController()
   const overallTimer = setTimeout(() => overall.abort(), context.auditTimeoutMs)
   const sent: Array<Pick<SellerThinkingDiscoveryAttemptV1, 'requestIds' | 'attemptCosts'>> = []
-  // A seller that failed every try of a strategy with no answer (transport error or 5xx) is down,
-  // not refusing a field: the remaining strategies are not sent, and the batches record the outage.
+  // A seller that failed every try of DISCOVERY_OUTAGE_STRATEGIES strategies in a row with no answer
+  // (transport error or 5xx) is down, not refusing a field: the remaining strategies are not sent,
+  // and the batches record the outage.
   let unreachable: { status: number | null; failure: string } | null = null
+  let outages = 0
   const probe: ThinkingDiscoveryProbe = async ({ request, maxTokens }) => {
     const record = { requestIds: [] as string[], attemptCosts: [] as SellerThinkingDiscoveryAttemptV1['attemptCosts'] }
     sent.push(record)
@@ -1195,6 +1259,7 @@ async function discoverSellerThinking(
         const cost = parseProxyAuditExchangeCost(Object.fromEntries(response.headers.entries()))
         if (cost) record.attemptCosts.push(cost)
         if (response.ok) {
+          outages = 0
           return { ok: true, content: extractCompletionText(responseBody), reasoningTokens: reportedReasoningTokens(responseText(responseBody)) }
         }
         const text = responseText(responseBody)
@@ -1203,7 +1268,10 @@ async function discoverSellerThinking(
           sampling.omit = true
           continue
         }
-        if (response.status !== 429 && response.status < 500) return { ok: false, ...failure }
+        if (response.status !== 429 && response.status < 500) {
+          outages = 0
+          return { ok: false, ...failure }
+        }
       } catch (error) {
         failure = {
           status: null,
@@ -1215,9 +1283,15 @@ async function discoverSellerThinking(
         clearTimeout(timer)
         overall.signal.removeEventListener('abort', abort)
       }
-      if (attempt < 3) await sleepWithSignal(boundedBackoff(attempt, randomFn), overall.signal, sleepFn)
+      if (attempt < 3) {
+        const delay = DISCOVERY_RETRY_DELAYS_MS[attempt - 1]!
+        await sleepWithSignal(Math.round(delay * (0.75 + randomFn() * 0.5)), overall.signal, sleepFn)
+      }
     }
-    if (failure.status === null || failure.status >= 500) unreachable = failure
+    if (failure.status === null || failure.status >= 500 || failure.status === 429) {
+      outages += 1
+      if (outages >= DISCOVERY_OUTAGE_STRATEGIES) unreachable = failure
+    }
     return { ok: false, ...failure }
   }
   const withRequests = (attempts: ThinkingDiscoveryError['attempts']): SellerThinkingDiscoveryAttemptV1[] => attempts.map((attempt, index) => ({
@@ -1627,10 +1701,14 @@ function malformedOutputReason(requestId: string): VerificationOutcomeReasonV1 {
   }
 }
 
-function deadlineReason(timeoutMs: number): VerificationOutcomeReasonV1 {
+function deadlineText(context: { auditTimeoutMs: number; describeDeadline?: () => string }): string {
+  return context.describeDeadline?.() ?? `${AUDIT_IDLE_TEXT} ${context.auditTimeoutMs}ms`
+}
+
+function deadlineReason(summary: string): VerificationOutcomeReasonV1 {
   return {
     code: 'deadline_exceeded',
-    summary: `seller audit deadline exceeded after ${timeoutMs}ms`,
+    summary,
     retryable: true,
     source: 'transport',
     affectedBatchCount: 1,

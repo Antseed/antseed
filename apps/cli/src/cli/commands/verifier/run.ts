@@ -55,6 +55,7 @@ import {
   loadBuyerProxySnapshot,
   readModelAuditCheckpoints,
   verifyModelTarget,
+  DEFAULT_AUDIT_MAX_TIMEOUT_MS,
   type ModelVerificationFailure,
   type ModelVerificationResumeInput,
   type ModelVerificationSkip,
@@ -89,6 +90,7 @@ import { writeEpochOverview } from '../../../verifier/epoch-overview.js'
 import {
   CONFIRMATION_ATTEMPTS,
   CONFIRMATION_RECHECK_SPACING_SECONDS,
+  sellerRetryDueAt,
   countPlan,
   epochCellKey,
   heldForConfirmationRecheck,
@@ -929,6 +931,14 @@ async function runVerifierRound(
                 + `is audited again from ${new Date(recheckDueAt * 1_000).toISOString()}`)
               return []
             }
+            const cell = epochCellFor(model, peer.peerId)
+            const retryDueAt = cell ? sellerRetryDueAt(cell) : null
+            if (!resumeCandidate && retryDueAt !== null && retryDueAt > Date.now() / 1_000) {
+              // A seller's outage usually lasts hours: its one retry waits instead of failing again.
+              doneCount += 1
+              notAudited(`its failed audit is retried from ${new Date(retryDueAt * 1_000).toISOString()}`)
+              return []
+            }
             if (!pendingExtension && finished(model, peer)) {
               doneCount += 1
               if (confirmationKey) auditedConfirmations.add(confirmationKey)
@@ -1166,6 +1176,7 @@ async function runVerifierRound(
             checkpointRootDir: modelAuditsDirectory(evidenceDir, epoch, model, runId),
             requestTimeoutMs: config.verifier?.probeRequestTimeoutMs ?? 120_000,
             auditTimeoutMs: config.verifier?.auditPeerTimeoutMs ?? 600_000,
+            auditMaxTimeoutMs: config.verifier?.auditPeerMaxTimeoutMs ?? DEFAULT_AUDIT_MAX_TIMEOUT_MS,
             responseAuthReader: responseAuthReader!,
             batchConcurrency: Math.min(
               maxConcurrentBatchesPerPeer,

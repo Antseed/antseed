@@ -355,8 +355,10 @@ function batchSettings(reference: KbfReferenceV1, discovery: AuditThinkingDiscov
 async function discoverEndpointThinking(options: AuditOptions, model: string): Promise<AuditThinkingDiscovery> {
   const budget = options.reference.queryProfile.maxTokensPerRequest
   let omitTemperature = false
-  // An endpoint that failed every try of a strategy with no answer is down, not refusing a field.
+  // An endpoint that failed every try of two strategies in a row with no answer is down, not
+  // refusing a field. One failed strategy is not enough: a brief outage would drop the discovery.
   let unreachable: { status: number | null; failure: string } | null = null
+  let outages = 0
   const probe: ThinkingDiscoveryProbe = async ({ request, maxTokens }) => {
     if (unreachable) return { ok: false, ...unreachable, failure: `not sent, endpoint unreachable: ${unreachable.failure}` }
     let failure: { status: number | null; failure: string } = { status: null, failure: 'not attempted' }
@@ -376,6 +378,7 @@ async function discoverEndpointThinking(options: AuditOptions, model: string): P
       }
       const result = await options.endpoint.call(call, options.signal)
       if (result.ok) {
+        outages = 0
         return {
           ok: true,
           content: result.text,
@@ -385,6 +388,7 @@ async function discoverEndpointThinking(options: AuditOptions, model: string): P
       // A 2xx without completion text is an answer with nothing parseable (the model ran out of
       // tokens thinking), as the reference code counts it, not a failure to retry.
       if (result.status !== undefined && result.status >= 200 && result.status < 300) {
+        outages = 0
         return { ok: true, content: null, reasoningTokens: 0 }
       }
       failure = { status: result.status ?? null, failure: result.message.slice(0, 300) }
@@ -392,10 +396,16 @@ async function discoverEndpointThinking(options: AuditOptions, model: string): P
         omitTemperature = true
         continue
       }
-      if (!result.retryable) return { ok: false, ...failure }
-      if (attempt < 3) await delay(result.retryAfterMs ?? 1000 * 2 ** (attempt - 1), options.signal)
+      if (!result.retryable) {
+        outages = 0
+        return { ok: false, ...failure }
+      }
+      if (attempt < 3) await delay(result.retryAfterMs ?? 5000 * 3 ** (attempt - 1), options.signal)
     }
-    if (failure.status === null || failure.status >= 500) unreachable = failure
+    if (failure.status === null || failure.status >= 500 || failure.status === 429) {
+      outages += 1
+      if (outages >= 2) unreachable = failure
+    }
     return { ok: false, ...failure }
   }
   try {

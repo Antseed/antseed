@@ -219,9 +219,11 @@ Run the same `antseed verifier run` command again; it continues the epoch. It fi
 
 - **Finished:** SAME or DIFF. Not asked again.
 - **Retry, our side:** a payment channel timed out, the deposit or a probe bank was missing, or the seller had already seen too much of the bank (`BANK_EXHAUSTED`). Retried up to 3 times per epoch. A seller our buyer refuses is not retried, since every attempt would fail the same way. An UNDETERMINED caused on our side is never submitted: it says nothing about the seller's model.
-- **Retry, seller or unclear:** the seller was unreachable, too slow or sent bad answers. Retried once per epoch. A retry keeps the answers the seller already gave. An audit that failed on our side doesn't use up the seller's retry.
+- **Retry, seller or unclear:** the seller was unreachable, sent no answer for 10 minutes or sent bad answers. Retried once per epoch, at least 3 hours after the audit that failed, since a seller's outage (an upstream usage limit, a failing health check) usually lasts hours; audits closer together than that count as one. A retry keeps the answers the seller already gave. An audit that failed on our side doesn't use up the seller's retry.
 - **Close call:** a close call whose extra questions couldn't be asked yet.
 - **New:** a seller or model not audited yet, or skipped earlier (for example its price was above the reference).
+
+A seller audit runs as long as the seller keeps answering: it stops when no batch is answered for `verifier.auditPeerTimeoutMs` (default 10 minutes), or after `verifier.auditPeerMaxTimeoutMs` in total (default 60 minutes). Slow reasoning models need 30 to 90 seconds per batch, so an audit of 20 batches can take half an hour. Reaching the total limit is our limit, not the seller's fault, so it doesn't use up the seller's retry.
 
 One run does this in rounds: after the first round it retries what is left (failures, close calls waiting for their extra questions) with another probe-bank budget, up to `--max-rounds` rounds (default 3). It stops early when nothing is left, a round makes no progress, or less than 45 minutes of the epoch remain.
 

@@ -10,6 +10,8 @@ import {
   countPlan,
   epochCellKey,
   heldForConfirmationRecheck,
+  SELLER_RETRY_SPACING_SECONDS,
+  sellerRetryDueAt,
   epochModelRows,
   failureBlame,
   mergeEpochRuns,
@@ -114,9 +116,10 @@ test('a failure caused by the auditor does not use up the seller\'s retry', () =
     code: 'response_auth_invalid', source: 'response_auth', retryable: true, affectedBatchCount: 21, totalBatchCount: 21,
     nextAction: 'resume audit', summary: 'buyer proxy request ID mismatch (a06e1ead != b7ecb4bc)',
   } as const
-  const deadline = { ...sellerDown, code: 'deadline_exceeded', summary: 'seller audit deadline exceeded after 600000ms' } as const
+  const deadline = { ...sellerDown, code: 'deadline_exceeded', summary: 'seller sent no answer for 600000ms' } as const
+  // Runs four hours apart, so each seller failure counts (SELLER_RETRY_SPACING_SECONDS).
   const cell = (...reasons: Array<typeof ourAuthBug | typeof deadline>) => mergeEpochRuns(EPOCH, reasons.map((reason, index) => (
-    run(`r${index}`, `2026-10-28T2${index}:00:00.000Z`, [{ model: 'm', results: [result('a', 'UNDETERMINED', { outcomeReason: reason })] }])
+    run(`r${index}`, `2026-10-28T${String(4 * index).padStart(2, '0')}:00:00.000Z`, [{ model: 'm', results: [result('a', 'UNDETERMINED', { outcomeReason: reason })] }])
   ))).get(epochCellKey('m', 'a'))!
 
   const afterOurBug = cell(ourAuthBug, ourAuthBug, deadline)
@@ -135,6 +138,33 @@ test('a failure caused by the auditor does not use up the seller\'s retry', () =
   }])])
   assert.equal(cells.get(epochCellKey('m', 'b'))!.attempts, 0)
   assert.equal(cells.get(epochCellKey('m', 'c'))!.attempts, 1)
+})
+
+test('seller failures less than SELLER_RETRY_SPACING_SECONDS apart count as one, and the retry waits for it', () => {
+  // Epoch 29: GesundAI's upstream usage limit was still on when its retry ran two hours later.
+  const failure = (runId: string, at: string) => run(runId, at, [{
+    model: 'm', results: [result('a', 'UNDETERMINED', { outcomeReason: sellerDown })],
+  }])
+  assert.equal(SELLER_RETRY_SPACING_SECONDS, 3 * 60 * 60)
+  const close = mergeEpochRuns(EPOCH, [
+    failure('r1', '2026-10-28T14:23:00.000Z'),
+    failure('r2', '2026-10-28T16:17:00.000Z'),
+  ]).get(epochCellKey('m', 'a'))!
+  assert.equal(close.attempts, 1)
+  assert.equal(close.action, 'retry')
+  assert.equal(sellerRetryDueAt(close), Date.parse('2026-10-28T16:17:00.000Z') / 1_000 + SELLER_RETRY_SPACING_SECONDS)
+  // An auditor failure has no such wait.
+  const ours = mergeEpochRuns(EPOCH, [run('r1', '2026-10-28T14:23:00.000Z', [{
+    model: 'm', results: [result('b', 'UNDETERMINED', { outcomeReason: { ...sellerDown, summary: 'seller audit reached its time limit of 3600000ms' } })],
+  }])]).get(epochCellKey('m', 'b'))!
+  assert.equal(ours.blame, 'auditor')
+  assert.equal(sellerRetryDueAt(ours), null)
+})
+
+test('the fixed audit deadline of earlier releases was the auditor\'s limit; no answer for the idle limit is the seller\'s', () => {
+  assert.equal(failureBlame({ code: 'deadline_exceeded', summary: 'seller audit deadline exceeded after 600000ms' }), 'auditor')
+  assert.equal(failureBlame({ code: 'deadline_exceeded', summary: 'seller audit reached its time limit of 3600000ms' }), 'auditor')
+  assert.equal(failureBlame({ code: 'deadline_exceeded', summary: 'seller sent no answer for 600000ms' }), 'seller')
 })
 
 test('failures caused by the auditor are retried up to AUDITOR_FAILURE_ATTEMPTS times per epoch', () => {
@@ -273,7 +303,10 @@ test('a confirmation\'s UNDETERMINED from a failure is held and retried up to CO
   const second = cell(attempts(2, confirming('a')), 'a')
   assert.equal(second.action, 'retry')
   assert.equal(heldForConfirmationRecheck(second), true)
-  assert.equal(cell(attempts(2, result('a', 'UNDETERMINED', { outcomeReason: sellerDown })), 'a').action, 'done')
+  const spaced = [0, 4].map((hour, index) => run(`s${index}`, `2026-10-28T0${hour}:00:00.000Z`, [{
+    model: 'm', results: [result('a', 'UNDETERMINED', { outcomeReason: sellerDown })],
+  }]))
+  assert.equal(cell(spaced, 'a').action, 'done')
   // After the last attempt the UNDETERMINED is submitted.
   const third = cell(attempts(3, confirming('a')), 'a')
   assert.equal(third.action, 'done')

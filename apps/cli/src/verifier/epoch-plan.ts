@@ -43,6 +43,10 @@ const AUDITOR_TEXT = [
   /\benrol(?:l)?ment\b/i,
   /reference (?:endpoint|credits?)/i,
   /buyer proxy/i,
+  // The auditor's time limits, not the seller's: the fixed total deadline of earlier releases cut off
+  // honest slow sellers that were still answering, and the total limit that replaced it.
+  /seller audit deadline exceeded after \d+ms/i,
+  /seller audit reached its time limit/i,
 ]
 
 /** Auditor failures that the same configuration repeats on every attempt, so they are not retried. */
@@ -98,6 +102,8 @@ export interface EpochCell {
   auditorAttempts: number
   /** The auditor failure repeats on every attempt (`permanentAuditorFailure`), so it is not retried. */
   permanent: boolean
+  /** When the run holding the cell's latest audit finished, in seconds; null when unknown. */
+  lastAttemptAt: number | null
   blame: FailureBlame | null
   reason: string | null
   skipCode: string | null
@@ -120,6 +126,14 @@ export function epochCellKey(model: string, peerId: string): string {
 export const SELLER_FAILURE_ATTEMPTS = 2
 
 /**
+ * A seller or unclear failure is retried no sooner than this after the audit that failed, and
+ * audits closer together than this count as one attempt. A seller's outage (an upstream rate or
+ * usage limit, a failing self-health check) usually lasts hours: GesundAI's limit in epoch 29 was
+ * still on when its retry ran two hours later, which used up its retry. The epoch lasts a week.
+ */
+export const SELLER_RETRY_SPACING_SECONDS = 3 * 60 * 60
+
+/**
  * Audits per epoch that may fail because of the auditor before the seller is left alone for the
  * epoch. Without a limit, a cause that lasts (a refusing buyer, an empty deposit) would audit the
  * same seller every run.
@@ -135,6 +149,17 @@ export const CONFIRMATION_ATTEMPTS = 3
 
 /** A confirmation is audited again at least this long after its last attempt finished. */
 export const CONFIRMATION_RECHECK_SPACING_SECONDS = 10 * 60
+
+/**
+ * When a seller or unclear failure may be audited again (seconds), or null when the cell is not
+ * such a retry. Confirmation re-checks are spaced by `CONFIRMATION_RECHECK_SPACING_SECONDS` instead.
+ */
+export function sellerRetryDueAt(cell: Pick<EpochCell, 'state' | 'action' | 'blame' | 'result' | 'attempts' | 'lastAttemptAt'>): number | null {
+  if (cell.action !== 'retry' || cell.blame === 'auditor' || cell.lastAttemptAt === null) return null
+  if (cell.state !== 'failed' && cell.state !== 'undetermined') return null
+  if (cell.result?.confirmsDiff) return null
+  return cell.lastAttemptAt + SELLER_RETRY_SPACING_SECONDS
+}
 
 /** Whether a cell is a confirmation's UNDETERMINED that is audited again before it is submitted. */
 export function heldForConfirmationRecheck(cell: Pick<EpochCell, 'state' | 'action' | 'result' | 'attempts'>): boolean {
@@ -196,6 +221,9 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
     runId: string
     attempts: number
     auditorAttempts: number
+    /** When the last counted seller attempt finished (seconds), for `SELLER_RETRY_SPACING_SECONDS`. */
+    countedAt: number | null
+    lastAttemptAt: number | null
     result: ModelVerificationTargetResult | null
     resultRunId: string | null
     pending: { result: ModelVerificationTargetResult; runId: string } | null
@@ -209,7 +237,8 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
     let entry = acc.get(key)
     if (!entry) {
       entry = {
-        model, peerId, runId, attempts: 0, auditorAttempts: 0, result: null, resultRunId: null,
+        model, peerId, runId, attempts: 0, auditorAttempts: 0, countedAt: null, lastAttemptAt: null,
+        result: null, resultRunId: null,
         pending: null, failure: null, skip: null, last: 'skip',
       }
       acc.set(key, entry)
@@ -217,12 +246,24 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
     return entry
   }
   for (const { manifest, summaries } of runs) {
+    const finishedAt = Number.isFinite(Date.parse(manifest.completedAt)) ? Date.parse(manifest.completedAt) / 1_000 : null
+    // A seller attempt counts unless one was counted less than SELLER_RETRY_SPACING_SECONDS before
+    // it. Confirmation re-checks have their own spacing and limit, so each of them counts.
+    const countSellerAttempt = (entry: Acc, spaced: boolean): void => {
+      entry.lastAttemptAt = finishedAt ?? entry.lastAttemptAt
+      if (spaced && finishedAt !== null && entry.countedAt !== null
+        && finishedAt - entry.countedAt < SELLER_RETRY_SPACING_SECONDS) return
+      entry.attempts += 1
+      entry.countedAt = finishedAt ?? entry.countedAt
+    }
     for (const summary of summaries) {
       if (summary.epoch !== epoch || summary.runId !== manifest.runId) continue
       for (const result of summary.results ?? []) {
         const entry = get(summary.model, result.peerId, manifest.runId)
-        if (result.outcomeReason && failureBlame(result.outcomeReason) === 'auditor') entry.auditorAttempts += 1
-        else entry.attempts += 1
+        if (result.outcomeReason && failureBlame(result.outcomeReason) === 'auditor') {
+          entry.auditorAttempts += 1
+          entry.lastAttemptAt = finishedAt ?? entry.lastAttemptAt
+        } else countSellerAttempt(entry, result.confirmsDiff !== true)
         if (finalAuditVerdict(result) === null) {
           entry.pending = { result, runId: manifest.runId }
           entry.last = 'pending'
@@ -236,16 +277,20 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
       for (const failure of summary.failures ?? []) {
         if (failure.peerId.startsWith('model:')) continue
         const entry = get(summary.model, failure.peerId, manifest.runId)
-        if (failureBlame(failure.outcomeReason, failure.reason) === 'auditor') entry.auditorAttempts += 1
-        else entry.attempts += 1
+        if (failureBlame(failure.outcomeReason, failure.reason) === 'auditor') {
+          entry.auditorAttempts += 1
+          entry.lastAttemptAt = finishedAt ?? entry.lastAttemptAt
+        } else countSellerAttempt(entry, true)
         entry.failure = { entry: failure, runId: manifest.runId }
         entry.last = 'failure'
       }
       for (const skip of summary.skipped ?? []) {
         const entry = get(summary.model, skip.peerId, manifest.runId)
         if (skip.source === 'runtime') {
-          if (failureBlame(skip.outcomeReason, skip.reason) === 'auditor') entry.auditorAttempts += 1
-          else entry.attempts += 1
+          if (failureBlame(skip.outcomeReason, skip.reason) === 'auditor') {
+            entry.auditorAttempts += 1
+            entry.lastAttemptAt = finishedAt ?? entry.lastAttemptAt
+          } else countSellerAttempt(entry, true)
         }
         entry.skip = { entry: skip, runId: manifest.runId }
         entry.last = 'skip'
@@ -258,7 +303,7 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
     let cell: Omit<EpochCell, 'action'>
     const base = {
       model: entry.model, peerId: entry.peerId, attempts: entry.attempts, auditorAttempts: entry.auditorAttempts,
-      permanent: false, skipCode: null,
+      permanent: false, lastAttemptAt: entry.lastAttemptAt, skipCode: null,
     }
     if (entry.pending) {
       // A close call newer than any submittable result: its extra questions decide the cell.
