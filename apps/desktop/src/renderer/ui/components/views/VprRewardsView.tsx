@@ -9,6 +9,7 @@ import type { CreateInviteResult, RefereeBonus, ReferralInvites, ReferralStatus 
 import { ReferralStatusRow } from '../ReferralStatusRow';
 import { VprBadge, VprCard, VprPage, VprSettingRow } from '../vpr/VprKit';
 import breakdown from './BalanceBreakdown.module.scss';
+import { VprFreeTierCard } from './VprFreeTierCard';
 import styles from './VprRewardsView.module.scss';
 
 const PAYMENT_SUMMARY_POLL_MS = 60_000;
@@ -118,6 +119,7 @@ export function VprRewardsView({ onSelectView }: Props) {
         <span className={styles.errorNote}>Copy a link to use your wallet in another browser.</span>
 
         <VprInvitesCard invites={invites} onCreated={reloadInvites} />
+        <VprFreeTierCard />
 
         <VprCard className={styles.aboutCard}>
           <span className={styles.aboutTitle}>About $ANTS</span>

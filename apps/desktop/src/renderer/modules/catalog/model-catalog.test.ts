@@ -696,6 +696,31 @@ test('catalog lists native video services as video models with per-second and pe
   assert.deepEqual(filterVprCatalog(catalog, { kinds: ['video'] }).map((entry) => entry.serviceId), ['wan-2.5']);
 });
 
+test('video models that take a source video are marked as editing videos', () => {
+  const catalog = projectRowsToVprModelCatalog([
+    discoverRow({
+      serviceId: 'minimax-h3-max-recast',
+      protocol: 'venice-video',
+      inputUsdPerMillion: null,
+      outputUsdPerMillion: null,
+      capabilities: { video: { inputs: ['video', 'reference_image'], requiredInputs: ['video', 'reference_image'] } },
+      minVideoUsdPerSecond: 0.3,
+      maxVideoUsdPerSecond: 0.3,
+    }),
+    discoverRow({
+      serviceId: 'wan-2.5',
+      protocol: 'venice-video',
+      inputUsdPerMillion: null,
+      outputUsdPerMillion: null,
+      capabilities: { video: { inputs: ['first_frame'] } },
+      minVideoUsdPerSecond: 0.1,
+      maxVideoUsdPerSecond: 0.1,
+    }),
+  ]);
+  assert.equal(findCatalogEntry(catalog, 'openai', 'minimax-h3-max-recast')?.videoEditing, true);
+  assert.equal(findCatalogEntry(catalog, 'openai', 'wan-2.5')?.videoEditing, undefined);
+});
+
 test('selectDefaultVprModel never falls back to a video model', () => {
   const catalog = projectRowsToVprModelCatalog([
     discoverRow({

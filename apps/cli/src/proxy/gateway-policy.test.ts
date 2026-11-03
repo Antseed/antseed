@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test, { type TestContext } from 'node:test'
 import type { PeerInfo, SerializedHttpRequest } from '@antseed/node'
+import { encodeFreeTierCapabilities } from '@antseed/node/free-tier-program'
 import { BuyerProxy, type BuyerBalanceReader, type BuyerProxyConfig } from './buyer-proxy.js'
 import { BUYER_IDENTITY_HEADER } from './request-utils.js'
 import { SPEND_ATTRIBUTION_HEADER } from './spend-attribution.js'
@@ -251,7 +252,7 @@ test('route-preview shares routing logic and explains ineligible sellers', async
   assert.equal(body.model, 'gpt-5')
   const byId = new Map(body.candidates.map((candidate) => [candidate['peerId'], candidate]))
   assert.deepEqual(Object.keys(body.candidates[0]!).sort(), [
-    'displayName', 'eligible', 'inputUsdPerMillion', 'outputUsdPerMillion', 'peerId', 'rank', 'reasons', 'selection', 'trustScore',
+    'displayName', 'eligible', 'health', 'inputUsdPerMillion', 'outputUsdPerMillion', 'peerId', 'rank', 'reasons', 'selection', 'trustScore',
   ])
   // Only eligible sellers carry the numbers routing ranked them by.
   assert.equal(byId.get(pricey.peerId)?.['selection'], null)
@@ -269,6 +270,43 @@ test('route-preview shares routing logic and explains ineligible sellers', async
 
   const bad = await fetch(`${h.url}/_antseed/route-preview?model=gpt-5`, { headers: { [GATEWAY_CONTROL_HEADER]: SECRET, [ROUTING_POLICY_HEADER]: '!!' } })
   assert.equal(bad.status, 400)
+})
+
+test('route-preview carries each seller\'s last announced self health check, failing ones included', async (t) => {
+  const healthy = makePeer('e', { input: 1, output: 1, trust: 80 })
+  healthy.providerServiceHealth = { openai: { services: { 'gpt-5': { status: 'healthy', checkedAt: 1_793_328_100_000, source: 'traffic' } } } }
+  const failing = makePeer('f', { input: 1, output: 1, trust: 80 })
+  const failingHealth = { status: 'failing' as const, checkedAt: 1_793_328_180_000, source: 'probe' as const, failingSince: 1_793_327_880_000, consecutiveFailures: 3, reason: 'timeout' as const }
+  failing.providerServiceHealth = { openai: { services: { 'gpt-5': failingHealth } } }
+  const silent = makePeer('g', { input: 1, output: 1, trust: 80 })
+  const h = await startHarness(t, [healthy, failing, silent])
+
+  const res = await fetch(`${h.url}/_antseed/route-preview?model=gpt-5`, { headers: withPolicy({}) })
+  const body = await res.json() as { candidates: Array<{ peerId: string; eligible: boolean; reasons: string[]; health: unknown }> }
+  const byId = new Map(body.candidates.map((candidate) => [candidate.peerId, candidate]))
+  assert.deepEqual(byId.get(healthy.peerId)?.health, { status: 'healthy', checkedAt: 1_793_328_100_000, source: 'traffic' })
+  assert.equal(byId.get(failing.peerId)?.eligible, false)
+  assert.deepEqual(byId.get(failing.peerId)?.reasons, ['self health check failing (timeout)'])
+  assert.deepEqual(byId.get(failing.peerId)?.health, failingHealth)
+  assert.equal(byId.get(silent.peerId)?.health, null)
+})
+
+test('route-preview starts a seller the buyer has not used from its reported performance', async (t) => {
+  const struggling = makePeer('h', { input: 1, output: 1, trust: 80 })
+  struggling.providerServicePerformance = { openai: { services: { 'gpt-5': { requests: 200, successRate: 0.4, firstTokenMsP50: 900, tokensPerSecondP50: 40 } } } }
+  const steady = makePeer('i', { input: 1, output: 1, trust: 80 })
+  steady.providerServicePerformance = { openai: { services: { 'gpt-5': { requests: 200, successRate: 0.99, firstTokenMsP50: 400 } } } }
+  const h = await startHarness(t, [struggling, steady])
+
+  const res = await fetch(`${h.url}/_antseed/route-preview?model=gpt-5`, { headers: withPolicy({}) })
+  const body = await res.json() as { candidates: Array<{ peerId: string; rank: number; reasons: string[]; selection: { successRate: number; record: string; reported: unknown } }> }
+  const byId = new Map(body.candidates.map((candidate) => [candidate.peerId, candidate]))
+  assert.deepEqual(body.candidates.map((candidate) => candidate.peerId), [steady.peerId, struggling.peerId])
+  const first = byId.get(steady.peerId)!
+  assert.equal(first.selection.record, 'none')
+  assert.ok(Math.abs(first.selection.successRate - 0.95) < 1e-9, 'a reported rate is capped')
+  assert.deepEqual(first.selection.reported, { requests: 200, successRate: 0.99, firstTokenMsP50: 400, tokensPerSecondP50: null })
+  assert.ok(byId.get(struggling.peerId)!.reasons.includes('success ~40% (seller reports 200 requests in the last hour)'))
 })
 
 test('route-preview explains each eligible seller with the numbers routing ranked it by', async (t) => {
@@ -706,6 +744,36 @@ test('gateway-policy automatic routing falls back to a free seller when a paid o
   const refused = await chat(h2, { ...gatewayPolicy, 'x-antseed-chat-session-id': 'thread-2' })
   assert.equal(refused.status, 402)
   assert.equal((h2.proxy as any)._conversations.get('antseed-chat:thread-2')?.pinnedModel ?? null, null)
+})
+
+test('gateway-policy automatic routing without deposits also tries a paid seller whose model has a free allowance', async (t) => {
+  const paid = makePeer('a', { input: 1, output: 1, trust: 95 })
+  const plain = makePeer('b', { input: 2, output: 2, trust: 90 })
+  const allowance = makePeer('e', {
+    input: 3,
+    output: 3,
+    trust: 70,
+    capabilities: encodeFreeTierCapabilities(
+      { base: { maxRequestsPerAddress: 5, maxRequestsPerIp: null, windowMs: 86_400_000, stakersOnly: true }, stakeTiers: [{ minPower: 1_000_000, multiplier: 1 }] },
+      'gpt-5',
+    ),
+  })
+  const h = await startHarness(t, [paid, plain, allowance])
+  ;(h.proxy as any)._node.sendRequest = async (peer: PeerInfo, request: SerializedHttpRequest) => {
+    h.dispatched.push({ peerId: peer.peerId, headers: request.headers })
+    if (peer.peerId === allowance.peerId) {
+      return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json', 'x-antseed-free-tier': 'covered' }, body: Buffer.from('{}') }
+    }
+    return {
+      requestId: request.requestId, statusCode: 402,
+      headers: { 'content-type': 'application/json', 'x-antseed-fault-attribution': 'buyer' },
+      body: Buffer.from('{"error":"payment_required","code":"insufficient_deposits"}'),
+    }
+  }
+  const res = await chat(h, withPolicy({ sort: 'trust' }))
+  assert.equal(res.status, 200)
+  // The paid seller refused; the other one without an allowance is skipped.
+  assert.deepEqual(h.dispatched.map((entry) => entry.peerId), [paid.peerId, allowance.peerId])
 })
 
 test('without a gateway policy a 402 reaches the client from the first seller, as before', async (t) => {

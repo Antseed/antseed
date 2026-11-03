@@ -9,6 +9,7 @@ import {
   buildNetworkServiceOffers,
   compareEffectiveModelReputation,
   effectiveModelReputationScore,
+  hasLiveDiffVerdict,
   modelRouteTotalPrice,
   normalizedModelReputationScore,
   rankModelRoutes,
@@ -20,7 +21,8 @@ import {
   type PeerInfo,
 } from '@antseed/node'
 import { canonicalModelKey, preferredModelDisplayName } from '@antseed/node/model-identity'
-import type { RoutingProtocol } from '@antseed/node'
+import { freeTierProgramForService, isPricedService, type FreeTierProgram } from '@antseed/node/free-tier-program'
+import type { RoutingProtocol, ServiceHealth, ServicePerformance } from '@antseed/node'
 import type { RouterOptionSpec } from '@antseed/router-core'
 
 export { effectiveModelReputationScore } from '@antseed/node'
@@ -47,6 +49,15 @@ export type NetworkModelPeerOffer = {
   cachedInputUsdPerMillion?: number
   minImageUsdPerImage?: number
   maxImageUsdPerImage?: number
+  /**
+   * The seller's free-tier program for this offer: on a free offer its limit,
+   * on a priced one the free allowance before the listed price applies.
+   */
+  freeTier?: FreeTierProgram
+  /** The seller's last announced self health check for this offer; failing offers are not listed. */
+  health?: ServiceHealth
+  /** How the offer served the seller's buyers in the last hour, as the seller measured it. */
+  performance?: ServicePerformance
 }
 
 export type NetworkModelCapabilityCoverage = {
@@ -291,6 +302,11 @@ export function buildNetworkModels(
     if (offer.type === 'text') entry.type = 'text'
     else if (offer.type === 'image' && entry.type === 'decision') entry.type = 'image'
     const peer = peerById.get(offer.peerId)
+    const priced = isPricedService({
+      ...offer,
+      unitBillingModels: offer.unitBillingModels ?? peer?.providerServiceUnitBillingModels?.[offer.provider]?.services?.[offer.serviceId],
+    })
+    const freeTier = freeTierProgramForService(peer?.capabilities, offer.serviceId, priced, { video: offer.type === 'video' })
     entry.peers.push({
       advertisedVerifierIds: offer.advertisedVerifierIds,
       peerId: offer.peerId,
@@ -311,6 +327,9 @@ export function buildNetworkModels(
       ...(offer.cachedInputUsdPerMillion !== undefined ? { cachedInputUsdPerMillion: offer.cachedInputUsdPerMillion } : {}),
       ...(offer.minImageUsdPerImage !== undefined ? { minImageUsdPerImage: offer.minImageUsdPerImage } : {}),
       ...(offer.maxImageUsdPerImage !== undefined ? { maxImageUsdPerImage: offer.maxImageUsdPerImage } : {}),
+      ...(freeTier ? { freeTier } : {}),
+      ...(offer.health ? { health: offer.health } : {}),
+      ...(offer.performance ? { performance: offer.performance } : {}),
     })
   }
 
@@ -319,14 +338,13 @@ export function buildNetworkModels(
     entry.aliases = [...new Set(entry.aliases.filter(Boolean))].sort((a, b) => a.localeCompare(b))
     const modelHasCachedInputPricing = entry.peers.some((peer) => peer.cachedInputUsdPerMillion !== undefined)
     for (const peer of entry.peers) {
-      peer.effectiveReputationScore = modelHasCachedInputPricing
-        ? effectiveModelReputationScore(
-            normalizedReputationByPeerId.get(peer.peerId) ?? null,
-            peer.cachedInputUsdPerMillion !== undefined,
-            true,
-            modelRouteTotalPrice(peer) === 0,
-          )
-        : normalizedReputationByPeerId.get(peer.peerId) ?? null
+      peer.effectiveReputationScore = effectiveModelReputationScore(
+        normalizedReputationByPeerId.get(peer.peerId) ?? null,
+        peer.cachedInputUsdPerMillion !== undefined,
+        modelHasCachedInputPricing,
+        modelRouteTotalPrice(peer) === 0,
+        hasLiveDiffVerdict(peerById.get(peer.peerId), peer.serviceId, nowMs),
+      )
     }
     if (options.routingPreferences) {
       const ranked = rankModelRoutes(entry.peers.map((offer) => {

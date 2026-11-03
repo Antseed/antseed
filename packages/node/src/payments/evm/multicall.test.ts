@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { Interface, type AbstractProvider } from 'ethers';
-import { multicallRead, MULTICALL3_ADDRESS } from './multicall.js';
+import { createCachedMulticallReader, multicallRead, MULTICALL3_ADDRESS } from './multicall.js';
 
 const aggregate = new Interface(['function aggregate3(tuple(address target, bool allowFailure, bytes callData)[] calls) payable returns (tuple(bool success, bytes returnData)[])']);
 const iface = new Interface(['function value(uint256) view returns (uint256)']);
@@ -103,5 +103,40 @@ describe('multicall failure budgets', () => {
     await multicallRead(provider, requests.slice(0, 1), { blockTag: 123 });
     expect(getCode).toHaveBeenCalledWith(MULTICALL3_ADDRESS, 123);
     expect(call).toHaveBeenCalledWith(expect.objectContaining({ blockTag: 123 }));
+  });
+});
+
+describe('createCachedMulticallReader', () => {
+  it('probes for Multicall3 once across reads', async () => {
+    const { provider, call, getCode } = fixture();
+    const read = createCachedMulticallReader(provider);
+    expect(await read([])).toEqual([]);
+    expect(getCode).not.toHaveBeenCalled();
+    expect(await read(requests.slice(0, 2))).toEqual([[0n], [1n]]);
+    expect(await read(requests.slice(2, 4))).toEqual([[2n], [3n]]);
+    expect(getCode).toHaveBeenCalledTimes(1);
+    expect(call).toHaveBeenCalledTimes(2);
+  });
+
+  it('reads calls one by one, failures as null, after a failed probe and probes again next time', async () => {
+    const { provider, call, getCode } = fixture();
+    getCode.mockRejectedValueOnce(new Error('HTTP 503'));
+    call.mockImplementationOnce(async () => { throw new Error('HTTP 429'); });
+    const read = createCachedMulticallReader(provider);
+    expect(await read(requests.slice(0, 2))).toEqual([null, [1n]]);
+    expect(call).toHaveBeenCalledTimes(2);
+    expect(await read(requests.slice(0, 2))).toEqual([[0n], [1n]]);
+    expect(getCode).toHaveBeenCalledTimes(2);
+    expect(call).toHaveBeenCalledTimes(3);
+  });
+
+  it('keeps reading calls one by one on a chain without Multicall3', async () => {
+    const { provider, call, getCode } = fixture();
+    getCode.mockResolvedValue('0x');
+    const read = createCachedMulticallReader(provider);
+    expect(await read(requests.slice(0, 2))).toEqual([[0n], [1n]]);
+    expect(await read(requests.slice(0, 1))).toEqual([[0n]]);
+    expect(getCode).toHaveBeenCalledTimes(1);
+    expect(call).toHaveBeenCalledTimes(3);
   });
 });

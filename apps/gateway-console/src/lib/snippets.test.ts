@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { apiCallTabs, connectTabs, curlSnippet as modelCurl, gatewayApiUrl, gatewayBaseUrl, keySnippets, modelCallFormat, modelSnippets, pinnedModelId, serviceApiFormat } from './snippets'
+import { apiCallTabs, connectTabs, curlSnippet as modelCurl, gatewayApiUrl, gatewayBaseUrl, keySnippets, localBuyerExample, modelCallFormat, modelSnippets, pinnedModelId, serviceApiFormat } from './snippets'
 
 const PEER = `0xFA1E${'0'.repeat(32)}0004`
 const BASE = 'https://gw.example.test'
@@ -149,5 +149,26 @@ describe('model API calls', () => {
   })
   it('a pinned image model gets no coding-tool tabs', () => {
     expect(connectTabs(BASE, PEER, 'flux-schnell', 'openai-images', null).map((tab) => tab.id)).toEqual(['curl', 'openai-python', 'openai-js'])
+  })
+})
+
+describe('localBuyerExample', () => {
+  const peer = 'fa1e' + '0'.repeat(36)
+  const image = { provider: 'openai', service: 'qwen-image', kind: 'image' as const, apiProtocols: ['openai-images'] }
+  const video = { provider: 'fal', service: 'wan-video', kind: 'video' as const, apiProtocols: ['fal-video'] }
+  const chat = { provider: 'anthropic', service: 'claude-x', kind: 'text' as const, apiProtocols: ['anthropic-messages'] }
+
+  it('prefers a text model, on the API it speaks, with no key for the local buyer', () => {
+    const example = localBuyerExample(peer, [image, chat])!
+    expect(example.service).toBe('claude-x')
+    expect(example.code).toContain('curl http://localhost:8377/v1/messages \\')
+    expect(example.code).toContain(`"model":"${peer}@claude-x"`)
+    expect(example.code).not.toContain('Authorization')
+  })
+
+  it('an image-only seller gets the images API; a video-only seller no request', () => {
+    expect(localBuyerExample(peer, [video, image])!.code).toContain('/v1/images/generations')
+    expect(localBuyerExample(peer, [video])).toEqual({ service: 'wan-video', code: null })
+    expect(localBuyerExample(peer, [])).toBeNull()
   })
 })

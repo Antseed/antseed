@@ -5,6 +5,7 @@ import { createResponseAuthPayload } from '../src/verification/index.js';
 import type { PeerInfo, PeerId } from '../src/types/peer.js';
 import type { SerializedHttpRequest, SerializedHttpResponse } from '../src/types/http.js';
 import { CONNECTION_CAPABILITY_RESPONSE_AUTH_V1 } from '../src/types/protocol.js';
+import { encodeHttpRequest, encodeHttpResponse } from '../src/proxy/request-codec.js';
 
 describe('BuyerRequestHandler response auth sampling', () => {
   it('passes verified response auth evidence to the sampler', async () => {
@@ -39,6 +40,7 @@ describe('BuyerRequestHandler response auth sampling', () => {
     }, seller.wallet);
 
     const maybeStoreResponseAuthSample = vi.fn(async () => null);
+    const insertResponseAuth = vi.fn();
     let deliverAuth!: () => void;
     const authReady = new Promise<void>(resolve => { deliverAuth = resolve; });
     const handler = new BuyerRequestHandler(
@@ -46,7 +48,7 @@ describe('BuyerRequestHandler response auth sampling', () => {
       {
         localPeerId: buyer.peerId as PeerId,
         negotiator: null,
-        verificationStorage: null,
+        verificationStorage: { insertResponseAuth },
         verificationSampler: { maybeStoreResponseAuthSample } as any,
         getConnection: vi.fn(async () => ({ state: 'open' })) as any,
         getMux: vi.fn(() => ({
@@ -65,13 +67,19 @@ describe('BuyerRequestHandler response auth sampling', () => {
       },
     );
 
-    const received = await handler.sendRequest(peer, request);
+    const responsePreimage = encodeHttpResponse(response);
+    const received = await handler.sendRequest(peer, request, undefined, { captureResponseAuthPreimages: true });
     received.headers['x-antseed-seller-peer'] = seller.peerId;
     deliverAuth();
 
     await vi.waitFor(() => {
       expect(maybeStoreResponseAuthSample).toHaveBeenCalledOnce();
+      expect(insertResponseAuth).toHaveBeenCalledOnce();
     });
+    expect(insertResponseAuth).toHaveBeenCalledWith(expect.objectContaining({
+      requestPreimage: encodeHttpRequest(request),
+      responsePreimage,
+    }), { requestedService: 'sample-model', sellerPeerId: seller.peerId });
     expect(maybeStoreResponseAuthSample).toHaveBeenCalledWith(expect.objectContaining({
       request,
       response: expect.objectContaining({ headers: { 'content-type': 'application/json' } }),
@@ -171,4 +179,5 @@ describe('BuyerRequestHandler response auth sampling', () => {
 
     expect(waitForResponseAuth).not.toHaveBeenCalled();
   });
+
 });

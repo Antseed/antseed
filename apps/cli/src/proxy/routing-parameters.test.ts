@@ -172,3 +172,4 @@ test('skips unparseable bodies and requests without a resolved service or protoc
   assert.deepEqual(findUnannouncedRequestParameters(imagePeer, 'openai', null, 'openai-images', request), [])
   assert.deepEqual(findUnannouncedRequestParameters(imagePeer, 'openai', 'gpt-image-1', null, request), [])
 })
+

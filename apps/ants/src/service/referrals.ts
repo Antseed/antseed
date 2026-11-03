@@ -155,13 +155,14 @@ export async function issueInvite(options: {
 
 /**
  * Guards invite allocation in `dataDir` across every process that issues from
- * it. It is separate from the short `referral.lock` that every referral-file
- * update takes (`recordIssuedInvite` takes it inside this one), so a slow
- * allocation never blocks a redemption or a daemon sync. The order is always
+ * it (the lock file is `referral-invite.lock`). It is separate from the short
+ * `referral.json.lock` that every referral-file update takes
+ * (`recordIssuedInvite` takes it inside this one), so a slow allocation
+ * never blocks a redemption or a daemon sync. The order is always
  * allocation → file, and file-lock holders never take this one: no deadlock.
  */
 function inviteLockPath(dataDir: string): string {
-  return join(dataDir, 'referral-invite.lock');
+  return join(dataDir, 'referral-invite');
 }
 
 /**

@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Wallet, getAddress, zeroPadValue } from 'ethers';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { decodeInvite, recordIssuedInvite, recoverInviter } from '@antseed/node';
+import { decodeInvite, recordIssuedInvite, recoverInviter, withFileLock } from '@antseed/node';
 import type { AntsContext } from './context.js';
 import type { IndexedReferrer, Indexer } from './indexer.js';
 import {
@@ -224,19 +224,24 @@ describe('invites', () => {
     expect((created[0] as PromiseFulfilledResult<{ index: number }>).value.index).toBe(1);
   });
 
-  it('waits for another process holding the data dir\'s invite lock', async () => {
+  it('waits for another holder of the data dir\'s invite lock', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'ants-invite-'));
     dirs.push(dir);
-    const lock = join(dir, 'referral-invite.lock');
-    // A live process (our parent) holds the lock.
-    await writeFile(lock, JSON.stringify({ pid: process.ppid, at: Date.now() }));
+    let release!: () => void;
+    let held!: () => void;
+    const holding = new Promise<void>((resolve) => { held = resolve; });
+    const holder = withFileLock(join(dir, 'referral-invite'), () => {
+      held();
+      return new Promise<void>((resolve) => { release = resolve; });
+    });
+    await holding;
     const client = inviteClient({ quota: 3, used: [0] });
     const issuing = issueInvite({ client, indexer: null, signer: new Wallet(key), chainId: 8453, referralsAddress, dataDir: dir, random: () => 0 });
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(client.inviteUsed).not.toHaveBeenCalled();
-    await rm(lock);
+    release();
+    await holder;
     expect((await issuing).index).toBe(1);
-    await expect(readFile(lock, 'utf8')).rejects.toThrow();
   });
 
   it('refuses without last week\'s activity', async () => {

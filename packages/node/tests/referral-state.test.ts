@@ -1,6 +1,7 @@
 import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   clearReferralInvite,
@@ -263,21 +264,23 @@ describe('referral state', () => {
     expect(await readReferralState(dir, SCOPE)).toMatchObject({ state: 'invited', invite: ENCODED });
     expect(await readReferralState(dir, otherBuyer)).toMatchObject({ state: 'none' });
     expect(await readReferralState(dir, OTHER_CHAIN)).toMatchObject({ state: 'bound', referrer: REFERRER });
-    expect((await readdir(dir)).sort()).toEqual(['referral.json']); // no temporary or lock files left
+    expect((await readdir(dir)).sort()).toEqual(['referral.json', 'referral.json.lock']); // no temporary files left
   });
 
   it('waits for another process holding the referral lock before writing', async () => {
     const dir = await dataDir();
     const signer = { ...SCOPE, wallet: REFERRER };
-    const lock = join(dir, 'referral.lock');
-    await writeFile(lock, JSON.stringify({ pid: process.ppid })); // a live process
+    // Another process holds the lock: an exclusive transaction on its lock file.
+    const holder = new Database(join(dir, 'referral.json.lock'));
+    holder.exec('BEGIN EXCLUSIVE');
     let saved = false;
     const saving = saveReferralInvite(dir, SCOPE, ENCODED, REFERRER).then(() => { saved = true; });
     await new Promise((resolve) => setTimeout(resolve, 150));
     expect(saved).toBe(false);
     // The other process records an issued invite, then releases the lock.
     await writeFile(join(dir, 'referral.json'), JSON.stringify({ version: 2, referees: {}, issued: { [`8453:${SCOPE.referralsAddress}:${REFERRER}`]: { epoch: 30, indices: [4] } } }));
-    await rm(lock);
+    holder.exec('ROLLBACK');
+    holder.close();
     await saving;
     expect(await readIssuedInviteIndices(dir, signer, 30)).toEqual([4]);
     expect((await readReferralState(dir, SCOPE))?.state).toBe('invited');

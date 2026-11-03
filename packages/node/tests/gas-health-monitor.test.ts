@@ -9,7 +9,7 @@ const ADDRESS = '0x1111111111111111111111111111111111111111';
 
 function makeMonitor(
   balances: Array<bigint | Error>,
-  overrides: { minBalanceWei?: bigint; intervalMs?: number } = {},
+  overrides: { minBalanceWei?: bigint; intervalMs?: number; relaxedIntervalMs?: number; relaxedBalanceFactor?: bigint } = {},
 ): { monitor: GasHealthMonitor; events: GasHealthEvent[]; calls: string[] } {
   const events: GasHealthEvent[] = [];
   const calls: string[] = [];
@@ -48,6 +48,15 @@ describe('GasHealthMonitor', () => {
       balanceWei: 0n,
       minBalanceWei: DEFAULT_MIN_GAS_BALANCE_WEI,
     }]);
+  });
+
+  it('drops a reading still in flight when it is stopped', async () => {
+    const { monitor, events } = makeMonitor([0n], { intervalMs: 60_000 });
+    monitor.start();
+    monitor.stop();
+    await monitor.checkNow();
+    expect(events).toEqual([]);
+    expect(monitor.depleted).toBe(false);
   });
 
   it('emits restored when the wallet is funded again', async () => {
@@ -97,6 +106,54 @@ describe('GasHealthMonitor', () => {
       monitor.stop();
       await vi.advanceTimersByTimeAsync(5_000);
       expect(calls).toHaveLength(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('checks a well-funded wallet only every relaxed interval, and tightens up near the line', async () => {
+    vi.useFakeTimers();
+    try {
+      const plenty = DEFAULT_MIN_GAS_BALANCE_WEI * 50n;
+      const { monitor, calls } = makeMonitor([plenty, plenty, DEFAULT_MIN_GAS_BALANCE_WEI * 2n], { intervalMs: 2_000, relaxedIntervalMs: 10_000 });
+      monitor.start();
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(9_000);
+      expect(calls).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(calls).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(calls).toHaveLength(3);
+      // 2× the minimum is not well funded: back to every regular interval.
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(calls).toHaveLength(6);
+      monitor.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('never relaxes past five regular intervals', async () => {
+    vi.useFakeTimers();
+    try {
+      const { monitor, calls } = makeMonitor([DEFAULT_MIN_GAS_BALANCE_WEI * 50n], { intervalMs: 1_000, relaxedIntervalMs: 60_000 });
+      monitor.start();
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(calls).toHaveLength(2);
+      monitor.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('takes a higher well-funded factor from its config', async () => {
+    vi.useFakeTimers();
+    try {
+      const { monitor, calls } = makeMonitor([DEFAULT_MIN_GAS_BALANCE_WEI * 50n], { intervalMs: 1_000, relaxedIntervalMs: 10_000, relaxedBalanceFactor: 100n });
+      monitor.start();
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(calls).toHaveLength(4);
+      monitor.stop();
     } finally {
       vi.useRealTimers();
     }

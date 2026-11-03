@@ -46,6 +46,8 @@ Inside a workspace, a member is either a workspace **admin**, who manages that w
 
 The first time someone opens the console, a short tour shows where everything is. Replay it from the account menu with **Take the tour**. The navigation shows only the pages your role can open:
 
+![The console Overview: spend today, this week and this month against budgets, and spend per day by model](/img/docs/gateway/overview.webp)
+
 - **Overview**: spend, budgets and warnings for the open workspace.
 - **Chat**: talk to any model on the network, paid by your own key. See [Chat](/docs/gateway/chat).
 - **Activity** and **Logs**: spend and requests by model, key and member, and a searchable request log. See [Logs, usage and audit](/docs/gateway/activity).

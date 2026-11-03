@@ -371,6 +371,42 @@ describe('provider-openai-responses plugin', () => {
     rmSync(dirname(authFile), { recursive: true, force: true });
   });
 
+  it('sends the prompt cache key as the session_id header so the backend reuses the cache', async () => {
+    const authFile = writeAuthFile({
+      tokens: {
+        access_token: makeJwt({}),
+        account_id: 'acct-file',
+      },
+    });
+    const fetchMock = vi.fn().mockImplementation(async () => new Response(JSON.stringify({ id: 'resp_1' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const provider = plugin.createProvider({
+      OPENAI_RESPONSES_AUTH_FILE: authFile,
+      ANTSEED_ALLOWED_SERVICES: 'gpt-5.5',
+    });
+    const send = (headers: Record<string, string>, body: Record<string, unknown>) => provider.handleRequest({
+      requestId: 'req-cache',
+      method: 'POST',
+      path: '/v1/responses',
+      headers: { 'content-type': 'application/json', ...headers },
+      body: new TextEncoder().encode(JSON.stringify({ model: 'gpt-5.5', input: 'hello', ...body })),
+    });
+    const sentHeaders = (call: number) => new Headers((fetchMock.mock.calls[call] as [string, RequestInit])[1].headers);
+
+    await send({}, { prompt_cache_key: 'conv-1' });
+    await send({ session_id: 'client-session' }, { prompt_cache_key: 'conv-1' });
+    await send({}, {});
+
+    expect(sentHeaders(0).get('session_id')).toBe('conv-1');
+    expect(sentHeaders(1).get('session_id')).toBe('client-session');
+    expect(sentHeaders(2).get('session_id')).toBeNull();
+    rmSync(dirname(authFile), { recursive: true, force: true });
+  });
+
   it('forces upstream streaming and collapses SSE for non-stream callers', async () => {
     const authFile = writeAuthFile({
       tokens: {

@@ -22,7 +22,7 @@ import { withFileLock } from '../utils/file-lock.js';
  * blocks a new one with a binding made elsewhere. The issued-invite indices
  * are scoped the same way, by the signing wallet.
  *
- * Every read-modify-write of the file runs under `referral.lock` (see
+ * Every read-modify-write of the file runs under `referral.json.lock` (see
  * `updateFile`), shared by every process using the data directory, so a
  * redemption, a daemon sync and an invite allocation never drop each
  * other's updates. That lock is only held for local file IO and never
@@ -101,10 +101,6 @@ function referralStatePath(dataDir: string): string {
   return join(dataDir, 'referral.json');
 }
 
-function referralLockPath(dataDir: string): string {
-  return join(dataDir, 'referral.lock');
-}
-
 function scopeKey(scope: ReferralScope): string {
   return `${scope.chainId}:${getAddress(scope.referralsAddress)}:${getAddress(scope.wallet)}`;
 }
@@ -159,7 +155,7 @@ async function writeFileState(dataDir: string, file: ReferralFile): Promise<void
  * all under the shared referral lock.
  */
 async function updateFile<T>(dataDir: string, change: (file: ReferralFile) => { result: T; write: boolean }): Promise<T> {
-  return withFileLock(referralLockPath(dataDir), async () => {
+  return withFileLock(referralStatePath(dataDir), async () => {
     const file = await readFileState(dataDir);
     const { result, write } = change(file);
     if (write) await writeFileState(dataDir, file);
