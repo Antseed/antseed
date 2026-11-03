@@ -642,6 +642,9 @@ const PEER_CATALOG_FIELDS = [
  * sized for in-flight plus recently-finished traffic, not for concurrency.
  */
 const MAX_TRACKED_REQUEST_CONVERSATIONS = 512
+/** Why a speech seller is not a route: it does not list the voice the request asks for. */
+const UNSUPPORTED_VOICE_REASON = 'does not offer the requested voice'
+
 /** Min gap between background peer refreshes triggered by model_not_found responses. */
 const MODEL_NOT_FOUND_REFRESH_THROTTLE_MS = 30_000
 
@@ -1753,7 +1756,7 @@ export class BuyerProxy {
       }
       if (voice !== undefined && speechVoiceProblem(offer.capabilities?.speech, voice)) {
         log(`Voice filter: peer ${peer.peerId.slice(0, 12)}... service="${plan.serviceId}" does not offer the requested voice`)
-        verdict.reasons.push('does not offer the requested voice')
+        verdict.reasons.push(UNSUPPORTED_VOICE_REASON)
         continue
       }
       const requestForPolicy = withRoutedModel(request, plan.serviceId)
@@ -4521,7 +4524,7 @@ export class BuyerProxy {
       }
 
       const router = this._node.router
-      const { candidates, effectivePolicy, explored, selections, firstPick } = this._planModelRoutes({
+      const { candidates, verdicts, effectivePolicy, explored, selections, firstPick } = this._planModelRoutes({
         modelPeers,
         modelPlans,
         request: serializedReq,
@@ -4537,6 +4540,22 @@ export class BuyerProxy {
       })
       const requireVerified = effectivePolicy?.requireVerified === true
       if (candidates.length === 0) {
+        // Every seller of the model was left out only for not offering the voice asked for.
+        const voiceVerdicts = verdicts.filter((verdict) => verdict.reasons.includes(UNSUPPORTED_VOICE_REASON))
+        if (voiceVerdicts.length > 0 && voiceVerdicts.length === verdicts.length) {
+          const voices = [...new Set(voiceVerdicts.flatMap((verdict) => verdict.offer.capabilities?.speech?.voices ?? []))].sort()
+          const voice = extractRequestBodyFields(serializedReq.headers, serializedReq.body)?.['voice']
+          log(`Request rejected: no seller of ${requestedService} offers voice ${JSON.stringify(voice)}`)
+          return dispatchFailure(400, { 'content-type': 'application/json' }, JSON.stringify({
+            error: {
+              type: 'invalid_request_error',
+              code: 'unsupported_voice',
+              message: `No seller of "${requestedService}" offers voice ${JSON.stringify(voice)}. Available voices: ${voices.slice(0, 40).join(', ')}${voices.length > 40 ? ', ...' : ''}`,
+              param: 'voice',
+              available_voices: voices,
+            },
+          }))
+        }
         const capabilityRequired = routeRequiredParameters.length > 0
         // Served, but the health check of every seller that could take it
         // announces the route failing (the model, or the protocol this request

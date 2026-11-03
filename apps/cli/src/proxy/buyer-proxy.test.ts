@@ -6870,6 +6870,33 @@ test('speech requests route only to sellers that offer the requested voice', asy
   assert.deepEqual(sent, [third.peerId])
 })
 
+test('a voice no seller offers is refused with the voices that are available', async () => {
+  const seller = (seed: string, voices: string[]) => {
+    const p = makePeer(seed, ['openai'])
+    p.providerServiceApiProtocols = { openai: { services: { 'tts-kokoro': ['openai-audio-speech'] } } }
+    p.providerServiceCapabilities = {
+      openai: { services: { 'tts-kokoro': { inputs: ['text'], outputs: ['audio'], speech: { voices } } as any } },
+    }
+    return p
+  }
+  const peers = [seller('a', ['am_adam']), seller('b', ['af_sky', 'am_adam'])]
+  const proxy = makeBuyerProxyWithPeers(peers, peers, permissiveRouter())
+  let sent = 0
+  ;(proxy as any)._node.sendRequest = async () => { sent += 1; throw new Error('must not be sent') }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({
+    path: '/v1/audio/speech',
+    body: { model: 'tts-kokoro', input: 'Hello there.', voice: 'nova' },
+  }))
+
+  assert.equal(res.statusCode, 400, res.body)
+  assert.equal(sent, 0)
+  const error = JSON.parse(res.body).error
+  assert.equal(error.code, 'unsupported_voice')
+  assert.equal(error.param, 'voice')
+  assert.deepEqual(error.available_voices, ['af_sky', 'am_adam'])
+})
+
 test('lip-synced video creates route only to sellers whose model takes audio_url', async () => {
   const peer = (seed: string, reputation: number, supportedParameters: string[]) => {
     const p = makePeer(seed, ['venice-video'])
