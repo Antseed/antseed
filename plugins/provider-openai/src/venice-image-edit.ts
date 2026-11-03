@@ -21,6 +21,7 @@ const VENICE_EDIT_PARAMETERS = [
 ] as const;
 /** OpenAI clients send several images as repeated `image[]` parts, one image as `image`. */
 const IMAGE_FIELDS = ['image', 'image[]'] as const;
+const IMAGE_FIELD_NAMES = new Set<string>(IMAGE_FIELDS);
 const OPENAI_IMAGE_EDIT_FIELDS = new Set([
   'model',
   'service',
@@ -163,9 +164,9 @@ async function adaptRequest(
   }
 
   // In form order: Venice takes the first image as the base, whatever its field name.
-  const imageFields = new Set<string>(IMAGE_FIELDS);
-  const entries = [...form.entries()].flatMap(([field, value]) => (imageFields.has(field) ? [value] : []));
-  const images = entries.flatMap((image) => (typeof image === 'string' ? [] : [image as unknown as Blob]));
+  const entries = [...form.entries()].flatMap(([field, value]) => (IMAGE_FIELD_NAMES.has(field) ? [value] : []));
+  // A text part under an image field is refused below rather than skipped.
+  const images = entries.filter((value) => typeof value !== 'string');
   if (images.length === 0 || images.length !== entries.length) {
     return {
       response: openAiError(
