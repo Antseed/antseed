@@ -265,13 +265,15 @@ async function adaptRequest(
   }
 
   // The relay keeps selecting upstreams (and fallbacks) by the advertised
-  // service; only the model it sends upstream is the native edit model.
+  // service, which the rebuilt form no longer names, so it travels in the
+  // header; only the model sent upstream is the native edit model.
+  const headers = replaceHeader(request.headers, 'content-type', upstreamContentType);
   return {
     adapted: {
       request: withPinnedUpstreamModel({
         ...request,
         path: multi ? VENICE_IMAGE_MULTI_EDIT_PATH : VENICE_IMAGE_EDIT_PATH,
-        headers: replaceHeader(request.headers, 'content-type', upstreamContentType),
+        headers: replaceHeader(headers, 'x-antseed-service', requestedService),
         body: new Uint8Array(await encoded.arrayBuffer()),
       }, editModel),
     },
