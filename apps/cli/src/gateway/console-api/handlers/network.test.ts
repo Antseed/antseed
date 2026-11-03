@@ -316,6 +316,17 @@ test('speech offers keep their per-character price and are free only when it is 
   assert.equal(empty!.offers[0]!.usdPerMillionCharacters, 0)
   assert.equal(empty!.offers[0]!.free, true)
   assert.equal(empty!.free, true)
+
+  // Only the speech billing model prices characters: a free image model beside it changes nothing.
+  const [mixed] = mapNetworkModels({ data: [{ id: 'tts-model', type: 'speech', peers: [{
+    peerId: PEER_A, provider: 'openai', serviceId: 'tts-model',
+    unitBillingModels: {
+      'openai-audio-speech': { version: 1, components: [{ unit: 'input_characters', priceUsd: 0.000015 }] },
+      'openai-images': { version: 1, components: [] },
+    },
+  }] }] }, [])
+  assert.ok(Math.abs(mixed!.offers[0]!.usdPerMillionCharacters! - 15) < 1e-9)
+  assert.equal(mixed!.offers[0]!.free, false)
 })
 
 test('peer services give a paid unit-billed service no seller-wide program', () => {

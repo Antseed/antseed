@@ -1,5 +1,5 @@
 /** Pure mapping from the buyer's peer, health and verification views to the console's `Peer`. */
-import { VERIFICATION_STATUS_STALE_MAX_MS, isNativeVideoProtocol, parseServiceHealth, parseServicePerformance } from '@antseed/node'
+import { VERIFICATION_STATUS_STALE_MAX_MS, isAudioSpeechProtocol, isNativeVideoProtocol, parseServiceHealth, parseServicePerformance } from '@antseed/node'
 import { collectPeerVerificationLinks } from '@antseed/node/discovery'
 import { parseVerifierCapabilities } from '@antseed/node/verifier-capabilities'
 import { freeTierProgramForService, isPricedService, normalizeFreeTierProgram, parseFreeTierProgram } from '@antseed/node/free-tier-program'
@@ -68,12 +68,16 @@ export interface PeerStat {
 }
 
 /**
- * USD per million `input` characters a speech offer charges: the components
- * speech billing applies (no `match`, or one naming the service), summed; 0
- * for a model with no components (free); null when the offer publishes none.
+ * USD per million `input` characters a speech offer charges, from its speech
+ * protocol's billing model only: the components speech billing applies (no
+ * `match`, or one naming the service), summed; 0 for a model with no
+ * components (free); null when the offer publishes none.
  */
 function speechUsdPerMillionCharacters(unitBillingModels: unknown, serviceId: string): number | null {
-  const rates = Object.values(asRecord(unitBillingModels)).flatMap((model) => {
+  const speechModels = Object.entries(asRecord(unitBillingModels))
+    .filter(([protocol]) => isAudioSpeechProtocol(protocol))
+    .map(([, model]) => model)
+  const rates = speechModels.flatMap((model) => {
     const components = asRecord(model)['components']
     // A model with no components is explicitly free.
     if (Array.isArray(components) && components.length === 0) return [0]
