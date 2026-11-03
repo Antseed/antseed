@@ -27,7 +27,7 @@ import type { RouterOptionSpec } from '@antseed/router-core'
 
 export { effectiveModelReputationScore } from '@antseed/node'
 
-export type NetworkModelType = 'text' | 'image' | 'decision' | 'video' | 'speech'
+export type NetworkModelType = NetworkServiceOffer['type']
 
 export type NetworkModelPeerOffer = {
   unitBillingModels?: NetworkServiceOffer['unitBillingModels']
