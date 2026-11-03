@@ -1,6 +1,6 @@
 import { StakingButton } from '../StakingButton';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Button } from '@antseed/ui';
+import { Button, CopyButton } from '@antseed/ui';
 import { shallowEqual, useUiSelector } from '../../hooks/useUiSelector';
 import { useActions } from '../../hooks/useActions';
 import { formatCredits, formatInt, shortAddress } from '../../../core/format';
@@ -285,7 +285,6 @@ export function inviteCardState(invites: ReferralInvites, creation: InviteCreati
 export function VprInvitesCard({ invites, onCreated }: { invites: ReferralInvites | null; onCreated?: () => void }) {
   const [creation, setCreation] = useState<InviteCreation>(NO_INVITE_CREATION);
   const [creating, setCreating] = useState(false);
-  const [copied, setCopied] = useState(false);
   if (!invites?.available) return null;
   const create = async () => {
     const createInvite = window.antseedDesktop?.referralCreateInvite;
@@ -294,39 +293,26 @@ export function VprInvitesCard({ invites, onCreated }: { invites: ReferralInvite
     try {
       const attempt = await createInviteOnce(createInvite, invites.allowance?.epoch ?? null);
       setCreation((current) => nextInviteCreation(current, attempt));
-      if (attempt.result.ok) {
-        setCopied(false);
-        onCreated?.();
-      }
+      if (attempt.result.ok) onCreated?.();
     } finally {
       setCreating(false);
     }
-  };
-  const copy = (link: string) => {
-    void navigator.clipboard.writeText(link).then(() => {
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1500);
-    });
   };
   return (
     <VprInvitesCardBody
       invites={invites}
       creation={creation}
       creating={creating}
-      copied={copied}
       onCreate={() => void create()}
-      onCopy={copy}
     />
   );
 }
 
-export function VprInvitesCardBody({ invites, creation, creating, copied, onCreate, onCopy }: {
+export function VprInvitesCardBody({ invites, creation, creating, onCreate }: {
   invites: ReferralInvites;
   creation: InviteCreation;
   creating: boolean;
-  copied: boolean;
   onCreate: () => void;
-  onCopy: (link: string) => void;
 }) {
   const { link, left, quota, noQuota, canCreate } = inviteCardState(invites, creation);
   const leftHint = left !== null && quota !== null ? `${formatInt(left)} of ${formatInt(quota)} left this week.` : null;
@@ -351,7 +337,8 @@ export function VprInvitesCardBody({ invites, creation, creating, copied, onCrea
             <Button size="sm" variant="link" onClick={onCreate} disabled={creating} aria-busy={creating}>
               {creating ? (canCreate ? 'Creating…' : 'Checking…') : canCreate ? 'Create another' : 'Check again'}
             </Button>
-            <Button size="sm" variant="outline" onClick={() => onCopy(link)}>{copied ? 'Copied' : 'Copy'}</Button>
+            {/* Keyed by the link, so a new link starts at Copy again. */}
+            <CopyButton key={link} value={link} size="sm" variant="outline" />
           </span>
         ) : canCreate ? (
           <Button size="sm" variant="outline" onClick={onCreate} disabled={creating} aria-busy={creating}>

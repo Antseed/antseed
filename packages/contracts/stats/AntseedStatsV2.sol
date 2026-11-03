@@ -170,11 +170,22 @@ contract AntseedStatsV2 is IAntseedStats, Ownable {
         uint256 outputDelta = cumulativeOutputTokens - snapshot.outputTokens;
         uint256 requestDelta = cumulativeRequestCount - snapshot.requestCount;
 
+        // The counters are buyer-signed and unbounded: a total that would
+        // overflow skips the token stats, like non-monotonic counters, instead
+        // of reverting and rolling back the attribution forwards above.
+        BuyerMetadataStats storage stats = _buyerMetadataStats[agentId][buyer];
+        if (
+            inputDelta > type(uint256).max - stats.totalInputTokens
+                || outputDelta > type(uint256).max - stats.totalOutputTokens
+                || requestDelta > type(uint256).max - stats.totalRequestCount
+        ) {
+            return;
+        }
+
         snapshot.inputTokens = cumulativeInputTokens;
         snapshot.outputTokens = cumulativeOutputTokens;
         snapshot.requestCount = cumulativeRequestCount;
 
-        BuyerMetadataStats storage stats = _buyerMetadataStats[agentId][buyer];
         stats.totalInputTokens += inputDelta;
         stats.totalOutputTokens += outputDelta;
         stats.totalRequestCount += requestDelta;

@@ -1,6 +1,7 @@
 import { Contract, id } from 'ethers';
 import type { AbstractSigner } from 'ethers';
 import type { ReferralInvite } from '@antseed/protocol/signatures';
+import { scanEpochRewards } from '../reward-claims.js';
 import { BaseEvmClient } from './base-evm-client.js';
 
 export interface ReferralsClientConfig {
@@ -133,13 +134,7 @@ export class ReferralsClient extends BaseEvmClient {
    * Fallback for when no explorer indexes referrals.
    */
   async pendingRewards(referrer: string, lookback = 26): Promise<ReferralEpochReward[]> {
-    const current = await this.currentEpoch();
-    const latestClaimable = current - 2; // one finalized epoch plus the settlement grace epoch
-    if (latestClaimable < 0) return [];
-    const from = Math.max(0, latestClaimable - lookback + 1);
-    const epochs = Array.from({ length: latestClaimable - from + 1 }, (_, i) => from + i);
-    const amounts = await Promise.all(epochs.map((epoch) => this.pendingReward(referrer, epoch)));
-    return epochs.map((epoch, i) => ({ epoch, amount: amounts[i]! })).filter((entry) => entry.amount > 0n);
+    return scanEpochRewards(await this.currentEpoch(), (epoch) => this.pendingReward(referrer, epoch), lookback);
   }
 
   claim(signer: AbstractSigner, referrer: string, epoch: number): Promise<string> {

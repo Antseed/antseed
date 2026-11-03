@@ -8,6 +8,7 @@ import {
   nextInviteIndex,
   readIssuedInviteIndices,
   recordIssuedInvite,
+  scanEpochRewards,
   signInvite,
   withFileLock,
   type ReferralScope,
@@ -252,21 +253,14 @@ export async function claimReferralRewards(
   return { hash, epochs };
 }
 
-/** Same window as `ReferralsClient.pendingRewards`: the last 26 claimable epochs. */
-const REFEREE_SCAN_LOOKBACK = 26;
-
 /**
  * Epochs with a non-zero referee bonus for `buyer`, from `pendingRefereeReward`
  * per epoch. Costs one read per epoch, so only claims use it, and only when
  * Antscan cannot answer.
  */
 async function pendingRefereeEpochs(client: Pick<ReferralsClient, 'currentEpoch' | 'pendingRefereeReward'>, buyer: string): Promise<number[]> {
-  const latestClaimable = await client.currentEpoch() - 2; // one finalized epoch plus the settlement grace epoch
-  if (latestClaimable < 0) return [];
-  const from = Math.max(0, latestClaimable - REFEREE_SCAN_LOOKBACK + 1);
-  const epochs = Array.from({ length: latestClaimable - from + 1 }, (_, i) => from + i);
-  const amounts = await Promise.all(epochs.map((epoch) => client.pendingRefereeReward(buyer, epoch)));
-  return epochs.filter((_, i) => amounts[i]! > 0n);
+  const rewards = await scanEpochRewards(await client.currentEpoch(), (epoch) => client.pendingRefereeReward(buyer, epoch));
+  return rewards.map(({ epoch }) => epoch);
 }
 
 /**

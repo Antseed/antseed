@@ -260,7 +260,7 @@ export { UsageRewardsClient, type UsageRewardsClientConfig } from './payments/ev
 export { SellerPoolsClient, estimateEarlyExit, positionState, projectedEarlyExitSlashBps, type SellerPoolsClientConfig, type SellerPoolPosition, type EarlyExitEstimate, type SellerPoolConfig, type PositionPowerSegment, type PositionState } from './payments/evm/seller-pools-client.js';
 export { SellerPoolsRewardsClient, type SellerPoolsRewardsClientConfig } from './payments/evm/seller-pools-rewards-client.js';
 export { SellerRegistryClient, SellerRegistrationVerificationError, type SellerRegistryClientConfig } from './payments/evm/seller-registry-client.js';
-export { pendingEpochRewards, claimEpochRewards, claimBuyerEpochRewards, previewPoolRewards, claimPoolRewards, type RewardTransactionRecorder } from './payments/reward-claims.js';
+export { scanEpochRewards, pendingEpochRewards, claimEpochRewards, claimBuyerEpochRewards, previewPoolRewards, claimPoolRewards, type RewardTransactionRecorder } from './payments/reward-claims.js';
 export { PositionInitClient, type PositionInitClientConfig } from './payments/evm/position-init-client.js';
 export { EmissionsGateClient, GATE_MINTERS, gateMinterId, type EmissionsGateClientConfig, type GateMinter } from './payments/evm/emissions-gate-client.js';
 export { ReferralsClient, inviteFailureOf, type ReferralsClientConfig, type ReferralEpochReward, type InviteFailure, type InvitePreview } from './payments/evm/referrals-client.js';

@@ -205,6 +205,26 @@ contract AntseedStatsV2Test is Test {
         assertEq(buyerStats.totalInputTokens, 100);
     }
 
+    function test_recordMetadata_overflowingTotalsKeepTheAttributionForwards() public {
+        // One channel signs the maximum input counter; the buyer's total is then full.
+        vm.prank(writer);
+        stats.recordMetadata(agentId, buyer, bytes32("chan-1"), _v3(type(uint256).max, 1, 1, false));
+        assertEq(stats.getBuyerMetadataStats(agentId, buyer).totalInputTokens, type(uint256).max);
+
+        // Any input on another channel would overflow it: the token stats are
+        // skipped, but the client and the invite still reach their sinks.
+        vm.prank(writer);
+        stats.recordMetadata(agentId, buyer, bytes32("chan-2"), _v3(1, 1, 1, true));
+        assertEq(clientUsage.calls(), 2);
+        assertEq(clientUsage.lastClient(), 42);
+        assertEq(binder.lastBuyer(), buyer);
+        assertEq(binder.lastIndex(), inviteIndex);
+        IAntseedStats.BuyerMetadataStats memory buyerStats = stats.getBuyerMetadataStats(agentId, buyer);
+        assertEq(buyerStats.totalInputTokens, type(uint256).max);
+        assertEq(buyerStats.totalOutputTokens, 1);
+        assertEq(buyerStats.totalRequestCount, 1);
+    }
+
     function test_recordMetadata_tailWithoutInviteForwardsOnlyTheClient() public {
         inviteR = bytes32(0);
         inviteVs = bytes32(0);

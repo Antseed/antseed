@@ -171,7 +171,7 @@ export { SellerPoolsRewardsClient } from './evm/seller-pools-rewards-client.js';
 export type { SellerPoolsRewardsClientConfig, DynamicStakerConfig } from './evm/seller-pools-rewards-client.js';
 export { SellerRegistryClient, SellerRegistrationVerificationError } from './evm/seller-registry-client.js';
 export type { SellerRegistryClientConfig } from './evm/seller-registry-client.js';
-export { pendingEpochRewards, claimEpochRewards, claimBuyerEpochRewards, previewPoolRewards, claimPoolRewards } from './reward-claims.js';
+export { scanEpochRewards, pendingEpochRewards, claimEpochRewards, claimBuyerEpochRewards, previewPoolRewards, claimPoolRewards } from './reward-claims.js';
 export type { RewardTransactionRecorder } from './reward-claims.js';
 export { PositionInitClient } from './evm/position-init-client.js';
 export type { PositionInitClientConfig } from './evm/position-init-client.js';
