@@ -94,19 +94,17 @@ async function adaptRequest(
   request: SerializedHttpRequest,
   editModelMap: Readonly<Record<string, string>>,
 ): Promise<AdaptRequestResult> {
+  const reject = (statusCode: number, message: string, param?: string): AdaptRequestResult => ({
+    response: openAiError(request.requestId, statusCode, message, param),
+  });
+
   if (request.method.toUpperCase() !== 'POST') {
-    return { response: openAiError(request.requestId, 405, 'Image edits require POST.') };
+    return reject(405, 'Image edits require POST.');
   }
 
   const contentType = getHeader(request.headers, 'content-type');
   if (!/^multipart\/form-data(?:\s*;|$)/i.test(contentType)) {
-    return {
-      response: openAiError(
-        request.requestId,
-        415,
-        'Venice image edits require multipart/form-data.',
-      ),
-    };
+    return reject(415, 'Venice image edits require multipart/form-data.');
   }
 
   let form: FormData;
@@ -117,21 +115,12 @@ async function adaptRequest(
       body: request.body,
     }).formData();
   } catch {
-    return {
-      response: openAiError(request.requestId, 400, 'Invalid multipart image edit request.'),
-    };
+    return reject(400, 'Invalid multipart image edit request.');
   }
 
   for (const field of form.keys()) {
     if (!OPENAI_IMAGE_EDIT_FIELDS.has(field)) {
-      return {
-        response: openAiError(
-          request.requestId,
-          400,
-          `Venice image edits do not support the "${field}" field.`,
-          field,
-        ),
-      };
+      return reject(400, `Venice image edits do not support the "${field}" field.`, field);
     }
   }
 
@@ -139,28 +128,21 @@ async function adaptRequest(
     || textField(form, 'service')
     || textField(form, 'model');
   if (!requestedService) {
-    return {
-      response: openAiError(request.requestId, 400, 'Image edit model is required.', 'model'),
-    };
+    return reject(400, 'Image edit model is required.', 'model');
   }
 
   const editModel = editModelMap[requestedService.toLowerCase()];
   if (!editModel) {
-    return {
-      response: openAiError(
-        request.requestId,
-        400,
-        `Service "${requestedService}" does not have a Venice image edit model configured.`,
-        'model',
-      ),
-    };
+    return reject(
+      400,
+      `Service "${requestedService}" does not have a Venice image edit model configured.`,
+      'model',
+    );
   }
 
   const prompt = textField(form, 'prompt');
   if (!prompt) {
-    return {
-      response: openAiError(request.requestId, 400, 'Image edit prompt is required.', 'prompt'),
-    };
+    return reject(400, 'Image edit prompt is required.', 'prompt');
   }
 
   // In form order: Venice takes the first image as the base, whatever its field name.
@@ -168,48 +150,20 @@ async function adaptRequest(
   // A text part under an image field is refused below rather than skipped.
   const images = entries.filter((value) => typeof value !== 'string');
   if (images.length === 0 || images.length !== entries.length) {
-    return {
-      response: openAiError(
-        request.requestId,
-        400,
-        'Venice image edits require one or more image files.',
-        'image',
-      ),
-    };
+    return reject(400, 'Venice image edits require one or more image files.', 'image');
   }
   if (form.has('mask')) {
-    return {
-      response: openAiError(
-        request.requestId,
-        400,
-        'Venice image edits do not support the OpenAI mask field.',
-        'mask',
-      ),
-    };
+    return reject(400, 'Venice image edits do not support the OpenAI mask field.', 'mask');
   }
 
   const count = textField(form, 'n');
   if (count && count !== '1') {
-    return {
-      response: openAiError(
-        request.requestId,
-        400,
-        'Venice image edits support only n=1.',
-        'n',
-      ),
-    };
+    return reject(400, 'Venice image edits support only n=1.', 'n');
   }
 
   const responseFormat = textField(form, 'response_format') || 'b64_json';
   if (responseFormat !== 'b64_json') {
-    return {
-      response: openAiError(
-        request.requestId,
-        400,
-        'Venice image edits support only response_format="b64_json".',
-        'response_format',
-      ),
-    };
+    return reject(400, 'Venice image edits support only response_format="b64_json".', 'response_format');
   }
 
   // Venice's single-image edit takes no `quality`; its multi-image edit does,
@@ -225,24 +179,10 @@ async function adaptRequest(
   }
   const moderation = textField(form, 'moderation');
   if (moderation && moderation !== 'low' && moderation !== 'auto') {
-    return {
-      response: openAiError(
-        request.requestId,
-        400,
-        'moderation must be "auto" or "low".',
-        'moderation',
-      ),
-    };
+    return reject(400, 'moderation must be "auto" or "low".', 'moderation');
   }
   if (moderation && upstreamForm.has('safe_mode')) {
-    return {
-      response: openAiError(
-        request.requestId,
-        400,
-        'moderation and safe_mode cannot both be provided.',
-        'moderation',
-      ),
-    };
+    return reject(400, 'moderation and safe_mode cannot both be provided.', 'moderation');
   }
   if (!upstreamForm.has('safe_mode')) {
     if (moderation === 'low') {
@@ -255,7 +195,7 @@ async function adaptRequest(
   const encoded = new Response(upstreamForm);
   const upstreamContentType = encoded.headers.get('content-type');
   if (!upstreamContentType) {
-    return { response: openAiError(request.requestId, 500, 'Could not encode Venice image edit request.') };
+    return reject(500, 'Could not encode Venice image edit request.');
   }
 
   // The relay keeps selecting upstreams (and fallbacks) by the advertised
