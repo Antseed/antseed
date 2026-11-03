@@ -4,6 +4,7 @@ import {
   StaticTokenProvider,
   isImageModelId,
   isSpeechModelId,
+  normalizeServiceModelMap,
   parseCsv,
   parseFallbackUpstreamsJson,
   parseJsonObject,
@@ -144,21 +145,9 @@ function withImageServiceCapabilityDefaults(
 }
 
 function parseImageEditModelMap(raw: string | undefined): Record<string, string> | undefined {
-  const parsed = parseJsonObject(raw, 'ANTSEED_SERVICE_IMAGE_EDIT_MODEL_MAP_JSON');
-  if (!parsed) return undefined;
-
-  const out: Record<string, string> = {};
-  for (const [serviceRaw, editModelRaw] of Object.entries(parsed)) {
-    const service = serviceRaw.trim().toLowerCase();
-    if (!service) continue;
-    if (typeof editModelRaw !== 'string' || !editModelRaw.trim()) {
-      throw new Error(
-        `ANTSEED_SERVICE_IMAGE_EDIT_MODEL_MAP_JSON entry "${serviceRaw}" must map to a non-empty string`,
-      );
-    }
-    out[service] = editModelRaw.trim();
-  }
-  return Object.keys(out).length > 0 ? out : undefined;
+  const key = 'ANTSEED_SERVICE_IMAGE_EDIT_MODEL_MAP_JSON';
+  const parsed = parseJsonObject(raw, key);
+  return parsed ? normalizeServiceModelMap(parsed, key) : undefined;
 }
 
 function validateVeniceEditModelMap(

@@ -5,7 +5,7 @@ export { StaticTokenProvider, OAuthTokenProvider, createTokenProvider, type Auth
 export { OAuthRefreshError } from './token-providers.js';
 export type { TokenProvider, TokenProviderState, OAuthState, OAuthStateStore } from './token-providers.js';
 export { BaseProvider, type BaseProviderConfig } from './base-provider.js';
-export { parseServiceAliasMap } from './service-alias.js';
+export { normalizeServiceModelMap, parseServiceAliasMap } from './service-alias.js';
 export { withPinnedUpstreamModel } from './pinned-upstream-model.js';
 export {
   parseNonNegativeNumber,
