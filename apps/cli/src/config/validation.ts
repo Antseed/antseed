@@ -116,6 +116,19 @@ function validateFallbackUpstreams(
   }
 }
 
+const OPENAI_PLUGINS = new Set(['openai', '@antseed/provider-openai']);
+
+/** Venice image edits need the openai plugin pointed at Venice, which it detects from the base URL. */
+function isVeniceOpenAiProvider(providerCfg: SellerProviderConfig): boolean {
+  if (!OPENAI_PLUGINS.has(providerCfg.plugin?.trim())) return false;
+  try {
+    const host = new URL(providerCfg.baseUrl ?? '').hostname.toLowerCase();
+    return host === 'venice.ai' || host.endsWith('.venice.ai');
+  } catch {
+    return false;
+  }
+}
+
 function validateSellerProviders(
   path: string,
   providers: Record<string, SellerProviderConfig>,
@@ -145,6 +158,8 @@ function validateSellerProviders(
       }
       if (serviceCfg.imageEditModel !== undefined && serviceCfg.imageEditModel.trim().length === 0) {
         errors.push(`${servicePath}.imageEditModel must be a non-empty string when provided`);
+      } else if (serviceCfg.imageEditModel !== undefined && !isVeniceOpenAiProvider(providerCfg)) {
+        errors.push(`${servicePath}.imageEditModel requires the openai plugin with a Venice baseUrl (https://api.venice.ai/api)`);
       }
       if (serviceCfg.pricing) {
         validatePricingLeaf(`${servicePath}.pricing`, serviceCfg.pricing, errors);
