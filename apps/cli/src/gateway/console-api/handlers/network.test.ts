@@ -329,6 +329,23 @@ test('speech offers keep their per-character price and are free only when it is 
   assert.equal(mixed!.offers[0]!.free, false)
 })
 
+test('peer services carry a speech service\'s price per million characters', () => {
+  const row = {
+    ...PEERS_BODY.peers[0],
+    providerPricing: { openai: { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 }, services: { 'tts-paid': {}, 'tts-free': {} } } },
+    providerServiceApiProtocols: { openai: { services: { 'tts-paid': ['openai-audio-speech'], 'tts-free': ['openai-audio-speech'] } } },
+    providerServiceUnitBillingModels: { openai: { services: {
+      'tts-paid': { 'openai-audio-speech': { version: 1, components: [{ unit: 'input_characters', priceUsd: 0.000015 }] } },
+      'tts-free': { 'openai-audio-speech': { version: 1, components: [] } },
+    } } },
+  }
+  const services = peerServices(row as Record<string, unknown>)
+  const paid = services.find((entry) => entry.service === 'tts-paid')!
+  assert.ok(Math.abs(paid.usdPerMillionCharacters! - 15) < 1e-9)
+  assert.equal(paid.paid, true)
+  assert.equal(services.find((entry) => entry.service === 'tts-free')!.usdPerMillionCharacters, 0)
+})
+
 test('peer services give a paid unit-billed service no seller-wide program', () => {
   const row = {
     ...PEERS_BODY.peers[0],

@@ -803,6 +803,8 @@ export interface Peer {
     performance?: ServicePerformanceView
     /** Speech services: the voices the seller accepts. Absent when not announced. */
     voices?: string[]
+    /** Speech services: USD per million characters of `input`. Absent when not advertised. */
+    usdPerMillionCharacters?: number
   }>
   trustScore: number | null
   reputationScore: number | null

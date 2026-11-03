@@ -134,6 +134,7 @@ export function peerServices(row: Row): Peer['services'] {
       })
       const video = Array.isArray(apis) && apis.some(isNativeVideoProtocol)
       const voices = speechVoices(asRecord(asRecord(serviceCapabilities[provider])['services'])[service])
+      const perMillionCharacters = speechUsdPerMillionCharacters(billing, service)
       services.push({
         provider,
         service,
@@ -148,6 +149,7 @@ export function peerServices(row: Row): Peer['services'] {
         ...serviceHealthField(asRecord(asRecord(health[provider])['services'])[service]),
         ...servicePerformanceField(asRecord(asRecord(performance[provider])['services'])[service]),
         ...(voices.length > 0 ? { voices } : {}),
+        ...(perMillionCharacters !== null ? { usdPerMillionCharacters: perMillionCharacters } : {}),
       })
     }
   }
