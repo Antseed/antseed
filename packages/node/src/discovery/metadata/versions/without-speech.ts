@@ -1,5 +1,6 @@
 import type { PeerMetadata, ProviderAnnouncement, ServiceCapabilities } from "../../peer-metadata.js";
 import { AUDIO_SPEECH_PROTOCOLS } from "../../peer-metadata.js";
+import { pruneServiceMaps } from "./prune-service-maps.js";
 
 /** Billing units that metadata before v15 cannot carry. */
 const SPEECH_UNITS = new Set<string>(["input_characters"]);
@@ -70,13 +71,7 @@ export function withoutSpeechServices(latest: PeerMetadata): PeerMetadata {
         if (services.length === 0) continue;
         next.services = services;
       }
-      for (const key of PER_SERVICE_KEYS) {
-        const map = provider[key] as Record<string, unknown> | undefined;
-        if (!map) continue;
-        const kept = Object.fromEntries(Object.entries(map).filter(([service]) => !speech.has(service)));
-        if (Object.keys(kept).length > 0) (next as unknown as Record<string, unknown>)[key] = kept;
-        else delete next[key];
-      }
+      pruneServiceMaps(next, provider, speech, PER_SERVICE_KEYS);
     }
     if (next.serviceCapabilities) {
       const capabilities = withoutSpeechCapabilities(next.serviceCapabilities);

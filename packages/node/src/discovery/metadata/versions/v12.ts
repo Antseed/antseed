@@ -3,6 +3,7 @@ import { defineMetadataVersion, insertBefore, type MetadataLayout } from "../def
 import { providerLoadField } from "../fields/provider-basics.js";
 import { serviceCapabilitiesField } from "../fields/service-capabilities.js";
 import { V11_LAYOUT } from "./v11.js";
+import { pruneServiceMaps } from "./prune-service-maps.js";
 import { withoutSpeechServices } from "./without-speech.js";
 
 /** v12: per-service capability hints and u16 service entry counts. */
@@ -47,13 +48,7 @@ function withoutFailingServices(latest: PeerMetadata): PeerMetadata {
     const services = provider.services.filter((service) => !failing.has(service));
     if (services.length === 0) continue;
     const next: ProviderAnnouncement = { ...provider, services };
-    for (const key of PER_SERVICE_KEYS) {
-      const map = provider[key] as Record<string, unknown> | undefined;
-      if (!map) continue;
-      const kept = Object.fromEntries(Object.entries(map).filter(([service]) => !failing.has(service)));
-      if (Object.keys(kept).length > 0) (next as unknown as Record<string, unknown>)[key] = kept;
-      else delete next[key];
-    }
+    pruneServiceMaps(next, provider, failing, PER_SERVICE_KEYS);
     providers.push(next);
   }
   return { ...latest, providers };
