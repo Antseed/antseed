@@ -68,6 +68,7 @@ export function registerDevCommand(program: Command): void {
       const buyer = new AntseedNode({
         role: 'buyer',
         bootstrapNodes: localBootstrap,
+        autoReconcileBuyerChannels: false,
       });
 
       try {

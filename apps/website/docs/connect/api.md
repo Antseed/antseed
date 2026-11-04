@@ -115,6 +115,16 @@ jq -n --rawfile face <(printf 'data:image/png;base64,'; base64 < face.png | tr -
 curl http://localhost:8377/api/v1/video/queue -H 'content-type: application/json' -H 'Expect:' --data-binary @lipsync.json
 ```
 
+Talking-avatar models (`audio` in `capabilities.video.requiredInputs`, no `duration` in `supportedParameters`; for example fal's `fal-ai/kling-video/ai-avatar/v2/pro`) make a video as long as the audio and take no duration of their own. The length you pay for is still `duration`, and it must be the audio's length in whole seconds, rounded down (`ffprobe -v error -show_entries format=duration -of csv=p=0 hello.mp3`). Send the audio inline as an MP3 or WAV data URL: the seller measures it and answers `422 invalid_video_duration` for a URL, another format, or a `duration` that is not its length, before any payment. The seller removes `duration` before calling fal.
+
+```bash
+jq -n --rawfile face <(printf 'data:image/png;base64,'; base64 < face.png | tr -d '\n') \
+      --rawfile voice <(printf 'data:audio/mpeg;base64,'; base64 < hello.mp3 | tr -d '\n') \
+  '{model: "<peerId>@fal-ai/kling-video/ai-avatar/v2/pro", prompt: "She smiles warmly",
+    image_url: $face, audio_url: $voice, duration: 7}' > avatar.json
+curl http://localhost:8377/fal/v1/video/queue -H 'content-type: application/json' -H 'Expect:' --data-binary @avatar.json
+```
+
 ### Edit images
 
 `POST /v1/images/edits` takes OpenAI's multipart form: `model`, `prompt`, and one `image` file, or several as `image[]` (the OpenAI SDKs send a list that way). Automatic routing only picks sellers that announce `image` in `supportedParameters`. The answer is an OpenAI images response with `b64_json`.

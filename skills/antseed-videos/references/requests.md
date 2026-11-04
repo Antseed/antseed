@@ -195,6 +195,13 @@ case "$(file -b --mime-type "$voice_file")" in
 esac && { printf 'data:%s;base64,' "$mime"; base64 < "$voice_file" | tr -d '\n'; } > "$audio_url_file"
 ```
 
+A talking-avatar model (the offer's `video.requiredInputs` has `audio` and `fields` has no `duration`) makes a video exactly as long as the audio, so `duration` is not a choice: set it to the audio's length in whole seconds, rounded down (at least 1), before [Price](#price). The seller measures the inline audio and refuses any other value with `422 invalid_video_duration` before payment; the number in its message is the length it measured.
+
+```bash
+duration="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$voice_file" | awk '{ s = int($1); print (s < 1 ? 1 : s) }')"
+echo "duration: $duration s (the audio's length)"
+```
+
 ## Create once
 
 Check for a job file first. If `<output>.job.json` exists, go to [Wait and save](#wait-and-save) instead. Set `protocol` and `peer_id` from the chosen [Price](#price) entry and `route_model` to `<peerId>@<model>`. Write the prompt to `prompt.txt` first. Set `aspect_ratio` only when the chosen Price entry has `sendRatio: true`; otherwise leave it unset ([Aspect ratio](#aspect-ratio)). Set `audio=false` only when the user wants a silent video and the seller advertises `audio`; never send `audio=true`, because many models make sound by default and fail the job when `audio` is set. Before an approved retry after a failed job, rename `<name>.job.json` to `<name>.failed.job.json`.
@@ -610,6 +617,6 @@ On a failed create or wait, `error.peer_message` carries the seller's reason, in
 - `504 upstream_upload_timeout`: the seller could not hand the request to fal in time. The video is not charged (a price above $1.00 keeps the opening fee); send a smaller file or a URL.
 - Job `FAILED` after it started (for example Venice "No person detected" from motion control or Recast, or fal's message that the source is too short or too small): the source has no real person, is outside the model's limits ([Source limits](#source-limits)), or the upstream rejected it. The job's payment channel is closed at once; a video priced above $1.00 costs the opening fee ($0.65 on Base), a cheaper one nothing.
 - `413 request_too_large`: the request body is larger than the seller's upstream accepts (Venice: 32.5 MB). Re-encode a smaller copy, or send a public `https` URL (not for a video edit's source, see [Inline or URL](#inline-or-url)).
-- `422 invalid_video_duration` on create: an edit is paid by its source length, so the seller measured it. Send the source inline, with `duration` its length in whole seconds, rounded down (the number in the message). No job started; on a video above $1.00 the opening fee is kept, so measure the source as in [Source](#source) before creating.
+- `422 invalid_video_duration` on create: an edit is paid by its source length, and a talking avatar by its audio's length, so the seller measured it. Send the source video (or the audio, as MP3 or WAV) inline, with `duration` its length in whole seconds, rounded down (the number in the message). No job started. Current sellers refuse before the payment channel opens, so nothing is charged; an older seller refuses after it and keeps the opening fee on a video above $1.00, so measure first as in [Source](#source) or [Lip-sync audio](#lip-sync-audio).
 - `422 required_capability_unavailable` naming `video_url`: no seller of that model takes a source video. Pick a model from the `frames=edit` catalog.
 - Connection refused: start Antseed Desktop or `antseed buyer start`.

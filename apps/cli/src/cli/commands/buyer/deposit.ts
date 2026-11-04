@@ -250,7 +250,7 @@ async function watchStandalone(
     const bootstrapNodes = toBootstrapConfig(
       parseBootstrapList(buildBuyerBootstrapEntries(config.network?.bootstrapNodes)),
     )
-    node = new AntseedNode({ role: 'buyer', bootstrapNodes, allowPrivateIPs: true, dataDir })
+    node = new AntseedNode({ role: 'buyer', bootstrapNodes, allowPrivateIPs: true, dataDir, autoReconcileBuyerChannels: false })
     await node.start()
     node.on('sweep:receipt', (event: AttributedSweepReceipt) => {
       if (supersedesSweepReceipt(latestReceipt, event)) latestReceipt = event

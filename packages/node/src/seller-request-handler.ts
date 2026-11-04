@@ -1,6 +1,7 @@
 import type { PeerAnnouncer } from './discovery/announcer.js';
 import type {
   Provider,
+  ProviderRequestRefusal,
   ProviderStreamCallbacks,
 } from './interfaces/seller-provider.js';
 import { ANTSEED_ATTEST_PATH, type Prover } from './interfaces/plugin.js';
@@ -381,6 +382,20 @@ export class SellerRequestHandler {
         return;
       }
 
+      // A request the provider refuses anyway is answered before any payment step.
+      let refusal: ProviderRequestRefusal | null;
+      try {
+        refusal = provider.checkRequest?.(request) ?? null;
+      } catch (err) {
+        debugWarn(`[SellerHandler] Provider request check failed: ${err instanceof Error ? err.message : err}`);
+        this._sendJsonError(mux, request.requestId, 500, 'request_check_failed', 'Seller could not check the request');
+        return;
+      }
+      if (refusal) {
+        this._sendJsonError(mux, request.requestId, refusal.statusCode, refusal.code, refusal.message);
+        return;
+      }
+
       const requestPricing = this.resolveProviderPricing(provider, request);
       let requestBilling: SellerBillingContext | null;
       let unitBillingModel: UnitBillingModelV1 | undefined;
@@ -709,8 +724,8 @@ export class SellerRequestHandler {
             // A top-up mining in the background may lift the ceiling: wait for
             // it (bounded) rather than close a channel that is being extended.
             let topUpLanded = true;
-            if (spm.isTopUpRunning(session.sessionId)) {
-              topUpLanded = await spm.waitForTopUp(session.sessionId, TOP_UP_WAIT_MS);
+            if (spm.isTopUpRunning(session.sessionId) || spm.isTopUpPendingFor(session.sessionId, spent)) {
+              topUpLanded = await spm.waitForTopUp(session.sessionId, TOP_UP_WAIT_MS, spent);
             }
             reserveMax = await spm.refreshReserveMaxFromChain(session.sessionId);
             // The channel may have closed during the read: never admit work

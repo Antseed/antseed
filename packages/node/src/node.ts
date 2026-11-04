@@ -362,6 +362,13 @@ export interface NodeConfig {
   dhtOperationTimeoutMs?: number;
   /** Optional seller-side payment runtime wiring. */
   payments?: NodePaymentsConfig;
+  /**
+   * Buyer only: run the channel reconcile pass on its own (at start, when the
+   * chain RPC recovers, when a buyer identity is added, and every 5 minutes).
+   * Default true. Turn it off for a short-lived node that only looks peers up:
+   * it shares the data dir, and so the channel store, of the buyer that owns it.
+   */
+  autoReconcileBuyerChannels?: boolean;
   /** Optional per-address request limit for zero-priced seller services. */
   freeTier?: SellerFreeTierConfig;
   /**
@@ -464,6 +471,8 @@ const SWEEP_OUTCOME_WATCH_MS = 5 * 60_000;
 /** Don't offer a sweep whose authorization expires too soon to safely land —
  *  mirrors MIN_REMAINING_VALIDITY_SECS in the seller-side relayer. */
 const MIN_SWEEP_DISPATCH_VALIDITY_SECS = 30;
+/** How often a running buyer re-checks its stored channels against the chain. */
+const BUYER_CHANNEL_RECONCILE_INTERVAL_MS = 5 * 60_000;
 
 /** Verdict on one seller-signed response receipt, emitted as `response-auth`. */
 export interface ResponseAuthEvent {
@@ -546,6 +555,10 @@ export class AntseedNode extends EventEmitter {
   private _verificationSampler: VerificationSampler | null = null;
   /** Periodic timeout checker interval. */
   private _timeoutCheckerInterval: ReturnType<typeof setInterval> | null = null;
+  private _buyerReconcileTimer: ReturnType<typeof setInterval> | null = null;
+  private readonly _buyerReconcileRuns = new Set<Promise<void>>();
+  /** Set while stop() runs, so no trigger starts a reconcile pass after the drain. */
+  private _stopping = false;
   /** Block cursor for CloseRequested event polling. */
   private _closeRequestedFromBlock: number = 0;
   /** Seller session lifecycle tracking (metering, settlement). */
@@ -732,6 +745,7 @@ export class AntseedNode extends EventEmitter {
     if (this._started) {
       throw new Error("Node already started");
     }
+    this._stopping = false;
 
     const dataDir = this._config.dataDir ?? join(homedir(), ".antseed");
 
@@ -774,6 +788,14 @@ export class AntseedNode extends EventEmitter {
       return;
     }
 
+    // Before the drain below: an RPC probe still in flight can report ready
+    // after it and would otherwise start a pass against the closing store.
+    this._stopping = true;
+    if (this._buyerReconcileTimer) {
+      clearInterval(this._buyerReconcileTimer);
+      this._buyerReconcileTimer = null;
+    }
+
     const extraIdentities = [...this._buyerIdentities.values()];
     this._buyerIdentities.clear();
     await Promise.all(extraIdentities.map((context) => context.stop().catch((err: unknown) => {
@@ -786,6 +808,10 @@ export class AntseedNode extends EventEmitter {
     if (this._buyerNegotiator) {
       await new Promise<void>((resolve) => setTimeout(resolve, 500));
       await this._buyerNegotiator.drainPendingNeedAuth();
+    }
+    // A reconcile run writes the channel store, which is closed below.
+    while (this._buyerReconcileRuns.size > 0) {
+      await Promise.all([...this._buyerReconcileRuns]);
     }
 
     // End all active buyer payment sessions before shutdown
@@ -1709,6 +1735,37 @@ export class AntseedNode extends EventEmitter {
     };
   }
 
+  /**
+   * Bring every buyer identity's stored channels in line with the chain:
+   * retire each row the chain shows settled, withdrawn, or never opened. Runs
+   * on its own at buyer start, whenever the chain RPC becomes reachable, when
+   * an identity is added, and every 5 minutes, unless
+   * `autoReconcileBuyerChannels` is false. stop() waits for runs in flight;
+   * once it has begun, this starts none.
+   */
+  reconcileBuyerChannels(): Promise<void> {
+    if (this._stopping) return Promise.resolve();
+    const run = this._reconcileBuyerChannels();
+    this._buyerReconcileRuns.add(run);
+    void run.then(() => this._buyerReconcileRuns.delete(run));
+    return run;
+  }
+
+  private async _reconcileBuyerChannels(): Promise<void> {
+    const negotiators = [this._buyerNegotiator, ...[...this._buyerIdentities.values()].map((context) => context.negotiator)];
+    for (const negotiator of negotiators) {
+      if (!negotiator) continue;
+      try {
+        const { retired, unchecked, readError } = await negotiator.reconcileChannelsWithChain();
+        if (retired.length > 0 || unchecked > 0) {
+          debugLog(`[Node] Buyer channels reconciled with the chain: retired=${retired.length} unchecked=${unchecked}${readError ? ` (${readError})` : ''}`);
+        }
+      } catch (err) {
+        debugWarn(`[Node] Buyer channel reconcile failed: ${err instanceof Error ? err.message : err}`);
+      }
+    }
+  }
+
   async sendRequest(
     peer: PeerInfo,
     req: SerializedHttpRequest,
@@ -1820,6 +1877,7 @@ export class AntseedNode extends EventEmitter {
       emit: (event, payload) => { this.emit(event, payload); },
     });
     this._buyerIdentities.set(name, context);
+    if (this._config.autoReconcileBuyerChannels !== false) void this.reconcileBuyerChannels();
     debugLog(`[Node] Buyer identity "${name}" loaded (wallet=${identity.wallet.address.slice(0, 10)}...)`);
     return { name, address: identity.wallet.address };
   }
@@ -2297,6 +2355,14 @@ export class AntseedNode extends EventEmitter {
         freeTierDelegationsHeader: () => this._freeTierDelegationsHeader(identity.wallet.address),
       },
     );
+
+    if (this._buyerNegotiator && this._config.autoReconcileBuyerChannels !== false) {
+      const reconcile = (): void => { void this.reconcileBuyerChannels(); };
+      this._rpcHealth?.onReady(reconcile);
+      reconcile();
+      this._buyerReconcileTimer = setInterval(reconcile, BUYER_CHANNEL_RECONCILE_INTERVAL_MS);
+      this._buyerReconcileTimer.unref?.();
+    }
 
     debugLog(`[Node] Buyer ready — DHT running on port ${this._dht!.getPort()}`);
   }
