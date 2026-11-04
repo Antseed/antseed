@@ -709,8 +709,8 @@ export class SellerRequestHandler {
             // A top-up mining in the background may lift the ceiling: wait for
             // it (bounded) rather than close a channel that is being extended.
             let topUpLanded = true;
-            if (spm.isTopUpRunning(session.sessionId)) {
-              topUpLanded = await spm.waitForTopUp(session.sessionId, TOP_UP_WAIT_MS);
+            if (spm.isTopUpRunning(session.sessionId) || spm.isTopUpPendingFor(session.sessionId, spent)) {
+              topUpLanded = await spm.waitForTopUp(session.sessionId, TOP_UP_WAIT_MS, spent);
             }
             reserveMax = await spm.refreshReserveMaxFromChain(session.sessionId);
             // The channel may have closed during the read: never admit work

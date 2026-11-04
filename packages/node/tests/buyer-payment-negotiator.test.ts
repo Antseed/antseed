@@ -49,6 +49,7 @@ function createMockBpm(): BuyerPaymentManager & Record<string, unknown> {
     setChannelDepositReader: vi.fn(),
     extendCurrentSpendingAuth: vi.fn().mockResolvedValue(undefined),
     getCumulativeAmount: vi.fn().mockReturnValue(0n),
+    getSellerAcceptedCumulative: vi.fn().mockReturnValue(0n),
     resendCurrentSpendingAuth: vi.fn().mockResolvedValue(undefined),
     resendReserveAuth: vi.fn().mockResolvedValue(undefined),
     resendPendingReserveAuth: vi.fn().mockResolvedValue(undefined),
@@ -464,6 +465,35 @@ describe('BuyerPaymentNegotiator', () => {
         expect(bpm.resendCurrentSpendingAuth).toHaveBeenCalledTimes(1);
         expect(bpm.retireSession).not.toHaveBeenCalledWith(peer.peerId, CHANNEL_STATUS.GHOST);
         expect(bpm.authorizeSpending).toHaveBeenCalled();
+        expect(result.action).toBe('retry');
+      });
+
+      it('retries a repeated target the seller has since reported accepting, instead of closing', async () => {
+        setSigned(5_600_000n);
+        await negotiator.handle402(make402Response(catchUp), peer, conn, makeRequest());
+        const close = closeConfirmed();
+        // This 402 waited behind other work: meanwhile a NeedAuth reported the
+        // seller accepting more than it asks for.
+        (bpm.getSellerAcceptedCumulative as ReturnType<typeof vi.fn>).mockReturnValue(5_590_000n);
+        vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 10_000);
+
+        const result = await negotiator.handle402(make402Response(catchUp), peer, conn, makeRequest());
+        vi.mocked(Date.now).mockRestore();
+
+        expect(close).not.toHaveBeenCalled();
+        expect(bpm.resendCurrentSpendingAuth).toHaveBeenCalledTimes(1);
+        expect(result.action).toBe('retry');
+      });
+
+      it('retries a target the seller has since reported accepting, even with more signed than the deposit', async () => {
+        // A top-up is on its way: the buyer signed past the on-chain deposit.
+        setSigned(6_500_000n);
+        const close = closeConfirmed();
+        (bpm.getSellerAcceptedCumulative as ReturnType<typeof vi.fn>).mockReturnValue(5_537_080n);
+
+        const result = await negotiator.handle402(make402Response(catchUp), peer, conn, makeRequest());
+
+        expect(close).not.toHaveBeenCalled();
         expect(result.action).toBe('retry');
       });
 

@@ -264,6 +264,9 @@ export class BuyerPaymentManager {
   /** sellerPeerId -> cumulative USDC amount in the latest SpendingAuth */
   private readonly _cumulativeAmount = new Map<string, bigint>();
 
+  /** sellerPeerId -> the highest cumulative the seller reported accepting on the active channel */
+  private readonly _sellerAccepted = new Map<string, { channelId: string; amount: bigint }>();
+
   /** sellerPeerId -> cumulative metadata for SpendingAuth */
   private readonly _metadata = new Map<string, SpendingAuthMetadata>();
 
@@ -528,6 +531,7 @@ export class BuyerPaymentManager {
   /** Clean up all in-memory state for a seller when the session ends. */
   cleanupSession(sellerPeerId: string): void {
     this._cumulativeAmount.delete(sellerPeerId);
+    this._sellerAccepted.delete(sellerPeerId);
     this._metadata.delete(sellerPeerId);
     this._verifiedCost.delete(sellerPeerId);
     this._sessionPricing.delete(sellerPeerId);
@@ -1806,6 +1810,7 @@ export class BuyerPaymentManager {
       debugWarn(`[BuyerPayment] NeedAuth for unknown channel ${payload.channelId.slice(0, 18)}... — ignoring`);
       return false;
     }
+    if (payload.currentAcceptedCumulative != null) this._recordSellerAccepted(sellerPeerId, session.sessionId, BigInt(payload.currentAcceptedCumulative));
 
     if (this.isRequestCovered(sellerPeerId, payload.requestId)) {
       debugWarn(
@@ -2470,6 +2475,18 @@ export class BuyerPaymentManager {
   /** Current cumulative signed amount for a seller. */
   getCumulativeAmount(sellerPeerId: string): bigint {
     return this._cumulativeAmount.get(sellerPeerId) ?? 0n;
+  }
+
+  /** The highest cumulative the seller has reported accepting on the active channel (0 if none yet). */
+  getSellerAcceptedCumulative(sellerPeerId: string): bigint {
+    const accepted = this._sellerAccepted.get(sellerPeerId);
+    return accepted && accepted.channelId === this.getActiveSession(sellerPeerId)?.sessionId ? accepted.amount : 0n;
+  }
+
+  private _recordSellerAccepted(sellerPeerId: string, channelId: string, amount: bigint): void {
+    const known = this._sellerAccepted.get(sellerPeerId);
+    if (known?.channelId === channelId && known.amount >= amount) return;
+    this._sellerAccepted.set(sellerPeerId, { channelId, amount });
   }
 
   /** Live cumulative token counts for a seller (in-memory, always up-to-date). */
