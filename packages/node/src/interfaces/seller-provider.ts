@@ -101,6 +101,12 @@ export interface Provider {
   /** Optional startup hook — validate credentials, warm caches, etc. */
   init?(): Promise<void>;
 
+  /**
+   * Optional shutdown hook: release what init() opened (listeners, files).
+   * AntseedNode.stop() calls it for every registered provider.
+   */
+  stop?(): Promise<void>;
+
   /** Return current and maximum concurrent request counts */
   getCapacity(): { current: number; max: number };
 

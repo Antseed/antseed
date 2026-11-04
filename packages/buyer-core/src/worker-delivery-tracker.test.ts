@@ -140,4 +140,51 @@ describe('WorkerDeliveryTracker', () => {
     // Another seller is unaffected.
     expect(() => tracker.recordAttribution(OTHER, 'one-more', W1)).not.toThrow();
   });
+
+  it('never evicts a verified request whose counted cost is not fully signed', () => {
+    const owed = new Set<string>(['capped']);
+    const tracker = new WorkerDeliveryTracker((id) => owed.has(id));
+    tracker.recordAttribution(SELLER, 'capped', W1);
+    tracker.recordDelivery('capped', usage, W1);
+    tracker.recordAttribution(SELLER, 'paid', W1);
+    tracker.recordDelivery('paid', usage, W1);
+    // Fill well past the cache: the owed record stays, the paid one is retired as completed.
+    for (let i = 0; i < 1_000; i++) tracker.recordAttribution(SELLER, `n${i}`, W1);
+    expect(tracker.isCompleted(SELLER, 'paid')).toBe(true);
+    expect(tracker.isCompleted(SELLER, 'capped')).toBe(false);
+    expect(tracker.verifiedWorker('capped', SELLER)).toBe(W1.toLowerCase());
+    expect(tracker.get('capped')?.usage).toEqual(usage);
+    // Once paid in full it is evictable like any verified record.
+    owed.delete('capped');
+    tracker.recordAttribution(SELLER, 'after', W1);
+    expect(tracker.isCompleted(SELLER, 'capped')).toBe(true);
+  });
+
+  it('does not let owed records take cache room from other requests', () => {
+    const owed = new Set<string>();
+    const tracker = new WorkerDeliveryTracker((id) => owed.has(id));
+    for (let i = 0; i < 600; i++) {
+      tracker.recordAttribution(SELLER, `o${i}`, W1);
+      tracker.recordDelivery(`o${i}`, usage, W1);
+      owed.add(`o${i}`);
+    }
+    // 600 owed records plus a full cache of pending ones: the pending ones evict each other, not the owed.
+    for (let i = 0; i < 512; i++) tracker.recordAttribution(OTHER, `p${i}`, W1);
+    tracker.recordAttribution(OTHER, 'p-next', W1);
+    expect(tracker.isForgotten(OTHER, 'p0')).toBe(true);
+    expect(tracker.get('p1')?.state).toBe('pending');
+    for (let i = 0; i < 600; i++) expect(tracker.get(`o${i}`)?.state).toBe('verified');
+  });
+
+  it('refuses new worker requests to a seller with too many partly paid requests, not to others', () => {
+    const tracker = new WorkerDeliveryTracker(() => true);
+    for (let i = 0; i < 4_096; i++) {
+      tracker.recordAttribution(SELLER, `o${i}`, W1);
+      tracker.recordDelivery(`o${i}`, usage, W1);
+    }
+    expect(() => tracker.recordAttribution(SELLER, 'one-more', W1)).toThrow(/Too many partly paid colony-pool requests/);
+    expect(() => tracker.recordAttribution(OTHER, 'one-more', W1)).not.toThrow();
+    // None was retired to make room.
+    expect(tracker.get('o0')?.state).toBe('verified');
+  });
 });

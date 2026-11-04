@@ -156,6 +156,8 @@ interface InFlight {
   release: () => void;
   startedAt: number;
   firstByteAt: number | null;
+  /** The answer is an SSE stream, so its delivery time is its generation time. */
+  streamed: boolean;
   /** The caller's request ID; worker frames use a pool-owned dispatch ID, since buyers' IDs can collide. */
   requestId: string;
 }
@@ -164,6 +166,11 @@ export interface RequestTiming {
   startedAt: number;
   firstByteAt: number | null;
   endedAt: number;
+  /**
+   * Streamed answer. A buffered one arrives in one burst after the worker has
+   * generated all of it, so first byte to end says nothing about decode speed.
+   */
+  streamed: boolean;
 }
 
 interface ConnectedWorker {
@@ -224,6 +231,9 @@ export interface WorkerSummary {
   priority: number;
 }
 
+/** How long stop() waits for connections to finish their close handshake. */
+const STOP_GRACE_MS = 1_000;
+
 /**
  * Accepts worker connections, verifies them, and routes requests to the
  * best-ranked worker that serves the requested service (ranking.ts).
@@ -252,6 +262,9 @@ export class ColonyPool {
     });
     const wss = new WebSocketServer({ server, maxPayload: MAX_FRAME_BYTES });
     wss.on('connection', (ws) => this.accept(ws));
+    // The server's errors (a taken port) reach the listen below; without this
+    // handler their re-emit on `wss` would throw before it can reject.
+    wss.on('error', () => {});
     this.server = server;
     this.wss = wss;
     await new Promise<void>((resolve, reject) => {
@@ -279,10 +292,22 @@ export class ColonyPool {
 
   async stop(): Promise<void> {
     if (this.pingTimer) clearInterval(this.pingTimer);
+    this.pingTimer = null;
     await this.opts.deviceAttestor?.stop?.();
-    for (const worker of [...this.workers.values()]) worker.ws.close(1001, 'pool stopping');
-    await new Promise<void>((resolve) => (this.wss ? this.wss.close(() => resolve()) : resolve()));
-    await new Promise<void>((resolve) => (this.server ? this.server.close(() => resolve()) : resolve()));
+    const wss = this.wss;
+    // Every connection, including ones that never finished joining: the
+    // server only reports closed once they are all gone.
+    for (const client of wss?.clients ?? []) client.close(1001, 'pool stopping');
+    const closed = new Promise<void>((resolve) => (wss ? wss.close(() => resolve()) : resolve()));
+    const grace = setTimeout(() => { for (const client of wss?.clients ?? []) client.terminate(); }, STOP_GRACE_MS);
+    await closed;
+    clearTimeout(grace);
+    const server = this.server;
+    this.server = null;
+    this.wss = null;
+    // Upgraded worker sockets would otherwise hold the port until their close handshake ends.
+    server?.closeAllConnections?.();
+    await new Promise<void>((resolve) => (server ? server.close(() => resolve()) : resolve()));
   }
 
   onChange(listener: () => void): void {
@@ -577,6 +602,7 @@ export class ColonyPool {
       release: () => signal?.removeEventListener('abort', onAbort),
       startedAt: Date.now(),
       firstByteAt: null,
+      streamed: false,
       requestId: req.requestId,
     };
     // The worker must pick the request up quickly, then start answering in time.
@@ -903,6 +929,8 @@ export class ColonyPool {
         entry.started = true;
         entry.accepted = true;
         entry.firstByteAt = Date.now();
+        entry.streamed = Object.entries(frame.headers ?? {})
+          .some(([name, value]) => name.toLowerCase() === 'content-type' && String(value).includes('text/event-stream'));
         entry.touch();
         entry.handlers.onStart(frame.status, frame.headers);
         return;
@@ -929,7 +957,7 @@ export class ColonyPool {
         this.finish(worker.inflight, frame.id);
         this.recordDispatch(worker, entry, true);
         // Paid requests are charged right after they end; free ones never read this.
-        const timing = { startedAt: entry.startedAt, firstByteAt: entry.firstByteAt, endedAt: Date.now() };
+        const timing = { startedAt: entry.startedAt, firstByteAt: entry.firstByteAt, endedAt: Date.now(), streamed: entry.streamed };
         worker.finished.set(frame.id, timing);
         setTimeout(() => { if (worker.finished.get(frame.id) === timing) worker.finished.delete(frame.id); }, 60_000).unref();
         entry.handlers.onEnd();

@@ -272,8 +272,9 @@ goes silent midway, or exceeds its byte limit, lowers its reliability without
 benching it. A worker's error counts against it only after it sent
 `accepted` (its model failed or timed out); refusals before that (channel,
 binding, capacity, check limits) never do, so buyers can't lower a Mac's rank
-with bad requests. Ranks, including each worker's smoothed decode speed,
-survive reconnects and pool restarts (the ledger keeps them
+with bad requests. Ranks, including each worker's smoothed decode speed (learned only
+from streamed answers: a buffered answer arrives in one burst after
+generation, so it adds no speed sample), survive reconnects and pool restarts (the ledger keeps them
 in `worker_rank`, and each outcome in `dispatches` for 30 days), so a flaky
 Mac can't reset its record by reconnecting.
 
@@ -321,7 +322,11 @@ is refused, so a pool can't turn a failed worker answer into an ordinary
 claim. Requests to the same seller's ordinary providers are tracked and paid
 as usual. A pool seller's own headroom prompts never reopen the buyer's
 overdraft window; beyond the one prepaid request, it is paid only for answers
-whose worker seal verified.
+whose worker seal verified. A worker request whose answer verified but whose
+cost was only partly signed (capped at the reserve ceiling) is kept, with its
+worker and sealed usage, until the remainder is signed; past 4,096 such
+requests to one seller the buyer sends that seller no more worker requests
+until its reserve grows.
 
 A request routed to a colony-pool provider is encrypted to its workers or not
 sent at all: a client without worker encryption, such as the web SDK, fails

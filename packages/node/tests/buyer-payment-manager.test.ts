@@ -1985,6 +1985,48 @@ describe('BuyerPaymentManager', () => {
     expect(decodeWorkerTail(payload.metadata)).toEqual([{ worker, cumulativeAmount: 50_000n }]);
   });
 
+  it('keeps a ceiling-capped worker request through cache eviction until its remainder is signed', async () => {
+    store.close();
+    store = new ChannelStore(tempDir);
+    manager = new BuyerPaymentManager(
+      identity,
+      makeConfig(tempDir, { maxReserveAmountUsdc: 100_000n, maxPerRequestUsdc: 100_000n }),
+      store,
+    );
+    manager.setSigner(Wallet.createRandom());
+    const worker = '0x1000000000000000000000000000000000000001';
+    const other = '0x2000000000000000000000000000000000000002';
+    const sellerPeerId = fakePeerId('seller-pool-capped-evicted');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 100_000n);
+    manager.handleAuthAck(sellerPeerId, { channelId });
+
+    await manager.handleNeedAuth(sellerPeerId, {
+      channelId, requestId: 'chat-1', requiredCumulativeAmount: '60000', currentAcceptedCumulative: '0',
+      deposit: '1000000', lastRequestCost: '60000',
+    }, mux);
+    manager.recordWorkerAttribution(sellerPeerId, 'chat-2', worker);
+    manager.recordWorkerDelivery('chat-2', { inputTokens: 1000n, cachedInputTokens: 0n, outputTokens: 400n });
+    // 50_000, of which NeedAuth signs 40_000 up to the ceiling.
+    await manager.handleNeedAuth(sellerPeerId, {
+      channelId, requestId: 'chat-2', requiredCumulativeAmount: '110000', currentAcceptedCumulative: '60000',
+      deposit: '1000000', lastRequestCost: '50000',
+    }, mux);
+    expect(manager.getCumulativeAmount(sellerPeerId)).toBe(100_000n);
+
+    // Many newer worker requests (more than the delivery cache holds) arrive before the remainder is signed.
+    for (let i = 0; i < 600; i++) {
+      manager.recordWorkerAttribution(sellerPeerId, `later-${i}`, other);
+      manager.recordWorkerDelivery(`later-${i}`, i % 2 === 0 ? { inputTokens: 1n, cachedInputTokens: 0n, outputTokens: 1n } : null);
+    }
+
+    // The reserve grows: the 10_000 left is signed and still credited to chat-2's worker.
+    const { payload } = await manager.signPerRequestAuth(sellerPeerId, {
+      requestId: 'chat-2', inputBytes: new Uint8Array(), outputBytes: new Uint8Array(), sellerClaimedCost: 50_000n,
+    });
+    expect(BigInt(payload.cumulativeAmount)).toBe(110_000n);
+    expect(decodeWorkerTail(payload.metadata)).toEqual([{ worker, cumulativeAmount: 50_000n }]);
+  });
+
   it('attributes the remainder NeedAuth signs after a capped post-response auth to the worker', async () => {
     store.close();
     store = new ChannelStore(tempDir);

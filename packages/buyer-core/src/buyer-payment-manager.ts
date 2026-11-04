@@ -346,7 +346,10 @@ export class BuyerPaymentManager {
    *  without trusting the seller's claim of which service was used. */
   private readonly _requestService = new RequestServiceTracker();
   /** Colony-pool requests and their worker deliveries, for the node's lifetime (see WorkerDeliveryTracker). */
-  private readonly _workerDeliveries = new WorkerDeliveryTracker();
+  // A verified worker request is kept until its counted cost is fully signed (not evicted as completed).
+  private readonly _workerDeliveries: WorkerDeliveryTracker = new WorkerDeliveryTracker(
+    (requestId: string): boolean => this._serviceTokensCounted.has(requestId) && this._serviceTokensCounted.unpaid(requestId) > 0n,
+  );
   /**
    * requestId -> trusted buyer-owned billing identity, request facts, and mode.
    *
@@ -1045,7 +1048,11 @@ export class BuyerPaymentManager {
    * response first records its requestId here so the other path does not
    * duplicate its service amount, token totals, or request count.
    */
-  private readonly _serviceTokensCounted = new CountedRequestTracker();
+  // A live worker request's remainder is never trimmed while its delivery record exists.
+  private readonly _serviceTokensCounted: CountedRequestTracker = new CountedRequestTracker(
+    undefined,
+    (requestId: string): boolean => this._workerDeliveries.get(requestId) !== undefined,
+  );
 
   private _spendListener: BuyerSpendListener | null = null;
 

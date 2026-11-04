@@ -141,7 +141,9 @@ export class ColonyPoolProvider implements Provider {
     this.servedBy.delete(charge.request);
     const { worker, dispatchId } = served;
     const timing = this.pool.takeTiming(worker, dispatchId);
-    const streamMs = timing?.firstByteAt ? Math.max(1, timing.endedAt - timing.firstByteAt) : undefined;
+    // Only a streamed answer's first byte to end is its decode time; a buffered
+    // one arrives in one burst after generation and would read as instant.
+    const streamMs = timing?.streamed && timing.firstByteAt ? Math.max(1, timing.endedAt - timing.firstByteAt) : undefined;
     this.ledger.recordEarning({
       requestId: dispatchId,
       worker,

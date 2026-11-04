@@ -499,6 +499,12 @@ export interface ResponseAuthEvent {
   verificationError: string | null;
 }
 
+/** `capabilities` without repeats and without any already in `present`, in first-seen order. */
+function uniqueCapabilities(capabilities: readonly string[], present: readonly string[] = []): string[] {
+  const seen = new Set(present);
+  return capabilities.filter((capability) => !seen.has(capability) && (seen.add(capability), true));
+}
+
 export class AntseedNode extends EventEmitter {
   private _config: NodeConfig;
   private _identity: Identity | null = null;
@@ -882,6 +888,11 @@ export class AntseedNode extends EventEmitter {
       this._connectionManager.closeAll();
       this._connectionManager = null;
     }
+
+    // Providers last among the seller's parts: no request can reach them now.
+    await Promise.all(this._providers.map((provider) => provider.stop?.().catch((err: unknown) => {
+      debugWarn(`[Node] Failed to stop provider "${provider.name}": ${err instanceof Error ? err.message : err}`);
+    })));
 
     // Stop DHT
     if (this._dht) {
@@ -2182,13 +2193,16 @@ export class AntseedNode extends EventEmitter {
 
     // Set up announcer for providers
     if (this._providers.length > 0) {
-      const baseCapabilities = [
+      // One set: providers (two colony pools, say) can contribute the same
+      // capability, and metadata with a duplicate fails validation.
+      const builtin = builtinPeerCapabilities(this._depositRelayer !== null);
+      const baseCapabilities = uniqueCapabilities([
         ...(this._connectionManager.supportsWebRtc ? [CONNECTION_CAPABILITY_WEBRTC_V1] : []),
         ...(this._config.capabilities ?? []),
         ...this._providers.flatMap((provider) => provider.peerCapabilities ?? []),
-      ];
-      const usedCapabilities = builtinPeerCapabilities(this._depositRelayer !== null).length + baseCapabilities.length;
-      const extraCapabilities = [...baseCapabilities, ...this._freeTierCapabilities(usedCapabilities)];
+      ], builtin);
+      const usedCapabilities = builtin.length + baseCapabilities.length;
+      const extraCapabilities = uniqueCapabilities([...baseCapabilities, ...this._freeTierCapabilities(usedCapabilities)], builtin);
       const announcerConfig: AnnouncerConfig = {
         identity,
         dht: this._dht,

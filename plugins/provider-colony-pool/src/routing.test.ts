@@ -96,7 +96,11 @@ describe('worker ranking', () => {
   });
 });
 
-type Behavior = 'answer' | 'hang' | 'accept-then-hang' | 'refuse' | 'accept-then-fail' | { acceptThenAnswerAfterMs: number };
+type Behavior =
+  | 'answer' | 'hang' | 'accept-then-hang' | 'refuse' | 'accept-then-fail'
+  | { acceptThenAnswerAfterMs: number }
+  /** Streams `chunks` SSE events `gapMs` apart. */
+  | { streamChunks: number; gapMs: number };
 
 /** A worker on the wire, scripted per request. */
 class ScriptedWorker {
@@ -151,6 +155,15 @@ class ScriptedWorker {
     // A refusal (bad channel, binding, capacity) comes before `accepted`; a model failure after it.
     if (behavior === 'refuse') return send({ t: 'response-error', id, message: 'Request channel does not belong to a buyer of this pool' });
     send({ t: 'accepted', id });
+    if (typeof behavior === 'object' && 'streamChunks' in behavior) {
+      send({ t: 'response-start', id, status: 200, headers: { 'content-type': 'text/event-stream' } });
+      for (let i = 0; i < behavior.streamChunks; i++) {
+        await sleep(behavior.gapMs);
+        send({ t: 'response-chunk', id, data: encodeBody(new TextEncoder().encode(`data: {"seq":${i}}\n\n`)) });
+      }
+      send({ t: 'response-end', id });
+      return;
+    }
     if (behavior === 'accept-then-hang') return;
     if (behavior === 'accept-then-fail') return send({ t: 'response-error', id, message: 'Local model timed out' });
     await sleep(behavior.acceptThenAnswerAfterMs);
@@ -305,6 +318,26 @@ describe('routing, failover and ranking in the pool', () => {
     await waitFor(() => pool.workerSummaries().length === 0);
     const back = await connect('answer', wallet);
     expect(summary(back).tokensPerSecond).toBeCloseTo(80.2);
+  });
+
+  it('measures decode speed only on streamed answers, so a buffered one cannot read as instant', async () => {
+    await setup({ firstByteTimeoutMs: 5_000 });
+    // Generates for 400 ms, then sends the whole answer in one burst (as both workers do without `stream`).
+    const buffered = await connect({ acceptThenAnswerAfterMs: 400 });
+    // Streams the same 100 tokens over about 200 ms: 500 tok/s.
+    const streaming = await connect({ streamChunks: 4, gapMs: 50 });
+    const charge = async (worker: ScriptedWorker) => {
+      const request = await requestFor(worker);
+      expect((await provider.handleRequest(request)).statusCode).toBe(200);
+      provider.onRequestCharged({ requestId: 'req-1', request, service: SERVICE, costUsdc: 1000n, inputTokens: 10, outputTokens: 100, freshInputTokens: 10, cachedInputTokens: 0 });
+    };
+    await charge(buffered);
+    await charge(streaming);
+    // Before, the buffered answer's ~1 ms delivery read as ~100,000 tok/s and won every assignment.
+    expect(summary(buffered).tokensPerSecond).toBe(0);
+    expect(summary(streaming).tokensPerSecond).toBeGreaterThan(100);
+    expect(summary(streaming).tokensPerSecond).toBeLessThan(1_000);
+    expect(ledger.loadRank(buffered.address)?.tokensPerSecond ?? 0).toBe(0);
   });
 
   it('never routes to a worker the operator weights 0, and favors one weighted higher', async () => {

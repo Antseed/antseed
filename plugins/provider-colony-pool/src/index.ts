@@ -152,12 +152,21 @@ const plugin: AntseedProviderPlugin = {
       serviceApiProtocols,
       ...(serviceCapabilities ? { serviceCapabilities } : {}),
     });
+    let stopped: Promise<void> | null = null;
+    // Pool (and with it the MDM webhook) before the ledger it writes to.
+    const stop = (): Promise<void> => (stopped ??= pool.stop().finally(() => ledger.close()));
     return Object.assign(provider, {
       async init(): Promise<void> {
-        await deviceAttestor?.start();
-        const boundPort = await pool.start();
-        console.log(`[colony-pool] accepting workers on port ${boundPort}`);
+        try {
+          await deviceAttestor?.start();
+          const boundPort = await pool.start();
+          console.log(`[colony-pool] accepting workers on port ${boundPort}`);
+        } catch (err) {
+          await stop().catch(() => {});
+          throw err;
+        }
       },
+      stop,
     });
   },
 };

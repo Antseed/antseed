@@ -15,6 +15,13 @@ const MAX_FORGOTTEN_WORKER_REQUESTS = 16_384;
  * out; they never count toward MAX_FORGOTTEN_WORKER_REQUESTS.
  */
 const MAX_COMPLETED_WORKER_REQUESTS = 16_384;
+/**
+ * Worker requests per seller that verified and were counted but are not yet
+ * fully signed (a NeedAuth or post-response signing capped at the reserve
+ * ceiling). They are never evicted: the remainder is still owed to their
+ * worker. Past this many the buyer stops sending that seller worker requests.
+ */
+const MAX_OWED_WORKER_REQUESTS = 4_096;
 /** Per pool seller: its other (non-worker) requests a NeedAuth may name, oldest dropped first. */
 const MAX_POOL_SELLER_REQUESTS = 16_384;
 
@@ -55,6 +62,19 @@ export class WorkerDeliveryTracker {
   /** pool seller -> requests the buyer sent it that went to an ordinary provider (not encrypted to a worker). */
   private readonly _poolSellerRequests = new Map<string, Set<string>>();
 
+  /**
+   * `owes(requestId)` tells whether a counted request still has part of its
+   * cost unsigned (the payment manager's accounting). Such a verified record
+   * stays until it is paid in full: evicting it as completed would refuse
+   * the remainder and lose its worker's attribution.
+   */
+  constructor(private readonly _owes: (requestId: string) => boolean = () => false) {}
+
+  /** A verified answer whose counted cost is not yet fully signed. */
+  private _owed(requestId: string, delivery: WorkerDelivery): boolean {
+    return delivery.state === 'verified' && this._owes(requestId);
+  }
+
   get(requestId: string): WorkerDelivery | undefined {
     return this._deliveries.get(requestId);
   }
@@ -85,9 +105,23 @@ export class WorkerDeliveryTracker {
         'buyer-session-state',
       );
     }
+    let owed = 0;
+    let sellerOwed = 0;
+    for (const [id, record] of this._deliveries) {
+      if (!this._owed(id, record)) continue;
+      owed += 1;
+      if (record.sellerPeerId === sellerPeerId) sellerOwed += 1;
+    }
+    if (sellerOwed >= MAX_OWED_WORKER_REQUESTS) {
+      throw buyerFault(
+        `[BuyerPayment] Too many partly paid colony-pool requests to ${sellerPeerId.slice(0, 12)}...; refusing further worker requests to it until the reserve grows`,
+        'buyer-session-state',
+      );
+    }
     // The same request retried through another seller: the first seller's record is retired, not dropped.
     if (delivery) this.retire(requestId);
-    if (this._deliveries.size >= MAX_WORKER_DELIVERIES) this._evict();
+    // Owed records don't take cache room: they are bounded per seller above.
+    if (this._deliveries.size - owed >= MAX_WORKER_DELIVERIES) this._evict();
     // The buyer is sending this id again: the new record gates its payment from here on.
     this._forgotten.get(sellerPeerId)?.delete(requestId);
     this._completed.get(sellerPeerId)?.delete(requestId);
@@ -95,15 +129,19 @@ export class WorkerDeliveryTracker {
   }
 
   /**
-   * Make room by retiring the oldest verified record, else the oldest failed
-   * one, else the oldest pending one. Retiring never forgets it was a worker
-   * request (see retire).
+   * Make room by retiring the oldest verified record that owes nothing, else
+   * the oldest failed one, else the oldest pending one. A verified record
+   * whose counted cost is not fully signed is never evicted. Retiring never
+   * forgets it was a worker request (see retire).
    */
   private _evict(): void {
     let failed: string | undefined;
     let pending: string | undefined;
     for (const [requestId, delivery] of this._deliveries) {
-      if (delivery.state === 'verified') return this.retire(requestId);
+      if (delivery.state === 'verified') {
+        if (this._owed(requestId, delivery)) continue;
+        return this.retire(requestId);
+      }
       if (delivery.state === 'failed') failed ??= requestId;
       else pending ??= requestId;
     }
