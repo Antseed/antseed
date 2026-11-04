@@ -72,6 +72,15 @@ function ExampleOutput({label = 'Example output', snippet}: {label?: string; sni
 }
 
 function ConfigBlockRenderer({b}: {b: ConfigBlock}) {
+  return (
+    <div>
+      {b.title && <p className={styles.stepLabel}>{b.title}</p>}
+      <ConfigBlockBody b={b} />
+    </div>
+  );
+}
+
+function ConfigBlockBody({b}: {b: ConfigBlock}) {
   if (b.kind === 'env') {
     const lines = Object.entries(b.vars).map(([k, v]) => `export ${k}=${JSON.stringify(v)}`).join('\n');
     return (
@@ -133,7 +142,7 @@ function RunFirstBanner() {
   const [collapsed, setCollapsed] = useState(true);
 
   return (
-    <div className={`${styles.runFirst}${collapsed ? ' ' + styles.runFirstCollapsed : ''}`}>
+    <div id="run-first" className={`${styles.runFirst}${collapsed ? ' ' + styles.runFirstCollapsed : ''}`}>
       <header className={styles.runFirstHeader}>
         <div>
           <p className={styles.runFirstKicker}>
@@ -141,8 +150,9 @@ function RunFirstBanner() {
             Run Antseed first
           </p>
           <p className={styles.runFirstSub}>
-            Every integration assumes a buyer proxy at <code>http://localhost:8377</code>.
-            One-time setup, ~2 minutes.
+            Every integration needs an Antseed endpoint: a gateway, best on a small server
+            so every tool on every machine can reach it, or the local buyer proxy (same
+            computer only). One-time setup, a few minutes.
           </p>
         </div>
         <button
@@ -160,9 +170,20 @@ function RunFirstBanner() {
           <p className={styles.glossaryTitle}>The model in your head</p>
           <ul className={styles.glossaryList}>
             <li>
-              <strong>Buyer proxy</strong> - a small server on{' '}
-              <code>localhost:8377</code> that accepts API calls from your tools and
-              forwards them to the Antseed network. It speaks{' '}
+              <strong>Gateway</strong> - the API server you run with{' '}
+              <code>antseed gateway start</code> or the server installer, at{' '}
+              <code>/v1</code> on port 8379. It gives every tool its own API key with
+              budgets, routing policy and usage logs, and passes requests to a buyer.
+              Reach it locally, on your network, behind a{' '}
+              <Link to="/docs/tunnels">tunnel</Link>, or on a server. Tools send the
+              key as <code>Authorization: Bearer</code>.
+            </li>
+            <li>
+              <strong>Buyer proxy</strong> - the server on{' '}
+              <code>localhost:8377</code> that finds sellers and pays them, forwarding
+              your requests to the Antseed network. It only listens on localhost and
+              checks no key, so tools can call it directly only on the same computer;
+              everything else goes through a gateway. It speaks{' '}
               <em>all four LLM protocols</em> at once -{' '}
               <code>/v1/messages</code> (Anthropic),{' '}
               <code>/v1/chat/completions</code> (OpenAI Chat),{' '}
@@ -207,8 +228,8 @@ function RunFirstBanner() {
               chatbots, this is often the dominant cost line.
             </li>
             <li>
-              <strong>Pin</strong> - optionally telling your buyer proxy “route
-              requests to <em>this</em> peer.” Without a pin, the proxy
+              <strong>Pin</strong> - optionally telling Antseed “route
+              requests to <em>this</em> peer.” Without a pin, the buyer
               ranks eligible offers with the same Price + Trust preferences used
               by the desktop and can fail over on retryable peer failures. A
               recognized conversation softly prefers its previous successful
@@ -225,23 +246,43 @@ function RunFirstBanner() {
             <span className={styles.runFirstNum}>1</span>
             <div className={styles.runFirstBody}>
               <p className={styles.runFirstStepTitle}>
-                Install the CLI and start the buyer proxy.
+                Run a gateway, ideally on a small server (VPS).
               </p>
               <p className={styles.runFirstHint}>
-                <strong>Recommended:</strong> the <Link to="/install">AI VPN desktop app</Link>{' '}
-                wraps everything below in one app — its <strong>Apps</strong> view
-                launches tools like this one pre-wired to the proxy and saves its
-                Price + Trust preferences into the buyer config used by every client.
-                The CLI flow below is for headless machines and scripts:
+                <strong>Recommended: a gateway on a server.</strong> One command on any
+                Linux VPS with systemd installs the buyer and the gateway, serves them over
+                HTTPS on your domain and keeps them running. Every tool, on any machine,
+                then uses the same URL with its own API key, and keeps working when your
+                laptop sleeps. See <Link to="/docs/gateway/server">Run a gateway on a server</Link>.
               </p>
               <CodeBlock
-                snippet={`# 1. Install\nnpm install -g @antseed/cli\n\n# 2. Start the proxy on http://localhost:8377\n#    First start creates your buyer wallet key at ~/.antseed/identity.key\nantseed buyer start`}
+                snippet={`# On the server (DNS for the domain points at it, ports 80 and 443 open)\ncurl -fsSL https://antseed.com/install.sh | bash -s -- --domain gateway.example.com\n\n# Then, wherever your tool runs:\nexport ANTSEED_BASE_URL="https://gateway.example.com/v1"\nexport ANTSEED_API_KEY="antseed_…"   # printed by the installer, or from the console's Keys page`}
               />
               <p className={styles.runFirstHint}>
-                Back up <code>~/.antseed/identity.key</code> - it is your buyer wallet key, and
-                losing it means losing access to whatever USDC you've deposited under that
-                buyer address. Keep the proxy running in the background (the desktop app, or a
-                launchd/systemd service) rather than in a terminal you'll close.
+                <strong>Just trying it out?</strong> Run the gateway on your own computer
+                with <code>curl -fsSL https://antseed.com/install.sh | bash</code> and use{' '}
+                <code>http://localhost:8379/v1</code>. Its keys only work while the computer
+                is on, and other machines can't reach it unless you publish it with a{' '}
+                <Link to="/docs/tunnels">tunnel</Link> (<code>antseed tunnel start</code>,
+                or <strong>Agents → Internet-accessible endpoint</strong> in the{' '}
+                <Link to="/install">desktop app</Link>) or, on a network you trust, start it
+                with <code>--host 0.0.0.0</code>. You can{' '}
+                <Link to="/docs/gateway/migrate">move it to a server</Link> later with its
+                keys and wallets. See the <Link to="/docs/quickstart">quickstart</Link>.
+              </p>
+              <p className={styles.runFirstHint}>
+                <strong>Same computer, no gateway.</strong> The desktop app runs the buyer
+                proxy for you, and its <strong>Apps</strong> view launches tools pre-wired
+                to it. Headless:
+              </p>
+              <CodeBlock
+                snippet={`npm install -g @antseed/cli\nantseed buyer start   # http://localhost:8377/v1, no key needed`}
+              />
+              <p className={styles.runFirstHint}>
+                The buyer proxy only listens on localhost and spends from your deposit
+                without checking a key. Never publish port 8377 (port forward,{' '}
+                <code>socat</code>, reverse proxy); put a gateway in front of it instead.
+                Back up <code>~/.antseed/identity.key</code>: it is the buyer wallet key.
               </p>
             </div>
           </li>
@@ -425,7 +466,7 @@ function RunFirstBanner() {
             <span className={styles.runFirstNum}>4</span>
             <div className={styles.runFirstBody}>
               <p className={styles.runFirstStepTitle}>
-                Verify the proxy sees your models — and optionally pick a seller.
+                Verify your endpoint sees the models — and optionally pick a seller.
               </p>
               <p className={styles.runFirstHint}>
                 <strong>No pin needed.</strong> A request that names only a model
@@ -436,7 +477,7 @@ function RunFirstBanner() {
                 aggregated across sellers:
               </p>
               <CodeBlock
-                snippet={`# Every model on the network (OpenAI-compatible, answered locally)\ncurl -s http://localhost:8377/v1/models | jq '.data[].id'`}
+                snippet={`# Every model on the network (free, no seller is called)\ncurl -s "$ANTSEED_BASE_URL/models" -H "Authorization: Bearer $ANTSEED_API_KEY" | jq '.data[].id'\n\n# Local buyer proxy: no key\ncurl -s http://localhost:8377/v1/models | jq '.data[].id'`}
               />
               <ExampleOutput
                 label="Example response"
@@ -450,8 +491,9 @@ function RunFirstBanner() {
               <p className={styles.runFirstHint}>
                 These are the values you can pass as <code>model</code> in your
                 tool's config (close aliases like <code>opus-5</code> for{' '}
-                <code>claude-opus-5</code> also resolve). A model no policy-allowed
-                peer serves returns <code>502 model_not_found</code>.
+                <code>claude-opus-5</code> also resolve). A model no seller your routing
+                policy allows serves returns <code>502 model_not_found</code>. A gateway
+                key limited to certain models lists only those.
               </p>
               <p className={styles.runFirstHint}>
                 Automatic routes keep soft conversation affinity when the tool sends
@@ -464,9 +506,10 @@ function RunFirstBanner() {
                 pick one of three overrides — you can mix them:
               </p>
               <p className={styles.runFirstHint} style={{marginTop: 6}}>
-                <strong>Option A - session pin.</strong> One command, every
-                future request goes to that peer. Persists in{' '}
-                <code>~/.antseed/buyer.state.json</code> across restarts.
+                <strong>Option A - session pin (local buyer proxy only).</strong> One
+                command, every future request goes to that peer. Persists in{' '}
+                <code>~/.antseed/buyer.state.json</code> across restarts. On a gateway, use
+                a routing policy or preset instead.
               </p>
               <CodeBlock
                 snippet={`# Pin the peer you chose for every request from now on (survives restart).\n# Replace the id below with one from your real \`antseed network browse\` output.\nantseed buyer connection set --peer cccccccccccccccccccccccccccccccccccccccc`}
@@ -478,7 +521,8 @@ function RunFirstBanner() {
                 multi-tenant deployments that fan out to different peers per call.
               </p>
               <CodeBlock
-                snippet={`curl http://localhost:8377/v1/chat/completions \\
+                snippet={`curl "$ANTSEED_BASE_URL/chat/completions" \\
+  -H "Authorization: Bearer $ANTSEED_API_KEY" \\
   -H 'content-type: application/json' \\
   -H 'x-antseed-pin-peer: cccccccccccccccccccccccccccccccccccccccc' \\
   -d '{
@@ -489,12 +533,13 @@ function RunFirstBanner() {
               <p className={styles.runFirstHint} style={{marginTop: 12}}>
                 <strong>Option C - model prefix (works in any tool).</strong> Set the{' '}
                 <code>model</code> field to <code>&lt;peerId&gt;@&lt;service-id&gt;</code>.
-                The proxy pins that peer for the request and strips the prefix before
+                Antseed pins that peer for the request and strips the prefix before
                 routing, so the seller just sees the service id. This is the way to pick
                 a peer from tools where you can only type a model name.
               </p>
               <CodeBlock
-                snippet={`curl http://localhost:8377/v1/chat/completions \\
+                snippet={`curl "$ANTSEED_BASE_URL/chat/completions" \\
+  -H "Authorization: Bearer $ANTSEED_API_KEY" \\
   -H 'content-type: application/json' \\
   -d '{
     "model": "cccccccccccccccccccccccccccccccccccccccc@minimax-m2.7",
@@ -509,7 +554,15 @@ function RunFirstBanner() {
             <div className={styles.runFirstBody}>
               <p className={styles.runFirstStepTitle}>
                 <span className={styles.runFirstOptionalTag}>Optional</span>
-                Deposit USDC - only needed for paid services:
+                Add funds - only needed for paid services:
+              </p>
+              <p className={styles.runFirstHint}>
+                <strong>Gateway:</strong> open <strong>Wallet &amp; Funding</strong> in
+                the console and add funds by card or with USDC on Base. Each workspace
+                pays from its own wallet. See <Link to="/docs/gateway/funding">Funding</Link>.
+              </p>
+              <p className={styles.runFirstHint}>
+                <strong>Local buyer proxy:</strong>
               </p>
               <CodeBlock snippet={`antseed buyer deposit`} />
               <p className={styles.runFirstHint}>
@@ -587,7 +640,7 @@ function WireFormatPanel({i}: {i: Integration}) {
           <strong>Wire format sent by {i.name}:</strong>{' '}
           <code>{FORMAT_LABELS[fmt]}</code>{' '}
           <span className={styles.wireFormatDim}>
-            (hits <code>{endpoint}</code> on the buyer proxy)
+            (hits <code>{endpoint}</code> on your gateway or buyer proxy)
           </span>
         </li>
         <li>
@@ -611,7 +664,7 @@ function WireFormatPanel({i}: {i: Integration}) {
             <code>@antseed/api-adapter</code>
           </a>{' '}
           translates between {FORMAT_LABELS[fmt]} and the service's native protocol on
-          the fly. So a request from {i.name} can still reach a service that only
+          the fly, inside the buyer. So a request from {i.name} can still reach a service that only
           advertises{' '}
           {fmt === 'anthropic-messages' ? (
             <code>openai-chat-completions</code>
@@ -624,7 +677,7 @@ function WireFormatPanel({i}: {i: Integration}) {
           <li className={styles.wireFormatWarn}>
             <strong>One known caveat:</strong> services whose only advertised protocol
             is <code>openai-responses</code> require streaming. If {i.name} sends a
-            non-streaming request and the proxy routes it to one of those services,
+            non-streaming request and Antseed routes it to one of those services,
             the call fails with <code>HTTP 400: Stream must be set to true</code>.
             Pick a service whose <code>protocols</code> includes{' '}
             <code>{protocol}</code> (or another non-responses protocol) to avoid this.
@@ -693,7 +746,7 @@ export default function IntegrationPage({integration}: {integration: Integration
   howToSteps.push({
     '@type': 'HowToStep',
     name: `Point ${i.name} at Antseed`,
-    text: `Configure ${i.name} to send requests to the local Antseed proxy at http://localhost:8377.`,
+    text: `Configure ${i.name} to send requests to your Antseed gateway with a gateway API key, or to the local buyer proxy at http://localhost:8377 when it runs on the same computer.`,
     url: `${pageUrl}#configure`,
   });
   if (i.modelHints) {
@@ -801,7 +854,7 @@ export default function IntegrationPage({integration}: {integration: Integration
             {i.modelHints.note && <p className={styles.modelNote}><Ticks>{i.modelHints.note}</Ticks></p>}
             <p className={styles.modelNote}>
               The full list is every model on the network. Run{' '}
-              <code>curl -s localhost:8377/v1/models</code>,{' '}
+              <code>GET /v1/models</code> on your endpoint,{' '}
               <code>antseed network browse</code>, or open the{' '}
               <a href="https://antseedstats.com/network" target="_blank" rel="noopener noreferrer">live network page</a> to see what's available right now.
             </p>
@@ -873,14 +926,14 @@ export default function IntegrationPage({integration}: {integration: Integration
 
       <FinalCta
         title={`Run ${i.name} on the open market`}
-        sub="Install Antseed, point this tool at your local proxy, and pay per request in USDC."
+        sub="Run a gateway, point this tool at it, and pay per request."
         note={
           <>
             <a href="/integrations">All integrations</a>
-            <a href="/docs/api">Protocol guide</a>
+            <a href="/docs/gateway/api">Gateway API</a>
           </>
         }>
-        <Button to="/docs/install" variant="white" size="lg" arrow>Install Antseed</Button>
+        <Button to="/docs/quickstart" variant="white" size="lg" arrow>Run a gateway</Button>
         <Button to="/providers" variant="light" size="lg">Become a provider</Button>
       </FinalCta>
     </Layout>

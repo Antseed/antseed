@@ -161,7 +161,7 @@ export default function ConnectHub(): JSX.Element {
   return (
     <Layout
       title="Integrations"
-      description="Every way to use Antseed: coding agents, autonomous agents, editors, SDKs, frameworks, partner platforms. Anthropic and OpenAI compatible. Drop-in via localhost:8377.">
+      description="Every way to use Antseed: coding agents, autonomous agents, editors, SDKs, frameworks, partner platforms. Anthropic and OpenAI compatible. Drop-in via your Antseed gateway.">
       <Head>
         <meta property="og:title" content="Integrations | Antseed" />
         <meta property="og:description" content="Every way to use Antseed: coding agents, autonomous agents, editors, SDKs, frameworks, partner platforms. Anthropic and OpenAI compatible." />
@@ -170,14 +170,15 @@ export default function ConnectHub(): JSX.Element {
 
       <PageHero
         kicker="Integrations"
-        title="One local endpoint. Every tool you already use."
+        title="One endpoint. Every tool you already use."
         lead={
           <>
-            Your local endpoint at <code>http://localhost:8377</code> is OpenAI and Anthropic
-            compatible and translates between the two on the fly. Pick your tool below.
+            Your Antseed gateway gives each tool its own API key, from your computer, a
+            server or a tunnel. It is OpenAI and Anthropic compatible and translates
+            between the two on the fly. Pick your tool below.
           </>
         }>
-        <Button to="/docs/install" arrow>Install the CLI</Button>
+        <Button to="/docs/quickstart" arrow>Run a gateway</Button>
         <SkillChip size="md" />
       </PageHero>
 
