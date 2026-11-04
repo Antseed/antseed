@@ -17,6 +17,7 @@ import {
 import type { CreatedInviteView, InviteAllowanceView, RefereeView, ReferralView, ReferredBuyersView } from '../api-types.js';
 import type { AntsContext } from './context.js';
 import { createIndexer, type IndexedReferralBinding, type IndexedReferrer, type Indexer } from './indexer.js';
+import { buyerOperator } from './rewards.js';
 import { silentReporter, type StepReporter } from './steps.js';
 
 const HIDDEN_REFERRAL: ReferralView = { available: false, payable: '0', claimableEpochs: [], referredCount: 0, invites: null };
@@ -231,10 +232,21 @@ export async function refereeBonus(ctx: AntsContext): Promise<RefereeView> {
   return refereeView(await referralBinding(ctx.indexer(), ctx.buyerAddress));
 }
 
+/** The connected signer, once it is the buyer account's Deposits operator: the contract accepts claims only from it. */
+async function requireOperatorSigner(ctx: AntsContext): Promise<AbstractSigner> {
+  const signer = ctx.requireSigner();
+  const operator = await buyerOperator(ctx);
+  if (!operator || operator.toLowerCase() !== (await signer.getAddress()).toLowerCase()) {
+    throw new Error(`Connect the authorized wallet for buyer ${ctx.buyerAddress}.${operator ? ` Current operator: ${operator}.` : ''}`);
+  }
+  return signer;
+}
+
 /**
  * Claim every payable referral reward for the dashboard wallet. Rewards are
  * per referred buyer, and only Antscan lists a referrer's buyers (never an RPC
- * scan), so this needs it. `claim` skips pairs with nothing to pay.
+ * scan), so this needs it. `claim` skips pairs with nothing to pay. Only the
+ * buyer account's Deposits operator can send it.
  */
 export async function claimReferralRewards(
   ctx: AntsContext,
@@ -242,13 +254,14 @@ export async function claimReferralRewards(
 ): Promise<{ hash: string; epochs: number[] }> {
   const client = ctx.referrals();
   if (!client) throw new Error('Referrals are not configured for this chain.');
-  // The buyer account is the referrer (see `referral`); any wallet may send it.
+  // The buyer account is the referrer (see `referral`).
+  const signer = await requireOperatorSigner(ctx);
   const indexed = await indexedReferrer(ctx.indexer(), ctx.buyerAddress).catch(() => null);
   if (!indexed) throw new Error('Claiming referral rewards needs Antscan, which lists your referred buyers. Try again later.');
   const epochs = indexed.claimableEpochs;
   if (epochs.length === 0) throw new Error('No referral rewards are payable yet.');
   await report(`Claiming referral rewards for ${epochs.length} ${epochs.length === 1 ? 'epoch' : 'epochs'}`);
-  const hash = await client.claim(ctx.requireSigner(), ctx.buyerAddress, indexed.buyers.map(({ buyer }) => buyer), epochs);
+  const hash = await client.claim(signer, ctx.buyerAddress, indexed.buyers.map(({ buyer }) => buyer), epochs);
   await report('Referral rewards claimed', hash);
   return { hash, epochs };
 }
@@ -267,8 +280,8 @@ async function pendingRefereeEpochs(client: Pick<ReferralsClient, 'currentEpoch'
  * Claim the buyer account's referee bonus for the epochs Antscan reports
  * payable, or, when Antscan is unset, does not index referrals, or fails, the
  * epochs an on-chain `pendingRefereeReward` scan finds. An available Antscan
- * answer is authoritative, even when empty. Permissionless: the dashboard
- * wallet sends it, and the contract always pays the buyer's Deposits operator.
+ * answer is authoritative, even when empty. Only the buyer's Deposits operator
+ * can send it, and the contract pays that operator.
  */
 export async function claimRefereeRewards(
   ctx: AntsContext,
@@ -276,11 +289,12 @@ export async function claimRefereeRewards(
 ): Promise<{ hash: string; epochs: number[] }> {
   const client = ctx.referrals();
   if (!client) throw new Error('Referrals are not configured for this chain.');
+  const signer = await requireOperatorSigner(ctx);
   const binding = await referralBinding(ctx.indexer(), ctx.buyerAddress);
   const epochs = binding ? binding.refereeClaimableEpochs : await pendingRefereeEpochs(client, ctx.buyerAddress);
   if (epochs.length === 0) throw new Error('No invite bonus is payable yet.');
   await report(`Claiming your invite bonus for ${epochs.length} ${epochs.length === 1 ? 'epoch' : 'epochs'}`);
-  const hash = await client.claimReferee(ctx.requireSigner(), ctx.buyerAddress, epochs);
+  const hash = await client.claimReferee(signer, ctx.buyerAddress, epochs);
   await report('Invite bonus claimed', hash);
   return { hash, epochs };
 }

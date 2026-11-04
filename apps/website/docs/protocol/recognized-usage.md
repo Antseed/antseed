@@ -99,7 +99,9 @@ reward budgets follow the [burn and reserve rule](#unallocated-emissions-and-bur
 
 Two further reward controllers pay from their own epoch buckets by each
 claimant's share of all recognized buyer usage, so a bucket is only fully used
-when all usage is attributed:
+when all usage is attributed. As with usage rewards, each address is capped per
+epoch at 5% of the bucket and anything above the cap goes to the emissions
+reserve:
 
 - **Referrals** (`AntseedReferrals`): a referred buyer's share after its invite
   binds, read directly from `AntseedUsageAccounting`, goes half to its inviter
@@ -107,8 +109,8 @@ when all usage is attributed:
   claimable once it ends. The unearned part of the bucket is never minted. See
   the [referrals guide](../provide/referrals.md).
 - **Clients** (`AntseedClientRewards`): usage credited to the ERC-8004 agent
-  of the client software that produced it, paid to that agent's owner. An epoch is claimable after one
-  further epoch. The unearned part of the bucket is never minted.
+  of the client software that produced it, claimed by that agent's owner. An
+  epoch is claimable after one further epoch. The unearned part of the bucket is never minted.
 
 Each controller pays nothing until it is registered as an emissions-gate
 minter. Both buckets come out of the 10% verification bucket: once they are

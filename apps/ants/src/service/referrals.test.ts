@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Wallet, getAddress, zeroPadValue } from 'ethers';
+import { Wallet, ZeroAddress, getAddress, zeroPadValue } from 'ethers';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { decodeInvite, recordIssuedInvite, recoverInviter, withFileLock } from '@antseed/node';
 import type { AntsContext } from './context.js';
@@ -41,7 +41,10 @@ const binding = {
   refereePayable: '900', refereeClaimableEpochs: [20, 21], currentEpoch: 23,
 };
 
-function fixture(options: { referrals?: boolean; explorer?: boolean; indexed?: Partial<IndexedReferrer>; binding?: Partial<typeof binding> } = {}) {
+const operatorAddress = '0x00000000000000000000000000000000000000Ee';
+const operatorSigner = { getAddress: async () => operatorAddress };
+
+function fixture(options: { operator?: string | null; referrals?: boolean; explorer?: boolean; indexed?: Partial<IndexedReferrer>; binding?: Partial<typeof binding> } = {}) {
   const indexer = {
     referrer: vi.fn(async () => ({ ...indexedReferrer, ...options.indexed })),
     referralBinding: vi.fn(async () => ({ ...binding, ...options.binding })),
@@ -58,7 +61,8 @@ function fixture(options: { referrals?: boolean; explorer?: boolean; indexed?: P
     chain: options.referrals === false ? {} : { referralsAddress, evmChainId: 8453 },
     referrals: () => (options.referrals === false ? null : client),
     indexer: () => (options.explorer === false ? null : indexer),
-    requireSigner: () => ({}),
+    requireSigner: () => operatorSigner,
+    deposits: () => ({ getOperator: async () => (options.operator === undefined ? operatorAddress : options.operator ?? ZeroAddress) }),
   } as unknown as AntsContext;
   return { ctx, indexer, client };
 }
@@ -266,7 +270,7 @@ describe('referee bonus', () => {
   it('claims the payable epochs for the buyer account', async () => {
     const { ctx, client } = fixture();
     expect(await claimRefereeRewards(ctx)).toEqual({ hash: '0xreferee', epochs: [20, 21] });
-    expect(client.claimReferee).toHaveBeenCalledWith({}, buyer, [20, 21]);
+    expect(client.claimReferee).toHaveBeenCalledWith(operatorSigner, buyer, [20, 21]);
     await expect(claimRefereeRewards(fixture({ binding: { refereeClaimableEpochs: [] } }).ctx)).rejects.toThrow('No invite bonus');
   });
 
@@ -284,7 +288,7 @@ describe('referee bonus', () => {
     expect(await claimRefereeRewards(ctx)).toEqual({ hash: '0xreferee', epochs: [20, 22] });
     expect(client.pendingRefereeReward).toHaveBeenCalledWith(buyer, 22);
     expect(client.pendingRefereeReward).not.toHaveBeenCalledWith(buyer, 23); // not claimable yet
-    expect(client.claimReferee).toHaveBeenCalledWith({}, buyer, [20, 22]);
+    expect(client.claimReferee).toHaveBeenCalledWith(operatorSigner, buyer, [20, 22]);
   });
 
   it('claims the epochs payable on-chain when the explorer request fails', async () => {
@@ -319,11 +323,21 @@ describe('dashboard invites', () => {
 });
 
 describe('referral claim', () => {
-  it('claims the epochs Antscan reports payable for the buyer account, whichever wallet sends it', async () => {
+  it('claims the epochs Antscan reports payable for the buyer account', async () => {
     const { ctx, client, indexer } = fixture();
     expect(await claimReferralRewards(ctx)).toEqual({ hash: '0xhash', epochs: [3, 5] });
     expect(indexer.referrer).toHaveBeenCalledWith(buyer);
-    expect(client.claim).toHaveBeenCalledWith({}, buyer, [buyer], [3, 5]);
+    expect(client.claim).toHaveBeenCalledWith(operatorSigner, buyer, [buyer], [3, 5]);
+  });
+
+  it('refuses unless the connected wallet is the buyer account\'s operator', async () => {
+    for (const operator of [null, referrer]) {
+      const { ctx, client } = fixture({ operator });
+      await expect(claimReferralRewards(ctx)).rejects.toThrow('Connect the authorized wallet');
+      await expect(claimRefereeRewards(ctx)).rejects.toThrow('Connect the authorized wallet');
+      expect(client.claim).not.toHaveBeenCalled();
+      expect(client.claimReferee).not.toHaveBeenCalled();
+    }
   });
 
   it('refuses without an explorer, the only source of the referred buyers', async () => {

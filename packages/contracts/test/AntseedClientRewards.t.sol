@@ -8,6 +8,7 @@ import { Pausable } from "@openzeppelin/contracts/utils/Pausable.sol";
 import { AntseedClientRewards } from "../emissions/AntseedClientRewards.sol";
 import { IAntseedUsageAccounting } from "../interfaces/IAntseedUsageAccounting.sol";
 import { EmissionsGateMock } from "./mocks/EmissionsGateMock.sol";
+import { SellerPoolsStakeMock } from "./mocks/SellerPoolsStakeMock.sol";
 import { MockERC8004Registry } from "./mocks/MockERC8004Registry.sol";
 
 /// Cumulative weighted points per buyer, and a settable epoch total.
@@ -173,103 +174,155 @@ contract AntseedClientAttributionTest is ClientRewardsFixture {
         assertEq(rewards.clientEpochPoints(20, desktop), 10);
 
         gate.setCurrentEpoch(22);
+        vm.prank(desktopOwner);
         vm.expectRevert(Pausable.EnforcedPause.selector);
-        rewards.claim(desktop, 20);
+        rewards.claimClientReward(desktop, 20);
 
         rewards.unpause();
-        rewards.claim(desktop, 20);
-        assertEq(gate.balanceOf(desktopOwner), 100 ether);
+        vm.prank(desktopOwner);
+        rewards.claimClientReward(desktop, 20);
+        assertEq(gate.balanceOf(desktopOwner), 5 ether);
     }
 }
 
 contract AntseedClientRewardsTest is ClientRewardsFixture {
+    function _claim(uint256 client, address owner, uint256 epoch) private {
+        vm.prank(owner);
+        rewards.claimClientReward(client, epoch);
+    }
+
     function test_constructorRejectsACodelessIdentityRegistry() public {
         vm.expectRevert(AntseedClientRewards.InvalidAddress.selector);
         new AntseedClientRewards(address(gate), address(accounting), address(0xDEAD), stats);
     }
 
     function test_paysEachClientItsShareOfAllRecognizedUsage() public {
-        accounting.setTotal(10, 200); // 120 of it attributed to no client
-        _credit(10, desktop, 50);
-        _credit(10, cli, 30);
+        accounting.setTotal(10, 1000);
+        _credit(10, desktop, 30);
+        _credit(10, cli, 20);
         gate.setBudget(address(rewards), 10, 100 ether);
         gate.setCurrentEpoch(12); // epoch 10 finalized and one grace epoch elapsed
 
-        assertEq(rewards.pendingReward(desktop, 10), 25 ether);
-        rewards.claim(desktop, 10);
-        assertEq(gate.balanceOf(desktopOwner), 25 ether);
-        assertTrue(rewards.claimed(desktop, 10));
-        assertFalse(rewards.claimed(cli, 10));
-        assertEq(rewards.pendingReward(desktop, 10), 0);
+        assertEq(rewards.rewardRecipient(desktop), desktopOwner);
+        assertEq(rewards.pendingClientReward(desktop, 10), 3 ether);
+        _claim(desktop, desktopOwner, 10);
+        assertEq(gate.balanceOf(desktopOwner), 3 ether);
+        assertTrue(rewards.clientEpochClaimed(desktop, 10));
+        assertFalse(rewards.clientEpochClaimed(cli, 10));
+        assertEq(rewards.pendingClientReward(desktop, 10), 0);
 
-        rewards.claim(cli, 10);
-        assertEq(gate.balanceOf(cliOwner), 15 ether);
+        _claim(cli, cliOwner, 10);
+        assertEq(gate.balanceOf(cliOwner), 2 ether);
 
+        vm.prank(cliOwner);
         vm.expectRevert(AntseedClientRewards.AlreadyClaimed.selector);
-        rewards.claim(cli, 10);
+        rewards.claimClientReward(cli, 10);
     }
 
-    function test_aLoneClientEarnsOnlyItsShareNotTheWholeBucket() public {
+    function test_onlyTheAgentOwnerCanClaim() public {
         accounting.setTotal(10, 1000);
-        _credit(10, desktop, 1);
+        _credit(10, desktop, 30);
         gate.setBudget(address(rewards), 10, 100 ether);
         gate.setCurrentEpoch(12);
-        assertEq(rewards.pendingReward(desktop, 10), 0.1 ether);
+
+        vm.prank(cliOwner);
+        vm.expectRevert(AntseedClientRewards.NotRewardRecipient.selector);
+        rewards.claimClientReward(desktop, 10);
+        assertFalse(rewards.clientEpochClaimed(desktop, 10));
+    }
+
+    function test_capsAClientAtFivePercentAndReservesTheExcess() public {
+        accounting.setTotal(10, 200);
+        _credit(10, desktop, 50); // 25% of usage: 25 gross
+        gate.setBudget(address(rewards), 10, 100 ether);
+        gate.setCurrentEpoch(12);
+
+        assertEq(rewards.pendingClientReward(desktop, 10), 5 ether);
+        vm.expectEmit(true, true, true, true);
+        emit AntseedClientRewards.ClientRewardClaimed(desktopOwner, desktop, 10, 50, 200, 25 ether, 5 ether, 20 ether);
+        _claim(desktop, desktopOwner, 10);
+        assertEq(gate.balanceOf(desktopOwner), 5 ether);
+        assertEq(gate.balanceOf(gate.emissionsReserve()), 20 ether);
+        assertEq(gate.minted(address(rewards), 10), 25 ether);
     }
 
     function test_creditsRolledIntoAQuietEpochStayWithinTheBucket() public {
-        accounting.setTotal(10, 10); // less settled in the epoch than was credited to it
+        accounting.setTotal(10, 1); // less settled in the epoch than was credited to it
         _credit(10, desktop, 60);
         _credit(10, cli, 40);
         gate.setBudget(address(rewards), 10, 100 ether);
         gate.setCurrentEpoch(12);
 
-        rewards.claim(desktop, 10);
-        rewards.claim(cli, 10);
-        assertEq(gate.balanceOf(desktopOwner), 60 ether);
-        assertEq(gate.balanceOf(cliOwner), 40 ether);
+        _claim(desktop, desktopOwner, 10);
+        _claim(cli, cliOwner, 10);
+        assertEq(gate.balanceOf(desktopOwner), 5 ether);
+        assertEq(gate.balanceOf(cliOwner), 5 ether);
+        assertEq(gate.balanceOf(gate.emissionsReserve()), 90 ether);
         assertEq(gate.minted(address(rewards), 10), 100 ether);
     }
 
     function test_theUnearnedPartIsNeverMinted() public {
-        accounting.setTotal(10, 200);
-        _credit(10, desktop, 50);
+        accounting.setTotal(10, 1000);
+        _credit(10, desktop, 30);
         gate.setBudget(address(rewards), 10, 100 ether);
         gate.setCurrentEpoch(12);
 
-        rewards.claim(desktop, 10);
-        assertEq(gate.balanceOf(desktopOwner), 25 ether);
-        assertEq(gate.minted(address(rewards), 10), 25 ether);
+        _claim(desktop, desktopOwner, 10);
+        assertEq(gate.minted(address(rewards), 10), 3 ether);
     }
 
     function test_waitsOneGraceEpochBeforeAnEpochIsClaimable() public {
-        accounting.setTotal(10, 1);
+        accounting.setTotal(10, 100);
         _credit(10, desktop, 1);
-        gate.setBudget(address(rewards), 10, 10 ether);
+        gate.setBudget(address(rewards), 10, 100 ether);
         gate.setCurrentEpoch(11);
         assertFalse(rewards.isClaimable(10));
-        assertEq(rewards.pendingReward(desktop, 10), 0);
+        assertEq(rewards.pendingClientReward(desktop, 10), 0);
+        vm.prank(desktopOwner);
         vm.expectRevert(AntseedClientRewards.EpochNotClaimable.selector);
-        rewards.claim(desktop, 10);
+        rewards.claimClientReward(desktop, 10);
 
         gate.setCurrentEpoch(12);
-        rewards.claim(desktop, 10);
-        assertEq(gate.balanceOf(desktopOwner), 10 ether);
+        _claim(desktop, desktopOwner, 10);
+        assertEq(gate.balanceOf(desktopOwner), 1 ether);
     }
 
     function test_noBucketOrNoPointsPaysNothing() public {
         accounting.setTotal(10, 1);
         _credit(10, desktop, 1);
         gate.setCurrentEpoch(12);
+        vm.prank(desktopOwner);
         vm.expectRevert(AntseedClientRewards.NothingToClaim.selector);
-        rewards.claim(desktop, 10); // controller not registered: budget 0
+        rewards.claimClientReward(desktop, 10); // controller not registered: budget 0
 
         gate.setBudget(address(rewards), 10, 10 ether);
+        vm.prank(cliOwner);
         vm.expectRevert(AntseedClientRewards.NothingToClaim.selector);
-        rewards.claim(cli, 10); // no points
+        rewards.claimClientReward(cli, 10); // no points
+    }
 
+    function test_stakesTheCappedRewardForTheOwnerAndReservesTheExcess() public {
+        SellerPoolsStakeMock pools = new SellerPoolsStakeMock(gate);
+        accounting.setTotal(10, 200);
+        _credit(10, desktop, 50);
+        gate.setBudget(address(rewards), 10, 100 ether);
+        gate.setCurrentEpoch(12);
+
+        vm.prank(desktopOwner);
         vm.expectRevert(AntseedClientRewards.InvalidAddress.selector);
-        rewards.claim(999, 10); // unregistered agent
+        rewards.stakeClientReward(desktop, 10, 4); // no pools configured
+
+        rewards.setSellerPools(address(pools));
+        vm.prank(desktopOwner);
+        assertEq(rewards.stakeClientReward(desktop, 10, 4), 7);
+        assertEq(pools.lastStaker(), desktopOwner);
+        assertEq(pools.lastAgentId(), desktop);
+        assertEq(pools.lastAmount(), 5 ether);
+        assertEq(pools.lastEpochs(), 4);
+        assertEq(gate.balanceOf(address(pools)), 5 ether);
+        assertEq(gate.balanceOf(address(rewards)), 0);
+        assertEq(gate.allowance(address(rewards), address(pools)), 0);
+        assertEq(gate.balanceOf(gate.emissionsReserve()), 20 ether);
     }
 
     function testFuzz_sharesNeverExceedTheBucket(
@@ -288,10 +341,22 @@ contract AntseedClientRewardsTest is ClientRewardsFixture {
         gate.setBudget(address(rewards), 10, budget);
         gate.setCurrentEpoch(12);
 
-        uint256 expected = rewards.pendingReward(desktop, 10) + rewards.pendingReward(cli, 10);
-        assertLe(expected, budget);
-        if (rewards.pendingReward(desktop, 10) != 0) rewards.claim(desktop, 10);
-        if (rewards.pendingReward(cli, 10) != 0) rewards.claim(cli, 10);
+        uint256 cap = (budget * rewards.MAX_REWARD_SHARE_BPS()) / rewards.BPS_DENOMINATOR();
+        assertLe(rewards.pendingClientReward(desktop, 10), cap);
+        assertLe(rewards.pendingClientReward(cli, 10), cap);
+        // The gate reverts a claim past the bucket, and the reserve part is charged to it too.
+        try this.claimAs(desktopOwner, desktop) { } catch (bytes memory reason) {
+            assertEq(bytes4(reason), AntseedClientRewards.NothingToClaim.selector);
+        }
+        try this.claimAs(cliOwner, cli) { } catch (bytes memory reason) {
+            assertEq(bytes4(reason), AntseedClientRewards.NothingToClaim.selector);
+        }
+        assertLe(gate.balanceOf(desktopOwner), cap);
         assertLe(gate.minted(address(rewards), 10), budget);
+    }
+
+    function claimAs(address owner, uint256 client) external {
+        vm.prank(owner);
+        rewards.claimClientReward(client, 10);
     }
 }

@@ -154,7 +154,7 @@ function InviteRow({ view, onCreated }: { view: ReferralView; onCreated: () => v
   );
 }
 
-/** The buyer account's two-sided invite bonus: weeks left in the window, payable now, and a permissionless claim paid to its authorized wallet (operator). */
+/** The buyer account's two-sided invite bonus: weeks left in the window, payable now, and a claim paid to its authorized wallet (operator). */
 function RefereeBonusRow() {
   const dashboard = useConfig();
   const page = usePageData('referrals:referee', api.referee, 60_000);
@@ -332,8 +332,8 @@ function BuildersCard() {
                   : 'Not a registered ERC-8004 agent on this chain.'}
                 actions={<>
                   <ActionButton label="Claim" title={`Claim builder rewards · agent #${agent.agentId}`} path="/api/builders/claim" body={{ agentId: agent.agentId }}
-                    disabled={dashboard.readOnly || !agent.owner || isZero(agent.payable)}
-                    disabledReason={dashboard.readOnly ? 'Connect a wallet with a signer to claim.' : !agent.owner ? 'This agent id is not registered.' : 'Nothing to claim yet.'}
+                    disabled={dashboard.readOnly || !agent.owner || !agent.owned || isZero(agent.payable)}
+                    disabledReason={dashboard.readOnly ? 'Connect a wallet with a signer to claim.' : !agent.owner ? 'This agent id is not registered.' : !agent.owned ? 'Only the agent owner can claim.' : 'Nothing to claim yet.'}
                     summary={[['Payable now', `${formatAnts(agent.payable, 4)} ANTS`], ['Weeks', String(epochs)]]} />
                   {ids.includes(agent.agentId) ? <Button variant="outline" size="sm" onClick={() => remove(agent.agentId)}>Remove</Button> : null}
                 </>} />

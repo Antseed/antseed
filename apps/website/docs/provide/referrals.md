@@ -165,6 +165,10 @@ share of all recognized buyer usage that week: a buyer with 5% of the week's usa
 earns 5% of the bucket. The part of the bucket earned by usage nobody referred
 is not paid out.
 
+Like usage rewards, each address is capped per epoch at 5% of the bucket, per
+role: an inviter across all its referred buyers, and a new user on its own
+bonus. Anything above the cap goes to the emissions reserve.
+
 That share goes to:
 
 - **Bonus window, 12 weeks after the binding:** the inviter and the new user,
@@ -178,7 +182,7 @@ same reward policies that apply to usage rewards apply here.
 
 A week becomes claimable as soon as it has ended. An inviter claims per referred
 buyer and week, and the ANTS dashboard claims them all in one transaction using
-Antscan's list of your referred buyers. Claiming is permissionless, and the recipient is fixed by the contract:
+Antscan's list of your referred buyers. Only the authorized wallet can claim or stake:
 
 - **The new user's bonus** is paid only to the buyer's authorized wallet (its
   Deposits operator), never to the buyer hot wallet. Until the buyer has an

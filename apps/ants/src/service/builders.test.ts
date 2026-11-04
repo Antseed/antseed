@@ -5,9 +5,10 @@ import { builders, claimBuilderRewards, registerClientAgent } from './builders.j
 
 const wallet = '0x0000000000000000000000000000000000000001';
 const other = '0x0000000000000000000000000000000000000002';
+const signer = { getAddress: async () => wallet };
 
 function fixture(options: { clientRewards?: boolean; explorer?: boolean } = {}) {
-  const owners: Record<number, string> = { 5: wallet, 6: other, 9: other };
+  const owners: Record<number, string> = { 5: wallet, 6: other, 7: wallet, 9: other };
   const identity = {
     getAgentWallet: vi.fn(async (agentId: number) => {
       const owner = owners[agentId];
@@ -17,7 +18,7 @@ function fixture(options: { clientRewards?: boolean; explorer?: boolean } = {}) 
     register: vi.fn(async () => 31),
   };
   const clientRewards = {
-    pendingRewards: vi.fn(async (agentId: number) => agentId === 9 ? [{ epoch: 8, amount: 1n }] : []),
+    pendingRewards: vi.fn(async (agentId: number) => agentId === 7 ? [{ epoch: 8, amount: 1n }] : []),
     pendingReward: vi.fn(async (_agentId: number, _epoch: number) => 1n),
     claim: vi.fn(async (_signer: unknown, _agentId: number, epoch: number) => `0xhash${epoch}`),
   };
@@ -35,7 +36,7 @@ function fixture(options: { clientRewards?: boolean; explorer?: boolean } = {}) 
     indexer: () => (options.explorer === false ? null : indexer),
     identity: () => identity,
     clientRewards: () => (options.clientRewards === false ? null : clientRewards),
-    requireSigner: () => ({}),
+    requireSigner: () => signer,
     invalidate: vi.fn(),
   } as unknown as AntsContext;
   return { ctx, identity, clientRewards, indexer };
@@ -92,8 +93,8 @@ describe('builders program', () => {
     const { ctx, clientRewards } = fixture();
     const report = vi.fn();
     expect(await claimBuilderRewards(ctx, 5, report)).toEqual({ agentId: 5, owner: wallet, epochs: [3, 4], hashes: ['0xhash3', '0xhash4'] });
-    expect(clientRewards.claim).toHaveBeenNthCalledWith(1, {}, 5, 3);
-    expect(clientRewards.claim).toHaveBeenNthCalledWith(2, {}, 5, 4);
+    expect(clientRewards.claim).toHaveBeenNthCalledWith(1, signer, 5, 3);
+    expect(clientRewards.claim).toHaveBeenNthCalledWith(2, signer, 5, 4);
     expect(report).toHaveBeenCalledWith('Epoch 3 claimed', '0xhash3');
     expect(report).toHaveBeenCalledWith('Epoch 4 claimed', '0xhash4');
   });
@@ -103,42 +104,43 @@ describe('builders program', () => {
     clientRewards.pendingReward.mockImplementation(async (_agentId: number, epoch: number) => (epoch === 3 ? 0n : 7n));
     expect(await claimBuilderRewards(ctx, 5)).toMatchObject({ epochs: [4], hashes: ['0xhash4'] });
     expect(clientRewards.claim).toHaveBeenCalledTimes(1);
-    expect(clientRewards.claim).toHaveBeenCalledWith({}, 5, 4);
+    expect(clientRewards.claim).toHaveBeenCalledWith(signer, 5, 4);
     clientRewards.pendingReward.mockResolvedValue(0n);
     await expect(claimBuilderRewards(ctx, 5)).rejects.toThrow('No builder rewards');
   });
 
   it('falls back to the on-chain epoch scan for a claim only without an explorer', async () => {
     const { ctx, clientRewards } = fixture({ explorer: false });
-    expect(await claimBuilderRewards(ctx, 9)).toMatchObject({ epochs: [8], hashes: ['0xhash8'] });
-    expect(clientRewards.pendingRewards).toHaveBeenCalledWith(9);
+    expect(await claimBuilderRewards(ctx, 7)).toMatchObject({ epochs: [8], hashes: ['0xhash8'] });
+    expect(clientRewards.pendingRewards).toHaveBeenCalledWith(7);
   });
 
   it('falls back to the on-chain epoch scan when Antscan does not index the builders program', async () => {
     const { ctx, clientRewards, indexer } = fixture();
     indexer.builders.mockResolvedValueOnce({ available: false, agents: [] });
-    expect(await claimBuilderRewards(ctx, 9)).toMatchObject({ epochs: [8], hashes: ['0xhash8'] });
-    expect(clientRewards.pendingRewards).toHaveBeenCalledWith(9);
+    expect(await claimBuilderRewards(ctx, 7)).toMatchObject({ epochs: [8], hashes: ['0xhash8'] });
+    expect(clientRewards.pendingRewards).toHaveBeenCalledWith(7);
   });
 
   it('falls back to the on-chain epoch scan when the Antscan request fails', async () => {
     const { ctx, clientRewards, indexer } = fixture();
     indexer.builders.mockRejectedValueOnce(new Error('Antscan unavailable'));
-    expect(await claimBuilderRewards(ctx, 9)).toMatchObject({ epochs: [8], hashes: ['0xhash8'] });
-    expect(clientRewards.pendingRewards).toHaveBeenCalledWith(9);
+    expect(await claimBuilderRewards(ctx, 7)).toMatchObject({ epochs: [8], hashes: ['0xhash8'] });
+    expect(clientRewards.pendingRewards).toHaveBeenCalledWith(7);
   });
 
   it('trusts an available Antscan answer with nothing payable, without scanning RPC', async () => {
     const { ctx, clientRewards } = fixture();
-    await expect(claimBuilderRewards(ctx, 6)).rejects.toThrow('No builder rewards');
+    await expect(claimBuilderRewards(ctx, 7)).rejects.toThrow('No builder rewards');
     expect(clientRewards.pendingRewards).not.toHaveBeenCalled();
   });
 
   it('refuses unregistered agents, invalid ids and empty claims without sending', async () => {
     const { ctx, clientRewards } = fixture();
     await expect(claimBuilderRewards(ctx, 404)).rejects.toThrow('not registered');
+    await expect(claimBuilderRewards(ctx, 9)).rejects.toThrow('Connect the owner of agent 9');
     await expect(claimBuilderRewards(ctx, 0)).rejects.toThrow('positive integer');
-    await expect(claimBuilderRewards(ctx, 9)).rejects.toThrow('No builder rewards');
+    await expect(claimBuilderRewards(ctx, 7)).rejects.toThrow('No builder rewards');
     expect(clientRewards.claim).not.toHaveBeenCalled();
   });
 

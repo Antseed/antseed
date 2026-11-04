@@ -2,22 +2,28 @@
 pragma solidity ^0.8.24;
 
 import "@openzeppelin/contracts/access/Ownable2Step.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/utils/Pausable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {IAntseedEmissionsGate} from "../interfaces/IAntseedEmissionsGate.sol";
+import {IAntseedSellerPools} from "../interfaces/IAntseedSellerPools.sol";
 import {IAntseedUsageAccounting} from "../interfaces/IAntseedUsageAccounting.sol";
 import {IERC8004Registry} from "../interfaces/IERC8004Registry.sol";
 
 /**
  * @title AntseedClientRewards
  * @notice Emission-funded rewards for client software (Desktop, CLI,
- *         third-party apps), paid to each client's ERC-8004 agent owner. A
- *         client earns the bucket in proportion to its share of all recognized
- *         buyer usage: producing 5% of an epoch's weighted buyer points earns
- *         5% of the bucket. The part of the bucket no client earned is never
- *         minted.
+ *         third-party apps), structured like AntseedUsageRewards.
+ *
+ *         Rewards: a client earns the epoch's gate bucket in proportion to its share of all
+ *         recognized buyer usage: producing 3% of an epoch's weighted buyer
+ *         points earns 3% of the bucket. Each client is capped at 5% of the
+ *         bucket per epoch and the excess goes to the emissions reserve. The
+ *         part of the bucket earned by usage no client produced is never
+ *         minted. Only the ERC-8004 agent owner claims or stakes.
  *
  *         Attribution: every settlement calls AntseedStatsV2 before the
  *         accounting records that settlement's points, and the buyer-signed
@@ -39,6 +45,8 @@ import {IERC8004Registry} from "../interfaces/IERC8004Registry.sol";
  *         every share within the bucket.
  */
 contract AntseedClientRewards is Ownable2Step, Pausable, ReentrancyGuard {
+    using SafeERC20 for IERC20;
+
     /// @dev One slot per buyer: last observed cumulative weighted points, the
     ///      client of the most recent settlement, and the epoch it settled in.
     struct Cursor {
@@ -48,12 +56,25 @@ contract AntseedClientRewards is Ownable2Step, Pausable, ReentrancyGuard {
         bool initialized;
     }
 
+    /// @dev Values shared by the claim and stake tails of a reward.
+    struct PreparedReward {
+        address recipient;
+        uint256 weightedPoints;
+        uint256 totalWeightedPoints;
+        uint256 grossAmount;
+        uint256 claimableAmount;
+        uint256 reserveAmount;
+    }
+
     /// @notice Epochs that must fully elapse after `epoch` before it is claimable.
     uint256 public constant SETTLEMENT_GRACE_EPOCHS = 1;
+    uint256 public constant BPS_DENOMINATOR = 10_000;
+    uint256 public constant MAX_REWARD_SHARE_BPS = 500;
 
     IAntseedEmissionsGate public immutable emissionsGate;
     IAntseedUsageAccounting public immutable usageAccounting;
     IERC8004Registry public immutable identityRegistry;
+    IAntseedSellerPools public sellerPools;
 
     /// @notice Contract allowed to report settlements (AntseedStatsV2).
     address public recorder;
@@ -63,21 +84,36 @@ contract AntseedClientRewards is Ownable2Step, Pausable, ReentrancyGuard {
     mapping(uint256 epoch => mapping(uint256 clientAgentId => uint256 points)) public clientEpochPoints;
     mapping(uint256 epoch => uint256 points) public totalClientPointsByEpoch;
 
-    mapping(uint256 clientAgentId => mapping(uint256 epoch => bool)) public claimed;
+    mapping(uint256 clientAgentId => mapping(uint256 epoch => bool)) public clientEpochClaimed;
 
     event ClientUsageCredited(uint256 indexed epoch, uint256 indexed clientAgentId, address indexed buyer, uint256 points);
     event ClientRewardClaimed(
-        uint256 indexed epoch,
-        uint256 indexed clientAgentId,
         address indexed recipient,
-        uint256 points,
-        uint256 totalPoints,
-        uint256 amount
+        uint256 indexed clientAgentId,
+        uint256 indexed epoch,
+        uint256 weightedPoints,
+        uint256 totalWeightedPoints,
+        uint256 grossAmount,
+        uint256 claimableAmount,
+        uint256 reserveAmount
     );
+    event ClientRewardStaked(
+        address indexed recipient,
+        uint256 indexed clientAgentId,
+        uint256 epoch,
+        uint256 newPositionId,
+        uint256 weightedPoints,
+        uint256 totalWeightedPoints,
+        uint256 grossAmount,
+        uint256 stakedAmount,
+        uint256 reserveAmount
+    );
+    event SellerPoolsSet(address indexed sellerPools);
     event RecorderUpdated(address indexed recorder);
 
     error InvalidAddress();
     error NotRecorder();
+    error NotRewardRecipient();
     error EpochNotClaimable();
     error AlreadyClaimed();
     error NothingToClaim();
@@ -130,29 +166,58 @@ contract AntseedClientRewards is Ownable2Step, Pausable, ReentrancyGuard {
         return epoch + SETTLEMENT_GRACE_EPOCHS < emissionsGate.currentEpoch();
     }
 
-    /// @notice Mint a client's share of an epoch's bucket to the agent owner.
-    ///         Permissionless: anyone may trigger it; funds only ever go to
-    ///         `identityRegistry.ownerOf(clientAgentId)`.
-    function claim(uint256 clientAgentId, uint256 epoch) external nonReentrant whenNotPaused {
-        if (!isClaimable(epoch)) revert EpochNotClaimable();
-        if (claimed[clientAgentId][epoch]) revert AlreadyClaimed();
-        address recipient = _agentOwner(clientAgentId);
-        if (recipient == address(0)) revert InvalidAddress();
-
-        uint256 points = clientEpochPoints[epoch][clientAgentId];
-        uint256 total = _epochTotal(epoch);
-        uint256 amount = _share(epoch, points, total);
-        if (amount == 0) revert NothingToClaim();
-
-        claimed[clientAgentId][epoch] = true;
-        emissionsGate.claim(epoch, recipient, amount);
-        emit ClientRewardClaimed(epoch, clientAgentId, recipient, points, total, amount);
+    /// @notice Mint a client's reward to the agent owner, who must send this.
+    function claimClientReward(uint256 clientAgentId, uint256 epoch) external nonReentrant whenNotPaused {
+        PreparedReward memory reward = _prepareClientReward(clientAgentId, epoch);
+        _mintReward(epoch, reward.recipient, reward.claimableAmount, reward.reserveAmount);
+        emit ClientRewardClaimed(
+            reward.recipient,
+            clientAgentId,
+            epoch,
+            reward.weightedPoints,
+            reward.totalWeightedPoints,
+            reward.grossAmount,
+            reward.claimableAmount,
+            reward.reserveAmount
+        );
     }
 
-    /// @notice What a client would receive for an epoch right now.
-    function pendingReward(uint256 clientAgentId, uint256 epoch) external view returns (uint256) {
-        if (!isClaimable(epoch) || claimed[clientAgentId][epoch]) return 0;
-        return _share(epoch, clientEpochPoints[epoch][clientAgentId], _epochTotal(epoch));
+    /// @notice Stake a client's reward into the agent's seller pool for its owner.
+    function stakeClientReward(uint256 clientAgentId, uint256 epoch, uint256 stakeEpochs)
+        external
+        nonReentrant
+        whenNotPaused
+        returns (uint256 newPositionId)
+    {
+        PreparedReward memory reward = _prepareClientReward(clientAgentId, epoch);
+        newPositionId = _stakeClaimedReward(
+            reward.recipient, clientAgentId, stakeEpochs, epoch, reward.claimableAmount, reward.reserveAmount
+        );
+        emit ClientRewardStaked(
+            reward.recipient,
+            clientAgentId,
+            epoch,
+            newPositionId,
+            reward.weightedPoints,
+            reward.totalWeightedPoints,
+            reward.grossAmount,
+            reward.claimableAmount,
+            reward.reserveAmount
+        );
+    }
+
+    /// @notice What a client's owner would receive for an epoch right now.
+    function pendingClientReward(uint256 clientAgentId, uint256 epoch) external view returns (uint256) {
+        if (!isClaimable(epoch) || clientEpochClaimed[clientAgentId][epoch]) return 0;
+        uint256 points = clientEpochPoints[epoch][clientAgentId];
+        uint256 total = _epochTotal(epoch);
+        if (points == 0 || total == 0) return 0;
+        uint256 budget = emissionsGate.controllerEpochBudget(address(this), epoch);
+        return Math.min(Math.mulDiv(budget, points, total), _rewardCap(budget));
+    }
+
+    function rewardRecipient(uint256 clientAgentId) external view returns (address) {
+        return _agentOwner(clientAgentId);
     }
 
     // ─── Internal ────────────────────────────────────────────────────
@@ -183,9 +248,59 @@ contract AntseedClientRewards is Ownable2Step, Pausable, ReentrancyGuard {
         return Math.max(usageAccounting.totalWeightedBuyerPointsByEpoch(epoch), totalClientPointsByEpoch[epoch]);
     }
 
-    function _share(uint256 epoch, uint256 points, uint256 total) internal view returns (uint256) {
-        if (points == 0 || total == 0) return 0;
-        return Math.mulDiv(emissionsGate.controllerEpochBudget(address(this), epoch), points, total);
+    function _prepareClientReward(uint256 clientAgentId, uint256 epoch) internal returns (PreparedReward memory reward) {
+        if (!isClaimable(epoch)) revert EpochNotClaimable();
+        if (clientEpochClaimed[clientAgentId][epoch]) revert AlreadyClaimed();
+
+        reward.weightedPoints = clientEpochPoints[epoch][clientAgentId];
+        reward.totalWeightedPoints = _epochTotal(epoch);
+        if (reward.weightedPoints == 0 || reward.totalWeightedPoints == 0) revert NothingToClaim();
+
+        uint256 budget = emissionsGate.controllerEpochBudget(address(this), epoch);
+        reward.grossAmount = Math.mulDiv(budget, reward.weightedPoints, reward.totalWeightedPoints);
+        if (reward.grossAmount == 0) revert NothingToClaim();
+        reward.claimableAmount = Math.min(reward.grossAmount, _rewardCap(budget));
+        reward.reserveAmount = reward.grossAmount - reward.claimableAmount;
+
+        reward.recipient = _agentOwner(clientAgentId);
+        if (reward.recipient == address(0)) revert InvalidAddress();
+        if (msg.sender != reward.recipient) revert NotRewardRecipient();
+
+        clientEpochClaimed[clientAgentId][epoch] = true;
+    }
+
+    function _rewardCap(uint256 budget) internal pure returns (uint256) {
+        return (budget * MAX_REWARD_SHARE_BPS) / BPS_DENOMINATOR;
+    }
+
+    function _mintReward(uint256 epoch, address recipient, uint256 claimableAmount, uint256 reserveAmount) internal {
+        if (claimableAmount != 0) emissionsGate.claim(epoch, recipient, claimableAmount);
+        if (reserveAmount != 0) emissionsGate.claim(epoch, _emissionsReserve(), reserveAmount);
+    }
+
+    function _stakeClaimedReward(
+        address staker,
+        uint256 stakeAgentId,
+        uint256 stakeEpochs,
+        uint256 epoch,
+        uint256 claimableAmount,
+        uint256 reserveAmount
+    ) internal returns (uint256 newPositionId) {
+        IAntseedSellerPools pools = sellerPools;
+        if (address(pools) == address(0)) revert InvalidAddress();
+
+        _mintReward(epoch, address(this), claimableAmount, reserveAmount);
+
+        IERC20 token = pools.antsToken();
+        if (address(token) == address(0)) revert InvalidAddress();
+        token.forceApprove(address(pools), claimableAmount);
+        newPositionId = pools.stakeFor(staker, stakeAgentId, claimableAmount, stakeEpochs);
+        token.forceApprove(address(pools), 0);
+    }
+
+    function _emissionsReserve() internal view returns (address reserve) {
+        reserve = emissionsGate.emissionsReserve();
+        if (reserve == address(0)) revert InvalidAddress();
     }
 
     /// @dev Zero unless the agent id fits the cursor and has an owner.
@@ -210,7 +325,13 @@ contract AntseedClientRewards is Ownable2Step, Pausable, ReentrancyGuard {
         emit RecorderUpdated(_recorder);
     }
 
-    /// @notice Stops claims. Recording keeps running.
+    function setSellerPools(address _sellerPools) external onlyOwner {
+        if (_sellerPools == address(0)) revert InvalidAddress();
+        sellerPools = IAntseedSellerPools(_sellerPools);
+        emit SellerPoolsSet(_sellerPools);
+    }
+
+    /// @notice Stops claims and stakes. Recording keeps running.
     function pause() external onlyOwner {
         _pause();
     }

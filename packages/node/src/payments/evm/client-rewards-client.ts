@@ -19,18 +19,19 @@ const CLIENT_REWARDS_ABI = [
   'function emissionsGate() external view returns (address)',
   'function identityRegistry() external view returns (address)',
   'function isClaimable(uint256 epoch) external view returns (bool)',
-  'function claimed(uint256 clientAgentId, uint256 epoch) external view returns (bool)',
-  'function pendingReward(uint256 clientAgentId, uint256 epoch) external view returns (uint256)',
-  'function claim(uint256 clientAgentId, uint256 epoch) external',
-  'event ClientRewardClaimed(uint256 indexed epoch, uint256 indexed clientAgentId, address indexed recipient, uint256 points, uint256 totalPoints, uint256 amount)',
+  'function clientEpochClaimed(uint256 clientAgentId, uint256 epoch) external view returns (bool)',
+  'function pendingClientReward(uint256 clientAgentId, uint256 epoch) external view returns (uint256)',
+  'function claimClientReward(uint256 clientAgentId, uint256 epoch) external',
+  'event ClientRewardClaimed(address indexed recipient, uint256 indexed clientAgentId, uint256 indexed epoch, uint256 weightedPoints, uint256 totalWeightedPoints, uint256 grossAmount, uint256 claimableAmount, uint256 reserveAmount)',
 ] as const;
 
 /**
  * Read/claim client for AntseedClientRewards (the builders program). A client
  * app earns its share of all recognized buyer usage in an epoch, applied to the
- * epoch's bucket; usage is credited to the app's ERC-8004 agent. Claims are
- * permissionless and always pay `ownerOf(clientAgentId)`; there is no batch
- * claim, so several epochs take one transaction each.
+ * epoch's bucket, capped at 5% of it with the excess going to the emissions
+ * reserve; usage is credited to the app's ERC-8004 agent. Only
+ * `ownerOf(clientAgentId)` can claim; there is no batch claim, so several
+ * epochs take one transaction each.
  */
 export class ClientRewardsClient extends BaseEvmClient {
   constructor(config: ClientRewardsClientConfig) {
@@ -42,11 +43,11 @@ export class ClientRewardsClient extends BaseEvmClient {
   }
 
   pendingReward(clientAgentId: number, epoch: number): Promise<bigint> {
-    return this.contract().getFunction('pendingReward')(clientAgentId, epoch);
+    return this.contract().getFunction('pendingClientReward')(clientAgentId, epoch);
   }
 
   claimed(clientAgentId: number, epoch: number): Promise<boolean> {
-    return this.contract().getFunction('claimed')(clientAgentId, epoch);
+    return this.contract().getFunction('clientEpochClaimed')(clientAgentId, epoch);
   }
 
   async currentEpoch(): Promise<number> {
@@ -63,8 +64,8 @@ export class ClientRewardsClient extends BaseEvmClient {
     return scanEpochRewards(await this.currentEpoch(), (epoch) => this.pendingReward(clientAgentId, epoch), lookback);
   }
 
-  /** Mint the client's share of `epoch` to its agent owner; any signer may send it. */
+  /** Mint the client's share of `epoch` to its agent owner, who must be `signer`. */
   claim(signer: AbstractSigner, clientAgentId: number, epoch: number): Promise<string> {
-    return this._execWrite(signer, CLIENT_REWARDS_ABI, 'claim', clientAgentId, epoch);
+    return this._execWrite(signer, CLIENT_REWARDS_ABI, 'claimClientReward', clientAgentId, epoch);
   }
 }

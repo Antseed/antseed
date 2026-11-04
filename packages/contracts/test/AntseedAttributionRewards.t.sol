@@ -107,19 +107,22 @@ contract AntseedClientAttributionRewardsTest is Test {
 
         gate.setCurrentEpoch(22);
         gate.setBudget(address(rewards), 20, 100 ether);
-        rewards.claim(desktop, 20);
-        assertEq(gate.balanceOf(desktopOwner), 30 ether);
+        vm.prank(desktopOwner);
+        rewards.claimClientReward(desktop, 20);
+        assertEq(gate.balanceOf(desktopOwner), 5 ether); // 30 gross, capped at 5%
+        assertEq(gate.balanceOf(gate.emissionsReserve()), 25 ether);
 
         _flush(x3); // lands in the oldest open epoch, never in the claimable one
         assertEq(rewards.clientEpochPoints(20, cli), 0);
         assertEq(rewards.clientEpochPoints(21, cli), 50);
-        assertEq(rewards.pendingReward(cli, 20), 0);
+        assertEq(rewards.pendingClientReward(cli, 20), 0);
 
         // Epoch 21 settled nothing, so the rolled credit sets its denominator.
         gate.setCurrentEpoch(23);
         gate.setBudget(address(rewards), 21, 40 ether);
-        rewards.claim(cli, 21);
-        assertEq(gate.balanceOf(cliOwner), 40 ether);
+        vm.prank(cliOwner);
+        rewards.claimClientReward(cli, 21);
+        assertEq(gate.balanceOf(cliOwner), 2 ether); // 5% of the 40 bucket
     }
 }
 
@@ -230,13 +233,16 @@ contract AntseedReferralProgramIntegrationTest is Test {
         // Final and claimable as soon as the epoch ends, with no flush.
         gate.setCurrentEpoch(21);
         gate.setBudget(address(referrals), 20, 100 ether);
-        assertEq(referrals.pendingReward(buyer, 20), 25 ether);
-        assertEq(referrals.pendingRefereeReward(buyer, 20), 25 ether);
-        referrals.claim(referrer, _only(buyer), _one(20));
-        referrals.claimReferee(buyer, _one(20));
-        assertEq(gate.balanceOf(referrerOperator), 25 ether);
-        assertEq(gate.balanceOf(buyerOperator), 25 ether);
+        assertEq(referrals.pendingReferrerReward(buyer, 20), 5 ether); // 25 gross, capped at 5%
+        assertEq(referrals.pendingRefereeReward(buyer, 20), 5 ether);
+        vm.prank(referrerOperator);
+        referrals.claimReferrerRewards(referrer, _only(buyer), _one(20));
+        vm.prank(buyerOperator);
+        referrals.claimRefereeRewards(buyer, _one(20));
+        assertEq(gate.balanceOf(referrerOperator), 5 ether);
+        assertEq(gate.balanceOf(buyerOperator), 5 ether);
         assertEq(gate.balanceOf(buyer), 0);
+        assertEq(gate.balanceOf(gate.emissionsReserve()), 40 ether);
         assertEq(gate.minted(address(referrals), 20), 50 ether); // the unreferred half stays un-minted
 
         // After the window the referrer takes the buyer's whole share.
@@ -246,8 +252,9 @@ contract AntseedReferralProgramIntegrationTest is Test {
         gate.setCurrentEpoch(after_ + 1);
         gate.setBudget(address(referrals), after_, 100 ether);
         assertEq(referrals.pendingRefereeReward(buyer, after_), 0);
-        referrals.claim(referrer, _only(buyer), _one(after_));
-        assertEq(gate.balanceOf(referrerOperator), 125 ether);
+        vm.prank(referrerOperator);
+        referrals.claimReferrerRewards(referrer, _only(buyer), _one(after_));
+        assertEq(gate.balanceOf(referrerOperator), 10 ether);
         assertEq(gate.minted(address(referrals), after_), 100 ether);
     }
 
@@ -271,15 +278,20 @@ contract AntseedReferralProgramIntegrationTest is Test {
 
         gate.setCurrentEpoch(22);
         gate.setBudget(address(referrals), 21, 80 ether);
-        referrals.claim(buyer, _only(newcomer), _one(21)); // independent claims: both roles pay the operator
-        assertEq(gate.balanceOf(buyerOperator), 30 ether);
-        referrals.claimReferee(buyer, _one(21));
-        referrals.claim(referrer, _only(buyer), _one(21));
-        referrals.claimReferee(newcomer, _one(21));
+        // Independent claims, each capped at 5% of the bucket (4 ether).
+        vm.startPrank(buyerOperator);
+        referrals.claimReferrerRewards(buyer, _only(newcomer), _one(21));
+        assertEq(gate.balanceOf(buyerOperator), 4 ether);
+        referrals.claimRefereeRewards(buyer, _one(21));
+        vm.stopPrank();
+        vm.prank(referrerOperator);
+        referrals.claimReferrerRewards(referrer, _only(buyer), _one(21));
+        vm.prank(newcomerOperator);
+        referrals.claimRefereeRewards(newcomer, _one(21));
         assertEq(gate.balanceOf(buyer), 0); // a buyer hot wallet never receives funds
-        assertEq(gate.balanceOf(buyerOperator), 40 ether);
-        assertEq(gate.balanceOf(referrerOperator), 10 ether);
-        assertEq(gate.balanceOf(newcomerOperator), 30 ether);
+        assertEq(gate.balanceOf(buyerOperator), 8 ether);
+        assertEq(gate.balanceOf(referrerOperator), 4 ether);
+        assertEq(gate.balanceOf(newcomerOperator), 4 ether);
         assertEq(gate.minted(address(referrals), 21), 80 ether);
     }
 
@@ -289,8 +301,12 @@ contract AntseedReferralProgramIntegrationTest is Test {
         assertEq(referrals.pointsBeforeBinding(buyer), 10e6);
 
         gate.setCurrentEpoch(21);
-        gate.setBudget(address(referrals), 20, 100 ether);
-        assertEq(referrals.pendingReward(buyer, 20), 37.5 ether); // 75% of usage, halved
+        gate.setBudget(address(referrals), 20, 10 ether);
+        // 75% of usage, halved: 3.75 gross, against a 0.5 cap.
+        assertEq(referrals.pendingReferrerReward(buyer, 20), 0.5 ether);
+        vm.prank(referrerOperator);
+        referrals.claimReferrerRewards(referrer, _only(buyer), _one(20));
+        assertEq(gate.minted(address(referrals), 20), 3.75 ether);
     }
 
     function test_oldBuyerInviteIsRejectedButTheSettlementSucceeds() public {

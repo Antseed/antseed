@@ -38,15 +38,15 @@ const REFERRALS_ABI = [
   'function inviteUsed(address referrer, uint256 issuedEpoch, uint256 index) external view returns (bool)',
   'function inviteSigner(uint256 issuedEpoch, uint256 index, bytes32 r, bytes32 vs) external view returns (address)',
   'function previewInvite(address buyer, uint256 issuedEpoch, uint256 index, bytes32 r, bytes32 vs) external view returns (address referrer, bytes4 failure)',
-  'function referrerRecipient(address referrer) external view returns (address)',
+  'function rewardRecipient(address wallet) external view returns (address)',
   'function isClaimable(uint256 epoch) external view returns (bool)',
-  'function claimed(address buyer, uint256 epoch) external view returns (bool)',
-  'function refereeClaimed(address buyer, uint256 epoch) external view returns (bool)',
-  'function pendingReward(address buyer, uint256 epoch) external view returns (uint256)',
+  'function referrerEpochClaimed(address buyer, uint256 epoch) external view returns (bool)',
+  'function refereeEpochClaimed(address buyer, uint256 epoch) external view returns (bool)',
+  'function pendingReferrerReward(address buyer, uint256 epoch) external view returns (uint256)',
   'function pendingRefereeReward(address buyer, uint256 epoch) external view returns (uint256)',
   'function usageAccounting() external view returns (address)',
-  'function claim(address referrer, address[] buyers, uint256[] epochs) external',
-  'function claimReferee(address buyer, uint256[] epochs) external',
+  'function claimReferrerRewards(address referrer, address[] buyers, uint256[] epochs) external',
+  'function claimRefereeRewards(address buyer, uint256[] epochs) external',
   'event ReferralBound(address indexed buyer, address indexed referrer, uint256 epoch, uint256 inviteEpoch, uint256 inviteIndex)',
 ] as const;
 
@@ -70,7 +70,9 @@ export function inviteFailureOf(selector: string): InviteFailure | null {
  * A referred buyer's reward is its share of all recognized buyer usage in the
  * epoch, applied to the referral emission bucket: the referrer earns all of it,
  * or half during the buyer's bonus window, when the referee earns the other
- * half. Claims are permissionless and pay the claimant's Deposits operator.
+ * half. Each address is capped per epoch at 5% of the bucket, per role, and the
+ * excess goes to the emissions reserve. Only the wallet's Deposits operator can
+ * send a claim, and it is paid to that operator.
  */
 export class ReferralsClient extends BaseEvmClient {
   constructor(config: ReferralsClientConfig) {
@@ -107,7 +109,7 @@ export class ReferralsClient extends BaseEvmClient {
 
   /** What the buyer's referrer would receive on this buyer's epoch right now. */
   pendingReward(buyer: string, epoch: number): Promise<bigint> {
-    return this.contract().getFunction('pendingReward')(buyer, epoch);
+    return this.contract().getFunction('pendingReferrerReward')(buyer, epoch);
   }
 
   pendingRefereeReward(buyer: string, epoch: number): Promise<bigint> {
@@ -120,13 +122,13 @@ export class ReferralsClient extends BaseEvmClient {
     return Number(await contract.getFunction('currentEpoch')());
   }
 
-  /** Claim a referrer's rewards on `buyers` for `epochs`, skipping pairs with nothing to pay; pays the referrer's Deposits operator whoever sends it. */
+  /** Claim a referrer's rewards on `buyers` for `epochs`, skipping pairs with nothing to pay. `signer` must be the referrer's Deposits operator. */
   claim(signer: AbstractSigner, referrer: string, buyers: string[], epochs: number[]): Promise<string> {
-    return this._execWrite(signer, REFERRALS_ABI, 'claim', referrer, buyers, epochs);
+    return this._execWrite(signer, REFERRALS_ABI, 'claimReferrerRewards', referrer, buyers, epochs);
   }
 
-  /** Claim a referee's bonus for several epochs; pays the buyer's Deposits operator whoever sends it. */
+  /** Claim a referee's bonus for several epochs. `signer` must be the buyer's Deposits operator. */
   claimReferee(signer: AbstractSigner, buyer: string, epochs: number[]): Promise<string> {
-    return this._execWrite(signer, REFERRALS_ABI, 'claimReferee', buyer, epochs);
+    return this._execWrite(signer, REFERRALS_ABI, 'claimRefereeRewards', buyer, epochs);
   }
 }

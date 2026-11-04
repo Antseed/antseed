@@ -67,8 +67,8 @@ export async function builders(ctx: AntsContext, agentIds: number[]): Promise<Bu
 
 /**
  * Claim every payable epoch for one client agent, one transaction per epoch
- * (the contract has no batch claim). Anyone may send it; the contract always
- * pays the agent owner. Epochs come from Antscan, falling back to the RPC
+ * (the contract has no batch claim). Only the agent owner can send it, and the
+ * contract pays that owner. Epochs come from Antscan, falling back to the RPC
  * epoch scan when Antscan is unset, does not index builders, or fails.
  */
 export async function claimBuilderRewards(
@@ -82,6 +82,9 @@ export async function claimBuilderRewards(
   const signer = ctx.requireSigner();
   const owner = await agentOwner(ctx, agentId);
   if (!owner) throw new Error(`Agent ${agentId} is not registered in the ERC-8004 identity registry.`);
+  if (owner.toLowerCase() !== (await signer.getAddress()).toLowerCase()) {
+    throw new Error(`Connect the owner of agent ${agentId} to claim: ${owner}.`);
+  }
   // Antscan's answer is authoritative only when it is available; unset,
   // unsupported or failing, fall back to the on-chain epoch scan.
   const indexer = ctx.indexer();
@@ -89,8 +92,7 @@ export async function claimBuilderRewards(
   const listed = indexed?.available
     ? indexed.agents.find((agent) => agent.agentId === agentId)?.claimableEpochs ?? []
     : (await client.pendingRewards(agentId)).map((entry) => entry.epoch);
-  // Antscan can lag a claim (an earlier partial run, or anyone else: claims
-  // are permissionless), and the contract reverts on an epoch already paid, so
+  // Antscan can lag a claim (an earlier partial run), and the contract reverts on an epoch already paid, so
   // its epochs are rechecked on-chain before each one is sent.
   const epochs = indexed?.available
     ? (await Promise.all(listed.map(async (epoch) => ((await client.pendingReward(agentId, epoch)) > 0n ? epoch : null))))
