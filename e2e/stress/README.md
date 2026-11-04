@@ -21,10 +21,11 @@ By default (`--rpc base`), each peer reaches the chain through its own proxy tha
 After the load, the harness closes every channel and compares the seller's and buyer's stores, the chain, and what the mock upstream actually delivered. A run fails on any of these:
 
 - delivered work that was not settled, or a buyer paying for more than was delivered;
+- in every scenario, faults and restarts included: a response the client received in full that the mock upstream did not deliver, or that settled for less than it cost;
 - a buyer deposit change that differs from the sum settled, or seller plus fee income that differs from it;
 - reserve left locked, or a channel left open after the close;
-- a peer crashing, exiting unexpectedly, or needing SIGKILL to stop;
-- after #1050's scenario, a channel the seller closed still counted as active by the buyer's store, `/_antseed/buyer-usage`, or `antseed buyer status`.
+- a peer crashing, exiting unexpectedly, or needing SIGKILL to stop (mid-run restarts included);
+- after #1050's scenario, a channel the seller closed still counted as active by the buyer's store, `/_antseed/buyer-usage`, `/_antseed/channels` or `antseed buyer status`, or one of them could not be read.
 
 `ci.mjs` also requires a share of requests to succeed (see `GATES`), and for restart scenarios no failures outside the restart window.
 

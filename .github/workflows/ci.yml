@@ -77,9 +77,16 @@ jobs:
       - name: Install Forge dependencies
         run: cd packages/contracts && forge install foundry-rs/forge-std
 
-      - name: Build contracts
-        run: cd packages/contracts && forge build
+      # Shared with the other job that deploys: contracts compile once per change to them.
+      - name: Restore compiled contracts
+        uses: actions/cache@v4
+        with:
+          path: |
+            packages/contracts/out
+            packages/contracts/cache_forge
+          key: contracts-deploy-${{ hashFiles('packages/contracts/**/*.sol', 'packages/contracts/foundry.toml', 'packages/contracts/foundry.lock', 'pnpm-lock.yaml') }}
 
+      # The deploy script compiles what it needs (without the contract tests).
       - name: Start Anvil
         run: anvil &
 
@@ -121,8 +128,14 @@ jobs:
       - name: Install Forge dependencies
         run: cd packages/contracts && forge install foundry-rs/forge-std
 
-      - name: Build contracts
-        run: cd packages/contracts && forge build
+      # Shared with the other job that deploys: contracts compile once per change to them.
+      - name: Restore compiled contracts
+        uses: actions/cache@v4
+        with:
+          path: |
+            packages/contracts/out
+            packages/contracts/cache_forge
+          key: contracts-deploy-${{ hashFiles('packages/contracts/**/*.sol', 'packages/contracts/foundry.toml', 'packages/contracts/foundry.lock', 'pnpm-lock.yaml') }}
 
       - name: Run payment stress scenarios
         run: node e2e/stress/ci.mjs --parallel 2 --out "$RUNNER_TEMP/antseed-stress"

@@ -132,6 +132,8 @@ class Proc {
   constructor(name, cmd, args, env, logFile) {
     this.name = name; this.cmd = cmd; this.args = args; this.env = env; this.logFile = logFile;
     this.exits = [];
+    // Every stop that needed SIGKILL, mid-run restarts included.
+    this.forcedStops = [];
   }
   start() {
     const out = createWriteStream(this.logFile, { flags: 'a' });
@@ -162,7 +164,12 @@ class Proc {
     const t0 = Date.now();
     while (this.alive && Date.now() - t0 < timeoutMs) await sleep(100);
     let forced = false;
-    if (this.alive) { forced = true; this.child.kill('SIGKILL'); while (this.alive) await sleep(50); }
+    if (this.alive) {
+      forced = true;
+      this.forcedStops.push({ at: new Date().toISOString(), afterMs: Date.now() - t0 });
+      this.child.kill('SIGKILL');
+      while (this.alive) await sleep(50);
+    }
     this.stopping = false;
     return { forced, ms: Date.now() - t0 };
   }
@@ -659,6 +666,19 @@ async function oneRun({ scenarioName, sc, sellerTree, buyerTree, runDir }) {
     // Mock records: all fully-delivered ok responses were billed? Allow rounding.
     const faultFree = sc.fault500Rate === 0 && sc.disconnectRate === 0 && sc.abortRatio === 0 && !sc.restart;
     if (faultFree && sumSpent !== expected) result.violations.push({ kind: 'seller-spent!=delivered-cost(fault-free)', spent: sumSpent.toString(), expected: expected.toString() });
+    // In every scenario, independent of the seller's own books: each response
+    // the client received in full was delivered by the upstream and paid for.
+    let receivedCost = 0n;
+    const undelivered = [];
+    for (const r of results) {
+      if (r.error || r.clientAborted) continue;
+      const delivered = mock.stats.perRequest.get(r.tag);
+      if (delivered?.status !== 'ok') { undelivered.push(r.tag); continue; }
+      receivedCost += BigInt(delivered.cost);
+    }
+    result.money.clientReceivedCost = receivedCost.toString();
+    if (undelivered.length) result.violations.push({ kind: 'client-ok-without-upstream-delivery', n: undelivered.length, tags: undelivered.slice(0, 5) });
+    if (sumSettled < receivedCost) result.violations.push({ kind: 'client-received-work-unpaid', received: receivedCost.toString(), settled: sumSettled.toString(), gap: (receivedCost - sumSettled).toString() });
     if (sumSettled > sumSpent) result.violations.push({ kind: 'buyer-overpaid(settled>seller-spent)', settled: sumSettled.toString(), spent: sumSpent.toString() });
 
     result.channels = channels;
@@ -692,8 +712,8 @@ async function oneRun({ scenarioName, sc, sellerTree, buyerTree, runDir }) {
     const stops = [];
     for (const p of procs.reverse()) stops.push({ name: p.name, ...(await p.stop(15000)) });
     result.shutdown = stops;
-    const stuck = stops.filter((s) => s.forced && s.name !== 'bootstrap');
-    if (stuck.length) result.violations.push({ kind: 'process-needed-SIGKILL-on-shutdown', detail: stuck });
+    const stuck = procs.filter((p) => p.name !== 'bootstrap').flatMap((p) => p.forcedStops.map((f) => ({ name: p.name, ...f })));
+    if (stuck.length) result.violations.push({ kind: 'process-needed-SIGKILL-to-stop', detail: stuck });
     result.rpcStats = Object.fromEntries(rpcProxies.map(([who, p]) => [who, p.stats]));
     for (const [, p] of rpcProxies) await p.close();
     if (anvil) anvil.kill('SIGKILL');
@@ -753,6 +773,7 @@ async function main() {
       sellerLog: res.sellerLog.counts, buyerLog: res.buyerLog.counts, restart: res.restart, issue1050: res.issue1050, channels: res.channels?.length, notes: res.notes, mock: res.mock };
     appendFileSync(summaryFile, JSON.stringify(line) + '\n');
     console.log(`[${label} ${r}/${runs}] ${res.harnessError ? 'HARNESS-ERROR ' + res.harnessError.split('\n')[0] : ''} ok=${res.client?.ok}/${res.client?.total} fail=${JSON.stringify(res.client?.failures)} viol=${res.violations.map((v) => v.kind).join(',') || 'none'} p50=${res.client?.p50} p95=${res.client?.p95} sellerRej=${res.sellerLog.counts.rejectUnderfunded} behind=${res.sellerLog.counts.behindSpendAccepted} settled=${res.money?.onchainSettled} expected=${res.money?.mockExpectedDelivered} (${Math.round((Date.now() - t) / 1000)}s)${res.issue1050 ? ' 1050=' + JSON.stringify(res.issue1050) : ''}`);
+    if (res.harnessError || res.violations.length > 0) process.exitCode = 1;
   }
 }
 

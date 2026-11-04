@@ -32,7 +32,7 @@ export function startMockUpstream(opts = {}) {
   const stats = {
     requests: 0, completed: 0, faults500: 0, disconnects: 0, clientGone: 0,
     expectedCostBaseUnits: 0n, // sum over fully delivered responses (with usage)
-    perRequest: new Map(), // tag -> {status, cost, prompt, completion, stream}
+    perRequest: new Map(), // tag -> {status, cost, ...}: what was delivered, by request
     active: 0, maxActive: 0,
   };
   const server = http.createServer((req, res) => {
@@ -60,9 +60,10 @@ export function startMockUpstream(opts = {}) {
       const imgCost = BigInt(Math.round((o.imagePriceUsd ?? 0.04) * 1e6)) * BigInt(n);
       stats.imageRequests = (stats.imageRequests ?? 0) + 1;
       stats.images = (stats.images ?? 0) + n;
-      stats.perRequest.set(tag, { status: 'ok', image: true, n, prompt: promptTokens, unitCost: imgCost.toString() });
+      const cost = imgCost + BigInt(Math.round(promptTokens * o.inPrice));
+      stats.perRequest.set(tag, { status: 'ok', image: true, n, prompt: promptTokens, cost: cost.toString() });
       stats.expectedImageUnitCost = (stats.expectedImageUnitCost ?? 0n) + imgCost;
-      stats.expectedCostBaseUnits += imgCost + BigInt(Math.round(promptTokens * o.inPrice));
+      stats.expectedCostBaseUnits += cost;
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ created: Math.floor(Date.now() / 1000), data: Array.from({ length: n }, () => ({ b64_json: png })), usage: { input_tokens: promptTokens, output_tokens: 0, total_tokens: promptTokens, input_tokens_details: { text_tokens: promptTokens, image_tokens: 0 } } }));
       stats.completed++;

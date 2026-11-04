@@ -4,6 +4,7 @@
 // directory and loaded into a fresh anvil for every run.
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { getChainConfig } from '../../packages/node/dist/payments/chain-config.js';
 
 export const KEYS = {
   deployer: '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80',
@@ -15,16 +16,17 @@ export const ADDR = {
   seller: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8',
   buyer: '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC',
 };
-// Deterministic Deploy.s.sol addresses (= chain-config base-local preset).
+// Deploy.s.sol's deterministic addresses on a fresh chain: the base-local preset.
+const local = getChainConfig('base-local');
 export const C = {
-  usdc: '0x5FbDB2315678afecb367f032d93F642f64180aa3',
-  identity: '0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512',
-  registry: '0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0',
-  staking: '0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9',
-  deposits: '0x5FC8d32690cc91D4c39d9d3abcBD16989F875707',
-  channels: '0x0165878A594ca255338adfa4d48449f69242Eb8F',
-  emissions: '0x2279B7A0a67DB372996a5FaB50D91eAA73d2eBe6',
-  depositRelay: '0x8A791620dd6260079BF849Dc5567aDC3F2FdC318',
+  usdc: local.usdcContractAddress,
+  identity: local.identityRegistryAddress,
+  registry: local.registryContractAddress,
+  staking: local.stakingContractAddress,
+  deposits: local.depositsContractAddress,
+  channels: local.channelsContractAddress,
+  emissions: local.emissionsContractAddress,
+  depositRelay: local.depositRelayAddress,
 };
 export const BUYER_DEPOSIT = 500_000_000n; // 500 USDC
 
@@ -65,7 +67,8 @@ async function rpcCall(rpc, method, params) {
 }
 
 function deployAndSetup(rpc, contractsDir) {
-  run('forge', ['script', 'script/Deploy.s.sol', '--rpc-url', rpc, '--broadcast'], { cwd: contractsDir });
+  // The deploy needs none of the contract tests, which are most of the compile.
+  run('forge', ['script', 'script/Deploy.s.sol', '--skip', 'test', '--rpc-url', rpc, '--broadcast'], { cwd: contractsDir });
   const code = cast(rpc, ['code', C.channels]);
   if (code === '0x') throw new Error('Channels not deployed at expected address');
   // Match Base mainnet: top-ups are allowed once 65% of the deposit is settled (source default 85%).
