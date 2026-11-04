@@ -27,7 +27,11 @@ const CERTIFICATE_LIFETIME_S = 24 * 60 * 60;
 /** Requests without a buyer binding are the pool's own checks: kept tiny and rare. */
 const CHECK_MAX_TOKENS = 16;
 const DEFAULT_CHECKS_PER_HOUR = 240;
-const CHANNEL_RECHECK_MS = 30_000;
+/** How long a request waits for its channel to show on-chain (a fresh reserve can lag the RPC), and how often it looks. */
+const DEFAULT_CHANNEL_WAIT_MS = 5_000;
+const CHANNEL_POLL_MS = 1_000;
+/** Bounds the per-channel caches; past it they start over. */
+const MAX_CACHED_CHANNELS = 10_000;
 
 /** Signs attestations about the machine the worker runs on (the Mac app does this with the Secure Enclave). */
 export interface WorkerAttester {
@@ -36,7 +40,7 @@ export interface WorkerAttester {
   attest(nonce: string, worker: string, encryptionKey: string): Promise<WorkerAttestation>;
 }
 
-/** Whether `channel` on-chain belongs to `buyer` and to the pool's `seller`. `null` = not known yet. */
+/** Whether `channel` on-chain belongs to `buyer` and to the pool's `seller`. `null` = not on-chain (yet). */
 export type ChannelVerifier = (channel: string, buyer: string, seller: string) => Promise<boolean | null>;
 
 export interface PoolWorkerOptions {
@@ -54,6 +58,8 @@ export interface PoolWorkerOptions {
   attester?: WorkerAttester;
   /** Checks that requests come from real buyers of this pool; without it, bindings are only signature-checked. */
   channelVerifier?: ChannelVerifier;
+  /** How long a request waits for its channel to be verified before it is refused (default 5 s). */
+  channelWaitMs?: number;
   maxConcurrency?: number;
   checksPerHour?: number;
   agent?: string;
@@ -72,15 +78,18 @@ export class PoolWorker {
   private readonly active = new Map<string, AbortController>();
   private readonly statsWaiters = new Map<string, (stats: WorkerStats) => void>();
   private stopped = false;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private backoffMs = 1_000;
   private paused = false;
   private welcome: WelcomeFrame | null = null;
   private seller: string | null = null;
   private checkTimes: number[] = [];
-  /** channel → the buyer the chain says owns it, once verified. */
+  /** Verified: channel → the buyer the chain says owns it. */
   private readonly channelOwners = new Map<string, string>();
-  /** `channel|buyer` → false (not that buyer's) or the time a pending check may run again. */
-  private readonly channels = new Map<string, false | number>();
+  /** Refused: `channel|buyer` pairs the chain shows are not that buyer's channel with this pool. */
+  private readonly refusedChannels = new Set<string>();
+  /** Pending: one lookup per `channel|buyer`, shared by the requests waiting on it. */
+  private readonly verifying = new Map<string, Promise<boolean | null>>();
 
   constructor(opts: PoolWorkerOptions) {
     this.opts = opts;
@@ -102,6 +111,8 @@ export class PoolWorker {
 
   stop(): void {
     this.stopped = true;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
     for (const controller of this.active.values()) controller.abort();
     this.ws?.close(1000, 'worker stopping');
   }
@@ -133,10 +144,12 @@ export class PoolWorker {
   }
 
   private connect(): void {
+    this.reconnectTimer = null;
+    if (this.stopped) return;
     const ws = new WebSocket(this.opts.poolUrl, { maxPayload: 16 * 1024 * 1024 });
     this.ws = ws;
     ws.on('message', (data, isBinary) => {
-      if (isBinary) return;
+      if (isBinary || this.stopped) return;
       const frame = parsePoolFrame(data.toString());
       if (frame) void this.handle(frame);
     });
@@ -147,7 +160,7 @@ export class PoolWorker {
       this.active.clear();
       if (this.stopped) return;
       this.log(`disconnected (${code}${reason.length ? ` ${reason.toString()}` : ''}); retrying in ${Math.round(this.backoffMs / 1000)}s`);
-      setTimeout(() => this.connect(), this.backoffMs);
+      this.reconnectTimer = setTimeout(() => this.connect(), this.backoffMs);
       this.backoffMs = Math.min(MAX_BACKOFF_MS, this.backoffMs * 2);
     });
     ws.on('error', (err) => this.log(`connection error: ${err.message}`));
@@ -214,11 +227,14 @@ export class PoolWorker {
   }
 
   /**
-   * Whether to serve a request bound to `channel`. Verification runs in the
-   * background (RPC reads can lag a fresh reserve); a channel proven to belong
-   * to someone else is refused from then on.
+   * Whether `channel` is `buyer`'s channel with this pool: true (verified),
+   * false (refused) or null (not on-chain within the wait). Only a verified
+   * channel gets full requests, so a pool cannot buy real work by signing
+   * bindings to channels that do not exist. Lookups are shared by concurrent
+   * requests and both verdicts are cached; an unknown one is looked up again
+   * by the next request.
    */
-  private channelAllowed(channel: string, buyer: string): boolean {
+  private channelVerdict(channel: string, buyer: string): Promise<boolean | null> | boolean {
     const verifier = this.opts.channelVerifier;
     if (!verifier || !this.seller) return true;
     buyer = buyer.toLowerCase();
@@ -226,21 +242,34 @@ export class PoolWorker {
     const owner = this.channelOwners.get(channel);
     if (owner !== undefined) return owner === buyer;
     const key = `${channel}|${buyer}`;
-    const verdict = this.channels.get(key);
-    if (verdict === false) return false;
-    if (typeof verdict === 'number' && Date.now() < verdict) return true;
-    this.channels.set(key, Date.now() + CHANNEL_RECHECK_MS);
-    void verifier(channel, buyer, this.seller).then((result) => {
-      if (result === null) return;
-      if (result) {
+    if (this.refusedChannels.has(key)) return false;
+    let pending = this.verifying.get(key);
+    if (!pending) {
+      pending = this.lookUpChannel(verifier, channel, buyer, this.seller).finally(() => this.verifying.delete(key));
+      this.verifying.set(key, pending);
+    }
+    return pending;
+  }
+
+  private async lookUpChannel(verifier: ChannelVerifier, channel: string, buyer: string, seller: string): Promise<boolean | null> {
+    const deadline = Date.now() + (this.opts.channelWaitMs ?? DEFAULT_CHANNEL_WAIT_MS);
+    for (;;) {
+      const remaining = deadline - Date.now();
+      const result = await withTimeout(verifier(channel, buyer, seller), Math.max(remaining, 1)).catch(() => null);
+      if (result === true) {
+        if (this.channelOwners.size >= MAX_CACHED_CHANNELS) this.channelOwners.clear();
         this.channelOwners.set(channel, buyer);
-        this.channels.delete(key);
-      } else {
-        this.channels.set(key, false);
-        this.log(`channel ${channel.slice(0, 18)}… does not belong to buyer ${buyer} of this pool; refusing it`);
+        return true;
       }
-    }).catch(() => {});
-    return true;
+      if (result === false) {
+        if (this.refusedChannels.size >= MAX_CACHED_CHANNELS) this.refusedChannels.clear();
+        this.refusedChannels.add(`${channel}|${buyer}`);
+        this.log(`channel ${channel.slice(0, 18)}… does not belong to buyer ${buyer} of this pool; refusing it`);
+        return false;
+      }
+      if (Date.now() + CHANNEL_POLL_MS >= deadline) return null;
+      await new Promise((resolve) => setTimeout(resolve, CHANNEL_POLL_MS));
+    }
   }
 
   private async serve(frame: RequestFrame): Promise<void> {
@@ -265,8 +294,13 @@ export class PoolWorker {
     }
 
     if (opened.buyer && opened.channel && !/^0x0+$/.test(opened.channel)) {
-      if (!this.channelAllowed(opened.channel.toLowerCase(), opened.buyer)) {
+      const verdict = await this.channelVerdict(opened.channel.toLowerCase(), opened.buyer);
+      if (verdict === false) {
         fail('Request channel does not belong to a buyer of this pool');
+        return;
+      }
+      if (verdict === null) {
+        fail('Request channel is not on-chain yet; retry shortly');
         return;
       }
     } else {
@@ -332,4 +366,13 @@ export class PoolWorker {
   private log(line: string): void {
     this.opts.log?.(`[worker] ${line}`);
   }
+}
+
+/** `promise`, or a rejection after `ms`. */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => { timer = setTimeout(() => reject(new Error('timed out')), ms); }),
+  ]).finally(() => clearTimeout(timer));
 }

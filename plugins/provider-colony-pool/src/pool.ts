@@ -14,6 +14,7 @@ import {
   type WorkerAttestation,
   type WorkerKeyCertificate,
 } from '@antseed/node/worker-e2e';
+import type { SerializedHttpRequest } from '@antseed/node';
 import type { WorkerLedger } from './ledger.js';
 import type { DeviceAttestor } from './mdm.js';
 import {
@@ -84,13 +85,7 @@ export interface DispatchHandlers {
   onError(error: Error): void;
 }
 
-export interface DispatchRequest {
-  requestId: string;
-  method: string;
-  path: string;
-  headers: Record<string, string>;
-  body: Uint8Array;
-}
+export type DispatchRequest = SerializedHttpRequest;
 
 export class NoWorkerAvailableError extends Error {
   constructor(service: string) {

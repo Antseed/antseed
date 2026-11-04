@@ -20,7 +20,7 @@ export interface NanoMdmAttestorOptions {
   /** Port this pool listens on for NanoMDM's webhook (`nanomdm -webhook-url http://<pool>:<port>/<path>`). */
   webhookPort: number;
   webhookHost?: string;
-  /** Secret path NanoMDM posts to. */
+  /** Secret path NanoMDM posts to: the webhook's only authentication, so it must be unguessable. */
   webhookPath: string;
   timeoutMs?: number;
   log?: (line: string) => void;
@@ -28,6 +28,12 @@ export interface NanoMdmAttestorOptions {
 
 /** DeviceInformation answers can take a while: the Mac is woken by push and asks Apple for the attestation. */
 const DEFAULT_TIMEOUT_MS = 120_000;
+
+/** A DeviceInformation answer with a certificate chain is a few KiB; anything far larger is refused unread. */
+export const MAX_WEBHOOK_BODY_BYTES = 64 * 1024;
+
+/** Shortest webhook secret path accepted (e.g. `openssl rand -hex 16` is 32). */
+export const MIN_WEBHOOK_PATH_LENGTH = 16;
 
 /**
  * NanoMDM (github.com/micromdm/nanomdm): commands are queued with
@@ -38,7 +44,11 @@ export class NanoMdmAttestor implements DeviceAttestor {
   private server: Server | null = null;
   private readonly waiting = new Map<string, { resolve: (payload: PlistValue) => void; reject: (error: Error) => void }>();
 
-  constructor(private readonly opts: NanoMdmAttestorOptions) {}
+  constructor(private readonly opts: NanoMdmAttestorOptions) {
+    if (opts.webhookPath.replace(/^\//, '').length < MIN_WEBHOOK_PATH_LENGTH) {
+      throw new Error(`The MDM webhook path is its only secret: use at least ${MIN_WEBHOOK_PATH_LENGTH} random characters`);
+    }
+  }
 
   async start(): Promise<void> {
     const path = `/${this.opts.webhookPath.replace(/^\//, '')}`;
@@ -47,9 +57,24 @@ export class NanoMdmAttestor implements DeviceAttestor {
         res.writeHead(404).end();
         return;
       }
+      if (Number(req.headers['content-length'] ?? 0) > MAX_WEBHOOK_BODY_BYTES) {
+        res.writeHead(413, { connection: 'close' }).end(() => req.destroy());
+        return;
+      }
       const chunks: Buffer[] = [];
-      req.on('data', (chunk: Buffer) => chunks.push(chunk));
+      let size = 0;
+      req.on('data', (chunk: Buffer) => {
+        size += chunk.length;
+        if (size <= MAX_WEBHOOK_BODY_BYTES) {
+          chunks.push(chunk);
+          return;
+        }
+        // A chunked body past the cap: drop what was read and the connection.
+        chunks.length = 0;
+        req.socket.destroy();
+      });
       req.on('end', () => {
+        if (size > MAX_WEBHOOK_BODY_BYTES) return;
         res.writeHead(200).end();
         this.onWebhook(Buffer.concat(chunks));
       });
@@ -64,6 +89,7 @@ export class NanoMdmAttestor implements DeviceAttestor {
   async stop(): Promise<void> {
     for (const waiter of this.waiting.values()) waiter.reject(new Error('MDM attestor stopped'));
     this.waiting.clear();
+    this.server?.closeAllConnections();
     await new Promise<void>((resolve) => (this.server ? this.server.close(() => resolve()) : resolve()));
   }
 

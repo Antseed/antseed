@@ -39,7 +39,7 @@ import { adaptPeerFaultErrorResponse } from './peer-error-response.js';
 import {
   WORKER_ASSIGN_PATH,
   isWorkerUnavailable,
-  peerSupportsWorkerE2E,
+  peerServiceUsesWorkerE2E,
   type SealedWorkerRequest,
   type WorkerE2EClient,
 } from './worker-e2e.js';
@@ -118,7 +118,7 @@ export interface BuyerRequestHandlerDeps {
    * consent to count their stake for this buyer on sellers' staked free tiers.
    */
   freeTierDelegationsHeader?: () => string | null;
-  /** Encrypts requests to colony pools' workers (sellers advertising colony-pool-e2e.v2). */
+  /** Encrypts requests for colony-pool services to the pool's workers (see peerServiceUsesWorkerE2E). */
   workerE2E?: WorkerE2EClient | null;
 }
 
@@ -271,7 +271,7 @@ export class BuyerRequestHandler {
     // routes ciphertext. Everything above read the plaintext request; the
     // request sent and the raw response stay on hand for ResponseAuth, which
     // signs wire bytes.
-    const workerE2E = !options?.controlPlane && requestedService && this._deps.workerE2E && peerSupportsWorkerE2E(peer)
+    const workerE2E = !options?.controlPlane && requestedService && this._deps.workerE2E && peerServiceUsesWorkerE2E(peer, requestedService)
       ? this._deps.workerE2E
       : null;
     const plainReq = req;
@@ -567,14 +567,34 @@ export class BuyerRequestHandler {
     const bpm = isFreeService ? undefined : this._deps.negotiator?.bpm;
     const executeCountedRequest = async (): Promise<SerializedHttpResponse> => {
       bpm?.beginPaidRequest(peer.peerId);
+      // Tell the payment manager whether the worker's sealed answer verified:
+      // a NeedAuth for the request waits for this before it is signed.
+      const attempt = async (): Promise<SerializedHttpResponse> => {
+        try {
+          await sealForAttempt();
+        } catch (error) {
+          if (sealed) this._deps.negotiator?.bpm?.recordWorkerDelivery(plainReq.requestId, null);
+          throw error;
+        }
+        const session: SealedWorkerRequest | null = sealed;
+        try {
+          const response = await executeRequest();
+          if (session) {
+            const verified = session.verified && session.usageConsistent;
+            this._deps.negotiator?.bpm?.recordWorkerDelivery(plainReq.requestId, verified ? session.usage : null);
+          }
+          return response;
+        } catch (error) {
+          if (session) this._deps.negotiator?.bpm?.recordWorkerDelivery(plainReq.requestId, null);
+          throw error;
+        }
+      };
       try {
-        await sealForAttempt();
-        const response = await executeRequest();
+        const response = await attempt();
         if (!sealed || !isWorkerUnavailable(response)) return response;
         // The assigned worker left or is busy: take another one, once.
         workerE2E!.forget(peer.peerId, requestedService!);
-        await sealForAttempt();
-        return await executeRequest();
+        return await attempt();
       } finally {
         bpm?.endPaidRequest(peer.peerId);
       }

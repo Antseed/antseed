@@ -13,6 +13,7 @@ import {
   WORKER_E2E_CAPABILITY,
   WORKER_UNAVAILABLE_CODE,
   WORKER_UNAVAILABLE_STATUS,
+  workerE2EProviderCapability,
 } from '@antseed/node/worker-e2e';
 import type { WorkerLedger } from './ledger.js';
 import { NoWorkerAvailableError, WorkerUnavailableError, type ColonyPool } from './pool.js';
@@ -54,16 +55,6 @@ function routeOf(req: SerializedHttpRequest): { model: string | null; worker: st
   }
 }
 
-function concat(chunks: Uint8Array[]): Uint8Array {
-  const out = new Uint8Array(chunks.reduce((sum, chunk) => sum + chunk.length, 0));
-  let offset = 0;
-  for (const chunk of chunks) {
-    out.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return out;
-}
-
 /**
  * Seller-side provider that serves every request from a pool worker. Its
  * announced `services` follow the connected workers, and each paid request
@@ -76,7 +67,8 @@ export class ColonyPoolProvider implements Provider {
   readonly maxConcurrency: number;
   readonly serviceApiProtocols?: Record<string, ServiceApiProtocol[]>;
   readonly serviceCapabilities?: Record<string, ServiceCapabilities>;
-  readonly peerCapabilities = [WORKER_E2E_CAPABILITY];
+  /** Buyers encrypt to a worker only for the services of a provider named in a capability. */
+  readonly peerCapabilities = [WORKER_E2E_CAPABILITY, workerE2EProviderCapability(this.name)];
 
   private readonly pool: ColonyPool;
   private readonly ledger: WorkerLedger;
@@ -197,7 +189,7 @@ export class ColonyPoolProvider implements Provider {
         requestId: req.requestId,
         statusCode: start!.statusCode,
         headers: start!.headers,
-        body: concat(chunks),
+        body: Buffer.concat(chunks),
       });
 
       const worker = target.toLowerCase();

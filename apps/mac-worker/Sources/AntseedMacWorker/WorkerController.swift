@@ -73,11 +73,19 @@ final class WorkerController: ObservableObject {
     private var socket: URLSessionWebSocketTask?
     private var backoff: UInt64 = 1
     private var active: [String: Task<Void, Never>] = [:]
-    private var statsWaiter: String?
-    /// channel → the buyer the chain says owns it, once verified.
-    private var channelOwners: [String: String] = [:]
-    /// "channel|buyer" pairs the chain says don't match.
-    private var refusedChannels: Set<String> = []
+    /// On-chain channel checks (when an RPC is set), each read bounded so a slow RPC can't hold a request.
+    private lazy var channels: ChannelVerdicts = {
+        let verdicts = ChannelVerdicts { [weak self] channel, buyer in
+            guard let self, let rpc = self.config.rpcURL, let pool = self.poolSeller else { return nil }
+            return try await Chain(rpcURL: rpc, timeout: 2).channelBelongs(channel: channel, buyer: buyer, pool: pool)
+        }
+        verdicts.onVerdict = { [weak self] channel, buyer, verified in
+            self?.log(verified
+                ? "on-chain check: channel \(channel.prefix(12))… belongs to buyer \(buyer.prefix(10))… and this pool"
+                : "on-chain check FAILED: channel \(channel.prefix(12))… is not this buyer's; refusing it")
+        }
+        return verdicts
+    }()
     private var checkTimes: [Date] = []
 
     var address: String { keys.ethereum.address }
@@ -233,7 +241,7 @@ final class WorkerController: ObservableObject {
             refreshPayout()
             if let wallet = config.linkPayoutTo, !linkRequested {
                 linkRequested = true
-                linkPayout(to: wallet)
+                Task { await linkPayout(to: wallet) }
             }
         case "request":
             guard let id = frame["id"] as? String else { return }
@@ -289,8 +297,13 @@ final class WorkerController: ObservableObject {
 
         var maxTokens = request["max_tokens"] as? Int ?? request["max_completion_tokens"] as? Int ?? 512
         if let buyer = opened.buyer, let channel = opened.channel, !channel.allSatisfy({ $0 == "0" || $0 == "x" }) {
-            guard await channelAllowed(channel: channel.lowercased(), buyer: buyer) else {
-                return fail(id, "Request channel does not belong to a buyer of this pool")
+            // Without an RPC, bindings are only signature-checked.
+            if config.rpcURL != nil, poolSeller != nil {
+                switch await channels.verdict(channel: channel, buyer: buyer) {
+                case true?: break
+                case false?: return fail(id, "Request channel does not belong to a buyer of this pool")
+                case nil: return fail(id, "Request channel is not on-chain yet; retry shortly")
+                }
             }
         } else {
             // No buyer binding: a pool check, kept small.
@@ -351,29 +364,10 @@ final class WorkerController: ObservableObject {
         }
     }
 
-    /// Checks on-chain that the channel belongs to this buyer and pool (when an RPC is set).
-    private func channelAllowed(channel: String, buyer: String) async -> Bool {
-        guard let rpc = config.rpcURL, let pool = poolSeller else { return true }
-        let buyer = buyer.lowercased()
-        // A channel proven to be another buyer's never serves this one.
-        if let owner = channelOwners[channel] { return owner == buyer }
-        if refusedChannels.contains("\(channel)|\(buyer)") { return false }
-        if let result = try? await Chain(rpcURL: rpc).channelBelongs(channel: channel, buyer: buyer, pool: pool) {
-            if result { channelOwners[channel] = buyer } else { refusedChannels.insert("\(channel)|\(buyer)") }
-            log(result
-                ? "on-chain check: channel \(channel.prefix(12))… belongs to buyer \(buyer.prefix(10))… and this pool"
-                : "on-chain check FAILED: channel \(channel.prefix(12))… is not this buyer's; refusing it")
-            return result
-        }
-        return true // not visible yet: RPC reads can lag a fresh reserve
-    }
-
     // MARK: earnings
 
     private func requestStats() {
-        let id = UUID().uuidString
-        statsWaiter = id
-        send(["t": "stats-request", "id": id])
+        send(["t": "stats-request", "id": UUID().uuidString])
     }
 
     private func apply(_ raw: [String: Any]) {
@@ -440,34 +434,36 @@ final class WorkerController: ObservableObject {
         linkCopied = true
     }
 
-    func linkPayout(to wallet: String) {
+    /// Returns whether a new link was signed; on failure `linkError` says why.
+    @discardableResult
+    func linkPayout(to wallet: String) async -> Bool {
         let wallet = wallet.trimmingCharacters(in: .whitespacesAndNewlines)
         guard wallet.count == 42, wallet.hasPrefix("0x"), (try? Data(hexString: wallet)) != nil else {
             linkError = "Enter a wallet address (0x…)"
-            return
+            return false
         }
         guard let rpc = config.rpcURL, let pool = poolSeller else {
             linkError = "Join a pool first"
-            return
+            return false
         }
         linkError = nil
-        Task {
-            do {
-                let chain = Chain(rpcURL: rpc)
-                let chainId = try await chain.chainId()
-                let nonceWord = try await chain.ethCall(to: pool, data: Chain.selector("payoutNonce(address)") + Data(repeating: 0, count: 12) + (try Data(hexString: address)))
-                let nonce = nonceWord.suffix(8).reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
-                let deadline = UInt64(Date().timeIntervalSince1970) + 7 * 24 * 3600
-                let digest = PayoutAuthorization.digest(chainId: chainId, pool: pool, worker: address, payout: wallet, nonce: nonce, deadline: deadline)
-                let signature = try keys.ethereum.sign(digest: personalMessageDigest(digest))
-                let link = PayoutAuthorization(chainId: chainId, pool: pool, worker: address, payout: wallet, deadline: deadline, signature: signature.prefixedHex)
-                setPendingLink(link)
-                copyLinkCode()
-                log("payout authorization for \(wallet) copied; paste it in the ANTS dashboard (Rewards → Link a Mac)")
-                if config.linkPayoutTo != nil { log("link code \(link.code)") }
-            } catch {
-                linkError = error.localizedDescription
-            }
+        do {
+            let chain = Chain(rpcURL: rpc)
+            let chainId = try await chain.chainId()
+            let nonceWord = try await chain.ethCall(to: pool, data: Chain.selector("payoutNonce(address)") + Data(repeating: 0, count: 12) + (try Data(hexString: address)))
+            let nonce = nonceWord.suffix(8).reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
+            let deadline = UInt64(Date().timeIntervalSince1970) + 7 * 24 * 3600
+            let digest = PayoutAuthorization.digest(chainId: chainId, pool: pool, worker: address, payout: wallet, nonce: nonce, deadline: deadline)
+            let signature = try keys.ethereum.sign(digest: personalMessageDigest(digest))
+            let link = PayoutAuthorization(chainId: chainId, pool: pool, worker: address, payout: wallet, deadline: deadline, signature: signature.prefixedHex)
+            setPendingLink(link)
+            copyLinkCode()
+            log("payout authorization for \(wallet) copied; paste it in the ANTS dashboard (Rewards → Link a Mac)")
+            if config.linkPayoutTo != nil { log("link code \(link.code)") }
+            return true
+        } catch {
+            linkError = error.localizedDescription
+            return false
         }
     }
 }

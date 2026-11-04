@@ -1,11 +1,12 @@
 import type { BuyerPeerView, BuyerSigner } from '@antseed/buyer-core';
-import type { SealedWorkerRequest, WorkerE2EClient } from '@antseed/buyer-core/worker-e2e';
+import type { SealedWorkerRequest, WorkerE2EClient, WorkerUsage } from '@antseed/buyer-core/worker-e2e';
 import { peerIdToAddress } from '@antseed/protocol/peer-id';
 import type { SerializedHttpRequest, SerializedHttpResponse } from '../types/http.js';
 import { isDeviceAttestation, verifyDeviceAttestation } from './apple-attestation.js';
 import {
   isWorkerAttestation,
   sealRequest,
+  type UsageLike,
   verifyWorkerAttestation,
   verifyWorkerKeyCertificate,
   type WorkerAssignment,
@@ -52,12 +53,31 @@ function parseAssignment(response: SerializedHttpResponse): WorkerAssignment {
   return value as WorkerAssignment;
 }
 
+function count(value: unknown): bigint {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? BigInt(value) : 0n;
+}
+
+/** Token counts from an OpenAI-style (or Anthropic-style) usage object. */
+function workerUsage(usage: UsageLike | null): WorkerUsage {
+  if (!usage) return { inputTokens: 0n, cachedInputTokens: 0n, outputTokens: 0n };
+  const details = usage['prompt_tokens_details'] as { cached_tokens?: unknown } | undefined;
+  const cached = count(details?.cached_tokens) + count(usage['cache_read_input_tokens']);
+  // Anthropic-style input_tokens excludes cached tokens; prompt_tokens includes them.
+  const input = usage['prompt_tokens'] !== undefined ? count(usage['prompt_tokens']) : count(usage['input_tokens']) + cached;
+  return {
+    inputTokens: input,
+    cachedInputTokens: cached,
+    outputTokens: count(usage['completion_tokens'] ?? usage['output_tokens']),
+  };
+}
+
 /**
  * Encrypts requests to a colony pool's workers and keeps one assignment per
  * (seller, service), so a buyer's requests stay on one worker.
  */
 export class NodeWorkerE2EClient implements WorkerE2EClient {
-  private readonly assignments = new Map<string, WorkerAssignment>();
+  /** Each assignment with the time it stops being usable (certificate, attestation or Apple attestation). */
+  private readonly assignments = new Map<string, { assignment: WorkerAssignment; usableUntil: number }>();
   private readonly now: () => number;
 
   constructor(private readonly signer: BuyerSigner, private readonly options: NodeWorkerE2EClientOptions = {}) {
@@ -95,6 +115,9 @@ export class NodeWorkerE2EClient implements WorkerE2EClient {
         const { authenticated, clear } = sealed.opener.usage;
         return clear === null || JSON.stringify(clear) === JSON.stringify(authenticated);
       },
+      get usage() {
+        return workerUsage(sealed.opener.usage.authenticated);
+      },
     };
   }
 
@@ -110,10 +133,7 @@ export class NodeWorkerE2EClient implements WorkerE2EClient {
     const key = `${peer.peerId.toLowerCase()}|${service}`;
     const cached = this.assignments.get(key);
     const now = this.now();
-    if (
-      cached && cached.expires > now + CERTIFICATE_RENEW_MARGIN_S
-      && (!cached.attestation || cached.attestation.issued > now - ATTESTATION_MAX_AGE_S)
-    ) return cached;
+    if (cached && now < cached.usableUntil) return cached.assignment;
 
     const certificate = parseAssignment(await assign(new TextEncoder().encode(JSON.stringify({ model: service }))));
     // The key must be certified by its worker for the seller this buyer pays.
@@ -125,6 +145,8 @@ export class NodeWorkerE2EClient implements WorkerE2EClient {
       ? verifyWorkerAttestation(certificate.attestation, certificate, { maxAgeS: ATTESTATION_MAX_AGE_S, now })
       : null;
     if (check && !check.valid) throw new Error(`Colony pool returned an invalid worker attestation: ${check.reason}`);
+    let usableUntil = certificate.expires - CERTIFICATE_RENEW_MARGIN_S;
+    if (certificate.attestation) usableUntil = Math.min(usableUntil, certificate.attestation.issued + ATTESTATION_MAX_AGE_S);
     if ((this.options.requireAttestedWorkers || this.options.requireAppleVerifiedWorkers) && !check?.hardened) {
       throw new Error('Colony pool assigned a worker that is not an attested hardened Mac');
     }
@@ -139,6 +161,7 @@ export class NodeWorkerE2EClient implements WorkerE2EClient {
         ...(this.options.deviceAttestationRoots ? { roots: this.options.deviceAttestationRoots } : {}),
       });
       if (!device.valid) throw new Error(`Colony pool returned an invalid Apple device attestation: ${device.reason}`);
+      usableUntil = Math.min(usableUntil, device.validUntil ?? now);
     } else if (this.options.requireAppleVerifiedWorkers) {
       throw new Error('Colony pool assigned a worker whose Mac Apple does not attest');
     }
@@ -146,7 +169,7 @@ export class NodeWorkerE2EClient implements WorkerE2EClient {
       const oldest = this.assignments.keys().next().value;
       if (oldest !== undefined) this.assignments.delete(oldest);
     }
-    this.assignments.set(key, certificate);
+    this.assignments.set(key, { assignment: certificate, usableUntil });
     return certificate;
   }
 }

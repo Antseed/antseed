@@ -49,9 +49,14 @@ export async function claimColonyPool(ctx: AntsContext, request: ColonyPoolClaim
   let antsEpochs = view?.antsEpochs ?? [];
   if (request.ants && view && view.unfundedEpochs.length > 0) {
     // The pool holds no ANTS for an epoch until someone pulls its emissions (anyone may; repeats are no-ops).
-    const hash = await pool.claimEpochEmissions(signer, view.unfundedEpochs);
-    hashes.push(hash);
-    await report('Colony pool emissions pulled for finished epochs', hash);
+    // A pull can fail (e.g. the seller reward is still locked); the funded epochs are claimed anyway.
+    try {
+      const hash = await pool.claimEpochEmissions(signer, view.unfundedEpochs);
+      hashes.push(hash);
+      await report('Colony pool emissions pulled for finished epochs', hash);
+    } catch (error) {
+      await report(`Colony pool emissions not pulled yet: ${error instanceof Error ? error.message : String(error)}`);
+    }
     const owed = await Promise.all(view.unfundedEpochs.map(async (epoch) => ({ epoch, owed: await pool.pendingAnts(ctx.address, [epoch]) })));
     antsEpochs = [...new Set([...antsEpochs, ...owed.filter((entry) => entry.owed > 0n).map((entry) => entry.epoch)])].sort((a, b) => a - b);
   }

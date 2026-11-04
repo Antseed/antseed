@@ -2,10 +2,10 @@ import type { SerializedHttpRequest, SerializedHttpResponse } from '@antseed/pro
 import type { BuyerPeerView } from './interfaces.js';
 
 /**
- * Buyer-side hook for colony pools (docs/protocol/colony-pool.md). Sellers
- * advertising WORKER_E2E_CAPABILITY get requests encrypted to one of their
- * workers. The crypto lives in @antseed/node so this package stays free of
- * Node-only modules.
+ * Buyer-side hook for colony pools (docs/protocol/colony-pool.md). Requests
+ * for a service a seller's colony-pool provider offers are encrypted to one
+ * of its workers; the seller's other services are untouched. The crypto lives
+ * in @antseed/node so this package stays free of Node-only modules.
  */
 
 export const WORKER_E2E_CAPABILITY = 'colony-pool-e2e.v2';
@@ -28,6 +28,16 @@ export interface SealedWorkerRequest {
   readonly verified: boolean;
   /** False when the usage the pool showed in the clear (what it bills) differs from the worker's sealed usage. */
   readonly usageConsistent: boolean;
+  /** Token counts inside the worker's ciphertext (zero when it reported none). */
+  readonly usage: WorkerUsage;
+}
+
+/** Token counts a worker authenticated inside its sealed answer. */
+export interface WorkerUsage {
+  /** Prompt tokens, cached ones included. */
+  inputTokens: bigint;
+  cachedInputTokens: bigint;
+  outputTokens: bigint;
 }
 
 export interface WorkerE2EClient {
@@ -46,8 +56,28 @@ export interface WorkerE2EClient {
   forget(peerId: string, service: string): void;
 }
 
-export function peerSupportsWorkerE2E(peer: BuyerPeerView): boolean {
-  return (peer.capabilities ?? []).includes(WORKER_E2E_CAPABILITY);
+/**
+ * The peer capability a seller announces for each colony-pool provider
+ * (`colony-pool-e2e.v2.<provider>`), next to WORKER_E2E_CAPABILITY, so buyers
+ * encrypt only that provider's services.
+ */
+export function workerE2EProviderCapability(provider: string): string {
+  return `${WORKER_E2E_CAPABILITY}.${provider.toLowerCase().replace(/[^a-z0-9.-]/g, '-')}`;
+}
+
+function providersOffering(peer: BuyerPeerView, service: string): string[] {
+  const announced = peer.metadata?.providers;
+  if (announced?.length) return announced.filter((p) => p.services.includes(service)).map((p) => p.provider);
+  return (peer.providers ?? []).filter((provider) =>
+    peer.providerServiceApiProtocols?.[provider]?.services[service] !== undefined
+    || peer.providerPricing?.[provider]?.services?.[service] !== undefined);
+}
+
+/** True when `service` on this peer is a colony-pool offering, so requests for it must be encrypted to a worker. */
+export function peerServiceUsesWorkerE2E(peer: BuyerPeerView, service: string): boolean {
+  const capabilities = new Set(peer.capabilities ?? []);
+  if (!capabilities.has(WORKER_E2E_CAPABILITY)) return false;
+  return providersOffering(peer, service).some((provider) => capabilities.has(workerE2EProviderCapability(provider)));
 }
 
 export function isWorkerUnavailable(response: SerializedHttpResponse): boolean {

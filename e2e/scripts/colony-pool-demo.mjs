@@ -98,25 +98,32 @@ function startModelTap(name) {
   const server = createServer((req, res) => {
     const chunks = [];
     req.on('data', (c) => chunks.push(c));
-    req.on('end', async () => {
-      const body = Buffer.concat(chunks);
-      const parsed = JSON.parse(body.toString());
-      const prompt = parsed.messages?.at(-1)?.content ?? '';
-      logTo(name, `${C.magenta}[local model]${C.reset} prompt in plaintext: "${short(String(prompt), 80)}"`);
-      const upstream = await fetch(`${OLLAMA_URL}${req.url}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body });
-      res.writeHead(upstream.status, { 'content-type': upstream.headers.get('content-type') ?? 'application/json' });
-      let text = '';
-      for await (const chunk of upstream.body) {
-        res.write(chunk);
-        text += Buffer.from(chunk).toString();
-      }
-      res.end();
-      const answer = text.includes('data:')
-        ? text.split('\n').filter((l) => l.startsWith('data: {')).map((l) => JSON.parse(l.slice(6)).choices?.[0]?.delta?.content ?? '').join('')
-        : JSON.parse(text).choices?.[0]?.message?.content ?? '';
-      logTo(name, `${C.magenta}[local model]${C.reset} answer: "${short(answer.replace(/\s+/g, ' '), 80)}"`);
+    req.on('end', () => {
+      tap(Buffer.concat(chunks), req, res).catch((err) => {
+        // An Ollama failure answers this request instead of crashing the demo before its cleanup.
+        logTo(name, `${C.yellow}[local model]${C.reset} upstream failed: ${err instanceof Error ? err.message : err}`);
+        if (!res.headersSent) res.writeHead(502, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'upstream_failed' }));
+        else res.destroy();
+      });
     });
   });
+  async function tap(body, req, res) {
+    const parsed = JSON.parse(body.toString());
+    const prompt = parsed.messages?.at(-1)?.content ?? '';
+    logTo(name, `${C.magenta}[local model]${C.reset} prompt in plaintext: "${short(String(prompt), 80)}"`);
+    const upstream = await fetch(`${OLLAMA_URL}${req.url}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body });
+    res.writeHead(upstream.status, { 'content-type': upstream.headers.get('content-type') ?? 'application/json' });
+    let text = '';
+    for await (const chunk of upstream.body) {
+      res.write(chunk);
+      text += Buffer.from(chunk).toString();
+    }
+    res.end();
+    const answer = text.includes('data:')
+      ? text.split('\n').filter((l) => l.startsWith('data: {')).map((l) => JSON.parse(l.slice(6)).choices?.[0]?.delta?.content ?? '').join('')
+      : JSON.parse(text).choices?.[0]?.message?.content ?? '';
+    logTo(name, `${C.magenta}[local model]${C.reset} answer: "${short(answer.replace(/\s+/g, ' '), 80)}"`);
+  }
   return new Promise((resolveServer) => server.listen(0, '127.0.0.1', () => resolveServer(server)));
 }
 
@@ -222,14 +229,13 @@ async function main() {
   logTo('chain', `deployed pool     ${poolAddress} (operator = seller node ${operator})`);
   say(`pool contract ${C.green}${poolAddress}${C.reset}  operator = seller node ${operator}`);
 
-  // The pool owns its ERC-8004 agent and is staked like any seller façade.
-  await provider.send('anvil_impersonateAccount', [poolAddress]);
-  await provider.send('anvil_setBalance', [poolAddress, '0xDE0B6B3A7640000']);
-  const poolSigner = await provider.getSigner(poolAddress);
-  const identityRegistry = new Contract(A.identity, ['function register() returns (uint256)', 'event Registered(uint256 indexed agentId, address indexed owner)'], poolSigner);
-  const registered = await (await identityRegistry.register()).wait();
-  const agentId = identityRegistry.interface.parseLog(registered.logs[0]).args.agentId;
-  await provider.send('anvil_stopImpersonatingAccount', [poolAddress]);
+  // The pool owns its ERC-8004 agent (minted through the pool by its owner) and is staked like any seller façade.
+  // On the seller-pool stack the owner would then call registerSeller(agentId) and stake ANTS for the agent;
+  // this local stack still uses USDC staking.
+  const poolAdmin = new Contract(poolAddress, ['function registerAgent(string) returns (uint256)', 'event AgentRegistered(uint256 indexed agentId)'], deployer);
+  const registered = await send(poolAdmin, 'registerAgent', 'antseed:colony-pool-demo');
+  const agentId = registered.logs.map((log) => { try { return poolAdmin.interface.parseLog(log); } catch { return null; } })
+    .find((log) => log?.name === 'AgentRegistered').args.agentId;
   const STAKE = 10_000_000n;
   await send(usdcToken, 'mint', deployer.address, STAKE);
   await send(usdcToken, 'approve', A.staking, STAKE);

@@ -65,11 +65,12 @@ export interface TestDeviceAttestationOptions {
   notBefore?: Date;
 }
 
-export function createTestAppleCa(): { rootPem: string; issue(opts: TestDeviceAttestationOptions): string[] } {
+/** `created`: when the root and intermediate start being valid (each for 365 days); an hour ago by default. */
+export function createTestAppleCa(opts: { created?: Date } = {}): { rootPem: string; issue(opts: TestDeviceAttestationOptions): string[] } {
   const ca = [seq(der(0x01, Buffer.from([0xff])))].map((value) => extension('2.5.29.19', value, true));
   const newKey = () => generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
   const rootKeys = newKey();
-  const created = new Date(Date.now() - 3600_000);
+  const created = opts.created ?? new Date(Date.now() - 3600_000);
   const root: Issued = { cert: certificate('Test Attestation Root', 'Test Attestation Root', rootKeys.publicKey, rootKeys.privateKey, ca, created, 1), key: rootKeys.privateKey };
   const subKeys = newKey();
   const sub: Issued = { cert: certificate('Test Attestation Sub CA', 'Test Attestation Root', subKeys.publicKey, root.key, ca, created, 2), key: subKeys.privateKey };

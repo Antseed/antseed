@@ -1,6 +1,8 @@
 import { createServer, type Server } from 'node:http';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { NanoMdmAttestor, parsePlist } from './mdm.js';
+import { MAX_WEBHOOK_BODY_BYTES, NanoMdmAttestor, parsePlist } from './mdm.js';
+
+const SECRET = '9f2c4e7a1b8d3f60';
 
 /** A NanoMDM stand-in: takes the enqueued command and answers through the webhook, as a Mac would. */
 async function fakeNanoMdm(webhook: () => string, answer: (command: Record<string, any>) => string): Promise<{ server: Server; url: string; auth: string[] }> {
@@ -38,8 +40,8 @@ describe('NanoMDM device attestor', () => {
 
   it('enqueues DeviceInformation with the nonce and returns the attestation chain from the webhook', async () => {
     let commandSeen: Record<string, any> = {};
-    const attestor = new NanoMdmAttestor({ url: '', apiKey: 'k', webhookPort: 0, webhookHost: '127.0.0.1', webhookPath: 'secret' });
-    const mdm = await fakeNanoMdm(() => `http://127.0.0.1:${(attestor as any).server.address().port}/secret`, (command) => {
+    const attestor = new NanoMdmAttestor({ url: '', apiKey: 'k', webhookPort: 0, webhookHost: '127.0.0.1', webhookPath: SECRET });
+    const mdm = await fakeNanoMdm(() => `http://127.0.0.1:${(attestor as any).server.address().port}/${SECRET}`, (command) => {
       commandSeen = command;
       return ack(command['CommandUUID'], ['AQID', 'BAUG']);
     });
@@ -55,8 +57,8 @@ describe('NanoMDM device attestor', () => {
   });
 
   it('fails when the Mac returns an error or no attestation', async () => {
-    const attestor = new NanoMdmAttestor({ url: '', apiKey: 'k', webhookPort: 0, webhookHost: '127.0.0.1', webhookPath: 'secret' });
-    const mdm = await fakeNanoMdm(() => `http://127.0.0.1:${(attestor as any).server.address().port}/secret`, (command) =>
+    const attestor = new NanoMdmAttestor({ url: '', apiKey: 'k', webhookPort: 0, webhookHost: '127.0.0.1', webhookPath: SECRET });
+    const mdm = await fakeNanoMdm(() => `http://127.0.0.1:${(attestor as any).server.address().port}/${SECRET}`, (command) =>
       `<plist version="1.0"><dict><key>CommandUUID</key><string>${command['CommandUUID']}</string><key>Status</key><string>Error</string></dict></plist>`);
     stops.push(() => new Promise((r) => mdm.server.close(() => r())), () => attestor.stop());
     (attestor as any).opts.url = mdm.url;
@@ -73,7 +75,7 @@ describe('NanoMDM device attestor', () => {
     await new Promise<void>((resolve) => stalled.listen(0, '127.0.0.1', () => resolve()));
     stops.push(() => new Promise((r) => { stalled.closeAllConnections(); stalled.close(() => r()); }));
     const attestor = new NanoMdmAttestor({
-      url: `http://127.0.0.1:${(stalled.address() as { port: number }).port}`, apiKey: 'k', webhookPort: 0, webhookHost: '127.0.0.1', webhookPath: 'secret', timeoutMs: 100,
+      url: `http://127.0.0.1:${(stalled.address() as { port: number }).port}`, apiKey: 'k', webhookPort: 0, webhookHost: '127.0.0.1', webhookPath: SECRET, timeoutMs: 100,
     });
     await attestor.start();
     stops.push(() => attestor.stop());
@@ -82,5 +84,32 @@ describe('NanoMDM device attestor', () => {
     expect((attestor as any).waiting.size).toBe(0);
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(unhandled).not.toHaveBeenCalled();
+  });
+
+  it('refuses a guessable webhook path', () => {
+    expect(() => new NanoMdmAttestor({ url: '', apiKey: 'k', webhookPort: 0, webhookPath: 'mdm-webhook' })).toThrow(/at least 16/);
+  });
+
+  it('refuses oversized webhook bodies with 413 without buffering them', async () => {
+    const attestor = new NanoMdmAttestor({ url: '', apiKey: 'k', webhookPort: 0, webhookHost: '127.0.0.1', webhookPath: SECRET });
+    await attestor.start();
+    stops.push(() => attestor.stop());
+    const webhook = `http://127.0.0.1:${(attestor as any).server.address().port}/${SECRET}`;
+    const onWebhook = vi.spyOn(attestor as any, 'onWebhook');
+
+    const declared = await fetch(webhook, { method: 'POST', body: Buffer.alloc(MAX_WEBHOOK_BODY_BYTES + 1) });
+    expect(declared.status).toBe(413);
+
+    // A chunked body with no length is cut off once it passes the cap.
+    let sent = 0;
+    const chunked = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sent++ < 64) controller.enqueue(new Uint8Array(16 * 1024));
+        else controller.close();
+      },
+    });
+    const streamed = await fetch(webhook, { method: 'POST', body: chunked, duplex: 'half' } as RequestInit).catch(() => null);
+    expect(streamed === null || streamed.status === 413).toBe(true);
+    expect(onWebhook).not.toHaveBeenCalled();
   });
 });

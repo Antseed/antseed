@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Wallet } from 'ethers';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import WebSocket from 'ws';
+import WebSocket, { WebSocketServer } from 'ws';
 import type { SerializedHttpRequest, SerializedHttpResponseChunk } from '@antseed/node';
 import {
   WORKER_ASSIGN_PATH,
@@ -157,7 +157,7 @@ describe('colony pool', () => {
     poolUrl = `ws://127.0.0.1:${port}`;
   }
 
-  function startWorker(opts: { key?: string; channelVerifier?: ChannelVerifier; attester?: WorkerAttester } = {}): PoolWorker {
+  function startWorker(opts: { key?: string; channelVerifier?: ChannelVerifier; channelWaitMs?: number; attester?: WorkerAttester } = {}): PoolWorker {
     const worker = new PoolWorker({
       poolUrl,
       baseUrl: upstream.url,
@@ -166,6 +166,7 @@ describe('colony pool', () => {
       encryptionKey: generateWorkerEncryptionKey(),
       maxConcurrency: 2,
       ...(opts.channelVerifier ? { channelVerifier: opts.channelVerifier } : {}),
+      ...(opts.channelWaitMs !== undefined ? { channelWaitMs: opts.channelWaitMs } : {}),
       ...(opts.attester ? { attester: opts.attester } : {}),
     });
     workers.push(worker);
@@ -321,17 +322,18 @@ describe('colony pool', () => {
     expect(upstream.requests.at(-1)!.body['max_tokens']).toBe(16);
   });
 
-  it('refuses a channel once the chain shows it belongs to someone else', async () => {
+  it('refuses a channel the chain shows belongs to someone else, from the first request on', async () => {
     await setup({ verifyOnJoin: false });
     let lookups = 0;
     startWorker({ channelVerifier: async () => { lookups++; return false; } });
     await waitFor(() => provider.services.includes(SERVICE));
-    // The first request is served while the lookup runs (RPC reads can lag a fresh reserve).
-    expect((await provider.handleRequest((await buyerSeal('c1', false)).request)).statusCode).toBe(200);
-    await waitFor(() => lookups === 1);
-    const refused = await provider.handleRequest((await buyerSeal('c2', false)).request);
-    expect(refused.statusCode).toBe(502);
-    expect(dec(refused.body)).toContain('does not belong');
+    for (const id of ['c1', 'c2']) {
+      const refused = await provider.handleRequest((await buyerSeal(id, false)).request);
+      expect(refused.statusCode).toBe(502);
+      expect(dec(refused.body)).toContain('does not belong');
+    }
+    expect(lookups).toBe(1);
+    expect(upstream.requests.filter((r) => r.body['max_tokens'] !== 16)).toHaveLength(0);
   });
 
   it('serves a verified channel only to its buyer, without looking it up again', async () => {
@@ -340,7 +342,6 @@ describe('colony pool', () => {
     startWorker({ channelVerifier: async (_channel, from) => { lookups.push(from); return from === buyer.address.toLowerCase(); } });
     await waitFor(() => provider.services.includes(SERVICE));
     expect((await provider.handleRequest((await buyerSeal('v1', false)).request)).statusCode).toBe(200);
-    await waitFor(() => lookups.length === 1);
     expect((await provider.handleRequest((await buyerSeal('v2', false)).request)).statusCode).toBe(200);
     // Another signer naming the same channel (the pool itself, say) is refused from the cache.
     const refused = await provider.handleRequest((await buyerSeal('v3', false, Wallet.createRandom())).request);
@@ -355,20 +356,69 @@ describe('colony pool', () => {
     startWorker({ channelVerifier: async (_channel, from) => { lookups.push(from); return from === buyer.address.toLowerCase(); } });
     await waitFor(() => provider.services.includes(SERVICE));
     const intruder = Wallet.createRandom();
-    await provider.handleRequest((await buyerSeal('i1', false, intruder)).request);
-    await waitFor(() => lookups.length === 1);
+    expect((await provider.handleRequest((await buyerSeal('i1', false, intruder)).request)).statusCode).toBe(502);
     expect((await provider.handleRequest((await buyerSeal('i2', false, intruder)).request)).statusCode).toBe(502);
     expect((await provider.handleRequest((await buyerSeal('i3', false)).request)).statusCode).toBe(200);
     expect(lookups).toEqual([intruder.address.toLowerCase(), buyer.address.toLowerCase()]);
   });
 
-  it('looks an undecided channel up again only after a pause', async () => {
+  it('never serves full requests on a channel that is not on-chain', async () => {
     await setup({ verifyOnJoin: false });
     let lookups = 0;
-    startWorker({ channelVerifier: async () => { lookups++; return null; } });
+    startWorker({ channelVerifier: async () => { lookups++; return null; }, channelWaitMs: 50 });
     await waitFor(() => provider.services.includes(SERVICE));
-    for (const id of ['p1', 'p2', 'p3']) expect((await provider.handleRequest((await buyerSeal(id, false)).request)).statusCode).toBe(200);
-    expect(lookups).toBe(1);
+    const before = upstream.requests.length;
+    for (const id of ['p1', 'p2', 'p3']) {
+      const refused = await provider.handleRequest((await buyerSeal(id, false)).request);
+      expect(refused.statusCode).toBe(502);
+      expect(dec(refused.body)).toContain('not on-chain');
+    }
+    // Each request looked again (it may have appeared since), and none reached the model.
+    expect(lookups).toBe(3);
+    expect(upstream.requests.length).toBe(before);
+  });
+
+  it('waits for a fresh reserve to show on-chain, sharing one lookup between requests', async () => {
+    await setup({ verifyOnJoin: false });
+    let lookups = 0;
+    startWorker({ channelVerifier: async () => (++lookups < 2 ? null : true), channelWaitMs: 3_000 });
+    await waitFor(() => provider.services.includes(SERVICE));
+    const [a, b] = await Promise.all([buyerSeal('f1', false), buyerSeal('f2', false)]);
+    const responses = await Promise.all([provider.handleRequest(a.request), provider.handleRequest(b.request)]);
+    expect(responses.map((r) => r.statusCode)).toEqual([200, 200]);
+    expect(lookups).toBe(2);
+  });
+
+  it('gives up on a lookup that hangs', async () => {
+    await setup({ verifyOnJoin: false });
+    startWorker({ channelVerifier: () => new Promise(() => {}), channelWaitMs: 100 });
+    await waitFor(() => provider.services.includes(SERVICE));
+    const refused = await provider.handleRequest((await buyerSeal('h1', false)).request);
+    expect(dec(refused.body)).toContain('not on-chain');
+  });
+
+  it('does not reconnect once stopped during the reconnect backoff', async () => {
+    await setup();
+    const server = new WebSocketServer({ port: 0 });
+    await new Promise<void>((resolve) => server.once('listening', () => resolve()));
+    let connections = 0;
+    server.on('connection', (socket) => { connections++; socket.terminate(); });
+    const worker = new PoolWorker({
+      poolUrl: `ws://127.0.0.1:${(server.address() as { port: number }).port}`,
+      baseUrl: 'http://127.0.0.1:1',
+      services: { [SERVICE]: LOCAL_MODEL },
+      privateKey: Wallet.createRandom().privateKey,
+      encryptionKey: generateWorkerEncryptionKey(),
+      log: () => {},
+    });
+    worker.start();
+    await waitFor(() => connections === 1);
+    // The pool dropped it; it is now waiting 1 s to reconnect.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    worker.stop();
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    expect(connections).toBe(1);
+    await new Promise<void>((resolve) => server.close(() => resolve()));
   });
 
   it('withdraws services while the owner pauses the worker', async () => {

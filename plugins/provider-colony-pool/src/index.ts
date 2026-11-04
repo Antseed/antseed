@@ -52,7 +52,7 @@ const plugin: AntseedProviderPlugin = {
     { key: 'COLONY_POOL_MDM_URL', label: 'MDM URL', type: 'string', required: false, description: 'Your NanoMDM server, for Apple-signed attestations of enrolled Macs (optional; you run it, Macs enroll in it)' },
     { key: 'COLONY_POOL_MDM_API_KEY', label: 'MDM API Key', type: 'secret', required: false, description: 'NanoMDM API key' },
     { key: 'COLONY_POOL_MDM_WEBHOOK_PORT', label: 'MDM Webhook Port', type: 'number', required: false, default: 8791, description: 'Port NanoMDM posts command results to (nanomdm -webhook-url http://<pool>:<port>/<secret path>)' },
-    { key: 'COLONY_POOL_MDM_WEBHOOK_PATH', label: 'MDM Webhook Path', type: 'secret', required: false, description: 'Secret path for that webhook URL' },
+    { key: 'COLONY_POOL_MDM_WEBHOOK_PATH', label: 'MDM Webhook Path', type: 'secret', required: false, description: 'Secret path for that webhook URL, at least 16 random characters (required with the MDM)' },
     { key: 'COLONY_POOL_REQUIRE_DEVICE_ATTESTATION', label: 'Require Apple Attestation', type: 'boolean', required: false, default: false, description: 'Only route to Macs Apple attests through your MDM (SIP on, serial matches)' },
     { key: 'COLONY_POOL_VERIFY_ON_JOIN', label: 'Verify On Join', type: 'boolean', required: false, default: true, description: 'Send each newly offered model a short test completion before routing buyers to it' },
     { key: 'COLONY_POOL_LEDGER_PATH', label: 'Ledger Path', type: 'string', required: false, description: 'SQLite file for worker earnings (defaults to <data dir>/colony-pool.db)' },
@@ -91,12 +91,16 @@ const plugin: AntseedProviderPlugin = {
     const allowedWorkers = parseList(config['COLONY_POOL_ALLOWED_WORKERS']).map((address) => address.toLowerCase());
     const attestedTeams = parseList(config['COLONY_POOL_ATTESTED_TEAMS']);
     const mdmUrl = config['COLONY_POOL_MDM_URL'];
-    const deviceAttestor = mdmUrl
+    const webhookPath = config['COLONY_POOL_MDM_WEBHOOK_PATH'];
+    if (mdmUrl && !webhookPath) {
+      throw new Error('COLONY_POOL_MDM_URL needs COLONY_POOL_MDM_WEBHOOK_PATH: at least 16 random characters (e.g. `openssl rand -hex 16`)');
+    }
+    const deviceAttestor = mdmUrl && webhookPath
       ? new NanoMdmAttestor({
         url: mdmUrl,
         apiKey: config['COLONY_POOL_MDM_API_KEY'] ?? '',
         webhookPort: parseNonNegativeNumber(config['COLONY_POOL_MDM_WEBHOOK_PORT'], 'COLONY_POOL_MDM_WEBHOOK_PORT', 8791),
-        webhookPath: config['COLONY_POOL_MDM_WEBHOOK_PATH'] || 'mdm-webhook',
+        webhookPath,
         log: (line) => console.log(line),
       })
       : null;

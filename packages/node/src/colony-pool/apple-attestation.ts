@@ -160,7 +160,7 @@ export interface DeviceAttestationPolicy {
 export function verifyDeviceAttestation(
   attestation: DeviceAttestation,
   policy: DeviceAttestationPolicy,
-): { valid: boolean; report?: DeviceAttestationReport; reason?: string } {
+): { valid: boolean; report?: DeviceAttestationReport; reason?: string; validUntil?: number } {
   const fail = (reason: string) => ({ valid: false, reason });
   const now = policy.now ?? Math.floor(Date.now() / 1000);
   let certs: X509Certificate[];
@@ -210,7 +210,9 @@ export function verifyDeviceAttestation(
     return fail('device attestation is for another Mac');
   }
   if (report.sipEnabled !== true) return { valid: false, report, reason: 'Apple reports SIP off on this Mac' };
-  return { valid: true, report };
+  // Until the leaf grows too old or a certificate in the chain expires.
+  const validUntil = Math.min(report.issued + policy.maxAgeS, ...certs.map((cert) => Math.floor(Date.parse(cert.validTo) / 1000)));
+  return { valid: true, report, validUntil };
 }
 
 export function isDeviceAttestation(value: unknown): value is DeviceAttestation {

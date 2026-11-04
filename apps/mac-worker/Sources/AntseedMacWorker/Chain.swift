@@ -4,6 +4,8 @@ import Foundation
 /// buyer of this pool, and the chain id the payout authorization is bound to.
 struct Chain {
     let rpcURL: URL
+    /// Per-request deadline; nil keeps URLSession's default.
+    var timeout: TimeInterval? = nil
 
     enum Failure: Error, LocalizedError {
         case rpc(String)
@@ -20,6 +22,7 @@ struct Chain {
     func call(_ method: String, _ params: [Any]) async throws -> Any {
         var request = URLRequest(url: rpcURL)
         request.httpMethod = "POST"
+        if let timeout { request.timeoutInterval = timeout }
         request.setValue("application/json", forHTTPHeaderField: "content-type")
         request.httpBody = try JSONSerialization.data(withJSONObject: ["jsonrpc": "2.0", "id": 1, "method": method, "params": params])
         let (data, _) = try await URLSession.shared.data(for: request)

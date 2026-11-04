@@ -21,6 +21,7 @@ import type { DeviceAttestation } from './apple-attestation.js';
 
 export {
   WORKER_E2E_CAPABILITY,
+  workerE2EProviderCapability,
   WORKER_ASSIGN_PATH,
   WORKER_UNAVAILABLE_STATUS,
   WORKER_UNAVAILABLE_CODE,

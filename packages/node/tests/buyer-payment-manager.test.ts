@@ -737,9 +737,12 @@ describe('BuyerPaymentManager', () => {
       requestId,
     });
 
+    const usage = { inputTokens: 100n, cachedInputTokens: 0n, outputTokens: 10n };
     manager.recordWorkerAttribution('req-a', workerA);
+    manager.recordWorkerDelivery('req-a', usage);
     await manager.signPerRequestAuth(sellerPeerId, stats('req-a', 100n));
     manager.recordWorkerAttribution('req-b', workerB);
+    manager.recordWorkerDelivery('req-b', usage);
     await manager.signPerRequestAuth(sellerPeerId, stats('req-b', 150n));
     // A request no worker was assigned stays unattributed (the pool's remainder).
     const { payload } = await manager.signPerRequestAuth(sellerPeerId, stats('req-c', 50n));
@@ -754,11 +757,73 @@ describe('BuyerPaymentManager', () => {
     manager = new BuyerPaymentManager(identity, makeConfig(tempDir), store);
     manager.setSigner(identity.wallet);
     manager.recordWorkerAttribution('req-d', workerA);
+    manager.recordWorkerDelivery('req-d', usage);
     const after = await manager.signPerRequestAuth(sellerPeerId, stats('req-d', 25n));
     expect(decodeWorkerTail(after.payload.metadata)).toEqual([
       { worker: workerA, cumulativeAmount: 125n },
       { worker: workerB, cumulativeAmount: 150n },
     ]);
+  });
+
+  describe('NeedAuth for colony pool requests', () => {
+    const worker = '0x1000000000000000000000000000000000000001';
+    const usage = { inputTokens: 1000n, cachedInputTokens: 0n, outputTokens: 400n };
+    const setup = async (name: string) => {
+      const sellerPeerId = fakePeerId(name);
+      const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+      await manager.handleAuthAck(sellerPeerId, { channelId });
+      mux.sentSpendingAuths.length = 0;
+      manager.recordWorkerAttribution('req-pool', worker);
+      // Priced consistently with TEST_PRICING ($3 in, $15 out per million): 1000 in + 400 out = 9000.
+      const needAuth = (claim: { inputTokens: string; outputTokens: string; lastRequestCost: string } = { inputTokens: '1000', outputTokens: '400', lastRequestCost: '9000' }) => manager.handleNeedAuth(sellerPeerId, {
+        channelId, requiredCumulativeAmount: '19000', currentAcceptedCumulative: '10000', deposit: '1000000',
+        requestId: 'req-pool', ...claim,
+      }, mux);
+      return { needAuth };
+    };
+
+    it('waits for the worker\'s answer to verify, then signs and attributes it', async () => {
+      const { needAuth } = await setup('seller-pool-verified');
+      const pending = needAuth();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(mux.sentSpendingAuths).toHaveLength(0);
+      manager.recordWorkerDelivery('req-pool', usage);
+      await pending;
+      expect(mux.sentSpendingAuths).toHaveLength(1);
+      const sent = mux.sentSpendingAuths[0] as { metadata: string };
+      expect(decodeWorkerTail(sent.metadata)).toEqual([{ worker, cumulativeAmount: 9000n }]);
+    });
+
+    it('refuses a NeedAuth that arrives before a tampered or truncated answer fails verification', async () => {
+      const { needAuth } = await setup('seller-pool-fails-later');
+      const pending = needAuth();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      manager.recordWorkerDelivery('req-pool', null);
+      await pending;
+      expect(mux.sentSpendingAuths).toHaveLength(0);
+    });
+
+    it('refuses a NeedAuth that arrives after the answer failed verification', async () => {
+      const { needAuth } = await setup('seller-pool-failed');
+      manager.recordWorkerDelivery('req-pool', null);
+      await needAuth();
+      expect(mux.sentSpendingAuths).toHaveLength(0);
+    });
+
+    it('refuses to pay for more tokens than the worker authenticated', async () => {
+      const { needAuth } = await setup('seller-pool-inflated');
+      manager.recordWorkerDelivery('req-pool', usage);
+      // Consistently priced, but for 600 output tokens where the worker sealed 400.
+      await needAuth({ inputTokens: '1000', outputTokens: '600', lastRequestCost: '12000' });
+      expect(mux.sentSpendingAuths).toHaveLength(0);
+    });
+
+    it('refuses to sign a per-request auth for an unverified worker answer', async () => {
+      await setup('seller-pool-per-request');
+      await expect(manager.signPerRequestAuth(fakePeerId('seller-pool-per-request'), {
+        inputBytes: SAMPLE_INPUT, outputBytes: SAMPLE_OUTPUT, sellerClaimedCost: 100n, requestId: 'req-pool',
+      })).rejects.toThrow(/no verified answer/);
+    });
   });
 
   // ── handleNeedAuth ─────────────────────────────────────────────

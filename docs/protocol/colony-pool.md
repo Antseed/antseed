@@ -46,8 +46,11 @@ attestation-key:<attestation public key, or empty>
 
 ## Assignment
 
-Pools advertise the peer capability `colony-pool-e2e.v2`. Before its first
-request for a service, the buyer asks the pool for a worker:
+Pools advertise the peer capability `colony-pool-e2e.v2`, and
+`colony-pool-e2e.v2.<provider>` for the provider that serves through workers.
+Buyers encrypt only that provider's services, so a seller can run a pool next
+to ordinary providers. Before its first request for a pool service, the buyer
+asks the pool for a worker:
 
 ```
 POST /_antseed/provider/colony-pool/assign
@@ -164,10 +167,21 @@ only that worker's key can decrypt it, so only that worker can answer it.
 - A request without a valid buyer binding (or bound to the zero channel) is
   treated as the pool's own check: `max_tokens` is capped at 16 and checks are
   rate limited per hour, so a pool cannot buy real work with them.
-- With an RPC endpoint, the worker checks in the background that each bound
-  channel belongs to that buyer and to the pool seller (reads can lag a fresh
-  reserve, so the first request is served while the check runs), and refuses a
-  channel once the chain shows it belongs to someone else.
+- With an RPC endpoint, a worker serves a bound request in full only on a
+  verified channel: one the chain shows belongs to the signing buyer and to
+  the pool seller. A channel that belongs to someone else is refused (cached
+  for that buyer), and once a channel is verified for one buyer every other
+  signer naming it is refused without another lookup. A channel not on-chain
+  yet is looked up every second for up to 5 seconds (a fresh reserve can lag
+  the RPC; requests waiting on it share one lookup, each read with a short
+  deadline), then refused with a retryable error. So a pool cannot buy real
+  work by signing bindings to channels that don't exist. Without an RPC
+  endpoint the worker checks only the buyer's signature.
+
+Buyers pay for a pool request only after the worker's sealed answer verifies,
+and only for the tokens the worker authenticated: a NeedAuth for a request
+whose answer is tampered with, truncated or missing is refused, as is one
+billing more input or output tokens than the worker sealed.
 
 ## Hardened Macs
 
@@ -271,7 +285,9 @@ Because the nonce names the worker and its attestation key, the pool can't
 reuse one Mac's attestation for another worker.
 
 Pool settings: `COLONY_POOL_MDM_URL`, `COLONY_POOL_MDM_API_KEY`,
-`COLONY_POOL_MDM_WEBHOOK_PORT` and `COLONY_POOL_MDM_WEBHOOK_PATH` connect a
+`COLONY_POOL_MDM_WEBHOOK_PORT` and `COLONY_POOL_MDM_WEBHOOK_PATH` (required
+with the MDM: at least 16 random characters, since the path is the webhook's
+only secret; bodies over 64 KiB are refused) connect a
 [NanoMDM](https://github.com/micromdm/nanomdm) server (commands are queued
 with `PUT /v1/enqueue/<udid>`; answers arrive on its webhook, configured
 with `-webhook-url http://<pool>:<port>/<path>`).
@@ -346,9 +362,16 @@ the operator fee) in proportion to its weight; ANTS for an epoch with no
 weight go to the remainder. Workers claim USDC with `claimUsdc()` and ANTS
 with `claimAnts(epochs)`; pausing never blocks these claims.
 
-The pool is staked like any seller façade (`staking.stakeFor(pool, agentId,
-amount)` once it owns its ERC-8004 agent), and must own that agent to receive
-emissions. The buyer decides the split it signs; the contract enforces only
+The pool must own its ERC-8004 agent to be staked and to receive emissions.
+The owner mints one for the pool with `registerAgent(agentURI)` (or transfers
+one in) and, on the seller-registry stack, binds it with
+`registerSeller(agentId)`, which the pool calls itself; ANTS stake for that
+agent then makes the pool channel-eligible. On the legacy stack it is staked
+with `staking.stakeFor(pool, agentId, amount)`. Settlements during the
+emissions cutover add weight to the first rewarded epoch, matching the usage
+accounting. On AntseedEmissionsV2, pulling emissions fails (`EmissionsLocked`)
+while the pool's seller reward would be locked, leaving the epoch unclaimed
+until the unlock policy lets the pool claim it. The buyer decides the split it signs; the contract enforces only
 what the buyer signed.
 
 ### Payout wallet

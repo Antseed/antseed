@@ -45,6 +45,7 @@ import type { BillingRequestFacts } from './unit-billing.js';
 import { evaluateUnitBilling, unitUsageFromReport, validateUnitBillingUsage } from '@antseed/protocol/billing';
 import { isUnitBilledProtocol, nativeVideoUnitUsage } from './unit-billing.js';
 import { buyerFault, faultCodeOf } from './errors.js';
+import type { WorkerUsage } from './worker-e2e.js';
 
 /** Default tolerance: accept seller claims up to 1.4x buyer's estimate. */
 const DEFAULT_COST_TOLERANCE = 1.4;
@@ -75,6 +76,20 @@ const MAX_REQUEST_BILLING_ENTRIES = 512;
 /** How long NeedAuth validation waits for the buyer's own response processing
  *  to record delivered unit usage before rejecting a positive claim. */
 const OBSERVED_UNIT_USAGE_WAIT_MS = 5_000;
+/** How long a NeedAuth for a colony-pool request waits for the buyer to verify the worker's sealed answer. */
+const WORKER_DELIVERY_WAIT_MS = 15_000;
+const MAX_WORKER_DELIVERIES = 512;
+
+/**
+ * A request encrypted to a colony-pool worker: pending until the buyer has
+ * checked the worker's sealed answer, then verified (with the usage the worker
+ * authenticated) or failed. Only a verified answer is paid for.
+ */
+interface WorkerDelivery {
+  state: 'pending' | 'verified' | 'failed';
+  usage?: WorkerUsage;
+  waiters: Array<() => void>;
+}
 
 /**
  * Whole units of `unit` in `usage`, never negative. Speech billing reports no
@@ -122,6 +137,20 @@ export interface BuyerPaymentConfig {
 }
 
 /** A wire cost that is a positive integer; malformed values are judged later, where they are caught. */
+/** Why a NeedAuth for a colony-pool request must not be signed, or null when it may be judged as usual. */
+function workerDeliveryProblem(delivery: WorkerDelivery, payload: NeedAuthPayload): string | null {
+  if (delivery.state === 'pending') return 'the worker\'s answer was not verified in time';
+  if (delivery.state === 'failed' || !delivery.usage) return 'the worker\'s answer did not verify';
+  const usage = delivery.usage;
+  const input = BigInt(payload.inputTokens ?? '0');
+  const fresh = payload.freshInputTokens != null ? BigInt(payload.freshInputTokens) : 0n;
+  const output = BigInt(payload.outputTokens ?? '0');
+  if (input > usage.inputTokens || fresh > usage.inputTokens || output > usage.outputTokens) {
+    return `billed tokens (in=${input} out=${output}) exceed the worker's authenticated usage (in=${usage.inputTokens} out=${usage.outputTokens})`;
+  }
+  return null;
+}
+
 function hasPositiveCost(cost: string | undefined): boolean {
   try {
     return BigInt(cost ?? '0') > 0n;
@@ -304,6 +333,8 @@ export class BuyerPaymentManager {
   private readonly _requestService = new RequestServiceTracker();
   /** requestId -> worker a pool request was encrypted for; its signed amount is attributed to that worker. */
   private readonly _requestWorker = new RequestServiceTracker();
+  /** requestId -> whether the worker's sealed answer verified (see WorkerDelivery). */
+  private readonly _workerDeliveries = new Map<string, WorkerDelivery>();
   /**
    * requestId -> trusted buyer-owned billing identity, request facts, and mode.
    *
@@ -549,6 +580,61 @@ export class BuyerPaymentManager {
    */
   recordWorkerAttribution(requestId: string, worker: string): void {
     this._requestWorker.track(requestId, worker);
+    // A retry on another worker starts over; NeedAuths already waiting keep waiting.
+    const delivery = this._workerDeliveries.get(requestId);
+    if (delivery) {
+      delivery.state = 'pending';
+      delete delivery.usage;
+      return;
+    }
+    if (this._workerDeliveries.size >= MAX_WORKER_DELIVERIES) {
+      const oldest = this._workerDeliveries.keys().next().value;
+      if (oldest !== undefined) {
+        this._settleWorkerDelivery(oldest, 'failed');
+        this._workerDeliveries.delete(oldest);
+      }
+    }
+    this._workerDeliveries.set(requestId, { state: 'pending', waiters: [] });
+  }
+
+  /**
+   * The buyer checked the worker's sealed answer to a pool request: `usage` is
+   * what the worker authenticated, or null when the answer did not verify (or
+   * never came). A NeedAuth for the request is signed only after a verified
+   * answer, and only for the tokens the worker reported.
+   */
+  recordWorkerDelivery(requestId: string, usage: WorkerUsage | null): void {
+    if (usage) this._settleWorkerDelivery(requestId, 'verified', usage);
+    else this._settleWorkerDelivery(requestId, 'failed');
+  }
+
+  private _settleWorkerDelivery(requestId: string, state: 'verified' | 'failed', usage?: WorkerUsage): void {
+    const delivery = this._workerDeliveries.get(requestId);
+    if (!delivery) return;
+    delivery.state = state;
+    if (usage) delivery.usage = usage;
+    const waiters = delivery.waiters.splice(0);
+    for (const waiter of waiters) waiter();
+  }
+
+  /** The request's worker delivery once it is no longer pending (or the wait ran out); undefined for other requests. */
+  private async _awaitWorkerDelivery(requestId: string, timeoutMs: number): Promise<WorkerDelivery | undefined> {
+    const delivery = this._workerDeliveries.get(requestId);
+    if (!delivery || delivery.state !== 'pending') return delivery;
+    await new Promise<void>((resolve) => {
+      const done = (): void => {
+        clearTimeout(timer);
+        resolve();
+      };
+      const timer = setTimeout(() => {
+        const index = delivery.waiters.indexOf(done);
+        if (index >= 0) delivery.waiters.splice(index, 1);
+        resolve();
+      }, timeoutMs);
+      timer.unref?.();
+      delivery.waiters.push(done);
+    });
+    return delivery;
   }
 
   private _getCeiling(sellerPeerId: string): bigint {
@@ -1575,6 +1661,13 @@ export class BuyerPaymentManager {
     sellerPeerId: string,
     responseStats: PerRequestResponseStats,
   ): Promise<PerRequestAuthResult> {
+    const workerDelivery = responseStats.requestId != null ? this._workerDeliveries.get(responseStats.requestId) : undefined;
+    if (workerDelivery && workerDelivery.state !== 'verified') {
+      throw buyerFault(
+        `[BuyerPayment] Request ${responseStats.requestId} to a colony-pool worker has no verified answer to pay for`,
+        'buyer-session-state',
+      );
+    }
     const session = this.getActiveSession(sellerPeerId);
     if (!session) {
       throw buyerFault(
@@ -1864,6 +1957,21 @@ export class BuyerPaymentManager {
       && this.getRequestBilling(payload.requestId)?.unitModel
     ) {
       await this._waitForObservedUnitUsage(payload.requestId, OBSERVED_UNIT_USAGE_WAIT_MS);
+    }
+    // A colony-pool request is paid only once the buyer has verified the
+    // worker's sealed answer, and only for the tokens the worker authenticated:
+    // the pool could otherwise bill for an answer that was tampered with,
+    // truncated or never came. Waits inside the lock for the same reason as
+    // above; the response path records the result without taking the lock.
+    const workerDelivery = payload.requestId && hasPositiveCost(payload.lastRequestCost)
+      ? await this._awaitWorkerDelivery(payload.requestId, WORKER_DELIVERY_WAIT_MS)
+      : undefined;
+    if (workerDelivery) {
+      const problem = workerDeliveryProblem(workerDelivery, payload);
+      if (problem) {
+        debugWarn(`[BuyerPayment] Refusing NeedAuth from ${sellerPeerId.slice(0, 12)}... for request ${payload.requestId}: ${problem}`);
+        return false;
+      }
     }
     const session = this.getActiveSession(sellerPeerId);
     if (!session) {
@@ -2161,6 +2269,7 @@ export class BuyerPaymentManager {
     // still being served.
     if (payload.requestId && deliveredResponse) {
       this.clearRequestBilling(payload.requestId);
+      this._workerDeliveries.delete(payload.requestId);
     }
     return needsTopUp || this._needsTopUp(sellerPeerId);
   }

@@ -83,13 +83,16 @@ struct MenuPanel: View {
                     } else {
                         TextField("0x…", text: $wallet).textFieldStyle(.roundedBorder).font(.system(size: 12, design: .monospaced))
                         Button("Link") {
-                            worker.linkPayout(to: wallet)
-                            changingPayout = false
+                            // The editor stays open, with the error, until a new link is signed.
+                            Task { if await worker.linkPayout(to: wallet) { changingPayout = false } }
                         }.controlSize(.small)
                     }
                 }
                 if let error = worker.linkError {
                     Text(error).font(.system(size: 11)).foregroundStyle(.red)
+                }
+                if changingPayout && !snapshot {
+                    Button("Cancel") { changingPayout = false }.buttonStyle(.link).font(.system(size: 11))
                 }
             }
             HStack {

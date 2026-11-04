@@ -9,6 +9,33 @@ import { MessageHashUtils } from "@openzeppelin/contracts/utils/cryptography/Mes
 
 import { AntseedSellerDelegation } from "./AntseedSellerDelegation.sol";
 import { IAntseedEmissions } from "../interfaces/IAntseedEmissions.sol";
+import { IERC8004Registry } from "../interfaces/IERC8004Registry.sol";
+
+/// @dev The ERC-8004 IdentityRegistry's minting entry point.
+interface IERC8004AgentRegistration {
+    function register(string calldata agentURI) external returns (uint256 agentId);
+}
+
+/// @dev AntseedSellerRegistry (registry.staking() in the seller-pool era).
+interface IAntseedSellerRegistration {
+    function registerSeller(uint256 agentId) external;
+}
+
+/// @dev AntseedUsageAccounting accounts settlements made before the gate's
+///      effective epoch under that epoch.
+interface IAntseedRewardedEpochFloor {
+    function firstRewardedEpoch() external view returns (uint256);
+}
+
+/// @dev AntseedEmissionsV2 mints a seller's reward into a rewards pool,
+///      locked, unless its unlock policy lets the seller claim directly.
+interface IAntseedLockingEmissions {
+    function sellerRewardsPool() external view returns (address);
+}
+
+interface IAntseedLockedSellerRewards {
+    function lockedRewards(address seller) external view returns (uint256);
+}
 
 /**
  * @title AntseedColonyPool
@@ -34,9 +61,16 @@ import { IAntseedEmissions } from "../interfaces/IAntseedEmissions.sol";
  *         `remainderRecipient`. Everything is pull-based (`claimUsdc`).
  *
  *         ANTS: every USDC credit also adds weight for the emissions epoch
- *         current at settlement time. Once an epoch is finalized, anyone can
- *         pull the pool's seller emissions for it (`claimEpochEmissions`) and
- *         each account claims its weight-proportional share (`claimAnts`).
+ *         that rewards the settlement: the current epoch, or the emissions
+ *         contract's `firstRewardedEpoch` when settling before it (the gate
+ *         cutover). Once an epoch is finalized, anyone can pull the pool's
+ *         seller emissions for it (`claimEpochEmissions`) and each account
+ *         claims its weight-proportional share (`claimAnts`).
+ *
+ *         Setup on the seller-pool stack: the owner mints the pool's agent
+ *         (`registerAgent`, or transfers one to the pool) and binds it
+ *         (`registerSeller`); ANTS stake for that agent then makes the pool
+ *         channel-eligible.
  */
 contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
     using SafeERC20 for IERC20;
@@ -105,6 +139,8 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
     event OrphanUsdcSwept(address indexed recipient, uint256 amount);
     event PayoutSet(address indexed worker, address indexed payout, uint256 nonce);
     event EarningsMoved(address indexed from, address indexed to, uint256 usdcAmount);
+    event AgentRegistered(uint256 indexed agentId);
+    event SellerRegistered(uint256 indexed agentId);
 
     // ─── Errors ─────────────────────────────────────────────────────
     error NothingToClaim();
@@ -112,6 +148,8 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
     error EpochNotFinalized();
     error SignatureExpired();
     error InvalidSignature();
+    error NotAgentOwner();
+    error EmissionsLocked();
 
     /// @param _registry AntSeed address book.
     /// @param initialOperator First operator; also the initial operator-fee
@@ -189,7 +227,7 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
             // emissions implementation refuses the current epoch anyway.
             if (epoch >= current) revert EpochNotFinalized();
             single[0] = epoch;
-            uint256 antsAmount = _claimSellerEmissions(single);
+            uint256 antsAmount = _claimUnlockedSellerEmissions(single);
             if (antsAmount == 0) continue;
             if (epochTotalWeight[epoch] == 0) {
                 // ANTS for an epoch with no credited USDC would otherwise be
@@ -262,7 +300,11 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
         (bool hasEpoch, uint256 current) = _tryCurrentEpoch();
         if (!hasEpoch) return;
         uint256 oldest = current > MAX_EPOCHS_PER_CLAIM ? current - MAX_EPOCHS_PER_CLAIM : 0;
-        for (uint256 epoch = oldest; epoch <= current; epoch++) {
+        // Weights recorded during the gate cutover sit in the first rewarded
+        // epoch, ahead of the current one; move those too.
+        (, uint256 newest) = _tryRewardEpoch();
+        if (newest < current) newest = current;
+        for (uint256 epoch = oldest; epoch <= newest; epoch++) {
             uint256 weight = epochWeight[epoch][from];
             if (weight == 0) continue;
             epochWeight[epoch][from] = 0;
@@ -284,6 +326,26 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
     // ═══════════════════════════════════════════════════════════════════
     //                        ADMIN
     // ═══════════════════════════════════════════════════════════════════
+
+    /// @notice Mint an ERC-8004 agent owned by this pool, for `registerSeller`.
+    function registerAgent(string calldata agentURI) external onlyOwner returns (uint256 agentId) {
+        agentId = IERC8004AgentRegistration(registry.identityRegistry()).register(agentURI);
+        emit AgentRegistered(agentId);
+    }
+
+    /// @notice Bind this pool to `agentId` in the seller registry
+    ///         (registry.staking()), which only the seller itself can do. The
+    ///         pool must own the agent.
+    function registerSeller(uint256 agentId) external onlyOwner {
+        if (IERC8004Registry(registry.identityRegistry()).ownerOf(agentId) != address(this)) revert NotAgentOwner();
+        IAntseedSellerRegistration(registry.staking()).registerSeller(agentId);
+        emit SellerRegistered(agentId);
+    }
+
+    /// @notice Accept ERC-8004 agents minted with `_safeMint` or transferred in.
+    function onERC721Received(address, address, uint256, bytes calldata) external pure returns (bytes4) {
+        return this.onERC721Received.selector;
+    }
 
     function setRemainderRecipient(address recipient) external onlyOwner {
         if (recipient == address(0)) revert InvalidAddress();
@@ -362,7 +424,7 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
     function _attribute(bytes32 channelId, uint128 newCumulative, bytes calldata metadata, uint256 net) internal {
         bytes32 key = _channelKey(channelId);
         uint128 last = _channelCumulative[key];
-        (bool hasEpoch, uint256 epoch) = _tryCurrentEpoch();
+        (bool hasEpoch, uint256 epoch) = _tryRewardEpoch();
 
         if (newCumulative <= last) {
             // AntseedChannels settled nothing new, so it did not verify the
@@ -480,5 +542,39 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
         } catch {
             return (false, 0);
         }
+    }
+
+    /// @dev The epoch whose emissions reward a settlement made now. Matches
+    ///      AntseedUsageAccounting, which accounts usage settled before its
+    ///      `firstRewardedEpoch` under that epoch; other emissions contracts
+    ///      reward the current epoch.
+    function _tryRewardEpoch() internal view returns (bool ok, uint256 epoch) {
+        (ok, epoch) = _tryCurrentEpoch();
+        if (!ok) return (ok, epoch);
+        try IAntseedRewardedEpochFloor(registry.emissions()).firstRewardedEpoch() returns (uint256 first) {
+            if (epoch < first) epoch = first;
+        } catch { }
+    }
+
+    /// @dev Claim seller emissions, refusing a claim that AntseedEmissionsV2
+    ///      would lock in its seller rewards pool: the epoch would be marked
+    ///      claimed with nothing reaching this contract, and only the seller
+    ///      itself could later release it. Reverting leaves the epoch
+    ///      unclaimed upstream until the pool may claim it unlocked.
+    function _claimUnlockedSellerEmissions(uint256[] memory epochs) internal returns (uint256 antsAmount) {
+        (address lockPool, uint256 lockedBefore) = _lockedSellerRewards();
+        antsAmount = _claimSellerEmissions(epochs);
+        if (lockPool != address(0) && IAntseedLockedSellerRewards(lockPool).lockedRewards(address(this)) > lockedBefore) {
+            revert EmissionsLocked();
+        }
+    }
+
+    function _lockedSellerRewards() internal view returns (address lockPool, uint256 locked) {
+        try IAntseedLockingEmissions(registry.emissions()).sellerRewardsPool() returns (address p) {
+            if (p == address(0)) return (address(0), 0);
+            try IAntseedLockedSellerRewards(p).lockedRewards(address(this)) returns (uint256 l) {
+                return (p, l);
+            } catch { }
+        } catch { }
     }
 }

@@ -12,6 +12,7 @@ import {
   deviceAttestationNonce,
   WORKER_ASSIGN_PATH,
   WORKER_E2E_CAPABILITY,
+  workerE2EProviderCapability,
   generateWorkerEncryptionKey,
   openRequest,
   workerAttestationMessage,
@@ -31,18 +32,41 @@ const peer: PeerInfo = {
   peerId: 'a'.repeat(40) as PeerInfo['peerId'],
   lastSeen: Date.now(),
   providers: ['colony-pool'],
-  capabilities: [WORKER_E2E_CAPABILITY],
+  providerServiceApiProtocols: { 'colony-pool': { services: { qwen: ['openai-chat-completions'] } } },
+  capabilities: [WORKER_E2E_CAPABILITY, workerE2EProviderCapability('colony-pool')],
+};
+/** The same seller with an ordinary provider next to its colony pool. */
+const mixedPeer: PeerInfo = {
+  ...peer,
+  providers: ['openai', 'colony-pool'],
+  providerServiceApiProtocols: {
+    openai: { services: { llama: ['openai-chat-completions'] } },
+    'colony-pool': { services: { qwen: ['openai-chat-completions'] } },
+  },
 };
 const SELLER = `0x${'a'.repeat(40)}`;
 
-function chatRequest(requestId: string, stream = false): SerializedHttpRequest {
+function chatRequest(requestId: string, stream = false, model = 'qwen'): SerializedHttpRequest {
   return {
     requestId,
     method: 'POST',
     path: '/v1/chat/completions',
     headers: { 'content-type': 'application/json' },
-    body: enc({ model: 'qwen', stream, messages: [{ role: 'user', content: PROMPT }] }),
+    body: enc({ model, stream, messages: [{ role: 'user', content: PROMPT }] }),
   };
+}
+
+/** A stand-in for the payment negotiator that records what the handler tells its payment manager. */
+function recordingNegotiator() {
+  const calls: Array<{ method: string; args: unknown[] }> = [];
+  const recorder = (target: Record<string, unknown> = {}) => new Proxy(target, {
+    get: (object, prop) => {
+      if (prop in object) return object[prop as string];
+      if (prop === 'then') return undefined;
+      return (...args: unknown[]) => { calls.push({ method: String(prop), args }); return undefined; };
+    },
+  });
+  return { negotiator: recorder({ bpm: recorder() }), calls };
 }
 
 /** A pool with workers that really decrypt and encrypt, behind a fake mux. */
@@ -67,11 +91,12 @@ function attestation(kind: Attest, worker: string, key: string) {
   return { attestationKey: certified.hex, attestation: { ...statement, signature } };
 }
 
-function deviceAttestation(kind: Device, worker: string, attestationKey: string) {
+function deviceAttestation(kind: Device, worker: string, attestationKey: string, ca = appleCa, notBefore?: Date) {
   const challenge = 'mdm-challenge';
   return {
     challenge,
-    chain: appleCa.issue({
+    chain: ca.issue({
+      ...(notBefore ? { notBefore } : {}),
       serialNumber: kind === 'other-mac' ? 'SOMEONEELSE1' : 'C02TEST0MD6T',
       udid: '00000000-0000-1000-8000-0123456789AB',
       nonce: deviceAttestationNonce(worker, attestationKey, challenge),
@@ -80,7 +105,7 @@ function deviceAttestation(kind: Device, worker: string, attestationKey: string)
   };
 }
 
-function fakePool(opts: { workers?: number; certSeller?: string; unavailableOnce?: boolean; tamper?: 'ciphertext' | 'usage'; attest?: Attest; requireAttested?: boolean; device?: Device; requireApple?: boolean; streamTamper?: 'no-end' | 'usage' | 'not-sse' | 'padding'; maxStreamBufferBytes?: number } = {}) {
+function fakePool(opts: { payments?: boolean; now?: () => number; appleCa?: ReturnType<typeof createTestAppleCa>; deviceNotBefore?: Date; workers?: number; certSeller?: string; unavailableOnce?: boolean; tamper?: 'ciphertext' | 'usage'; attest?: Attest; requireAttested?: boolean; device?: Device; requireApple?: boolean; streamTamper?: 'no-end' | 'usage' | 'not-sse' | 'padding'; maxStreamBufferBytes?: number } = {}) {
   const workers = Array.from({ length: opts.workers ?? 1 }, () => ({ wallet: Wallet.createRandom(), key: generateWorkerEncryptionKey() }));
   let next = 0;
   let unavailable = opts.unavailableOnce === true;
@@ -103,11 +128,16 @@ function fakePool(opts: { workers?: number; certSeller?: string; unavailableOnce
           worker: worker.wallet.address, key, expires, pool,
           certificate: worker.wallet.signMessageSync(workerKeyCertificateMessage(pool, key, expires, attested?.attestationKey)),
           ...(attested ?? {}),
-          ...(attested && opts.device ? { deviceAttestation: deviceAttestation(opts.device, worker.wallet.address, attested.attestationKey) } : {}),
+          ...(attested && opts.device ? { deviceAttestation: deviceAttestation(opts.device, worker.wallet.address, attested.attestationKey, opts.appleCa, opts.deviceNotBefore) } : {}),
         });
         return;
       }
-      const envelope = JSON.parse(dec(req.body)).antseed_e2e as { worker: string };
+      const envelope = JSON.parse(dec(req.body)).antseed_e2e as { worker: string } | undefined;
+      // An ordinary provider's plaintext answer.
+      if (!envelope) {
+        respond(onResponse, req.requestId, 200, { choices: [{ message: { content: 'plain answer' } }] });
+        return;
+      }
       if (unavailable) {
         unavailable = false;
         respond(onResponse, req.requestId, 421, { error: { code: 'worker_unavailable', message: 'gone' } });
@@ -152,9 +182,10 @@ function fakePool(opts: { workers?: number; certSeller?: string; unavailableOnce
     activeRequestCount: () => 0,
   };
   const buyer = Wallet.createRandom();
+  const payments = opts.payments ? recordingNegotiator() : null;
   const handler = new BuyerRequestHandler(opts.maxStreamBufferBytes ? { maxStreamBufferBytes: opts.maxStreamBufferBytes } : {}, {
     localPeerId: buyer.address.slice(2).toLowerCase() as PeerInfo['peerId'],
-    negotiator: null,
+    negotiator: (payments?.negotiator ?? null) as any,
     verificationStorage: null,
     verificationSampler: null,
     getConnection: vi.fn(async () => ({ state: ConnectionState.Open }) as any),
@@ -164,10 +195,14 @@ function fakePool(opts: { workers?: number; certSeller?: string; unavailableOnce
     workerE2E: new NodeWorkerE2EClient(buyer, {
       requireAttestedWorkers: opts.requireAttested === true,
       requireAppleVerifiedWorkers: opts.requireApple === true,
-      deviceAttestationRoots: [appleCa.rootPem],
+      deviceAttestationRoots: [(opts.appleCa ?? appleCa).rootPem],
+      ...(opts.now ? { now: opts.now } : {}),
     }),
   });
-  return { handler, wire, assigned, workers };
+  const deliveries = () => (payments?.calls ?? [])
+    .filter((call) => call.method === 'recordWorkerAttribution' || call.method === 'recordWorkerDelivery')
+    .map((call) => call.method === 'recordWorkerAttribution' ? 'assigned' : call.args[1] === null ? 'failed' : call.args[1]);
+  return { handler, wire, assigned, workers, deliveries };
 }
 
 describe('buyer requests to colony pools', () => {
@@ -230,6 +265,33 @@ describe('buyer requests to colony pools', () => {
     await expect(fakePool({ attest: 'hardened', device: 'other-mac' }).handler.sendRequest(peer, chatRequest('d4'))).rejects.toThrow(/another Mac/);
   });
 
+  it('stops using a cached assignment once its Apple attestation grows too old', async () => {
+    let clock = Math.floor(Date.now() / 1000);
+    // Apple's leaf is a minute short of the 26-hour limit when the buyer first uses it.
+    const pool = fakePool({ attest: 'hardened', device: 'apple', now: () => clock, deviceNotBefore: new Date((clock - 26 * 3600 + 60) * 1000) });
+    expect((await pool.handler.sendRequest(peer, chatRequest('c1'))).statusCode).toBe(200);
+    clock += 30;
+    expect((await pool.handler.sendRequest(peer, chatRequest('c2'))).statusCode).toBe(200);
+    expect(pool.assigned).toHaveLength(1);
+    clock += 90;
+    await expect(pool.handler.sendRequest(peer, chatRequest('c3'))).rejects.toThrow(/device attestation is stale/);
+    expect(pool.assigned).toHaveLength(2);
+  });
+
+  it('stops using a cached assignment once a certificate in its Apple chain expires', async () => {
+    let clock = Math.floor(Date.now() / 1000);
+    // Apple's intermediate expires 10 minutes from now.
+    const ca = createTestAppleCa({ created: new Date((clock - 365 * 24 * 3600 + 600) * 1000) });
+    const pool = fakePool({ attest: 'hardened', device: 'apple', appleCa: ca, now: () => clock });
+    expect((await pool.handler.sendRequest(peer, chatRequest('c4'))).statusCode).toBe(200);
+    clock += 500;
+    expect((await pool.handler.sendRequest(peer, chatRequest('c5'))).statusCode).toBe(200);
+    expect(pool.assigned).toHaveLength(1);
+    clock += 200;
+    await expect(pool.handler.sendRequest(peer, chatRequest('c6'))).rejects.toThrow(/not valid now/);
+    expect(pool.assigned).toHaveLength(2);
+  });
+
   it('fails a response whose ciphertext does not verify', async () => {
     const pool = fakePool({ tamper: 'ciphertext' });
     await expect(pool.handler.sendRequest(peer, chatRequest('t1'))).rejects.toThrow(/failed verification/);
@@ -264,7 +326,49 @@ describe('buyer requests to colony pools', () => {
   it('leaves sellers without the capability untouched', async () => {
     const pool = fakePool();
     const plainPeer = { ...peer, capabilities: [] };
-    await expect(pool.handler.sendRequest(plainPeer, chatRequest('p1'))).rejects.toThrow();
+    expect(JSON.parse(dec((await pool.handler.sendRequest(plainPeer, chatRequest('p1'))).body)).choices[0].message.content).toBe('plain answer');
     expect(dec(pool.wire[0]!.body)).toContain(PROMPT);
+  });
+
+  it('encrypts only the colony pool\'s services on a seller that also has an ordinary provider', async () => {
+    const pool = fakePool();
+    const ordinary = await pool.handler.sendRequest(mixedPeer, chatRequest('m1', false, 'llama'));
+    expect(JSON.parse(dec(ordinary.body)).choices[0].message.content).toBe('plain answer');
+    expect(pool.wire.map((req) => req.path)).toEqual(['/v1/chat/completions']);
+    expect(dec(pool.wire[0]!.body)).toContain(PROMPT);
+
+    const pooled = await pool.handler.sendRequest(mixedPeer, chatRequest('m2'));
+    expect(JSON.parse(dec(pooled.body)).choices[0].message.content).toBe(ANSWER);
+    expect(dec(pool.wire.at(-1)!.body)).not.toContain(PROMPT);
+  });
+
+  it('does not encrypt when the colony-pool capability names no provider of the service', async () => {
+    const pool = fakePool();
+    const unscoped = { ...peer, capabilities: [WORKER_E2E_CAPABILITY] };
+    await pool.handler.sendRequest(unscoped, chatRequest('m3'));
+    expect(pool.wire.map((req) => req.path)).toEqual(['/v1/chat/completions']);
+  });
+
+  it('tells the payment manager whether the worker\'s sealed answer verified, with its authenticated usage', async () => {
+    const verified = fakePool({ payments: true });
+    await verified.handler.sendRequest(peer, chatRequest('v1'));
+    expect(verified.deliveries()).toEqual(['assigned', { inputTokens: 10n, cachedInputTokens: 0n, outputTokens: 5n }]);
+
+    const streamed = fakePool({ payments: true });
+    await streamed.handler.sendRequest(peer, chatRequest('v2', true), { onResponseChunk: () => {} });
+    expect(streamed.deliveries()).toEqual(['assigned', { inputTokens: 10n, cachedInputTokens: 0n, outputTokens: 5n }]);
+
+    const tampered = fakePool({ payments: true, tamper: 'ciphertext' });
+    await expect(tampered.handler.sendRequest(peer, chatRequest('v3'))).rejects.toThrow();
+    expect(tampered.deliveries()).toEqual(['assigned', 'failed']);
+
+    const truncated = fakePool({ payments: true, streamTamper: 'no-end' });
+    await expect(truncated.handler.sendRequest(peer, chatRequest('v4', true), { onResponseChunk: () => {} })).rejects.toThrow();
+    expect(truncated.deliveries()).toEqual(['assigned', 'failed']);
+
+    // The first worker was unavailable: its attempt fails, the second worker's verifies.
+    const retried = fakePool({ payments: true, workers: 2, unavailableOnce: true });
+    await retried.handler.sendRequest(peer, chatRequest('v5'));
+    expect(retried.deliveries()).toEqual(['assigned', 'failed', 'assigned', { inputTokens: 10n, cachedInputTokens: 0n, outputTokens: 5n }]);
   });
 });

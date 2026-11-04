@@ -61,6 +61,13 @@ describe('colony pool rewards', () => {
     expect(client.claimAnts).toHaveBeenCalledWith(wallet, [4, 5]);
   });
 
+  it('still claims funded epochs when pulling emissions fails', async () => {
+    const { ctx, client } = fixture([pool], [5]);
+    client.claimEpochEmissions.mockRejectedValueOnce(new Error('EmissionsLocked'));
+    await expect(claimColonyPool(ctx, { pool, usdc: false, ants: true }, report)).resolves.toEqual({ hashes: ['ants-hash'] });
+    expect(client.claimAnts).toHaveBeenCalledWith(wallet, [4]);
+  });
+
   it('refuses pools the dashboard does not know', async () => {
     const { ctx } = fixture([]);
     await expect(claimColonyPool(ctx, { pool, usdc: true, ants: false }, report)).rejects.toThrow(/Unknown colony pool/);

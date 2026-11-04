@@ -14,6 +14,9 @@ import { AntseedChannels } from "../payments/AntseedChannels.sol";
 import { AntseedEmissions } from "../legacy/AntseedEmissions.sol";
 import { AntseedColonyPool } from "../staking/AntseedColonyPool.sol";
 import { AntseedSellerDelegation } from "../staking/AntseedSellerDelegation.sol";
+import { AntseedEmissionsGate } from "../emissions/AntseedEmissionsGate.sol";
+import { AntseedUsageAccounting } from "../emissions/AntseedUsageAccounting.sol";
+import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
 
 /// @dev Channels stand-in that re-enters the pool while the pool is inside
 ///      its `settle` override.
@@ -115,8 +118,8 @@ contract AntseedColonyPoolTest is Test {
         vm.prank(owner);
         pool = new AntseedColonyPool(address(antseedRegistry), operator);
 
-        vm.prank(address(pool));
-        poolAgentId = identityRegistry.register();
+        vm.prank(owner);
+        poolAgentId = pool.registerAgent("ipfs://colony-pool");
 
         usdc.mint(address(this), POOL_STAKE);
         usdc.approve(address(staking), POOL_STAKE);
@@ -656,17 +659,74 @@ contract AntseedColonyPoolTest is Test {
         vm.expectRevert(AntseedColonyPool.NothingToClaim.selector);
         pool.claimAnts(_epochs2(e0, e1));
 
-        // Duplicate epochs in one call don't pay twice.
-        uint256[] memory dup = _epochs2(e1, e1);
-        uint256 expected = pool.pendingAnts(remainderSink, _epochs1(e1));
-        if (expected > 0) {
-            vm.prank(remainderSink);
-            pool.claimAnts(dup);
-            assertEq(ants.balanceOf(remainderSink), expected);
-        }
-
         // Pool never pays out more than it received.
-        assertLe(ants.balanceOf(workerA) + ants.balanceOf(workerB) + ants.balanceOf(remainderSink), pot0 + pot1);
+        assertLe(ants.balanceOf(workerA) + ants.balanceOf(workerB), pot0 + pot1);
+    }
+
+    function test_emissions_duplicateEpochInOneClaimPaysOnce() public {
+        uint256 e0 = emissions.currentEpoch();
+        bytes32 ch = _reserve(bytes32(uint256(52)), 100e6);
+        _settle(ch, 100e6, _e2(workerA, 60e6, workerB, 40e6));
+        vm.warp(block.timestamp + EPOCH_DURATION);
+        pool.claimEpochEmissions(_epochs1(e0));
+
+        uint256 expected = pool.pendingAnts(workerA, _epochs1(e0));
+        assertGt(expected, 0, "worker has an unclaimed share");
+        vm.prank(workerA);
+        pool.claimAnts(_epochs2(e0, e0));
+        assertEq(ants.balanceOf(workerA), expected, "paid exactly one epoch share");
+        assertEq(pool.pendingAnts(workerA, _epochs1(e0)), 0);
+    }
+
+    /// @dev AntseedUsageAccounting rewards usage settled before the gate's
+    ///      effective epoch under that epoch; worker weights must land there.
+    function test_emissions_gateCutover_weightsUnderFirstRewardedEpoch() public {
+        bytes32 ch = _reserve(bytes32(uint256(53)), 200e6);
+        AntseedEmissionsGate gate = new AntseedEmissionsGate(teamWallet, protocolReserve, 15_000, 15_000);
+        vm.warp(gate.GENESIS() + 2 * gate.EPOCH_DURATION() + 1);
+        gate = new AntseedEmissionsGate(teamWallet, protocolReserve, 15_000, 15_000);
+        AntseedUsageAccounting accounting = new AntseedUsageAccounting(address(0), address(channels), address(gate));
+        antseedRegistry.setEmissions(address(accounting));
+        uint256 cutover = accounting.currentEpoch();
+        uint256 rewarded = accounting.firstRewardedEpoch();
+        assertEq(rewarded, cutover + 1);
+
+        address mac = vm.addr(MAC_PK);
+        _settle(ch, 100e6, _e1(mac, 100e6));
+        assertGt(pool.epochWeight(rewarded, mac), 0, "weight in the rewarded epoch");
+        assertEq(pool.epochWeight(cutover, mac), 0, "nothing in the cutover epoch");
+        assertEq(pool.epochTotalWeight(cutover), 0);
+
+        // A payout change during the cutover moves that weight too.
+        address wallet = address(0x9A1);
+        _setPayout(wallet, block.timestamp + 1 days);
+        assertEq(pool.epochWeight(rewarded, mac), 0);
+        assertGt(pool.epochWeight(rewarded, wallet), 0);
+
+        // The rewarded epoch can't be pulled before it ends.
+        vm.expectRevert(AntseedColonyPool.EpochNotFinalized.selector);
+        pool.claimEpochEmissions(_epochs1(rewarded));
+    }
+
+    // ─── Seller registration ────────────────────────────────────────
+
+    function test_registerSeller_onlyOwnerAndOwnedAgent() public {
+        uint256 foreign = identityRegistry.register();
+        vm.prank(owner);
+        vm.expectRevert(AntseedColonyPool.NotAgentOwner.selector);
+        pool.registerSeller(foreign);
+
+        vm.prank(operator);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, operator));
+        pool.registerSeller(poolAgentId);
+
+        vm.prank(operator);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, operator));
+        pool.registerAgent("ipfs://pool");
+
+        vm.prank(owner);
+        uint256 minted = pool.registerAgent("ipfs://pool");
+        assertEq(identityRegistry.ownerOf(minted), address(pool));
     }
 
     function test_emissions_operatorFeeTakenOnAnts() public {
