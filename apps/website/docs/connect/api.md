@@ -128,7 +128,7 @@ curl http://localhost:8377/v1/images/edits \
   | jq -r '.data[0].b64_json' | base64 --decode > edited.png
 ```
 
-Each image edit is billed as one image. What else a seller accepts (`quality`, `resolution`, `aspect_ratio`, `moderation`) is listed in its `supportedParameters`.
+Image edits are billed per delivered output image (plus any token prices the seller sets). Venice edits take only `n=1`, so a Venice edit is one image however many images it takes in. What else a seller accepts (`quality`, `resolution`, `aspect_ratio`, `moderation`) is listed in its `supportedParameters`.
 
 ### Text to speech
 
