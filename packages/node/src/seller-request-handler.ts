@@ -1,6 +1,7 @@
 import type { PeerAnnouncer } from './discovery/announcer.js';
 import type {
   Provider,
+  ProviderRequestRefusal,
   ProviderStreamCallbacks,
 } from './interfaces/seller-provider.js';
 import { ANTSEED_ATTEST_PATH, type Prover } from './interfaces/plugin.js';
@@ -378,6 +379,20 @@ export class SellerRequestHandler {
             },
           })),
         });
+        return;
+      }
+
+      // A request the provider refuses anyway is answered before any payment step.
+      let refusal: ProviderRequestRefusal | null;
+      try {
+        refusal = provider.checkRequest?.(request) ?? null;
+      } catch (err) {
+        debugWarn(`[SellerHandler] Provider request check failed: ${err instanceof Error ? err.message : err}`);
+        this._sendJsonError(mux, request.requestId, 500, 'request_check_failed', 'Seller could not check the request');
+        return;
+      }
+      if (refusal) {
+        this._sendJsonError(mux, request.requestId, refusal.statusCode, refusal.code, refusal.message);
         return;
       }
 
