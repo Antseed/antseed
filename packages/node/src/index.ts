@@ -240,6 +240,7 @@ export { BalanceManager } from './payments/balance-manager.js';
 export {
   computeCostUsdc,
   estimateTokensFromBytes,
+  estimateTokensFromBytesSampled,
   estimateTokensFromText,
   type ServicePricing,
 } from './payments/pricing.js';

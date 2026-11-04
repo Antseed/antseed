@@ -29,7 +29,7 @@ import type {
 } from './types/http.js';
 import {
   computeCostUsdc,
-  estimateTokensFromBytes,
+  estimateTokensFromBytesSampled,
 } from './payments/pricing.js';
 import { debugLog, debugWarn } from './utils/debug.js';
 import {
@@ -1596,7 +1596,7 @@ export class SellerRequestHandler {
       return null;
     }
 
-    const inputTokens = estimateTokensFromBytes(request.body);
+    const inputTokens = estimateTokensFromBytesSampled(request.body);
     const maxOutputTokens = this._extractMaxOutputTokens(body);
     return {
       cost: computeCostUsdc(inputTokens, maxOutputTokens, pricing),
