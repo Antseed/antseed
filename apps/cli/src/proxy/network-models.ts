@@ -27,7 +27,7 @@ import type { RouterOptionSpec } from '@antseed/router-core'
 
 export { effectiveModelReputationScore } from '@antseed/node'
 
-export type NetworkModelType = 'text' | 'image' | 'decision' | 'video'
+export type NetworkModelType = NetworkServiceOffer['type']
 
 export type NetworkModelPeerOffer = {
   unitBillingModels?: NetworkServiceOffer['unitBillingModels']
@@ -93,6 +93,8 @@ export type NetworkModelEntry = {
     structured_output?: boolean
   }
   supported_parameters?: string[]
+  /** Speech models: voices every listed offer accepts (each offer lists its own under `capabilities.speech`). */
+  voices?: string[]
   capability_coverage: NetworkModelCapabilityCoverage
   peers: NetworkModelPeerOffer[]
 }
@@ -175,6 +177,7 @@ function aggregateModelCapabilities(entry: NetworkModelEntry): void {
   const toolUse = capabilities.map((value) => value?.toolUse)
   const structuredOutput = capabilities.map((value) => value?.structuredOutput)
   const supportedParameters = capabilities.map((value) => value?.supportedParameters)
+  const voices = entry.type === 'speech' ? guaranteedIntersection(capabilities.map((value) => value?.speech?.voices)) : undefined
 
   entry.supported_protocols = [...new Set(entry.peers.flatMap((peer) => [peer.protocol, ...peer.protocols]))]
     .filter((protocol): protocol is string => Boolean(protocol))
@@ -216,6 +219,7 @@ function aggregateModelCapabilities(entry: NetworkModelEntry): void {
     }
   }
   if (parameters !== undefined) entry.supported_parameters = parameters
+  if (voices !== undefined) entry.voices = voices
 }
 
 /** Maps a `?type=` query value to a filter; absent/empty means "all". */
@@ -224,6 +228,7 @@ export function parseModelTypeFilter(raw: string | null): ModelTypeFilter {
   if (value === '') return 'all'
   if (value === 'image' || value === 'images') return 'image'
   if (value === 'video' || value === 'videos') return 'video'
+  if (value === 'speech' || value === 'tts') return 'speech'
   if (value === 'text') return 'text'
   if (value === 'decision' || value === 'decisions') return 'decision'
   if (value === 'router' || value === 'routers') return 'router'

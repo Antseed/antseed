@@ -15,7 +15,7 @@ export {
   type ResponseAuthEvent,
 } from './node.js';
 export { DEFAULT_BUYER_IDENTITY, isValidBuyerIdentityName } from './buyer-identity-context.js';
-export type { Provider, ProviderRequestCharge, ProviderStreamCallbacks, ServiceHealthStatus, UpstreamAccountStatus } from './interfaces/seller-provider.js';
+export type { Provider, ProviderRequestCharge, ProviderRequestRefusal, ProviderStreamCallbacks, ServiceHealthStatus, UpstreamAccountStatus } from './interfaces/seller-provider.js';
 export { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION, VIDEO_DOWNLOAD_MAX_BYTES, VIDEO_DOWNLOAD_CHUNK_BYTES, ANTSEED_STREAMING_RESPONSE_HEADER } from './types/http.js';
 export {
   ModelHealthChecker,
@@ -30,6 +30,7 @@ export {
   type UpstreamAccountEvent,
 } from './health/model-health-checker.js';
 export { isUpstreamOutOfCredit } from './health/upstream-credit.js';
+export { requestBodyFields, requestBodyService } from './requested-service.js';
 export {
   GasHealthMonitor,
   DEFAULT_GAS_CHECK_INTERVAL_MS,
@@ -91,6 +92,7 @@ export {
   compareNetworkServiceOfferPrice,
   selectLowestPricedCanonicalOffers,
   selectLowestPricedNetworkServiceOffer,
+  speechOfferUsdPerCharacter,
 } from './discovery/service-catalog.js';
 
 // Fault attribution — lets consumers tell a dead peer from a broken buyer.
@@ -105,6 +107,7 @@ export {
 } from './errors.js';
 export { adaptPeerFaultErrorResponse, describeFreeTierLimit, FREE_TIER_EXHAUSTED_ERROR_ID, isFreeTierExhaustedResponse, nextFreeTierStakeTier, readFreeTierLimit, VIDEO_PRICE_HEADER, VIDEO_JOB_RETIRED_HEADER, VIDEO_DELIVERED_HEADER, VIDEO_DELIVERY_UNRECORDED } from '@antseed/buyer-core';
 export type { FreeTierLimit, FreeTierLimitStakeTier } from '@antseed/buyer-core';
+export { reconcileStoredChannels, type ChannelReconcileResult, type LivePaymentSessions } from '@antseed/buyer-core';
 
 // Submodule re-exports (commonly used)
 export {
@@ -140,6 +143,8 @@ export {
   WELL_KNOWN_SERVICE_API_PROTOCOLS,
   NATIVE_VIDEO_PROTOCOLS,
   isNativeVideoProtocol,
+  AUDIO_SPEECH_PROTOCOLS,
+  isAudioSpeechProtocol,
   SERVICE_CAPABILITY_MODALITIES,
   MAX_CAPABILITY_TOKEN_COUNT,
   MAX_CAPABILITY_SUPPORTED_PARAMETERS,
@@ -171,6 +176,10 @@ export {
   type ServiceCapabilityModality,
   type VideoInputKind,
   type VideoOptions,
+  type SpeechOptions,
+  type AudioSpeechProtocol,
+  SPEECH_METADATA_VERSION,
+  speechVoiceProblem,
   type PeerMetadata,
   type PeerVerifications,
   type ProviderAnnouncement,
@@ -310,6 +319,7 @@ export {
   RECEIVE_WITH_AUTHORIZATION_TYPES,
   computeMetadataHash,
   encodeMetadata,
+  decodeSpendingAuthMetadata,
   computeFreeUsageMetadataHash,
   encodeFreeUsageMetadata,
   getServiceMetadataId,

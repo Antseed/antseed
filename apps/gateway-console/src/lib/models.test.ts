@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { NetworkModel } from '../api/types'
+import { formatPricePerMillion } from './format'
 import { findModel, priceSummary } from './models'
 
 const model = (id: string, extra: Partial<NetworkModel> = {}): NetworkModel => ({
@@ -28,5 +29,7 @@ describe('priceSummary', () => {
     expect(priceSummary({ inputUsdPerMillion: 0, outputUsdPerMillion: 0 })).toBe('Free')
     expect(priceSummary({ inputUsdPerMillion: null, outputUsdPerMillion: null, usdPerImage: { min: 0.003, max: 0.003 } })).toBe('$0.003 per image')
     expect(priceSummary({ inputUsdPerMillion: null, outputUsdPerMillion: null })).toBe('No price advertised')
+    expect(priceSummary({ inputUsdPerMillion: null, outputUsdPerMillion: null, usdPerMillionCharacters: 15 })).toBe(`${formatPricePerMillion(15)} /M characters`)
+    expect(priceSummary({ inputUsdPerMillion: null, outputUsdPerMillion: null, usdPerMillionCharacters: 0 })).toBe('Free')
   })
 })

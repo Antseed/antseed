@@ -956,3 +956,62 @@ test('/v1/models?type=router lists only routers the key policy allows, with only
   assert.deepEqual(await list({ allowedModels: ['gpt-5'] }), [])
   assert.deepEqual(await list({ blockedPeerIds: [router.peerId] }), [])
 })
+
+/** A seller of the speech service `tts-model`, free of token prices, at `perCharacter` USD per character. */
+function makeSpeechPeer(seed: string, perCharacter: number, trust: number): PeerInfo {
+  return {
+    peerId: seed.repeat(40) as PeerInfo['peerId'],
+    lastSeen: Date.now(),
+    providers: ['openai'],
+    onChainReputationScore: trust,
+    displayName: `Test speech seller ${seed}`,
+    providerPricing: { openai: { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } } },
+    providerServiceApiProtocols: { openai: { services: { 'tts-model': ['openai-audio-speech'] } } },
+    providerServiceUnitBillingModels: { openai: { services: { 'tts-model': {
+      'openai-audio-speech': { version: 1, components: perCharacter === 0 ? [] : [{ unit: 'input_characters', priceUsd: perCharacter }] },
+    } } } },
+  }
+}
+
+function speak(h: Harness, headers: Record<string, string> = {}): Promise<Response> {
+  return fetch(`${h.url}/v1/audio/speech`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...headers },
+    body: JSON.stringify({ model: 'tts-model', input: 'Hello there.' }),
+  })
+}
+
+const dearSpeech = makeSpeechPeer('a', 0.00003, 95)
+const cheapSpeech = makeSpeechPeer('b', 0.00001, 70)
+const freeSpeech = makeSpeechPeer('e', 0, 60)
+
+test('a price sort ranks speech sellers by their price per character', async (t) => {
+  const h = await startHarness(t, [dearSpeech, cheapSpeech])
+  assert.equal((await speak(h, withPolicy({ sort: 'price' }))).status, 200)
+  assert.equal(h.dispatched[0]?.peerId, cheapSpeech.peerId)
+})
+
+test('free-first puts a speech seller with a zero character price first', async (t) => {
+  const h = await startHarness(t, [dearSpeech, cheapSpeech, freeSpeech])
+  assert.equal((await speak(h, withPolicy({ sort: 'trust', preferFreePeers: true }))).status, 200)
+  assert.equal(h.dispatched[0]?.peerId, freeSpeech.peerId)
+})
+
+test('a speech request the buyer cannot fund falls back to a free speech seller', async (t) => {
+  const h = await startHarness(t, [dearSpeech, cheapSpeech, freeSpeech])
+  ;(h.proxy as any)._node.sendRequest = async (peer: PeerInfo, request: SerializedHttpRequest) => {
+    h.dispatched.push({ peerId: peer.peerId, headers: request.headers })
+    if (peer.peerId === freeSpeech.peerId) {
+      return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'audio/mpeg' }, body: Buffer.from('audio') }
+    }
+    return {
+      requestId: request.requestId, statusCode: 402,
+      headers: { 'content-type': 'application/json', 'x-antseed-fault-attribution': 'buyer' },
+      body: Buffer.from('{"error":"payment_required","code":"insufficient_deposits"}'),
+    }
+  }
+  const res = await speak(h, withPolicy({ sort: 'trust' }))
+  assert.equal(res.status, 200)
+  // The dearest (most trusted) seller refused; the other paid one is skipped; the free one answered.
+  assert.deepEqual(h.dispatched.map((entry) => entry.peerId), [dearSpeech.peerId, freeSpeech.peerId])
+})

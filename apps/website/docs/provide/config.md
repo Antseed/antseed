@@ -52,7 +52,7 @@ Everything a seller announces lives under `seller.providers`. Each key is a labe
 | Field | Description |
 |---|---|
 | `plugin` | Plugin name (`openai`, `anthropic`, `local-llm`, …) or an npm package name. Required. |
-| `baseUrl` | Upstream API base URL, without the `/v1` suffix. Passed to the `openai`, `local-llm`, `typesafe`, `venice-video` and `fal-video` plugins as their `*_BASE_URL` setting, so you don't need to export it separately. |
+| `baseUrl` | Upstream API base URL, without the `/v1` suffix. Passed to the `openai`, `local-llm`, `typesafe`, `venice-video`, `fal-video` and `alibaba-video` plugins as their `*_BASE_URL` setting, so you don't need to export it separately. |
 | `apiKeyEnv` | Name of the environment variable that holds this provider's API key, so two providers on one seller can use different keys. Applies to the same plugins as `baseUrl`. |
 | `pathRewrite` | Exact request paths to rewrite before forwarding upstream, for example `{ "/v1/chat/completions": "/v4/chat/completions" }`. `openai` plugin only. |
 | `fallbackUpstreams` | Backup upstreams for the same models, tried in order when the main upstream fails. `openai` plugin only. See [Backup upstreams](#backup-upstreams). |
@@ -113,10 +113,11 @@ After an upstream fails for a service, the seller tries it last for that service
 | Field | Description |
 |---|---|
 | `upstreamModel` | Model ID sent upstream. Defaults to the service ID. |
+| `imageEditModel` | Venice image services only: the native edit model that serves `/v1/images/edits` for this service. See [Venice image edits](/docs/provide/media#venice-image-edits). |
 | `pricing` | `inputUsdPerMillion`, `outputUsdPerMillion` and optional `cachedInputUsdPerMillion`, in USD per million tokens. Overrides the provider's `defaults`. |
 | `categories` | Tags announced in discovery. Lowercase letters, digits and hyphens. Buyers can filter on any tag; `privacy`, `legal`, `uncensored`, `coding`, `finance` and `tee` are the well-known ones shown in `antseed network browse --tag`. |
 | `capabilities` | Hints about the model. See below. |
-| `unitBillingModels` | Per-image, per-video or per-routing-request pricing. See [Unit-billed services](/docs/provide/media). |
+| `unitBillingModels` | Per-image, per-video, per-character (speech) or per-routing-request pricing. See [Unit-billed services](/docs/provide/media). |
 
 Set `cachedInputUsdPerMillion` when your upstream charges less for cache hits. When any seller of a model advertises a cached-input price, buyers count offers of that model that omit it at half their trust score, which can drop them below the buyer's minimum. Free offers are exempt.
 
@@ -134,7 +135,8 @@ Capabilities tell buyers what a service can do. They are hints, not enforced lim
 | `toolUse` | boolean | Supports tool calls |
 | `structuredOutput` | boolean | Supports JSON schema responses |
 | `supportedParameters` | string[] | Extra request-body parameters the service accepts, in lowercase snake_case (for example `seed`, `output_format`); at most 32 |
-| `video` | object | Options a video model accepts. See [Image and video services](/docs/provide/media#video-services) |
+| `video` | object | Options a video model accepts. See [Image, video and speech services](/docs/provide/media#video-services) |
+| `speech` | object | Voices (`voices`, `customVoices`) and `formats` of a speech model. See [Voices](/docs/provide/media#voices) |
 
 ## Edit the configuration from the CLI
 
@@ -193,6 +195,7 @@ Credentials always come from environment variables, never from `config.json`.
 | `typesafe` | System One decision models (`POST /v1/systemone`) | `TYPESAFE_API_KEY` |
 | `venice-video` | Video models behind the Venice video API | `VENICE_VIDEO_API_KEY` |
 | `fal-video` | fal.ai video models | `FAL_VIDEO_API_KEY` |
+| `alibaba-video` | Alibaba Cloud Model Studio video models (Wan, HappyHorse) | `ALIBABA_VIDEO_API_KEY` |
 | `claude-code`, `claude-oauth`, `openai-responses` | Subscription credentials, for testing only | Local keychain, OAuth token or Codex auth file |
 
 Any other npm package that exports a provider plugin works too. See [Provider plugin API](/docs/provider-api).
@@ -363,7 +366,7 @@ The seller checks its own services and announces the result in its signed metada
 
 Buyers are never told about your upstream account: an upstream that is out of credit or rejects your key is announced as unavailable (`reason: "upstream_error"`), and a buyer request whose upstream answers with such an error (401, 403, 402 or a billing error) gets a `503` saying the model is unavailable on this seller, not the upstream's error. Your dashboard, `antseed seller status`, logs and alerts show the real reason.
 
-Image and video services are never probed, because a probe would generate a paid result. An image service on an upstream without such a check (for example images on the OpenAI-compatible plugin) follows the account the upstream's text services found: each check interval while that upstream is out of credit counts as a failed check, and it recovers once the account has credit again. Instead, the Venice and fal video plugins check the account and model list for free every `intervalMs` (see [Image and video services](/docs/provide/media)). Their failed buyer requests count as the checks: after `failureThreshold` upstream failures in a row (401, 402, 403, 5xx, or a request that throws; a 429 means busy, not broken) the service is announced as failing. A passing account or model check doesn't clear that. Because nothing can check it in the meantime, it is announced as unknown again after the same wait a failing text service has between probes, so buyers try it; one more failure marks it failing again, and a successful request marks it healthy.
+Image, video and speech services are never probed, because a probe would generate a paid result. An image service on an upstream without such a check (for example images on the OpenAI-compatible plugin) follows the account the upstream's text services found: each check interval while that upstream is out of credit counts as a failed check, and it recovers once the account has credit again. Instead, the Venice and fal video plugins check the account and model list for free every `intervalMs` (see [Image and video services](/docs/provide/media)). Their failed buyer requests count as the checks: after `failureThreshold` upstream failures in a row (401, 402, 403, 5xx, or a request that throws; a 429 means busy, not broken) the service is announced as failing. A passing account or model check doesn't clear that. Because nothing can check it in the meantime, it is announced as unknown again after the same wait a failing text service has between probes, so buyers try it; one more failure marks it failing again, and a successful request marks it healthy.
 
 ```json
 {

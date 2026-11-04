@@ -8,6 +8,7 @@ export * from './usdc-utils.js';
 export * from './response-usage.js';
 export * from './channel-usage-accounting.js';
 export * from './channel-session-state.js';
+export * from './channel-reconcile.js';
 export * from './base-evm-client.js';
 export * from './deposits-client.js';
 export * from './channels-client.js';

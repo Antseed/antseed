@@ -165,6 +165,7 @@ export function parseServiceCapabilitiesJson(raw: string | undefined, key = 'ANT
       normalized.supportedParameters = caps.supportedParameters as ServiceCapabilities['supportedParameters'];
     }
     if (caps.video !== undefined) normalized.video = caps.video as ServiceCapabilities['video'];
+    if (caps.speech !== undefined) normalized.speech = caps.speech as ServiceCapabilities['speech'];
     // Same validator the announce path uses, so anything accepted here is
     // guaranteed to announce instead of failing silently at announce time.
     const fieldErrors = validateServiceCapabilityFields(normalized);
@@ -213,11 +214,22 @@ export function buildServiceApiProtocols(
  * `venice/flux-2-pro` work without treating an unrelated namespace as a model
  * family. Keep generic one-word IDs exact to avoid false positives.
  */
-const IMAGE_MODEL_ID_PATTERN = /^(?:gpt-image-|dall-e(?:-|$)|grok-imagine-image(?:-|$)|venice-sd35$|krea-(?:2-|v2-)|flux-2-|hunyuan-image-|ideogram-v4(?:-|$)|imagineart-|luma-uni-|nano-banana-|recraft-v4(?:-|$)|seedream-v[45](?:-|$)|qwen-image(?:-|$)|wan-2-7(?:-pro)?-text-to-image$|lustify-|wai-illustrious$|z-image-|chroma$)/;
+const IMAGE_MODEL_ID_PATTERN = /^(?:gpt-image-|dall-e(?:-|$)|grok-imagine-image(?:-|$)|venice-sd35$|krea-(?:2-|v2-)|flux-2-|flux-3-image$|hunyuan-image-|ideogram-v4(?:-|$)|imagineart-|luma-uni-|nano-banana-|recraft-v4(?:-|$)|seedream-v[45](?:-|$)|qwen-image(?:-|$)|wan-2-7(?:-pro)?-text-to-image$|lustify-|wai-illustrious$|z-image-|chroma$)/;
 
 export function isImageModelId(model: string): boolean {
   const modelId = model.trim().toLowerCase().split('/').pop() ?? '';
   return IMAGE_MODEL_ID_PATTERN.test(modelId);
+}
+
+/**
+ * Text-to-speech model IDs served through `POST /v1/audio/speech`: OpenAI's
+ * `tts-1`, `tts-1-hd` and `gpt-4o-mini-tts`, and Venice's `tts-*` family.
+ */
+const SPEECH_MODEL_ID_PATTERN = /^(?:tts-|gpt-4o(?:-mini)?-tts(?:-|$))/;
+
+export function isSpeechModelId(model: string): boolean {
+  const modelId = model.trim().toLowerCase().split('/').pop() ?? '';
+  return SPEECH_MODEL_ID_PATTERN.test(modelId);
 }
 
 /**

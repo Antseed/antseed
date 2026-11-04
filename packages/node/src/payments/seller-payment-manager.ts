@@ -17,6 +17,8 @@ import {
   makeChannelsDomain,
   encodeMetadata,
   ZERO_METADATA,
+  zeroMetadataForHash,
+  ZERO_METADATA_HASHES,
 } from './evm/signatures.js';
 import { debugLog, debugWarn } from '../utils/debug.js';
 import { peerIdToAddress } from '../types/peer.js';
@@ -63,6 +65,9 @@ const DEFAULT_MIN_SETTLE_DELTA = BigInt(DEFAULT_MIN_SETTLE_DELTA_STR);
 const CLOSE_CATCH_UP_WAIT_MS = 5_000;
 /** How long an auth only a mining top-up covers waits for it (outside the buyer lock). */
 const OVER_CEILING_AUTH_WAIT_MS = 30_000;
+/** How long an auth or request above the ceiling waits for a covering pending top-up to start. */
+const PENDING_TOP_UP_START_MS = 2_000;
+const PENDING_TOP_UP_POLL_MS = 50;
 /** Minimum gap between on-chain reads of one channel's deposit. */
 const RESERVE_REFRESH_MIN_INTERVAL_MS = 10_000;
 /** `retryAfterMs` hint returned with 'busy' / 'pending_auth' rejections. */
@@ -335,6 +340,7 @@ export class SellerPaymentManager {
    * Must be called after construction (async, cannot run in constructor).
    */
   async validateHydratedChannels(): Promise<void> {
+    await this._restoreSignedZeroMetadata();
     await this._checkOneOffChannels();
     const activeChannels = this._channelStore.getActiveChannels(CHANNEL_ROLE.SELLER);
     if (activeChannels.length === 0) return;
@@ -587,14 +593,17 @@ export class SellerPaymentManager {
       return outcome;
     };
     let result = await runLocked(true);
-    if (result === 'awaiting-top-up') {
-      // Only a top-up that is mining covers this auth: wait for it with the
-      // lock released, so this buyer's other auths and requests keep moving,
-      // then judge the auth again against the new ceiling.
-      await this.waitForTopUp(payload.channelId, OVER_CEILING_AUTH_WAIT_MS);
-      result = await runLocked(false);
+    // Only a top-up that is mining covers this auth: wait for it with the
+    // lock released, so this buyer's other auths and requests keep moving,
+    // then judge the auth again against the new ceiling. The one that lands
+    // can be a lower one, with the top-up this auth needs queued behind it:
+    // keep waiting, within the same budget.
+    const deadline = Date.now() + OVER_CEILING_AUTH_WAIT_MS;
+    while (result === 'awaiting-top-up') {
+      await this.waitForTopUp(payload.channelId, Math.max(0, deadline - Date.now()), BigInt(payload.cumulativeAmount));
+      result = await runLocked(Date.now() < deadline);
     }
-    return result === 'awaiting-top-up' ? 'rejected' : result;
+    return result;
   }
 
   /**
@@ -1411,10 +1420,20 @@ export class SellerPaymentManager {
     }
   }
 
+  /**
+   * Whether the payload's metadata hashes to its metadataHash. A payload sent
+   * without metadata bytes matches when its hash is the zero metadata's in an
+   * accepted version (v5 or v4); those bytes are filled in, so the stored auth
+   * settles with exactly what the buyer signed.
+   */
   private _metadataMatchesHash(payload: SpendingAuthPayload): boolean {
     try {
-      const metadata = payload.metadata || encodeMetadata(ZERO_METADATA);
-      return keccak256(metadata).toLowerCase() === payload.metadataHash.toLowerCase();
+      if (!payload.metadata) {
+        const zero = zeroMetadataForHash(payload.metadataHash);
+        if (zero) payload.metadata = zero;
+        return zero !== undefined;
+      }
+      return keccak256(payload.metadata).toLowerCase() === payload.metadataHash.toLowerCase();
     } catch (err) {
       debugWarn(`[SellerPayment] Invalid metadata payload: ${err instanceof Error ? err.message : err}`);
       return false;
@@ -1598,23 +1617,43 @@ export class SellerPaymentManager {
     this._topUpsRunning.set(channelId, run);
   }
 
-  /** Resolves once no background topUp() is running for the channel. */
-  async waitForTopUp(channelId: string, timeoutMs = Infinity): Promise<boolean> {
+  /**
+   * Resolves once no background topUp() is running for the channel: false if
+   * one still is at the timeout. With `covering`, an amount above the current
+   * ceiling, it also waits briefly for a pending top-up that covers it to
+   * start: one landing can let in the auths that make the next one eligible.
+   */
+  async waitForTopUp(channelId: string, timeoutMs = Infinity, covering?: bigint): Promise<boolean> {
     const deadline = Date.now() + timeoutMs;
-    while (this._topUpsRunning.has(channelId)) {
-      const remaining = deadline - Date.now();
-      if (remaining <= 0) return false;
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const timedOut = new Promise<void>((resolve) => {
-        if (Number.isFinite(remaining)) timer = setTimeout(resolve, remaining);
-      });
-      try {
-        await Promise.race([this._topUpsRunning.get(channelId), timedOut]);
-      } finally {
-        clearTimeout(timer);
+    for (;;) {
+      const run = this._topUpsRunning.get(channelId);
+      if (run) {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) return false;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const timedOut = new Promise<void>((resolve) => {
+          if (Number.isFinite(remaining)) timer = setTimeout(resolve, remaining);
+        });
+        try {
+          await Promise.race([run, timedOut]);
+        } finally {
+          clearTimeout(timer);
+        }
+        continue;
       }
+      if (covering == null) return true;
+      const startBy = Math.min(deadline, Date.now() + PENDING_TOP_UP_START_MS);
+      while (!this._topUpsRunning.has(channelId) && this.isTopUpPendingFor(channelId, covering) && Date.now() < startBy) {
+        await new Promise((resolve) => setTimeout(resolve, PENDING_TOP_UP_POLL_MS));
+      }
+      if (!this._topUpsRunning.has(channelId)) return true;
     }
-    return true;
+  }
+
+  /** Whether `amount` is above the channel's ceiling and a pending top-up would cover it. */
+  isTopUpPendingFor(channelId: string, amount: bigint): boolean {
+    const pending = this._pendingTopUp.get(channelId);
+    return pending != null && amount > (this._reserveMax.get(channelId) ?? 0n) && amount <= pending.newMaxAmount;
   }
 
   /** Whether a background topUp() is being submitted for the channel now. */
@@ -1819,6 +1858,49 @@ export class SellerPaymentManager {
   }
 
   // ── Settlement ──────────────────────────────────────────────
+
+  /**
+   * The metadata a stored channel's latest SpendingAuth was signed over. Auths
+   * accepted without metadata bytes before the seller filled them in were stored
+   * without them; their signature names the zero metadata of the buyer's version
+   * (v5 or v4), found as the hash the signature recovers to the buyer with.
+   */
+  private async _storedAuthMetadata(channel: StoredChannel): Promise<string> {
+    if (channel.latestMetadata) return channel.latestMetadata;
+    const sig = channel.latestSpendingAuthSig;
+    if (sig) {
+      const { channels: channelsAddr } = await this._resolvedAddresses!;
+      const domain = makeChannelsDomain(this._config.chainId, channelsAddr);
+      for (const metadataHash of ZERO_METADATA_HASHES) {
+        try {
+          const signer = verifyTypedData(domain, SPENDING_AUTH_TYPES, {
+            channelId: channel.sessionId,
+            cumulativeAmount: BigInt(channel.authMax || '0'),
+            metadataHash,
+          }, sig);
+          if (signer.toLowerCase() === channel.buyerEvmAddr.toLowerCase()) return zeroMetadataForHash(metadataHash)!;
+        } catch {
+          // Not a SpendingAuth signature: nothing to restore.
+        }
+      }
+    }
+    return encodeMetadata(ZERO_METADATA);
+  }
+
+  /** Fills in, once at startup, the metadata of hydrated auths stored without it. */
+  private async _restoreSignedZeroMetadata(): Promise<void> {
+    const channels = [
+      ...this._channelStore.getActiveChannels(CHANNEL_ROLE.SELLER),
+      ...this._channelStore.getActiveChannels(CHANNEL_ROLE.SELLER, CHANNEL_KIND.ONE_OFF),
+    ];
+    for (const channel of channels) {
+      const auth = this._latestAuth.get(channel.sessionId);
+      if (!auth || auth.metadata || !channel.latestSpendingAuthSig) continue;
+      const metadata = await this._storedAuthMetadata(channel);
+      auth.metadata = metadata;
+      this._channelStore.upsertChannel({ ...channel, latestMetadata: metadata, updatedAt: Date.now() });
+    }
+  }
 
   /** Get the latest SpendingAuth params for a channel, or zero-auth if none exists. */
   private _getSettleParams(channelId: string): { amount: bigint; metadata: string; sig: string } {
@@ -2129,7 +2211,7 @@ export class SellerPaymentManager {
           && authAmount <= state.channel.deposit;
         // Closing at the settled amount needs no signature; the contract skips verification.
         const { amount, metadata, sig, useAuth } = authSig && authUsable
-          ? { amount: authAmount, metadata: channel.latestMetadata || encodeMetadata(ZERO_METADATA), sig: authSig, useAuth: true }
+          ? { amount: authAmount, metadata: await this._storedAuthMetadata(channel), sig: authSig, useAuth: true }
           : { amount: state.channel.settled, metadata: '0x', sig: '0x', useAuth: false };
 
         debugLog(

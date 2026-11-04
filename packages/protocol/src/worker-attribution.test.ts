@@ -1,6 +1,6 @@
 import { AbiCoder, Wallet, concat, getBytes, hexlify, toBeHex } from 'ethers';
 import { describe, expect, it } from 'vitest';
-import { ZERO_METADATA, encodeMetadata } from './signatures.js';
+import { METADATA_VERSION, ZERO_METADATA, decodeSpendingAuthMetadata, encodeMetadata } from './signatures.js';
 import {
   MAX_WORKERS_PER_CHANNEL,
   WORKER_TAIL_MAGIC,
@@ -36,12 +36,10 @@ describe('worker attribution block', () => {
   it('keeps the ABI head readable by decoders that ignore trailing bytes', () => {
     const encoded = encodeMetadata({ ...metadata, workers: [{ worker: A, cumulativeAmount: 1n }] });
     const [version, input, output, requests] = AbiCoder.defaultAbiCoder().decode(['uint256', 'uint256', 'uint256', 'uint256'], encoded);
-    expect([version, input, output, requests]).toEqual([4n, 1000n, 500n, 2n]);
-    const full = AbiCoder.defaultAbiCoder().decode(
-      ['uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'tuple(bytes32,uint256,uint256,uint256,uint256,uint256,uint256,uint256,uint256)[]'],
-      encoded,
-    );
-    expect(full[7]).toHaveLength(0);
+    expect([version, input, output, requests]).toEqual([METADATA_VERSION, 1000n, 500n, 2n]);
+    const decoded = decodeSpendingAuthMetadata(encoded);
+    expect(decoded.services).toHaveLength(0);
+    expect(decoded.workers).toEqual([{ worker: A, cumulativeAmount: 1n }]);
   });
 
   it('finds no block in plain metadata', () => {

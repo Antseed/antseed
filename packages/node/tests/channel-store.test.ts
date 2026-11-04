@@ -405,6 +405,7 @@ describe('ChannelStore', () => {
         cumulativeOutputImages: '2',
         cumulativeVideoGenerations: '1',
         cumulativeVideoSeconds: '8',
+        cumulativeInputCharacters: '19',
       }]);
       // Rows written before migration 005 hydrate without the images field.
       store.replaceServiceTotals(free.sessionId, [{
@@ -426,7 +427,11 @@ describe('ChannelStore', () => {
       expect(totals[0].outputImages).toBe('2');
       expect(totals[0].videoGenerations).toBe('1');
       expect(totals[0].videoSeconds).toBe('8');
+      expect(totals[0].inputCharacters).toBe('19');
       expect(totals[0].requestCount).toBe(5);
+      // The channel's signed metadata carries the speech characters back too.
+      expect(store.getChannelMetadata(paid).cumulativeInputCharacters).toBe(19n);
+      expect(store.getChannelMetadata(free).cumulativeInputCharacters).toBe(0n);
     });
 
     it('keeps distinct services separate and excludes other buyers', () => {

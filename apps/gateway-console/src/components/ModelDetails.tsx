@@ -150,7 +150,7 @@ export function ModelDetails({ model, preview, previewLoading, pin }: {
             ? <>Pinned to {offerName(pinnedOffer)} with <code>{shortId(callModel, 10, 12)}</code>.</>
             : <>The gateway picks the best provider for <code>{model.id}</code> under your routing policy.</>}
         </p>
-        <ApiCall id="gc-model-call" model={callModel} format={format}
+        <ApiCall id="gc-model-call" model={callModel} format={format} voice={(pinnedOffer ?? model).voices?.[0]}
           unsupported={`${MODEL_TYPE_LABELS[model.type]} models are not served through the gateway's /v1 API.`} />
       </PanelSection>
     </>

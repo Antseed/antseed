@@ -252,6 +252,18 @@ function setPricingHeaders(headers: Record<string, string>, pricing: ResolvedPri
   setFiniteNumberHeader(headers, 'x-antseed-cached-input-usd-per-million', pricing.cachedInputUsdPerMillion)
 }
 
+/**
+ * Tells a gateway whether the service also charges per unit (image, video
+ * second, speech character), so zero token prices alone do not make it free:
+ * `1` when a published unit price is positive, `0` when none is.
+ */
+function setUnitPricedHeader(headers: Record<string, string>, peer: PeerInfo, provider: string, service: string | null): void {
+  if (!service) return
+  const models = peer.providerServiceUnitBillingModels?.[provider]?.services?.[service]
+  const priced = Object.values(models ?? {}).some((model) => (model?.components ?? []).some((component) => component.priceUsd > 0))
+  headers['x-antseed-unit-priced'] = priced ? '1' : '0'
+}
+
 function resolvePeerPricing(peer: PeerInfo, provider: string, service: string | null): ResolvedPricing {
   const providerPricing = peer.providerPricing?.[provider]
   if (providerPricing) {
@@ -373,6 +385,7 @@ export function attachAntseedTelemetryHeaders(
     headers['x-antseed-service'] = telemetry.pricing.service
   }
   setPricingHeaders(headers, telemetry.pricing)
+  setUnitPricedHeader(headers, selectedPeer, telemetry.pricing.provider, telemetry.pricing.service)
   headers['x-antseed-token-source'] = telemetry.usage.source
   headers['x-antseed-input-tokens'] = String(telemetry.usage.inputTokens)
   headers['x-antseed-cached-input-tokens'] = String(telemetry.usage.cachedInputTokens)
@@ -400,6 +413,8 @@ export function attachStreamingAntseedHeaders(
   setPeerIdentityHeaders(headers, selectedPeer)
   const service = extractRequestedService(request)
   if (service) headers['x-antseed-service'] = service
-  setPricingHeaders(headers, resolvePeerPricing(selectedPeer, pickProviderForPeer(selectedPeer, request), service))
+  const provider = pickProviderForPeer(selectedPeer, request)
+  setPricingHeaders(headers, resolvePeerPricing(selectedPeer, provider, service))
+  setUnitPricedHeader(headers, selectedPeer, provider, service)
   return headers
 }

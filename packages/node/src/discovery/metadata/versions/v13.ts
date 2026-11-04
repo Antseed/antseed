@@ -7,11 +7,12 @@ import { V12_LAYOUT } from "./v12.js";
 export const V13_LAYOUT: MetadataLayout = {
   providerFields: insertBefore(V12_LAYOUT.providerFields, providerLoadField, serviceHealthField),
   peerFields: V12_LAYOUT.peerFields,
+  vocabulary: V12_LAYOUT.vocabulary,
 };
 
 export const metadataV13 = defineMetadataVersion({
   version: 13,
   wideServiceCounts: true,
+  servable: true,
   ...V13_LAYOUT,
-  fromLatest: (latest) => latest,
 });

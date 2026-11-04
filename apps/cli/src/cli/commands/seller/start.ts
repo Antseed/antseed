@@ -286,6 +286,17 @@ export function buildSellerRuntimeOverridesFromFlags(options: {
   return overrides
 }
 
+/** Config-key prefix of a provider plugin package. Other plugins use `OPENAI`. */
+const PROVIDER_ENV_PREFIXES: Readonly<Record<string, string>> = {
+  '@antseed/provider-local-llm': 'LOCAL_LLM',
+  '@antseed/provider-typesafe': 'TYPESAFE',
+  '@antseed/provider-venice-video': 'VENICE_VIDEO',
+  '@antseed/provider-fal-video': 'FAL_VIDEO',
+  '@antseed/provider-alibaba-video': 'ALIBABA_VIDEO',
+  '@antseed/provider-irp-router': 'IRP_ROUTER',
+  '@antseed/provider-colony-pool': 'COLONY_POOL',
+}
+
 /**
  * Translate the unified `seller.providers[name]` block into the flat
  * `ANTSEED_*` env keys that provider plugins consume. Plugins continue to
@@ -324,6 +335,7 @@ export function buildSellerPluginRuntimeEnv(
   // the plugin env avoids dead noise in process.env.
   const servicePricing: Record<string, unknown> = {}
   const serviceAliasMap: Record<string, string> = {}
+  const serviceImageEditModelMap: Record<string, string> = {}
   const serviceCapabilities: Record<string, unknown> = {}
   const serviceUnitBillingModels: Record<string, unknown> = {}
   for (const [serviceId, serviceCfg] of Object.entries(providerCfg.services)) {
@@ -332,6 +344,9 @@ export function buildSellerPluginRuntimeEnv(
     }
     if (serviceCfg.upstreamModel && serviceCfg.upstreamModel !== serviceId) {
       serviceAliasMap[serviceId] = serviceCfg.upstreamModel
+    }
+    if (serviceCfg.imageEditModel) {
+      serviceImageEditModelMap[serviceId] = serviceCfg.imageEditModel
     }
     if (serviceCfg.capabilities) {
       serviceCapabilities[serviceId] = serviceCfg.capabilities
@@ -346,6 +361,9 @@ export function buildSellerPluginRuntimeEnv(
   if (Object.keys(serviceAliasMap).length > 0) {
     runtimeEnv['ANTSEED_SERVICE_ALIAS_MAP_JSON'] = JSON.stringify(serviceAliasMap)
   }
+  if (Object.keys(serviceImageEditModelMap).length > 0) {
+    runtimeEnv['ANTSEED_SERVICE_IMAGE_EDIT_MODEL_MAP_JSON'] = JSON.stringify(serviceImageEditModelMap)
+  }
   if (Object.keys(serviceCapabilities).length > 0) {
     runtimeEnv['ANTSEED_SERVICE_CAPABILITIES_JSON'] = JSON.stringify(serviceCapabilities)
   }
@@ -353,15 +371,7 @@ export function buildSellerPluginRuntimeEnv(
     runtimeEnv['ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON'] = JSON.stringify(serviceUnitBillingModels)
   }
   const pluginPackage = resolvePluginPackage(providerCfg.plugin)
-  const envPrefix = pluginPackage === '@antseed/provider-local-llm'
-    ? 'LOCAL_LLM'
-    : pluginPackage === '@antseed/provider-typesafe'
-      ? 'TYPESAFE'
-      : pluginPackage === '@antseed/provider-venice-video' ? 'VENICE_VIDEO'
-      : pluginPackage === '@antseed/provider-fal-video' ? 'FAL_VIDEO'
-      : pluginPackage === '@antseed/provider-irp-router' ? 'IRP_ROUTER'
-      : pluginPackage === '@antseed/provider-colony-pool' ? 'COLONY_POOL'
-      : 'OPENAI'
+  const envPrefix = PROVIDER_ENV_PREFIXES[pluginPackage] ?? 'OPENAI'
   if (providerCfg.baseUrl) {
     runtimeEnv[`${envPrefix}_BASE_URL`] = providerCfg.baseUrl
   }
@@ -428,6 +438,18 @@ export function getUnsupportedUnitBillingWarning(
     return undefined
   }
   return `Provider "${providerName}" (${providerConfig.plugin}) ignores unitBillingModels for service(s): ${configuredServices.join(', ')} because its plugin does not support unit billing.`
+}
+
+export function getImageEditUnitBillingWarning(
+  providerName: string,
+  providerConfig: SellerProviderConfig,
+): string | undefined {
+  const unpricedEditServices = Object.entries(providerConfig.services)
+    .filter(([, service]) => service.imageEditModel !== undefined
+      && service.unitBillingModels?.['openai-images'] === undefined)
+    .map(([serviceId]) => serviceId)
+  if (unpricedEditServices.length === 0) return undefined
+  return `Provider "${providerName}" has imageEditModel configured for service(s): ${unpricedEditServices.join(', ')} without openai-images unit billing. Configure a shared output_images price for generation and edits.`
 }
 
 export function mergeSellerRuntimeEnv(
@@ -560,6 +582,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
           for (const warning of [
             getUnsupportedUnitBillingWarning(providerName, providerCfg, configFields),
             getUnsupportedFallbackUpstreamsWarning(providerName, providerCfg, configFields),
+            getImageEditUnitBillingWarning(providerName, providerCfg),
           ]) {
             if (!warning) continue
             spinner.warn(chalk.yellow(warning))

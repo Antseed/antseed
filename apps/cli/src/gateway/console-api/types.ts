@@ -801,6 +801,10 @@ export interface Peer {
     health?: ServiceHealthView
     /** The seller's measured performance in the last hour. Absent when not announced. */
     performance?: ServicePerformanceView
+    /** Speech services: the voices the seller accepts. Absent when not announced. */
+    voices?: string[]
+    /** Speech services: USD per million characters of `input`. Absent when not advertised. */
+    usdPerMillionCharacters?: number
   }>
   trustScore: number | null
   reputationScore: number | null
@@ -832,7 +836,7 @@ export interface Peer {
   requests24h: number
 }
 
-export type NetworkModelType = 'text' | 'image' | 'decision' | 'video'
+export type NetworkModelType = 'text' | 'image' | 'decision' | 'video' | 'speech'
 
 /** A feature at least one seller of the model advertises. */
 export type NetworkModelCapability = 'toolUse' | 'reasoning' | 'structuredOutput' | 'vision'
@@ -894,6 +898,8 @@ export interface NetworkModelOffer {
   cachedInputUsdPerMillion: number | null
   /** Image models: price per image, cheapest to dearest; null when not advertised. */
   usdPerImage: { min: number; max: number } | null
+  /** Speech models: USD per million characters of `input`; absent when not advertised. */
+  usdPerMillionCharacters?: number
   contextLength: number | null
   free: boolean
   /**
@@ -924,6 +930,8 @@ export interface NetworkModelOffer {
   health?: ServiceHealthView
   /** The seller's measured performance in the last hour. */
   performance?: ServicePerformanceView
+  /** Speech models: the voices this seller accepts. Absent when not announced. */
+  voices?: string[]
 }
 
 /** A model on the network, merged across the sellers that offer it (aliases included). */
@@ -953,6 +961,8 @@ export interface NetworkModel {
   verifiedSellers: number
   /** In the buyer's routing order. */
   offers: NetworkModelOffer[]
+  /** Speech models: the voices every offer accepts. Absent when none is known to be. */
+  voices?: string[]
 }
 
 /**

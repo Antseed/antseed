@@ -30,7 +30,7 @@ Run the local buyer proxy (port 8377) that pays sellers. Guides: [Local buyer AP
 | `antseed buyer identity unprotect [name]` | Store encrypted wallet keys as plaintext again | `--all`, `--yes` |
 | `antseed buyer identity remove <name>` | Stop using an identity; its key is archived, not deleted | |
 | `antseed buyer activity` | Tokens, spending history, savings, active channels and claimable ANTS | `--days 7\|30\|90`, `--json` |
-| `antseed buyer metering` | Channel and usage stats from the local database | `--peer <peerId>`, `--json` |
+| `antseed buyer metering` | Channel and usage stats, after checking active channels on-chain | `--peer <peerId>`, `--json` |
 
 </CommandTable>
 
@@ -281,7 +281,7 @@ Fund the buyer and manage payment channels. Guides: [Gateway funding](/docs/gate
 | `antseed buyer free-tier share` | Sign in the browser to share a wallet's ANTS stake with this buyer for staked free tiers | `--no-open`, `--identity <name>` |
 | `antseed buyer free-tier list` | List the stakers sharing with this buyer and the stake each seller pool counts, with when it runs down | `--identity <name>`, `--no-stake` |
 | `antseed buyer free-tier remove <staker>` | Stop sending a staker's delegation | `--identity <name>` |
-| `antseed buyer channels [list]` | List payment channels from the local store | `--status active\|settled\|timeout\|ghost`, `--limit` (20) |
+| `antseed buyer channels [list]` | List payment channels from the local store, after checking active ones on-chain | `--status active\|settled\|timeout\|ghost`, `--limit` (20) |
 | `antseed buyer channels close <channelId>` | Ask the seller to close a channel now | `--no-auth` |
 | `antseed buyer channels request-close <channelId>` | Start a timeout close so reserved funds can be withdrawn after the grace period | |
 | `antseed buyer channels withdraw <channelId>` | Release reserved funds after the grace period | |
@@ -400,7 +400,7 @@ Read and change `~/.antseed/config.json`. Guides: [Buyer configuration](/docs/bu
 | `antseed config seller set <key> <value>` | Set a seller value | |
 | `antseed config seller add-provider <name>` | Add a provider (installs its plugin) | `--plugin <name>`, `--base-url`, `--input`, `--output`, `--cached` |
 | `antseed config seller remove-provider <name>` | Remove a provider | |
-| `antseed config seller add-service <provider> <serviceId>` | Add a service under a provider | `--upstream`, `--input`, `--output`, `--cached`, `--categories`, `--capabilities <json>`, `--unit-billing-models <json>`, `--base-url` |
+| `antseed config seller add-service <provider> <serviceId>` | Add a service under a provider | `--upstream`, `--venice-edit-model <model>` (Venice only: the native edit model that serves `/v1/images/edits` for this image service; see [Venice image edits](/docs/provide/media#venice-image-edits)), `--input`, `--output`, `--cached`, `--categories`, `--capabilities <json>`, `--unit-billing-models <json>`, `--base-url` |
 | `antseed config seller remove-service <provider> <serviceId>` | Remove a service | |
 
 </CommandTable>

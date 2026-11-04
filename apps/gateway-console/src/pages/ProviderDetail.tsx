@@ -30,6 +30,7 @@ const FORMAT_LABELS: Record<ApiFormat, string> = {
   'openai-responses': 'Responses',
   'anthropic-messages': 'Messages',
   'openai-images': 'Images',
+  'openai-audio-speech': 'Speech',
 }
 
 function score(value: number | null): string {
@@ -127,7 +128,7 @@ function Connect({ peer, service, onSelect }: { peer: Peer; service: Service; on
   const format = serviceApiFormat(service)
   const modelId = pinnedModelId(peer.peerId, service.service)
   const preset = presets.data?.find((entry) => entry.model === modelId) ?? null
-  const tabs = connectTabs(baseUrl, peer.peerId, service.service, format, preset ? `@preset/${preset.slug}` : null)
+  const tabs = connectTabs(baseUrl, peer.peerId, service.service, format, preset ? `@preset/${preset.slug}` : null, service.voices?.[0])
   const current = tabs.find((entry) => entry.id === tab) ?? tabs[0]!
   const hasKey = (keys.data ?? []).some((key) => key.status === 'active')
   const canCreatePreset = isWorkspaceAdmin(viewer)

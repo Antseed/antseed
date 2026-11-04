@@ -126,8 +126,28 @@ describe('model API calls', () => {
     expect(modelCallFormat('text', offer(['openai-responses']))).toBe('openai-responses')
     expect(modelCallFormat('image')).toBe('openai-images')
     expect(modelCallFormat('image', offer(['openai-chat-completions']))).toBe('openai-images')
+    expect(modelCallFormat('speech')).toBe('openai-audio-speech')
     expect(modelCallFormat('video')).toBeNull()
     expect(modelCallFormat('decision', offer(['typesafe-systemone']))).toBeNull()
+  })
+  it('curl alone for a speech model, asking for a voice and saving the audio file', () => {
+    const tabs = apiCallTabs(BASE, 'peer@tts-kokoro', 'openai-audio-speech', 'af_sky')
+    expect(tabs.map((tab) => tab.id)).toEqual(['curl'])
+    expect(tabs[0]!.code).toContain(`curl ${BASE}/v1/audio/speech`)
+    expect(tabs[0]!.code).toContain('"input":"Hello from Antseed.","voice":"af_sky"')
+    expect(tabs[0]!.code.endsWith('-o speech.mp3')).toBe(true)
+    // Without an announced voice the call names a placeholder rather than relying on an upstream default.
+    expect(apiCallTabs(BASE, 'peer@tts-1', 'openai-audio-speech')[0]!.code).toContain('"voice":"<voice>"')
+    expect(modelSnippets(BASE, 'peer', 'tts-kokoro', 'openai-audio-speech', 'af_sky').map((snippet) => snippet.id)).toEqual(['model', 'curl'])
+  })
+  it('gives a speech-only provider service the speech call', () => {
+    const format = serviceApiFormat({ provider: 'openai', apiProtocols: ['openai-audio-speech'] })
+    expect(format).toBe('openai-audio-speech')
+    const tabs = connectTabs(BASE, 'peer', 'tts-1', format, null, 'alloy')
+    expect(tabs.map((tab) => tab.id)).toEqual(['curl'])
+    expect(tabs[0]!.code).toContain(`${BASE}/v1/audio/speech`)
+    expect(tabs[0]!.code).toContain('"voice":"alloy"')
+    expect(tabs[0]!.code).toContain('-o speech.mp3')
   })
   it('recognizes image sellers', () => {
     expect(serviceApiFormat({ provider: 'fal', apiProtocols: ['openai-images'] })).toBe('openai-images')

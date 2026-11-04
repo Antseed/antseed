@@ -10,6 +10,7 @@ export interface TrustedPlugin {
 export const TRUSTED_PROVIDER_PLUGINS: TrustedPlugin[] = [
   { name: 'venice-video', type: 'provider', description: 'Venice video API', package: '@antseed/provider-venice-video' },
   { name: 'fal-video', type: 'provider', description: 'fal.ai video models (queue API)', package: '@antseed/provider-fal-video' },
+  { name: 'alibaba-video', type: 'provider', description: 'Alibaba Cloud Model Studio video models (Wan, HappyHorse)', package: '@antseed/provider-alibaba-video' },
   {
     name: 'anthropic',
     type: 'provider',
