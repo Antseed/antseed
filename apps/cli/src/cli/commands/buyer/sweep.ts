@@ -335,6 +335,7 @@ export function registerBuyerSweepCommand(buyerCmd: Command): void {
             bootstrapNodes,
             allowPrivateIPs: true,
             dataDir: globalOpts.dataDir,
+            autoReconcileBuyerChannels: false,
           })
           await node.start()
 
