@@ -2,7 +2,7 @@ import Foundation
 
 /// What the worker lets a decrypted request do (docs/protocol/colony-pool.md, "Workers").
 enum Admission: Equatable {
-    /// A buyer's request on a verified channel (or signature-checked, without an RPC).
+    /// A buyer's request on a channel verified on-chain.
     case full
     /// The pool's own check: small input, at most this many output tokens.
     case check(maxTokens: Int)
@@ -11,11 +11,11 @@ enum Admission: Equatable {
     case cancelled
 }
 
-/// How a buyer's channel binding is checked.
+/// How a buyer's channel binding is checked. A signature alone proves a key,
+/// not a payment, so there is no way to serve a buyer's request unverified.
 enum ChannelCheck {
-    /// No RPC: the buyer's signature is all that is checked.
-    case signatureOnly
-    /// An RPC but no trusted Channels contract for its chain: full requests are refused.
+    /// The channel can't be checked (no RPC, no trusted Channels contract for
+    /// its chain, or no pool yet): full requests are refused.
     case unavailable(String)
     /// true = verified, false = refused, nil = not on-chain yet (or cancelled).
     case verify(() async -> Bool?)
@@ -66,8 +66,6 @@ final class RequestGate {
             return .check(maxTokens: max(1, min(requestedMaxTokens, Self.checkMaxTokens)))
         }
         switch check {
-        case .signatureOnly:
-            return .full
         case .unavailable(let reason):
             return .refused(reason)
         case .verify(let verdict):

@@ -166,7 +166,8 @@ describe('colony pool', () => {
       privateKey: opts.key ?? Wallet.createRandom().privateKey,
       encryptionKey: generateWorkerEncryptionKey(),
       maxConcurrency: 2,
-      ...(opts.channelVerifier ? { channelVerifier: opts.channelVerifier } : {}),
+      // Workers refuse buyer requests they can't verify; these tests don't run a chain.
+      channelVerifier: opts.channelVerifier ?? (async () => true),
       ...(opts.channelWaitMs !== undefined ? { channelWaitMs: opts.channelWaitMs } : {}),
       ...(opts.attester ? { attester: opts.attester } : {}),
     });

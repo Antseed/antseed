@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
+import { rankScores } from '@antseed/provider-core'
 import type { SellerWorkers } from '../gateway/console-api/types.js'
 import { SELLER_STALE_MS } from './reader.js'
 
@@ -13,20 +14,6 @@ export const COLONY_POOL_LEDGER_POINTER_FILE = 'colony-pool.ledger-path'
 
 /** Recent first-byte samples per worker the median is taken over. */
 const FIRST_BYTE_SAMPLES = 500
-
-/**
- * The pool's routing score (plugins/provider-colony-pool/src/ranking.ts,
- * `rankScores`, without load): priority × reliability × speed relative to
- * the fastest, with the others' averages for a worker that has no record.
- */
-function rankScores(candidates: Array<{ reliability: number | null; tokensPerSecond: number | null; priority: number }>): number[] {
-  const known = candidates.filter((c) => c.reliability !== null).map((c) => c.reliability!)
-  const averageReliability = known.length > 0 ? known.reduce((a, b) => a + b, 0) / known.length : 1
-  const fastest = Math.max(0, ...candidates.map((c) => c.tokensPerSecond ?? 0))
-  const speeds = candidates.filter((c) => (c.tokensPerSecond ?? 0) > 0).map((c) => c.tokensPerSecond! / fastest)
-  const averageSpeed = speeds.length > 0 ? speeds.reduce((a, b) => a + b, 0) / speeds.length : 1
-  return candidates.map((c) => c.priority * (c.reliability ?? averageReliability) * ((c.tokensPerSecond ?? 0) > 0 ? c.tokensPerSecond! / fastest : averageSpeed))
-}
 
 function median(values: number[]): number | null {
   if (values.length === 0) return null
@@ -90,26 +77,34 @@ export function readSellerWorkers(dataDir: string, now = Date.now(), sellerSeenA
     const firstBytes = dispatches ? db.prepare(`
       SELECT first_byte_ms FROM dispatches WHERE worker = ? AND at >= ? AND first_byte_ms IS NOT NULL ORDER BY at DESC LIMIT ${FIRST_BYTE_SAMPLES}
     `) : null
-    const rankOf = tables.has('worker_rank') ? db.prepare('SELECT reliability, benched_until, priority FROM worker_rank WHERE worker = ?') : null
+    // The decode speed the pool routes by (smoothed, per finished request) is kept with its rank.
+    const liveSpeed = tables.has('worker_rank')
+      && (db.prepare('PRAGMA table_info(worker_rank)').all() as Array<{ name: string }>).some((c) => c.name === 'tokens_per_second')
+    const rankOf = tables.has('worker_rank')
+      ? db.prepare(`SELECT reliability, benched_until, priority, ${liveSpeed ? 'tokens_per_second' : '0'} AS tokens_per_second FROM worker_rank WHERE worker = ?`)
+      : null
     const workers = rows.map((row) => {
       const counts = rate?.get({ worker: row.address, dayAgo: now - DAY_MS, weekAgo }) as { ok_day: number | null; day: number; ok_week: number | null; week: number } | undefined
-      const rank = rankOf?.get(row.address) as { reliability: number | null; benched_until: number; priority: number } | undefined
+      const rank = rankOf?.get(row.address) as { reliability: number | null; benched_until: number; priority: number; tokens_per_second: number } | undefined
       return {
         ...summary(row),
         successRateDay: counts && counts.day > 0 ? (counts.ok_day ?? 0) / counts.day : null,
         successRateWeek: counts && counts.week > 0 ? (counts.ok_week ?? 0) / counts.week : null,
         firstByteMsMedian: median(((firstBytes?.all(row.address, weekAgo) ?? []) as Array<{ first_byte_ms: number }>).map((r) => r.first_byte_ms)),
         reliability: rank?.reliability ?? null,
+        routingSpeed: rank?.tokens_per_second ?? 0,
         benchedUntil: live && rank && rank.benched_until > now ? rank.benched_until : null,
         priority: rank?.priority ?? 1,
       }
     })
-    // Rank the workers the pool would route to now, by its score.
+    // Rank the workers the pool would route to now, by its own score and inputs
+    // (with no load, since the dashboard shows standing, not who is busy this second).
+    // The weekly tokens per second shown next to it is an average, not what it routes by.
     const routable = workers.filter((w) => w.connected && w.priority > 0 && w.benchedUntil === null)
-    const scores = rankScores(routable)
+    const scores = rankScores(routable.map((w) => ({ reliability: w.reliability, tokensPerSecond: w.routingSpeed, priority: w.priority, load: 0 })))
     const order = routable.map((w, i) => ({ w, score: scores[i]! })).sort((a, b) => b.score - a.score)
     const rankByAddress = new Map(order.map(({ w }, i) => [w.address, i + 1]))
-    const ranked = workers.map(({ reliability: _reliability, ...w }) => ({ ...w, rank: rankByAddress.get(w.address) ?? null }))
+    const ranked = workers.map(({ reliability: _reliability, routingSpeed: _routingSpeed, ...w }) => ({ ...w, rank: rankByAddress.get(w.address) ?? null }))
       .sort((a, b) => Number(b.connected) - Number(a.connected) || (a.rank ?? Infinity) - (b.rank ?? Infinity) || b.earnedWeekUsdc - a.earnedWeekUsdc)
     return { available: true, workers: ranked }
   } finally {

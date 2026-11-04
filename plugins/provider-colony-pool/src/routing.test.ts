@@ -96,7 +96,7 @@ describe('worker ranking', () => {
   });
 });
 
-type Behavior = 'answer' | 'hang' | 'accept-then-hang' | { acceptThenAnswerAfterMs: number };
+type Behavior = 'answer' | 'hang' | 'accept-then-hang' | 'refuse' | 'accept-then-fail' | { acceptThenAnswerAfterMs: number };
 
 /** A worker on the wire, scripted per request. */
 class ScriptedWorker {
@@ -148,8 +148,11 @@ class ScriptedWorker {
     const behavior = this.behavior;
     if (behavior === 'hang') return;
     if (behavior === 'answer') return answer();
+    // A refusal (bad channel, binding, capacity) comes before `accepted`; a model failure after it.
+    if (behavior === 'refuse') return send({ t: 'response-error', id, message: 'Request channel does not belong to a buyer of this pool' });
     send({ t: 'accepted', id });
     if (behavior === 'accept-then-hang') return;
+    if (behavior === 'accept-then-fail') return send({ t: 'response-error', id, message: 'Local model timed out' });
     await sleep(behavior.acceptThenAnswerAfterMs);
     answer();
   }
@@ -263,6 +266,45 @@ describe('routing, failover and ranking in the pool', () => {
     const stuck = await connect('accept-then-hang');
     expect((await provider.handleRequest(await requestFor(stuck))).statusCode).toBe(WORKER_UNAVAILABLE_STATUS);
     expect(summary(stuck).benchedUntil).toBeGreaterThan(Date.now());
+  });
+
+  it('counts a worker\'s own failure against it, but never a refusal the buyer caused', async () => {
+    await setup();
+    const refusing = await connect('refuse');
+    for (let i = 0; i < 5; i++) {
+      expect((await provider.handleRequest(await requestFor(refusing, `bad-${i}`))).statusCode).toBe(WORKER_UNAVAILABLE_STATUS);
+    }
+    // Five requests it refused before taking them: its rank and history are untouched.
+    expect(summary(refusing)).toMatchObject({ reliability: null, benchedUntil: null });
+    expect(ledger.loadRank(refusing.address)?.reliability ?? null).toBeNull();
+
+    const failing = await connect('accept-then-fail');
+    expect((await provider.handleRequest(await requestFor(failing))).statusCode).toBe(WORKER_UNAVAILABLE_STATUS);
+    // It took the request and its model failed: that is its fault, so it drops and is benched.
+    expect(summary(failing).reliability).toBeLessThan(1);
+    expect(summary(failing).benchedUntil).toBeGreaterThan(Date.now());
+    expect(ledger.loadRank(failing.address)?.reliability).toBeLessThan(1);
+    const history = new (await import('better-sqlite3')).default(join(dir, 'ledger.db'), { readonly: true });
+    try {
+      expect(history.prepare('SELECT worker, ok, reason FROM dispatches').all()).toEqual([{ worker: failing.address, ok: 0, reason: 'worker-error' }]);
+    } finally {
+      history.close();
+    }
+  });
+
+  it('keeps the decode speed it routes by in the ledger, across reconnects', async () => {
+    await setup();
+    const wallet = Wallet.createRandom();
+    const fast = await connect('answer', wallet);
+    pool.recordThroughput(fast.address, 100, 1_000);
+    pool.recordThroughput(fast.address, 1, 1_000);
+    // The same smoothing the pool routes by: 100 × 0.8 + 1 × 0.2.
+    expect(summary(fast).tokensPerSecond).toBeCloseTo(80.2);
+    expect(ledger.loadRank(fast.address)?.tokensPerSecond).toBeCloseTo(80.2);
+    await fast.close();
+    await waitFor(() => pool.workerSummaries().length === 0);
+    const back = await connect('answer', wallet);
+    expect(summary(back).tokensPerSecond).toBeCloseTo(80.2);
   });
 
   it('never routes to a worker the operator weights 0, and favors one weighted higher', async () => {

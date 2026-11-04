@@ -107,6 +107,7 @@ describe('worker lifecycle', () => {
       services: { [SERVICE]: 'local' },
       privateKey: Wallet.createRandom().privateKey,
       encryptionKey: key,
+      channelVerifier: async () => true, // no chain in these tests; tests that check channels pass their own
       ...opts,
     });
     worker.start();
@@ -240,6 +241,21 @@ describe('worker lifecycle', () => {
     expect(upstream.bodies[0]!['max_tokens']).toBe(16);
   });
 
+  it('refuses buyer requests without a channel verifier and still runs pool checks', async () => {
+    upstream = await startUpstream((_body, res) => answer(res));
+    start({ channelVerifier: undefined });
+    await waitFor(() => fakePool.frames.some((f) => f['t'] === 'hello'));
+    // A correctly signed binding proves a key, not a payment: never full inference unverified.
+    await request('nv1');
+    await waitFor(() => fakePool.errorFor('nv1') !== undefined);
+    expect(fakePool.errorFor('nv1')).toMatch(/no channel verifier/);
+    expect(fakePool.frames.some((f) => f['t'] === 'accepted' && f['id'] === 'nv1')).toBe(false);
+    await request('nv2', { unbound: true });
+    await waitFor(() => fakePool.ended('nv2'));
+    expect(upstream.bodies).toHaveLength(1);
+    expect(upstream.bodies[0]!['max_tokens']).toBe(16);
+  });
+
   it('gives up on a local model that stops sending mid-stream', async () => {
     upstream = await startUpstream((_body, res) => {
       res.writeHead(200, { 'content-type': 'text/event-stream' });
@@ -337,6 +353,7 @@ describe('pool deadlines and capacity', () => {
   function startWorker(poolUrl: string, services: Record<string, string>, maxConcurrency = 1): PoolWorker {
     const worker = new PoolWorker({
       poolUrl, baseUrl: upstream.url, services, privateKey: Wallet.createRandom().privateKey, encryptionKey: generateWorkerEncryptionKey(), maxConcurrency,
+      channelVerifier: async () => true, // no chain in these tests
     });
     workers.push(worker);
     worker.start();

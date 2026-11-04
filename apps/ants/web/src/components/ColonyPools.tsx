@@ -20,9 +20,21 @@ export function ColonyPoolsCard({ stale = false }: { stale?: boolean }) {
   const [linking, setLinking] = useState(false);
   const pools: ColonyPoolsView['pools'] = page.data?.pools ?? [];
   const linkBody: WorkerPayoutLinkRequest = { code: code.trim() };
-  // Same rule as the rest of the Rewards page: no actions while amounts refresh.
-  const refreshing = stale || page.reconciling;
-  const refreshReason = 'Wait for rewards to refresh before another action.';
+  // Same rule as the rest of the Rewards page: no actions while amounts refresh,
+  // or while they may be out of date because the last refresh failed.
+  const refreshing = stale || page.reconciling || !!page.error;
+  const refreshReason = page.error ? 'Mac earnings could not be refreshed. Retry first.' : 'Wait for rewards to refresh before another action.';
+
+  // Not read yet: no answer is not the same as no Macs.
+  if (!page.data && !page.error) return null;
+  // Never read: say so, rather than suggest this wallet has no Macs.
+  if (!page.data) {
+    return (
+      <p className="notice-line" role="status">
+        <span>Mac earnings could not be loaded. <button className="link-button" onClick={page.refresh}>Retry</button></span>
+      </p>
+    );
+  }
 
   // Most wallets run no Mac: keep the page as it is until one does.
   if (pools.length === 0 && !linking) {
@@ -33,6 +45,11 @@ export function ColonyPoolsCard({ stale = false }: { stale?: boolean }) {
     <Card className="hero" aria-label="Mac earnings">
       <div className="tile-label">Mac earnings</div>
       <p className="hint">USDC and ANTS that colony pools owe <AddressLink value={dashboard.address} /> for Macs that pay out here.</p>
+      {page.error ? (
+        <p className="notice-line" role="status">
+          <span>Could not refresh these amounts; they may be out of date. <button className="link-button" onClick={page.refresh}>Retry</button></span>
+        </p>
+      ) : null}
       {pools.map((pool) => {
         const claim = (usdc: boolean, ants: boolean): ColonyPoolClaimRequest => ({ pool: pool.address, usdc, ants });
         // Unfunded epochs may still owe ANTS: claiming pulls their emissions into the pool first.

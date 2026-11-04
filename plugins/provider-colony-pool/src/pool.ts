@@ -18,7 +18,7 @@ import {
 import type { SerializedHttpRequest } from '@antseed/node';
 import type { WorkerLedger } from './ledger.js';
 import type { DeviceAttestor } from './mdm.js';
-import { newRank, rankScores, recordOutcome, type WorkerRank } from './ranking.js';
+import { newRank, rankScores, recordOutcome, recordSpeed, type WorkerRank } from './ranking.js';
 import {
   COLONY_POOL_PROTOCOL_VERSION,
   decodeBody,
@@ -189,8 +189,6 @@ interface ConnectedWorker {
   finished: Map<string, RequestTiming>;
   /** Join checks run one at a time, each in a free slot, so they never exceed the worker's capacity. */
   checks: Promise<void>;
-  /** Smoothed decode speed in output tokens per second, 0 until measured. */
-  tokensPerSecond: number;
   /** When buyers were recently assigned to this worker. */
   assignedAt: number[];
   /** Pings sent since the last pong. */
@@ -313,7 +311,7 @@ export class ColonyPool {
       services: [...worker.verified],
       inflight: worker.inflight.size,
       maxConcurrency: worker.maxConcurrency,
-      tokensPerSecond: worker.tokensPerSecond,
+      tokensPerSecond: worker.rank.tokensPerSecond,
       attested: worker.hardened,
       appleVerified: worker.deviceAttestation !== null,
       reliability: worker.rank.reliability,
@@ -397,12 +395,7 @@ export class ColonyPool {
     for (const address of set) {
       if (tried.has(address)) continue;
       const worker = this.workers.get(address);
-      const reason = !worker ? 'not connected'
-        : !worker.verified.has(service) || !this.routable(worker) ? `not serving ${service}`
-          : this.priority(worker.address) === 0 ? 'the operator routes nothing to it'
-            : now < worker.rank.benchedUntil ? 'benched after failing to answer'
-              : worker.inflight.size >= worker.maxConcurrency ? 'at capacity'
-                : null;
+      const reason = this.unavailableReason(worker, service, now);
       if (reason) {
         if (!failures.some((f) => f.startsWith(`Worker ${address} `))) failures.push(`Worker ${address} ${reason}`);
         continue;
@@ -410,6 +403,16 @@ export class ColonyPool {
       candidates.push(worker!);
     }
     return this.byScore(candidates, false)[0] ?? null;
+  }
+
+  /** Why `worker` can't take a request for `service` now, in order of precedence; null when it can. */
+  private unavailableReason(worker: ConnectedWorker | undefined, service: string, now: number): string | null {
+    if (!worker) return 'not connected';
+    if (!worker.verified.has(service) || !this.routable(worker)) return `not serving ${service}`;
+    if (this.priority(worker.address) === 0) return 'the operator routes nothing to it';
+    if (now < worker.rank.benchedUntil) return 'benched after failing to answer';
+    if (worker.inflight.size >= worker.maxConcurrency) return 'at capacity';
+    return null;
   }
 
   /**
@@ -456,8 +459,9 @@ export class ColonyPool {
   recordThroughput(address: string, outputTokens: number, streamMs: number): void {
     const worker = this.workers.get(address.toLowerCase());
     if (!worker || outputTokens <= 0 || streamMs <= 0) return;
-    const sample = outputTokens / (streamMs / 1000);
-    worker.tokensPerSecond = worker.tokensPerSecond === 0 ? sample : worker.tokensPerSecond * 0.8 + sample * 0.2;
+    // Kept in the rank (and the ledger), so it survives reconnects and the dashboard ranks by it too.
+    recordSpeed(worker.rank, outputTokens / (streamMs / 1000));
+    this.opts.ledger.saveRank(worker.address, worker.rank, this.priority(worker.address));
   }
 
   /** Timing of a finished dispatch, read once by the provider when the request is charged. */
@@ -498,7 +502,7 @@ export class ColonyPool {
   private byScore(workers: ConnectedWorker[], forAssignment: boolean): ConnectedWorker[] {
     const scores = rankScores(workers.map((worker) => ({
       reliability: worker.rank.reliability,
-      tokensPerSecond: worker.tokensPerSecond,
+      tokensPerSecond: worker.rank.tokensPerSecond,
       priority: this.priority(worker.address),
       load: (worker.inflight.size + (forAssignment ? worker.assignedAt.length : 0)) / worker.maxConcurrency,
     })));
@@ -692,7 +696,6 @@ export class ColonyPool {
       inflight: new Map(),
       finished: new Map(),
       checks: Promise.resolve(),
-      tokensPerSecond: 0,
       assignedAt: [],
       missedPings: 0,
       rank,
@@ -913,6 +916,11 @@ export class ColonyPool {
         const entry = worker.inflight.get(frame.id);
         if (!entry) return;
         this.finish(worker.inflight, frame.id);
+        // Workers refuse a request (its channel, its binding, their capacity) before
+        // `accepted`, and fail one they took (the model threw or timed out) after it.
+        // Only the second is the worker's fault: a refusal the buyer caused never
+        // counts against it, or anyone could sink a Mac's rank with bad requests.
+        if (entry.accepted) this.recordDispatch(worker, entry, false, { reason: 'worker-error', bench: !entry.started });
         entry.handlers.onError(new Error(`Worker ${worker.address}: ${frame.message}`));
         return;
       }

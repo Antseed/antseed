@@ -20,8 +20,9 @@ Options:
   --concurrency <n>     Requests to run at once (default 1)
   --key-file <path>     Worker key; created on first run (default ~/.antseed-worker/key).
                         The encryption key is kept next to it as <path>.p256.
-  --rpc-url <url>       Base RPC; with it, the worker checks that each request's
-                        channel belongs to a buyer of this pool
+  --rpc-url <url>       RPC the worker checks each buyer request's channel on
+                        (default: the chain's public RPC). Buyer requests whose
+                        channel can't be checked are refused.
   --chain-id <id>       Chain whose Channels contract those checks read
                         (base-mainnet, base-sepolia, base-local; default base-mainnet)
   --channels-address <address>
@@ -53,10 +54,10 @@ function loadOrCreateEncryptionKey(path: string): WorkerEncryptionKey {
  * Reads channels from the chain's Channels contract, as this worker's own
  * config names it: never through a contract the pool points at.
  */
-function channelVerifier(rpcUrl: string, chainId: string, channelsAddress?: string): ChannelVerifier {
-  const chain = (CHAIN_CONFIGS as Record<string, { channelsContractAddress: string; evmChainId: number } | undefined>)[chainId];
+function channelVerifier(chainId: string, rpcUrl?: string, channelsAddress?: string): ChannelVerifier {
+  const chain = (CHAIN_CONFIGS as Record<string, { channelsContractAddress: string; evmChainId: number; rpcUrl: string } | undefined>)[chainId];
   if (!chain) throw new Error(`Unknown --chain-id ${chainId}`);
-  const client = new ChannelsClient({ rpcUrl, contractAddress: channelsAddress ?? chain.channelsContractAddress, evmChainId: chain.evmChainId });
+  const client = new ChannelsClient({ rpcUrl: rpcUrl ?? chain.rpcUrl, contractAddress: channelsAddress ?? chain.channelsContractAddress, evmChainId: chain.evmChainId });
   return trustedChannelVerifier((channel) => client.getSession(channel));
 }
 
@@ -95,7 +96,7 @@ async function main(): Promise<void> {
     services: values.services ? parseServices(values.services) : {},
     privateKey: loadOrCreateKey(values['key-file']!),
     encryptionKey: loadOrCreateEncryptionKey(`${values['key-file']!}.p256`),
-    ...(values['rpc-url'] ? { channelVerifier: channelVerifier(values['rpc-url'], values['chain-id']!, values['channels-address']) } : {}),
+    channelVerifier: channelVerifier(values['chain-id']!, values['rpc-url'], values['channels-address']),
     maxConcurrency: concurrency,
     log: (line) => console.log(line),
   });

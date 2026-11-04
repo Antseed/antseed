@@ -60,6 +60,9 @@ export type ChannelVerifier = (channel: string, buyer: string, seller: string) =
  * contract the pool names: a pool could otherwise answer with a contract of
  * its own that vouches for any channel.
  */
+/** channelVerdict's answer when the worker has no verifier: buyer requests are refused. */
+const UNVERIFIABLE = Symbol('unverifiable');
+
 export function trustedChannelVerifier(readChannel: (channel: string) => Promise<{ buyer: string; seller: string; status: number }>): ChannelVerifier {
   return async (channel, buyer, seller) => {
     const session = await readChannel(channel);
@@ -83,7 +86,11 @@ export interface PoolWorkerOptions {
   encryptionKey: WorkerEncryptionKey;
   /** Attests hello and every `attest` frame; without it the worker joins unattested. */
   attester?: WorkerAttester;
-  /** Checks that requests come from real buyers of this pool; without it, bindings are only signature-checked. */
+  /**
+   * Checks on-chain that a request's channel is an active channel of its buyer
+   * with this pool. Without it the worker refuses every buyer request and only
+   * runs the pool's checks: a signature alone proves a key, not a payment.
+   */
   channelVerifier?: ChannelVerifier;
   /** How long a request waits for its channel to be verified before it is refused (default 5 s). */
   channelWaitMs?: number;
@@ -302,9 +309,10 @@ export class PoolWorker {
    * a minute, so one closed since stops serving; an unknown one is looked up
    * again by the next request.
    */
-  private channelVerdict(channel: string, buyer: string): Promise<boolean | null> | boolean {
+  private channelVerdict(channel: string, buyer: string): Promise<boolean | null> | boolean | null | typeof UNVERIFIABLE {
     const verifier = this.opts.channelVerifier;
-    if (!verifier || !this.seller) return true;
+    if (!verifier) return UNVERIFIABLE;
+    if (!this.seller) return null;
     buyer = buyer.toLowerCase();
     const seller = this.seller.toLowerCase();
     const key = `${seller}|${channel}|${buyer}`;
@@ -386,6 +394,7 @@ export class PoolWorker {
 
     if (opened.buyer && opened.channel && !/^0x0+$/.test(opened.channel)) {
       const verdict = await abortable(this.channelVerdict(opened.channel.toLowerCase(), opened.buyer), signal);
+      if (verdict === UNVERIFIABLE) throw new Error('This worker has no channel verifier, so it refuses buyer requests; start it with an RPC endpoint');
       if (verdict === false) throw new Error('Request channel does not belong to a buyer of this pool');
       if (verdict === null) throw new Error('Request channel is not on-chain yet; retry shortly');
     } else {

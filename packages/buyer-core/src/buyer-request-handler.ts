@@ -39,6 +39,7 @@ import { adaptPeerFaultErrorResponse } from './peer-error-response.js';
 import {
   WORKER_ASSIGN_PATH,
   isWorkerUnavailable,
+  peerAnnouncesWorkerE2E,
   peerServiceUsesWorkerE2E,
   type SealedWorkerRequest,
   type WorkerE2EClient,
@@ -166,6 +167,9 @@ export class BuyerRequestHandler {
     const mux = this._deps.getMux(peer.peerId, conn);
     const verificationMux = this._deps.getVerificationMux(peer.peerId, conn);
     const negotiator = options?.controlPlane ? null : this._deps.negotiator;
+    // Before any payment frame can arrive: a seller announcing colony-pool
+    // workers is paid only for requests this buyer sent it (see trackPoolSellerRequest).
+    if (peerAnnouncesWorkerE2E(peer)) this._deps.negotiator?.bpm?.markWorkerSeller(peer.peerId);
     if (negotiator) {
       this._deps.registerPaymentMux(peer.peerId, negotiator.getOrCreatePaymentMux(peer.peerId, conn));
       // A retry reuses the request ID: an earlier covered attempt must not refuse this one's charge.
@@ -212,6 +216,22 @@ export class BuyerRequestHandler {
     // through the same upstream instead of choosing one by itself.
     if (billingRoute && !extractRequestedProvider(req)) {
       req = { ...req, headers: { ...req.headers, "x-antseed-provider": billingRoute.provider } };
+    }
+    // Colony pools: a request routed to a colony-pool provider is encrypted to
+    // its workers, or not sent at all. Decided by the provider the request is
+    // routed to, not by whether this client can encrypt: an ordinary provider
+    // may offer the same model, but a pool must never see a prompt in the clear.
+    const workerService = !options?.controlPlane ? requestedService?.trim() : undefined;
+    const needsWorkerE2E = Boolean(workerService) && peerServiceUsesWorkerE2E(peer, workerService!, billingRoute?.provider);
+    if (needsWorkerE2E && !this._deps.workerE2E) {
+      throw buyerFault(
+        `Service "${workerService}" on ${peer.peerId.slice(0, 12)}... is served by a colony pool, which needs worker encryption this client does not support`,
+        'invalid-request',
+      );
+    }
+    // Any other request to a pool seller: its payment claims must name it.
+    if (!options?.controlPlane && !needsWorkerE2E && peerAnnouncesWorkerE2E(peer)) {
+      this._deps.negotiator?.bpm?.trackPoolSellerRequest(peer.peerId, req.requestId);
     }
     // Decide free vs paid from the resolved route (provider + protocol), mirroring
     // the seller's per-request gate so both sides classify the request the same way.
@@ -271,20 +291,15 @@ export class BuyerRequestHandler {
     // routes ciphertext. Everything above read the plaintext request; the
     // request sent and the raw response stay on hand for ResponseAuth, which
     // signs wire bytes.
-    // Decided by the provider the request is routed to, not the service alone:
-    // an ordinary provider may offer the same model.
-    const workerE2E = !options?.controlPlane && requestedService && this._deps.workerE2E
-      && peerServiceUsesWorkerE2E(peer, requestedService, billingRoute?.provider)
-      ? this._deps.workerE2E
-      : null;
+    const workerE2E = needsWorkerE2E ? this._deps.workerE2E! : null;
     const plainReq = req;
     let sealed: SealedWorkerRequest | null = null;
     let wireResponse: SerializedHttpResponse | null = null;
     const sealForAttempt = async (): Promise<void> => {
-      if (!workerE2E || !requestedService) return;
+      if (!workerE2E || !workerService) return;
       const channelId = this._deps.negotiator?.bpm?.getActiveSession(peer.peerId)?.sessionId ?? null;
       const provider = billingRoute?.provider;
-      sealed = await workerE2E.seal(peer, plainReq, requestedService, (body) => this.sendRequest(peer, {
+      sealed = await workerE2E.seal(peer, plainReq, workerService, (body) => this.sendRequest(peer, {
         requestId: `${plainReq.requestId}-assign`,
         method: 'POST',
         path: WORKER_ASSIGN_PATH,
@@ -598,7 +613,7 @@ export class BuyerRequestHandler {
         const response = await attempt();
         if (!sealed || !isWorkerUnavailable(response)) return response;
         // None of the assigned workers could take it (the pool already tried each): take new ones, once.
-        workerE2E!.forget(peer.peerId, requestedService!);
+        workerE2E!.forget(peer.peerId, workerService!);
         return await attempt();
       } finally {
         bpm?.endPaidRequest(peer.peerId);

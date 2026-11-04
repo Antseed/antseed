@@ -241,8 +241,12 @@ seal under its response key.
   yet is looked up every second for up to 5 seconds (a fresh reserve can lag
   the RPC; requests waiting on it share one lookup, each read with a short
   deadline), then refused with a retryable error. So a pool cannot buy real
-  work by signing bindings to channels that don't exist. Without an RPC
-  endpoint the worker checks only the buyer's signature.
+  work by signing bindings to channels that don't exist. There is no
+  signature-only mode: a worker without a channel verifier or an RPC refuses
+  buyer requests and runs only the pool's checks. `antseed-pool-worker`
+  reads the `--chain-id` chain's public RPC unless `--rpc-url` names another;
+  the Mac app uses Base mainnet's public RPC (generated from chain-config)
+  unless `--rpc` names another.
 
 ## Routing and failover
 
@@ -258,7 +262,11 @@ time, or dropped its connection before answering) is **benched**: no
 assignments or dispatches for 30 seconds, doubling with each failure in a row
 up to 10 minutes, and cleared by its next answered request. A response that
 goes silent midway, or exceeds its byte limit, lowers its reliability without
-benching it. Ranks survive reconnects and pool restarts (the ledger keeps them
+benching it. A worker's error counts against it only after it sent
+`accepted` (its model failed or timed out); refusals before that (channel,
+binding, capacity, check limits) never do, so buyers can't lower a Mac's rank
+with bad requests. Ranks, including each worker's smoothed decode speed,
+survive reconnects and pool restarts (the ledger keeps them
 in `worker_rank`, and each outcome in `dispatches` for 30 days), so a flaky
 Mac can't reset its record by reconnecting.
 
@@ -282,7 +290,7 @@ response started reaches the client as a stream error.
 `COLONY_POOL_WORKER_PRIORITY` (`0xaddress=weight,…`, default 1) multiplies a
 worker's score: 2 doubles it, 0 means the pool never routes to it (its models
 are not announced through it). The seller dashboard's **Workers** panel lists
-workers in this order (Rank), with each one's share of requests answered over
+workers in this order (Rank, from the same score inputs the pool routes by), with each one's share of requests answered over
 24 hours and 7 days, median time to first byte, and how long a benched worker
 has left.
 
@@ -299,6 +307,23 @@ of unpaid worker requests is full, the oldest one's ID is kept and a later
 payment request naming it is refused (past 16,384 such IDs for one seller,
 the buyer sends that seller no more worker requests), and a payment request
 from a different seller naming a worker request is refused.
+
+A buyer pays a colony-pool seller only for requests it sent that seller: a
+delivered-cost NeedAuth that names no request, or one the buyer never sent it,
+is refused, so a pool can't turn a failed worker answer into an ordinary
+claim. Requests to the same seller's ordinary providers are tracked and paid
+as usual. A pool seller's own headroom prompts never reopen the buyer's
+overdraft window; beyond the one prepaid request, it is paid only for answers
+whose worker seal verified.
+
+A request routed to a colony-pool provider is encrypted to its workers or not
+sent at all: a client without worker encryption, such as the web SDK, fails
+it locally before any bytes go to the seller.
+
+Workers are paid through the buyer's signed attribution. A pool operator who
+opens a real channel as a buyer could have workers serve requests it then
+never pays through that channel; the channel check proves a buyer exists, not
+that it will pay.
 
 ## Hardened Macs
 

@@ -56,22 +56,22 @@ final class RequestGateTests: XCTestCase {
         let refused = await gate.admit(buyer: buyer, channel: channel, bodyBytes: 100, requestedMaxTokens: 512, check: .verify { false })
         let unknown = await gate.admit(buyer: buyer, channel: channel, bodyBytes: 100, requestedMaxTokens: 512, check: .verify { nil })
         let untrusted = await gate.admit(buyer: buyer, channel: channel, bodyBytes: 100, requestedMaxTokens: 512, check: .unavailable("No trusted Channels contract"))
-        let unchecked = await gate.admit(buyer: buyer, channel: channel, bodyBytes: 100_000, requestedMaxTokens: 4096, check: .signatureOnly)
+        let noRPC = await gate.admit(buyer: buyer, channel: channel, bodyBytes: 100, requestedMaxTokens: 512, check: .unavailable("No RPC"))
         XCTAssertEqual(refused, .refused("Request channel does not belong to a buyer of this pool"))
         XCTAssertEqual(unknown, .refused("Request channel is not on-chain yet; retry shortly"))
         XCTAssertEqual(untrusted, .refused("No trusted Channels contract"))
-        XCTAssertEqual(unchecked, .full)
+        XCTAssertEqual(noRPC, .refused("No RPC"), "a signed binding without on-chain proof never gets full inference")
     }
 
     func testPoolChecksAreSmallAndRateLimited() async {
         let gate = RequestGate(checksPerHour: 2)
-        let large = await gate.admit(buyer: nil, channel: nil, bodyBytes: RequestGate.checkBodyBytes + 1, requestedMaxTokens: 512, check: .signatureOnly)
+        let large = await gate.admit(buyer: nil, channel: nil, bodyBytes: RequestGate.checkBodyBytes + 1, requestedMaxTokens: 512, check: .unavailable("No RPC"))
         XCTAssertEqual(large, .refused("Check request too large"), "a large unsigned prompt never reaches the model")
-        let zero = await gate.admit(buyer: buyer, channel: zeroChannel, bodyBytes: 10 * 1024 * 1024, requestedMaxTokens: 512, check: .signatureOnly)
+        let zero = await gate.admit(buyer: buyer, channel: zeroChannel, bodyBytes: 10 * 1024 * 1024, requestedMaxTokens: 512, check: .unavailable("No RPC"))
         XCTAssertEqual(zero, .refused("Check request too large"), "the zero channel is a pool check too")
-        let first = await gate.admit(buyer: nil, channel: nil, bodyBytes: 200, requestedMaxTokens: 512, check: .signatureOnly)
-        let second = await gate.admit(buyer: nil, channel: nil, bodyBytes: 200, requestedMaxTokens: 4, check: .signatureOnly)
-        let third = await gate.admit(buyer: nil, channel: nil, bodyBytes: 200, requestedMaxTokens: 4, check: .signatureOnly)
+        let first = await gate.admit(buyer: nil, channel: nil, bodyBytes: 200, requestedMaxTokens: 512, check: .unavailable("No RPC"))
+        let second = await gate.admit(buyer: nil, channel: nil, bodyBytes: 200, requestedMaxTokens: 4, check: .unavailable("No RPC"))
+        let third = await gate.admit(buyer: nil, channel: nil, bodyBytes: 200, requestedMaxTokens: 4, check: .unavailable("No RPC"))
         XCTAssertEqual(first, .check(maxTokens: RequestGate.checkMaxTokens))
         XCTAssertEqual(second, .check(maxTokens: 4))
         XCTAssertEqual(third, .refused("Check rate limit exceeded"))
@@ -80,10 +80,10 @@ final class RequestGateTests: XCTestCase {
     func testPoolCheckBudgetIsAlwaysPositive() async {
         let gate = RequestGate(checksPerHour: 10)
         for requested in [-5, 0, 1] {
-            let admission = await gate.admit(buyer: nil, channel: nil, bodyBytes: 200, requestedMaxTokens: requested, check: .signatureOnly)
+            let admission = await gate.admit(buyer: nil, channel: nil, bodyBytes: 200, requestedMaxTokens: requested, check: .unavailable("No RPC"))
             XCTAssertEqual(admission, .check(maxTokens: 1), "max_tokens \(requested) runs one token, never a negative budget")
         }
-        let huge = await gate.admit(buyer: nil, channel: nil, bodyBytes: 200, requestedMaxTokens: Int.max, check: .signatureOnly)
+        let huge = await gate.admit(buyer: nil, channel: nil, bodyBytes: 200, requestedMaxTokens: Int.max, check: .unavailable("No RPC"))
         XCTAssertEqual(huge, .check(maxTokens: RequestGate.checkMaxTokens))
     }
 
@@ -102,6 +102,12 @@ final class RequestGateTests: XCTestCase {
         XCTAssertEqual(TrustedChannels.address(chainId: 84532, override: nil), "0x3b0b94AC27C042CAC17103A897Fb5cEb7D8b4cf7")
         XCTAssertNil(TrustedChannels.address(chainId: 31337, override: nil), "a local chain needs --channels")
         XCTAssertEqual(TrustedChannels.address(chainId: 31337, override: "0xa513E6E4b8f2a923D98304ec87F64353C4D5C853"), "0xa513E6E4b8f2a923D98304ec87F64353C4D5C853")
+    }
+
+    func testChannelsAreCheckedByDefault() {
+        // No --rpc still means a verifying worker: Base mainnet's public RPC.
+        XCTAssertEqual(WorkerConfig.fromCommandLine(["app"]).rpcURL?.absoluteString, GeneratedContractAddresses.defaultRPC)
+        XCTAssertEqual(WorkerConfig.fromCommandLine(["app", "--rpc", "http://127.0.0.1:8545"]).rpcURL?.absoluteString, "http://127.0.0.1:8545")
     }
 }
 

@@ -113,7 +113,7 @@ function deviceAttestation(kind: Device, worker: string, attestationKey: string,
   };
 }
 
-function fakePool(opts: { payments?: boolean; now?: () => number; appleCa?: ReturnType<typeof createTestAppleCa>; deviceNotBefore?: Date; workers?: number; recipients?: number; certSeller?: string; unavailableOnce?: boolean; tamper?: 'ciphertext' | 'usage'; attest?: Attest | Attest[]; requireAttested?: boolean; device?: Device; requireApple?: boolean; streamTamper?: 'no-end' | 'usage' | 'not-sse' | 'padding'; maxStreamBufferBytes?: number; failover?: boolean; forgeAnswer?: boolean } = {}) {
+function fakePool(opts: { payments?: boolean; now?: () => number; appleCa?: ReturnType<typeof createTestAppleCa>; deviceNotBefore?: Date; workers?: number; recipients?: number; certSeller?: string; unavailableOnce?: boolean; tamper?: 'ciphertext' | 'usage'; attest?: Attest | Attest[]; requireAttested?: boolean; device?: Device; requireApple?: boolean; streamTamper?: 'no-end' | 'usage' | 'not-sse' | 'padding'; maxStreamBufferBytes?: number; failover?: boolean; forgeAnswer?: boolean; noHook?: boolean; assignFails?: boolean } = {}) {
   const workers = Array.from({ length: opts.workers ?? 1 }, () => ({ wallet: Wallet.createRandom(), key: generateWorkerEncryptionKey() }));
   let next = 0;
   let unavailable = opts.unavailableOnce === true;
@@ -127,6 +127,10 @@ function fakePool(opts: { payments?: boolean; now?: () => number; appleCa?: Retu
     sendProxyRequest: vi.fn((req: SerializedHttpRequest, onResponse: OnResponse, onChunk: OnChunk) => {
       wire.push(req);
       if (req.path === WORKER_ASSIGN_PATH) {
+        if (opts.assignFails) {
+          respond(onResponse, req.requestId, 503, { error: { message: 'No worker is available for qwen' } });
+          return;
+        }
         const wanted = (JSON.parse(dec(req.body)) as { recipients?: number }).recipients ?? 1;
         const start = next++;
         const chosen = Array.from({ length: Math.min(wanted, workers.length) }, (_, i) => (start + i) % workers.length);
@@ -219,7 +223,7 @@ function fakePool(opts: { payments?: boolean; now?: () => number; appleCa?: Retu
     getMux: vi.fn(() => proxyMux as any),
     getVerificationMux: vi.fn(() => ({} as any)),
     registerPaymentMux: vi.fn(),
-    workerE2E: new NodeWorkerE2EClient(buyer, {
+    workerE2E: opts.noHook ? undefined : new NodeWorkerE2EClient(buyer, {
       ...(opts.recipients ? { recipients: opts.recipients } : {}),
       requireAttestedWorkers: opts.requireAttested === true,
       requireAppleVerifiedWorkers: opts.requireApple === true,
@@ -405,6 +409,45 @@ describe('buyer requests to colony pools', () => {
     expect(poolFirst.wire[0]!.headers['x-antseed-provider']).toBe('colony-pool');
     expect(poolFirst.wire.at(-1)!.headers['x-antseed-provider']).toBe('colony-pool');
     expect(dec(poolFirst.wire.at(-1)!.body)).not.toContain(PROMPT);
+  });
+
+  it('never sends a pool request in the clear when this client cannot encrypt', async () => {
+    const pool = fakePool({ noHook: true });
+    await expect(pool.handler.sendRequest(peer, chatRequest('h1'))).rejects.toThrow(/needs worker encryption/);
+    // A model name with spaces (the seller trims it) and a model no provider announces go nowhere either.
+    await expect(pool.handler.sendRequest(peer, chatRequest('h2', false, ' qwen '))).rejects.toThrow(/needs worker encryption/);
+    await expect(pool.handler.sendRequest(peer, chatRequest('h3', false, 'unlisted'))).rejects.toThrow(/needs worker encryption/);
+    expect(pool.wire).toHaveLength(0);
+    // The seller's ordinary provider still works without the hook.
+    const ordinary = await pool.handler.sendRequest(mixedPeer, chatRequest('h4', false, 'llama'));
+    expect(JSON.parse(dec(ordinary.body)).choices[0].message.content).toBe('plain answer');
+  });
+
+  it('encrypts a pool model named with surrounding spaces', async () => {
+    const pool = fakePool();
+    const answer = await pool.handler.sendRequest(peer, chatRequest('w1', false, ' qwen '));
+    expect(JSON.parse(dec(answer.body)).choices[0].message.content).toBe(ANSWER);
+    expect(pool.wire.map((req) => req.path)).toEqual([WORKER_ASSIGN_PATH, '/v1/chat/completions']);
+    expect(dec(pool.wire.at(-1)!.body)).not.toContain(PROMPT);
+  });
+
+  it('sends nothing but the assignment when the pool assigns no worker', async () => {
+    const pool = fakePool({ assignFails: true });
+    await expect(pool.handler.sendRequest(peer, chatRequest('a1'))).rejects.toThrow();
+    expect(pool.wire.map((req) => req.path)).toEqual([WORKER_ASSIGN_PATH]);
+    expect(pool.wire.some((req) => dec(req.body).includes(PROMPT))).toBe(false);
+  });
+
+  it('tells the payment manager which requests to a pool seller went to an ordinary provider', async () => {
+    const pool = fakePool({ payments: true });
+    await pool.handler.sendRequest(mixedPeer, chatRequest('o1', false, 'llama'));
+    await pool.handler.sendRequest(mixedPeer, chatRequest('o2'));
+    expect(pool.calls.some((call) => call.method === 'markWorkerSeller' && call.args[0] === mixedPeer.peerId)).toBe(true);
+    const tracked = pool.calls.filter((call) => call.method === 'trackPoolSellerRequest').map((call) => call.args[1]);
+    expect(tracked).toEqual(['o1']);
+    // The seller is marked before the payment mux exists, so no claim can arrive first.
+    const order = pool.calls.map((call) => call.method);
+    expect(order.indexOf('markWorkerSeller')).toBeLessThan(order.indexOf('releaseRequestCoverage'));
   });
 
   it('does not encrypt when the colony-pool capability names no provider of the service', async () => {

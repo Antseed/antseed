@@ -316,9 +316,11 @@ final class WorkerController: ObservableObject {
 
     /// How this request's channel binding can be checked: on the trusted
     /// Channels contract for the RPC's chain (`--channels`, or the known
-    /// deployment). With an RPC but none for its chain, full requests are refused.
+    /// deployment). Without an RPC, or with none for its chain, full requests
+    /// are refused.
     private func channelCheck(channel: String, buyer: String) async -> ChannelCheck {
-        guard let rpc = config.rpcURL, poolSeller != nil else { return .signatureOnly }
+        guard let rpc = config.rpcURL else { return .unavailable("This worker has no RPC to check request channels on, so it refuses buyer requests; start it with --rpc") }
+        guard poolSeller != nil else { return .unavailable("Not joined to a pool yet; retry shortly") }
         if trustedChannels == nil {
             guard let chainId = try? await Chain(rpcURL: rpc, timeout: 2).chainId() else {
                 return .unavailable("Could not read the chain id to check the request channel; retry shortly")
@@ -354,7 +356,7 @@ final class WorkerController: ObservableObject {
         if let buyer = opened.buyer, let channel = opened.channel, !channel.allSatisfy({ $0 == "0" || $0 == "x" }) {
             check = await channelCheck(channel: channel, buyer: buyer)
         } else {
-            check = .signatureOnly
+            check = .unavailable("No buyer binding") // never consulted: an unbound request is a pool check
         }
         // Pool checks are bounded by size here, before the body is even parsed.
         let size = opened.body.count

@@ -96,9 +96,15 @@ export class WorkerLedger {
         failures INTEGER NOT NULL,
         benched_until INTEGER NOT NULL,
         priority REAL NOT NULL,
-        updated_at INTEGER NOT NULL
+        updated_at INTEGER NOT NULL,
+        tokens_per_second REAL NOT NULL DEFAULT 0
       );
     `);
+    // Rank tables written before decode speed was kept there gain the column.
+    const rankColumns = this.db.prepare('PRAGMA table_info(worker_rank)').all() as Array<{ name: string }>;
+    if (!rankColumns.some((column) => column.name === 'tokens_per_second')) {
+      this.db.exec('ALTER TABLE worker_rank ADD COLUMN tokens_per_second REAL NOT NULL DEFAULT 0');
+    }
     // A pool that crashed left sessions open; they ended no later than now.
     this.db.prepare('UPDATE connections SET disconnected_at = ? WHERE disconnected_at IS NULL').run(Date.now());
     this.stmts = this.prepareStatements();
@@ -131,12 +137,13 @@ export class WorkerLedger {
       insertDispatch: this.db.prepare('INSERT INTO dispatches (worker, at, ok, reason, first_byte_ms) VALUES (?, ?, ?, ?, ?)'),
       pruneDispatches: this.db.prepare('DELETE FROM dispatches WHERE at < ?'),
       saveRank: this.db.prepare(`
-        INSERT INTO worker_rank (worker, reliability, first_byte_ms, failures, benched_until, priority, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO worker_rank (worker, reliability, first_byte_ms, failures, benched_until, priority, updated_at, tokens_per_second)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (worker) DO UPDATE SET reliability = excluded.reliability, first_byte_ms = excluded.first_byte_ms,
-          failures = excluded.failures, benched_until = excluded.benched_until, priority = excluded.priority, updated_at = excluded.updated_at
+          failures = excluded.failures, benched_until = excluded.benched_until, priority = excluded.priority, updated_at = excluded.updated_at,
+          tokens_per_second = excluded.tokens_per_second
       `),
-      loadRank: this.db.prepare('SELECT reliability, first_byte_ms, failures, benched_until FROM worker_rank WHERE worker = ?'),
+      loadRank: this.db.prepare('SELECT reliability, first_byte_ms, failures, benched_until, tokens_per_second FROM worker_rank WHERE worker = ?'),
       pendingPayouts: this.db.prepare(`
         SELECT e.worker AS worker, e.earned - COALESCE(p.paid, 0) AS pending
         FROM (SELECT worker, SUM(worker_usdc) AS earned FROM earnings GROUP BY worker) e
@@ -168,12 +175,12 @@ export class WorkerLedger {
 
   /** The worker's current rank, so it survives reconnects and pool restarts. */
   saveRank(worker: string, rank: WorkerRank, priority: number, at = Date.now()): void {
-    this.stmts.saveRank.run(worker.toLowerCase(), rank.reliability, rank.firstByteMs, rank.failures, rank.benchedUntil, priority, at);
+    this.stmts.saveRank.run(worker.toLowerCase(), rank.reliability, rank.firstByteMs, rank.failures, rank.benchedUntil, priority, at, rank.tokensPerSecond);
   }
 
   loadRank(worker: string): WorkerRank | null {
-    const row = this.stmts.loadRank.get(worker.toLowerCase()) as { reliability: number | null; first_byte_ms: number | null; failures: number; benched_until: number } | undefined;
-    return row ? { reliability: row.reliability, firstByteMs: row.first_byte_ms, failures: row.failures, benchedUntil: row.benched_until } : null;
+    const row = this.stmts.loadRank.get(worker.toLowerCase()) as { reliability: number | null; first_byte_ms: number | null; failures: number; benched_until: number; tokens_per_second: number } | undefined;
+    return row ? { reliability: row.reliability, firstByteMs: row.first_byte_ms, failures: row.failures, benchedUntil: row.benched_until, tokensPerSecond: row.tokens_per_second } : null;
   }
 
   private dispatchesSincePrune = 0;

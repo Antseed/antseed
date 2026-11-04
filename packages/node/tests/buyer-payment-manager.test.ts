@@ -744,7 +744,8 @@ describe('BuyerPaymentManager', () => {
     manager.recordWorkerAttribution(sellerPeerId, 'req-b', workerB);
     manager.recordWorkerDelivery('req-b', usage);
     await manager.signPerRequestAuth(sellerPeerId, stats('req-b', 150n));
-    // A request no worker was assigned stays unattributed (the pool's remainder).
+    // A request no worker was assigned (an ordinary provider of the same seller) stays unattributed.
+    manager.trackPoolSellerRequest(sellerPeerId, 'req-c');
     const { payload } = await manager.signPerRequestAuth(sellerPeerId, stats('req-c', 50n));
     expect(decodeWorkerTail(payload.metadata)).toEqual([
       { worker: workerA, cumulativeAmount: 100n },
@@ -827,6 +828,70 @@ describe('BuyerPaymentManager', () => {
       manager.recordWorkerDelivery('req-pool', null);
       await pending;
       expect(mux.sentSpendingAuths).toHaveLength(0);
+    });
+
+    it('refuses a pool seller\'s claim that drops or changes the request ID after a failed answer', async () => {
+      const { sellerPeerId } = await setup('seller-pool-untracked');
+      manager.recordWorkerDelivery('req-pool', null);
+      const channelId = manager.getActiveSession(sellerPeerId)!.sessionId;
+      const claim = { channelId, requiredCumulativeAmount: '19000', currentAcceptedCumulative: '10000', deposit: '1000000', inputTokens: '1000', outputTokens: '400', lastRequestCost: '9000' };
+      // No request ID at all, then a fresh one the buyer never sent.
+      await manager.handleNeedAuth(sellerPeerId, claim, mux);
+      await manager.handleNeedAuth(sellerPeerId, { ...claim, requestId: 'req-invented' }, mux);
+      // A zero-cost delivered claim is judged too.
+      await manager.handleNeedAuth(sellerPeerId, { ...claim, requestId: 'req-invented-2', lastRequestCost: '0' }, mux);
+      expect(mux.sentSpendingAuths).toHaveLength(0);
+      await expect(manager.signPerRequestAuth(sellerPeerId, {
+        inputBytes: SAMPLE_INPUT, outputBytes: SAMPLE_OUTPUT, sellerClaimedCost: 9000n, requestId: 'req-invented', service: 'qwen',
+      })).rejects.toThrow(/no verified answer/);
+      await expect(manager.signPerRequestAuth(sellerPeerId, {
+        inputBytes: SAMPLE_INPUT, outputBytes: SAMPLE_OUTPUT, sellerClaimedCost: 9000n,
+      })).rejects.toThrow(/no verified answer/);
+    });
+
+    it('pays a pool seller for an ordinary request the buyer sent it, and a marked seller only for those', async () => {
+      const sellerPeerId = fakePeerId('seller-pool-mixed');
+      const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+      await manager.handleAuthAck(sellerPeerId, { channelId });
+      mux.sentSpendingAuths.length = 0;
+      manager.markWorkerSeller(sellerPeerId);
+      const claim = { channelId, requiredCumulativeAmount: '19000', currentAcceptedCumulative: '10000', deposit: '1000000', inputTokens: '1000', outputTokens: '400', lastRequestCost: '9000' };
+      await manager.handleNeedAuth(sellerPeerId, { ...claim, requestId: 'req-ordinary' }, mux);
+      expect(mux.sentSpendingAuths).toHaveLength(0);
+      manager.trackPoolSellerRequest(sellerPeerId, 'req-ordinary');
+      await manager.handleNeedAuth(sellerPeerId, { ...claim, requestId: 'req-ordinary' }, mux);
+      expect(mux.sentSpendingAuths).toHaveLength(1);
+      // Ordinary work is never credited to a worker.
+      expect(decodeWorkerTail((mux.sentSpendingAuths[0] as { metadata: string }).metadata)).toBeNull();
+    });
+
+    it('does not reopen a pool seller\'s overdraft window on its own headroom prompts', async () => {
+      const prompts = async (sellerPeerId: string, pool: boolean) => {
+        const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+        await manager.handleAuthAck(sellerPeerId, { channelId });
+        if (pool) manager.markWorkerSeller(sellerPeerId);
+        mux.sentSpendingAuths.length = 0;
+        // Headroom prompts: no request, no delivered cost, each asking past the window.
+        for (const required of ['100000', '200000', '300000']) {
+          await manager.handleNeedAuth(sellerPeerId, { channelId, requiredCumulativeAmount: required, currentAcceptedCumulative: '0', deposit: '1000000' }, mux);
+        }
+        return manager.getCumulativeAmount(sellerPeerId);
+      };
+      // The pool keeps the one prepaid window ($0.10) and gets nothing more without an answer.
+      expect(await prompts(fakePeerId('seller-pool-headroom'), true)).toBe(100_000n);
+      expect(mux.sentSpendingAuths).toHaveLength(1);
+    });
+
+    it('leaves sellers without colony-pool workers unaffected', async () => {
+      const sellerPeerId = fakePeerId('seller-not-a-pool');
+      const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+      await manager.handleAuthAck(sellerPeerId, { channelId });
+      mux.sentSpendingAuths.length = 0;
+      await manager.handleNeedAuth(sellerPeerId, {
+        channelId, requiredCumulativeAmount: '19000', currentAcceptedCumulative: '10000', deposit: '1000000',
+        inputTokens: '1000', outputTokens: '400', lastRequestCost: '9000', requestId: 'req-any',
+      }, mux);
+      expect(mux.sentSpendingAuths).toHaveLength(1);
     });
 
     it('refuses a NeedAuth that arrives after the answer failed verification', async () => {
@@ -981,6 +1046,7 @@ describe('BuyerPaymentManager', () => {
       const paid = manager.getCumulativeAmount(sellerPeerId);
       // 600 later counted requests push req-pool out of the counted-request tracker.
       for (let i = 0; i < 600; i++) {
+        manager.trackPoolSellerRequest(sellerPeerId, `req-free-${i}`);
         await manager.signPerRequestAuth(sellerPeerId, {
           inputBytes: new Uint8Array(), outputBytes: new Uint8Array(), sellerClaimedCost: 0n, requestId: `req-free-${i}`,
         });

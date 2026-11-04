@@ -1,7 +1,21 @@
 import { Wallet } from 'ethers';
 import { describe, expect, it, vi } from 'vitest';
+import type { MulticallRequest } from '@antseed/node/payments';
 import type { AntsContext } from './context.js';
 import { claimColonyPool, linkWorkerPayout, colonyPools } from './colony-pools.js';
+
+// Batched epoch reads go through Multicall3; here they are answered by the fixture's client.
+const multicall = vi.hoisted(() => ({ client: null as Record<string, (...args: unknown[]) => Promise<unknown>> | null, calls: [] as string[] }));
+vi.mock('@antseed/node/payments', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@antseed/node/payments')>()),
+  multicallRead: vi.fn(async (_provider: unknown, requests: MulticallRequest[]) => {
+    multicall.calls.push(requests[0]?.method ?? '');
+    return Promise.all(requests.map(async (request) => {
+      const value = await multicall.client![request.method]!(...(request.args ?? []));
+      return value === undefined ? null : [value];
+    }));
+  }),
+}));
 
 const wallet = Wallet.createRandom();
 const pool = '0x00000000000000000000000000000000000000aa';
@@ -24,6 +38,8 @@ function fixture(pools: string[] = [pool], unfunded: number[] = []) {
     claimAnts: vi.fn(async () => 'ants-hash'),
     setPayout: vi.fn(async () => 'link-hash'),
   };
+  multicall.client = client as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>;
+  multicall.calls = [];
   const chain = { evmChainId: 31337, colonyPoolAddresses: pools };
   const ctx = {
     address: wallet.address,
@@ -32,6 +48,7 @@ function fixture(pools: string[] = [pool], unfunded: number[] = []) {
     colonyPoolAddresses: () => (chain.colonyPoolAddresses ?? []).map((a) => a.toLowerCase()),
     rememberColonyPool: async (address: string) => { chain.colonyPoolAddresses = [...chain.colonyPoolAddresses, address]; },
     colonyPool: () => client,
+    provider: () => ({}),
     requireSigner: () => wallet,
   } as unknown as AntsContext;
   return { ctx, client };
@@ -102,6 +119,14 @@ describe('colony pool rewards', () => {
     ]);
     // Epochs with no weight are never asked about beyond their weight.
     expect(client.pendingAnts).toHaveBeenCalledTimes(82);
+    // A hundred epochs' weights are one batched read, not a hundred calls.
+    expect(multicall.calls.filter((method) => method === 'epochWeight')).toHaveLength(2);
+  });
+
+  it('fails instead of showing zero when a batched epoch read fails', async () => {
+    const { ctx, client } = fixture();
+    client.epochAnts.mockImplementation(async () => undefined as unknown as bigint);
+    await expect(colonyPools(ctx)).rejects.toThrow(/epochAnts unavailable/);
   });
 
   it('refuses pools the dashboard does not know', async () => {

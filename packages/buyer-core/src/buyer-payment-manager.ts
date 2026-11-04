@@ -92,6 +92,8 @@ const MAX_FORGOTTEN_WORKER_REQUESTS = 16_384;
  * out; they never count toward MAX_FORGOTTEN_WORKER_REQUESTS.
  */
 const MAX_COMPLETED_WORKER_REQUESTS = 16_384;
+/** Per pool seller: its other (non-worker) requests a NeedAuth may name, oldest dropped first. */
+const MAX_POOL_SELLER_REQUESTS = 16_384;
 
 /**
  * A request encrypted to a colony-pool worker: pending until the buyer has
@@ -381,6 +383,10 @@ export class BuyerPaymentManager {
   private readonly _forgottenWorkerRequests = new Map<string, Set<string>>();
   /** sellerPeerId -> worker requests retired verified (paid in full, or free); not paid again. */
   private readonly _completedWorkerRequests = new Map<string, Set<string>>();
+  /** Sellers announcing colony-pool workers: a delivered cost they claim must name a request the buyer sent them. */
+  private readonly _workerSellers = new Set<string>();
+  /** pool seller -> requests the buyer sent it that went to an ordinary provider (not encrypted to a worker). */
+  private readonly _poolSellerRequests = new Map<string, Set<string>>();
   /**
    * requestId -> trusted buyer-owned billing identity, request facts, and mode.
    *
@@ -629,6 +635,8 @@ export class BuyerPaymentManager {
    * only a recipient can decrypt it, and each answers under its own key.
    */
   recordWorkerAttribution(sellerPeerId: string, requestId: string, workers: string | readonly string[]): void {
+    this._workerSellers.add(sellerPeerId);
+    this._poolSellerRequests.get(sellerPeerId)?.delete(requestId);
     const recipients = (typeof workers === 'string' ? [workers] : [...workers]).map((w) => w.toLowerCase());
     // A retry on other workers starts over; NeedAuths already waiting keep waiting.
     const delivery = this._workerDeliveries.get(requestId);
@@ -706,6 +714,53 @@ export class BuyerPaymentManager {
     ) {
       this._retireWorkerDelivery(requestId);
     }
+  }
+
+  /**
+   * The seller announces colony-pool workers. From now on a delivered cost it
+   * claims is paid only for a request the buyer sent it: a worker request
+   * (judged by its verified answer) or one tracked with trackPoolSellerRequest.
+   * A claim naming no request, or one the buyer never sent, is refused, so a
+   * pool cannot turn a failed worker answer into an ordinary claim by
+   * changing or dropping its request ID.
+   */
+  markWorkerSeller(sellerPeerId: string): void {
+    this._workerSellers.add(sellerPeerId);
+  }
+
+  /** The buyer sent a pool seller a request that is not encrypted to a worker (an ordinary provider of that seller). */
+  trackPoolSellerRequest(sellerPeerId: string, requestId: string): void {
+    this._workerSellers.add(sellerPeerId);
+    // The buyer is sending this id again, now not to a worker: this attempt gates its payment
+    // from here on (as recordWorkerAttribution does for a worker attempt).
+    const delivery = this._workerDeliveries.get(requestId);
+    if (delivery?.sellerPeerId === sellerPeerId) {
+      this._settleWorkerDelivery(requestId, 'failed');
+      this._workerDeliveries.delete(requestId);
+    }
+    this._forgottenWorkerRequests.get(sellerPeerId)?.delete(requestId);
+    this._completedWorkerRequests.get(sellerPeerId)?.delete(requestId);
+    let ids = this._poolSellerRequests.get(sellerPeerId);
+    if (!ids) {
+      ids = new Set();
+      this._poolSellerRequests.set(sellerPeerId, ids);
+    }
+    ids.delete(requestId);
+    ids.add(requestId);
+    if (ids.size > MAX_POOL_SELLER_REQUESTS) ids.delete(ids.values().next().value!);
+  }
+
+  /**
+   * A pool seller's claim for a request the buyer cannot tie to anything it
+   * sent that seller. Worker requests (live, forgotten or completed) are
+   * judged by their own checks, so they are not untracked here.
+   */
+  private _untrackedPoolSellerClaim(sellerPeerId: string, requestId: string | undefined, workerDelivery: WorkerDelivery | undefined): boolean {
+    if (!this._workerSellers.has(sellerPeerId)) return false;
+    if (requestId == null || requestId === '') return true;
+    if (workerDelivery) return false;
+    if (this._isForgottenWorkerRequest(sellerPeerId, requestId) || this._isCompletedWorkerRequest(sellerPeerId, requestId)) return false;
+    return !(this._poolSellerRequests.get(sellerPeerId)?.has(requestId) ?? false);
   }
 
   private _isForgottenWorkerRequest(sellerPeerId: string, requestId: string | undefined): boolean {
@@ -1794,6 +1849,7 @@ export class BuyerPaymentManager {
     const workerDelivery = stats.requestId != null ? this._workerDeliveries.get(stats.requestId) : undefined;
     if (
       this._isForgottenWorkerRequest(sellerPeerId, stats.requestId)
+      || this._untrackedPoolSellerClaim(sellerPeerId, stats.requestId, workerDelivery)
       || (workerDelivery && (workerDelivery.sellerPeerId !== sellerPeerId || workerDelivery.state !== 'verified' || !workerDelivery.usage))
     ) {
       throw buyerFault(
@@ -2150,6 +2206,10 @@ export class BuyerPaymentManager {
       debugWarn(`[BuyerPayment] Refusing NeedAuth from ${sellerPeerId.slice(0, 12)}... for request ${payload.requestId} sent to another seller`);
       return false;
     }
+    if (reportsDelivery && this._untrackedPoolSellerClaim(sellerPeerId, payload.requestId, workerDelivery)) {
+      debugWarn(`[BuyerPayment] Refusing NeedAuth from colony-pool seller ${sellerPeerId.slice(0, 12)}... for request ${payload.requestId ?? '(none)'} it was never sent`);
+      return false;
+    }
     if (workerDelivery) {
       const pricing = requestBilling?.tokenPricing ?? this.getSessionPricing(sellerPeerId, buyerService);
       const problem = workerDeliveryProblem(workerDelivery, payload, pricing, Boolean(requestBilling?.unitModel));
@@ -2322,6 +2382,17 @@ export class BuyerPaymentManager {
     const ceiling = this._getCeiling(sellerPeerId);
     let needsTopUp = this._needsCeilingAdvance(requiredCumulativeAmount, maxSignable, ceiling);
     if (maxSignable <= currentCumulative && !needsTopUp) {
+      // A colony-pool seller gets no new window from its own frames: its
+      // prepaid window is spent only by verified worker answers (which raise
+      // verifiedCost) or reopened by the buyer's next request (the 402 path).
+      // Otherwise repeated headroom prompts would each advance verifiedCost to
+      // what is already signed and buy another window with no answer behind it.
+      if (this._workerSellers.has(sellerPeerId)) {
+        debugWarn(
+          `[BuyerPayment] NeedAuth: colony-pool seller ${sellerPeerId.slice(0, 12)}... reached its overdraft window (${currentCumulative}) without a verified answer — not reopening`,
+        );
+        return false;
+      }
       const reopened = this._reopenOverdraftWindowIfCollapsed(
         sellerPeerId,
         currentCumulative,

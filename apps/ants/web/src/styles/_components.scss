@@ -526,6 +526,9 @@ select.field__input { cursor: pointer; -webkit-appearance: none; appearance: non
 .field-w-lg { width: 360px; max-width: 100%; }
 .hint { color: var(--pc-faint); font-size: 12px; line-height: 17px; }
 .hint a, .hint code { color: var(--pc-sub); }
+/* A calm warning: an amber dot before one line of text (and text links), no tinted box. */
+.notice-line { display: flex; align-items: baseline; gap: 8px; color: var(--pc-sub); font-size: 12px; line-height: 17px; }
+.notice-line::before { content: ''; flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--pc-amber); transform: translateY(-1px); }
 .error-text { color: var(--pc-danger); font-size: 12px; line-height: 17px; margin-top: 6px; white-space: pre-wrap; word-break: break-word; }
 .check { display: inline-flex; gap: 8px; align-items: center; cursor: pointer; font-size: 13px; }
 

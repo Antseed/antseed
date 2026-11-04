@@ -6,7 +6,8 @@
  * (it never answered, or dropped the connection mid-request) benches it:
  * no assignments for 30 s, doubling with each failure in a row up to
  * 10 minutes, and reset by its next success. The seller dashboard reads the
- * same state from the ledger (apps/cli seller-monitor/workers.ts).
+ * same state from the ledger (apps/cli seller-monitor/workers.ts) and scores
+ * it with the same `rankScores`.
  */
 
 /** Weight of the newest outcome in the smoothed reliability and first-byte time. */
@@ -23,6 +24,8 @@ export interface WorkerRank {
   failures: number;
   /** No assignments or dispatches before this time (ms); 0 when not benched. */
   benchedUntil: number;
+  /** Smoothed decode speed (output tokens per second); 0 until measured. */
+  tokensPerSecond: number;
 }
 
 export interface DispatchOutcome {
@@ -34,7 +37,7 @@ export interface DispatchOutcome {
 }
 
 export function newRank(): WorkerRank {
-  return { reliability: null, firstByteMs: null, failures: 0, benchedUntil: 0 };
+  return { reliability: null, firstByteMs: null, failures: 0, benchedUntil: 0, tokensPerSecond: 0 };
 }
 
 export function benchMs(failures: number): number {
@@ -43,6 +46,12 @@ export function benchMs(failures: number): number {
 
 const smooth = (previous: number | null, sample: number, start: number): number =>
   (previous ?? start) * (1 - RANK_ALPHA) + sample * RANK_ALPHA;
+
+/** Fold one finished request's decode speed into `rank` (mutates it). */
+export function recordSpeed(rank: WorkerRank, tokensPerSecond: number): WorkerRank {
+  rank.tokensPerSecond = rank.tokensPerSecond === 0 ? tokensPerSecond : smooth(rank.tokensPerSecond, tokensPerSecond, tokensPerSecond);
+  return rank;
+}
 
 /** Fold one dispatch's outcome into `rank` (mutates it). */
 export function recordOutcome(rank: WorkerRank, outcome: DispatchOutcome): WorkerRank {
@@ -60,32 +69,8 @@ export function recordOutcome(rank: WorkerRank, outcome: DispatchOutcome): Worke
   return rank;
 }
 
-export interface RankCandidate {
-  reliability: number | null;
-  tokensPerSecond: number;
-  /** Operator weight (COLONY_POOL_WORKER_PRIORITY), 1 by default. */
-  priority: number;
-  /** Share of the worker's capacity in use, 0 when idle. */
-  load: number;
-}
-
-/**
- * Scores for candidates serving one service: priority × reliability × speed
- * (decode speed relative to the fastest) ÷ (1 + load). A worker with no
- * record yet gets the others' average reliability and speed, so it is
- * neither punished nor favored.
- */
-export function rankScores(candidates: RankCandidate[]): number[] {
-  const known = candidates.filter((c) => c.reliability !== null).map((c) => c.reliability!);
-  const averageReliability = known.length > 0 ? known.reduce((a, b) => a + b, 0) / known.length : 1;
-  const fastest = Math.max(0, ...candidates.map((c) => c.tokensPerSecond));
-  const speeds = candidates.filter((c) => c.tokensPerSecond > 0).map((c) => c.tokensPerSecond / fastest);
-  const averageSpeed = speeds.length > 0 ? speeds.reduce((a, b) => a + b, 0) / speeds.length : 1;
-  return candidates.map((c) => {
-    const speed = c.tokensPerSecond > 0 ? c.tokensPerSecond / fastest : averageSpeed;
-    return (c.priority * (c.reliability ?? averageReliability) * speed) / (1 + c.load);
-  });
-}
+// The score itself is shared with the seller dashboard (@antseed/provider-core).
+export { rankScores, type RankCandidate } from '@antseed/provider-core';
 
 /** Parse COLONY_POOL_WORKER_PRIORITY: `0xaddress=weight,…`; weight 0 means never route to it. */
 export function parseWorkerPriority(raw: string | undefined): Map<string, number> {

@@ -3,14 +3,17 @@ import Foundation
 import Security
 
 /// Settings from the command line (or defaults), e.g.
-/// `AntseedMacWorker --pool ws://pool.example:8790 --rpc http://… --pool-contract 0x…`.
+/// `AntseedMacWorker --pool wss://pool.example:8790 --rpc https://… --channels 0x…`.
 struct WorkerConfig {
     var poolURL = URL(string: "ws://127.0.0.1:8790")!
     /// Service name the pool sells.
     var service = "qwen2.5-0.5b"
     /// Hugging Face MLX model that serves it.
     var modelId = "mlx-community/Qwen2.5-0.5B-Instruct-4bit"
-    var rpcURL: URL?
+    /// RPC that request channels (and the payout wallet) are read on: Base
+    /// mainnet's public RPC unless `--rpc` names another. Buyer requests are
+    /// refused without one, so the pool can't buy work with made-up channels.
+    var rpcURL: URL? = URL(string: GeneratedContractAddresses.defaultRPC)
     /// The AntseedChannels contract to check request channels on (default: the
     /// deployment for the RPC's chain; required on other chains, such as a local one).
     var channelsAddress: String?

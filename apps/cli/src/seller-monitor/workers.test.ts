@@ -119,4 +119,32 @@ describe('readSellerWorkers', () => {
     const stale = readSellerWorkers(dataDir, NOW, NOW - HOUR)
     assert.equal(stale.available && stale.workers.find((w) => w.address === '0xdd')!.benchedUntil, null)
   })
+
+  it('ranks by the decode speed the pool routes by, not the weekly average it shows', () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'workers-'))
+    const db = new Database(join(dataDir, COLONY_POOL_LEDGER_FILE))
+    db.exec(`
+      CREATE TABLE earnings (request_id TEXT PRIMARY KEY, worker TEXT NOT NULL, service TEXT, gross_usdc INTEGER NOT NULL, worker_usdc INTEGER NOT NULL,
+        input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL, stream_ms INTEGER, created_at INTEGER NOT NULL);
+      CREATE TABLE connections (id INTEGER PRIMARY KEY AUTOINCREMENT, worker TEXT NOT NULL, agent TEXT, connected_at INTEGER NOT NULL, disconnected_at INTEGER);
+      CREATE TABLE worker_rank (worker TEXT PRIMARY KEY, reliability REAL, first_byte_ms REAL, failures INTEGER NOT NULL, benched_until INTEGER NOT NULL,
+        priority REAL NOT NULL, updated_at INTEGER NOT NULL, tokens_per_second REAL NOT NULL DEFAULT 0);
+    `)
+    const connect = db.prepare('INSERT INTO connections (worker, agent, connected_at, disconnected_at) VALUES (?, ?, ?, ?)')
+    connect.run('0xaa', 'antseed-mac/0.1.0', NOW - HOUR, null)
+    connect.run('0xbb', 'antseed-mac/0.1.0', NOW - HOUR, null)
+    const earn = db.prepare('INSERT INTO earnings VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    // 0xaa ran at 100 tok/s, then 1 tok/s: 50.5 on average, 80.2 as the pool smooths it. 0xbb runs at 60.
+    earn.run('a1', '0xaa', 'qwen', 1000, 500, 10, 100, 1000, NOW - 2 * HOUR)
+    earn.run('a2', '0xaa', 'qwen', 1000, 500, 10, 1, 1000, NOW - HOUR)
+    earn.run('b1', '0xbb', 'qwen', 1000, 500, 10, 60, 1000, NOW - HOUR)
+    const rank = db.prepare('INSERT INTO worker_rank VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+    rank.run('0xaa', 1, 100, 0, 0, 1, NOW, 80.2)
+    rank.run('0xbb', 1, 100, 0, 0, 1, NOW, 60)
+    db.close()
+    const result = readSellerWorkers(dataDir, NOW)
+    const workers = result.available ? result.workers : []
+    assert.deepEqual(workers.map((w) => [w.address, w.rank]), [['0xaa', 1], ['0xbb', 2]])
+    assert.equal(workers[0]!.tokensPerSecond, 50.5)
+  })
 })

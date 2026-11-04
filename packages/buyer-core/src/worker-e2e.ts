@@ -76,9 +76,13 @@ function providersOffering(peer: BuyerPeerView, service: string): string[] {
     || peer.providerPricing?.[provider]?.services?.[service] !== undefined);
 }
 
+/** True when the seller announces any colony-pool provider: its payment claims must name requests the buyer sent it. */
+export function peerAnnouncesWorkerE2E(peer: BuyerPeerView): boolean {
+  return (peer.capabilities ?? []).includes(WORKER_E2E_CAPABILITY);
+}
+
 function workerProviders(peer: BuyerPeerView): (provider: string) => boolean {
   const capabilities = new Set(peer.capabilities ?? []);
-  if (!capabilities.has(WORKER_E2E_CAPABILITY)) return () => false;
   return (provider) => capabilities.has(workerE2EProviderCapability(provider));
 }
 
@@ -87,12 +91,16 @@ function workerProviders(peer: BuyerPeerView): (provider: string) => boolean {
  * worker. With the provider the request is routed to (`x-antseed-provider`),
  * only that provider decides, so a service an ordinary provider also offers
  * stays plaintext when the request goes to the ordinary one. Without one, any
- * colony-pool provider offering the service makes it a pool request.
+ * colony-pool provider offering the service makes it a pool request, and so
+ * does a service no provider announces: the seller (which trims the name)
+ * could still route it to its pool, so it is never sent in the clear.
  */
 export function peerServiceUsesWorkerE2E(peer: BuyerPeerView, service: string, provider?: string | null): boolean {
+  if (!peerAnnouncesWorkerE2E(peer)) return false;
   const isWorkerProvider = workerProviders(peer);
   if (provider) return isWorkerProvider(provider);
-  return providersOffering(peer, service).some(isWorkerProvider);
+  const offering = providersOffering(peer, service.trim());
+  return offering.length === 0 || offering.some(isWorkerProvider);
 }
 
 export function isWorkerUnavailable(response: SerializedHttpResponse): boolean {

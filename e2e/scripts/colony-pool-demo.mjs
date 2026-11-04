@@ -489,6 +489,11 @@ async function main() {
       continue;
     }
     if (w.external) {
+      // Ranked routing may send every request to another worker: then there is nothing to claim.
+      if (creditOf(w.owner.address) === 0n && (await pool.usdcBalance(w.owner.address)) === 0n) {
+        say(`${w.name.padEnd(9)} served no paid requests this run (the pool routed them to higher-ranked workers): nothing to claim`);
+        continue;
+      }
       say(`${w.name.padEnd(9)} owner claims in the ANTS dashboard (Rewards → Claim to wallet)…`);
       const after = await waitFor(async () => {
         const [owed, balance] = await Promise.all([pool.usdcBalance(w.owner.address), usdcToken.balanceOf(w.owner.address)]);
