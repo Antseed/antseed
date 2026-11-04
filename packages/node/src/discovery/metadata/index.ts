@@ -12,16 +12,19 @@ import type { PeerMetadata } from "../peer-metadata.js";
 import { LEGACY_METADATA_VERSION, METADATA_VERSION } from "../peer-metadata.js";
 import { hexToBytes } from "../../utils/hex.js";
 import type { MetadataVersionCodec } from "./define-version.js";
+import type { MetadataVocabulary } from "./vocabulary.js";
 import { metadataV10 } from "./versions/v10.js";
 import { metadataV11 } from "./versions/v11.js";
 import { metadataV12 } from "./versions/v12.js";
 import { metadataV13 } from "./versions/v13.js";
 import { metadataV14 } from "./versions/v14.js";
+import { metadataV15 } from "./versions/v15.js";
 
 export type { MetadataVersionCodec } from "./define-version.js";
+export type { MetadataVocabulary } from "./vocabulary.js";
 
 const CODECS = new Map<number, MetadataVersionCodec>(
-  [metadataV10, metadataV11, metadataV12, metadataV13, metadataV14].map((codec) => [codec.version, codec]),
+  [metadataV10, metadataV11, metadataV12, metadataV13, metadataV14, metadataV15].map((codec) => [codec.version, codec]),
 );
 
 if (!CODECS.has(METADATA_VERSION)) {
@@ -32,6 +35,15 @@ export function getMetadataCodec(version: number): MetadataVersionCodec {
   const codec = CODECS.get(version);
   if (!codec) throw new Error(`Unsupported metadata version ${version}`);
   return codec;
+}
+
+/**
+ * The oldest version whose vocabulary has `name` among its protocols, billing
+ * units or capability options, or undefined when no version knows it.
+ */
+export function metadataVersionIntroducing(kind: keyof MetadataVocabulary, name: string): number | undefined {
+  const versions = [...CODECS.values()].sort((a, b) => a.version - b.version);
+  return versions.find((codec) => (codec.vocabulary[kind] as ReadonlySet<string>).has(name))?.version;
 }
 
 /** Versions a seller signs on every refresh, oldest first. */

@@ -17,6 +17,8 @@ import {
   makeChannelsDomain,
   encodeMetadata,
   ZERO_METADATA,
+  zeroMetadataForHash,
+  ZERO_METADATA_HASHES,
 } from './evm/signatures.js';
 import { debugLog, debugWarn } from '../utils/debug.js';
 import { peerIdToAddress } from '../types/peer.js';
@@ -335,6 +337,7 @@ export class SellerPaymentManager {
    * Must be called after construction (async, cannot run in constructor).
    */
   async validateHydratedChannels(): Promise<void> {
+    await this._restoreSignedZeroMetadata();
     await this._checkOneOffChannels();
     const activeChannels = this._channelStore.getActiveChannels(CHANNEL_ROLE.SELLER);
     if (activeChannels.length === 0) return;
@@ -1411,10 +1414,20 @@ export class SellerPaymentManager {
     }
   }
 
+  /**
+   * Whether the payload's metadata hashes to its metadataHash. A payload sent
+   * without metadata bytes matches when its hash is the zero metadata's in an
+   * accepted version (v5 or v4); those bytes are filled in, so the stored auth
+   * settles with exactly what the buyer signed.
+   */
   private _metadataMatchesHash(payload: SpendingAuthPayload): boolean {
     try {
-      const metadata = payload.metadata || encodeMetadata(ZERO_METADATA);
-      return keccak256(metadata).toLowerCase() === payload.metadataHash.toLowerCase();
+      if (!payload.metadata) {
+        const zero = zeroMetadataForHash(payload.metadataHash);
+        if (zero) payload.metadata = zero;
+        return zero !== undefined;
+      }
+      return keccak256(payload.metadata).toLowerCase() === payload.metadataHash.toLowerCase();
     } catch (err) {
       debugWarn(`[SellerPayment] Invalid metadata payload: ${err instanceof Error ? err.message : err}`);
       return false;
@@ -1820,6 +1833,49 @@ export class SellerPaymentManager {
 
   // ── Settlement ──────────────────────────────────────────────
 
+  /**
+   * The metadata a stored channel's latest SpendingAuth was signed over. Auths
+   * accepted without metadata bytes before the seller filled them in were stored
+   * without them; their signature names the zero metadata of the buyer's version
+   * (v5 or v4), found as the hash the signature recovers to the buyer with.
+   */
+  private async _storedAuthMetadata(channel: StoredChannel): Promise<string> {
+    if (channel.latestMetadata) return channel.latestMetadata;
+    const sig = channel.latestSpendingAuthSig;
+    if (sig) {
+      const { channels: channelsAddr } = await this._resolvedAddresses!;
+      const domain = makeChannelsDomain(this._config.chainId, channelsAddr);
+      for (const metadataHash of ZERO_METADATA_HASHES) {
+        try {
+          const signer = verifyTypedData(domain, SPENDING_AUTH_TYPES, {
+            channelId: channel.sessionId,
+            cumulativeAmount: BigInt(channel.authMax || '0'),
+            metadataHash,
+          }, sig);
+          if (signer.toLowerCase() === channel.buyerEvmAddr.toLowerCase()) return zeroMetadataForHash(metadataHash)!;
+        } catch {
+          // Not a SpendingAuth signature: nothing to restore.
+        }
+      }
+    }
+    return encodeMetadata(ZERO_METADATA);
+  }
+
+  /** Fills in, once at startup, the metadata of hydrated auths stored without it. */
+  private async _restoreSignedZeroMetadata(): Promise<void> {
+    const channels = [
+      ...this._channelStore.getActiveChannels(CHANNEL_ROLE.SELLER),
+      ...this._channelStore.getActiveChannels(CHANNEL_ROLE.SELLER, CHANNEL_KIND.ONE_OFF),
+    ];
+    for (const channel of channels) {
+      const auth = this._latestAuth.get(channel.sessionId);
+      if (!auth || auth.metadata || !channel.latestSpendingAuthSig) continue;
+      const metadata = await this._storedAuthMetadata(channel);
+      auth.metadata = metadata;
+      this._channelStore.upsertChannel({ ...channel, latestMetadata: metadata, updatedAt: Date.now() });
+    }
+  }
+
   /** Get the latest SpendingAuth params for a channel, or zero-auth if none exists. */
   private _getSettleParams(channelId: string): { amount: bigint; metadata: string; sig: string } {
     const latestAuth = this._latestAuth.get(channelId);
@@ -2129,7 +2185,7 @@ export class SellerPaymentManager {
           && authAmount <= state.channel.deposit;
         // Closing at the settled amount needs no signature; the contract skips verification.
         const { amount, metadata, sig, useAuth } = authSig && authUsable
-          ? { amount: authAmount, metadata: channel.latestMetadata || encodeMetadata(ZERO_METADATA), sig: authSig, useAuth: true }
+          ? { amount: authAmount, metadata: await this._storedAuthMetadata(channel), sig: authSig, useAuth: true }
           : { amount: state.channel.settled, metadata: '0x', sig: '0x', useAuth: false };
 
         debugLog(

@@ -1,4 +1,5 @@
 export { createMp4Inspector, type Mp4Facts } from './mp4.js';
+export { isSpeechAudio } from './speech-audio.js';
 export { detectNativeVideoProtocol, nativeVideoRoute, nativeVideoAcceptance, nativeVideoDelivered, nativeVideoFacts, videoSourceLengthProblem, VIDEO_MIN_DURATION_RATIO, requestService, type NativeVideoRoute, type NativeVideoFacts } from './native-video.js';
 
 export {
@@ -39,6 +40,9 @@ export {
   extractRequestBodyFields,
   parseJsonObject,
   parseMultipartFormFields,
+  extractSpeechRequestFacts,
+  speechAudioDelivered,
+  type SpeechRequestFacts,
   toNonNegativeInt,
   type StreamingResponseAdapter,
 } from './utils.js';
@@ -50,10 +54,13 @@ export {
   type ServiceApiProtocol,
   type NativeVideoProtocol,
   type RoutingProtocol,
+  type AudioSpeechProtocol,
   WELL_KNOWN_SERVICE_API_PROTOCOLS,
   NATIVE_VIDEO_PROTOCOLS,
   ROUTING_PROTOCOLS,
+  AUDIO_SPEECH_PROTOCOLS,
   isKnownServiceApiProtocol,
   isNativeVideoProtocol,
   isRoutingProtocol,
+  isAudioSpeechProtocol,
 } from './types.js';

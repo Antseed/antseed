@@ -94,22 +94,25 @@ costUSD = (freshInputTokens × inputUsdPerMillion
          + outputTokens × outputUsdPerMillion) / 1,000,000
 ```
 
-`cachedInputUsdPerMillion` defaults to `inputUsdPerMillion` when the seller does not set it. Image and video services add a per-unit charge (`output_images`, `video_generations`, or `video_seconds`) from the billing model in their metadata; see [Media billing](/docs/provide/media). Each paid video gets its own one-off channel bound to that request.
+`cachedInputUsdPerMillion` defaults to `inputUsdPerMillion` when the seller does not set it. Image, video and speech services add a per-unit charge (`output_images`, `video_generations`, `video_seconds`, or `input_characters`) from the billing model in their metadata; see [Media billing](/docs/provide/media). Each paid video gets its own one-off channel bound to that request.
 
 ### SpendingAuth metadata
 
-The signed metadata is `abi.encode` of these fields (metadata version 4):
+The signed metadata is `abi.encode` of these fields (metadata version 5):
 
 | Field | Meaning |
 |---|---|
-| `version` | Metadata format version (4) |
+| `version` | Metadata format version (5) |
 | `cumulativeInputTokens` | Total input tokens on the channel |
 | `cumulativeOutputTokens` | Total output tokens; each delivered image also adds a flat 1,290-token equivalent |
 | `cumulativeRequestCount` | Requests served |
 | `cumulativeOutputImages` | Images delivered |
 | `cumulativeVideoGenerations` | Videos delivered |
 | `cumulativeVideoSeconds` | Video seconds delivered |
-| `services[]` | Per service (keyed by `keccak256` of the service name): amount, input, cached input, output tokens, requests, images, video generations and seconds |
+| `cumulativeInputCharacters` | Characters of speech `input` whose audio was delivered |
+| `services[]` | Per service (keyed by `keccak256` of the service name): amount, input, cached input, output tokens, requests, images, video generations and seconds, and speech characters |
+
+Each version only appends fields, so the leading words never move. Version 4 is the same without `cumulativeInputCharacters` (top level and per service); sellers accept SpendingAuths from buyers that still sign version 4, and `AntseedStats` reads only the first four words, which every version keeps.
 
 When a channel settles, the metadata is forwarded to the `AntseedStats` contract, which aggregates token and request counters per seller (see [Reputation](/docs/reputation#on-chain-stats)).
 

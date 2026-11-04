@@ -114,6 +114,12 @@ async function fakeBuyer(options: { costUsdc?: number; spendFeed?: boolean; repo
         res.end(Buffer.concat([Buffer.from([0, 0, 0, 0x18]), Buffer.from('ftypisom'), randomBytes(4096)]))
         return
       }
+      if (req.url === '/v1/audio/speech') {
+        // Speech: the audio file comes back as it is, with no usage in it.
+        res.writeHead(200, { 'content-type': 'audio/mpeg', 'x-antseed-request-id': requestId, 'x-antseed-peer-id': 'seller' })
+        res.end(Buffer.from('ID3-speech-audio'))
+        return
+      }
       res.writeHead(200, { 'content-type': 'application/json', 'x-antseed-request-id': requestId })
       res.end(JSON.stringify(req.url?.endsWith('/video/queue') ? { queue_id: 'job-1' } : { ok: true }))
     })
@@ -424,6 +430,26 @@ test('gateway returns its journal tag and still forwards the buyer request id', 
     assert.equal(response.headers['x-antseed-request-id'], 'req-1')
     assert.equal(response.headers['x-antseed-gateway-tag'], buyer.captured[0]?.tag)
     assert.match(String(response.headers['x-antseed-gateway-tag']), /^gw_/)
+  } finally {
+    await gateway.stop()
+    await buyer.close()
+    cleanup()
+  }
+})
+
+test('gateway passes speech requests to the buyer, returns the audio as it is and books the spend', async () => {
+  const { store, cleanup } = tempDataDir()
+  const buyer = await fakeBuyer({ costUsdc: 62_500 })
+  const { key, secret } = store.createKey({ label: 'Speech', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
+  const gateway = await startGateway(store, buyer.port)
+  try {
+    const speech = await request(gateway.port, '/v1/audio/speech', { method: 'POST', key: secret, body: '{"model":"tts-kokoro","input":"Hello","voice":"af_sky"}' })
+    assert.equal(speech.status, 200)
+    assert.equal(speech.headers['content-type'], 'audio/mpeg')
+    assert.equal(speech.body, 'ID3-speech-audio')
+    assert.deepEqual(buyer.captured.map(({ url }) => url), ['/v1/audio/speech'])
+    await gateway.feed.pollOnce()
+    assert.equal(store.periodSpend(key.id).total, 62_500)
   } finally {
     await gateway.stop()
     await buyer.close()

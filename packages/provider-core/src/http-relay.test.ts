@@ -129,6 +129,54 @@ describe('HttpRelay', () => {
     expect(upstreamBody).toEqual({ model: 'venice-sd35', prompt: 'A seedling' });
   });
 
+  it('does not inject chat-only fields into speech requests', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(new Uint8Array([1, 2]), { status: 200, headers: { 'content-type': 'audio/mpeg' } }));
+
+    const responses: SerializedHttpResponse[] = [];
+    const relay = new HttpRelay(
+      makeConfig({
+        allowedServices: ['tts-kokoro'],
+        injectJsonFields: { venice_parameters: { include_venice_system_prompt: false } },
+      }),
+      { onResponse: (response) => responses.push(response) },
+    );
+
+    await relay.handleRequest(makeRequest({
+      path: '/v1/audio/speech',
+      body: new TextEncoder().encode(JSON.stringify({ model: 'tts-kokoro', input: 'Hi', voice: 'af_sky' })),
+    }));
+
+    const [, options] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(new TextDecoder().decode(options.body as Uint8Array))).toEqual({ model: 'tts-kokoro', input: 'Hi', voice: 'af_sky' });
+    expect(Array.from(responses[0]!.body)).toEqual([1, 2]);
+    expect(responses[0]!.headers['content-type']).toBe('audio/mpeg');
+  });
+
+  it('rewrites a multipart modelId field in place instead of adding a model field', async () => {
+    fetchMock.mockResolvedValueOnce(new Response('{}', { status: 200 }));
+    const relay = new HttpRelay(
+      makeConfig({ allowedServices: ['edit-model'] }),
+      { onResponse: () => undefined },
+    );
+    const form = new FormData();
+    form.append('prompt', 'merge them');
+    form.append('modelId', 'edit-model');
+    form.append('images', new Blob([new Uint8Array([1])], { type: 'image/png' }), 'a.png');
+    const webRequest = new Request('https://buyer.invalid/v1/image/multi-edit', { method: 'POST', body: form });
+
+    await relay.handleRequest(makeRequest({
+      path: '/v1/image/multi-edit',
+      headers: { 'content-type': webRequest.headers.get('content-type') ?? '', 'x-antseed-service': 'edit-model' },
+      body: new Uint8Array(await webRequest.arrayBuffer()),
+    }));
+
+    const [, options] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const sentHeaders = options.headers as Record<string, string>;
+    const forwarded = await new Response(options.body, { headers: { 'content-type': sentHeaders['content-type'] ?? '' } }).formData();
+    expect(forwarded.get('modelId')).toBe('edit-model');
+    expect(forwarded.has('model')).toBe(false);
+  });
+
   it('rewrites announced service names to upstream service IDs before relay', async () => {
     fetchMock.mockResolvedValueOnce(new Response('{}', { status: 200 }));
 

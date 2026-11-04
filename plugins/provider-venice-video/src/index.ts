@@ -65,6 +65,8 @@ function saveDownloadUrls(dataDir: string | undefined, urls: DownloadUrls): void
 }
 
 const FRAME_FIELDS = { first_frame: 'image_url', last_frame: 'end_image_url', reference_image: 'reference_image_urls' } as const;
+/** Venice's queue field for an audio input (video input kind `audio`). */
+const AUDIO_INPUT_FIELD = 'audio_url';
 
 /**
  * Largest create body Venice accepts. Measured on 2026-10-23: 32.5 MB passed
@@ -91,9 +93,11 @@ export function isVeniceEditModel(model: unknown): boolean {
  * are kept.
  */
 export function veniceEditCapabilities(capabilities: ServiceCapabilities, model: unknown, references: VeniceReferenceImages | null): ServiceCapabilities {
-  const kinds: VideoInputKind[] = ['video', 'reference_image'];
-  const required: VideoInputKind[] = ['video', ...(references === 'required' ? ['reference_image' as const] : [])];
   const configured = capabilities.video ?? {};
+  // Audio follows the seller's inputs when it announced them, else Venice's `audio_input`.
+  const audio = !configured.inputs && veniceConstraints(model)?.audio_input === true;
+  const kinds: VideoInputKind[] = ['video', 'reference_image', ...(audio ? ['audio' as const] : [])];
+  const required: VideoInputKind[] = ['video', ...(references === 'required' ? ['reference_image' as const] : [])];
   // Case-sensitive, as Venice lists them (`768P` for Recast, `720p` for Wan).
   const listed = veniceConstraints(model)?.resolutions;
   const resolutions = Array.isArray(listed) && listed.length > 0 && listed.length <= 16
@@ -148,7 +152,9 @@ export async function veniceReferenceImages(baseUrl: string, apiKey: string, mod
  * image-to-video model takes `image_url`, plus `end_image_url` when
  * `endFrame` is true (Venice's model list does not say, see veniceAcceptsEndFrame).
  * A video-to-video model takes `video_url` and `image_url`, plus
- * `reference_image_urls` when `referenceImages` is true.
+ * `reference_image_urls` when `referenceImages` is true. Audio input
+ * (`audio_url`, e.g. narration to lip-sync to) follows `audio` in the
+ * announced inputs, or Venice's `audio_input` when inputs were not announced.
  */
 export function veniceInputParameters(model: unknown, inputs?: readonly string[], endFrame = false, referenceImages = inputs?.includes('reference_image') === true): string[] | null {
   const constraints = veniceConstraints(model);
@@ -163,10 +169,12 @@ export function veniceInputParameters(model: unknown, inputs?: readonly string[]
       : constraints.model_type === 'image-to-video'
         ? [FRAME_FIELDS.first_frame, ...(endFrame ? [FRAME_FIELDS.last_frame] : [])]
         : [];
+  const audioInput = inputs ? inputs.includes('audio') : constraints.audio_input === true;
   const parameters = [
     'prompt',
     'duration',
     ...(edit ? ['video_url'] : []),
+    ...(audioInput ? [AUDIO_INPUT_FIELD] : []),
     ...(Array.isArray(constraints.resolutions) && constraints.resolutions.length > 0 ? ['resolution'] : []),
     ...(Array.isArray(constraints.aspect_ratios) && constraints.aspect_ratios.length > 0 ? ['aspect_ratio'] : []),
     ...(constraints.audio_configurable === true ? ['audio'] : []),

@@ -3,6 +3,7 @@ import {
   isServiceHealthFailing,
   providerServiceHealthFor,
   selectLowestPricedNetworkServiceOffer,
+  speechVoiceProblem,
   type NetworkServiceOffer,
   type PeerInfo,
   type SerializedHttpRequest,
@@ -283,6 +284,7 @@ function selectAdvertisedServiceByProtocol(
   requestProtocol: ServiceApiProtocol,
   requestedService: string,
   includeFailing: boolean,
+  voice: unknown,
 ): PeerProtocolRoutePlan | null {
   const compatible: Array<{ offer: NetworkServiceOffer; plan: PeerProtocolRoutePlan }> = []
   for (const provider of candidates) {
@@ -295,6 +297,7 @@ function selectAdvertisedServiceByProtocol(
         || protocol === 'openai-chat-completions'
         || protocol === 'openai-responses'
         || protocol === 'openai-images'
+        || protocol === 'openai-audio-speech'
         || protocol === 'typesafe-systemone'
         || isNativeVideoProtocol(protocol)
       ))
@@ -308,8 +311,15 @@ function selectAdvertisedServiceByProtocol(
       plan: { provider, selection, serviceId: offer.serviceId },
     })
   }
-  const selectedOffer = selectLowestPricedNetworkServiceOffer(compatible.map((candidate) => candidate.offer))
-  return compatible.find((candidate) => candidate.offer === selectedOffer)?.plan ?? null
+  // A speech request goes to the cheapest provider that offers its voice. When
+  // none does, the cheapest provider is still planned, so routing can tell the
+  // caller which voices are on offer instead of claiming the model is missing.
+  const voiced = voice === undefined
+    ? compatible
+    : compatible.filter((candidate) => !speechVoiceProblem(candidate.offer.capabilities?.speech, voice))
+  const pool = voiced.length > 0 ? voiced : compatible
+  const selectedOffer = selectLowestPricedNetworkServiceOffer(pool.map((candidate) => candidate.offer))
+  return pool.find((candidate) => candidate.offer === selectedOffer)?.plan ?? null
 }
 
 export function resolvePeerRoutePlan(
@@ -318,6 +328,8 @@ export function resolvePeerRoutePlan(
   requestedService: string | null,
   explicitProvider: string | null,
   serviceFilterMode: ServiceFilterMode = 'strict',
+  /** A speech request's `voice`: providers that list it are preferred. */
+  voice?: unknown,
 ): PeerProtocolRoutePlan | null {
   const providers = peer.providers
     .map((provider) => provider.trim().toLowerCase())
@@ -355,7 +367,7 @@ export function resolvePeerRoutePlan(
 
   if (requestedService?.trim()) {
     for (const includeFailing of healthPasses) {
-      const exactPlan = selectAdvertisedServiceByProtocol(peer, candidates, requestProtocol, requestedService, includeFailing)
+      const exactPlan = selectAdvertisedServiceByProtocol(peer, candidates, requestProtocol, requestedService, includeFailing, voice)
       if (exactPlan) return exactPlan
     }
     if (isNativeVideoProtocol(requestProtocol)) return null
@@ -380,6 +392,8 @@ export function selectCandidatePeersForRouting(
   requestedService: string | null,
   explicitProvider: string | null,
   serviceFilterMode: ServiceFilterMode = 'strict',
+  /** A speech request's `voice`; see resolvePeerRoutePlan. */
+  voice?: unknown,
 ): CandidatePeerRouteSelection {
   const routePlanByPeerId = new Map<string, PeerProtocolRoutePlan>()
   if (!requestProtocol && !explicitProvider) {
@@ -390,7 +404,7 @@ export function selectCandidatePeersForRouting(
   }
 
   const candidatePeers = peers.filter((peer) => {
-    const plan = resolvePeerRoutePlan(peer, requestProtocol, requestedService, explicitProvider, serviceFilterMode)
+    const plan = resolvePeerRoutePlan(peer, requestProtocol, requestedService, explicitProvider, serviceFilterMode, voice)
     if (!plan) return false
     routePlanByPeerId.set(peer.peerId, plan)
     return true
@@ -407,6 +421,7 @@ export function selectCandidatePeersForRouting(
 // extras, not the fields every request on that protocol carries.
 const PROTOCOL_BASELINE_FIELDS: Partial<Record<ServiceApiProtocol, readonly string[]>> = {
   'openai-images': ['model', 'prompt', 'image', 'mask', 'n', 'stream'],
+  'openai-audio-speech': ['model', 'input', 'voice'],
   'openai-chat-completions': ['model', 'messages', 'stream'],
   'openai-responses': ['model', 'input', 'stream'],
   'anthropic-messages': ['model', 'messages', 'max_tokens', 'stream'],
