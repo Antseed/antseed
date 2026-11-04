@@ -62,6 +62,10 @@ After "go", queue the video once, save the job file, wait, and save the MP4 ([re
 
 For a video longer than the model's longest clip, plan it as several clips in Stage 3 (price each one), then make them one at a time, each starting from the previous clip's last frame, and join them ([references/requests.md](references/requests.md#multi-clip-videos)).
 
+## Lip-sync to audio
+
+When the user wants a character to speak a recorded or generated voice track (make it with text to speech, `POST /v1/audio/speech`), use a model whose seller lists `audio_url` in `fields` (the price step with `audio_in=yes` keeps only those). Make the first frame or reference images as usual, then send the audio as `audio_url` ([references/requests.md](references/requests.md#lip-sync-audio)). The video is priced as usual; the audio adds nothing. Keep the audio within the model's limit (on Venice WAV or MP3, at most 30 s and 15 MB) and pick a duration at least as long as the audio.
+
 ## Edit a video
 
 When the user brings a video and wants it changed (put them or another character in it, restyle it, change one thing), use a video-to-video model instead of the three stages above. The source video keeps its motion, timing, and camera; the model changes only what is asked. The steps in [references/requests.md](references/requests.md#edit-a-video) do the work.
