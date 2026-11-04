@@ -185,14 +185,14 @@ echo "references: $(jq length "$refs_json")"
 
 ## Lip-sync audio
 
-To make a character speak an audio track, write it as a data URL to `audio_url_file` before [Create once](#create-once); the create block sends it as `audio_url`. Price with `audio_in=yes` so only sellers that take it are listed. WAV or MP3 only:
+To make a character speak an audio track, set `voice_file` to its path (not `audio`, which is the sound on/off switch) and write it as a data URL to `audio_url_file` before [Create once](#create-once); the create block sends it as `audio_url`. Price with `audio_in=yes` so only sellers that take it are listed. WAV or MP3 only:
 
 ```bash
 audio_url_file="$(mktemp)"
-case "$(file -b --mime-type "$audio")" in
+case "$(file -b --mime-type "$voice_file")" in
   audio/mpeg) mime=audio/mpeg ;; audio/x-wav|audio/wav|audio/vnd.wave) mime=audio/wav ;;
-  *) echo "audio must be MP3 or WAV: $audio" >&2; false ;;
-esac && { printf 'data:%s;base64,' "$mime"; base64 < "$audio" | tr -d '\n'; } > "$audio_url_file"
+  *) echo "audio must be MP3 or WAV: $voice_file" >&2; false ;;
+esac && { printf 'data:%s;base64,' "$mime"; base64 < "$voice_file" | tr -d '\n'; } > "$audio_url_file"
 ```
 
 ## Create once
