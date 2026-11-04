@@ -1750,6 +1750,12 @@ export class BuyerPaymentNegotiator {
       // anything new: resend the highest authorization unchanged. An
       // authorization above the on-chain deposit can never be accepted, so
       // such a channel goes straight to a close capped at the deposit.
+      if (this._bpm.getSellerAcceptedCumulative(peer.peerId) >= targetCumulative) {
+        // The seller has since reported accepting this target: the 402 was
+        // waiting behind other work while the channel moved on. Retry, even
+        // with more signed than the deposit (a top-up on its way).
+        return true;
+      }
       const resendable = deposit <= 0n || signedCumulative <= deposit;
       const resent = this._resentForTarget.get(peer.peerId);
       if (resendable && resent?.target === targetCumulative && Date.now() - resent.at < RESEND_SETTLE_MS) {

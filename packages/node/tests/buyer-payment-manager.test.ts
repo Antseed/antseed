@@ -740,6 +740,22 @@ describe('BuyerPaymentManager', () => {
     expect(sent.cumulativeAmount).toBe('50000');
   });
 
+  it('remembers the highest amount the seller reported accepting on the active channel, until it retires', async () => {
+    const sellerPeerId = fakePeerId('seller-accepted');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    const needAuth = (required: string, accepted: string) => manager.handleNeedAuth(sellerPeerId, {
+      channelId, requiredCumulativeAmount: required, currentAcceptedCumulative: accepted, deposit: '1000000', lastRequestCost: '10000',
+    }, mux);
+
+    await needAuth('50000', '40000');
+    // A NeedAuth that was overtaken on the wire reports less: the higher one stands.
+    await needAuth('20000', '10000');
+    const seen = manager.getSellerAcceptedCumulative(sellerPeerId);
+    manager.retireSession(sellerPeerId, CHANNEL_STATUS.SETTLED);
+
+    expect({ seen, afterRetire: manager.getSellerAcceptedCumulative(sellerPeerId) }).toEqual({ seen: 40_000n, afterRetire: 0n });
+  });
+
   it('handleNeedAuth signs concurrent NeedAuths one at a time: no lost cost, no lower cumulative after a higher one', async () => {
     const sellerPeerId = fakePeerId('seller-needauth-race');
     const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
