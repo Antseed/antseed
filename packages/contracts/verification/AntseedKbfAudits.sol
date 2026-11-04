@@ -125,7 +125,7 @@ contract AntseedKbfAudits is IAntseedKbfAudits, Ownable2Step {
         if (auditor == address(0)) revert InvalidAddress();
         if (approvedAuditors[auditor] && !approved) auditorRevocations += 1;
         approvedAuditors[auditor] = approved;
-        emit AuditorSet(auditor, approved);
+        emit AuditorSet(auditor, approved, auditorRevocations);
     }
 
     /// @inheritdoc IAntseedKbfAudits

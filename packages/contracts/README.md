@@ -750,7 +750,7 @@ are no longer left unminted: they go to the reserve and the remainder route.
   approved sources (`setSource`, at most `MAX_SOURCES` = 32 ever listed) can `record` and
   `credit`; the latest record from any source wins, and how a verdict is reached is the source's
   business. The owner can `clearServiceStatuses`, which bumps `serviceClears` so sources drop
-  reports made before the clear. `ServiceStatusChanged` gains `source`; the evidence stays in the source's own events (KBF: `ModelAudited`).
+  reports made before the clear. `ServiceStatusChanged` gains `source` and `epoch`; `ServiceCleared(agentId, serviceHash, epoch, clears)` reports every owner clear, also of a service with no live verdict; the evidence stays in the source's own events (KBF: `ModelAudited`).
   As the minter controller of the verification bucket it splits each epoch's budget between
   sources by `sourceShareBps` (sum at most 10,000; a change applies from the next epoch, so a
   running or finished epoch's split never moves; `sourceShareBpsAt(source, epoch)`). Per source:
@@ -766,7 +766,7 @@ are no longer left unminted: they go to the reserve and the remainder route.
   a later void frees more, and always leaves enough of the bucket on the gate for every unpaid claim
   (`unclaimableRemainder`). `voidCredits(source, epoch, auditor)` removes unclaimed farmed credits.
 - **`AntseedKbfAudits`** (KBF source). `submitModelAudit` and `setAuditor` have the same signatures
-  and rules as before (`approvedAuditors`, `AuditorSet` on every call, `auditorRevocations`); it
+  and rules as before (`approvedAuditors`, `AuditorSet` on every call, carrying the resulting `auditorRevocations`); it
   holds `sellerPools` for the staking check. Its report round is
   `results.diffChanges + results.serviceClears + auditorRevocations`: the results layer counts every
   move into or out of DIFF by any source, so support given before another source's DIFF can't clear

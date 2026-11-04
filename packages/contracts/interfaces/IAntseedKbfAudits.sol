@@ -45,7 +45,9 @@ interface IAntseedKbfAudits {
         string url;
     }
 
-    event AuditorSet(address indexed auditor, bool approved);
+    /// @param revocations The `auditorRevocations` value after this call, so an indexer can tell
+    ///        whether a revocation started a new report round without replaying earlier events.
+    event AuditorSet(address indexed auditor, bool approved, uint256 revocations);
     event AuditorProfileSet(address indexed auditor, string name, string iconUri, string url);
 
     function results() external view returns (IAntseedVerificationResults);

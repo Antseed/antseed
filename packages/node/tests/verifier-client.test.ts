@@ -99,13 +99,16 @@ describe('VerifierClient audit ABI', () => {
       'modelHash', 'verdict', 'updatedAt', 'epoch', 'source',
     ]);
     expect(results.getEvent('ServiceStatusChanged')?.inputs.map((input) => input.name)).toEqual([
-      'agentId', 'serviceHash', 'modelHash', 'previous', 'current', 'source',
+      'agentId', 'serviceHash', 'modelHash', 'previous', 'current', 'source', 'epoch',
+    ]);
+    expect(results.getEvent('ServiceCleared')?.inputs.map((input) => input.name)).toEqual([
+      'agentId', 'serviceHash', 'epoch', 'clears',
     ]);
     expect(results.getFunction('claimRewards')?.inputs.map((input) => input.type)).toEqual(['address', 'uint256[]']);
     expect(results.getFunction('pendingReward')?.inputs.map((input) => input.name)).toEqual(['source', 'auditor', 'epoch']);
     expect(results.getFunction('submitModelAudit')).toBeNull();
     const kbf = new Interface(KBF_AUDITS_ABI);
-    expect(kbf.getEvent('AuditorSet')?.inputs.map((input) => input.name)).toEqual(['auditor', 'approved']);
+    expect(kbf.getEvent('AuditorSet')?.inputs.map((input) => input.name)).toEqual(['auditor', 'approved', 'revocations']);
     expect(kbf.getFunction('approvedAuditors')).not.toBeNull();
     expect(kbf.getFunction('verifierSet')).toBeNull();
   });
@@ -335,7 +338,7 @@ describe('verifier event block ranges', () => {
     const iface = new Interface(KBF_AUDITS_ABI);
     const fragment = iface.getEvent('AuditorSet')!;
     const log = (auditor: string, approved: boolean, blockNumber: number, index: number) => {
-      const encoded = iface.encodeEventLog(fragment, [auditor, approved]);
+      const encoded = iface.encodeEventLog(fragment, [auditor, approved, approved ? 0n : 1n]);
       return new EventLog({
         ...encoded, address: VERIFICATION_ADDRESS, blockNumber, index, transactionHash: '0x' + 'ab'.repeat(32),
         blockHash: '0x' + 'cd'.repeat(32), transactionIndex: 0, removed: false,

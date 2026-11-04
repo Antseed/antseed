@@ -142,7 +142,7 @@ contract AntseedKbfAuditsTest is Test {
         _advance(2);
         vm.expectEmit(true, true, false, true, address(results));
         emit AntseedVerificationResults.ServiceStatusChanged(
-            agentId, SERVICE_A, MODEL_A, NONE, SAME, address(kbf)
+            agentId, SERVICE_A, MODEL_A, NONE, SAME, address(kbf), gate.currentEpoch()
         );
         vm.expectEmit(true, false, false, true, address(results));
         emit AntseedVerificationResults.AgentStatusChanged(agentId, 1, 0);
@@ -227,7 +227,7 @@ contract AntseedKbfAuditsTest is Test {
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
         vm.expectEmit(true, true, false, true, address(results));
         emit AntseedVerificationResults.ServiceStatusChanged(
-            agentId, SERVICE_A, MODEL_A, SAME, DIFF, address(kbf)
+            agentId, SERVICE_A, MODEL_A, SAME, DIFF, address(kbf), gate.currentEpoch()
         );
         _audit(auditorB, MODEL_A, agentId, SERVICE_A, DIFF);
         assertEq(results.agentStatus(agentId).diffCount, 1, "one auditor's DIFF counts");
@@ -260,7 +260,7 @@ contract AntseedKbfAuditsTest is Test {
         _advance(1);
         vm.expectEmit(true, true, false, true, address(results));
         emit AntseedVerificationResults.ServiceStatusChanged(
-            agentId, SERVICE_A, MODEL_A, SAME, UNDETERMINED, address(kbf)
+            agentId, SERVICE_A, MODEL_A, SAME, UNDETERMINED, address(kbf), gate.currentEpoch()
         );
         vm.expectEmit(true, false, false, true, address(results));
         emit AntseedVerificationResults.AgentStatusChanged(agentId, 0, 0);
@@ -800,7 +800,7 @@ contract AntseedKbfAuditsTest is Test {
         emit AntseedKbfAudits.ServiceAudited(agentId, SERVICE_A, auditorC, MODEL_A, DIFF, 0, 2, 2);
         vm.expectEmit(true, true, false, true, address(results));
         emit AntseedVerificationResults.ServiceStatusChanged(
-            agentId, SERVICE_A, MODEL_A, SAME, DIFF, address(kbf)
+            agentId, SERVICE_A, MODEL_A, SAME, DIFF, address(kbf), gate.currentEpoch()
         );
         _audit(auditorC, MODEL_A, agentId, SERVICE_A, DIFF);
         assertFalse(results.isVerified(agentId));
@@ -1101,22 +1101,22 @@ contract AntseedKbfAuditsTest is Test {
         address newcomer = address(0xE5);
         assertFalse(kbf.approvedAuditors(newcomer));
         vm.expectEmit(true, false, false, true, address(kbf));
-        emit IAntseedKbfAudits.AuditorSet(newcomer, true);
+        emit IAntseedKbfAudits.AuditorSet(newcomer, true, kbf.auditorRevocations());
         kbf.setAuditor(newcomer, true);
         assertTrue(kbf.approvedAuditors(newcomer));
 
         uint256 revocations = kbf.auditorRevocations();
         vm.expectEmit(true, false, false, true, address(kbf));
-        emit IAntseedKbfAudits.AuditorSet(newcomer, true);
+        emit IAntseedKbfAudits.AuditorSet(newcomer, true, revocations);
         kbf.setAuditor(newcomer, true); // already approved: still emits, counts nothing
         assertEq(kbf.auditorRevocations(), revocations);
         vm.expectEmit(true, false, false, true, address(kbf));
-        emit IAntseedKbfAudits.AuditorSet(newcomer, false);
+        emit IAntseedKbfAudits.AuditorSet(newcomer, false, revocations + 1);
         kbf.setAuditor(newcomer, false);
         assertFalse(kbf.approvedAuditors(newcomer));
         assertEq(kbf.auditorRevocations(), revocations + 1);
         vm.expectEmit(true, false, false, true, address(kbf));
-        emit IAntseedKbfAudits.AuditorSet(newcomer, false);
+        emit IAntseedKbfAudits.AuditorSet(newcomer, false, revocations + 1);
         kbf.setAuditor(newcomer, false); // already revoked: still emits, counts nothing
         assertEq(kbf.auditorRevocations(), revocations + 1);
     }

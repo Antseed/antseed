@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import { Test } from "forge-std/Test.sol";
+import { Test, Vm } from "forge-std/Test.sol";
 
 import { AntseedRegistry } from "../../core/AntseedRegistry.sol";
 import { IAntseedVerificationResults } from "../../interfaces/IAntseedVerificationResults.sol";
@@ -183,7 +183,7 @@ contract AntseedVerificationResultsTest is Test {
 
     function test_statusChangesCarryTheSource() public {
         vm.expectEmit(true, true, false, true, address(results));
-        emit AntseedVerificationResults.ServiceStatusChanged(agentId, SERVICE_A, MODEL_A, NONE, SAME, address(sourceA));
+        emit AntseedVerificationResults.ServiceStatusChanged(agentId, SERVICE_A, MODEL_A, NONE, SAME, address(sourceA), gate.currentEpoch());
         vm.expectEmit(true, false, false, true, address(results));
         emit AntseedVerificationResults.AgentStatusChanged(agentId, 1, 0);
         sourceA.record(agentId, SERVICE_A, MODEL_A, SAME);
@@ -197,7 +197,7 @@ contract AntseedVerificationResultsTest is Test {
         assertEq(uint8(results.liveVerdict(agentId, SERVICE_A)), uint8(SAME));
 
         vm.expectEmit(true, true, false, true, address(results));
-        emit AntseedVerificationResults.ServiceStatusChanged(agentId, SERVICE_A, MODEL_A, SAME, NONE, address(0));
+        emit AntseedVerificationResults.ServiceStatusChanged(agentId, SERVICE_A, MODEL_A, SAME, NONE, address(0), gate.currentEpoch());
         _clear(agentId, SERVICE_A);
         status = results.serviceStatus(agentId, SERVICE_A);
         assertEq(uint8(status.verdict), uint8(NONE));
@@ -227,7 +227,7 @@ contract AntseedVerificationResultsTest is Test {
         vm.warp(block.timestamp + 1 days);
         vm.expectEmit(true, true, false, true, address(results));
         emit AntseedVerificationResults.ServiceStatusChanged(
-            agentId, SERVICE_A, MODEL_A, SAME, SAME, address(sourceB)
+            agentId, SERVICE_A, MODEL_A, SAME, SAME, address(sourceB), gate.currentEpoch()
         );
         sourceB.record(agentId, SERVICE_A, MODEL_A, SAME);
         IAntseedVerificationResults.ServiceStatus memory status = results.serviceStatus(agentId, SERVICE_A);
@@ -242,7 +242,7 @@ contract AntseedVerificationResultsTest is Test {
 
         vm.expectEmit(true, true, false, true, address(results));
         emit AntseedVerificationResults.ServiceStatusChanged(
-            agentId, SERVICE_A, MODEL_A, DIFF, SAME, address(sourceB)
+            agentId, SERVICE_A, MODEL_A, DIFF, SAME, address(sourceB), gate.currentEpoch()
         );
         sourceB.record(agentId, SERVICE_A, MODEL_A, SAME);
         IAntseedVerificationResults.ServiceStatus memory status = results.serviceStatus(agentId, SERVICE_A);
@@ -262,11 +262,11 @@ contract AntseedVerificationResultsTest is Test {
         sourceA.record(agentId, SERVICE_A, MODEL_A, DIFF);
         vm.expectEmit(true, true, false, true, address(results));
         emit AntseedVerificationResults.ServiceStatusChanged(
-            agentId, SERVICE_A, MODEL_A, DIFF, NONE, address(sourceA)
+            agentId, SERVICE_A, MODEL_A, DIFF, NONE, address(sourceA), gate.currentEpoch()
         );
         vm.expectEmit(true, true, false, true, address(results));
         emit AntseedVerificationResults.ServiceStatusChanged(
-            agentId, SERVICE_A, MODEL_B, NONE, DIFF, address(sourceA)
+            agentId, SERVICE_A, MODEL_B, NONE, DIFF, address(sourceA), gate.currentEpoch()
         );
         sourceA.record(agentId, SERVICE_A, MODEL_B, DIFF);
         assertEq(results.agentStatus(agentId).diffCount, 1, "counted once");
@@ -413,7 +413,17 @@ contract AntseedVerificationResultsTest is Test {
     function test_clearingAServiceBumpsItsClearCount() public {
         _enable(address(sourceA), 10_000);
         assertEq(results.serviceClears(agentId, SERVICE_A), 0);
+        // No live verdict: no ServiceStatusChanged, but ServiceCleared still reports every bump.
+        vm.recordLogs();
         _clear(agentId, SERVICE_A);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        assertEq(logs.length, 1, "only ServiceCleared for a service with no verdict");
+        assertEq(logs[0].topics[0], AntseedVerificationResults.ServiceCleared.selector);
+        assertEq(logs[0].topics[1], bytes32(agentId));
+        assertEq(logs[0].topics[2], SERVICE_A);
+        assertEq(logs[0].data, abi.encode(EPOCH, uint256(1)));
+        vm.expectEmit(true, true, false, true, address(results));
+        emit AntseedVerificationResults.ServiceCleared(agentId, SERVICE_A, EPOCH, 2);
         _clear(agentId, SERVICE_A);
         assertEq(results.serviceClears(agentId, SERVICE_A), 2);
         assertEq(results.serviceClears(agentId, SERVICE_B), 0, "other services are untouched");

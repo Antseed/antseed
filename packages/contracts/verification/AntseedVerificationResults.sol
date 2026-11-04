@@ -111,14 +111,20 @@ contract AntseedVerificationResults is IAntseedVerificationResults, Ownable2Step
     event ValidityEpochsSet(uint8 validityEpochs);
     /// @param source The source that recorded `current`; zero when the owner cleared the service.
     ///        The source's own events (e.g. KBF's `ModelAudited`) carry the evidence behind it.
+    /// @param epoch The emissions epoch the change happened in.
     event ServiceStatusChanged(
         uint256 indexed agentId,
         bytes32 indexed serviceHash,
         bytes32 modelHash,
         Verdict previous,
         Verdict current,
-        address source
+        address source,
+        uint256 epoch
     );
+    /// @notice The owner cleared a service with `clearServiceStatuses`. Emitted for every listed
+    ///         service, also one with no live verdict (which emits no `ServiceStatusChanged`), so
+    ///         indexers see every `serviceClears` bump. @param clears The new `serviceClears` value.
+    event ServiceCleared(uint256 indexed agentId, bytes32 indexed serviceHash, uint256 epoch, uint256 clears);
     event AgentStatusChanged(uint256 indexed agentId, uint16 verifiedCount, uint16 diffCount);
     event Credited(address indexed source, uint256 indexed epoch, address indexed auditor, uint256 credits);
     event CreditsVoided(address indexed source, uint256 indexed epoch, address indexed auditor, uint256 credits);
@@ -230,10 +236,12 @@ contract AntseedVerificationResults is IAntseedVerificationResults, Ownable2Step
         if (count != serviceHashes.length) revert InvalidValue();
         uint256 epoch = emissionsGate.currentEpoch();
         for (uint256 i = 0; i < count; i++) {
-            serviceClears[agentIds[i]][serviceHashes[i]] += 1;
+            uint256 clears = serviceClears[agentIds[i]][serviceHashes[i]] + 1;
+            serviceClears[agentIds[i]][serviceHashes[i]] = clears;
             _resetService(
                 agentIds[i], serviceHashes[i], _serviceStatus[agentIds[i]][serviceHashes[i]], epoch, address(0)
             );
+            emit ServiceCleared(agentIds[i], serviceHashes[i], epoch, clears);
         }
     }
 
@@ -526,7 +534,7 @@ contract AntseedVerificationResults is IAntseedVerificationResults, Ownable2Step
         if (previous != current && (previous == Verdict.DIFF || current == Verdict.DIFF)) {
             diffChanges[agentId][serviceHash] += 1;
         }
-        emit ServiceStatusChanged(agentId, serviceHash, service.modelHash, previous, service.verdict, source);
+        emit ServiceStatusChanged(agentId, serviceHash, service.modelHash, previous, service.verdict, source, epoch);
         AgentStatus memory agent = _agentStatusAt(agentId, epoch);
         emit AgentStatusChanged(agentId, agent.verifiedCount, agent.diffCount);
     }
