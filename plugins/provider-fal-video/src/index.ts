@@ -480,10 +480,12 @@ const plugin: AntseedProviderPlugin = {
      * Why a create can't be paid for its `duration`, or null. The buyer pays
      * for `duration`, so for an edit it must be the source's measured length
      * (see FalEditRule), and for an endpoint that follows its audio the
-     * audio's (see falFollowsAudio). Without the endpoint's schema, a source
-     * video marks an edit.
+     * audio's (see falFollowsAudio). The schema decides first: an extra
+     * `video_url` on an endpoint that follows its audio does not change what
+     * it is paid by. Without the endpoint's schema, a source video marks an edit.
      */
     const lengthProblem = (service: string, input: Record<string, unknown>): string | null => {
+      if (audioServices.has(service)) return audioSourceLengthProblem(input.audio_url, input.duration);
       if (editRules.has(service) || input.video_url !== undefined) return videoSourceLengthProblem(input.video_url, input.duration);
       if (followsAudio(service, input)) return audioSourceLengthProblem(input.audio_url, input.duration);
       return null;

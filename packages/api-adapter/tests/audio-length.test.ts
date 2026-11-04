@@ -1,15 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { audioSourceLengthProblem, inlineAudioSeconds } from '../src/index.js';
 
-const concat = (...parts: Uint8Array[]) => {
-  const out = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
-  let offset = 0;
-  for (const part of parts) {
-    out.set(part, offset);
-    offset += part.length;
-  }
-  return out;
-};
+const concat = (...parts: Uint8Array[]): Uint8Array => Buffer.concat(parts);
 const ascii = (text: string) => new TextEncoder().encode(text);
 const dataUrl = (bytes: Uint8Array, type = 'audio/mpeg') => `data:${type};base64,${Buffer.from(bytes).toString('base64')}`;
 
@@ -32,7 +24,7 @@ const le32 = (value: number) => { const b = Buffer.alloc(4); b.writeUInt32LE(val
 const le16 = (value: number) => { const b = Buffer.alloc(2); b.writeUInt16LE(value); return new Uint8Array(b); };
 const chunk = (id: string, body: Uint8Array, size = body.length) => concat(ascii(id), le32(size), body, body.length % 2 ? new Uint8Array(1) : new Uint8Array(0));
 /** `fmt ` of 16-bit mono PCM at 8 kHz: 16000 bytes per second. */
-const pcmFormat = (format = 1) => chunk('fmt ', concat(le16(format), le16(1), le32(8000), le32(16000), le16(2), le16(16)));
+const pcmFormat = (format = 1, blockAlign = 2) => chunk('fmt ', concat(le16(format), le16(1), le32(8000), le32(8000 * blockAlign), le16(blockAlign), le16(16)));
 const wav = (...chunks: Uint8Array[]) => concat(ascii('RIFF'), le32(0), ascii('WAVE'), ...chunks);
 
 describe('inline audio length', () => {
@@ -81,6 +73,8 @@ describe('inline audio length', () => {
     // Compressed WAV (MP3 in WAV), and WAV without a format before its data.
     expect(inlineAudioSeconds(dataUrl(wav(pcmFormat(0x55), chunk('data', new Uint8Array(88_000))), 'audio/wav'))).toBeNull();
     expect(inlineAudioSeconds(dataUrl(wav(chunk('data', new Uint8Array(88_000)), pcmFormat()), 'audio/wav'))).toBeNull();
+    // 30 s of mono 16-bit PCM whose blockAlign claims 60 bytes per frame: a decoder still plays 30 s.
+    expect(inlineAudioSeconds(dataUrl(wav(pcmFormat(1, 60), chunk('data', new Uint8Array(480_000))), 'audio/wav'))).toBeNull();
   });
 });
 

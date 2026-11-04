@@ -107,14 +107,24 @@ function isMp3OrAac(body: Uint8Array): boolean {
 
 // ── WAV ──────────────────────────────────────────────────────────
 
-/** The sample rate and bytes per sample frame of a PCM-family (PCM, float, extensible) `fmt ` chunk at `offset`, or null. */
+/**
+ * The sample rate and bytes per sample frame of a PCM or float `fmt ` chunk
+ * (plain or extensible) at `offset`, or null. `blockAlign` must be channels ×
+ * sample width, as a decoder plays it.
+ */
 function wavFormat(body: Uint8Array, view: DataView, offset: number, size: number): { sampleRate: number; blockAlign: number } | null {
   if (size < 16 || body.length < offset + 8 + 16) return null;
   const format = view.getUint16(offset + 8, true);
   const channels = view.getUint16(offset + 10, true);
   const sampleRate = view.getUint32(offset + 12, true);
   const blockAlign = view.getUint16(offset + 20, true);
-  if (![1, 3, 0xfffe].includes(format) || channels === 0 || sampleRate === 0 || blockAlign === 0) return null;
+  const bitsPerSample = view.getUint16(offset + 22, true);
+  // WAVE_FORMAT_EXTENSIBLE names the real format in the first two bytes of its SubFormat GUID.
+  const subformat = format === 0xfffe && size >= 40 && body.length >= offset + 8 + 26 ? view.getUint16(offset + 8 + 24, true) : format;
+  const widths = subformat === 1 ? [8, 16, 24, 32] : subformat === 3 ? [32, 64] : [];
+  if (channels === 0 || sampleRate === 0 || !widths.includes(bitsPerSample)) return null;
+  // A decoder plays channels × sample width per frame, whatever blockAlign says: a larger one would shorten the measured length.
+  if (blockAlign !== channels * (bitsPerSample / 8)) return null;
   return { sampleRate, blockAlign };
 }
 

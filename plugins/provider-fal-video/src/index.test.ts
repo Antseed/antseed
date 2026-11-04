@@ -553,6 +553,10 @@ describe('endpoints whose video follows their audio', () => {
     for (const audio_url of [undefined, 'https://example.com/voice.mp3', 'data:audio/mp4;base64,AAAAIGZ0eXBNNEEg']) {
       expect(refusal(provider, { image_url: face, audio_url, duration: 5 })).toMatchObject({ statusCode: 422, code: 'invalid_video_duration', message: expect.stringContaining('send audio_url inline') });
     }
+    // An extra source video the endpoint doesn't take does not switch it to the video's length.
+    const withVideo = { image_url: face, audio_url: voice, video_url: sourceMp4(1_200), duration: 1 };
+    expect(refusal(provider, withVideo)?.message).toContain(': 5');
+    expect((await provider.handleRequest(create(AVATAR_PRO, withVideo))).statusCode).toBe(422);
     // handleRequest refuses the same way when called directly, without calling fal.
     const direct = await provider.handleRequest(create(AVATAR_PRO, { image_url: face, audio_url: voice, duration: 1 }));
     expect(direct.statusCode).toBe(422);
