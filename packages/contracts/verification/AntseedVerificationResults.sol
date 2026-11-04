@@ -64,10 +64,12 @@ contract AntseedVerificationResults is IAntseedVerificationResults, Ownable2Step
         uint64 rewardsStartEpoch;
     }
 
-    /// @dev An auditor's reward for one audit and epoch, as `AntseedUsageRewards.PreparedReward`:
-    ///      its credits against the audit's total, the gross amount, what the auditor receives and
-    ///      the part above the cap that goes to the reserve. Populated by `_prepareAuditorReward`,
-    ///      which also marks the epoch claimed.
+    /// @dev An auditor's reward for one audit and epoch. Copied from `AntseedUsageRewards.PreparedReward`
+    ///      (emissions/AntseedUsageRewards.sol), field for field: `recipient`, the claimant's share
+    ///      (there `weightedPoints` / `totalWeightedPoints`, here the auditor's `credits` against the
+    ///      audit's `totalCredits` for the epoch), `grossAmount`, `claimableAmount` (what the auditor
+    ///      receives) and `reserveAmount` (the part above the cap, minted to the emissions reserve).
+    ///      Populated by `_prepareAuditorReward`, which also marks the epoch claimed.
     struct PreparedReward {
         address recipient;
         uint256 credits;
@@ -362,6 +364,10 @@ contract AntseedVerificationResults is IAntseedVerificationResults, Ownable2Step
         emit Credited(msg.sender, epoch, auditor, credited);
     }
 
+    /// @dev Copied from `AntseedUsageRewards.claimAgentReward` / `_claimAgentReward`: one epoch per
+    ///      call, `nonReentrant whenNotPaused`, prepare (check, compute, mark claimed) then mint, then
+    ///      emit the full breakdown. The claimant is the auditor itself (msg.sender), so there is no
+    ///      recipient lookup like UsageRewards' agent owner check.
     function claimAuditorReward(address audit, uint256 epoch) external override nonReentrant whenNotPaused {
         PreparedReward memory reward = _prepareAuditorReward(audit, epoch, msg.sender);
         _mintReward(epoch, reward.recipient, reward.claimableAmount, reward.reserveAmount);
@@ -377,6 +383,9 @@ contract AntseedVerificationResults is IAntseedVerificationResults, Ownable2Step
         );
     }
 
+    /// @dev Copied from `AntseedUsageRewards.pendingAgentReward` / `_pendingAgentReward`: the claimable
+    ///      amount from the same share math as the claim, 0 instead of a revert. Additionally 0 for the
+    ///      current epoch and for an epoch already claimed, so it always equals what a claim would pay.
     function pendingAuditorReward(address audit, address auditor, uint256 epoch)
         external
         view
@@ -384,19 +393,22 @@ contract AntseedVerificationResults is IAntseedVerificationResults, Ownable2Step
         returns (uint256 amount)
     {
         if (epoch >= emissionsGate.currentEpoch() || auditorEpochClaimed[audit][epoch][auditor]) return 0;
-        uint256 credits = auditorEpochCredits[audit][epoch][auditor];
-        uint256 totalCredits = epochCredits[audit][epoch];
-        if (credits == 0 || totalCredits == 0) return 0;
-        uint256 budget = auditBudget(audit, epoch);
-        uint256 gross = (budget * credits) / totalCredits;
-        uint256 cap = (budget * _audits[audit].maxAuditorShareBps) / BPS;
-        amount = gross < cap ? gross : cap;
+        return _pendingReward(
+            audit, auditBudget(audit, epoch), auditorEpochCredits[audit][epoch][auditor], epochCredits[audit][epoch]
+        );
     }
 
     // ═══════════════════════════════════════════════════════════════════
     //                        INTERNAL
     // ═══════════════════════════════════════════════════════════════════
 
+    /// @dev Copied from `AntseedUsageRewards._prepareAgentReward`: revert if already claimed, read the
+    ///      share, compute the amounts with `_rewardAmounts`, then mark the epoch claimed before any mint.
+    ///      Differences: an explicit `EpochNotFinalized` check (UsageRewards relies on the gate's own
+    ///      check in `claim`), and no budget freeze. UsageRewards freezes each epoch's budget on the
+    ///      first claim (`_freezeUsageEpochBudgets`) because it depends on live usage volume; here the
+    ///      budget is the gate's controller budget times the audit's checkpointed share for that epoch
+    ///      (`auditBudget`), which can no longer change once the epoch is over.
     function _prepareAuditorReward(address audit, uint256 epoch, address auditor)
         internal
         returns (PreparedReward memory reward)
@@ -413,6 +425,10 @@ contract AntseedVerificationResults is IAntseedVerificationResults, Ownable2Step
         auditorEpochClaimed[audit][epoch][auditor] = true;
     }
 
+    /// @dev Copied from `AntseedUsageRewards._rewardAmounts`, line for line: gross pro rata share of the
+    ///      epoch budget, capped, the rest to the reserve, reverting `NothingToClaim` on no share or a zero
+    ///      amount. One difference: the cap is the audit's `maxAuditorShareBps` (default 20%, owner-set per
+    ///      audit) instead of UsageRewards' constant `MAX_REWARD_SHARE_BPS`.
     function _rewardAmounts(address audit, uint256 epochBudget, uint256 credits, uint256 totalCredits)
         internal
         view
@@ -429,6 +445,20 @@ contract AntseedVerificationResults is IAntseedVerificationResults, Ownable2Step
         if (claimableAmount == 0 && reserveAmount == 0) revert NothingToClaim();
     }
 
+    /// @dev Copied from `AntseedUsageRewards._pendingReward`: the capped gross share, 0 when there is none.
+    function _pendingReward(address audit, uint256 epochBudget, uint256 credits, uint256 totalCredits)
+        internal
+        view
+        returns (uint256)
+    {
+        if (credits == 0 || totalCredits == 0) return 0;
+        uint256 grossAmount = (epochBudget * credits) / totalCredits;
+        uint256 cap = (epochBudget * _audits[audit].maxAuditorShareBps) / BPS;
+        return grossAmount < cap ? grossAmount : cap;
+    }
+
+    /// @dev Copied from `AntseedUsageRewards._mintReward`, unchanged: the auditor's part and the reserve's
+    ///      part are separate `emissionsGate.claim` calls against the same epoch budget.
     function _mintReward(uint256 epoch, address recipient, uint256 claimableAmount, uint256 reserveAmount) internal {
         if (claimableAmount != 0) {
             emissionsGate.claim(epoch, recipient, claimableAmount);
