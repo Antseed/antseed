@@ -72,8 +72,14 @@ The last of those, on Base mainnet, is `AntseedKbfVerification`
 migration owns it any more; on activation the new release's contracts are added to `current.json`,
 the old `kbfVerification` / `kbfVerificationPointsPolicy` entries stay there with
 `deployedInRelease: false`, and `verificationConfiguration.verificationRegistry` is replaced. The
-address generator no longer reads `kbfVerification`, so the SDK and CLI have no built-in
-verification address until the new release is recorded. The old contracts stay on-chain unused.
+address generator no longer reads `kbfVerification`; the SDK and CLI default to the new release's
+`kbfAudits` and `verificationResults`. The old contracts stay on-chain unused.
+
+The new release is recorded on Base mainnet (source commit `9152657b3`, blocks 53,490,135–53,490,139):
+`AntseedVerificationResults` `0xF2C8482aD2A348854698E93f41FE3cc32307687c`, `AntseedKbfAudits`
+`0xe57aB03423A3835571F7d68AC1E23CF8a2763343`, `AntseedVerificationPointsPolicy`
+`0x5d677f5eDd69E69c664E3f7FA80f1D3DD61A2212`. Basescan source verification and the manual owner
+steps below are still to do.
 
 **Nothing carries over.** Verdicts, report tallies, credits and auditor approvals live in the old
 contract. Its verdicts expire within 2 epochs; its policy keeps reading them while it is registered

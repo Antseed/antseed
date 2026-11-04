@@ -2128,7 +2128,9 @@ function m003Checkpoint() {
 }
 
 test('M003 activation preserves previous contracts/configuration and generates its addresses', async () => {
+  // The state before M003 activated: the live record without the contracts it added.
   const baseline = JSON.parse(await readFile('packages/contracts/deployments/base-mainnet/current.json', 'utf8'));
+  for (const [key] of DEPLOYMENTS) delete baseline.contracts[key];
   const original = structuredClone(baseline);
   const { record, current } = activationRecords({ network: 'base-mainnet', canonical: baseline }, m003Checkpoint());
   assert.deepEqual(m003.recordErrors(record), []);
@@ -2166,11 +2168,17 @@ test('M003 activation preserves previous contracts/configuration and generates i
 test('the replaced AntseedKbfVerification stays in history but is no longer a default address', async () => {
   const current = JSON.parse(await readFile('packages/contracts/deployments/base-mainnet/current.json', 'utf8'));
   assert.ok(current.contracts.kbfVerification, 'append-only history keeps the earlier deployment');
+  assert.equal(current.contracts.kbfVerification.deployedInRelease, false);
   await readFile('packages/contracts/deployments/base-mainnet/history/003-kbf-verification.json', 'utf8');
+  await readFile(`packages/contracts/deployments/base-mainnet/history/${M003_RELEASE}.json`, 'utf8');
   assert.notEqual(M003_RELEASE, '003-kbf-verification', 'the replacement is its own release');
   assert.equal(buildReleaseOwners().get('003-kbf-verification'), undefined);
-  assert.equal(renderNetwork(current).verificationContractAddress, undefined);
-  assert.equal(renderNetwork(current).verificationDeployBlock, undefined);
+  assert.equal(current.release, M003_RELEASE);
+  const rendered = renderNetwork(current);
+  assert.notEqual(rendered.verificationContractAddress, current.contracts.kbfVerification.address.toLowerCase());
+  assert.equal(rendered.verificationContractAddress, current.contracts.kbfAudits.address.toLowerCase());
+  assert.equal(rendered.verificationResultsAddress, current.contracts.verificationResults.address.toLowerCase());
+  assert.equal(rendered.verificationDeployBlock, current.contracts.kbfAudits.deploymentBlock);
 });
 
 async function m003Context(t, checkpoint = m003Checkpoint()) {

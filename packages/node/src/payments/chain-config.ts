@@ -80,9 +80,8 @@ export interface ChainConfig {
    * The contract auditors submit KBF audits to: `AntseedKbfAudits` (M003), which also holds the
    * approved auditors. The results layer is discovered from it unless overridden below.
    *
-   * NOTE: Base mainnet has no generated default until the M003 redeploy (release
-   * `003-verification-split`) is recorded; the earlier `AntseedKbfVerification` it replaces has an
-   * ABI the split client cannot read.
+   * Base mainnet defaults to the M003 deployment (release `003-verification-split`); the earlier
+   * `AntseedKbfVerification` it replaces has an ABI the split client cannot read.
    */
   verificationContractAddress?: string;
   /** `AntseedVerificationResults` (verdicts and verification rewards); read from `kbf.results()` when absent. */

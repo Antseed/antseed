@@ -627,8 +627,9 @@ points policy read. The owner approves auditors on `AntseedKbfAudits`. The CLI f
 results address through the KBF contract; `payments.crypto.verificationResultsAddress`
 overrides it. Each new verification method is its own contract next to `AntseedKbfAudits`.
 They replace the earlier single contract, `AntseedKbfVerification`, which this CLI can no
-longer read. Until the M003 redeploy is recorded there is no built-in Base mainnet address:
-set `verificationContractAddress` (and `verificationDeployBlock`) to the `AntseedKbfAudits` deployment.
+longer read. On Base mainnet the CLI defaults to `AntseedKbfAudits`
+`0xe57aB03423A3835571F7d68AC1E23CF8a2763343` and `AntseedVerificationResults`
+`0xF2C8482aD2A348854698E93f41FE3cc32307687c`, so no configuration is needed.
 
 The audited models are a list built into the CLI (`src/verifier/audited-models.ts`):
 each model's service id, the aliases sellers use for it, and its OpenRouter id. A
