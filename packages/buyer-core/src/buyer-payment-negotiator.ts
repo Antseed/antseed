@@ -48,7 +48,7 @@ import {
   extractUnitResponseUsage,
   type FinalUnitBillingResult,
 } from './unit-billing.js';
-import { buyerFault, peerFault } from './errors.js';
+import { AntseedRequestError, buyerFault, peerFault } from './errors.js';
 
 export interface BuyerNegotiatorConfig {
   /**
@@ -156,6 +156,9 @@ function sameOneOffPlan(a: OneOffChannelPlan, b: OneOffChannelPlan): boolean {
  * (402 handling, SpendingAuth negotiation, per-request auth, cost tracking)
  * from core node orchestration.
  */
+/** The session a payment call started on was retired or replaced while it awaited. */
+class SessionReplacedError extends AntseedRequestError {}
+
 export class BuyerPaymentNegotiator {
   private readonly _bpm: BuyerPaymentManager;
   private readonly _depositsClient: DepositsClient | null;
@@ -953,34 +956,22 @@ export class BuyerPaymentNegotiator {
 
     // A 402 about a channel the buyer has since replaced describes that
     // channel: its target and exhaustion say nothing about the live one.
+    // Retiring on it would ghost the replacement (with requests in parallel,
+    // an exhausted 402 for the old channel often lands after another request
+    // replaced it): wait for the replacement's negotiation and retry on it.
     const paymentChannelId = buffered?.channelId
       ?? (responseAlreadyHasRequirements && typeof directPaymentBody?.channelId === 'string' ? directPaymentBody.channelId : null);
     const session = this._bpm.getActiveSession(peer.peerId);
     if (session && paymentChannelId != null && paymentChannelId.toLowerCase() !== session.sessionId.toLowerCase()) {
       debugLog(
-        `[BuyerNegotiator] 402 from ${peer.peerId.slice(0, 12)}... is about channel ${paymentChannelId.slice(0, 18)}..., ` +
-        `not the live ${session.sessionId.slice(0, 18)}... — retrying`,
-      );
-      return { action: 'retry' };
-    }
-
-    const hasActiveSession = hadLockedSession || session != null;
-
-    // With requests in parallel, an exhausted 402 for the old channel can
-    // arrive after another request already replaced it. Retiring then would
-    // ghost the replacement: wait for its negotiation and retry on it instead.
-    const exhaustedChannelId = channelExhausted
-      ? buffered?.channelId ?? (responseAlreadyHasRequirements && typeof directPaymentBody?.channelId === 'string' ? directPaymentBody.channelId : null)
-      : null;
-    const activeChannelId = exhaustedChannelId ? this._bpm.getActiveSession(peer.peerId)?.sessionId : undefined;
-    if (exhaustedChannelId && activeChannelId && exhaustedChannelId.toLowerCase() !== activeChannelId.toLowerCase()) {
-      debugLog(
-        `[BuyerNegotiator] Exhausted 402 for replaced channel ${exhaustedChannelId.slice(0, 18)}... from ${peer.peerId.slice(0, 12)}... — ` +
-        `retrying on ${activeChannelId.slice(0, 18)}...`,
+        `[BuyerNegotiator] ${channelExhausted ? 'Exhausted ' : ''}402 from ${peer.peerId.slice(0, 12)}... is about channel ` +
+        `${paymentChannelId.slice(0, 18)}..., not the live ${session.sessionId.slice(0, 18)}... — retrying on it`,
       );
       await this._negotiationLocks.get(peer.peerId)?.catch(() => undefined);
       return { action: 'retry' };
     }
+
+    const hasActiveSession = hadLockedSession || session != null;
 
     if (channelExhausted && hasActiveSession) {
       debugLog(
@@ -993,16 +984,30 @@ export class BuyerPaymentNegotiator {
       this._bpm.retireSession(peer.peerId, CHANNEL_STATUS.GHOST);
       this._forgetSellerSession(peer.peerId);
     } else if (hasActiveSession) {
-      const recovered = await this._recoverExistingSession(
-        peer,
-        conn,
-        session,
-        existingSessionBudgetRequest,
-        requiredCumulativeTarget,
-        requiredCumulativeTarget == null,
-        req.requestId,
-        inFlightRequests,
-      );
+      let recovered: boolean;
+      try {
+        recovered = await this._recoverExistingSession(
+          peer,
+          conn,
+          session,
+          existingSessionBudgetRequest,
+          requiredCumulativeTarget,
+          requiredCumulativeTarget == null,
+          req.requestId,
+          inFlightRequests,
+        );
+      } catch (err) {
+        if (!(err instanceof SessionReplacedError)) throw err;
+        // After a restart every parked request's 402 recovers the same
+        // channel. One of them found it closed and retired it while this one
+        // read the chain: join that request's replacement instead of failing.
+        debugLog(`[BuyerNegotiator] ${err.message} by a parallel request — joining its replacement`);
+        if (this._bpm.getActiveSession(peer.peerId)) {
+          await this._negotiationLocks.get(peer.peerId)?.catch(() => undefined);
+          return { action: 'retry' };
+        }
+        recovered = false;
+      }
       if (recovered) {
         return { action: 'retry' };
       }
@@ -1842,7 +1847,11 @@ export class BuyerPaymentNegotiator {
   /** Fails the way a vanished session fails a payment call. */
   private _assertLiveChannel(peerId: string, channelId: string): void {
     if (!this._isLiveChannel(peerId, channelId)) {
-      throw buyerFault(`[BuyerNegotiator] Session ${channelId.slice(0, 18)}... with ${peerId.slice(0, 12)}... was retired during recovery`, 'buyer-session-state');
+      throw new SessionReplacedError(
+        `[BuyerNegotiator] Session ${channelId.slice(0, 18)}... with ${peerId.slice(0, 12)}... was retired during recovery`,
+        'buyer-session-state',
+        'buyer',
+      );
     }
   }
 

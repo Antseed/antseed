@@ -737,7 +737,30 @@ describe('a payment write that awaited while the seller channel moved on', () =>
       const result = await replaceWhileHeld({ arrived: read.arrived, release: read.open }, write, oldChannelId, pmux);
 
       expect(await newChannelAfter(result)).toEqual(untouched());
-      expect(result.outcome).toBe('buyer-session-state');
+      // The request joins the replacement instead of failing.
+      await expect(write).resolves.toEqual({ action: 'retry' });
+    });
+
+    it('402 held at the on-chain read while a parallel request retires the channel, before any replacement', async () => {
+      setupNegotiator();
+      const oldChannelId = await oldChannel(pmux);
+      onChain.set(oldChannelId, chainInfo(1, 7_000_000n));
+      const read = gate();
+      channels.getSession.mockImplementationOnce(async (channelId: string) => {
+        read.arrive();
+        await read.opened;
+        return onChain.get(channelId);
+      });
+      const write = negotiator.handle402(make402({ minBudgetPerRequest: '10000', requiredCumulativeAmount: '60000' }), PEER, conn, REQUEST);
+
+      await read.arrived;
+      manager.retireSession(SELLER, CHANNEL_STATUS.SETTLED, OLD_SPENT);
+      read.open();
+
+      // It goes on to negotiate a channel itself (here stopped by the empty deposit), not fail on the retired one.
+      await expect(write.then((r) => r.action)).resolves.toBe('return');
+      expect(store.getChannel(oldChannelId)?.status).toBe(CHANNEL_STATUS.SETTLED);
+      expect(manager.getActiveSession(SELLER)).toBeNull();
     });
 
     it('402 catch-up after reconciling the reserve with the chain', async () => {
@@ -750,7 +773,8 @@ describe('a payment write that awaited while the seller channel moved on', () =>
       const result = await race(oldChannelId, write, replacement);
 
       expect(await newChannelAfter(result)).toEqual(untouched());
-      expect(result.outcome).toBe('buyer-session-state');
+      // The request joins the replacement instead of failing.
+      await expect(write).resolves.toEqual({ action: 'retry' });
     });
 
     it('402 catch-up after replaying the pending reserve', async () => {
@@ -764,7 +788,8 @@ describe('a payment write that awaited while the seller channel moved on', () =>
       const result = await race(oldChannelId, write, replacement);
 
       expect(await newChannelAfter(result)).toEqual(untouched());
-      expect(result.outcome).toBe('buyer-session-state');
+      // The request joins the replacement instead of failing.
+      await expect(write).resolves.toEqual({ action: 'retry' });
     });
 
     it('402 catch-up after the catch-up SpendingAuth', async () => {
@@ -777,7 +802,8 @@ describe('a payment write that awaited while the seller channel moved on', () =>
       const result = await race(oldChannelId, write, replacement);
 
       expect(await newChannelAfter(result)).toEqual(untouched());
-      expect(result.outcome).toBe('buyer-session-state');
+      // The request joins the replacement instead of failing.
+      await expect(write).resolves.toEqual({ action: 'retry' });
     });
 
     /** What a budget-exhausted 402 left on the channel, after the seller's catch-up NeedAuth for more signed past it. */
