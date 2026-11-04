@@ -13,6 +13,7 @@ import {
 import { serviceApiProtocolsField } from "../fields/service-api-protocols.js";
 import { serviceCategoriesField } from "../fields/service-categories.js";
 import { verificationsField } from "../fields/verifications.js";
+import { BASE_METADATA_VOCABULARY } from "../vocabulary.js";
 
 /** v10: peer capabilities. The oldest version buyers accept. Decode-only. */
 export const V10_LAYOUT: MetadataLayout = {
@@ -34,6 +35,7 @@ export const V10_LAYOUT: MetadataLayout = {
     onChainStatsField,
     peerCapabilitiesField,
   ],
+  vocabulary: BASE_METADATA_VOCABULARY,
 };
 
-export const metadataV10 = defineMetadataVersion({ version: 10, wideServiceCounts: false, ...V10_LAYOUT });
+export const metadataV10 = defineMetadataVersion({ version: 10, wideServiceCounts: false, servable: false, ...V10_LAYOUT });

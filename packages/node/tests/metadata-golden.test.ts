@@ -1,12 +1,14 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { decodeMetadata, encodeMetadata, encodeMetadataForSigning, getMetadataCodec } from '../src/discovery/metadata-codec.js';
+import { decodeMetadata, encodeMetadata, encodeMetadataForSigning, getMetadataCodec, SERVED_METADATA_VERSIONS } from '../src/discovery/metadata-codec.js';
+import { validateMetadata } from '../src/discovery/metadata-validator.js';
 import type { PeerMetadata } from '../src/discovery/peer-metadata.js';
 
-// Every field v10-v13 know. The v10-v12 hashes are of the bytes the codec
-// signed before it was split into per-version files, v13's of the bytes it
-// signed when v14 was added: buyers that have not upgraded verify those exact
-// bytes, so they must never change.
+// Every field each version knows. The v10-v12 hashes are of the bytes the
+// codec signed before it was split into per-version files, v13's of the bytes
+// it signed when v14 was added, v14's of the bytes it signed before v15 (speech)
+// was added, and v15's of the bytes it signed when v15 was added: buyers verify
+// those exact bytes, so they must never change.
 const fixture = (version: number): PeerMetadata => {
   const metadata = {
     peerId: "ab".repeat(20), version: 12, region: "eu-west-1", timestamp: 1_700_000_000_000,
@@ -35,6 +37,24 @@ const fixture = (version: number): PeerMetadata => {
       m2: { status: "healthy", checkedAt: 1_700_000_000_000, source: "traffic" },
     };
   }
+  if (version >= 14) {
+    metadata.providers[0].servicePerformance = {
+      m1: { requests: 312, successRate: 0.97, firstTokenMsP50: 420, firstTokenMsP90: 900, tokensPerSecondP50: 78 },
+    };
+  }
+  if (version >= 15) {
+    const provider = metadata.providers[0];
+    provider.services = [...provider.services, "tts"];
+    provider.serviceApiProtocols = { ...provider.serviceApiProtocols, tts: ["openai-audio-speech"] };
+    provider.serviceUnitBillingModels = {
+      ...provider.serviceUnitBillingModels,
+      tts: { "openai-audio-speech": { version: 1, components: [{ unit: "input_characters", priceUsd: 0.0000625 }] } },
+    };
+    provider.serviceCapabilities = {
+      ...provider.serviceCapabilities,
+      tts: { inputs: ["text"], outputs: ["audio"], speech: { voices: ["af_sky", "am_adam"], formats: ["mp3", "wav"], customVoices: false } },
+    };
+  }
   if (version < 12) {
     metadata.providers = metadata.providers.map((provider: any) => {
       const { serviceCapabilities: _capabilities, ...rest } = provider;
@@ -50,6 +70,8 @@ const GOLDEN_SHA256: Record<number, string> = {
   11: '8bd42ef2d8fd886b718c42800ef0573c63230cff0a111573db1945ea43f96bb2',
   12: 'a5dbd0ef1380cfe1bd9ed16586540de4600c41039d3eb0e76b9758211b084a3d',
   13: '45e7d04a3a58a03f9781c393002828b8064434c7e741de5eb25896488ebab271',
+  14: 'd48dc14ae24fb892f42f8110f570b95dbd2e01280e1e3fef77d372b39926883b',
+  15: 'cab523457500cbb9d3967bc65d5a69bf609767aa6987cc853141c62cffe87bfa',
 };
 
 describe('metadata signing bytes', () => {
@@ -70,6 +92,34 @@ describe('metadata signing bytes', () => {
     ]);
     expect(legacy.providers[0]!.serviceHealth).toBeUndefined();
   });
+
+  // Every version a seller serves, built from one newest document that uses
+  // every field, protocol and unit: each must pass its own version's checks
+  // and survive its own codec unchanged.
+  for (const version of SERVED_METADATA_VERSIONS) {
+    it(`builds a valid v${version} document from the newest metadata`, () => {
+      const latest = { ...fixture(15), signature: 'ab'.repeat(65) };
+      latest.providers = [...latest.providers, {
+        // A wildcard provider that describes a speech service and a chat one.
+        provider: 'wild', services: [], defaultPricing: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 },
+        serviceApiProtocols: { chat: ['openai-chat-completions'], voice: ['openai-audio-speech'] },
+        serviceUnitBillingModels: { voice: { 'openai-audio-speech': { version: 1, components: [{ unit: 'input_characters', priceUsd: 0.00001 }] } } },
+        serviceCapabilities: { voice: { speech: { voices: ['alloy'] } } },
+        maxConcurrency: 1, currentLoad: 0,
+      }];
+      expect(validateMetadata(latest)).toEqual([]);
+      const document = getMetadataCodec(version).fromLatest(latest);
+      expect(document.version).toBe(version);
+      expect(validateMetadata(document)).toEqual([]);
+      const decoded = decodeMetadata(encodeMetadata(document));
+      expect(decoded.version).toBe(version);
+      expect(encodeMetadataForSigning(decoded)).toEqual(encodeMetadataForSigning(document));
+      const speech = document.providers.some((provider) =>
+        Object.values(provider.serviceApiProtocols ?? {}).some((protocols) => protocols.includes('openai-audio-speech')));
+      expect(speech).toBe(version >= 15);
+      expect(document.providers.find((provider) => provider.provider === 'wild')?.services).toEqual([]);
+    });
+  }
 
   it('round-trips service names that collide with Object.prototype', () => {
     const latest = fixture(13);

@@ -1,5 +1,5 @@
 import type { NativeVideoProtocol, SerializedHttpRequest, SerializedHttpResponse } from './types.js';
-import { extractRequestBodyFields, parseJsonObject } from './utils.js';
+import { extractRequestBodyFields, headerValue, parseJsonObject } from './utils.js';
 import { inlineVideoSeconds } from './mp4.js';
 
 export type { NativeVideoProtocol };
@@ -75,9 +75,9 @@ export const VIDEO_MIN_DURATION_RATIO = 0.9;
  */
 export function nativeVideoDelivered(response: SerializedHttpResponse, requestedDurationSeconds?: number): boolean {
   if (response.statusCode !== 200 || !response.streamedBody) return false;
-  const contentType = Object.entries(response.headers).find(([key]) => key.toLowerCase() === 'content-type')?.[1];
+  const contentType = headerValue(response.headers, 'content-type');
   const durationMs = response.streamedBody.videoDurationMs;
-  if (!contentType?.toLowerCase().startsWith('video/mp4') || durationMs === undefined) return false;
+  if (!contentType.toLowerCase().startsWith('video/mp4') || durationMs === undefined) return false;
   return !requestedDurationSeconds || durationMs >= requestedDurationSeconds * 1000 * VIDEO_MIN_DURATION_RATIO;
 }
 

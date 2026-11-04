@@ -1,8 +1,9 @@
 import { CODING_ONLY_SUFFIX_RE, canonicalModelKey } from '../model-identity.js';
 import { parseVerifierCapabilities } from './verifier-capabilities.js';
-import { NATIVE_VIDEO_PROTOCOLS, isNativeVideoProtocol, isRoutingProtocol, type NativeVideoProtocol } from '@antseed/protocol/service-api';
-import { isServiceHealthFailing, providerServiceHealthFor, providerServicePerformanceFor, type ServiceHealth, type ServicePerformance, type VideoOptions } from '@antseed/protocol/peer-metadata';
+import { AUDIO_SPEECH_PROTOCOLS, NATIVE_VIDEO_PROTOCOLS, isAudioSpeechProtocol, isNativeVideoProtocol, isRoutingProtocol, type AudioSpeechProtocol, type NativeVideoProtocol } from '@antseed/protocol/service-api';
+import { isServiceHealthFailing, providerServiceHealthFor, providerServicePerformanceFor, type ServiceHealth, type ServicePerformance, type SpeechOptions, type VideoOptions } from '@antseed/protocol/peer-metadata';
 import type { ProviderServiceHealthMatrixEntry, ProviderServicePerformanceMatrixEntry } from '@antseed/protocol/peer-pricing';
+import { componentMatchesAttributes } from '@antseed/protocol/billing';
 
 export type CatalogServiceProtocol =
   | 'anthropic-messages'
@@ -10,7 +11,8 @@ export type CatalogServiceProtocol =
   | 'openai-responses'
   | 'openai-images'
   | 'typesafe-systemone'
-  | NativeVideoProtocol;
+  | NativeVideoProtocol
+  | AudioSpeechProtocol;
 
 export type CatalogServiceCapabilities = {
   contextWindow?: number;
@@ -22,6 +24,7 @@ export type CatalogServiceCapabilities = {
   structuredOutput?: boolean;
   supportedParameters?: string[];
   video?: VideoOptions;
+  speech?: SpeechOptions;
 };
 
 export type NetworkServiceCatalogPeer = {
@@ -64,8 +67,11 @@ export type NetworkServiceCatalogPeer = {
   defaultCachedInputUsdPerMillion?: number;
 };
 
-/** `decision`: System One models return typed answers, not text or images. */
-export type NetworkServiceOfferType = 'text' | 'image' | 'decision' | 'video';
+/**
+ * `decision`: System One models return typed answers, not text or images.
+ * `speech`: text-to-speech models return an audio file.
+ */
+export type NetworkServiceOfferType = 'text' | 'image' | 'decision' | 'video' | 'speech';
 
 export type NetworkServiceOffer = {
   unitBillingModels?: NonNullable<NetworkServiceCatalogPeer['providerServiceUnitBillingModels']>[string]['services'][string];
@@ -106,6 +112,7 @@ const VALID_PROTOCOLS = new Set<string>([
   'openai-images',
   'typesafe-systemone',
   ...NATIVE_VIDEO_PROTOCOLS,
+  ...AUDIO_SPEECH_PROTOCOLS,
 ]);
 
 export function inferServiceProtocol(provider: string): Exclude<CatalogServiceProtocol, 'openai-images'> | null {
@@ -188,6 +195,18 @@ function resolveImagePriceRange(peer: NetworkServiceCatalogPeer, provider: strin
     : {};
 }
 
+/** What an offer is, by its protocol first and then, for image models served elsewhere, its outputs. */
+function serviceOfferType(
+  protocol: CatalogServiceProtocol | null,
+  capabilities: CatalogServiceCapabilities | undefined,
+): NetworkServiceOfferType {
+  if (isNativeVideoProtocol(protocol)) return 'video';
+  if (isAudioSpeechProtocol(protocol)) return 'speech';
+  if (protocol === 'typesafe-systemone') return 'decision';
+  if (protocol === 'openai-images' || capabilities?.outputs?.includes('image')) return 'image';
+  return 'text';
+}
+
 export function buildNetworkServiceOffers(
   peers: NetworkServiceCatalogPeer[],
   options: BuildNetworkServiceOffersOptions = {},
@@ -205,14 +224,9 @@ export function buildNetworkServiceOffers(
         const capabilities = peer.providerServiceCapabilities?.[provider]?.services?.[serviceId];
         const categories = peer.providerServiceCategories?.[provider]?.services?.[serviceId];
         const protocol = resolveServiceProtocol(protocols, provider);
-        const type: NetworkServiceOfferType = isNativeVideoProtocol(protocol)
-          ? 'video'
-          : protocol === 'typesafe-systemone'
-          ? 'decision'
-          : protocol === 'openai-images' || capabilities?.outputs?.includes('image')
-            ? 'image'
-            : 'text';
+        const type = serviceOfferType(protocol, capabilities);
         const pricing = resolvePricing(peer, provider, serviceId);
+        const unitPriced = type === 'video' || type === 'speech';
         offers.push({
           advertisedVerifierIds: parseVerifierCapabilities(peer.capabilities).supported,
           serviceId,
@@ -225,10 +239,10 @@ export function buildNetworkServiceOffers(
           peerId: peer.peerId,
           ...(peer.displayName ? { displayName: peer.displayName } : {}),
           ...(peer.reputationScore !== undefined ? { reputationScore: peer.reputationScore } : {}),
-          ...(type !== 'video' && pricing.inputUsdPerMillion !== undefined ? { inputUsdPerMillion: pricing.inputUsdPerMillion } : {}),
-          ...(type !== 'video' && pricing.outputUsdPerMillion !== undefined ? { outputUsdPerMillion: pricing.outputUsdPerMillion } : {}),
-          ...(type !== 'video' && pricing.cachedInputUsdPerMillion !== undefined ? { cachedInputUsdPerMillion: pricing.cachedInputUsdPerMillion } : {}),
-          ...(type === 'video' ? { unitBillingModels: peer.providerServiceUnitBillingModels?.[provider]?.services[serviceId] } : {}),
+          ...(!unitPriced && pricing.inputUsdPerMillion !== undefined ? { inputUsdPerMillion: pricing.inputUsdPerMillion } : {}),
+          ...(!unitPriced && pricing.outputUsdPerMillion !== undefined ? { outputUsdPerMillion: pricing.outputUsdPerMillion } : {}),
+          ...(!unitPriced && pricing.cachedInputUsdPerMillion !== undefined ? { cachedInputUsdPerMillion: pricing.cachedInputUsdPerMillion } : {}),
+          ...(unitPriced ? { unitBillingModels: peer.providerServiceUnitBillingModels?.[provider]?.services[serviceId] } : {}),
           ...resolveImagePriceRange(peer, provider, serviceId),
           ...(health ? { health } : {}),
           ...(performance ? { performance } : {}),
@@ -239,8 +253,31 @@ export function buildNetworkServiceOffers(
   return offers;
 }
 
+/**
+ * USD per input character a speech offer bills: speech billing matches
+ * components against `{ model: <service> }` and charges every one that
+ * applies, so their prices add up. 0 for a billing model with no components
+ * (free); null when the offer is not speech or publishes no character price.
+ */
+export function speechOfferUsdPerCharacter(offer: NetworkServiceOffer): number | null {
+  if (offer.type !== 'speech') return null;
+  const model = offer.protocol ? offer.unitBillingModels?.[offer.protocol] : undefined;
+  // A billing model with no components charges nothing: the offer is free.
+  if (model && model.components.length === 0) return 0;
+  const attributes = { model: offer.serviceId };
+  const applicable = (model?.components ?? []).filter((component) =>
+    component.unit === 'input_characters'
+    && componentMatchesAttributes(component, attributes)
+    && Number.isFinite(component.priceUsd)
+    && component.priceUsd >= 0);
+  return applicable.length > 0
+    ? applicable.reduce((sum, component) => sum + component.priceUsd, 0)
+    : null;
+}
+
 function comparableOfferPrice(offer: NetworkServiceOffer): number {
   if (offer.type === 'image') return offer.minImageUsdPerImage ?? Number.POSITIVE_INFINITY;
+  if (offer.type === 'speech') return speechOfferUsdPerCharacter(offer) ?? Number.POSITIVE_INFINITY;
   if (offer.inputUsdPerMillion === undefined || offer.outputUsdPerMillion === undefined) {
     return Number.POSITIVE_INFINITY;
   }

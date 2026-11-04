@@ -11,6 +11,12 @@ export const NATIVE_VIDEO_PROTOCOLS = ['venice-video', 'fal-video'] as const;
  */
 export const ROUTING_PROTOCOLS = ['irp-suggest'] as const;
 
+/**
+ * Speech APIs: text in, audio file out (OpenAI `POST /v1/audio/speech`).
+ * Appended only, after the routing protocols, for the same reason.
+ */
+export const AUDIO_SPEECH_PROTOCOLS = ['openai-audio-speech'] as const;
+
 export const WELL_KNOWN_SERVICE_API_PROTOCOLS = [
   'anthropic-messages',
   'openai-chat-completions',
@@ -20,6 +26,7 @@ export const WELL_KNOWN_SERVICE_API_PROTOCOLS = [
   'typesafe-systemone',
   ...NATIVE_VIDEO_PROTOCOLS,
   ...ROUTING_PROTOCOLS,
+  ...AUDIO_SPEECH_PROTOCOLS,
 ] as const;
 
 export type ServiceApiProtocol = (typeof WELL_KNOWN_SERVICE_API_PROTOCOLS)[number];
@@ -34,6 +41,12 @@ export type RoutingProtocol = (typeof ROUTING_PROTOCOLS)[number];
 
 export function isRoutingProtocol(value: unknown): value is RoutingProtocol {
   return ROUTING_PROTOCOLS.includes(value as RoutingProtocol);
+}
+
+export type AudioSpeechProtocol = (typeof AUDIO_SPEECH_PROTOCOLS)[number];
+
+export function isAudioSpeechProtocol(value: unknown): value is AudioSpeechProtocol {
+  return AUDIO_SPEECH_PROTOCOLS.includes(value as AudioSpeechProtocol);
 }
 
 const SERVICE_API_PROTOCOL_SET = new Set<string>(WELL_KNOWN_SERVICE_API_PROTOCOLS);

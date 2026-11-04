@@ -30,6 +30,7 @@ export {
   type UpstreamAccountEvent,
 } from './health/model-health-checker.js';
 export { isUpstreamOutOfCredit } from './health/upstream-credit.js';
+export { requestBodyFields, requestBodyService } from './requested-service.js';
 export {
   GasHealthMonitor,
   DEFAULT_GAS_CHECK_INTERVAL_MS,
@@ -91,6 +92,7 @@ export {
   compareNetworkServiceOfferPrice,
   selectLowestPricedCanonicalOffers,
   selectLowestPricedNetworkServiceOffer,
+  speechOfferUsdPerCharacter,
 } from './discovery/service-catalog.js';
 
 // Fault attribution — lets consumers tell a dead peer from a broken buyer.
@@ -140,6 +142,8 @@ export {
   WELL_KNOWN_SERVICE_API_PROTOCOLS,
   NATIVE_VIDEO_PROTOCOLS,
   isNativeVideoProtocol,
+  AUDIO_SPEECH_PROTOCOLS,
+  isAudioSpeechProtocol,
   SERVICE_CAPABILITY_MODALITIES,
   MAX_CAPABILITY_TOKEN_COUNT,
   MAX_CAPABILITY_SUPPORTED_PARAMETERS,
@@ -171,6 +175,10 @@ export {
   type ServiceCapabilityModality,
   type VideoInputKind,
   type VideoOptions,
+  type SpeechOptions,
+  type AudioSpeechProtocol,
+  SPEECH_METADATA_VERSION,
+  speechVoiceProblem,
   type PeerMetadata,
   type PeerVerifications,
   type ProviderAnnouncement,
@@ -310,6 +318,7 @@ export {
   RECEIVE_WITH_AUTHORIZATION_TYPES,
   computeMetadataHash,
   encodeMetadata,
+  decodeSpendingAuthMetadata,
   computeFreeUsageMetadataHash,
   encodeFreeUsageMetadata,
   getServiceMetadataId,

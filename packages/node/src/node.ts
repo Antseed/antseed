@@ -411,6 +411,11 @@ export interface BuyerUsageServicePoint {
   inputTokens: string;
   cachedInputTokens: string;
   outputTokens: string;
+  /** Delivered images, video generations and seconds, and speech `input` characters; bigints as strings. */
+  outputImages: string;
+  videoGenerations: string;
+  videoSeconds: string;
+  inputCharacters: string;
   requestCount: number;
 }
 
@@ -1681,7 +1686,8 @@ export class AntseedNode extends EventEmitter {
     // Per-service usage (model attribution for the desktop savings tile).
     // Documented as lower bounds — requests that raced NeedAuth may lack
     // service attribution, so Σ services ≤ channel totals.
-    const services = this._channelStore.getBuyerServiceUsageTotals(buyerAddress).map((s) => ({
+    // Typed, so a field added to the totals but not to BuyerUsageServicePoint fails to compile.
+    const services = this._channelStore.getBuyerServiceUsageTotals(buyerAddress).map((s): BuyerUsageServicePoint => ({
       serviceIdHash: s.serviceId,
       amountUsdc: s.amountUsdc,
       inputTokens: s.inputTokens,
@@ -1690,6 +1696,7 @@ export class AntseedNode extends EventEmitter {
       outputImages: s.outputImages,
       videoGenerations: s.videoGenerations,
       videoSeconds: s.videoSeconds,
+      inputCharacters: s.inputCharacters,
       requestCount: s.requestCount,
     }));
     return {

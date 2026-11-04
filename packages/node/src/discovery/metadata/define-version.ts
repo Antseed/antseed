@@ -3,22 +3,27 @@ import { toPeerId } from "../../types/peer.js";
 import { bytesToHex, hexToBytes } from "../../utils/hex.js";
 import type { MetadataFieldContext, PeerField, ProviderField } from "./field.js";
 import { MetadataReader, MetadataWriter, SIGNATURE_LENGTH } from "./wire.js";
+import { withinVocabulary, type MetadataVocabulary } from "./vocabulary.js";
 
 export interface MetadataLayout {
   /** Blocks of each provider entry, in wire order. */
   providerFields: readonly ProviderField[];
   /** Peer-level blocks after the provider entries, in wire order. */
   peerFields: readonly PeerField[];
+  /** Protocols, billing units and capability options documents may name. */
+  vocabulary: MetadataVocabulary;
 }
 
 export interface MetadataVersionSpec extends MetadataLayout {
   version: number;
   /** Per-service entry counts are u16 instead of u8. */
   wideServiceCounts: boolean;
+  /** Whether sellers still sign and serve this version; the rest are decode-only. */
+  servable: boolean;
   /**
-   * Builds this version's document from the seller's newest metadata. Only
-   * versions that define it are served by sellers; the rest are decode-only.
-   * Fields this version does not carry are stripped automatically afterwards.
+   * Version-specific changes when building this version's document from the
+   * seller's newest metadata. Services outside the version's vocabulary and
+   * fields it does not carry are left out automatically, before and after.
    */
   fromLatest?: (latest: PeerMetadata) => PeerMetadata;
 }
@@ -34,6 +39,8 @@ export interface MetadataVersionCodec {
   fromLatest(latest: PeerMetadata): PeerMetadata;
   /** Whether this version carries the given provider field. */
   carriesProviderField(key: keyof ProviderAnnouncement): boolean;
+  /** Protocols, billing units and capability options this version's documents may name. */
+  readonly vocabulary: MetadataVocabulary;
 }
 
 /** Keys every provider entry and every document carries. */
@@ -71,7 +78,8 @@ export function defineMetadataVersion(spec: MetadataVersionSpec): MetadataVersio
 
   return {
     version: spec.version,
-    servable: spec.fromLatest !== undefined,
+    servable: spec.servable,
+    vocabulary: spec.vocabulary,
 
     encodeBody(metadata) {
       const writer = new MetadataWriter();
@@ -121,8 +129,9 @@ export function defineMetadataVersion(spec: MetadataVersionSpec): MetadataVersio
     },
 
     fromLatest(latest) {
-      if (!spec.fromLatest) throw new Error(`Metadata v${spec.version} is decode-only`);
-      return strip(spec.fromLatest(latest));
+      if (!spec.servable) throw new Error(`Metadata v${spec.version} is decode-only`);
+      const known = withinVocabulary(latest, spec.vocabulary);
+      return strip(spec.fromLatest ? spec.fromLatest(known) : known);
     },
 
     carriesProviderField(key) {

@@ -155,6 +155,18 @@ antseed config seller set freeUsage.recordBatchSize 64
 antseed config seller set freeUsage.recordFlushIntervalMs 3600000
 ```
 
+Venice image services can pair generation with a native edit model. The provider advertises image input only when this pairing exists:
+
+```bash
+antseed config seller add-service venice grok-imagine-image-quality \
+  --upstream grok-imagine-image-quality \
+  --venice-edit-model grok-imagine-quality-edit \
+  --input 0 --output 0 \
+  --unit-billing-models '{"openai-images":{"version":1,"components":[{"unit":"output_images","priceUsd":0.06}]}}'
+```
+
+Venice edits support `response_format=b64_json`; explicit `response_format=url` and unsupported multipart fields are rejected before the upstream request. Seller startup warns when `imageEditModel` is configured without an `openai-images` billing model. The example prices reflect Venice's catalog when written; verify current generation and edit pricing through `GET https://api.venice.ai/api/v1/models?type=image` and `?type=inpaint` before advertising a service.
+
 **Routers** select peers and proxy requests (consumer mode):
 
 ```bash

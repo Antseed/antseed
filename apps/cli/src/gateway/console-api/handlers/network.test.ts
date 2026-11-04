@@ -274,6 +274,78 @@ test('peer services and model offers carry the seller\'s measured performance', 
   assert.equal(model!.offers[0]!.performance?.requests, 312)
 })
 
+test('peer services, model offers and models carry the voices speech services accept', () => {
+  const row = {
+    ...PEERS_BODY.peers[0],
+    providerServiceCapabilities: { openai: { services: {
+      'open-model-a': { speech: { voices: ['af_sky', 'am_adam'] } },
+      'open-model-b': { outputs: ['text'] },
+    } } },
+  }
+  const services = peerServices(row as Record<string, unknown>)
+  assert.deepEqual(services.find((entry) => entry.service === 'open-model-a')?.voices, ['af_sky', 'am_adam'])
+  assert.equal(services.find((entry) => entry.service === 'open-model-b')?.voices, undefined)
+  const [model] = mapNetworkModels({ data: [{ id: 'tts-kokoro', type: 'speech', voices: ['af_sky'], peers: [
+    { peerId: PEER_A, serviceId: 'tts-kokoro', capabilities: { speech: { voices: ['af_sky', 'am_adam'] } } },
+  ] }] }, [])
+  assert.deepEqual(model!.voices, ['af_sky'])
+  assert.deepEqual(model!.offers[0]!.voices, ['af_sky', 'am_adam'])
+})
+
+test('speech offers keep their per-character price and are free only when it is zero', () => {
+  const speechOffer = (peerId: string, priceUsd: number) => ({
+    peerId, provider: 'openai', serviceId: 'tts-model', protocol: 'openai-audio-speech',
+    unitBillingModels: { 'openai-audio-speech': { version: 1, components: [
+      { unit: 'input_characters', priceUsd },
+      // A component for another model does not apply.
+      { unit: 'input_characters', priceUsd: 1, match: { model: 'other-model' } },
+    ] } },
+  })
+  const [model] = mapNetworkModels({ data: [{ id: 'tts-model', type: 'speech', peers: [speechOffer(PEER_A, 0.000015), speechOffer('b'.repeat(40), 0)] }] }, [])
+  const [paid, free] = model!.offers
+  assert.ok(Math.abs(paid!.usdPerMillionCharacters! - 15) < 1e-9)
+  assert.equal(paid!.free, false)
+  assert.equal(free!.usdPerMillionCharacters, 0)
+  assert.equal(free!.free, true)
+  assert.equal(model!.free, true)
+
+  // A billing model with no components is free too.
+  const [empty] = mapNetworkModels({ data: [{ id: 'tts-free', type: 'speech', peers: [
+    { peerId: PEER_A, provider: 'openai', serviceId: 'tts-free', unitBillingModels: { 'openai-audio-speech': { version: 1, components: [] } } },
+  ] }] }, [])
+  assert.equal(empty!.offers[0]!.usdPerMillionCharacters, 0)
+  assert.equal(empty!.offers[0]!.free, true)
+  assert.equal(empty!.free, true)
+
+  // Only the speech billing model prices characters: a free image model beside it changes nothing.
+  const [mixed] = mapNetworkModels({ data: [{ id: 'tts-model', type: 'speech', peers: [{
+    peerId: PEER_A, provider: 'openai', serviceId: 'tts-model',
+    unitBillingModels: {
+      'openai-audio-speech': { version: 1, components: [{ unit: 'input_characters', priceUsd: 0.000015 }] },
+      'openai-images': { version: 1, components: [] },
+    },
+  }] }] }, [])
+  assert.ok(Math.abs(mixed!.offers[0]!.usdPerMillionCharacters! - 15) < 1e-9)
+  assert.equal(mixed!.offers[0]!.free, false)
+})
+
+test('peer services carry a speech service\'s price per million characters', () => {
+  const row = {
+    ...PEERS_BODY.peers[0],
+    providerPricing: { openai: { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 }, services: { 'tts-paid': {}, 'tts-free': {} } } },
+    providerServiceApiProtocols: { openai: { services: { 'tts-paid': ['openai-audio-speech'], 'tts-free': ['openai-audio-speech'] } } },
+    providerServiceUnitBillingModels: { openai: { services: {
+      'tts-paid': { 'openai-audio-speech': { version: 1, components: [{ unit: 'input_characters', priceUsd: 0.000015 }] } },
+      'tts-free': { 'openai-audio-speech': { version: 1, components: [] } },
+    } } },
+  }
+  const services = peerServices(row as Record<string, unknown>)
+  const paid = services.find((entry) => entry.service === 'tts-paid')!
+  assert.ok(Math.abs(paid.usdPerMillionCharacters! - 15) < 1e-9)
+  assert.equal(paid.paid, true)
+  assert.equal(services.find((entry) => entry.service === 'tts-free')!.usdPerMillionCharacters, 0)
+})
+
 test('peer services give a paid unit-billed service no seller-wide program', () => {
   const row = {
     ...PEERS_BODY.peers[0],

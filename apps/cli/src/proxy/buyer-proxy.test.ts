@@ -59,6 +59,17 @@ function makePeer(seed: string, providers: string[]): PeerInfo {
   }
 }
 
+/** A seller of the `tts-kokoro` speech service with `voices`. */
+function makeSpeechPeer(seed: string, voices: string[], reputation?: number): PeerInfo {
+  const peer = makePeer(seed, ['openai'])
+  if (reputation !== undefined) peer.reputationScore = reputation
+  peer.providerServiceApiProtocols = { openai: { services: { 'tts-kokoro': ['openai-audio-speech'] } } }
+  peer.providerServiceCapabilities = {
+    openai: { services: { 'tts-kokoro': { inputs: ['text'], outputs: ['audio'], speech: { voices } } } },
+  }
+  return peer
+}
+
 test('the buyer switches between a model and a routing service without replacing the plugin', async () => {
   const inferencePeer = makeRankedRoutingFixture().peers[0]!
   const routingPeer = makePeer('d', ['alpha'])
@@ -6807,4 +6818,142 @@ test('a buyer payment negotiation failure counts like a busy answer, flat or ada
   // Any other 503 is still the seller's.
   assert.equal(classifyFailedAttempt({ done: false, statusCode: 503, responseBody: Buffer.from('{"error":"overloaded"}'), responseHeaders: {}, errorMessage: null }).sellerOnly, true)
   assert.equal(healthStatusFor({ statusCode: 503, body: Buffer.from('{"error":"overloaded"}') }), 503)
+})
+
+test('speech requests route only to speech services and return the audio unchanged', async () => {
+  const chat = makePeer('a', ['openai'])
+  chat.reputationScore = 95
+  chat.providerServiceApiProtocols = { openai: { services: { 'tts-kokoro': ['openai-chat-completions'] } } }
+  const speech = makeSpeechPeer('b', ['af_sky'], 50)
+  const proxy = makeBuyerProxyWithPeers([chat, speech], [chat, speech], permissiveRouter())
+  const sent: Array<{ peer: string; path: string; body: Record<string, unknown> }> = []
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string; path: string; body: Uint8Array }) => {
+    sent.push({ peer: peer.peerId, path: request.path, body: JSON.parse(Buffer.from(request.body).toString()) })
+    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'audio/mpeg' }, body: Buffer.from('ID3-audio-bytes') }
+  }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({
+    path: '/v1/audio/speech',
+    body: { model: 'tts-kokoro', input: 'Hello there.', voice: 'af_sky' },
+  }))
+
+  assert.equal(res.statusCode, 200, res.body)
+  assert.equal(res.headers['content-type'], 'audio/mpeg')
+  assert.equal(res.body, 'ID3-audio-bytes')
+  assert.equal(sent.length, 1)
+  assert.equal(sent[0]!.peer, speech.peerId)
+  assert.equal(sent[0]!.path, '/v1/audio/speech')
+  assert.equal(sent[0]!.body.input, 'Hello there.')
+})
+
+test('speech requests route only to sellers that offer the requested voice', async () => {
+  // The two best-ranked sellers do not offer the voice; only the third does.
+  const first = makeSpeechPeer('a', ['am_adam'], 95)
+  const second = makeSpeechPeer('b', ['am_adam'], 90)
+  const third = makeSpeechPeer('c', ['af_sky', 'am_adam'], 50)
+  const proxy = makeBuyerProxyWithPeers([first, second, third], [first, second, third], permissiveRouter())
+  const sent: string[] = []
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
+    sent.push(peer.peerId)
+    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'audio/mpeg' }, body: Buffer.from('audio') }
+  }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({
+    path: '/v1/audio/speech',
+    body: { model: 'tts-kokoro', input: 'Hello there.', voice: 'af_sky' },
+  }))
+
+  assert.equal(res.statusCode, 200, res.body)
+  assert.deepEqual(sent, [third.peerId])
+})
+
+/** One peer selling `tts-kokoro` through a cheaper provider without `af_sky` and a dearer one with it. */
+function makeTwoProviderSpeechPeer(): PeerInfo {
+  const peer = makePeer('a', ['cheap', 'voiced'])
+  const service = (voices: string[]) => ({ inputs: ['text' as const], outputs: ['audio' as const], speech: { voices } })
+  const perCharacter = (priceUsd: number) => ({ 'openai-audio-speech': { version: 1 as const, components: [{ unit: 'input_characters' as const, priceUsd }] } })
+  peer.providerServiceApiProtocols = {
+    cheap: { services: { 'tts-kokoro': ['openai-audio-speech'] } },
+    voiced: { services: { 'tts-kokoro': ['openai-audio-speech'] } },
+  }
+  peer.providerServiceCapabilities = {
+    cheap: { services: { 'tts-kokoro': service(['am_adam']) } },
+    voiced: { services: { 'tts-kokoro': service(['af_sky']) } },
+  }
+  peer.providerServiceUnitBillingModels = {
+    cheap: { services: { 'tts-kokoro': perCharacter(0.000001) } },
+    voiced: { services: { 'tts-kokoro': perCharacter(0.00002) } },
+  }
+  return peer
+}
+
+for (const pinned of [false, true]) {
+  test(`a${pinned ? ' pinned' : ''} speech request uses the peer provider that offers its voice, even when another is cheaper`, async () => {
+    const peer = makeTwoProviderSpeechPeer()
+    const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
+    const providers: string[] = []
+    ;(proxy as any)._node.sendRequest = async (_peer: PeerInfo, request: { requestId: string; headers: Record<string, string> }) => {
+      providers.push(request.headers['x-antseed-provider'] ?? '')
+      return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'audio/mpeg' }, body: Buffer.from('audio') }
+    }
+
+    const res = await invokeProxy(proxy, makeProxyRequest({
+      path: '/v1/audio/speech',
+      body: { model: pinned ? `${peer.peerId}@tts-kokoro` : 'tts-kokoro', input: 'Hello there.', voice: 'af_sky' },
+    }))
+
+    assert.equal(res.statusCode, 200, res.body)
+    assert.deepEqual(providers, ['voiced'])
+  })
+}
+
+test('a voice no seller offers is refused with the voices that are available', async () => {
+  const peers = [makeSpeechPeer('a', ['am_adam']), makeSpeechPeer('b', ['af_sky', 'am_adam'])]
+  const proxy = makeBuyerProxyWithPeers(peers, peers, permissiveRouter())
+  let sent = 0
+  ;(proxy as any)._node.sendRequest = async () => { sent += 1; throw new Error('must not be sent') }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({
+    path: '/v1/audio/speech',
+    body: { model: 'tts-kokoro', input: 'Hello there.', voice: 'nova' },
+  }))
+
+  assert.equal(res.statusCode, 400, res.body)
+  assert.equal(sent, 0)
+  const error = JSON.parse(res.body).error
+  assert.equal(error.code, 'unsupported_voice')
+  assert.equal(error.param, 'voice')
+  assert.deepEqual(error.available_voices, ['af_sky', 'am_adam'])
+})
+
+test('lip-synced video creates route only to sellers whose model takes audio_url', async () => {
+  const peer = (seed: string, reputation: number, supportedParameters: string[]) => {
+    const p = makePeer(seed, ['venice-video'])
+    p.reputationScore = reputation
+    p.providerServiceApiProtocols = { 'venice-video': { services: { 'ref-model': ['venice-video'] } } }
+    p.providerServiceCapabilities = { 'venice-video': { services: { 'ref-model': { outputs: ['video'], supportedParameters } as any } } }
+    return p
+  }
+  const silent = peer('a', 95, ['duration', 'image_url', 'prompt'])
+  const lipSync = peer('b', 50, ['audio_url', 'duration', 'image_url', 'prompt'])
+  const selected: string[] = []
+  const route = async (peers: PeerInfo[], body: Record<string, unknown>) => {
+    const proxy = makeBuyerProxyWithPeers(peers, peers, permissiveRouter() as any)
+    ;(proxy as any)._persistResourceRoutes = async () => {}
+    ;(proxy as any)._node.sendRequest = async (selectedPeer: PeerInfo, request: { requestId: string }) => {
+      selected.push(selectedPeer.peerId)
+      return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ queue_id: `job-${selected.length}` })) }
+    }
+    return invokeProxy(proxy, makeProxyRequest({ path: '/api/v1/video/queue', body: { model: 'ref-model', prompt: 'she says hello', duration: '5s', ...body } }))
+  }
+
+  selected.length = 0
+  assert.equal((await route([silent, lipSync], { audio_url: 'https://example.com/hello.mp3' })).statusCode, 200)
+  assert.deepEqual(selected, [lipSync.peerId])
+
+  selected.length = 0
+  const refused = await route([silent], { audio_url: 'https://example.com/hello.mp3' })
+  assert.equal(refused.statusCode, 422)
+  assert.match(JSON.parse(refused.body).error.message, /required parameter\(s\): audio_url/)
+  assert.deepEqual(selected, [])
 })
