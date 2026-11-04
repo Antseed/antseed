@@ -1,14 +1,19 @@
 import { describe, expect, it, vi } from 'vitest';
 import { AbiCoder, Interface, type AbstractProvider } from 'ethers';
 import { VerificationSignalsClient } from '../src/payments/evm/verification-signals-client.js';
-import { VERIFICATION_ABI, serviceHash } from '../src/payments/evm/verifier-client.js';
+import { KBF_AUDITS_ABI, VERIFICATION_RESULTS_ABI, serviceHash } from '../src/payments/evm/verifier-client.js';
 import { MULTICALL3_ADDRESS } from '../src/payments/evm/multicall.js';
 
 const VERIFICATION = '0x' + '11'.repeat(20);
+const RESULTS = '0x' + '33'.repeat(20);
 const GATE = '0x' + '22'.repeat(20);
 const MULTICALL_IFACE = new Interface(['function aggregate3(tuple(address target, bool allowFailure, bytes callData)[] calls) payable returns (tuple(bool success, bytes returnData)[] returnData)']);
-// The deployed AntseedKbfVerification ABI, plus the emissions gate's epoch read.
-const IFACE = new Interface([...VERIFICATION_ABI, 'function currentEpoch() view returns (uint256)']);
+// The results layer's reads, the KBF contract's `results()`, and the emissions gate's epoch read.
+const IFACE = new Interface([
+  ...VERIFICATION_RESULTS_ABI.filter((entry) => !entry.includes('currentEpoch')),
+  ...KBF_AUDITS_ABI.filter((entry) => entry.includes('function results()')),
+  'function currentEpoch() view returns (uint256)',
+]);
 const coder = AbiCoder.defaultAbiCoder();
 const hash = serviceHash;
 
@@ -19,7 +24,11 @@ function fakeProvider(statuses: Statuses, options: { currentEpoch?: number; mult
   const answer = (target: string, data: string): string => {
     const parsed = IFACE.parseTransaction({ data })!;
     switch (parsed.name) {
+      case 'results':
+        expect(target.toLowerCase()).toBe(VERIFICATION);
+        return coder.encode(['address'], [RESULTS]);
       case 'validityEpochs':
+        expect(target.toLowerCase()).toBe(RESULTS);
         if (options.failValidity) throw new Error('revert');
         return coder.encode(['uint8'], [2]);
       case 'emissionsGate': return coder.encode(['address'], [GATE]);
@@ -30,8 +39,9 @@ function fakeProvider(statuses: Statuses, options: { currentEpoch?: number; mult
         const [agentId, serviceHash] = parsed.args as unknown as [bigint, string];
         const status = statuses[`${agentId}:${serviceHash}`];
         if (status === 'revert') throw new Error('revert');
-        return coder.encode(['tuple(bytes32,uint8,uint64,uint64)'], [[
-          '0x' + '00'.repeat(32), status?.verdict ?? 0, 0, status?.epoch ?? 0,
+        expect(target.toLowerCase()).toBe(RESULTS);
+        return coder.encode(['tuple(bytes32,uint8,uint64,uint64,address)'], [[
+          '0x' + '00'.repeat(32), status?.verdict ?? 0, 0, status?.epoch ?? 0, VERIFICATION,
         ]]);
       }
       default: throw new Error(`unexpected ${parsed.name}`);
@@ -70,8 +80,24 @@ describe('VerificationSignalsClient', () => {
     expect(result.get(7)).toEqual(['gpt-6.1-sol']);
     expect(result.get(8)).toEqual([]);
     expect(result.has(0)).toBe(false);
-    // One batched round for statuses + one for the gate epoch.
+    // The results address once, then one batched round for statuses + one for the gate epoch.
+    expect(call).toHaveBeenCalledTimes(3);
+  });
+
+  it('reads a configured results address without asking the KBF contract', async () => {
+    const { provider, call } = fakeProvider({ [`7:${hash('a')}`]: { verdict: 2, epoch: 28 } });
+    const client = new VerificationSignalsClient(provider, VERIFICATION, RESULTS);
+    expect((await client.readDiffServices([{ agentId: 7, services: ['a'] }])).get(7)).toEqual(['a']);
     expect(call).toHaveBeenCalledTimes(2);
+  });
+
+  it('discovers the results address once', async () => {
+    const { provider, call } = fakeProvider({ [`7:${hash('a')}`]: { verdict: 2, epoch: 28 } });
+    const client = new VerificationSignalsClient(provider, VERIFICATION);
+    await client.readDiffServices([{ agentId: 7, services: ['a'] }]);
+    await client.readDiffServices([{ agentId: 7, services: ['a'] }]);
+    const resultsReads = call.mock.calls.filter(([tx]) => (tx as { data: string }).data.includes(IFACE.getFunction('results')!.selector.slice(2)));
+    expect(resultsReads).toHaveLength(1);
   });
 
   it('ignores a DIFF still waiting for its second auditor: serviceStatus keeps the recorded result', async () => {

@@ -19,7 +19,10 @@ import {
   createReferenceRequestLimiter,
   loadModelReference,
   ReferenceBuildCheckpoint,
+  ReferenceEndpointError,
+  replayedThinkingDiscovery,
   resolveReferenceRequestOverrides,
+  retryDelayMs,
 } from './model-reference.js'
 import type { VerifierModelCatalog } from './openrouter-catalog.js'
 import { setAuditedModelsForTesting } from './audited-models.js'
@@ -1819,6 +1822,46 @@ test('reference requests retry nested Undici socket failures', async () => {
   }
 })
 
+test('a 429 without Retry-After backs off for seconds, not milliseconds', () => {
+  // A provider rate limit outlasts 0.5-2 s waits: quick retries all hit it.
+  const providerThrottle = new ReferenceEndpointError(429, null, '{"error":{"message":"Provider returned error","code":429}}')
+  assert.deepEqual([1, 2, 3, 4].map((attempt) => retryDelayMs(providerThrottle, 500, attempt)), [10_000, 20_000, 40_000, 60_000])
+  // A Retry-After the endpoint sends is honoured as before.
+  assert.equal(retryDelayMs(new ReferenceEndpointError(429, 1_500, 'slow down'), 500, 1), 1_500)
+  // Other retryable errors keep the short backoff.
+  assert.deepEqual([1, 2, 3].map((attempt) => retryDelayMs(new ReferenceEndpointError(503, null, 'busy'), 500, attempt)), [500, 1_000, 2_000])
+})
+
+test('a 200 whose body is only keep-alive whitespace is retried, not fatal', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-blank-body-'))
+  let blankBodies = 0
+  const logs: string[] = []
+  const fetchFn: typeof fetch = async (_url, init) => {
+    if (blankBodies === 0) {
+      blankBodies += 1
+      // OpenRouter pads a slow non-streaming answer with whitespace; a dropped upstream leaves only that.
+      return new Response('\n\n   \n', { status: 200, headers: { 'content-type': 'application/json' } })
+    }
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    return response(successfulContent(body.model, prompt))
+  }
+  try {
+    const built = await buildModelReference({
+      model: MODEL,
+      referencesDir: directory,
+      config: config(),
+      fetchFn,
+      log: (message) => logs.push(message),
+    })
+    assert.equal(built.reference.probes.length, 100)
+    assert.equal(blankBodies, 1)
+    assert.equal(logs.some((message) => message.includes('reference request retry') && message.includes('not valid JSON')), true)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test('reference builds enforce the physical request budget', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-budget-'))
   const budgetedConfig = { ...config(), referenceMaxRequestsPerBuild: 1 }
@@ -2268,4 +2311,20 @@ test('reference builds record contrast detection and grow until every contrast i
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
+})
+
+test('a replayed thinking-discovery reply keeps its token-limit cut-off; one cached without a finish reason is asked again', () => {
+  const base = {
+    model: 'm', purpose: 'thinking-discovery' as const, inputTokens: 10, outputTokens: 20,
+    inputUsdPerMillion: 0, outputUsdPerMillion: 0, costUsdMicros: '0', reasoningTokens: 0,
+  }
+  const answers = '1) 1\n2) 2'
+  assert.deepEqual(replayedThinkingDiscovery({ ...base, content: answers, finishReason: 'length' }),
+    { ok: true, content: answers, reasoningTokens: 0, truncated: true })
+  assert.deepEqual(replayedThinkingDiscovery({ ...base, content: answers, finishReason: 'stop' }),
+    { ok: true, content: answers, reasoningTokens: 0, truncated: false })
+  assert.equal(replayedThinkingDiscovery({ ...base, content: answers }), null, 'older checkpoint entry: re-asked, not trusted')
+  assert.deepEqual(replayedThinkingDiscovery({
+    ...base, outcome: 'terminal-empty', finishReason: 'length', nativeFinishReason: null, detail: 'empty',
+  }), { ok: true, content: null, reasoningTokens: 0, truncated: true })
 })

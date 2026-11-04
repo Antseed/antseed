@@ -633,8 +633,15 @@ Provider-specific options are configured via each plugin's config schema (see `a
 
 `antseed verifier` runs **KBF audits** (Knowledge Boundary Fingerprinting). KBF is
 one of the first of many verification methods Antseed is launching; more are coming.
-KBF audits are recorded in their own contract, `AntseedKbfVerification`; each new
-method gets its own contract.
+Auditors submit KBF audits to `AntseedKbfAudits` (`payments.crypto.verificationContractAddress`),
+which records verdicts into `AntseedVerificationResults`, the one contract buyers and the
+points policy read. The owner approves auditors on `AntseedKbfAudits`. The CLI finds the
+results address through the KBF contract; `payments.crypto.verificationResultsAddress`
+overrides it. Each new verification method is its own contract next to `AntseedKbfAudits`.
+They replace the earlier single contract, `AntseedKbfVerification`, which this CLI can no
+longer read. On Base mainnet the CLI defaults to `AntseedKbfAudits`
+`0xe57aB03423A3835571F7d68AC1E23CF8a2763343` and `AntseedVerificationResults`
+`0xF2C8482aD2A348854698E93f41FE3cc32307687c`, so no configuration is needed.
 
 The audited models are a list built into the CLI (`src/verifier/audited-models.ts`):
 each model's service id, the aliases sellers use for it, and its OpenRouter id. A
@@ -697,11 +704,11 @@ buyer proxy's caps, so set `buyer.maxPricing.defaults` at least as high as the
 most expensive reference price.
 
 Every `verifier run` labels its evidence with the current on-chain epoch from the
-emissions gate, the epoch `AntseedKbfVerification` checks on submit. When no chain
+emissions gate, the epoch `AntseedKbfAudits` checks on submit. When no chain
 is reachable it falls back to the UTC-day epoch with a warning; that evidence
 cannot be submitted on-chain. The assignment uses the same epoch: every audited
 model is audited every epoch, split round robin across the auditors approved when
-the epoch started (read from the contract's `AuditorSet` events). Auditors are
+the epoch started (read from the KBF contract's `AuditorSet` events). Auditors are
 sorted by address and models by name, and in epoch `e` model `i` goes to auditor
 `(i + e) mod auditors`. `antseed verifier assignment [--epoch <n>] [--epochs <count>]`
 shows every auditor's models. The split is off-chain only. `--auditor` cannot be
@@ -771,6 +778,16 @@ or skipped result in the same words as AntScan. `verifier overview [--epoch <n>]
 
 `verifier rewards --epochs <list>` shows the credits earned per epoch and claims
 the auditor share once an epoch is final; the current epoch shows 0 until it ends.
+Rewards are claimed on `AntseedVerificationResults` from the KBF source's share of
+the verification bucket (`claimRewards(kbf, epochs)`); the command prints both
+addresses, whether KBF rewards are on yet, KBF's share and the per-auditor cap
+(20% by default; the rest of a capped reward goes to the emissions reserve).
+
+`verifier profile` shows your public auditor profile on the KBF audits contract;
+`--name`, `--icon` and `--url` set it (each flag replaces its field, `""` clears
+it; links must be `https://` or `ipfs://`). It signs like `verifier rewards
+--claim`, and only approved auditors can set one. `--auditor <address>` shows
+another auditor's profile.
 
 ## Checking Other Endpoints
 

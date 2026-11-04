@@ -24,6 +24,7 @@ import {
 import type { VerifierCLIConfig } from '../config/types.js'
 import type { ModelAuditSummaryV1, VerifierRunManifestV1 } from './audit-artifacts.js'
 import { readJsonIfExists, writeJsonAtomic } from './atomic-files.js'
+import { failureBlame } from './failure-blame.js'
 import type { VerificationOutcomeReasonV1 } from './outcome-reason.js'
 import type { ReferenceUpstreamProvenanceV1 } from './model-reference.js'
 import { findEpochProbeReference, loadBankReferenceExchanges } from './probe-bank.js'
@@ -324,6 +325,12 @@ export async function prepareModelAudits(input: {
         exclude(result.extensionPending
           ? `close call waiting for its extra questions (${result.extensionPending.reason}); a later run this epoch asks them, so it is not submitted yet`
           : 'close call without its extra questions, so it is not submitted')
+        continue
+      }
+      if (finalVerdict === 'UNDETERMINED' && failureBlame(result.outcomeReason) === 'auditor') {
+        // The auditor's own failure says nothing about the seller's model, also when a run is
+        // submitted directly (`--run-id`) rather than through the merged epoch.
+        exclude(`UNDETERMINED caused by this auditor (${result.outcomeReason?.summary ?? 'audit failed'}), so it is not submitted`)
         continue
       }
       if (finalVerdict !== result.status) result = { ...result, status: finalVerdict }

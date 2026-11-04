@@ -13,6 +13,7 @@ export interface AnthropicMessagesEndpointOptions {
 
 export class AnthropicMessagesEndpoint implements ModelEndpoint {
   readonly label: string
+  readonly supportsPrefill = false
 
   constructor(private readonly options: AnthropicMessagesEndpointOptions) {
     this.label = trimTrailingSlash(options.baseUrl)
@@ -35,7 +36,7 @@ export class AnthropicMessagesEndpoint implements ModelEndpoint {
         ...anthropicThinking(request.extraBody),
         ...this.options.extraBody,
       },
-      timeoutMs: this.options.timeoutMs ?? 120_000,
+      timeoutMs: request.timeoutMs ?? this.options.timeoutMs ?? 120_000,
       ...(signal ? { signal } : {}),
       ...(this.options.fetchImpl ? { fetchImpl: this.options.fetchImpl } : {}),
       readUsage: (parsed) => {

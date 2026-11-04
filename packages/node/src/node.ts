@@ -279,8 +279,10 @@ export interface NodePaymentsConfig {
   usageAccountingAddress?: string;
   /** AntseedWashTradingRegistry contract address (buyer trust score: proven wash traders). */
   washTradingRegistryAddress?: string;
-  /** AntseedKbfVerification contract address (buyer reputation: services with a live DIFF verdict keep 10%). */
+  /** AntseedKbfAudits contract address (buyer reputation: services with a live DIFF verdict keep 10%). */
   verificationContractAddress?: string;
+  /** AntseedVerificationResults address; discovered from the KBF contract when absent. */
+  verificationResultsAddress?: string;
   /** Chain ID for EIP-712 domain. Default: 8453 (Base) */
   chainId?: number;
   /** Default maximum USDC per spending auth. Default: 500000 ($0.50) */
@@ -529,7 +531,7 @@ export class AntseedNode extends EventEmitter {
   private _stakingClient: StakingClient | null = null;
   /** Batched reader for the on-chain inputs of the buyer trust score. */
   private _trustSignalsClient: TrustSignalsClient | null = null;
-  /** Batched reader for live DIFF verdicts on `AntseedKbfVerification`. */
+  /** Batched reader for live DIFF verdicts on `AntseedVerificationResults`. */
   private _verificationSignalsClient: VerificationSignalsClient | null = null;
   /** Last good verification read per agent id, keyed by the services it covered. */
   private _verificationStatusCache = new Map<number, { servicesKey: string; diffServices: string[]; fetchedAt: number }>();
@@ -1285,7 +1287,7 @@ export class AntseedNode extends EventEmitter {
 
   /**
    * Mark each peer's services that have a live DIFF verdict on
-   * `AntseedKbfVerification` (`onChainDiffServices`). Needs the agent id from the
+   * `AntseedVerificationResults` (`onChainDiffServices`). Needs the agent id from the
    * trust read. Reads are batched and cached per agent for
    * VERIFICATION_STATUS_TTL_MS; a failed read reuses the last good one for up
    * to VERIFICATION_STATUS_STALE_MAX_MS and otherwise leaves the peer
@@ -2645,7 +2647,11 @@ export class AntseedNode extends EventEmitter {
       debugLog(`[Node] TrustSignalsClient initialized (pools=${Boolean(payments.sellerPoolsAddress)} usage=${Boolean(payments.usageAccountingAddress)} wash=${Boolean(payments.washTradingRegistryAddress)})`);
     }
     if (this._channelsClient && payments.verificationContractAddress) {
-      this._verificationSignalsClient = new VerificationSignalsClient(payments.readProvider ?? this._channelsClient.provider, payments.verificationContractAddress);
+      this._verificationSignalsClient = new VerificationSignalsClient(
+        payments.readProvider ?? this._channelsClient.provider,
+        payments.verificationContractAddress,
+        payments.verificationResultsAddress,
+      );
       debugLog(`[Node] VerificationSignalsClient initialized (contract=${payments.verificationContractAddress.slice(0, 10)}...)`);
     }
 

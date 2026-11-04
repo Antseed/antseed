@@ -26,6 +26,7 @@ export * from './scoring.js';
 export * from './stats.js';
 export * from './verdict.js';
 export * from './reference.js';
+export * from './thinking-discovery.js';
 
 export const KBF_KIND = 'kbf';
 

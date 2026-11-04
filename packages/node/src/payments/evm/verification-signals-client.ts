@@ -1,21 +1,23 @@
 import { Interface, getAddress, type AbstractProvider } from 'ethers';
 import { createCachedMulticallReader, type MulticallRequest } from './multicall.js';
-import { VERIFICATION_ABI, VERIFIER_VERDICT, serviceHash } from './verifier-client.js';
+import { KBF_AUDITS_ABI, VERIFICATION_RESULTS_ABI, VERIFIER_VERDICT, serviceHash } from './verifier-client.js';
 import { verificationServiceKey } from '../../reputation/model-reputation.js';
 
 /**
  * Reads which advertised services of a batch of sellers have a live DIFF
- * verdict on `AntseedKbfVerification`, in at most two Multicall3 round trips:
+ * verdict on `AntseedVerificationResults`, the verification results layer,
+ * whatever verification method (source) recorded it. Two Multicall3 round
+ * trips per read, plus one on the first read when the results address has to
+ * be discovered from the KBF audits contract (`kbf.results()`, cached):
  *
- *   round 1: verification.validityEpochs, verification.emissionsGate (first
- *            read only; it is immutable), and per (agentId, service)
- *            verification.serviceStatus
+ *   round 1: results.validityEpochs, results.emissionsGate (first read only;
+ *            it is immutable), and per (agentId, service) results.serviceStatus
  *   round 2: emissionsGate.currentEpoch
  *
- * `serviceStatus` holds only recorded results. A DIFF is recorded once
+ * `serviceStatus` holds only recorded results. KBF records a DIFF once
  * `requiredReports[DIFF]` (2 on Base) distinct approved auditors report it in
  * the same epoch and report round; a DIFF still waiting for its second auditor
- * stays in the contract's report counts and leaves `serviceStatus` at the
+ * stays in the KBF contract's report counts and leaves `serviceStatus` at the
  * previous result, so it never cuts reputation here.
  *
  * A recorded verdict is live exactly as the contract counts it:
@@ -31,7 +33,8 @@ export interface VerificationServiceQuery {
 
 const VERDICT_DIFF = BigInt(VERIFIER_VERDICT.DIFF);
 
-const VERIFICATION_IFACE = new Interface(VERIFICATION_ABI);
+const RESULTS_IFACE = new Interface(VERIFICATION_RESULTS_ABI);
+const KBF_IFACE = new Interface(KBF_AUDITS_ABI);
 const GATE_IFACE = new Interface(['function currentEpoch() view returns (uint256)']);
 
 function first(result: unknown[] | null | undefined): unknown {
@@ -41,12 +44,29 @@ function first(result: unknown[] | null | undefined): unknown {
 export class VerificationSignalsClient {
   private readonly _read: (requests: MulticallRequest[]) => Promise<Array<unknown[] | null>>;
   private _emissionsGate: string | undefined;
+  private _resultsAddress: string | undefined;
 
+  /**
+   * @param _verificationAddress The KBF audits contract (`verificationContractAddress`).
+   * @param resultsAddress The results layer; read from `kbf.results()` on first use when absent.
+   */
   constructor(
     provider: AbstractProvider,
     private readonly _verificationAddress: string,
+    resultsAddress?: string,
   ) {
     this._read = createCachedMulticallReader(provider);
+    if (resultsAddress) this._resultsAddress = getAddress(resultsAddress);
+  }
+
+  /** The results layer address, discovered once from the KBF contract when not configured. */
+  private async _results(): Promise<string> {
+    if (this._resultsAddress) return this._resultsAddress;
+    const [result] = await this._read([{ target: this._verificationAddress, iface: KBF_IFACE, method: 'results' }]);
+    const address = first(result);
+    if (typeof address !== 'string') throw new Error('verification results() read failed');
+    this._resultsAddress = getAddress(address);
+    return this._resultsAddress;
   }
 
   /**
@@ -70,15 +90,15 @@ export class VerificationSignalsClient {
     }
     if (agents.size === 0) return out;
 
-    const target = this._verificationAddress;
-    const requests: MulticallRequest[] = [{ target, iface: VERIFICATION_IFACE, method: 'validityEpochs' }];
+    const target = await this._results();
+    const requests: MulticallRequest[] = [{ target, iface: RESULTS_IFACE, method: 'validityEpochs' }];
     const needsGate = this._emissionsGate === undefined;
-    if (needsGate) requests.push({ target, iface: VERIFICATION_IFACE, method: 'emissionsGate' });
+    if (needsGate) requests.push({ target, iface: RESULTS_IFACE, method: 'emissionsGate' });
     const statusCalls: Array<{ agentId: number; key: string; index: number }> = [];
     for (const [agentId, keys] of agents) {
       for (const key of keys) {
         statusCalls.push({ agentId, key, index: requests.length });
-        requests.push({ target, iface: VERIFICATION_IFACE, method: 'serviceStatus', args: [BigInt(agentId), serviceHash(key)] });
+        requests.push({ target, iface: RESULTS_IFACE, method: 'serviceStatus', args: [BigInt(agentId), serviceHash(key)] });
       }
     }
     const results = await this._read(requests);

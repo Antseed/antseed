@@ -88,10 +88,38 @@ its approval.
 ## What goes on-chain
 
 ```
-seller audit ──► evidence on IPFS ──► AntseedKbfVerification ◄── second auditor's audit (for a DIFF)
+seller audit ──► evidence on IPFS ──► AntseedKbfAudits ◄── second auditor's audit (for a DIFF)
+                                            │ once enough auditors agree
+                                            ▼
+                               AntseedVerificationResults ──► buyers, points policy
 ```
 
-`AntseedKbfVerification` keeps one result per seller service (one model offer of one
+Two contracts share the work:
+
+- **`AntseedKbfAudits`** takes the auditors' KBF submissions, counts the reports for each
+  seller service and records a verdict once enough auditors agree (one for a SAME, two for
+  a DIFF). The owner approves and revokes auditors on it with `setAuditor`. It earns each
+  auditor one credit per audited model.
+- **`AntseedVerificationResults`** holds the recorded verdicts, whatever verification
+  method produced them, and pays verifiers from the verification emissions bucket. KBF is
+  the first method writing to it; each later method is its own contract next to
+  `AntseedKbfAudits`, with its own share of the bucket.
+
+Auditor rewards come from KBF's share of the verification bucket. After an epoch ends, each
+auditor's share follows its credits, capped at 20% of KBF's share per auditor; the part above the
+cap goes to the emissions reserve, as with the other ANTS reward contracts. Budget nobody can
+claim (for example in an epoch without credits) is burned or sent to the reserve by
+`settleEpochRemainder`, which anyone can call. Rewards stay off until the owner turns them on.
+Auditors claim with `antseed verifier rewards --claim` and can publish a display name, icon and
+link with `antseed verifier profile`.
+
+These replace the single `AntseedKbfVerification` contract (migration M003) with the same
+KBF rules. On Base mainnet they are `AntseedVerificationResults`
+`0xF2C8482aD2A348854698E93f41FE3cc32307687c` and `AntseedKbfAudits`
+`0xe57aB03423A3835571F7d68AC1E23CF8a2763343`, the CLI and SDK defaults; the old
+`AntseedKbfVerification` stays on-chain but is no longer read.
+
+`AntseedVerificationResults` keeps one result per seller service (one model offer of one
 seller):
 
 - **The latest result wins**, whichever approved auditor submitted it. A new SAME replaces
@@ -101,18 +129,23 @@ seller):
   its model recovers at the next audit.
 - **A DIFF only affects that one service.** A seller's other verified models are not
   touched.
+- **Replacing a DIFF takes one auditor by default.** Within KBF, a SAME or UNDETERMINED
+  replaces a live DIFF once it has its own required reports (one each) and at least
+  `diffReplacementReports` of them. That floor is 1 by default (and on Base mainnet); the owner
+  can raise it, e.g. to 2 so one auditor alone cannot lift a DIFF. If the owner clears a wrong
+  result, reports made before the clear stop counting.
 - Auditors cannot audit sellers they own.
 
 ## How buyers use results
 
-Buyers read each seller service's recorded result from `AntseedKbfVerification`. A
+Buyers read each seller service's recorded result from `AntseedVerificationResults`. A
 service with a live **DIFF** keeps 10% of its effective reputation, so automatic routing
 skips it under the default minimum trust score, and the desktop app explains the cut
 in the seller's reputation tooltip. Only a recorded DIFF counts: a DIFF from one auditor
 that is still waiting for the second changes nothing, and the service keeps its earlier
 result until then. SAME, UNDETERMINED, expired and missing results change nothing. The
-penalty lifts on its own when the DIFF expires or two auditors replace it with a later
-result. See [Routing](/docs/api/routing).
+penalty lifts on its own when the DIFF expires or a later result replaces it (one auditor's
+SAME or UNDETERMINED under the default `diffReplacementReports` of 1). See [Routing](/docs/api/routing).
 
 ## Check a model yourself
 

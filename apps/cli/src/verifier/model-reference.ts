@@ -13,6 +13,7 @@ import {
   canonicalJsonStringify,
   computeBinomialPower,
   computeMatchVector,
+  isKbfTokenLimitFinishReason,
   isLowCoverageKbfBatch,
   computeReferenceId,
   createReferenceQueryProfile,
@@ -77,6 +78,14 @@ const CANDIDATE_BATCH_SIZE = 20
 const DEFAULT_MAX_REQUESTS_PER_BUILD = 2_000
 const DEFAULT_BATCH_RETRY_COUNT = 3
 const DEFAULT_RETRY_BASE_DELAY_MS = 500
+/**
+ * First wait after a 429 that gives no Retry-After, doubling per attempt up to
+ * `REFERENCE_THROTTLE_MAX_DELAY_MS`. An upstream provider's rate limit (OpenRouter's "Provider
+ * returned error" 429) outlasts the half-second backoff of other errors, so quick retries all hit
+ * it and the enrollment fails.
+ */
+const REFERENCE_THROTTLE_BASE_DELAY_MS = 10_000
+const REFERENCE_THROTTLE_MAX_DELAY_MS = 60_000
 const DEFAULT_MAX_NO_PROGRESS_ROUNDS = 3
 /** Layout-filter passes for a new bank, as `generate_probes.py --layout-filter 1` in the KBF reference code. */
 const DEFAULT_LAYOUT_FILTER_PASSES = 1
@@ -143,6 +152,8 @@ interface ReferenceCachedResponseBaseV1 {
 interface ReferenceCachedSuccessV1 extends ReferenceCachedResponseBaseV1 {
   outcome?: 'success'
   content: string
+  /** Kept for thinking-discovery responses, so a replayed reply cut off at the token limit stays rejected. */
+  finishReason?: string | null
 }
 
 interface ReferenceCachedTerminalEmptyV1 extends ReferenceCachedResponseBaseV1 {
@@ -1673,12 +1684,12 @@ function createReferenceQuery(input: {
     const cacheKey = canonicalHashBytes32({ model, cacheDomain: 'thinking-discovery', body, route })
     const cached = input.checkpoint.get(cacheKey)
     if (cached !== undefined) {
-      consumed.set(cacheKey, cached)
-      return {
-        ok: true,
-        content: cached.outcome === 'terminal-empty' ? null : cached.content,
-        reasoningTokens: cached.reasoningTokens ?? 0,
+      const replayed = replayedThinkingDiscovery(cached)
+      if (replayed) {
+        consumed.set(cacheKey, cached)
+        return replayed
       }
+      await input.checkpoint.delete(cacheKey)
     }
     // As in the reference code: 429 waits, 5xx and network errors retry up to three
     // times, and any other 4xx means this strategy is refused.
@@ -1692,6 +1703,7 @@ function createReferenceQuery(input: {
           ...cachedCost(model, 'thinking-discovery', response.inputTokens, response.outputTokens),
           content: response.content,
           reasoningTokens: response.reasoningTokens ?? 0,
+          finishReason: response.finishReason ?? null,
           ...(response.provider ? { provider: response.provider } : {}),
         }
         await input.checkpoint.appendExchange({
@@ -1699,7 +1711,12 @@ function createReferenceQuery(input: {
         })
         await input.checkpoint.set(cacheKey, success)
         consumed.set(cacheKey, success)
-        return { ok: true, content: response.content, reasoningTokens: response.reasoningTokens ?? 0 }
+        return {
+          ok: true,
+          content: response.content,
+          reasoningTokens: response.reasoningTokens ?? 0,
+          truncated: isKbfTokenLimitFinishReason(response.finishReason),
+        }
       } catch (error) {
         if (error instanceof EmptyReferenceResponseError) {
           const empty: ReferenceCachedTerminalEmptyV1 = {
@@ -2164,6 +2181,8 @@ interface ReferenceCompletion {
   /** Hidden reasoning tokens the endpoint reported; null when it reports none. */
   reasoningTokens: number | null
   provider: string | null
+  /** `length` when the reply stopped at the token limit (Anthropic `max_tokens` is mapped to it). */
+  finishReason?: string | null
   exchange: ReferenceRawExchange
 }
 
@@ -2222,7 +2241,18 @@ async function postChatCompletion(
       status: response.status,
       responseBody,
     }
-    const parsed = parseCompletion(anthropic, responseBody)
+    let parsed: ReturnType<typeof parseCompletion>
+    try {
+      parsed = parseCompletion(anthropic, responseBody)
+    } catch (error) {
+      // A 200 whose body is not JSON, such as OpenRouter's whitespace keep-alive padding left
+      // alone when the upstream drops, is a broken gateway response: retry it like a 502.
+      throw new ReferenceEndpointError(
+        502,
+        null,
+        `HTTP ${response.status} body (${responseBody.length} bytes) was not valid JSON: ${asError(error).message}`,
+      )
+    }
     assertPinnedProvider(route, parsed.provider)
     if (parsed.content === null) {
       throw new EmptyReferenceResponseError(
@@ -2244,6 +2274,7 @@ async function postChatCompletion(
       outputTokens: parsed.outputTokens,
       reasoningTokens: parsed.reasoningTokens,
       provider: parsed.provider,
+      finishReason: parsed.finishReason,
       exchange,
     }
   } finally {
@@ -2377,7 +2408,7 @@ export function resolveReferenceRequestOverrides(
   return { reasoning: { effort, exclude: true } }
 }
 
-class ReferenceEndpointError extends Error {
+export class ReferenceEndpointError extends Error {
   constructor(
     readonly status: number,
     readonly retryAfterMs: number | null,
@@ -2630,6 +2661,23 @@ function withRecordedEndpointRequest(
   }
 }
 
+/**
+ * A checkpointed thinking-discovery reply as the discovery saw it first, including whether it
+ * stopped at the token limit. Null for a reply cached before its finish reason was kept: it can't
+ * say whether it was cut off, so it is asked again instead of being replayed as a clean reply.
+ */
+export function replayedThinkingDiscovery(
+  cached: ReferenceCachedResponseV1,
+): { ok: true; content: string | null; reasoningTokens: number; truncated: boolean } | null {
+  if (cached.outcome !== 'terminal-empty' && cached.finishReason === undefined) return null
+  return {
+    ok: true,
+    content: cached.outcome === 'terminal-empty' ? null : cached.content,
+    reasoningTokens: cached.reasoningTokens ?? 0,
+    truncated: isKbfTokenLimitFinishReason(cached.finishReason),
+  }
+}
+
 function isReferenceCachedResponse(value: unknown): value is ReferenceCachedResponseV1 {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const response = value as Record<string, unknown>
@@ -2655,6 +2703,7 @@ function isReferenceCachedResponse(value: unknown): value is ReferenceCachedResp
   }
   return (response.outcome === undefined || response.outcome === 'success')
     && typeof response.content === 'string'
+    && (response.finishReason === undefined || response.finishReason === null || typeof response.finishReason === 'string')
 }
 
 function nonNegativeInteger(value: unknown): number | null {
@@ -2699,10 +2748,13 @@ function isNewAccountRateLimit(error: unknown): boolean {
     && normalized(error.detail).includes('new-account-rpm')
 }
 
-function retryDelayMs(error: unknown, baseDelayMs: number, attempt: number): number {
+/** How long to wait before retry `attempt` (1-based) of a reference request that failed with `error`. */
+export function retryDelayMs(error: unknown, baseDelayMs: number, attempt: number): number {
   if (error instanceof ReferenceEndpointError && error.retryAfterMs !== null) return error.retryAfterMs
   if (isNewAccountRateLimit(error)) return NEW_ACCOUNT_MINIMUM_REQUEST_INTERVAL_MS
-  return Math.min(30_000, baseDelayMs * 2 ** Math.max(0, attempt - 1))
+  const doubling = 2 ** Math.max(0, attempt - 1)
+  if (isThrottleError(error)) return Math.min(REFERENCE_THROTTLE_MAX_DELAY_MS, REFERENCE_THROTTLE_BASE_DELAY_MS * doubling)
+  return Math.min(30_000, baseDelayMs * doubling)
 }
 
 function parseRetryAfterMs(value: string | null): number | null {
