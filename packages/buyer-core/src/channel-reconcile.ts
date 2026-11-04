@@ -128,7 +128,9 @@ function applyReadings(o: ReconcileStoredChannelsOptions, readings: Map<string, 
 
   const paidByPeer = new Map<string, StoredChannel[]>();
   for (const row of activeRows(o, CHANNEL_KIND.PAID)) {
-    paidByPeer.set(row.peerId, [...(paidByPeer.get(row.peerId) ?? []), row]);
+    const rows = paidByPeer.get(row.peerId);
+    if (rows) rows.push(row);
+    else paidByPeer.set(row.peerId, [row]);
   }
   for (const [peerId, rows] of paidByPeer) {
     const currentId = o.store.getActiveChannelByPeerAndBuyer(peerId, CHANNEL_ROLE.BUYER, o.buyerEvmAddr)?.sessionId;

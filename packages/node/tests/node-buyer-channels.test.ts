@@ -239,6 +239,29 @@ describe('buyer channel counts after a reconcile with the chain', () => {
 
     expect(order).toEqual(['retired', 'cleanup', 'store closed']);
   });
+
+  it('starts no reconcile pass when an RPC probe reports ready after stop() has drained', async () => {
+    const main = buyerIdentity();
+    store.upsertChannel(makeChannel('0x' + 'd1'.repeat(32), { buyerEvmAddr: main.wallet.address }));
+    const chain = { getSession: vi.fn() } as unknown as ChannelsClient;
+    const account = buyerAccount(main, chain);
+    const pass = vi.spyOn(account.negotiator, 'reconcileChannelsWithChain');
+    const node = new AntseedNode({ role: 'buyer' });
+    Object.assign(node, {
+      _started: true,
+      _identity: main,
+      _channelStore: store,
+      _buyerPaymentManager: account.paymentManager,
+      _buyerNegotiator: account.negotiator,
+      // The probe outstanding at stop() succeeds while the DHT shuts down and
+      // fires the RPC-ready trigger the buyer registered.
+      _dht: { stop: async () => { void node.reconcileBuyerChannels(); await new Promise((r) => setTimeout(r, 10)); } },
+    });
+
+    await node.stop();
+
+    expect({ passes: pass.mock.calls.length, reads: vi.mocked(chain.getSession).mock.calls.length }).toEqual({ passes: 0, reads: 0 });
+  });
 });
 
 describe('the buyer channel reconcile pass a node runs on its own', () => {

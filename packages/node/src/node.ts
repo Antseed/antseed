@@ -552,6 +552,8 @@ export class AntseedNode extends EventEmitter {
   private _timeoutCheckerInterval: ReturnType<typeof setInterval> | null = null;
   private _buyerReconcileTimer: ReturnType<typeof setInterval> | null = null;
   private readonly _buyerReconcileRuns = new Set<Promise<void>>();
+  /** Set while stop() runs, so no trigger starts a reconcile pass after the drain. */
+  private _stopping = false;
   /** Block cursor for CloseRequested event polling. */
   private _closeRequestedFromBlock: number = 0;
   /** Seller session lifecycle tracking (metering, settlement). */
@@ -738,6 +740,7 @@ export class AntseedNode extends EventEmitter {
     if (this._started) {
       throw new Error("Node already started");
     }
+    this._stopping = false;
 
     const dataDir = this._config.dataDir ?? join(homedir(), ".antseed");
 
@@ -780,6 +783,9 @@ export class AntseedNode extends EventEmitter {
       return;
     }
 
+    // Before the drain below: an RPC probe still in flight can report ready
+    // after it and would otherwise start a pass against the closing store.
+    this._stopping = true;
     if (this._buyerReconcileTimer) {
       clearInterval(this._buyerReconcileTimer);
       this._buyerReconcileTimer = null;
@@ -1727,9 +1733,11 @@ export class AntseedNode extends EventEmitter {
    * retire each row the chain shows settled, withdrawn, or never opened. Runs
    * on its own at buyer start, whenever the chain RPC becomes reachable, when
    * an identity is added, and every 5 minutes, unless
-   * `autoReconcileBuyerChannels` is false. stop() waits for runs in flight.
+   * `autoReconcileBuyerChannels` is false. stop() waits for runs in flight;
+   * once it has begun, this starts none.
    */
   reconcileBuyerChannels(): Promise<void> {
+    if (this._stopping) return Promise.resolve();
     const run = this._reconcileBuyerChannels();
     this._buyerReconcileRuns.add(run);
     void run.then(() => this._buyerReconcileRuns.delete(run));

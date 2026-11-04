@@ -630,35 +630,12 @@ export class BuyerPaymentManager {
 
     const cumulativeAmount = this._cumulativeAmount.get(sellerPeerId) ?? BigInt(session.authMax);
     const currentMeta = this._sanitizeMetadata(this._metadata.get(sellerPeerId));
-    const metadataHashHex = computeMetadataHash(currentMeta);
-    const encodedMetadata = encodeMetadata(currentMeta);
-
-    const metadataMsg: SpendingAuthMessage = {
-      channelId: session.sessionId,
-      cumulativeAmount,
-      metadataHash: metadataHashHex,
-    };
-    const spendingAuthSig = await signSpendingAuth(this._signer, this._channelsDomain, metadataMsg);
-
-    const outcome = await this._commitLive({
-      ...session,
-      authMax: cumulativeAmount.toString(),
-      latestBuyerSig: spendingAuthSig,
-      latestSpendingAuthSig: spendingAuthSig,
-      latestMetadata: encodedMetadata,
-      updatedAt: Date.now(),
-    }, currentMeta);
-    if (outcome === 'retired') throw writeDropped(sellerPeerId);
+    const spendingAuth = await this._signAndCommitSpendingAuth(session, cumulativeAmount, currentMeta);
+    if (spendingAuth === 'retired') throw writeDropped(sellerPeerId);
     // The higher authorization committed meanwhile was sent by its own writer.
-    if (outcome === 'superseded') return session.sessionId;
+    if (spendingAuth === 'superseded') return session.sessionId;
 
-    paymentMux.sendSpendingAuth({
-      channelId: session.sessionId,
-      cumulativeAmount: cumulativeAmount.toString(),
-      metadataHash: metadataHashHex,
-      metadata: encodedMetadata,
-      spendingAuthSig,
-    });
+    paymentMux.sendSpendingAuth(spendingAuth);
 
     return session.sessionId;
   }
