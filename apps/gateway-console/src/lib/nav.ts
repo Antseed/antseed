@@ -2,7 +2,7 @@ import type { MeResponse, OrgRole, WorkspaceRole } from '../api/types'
 
 export type PageId =
   | 'overview' | 'chat' | 'activity' | 'logs' | 'keys' | 'members' | 'workspaces' | 'wallet'
-  | 'rewards' | 'staking' | 'providers' | 'models' | 'routing' | 'presets' | 'audit' | 'settings'
+  | 'rewards' | 'referrals' | 'staking' | 'builders' | 'providers' | 'models' | 'routing' | 'presets' | 'audit' | 'settings'
   | 'seller' | 'seller-logs' | 'seller-market' | 'seller-reputation' | 'seller-promote' | 'seller-settings'
 
 export interface Viewer {
@@ -30,12 +30,14 @@ export const NAV_ITEMS: Array<{ id: PageId; label: string; group: string; access
   { id: 'presets', label: 'Presets', group: 'Workspace', access: 'member' },
   { id: 'wallet', label: 'Wallet & Funding', group: 'Money', access: 'workspaceAdmin' },
   { id: 'rewards', label: 'Rewards', group: 'Money', access: 'workspaceAdmin' },
+  { id: 'referrals', label: 'Referrals', group: 'Money', access: 'workspaceAdmin' },
   { id: 'staking', label: 'Staking', group: 'Money', access: 'workspaceAdmin' },
   { id: 'providers', label: 'Providers', group: 'Routing', access: 'member' },
   { id: 'models', label: 'Models', group: 'Routing', access: 'member' },
   { id: 'routing', label: 'Routing', group: 'Routing', access: 'workspaceAdmin' },
   { id: 'members', label: 'Members', group: 'Organization', access: 'workspaceAdmin' },
   { id: 'workspaces', label: 'Workspaces', group: 'Organization', access: 'workspaceAdmin' },
+  { id: 'builders', label: 'Builders program', group: 'Organization', access: 'orgAdmin' },
   { id: 'audit', label: 'Audit log', group: 'Organization', access: 'orgAdmin' },
   { id: 'settings', label: 'Settings', group: 'Organization', access: 'orgAdmin' },
   // Shown only when a seller runs on the gateway host (see `hasSeller` in visibleNav).

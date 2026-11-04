@@ -1,4 +1,14 @@
-import { type AbstractSigner, type TypedDataDomain, AbiCoder, hexlify, id, keccak256, randomBytes } from 'ethers';
+import {
+  type AbstractSigner,
+  type TypedDataDomain,
+  AbiCoder,
+  ZeroHash,
+  hexlify,
+  id,
+  keccak256,
+  randomBytes,
+  toBeHex,
+} from 'ethers';
 
 // =========================================================================
 // EIP-712 Types — AntSeed SpendingAuth (cumulative payment authorization)
@@ -40,6 +50,14 @@ export const FREE_USAGE_AUTH_TYPES = {
     { name: 'sequence', type: 'uint256' },
     { name: 'metadataHash', type: 'bytes32' },
     { name: 'deadline', type: 'uint256' },
+  ],
+};
+
+/** AntseedReferrals invite (signed by the referrer; see `ReferralInvite`). */
+export const INVITE_TYPES = {
+  Invite: [
+    { name: 'issuedEpoch', type: 'uint256' },
+    { name: 'index', type: 'uint256' },
   ],
 };
 
@@ -149,6 +167,114 @@ export interface ReceiveAuthorizationMessage {
  * specific service.
  */
 
+/**
+ * A referral invite: the EIP-712 `Invite(uint256 issuedEpoch,uint256 index)`
+ * signed by the referrer in the AntseedReferrals domain, as an EIP-2098
+ * compact signature (r, vs). The referrer is recovered from the signature.
+ */
+export interface ReferralInvite {
+  epoch: bigint;
+  index: bigint;
+  /** bytes32 hex */
+  r: string;
+  /** bytes32 hex */
+  vs: string;
+}
+
+/**
+ * Buyer-side usage attribution, appended to both SpendingAuth and FreeUsage
+ * metadata as five extra ABI head words after the services-array offset:
+ *
+ *   abi.encode(<head words>, ServiceTotal[] services, bytes32 clientId,
+ *              uint256 inviteEpoch, uint256 inviteIndex, bytes32 inviteR, bytes32 inviteVs)
+ *
+ * Offsets are absolute, so every decoder that stops at the services array
+ * keeps working (see `decodeMetadataAttribution`). AntseedStatsV2 forwards a
+ * present invite (non-zero r or vs) to AntseedReferrals, which binds the
+ * buyer to the invite's signer, and credits the buyer's recognized usage to
+ * the client. The tail is covered by metadataHash, so the binding is
+ * buyer-signed, covers free usage, and costs no extra transaction.
+ *
+ * - clientId: ERC-8004 agent id (as bytes32) of the client software that
+ *   produced the usage (zero when none).
+ * - invite: carried until the referral is bound; afterwards the buyer sends
+ *   zeros there and keeps the tail for clientId.
+ */
+export interface UsageAttribution {
+  clientId?: string;
+  invite?: ReferralInvite;
+}
+
+/** Encode an ERC-8004 agent id as the bytes32 clientId word. */
+export function clientIdFromAgentId(agentId: bigint | number): string {
+  const id = BigInt(agentId);
+  if (id <= 0n) throw new Error('client agent id must be positive');
+  return toBeHex(id, 32);
+}
+
+/** ERC-8004 agent id carried by a bytes32 clientId (0n when unset). */
+export function clientAgentId(clientId: string): bigint {
+  return BigInt(clientId);
+}
+
+const BYTES32 = /^0x[0-9a-fA-F]{64}$/;
+const ATTRIBUTION_TAIL_TYPES = ['bytes32', 'uint256', 'uint256', 'bytes32', 'bytes32'];
+
+/**
+ * ABI types and values of a metadata blob's optional attribution tail, to
+ * append after the services array. Empty when neither a client nor an invite
+ * is set, so the encoding is unchanged.
+ */
+export function attributionTailAbi(attribution: UsageAttribution | undefined): { types: string[]; values: unknown[] } {
+  const clientId = attribution?.clientId ?? ZeroHash;
+  if (!BYTES32.test(clientId)) throw new Error('clientId must be a bytes32 hex string');
+  const invite = attribution?.invite;
+  if (invite && (!BYTES32.test(invite.r) || !BYTES32.test(invite.vs))) throw new Error('invite r and vs must be bytes32 hex strings');
+  if (clientId === ZeroHash && !invite) return { types: [], values: [] };
+  return {
+    types: ATTRIBUTION_TAIL_TYPES,
+    values: [clientId, invite?.epoch ?? 0n, invite?.index ?? 0n, invite?.r ?? ZeroHash, invite?.vs ?? ZeroHash],
+  };
+}
+
+/**
+ * Decode the optional attribution tail from encoded SpendingAuth or FreeUsage
+ * metadata. Returns null when the metadata carries no tail; `invite` is null
+ * when the tail carries none (zero r and vs).
+ *
+ * The tail grows the ABI head by exactly five words, so its presence shows in
+ * the services-array offset: `(staticWords + 1) * 32` without a tail,
+ * `(staticWords + 6) * 32` with one (the AntseedStatsV2 rule). Any other
+ * shape, including the retired two-word referrer/clientId tail, reads as none.
+ */
+export function decodeMetadataAttribution(encoded: string): { clientId: string; invite: ReferralInvite | null } | null {
+  const coder = AbiCoder.defaultAbiCoder();
+  const [version] = coder.decode(['uint256'], encoded) as unknown as [bigint];
+  const staticWords = metadataStaticWords(version);
+  const headWords = staticWords + 1 + ATTRIBUTION_TAIL_TYPES.length;
+  // Head (with tail) plus the services length word.
+  if ((encoded.length - 2) / 64 < headWords + 1) return null;
+  const head = coder.decode(Array(headWords).fill('uint256'), encoded) as unknown as bigint[];
+  if (head[staticWords] !== BigInt(headWords * 32)) return null;
+  const word = (i: number) => toBeHex(head[staticWords + 1 + i]!, 32);
+  const invite = { epoch: head[staticWords + 2]!, index: head[staticWords + 3]!, r: word(3), vs: word(4) };
+  return {
+    clientId: word(0),
+    invite: invite.r === ZeroHash && invite.vs === ZeroHash ? null : invite,
+  };
+}
+
+/**
+ * Static head words before the services-array offset, by metadata version:
+ * v4 adds the two video counters, v3 adds cumulativeOutputImages, v1/v2 (and
+ * FreeUsage v1) carry version, in, out and requests. Mirrors AntseedStatsV2.
+ */
+export function metadataStaticWords(version: bigint): number {
+  if (version === 4n) return 7;
+  if (version === 3n) return 5;
+  return 4;
+}
+
 export interface SpendingAuthMetadata {
   cumulativeInputTokens: bigint;
   cumulativeOutputTokens: bigint;
@@ -158,6 +284,8 @@ export interface SpendingAuthMetadata {
   cumulativeVideoGenerations?: bigint;
   cumulativeVideoSeconds?: bigint;
   services?: SpendingAuthServiceMetadata[];
+  /** Optional client / invite attribution tail; omitted when unset. */
+  attribution?: UsageAttribution;
 }
 
 export interface SpendingAuthServiceMetadata {
@@ -197,8 +325,9 @@ export function encodeMetadata(metadata: SpendingAuthMetadata): string {
     cumulativeVideoGenerations: service.cumulativeVideoGenerations ?? 0n,
     cumulativeVideoSeconds: service.cumulativeVideoSeconds ?? 0n,
   }));
+  const tail = attributionTailAbi(metadata.attribution);
   return coder.encode(
-    ['uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256', SERVICE_METADATA_ABI_TYPE],
+    ['uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256', SERVICE_METADATA_ABI_TYPE, ...tail.types],
     [
       METADATA_VERSION,
       metadata.cumulativeInputTokens,
@@ -208,6 +337,7 @@ export function encodeMetadata(metadata: SpendingAuthMetadata): string {
       metadata.cumulativeVideoGenerations ?? 0n,
       metadata.cumulativeVideoSeconds ?? 0n,
       services,
+      ...tail.values,
     ],
   );
 }
@@ -379,6 +509,8 @@ export interface FreeUsageMetadata {
   cumulativeOutputTokens: bigint;
   cumulativeRequestCount: bigint;
   services?: SpendingAuthServiceMetadata[];
+  /** Optional client / invite attribution tail; omitted when unset. */
+  attribution?: UsageAttribution;
 }
 
 export type FreeUsageServiceMetadata = SpendingAuthServiceMetadata;
@@ -390,14 +522,16 @@ export function encodeFreeUsageMetadata(metadata: FreeUsageMetadata): string {
   const services = [...(metadata.services ?? [])].sort((a, b) =>
     a.serviceId < b.serviceId ? -1 : a.serviceId > b.serviceId ? 1 : 0,
   );
+  const tail = attributionTailAbi(metadata.attribution);
   return coder.encode(
-    ['uint256', 'uint256', 'uint256', 'uint256', SERVICE_METADATA_ABI_TYPE_V2],
+    ['uint256', 'uint256', 'uint256', 'uint256', SERVICE_METADATA_ABI_TYPE_V2, ...tail.types],
     [
       FREE_USAGE_METADATA_VERSION,
       metadata.cumulativeInputTokens,
       metadata.cumulativeOutputTokens,
       metadata.cumulativeRequestCount,
       services,
+      ...tail.values,
     ],
   );
 }
@@ -470,6 +604,15 @@ export function makeChannelsDomain(chainId: number, contractAddress: string): Ty
 export function makeDepositsDomain(chainId: number, contractAddress: string): TypedDataDomain {
   return {
     name: 'AntseedDeposits',
+    version: '1',
+    chainId,
+    verifyingContract: contractAddress,
+  };
+}
+
+export function makeReferralsDomain(chainId: number, contractAddress: string): TypedDataDomain {
+  return {
+    name: 'AntseedReferrals',
     version: '1',
     chainId,
     verifyingContract: contractAddress,

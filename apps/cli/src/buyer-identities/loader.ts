@@ -14,14 +14,19 @@ export class BuyerIdentityLoader {
   constructor(
     private readonly _node: IdentityNode,
     private readonly _dataDir: string,
-    /** Called once per identity after it joins the node (e.g. to watch its wallet for deposits). */
-    private readonly _onLoaded?: (name: string, identity: Identity) => void,
+    /**
+     * Called once per identity after it joins the node (e.g. to watch its
+     * wallet for deposits, apply its referral attribution). `ensure` resolves
+     * only after it settles, so the identity is used once it is ready.
+     */
+    private readonly _onLoaded?: (name: string, identity: Identity) => void | Promise<void>,
   ) {}
 
   /** True when the node can pay as `name`, loading it from disk if needed. */
   ensure(name: string): Promise<boolean> {
-    if (name === DEFAULT_BUYER_IDENTITY || this._node.hasBuyerIdentity(name)) return Promise.resolve(true)
+    if (name === DEFAULT_BUYER_IDENTITY) return Promise.resolve(true)
     let pending = this._pending.get(name)
+    if (!pending && this._node.hasBuyerIdentity(name)) return Promise.resolve(true)
     if (!pending) {
       pending = this._load(name).finally(() => this._pending.delete(name))
       this._pending.set(name, pending)
@@ -53,7 +58,7 @@ export class BuyerIdentityLoader {
     const identity = await loadBuyerIdentity(this._dataDir, name)
     if (!identity) return false
     await this._node.addBuyerIdentity(name, identity)
-    this._onLoaded?.(name, identity)
+    await this._onLoaded?.(name, identity)
     return true
   }
 }

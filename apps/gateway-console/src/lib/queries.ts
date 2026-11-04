@@ -36,6 +36,8 @@ export const qk = {
   /** Authorized-wallet status of every workspace the viewer can open (markers). */
   operators: ['wallet-operators'] as const,
   rewards: (workspaceId: string) => ['rewards', workspaceId] as const,
+  referrals: (workspaceId: string) => ['referrals', workspaceId] as const,
+  builders: ['builders'] as const,
   freeTier: (workspaceId: string) => ['free-tier', workspaceId] as const,
   /** Under `freeTier`, so adding or removing a code re-reads it. */
   freeTierStake: (workspaceId: string) => ['free-tier', workspaceId, 'stake'] as const,

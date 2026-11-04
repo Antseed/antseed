@@ -2,14 +2,10 @@ import { useState } from 'react'
 import { useAccount, useConfig, useSwitchChain } from 'wagmi'
 import { waitForTransactionReceipt } from 'wagmi/actions'
 import { OperatorPreflightError, operatorTxError } from '../lib/operator'
+import { runTxSteps, type TxStep } from '../lib/tx-steps'
 import { walletError } from './provider'
 
-export interface TxStep {
-  label: string
-  /** Runs before the wallet prompt (e.g. a contract simulation); a throw stops here, nothing is sent. */
-  check?: () => Promise<unknown>
-  send: () => Promise<`0x${string}`>
-}
+export type { TxStep }
 
 export interface TxOptions {
   /** Called when a failure means the shown on-chain state is stale (e.g. OperatorAlreadySet). */
@@ -43,19 +39,11 @@ export function useTxRunner(chainId: number) {
         setStatus('Switch network in your wallet…')
         await switchChainAsync({ chainId })
       }
-      for (const step of steps) {
-        if (step.check) {
-          setStatus(`${step.label}: checking…`)
-          await step.check()
-        }
-        setStatus(`${step.label}: confirm in your wallet…`)
-        const hash = await step.send()
-        last = hash
-        setLastHash(hash)
-        setStatus(`${step.label}: waiting for confirmation…`)
-        const receipt = await waitForTransactionReceipt(config, { hash, chainId })
-        if (receipt.status !== 'success') throw new Error(`${step.label} reverted on chain.`)
-      }
+      await runTxSteps(steps, {
+        status: setStatus,
+        sent: (hash) => { last = hash; setLastHash(hash) },
+        receipt: (hash) => waitForTransactionReceipt(config, { hash, chainId }),
+      })
       setStatus(null)
       setConfirmed(last)
       return last

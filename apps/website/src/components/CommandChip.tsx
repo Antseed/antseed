@@ -4,8 +4,11 @@ import styles from './CommandChip.module.css';
 /**
  * Inline shell command shown next to a CTA — mono pill with a copy button.
  * Clicking copies the command (without the "$") and flashes "Copied".
+ * `token` marks a long opaque part of the command (e.g. an invite) that may
+ * break anywhere when wrapping; the rest wraps only at spaces. A command with
+ * a token wraps at every width; others stay on one line above phone widths.
  */
-export function CommandChip({command, size = 'lg', dark = false, className}: {command: string; size?: 'md' | 'lg'; dark?: boolean; className?: string}) {
+export function CommandChip({command, size = 'lg', dark = false, token, className}: {command: string; size?: 'md' | 'lg'; dark?: boolean; token?: string; className?: string}) {
   const [copied, setCopied] = useState(false);
   useEffect(() => {
     if (!copied) return undefined;
@@ -23,12 +26,12 @@ export function CommandChip({command, size = 'lg', dark = false, className}: {co
   return (
     <button
       type="button"
-      className={`${styles.chip} ${size === 'md' ? styles.md : ''} ${dark ? styles.dark : ''} ${copied ? styles.copied : ''} ${className ?? ''}`}
+      className={`${styles.chip} ${size === 'md' ? styles.md : ''} ${dark ? styles.dark : ''} ${token ? styles.wrap : ''} ${copied ? styles.copied : ''} ${className ?? ''}`}
       onClick={copy}
       aria-label={`Copy command: ${command}`}
       title="Copy to clipboard">
       <span className={styles.prompt} aria-hidden="true">$</span>
-      <code className={styles.cmd}>{command}</code>
+      <code className={styles.cmd}>{renderCommand(command, token)}</code>
       <span className={styles.icon} aria-hidden="true">
         {copied ? (
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M3 8.5l3 3 7-7" /></svg>
@@ -38,5 +41,17 @@ export function CommandChip({command, size = 'lg', dark = false, className}: {co
       </span>
       <span className={styles.toast} aria-live="polite">{copied ? 'Copied' : ''}</span>
     </button>
+  );
+}
+
+function renderCommand(command: string, token: string | undefined) {
+  const at = token ? command.lastIndexOf(token) : -1;
+  if (!token || at < 0) return command;
+  return (
+    <>
+      {command.slice(0, at)}
+      <span className={styles.token}>{token}</span>
+      {command.slice(at + token.length)}
+    </>
   );
 }

@@ -58,6 +58,7 @@ import { PaymentMux } from "./p2p/payment-mux.js";
 import { SweepMux } from "./p2p/sweep-mux.js";
 import { VerificationMux } from "./verification/verification-mux.js";
 import { DepositRelayer } from "./payments/deposit-relayer.js";
+import type { UsageAttribution } from "./payments/evm/signatures.js";
 import {
   CONNECTION_CAPABILITY_RELAYS_SWEEPS_V1,
   CONNECTION_CAPABILITY_COOPERATIVE_CLOSE_V1,
@@ -304,6 +305,15 @@ export interface NodePaymentsConfig {
   disableMetadataV2Services?: boolean;
   /** Deployed AntseedDepositRelay contract address (gasless deposit sweeps). */
   depositRelayAddress?: string;
+  /**
+   * Buyer-side attribution appended to every signed SpendingAuth / FreeUsage
+   * metadata blob: the bytes32 client id of this software and, until the
+   * referral is bound, the invite (bound on-chain by AntseedStatsV2 on the
+   * buyer's first settlement that carries it). The invite belongs to the
+   * default buyer wallet it was redeemed for; identities added with
+   * `addBuyerIdentity` carry the client id only.
+   */
+  attribution?: UsageAttribution;
 }
 
 export interface NodeRelayerConfig {
@@ -517,6 +527,10 @@ export class AntseedNode extends EventEmitter {
   private _peerCapabilities = new Map<PeerId, Set<string>>();
   /** Buyer identities beyond the default one, by name. */
   private _buyerIdentities = new Map<string, BuyerIdentityContext>();
+  /** Default identity's attribution; starts as `payments.attribution`, then `setBuyerAttribution`. */
+  private _buyerAttribution: UsageAttribution | undefined;
+  /** Attribution set for an added identity itself (its own invite), by identity name. */
+  private _identityAttributions = new Map<string, UsageAttribution | undefined>();
   /** Seller-side deposit-sweep relayer (initialized when configured + enabled). */
   private _depositRelayer: DepositRelayer | null = null;
   /** Settles or closes a buyer's channel when its metering session goes idle; removed on stop. */
@@ -576,6 +590,7 @@ export class AntseedNode extends EventEmitter {
   constructor(config: NodeConfig) {
     super();
     this._config = config;
+    this._buyerAttribution = config.payments?.attribution;
   }
 
   get peerId(): string | null {
@@ -1733,8 +1748,12 @@ export class AntseedNode extends EventEmitter {
       : this._buyerHandler.sendRequest(peer, req, callbacks, executionOptions);
   }
 
-  /** Buyer payment settings shared by every identity; null when payments are off. */
-  private _buyerPaymentConfig(paymentsDir: string): BuyerPaymentConfig | null {
+  /**
+   * Buyer payment settings shared by every identity; null when payments are
+   * off. `attribution` is per identity: the invite is single-use and belongs
+   * to the wallet that redeemed it.
+   */
+  private _buyerPaymentConfig(paymentsDir: string, attribution: UsageAttribution | undefined): BuyerPaymentConfig | null {
     const payments = this._config.payments;
     if (!payments?.enabled || !payments.rpcUrl || !payments.depositsAddress || !payments.channelsAddress || !payments.usdcAddress) {
       return null;
@@ -1752,6 +1771,7 @@ export class AntseedNode extends EventEmitter {
       maxReserveAmountUsdc: BigInt(payments.maxReserveAmountUsdc ?? "1000000"),  // $1.00 default per session (matches FIRST_SIGN_CAP)
       maxVideoRequestUsdc: BigInt(payments.maxVideoRequestUsdc ?? "5000000"),  // $5.00 default per video
       disableMetadataV2Services: payments.disableMetadataV2Services ?? false,
+      attribution,
       dataDir: paymentsDir,
     };
   }
@@ -1779,16 +1799,20 @@ export class AntseedNode extends EventEmitter {
 
     const payments = this._config.payments;
     const dataDir = this._config.dataDir ?? join(homedir(), ".antseed");
+    const attribution = this._identityAttributions.has(name)
+      ? this._identityAttributions.get(name)
+      : clientAttribution(this._buyerAttribution);
     const context = await BuyerIdentityContext.create({
       name,
       identity,
-      paymentConfig: this._buyerPaymentConfig(join(dataDir, "payments")),
+      paymentConfig: this._buyerPaymentConfig(join(dataDir, "payments"), attribution),
       freeUsage: this._freeUsageClient && payments?.freeUsageAddress
         ? {
           chainId: payments.chainId ?? 8453,
           freeUsageContractAddress: payments.freeUsageAddress,
           defaultAuthDurationSecs: payments.defaultAuthDurationSecs ?? 3600,
           disableMetadataV2Services: payments.disableMetadataV2Services ?? false,
+          attribution,
         }
         : null,
       requestHandler: {
@@ -1822,6 +1846,7 @@ export class AntseedNode extends EventEmitter {
     const context = this._buyerIdentities.get(name);
     if (!context) return;
     this._buyerIdentities.delete(name);
+    this._identityAttributions.delete(name);
     await context.stop();
   }
 
@@ -2244,7 +2269,7 @@ export class AntseedNode extends EventEmitter {
         }
       }
       if (this._channelStore) {
-        const buyerPaymentConfig = this._buyerPaymentConfig(paymentsDir)!;
+        const buyerPaymentConfig = this._buyerPaymentConfig(paymentsDir, this._buyerAttribution)!;
         this._buyerPaymentManager = new BuyerPaymentManager(identity, buyerPaymentConfig, this._channelStore, this._sellerAddressResolver ?? undefined);
         // Re-emit per-request spend so callers can attribute it to whatever
         // issued the request — the node only knows the seller and requestId.
@@ -2511,6 +2536,7 @@ export class AntseedNode extends EventEmitter {
             freeUsageContractAddress: freeUsageConfig.freeUsageContractAddress,
             defaultAuthDurationSecs: payments.defaultAuthDurationSecs ?? 3600,
             disableMetadataV2Services: payments.disableMetadataV2Services ?? false,
+            attribution: this._buyerAttribution,
           },
           this._sellerAddressResolver ?? undefined,
           this._channelStore ?? undefined,
@@ -2724,6 +2750,35 @@ export class AntseedNode extends EventEmitter {
     });
     this._sweepMuxes.set(peerId, mux);
     return mux;
+  }
+
+  /**
+   * Update the client / invite attribution appended to every buyer-signed
+   * settlement metadata blob (see NodePaymentsConfig.attribution). Takes
+   * effect on the next signed auth; nothing on-chain is touched here.
+   * Without `buyerIdentity` it sets the default identity's attribution, and
+   * added identities that have none of their own get its client id only: the
+   * invite is single-use and belongs to the wallet that redeemed it.
+   * `buyerIdentity` sets one added identity's own attribution (each wallet
+   * redeems its own invite).
+   */
+  setBuyerAttribution(attribution: UsageAttribution | undefined, buyerIdentity?: string): void {
+    if (buyerIdentity && buyerIdentity !== DEFAULT_BUYER_IDENTITY) {
+      this._identityAttributions.set(buyerIdentity, attribution);
+      const context = this._buyerIdentities.get(buyerIdentity);
+      context?.paymentManager?.setAttribution(attribution);
+      context?.freeUsageManager?.setAttribution(attribution);
+      return;
+    }
+    this._buyerAttribution = attribution;
+    this._buyerPaymentManager?.setAttribution(attribution);
+    this._buyerFreeUsageManager?.setAttribution(attribution);
+    const clientOnly = clientAttribution(attribution);
+    for (const [name, context] of this._buyerIdentities) {
+      if (this._identityAttributions.has(name)) continue;
+      context.paymentManager?.setAttribution(clientOnly);
+      context.freeUsageManager?.setAttribution(clientOnly);
+    }
   }
 
   /**
@@ -3062,6 +3117,11 @@ function peerOffersService(peer: PeerInfo, service: string): boolean {
     }
   }
   return false;
+}
+
+/** The node-wide part of an attribution (the client id), without the wallet-specific invite. */
+function clientAttribution(attribution: UsageAttribution | undefined): UsageAttribution | undefined {
+  return attribution?.clientId ? { clientId: attribution.clientId } : undefined;
 }
 
 /**

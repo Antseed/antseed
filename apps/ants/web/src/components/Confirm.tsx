@@ -127,7 +127,9 @@ export function useActionBlock(buyerAction = false): { blocked: boolean; reason:
 export function ActionButton(props: ActionButtonProps) {
   const jobs = useJobs();
   const body = props.body as { scope?: string; side?: string } | null;
-  const buyerAction = (props.path === '/api/rewards/claim' && body?.scope === 'buyer') || (props.path === '/api/rewards/stake-usage' && body?.side === 'buyer');
+  // Buyer actions the selected buyer's operator may send (the server rechecks the operator).
+  const buyerAction = (props.path === '/api/rewards/claim' && body?.scope === 'buyer') || (props.path === '/api/rewards/stake-usage' && body?.side === 'buyer')
+    || props.path === '/api/referrals/claim' || props.path === '/api/referrals/referee/claim';
   const block = useActionBlock(buyerAction);
   const [open, setOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);

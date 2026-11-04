@@ -12,6 +12,7 @@ import { resolveBuyerProxyPort } from '../runtime/active-config.js';
 import { getCachedChannelsClient, loadCachedCryptoConfig, setCachedChannelsClient } from './credits.js';
 import { sharedChainProvider } from './shared-chain.js';
 import { CHANNELS_FRESH_MS, cachedRead, readKeys, refreshFresh } from './read-cache.js';
+export { EMPTY_REWARDS_SUMMARY, type DesktopRewardsSummary } from './rewards-summary.js';
 import {
   applyChannelOnChainSnapshot,
   normalizePaymentChannelSummary,
@@ -72,14 +73,6 @@ export type DesktopPaymentChannelSummary = {
   cooperativeCloseSupported: boolean;
 };
 
-export type DesktopRewardsSummary = {
-  available: boolean;
-  pendingAnts: string;
-  currentEpoch: number | null;
-  transfersEnabled: boolean;
-  error: string | null;
-};
-
 export const MAX_SPENDING_AUTH_BASE_UNITS = 5_000_000n;
 export const BYTES32_RE = /^0x[0-9a-fA-F]{64}$/;
 
@@ -91,14 +84,6 @@ const EMPTY_BUYER_USAGE_TOTALS: DesktopBuyerUsageTotals = {
   uniqueSellers: 0,
   activeChannels: 0,
   services: [],
-};
-
-export const EMPTY_REWARDS_SUMMARY: DesktopRewardsSummary = {
-  available: false,
-  pendingAnts: '0',
-  currentEpoch: null,
-  transfersEnabled: false,
-  error: null,
 };
 
 function readNumberField(raw: Record<string, unknown>, key: string): number {

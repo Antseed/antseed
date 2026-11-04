@@ -46,6 +46,10 @@ Command-line interface and web dashboard for the AntSeed Network — a P2P netwo
 | `antseed buyer set-authorized-wallet [--self]` | Authorize an external wallet in the browser, or authorize the buyer wallet itself |
 | `antseed buyer balance` | Check wallet and deposit balance |
 | `antseed network browse` | Browse peers, models, and pricing (same catalog as `/v1/models`) |
+| **Referrals** | |
+| `antseed referral invite` | Create a single-use invite link (`https://antseed.com/invite/<invite>`) signed by this wallet; shows invites left this week |
+| `antseed referral redeem <invite\|link>` | Check an invite for this wallet (new wallets only) and save it; the buyer daemon carries it until it binds |
+| `antseed referral status` | Your inviter, invite bonus (weeks left, payable), and the people you invited |
 | `antseed apps [--json]` / `antseed apps status [--json]` | List every supported connected app (OpenCode, Codex, Claude Code, Claude Desktop, Hermes, Droid, T3 Code, pi, GooeyPi, Crush, Goose, Zed) with installed / connected / config path. `--json` output carries `"schemaVersion": 1` |
 | `antseed apps connect <app> [--port <buyerPort>]` | Point the app's own config at the buyer proxy (default port: running buyer, then `buyer.proxyPort`, then 8377). Backs up the original to `<file>.antseed.bak`; also patches WSL installs on Windows. The app requests the `antseed` model, which needs a default route on the buyer (desktop model picker or `POST /_antseed/route`); connect warns when none is set |
 | `antseed apps disconnect <app>` | Remove only what AntSeed added, restoring replaced values. The desktop app's Connected apps screen reflects CLI connects and disconnects |
@@ -464,6 +468,69 @@ operator. Loop-proof artifacts come from the `antseed-loop-proof` host
 partially authenticated proof can be re-submitted with the same file.
 The [staking guide](../website/docs/provide/staking.md) walks through the
 dashboard tabs and how to read the pool table.
+
+### Referrals
+
+Referrals are invite-only and two-sided: you and the new users you invite both
+earn bonus $ANTS from their usage. The
+[referrals guide](../website/docs/provide/referrals.md) covers Desktop and the
+dashboard too.
+
+**Quota.** Invites are earned by activity. Your quota for a week comes from
+your buying plus selling in the previous week: below 1 USDC you get none;
+otherwise 3, plus one more per 10 USDC, up to 20 a week.
+
+**Invite.** `antseed referral invite` signs an invite with the node wallet,
+off-chain and free: a 91-character base64url string holding the issue week, an
+index and the 64-byte signature, shared as
+`https://antseed.com/invite/<invite>` (Desktop also opens
+`antseed://invite/<invite>`). Each invite works once and stays valid for 4
+weeks, counting the week it was created.
+
+```text
+$ antseed referral invite
+Invite created. Share the link; it works once and expires within 4 weeks.
+
+  https://antseed.com/invite/<invite>
+
+Invite: <invite>
+<left> of <quota> invites left this week.
+```
+
+**Redeem.** Only new wallets can redeem (no recognized usage yet, or first
+usage at most 2 weeks ago), and only someone else's invite: an invite signed
+by the buyer itself, by its authorized wallet, or by another wallet with the
+same authorized wallet is rejected. `antseed referral redeem <invite|link>`
+checks the invite on-chain with `previewInvite` and saves it to
+`<data-dir>/referral.json` (kept separately for each wallet and network). While `antseed buyer start` runs, the invite rides
+in the metadata the buyer already signs and binds on its first settlement,
+paid or free. A binding is permanent.
+
+```text
+$ antseed referral redeem https://antseed.com/invite/<invite>
+Invite from <inviter> saved.
+Binds with your first paid or free request through `antseed buyer start` (before week <week>).
+Then you earn bonus $ANTS on your usage for 12 weeks.
+```
+
+**Rewards.** For 12 weeks after the binding the inviter and the new buyer
+split the buyer's referral share 50/50; after that the inviter keeps earning
+alone. The invitee's bonus is paid only to its authorized wallet (operator).
+The inviter's rewards are paid only to its authorized wallet too, so an inviter
+(buyer or seller) needs one set before it can claim. Claims are per week
+and open in `antseed ants` (Desktop's Claim buttons open the same dashboard).
+
+**Status.** `antseed referral status` reads the binding, the bonus and your
+invitees from Antscan. Without an explorer it still shows your invited count
+and this week's invites from the Referrals contract; payable amounts need
+Antscan:
+
+```text
+$ antseed referral status
+Invited by <inviter> (week <week>).
+Invite bonus: <n> weeks left · <amount> ANTS payable. Paid to your authorized wallet.
+Your invites: <n> invited · <amount> ANTS payable · <left> of <quota> invites left this week.
+```
 
 ### Legacy USDC Provider Setup (Pre-Migration)
 

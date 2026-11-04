@@ -1,5 +1,14 @@
 import type { FreeTierStakeView } from '@antseed/node/free-tier-program';
+import type {
+  CreateInviteResult,
+  InviteCheckResult,
+  RefereeBonus,
+  ReferralInvites,
+  ReferralStatus,
+} from '../../shared/referrals';
 export type RuntimeMode = 'connect' | 'system-proxy' | 'tunnel';
+
+export type { CreateInviteResult, InviteCheckResult, RefereeBonus, ReferralInvites, ReferralStatus };
 
 export type RuntimeProcessState = {
   mode: RuntimeMode;
@@ -418,6 +427,15 @@ export type DesktopBridge = {
   onFullscreenChange?: (handler: (isFullscreen: boolean) => void) => () => void;
   onWindowFocusChange?: (handler: (isFocused: boolean) => void) => () => void;
   getAppSetupStatus?: () => Promise<{ needed: boolean; complete: boolean }>;
+  referralGetStatus?: () => Promise<ReferralStatus>;
+  referralCheckInvite?: (value: string) => Promise<InviteCheckResult>;
+  referralRedeemInvite?: (value: string) => Promise<InviteCheckResult>;
+  referralClearInvite?: () => Promise<ReferralStatus>;
+  referralGetInvites?: () => Promise<ReferralInvites>;
+  referralCreateInvite?: () => Promise<CreateInviteResult>;
+  referralGetReferee?: () => Promise<RefereeBonus>;
+  referralTakeDeepLink?: () => Promise<string | null>;
+  onReferralDeepLink?: (handler: (invite: string) => void) => () => void;
   getTelemetryStatus?: () => Promise<import('../../shared/telemetry.js').TelemetryStatus>;
   getTeeStatus?: () => Promise<import('@antseed/node/tee-status').DesktopTeeStatus>;
   checkSellerTee?: (peerId: string) => Promise<import('@antseed/node/tee-status').DesktopTeeStatus>;

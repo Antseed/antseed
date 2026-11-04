@@ -53,7 +53,7 @@ test('the loader adds stored identities to the node once, on demand', async () =
       },
     }
     const loaded: string[] = []
-    const loader = new BuyerIdentityLoader(node, dataDir, (name) => loaded.push(name))
+    const loader = new BuyerIdentityLoader(node, dataDir, (name) => { loaded.push(name) })
 
     assert.equal(await loader.ensure('default'), true)
     const [first, second] = await Promise.all([loader.ensure('team-a'), loader.ensure('team-a')])
@@ -125,6 +125,37 @@ test('the loader reports identities whose key cannot be read', async () => {
     assert.match(failed[0]!.error ?? '', /TEST_LOADER_KEY is not set/)
   } finally {
     delete process.env['TEST_LOADER_KEY']
+    cleanup()
+  }
+})
+
+test('a loading identity is reported ready only after its onLoaded hook settles', async () => {
+  const { dataDir, cleanup } = tempDataDir()
+  try {
+    await createBuyerIdentity(dataDir, 'team-a')
+    const loaded = new Set<string>()
+    const node = {
+      hasBuyerIdentity: (name: string) => loaded.has(name),
+      addBuyerIdentity: async (name: string) => { loaded.add(name) },
+    }
+    let release: () => void = () => {}
+    const hook = new Promise<void>((resolve) => { release = resolve })
+    let ready = false
+    const loader = new BuyerIdentityLoader(node as never, dataDir, () => hook.then(() => { ready = true }))
+    const first = loader.ensure('team-a')
+    // The node already holds the identity, but a second caller still waits for the hook.
+    while (!loaded.has('team-a')) await new Promise((resolve) => setImmediate(resolve))
+    const second = loader.ensure('team-a')
+    let settled = false
+    void second.then(() => { settled = true })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    assert.equal(settled, false)
+    release()
+    assert.equal(await first, true)
+    assert.equal(await second, true)
+    assert.equal(ready, true)
+    assert.equal(await loader.ensure('team-a'), true)
+  } finally {
     cleanup()
   }
 })
