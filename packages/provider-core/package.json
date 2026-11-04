@@ -1,6 +1,6 @@
 {
   "name": "@antseed/provider-core",
-  "version": "0.2.62",
+  "version": "0.2.63",
   "description": "Shared provider infrastructure for Antseed plugins",
   "type": "module",
   "files": [
