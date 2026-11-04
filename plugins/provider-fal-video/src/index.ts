@@ -6,8 +6,11 @@ import {
   parseServiceCapabilitiesJson,
   parseServiceUnitBillingModelsJson,
   createVideoResponseStreamer,
+  readVideoJson as readJson,
   videoDownloadError as error,
   videoDownloadSignal,
+  videoJsonResponse as json,
+  videoSubmitTimeoutMs,
 } from '@antseed/provider-core';
 
 export const FAL_DEFAULT_BASE_URL = 'https://queue.fal.run';
@@ -16,7 +19,6 @@ export const FAL_SCHEMA_URL = 'https://fal.ai/api/openapi/queue/openapi.json';
 export const FAL_STORAGE_URL = 'https://rest.fal.ai/storage/upload/initiate?storage_type=fal-cdn-v3';
 
 const PROTOCOL = 'fal-video';
-const MAX_JSON_BYTES = 1024 * 1024;
 const MAX_ACTIVE_DOWNLOADS = 2;
 const HEALTH_CHECK_TIMEOUT_MS = 15_000;
 /** Endpoint IDs per fal model-list request. */
@@ -24,20 +26,6 @@ const MODEL_LOOKUP_BATCH = 50;
 const MODEL_LOOKUP_PAUSE_MS = 200;
 /** fal endpoint IDs: `owner/alias[/path...]`, at most 64 characters (the discovery service-name limit). */
 const ENDPOINT_ID = /^[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-][A-Za-z0-9._-]*)+$/;
-
-function json(request: SerializedHttpRequest, statusCode: number, body: Record<string, unknown>) {
-  return {
-    requestId: request.requestId,
-    statusCode,
-    headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
-    body: Buffer.from(JSON.stringify(body)),
-  };
-}
-
-async function readJson(response: Response): Promise<Record<string, unknown> | null> {
-  const body = Buffer.from(await response.arrayBuffer());
-  return body.length <= MAX_JSON_BYTES ? parseJsonObject(body) : null;
-}
 
 /** What an endpoint's fal input schema says about its fields. */
 export interface FalInputSchema {
@@ -205,9 +193,7 @@ export function withAudioInputs(capabilities: ServiceCapabilities, input: FalInp
 }
 
 /** Time allowed to send a create to fal and get its answer: 60 s plus 1 s per 256 KB of body, at most 10 min. */
-export function falSubmitTimeoutMs(bodyBytes: number): number {
-  return Math.min(10 * 60_000, 60_000 + Math.ceil(bodyBytes / (256 * 1024)) * 1000);
-}
+export const falSubmitTimeoutMs = videoSubmitTimeoutMs;
 
 /**
  * A readable reason from a fal error body: `detail` as a string, the

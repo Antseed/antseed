@@ -27,6 +27,35 @@ export function videoDownloadSignal(callerSignal: AbortSignal): { signal: AbortS
   };
 }
 
+const MAX_VIDEO_JSON_BYTES = 1024 * 1024;
+
+/** A JSON answer of a video provider, never cached. */
+export function videoJsonResponse(request: SerializedHttpRequest, statusCode: number, body: Record<string, unknown>): SerializedHttpResponse {
+  return {
+    requestId: request.requestId,
+    statusCode,
+    headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
+    body: Buffer.from(JSON.stringify(body)),
+  };
+}
+
+/** An upstream's JSON object answer, or null when it is too large, not JSON, or not an object. */
+export async function readVideoJson(response: Response): Promise<Record<string, unknown> | null> {
+  const body = Buffer.from(await response.arrayBuffer());
+  if (body.length > MAX_VIDEO_JSON_BYTES) return null;
+  try {
+    const parsed = JSON.parse(body.toString('utf8')) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Time allowed to send a create and get its answer: 60 s plus 1 s per 256 KB of body, at most 10 min. */
+export function videoSubmitTimeoutMs(bodyBytes: number): number {
+  return Math.min(10 * 60_000, 60_000 + Math.ceil(bodyBytes / (256 * 1024)) * 1000);
+}
+
 /**
  * Validates an upstream MP4 response and streams it to the buyer in bounded
  * chunks. Returns an error response (nothing sent yet) when the upstream answer

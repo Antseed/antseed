@@ -7,8 +7,11 @@ import {
   parseServiceCapabilitiesJson,
   parseServiceUnitBillingModelsJson,
   createVideoResponseStreamer,
+  readVideoJson as readJson,
   videoDownloadError as error,
   videoDownloadSignal,
+  videoJsonResponse as json,
+  videoSubmitTimeoutMs,
 } from '@antseed/provider-core';
 
 /** Model Studio's Singapore endpoint. API keys belong to one region. */
@@ -22,7 +25,6 @@ const PROTOCOL = 'fal-video';
 const CREATE_PATH = '/api/v1/services/aigc/video-generation/video-synthesis';
 const TASKS_PATH = '/api/v1/tasks';
 const ACCOUNT_CHECK_PATH = '/compatible-mode/v1/models';
-const MAX_JSON_BYTES = 1024 * 1024;
 const MAX_ACTIVE_DOWNLOADS = 2;
 const HEALTH_CHECK_TIMEOUT_MS = 15_000;
 
@@ -38,20 +40,6 @@ export const SUPPORTED_PARAMETERS = [
  * otherwise ignore or misuse an input the buyer expected to count.
  */
 const UNSUPPORTED_INPUTS = ['audio_url', 'video_url', 'reference_video_urls'];
-
-function json(request: SerializedHttpRequest, statusCode: number, body: Record<string, unknown>) {
-  return {
-    requestId: request.requestId,
-    statusCode,
-    headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
-    body: Buffer.from(JSON.stringify(body)),
-  };
-}
-
-async function readJson(response: Response): Promise<Record<string, unknown> | null> {
-  const body = Buffer.from(await response.arrayBuffer());
-  return body.length <= MAX_JSON_BYTES ? parseJsonObject(body) : null;
-}
 
 /** Why a create can't be priced or served, or null. Run before any payment. */
 export function alibabaRequestProblem(input: Record<string, unknown>): string | null {
@@ -107,11 +95,6 @@ export function alibabaErrorReason(body: Record<string, unknown> | null | undefi
   if (typeof message === 'string' && message.trim()) return message.slice(0, 500);
   const code = body?.code;
   return typeof code === 'string' && code.trim() ? code.slice(0, 500) : undefined;
-}
-
-/** Time allowed to send a create and get its answer: 60 s plus 1 s per 256 KB of body, at most 10 min. */
-function submitTimeoutMs(bodyBytes: number): number {
-  return Math.min(10 * 60_000, 60_000 + Math.ceil(bodyBytes / (256 * 1024)) * 1000);
 }
 
 const plugin: AntseedProviderPlugin = {
@@ -188,7 +171,7 @@ const plugin: AntseedProviderPlugin = {
           headers: { authorization, 'content-type': 'application/json', 'x-dashscope-async': 'enable' },
           body: JSON.stringify(alibabaTaskBody(aliases?.[service.toLowerCase()] ?? service, body)),
           redirect: 'error',
-          signal: AbortSignal.timeout(submitTimeoutMs(request.body.length)),
+          signal: AbortSignal.timeout(videoSubmitTimeoutMs(request.body.length)),
         });
         const accepted = await readJson(upstream);
         if (upstream.status >= 400 && upstream.status < 500) {
