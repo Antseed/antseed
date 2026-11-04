@@ -177,6 +177,14 @@ describe('parseKbfAnswers unit numbers', () => {
     expect(parseKbfAnswers('1) 3.2 × 10^5\n2) 6.02x10^23\n3) 1.6 * 10^-19 C\n4) 12.5 x 10**3', 4)).toEqual([320000, 6.02e23, 1.6e-19, 12500]);
   });
 
+  it('skips braced and bracketed unit exponents (LaTeX style)', () => {
+    expect(parseKbfAnswers('1) 9.81 m/s^{2}\n2) 340 m s^{-1}\n3) 1.6 m^{ 3 }\n4) 2 m**(2)', 4)).toEqual([9.81, 340, 1.6, 2]);
+  });
+
+  it('reads braced scientific notation as one number', () => {
+    expect(parseKbfAnswers('1) 6.02 \\times 10^{23}\n2) 1.6 \\cdot 10^{-19} C\n3) 3.0 · 10^{8} m/s', 3)).toEqual([6.02e23, 1.6e-19, 3e8]);
+  });
+
   it('still takes the last number of a reasoned line and keeps signs and plain units', () => {
     expect(parseKbfAnswers('1) ran from 1923 to 1924, so 52\n2) -430\n3) 1,234 km\n4) 2.5e3', 4)).toEqual([52, -430, 1234, 2500]);
   });

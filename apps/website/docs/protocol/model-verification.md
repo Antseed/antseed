@@ -114,8 +114,10 @@ Auditors claim with `antseed verifier rewards --claim` and can publish a display
 link with `antseed verifier profile`.
 
 These replace the single `AntseedKbfVerification` contract (migration M003) with the same
-KBF rules; until the replacement is deployed on Base mainnet, `AntseedKbfVerification` stays
-on-chain but the CLI and SDK no longer read it.
+KBF rules. On Base mainnet they are `AntseedVerificationResults`
+`0xF2C8482aD2A348854698E93f41FE3cc32307687c` and `AntseedKbfAudits`
+`0xe57aB03423A3835571F7d68AC1E23CF8a2763343`, the CLI and SDK defaults; the old
+`AntseedKbfVerification` stays on-chain but is no longer read.
 
 `AntseedVerificationResults` keeps one result per seller service (one model offer of one
 seller):
@@ -127,9 +129,11 @@ seller):
   its model recovers at the next audit.
 - **A DIFF only affects that one service.** A seller's other verified models are not
   touched.
-- **Replacing a DIFF takes two auditors.** Within KBF, a SAME or UNDETERMINED replaces a live
-  DIFF only once as many auditors report it as a DIFF needs. If the owner clears a wrong result,
-  reports made before the clear stop counting.
+- **Replacing a DIFF takes one auditor by default.** Within KBF, a SAME or UNDETERMINED
+  replaces a live DIFF once it has its own required reports (one each) and at least
+  `diffReplacementReports` of them. That floor is 1 by default (and on Base mainnet); the owner
+  can raise it, e.g. to 2 so one auditor alone cannot lift a DIFF. If the owner clears a wrong
+  result, reports made before the clear stop counting.
 - Auditors cannot audit sellers they own.
 
 ## How buyers use results
@@ -140,8 +144,8 @@ skips it under the default minimum trust score, and the desktop app explains the
 in the seller's reputation tooltip. Only a recorded DIFF counts: a DIFF from one auditor
 that is still waiting for the second changes nothing, and the service keeps its earlier
 result until then. SAME, UNDETERMINED, expired and missing results change nothing. The
-penalty lifts on its own when the DIFF expires or two auditors replace it with a later
-result. See [Routing](/docs/api/routing).
+penalty lifts on its own when the DIFF expires or a later result replaces it (one auditor's
+SAME or UNDETERMINED under the default `diffReplacementReports` of 1). See [Routing](/docs/api/routing).
 
 ## Check a model yourself
 

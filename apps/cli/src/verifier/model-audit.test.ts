@@ -106,6 +106,32 @@ test('builds one audit per model with every seller, including UNDETERMINED', asy
   })
 })
 
+test('an UNDETERMINED the auditor caused is never submitted, also from a run submitted directly', async () => {
+  await withRun([
+    audit('1', sellers[0]!, 'model-a'),
+    audit('3', sellers[2]!, 'model-a', 'UNDETERMINED'),
+  ], async ({ prepared }) => {
+    const [entry] = prepared.audits as [PreparedModelAudit]
+    assert.deepEqual(entry.results.map((result) => result.agentId), [1n])
+    assert.equal(prepared.excluded.length, 1)
+    assert.equal(prepared.excluded[0]!.agentId, '3')
+    assert.match(prepared.excluded[0]!.reason, /UNDETERMINED caused by this auditor \(no probe bank exists/)
+  }, {
+    tamper: async (evidenceDir) => {
+      // Run manifests are read as written, as `verifier submit --run-id` does.
+      const manifest = await readVerifierRunManifest(evidenceDir, 'run-1')
+      const path = manifest.models[0]!.summaryPath
+      const summary = JSON.parse(await readFile(path, 'utf8')) as {
+        results: Array<{ agentId: string; outcomeReason?: unknown }>
+      }
+      summary.results.find((result) => result.agentId === '3')!.outcomeReason = {
+        version: 1, code: 'audit_failed', source: 'verifier', summary: 'no probe bank exists for model-a',
+      }
+      await writeFile(path, JSON.stringify(summary))
+    },
+  })
+})
+
 test('excludes the auditor\'s own agent and tampered evidence without dropping the model', async () => {
   await withRun([
     audit('1', sellers[0]!, 'model-a'),

@@ -780,9 +780,14 @@ are no longer left unminted: they go to the reserve and the remainder route.
   reading `results.agentStatus`.
 
 Runbook, wiring and the manual owner steps: `script/migrations/M003VerificationRegistry/README.md`.
-Verdicts, credits and auditor approvals on the old contract do not carry over. The redeploy is not
-broadcast yet: `deployments/` still records the old contract (history is append-only), and the SDK
-has no default verification address until the new release `003-verification-split` is recorded.
+Verdicts, credits and auditor approvals on the old contract do not carry over. The redeploy is on
+Base mainnet and recorded as release `003-verification-split` (`deployments/base-mainnet/history/
+003-verification-split.json`; the old `003-kbf-verification` record stays, history is append-only):
+`AntseedVerificationResults` `0xF2C8482aD2A348854698E93f41FE3cc32307687c`, `AntseedKbfAudits`
+`0xe57aB03423A3835571F7d68AC1E23CF8a2763343` and `AntseedVerificationPointsPolicy`
+`0x5d677f5eDd69E69c664E3f7FA80f1D3DD61A2212`, with KBF wired as a source at 10,000 bps. The SDK and
+CLI default to them. Still open are the manual owner steps: moving the verification minter to the
+results layer, registering the policy and turning rewards on.
 
 Administrative parameters use their contract's dedicated setters where available.
 The emissions gate's schedule constants are immutable; do not treat legacy

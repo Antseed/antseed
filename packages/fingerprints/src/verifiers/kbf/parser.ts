@@ -32,15 +32,19 @@ function numericValue(token: string): number | null {
   return Number.isFinite(value) ? value : null;
 }
 
-/** `3.2 × 10^5`, `3.2x10^-4`, `3.2*10**5`: written-out scientific notation, rewritten as `3.2e5`. */
-const TIMES_TEN_POWER_RE = /(\d(?:\.\d+)?)\s*(?:[x×*]|\\times)\s*10\s*(?:\^|\*\*)\s*\(?\s*([-+]?\d+)\s*\)?/gi;
+/**
+ * `3.2 × 10^5`, `3.2x10^-4`, `3.2*10**5`, `6.02 \times 10^{23}`, `1.6 · 10^{-19}`: written-out
+ * scientific notation, rewritten as `3.2e5`.
+ */
+const TIMES_TEN_POWER_RE = /(\d(?:\.\d+)?)\s*(?:[x×*·]|\\times|\\cdot)\s*10\s*(?:\^|\*\*)\s*[({]?\s*([-+]?\d+)\s*[)}]?/gi;
 
 /**
- * Whether the numeric token at `index` is part of a unit, not an answer: an exponent (`m/s^2`,
- * `s^-1`) or a digit glued to letters (`m2`, `CO2`, `s-1`).
+ * Whether the numeric token at `index` is part of a unit, not an answer: an exponent, bare or
+ * bracketed (`m/s^2`, `s^-1`, `m/s^{2}`, `m s^{-1}`, `m**(2)`), or a digit glued to letters
+ * (`m2`, `CO2`, `s-1`).
  */
 function isUnitNumber(text: string, index: number): boolean {
-  const before = text.slice(0, index).trimEnd();
+  const before = text.slice(0, index).trimEnd().replace(/[({]$/, '').trimEnd();
   const previous = text[index - 1] ?? '';
   return before.endsWith('^') || before.endsWith('**') || /[A-Za-z\u00b5\u03bc]/.test(previous);
 }
