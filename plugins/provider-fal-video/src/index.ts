@@ -246,9 +246,13 @@ async function uploadInlineMedia(source: unknown, kind: 'video' | 'audio', autho
   if (!match || !mediaType?.startsWith(`${kind}/`)) return source;
   const bytes = Buffer.from(source.slice(match[0].length), 'base64');
   // Audio was measured as MP3 or WAV by its bytes, whatever its label.
-  const [contentType, fileName] = kind === 'audio'
-    ? bytes.subarray(0, 4).toString('latin1') === 'RIFF' ? ['audio/wav', 'source.wav'] : ['audio/mpeg', 'source.mp3']
-    : [mediaType, mediaType === 'video/quicktime' ? 'source.mov' : 'source.mp4'];
+  let contentType = mediaType;
+  let fileName = mediaType === 'video/quicktime' ? 'source.mov' : 'source.mp4';
+  if (kind === 'audio') {
+    const isWav = bytes.subarray(0, 4).toString('latin1') === 'RIFF';
+    contentType = isWav ? 'audio/wav' : 'audio/mpeg';
+    fileName = isWav ? 'source.wav' : 'source.mp3';
+  }
   const initiate = await fetch(FAL_STORAGE_URL, {
     method: 'POST',
     headers: { authorization, 'content-type': 'application/json', 'x-fal-object-lifecycle': JSON.stringify({ expiration_duration_seconds: 86_400 }) },
