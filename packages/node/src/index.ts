@@ -92,6 +92,7 @@ export {
   compareNetworkServiceOfferPrice,
   selectLowestPricedCanonicalOffers,
   selectLowestPricedNetworkServiceOffer,
+  speechOfferUsdPerCharacter,
 } from './discovery/service-catalog.js';
 
 // Fault attribution — lets consumers tell a dead peer from a broken buyer.

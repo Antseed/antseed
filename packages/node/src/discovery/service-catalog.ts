@@ -254,11 +254,13 @@ export function buildNetworkServiceOffers(
 }
 
 /**
- * USD per input character a speech request is billed. Speech billing matches
- * components against `{ model: <service> }`, and every component that applies
- * is charged, so their prices add up.
+ * USD per input character a speech offer bills: speech billing matches
+ * components against `{ model: <service> }` and charges every one that
+ * applies, so their prices add up. 0 for a billing model with no components
+ * (free); null when the offer is not speech or publishes no character price.
  */
-function speechUsdPerCharacter(offer: NetworkServiceOffer): number {
+export function speechOfferUsdPerCharacter(offer: NetworkServiceOffer): number | null {
+  if (offer.type !== 'speech') return null;
   const model = offer.protocol ? offer.unitBillingModels?.[offer.protocol] : undefined;
   // A billing model with no components charges nothing: the offer is free.
   if (model && model.components.length === 0) return 0;
@@ -270,12 +272,12 @@ function speechUsdPerCharacter(offer: NetworkServiceOffer): number {
     && component.priceUsd >= 0);
   return applicable.length > 0
     ? applicable.reduce((sum, component) => sum + component.priceUsd, 0)
-    : Number.POSITIVE_INFINITY;
+    : null;
 }
 
 function comparableOfferPrice(offer: NetworkServiceOffer): number {
   if (offer.type === 'image') return offer.minImageUsdPerImage ?? Number.POSITIVE_INFINITY;
-  if (offer.type === 'speech') return speechUsdPerCharacter(offer);
+  if (offer.type === 'speech') return speechOfferUsdPerCharacter(offer) ?? Number.POSITIVE_INFINITY;
   if (offer.inputUsdPerMillion === undefined || offer.outputUsdPerMillion === undefined) {
     return Number.POSITIVE_INFINITY;
   }
