@@ -1,4 +1,4 @@
-import { isWorkerAttestation, type WorkerAttestation } from '@antseed/node/worker-e2e';
+import { isWorkerAttestation, type WorkerAttestation, type WorkerKeyCertificate } from '@antseed/node/worker-e2e';
 
 /**
  * Colony pool wire protocol (v1).
@@ -86,16 +86,8 @@ export interface HelloFrame {
   agent?: string;
 }
 
-export interface WorkerEncryption {
-  /** Uncompressed P-256 public key, lowercase hex. */
-  key: string;
-  /** Unix seconds. */
-  expires: number;
-  /** EIP-191 signature over workerKeyCertificateMessage(seller, key, expires, attestationKey). */
-  certificate: string;
-  /** P-256 key the worker signs attestations with (Secure Enclave on a Mac), lowercase hex. */
-  attestationKey?: string;
-}
+/** The worker's certificate as it sends it: the pool already knows the worker and itself. */
+export type WorkerEncryption = Omit<WorkerKeyCertificate, 'worker' | 'pool'>;
 
 /** Answers an `attest` frame. */
 export interface AttestationFrame {

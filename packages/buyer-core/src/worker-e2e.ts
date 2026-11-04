@@ -92,8 +92,8 @@ export interface WorkerE2ERoute {
 }
 
 /**
- * True when a request for `service` on this peer must be encrypted to a
- * worker. Plaintext is only for a request the buyer resolved to an ordinary
+ * True when a request on this peer, routed as `route` says, must be
+ * encrypted to a worker. Plaintext is only for a request the buyer resolved to an ordinary
  * provider, because a pool must never see a prompt in the clear:
  * - a request that names a colony-pool provider is encrypted, whatever the
  *   buyer's metadata says the provider offers (pools gain models as workers
@@ -104,7 +104,7 @@ export interface WorkerE2ERoute {
  * - without a named provider, the resolved provider decides, and a service no
  *   provider announces is encrypted, since the seller could route it to its pool.
  */
-export function peerServiceUsesWorkerE2E(peer: BuyerPeerView, _service: string, route: WorkerE2ERoute = {}): boolean {
+export function peerServiceUsesWorkerE2E(peer: BuyerPeerView, route: WorkerE2ERoute = {}): boolean {
   if (!peerAnnouncesWorkerE2E(peer)) return false;
   const isWorkerProvider = workerProviders(peer);
   const explicit = route.explicitProvider?.trim().toLowerCase() || null;

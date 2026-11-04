@@ -42,6 +42,19 @@ function fakeMdm(report: { sip?: boolean; serialNumber?: string } = {}): DeviceA
   };
 }
 
+/** An MDM whose answers the test releases one by one, in any order. */
+function deferredMdm(): DeviceAttestor & { lookups: Array<{ udid: string; nonce: string; resolve: (serial: string) => void; reject: (err: Error) => void }> } {
+  const lookups: Array<{ udid: string; nonce: string; resolve: (serial: string) => void; reject: (err: Error) => void }> = [];
+  return {
+    lookups,
+    attest(udid, nonce) {
+      return new Promise<string[]>((resolve, reject) => {
+        lookups.push({ udid, nonce, resolve: (serial) => resolve(appleCa.issue({ serialNumber: serial, udid, nonce })), reject });
+      });
+    },
+  };
+}
+
 const DAY_MS = 24 * 3600_000;
 const TEST_UDID = '00000000-0000-1000-8000-0123456789AB';
 
@@ -68,7 +81,7 @@ function cachingMdm(issuedAgoMs: number, opts: { reissue?: boolean } = {}): Devi
   };
 }
 
-function fakeAttester(report: { sip?: boolean; teamId?: string | null } = {}): WorkerAttester & { calls: number } {
+function fakeAttester(report: { sip?: boolean; teamId?: string | null; device?: { serial: string; udid: string } } = {}): WorkerAttester & { calls: number } {
   const { publicKey, privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
   const jwk = publicKey.export({ format: 'jwk' });
   return {
@@ -79,7 +92,8 @@ function fakeAttester(report: { sip?: boolean; teamId?: string | null } = {}): W
       const statement = {
         v: 1 as const, teamId: report.teamId === undefined ? 'H3M5BXXQR2' : report.teamId, signingId: 'com.antseed.macworker',
         cdhash: 'ab'.repeat(20), sip: report.sip ?? true, hardenedRuntime: true, debuggerDenied: true, keyAppBound: true,
-        os: 'macOS 26.2', serial: 'C02TEST0MD6T', udid: '00000000-0000-1000-8000-0123456789AB', issued: Math.floor(Date.now() / 1000), nonce,
+        os: 'macOS 26.2', serial: report.device?.serial ?? 'C02TEST0MD6T', udid: report.device?.udid ?? '00000000-0000-1000-8000-0123456789AB',
+        issued: Math.floor(Date.now() / 1000), nonce,
       };
       const signature = sign('sha256', Buffer.from(workerAttestationMessage(worker, key, statement)), { key: privateKey, dsaEncoding: 'der' });
       return { ...statement, signature: signature.toString('base64') };
@@ -650,5 +664,48 @@ describe('colony pool', () => {
     await new Promise((resolve) => setTimeout(resolve, 200));
     expect(mdm.issued).toBe(1);
     expect(pool.workerSummaries()).toEqual([]);
+  });
+
+  it('ignores an older MDM answer that arrives after the worker named another Mac', async () => {
+    const mdm = deferredMdm();
+    await setup({ verifyOnJoin: false, attestationIntervalMs: 30, deviceAttestor: mdm });
+    const device = { serial: 'C02TEST0MD6T', udid: TEST_UDID };
+    startWorker({ attester: fakeAttester({ device }) });
+    await waitFor(() => mdm.lookups.length === 1);
+
+    // The worker re-attests naming another Mac: the pool asks about it while the first lookup is still out.
+    device.serial = 'C02OTHERMAC1';
+    device.udid = '00000000-0000-1000-8000-0000000000FF';
+    await waitFor(() => mdm.lookups.length === 2);
+    expect(mdm.lookups[1]!.udid).toBe(device.udid);
+
+    // Apple's word for the old Mac must not verify the worker that now runs on another one.
+    mdm.lookups[0]!.resolve('C02TEST0MD6T');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(pool.workerSummaries()[0]).toMatchObject({ appleVerified: false });
+
+    mdm.lookups[1]!.resolve('C02OTHERMAC1');
+    await waitFor(() => pool.workerSummaries()[0]?.appleVerified === true);
+  });
+
+  it('keeps a newer MDM answer when an older lookup fails afterwards', async () => {
+    const mdm = deferredMdm();
+    await setup({ verifyOnJoin: false, attestationIntervalMs: 30, deviceAttestor: mdm, requireDeviceAttestation: true });
+    const device = { serial: 'C02TEST0MD6T', udid: TEST_UDID };
+    startWorker({ attester: fakeAttester({ device }) });
+    await waitFor(() => mdm.lookups.length === 1);
+    device.serial = 'C02OTHERMAC1';
+    device.udid = '00000000-0000-1000-8000-0000000000FF';
+    await waitFor(() => mdm.lookups.length === 2);
+
+    mdm.lookups[1]!.resolve('C02OTHERMAC1');
+    await waitFor(() => pool.workerSummaries()[0]?.appleVerified === true);
+
+    // The stale failure neither clears the new verification nor disconnects the worker.
+    mdm.lookups[0]!.reject(new Error('MDM timed out'));
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(pool.workerSummaries()).toHaveLength(1);
+    expect(pool.workerSummaries()[0]).toMatchObject({ appleVerified: true });
+    expect(provider.services).toContain(SERVICE);
   });
 });

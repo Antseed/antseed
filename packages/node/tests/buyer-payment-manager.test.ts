@@ -2027,6 +2027,50 @@ describe('BuyerPaymentManager', () => {
     expect(decodeWorkerTail(payload.metadata)).toEqual([{ worker, cumulativeAmount: 50_000n }]);
   });
 
+  it('lets NeedAuth collect a ceiling-capped worker remainder after cache eviction', async () => {
+    store.close();
+    store = new ChannelStore(tempDir);
+    manager = new BuyerPaymentManager(
+      identity,
+      makeConfig(tempDir, { maxReserveAmountUsdc: 100_000n, maxPerRequestUsdc: 100_000n }),
+      store,
+    );
+    manager.setSigner(Wallet.createRandom());
+    const worker = '0x1000000000000000000000000000000000000001';
+    const other = '0x2000000000000000000000000000000000000002';
+    const sellerPeerId = fakePeerId('seller-pool-capped-evicted-needauth');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 100_000n);
+    manager.handleAuthAck(sellerPeerId, { channelId });
+
+    await manager.handleNeedAuth(sellerPeerId, {
+      channelId, requestId: 'chat-1', requiredCumulativeAmount: '60000', currentAcceptedCumulative: '0',
+      deposit: '1000000', lastRequestCost: '60000',
+    }, mux);
+    manager.recordWorkerAttribution(sellerPeerId, 'chat-2', worker);
+    manager.recordWorkerDelivery('chat-2', { inputTokens: 1000n, cachedInputTokens: 0n, outputTokens: 400n });
+    await manager.handleNeedAuth(sellerPeerId, {
+      channelId, requestId: 'chat-2', requiredCumulativeAmount: '110000', currentAcceptedCumulative: '60000',
+      deposit: '1000000', lastRequestCost: '50000',
+    }, mux);
+    expect(manager.getCumulativeAmount(sellerPeerId)).toBe(100_000n);
+
+    for (let i = 0; i < 600; i++) {
+      manager.recordWorkerAttribution(sellerPeerId, `later-${i}`, other);
+      manager.recordWorkerDelivery(`later-${i}`, i % 2 === 0 ? { inputTokens: 1n, cachedInputTokens: 0n, outputTokens: 1n } : null);
+    }
+
+    // The seller asks again for the remainder: it is not refused as already paid, and stays chat-2's worker's.
+    for (let attempt = 0; attempt < 2 && manager.getCumulativeAmount(sellerPeerId) < 110_000n; attempt++) {
+      await manager.handleNeedAuth(sellerPeerId, {
+        channelId, requestId: 'chat-2', requiredCumulativeAmount: '110000', currentAcceptedCumulative: '100000',
+        deposit: '1000000', lastRequestCost: '50000',
+      }, mux);
+    }
+    expect(manager.getCumulativeAmount(sellerPeerId)).toBe(110_000n);
+    const last = mux.sentSpendingAuths.at(-1) as { metadata: string };
+    expect(decodeWorkerTail(last.metadata)).toEqual([{ worker, cumulativeAmount: 50_000n }]);
+  });
+
   it('attributes the remainder NeedAuth signs after a capped post-response auth to the worker', async () => {
     store.close();
     store = new ChannelStore(tempDir);

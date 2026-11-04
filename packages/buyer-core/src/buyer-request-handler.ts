@@ -227,7 +227,7 @@ export class BuyerRequestHandler {
     // The seller trims the model name, so a padded name is resolved trimmed too.
     const routedProvider = billingRoute?.provider
       ?? (workerService && workerService !== requestedService ? selectBillingRoute(peer, req, workerService)?.provider : null);
-    const needsWorkerE2E = Boolean(workerService) && peerServiceUsesWorkerE2E(peer, workerService!, { explicitProvider, routedProvider });
+    const needsWorkerE2E = Boolean(workerService) && peerServiceUsesWorkerE2E(peer, { explicitProvider, routedProvider });
     if (needsWorkerE2E && !this._deps.workerE2E) {
       throw buyerFault(
         `Service "${workerService}" on ${peer.peerId.slice(0, 12)}... is served by a colony pool, which needs worker encryption this client does not support`,

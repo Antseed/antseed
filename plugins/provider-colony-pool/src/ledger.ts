@@ -32,11 +32,6 @@ export interface DispatchRecord {
   at?: number;
 }
 
-export interface PendingPayout {
-  worker: string;
-  pendingUsdc: bigint;
-}
-
 /**
  * The pool's record of what each worker earned and was paid. Amounts are
  * USDC base units (6 decimals) stored as integers; sums stay far below 2^53.
@@ -118,7 +113,6 @@ export class WorkerLedger {
         INSERT OR IGNORE INTO earnings (request_id, worker, service, gross_usdc, worker_usdc, input_tokens, output_tokens, stream_ms, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `),
-      insertPayout: this.db.prepare('INSERT INTO payouts (worker, amount_usdc, tx_hash, created_at) VALUES (?, ?, ?, ?)'),
       insertConnection: this.db.prepare('INSERT INTO connections (worker, agent, connected_at) VALUES (?, ?, ?)'),
       closeConnection: this.db.prepare('UPDATE connections SET disconnected_at = ? WHERE id = ? AND disconnected_at IS NULL'),
       earningTotals: this.db.prepare(`
@@ -144,12 +138,6 @@ export class WorkerLedger {
           tokens_per_second = excluded.tokens_per_second
       `),
       loadRank: this.db.prepare('SELECT reliability, first_byte_ms, failures, benched_until, tokens_per_second FROM worker_rank WHERE worker = ?'),
-      pendingPayouts: this.db.prepare(`
-        SELECT e.worker AS worker, e.earned - COALESCE(p.paid, 0) AS pending
-        FROM (SELECT worker, SUM(worker_usdc) AS earned FROM earnings GROUP BY worker) e
-        LEFT JOIN (SELECT worker, SUM(amount_usdc) AS paid FROM payouts GROUP BY worker) p ON p.worker = e.worker
-        ORDER BY pending DESC
-      `),
     };
   }
 
@@ -190,10 +178,6 @@ export class WorkerLedger {
     this.stmts.pruneDispatches.run(now - DISPATCH_RETENTION_MS);
   }
 
-  recordPayout(worker: string, amountUsdc: bigint, txHash?: string, at = Date.now()): void {
-    this.stmts.insertPayout.run(worker.toLowerCase(), Number(amountUsdc), txHash ?? null, at);
-  }
-
   /** Returns the connection row id, to pass to `recordDisconnect`. */
   recordConnect(worker: string, agent?: string, at = Date.now()): number {
     const result = this.stmts.insertConnection.run(worker.toLowerCase(), agent ?? null, at);
@@ -224,14 +208,6 @@ export class WorkerLedger {
       outputTokensTotal: totals.output,
       connectedSecondsLast7Days: Math.floor(connected / 1000),
     };
-  }
-
-  /** Workers owed at least `minUsdc`, largest balance first. */
-  pendingPayouts(minUsdc = 0n): PendingPayout[] {
-    const rows = this.stmts.pendingPayouts.all() as { worker: string; pending: number }[];
-    return rows
-      .map((row) => ({ worker: row.worker, pendingUsdc: BigInt(row.pending) }))
-      .filter((row) => row.pendingUsdc > 0n && row.pendingUsdc >= minUsdc);
   }
 
   close(): void {

@@ -189,6 +189,8 @@ interface ConnectedWorker {
   /** Unix seconds when `deviceAttestation` grows too old or its chain expires. */
   deviceValidUntil: number;
   deviceTimer: NodeJS.Timeout | null;
+  /** Bumped by each MDM lookup, so an older lookup still in flight can't overwrite a newer one. */
+  deviceGeneration: number;
   /** Closes the connection before the key certificate expires, so the worker reconnects and certifies again. */
   renewTimer: NodeJS.Timeout | null;
   connectionId: number;
@@ -720,6 +722,7 @@ export class ColonyPool {
       deviceAttestation: null,
       deviceValidUntil: 0,
       deviceTimer: null,
+      deviceGeneration: 0,
       renewTimer: null,
       connectionId: this.opts.ledger.recordConnect(address, hello.agent),
       maxConcurrency: Math.max(1, Math.min(MAX_WORKER_CONCURRENCY, Math.floor(hello.maxConcurrency))),
@@ -767,6 +770,9 @@ export class ColonyPool {
    * Apple issues the next. A pool that requires it disconnects workers that fail.
    */
   private async attestDevice(worker: ConnectedWorker): Promise<void> {
+    const generation = ++worker.deviceGeneration;
+    // A newer lookup (the worker named another Mac) or a dropped connection makes this one's result moot.
+    const current = (): boolean => this.workers.get(worker.address) === worker && worker.deviceGeneration === generation;
     const attestation = worker.attestation;
     const attestationKey = worker.certificate.attestationKey;
     const retryMs = this.opts.deviceAttestationIntervalMs ?? DEVICE_ATTESTATION_INTERVAL_MS;
@@ -783,7 +789,7 @@ export class ColonyPool {
           ...(this.opts.deviceAttestationRoots ? { roots: this.opts.deviceAttestationRoots } : {}),
         });
         if (check.valid && check.report && check.validUntil !== undefined) {
-          if (this.workers.get(worker.address) !== worker) return;
+          if (!current()) return;
           worker.deviceAttestation = { chain, challenge };
           worker.deviceValidUntil = check.validUntil;
           const nowS = Math.floor(Date.now() / 1000);
@@ -800,7 +806,7 @@ export class ColonyPool {
         reason = err instanceof Error ? err.message : String(err);
       }
     }
-    if (this.workers.get(worker.address) !== worker) return;
+    if (!current()) return;
     if (reason) {
       worker.deviceAttestation = null;
       worker.deviceValidUntil = 0;
@@ -835,7 +841,7 @@ export class ColonyPool {
   }
 
   private reattested(worker: ConnectedWorker, attestation: WorkerAttestation): void {
-    if (!worker.attestNonce) return;
+    if (!worker.attestNonce || this.workers.get(worker.address) !== worker) return;
     const check = verifyWorkerAttestation(attestation, worker.certificate, this.attestationPolicy(worker.attestNonce));
     if (!check.valid || (worker.hardened && !check.hardened)) {
       this.log(`worker ${worker.address} failed re-attestation (${check.reason ?? 'no longer hardened'}); disconnecting it`);
