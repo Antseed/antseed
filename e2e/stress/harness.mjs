@@ -16,35 +16,12 @@ import { randomUUID } from 'node:crypto';
 import { freshChain, chainSnapshot, readChannel, ADDR, KEYS, C } from './chain.mjs';
 import { startMockUpstream } from './mock-upstream.mjs';
 import { startRpcProxy } from './rpc-proxy.mjs';
+import { SCENARIOS } from './scenarios.mjs';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 const REPO = resolve(HERE, '../..');
 const CONTRACTS_DIR = join(REPO, 'packages/contracts');
 const SELLER_PEER = ADDR.seller.toLowerCase().slice(2);
-
-// ── Scenarios ───────────────────────────────────────────────────────────
-const BASE = {
-  concurrency: 8, requests: 100, streamRatio: 0.5, abortRatio: 0, fault500Rate: 0, disconnectRate: 0,
-  maxReserveUsdc: '1000000', maxPerRequestUsdc: undefined, minInTokens: 1000, maxInTokens: 20000,
-  minOut: 100, maxOut: 4000, minLatencyMs: 50, maxLatencyMs: 3000, restart: null, blockTime: 1,
-  imageRatio: 0,
-};
-export const SCENARIOS = {
-  smoke: { ...BASE, concurrency: 2, requests: 6 },
-  seq: { ...BASE, concurrency: 1, requests: 30 },
-  c8: { ...BASE, concurrency: 8, requests: 120 },
-  c32: { ...BASE, concurrency: 32, requests: 256 },
-  c64: { ...BASE, concurrency: 64, requests: 384 },
-  smallreserve: { ...BASE, concurrency: 32, requests: 256, maxReserveUsdc: '250000', maxPerRequestUsdc: '150000' },
-  faults: { ...BASE, concurrency: 32, requests: 256, abortRatio: 0.1, fault500Rate: 0.05, disconnectRate: 0.05 },
-  'restart-buyer': { ...BASE, concurrency: 32, requests: 300, restart: { who: 'buyer', atFraction: 0.4 } },
-  'restart-seller': { ...BASE, concurrency: 32, requests: 300, restart: { who: 'seller', atFraction: 0.4 } },
-  mixed: { ...BASE, concurrency: 32, requests: 256 },
-  images: { ...BASE, concurrency: 32, requests: 256, imageRatio: 0.3 },
-  // #1050: pay, stop the buyer (seller closes on disconnect), restart it, then
-  // check every channel count before paying again on a fresh channel.
-  'issue-1050': { ...BASE, concurrency: 4, requests: 24, stale1050: { reconcileWaitMs: 90_000 } },
-};
 
 // ── Utilities ───────────────────────────────────────────────────────────
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -191,17 +168,28 @@ class Proc {
   }
 }
 
-function cliProc(name, tree, dataDir, home, cmdArgs, logFile, extraEnv = {}) {
-  const env = {
-    PATH: process.env.PATH, HOME: home, ANTSEED_DEBUG: '1',
-    ANTSEED_NO_UPDATE_CHECK: '1', ANTSEED_SKIP_PLUGIN_UPDATE_CHECK: '1',
-    MOCK_API_KEY: 'sk-mock', NODE_OPTIONS: `--unhandled-rejections=warn --import ${pathToFileURL(join(HERE, 'isolate.mjs')).href}`,
-    STRESS_NODE_DIST: join(tree, 'packages/node/dist'),
-    ...extraEnv,
+/** The CLI of `tree` on a peer's data dir, kept on the local DHT by isolate.mjs. */
+function cliInvocation(tree, dataDir, home, args, extraEnv = {}) {
+  return {
+    cmd: process.execPath,
+    args: [join(tree, 'apps/cli/dist/cli/index.js'), '--data-dir', dataDir, '--config', join(dataDir, 'config.json'), ...args],
+    env: {
+      PATH: process.env.PATH, HOME: home,
+      ANTSEED_NO_UPDATE_CHECK: '1', ANTSEED_SKIP_PLUGIN_UPDATE_CHECK: '1',
+      NODE_OPTIONS: `--import ${pathToFileURL(join(HERE, 'isolate.mjs')).href}`,
+      STRESS_NODE_DIST: join(tree, 'packages/node/dist'),
+      ...extraEnv,
+    },
   };
-  return new Proc(name, process.execPath,
-    [join(tree, 'apps/cli/dist/cli/index.js'), '--data-dir', dataDir, '--config', join(dataDir, 'config.json'), '--verbose', ...cmdArgs],
-    env, logFile);
+}
+
+function cliProc(name, tree, dataDir, home, cmdArgs, logFile, extraEnv = {}) {
+  const { cmd, args, env } = cliInvocation(tree, dataDir, home, ['--verbose', ...cmdArgs], {
+    ANTSEED_DEBUG: '1', MOCK_API_KEY: 'sk-mock',
+    NODE_OPTIONS: `--unhandled-rejections=warn --import ${pathToFileURL(join(HERE, 'isolate.mjs')).href}`,
+    ...extraEnv,
+  });
+  return new Proc(name, cmd, args, env, logFile);
 }
 
 async function waitFor(fn, label, timeoutMs, interval = 500) {
@@ -387,22 +375,40 @@ function findNumber(obj, key) {
   return undefined;
 }
 // Async: the RPC proxies live in this process, so a sync spawn would starve them.
+// Resolves with the exit code, the JSON object it printed (null if none), and its stderr tail.
 function cliJson(tree, dataDir, home, args) {
   return new Promise((resolveCli) => {
-    const child = spawn(process.execPath, [join(tree, 'apps/cli/dist/cli/index.js'), '--data-dir', dataDir, '--config', join(dataDir, 'config.json'), ...args], {
-      env: { PATH: process.env.PATH, HOME: home, ANTSEED_NO_UPDATE_CHECK: '1', ANTSEED_SKIP_PLUGIN_UPDATE_CHECK: '1', NODE_OPTIONS: `--import ${pathToFileURL(join(HERE, 'isolate.mjs')).href}`, STRESS_NODE_DIST: join(tree, 'packages/node/dist') },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    const { cmd, args: argv, env } = cliInvocation(tree, dataDir, home, args);
+    const child = spawn(cmd, argv, { env, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = ''; let stderr = '';
     child.stdout.on('data', (d) => { stdout += d; });
     child.stderr.on('data', (d) => { stderr += d; });
     const timer = setTimeout(() => child.kill('SIGKILL'), 120_000);
-    child.on('exit', () => {
+    child.on('exit', (code) => {
       clearTimeout(timer);
-      const m = stdout.match(/\{[\s\S]*\}/);
-      try { resolveCli(m ? { ...JSON.parse(m[0]), stderr: stderr.trim().slice(-300) || undefined } : { raw: stdout.slice(-300), err: stderr.slice(-300) }); } catch { resolveCli({ raw: stdout.slice(-300) }); }
+      let json = null;
+      try { json = JSON.parse(stdout.match(/\{[\s\S]*\}/)?.[0] ?? 'null'); } catch {}
+      resolveCli({ code, json, stderr: stderr.trim().slice(-300) || undefined });
     });
   });
+}
+
+/** `buyer status --json`'s active-channel count, or why it could not be read. */
+async function cliActiveChannels(tree, dataDir, home) {
+  const { code, json, stderr } = await cliJson(tree, dataDir, home, ['buyer', 'status', '--json']);
+  if (code !== 0) return { error: `exit ${code}${stderr ? `: ${stderr}` : ''}` };
+  return typeof json?.activeChannels === 'number' ? { count: json.activeChannels } : { error: 'no activeChannels in the output' };
+}
+
+/** GET a buyer-proxy route as JSON, or why it failed. */
+async function proxyJson(path) {
+  try {
+    const res = await fetch(`http://127.0.0.1:${PORTS.buyerProxy}${path}`);
+    if (!res.ok) return { error: `HTTP ${res.status}` };
+    return { json: await res.json() };
+  } catch (e) {
+    return { error: e.message };
+  }
 }
 async function stale1050Phase({ sc, seller, buyer, buyerDir, buyerTree, buyerHome, rpc, result }) {
   const buyerDb = join(buyerDir, 'payments', 'sessions.db');
@@ -419,9 +425,9 @@ async function stale1050Phase({ sc, seller, buyer, buyerDir, buyerTree, buyerHom
   out.onchainStatus = Object.fromEntries(before.map((id) => [id.slice(0, 10), readChannel(rpc, id).status]));
   out.staleRowsWhileStopped = buyerActiveRows(buyerDb).filter((r) => before.includes(r.session_id)).length;
   // Offline CLI count (no running buyer).
-  { const a = await cliJson(buyerTree, buyerDir, buyerHome, ['buyer', 'status', '--json']); out.cliStatusStopped = a?.activeChannels; out.cliStatusStoppedErr = a?.stderr ?? a?.err; }
+  out.cliStatusStopped = await cliActiveChannels(buyerTree, buyerDir, buyerHome);
   await sleep(8000);
-  { const a = await cliJson(buyerTree, buyerDir, buyerHome, ['buyer', 'status', '--json']); out.cliStatusStopped2 = a?.activeChannels; out.cliStatusStopped2Err = a?.stderr ?? a?.err; }
+  out.cliStatusStopped2 = await cliActiveChannels(buyerTree, buyerDir, buyerHome);
   // Buyer comes back without talking to that seller.
   buyer.start();
   await waitFor(async () => (await fetch(`http://127.0.0.1:${PORTS.buyerProxy}/_antseed/status`)).ok, 'buyer restart', 60_000, 250);
@@ -431,14 +437,23 @@ async function stale1050Phase({ sc, seller, buyer, buyerDir, buyerTree, buyerHom
     'buyer retires closed rows', sc.stale1050.reconcileWaitMs, 1000).catch(() => {});
   out.t.retiredAfterRestartMs = stale === 0 ? Date.now() - t1 : null;
   out.staleRowsAfterRestart = stale;
-  try { const u = await (await fetch(`http://127.0.0.1:${PORTS.buyerProxy}/_antseed/buyer-usage`)).json(); out.usageActiveChannels = findNumber(u, 'activeChannels'); } catch (e) { out.usageErr = e.message; }
-  try { out.channelsView = ((await (await fetch(`http://127.0.0.1:${PORTS.buyerProxy}/_antseed/channels`)).json()).channels ?? []).length; } catch {}
-  out.cliStatusRunning = (await cliJson(buyerTree, buyerDir, buyerHome, ['buyer', 'status', '--json']))?.activeChannels;
+  const usage = await proxyJson('/_antseed/buyer-usage');
+  const usageCount = findNumber(usage.json, 'activeChannels');
+  out.usageActiveChannels = typeof usageCount === 'number' ? { count: usageCount } : { error: usage.error ?? 'no activeChannels in the response' };
+  const channels = await proxyJson('/_antseed/channels');
+  out.channelsView = Array.isArray(channels.json?.channels) ? { count: channels.json.channels.length } : { error: channels.error ?? 'no channels in the response' };
+  out.cliStatusRunning = await cliActiveChannels(buyerTree, buyerDir, buyerHome);
   out.rowStatuses = sqliteJson(buyerDb, "select substr(session_id,1,10) id, status, settled_amount, auth_max from payment_channels where role='buyer'");
   if (out.staleRowsAfterRestart !== 0) result.violations.push({ kind: '1050-stale-active-rows-after-restart', n: out.staleRowsAfterRestart });
-  if (out.usageActiveChannels) result.violations.push({ kind: '1050-usage-counts-closed-channels', n: out.usageActiveChannels });
-  if (out.cliStatusRunning) result.violations.push({ kind: '1050-cli-status-counts-closed-channels', n: out.cliStatusRunning });
-  if (out.cliStatusStopped) result.notes.push(`1050: offline buyer status counted ${out.cliStatusStopped}`);
+  // Every surface must answer, and answer 0: a missing count is not a pass.
+  for (const [surface, read] of [['usage', out.usageActiveChannels], ['channels-view', out.channelsView], ['cli-status', out.cliStatusRunning]]) {
+    if (read.error) result.violations.push({ kind: `1050-${surface}-unreadable`, error: read.error });
+    else if (read.count !== 0) result.violations.push({ kind: `1050-${surface}-counts-closed-channels`, n: read.count });
+  }
+  for (const read of [out.cliStatusStopped, out.cliStatusStopped2]) {
+    if (read.error) result.violations.push({ kind: '1050-offline-cli-status-unreadable', error: read.error });
+  }
+  if (out.cliStatusStopped2.count) result.notes.push(`1050: offline buyer status counted ${out.cliStatusStopped2.count}`);
   return out;
 }
 
@@ -465,8 +480,10 @@ async function oneRun({ scenarioName, sc, sellerTree, buyerTree, runDir }) {
     const rpc = `http://127.0.0.1:${PORTS.anvil}`;
     let sellerRpc = rpc; let buyerRpc = rpc;
     if (RPC_PROFILE === 'base') {
-      const sp = await startRpcProxy({ port: PORTS.sellerRpc, upstream: rpc, seed: 11 + SLOT });
-      const bp = await startRpcProxy({ port: PORTS.buyerRpc, upstream: rpc, seed: 29 + SLOT });
+      // Only the seller sends transactions; the buyer's reads must lag after them too.
+      const chainClock = { lastTxAt: 0 };
+      const sp = await startRpcProxy({ port: PORTS.sellerRpc, upstream: rpc, seed: 11 + SLOT, chain: chainClock });
+      const bp = await startRpcProxy({ port: PORTS.buyerRpc, upstream: rpc, seed: 29 + SLOT, chain: chainClock });
       rpcProxies.push(['seller', sp], ['buyer', bp]);
       sellerRpc = sp.url; buyerRpc = bp.url;
     }
@@ -739,6 +756,4 @@ async function main() {
   }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  main().catch((e) => { console.error(e); process.exit(1); });
-}
+main().catch((e) => { console.error(e); process.exit(1); });

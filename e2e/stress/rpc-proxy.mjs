@@ -2,6 +2,8 @@
 // per-call latency with a slow tail, a per-client rate limit answered with
 // HTTP 429, and load-balanced nodes that lag a block behind for a while after
 // a transaction (stale eth_call / eth_getBalance, receipts not found yet).
+// Proxies in front of one chain share a `chain` clock: a transaction sent
+// through one makes reads through every one of them lag.
 import { createServer } from 'node:http';
 
 export async function startRpcProxy({
@@ -17,6 +19,7 @@ export async function startRpcProxy({
   staleReadRate = 0.35,
   receiptMissRate = 0.4,
   seed = 1,
+  chain = { lastTxAt: 0 },
 }) {
   let rnd = seed >>> 0;
   const random = () => {
@@ -26,7 +29,6 @@ export async function startRpcProxy({
   const stats = { calls: 0, rateLimited: 0, staleReads: 0, receiptMisses: 0 };
   let tokens = burst;
   let refilledAt = Date.now();
-  let lastTxAt = 0;
 
   const takeTokens = (n) => {
     const now = Date.now();
@@ -53,7 +55,7 @@ export async function startRpcProxy({
 
   // Rewrites one request the way a lagging node would answer it.
   const lagged = async (req) => {
-    const inWindow = Date.now() - lastTxAt < lagWindowMs;
+    const inWindow = Date.now() - chain.lastTxAt < lagWindowMs;
     if (!inWindow) return null;
     if (req.method === 'eth_getTransactionReceipt' && random() < receiptMissRate) {
       stats.receiptMisses += 1;
@@ -78,7 +80,7 @@ export async function startRpcProxy({
   const handleOne = async (req) => {
     if (req.method === 'eth_sendRawTransaction') {
       const res = await forward(req);
-      lastTxAt = Date.now();
+      chain.lastTxAt = Date.now();
       return res;
     }
     return (await lagged(req)) ?? forward(req);
@@ -112,7 +114,7 @@ export async function startRpcProxy({
   });
   await new Promise((resolve) => server.listen(port, '127.0.0.1', resolve));
   return {
-    url: `http://127.0.0.1:${port}`,
+    url: `http://127.0.0.1:${server.address().port}`,
     stats,
     close: () => new Promise((resolve) => server.close(() => resolve())),
   };

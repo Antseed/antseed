@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { prepareChainState } from './chain.mjs';
-import { SCENARIOS } from './harness.mjs';
+import { SCENARIOS } from './scenarios.mjs';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 
