@@ -161,6 +161,7 @@ export const integrations: Integration[] = [
     oneLiner: "Anthropic's official CLI agent - launch through Antseed with `antseed claude`.",
     description: [
       'Claude Code is the official CLI coding agent from Anthropic. It speaks the Anthropic Messages API natively, so it slots into Antseed through the `antseed claude` wrapper or by pointing `ANTHROPIC_BASE_URL` at your local proxy.',
+      'The quickest route is the <a href="/docs/desktop">desktop app (AI VPN)</a>: open <strong>Connected apps</strong> and connect Claude Code, then pick the model in the app. You can change it per conversation without touching any config. The steps below are for the CLI.',
       '`antseed claude` resolves the active buyer proxy, sets the placeholder Anthropic API key for the child process, and forwards the rest of your Claude Code flags unchanged. Manual environment variables still work if you want to run `claude` directly.',
       'No real Anthropic API key is needed - the Antseed proxy authenticates each request with your local identity (`ANTSEED_IDENTITY_HEX`) and settles payments on-chain. The `ANTHROPIC_API_KEY` value is required by the Anthropic SDK only as a non-empty placeholder.',
       'When Claude Code calls the Messages API, the proxy selects the highest-ranked eligible offer under the shared Price + Trust preferences. Stable session metadata gives the conversation soft affinity to the seller that actually served it, with failover when needed. Every model on the network (listed by <code>GET /v1/models</code>) is a valid <code>--model</code> value; prefix it with a peer id (<code>&lt;peerId&gt;@&lt;service-id&gt;</code>) only when you want to force a specific seller.',
@@ -170,16 +171,15 @@ export const integrations: Integration[] = [
       {
         label: 'Verify it runs',
         command: 'claude --version',
-        output: '1.4.2 (Claude Code)',
       },
     ],
     configure: [
       {
         kind: 'code',
         language: 'bash',
-        snippet: 'antseed claude --model kimi-k2.6',
+        snippet: 'antseed claude --model deepseek-v4.1-flash',
         note:
-          'Recommended: the wrapper reads the active buyer proxy from `buyer.state.json` or config, sets `ANTHROPIC_BASE_URL` and `ANTHROPIC_API_KEY` for Claude Code, and forwards extra Claude args. Add `--antseed-base-url http://host:port` only when your proxy is somewhere else. To route to a specific peer, prefix the model with its peer id: `antseed claude --model <peerId>@kimi-k2.6`.',
+          'Recommended: the wrapper reads the active buyer proxy from `buyer.state.json` or config, sets `ANTHROPIC_BASE_URL` and `ANTHROPIC_API_KEY` for Claude Code, and forwards extra Claude args. Add `--antseed-base-url http://host:port` only when your proxy is somewhere else. To route to a specific peer, prefix the model with its peer id: `antseed claude --model <peerId>@deepseek-v4.1-flash`.',
       },
       {
         kind: 'env',
@@ -189,27 +189,52 @@ export const integrations: Integration[] = [
         },
         note: 'Manual equivalent if you want to run `claude` directly instead of through `antseed claude`.',
       },
+      {
+        kind: 'env',
+        vars: {
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: 'deepseek-v4.1-flash',
+          CLAUDE_CODE_SUBAGENT_MODEL: 'deepseek-v4.1-flash',
+          CLAUDE_CODE_MAX_CONTEXT_TOKENS: '128000',
+        },
+        note: 'Claude Code also sends background tasks and subagents to other model names (Claude Haiku, for example), and those requests reach the proxy too. Set the first two so they use an open model as well. Claude Code does not know open model ids and assumes a 200k context window; set `CLAUDE_CODE_MAX_CONTEXT_TOKENS` to the context length on the model card so it compacts at the right point.',
+      },
+      {
+        kind: 'file',
+        path: '~/.claude/settings.json',
+        language: 'json',
+        snippet: `{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://localhost:${ANT_PORT}",
+    "ANTHROPIC_API_KEY": "antseed",
+    "ANTHROPIC_MODEL": "deepseek-v4.1-flash",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-v4.1-flash",
+    "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-v4.1-flash",
+    "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "128000"
+  }
+}`,
+        note: 'Optional: to run plain `claude` through Antseed every time, put the settings in Claude Code\'s own settings file instead of passing them per session.',
+      },
     ],
     modelHints: {
-      suggested: ['kimi-k2.6', 'deepseek-v4-flash', 'minimax-m2.7', 'glm-5'],
-      note: "`antseed claude --model <model-id>` passes the value to Claude Code unchanged. Use a model id returned by `curl http://localhost:8377/v1/models`. You can also route to a specific peer per session with `--model <peerId>@<service-id>`.",
+      suggested: ['deepseek-v4.1-flash', 'glm-5.3-flash', 'glm-5.2', 'kimi-k3'],
+      note: "`antseed claude --model <model-id>` passes the value to Claude Code unchanged. Use a model id returned by `curl http://localhost:8377/v1/models`, and pick a seller that lists tool use: Claude Code needs it for every file edit and command. You can also route to a specific peer per session with `--model <peerId>@<service-id>`.",
     },
     test: [
       {
         label: 'List every model on the network',
         command: 'curl -s http://localhost:8377/v1/models | jq \'.data[].id\'',
         outputLabel: 'Example response',
-        output: `"deepseek-v4-flash"
-"gpt-oss-120b"
-"kimi-k2.6"
-"minimax-m2.7"`,
+        output: `"deepseek/deepseek-v4.1-flash"
+"moonshotai/kimi-k3"
+"z-ai/glm-5.2"
+"z-ai/glm-5.3-flash"`,
         note:
-          'Any id here works with `--model` - the proxy applies the shared Price + Trust ranking and keeps soft conversation affinity after the first successful route. To force a specific seller, use `--model <peerId>@<service-id>` or `antseed buyer connection set --peer <peerId>`.',
+          'Any id here works with `--model`, and so does the short name without the vendor prefix (`deepseek-v4.1-flash`) -the proxy applies the shared Price + Trust ranking and keeps soft conversation affinity after the first successful route. To force a specific seller, use `--model <peerId>@<service-id>` or `antseed buyer connection set --peer <peerId>`.',
       },
       {
         label: 'Start a Claude Code session through the wrapper',
-        command: 'antseed claude --model kimi-k2.6',
-        note: 'Manual equivalent after exporting the env vars above: `claude --model kimi-k2.6`. To pin a specific peer for the session: `antseed claude --model <peerId>@kimi-k2.6`.',
+        command: 'antseed claude --model deepseek-v4.1-flash',
+        note: 'Manual equivalent after exporting the env vars above: `claude --model deepseek-v4.1-flash`. To pin a specific peer for the session: `antseed claude --model <peerId>@deepseek-v4.1-flash`.',
       },
     ],
     troubleshooting: [
@@ -224,6 +249,14 @@ export const integrations: Integration[] = [
       {
         problem: '`model_not_found` for a model name you expected to work',
         fix: 'No policy-allowed peer on the network currently advertises that model. Check what is available with `curl http://localhost:8377/v1/models`, then pick another model or adjust your buyer policy.',
+      },
+      {
+        problem: '`402 insufficient_deposits` even though a free seller offers the model',
+        fix: 'With automatic routing, Claude Code\'s requests can still land on a paid seller. Deposit with `antseed buyer deposit`, or pin the free seller: `antseed claude --model <peerId>@<model>`. `antseed network browse --service <model>` lists sellers and their prices.',
+      },
+      {
+        problem: 'Claude Code says it doesn\'t recognize the model and assumes a 200k context window',
+        fix: 'Expected for open model ids. Set `CLAUDE_CODE_MAX_CONTEXT_TOKENS` to the model\'s real context length so Claude Code compacts at the right point.',
       },
       {
         problem: 'Want to confirm a request actually went through Antseed (not Anthropic direct)',
@@ -261,9 +294,9 @@ export const integrations: Integration[] = [
       {
         kind: 'code',
         language: 'bash',
-        snippet: 'antseed codex --model deepseek-v4-flash',
+        snippet: 'antseed codex --model deepseek-v4.1-flash',
         note:
-          'Recommended: the wrapper resolves the proxy URL, injects an Antseed model provider with `wire_api = "responses"`, sets `ANTSEED_API_KEY=antseed`, and forwards extra Codex args. Put child flags after `--` when they look like wrapper flags. To route to a specific peer, prefix the model with its peer id: `antseed codex --model <peerId>@deepseek-v4-flash`.',
+          'Recommended: the wrapper resolves the proxy URL, injects an Antseed model provider with `wire_api = "responses"`, sets `ANTSEED_API_KEY=antseed`, and forwards extra Codex args. Put child flags after `--` when they look like wrapper flags. To route to a specific peer, prefix the model with its peer id: `antseed codex --model <peerId>@deepseek-v4.1-flash`.',
       },
       {
         kind: 'file',
@@ -272,8 +305,10 @@ export const integrations: Integration[] = [
         snippet: `# Loaded by: codex --profile antseed
 # Set this to any model id returned by http://localhost:${ANT_PORT}/v1/models
 # (the network-wide list - no peer pin needed).
-model = "deepseek-v4-flash"
+model = "deepseek-v4.1-flash"
 model_provider = "antseed"
+# Codex doesn't know open model ids; set the model's context length so it compacts in time.
+model_context_window = 128000
 
 [model_providers.antseed]
 name = "Antseed"
@@ -289,7 +324,7 @@ wire_api = "responses"`,
       },
     ],
     modelHints: {
-      suggested: ['deepseek-v4-flash', 'kimi-k2.6', 'qwen3-coder-480b', 'minimax-m2.7'],
+      suggested: ['deepseek-v4.1-flash', 'glm-5.3-flash', 'glm-5.2', 'kimi-k3'],
       note: 'Pass a network model id to `antseed codex --model <model-id>`. For a manual profile, set top-level `model = "<model-id>"` in `~/.codex/antseed.config.toml` or override with `codex --profile antseed --model <model-id>`. Route to a specific peer by prefixing its advertised service id: `<peerId>@<service-id>`.',
     },
     test: [
@@ -297,17 +332,17 @@ wire_api = "responses"`,
         label: 'List every model on the network',
         command: 'curl -s http://localhost:8377/v1/models | jq \'.data[].id\'',
         outputLabel: 'Example response',
-        output: `"deepseek-v4-flash"
-"gpt-oss-120b"
-"kimi-k2.6"
-"minimax-m2.7"`,
+        output: `"deepseek/deepseek-v4.1-flash"
+"moonshotai/kimi-k3"
+"z-ai/glm-5.2"
+"z-ai/glm-5.3-flash"`,
         note:
-          'Whatever appears here is a valid value for top-level `model = ...` in `~/.codex/antseed.config.toml` (or for `codex --profile antseed --model <id>`).',
+          'Whatever appears here (or the short name without the vendor prefix, such as `deepseek-v4.1-flash`) is a valid value for top-level `model = ...` in `~/.codex/antseed.config.toml` (or for `codex --profile antseed --model <id>`).',
       },
       {
         label: 'Run Codex through the wrapper',
-        command: 'antseed codex --model deepseek-v4-flash',
-        note: 'Manual profile equivalent: `codex --profile antseed --model deepseek-v4-flash`.',
+        command: 'antseed codex --model deepseek-v4.1-flash',
+        note: 'Manual profile equivalent: `codex --profile antseed --model deepseek-v4.1-flash`.',
       },
       {
         label: 'Verify inference is actually paid through Antseed',
@@ -339,6 +374,10 @@ Deposits reserved:           0 USDC → 1 USDC`,
       {
         problem: 'Streaming stops after the first chunk with a manual profile',
         fix: 'Use `antseed codex`, or set `wire_api = "responses"` in the manual `[model_providers.antseed]` block.',
+      },
+      {
+        problem: '`Model metadata for … not found. Defaulting to fallback metadata`',
+        fix: 'Expected for open model ids. `antseed codex` sets a context window for you; in a manual profile, set `model_context_window` to the model\'s context length.',
       },
       {
         problem: '`unknown profile: antseed`',
@@ -384,7 +423,7 @@ Deposits reserved:           0 USDC → 1 USDC`,
       {
         kind: 'code',
         language: 'bash',
-        snippet: 'antseed opencode --model gpt-oss-120b',
+        snippet: 'antseed opencode --model deepseek-v4.1-flash',
         note:
           'Recommended: the wrapper resolves the proxy URL, writes a temporary OpenCode config with one Antseed model, sets `OPENCODE_CONFIG` for the child process, and forwards extra OpenCode args.',
       },
@@ -403,18 +442,27 @@ Deposits reserved:           0 USDC → 1 USDC`,
         "apiKey": "antseed"
       },
       "models": {
-        "kimi-k2.6":          { "name": "Kimi K2.6 (via Antseed)" },
-        "deepseek-v4-flash":  { "name": "DeepSeek v4 Flash (via Antseed)" },
-        "gpt-oss-120b":       { "name": "gpt-oss 120B (via Antseed)" }
+        "deepseek-v4.1-flash": {
+          "name": "DeepSeek V4.1 Flash (via Antseed)",
+          "limit": { "context": 128000, "output": 8192 }
+        },
+        "glm-5.2": {
+          "name": "GLM-5.2 (via Antseed)",
+          "limit": { "context": 128000, "output": 8192 }
+        },
+        "kimi-k3": {
+          "name": "Kimi K3 (via Antseed)",
+          "limit": { "context": 128000, "output": 8192 }
+        }
       }
     }
   }
 }`,
-        note: 'Manual equivalent if you want OpenCode to keep Antseed in its normal project or global config.',
+        note: 'Manual equivalent if you want OpenCode to keep Antseed in its normal project or global config. Set `limit.context` to each model\'s context length: OpenCode uses it to decide when to compact the conversation.',
       },
     ],
     modelHints: {
-      suggested: ['kimi-k2.6', 'deepseek-v4-flash', 'minimax-m2.7', 'gpt-oss-120b'],
+      suggested: ['deepseek-v4.1-flash', 'glm-5.3-flash', 'glm-5.2', 'kimi-k3'],
       note:
         '`antseed opencode --model <model-id>` generates a temporary config for that one id. In manual config, use model ids returned by `curl http://localhost:8377/v1/models` as the keys under `models`. Route to a specific peer by prefixing its advertised service id: `<peerId>@<service-id>`.',
     },
@@ -423,17 +471,17 @@ Deposits reserved:           0 USDC → 1 USDC`,
         label: 'Confirm the proxy lists the same ids your config references',
         command: 'curl -s http://localhost:8377/v1/models | jq \'.data[].id\'',
         outputLabel: 'Example response',
-        output: `"deepseek-v4-flash"
-"gpt-oss-120b"
-"kimi-k2.6"
-"minimax-m2.7"`,
+        output: `"deepseek/deepseek-v4.1-flash"
+"moonshotai/kimi-k3"
+"z-ai/glm-5.2"
+"z-ai/glm-5.3-flash"`,
         note: 'Add or remove entries under `models` in `opencode.json` so they match this list.',
       },
       {
         label: 'Launch OpenCode through the wrapper',
-        command: 'antseed opencode --model gpt-oss-120b',
+        command: 'antseed opencode --model deepseek-v4.1-flash',
         note:
-          'Extra OpenCode args are forwarded, so `antseed opencode --model gpt-oss-120b run` works too. Manual config equivalent: run `opencode`, then pick one of the Antseed entries from `/models`.',
+          'Extra OpenCode args are forwarded, so `antseed opencode --model deepseek-v4.1-flash run` works too. Manual config equivalent: run `opencode`, then pick one of the Antseed entries from `/models`.',
       },
     ],
     troubleshooting: [
@@ -470,7 +518,7 @@ Deposits reserved:           0 USDC → 1 USDC`,
     oneLiner: 'Open-source terminal coding agent with a first-class Antseed extension.',
     description: [
       '<strong>What Pi is.</strong> Pi (<code>@mariozechner/pi-coding-agent</code>) is a minimal, hackable terminal coding agent by Mario Zechner - the same lineage as <a href="https://github.com/badlogic/pi-mono">pi-mono</a>. It ships with four default tools (<code>read</code>, <code>write</code>, <code>edit</code>, <code>bash</code>) and lets you extend everything else - commands, providers, themes, even the editor UI - through TypeScript <em>extensions</em>, <em>skills</em>, and <em>prompt templates</em>. No fork required.',
-      '<strong>What the Antseed extension does.</strong> <a href="https://github.com/AntSeed/pi-antseed"><code>pi-antseed</code></a> is a Pi extension that registers the local buyer proxy as a Pi provider named <code>antseed</code>. Once installed, every model on the network shows up under <code>antseed/&lt;id&gt;</code> in Pi\'s model picker (Ctrl+L or <code>/model</code>) - you switch with <code>/model antseed/minimax-m2.7</code> just like any built-in.',
+      '<strong>What the Antseed extension does.</strong> <a href="https://github.com/AntSeed/pi-antseed"><code>pi-antseed</code></a> is a Pi extension that registers the local buyer proxy as a Pi provider named <code>antseed</code>. Once installed, every model on the network shows up under <code>antseed/&lt;id&gt;</code> in Pi\'s model picker (Ctrl+L or <code>/model</code>) - you switch with <code>/model antseed/deepseek-v4.1-flash</code> just like any built-in. The picker lists one entry per seller, named <code>antseed/&lt;model&gt;@&lt;seller&gt;</code>; pick one of those to stay on that seller.',
       '<strong>Why an extension instead of env vars.</strong> Pi already speaks dozens of provider protocols natively. The extension calls <code>pi.registerProvider("antseed", { api: "openai-responses", authHeader: true, baseUrl: "http://localhost:8377/v1" })</code> - Pi then handles auth headers, streaming, retries, and tool-calling. The Responses API path preserves reasoning items across turns for reasoning-capable models, while the extension still auto-refreshes the model list from <code>GET /v1/models</code> so the menu reflects every model on the network.',
     ],
     install: [
@@ -507,9 +555,9 @@ Deposits reserved:           0 USDC → 1 USDC`,
       },
     ],
     modelHints: {
-      suggested: ['minimax-m2.7', 'kimi-k2.6', 'deepseek-v4-flash', 'qwen3-coder-480b'],
+      suggested: ['deepseek-v4.1-flash', 'glm-5.3-flash', 'glm-5.2', 'kimi-k3'],
       note:
-        'The extension auto-discovers from `GET /v1/models` after Pi loads, so every model on the network shows up under `antseed/...`. Run `/reload` in Pi to refresh the list as the network changes. Route to a specific peer by prefixing the model id: `/model antseed/<peerId>@minimax-m2.7`.',
+        'The extension auto-discovers from `GET /v1/models` after Pi loads, so every model on the network shows up under `antseed/...`. Run `/reload` in Pi to refresh the list as the network changes. To stay on one seller, pick its entry in the picker (`antseed/<model>@<seller>`).',
     },
     test: [
       {
@@ -522,13 +570,13 @@ Deposits reserved:           0 USDC → 1 USDC`,
         label: 'Open the model picker and pick an Antseed-routed model',
         command: '/model',
         note:
-          'Or press Ctrl+L. The picker is fuzzy-searchable; type "antseed" to filter. You should see entries like `antseed/minimax-m2.7`, `antseed/deepseek-v4-flash`, etc. - one for each model on the network.',
+          'Or press Ctrl+L. The picker is fuzzy-searchable; type "antseed" to filter. You should see one entry per seller and model, such as `antseed/deepseek-v4.1-flash@<seller>`, where `<seller>` is the seller\'s short peer id, name and reputation.',
       },
       {
         label: 'Or switch directly via slash command',
-        command: '/model antseed/minimax-m2.7',
+        command: '/model antseed/deepseek-v4.1-flash',
         note:
-          'Replace `minimax-m2.7` with any id from `curl http://localhost:8377/v1/models`. After this, every prompt routes through Antseed using the buyer\'s shared Price + Trust preferences.',
+          'Replace `deepseek-v4.1-flash` with any id from `curl http://localhost:8377/v1/models`. After this, every prompt routes through Antseed using the buyer\'s shared Price + Trust preferences.',
       },
     ],
     troubleshooting: [
