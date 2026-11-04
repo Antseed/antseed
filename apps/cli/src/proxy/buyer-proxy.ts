@@ -39,6 +39,7 @@ import {
   reportedSuccessPrior,
   adaptiveFirstTokenTimeoutMs,
   sanitizePeerDisplayName,
+  speechOfferUsdPerCharacter,
   speechVoiceProblem,
   type AntseedNode,
   type FaultAttribution,
@@ -1734,9 +1735,10 @@ export class BuyerProxy {
     const verdicts = new Map<string, ModelRouteVerdict>()
     const routeCandidates = []
     // A speech seller refuses a voice it does not list, so it is not a route for one.
-    const voice = requestProtocol === 'openai-audio-speech'
-      ? extractRequestBodyFields(request.headers, request.body)?.['voice']
-      : undefined
+    const speechBody = requestProtocol === 'openai-audio-speech' ? extractRequestBodyFields(request.headers, request.body) : null
+    const voice = speechBody?.['voice']
+    // What a speech request costs on a route: its price per character times the characters it reads.
+    const speechCharacters = typeof speechBody?.['input'] === 'string' ? [...speechBody['input']].length : null
     for (const peer of modelPeers) {
       const plan = modelPlans.get(peer.peerId)
         ?? resolvePeerRoutePlan(peer, requestProtocol, requestedService, explicitProvider, 'strict', voice)
@@ -1778,6 +1780,7 @@ export class BuyerProxy {
         inputUsdPerMillion: offer.inputUsdPerMillion ?? null,
         outputUsdPerMillion: offer.outputUsdPerMillion ?? null,
         minImageUsdPerImage: offer.minImageUsdPerImage ?? null,
+        speechUsdPerCharacter: speechOfferUsdPerCharacter(offer),
       })
     }
     const now = this._now()
@@ -1846,7 +1849,9 @@ export class BuyerProxy {
       serviceId: this._healthServiceKey(candidate.serviceId),
       inputUsdPerMillion: candidate.inputUsdPerMillion,
       outputUsdPerMillion: candidate.outputUsdPerMillion,
-      requestUsd: candidate.minImageUsdPerImage,
+      requestUsd: candidate.speechUsdPerCharacter != null && speechCharacters !== null
+        ? candidate.speechUsdPerCharacter * speechCharacters
+        : candidate.minImageUsdPerImage,
       coolingDown: isCooling(candidate),
       ...(openChannels ? { channelOpen: modelRouteTotalPrice(candidate) === 0 || openChannels.has(candidate.peerId.toLowerCase()) } : {}),
       saturated: typeof candidate.peer.maxConcurrency === 'number' && candidate.peer.maxConcurrency > 0
