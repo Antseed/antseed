@@ -89,6 +89,8 @@ export interface AntsContextOptions {
    * ChainRpcProvider): every client reads through it and `selectRpc` is a no-op.
    */
   provider?: AbstractProvider;
+  /** Persists the colony pools linked in this dashboard (all of them), so a restart still shows them. */
+  saveColonyPools?: (addresses: string[]) => Promise<void>;
 }
 
 function sameAddress(a?: string | null, b?: string | null): boolean {
@@ -126,6 +128,7 @@ export class AntsContext {
   private readonly injectedProvider: AbstractProvider | null;
   private indexerClient: Indexer | null | undefined;
   private rpcOrder: string[] | null = null;
+  saveColonyPools: ((addresses: string[]) => Promise<void>) | undefined;
 
   constructor(options: AntsContextOptions) {
     this.chain = options.chain;
@@ -135,6 +138,7 @@ export class AntsContext {
     this.stackTtlMs = options.stackTtlMs ?? 60_000;
     this.probeRpc = options.probeRpc ?? probeRpcEndpoint;
     this.injectedProvider = options.provider ?? null;
+    this.saveColonyPools = options.saveColonyPools;
   }
 
   /**
@@ -266,12 +270,14 @@ export class AntsContext {
   usageAccounting(): UsageAccountingClient | null {
     return this.optional('usageAccounting', this.chain.usageAccountingAddress, (address) => new UsageAccountingClient(this.base(address)));
   }
-  /** Colony pools: the configured ones plus any linked in this session. */
+  /** Colony pools: the configured ones plus any linked through this dashboard. */
   colonyPoolAddresses(): string[] {
     return [...new Set((this.chain.colonyPoolAddresses ?? []).map((address) => address.toLowerCase()))];
   }
-  rememberColonyPool(address: string): void {
+  /** Show a newly linked pool from now on, and persist it through the host. */
+  async rememberColonyPool(address: string): Promise<void> {
     this.chain.colonyPoolAddresses = [...(this.chain.colonyPoolAddresses ?? []), address];
+    await this.saveColonyPools?.(this.colonyPoolAddresses());
   }
   colonyPool(address: string): ColonyPoolClient {
     return this.required('colonyPool', 'colonyPool', address, (pool) => new ColonyPoolClient(this.base(pool)));

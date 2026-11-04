@@ -336,7 +336,8 @@ async function main() {
         // The deployed Channels contract, never one the pool names.
         const session = await new ChannelsClient({ rpcUrl: RPC_URL, contractAddress: A.channels, evmChainId: CHAIN_ID }).getSession(channel);
         if (/^0x0+$/.test(session.buyer)) return null;
-        const ok = session.buyer.toLowerCase() === buyer.toLowerCase() && session.seller.toLowerCase() === seller.toLowerCase();
+        // Only an Active channel (status 1) pays for work; a closed one keeps its buyer and seller.
+        const ok = session.status === 1 && session.buyer.toLowerCase() === buyer.toLowerCase() && session.seller.toLowerCase() === seller.toLowerCase();
         logTo(name, `${ok ? C.green : C.yellow}on-chain check${C.reset}: channel ${channel.slice(0, 12)}… buyer=${session.buyer.slice(0, 10)}… seller=pool → ${ok ? 'genuine buyer' : 'MISMATCH'}`);
         return ok;
       },

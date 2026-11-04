@@ -30,7 +30,7 @@ function fixture(pools: string[] = [pool], unfunded: number[] = []) {
     chain,
     stack: async () => ({ currentEpoch: 6 }),
     colonyPoolAddresses: () => (chain.colonyPoolAddresses ?? []).map((a) => a.toLowerCase()),
-    rememberColonyPool: (address: string) => { chain.colonyPoolAddresses = [...chain.colonyPoolAddresses, address]; },
+    rememberColonyPool: async (address: string) => { chain.colonyPoolAddresses = [...chain.colonyPoolAddresses, address]; },
     colonyPool: () => client,
     requireSigner: () => wallet,
   } as unknown as AntsContext;
@@ -66,6 +66,22 @@ describe('colony pool rewards', () => {
     client.claimEpochEmissions.mockRejectedValueOnce(new Error('EmissionsLocked'));
     await expect(claimColonyPool(ctx, { pool, usdc: false, ants: true }, report)).resolves.toEqual({ hashes: ['ants-hash'] });
     expect(client.claimAnts).toHaveBeenCalledWith(wallet, [4]);
+  });
+
+  it('reads only the pool being claimed', async () => {
+    const other = Wallet.createRandom().address.toLowerCase();
+    const { ctx, client } = fixture([pool, other]);
+    const opened: string[] = [];
+    (ctx as unknown as { colonyPool: (address: string) => typeof client }).colonyPool = (address: string) => { opened.push(address.toLowerCase()); return client; };
+    await claimColonyPool(ctx, { pool, usdc: true, ants: false }, report);
+    expect(new Set(opened)).toEqual(new Set([pool.toLowerCase()]));
+  });
+
+  it('reports, but does not fail the link, when the pool cannot be saved', async () => {
+    const { ctx } = fixture([]);
+    (ctx as unknown as { rememberColonyPool: () => Promise<void> }).rememberColonyPool = async () => { throw new Error('disk full'); };
+    await expect(linkWorkerPayout(ctx, { code: linkCode() }, report)).resolves.toMatchObject({ hash: 'link-hash' });
+    expect(report).toHaveBeenCalledWith(expect.stringMatching(/Could not save the colony pool.*disk full/));
   });
 
   it('refuses pools the dashboard does not know', async () => {

@@ -79,6 +79,13 @@ const OBSERVED_UNIT_USAGE_WAIT_MS = 5_000;
 /** How long a NeedAuth for a colony-pool request waits for the buyer to verify the worker's sealed answer. */
 const WORKER_DELIVERY_WAIT_MS = 15_000;
 const MAX_WORKER_DELIVERIES = 512;
+/**
+ * Worker requests per seller whose delivery record was evicted unpaid. Their
+ * ids are kept (across sessions) so a late NeedAuth for one is still refused;
+ * past this many the buyer stops sending that seller worker requests rather
+ * than forget one.
+ */
+const MAX_FORGOTTEN_WORKER_REQUESTS = 16_384;
 
 /**
  * A request encrypted to a colony-pool worker: pending until the buyer has
@@ -86,6 +93,9 @@ const MAX_WORKER_DELIVERIES = 512;
  * authenticated) or failed. Only a verified answer is paid for.
  */
 interface WorkerDelivery {
+  sellerPeerId: string;
+  /** The worker the request was encrypted for: its signed amount is attributed to it. */
+  worker: string;
   state: 'pending' | 'verified' | 'failed';
   usage?: WorkerUsage;
   waiters: Array<() => void>;
@@ -357,10 +367,10 @@ export class BuyerPaymentManager {
    *  Used in handleNeedAuth to validate cost with the correct pricing tier
    *  without trusting the seller's claim of which service was used. */
   private readonly _requestService = new RequestServiceTracker();
-  /** requestId -> worker a pool request was encrypted for; its signed amount is attributed to that worker. */
-  private readonly _requestWorker = new RequestServiceTracker();
   /** requestId -> whether the worker's sealed answer verified (see WorkerDelivery). */
   private readonly _workerDeliveries = new Map<string, WorkerDelivery>();
+  /** sellerPeerId -> worker requests evicted from _workerDeliveries before they were paid; never paid. */
+  private readonly _forgottenWorkerRequests = new Map<string, Set<string>>();
   /**
    * requestId -> trusted buyer-owned billing identity, request facts, and mode.
    *
@@ -596,7 +606,7 @@ export class BuyerPaymentManager {
       this._disableMetadataV2Services ? undefined : service,
       delta,
     );
-    const worker = this._requestWorker.get(requestId);
+    const worker = requestId != null ? this._workerDeliveries.get(requestId)?.worker : undefined;
     return worker ? { ...next, workers: withWorkerAttribution(next.workers, worker, delta.amount) } : next;
   }
 
@@ -604,23 +614,57 @@ export class BuyerPaymentManager {
    * Attribute a request's signed amount to the pool worker it was encrypted
    * for. Only that worker could decrypt it, so only it can have answered.
    */
-  recordWorkerAttribution(requestId: string, worker: string): void {
-    this._requestWorker.track(requestId, worker);
+  recordWorkerAttribution(sellerPeerId: string, requestId: string, worker: string): void {
     // A retry on another worker starts over; NeedAuths already waiting keep waiting.
     const delivery = this._workerDeliveries.get(requestId);
-    if (delivery) {
+    if (delivery && delivery.sellerPeerId === sellerPeerId) {
+      delivery.worker = worker;
       delivery.state = 'pending';
       delete delivery.usage;
       return;
     }
-    if (this._workerDeliveries.size >= MAX_WORKER_DELIVERIES) {
-      const oldest = this._workerDeliveries.keys().next().value;
-      if (oldest !== undefined) {
-        this._settleWorkerDelivery(oldest, 'failed');
-        this._workerDeliveries.delete(oldest);
-      }
+    if ((this._forgottenWorkerRequests.get(sellerPeerId)?.size ?? 0) >= MAX_FORGOTTEN_WORKER_REQUESTS) {
+      throw buyerFault(
+        `[BuyerPayment] Too many unpaid colony-pool requests to ${sellerPeerId.slice(0, 12)}...; refusing further worker requests to it`,
+        'buyer-session-state',
+      );
     }
-    this._workerDeliveries.set(requestId, { state: 'pending', waiters: [] });
+    // The same request retried through another seller: the first seller's record is forgotten, not dropped.
+    if (delivery) this._forgetWorkerDelivery(requestId);
+    if (this._workerDeliveries.size >= MAX_WORKER_DELIVERIES) this._evictWorkerDelivery();
+    this._workerDeliveries.set(requestId, { sellerPeerId, worker, state: 'pending', waiters: [] });
+  }
+
+  /**
+   * Make room by dropping the oldest settled record (else the oldest pending
+   * one) without forgetting it was a worker request: its id moves to the
+   * seller's forgotten set, so a late NeedAuth for it is refused, never
+   * validated as an ordinary request.
+   */
+  private _evictWorkerDelivery(): void {
+    let victim: string | undefined;
+    for (const [requestId, delivery] of this._workerDeliveries) {
+      if (delivery.state !== 'pending') { victim = requestId; break; }
+      victim ??= requestId;
+    }
+    if (victim !== undefined) this._forgetWorkerDelivery(victim);
+  }
+
+  private _forgetWorkerDelivery(requestId: string): void {
+    const delivery = this._workerDeliveries.get(requestId);
+    if (!delivery) return;
+    this._settleWorkerDelivery(requestId, 'failed');
+    this._workerDeliveries.delete(requestId);
+    let forgotten = this._forgottenWorkerRequests.get(delivery.sellerPeerId);
+    if (!forgotten) {
+      forgotten = new Set();
+      this._forgottenWorkerRequests.set(delivery.sellerPeerId, forgotten);
+    }
+    forgotten.add(requestId);
+  }
+
+  private _isForgottenWorkerRequest(sellerPeerId: string, requestId: string | undefined): boolean {
+    return requestId != null && (this._forgottenWorkerRequests.get(sellerPeerId)?.has(requestId) ?? false);
   }
 
   /**
@@ -644,9 +688,10 @@ export class BuyerPaymentManager {
   }
 
   /** The request's worker delivery once it is no longer pending (or the wait ran out); undefined for other requests. */
-  private async _awaitWorkerDelivery(requestId: string, timeoutMs: number): Promise<WorkerDelivery | undefined> {
+  private async _awaitWorkerDelivery(sellerPeerId: string, requestId: string, timeoutMs: number): Promise<WorkerDelivery | undefined> {
     const delivery = this._workerDeliveries.get(requestId);
-    if (!delivery || delivery.state !== 'pending') return delivery;
+    // Another seller's request is refused at once; there is nothing to wait for.
+    if (!delivery || delivery.state !== 'pending' || delivery.sellerPeerId !== sellerPeerId) return delivery;
     await new Promise<void>((resolve) => {
       const done = (): void => {
         clearTimeout(timer);
@@ -682,6 +727,8 @@ export class BuyerPaymentManager {
     this._rejectedPeers.delete(sellerPeerId);
     this._responseTokenTotals.delete(sellerPeerId);
     this._clearRequestBillingForSeller(sellerPeerId);
+    // Worker delivery state outlives the session: a NeedAuth names a request,
+    // and a forgotten worker request must stay refused on the next channel too.
   }
 
   getActiveSession(sellerPeerId: string): StoredChannel | null {
@@ -1688,7 +1735,10 @@ export class BuyerPaymentManager {
     stats: PerRequestResponseStats,
   ): Promise<PerRequestAuthResult> {
     const workerDelivery = stats.requestId != null ? this._workerDeliveries.get(stats.requestId) : undefined;
-    if (workerDelivery && (workerDelivery.state !== 'verified' || !workerDelivery.usage)) {
+    if (
+      this._isForgottenWorkerRequest(sellerPeerId, stats.requestId)
+      || (workerDelivery && (workerDelivery.sellerPeerId !== sellerPeerId || workerDelivery.state !== 'verified' || !workerDelivery.usage))
+    ) {
       throw buyerFault(
         `[BuyerPayment] Request ${stats.requestId} to a colony-pool worker has no verified answer to pay for`,
         'buyer-session-state',
@@ -1999,7 +2049,7 @@ export class BuyerPaymentManager {
     // truncated or never came. Waits inside the lock for the same reason as
     // above; the response path records the result without taking the lock.
     const workerDelivery = payload.requestId && hasPositiveCost(payload.lastRequestCost)
-      ? await this._awaitWorkerDelivery(payload.requestId, WORKER_DELIVERY_WAIT_MS)
+      ? await this._awaitWorkerDelivery(sellerPeerId, payload.requestId, WORKER_DELIVERY_WAIT_MS)
       : undefined;
     const session = this.getActiveSession(sellerPeerId);
     if (!session) {
@@ -2023,6 +2073,14 @@ export class BuyerPaymentManager {
     const buyerService = requestBilling?.context.service
       ?? this._requestService.get(payload.requestId);
     const buyerBillingContext = requestBilling?.context;
+    if (hasPositiveCost(payload.lastRequestCost) && this._isForgottenWorkerRequest(sellerPeerId, payload.requestId)) {
+      debugWarn(`[BuyerPayment] Refusing NeedAuth from ${sellerPeerId.slice(0, 12)}... for colony-pool request ${payload.requestId}: its delivery was never verified`);
+      return false;
+    }
+    if (workerDelivery && workerDelivery.sellerPeerId !== sellerPeerId) {
+      debugWarn(`[BuyerPayment] Refusing NeedAuth from ${sellerPeerId.slice(0, 12)}... for request ${payload.requestId} sent to another seller`);
+      return false;
+    }
     if (workerDelivery) {
       const pricing = requestBilling?.tokenPricing ?? this.getSessionPricing(sellerPeerId, buyerService);
       const problem = workerDeliveryProblem(workerDelivery, payload, pricing, Boolean(requestBilling?.unitModel));

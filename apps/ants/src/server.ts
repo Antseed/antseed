@@ -143,6 +143,21 @@ export async function createAntsServer(options: AntsServerOptions): Promise<Ants
   }
   const statePrefix = options.stateKey ? `${chain.evmChainId}-${options.stateKey.replace(/[^A-Za-z0-9_-]/g, '_')}` : `${chain.evmChainId}`;
 
+  // Colony pools linked through this dashboard (Rewards → Link a Mac), so a restart still shows them.
+  const colonyPoolsPath = path.join(dataDir, 'ants-activity', `${statePrefix}-colony-pools.json`);
+  const configuredPools = new Set((context.chain.colonyPoolAddresses ?? []).map((address) => address.toLowerCase()));
+  try {
+    const saved = JSON.parse(await readFile(colonyPoolsPath, 'utf8')) as unknown;
+    const linked = Array.isArray(saved) ? saved.filter((address): address is string => typeof address === 'string' && /^0x[0-9a-fA-F]{40}$/.test(address)) : [];
+    if (linked.length > 0) context.chain.colonyPoolAddresses = [...(context.chain.colonyPoolAddresses ?? []), ...linked];
+  } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('Could not read the linked colony pools. Preserve the file and resolve the error before continuing.', { cause: error }); }
+  context.saveColonyPools = async (addresses) => {
+    await mkdir(path.dirname(colonyPoolsPath), { recursive: true, mode: 0o700 });
+    const temporary = `${colonyPoolsPath}.${randomBytes(8).toString('hex')}.tmp`;
+    await writeFile(temporary, JSON.stringify(addresses.filter((address) => !configuredPools.has(address))), { mode: 0o600 });
+    await rename(temporary, colonyPoolsPath);
+  };
+
   const views = new ViewCache();
   const historyPath = path.join(dataDir, 'ants-activity', `${statePrefix}-positions.json`);
   try {

@@ -5,9 +5,12 @@ import Foundation
 /// buyer's channel with this pool), refused (the chain shows otherwise) or
 /// unknown (not on-chain within `wait`). Only a verified channel gets full
 /// requests, so a pool cannot buy real work by signing bindings to channels
-/// that do not exist. Both verdicts are cached; one lookup is shared by the
-/// requests waiting on it, and an unknown channel is looked up again by the
-/// next request (a fresh reserve can lag the RPC).
+/// that do not exist or are closed. A refusal is cached (a closed channel
+/// never reopens); a verification lasts `verifiedFor`, then the channel is
+/// looked up again, so a channel closed after it was verified stops getting
+/// full requests. One lookup is shared by the requests waiting on it, and an
+/// unknown channel is looked up again by the next request (a fresh reserve
+/// can lag the RPC).
 @MainActor
 final class ChannelVerdicts {
     /// Whether `channel` belongs to `buyer` and the pool; nil = not on-chain (yet).
@@ -16,8 +19,12 @@ final class ChannelVerdicts {
     private let lookup: Lookup
     private let wait: TimeInterval
     private let pollInterval: TimeInterval
-    /// Verified: channel → the buyer the chain says owns it.
+    private let verifiedFor: TimeInterval
+    private let now: () -> Date
+    /// Channel → the buyer the chain says owns it (ownership never changes).
     private var owners: [String: String] = [:]
+    /// Channel → until when its last Active verification counts.
+    private var verifiedUntil: [String: Date] = [:]
     /// Refused: "channel|buyer" pairs the chain says don't match.
     private var refused: Set<String> = []
     private var pending: [String: Task<Bool?, Never>] = [:]
@@ -26,9 +33,11 @@ final class ChannelVerdicts {
 
     private static let maxCached = 10_000
 
-    init(wait: TimeInterval = 5, pollInterval: TimeInterval = 1, lookup: @escaping Lookup) {
+    init(wait: TimeInterval = 5, pollInterval: TimeInterval = 1, verifiedFor: TimeInterval = 60, now: @escaping () -> Date = Date.init, lookup: @escaping Lookup) {
         self.wait = wait
         self.pollInterval = pollInterval
+        self.verifiedFor = verifiedFor
+        self.now = now
         self.lookup = lookup
     }
 
@@ -38,9 +47,10 @@ final class ChannelVerdicts {
     func verdict(channel: String, buyer: String) async -> Bool? {
         let channel = channel.lowercased(), buyer = buyer.lowercased()
         // A channel proven to be another buyer's never serves this one.
-        if let owner = owners[channel] { return owner == buyer }
+        if let owner = owners[channel], owner != buyer { return false }
         let key = "\(channel)|\(buyer)"
         if refused.contains(key) { return false }
+        if let until = verifiedUntil[channel], now() < until { return true }
         if Task.isCancelled { return nil }
         let task = pending[key] ?? {
             let task = Task { () -> Bool? in
@@ -72,11 +82,13 @@ final class ChannelVerdicts {
         while true {
             switch try? await lookup(channel, buyer) {
             case true?:
-                if owners.count >= Self.maxCached { owners.removeAll() }
+                if owners.count >= Self.maxCached { owners.removeAll(); verifiedUntil.removeAll() }
                 owners[channel] = buyer
+                verifiedUntil[channel] = now().addingTimeInterval(verifiedFor)
                 onVerdict?(channel, buyer, true)
                 return true
             case false?:
+                verifiedUntil[channel] = nil
                 if refused.count >= Self.maxCached { refused.removeAll() }
                 refused.insert("\(channel)|\(buyer)")
                 onVerdict?(channel, buyer, false)

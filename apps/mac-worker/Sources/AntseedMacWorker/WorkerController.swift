@@ -77,7 +77,10 @@ final class WorkerController: ObservableObject {
     /// The Channels contract channels are checked on, once the RPC's chain id is known.
     private var trustedChannels: String?
     /// On-chain channel checks (when an RPC is set), each read bounded so a slow RPC can't hold a request.
-    private lazy var channels: ChannelVerdicts = {
+    /// Its verdicts are for `poolSeller`; a challenge naming another pool starts a fresh one.
+    private lazy var channels = makeChannelVerdicts()
+
+    private func makeChannelVerdicts() -> ChannelVerdicts {
         let verdicts = ChannelVerdicts { [weak self] channel, buyer in
             guard let self, let rpc = self.config.rpcURL, let pool = self.poolSeller, let trusted = self.trustedChannels else { return nil }
             return try await Chain(rpcURL: rpc, timeout: 2).channelBelongs(channel: channel, buyer: buyer, pool: pool, channels: trusted)
@@ -88,7 +91,7 @@ final class WorkerController: ObservableObject {
                 : "on-chain check FAILED: channel \(channel.prefix(12))… is not this buyer's; refusing it")
         }
         return verdicts
-    }()
+    }
 
     var address: String { keys.ethereum.address }
 
@@ -211,7 +214,11 @@ final class WorkerController: ObservableObject {
         case "challenge":
             guard let pool = frame["pool"] as? String, let nonce = frame["nonce"] as? String,
                   let seller = frame["seller"] as? String else { return }
-            poolSeller = seller
+            if seller.lowercased() != poolSeller?.lowercased() {
+                // Verdicts say "this buyer's channel with that pool": none carry over to another pool.
+                if poolSeller != nil { channels = makeChannelVerdicts() }
+                poolSeller = seller
+            }
             guard refreshProtection() else { socket?.cancel(with: .goingAway, reason: nil); return }
             do {
                 let keyHex = keys.encryptionKeyHex

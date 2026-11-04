@@ -30,6 +30,8 @@ import {
 const HELLO_TIMEOUT_MS = 10_000;
 const CANARY_TIMEOUT_MS = 60_000;
 const PING_INTERVAL_MS = 15_000;
+/** A worker that misses this many pings in a row is disconnected (a sleeping Mac, a dropped path). */
+const MAX_MISSED_PINGS = 2;
 const MAX_FRAME_BYTES = 16 * 1024 * 1024;
 const MAX_WORKER_CONCURRENCY = 64;
 /** A started response that sends nothing for this long is cancelled. */
@@ -72,6 +74,8 @@ export interface ColonyPoolOptions {
   firstByteTimeoutMs?: number;
   /** How long a started response may go without a chunk before it is cancelled. */
   responseIdleTimeoutMs?: number;
+  /** How often workers are pinged; one that misses two pings in a row is disconnected (default 15 s). */
+  heartbeatIntervalMs?: number;
   /** Only admit workers whose attestation reports a hardened Mac (signed app, SIP on, app-bound key). */
   requireAttestation?: boolean;
   /** If set, only apps signed by these Apple Developer teams count as hardened. */
@@ -131,6 +135,8 @@ interface InFlight {
   release: () => void;
   startedAt: number;
   firstByteAt: number | null;
+  /** The caller's request ID; worker frames use a pool-owned dispatch ID, since buyers' IDs can collide. */
+  requestId: string;
 }
 
 export interface RequestTiming {
@@ -170,6 +176,8 @@ interface ConnectedWorker {
   tokensPerSecond: number;
   /** When buyers were recently assigned to this worker. */
   assignedAt: number[];
+  /** Pings sent since the last pong. */
+  missedPings: number;
 }
 
 export interface WorkerSummary {
@@ -221,8 +229,16 @@ export class ColonyPool {
       });
     });
     this.pingTimer = setInterval(() => {
-      for (const worker of this.workers.values()) worker.ws.ping();
-    }, PING_INTERVAL_MS);
+      for (const worker of [...this.workers.values()]) {
+        if (worker.missedPings >= MAX_MISSED_PINGS) {
+          this.log(`worker ${worker.address} stopped answering pings; disconnecting it`);
+          worker.ws.terminate(); // its close event drops it and fails what it was serving
+          continue;
+        }
+        worker.missedPings += 1;
+        worker.ws.ping();
+      }
+    }, this.opts.heartbeatIntervalMs ?? PING_INTERVAL_MS);
     this.pingTimer.unref();
     const address = server.address();
     return typeof address === 'object' && address ? address.port : this.opts.port;
@@ -385,10 +401,12 @@ export class ColonyPool {
       return;
     }
     const idleTimeoutMs = this.opts.responseIdleTimeoutMs ?? DEFAULT_RESPONSE_IDLE_TIMEOUT_MS;
+    // Each buyer connection names its own request IDs, so two can collide on one worker.
+    const dispatchId = randomUUID();
     const cancel = (error: Error): void => {
-      if (table.get(req.requestId) !== entry) return;
-      this.sendFrame(worker.ws, { t: 'cancel', id: req.requestId });
-      this.finish(table, req.requestId);
+      if (table.get(dispatchId) !== entry) return;
+      this.sendFrame(worker.ws, { t: 'cancel', id: dispatchId });
+      this.finish(table, dispatchId);
       handlers.onError(error);
     };
     const onAbort = (): void => cancel(new Error('Request aborted'));
@@ -405,12 +423,13 @@ export class ColonyPool {
       release: () => signal?.removeEventListener('abort', onAbort),
       startedAt: Date.now(),
       firstByteAt: null,
+      requestId: req.requestId,
     };
-    table.set(req.requestId, entry);
+    table.set(dispatchId, entry);
     signal?.addEventListener('abort', onAbort, { once: true });
     this.sendFrame(worker.ws, {
       t: 'request',
-      id: req.requestId,
+      id: dispatchId,
       method: req.method,
       path: req.path,
       headers: req.headers,
@@ -418,11 +437,11 @@ export class ColonyPool {
     });
   }
 
-  private finish(table: Map<string, InFlight>, requestId: string): void {
-    const entry = table.get(requestId);
+  private finish(table: Map<string, InFlight>, dispatchId: string): void {
+    const entry = table.get(dispatchId);
     if (entry?.timer) clearTimeout(entry.timer);
     entry?.release();
-    table.delete(requestId);
+    table.delete(dispatchId);
   }
 
   private accept(ws: WebSocket): void {
@@ -520,7 +539,9 @@ export class ColonyPool {
       checks: Promise.resolve(),
       tokensPerSecond: 0,
       assignedAt: [],
+      missedPings: 0,
     };
+    ws.on('pong', () => { worker.missedPings = 0; });
     this.workers.set(address, worker);
     const { accepted, rejected } = this.setOffered(worker, hello.services);
     this.sendFrame(ws, { t: 'welcome', workerId: address, accepted, rejected, workerShareBps: this.opts.workerShareBps });
@@ -718,8 +739,9 @@ export class ColonyPool {
         if (!entry?.started) return;
         this.finish(worker.inflight, frame.id);
         // Paid requests are charged right after they end; free ones never read this.
-        worker.finished.set(frame.id, { startedAt: entry.startedAt, firstByteAt: entry.firstByteAt, endedAt: Date.now() });
-        setTimeout(() => worker.finished.delete(frame.id), 60_000).unref();
+        const timing = { startedAt: entry.startedAt, firstByteAt: entry.firstByteAt, endedAt: Date.now() };
+        worker.finished.set(entry.requestId, timing);
+        setTimeout(() => { if (worker.finished.get(entry.requestId) === timing) worker.finished.delete(entry.requestId); }, 60_000).unref();
         entry.handlers.onEnd();
         return;
       }
@@ -744,8 +766,8 @@ export class ColonyPool {
     if (worker.renewTimer) clearTimeout(worker.renewTimer);
     if (this.workers.get(worker.address) === worker) this.workers.delete(worker.address);
     this.opts.ledger.recordDisconnect(worker.connectionId);
-    for (const [requestId, entry] of [...worker.inflight]) {
-      this.finish(worker.inflight, requestId);
+    for (const [dispatchId, entry] of [...worker.inflight]) {
+      this.finish(worker.inflight, dispatchId);
       entry.handlers.onError(new Error(`Worker ${worker.address} disconnected`));
     }
     this.log(`worker ${worker.address} left`);

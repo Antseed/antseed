@@ -201,6 +201,23 @@ it('remembers the latest confirmed transaction in the current dashboard session'
   expect([...restarted.context.positionReadBarriers]).toEqual([]);
 });
 
+it('keeps a colony pool linked through the dashboard after a restart', async () => {
+  vi.spyOn(AntsContext.prototype, 'selectRpc').mockResolvedValue();
+  const dataDir = await mkdtemp(path.join(tmpdir(), 'ants-colony-pools-test-'));
+  directories.push(dataDir);
+  const configured = Wallet.createRandom().address.toLowerCase();
+  const linked = Wallet.createRandom().address;
+  const options = () => ({ port: 0, dataDir, address: Wallet.createRandom().address, chain: { chainId: 'base-local' as const, evmChainId: 31337, rpcUrl: 'http://127.0.0.1:1', fallbackRpcUrls: [], explorerApiUrl: '', colonyPoolAddresses: [configured] } });
+  const server = await createAntsServer(options());
+  servers.push(server);
+  await server.context.rememberColonyPool(linked);
+  await server.close();
+  servers.pop();
+  const restarted = await createAntsServer(options());
+  servers.push(restarted);
+  expect(restarted.context.colonyPoolAddresses()).toEqual([configured, linked.toLowerCase()]);
+});
+
 it.each([true, false])('correlates a wallet request only with its running owner job (active=%s)', async active => {
   vi.spyOn(AntsContext.prototype, 'selectRpc').mockResolvedValue();
   const dataDir = await mkdtemp(path.join(tmpdir(), 'ants-wallet-job-test-'));

@@ -18,28 +18,31 @@ export async function colonyPools(ctx: AntsContext): Promise<ColonyPoolsView> {
   if (addresses.length === 0 || ctx.address === ZeroAddress) return { pools: [] };
   const { currentEpoch } = await ctx.stack();
   const epochs = finishedEpochs(currentEpoch);
-  const pools = await Promise.all(addresses.map(async (address) => {
-    const pool = ctx.colonyPool(address);
-    const [usdcOwed, perEpoch] = await Promise.all([
-      pool.usdcBalance(ctx.address),
-      Promise.all(epochs.map(async (epoch) => {
-        const [owed, weight, funded] = await Promise.all([pool.pendingAnts(ctx.address, [epoch]), pool.epochWeight(epoch, ctx.address), pool.epochAnts(epoch)]);
-        return { epoch, owed, unfunded: weight > 0n && funded === 0n };
-      })),
-    ]);
-    const antsEpochs = perEpoch.filter((entry) => entry.owed > 0n).map((entry) => entry.epoch);
-    const unfundedEpochs = perEpoch.filter((entry) => entry.unfunded).map((entry) => entry.epoch);
-    const antsOwed = perEpoch.reduce((sum, entry) => sum + entry.owed, 0n);
-    return { address, usdcOwed: usdcOwed.toString(), antsOwed: antsOwed.toString(), antsEpochs, unfundedEpochs };
-  }));
-  return { pools };
+  return { pools: await Promise.all(addresses.map((address) => readColonyPool(ctx, address, epochs))) };
+}
+
+/** What one colony pool owes the connected wallet over `epochs`. */
+async function readColonyPool(ctx: AntsContext, address: string, epochs: number[]): Promise<ColonyPoolsView['pools'][number]> {
+  const pool = ctx.colonyPool(address);
+  const [usdcOwed, perEpoch] = await Promise.all([
+    pool.usdcBalance(ctx.address),
+    Promise.all(epochs.map(async (epoch) => {
+      const [owed, weight, funded] = await Promise.all([pool.pendingAnts(ctx.address, [epoch]), pool.epochWeight(epoch, ctx.address), pool.epochAnts(epoch)]);
+      return { epoch, owed, unfunded: weight > 0n && funded === 0n };
+    })),
+  ]);
+  const antsEpochs = perEpoch.filter((entry) => entry.owed > 0n).map((entry) => entry.epoch);
+  const unfundedEpochs = perEpoch.filter((entry) => entry.unfunded).map((entry) => entry.epoch);
+  const antsOwed = perEpoch.reduce((sum, entry) => sum + entry.owed, 0n);
+  return { address, usdcOwed: usdcOwed.toString(), antsOwed: antsOwed.toString(), antsEpochs, unfundedEpochs };
 }
 
 export async function claimColonyPool(ctx: AntsContext, request: ColonyPoolClaimRequest, report: StepReporter): Promise<{ hashes: string[] }> {
   const signer = ctx.requireSigner();
-  if (!ctx.colonyPoolAddresses().includes(request.pool.toLowerCase())) throw new Error('Unknown colony pool');
+  const address = request.pool.toLowerCase();
+  if (!ctx.colonyPoolAddresses().includes(address)) throw new Error('Unknown colony pool');
   const pool = ctx.colonyPool(request.pool);
-  const view = (await colonyPools(ctx)).pools.find((entry) => entry.address === request.pool.toLowerCase());
+  const view = ctx.address === ZeroAddress ? undefined : await readColonyPool(ctx, address, finishedEpochs((await ctx.stack()).currentEpoch));
   const hashes: string[] = [];
   if (request.usdc && view && BigInt(view.usdcOwed) > 0n) {
     const hash = await pool.claimUsdc(signer);
@@ -84,6 +87,13 @@ export async function linkWorkerPayout(ctx: AntsContext, request: WorkerPayoutLi
   }
   const hash = await ctx.colonyPool(authorization.pool).setPayout(signer, authorization);
   await report('Mac linked: its earnings now pay to this wallet', hash);
-  if (!ctx.colonyPoolAddresses().includes(authorization.pool.toLowerCase())) ctx.rememberColonyPool(authorization.pool);
+  if (!ctx.colonyPoolAddresses().includes(authorization.pool.toLowerCase())) {
+    // The link is on-chain either way; a failed save only means a restart forgets the pool until it is configured.
+    try {
+      await ctx.rememberColonyPool(authorization.pool);
+    } catch (error) {
+      await report(`Could not save the colony pool for later sessions: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
   return { hash, pool: authorization.pool, worker: authorization.worker };
 }

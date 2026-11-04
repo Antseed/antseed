@@ -99,7 +99,7 @@ describe('worker lifecycle', () => {
   let key: WorkerEncryptionKey;
   const buyer = Wallet.createRandom();
 
-  function start(opts: { channelVerifier?: ChannelVerifier; maxConcurrency?: number; upstreamIdleMs?: number; upstreamTimeoutMs?: number } = {}): PoolWorker {
+  function start(opts: { channelVerifier?: ChannelVerifier; maxConcurrency?: number; upstreamIdleMs?: number; upstreamTimeoutMs?: number; verifiedChannelTtlMs?: number; channelWaitMs?: number; poolSilenceMs?: number } = {}): PoolWorker {
     key = generateWorkerEncryptionKey();
     worker = new PoolWorker({
       poolUrl: fakePool.url,
@@ -212,17 +212,61 @@ describe('worker lifecycle', () => {
 
   it('reads channels only through the trusted Channels contract', async () => {
     const reads: string[] = [];
-    const sessions: Record<string, { buyer: string; seller: string }> = {
-      [`0x${'01'.repeat(32)}`]: { buyer: buyer.address, seller: SELLER },
-      [`0x${'02'.repeat(32)}`]: { buyer: buyer.address, seller: '0x00000000000000000000000000000000000000bb' },
-      [`0x${'03'.repeat(32)}`]: { buyer: '0x0000000000000000000000000000000000000000', seller: '0x0000000000000000000000000000000000000000' },
+    const sessions: Record<string, { buyer: string; seller: string; status: number }> = {
+      [`0x${'01'.repeat(32)}`]: { buyer: buyer.address, seller: SELLER, status: 1 },
+      [`0x${'02'.repeat(32)}`]: { buyer: buyer.address, seller: '0x00000000000000000000000000000000000000bb', status: 1 },
+      [`0x${'03'.repeat(32)}`]: { buyer: '0x0000000000000000000000000000000000000000', seller: '0x0000000000000000000000000000000000000000', status: 0 },
+      [`0x${'04'.repeat(32)}`]: { buyer: buyer.address, seller: SELLER, status: 2 }, // settled
+      [`0x${'05'.repeat(32)}`]: { buyer: buyer.address, seller: SELLER, status: 3 }, // timed out
     };
     const verifier = trustedChannelVerifier(async (channel) => { reads.push(channel); return sessions[channel]!; });
     expect(await verifier(`0x${'01'.repeat(32)}`, buyer.address.toLowerCase(), SELLER)).toBe(true);
     // The pool's own seller address must be the channel's seller on the trusted contract.
     expect(await verifier(`0x${'02'.repeat(32)}`, buyer.address, SELLER)).toBe(false);
     expect(await verifier(`0x${'03'.repeat(32)}`, buyer.address, SELLER)).toBeNull();
-    expect(reads).toHaveLength(3);
+    // A closed channel keeps its buyer and seller but is no longer active.
+    expect(await verifier(`0x${'04'.repeat(32)}`, buyer.address, SELLER)).toBe(false);
+    expect(await verifier(`0x${'05'.repeat(32)}`, buyer.address, SELLER)).toBe(false);
+    expect(reads).toHaveLength(5);
+  });
+
+  it('reconnects when the pool goes silent without closing', async () => {
+    upstream = await startUpstream((_body, res) => answer(res));
+    start({ poolSilenceMs: 300 });
+    await waitFor(() => fakePool.frames.filter((f) => f['t'] === 'hello').length === 1);
+    // The fake pool never pings; after the silence the worker drops the connection and joins again.
+    await waitFor(() => fakePool.frames.filter((f) => f['t'] === 'hello').length >= 2, 4_000);
+  });
+
+  it('refuses a channel closed before its first lookup', async () => {
+    upstream = await startUpstream((_body, res) => answer(res));
+    start({ channelVerifier: trustedChannelVerifier(async () => ({ buyer: buyer.address, seller: SELLER, status: 2 })) });
+    await waitFor(() => fakePool.frames.some((f) => f['t'] === 'hello'));
+    await request('closed');
+    await waitFor(() => fakePool.errorFor('closed') !== undefined);
+    expect(upstream.bodies).toHaveLength(0);
+  });
+
+  it('looks a verified channel up again after its lifetime and stops serving it once closed', async () => {
+    upstream = await startUpstream((_body, res) => answer(res));
+    let status = 1;
+    let reads = 0;
+    start({
+      verifiedChannelTtlMs: 300,
+      channelVerifier: trustedChannelVerifier(async () => { reads++; return { buyer: buyer.address, seller: SELLER, status }; }),
+    });
+    await waitFor(() => fakePool.frames.some((f) => f['t'] === 'hello'));
+    await request('v1');
+    await waitFor(() => fakePool.ended('v1'));
+    await request('v2'); // within the lifetime: served from the cache
+    await waitFor(() => fakePool.ended('v2'));
+    expect(reads).toBe(1);
+    status = 2; // the buyer closes the channel
+    await sleep(400);
+    await request('v3');
+    await waitFor(() => fakePool.errorFor('v3') !== undefined);
+    expect(reads).toBe(2);
+    expect(upstream.bodies).toHaveLength(2);
   });
 });
 
@@ -234,12 +278,13 @@ describe('pool deadlines and capacity', () => {
   let upstream: Upstream;
   const workers: PoolWorker[] = [];
 
-  async function setup(handler: Parameters<typeof startUpstream>[0], opts: { responseIdleTimeoutMs?: number; verifyOnJoin?: boolean } = {}): Promise<string> {
+  async function setup(handler: Parameters<typeof startUpstream>[0], opts: { responseIdleTimeoutMs?: number; verifyOnJoin?: boolean; heartbeatIntervalMs?: number } = {}): Promise<string> {
     upstream = await startUpstream(handler);
     pool = new ColonyPool({
       poolId: 'test-pool', seller: SELLER, catalog: [SERVICE, 'other-model'], workerShareBps: 9000, ledger, port: 0, host: '127.0.0.1',
       verifyOnJoin: opts.verifyOnJoin ?? false,
       ...(opts.responseIdleTimeoutMs ? { responseIdleTimeoutMs: opts.responseIdleTimeoutMs } : {}),
+      ...(opts.heartbeatIntervalMs ? { heartbeatIntervalMs: opts.heartbeatIntervalMs } : {}),
     });
     provider = new ColonyPoolProvider({ pool, ledger, pricing: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 4 } }, workerShareBps: 9000, maxConcurrency: 64 });
     return `ws://127.0.0.1:${await pool.start()}`;
@@ -311,5 +356,46 @@ describe('pool deadlines and capacity', () => {
     await waitFor(() => upstream.bodies.length === 1);
     await sleep(500);
     expect(provider.services).toEqual([]);
+  });
+
+  async function assign(): Promise<{ worker: string; key: string }> {
+    return JSON.parse(new TextDecoder().decode((await provider.handleControlRequest({
+      requestId: 'assign', method: 'POST', path: '/_antseed/provider/colony-pool/assign', headers: {}, body: enc({ model: SERVICE }),
+    })).body)) as { worker: string; key: string };
+  }
+
+  it('keeps two buyers\' requests apart when they use the same request ID', async () => {
+    const poolUrl = await setup(async (body, res) => {
+      await sleep(150);
+      res.writeHead(200, { 'content-type': 'application/json' });
+      const content = (body['messages'] as Array<{ content: string }>)[0]!.content;
+      res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: `echo ${content}` } }], usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 } }));
+    });
+    startWorker(poolUrl, { [SERVICE]: 'local' }, 2);
+    await waitFor(() => provider.services.includes(SERVICE));
+    const target = await assign();
+    const send = async (content: string) => {
+      const sealed = await sealRequest({ body: enc({ model: SERVICE, messages: [{ role: 'user', content }] }), worker: target.worker, workerKey: target.key });
+      // Each buyer connection numbers its own requests, so both say req-1.
+      const response = await provider.handleRequest({ requestId: 'req-1', method: 'POST', path: '/v1/chat/completions', headers: {}, body: sealed.body });
+      const answer = JSON.parse(new TextDecoder().decode(sealed.opener.openBody(response.body))) as { choices: Array<{ message: { content: string } }> };
+      return { status: response.statusCode, content: answer.choices[0]!.message.content };
+    };
+    const [a, b] = await Promise.all([send('first'), send('second')]);
+    // Each buyer gets its own answer, sealed to its own key.
+    expect(a).toEqual({ status: 200, content: 'echo first' });
+    expect(b).toEqual({ status: 200, content: 'echo second' });
+    expect(upstream.bodies).toHaveLength(2);
+    expect(pool.capacity().current).toBe(0);
+  });
+
+  it('disconnects a worker that stops answering pings without closing', async () => {
+    const poolUrl = await setup((_body, res) => answer(res), { heartbeatIntervalMs: 100 });
+    const worker = startWorker(poolUrl, { [SERVICE]: 'local' });
+    await waitFor(() => provider.services.includes(SERVICE));
+    // The worker's machine goes to sleep: its socket stays open but reads nothing, so pings go unanswered.
+    const socket = (worker as unknown as { ws: { _socket: { pause(): void } } }).ws._socket;
+    socket.pause();
+    await waitFor(() => !provider.services.includes(SERVICE), 3_000);
   });
 });

@@ -294,7 +294,7 @@ export class BuyerRequestHandler {
       }, undefined, { controlPlane: true, ...(options?.signal ? { signal: options.signal } : {}) }), channelId);
       req = sealed.request;
       // Only the worker it is encrypted for can answer it.
-      this._deps.negotiator?.bpm?.recordWorkerAttribution(plainReq.requestId, sealed.worker);
+      this._deps.negotiator?.bpm?.recordWorkerAttribution(peer.peerId, plainReq.requestId, sealed.worker);
     };
 
     let startTime = Date.now();

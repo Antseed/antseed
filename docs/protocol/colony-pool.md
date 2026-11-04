@@ -175,6 +175,11 @@ only that worker's key can decrypt it, so only that worker can answer it.
   still waiting on a channel check, and refuses extras ("Worker is at
   capacity"). A request cancelled or disconnected while it waits never starts.
   The pool runs its join checks one at a time, each in a free slot.
+- The pool sends each request to a worker under its own dispatch ID, so two
+  buyers using the same request ID never collide. It pings workers every 15
+  seconds (`heartbeatIntervalMs`) and disconnects one that misses two pings in
+  a row; a worker reconnects when it hears nothing from the pool for 45
+  seconds (`poolSilenceMs`).
 - A started response that sends nothing for 60 seconds
   (`responseIdleTimeoutMs`) is cancelled and the worker frees its slot. A
   worker may send at most 64 MiB per response, and 1 MiB answering the pool's
@@ -184,11 +189,17 @@ only that worker's key can decrypt it, so only that worker can answer it.
   chain config, never one the pool names: `antseed-pool-worker --chain-id`
   (default base-mainnet) or `--channels-address`; the Mac app uses the
   deployment for its RPC's chain (Base mainnet and Base Sepolia built in) or
-  `--channels`, and with an RPC but no trusted contract refuses buyers'
-  requests.
+  `--channels`, generated from the deployment records by
+  `scripts/generate-contract-chain-config.mjs`), and with an RPC but no
+  trusted contract refuses buyers' requests.
 - With an RPC endpoint, a worker serves a bound request in full only on a
-  verified channel: one the chain shows belongs to the signing buyer and to
-  the pool seller. A channel that belongs to someone else is refused (cached
+  verified channel: an **Active** channel (status 1 in AntseedChannels
+  `channels(bytes32)`; a settled or timed-out channel keeps its buyer and
+  seller but is refused) that the chain shows belongs to the signing buyer and
+  to the pool seller. A verification lasts 60 seconds
+  (`verifiedChannelTtlMs`), then the channel is checked again, so one closed
+  since stops getting full requests; refusals are final, and verdicts are kept
+  per pool seller. A channel that belongs to someone else is refused (cached
   for that buyer), and once a channel is verified for one buyer every other
   signer naming it is refused without another lookup. A channel not on-chain
   yet is looked up every second for up to 5 seconds (a fresh reserve can lag
@@ -203,7 +214,11 @@ and only up to what the worker's sealed usage costs: every billed count
 the token cost may not exceed the cost of the sealed usage, with no estimate
 tolerance. A NeedAuth for a request whose answer is tampered with, truncated
 or missing is refused. Per-request authorizations are priced from the sealed
-usage.
+usage. A buyer never forgets that a request went to a worker: when its cache
+of unpaid worker requests is full, the oldest one's ID is kept and a later
+payment request naming it is refused (past 16,384 such IDs for one seller,
+the buyer sends that seller no more worker requests), and a payment request
+from a different seller naming a worker request is refused.
 
 ## Hardened Macs
 
@@ -418,7 +433,7 @@ The Antseed Mac app signs this and copies a link code,
 The owner pastes it in the ANTS dashboard (Rewards → Link a Mac), which checks
 the chain and that the connected wallet is `payout`, submits `setPayout`, and
 from then on shows the pool's USDC and ANTS owed to that wallet with a claim
-button. The Mac app keeps the signed link until the contract records it or
+button (linked pools are saved in `<data dir>/ants-activity/<chain>-colony-pools.json`). The Mac app keeps the signed link until the contract records it or
 its deadline passes, so its code can be copied again after a restart, and
 shows "Pays to" only for the wallet `payoutOf` returns; **Change wallet**
 signs a new link. The seller dashboard shows the pool operator each worker's

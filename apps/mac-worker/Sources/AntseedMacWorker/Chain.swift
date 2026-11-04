@@ -42,27 +42,40 @@ struct Chain {
     }
 
     /// Whether `channel`, read from the trusted Channels contract `channels`,
-    /// belongs to `buyer` and to the pool seller. nil = not visible yet.
-    /// `channels` never comes from the pool: a pool could otherwise name a
-    /// contract of its own that vouches for any channel.
+    /// is an Active channel of `buyer` with the pool seller. nil = not visible
+    /// yet. A Settled or TimedOut channel keeps its buyer and seller on-chain,
+    /// so the status word must be checked too. `channels` never comes from
+    /// the pool: a pool could otherwise name a contract of its own that
+    /// vouches for any channel.
     func channelBelongs(channel: String, buyer: String, pool: String, channels: String) async throws -> Bool? {
         let result = try await ethCall(to: channels, data: Self.selector("channels(bytes32)") + (try Data(hexString: channel)))
-        guard result.count >= 64 else { return nil }
-        let onChainBuyer = Data(result[12..<32]).prefixedHex
-        let onChainSeller = Data(result[44..<64]).prefixedHex
+        return Self.channelVerdict(result, buyer: buyer, pool: pool)
+    }
+
+    /// AntseedChannels.ChannelStatus.Active.
+    static let activeStatus: UInt8 = 1
+
+    /// Decodes the `channels(bytes32)` getter: buyer, seller, deposit, settled,
+    /// metadataHash, deadline, settledAt, closeRequestedAt, status (9 words).
+    static func channelVerdict(_ result: Data, buyer: String, pool: String) -> Bool? {
+        let bytes = [UInt8](result)
+        guard bytes.count >= 9 * 32 else { return nil }
+        let onChainBuyer = Data(bytes[12..<32]).prefixedHex
+        let onChainSeller = Data(bytes[44..<64]).prefixedHex
         if onChainBuyer == "0x" + String(repeating: "0", count: 40) { return nil }
-        return onChainBuyer.lowercased() == buyer.lowercased() && onChainSeller.lowercased() == pool.lowercased()
+        let status = bytes[8 * 32 + 31]
+        let statusHigh = bytes[(8 * 32)..<(8 * 32 + 31)]
+        return onChainBuyer.lowercased() == buyer.lowercased()
+            && onChainSeller.lowercased() == pool.lowercased()
+            && statusHigh.allSatisfy { $0 == 0 } && status == activeStatus
     }
 }
 
-/// The AntseedChannels deployments this app trusts, by EVM chain id (from
-/// packages/node/src/payments/generated-contract-addresses.ts). Other chains,
+/// The AntseedChannels deployments this app trusts, by EVM chain id
+/// (GeneratedContractAddresses, from the deployment records). Other chains,
 /// such as a local test chain, need `--channels`.
 enum TrustedChannels {
-    static let deployments: [UInt64: String] = [
-        8453: "0xBA66d3b4fbCf472F6F11D6F9F96aaCE96516F09d", // Base mainnet
-        84532: "0x3b0b94AC27C042CAC17103A897Fb5cEb7D8b4cf7", // Base Sepolia
-    ]
+    static var deployments: [UInt64: String] { GeneratedContractAddresses.channels }
 
     /// The Channels contract to check channels on: `--channels` when given, else the chain's deployment.
     static func address(chainId: UInt64, override: String?) -> String? {
