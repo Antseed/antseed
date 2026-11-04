@@ -4446,6 +4446,10 @@ export class BuyerProxy {
 
     const requestProtocol = detectRequestServiceApiProtocol(serializedReq)
     const requestedService = extractRequestedService(serializedReq)
+    // A speech request prefers, on each peer (pinned or not), a provider that offers its voice.
+    const requestedVoice = requestProtocol === 'openai-audio-speech'
+      ? extractRequestBodyFields(serializedReq.headers, serializedReq.body)?.['voice']
+      : undefined
     log(`Routing: protocol=${requestProtocol ?? 'null'} service=${requestedService ?? 'null'}`)
     const explicitProvider = getExplicitProviderOverride(serializedReq)
     const explicitPeerId = getExplicitPeerIdOverride(serializedReq, effectivePinnedPeer ?? undefined, bodyPinnedPeer)
@@ -4513,10 +4517,6 @@ export class BuyerProxy {
             && !routeRequiredParameters.includes(field)) routeRequiredParameters.push(field)
         }
       }
-      // A speech request prefers, on each peer, a provider that offers its voice.
-      const requestedVoice = requestProtocol === 'openai-audio-speech'
-        ? extractRequestBodyFields(serializedReq.headers, serializedReq.body)?.['voice']
-        : undefined
       const selectModelPeers = (candidateSources: PeerInfo[]): CandidatePeerRouteSelection =>
         selectCandidatePeersForRouting(candidateSources, requestProtocol, requestedService, explicitProvider, 'strict', requestedVoice)
       let discoveredPeers = peers
@@ -4801,6 +4801,7 @@ export class BuyerProxy {
       requestedService,
       explicitProvider,
       'lenient',
+      requestedVoice,
     )
 
     let hasForcedRefresh = false
@@ -4902,7 +4903,7 @@ export class BuyerProxy {
     }
     const policyRouter = router as BuyerPolicyRouter | null | undefined
     const selectedPlan = routingPlans.get(selectedPeer.peerId)
-      ?? resolvePeerRoutePlan(selectedPeer, requestProtocol, requestedService, explicitProvider, 'lenient')
+      ?? resolvePeerRoutePlan(selectedPeer, requestProtocol, requestedService, explicitProvider, 'lenient', requestedVoice)
     const pinnedServiceId = selectedPlan?.serviceId ?? requestedService
     const missingRequired = selectedPlan
       ? findMissingRouteParameters(selectedPeer, selectedPlan, pinnedServiceId, requiredParameters)

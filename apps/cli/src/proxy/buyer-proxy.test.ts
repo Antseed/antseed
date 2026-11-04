@@ -6867,7 +6867,8 @@ test('speech requests route only to sellers that offer the requested voice', asy
   assert.deepEqual(sent, [third.peerId])
 })
 
-test('a speech request uses the peer provider that offers its voice, even when another is cheaper', async () => {
+/** One peer selling `tts-kokoro` through a cheaper provider without `af_sky` and a dearer one with it. */
+function makeTwoProviderSpeechPeer(): PeerInfo {
   const peer = makePeer('a', ['cheap', 'voiced'])
   const service = (voices: string[]) => ({ inputs: ['text' as const], outputs: ['audio' as const], speech: { voices } })
   const perCharacter = (priceUsd: number) => ({ 'openai-audio-speech': { version: 1 as const, components: [{ unit: 'input_characters' as const, priceUsd }] } })
@@ -6883,21 +6884,28 @@ test('a speech request uses the peer provider that offers its voice, even when a
     cheap: { services: { 'tts-kokoro': perCharacter(0.000001) } },
     voiced: { services: { 'tts-kokoro': perCharacter(0.00002) } },
   }
-  const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
-  const providers: string[] = []
-  ;(proxy as any)._node.sendRequest = async (_peer: PeerInfo, request: { requestId: string; headers: Record<string, string> }) => {
-    providers.push(request.headers['x-antseed-provider'] ?? '')
-    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'audio/mpeg' }, body: Buffer.from('audio') }
-  }
+  return peer
+}
 
-  const res = await invokeProxy(proxy, makeProxyRequest({
-    path: '/v1/audio/speech',
-    body: { model: 'tts-kokoro', input: 'Hello there.', voice: 'af_sky' },
-  }))
+for (const pinned of [false, true]) {
+  test(`a${pinned ? ' pinned' : ''} speech request uses the peer provider that offers its voice, even when another is cheaper`, async () => {
+    const peer = makeTwoProviderSpeechPeer()
+    const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
+    const providers: string[] = []
+    ;(proxy as any)._node.sendRequest = async (_peer: PeerInfo, request: { requestId: string; headers: Record<string, string> }) => {
+      providers.push(request.headers['x-antseed-provider'] ?? '')
+      return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'audio/mpeg' }, body: Buffer.from('audio') }
+    }
 
-  assert.equal(res.statusCode, 200, res.body)
-  assert.deepEqual(providers, ['voiced'])
-})
+    const res = await invokeProxy(proxy, makeProxyRequest({
+      path: '/v1/audio/speech',
+      body: { model: pinned ? `${peer.peerId}@tts-kokoro` : 'tts-kokoro', input: 'Hello there.', voice: 'af_sky' },
+    }))
+
+    assert.equal(res.statusCode, 200, res.body)
+    assert.deepEqual(providers, ['voiced'])
+  })
+}
 
 test('a voice no seller offers is refused with the voices that are available', async () => {
   const peers = [makeSpeechPeer('a', ['am_adam']), makeSpeechPeer('b', ['af_sky', 'am_adam'])]
