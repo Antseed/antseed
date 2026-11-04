@@ -439,6 +439,14 @@ describe('video-to-video models', () => {
     expect((await grokCreate({ video_url: sourceMp4(5_400), duration: '5s' })).statusCode).toBe(200);
   });
 
+  it('refuses the same edits before payment', async () => {
+    const { provider } = await ready(WAN);
+    expect(provider.checkRequest!(create(WAN.id, { prompt: 'snow', video_url: sourceMp4(12_400), duration: '3s' })))
+      .toEqual({ statusCode: 422, code: 'invalid_video_duration', message: 'duration must be the source length in whole seconds, rounded down: 12' });
+    expect(provider.checkRequest!(create(WAN.id, { prompt: 'snow', video_url: sourceMp4(12_400), duration: '12s' }))).toBeNull();
+    expect(provider.checkRequest!(create(WAN.id, { prompt: 'snow', duration: '5s' }))).toBeNull();
+  });
+
   it('turns Venice\'s HTML 413 into JSON', async () => {
     const provider = plugin.createProvider(editConfig(RECAST.id)) as Provider;
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('<html><title>413 Request Entity Too Large</title></html>', { status: 413, headers: { 'content-type': 'text/html' } })));
