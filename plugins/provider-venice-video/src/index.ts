@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { AntseedProviderPlugin, Provider, SerializedHttpRequest, ServiceCapabilities, ServiceHealthStatus, UpstreamAccountStatus, VideoInputKind } from '@antseed/node';
+import type { AntseedProviderPlugin, Provider, ProviderRequestRefusal, SerializedHttpRequest, ServiceCapabilities, ServiceHealthStatus, UpstreamAccountStatus, VideoInputKind } from '@antseed/node';
 import { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION, validateServiceCapabilityFields } from '@antseed/node';
 import { nativeVideoRoute, parseJsonObject, requestService, videoSourceLengthProblem } from '@antseed/api-adapter';
 import {
@@ -353,6 +353,24 @@ const plugin: AntseedProviderPlugin = {
     // Edit models, whose `duration` must be the source length; null until Venice's model list was read.
     let editModels: Set<string> | null = null;
 
+    /**
+     * Why a create can't be paid for its `duration`, or null. The buyer pays
+     * for an edit's `duration`. Venice bills a whole-source edit (`Auto`) for
+     * the whole source, and a shorter output than `duration` is never charged,
+     * so `duration` must be the measured source length. Without Venice's model
+     * list, a source video marks an edit.
+     */
+    const lengthProblem = (service: string, input: Record<string, unknown> | null): string | null =>
+      input?.video_url !== undefined && (editModels?.has(service) ?? true) ? videoSourceLengthProblem(input.video_url, input.duration) : null;
+
+    // Run before any payment, so a refused create costs the buyer nothing.
+    const checkRequest = (request: SerializedHttpRequest): ProviderRequestRefusal | null => {
+      const { videoRoute, service } = route(request);
+      if (videoRoute?.action !== 'create' || !service) return null;
+      const refused = lengthProblem(service, parseJsonObject(request.body));
+      return refused ? { statusCode: 422, code: 'invalid_video_duration', message: refused } : null;
+    };
+
     // Announces the queue fields each model takes, so buyers send only those.
     const init = async () => {
       try {
@@ -422,14 +440,9 @@ const plugin: AntseedProviderPlugin = {
     const handleRequest: Provider['handleRequest'] = async (request) => {
       const { videoRoute, service } = route(request);
       if (videoRoute?.action !== 'create' || !service) return error(request, 400, 'unsupported_video_request', 'Unsupported video endpoint or service');
-      // The buyer pays for an edit's `duration`. Venice bills a whole-source edit (`Auto`) for the whole source,
-      // and a shorter output than `duration` is never charged, so `duration` must be the measured source length.
-      // Without Venice's model list, a source video marks an edit.
-      const input = parseJsonObject(request.body);
-      if (input?.video_url !== undefined && (editModels?.has(service) ?? true)) {
-        const refused = videoSourceLengthProblem(input.video_url, input.duration);
-        if (refused) return error(request, 422, 'invalid_video_duration', refused);
-      }
+      // The seller checks this before payment too (checkRequest).
+      const refused = lengthProblem(service, parseJsonObject(request.body));
+      if (refused) return error(request, 422, 'invalid_video_duration', refused);
       const response = await relay.handleRequest({ ...request, path: new URL(request.path, 'http://local').pathname });
       if (response.statusCode === 413) {
         // Venice answers an oversized body with an HTML page.
@@ -466,6 +479,7 @@ const plugin: AntseedProviderPlugin = {
       maxConcurrency,
       getCapacity: () => relay.getCapacity(),
       init,
+      checkRequest,
       handleRequest,
       async checkServiceHealth(checked) {
         const models = await readVeniceVideoModels(baseUrl);

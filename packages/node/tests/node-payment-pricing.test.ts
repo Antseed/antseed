@@ -548,6 +548,36 @@ describe('native video job ownership', () => {
       } finally { store.close(); }
     });
 
+    it('answers a create the provider refuses before offering a channel, so it costs nothing', async () => {
+      const { provider, create, spm, recordSpend, store } = setupOneOff();
+      provider.checkRequest = vi.fn(request => JSON.parse(new TextDecoder().decode(request.body)).duration === '20s'
+        ? { statusCode: 422, code: 'invalid_video_duration', message: 'duration must be the source length in whole seconds, rounded down: 12' }
+        : null);
+      try {
+        const refused = await create('video-1', bigVideo);
+        expect(refused.statusCode).toBe(422);
+        expect(bodyOf(refused)).toEqual({ error: { code: 'invalid_video_duration', message: 'duration must be the source length in whole seconds, rounded down: 12' } });
+        expect(spm.registerOneOffPlan).not.toHaveBeenCalled();
+        expect(provider.handleRequest).not.toHaveBeenCalled();
+        expect(recordSpend).not.toHaveBeenCalled();
+        // An accepted create is priced by its duration as usual.
+        const accepted = await create('video-2', { model: 'video', duration: '12s' });
+        expect(accepted.statusCode).toBe(402);
+        expect(bodyOf(accepted).oneOffPlan.requestCost).toBe('1200000');
+      } finally { store.close(); }
+    });
+
+    it('answers 500 when the provider check throws, without offering a channel', async () => {
+      const { provider, create, spm, store } = setupOneOff();
+      provider.checkRequest = () => { throw new Error('boom'); };
+      try {
+        const response = await create('video-1', bigVideo);
+        expect(response.statusCode).toBe(500);
+        expect(bodyOf(response).error.code).toBe('request_check_failed');
+        expect(spm.registerOneOffPlan).not.toHaveBeenCalled();
+      } finally { store.close(); }
+    });
+
     it('needs no serious fee when the video fits under the first-sign cap', async () => {
       const { create, store } = setupOneOff();
       try {
