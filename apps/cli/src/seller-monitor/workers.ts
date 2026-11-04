@@ -5,16 +5,16 @@ import type { SellerWorkers } from '../gateway/console-api/types.js'
 
 const DAY_MS = 86_400_000
 const MICRO_USDC = 1_000_000
-/** Where the worker-pool provider keeps its ledger unless WORKER_POOL_LEDGER_PATH moves it. */
-export const WORKER_POOL_LEDGER_FILE = 'worker-pool.db'
+/** Where the colony-pool provider keeps its ledger unless COLONY_POOL_LEDGER_PATH moves it. */
+export const COLONY_POOL_LEDGER_FILE = 'colony-pool.db'
 
 /**
- * The Macs (and other workers) serving this seller's worker pool, from the
+ * The Macs (and other workers) serving this seller's colony pool, from the
  * provider's ledger, read-only. `available: false` when the seller runs no
- * worker pool, so the dashboard shows nothing extra.
+ * colony pool, so the dashboard shows nothing extra.
  */
 export function readSellerWorkers(dataDir: string, now = Date.now()): SellerWorkers {
-  const path = join(dataDir, WORKER_POOL_LEDGER_FILE)
+  const path = join(dataDir, COLONY_POOL_LEDGER_FILE)
   if (!existsSync(path)) return { available: false }
   const db = new Database(path, { readonly: true, fileMustExist: true })
   try {

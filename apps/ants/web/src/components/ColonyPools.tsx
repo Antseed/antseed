@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { WorkerPayoutLinkRequest, WorkerPoolClaimRequest, WorkerPoolsView } from '../../../src/api-types';
+import type { WorkerPayoutLinkRequest, ColonyPoolClaimRequest, ColonyPoolsView } from '../../../src/api-types';
 import { api } from '../api';
 import { useConfig } from '../app-context';
 import { usePageData } from '../data';
@@ -13,12 +13,12 @@ import { Card } from './ui';
  * Earnings from Macs this wallet is the payout address for (Antseed Mac app),
  * and linking a new Mac with the code the app copies.
  */
-export function WorkerPoolsCard({ stale = false }: { stale?: boolean }) {
+export function ColonyPoolsCard({ stale = false }: { stale?: boolean }) {
   const dashboard = useConfig();
-  const page = usePageData('worker-pools', api.workerPools, 5 * 60_000);
+  const page = usePageData('colony-pools', api.colonyPools, 5 * 60_000);
   const [code, setCode] = useState('');
   const [linking, setLinking] = useState(false);
-  const pools: WorkerPoolsView['pools'] = page.data?.pools ?? [];
+  const pools: ColonyPoolsView['pools'] = page.data?.pools ?? [];
   const linkBody: WorkerPayoutLinkRequest = { code: code.trim() };
   // Same rule as the rest of the Rewards page: no actions while amounts refresh.
   const refreshing = stale || page.reconciling;
@@ -32,14 +32,14 @@ export function WorkerPoolsCard({ stale = false }: { stale?: boolean }) {
   return (
     <Card className="hero" aria-label="Mac earnings">
       <div className="tile-label">Mac earnings</div>
-      <p className="hint">USDC and ANTS that worker pools owe <AddressLink value={dashboard.address} /> for Macs that pay out here.</p>
+      <p className="hint">USDC and ANTS that colony pools owe <AddressLink value={dashboard.address} /> for Macs that pay out here.</p>
       {pools.map((pool) => {
-        const claim = (usdc: boolean, ants: boolean): WorkerPoolClaimRequest => ({ pool: pool.address, usdc, ants });
+        const claim = (usdc: boolean, ants: boolean): ColonyPoolClaimRequest => ({ pool: pool.address, usdc, ants });
         const nothing = isZero(pool.usdcOwed) && isZero(pool.antsOwed);
         return (
           <div className="bucket" key={pool.address}>
             <div className="bucket-main">
-              <div className="bucket-name">Worker pool <AddressLink value={pool.address} /></div>
+              <div className="bucket-name">Colony pool <AddressLink value={pool.address} /></div>
             </div>
             <div className="bucket-amount mono bucket-amount--detailed">
               <span>{formatUsdc(pool.usdcOwed, 6)} <span className="unit">USDC</span></span>
@@ -50,7 +50,7 @@ export function WorkerPoolsCard({ stale = false }: { stale?: boolean }) {
                 label="Claim to wallet"
                 size="sm"
                 title="Claim Mac earnings"
-                path="/api/worker-pools/claim"
+                path="/api/colony-pools/claim"
                 body={claim(true, true)}
                 disabled={refreshing || nothing}
                 disabledReason={refreshing ? refreshReason : 'Nothing to claim.'}
@@ -66,7 +66,7 @@ export function WorkerPoolsCard({ stale = false }: { stale?: boolean }) {
           label="Link Mac"
           size="sm"
           title="Pay this Mac's earnings to this wallet"
-          path="/api/worker-pools/link"
+          path="/api/colony-pools/link"
           body={linkBody}
           disabled={refreshing}
           disabledReason={refreshReason}

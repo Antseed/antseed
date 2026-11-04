@@ -10,7 +10,7 @@ import { PoolWorker, type ChannelVerifier } from './worker.js';
 
 const USAGE = `Usage: antseed-pool-worker --pool <wss://url> --services <service[=localModel],...> [options]
 
-Joins an Antseed worker pool and serves its requests from a local
+Joins an Antseed colony pool and serves its requests from a local
 OpenAI-compatible model server (mlx_lm.server, Ollama, llama.cpp).
 
 Options:

@@ -1,14 +1,14 @@
 import { Contract, type AbstractSigner } from 'ethers';
 import { BaseEvmClient } from './base-evm-client.js';
 
-export interface WorkerPoolClientConfig {
+export interface ColonyPoolClientConfig {
   rpcUrl: string;
   fallbackRpcUrls?: string[];
   contractAddress: string;
   evmChainId?: number;
 }
 
-const WORKER_POOL_ABI = [
+const COLONY_POOL_ABI = [
   'function claimUsdc() external',
   'function claimAnts(uint256[] epochs) external',
   'function claimEpochEmissions(uint256[] epochs) external',
@@ -20,7 +20,7 @@ const WORKER_POOL_ABI = [
   'function payoutNonce(address worker) external view returns (uint256)',
 ] as const;
 
-/** A worker's signed instruction to pay its earnings to `payout` (see AntseedWorkerPool.setPayout). */
+/** A worker's signed instruction to pay its earnings to `payout` (see AntseedColonyPool.setPayout). */
 export interface WorkerPayoutAuthorization {
   chainId: number;
   pool: string;
@@ -48,14 +48,14 @@ export function parseWorkerPayoutLink(code: string): WorkerPayoutAuthorization |
   }
 }
 
-/** AntseedWorkerPool: what a worker (or its payout wallet) is owed, and the calls to claim it. */
-export class WorkerPoolClient extends BaseEvmClient {
-  constructor(config: WorkerPoolClientConfig) {
+/** AntseedColonyPool: what a worker (or its payout wallet) is owed, and the calls to claim it. */
+export class ColonyPoolClient extends BaseEvmClient {
+  constructor(config: ColonyPoolClientConfig) {
     super(config.rpcUrl, config.contractAddress, config.fallbackRpcUrls, config.evmChainId);
   }
 
   private read(): Contract {
-    return new Contract(this._contractAddress, WORKER_POOL_ABI, this._provider);
+    return new Contract(this._contractAddress, COLONY_POOL_ABI, this._provider);
   }
 
   async usdcBalance(account: string): Promise<bigint> {
@@ -76,21 +76,21 @@ export class WorkerPoolClient extends BaseEvmClient {
   }
 
   async claimUsdc(signer: AbstractSigner): Promise<string> {
-    return this._execWrite(signer, WORKER_POOL_ABI, 'claimUsdc');
+    return this._execWrite(signer, COLONY_POOL_ABI, 'claimUsdc');
   }
 
   /** Pull the pool's seller emissions for finished epochs into the contract (anyone may call). */
   async claimEpochEmissions(signer: AbstractSigner, epochs: number[]): Promise<string> {
-    return this._execWrite(signer, WORKER_POOL_ABI, 'claimEpochEmissions', epochs);
+    return this._execWrite(signer, COLONY_POOL_ABI, 'claimEpochEmissions', epochs);
   }
 
   async claimAnts(signer: AbstractSigner, epochs: number[]): Promise<string> {
-    return this._execWrite(signer, WORKER_POOL_ABI, 'claimAnts', epochs);
+    return this._execWrite(signer, COLONY_POOL_ABI, 'claimAnts', epochs);
   }
 
   async setPayout(signer: AbstractSigner, authorization: WorkerPayoutAuthorization): Promise<string> {
     return this._execWrite(
-      signer, WORKER_POOL_ABI, 'setPayout',
+      signer, COLONY_POOL_ABI, 'setPayout',
       authorization.worker, authorization.payout, authorization.deadline, authorization.signature,
     );
   }

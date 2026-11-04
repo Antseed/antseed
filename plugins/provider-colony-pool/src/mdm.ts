@@ -114,7 +114,7 @@ export class NanoMdmAttestor implements DeviceAttestor {
       this.waiting.delete(ack.command_uuid);
       waiter.resolve(parsePlist(Buffer.from(ack.raw_payload, 'base64').toString('utf-8')));
     } catch (err) {
-      this.opts.log?.(`[worker-pool] ignored an MDM webhook: ${err instanceof Error ? err.message : String(err)}`);
+      this.opts.log?.(`[colony-pool] ignored an MDM webhook: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 }

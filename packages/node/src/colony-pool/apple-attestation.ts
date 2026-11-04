@@ -3,7 +3,7 @@ import { X509Certificate, createHash } from 'node:crypto';
 /**
  * Apple Managed Device Attestation (MDA): an Apple-signed certificate the
  * pool operator's own MDM obtains from an enrolled Mac, vouching for its
- * serial number and security state (docs/protocol/worker-pool.md, "Apple-verified Macs").
+ * serial number and security state (docs/protocol/colony-pool.md, "Apple-verified Macs").
  */
 
 /** Apple Enterprise Attestation Root CA (https://www.apple.com/certificateauthority/), SHA-256 CC:F5:9E:F8:…:F0:5B. */

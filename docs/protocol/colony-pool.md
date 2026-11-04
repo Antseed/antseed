@@ -1,6 +1,6 @@
-# Worker pools
+# Colony pools
 
-A worker pool is one Antseed seller that serves buyers from many worker
+A colony pool is one Antseed seller that serves buyers from many worker
 machines (for example Macs running local models). Workers dial the pool; the
 pool stakes, holds the payment channels and settles. Three mechanisms keep the
 split honest without trusting the pool operator:
@@ -10,7 +10,7 @@ split honest without trusting the pool operator:
    ciphertext and cannot read prompts or forge which worker answered.
 2. **Buyer-signed attribution.** The buyer appends each worker's cumulative
    amount to the metadata it already signs in every SpendingAuth.
-3. **On-chain split.** `AntseedWorkerPool` settles through the same
+3. **On-chain split.** `AntseedColonyPool` settles through the same
    `settle`/`close`/`topUp` calls as any seller façade, reads the attribution
    from the buyer-signed metadata, and credits each worker its share of the
    USDC payout and of the pool's ANTS emissions. Workers (or the payout
@@ -46,11 +46,11 @@ attestation-key:<attestation public key, or empty>
 
 ## Assignment
 
-Pools advertise the peer capability `worker-pool-e2e.v2`. Before its first
+Pools advertise the peer capability `colony-pool-e2e.v2`. Before its first
 request for a service, the buyer asks the pool for a worker:
 
 ```
-POST /_antseed/provider/worker-pool/assign
+POST /_antseed/provider/colony-pool/assign
 { "model": "<service>" }
 
 200 { "worker": "0x…", "key": "04…", "expires": <unix>, "certificate": "0x<sig>", "pool": "0x…",
@@ -220,8 +220,8 @@ assignment. Buyers check it themselves, accepting one up to 15 minutes old.
 Because the attestation key is certified by the worker's identity, the pool
 cannot forge an attestation or move one to another worker.
 
-Pool settings: `WORKER_POOL_REQUIRE_ATTESTATION` admits only hardened workers,
-and `WORKER_POOL_ATTESTED_TEAMS` limits which Apple Developer teams count.
+Pool settings: `COLONY_POOL_REQUIRE_ATTESTATION` admits only hardened workers,
+and `COLONY_POOL_ATTESTED_TEAMS` limits which Apple Developer teams count.
 
 **Limits.** This is a hardened Mac, not a TEE. Memory is not encrypted, so a
 kernel exploit, or a gap in macOS's enforcement, exposes prompts. The
@@ -258,12 +258,12 @@ nonce the pool chose.
 Because the nonce names the worker and its attestation key, the pool can't
 reuse one Mac's attestation for another worker.
 
-Pool settings: `WORKER_POOL_MDM_URL`, `WORKER_POOL_MDM_API_KEY`,
-`WORKER_POOL_MDM_WEBHOOK_PORT` and `WORKER_POOL_MDM_WEBHOOK_PATH` connect a
+Pool settings: `COLONY_POOL_MDM_URL`, `COLONY_POOL_MDM_API_KEY`,
+`COLONY_POOL_MDM_WEBHOOK_PORT` and `COLONY_POOL_MDM_WEBHOOK_PATH` connect a
 [NanoMDM](https://github.com/micromdm/nanomdm) server (commands are queued
 with `PUT /v1/enqueue/<udid>`; answers arrive on its webhook, configured
 with `-webhook-url http://<pool>:<port>/<path>`).
-`WORKER_POOL_REQUIRE_DEVICE_ATTESTATION` routes only to Apple-verified Macs.
+`COLONY_POOL_REQUIRE_DEVICE_ATTESTATION` routes only to Apple-verified Macs.
 Other MDMs can implement the `DeviceAttestor` interface.
 
 What the operator needs: an MDM server, an Apple MDM push certificate (it
@@ -297,9 +297,9 @@ WORKER_TAIL_MAGIC = keccak256("antseed:worker-attribution:v1")
   channel for requests that worker served. Each entry only grows, and the sum
   never exceeds the SpendingAuth's `cumulativeAmount`.
 
-## AntseedWorkerPool contract
+## AntseedColonyPool contract
 
-`AntseedWorkerPool is AntseedSellerDelegation`. It keeps the façade ABI
+`AntseedColonyPool is AntseedSellerDelegation`. It keeps the façade ABI
 unchanged, so seller nodes settle through it with no code changes.
 
 On every `settle`, `close` and `topUp` (all `nonReentrant`, paused by

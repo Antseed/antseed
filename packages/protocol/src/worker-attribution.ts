@@ -3,16 +3,16 @@ import { concat, getAddress, getBytes, hexlify, id, toBeHex, zeroPadValue } from
 /**
  * Worker attribution block appended to SpendingAuth metadata.
  *
- * A buyer of a worker pool appends, after the ABI-encoded metadata, how much
+ * A buyer of a colony pool appends, after the ABI-encoded metadata, how much
  * of the channel's cumulative amount it paid for requests each worker served:
  *
  *   entries ‖ uint8 count ‖ bytes32 WORKER_TAIL_MAGIC
  *   entry = address worker (20 bytes) ‖ uint128 cumulativeAmount (16 bytes)
  *
  * ABI decoders read the metadata head by offset and ignore trailing bytes, so
- * existing readers are unaffected. AntseedWorkerPool reads the block from the
+ * existing readers are unaffected. AntseedColonyPool reads the block from the
  * end of the buyer-signed metadata to split payouts. See
- * docs/protocol/worker-pool.md.
+ * docs/protocol/colony-pool.md.
  */
 
 export interface WorkerAttribution {
@@ -65,7 +65,7 @@ export function appendWorkerTail(encodedMetadata: string, workers: readonly Work
 
 /**
  * Read the block from the end of metadata bytes, applying the same rules as
- * AntseedWorkerPool: anything malformed yields null (no attribution).
+ * AntseedColonyPool: anything malformed yields null (no attribution).
  */
 export function decodeWorkerTail(metadata: string | Uint8Array): WorkerAttribution[] | null {
   const bytes = typeof metadata === 'string' ? getBytes(metadata) : metadata;

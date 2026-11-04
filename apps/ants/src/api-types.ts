@@ -423,8 +423,8 @@ export interface StakeUsageRequest { side: 'seller' | 'buyer'; epochs: number; s
 export interface CompoundRequest { includeBuyer?: boolean; epochs: number; targetAgentId?: number; stakeAgentId?: number; }
 export interface SubmitProofRequest { artifact: unknown; }
 
-/** What AntseedWorkerPool contracts owe this wallet as the payout address of one or more Macs. */
-export interface WorkerPoolsView {
+/** What AntseedColonyPool contracts owe this wallet as the payout address of one or more Macs. */
+export interface ColonyPoolsView {
   pools: Array<{
     address: string;
     /** USDC base units. */
@@ -436,7 +436,7 @@ export interface WorkerPoolsView {
   }>;
 }
 
-export interface WorkerPoolClaimRequest {
+export interface ColonyPoolClaimRequest {
   pool: string;
   usdc: boolean;
   ants: boolean;

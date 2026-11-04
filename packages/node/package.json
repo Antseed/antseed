@@ -74,12 +74,12 @@
       "types": "./dist/reputation/trust-score.d.ts"
     },
     "./worker-e2e": {
-      "import": "./dist/worker-pool/e2e.js",
-      "types": "./dist/worker-pool/e2e.d.ts"
+      "import": "./dist/colony-pool/e2e.js",
+      "types": "./dist/colony-pool/e2e.d.ts"
     },
     "./worker-e2e/testing": {
-      "import": "./dist/worker-pool/apple-attestation-testing.js",
-      "types": "./dist/worker-pool/apple-attestation-testing.d.ts"
+      "import": "./dist/colony-pool/apple-attestation-testing.js",
+      "types": "./dist/colony-pool/apple-attestation-testing.d.ts"
     }
   },
   "scripts": {

@@ -12,16 +12,16 @@ import { AntseedDeposits } from "../payments/AntseedDeposits.sol";
 import { AntseedStaking } from "../staking/AntseedStaking.sol";
 import { AntseedChannels } from "../payments/AntseedChannels.sol";
 import { AntseedEmissions } from "../legacy/AntseedEmissions.sol";
-import { AntseedWorkerPool } from "../staking/AntseedWorkerPool.sol";
+import { AntseedColonyPool } from "../staking/AntseedColonyPool.sol";
 import { AntseedSellerDelegation } from "../staking/AntseedSellerDelegation.sol";
 
 /// @dev Channels stand-in that re-enters the pool while the pool is inside
 ///      its `settle` override.
 contract ReentrantChannels {
-    AntseedWorkerPool public pool;
+    AntseedColonyPool public pool;
     uint8 public mode; // 0 = claimUsdc, 1 = settle, 2 = claimEpochEmissions
 
-    function configure(AntseedWorkerPool _pool, uint8 _mode) external {
+    function configure(AntseedColonyPool _pool, uint8 _mode) external {
         pool = _pool;
         mode = _mode;
     }
@@ -38,7 +38,7 @@ contract ReentrantChannels {
     }
 }
 
-contract AntseedWorkerPoolTest is Test {
+contract AntseedColonyPoolTest is Test {
     uint256 constant OWNER_PK = 0x0A;
     uint256 constant OPERATOR_PK = 0x0B;
     uint256 constant BUYER_PK = 0xA11CE;
@@ -74,7 +74,7 @@ contract AntseedWorkerPoolTest is Test {
     AntseedChannels channels;
     AntseedEmissions emissions;
 
-    AntseedWorkerPool pool;
+    AntseedColonyPool pool;
     uint256 poolAgentId;
     bool buyerReady;
 
@@ -113,7 +113,7 @@ contract AntseedWorkerPoolTest is Test {
         channels.setFirstSignCap(10_000_000_000);
 
         vm.prank(owner);
-        pool = new AntseedWorkerPool(address(antseedRegistry), operator);
+        pool = new AntseedColonyPool(address(antseedRegistry), operator);
 
         vm.prank(address(pool));
         poolAgentId = identityRegistry.register();
@@ -569,7 +569,7 @@ contract AntseedWorkerPoolTest is Test {
         _assertSolvent();
 
         vm.prank(workerA);
-        vm.expectRevert(AntseedWorkerPool.NothingToClaim.selector);
+        vm.expectRevert(AntseedColonyPool.NothingToClaim.selector);
         pool.claimUsdc();
 
         if (pool.usdcBalance(remainderSink) > 0) {
@@ -605,7 +605,7 @@ contract AntseedWorkerPoolTest is Test {
         assertEq(wA0 + wB0 + pool.epochWeight(e0, remainderSink), t0);
 
         // Cannot pull the current epoch.
-        vm.expectRevert(AntseedWorkerPool.EpochNotFinalized.selector);
+        vm.expectRevert(AntseedColonyPool.EpochNotFinalized.selector);
         pool.claimEpochEmissions(_epochs1(e0));
 
         vm.warp(block.timestamp + EPOCH_DURATION);
@@ -644,7 +644,7 @@ contract AntseedWorkerPoolTest is Test {
 
         // Double claim.
         vm.prank(workerA);
-        vm.expectRevert(AntseedWorkerPool.NothingToClaim.selector);
+        vm.expectRevert(AntseedColonyPool.NothingToClaim.selector);
         pool.claimAnts(_epochs2(e0, e1));
 
         // Duplicate epochs in one call don't pay twice.
@@ -675,11 +675,11 @@ contract AntseedWorkerPoolTest is Test {
     }
 
     function test_emissions_invalidInputs() public {
-        vm.expectRevert(AntseedWorkerPool.InvalidEpochs.selector);
+        vm.expectRevert(AntseedColonyPool.InvalidEpochs.selector);
         pool.claimEpochEmissions(new uint256[](0));
-        vm.expectRevert(AntseedWorkerPool.InvalidEpochs.selector);
+        vm.expectRevert(AntseedColonyPool.InvalidEpochs.selector);
         pool.claimAnts(new uint256[](33));
-        vm.expectRevert(AntseedWorkerPool.NothingToClaim.selector);
+        vm.expectRevert(AntseedColonyPool.NothingToClaim.selector);
         pool.claimAnts(_epochs1(0));
     }
 
@@ -753,7 +753,7 @@ contract AntseedWorkerPoolTest is Test {
         bytes memory sig = _signPayout(MAC_PK, mac, wallet, 0, deadline);
 
         vm.expectEmit(true, true, false, true, address(pool));
-        emit AntseedWorkerPool.PayoutSet(mac, wallet, 0);
+        emit AntseedColonyPool.PayoutSet(mac, wallet, 0);
         vm.prank(address(0xD00D));
         pool.setPayout(mac, wallet, deadline, sig);
         assertEq(pool.payoutOf(mac), wallet);
@@ -795,7 +795,7 @@ contract AntseedWorkerPoolTest is Test {
         uint256 net2 = _settle(ch, 200e6, _e1(mac, 200e6));
 
         vm.expectEmit(true, true, false, true, address(pool));
-        emit AntseedWorkerPool.EarningsMoved(mac, wallet, net1 + net2);
+        emit AntseedColonyPool.EarningsMoved(mac, wallet, net1 + net2);
         _setPayout(wallet, block.timestamp + 1 hours);
         assertEq(pool.usdcBalance(mac), 0);
         assertEq(pool.usdcBalance(wallet), net1 + net2, "unclaimed USDC moves");
@@ -834,7 +834,7 @@ contract AntseedWorkerPoolTest is Test {
         uint256 deadline = block.timestamp + 1 hours;
         bytes memory sig = _signPayout(MAC_PK, mac, owner, 0, deadline);
         pool.setPayout(mac, owner, deadline, sig);
-        vm.expectRevert(AntseedWorkerPool.InvalidSignature.selector);
+        vm.expectRevert(AntseedColonyPool.InvalidSignature.selector);
         pool.setPayout(mac, owner, deadline, sig);
     }
 
@@ -842,7 +842,7 @@ contract AntseedWorkerPoolTest is Test {
         address mac = vm.addr(MAC_PK);
         uint256 deadline = block.timestamp - 1;
         bytes memory sig = _signPayout(MAC_PK, mac, owner, 0, deadline);
-        vm.expectRevert(AntseedWorkerPool.SignatureExpired.selector);
+        vm.expectRevert(AntseedColonyPool.SignatureExpired.selector);
         pool.setPayout(mac, owner, deadline, sig);
         // deadline == now is still valid
         sig = _signPayout(MAC_PK, mac, owner, 0, block.timestamp);
@@ -853,14 +853,14 @@ contract AntseedWorkerPoolTest is Test {
         address mac = vm.addr(MAC_PK);
         uint256 deadline = block.timestamp + 1 hours;
         bytes memory sig = _signPayout(OTHER_PK, mac, owner, 0, deadline);
-        vm.expectRevert(AntseedWorkerPool.InvalidSignature.selector);
+        vm.expectRevert(AntseedColonyPool.InvalidSignature.selector);
         pool.setPayout(mac, owner, deadline, sig);
         // Signature for a different payout doesn't transfer.
         sig = _signPayout(MAC_PK, mac, owner, 0, deadline);
-        vm.expectRevert(AntseedWorkerPool.InvalidSignature.selector);
+        vm.expectRevert(AntseedColonyPool.InvalidSignature.selector);
         pool.setPayout(mac, operator, deadline, sig);
         // Garbage signature.
-        vm.expectRevert(AntseedWorkerPool.InvalidSignature.selector);
+        vm.expectRevert(AntseedColonyPool.InvalidSignature.selector);
         pool.setPayout(mac, owner, deadline, hex"1234");
     }
 
@@ -878,7 +878,7 @@ contract AntseedWorkerPoolTest is Test {
         }
         uint256 n = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141;
         bytes memory flipped = abi.encodePacked(r, bytes32(n - uint256(s_)), v == 27 ? uint8(28) : uint8(27));
-        vm.expectRevert(AntseedWorkerPool.InvalidSignature.selector);
+        vm.expectRevert(AntseedColonyPool.InvalidSignature.selector);
         pool.setPayout(mac, owner, deadline, flipped);
     }
 

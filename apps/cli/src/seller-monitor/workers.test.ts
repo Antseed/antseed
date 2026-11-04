@@ -4,14 +4,14 @@ import { join } from 'node:path'
 import Database from 'better-sqlite3'
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { readSellerWorkers, WORKER_POOL_LEDGER_FILE } from './workers.js'
+import { readSellerWorkers, COLONY_POOL_LEDGER_FILE } from './workers.js'
 
 const NOW = 1_800_000_000_000
 const HOUR = 3_600_000
 
-/** The worker-pool provider's ledger tables (plugins/provider-worker-pool/src/ledger.ts), with a few rows. */
+/** The colony-pool provider's ledger tables (plugins/provider-colony-pool/src/ledger.ts), with a few rows. */
 function writeLedger(dataDir: string): void {
-  const db = new Database(join(dataDir, WORKER_POOL_LEDGER_FILE))
+  const db = new Database(join(dataDir, COLONY_POOL_LEDGER_FILE))
   db.exec(`
     CREATE TABLE earnings (request_id TEXT PRIMARY KEY, worker TEXT NOT NULL, service TEXT, gross_usdc INTEGER NOT NULL, worker_usdc INTEGER NOT NULL,
       input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL, stream_ms INTEGER, created_at INTEGER NOT NULL);
@@ -28,7 +28,7 @@ function writeLedger(dataDir: string): void {
 }
 
 describe('readSellerWorkers', () => {
-  it('is unavailable for a seller without a worker pool', () => {
+  it('is unavailable for a seller without a colony pool', () => {
     assert.deepEqual(readSellerWorkers(mkdtempSync(join(tmpdir(), 'workers-')), NOW), { available: false })
   })
 

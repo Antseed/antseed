@@ -203,7 +203,7 @@ final class WorkerController: ObservableObject {
                 send([
                     "t": "hello",
                     "address": address,
-                    "signature": try keys.ethereum.personalSign("antseed-worker-pool/v1\npool:\(pool)\nnonce:\(nonce)"),
+                    "signature": try keys.ethereum.personalSign("antseed-colony-pool/v1\npool:\(pool)\nnonce:\(nonce)"),
                     "services": sharing ? [config.service] : [],
                     "maxConcurrency": 1,
                     "encryption": [

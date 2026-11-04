@@ -15,14 +15,14 @@ import {
   WORKER_UNAVAILABLE_STATUS,
 } from '@antseed/node/worker-e2e';
 import type { WorkerLedger } from './ledger.js';
-import { NoWorkerAvailableError, WorkerUnavailableError, type WorkerPool } from './pool.js';
+import { NoWorkerAvailableError, WorkerUnavailableError, type ColonyPool } from './pool.js';
 
 const MAX_TRACKED_REQUESTS = 10_000;
 /** Request IDs the seller's model health checker uses for its probes. */
 const HEALTH_PROBE_PREFIX = 'health-';
 
-export interface WorkerPoolProviderOptions {
-  pool: WorkerPool;
+export interface ColonyPoolProviderOptions {
+  pool: ColonyPool;
   ledger: WorkerLedger;
   pricing: Provider['pricing'];
   workerShareBps: number;
@@ -38,7 +38,7 @@ function errorResponse(requestId: string, statusCode: number, message: string, c
     requestId,
     statusCode,
     headers: { 'content-type': 'application/json' },
-    body: new TextEncoder().encode(JSON.stringify({ error: { message, type: 'worker_pool_error', ...(code ? { code } : {}) } })),
+    body: new TextEncoder().encode(JSON.stringify({ error: { message, type: 'colony_pool_error', ...(code ? { code } : {}) } })),
   };
 }
 
@@ -69,8 +69,8 @@ function concat(chunks: Uint8Array[]): Uint8Array {
  * announced `services` follow the connected workers, and each paid request
  * is credited to the worker that served it.
  */
-export class WorkerPoolProvider implements Provider {
-  readonly name = 'worker-pool';
+export class ColonyPoolProvider implements Provider {
+  readonly name = 'colony-pool';
   readonly services: string[] = [];
   readonly pricing: Provider['pricing'];
   readonly maxConcurrency: number;
@@ -78,7 +78,7 @@ export class WorkerPoolProvider implements Provider {
   readonly serviceCapabilities?: Record<string, ServiceCapabilities>;
   readonly peerCapabilities = [WORKER_E2E_CAPABILITY];
 
-  private readonly pool: WorkerPool;
+  private readonly pool: ColonyPool;
   private readonly ledger: WorkerLedger;
   private readonly workerShareBps: bigint;
   private readonly protocolFeeBps: bigint;
@@ -86,7 +86,7 @@ export class WorkerPoolProvider implements Provider {
   private readonly servedBy = new Map<string, string>();
   private servicesChanged: (() => void) | null = null;
 
-  constructor(opts: WorkerPoolProviderOptions) {
+  constructor(opts: ColonyPoolProviderOptions) {
     this.pool = opts.pool;
     this.ledger = opts.ledger;
     this.pricing = opts.pricing;
@@ -122,7 +122,7 @@ export class WorkerPoolProvider implements Provider {
   /** Free route: assign a worker and hand the buyer its key certificate. */
   async handleControlRequest(req: SerializedHttpRequest): Promise<SerializedHttpResponse> {
     if (req.method !== 'POST' || req.path.split('?')[0] !== WORKER_ASSIGN_PATH) {
-      return errorResponse(req.requestId, 404, `Unknown worker pool route ${req.method} ${req.path}`);
+      return errorResponse(req.requestId, 404, `Unknown colony pool route ${req.method} ${req.path}`);
     }
     const { model } = routeOf(req);
     if (!model) return errorResponse(req.requestId, 400, 'Request body must name a model');
@@ -184,7 +184,7 @@ export class WorkerPoolProvider implements Provider {
       return Promise.resolve(errorResponse(
         req.requestId,
         428,
-        'This seller is a worker pool: requests must be encrypted to one of its workers. Update your Antseed buyer.',
+        'This seller is a colony pool: requests must be encrypted to one of its workers. Update your Antseed buyer.',
         'e2e_required',
       ));
     }

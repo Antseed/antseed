@@ -1,7 +1,7 @@
 import Foundation
 
 /// A worker's signed instruction to the pool contract: pay this Mac's earnings
-/// to the owner's wallet. Anyone may submit it (`AntseedWorkerPool.setPayout`);
+/// to the owner's wallet. Anyone may submit it (`AntseedColonyPool.setPayout`);
 /// the owner does, from the ANTS dashboard (Rewards → Link a Mac).
 struct PayoutAuthorization: Codable {
     let chainId: UInt64

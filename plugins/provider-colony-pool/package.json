@@ -1,5 +1,5 @@
 {
-  "name": "@antseed/provider-worker-pool",
+  "name": "@antseed/provider-colony-pool",
   "version": "0.1.0",
   "description": "Antseed provider plugin that serves buyer requests from a pool of worker machines (e.g. Macs running local models)",
   "type": "module",

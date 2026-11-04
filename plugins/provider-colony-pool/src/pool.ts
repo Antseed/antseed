@@ -17,7 +17,7 @@ import {
 import type { WorkerLedger } from './ledger.js';
 import type { DeviceAttestor } from './mdm.js';
 import {
-  WORKER_POOL_PROTOCOL_VERSION,
+  COLONY_POOL_PROTOCOL_VERSION,
   decodeBody,
   encodeBody,
   parseWorkerFrame,
@@ -43,9 +43,9 @@ const ATTESTATION_MAX_AGE_S = 120;
 /** How often the operator's MDM re-fetches Apple's attestation of a Mac. */
 const DEVICE_ATTESTATION_INTERVAL_MS = 24 * 60 * 60_000;
 
-export interface WorkerPoolOptions {
+export interface ColonyPoolOptions {
   poolId: string;
-  /** Address buyers pay (the AntseedWorkerPool contract, or the seller node's address). */
+  /** Address buyers pay (the AntseedColonyPool contract, or the seller node's address). */
   seller: string;
   /** Services this pool sells. Workers' other services are ignored. */
   catalog: string[];
@@ -171,8 +171,8 @@ export interface WorkerSummary {
  * Accepts worker connections, verifies them, and routes requests to the
  * least-loaded worker that serves the requested service.
  */
-export class WorkerPool {
-  private readonly opts: WorkerPoolOptions;
+export class ColonyPool {
+  private readonly opts: ColonyPoolOptions;
   private readonly catalog: Set<string>;
   private readonly workers = new Map<string, ConnectedWorker>();
   private readonly changeListeners: Array<() => void> = [];
@@ -181,7 +181,7 @@ export class WorkerPool {
   private pingTimer: NodeJS.Timeout | null = null;
   private lastServices = '';
 
-  constructor(opts: WorkerPoolOptions) {
+  constructor(opts: ColonyPoolOptions) {
     this.opts = opts;
     this.catalog = new Set(opts.catalog);
   }
@@ -189,7 +189,7 @@ export class WorkerPool {
   async start(): Promise<number> {
     const server = this.opts.tls ? createHttpsServer(this.opts.tls) : createHttpServer();
     server.on('request', (_req, res) => {
-      res.writeHead(426, { 'content-type': 'text/plain' }).end('Antseed worker pool: connect with a WebSocket.\n');
+      res.writeHead(426, { 'content-type': 'text/plain' }).end('Antseed colony pool: connect with a WebSocket.\n');
     });
     const wss = new WebSocketServer({ server, maxPayload: MAX_FRAME_BYTES });
     wss.on('connection', (ws) => this.accept(ws));
@@ -398,7 +398,7 @@ export class WorkerPool {
       this.log('a connection sent no valid hello in time; closing it');
       ws.close(4001, 'no hello');
     }, HELLO_TIMEOUT_MS);
-    this.sendFrame(ws, { t: 'challenge', version: WORKER_POOL_PROTOCOL_VERSION, pool: this.opts.poolId, nonce, seller: this.opts.seller });
+    this.sendFrame(ws, { t: 'challenge', version: COLONY_POOL_PROTOCOL_VERSION, pool: this.opts.poolId, nonce, seller: this.opts.seller });
     let worker: ConnectedWorker | null = null;
 
     ws.on('message', (data, isBinary) => {
@@ -694,7 +694,7 @@ export class WorkerPool {
   }
 
   private log(line: string): void {
-    this.opts.log?.(`[worker-pool] ${line}`);
+    this.opts.log?.(`[colony-pool] ${line}`);
   }
 }
 

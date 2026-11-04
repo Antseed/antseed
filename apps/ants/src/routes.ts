@@ -18,12 +18,12 @@ import {
   overview, positions, stake, move, split, merge, extend, maxLock, previewWithdraw, withdraw,
   rewards, claim, restake, stakeUsageRewards, compound, poolsView, singlePool, usage, emissions,
   verification, proofStatus, submitProof, seller, registerBinding, claimStarter,
-  workerPools, claimWorkerPool, linkWorkerPayout,
+  colonyPools, claimColonyPool, linkWorkerPayout,
 } from './service/index.js';
 import type {
   StakeRequest, MoveRequest, SplitRequest, MergeRequest, ExtendRequest, MaxLockRequest, WithdrawRequest,
   ClaimRequest, RestakeRequest, StakeUsageRequest, SubmitProofRequest, CompoundRequest,
-  WorkerPoolClaimRequest, WorkerPayoutLinkRequest,
+  ColonyPoolClaimRequest, WorkerPayoutLinkRequest,
 } from './api-types.js';
 
 export interface RouteContext {
@@ -106,7 +106,7 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext): voi
   app.get<{ Params: { agentId: string } }>('/api/pools/:agentId', (request, reply) => respond(reply, () => views.read(`pool:${request.params.agentId}`, () => singlePool(ctx, Number(request.params.agentId)), undefined, value => !value.walletSyncing)));
   app.get<{ Querystring: { epochs?: string } }>('/api/usage', (request, reply) => respond(reply, () => cached(`usage:${request.query.epochs ?? ''}`, () => usage(ctx, { epochs: request.query.epochs ? Number(request.query.epochs) : undefined }))));
   app.get('/api/emissions', (_request, reply) => respond(reply, () => cached('emissions', () => emissions(ctx))));
-  app.get('/api/worker-pools', (_request, reply) => respond(reply, () => cached('worker-pools', () => workerPools(ctx))));
+  app.get('/api/colony-pools', (_request, reply) => respond(reply, () => cached('colony-pools', () => colonyPools(ctx))));
   app.get('/api/network', (_request, reply) => respond(reply, () => networkSnapshot(ctx)));
   app.get('/api/network/legacy', (_request, reply) => respond(reply, () => views.read('network:legacy', () => networkLegacy(ctx), 300_000)));
   app.get<{ Querystring: { seller?: string } }>('/api/verification', (request, reply) => respond(reply, () => cached(`verification:${(request.query.seller ?? '').toLowerCase()}`, () => verification(ctx, request.query.seller || undefined))));
@@ -170,8 +170,8 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext): voi
   action<RestakeRequest>('/api/rewards/restake', 'restake', (body, report) => restake(ctx, body, report));
   action<StakeUsageRequest>('/api/rewards/stake-usage', 'stake-usage', (body, report) => stakeUsageRewards(ctx, body, report));
   action<CompoundRequest>('/api/rewards/compound', 'compound', (body, report) => compound(ctx, body, report));
-  action<WorkerPoolClaimRequest>('/api/worker-pools/claim', 'worker-pool-claim', (body, report) => claimWorkerPool(ctx, body, report));
-  action<WorkerPayoutLinkRequest>('/api/worker-pools/link', 'worker-pool-link', (body, report) => linkWorkerPayout(ctx, body, report));
+  action<ColonyPoolClaimRequest>('/api/colony-pools/claim', 'colony-pool-claim', (body, report) => claimColonyPool(ctx, body, report));
+  action<WorkerPayoutLinkRequest>('/api/colony-pools/link', 'colony-pool-link', (body, report) => linkWorkerPayout(ctx, body, report));
   action<SubmitProofRequest>('/api/verification/submit', 'verify-submit', (body, report) => submitProof(ctx, body.artifact, report));
   action<{ agentId?: number }>('/api/seller/register', 'seller-register', (body, report) => registerBinding(ctx, body?.agentId, report));
   action<Record<string, never>>('/api/seller/claim-starter', 'claim-starter', (_body, report) => claimStarter(ctx, report));

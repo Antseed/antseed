@@ -1211,7 +1211,7 @@ export interface ObservabilitySettings {
 // GET /seller/status            → SellerStatus  ({ available: false } when no seller is found)
 // GET /seller/events?limit=     → { events: SellerEventView[] }  (newest first, limit ≤ 500)
 // GET /seller/usage?days=       → SellerUsage   (UTC days, days ≤ 30)
-// GET /seller/workers           → SellerWorkers ({ available: false } when the seller runs no worker pool)
+// GET /seller/workers           → SellerWorkers ({ available: false } when the seller runs no colony pool)
 
 export interface SellerModelHealth {
   provider: string
@@ -1316,7 +1316,7 @@ export interface SellerUsageDay {
   revenueUsd: number
 }
 
-/** A worker (e.g. a Mac running the Antseed Mac app) serving this seller's worker pool, from the pool's ledger. */
+/** A worker (e.g. a Mac running the Antseed Mac app) serving this seller's colony pool, from the pool's ledger. */
 export interface SellerWorker {
   address: string
   /** The app and name it announced, e.g. `antseed-mac/0.1.0 (Studio)`. */

@@ -9,8 +9,8 @@ final class InteropTests: XCTestCase {
         XCTAssertEqual(key.address, "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266")
         // RFC 6979 signing is deterministic, so the signature matches ethers byte for byte.
         XCTAssertEqual(
-            try key.personalSign("antseed-worker-pool/v1\npool:demo\nnonce:abc"),
-            "0x4e05f6a4fd43194e75ff202ef228db49d41c045570935157887a929a7100caa24b99f48f0c7b81babb9e3edd6c163ef08753c3f421a4b800460fe60356c486001c"
+            try key.personalSign("antseed-colony-pool/v1\npool:demo\nnonce:abc"),
+            "0xf205a95a5e2a200ed183a7fe28b968a3b6d851c8837ac4d0ea26a2553dbbf39e62acd609041876574ccc5eb4cb62dcba072509a79cde86304da7243a57abf1211b"
         )
     }
 
@@ -18,7 +18,7 @@ final class InteropTests: XCTestCase {
         let key = try EthereumKey(privateKey: try Data(hexString: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"))
         let digest = PayoutAuthorization.digest(chainId: 31337, pool: "0xa85233c63b9ee964add6f2cffe00fd84eb32338f", worker: key.address,
                                                 payout: "0x70997970C51812dc3A010C7d01b50e0d17dc79C8", nonce: 2, deadline: 2_000_000_000)
-        // AntseedWorkerPool.payoutDigest for the same arguments.
+        // AntseedColonyPool.payoutDigest for the same arguments.
         XCTAssertEqual(Data(digest), try Data(hexString: "0xdb41b3b2acdc64eee8c7887ce758e6bd8c9f976f6f634b243c4966d31675c577"))
         XCTAssertEqual(
             try key.sign(digest: personalMessageDigest(digest)).prefixedHex,

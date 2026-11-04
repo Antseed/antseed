@@ -27,7 +27,7 @@ import {
   type RequestStreamCallbacks,
 } from "./buyer-request-handler.js";
 import { debugWarn } from "./utils/debug.js";
-import { NodeWorkerE2EClient } from './worker-pool/client.js';
+import { NodeWorkerE2EClient } from './colony-pool/client.js';
 
 /** The identity loaded from the node's own data dir. */
 export const DEFAULT_BUYER_IDENTITY = "default";

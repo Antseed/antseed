@@ -2,15 +2,15 @@ import type { SerializedHttpRequest, SerializedHttpResponse } from '@antseed/pro
 import type { BuyerPeerView } from './interfaces.js';
 
 /**
- * Buyer-side hook for worker pools (docs/protocol/worker-pool.md). Sellers
+ * Buyer-side hook for colony pools (docs/protocol/colony-pool.md). Sellers
  * advertising WORKER_E2E_CAPABILITY get requests encrypted to one of their
  * workers. The crypto lives in @antseed/node so this package stays free of
  * Node-only modules.
  */
 
-export const WORKER_E2E_CAPABILITY = 'worker-pool-e2e.v2';
+export const WORKER_E2E_CAPABILITY = 'colony-pool-e2e.v2';
 /** Free control route that assigns a worker; body `{ "model": <service> }`. */
-export const WORKER_ASSIGN_PATH = '/_antseed/provider/worker-pool/assign';
+export const WORKER_ASSIGN_PATH = '/_antseed/provider/colony-pool/assign';
 /** Status and error code a pool answers when the worker a request names cannot take it. */
 export const WORKER_UNAVAILABLE_STATUS = 421;
 export const WORKER_UNAVAILABLE_CODE = 'worker_unavailable';

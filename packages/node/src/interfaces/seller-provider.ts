@@ -59,7 +59,7 @@ export interface Provider {
   /** Optional per-service model capability hints advertised via discovery metadata. */
   serviceCapabilities?: Record<string, ServiceCapabilities>;
 
-  /** Optional peer capabilities the seller advertises because of this provider (e.g. `worker-pool-e2e.v2`). */
+  /** Optional peer capabilities the seller advertises because of this provider (e.g. `colony-pool-e2e.v2`). */
   peerCapabilities?: string[];
 
   /** Maximum concurrent requests this provider can handle */
@@ -116,13 +116,13 @@ export interface Provider {
    * Optional: called after a paid request is charged to the buyer's channel,
    * with the amount charged. Free and allowance-covered requests are not
    * reported. Lets a provider that fans requests out to several backends
-   * (e.g. a worker pool) attribute revenue to the backend that served it.
+   * (e.g. a colony pool) attribute revenue to the backend that served it.
    */
   onRequestCharged?(charge: ProviderRequestCharge): void;
 
   /**
    * Optional: the node registers a listener here once it announces. The
-   * provider calls it after changing `services` in place (e.g. a worker pool
+   * provider calls it after changing `services` in place (e.g. a colony pool
    * whose capacity comes and goes) so the seller re-signs its metadata.
    */
   setServicesChangedListener?(listener: () => void): void;

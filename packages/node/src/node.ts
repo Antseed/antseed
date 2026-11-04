@@ -101,7 +101,7 @@ import {
   type StoredChannel,
 } from "./payments/index.js";
 import { debugLog, debugWarn } from "./utils/debug.js";
-import { NodeWorkerE2EClient } from "./worker-pool/client.js";
+import { NodeWorkerE2EClient } from "./colony-pool/client.js";
 import { parsePublicAddress } from "./discovery/public-address.js";
 import { MAX_PEER_CAPABILITIES } from "./discovery/metadata-validator.js";
 import { sanitizePeerDisplayName } from "./discovery/display-name.js";
@@ -354,7 +354,7 @@ export interface NodeConfig {
   maxUploadBodyBytes?: number;
   /** Maximum wall time allowed for a streaming response. Default: 30 minutes. */
   maxStreamDurationMs?: number;
-  /** Only send worker pools requests for workers attesting a hardened Mac (docs/protocol/worker-pool.md). */
+  /** Only send colony pools requests for workers attesting a hardened Mac (docs/protocol/colony-pool.md). */
   requireAttestedWorkers?: boolean;
   /** Also require Apple's attestation of the worker's Mac, from the pool operator's MDM. */
   requireAppleVerifiedWorkers?: boolean;

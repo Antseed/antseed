@@ -6,7 +6,7 @@ import { ConnectionState } from '../src/types/connection.js';
 import { ANTSEED_STREAMING_RESPONSE_HEADER } from '../src/types/http.js';
 import type { SerializedHttpRequest, SerializedHttpResponse, SerializedHttpResponseChunk } from '../src/types/http.js';
 import type { PeerInfo } from '../src/types/peer.js';
-import { createTestAppleCa } from '../src/worker-pool/apple-attestation-testing.js';
+import { createTestAppleCa } from '../src/colony-pool/apple-attestation-testing.js';
 import {
   NodeWorkerE2EClient,
   deviceAttestationNonce,
@@ -17,7 +17,7 @@ import {
   workerAttestationMessage,
   workerKeyCertificateMessage,
   workerKeyHex,
-} from '../src/worker-pool/e2e.js';
+} from '../src/colony-pool/e2e.js';
 
 const enc = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
 const dec = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
@@ -30,7 +30,7 @@ type OnChunk = (chunk: SerializedHttpResponseChunk) => void | Promise<void>;
 const peer: PeerInfo = {
   peerId: 'a'.repeat(40) as PeerInfo['peerId'],
   lastSeen: Date.now(),
-  providers: ['worker-pool'],
+  providers: ['colony-pool'],
   capabilities: [WORKER_E2E_CAPABILITY],
 };
 const SELLER = `0x${'a'.repeat(40)}`;
@@ -163,7 +163,7 @@ function fakePool(opts: { workers?: number; certSeller?: string; unavailableOnce
   return { handler, wire, assigned, workers };
 }
 
-describe('buyer requests to worker pools', () => {
+describe('buyer requests to colony pools', () => {
   it('encrypts to an assigned worker, keeps the assignment, and returns the decrypted answer', async () => {
     const pool = fakePool();
     const first = await pool.handler.sendRequest(peer, chatRequest('r1'));

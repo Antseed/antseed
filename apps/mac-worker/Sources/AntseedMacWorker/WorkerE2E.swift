@@ -2,7 +2,7 @@ import CryptoKit
 import Foundation
 
 /// Worker side of the buyer ↔ worker end-to-end encryption
-/// (docs/protocol/worker-pool.md). Byte-compatible with @antseed/node/worker-e2e.
+/// (docs/protocol/colony-pool.md). Byte-compatible with @antseed/node/worker-e2e.
 enum WorkerE2E {
     static let info = "antseed-worker-e2e/v2"
     static let version = 2

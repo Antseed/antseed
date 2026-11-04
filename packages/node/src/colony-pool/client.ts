@@ -37,7 +37,7 @@ export function sellerPayeeAddress(peer: BuyerPeerView): string {
 
 function parseAssignment(response: SerializedHttpResponse): WorkerAssignment {
   if (response.statusCode !== 200) {
-    throw new Error(`Worker pool could not assign a worker (HTTP ${response.statusCode})`);
+    throw new Error(`Colony pool could not assign a worker (HTTP ${response.statusCode})`);
   }
   const value = JSON.parse(new TextDecoder().decode(response.body)) as Partial<WorkerAssignment>;
   if (
@@ -47,13 +47,13 @@ function parseAssignment(response: SerializedHttpResponse): WorkerAssignment {
     || (value.attestation !== undefined && !isWorkerAttestation(value.attestation))
     || (value.deviceAttestation !== undefined && !isDeviceAttestation(value.deviceAttestation))
   ) {
-    throw new Error('Worker pool returned a malformed assignment');
+    throw new Error('Colony pool returned a malformed assignment');
   }
   return value as WorkerAssignment;
 }
 
 /**
- * Encrypts requests to a worker pool's workers and keeps one assignment per
+ * Encrypts requests to a colony pool's workers and keeps one assignment per
  * (seller, service), so a buyer's requests stay on one worker.
  */
 export class NodeWorkerE2EClient implements WorkerE2EClient {
@@ -118,15 +118,15 @@ export class NodeWorkerE2EClient implements WorkerE2EClient {
     const certificate = parseAssignment(await assign(new TextEncoder().encode(JSON.stringify({ model: service }))));
     // The key must be certified by its worker for the seller this buyer pays.
     if (!verifyWorkerKeyCertificate(certificate, sellerPayeeAddress(peer), now)) {
-      throw new Error('Worker pool returned a worker key that is not certified for this seller');
+      throw new Error('Colony pool returned a worker key that is not certified for this seller');
     }
     // An attestation the pool forwards must be the worker's own and fresh.
     const check = certificate.attestation
       ? verifyWorkerAttestation(certificate.attestation, certificate, { maxAgeS: ATTESTATION_MAX_AGE_S, now })
       : null;
-    if (check && !check.valid) throw new Error(`Worker pool returned an invalid worker attestation: ${check.reason}`);
+    if (check && !check.valid) throw new Error(`Colony pool returned an invalid worker attestation: ${check.reason}`);
     if ((this.options.requireAttestedWorkers || this.options.requireAppleVerifiedWorkers) && !check?.hardened) {
-      throw new Error('Worker pool assigned a worker that is not an attested hardened Mac');
+      throw new Error('Colony pool assigned a worker that is not an attested hardened Mac');
     }
     // Apple's attestation must name the Mac the worker attests it runs on, and this worker's key.
     if (certificate.deviceAttestation) {
@@ -138,9 +138,9 @@ export class NodeWorkerE2EClient implements WorkerE2EClient {
         now,
         ...(this.options.deviceAttestationRoots ? { roots: this.options.deviceAttestationRoots } : {}),
       });
-      if (!device.valid) throw new Error(`Worker pool returned an invalid Apple device attestation: ${device.reason}`);
+      if (!device.valid) throw new Error(`Colony pool returned an invalid Apple device attestation: ${device.reason}`);
     } else if (this.options.requireAppleVerifiedWorkers) {
-      throw new Error('Worker pool assigned a worker whose Mac Apple does not attest');
+      throw new Error('Colony pool assigned a worker whose Mac Apple does not attest');
     }
     if (this.assignments.size >= MAX_CACHED_ASSIGNMENTS) {
       const oldest = this.assignments.keys().next().value;

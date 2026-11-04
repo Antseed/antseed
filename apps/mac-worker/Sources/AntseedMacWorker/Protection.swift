@@ -5,7 +5,7 @@ import IOKit
 import Security
 
 /// What keeps the Mac's owner out of the prompts this app decrypts, and the
-/// attestation that reports it (docs/protocol/worker-pool.md, "Hardened Macs").
+/// attestation that reports it (docs/protocol/colony-pool.md, "Hardened Macs").
 /// macOS enforces these for a Developer ID build with the hardened runtime
 /// while SIP is on; memory itself is not encrypted, so this is a hardened Mac,
 /// not a TEE.

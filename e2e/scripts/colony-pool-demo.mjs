@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * End-to-end worker pool demo on a local chain:
- *   anvil + full protocol → AntseedWorkerPool (staked seller façade)
- *   → seller node running the worker-pool provider
+ * End-to-end colony pool demo on a local chain:
+ *   anvil + full protocol → AntseedColonyPool (staked seller façade)
+ *   → seller node running the colony-pool provider
  *   → two workers serving a real local model through Ollama
  *   → buyer node: encrypted requests, buyer-signed per-worker attribution
  *   → each Mac owner links a payout wallet (the Mac's signed setPayout)
@@ -26,13 +26,13 @@ import { fileURLToPath } from 'node:url';
 import { AbiCoder, Contract, JsonRpcProvider, NonceManager, Wallet, formatUnits, getBytes, id, keccak256 } from 'ethers';
 
 import { AntseedNode, ChannelsClient, loadOrCreateIdentity, toPeerId } from '@antseed/node';
-import { WorkerPoolClient, parseWorkerPayoutLink } from '@antseed/node/payments';
+import { ColonyPoolClient, parseWorkerPayoutLink } from '@antseed/node/payments';
 import { DHTNode } from '@antseed/node/discovery';
 import { WORKER_E2E_CAPABILITY, generateWorkerEncryptionKey } from '@antseed/node/worker-e2e';
 
 const repoRoot = resolve(fileURLToPath(new URL('.', import.meta.url)), '..', '..');
-const pluginDist = join(repoRoot, 'plugins', 'provider-worker-pool', 'dist');
-const { WorkerLedger, WorkerPool, WorkerPoolProvider } = await import(join(pluginDist, 'index.js'));
+const pluginDist = join(repoRoot, 'plugins', 'provider-colony-pool', 'dist');
+const { WorkerLedger, ColonyPool, ColonyPoolProvider } = await import(join(pluginDist, 'index.js'));
 const { PoolWorker } = await import(join(pluginDist, 'worker.js'));
 const { decodeWorkerTail } = await import(join(repoRoot, 'packages', 'protocol', 'dist', 'worker-attribution.js'));
 
@@ -60,7 +60,7 @@ const BUYERS = [
   { name: 'bob', prompts: ['In one sentence: what is end-to-end encryption?', 'Name three uses for idle computers, comma separated, no explanation.'] },
 ];
 
-const logDir = process.env.DEMO_LOG_DIR ?? await mkdtemp(join(tmpdir(), 'worker-pool-demo-'));
+const logDir = process.env.DEMO_LOG_DIR ?? await mkdtemp(join(tmpdir(), 'colony-pool-demo-'));
 await mkdir(logDir, { recursive: true });
 const streams = new Map();
 const stamp = () => new Date().toISOString().slice(11, 19);
@@ -146,7 +146,7 @@ async function startVideoDashboards({ provider, A, poolAddress, sellerDir, selle
     chainId: 'base-local', evmChainId: CHAIN_ID, rpcUrl: RPC_URL, fallbackRpcUrls: [],
     registryContractAddress: A.registry, depositsContractAddress: A.deposits, channelsContractAddress: A.channels, usdcContractAddress: A.usdc,
     identityRegistryAddress: A.identity, stakingContractAddress: A.staking, emissionsContractAddress: A.emissions, antsTokenAddress: A.ants,
-    workerPoolAddresses: [],
+    colonyPoolAddresses: [],
   };
   // Local signing stands in for the browser wallet's approval.
   const ants = await createAntsServer({ port: 3133, dataDir: antsDir, browserWallet: false, signer: owner, address: owner.address, chain, selectRpc: false });
@@ -157,7 +157,7 @@ async function startVideoDashboards({ provider, A, poolAddress, sellerDir, selle
   // The seller dashboard reads the seller's data dir: daemon state, metering and the pool ledger.
   const startedAt = Date.now();
   const writeState = () => writeFileSync(join(sellerDir, 'daemon.state.json'), JSON.stringify({
-    peerId: sellerNode.peerId, provider: 'worker-pool', startedAt, updatedAt: Date.now(), activeChannels: BUYERS.length, capacityUsedPercent: 12, notices: [],
+    peerId: sellerNode.peerId, provider: 'colony-pool', startedAt, updatedAt: Date.now(), activeChannels: BUYERS.length, capacityUsedPercent: 12, notices: [],
   }));
   writeState();
   const stateTimer = setInterval(writeState, 2000);
@@ -174,7 +174,7 @@ async function startVideoDashboards({ provider, A, poolAddress, sellerDir, selle
 
 const cleanup = [];
 async function main() {
-  console.log(`${C.bold}Antseed worker pool — end-to-end demo${C.reset}`);
+  console.log(`${C.bold}Antseed colony pool — end-to-end demo${C.reset}`);
   console.log(`${C.dim}logs: ${logDir}${C.reset}`);
 
   // ── chain ──
@@ -215,8 +215,8 @@ async function main() {
   }
 
   // ── pool contract ──
-  await step('Deploy AntseedWorkerPool — the on-chain seller that splits revenue between Macs');
-  const poolOut = run('forge', ['create', 'staking/AntseedWorkerPool.sol:AntseedWorkerPool', '--rpc-url', RPC_URL, '--private-key', DEPLOYER_KEY, '--broadcast', '--skip', 'test', '--constructor-args', A.registry, operator], contractsDir);
+  await step('Deploy AntseedColonyPool — the on-chain seller that splits revenue between Macs');
+  const poolOut = run('forge', ['create', 'staking/AntseedColonyPool.sol:AntseedColonyPool', '--rpc-url', RPC_URL, '--private-key', DEPLOYER_KEY, '--broadcast', '--skip', 'test', '--constructor-args', A.registry, operator], contractsDir);
   const poolAddress = poolOut.match(/Deployed to:\s+(0x[0-9a-fA-F]{40})/)[1];
   deployer.reset();
   logTo('chain', `deployed pool     ${poolAddress} (operator = seller node ${operator})`);
@@ -258,7 +258,7 @@ async function main() {
   }
 
   // ── seller node + pool ──
-  await step('Start the seller node with the worker-pool provider');
+  await step('Start the seller node with the colony-pool provider');
   const bootstrap = new DHTNode({ peerId: toPeerId('0'.repeat(40)), port: 0, bootstrapNodes: [], reannounceIntervalMs: 60_000, operationTimeoutMs: 5_000 });
   await bootstrap.start();
   cleanup.push(() => bootstrap.stop());
@@ -267,16 +267,16 @@ async function main() {
     enabled: true, paymentMethod: 'crypto', rpcUrl: RPC_URL, chainId: CHAIN_ID, settlementIdleMs: 10 * 60_000,
     depositsAddress: A.deposits, channelsAddress, usdcAddress: A.usdc, identityRegistryAddress: A.identity, stakingAddress: A.staking,
   });
-  const ledger = new WorkerLedger(join(sellerDir, 'worker-pool.db'));
-  const workerPool = new WorkerPool({
+  const ledger = new WorkerLedger(join(sellerDir, 'colony-pool.db'));
+  const colonyPool = new ColonyPool({
     poolId: 'demo-pool', seller: poolAddress.toLowerCase(), catalog: [SERVICE], workerShareBps: 9000, ledger,
     port: POOL_PORT, host: BIND, verifyOnJoin: true, log: (line) => logTo('pool', line),
     // DEMO_REQUIRE_ATTESTATION=1 admits only attested hardened Macs; DEMO_ATTEST_INTERVAL_MS shortens re-attestation.
     requireAttestation: process.env.DEMO_REQUIRE_ATTESTATION === '1',
     ...(process.env.DEMO_ATTEST_INTERVAL_MS ? { attestationIntervalMs: Number(process.env.DEMO_ATTEST_INTERVAL_MS) } : {}),
   });
-  const poolProvider = new WorkerPoolProvider({
-    pool: workerPool, ledger, workerShareBps: 9000, maxConcurrency: 16,
+  const poolProvider = new ColonyPoolProvider({
+    pool: colonyPool, ledger, workerShareBps: 9000, maxConcurrency: 16,
     pricing: { defaults: { inputUsdPerMillion: 20, outputUsdPerMillion: 80 } },
     serviceApiProtocols: { [SERVICE]: ['openai-chat-completions'] },
   });
@@ -296,8 +296,8 @@ async function main() {
       return response;
     };
   }
-  await workerPool.start();
-  cleanup.push(() => workerPool.stop());
+  await colonyPool.start();
+  cleanup.push(() => colonyPool.stop());
   const sellerNode = new AntseedNode({
     role: 'seller', dataDir: sellerDir, identity: sellerIdentity, dhtPort: 0, signalingPort: 0, bootstrapNodes, allowPrivateIPs: true,
     sellerContract: { sellerContract: poolAddress }, payments: payments(poolAddress),
@@ -342,8 +342,8 @@ async function main() {
     say(`${name}: ${wallet.address}`);
   }
   if (EXPECT_WORKERS > LOCAL_WORKERS) say(`waiting for the Mac app to join ws://<this Mac>:${POOL_PORT}…`);
-  await waitFor(async () => poolProvider.services.includes(SERVICE) && workerPool.workerSummaries().filter((w) => w.services.length).length >= EXPECT_WORKERS, 'workers verified', 300_000, 500);
-  for (const summary of workerPool.workerSummaries()) {
+  await waitFor(async () => poolProvider.services.includes(SERVICE) && colonyPool.workerSummaries().filter((w) => w.services.length).length >= EXPECT_WORKERS, 'workers verified', 300_000, 500);
+  for (const summary of colonyPool.workerSummaries()) {
     if (workers.some((w) => w.wallet.address.toLowerCase() === summary.address)) continue;
     workers.push({ name: 'mac-app', wallet: { address: summary.address }, external: true, agent: summary.agent });
     say(`mac-app: ${summary.address}  ${C.dim}(${summary.agent} · ${summary.attested ? 'attested hardened Mac' : 'not attested as hardened'})${C.reset}`);
@@ -352,7 +352,7 @@ async function main() {
 
   // ── payout wallets ──
   await step("Each Mac's owner links the wallet its earnings go to (Rewards → Link a Mac)");
-  const poolClient = new WorkerPoolClient({ rpcUrl: RPC_URL, contractAddress: poolAddress, evmChainId: CHAIN_ID });
+  const poolClient = new ColonyPoolClient({ rpcUrl: RPC_URL, contractAddress: poolAddress, evmChainId: CHAIN_ID });
   const poolReader = new Contract(poolAddress, ['function payoutNonce(address) view returns (uint256)', 'function payoutDigest(address,address,uint256) view returns (bytes32)'], provider);
   for (const w of workers) {
     if (w.external && macOwner) {

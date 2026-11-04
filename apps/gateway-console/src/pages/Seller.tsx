@@ -131,12 +131,12 @@ function workerName(worker: SellerWorker): string {
   return worker.agent?.match(/\(([^)]+)\)\s*$/)?.[1] ?? shortId(worker.address)
 }
 
-/** Only for a seller running the worker-pool provider: the Macs serving it. */
+/** Only for a seller running the colony-pool provider: the Macs serving it. */
 function WorkersPanel() {
   const workers = useSellerWorkers()
   if (!workers.data?.available) return null
   return (
-    <Panel title="Workers" description="Macs serving this seller's worker pool. Earnings are each worker's share after the protocol fee and your pool's cut; the pool contract pays them at settlement." flush>
+    <Panel title="Workers" description="Macs serving this seller's colony pool. Earnings are each worker's share after the protocol fee and your pool's cut; the pool contract pays them at settlement." flush>
       <DataTable<SellerWorker> label="Workers" rows={workers.data.workers} rowKey={(row) => row.address}
         empty={<EmptyState title="No workers yet" body="Workers appear here once a Mac joins the pool." />}
         columns={[

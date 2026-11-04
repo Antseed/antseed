@@ -21,9 +21,9 @@ import {
 import { createTestAppleCa } from '@antseed/node/worker-e2e/testing';
 import type { DeviceAttestor } from './mdm.js';
 import { WorkerLedger } from './ledger.js';
-import { WorkerPool } from './pool.js';
+import { ColonyPool } from './pool.js';
 import { parsePoolFrame, workerAuthMessage } from './protocol.js';
-import { WorkerPoolProvider } from './provider.js';
+import { ColonyPoolProvider } from './provider.js';
 import { PoolWorker, type ChannelVerifier, type WorkerAttester } from './worker.js';
 
 /** A software stand-in for the Mac app's Secure Enclave attester. */
@@ -119,18 +119,18 @@ async function waitFor(condition: () => boolean, timeoutMs = 5_000): Promise<voi
   }
 }
 
-describe('worker pool', () => {
+describe('colony pool', () => {
   let dir: string;
   let ledger: WorkerLedger;
-  let pool: WorkerPool;
-  let provider: WorkerPoolProvider;
+  let pool: ColonyPool;
+  let provider: ColonyPoolProvider;
   let upstream: FakeUpstream;
   let poolUrl: string;
   const workers: PoolWorker[] = [];
   const buyer = Wallet.createRandom();
 
   async function setup(opts: { verifyOnJoin?: boolean; allowedWorkers?: Set<string>; requireAttestation?: boolean; attestationIntervalMs?: number; deviceAttestor?: DeviceAttestor; requireDeviceAttestation?: boolean } = {}): Promise<void> {
-    pool = new WorkerPool({
+    pool = new ColonyPool({
       poolId: 'test-pool',
       seller: SELLER,
       catalog: [SERVICE, 'other-model'],
@@ -145,7 +145,7 @@ describe('worker pool', () => {
       ...(opts.deviceAttestor ? { deviceAttestor: opts.deviceAttestor, deviceAttestationRoots: [appleCa.rootPem] } : {}),
       ...(opts.requireDeviceAttestation ? { requireDeviceAttestation: true } : {}),
     });
-    provider = new WorkerPoolProvider({
+    provider = new ColonyPoolProvider({
       pool,
       ledger,
       pricing: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 4 } },
@@ -194,7 +194,7 @@ describe('worker pool', () => {
   }
 
   beforeEach(async () => {
-    dir = mkdtempSync(join(tmpdir(), 'worker-pool-'));
+    dir = mkdtempSync(join(tmpdir(), 'colony-pool-'));
     ledger = new WorkerLedger(join(dir, 'ledger.db'));
     upstream = await startUpstream();
   });
@@ -209,7 +209,7 @@ describe('worker pool', () => {
 
   it('advertises end-to-end encryption and announces a service only after the sealed join check', async () => {
     await setup();
-    expect(provider.peerCapabilities).toContain('worker-pool-e2e.v2');
+    expect(provider.peerCapabilities).toContain('colony-pool-e2e.v2');
     let changes = 0;
     provider.setServicesChangedListener(() => { changes++; });
     expect(provider.services).toEqual([]);

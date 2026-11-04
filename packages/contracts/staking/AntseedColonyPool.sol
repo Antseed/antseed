@@ -11,13 +11,13 @@ import { AntseedSellerDelegation } from "./AntseedSellerDelegation.sol";
 import { IAntseedEmissions } from "../interfaces/IAntseedEmissions.sol";
 
 /**
- * @title AntseedWorkerPool
- * @notice Seller façade for a worker pool: one staked Antseed seller that
+ * @title AntseedColonyPool
+ * @notice Seller façade for a colony pool: one staked Antseed seller that
  *         serves buyers from many worker machines. The pool settles through
  *         the same `settle` / `close` / `topUp` surface as any seller
  *         delegation, then splits each payout between workers using the
  *         per-worker cumulative amounts the buyer appends to the metadata it
- *         signs in every SpendingAuth (see docs/protocol/worker-pool.md).
+ *         signs in every SpendingAuth (see docs/protocol/colony-pool.md).
  *
  *         Worker tail, read from the END of `metadata`:
  *
@@ -38,7 +38,7 @@ import { IAntseedEmissions } from "../interfaces/IAntseedEmissions.sol";
  *         pull the pool's seller emissions for it (`claimEpochEmissions`) and
  *         each account claims its weight-proportional share (`claimAnts`).
  */
-contract AntseedWorkerPool is AntseedSellerDelegation, Pausable {
+contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
     using SafeERC20 for IERC20;
 
     // ─── Constants ──────────────────────────────────────────────────

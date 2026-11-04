@@ -134,7 +134,7 @@ describe('worker end-to-end encryption', async () => {
   it('passes through bodies the pool itself returned', async () => {
     const { worker, key } = setup();
     const sealed = await sealRequest({ body: enc({ model: 'qwen' }), worker: worker.address, workerKey: key.publicKey });
-    const poolError = enc({ error: { message: 'No worker is available', type: 'worker_pool_error' } });
+    const poolError = enc({ error: { message: 'No worker is available', type: 'colony_pool_error' } });
     expect(sealed.opener.openBody(poolError)).toBe(poolError);
     expect(sealed.opener.verified).toBe(false);
   });

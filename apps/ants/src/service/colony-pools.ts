@@ -1,6 +1,6 @@
 import { parseWorkerPayoutLink } from '@antseed/node/payments';
 import { ZeroAddress } from 'ethers';
-import type { WorkerPayoutLinkRequest, WorkerPoolClaimRequest, WorkerPoolsView } from '../api-types.js';
+import type { WorkerPayoutLinkRequest, ColonyPoolClaimRequest, ColonyPoolsView } from '../api-types.js';
 import type { AntsContext } from './context.js';
 import type { StepReporter } from './steps.js';
 
@@ -12,14 +12,14 @@ function finishedEpochs(currentEpoch: number): number[] {
   return Array.from({ length: Math.max(0, currentEpoch - first) }, (_, index) => first + index);
 }
 
-/** USDC and ANTS each configured worker pool owes the connected wallet. */
-export async function workerPools(ctx: AntsContext): Promise<WorkerPoolsView> {
-  const addresses = ctx.workerPoolAddresses();
+/** USDC and ANTS each configured colony pool owes the connected wallet. */
+export async function colonyPools(ctx: AntsContext): Promise<ColonyPoolsView> {
+  const addresses = ctx.colonyPoolAddresses();
   if (addresses.length === 0 || ctx.address === ZeroAddress) return { pools: [] };
   const { currentEpoch } = await ctx.stack();
   const epochs = finishedEpochs(currentEpoch);
   const pools = await Promise.all(addresses.map(async (address) => {
-    const pool = ctx.workerPool(address);
+    const pool = ctx.colonyPool(address);
     const [usdcOwed, perEpoch] = await Promise.all([
       pool.usdcBalance(ctx.address),
       Promise.all(epochs.map(async (epoch) => ({ epoch, owed: await pool.pendingAnts(ctx.address, [epoch]) }))),
@@ -31,23 +31,23 @@ export async function workerPools(ctx: AntsContext): Promise<WorkerPoolsView> {
   return { pools };
 }
 
-export async function claimWorkerPool(ctx: AntsContext, request: WorkerPoolClaimRequest, report: StepReporter): Promise<{ hashes: string[] }> {
+export async function claimColonyPool(ctx: AntsContext, request: ColonyPoolClaimRequest, report: StepReporter): Promise<{ hashes: string[] }> {
   const signer = ctx.requireSigner();
-  if (!ctx.workerPoolAddresses().includes(request.pool.toLowerCase())) throw new Error('Unknown worker pool');
-  const pool = ctx.workerPool(request.pool);
-  const view = (await workerPools(ctx)).pools.find((entry) => entry.address === request.pool.toLowerCase());
+  if (!ctx.colonyPoolAddresses().includes(request.pool.toLowerCase())) throw new Error('Unknown colony pool');
+  const pool = ctx.colonyPool(request.pool);
+  const view = (await colonyPools(ctx)).pools.find((entry) => entry.address === request.pool.toLowerCase());
   const hashes: string[] = [];
   if (request.usdc && view && BigInt(view.usdcOwed) > 0n) {
     const hash = await pool.claimUsdc(signer);
     hashes.push(hash);
-    await report('USDC claimed from the worker pool', hash);
+    await report('USDC claimed from the colony pool', hash);
   }
   if (request.ants && view && view.antsEpochs.length > 0) {
     const hash = await pool.claimAnts(signer, view.antsEpochs);
     hashes.push(hash);
-    await report('ANTS claimed from the worker pool', hash);
+    await report('ANTS claimed from the colony pool', hash);
   }
-  if (hashes.length === 0) throw new Error('Nothing to claim from this worker pool');
+  if (hashes.length === 0) throw new Error('Nothing to claim from this colony pool');
   return { hashes };
 }
 
@@ -64,8 +64,8 @@ export async function linkWorkerPayout(ctx: AntsContext, request: WorkerPayoutLi
   if (wallet.toLowerCase() !== authorization.payout.toLowerCase()) {
     throw new Error(`This link pays ${authorization.payout}; connect that wallet to submit it`);
   }
-  const hash = await ctx.workerPool(authorization.pool).setPayout(signer, authorization);
+  const hash = await ctx.colonyPool(authorization.pool).setPayout(signer, authorization);
   await report('Mac linked: its earnings now pay to this wallet', hash);
-  if (!ctx.workerPoolAddresses().includes(authorization.pool.toLowerCase())) ctx.rememberWorkerPool(authorization.pool);
+  if (!ctx.colonyPoolAddresses().includes(authorization.pool.toLowerCase())) ctx.rememberColonyPool(authorization.pool);
   return { hash, pool: authorization.pool, worker: authorization.worker };
 }

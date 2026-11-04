@@ -727,8 +727,8 @@ describe('BuyerPaymentManager', () => {
     ).rejects.toThrow(/No active session/);
   });
 
-  it('signs per-worker totals for worker pool requests and keeps them across a restart', async () => {
-    const sellerPeerId = fakePeerId('seller-worker-pool');
+  it('signs per-worker totals for colony pool requests and keeps them across a restart', async () => {
+    const sellerPeerId = fakePeerId('seller-colony-pool');
     const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
     await manager.handleAuthAck(sellerPeerId, { channelId });
     const workerA = '0x1000000000000000000000000000000000000001';

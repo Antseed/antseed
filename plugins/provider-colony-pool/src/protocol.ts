@@ -1,7 +1,7 @@
 import { isWorkerAttestation, type WorkerAttestation } from '@antseed/node/worker-e2e';
 
 /**
- * Worker pool wire protocol (v1).
+ * Colony pool wire protocol (v1).
  *
  * Workers dial the pool over a WebSocket and exchange JSON text frames.
  * Bodies travel base64-encoded so any client (Node, Swift) can speak the
@@ -10,11 +10,11 @@ import { isWorkerAttestation, type WorkerAttestation } from '@antseed/node/worke
  * then on the pool tunnels buyer requests to the worker.
  */
 
-export const WORKER_POOL_PROTOCOL_VERSION = 1;
+export const COLONY_POOL_PROTOCOL_VERSION = 1;
 
 /** Message a worker signs (EIP-191 personal_sign) to prove its address. */
 export function workerAuthMessage(poolId: string, nonce: string): string {
-  return `antseed-worker-pool/v${WORKER_POOL_PROTOCOL_VERSION}\npool:${poolId}\nnonce:${nonce}`;
+  return `antseed-colony-pool/v${COLONY_POOL_PROTOCOL_VERSION}\npool:${poolId}\nnonce:${nonce}`;
 }
 
 // ── pool → worker ──
@@ -24,7 +24,7 @@ export interface ChallengeFrame {
   version: number;
   pool: string;
   nonce: string;
-  /** Address buyers pay (the AntseedWorkerPool contract); workers certify their encryption key for it. */
+  /** Address buyers pay (the AntseedColonyPool contract); workers certify their encryption key for it. */
   seller: string;
 }
 

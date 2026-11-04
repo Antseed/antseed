@@ -1,7 +1,7 @@
 import { Wallet } from 'ethers';
 import { describe, expect, it, vi } from 'vitest';
 import type { AntsContext } from './context.js';
-import { claimWorkerPool, linkWorkerPayout, workerPools } from './worker-pools.js';
+import { claimColonyPool, linkWorkerPayout, colonyPools } from './colony-pools.js';
 
 const wallet = Wallet.createRandom();
 const pool = '0x00000000000000000000000000000000000000aa';
@@ -20,14 +20,14 @@ function fixture(pools: string[] = [pool]) {
     claimAnts: vi.fn(async () => 'ants-hash'),
     setPayout: vi.fn(async () => 'link-hash'),
   };
-  const chain = { evmChainId: 31337, workerPoolAddresses: pools };
+  const chain = { evmChainId: 31337, colonyPoolAddresses: pools };
   const ctx = {
     address: wallet.address,
     chain,
     stack: async () => ({ currentEpoch: 6 }),
-    workerPoolAddresses: () => (chain.workerPoolAddresses ?? []).map((a) => a.toLowerCase()),
-    rememberWorkerPool: (address: string) => { chain.workerPoolAddresses = [...chain.workerPoolAddresses, address]; },
-    workerPool: () => client,
+    colonyPoolAddresses: () => (chain.colonyPoolAddresses ?? []).map((a) => a.toLowerCase()),
+    rememberColonyPool: (address: string) => { chain.colonyPoolAddresses = [...chain.colonyPoolAddresses, address]; },
+    colonyPool: () => client,
     requireSigner: () => wallet,
   } as unknown as AntsContext;
   return { ctx, client };
@@ -35,30 +35,30 @@ function fixture(pools: string[] = [pool]) {
 
 const report = vi.fn(async () => {});
 
-describe('worker pool rewards', () => {
+describe('colony pool rewards', () => {
   it('reports USDC and ANTS each configured pool owes the wallet', async () => {
     const { ctx } = fixture();
-    await expect(workerPools(ctx)).resolves.toEqual({
+    await expect(colonyPools(ctx)).resolves.toEqual({
       pools: [{ address: pool, usdcOwed: '2500', antsOwed: '7', antsEpochs: [4] }],
     });
   });
 
   it('claims USDC and the epochs with ANTS owed', async () => {
     const { ctx, client } = fixture();
-    await expect(claimWorkerPool(ctx, { pool, usdc: true, ants: true }, report)).resolves.toEqual({ hashes: ['usdc-hash', 'ants-hash'] });
+    await expect(claimColonyPool(ctx, { pool, usdc: true, ants: true }, report)).resolves.toEqual({ hashes: ['usdc-hash', 'ants-hash'] });
     expect(client.claimAnts).toHaveBeenCalledWith(wallet, [4]);
   });
 
   it('refuses pools the dashboard does not know', async () => {
     const { ctx } = fixture([]);
-    await expect(claimWorkerPool(ctx, { pool, usdc: true, ants: false }, report)).rejects.toThrow(/Unknown worker pool/);
+    await expect(claimColonyPool(ctx, { pool, usdc: true, ants: false }, report)).rejects.toThrow(/Unknown colony pool/);
   });
 
   it('submits a Mac link from the payout wallet and starts showing its pool', async () => {
     const { ctx, client } = fixture([]);
     await expect(linkWorkerPayout(ctx, { code: linkCode() }, report)).resolves.toMatchObject({ hash: 'link-hash', pool, worker });
     expect(client.setPayout).toHaveBeenCalledWith(wallet, expect.objectContaining({ worker, payout: wallet.address }));
-    expect(ctx.workerPoolAddresses()).toEqual([pool]);
+    expect(ctx.colonyPoolAddresses()).toEqual([pool]);
   });
 
   it('rejects a link for another wallet, another chain, or a malformed code', async () => {

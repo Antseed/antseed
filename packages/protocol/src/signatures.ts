@@ -160,7 +160,7 @@ export interface SpendingAuthMetadata {
   cumulativeVideoSeconds?: bigint;
   services?: SpendingAuthServiceMetadata[];
   /**
-   * Worker pool attribution, appended after the ABI encoding (see
+   * Colony pool attribution, appended after the ABI encoding (see
    * worker-attribution.ts). Absent for every seller that is not a pool.
    */
   workers?: WorkerAttribution[];

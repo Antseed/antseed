@@ -1202,7 +1202,7 @@ importers:
         specifier: ^2.0.0
         version: 2.1.9(@types/node@22.7.5)(lightningcss@1.32.0)(sass@1.97.3)(terser@5.46.0)
 
-  plugins/provider-worker-pool:
+  plugins/provider-colony-pool:
     dependencies:
       '@antseed/provider-core':
         specifier: workspace:*

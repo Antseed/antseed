@@ -1,4 +1,4 @@
-import type { WorkerPoolsView,
+import type { ColonyPoolsView,
   EmissionsView,
   NetworkSnapshot,
   JobView,
@@ -136,7 +136,7 @@ export const api = {
   overview: () => get<OverviewView>('/api/overview'),
   positions: () => get<PositionsView>('/api/positions'),
   rewards: () => get<RewardsView>('/api/rewards'),
-  workerPools: () => get<WorkerPoolsView>('/api/worker-pools'),
+  colonyPools: () => get<ColonyPoolsView>('/api/colony-pools'),
   pools: () => get<PoolsView>('/api/pools'),
   sellerModels: async (address: string) => {
     try {

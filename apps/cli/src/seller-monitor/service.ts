@@ -102,7 +102,7 @@ export class SellerMonitor {
     return this._usage.usage(this.seller().dataDir, days)
   }
 
-  /** The worker pool's workers, when the seller runs one. */
+  /** The colony pool's workers, when the seller runs one. */
   workers(): SellerWorkers {
     return readSellerWorkers(this.seller().dataDir)
   }

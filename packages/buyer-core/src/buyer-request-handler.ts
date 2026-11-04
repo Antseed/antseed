@@ -118,7 +118,7 @@ export interface BuyerRequestHandlerDeps {
    * consent to count their stake for this buyer on sellers' staked free tiers.
    */
   freeTierDelegationsHeader?: () => string | null;
-  /** Encrypts requests to worker pools' workers (sellers advertising worker-pool-e2e.v2). */
+  /** Encrypts requests to colony pools' workers (sellers advertising colony-pool-e2e.v2). */
   workerE2E?: WorkerE2EClient | null;
 }
 
@@ -267,7 +267,7 @@ export class BuyerRequestHandler {
       ? this._deps.negotiator?.bpm?.videoJobDuration(peer.peerId, videoRoute.protocol, videoJobId)
       : undefined;
 
-    // Worker pools: encrypt to one of the seller's workers so the seller only
+    // Colony pools: encrypt to one of the seller's workers so the seller only
     // routes ciphertext. Everything above read the plaintext request; the
     // request sent and the raw response stay on hand for ResponseAuth, which
     // signs wire bytes.

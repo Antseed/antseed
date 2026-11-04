@@ -13,8 +13,8 @@ import { getAddress, getBytes, keccak256, solidityPacked, verifyMessage } from '
 import type { DeviceAttestation } from './apple-attestation.js';
 
 /**
- * End-to-end encryption between a buyer and a worker pool's worker. The pool
- * routes ciphertext only. Spec: docs/protocol/worker-pool.md.
+ * End-to-end encryption between a buyer and a colony pool's worker. The pool
+ * routes ciphertext only. Spec: docs/protocol/colony-pool.md.
  */
 
 export {
@@ -118,7 +118,7 @@ export interface WorkerAssignment extends WorkerKeyCertificate {
  * What a worker app reports about itself, signed with its attestation key:
  * which signed build is running and whether macOS keeps other processes
  * (the Mac's owner included) out of it. Self-reported: it shows the official
- * app holds the key, not that no modified app exists (docs/protocol/worker-pool.md).
+ * app holds the key, not that no modified app exists (docs/protocol/colony-pool.md).
  */
 export interface WorkerAttestation {
   v: 1;
