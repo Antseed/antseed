@@ -25,4 +25,4 @@ export {
   stripRelayResponseHeaders,
   type StripRelayRequestHeadersOptions,
 } from './http-headers.js';
-export { streamVideoResponse, videoDownloadSignal, videoDownloadError } from './video-download.js';
+export { createVideoResponseStreamer, streamVideoResponse, videoDownloadSignal, videoDownloadError } from './video-download.js';

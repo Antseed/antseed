@@ -8,7 +8,7 @@ import {
   parseCsv,
   parseServiceCapabilitiesJson,
   parseServiceUnitBillingModelsJson,
-  streamVideoResponse,
+  createVideoResponseStreamer,
   videoDownloadError,
   videoDownloadSignal,
 } from '@antseed/provider-core';
@@ -415,8 +415,6 @@ const plugin: AntseedProviderPlugin = {
         // Unknown model fields: buyers fall back to their defaults.
       }
     };
-
-    let activeDownloads = 0;
     // Private (VPS-backed) Venice models return a pre-signed download_url on
     // create instead of streaming the file from retrieve. The seller keeps
     // that URL and streams the file itself, so every video reaches the buyer
@@ -456,18 +454,7 @@ const plugin: AntseedProviderPlugin = {
       return { ...response, headers, body: Buffer.from(JSON.stringify(rest)) };
     };
 
-    const streamUpstream = async (request: SerializedHttpRequest, upstream: Response, callbacks: Parameters<NonNullable<Provider['handleRequestStream']>>[1], download: ReturnType<typeof videoDownloadSignal>) => {
-      if (activeDownloads >= MAX_ACTIVE_DOWNLOADS) {
-        await upstream.body?.cancel();
-        return error(request, 429, 'video_download_busy', 'Too many concurrent video downloads');
-      }
-      activeDownloads += 1;
-      try {
-        return await streamVideoResponse(request, upstream, callbacks, download);
-      } finally {
-        activeDownloads -= 1;
-      }
-    };
+    const streamUpstream = createVideoResponseStreamer(MAX_ACTIVE_DOWNLOADS);
 
     return {
       name: relay.name,

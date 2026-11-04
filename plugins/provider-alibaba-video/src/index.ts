@@ -1,12 +1,12 @@
-import type { AntseedProviderPlugin, Provider, ProviderRequestRefusal, ProviderStreamCallbacks, SerializedHttpRequest, ServiceCapabilities, UpstreamAccountStatus } from '@antseed/node';
-import { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION } from '@antseed/node';
+import type { AntseedProviderPlugin, Provider, ProviderRequestRefusal, SerializedHttpRequest, ServiceCapabilities, UpstreamAccountStatus } from '@antseed/node';
+import { MAX_SERVICE_NAME_LENGTH, VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION } from '@antseed/node';
 import { nativeVideoRoute, parseJsonObject, requestService } from '@antseed/api-adapter';
 import {
   parseCsv,
   parseServiceAliasMap,
   parseServiceCapabilitiesJson,
   parseServiceUnitBillingModelsJson,
-  streamVideoResponse,
+  createVideoResponseStreamer,
   videoDownloadError as error,
   videoDownloadSignal,
 } from '@antseed/provider-core';
@@ -25,7 +25,6 @@ const ACCOUNT_CHECK_PATH = '/compatible-mode/v1/models';
 const MAX_JSON_BYTES = 1024 * 1024;
 const MAX_ACTIVE_DOWNLOADS = 2;
 const HEALTH_CHECK_TIMEOUT_MS = 15_000;
-const MAX_SERVICE_ID_LENGTH = 64;
 
 /** Request fields the seller translates, announced to buyers unless the seller configured its own list. */
 export const SUPPORTED_PARAMETERS = [
@@ -141,8 +140,8 @@ const plugin: AntseedProviderPlugin = {
 
     const services = parseCsv(config['ANTSEED_ALLOWED_SERVICES']);
     if (services.length === 0) throw new Error('ANTSEED_ALLOWED_SERVICES is required');
-    const tooLong = services.find(service => service.length > MAX_SERVICE_ID_LENGTH);
-    if (tooLong) throw new Error(`Service ID is longer than ${MAX_SERVICE_ID_LENGTH} characters: ${tooLong}`);
+    const tooLong = services.find(service => service.length > MAX_SERVICE_NAME_LENGTH);
+    if (tooLong) throw new Error(`Service ID is longer than ${MAX_SERVICE_NAME_LENGTH} characters: ${tooLong}`);
     const aliases = parseServiceAliasMap(config['ANTSEED_SERVICE_ALIAS_MAP_JSON']);
     const serviceUnitBillingModels = parseServiceUnitBillingModelsJson(config['ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON']);
     const missingPricing = services.find(service => !serviceUnitBillingModels?.[service]?.[PROTOCOL]);
@@ -172,7 +171,6 @@ const plugin: AntseedProviderPlugin = {
     };
 
     let active = 0;
-    let activeDownloads = 0;
 
     const handleRequest: Provider['handleRequest'] = async (request) => {
       const { videoRoute, service } = route(request);
@@ -209,18 +207,7 @@ const plugin: AntseedProviderPlugin = {
       }
     };
 
-    const streamUpstream = async (request: SerializedHttpRequest, upstream: Response, callbacks: ProviderStreamCallbacks, download: ReturnType<typeof videoDownloadSignal>) => {
-      if (activeDownloads >= MAX_ACTIVE_DOWNLOADS) {
-        await upstream.body?.cancel();
-        return error(request, 429, 'video_download_busy', 'Too many concurrent video downloads');
-      }
-      activeDownloads += 1;
-      try {
-        return await streamVideoResponse(request, upstream, callbacks, download);
-      } finally {
-        activeDownloads -= 1;
-      }
-    };
+    const streamUpstream = createVideoResponseStreamer(MAX_ACTIVE_DOWNLOADS);
 
     return {
       name: 'alibaba-video',

@@ -1,11 +1,11 @@
-import type { AntseedProviderPlugin, Provider, ProviderRequestRefusal, ProviderStreamCallbacks, SerializedHttpRequest, ServiceCapabilities, ServiceHealthStatus, UpstreamAccountStatus, VideoInputKind } from '@antseed/node';
+import type { AntseedProviderPlugin, Provider, ProviderRequestRefusal, SerializedHttpRequest, ServiceCapabilities, ServiceHealthStatus, UpstreamAccountStatus, VideoInputKind } from '@antseed/node';
 import { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION, validateServiceCapabilityFields } from '@antseed/node';
 import { audioSourceLengthProblem, nativeVideoRoute, parseJsonObject, requestService, videoSourceLengthProblem } from '@antseed/api-adapter';
 import {
   parseCsv,
   parseServiceCapabilitiesJson,
   parseServiceUnitBillingModelsJson,
-  streamVideoResponse,
+  createVideoResponseStreamer,
   videoDownloadError as error,
   videoDownloadSignal,
 } from '@antseed/provider-core';
@@ -505,7 +505,6 @@ const plugin: AntseedProviderPlugin = {
     };
 
     let active = 0;
-    let activeDownloads = 0;
 
     const handleRequest: Provider['handleRequest'] = async (request) => {
       const { videoRoute, service } = route(request);
@@ -552,18 +551,7 @@ const plugin: AntseedProviderPlugin = {
       }
     };
 
-    const streamUpstream = async (request: SerializedHttpRequest, upstream: Response, callbacks: ProviderStreamCallbacks, download: ReturnType<typeof videoDownloadSignal>) => {
-      if (activeDownloads >= MAX_ACTIVE_DOWNLOADS) {
-        await upstream.body?.cancel();
-        return error(request, 429, 'video_download_busy', 'Too many concurrent video downloads');
-      }
-      activeDownloads += 1;
-      try {
-        return await streamVideoResponse(request, upstream, callbacks, download);
-      } finally {
-        activeDownloads -= 1;
-      }
-    };
+    const streamUpstream = createVideoResponseStreamer(MAX_ACTIVE_DOWNLOADS);
 
     return {
       name: 'fal-video',

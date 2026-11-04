@@ -83,3 +83,20 @@ export async function streamVideoResponse(
     reader.releaseLock();
   }
 }
+
+/** {@link streamVideoResponse} limited to `maxDownloads` at a time; call once per provider instance. */
+export function createVideoResponseStreamer(maxDownloads: number): typeof streamVideoResponse {
+  let activeDownloads = 0;
+  return async (request, upstream, callbacks, download) => {
+    if (activeDownloads >= maxDownloads) {
+      await upstream.body?.cancel();
+      return videoDownloadError(request, 429, 'video_download_busy', 'Too many concurrent video downloads');
+    }
+    activeDownloads += 1;
+    try {
+      return await streamVideoResponse(request, upstream, callbacks, download);
+    } finally {
+      activeDownloads -= 1;
+    }
+  };
+}
