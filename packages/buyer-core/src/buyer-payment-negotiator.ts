@@ -1802,9 +1802,7 @@ export class BuyerPaymentNegotiator {
       const signedAfterExtend = async (): Promise<bigint> => {
         await extend();
         this._assertLiveChannel(peer.peerId, session.sessionId);
-        const inMemory = this._bpm.getCumulativeAmount(peer.peerId);
-        const committed = BigInt(this._bpm.getActiveSession(peer.peerId)?.authMax ?? '0');
-        return committed > inMemory ? committed : inMemory;
+        return this._bpm.getHighestSignedAmount(session);
       };
       let cumulativeAfter = await signedAfterExtend();
       if (cumulativeAfter <= cumulativeBefore && this._bpm.hasPendingReserveAuth(peer.peerId)) {

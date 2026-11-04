@@ -572,13 +572,13 @@ export class BuyerPaymentManager {
   /** Commit a SpendingAuth to a live channel, unless a higher one was committed while it was signed. */
   private async _commitLive(channel: StoredChannel, metadata: SpendingAuthMetadata): Promise<CommitOutcome> {
     if (!this._isLive(channel)) return 'retired';
-    if (BigInt(channel.authMax) < this._highestSigned(channel)) return 'superseded';
+    if (BigInt(channel.authMax) < this.getHighestSignedAmount(channel)) return 'superseded';
     await this._commitAuthorization(channel, metadata);
     return this._isLive(channel) ? 'committed' : 'retired';
   }
 
   /** The highest cumulative signed on a live channel: in memory, or committed to the store. */
-  private _highestSigned(channel: StoredChannel): bigint {
+  getHighestSignedAmount(channel: StoredChannel): bigint {
     const committed = BigInt(this._channelStore.getChannel(channel.sessionId)?.authMax ?? '0');
     const inMemory = (channel.channelKind === CHANNEL_KIND.ONE_OFF
       ? this._oneOffChannels.get(channel.sessionId)?.cumulative

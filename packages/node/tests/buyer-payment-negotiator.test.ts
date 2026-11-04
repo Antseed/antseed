@@ -24,7 +24,7 @@ function createMockIdentity(): Identity {
 }
 
 function createMockBpm(): BuyerPaymentManager & Record<string, unknown> {
-  return {
+  const bpm = {
     signPerRequestAuth: vi.fn().mockResolvedValue({
       payload: {
         channelId: '0x' + 'cc'.repeat(32),
@@ -63,6 +63,13 @@ function createMockBpm(): BuyerPaymentManager & Record<string, unknown> {
     maxVideoRequestUsdc: 5_000_000n,
     maxReserveAmountUsdc: 10_000_000n,
   } as unknown as BuyerPaymentManager & Record<string, unknown>;
+  // Like the manager: the higher of the in-memory and the stored cumulative.
+  bpm.getHighestSignedAmount = vi.fn((channel: StoredChannel) => {
+    const inMemory = bpm.getCumulativeAmount(channel.peerId);
+    const committed = BigInt(bpm.getActiveSession(channel.peerId)?.authMax ?? '0');
+    return committed > inMemory ? committed : inMemory;
+  });
+  return bpm;
 }
 
 function createMockDepositsClient(balance = 1_000_000n, reserved = 0n): DepositsClient {

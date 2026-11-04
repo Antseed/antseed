@@ -314,59 +314,56 @@ describe('a payment write that awaited while the seller channel moved on', () =>
   describe('in BuyerPaymentManager', () => {
     beforeEach(() => setup());
 
-    it('per-request SpendingAuth (signPerRequestAuth) held at the signer', async () => {
+    it.each<{ name: string; start: (oldChannelId: string) => Promise<unknown>; outcome: string }>([
+      {
+        name: 'per-request SpendingAuth (signPerRequestAuth)',
+        start: () => manager.signPerRequestAuth(SELLER, { ...PROBE, requestId: 'old-response' }),
+        outcome: 'buyer-session-state',
+      },
+      {
+        name: 'NeedAuth (handleNeedAuth)',
+        start: (oldChannelId: string) => manager.handleNeedAuth(SELLER, needAuth(oldChannelId, 10_000n), mux),
+        outcome: 'completed',
+      },
+      {
+        name: 'catch-up SpendingAuth (extendCurrentSpendingAuth)',
+        start: () => manager.extendCurrentSpendingAuth(SELLER, 10_000n, mux, OLD_SPENT + 10_000n, 'req-402'),
+        outcome: 'buyer-session-state',
+      },
+      {
+        name: 'resent SpendingAuth (resendCurrentSpendingAuth)',
+        start: () => manager.resendCurrentSpendingAuth(SELLER, mux),
+        outcome: 'buyer-session-state',
+      },
+      {
+        name: 'reserve top-up (topUpReserve)',
+        start: () => manager.topUpReserve(SELLER, mux),
+        outcome: 'completed',
+      },
+      {
+        name: 'reserve replay (resendReserveAuth)',
+        start: () => manager.resendReserveAuth(SELLER, mux),
+        outcome: 'buyer-session-state',
+      },
+      {
+        name: 'close authorization (buildCloseChannelRequest)',
+        start: () => manager.buildCloseChannelRequest(SELLER),
+        outcome: 'buyer-session-state',
+      },
+      {
+        name: 'close authorization capped at the deposit (buildCloseChannelRequest)',
+        start: () => manager.buildCloseChannelRequest(SELLER, { maxCumulative: OLD_SPENT - 1n }),
+        outcome: 'buyer-session-state',
+      },
+    ])('$name held at the signer', async ({ start, outcome }) => {
       const oldChannelId = await oldChannel();
       const held = heldSignature();
-      const write = manager.signPerRequestAuth(SELLER, { ...PROBE, requestId: 'old-response' });
+      const write = start(oldChannelId);
 
       const race = await replaceWhileHeld(held, write, oldChannelId);
 
       expect(await newChannelAfter(race)).toEqual(untouched());
-      expect(race.outcome).toBe('buyer-session-state');
-    });
-
-    it('NeedAuth (handleNeedAuth) held at the signer', async () => {
-      const oldChannelId = await oldChannel();
-      const held = heldSignature();
-      const write = manager.handleNeedAuth(SELLER, needAuth(oldChannelId, 10_000n), mux);
-
-      const race = await replaceWhileHeld(held, write, oldChannelId);
-
-      expect(await newChannelAfter(race)).toEqual(untouched());
-      expect(race.outcome).toBe('completed');
-    });
-
-    it('catch-up SpendingAuth (extendCurrentSpendingAuth) held at the signer', async () => {
-      const oldChannelId = await oldChannel();
-      const held = heldSignature();
-      const write = manager.extendCurrentSpendingAuth(SELLER, 10_000n, mux, OLD_SPENT + 10_000n, 'req-402');
-
-      const race = await replaceWhileHeld(held, write, oldChannelId);
-
-      expect(await newChannelAfter(race)).toEqual(untouched());
-      expect(race.outcome).toBe('buyer-session-state');
-    });
-
-    it('resent SpendingAuth (resendCurrentSpendingAuth) held at the signer', async () => {
-      const oldChannelId = await oldChannel();
-      const held = heldSignature();
-      const write = manager.resendCurrentSpendingAuth(SELLER, mux);
-
-      const race = await replaceWhileHeld(held, write, oldChannelId);
-
-      expect(await newChannelAfter(race)).toEqual(untouched());
-      expect(race.outcome).toBe('buyer-session-state');
-    });
-
-    it('reserve top-up (topUpReserve) held at the signer', async () => {
-      const oldChannelId = await oldChannel();
-      const held = heldSignature();
-      const write = manager.topUpReserve(SELLER, mux);
-
-      const race = await replaceWhileHeld(held, write, oldChannelId);
-
-      expect(await newChannelAfter(race)).toEqual(untouched());
-      expect(race.outcome).toBe('completed');
+      expect(race.outcome).toBe(outcome);
     });
 
     it('reserve top-up (topUpReserve) held at the deposit balance read', async () => {
@@ -385,17 +382,6 @@ describe('a payment write that awaited while the seller channel moved on', () =>
       expect(race.outcome).toBe('completed');
     });
 
-    it('reserve replay (resendReserveAuth) held at the signer', async () => {
-      const oldChannelId = await oldChannel();
-      const held = heldSignature();
-      const write = manager.resendReserveAuth(SELLER, mux);
-
-      const race = await replaceWhileHeld(held, write, oldChannelId);
-
-      expect(await newChannelAfter(race)).toEqual(untouched());
-      expect(race.outcome).toBe('buyer-session-state');
-    });
-
     it('pending reserve replay (resendPendingReserveAuth) held at the signer', async () => {
       const oldChannelId = await oldChannel();
       await manager.topUpReserve(SELLER, mux);
@@ -403,28 +389,6 @@ describe('a payment write that awaited while the seller channel moved on', () =>
       vi.spyOn(Date, 'now').mockReturnValue(later);
       const held = heldSignature();
       const write = manager.resendPendingReserveAuth(SELLER, mux);
-
-      const race = await replaceWhileHeld(held, write, oldChannelId);
-
-      expect(await newChannelAfter(race)).toEqual(untouched());
-      expect(race.outcome).toBe('buyer-session-state');
-    });
-
-    it('close authorization (buildCloseChannelRequest) held at the signer', async () => {
-      const oldChannelId = await oldChannel();
-      const held = heldSignature();
-      const write = manager.buildCloseChannelRequest(SELLER);
-
-      const race = await replaceWhileHeld(held, write, oldChannelId);
-
-      expect(await newChannelAfter(race)).toEqual(untouched());
-      expect(race.outcome).toBe('buyer-session-state');
-    });
-
-    it('close authorization capped at the deposit, held at the signer', async () => {
-      const oldChannelId = await oldChannel();
-      const held = heldSignature();
-      const write = manager.buildCloseChannelRequest(SELLER, { maxCumulative: OLD_SPENT - 1n });
 
       const race = await replaceWhileHeld(held, write, oldChannelId);
 
