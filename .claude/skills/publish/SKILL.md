@@ -117,7 +117,8 @@ packages/*   @antseed/node, @antseed/protocol, @antseed/buyer-core,
              @antseed/provider-core, @antseed/router-core, @antseed/web-sdk
 plugins/*    provider-anthropic, provider-claude-code, provider-claude-oauth,
              provider-openai, provider-openai-responses, provider-local-llm,
-             router-local
+             provider-typesafe, provider-venice-video, provider-fal-video,
+             provider-alibaba-video, router-local
 apps/*       @antseed/cli, @antseed/network-stats, @antseed/payments
              @antseed/ants, @antseed/relay, @antseed/gateway-console
 ```
