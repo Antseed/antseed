@@ -234,6 +234,7 @@ export {
   computeCostUsdc,
   estimateCostFromBytes,
   estimateTokensFromBytes,
+  estimateTokensFromBytesSampled,
   isFreeUnitBillingModel,
   validateUnitBillingModelV1,
 } from './pricing.js';
