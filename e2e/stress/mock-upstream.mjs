@@ -32,7 +32,7 @@ export function startMockUpstream(opts = {}) {
   const stats = {
     requests: 0, completed: 0, faults500: 0, disconnects: 0, clientGone: 0,
     expectedCostBaseUnits: 0n, // sum over fully delivered responses (with usage)
-    perRequest: new Map(), // tag -> {status, cost, ...}: what was delivered, by request
+    perRequest: new Map(), // tag -> {status, started, cost, ...}: what was delivered, by request
     active: 0, maxActive: 0,
   };
   const server = http.createServer((req, res) => {
@@ -61,7 +61,7 @@ export function startMockUpstream(opts = {}) {
       stats.imageRequests = (stats.imageRequests ?? 0) + 1;
       stats.images = (stats.images ?? 0) + n;
       const cost = imgCost + BigInt(Math.round(promptTokens * o.inPrice));
-      stats.perRequest.set(tag, { status: 'ok', image: true, n, prompt: promptTokens, cost: cost.toString() });
+      stats.perRequest.set(tag, { status: 'ok', started: true, image: true, n, prompt: promptTokens, cost: cost.toString() });
       stats.expectedImageUnitCost = (stats.expectedImageUnitCost ?? 0n) + imgCost;
       stats.expectedCostBaseUnits += cost;
       res.writeHead(200, { 'content-type': 'application/json' });
@@ -96,7 +96,8 @@ export function startMockUpstream(opts = {}) {
       const latency = isProbe ? 5 : rand(o.minLatencyMs, o.maxLatencyMs);
       const stream = parsed.stream === true;
       const cost = BigInt(Math.max(0, Math.round(promptTokens * o.inPrice + completionTokens * o.outPrice)));
-      const rec = { status: 'pending', cost: cost.toString(), prompt: promptTokens, completion: completionTokens, stream };
+      // started: whether any of the response reached the wire.
+      const rec = { status: 'pending', started: false, cost: cost.toString(), prompt: promptTokens, completion: completionTokens, stream };
       stats.perRequest.set(tag, rec);
 
       if (!isProbe && Math.random() < o.fault500Rate) {
@@ -118,6 +119,7 @@ export function startMockUpstream(opts = {}) {
         await sleep(latency);
         if (gone) { stats.clientGone++; rec.status = 'client-gone'; return; }
         if (disconnect) { stats.disconnects++; rec.status = 'disconnect'; res.socket?.destroy(); return; }
+        rec.started = true;
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({
           id, object: 'chat.completion', created, model,
@@ -132,6 +134,7 @@ export function startMockUpstream(opts = {}) {
       // Streaming: first byte after ~20% of latency, then chunks over the rest.
       await sleep(latency * 0.2);
       if (gone) { stats.clientGone++; rec.status = 'client-gone'; return; }
+      rec.started = true;
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
       const nChunks = Math.max(2, Math.min(40, Math.ceil(text.length / 400)));
       const step = Math.ceil(text.length / nChunks);

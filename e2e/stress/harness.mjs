@@ -17,7 +17,7 @@ import { freshChain, chainSnapshot, readChannel, ADDR, KEYS, C } from './chain.m
 import { startMockUpstream } from './mock-upstream.mjs';
 import { startRpcProxy } from './rpc-proxy.mjs';
 import { SCENARIOS } from './scenarios.mjs';
-import { analyzePayments } from './analysis.mjs';
+import { analyzePayments, analyzeRecordedCosts } from './analysis.mjs';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 const REPO = resolve(HERE, '../..');
@@ -685,21 +685,15 @@ async function oneRun({ scenarioName, sc, sellerTree, buyerTree, runDir }) {
   result.sellerLog = scanLog(join(runDir, 'seller.log'), SELLER_PATTERNS);
   // Seller's own per-request delivered costs ("Cost recorded: ... cost=N").
   try {
-    let costSum = 0n; let costN = 0; let unitSum = 0n;
+    let costSum = 0n; let costN = 0;
     for (const line of readFileSync(join(runDir, 'seller.log'), 'utf8').split('\n')) {
       const m = line.match(/Cost recorded: .*?cost=(\d+)/);
       if (m) { costSum += BigInt(m[1]); costN++; }
-      const u = line.match(/unit(?:Cost| cost)=(\d+)/i);
-      if (u) unitSum += BigInt(u[1]);
     }
     if (result.money) {
-      result.money.sellerCostRecordedSum = costSum.toString();
-      result.money.sellerCostRecordedCount = costN;
-      const settled = BigInt(result.money.onchainSettled);
-      result.money.deliveredUnpaid = (costSum > settled ? costSum - settled : 0n).toString();
-      result.money.paidBeyondDelivered = (settled > costSum ? settled - costSum : 0n).toString();
-      if (settled > costSum) result.violations.push({ kind: 'buyer-paid-more-than-seller-recorded-delivered(double-pay?)', settled: settled.toString(), recorded: costSum.toString() });
-      if (costSum > settled) result.violations.push({ kind: 'delivered-but-unpaid(cost-recorded>settled)', recorded: costSum.toString(), settled: settled.toString(), gap: (costSum - settled).toString() });
+      const recorded = analyzeRecordedCosts({ recordedCost: costSum, recordedCount: costN, settled: BigInt(result.money.onchainSettled) });
+      Object.assign(result.money, recorded.money);
+      result.violations.push(...recorded.violations);
     }
   } catch {}
   result.buyerLog = scanLog(join(runDir, 'buyer.log'), BUYER_PATTERNS);

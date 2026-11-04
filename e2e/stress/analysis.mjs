@@ -76,11 +76,11 @@ export function analyzePayments({ sellerRowsPre, sellerRowsPost, buyerRowsPost, 
   if (undelivered.length) violations.push({ kind: 'client-ok-without-upstream-delivery', n: undelivered.length, tags: undelivered.slice(0, 5) });
   if (sumSettled < receivedCost) violations.push({ kind: 'client-received-work-unpaid', received: receivedCost.toString(), settled: sumSettled.toString(), gap: (receivedCost - sumSettled).toString() });
   // And the most it could owe, also from the upstream: the full cost of every
-  // request the upstream answered or started streaming (a cut or abandoned
-  // stream delivered at most that), nothing for an upstream error.
+  // response that reached the wire (a stream cut midway delivered at most
+  // that), nothing for an error or a request dropped before any byte.
   let deliveredAtMost = 0n;
   for (const delivered of mockStats.perRequest.values()) {
-    if (delivered.status !== '500') deliveredAtMost += BigInt(delivered.cost);
+    if (delivered.started) deliveredAtMost += BigInt(delivered.cost);
   }
   money.upstreamDeliveredAtMost = deliveredAtMost.toString();
   if (sumSettled > deliveredAtMost) violations.push({ kind: 'settled-above-upstream-delivery', settled: sumSettled.toString(), deliveredAtMost: deliveredAtMost.toString(), gap: (sumSettled - deliveredAtMost).toString() });
@@ -88,4 +88,18 @@ export function analyzePayments({ sellerRowsPre, sellerRowsPost, buyerRowsPost, 
 
   const asStrings = (snapshot) => Object.fromEntries(Object.entries(snapshot).map(([k, v]) => [k, v.toString()]));
   return { money, channels, chain0: asStrings(chain0), chain1: asStrings(chain1), violations, notes };
+}
+
+/** Settlement against the seller's own per-request "Cost recorded" log lines. */
+export function analyzeRecordedCosts({ recordedCost, recordedCount, settled }) {
+  const violations = [];
+  const money = {
+    sellerCostRecordedSum: recordedCost.toString(),
+    sellerCostRecordedCount: recordedCount,
+    deliveredUnpaid: (recordedCost > settled ? recordedCost - settled : 0n).toString(),
+    paidBeyondDelivered: (settled > recordedCost ? settled - recordedCost : 0n).toString(),
+  };
+  if (settled > recordedCost) violations.push({ kind: 'buyer-paid-more-than-seller-recorded-delivered(double-pay?)', settled: settled.toString(), recorded: recordedCost.toString() });
+  if (recordedCost > settled) violations.push({ kind: 'delivered-but-unpaid(cost-recorded>settled)', recorded: recordedCost.toString(), settled: settled.toString(), gap: (recordedCost - settled).toString() });
+  return { money, violations };
 }
