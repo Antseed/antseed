@@ -4,7 +4,9 @@
 // directory and loaded into a fresh anvil for every run.
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { Wallet } from 'ethers';
 import { getChainConfig } from '../../packages/node/dist/payments/chain-config.js';
+import { makeDepositsDomain, signSetOperator } from '../../packages/node/dist/payments/index.js';
 
 export const KEYS = {
   deployer: '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80',
@@ -66,7 +68,7 @@ async function rpcCall(rpc, method, params) {
   return j.result;
 }
 
-function deployAndSetup(rpc, contractsDir) {
+async function deployAndSetup(rpc, contractsDir) {
   // The deploy needs none of the contract tests, which are most of the compile.
   run('forge', ['script', 'script/Deploy.s.sol', '--skip', 'test', '--rpc-url', rpc, '--broadcast'], { cwd: contractsDir });
   const code = cast(rpc, ['code', C.channels]);
@@ -81,12 +83,7 @@ function deployAndSetup(rpc, contractsDir) {
   send(rpc, KEYS.seller, C.usdc, 'approve(address,uint256)', C.staking, '50000000');
   send(rpc, KEYS.seller, C.staking, 'stake(uint256,uint256)', '1', '50000000');
   // Buyer: operator = self via EIP-712 SetOperator
-  const domainSep = call(rpc, C.deposits, 'domainSeparator()(bytes32)');
-  const typeHash = run('cast', ['keccak', 'SetOperator(address operator,uint256 nonce)']);
-  const enc = run('cast', ['abi-encode', 'f(bytes32,address,uint256)', typeHash, ADDR.buyer, '0']);
-  const structHash = run('cast', ['keccak', enc]);
-  const digest = run('cast', ['keccak', run('cast', ['concat-hex', '0x1901', domainSep, structHash])]);
-  const sig = run('cast', ['wallet', 'sign', '--no-hash', '--private-key', KEYS.buyer, digest]);
+  const sig = await signSetOperator(new Wallet(KEYS.buyer), makeDepositsDomain(31337, C.deposits), { operator: ADDR.buyer, nonce: 0n });
   send(rpc, KEYS.buyer, C.deposits, 'setOperator(address,address,uint256,bytes)', ADDR.buyer, ADDR.buyer, '0', sig);
   // Raise the buyer's credit limit (owner-only) so long stress runs fit, then deposit.
   send(rpc, KEYS.deployer, C.deposits, 'setCreditLimitOverride(address,uint256)', ADDR.buyer, '1000000000');
@@ -114,7 +111,7 @@ export async function prepareChainState({ port, contractsDir, stateFile }) {
       if (existsSync(stateFile)) return;
       const { child, rpc } = await startAnvil(port, 0);
       try {
-        deployAndSetup(rpc, contractsDir);
+        await deployAndSetup(rpc, contractsDir);
         // Written whole, then renamed: a waiting run never reads half a dump.
         writeFileSync(`${stateFile}.tmp`, await rpcCall(rpc, 'anvil_dumpState', []));
         renameSync(`${stateFile}.tmp`, stateFile);

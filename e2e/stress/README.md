@@ -18,10 +18,10 @@ By default (`--rpc base`), each peer reaches the chain through its own proxy tha
 
 ## Checks
 
-After the load, the harness closes every channel and compares the seller's and buyer's stores, the chain, and what the mock upstream actually delivered. A run fails on any of these:
+After the load, the harness closes every channel and compares the seller's and buyer's stores, the chain, and what the mock upstream actually delivered (`analysis.mjs`, unit-tested in `e2e/tests/stress-analysis.test.ts`). A run fails on any of these:
 
 - delivered work that was not settled, or a buyer paying for more than was delivered;
-- in every scenario, faults and restarts included: a response the client received in full that the mock upstream did not deliver, or that settled for less than it cost;
+- in every scenario, faults and restarts included, judged by the mock upstream rather than the seller's books: a response the client received in full that it did not deliver, settlement below the cost of what the client received, or settlement above the most it delivered (the full cost of every request it answered or started streaming; nothing for an upstream error);
 - a buyer deposit change that differs from the sum settled, or seller plus fee income that differs from it;
 - reserve left locked, or a channel left open after the close;
 - a peer crashing, exiting unexpectedly, or needing SIGKILL to stop (mid-run restarts included);
