@@ -17,31 +17,29 @@ const IFACE = new Interface([
 const coder = AbiCoder.defaultAbiCoder();
 const hash = serviceHash;
 
-/** verdict + epoch per (agentId, service hash); missing entries are NONE. */
+/** verdict + epoch given per (agentId, service hash), counting two epochs as KBF does; missing entries are NONE. */
 type Statuses = Record<string, { verdict: number; epoch: number } | 'revert'>;
 
-function fakeProvider(statuses: Statuses, options: { currentEpoch?: number; multicall?: boolean; failValidity?: boolean } = {}) {
+function fakeProvider(statuses: Statuses, options: { currentEpoch?: number; multicall?: boolean; failEpoch?: boolean } = {}) {
   const answer = (target: string, data: string): string => {
     const parsed = IFACE.parseTransaction({ data })!;
     switch (parsed.name) {
       case 'results':
         expect(target.toLowerCase()).toBe(VERIFICATION);
         return coder.encode(['address'], [RESULTS]);
-      case 'validityEpochs':
-        expect(target.toLowerCase()).toBe(RESULTS);
-        if (options.failValidity) throw new Error('revert');
-        return coder.encode(['uint8'], [2]);
       case 'emissionsGate': return coder.encode(['address'], [GATE]);
       case 'currentEpoch':
         expect(target.toLowerCase()).toBe(GATE);
+        if (options.failEpoch) throw new Error('revert');
         return coder.encode(['uint256'], [options.currentEpoch ?? 28]);
       case 'serviceStatus': {
         const [agentId, serviceHash] = parsed.args as unknown as [bigint, string];
         const status = statuses[`${agentId}:${serviceHash}`];
         if (status === 'revert') throw new Error('revert');
         expect(target.toLowerCase()).toBe(RESULTS);
-        return coder.encode(['tuple(bytes32,uint8,uint64,uint64,address)'], [[
-          '0x' + '00'.repeat(32), status?.verdict ?? 0, 0, status?.epoch ?? 0, VERIFICATION,
+        const epoch = status?.epoch ?? 0;
+        return coder.encode(['tuple(bytes32,uint8,uint64,uint64,address,uint64)'], [[
+          '0x' + '00'.repeat(32), status?.verdict ?? 0, 0, epoch, VERIFICATION, status ? epoch + 2 : 0,
         ]]);
       }
       default: throw new Error(`unexpected ${parsed.name}`);
@@ -134,10 +132,17 @@ describe('VerificationSignalsClient', () => {
     expect(result.get(8)).toEqual(['b']);
   });
 
-  it('throws when the validity window cannot be read', async () => {
-    const { provider } = fakeProvider({}, { failValidity: true });
+  it('uses the expiry each verdict carries', async () => {
+    const { provider } = fakeProvider({ [`7:${hash('a')}`]: { verdict: 2, epoch: 26 } }, { currentEpoch: 27 });
+    // Given in 26 and counting until 28 (exclusive), so still live in 27.
+    expect((await new VerificationSignalsClient(provider, VERIFICATION)
+      .readDiffServices([{ agentId: 7, services: ['a'] }])).get(7)).toEqual(['a']);
+  });
+
+  it('throws when the current epoch cannot be read', async () => {
+    const { provider } = fakeProvider({}, { failEpoch: true });
     await expect(new VerificationSignalsClient(provider, VERIFICATION)
-      .readDiffServices([{ agentId: 7, services: ['a'] }])).rejects.toThrow(/validityEpochs/);
+      .readDiffServices([{ agentId: 7, services: ['a'] }])).rejects.toThrow(/currentEpoch/);
   });
 
   it('works without Multicall3', async () => {

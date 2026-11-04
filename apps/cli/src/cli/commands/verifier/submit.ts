@@ -192,22 +192,29 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
       const submittedEvidence = await submittedEvidenceHashes(verifierClient, address, auditorSetEvents)
       const credited = await verifierClient.auditCredits(address, window.epoch)
       let auditorCreditsLeft = limits.perAuditor > credited.auditor ? limits.perAuditor - credited.auditor : 0n
-      const modelCreditsLeft = new Map<string, bigint>()
+      // Credited audits left per model (KBF's per-model cap counts audits), and what one audit earns.
+      const modelAuditsLeft = new Map<string, bigint>()
+      const creditsPerAudit = new Map<string, bigint>()
       const pending: PendingModelAudit[] = []
       for (const audit of audits) {
         const previous = ledger.models[audit.key] ?? null
         const alreadySubmitted = submittedEvidence.has(normalized(audit.evidenceHash))
         let expectsCredit = false
         if (!alreadySubmitted) {
-          if (!modelCreditsLeft.has(audit.modelHash)) {
-            const used = await verifierClient.modelCredits(window.epoch, address, audit.modelHash)
-            modelCreditsLeft.set(audit.modelHash, limits.perModel > used ? limits.perModel - used : 0n)
+          if (!modelAuditsLeft.has(audit.modelHash)) {
+            const [used, perAudit] = await Promise.all([
+              verifierClient.creditedAudits(window.epoch, address, audit.modelHash),
+              verifierClient.creditsFor(audit.modelHash),
+            ])
+            modelAuditsLeft.set(audit.modelHash, limits.perModel > used ? limits.perModel - used : 0n)
+            creditsPerAudit.set(audit.modelHash, perAudit)
           }
-          const modelLeft = modelCreditsLeft.get(audit.modelHash)!
+          const modelLeft = modelAuditsLeft.get(audit.modelHash)!
           expectsCredit = modelLeft > 0n && auditorCreditsLeft > 0n
           if (expectsCredit) {
-            modelCreditsLeft.set(audit.modelHash, modelLeft - 1n)
-            auditorCreditsLeft -= 1n
+            modelAuditsLeft.set(audit.modelHash, modelLeft - 1n)
+            const earns = creditsPerAudit.get(audit.modelHash)!
+            auditorCreditsLeft = auditorCreditsLeft > earns ? auditorCreditsLeft - earns : 0n
           }
         }
         pending.push({ audit, previous, alreadySubmitted, expectsCredit })
@@ -226,7 +233,7 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
         ))
       }
       console.log(chalk.dim(
-        `Epoch ${window.epoch}: ${credited.auditor} credit(s) earned so far; limits ${limits.perModel} per model, ${limits.perAuditor} per auditor. `
+        `Epoch ${window.epoch}: ${credited.auditor} credit(s) earned so far; limits ${limits.perModel} credited audit(s) per model, ${limits.perAuditor} credits per auditor. `
         + 'Credits also require at least one audited seller with staked pool power.',
       ))
       const toSubmit = pending.filter((entry) => !entry.alreadySubmitted)
