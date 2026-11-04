@@ -1,17 +1,17 @@
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { readSellerWorkers, COLONY_POOL_LEDGER_FILE } from './workers.js'
+import { readSellerWorkers, COLONY_POOL_LEDGER_FILE, COLONY_POOL_LEDGER_POINTER_FILE } from './workers.js'
 
 const NOW = 1_800_000_000_000
 const HOUR = 3_600_000
 
 /** The colony-pool provider's ledger tables (plugins/provider-colony-pool/src/ledger.ts), with a few rows. */
-function writeLedger(dataDir: string): void {
-  const db = new Database(join(dataDir, COLONY_POOL_LEDGER_FILE))
+function writeLedger(dataDir: string, file = join(dataDir, COLONY_POOL_LEDGER_FILE)): void {
+  const db = new Database(file)
   db.exec(`
     CREATE TABLE earnings (request_id TEXT PRIMARY KEY, worker TEXT NOT NULL, service TEXT, gross_usdc INTEGER NOT NULL, worker_usdc INTEGER NOT NULL,
       input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL, stream_ms INTEGER, created_at INTEGER NOT NULL);
@@ -30,6 +30,17 @@ function writeLedger(dataDir: string): void {
 describe('readSellerWorkers', () => {
   it('is unavailable for a seller without a colony pool', () => {
     assert.deepEqual(readSellerWorkers(mkdtempSync(join(tmpdir(), 'workers-')), NOW), { available: false })
+  })
+
+  it('reads a ledger COLONY_POOL_LEDGER_PATH moved, not an old default one', () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'workers-'))
+    const moved = join(mkdtempSync(join(tmpdir(), 'ledger-')), 'pool.db')
+    writeLedger(dataDir, moved)
+    new Database(join(dataDir, COLONY_POOL_LEDGER_FILE)).close() // stale, empty default
+    writeFileSync(join(dataDir, COLONY_POOL_LEDGER_POINTER_FILE), `${moved}\n`)
+    const result = readSellerWorkers(dataDir, NOW)
+    assert.equal(result.available, true)
+    assert.equal(result.available && result.workers.length, 2)
   })
 
   it('summarizes each worker from the pool ledger, online ones first', () => {

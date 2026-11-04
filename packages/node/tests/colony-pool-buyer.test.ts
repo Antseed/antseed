@@ -80,7 +80,7 @@ function deviceAttestation(kind: Device, worker: string, attestationKey: string)
   };
 }
 
-function fakePool(opts: { workers?: number; certSeller?: string; unavailableOnce?: boolean; tamper?: 'ciphertext' | 'usage'; attest?: Attest; requireAttested?: boolean; device?: Device; requireApple?: boolean } = {}) {
+function fakePool(opts: { workers?: number; certSeller?: string; unavailableOnce?: boolean; tamper?: 'ciphertext' | 'usage'; attest?: Attest; requireAttested?: boolean; device?: Device; requireApple?: boolean; streamTamper?: 'no-end' | 'usage' | 'not-sse' | 'padding'; maxStreamBufferBytes?: number } = {}) {
   const workers = Array.from({ length: opts.workers ?? 1 }, () => ({ wallet: Wallet.createRandom(), key: generateWorkerEncryptionKey() }));
   let next = 0;
   let unavailable = opts.unavailableOnce === true;
@@ -119,9 +119,16 @@ function fakePool(opts: { workers?: number; certSeller?: string; unavailableOnce
       const inner = JSON.parse(dec(opened.body)) as { stream?: boolean };
       const usage = { prompt_tokens: 10, completion_tokens: 5 };
       if (inner.stream) {
-        onResponse({ requestId: req.requestId, statusCode: 200, headers: { 'content-type': 'text/event-stream', [ANTSEED_STREAMING_RESPONSE_HEADER]: '1' }, body: new Uint8Array() }, { streamingStart: true });
+        const contentType = opts.streamTamper === 'not-sse' ? 'application/json' : 'text/event-stream';
+        onResponse({ requestId: req.requestId, statusCode: 200, headers: { 'content-type': contentType, [ANTSEED_STREAMING_RESPONSE_HEADER]: '1' }, body: new Uint8Array() }, { streamingStart: true });
         const upstream = `data: ${JSON.stringify({ choices: [{ delta: { content: ANSWER } }] })}\n\ndata: ${JSON.stringify({ choices: [], usage })}\n\ndata: [DONE]\n\n`;
-        const sealed = Buffer.concat([opened.sealer.pushStream(enc(upstream).subarray(0, 0)), opened.sealer.pushStream(new TextEncoder().encode(upstream)), opened.sealer.finishStream()]);
+        const parts = [opened.sealer.pushStream(enc(upstream).subarray(0, 0)), opened.sealer.pushStream(new TextEncoder().encode(upstream))];
+        // The pool bills more than the worker's sealed usage in a clear line of its own.
+        if (opts.streamTamper === 'usage') parts.push(new TextEncoder().encode(`data: ${JSON.stringify({ choices: [], usage: { ...usage, completion_tokens: 50 } })}\n\n`));
+        // Events the opener ignores: wire bytes without any plaintext.
+        if (opts.streamTamper === 'padding') parts.push(new TextEncoder().encode(`data: ${JSON.stringify({ pad: 'x'.repeat(200) })}\n\n`.repeat(50)));
+        if (opts.streamTamper !== 'no-end') parts.push(opened.sealer.finishStream());
+        const sealed = Buffer.concat(parts);
         void onChunk({ requestId: req.requestId, data: sealed.subarray(0, 40), done: false });
         void onChunk({ requestId: req.requestId, data: sealed.subarray(40), done: false });
         void onChunk({ requestId: req.requestId, data: new Uint8Array(), done: true });
@@ -145,7 +152,7 @@ function fakePool(opts: { workers?: number; certSeller?: string; unavailableOnce
     activeRequestCount: () => 0,
   };
   const buyer = Wallet.createRandom();
-  const handler = new BuyerRequestHandler({}, {
+  const handler = new BuyerRequestHandler(opts.maxStreamBufferBytes ? { maxStreamBufferBytes: opts.maxStreamBufferBytes } : {}, {
     localPeerId: buyer.address.slice(2).toLowerCase() as PeerInfo['peerId'],
     negotiator: null,
     verificationStorage: null,
@@ -231,6 +238,27 @@ describe('buyer requests to colony pools', () => {
   it('fails a response whose billed usage differs from the worker\'s sealed usage', async () => {
     const pool = fakePool({ tamper: 'usage' });
     await expect(pool.handler.sendRequest(peer, chatRequest('t2'))).rejects.toThrow(/failed verification/);
+  });
+
+  it('fails a stream that ends without the worker\'s end marker', async () => {
+    const pool = fakePool({ streamTamper: 'no-end' });
+    await expect(pool.handler.sendRequest(peer, chatRequest('e1', true), { onResponseChunk: () => {} })).rejects.toThrow(/ended without its end marker/);
+  });
+
+  it('fails a stream whose billed usage differs from the worker\'s sealed usage', async () => {
+    const pool = fakePool({ streamTamper: 'usage' });
+    await expect(pool.handler.sendRequest(peer, chatRequest('e2', true), { onResponseChunk: () => {} })).rejects.toThrow(/differs from its worker/);
+  });
+
+  it('fails a successful worker stream that is not sealed SSE', async () => {
+    const pool = fakePool({ streamTamper: 'not-sse' });
+    await expect(pool.handler.sendRequest(peer, chatRequest('e3', true), { onResponseChunk: () => {} })).rejects.toThrow(/not sealed SSE/);
+  });
+
+  it('bounds the wire bytes of a sealed stream, not only its plaintext', async () => {
+    expect((await fakePool({ maxStreamBufferBytes: 4000 }).handler.sendRequest(peer, chatRequest('e4', true), { onResponseChunk: () => {} })).statusCode).toBe(200);
+    const pool = fakePool({ streamTamper: 'padding', maxStreamBufferBytes: 4000 });
+    await expect(pool.handler.sendRequest(peer, chatRequest('e5', true), { onResponseChunk: () => {} })).rejects.toThrow(/exceeded max buffered size/);
   });
 
   it('leaves sellers without the capability untouched', async () => {

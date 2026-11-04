@@ -120,16 +120,33 @@ enum WorkerE2E {
 }
 
 /// Encrypts a response for the buyer; the usage stays in the clear for metering.
+/// Each response gets its own key from a random salt, so a replayed request
+/// never seals two answers under the same key and nonce.
 final class ResponseSealer {
     private let key: SymmetricKey
+    private let salt: Data
     private var seq = 0
 
-    init(key: SymmetricKey) { self.key = key }
+    init(key base: SymmetricKey, salt: Data = Data((0..<16).map { _ in UInt8.random(in: .min ... .max) })) {
+        self.salt = salt
+        self.key = Self.responseKey(base: base, salt: salt)
+    }
+
+    static func responseKey(base: SymmetricKey, salt: Data) -> SymmetricKey {
+        HKDF<SHA256>.deriveKey(inputKeyMaterial: base, salt: salt, info: Data("\(WorkerE2E.info)|resp-key".utf8), outputByteCount: 32)
+    }
+
+    /// The first event of a stream carries the salt.
+    private func envelope(_ fields: [String: Any], seq: Int) -> [String: Any] {
+        var fields = fields
+        if seq == 0 { fields["salt"] = salt.base64EncodedString() }
+        return ["antseed_e2e": fields]
+    }
 
     /// A complete (non-streamed) body.
     func sealBody(_ body: Data, usage: [String: Any]?) throws -> Data {
         let ct = try WorkerE2E.seal(key, seq: 0, aad: WorkerE2E.responseAAD(0, end: true), body)
-        var envelope: [String: Any] = ["antseed_e2e": ["v": WorkerE2E.version, "ct": ct.base64EncodedString()]]
+        var envelope = envelope(["v": WorkerE2E.version, "ct": ct.base64EncodedString()], seq: 0)
         if let usage { envelope["usage"] = usage }
         return Data(try jsonString(envelope).utf8)
     }
@@ -139,7 +156,7 @@ final class ResponseSealer {
         let current = seq
         seq += 1
         let ct = try WorkerE2E.seal(key, seq: current, aad: WorkerE2E.responseAAD(current, end: false), Data(event.utf8))
-        var out = try "data: " + jsonString(["antseed_e2e": ["seq": current, "ct": ct.base64EncodedString()]]) + "\n\n"
+        var out = try "data: " + jsonString(envelope(["seq": current, "ct": ct.base64EncodedString()], seq: current)) + "\n\n"
         if let usage { out += try "data: " + jsonString(["choices": [Any](), "usage": usage]) + "\n\n" }
         return Data(out.utf8)
     }
@@ -149,7 +166,7 @@ final class ResponseSealer {
         let current = seq
         seq += 1
         let ct = try WorkerE2E.seal(key, seq: current, aad: WorkerE2E.responseAAD(current, end: true), Data())
-        return try Data(("data: " + jsonString(["antseed_e2e": ["seq": current, "end": true, "ct": ct.base64EncodedString()]]) + "\n\n").utf8)
+        return try Data(("data: " + jsonString(envelope(["seq": current, "end": true, "ct": ct.base64EncodedString()], seq: current)) + "\n\n").utf8)
     }
 }
 

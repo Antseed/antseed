@@ -4,6 +4,7 @@ import {
   generateWorkerEncryptionKey,
   isSealedRequest,
   openRequest,
+  ResponseOpener,
   sealRequest,
   verifyWorkerAttestation,
   verifyWorkerKeyCertificate,
@@ -129,6 +130,48 @@ describe('worker end-to-end encryption', async () => {
     const secondSealer = openRequest(second.body, worker.address, key).sealer;
     const reordered = dec(secondSealer.pushStream(new TextEncoder().encode('data: {"a":1}\n\ndata: {"b":2}\n\n'))).split('\n\n').filter(Boolean);
     expect(() => second.opener.pushStream(new TextEncoder().encode(`${reordered[1]}\n\n`))).toThrow(/out of order/);
+  });
+
+  it('seals each answer to a replayed request under its own salt and key', async () => {
+    const { worker, key } = setup();
+    const sealed = await sealRequest({ body: enc({ model: 'qwen' }), worker: worker.address, workerKey: key.publicKey });
+    // The pool replays the same ciphertext to the worker twice; the answers differ.
+    const first = openRequest(sealed.body, worker.address, key).sealer.sealBody(enc({ answer: 'first' }));
+    const second = openRequest(sealed.body, worker.address, key).sealer.sealBody(enc({ answer: 'second' }));
+    const envelope = (bytes: Uint8Array) => JSON.parse(dec(bytes)).antseed_e2e as { salt: string; ct: string };
+    expect(envelope(first).salt).not.toBe(envelope(second).salt);
+
+    // Same nonce (seq 0) and similar plaintext under one key would leak their XOR; under two keys it doesn't.
+    const ct1 = Buffer.from(envelope(first).ct, 'base64');
+    const ct2 = Buffer.from(envelope(second).ct, 'base64');
+    const xor = ct1.subarray(0, 12).map((byte, i) => byte ^ ct2[i]!);
+    const plainXor = Buffer.from('{"answer":"f').map((byte, i) => byte ^ Buffer.from('{"answer":"s')[i]!);
+    expect(Buffer.from(xor).equals(Buffer.from(plainXor))).toBe(false);
+
+    const base = (sealed.opener as unknown as { base: Buffer }).base;
+    expect(JSON.parse(dec(new ResponseOpener(base).openBody(first)))).toEqual({ answer: 'first' });
+    expect(JSON.parse(dec(new ResponseOpener(base).openBody(second)))).toEqual({ answer: 'second' });
+  });
+
+  it('rejects a response without its salt', async () => {
+    const { worker, key } = setup();
+    const sealed = await sealRequest({ body: enc({ model: 'qwen' }), worker: worker.address, workerKey: key.publicKey });
+    const response = JSON.parse(dec(openRequest(sealed.body, worker.address, key).sealer.sealBody(enc({ answer: 1 }))));
+    delete response.antseed_e2e.salt;
+    expect(() => sealed.opener.openBody(enc(response))).toThrow(/salt/);
+  });
+
+  it('keeps multi-byte characters intact when a chunk splits them at any byte', async () => {
+    const upstream = new TextEncoder().encode(`data: ${JSON.stringify({ choices: [{ delta: { content: 'שלום 🐜 naïve 日本' } }] })}\n\ndata: [DONE]\n\n`);
+    for (let cut = 1; cut < upstream.length; cut++) {
+      const { worker, key } = setup();
+      const sealed = await sealRequest({ body: enc({ model: 'qwen', stream: true }), worker: worker.address, workerKey: key.publicKey });
+      const { sealer } = openRequest(sealed.body, worker.address, key);
+      const wire = Buffer.concat([sealer.pushStream(upstream.subarray(0, cut)), sealer.pushStream(upstream.subarray(cut)), sealer.finishStream()]);
+      const plain = Buffer.concat([sealed.opener.pushStream(wire.subarray(0, cut)), sealed.opener.pushStream(wire.subarray(cut))]);
+      expect(plain.equals(Buffer.from(upstream))).toBe(true);
+      expect(sealed.opener.verified).toBe(true);
+    }
   });
 
   it('passes through bodies the pool itself returned', async () => {

@@ -38,6 +38,12 @@ final class InteropTests: XCTestCase {
         XCTAssertThrowsError(try WorkerE2E.openRequest(Data(body.utf8), workerAddress: worker, key: P256.KeyAgreement.PrivateKey()))
     }
 
+    func testResponseKeyFromSaltMatchesNode() {
+        // responseKey(base, salt) in @antseed/node/worker-e2e: HKDF-SHA256(base, salt, "antseed-worker-e2e/v2|resp-key").
+        let key = ResponseSealer.responseKey(base: SymmetricKey(data: Data(repeating: 0x11, count: 32)), salt: Data(repeating: 0x22, count: 16))
+        XCTAssertEqual(key.withUnsafeBytes { Data($0) }.hex, "2d11af63a7112054fe4acaeb5d08f935522baff5d227392ccf160ac7f08c0986")
+    }
+
     func testAttestationMessageAndSignatureMatchNode() throws {
         let keyHex = "0460fed4ba255a9d31c961eb74c6356d68c049b8923b61fa6ce669622e60f29fb67903fe1008b8bc99a41ae9e95628bc64f2f1b20c2d7e9f5177a3c294d4462299"
         let statement: [String: Any] = [

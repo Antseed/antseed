@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
 import type { SellerWorkers } from '../gateway/console-api/types.js'
@@ -7,6 +7,14 @@ const DAY_MS = 86_400_000
 const MICRO_USDC = 1_000_000
 /** Where the colony-pool provider keeps its ledger unless COLONY_POOL_LEDGER_PATH moves it. */
 export const COLONY_POOL_LEDGER_FILE = 'colony-pool.db'
+/** Written by the provider when COLONY_POOL_LEDGER_PATH moves the ledger: the ledger's path. */
+export const COLONY_POOL_LEDGER_POINTER_FILE = 'colony-pool.ledger-path'
+
+function ledgerPath(dataDir: string): string {
+  const pointer = join(dataDir, COLONY_POOL_LEDGER_POINTER_FILE)
+  const moved = existsSync(pointer) ? readFileSync(pointer, 'utf-8').trim() : ''
+  return moved || join(dataDir, COLONY_POOL_LEDGER_FILE)
+}
 
 /**
  * The Macs (and other workers) serving this seller's colony pool, from the
@@ -14,7 +22,7 @@ export const COLONY_POOL_LEDGER_FILE = 'colony-pool.db'
  * colony pool, so the dashboard shows nothing extra.
  */
 export function readSellerWorkers(dataDir: string, now = Date.now()): SellerWorkers {
-  const path = join(dataDir, COLONY_POOL_LEDGER_FILE)
+  const path = ledgerPath(dataDir)
   if (!existsSync(path)) return { available: false }
   const db = new Database(path, { readonly: true, fileMustExist: true })
   try {

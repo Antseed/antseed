@@ -101,7 +101,7 @@ import {
   type StoredChannel,
 } from "./payments/index.js";
 import { debugLog, debugWarn } from "./utils/debug.js";
-import { NodeWorkerE2EClient } from "./colony-pool/client.js";
+import { NodeWorkerE2EClient, type NodeWorkerE2EClientOptions } from "./colony-pool/client.js";
 import { parsePublicAddress } from "./discovery/public-address.js";
 import { MAX_PEER_CAPABILITIES } from "./discovery/metadata-validator.js";
 import { sanitizePeerDisplayName } from "./discovery/display-name.js";
@@ -1825,6 +1825,14 @@ export class AntseedNode extends EventEmitter {
     };
   }
 
+  /** Colony pool trust policy, the same for every buyer identity. */
+  private _workerPolicy(): NodeWorkerE2EClientOptions {
+    return {
+      requireAttestedWorkers: this._config.requireAttestedWorkers === true,
+      requireAppleVerifiedWorkers: this._config.requireAppleVerifiedWorkers === true,
+    };
+  }
+
   /**
    * Let this buyer node also pay as another wallet. The identity reuses the
    * node's discovery, routing and chain clients; sellers see it as its own
@@ -1867,6 +1875,7 @@ export class AntseedNode extends EventEmitter {
       },
       maxUploadBodyBytes: this._config.maxUploadBodyBytes,
       requireSecureTransport: this._config.requireSecureTransport,
+      workerPolicy: this._workerPolicy(),
       freeTierDelegationsHeader: () => this._freeTierDelegationsHeader(identity.wallet.address),
       shared: {
         channelStore: this._channelStore,
@@ -2364,10 +2373,7 @@ export class AntseedNode extends EventEmitter {
         getVerificationMux: (peerId, conn) => this._getOrCreateVerificationMux(peerId, conn as PeerConnection),
         registerPaymentMux: (peerId, pmux) => this._paymentMuxes.set(peerId, pmux),
         freeTierDelegationsHeader: () => this._freeTierDelegationsHeader(identity.wallet.address),
-        workerE2E: new NodeWorkerE2EClient(identity.wallet, {
-          requireAttestedWorkers: this._config.requireAttestedWorkers === true,
-          requireAppleVerifiedWorkers: this._config.requireAppleVerifiedWorkers === true,
-        }),
+        workerE2E: new NodeWorkerE2EClient(identity.wallet, this._workerPolicy()),
       },
     );
 

@@ -435,6 +435,15 @@ contract AntseedColonyPoolTest is Test {
         _assertAllToRemainder("", workerA);
     }
 
+    function test_parseWorkerTail_shortMetadataIsEmpty() public view {
+        uint256[3] memory lengths = [uint256(0), 1, 32];
+        for (uint256 i = 0; i < lengths.length; i++) {
+            (address[] memory ws, uint128[] memory as_) = pool.parseWorkerTail(new bytes(lengths[i]));
+            assertEq(ws.length, 0);
+            assertEq(as_.length, 0);
+        }
+    }
+
     function test_parseWorkerTail() public view {
         (address[] memory ws, uint128[] memory as_) = pool.parseWorkerTail(_meta(1, _e2(workerA, 5, workerB, 7)));
         assertEq(ws.length, 2);

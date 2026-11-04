@@ -1,9 +1,18 @@
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import type { AntseedProviderPlugin, Provider, ServiceApiProtocol } from '@antseed/node';
-import { parseServiceCapabilitiesJson, parseServicePricingJson } from '@antseed/provider-core';
+import { readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import type { AntseedProviderPlugin, Provider } from '@antseed/node';
+import {
+  buildServiceApiProtocols,
+  parseNonNegativeNumber as parseSharedNonNegativeNumber,
+  parseServiceCapabilitiesJson,
+  parseServicePricingJson,
+} from '@antseed/provider-core';
 import { WorkerLedger } from './ledger.js';
 import { NanoMdmAttestor } from './mdm.js';
+
+/** The ledger's default file in the data dir, and the file naming it when COLONY_POOL_LEDGER_PATH moves it. */
+const LEDGER_FILE = 'colony-pool.db';
+const LEDGER_POINTER_FILE = 'colony-pool.ledger-path';
 import { ColonyPool } from './pool.js';
 import { ColonyPoolProvider } from './provider.js';
 
@@ -13,12 +22,9 @@ export { ColonyPoolProvider } from './provider.js';
 export * from './protocol.js';
 export { NanoMdmAttestor, parsePlist, deviceInformationCommand, type DeviceAttestor, type NanoMdmAttestorOptions } from './mdm.js';
 
+/** provider-core's parser, with an empty setting meaning the default. */
 function parseNonNegativeNumber(raw: string | undefined, key: string, fallback: number): number {
-  const parsed = raw === undefined || raw === '' ? fallback : Number.parseFloat(raw);
-  if (!Number.isFinite(parsed) || parsed < 0) {
-    throw new Error(`${key} must be a non-negative number`);
-  }
-  return parsed;
+  return parseSharedNonNegativeNumber(raw === '' ? undefined : raw, key, fallback);
 }
 
 function parseList(raw: string | undefined): string[] {
@@ -103,7 +109,12 @@ const plugin: AntseedProviderPlugin = {
       throw new Error('COLONY_POOL_SELLER_ADDRESS must be the address buyers pay (the AntseedColonyPool contract)');
     }
 
-    const ledger = new WorkerLedger(config['COLONY_POOL_LEDGER_PATH'] || join(dataDir, 'colony-pool.db'));
+    const ledgerPath = resolve(config['COLONY_POOL_LEDGER_PATH'] || join(dataDir, LEDGER_FILE));
+    const ledger = new WorkerLedger(ledgerPath);
+    // The seller dashboard finds a moved ledger through this pointer (apps/cli seller-monitor).
+    const pointer = join(dataDir, LEDGER_POINTER_FILE);
+    if (ledgerPath === resolve(join(dataDir, LEDGER_FILE))) rmSync(pointer, { force: true });
+    else writeFileSync(pointer, `${ledgerPath}\n`);
     const pool = new ColonyPool({
       poolId: config['COLONY_POOL_ID'] || 'antseed-pool',
       seller: seller.toLowerCase(),
@@ -121,9 +132,7 @@ const plugin: AntseedProviderPlugin = {
       log: (line) => console.log(line),
     });
 
-    const serviceApiProtocols = Object.fromEntries(
-      catalog.map((service) => [service, ['openai-chat-completions'] as ServiceApiProtocol[]]),
-    );
+    const serviceApiProtocols = buildServiceApiProtocols(catalog, 'openai-chat-completions') ?? {};
     const serviceCapabilities = parseServiceCapabilitiesJson(config['ANTSEED_SERVICE_CAPABILITIES_JSON']);
     const provider = new ColonyPoolProvider({
       pool,

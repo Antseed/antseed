@@ -433,6 +433,8 @@ export interface ColonyPoolsView {
     antsOwed: string;
     /** Finished epochs with ANTS owed. */
     antsEpochs: number[];
+    /** Finished epochs this wallet earned in whose emissions the pool hasn't pulled yet; claiming pulls them first. */
+    unfundedEpochs: number[];
   }>;
 }
 

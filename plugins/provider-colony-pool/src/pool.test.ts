@@ -4,7 +4,7 @@ import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Wallet } from 'ethers';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import WebSocket from 'ws';
 import type { SerializedHttpRequest, SerializedHttpResponseChunk } from '@antseed/node';
 import {
@@ -129,7 +129,7 @@ describe('colony pool', () => {
   const workers: PoolWorker[] = [];
   const buyer = Wallet.createRandom();
 
-  async function setup(opts: { verifyOnJoin?: boolean; allowedWorkers?: Set<string>; requireAttestation?: boolean; attestationIntervalMs?: number; deviceAttestor?: DeviceAttestor; requireDeviceAttestation?: boolean } = {}): Promise<void> {
+  async function setup(opts: { verifyOnJoin?: boolean; allowedWorkers?: Set<string>; requireAttestation?: boolean; attestationIntervalMs?: number; deviceAttestor?: DeviceAttestor; requireDeviceAttestation?: boolean; deviceAttestationIntervalMs?: number } = {}): Promise<void> {
     pool = new ColonyPool({
       poolId: 'test-pool',
       seller: SELLER,
@@ -144,6 +144,7 @@ describe('colony pool', () => {
       ...(opts.attestationIntervalMs ? { attestationIntervalMs: opts.attestationIntervalMs } : {}),
       ...(opts.deviceAttestor ? { deviceAttestor: opts.deviceAttestor, deviceAttestationRoots: [appleCa.rootPem] } : {}),
       ...(opts.requireDeviceAttestation ? { requireDeviceAttestation: true } : {}),
+      ...(opts.deviceAttestationIntervalMs ? { deviceAttestationIntervalMs: opts.deviceAttestationIntervalMs } : {}),
     });
     provider = new ColonyPoolProvider({
       pool,
@@ -181,14 +182,14 @@ describe('colony pool', () => {
   }
 
   /** What the buyer's node does: assign, check the certificate, seal with a channel binding. */
-  async function buyerSeal(requestId: string, stream: boolean) {
+  async function buyerSeal(requestId: string, stream: boolean, signer = buyer) {
     const certificate = await assign();
     expect(verifyWorkerKeyCertificate(certificate, SELLER)).toBe(true);
     const sealed = await sealRequest({
       body: plainRequest(requestId, stream).body,
       worker: certificate.worker,
       workerKey: certificate.key,
-      buyer: { address: buyer.address, channel: CHANNEL, signMessage: (m) => buyer.signMessage(m) },
+      buyer: { address: signer.address, channel: CHANNEL, signMessage: (m) => signer.signMessage(m) },
     });
     return { certificate, sealed, request: { ...plainRequest(requestId, stream), body: sealed.body } };
   }
@@ -200,6 +201,7 @@ describe('colony pool', () => {
   });
 
   afterEach(async () => {
+    vi.useRealTimers();
     for (const worker of workers.splice(0)) worker.stop();
     await pool.stop();
     await new Promise<void>((resolve) => upstream.server.close(() => resolve()));
@@ -332,6 +334,43 @@ describe('colony pool', () => {
     expect(dec(refused.body)).toContain('does not belong');
   });
 
+  it('serves a verified channel only to its buyer, without looking it up again', async () => {
+    await setup({ verifyOnJoin: false });
+    const lookups: string[] = [];
+    startWorker({ channelVerifier: async (_channel, from) => { lookups.push(from); return from === buyer.address.toLowerCase(); } });
+    await waitFor(() => provider.services.includes(SERVICE));
+    expect((await provider.handleRequest((await buyerSeal('v1', false)).request)).statusCode).toBe(200);
+    await waitFor(() => lookups.length === 1);
+    expect((await provider.handleRequest((await buyerSeal('v2', false)).request)).statusCode).toBe(200);
+    // Another signer naming the same channel (the pool itself, say) is refused from the cache.
+    const refused = await provider.handleRequest((await buyerSeal('v3', false, Wallet.createRandom())).request);
+    expect(refused.statusCode).toBe(502);
+    expect(dec(refused.body)).toContain('does not belong');
+    expect(lookups).toHaveLength(1);
+  });
+
+  it('does not let another signer\'s refused check refuse the channel\'s buyer', async () => {
+    await setup({ verifyOnJoin: false });
+    const lookups: string[] = [];
+    startWorker({ channelVerifier: async (_channel, from) => { lookups.push(from); return from === buyer.address.toLowerCase(); } });
+    await waitFor(() => provider.services.includes(SERVICE));
+    const intruder = Wallet.createRandom();
+    await provider.handleRequest((await buyerSeal('i1', false, intruder)).request);
+    await waitFor(() => lookups.length === 1);
+    expect((await provider.handleRequest((await buyerSeal('i2', false, intruder)).request)).statusCode).toBe(502);
+    expect((await provider.handleRequest((await buyerSeal('i3', false)).request)).statusCode).toBe(200);
+    expect(lookups).toEqual([intruder.address.toLowerCase(), buyer.address.toLowerCase()]);
+  });
+
+  it('looks an undecided channel up again only after a pause', async () => {
+    await setup({ verifyOnJoin: false });
+    let lookups = 0;
+    startWorker({ channelVerifier: async () => { lookups++; return null; } });
+    await waitFor(() => provider.services.includes(SERVICE));
+    for (const id of ['p1', 'p2', 'p3']) expect((await provider.handleRequest((await buyerSeal(id, false)).request)).statusCode).toBe(200);
+    expect(lookups).toBe(1);
+  });
+
   it('withdraws services while the owner pauses the worker', async () => {
     await setup();
     const worker = startWorker();
@@ -444,5 +483,43 @@ describe('colony pool', () => {
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect(provider.services).toEqual([]);
     expect(pool.workerSummaries()).toEqual([]);
+  });
+
+  it('stops assigning a worker whose certificate is about to expire, and reconnects it to renew', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'], shouldAdvanceTime: true });
+    await setup({ verifyOnJoin: false });
+    startWorker();
+    await waitFor(() => provider.services.includes(SERVICE));
+    const first = await assign();
+
+    // An hour before expiry the pool closes the connection; the worker reconnects with a fresh certificate.
+    await vi.advanceTimersByTimeAsync((first.expires - Math.floor(Date.now() / 1000) - 3600) * 1000 + 1000);
+    let renewed = first;
+    for (let i = 0; i < 100 && renewed.expires === first.expires; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const response = await provider.handleControlRequest({
+        requestId: 'renew', method: 'POST', path: WORKER_ASSIGN_PATH, headers: {}, body: enc({ model: SERVICE }),
+      });
+      if (response.statusCode === 200) renewed = JSON.parse(dec(response.body)) as WorkerKeyCertificate;
+    }
+    expect(renewed.worker).toBe(first.worker);
+    expect(renewed.expires).toBeGreaterThan(first.expires);
+
+    // A certificate buyers would stop using within 5 minutes is never handed out.
+    vi.setSystemTime((renewed.expires - 200) * 1000);
+    const response = await provider.handleControlRequest({
+      requestId: 'late', method: 'POST', path: WORKER_ASSIGN_PATH, headers: {}, body: enc({ model: SERVICE }),
+    });
+    expect(response.statusCode).toBe(503);
+  });
+
+  it('keeps refreshing Apple\'s attestation while the worker re-attests', async () => {
+    const mdm = fakeMdm();
+    await setup({ verifyOnJoin: false, attestationIntervalMs: 30, deviceAttestor: mdm, deviceAttestationIntervalMs: 150 });
+    const attester = fakeAttester();
+    startWorker({ attester });
+    await waitFor(() => mdm.asked.length === 1);
+    await waitFor(() => attester.calls >= 4 && mdm.asked.length >= 3);
+    expect(pool.workerSummaries()[0]).toMatchObject({ attested: true, appleVerified: true });
   });
 });

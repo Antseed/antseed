@@ -33,6 +33,8 @@ const MAX_FRAME_BYTES = 16 * 1024 * 1024;
 const MAX_WORKER_CONCURRENCY = 64;
 /** A certificate must outlive the connection's first minute to be accepted. */
 const MIN_CERTIFICATE_LIFETIME_S = 60;
+/** Reconnect a worker this long before its certificate expires (buyers stop using one 5 minutes before). */
+const CERTIFICATE_RENEW_MARGIN_S = 3600;
 /** Assignments count toward a worker's load for this long, so new buyers spread out. */
 const ASSIGNMENT_WEIGHT_MS = 10 * 60_000;
 /** Attested workers re-attest this often, and have this long to answer. */
@@ -139,6 +141,8 @@ interface ConnectedWorker {
   /** Apple's attestation from the operator's MDM, once one verified. */
   deviceAttestation: DeviceAttestation | null;
   deviceTimer: NodeJS.Timeout | null;
+  /** Closes the connection before the key certificate expires, so the worker reconnects and certifies again. */
+  renewTimer: NodeJS.Timeout | null;
   connectionId: number;
   maxConcurrency: number;
   /** Services the worker offers that the pool sells. */
@@ -477,6 +481,7 @@ export class ColonyPool {
       attestNonce: null,
       deviceAttestation: null,
       deviceTimer: null,
+      renewTimer: null,
       connectionId: this.opts.ledger.recordConnect(address, hello.agent),
       maxConcurrency: Math.max(1, Math.min(MAX_WORKER_CONCURRENCY, Math.floor(hello.maxConcurrency))),
       offered: new Set(),
@@ -492,11 +497,18 @@ export class ColonyPool {
     this.log(`worker ${address} joined (${worker.agent}${hardened ? ', attested' : ''}) offering ${accepted.join(', ') || 'nothing'}`);
     if (worker.attestation) this.scheduleAttestation(worker);
     if (this.opts.deviceAttestor) void this.attestDevice(worker);
+    const renewInMs = (certificate.expires - CERTIFICATE_RENEW_MARGIN_S) * 1000 - Date.now();
+    worker.renewTimer = setTimeout(() => {
+      this.log(`worker ${address}'s key certificate expires soon; reconnecting it to renew`);
+      ws.close(4006, 'renew key certificate');
+    }, Math.max(MIN_CERTIFICATE_LIFETIME_S * 500, renewInMs));
+    worker.renewTimer.unref();
     return worker;
   }
 
   /** With `requireDeviceAttestation`, only Macs Apple attests get buyers. */
   private routable(worker: ConnectedWorker): boolean {
+    if (worker.certificate.expires <= Math.floor(Date.now() / 1000) + 300) return false;
     return !this.opts.requireDeviceAttestation || worker.deviceAttestation !== null;
   }
 
@@ -573,10 +585,17 @@ export class ColonyPool {
       return;
     }
     if (worker.attestTimer) clearTimeout(worker.attestTimer);
-    if (worker.deviceTimer) clearTimeout(worker.deviceTimer);
+    const deviceChanged = attestation.serial !== worker.attestation?.serial || attestation.udid !== worker.attestation?.udid;
     worker.attestNonce = null;
     worker.attestation = attestation;
     this.scheduleAttestation(worker);
+    // A worker that now names a different Mac loses Apple's word for the old one until its MDM attests the new one.
+    if (deviceChanged && this.opts.deviceAttestor) {
+      if (worker.deviceTimer) clearTimeout(worker.deviceTimer);
+      worker.deviceAttestation = null;
+      this.emitChangeIfNeeded();
+      void this.attestDevice(worker);
+    }
   }
 
   private reject(ws: WebSocket, message: string): void {
@@ -672,6 +691,8 @@ export class ColonyPool {
 
   private drop(worker: ConnectedWorker): void {
     if (worker.attestTimer) clearTimeout(worker.attestTimer);
+    if (worker.deviceTimer) clearTimeout(worker.deviceTimer);
+    if (worker.renewTimer) clearTimeout(worker.renewTimer);
     if (this.workers.get(worker.address) === worker) this.workers.delete(worker.address);
     this.opts.ledger.recordDisconnect(worker.connectionId);
     for (const [requestId, entry] of [...worker.inflight]) {

@@ -12,10 +12,14 @@ function linkCode(overrides: Record<string, unknown> = {}): string {
   return `antseed-link:${Buffer.from(JSON.stringify(payload)).toString('base64url')}`;
 }
 
-function fixture(pools: string[] = [pool]) {
+function fixture(pools: string[] = [pool], unfunded: number[] = []) {
+  let pulled = false;
   const client = {
     usdcBalance: vi.fn(async () => 2_500n),
-    pendingAnts: vi.fn(async (_account: string, epochs: number[]) => (epochs[0] === 4 ? 7n : 0n)),
+    pendingAnts: vi.fn(async (_account: string, epochs: number[]) => (epochs[0] === 4 ? 7n : pulled && unfunded.includes(epochs[0]!) ? 3n : 0n)),
+    epochWeight: vi.fn(async (epoch: number) => (epoch === 4 || unfunded.includes(epoch) ? 10n : 0n)),
+    epochAnts: vi.fn(async (epoch: number) => (epoch === 4 || (pulled && unfunded.includes(epoch)) ? 100n : 0n)),
+    claimEpochEmissions: vi.fn(async () => { pulled = true; return 'pull-hash'; }),
     claimUsdc: vi.fn(async () => 'usdc-hash'),
     claimAnts: vi.fn(async () => 'ants-hash'),
     setPayout: vi.fn(async () => 'link-hash'),
@@ -39,7 +43,7 @@ describe('colony pool rewards', () => {
   it('reports USDC and ANTS each configured pool owes the wallet', async () => {
     const { ctx } = fixture();
     await expect(colonyPools(ctx)).resolves.toEqual({
-      pools: [{ address: pool, usdcOwed: '2500', antsOwed: '7', antsEpochs: [4] }],
+      pools: [{ address: pool, usdcOwed: '2500', antsOwed: '7', antsEpochs: [4], unfundedEpochs: [] }],
     });
   });
 
@@ -47,6 +51,14 @@ describe('colony pool rewards', () => {
     const { ctx, client } = fixture();
     await expect(claimColonyPool(ctx, { pool, usdc: true, ants: true }, report)).resolves.toEqual({ hashes: ['usdc-hash', 'ants-hash'] });
     expect(client.claimAnts).toHaveBeenCalledWith(wallet, [4]);
+  });
+
+  it('pulls the pool\'s emissions for earned but unfunded epochs before claiming ANTS', async () => {
+    const { ctx, client } = fixture([pool], [5]);
+    expect((await colonyPools(ctx)).pools[0]!.unfundedEpochs).toEqual([5]);
+    await expect(claimColonyPool(ctx, { pool, usdc: false, ants: true }, report)).resolves.toEqual({ hashes: ['pull-hash', 'ants-hash'] });
+    expect(client.claimEpochEmissions).toHaveBeenCalledWith(wallet, [5]);
+    expect(client.claimAnts).toHaveBeenCalledWith(wallet, [4, 5]);
   });
 
   it('refuses pools the dashboard does not know', async () => {

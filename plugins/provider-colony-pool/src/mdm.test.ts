@@ -1,5 +1,5 @@
 import { createServer, type Server } from 'node:http';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { NanoMdmAttestor, parsePlist } from './mdm.js';
 
 /** A NanoMDM stand-in: takes the enqueued command and answers through the webhook, as a Mac would. */
@@ -62,5 +62,25 @@ describe('NanoMDM device attestor', () => {
     (attestor as any).opts.url = mdm.url;
     await attestor.start();
     await expect(attestor.attest('UDID-1', new Uint8Array(32))).rejects.toThrow(/answered Error/);
+  });
+
+  it('times out cleanly when NanoMDM never answers the enqueue', async () => {
+    const unhandled = vi.fn();
+    process.on('unhandledRejection', unhandled);
+    stops.push(async () => { process.off('unhandledRejection', unhandled); });
+    // Accepts the connection and never responds.
+    const stalled = createServer(() => {});
+    await new Promise<void>((resolve) => stalled.listen(0, '127.0.0.1', () => resolve()));
+    stops.push(() => new Promise((r) => { stalled.closeAllConnections(); stalled.close(() => r()); }));
+    const attestor = new NanoMdmAttestor({
+      url: `http://127.0.0.1:${(stalled.address() as { port: number }).port}`, apiKey: 'k', webhookPort: 0, webhookHost: '127.0.0.1', webhookPath: 'secret', timeoutMs: 100,
+    });
+    await attestor.start();
+    stops.push(() => attestor.stop());
+
+    await expect(attestor.attest('UDID-1', new Uint8Array(32))).rejects.toThrow(/did not answer DeviceInformation for UDID-1 in time/);
+    expect((attestor as any).waiting.size).toBe(0);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(unhandled).not.toHaveBeenCalled();
   });
 });

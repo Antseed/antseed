@@ -69,32 +69,37 @@ export class NanoMdmAttestor implements DeviceAttestor {
 
   async attest(udid: string, nonce: Uint8Array): Promise<string[]> {
     const commandUuid = randomUUID();
-    const answer = new Promise<PlistValue>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.waiting.delete(commandUuid);
-        reject(new Error(`MDM did not answer DeviceInformation for ${udid} in time`));
-      }, this.opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-      timer.unref();
-      this.waiting.set(commandUuid, {
-        resolve: (payload) => { clearTimeout(timer); resolve(payload); },
-        reject: (error) => { clearTimeout(timer); reject(error); },
+    const enqueue = new AbortController();
+    let settle!: { resolve: (payload: PlistValue) => void; reject: (error: Error) => void };
+    const answer = new Promise<PlistValue>((resolve, reject) => { settle = { resolve, reject }; });
+    // The waiter can fail before attest() awaits it (a stalled enqueue): never leave that rejection unhandled.
+    answer.catch(() => {});
+    this.waiting.set(commandUuid, settle);
+    const timer = setTimeout(() => {
+      enqueue.abort();
+      settle.reject(new Error(`MDM did not answer DeviceInformation for ${udid} in time`));
+    }, this.opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    timer.unref();
+    let payload: PlistValue;
+    try {
+      const response = await fetch(`${this.opts.url.replace(/\/$/, '')}/v1/enqueue/${encodeURIComponent(udid)}`, {
+        method: 'PUT',
+        headers: {
+          authorization: `Basic ${Buffer.from(`nanomdm:${this.opts.apiKey}`).toString('base64')}`,
+          'content-type': 'application/xml',
+        },
+        body: deviceInformationCommand(commandUuid, nonce),
+        signal: enqueue.signal,
+      }).catch((err: unknown) => {
+        settle.reject(err instanceof Error ? err : new Error(String(err)));
+        return null;
       });
-    });
-    const response = await fetch(`${this.opts.url.replace(/\/$/, '')}/v1/enqueue/${encodeURIComponent(udid)}`, {
-      method: 'PUT',
-      headers: {
-        authorization: `Basic ${Buffer.from(`nanomdm:${this.opts.apiKey}`).toString('base64')}`,
-        'content-type': 'application/xml',
-      },
-      body: deviceInformationCommand(commandUuid, nonce),
-    }).catch((err: unknown) => {
-      this.waiting.get(commandUuid)?.reject(err instanceof Error ? err : new Error(String(err)));
-      return null;
-    });
-    if (response && !response.ok) {
-      this.waiting.get(commandUuid)?.reject(new Error(`MDM refused the command (HTTP ${response.status})`));
+      if (response && !response.ok) settle.reject(new Error(`MDM refused the command (HTTP ${response.status})`));
+      payload = await answer;
+    } finally {
+      clearTimeout(timer);
+      this.waiting.delete(commandUuid);
     }
-    const payload = await answer;
     const result = asDict(payload);
     if (result?.['Status'] !== 'Acknowledged') throw new Error(`Mac answered ${String(result?.['Status'] ?? 'nothing')}`);
     const chain = asDict(result['QueryResponses'])?.['DevicePropertiesAttestation'];

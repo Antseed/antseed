@@ -16,6 +16,7 @@ const COLONY_POOL_ABI = [
   'function usdcBalance(address account) external view returns (uint256)',
   'function pendingAnts(address account, uint256[] epochs) external view returns (uint256)',
   'function epochAnts(uint256 epoch) external view returns (uint256)',
+  'function epochWeight(uint256 epoch, address account) external view returns (uint256)',
   'function payoutOf(address worker) external view returns (address)',
   'function payoutNonce(address worker) external view returns (uint256)',
 ] as const;
@@ -69,6 +70,11 @@ export class ColonyPoolClient extends BaseEvmClient {
 
   async epochAnts(epoch: number): Promise<bigint> {
     return this.read().getFunction('epochAnts')(epoch);
+  }
+
+  /** The account's credited weight in `epoch` (its share of that epoch's ANTS). */
+  async epochWeight(epoch: number, account: string): Promise<bigint> {
+    return this.read().getFunction('epochWeight')(epoch, account);
   }
 
   async payoutOf(worker: string): Promise<string> {

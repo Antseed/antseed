@@ -77,8 +77,10 @@ export class PoolWorker {
   private welcome: WelcomeFrame | null = null;
   private seller: string | null = null;
   private checkTimes: number[] = [];
-  /** channel → verdict: true (verified), false (belongs to someone else), or pending re-check time. */
-  private readonly channels = new Map<string, boolean | number>();
+  /** channel → the buyer the chain says owns it, once verified. */
+  private readonly channelOwners = new Map<string, string>();
+  /** `channel|buyer` → false (not that buyer's) or the time a pending check may run again. */
+  private readonly channels = new Map<string, false | number>();
 
   constructor(opts: PoolWorkerOptions) {
     this.opts = opts;
@@ -219,15 +221,24 @@ export class PoolWorker {
   private channelAllowed(channel: string, buyer: string): boolean {
     const verifier = this.opts.channelVerifier;
     if (!verifier || !this.seller) return true;
-    const verdict = this.channels.get(channel);
-    if (verdict === true) return true;
+    buyer = buyer.toLowerCase();
+    // A channel proven to be another buyer's never serves this one.
+    const owner = this.channelOwners.get(channel);
+    if (owner !== undefined) return owner === buyer;
+    const key = `${channel}|${buyer}`;
+    const verdict = this.channels.get(key);
     if (verdict === false) return false;
     if (typeof verdict === 'number' && Date.now() < verdict) return true;
-    this.channels.set(channel, Date.now() + CHANNEL_RECHECK_MS);
+    this.channels.set(key, Date.now() + CHANNEL_RECHECK_MS);
     void verifier(channel, buyer, this.seller).then((result) => {
       if (result === null) return;
-      this.channels.set(channel, result);
-      if (!result) this.log(`channel ${channel.slice(0, 18)}… does not belong to buyer ${buyer} of this pool; refusing it`);
+      if (result) {
+        this.channelOwners.set(channel, buyer);
+        this.channels.delete(key);
+      } else {
+        this.channels.set(key, false);
+        this.log(`channel ${channel.slice(0, 18)}… does not belong to buyer ${buyer} of this pool; refusing it`);
+      }
     }).catch(() => {});
     return true;
   }

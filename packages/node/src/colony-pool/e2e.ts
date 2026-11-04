@@ -6,9 +6,11 @@ import {
   diffieHellman,
   generateKeyPairSync,
   hkdfSync,
+  randomBytes,
   verify,
   type KeyObject,
 } from 'node:crypto';
+import { StringDecoder } from 'node:string_decoder';
 import { getAddress, getBytes, keccak256, solidityPacked, verifyMessage } from 'ethers';
 import type { DeviceAttestation } from './apple-attestation.js';
 
@@ -263,6 +265,18 @@ function requestAad(worker: string, model: string): string {
   return `${INFO}|req|${worker.toLowerCase()}|${model}`;
 }
 
+/**
+ * Each response is sealed under its own key, from the request's response key
+ * and a random salt the worker picks, so a pool replaying a request never
+ * gets two answers under the same key and nonce.
+ */
+const RESPONSE_SALT_BYTES = 16;
+
+function responseKey(base: Buffer, salt: Buffer): Buffer {
+  if (salt.length !== RESPONSE_SALT_BYTES) throw new Error('Response salt must be 16 bytes');
+  return Buffer.from(hkdfSync('sha256', base, salt, `${INFO}|resp-key`, 32));
+}
+
 function responseAad(seq: number, end: boolean): string {
   return `${INFO}|resp|${seq}${end ? '|end' : ''}`;
 }
@@ -436,14 +450,20 @@ export class ResponseSealer {
   private seq = 0;
   private buffer = '';
   private ended = false;
+  private readonly key: Buffer;
+  private readonly salt: string;
+  private readonly decoder = new StringDecoder('utf8');
 
-  constructor(private readonly key: Buffer) {}
+  constructor(base: Buffer, salt: Buffer = randomBytes(RESPONSE_SALT_BYTES)) {
+    this.key = responseKey(base, salt);
+    this.salt = salt.toString('base64');
+  }
 
   /** Seal a complete (non-streamed) body, exposing `usage` in the clear for metering. */
   sealBody(body: Uint8Array): Uint8Array {
     this.ended = true;
     const envelope: Record<string, unknown> = {
-      antseed_e2e: { v: WORKER_E2E_VERSION, ct: seal(this.key, 0, responseAad(0, true), body).toString('base64') },
+      antseed_e2e: { v: WORKER_E2E_VERSION, salt: this.salt, ct: seal(this.key, 0, responseAad(0, true), body).toString('base64') },
     };
     const usage = usageOf(Buffer.from(body).toString('utf-8'));
     if (usage) envelope['usage'] = usage;
@@ -452,7 +472,8 @@ export class ResponseSealer {
 
   /** Seal upstream SSE bytes; returns the SSE bytes to send (possibly empty). */
   pushStream(chunk: Uint8Array): Uint8Array {
-    this.buffer += Buffer.from(chunk).toString('utf-8');
+    // Upstream chunks can end mid-character; the decoder keeps the partial bytes for the next one.
+    this.buffer += this.decoder.write(Buffer.from(chunk));
     const { events, rest } = splitEvents(this.buffer);
     this.buffer = rest;
     return new TextEncoder().encode(events.map((event) => this.sealEvent(event)).join(''));
@@ -462,21 +483,27 @@ export class ResponseSealer {
   finishStream(): Uint8Array {
     if (this.ended) return new Uint8Array(0);
     this.ended = true;
+    this.buffer += this.decoder.end();
     const tail = this.buffer.trim().length > 0 ? this.sealEvent(this.buffer) : '';
     this.buffer = '';
     const seq = this.seq++;
     const ct = seal(this.key, seq, responseAad(seq, true), new Uint8Array(0)).toString('base64');
-    return new TextEncoder().encode(`${tail}data: ${JSON.stringify({ antseed_e2e: { seq, end: true, ct } })}\n\n`);
+    return new TextEncoder().encode(`${tail}data: ${JSON.stringify({ antseed_e2e: { seq, end: true, ct, ...this.saltFor(seq) } })}\n\n`);
   }
 
   private sealEvent(event: string): string {
     const seq = this.seq++;
     const ct = seal(this.key, seq, responseAad(seq, false), Buffer.from(event)).toString('base64');
-    let out = `data: ${JSON.stringify({ antseed_e2e: { seq, ct } })}\n\n`;
+    let out = `data: ${JSON.stringify({ antseed_e2e: { seq, ct, ...this.saltFor(seq) } })}\n\n`;
     const data = eventData(event);
     const usage = data ? usageOf(data) : null;
     if (usage) out += `data: ${JSON.stringify({ choices: [], usage })}\n\n`;
     return out;
+  }
+
+  /** The first event of a stream carries the salt. */
+  private saltFor(seq: number): { salt?: string } {
+    return seq === 0 ? { salt: this.salt } : {};
   }
 }
 
@@ -488,7 +515,18 @@ export class ResponseOpener {
   private authenticatedUsage: UsageLike | null = null;
   private clearUsage: UsageLike | null = null;
 
-  constructor(private readonly key: Buffer) {}
+  /** The response's own key, once its salt arrived. */
+  private key: Buffer | null = null;
+  private readonly decoder = new StringDecoder('utf8');
+
+  constructor(private readonly base: Buffer) {}
+
+  private keyFor(salt: unknown): Buffer {
+    if (this.key) return this.key;
+    if (typeof salt !== 'string') throw new Error('Worker response is missing its salt');
+    this.key = responseKey(this.base, Buffer.from(salt, 'base64'));
+    return this.key;
+  }
 
   /** True once the worker's end marker verified: the whole response came from the worker. */
   get verified(): boolean {
@@ -506,14 +544,14 @@ export class ResponseOpener {
    * anything else that fails to open throws.
    */
   openBody(body: Uint8Array): Uint8Array {
-    let parsed: { antseed_e2e?: { ct?: unknown }; usage?: unknown };
+    let parsed: { antseed_e2e?: { ct?: unknown; salt?: unknown }; usage?: unknown };
     try {
       parsed = JSON.parse(Buffer.from(body).toString('utf-8')) as typeof parsed;
     } catch {
       throw new Error('Worker response is not a sealed envelope');
     }
     if (typeof parsed.antseed_e2e?.ct !== 'string') return body;
-    const plaintext = open(this.key, 0, responseAad(0, true), Buffer.from(parsed.antseed_e2e.ct, 'base64'));
+    const plaintext = open(this.keyFor(parsed.antseed_e2e.salt), 0, responseAad(0, true), Buffer.from(parsed.antseed_e2e.ct, 'base64'));
     this.complete = true;
     this.authenticatedUsage = usageOf(plaintext.toString('utf-8'));
     this.clearUsage = parsed.usage && typeof parsed.usage === 'object' ? parsed.usage as UsageLike : null;
@@ -522,14 +560,14 @@ export class ResponseOpener {
 
   /** Decrypt streamed SSE bytes; returns plaintext SSE bytes for the client. Throws on tampering. */
   pushStream(chunk: Uint8Array): Uint8Array {
-    this.buffer += Buffer.from(chunk).toString('utf-8');
+    this.buffer += this.decoder.write(Buffer.from(chunk));
     const { events, rest } = splitEvents(this.buffer);
     this.buffer = rest;
     let out = '';
     for (const event of events) {
       const data = eventData(event);
       if (data === null) continue;
-      let parsed: { antseed_e2e?: { seq?: unknown; ct?: unknown; end?: unknown }; usage?: unknown };
+      let parsed: { antseed_e2e?: { seq?: unknown; ct?: unknown; end?: unknown; salt?: unknown }; usage?: unknown };
       try {
         parsed = JSON.parse(data) as typeof parsed;
       } catch {
@@ -543,7 +581,8 @@ export class ResponseOpener {
       if (this.complete) throw new Error('Worker response continued after its end marker');
       if (envelope.seq !== this.seq || typeof envelope.ct !== 'string') throw new Error('Worker response events are out of order');
       const end = envelope.end === true;
-      const plaintext = open(this.key, this.seq, responseAad(this.seq, end), Buffer.from(envelope.ct, 'base64')).toString('utf-8');
+      const key = this.seq === 0 ? this.keyFor(envelope.salt) : this.key!;
+      const plaintext = open(key, this.seq, responseAad(this.seq, end), Buffer.from(envelope.ct, 'base64')).toString('utf-8');
       this.seq++;
       if (end) {
         this.complete = true;

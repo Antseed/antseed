@@ -22,11 +22,15 @@ export async function colonyPools(ctx: AntsContext): Promise<ColonyPoolsView> {
     const pool = ctx.colonyPool(address);
     const [usdcOwed, perEpoch] = await Promise.all([
       pool.usdcBalance(ctx.address),
-      Promise.all(epochs.map(async (epoch) => ({ epoch, owed: await pool.pendingAnts(ctx.address, [epoch]) }))),
+      Promise.all(epochs.map(async (epoch) => {
+        const [owed, weight, funded] = await Promise.all([pool.pendingAnts(ctx.address, [epoch]), pool.epochWeight(epoch, ctx.address), pool.epochAnts(epoch)]);
+        return { epoch, owed, unfunded: weight > 0n && funded === 0n };
+      })),
     ]);
     const antsEpochs = perEpoch.filter((entry) => entry.owed > 0n).map((entry) => entry.epoch);
+    const unfundedEpochs = perEpoch.filter((entry) => entry.unfunded).map((entry) => entry.epoch);
     const antsOwed = perEpoch.reduce((sum, entry) => sum + entry.owed, 0n);
-    return { address, usdcOwed: usdcOwed.toString(), antsOwed: antsOwed.toString(), antsEpochs };
+    return { address, usdcOwed: usdcOwed.toString(), antsOwed: antsOwed.toString(), antsEpochs, unfundedEpochs };
   }));
   return { pools };
 }
@@ -42,8 +46,17 @@ export async function claimColonyPool(ctx: AntsContext, request: ColonyPoolClaim
     hashes.push(hash);
     await report('USDC claimed from the colony pool', hash);
   }
-  if (request.ants && view && view.antsEpochs.length > 0) {
-    const hash = await pool.claimAnts(signer, view.antsEpochs);
+  let antsEpochs = view?.antsEpochs ?? [];
+  if (request.ants && view && view.unfundedEpochs.length > 0) {
+    // The pool holds no ANTS for an epoch until someone pulls its emissions (anyone may; repeats are no-ops).
+    const hash = await pool.claimEpochEmissions(signer, view.unfundedEpochs);
+    hashes.push(hash);
+    await report('Colony pool emissions pulled for finished epochs', hash);
+    const owed = await Promise.all(view.unfundedEpochs.map(async (epoch) => ({ epoch, owed: await pool.pendingAnts(ctx.address, [epoch]) })));
+    antsEpochs = [...new Set([...antsEpochs, ...owed.filter((entry) => entry.owed > 0n).map((entry) => entry.epoch)])].sort((a, b) => a - b);
+  }
+  if (request.ants && antsEpochs.length > 0) {
+    const hash = await pool.claimAnts(signer, antsEpochs);
     hashes.push(hash);
     await report('ANTS claimed from the colony pool', hash);
   }

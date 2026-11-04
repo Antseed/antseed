@@ -35,7 +35,8 @@ export function ColonyPoolsCard({ stale = false }: { stale?: boolean }) {
       <p className="hint">USDC and ANTS that colony pools owe <AddressLink value={dashboard.address} /> for Macs that pay out here.</p>
       {pools.map((pool) => {
         const claim = (usdc: boolean, ants: boolean): ColonyPoolClaimRequest => ({ pool: pool.address, usdc, ants });
-        const nothing = isZero(pool.usdcOwed) && isZero(pool.antsOwed);
+        // Unfunded epochs may still owe ANTS: claiming pulls their emissions into the pool first.
+        const nothing = isZero(pool.usdcOwed) && isZero(pool.antsOwed) && pool.unfundedEpochs.length === 0;
         return (
           <div className="bucket" key={pool.address}>
             <div className="bucket-main">
@@ -43,7 +44,7 @@ export function ColonyPoolsCard({ stale = false }: { stale?: boolean }) {
             </div>
             <div className="bucket-amount mono bucket-amount--detailed">
               <span>{formatUsdc(pool.usdcOwed, 6)} <span className="unit">USDC</span></span>
-              <span className="bucket-amount-detail">{formatAnts(pool.antsOwed, 4)} ANTS</span>
+              <span className="bucket-amount-detail">{formatAnts(pool.antsOwed, 4)} ANTS{pool.unfundedEpochs.length > 0 ? ' + unclaimed epochs' : ''}</span>
             </div>
             <div className="bucket-actions">
               <ActionButton

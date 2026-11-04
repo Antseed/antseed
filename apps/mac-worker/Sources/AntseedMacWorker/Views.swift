@@ -29,6 +29,8 @@ struct MenuPanel: View {
     /// ImageRenderer cannot draw AppKit controls; snapshots get drawn stand-ins.
     var snapshot = false
     @State private var wallet = ""
+    /// The owner chose to link another wallet.
+    @State private var changingPayout = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -57,12 +59,18 @@ struct MenuPanel: View {
             }
             .font(.system(size: 11))
             Divider()
-            if let payout = worker.payout {
-                Text("Pays to \(short(payout))").font(.system(size: 12)).foregroundStyle(.secondary)
+            if let link = worker.pendingLink, !changingPayout {
+                Text("Linking \(short(link.payout))").font(.system(size: 12)).foregroundStyle(.secondary)
                 Text(worker.linkCopied
                      ? "Link code copied. In the Antseed app's Rewards (or `antseed ants`), choose Link a Mac and paste it."
-                     : "Earnings and claims: Rewards in the Antseed app or `antseed ants`.")
+                     : "Not linked yet: paste the link code in Rewards in the Antseed app or `antseed ants`.")
                     .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                payoutActions(primary: "Copy code") { worker.copyLinkCode() }
+            } else if let payout = worker.payout, !changingPayout {
+                Text("Pays to \(short(payout))").font(.system(size: 12)).foregroundStyle(.secondary)
+                Text("Earnings and claims: Rewards in the Antseed app or `antseed ants`.")
+                    .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                payoutActions(primary: nil) {}
             } else {
                 Text("Link the wallet your earnings go to").font(.system(size: 12)).foregroundStyle(.secondary)
                 HStack {
@@ -74,7 +82,10 @@ struct MenuPanel: View {
                             .background(RoundedRectangle(cornerRadius: 5).fill(Color.secondary.opacity(0.25)))
                     } else {
                         TextField("0x…", text: $wallet).textFieldStyle(.roundedBorder).font(.system(size: 12, design: .monospaced))
-                        Button("Link") { worker.linkPayout(to: wallet) }.controlSize(.small)
+                        Button("Link") {
+                            worker.linkPayout(to: wallet)
+                            changingPayout = false
+                        }.controlSize(.small)
                     }
                 }
                 if let error = worker.linkError {
@@ -92,5 +103,20 @@ struct MenuPanel: View {
         }
         .padding(14)
         .frame(width: 280)
+    }
+
+    /// Text links under the payout line: an optional primary action, then Change.
+    @ViewBuilder
+    private func payoutActions(primary: String?, action: @escaping () -> Void) -> some View {
+        HStack(spacing: 12) {
+            if snapshot {
+                if let primary { Text(primary).foregroundStyle(Color.accentColor) }
+                Text("Change wallet").foregroundStyle(Color.accentColor)
+            } else {
+                if let primary { Button(primary, action: action).buttonStyle(.link) }
+                Button("Change wallet") { changingPayout = true }.buttonStyle(.link)
+            }
+        }
+        .font(.system(size: 11))
     }
 }

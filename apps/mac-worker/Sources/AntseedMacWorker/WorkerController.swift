@@ -51,8 +51,11 @@ final class WorkerController: ObservableObject {
     @Published private(set) var stats = PoolStats()
     @Published private(set) var poolShareBps = 0
     @Published private(set) var poolSeller: String?
-    /// The owner's wallet this Mac's earnings are paid to, once linked.
+    /// The owner's wallet this Mac's earnings are paid to, as the pool contract records it.
     @Published private(set) var payout: String?
+    /// A signed link the owner has not submitted yet. Kept until the contract
+    /// records it or it expires, so its code can be copied again after a restart.
+    @Published private(set) var pendingLink: PayoutAuthorization?
     @Published private(set) var linkError: String?
     /// The payout authorization was just copied for the owner to paste.
     @Published private(set) var linkCopied = false
@@ -71,7 +74,10 @@ final class WorkerController: ObservableObject {
     private var backoff: UInt64 = 1
     private var active: [String: Task<Void, Never>] = [:]
     private var statsWaiter: String?
-    private var verifiedChannels: [String: Bool] = [:]
+    /// channel → the buyer the chain says owns it, once verified.
+    private var channelOwners: [String: String] = [:]
+    /// "channel|buyer" pairs the chain says don't match.
+    private var refusedChannels: Set<String> = []
     private var checkTimes: [Date] = []
 
     var address: String { keys.ethereum.address }
@@ -100,8 +106,8 @@ final class WorkerController: ObservableObject {
         let denied = identity.teamId != nil && Protection.denyDebuggers()
         self.debuggerDenied = denied
         self.protection = Protection.Report(identity: identity, sip: Protection.sipEnabled(), debuggerDenied: denied && !Protection.debuggerAttached(), keyAppBound: keys.appBound)
-        self.payout = (try? String(contentsOf: config.dataDirectory.appendingPathComponent("payout"), encoding: .utf8))?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        self.pendingLink = (try? Data(contentsOf: config.dataDirectory.appendingPathComponent(Self.pendingLinkFile)))
+            .flatMap { try? JSONDecoder().decode(PayoutAuthorization.self, from: $0) }
     }
 
     /// Re-read SIP and debugger state. A signed build with SIP off stops serving.
@@ -224,6 +230,7 @@ final class WorkerController: ObservableObject {
             status = sharing ? .serving : .paused
             log("joined pool \(config.poolURL.host ?? "") · encryption key certified for \(poolSeller ?? "") · attested \(protection.hardened ? "hardened" : "not hardened")")
             requestStats()
+            refreshPayout()
             if let wallet = config.linkPayoutTo, !linkRequested {
                 linkRequested = true
                 linkPayout(to: wallet)
@@ -347,9 +354,12 @@ final class WorkerController: ObservableObject {
     /// Checks on-chain that the channel belongs to this buyer and pool (when an RPC is set).
     private func channelAllowed(channel: String, buyer: String) async -> Bool {
         guard let rpc = config.rpcURL, let pool = poolSeller else { return true }
-        if let verdict = verifiedChannels[channel] { return verdict }
+        let buyer = buyer.lowercased()
+        // A channel proven to be another buyer's never serves this one.
+        if let owner = channelOwners[channel] { return owner == buyer }
+        if refusedChannels.contains("\(channel)|\(buyer)") { return false }
         if let result = try? await Chain(rpcURL: rpc).channelBelongs(channel: channel, buyer: buyer, pool: pool) {
-            verifiedChannels[channel] = result
+            if result { channelOwners[channel] = buyer } else { refusedChannels.insert("\(channel)|\(buyer)") }
             log(result
                 ? "on-chain check: channel \(channel.prefix(12))… belongs to buyer \(buyer.prefix(10))… and this pool"
                 : "on-chain check FAILED: channel \(channel.prefix(12))… is not this buyer's; refusing it")
@@ -379,6 +389,7 @@ final class WorkerController: ObservableObject {
         Task {
             while true {
                 requestStats()
+                if pendingLink != nil { refreshPayout() }
                 try? await Task.sleep(nanoseconds: 10_000_000_000)
             }
         }
@@ -392,6 +403,42 @@ final class WorkerController: ObservableObject {
     /// dashboard (Rewards → Link a Mac), where rewards are also claimed.
     /// `--link-payout` signs once per launch, not on every reconnect.
     private var linkRequested = false
+    private static let pendingLinkFile = "payout-link.json"
+
+    /// Read the payout wallet from the pool contract, and drop a pending link
+    /// once the contract records it or its deadline passes.
+    func refreshPayout() {
+        guard let rpc = config.rpcURL, let pool = poolSeller else { return }
+        Task {
+            guard let word = try? await Chain(rpcURL: rpc).ethCall(to: pool, data: Chain.selector("payoutOf(address)") + Data(repeating: 0, count: 12) + (try Data(hexString: address))),
+                  word.count == 32 else { return }
+            let recorded = word.suffix(20)
+            payout = recorded.allSatisfy({ $0 == 0 }) ? nil : Data(recorded).prefixedHex
+            if let link = pendingLink,
+               link.payout.lowercased() == payout?.lowercased() || link.deadline <= UInt64(Date().timeIntervalSince1970) {
+                setPendingLink(nil)
+            }
+        }
+    }
+
+    private func setPendingLink(_ link: PayoutAuthorization?) {
+        pendingLink = link
+        let file = config.dataDirectory.appendingPathComponent(Self.pendingLinkFile)
+        if let link, let json = try? JSONEncoder().encode(link) {
+            try? json.write(to: file, options: .atomic)
+        } else {
+            try? FileManager.default.removeItem(at: file)
+        }
+    }
+
+    /// Copy the pending link's code again.
+    func copyLinkCode() {
+        guard let link = pendingLink else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(link.code, forType: .string)
+        linkCopied = true
+    }
 
     func linkPayout(to wallet: String) {
         let wallet = wallet.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -414,12 +461,8 @@ final class WorkerController: ObservableObject {
                 let digest = PayoutAuthorization.digest(chainId: chainId, pool: pool, worker: address, payout: wallet, nonce: nonce, deadline: deadline)
                 let signature = try keys.ethereum.sign(digest: personalMessageDigest(digest))
                 let link = PayoutAuthorization(chainId: chainId, pool: pool, worker: address, payout: wallet, deadline: deadline, signature: signature.prefixedHex)
-                try wallet.write(to: config.dataDirectory.appendingPathComponent("payout"), atomically: true, encoding: .utf8)
-                payout = wallet
-                let pasteboard = NSPasteboard.general
-                pasteboard.clearContents()
-                pasteboard.setString(link.code, forType: .string)
-                linkCopied = true
+                setPendingLink(link)
+                copyLinkCode()
                 log("payout authorization for \(wallet) copied; paste it in the ANTS dashboard (Rewards → Link a Mac)")
                 if config.linkPayoutTo != nil { log("link code \(link.code)") }
             } catch {

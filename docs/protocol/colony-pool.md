@@ -116,13 +116,23 @@ the chain verifies that `channel` belongs to `buyer` and to the pool seller.
 
 ## Response envelope
 
+Each response has its own key. The worker picks a random 16-byte `salt` and
+seals with
+
+```
+responseKey = HKDF-SHA256(ikm = respKey, salt = salt, info = "antseed-worker-e2e/v2|resp-key", length = 32)
+```
+
+so a replayed request (same `epk`, same `respKey`) never reuses a key and
+nonce pair for a different answer.
+
 Non-streaming: the worker answers
 
 ```json
-{ "antseed_e2e": { "v": 2, "ct": "<base64>" }, "usage": { … } }
+{ "antseed_e2e": { "v": 2, "salt": "<base64>", "ct": "<base64>" }, "usage": { … } }
 ```
 
-where `ct` is the upstream body sealed with `respKey`, nonce 0, AAD
+where `ct` is the upstream body sealed with `responseKey`, nonce 0, AAD
 `"antseed-worker-e2e/v2|resp|0|end"`.
 
 Streaming: each upstream SSE event `data: X` becomes
@@ -131,17 +141,19 @@ Streaming: each upstream SSE event `data: X` becomes
 data: {"antseed_e2e":{"seq":n,"ct":"<base64>"}}
 ```
 
-sealed with `respKey`, nonce = `seq` as a 96-bit big-endian counter starting
-at 0, AAD `"antseed-worker-e2e/v2|resp|<seq>"`. The last event sets
+sealed with `responseKey`, nonce = `seq` as a 96-bit big-endian counter starting
+at 0, AAD `"antseed-worker-e2e/v2|resp|<seq>"`. The `seq` 0 event also carries
+`"salt"`. The last event sets
 `"end":true` and uses AAD `"antseed-worker-e2e/v2|resp|<seq>|end"`, so a
 truncated stream fails to verify.
 
 In both cases the worker also emits the upstream `usage` in the clear (as the
 `usage` field, or as one plain `data: {"choices":[],"usage":{…}}` event before
-the final encrypted event) so the seller can meter. The buyer fails a
-non-streamed response whose clear usage differs from the usage inside the
-ciphertext, or that does not verify; a streamed one has already reached the
-client, so a mismatch is logged against the seller.
+the final encrypted event) so the seller can meter. The buyer fails a response
+whose clear usage differs from the usage inside the ciphertext, or that does
+not verify. For a stream that includes one that ends without the
+authenticated end marker or that is not SSE: the client gets a stream error
+instead of a clean end, even though earlier events already reached it.
 
 The buyer attributes a request to the worker it encrypted the request for:
 only that worker's key can decrypt it, so only that worker can answer it.
@@ -361,5 +373,11 @@ The Antseed Mac app signs this and copies a link code,
 The owner pastes it in the ANTS dashboard (Rewards → Link a Mac), which checks
 the chain and that the connected wallet is `payout`, submits `setPayout`, and
 from then on shows the pool's USDC and ANTS owed to that wallet with a claim
-button. The seller dashboard shows the pool operator each worker's status,
-speed, requests and earnings from the pool's ledger.
+button. The Mac app keeps the signed link until the contract records it or
+its deadline passes, so its code can be copied again after a restart, and
+shows "Pays to" only for the wallet `payoutOf` returns; **Change wallet**
+signs a new link. The seller dashboard shows the pool operator each worker's
+status, speed, requests and earnings from the pool's ledger
+(`<data dir>/colony-pool.db`, or the file `COLONY_POOL_LEDGER_PATH` names,
+which the pool records in `<data dir>/colony-pool.ledger-path` for the
+dashboard).

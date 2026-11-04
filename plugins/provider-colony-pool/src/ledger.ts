@@ -106,14 +106,14 @@ export class WorkerLedger {
     const startOfDay = new Date(now);
     startOfDay.setUTCHours(0, 0, 0, 0);
     const weekAgo = now - 7 * DAY_MS;
-    const earned = (since: number): number => (this.db.prepare(
-      'SELECT COALESCE(SUM(worker_usdc), 0) AS total FROM earnings WHERE worker = ? AND created_at >= ?',
-    ).get(address, since) as { total: number }).total;
     const totals = this.db.prepare(`
-      SELECT COALESCE(SUM(worker_usdc), 0) AS earned, COUNT(*) AS requests,
+      SELECT COALESCE(SUM(worker_usdc), 0) AS earned,
+             COALESCE(SUM(CASE WHEN created_at >= ? THEN worker_usdc ELSE 0 END), 0) AS today,
+             COALESCE(SUM(CASE WHEN created_at >= ? THEN worker_usdc ELSE 0 END), 0) AS week,
+             COUNT(*) AS requests,
              COALESCE(SUM(input_tokens), 0) AS input, COALESCE(SUM(output_tokens), 0) AS output
       FROM earnings WHERE worker = ?
-    `).get(address) as { earned: number; requests: number; input: number; output: number };
+    `).get(startOfDay.getTime(), weekAgo, address) as { earned: number; today: number; week: number; requests: number; input: number; output: number };
     const paid = (this.db.prepare('SELECT COALESCE(SUM(amount_usdc), 0) AS total FROM payouts WHERE worker = ?')
       .get(address) as { total: number }).total;
     const connected = (this.db.prepare(`
@@ -122,8 +122,8 @@ export class WorkerLedger {
     `).get(now, now, weekAgo, address, now, weekAgo) as { ms: number }).ms;
     return {
       address,
-      earnedToday: String(earned(startOfDay.getTime())),
-      earnedLast7Days: String(earned(weekAgo)),
+      earnedToday: String(totals.today),
+      earnedLast7Days: String(totals.week),
       earnedTotal: String(totals.earned),
       paidTotal: String(paid),
       pending: String(Math.max(0, totals.earned - paid)),

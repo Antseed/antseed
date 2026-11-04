@@ -347,6 +347,8 @@ contract AntseedColonyPool is AntseedSellerDelegation, Pausable {
         uint256 n = _validTailCount(metadata);
         workers = new address[](n);
         amounts = new uint128[](n);
+        // Shorter metadata than a trailer would underflow the offset below.
+        if (n == 0) return (workers, amounts);
         uint256 base = metadata.length - _TAIL_TRAILER_BYTES - _ENTRY_BYTES * n;
         for (uint256 i = 0; i < n; i++) {
             (workers[i], amounts[i]) = _readEntry(metadata, base + _ENTRY_BYTES * i);

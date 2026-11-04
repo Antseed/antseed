@@ -297,6 +297,7 @@ export class BuyerRequestHandler {
     const executeRequest = (): Promise<SerializedHttpResponse> => new Promise<SerializedHttpResponse>((resolve, reject) => {
       const session = sealed;
       const rawChunks: Uint8Array[] = [];
+      let rawBytes = 0;
       let decryptStream = false;
       const timeoutMs = this._config.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
       const maxStreamBufferBytes = Math.max(1, this._config.maxStreamBufferBytes ?? 16 * 1024 * 1024);
@@ -395,13 +396,6 @@ export class BuyerRequestHandler {
         cleanupAbortListener();
         cleanupConnectionListener();
         wireResponse = stripPeerControlledResponseHeaders(stripStreamingHeader(raw));
-        if (session && !session.verified && response.statusCode < 400) {
-          debugWarn(`[BuyerRequest] Worker response for ${req.requestId.slice(0, 8)} ended without its end marker`);
-        }
-        if (session && !session.usageConsistent) {
-          // Already streamed to the client; the mismatch is the seller's to answer for.
-          debugWarn(`[BuyerRequest] Seller ${peer.peerId.slice(0, 12)}... reported usage that differs from its worker's for ${req.requestId.slice(0, 8)}`);
-        }
         const cleaned = stripPeerControlledResponseHeaders(stripStreamingHeader(response));
         debugLog(`[BuyerRequest] Response for ${req.requestId.slice(0, 8)}: status=${cleaned.statusCode} (${Date.now() - startTime}ms, ${cleaned.body.length}b)`);
         resolve(cleaned);
@@ -444,6 +438,12 @@ export class BuyerRequestHandler {
             streamStartResponse = stripPeerControlledResponseHeaders(stripStreamingHeader(response));
             forwardStreamToCallbacks = response.statusCode < 400;
             decryptStream = session !== null && (response.headers['content-type'] ?? '').includes('text/event-stream');
+            // A worker's successful answer streams only as sealed SSE; anything else would skip decryption and verification.
+            if (session && response.statusCode < 400 && !decryptStream) {
+              mux.cancelProxyRequest(req.requestId);
+              fail(peerFault(`Worker stream for ${req.requestId} is not sealed SSE`, 'peer-protocol-violation'));
+              return;
+            }
             debugLog(`[BuyerRequest] Stream started for ${req.requestId.slice(0, 8)}; idle-timeout=${streamIdleTimeoutMs}ms`);
             resetTimeout(streamIdleTimeoutMs);
             if (forwardStreamToCallbacks) {
@@ -499,6 +499,14 @@ export class BuyerRequestHandler {
           }
 
           if (decryptStream) {
+            // The wire bytes are kept for the response receipt: bound them too, since events
+            // the opener ignores add wire bytes without any plaintext.
+            rawBytes += chunk.data.length;
+            if (rawBytes > maxStreamBufferBytes) {
+              mux.cancelProxyRequest(req.requestId);
+              fail(buyerFault(`Stream ${req.requestId} exceeded max buffered size (${maxStreamBufferBytes} bytes)`, 'buyer-stream-limit'));
+              return;
+            }
             rawChunks.push(chunk.data);
             try {
               chunk = { ...chunk, data: session!.pushStream(chunk.data) };
@@ -533,6 +541,15 @@ export class BuyerRequestHandler {
           if (!streamStartResponse) {
             fail(peerFault(
               `Stream ${req.requestId} ended before response start`,
+              'peer-protocol-violation',
+            ));
+            return;
+          }
+
+          // A sealed stream counts only if the worker's end marker verified and the billed usage is the worker's.
+          if (decryptStream && streamStartResponse.statusCode < 400 && (!session!.verified || !session!.usageConsistent)) {
+            fail(peerFault(
+              `Worker stream for ${req.requestId} ${session!.verified ? 'billed usage that differs from its worker\'s' : 'ended without its end marker'}`,
               'peer-protocol-violation',
             ));
             return;
