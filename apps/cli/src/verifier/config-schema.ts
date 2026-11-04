@@ -66,6 +66,8 @@ const VerifierApiUpstreamSchema = strictObject({
   baseUrl: nonEmptyStringSchema,
   apiKey: z.string().optional(),
   apiKeyEnv: nonEmptyStringSchema.optional(),
+  /** Run this command and read the API key from its stdout (highest precedence). Lets the key stay encrypted at rest. */
+  apiKeyCommand: z.array(nonEmptyStringSchema).min(1).optional(),
 })
 
 /**
@@ -158,6 +160,8 @@ export const VerifierReferenceEndpointSchema = strictObject({
   baseUrl: nonEmptyStringSchema,
   apiKey: z.string().optional(),
   apiKeyEnv: nonEmptyStringSchema.optional(),
+  /** Run this command and read the API key from its stdout (highest precedence). Lets the key stay encrypted at rest. */
+  apiKeyCommand: z.array(nonEmptyStringSchema).min(1).optional(),
   sourceId: nonEmptyStringSchema,
   trust: z.enum(['smoke', 'trusted']),
   antseedPeerId: z.string().regex(PEER_ID_PATTERN, 'must be a 40-character hex peer id').optional(),

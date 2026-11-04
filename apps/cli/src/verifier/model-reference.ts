@@ -1,5 +1,6 @@
 import { appendFile, mkdir, readFile, unlink } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
+import { resolveApiKey } from './resolve-api-key.js'
 import {
   KBF_DEFAULT_SELF_TEST_RUNS,
   KBF_ENROLLMENT_TEMPERATURES,
@@ -404,7 +405,7 @@ export async function buildModelReference(input: {
   if (!endpoint) throw new Error('verifier.referenceEndpoint is required')
   const modelConfig = resolveVerifierModelConfig(input.config, input.model, input.catalog)
   const pricingByModel = referencePricingByModel(input.config, modelConfig, input.catalog ?? null)
-  const apiKey = (endpoint.apiKeyEnv ? process.env[endpoint.apiKeyEnv] : undefined) ?? endpoint.apiKey
+  const apiKey = resolveApiKey(endpoint, 'verifier.referenceEndpoint')
   const sizing = resolveReferenceSizingPolicy(input.config)
   const selfTestRuns = input.config?.referenceSelfTestRuns ?? KBF_DEFAULT_SELF_TEST_RUNS
   assertPositiveInteger(selfTestRuns, 'referenceSelfTestRuns')
@@ -2526,7 +2527,7 @@ function resolveReferenceRequestRoute(input: {
     const config = input.upstream.config
     if (!config) throw new Error(`verifier.upstreams.${input.upstream.name} is not configured`)
     if (config.type === 'antseed') throw new Error(`antseed upstream ${input.upstream.name} must resolve to a referenceRoute`)
-    const apiKey = (config.apiKeyEnv ? process.env[config.apiKeyEnv] : undefined) ?? config.apiKey
+    const apiKey = resolveApiKey(config, `verifier.upstreams.${input.upstream.name}`)
     if (!apiKey) {
       throw new Error(
         `verifier.upstreams.${input.upstream.name} has no API key`
