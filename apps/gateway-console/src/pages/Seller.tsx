@@ -1,9 +1,9 @@
 import { useState } from 'react'
 import { BarChart, DataTable } from '@antseed/ui'
-import type { SellerUsage } from '../api/types'
+import type { SellerUsage, SellerWorker } from '../api/types'
 import { Badge, EmptyState, ErrorAlert, Figure, LoadingRows, PageLink, Panel, Segmented, StatTile } from '../components/ui'
 import { formatDuration, formatNumber, formatRelative, formatUsd, shortId } from '../lib/format'
-import { useSellerEvents, useSellerUsage } from '../lib/queries'
+import { useSellerEvents, useSellerUsage, useSellerWorkers } from '../lib/queries'
 import { formatEth, formatUtcDay, lastResult, sellerNotices, usageTotals, type AvailableSeller } from '../lib/seller'
 import { SellerPage } from '../components/SellerPage'
 import { SellerEventList } from '../components/SellerEvents'
@@ -32,6 +32,7 @@ function Overview({ seller }: { seller: AvailableSeller }) {
       <Tiles seller={seller} usage={usage.data} />
       <UsagePanel usage={usage} />
       <ModelsPanel seller={seller} />
+      <WorkersPanel />
       <div className="gc-grid gc-grid--2">
         <EventsPanel events={events} />
         <PaymentsPanel usage={usage.data} />
@@ -120,6 +121,35 @@ function ModelsPanel({ seller }: { seller: AvailableSeller }) {
           { key: 'failures', header: 'Failures', align: 'right', render: (row) => formatNumber(row.consecutiveFailures), sortValue: (row) => row.consecutiveFailures },
           { key: 'last', header: 'Last result', secondary: true, render: (row) => <span className="gc-ellipsis" title={lastResult(row)}>{lastResult(row)}</span> },
           { key: 'probe', header: 'Checked', align: 'right', optional: true, render: (row) => formatRelative(row.checkedAt ?? row.lastProbeAt), sortValue: (row) => row.checkedAt ?? row.lastProbeAt ?? 0 },
+        ]} />
+    </Panel>
+  )
+}
+
+/** A worker's display name: the name its app announced, else its address. */
+function workerName(worker: SellerWorker): string {
+  return worker.agent?.match(/\(([^)]+)\)\s*$/)?.[1] ?? shortId(worker.address)
+}
+
+/** Only for a seller running the worker-pool provider: the Macs serving it. */
+function WorkersPanel() {
+  const workers = useSellerWorkers()
+  if (!workers.data?.available) return null
+  return (
+    <Panel title="Workers" description="Macs serving this seller's worker pool. Earnings are each worker's share after the protocol fee and your pool's cut; the pool contract pays them at settlement." flush>
+      <DataTable<SellerWorker> label="Workers" rows={workers.data.workers} rowKey={(row) => row.address}
+        empty={<EmptyState title="No workers yet" body="Workers appear here once a Mac joins the pool." />}
+        columns={[
+          { key: 'name', header: 'Worker', render: (row) => <span className="gc-ellipsis" title={row.address}>{workerName(row)}</span>, sortValue: (row) => workerName(row) },
+          {
+            key: 'status', header: 'Status', sortValue: (row) => (row.connected ? 0 : 1),
+            render: (row) => (row.connected ? <Badge tone="neutral">Online</Badge> : <span className="gc-muted">{`Seen ${formatRelative(row.lastSeenAt)}`}</span>),
+          },
+          { key: 'speed', header: 'Speed', align: 'right', render: (row) => (row.tokensPerSecond === null ? '—' : `${formatNumber(Math.round(row.tokensPerSecond))} tok/s`), sortValue: (row) => row.tokensPerSecond ?? 0 },
+          { key: 'requests', header: 'Requests (7d)', align: 'right', render: (row) => formatNumber(row.requestsWeek), sortValue: (row) => row.requestsWeek },
+          { key: 'online', header: 'Online (7d)', align: 'right', optional: true, render: (row) => `${formatNumber(Math.round(row.onlineHoursWeek))} h`, sortValue: (row) => row.onlineHoursWeek },
+          { key: 'earned', header: 'Earned (7d)', align: 'right', render: (row) => formatUsd(row.earnedWeekUsdc), sortValue: (row) => row.earnedWeekUsdc },
+          { key: 'total', header: 'Earned total', align: 'right', secondary: true, render: (row) => formatUsd(row.earnedTotalUsdc), sortValue: (row) => row.earnedTotalUsdc },
         ]} />
     </Panel>
   )

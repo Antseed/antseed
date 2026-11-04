@@ -13,6 +13,7 @@ import { toPeerId } from '../src/types/peer.js';
 import { estimateCostFromBytes } from '../src/payments/pricing.js';
 import { decodeSpendingAuth, encodeSpendingAuth } from '@antseed/protocol/payment-codec';
 import { getServiceMetadataId, MAX_METADATA_SERVICES } from '@antseed/protocol/signatures';
+import { decodeWorkerTail } from '@antseed/protocol/worker-attribution';
 import type { SpendingAuthPayload } from '@antseed/protocol/messages';
 import { captureUnitBillingContext } from '@antseed/buyer-core';
 
@@ -724,6 +725,46 @@ describe('BuyerPaymentManager', () => {
     await expect(
       manager.signPerRequestAuth('nonexistent-peer', { inputBytes: new Uint8Array(0), outputBytes: new Uint8Array(0) }),
     ).rejects.toThrow(/No active session/);
+  });
+
+  it('signs per-worker totals for worker pool requests and keeps them across a restart', async () => {
+    const sellerPeerId = fakePeerId('seller-worker-pool');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    await manager.handleAuthAck(sellerPeerId, { channelId });
+    const workerA = '0x1000000000000000000000000000000000000001';
+    const workerB = '0x2000000000000000000000000000000000000002';
+    const stats = (requestId: string, sellerClaimedCost: bigint) => ({
+      inputBytes: SAMPLE_INPUT,
+      outputBytes: SAMPLE_OUTPUT,
+      sellerClaimedCost,
+      reportedInputTokens: 100n,
+      reportedOutputTokens: 10n,
+      service: 'qwen',
+      requestId,
+    });
+
+    manager.recordWorkerAttribution('req-a', workerA);
+    await manager.signPerRequestAuth(sellerPeerId, stats('req-a', 100n));
+    manager.recordWorkerAttribution('req-b', workerB);
+    await manager.signPerRequestAuth(sellerPeerId, stats('req-b', 150n));
+    // A request no worker was assigned stays unattributed (the pool's remainder).
+    const { payload } = await manager.signPerRequestAuth(sellerPeerId, stats('req-c', 50n));
+    expect(decodeWorkerTail(payload.metadata)).toEqual([
+      { worker: workerA, cumulativeAmount: 100n },
+      { worker: workerB, cumulativeAmount: 150n },
+    ]);
+    expect(decodeMetadataTokens(payload.metadata).inputTokens).toBe(300n);
+
+    store.close();
+    store = new ChannelStore(tempDir);
+    manager = new BuyerPaymentManager(identity, makeConfig(tempDir), store);
+    manager.setSigner(identity.wallet);
+    manager.recordWorkerAttribution('req-d', workerA);
+    const after = await manager.signPerRequestAuth(sellerPeerId, stats('req-d', 25n));
+    expect(decodeWorkerTail(after.payload.metadata)).toEqual([
+      { worker: workerA, cumulativeAmount: 125n },
+      { worker: workerB, cumulativeAmount: 150n },
+    ]);
   });
 
   // ── handleNeedAuth ─────────────────────────────────────────────

@@ -23,6 +23,7 @@ import {
   boundServiceMetadata,
 } from '@antseed/protocol/signatures';
 import type { SpendingAuthMessage, SpendingAuthMetadata } from '@antseed/protocol/signatures';
+import { decodeWorkerTail, withWorkerAttribution } from '@antseed/protocol/worker-attribution';
 import { debugLog, debugWarn } from './debug.js';
 import { peerIdToAddress, type PeerId } from '@antseed/protocol/peer-id';
 import type { SellerAddressResolver } from './seller-address-resolver.js';
@@ -293,6 +294,8 @@ export class BuyerPaymentManager {
    *  Used in handleNeedAuth to validate cost with the correct pricing tier
    *  without trusting the seller's claim of which service was used. */
   private readonly _requestService = new RequestServiceTracker();
+  /** requestId -> worker a pool request was encrypted for; its signed amount is attributed to that worker. */
+  private readonly _requestWorker = new RequestServiceTracker();
   /**
    * requestId -> trusted buyer-owned billing identity, request facts, and mode.
    *
@@ -413,7 +416,10 @@ export class BuyerPaymentManager {
     const peerId = channel.peerId;
     const persistedCumulative = BigInt(channel.authMax);
     this._cumulativeAmount.set(peerId, persistedCumulative);
-    const metadata = this._sanitizeMetadata(this._channelStore.getChannelMetadata(channel));
+    const stored = this._channelStore.getChannelMetadata(channel);
+    // Worker attribution lives only in the signed metadata bytes, not in store columns.
+    const workers = channel.latestMetadata ? decodeWorkerTail(channel.latestMetadata) : null;
+    const metadata = this._sanitizeMetadata(workers ? { ...stored, workers } : stored);
     this._metadata.set(peerId, metadata);
     if (persistServiceMetadata && !this._disableMetadataV2Services) {
       this._persistServiceMetadata(channel.sessionId, metadata);
@@ -509,6 +515,7 @@ export class BuyerPaymentManager {
       cumulativeVideoGenerations: current.cumulativeVideoGenerations ?? 0n,
       cumulativeVideoSeconds: current.cumulativeVideoSeconds ?? 0n,
       services: [],
+      ...(current.workers ? { workers: current.workers } : {}),
     };
   }
 
@@ -516,12 +523,23 @@ export class BuyerPaymentManager {
     previous: SpendingAuthMetadata | undefined,
     service: string | undefined,
     delta: Parameters<typeof advanceUsageMetadata>[2],
+    requestId?: string,
   ): SpendingAuthMetadata {
-    return advanceUsageMetadata(
+    const next = advanceUsageMetadata(
       this._sanitizeMetadata(previous),
       this._disableMetadataV2Services ? undefined : service,
       delta,
     );
+    const worker = this._requestWorker.get(requestId);
+    return worker ? { ...next, workers: withWorkerAttribution(next.workers, worker, delta.amount) } : next;
+  }
+
+  /**
+   * Attribute a request's signed amount to the pool worker it was encrypted
+   * for. Only that worker could decrypt it, so only it can have answered.
+   */
+  recordWorkerAttribution(requestId: string, worker: string): void {
+    this._requestWorker.track(requestId, worker);
   }
 
   private _getCeiling(sellerPeerId: string): bigint {
@@ -1688,6 +1706,7 @@ export class BuyerPaymentManager {
         // Any remainder of a NeedAuth-counted request is still this service's amount.
         amount: signedDelta,
       },
+      responseStats.requestId,
     );
     debugLog(
       `[BuyerPayment] signPerRequestAuth #${newMeta.cumulativeRequestCount}: ` +
@@ -2050,6 +2069,7 @@ export class BuyerPaymentManager {
         videoGenerations: acceptedVideoGenerations,
         videoSeconds: acceptedVideoSeconds,
       }, { deliveredResponse, alreadyCounted }),
+      payload.requestId,
     );
     // Persistence and transport failures must propagate to the connection
     // owner. In particular, swallowing an IndexedDB failure leaves the browser

@@ -1,4 +1,5 @@
 import { type AbstractSigner, type TypedDataDomain, AbiCoder, hexlify, id, keccak256, randomBytes } from 'ethers';
+import { appendWorkerTail, type WorkerAttribution } from './worker-attribution.js';
 
 // =========================================================================
 // EIP-712 Types — AntSeed SpendingAuth (cumulative payment authorization)
@@ -158,6 +159,11 @@ export interface SpendingAuthMetadata {
   cumulativeVideoGenerations?: bigint;
   cumulativeVideoSeconds?: bigint;
   services?: SpendingAuthServiceMetadata[];
+  /**
+   * Worker pool attribution, appended after the ABI encoding (see
+   * worker-attribution.ts). Absent for every seller that is not a pool.
+   */
+  workers?: WorkerAttribution[];
 }
 
 export interface SpendingAuthServiceMetadata {
@@ -197,7 +203,7 @@ export function encodeMetadata(metadata: SpendingAuthMetadata): string {
     cumulativeVideoGenerations: service.cumulativeVideoGenerations ?? 0n,
     cumulativeVideoSeconds: service.cumulativeVideoSeconds ?? 0n,
   }));
-  return coder.encode(
+  return appendWorkerTail(coder.encode(
     ['uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256', SERVICE_METADATA_ABI_TYPE],
     [
       METADATA_VERSION,
@@ -209,7 +215,7 @@ export function encodeMetadata(metadata: SpendingAuthMetadata): string {
       metadata.cumulativeVideoSeconds ?? 0n,
       services,
     ],
-  );
+  ), metadata.workers);
 }
 
 export function getServiceMetadataId(service: string): string {

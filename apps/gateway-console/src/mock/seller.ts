@@ -1,5 +1,5 @@
 /** Dev mock of a seller on the gateway host (`VITE_MOCK=1`): a running seller with one failing model. */
-import type { SellerAlertSettings, SellerAlertsPatch, SellerEventView, SellerFreeTierProgramPatch, SellerFreeTierProgramSettings, SellerMarket, SellerMarketOffer, SellerPromote, SellerReputation, SellerRestartView, SellerSettings, SellerSettingsPatch, SellerStatus, SellerUsage, SellerVerificationsInput, TelegramChat } from '../api/types'
+import type { SellerAlertSettings, SellerAlertsPatch, SellerEventView, SellerFreeTierProgramPatch, SellerFreeTierProgramSettings, SellerMarket, SellerMarketOffer, SellerPromote, SellerReputation, SellerRestartView, SellerSettings, SellerSettingsPatch, SellerStatus, SellerUsage, SellerVerificationsInput, SellerWorkers, TelegramChat } from '../api/types'
 
 const DAY = 86_400_000
 const FAKE_PEER = '0xfa1e000000000000000000000000000000000007'
@@ -53,6 +53,18 @@ export function mockSellerUsage(days: number, now = Date.now()): SellerUsage {
     deliveredUsdc: 84.21,
     settledUsdc: 79.6,
   }
+}
+
+export function mockSellerWorkers(now = Date.now()): SellerWorkers {
+  const worker = (n: number, agent: string, connected: boolean, tokensPerSecond: number, requestsWeek: number, onlineHoursWeek: number) => ({
+    address: `0xfa1e${String(n).padStart(36, '0')}`, agent, connected, lastSeenAt: connected ? now : now - n * 3_600_000, onlineHoursWeek,
+    requestsWeek, outputTokensWeek: requestsWeek * 420, tokensPerSecond, earnedWeekUsdc: requestsWeek * 0.0021, earnedTotalUsdc: requestsWeek * 0.0055,
+  })
+  return { available: true, workers: [
+    worker(1, 'antseed-mac/0.1.0 (Studio)', true, 541, 1_820, 151),
+    worker(2, 'antseed-mac/0.1.0 (MacBook Pro)', true, 312, 640, 58),
+    worker(3, 'antseed-mac/0.1.0 (Office mini)', false, 188, 95, 12),
+  ] }
 }
 
 const DEFAULT_TIERS: Array<{ minPower: number; multiplier: number | 'unlimited' }> = [

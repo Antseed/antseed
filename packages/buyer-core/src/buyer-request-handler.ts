@@ -36,6 +36,13 @@ import {
 import { CONNECTION_CAPABILITY_RESPONSE_AUTH_V1 } from '@antseed/protocol/messages';
 import { buyerFault, peerFault } from './errors.js';
 import { adaptPeerFaultErrorResponse } from './peer-error-response.js';
+import {
+  WORKER_ASSIGN_PATH,
+  isWorkerUnavailable,
+  peerSupportsWorkerE2E,
+  type SealedWorkerRequest,
+  type WorkerE2EClient,
+} from './worker-e2e.js';
 
 export interface RequestStreamResponseMetadata {
   streaming: boolean;
@@ -111,6 +118,8 @@ export interface BuyerRequestHandlerDeps {
    * consent to count their stake for this buyer on sellers' staked free tiers.
    */
   freeTierDelegationsHeader?: () => string | null;
+  /** Encrypts requests to worker pools' workers (sellers advertising worker-pool-e2e.v2). */
+  workerE2E?: WorkerE2EClient | null;
 }
 
 export const FREE_TIER_DELEGATIONS_HEADER = 'x-antseed-free-tier-delegations';
@@ -258,9 +267,37 @@ export class BuyerRequestHandler {
       ? this._deps.negotiator?.bpm?.videoJobDuration(peer.peerId, videoRoute.protocol, videoJobId)
       : undefined;
 
+    // Worker pools: encrypt to one of the seller's workers so the seller only
+    // routes ciphertext. Everything above read the plaintext request; the
+    // request sent and the raw response stay on hand for ResponseAuth, which
+    // signs wire bytes.
+    const workerE2E = !options?.controlPlane && requestedService && this._deps.workerE2E && peerSupportsWorkerE2E(peer)
+      ? this._deps.workerE2E
+      : null;
+    const plainReq = req;
+    let sealed: SealedWorkerRequest | null = null;
+    let wireResponse: SerializedHttpResponse | null = null;
+    const sealForAttempt = async (): Promise<void> => {
+      if (!workerE2E || !requestedService) return;
+      const channelId = this._deps.negotiator?.bpm?.getActiveSession(peer.peerId)?.sessionId ?? null;
+      sealed = await workerE2E.seal(peer, plainReq, requestedService, (body) => this.sendRequest(peer, {
+        requestId: `${plainReq.requestId}-assign`,
+        method: 'POST',
+        path: WORKER_ASSIGN_PATH,
+        headers: { 'content-type': 'application/json' },
+        body,
+      }, undefined, { controlPlane: true, ...(options?.signal ? { signal: options.signal } : {}) }), channelId);
+      req = sealed.request;
+      // Only the worker it is encrypted for can answer it.
+      this._deps.negotiator?.bpm?.recordWorkerAttribution(plainReq.requestId, sealed.worker);
+    };
+
     let startTime = Date.now();
 
     const executeRequest = (): Promise<SerializedHttpResponse> => new Promise<SerializedHttpResponse>((resolve, reject) => {
+      const session = sealed;
+      const rawChunks: Uint8Array[] = [];
+      let decryptStream = false;
       const timeoutMs = this._config.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
       const maxStreamBufferBytes = Math.max(1, this._config.maxStreamBufferBytes ?? 16 * 1024 * 1024);
       const maxStreamDurationMs = Math.max(1, this._config.maxStreamDurationMs ?? DEFAULT_MAX_STREAM_DURATION_MS);
@@ -351,12 +388,20 @@ export class BuyerRequestHandler {
 
       resetTimeout(streamInitialResponseTimeoutMs);
 
-      const finish = (response: SerializedHttpResponse): void => {
+      const finish = (response: SerializedHttpResponse, raw: SerializedHttpResponse = response): void => {
         if (settled) return;
         settled = true;
         if (activeTimeout) clearTimeout(activeTimeout);
         cleanupAbortListener();
         cleanupConnectionListener();
+        wireResponse = stripPeerControlledResponseHeaders(stripStreamingHeader(raw));
+        if (session && !session.verified && response.statusCode < 400) {
+          debugWarn(`[BuyerRequest] Worker response for ${req.requestId.slice(0, 8)} ended without its end marker`);
+        }
+        if (session && !session.usageConsistent) {
+          // Already streamed to the client; the mismatch is the seller's to answer for.
+          debugWarn(`[BuyerRequest] Seller ${peer.peerId.slice(0, 12)}... reported usage that differs from its worker's for ${req.requestId.slice(0, 8)}`);
+        }
         const cleaned = stripPeerControlledResponseHeaders(stripStreamingHeader(response));
         debugLog(`[BuyerRequest] Response for ${req.requestId.slice(0, 8)}: status=${cleaned.statusCode} (${Date.now() - startTime}ms, ${cleaned.body.length}b)`);
         resolve(cleaned);
@@ -398,6 +443,7 @@ export class BuyerRequestHandler {
             streamBufferedBytes = 0;
             streamStartResponse = stripPeerControlledResponseHeaders(stripStreamingHeader(response));
             forwardStreamToCallbacks = response.statusCode < 400;
+            decryptStream = session !== null && (response.headers['content-type'] ?? '').includes('text/event-stream');
             debugLog(`[BuyerRequest] Stream started for ${req.requestId.slice(0, 8)}; idle-timeout=${streamIdleTimeoutMs}ms`);
             resetTimeout(streamIdleTimeoutMs);
             if (forwardStreamToCallbacks) {
@@ -406,13 +452,25 @@ export class BuyerRequestHandler {
             return;
           }
 
+          let plainResponse = response;
+          if (session) {
+            try {
+              plainResponse = { ...response, body: session.openBody(response.body) };
+              // Only the pool's own errors may arrive unsealed.
+              if (response.statusCode < 400 && !session.verified) throw new Error('unsealed success');
+              if (!session.usageConsistent) throw new Error('usage mismatch');
+            } catch {
+              fail(peerFault(`Worker response for ${req.requestId} failed verification`, 'peer-protocol-violation'));
+              return;
+            }
+          }
           callbacks?.onResponseStart?.(
             adaptPeerResponse(
-              stripPeerControlledResponseHeaders(stripStreamingHeader(response)),
+              stripPeerControlledResponseHeaders(stripStreamingHeader(plainResponse)),
             ),
             { streaming: false },
           );
-          finish(response);
+          finish(plainResponse, response);
         },
         async (chunk) => {
           if (settled) return;
@@ -438,6 +496,17 @@ export class BuyerRequestHandler {
             mux.cancelProxyRequest(req.requestId);
             fail(new Error(`Stream ${req.requestId} exceeded max duration (${maxStreamDurationMs}ms)`));
             return;
+          }
+
+          if (decryptStream) {
+            rawChunks.push(chunk.data);
+            try {
+              chunk = { ...chunk, data: session!.pushStream(chunk.data) };
+            } catch {
+              mux.cancelProxyRequest(req.requestId);
+              fail(peerFault(`Worker stream for ${req.requestId} failed verification`, 'peer-protocol-violation'));
+              return;
+            }
           }
 
           if (forwardStreamToCallbacks) {
@@ -472,7 +541,7 @@ export class BuyerRequestHandler {
           finish({
             ...streamStartResponse,
             body: concatChunks(streamChunks),
-          });
+          }, decryptStream ? { ...streamStartResponse, body: concatChunks(rawChunks) } : undefined);
         },
       );
     });
@@ -482,6 +551,12 @@ export class BuyerRequestHandler {
     const executeCountedRequest = async (): Promise<SerializedHttpResponse> => {
       bpm?.beginPaidRequest(peer.peerId);
       try {
+        await sealForAttempt();
+        const response = await executeRequest();
+        if (!sealed || !isWorkerUnavailable(response)) return response;
+        // The assigned worker left or is busy: take another one, once.
+        workerE2E!.forget(peer.peerId, requestedService!);
+        await sealForAttempt();
         return await executeRequest();
       } finally {
         bpm?.endPaidRequest(peer.peerId);
@@ -545,7 +620,7 @@ export class BuyerRequestHandler {
       this._recordResponseAuth(
         peer,
         req,
-        retriedResponse,
+        wireResponse ?? retriedResponse,
         requestedService,
         verificationMux,
         options?.captureResponseAuthPreimages === true,
@@ -560,7 +635,7 @@ export class BuyerRequestHandler {
     this._recordResponseAuth(
       peer,
       req,
-      response,
+      wireResponse ?? response,
       requestedService,
       verificationMux,
       options?.captureResponseAuthPreimages === true,

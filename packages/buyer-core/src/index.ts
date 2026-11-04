@@ -22,3 +22,4 @@ export * from './buyer-payment-negotiator.js';
 export * from './buyer-free-usage-manager.js';
 export * from './buyer-request-handler.js';
 export * from './peer-error-response.js';
+export * from './worker-e2e.js';

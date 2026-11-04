@@ -1,0 +1,50 @@
+{
+  "name": "@antseed/provider-worker-pool",
+  "version": "0.1.0",
+  "description": "Antseed provider plugin that serves buyer requests from a pool of worker machines (e.g. Macs running local models)",
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./protocol": {
+      "import": "./dist/protocol.js",
+      "types": "./dist/protocol.d.ts"
+    },
+    "./worker": {
+      "import": "./dist/worker.js",
+      "types": "./dist/worker.d.ts"
+    }
+  },
+  "bin": {
+    "antseed-pool-worker": "dist/worker-cli.js"
+  },
+  "scripts": {
+    "prebuild": "node ../../scripts/remove-paths.mjs dist",
+    "build": "tsc",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@antseed/provider-core": "workspace:*",
+    "better-sqlite3": "^12.6.2",
+    "ethers": "~6.16.0",
+    "ws": "^8.18.0"
+  },
+  "peerDependencies": {
+    "@antseed/node": ">=0.1.0"
+  },
+  "devDependencies": {
+    "@antseed/node": "workspace:*",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/ws": "^8.5.12",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  }
+}

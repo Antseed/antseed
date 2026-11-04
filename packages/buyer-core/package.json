@@ -122,6 +122,10 @@
     "./verification-mux": {
       "import": "./dist/verification-mux.js",
       "types": "./dist/verification-mux.d.ts"
+    },
+    "./worker-e2e": {
+      "import": "./dist/worker-e2e.js",
+      "types": "./dist/worker-e2e.d.ts"
     }
   }
 }

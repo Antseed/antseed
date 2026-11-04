@@ -84,6 +84,10 @@
     "./connection-state": {
       "import": "./dist/connection-state.js",
       "types": "./dist/connection-state.d.ts"
+    },
+    "./worker-attribution": {
+      "import": "./dist/worker-attribution.js",
+      "types": "./dist/worker-attribution.d.ts"
     }
   },
   "scripts": {

@@ -14,6 +14,7 @@ import { usePageData } from '../data';
 import { host } from '../host';
 import { poolDataOptions } from '../pool-data';
 import { formatAnts, isZero, sumBig, toBigInt } from '../format';
+import { WorkerPoolsCard } from '../components/WorkerPools';
 
 const RewardRefreshContext = createContext({ updating: false, stale: false });
 
@@ -38,6 +39,7 @@ export function RewardsPage() {
         {data.scope !== 'buyer' ? <RewardsBody onRefresh={page.refresh} data={data} />
           : host().buyerRewards ? null : <p className="hint">Connect the wallet that holds your staking positions to see its staking rewards.</p>}
       </RewardRefreshContext.Provider> : null}
+      {data && data.scope !== 'buyer' ? <WorkerPoolsCard stale={stale} /> : null}
     </>
   );
 }

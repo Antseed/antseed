@@ -101,6 +101,7 @@ import {
   type StoredChannel,
 } from "./payments/index.js";
 import { debugLog, debugWarn } from "./utils/debug.js";
+import { NodeWorkerE2EClient } from "./worker-pool/client.js";
 import { parsePublicAddress } from "./discovery/public-address.js";
 import { MAX_PEER_CAPABILITIES } from "./discovery/metadata-validator.js";
 import { sanitizePeerDisplayName } from "./discovery/display-name.js";
@@ -353,6 +354,10 @@ export interface NodeConfig {
   maxUploadBodyBytes?: number;
   /** Maximum wall time allowed for a streaming response. Default: 30 minutes. */
   maxStreamDurationMs?: number;
+  /** Only send worker pools requests for workers attesting a hardened Mac (docs/protocol/worker-pool.md). */
+  requireAttestedWorkers?: boolean;
+  /** Also require Apple's attestation of the worker's Mac, from the pool operator's MDM. */
+  requireAppleVerifiedWorkers?: boolean;
   /** Allow private/loopback IPs in DHT lookups. Default: false. Set true for local testing. */
   allowPrivateIPs?: boolean;
   /** Use only the provided bootstrapNodes and skip the official public DHT nodes. Default: false.
@@ -2096,6 +2101,7 @@ export class AntseedNode extends EventEmitter {
       const baseCapabilities = [
         ...(this._connectionManager.supportsWebRtc ? [CONNECTION_CAPABILITY_WEBRTC_V1] : []),
         ...(this._config.capabilities ?? []),
+        ...this._providers.flatMap((provider) => provider.peerCapabilities ?? []),
       ];
       const usedCapabilities = builtinPeerCapabilities(this._depositRelayer !== null).length + baseCapabilities.length;
       const extraCapabilities = [...baseCapabilities, ...this._freeTierCapabilities(usedCapabilities)];
@@ -2148,6 +2154,11 @@ export class AntseedNode extends EventEmitter {
       };
       this._announcer = new PeerAnnouncer(announcerConfig);
       this._announcer.startPeriodicAnnounce();
+      for (const provider of this._providers) {
+        provider.setServicesChangedListener?.(() => {
+          void this.refreshSellerMetadata().catch((err) => debugWarn(`[Node] Metadata refresh after ${provider.name} services changed failed: ${err instanceof Error ? err.message : err}`));
+        });
+      }
 
       // Serve metadata on the signaling port (HTTP requests are auto-detected)
       this._connectionManager!.setMetadataProvider(
@@ -2288,6 +2299,10 @@ export class AntseedNode extends EventEmitter {
         getVerificationMux: (peerId, conn) => this._getOrCreateVerificationMux(peerId, conn as PeerConnection),
         registerPaymentMux: (peerId, pmux) => this._paymentMuxes.set(peerId, pmux),
         freeTierDelegationsHeader: () => this._freeTierDelegationsHeader(identity.wallet.address),
+        workerE2E: new NodeWorkerE2EClient(identity.wallet, {
+          requireAttestedWorkers: this._config.requireAttestedWorkers === true,
+          requireAppleVerifiedWorkers: this._config.requireAppleVerifiedWorkers === true,
+        }),
       },
     );
 

@@ -76,6 +76,12 @@ export interface AntseedVerifierPlugin extends AntseedPluginBase {
 }
 
 export const ANTSEED_ATTEST_PATH = '/_antseed/attest'
+/**
+ * Free, unmetered provider routes (e.g. a worker pool's assignment). The
+ * seller hands requests under this prefix to the provider that serves the
+ * body's `model`, through `Provider.handleControlRequest`.
+ */
+export const ANTSEED_PROVIDER_CONTROL_PATH = '/_antseed/provider'
 
 export interface Prover extends AntseedPluginBase {
   type: 'prover'

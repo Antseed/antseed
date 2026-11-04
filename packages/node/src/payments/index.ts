@@ -117,6 +117,8 @@ export type { ANTSTokenClientConfig } from './evm/ants-token-client.js';
 
 // Emissions
 export { EmissionsClient } from './evm/emissions-client.js';
+export { WorkerPoolClient, parseWorkerPayoutLink } from './evm/worker-pool-client.js';
+export type { WorkerPoolClientConfig, WorkerPayoutAuthorization } from './evm/worker-pool-client.js';
 export type { EmissionsClientConfig, EmissionsEpochParams } from './evm/emissions-client.js';
 export { RegistryClient } from './evm/registry-client.js';
 export type { RegistryClientConfig } from './evm/registry-client.js';

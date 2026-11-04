@@ -1,0 +1,148 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import type { AntseedProviderPlugin, Provider, ServiceApiProtocol } from '@antseed/node';
+import { parseServiceCapabilitiesJson, parseServicePricingJson } from '@antseed/provider-core';
+import { WorkerLedger } from './ledger.js';
+import { NanoMdmAttestor } from './mdm.js';
+import { WorkerPool } from './pool.js';
+import { WorkerPoolProvider } from './provider.js';
+
+export { WorkerLedger } from './ledger.js';
+export { WorkerPool, NoWorkerAvailableError, WorkerUnavailableError, type WorkerPoolOptions, type WorkerSummary } from './pool.js';
+export { WorkerPoolProvider } from './provider.js';
+export * from './protocol.js';
+export { NanoMdmAttestor, parsePlist, deviceInformationCommand, type DeviceAttestor, type NanoMdmAttestorOptions } from './mdm.js';
+
+function parseNonNegativeNumber(raw: string | undefined, key: string, fallback: number): number {
+  const parsed = raw === undefined || raw === '' ? fallback : Number.parseFloat(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new Error(`${key} must be a non-negative number`);
+  }
+  return parsed;
+}
+
+function parseList(raw: string | undefined): string[] {
+  return raw ? raw.split(',').map((s) => s.trim()).filter(Boolean) : [];
+}
+
+const plugin: AntseedProviderPlugin = {
+  name: 'worker-pool',
+  displayName: 'Worker Pool',
+  version: '0.1.0',
+  type: 'provider',
+  description: 'Serve buyers from a pool of worker machines (e.g. Macs running local models) that connect to this seller',
+  configSchema: [
+    { key: 'WORKER_POOL_PORT', label: 'Worker Port', type: 'number', required: false, default: 8790, description: 'Port workers connect to (WebSocket)' },
+    { key: 'WORKER_POOL_HOST', label: 'Worker Bind Host', type: 'string', required: false, default: '0.0.0.0', description: 'Interface the worker server binds to' },
+    { key: 'WORKER_POOL_SELLER_ADDRESS', label: 'Seller Address', type: 'string', required: true, description: 'Address buyers pay: the AntseedWorkerPool contract (or this seller\'s own address). Workers certify their encryption keys for it.' },
+    { key: 'WORKER_POOL_ID', label: 'Pool ID', type: 'string', required: false, description: 'Name workers sign into their join message (defaults to "antseed-pool")' },
+    { key: 'WORKER_POOL_TLS_CERT', label: 'TLS Certificate', type: 'string', required: false, description: 'Path to a PEM certificate; serve wss:// directly instead of behind a TLS proxy' },
+    { key: 'WORKER_POOL_TLS_KEY', label: 'TLS Key', type: 'string', required: false, description: 'Path to the PEM private key for WORKER_POOL_TLS_CERT' },
+    { key: 'WORKER_POOL_WORKER_SHARE_BPS', label: 'Worker Share', type: 'number', required: false, default: 9000, description: 'Share of each paid request credited to the worker, in basis points (9000 = 90%)' },
+    { key: 'WORKER_POOL_PROTOCOL_FEE_BPS', label: 'Protocol Fee', type: 'number', required: false, default: 200, description: 'AntseedChannels protocol fee in basis points, for the local earnings estimate workers see' },
+    { key: 'WORKER_POOL_ALLOWED_WORKERS', label: 'Allowed Workers', type: 'string[]', required: false, description: 'Worker addresses allowed to join (empty = anyone)' },
+    { key: 'WORKER_POOL_REQUIRE_ATTESTATION', label: 'Require Attestation', type: 'boolean', required: false, default: false, description: 'Only admit workers attesting a hardened Mac: Developer ID signed app with the hardened runtime, SIP on, and a Secure Enclave key only that app can use' },
+    { key: 'WORKER_POOL_ATTESTED_TEAMS', label: 'Attested Teams', type: 'string[]', required: false, description: 'Apple Developer team IDs whose signed worker apps count as hardened (empty = any team)' },
+    { key: 'WORKER_POOL_MDM_URL', label: 'MDM URL', type: 'string', required: false, description: 'Your NanoMDM server, for Apple-signed attestations of enrolled Macs (optional; you run it, Macs enroll in it)' },
+    { key: 'WORKER_POOL_MDM_API_KEY', label: 'MDM API Key', type: 'secret', required: false, description: 'NanoMDM API key' },
+    { key: 'WORKER_POOL_MDM_WEBHOOK_PORT', label: 'MDM Webhook Port', type: 'number', required: false, default: 8791, description: 'Port NanoMDM posts command results to (nanomdm -webhook-url http://<pool>:<port>/<secret path>)' },
+    { key: 'WORKER_POOL_MDM_WEBHOOK_PATH', label: 'MDM Webhook Path', type: 'secret', required: false, description: 'Secret path for that webhook URL' },
+    { key: 'WORKER_POOL_REQUIRE_DEVICE_ATTESTATION', label: 'Require Apple Attestation', type: 'boolean', required: false, default: false, description: 'Only route to Macs Apple attests through your MDM (SIP on, serial matches)' },
+    { key: 'WORKER_POOL_VERIFY_ON_JOIN', label: 'Verify On Join', type: 'boolean', required: false, default: true, description: 'Send each newly offered model a short test completion before routing buyers to it' },
+    { key: 'WORKER_POOL_LEDGER_PATH', label: 'Ledger Path', type: 'string', required: false, description: 'SQLite file for worker earnings (defaults to <data dir>/worker-pool.db)' },
+    { key: 'ANTSEED_INPUT_USD_PER_MILLION', label: 'Input Price', type: 'number', required: false, default: 0, description: 'Input price in USD per 1M tokens' },
+    { key: 'ANTSEED_OUTPUT_USD_PER_MILLION', label: 'Output Price', type: 'number', required: false, default: 0, description: 'Output price in USD per 1M tokens' },
+    { key: 'ANTSEED_CACHED_INPUT_USD_PER_MILLION', label: 'Cached Input Price', type: 'number', required: false, description: 'Cached input price in USD per 1M tokens (defaults to input price)' },
+    { key: 'ANTSEED_MAX_CONCURRENCY', label: 'Max Concurrency', type: 'number', required: false, default: 64, description: 'Cap on concurrent requests across all workers' },
+    { key: 'ANTSEED_ALLOWED_SERVICES', label: 'Services', type: 'string[]', required: true, description: 'Services this pool sells; workers offering others are ignored' },
+    { key: 'ANTSEED_SERVICE_PRICING_JSON', label: 'Service Pricing JSON', type: 'string', required: false, description: 'Per-service pricing JSON' },
+    { key: 'ANTSEED_SERVICE_CAPABILITIES_JSON', label: 'Service Capabilities JSON', type: 'string', required: false, description: 'Per-service model capability JSON' },
+  ],
+
+  createProvider(config: Record<string, string>): Provider {
+    const catalog = parseList(config['ANTSEED_ALLOWED_SERVICES']);
+    if (catalog.length === 0) throw new Error('ANTSEED_ALLOWED_SERVICES must list the services this pool sells');
+
+    const servicePricing = parseServicePricingJson(config['ANTSEED_SERVICE_PRICING_JSON']);
+    const pricing: Provider['pricing'] = {
+      defaults: {
+        inputUsdPerMillion: parseNonNegativeNumber(config['ANTSEED_INPUT_USD_PER_MILLION'], 'ANTSEED_INPUT_USD_PER_MILLION', 0),
+        outputUsdPerMillion: parseNonNegativeNumber(config['ANTSEED_OUTPUT_USD_PER_MILLION'], 'ANTSEED_OUTPUT_USD_PER_MILLION', 0),
+        ...(config['ANTSEED_CACHED_INPUT_USD_PER_MILLION'] ? { cachedInputUsdPerMillion: parseNonNegativeNumber(config['ANTSEED_CACHED_INPUT_USD_PER_MILLION'], 'ANTSEED_CACHED_INPUT_USD_PER_MILLION', 0) } : {}),
+      },
+      ...(servicePricing ? { services: servicePricing } : {}),
+    };
+
+    const workerShareBps = parseNonNegativeNumber(config['WORKER_POOL_WORKER_SHARE_BPS'], 'WORKER_POOL_WORKER_SHARE_BPS', 9000);
+    if (!Number.isInteger(workerShareBps) || workerShareBps > 10_000) {
+      throw new Error('WORKER_POOL_WORKER_SHARE_BPS must be a whole number from 0 to 10000');
+    }
+    const maxConcurrency = parseNonNegativeNumber(config['ANTSEED_MAX_CONCURRENCY'], 'ANTSEED_MAX_CONCURRENCY', 64);
+    const port = parseNonNegativeNumber(config['WORKER_POOL_PORT'], 'WORKER_POOL_PORT', 8790);
+    const certPath = config['WORKER_POOL_TLS_CERT'];
+    const keyPath = config['WORKER_POOL_TLS_KEY'];
+    if (Boolean(certPath) !== Boolean(keyPath)) throw new Error('Set both WORKER_POOL_TLS_CERT and WORKER_POOL_TLS_KEY, or neither');
+    const allowedWorkers = parseList(config['WORKER_POOL_ALLOWED_WORKERS']).map((address) => address.toLowerCase());
+    const attestedTeams = parseList(config['WORKER_POOL_ATTESTED_TEAMS']);
+    const mdmUrl = config['WORKER_POOL_MDM_URL'];
+    const deviceAttestor = mdmUrl
+      ? new NanoMdmAttestor({
+        url: mdmUrl,
+        apiKey: config['WORKER_POOL_MDM_API_KEY'] ?? '',
+        webhookPort: parseNonNegativeNumber(config['WORKER_POOL_MDM_WEBHOOK_PORT'], 'WORKER_POOL_MDM_WEBHOOK_PORT', 8791),
+        webhookPath: config['WORKER_POOL_MDM_WEBHOOK_PATH'] || 'mdm-webhook',
+        log: (line) => console.log(line),
+      })
+      : null;
+    if (config['WORKER_POOL_REQUIRE_DEVICE_ATTESTATION'] === 'true' && !deviceAttestor) {
+      throw new Error('WORKER_POOL_REQUIRE_DEVICE_ATTESTATION needs WORKER_POOL_MDM_URL');
+    }
+    const dataDir = config['ANTSEED_DATA_DIR'] ?? '.';
+    const seller = config['WORKER_POOL_SELLER_ADDRESS'];
+    if (!seller || !/^0x[0-9a-fA-F]{40}$/.test(seller)) {
+      throw new Error('WORKER_POOL_SELLER_ADDRESS must be the address buyers pay (the AntseedWorkerPool contract)');
+    }
+
+    const ledger = new WorkerLedger(config['WORKER_POOL_LEDGER_PATH'] || join(dataDir, 'worker-pool.db'));
+    const pool = new WorkerPool({
+      poolId: config['WORKER_POOL_ID'] || 'antseed-pool',
+      seller: seller.toLowerCase(),
+      catalog,
+      workerShareBps,
+      ledger,
+      port,
+      ...(config['WORKER_POOL_HOST'] ? { host: config['WORKER_POOL_HOST'] } : {}),
+      ...(certPath && keyPath ? { tls: { cert: readFileSync(certPath, 'utf-8'), key: readFileSync(keyPath, 'utf-8') } } : {}),
+      ...(allowedWorkers.length > 0 ? { allowedWorkers: new Set(allowedWorkers) } : {}),
+      verifyOnJoin: config['WORKER_POOL_VERIFY_ON_JOIN'] !== 'false',
+      requireAttestation: config['WORKER_POOL_REQUIRE_ATTESTATION'] === 'true',
+      ...(attestedTeams.length > 0 ? { attestedTeams: new Set(attestedTeams) } : {}),
+      ...(deviceAttestor ? { deviceAttestor, requireDeviceAttestation: config['WORKER_POOL_REQUIRE_DEVICE_ATTESTATION'] === 'true' } : {}),
+      log: (line) => console.log(line),
+    });
+
+    const serviceApiProtocols = Object.fromEntries(
+      catalog.map((service) => [service, ['openai-chat-completions'] as ServiceApiProtocol[]]),
+    );
+    const serviceCapabilities = parseServiceCapabilitiesJson(config['ANTSEED_SERVICE_CAPABILITIES_JSON']);
+    const provider = new WorkerPoolProvider({
+      pool,
+      ledger,
+      pricing,
+      workerShareBps,
+      protocolFeeBps: parseNonNegativeNumber(config['WORKER_POOL_PROTOCOL_FEE_BPS'], 'WORKER_POOL_PROTOCOL_FEE_BPS', 200),
+      maxConcurrency,
+      serviceApiProtocols,
+      ...(serviceCapabilities ? { serviceCapabilities } : {}),
+    });
+    return Object.assign(provider, {
+      async init(): Promise<void> {
+        await deviceAttestor?.start();
+        const boundPort = await pool.start();
+        console.log(`[worker-pool] accepting workers on port ${boundPort}`);
+      },
+    });
+  },
+};
+
+export default plugin;

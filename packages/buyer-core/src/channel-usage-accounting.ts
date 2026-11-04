@@ -103,6 +103,7 @@ export function advanceUsageMetadata(
     cumulativeVideoGenerations: (prev.cumulativeVideoGenerations ?? 0n) + (delta.videoGenerations ?? 0n),
     cumulativeVideoSeconds: (prev.cumulativeVideoSeconds ?? 0n) + (delta.videoSeconds ?? 0n),
     services: prev.services ?? [],
+    ...(prev.workers ? { workers: prev.workers } : {}),
   };
   return withServiceMetadata(totals, service, delta);
 }

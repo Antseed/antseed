@@ -19,6 +19,7 @@ import {
   UsageAccountingClient,
   UsageRewardsClient,
   WashTradingRegistryClient,
+  WorkerPoolClient,
   resolveLegacyContractAddresses,
 } from '@antseed/node/payments';
 import type { ProtocolPhase } from '../api-types.js';
@@ -53,6 +54,8 @@ export interface AntsChainConfig {
   recognizedUsage?: { status: 'deployed' | 'active'; effectiveEpoch: number; deploymentBlock?: number };
   /** Explorer REST base (Antscan) for seller profiles; optional. */
   explorerApiUrl?: string;
+  /** AntseedWorkerPool contracts whose worker payouts this dashboard shows (config.json payments.crypto). */
+  workerPoolAddresses?: string[];
 }
 
 export interface ResolvedStack {
@@ -262,6 +265,16 @@ export class AntsContext {
   }
   usageAccounting(): UsageAccountingClient | null {
     return this.optional('usageAccounting', this.chain.usageAccountingAddress, (address) => new UsageAccountingClient(this.base(address)));
+  }
+  /** Worker pools: the configured ones plus any linked in this session. */
+  workerPoolAddresses(): string[] {
+    return [...new Set((this.chain.workerPoolAddresses ?? []).map((address) => address.toLowerCase()))];
+  }
+  rememberWorkerPool(address: string): void {
+    this.chain.workerPoolAddresses = [...(this.chain.workerPoolAddresses ?? []), address];
+  }
+  workerPool(address: string): WorkerPoolClient {
+    return this.required('workerPool', 'workerPool', address, (pool) => new WorkerPoolClient(this.base(pool)));
   }
   usageRewards(): UsageRewardsClient | null {
     return this.optional('usageRewards', this.chain.usageRewardsAddress, (address) => new UsageRewardsClient(this.base(address)));

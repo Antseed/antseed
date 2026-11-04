@@ -422,3 +422,27 @@ export interface StakeUsageRequest { side: 'seller' | 'buyer'; epochs: number; s
 /** Restake staker + seller usage (+ buyer usage when operator) rewards in one job; `targetAgentId` moves the new positions into that pool. */
 export interface CompoundRequest { includeBuyer?: boolean; epochs: number; targetAgentId?: number; stakeAgentId?: number; }
 export interface SubmitProofRequest { artifact: unknown; }
+
+/** What AntseedWorkerPool contracts owe this wallet as the payout address of one or more Macs. */
+export interface WorkerPoolsView {
+  pools: Array<{
+    address: string;
+    /** USDC base units. */
+    usdcOwed: string;
+    /** ANTS wei, from emissions already pulled into the pool. */
+    antsOwed: string;
+    /** Finished epochs with ANTS owed. */
+    antsEpochs: number[];
+  }>;
+}
+
+export interface WorkerPoolClaimRequest {
+  pool: string;
+  usdc: boolean;
+  ants: boolean;
+}
+
+export interface WorkerPayoutLinkRequest {
+  /** The `antseed-link:` code the Mac app copies. */
+  code: string;
+}

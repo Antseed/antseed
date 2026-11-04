@@ -3,7 +3,7 @@ import type {
   Provider,
   ProviderStreamCallbacks,
 } from './interfaces/seller-provider.js';
-import { ANTSEED_ATTEST_PATH, type Prover } from './interfaces/plugin.js';
+import { ANTSEED_ATTEST_PATH, ANTSEED_PROVIDER_CONTROL_PATH, type Prover } from './interfaces/plugin.js';
 import type { SellerSessionTracker } from './metering/seller-session-tracker.js';
 import type { PaymentMux } from './p2p/payment-mux.js';
 import type { Identity } from './p2p/identity.js';
@@ -210,6 +210,8 @@ const TOP_UP_WAIT_MS = 15_000;
 const ATTEST_RATE_WINDOW_MS = 60_000;
 const ATTEST_RATE_MAX_PER_WINDOW = 10;
 const ATTEST_RATE_MAX_TRACKED_PEERS = 1024;
+/** Per-buyer rate limit for free provider control routes. */
+const CONTROL_RATE_MAX_PER_WINDOW = 30;
 /**
  * Handles all seller-side request processing: provider matching, execution,
  * cost tracking, payment auth checks, and load management.
@@ -223,6 +225,7 @@ export class SellerRequestHandler {
   /** Per channel: the highest spend a catch-up NeedAuth was already sent for, so parked requests ask once. */
   private readonly _catchUpPrompted = new Map<string, bigint>();
   private readonly _attestRateWindows = new Map<string, { start: number; count: number }>();
+  private readonly _controlRateWindows = new Map<string, { start: number; count: number }>();
   private _metadataRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(deps: SellerRequestHandlerDeps) {
@@ -230,23 +233,51 @@ export class SellerRequestHandler {
   }
 
   private _allowAttest(buyerPeerId: string): boolean {
+    return this._allowRate(this._attestRateWindows, buyerPeerId, ATTEST_RATE_MAX_PER_WINDOW);
+  }
+
+  private _allowRate(windows: Map<string, { start: number; count: number }>, buyerPeerId: string, maxPerWindow: number): boolean {
     const now = Date.now();
-    const win = this._attestRateWindows.get(buyerPeerId);
+    const win = windows.get(buyerPeerId);
     if (!win || now - win.start >= ATTEST_RATE_WINDOW_MS) {
-      if (this._attestRateWindows.size >= ATTEST_RATE_MAX_TRACKED_PEERS) {
-        for (const [peer, w] of this._attestRateWindows) {
-          if (now - w.start >= ATTEST_RATE_WINDOW_MS) this._attestRateWindows.delete(peer);
+      if (windows.size >= ATTEST_RATE_MAX_TRACKED_PEERS) {
+        for (const [peer, w] of windows) {
+          if (now - w.start >= ATTEST_RATE_WINDOW_MS) windows.delete(peer);
         }
-        if (!this._attestRateWindows.has(buyerPeerId) && this._attestRateWindows.size >= ATTEST_RATE_MAX_TRACKED_PEERS) {
+        if (!windows.has(buyerPeerId) && windows.size >= ATTEST_RATE_MAX_TRACKED_PEERS) {
           return false;
         }
       }
-      this._attestRateWindows.set(buyerPeerId, { start: now, count: 1 });
+      windows.set(buyerPeerId, { start: now, count: 1 });
       return true;
     }
-    if (win.count >= ATTEST_RATE_MAX_PER_WINDOW) return false;
+    if (win.count >= maxPerWindow) return false;
     win.count += 1;
     return true;
+  }
+
+  /** Free provider control routes: no payment or metering, rate limited per buyer. */
+  private async _handleProviderControl(request: SerializedHttpRequest, buyerPeerId: string): Promise<SerializedHttpResponse> {
+    const problem = (statusCode: number, message: string, code: string): SerializedHttpResponse => ({
+      requestId: request.requestId,
+      statusCode,
+      headers: { 'content-type': 'application/json' },
+      body: new TextEncoder().encode(JSON.stringify({ error: { message, type: 'invalid_request_error', code } })),
+    });
+    const service = this._extractRequestedService(request);
+    const provider = service
+      ? this._deps.providers.find((p) => p.handleControlRequest && p.services.includes(service))
+      : undefined;
+    if (!provider?.handleControlRequest) return problem(404, `No provider offers control routes for ${service ?? 'this request'}.`, 'control_route_not_found');
+    if (!this._allowRate(this._controlRateWindows, buyerPeerId, CONTROL_RATE_MAX_PER_WINDOW)) {
+      return problem(429, 'Control route rate limit exceeded.', 'rate_limited');
+    }
+    try {
+      return { ...(await provider.handleControlRequest(request)), requestId: request.requestId };
+    } catch (err) {
+      debugWarn(`[SellerHandler] ${provider.name} control route failed: ${err instanceof Error ? err.message : err}`);
+      return problem(500, 'Control route failed.', 'control_route_failed');
+    }
   }
 
   /**
@@ -283,6 +314,11 @@ export class SellerRequestHandler {
       const routingRequest = routingRequestOf(request.method, request.path);
       if (routingRequest?.action === 'catalog') {
         mux.sendProxyResponse(await this._handleRoutingCatalog(request, buyerPeerId, routingRequest.protocol));
+        return;
+      }
+
+      if (pathOnly.startsWith(ANTSEED_PROVIDER_CONTROL_PATH + '/')) {
+        mux.sendProxyResponse(await this._handleProviderControl(request, buyerPeerId));
         return;
       }
 
@@ -1076,6 +1112,19 @@ export class SellerRequestHandler {
           const session = spm.getChannelByPeer(buyerPeerId);
           if (session) {
             spm.recordSpend(session.sessionId, costUsdc);
+            try {
+              provider.onRequestCharged?.({
+                requestId: request.requestId,
+                ...(requestedModel !== 'unknown' ? { service: requestedModel } : {}),
+                costUsdc,
+                inputTokens: usage.inputTokens,
+                outputTokens: usage.outputTokens,
+                freshInputTokens: usage.freshInputTokens,
+                cachedInputTokens: usage.cachedInputTokens,
+              });
+            } catch (err) {
+              debugWarn(`[SellerHandler] ${provider.name} onRequestCharged failed: ${err instanceof Error ? err.message : err}`);
+            }
             const cumulativeSpend = spm.getCumulativeSpend(session.sessionId);
             debugLog(`[SellerHandler] Cost recorded: buyer=${buyerPeerId.slice(0, 12)}... cost=${costUsdc} cumulative=${cumulativeSpend} (in=${usage.inputTokens} cached=${usage.cachedInputTokens} out=${usage.outputTokens})`);
 

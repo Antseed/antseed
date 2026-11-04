@@ -27,6 +27,7 @@ import {
   type RequestStreamCallbacks,
 } from "./buyer-request-handler.js";
 import { debugWarn } from "./utils/debug.js";
+import { NodeWorkerE2EClient } from './worker-pool/client.js';
 
 /** The identity loaded from the node's own data dir. */
 export const DEFAULT_BUYER_IDENTITY = "default";
@@ -158,6 +159,7 @@ export class BuyerIdentityContext {
       getVerificationMux: (peerId, conn) => this._getOrCreateVerificationMux(peerId, conn as PeerConnection),
       registerPaymentMux: (peerId, mux) => this._paymentMuxes.set(peerId, mux),
       ...(_options.freeTierDelegationsHeader ? { freeTierDelegationsHeader: _options.freeTierDelegationsHeader } : {}),
+      workerE2E: new NodeWorkerE2EClient(this.identity.wallet),
     });
   }
 
