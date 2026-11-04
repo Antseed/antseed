@@ -12,6 +12,7 @@ import {
   heldForConfirmationRecheck,
   SELLER_RETRY_SPACING_SECONDS,
   sellerRetryDueAt,
+  sellerRetryWaitUntil,
   epochModelRows,
   failureBlame,
   mergeEpochRuns,
@@ -159,6 +160,20 @@ test('seller failures less than SELLER_RETRY_SPACING_SECONDS apart count as one,
   }])]).get(epochCellKey('m', 'b'))!
   assert.equal(ours.blame, 'auditor')
   assert.equal(sellerRetryDueAt(ours), null)
+})
+
+test('an automatic resume of a seller failure waits for the retry spacing; only --resume-run skips it', () => {
+  const at = '2026-10-28T14:23:00.000Z'
+  const cell = mergeEpochRuns(EPOCH, [run('r1', at, [{
+    model: 'm', results: [result('a', 'UNDETERMINED', { outcomeReason: sellerDown })],
+  }])]).get(epochCellKey('m', 'a'))!
+  const failedAt = Date.parse(at) / 1_000
+  const dueAt = failedAt + SELLER_RETRY_SPACING_SECONDS
+  // An hour later the retry cell is still an automatic resume candidate, and it waits.
+  assert.equal(sellerRetryWaitUntil(cell, failedAt + 3_600, false), dueAt)
+  assert.equal(sellerRetryWaitUntil(cell, dueAt + 1, false), null, 'runs once the spacing has passed')
+  assert.equal(sellerRetryWaitUntil(cell, failedAt + 3_600, true), null, 'an explicit --resume-run repair is not held')
+  assert.equal(sellerRetryWaitUntil(undefined, failedAt, false), null)
 })
 
 test('the fixed audit deadline of earlier releases was the auditor\'s limit; no answer for the idle limit is the seller\'s', () => {

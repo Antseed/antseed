@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   THINKING_FALLBACK_MAX_TOKENS,
+  countDiscoveryAnswers,
   discoverThinkingSuppression,
   isKbfTokenLimitFinishReason,
   kbfResponseFinishReason,
@@ -58,6 +59,19 @@ describe('thinking discovery helpers', () => {
     const alwaysCutOff: ThinkingDiscoveryProbe = async () => ({ ok: true, content: ANSWERS, reasoningTokens: 0, truncated: true });
     await expect(discoverThinkingSuppression({ model: 'm', label: 'e', supportsPrefill: false, probe: alwaysCutOff }))
       .rejects.toThrow(/hit token limit/);
+  });
+
+  it('does not accept a strategy whose answers are only inside a <think> block', async () => {
+    // The audit strips <think> before parsing, so these answers would all be lost there.
+    const insideThink = `<think>${ANSWERS}</think>`;
+    expect(countDiscoveryAnswers(insideThink)).toBe(0);
+    expect(countDiscoveryAnswers(`<think>scratch</think>\n${ANSWERS}`)).toBe(10);
+    const probe: ThinkingDiscoveryProbe = async ({ strategy }) => strategy === 'reasoning-effort-minimal'
+      ? { ok: true, content: ANSWERS, reasoningTokens: 0 }
+      : { ok: true, content: insideThink, reasoningTokens: 0 };
+    const result = await discoverThinkingSuppression({ model: 'm', label: 'endpoint', supportsPrefill: false, probe });
+    expect(result.strategy).toBe('reasoning-effort-minimal');
+    expect(result.attempts[0]!.validAnswers).toBe(0);
   });
 
   it('recognises token-limit finish reasons across APIs', () => {

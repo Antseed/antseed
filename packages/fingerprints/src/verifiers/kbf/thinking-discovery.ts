@@ -147,10 +147,14 @@ export class ThinkingDiscoveryError extends Error {
   }
 }
 
-/** Counts the parseable answers a discovery response gives to the fixed batch. */
+/**
+ * Counts the parseable answers a discovery response gives to the fixed batch, after removing
+ * `<think>` blocks as the audit does, so answers that only appear inside a thinking block (which
+ * the audit discards) do not make a strategy look usable.
+ */
 export function countDiscoveryAnswers(content: string | null): number {
   if (content === null) return 0;
-  return parseKbfAnswers(content, THINKING_DISCOVERY_PROBES.length).filter((answer) => answer !== null).length;
+  return parseKbfAnswers(stripKbfThinkBlocks(content), THINKING_DISCOVERY_PROBES.length).filter((answer) => answer !== null).length;
 }
 
 /**

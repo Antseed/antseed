@@ -161,6 +161,21 @@ export function sellerRetryDueAt(cell: Pick<EpochCell, 'state' | 'action' | 'bla
   return cell.lastAttemptAt + SELLER_RETRY_SPACING_SECONDS
 }
 
+/**
+ * When a seller's failed audit may run again, or null when it may run now. Automatic resumes (retry
+ * cells of this epoch and interrupted runs) wait like a fresh retry, so an outage is not hit again
+ * at once; only an explicit `--resume-run` repair skips the spacing.
+ */
+export function sellerRetryWaitUntil(
+  cell: Pick<EpochCell, 'state' | 'action' | 'blame' | 'result' | 'attempts' | 'lastAttemptAt'> | undefined,
+  nowSeconds: number,
+  explicitResume: boolean,
+): number | null {
+  if (!cell || explicitResume) return null
+  const dueAt = sellerRetryDueAt(cell)
+  return dueAt !== null && dueAt > nowSeconds ? dueAt : null
+}
+
 /** Whether a cell is a confirmation's UNDETERMINED that is audited again before it is submitted. */
 export function heldForConfirmationRecheck(cell: Pick<EpochCell, 'state' | 'action' | 'result' | 'attempts'>): boolean {
   return cell.state === 'undetermined' && cell.action === 'retry' && cell.result?.confirmsDiff === true

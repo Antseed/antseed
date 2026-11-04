@@ -90,7 +90,7 @@ import { writeEpochOverview } from '../../../verifier/epoch-overview.js'
 import {
   CONFIRMATION_ATTEMPTS,
   CONFIRMATION_RECHECK_SPACING_SECONDS,
-  sellerRetryDueAt,
+  sellerRetryWaitUntil,
   countPlan,
   epochCellKey,
   heldForConfirmationRecheck,
@@ -931,10 +931,10 @@ async function runVerifierRound(
                 + `is audited again from ${new Date(recheckDueAt * 1_000).toISOString()}`)
               return []
             }
-            const cell = epochCellFor(model, peer.peerId)
-            const retryDueAt = cell ? sellerRetryDueAt(cell) : null
-            if (!resumeCandidate && retryDueAt !== null && retryDueAt > Date.now() / 1_000) {
-              // A seller's outage usually lasts hours: its one retry waits instead of failing again.
+            // A seller's outage usually lasts hours: its one retry waits instead of failing again, also
+            // when it resumes automatically from this epoch's retry cell. Only --resume-run skips it.
+            const retryDueAt = sellerRetryWaitUntil(epochCellFor(model, peer.peerId), Date.now() / 1_000, resumeOnly)
+            if (retryDueAt !== null) {
               doneCount += 1
               notAudited(`its failed audit is retried from ${new Date(retryDueAt * 1_000).toISOString()}`)
               return []

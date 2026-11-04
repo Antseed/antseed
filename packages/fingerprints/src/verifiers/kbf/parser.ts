@@ -32,10 +32,30 @@ function numericValue(token: string): number | null {
   return Number.isFinite(value) ? value : null;
 }
 
-/** The last numeric token of a string, as the KBF reference code reads an answer line. */
+/** `3.2 × 10^5`, `3.2x10^-4`, `3.2*10**5`: written-out scientific notation, rewritten as `3.2e5`. */
+const TIMES_TEN_POWER_RE = /(\d(?:\.\d+)?)\s*(?:[x×*]|\\times)\s*10\s*(?:\^|\*\*)\s*\(?\s*([-+]?\d+)\s*\)?/gi;
+
+/**
+ * Whether the numeric token at `index` is part of a unit, not an answer: an exponent (`m/s^2`,
+ * `s^-1`) or a digit glued to letters (`m2`, `CO2`, `s-1`).
+ */
+function isUnitNumber(text: string, index: number): boolean {
+  const before = text.slice(0, index).trimEnd();
+  const previous = text[index - 1] ?? '';
+  return before.endsWith('^') || before.endsWith('**') || /[A-Za-z\u00b5\u03bc]/.test(previous);
+}
+
+/**
+ * The last numeric token of a string, as the KBF reference code reads an answer line, skipping
+ * numbers that belong to a unit (`9.81 m/s^2` is 9.81, not 2). Falls back to the last token when
+ * every number looks like a unit.
+ */
 function parseNumericToken(text: string): number | null {
-  const tokens = text.match(NUMBER_RE);
-  return tokens ? numericValue(tokens[tokens.length - 1]!) : null;
+  const normalized = text.replace(TIMES_TEN_POWER_RE, (_match, mantissa: string, exponent: string) => `${mantissa}e${exponent}`);
+  const tokens = [...normalized.matchAll(NUMBER_RE)];
+  if (tokens.length === 0) return null;
+  const answer = [...tokens].reverse().find((token) => !isUnitNumber(normalized, token.index!)) ?? tokens[tokens.length - 1]!;
+  return numericValue(answer[0]);
 }
 
 /**

@@ -20,6 +20,7 @@ import {
   loadModelReference,
   ReferenceBuildCheckpoint,
   ReferenceEndpointError,
+  replayedThinkingDiscovery,
   resolveReferenceRequestOverrides,
   retryDelayMs,
 } from './model-reference.js'
@@ -2310,4 +2311,20 @@ test('reference builds record contrast detection and grow until every contrast i
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
+})
+
+test('a replayed thinking-discovery reply keeps its token-limit cut-off; one cached without a finish reason is asked again', () => {
+  const base = {
+    model: 'm', purpose: 'thinking-discovery' as const, inputTokens: 10, outputTokens: 20,
+    inputUsdPerMillion: 0, outputUsdPerMillion: 0, costUsdMicros: '0', reasoningTokens: 0,
+  }
+  const answers = '1) 1\n2) 2'
+  assert.deepEqual(replayedThinkingDiscovery({ ...base, content: answers, finishReason: 'length' }),
+    { ok: true, content: answers, reasoningTokens: 0, truncated: true })
+  assert.deepEqual(replayedThinkingDiscovery({ ...base, content: answers, finishReason: 'stop' }),
+    { ok: true, content: answers, reasoningTokens: 0, truncated: false })
+  assert.equal(replayedThinkingDiscovery({ ...base, content: answers }), null, 'older checkpoint entry: re-asked, not trusted')
+  assert.deepEqual(replayedThinkingDiscovery({
+    ...base, outcome: 'terminal-empty', finishReason: 'length', nativeFinishReason: null, detail: 'empty',
+  }), { ok: true, content: null, reasoningTokens: 0, truncated: true })
 })

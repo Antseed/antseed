@@ -4,7 +4,7 @@ import { isKbfAnswersOnlyReply, parseKbfAnswers } from '../src/verifiers/kbf/par
 import { KBF_PROMPT_VARIANTS, buildKbfPrompt, isKbfSamplingFieldRejection } from '../src/verifiers/kbf/prompts.js';
 import type { KbfProbe } from '../src/types.js';
 
-/** Real replies from one seller (Open Forge, glm-5.3 via DeepInfra) in the epoch 29 audits. */
+/** Real replies from one glm-5.3 seller (via DeepInfra) in the epoch 29 audits, anonymized. */
 const glmReplies = JSON.parse(readFileSync(new URL('./fixtures/glm-deepinfra-replies.json', import.meta.url), 'utf8')) as Record<
   'reasonedCutOff' | 'reasonedComplete' | 'minimalClean',
   { finishReason: string; content: string; parsedBefore: Array<number | null> }
@@ -165,6 +165,20 @@ describe('kbfTargetThinkingSuppression', () => {
     expect(kbfTargetThinkingSuppression({ ...base, generator: { name: 'x', version: '1', verifierKind: 'kbf', params: {
       referenceEndpointRequest: { reasoningStrategy: 'bare', requestOverrides: {}, requestOmissions: [] },
     } } })).toBeNull();
+  });
+});
+
+describe('parseKbfAnswers unit numbers', () => {
+  it('does not take a unit exponent or a digit glued to a unit as the answer', () => {
+    expect(parseKbfAnswers('1) 9.81 m/s^2\n2) 1.6 m^3\n3) 340 m s^-1\n4) 415 ppm CO2\n5) 0.5 s-1', 5)).toEqual([9.81, 1.6, 340, 415, 0.5]);
+  });
+
+  it('reads written-out scientific notation as one number', () => {
+    expect(parseKbfAnswers('1) 3.2 × 10^5\n2) 6.02x10^23\n3) 1.6 * 10^-19 C\n4) 12.5 x 10**3', 4)).toEqual([320000, 6.02e23, 1.6e-19, 12500]);
+  });
+
+  it('still takes the last number of a reasoned line and keeps signs and plain units', () => {
+    expect(parseKbfAnswers('1) ran from 1923 to 1924, so 52\n2) -430\n3) 1,234 km\n4) 2.5e3', 4)).toEqual([52, -430, 1234, 2500]);
   });
 });
 

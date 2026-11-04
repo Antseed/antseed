@@ -152,6 +152,8 @@ interface ReferenceCachedResponseBaseV1 {
 interface ReferenceCachedSuccessV1 extends ReferenceCachedResponseBaseV1 {
   outcome?: 'success'
   content: string
+  /** Kept for thinking-discovery responses, so a replayed reply cut off at the token limit stays rejected. */
+  finishReason?: string | null
 }
 
 interface ReferenceCachedTerminalEmptyV1 extends ReferenceCachedResponseBaseV1 {
@@ -1682,12 +1684,12 @@ function createReferenceQuery(input: {
     const cacheKey = canonicalHashBytes32({ model, cacheDomain: 'thinking-discovery', body, route })
     const cached = input.checkpoint.get(cacheKey)
     if (cached !== undefined) {
-      consumed.set(cacheKey, cached)
-      return {
-        ok: true,
-        content: cached.outcome === 'terminal-empty' ? null : cached.content,
-        reasoningTokens: cached.reasoningTokens ?? 0,
+      const replayed = replayedThinkingDiscovery(cached)
+      if (replayed) {
+        consumed.set(cacheKey, cached)
+        return replayed
       }
+      await input.checkpoint.delete(cacheKey)
     }
     // As in the reference code: 429 waits, 5xx and network errors retry up to three
     // times, and any other 4xx means this strategy is refused.
@@ -1701,6 +1703,7 @@ function createReferenceQuery(input: {
           ...cachedCost(model, 'thinking-discovery', response.inputTokens, response.outputTokens),
           content: response.content,
           reasoningTokens: response.reasoningTokens ?? 0,
+          finishReason: response.finishReason ?? null,
           ...(response.provider ? { provider: response.provider } : {}),
         }
         await input.checkpoint.appendExchange({
@@ -2658,6 +2661,23 @@ function withRecordedEndpointRequest(
   }
 }
 
+/**
+ * A checkpointed thinking-discovery reply as the discovery saw it first, including whether it
+ * stopped at the token limit. Null for a reply cached before its finish reason was kept: it can't
+ * say whether it was cut off, so it is asked again instead of being replayed as a clean reply.
+ */
+export function replayedThinkingDiscovery(
+  cached: ReferenceCachedResponseV1,
+): { ok: true; content: string | null; reasoningTokens: number; truncated: boolean } | null {
+  if (cached.outcome !== 'terminal-empty' && cached.finishReason === undefined) return null
+  return {
+    ok: true,
+    content: cached.outcome === 'terminal-empty' ? null : cached.content,
+    reasoningTokens: cached.reasoningTokens ?? 0,
+    truncated: isKbfTokenLimitFinishReason(cached.finishReason),
+  }
+}
+
 function isReferenceCachedResponse(value: unknown): value is ReferenceCachedResponseV1 {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const response = value as Record<string, unknown>
@@ -2683,6 +2703,7 @@ function isReferenceCachedResponse(value: unknown): value is ReferenceCachedResp
   }
   return (response.outcome === undefined || response.outcome === 'success')
     && typeof response.content === 'string'
+    && (response.finishReason === undefined || response.finishReason === null || typeof response.finishReason === 'string')
 }
 
 function nonNegativeInteger(value: unknown): number | null {
