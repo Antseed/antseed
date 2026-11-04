@@ -137,17 +137,18 @@ export function startMockUpstream(opts = {}) {
       const step = Math.ceil(text.length / nChunks);
       const per = (latency * 0.8) / nChunks;
       const cutAt = disconnect ? randInt(1, nChunks - 1) : -1;
-      res.write(`data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model, choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }] })}\n\n`);
+      const writeChunk = (payload) => res.write(`data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model, ...payload })}\n\n`);
+      writeChunk({ choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }] });
       for (let i = 0; i < nChunks; i++) {
         if (gone) { stats.clientGone++; rec.status = 'client-gone'; return; }
         if (i === cutAt) { stats.disconnects++; rec.status = 'disconnect'; res.socket?.destroy(); return; }
         const piece = text.slice(i * step, (i + 1) * step);
-        res.write(`data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model, choices: [{ index: 0, delta: { content: piece }, finish_reason: null }] })}\n\n`);
+        writeChunk({ choices: [{ index: 0, delta: { content: piece }, finish_reason: null }] });
         await sleep(per);
       }
       if (gone) { stats.clientGone++; rec.status = 'client-gone'; return; }
-      res.write(`data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })}\n\n`);
-      res.write(`data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model, choices: [], usage })}\n\n`);
+      writeChunk({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] });
+      writeChunk({ choices: [], usage });
       res.write('data: [DONE]\n\n');
       res.end();
       stats.completed++; rec.status = 'ok';

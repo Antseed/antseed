@@ -7,7 +7,7 @@
 //                         [--tree <repo>] [--seller-tree <repo>] [--buyer-tree <repo>]
 //                         [--rpc base|anvil] [--out <dir>] [--port-base N]
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdirSync, writeFileSync, symlinkSync, existsSync, readFileSync, appendFileSync, createWriteStream, rmSync, statSync } from 'node:fs';
+import { mkdirSync, writeFileSync, symlinkSync, existsSync, readFileSync, appendFileSync, createWriteStream, rmSync, statSync, cpSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -431,10 +431,19 @@ async function stale1050Phase({ sc, seller, buyer, buyerDir, buyerTree, buyerHom
   out.t.closedOnChainMs = Date.now() - t0;
   out.onchainStatus = Object.fromEntries(before.map((id) => [id.slice(0, 10), readChannel(rpc, id).status]));
   out.staleRowsWhileStopped = buyerActiveRows(buyerDb).filter((r) => before.includes(r.session_id)).length;
-  // Offline CLI count (no running buyer).
-  out.cliStatusStopped = await cliActiveChannels(buyerTree, buyerDir, buyerHome);
-  await sleep(8000);
-  out.cliStatusStopped2 = await cliActiveChannels(buyerTree, buyerDir, buyerHome);
+  // Without a stale row there is nothing for the restart to fix.
+  if (out.staleRowsWhileStopped === 0) result.violations.push({ kind: '1050-no-stale-row-to-reconcile' });
+  // Offline CLI count with no running buyer. `buyer status` reconciles the
+  // store it reads, so it gets a copy: the restarted buyer must retire the
+  // stale rows itself.
+  const offlineDir = join(buyerDir, '..', 'buyer-offline-copy');
+  cpSync(buyerDir, offlineDir, { recursive: true });
+  out.cliStatusStopped = await cliActiveChannels(buyerTree, offlineDir, buyerHome);
+  await sleep(Number(process.env.RPC_LAG_WINDOW_MS ?? 4000) * 2);
+  out.cliStatusStopped2 = await cliActiveChannels(buyerTree, offlineDir, buyerHome);
+  if (out.staleRowsWhileStopped !== buyerActiveRows(buyerDb).filter((r) => before.includes(r.session_id)).length) {
+    result.violations.push({ kind: 'HARNESS-offline-status-touched-the-buyer-store' });
+  }
   // Buyer comes back without talking to that seller.
   buyer.start();
   await waitFor(async () => (await fetch(`http://127.0.0.1:${PORTS.buyerProxy}/_antseed/status`)).ok, 'buyer restart', 60_000, 250);
@@ -460,7 +469,9 @@ async function stale1050Phase({ sc, seller, buyer, buyerDir, buyerTree, buyerHom
   for (const read of [out.cliStatusStopped, out.cliStatusStopped2]) {
     if (read.error) result.violations.push({ kind: '1050-offline-cli-status-unreadable', error: read.error });
   }
-  if (out.cliStatusStopped2.count) result.notes.push(`1050: offline buyer status counted ${out.cliStatusStopped2.count}`);
+  // The first read can land in the RPC's post-transaction lag and still see
+  // the channel open; the one after the lag window must count 0.
+  if (out.cliStatusStopped2.count) result.violations.push({ kind: '1050-offline-cli-status-counts-closed-channels', n: out.cliStatusStopped2.count });
   return out;
 }
 
@@ -633,9 +644,13 @@ async function oneRun({ scenarioName, sc, sellerTree, buyerTree, runDir }) {
     const buyerDecrease = chain0.buyerBalance - chain1.buyerBalance;
     const sellerGain = chain1.sellerUsdc - chain0.sellerUsdc;
     const feeGain = chain1.reserveUsdc - chain0.reserveUsdc;
+    const bySessionId = (rows) => new Map(rows.map((row) => [row.session_id, row]));
+    const sellerPostById = bySessionId(sellerRowsPost);
+    const sellerPreById = bySessionId(sellerRowsPre);
+    const buyerPostById = bySessionId(buyerRowsPost);
     const channels = allIds.map((id) => {
-      const s = sellerRowsPost.find((r) => r.session_id === id); const sPre = sellerRowsPre.find((r) => r.session_id === id);
-      const b = buyerRowsPost.find((r) => r.session_id === id);
+      const s = sellerPostById.get(id); const sPre = sellerPreById.get(id);
+      const b = buyerPostById.get(id);
       return {
         id, sellerSpent: s?.tokens_delivered ?? null, sellerAcceptedPreClose: sPre?.auth_max ?? null, sellerAccepted: s?.auth_max ?? null,
         buyerSigned: b?.auth_max ?? null, onchainSettled: onchain[id].settled.toString(), onchainDeposit: onchain[id].deposit.toString(),
