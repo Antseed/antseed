@@ -48,11 +48,18 @@ attestation-key:<attestation public key, or empty>
 
 Pools advertise the peer capability `colony-pool-e2e.v2`, and
 `colony-pool-e2e.v2.<provider>` for the provider that serves through workers.
-Whether a request is encrypted to a worker depends on the provider it is
-routed to (`x-antseed-provider`, or the default route, which the buyer names),
-so an ordinary provider offering the same model as the pool gets plaintext
-requests. The assignment request names that provider too, and buyers cache
-one assignment per seller, provider and service. Before its first request for a pool service, the buyer
+Whether a request is encrypted to a worker follows the provider it names
+first: a request naming a colony-pool provider is always encrypted, even when
+the buyer's view of the pool's models is out of date. A request naming an
+ordinary provider stays plaintext only when that provider offers the model,
+since otherwise the seller would serve it through another provider, possibly
+its pool. Without a named provider, the provider the buyer routes it to
+decides, and a model no provider offers is encrypted. The assignment request
+names the pool the request is for, and buyers cache one assignment per
+seller, provider and service. One case only the seller can see remains: if a
+seller stops offering a model on an ordinary provider while the buyer's
+metadata still lists it there, the seller could route that plaintext request
+to its pool (which refuses it with `428`, after the seller has seen it). Before its first request for a pool service, the buyer
 asks the pool for its top-ranked workers:
 
 ```
@@ -406,25 +413,41 @@ want the higher level enroll their Macs in it. Antseed runs no MDM. The pool
 then gets an **Apple Managed Device Attestation** for each enrolled Mac: a
 certificate chain signed by the Apple Enterprise Attestation Root CA that
 states the Mac's serial number, OS version and SIP status, and that answers a
-nonce the pool chose.
+nonce naming the worker and its attestation key.
 
 1. The worker's signed attestation names its Mac (`serial`, `udid`).
 2. The pool asks its MDM to send that Mac a `DeviceInformation` command
    querying `DevicePropertiesAttestation`, with
-   `DeviceAttestationNonce = sha256("antseed-device-attestation/v1\n" ‖ worker ‖ "\n" ‖ attestationKey ‖ "\n" ‖ challenge)`
-   for a fresh random `challenge`.
+   `DeviceAttestationNonce = sha256("antseed-device-attestation/v1\n" ‖ worker ‖ "\n" ‖ attestationKey ‖ "\n" ‖ challenge)`,
+   where `challenge = hex(sha256("antseed-device-challenge/v1\n" ‖ worker ‖ "\n" ‖ attestationKey ‖ "\n" ‖ udid))`.
+   The challenge is derived, not random: Apple issues a new attestation for a
+   device at most once every 7 days and returns the cached one in between,
+   whatever nonce is sent, so the cached one must still answer it, also after
+   the worker reconnects or the pool restarts. Freshness comes from the
+   leaf's issue time.
 3. It verifies that the chain leads to Apple's root, that the freshness code
    (OID 1.2.840.113635.100.8.11.1) equals that nonce, that the serial number
-   (…8.9.1) is the one the worker attested, and that SIP (…8.13.1) is on. The
-   pool repeats this daily.
+   (…8.9.1) is the one the worker attested, that SIP (…8.13.1) is on, and
+   that the leaf is at most 8 days old. The pool asks again once the
+   attestation is 7 days old, then daily while Apple still returns it, and
+   stops treating the Mac as Apple-verified once it is 8 days old.
 4. Assignments carry `deviceAttestation: { chain, challenge }`. Buyers
    recompute the nonce from the worker, its certified attestation key and the
-   challenge, and verify the chain themselves (accepting one up to 26 hours
-   old). A buyer with `requireAppleVerifiedWorkers` refuses workers without
+   challenge, and verify the chain themselves (accepting one up to 8 days old,
+   and dropping a cached assignment when it passes that age or a certificate
+   in the chain expires). A buyer with `requireAppleVerifiedWorkers` refuses workers without
    it.
 
 Because the nonce names the worker and its attestation key, the pool can't
-reuse one Mac's attestation for another worker.
+reuse one Mac's attestation for another worker. It also means a worker whose
+attestation key changes (a reinstall, or keys created again) is not
+Apple-verified until Apple issues its next attestation, up to 7 days later.
+
+So "Apple-verified" means: Apple attested, within the last 8 days, that this
+Mac had SIP on and that this worker and attestation key asked for the
+attestation. Turning SIP off needs a reboot into Recovery; in between Apple's
+attestations, it is the app's own attestation every 5 minutes (self-reported,
+see Hardened Macs) that reports SIP, and the app stops serving when it is off.
 
 Pool settings: `COLONY_POOL_MDM_URL`, `COLONY_POOL_MDM_API_KEY`,
 `COLONY_POOL_MDM_WEBHOOK_PORT` and `COLONY_POOL_MDM_WEBHOOK_PATH` (required

@@ -10,6 +10,7 @@ import type { SerializedHttpRequest, SerializedHttpResponseChunk } from '@antsee
 import {
   WORKER_ASSIGN_PATH,
   WORKER_UNAVAILABLE_STATUS as WORKER_UNAVAILABLE,
+  deviceAttestationChallenge,
   generateWorkerEncryptionKey,
   sealRequest,
   verifyWorkerAttestation,
@@ -37,6 +38,32 @@ function fakeMdm(report: { sip?: boolean; serialNumber?: string } = {}): DeviceA
     async attest(udid, nonce) {
       this.asked.push(udid);
       return appleCa.issue({ serialNumber: report.serialNumber ?? 'C02TEST0MD6T', udid, nonce, sip: report.sip ?? true });
+    },
+  };
+}
+
+const DAY_MS = 24 * 3600_000;
+const TEST_UDID = '00000000-0000-1000-8000-0123456789AB';
+
+/**
+ * Apple's behaviour behind the operator's MDM: a new attestation of a device
+ * at most every 7 days, and until then the cached one, whatever nonce is sent.
+ * The first one was issued `issuedAgoMs` ago; `reissue: false` never issues another.
+ */
+function cachingMdm(issuedAgoMs: number, opts: { reissue?: boolean } = {}): DeviceAttestor & { asked: number; issued: number } {
+  const cache = new Map<string, { chain: string[]; at: number }>();
+  return {
+    asked: 0,
+    issued: 0,
+    async attest(udid, nonce) {
+      this.asked++;
+      const hit = cache.get(udid);
+      if (hit && (opts.reissue === false || Date.now() - hit.at < 7 * DAY_MS)) return hit.chain;
+      const at = hit ? Date.now() : Date.now() - issuedAgoMs;
+      const chain = appleCa.issue({ serialNumber: 'C02TEST0MD6T', udid, nonce, notBefore: new Date(at) });
+      cache.set(udid, { chain, at });
+      this.issued++;
+      return chain;
     },
   };
 }
@@ -565,13 +592,63 @@ describe('colony pool', () => {
     expect(response.statusCode).toBe(503);
   });
 
-  it('keeps refreshing Apple\'s attestation while the worker re-attests', async () => {
-    const mdm = fakeMdm();
+  it('keeps Apple\'s attestation while the worker re-attests, asking daily once Apple could issue a new one', async () => {
+    // Apple issued this one 7 days and an hour ago and keeps returning it.
+    const mdm = cachingMdm(7 * DAY_MS + 3600_000, { reissue: false });
     await setup({ verifyOnJoin: false, attestationIntervalMs: 30, deviceAttestor: mdm, deviceAttestationIntervalMs: 150 });
     const attester = fakeAttester();
     startWorker({ attester });
-    await waitFor(() => mdm.asked.length === 1);
-    await waitFor(() => attester.calls >= 4 && mdm.asked.length >= 3);
+    await waitFor(() => mdm.asked === 1);
+    await waitFor(() => attester.calls >= 4 && mdm.asked >= 3);
+    expect(mdm.issued).toBe(1);
     expect(pool.workerSummaries()[0]).toMatchObject({ attested: true, appleVerified: true });
+  });
+
+  it('accepts Apple\'s cached attestation across reconnects and asks again only once it is 7 days old', async () => {
+    const mdm = cachingMdm(3 * DAY_MS);
+    await setup({ verifyOnJoin: false, deviceAttestor: mdm, requireDeviceAttestation: true, deviceAttestationIntervalMs: 50 });
+    const key = Wallet.createRandom().privateKey;
+    const attester = fakeAttester();
+    const first = startWorker({ key, attester });
+    await waitFor(() => pool.workerSummaries()[0]?.appleVerified === true);
+    const assignment = await assign() as WorkerKeyCertificate & { deviceAttestation?: { chain: string[]; challenge: string } };
+    expect(assignment.deviceAttestation?.challenge).toBe(deviceAttestationChallenge(first.address, attester.publicKey, TEST_UDID));
+
+    // A reconnect asks again; Apple answers with the cached attestation, which still answers the derived challenge.
+    first.stop();
+    await waitFor(() => pool.workerSummaries().length === 0);
+    startWorker({ key, attester });
+    await waitFor(() => pool.workerSummaries()[0]?.appleVerified === true);
+    expect(mdm.asked).toBe(2);
+    expect(mdm.issued).toBe(1);
+
+    // Apple can't issue a new one for 4 more days, so the pool doesn't ask, even with a short retry interval.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(mdm.asked).toBe(2);
+  });
+
+  it('drops Apple\'s attestation once it is 8 days old', async () => {
+    await setup({ verifyOnJoin: false, deviceAttestor: cachingMdm(8 * DAY_MS + 60_000, { reissue: false }), requireDeviceAttestation: true });
+    startWorker({ attester: fakeAttester() });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(provider.services).toEqual([]);
+    expect(pool.workerSummaries()).toEqual([]);
+  });
+
+  it('needs Apple\'s next attestation when a worker\'s attestation key changes', async () => {
+    const mdm = cachingMdm(DAY_MS);
+    await setup({ verifyOnJoin: false, deviceAttestor: mdm, requireDeviceAttestation: true });
+    const key = Wallet.createRandom().privateKey;
+    const first = startWorker({ key, attester: fakeAttester() });
+    await waitFor(() => pool.workerSummaries()[0]?.appleVerified === true);
+    first.stop();
+    await waitFor(() => pool.workerSummaries().length === 0);
+
+    // Same worker and Mac, new attestation key: Apple's cached attestation names the old key, so the Mac waits.
+    startWorker({ key, attester: fakeAttester() });
+    await waitFor(() => mdm.asked === 2);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(mdm.issued).toBe(1);
+    expect(pool.workerSummaries()).toEqual([]);
   });
 });

@@ -46,6 +46,7 @@ import { evaluateUnitBilling, unitUsageFromReport, validateUnitBillingUsage } fr
 import { isUnitBilledProtocol, nativeVideoUnitUsage } from './unit-billing.js';
 import { buyerFault, faultCodeOf } from './errors.js';
 import type { WorkerUsage } from './worker-e2e.js';
+import { WorkerDeliveryTracker, type WorkerDelivery } from './worker-delivery-tracker.js';
 
 /** Default tolerance: accept seller claims up to 1.4x buyer's estimate. */
 const DEFAULT_COST_TOLERANCE = 1.4;
@@ -78,39 +79,6 @@ const MAX_REQUEST_BILLING_ENTRIES = 512;
 const OBSERVED_UNIT_USAGE_WAIT_MS = 5_000;
 /** How long a NeedAuth for a colony-pool request waits for the buyer to verify the worker's sealed answer. */
 const WORKER_DELIVERY_WAIT_MS = 15_000;
-const MAX_WORKER_DELIVERIES = 512;
-/**
- * Worker requests per seller whose delivery record was evicted unpaid. Their
- * ids are kept (across sessions) so a late NeedAuth for one is still refused;
- * past this many the buyer stops sending that seller worker requests rather
- * than forget one.
- */
-const MAX_FORGOTTEN_WORKER_REQUESTS = 16_384;
-/**
- * Worker requests per seller that were verified and paid (or verified and
- * free), kept so a later NeedAuth claiming one again is refused. Oldest first
- * out; they never count toward MAX_FORGOTTEN_WORKER_REQUESTS.
- */
-const MAX_COMPLETED_WORKER_REQUESTS = 16_384;
-/** Per pool seller: its other (non-worker) requests a NeedAuth may name, oldest dropped first. */
-const MAX_POOL_SELLER_REQUESTS = 16_384;
-
-/**
- * A request encrypted to a colony-pool worker: pending until the buyer has
- * checked the worker's sealed answer, then verified (with the usage the worker
- * authenticated) or failed. Only a verified answer is paid for.
- */
-interface WorkerDelivery {
-  sellerPeerId: string;
-  /** The workers the request was encrypted for (lowercase); only one of them can answer. */
-  recipients: string[];
-  /** The recipient whose sealed answer verified: its signed amount is attributed to it. */
-  worker?: string;
-  state: 'pending' | 'verified' | 'failed';
-  usage?: WorkerUsage;
-  waiters: Array<() => void>;
-}
-
 /**
  * Whole units of `unit` in `usage`, never negative. Speech billing reports no
  * `input_characters` for undelivered audio.
@@ -377,16 +345,8 @@ export class BuyerPaymentManager {
    *  Used in handleNeedAuth to validate cost with the correct pricing tier
    *  without trusting the seller's claim of which service was used. */
   private readonly _requestService = new RequestServiceTracker();
-  /** requestId -> whether the worker's sealed answer verified (see WorkerDelivery). */
-  private readonly _workerDeliveries = new Map<string, WorkerDelivery>();
-  /** sellerPeerId -> worker requests evicted from _workerDeliveries before they were paid; never paid. */
-  private readonly _forgottenWorkerRequests = new Map<string, Set<string>>();
-  /** sellerPeerId -> worker requests retired verified (paid in full, or free); not paid again. */
-  private readonly _completedWorkerRequests = new Map<string, Set<string>>();
-  /** Sellers announcing colony-pool workers: a delivered cost they claim must name a request the buyer sent them. */
-  private readonly _workerSellers = new Set<string>();
-  /** pool seller -> requests the buyer sent it that went to an ordinary provider (not encrypted to a worker). */
-  private readonly _poolSellerRequests = new Map<string, Set<string>>();
+  /** Colony-pool requests and their worker deliveries, for the node's lifetime (see WorkerDeliveryTracker). */
+  private readonly _workerDeliveries = new WorkerDeliveryTracker();
   /**
    * requestId -> trusted buyer-owned billing identity, request facts, and mode.
    *
@@ -623,9 +583,8 @@ export class BuyerPaymentManager {
       this._disableMetadataV2Services ? undefined : service,
       delta,
     );
-    const delivery = requestId != null ? this._workerDeliveries.get(requestId) : undefined;
     // Only the seller the request went to, and only for an answer that verified.
-    const worker = delivery && delivery.sellerPeerId === sellerPeerId && delivery.state === 'verified' ? delivery.worker : undefined;
+    const worker = this._workerDeliveries.verifiedWorker(requestId, sellerPeerId);
     return worker ? { ...next, workers: withWorkerAttribution(next.workers, worker, delta.amount) } : next;
   }
 
@@ -635,84 +594,18 @@ export class BuyerPaymentManager {
    * only a recipient can decrypt it, and each answers under its own key.
    */
   recordWorkerAttribution(sellerPeerId: string, requestId: string, workers: string | readonly string[]): void {
-    this._workerSellers.add(sellerPeerId);
-    this._poolSellerRequests.get(sellerPeerId)?.delete(requestId);
-    const recipients = (typeof workers === 'string' ? [workers] : [...workers]).map((w) => w.toLowerCase());
-    // A retry on other workers starts over; NeedAuths already waiting keep waiting.
-    const delivery = this._workerDeliveries.get(requestId);
-    if (delivery && delivery.sellerPeerId === sellerPeerId) {
-      delivery.recipients = recipients;
-      delete delivery.worker;
-      delivery.state = 'pending';
-      delete delivery.usage;
-      return;
-    }
-    if ((this._forgottenWorkerRequests.get(sellerPeerId)?.size ?? 0) >= MAX_FORGOTTEN_WORKER_REQUESTS) {
-      throw buyerFault(
-        `[BuyerPayment] Too many unpaid colony-pool requests to ${sellerPeerId.slice(0, 12)}...; refusing further worker requests to it`,
-        'buyer-session-state',
-      );
-    }
-    // The same request retried through another seller: the first seller's record is retired, not dropped.
-    if (delivery) this._retireWorkerDelivery(requestId);
-    if (this._workerDeliveries.size >= MAX_WORKER_DELIVERIES) this._evictWorkerDelivery();
-    // The buyer is sending this id again: the new record gates its payment from here on.
-    this._forgottenWorkerRequests.get(sellerPeerId)?.delete(requestId);
-    this._completedWorkerRequests.get(sellerPeerId)?.delete(requestId);
-    this._workerDeliveries.set(requestId, { sellerPeerId, recipients, state: 'pending', waiters: [] });
-  }
-
-  /**
-   * Make room by retiring the oldest verified record, else the oldest failed
-   * one, else the oldest pending one. Retiring never forgets it was a worker
-   * request (see _retireWorkerDelivery).
-   */
-  private _evictWorkerDelivery(): void {
-    let failed: string | undefined;
-    let pending: string | undefined;
-    for (const [requestId, delivery] of this._workerDeliveries) {
-      if (delivery.state === 'verified') return this._retireWorkerDelivery(requestId);
-      if (delivery.state === 'failed') failed ??= requestId;
-      else pending ??= requestId;
-    }
-    const victim = failed ?? pending;
-    if (victim !== undefined) this._retireWorkerDelivery(victim);
-  }
-
-  /**
-   * Drop a delivery record, keeping its id so a later NeedAuth naming it is
-   * refused rather than validated as an ordinary request: a verified answer
-   * joins the seller's completed set (it was paid, or was free), anything
-   * else the forgotten set, which counts toward MAX_FORGOTTEN_WORKER_REQUESTS.
-   */
-  private _retireWorkerDelivery(requestId: string): void {
-    const delivery = this._workerDeliveries.get(requestId);
-    if (!delivery) return;
-    const verified = delivery.state === 'verified';
-    if (!verified) this._settleWorkerDelivery(requestId, 'failed');
-    this._workerDeliveries.delete(requestId);
-    const sets = verified ? this._completedWorkerRequests : this._forgottenWorkerRequests;
-    let ids = sets.get(delivery.sellerPeerId);
-    if (!ids) {
-      ids = new Set();
-      sets.set(delivery.sellerPeerId, ids);
-    }
-    ids.add(requestId);
-    if (verified && ids.size > MAX_COMPLETED_WORKER_REQUESTS) {
-      ids.delete(ids.values().next().value!);
-    }
+    this._workerDeliveries.recordAttribution(sellerPeerId, requestId, workers);
   }
 
   /** Retire a verified worker request once it has been counted and nothing of its cost is left unsigned. */
   private _retireWorkerDeliveryIfPaid(requestId: string | undefined): void {
     if (requestId == null) return;
-    const delivery = this._workerDeliveries.get(requestId);
     if (
-      delivery?.state === 'verified'
+      this._workerDeliveries.get(requestId)?.state === 'verified'
       && this._serviceTokensCounted.has(requestId)
       && this._serviceTokensCounted.unpaid(requestId) === 0n
     ) {
-      this._retireWorkerDelivery(requestId);
+      this._workerDeliveries.retire(requestId);
     }
   }
 
@@ -725,50 +618,12 @@ export class BuyerPaymentManager {
    * changing or dropping its request ID.
    */
   markWorkerSeller(sellerPeerId: string): void {
-    this._workerSellers.add(sellerPeerId);
+    this._workerDeliveries.markSeller(sellerPeerId);
   }
 
   /** The buyer sent a pool seller a request that is not encrypted to a worker (an ordinary provider of that seller). */
   trackPoolSellerRequest(sellerPeerId: string, requestId: string): void {
-    this._workerSellers.add(sellerPeerId);
-    // The buyer is sending this id again, now not to a worker: this attempt gates its payment
-    // from here on (as recordWorkerAttribution does for a worker attempt).
-    const delivery = this._workerDeliveries.get(requestId);
-    if (delivery?.sellerPeerId === sellerPeerId) {
-      this._settleWorkerDelivery(requestId, 'failed');
-      this._workerDeliveries.delete(requestId);
-    }
-    this._forgottenWorkerRequests.get(sellerPeerId)?.delete(requestId);
-    this._completedWorkerRequests.get(sellerPeerId)?.delete(requestId);
-    let ids = this._poolSellerRequests.get(sellerPeerId);
-    if (!ids) {
-      ids = new Set();
-      this._poolSellerRequests.set(sellerPeerId, ids);
-    }
-    ids.delete(requestId);
-    ids.add(requestId);
-    if (ids.size > MAX_POOL_SELLER_REQUESTS) ids.delete(ids.values().next().value!);
-  }
-
-  /**
-   * A pool seller's claim for a request the buyer cannot tie to anything it
-   * sent that seller. Worker requests (live, forgotten or completed) are
-   * judged by their own checks, so they are not untracked here.
-   */
-  private _untrackedPoolSellerClaim(sellerPeerId: string, requestId: string | undefined, workerDelivery: WorkerDelivery | undefined): boolean {
-    if (!this._workerSellers.has(sellerPeerId)) return false;
-    if (requestId == null || requestId === '') return true;
-    if (workerDelivery) return false;
-    if (this._isForgottenWorkerRequest(sellerPeerId, requestId) || this._isCompletedWorkerRequest(sellerPeerId, requestId)) return false;
-    return !(this._poolSellerRequests.get(sellerPeerId)?.has(requestId) ?? false);
-  }
-
-  private _isForgottenWorkerRequest(sellerPeerId: string, requestId: string | undefined): boolean {
-    return requestId != null && (this._forgottenWorkerRequests.get(sellerPeerId)?.has(requestId) ?? false);
-  }
-
-  private _isCompletedWorkerRequest(sellerPeerId: string, requestId: string | undefined): boolean {
-    return requestId != null && (this._completedWorkerRequests.get(sellerPeerId)?.has(requestId) ?? false);
+    this._workerDeliveries.trackPoolSellerRequest(sellerPeerId, requestId);
   }
 
   /**
@@ -780,44 +635,7 @@ export class BuyerPaymentManager {
    * for (or, with several recipients, an unnamed one) counts as failed.
    */
   recordWorkerDelivery(requestId: string, usage: WorkerUsage | null, worker?: string | null): void {
-    const delivery = this._workerDeliveries.get(requestId);
-    const answered = worker?.toLowerCase() ?? (delivery?.recipients.length === 1 ? delivery.recipients[0] : undefined);
-    if (usage && delivery && answered && delivery.recipients.includes(answered)) {
-      this._settleWorkerDelivery(requestId, 'verified', usage, answered);
-    } else {
-      this._settleWorkerDelivery(requestId, 'failed');
-    }
-  }
-
-  private _settleWorkerDelivery(requestId: string, state: 'verified' | 'failed', usage?: WorkerUsage, worker?: string): void {
-    const delivery = this._workerDeliveries.get(requestId);
-    if (!delivery) return;
-    delivery.state = state;
-    if (usage) delivery.usage = usage;
-    if (worker) delivery.worker = worker;
-    const waiters = delivery.waiters.splice(0);
-    for (const waiter of waiters) waiter();
-  }
-
-  /** The request's worker delivery once it is no longer pending (or the wait ran out); undefined for other requests. */
-  private async _awaitWorkerDelivery(sellerPeerId: string, requestId: string, timeoutMs: number): Promise<WorkerDelivery | undefined> {
-    const delivery = this._workerDeliveries.get(requestId);
-    // Another seller's request is refused at once; there is nothing to wait for.
-    if (!delivery || delivery.state !== 'pending' || delivery.sellerPeerId !== sellerPeerId) return delivery;
-    await new Promise<void>((resolve) => {
-      const done = (): void => {
-        clearTimeout(timer);
-        resolve();
-      };
-      const timer = setTimeout(() => {
-        const index = delivery.waiters.indexOf(done);
-        if (index >= 0) delivery.waiters.splice(index, 1);
-        resolve();
-      }, timeoutMs);
-      timer.unref?.();
-      delivery.waiters.push(done);
-    });
-    return delivery;
+    this._workerDeliveries.recordDelivery(requestId, usage, worker);
   }
 
   private _getCeiling(sellerPeerId: string): bigint {
@@ -1848,8 +1666,8 @@ export class BuyerPaymentManager {
   ): Promise<PerRequestAuthResult> {
     const workerDelivery = stats.requestId != null ? this._workerDeliveries.get(stats.requestId) : undefined;
     if (
-      this._isForgottenWorkerRequest(sellerPeerId, stats.requestId)
-      || this._untrackedPoolSellerClaim(sellerPeerId, stats.requestId, workerDelivery)
+      this._workerDeliveries.isForgotten(sellerPeerId, stats.requestId)
+      || this._workerDeliveries.isUntrackedPoolSellerClaim(sellerPeerId, stats.requestId, workerDelivery)
       || (workerDelivery && (workerDelivery.sellerPeerId !== sellerPeerId || workerDelivery.state !== 'verified' || !workerDelivery.usage))
     ) {
       throw buyerFault(
@@ -2008,7 +1826,7 @@ export class BuyerPaymentManager {
     // so the request is neither paid twice nor left short before a close.
     // A worker request retired as paid stays counted even once the tracker has trimmed it.
     const alreadyCounted = this._serviceTokensCounted.has(responseStats.requestId)
-      || this._isCompletedWorkerRequest(sellerPeerId, responseStats.requestId);
+      || this._workerDeliveries.isCompleted(sellerPeerId, responseStats.requestId);
     if (alreadyCounted) {
       acceptedCost = this._serviceTokensCounted.unpaid(responseStats.requestId);
       verifiedCostDelta = 0n;
@@ -2170,7 +1988,7 @@ export class BuyerPaymentManager {
     // it would otherwise count (and so retire) a request whose answer failed.
     const reportsDelivery = payload.lastRequestCost != null || payload.billingUsage != null;
     const workerDelivery = payload.requestId && reportsDelivery
-      ? await this._awaitWorkerDelivery(sellerPeerId, payload.requestId, WORKER_DELIVERY_WAIT_MS)
+      ? await this._workerDeliveries.awaitDelivery(sellerPeerId, payload.requestId, WORKER_DELIVERY_WAIT_MS)
       : undefined;
     const session = this.getActiveSession(sellerPeerId);
     if (!session) {
@@ -2194,11 +2012,11 @@ export class BuyerPaymentManager {
     const buyerService = requestBilling?.context.service
       ?? this._requestService.get(payload.requestId);
     const buyerBillingContext = requestBilling?.context;
-    if (reportsDelivery && this._isForgottenWorkerRequest(sellerPeerId, payload.requestId)) {
+    if (reportsDelivery && this._workerDeliveries.isForgotten(sellerPeerId, payload.requestId)) {
       debugWarn(`[BuyerPayment] Refusing NeedAuth from ${sellerPeerId.slice(0, 12)}... for colony-pool request ${payload.requestId}: its delivery was never verified`);
       return false;
     }
-    if (reportsDelivery && this._isCompletedWorkerRequest(sellerPeerId, payload.requestId)) {
+    if (reportsDelivery && this._workerDeliveries.isCompleted(sellerPeerId, payload.requestId)) {
       debugWarn(`[BuyerPayment] Refusing NeedAuth from ${sellerPeerId.slice(0, 12)}... for colony-pool request ${payload.requestId}: it is already paid`);
       return false;
     }
@@ -2206,7 +2024,7 @@ export class BuyerPaymentManager {
       debugWarn(`[BuyerPayment] Refusing NeedAuth from ${sellerPeerId.slice(0, 12)}... for request ${payload.requestId} sent to another seller`);
       return false;
     }
-    if (reportsDelivery && this._untrackedPoolSellerClaim(sellerPeerId, payload.requestId, workerDelivery)) {
+    if (reportsDelivery && this._workerDeliveries.isUntrackedPoolSellerClaim(sellerPeerId, payload.requestId, workerDelivery)) {
       debugWarn(`[BuyerPayment] Refusing NeedAuth from colony-pool seller ${sellerPeerId.slice(0, 12)}... for request ${payload.requestId ?? '(none)'} it was never sent`);
       return false;
     }
@@ -2387,7 +2205,7 @@ export class BuyerPaymentManager {
       // verifiedCost) or reopened by the buyer's next request (the 402 path).
       // Otherwise repeated headroom prompts would each advance verifiedCost to
       // what is already signed and buy another window with no answer behind it.
-      if (this._workerSellers.has(sellerPeerId)) {
+      if (this._workerDeliveries.isWorkerSeller(sellerPeerId)) {
         debugWarn(
           `[BuyerPayment] NeedAuth: colony-pool seller ${sellerPeerId.slice(0, 12)}... reached its overdraft window (${currentCumulative}) without a verified answer — not reopening`,
         );

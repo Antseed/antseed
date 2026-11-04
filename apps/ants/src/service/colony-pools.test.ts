@@ -2,7 +2,7 @@ import { Wallet } from 'ethers';
 import { describe, expect, it, vi } from 'vitest';
 import type { MulticallRequest } from '@antseed/node/payments';
 import type { AntsContext } from './context.js';
-import { claimColonyPool, linkWorkerPayout, colonyPools } from './colony-pools.js';
+import { claimColonyPool, forgetColonyPool, linkWorkerPayout, colonyPools } from './colony-pools.js';
 
 // Batched epoch reads go through Multicall3; here they are answered by the fixture's client.
 const multicall = vi.hoisted(() => ({ client: null as Record<string, (...args: unknown[]) => Promise<unknown>> | null, calls: [] as string[] }));
@@ -36,22 +36,31 @@ function fixture(pools: string[] = [pool], unfunded: number[] = []) {
     claimEpochEmissions: vi.fn(async () => { pulled = true; return 'pull-hash'; }),
     claimUsdc: vi.fn(async () => 'usdc-hash'),
     claimAnts: vi.fn(async () => 'ants-hash'),
-    setPayout: vi.fn(async () => 'link-hash'),
+    payout: '0x0000000000000000000000000000000000000000',
+    payoutOf: vi.fn(async (): Promise<string> => client.payout),
+    setPayout: vi.fn(async (_signer: unknown, authorization: { payout: string }) => { client.payout = authorization.payout; return 'link-hash'; }),
   };
+  const code = new Map<string, string>([[pool, '0x6080']]);
   multicall.client = client as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>;
   multicall.calls = [];
   const chain = { evmChainId: 31337, colonyPoolAddresses: pools };
+  const configured = new Set(pools.map((a) => a.toLowerCase()));
   const ctx = {
     address: wallet.address,
     chain,
     stack: async () => ({ currentEpoch: 6 }),
     colonyPoolAddresses: () => (chain.colonyPoolAddresses ?? []).map((a) => a.toLowerCase()),
     rememberColonyPool: async (address: string) => { chain.colonyPoolAddresses = [...chain.colonyPoolAddresses, address]; },
+    isLinkedColonyPool: (address: string) => chain.colonyPoolAddresses.some((a) => a.toLowerCase() === address.toLowerCase()) && !configured.has(address.toLowerCase()),
+    forgetColonyPool: async (address: string) => {
+      if (configured.has(address.toLowerCase())) throw new Error('Only a colony pool linked from this dashboard can be forgotten here');
+      chain.colonyPoolAddresses = chain.colonyPoolAddresses.filter((a) => a.toLowerCase() !== address.toLowerCase());
+    },
     colonyPool: () => client,
-    provider: () => ({}),
+    provider: () => ({ getCode: async (address: string) => code.get(address.toLowerCase()) ?? '0x' }),
     requireSigner: () => wallet,
   } as unknown as AntsContext;
-  return { ctx, client };
+  return { ctx, client, code };
 }
 
 const report = vi.fn(async () => {});
@@ -60,7 +69,7 @@ describe('colony pool rewards', () => {
   it('reports USDC and ANTS each configured pool owes the wallet', async () => {
     const { ctx } = fixture();
     await expect(colonyPools(ctx)).resolves.toEqual({
-      pools: [{ address: pool, usdcOwed: '2500', antsOwed: '7', antsEpochs: [4], unfundedEpochs: [] }],
+      pools: [{ address: pool, usdcOwed: '2500', antsOwed: '7', antsEpochs: [4], unfundedEpochs: [], forgettable: false }],
     });
   });
 
@@ -123,15 +132,59 @@ describe('colony pool rewards', () => {
     expect(multicall.calls.filter((method) => method === 'epochWeight')).toHaveLength(2);
   });
 
-  it('fails instead of showing zero when a batched epoch read fails', async () => {
+  it('marks a pool unreadable instead of showing zero when a batched epoch read fails', async () => {
     const { ctx, client } = fixture();
     client.epochAnts.mockImplementation(async () => undefined as unknown as bigint);
-    await expect(colonyPools(ctx)).rejects.toThrow(/epochAnts unavailable/);
+    const [view] = (await colonyPools(ctx)).pools;
+    expect(view).toMatchObject({ address: pool, usdcOwed: '0', antsOwed: '0', error: expect.stringMatching(/epochAnts unavailable/) });
+    await expect(claimColonyPool(ctx, { pool, usdc: true, ants: true }, report)).rejects.toThrow(/epochAnts unavailable/);
+  });
+
+  it('keeps showing valid pools when a remembered one cannot be read, and lets it be forgotten', async () => {
+    const broken = '0x00000000000000000000000000000000000000cc';
+    const { ctx, client } = fixture([pool]);
+    await ctx.rememberColonyPool(broken);
+    const base = client.usdcBalance.getMockImplementation()!;
+    client.usdcBalance.mockImplementation(async () => { throw new Error('missing revert data'); });
+    const opened = (ctx as unknown as { colonyPool: (address: string) => typeof client });
+    opened.colonyPool = (address: string) => (address.toLowerCase() === broken ? client : { ...client, usdcBalance: vi.fn(base) });
+    const { pools } = await colonyPools(ctx);
+    expect(pools.find((entry) => entry.address === pool)).toMatchObject({ usdcOwed: '2500', forgettable: false });
+    expect(pools.find((entry) => entry.address === broken)).toMatchObject({ error: expect.stringMatching(/missing revert data/), forgettable: true });
+    await expect(forgetColonyPool(ctx, { pool })).rejects.toThrow(/linked from this dashboard/);
+    await expect(forgetColonyPool(ctx, { pool: broken })).resolves.toEqual({ pool: broken });
+    expect(ctx.colonyPoolAddresses()).toEqual([pool]);
   });
 
   it('refuses pools the dashboard does not know', async () => {
     const { ctx } = fixture([]);
     await expect(claimColonyPool(ctx, { pool, usdc: true, ants: false }, report)).rejects.toThrow(/Unknown colony pool/);
+  });
+
+  it('rejects a link to an account without code, or to a contract that is not a colony pool, and never remembers it', async () => {
+    const { ctx, client, code } = fixture([]);
+    code.delete(pool);
+    await expect(linkWorkerPayout(ctx, { code: linkCode() }, report)).rejects.toThrow(/not a contract/);
+    code.set(pool, '0x6080');
+    client.payoutOf.mockRejectedValueOnce(new Error('could not decode result data'));
+    await expect(linkWorkerPayout(ctx, { code: linkCode() }, report)).rejects.toThrow(/not a colony pool/);
+    expect(client.setPayout).not.toHaveBeenCalled();
+    expect(ctx.colonyPoolAddresses()).toEqual([]);
+  });
+
+  it('does not report or remember a link the pool did not record', async () => {
+    vi.useFakeTimers();
+    try {
+      const { ctx, client } = fixture([]);
+      client.setPayout.mockImplementation(async () => 'link-hash');
+      const linking = linkWorkerPayout(ctx, { code: linkCode() }, report);
+      const settled = expect(linking).rejects.toThrow(/did not record this wallet/);
+      await vi.runAllTimersAsync();
+      await settled;
+      expect(ctx.colonyPoolAddresses()).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('submits a Mac link from the payout wallet and starts showing its pool', async () => {

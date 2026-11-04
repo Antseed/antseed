@@ -54,6 +54,28 @@ export interface DeviceAttestationReport {
 }
 
 /**
+ * Apple issues a new DeviceInformation attestation for a device at most once
+ * every 7 days; until then it returns the cached one, whatever nonce the MDM
+ * sends. Pools ask again once an attestation is this old.
+ */
+export const APPLE_ATTESTATION_REISSUE_S = 7 * 24 * 3600;
+/** Oldest Apple attestation buyers and pools accept: the reissue interval plus a day to fetch the next. */
+export const DEVICE_ATTESTATION_MAX_AGE_S = 8 * 24 * 3600;
+
+/**
+ * The challenge a pool sends for a worker's Mac. It is derived, not random,
+ * so the cached attestation Apple returns within its reissue interval still
+ * answers it, also after the worker reconnects or the pool restarts. Freshness
+ * comes from the leaf's issue time; the nonce binds the attestation to the
+ * worker and its attestation key, so a new key needs Apple's next issuance.
+ */
+export function deviceAttestationChallenge(worker: string, attestationKey: string, udid: string): string {
+  return createHash('sha256')
+    .update(`antseed-device-challenge/v1\n${worker.toLowerCase()}\n${attestationKey.toLowerCase()}\n${udid}`)
+    .digest('hex');
+}
+
+/**
  * The 32-byte `DeviceAttestationNonce` the pool's MDM sends. It names the
  * worker and its attestation key, so an attestation fetched for one worker
  * can't be presented for another, and buyers can recompute it.

@@ -147,4 +147,26 @@ describe('readSellerWorkers', () => {
     assert.deepEqual(workers.map((w) => [w.address, w.rank]), [['0xaa', 1], ['0xbb', 2]])
     assert.equal(workers[0]!.tokensPerSecond, 50.5)
   })
+
+  it('takes each worker\'s first-byte median over its own latest 500 samples', () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'workers-'))
+    writeLedger(dataDir)
+    const db = new Database(join(dataDir, COLONY_POOL_LEDGER_FILE))
+    db.exec('CREATE TABLE dispatches (id INTEGER PRIMARY KEY AUTOINCREMENT, worker TEXT NOT NULL, at INTEGER NOT NULL, ok INTEGER NOT NULL, reason TEXT, first_byte_ms INTEGER)')
+    const dispatch = db.prepare('INSERT INTO dispatches (worker, at, ok, reason, first_byte_ms) VALUES (?, ?, 1, null, ?)')
+    // 0xaa: 600 old slow samples, then 500 newer fast ones; only the newest 500 count.
+    for (let i = 0; i < 600; i++) dispatch.run('0xaa', NOW - 5 * HOUR + i, 900)
+    for (let i = 0; i < 500; i++) dispatch.run('0xaa', NOW - HOUR + i, 100)
+    // 0xbb: its own samples, unaffected by 0xaa's.
+    dispatch.run('0xbb', NOW - HOUR, 40)
+    dispatch.run('0xbb', NOW - HOUR, 60)
+    // Older than a week: not counted.
+    dispatch.run('0xbb', NOW - 8 * 24 * HOUR, 5000)
+    db.close()
+    const result = readSellerWorkers(dataDir, NOW)
+    const workers = result.available ? result.workers : []
+    assert.equal(workers.find((w) => w.address === '0xaa')!.firstByteMsMedian, 100)
+    assert.equal(workers.find((w) => w.address === '0xbb')!.firstByteMsMedian, 50)
+    assert.equal(workers.find((w) => w.address === '0xbb')!.successRateWeek, 1)
+  })
 })

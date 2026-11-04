@@ -4,6 +4,9 @@ import { createServer as createHttpsServer } from 'node:https';
 import { verifyMessage } from 'ethers';
 import { WebSocketServer, type WebSocket } from 'ws';
 import {
+  APPLE_ATTESTATION_REISSUE_S,
+  DEVICE_ATTESTATION_MAX_AGE_S,
+  deviceAttestationChallenge,
   deviceAttestationNonce,
   MAX_WORKER_RECIPIENTS,
   sealRequest,
@@ -57,7 +60,7 @@ const ATTESTATION_INTERVAL_MS = 5 * 60_000;
 const ATTESTATION_REPLY_MS = 30_000;
 /** An attestation answering a challenge must be this fresh. */
 const ATTESTATION_MAX_AGE_S = 120;
-/** How often the operator's MDM re-fetches Apple's attestation of a Mac. */
+/** How often the pool asks again while Apple still returns an attestation older than its reissue interval. */
 const DEVICE_ATTESTATION_INTERVAL_MS = 24 * 60 * 60_000;
 
 export interface ColonyPoolOptions {
@@ -94,6 +97,7 @@ export interface ColonyPoolOptions {
   deviceAttestor?: DeviceAttestor;
   /** Only route to Macs Apple attests through the operator's MDM (SIP on, serial matches). */
   requireDeviceAttestation?: boolean;
+  /** How often to ask again while Apple still returns an attestation past its 7-day reissue interval (default daily). */
   deviceAttestationIntervalMs?: number;
   /** Trust anchors for device attestations; Apple's root unless a test overrides it. */
   deviceAttestationRoots?: string[];
@@ -175,6 +179,8 @@ interface ConnectedWorker {
   attestNonce: string | null;
   /** Apple's attestation from the operator's MDM, once one verified. */
   deviceAttestation: DeviceAttestation | null;
+  /** Unix seconds when `deviceAttestation` grows too old or its chain expires. */
+  deviceValidUntil: number;
   deviceTimer: NodeJS.Timeout | null;
   /** Closes the connection before the key certificate expires, so the worker reconnects and certifies again. */
   renewTimer: NodeJS.Timeout | null;
@@ -313,7 +319,7 @@ export class ColonyPool {
       maxConcurrency: worker.maxConcurrency,
       tokensPerSecond: worker.rank.tokensPerSecond,
       attested: worker.hardened,
-      appleVerified: worker.deviceAttestation !== null,
+      appleVerified: this.appleVerified(worker),
       reliability: worker.rank.reliability,
       firstByteMs: worker.rank.firstByteMs,
       benchedUntil: worker.rank.benchedUntil > now ? worker.rank.benchedUntil : null,
@@ -335,7 +341,7 @@ export class ColonyPool {
     return workers.map((worker) => ({
       ...worker.certificate,
       ...(worker.attestation ? { attestation: worker.attestation } : {}),
-      ...(worker.deviceAttestation ? { deviceAttestation: worker.deviceAttestation } : {}),
+      ...(worker.deviceAttestation && this.appleVerified(worker) ? { deviceAttestation: worker.deviceAttestation } : {}),
     }));
   }
 
@@ -490,8 +496,7 @@ export class ColonyPool {
     const now = Date.now();
     const candidates: ConnectedWorker[] = [];
     for (const worker of this.workers.values()) {
-      if (!worker.verified.has(service) || !this.routable(worker) || worker.inflight.size >= worker.maxConcurrency) continue;
-      if (this.priority(worker.address) === 0 || now < worker.rank.benchedUntil) continue;
+      if (this.unavailableReason(worker, service, now) !== null) continue;
       worker.assignedAt = worker.assignedAt.filter((at) => now - at < ASSIGNMENT_WEIGHT_MS);
       candidates.push(worker);
     }
@@ -687,6 +692,7 @@ export class ColonyPool {
       attestTimer: null,
       attestNonce: null,
       deviceAttestation: null,
+      deviceValidUntil: 0,
       deviceTimer: null,
       renewTimer: null,
       connectionId: this.opts.ledger.recordConnect(address, hello.agent),
@@ -719,32 +725,47 @@ export class ColonyPool {
   /** With `requireDeviceAttestation`, only Macs Apple attests get buyers. */
   private routable(worker: ConnectedWorker): boolean {
     if (worker.certificate.expires <= Math.floor(Date.now() / 1000) + 300) return false;
-    return !this.opts.requireDeviceAttestation || worker.deviceAttestation !== null;
+    return !this.opts.requireDeviceAttestation || this.appleVerified(worker);
+  }
+
+  private appleVerified(worker: ConnectedWorker): boolean {
+    return worker.deviceAttestation !== null && worker.deviceValidUntil > Math.floor(Date.now() / 1000);
   }
 
   /**
    * Ask the operator's MDM for Apple's attestation of the Mac this worker
-   * says it runs on, bound to the worker and its attestation key, and repeat
-   * it daily. A pool that requires it disconnects workers that fail.
+   * says it runs on, bound to the worker and its attestation key. Apple
+   * issues a new one at most every 7 days and returns the cached one in
+   * between, so the challenge is derived (deviceAttestationChallenge) and the
+   * pool asks again once the attestation is 7 days old, then daily until
+   * Apple issues the next. A pool that requires it disconnects workers that fail.
    */
   private async attestDevice(worker: ConnectedWorker): Promise<void> {
     const attestation = worker.attestation;
     const attestationKey = worker.certificate.attestationKey;
+    const retryMs = this.opts.deviceAttestationIntervalMs ?? DEVICE_ATTESTATION_INTERVAL_MS;
     let reason: string | undefined;
+    let nextMs = retryMs;
     if (!attestation?.udid || !attestation.serial || !attestationKey) {
       reason = 'it reports no Mac to attest';
     } else {
-      const challenge = randomBytes(16).toString('hex');
+      const challenge = deviceAttestationChallenge(worker.address, attestationKey, attestation.udid);
       try {
         const chain = await this.opts.deviceAttestor!.attest(attestation.udid, deviceAttestationNonce(worker.address, attestationKey, challenge));
         const check = verifyDeviceAttestation({ chain, challenge }, {
-          worker: worker.address, attestationKey, serialNumber: attestation.serial, maxAgeS: ATTESTATION_MAX_AGE_S * 5,
+          worker: worker.address, attestationKey, serialNumber: attestation.serial, maxAgeS: DEVICE_ATTESTATION_MAX_AGE_S,
           ...(this.opts.deviceAttestationRoots ? { roots: this.opts.deviceAttestationRoots } : {}),
         });
-        if (check.valid) {
+        if (check.valid && check.report && check.validUntil !== undefined) {
           if (this.workers.get(worker.address) !== worker) return;
           worker.deviceAttestation = { chain, challenge };
-          this.log(`Apple attests worker ${worker.address}'s Mac ${attestation.serial} (SIP on, ${check.report?.osVersion ?? 'macOS'})`);
+          worker.deviceValidUntil = check.validUntil;
+          const nowS = Math.floor(Date.now() / 1000);
+          // Ask again once Apple can issue a new one (daily while it still returns this one), and by the time this one lapses.
+          const reissueS = check.report.issued + APPLE_ATTESTATION_REISSUE_S;
+          const nextS = Math.min(reissueS > nowS ? reissueS : nowS + Math.ceil(retryMs / 1000), check.validUntil);
+          nextMs = Math.max(1000, (nextS - nowS) * 1000);
+          this.log(`Apple attests worker ${worker.address}'s Mac ${attestation.serial} (SIP on, ${check.report.osVersion ?? 'macOS'}, issued ${new Date(check.report.issued * 1000).toISOString()})`);
           this.emitChangeIfNeeded();
         } else {
           reason = check.reason;
@@ -756,6 +777,7 @@ export class ColonyPool {
     if (this.workers.get(worker.address) !== worker) return;
     if (reason) {
       worker.deviceAttestation = null;
+      worker.deviceValidUntil = 0;
       this.log(`no Apple attestation for worker ${worker.address}: ${reason}`);
       this.emitChangeIfNeeded();
       if (this.opts.requireDeviceAttestation) {
@@ -763,7 +785,7 @@ export class ColonyPool {
         return;
       }
     }
-    worker.deviceTimer = setTimeout(() => void this.attestDevice(worker), this.opts.deviceAttestationIntervalMs ?? DEVICE_ATTESTATION_INTERVAL_MS);
+    worker.deviceTimer = setTimeout(() => void this.attestDevice(worker), nextMs);
     worker.deviceTimer.unref();
   }
 
@@ -803,6 +825,7 @@ export class ColonyPool {
     if (deviceChanged && this.opts.deviceAttestor) {
       if (worker.deviceTimer) clearTimeout(worker.deviceTimer);
       worker.deviceAttestation = null;
+      worker.deviceValidUntil = 0;
       this.emitChangeIfNeeded();
       void this.attestDevice(worker);
     }

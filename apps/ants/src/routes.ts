@@ -18,12 +18,12 @@ import {
   overview, positions, stake, move, split, merge, extend, maxLock, previewWithdraw, withdraw,
   rewards, claim, restake, stakeUsageRewards, compound, poolsView, singlePool, usage, emissions,
   verification, proofStatus, submitProof, seller, registerBinding, claimStarter,
-  colonyPools, claimColonyPool, linkWorkerPayout,
+  colonyPools, claimColonyPool, linkWorkerPayout, forgetColonyPool,
 } from './service/index.js';
 import type {
   StakeRequest, MoveRequest, SplitRequest, MergeRequest, ExtendRequest, MaxLockRequest, WithdrawRequest,
   ClaimRequest, RestakeRequest, StakeUsageRequest, SubmitProofRequest, CompoundRequest,
-  ColonyPoolClaimRequest, WorkerPayoutLinkRequest,
+  ColonyPoolClaimRequest, ColonyPoolForgetRequest, WorkerPayoutLinkRequest,
 } from './api-types.js';
 
 export interface RouteContext {
@@ -107,6 +107,12 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext): voi
   app.get<{ Querystring: { epochs?: string } }>('/api/usage', (request, reply) => respond(reply, () => cached(`usage:${request.query.epochs ?? ''}`, () => usage(ctx, { epochs: request.query.epochs ? Number(request.query.epochs) : undefined }))));
   app.get('/api/emissions', (_request, reply) => respond(reply, () => cached('emissions', () => emissions(ctx))));
   app.get('/api/colony-pools', (_request, reply) => respond(reply, () => cached('colony-pools', () => colonyPools(ctx))));
+  // Local dashboard state only (no transaction): drop a linked pool from the Mac earnings card.
+  app.post<{ Body: ColonyPoolForgetRequest }>('/api/colony-pools/forget', (request, reply) => respond(reply, async () => {
+    const result = await forgetColonyPool(ctx, request.body);
+    views.invalidate();
+    return result;
+  }));
   app.get('/api/network', (_request, reply) => respond(reply, () => networkSnapshot(ctx)));
   app.get('/api/network/legacy', (_request, reply) => respond(reply, () => views.read('network:legacy', () => networkLegacy(ctx), 300_000)));
   app.get<{ Querystring: { seller?: string } }>('/api/verification', (request, reply) => respond(reply, () => cached(`verification:${(request.query.seller ?? '').toLowerCase()}`, () => verification(ctx, request.query.seller || undefined))));

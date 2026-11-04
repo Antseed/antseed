@@ -1,11 +1,15 @@
 import { multicallRead, parseWorkerPayoutLink } from '@antseed/node/payments';
 import { Interface, ZeroAddress } from 'ethers';
-import type { WorkerPayoutLinkRequest, ColonyPoolClaimRequest, ColonyPoolsView } from '../api-types.js';
+import type { WorkerPayoutLinkRequest, ColonyPoolClaimRequest, ColonyPoolForgetRequest, ColonyPoolsView } from '../api-types.js';
 import type { AntsContext } from './context.js';
 import type { StepReporter } from './steps.js';
 
 /** AntseedColonyPool.MAX_EPOCHS_PER_CLAIM: epochs per claimAnts / claimEpochEmissions call. */
 const MAX_EPOCHS_PER_CLAIM = 32;
+
+/** Reads of payoutOf after setPayout confirms, and the wait between them. */
+const PAYOUT_READ_ATTEMPTS = 5;
+const PAYOUT_READ_RETRY_MS = 1_000;
 
 /** Every finished epoch: pool ANTS never expire, so none is left out (epochs are weekly). */
 function finishedEpochs(currentEpoch: number): number[] {
@@ -43,7 +47,20 @@ export async function colonyPools(ctx: AntsContext): Promise<ColonyPoolsView> {
   if (addresses.length === 0 || ctx.address === ZeroAddress) return { pools: [] };
   const { currentEpoch } = await ctx.stack();
   const epochs = finishedEpochs(currentEpoch);
-  return { pools: await Promise.all(addresses.map((address) => readColonyPool(ctx, address, epochs))) };
+  // One pool that can't be read (a bad link, an RPC error) must not hide the others.
+  return {
+    pools: await Promise.all(addresses.map(async (address) => {
+      try {
+        return await readColonyPool(ctx, address, epochs);
+      } catch (error) {
+        return {
+          address, usdcOwed: '0', antsOwed: '0', antsEpochs: [], unfundedEpochs: [],
+          error: error instanceof Error ? error.message : String(error),
+          forgettable: ctx.isLinkedColonyPool(address),
+        };
+      }
+    })),
+  };
 }
 
 /** What one colony pool owes the connected wallet over `epochs`. */
@@ -63,7 +80,7 @@ async function readColonyPool(ctx: AntsContext, address: string, epochs: number[
   const antsEpochs = perEpoch.filter((entry) => entry.owed > 0n).map((entry) => entry.epoch);
   const unfundedEpochs = perEpoch.filter((entry) => entry.unfunded).map((entry) => entry.epoch);
   const antsOwed = perEpoch.reduce((sum, entry) => sum + entry.owed, 0n);
-  return { address, usdcOwed: usdcOwed.toString(), antsOwed: antsOwed.toString(), antsEpochs, unfundedEpochs };
+  return { address, usdcOwed: usdcOwed.toString(), antsOwed: antsOwed.toString(), antsEpochs, unfundedEpochs, forgettable: ctx.isLinkedColonyPool(address) };
 }
 
 export async function claimColonyPool(ctx: AntsContext, request: ColonyPoolClaimRequest, report: StepReporter): Promise<{ hashes: string[] }> {
@@ -118,7 +135,26 @@ export async function linkWorkerPayout(ctx: AntsContext, request: WorkerPayoutLi
   if (wallet.toLowerCase() !== authorization.payout.toLowerCase()) {
     throw new Error(`This link pays ${authorization.payout}; connect that wallet to submit it`);
   }
-  const hash = await ctx.colonyPool(authorization.pool).setPayout(signer, authorization);
+  // The code only proves its own format: check that it names a colony pool before sending anything,
+  // since a call to an account without code succeeds and would link nothing.
+  if (await ctx.provider().getCode(authorization.pool) === '0x') throw new Error(`${authorization.pool} is not a contract, so this link code is not for a colony pool`);
+  const pool = ctx.colonyPool(authorization.pool);
+  try {
+    await pool.payoutOf(authorization.worker);
+  } catch {
+    throw new Error(`${authorization.pool} is not a colony pool, so this link code cannot be submitted`);
+  }
+  const hash = await pool.setPayout(signer, authorization);
+  // Report success, and remember the pool, only once the contract records this wallet.
+  // A read can lag the confirmed transaction on a load-balanced RPC, so give it a few tries.
+  let recorded = await pool.payoutOf(authorization.worker);
+  for (let attempt = 1; attempt < PAYOUT_READ_ATTEMPTS && recorded.toLowerCase() !== authorization.payout.toLowerCase(); attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, PAYOUT_READ_RETRY_MS));
+    recorded = await pool.payoutOf(authorization.worker);
+  }
+  if (recorded.toLowerCase() !== authorization.payout.toLowerCase()) {
+    throw new Error(`The colony pool did not record this wallet for the Mac (it pays ${recorded})`);
+  }
   await report('Mac linked: its earnings now pay to this wallet', hash);
   if (!ctx.colonyPoolAddresses().includes(authorization.pool.toLowerCase())) {
     // The link is on-chain either way; a failed save only means a restart forgets the pool until it is configured.
@@ -129,4 +165,11 @@ export async function linkWorkerPayout(ctx: AntsContext, request: WorkerPayoutLi
     }
   }
   return { hash, pool: authorization.pool, worker: authorization.worker };
+}
+
+/** Stop showing a colony pool linked from this dashboard (e.g. one that can no longer be read). */
+export async function forgetColonyPool(ctx: AntsContext, request: ColonyPoolForgetRequest): Promise<{ pool: string }> {
+  if (!request?.pool || !/^0x[0-9a-fA-F]{40}$/.test(request.pool)) throw new Error('Name the colony pool to forget');
+  await ctx.forgetColonyPool(request.pool);
+  return { pool: request.pool.toLowerCase() };
 }

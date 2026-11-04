@@ -298,10 +298,19 @@ describe('buyer requests to colony pools', () => {
     await expect(fakePool({ attest: 'hardened', device: 'other-mac' }).handler.sendRequest(peer, chatRequest('d4'))).rejects.toThrow(/another Mac/);
   });
 
+  it('accepts Apple\'s cached attestation for 8 days, Apple\'s 7-day reissue interval plus a day', async () => {
+    const clock = Math.floor(Date.now() / 1000);
+    // Apple returns its cached attestation for 7 days, so a leaf issued 3 days ago is current.
+    const recent = fakePool({ attest: 'hardened', device: 'apple', requireApple: true, now: () => clock, deviceNotBefore: new Date((clock - 3 * 24 * 3600) * 1000) });
+    expect((await recent.handler.sendRequest(peer, chatRequest('a8'))).statusCode).toBe(200);
+    const old = fakePool({ attest: 'hardened', device: 'apple', requireApple: true, now: () => clock, deviceNotBefore: new Date((clock - 8 * 24 * 3600 - 60) * 1000) });
+    await expect(old.handler.sendRequest(peer, chatRequest('a9'))).rejects.toThrow(/device attestation is stale/);
+  });
+
   it('stops using a cached assignment once its Apple attestation grows too old', async () => {
     let clock = Math.floor(Date.now() / 1000);
-    // Apple's leaf is a minute short of the 26-hour limit when the buyer first uses it.
-    const pool = fakePool({ attest: 'hardened', device: 'apple', now: () => clock, deviceNotBefore: new Date((clock - 26 * 3600 + 60) * 1000) });
+    // Apple's leaf is a minute short of the 8-day limit when the buyer first uses it.
+    const pool = fakePool({ attest: 'hardened', device: 'apple', now: () => clock, deviceNotBefore: new Date((clock - 8 * 24 * 3600 + 60) * 1000) });
     expect((await pool.handler.sendRequest(peer, chatRequest('c1'))).statusCode).toBe(200);
     clock += 30;
     expect((await pool.handler.sendRequest(peer, chatRequest('c2'))).statusCode).toBe(200);
@@ -409,6 +418,53 @@ describe('buyer requests to colony pools', () => {
     expect(poolFirst.wire[0]!.headers['x-antseed-provider']).toBe('colony-pool');
     expect(poolFirst.wire.at(-1)!.headers['x-antseed-provider']).toBe('colony-pool');
     expect(dec(poolFirst.wire.at(-1)!.body)).not.toContain(PROMPT);
+  });
+
+  it('encrypts a request that names the pool even when the buyer\'s metadata lists the model only for an ordinary provider', async () => {
+    // Pools gain models as workers join, so the buyer's view of them can be stale.
+    const naming = (requestId: string, provider: string, model: string) => {
+      const request = chatRequest(requestId, false, model);
+      return { ...request, headers: { ...request.headers, 'x-antseed-provider': provider } };
+    };
+    const pool = fakePool();
+    const answer = await pool.handler.sendRequest(mixedPeer, naming('x1', 'colony-pool', 'llama'));
+    expect(JSON.parse(dec(answer.body)).choices[0].message.content).toBe(ANSWER);
+    expect(pool.wire.map((req) => req.path)).toEqual([WORKER_ASSIGN_PATH, '/v1/chat/completions']);
+    expect(pool.wire[0]!.headers['x-antseed-provider']).toBe('colony-pool');
+    expect(pool.wire.at(-1)!.headers['x-antseed-provider']).toBe('colony-pool');
+    expect(pool.wire.some((req) => dec(req.body).includes(PROMPT))).toBe(false);
+
+    const noHook = fakePool({ noHook: true });
+    await expect(noHook.handler.sendRequest(mixedPeer, naming('x2', 'colony-pool', 'llama'))).rejects.toThrow(/needs worker encryption/);
+    expect(noHook.wire).toHaveLength(0);
+  });
+
+  it('keeps a request that names an ordinary provider plaintext only when that provider offers the model', async () => {
+    const naming = (requestId: string, provider: string, model: string) => {
+      const request = chatRequest(requestId, false, model);
+      return { ...request, headers: { ...request.headers, 'x-antseed-provider': provider } };
+    };
+    const pool = fakePool();
+    await pool.handler.sendRequest(mixedPeer, naming('y1', 'openai', 'llama'));
+    expect(pool.wire.map((req) => req.path)).toEqual(['/v1/chat/completions']);
+    expect(dec(pool.wire[0]!.body)).toContain(PROMPT);
+
+    // The named provider does not offer qwen, so the seller would serve it through another provider, possibly its pool.
+    const fallback = fakePool();
+    await fallback.handler.sendRequest(mixedPeer, naming('y2', 'openai', 'qwen'));
+    expect(fallback.wire.some((req) => dec(req.body).includes(PROMPT))).toBe(false);
+    // The assignment is left to the seller to place rather than asked of the ordinary provider.
+    expect(fallback.wire[0]!.path).toBe(WORKER_ASSIGN_PATH);
+    expect(fallback.wire[0]!.headers['x-antseed-provider']).toBeUndefined();
+    const noHook = fakePool({ noHook: true });
+    await expect(noHook.handler.sendRequest(mixedPeer, naming('y3', 'openai', 'qwen'))).rejects.toThrow(/needs worker encryption/);
+    await expect(noHook.handler.sendRequest(mixedPeer, naming('y4', 'unknown', 'llama'))).rejects.toThrow(/needs worker encryption/);
+    expect(noHook.wire).toHaveLength(0);
+
+    // A padded ordinary model name is resolved trimmed, as the seller does, and stays plaintext.
+    const padded = fakePool({ noHook: true });
+    await padded.handler.sendRequest(mixedPeer, chatRequest('y5', false, ' llama '));
+    expect(dec(padded.wire[0]!.body)).toContain(PROMPT);
   });
 
   it('never sends a pool request in the clear when this client cannot encrypt', async () => {

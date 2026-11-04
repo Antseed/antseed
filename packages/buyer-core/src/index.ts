@@ -7,6 +7,7 @@ export * from './unit-billing.js';
 export * from './usdc-utils.js';
 export * from './response-usage.js';
 export * from './channel-usage-accounting.js';
+export * from './worker-delivery-tracker.js';
 export * from './channel-session-state.js';
 export * from './channel-reconcile.js';
 export * from './base-evm-client.js';

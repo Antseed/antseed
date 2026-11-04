@@ -435,7 +435,15 @@ export interface ColonyPoolsView {
     antsEpochs: number[];
     /** Finished epochs this wallet earned in whose emissions the pool hasn't pulled yet; claiming pulls them first. */
     unfundedEpochs: number[];
+    /** Why this pool could not be read; its amounts are then zero and must not be claimed. */
+    error?: string;
+    /** Linked through this dashboard (not configured), so it can be forgotten here. */
+    forgettable: boolean;
   }>;
+}
+
+export interface ColonyPoolForgetRequest {
+  pool: string;
 }
 
 export interface ColonyPoolClaimRequest {

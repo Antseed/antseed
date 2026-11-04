@@ -41,6 +41,7 @@ import {
   isWorkerUnavailable,
   peerAnnouncesWorkerE2E,
   peerServiceUsesWorkerE2E,
+  isWorkerE2EProvider,
   type SealedWorkerRequest,
   type WorkerE2EClient,
 } from './worker-e2e.js';
@@ -211,6 +212,7 @@ export class BuyerRequestHandler {
       const headers = Object.fromEntries(Object.entries(adapted.headers).filter(([name]) => name.toLowerCase() !== VIDEO_PRICE_HEADER));
       return { ...adapted, headers: { ...headers, [VIDEO_PRICE_HEADER]: videoPriceUsdc.toString() } };
     };
+    const explicitProvider = extractRequestedProvider(req);
     const billingRoute = requestedService ? selectBillingRoute(peer, req, requestedService) : null;
     // Name the provider the request is billed under, so the seller serves it
     // through the same upstream instead of choosing one by itself.
@@ -222,7 +224,10 @@ export class BuyerRequestHandler {
     // routed to, not by whether this client can encrypt: an ordinary provider
     // may offer the same model, but a pool must never see a prompt in the clear.
     const workerService = !options?.controlPlane ? requestedService?.trim() : undefined;
-    const needsWorkerE2E = Boolean(workerService) && peerServiceUsesWorkerE2E(peer, workerService!, billingRoute?.provider);
+    // The seller trims the model name, so a padded name is resolved trimmed too.
+    const routedProvider = billingRoute?.provider
+      ?? (workerService && workerService !== requestedService ? selectBillingRoute(peer, req, workerService)?.provider : null);
+    const needsWorkerE2E = Boolean(workerService) && peerServiceUsesWorkerE2E(peer, workerService!, { explicitProvider, routedProvider });
     if (needsWorkerE2E && !this._deps.workerE2E) {
       throw buyerFault(
         `Service "${workerService}" on ${peer.peerId.slice(0, 12)}... is served by a colony pool, which needs worker encryption this client does not support`,
@@ -298,7 +303,9 @@ export class BuyerRequestHandler {
     const sealForAttempt = async (): Promise<void> => {
       if (!workerE2E || !workerService) return;
       const channelId = this._deps.negotiator?.bpm?.getActiveSession(peer.peerId)?.sessionId ?? null;
-      const provider = billingRoute?.provider;
+      // The pool the request is for: the one it names, else the one it was routed to. A request
+      // that names an ordinary provider without that model is left to the seller to place.
+      const provider = [explicitProvider, billingRoute?.provider].find((name) => name && isWorkerE2EProvider(peer, name));
       sealed = await workerE2E.seal(peer, plainReq, workerService, (body) => this.sendRequest(peer, {
         requestId: `${plainReq.requestId}-assign`,
         method: 'POST',

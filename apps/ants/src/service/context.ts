@@ -129,9 +129,12 @@ export class AntsContext {
   private indexerClient: Indexer | null | undefined;
   private rpcOrder: string[] | null = null;
   saveColonyPools: ((addresses: string[]) => Promise<void>) | undefined;
+  /** Pools named in the configuration: shown always, never forgotten from the dashboard. */
+  private readonly configuredColonyPools: ReadonlySet<string>;
 
   constructor(options: AntsContextOptions) {
     this.chain = options.chain;
+    this.configuredColonyPools = new Set((options.chain.colonyPoolAddresses ?? []).map((address) => address.toLowerCase()));
     this.address = options.address;
     this.buyerAddress = options.buyerAddress ?? options.address;
     this.signer = options.signer;
@@ -277,6 +280,18 @@ export class AntsContext {
   /** Show a newly linked pool from now on, and persist it through the host. */
   async rememberColonyPool(address: string): Promise<void> {
     this.chain.colonyPoolAddresses = [...(this.chain.colonyPoolAddresses ?? []), address];
+    await this.saveColonyPools?.(this.colonyPoolAddresses());
+  }
+  /** Whether a pool was linked through this dashboard rather than configured. */
+  isLinkedColonyPool(address: string): boolean {
+    const pool = address.toLowerCase();
+    return this.colonyPoolAddresses().includes(pool) && !this.configuredColonyPools.has(pool);
+  }
+  /** Stop showing a pool linked through this dashboard, and persist that through the host. */
+  async forgetColonyPool(address: string): Promise<void> {
+    if (!this.isLinkedColonyPool(address)) throw new Error('Only a colony pool linked from this dashboard can be forgotten here');
+    const pool = address.toLowerCase();
+    this.chain.colonyPoolAddresses = (this.chain.colonyPoolAddresses ?? []).filter((entry) => entry.toLowerCase() !== pool);
     await this.saveColonyPools?.(this.colonyPoolAddresses());
   }
   colonyPool(address: string): ColonyPoolClient {

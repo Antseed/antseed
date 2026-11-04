@@ -2,7 +2,7 @@ import type { BuyerPeerView, BuyerSigner } from '@antseed/buyer-core';
 import type { SealedWorkerRequest, WorkerE2EClient, WorkerUsage } from '@antseed/buyer-core/worker-e2e';
 import { peerIdToAddress } from '@antseed/protocol/peer-id';
 import type { SerializedHttpRequest, SerializedHttpResponse } from '../types/http.js';
-import { isDeviceAttestation, verifyDeviceAttestation } from './apple-attestation.js';
+import { DEVICE_ATTESTATION_MAX_AGE_S, isDeviceAttestation, verifyDeviceAttestation } from './apple-attestation.js';
 import {
   isWorkerAttestation,
   MAX_WORKER_RECIPIENTS,
@@ -18,8 +18,6 @@ const CERTIFICATE_RENEW_MARGIN_S = 300;
 const MAX_CACHED_ASSIGNMENTS = 1024;
 /** Pools re-attest workers every 5 minutes; an older attestation means the pool stopped checking. */
 const ATTESTATION_MAX_AGE_S = 900;
-/** Pools re-fetch Apple's attestation daily through their MDM. */
-const DEVICE_ATTESTATION_MAX_AGE_S = 26 * 3600;
 
 /** Workers a request is encrypted for unless the buyer says otherwise. */
 export const DEFAULT_WORKER_RECIPIENTS = 2;

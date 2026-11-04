@@ -69,28 +69,43 @@ export function readSellerWorkers(dataDir: string, now = Date.now(), sellerSeenA
     // Ledgers from before routing outcomes were recorded have no dispatch or rank tables.
     const tables = new Set((db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all() as Array<{ name: string }>).map((t) => t.name))
     const dispatches = tables.has('dispatches')
-    const rate = dispatches ? db.prepare(`
-      SELECT SUM(CASE WHEN at >= @dayAgo THEN ok ELSE 0 END) AS ok_day, SUM(CASE WHEN at >= @dayAgo THEN 1 ELSE 0 END) AS day,
+    // One query per kind for every worker (not three per worker on each 15 s poll), keyed by address.
+    type Counts = { ok_day: number | null; day: number; ok_week: number | null; week: number }
+    type Rank = { reliability: number | null; benched_until: number; priority: number; tokens_per_second: number }
+    const countsByWorker = new Map(dispatches ? (db.prepare(`
+      SELECT worker, SUM(CASE WHEN at >= @dayAgo THEN ok ELSE 0 END) AS ok_day, SUM(CASE WHEN at >= @dayAgo THEN 1 ELSE 0 END) AS day,
              SUM(ok) AS ok_week, COUNT(*) AS week
-      FROM dispatches WHERE worker = @worker AND at >= @weekAgo
-    `) : null
-    const firstBytes = dispatches ? db.prepare(`
-      SELECT first_byte_ms FROM dispatches WHERE worker = ? AND at >= ? AND first_byte_ms IS NOT NULL ORDER BY at DESC LIMIT ${FIRST_BYTE_SAMPLES}
-    `) : null
+      FROM dispatches WHERE at >= @weekAgo GROUP BY worker
+    `).all({ dayAgo: now - DAY_MS, weekAgo }) as Array<Counts & { worker: string }>).map((r) => [r.worker, r]) : [])
+    const firstBytesByWorker = new Map<string, number[]>()
+    if (dispatches) {
+      const samples = db.prepare(`
+        SELECT worker, first_byte_ms FROM (
+          SELECT worker, first_byte_ms, ROW_NUMBER() OVER (PARTITION BY worker ORDER BY at DESC) AS sample
+          FROM dispatches WHERE at >= ? AND first_byte_ms IS NOT NULL
+        ) WHERE sample <= ${FIRST_BYTE_SAMPLES}
+      `).all(weekAgo) as Array<{ worker: string; first_byte_ms: number }>
+      for (const { worker, first_byte_ms } of samples) {
+        const list = firstBytesByWorker.get(worker)
+        if (list) list.push(first_byte_ms)
+        else firstBytesByWorker.set(worker, [first_byte_ms])
+      }
+    }
     // The decode speed the pool routes by (smoothed, per finished request) is kept with its rank.
     const liveSpeed = tables.has('worker_rank')
       && (db.prepare('PRAGMA table_info(worker_rank)').all() as Array<{ name: string }>).some((c) => c.name === 'tokens_per_second')
-    const rankOf = tables.has('worker_rank')
-      ? db.prepare(`SELECT reliability, benched_until, priority, ${liveSpeed ? 'tokens_per_second' : '0'} AS tokens_per_second FROM worker_rank WHERE worker = ?`)
-      : null
+    const rankByWorker = new Map(tables.has('worker_rank')
+      ? (db.prepare(`SELECT worker, reliability, benched_until, priority, ${liveSpeed ? 'tokens_per_second' : '0'} AS tokens_per_second FROM worker_rank`)
+          .all() as Array<Rank & { worker: string }>).map((r) => [r.worker, r])
+      : [])
     const workers = rows.map((row) => {
-      const counts = rate?.get({ worker: row.address, dayAgo: now - DAY_MS, weekAgo }) as { ok_day: number | null; day: number; ok_week: number | null; week: number } | undefined
-      const rank = rankOf?.get(row.address) as { reliability: number | null; benched_until: number; priority: number; tokens_per_second: number } | undefined
+      const counts = countsByWorker.get(row.address)
+      const rank = rankByWorker.get(row.address)
       return {
         ...summary(row),
         successRateDay: counts && counts.day > 0 ? (counts.ok_day ?? 0) / counts.day : null,
         successRateWeek: counts && counts.week > 0 ? (counts.ok_week ?? 0) / counts.week : null,
-        firstByteMsMedian: median(((firstBytes?.all(row.address, weekAgo) ?? []) as Array<{ first_byte_ms: number }>).map((r) => r.first_byte_ms)),
+        firstByteMsMedian: median(firstBytesByWorker.get(row.address) ?? []),
         reliability: rank?.reliability ?? null,
         routingSpeed: rank?.tokens_per_second ?? 0,
         benchedUntil: live && rank && rank.benched_until > now ? rank.benched_until : null,

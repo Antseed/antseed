@@ -218,6 +218,27 @@ it('keeps a colony pool linked through the dashboard after a restart', async () 
   expect(restarted.context.colonyPoolAddresses()).toEqual([configured, linked.toLowerCase()]);
 });
 
+it('forgets a linked colony pool, also after a restart, but never a configured one', async () => {
+  vi.spyOn(AntsContext.prototype, 'selectRpc').mockResolvedValue();
+  const dataDir = await mkdtemp(path.join(tmpdir(), 'ants-colony-pools-forget-test-'));
+  directories.push(dataDir);
+  const configured = Wallet.createRandom().address.toLowerCase();
+  const linked = Wallet.createRandom().address;
+  const options = () => ({ port: 0, dataDir, address: Wallet.createRandom().address, chain: { chainId: 'base-local' as const, evmChainId: 31337, rpcUrl: 'http://127.0.0.1:1', fallbackRpcUrls: [], explorerApiUrl: '', colonyPoolAddresses: [configured] } });
+  const server = await createAntsServer(options());
+  servers.push(server);
+  await server.context.rememberColonyPool(linked);
+  const forget = (pool: string) => server.app.inject({ method: 'POST', url: '/api/colony-pools/forget', headers: { authorization: `Bearer ${server.token}` }, payload: { pool } });
+  expect((await forget(configured)).json()).toMatchObject({ ok: false, error: expect.stringMatching(/linked from this dashboard/) });
+  expect((await forget(linked)).json()).toEqual({ ok: true, data: { pool: linked.toLowerCase() } });
+  expect(server.context.colonyPoolAddresses()).toEqual([configured]);
+  await server.close();
+  servers.pop();
+  const restarted = await createAntsServer(options());
+  servers.push(restarted);
+  expect(restarted.context.colonyPoolAddresses()).toEqual([configured]);
+});
+
 it.each([true, false])('correlates a wallet request only with its running owner job (active=%s)', async active => {
   vi.spyOn(AntsContext.prototype, 'selectRpc').mockResolvedValue();
   const dataDir = await mkdtemp(path.join(tmpdir(), 'ants-wallet-job-test-'));

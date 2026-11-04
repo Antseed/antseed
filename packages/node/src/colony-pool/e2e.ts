@@ -5,7 +5,10 @@
  */
 export * from './worker-crypto.js';
 export {
+  APPLE_ATTESTATION_REISSUE_S,
   APPLE_ENTERPRISE_ATTESTATION_ROOT_CA,
+  DEVICE_ATTESTATION_MAX_AGE_S,
+  deviceAttestationChallenge,
   deviceAttestationNonce,
   isDeviceAttestation,
   verifyDeviceAttestation,

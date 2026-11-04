@@ -68,17 +68,14 @@ export function workerE2EProviderCapability(provider: string): string {
   return `${WORKER_E2E_CAPABILITY}.${provider.toLowerCase().replace(/[^a-z0-9.-]/g, '-')}`;
 }
 
-function providersOffering(peer: BuyerPeerView, service: string): string[] {
-  const announced = peer.metadata?.providers;
-  if (announced?.length) return announced.filter((p) => p.services.includes(service)).map((p) => p.provider);
-  return (peer.providers ?? []).filter((provider) =>
-    peer.providerServiceApiProtocols?.[provider]?.services[service] !== undefined
-    || peer.providerPricing?.[provider]?.services?.[service] !== undefined);
-}
-
 /** True when the seller announces any colony-pool provider: its payment claims must name requests the buyer sent it. */
 export function peerAnnouncesWorkerE2E(peer: BuyerPeerView): boolean {
   return (peer.capabilities ?? []).includes(WORKER_E2E_CAPABILITY);
+}
+
+/** True when the peer announces `provider` as a colony-pool provider. */
+export function isWorkerE2EProvider(peer: BuyerPeerView, provider: string): boolean {
+  return workerProviders(peer)(provider);
 }
 
 function workerProviders(peer: BuyerPeerView): (provider: string) => boolean {
@@ -86,21 +83,36 @@ function workerProviders(peer: BuyerPeerView): (provider: string) => boolean {
   return (provider) => capabilities.has(workerE2EProviderCapability(provider));
 }
 
+/** Where a request to a peer is routed, as the buyer resolved it. */
+export interface WorkerE2ERoute {
+  /** The provider the request names itself (`x-antseed-provider`), before the buyer adds one. */
+  explicitProvider?: string | null;
+  /** The provider the buyer's billing route resolved for the service (null when none offers it). */
+  routedProvider?: string | null;
+}
+
 /**
  * True when a request for `service` on this peer must be encrypted to a
- * worker. With the provider the request is routed to (`x-antseed-provider`),
- * only that provider decides, so a service an ordinary provider also offers
- * stays plaintext when the request goes to the ordinary one. Without one, any
- * colony-pool provider offering the service makes it a pool request, and so
- * does a service no provider announces: the seller (which trims the name)
- * could still route it to its pool, so it is never sent in the clear.
+ * worker. Plaintext is only for a request the buyer resolved to an ordinary
+ * provider, because a pool must never see a prompt in the clear:
+ * - a request that names a colony-pool provider is encrypted, whatever the
+ *   buyer's metadata says the provider offers (pools gain models as workers
+ *   join, so it may be stale);
+ * - a request that names an ordinary provider stays plaintext only when that
+ *   provider offers the service. Otherwise the seller would serve it through
+ *   another provider, possibly its pool;
+ * - without a named provider, the resolved provider decides, and a service no
+ *   provider announces is encrypted, since the seller could route it to its pool.
  */
-export function peerServiceUsesWorkerE2E(peer: BuyerPeerView, service: string, provider?: string | null): boolean {
+export function peerServiceUsesWorkerE2E(peer: BuyerPeerView, _service: string, route: WorkerE2ERoute = {}): boolean {
   if (!peerAnnouncesWorkerE2E(peer)) return false;
   const isWorkerProvider = workerProviders(peer);
-  if (provider) return isWorkerProvider(provider);
-  const offering = providersOffering(peer, service.trim());
-  return offering.length === 0 || offering.some(isWorkerProvider);
+  const explicit = route.explicitProvider?.trim().toLowerCase() || null;
+  const routed = route.routedProvider ?? null;
+  if (explicit && isWorkerProvider(explicit)) return true;
+  if (!routed) return true;
+  if (explicit && routed.toLowerCase() !== explicit) return true;
+  return isWorkerProvider(routed);
 }
 
 export function isWorkerUnavailable(response: SerializedHttpResponse): boolean {

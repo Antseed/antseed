@@ -43,8 +43,30 @@ describe('Mac earnings card', () => {
     expect(render()).toContain('Link a Mac');
   });
 
+  it('shows an unreadable pool with Retry and, for a linked one, Forget, without hiding readable pools', () => {
+    const broken = '0x00000000000000000000000000000000000000cc';
+    state.data = { pools: [
+      { address: pool, usdcOwed: '2500000', antsOwed: '0', antsEpochs: [], unfundedEpochs: [], forgettable: false },
+      { address: broken, usdcOwed: '0', antsOwed: '0', antsEpochs: [], unfundedEpochs: [], error: 'missing revert data', forgettable: true },
+    ] };
+    const html = render();
+    expect(html).toContain('This pool could not be read');
+    expect(html).toContain('Forget it');
+    expect(html).toContain('2.5');
+    // One claim button, for the readable pool only.
+    expect(state.actions.filter((action) => action.title === 'Claim Mac earnings')).toHaveLength(1);
+    expect(claim()?.body).toEqual({ pool, usdc: true, ants: true });
+  });
+
+  it('offers no Forget for a configured pool that cannot be read', () => {
+    state.data = { pools: [{ address: pool, usdcOwed: '0', antsOwed: '0', antsEpochs: [], unfundedEpochs: [], error: 'RPC unavailable', forgettable: false }] };
+    const html = render();
+    expect(html).toContain('This pool could not be read');
+    expect(html).not.toContain('Forget it');
+  });
+
   it('keeps showing earlier amounts after a failed refresh, marked out of date, with claims off', () => {
-    state.data = { pools: [{ address: pool, usdcOwed: '2500000', antsOwed: '0', antsEpochs: [], unfundedEpochs: [] }] };
+    state.data = { pools: [{ address: pool, usdcOwed: '2500000', antsOwed: '0', antsEpochs: [], unfundedEpochs: [], forgettable: false }] };
     expect(render()).not.toContain('out of date');
     expect(claim()?.disabled).toBe(false);
     state.actions = [];
