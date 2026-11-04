@@ -16,6 +16,7 @@ import fs from 'node:fs/promises';
 import type {LoadContext, Plugin} from '@docusaurus/types';
 import {
   integrations,
+  LIST_MODELS_COMMAND,
   CATEGORY_LABELS,
   FORMAT_LABELS,
   FORMAT_ENDPOINT,
@@ -326,7 +327,7 @@ function renderSkillMarkdown(): string {
   out.push('export ANTSEED_BASE_URL="https://gateway.example.com/v1"');
   out.push('export ANTSEED_API_KEY="antseed_…"   # printed once by the installer; never print or commit it');
   out.push('');
-  out.push('curl -s "$ANTSEED_BASE_URL/models" -H "Authorization: Bearer $ANTSEED_API_KEY" | jq \'.data[].id\'');
+  out.push(LIST_MODELS_COMMAND);
   out.push('curl "$ANTSEED_BASE_URL/chat/completions" \\');
   out.push('  -H "Authorization: Bearer $ANTSEED_API_KEY" -H \'content-type: application/json\' \\');
   out.push('  -d \'{ "model": "deepseek-v4-flash", "messages": [{"role": "user", "content": "Hello"}] }\'');

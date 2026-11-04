@@ -69,14 +69,14 @@ export ANTSEED_API_KEY="<the gateway key>"
 If your terminal tool doesn't keep variables between calls, repeat these two `export` lines at the top of each
 command below that uses them.
 
-With a gateway, skip steps 2–4: the buyer, its wallet and funding live on the gateway. Check it answers, then go to
-step 5:
+With a gateway, check it answers now. Then do step 1 (the snapshot is what undo relies on), skip steps 2–4 (the
+buyer, its wallet and funding live on the gateway) and continue with step 5:
 
 ```bash
 curl -s -o /dev/null -w '%{http_code}\n' -m 15 "$ANTSEED_BASE_URL/models" -H "Authorization: Bearer $ANTSEED_API_KEY"
 ```
 
-`200`: go on. `401`: wrong key or base URL (🙋 ask again). Anything else, or no answer: the gateway isn't reachable
+`200`: go on to step 1. `401`: wrong key or base URL (🙋 ask again). Anything else, or no answer: the gateway isn't reachable
 from here; tell the user and stop.
 
 ## Step 1 — Snapshot and note the current model
@@ -88,6 +88,8 @@ echo "provider: $(hermes config get model.provider)  model: $(hermes config get 
 
 Keep the snapshot id it prints (e.g. `20261021-215105-before-antseed`) and tell the user the current provider and
 model.
+
+With a gateway, go on to step 5 now; steps 2–4 are for a local buyer only.
 
 ## Step 2 — Antseed CLI (local buyer only)
 

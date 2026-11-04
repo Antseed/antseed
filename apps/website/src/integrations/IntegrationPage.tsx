@@ -9,6 +9,7 @@ import {
   FORMAT_TO_PROTOCOL,
   STATUS_LABELS,
   integrations,
+  LIST_MODELS_COMMAND,
   type Integration,
   type ConfigBlock,
   type Step,
@@ -477,7 +478,7 @@ function RunFirstBanner() {
                 aggregated across sellers:
               </p>
               <CodeBlock
-                snippet={`# Every model on the network (free, no seller is called)\ncurl -s "$ANTSEED_BASE_URL/models" -H "Authorization: Bearer $ANTSEED_API_KEY" | jq '.data[].id'\n\n# Local buyer proxy: no key\ncurl -s http://localhost:8377/v1/models | jq '.data[].id'`}
+                snippet={`# Every model on the network (free, no seller is called)\n${LIST_MODELS_COMMAND}\n\n# Local buyer proxy: no key\ncurl -s http://localhost:8377/v1/models | jq '.data[].id'`}
               />
               <ExampleOutput
                 label="Example response"

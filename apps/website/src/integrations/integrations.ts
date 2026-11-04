@@ -155,6 +155,10 @@ const LOCAL_GATEWAY_URL = 'http://localhost:8379/v1';
 const LOCAL_PROXY_URL = `http://localhost:${ANT_PORT}/v1`;
 const GATEWAY_KEY = 'antseed_…';
 
+/** Lists every model on the network through the endpoint in ANTSEED_BASE_URL. */
+export const LIST_MODELS_COMMAND =
+  `curl -s "$ANTSEED_BASE_URL/models" -H "Authorization: Bearer $ANTSEED_API_KEY" | jq '.data[].id'`;
+
 /** Env block every gateway setup below reads: the gateway's base URL and an API key. */
 function gatewayEnv(extraNote?: string): ConfigBlock {
   return {
@@ -362,7 +366,7 @@ wire_api = "responses"`,
     test: [
       {
         label: 'List every model on the network',
-        command: 'curl -s "$ANTSEED_BASE_URL/models" -H "Authorization: Bearer $ANTSEED_API_KEY" | jq \'.data[].id\'',
+        command: LIST_MODELS_COMMAND,
         outputLabel: 'Example response',
         output: `"deepseek/deepseek-v4.1-flash"
 "moonshotai/kimi-k3"
@@ -504,7 +508,7 @@ Deposits reserved:           0 USDC → 1 USDC`,
     test: [
       {
         label: 'Confirm the endpoint lists the same ids your config references',
-        command: 'curl -s "$ANTSEED_BASE_URL/models" -H "Authorization: Bearer $ANTSEED_API_KEY" | jq \'.data[].id\'',
+        command: LIST_MODELS_COMMAND,
         outputLabel: 'Example response',
         output: `"deepseek/deepseek-v4.1-flash"
 "moonshotai/kimi-k3"
@@ -726,7 +730,7 @@ openclaw gateway restart`,
     test: [
       {
         label: 'Confirm the endpoint advertises the model ids you put in config',
-        command: 'curl -s "$ANTSEED_BASE_URL/models" -H "Authorization: Bearer $ANTSEED_API_KEY" | jq \'.data[].id\'',
+        command: LIST_MODELS_COMMAND,
         outputLabel: 'Example response',
         output: `"deepseek-v4-flash"
 "gpt-oss-120b"
@@ -1206,7 +1210,7 @@ console.log(object);`,
     modelHints: {
       suggested: ['deepseek-v4-flash', 'kimi-k2.6', 'gpt-oss-120b', 'qwen3-coder-480b'],
       note:
-        'The string you pass to `antseed(\'<id>\')` is forwarded verbatim as `model` in the OpenAI Chat request. Run `curl -s "$ANTSEED_BASE_URL/models" -H "Authorization: Bearer $ANTSEED_API_KEY" | jq \'.data[].id\'` to list every model on the network. `antseed(\'<peerId>@<id>\')` routes that one call to a specific peer.',
+        `The string you pass to \`antseed('<id>')\` is forwarded verbatim as \`model\` in the OpenAI Chat request. Run \`${LIST_MODELS_COMMAND}\` to list every model on the network. \`antseed('<peerId>@<id>')\` routes that one call to a specific peer.`,
     },
     test: [
       {
