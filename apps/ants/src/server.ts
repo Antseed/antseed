@@ -59,6 +59,14 @@ export interface AntsServer {
   close(): Promise<void>;
 }
 
+/** Write `value` as JSON readable only by this user, atomically (temporary file, then rename). */
+async function writePrivateJson(file: string, value: unknown): Promise<void> {
+  await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+  const temporary = `${file}.${randomBytes(8).toString('hex')}.tmp`;
+  await writeFile(temporary, JSON.stringify(value), { mode: 0o600 });
+  await rename(temporary, file);
+}
+
 async function readCryptoOverrides(configPath: string): Promise<Record<string, unknown>> {
   try {
     const parsed = JSON.parse(await readFile(configPath, 'utf-8')) as { payments?: { crypto?: Record<string, unknown> } };
@@ -152,10 +160,7 @@ export async function createAntsServer(options: AntsServerOptions): Promise<Ants
     if (linked.length > 0) context.chain.colonyPoolAddresses = [...(context.chain.colonyPoolAddresses ?? []), ...linked];
   } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('Could not read the linked colony pools. Preserve the file and resolve the error before continuing.', { cause: error }); }
   context.saveColonyPools = async (addresses) => {
-    await mkdir(path.dirname(colonyPoolsPath), { recursive: true, mode: 0o700 });
-    const temporary = `${colonyPoolsPath}.${randomBytes(8).toString('hex')}.tmp`;
-    await writeFile(temporary, JSON.stringify(addresses.filter((address) => !configuredPools.has(address))), { mode: 0o600 });
-    await rename(temporary, colonyPoolsPath);
+    await writePrivateJson(colonyPoolsPath, addresses.filter((address) => !configuredPools.has(address)));
   };
 
   const views = new ViewCache();
@@ -174,10 +179,7 @@ export async function createAntsServer(options: AntsServerOptions): Promise<Ants
     if (!ids.length) return;
     const positions = await context.requirePools().positionsBatch([...new Set(ids)]);
     for (const position of positions) if (position.owner.toLowerCase() === context.address.toLowerCase()) context.localPositionIds.set(position.id, position.owner);
-    await mkdir(path.dirname(historyPath), { recursive: true, mode: 0o700 });
-    const temporary = `${historyPath}.${randomBytes(8).toString('hex')}.tmp`;
-    await writeFile(temporary, JSON.stringify([...context.localPositionIds]), { mode: 0o600 });
-    await rename(temporary, historyPath);
+    await writePrivateJson(historyPath, [...context.localPositionIds]);
   };
   // Browser sessions have no wallet at startup; one journal per chain, with jobs tagged by owner.
   const journalPath = path.join(dataDir, 'ants-activity', browserSigning ? `${statePrefix}-browser.json` : `${statePrefix}-${context.address.toLowerCase()}.json`);

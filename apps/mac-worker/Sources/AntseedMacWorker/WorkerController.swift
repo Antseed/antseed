@@ -52,6 +52,8 @@ final class WorkerController: ObservableObject {
     @Published private(set) var poolShareBps = 0
     @Published private(set) var poolSeller: String?
     /// The owner's wallet this Mac's earnings are paid to, as the pool contract records it.
+    /// When the pool connection last showed signs of life.
+    private var liveness = PoolLiveness()
     @Published private(set) var payout: String?
     /// A signed link the owner has not submitted yet. Kept until the contract
     /// records it or it expires, so its code can be copied again after a restart.
@@ -161,14 +163,42 @@ final class WorkerController: ObservableObject {
         let task = URLSession.shared.webSocketTask(with: config.poolURL)
         task.maximumMessageSize = 16 * 1024 * 1024
         socket = task
+        liveness = PoolLiveness()
         task.resume()
         receive(on: task)
+        watch(task)
+    }
+
+    /// URLSession answers the pool's pings without telling us, so the app pings
+    /// the pool itself and reconnects when neither a message nor a pong arrives
+    /// for `PoolLiveness.silenceLimit` (a sleeping Mac, a dropped network path).
+    private func watch(_ task: URLSessionWebSocketTask) {
+        Task { [weak self] in
+            while true {
+                try? await Task.sleep(nanoseconds: UInt64(PoolLiveness.pingInterval * 1_000_000_000))
+                guard let self, self.socket === task else { return }
+                if self.liveness.isSilent() {
+                    self.log("pool connection silent for \(Int(PoolLiveness.silenceLimit)) s; reconnecting")
+                    self.reconnect()
+                    task.cancel(with: .goingAway, reason: nil)
+                    return
+                }
+                task.sendPing { [weak self] error in
+                    guard error == nil else { return }
+                    Task { @MainActor in
+                        guard let self, self.socket === task else { return }
+                        self.liveness.heard()
+                    }
+                }
+            }
+        }
     }
 
     private func receive(on task: URLSessionWebSocketTask) {
         task.receive { [weak self] result in
             Task { @MainActor in
                 guard let self, self.socket === task else { return }
+                if case .success = result { self.liveness.heard() }
                 switch result {
                 case .success(.string(let text)):
                     self.handle(text)
@@ -347,6 +377,8 @@ final class WorkerController: ObservableObject {
         // Cancelled, or the pool connection changed, while the channel was checked: don't start.
         guard !Task.isCancelled, socket === connection else { return }
         guard let request = requested else { return fail(id, "Request body is not JSON") }
+        // Taken: the pool now gives it the full first-byte deadline instead of failing over.
+        send(["t": "accepted", "id": id])
 
         let stream = request["stream"] as? Bool ?? false
         let messages = request["messages"] as? [[String: Any]] ?? []

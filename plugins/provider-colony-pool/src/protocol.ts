@@ -109,6 +109,17 @@ export interface ServicesFrame {
   services: string[];
 }
 
+/**
+ * The worker took the request and is running it: sent as soon as it admitted
+ * the request and its channel check passed, before inference, so the pool
+ * fails over from a worker that never picks a request up without waiting for
+ * a slow first byte.
+ */
+export interface AcceptedFrame {
+  t: 'accepted';
+  id: string;
+}
+
 export interface ResponseStartFrame {
   t: 'response-start';
   id: string;
@@ -142,6 +153,7 @@ export type PoolFrame = ChallengeFrame | WelcomeFrame | RequestFrame | CancelFra
 export type WorkerFrame =
   | HelloFrame
   | ServicesFrame
+  | AcceptedFrame
   | ResponseStartFrame
   | ResponseChunkFrame
   | ResponseEndFrame
@@ -211,6 +223,8 @@ export function parseWorkerFrame(raw: string): WorkerFrame | null {
         ? value as unknown as HelloFrame : null;
     case 'services':
       return isStringArray(value['services']) ? value as unknown as ServicesFrame : null;
+    case 'accepted':
+      return typeof id === 'string' ? value as unknown as AcceptedFrame : null;
     case 'response-start':
       return typeof id === 'string' && typeof value['status'] === 'number' && isStringRecord(value['headers'])
         ? value as unknown as ResponseStartFrame : null;

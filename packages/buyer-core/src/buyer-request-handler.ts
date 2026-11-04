@@ -267,7 +267,7 @@ export class BuyerRequestHandler {
       ? this._deps.negotiator?.bpm?.videoJobDuration(peer.peerId, videoRoute.protocol, videoJobId)
       : undefined;
 
-    // Colony pools: encrypt to one of the seller's workers so the seller only
+    // Colony pools: encrypt to a few of the seller's workers so the seller only
     // routes ciphertext. Everything above read the plaintext request; the
     // request sent and the raw response stay on hand for ResponseAuth, which
     // signs wire bytes.
@@ -293,8 +293,8 @@ export class BuyerRequestHandler {
         body,
       }, undefined, { controlPlane: true, ...(options?.signal ? { signal: options.signal } : {}) }), channelId);
       req = sealed.request;
-      // Only the worker it is encrypted for can answer it.
-      this._deps.negotiator?.bpm?.recordWorkerAttribution(peer.peerId, plainReq.requestId, sealed.worker);
+      // Only a worker it is encrypted for can answer it; the one that does is credited.
+      this._deps.negotiator?.bpm?.recordWorkerAttribution(peer.peerId, plainReq.requestId, sealed.recipients);
     };
 
     let startTime = Date.now();
@@ -586,7 +586,7 @@ export class BuyerRequestHandler {
           const response = await executeRequest();
           if (session) {
             const verified = session.verified && session.usageConsistent;
-            this._deps.negotiator?.bpm?.recordWorkerDelivery(plainReq.requestId, verified ? session.usage : null);
+            this._deps.negotiator?.bpm?.recordWorkerDelivery(plainReq.requestId, verified ? session.usage : null, session.worker);
           }
           return response;
         } catch (error) {
@@ -597,7 +597,7 @@ export class BuyerRequestHandler {
       try {
         const response = await attempt();
         if (!sealed || !isWorkerUnavailable(response)) return response;
-        // The assigned worker left or is busy: take another one, once.
+        // None of the assigned workers could take it (the pool already tried each): take new ones, once.
         workerE2E!.forget(peer.peerId, requestedService!);
         return await attempt();
       } finally {

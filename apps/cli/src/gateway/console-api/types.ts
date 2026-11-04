@@ -1341,6 +1341,17 @@ export interface SellerWorker {
   /** The worker's share after the protocol fee and the pool's cut; the pool contract pays it at settlement. */
   earnedWeekUsdc: number
   earnedTotalUsdc: number
+  /** Position in the pool's routing order (1 = gets buyers first); null while offline, benched or excluded. */
+  rank: number | null
+  /** Share of buyer requests it answered, over 24 hours and 7 days; null without requests. */
+  successRateDay: number | null
+  successRateWeek: number | null
+  /** Median time to first byte over 7 days, ms. */
+  firstByteMsMedian: number | null
+  /** Not routed before this time (ms) after failing to answer; null when not benched. */
+  benchedUntil: number | null
+  /** The operator's weight (COLONY_POOL_WORKER_PRIORITY); 0 means the pool never routes to it. */
+  priority: number
 }
 
 export type SellerWorkers = { available: false } | { available: true; workers: SellerWorker[] }

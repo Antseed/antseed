@@ -765,6 +765,32 @@ describe('BuyerPaymentManager', () => {
     ]);
   });
 
+  it('credits only the recipient whose answer verified when a request is encrypted for several workers', async () => {
+    const sellerPeerId = fakePeerId('seller-colony-pool-recipients');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    await manager.handleAuthAck(sellerPeerId, { channelId });
+    const workerA = '0x1000000000000000000000000000000000000001';
+    const workerB = '0x2000000000000000000000000000000000000002';
+    const outsider = '0x3000000000000000000000000000000000000003';
+    const usage = { inputTokens: 100n, cachedInputTokens: 0n, outputTokens: 10n };
+    const stats = (requestId: string) => ({
+      inputBytes: SAMPLE_INPUT, outputBytes: SAMPLE_OUTPUT, sellerClaimedCost: 100n,
+      reportedInputTokens: 100n, reportedOutputTokens: 10n, service: 'qwen', requestId,
+    });
+    // The pool failed over to B: only B is credited.
+    manager.recordWorkerAttribution(sellerPeerId, 'req-a', [workerA, workerB]);
+    manager.recordWorkerDelivery('req-a', usage, workerB);
+    const { payload } = await manager.signPerRequestAuth(sellerPeerId, stats('req-a'));
+    expect(decodeWorkerTail(payload.metadata)).toEqual([{ worker: workerB, cumulativeAmount: 100n }]);
+    // An answer from a worker outside the set, or one that names no worker, is never paid.
+    manager.recordWorkerAttribution(sellerPeerId, 'req-b', [workerA, workerB]);
+    manager.recordWorkerDelivery('req-b', usage, outsider);
+    await expect(manager.signPerRequestAuth(sellerPeerId, stats('req-b'))).rejects.toThrow();
+    manager.recordWorkerAttribution(sellerPeerId, 'req-c', [workerA, workerB]);
+    manager.recordWorkerDelivery('req-c', usage);
+    await expect(manager.signPerRequestAuth(sellerPeerId, stats('req-c'))).rejects.toThrow();
+  });
+
   describe('NeedAuth for colony pool requests', () => {
     const worker = '0x1000000000000000000000000000000000000001';
     const usage = { inputTokens: 1000n, cachedInputTokens: 0n, outputTokens: 400n };
@@ -916,6 +942,68 @@ describe('BuyerPaymentManager', () => {
       const tokens = decodeMetadataTokens(payload.metadata);
       expect(tokens.inputTokens).toBe(1000n);
       expect(tokens.outputTokens).toBe(400n);
+    });
+
+    it('a zero-cost NeedAuth cannot clear a failed delivery for a later paid claim', async () => {
+      const { needAuth, sellerPeerId } = await setup('seller-pool-zero-cost');
+      const before = manager.getCumulativeAmount(sellerPeerId);
+      manager.recordWorkerDelivery('req-pool', null);
+      await needAuth({ inputTokens: '0', outputTokens: '0', lastRequestCost: '0' });
+      await needAuth();
+      expect(mux.sentSpendingAuths).toHaveLength(0);
+      expect(manager.getCumulativeAmount(sellerPeerId)).toBe(before);
+    });
+
+    it('refuses a second claim for a worker request already paid by the buyer', async () => {
+      const { needAuth, sellerPeerId } = await setup('seller-pool-buyer-first');
+      manager.recordWorkerDelivery('req-pool', usage);
+      await manager.signPerRequestAuth(sellerPeerId, {
+        inputBytes: SAMPLE_INPUT, outputBytes: SAMPLE_OUTPUT, sellerClaimedCost: 9000n, requestId: 'req-pool', service: 'qwen',
+      });
+      const paid = manager.getCumulativeAmount(sellerPeerId);
+      mux.sentSpendingAuths.length = 0;
+      // The seller's NeedAuth for the same request, asking past what was signed.
+      await manager.handleNeedAuth(sellerPeerId, {
+        channelId: manager.getActiveSession(sellerPeerId)!.sessionId, requiredCumulativeAmount: (paid + 9000n).toString(),
+        currentAcceptedCumulative: paid.toString(), deposit: '1000000',
+        requestId: 'req-pool', inputTokens: '1000', outputTokens: '400', lastRequestCost: '9000',
+      }, mux);
+      expect(mux.sentSpendingAuths).toHaveLength(0);
+      expect(manager.getCumulativeAmount(sellerPeerId)).toBe(paid);
+      await needAuth();
+      expect(mux.sentSpendingAuths).toHaveLength(0);
+    });
+
+    it('does not charge a retired worker request again after its counted entry is trimmed', async () => {
+      const { needAuth, sellerPeerId } = await setup('seller-pool-trimmed');
+      manager.recordWorkerDelivery('req-pool', usage);
+      await needAuth();
+      const paid = manager.getCumulativeAmount(sellerPeerId);
+      // 600 later counted requests push req-pool out of the counted-request tracker.
+      for (let i = 0; i < 600; i++) {
+        await manager.signPerRequestAuth(sellerPeerId, {
+          inputBytes: new Uint8Array(), outputBytes: new Uint8Array(), sellerClaimedCost: 0n, requestId: `req-free-${i}`,
+        });
+      }
+      const { payload } = await manager.signPerRequestAuth(sellerPeerId, {
+        inputBytes: SAMPLE_INPUT, outputBytes: SAMPLE_OUTPUT, sellerClaimedCost: 9000n, requestId: 'req-pool', service: 'qwen',
+      });
+      expect(BigInt(payload.cumulativeAmount)).toBe(paid);
+    });
+
+    it('never counts verified worker requests toward the unpaid-request limit', () => {
+      const sellerPeerId = fakePeerId('seller-pool-healthy');
+      // Free (verified, never billed) answers, far past the 16,384 unpaid limit.
+      for (let i = 0; i < 17_000; i++) {
+        manager.recordWorkerAttribution(sellerPeerId, `req-free-${i}`, worker);
+        manager.recordWorkerDelivery(`req-free-${i}`, usage);
+      }
+      expect(() => manager.recordWorkerAttribution(sellerPeerId, 'req-next', worker)).not.toThrow();
+      // Unanswered ones still count.
+      const flaky = fakePeerId('seller-pool-flaky');
+      expect(() => {
+        for (let i = 0; i < 17_500; i++) manager.recordWorkerAttribution(flaky, `req-lost-${i}`, worker);
+      }).toThrow(/Too many unpaid colony-pool requests/);
     });
 
     it('refuses to sign a per-request auth for an unverified worker answer', async () => {
@@ -1796,6 +1884,74 @@ describe('BuyerPaymentManager', () => {
       sellerClaimedCost: 50_000n,
     });
     expect(BigInt(repeat.payload.cumulativeAmount)).toBe(110_000n);
+  });
+
+  it('attributes the whole cost of a ceiling-capped worker request to its worker', async () => {
+    store.close();
+    store = new ChannelStore(tempDir);
+    manager = new BuyerPaymentManager(
+      identity,
+      makeConfig(tempDir, { maxReserveAmountUsdc: 100_000n, maxPerRequestUsdc: 100_000n }),
+      store,
+    );
+    manager.setSigner(Wallet.createRandom());
+    const worker = '0x1000000000000000000000000000000000000001';
+    const sellerPeerId = fakePeerId('seller-pool-capped');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 100_000n);
+    manager.handleAuthAck(sellerPeerId, { channelId });
+
+    await manager.handleNeedAuth(sellerPeerId, {
+      channelId, requestId: 'chat-1', requiredCumulativeAmount: '60000', currentAcceptedCumulative: '0',
+      deposit: '1000000', lastRequestCost: '60000',
+    }, mux);
+    manager.recordWorkerAttribution(sellerPeerId, 'chat-2', worker);
+    manager.recordWorkerDelivery('chat-2', { inputTokens: 1000n, cachedInputTokens: 0n, outputTokens: 400n });
+    // 50_000, of which NeedAuth signs 40_000 up to the ceiling.
+    await manager.handleNeedAuth(sellerPeerId, {
+      channelId, requestId: 'chat-2', requiredCumulativeAmount: '110000', currentAcceptedCumulative: '60000',
+      deposit: '1000000', lastRequestCost: '50000',
+    }, mux);
+    expect(manager.getCumulativeAmount(sellerPeerId)).toBe(100_000n);
+    const { payload } = await manager.signPerRequestAuth(sellerPeerId, {
+      requestId: 'chat-2', inputBytes: new Uint8Array(), outputBytes: new Uint8Array(), sellerClaimedCost: 50_000n,
+    });
+    expect(BigInt(payload.cumulativeAmount)).toBe(110_000n);
+    expect(decodeWorkerTail(payload.metadata)).toEqual([{ worker, cumulativeAmount: 50_000n }]);
+  });
+
+  it('attributes the remainder NeedAuth signs after a capped post-response auth to the worker', async () => {
+    store.close();
+    store = new ChannelStore(tempDir);
+    manager = new BuyerPaymentManager(
+      identity,
+      makeConfig(tempDir, { maxReserveAmountUsdc: 100_000n, maxPerRequestUsdc: 100_000n }),
+      store,
+    );
+    manager.setSigner(Wallet.createRandom());
+    const worker = '0x1000000000000000000000000000000000000001';
+    const sellerPeerId = fakePeerId('seller-pool-capped-buyer-first');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 100_000n);
+    manager.handleAuthAck(sellerPeerId, { channelId });
+
+    await manager.handleNeedAuth(sellerPeerId, {
+      channelId, requestId: 'chat-1', requiredCumulativeAmount: '60000', currentAcceptedCumulative: '0',
+      deposit: '1000000', lastRequestCost: '60000',
+    }, mux);
+    manager.recordWorkerAttribution(sellerPeerId, 'chat-2', worker);
+    manager.recordWorkerDelivery('chat-2', { inputTokens: 1000n, cachedInputTokens: 0n, outputTokens: 400n });
+    const first = await manager.signPerRequestAuth(sellerPeerId, {
+      requestId: 'chat-2', inputBytes: new Uint8Array(), outputBytes: new Uint8Array(), sellerClaimedCost: 50_000n,
+    });
+    expect(BigInt(first.payload.cumulativeAmount)).toBe(100_000n);
+    for (let attempt = 0; attempt < 2 && manager.getCumulativeAmount(sellerPeerId) < 110_000n; attempt++) {
+      await manager.handleNeedAuth(sellerPeerId, {
+        channelId, requestId: 'chat-2', requiredCumulativeAmount: '110000', currentAcceptedCumulative: '100000',
+        deposit: '1000000', lastRequestCost: '50000',
+      }, mux);
+    }
+    expect(manager.getCumulativeAmount(sellerPeerId)).toBe(110_000n);
+    const last = mux.sentSpendingAuths.at(-1) as { metadata: string };
+    expect(decodeWorkerTail(last.metadata)).toEqual([{ worker, cumulativeAmount: 50_000n }]);
   });
 
   it('handleNeedAuth caps at reserve ceiling', async () => {

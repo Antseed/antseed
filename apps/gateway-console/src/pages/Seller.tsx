@@ -131,19 +131,43 @@ function workerName(worker: SellerWorker): string {
   return worker.agent?.match(/\(([^)]+)\)\s*$/)?.[1] ?? shortId(worker.address)
 }
 
-/** Only for a seller running the colony-pool provider: the Macs serving it. */
+/** Online, benched (amber dot, one line), excluded by the operator, or when it was last seen. */
+function workerStatus(row: SellerWorker) {
+  if (!row.connected) return <span className="gc-muted">{`Seen ${formatRelative(row.lastSeenAt)}`}</span>
+  if (row.benchedUntil !== null) {
+    return <span className="gc-health-failing" title="It failed to answer a request; the pool routes nothing to it until then"><span className="gc-attention" aria-hidden="true" />{`Benched, back in ${formatDuration(row.benchedUntil - Date.now())}`}</span>
+  }
+  if (row.priority === 0) return <span className="gc-muted" title="COLONY_POOL_WORKER_PRIORITY gives it weight 0">Not routed</span>
+  return <Badge tone="neutral">Online</Badge>
+}
+
+const percent = (value: number | null) => (value === null ? '—' : `${Math.round(value * 100)}%`)
+
+/** Only for a seller running the colony-pool provider: the Macs serving it, in the pool's routing order. */
 function WorkersPanel() {
   const workers = useSellerWorkers()
   if (!workers.data?.available) return null
   return (
-    <Panel title="Workers" description="Macs serving this seller's colony pool. Earnings are each worker's share after the protocol fee and your pool's cut; the pool contract pays them at settlement." flush>
+    <Panel title="Workers" description="Macs serving this seller's colony pool, in the order the pool sends them buyers (reliability, speed and your priority weights). Earnings are each worker's share after the protocol fee and your pool's cut; the pool contract pays them at settlement." flush>
       <DataTable<SellerWorker> label="Workers" rows={workers.data.workers} rowKey={(row) => row.address}
         empty={<EmptyState title="No workers yet" body="Workers appear here once a Mac joins the pool." />}
         columns={[
+          { key: 'rank', header: 'Rank', align: 'right', render: (row) => (row.rank === null ? '—' : `#${row.rank}`), sortValue: (row) => row.rank ?? Infinity },
           { key: 'name', header: 'Worker', render: (row) => <span className="gc-ellipsis" title={row.address}>{workerName(row)}</span>, sortValue: (row) => workerName(row) },
           {
-            key: 'status', header: 'Status', sortValue: (row) => (row.connected ? 0 : 1),
-            render: (row) => (row.connected ? <Badge tone="neutral">Online</Badge> : <span className="gc-muted">{`Seen ${formatRelative(row.lastSeenAt)}`}</span>),
+            key: 'status', header: 'Status', sortValue: (row) => (!row.connected ? 3 : row.benchedUntil !== null ? 1 : row.priority === 0 ? 2 : 0),
+            render: workerStatus,
+          },
+          {
+            key: 'answered', header: 'Answered (24h)', align: 'right', render: (row) => percent(row.successRateDay), sortValue: (row) => row.successRateDay ?? -1,
+          },
+          {
+            key: 'answeredWeek', header: 'Answered (7d)', align: 'right', optional: true, render: (row) => percent(row.successRateWeek), sortValue: (row) => row.successRateWeek ?? -1,
+          },
+          {
+            key: 'firstByte', header: 'First byte', align: 'right', optional: true,
+            render: (row) => (row.firstByteMsMedian === null ? '—' : row.firstByteMsMedian < 1000 ? `${Math.round(row.firstByteMsMedian)} ms` : `${(row.firstByteMsMedian / 1000).toFixed(1)} s`),
+            sortValue: (row) => row.firstByteMsMedian ?? Infinity,
           },
           { key: 'speed', header: 'Speed', align: 'right', render: (row) => (row.tokensPerSecond === null ? '—' : `${formatNumber(Math.round(row.tokensPerSecond))} tok/s`), sortValue: (row) => row.tokensPerSecond ?? 0 },
           { key: 'requests', header: 'Requests (7d)', align: 'right', render: (row) => formatNumber(row.requestsWeek), sortValue: (row) => row.requestsWeek },

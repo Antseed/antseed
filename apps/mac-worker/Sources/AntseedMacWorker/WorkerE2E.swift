@@ -6,6 +6,8 @@ import Foundation
 enum WorkerE2E {
     static let info = "antseed-worker-e2e/v2"
     static let version = 2
+    /// Most workers one request is encrypted for.
+    static let maxRecipients = 3
 
     enum Failure: Error, LocalizedError {
         case notEncrypted
@@ -16,7 +18,7 @@ enum WorkerE2E {
         var errorDescription: String? {
             switch self {
             case .notEncrypted: "Refusing an unencrypted request"
-            case .wrongWorker: "Envelope is addressed to another worker"
+            case .wrongWorker: "Envelope is addressed to other workers"
             case .modelMismatch: "Inner and outer model differ"
             case .malformed: "Request could not be decrypted for this worker"
             }
@@ -56,6 +58,8 @@ enum WorkerE2E {
         /// The buyer's original JSON body.
         let body: Data
         let model: String
+        /// Every worker the request is encrypted for, in order.
+        let recipients: [String]
         /// Set when the buyer signed the binding and it verifies.
         let buyer: String?
         let channel: String?
@@ -67,15 +71,26 @@ enum WorkerE2E {
         return object["antseed_e2e"] is [String: Any]
     }
 
+    /// Opens a request one of whose recipients is this worker: unwraps the
+    /// content key with this worker's own ECDH secret, then the body. The
+    /// AADs and the buyer's signature bind the ordered recipient list.
     static func openRequest(_ body: Data, workerAddress: String, key: DecryptionKey) throws -> OpenedRequest {
         guard let outer = try JSONSerialization.jsonObject(with: body) as? [String: Any],
               let envelope = outer["antseed_e2e"] as? [String: Any] else { throw Failure.notEncrypted }
         guard let model = outer["model"] as? String,
-              let worker = envelope["worker"] as? String,
-              let epkB64 = envelope["epk"] as? String, let epkData = Data(base64Encoded: epkB64),
+              let entries = envelope["recipients"] as? [[String: Any]], (1...maxRecipients).contains(entries.count),
               let ctB64 = envelope["ct"] as? String, let ct = Data(base64Encoded: ctB64),
               (envelope["v"] as? Int) == version else { throw Failure.malformed }
-        guard worker.lowercased() == workerAddress.lowercased() else { throw Failure.wrongWorker }
+        let workers = try entries.map { entry -> String in
+            guard let worker = entry["worker"] as? String else { throw Failure.malformed }
+            return worker
+        }
+        guard Set(workers.map { $0.lowercased() }).count == workers.count else { throw Failure.malformed }
+        guard let mine = entries.first(where: { ($0["worker"] as? String)?.lowercased() == workerAddress.lowercased() }) else {
+            throw Failure.wrongWorker
+        }
+        guard let epkB64 = mine["epk"] as? String, let epkData = Data(base64Encoded: epkB64),
+              let wkB64 = mine["wk"] as? String, let wrapped = Data(base64Encoded: wkB64) else { throw Failure.malformed }
 
         let epk: P256.KeyAgreement.PublicKey
         do {
@@ -91,12 +106,14 @@ enum WorkerE2E {
             outputByteCount: 64
         )
         let bytes = okm.withUnsafeBytes { Data($0) }
-        let requestKey = SymmetricKey(data: bytes.prefix(32))
+        let wrapKey = SymmetricKey(data: bytes.prefix(32))
         let responseKey = SymmetricKey(data: bytes.suffix(32))
+        let list = workers.map { $0.lowercased() }.joined(separator: ",")
 
         let plaintext: Data
         do {
-            plaintext = try open(requestKey, seq: 0, aad: "\(info)|req|\(worker.lowercased())|\(model)", ct)
+            let contentKey = SymmetricKey(data: try open(wrapKey, seq: 0, aad: "\(info)|wrap|\(list)|\(model)", wrapped))
+            plaintext = try open(contentKey, seq: 0, aad: "\(info)|req|\(list)|\(model)", ct)
         } catch {
             throw Failure.malformed
         }
@@ -107,28 +124,41 @@ enum WorkerE2E {
         var channel: String?
         if let claimed = envelope["buyer"] as? String, let channelHex = envelope["channel"] as? String,
            let sigHex = envelope["sig"] as? String, let sig = try? Data(hexString: sigHex),
-           let workerBytes = try? Data(hexString: worker), let channelBytes = try? Data(hexString: channelHex) {
-            let binding = keccak256(Array(info.utf8) + Array(workerBytes) + Array(channelBytes) + keccak256(ct))
-            if let recovered = try? recoverAddress(digest: personalMessageDigest(binding), signature: sig),
-               recovered.lowercased() == claimed.lowercased() {
-                buyer = claimed
-                channel = channelHex
+           let channelBytes = try? Data(hexString: channelHex) {
+            // keccak256(info ‖ worker₁ ‖ … ‖ workerₙ ‖ channel ‖ keccak256(ct))
+            var preimage = Array(info.utf8)
+            var addressesOK = true
+            for worker in workers {
+                guard let bytes = try? Data(hexString: worker), bytes.count == 20 else { addressesOK = false; break }
+                preimage += Array(bytes)
+            }
+            if addressesOK {
+                let binding = keccak256(preimage + Array(channelBytes) + keccak256(ct))
+                if let recovered = try? recoverAddress(digest: personalMessageDigest(binding), signature: sig),
+                   recovered.lowercased() == claimed.lowercased() {
+                    buyer = claimed
+                    channel = channelHex
+                }
             }
         }
-        return OpenedRequest(body: plaintext, model: model, buyer: buyer, channel: channel, sealer: ResponseSealer(key: responseKey))
+        return OpenedRequest(body: plaintext, model: model, recipients: workers, buyer: buyer, channel: channel,
+                             sealer: ResponseSealer(key: responseKey, worker: workerAddress))
     }
 }
 
 /// Encrypts a response for the buyer; the usage stays in the clear for metering.
 /// Each response gets its own key from a random salt, so a replayed request
-/// never seals two answers under the same key and nonce.
+/// never seals two answers under the same key and nonce, and names this
+/// worker so the buyer picks its response key (no other recipient has it).
 final class ResponseSealer {
     private let key: SymmetricKey
     private let salt: Data
+    private let worker: String
     private var seq = 0
 
-    init(key base: SymmetricKey, salt: Data = Data((0..<16).map { _ in UInt8.random(in: .min ... .max) })) {
+    init(key base: SymmetricKey, worker: String, salt: Data = Data((0..<16).map { _ in UInt8.random(in: .min ... .max) })) {
         self.salt = salt
+        self.worker = worker
         self.key = Self.responseKey(base: base, salt: salt)
     }
 
@@ -136,10 +166,13 @@ final class ResponseSealer {
         HKDF<SHA256>.deriveKey(inputKeyMaterial: base, salt: salt, info: Data("\(WorkerE2E.info)|resp-key".utf8), outputByteCount: 32)
     }
 
-    /// The first event of a stream carries the salt.
+    /// The first event of a stream names the worker and carries the salt.
     private func envelope(_ fields: [String: Any], seq: Int) -> [String: Any] {
         var fields = fields
-        if seq == 0 { fields["salt"] = salt.base64EncodedString() }
+        if seq == 0 {
+            fields["salt"] = salt.base64EncodedString()
+            fields["worker"] = worker
+        }
         return ["antseed_e2e": fields]
     }
 

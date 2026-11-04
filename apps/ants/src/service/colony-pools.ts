@@ -4,12 +4,16 @@ import type { WorkerPayoutLinkRequest, ColonyPoolClaimRequest, ColonyPoolsView }
 import type { AntsContext } from './context.js';
 import type { StepReporter } from './steps.js';
 
-/** Finished epochs checked for pool ANTS; older ones stay claimable through the contract. */
-const ANTS_EPOCH_WINDOW = 16;
+/** AntseedColonyPool.MAX_EPOCHS_PER_CLAIM: epochs per claimAnts / claimEpochEmissions call. */
+const MAX_EPOCHS_PER_CLAIM = 32;
 
+/** Every finished epoch: pool ANTS never expire, so none is left out (epochs are weekly). */
 function finishedEpochs(currentEpoch: number): number[] {
-  const first = Math.max(0, currentEpoch - ANTS_EPOCH_WINDOW);
-  return Array.from({ length: Math.max(0, currentEpoch - first) }, (_, index) => first + index);
+  return Array.from({ length: Math.max(0, currentEpoch) }, (_, index) => index);
+}
+
+function batches<T>(items: T[], size: number): T[][] {
+  return Array.from({ length: Math.ceil(items.length / size) }, (_, index) => items.slice(index * size, (index + 1) * size));
 }
 
 /** USDC and ANTS each configured colony pool owes the connected wallet. */
@@ -24,13 +28,15 @@ export async function colonyPools(ctx: AntsContext): Promise<ColonyPoolsView> {
 /** What one colony pool owes the connected wallet over `epochs`. */
 async function readColonyPool(ctx: AntsContext, address: string, epochs: number[]): Promise<ColonyPoolsView['pools'][number]> {
   const pool = ctx.colonyPool(address);
-  const [usdcOwed, perEpoch] = await Promise.all([
+  // Only an epoch the wallet has weight in can owe it ANTS, so the rest cost one read each.
+  const [usdcOwed, weights] = await Promise.all([
     pool.usdcBalance(ctx.address),
-    Promise.all(epochs.map(async (epoch) => {
-      const [owed, weight, funded] = await Promise.all([pool.pendingAnts(ctx.address, [epoch]), pool.epochWeight(epoch, ctx.address), pool.epochAnts(epoch)]);
-      return { epoch, owed, unfunded: weight > 0n && funded === 0n };
-    })),
+    Promise.all(epochs.map(async (epoch) => ({ epoch, weight: await pool.epochWeight(epoch, ctx.address) }))),
   ]);
+  const perEpoch = await Promise.all(weights.filter((entry) => entry.weight > 0n).map(async ({ epoch }) => {
+    const [owed, funded] = await Promise.all([pool.pendingAnts(ctx.address, [epoch]), pool.epochAnts(epoch)]);
+    return { epoch, owed, unfunded: funded === 0n };
+  }));
   const antsEpochs = perEpoch.filter((entry) => entry.owed > 0n).map((entry) => entry.epoch);
   const unfundedEpochs = perEpoch.filter((entry) => entry.unfunded).map((entry) => entry.epoch);
   const antsOwed = perEpoch.reduce((sum, entry) => sum + entry.owed, 0n);
@@ -53,20 +59,24 @@ export async function claimColonyPool(ctx: AntsContext, request: ColonyPoolClaim
   if (request.ants && view && view.unfundedEpochs.length > 0) {
     // The pool holds no ANTS for an epoch until someone pulls its emissions (anyone may; repeats are no-ops).
     // A pull can fail (e.g. the seller reward is still locked); the funded epochs are claimed anyway.
-    try {
-      const hash = await pool.claimEpochEmissions(signer, view.unfundedEpochs);
-      hashes.push(hash);
-      await report('Colony pool emissions pulled for finished epochs', hash);
-    } catch (error) {
-      await report(`Colony pool emissions not pulled yet: ${error instanceof Error ? error.message : String(error)}`);
+    for (const epochs of batches(view.unfundedEpochs, MAX_EPOCHS_PER_CLAIM)) {
+      try {
+        const hash = await pool.claimEpochEmissions(signer, epochs);
+        hashes.push(hash);
+        await report('Colony pool emissions pulled for finished epochs', hash);
+      } catch (error) {
+        await report(`Colony pool emissions not pulled yet: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
     const owed = await Promise.all(view.unfundedEpochs.map(async (epoch) => ({ epoch, owed: await pool.pendingAnts(ctx.address, [epoch]) })));
     antsEpochs = [...new Set([...antsEpochs, ...owed.filter((entry) => entry.owed > 0n).map((entry) => entry.epoch)])].sort((a, b) => a - b);
   }
-  if (request.ants && antsEpochs.length > 0) {
-    const hash = await pool.claimAnts(signer, antsEpochs);
-    hashes.push(hash);
-    await report('ANTS claimed from the colony pool', hash);
+  if (request.ants) {
+    for (const epochs of batches(antsEpochs, MAX_EPOCHS_PER_CLAIM)) {
+      const hash = await pool.claimAnts(signer, epochs);
+      hashes.push(hash);
+      await report('ANTS claimed from the colony pool', hash);
+    }
   }
   if (hashes.length === 0) throw new Error('Nothing to claim from this colony pool');
   return { hashes };

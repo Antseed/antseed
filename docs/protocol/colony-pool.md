@@ -53,22 +53,30 @@ routed to (`x-antseed-provider`, or the default route, which the buyer names),
 so an ordinary provider offering the same model as the pool gets plaintext
 requests. The assignment request names that provider too, and buyers cache
 one assignment per seller, provider and service. Before its first request for a pool service, the buyer
-asks the pool for a worker:
+asks the pool for its top-ranked workers:
 
 ```
 POST /_antseed/provider/colony-pool/assign
-{ "model": "<service>" }
+{ "model": "<service>", "recipients": 2 }
 
-200 { "worker": "0x…", "key": "04…", "expires": <unix>, "certificate": "0x<sig>", "pool": "0x…",
-      "attestationKey": "04…", "attestation": { … } }
+200 { "workers": [
+  { "worker": "0x…", "key": "04…", "expires": <unix>, "certificate": "0x<sig>", "pool": "0x…",
+    "attestationKey": "04…", "attestation": { … } },
+  …
+] }
 ```
 
-The buyer checks that the certificate recovers to `worker`, that `pool` is the
-seller it is paying, and that it has not expired. When an attestation is
-present it must verify (see [Hardened Macs](#hardened-macs)) or the buyer
-refuses the worker; a buyer configured with `requireAttestedWorkers` also
-refuses workers that are not attested hardened Macs. It keeps the assignment per
-(seller, service) until it expires or the pool answers `421` with
+`recipients` is the node option `colonyPoolRecipients`: 1 to 3, default 2.
+The pool returns up to that many distinct workers, best-ranked first (see
+[Routing and failover](#routing-and-failover)). For each one the buyer checks
+that the certificate recovers to `worker`, that `pool` is the seller it is
+paying, and that it has not expired. When an attestation is present it must
+verify (see [Hardened Macs](#hardened-macs)); a buyer configured with
+`requireAttestedWorkers` or `requireAppleVerifiedWorkers` also applies that
+policy. A worker that fails any check is left out of the set, and the buyer
+refuses the assignment only when no worker is left. It keeps the set per
+(seller, provider, service) until the first of its certificates or
+attestations stops being usable, or the pool answers `421` with
 `{"error":{"code":"worker_unavailable"}}`, then reassigns and retries once.
 Paths under `/_antseed/provider/` are free control routes: the seller hands
 them to the provider serving the body's `model` (`Provider.handleControlRequest`)
@@ -78,7 +86,8 @@ seller's own health probes to a worker itself.
 
 ## Request envelope
 
-The buyer replaces the request body with:
+The buyer encrypts the body once, for every worker in its assignment, and
+replaces the request body with:
 
 ```json
 {
@@ -87,8 +96,10 @@ The buyer replaces the request body with:
   "max_tokens": 1024,
   "antseed_e2e": {
     "v": 2,
-    "worker": "0x…",
-    "epk": "<base64 uncompressed P-256 ephemeral public key>",
+    "recipients": [
+      { "worker": "0x…", "epk": "<base64 uncompressed P-256 ephemeral public key>", "wk": "<base64 wrapped content key>" },
+      { "worker": "0x…", "epk": "…", "wk": "…" }
+    ],
     "ct": "<base64 ChaCha20-Poly1305 ciphertext of the original JSON body>",
     "buyer": "0x…",
     "channel": "0x…",
@@ -98,48 +109,66 @@ The buyer replaces the request body with:
 ```
 
 `model`, `stream` and `max_tokens` stay in the clear for routing, streaming
-and budget checks. Everything else is in `ct`.
+and budget checks. Everything else is in `ct`. `recipients` lists 1 to 3
+distinct workers, in the order the pool assigned them.
 
-Key schedule, per request (a fresh ephemeral key every time):
+Key schedule, per request (a fresh content key and a fresh ephemeral key per
+recipient every time). `list` is the recipients' addresses, lowercase, joined
+by commas, in envelope order:
 
 ```
-shared   = ECDH-P256(ephemeralPrivate, workerKey)   (the x-coordinate, 32 bytes)
-okm      = HKDF-SHA256(ikm = shared, salt = epk ‖ workerKey, info = "antseed-worker-e2e/v2", length = 64)
-reqKey   = okm[0:32]
-respKey  = okm[32:64]
-ct       = ChaCha20-Poly1305(reqKey, nonce = 12 zero bytes, aad = "antseed-worker-e2e/v2|req|" ‖ worker ‖ "|" ‖ model)
+contentKey = 32 random bytes
+ct         = ChaCha20-Poly1305(contentKey, nonce = 12 zero bytes, aad = "antseed-worker-e2e/v2|req|" ‖ list ‖ "|" ‖ model)
+
+for each recipient i (worker key Wᵢ, fresh ephemeral key eᵢ):
+  sharedᵢ  = ECDH-P256(eᵢ, Wᵢ)   (the x-coordinate, 32 bytes)
+  okmᵢ     = HKDF-SHA256(ikm = sharedᵢ, salt = epkᵢ ‖ Wᵢ, info = "antseed-worker-e2e/v2", length = 64)
+  wrapKeyᵢ = okmᵢ[0:32]
+  respKeyᵢ = okmᵢ[32:64]
+  wkᵢ      = ChaCha20-Poly1305(wrapKeyᵢ, nonce = 12 zero bytes, aad = "antseed-worker-e2e/v2|wrap|" ‖ list ‖ "|" ‖ model, contentKey)
 ```
 
-The worker rejects the request unless the inner body's `model` equals the
-outer `model` (the AAD already binds it).
+A worker finds its own entry, unwraps `contentKey` with its own ECDH secret,
+and opens `ct`. It rejects the request unless it is named in `recipients`
+(exactly once), and unless the inner body's `model` equals the outer `model`
+(the AADs already bind it and the recipient list: reordering, dropping or
+adding a recipient makes the request fail to open).
 
 `sig` is the buyer's EIP-191 signature over
-`keccak256("antseed-worker-e2e/v2" ‖ worker ‖ channel ‖ keccak256(ct))`
-(addresses as 20 bytes, `channel` as 32 bytes). It proves the request came from
-a buyer of this pool, so an operator cannot feed a worker requests of its own
-and relay the results to a buyer under a different key. A worker that checks
-the chain verifies that `channel` belongs to `buyer` and to the pool seller.
+`keccak256("antseed-worker-e2e/v2" ‖ worker₁ ‖ … ‖ workerₙ ‖ channel ‖ keccak256(ct))`
+(addresses as 20 bytes in envelope order, `channel` as 32 bytes). It proves the
+request came from a buyer of this pool, for exactly this set of workers, so an
+operator cannot feed a worker requests of its own and relay the results to a
+buyer under a different key. A worker that checks the chain verifies that
+`channel` belongs to `buyer` and to the pool seller.
+
+**Privacy with several recipients.** Any of the N recipient Macs could
+decrypt the request if the pool forwards it to them. The pool forwards to one
+at a time, in rank order, and only within the set the buyer signed (see
+[Routing and failover](#routing-and-failover)); set `colonyPoolRecipients` to
+1 so only one Mac can ever read a request.
 
 ## Response envelope
 
-Each response has its own key. The worker picks a random 16-byte `salt` and
-seals with
+Each recipient answers under its own key. The worker picks a random 16-byte
+`salt` and seals with
 
 ```
-responseKey = HKDF-SHA256(ikm = respKey, salt = salt, info = "antseed-worker-e2e/v2|resp-key", length = 32)
+responseKey = HKDF-SHA256(ikm = respKeyᵢ, salt = salt, info = "antseed-worker-e2e/v2|resp-key", length = 32)
 ```
 
-so a replayed request (same `epk`, same `respKey`) never reuses a key and
-nonce pair for a different answer.
+so a replayed request (same `epkᵢ`, same `respKeyᵢ`) never reuses a key and
+nonce pair for a different answer, and no recipient can produce an answer
+under another recipient's key.
 
 Non-streaming: the worker answers
 
 ```json
-{ "antseed_e2e": { "v": 2, "salt": "<base64>", "ct": "<base64>" }, "usage": { … } }
+{ "antseed_e2e": { "v": 2, "worker": "0x…", "salt": "<base64>", "ct": "<base64>" }, "usage": { … } }
 ```
 
-where `ct` is the upstream body sealed with `responseKey`, nonce 0, AAD
-`"antseed-worker-e2e/v2|resp|0|end"`.
+where `worker` is the answering worker and `ct` is the upstream body sealed
+with `responseKey`, nonce 0, AAD `"antseed-worker-e2e/v2|resp|0|end"`.
 
 Streaming: each upstream SSE event `data: X` becomes
 
@@ -149,9 +178,14 @@ data: {"antseed_e2e":{"seq":n,"ct":"<base64>"}}
 
 sealed with `responseKey`, nonce = `seq` as a 96-bit big-endian counter starting
 at 0, AAD `"antseed-worker-e2e/v2|resp|<seq>"`. The `seq` 0 event also carries
-`"salt"`. The last event sets
+`"worker"` and `"salt"`. The last event sets
 `"end":true` and uses AAD `"antseed-worker-e2e/v2|resp|<seq>|end"`, so a
 truncated stream fails to verify.
+
+The buyer opens the answer with the response key of the worker it names, and
+only of a worker the request was encrypted for. A label naming another
+recipient fails to open (only the named worker holds that key), and a label
+naming any other worker is refused.
 
 In both cases the worker also emits the upstream `usage` in the clear (as the
 `usage` field, or as one plain `data: {"choices":[],"usage":{…}}` event before
@@ -161,8 +195,9 @@ not verify. For a stream that includes one that ends without the
 authenticated end marker or that is not SSE: the client gets a stream error
 instead of a clean end, even though earlier events already reached it.
 
-The buyer attributes a request to the worker it encrypted the request for:
-only that worker's key can decrypt it, so only that worker can answer it.
+The buyer attributes a request to the recipient whose sealed answer verified:
+only a recipient can decrypt the request, and only the one that answered can
+seal under its response key.
 
 ## Workers
 
@@ -176,7 +211,8 @@ only that worker's key can decrypt it, so only that worker can answer it.
   capacity"). A request cancelled or disconnected while it waits never starts.
   The pool runs its join checks one at a time, each in a free slot.
 - The pool sends each request to a worker under its own dispatch ID, so two
-  buyers using the same request ID never collide. It pings workers every 15
+  buyers using the same request ID never collide, in delivery or in the
+  worker's earnings. It pings workers every 15
   seconds (`heartbeatIntervalMs`) and disconnects one that misses two pings in
   a row; a worker reconnects when it hears nothing from the pool for 45
   seconds (`poolSilenceMs`).
@@ -207,6 +243,50 @@ only that worker's key can decrypt it, so only that worker can answer it.
   deadline), then refused with a retryable error. So a pool cannot buy real
   work by signing bindings to channels that don't exist. Without an RPC
   endpoint the worker checks only the buyer's signature.
+
+## Routing and failover
+
+The pool assigns each buyer the best-ranked workers for the model that have a
+free slot (as many as it asks for, up to 3). A worker's score is its operator weight × its reliability (the
+smoothed share of buyer requests it answered) × its decode speed relative to
+the fastest worker for that model, divided by 1 + its load. A worker with no
+record yet gets the others' average reliability and speed, so it is neither
+punished nor favored.
+
+A worker that fails a request it is responsible for (it never answered in
+time, or dropped its connection before answering) is **benched**: no
+assignments or dispatches for 30 seconds, doubling with each failure in a row
+up to 10 minutes, and cleared by its next answered request. A response that
+goes silent midway, or exceeds its byte limit, lowers its reliability without
+benching it. Ranks survive reconnects and pool restarts (the ledger keeps them
+in `worker_rank`, and each outcome in `dispatches` for 30 days), so a flaky
+Mac can't reset its record by reconnecting.
+
+The pool sends a buyer's request to the best-ranked of its recipients that can
+take it now. When that worker fails before any byte reached the buyer (it
+never picked the request up, did not answer in time, disconnected, refused it,
+or is benched), the pool sends the same envelope to the next recipient, with
+no round trip to the buyer. It never sends it to a worker outside the set the
+buyer signed, and never to two workers at once; each attempt counts toward its
+own worker's rank. Once every recipient has failed, the pool answers
+`421 worker_unavailable` and the buyer takes new workers once, re-encrypting
+the request for them. A failed attempt is never paid for.
+
+Every worker sends `{"t":"accepted","id":…}` once it has admitted a request
+and its channel check passed, before inference, and must do so within
+20 seconds (`acceptTimeoutMs`); it then has 120 seconds to start answering
+(`firstByteTimeoutMs`). So a stuck worker is failed over quickly, while a slow
+non-streamed answer still gets the full 120 seconds. A failure after the
+response started reaches the client as a stream error.
+
+`COLONY_POOL_WORKER_PRIORITY` (`0xaddress=weight,…`, default 1) multiplies a
+worker's score: 2 doubles it, 0 means the pool never routes to it (its models
+are not announced through it). The seller dashboard's **Workers** panel lists
+workers in this order (Rank), with each one's share of requests answered over
+24 hours and 7 days, median time to first byte, and how long a benched worker
+has left.
+
+## Payment for pool requests
 
 Buyers pay for a pool request only after the worker's sealed answer verifies,
 and only up to what the worker's sealed usage costs: every billed count
@@ -345,12 +425,12 @@ version does not do yet. Prompts are still in unencrypted memory, as above.
 
 ## Attribution in SpendingAuth metadata
 
-The buyer appends a worker block after the ABI-encoded metadata (v4). ABI
+The buyer appends a worker block after the ABI-encoded metadata (v5). ABI
 decoders read the head by offset and ignore trailing bytes, so existing
 indexers are unaffected.
 
 ```
-metadata = abi.encode(v4 fields…) ‖ entries ‖ uint8 count ‖ bytes32 WORKER_TAIL_MAGIC
+metadata = abi.encode(v5 fields…) ‖ entries ‖ uint8 count ‖ bytes32 WORKER_TAIL_MAGIC
 entry    = address worker (20 bytes) ‖ uint128 cumulativeAmount (16 bytes, big-endian)
 WORKER_TAIL_MAGIC = keccak256("antseed:worker-attribution:v1")
 ```

@@ -84,6 +84,26 @@ describe('colony pool rewards', () => {
     expect(report).toHaveBeenCalledWith(expect.stringMatching(/Could not save the colony pool.*disk full/));
   });
 
+  it('finds and claims ANTS from every finished epoch, in batches the contract accepts', async () => {
+    const { ctx, client } = fixture();
+    // Earned in epoch 4 (long past any recent window) and in each of epochs 40..79.
+    const earned = (epoch: number) => epoch === 4 || (epoch >= 40 && epoch < 80);
+    (ctx as unknown as { stack: () => Promise<{ currentEpoch: number }> }).stack = async () => ({ currentEpoch: 100 });
+    client.epochWeight.mockImplementation(async (epoch: number) => (earned(epoch) ? 10n : 0n));
+    client.epochAnts.mockImplementation(async () => 100n);
+    client.pendingAnts.mockImplementation(async (_account: string, epochs: number[]) => (earned(epochs[0]!) ? 1n : 0n));
+    const view = (await colonyPools(ctx)).pools[0]!;
+    expect(view.antsEpochs).toEqual([4, ...Array.from({ length: 40 }, (_, i) => 40 + i)]);
+    expect(view.antsOwed).toBe('41');
+    await claimColonyPool(ctx, { pool, usdc: false, ants: true }, report);
+    expect(client.claimAnts.mock.calls.map(([, epochs]) => epochs)).toEqual([
+      [4, ...Array.from({ length: 31 }, (_, i) => 40 + i)],
+      Array.from({ length: 9 }, (_, i) => 71 + i),
+    ]);
+    // Epochs with no weight are never asked about beyond their weight.
+    expect(client.pendingAnts).toHaveBeenCalledTimes(82);
+  });
+
   it('refuses pools the dashboard does not know', async () => {
     const { ctx } = fixture([]);
     await expect(claimColonyPool(ctx, { pool, usdc: true, ants: false }, report)).rejects.toThrow(/Unknown colony pool/);

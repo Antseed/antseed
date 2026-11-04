@@ -5,6 +5,7 @@ import { verifyMessage } from 'ethers';
 import { WebSocketServer, type WebSocket } from 'ws';
 import {
   deviceAttestationNonce,
+  MAX_WORKER_RECIPIENTS,
   sealRequest,
   verifyDeviceAttestation,
   verifyWorkerAttestation,
@@ -17,6 +18,7 @@ import {
 import type { SerializedHttpRequest } from '@antseed/node';
 import type { WorkerLedger } from './ledger.js';
 import type { DeviceAttestor } from './mdm.js';
+import { newRank, rankScores, recordOutcome, type WorkerRank } from './ranking.js';
 import {
   COLONY_POOL_PROTOCOL_VERSION,
   decodeBody,
@@ -36,6 +38,9 @@ const MAX_FRAME_BYTES = 16 * 1024 * 1024;
 const MAX_WORKER_CONCURRENCY = 64;
 /** A started response that sends nothing for this long is cancelled. */
 const DEFAULT_RESPONSE_IDLE_TIMEOUT_MS = 60_000;
+/** How long a worker has to pick a request up (its `accepted` frame). */
+const DEFAULT_ACCEPT_TIMEOUT_MS = 20_000;
+const DEFAULT_FIRST_BYTE_TIMEOUT_MS = 120_000;
 /** Most a worker may send for one buyer response, and for one of the pool's own checks. */
 const MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
 const MAX_CHECK_RESPONSE_BYTES = 1024 * 1024;
@@ -70,8 +75,12 @@ export interface ColonyPoolOptions {
   allowedWorkers?: Set<string>;
   /** Send each newly offered service a short completion before routing buyers to it. */
   verifyOnJoin?: boolean;
-  /** How long a worker has to start answering a request. */
+  /** How long a worker has to start answering a request (default 120 s). */
   firstByteTimeoutMs?: number;
+  /** How long a worker has to pick a request up with an `accepted` frame (default 20 s). */
+  acceptTimeoutMs?: number;
+  /** Operator weights by worker address (COLONY_POOL_WORKER_PRIORITY); 1 by default, 0 never routes. */
+  workerPriority?: Map<string, number>;
   /** How long a started response may go without a chunk before it is cancelled. */
   responseIdleTimeoutMs?: number;
   /** How often workers are pinged; one that misses two pings in a row is disconnected (default 15 s). */
@@ -96,6 +105,8 @@ export interface DispatchHandlers {
   onChunk(data: Uint8Array): void;
   onEnd(): void;
   onError(error: Error): void;
+  /** The request went to `worker` under the pool's `dispatchId` (once per failover attempt). */
+  onAttempt?(worker: string, dispatchId: string): void;
 }
 
 export type DispatchRequest = SerializedHttpRequest;
@@ -124,6 +135,12 @@ export interface PlainResponse {
 interface InFlight {
   handlers: DispatchHandlers;
   started: boolean;
+  /** The worker said it took the request (`accepted`), or started answering. */
+  accepted: boolean;
+  /** A buyer dispatch: its outcome counts toward the worker's rank. */
+  ranked: boolean;
+  /** Re-arms `timer` with the first-byte deadline, once the worker accepted. */
+  accept: () => void;
   /** First-byte deadline until the response starts, then the idle deadline, refreshed by every chunk. */
   timer: NodeJS.Timeout | null;
   /** Re-arms `timer` with the idle deadline. */
@@ -178,6 +195,8 @@ interface ConnectedWorker {
   assignedAt: number[];
   /** Pings sent since the last pong. */
   missedPings: number;
+  /** Shared with the pool's rank table, so it outlives this connection. */
+  rank: WorkerRank;
 }
 
 export interface WorkerSummary {
@@ -191,16 +210,26 @@ export interface WorkerSummary {
   attested: boolean;
   /** Apple attests this Mac (SIP on) through the operator's MDM. */
   appleVerified: boolean;
+  /** Smoothed share of buyer dispatches that ended well, null until the first one. */
+  reliability: number | null;
+  /** Smoothed time to first byte, ms. */
+  firstByteMs: number | null;
+  /** Not routed before this time (ms), after failing to answer; null when not benched. */
+  benchedUntil: number | null;
+  /** Operator weight; 0 means the pool never routes to it. */
+  priority: number;
 }
 
 /**
  * Accepts worker connections, verifies them, and routes requests to the
- * least-loaded worker that serves the requested service.
+ * best-ranked worker that serves the requested service (ranking.ts).
  */
 export class ColonyPool {
   private readonly opts: ColonyPoolOptions;
   private readonly catalog: Set<string>;
   private readonly workers = new Map<string, ConnectedWorker>();
+  /** Every worker's rank, kept across reconnects (and in the ledger across restarts). */
+  private readonly ranks = new Map<string, WorkerRank>();
   private readonly changeListeners: Array<() => void> = [];
   private server: HttpServer | null = null;
   private wss: WebSocketServer | null = null;
@@ -260,7 +289,7 @@ export class ColonyPool {
   availableServices(): string[] {
     const services = new Set<string>();
     for (const worker of this.workers.values()) {
-      if (!this.routable(worker)) continue;
+      if (!this.routable(worker) || this.priority(worker.address) === 0) continue;
       for (const service of worker.verified) services.add(service);
     }
     return this.opts.catalog.filter((service) => services.has(service));
@@ -277,6 +306,7 @@ export class ColonyPool {
   }
 
   workerSummaries(): WorkerSummary[] {
+    const now = Date.now();
     return [...this.workers.values()].map((worker) => ({
       address: worker.address,
       agent: worker.agent,
@@ -286,32 +316,100 @@ export class ColonyPool {
       tokensPerSecond: worker.tokensPerSecond,
       attested: worker.hardened,
       appleVerified: worker.deviceAttestation !== null,
+      reliability: worker.rank.reliability,
+      firstByteMs: worker.rank.firstByteMs,
+      benchedUntil: worker.rank.benchedUntil > now ? worker.rank.benchedUntil : null,
+      priority: this.priority(worker.address),
     }));
   }
 
-  /** Pick a worker for a buyer and return its key certificate and attestation. Throws NoWorkerAvailableError. */
-  assign(service: string): WorkerAssignment {
-    const worker = this.pickWorker(service, true);
-    if (!worker) throw new NoWorkerAvailableError(service);
-    worker.assignedAt.push(Date.now());
-    return {
+  /**
+   * The best-ranked `count` workers for a buyer (1 to MAX_WORKER_RECIPIENTS),
+   * each with its key certificate and attestations: the buyer encrypts each
+   * request for all of them, and the pool tries them in rank order. Throws
+   * NoWorkerAvailableError.
+   */
+  assign(service: string, count = 1): WorkerAssignment[] {
+    const workers = this.rankedWorkers(service, true).slice(0, Math.max(1, Math.min(MAX_WORKER_RECIPIENTS, Math.floor(count))));
+    if (workers.length === 0) throw new NoWorkerAvailableError(service);
+    // Only the first is tried first, so only it takes the new buyer's load.
+    workers[0]!.assignedAt.push(Date.now());
+    return workers.map((worker) => ({
       ...worker.certificate,
       ...(worker.attestation ? { attestation: worker.attestation } : {}),
       ...(worker.deviceAttestation ? { deviceAttestation: worker.deviceAttestation } : {}),
-    };
+    }));
   }
 
   /**
-   * Send a buyer's sealed request to the worker it is encrypted for. The
-   * response arrives through `handlers`. Throws WorkerUnavailableError when
-   * that worker cannot take it, so the buyer reassigns.
+   * Send a buyer's sealed request to one of the workers it is encrypted for,
+   * best-ranked first. A worker that fails before the response starts (it
+   * never picks the request up, refuses it, disconnects, or is benched) is
+   * replaced by the next recipient: never a worker outside the set, and never
+   * two at once. The response arrives through `handlers`; `onAttempt` names
+   * each worker tried and its dispatch ID (unique even when buyers reuse
+   * request IDs). Throws WorkerUnavailableError when no recipient can take
+   * it, or reports it through `onError` once every one has failed, so the
+   * buyer reassigns.
    */
-  dispatchTo(address: string, service: string, req: DispatchRequest, handlers: DispatchHandlers, signal?: AbortSignal): void {
-    const worker = this.workers.get(address.toLowerCase());
-    if (!worker) throw new WorkerUnavailableError(address, 'not connected');
-    if (!worker.verified.has(service) || !this.routable(worker)) throw new WorkerUnavailableError(address, `not serving ${service}`);
-    if (worker.inflight.size >= worker.maxConcurrency) throw new WorkerUnavailableError(address, 'at capacity');
-    this.send(worker, worker.inflight, req, handlers, signal);
+  dispatch(recipients: readonly string[], service: string, req: DispatchRequest, handlers: DispatchHandlers, signal?: AbortSignal): void {
+    const set = [...new Set(recipients.map((address) => address.toLowerCase()))].slice(0, MAX_WORKER_RECIPIENTS);
+    const tried = new Set<string>();
+    const failures: string[] = [];
+    let first = true;
+    const next = (): void => {
+      const worker = this.nextRecipient(set, service, tried, failures);
+      if (!worker) {
+        const error = new WorkerUnavailableError(set.join(', '), failures.join('; ') || 'no recipient can take it');
+        if (first) throw error;
+        handlers.onError(error);
+        return;
+      }
+      first = false;
+      tried.add(worker.address);
+      let started = false;
+      const dispatchId = this.send(worker, req, {
+        onStart: (status, headers) => {
+          started = true;
+          handlers.onStart(status, headers);
+        },
+        onChunk: (data) => handlers.onChunk(data),
+        onEnd: () => handlers.onEnd(),
+        onError: (error) => {
+          // Nothing reached the buyer yet: the next recipient can still answer.
+          if (started || signal?.aborted) {
+            handlers.onError(error);
+            return;
+          }
+          failures.push(error.message);
+          next();
+        },
+      }, signal, { ranked: true });
+      if (dispatchId) handlers.onAttempt?.(worker.address, dispatchId);
+    };
+    next();
+  }
+
+  /** The best-ranked recipient not tried yet that can take a request now; why each other one can't is added to `failures`. */
+  private nextRecipient(set: readonly string[], service: string, tried: ReadonlySet<string>, failures: string[]): ConnectedWorker | null {
+    const now = Date.now();
+    const candidates: ConnectedWorker[] = [];
+    for (const address of set) {
+      if (tried.has(address)) continue;
+      const worker = this.workers.get(address);
+      const reason = !worker ? 'not connected'
+        : !worker.verified.has(service) || !this.routable(worker) ? `not serving ${service}`
+          : this.priority(worker.address) === 0 ? 'the operator routes nothing to it'
+            : now < worker.rank.benchedUntil ? 'benched after failing to answer'
+              : worker.inflight.size >= worker.maxConcurrency ? 'at capacity'
+                : null;
+      if (reason) {
+        if (!failures.some((f) => f.startsWith(`Worker ${address} `))) failures.push(`Worker ${address} ${reason}`);
+        continue;
+      }
+      candidates.push(worker!);
+    }
+    return this.byScore(candidates, false)[0] ?? null;
   }
 
   /**
@@ -321,7 +419,7 @@ export class ColonyPool {
    */
   async probe(service: string, body: Uint8Array, requestId: string, path = '/v1/chat/completions', worker = this.pickWorker(service)): Promise<PlainResponse> {
     if (!worker) throw new NoWorkerAvailableError(service);
-    return this.sealedRoundTrip(worker, body, requestId, path, this.opts.firstByteTimeoutMs ?? 120_000);
+    return this.sealedRoundTrip(worker, body, requestId, path, this.opts.firstByteTimeoutMs ?? DEFAULT_FIRST_BYTE_TIMEOUT_MS);
   }
 
   private async sealedRoundTrip(worker: ConnectedWorker, body: Uint8Array, requestId: string, path: string, timeoutMs: number): Promise<PlainResponse> {
@@ -330,7 +428,7 @@ export class ColonyPool {
       let status = 0;
       let headers: Record<string, string> = {};
       const chunks: Uint8Array[] = [];
-      this.send(worker, worker.inflight, {
+      this.send(worker, {
         requestId,
         method: 'POST',
         path,
@@ -350,7 +448,7 @@ export class ColonyPool {
           }
         },
         onError: reject,
-      }, undefined, timeoutMs, MAX_CHECK_RESPONSE_BYTES);
+      }, undefined, { firstByteTimeoutMs: timeoutMs, maxBytes: MAX_CHECK_RESPONSE_BYTES });
     });
   }
 
@@ -362,69 +460,118 @@ export class ColonyPool {
     worker.tokensPerSecond = worker.tokensPerSecond === 0 ? sample : worker.tokensPerSecond * 0.8 + sample * 0.2;
   }
 
-  /** Timing of a finished request, read once by the provider when the request is charged. */
-  takeTiming(address: string, requestId: string): RequestTiming | null {
+  /** Timing of a finished dispatch, read once by the provider when the request is charged. */
+  takeTiming(address: string, dispatchId: string): RequestTiming | null {
     const worker = this.workers.get(address.toLowerCase());
-    const timing = worker?.finished.get(requestId) ?? null;
-    worker?.finished.delete(requestId);
+    const timing = worker?.finished.get(dispatchId) ?? null;
+    worker?.finished.delete(dispatchId);
     return timing;
   }
 
-  /** Least-loaded worker for `service`; for assignments, recent assignments count as load too. */
-  private pickWorker(service: string, forAssignment = false): ConnectedWorker | null {
-    const now = Date.now();
-    let best: ConnectedWorker | null = null;
-    let bestLoad = Infinity;
-    for (const worker of this.workers.values()) {
-      if (!worker.verified.has(service) || !this.routable(worker) || worker.inflight.size >= worker.maxConcurrency) continue;
-      worker.assignedAt = worker.assignedAt.filter((at) => now - at < ASSIGNMENT_WEIGHT_MS);
-      const load = (worker.inflight.size + (forAssignment ? worker.assignedAt.length : 0)) / worker.maxConcurrency;
-      if (load < bestLoad || (load === bestLoad && best && worker.tokensPerSecond > best.tokensPerSecond)) {
-        best = worker;
-        bestLoad = load;
-      }
-    }
-    return best;
+  private priority(address: string): number {
+    return this.opts.workerPriority?.get(address) ?? 1;
   }
 
+  /**
+   * The best-ranked worker for `service` that is free, not benched, and not
+   * excluded by the operator (ranking.ts); for assignments, recent
+   * assignments count as load too, so new buyers spread out.
+   */
+  private pickWorker(service: string, forAssignment = false): ConnectedWorker | null {
+    return this.rankedWorkers(service, forAssignment)[0] ?? null;
+  }
+
+  /** Every worker that could take a request for `service` now, best-ranked first. */
+  private rankedWorkers(service: string, forAssignment: boolean): ConnectedWorker[] {
+    const now = Date.now();
+    const candidates: ConnectedWorker[] = [];
+    for (const worker of this.workers.values()) {
+      if (!worker.verified.has(service) || !this.routable(worker) || worker.inflight.size >= worker.maxConcurrency) continue;
+      if (this.priority(worker.address) === 0 || now < worker.rank.benchedUntil) continue;
+      worker.assignedAt = worker.assignedAt.filter((at) => now - at < ASSIGNMENT_WEIGHT_MS);
+      candidates.push(worker);
+    }
+    return this.byScore(candidates, forAssignment);
+  }
+
+  /** `workers` ordered by rank score (ranking.ts), highest first; ties keep their order. */
+  private byScore(workers: ConnectedWorker[], forAssignment: boolean): ConnectedWorker[] {
+    const scores = rankScores(workers.map((worker) => ({
+      reliability: worker.rank.reliability,
+      tokensPerSecond: worker.tokensPerSecond,
+      priority: this.priority(worker.address),
+      load: (worker.inflight.size + (forAssignment ? worker.assignedAt.length : 0)) / worker.maxConcurrency,
+    })));
+    return workers.map((worker, i) => ({ worker, score: scores[i]!, i }))
+      .sort((a, b) => b.score - a.score || a.i - b.i)
+      .map(({ worker }) => worker);
+  }
+
+  /** Fold a buyer dispatch's outcome into the worker's rank, and record it for the dashboard. */
+  private recordDispatch(worker: ConnectedWorker, entry: InFlight, ok: boolean, failure?: { reason: string; bench: boolean }): void {
+    if (!entry.ranked) return;
+    const at = Date.now();
+    const firstByteMs = entry.firstByteAt !== null ? entry.firstByteAt - entry.startedAt : undefined;
+    const wasBenched = at < worker.rank.benchedUntil;
+    recordOutcome(worker.rank, { ok, at, ...(failure?.bench ? { bench: true } : {}), ...(firstByteMs !== undefined ? { firstByteMs } : {}) });
+    this.opts.ledger.recordDispatch({ worker: worker.address, ok, at, ...(failure ? { reason: failure.reason } : {}), ...(firstByteMs !== undefined ? { firstByteMs } : {}) });
+    this.opts.ledger.saveRank(worker.address, worker.rank, this.priority(worker.address), at);
+    if (!wasBenched && at < worker.rank.benchedUntil) {
+      this.log(`worker ${worker.address} failed a request (${failure?.reason}); benched for ${Math.round((worker.rank.benchedUntil - at) / 1000)}s`);
+    }
+  }
+
+  /** Returns the dispatch ID (empty when `signal` had already aborted). */
   private send(
     worker: ConnectedWorker,
-    table: Map<string, InFlight>,
     req: DispatchRequest,
     handlers: DispatchHandlers,
     signal?: AbortSignal,
-    firstByteTimeoutMs = this.opts.firstByteTimeoutMs ?? 120_000,
-    maxBytes = MAX_RESPONSE_BYTES,
-  ): void {
+    opts: { firstByteTimeoutMs?: number; maxBytes?: number; ranked?: boolean } = {},
+  ): string {
     if (signal?.aborted) {
       handlers.onError(new Error('Request aborted'));
-      return;
+      return '';
     }
+    const table = worker.inflight;
+    const firstByteTimeoutMs = opts.firstByteTimeoutMs ?? this.opts.firstByteTimeoutMs ?? DEFAULT_FIRST_BYTE_TIMEOUT_MS;
+    const acceptTimeoutMs = Math.min(firstByteTimeoutMs, this.opts.acceptTimeoutMs ?? DEFAULT_ACCEPT_TIMEOUT_MS);
     const idleTimeoutMs = this.opts.responseIdleTimeoutMs ?? DEFAULT_RESPONSE_IDLE_TIMEOUT_MS;
     // Each buyer connection names its own request IDs, so two can collide on one worker.
     const dispatchId = randomUUID();
-    const cancel = (error: Error): void => {
+    const cancel = (error: Error, failure?: { reason: string; bench: boolean }): void => {
       if (table.get(dispatchId) !== entry) return;
       this.sendFrame(worker.ws, { t: 'cancel', id: dispatchId });
       this.finish(table, dispatchId);
+      if (failure) this.recordDispatch(worker, entry, false, failure);
       handlers.onError(error);
     };
     const onAbort = (): void => cancel(new Error('Request aborted'));
+    const arm = (ms: number, message: string, failure: { reason: string; bench: boolean }): void => {
+      if (entry.timer) clearTimeout(entry.timer);
+      entry.timer = setTimeout(() => cancel(new Error(message), failure), ms);
+    };
+    const noAnswer = { reason: 'timeout', bench: true };
     const entry: InFlight = {
       handlers,
       started: false,
-      timer: setTimeout(() => cancel(new Error(`Worker ${worker.address} did not answer within ${firstByteTimeoutMs}ms`)), firstByteTimeoutMs),
-      touch: () => {
-        if (entry.timer) clearTimeout(entry.timer);
-        entry.timer = setTimeout(() => cancel(new Error(`Worker ${worker.address} sent nothing for ${idleTimeoutMs}ms`)), idleTimeoutMs);
+      accepted: false,
+      ranked: opts.ranked ?? false,
+      timer: null,
+      accept: () => {
+        entry.accepted = true;
+        arm(firstByteTimeoutMs, `Worker ${worker.address} did not answer within ${firstByteTimeoutMs}ms`, noAnswer);
       },
+      touch: () => arm(idleTimeoutMs, `Worker ${worker.address} sent nothing for ${idleTimeoutMs}ms`, { reason: 'idle', bench: false }),
       bytes: 0,
-      maxBytes,
+      maxBytes: opts.maxBytes ?? MAX_RESPONSE_BYTES,
       release: () => signal?.removeEventListener('abort', onAbort),
       startedAt: Date.now(),
       firstByteAt: null,
       requestId: req.requestId,
     };
+    // The worker must pick the request up quickly, then start answering in time.
+    arm(acceptTimeoutMs, `Worker ${worker.address} did not take the request within ${acceptTimeoutMs}ms`, noAnswer);
     table.set(dispatchId, entry);
     signal?.addEventListener('abort', onAbort, { once: true });
     this.sendFrame(worker.ws, {
@@ -435,6 +582,7 @@ export class ColonyPool {
       headers: req.headers,
       body: encodeBody(req.body),
     });
+    return dispatchId;
   }
 
   private finish(table: Map<string, InFlight>, dispatchId: string): void {
@@ -517,6 +665,13 @@ export class ColonyPool {
     }
     // One connection per worker: a reconnect replaces the stale socket.
     this.workers.get(address)?.ws.close(4002, 'replaced by a new connection');
+    // Its rank survives reconnects (and, through the ledger, pool restarts), so a flaky Mac can't reset it.
+    let rank = this.ranks.get(address);
+    if (!rank) {
+      rank = this.opts.ledger.loadRank(address) ?? newRank();
+      this.ranks.set(address, rank);
+    }
+    this.opts.ledger.saveRank(address, rank, this.priority(address));
 
     const worker: ConnectedWorker = {
       address,
@@ -540,6 +695,7 @@ export class ColonyPool {
       tokensPerSecond: 0,
       assignedAt: [],
       missedPings: 0,
+      rank,
     };
     ws.on('pong', () => { worker.missedPings = 0; });
     this.workers.set(address, worker);
@@ -710,10 +866,16 @@ export class ColonyPool {
       case 'stats-request':
         this.sendFrame(worker.ws, { t: 'stats', id: frame.id, stats: this.opts.ledger.stats(worker.address) });
         return;
+      case 'accepted': {
+        const entry = worker.inflight.get(frame.id);
+        if (entry && !entry.accepted && !entry.started) entry.accept();
+        return;
+      }
       case 'response-start': {
         const entry = worker.inflight.get(frame.id);
         if (!entry || entry.started) return;
         entry.started = true;
+        entry.accepted = true;
         entry.firstByteAt = Date.now();
         entry.touch();
         entry.handlers.onStart(frame.status, frame.headers);
@@ -727,6 +889,7 @@ export class ColonyPool {
         if (entry.bytes > entry.maxBytes) {
           this.sendFrame(worker.ws, { t: 'cancel', id: frame.id });
           this.finish(worker.inflight, frame.id);
+          this.recordDispatch(worker, entry, false, { reason: 'oversize', bench: false });
           entry.handlers.onError(new Error(`Worker ${worker.address} sent more than ${entry.maxBytes} bytes`));
           return;
         }
@@ -738,10 +901,11 @@ export class ColonyPool {
         const entry = worker.inflight.get(frame.id);
         if (!entry?.started) return;
         this.finish(worker.inflight, frame.id);
+        this.recordDispatch(worker, entry, true);
         // Paid requests are charged right after they end; free ones never read this.
         const timing = { startedAt: entry.startedAt, firstByteAt: entry.firstByteAt, endedAt: Date.now() };
-        worker.finished.set(entry.requestId, timing);
-        setTimeout(() => { if (worker.finished.get(entry.requestId) === timing) worker.finished.delete(entry.requestId); }, 60_000).unref();
+        worker.finished.set(frame.id, timing);
+        setTimeout(() => { if (worker.finished.get(frame.id) === timing) worker.finished.delete(frame.id); }, 60_000).unref();
         entry.handlers.onEnd();
         return;
       }
@@ -768,6 +932,8 @@ export class ColonyPool {
     this.opts.ledger.recordDisconnect(worker.connectionId);
     for (const [dispatchId, entry] of [...worker.inflight]) {
       this.finish(worker.inflight, dispatchId);
+      // Dropping a request before answering it benches the worker; mid-response it only counts against it.
+      this.recordDispatch(worker, entry, false, { reason: 'disconnect', bench: !entry.started });
       entry.handlers.onError(new Error(`Worker ${worker.address} disconnected`));
     }
     this.log(`worker ${worker.address} left`);

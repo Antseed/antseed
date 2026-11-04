@@ -9,6 +9,7 @@ import type {
   ServiceCapabilities,
 } from '@antseed/node';
 import {
+  envelopeRecipients,
   WORKER_ASSIGN_PATH,
   WORKER_E2E_CAPABILITY,
   WORKER_UNAVAILABLE_CODE,
@@ -18,7 +19,6 @@ import {
 import type { WorkerLedger } from './ledger.js';
 import { NoWorkerAvailableError, WorkerUnavailableError, type ColonyPool } from './pool.js';
 
-const MAX_TRACKED_REQUESTS = 10_000;
 /** Request IDs the seller's model health checker uses for its probes. */
 const HEALTH_PROBE_PREFIX = 'health-';
 
@@ -43,15 +43,15 @@ function errorResponse(requestId: string, statusCode: number, message: string, c
   };
 }
 
-/** The model a request names, and the worker its envelope is encrypted for (if any). */
-function routeOf(req: SerializedHttpRequest): { model: string | null; worker: string | null } {
+/** The model a request names, and how many workers an assignment asks for. */
+function routeOf(req: SerializedHttpRequest): { model: string | null; recipients: number } {
   try {
-    const body = JSON.parse(new TextDecoder().decode(req.body)) as { model?: unknown; antseed_e2e?: { worker?: unknown } };
+    const body = JSON.parse(new TextDecoder().decode(req.body)) as { model?: unknown; recipients?: unknown };
     const model = typeof body.model === 'string' && body.model.trim() ? body.model.trim() : null;
-    const worker = typeof body.antseed_e2e?.worker === 'string' ? body.antseed_e2e.worker : null;
-    return { model, worker };
+    const recipients = typeof body.recipients === 'number' && Number.isInteger(body.recipients) ? body.recipients : 1;
+    return { model, recipients };
   } catch {
-    return { model: null, worker: null };
+    return { model: null, recipients: 1 };
   }
 }
 
@@ -74,8 +74,11 @@ export class ColonyPoolProvider implements Provider {
   private readonly ledger: WorkerLedger;
   private readonly workerShareBps: bigint;
   private readonly protocolFeeBps: bigint;
-  /** requestId → worker address, until the request is charged or ages out. */
-  private readonly servedBy = new Map<string, string>();
+  /**
+   * The worker and dispatch that served each request, until it is charged.
+   * Keyed by the request object, since buyers' request IDs can collide.
+   */
+  private readonly servedBy = new WeakMap<SerializedHttpRequest, { worker: string; dispatchId: string }>();
   private servicesChanged: (() => void) | null = null;
 
   constructor(opts: ColonyPoolProviderOptions) {
@@ -111,20 +114,20 @@ export class ColonyPoolProvider implements Provider {
     return this.forward(req, callbacks);
   }
 
-  /** Free route: assign a worker and hand the buyer its key certificate. */
+  /** Free route: assign the top-ranked workers the buyer asks for and hand it their key certificates. */
   async handleControlRequest(req: SerializedHttpRequest): Promise<SerializedHttpResponse> {
     if (req.method !== 'POST' || req.path.split('?')[0] !== WORKER_ASSIGN_PATH) {
       return errorResponse(req.requestId, 404, `Unknown colony pool route ${req.method} ${req.path}`);
     }
-    const { model } = routeOf(req);
+    const { model, recipients } = routeOf(req);
     if (!model) return errorResponse(req.requestId, 400, 'Request body must name a model');
     try {
-      const certificate = this.pool.assign(model);
+      const workers = this.pool.assign(model, recipients);
       return {
         requestId: req.requestId,
         statusCode: 200,
         headers: { 'content-type': 'application/json' },
-        body: new TextEncoder().encode(JSON.stringify(certificate)),
+        body: new TextEncoder().encode(JSON.stringify({ workers })),
       };
     } catch (err) {
       if (err instanceof NoWorkerAvailableError) return errorResponse(req.requestId, 503, err.message);
@@ -133,13 +136,14 @@ export class ColonyPoolProvider implements Provider {
   }
 
   onRequestCharged(charge: ProviderRequestCharge): void {
-    const worker = this.servedBy.get(charge.requestId);
-    if (!worker) return;
-    this.servedBy.delete(charge.requestId);
-    const timing = this.pool.takeTiming(worker, charge.requestId);
+    const served = charge.request ? this.servedBy.get(charge.request) : undefined;
+    if (!served || !charge.request) return;
+    this.servedBy.delete(charge.request);
+    const { worker, dispatchId } = served;
+    const timing = this.pool.takeTiming(worker, dispatchId);
     const streamMs = timing?.firstByteAt ? Math.max(1, timing.endedAt - timing.firstByteAt) : undefined;
     this.ledger.recordEarning({
-      requestId: charge.requestId,
+      requestId: dispatchId,
       worker,
       ...(charge.service ? { service: charge.service } : {}),
       grossUsdc: charge.costUsdc,
@@ -169,9 +173,10 @@ export class ColonyPoolProvider implements Provider {
   }
 
   private forward(req: SerializedHttpRequest, callbacks: ProviderStreamCallbacks | null): Promise<SerializedHttpResponse> {
-    const { model: service, worker: target } = routeOf(req);
+    const { model: service } = routeOf(req);
     if (!service) return Promise.resolve(errorResponse(req.requestId, 400, 'Request body must name a model'));
-    if (!target) {
+    const recipients = envelopeRecipients(req.body);
+    if (recipients.length === 0) {
       if (req.requestId.startsWith(HEALTH_PROBE_PREFIX)) return this.probe(req, service);
       return Promise.resolve(errorResponse(
         req.requestId,
@@ -192,9 +197,15 @@ export class ColonyPoolProvider implements Provider {
         body: Buffer.concat(chunks),
       });
 
-      const worker = target.toLowerCase();
+      // The worker the pool tried last: the one that answered, when the response ends.
+      let worker = '';
+      let dispatchId = '';
       try {
-        this.pool.dispatchTo(worker, service, req, {
+        this.pool.dispatch(recipients, service, req, {
+          onAttempt: (address, id) => {
+            worker = address;
+            dispatchId = id;
+          },
           onStart: (statusCode, headers) => {
             start = { statusCode, headers };
             streaming = callbacks !== null && (headers['content-type'] ?? '').includes('text/event-stream');
@@ -208,11 +219,12 @@ export class ColonyPoolProvider implements Provider {
           },
           onEnd: () => {
             if (streaming) void callbacks!.onResponseChunk({ requestId: req.requestId, data: new Uint8Array(0), done: true });
-            this.track(req.requestId, worker);
+            this.servedBy.set(req, { worker, dispatchId });
             resolve(response());
           },
           onError: (error) => {
-            if (!start) resolve(errorResponse(req.requestId, 502, error.message));
+            // Nothing reached the buyer and every recipient failed: it takes other workers (the pool benches one that never answered).
+            if (!start) resolve(errorResponse(req.requestId, WORKER_UNAVAILABLE_STATUS, error.message, WORKER_UNAVAILABLE_CODE));
             else reject(error);
           },
         }, callbacks?.signal);
@@ -224,13 +236,5 @@ export class ColonyPoolProvider implements Provider {
         reject(err);
       }
     });
-  }
-
-  private track(requestId: string, worker: string): void {
-    if (this.servedBy.size >= MAX_TRACKED_REQUESTS) {
-      const oldest = this.servedBy.keys().next().value;
-      if (oldest !== undefined) this.servedBy.delete(oldest);
-    }
-    this.servedBy.set(requestId, worker);
   }
 }

@@ -3,8 +3,8 @@ import type { BuyerPeerView } from './interfaces.js';
 
 /**
  * Buyer-side hook for colony pools (docs/protocol/colony-pool.md). Requests
- * for a service a seller's colony-pool provider offers are encrypted to one
- * of its workers; the seller's other services are untouched. The crypto lives
+ * for a service a seller's colony-pool provider offers are encrypted to a
+ * few of its workers; the seller's other services are untouched. The crypto lives
  * in @antseed/node so this package stays free of Node-only modules.
  */
 
@@ -16,8 +16,10 @@ export const WORKER_UNAVAILABLE_STATUS = 421;
 export const WORKER_UNAVAILABLE_CODE = 'worker_unavailable';
 
 export interface SealedWorkerRequest {
-  /** Worker the request is encrypted for. */
-  worker: string;
+  /** Workers the request is encrypted for, in the order the pool tries them. */
+  recipients: string[];
+  /** The recipient whose sealed answer opened (null until one did). Only it is paid. */
+  readonly worker: string | null;
   /** The request as sent on the wire. */
   request: SerializedHttpRequest;
   /** Decrypt a complete body; bodies the pool itself answered pass through. Throws on tampering. */
@@ -42,8 +44,9 @@ export interface WorkerUsage {
 
 export interface WorkerE2EClient {
   /**
-   * Encrypt `request` for the worker assigned to this seller and service,
-   * asking the seller for one through `assign` when none is cached.
+   * Encrypt `request` for the workers assigned to this seller and service
+   * (the pool's top-ranked few), asking the seller through `assign` when
+   * none are cached.
    */
   seal(
     peer: BuyerPeerView,
@@ -52,7 +55,7 @@ export interface WorkerE2EClient {
     assign: (body: Uint8Array) => Promise<SerializedHttpResponse>,
     channelId: string | null,
   ): Promise<SealedWorkerRequest>;
-  /** Drop a cached assignment (the pool said its worker is unavailable). */
+  /** Drop a cached assignment (the pool said none of its workers could take the request). */
   forget(peerId: string, service: string): void;
 }
 

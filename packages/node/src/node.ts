@@ -358,6 +358,13 @@ export interface NodeConfig {
   requireAttestedWorkers?: boolean;
   /** Also require Apple's attestation of the worker's Mac, from the pool operator's MDM. */
   requireAppleVerifiedWorkers?: boolean;
+  /**
+   * How many of a colony pool's top-ranked workers each request is encrypted
+   * for (1 to 3, default 2), so the pool can fail over without a round trip.
+   * Any of them could read the request if the pool forwarded it; 1 keeps each
+   * request readable by a single worker.
+   */
+  colonyPoolRecipients?: number;
   /** Allow private/loopback IPs in DHT lookups. Default: false. Set true for local testing. */
   allowPrivateIPs?: boolean;
   /** Use only the provided bootstrapNodes and skip the official public DHT nodes. Default: false.
@@ -1830,6 +1837,7 @@ export class AntseedNode extends EventEmitter {
     return {
       requireAttestedWorkers: this._config.requireAttestedWorkers === true,
       requireAppleVerifiedWorkers: this._config.requireAppleVerifiedWorkers === true,
+      ...(this._config.colonyPoolRecipients !== undefined ? { recipients: this._config.colonyPoolRecipients } : {}),
     };
   }
 

@@ -27,7 +27,7 @@ final class InteropTests: XCTestCase {
     }
 
     func testOpensARequestSealedByTheBuyerAndVerifiesItsBinding() throws {
-        let body = #"{"model":"qwen2.5-0.5b","stream":true,"antseed_e2e":{"v":2,"worker":"0x70997970C51812dc3A010C7d01b50e0d17dc79C8","epk":"BBUH7Yt/LD01/nQu/3njbo5hqPTkbUD2HxmnlQtXLuOHs9Il0r5zGRUxxNDsNwytB9PmeqUSszlEuTB3ZyeaST4=","ct":"ucZp7c076FunVSuCo/+Bgq/pdXeh1ntyyEZW+vculDZEkrWfBD2QyNq+0jocotMUeKzdkkh5NYtRsmqoRDBBJ4uRUX100k9CruV81p6AtiZyu6Bdf1rBHRTIPvBvr3rLC/YFPsdWeJIvTrb3","buyer":"0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC","channel":"0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd","sig":"0x43fcdaf50d046d78d0df1ce9e2e35ef0ef02cc4c77d022ad319c41082f47bea85b9d77cb93ee7d3ca6529ded7767789fcc0eb4ebe6dab0445bef707683e5d86b1b"}}"#
+        let body = #"{"model":"qwen2.5-0.5b","stream":true,"antseed_e2e":{"v":2,"recipients":[{"worker":"0x70997970C51812dc3A010C7d01b50e0d17dc79C8","epk":"BEJ6FfiCTUbQ1tNZayY9qLI2oOypahN5p+gbWn3PY0FwLL5lvc6IMJP8DIDY8cFVr4h4tCLwpNsBnI4QWXVzx/4=","wk":"LC4x1AdUvXAwLWeM1QMcZ6iu6TBZrlTKRY2XaHg8THDijg0ogMcp8/xMLkek8c+t"}],"ct":"YGHsula2cpuACCaWH6diX6OgUw+VNntKc8GiJZOqfoB5t2oMWXUiVPmzBKwMMiP/6RYfcVWx8M2dDncr9MWX4N6qshrRvETvpWOd9NpNHl12yonRpjH4vaWSc5icQnFcs3EW8lT77CsKNdg/","buyer":"0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC","channel":"0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd","sig":"0xa20cc8774678595dd1ef6e9253cf08347fd43236cccc173796a4e02964c3e52d01c8e27aa0a476b81c5f11912ee6e3de66400911c43940dd41f9b6a8c1737a151b"}}"#
         let worker = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
         let key = try P256.KeyAgreement.PrivateKey(rawRepresentation: try Data(hexString: "c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721"))
         let opened = try WorkerE2E.openRequest(Data(body.utf8), workerAddress: worker, key: key)
@@ -36,6 +36,49 @@ final class InteropTests: XCTestCase {
         XCTAssertEqual(opened.buyer?.lowercased(), "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc")
         XCTAssertThrowsError(try WorkerE2E.openRequest(Data(body.utf8), workerAddress: "0x0000000000000000000000000000000000000001", key: key))
         XCTAssertThrowsError(try WorkerE2E.openRequest(Data(body.utf8), workerAddress: worker, key: P256.KeyAgreement.PrivateKey()))
+    }
+
+    func testEachRecipientOpensARequestSealedForTwoWorkers() throws {
+        // sealRequest({ recipients: [w1, w2], buyer }) in @antseed/node/worker-e2e.
+        let body = Data(#"{"model":"qwen2.5-0.5b","stream":true,"antseed_e2e":{"v":2,"recipients":[{"worker":"0x70997970C51812dc3A010C7d01b50e0d17dc79C8","epk":"BBHw6KisVYhQZr+Rcvfj2WOz6RQUZTxLIROfhsngn0KUCWkDlGIGb1YZqZhePkDJ0p1DQMR0x+Ac7gJLaXWWbQY=","wk":"Ltx3DttS1XStQIvtw7JJSIc2EImCifVV19epdD/OycesFHKcaoKpIkLhyFMai1fk"},{"worker":"0x90F79bf6EB2c4f870365E785982E1f101E93b906","epk":"BDk4pUTVcbiTY/QT1z0pNuHH2HTC5OPdJNwTtwZFvgyeYBZ8CwBwfUcLNIZ5zLlC1vx6QU0lPYlZr/m2XZsdJWY=","wk":"H7znnVjHwxSPpxqSyiOyBF/J0NwkRL368HLztubBVh3ydl+BUYyN+2zj4sm3Byzo"}],"ct":"gzhs4+nkyaG7DyM/ROpptc8859wJqQPAkbwwhGMzEmNe0z2V55rCvC6BEfKfL4lYobF4FlJoEDUMaeiJwLNe/J2mmSJVDCee2v1Itsfz0ZLv1Fmwhwn4NrtN3L8dWPN6uOnNNyYZ3PzyLLmM","buyer":"0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC","channel":"0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd","sig":"0xb59c375127adbcf05018e1aad5f606128cba11f0947594bf70f4b5a7cccb81595c0ba5b8d5a23ec2b18fc1e73391ca3dbeb18ed36c28449ddf032a1f7e5257821b"}}"#.utf8)
+        let w1 = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
+        let w2 = "0x90F79bf6EB2c4f870365E785982E1f101E93b906"
+        let k1 = try P256.KeyAgreement.PrivateKey(rawRepresentation: try Data(hexString: "c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721"))
+        let k2 = try P256.KeyAgreement.PrivateKey(rawRepresentation: try Data(hexString: "519b423d715f8b581f4fa8ee59f4771a5b44c8130b4e3eacca54a56dda72b464"))
+        for (worker, key) in [(w1, k1), (w2, k2)] {
+            let opened = try WorkerE2E.openRequest(body, workerAddress: worker, key: key)
+            XCTAssertTrue(String(decoding: opened.body, as: UTF8.self).contains("hi from node"))
+            XCTAssertEqual(opened.recipients, [w1, w2])
+            // The buyer's signature covers both recipients, in order.
+            XCTAssertEqual(opened.buyer?.lowercased(), "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc")
+        }
+        // A worker the envelope does not name, or a recipient's address with another key, can't open it.
+        XCTAssertThrowsError(try WorkerE2E.openRequest(body, workerAddress: "0x0000000000000000000000000000000000000001", key: k1)) {
+            XCTAssertEqual($0 as? WorkerE2E.Failure, .wrongWorker)
+        }
+        XCTAssertThrowsError(try WorkerE2E.openRequest(body, workerAddress: w2, key: k1))
+        // Reordering the recipients breaks the binding: the request no longer opens.
+        var outer = try JSONSerialization.jsonObject(with: body) as! [String: Any]
+        var envelope = outer["antseed_e2e"] as! [String: Any]
+        envelope["recipients"] = Array((envelope["recipients"] as! [[String: Any]]).reversed())
+        outer["antseed_e2e"] = envelope
+        XCTAssertThrowsError(try WorkerE2E.openRequest(try JSONSerialization.data(withJSONObject: outer), workerAddress: w1, key: k1))
+    }
+
+    func testAnswerNamesTheWorkerAndOpensWithItsResponseKey() throws {
+        let sealer = ResponseSealer(key: SymmetricKey(data: Data(repeating: 0x11, count: 32)), worker: "0x90F79bf6EB2c4f870365E785982E1f101E93b906", salt: Data(repeating: 0x22, count: 16))
+        let body = try JSONSerialization.jsonObject(with: try sealer.sealBody(Data(#"{"answer":1}"#.utf8), usage: nil)) as! [String: Any]
+        let envelope = body["antseed_e2e"] as! [String: Any]
+        XCTAssertEqual(envelope["worker"] as? String, "0x90F79bf6EB2c4f870365E785982E1f101E93b906")
+        let key = ResponseSealer.responseKey(base: SymmetricKey(data: Data(repeating: 0x11, count: 32)), salt: Data(repeating: 0x22, count: 16))
+        let plain = try WorkerE2E.open(key, seq: 0, aad: WorkerE2E.responseAAD(0, end: true), Data(base64Encoded: envelope["ct"] as! String)!)
+        XCTAssertEqual(String(decoding: plain, as: UTF8.self), #"{"answer":1}"#)
+        // A stream names it on its first event only.
+        let stream = ResponseSealer(key: SymmetricKey(data: Data(repeating: 0x11, count: 32)), worker: "0xabc")
+        let first = String(decoding: try stream.sealEvent("data: {}"), as: UTF8.self)
+        let second = String(decoding: try stream.sealEvent("data: {}"), as: UTF8.self)
+        XCTAssertTrue(first.contains(#""worker":"0xabc""#))
+        XCTAssertFalse(second.contains("worker"))
     }
 
     func testResponseKeyFromSaltMatchesNode() {

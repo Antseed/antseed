@@ -59,11 +59,14 @@ export function mockSellerWorkers(now = Date.now()): SellerWorkers {
   const worker = (n: number, agent: string, connected: boolean, tokensPerSecond: number, requestsWeek: number, onlineHoursWeek: number) => ({
     address: `0xfa1e${String(n).padStart(36, '0')}`, agent, connected, lastSeenAt: connected ? now : now - n * 3_600_000, onlineHoursWeek,
     requestsWeek, outputTokensWeek: requestsWeek * 420, tokensPerSecond, earnedWeekUsdc: requestsWeek * 0.0021, earnedTotalUsdc: requestsWeek * 0.0055,
+    rank: null as number | null, successRateDay: 0.99 as number | null, successRateWeek: 0.98 as number | null, firstByteMsMedian: 420 as number | null,
+    benchedUntil: null as number | null, priority: 1,
   })
   return { available: true, workers: [
-    worker(1, 'antseed-mac/0.1.0 (Studio)', true, 541, 1_820, 151),
-    worker(2, 'antseed-mac/0.1.0 (MacBook Pro)', true, 312, 640, 58),
-    worker(3, 'antseed-mac/0.1.0 (Office mini)', false, 188, 95, 12),
+    { ...worker(1, 'antseed-mac/0.1.0 (Studio)', true, 541, 1_820, 151), rank: 1, successRateDay: 1, firstByteMsMedian: 310 },
+    { ...worker(2, 'antseed-mac/0.1.0 (MacBook Pro)', true, 312, 640, 58), rank: 2, successRateDay: 0.97, successRateWeek: 0.95, firstByteMsMedian: 560 },
+    { ...worker(4, 'antseed-mac/0.1.0 (Lab mini)', true, 205, 210, 40), successRateDay: 0.71, successRateWeek: 0.88, firstByteMsMedian: 1_900, benchedUntil: now + 4 * 60_000 },
+    { ...worker(3, 'antseed-mac/0.1.0 (Office mini)', false, 188, 95, 12), successRateDay: null, successRateWeek: 0.93, firstByteMsMedian: 880 },
   ] }
 }
 

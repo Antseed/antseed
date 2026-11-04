@@ -77,6 +77,26 @@ final class RequestGateTests: XCTestCase {
         XCTAssertEqual(third, .refused("Check rate limit exceeded"))
     }
 
+    func testPoolCheckBudgetIsAlwaysPositive() async {
+        let gate = RequestGate(checksPerHour: 10)
+        for requested in [-5, 0, 1] {
+            let admission = await gate.admit(buyer: nil, channel: nil, bodyBytes: 200, requestedMaxTokens: requested, check: .signatureOnly)
+            XCTAssertEqual(admission, .check(maxTokens: 1), "max_tokens \(requested) runs one token, never a negative budget")
+        }
+        let huge = await gate.admit(buyer: nil, channel: nil, bodyBytes: 200, requestedMaxTokens: Int.max, check: .signatureOnly)
+        XCTAssertEqual(huge, .check(maxTokens: RequestGate.checkMaxTokens))
+    }
+
+    func testPoolSilenceTriggersReconnect() {
+        let start = Date(timeIntervalSince1970: 1_000)
+        var liveness = PoolLiveness(now: start)
+        XCTAssertFalse(liveness.isSilent(now: start.addingTimeInterval(44)))
+        XCTAssertTrue(liveness.isSilent(now: start.addingTimeInterval(45)), "45 s without a message or pong is a dead connection")
+        liveness.heard(at: start.addingTimeInterval(40))
+        XCTAssertFalse(liveness.isSilent(now: start.addingTimeInterval(80)), "a pong or message restarts the deadline")
+        XCTAssertTrue(liveness.isSilent(now: start.addingTimeInterval(85)))
+    }
+
     func testTrustedChannelsNeverComeFromThePool() {
         XCTAssertEqual(TrustedChannels.address(chainId: 8453, override: nil), "0xBA66d3b4fbCf472F6F11D6F9F96aaCE96516F09d")
         XCTAssertEqual(TrustedChannels.address(chainId: 84532, override: nil), "0x3b0b94AC27C042CAC17103A897Fb5cEb7D8b4cf7")

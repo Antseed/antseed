@@ -113,12 +113,13 @@ function deviceAttestation(kind: Device, worker: string, attestationKey: string,
   };
 }
 
-function fakePool(opts: { payments?: boolean; now?: () => number; appleCa?: ReturnType<typeof createTestAppleCa>; deviceNotBefore?: Date; workers?: number; certSeller?: string; unavailableOnce?: boolean; tamper?: 'ciphertext' | 'usage'; attest?: Attest; requireAttested?: boolean; device?: Device; requireApple?: boolean; streamTamper?: 'no-end' | 'usage' | 'not-sse' | 'padding'; maxStreamBufferBytes?: number } = {}) {
+function fakePool(opts: { payments?: boolean; now?: () => number; appleCa?: ReturnType<typeof createTestAppleCa>; deviceNotBefore?: Date; workers?: number; recipients?: number; certSeller?: string; unavailableOnce?: boolean; tamper?: 'ciphertext' | 'usage'; attest?: Attest | Attest[]; requireAttested?: boolean; device?: Device; requireApple?: boolean; streamTamper?: 'no-end' | 'usage' | 'not-sse' | 'padding'; maxStreamBufferBytes?: number; failover?: boolean; forgeAnswer?: boolean } = {}) {
   const workers = Array.from({ length: opts.workers ?? 1 }, () => ({ wallet: Wallet.createRandom(), key: generateWorkerEncryptionKey() }));
   let next = 0;
   let unavailable = opts.unavailableOnce === true;
   const wire: SerializedHttpRequest[] = [];
   const assigned: string[] = [];
+  const encryptedFor: string[][] = [];
   const respond = (onResponse: OnResponse, requestId: string, statusCode: number, body: unknown) =>
     onResponse({ requestId, statusCode, headers: { 'content-type': 'application/json' }, body: enc(body) }, { streamingStart: false });
 
@@ -126,21 +127,29 @@ function fakePool(opts: { payments?: boolean; now?: () => number; appleCa?: Retu
     sendProxyRequest: vi.fn((req: SerializedHttpRequest, onResponse: OnResponse, onChunk: OnChunk) => {
       wire.push(req);
       if (req.path === WORKER_ASSIGN_PATH) {
-        const worker = workers[next++ % workers.length]!;
-        assigned.push(worker.wallet.address);
-        const key = workerKeyHex(worker.key.publicKey);
-        const expires = Math.floor(Date.now() / 1000) + 3600;
-        const pool = opts.certSeller ?? SELLER;
-        const attested = opts.attest ? attestation(opts.attest, worker.wallet.address, key) : null;
+        const wanted = (JSON.parse(dec(req.body)) as { recipients?: number }).recipients ?? 1;
+        const start = next++;
+        const chosen = Array.from({ length: Math.min(wanted, workers.length) }, (_, i) => (start + i) % workers.length);
+        assigned.push(workers[chosen[0]!]!.wallet.address);
         respond(onResponse, req.requestId, 200, {
-          worker: worker.wallet.address, key, expires, pool,
-          certificate: worker.wallet.signMessageSync(workerKeyCertificateMessage(pool, key, expires, attested?.attestationKey)),
-          ...(attested ?? {}),
-          ...(attested && opts.device ? { deviceAttestation: deviceAttestation(opts.device, worker.wallet.address, attested.attestationKey, opts.appleCa, opts.deviceNotBefore) } : {}),
+          workers: chosen.map((index) => {
+            const worker = workers[index]!;
+            const key = workerKeyHex(worker.key.publicKey);
+            const expires = Math.floor(Date.now() / 1000) + 3600;
+            const pool = opts.certSeller ?? SELLER;
+            const kind = Array.isArray(opts.attest) ? opts.attest[index] : opts.attest;
+            const attested = kind ? attestation(kind, worker.wallet.address, key) : null;
+            return {
+              worker: worker.wallet.address, key, expires, pool,
+              certificate: worker.wallet.signMessageSync(workerKeyCertificateMessage(pool, key, expires, attested?.attestationKey)),
+              ...(attested ?? {}),
+              ...(attested && opts.device ? { deviceAttestation: deviceAttestation(opts.device, worker.wallet.address, attested.attestationKey, opts.appleCa, opts.deviceNotBefore) } : {}),
+            };
+          }),
         });
         return;
       }
-      const envelope = JSON.parse(dec(req.body)).antseed_e2e as { worker: string } | undefined;
+      const envelope = JSON.parse(dec(req.body)).antseed_e2e as { recipients: Array<{ worker: string }> } | undefined;
       // An ordinary provider's plaintext answer.
       if (!envelope) {
         respond(onResponse, req.requestId, 200, { choices: [{ message: { content: 'plain answer' } }] });
@@ -151,7 +160,11 @@ function fakePool(opts: { payments?: boolean; now?: () => number; appleCa?: Retu
         respond(onResponse, req.requestId, 421, { error: { code: 'worker_unavailable', message: 'gone' } });
         return;
       }
-      const worker = workers.find((w) => w.wallet.address === envelope.worker)!;
+      const recipients = envelope.recipients.map((r) => r.worker);
+      encryptedFor.push(recipients);
+      // The pool fails over from the first recipient to the next one without the buyer.
+      const answering = (opts.failover || opts.forgeAnswer) && recipients.length > 1 ? recipients[1]! : recipients[0]!;
+      const worker = workers.find((w) => w.wallet.address === answering)!;
       const opened = openRequest(req.body, worker.wallet.address, worker.key);
       expect(dec(opened.body)).toContain(PROMPT);
       const inner = JSON.parse(dec(opened.body)) as { stream?: boolean };
@@ -173,6 +186,12 @@ function fakePool(opts: { payments?: boolean; now?: () => number; appleCa?: Retu
         return;
       }
       let sealed = opened.sealer.sealBody(enc({ choices: [{ message: { content: ANSWER } }], usage }));
+      if (opts.forgeAnswer) {
+        // The second recipient answers but claims to be the first, to be paid in its place.
+        const envelope = JSON.parse(dec(sealed)) as { antseed_e2e: { worker: string } };
+        envelope.antseed_e2e.worker = recipients[0]!;
+        sealed = enc(envelope);
+      }
       if (opts.tamper) {
         const envelope = JSON.parse(dec(sealed)) as { antseed_e2e: { ct: string }; usage: { completion_tokens: number } };
         if (opts.tamper === 'ciphertext') {
@@ -201,6 +220,7 @@ function fakePool(opts: { payments?: boolean; now?: () => number; appleCa?: Retu
     getVerificationMux: vi.fn(() => ({} as any)),
     registerPaymentMux: vi.fn(),
     workerE2E: new NodeWorkerE2EClient(buyer, {
+      ...(opts.recipients ? { recipients: opts.recipients } : {}),
       requireAttestedWorkers: opts.requireAttested === true,
       requireAppleVerifiedWorkers: opts.requireApple === true,
       deviceAttestationRoots: [(opts.appleCa ?? appleCa).rootPem],
@@ -210,7 +230,7 @@ function fakePool(opts: { payments?: boolean; now?: () => number; appleCa?: Retu
   const deliveries = () => (payments?.calls ?? [])
     .filter((call) => call.method === 'recordWorkerAttribution' || call.method === 'recordWorkerDelivery')
     .map((call) => call.method === 'recordWorkerAttribution' ? 'assigned' : call.args[1] === null ? 'failed' : call.args[1]);
-  return { handler, wire, assigned, workers, deliveries };
+  return { handler, wire, assigned, workers, deliveries, encryptedFor, calls: payments?.calls ?? [] };
 }
 
 describe('buyer requests to colony pools', () => {
@@ -226,7 +246,8 @@ describe('buyer requests to colony pools', () => {
     expect(sent).toHaveLength(2);
     for (const req of sent) {
       expect(dec(req.body)).not.toContain(PROMPT);
-      expect(JSON.parse(dec(req.body))).toMatchObject({ model: 'qwen', antseed_e2e: { worker: pool.workers[0]!.wallet.address } });
+      expect(JSON.parse(dec(req.body)).antseed_e2e.recipients.map((r: { worker: string }) => r.worker)).toEqual([pool.workers[0]!.wallet.address]);
+      expect(JSON.parse(dec(req.body)).model).toBe('qwen');
     }
   });
 
@@ -414,5 +435,42 @@ describe('buyer requests to colony pools', () => {
     const retried = fakePool({ payments: true, workers: 2, unavailableOnce: true });
     await retried.handler.sendRequest(peer, chatRequest('v5'));
     expect(retried.deliveries()).toEqual(['assigned', 'failed', 'assigned', { inputTokens: 10n, cachedInputTokens: 0n, outputTokens: 5n }]);
+  });
+
+  it('encrypts each request for the pool\'s top two workers by default, and for one when the buyer asks', async () => {
+    const pool = fakePool({ workers: 3 });
+    await pool.handler.sendRequest(peer, chatRequest('n1'));
+    expect(pool.encryptedFor[0]).toEqual([pool.workers[0]!.wallet.address, pool.workers[1]!.wallet.address]);
+    const single = fakePool({ workers: 3, recipients: 1 });
+    await single.handler.sendRequest(peer, chatRequest('n2'));
+    expect(single.encryptedFor[0]).toEqual([single.workers[0]!.wallet.address]);
+    expect(() => new NodeWorkerE2EClient(Wallet.createRandom(), { recipients: 4 })).toThrow(/1 to 3/);
+  });
+
+  it('takes the answer of the recipient the pool failed over to, without a new assignment, and credits only it', async () => {
+    const pool = fakePool({ workers: 2, failover: true, payments: true });
+    const response = await pool.handler.sendRequest(peer, chatRequest('f1'));
+    expect(JSON.parse(dec(response.body)).choices[0].message.content).toBe(ANSWER);
+    expect(pool.wire.filter((req) => req.path === WORKER_ASSIGN_PATH)).toHaveLength(1);
+    const attribution = pool.calls.find((call) => call.method === 'recordWorkerAttribution')!;
+    expect(attribution.args[2]).toEqual([pool.workers[0]!.wallet.address, pool.workers[1]!.wallet.address]);
+    const delivery = pool.calls.find((call) => call.method === 'recordWorkerDelivery')!;
+    expect(delivery.args[1]).toEqual({ inputTokens: 10n, cachedInputTokens: 0n, outputTokens: 5n });
+    expect(delivery.args[2]).toBe(pool.workers[1]!.wallet.address);
+  });
+
+  it('fails an answer one recipient seals but labels as another\'s', async () => {
+    const pool = fakePool({ workers: 2, forgeAnswer: true, payments: true });
+    await expect(pool.handler.sendRequest(peer, chatRequest('g1'))).rejects.toThrow(/failed verification/);
+    expect(pool.deliveries()).toEqual(['assigned', 'failed']);
+  });
+
+  it('applies the buyer\'s trust policy to every recipient, leaving out those that fail it', async () => {
+    const mixed = fakePool({ workers: 2, attest: ['sip-off', 'hardened'], requireAttested: true });
+    expect((await mixed.handler.sendRequest(peer, chatRequest('p1'))).statusCode).toBe(200);
+    expect(mixed.encryptedFor[0]).toEqual([mixed.workers[1]!.wallet.address]);
+    const none = fakePool({ workers: 2, attest: ['sip-off', 'forged'], requireAttested: true });
+    await expect(none.handler.sendRequest(peer, chatRequest('p2'))).rejects.toThrow();
+    expect(none.wire.filter((req) => req.path !== WORKER_ASSIGN_PATH)).toHaveLength(0);
   });
 });

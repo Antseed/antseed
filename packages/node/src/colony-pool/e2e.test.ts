@@ -49,7 +49,7 @@ describe('worker end-to-end encryption', async () => {
   it('rejects envelopes for another worker, a swapped model, or a tampered ciphertext', async () => {
     const { worker, key, binding } = setup();
     const sealed = await sealRequest({ body: enc({ model: 'qwen', messages: [] }), worker: worker.address, workerKey: key.publicKey, buyer: binding });
-    expect(() => openRequest(sealed.body, Wallet.createRandom().address, key)).toThrow(/another worker/);
+    expect(() => openRequest(sealed.body, Wallet.createRandom().address, key)).toThrow(/addressed to other workers/);
 
     const swapped = JSON.parse(dec(sealed.body));
     swapped.model = 'expensive-model';
@@ -148,9 +148,9 @@ describe('worker end-to-end encryption', async () => {
     const plainXor = Buffer.from('{"answer":"f').map((byte, i) => byte ^ Buffer.from('{"answer":"s')[i]!);
     expect(Buffer.from(xor).equals(Buffer.from(plainXor))).toBe(false);
 
-    const base = (sealed.opener as unknown as { base: Buffer }).base;
-    expect(JSON.parse(dec(new ResponseOpener(base).openBody(first)))).toEqual({ answer: 'first' });
-    expect(JSON.parse(dec(new ResponseOpener(base).openBody(second)))).toEqual({ answer: 'second' });
+    const bases = (sealed.opener as unknown as { bases: Map<string, Buffer> }).bases;
+    expect(JSON.parse(dec(new ResponseOpener(bases).openBody(first)))).toEqual({ answer: 'first' });
+    expect(JSON.parse(dec(new ResponseOpener(bases).openBody(second)))).toEqual({ answer: 'second' });
   });
 
   it('rejects a response without its salt', async () => {
@@ -245,5 +245,90 @@ describe('worker attestations', () => {
     expect(verifyWorkerAttestation(attestation, attestedWorker().cert, { maxAgeS: 60 }).valid).toBe(false);
     // A certificate whose attestation key was swapped no longer verifies.
     expect(verifyWorkerKeyCertificate({ ...cert, attestationKey: attestedWorker().cert.attestationKey }, POOL)).toBe(false);
+  });
+
+});
+
+describe('worker end-to-end encryption for several recipients', () => {
+  function recipients(n: number) {
+    return Array.from({ length: n }, () => ({ wallet: Wallet.createRandom(), key: generateWorkerEncryptionKey() }));
+  }
+  const sealFor = (workers: ReturnType<typeof recipients>, binding?: Parameters<typeof sealRequest>[0]['buyer'], body = enc({ model: 'qwen', messages: [{ role: 'user', content: 'secret prompt' }] })) =>
+    sealRequest({ body, recipients: workers.map((w) => ({ worker: w.wallet.address, key: w.key.publicKey })), ...(binding ? { buyer: binding } : {}) });
+
+  it('lets each recipient open the request, bound to the buyer, and answer under its own key', async () => {
+    const { binding, buyer } = setup();
+    const workers = recipients(3);
+    const sealed = await sealFor(workers, binding);
+    const outer = JSON.parse(dec(sealed.body));
+    expect(outer.antseed_e2e.recipients.map((r: { worker: string }) => r.worker)).toEqual(workers.map((w) => w.wallet.address));
+    expect(dec(sealed.body)).not.toContain('secret prompt');
+    for (const worker of workers) {
+      const opened = openRequest(sealed.body, worker.wallet.address, worker.key);
+      expect(dec(opened.body)).toContain('secret prompt');
+      expect(opened.buyer).toBe(buyer.address);
+      expect(opened.recipients).toEqual(workers.map((w) => w.wallet.address));
+    }
+    // The second recipient answers: the buyer opens it and knows who answered.
+    const answer = openRequest(sealed.body, workers[1]!.wallet.address, workers[1]!.key).sealer.sealBody(enc({ answer: 'two', usage: { completion_tokens: 3 } }));
+    expect(JSON.parse(dec(sealed.opener.openBody(answer)))).toEqual({ answer: 'two', usage: { completion_tokens: 3 } });
+    expect(sealed.opener.verified).toBe(true);
+    expect(sealed.opener.worker).toBe(workers[1]!.wallet.address);
+  });
+
+  it('streams an answer from any recipient and names it', async () => {
+    const workers = recipients(2);
+    const sealed = await sealFor(workers, undefined, enc({ model: 'qwen', stream: true }));
+    const { sealer } = openRequest(sealed.body, workers[1]!.wallet.address, workers[1]!.key);
+    const wire = Buffer.concat([sealer.pushStream(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"hi"}}]}\n\n')), sealer.finishStream()]);
+    expect(sealed.opener.worker).toBeNull();
+    expect(dec(sealed.opener.pushStream(wire))).toContain('"hi"');
+    expect(sealed.opener.verified).toBe(true);
+    expect(sealed.opener.worker).toBe(workers[1]!.wallet.address);
+  });
+
+  it('refuses a worker the envelope does not name', async () => {
+    const workers = recipients(2);
+    const outsider = recipients(1)[0]!;
+    const sealed = await sealFor(workers);
+    expect(() => openRequest(sealed.body, outsider.wallet.address, outsider.key)).toThrow(/addressed to other workers/);
+    // Nor can it pass for a recipient with its own key.
+    expect(() => openRequest(sealed.body, workers[0]!.wallet.address, outsider.key)).toThrow();
+  });
+
+  it('fails an answer one recipient seals and labels as another\'s', async () => {
+    const workers = recipients(2);
+    const sealed = await sealFor(workers);
+    const forged = JSON.parse(dec(openRequest(sealed.body, workers[1]!.wallet.address, workers[1]!.key).sealer.sealBody(enc({ answer: 'mine' }))));
+    forged.antseed_e2e.worker = workers[0]!.wallet.address;
+    expect(() => sealed.opener.openBody(enc(forged))).toThrow();
+    expect(sealed.opener.verified).toBe(false);
+    // Naming a worker the request was not encrypted for is refused outright.
+    forged.antseed_e2e.worker = Wallet.createRandom().address;
+    expect(() => sealed.opener.openBody(enc(forged))).toThrow(/not encrypted for/);
+  });
+
+  it('binds the ciphertext and the buyer\'s signature to the ordered recipient list', async () => {
+    const { binding } = setup();
+    const workers = recipients(2);
+    const sealed = await sealFor(workers, binding);
+    const reordered = JSON.parse(dec(sealed.body));
+    reordered.antseed_e2e.recipients.reverse();
+    expect(() => openRequest(enc(reordered), workers[0]!.wallet.address, workers[0]!.key)).toThrow();
+    // Dropping a recipient changes the list too: the request no longer opens.
+    const dropped = JSON.parse(dec(sealed.body));
+    dropped.antseed_e2e.recipients = dropped.antseed_e2e.recipients.slice(0, 1);
+    expect(() => openRequest(enc(dropped), workers[0]!.wallet.address, workers[0]!.key)).toThrow();
+    // An envelope naming a worker twice is refused.
+    const twice = JSON.parse(dec(sealed.body));
+    twice.antseed_e2e.recipients[1] = twice.antseed_e2e.recipients[0];
+    expect(() => openRequest(enc(twice), workers[0]!.wallet.address, workers[0]!.key)).toThrow(/twice/);
+  });
+
+  it('takes one to three distinct recipients', async () => {
+    await expect(sealFor(recipients(4))).rejects.toThrow(/1 to 3/);
+    await expect(sealFor([])).rejects.toThrow(/1 to 3/);
+    const one = recipients(1);
+    await expect(sealFor([one[0]!, one[0]!])).rejects.toThrow(/distinct/);
   });
 });

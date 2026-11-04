@@ -139,6 +139,11 @@ export interface Provider {
 
 export interface ProviderRequestCharge {
   requestId: string;
+  /**
+   * The request object passed to `handleRequest(Stream)`, so a provider can
+   * tell apart requests from different buyers that reuse a request ID.
+   */
+  request?: SerializedHttpRequest;
   service?: string;
   /** Amount charged, in USDC base units (6 decimals). */
   costUsdc: bigint;

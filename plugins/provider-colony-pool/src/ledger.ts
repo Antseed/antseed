@@ -1,9 +1,14 @@
 import Database from 'better-sqlite3';
 import type { WorkerStats } from './protocol.js';
+import type { WorkerRank } from './ranking.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+/** Dispatch outcomes are kept this long, for the dashboard's success rates. */
+const DISPATCH_RETENTION_MS = 30 * DAY_MS;
+const PRUNE_EVERY_DISPATCHES = 1000;
 
 export interface EarningInput {
+  /** Unique per served request (the pool's dispatch ID): buyers' own request IDs can collide. */
   requestId: string;
   worker: string;
   service?: string;
@@ -18,6 +23,15 @@ export interface EarningInput {
   at?: number;
 }
 
+export interface DispatchRecord {
+  worker: string;
+  ok: boolean;
+  /** Why it failed: timeout, disconnect, idle, oversize. */
+  reason?: string;
+  firstByteMs?: number;
+  at?: number;
+}
+
 export interface PendingPayout {
   worker: string;
   pendingUsdc: bigint;
@@ -27,7 +41,8 @@ export interface PendingPayout {
  * The pool's record of what each worker earned and was paid. Amounts are
  * USDC base units (6 decimals) stored as integers; sums stay far below 2^53.
  * The seller dashboard reads `earnings` and `connections` read-only (apps/cli
- * seller-monitor/workers.ts), so keep those columns stable.
+ * seller-monitor/workers.ts), so keep those columns stable, and `dispatches`
+ * and `worker_rank` too.
  */
 export class WorkerLedger {
   private readonly db: Database.Database;
@@ -65,10 +80,29 @@ export class WorkerLedger {
         disconnected_at INTEGER
       );
       CREATE INDEX IF NOT EXISTS connections_worker ON connections (worker, connected_at);
+      CREATE TABLE IF NOT EXISTS dispatches (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        worker TEXT NOT NULL,
+        at INTEGER NOT NULL,
+        ok INTEGER NOT NULL,
+        reason TEXT,
+        first_byte_ms INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS dispatches_worker_time ON dispatches (worker, at);
+      CREATE TABLE IF NOT EXISTS worker_rank (
+        worker TEXT PRIMARY KEY,
+        reliability REAL,
+        first_byte_ms REAL,
+        failures INTEGER NOT NULL,
+        benched_until INTEGER NOT NULL,
+        priority REAL NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
     `);
     // A pool that crashed left sessions open; they ended no later than now.
     this.db.prepare('UPDATE connections SET disconnected_at = ? WHERE disconnected_at IS NULL').run(Date.now());
     this.stmts = this.prepareStatements();
+    this.pruneDispatches();
   }
 
   /** The ledger's fixed statements, compiled once. */
@@ -94,6 +128,15 @@ export class WorkerLedger {
         SELECT COALESCE(SUM(MIN(COALESCE(disconnected_at, ?), ?) - MAX(connected_at, ?)), 0) AS ms
         FROM connections WHERE worker = ? AND COALESCE(disconnected_at, ?) > ?
       `),
+      insertDispatch: this.db.prepare('INSERT INTO dispatches (worker, at, ok, reason, first_byte_ms) VALUES (?, ?, ?, ?, ?)'),
+      pruneDispatches: this.db.prepare('DELETE FROM dispatches WHERE at < ?'),
+      saveRank: this.db.prepare(`
+        INSERT INTO worker_rank (worker, reliability, first_byte_ms, failures, benched_until, priority, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (worker) DO UPDATE SET reliability = excluded.reliability, first_byte_ms = excluded.first_byte_ms,
+          failures = excluded.failures, benched_until = excluded.benched_until, priority = excluded.priority, updated_at = excluded.updated_at
+      `),
+      loadRank: this.db.prepare('SELECT reliability, first_byte_ms, failures, benched_until FROM worker_rank WHERE worker = ?'),
       pendingPayouts: this.db.prepare(`
         SELECT e.worker AS worker, e.earned - COALESCE(p.paid, 0) AS pending
         FROM (SELECT worker, SUM(worker_usdc) AS earned FROM earnings GROUP BY worker) e
@@ -115,6 +158,29 @@ export class WorkerLedger {
       input.streamMs ?? null,
       input.at ?? Date.now(),
     );
+  }
+
+  /** One buyer dispatch's outcome, for the dashboard's success rates and first-byte times. */
+  recordDispatch(record: DispatchRecord): void {
+    this.stmts.insertDispatch.run(record.worker.toLowerCase(), record.at ?? Date.now(), record.ok ? 1 : 0, record.reason ?? null, record.firstByteMs ?? null);
+    if (++this.dispatchesSincePrune >= PRUNE_EVERY_DISPATCHES) this.pruneDispatches();
+  }
+
+  /** The worker's current rank, so it survives reconnects and pool restarts. */
+  saveRank(worker: string, rank: WorkerRank, priority: number, at = Date.now()): void {
+    this.stmts.saveRank.run(worker.toLowerCase(), rank.reliability, rank.firstByteMs, rank.failures, rank.benchedUntil, priority, at);
+  }
+
+  loadRank(worker: string): WorkerRank | null {
+    const row = this.stmts.loadRank.get(worker.toLowerCase()) as { reliability: number | null; first_byte_ms: number | null; failures: number; benched_until: number } | undefined;
+    return row ? { reliability: row.reliability, firstByteMs: row.first_byte_ms, failures: row.failures, benchedUntil: row.benched_until } : null;
+  }
+
+  private dispatchesSincePrune = 0;
+
+  private pruneDispatches(now = Date.now()): void {
+    this.dispatchesSincePrune = 0;
+    this.stmts.pruneDispatches.run(now - DISPATCH_RETENTION_MS);
   }
 
   recordPayout(worker: string, amountUsdc: bigint, txHash?: string, at = Date.now()): void {

@@ -15,6 +15,7 @@ const LEDGER_FILE = 'colony-pool.db';
 const LEDGER_POINTER_FILE = 'colony-pool.ledger-path';
 import { ColonyPool } from './pool.js';
 import { ColonyPoolProvider } from './provider.js';
+import { parseWorkerPriority } from './ranking.js';
 
 export { WorkerLedger } from './ledger.js';
 export { ColonyPool, NoWorkerAvailableError, WorkerUnavailableError, type ColonyPoolOptions, type WorkerSummary } from './pool.js';
@@ -47,6 +48,7 @@ const plugin: AntseedProviderPlugin = {
     { key: 'COLONY_POOL_WORKER_SHARE_BPS', label: 'Worker Share', type: 'number', required: false, default: 9000, description: 'Share of each paid request credited to the worker, in basis points (9000 = 90%)' },
     { key: 'COLONY_POOL_PROTOCOL_FEE_BPS', label: 'Protocol Fee', type: 'number', required: false, default: 200, description: 'AntseedChannels protocol fee in basis points, for the local earnings estimate workers see' },
     { key: 'COLONY_POOL_ALLOWED_WORKERS', label: 'Allowed Workers', type: 'string[]', required: false, description: 'Worker addresses allowed to join (empty = anyone)' },
+    { key: 'COLONY_POOL_WORKER_PRIORITY', label: 'Worker Priority', type: 'string[]', required: false, description: 'Weights for ranking workers, as address=weight (default 1; 2 doubles its score; 0 never routes to it)' },
     { key: 'COLONY_POOL_REQUIRE_ATTESTATION', label: 'Require Attestation', type: 'boolean', required: false, default: false, description: 'Only admit workers attesting a hardened Mac: Developer ID signed app with the hardened runtime, SIP on, and a Secure Enclave key only that app can use' },
     { key: 'COLONY_POOL_ATTESTED_TEAMS', label: 'Attested Teams', type: 'string[]', required: false, description: 'Apple Developer team IDs whose signed worker apps count as hardened (empty = any team)' },
     { key: 'COLONY_POOL_MDM_URL', label: 'MDM URL', type: 'string', required: false, description: 'Your NanoMDM server, for Apple-signed attestations of enrolled Macs (optional; you run it, Macs enroll in it)' },
@@ -90,6 +92,7 @@ const plugin: AntseedProviderPlugin = {
     if (Boolean(certPath) !== Boolean(keyPath)) throw new Error('Set both COLONY_POOL_TLS_CERT and COLONY_POOL_TLS_KEY, or neither');
     const allowedWorkers = parseList(config['COLONY_POOL_ALLOWED_WORKERS']).map((address) => address.toLowerCase());
     const attestedTeams = parseList(config['COLONY_POOL_ATTESTED_TEAMS']);
+    const workerPriority = parseWorkerPriority(config['COLONY_POOL_WORKER_PRIORITY']);
     const mdmUrl = config['COLONY_POOL_MDM_URL'];
     const webhookPath = config['COLONY_POOL_MDM_WEBHOOK_PATH'];
     if (mdmUrl && !webhookPath) {
@@ -129,6 +132,7 @@ const plugin: AntseedProviderPlugin = {
       ...(config['COLONY_POOL_HOST'] ? { host: config['COLONY_POOL_HOST'] } : {}),
       ...(certPath && keyPath ? { tls: { cert: readFileSync(certPath, 'utf-8'), key: readFileSync(keyPath, 'utf-8') } } : {}),
       ...(allowedWorkers.length > 0 ? { allowedWorkers: new Set(allowedWorkers) } : {}),
+      ...(workerPriority.size > 0 ? { workerPriority } : {}),
       verifyOnJoin: config['COLONY_POOL_VERIFY_ON_JOIN'] !== 'false',
       requireAttestation: config['COLONY_POOL_REQUIRE_ATTESTATION'] === 'true',
       ...(attestedTeams.length > 0 ? { attestedTeams: new Set(attestedTeams) } : {}),

@@ -136,6 +136,50 @@ describe('worker lifecycle', () => {
     upstream = null;
   });
 
+  it('sends accepted once a request passes its channel check, before the model answers, and never for a refused one', async () => {
+    upstream = await startUpstream((_body, res) => answer(res));
+    let settle: (verdict: boolean | null) => void = () => {};
+    start({ channelVerifier: () => new Promise((resolve) => { settle = resolve; }) });
+    await waitFor(() => fakePool.frames.some((f) => f['t'] === 'hello'));
+    await request('a1');
+    await sleep(100);
+    // Still checking the channel: not taken yet.
+    expect(fakePool.frames.some((f) => f['t'] === 'accepted')).toBe(false);
+    settle(true);
+    await waitFor(() => fakePool.ended('a1'));
+    const order = fakePool.frames.filter((f) => f['id'] === 'a1').map((f) => f['t']);
+    expect(order.slice(0, 2)).toEqual(['accepted', 'response-start']);
+    // A refused channel is never accepted.
+    worker!.stop();
+    start({ channelVerifier: async () => false });
+    await waitFor(() => fakePool.frames.filter((f) => f['t'] === 'hello').length >= 2);
+    await request('a2');
+    await waitFor(() => fakePool.errorFor('a2') !== undefined);
+    expect(fakePool.frames.some((f) => f['t'] === 'accepted' && f['id'] === 'a2')).toBe(false);
+  });
+
+  it('serves a request it is one of several recipients of, and refuses one that does not name it', async () => {
+    upstream = await startUpstream((_body, res) => answer(res));
+    start({ channelVerifier: async () => true });
+    await waitFor(() => fakePool.frames.some((f) => f['t'] === 'hello'));
+    const other = generateWorkerEncryptionKey();
+    const otherAddress = Wallet.createRandom().address;
+    const body = enc({ model: SERVICE, messages: [{ role: 'user', content: 'hi' }] });
+    const binding = { address: buyer.address, channel: CHANNEL, signMessage: (m: Uint8Array) => buyer.signMessage(m) };
+    const both = await sealRequest({ body, recipients: [{ worker: otherAddress, key: other.publicKey }, { worker: worker!.address, key: key.publicKey }], buyer: binding });
+    fakePool.send({ t: 'request', id: 'm1', method: 'POST', path: '/v1/chat/completions', headers: {}, body: encodeBody(both.body) });
+    await waitFor(() => fakePool.ended('m1'));
+    // Its answer is sealed under its own key and names it.
+    const chunks = fakePool.frames.filter((f) => f['t'] === 'response-chunk' && f['id'] === 'm1').map((f) => Buffer.from(f['data'] as string, 'base64'));
+    both.opener.openBody(Buffer.concat(chunks));
+    expect(both.opener.worker?.toLowerCase()).toBe(worker!.address.toLowerCase());
+    const notMine = await sealRequest({ body, recipients: [{ worker: otherAddress, key: other.publicKey }], buyer: binding });
+    fakePool.send({ t: 'request', id: 'm2', method: 'POST', path: '/v1/chat/completions', headers: {}, body: encodeBody(notMine.body) });
+    await waitFor(() => fakePool.errorFor('m2') !== undefined);
+    expect(fakePool.errorFor('m2')).toMatch(/could not be decrypted/);
+    expect(upstream.bodies).toHaveLength(1);
+  });
+
   it('drops a request cancelled while its channel check is pending, before it reaches the model', async () => {
     upstream = await startUpstream((_body, res) => answer(res));
     let settle: (verdict: boolean) => void = () => {};
@@ -320,9 +364,9 @@ describe('pool deadlines and capacity', () => {
     }, { responseIdleTimeoutMs: 300 });
     startWorker(poolUrl, { [SERVICE]: 'local' });
     await waitFor(() => provider.services.includes(SERVICE));
-    const certificate = JSON.parse(new TextDecoder().decode((await provider.handleControlRequest({
+    const certificate = (JSON.parse(new TextDecoder().decode((await provider.handleControlRequest({
       requestId: 'assign', method: 'POST', path: '/_antseed/provider/colony-pool/assign', headers: {}, body: enc({ model: SERVICE }),
-    })).body)) as { worker: string; key: string };
+    })).body)) as { workers: Array<{ worker: string; key: string }> }).workers[0]!;
     const sealed = await sealRequest({ body: enc({ model: SERVICE, stream: true, messages: [{ role: 'user', content: 'hi' }] }), worker: certificate.worker, workerKey: certificate.key });
     let started = false;
     const result = provider.handleRequestStream(
@@ -359,9 +403,9 @@ describe('pool deadlines and capacity', () => {
   });
 
   async function assign(): Promise<{ worker: string; key: string }> {
-    return JSON.parse(new TextDecoder().decode((await provider.handleControlRequest({
+    return (JSON.parse(new TextDecoder().decode((await provider.handleControlRequest({
       requestId: 'assign', method: 'POST', path: '/_antseed/provider/colony-pool/assign', headers: {}, body: enc({ model: SERVICE }),
-    })).body)) as { worker: string; key: string };
+    })).body)) as { workers: Array<{ worker: string; key: string }> }).workers[0]!;
   }
 
   it('keeps two buyers\' requests apart when they use the same request ID', async () => {

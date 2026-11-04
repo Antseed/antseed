@@ -71,11 +71,52 @@ describe('readSellerWorkers', () => {
         address: '0xaa', agent: 'antseed-mac/0.1.0 (Studio)', connected: true, lastSeenAt: NOW, onlineHoursWeek: 2,
         // Speed only from timed requests: 200 tokens in 0.4 s.
         requestsWeek: 2, outputTokensWeek: 300, tokensPerSecond: 500, earnedWeekUsdc: 0.001, earnedTotalUsdc: 0.001,
+        // A ledger from before routing outcomes were recorded: no rates, ranked by the defaults.
+        successRateDay: null, successRateWeek: null, firstByteMsMedian: null, benchedUntil: null, priority: 1, rank: 1,
       },
       {
         address: '0xbb', agent: 'antseed-pool-worker/0.1.0', connected: false, lastSeenAt: NOW - 26 * HOUR, onlineHoursWeek: 4,
         requestsWeek: 0, outputTokensWeek: 0, tokensPerSecond: null, earnedWeekUsdc: 0, earnedTotalUsdc: 0.0015,
+        successRateDay: null, successRateWeek: null, firstByteMsMedian: null, benchedUntil: null, priority: 1, rank: null,
       },
     ] })
+  })
+
+  it('ranks connected workers by the pool\'s score and shows benched and excluded ones without a rank', () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'workers-'))
+    writeLedger(dataDir)
+    const db = new Database(join(dataDir, COLONY_POOL_LEDGER_FILE))
+    db.exec(`
+      CREATE TABLE dispatches (id INTEGER PRIMARY KEY AUTOINCREMENT, worker TEXT NOT NULL, at INTEGER NOT NULL, ok INTEGER NOT NULL, reason TEXT, first_byte_ms INTEGER);
+      CREATE TABLE worker_rank (worker TEXT PRIMARY KEY, reliability REAL, first_byte_ms REAL, failures INTEGER NOT NULL, benched_until INTEGER NOT NULL, priority REAL NOT NULL, updated_at INTEGER NOT NULL);
+    `)
+    const connect = db.prepare('INSERT INTO connections (worker, agent, connected_at, disconnected_at) VALUES (?, ?, ?, ?)')
+    for (const worker of ['0xcc', '0xdd', '0xee']) connect.run(worker, 'antseed-mac/0.1.0', NOW - HOUR, null)
+    const dispatch = db.prepare('INSERT INTO dispatches (worker, at, ok, reason, first_byte_ms) VALUES (?, ?, ?, ?, ?)')
+    // 0xaa: 3 of 4 answered today, one failure two days ago; first bytes 100, 200, 300.
+    dispatch.run('0xaa', NOW - HOUR, 1, null, 100)
+    dispatch.run('0xaa', NOW - HOUR, 1, null, 300)
+    dispatch.run('0xaa', NOW - HOUR, 1, null, 200)
+    dispatch.run('0xaa', NOW - HOUR, 0, 'timeout', null)
+    dispatch.run('0xaa', NOW - 48 * HOUR, 0, 'disconnect', null)
+    const rank = db.prepare('INSERT INTO worker_rank VALUES (?, ?, ?, ?, ?, ?, ?)')
+    rank.run('0xaa', 0.6, 200, 0, 0, 1, NOW)
+    rank.run('0xcc', 1, 150, 0, 0, 1, NOW) // reliable: outranks 0xaa
+    rank.run('0xdd', 0.4, null, 2, NOW + 60_000, 1, NOW) // benched for another minute
+    rank.run('0xee', 1, null, 0, 0, 0, NOW) // the operator routes nothing to it
+    db.close()
+    const result = readSellerWorkers(dataDir, NOW)
+    assert.equal(result.available, true)
+    const workers = result.available ? result.workers : []
+    assert.deepEqual(workers.map((w) => [w.address, w.rank]), [['0xcc', 1], ['0xaa', 2], ['0xdd', null], ['0xee', null], ['0xbb', null]])
+    const aa = workers.find((w) => w.address === '0xaa')!
+    assert.equal(aa.successRateDay, 0.75)
+    assert.equal(aa.successRateWeek, 0.6)
+    assert.equal(aa.firstByteMsMedian, 200)
+    assert.equal(workers.find((w) => w.address === '0xdd')!.benchedUntil, NOW + 60_000)
+    assert.equal(workers.find((w) => w.address === '0xee')!.priority, 0)
+    // A stopped seller benches nobody.
+    const stale = readSellerWorkers(dataDir, NOW, NOW - HOUR)
+    assert.equal(stale.available && stale.workers.find((w) => w.address === '0xdd')!.benchedUntil, null)
   })
 })

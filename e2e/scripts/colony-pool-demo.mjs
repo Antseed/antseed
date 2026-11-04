@@ -292,7 +292,8 @@ async function main() {
     poolProvider[method] = async (req, callbacks) => {
       const outer = JSON.parse(new TextDecoder().decode(req.body));
       if (outer.antseed_e2e) {
-        logTo('pool', `${C.yellow}request ${req.requestId.slice(0, 8)}${C.reset} → worker ${outer.antseed_e2e.worker.slice(0, 10)}… model=${outer.model}`);
+        const recipients = outer.antseed_e2e.recipients.map((r) => `${r.worker.slice(0, 10)}…`).join(', ');
+        logTo('pool', `${C.yellow}request ${req.requestId.slice(0, 8)}${C.reset} → sealed for ${recipients} (tried in rank order) model=${outer.model}`);
         logTo('pool', `  ${C.dim}body the pool sees: ct=${outer.antseed_e2e.ct.slice(0, 48)}…${C.reset}`);
       }
       const response = await original(req, callbacks);
@@ -396,7 +397,7 @@ async function main() {
     return owner ? `${owner.name} owner` : workers.find((x) => x.wallet.address.toLowerCase() === w.toLowerCase())?.name ?? w;
   };
   for (const buyer of BUYERS) {
-    await step(`Buyer ${buyer.name} discovers the seller on the DHT and gets a Mac assigned`);
+    await step(`Buyer ${buyer.name} discovers the seller on the DHT and gets its top-ranked Macs assigned`);
     buyer.node = new AntseedNode({ role: 'buyer', dataDir: buyer.dir, identity: buyer.identity, dhtPort: 0, bootstrapNodes, allowPrivateIPs: true, payments: payments(A.channels) });
     await buyer.node.start();
     cleanup.push(() => buyer.node.stop());

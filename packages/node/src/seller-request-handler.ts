@@ -1143,6 +1143,7 @@ export class SellerRequestHandler {
             try {
               provider.onRequestCharged?.({
                 requestId: request.requestId,
+                request,
                 ...(requestedModel !== 'unknown' ? { service: requestedModel } : {}),
                 costUsdc,
                 inputTokens: usage.inputTokens,

@@ -101,6 +101,25 @@ export interface PoolWorkerOptions {
 }
 
 /**
+ * The body a pool check (no buyer binding) may run: its messages and stream
+ * flag, one completion of 1 to 16 tokens. Every other field is dropped, so a
+ * check cannot ask for more completions (`n`, `best_of`), tools or a larger
+ * or negative budget.
+ */
+export function checkRequestBody(body: Record<string, unknown>): Record<string, unknown> {
+  if (!Array.isArray(body['messages'])) throw new Error('Check requests need messages');
+  const requested = body['max_tokens'] ?? body['max_completion_tokens'];
+  const maxTokens = typeof requested === 'number' && Number.isFinite(requested)
+    ? Math.min(Math.max(Math.floor(requested), 1), CHECK_MAX_TOKENS)
+    : CHECK_MAX_TOKENS;
+  return {
+    messages: body['messages'],
+    max_tokens: maxTokens,
+    ...(body['stream'] === true ? { stream: true } : {}),
+  };
+}
+
+/**
  * Reference worker: keeps a connection to a pool open and serves its
  * encrypted requests from a local OpenAI-compatible model server. The pool
  * never sees prompts or answers.
@@ -373,10 +392,11 @@ export class PoolWorker {
       // No buyer binding: a pool check. Keep it small so it cannot buy real work, prompt processing included.
       if (opened.body.length > MAX_CHECK_BODY_BYTES) throw new Error(`Check requests are limited to ${MAX_CHECK_BODY_BYTES} bytes`);
       if (!this.allowCheck()) throw new Error('Check rate limit exceeded');
-      body['max_tokens'] = Math.min(typeof body['max_tokens'] === 'number' ? body['max_tokens'] : CHECK_MAX_TOKENS, CHECK_MAX_TOKENS);
-      delete body['max_completion_tokens'];
+      body = checkRequestBody(body);
     }
     if (signal.aborted || this.stopped) throw new Error('cancelled');
+    // Taken: the pool now gives it the full first-byte deadline instead of failing over.
+    send({ t: 'accepted', id: frame.id });
 
     body['model'] = localModel;
     // Usage in the final stream event is what the buyer is charged for.

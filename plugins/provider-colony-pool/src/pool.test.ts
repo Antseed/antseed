@@ -9,6 +9,7 @@ import WebSocket, { WebSocketServer } from 'ws';
 import type { SerializedHttpRequest, SerializedHttpResponseChunk } from '@antseed/node';
 import {
   WORKER_ASSIGN_PATH,
+  WORKER_UNAVAILABLE_STATUS as WORKER_UNAVAILABLE,
   generateWorkerEncryptionKey,
   sealRequest,
   verifyWorkerAttestation,
@@ -179,7 +180,7 @@ describe('colony pool', () => {
       requestId: 'assign', method: 'POST', path: WORKER_ASSIGN_PATH, headers: {}, body: enc({ model: SERVICE }),
     });
     expect(response.statusCode).toBe(200);
-    return JSON.parse(dec(response.body)) as WorkerKeyCertificate;
+    return (JSON.parse(dec(response.body)) as { workers: WorkerKeyCertificate[] }).workers[0]!;
   }
 
   /** What the buyer's node does: assign, check the certificate, seal with a channel binding. */
@@ -255,7 +256,7 @@ describe('colony pool', () => {
     expect(sealed.opener.verified).toBe(true);
 
     provider.onRequestCharged({
-      requestId: 'req-1', service: SERVICE, costUsdc: 3000n,
+      requestId: 'req-1', request, service: SERVICE, costUsdc: 3000n,
       inputTokens: 1000, outputTokens: 500, freshInputTokens: 1000, cachedInputTokens: 0,
     });
     // 3000 − 2% protocol fee = 2940, then the worker's 90% = 2646.
@@ -329,7 +330,7 @@ describe('colony pool', () => {
     await waitFor(() => provider.services.includes(SERVICE));
     for (const id of ['c1', 'c2']) {
       const refused = await provider.handleRequest((await buyerSeal(id, false)).request);
-      expect(refused.statusCode).toBe(502);
+      expect(refused.statusCode).toBe(WORKER_UNAVAILABLE);
       expect(dec(refused.body)).toContain('does not belong');
     }
     expect(lookups).toBe(1);
@@ -345,7 +346,7 @@ describe('colony pool', () => {
     expect((await provider.handleRequest((await buyerSeal('v2', false)).request)).statusCode).toBe(200);
     // Another signer naming the same channel (the pool itself, say) is refused from the cache.
     const refused = await provider.handleRequest((await buyerSeal('v3', false, Wallet.createRandom())).request);
-    expect(refused.statusCode).toBe(502);
+    expect(refused.statusCode).toBe(WORKER_UNAVAILABLE);
     expect(dec(refused.body)).toContain('does not belong');
     expect(lookups).toHaveLength(1);
   });
@@ -356,8 +357,8 @@ describe('colony pool', () => {
     startWorker({ channelVerifier: async (_channel, from) => { lookups.push(from); return from === buyer.address.toLowerCase(); } });
     await waitFor(() => provider.services.includes(SERVICE));
     const intruder = Wallet.createRandom();
-    expect((await provider.handleRequest((await buyerSeal('i1', false, intruder)).request)).statusCode).toBe(502);
-    expect((await provider.handleRequest((await buyerSeal('i2', false, intruder)).request)).statusCode).toBe(502);
+    expect((await provider.handleRequest((await buyerSeal('i1', false, intruder)).request)).statusCode).toBe(WORKER_UNAVAILABLE);
+    expect((await provider.handleRequest((await buyerSeal('i2', false, intruder)).request)).statusCode).toBe(WORKER_UNAVAILABLE);
     expect((await provider.handleRequest((await buyerSeal('i3', false)).request)).statusCode).toBe(200);
     expect(lookups).toEqual([intruder.address.toLowerCase(), buyer.address.toLowerCase()]);
   });
@@ -370,7 +371,7 @@ describe('colony pool', () => {
     const before = upstream.requests.length;
     for (const id of ['p1', 'p2', 'p3']) {
       const refused = await provider.handleRequest((await buyerSeal(id, false)).request);
-      expect(refused.statusCode).toBe(502);
+      expect(refused.statusCode).toBe(WORKER_UNAVAILABLE);
       expect(dec(refused.body)).toContain('not on-chain');
     }
     // Each request looked again (it may have appeared since), and none reached the model.
@@ -550,7 +551,7 @@ describe('colony pool', () => {
       const response = await provider.handleControlRequest({
         requestId: 'renew', method: 'POST', path: WORKER_ASSIGN_PATH, headers: {}, body: enc({ model: SERVICE }),
       });
-      if (response.statusCode === 200) renewed = JSON.parse(dec(response.body)) as WorkerKeyCertificate;
+      if (response.statusCode === 200) renewed = (JSON.parse(dec(response.body)) as { workers: WorkerKeyCertificate[] }).workers[0]!;
     }
     expect(renewed.worker).toBe(first.worker);
     expect(renewed.expires).toBeGreaterThan(first.expires);

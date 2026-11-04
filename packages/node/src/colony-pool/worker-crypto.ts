@@ -29,6 +29,8 @@ export {
 export const WORKER_E2E_VERSION = 2;
 
 const INFO = 'antseed-worker-e2e/v2';
+/** Most workers one request is encrypted for (the pool fails over within them). */
+export const MAX_WORKER_RECIPIENTS = 3;
 const TAG_BYTES = 16;
 const P256_PUBLIC_HEX = /^04[0-9a-f]{128}$/;
 const ZERO_CHANNEL = `0x${'00'.repeat(32)}`;
@@ -231,14 +233,16 @@ export function verifyWorkerAttestation(
 
 // ── primitives ──
 
-interface SessionKeys {
-  requestKey: Buffer;
+interface RecipientKeys {
+  /** Wraps the request's content key for this recipient. */
+  wrapKey: Buffer;
+  /** This recipient's own response key: no other recipient can answer under it. */
   responseKey: Buffer;
 }
 
-function deriveKeys(shared: Buffer, ephemeralPublic: Uint8Array, workerPublic: Uint8Array): SessionKeys {
+function deriveKeys(shared: Buffer, ephemeralPublic: Uint8Array, workerPublic: Uint8Array): RecipientKeys {
   const okm = Buffer.from(hkdfSync('sha256', shared, Buffer.concat([ephemeralPublic, workerPublic]), INFO, 64));
-  return { requestKey: okm.subarray(0, 32), responseKey: okm.subarray(32, 64) };
+  return { wrapKey: okm.subarray(0, 32), responseKey: okm.subarray(32, 64) };
 }
 
 function nonceFor(seq: number): Buffer {
@@ -262,8 +266,17 @@ function open(key: Buffer, seq: number, aad: string, sealed: Uint8Array): Buffer
   return Buffer.concat([decipher.update(body), decipher.final()]);
 }
 
-function requestAad(worker: string, model: string): string {
-  return `${INFO}|req|${worker.toLowerCase()}|${model}`;
+/** The ordered recipient list as the AADs bind it: lowercase addresses joined by commas. */
+function recipientList(workers: readonly string[]): string {
+  return workers.map((worker) => worker.toLowerCase()).join(',');
+}
+
+function requestAad(workers: readonly string[], model: string): string {
+  return `${INFO}|req|${recipientList(workers)}|${model}`;
+}
+
+function wrapAad(workers: readonly string[], model: string): string {
+  return `${INFO}|wrap|${recipientList(workers)}|${model}`;
 }
 
 /**
@@ -282,21 +295,49 @@ function responseAad(seq: number, end: boolean): string {
   return `${INFO}|resp|${seq}${end ? '|end' : ''}`;
 }
 
-/** Hash the buyer signs to bind a request to its channel and worker. */
-export function requestBindingHash(worker: string, channel: string, ciphertext: Uint8Array): string {
-  return keccak256(solidityPacked(['string', 'address', 'bytes32', 'bytes32'], [INFO, worker, channel, keccak256(ciphertext)]));
+/**
+ * Hash the buyer signs to bind a request to its channel and the ordered set
+ * of workers it is encrypted for:
+ * keccak256(INFO ‖ worker₁ ‖ … ‖ workerₙ ‖ channel ‖ keccak256(ct)).
+ */
+export function requestBindingHash(workers: string | readonly string[], channel: string, ciphertext: Uint8Array): string {
+  const list = typeof workers === 'string' ? [workers] : workers;
+  return keccak256(solidityPacked(
+    ['string', ...list.map(() => 'address'), 'bytes32', 'bytes32'],
+    [INFO, ...list, channel, keccak256(ciphertext)],
+  ));
 }
 
 // ── envelopes ──
 
-export interface RequestEnvelope {
-  v: number;
+/** One worker a request is encrypted for: its ephemeral key and its wrapped copy of the content key. */
+export interface RequestRecipient {
   worker: string;
   epk: string;
+  /** The content key sealed under this recipient's wrap key (48 bytes, base64). */
+  wk: string;
+}
+
+export interface RequestEnvelope {
+  v: number;
+  /** In the pool's rank order; the pool tries them one at a time. */
+  recipients: RequestRecipient[];
   ct: string;
   buyer?: string;
   channel?: string;
   sig?: string;
+}
+
+/** The recipients a request envelope names, in order (empty for anything else). */
+export function envelopeRecipients(body: Uint8Array): string[] {
+  try {
+    const parsed = JSON.parse(Buffer.from(body).toString('utf-8')) as { antseed_e2e?: { recipients?: unknown } };
+    const recipients = parsed.antseed_e2e?.recipients;
+    if (!Array.isArray(recipients)) return [];
+    return recipients.map((r) => (r as { worker?: unknown })?.worker).filter((w): w is string => typeof w === 'string');
+  } catch {
+    return [];
+  }
 }
 
 export interface UsageLike {
@@ -309,12 +350,20 @@ export interface BuyerBinding {
   signMessage(message: Uint8Array): string | Promise<string>;
 }
 
+export interface SealRecipient {
+  worker: string;
+  /** Worker P-256 public key (uncompressed bytes or hex). */
+  key: Uint8Array | string;
+}
+
 export interface SealRequestOptions {
   /** The original JSON request body. */
   body: Uint8Array;
-  worker: string;
-  /** Worker P-256 public key (uncompressed bytes or hex). */
-  workerKey: Uint8Array | string;
+  /** One worker (shorthand for a single recipient)… */
+  worker?: string;
+  workerKey?: Uint8Array | string;
+  /** …or up to MAX_WORKER_RECIPIENTS, in the order the pool should try them. */
+  recipients?: SealRecipient[];
   /** Buyer identity that signs the request binding; omitted for pool health checks. */
   buyer?: BuyerBinding;
 }
@@ -329,29 +378,44 @@ function keyBytes(key: Uint8Array | string): Uint8Array {
   return typeof key === 'string' ? new Uint8Array(Buffer.from(key.replace(/^0x/, ''), 'hex')) : key;
 }
 
-/** Buyer side: encrypt a JSON request body for `worker`. */
+/**
+ * Buyer side: encrypt a JSON request body once, for one or more workers.
+ * Each recipient unwraps the content key with its own ECDH secret and answers
+ * under its own response key, so the buyer always knows which one answered.
+ */
 export async function sealRequest(opts: SealRequestOptions): Promise<SealedRequest> {
   const parsed = JSON.parse(Buffer.from(opts.body).toString('utf-8')) as Record<string, unknown>;
   const model = parsed['model'];
   if (typeof model !== 'string' || model.length === 0) throw new Error('Request body must name a model');
-  const workerKey = keyBytes(opts.workerKey);
-  const worker = getAddress(opts.worker);
-  const ephemeral = generateWorkerEncryptionKey();
-  const shared = diffieHellman({ privateKey: privateKeyObject(ephemeral), publicKey: publicKeyObject(workerKey) });
-  const keys = deriveKeys(shared, ephemeral.publicKey, workerKey);
-  const ct = seal(keys.requestKey, 0, requestAad(worker, model), opts.body);
+  const given = opts.recipients ?? (opts.worker && opts.workerKey ? [{ worker: opts.worker, key: opts.workerKey }] : []);
+  if (given.length === 0 || given.length > MAX_WORKER_RECIPIENTS) {
+    throw new Error(`A request is encrypted for 1 to ${MAX_WORKER_RECIPIENTS} workers`);
+  }
+  const workers = given.map((r) => getAddress(r.worker));
+  if (new Set(workers.map((w) => w.toLowerCase())).size !== workers.length) throw new Error('Recipients must be distinct workers');
 
-  const envelope: RequestEnvelope = {
-    v: WORKER_E2E_VERSION,
-    worker,
-    epk: Buffer.from(ephemeral.publicKey).toString('base64'),
-    ct: ct.toString('base64'),
-  };
+  const contentKey = randomBytes(32);
+  const ct = seal(contentKey, 0, requestAad(workers, model), opts.body);
+  const responseKeys = new Map<string, Buffer>();
+  const recipients = given.map((recipient, i): RequestRecipient => {
+    const workerKey = keyBytes(recipient.key);
+    const ephemeral = generateWorkerEncryptionKey();
+    const shared = diffieHellman({ privateKey: privateKeyObject(ephemeral), publicKey: publicKeyObject(workerKey) });
+    const keys = deriveKeys(shared, ephemeral.publicKey, workerKey);
+    responseKeys.set(workers[i]!.toLowerCase(), keys.responseKey);
+    return {
+      worker: workers[i]!,
+      epk: Buffer.from(ephemeral.publicKey).toString('base64'),
+      wk: seal(keys.wrapKey, 0, wrapAad(workers, model), contentKey).toString('base64'),
+    };
+  });
+
+  const envelope: RequestEnvelope = { v: WORKER_E2E_VERSION, recipients, ct: ct.toString('base64') };
   if (opts.buyer) {
     const channel = opts.buyer.channel ?? ZERO_CHANNEL;
     envelope.buyer = getAddress(opts.buyer.address);
     envelope.channel = channel;
-    envelope.sig = await opts.buyer.signMessage(getBytes(requestBindingHash(worker, channel, ct)));
+    envelope.sig = await opts.buyer.signMessage(getBytes(requestBindingHash(workers, channel, ct)));
   }
   const outer: Record<string, unknown> = { model };
   if (typeof parsed['stream'] === 'boolean') outer['stream'] = parsed['stream'];
@@ -362,7 +426,7 @@ export async function sealRequest(opts: SealRequestOptions): Promise<SealedReque
   return {
     body: new TextEncoder().encode(JSON.stringify(outer)),
     model,
-    opener: new ResponseOpener(keys.responseKey),
+    opener: new ResponseOpener(responseKeys),
   };
 }
 
@@ -370,6 +434,8 @@ export interface OpenedRequest {
   /** The original JSON request body. */
   body: Uint8Array;
   model: string;
+  /** Every worker the request is encrypted for, in order. */
+  recipients: string[];
   /** Set when the buyer signed the binding and the signature recovers to it. */
   buyer: string | null;
   channel: string | null;
@@ -387,9 +453,9 @@ export function isSealedRequest(body: Uint8Array): boolean {
 }
 
 /**
- * Worker side: decrypt a request addressed to this worker. Throws when the
- * envelope is not for `workerAddress`, fails authentication, or names a
- * different model inside than outside.
+ * Worker side: decrypt a request one of whose recipients is this worker.
+ * Throws when it is not, the envelope fails authentication, or the inner
+ * model differs from the outer one.
  */
 export function openRequest(body: Uint8Array, workerAddress: string, workerKey: WorkerEncryptionKey): OpenedRequest {
   const outer = JSON.parse(Buffer.from(body).toString('utf-8')) as Record<string, unknown>;
@@ -397,12 +463,23 @@ export function openRequest(body: Uint8Array, workerAddress: string, workerKey: 
   const model = outer['model'];
   if (!envelope || typeof model !== 'string') throw new Error('Not an encrypted request');
   if (envelope.v !== WORKER_E2E_VERSION) throw new Error(`Unsupported envelope version ${envelope.v}`);
-  if (envelope.worker.toLowerCase() !== workerAddress.toLowerCase()) throw new Error('Envelope is addressed to another worker');
-  const epk = new Uint8Array(Buffer.from(envelope.epk, 'base64'));
+  if (!Array.isArray(envelope.recipients) || envelope.recipients.length === 0 || envelope.recipients.length > MAX_WORKER_RECIPIENTS
+    || typeof envelope.ct !== 'string') {
+    throw new Error('Malformed envelope');
+  }
+  const workers = envelope.recipients.map((r) => {
+    if (typeof r?.worker !== 'string' || typeof r.epk !== 'string' || typeof r.wk !== 'string') throw new Error('Malformed envelope');
+    return r.worker;
+  });
+  if (new Set(workers.map((w) => w.toLowerCase())).size !== workers.length) throw new Error('Envelope names a worker twice');
+  const mine = envelope.recipients.find((r) => r.worker.toLowerCase() === workerAddress.toLowerCase());
+  if (!mine) throw new Error('Envelope is addressed to other workers');
+  const epk = new Uint8Array(Buffer.from(mine.epk, 'base64'));
   const ct = Buffer.from(envelope.ct, 'base64');
   const shared = diffieHellman({ privateKey: privateKeyObject(workerKey), publicKey: publicKeyObject(epk) });
   const keys = deriveKeys(shared, epk, workerKey.publicKey);
-  const plaintext = open(keys.requestKey, 0, requestAad(envelope.worker, model), ct);
+  const contentKey = open(keys.wrapKey, 0, wrapAad(workers, model), Buffer.from(mine.wk, 'base64'));
+  const plaintext = open(contentKey, 0, requestAad(workers, model), ct);
   const inner = JSON.parse(plaintext.toString('utf-8')) as Record<string, unknown>;
   if (inner['model'] !== model) throw new Error('Inner and outer model differ');
 
@@ -410,7 +487,7 @@ export function openRequest(body: Uint8Array, workerAddress: string, workerKey: 
   let channel: string | null = null;
   if (envelope.buyer && envelope.sig && envelope.channel) {
     try {
-      const recovered = verifyMessage(getBytes(requestBindingHash(envelope.worker, envelope.channel, ct)), envelope.sig);
+      const recovered = verifyMessage(getBytes(requestBindingHash(workers, envelope.channel, ct)), envelope.sig);
       if (recovered.toLowerCase() === envelope.buyer.toLowerCase()) {
         buyer = getAddress(envelope.buyer);
         channel = envelope.channel;
@@ -419,7 +496,14 @@ export function openRequest(body: Uint8Array, workerAddress: string, workerKey: 
       // Unsigned or forged binding: treated as an unbound (health check) request.
     }
   }
-  return { body: new Uint8Array(plaintext), model, buyer, channel, sealer: new ResponseSealer(keys.responseKey) };
+  return {
+    body: new Uint8Array(plaintext),
+    model,
+    recipients: workers.map((w) => getAddress(w)),
+    buyer,
+    channel,
+    sealer: new ResponseSealer(keys.responseKey, getAddress(workerAddress)),
+  };
 }
 
 // ── responses ──
@@ -446,7 +530,10 @@ function usageOf(data: string): UsageLike | null {
   }
 }
 
-/** Worker side: encrypts a response for the buyer. */
+/**
+ * Worker side: encrypts a response for the buyer, naming the worker so the
+ * buyer picks that worker's response key (no other recipient has it).
+ */
 export class ResponseSealer {
   private seq = 0;
   private buffer = '';
@@ -455,7 +542,7 @@ export class ResponseSealer {
   private readonly salt: string;
   private readonly decoder = new StringDecoder('utf8');
 
-  constructor(base: Buffer, salt: Buffer = randomBytes(RESPONSE_SALT_BYTES)) {
+  constructor(base: Buffer, private readonly worker: string, salt: Buffer = randomBytes(RESPONSE_SALT_BYTES)) {
     this.key = responseKey(base, salt);
     this.salt = salt.toString('base64');
   }
@@ -464,7 +551,7 @@ export class ResponseSealer {
   sealBody(body: Uint8Array): Uint8Array {
     this.ended = true;
     const envelope: Record<string, unknown> = {
-      antseed_e2e: { v: WORKER_E2E_VERSION, salt: this.salt, ct: seal(this.key, 0, responseAad(0, true), body).toString('base64') },
+      antseed_e2e: { v: WORKER_E2E_VERSION, worker: this.worker, salt: this.salt, ct: seal(this.key, 0, responseAad(0, true), body).toString('base64') },
     };
     const usage = usageOf(Buffer.from(body).toString('utf-8'));
     if (usage) envelope['usage'] = usage;
@@ -502,9 +589,9 @@ export class ResponseSealer {
     return out;
   }
 
-  /** The first event of a stream carries the salt. */
-  private saltFor(seq: number): { salt?: string } {
-    return seq === 0 ? { salt: this.salt } : {};
+  /** The first event of a stream names the worker and carries the salt. */
+  private saltFor(seq: number): { worker?: string; salt?: string } {
+    return seq === 0 ? { worker: this.worker, salt: this.salt } : {};
   }
 }
 
@@ -516,22 +603,31 @@ export class ResponseOpener {
   private authenticatedUsage: UsageLike | null = null;
   private clearUsage: UsageLike | null = null;
 
-  /** The response's own key, once its salt arrived. */
+  /** The response's own key, once its worker and salt arrived. */
   private key: Buffer | null = null;
+  private answeredBy: string | null = null;
   private readonly decoder = new StringDecoder('utf8');
 
-  constructor(private readonly base: Buffer) {}
+  /** Response base keys by lowercase recipient address. */
+  constructor(private readonly bases: ReadonlyMap<string, Buffer>) {}
 
-  private keyFor(salt: unknown): Buffer {
-    if (this.key) return this.key;
+  /** The response key the first sealed bytes name; kept only once they open under it. */
+  private keyFor(worker: unknown, salt: unknown): { key: Buffer; worker: string } {
+    if (typeof worker !== 'string') throw new Error('Worker response does not name its worker');
+    const base = this.bases.get(worker.toLowerCase());
+    if (!base) throw new Error('Worker response names a worker the request was not encrypted for');
     if (typeof salt !== 'string') throw new Error('Worker response is missing its salt');
-    this.key = responseKey(this.base, Buffer.from(salt, 'base64'));
-    return this.key;
+    return { key: responseKey(base, Buffer.from(salt, 'base64')), worker: getAddress(worker) };
   }
 
   /** True once the worker's end marker verified: the whole response came from the worker. */
   get verified(): boolean {
     return this.complete;
+  }
+
+  /** The recipient that answered (once its first sealed bytes opened), else null. */
+  get worker(): string | null {
+    return this.answeredBy;
   }
 
   /** Usage inside the ciphertext, and usage the pool saw in the clear (they should match). */
@@ -545,14 +641,17 @@ export class ResponseOpener {
    * anything else that fails to open throws.
    */
   openBody(body: Uint8Array): Uint8Array {
-    let parsed: { antseed_e2e?: { ct?: unknown; salt?: unknown }; usage?: unknown };
+    let parsed: { antseed_e2e?: { ct?: unknown; salt?: unknown; worker?: unknown }; usage?: unknown };
     try {
       parsed = JSON.parse(Buffer.from(body).toString('utf-8')) as typeof parsed;
     } catch {
       throw new Error('Worker response is not a sealed envelope');
     }
     if (typeof parsed.antseed_e2e?.ct !== 'string') return body;
-    const plaintext = open(this.keyFor(parsed.antseed_e2e.salt), 0, responseAad(0, true), Buffer.from(parsed.antseed_e2e.ct, 'base64'));
+    const named = this.keyFor(parsed.antseed_e2e.worker, parsed.antseed_e2e.salt);
+    const plaintext = open(named.key, 0, responseAad(0, true), Buffer.from(parsed.antseed_e2e.ct, 'base64'));
+    this.key = named.key;
+    this.answeredBy = named.worker;
     this.complete = true;
     this.authenticatedUsage = usageOf(plaintext.toString('utf-8'));
     this.clearUsage = parsed.usage && typeof parsed.usage === 'object' ? parsed.usage as UsageLike : null;
@@ -568,7 +667,7 @@ export class ResponseOpener {
     for (const event of events) {
       const data = eventData(event);
       if (data === null) continue;
-      let parsed: { antseed_e2e?: { seq?: unknown; ct?: unknown; end?: unknown; salt?: unknown }; usage?: unknown };
+      let parsed: { antseed_e2e?: { seq?: unknown; ct?: unknown; end?: unknown; salt?: unknown; worker?: unknown }; usage?: unknown };
       try {
         parsed = JSON.parse(data) as typeof parsed;
       } catch {
@@ -582,8 +681,10 @@ export class ResponseOpener {
       if (this.complete) throw new Error('Worker response continued after its end marker');
       if (envelope.seq !== this.seq || typeof envelope.ct !== 'string') throw new Error('Worker response events are out of order');
       const end = envelope.end === true;
-      const key = this.seq === 0 ? this.keyFor(envelope.salt) : this.key!;
-      const plaintext = open(key, this.seq, responseAad(this.seq, end), Buffer.from(envelope.ct, 'base64')).toString('utf-8');
+      const named = this.seq === 0 ? this.keyFor(envelope.worker, envelope.salt) : { key: this.key!, worker: this.answeredBy! };
+      const plaintext = open(named.key, this.seq, responseAad(this.seq, end), Buffer.from(envelope.ct, 'base64')).toString('utf-8');
+      this.key = named.key;
+      this.answeredBy = named.worker;
       this.seq++;
       if (end) {
         this.complete = true;
