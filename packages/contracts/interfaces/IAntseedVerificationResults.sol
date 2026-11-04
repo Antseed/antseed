@@ -24,7 +24,9 @@ import { IAntseedEmissionsGate } from "./IAntseedEmissionsGate.sol";
 ///      `credit`; once an epoch is final an auditor claims it with `claimAuditorReward`, one audit
 ///      and epoch per call: `gross = auditBudget * credits / auditCredits`, of which it receives at
 ///      most `auditBudget * maxAuditorShareBps / BPS`; the rest goes to the emissions reserve in
-///      the same claim. Audit shares are checkpointed per epoch: a change applies from the next
+///      the same claim. Budget nobody can claim (an epoch without credits, a share given to no
+///      audit, a reward never claimed) stays unminted: the bucket is fixed, so there is no dynamic
+///      remainder to sweep. Audit shares are checkpointed per epoch: a change applies from the next
 ///      epoch, so a running or finished epoch's split never moves.
 interface IAntseedVerificationResults {
     enum Verdict {

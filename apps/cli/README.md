@@ -778,10 +778,12 @@ or skipped result in the same words as AntScan. `verifier overview [--epoch <n>]
 
 `verifier rewards --epochs <list>` shows the credits earned per epoch and claims
 the auditor share once an epoch is final; the current epoch shows 0 until it ends.
-Rewards are claimed on `AntseedVerificationResults` from the KBF source's share of
-the verification bucket (`claimRewards(kbf, epochs)`); the command prints both
-addresses, whether KBF rewards are on yet, KBF's share and the per-auditor cap
-(20% by default; the rest of a capped reward goes to the emissions reserve).
+Rewards are claimed on `AntseedVerificationResults` from the KBF audit's share of
+the verification bucket, one transaction per epoch
+(`claimAuditorReward(kbf, epoch)`); the command prints both addresses, whether
+KBF rewards are on yet, KBF's share and the per-auditor cap (20% by default; the
+rest of a capped reward goes to the emissions reserve in the same claim). Credits
+per audit are set by the KBF owner (one by default, optionally per model).
 
 `verifier profile` shows your public auditor profile on the KBF audits contract;
 `--name`, `--icon` and `--url` set it (each flag replaces its field, `""` clears

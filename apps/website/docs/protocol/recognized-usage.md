@@ -146,7 +146,7 @@ and `dynamicUsageConfigAt(epoch)` on the reward contracts.
 
 ### Destinations
 
-USDC protocol fees go to the protocol reserve configured in AntseedRegistry. Team emissions go to the registry's team wallet, reserve emissions to the emissions reserve, and the verification allocation to its controller. See [Contract addresses](/docs/contracts) for the protocol reserve. For pre-migration claims and reserve and team flushes, see [Legacy emissions](/docs/legacy-emissions#escrow-and-flushes).
+USDC protocol fees go to the protocol reserve configured in AntseedRegistry. Team emissions go to the registry's team wallet, reserve emissions to the emissions reserve, and the verification allocation to its controller, the verification results layer, which pays auditors by credits (see [Model verification](/docs/protocol/model-verification)); what its auditors never claim stays unminted and is not swept into a remainder. See [Contract addresses](/docs/contracts) for the protocol reserve. For pre-migration claims and reserve and team flushes, see [Legacy emissions](/docs/legacy-emissions#escrow-and-flushes).
 
 ### Unallocated emissions and burns
 
@@ -169,7 +169,8 @@ to the emissions reserve. If the remainder is only 100 ANTS, all 100 is burned;
 30% is a ceiling, not a guaranteed burn every epoch.
 
 Settlement is explicit: after the epoch ends, anyone can call
-`settleEpochRemainder(epoch)` on each reward controller with a remainder. An epoch
+`settleEpochRemainder(epoch)` on each seller-pool or usage reward controller with a
+remainder (the verification results layer has no remainder settlement). An epoch
 ending does not itself execute a burn transaction. The gate's
 `epochBurnedAmount(epoch)` records the emission amount burned for that epoch;
 remainder-settlement events report both the burned and reserve amounts.
