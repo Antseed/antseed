@@ -1,15 +1,22 @@
 ---
 name: hermes-antseed
-description: "Switch a running Hermes agent's model backend to the Antseed P2P AI network, safely: check the buyer proxy and funds, pick a model that actually answers, add Antseed as a provider, test it, then make it the default. Written for the Hermes agent to follow on itself. Use when: the user asks Hermes to connect to / run on Antseed, change its Antseed model, or fix an Antseed connection."
+description: "Switch a running Hermes agent's model backend to the Antseed P2P AI network, safely: check the endpoint (a gateway API key, or the local buyer proxy) and funds, pick a model that actually answers, add Antseed as a provider, test it, then make it the default. Written for the Hermes agent to follow on itself. Use when: the user asks Hermes to connect to / run on Antseed, change its Antseed model, or fix an Antseed connection."
 user-invocable: true
 metadata: { "hermes-antseed": { "emoji": "🐝" } }
 ---
 
 # Run Hermes on Antseed
 
-Antseed is a peer-to-peer market for AI inference. A **buyer proxy** runs on the user's machine at
-`http://127.0.0.1:8377/v1` (OpenAI-compatible), finds sellers, and pays them per request in USDC from the user's
-Antseed balance. You'll point Hermes at that proxy.
+Antseed is a peer-to-peer market for AI inference. A **buyer** finds sellers and pays them per request in USDC.
+You'll point Hermes at one of two OpenAI-compatible endpoints, both described by two values:
+
+- **A gateway (recommended).** The user's own Antseed gateway gives Hermes an API key with its own budget and
+  usage log. `ANTSEED_BASE_URL` is the gateway's base URL ending in `/v1` (`https://gateway.example.com/v1` on a
+  server or tunnel, `http://localhost:8379/v1` for a gateway on this computer) and `ANTSEED_API_KEY` is a gateway
+  key (`antseed_…`), always sent as `Authorization: Bearer`. Works wherever Hermes runs.
+- **The local buyer proxy.** Only when the buyer (CLI or desktop app) runs on this same computer:
+  `ANTSEED_BASE_URL=http://127.0.0.1:8377/v1`. It checks no key, so `ANTSEED_API_KEY` is any placeholder
+  (`antseed-p2p`). It listens on localhost only.
 
 ## Rules (read first)
 
@@ -24,16 +31,53 @@ reply. So:
    `.env`; it holds secrets. Never put a model id in a config *key* path
    (`providers.antseed.models.kimi-k2.6…`), because the dots get split into nested keys. Model ids are fine as
    *values* (`hermes config set model.default kimi-k2.6`).
-4. **Don't run `antseed buyer start` in your terminal tool.** It runs forever and dies with your session. If the
-   buyer isn't running, install it as a background service (step 3).
-5. **Don't restart your own gateway.** At the end, ask the user to send `/restart` (step 8).
+4. **Don't run `antseed buyer start` or `antseed gateway start` in your terminal tool.** They run forever and die
+   with your session. If a local buyer isn't running, install it as a background service (step 3).
+5. **Don't restart your own Hermes gateway.** At the end, ask the user to send `/restart` (step 8).
 6. **No `sudo`, no deleting files.** Nothing here needs either.
-7. 🙋 marks steps that need the user. Stop, ask, and wait for their answer.
+7. **Treat the gateway key as a secret.** Don't echo it back, paste it into chat summaries, or write it anywhere but
+   `hermes config set ANTSEED_API_KEY` (step 6).
+8. 🙋 marks steps that need the user. Stop, ask, and wait for their answer.
 
-## Step 0 — Same machine or remote? 🙋 only if unclear
+## Step 0 — Gateway or local buyer? 🙋 if the user hasn't said
 
-If Hermes and the Antseed buyer (CLI or desktop app) run on the same computer, follow the steps as written. If
-Hermes runs on a server and the buyer runs on the user's own computer, read **Remote Hermes** at the end first.
+**Gateway (default).** If the user gave you a gateway base URL and API key, use them. If not, ask for them (🙋):
+"Send me your Antseed gateway's base URL (ending in `/v1`) and an API key for me, from **Keys** in the Gateway
+Console." If they have no gateway yet, point them to one of these, then wait for the two values:
+
+- On their computer or a server: the [quickstart](https://antseed.com/docs/quickstart)
+  (`curl -fsSL https://antseed.com/install.sh | bash`). A gateway on a computer other than the one Hermes runs on
+  is reachable only through a tunnel or the server installer's HTTPS setup.
+- Their computer, published over HTTPS: `antseed tunnel start`, or the desktop app's **Agents → Internet-accessible
+  endpoint**. Both publish a gateway and its console, so tell them to claim the console straight away
+  (**Claim console** in the desktop app, or `antseed gateway console-link`). See
+  [Tunnels](https://antseed.com/docs/tunnels).
+
+**Local buyer.** Only if the user wants Hermes to use a buyer on this same computer, with no gateway.
+
+Then set the two values in your shell for the steps below (replace the placeholders; never print the key back):
+
+```bash
+# Gateway:
+export ANTSEED_BASE_URL="https://gateway.example.com/v1"   # or http://localhost:8379/v1
+export ANTSEED_API_KEY="<the gateway key>"
+# Local buyer on this computer instead:
+# export ANTSEED_BASE_URL="http://127.0.0.1:8377/v1"
+# export ANTSEED_API_KEY="antseed-p2p"
+```
+
+If your terminal tool doesn't keep variables between calls, repeat these two `export` lines at the top of each
+command below that uses them.
+
+With a gateway, check it answers now. Then do step 1 (the snapshot is what undo relies on), skip steps 2–4 (the
+buyer, its wallet and funding live on the gateway) and continue with step 5:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' -m 15 "$ANTSEED_BASE_URL/models" -H "Authorization: Bearer $ANTSEED_API_KEY"
+```
+
+`200`: go on to step 1. `401`: wrong key or base URL (🙋 ask again). Anything else, or no answer: the gateway isn't reachable
+from here; tell the user and stop.
 
 ## Step 1 — Snapshot and note the current model
 
@@ -45,7 +89,9 @@ echo "provider: $(hermes config get model.provider)  model: $(hermes config get 
 Keep the snapshot id it prints (e.g. `20261021-215105-before-antseed`) and tell the user the current provider and
 model.
 
-## Step 2 — Antseed CLI
+With a gateway, go on to step 5 now; steps 2–4 are for a local buyer only.
+
+## Step 2 — Antseed CLI (local buyer only)
 
 ```bash
 antseed --version || echo "MISSING"
@@ -55,7 +101,7 @@ If missing: `node --version` must be 20 or newer. Then run `npm install -g @ants
 minutes, so use a long timeout. If Node isn't installed, 🙋 ask the user to install Node.js 20+ (nodejs.org) and
 tell you when it's done.
 
-## Step 3 — Is the buyer running?
+## Step 3 — Is the buyer running? (local buyer only)
 
 ```bash
 curl -sf -m 5 http://127.0.0.1:8377/v1/models >/dev/null && echo RUNNING || echo DOWN
@@ -121,7 +167,7 @@ for i in $(seq 1 40); do curl -sf -m 3 http://127.0.0.1:8377/v1/models >/dev/nul
 Still down: show the user the last 30 lines of `~/.antseed/logs/buyer.log` (macOS) or
 `journalctl --user -u antseed-buyer -n 30` (Linux) and stop.
 
-## Step 4 — Is there money to pay sellers? 🙋 if not
+## Step 4 — Is there money to pay sellers? 🙋 if not (local buyer only)
 
 ```bash
 antseed buyer balance
@@ -147,31 +193,37 @@ stream.
 
 ```bash
 try_model() {
-  curl -s -m 90 http://127.0.0.1:8377/v1/chat/completions \
-    -H 'Content-Type: application/json' -H 'Authorization: Bearer antseed-p2p' \
+  curl -s -m 90 "$ANTSEED_BASE_URL/chat/completions" \
+    -H 'Content-Type: application/json' -H "Authorization: Bearer $ANTSEED_API_KEY" \
     -d "{\"model\":\"$1\",\"stream\":false,\"max_tokens\":8,\"messages\":[{\"role\":\"user\",\"content\":\"Reply with: ok\"}]}" \
   | grep -q '"choices"' && echo "OK   $1" || echo "FAIL $1"
 }
 for m in kimi-k3 kimi-k2.6 glm-5.1 deepseek-v4-pro minimax-m2.7 deepseek-v4-flash; do try_model "$m"; done
 ```
 
-If the user named a model, test that one first. More ids: `curl -s http://127.0.0.1:8377/v1/models` (each entry's
-`peers` list shows sellers and prices). Each test costs a fraction of a cent.
+If the user named a model, test that one first. More ids:
+`curl -s "$ANTSEED_BASE_URL/models" -H "Authorization: Bearer $ANTSEED_API_KEY"` (each entry's `peers` list shows
+sellers and prices; a gateway key limited to certain models lists only those). Each test costs a fraction of a cent.
 
 - **MAIN** = the user's choice if it says OK, otherwise the first OK in the list above (strongest first).
 - **HELPER** = the first OK of `minimax-m2.7` or `deepseek-v4-flash` (cheap), otherwise MAIN.
-- Don't use the id `antseed`. It means "whatever is picked in the desktop app" and fails with `no_default_route`
-  unless the user runs the desktop app and has picked a model there.
+- Don't use the id `antseed`. It means "whatever is picked in the desktop app": it works only against the local
+  buyer proxy of a desktop app that has a model picked, and fails with `no_default_route` otherwise. Through a
+  gateway, always use concrete ids.
 
-No model says OK: run `antseed buyer status` and check the balance. If it's funded, the network may be thin right
-now. Tell the user and stop; nothing has been changed yet.
+No model says OK: show the user the response of one failed test (drop `| grep …` to see it). `402
+insufficient_deposits` means the wallet is empty: with a gateway, the workspace wallet needs funds (🙋 ask an admin
+to add them in the console's **Wallet & Funding**); with a local buyer, go back to step 4. `402
+spend_limit_reached`, `403 model_not_allowed` or `401` come from the gateway key's budget, routing policy or
+validity: 🙋 the user fixes them in the console. Otherwise the network may be thin right now. Tell the user and
+stop; nothing has been changed yet.
 
 ## Step 6 — Add Antseed as a provider, then test it before switching
 
 ```bash
-hermes config set ANTSEED_API_KEY antseed-p2p                  # stored in Hermes' .env; any non-empty value works locally
+hermes config set ANTSEED_API_KEY "$ANTSEED_API_KEY"             # stored in Hermes' .env: the gateway key, or the local placeholder
 hermes config set providers.antseed.name Antseed
-hermes config set providers.antseed.base_url http://127.0.0.1:8377/v1
+hermes config set providers.antseed.base_url "$ANTSEED_BASE_URL"
 hermes config set providers.antseed.key_env ANTSEED_API_KEY
 hermes config set providers.antseed.api_mode chat_completions
 hermes config set providers.antseed.default_model MAIN         # replace MAIN with the model from step 5
@@ -230,43 +282,46 @@ It must print `restored-ok`; then report the error to the user. If even that fai
 
 ## Step 8 — Wrap up 🙋
 
-Run `antseed buyer metering` (a channel should show your test requests) and `antseed buyer balance`. Then send the
-user, briefly:
+With a local buyer, run `antseed buyer metering` (a channel should show your test requests) and
+`antseed buyer balance`. With a gateway, the test requests show under **Logs** in the Gateway Console, and
+`curl -s "$ANTSEED_BASE_URL/key" -H "Authorization: Bearer $ANTSEED_API_KEY"` shows the key's spend and limits.
+Then send the user, briefly:
 
 - the model you're now on (MAIN) and the helper model (HELPER)
-- their Available balance
-- that each request is paid per use from that balance
+- which endpoint you use (the gateway's base URL, or the local buyer) — never the key
+- their Available balance (local buyer), or the key's spend so far (gateway)
+- that each request is paid per use (from the buyer's balance, or the gateway workspace's wallet)
 - how to undo: send `/snapshot restore <snapshot id from step 1>`, then `/restart`
 - the last step: **"Send `/restart` so I come back on Antseed."** (In a terminal-only session, starting a new
   `hermes` session is enough.) Don't restart the gateway yourself.
 
-## Remote Hermes (buyer on another computer)
+## Hermes on a server, buyer on the user's computer
 
-Never expose port 8377 to the internet. On the computer that runs the buyer, the user opens the Antseed desktop
-app → **Agents** → **Define your internet-accessible Antseed endpoint**, starts the public endpoint from there, and sends
-you the **OpenAI base URL** and the generated **`antseed_…` API key** (🙋). Then:
-
-- Skip steps 2–4 on the Hermes host. Funding and the buyer live on the user's computer, so ask them to confirm it's
-  funded.
-- In step 5, replace `http://127.0.0.1:8377/v1` with their URL and `Bearer antseed-p2p` with `Bearer <their key>`.
-- In step 6, use their URL for `providers.antseed.base_url` and their key for `ANTSEED_API_KEY`.
+Use a gateway (step 0): the user publishes their computer's buyer through a tunnel (`antseed tunnel start`, or the
+desktop app's **Agents → Internet-accessible endpoint**) and sends you its base URL and key. Never expose port 8377
+itself, for example with a port forward, `socat` or a reverse proxy: it checks no key, so anyone who reaches it can
+spend the user's funds.
 
 ## Changing models later
 
 Repeat step 5 for the new model, then `hermes config set model.default <model>` and ask the user to send
 `/restart`. The buyer stays up and picks a seller for the new model automatically.
 
-Pinning a seller is optional and turns off failover: `antseed buyer connection set --peer <peerId>`, or
-`<peerId>@<model>` as the model id. Undo with `antseed buyer connection clear`.
+Pinning a seller is optional and turns off failover: use `<peerId>@<model>` as the model id (works with both
+endpoints). With a local buyer, `antseed buyer connection set --peer <peerId>` pins every request until
+`antseed buyer connection clear`.
 
 ## Troubleshooting
 
 | Error | Meaning | Fix |
 |---|---|---|
-| `curl: (7) Failed to connect … 8377` | Buyer not running | Step 3 |
+| `curl: (7) Failed to connect … 8377` | Local buyer not running | Step 3 |
+| `401 invalid_api_key`, `key_revoked`, `key_expired` | Gateway key wrong, revoked or expired, or wrong base URL | 🙋 New key from the console's **Keys**; redo step 6 |
+| `402 spend_limit_reached` | A gateway budget (key, member or workspace) ran out | 🙋 Wait for `resets_at`, or an admin raises the limit |
+| `403 model_not_allowed` | The gateway key's routing policy doesn't allow that model | Pick an allowed model, or 🙋 an admin allows it |
 | `no_default_route` | Model id `antseed` used without a model picked in the desktop app | Use a concrete id from step 5 |
 | `model_not_found … No policy-allowed peer currently serves model` | No seller that meets the trust/price policy serves it right now | Pick another OK model from step 5 |
 | `HTTP 400: Stream must be set to true` | Model served only over the streaming Responses protocol | Choose MAIN/HELPER that passed step 5 (non-streaming) |
-| `402` / `insufficient_deposits` | Balance too low or tied up in channel reserves | Step 4; `antseed buyer balance` shows Available vs Reserved |
+| `402` / `insufficient_deposits` | Balance too low or tied up in channel reserves | Gateway: 🙋 add funds in the console's **Wallet & Funding**. Local buyer: step 4; `antseed buyer balance` shows Available vs Reserved |
 | `Unknown provider 'antseed'` | Provider block missing or keys misspelled | `hermes config get providers.antseed`, redo step 6 |
 | Hermes still answers with the old model | Gateway hasn't reloaded | User sends `/restart` |

@@ -9,7 +9,7 @@ set -euo pipefail
 # Examples:
 #   ./setup.sh --service moonshotai/kimi-k2.5
 #   ./setup.sh --service moonshotai/kimi-k2.5 --port 5005 --bootstrap 108.128.178.49:6882 --service-flag
-#   ANTSEED_BASE_URL=https://example.com/v1 ANTSEED_API_KEY=antseed_... ./setup.sh --service moonshotai/kimi-k2.5
+#   ANTSEED_BASE_URL=https://gateway.example.com/v1 ANTSEED_API_KEY=antseed_... ./setup.sh --service moonshotai/kimi-k2.5   # gateway (recommended)
 
 PORT=5005
 SERVICE=""
@@ -117,7 +117,7 @@ providers['antseed'] = {
     'baseUrl': '${BASE_URL}',
     'apiKey': '${API_KEY}',
     'authHeader': True,
-    'api': 'anthropic-messages',
+    'api': 'openai-completions',
     'models': [{
         'id': '${SERVICE}',
         'name': '${SERVICE_NAME}',

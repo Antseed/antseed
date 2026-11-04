@@ -187,7 +187,7 @@ env_key = "ANTSEED_API_KEY"
 wire_api = "responses"
 ```
 
-To launch coding tools against Antseed with one click instead, use the [desktop app](/docs/desktop).
+Step-by-step setups for more tools (OpenCode, Pi, the Vercel AI SDK, LangChain and others) are in the [Integrations directory](/integrations); for Hermes and OpenClaw, see [Connect agents](/docs/agents). Each uses the same base URL and key. To launch coding tools against Antseed with one click instead, use the [desktop app](/docs/desktop).
 
 ## Check a key's usage and limits
 

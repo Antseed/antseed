@@ -10,8 +10,8 @@ This guide takes you from nothing to a working API request through your own Ants
 
 Pick where the gateway runs, then follow the common steps.
 
-- **On your computer**: quickest to try. Keys only work while your computer is on.
-- **On a server**: always on, reachable by your team over HTTPS.
+- **On a server** (recommended): always on, reachable over HTTPS by your team, your agents and your tools on any machine.
+- **On your computer**: quickest to try. Keys only work while your computer is on, and only on that computer unless you publish it with a [tunnel](/docs/tunnels).
 
 You can start on your computer and [move the gateway to a server](/docs/gateway/migrate) later, keeping its keys, members and wallets.
 
