@@ -30,10 +30,10 @@ function arg(name, def) {
   const i = process.argv.indexOf(`--${name}`);
   return i >= 0 ? process.argv[i + 1] : def;
 }
-function pct(arr, p) {
-  if (arr.length === 0) return null;
-  const s = [...arr].sort((a, b) => a - b);
-  return s[Math.min(s.length - 1, Math.floor((p / 100) * s.length))];
+/** Percentile lookup over an ascending sample (null when it is empty). */
+function percentile(sorted, p) {
+  if (sorted.length === 0) return null;
+  return sorted[Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length))];
 }
 const Database = createRequire(join(REPO, 'packages/node/package.json'))('better-sqlite3');
 function sqliteJson(db, sql) {
@@ -649,12 +649,13 @@ async function oneRun({ scenarioName, sc, sellerTree, buyerTree, runDir }) {
 
     // Client results.
     const ok = results.filter((r) => !r.error && !r.clientAborted);
+    const latencies = ok.map((r) => r.ms).sort((a, b) => a - b);
     const failures = {};
     for (const r of results) if (r.error) failures[r.error] = (failures[r.error] ?? 0) + 1;
     result.client = {
       total: results.length, ok: ok.length, clientAborted: results.filter((r) => r.clientAborted).length,
       failed: results.filter((r) => r.error).length, failures,
-      p50: pct(ok.map((r) => r.ms), 50), p95: pct(ok.map((r) => r.ms), 95), max: pct(ok.map((r) => r.ms), 100),
+      p50: percentile(latencies, 50), p95: percentile(latencies, 95), max: percentile(latencies, 100),
     };
     if (sc.restart && restartInfo) {
       // Failures during the restart window are expected; separate them.
