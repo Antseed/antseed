@@ -87,6 +87,58 @@ jobs:
         run: node e2e/scripts/full-payment-flow.mjs
         timeout-minutes: 15
 
+  payment-stress:
+    name: Payment stress (Base-like RPC)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'pnpm'
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Install dependencies
+        run: pnpm install
+
+      # The real CLI seller and buyer run here, so build up to the CLI.
+      - name: Build tiers 0-3 and the CLI
+        run: |
+          pnpm run build:tier0
+          pnpm run build:tier1
+          pnpm run build:tier2
+          pnpm run build:tier3
+          pnpm --filter=@antseed/cli run build
+
+      - name: Install Forge dependencies
+        run: cd packages/contracts && forge install foundry-rs/forge-std
+
+      - name: Build contracts
+        run: cd packages/contracts && forge build
+
+      - name: Run payment stress scenarios
+        run: node e2e/stress/ci.mjs --parallel 2 --out "$RUNNER_TEMP/antseed-stress"
+        timeout-minutes: 30
+
+      - name: Upload stress logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: payment-stress-logs
+          path: |
+            ${{ runner.temp }}/antseed-stress/logs
+            ${{ runner.temp }}/antseed-stress/runs/*/*.log
+            ${{ runner.temp }}/antseed-stress/runs/*/*.json
+          retention-days: 7
+
   installer-lint:
     name: Lint installer script
     runs-on: ubuntu-latest
