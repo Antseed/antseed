@@ -93,7 +93,13 @@ is append-only: the earlier records (`history/003-kbf-verification.json`,
 activation the new release's contracts replace `contracts.verificationResults`,
 `contracts.kbfAudits` and `contracts.verificationPointsPolicy` in `current.json` (the earlier
 addresses keep `deployedInRelease: false`), and `verificationConfiguration` is replaced. The SDK and
-CLI default to the new release's `kbfAudits` and `verificationResults`. The old contracts stay
+CLI default to the new release's `kbfAudits` and `verificationResults`. On Base mainnet the
+`003-verification-audits` release is deployed and active (source commit `c05e364c9`, deployer
+nonces 10,356–10,360, blocks 53,514,466–53,514,470): `AntseedVerificationResults`
+`0x139ab1722a62a23371f491220902c460E9fAeAb2`, `AntseedKbfAudits`
+`0x86B92DC48EF7c5a12de6e44409E83C8EF36657Ff`, `AntseedVerificationPointsPolicy`
+`0x4B586d4361783e9798881DC32c78Cf595a923095`, with KBF wired at 10,000 bps and auditors 1 and 2
+approved again on the new KBF contract. The old contracts stay
 on-chain unused.
 
 **Nothing carries over.** Verdicts, report tallies, credits and auditor approvals live in the old

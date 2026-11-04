@@ -640,8 +640,9 @@ results address through the KBF contract; `payments.crypto.verificationResultsAd
 overrides it. Each new verification method is its own contract next to `AntseedKbfAudits`.
 They replace the earlier single contract, `AntseedKbfVerification`, which this CLI can no
 longer read. On Base mainnet the CLI defaults to `AntseedKbfAudits`
-`0xe57aB03423A3835571F7d68AC1E23CF8a2763343` and `AntseedVerificationResults`
-`0xF2C8482aD2A348854698E93f41FE3cc32307687c`, so no configuration is needed.
+`0x86B92DC48EF7c5a12de6e44409E83C8EF36657Ff` and `AntseedVerificationResults`
+`0x139ab1722a62a23371f491220902c460E9fAeAb2` (release `003-verification-audits`), so no
+configuration is needed.
 
 The audited models are a list built into the CLI (`src/verifier/audited-models.ts`):
 each model's service id, the aliases sellers use for it, and its OpenRouter id. A

@@ -117,11 +117,12 @@ them on. Auditors claim with `antseed verifier rewards --claim` and can publish 
 icon and link with `antseed verifier profile`.
 
 These replace the single `AntseedKbfVerification` contract (migration M003) with the same
-KBF rules. The current contracts are a redeploy of the earlier `AntseedVerificationResults`
-`0xF2C8482aD2A348854698E93f41FE3cc32307687c` and `AntseedKbfAudits`
-`0xe57aB03423A3835571F7d68AC1E23CF8a2763343` pair on Base mainnet, which they are not
-compatible with; the CLI and SDK default to the new addresses once the redeploy is recorded.
-The old `AntseedKbfVerification` stays on-chain but is no longer read.
+KBF rules. On Base mainnet the current contracts are `AntseedVerificationResults`
+`0x139ab1722a62a23371f491220902c460E9fAeAb2` and `AntseedKbfAudits`
+`0x86B92DC48EF7c5a12de6e44409E83C8EF36657Ff` (release `003-verification-audits`), which the
+CLI and SDK default to. They replaced the earlier `0xF2C8482aD2A348854698E93f41FE3cc32307687c`
+and `0xe57aB03423A3835571F7d68AC1E23CF8a2763343` pair, which they are not compatible with.
+The old contracts stay on-chain but are no longer read.
 
 `AntseedVerificationResults` keeps one result per seller service (one model offer of one
 seller):

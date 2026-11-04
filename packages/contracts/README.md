@@ -803,9 +803,11 @@ Verdicts, credits and auditor approvals on the old contracts do not carry over. 
 (`AntseedVerificationResults` `0xF2C8482aD2A348854698E93f41FE3cc32307687c`, `AntseedKbfAudits`
 `0xe57aB03423A3835571F7d68AC1E23CF8a2763343`, `AntseedVerificationPointsPolicy`
 `0x5d677f5eDd69E69c664E3f7FA80f1D3DD61A2212`): the constructors, the audit setters, `record`,
-the claim path and the events changed, so M003 deploys them again as release
-`003-verification-audits` (history is append-only; the `003-verification-split` record stays). The
-SDK and CLI default to the new release's addresses once it is recorded.
+the claim path and the events changed, so M003 deployed them again as release
+`003-verification-audits` (`AntseedVerificationResults` `0x139ab1722a62a23371f491220902c460E9fAeAb2`,
+`AntseedKbfAudits` `0x86B92DC48EF7c5a12de6e44409E83C8EF36657Ff`, `AntseedVerificationPointsPolicy`
+`0x4B586d4361783e9798881DC32c78Cf595a923095`, blocks 53,514,466–53,514,470; history is append-only,
+so the `003-verification-split` record stays). The SDK and CLI default to these addresses.
 
 Administrative parameters use their contract's dedicated setters where available.
 The emissions gate's schedule constants are immutable; do not treat legacy
