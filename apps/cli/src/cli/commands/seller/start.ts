@@ -286,6 +286,16 @@ export function buildSellerRuntimeOverridesFromFlags(options: {
   return overrides
 }
 
+/** Config-key prefix of a provider plugin package. Other plugins use `OPENAI`. */
+const PROVIDER_ENV_PREFIXES: Readonly<Record<string, string>> = {
+  '@antseed/provider-local-llm': 'LOCAL_LLM',
+  '@antseed/provider-typesafe': 'TYPESAFE',
+  '@antseed/provider-venice-video': 'VENICE_VIDEO',
+  '@antseed/provider-fal-video': 'FAL_VIDEO',
+  '@antseed/provider-alibaba-video': 'ALIBABA_VIDEO',
+  '@antseed/provider-irp-router': 'IRP_ROUTER',
+}
+
 /**
  * Translate the unified `seller.providers[name]` block into the flat
  * `ANTSEED_*` env keys that provider plugins consume. Plugins continue to
@@ -360,15 +370,7 @@ export function buildSellerPluginRuntimeEnv(
     runtimeEnv['ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON'] = JSON.stringify(serviceUnitBillingModels)
   }
   const pluginPackage = resolvePluginPackage(providerCfg.plugin)
-  const envPrefix = pluginPackage === '@antseed/provider-local-llm'
-    ? 'LOCAL_LLM'
-    : pluginPackage === '@antseed/provider-typesafe'
-      ? 'TYPESAFE'
-      : pluginPackage === '@antseed/provider-venice-video' ? 'VENICE_VIDEO'
-      : pluginPackage === '@antseed/provider-fal-video' ? 'FAL_VIDEO'
-      : pluginPackage === '@antseed/provider-alibaba-video' ? 'ALIBABA_VIDEO'
-      : pluginPackage === '@antseed/provider-irp-router' ? 'IRP_ROUTER'
-      : 'OPENAI'
+  const envPrefix = PROVIDER_ENV_PREFIXES[pluginPackage] ?? 'OPENAI'
   if (providerCfg.baseUrl) {
     runtimeEnv[`${envPrefix}_BASE_URL`] = providerCfg.baseUrl
   }
