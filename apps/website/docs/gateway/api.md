@@ -73,7 +73,8 @@ A router counts as a model in the key's policy: a key limited to certain models 
 | `POST` | `/v1/messages` | Anthropic-compatible messages |
 | `POST` | `/v1/messages/count_tokens` | Anthropic-compatible token count. Free. |
 | `POST` | `/v1/images/generations` | Image generation |
-| `POST` | `/v1/images/edits` | Image editing |
+| `POST` | `/v1/images/edits` | Image editing, one or more images |
+| `POST` | `/v1/audio/speech` | Text to speech; returns the audio file |
 | `POST` | `/api/v1/video/queue`, `/api/v1/video/retrieve` | Venice-format video jobs |
 | `POST` | `/fal/v1/video/queue`, `/fal/v1/video/retrieve` | fal-format video jobs, with the fal endpoint id as `model` |
 | `GET` | `/v1/key` | Usage and limits of the calling key |
@@ -96,6 +97,18 @@ curl https://gateway.example.com/fal/v1/video/retrieve \
 ```
 
 Retrieve goes to the seller that accepted the job. The video is paid once, on the retrieve that delivers the MP4, and that spend counts against the key's limits. See [Video jobs](/docs/api#video-jobs) for the request fields. Video edits send the source video as `video_url` (inline, up to 64 MiB per request, or a public `https` URL) with `duration` set to its length in whole seconds; see [Edit a video](/docs/api#edit-a-video).
+
+Text to speech uses the OpenAI speech API. List speech models and their voices with `GET /v1/models?type=speech`:
+
+```bash
+curl https://gateway.example.com/v1/audio/speech \
+  -H "Authorization: Bearer $ANTSEED_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"<peerId>@tts-kokoro","input":"Hello from Antseed.","voice":"af_sky"}' \
+  -o hello.mp3
+```
+
+It is charged per character of `input`, only when audio comes back, and counts against the key's limits like any other spend. See [Text to speech](/docs/api#text-to-speech) and [Edit images](/docs/api#edit-images).
 
 To attribute requests to your own end users, send the OpenAI-style `user` field in the body, or an `x-antseed-end-user` header. The gateway records it in the request log and does not forward the header.
 
@@ -187,7 +200,7 @@ env_key = "ANTSEED_API_KEY"
 wire_api = "responses"
 ```
 
-To launch coding tools against Antseed with one click instead, use the [desktop app](/docs/desktop).
+Step-by-step setups for more tools (OpenCode, Pi, the Vercel AI SDK, LangChain and others) are in the [Integrations directory](/integrations); for Hermes and OpenClaw, see [Connect agents](/docs/agents). Each uses the same base URL and key. To launch coding tools against Antseed with one click instead, use the [desktop app](/docs/desktop).
 
 ## Check a key's usage and limits
 

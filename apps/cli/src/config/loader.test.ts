@@ -124,6 +124,32 @@ test('loadConfig rejects invalid model routing peer ids', async () => {
   );
 });
 
+test('loadConfig keeps imageEditModel only on Venice openai providers', async () => {
+  const sellerWith = (plugin: string, baseUrl?: string) => JSON.stringify({
+    seller: {
+      providers: {
+        images: {
+          plugin,
+          ...(baseUrl ? { baseUrl } : {}),
+          services: { 'cover-art': { upstreamModel: 'qwen-image', imageEditModel: ' qwen-edit ' } },
+        },
+      },
+    },
+  });
+  await withTempConfig(sellerWith('openai', 'https://api.venice.ai/api'), async (configPath) => {
+    const config = await loadConfig(configPath);
+    assert.equal(config.seller.providers['images']?.services['cover-art']?.imageEditModel, 'qwen-edit');
+  });
+  for (const [plugin, baseUrl] of [['openai', 'https://api.openai.com'], ['openai', undefined], ['anthropic', 'https://api.venice.ai/api']] as const) {
+    await withTempConfig(sellerWith(plugin, baseUrl), async (configPath) => {
+      await assert.rejects(
+        () => loadConfig(configPath),
+        /images\.services\.cover-art\.imageEditModel requires the openai plugin with a Venice baseUrl/,
+      );
+    });
+  }
+});
+
 test('loadConfig reads nested seller.providers[name].services[id] shape', async () => {
   await withTempConfig(
     JSON.stringify({

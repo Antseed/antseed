@@ -62,6 +62,32 @@ it('derives each model\'s queue fields from Venice constraints and the announced
   expect(veniceInputParameters(undefined)).toBeNull();
 });
 
+it('announces audio_url for models that take an audio input, following the announced inputs', () => {
+  const lipSync = veniceModel('seedance-2-5-reference-to-video-basic', {
+    model_type: 'image-to-video', resolutions: ['1080p', '720p'], aspect_ratios: ['16:9'], audio_configurable: true, audio_input: true,
+  });
+  // Inputs not announced: Venice's audio_input decides.
+  expect(veniceInputParameters(lipSync)).toEqual(['aspect_ratio', 'audio', 'audio_url', 'duration', 'image_url', 'prompt', 'resolution']);
+  // Announced inputs are the complete list: audio only when listed.
+  expect(veniceInputParameters(lipSync, ['first_frame', 'reference_image', 'audio']))
+    .toEqual(['aspect_ratio', 'audio', 'audio_url', 'duration', 'image_url', 'prompt', 'reference_image_urls', 'resolution']);
+  expect(veniceInputParameters(lipSync, ['first_frame'])).toEqual(['aspect_ratio', 'audio', 'duration', 'image_url', 'prompt', 'resolution']);
+  const silent = veniceModel('kling', { model_type: 'image-to-video', resolutions: ['720p'], aspect_ratios: [], audio_input: false });
+  expect(veniceInputParameters(silent)).toEqual(['duration', 'image_url', 'prompt', 'resolution']);
+});
+
+it('relays the audio_url of a lip-synced video create to Venice unchanged', async () => {
+  const fetchMock = vi.fn().mockResolvedValue(Response.json({ model: 'wan-2.5', queue_id: 'queue-9' }));
+  vi.stubGlobal('fetch', fetchMock);
+  const provider = plugin.createProvider(config) as Provider;
+  const body = { model: 'wan-2.5', prompt: 'she says hello', duration: '5s', image_url: 'https://example.com/face.png', audio_url: 'https://example.com/hello.mp3' };
+  const response = await provider.handleRequest(request('/api/v1/video/queue', body));
+  expect(response.statusCode).toBe(200);
+  const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+  expect(url).toBe('https://api.venice.ai/api/v1/video/queue');
+  expect(JSON.parse(Buffer.from(init.body as Uint8Array).toString())).toEqual(body);
+});
+
 it('announces queue fields from the Venice model list and keeps configured ones', async () => {
   const fetchMock = vi.fn().mockResolvedValue(Response.json({ data: [
     veniceModel('wan-2.5', { model_type: 'image-to-video', resolutions: ['720p'], aspect_ratios: [], audio_configurable: false }),
@@ -312,6 +338,7 @@ describe('video-to-video models', () => {
   const WAN = veniceModel('wan-2-7-video-to-video', { model_type: 'video', aspect_ratios: [], resolutions: ['1080p', '720p'], durations: ['Auto'], audio_configurable: false, video_input: true });
   const GROK = veniceModel('grok-imagine-video-to-video-private', { model_type: 'video', aspect_ratios: [], resolutions: ['480p', '720p'], durations: ['5s', '10s', '15s'], video_input: true });
   const TEXT = veniceModel('wan-2.5-preview-text-to-video', { model_type: 'text-to-video', aspect_ratios: ['16:9'], resolutions: ['720p'], durations: ['5s'] });
+  const LIPSYNC = veniceModel('lipsync-video-to-video', { model_type: 'video', aspect_ratios: [], resolutions: [], durations: ['Auto'], audio_configurable: false, video_input: true, audio_input: true });
   // Venice's validation answers to an empty `reference_image_urls` (captured 2026-10-23).
   const referenceAnswer = (model: string) => Response.json({ error: 'Invalid request parameters', details: {
     _errors: [], duration: { _errors: ['duration must not exceed 300 seconds for upscale models'] },
@@ -326,7 +353,7 @@ describe('video-to-video models', () => {
   });
   const ready = async (model: { id: string }, capabilities?: object) => {
     const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
-      if (String(url).endsWith('/api/v1/models?type=video')) return Response.json({ data: [RECAST, MOTION, WAN, GROK, TEXT] });
+      if (String(url).endsWith('/api/v1/models?type=video')) return Response.json({ data: [RECAST, MOTION, WAN, GROK, TEXT, LIPSYNC] });
       if (String(url).endsWith('/api/v1/video/queue')) {
         const body = JSON.parse(String(init?.body));
         return body.duration === '999s' ? referenceAnswer(body.model) : Response.json({ model: body.model, queue_id: 'queue-1' });
@@ -376,6 +403,15 @@ describe('video-to-video models', () => {
       .toEqual({ inputs: ['video', 'reference_image'], requiredInputs: ['video'], durationsSeconds: [5], resolutions: ['768P'] });
   });
 
+  it('announces audio_url for an edit model Venice says takes audio, unless inputs are configured', async () => {
+    const lipsync = (await ready(LIPSYNC)).provider.serviceCapabilities?.[LIPSYNC.id];
+    expect(lipsync?.video?.inputs).toEqual(['video', 'reference_image', 'audio']);
+    expect(lipsync?.supportedParameters).toContain('audio_url');
+    const configured = (await ready(LIPSYNC, { video: { inputs: ['video'] } })).provider.serviceCapabilities?.[LIPSYNC.id];
+    expect(configured?.video?.inputs).toEqual(['video', 'reference_image']);
+    expect(configured?.supportedParameters).not.toContain('audio_url');
+  });
+
   it('forwards a create as sent', async () => {
     const { provider, fetchMock } = await ready(RECAST);
     const body = { video_url: sourceMp4(10_400), reference_image_urls: ['data:image/png;base64,AAAA'], resolution: '768P', duration: '10s' };
@@ -401,6 +437,14 @@ describe('video-to-video models', () => {
     expect(parse((await grokCreate({ video_url: sourceMp4(5_400), duration: '10s' })).body).error).toMatchObject({ code: 'invalid_video_duration', message: expect.stringContaining(': 5') });
     expect((await grokCreate({ video_url: 'https://example.com/source.mp4', duration: '5s' })).statusCode).toBe(422);
     expect((await grokCreate({ video_url: sourceMp4(5_400), duration: '5s' })).statusCode).toBe(200);
+  });
+
+  it('refuses the same edits before payment', async () => {
+    const { provider } = await ready(WAN);
+    expect(provider.checkRequest!(create(WAN.id, { prompt: 'snow', video_url: sourceMp4(12_400), duration: '3s' })))
+      .toEqual({ statusCode: 422, code: 'invalid_video_duration', message: 'duration must be the source length in whole seconds, rounded down: 12' });
+    expect(provider.checkRequest!(create(WAN.id, { prompt: 'snow', video_url: sourceMp4(12_400), duration: '12s' }))).toBeNull();
+    expect(provider.checkRequest!(create(WAN.id, { prompt: 'snow', duration: '5s' }))).toBeNull();
   });
 
   it('turns Venice\'s HTML 413 into JSON', async () => {

@@ -165,6 +165,26 @@ test('parseModelTypeFilter maps query values', () => {
   assert.equal(parseModelTypeFilter('Image'), 'image')
   assert.equal(parseModelTypeFilter('text'), 'text')
   assert.equal(parseModelTypeFilter('audio'), 'invalid')
+  assert.equal(parseModelTypeFilter('speech'), 'speech')
+  assert.equal(parseModelTypeFilter('TTS'), 'speech')
+})
+
+test('lists speech models with the voices every offer accepts', () => {
+  const speechSeller = (peerId: string, voices: string[]): PeerInfo => ({
+    peerId,
+    lastSeen: NOW_MS,
+    providers: ['openai'],
+    providerServiceApiProtocols: { openai: { services: { 'tts-kokoro': ['openai-audio-speech'] } } },
+    providerServiceCapabilities: { openai: { services: { 'tts-kokoro': { inputs: ['text'], outputs: ['audio'], speech: { voices } } } } },
+    providerServiceUnitBillingModels: { openai: { services: { 'tts-kokoro': { 'openai-audio-speech': { version: 1, components: [{ unit: 'input_characters', priceUsd: 0.0000035 }] } } } } },
+  } as unknown as PeerInfo)
+  const [model] = buildNetworkModels([speechSeller('a'.repeat(40), ['af_sky', 'am_adam']), speechSeller('b'.repeat(40), ['af_sky'])], NOW_MS)
+  assert.ok(model)
+  assert.equal(model.type, 'speech')
+  assert.deepEqual(model.supported_protocols, ['openai-audio-speech'])
+  assert.deepEqual(model.voices, ['af_sky'])
+  assert.deepEqual(model.peers.map((peer) => peer.capabilities?.speech?.voices), [['af_sky', 'am_adam'], ['af_sky']])
+  assert.equal(model.peers[0]!.inputUsdPerMillion, undefined)
 })
 
 test('aggregates one entry per model id across peers, case-insensitively', () => {

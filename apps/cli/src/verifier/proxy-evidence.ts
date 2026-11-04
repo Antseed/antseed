@@ -13,6 +13,7 @@ import {
 import type { StoredResponseAuth } from '@antseed/node'
 import type { VerificationOutcomeReasonV1 } from './outcome-reason.js'
 import { safeServiceSlug } from './slug.js'
+import type { ThinkingDiscoveryAttemptV1, ThinkingDiscoveryStrategy } from './thinking-suppression.js'
 
 export type ExportedResponseAuthRecord = Omit<StoredResponseAuth, 'requestPreimage' | 'responsePreimage'>
 
@@ -75,6 +76,31 @@ export interface ProxyAuditEvidenceExchangeV1 extends ProxyAuditEvidenceExchange
   }
 }
 
+/** One discovery request sent to the seller, with every try's request ID and cost. */
+export interface SellerThinkingDiscoveryAttemptV1 extends ThinkingDiscoveryAttemptV1 {
+  requestIds: string[]
+  attemptCosts: ProxyAuditExchangeCostV1[]
+}
+
+/**
+ * How hidden reasoning is turned off for this seller. As in the KBF reference code
+ * (`discover_thinking_strategy`, run for every endpoint it queries), each strategy is tried on the
+ * seller with a fixed ten-question batch; the first giving at least 5 answers with zero reasoning
+ * tokens is used (`bare` may think), else `bare-expanded` with 50x the token budget.
+ */
+export interface SellerThinkingDiscoveryV1 {
+  method: 'kbf-reference-code-2026-09-30'
+  /** Strategy this audit's batches use; null when discovery found none and the reference's suppression was sent. */
+  strategy: ThinkingDiscoveryStrategy | null
+  /** `max_tokens` of each batch request. */
+  maxTokens: number
+  attempts: SellerThinkingDiscoveryAttemptV1[]
+  /** Why discovery found no strategy (strategy is then null). */
+  failure?: string
+  /** An earlier audit of this seller and service in the same run discovered it; its cost is counted there. */
+  reused?: true
+}
+
 export interface ProxyAuditExchangeCostV1 {
   inputTokens: number
   outputTokens: number
@@ -125,6 +151,7 @@ export interface ProxyAuditSkipEvidenceV1 {
     referenceId: string
     referenceModel: string
   }
+  sellerThinking?: SellerThinkingDiscoveryV1
   exchange: ProxyAuditEvidenceExchangeV1
   result: {
     status: 'SKIPPED'
@@ -166,6 +193,8 @@ export interface ProxyAuditEvidenceV1 {
     }
     probes: KbfProbe[]
   }
+  /** Absent on audits that sent the reference's thinking suppression without asking the seller. */
+  sellerThinking?: SellerThinkingDiscoveryV1
   exchanges: ProxyAuditEvidenceExchangeV1[]
   resume?: {
     parentAuditId: string
@@ -232,14 +261,16 @@ export function addAuditCostSummaries(...summaries: AuditCostSummaryV1[]): Audit
 export function summarizeAuditExchangeCosts(
   exchanges: ProxyAuditEvidenceExchangeV1[],
 ): AuditCostSummaryV1 {
-  const priced = exchanges.flatMap((exchange) => exchange.attemptCosts ?? (exchange.cost ? [exchange.cost] : []))
+  const costsByExchange = exchanges.map((exchange) => exchange.attemptCosts ?? (exchange.cost ? [exchange.cost] : []))
+  const priced = costsByExchange.flat()
   return {
     inputTokens: priced.reduce((total, cost) => total + cost.inputTokens, 0),
     outputTokens: priced.reduce((total, cost) => total + cost.outputTokens, 0),
     totalTokens: priced.reduce((total, cost) => total + cost.totalTokens, 0),
     estimatedCostUsd: priced.reduce((total, cost) => total + cost.estimatedCostUsd, 0),
-    pricedExchangeCount: priced.length,
-    missingCostExchangeCount: exchanges.length - priced.length,
+    // One exchange can carry several priced attempts (retries), so count exchanges, not attempts.
+    pricedExchangeCount: costsByExchange.filter((costs) => costs.length > 0).length,
+    missingCostExchangeCount: costsByExchange.filter((costs) => costs.length === 0).length,
   }
 }
 

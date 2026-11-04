@@ -25,6 +25,8 @@ The rest of this page explains what these commands do.
 
 1. **Reference banks.** For each model, the auditor asks the genuine model short questions with exact answers. It keeps the ones it answers consistently and that cheaper look-alike models get wrong (see [Reference banks](#reference-banks)).
 2. **Questions.** `verifier run` asks each seller a fresh set of those questions. These are normal paid requests, and the seller must sign every response.
+
+   Before the questions, the auditor works out how to turn off the seller's hidden reasoning ("thinking"), the way the KBF reference code does for every endpoint it checks. It sends a fixed batch of ten easy questions with each setting in turn: `reasoning: {effort: "none"}`, `reasoning: {effort: "minimal"}`, `thinking: {type: "disabled"}`, `enable_thinking: false`, a `<think></think>` prefill, then nothing. It uses the first setting that gets at least 5 answers with no reasoning tokens. If the seller keeps thinking whatever it is sent, its questions go out with 50 times the token budget (40,000 tokens per request), so it has room to think and still answer. This is worked out once per seller and model in each run; the requests and their cost are part of the audit's evidence (`sellerThinking`). Text inside `<think>…</think>` is not read as an answer.
 3. **Verdict.** The seller's answers are compared with the genuine ones:
 
 | Verdict | Meaning |
@@ -77,7 +79,7 @@ Every seller your buyer has found that offers the model. A seller is skipped whe
 | `missing_response_auth` | It doesn't sign its responses |
 | `reputation_below_minimum` | Its trust score is below `buyer.minPeerReputation` |
 | `price_above_reference` | It charges more than the model's upstream price |
-| `policy_rejected` | Its pricing couldn't be read |
+| `policy_rejected` | Its price for the model couldn't be read, or your buyer would refuse it (for example cached input priced above input) |
 
 ### Your buyer's price cap
 
@@ -187,9 +189,9 @@ Each result is a report. The contract records it as the seller service's verdict
 | `SAME` | 1 |
 | `DIFF` | 2 |
 | `UNDETERMINED` | 1 |
-| `SAME` or `UNDETERMINED` replacing a `DIFF` that still counts | 2 |
+| `SAME` or `UNDETERMINED` replacing a `DIFF` that still counts | `diffReplacementReports`: 1 by default |
 
-So one auditor's `SAME` verifies a seller right away, but one auditor alone can neither mark a seller `DIFF` nor clear a `DIFF` two auditors agreed on. Only reports made after a `DIFF` was confirmed count toward clearing it, and only reports made after it was cleared count toward giving it again. While a `DIFF` waits for its second auditor, the seller keeps its current verdict. Reports count only in the epoch they were made in; a recorded verdict counts for that epoch and the next, like every verdict. Your own report never confirms itself: submitting the same result again adds nothing. When an auditor is revoked, every report still waiting for a second auditor starts over, so a revoked auditor's report never counts; verdicts already recorded stay. The contract owner can change the numbers.
+So one auditor's `SAME` verifies a seller right away, and one auditor alone cannot mark a seller `DIFF`. Clearing a recorded `DIFF` takes at least `diffReplacementReports` reports of the new result, which is 1 by default (and on Base mainnet): one auditor's `SAME` or `UNDETERMINED` clears it. The owner can raise it, e.g. to 2, so one auditor alone cannot clear a `DIFF` two auditors agreed on. Only reports made after a `DIFF` was confirmed count toward clearing it, and only reports made after it was cleared count toward giving it again. While a `DIFF` waits for its second auditor, the seller keeps its current verdict. Reports count only in the epoch they were made in; a recorded verdict counts for that epoch and the next, like every verdict. Your own report never confirms itself: submitting the same result again adds nothing. When an auditor is revoked, every report still waiting for a second auditor starts over, so a revoked auditor's report never counts; verdicts already recorded stay. The contract owner can change the numbers.
 
 `verifier run` confirms automatically. Before it plans the run, it reads this epoch's reports that still need another auditor, and audits the sellers it is responsible for: those where it is the model's confirmer, or the next auditor in the rotation who hasn't reported yet. From halfway through the epoch, any auditor who hasn't reported on a waiting result picks it up. This includes models outside your share: a model you have no bank for gets one built first, the same way as for your own models. Your audit is a normal audit on your own questions. It can confirm the report or disagree with it, and either way it earns credit like any other audit. `--no-confirm` skips these sellers, and `verifier run <model>` confirms only that model's reports. If your audit of a `DIFF` waiting for you ends `UNDETERMINED` because the seller failed (unreachable, too slow, bad answers), it isn't submitted yet, since it would replace the waiting `DIFF`: the seller is audited again at least 10 minutes later, up to 3 attempts in the epoch, and only the last attempt's `UNDETERMINED` is submitted. `submit` lists such a seller as held. A close call that stays undecided after its extra questions is submitted at once. Confirmations you can't audit now (the seller no longer advertises the service, or is skipped) stay waiting, and `verifier run` says why. With fewer approved auditors than a `DIFF` needs, no `DIFF` can be recorded; `verifier run` warns about it.
 
@@ -216,10 +218,12 @@ Every tick runs `verifier run` (your models, plus the confirmations you're respo
 Run the same `antseed verifier run` command again; it continues the epoch. It first prints a plan built from the epoch's earlier runs:
 
 - **Finished:** SAME or DIFF. Not asked again.
-- **Retry, our side:** our buyer refused the seller, a payment channel timed out, the deposit or a probe bank was missing, or the seller had already seen too much of the bank (`BANK_EXHAUSTED`). Retried on every run.
-- **Retry, seller or unclear:** the seller was unreachable, too slow or sent bad answers. Retried once per epoch. A retry keeps the answers the seller already gave.
+- **Retry, our side:** a payment channel timed out, the deposit or a probe bank was missing, or the seller had already seen too much of the bank (`BANK_EXHAUSTED`). Retried up to 3 times per epoch. A seller our buyer refuses is not retried, since every attempt would fail the same way. An UNDETERMINED caused on our side is never submitted: it says nothing about the seller's model.
+- **Retry, seller or unclear:** the seller was unreachable, sent no answer for 10 minutes or sent bad answers. Retried once per epoch, at least 3 hours after the audit that failed, since a seller's outage (an upstream usage limit, a failing health check) usually lasts hours; audits closer together than that count as one. A retry keeps the answers the seller already gave. An audit that failed on our side doesn't use up the seller's retry.
 - **Close call:** a close call whose extra questions couldn't be asked yet.
 - **New:** a seller or model not audited yet, or skipped earlier (for example its price was above the reference).
+
+A seller audit runs as long as the seller keeps answering: it stops when no batch is answered for `verifier.auditPeerTimeoutMs` (default 10 minutes), or after `verifier.auditPeerMaxTimeoutMs` in total (default 60 minutes). Slow reasoning models need 30 to 90 seconds per batch, so an audit of 20 batches can take half an hour. Reaching the total limit is our limit, not the seller's fault, so it doesn't use up the seller's retry.
 
 One run does this in rounds: after the first round it retries what is left (failures, close calls waiting for their extra questions) with another probe-bank budget, up to `--max-rounds` rounds (default 3). It stops early when nothing is left, a round makes no progress, or less than 45 minutes of the epoch remain.
 

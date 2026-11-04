@@ -19,7 +19,7 @@ To set one up from scratch, follow the [quickstart](/docs/quickstart). Installat
 | Where | Start it with | Good for | Limits |
 |---|---|---|---|
 | Your own computer | `antseed gateway start` | Trying it out, personal use | Keys only work while the computer is on. Other machines can't reach it, unless you listen on your network with `--host 0.0.0.0` (plain HTTP). |
-| A Linux server | The [server installer](/docs/gateway/server) | Teams, CI, hosted tools: anything that should always work | Needs a small server with systemd and, for HTTPS, a domain name. |
+| A Linux server (recommended) | The [server installer](/docs/gateway/server) | Teams, agents, CI, hosted tools, and tools on other machines: anything that should always work | Needs a small server with systemd and, for HTTPS, a domain name. |
 | Your computer, behind a tunnel | `antseed tunnel start`, or **Agents → Internet-accessible endpoint** in the desktop app | A public HTTPS address without moving anything | Keys still stop working when the computer sleeps or goes offline. See [Public tunnels](/docs/tunnels). |
 
 A tunnel also publishes the console, including the desktop app's tunnel. Claim it straight away, before anyone else can: in the desktop app, click **Claim console** in the **Internet-accessible endpoint** window; from the CLI, run `antseed gateway console-link` on the same computer and open the one-time link (see [Sign-in and access](/docs/gateway/sign-in#claim-the-console)).

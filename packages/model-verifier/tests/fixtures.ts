@@ -79,6 +79,7 @@ export class FakeEndpoint implements ModelEndpoint {
   async call(request: ModelBatchRequest): Promise<ModelCallResult> {
     const callIndex = this.requests.push(request) - 1
     if (this.fail(callIndex)) return { ok: false, status: 503, retryable: false, message: 'unavailable' }
+    if (request.user.includes('atomic number of gold')) return answerDiscovery(request)
     const lines: string[] = []
     for (const line of request.user.split('\n')) {
       const match = /^\W*Q?(\d+)\W+Probe (\d+) is/i.exec(line)
@@ -93,5 +94,19 @@ export class FakeEndpoint implements ModelEndpoint {
       finishReason: 'stop',
       raw: { request: new TextEncoder().encode(request.user), response: new TextEncoder().encode(text), status: 200 },
     }
+  }
+}
+
+/** Correct answers to the fixed thinking-discovery batch, without reasoning: a model that does not think. */
+export const DISCOVERY_ANSWERS = [78.37, 79, 299792458, 1538, 206, 12, 100, 9.81, 8, 0]
+
+export function answerDiscovery(request: ModelBatchRequest, reasoningTokens = 0): ModelCallResult {
+  const text = DISCOVERY_ANSWERS.map((value, index) => `(${index + 1}) ${value}`).join('\n')
+  const response = JSON.stringify({ choices: [{ message: { content: text } }], usage: { completion_tokens_details: { reasoning_tokens: reasoningTokens } } })
+  return {
+    ok: true,
+    text,
+    finishReason: 'stop',
+    raw: { request: new TextEncoder().encode(request.user), response: new TextEncoder().encode(response), status: 200 },
   }
 }

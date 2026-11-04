@@ -131,13 +131,15 @@ neither staging a proof nor backfilling its hashes makes it finalized.
 
 ## KBF verification policy
 
-`AntseedKbfVerificationPointsPolicy` scales seller points by the seller's on-chain
-KBF verification results: a small bonus per verified service (capped at +50% in
+`AntseedVerificationPointsPolicy` scales seller points by the seller's on-chain
+verification results: a small bonus per verified service (capped at +50% in
 total) and a penalty per service marked DIFF. Both start at 0, so points are
 unchanged until the owner turns them on. Buyer points always pass through. The
-policy only reads a KBF verification contract. KBF is one of the first
-verification methods; a later method gets its own contract and points policy.
-See [Model verification](/docs/model-verification).
+policy reads `AntseedVerificationResults`, the one contract that holds every
+verification method's verdicts, so a new method changes points without a new
+policy. KBF is the first method. It replaces `AntseedKbfVerificationPointsPolicy`,
+which read the single KBF contract and stays live on Base mainnet until the split
+contracts are deployed. See [Model verification](/docs/model-verification).
 
 ## Other policy interfaces
 

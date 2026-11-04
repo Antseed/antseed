@@ -76,9 +76,17 @@ export interface ChainConfig {
   networkStatsUrl?: string;
   /** Public REST API of the chain explorer (Antscan). Serves per-seller on-chain stats at /api/sellers. */
   explorerApiUrl?: string;
-  /** AntseedKbfVerification contract address. */
+  /**
+   * The contract auditors submit KBF audits to: `AntseedKbfAudits` (M003), which also holds the
+   * approved auditors. The results layer is discovered from it unless overridden below.
+   *
+   * Base mainnet defaults to the M003 deployment (release `003-verification-split`); the earlier
+   * `AntseedKbfVerification` it replaces has an ABI the split client cannot read.
+   */
   verificationContractAddress?: string;
-  /** Block when the verification contract was deployed. Floor for verifier event scans. */
+  /** `AntseedVerificationResults` (verdicts and verification rewards); read from `kbf.results()` when absent. */
+  verificationResultsAddress?: string;
+  /** Block when the KBF audits contract was deployed. Floor for verifier event scans. */
   verificationDeployBlock?: number;
   /** AntseedDepositRelay contract for gasless USDC sweeps from buyer hot wallets. */
   depositRelayAddress?: string;
@@ -211,6 +219,7 @@ export function resolveChainConfig(overrides?: {
   legacyEmissionsV1ContractAddress?: string;
   antsTokenAddress?: string;
   verificationContractAddress?: string;
+  verificationResultsAddress?: string;
   emissionsGateAddress?: string;
   sellerPoolsAddress?: string;
   sellerRegistryAddress?: string;
@@ -232,8 +241,16 @@ export function resolveChainConfig(overrides?: {
   const rpcOverridden = !!overrides?.rpcUrl;
   const resolvedFallbacks = overrides?.fallbackRpcUrls
     ?? (rpcOverridden ? [] : base.fallbackRpcUrls);
+  // The results address belongs to the KBF deployment it came with. A caller that points at another
+  // KBF contract without naming its results contract gets none, so readers discover it through
+  // `kbf.results()` instead of reading verdicts from an unrelated default deployment.
+  const kbfOverridden = !!overrides?.verificationContractAddress
+    && overrides.verificationContractAddress.toLowerCase() !== base.verificationContractAddress?.toLowerCase();
+  const { verificationResultsAddress: defaultResultsAddress, ...baseWithoutResults } = base;
+  const inheritedResults = kbfOverridden || !defaultResultsAddress ? {} : { verificationResultsAddress: defaultResultsAddress };
   return {
-    ...base,
+    ...baseWithoutResults,
+    ...inheritedResults,
     ...(overrides?.rpcUrl ? { rpcUrl: overrides.rpcUrl } : {}),
     ...(resolvedFallbacks !== undefined ? { fallbackRpcUrls: resolvedFallbacks } : {}),
     ...(overrides?.depositsContractAddress ? { depositsContractAddress: overrides.depositsContractAddress } : {}),
@@ -250,6 +267,9 @@ export function resolveChainConfig(overrides?: {
     ...(overrides?.antsTokenAddress ? { antsTokenAddress: overrides.antsTokenAddress } : {}),
     ...(overrides?.verificationContractAddress
       ? { verificationContractAddress: overrides.verificationContractAddress }
+      : {}),
+    ...(overrides?.verificationResultsAddress
+      ? { verificationResultsAddress: overrides.verificationResultsAddress }
       : {}),
     ...(overrides?.emissionsGateAddress ? { emissionsGateAddress: overrides.emissionsGateAddress } : {}),
     ...(overrides?.sellerPoolsAddress ? { sellerPoolsAddress: overrides.sellerPoolsAddress } : {}),

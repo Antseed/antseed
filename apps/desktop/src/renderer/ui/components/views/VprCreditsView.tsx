@@ -8,6 +8,7 @@ import { formatCompactTokens, VprCard, VprPage, VprStatRow, VprStatTile } from '
 import { BalanceSummaryCard } from './BalanceSummaryCard';
 import { FundingStatusNotice } from './FundingStatusNotice';
 import { useFundingStatus } from '../../hooks/useFundingStatus';
+import { isFundedCurrentChannel } from './vpr-activity-close';
 import { ExportSignerKeyDialog, ImportSignerKeyDialog } from './SignerKeyDialogs';
 import styles from './VprCreditsView.module.scss';
 import { recordUserAction } from '../../../modules/telemetry/actions';
@@ -29,6 +30,7 @@ export function VprCreditsView({ onSelectView }: Props) {
     evmAddress: state.creditsEvmAddress,
     operatorAddress: state.creditsOperatorAddress,
     usage: state.creditsBuyerUsage,
+    channels: state.creditsChannels,
   }), shallowEqual);
   // Local to the button: background pollers (floating pill, payment events)
   // also refresh the summary, and mirroring their in-flight state here made
@@ -121,7 +123,7 @@ export function VprCreditsView({ onSelectView }: Props) {
         <VprCard className={styles.rewardsCard}>
           <span className={styles.rewardsText}>
             <strong>Payment channels</strong>{' '}
-            {`${snap.usage?.activeChannels ?? 0} active — see settlements or close a channel.`}
+            {`${snap.channels.filter(isFundedCurrentChannel).length} active — see settlements or close a channel.`}
           </span>
           <button
             type="button"

@@ -103,6 +103,9 @@ function normalizeSellerService(value: unknown): SellerServiceConfig | null {
   if (typeof value['upstreamModel'] === 'string' && value['upstreamModel'].trim().length > 0) {
     out.upstreamModel = value['upstreamModel'].trim();
   }
+  if (typeof value['imageEditModel'] === 'string' && value['imageEditModel'].trim().length > 0) {
+    out.imageEditModel = value['imageEditModel'].trim();
+  }
   const categories = normalizeCategories(value['categories']);
   if (categories) {
     out.categories = categories;

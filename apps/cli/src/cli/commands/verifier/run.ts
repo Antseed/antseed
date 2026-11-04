@@ -55,6 +55,7 @@ import {
   loadBuyerProxySnapshot,
   readModelAuditCheckpoints,
   verifyModelTarget,
+  DEFAULT_AUDIT_MAX_TIMEOUT_MS,
   type ModelVerificationFailure,
   type ModelVerificationResumeInput,
   type ModelVerificationSkip,
@@ -72,6 +73,7 @@ import { buyerCapShortfall, describeAuditPriceCap, requiredBuyerCap, resolveAudi
 import { loadHighestEndpointPrice, loadVerifierModelCatalog } from '../../../verifier/openrouter-catalog.js'
 import {
   inspectSellerProbeCapacity,
+  missingBankReferenceExchanges,
   loadModelAuditReservation,
   reserveExtensionReference,
   reserveModelAuditReference,
@@ -88,6 +90,7 @@ import { writeEpochOverview } from '../../../verifier/epoch-overview.js'
 import {
   CONFIRMATION_ATTEMPTS,
   CONFIRMATION_RECHECK_SPACING_SECONDS,
+  sellerRetryWaitUntil,
   countPlan,
   epochCellKey,
   heldForConfirmationRecheck,
@@ -221,8 +224,8 @@ export function enrollmentRequestBudget(options: RunOptions): number | null {
 }
 
 /**
- * Reads the epoch the verification contract checks on submit (`registry.emissions()`). Without a
- * configured verification contract it falls back to the configured emissions gate.
+ * Reads the epoch the KBF audits contract checks on submit (the results layer's pinned gate). Without a
+ * configured KBF audits contract it falls back to the configured emissions gate.
  */
 export function auditEpochReader(config: AntseedConfig): OnchainEpochReader {
   let verifier: ReturnType<typeof createVerifierClient> | null = null
@@ -271,7 +274,7 @@ export function resolveAssignedAuditModels(
   return roundRobinAssignmentFor(auditor, { auditors: approvedAuditors, epoch: epoch.epoch, availableModels })
 }
 
-/** Auditors approved when the epoch started, from the verification contract's `AuditorSet` events. */
+/** Auditors approved when the epoch started, from the KBF audits contract's `AuditorSet` events. */
 export async function loadApprovedAuditors(config: AntseedConfig, dataDir: string, epoch: AuditEpochWindow): Promise<string[]> {
   const events = await loadAuditorSetEvents(createVerifierClient(config), dataDir, (message) => console.log(chalk.dim(message)))
   return approvedAuditorsAt(events, epoch.startedAt)
@@ -282,7 +285,7 @@ export async function loadApprovedAuditors(config: AntseedConfig, dataDir: strin
  * the sellers to audit per model. Confirmations rotate like the assignment
  * (`auditorRotationForModel`): the first auditor in a model's rotation that has not reported on the
  * seller confirms it, and from halfway through the epoch any auditor that has not may. Nothing when
- * the epoch is not on-chain or no verification contract is configured; a failed read is a warning,
+ * the epoch is not on-chain or no KBF audits contract is configured; a failed read is a warning,
  * not a stop.
  */
 /** A confirmation assigned to this auditor that this run does not audit, and why. */
@@ -928,6 +931,14 @@ async function runVerifierRound(
                 + `is audited again from ${new Date(recheckDueAt * 1_000).toISOString()}`)
               return []
             }
+            // A seller's outage usually lasts hours: its one retry waits instead of failing again, also
+            // when it resumes automatically from this epoch's retry cell. Only --resume-run skips it.
+            const retryDueAt = sellerRetryWaitUntil(epochCellFor(model, peer.peerId), Date.now() / 1_000, resumeOnly)
+            if (retryDueAt !== null) {
+              doneCount += 1
+              notAudited(`its failed audit is retried from ${new Date(retryDueAt * 1_000).toISOString()}`)
+              return []
+            }
             if (!pendingExtension && finished(model, peer)) {
               doneCount += 1
               if (confirmationKey) auditedConfirmations.add(confirmationKey)
@@ -1098,6 +1109,8 @@ async function runVerifierRound(
         const maxConcurrentBatches = config.verifier?.auditMaxConcurrentBatches ?? 24
         const maxConcurrentBatchesPerPeer = config.verifier?.auditMaxConcurrentBatchesPerPeer ?? 2
         const batchLimiter = new ConcurrencyLimiter(maxConcurrentBatches)
+        // Each seller's thinking suppression, discovered once per run (see `ProxyVerificationContext.sellerThinking`).
+        const sellerThinking: NonNullable<ProxyVerificationContext['sellerThinking']> = new Map()
         const sellerLimiter = new KeyedSerialLimiter()
         const statusQueue = new SerialOperationQueue()
         const eventQueue = new SerialOperationQueue()
@@ -1163,6 +1176,7 @@ async function runVerifierRound(
             checkpointRootDir: modelAuditsDirectory(evidenceDir, epoch, model, runId),
             requestTimeoutMs: config.verifier?.probeRequestTimeoutMs ?? 120_000,
             auditTimeoutMs: config.verifier?.auditPeerTimeoutMs ?? 600_000,
+            auditMaxTimeoutMs: config.verifier?.auditPeerMaxTimeoutMs ?? DEFAULT_AUDIT_MAX_TIMEOUT_MS,
             responseAuthReader: responseAuthReader!,
             batchConcurrency: Math.min(
               maxConcurrentBatchesPerPeer,
@@ -1170,6 +1184,7 @@ async function runVerifierRound(
             ),
             batchConcurrencyPromotionLatencyMs: config.verifier?.auditConcurrencyPromotionLatencyMs ?? 30_000,
             batchLimiter,
+            sellerThinking,
           })
           const outcomes = await mapConcurrently(targets, maxConcurrentPeersPerModel, async (target) => {
             if (target.pendingExtension) {
@@ -1675,6 +1690,12 @@ async function collectPreRunProblems(input: {
         continue
       }
       problems.push(...probeBankProblems({ model, sellers: capacity.sellers, enrollIfNeeded: input.enrollIfNeeded }))
+      const missing = await missingBankReferenceExchanges(input.banksDir, model)
+      if (missing.length > 0) {
+        problems.push(`${model}: the probe bank's reference evidence is missing (${missing.slice(0, 3).join(', ')}`
+          + `${missing.length > 3 ? `, and ${missing.length - 3} more` : ''}), so the submission would fail after the run; `
+          + 'restore the bank\'s reference-evidence folder')
+      }
     } catch (error) {
       problems.push(`${model}: the probe bank can't be used (${asError(error).message}); `
         + `rebuild it with antseed verifier reference build ${model}`)

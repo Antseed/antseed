@@ -1,6 +1,7 @@
 import type { NativeVideoProtocol, SerializedHttpRequest, SerializedHttpResponse } from './types.js';
-import { extractRequestBodyFields, parseJsonObject } from './utils.js';
+import { extractRequestBodyFields, headerValue, parseJsonObject } from './utils.js';
 import { inlineVideoSeconds } from './mp4.js';
+import { inlineAudioSeconds } from './speech-audio.js';
 
 export type { NativeVideoProtocol };
 
@@ -75,9 +76,9 @@ export const VIDEO_MIN_DURATION_RATIO = 0.9;
  */
 export function nativeVideoDelivered(response: SerializedHttpResponse, requestedDurationSeconds?: number): boolean {
   if (response.statusCode !== 200 || !response.streamedBody) return false;
-  const contentType = Object.entries(response.headers).find(([key]) => key.toLowerCase() === 'content-type')?.[1];
+  const contentType = headerValue(response.headers, 'content-type');
   const durationMs = response.streamedBody.videoDurationMs;
-  if (!contentType?.toLowerCase().startsWith('video/mp4') || durationMs === undefined) return false;
+  if (!contentType.toLowerCase().startsWith('video/mp4') || durationMs === undefined) return false;
   return !requestedDurationSeconds || durationMs >= requestedDurationSeconds * 1000 * VIDEO_MIN_DURATION_RATIO;
 }
 
@@ -160,8 +161,30 @@ function positiveInteger(value: unknown): number | undefined | null {
  * length in whole seconds, rounded down (at least 1).
  */
 export function videoSourceLengthProblem(videoUrl: unknown, duration: unknown): string | null {
-  const seconds = inlineVideoSeconds(videoUrl);
-  if (seconds === null) return 'A video edit is paid by its source length: send the source inline as a regular (not fragmented) MP4 data:video/mp4;base64 URL, so the seller can measure its length';
+  return sourceLengthProblem(
+    inlineVideoSeconds(videoUrl),
+    duration,
+    'A video edit is paid by its source length: send the source inline as a regular (not fragmented) MP4 data:video/mp4;base64 URL, so the seller can measure its length',
+  );
+}
+
+/**
+ * Why a video whose length follows its input audio (a talking avatar) can't
+ * go upstream, or null. The model takes no `duration`: its output is as long
+ * as `audio_url`, and the upstream bills it by that length. So the audio must
+ * be an inline MP3 or WAV the seller can measure, and the `duration` the
+ * buyer pays for its length in whole seconds, rounded down (at least 1).
+ */
+export function audioSourceLengthProblem(audioUrl: unknown, duration: unknown): string | null {
+  return sourceLengthProblem(
+    inlineAudioSeconds(audioUrl),
+    duration,
+    'This model makes a video as long as its audio and is paid by that length: send audio_url inline as an MP3 or WAV data:audio/...;base64 URL, so the seller can measure its length',
+  );
+}
+
+function sourceLengthProblem(seconds: number | null, duration: unknown, notMeasurable: string): string | null {
+  if (seconds === null) return notMeasurable;
   const expected = Math.max(seconds, 1);
   const declared = typeof duration === 'string' ? Number(duration.trim().replace(/s$/, '')) : duration;
   return declared === expected ? null : `duration must be the source length in whole seconds, rounded down: ${expected}`;

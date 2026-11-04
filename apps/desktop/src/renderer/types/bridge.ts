@@ -66,7 +66,6 @@ export type DesktopBuyerUsageTotals = {
   totalOutputTokens: string;
   totalSettlements: number;
   uniqueSellers: number;
-  activeChannels: number;
   services?: DesktopBuyerServiceUsage[];
 };
 

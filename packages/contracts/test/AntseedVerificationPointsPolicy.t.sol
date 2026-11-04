@@ -3,42 +3,42 @@ pragma solidity ^0.8.24;
 
 import { Test } from "forge-std/Test.sol";
 import { AntseedPointsPolicyRegistry } from "../policies/AntseedPointsPolicyRegistry.sol";
-import { AntseedKbfVerificationPointsPolicy } from "../policies/AntseedKbfVerificationPointsPolicy.sol";
+import { AntseedVerificationPointsPolicy } from "../policies/AntseedVerificationPointsPolicy.sol";
 import { AntseedWashTradingPointsPolicy } from "../policies/AntseedWashTradingPointsPolicy.sol";
-import { IAntseedKbfVerification } from "../interfaces/IAntseedKbfVerification.sol";
+import { IAntseedVerificationResults } from "../interfaces/IAntseedVerificationResults.sol";
 
-contract ScoreSourceForPoints {
-    mapping(uint256 => IAntseedKbfVerification.AgentStatus) private _status;
+contract VerificationResultsForPoints {
+    mapping(uint256 => IAntseedVerificationResults.AgentStatus) private _status;
     bool public reverts;
 
     function set(uint256 agentId, uint16 verifiedCount, uint16 diffCount) external {
-        _status[agentId] = IAntseedKbfVerification.AgentStatus(verifiedCount, diffCount);
+        _status[agentId] = IAntseedVerificationResults.AgentStatus(verifiedCount, diffCount);
     }
 
     function setReverts(bool value) external {
         reverts = value;
     }
 
-    function status(uint256 agentId) external view returns (IAntseedKbfVerification.AgentStatus memory) {
+    function status(uint256 agentId) external view returns (IAntseedVerificationResults.AgentStatus memory) {
         return _status[agentId];
     }
 }
 
 /// @dev Routes `agentStatus` through a switch so the policy can be tested against a reverting source.
-contract SwitchableScoreSource {
-    ScoreSourceForPoints public immutable source;
+contract SwitchableVerificationResults {
+    VerificationResultsForPoints public immutable source;
 
-    constructor(ScoreSourceForPoints source_) {
+    constructor(VerificationResultsForPoints source_) {
         source = source_;
     }
 
-    function agentStatus(uint256 agentId) external view returns (IAntseedKbfVerification.AgentStatus memory) {
+    function agentStatus(uint256 agentId) external view returns (IAntseedVerificationResults.AgentStatus memory) {
         if (source.reverts()) revert("score source down");
         return source.status(agentId);
     }
 }
 
-contract SellerPoolsForPoints {
+contract SellerPoolsForVerificationPoints {
     mapping(address => uint256) public agentIdForSeller;
 
     function set(address seller, uint256 agentId) external {
@@ -46,7 +46,7 @@ contract SellerPoolsForPoints {
     }
 }
 
-contract UsageAccountingForPoints {
+contract UsageAccountingForVerificationPoints {
     address public sellerPools;
 
     function setSellerPools(address pools) external {
@@ -54,7 +54,7 @@ contract UsageAccountingForPoints {
     }
 }
 
-contract WashStatusForVerificationPoints {
+contract WashStatusForResultsPoints {
     mapping(address => bool) public isProvenWashTrader;
 
     function set(address seller, bool flagged) external {
@@ -62,29 +62,29 @@ contract WashStatusForVerificationPoints {
     }
 }
 
-contract AntseedKbfVerificationPointsPolicyTest is Test {
-    ScoreSourceForPoints scores;
-    SellerPoolsForPoints pools;
-    UsageAccountingForPoints accounting;
-    AntseedKbfVerificationPointsPolicy policy;
+contract AntseedVerificationPointsPolicyTest is Test {
+    VerificationResultsForPoints scores;
+    SellerPoolsForVerificationPoints pools;
+    UsageAccountingForVerificationPoints accounting;
+    AntseedVerificationPointsPolicy policy;
     address seller = address(0x100);
     address buyer = address(0x200);
 
     function setUp() public {
         vm.warp(1_800_000_000);
-        scores = new ScoreSourceForPoints();
-        pools = new SellerPoolsForPoints();
-        accounting = new UsageAccountingForPoints();
+        scores = new VerificationResultsForPoints();
+        pools = new SellerPoolsForVerificationPoints();
+        accounting = new UsageAccountingForVerificationPoints();
         accounting.setSellerPools(address(pools));
         pools.set(seller, 7);
-        policy = new AntseedKbfVerificationPointsPolicy(
-            address(new SwitchableScoreSource(scores)), address(accounting), 100, address(this)
+        policy = new AntseedVerificationPointsPolicy(
+            address(new SwitchableVerificationResults(scores)), address(accounting), 100, address(this)
         );
     }
 
     function test_ratesApplyAsSoonAsTheOwnerSetsThem() public {
-        AntseedKbfVerificationPointsPolicy fresh = new AntseedKbfVerificationPointsPolicy(
-            address(new SwitchableScoreSource(scores)), address(accounting), 0, address(this)
+        AntseedVerificationPointsPolicy fresh = new AntseedVerificationPointsPolicy(
+            address(new SwitchableVerificationResults(scores)), address(accounting), 0, address(this)
         );
         assertEq(fresh.bonusBps(), 0, "bonus off by default");
         assertEq(fresh.penaltyBps(), 0, "penalty off by default");
@@ -93,7 +93,7 @@ contract AntseedKbfVerificationPointsPolicyTest is Test {
         assertEq(sellerPoints, 10_000, "unchanged while both rates are 0");
 
         vm.expectEmit(address(fresh));
-        emit AntseedKbfVerificationPointsPolicy.PenaltyBpsSet(5_000);
+        emit AntseedVerificationPointsPolicy.PenaltyBpsSet(5_000);
         fresh.setPenaltyBps(5_000);
         (sellerPoints,) = fresh.points(bytes32(0), buyer, seller, 10_000, 10_000);
         assertEq(sellerPoints, 5_000, "penalty applies on the next settlement");
@@ -191,7 +191,7 @@ contract AntseedKbfVerificationPointsPolicyTest is Test {
     }
 
     function test_bonusIsCappedAndOwnerOnly() public {
-        vm.expectRevert(AntseedKbfVerificationPointsPolicy.InvalidValue.selector);
+        vm.expectRevert(AntseedVerificationPointsPolicy.InvalidValue.selector);
         policy.setBonusBps(5_001);
         policy.setBonusBps(5_000);
         _verify(1);
@@ -219,7 +219,7 @@ contract AntseedKbfVerificationPointsPolicyTest is Test {
     }
 
     function test_washTradingZeroStaysZeroInTheRegistryChain() public {
-        WashStatusForVerificationPoints wash = new WashStatusForVerificationPoints();
+        WashStatusForResultsPoints wash = new WashStatusForResultsPoints();
         AntseedPointsPolicyRegistry registry = new AntseedPointsPolicyRegistry(address(this));
         registry.registerPolicy(address(policy));
         registry.registerPolicy(address(new AntseedWashTradingPointsPolicy(address(wash))));
@@ -233,6 +233,21 @@ contract AntseedKbfVerificationPointsPolicyTest is Test {
         (sellerPoints, buyerPoints) = registry.points(bytes32(0), buyer, seller, 1_000);
         assertEq(sellerPoints, 0);
         assertEq(buyerPoints, 0);
+    }
+
+    function test_constructorValidates() public {
+        address results = address(new SwitchableVerificationResults(scores));
+        assertEq(address(policy.usageAccounting()), address(accounting));
+        vm.expectRevert(AntseedVerificationPointsPolicy.InvalidAddress.selector);
+        new AntseedVerificationPointsPolicy(address(0x1234), address(accounting), 0, address(this));
+        vm.expectRevert(AntseedVerificationPointsPolicy.InvalidAddress.selector);
+        new AntseedVerificationPointsPolicy(results, address(0x1234), 0, address(this));
+        vm.expectRevert(AntseedVerificationPointsPolicy.InvalidValue.selector);
+        new AntseedVerificationPointsPolicy(results, address(accounting), 5_001, address(this));
+        AntseedVerificationPointsPolicy owned =
+            new AntseedVerificationPointsPolicy(results, address(accounting), 0, address(0xB0B));
+        assertEq(address(owned.results()), results);
+        assertEq(owned.owner(), address(0xB0B));
     }
 
     function _verify(uint16 verifiedCount) private {

@@ -141,7 +141,7 @@ The node charges the buyer from the token usage in your response body. It reads 
 
 Declare `ANTSEED_SERVICE_CAPABILITIES_JSON` in `configSchema` and set `serviceCapabilities` from it to announce context windows, modalities and other [capabilities](/docs/provide/config#capabilities).
 
-To bill per image or per video instead of per token, declare `ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON` and set `serviceUnitBillingModels` from it. Buyers can meter units only for the `openai-images` (`output_images`), `venice-video` and `fal-video` (`video_generations`, `video_seconds`) protocols, so your services must speak one of them. If a seller configures unit billing on a plugin that doesn't declare the key, `antseed seller start` warns that it's ignored. See [Image and video services](/docs/provide/media).
+To bill per image or per video instead of per token, declare `ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON` and set `serviceUnitBillingModels` from it. Buyers can meter units only for the `openai-images` (`output_images`), `openai-audio-speech` (`input_characters`), `venice-video` and `fal-video` (`video_generations`, `video_seconds`) protocols, so your services must speak one of them. If a seller configures unit billing on a plugin that doesn't declare the key, `antseed seller start` warns that it's ignored. See [Image, video and speech services](/docs/provide/media).
 
 ### Health checks
 

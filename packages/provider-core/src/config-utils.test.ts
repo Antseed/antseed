@@ -1,6 +1,33 @@
 import { describe, expect, it } from 'vitest';
 import { MAX_SERVICES_PER_PROVIDER } from '@antseed/node';
-import { isImageModelId, parseFallbackUpstreamsJson, parseServiceCapabilitiesJson, parseServiceUnitBillingModelsJson } from './config-utils.js';
+import { isImageModelId, isSpeechModelId, parseFallbackUpstreamsJson, parseServiceCapabilitiesJson, parseServiceUnitBillingModelsJson } from './config-utils.js';
+
+describe('isSpeechModelId', () => {
+  it('matches OpenAI and Venice text-to-speech models only', () => {
+    for (const model of ['tts-1', 'tts-1-hd', 'gpt-4o-mini-tts', 'tts-kokoro', 'tts-elevenlabs-turbo-v2-5', 'venice/tts-minimax-speech-02-hd']) {
+      expect(isSpeechModelId(model)).toBe(true);
+    }
+    for (const model of ['gpt-4o', 'gpt-4o-mini', 'whisper-1', 'gpt-4o-transcribe', 'stts-model']) {
+      expect(isSpeechModelId(model)).toBe(false);
+    }
+  });
+});
+
+describe('isImageModelId: flux-3', () => {
+  it('matches the flux-3 image model but not the flux-3 video models', () => {
+    expect(isImageModelId('flux-3-image')).toBe(true);
+    expect(isImageModelId('flux-3-image-to-video')).toBe(false);
+    expect(isImageModelId('flux-3-text-to-video')).toBe(false);
+  });
+});
+
+describe('parseServiceCapabilitiesJson speech', () => {
+  it('keeps and validates speech options', () => {
+    expect(parseServiceCapabilitiesJson(JSON.stringify({ 'tts-kokoro': { speech: { voices: ['af_sky'], customVoices: false } } })))
+      .toEqual({ 'tts-kokoro': { speech: { voices: ['af_sky'], customVoices: false } } });
+    expect(() => parseServiceCapabilitiesJson(JSON.stringify({ 'tts-kokoro': { speech: { voices: [] } } }))).toThrow(/speech.voices/);
+  });
+});
 
 describe('isImageModelId', () => {
   it.each([

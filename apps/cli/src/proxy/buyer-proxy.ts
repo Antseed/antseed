@@ -39,6 +39,8 @@ import {
   reportedSuccessPrior,
   adaptiveFirstTokenTimeoutMs,
   sanitizePeerDisplayName,
+  speechOfferUsdPerCharacter,
+  speechVoiceProblem,
   type AntseedNode,
   type FaultAttribution,
   type BuyerSpendEvent,
@@ -641,6 +643,9 @@ const PEER_CATALOG_FIELDS = [
  * sized for in-flight plus recently-finished traffic, not for concurrency.
  */
 const MAX_TRACKED_REQUEST_CONVERSATIONS = 512
+/** Why a speech seller is not a route: it does not list the voice the request asks for. */
+const UNSUPPORTED_VOICE_REASON = 'does not offer the requested voice'
+
 /** Min gap between background peer refreshes triggered by model_not_found responses. */
 const MODEL_NOT_FOUND_REFRESH_THROTTLE_MS = 30_000
 
@@ -753,6 +758,7 @@ function adaptOpenAICompatibleErrorResponse(
     requestProtocol !== 'openai-responses'
     && requestProtocol !== 'openai-chat-completions'
     && requestProtocol !== 'openai-images'
+    && requestProtocol !== 'openai-audio-speech'
   ) {
     return response;
   }
@@ -1728,9 +1734,14 @@ export class BuyerProxy {
     const effectivePolicy = requestPolicy ? narrowPolicy(this._buyerPolicy(), requestPolicy) : null
     const verdicts = new Map<string, ModelRouteVerdict>()
     const routeCandidates = []
+    // A speech seller refuses a voice it does not list, so it is not a route for one.
+    const speechBody = requestProtocol === 'openai-audio-speech' ? extractRequestBodyFields(request.headers, request.body) : null
+    const voice = speechBody?.['voice']
+    // What a speech request costs on a route: its price per character times the characters it reads.
+    const speechCharacters = typeof speechBody?.['input'] === 'string' ? [...speechBody['input']].length : null
     for (const peer of modelPeers) {
       const plan = modelPlans.get(peer.peerId)
-        ?? resolvePeerRoutePlan(peer, requestProtocol, requestedService, explicitProvider, 'strict')
+        ?? resolvePeerRoutePlan(peer, requestProtocol, requestedService, explicitProvider, 'strict', voice)
       if (!plan?.serviceId) continue
       const offer = findAdvertisedServiceOffer(peer, plan.provider, plan.serviceId)
       if (!offer) continue
@@ -1743,6 +1754,11 @@ export class BuyerProxy {
           + `missing required parameter(s): ${missingRequired.join(', ')}`,
         )
         verdict.reasons.push(`missing required parameter(s): ${missingRequired.join(', ')}`)
+        continue
+      }
+      if (voice !== undefined && speechVoiceProblem(offer.capabilities?.speech, voice)) {
+        log(`Voice filter: peer ${peer.peerId.slice(0, 12)}... service="${plan.serviceId}" does not offer the requested voice`)
+        verdict.reasons.push(UNSUPPORTED_VOICE_REASON)
         continue
       }
       const requestForPolicy = withRoutedModel(request, plan.serviceId)
@@ -1764,6 +1780,7 @@ export class BuyerProxy {
         inputUsdPerMillion: offer.inputUsdPerMillion ?? null,
         outputUsdPerMillion: offer.outputUsdPerMillion ?? null,
         minImageUsdPerImage: offer.minImageUsdPerImage ?? null,
+        speechUsdPerCharacter: speechOfferUsdPerCharacter(offer),
       })
     }
     const now = this._now()
@@ -1832,7 +1849,9 @@ export class BuyerProxy {
       serviceId: this._healthServiceKey(candidate.serviceId),
       inputUsdPerMillion: candidate.inputUsdPerMillion,
       outputUsdPerMillion: candidate.outputUsdPerMillion,
-      requestUsd: candidate.minImageUsdPerImage,
+      requestUsd: candidate.speechUsdPerCharacter != null && speechCharacters !== null
+        ? candidate.speechUsdPerCharacter * speechCharacters
+        : candidate.minImageUsdPerImage,
       coolingDown: isCooling(candidate),
       ...(openChannels ? { channelOpen: modelRouteTotalPrice(candidate) === 0 || openChannels.has(candidate.peerId.toLowerCase()) } : {}),
       saturated: typeof candidate.peer.maxConcurrency === 'number' && candidate.peer.maxConcurrency > 0
@@ -2715,7 +2734,7 @@ export class BuyerProxy {
         onChainSybilRisk: p.onChainSybilRisk ?? null,
         onChainSybilFlags: p.onChainSybilFlags ?? null,
         onChainStatsFetchedAt: p.onChainStatsFetchedAt ?? null,
-        // Services with a live DIFF verdict on AntseedKbfVerification; their
+        // Services with a live DIFF verdict on AntseedVerificationResults; their
         // effective reputation keeps 10%.
         onChainDiffServices: p.onChainDiffServices ?? null,
         onChainVerificationFetchedAt: p.onChainVerificationFetchedAt ?? null,
@@ -3727,7 +3746,7 @@ export class BuyerProxy {
       res.writeHead(400, responseHeaders)
       res.end(JSON.stringify({
         error: {
-          message: `Unknown model type "${url.searchParams.get('type') ?? ''}" — expected "text", "images", "decisions", "videos", or "routers".`,
+          message: `Unknown model type "${url.searchParams.get('type') ?? ''}" — expected "text", "images", "decisions", "videos", "speech", or "routers".`,
           type: 'invalid_request_error',
           param: 'type',
         },
@@ -3833,6 +3852,7 @@ export class BuyerProxy {
       normalizedPath.startsWith('/v1/responses') ||
       normalizedPath.startsWith('/v1/images/generations') ||
       normalizedPath.startsWith('/v1/images/edits') ||
+      normalizedPath === '/v1/audio/speech' ||
       normalizedPath.startsWith('/v1/systemone') ||
       normalizedPath.startsWith('/v1/models')
     if (!isKnownApiPath) {
@@ -4431,6 +4451,10 @@ export class BuyerProxy {
 
     const requestProtocol = detectRequestServiceApiProtocol(serializedReq)
     const requestedService = extractRequestedService(serializedReq)
+    // A speech request prefers, on each peer (pinned or not), a provider that offers its voice.
+    const requestedVoice = requestProtocol === 'openai-audio-speech'
+      ? extractRequestBodyFields(serializedReq.headers, serializedReq.body)?.['voice']
+      : undefined
     log(`Routing: protocol=${requestProtocol ?? 'null'} service=${requestedService ?? 'null'}`)
     const explicitProvider = getExplicitProviderOverride(serializedReq)
     const explicitPeerId = getExplicitPeerIdOverride(serializedReq, effectivePinnedPeer ?? undefined, bodyPinnedPeer)
@@ -4488,17 +4512,18 @@ export class BuyerProxy {
         ? [...requiredParameters, 'image']
         : [...requiredParameters]
       // Likewise a video edit needs a seller whose model takes the source
-      // (or reference) videos the create sends.
+      // (or reference) videos the create sends, and a lip-synced video one
+      // whose model takes the audio.
       if (nativeVideo?.action === 'create') {
         const fields = extractRequestBodyFields(serializedReq.headers, serializedReq.body)
-        for (const field of ['video_url', 'reference_video_urls']) {
+        for (const field of ['video_url', 'reference_video_urls', 'audio_url']) {
           const value = fields?.[field]
           if ((typeof value === 'string' || Array.isArray(value)) && value.length > 0
             && !routeRequiredParameters.includes(field)) routeRequiredParameters.push(field)
         }
       }
       const selectModelPeers = (candidateSources: PeerInfo[]): CandidatePeerRouteSelection =>
-        selectCandidatePeersForRouting(candidateSources, requestProtocol, requestedService, explicitProvider, 'strict')
+        selectCandidatePeersForRouting(candidateSources, requestProtocol, requestedService, explicitProvider, 'strict', requestedVoice)
       let discoveredPeers = peers
       let { candidatePeers: modelPeers, routePlanByPeerId: modelPlans } = selectModelPeers(discoveredPeers)
       const cacheAgeMs = Date.now() - this._cacheLastUpdatedAtMs
@@ -4508,7 +4533,7 @@ export class BuyerProxy {
       }
 
       const router = this._node.router
-      const { candidates, effectivePolicy, explored, selections, firstPick } = this._planModelRoutes({
+      const { candidates, verdicts, effectivePolicy, explored, selections, firstPick } = this._planModelRoutes({
         modelPeers,
         modelPlans,
         request: serializedReq,
@@ -4524,6 +4549,22 @@ export class BuyerProxy {
       })
       const requireVerified = effectivePolicy?.requireVerified === true
       if (candidates.length === 0) {
+        // Every seller of the model was left out only for not offering the voice asked for.
+        const voiceVerdicts = verdicts.filter((verdict) => verdict.reasons.includes(UNSUPPORTED_VOICE_REASON))
+        if (voiceVerdicts.length > 0 && voiceVerdicts.length === verdicts.length) {
+          const voices = [...new Set(voiceVerdicts.flatMap((verdict) => verdict.offer.capabilities?.speech?.voices ?? []))].sort()
+          const voice = extractRequestBodyFields(serializedReq.headers, serializedReq.body)?.['voice']
+          log(`Request rejected: no seller of ${requestedService} offers voice ${JSON.stringify(voice)}`)
+          return dispatchFailure(400, { 'content-type': 'application/json' }, JSON.stringify({
+            error: {
+              type: 'invalid_request_error',
+              code: 'unsupported_voice',
+              message: `No seller of "${requestedService}" offers voice ${JSON.stringify(voice)}. Available voices: ${voices.slice(0, 40).join(', ')}${voices.length > 40 ? ', ...' : ''}`,
+              param: 'voice',
+              available_voices: voices,
+            },
+          }))
+        }
         const capabilityRequired = routeRequiredParameters.length > 0
         // Served, but the health check of every seller that could take it
         // announces the route failing (the model, or the protocol this request
@@ -4765,6 +4806,7 @@ export class BuyerProxy {
       requestedService,
       explicitProvider,
       'lenient',
+      requestedVoice,
     )
 
     let hasForcedRefresh = false
@@ -4866,7 +4908,7 @@ export class BuyerProxy {
     }
     const policyRouter = router as BuyerPolicyRouter | null | undefined
     const selectedPlan = routingPlans.get(selectedPeer.peerId)
-      ?? resolvePeerRoutePlan(selectedPeer, requestProtocol, requestedService, explicitProvider, 'lenient')
+      ?? resolvePeerRoutePlan(selectedPeer, requestProtocol, requestedService, explicitProvider, 'lenient', requestedVoice)
     const pinnedServiceId = selectedPlan?.serviceId ?? requestedService
     const missingRequired = selectedPlan
       ? findMissingRouteParameters(selectedPeer, selectedPlan, pinnedServiceId, requiredParameters)

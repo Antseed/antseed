@@ -77,6 +77,7 @@ export async function discoverNetwork(config: AntseedConfig, options: { serviceF
       dhtOperationTimeoutMs: 30_000,
       metadataFetchTimeoutMs: resolveEffectiveBuyerConfig({ config }).metadataFetchTimeoutMs,
       ...(payments ? { payments: { ...payments, ...(readProvider ? { readProvider } : {}) } } : {}),
+      autoReconcileBuyerChannels: false,
     })
     return await withRpcSource(options.rpcSource ?? 'discovery', async () => {
       try {

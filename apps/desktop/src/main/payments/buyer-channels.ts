@@ -45,7 +45,6 @@ export type DesktopBuyerUsageTotals = {
   totalOutputTokens: string;
   totalSettlements: number;
   uniqueSellers: number;
-  activeChannels: number;
   services: DesktopBuyerServiceUsage[];
 };
 
@@ -82,7 +81,6 @@ const EMPTY_BUYER_USAGE_TOTALS: DesktopBuyerUsageTotals = {
   totalOutputTokens: '0',
   totalSettlements: 0,
   uniqueSellers: 0,
-  activeChannels: 0,
   services: [],
 };
 
@@ -129,7 +127,6 @@ export function normalizeBuyerUsageTotals(value: unknown): DesktopBuyerUsageTota
     totalOutputTokens: readStringField(raw, 'totalOutputTokens') || '0',
     totalSettlements: readNumberField(raw, 'totalSettlements'),
     uniqueSellers: readNumberField(raw, 'uniqueSellers'),
-    activeChannels: readNumberField(raw, 'activeChannels'),
     services,
   };
 }

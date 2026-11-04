@@ -46,6 +46,8 @@ export interface SellerServiceConfig {
    * `"deepseek-v3.1"` with upstreamModel `"deepseek-ai/DeepSeek-V3.1"`.
    */
   upstreamModel?: string;
+  /** Native image-edit model paired with this advertised generation service. */
+  imageEditModel?: string;
   /** Normie-friendly tags announced in peer metadata (e.g. "chat", "coding"). */
   categories?: string[];
   /**
@@ -451,9 +453,11 @@ export interface PaymentsCLIConfig {
     identityRegistryAddress?: string;
     /** Deployed AntseedEmissions contract address */
     emissionsContractAddress?: string;
-    /** Deployed AntseedKbfVerification contract address */
+    /** Deployed AntseedKbfAudits contract address (the KBF source auditors submit to; holds the approved auditors) */
     verificationContractAddress?: string;
-    /** Deployment block of the verification contract; floor for verifier event scans */
+    /** AntseedVerificationResults address; discovered from the KBF contract when unset */
+    verificationResultsAddress?: string;
+    /** Deployment block of the KBF audits contract; floor for verifier event scans */
     verificationDeployBlock?: number;
     legacyEmissionsContractAddress?: string;
     legacyStakingContractAddress?: string;

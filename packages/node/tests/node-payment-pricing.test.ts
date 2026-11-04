@@ -238,6 +238,7 @@ function makeSpmMock(overrides: Record<string, unknown> = {}): any {
     hasClosingChannel: () => false,
     waitForClosingChannel: async () => false,
     isTopUpRunning: () => false,
+    isTopUpPendingFor: () => false,
     waitForTopUp: async () => true,
     // The real one waits for in-flight requests, then settles.
     closeSessionWhenIdle(buyerPeerId: string) {
@@ -544,6 +545,36 @@ describe('native video job ownership', () => {
         expect(provider.handleRequest).not.toHaveBeenCalled();
         expect(recordSpend).not.toHaveBeenCalled();
         expect(settleSession).not.toHaveBeenCalled();
+      } finally { store.close(); }
+    });
+
+    it('answers a create the provider refuses before offering a channel, so it costs nothing', async () => {
+      const { provider, create, spm, recordSpend, store } = setupOneOff();
+      provider.checkRequest = vi.fn(request => JSON.parse(new TextDecoder().decode(request.body)).duration === '20s'
+        ? { statusCode: 422, code: 'invalid_video_duration', message: 'duration must be the source length in whole seconds, rounded down: 12' }
+        : null);
+      try {
+        const refused = await create('video-1', bigVideo);
+        expect(refused.statusCode).toBe(422);
+        expect(bodyOf(refused)).toEqual({ error: { code: 'invalid_video_duration', message: 'duration must be the source length in whole seconds, rounded down: 12' } });
+        expect(spm.registerOneOffPlan).not.toHaveBeenCalled();
+        expect(provider.handleRequest).not.toHaveBeenCalled();
+        expect(recordSpend).not.toHaveBeenCalled();
+        // An accepted create is priced by its duration as usual.
+        const accepted = await create('video-2', { model: 'video', duration: '12s' });
+        expect(accepted.statusCode).toBe(402);
+        expect(bodyOf(accepted).oneOffPlan.requestCost).toBe('1200000');
+      } finally { store.close(); }
+    });
+
+    it('answers 500 when the provider check throws, without offering a channel', async () => {
+      const { provider, create, spm, store } = setupOneOff();
+      provider.checkRequest = () => { throw new Error('boom'); };
+      try {
+        const response = await create('video-1', bigVideo);
+        expect(response.statusCode).toBe(500);
+        expect(bodyOf(response).error.code).toBe('request_check_failed');
+        expect(spm.registerOneOffPlan).not.toHaveBeenCalled();
       } finally { store.close(); }
     });
 
@@ -2127,4 +2158,103 @@ it('waits for a running top-up before treating a channel at its ceiling as exhau
     if (!lands) expect(JSON.parse(new TextDecoder().decode(response.body)).error).toBe('top_up_pending');
     expect(settleSession).not.toHaveBeenCalled();
   }
+});
+
+it('waits for a pending top-up to start, between two top-ups, before treating the channel as exhausted', async () => {
+  let reserveMax = 1_000_000n;
+  const settleSession = vi.fn(async () => {});
+  const waitForTopUp = vi.fn(async () => {
+    // The next top-up starts and lands.
+    reserveMax = 2_000_000n;
+    return true;
+  });
+  const handler = makeSellerRequestHandler({
+    providers: [makeProvider(1, 1, { name: 'openai', services: ['test-model'] })],
+    sellerPaymentManager: makeSpmMock({
+      getCumulativeSpend: () => 1_500_000n,
+      getAcceptedCumulative: () => 1_500_000n,
+      getReserveMax: () => reserveMax,
+      settleSession,
+      // The last top-up just landed; the one covering this spend is queued.
+      isTopUpRunning: () => false,
+      isTopUpPendingFor: (_channelId: string, amount: bigint) => amount > reserveMax && amount <= 2_000_000n,
+      waitForTopUp,
+    }),
+    channelsClient: {} as any, sessionTracker: null, announcer: null, emit: () => false,
+  });
+  const frames: Uint8Array[] = [];
+  const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any);
+  await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({
+    requestId: 'between-top-ups', method: 'POST', path: '/v1/chat/completions',
+    headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ model: 'test-model', messages: [] })),
+  }) });
+
+  expect({
+    status: decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload).statusCode,
+    covering: waitForTopUp.mock.calls[0]?.[2],
+    closed: settleSession.mock.calls.length,
+  }).toEqual({ status: 200, covering: 1_500_000n, closed: 0 });
+});
+
+
+/** A speech answer: three 417-byte MPEG-1 layer III frames (128 kbps, 44.1 kHz). */
+const SPEECH_MP3 = new Uint8Array(417 * 3);
+for (const offset of [0, 417, 834]) SPEECH_MP3.set([0xff, 0xfb, 0x90, 0x00], offset);
+
+describe('speech seller payments', () => {
+  function setup(providerResponse?: { statusCode: number; contentType: string; body: Uint8Array }) {
+    let spend = 0n;
+    const provider = makeProvider(0.1, 0.45, { name: 'openai', services: ['tts-kokoro'] });
+    provider.serviceApiProtocols = { 'tts-kokoro': ['openai-audio-speech'] };
+    // $62.50 per million characters.
+    provider.serviceUnitBillingModels = { 'tts-kokoro': { 'openai-audio-speech': { version: 1, components: [{ unit: 'input_characters', priceUsd: 0.0000625 }] } } };
+    provider.serviceCapabilities = { 'tts-kokoro': { inputs: ['text'], outputs: ['audio'], speech: { voices: ['af_sky', 'am_adam'] } } };
+    const answer = providerResponse ?? { statusCode: 200, contentType: 'audio/mpeg', body: SPEECH_MP3 };
+    provider.handleRequest = vi.fn(async request => ({ requestId: request.requestId, statusCode: answer.statusCode, headers: { 'content-type': answer.contentType }, body: answer.body }));
+    delete (provider as Partial<Provider>).handleRequestStream;
+    const spm = makeSpmMock({
+      recordSpend: vi.fn((_channel: string, amount: bigint) => { spend += amount; }),
+      getCumulativeSpend: () => spend, getAcceptedCumulative: () => spend,
+    });
+    const frames: Uint8Array[] = [];
+    const paymentMux = { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() };
+    const handler = makeSellerRequestHandler({ providers: [provider], sellerPaymentManager: spm, sessionTracker: null, channelsClient: {} as any, announcer: null, emit: () => false });
+    const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), paymentMux as any);
+    const send = async (body: Record<string, unknown>, requestId = 'speech') => {
+      await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({
+        requestId, method: 'POST', path: '/v1/audio/speech',
+        headers: { 'content-type': 'application/json' },
+        body: new TextEncoder().encode(JSON.stringify(body)),
+      }) });
+      return frames.map(frame => decodeHttpResponse(decodeFrame(frame).message!.payload)).reverse().find(response => response.requestId === requestId)!;
+    };
+    return { provider, spm, paymentMux, send };
+  }
+
+  it('charges the characters of a delivered speech and passes the audio through', async () => {
+    const harness = setup();
+    const response = await harness.send({ model: 'tts-kokoro', input: 'a'.repeat(1000), voice: 'af_sky' });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-type']).toBe('audio/mpeg');
+    expect(Array.from(response.body)).toEqual(Array.from(SPEECH_MP3));
+    expect(harness.spm.recordSpend).toHaveBeenCalledWith('session-1', 62_500n);
+    expect(harness.paymentMux.sendNeedAuth).toHaveBeenCalledWith(expect.objectContaining({ lastRequestCost: '62500', billingUsage: { version: 1, units: { input_characters: '1000' } } }));
+  });
+
+  it('refuses a voice the service does not offer before reaching the upstream or charging', async () => {
+    const harness = setup();
+    const response = await harness.send({ model: 'tts-kokoro', input: 'Hello', voice: 'alloy' });
+    expect(response.statusCode).toBe(400);
+    expect(JSON.parse(new TextDecoder().decode(response.body))).toEqual({
+      error: { code: 'unsupported_voice', message: 'Voice "alloy" is not offered by this service. Available voices: af_sky, am_adam' },
+    });
+    expect(harness.provider.handleRequest).not.toHaveBeenCalled();
+    expect(harness.spm.recordSpend).not.toHaveBeenCalled();
+  });
+
+  it('charges nothing when the upstream refuses, even with an audio content type', async () => {
+    const harness = setup({ statusCode: 400, contentType: 'audio/mpeg; charset=utf-8', body: new TextEncoder().encode('{"error":"Voice is not supported"}') });
+    expect((await harness.send({ model: 'tts-kokoro', input: 'Hello', voice: 'af_sky' })).statusCode).toBe(400);
+    expect(harness.spm.recordSpend).toHaveBeenCalledWith('session-1', 0n);
+  });
 });

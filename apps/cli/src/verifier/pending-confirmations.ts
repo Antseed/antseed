@@ -11,7 +11,7 @@ import { auditorRotationForModel } from './audit-assignment.js'
 import { normalized } from './utils.js'
 import { mapConcurrently } from './audit-concurrency.js'
 
-/** The reads the confirmation helpers need from the verification contract. */
+/** The reads the confirmation helpers need from the KBF audits and results contracts. */
 export interface EpochReportReader {
   queryServiceAudits(
     agentId: null, service: null, fromBlock?: number, toBlock?: number | 'latest',

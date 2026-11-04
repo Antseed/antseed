@@ -1,11 +1,13 @@
 /**
  * Golden vectors pin the on-chain-facing encodings: a change to any of these
  * values breaks compatibility with deployed AntseedChannels contracts and
- * existing peers, so the constants below must never change.
+ * existing peers, so the constants below must never change. The exception is
+ * metadata hashed by the current encoder, which changes only with a
+ * METADATA_VERSION bump; the previous version's bytes stay pinned below.
  */
 
 import { describe, it, expect } from 'vitest';
-import { AbiCoder, Wallet, ZeroHash, keccak256, verifyTypedData } from 'ethers';
+import { AbiCoder, TypedDataEncoder, Wallet, ZeroHash, keccak256, verifyTypedData } from 'ethers';
 import {
   attributionTailAbi,
   clientAgentId,
@@ -18,7 +20,10 @@ import {
   ZERO_METADATA_HASH,
   computeChannelId,
   computeMetadataHash,
+  decodeSpendingAuthMetadata,
   encodeMetadata,
+  zeroMetadataForHash,
+  METADATA_VERSION,
   getServiceMetadataId,
   makeChannelsDomain,
   signSpendingAuth,
@@ -32,8 +37,18 @@ const SELLER = '0x00000000000000000000000000000000000000A1';
 const SALT = '0x' + 'ab'.repeat(32);
 
 describe('EIP-712 golden vectors', () => {
+  // Changes only with METADATA_VERSION (v5 here); see the version goldens below.
   it('pins ZERO_METADATA_HASH', () => {
-    expect(ZERO_METADATA_HASH).toBe('0xea67a9fe192b3a98fe0460402ec9f4f1a5a2eaa14cc5bbf0e2ea0eebba976867');
+    expect(ZERO_METADATA_HASH).toBe('0xdb2975dcc121adbd49379a0095b05556acdf01593802587e93980a3758a35f42');
+  });
+
+  it('pins the SpendingAuth EIP-712 digest', () => {
+    const domain = makeChannelsDomain(8453, '0xBA66d3b4fbCf472F6F11D6F9F96aaCE96516F09d');
+    expect(TypedDataEncoder.hash(domain, SPENDING_AUTH_TYPES, {
+      channelId: '0x' + '11'.repeat(32),
+      cumulativeAmount: 123456n,
+      metadataHash: '0x' + '22'.repeat(32),
+    })).toBe('0x5b8a1cc748fb2ea9e1aba9675824ad01aac67698735df444c9aef19a3f7724db');
   });
 
   it('pins channelId derivation', () => {
@@ -52,9 +67,7 @@ describe('EIP-712 golden vectors', () => {
       cumulativeRequestCount: 3n,
       services: [],
     };
-    expect(computeMetadataHash(metadata)).toBe(
-      '0x37c9aeed7c4a64a210f75b6162b61172843844237cdb69df5275a19fc824d62e',
-    );
+    expect(computeMetadataHash(metadata)).toBe('0x5061385bd4dce04398e6999fc5c92c3c50509831c99867fa5392d9fb9e1a4ffd');
     // Omitted cumulativeOutputImages encodes identically to an explicit zero.
     expect(computeMetadataHash({ ...metadata, cumulativeOutputImages: 0n })).toBe(
       computeMetadataHash(metadata),
@@ -72,6 +85,8 @@ describe('EIP-712 golden vectors', () => {
       cumulativeVideoGenerations: 1n,
       cumulativeVideoSeconds: 8n,
     })).not.toBe(computeMetadataHash(metadata));
+    expect(computeMetadataHash({ ...metadata, cumulativeInputCharacters: 0n })).toBe(computeMetadataHash(metadata));
+    expect(computeMetadataHash({ ...metadata, cumulativeInputCharacters: 19n })).not.toBe(computeMetadataHash(metadata));
     // Sorted service entries change the hash deterministically.
     const withService = {
       ...metadata,
@@ -101,6 +116,91 @@ describe('EIP-712 golden vectors', () => {
     const reserve = { channelId, maxAmount: 1_000_000n, deadline: 1900000000n };
     const reserveSig = await signReserveAuth(wallet, domain, reserve);
     expect(verifyTypedData(domain, RESERVE_AUTH_TYPES, reserve, reserveSig)).toBe(wallet.address);
+  });
+});
+
+// One channel's usage: a chat model and a video model (v4 fields only).
+const usageFixture = {
+  cumulativeInputTokens: 1234n,
+  cumulativeOutputTokens: 567n,
+  cumulativeRequestCount: 3n,
+  cumulativeOutputImages: 2n,
+  cumulativeVideoGenerations: 1n,
+  cumulativeVideoSeconds: 8n,
+  services: [
+    { serviceId: getServiceMetadataId('model-a'), cumulativeAmount: 4200n, cumulativeInputTokens: 1000n, cumulativeCachedInputTokens: 100n, cumulativeOutputTokens: 500n, cumulativeRequestCount: 1n, cumulativeOutputImages: 0n, cumulativeVideoGenerations: 0n, cumulativeVideoSeconds: 0n },
+    { serviceId: getServiceMetadataId('video-b'), cumulativeAmount: 9000n, cumulativeInputTokens: 234n, cumulativeCachedInputTokens: 0n, cumulativeOutputTokens: 67n, cumulativeRequestCount: 2n, cumulativeOutputImages: 2n, cumulativeVideoGenerations: 1n, cumulativeVideoSeconds: 8n },
+  ],
+};
+
+/** v4 as buyers that have not upgraded still sign it: v5 without the character counters. */
+function encodeMetadataV4(metadata: typeof usageFixture): string {
+  return AbiCoder.defaultAbiCoder().encode(
+    ['uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256',
+      'tuple(bytes32 serviceId,uint256 cumulativeAmount,uint256 cumulativeInputTokens,uint256 cumulativeCachedInputTokens,uint256 cumulativeOutputTokens,uint256 cumulativeRequestCount,uint256 cumulativeOutputImages,uint256 cumulativeVideoGenerations,uint256 cumulativeVideoSeconds)[]'],
+    [4n, metadata.cumulativeInputTokens, metadata.cumulativeOutputTokens, metadata.cumulativeRequestCount,
+      metadata.cumulativeOutputImages, metadata.cumulativeVideoGenerations, metadata.cumulativeVideoSeconds,
+      [...metadata.services].sort((a, b) => (a.serviceId < b.serviceId ? -1 : 1))],
+  );
+}
+
+describe('SpendingAuth metadata versions', () => {
+  // The v4 hash is of the bytes the v4 encoder produced before v5 existed.
+  it('pins the v4 bytes buyers that have not upgraded still sign', () => {
+    expect(keccak256(encodeMetadataV4(usageFixture))).toBe('0x432fe5129eb1920b99922b565b4595e0743921fa496def63e438baac070cc758');
+  });
+
+  it('pins the v5 bytes, with speech characters at the top level and per service', () => {
+    const v5 = {
+      ...usageFixture,
+      cumulativeInputCharacters: 19n,
+      services: [
+        ...usageFixture.services,
+        { serviceId: getServiceMetadataId('tts-c'), cumulativeAmount: 285n, cumulativeInputTokens: 0n, cumulativeCachedInputTokens: 0n, cumulativeOutputTokens: 0n, cumulativeRequestCount: 1n, cumulativeOutputImages: 0n, cumulativeVideoGenerations: 0n, cumulativeVideoSeconds: 0n, cumulativeInputCharacters: 19n },
+      ],
+    };
+    expect(METADATA_VERSION).toBe(5n);
+    expect(computeMetadataHash(v5)).toBe('0x476d90d80c4dce9ada1410049e54c94c119ae484fd9d1ea79aa71c46a209a435');
+  });
+
+  it('round-trips v5 and keeps the leading words where v4 has them', () => {
+    const v5 = {
+      ...usageFixture,
+      cumulativeInputCharacters: 19n,
+      services: usageFixture.services.map((service, index) => ({ ...service, cumulativeInputCharacters: BigInt(index * 7) })),
+    };
+    const encoded = encodeMetadata(v5);
+    const decoded = decodeSpendingAuthMetadata(encoded);
+    expect(decoded.version).toBe(5n);
+    const byId = (a: { serviceId: string }, b: { serviceId: string }) => (a.serviceId < b.serviceId ? -1 : 1);
+    expect(decoded).toEqual({ version: 5n, ...v5, services: [...v5.services].sort(byId) });
+    expect(encodeMetadata(decoded)).toBe(encoded);
+    // Words 1-3 (tokens, requests) are what AntseedStats reads, in every version.
+    const words = (hex: string) => hex.slice(2).match(/.{64}/g)!;
+    expect(words(encoded).slice(1, 4)).toEqual(words(encodeMetadataV4(usageFixture)).slice(1, 4));
+  });
+
+  it('still decodes v4, with no speech characters', () => {
+    const decoded = decodeSpendingAuthMetadata(encodeMetadataV4(usageFixture));
+    expect(decoded.version).toBe(4n);
+    expect(decoded.cumulativeInputCharacters).toBe(0n);
+    expect(decoded.cumulativeVideoSeconds).toBe(8n);
+    expect(decoded.services.map((service) => service.cumulativeInputCharacters)).toEqual([0n, 0n]);
+    const video = decoded.services.find((service) => service.serviceId === usageFixture.services[1]!.serviceId);
+    expect(video).toEqual({ ...usageFixture.services[1]!, cumulativeInputCharacters: 0n });
+  });
+
+  it('finds the zero metadata a hash belongs to in v5 or v4', () => {
+    const zeroV4 = encodeMetadataV4({ ...usageFixture, cumulativeInputTokens: 0n, cumulativeOutputTokens: 0n, cumulativeRequestCount: 0n,
+      cumulativeOutputImages: 0n, cumulativeVideoGenerations: 0n, cumulativeVideoSeconds: 0n, services: [] });
+    expect(zeroMetadataForHash(ZERO_METADATA_HASH)).toBe(encodeMetadata({ cumulativeInputTokens: 0n, cumulativeOutputTokens: 0n, cumulativeRequestCount: 0n }));
+    expect(zeroMetadataForHash(keccak256(zeroV4).toUpperCase().replace('0X', '0x'))).toBe(zeroV4);
+    expect(zeroMetadataForHash('0x' + '22'.repeat(32))).toBeUndefined();
+  });
+
+  it('refuses versions it does not know', () => {
+    const v3 = AbiCoder.defaultAbiCoder().encode(['uint256', 'uint256', 'uint256', 'uint256'], [3n, 1n, 1n, 1n]);
+    expect(() => decodeSpendingAuthMetadata(v3)).toThrow('Unsupported SpendingAuth metadata version 3');
   });
 });
 
@@ -173,14 +273,10 @@ describe('metadata attribution tail', () => {
     expect(clientAgentId(clientId)).toBe(42n);
     const coder = AbiCoder.defaultAbiCoder();
     const legacy = coder.decode(['uint256', 'uint256', 'uint256', 'uint256'], encoded);
-    expect(legacy.map(String)).toEqual(['4', '100', '40', '2']);
-    const v4 = coder.decode(
-      ['uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256',
-        'tuple(bytes32 serviceId,uint256 cumulativeAmount,uint256 cumulativeInputTokens,uint256 cumulativeCachedInputTokens,uint256 cumulativeOutputTokens,uint256 cumulativeRequestCount,uint256 cumulativeOutputImages,uint256 cumulativeVideoGenerations,uint256 cumulativeVideoSeconds)[]'],
-      encoded,
-    );
-    expect(v4[7].length).toBe(1);
-    expect(String(v4[7][0].cumulativeCachedInputTokens)).toBe('10');
+    expect(legacy.map(String)).toEqual(['5', '100', '40', '2']);
+    const decoded = decodeSpendingAuthMetadata(encoded);
+    expect(decoded.services.length).toBe(1);
+    expect(decoded.services[0]!.cumulativeCachedInputTokens).toBe(10n);
   });
 
   it('keeps the client with zero invite words once bound', () => {

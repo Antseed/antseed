@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
-import { AbiCoder, id, keccak256, Wallet } from 'ethers';
+import { id, keccak256, Wallet } from 'ethers';
 import { BuyerPaymentManager, type BuyerPaymentConfig, type BuyerSpendEvent } from '../src/payments/buyer-payment-manager.js';
 import { ChannelStore, CHANNEL_ROLE, CHANNEL_STATUS, type StoredChannel } from '../src/payments/channel-store.js';
 import type { PaymentMux } from '../src/p2p/payment-mux.js';
@@ -12,7 +12,7 @@ import { bytesToHex } from '../src/utils/hex.js';
 import { toPeerId } from '../src/types/peer.js';
 import { estimateCostFromBytes } from '../src/payments/pricing.js';
 import { decodeSpendingAuth, encodeSpendingAuth } from '@antseed/protocol/payment-codec';
-import { decodeMetadataAttribution, getServiceMetadataId, MAX_METADATA_SERVICES } from '@antseed/protocol/signatures';
+import { decodeMetadataAttribution, decodeSpendingAuthMetadata, getServiceMetadataId, MAX_METADATA_SERVICES } from '@antseed/protocol/signatures';
 import type { SpendingAuthPayload } from '@antseed/protocol/messages';
 import { captureUnitBillingContext } from '@antseed/buyer-core';
 
@@ -37,13 +37,17 @@ function decodeMetadataTokens(metadata: string): {
   outputImages: bigint;
   videoGenerations: bigint;
   videoSeconds: bigint;
+  inputCharacters: bigint;
 } {
-  const coder = AbiCoder.defaultAbiCoder();
-  const [, inputTokens, outputTokens, , outputImages, videoGenerations, videoSeconds] = coder.decode(
-    ['uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256'],
-    metadata,
-  );
-  return { inputTokens, outputTokens, outputImages, videoGenerations, videoSeconds };
+  const decoded = decodeSpendingAuthMetadata(metadata);
+  return {
+    inputTokens: decoded.cumulativeInputTokens,
+    outputTokens: decoded.cumulativeOutputTokens,
+    outputImages: decoded.cumulativeOutputImages,
+    videoGenerations: decoded.cumulativeVideoGenerations,
+    videoSeconds: decoded.cumulativeVideoSeconds,
+    inputCharacters: decoded.cumulativeInputCharacters,
+  };
 }
 
 function decodeMetadataServices(metadata: string): Array<{
@@ -55,25 +59,14 @@ function decodeMetadataServices(metadata: string): Array<{
   cumulativeRequestCount: bigint;
   cumulativeOutputImages: bigint;
 }> {
-  const coder = AbiCoder.defaultAbiCoder();
-  const [, , , , , , , services] = coder.decode([
-    'uint256',
-    'uint256',
-    'uint256',
-    'uint256',
-    'uint256',
-    'uint256',
-    'uint256',
-    'tuple(bytes32 serviceId,uint256 cumulativeAmount,uint256 cumulativeInputTokens,uint256 cumulativeCachedInputTokens,uint256 cumulativeOutputTokens,uint256 cumulativeRequestCount,uint256 cumulativeOutputImages,uint256 cumulativeVideoGenerations,uint256 cumulativeVideoSeconds)[]',
-  ], metadata);
-  return [...services].map((service) => ({
-    serviceId: service.serviceId as string,
-    cumulativeAmount: service.cumulativeAmount as bigint,
-    cumulativeInputTokens: service.cumulativeInputTokens as bigint,
-    cumulativeCachedInputTokens: service.cumulativeCachedInputTokens as bigint,
-    cumulativeOutputTokens: service.cumulativeOutputTokens as bigint,
-    cumulativeRequestCount: service.cumulativeRequestCount as bigint,
-    cumulativeOutputImages: service.cumulativeOutputImages as bigint,
+  return decodeSpendingAuthMetadata(metadata).services.map((service) => ({
+    serviceId: service.serviceId,
+    cumulativeAmount: service.cumulativeAmount,
+    cumulativeInputTokens: service.cumulativeInputTokens,
+    cumulativeCachedInputTokens: service.cumulativeCachedInputTokens,
+    cumulativeOutputTokens: service.cumulativeOutputTokens,
+    cumulativeRequestCount: service.cumulativeRequestCount,
+    cumulativeOutputImages: service.cumulativeOutputImages,
   }));
 }
 
@@ -177,9 +170,10 @@ describe('BuyerPaymentManager', () => {
     expect(sent.metadata).toBeTypeOf('string');
     expect(sent.metadata).not.toBe('');
     expect((sent.metadata as string).startsWith('0x')).toBe(true);
-    // v4 zero metadata: seven head words (version, input, output, requests,
-    // images, video generations, video seconds) + empty services array (offset + length) = 9 words.
-    expect((sent.metadata as string).length).toBe(2 + 9 * 64);
+    // v5 zero metadata: eight head words (version, input, output, requests,
+    // images, video generations, video seconds, speech characters) + empty services array
+    // (offset + length) = 10 words.
+    expect((sent.metadata as string).length).toBe(2 + 10 * 64);
   });
 
   it('authorizeSpending hashes the attributed initial metadata it sends', async () => {
@@ -195,7 +189,7 @@ describe('BuyerPaymentManager', () => {
     const sent = mux.sentSpendingAuths[0] as Record<string, string>;
     // Five extra tail words: the seller pre-checks keccak(metadata) == metadataHash
     // before it verifies the ReserveAuth, so a stale zero hash rejects every open.
-    expect(sent.metadata.length).toBe(2 + 14 * 64); // 7 v4 head words + offset + 5 tail words + services length
+    expect(sent.metadata.length).toBe(2 + 15 * 64); // 8 v5 head words + offset + 5 tail words + services length
     expect(sent.metadataHash).toBe(keccak256(sent.metadata));
   });
 
@@ -802,6 +796,22 @@ describe('BuyerPaymentManager', () => {
     expect(sent.cumulativeAmount).toBe('50000');
   });
 
+  it('remembers the highest amount the seller reported accepting on the active channel, until it retires', async () => {
+    const sellerPeerId = fakePeerId('seller-accepted');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    const needAuth = (required: string, accepted: string) => manager.handleNeedAuth(sellerPeerId, {
+      channelId, requiredCumulativeAmount: required, currentAcceptedCumulative: accepted, deposit: '1000000', lastRequestCost: '10000',
+    }, mux);
+
+    await needAuth('50000', '40000');
+    // A NeedAuth that was overtaken on the wire reports less: the higher one stands.
+    await needAuth('20000', '10000');
+    const seen = manager.getSellerAcceptedCumulative(sellerPeerId);
+    manager.retireSession(sellerPeerId, CHANNEL_STATUS.SETTLED);
+
+    expect({ seen, afterRetire: manager.getSellerAcceptedCumulative(sellerPeerId) }).toEqual({ seen: 40_000n, afterRetire: 0n });
+  });
+
   it('handleNeedAuth signs concurrent NeedAuths one at a time: no lost cost, no lower cumulative after a higher one', async () => {
     const sellerPeerId = fakePeerId('seller-needauth-race');
     const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
@@ -1114,6 +1124,61 @@ describe('BuyerPaymentManager', () => {
       cumulativeRequestCount: 1n,
       cumulativeOutputImages: 1n,
     }]);
+  });
+
+  it('signs delivered speech characters and adds none for a speech request that failed', async () => {
+    const sellerPeerId = fakePeerId('seller-speech-characters');
+    const service = 'tts-model';
+    const unitModel = { version: 1 as const, components: [{ unit: 'input_characters' as const, priceUsd: 0.000015 }] };
+    await manager.authorizeSpending(sellerPeerId, mux, 10_000n);
+    const track = (requestId: string) => manager.trackRequestBilling(requestId, {
+      context: {
+        sellerPeerId,
+        provider: 'openai',
+        service,
+        serviceApiProtocol: 'openai-audio-speech',
+        attributes: { model: service },
+        unitLimits: { input_characters: 19 },
+      },
+      requestFacts: { kind: 'speech', speech: { characters: 19 } },
+      unitModel,
+    });
+
+    track('req-speech-ok');
+    const delivered = await manager.signPerRequestAuth(sellerPeerId, {
+      inputBytes: new Uint8Array(0),
+      outputBytes: new Uint8Array([0xff, 0xfb, 0x90]),
+      sellerClaimedCost: 285n,
+      reportedInputTokens: 0n,
+      reportedCachedInputTokens: 0n,
+      reportedOutputTokens: 0n,
+      unitUsage: { units: { input_characters: 19 } },
+      service,
+      requestId: 'req-speech-ok',
+    });
+    expect(decodeMetadataTokens(delivered.payload.metadata).inputCharacters).toBe(19n);
+    expect(decodeSpendingAuthMetadata(delivered.payload.metadata).services[0]).toMatchObject({
+      serviceId: id(service),
+      cumulativeInputCharacters: 19n,
+      cumulativeRequestCount: 1n,
+    });
+
+    // Speech billing measures no characters when no audio came back.
+    track('req-speech-failed');
+    const failed = await manager.signPerRequestAuth(sellerPeerId, {
+      inputBytes: new Uint8Array(0),
+      outputBytes: enc.encode(JSON.stringify({ error: { message: 'upstream failed' } })),
+      sellerClaimedCost: 0n,
+      reportedInputTokens: 0n,
+      reportedCachedInputTokens: 0n,
+      reportedOutputTokens: 0n,
+      unitUsage: { units: { input_characters: 0 } },
+      service,
+      requestId: 'req-speech-failed',
+    });
+    const after = decodeSpendingAuthMetadata(failed.payload.metadata);
+    expect(after.cumulativeInputCharacters).toBe(19n);
+    expect(after.services[0]).toMatchObject({ cumulativeInputCharacters: 19n, cumulativeRequestCount: 2n });
   });
 
   it('handleNeedAuth suppresses per-service metadata when disabled', async () => {
