@@ -770,7 +770,7 @@ are no longer left unminted: they go to the reserve and the remainder route.
   holds `sellerPools` for the staking check. Its report round is
   `results.diffChanges + results.serviceClears + auditorRevocations`: the results layer counts every
   move into or out of DIFF by any source, so support given before another source's DIFF can't clear
-  it. A SAME or UNDETERMINED replacing a live DIFF from any source still needs the DIFF quorum. The
+  it. A SAME or UNDETERMINED replacing a live DIFF from any source needs `diffReplacementReports` reports (default 1, owner-set with `setDiffReplacementReports`). The
   tallies are public (`reportKey`, `reportOf`, `reportCount`). Any auditor may submit any evidence
   hash, as on the old contract. New: `agentOwner(agentId)` and a self-service auditor profile
   (`setAuditorProfile(name, iconUri, url)`, `auditorProfile`, `AuditorProfileSet`; approved auditors

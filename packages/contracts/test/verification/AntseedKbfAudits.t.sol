@@ -808,6 +808,7 @@ contract AntseedKbfAuditsTest is Test {
     }
 
     function test_clearingAConfirmedDiffNeedsTwoAuditors() public {
+        kbf.setDiffReplacementReports(2); // strict mode: clearing a DIFF needs two auditors
         kbf.setRequiredReports(DIFF, 2);
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, DIFF);
         _audit(auditorB, MODEL_A, agentId, SERVICE_A, DIFF);
@@ -826,6 +827,7 @@ contract AntseedKbfAuditsTest is Test {
     }
 
     function test_aConfirmedDiffStaysLiveIntoTheNextEpochUntilTwoAuditorsClearIt() public {
+        kbf.setDiffReplacementReports(2); // strict mode: clearing a DIFF needs two auditors
         kbf.setRequiredReports(DIFF, 2);
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, DIFF);
         _audit(auditorB, MODEL_A, agentId, SERVICE_A, DIFF);
@@ -838,6 +840,7 @@ contract AntseedKbfAuditsTest is Test {
     }
 
     function test_oneSameUnderAnotherModelCannotClearADiff() public {
+        kbf.setDiffReplacementReports(2); // strict mode: clearing a DIFF needs two auditors
         kbf.setRequiredReports(DIFF, 2);
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, DIFF);
         _audit(auditorB, MODEL_A, agentId, SERVICE_A, DIFF);
@@ -889,6 +892,7 @@ contract AntseedKbfAuditsTest is Test {
     }
 
     function test_supportFromBeforeAConfirmedDiffCannotClearIt() public {
+        kbf.setDiffReplacementReports(2); // strict mode: clearing a DIFF needs two auditors
         kbf.setRequiredReports(DIFF, 2);
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
         _audit(auditorB, MODEL_A, agentId, SERVICE_A, DIFF);
@@ -906,6 +910,7 @@ contract AntseedKbfAuditsTest is Test {
     }
 
     function test_oneAuditorCannotClearADiffByChangingAndRestoringItsReport() public {
+        kbf.setDiffReplacementReports(2); // strict mode: clearing a DIFF needs two auditors
         kbf.setRequiredReports(DIFF, 2);
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
         _audit(auditorD, MODEL_A, agentId, SERVICE_A, SAME);
@@ -1097,6 +1102,35 @@ contract AntseedKbfAuditsTest is Test {
         assertTrue(results.isVerified(agentId), "the original audit still records");
     }
 
+    function test_byDefaultOneSameReplacesAConfirmedDiff() public {
+        assertEq(kbf.diffReplacementReports(), 1);
+        kbf.setRequiredReports(DIFF, 2); // the deployed default
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, DIFF);
+        _audit(auditorB, MODEL_A, agentId, SERVICE_A, DIFF);
+        assertEq(uint8(results.liveVerdict(agentId, SERVICE_A)), uint8(DIFF), "two auditors confirm the DIFF");
+        _audit(auditorC, MODEL_A, agentId, SERVICE_A, SAME);
+        assertEq(uint8(results.liveVerdict(agentId, SERVICE_A)), uint8(SAME), "one SAME replaces it");
+        assertTrue(results.isVerified(agentId));
+    }
+
+    function test_aDiffStillNeedsTwoAuditorsWhenReplacementNeedsOne() public {
+        kbf.setRequiredReports(DIFF, 2); // the deployed default
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, DIFF);
+        assertEq(uint8(results.liveVerdict(agentId, SERVICE_A)), uint8(NONE), "one DIFF only waits");
+    }
+
+    function test_onlyTheOwnerSetsDiffReplacementReportsAndNeverZero() public {
+        vm.expectRevert(AntseedKbfAudits.InvalidValue.selector);
+        kbf.setDiffReplacementReports(0);
+        vm.prank(auditorA);
+        vm.expectRevert();
+        kbf.setDiffReplacementReports(2);
+        vm.expectEmit(false, false, false, true, address(kbf));
+        emit AntseedKbfAudits.DiffReplacementReportsSet(2);
+        kbf.setDiffReplacementReports(2);
+        assertEq(kbf.diffReplacementReports(), 2);
+    }
+
     function test_approvalEmitsOnEveryCallAndOnlyRevocationsCount() public {
         address newcomer = address(0xE5);
         assertFalse(kbf.approvedAuditors(newcomer));
@@ -1132,6 +1166,7 @@ contract AntseedKbfAuditsTest is Test {
     }
 
     function test_anotherSourcesDiffNeedsAKbfDiffQuorumToReplace() public {
+        kbf.setDiffReplacementReports(2); // strict mode: clearing a DIFF needs two auditors
         kbf.setRequiredReports(DIFF, 2);
         MockVerificationSource probes = new MockVerificationSource(address(results));
         results.setSource(address(probes), true);
@@ -1155,6 +1190,7 @@ contract AntseedKbfAuditsTest is Test {
     }
 
     function test_supportFromBeforeAnotherSourcesDiffCannotClearIt() public {
+        kbf.setDiffReplacementReports(2); // strict mode: clearing a DIFF needs two auditors
         kbf.setRequiredReports(DIFF, 2);
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME); // recorded: SAME needs one report
         MockVerificationSource probes = new MockVerificationSource(address(results));

@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   THINKING_FALLBACK_MAX_TOKENS,
   discoverThinkingSuppression,
+  isKbfTokenLimitFinishReason,
+  kbfResponseFinishReason,
   reportedReasoningTokens,
   stripKbfThinkBlocks,
   type ThinkingDiscoveryProbe,
@@ -29,5 +31,43 @@ describe('thinking discovery helpers', () => {
     expect(result.strategy).toBe('bare-expanded');
     expect(result.maxTokens).toBe(THINKING_FALLBACK_MAX_TOKENS);
     expect(result.attempts.map((attempt) => attempt.strategy)).not.toContain('prefill');
+  });
+
+  it('skips a strategy whose reply reasons in the open, as GLM-5.3 on DeepInfra does with effort none', async () => {
+    // effort "none" turns the thinking channel off (0 reasoning tokens, all ten answers parse),
+    // but the model reasons in its reply; effort "minimal" keeps the reasoning hidden.
+    const reasoned = ANSWERS.split('\n')
+      .map((line) => `${line.slice(0, line.indexOf(' '))} Let me recall this value from memory: it is ${line.slice(line.indexOf(' ') + 1)}.`)
+      .join('\n');
+    const probe: ThinkingDiscoveryProbe = async ({ strategy }) => strategy === 'reasoning-effort-none'
+      ? { ok: true, content: `Let me work through each of these.\n\n${reasoned}`, reasoningTokens: 0 }
+      : { ok: true, content: ANSWERS, reasoningTokens: 0 };
+    const logs: string[] = [];
+    const result = await discoverThinkingSuppression({ model: 'glm-5.3', label: 'seller', supportsPrefill: true, probe, log: (line) => logs.push(line) });
+    expect(result.strategy).toBe('reasoning-effort-minimal');
+    expect(result.attempts[0]).toMatchObject({ strategy: 'reasoning-effort-none', validAnswers: 10, reasoningTokens: 0, answersOnly: false });
+    expect(logs.join('\n')).toContain('reasoned in its reply');
+  });
+
+  it('skips a strategy whose reply stops at the token limit, and a cut-off bare-expanded fails', async () => {
+    const cutOff: ThinkingDiscoveryProbe = async ({ strategy }) => strategy === 'reasoning-effort-none'
+      ? { ok: true, content: ANSWERS, reasoningTokens: 0, truncated: true }
+      : { ok: true, content: ANSWERS, reasoningTokens: 0 };
+    expect((await discoverThinkingSuppression({ model: 'm', label: 'e', supportsPrefill: false, probe: cutOff })).strategy)
+      .toBe('reasoning-effort-minimal');
+    const alwaysCutOff: ThinkingDiscoveryProbe = async () => ({ ok: true, content: ANSWERS, reasoningTokens: 0, truncated: true });
+    await expect(discoverThinkingSuppression({ model: 'm', label: 'e', supportsPrefill: false, probe: alwaysCutOff }))
+      .rejects.toThrow(/hit token limit/);
+  });
+
+  it('recognises token-limit finish reasons across APIs', () => {
+    expect(isKbfTokenLimitFinishReason('length')).toBe(true);
+    expect(isKbfTokenLimitFinishReason('max_tokens')).toBe(true);
+    expect(isKbfTokenLimitFinishReason('incomplete')).toBe(true);
+    expect(isKbfTokenLimitFinishReason('stop')).toBe(false);
+    expect(isKbfTokenLimitFinishReason(null)).toBe(false);
+    expect(kbfResponseFinishReason(JSON.stringify({ choices: [{ finish_reason: 'length' }] }))).toBe('length');
+    expect(kbfResponseFinishReason(JSON.stringify({ stop_reason: 'max_tokens' }))).toBe('max_tokens');
+    expect(kbfResponseFinishReason('not json')).toBeNull();
   });
 });

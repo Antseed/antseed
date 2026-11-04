@@ -17,6 +17,8 @@ import {
   hasMissingKbfAnswers,
   parseKbfAnswers,
   queryProfileHash,
+  isKbfTokenLimitFinishReason,
+  kbfResponseFinishReason,
   reportedReasoningTokens,
   stripKbfThinkBlocks,
   verifyKbf,
@@ -1019,7 +1021,10 @@ async function executeProxyProbeBatch(
       const extracted = extractCompletionText(responseBody)
       // As the reference code does before parsing, `<think>…</think>` blocks are not answers.
       const completion = extracted === null ? null : stripKbfThinkBlocks(extracted)
-      const answers = completion === null
+      // A reply cut off at the token limit is not scored: the model was still writing (often
+      // reasoning in the reply), so its numbers are not its answers. It is asked again below.
+      const truncated = isKbfTokenLimitFinishReason(kbfResponseFinishReason(responseText(responseBody)))
+      const answers = completion === null || truncated
         ? new Array<number | null>(probes.length).fill(null)
         : parseKbfAnswers(completion, probes.length)
       const malformedOutput = answers.every((answer) => answer === null)
@@ -1070,7 +1075,7 @@ async function executeProxyProbeBatch(
         cost: attemptCost,
         attemptCosts: [...attemptCosts],
         outcomeReason: responseAuth.status === 'verified'
-          ? malformedOutput ? malformedOutputReason(requestId) : null
+          ? truncated ? truncatedOutputReason(requestId) : malformedOutput ? malformedOutputReason(requestId) : null
           : responseAuthReason(responseAuth.status, responseAuth.failureReason, requestId),
         responseAuth: {
           requestId: responseAuth.requestId,
@@ -1260,7 +1265,12 @@ async function discoverSellerThinking(
         if (cost) record.attemptCosts.push(cost)
         if (response.ok) {
           outages = 0
-          return { ok: true, content: extractCompletionText(responseBody), reasoningTokens: reportedReasoningTokens(responseText(responseBody)) }
+          return {
+            ok: true,
+            content: extractCompletionText(responseBody),
+            reasoningTokens: reportedReasoningTokens(responseText(responseBody)),
+            truncated: isKbfTokenLimitFinishReason(kbfResponseFinishReason(responseText(responseBody))),
+          }
         }
         const text = responseText(responseBody)
         failure = { status: response.status, failure: sanitizeOutcomeSummary(text.slice(0, 300)) }
@@ -1685,6 +1695,20 @@ function summarizeUndeterminedReason(
       : reasons.some((reason) => reason.code === 'malformed_output')
         ? 'seller must return parseable output'
       : 'resume audit',
+  }
+}
+
+/** A reply that stopped at the token limit: the seller's model was still writing, so it is not scored. */
+function truncatedOutputReason(requestId: string): VerificationOutcomeReasonV1 {
+  return {
+    code: 'malformed_output',
+    summary: 'successful authenticated response stopped at the token limit, so its answers are not scored',
+    retryable: false,
+    source: 'provider',
+    affectedBatchCount: 1,
+    totalBatchCount: 1,
+    nextAction: 'seller must return parseable output',
+    requestId,
   }
 }
 

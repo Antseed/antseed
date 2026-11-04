@@ -78,6 +78,10 @@ interface IAntseedKbfAudits {
     /// @notice Distinct approved auditors that must report a verdict in one epoch before it is recorded.
     function requiredReports(IAntseedVerificationResults.Verdict verdict) external view returns (uint8);
 
+    /// @notice Distinct approved auditors a non-DIFF result needs to replace a live DIFF (default 1,
+    ///         so one SAME is enough); the result's own `requiredReports` applies when higher.
+    function diffReplacementReports() external view returns (uint8);
+
     /// @notice Records one auditor's KBF results for every seller audited as `modelHash`.
     /// @dev Reverts unless the caller is an approved auditor, `expectedEpoch` is the results layer's current epoch, `evidenceHash` is non-zero, and `results` is non-empty, bounded, and strictly ordered by
     ///      (agentId, serviceHash).

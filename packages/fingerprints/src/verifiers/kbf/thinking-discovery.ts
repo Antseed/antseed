@@ -8,9 +8,16 @@
  * parseable answers with zero reasoning tokens is kept (`bare` may think). If
  * none works, `bare` is retried with 50 times the token budget so the model has
  * room to think and still answer (`bare-expanded`).
+ *
+ * Unlike the reference code, a strategy must also leave the reply as only the
+ * numbered answers and must not hit the token limit. Some upstreams turn the
+ * thinking channel off but let the model reason in its reply instead (GLM-5.3 on
+ * DeepInfra with `reasoning: {effort: "none"}`): that reports no reasoning tokens
+ * and passes the reference check, but on real audit questions the reasoning runs
+ * past the token limit and the parsed numbers come from the reasoning.
  */
 import type { KbfProbe } from '../../types.js';
-import { parseKbfAnswers } from './parser.js';
+import { isKbfAnswersOnlyReply, parseKbfAnswers } from './parser.js';
 import { KBF_THINKING_PREFILL, type ReferenceReasoningStrategy } from './reference.js';
 
 export const THINKING_DISCOVERY_STRATEGIES = [
@@ -86,6 +93,10 @@ export interface ThinkingDiscoveryAttemptV1 {
   /** Parseable answers out of ten; null when the request failed. */
   validAnswers: number | null;
   reasoningTokens: number | null;
+  /** False when the reply held more than the numbered answers (the model reasoned in it). */
+  answersOnly?: boolean;
+  /** True when the reply stopped at the token limit. */
+  truncated?: boolean;
   failure?: string;
 }
 
@@ -99,9 +110,35 @@ export type ThinkingDiscoveryProbe = (input: {
   request: ThinkingStrategyRequest;
   maxTokens: number;
 }) => Promise<
-  | { ok: true; content: string | null; reasoningTokens: number }
+  | { ok: true; content: string | null; reasoningTokens: number; truncated?: boolean }
   | { ok: false; status: number | null; failure: string }
 >;
+
+/**
+ * True for a finish reason meaning the reply stopped at the token limit: OpenAI `length`,
+ * Anthropic `max_tokens`, OpenAI Responses `incomplete` / `max_output_tokens`.
+ */
+export function isKbfTokenLimitFinishReason(reason: string | null | undefined): boolean {
+  if (typeof reason !== 'string') return false;
+  const normalized = reason.trim().toLowerCase();
+  return normalized === 'length' || normalized === 'max_tokens' || normalized === 'incomplete' || normalized === 'max_output_tokens';
+}
+
+/** The finish reason of an OpenAI-style, Anthropic or Responses API JSON body; null when absent. */
+export function kbfResponseFinishReason(responseBody: string): string | null {
+  try {
+    const parsed = JSON.parse(responseBody) as {
+      choices?: Array<{ finish_reason?: unknown }>;
+      stop_reason?: unknown;
+      status?: unknown;
+      incomplete_details?: { reason?: unknown };
+    };
+    const reason = parsed.choices?.[0]?.finish_reason ?? parsed.stop_reason ?? parsed.incomplete_details?.reason ?? parsed.status;
+    return typeof reason === 'string' ? reason : null;
+  } catch {
+    return null;
+  }
+}
 
 export class ThinkingDiscoveryError extends Error {
   constructor(message: string, readonly attempts: ThinkingDiscoveryAttemptV1[]) {
@@ -154,6 +191,8 @@ export async function discoverThinkingSuppression(input: {
         status: null,
         validAnswers: countDiscoveryAnswers(outcome.content),
         reasoningTokens: outcome.reasoningTokens,
+        answersOnly: outcome.content === null || isKbfAnswersOnlyReply(stripKbfThinkBlocks(outcome.content)),
+        truncated: outcome.truncated === true,
       }
       : { strategy, maxTokens, status: outcome.status, validAnswers: null, reasoningTokens: null, failure: outcome.failure };
     attempts.push(attempt);
@@ -163,16 +202,23 @@ export async function discoverThinkingSuppression(input: {
     if (strategy === 'prefill' && !input.supportsPrefill) continue;
     const attempt = await tryOnce(strategy, THINKING_DISCOVERY_MAX_TOKENS);
     const valid = attempt.validAnswers ?? -1;
+    const cleanReply = attempt.answersOnly !== false && attempt.truncated !== true;
     // `bare` is the no-suppression baseline and may think. Any other strategy
-    // that still reports reasoning tokens was accepted but ignored.
-    if (valid >= THINKING_DISCOVERY_MINIMUM_VALID_ANSWERS && (strategy === 'bare' || attempt.reasoningTokens === 0)) {
+    // that still reports reasoning tokens was accepted but ignored. A reply that
+    // reasons in the open or stops at the token limit fails any strategy.
+    if (valid >= THINKING_DISCOVERY_MINIMUM_VALID_ANSWERS && cleanReply && (strategy === 'bare' || attempt.reasoningTokens === 0)) {
       input.log?.(
         `thinking suppression for ${input.model}: '${strategy}' works on ${input.label} `
         + `(${valid}/10 parseable, reasoning_tokens=${attempt.reasoningTokens})`,
       );
       return { strategy, ...thinkingStrategyRequest(strategy), attempts };
     }
-    if (valid >= THINKING_DISCOVERY_MINIMUM_VALID_ANSWERS) {
+    if (valid >= THINKING_DISCOVERY_MINIMUM_VALID_ANSWERS && !cleanReply) {
+      input.log?.(
+        `thinking suppression for ${input.model}: '${strategy}' answered, but `
+        + `${attempt.truncated ? 'the reply stopped at the token limit' : 'the model reasoned in its reply'}; trying next`,
+      );
+    } else if (valid >= THINKING_DISCOVERY_MINIMUM_VALID_ANSWERS) {
       input.log?.(
         `thinking suppression for ${input.model}: '${strategy}' accepted but ignored `
         + `(reasoning_tokens=${attempt.reasoningTokens}); trying next`,
@@ -180,7 +226,8 @@ export async function discoverThinkingSuppression(input: {
     }
   }
   const expanded = await tryOnce('bare-expanded', THINKING_FALLBACK_MAX_TOKENS);
-  if ((expanded.validAnswers ?? -1) >= THINKING_DISCOVERY_MINIMUM_VALID_ANSWERS) {
+  // `bare-expanded` lets the model think in the open, so only a reply cut off at the limit fails it.
+  if ((expanded.validAnswers ?? -1) >= THINKING_DISCOVERY_MINIMUM_VALID_ANSWERS && expanded.truncated !== true) {
     input.log?.(
       `thinking suppression for ${input.model}: no strategy worked; using 'bare' with `
       + `${THINKING_FALLBACK_TOKEN_MULTIPLIER}x the token budget (${THINKING_FALLBACK_MAX_TOKENS} tokens per request, `
@@ -199,7 +246,8 @@ export async function discoverThinkingSuppression(input: {
   }
   const detail = attempts.map((attempt) => attempt.validAnswers === null
     ? `${attempt.strategy}: ${attempt.status === null ? 'failed' : `HTTP ${attempt.status}`} ${(attempt.failure ?? '').slice(0, 160)}`
-    : `${attempt.strategy}: ${attempt.validAnswers}/10 parseable, reasoning_tokens=${attempt.reasoningTokens}`).join('; ');
+    : `${attempt.strategy}: ${attempt.validAnswers}/10 parseable, reasoning_tokens=${attempt.reasoningTokens}`
+      + `${attempt.answersOnly === false ? ', reasoned in reply' : ''}${attempt.truncated ? ', hit token limit' : ''}`).join('; ');
   throw new ThinkingDiscoveryError(
     `no thinking-suppression strategy worked for ${input.model} on ${input.label}, even 'bare' with `
     + `${THINKING_FALLBACK_MAX_TOKENS} tokens: ${detail}`,

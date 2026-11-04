@@ -13,6 +13,7 @@ import {
   canonicalJsonStringify,
   computeBinomialPower,
   computeMatchVector,
+  isKbfTokenLimitFinishReason,
   isLowCoverageKbfBatch,
   computeReferenceId,
   createReferenceQueryProfile,
@@ -1707,7 +1708,12 @@ function createReferenceQuery(input: {
         })
         await input.checkpoint.set(cacheKey, success)
         consumed.set(cacheKey, success)
-        return { ok: true, content: response.content, reasoningTokens: response.reasoningTokens ?? 0 }
+        return {
+          ok: true,
+          content: response.content,
+          reasoningTokens: response.reasoningTokens ?? 0,
+          truncated: isKbfTokenLimitFinishReason(response.finishReason),
+        }
       } catch (error) {
         if (error instanceof EmptyReferenceResponseError) {
           const empty: ReferenceCachedTerminalEmptyV1 = {
@@ -2172,6 +2178,8 @@ interface ReferenceCompletion {
   /** Hidden reasoning tokens the endpoint reported; null when it reports none. */
   reasoningTokens: number | null
   provider: string | null
+  /** `length` when the reply stopped at the token limit (Anthropic `max_tokens` is mapped to it). */
+  finishReason?: string | null
   exchange: ReferenceRawExchange
 }
 
@@ -2263,6 +2271,7 @@ async function postChatCompletion(
       outputTokens: parsed.outputTokens,
       reasoningTokens: parsed.reasoningTokens,
       provider: parsed.provider,
+      finishReason: parsed.finishReason,
       exchange,
     }
   } finally {

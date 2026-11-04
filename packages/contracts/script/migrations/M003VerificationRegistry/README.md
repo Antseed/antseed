@@ -42,7 +42,7 @@ readers and the reward bucket stay put.
   must report a verdict before it is recorded: SAME 1, DIFF 2, UNDETERMINED 1
   (`setRequiredReports`). Until a second auditor confirms it, a DIFF only waits.
 - **The latest verdict from any source wins.** The results layer does not judge what a source
-  records. Within KBF, replacing a live DIFF (from any source) needs the DIFF quorum. A second
+  records. Within KBF, replacing a live DIFF (from any source) needs `kbf.diffReplacementReports` reports (default 1, so one SAME is enough; the owner can raise it with `setDiffReplacementReports`). A second
   source added later can overwrite KBF's verdicts, so it must bring its own rules for that. The owner
   can reset services with `results.clearServiceStatuses`; KBF then drops reports made before the
   clear.

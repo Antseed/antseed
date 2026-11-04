@@ -5,6 +5,11 @@
  * emits: `(N)`, `N.`, `N)`, or `QN:` followed by the number. Position comes
  * from the index N, never from the line order, so missing or reordered lines do
  * not shift other answers. Unparseable or missing positions yield null.
+ *
+ * As in the KBF reference code (`extract_nums`), a line's answer is its last
+ * number and a repeated index takes the later line: a model that reasons in its
+ * reply ("2) … ran from 1923 to 1924 … published 52 issues") ends a line, and the
+ * reply, with its answer.
  */
 
 /**
@@ -16,33 +21,34 @@
 const ANSWER_LINE_RE = /^\s*(?:Q\s*)?\(?\s*(\d{1,4})\s*[)\].:;]+\s*(.*)$/i;
 
 /**
- * First numeric token in a string: optional sign, digits with optional
+ * Numeric tokens in a string: optional sign, digits with optional
  * thousands-commas, optional decimals, optional scientific exponent.
  * Trailing units (`°C`, `km`, …) and leading prose are tolerated.
  */
-const NUMBER_RE = /[-+]?\d[\d,]*(?:\.\d+)?(?:[eE][-+]?\d+)?/;
+const NUMBER_RE = /[-+]?\d[\d,]*(?:\.\d+)?(?:[eE][-+]?\d+)?/g;
 
-function parseNumericToken(text: string): number | null {
-  const match = NUMBER_RE.exec(text);
-  if (!match) {
-    return null;
-  }
-  const cleaned = match[0].replace(/,/g, '');
-  const value = Number.parseFloat(cleaned);
+function numericValue(token: string): number | null {
+  const value = Number.parseFloat(token.replace(/,/g, ''));
   return Number.isFinite(value) ? value : null;
 }
 
-/**
- * Parse a KBF batch response into a position-aligned answer array of length
- * `probeCount`. Index N (1-based in the response) maps to slot N-1.
- * The first parsed value wins if an index repeats.
- */
+/** The last numeric token of a string, as the KBF reference code reads an answer line. */
+function parseNumericToken(text: string): number | null {
+  const tokens = text.match(NUMBER_RE);
+  return tokens ? numericValue(tokens[tokens.length - 1]!) : null;
+}
+
 /**
  * A line that holds only `<number>…</number>`, as some models answer the
  * `1) <number>` format: the tag literally, without the index.
  */
 const TAGGED_NUMBER_LINE_RE = /^\s*<number>\s*([^<]*?)\s*<\/number>\s*$/i;
 
+/**
+ * Parse a KBF batch response into a position-aligned answer array of length
+ * `probeCount`. Index N (1-based in the response) maps to slot N-1, and a
+ * repeated index takes the later line, as in the KBF reference code.
+ */
 export function parseKbfAnswers(responseText: string, probeCount: number): Array<number | null> {
   const answers: Array<number | null> = new Array(probeCount).fill(null);
   if (probeCount <= 0) {
@@ -64,10 +70,39 @@ export function parseKbfAnswers(responseText: string, probeCount: number): Array
     if (!Number.isInteger(index) || index < 1 || index > probeCount) {
       continue;
     }
-    if (answers[index - 1] !== null) {
-      continue; // first parsed value wins
-    }
     answers[index - 1] = parseNumericToken(lineMatch[2] ?? '');
   }
   return answers;
+}
+
+/** Words a short unit may add after an answer (`°C`, `m/s`, `days`). */
+const MAX_UNIT_WORDS = 3;
+
+/**
+ * True when a reply is only the numbered answers: every line is an answer line
+ * holding one number and at most a short unit, apart from one heading line
+ * ("Here are the answers:"). A reply that reasons ("2) … ran from 1923 to 1924 …
+ * published 52 issues") is not. Thinking discovery requires this, since a
+ * strategy that moves the model's reasoning into its reply reports no reasoning
+ * tokens.
+ */
+export function isKbfAnswersOnlyReply(responseText: string): boolean {
+  let otherLines = 0;
+  for (const raw of responseText.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line === '' || /^```/.test(line)) continue;
+    if (TAGGED_NUMBER_LINE_RE.test(line)) continue;
+    const lineMatch = ANSWER_LINE_RE.exec(line);
+    if (!lineMatch) {
+      otherLines += 1;
+      if (otherLines > 1) return false;
+      continue;
+    }
+    const rest = (lineMatch[2] ?? '').replace(/<\/?number>/gi, ' ');
+    const tokens = rest.match(NUMBER_RE) ?? [];
+    if (tokens.length === 0) continue;
+    const words = rest.replace(NUMBER_RE, ' ').split(/\s+/).filter((word) => /[\p{L}]/u.test(word));
+    if (words.length > MAX_UNIT_WORDS) return false;
+  }
+  return true;
 }

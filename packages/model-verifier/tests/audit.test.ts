@@ -72,6 +72,39 @@ describe('auditEndpoint', () => {
     expect(result.evaluation.verdict).toBe('UNDETERMINED')
   })
 
+  it('does not score a reply cut off at the token limit and re-asks the batch', async () => {
+    const endpoint = new FakeEndpoint()
+    const answer = endpoint.call.bind(endpoint)
+    let calls = 0
+    endpoint.call = async (request, signal) => {
+      const result = await answer(request, signal)
+      calls++
+      if (!result.ok) return result
+      // First try: every answer wrong, but the reply stopped at the token limit; second try: complete.
+      if (calls === 1) {
+        const wrong = result.text.split('\n').map((line) => line.replace(/\d+$/, (value) => String(Number(value) + 7))).join('\n')
+        return { ...result, text: wrong, finishReason: 'length' }
+      }
+      return result
+    }
+    const result = await auditEndpoint({ endpoint, reference: testReference(), probeCount: 10, concurrency: 1, discoverThinking: false })
+    expect(calls).toBe(2)
+    expect(result.batches[0]!.truncated).toBeUndefined()
+    expect(result.evaluation.stats.targetHamming).toBe(0)
+    expect(result.evaluation.verdict).toBe('SAME')
+
+    const cutOff = new FakeEndpoint()
+    const cutOffAnswer = cutOff.call.bind(cutOff)
+    cutOff.call = async (request, signal) => {
+      const result = await cutOffAnswer(request, signal)
+      return result.ok ? { ...result, finishReason: 'length' } : result
+    }
+    const always = await auditEndpoint({ endpoint: cutOff, reference: testReference(), probeCount: 10, concurrency: 1, discoverThinking: false })
+    expect(always.batches[0]!.truncated).toBe(true)
+    expect(always.batches[0]!.answers.every((value) => value === null)).toBe(true)
+    expect(always.evaluation.verdict).toBe('UNDETERMINED')
+  })
+
   it('fails instead of returning UNDETERMINED when the endpoint answers nothing', async () => {
     const endpoint = new FakeEndpoint()
     endpoint.call = async () => ({ ok: false, status: 401, retryable: false, message: 'HTTP 401: {"error":"User not found."}' })

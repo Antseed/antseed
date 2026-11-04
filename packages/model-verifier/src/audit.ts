@@ -2,6 +2,7 @@ import { randomInt } from 'node:crypto'
 import {
   ThinkingDiscoveryError,
   discoverThinkingSuppression,
+  isKbfTokenLimitFinishReason,
   reportedReasoningTokens,
   stripKbfThinkBlocks,
   thinkingStrategyRequest,
@@ -66,6 +67,8 @@ export interface AuditBatchRecord {
   omittedSamplingFields?: string[]
   /** True when the endpoint refused the reference's thinking suppression and the batch was sent without it. */
   omittedThinkingSuppression?: true
+  /** True when the kept reply stopped at the token limit; its answers are not scored. */
+  truncated?: true
   attempts: number
   status: 'succeeded' | 'failed'
   failureReason: string | null
@@ -274,7 +277,12 @@ async function runBatch(
     }
     if (result.ok) {
       // As the reference code does before parsing, `<think>…</think>` blocks are not answers.
-      const answers = parseKbfAnswers(stripKbfThinkBlocks(result.text), probes.length)
+      // A reply cut off at the token limit is not scored: the model was still writing, so
+      // its numbers may come from reasoning rather than answers. It is asked again below.
+      const truncated = isKbfTokenLimitFinishReason(result.finishReason)
+      const answers = truncated
+        ? probes.map(() => null)
+        : parseKbfAnswers(stripKbfThinkBlocks(result.text), probes.length)
       const matches = computeMatchVector(answers, probes)
       const scored = matches.filter((match) => match !== null).length
       const record: AuditBatchRecord = {
@@ -283,6 +291,7 @@ async function runBatch(
         promptVariantId,
         ...(omittedSampling ? { omittedSamplingFields: [...KBF_OPTIONAL_SAMPLING_FIELDS] } : {}),
         ...(omittedThinking ? { omittedThinkingSuppression: true as const } : {}),
+        ...(truncated ? { truncated: true as const } : {}),
         attempts: calls,
         status: 'succeeded',
         failureReason: null,
@@ -383,6 +392,7 @@ async function discoverEndpointThinking(options: AuditOptions, model: string): P
           ok: true,
           content: result.text,
           reasoningTokens: reportedReasoningTokens(Buffer.from(result.raw.response).toString('utf8')),
+          truncated: isKbfTokenLimitFinishReason(result.finishReason),
         }
       }
       // A 2xx without completion text is an answer with nothing parseable (the model ran out of

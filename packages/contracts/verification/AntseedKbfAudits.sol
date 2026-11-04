@@ -15,8 +15,9 @@ import { IERC8004Registry } from "../interfaces/IERC8004Registry.sol";
 ///         model. A verdict is recorded into the results layer once `requiredReports[verdict]`
 ///         distinct approved auditors report it for the same (agent, service, model) in the same
 ///         epoch and report round (defaults: SAME 1, DIFF 2, UNDETERMINED 1). Replacing a live DIFF
-///         needs as many reports as a DIFF does, whatever the new result or model, so one auditor
-///         cannot clear a confirmed DIFF either. An auditor's later report replaces its earlier one;
+///         needs at least `diffReplacementReports` reports (default 1), whatever the new result or
+///         model, so a single SAME clears a DIFF unless the owner raises it (e.g. to 2, so one auditor
+///         cannot clear a confirmed DIFF). An auditor's later report replaces its earlier one;
 ///         a repeated report adds no support, so it records again only when one report is enough.
 ///         Every report emits `ServiceAudited` with its round, the reports so far and the reports
 ///         needed.
@@ -27,7 +28,7 @@ import { IERC8004Registry } from "../interfaces/IERC8004Registry.sol";
 ///         a new round everywhere. The results layer counts moves into or out of DIFF made by any
 ///         source (`diffChanges`) and owner clears (`serviceClears`), and both move KBF rounds too,
 ///         so support given before another source's DIFF or an owner clear never counts after it.
-///         Any live DIFF, whoever recorded it, needs DIFF-level support to replace.
+///         Any live DIFF, whoever recorded it, needs `diffReplacementReports` support to replace.
 ///
 ///         Results for agents the identity registry cannot resolve are skipped with
 ///         `UnknownAgentSkipped`, so one stale agent does not fail the whole audit. An auditor
@@ -54,6 +55,8 @@ contract AntseedKbfAudits is IAntseedKbfAudits, Ownable2Step {
     mapping(address auditor => AuditorProfile profile) private _profiles;
     /// @notice Distinct approved auditors that must report a verdict in one epoch before it is recorded.
     mapping(IAntseedVerificationResults.Verdict verdict => uint8 reports) public override requiredReports;
+    /// @inheritdoc IAntseedKbfAudits
+    uint8 public override diffReplacementReports = 1;
 
     /// @notice Safety limit: credited audits of the same model per auditor and epoch (default 1).
     ///         Stops an auditor from earning repeatedly by re-auditing one model.
@@ -70,6 +73,7 @@ contract AntseedKbfAudits is IAntseedKbfAudits, Ownable2Step {
 
     event SellerPoolsSet(address sellerPools);
     event RequiredReportsSet(IAntseedVerificationResults.Verdict indexed verdict, uint8 reports);
+    event DiffReplacementReportsSet(uint8 reports);
     event MaxCreditsPerModelPerEpochSet(uint32 maxCredits);
     event ModelAudited(
         bytes32 indexed modelHash,
@@ -144,6 +148,15 @@ contract AntseedKbfAudits is IAntseedKbfAudits, Ownable2Step {
         if (verdict == IAntseedVerificationResults.Verdict.NONE || reports == 0) revert InvalidValue();
         requiredReports[verdict] = reports;
         emit RequiredReportsSet(verdict, reports);
+    }
+
+    /// @notice Distinct approved auditors a non-DIFF result needs to replace a live DIFF (default 1).
+    ///         The result's own `requiredReports` still applies when it is higher. Applies from the
+    ///         next report on.
+    function setDiffReplacementReports(uint8 reports) external onlyOwner {
+        if (reports == 0) revert InvalidValue();
+        diffReplacementReports = reports;
+        emit DiffReplacementReportsSet(reports);
     }
 
     /// @notice Sets the per-model safety limit on credited audits per auditor and epoch.
@@ -293,12 +306,12 @@ contract AntseedKbfAudits is IAntseedKbfAudits, Ownable2Step {
         uint256 reports = _reportCounts[key][verdict];
         uint256 required = requiredReports[verdict];
         IAntseedVerificationResults.Verdict live = results.liveVerdict(agentId, serviceHash);
-        // Replacing a live DIFF takes as many auditors as giving one.
+        // Replacing a live DIFF takes at least `diffReplacementReports` auditors.
         if (
             verdict != IAntseedVerificationResults.Verdict.DIFF && live == IAntseedVerificationResults.Verdict.DIFF
+            && diffReplacementReports > required
         ) {
-            uint256 diffRequired = requiredReports[IAntseedVerificationResults.Verdict.DIFF];
-            if (diffRequired > required) required = diffRequired;
+            required = diffReplacementReports;
         }
         emit ServiceAudited(agentId, serviceHash, msg.sender, modelHash, verdict, round, reports, required);
         if (reports < required || (!addsSupport && required != 1)) return;
