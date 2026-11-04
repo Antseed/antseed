@@ -32,6 +32,13 @@ const CANARY_TIMEOUT_MS = 60_000;
 const PING_INTERVAL_MS = 15_000;
 const MAX_FRAME_BYTES = 16 * 1024 * 1024;
 const MAX_WORKER_CONCURRENCY = 64;
+/** A started response that sends nothing for this long is cancelled. */
+const DEFAULT_RESPONSE_IDLE_TIMEOUT_MS = 60_000;
+/** Most a worker may send for one buyer response, and for one of the pool's own checks. */
+const MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
+const MAX_CHECK_RESPONSE_BYTES = 1024 * 1024;
+/** How often a join check looks for a free slot on a busy worker. */
+const CHECK_SLOT_POLL_MS = 1_000;
 /** A certificate must outlive the connection's first minute to be accepted. */
 const MIN_CERTIFICATE_LIFETIME_S = 60;
 /** Reconnect a worker this long before its certificate expires (buyers stop using one 5 minutes before). */
@@ -63,6 +70,8 @@ export interface ColonyPoolOptions {
   verifyOnJoin?: boolean;
   /** How long a worker has to start answering a request. */
   firstByteTimeoutMs?: number;
+  /** How long a started response may go without a chunk before it is cancelled. */
+  responseIdleTimeoutMs?: number;
   /** Only admit workers whose attestation reports a hardened Mac (signed app, SIP on, app-bound key). */
   requireAttestation?: boolean;
   /** If set, only apps signed by these Apple Developer teams count as hardened. */
@@ -111,7 +120,15 @@ export interface PlainResponse {
 interface InFlight {
   handlers: DispatchHandlers;
   started: boolean;
+  /** First-byte deadline until the response starts, then the idle deadline, refreshed by every chunk. */
   timer: NodeJS.Timeout | null;
+  /** Re-arms `timer` with the idle deadline. */
+  touch: () => void;
+  /** Response bytes received, bounded by `maxBytes`. */
+  bytes: number;
+  maxBytes: number;
+  /** Removes the caller's abort listener. */
+  release: () => void;
   startedAt: number;
   firstByteAt: number | null;
 }
@@ -147,6 +164,8 @@ interface ConnectedWorker {
   inflight: Map<string, InFlight>;
   /** Timing of recently finished requests, kept until the charge hook reads it. */
   finished: Map<string, RequestTiming>;
+  /** Join checks run one at a time, each in a free slot, so they never exceed the worker's capacity. */
+  checks: Promise<void>;
   /** Smoothed decode speed in output tokens per second, 0 until measured. */
   tokensPerSecond: number;
   /** When buyers were recently assigned to this worker. */
@@ -315,7 +334,7 @@ export class ColonyPool {
           }
         },
         onError: reject,
-      }, undefined, timeoutMs);
+      }, undefined, timeoutMs, MAX_CHECK_RESPONSE_BYTES);
     });
   }
 
@@ -359,22 +378,36 @@ export class ColonyPool {
     handlers: DispatchHandlers,
     signal?: AbortSignal,
     firstByteTimeoutMs = this.opts.firstByteTimeoutMs ?? 120_000,
+    maxBytes = MAX_RESPONSE_BYTES,
   ): void {
-    const entry: InFlight = { handlers, started: false, timer: null, startedAt: Date.now(), firstByteAt: null };
-    const fail = (error: Error): void => {
+    if (signal?.aborted) {
+      handlers.onError(new Error('Request aborted'));
+      return;
+    }
+    const idleTimeoutMs = this.opts.responseIdleTimeoutMs ?? DEFAULT_RESPONSE_IDLE_TIMEOUT_MS;
+    const cancel = (error: Error): void => {
       if (table.get(req.requestId) !== entry) return;
+      this.sendFrame(worker.ws, { t: 'cancel', id: req.requestId });
       this.finish(table, req.requestId);
       handlers.onError(error);
     };
-    entry.timer = setTimeout(() => {
-      this.sendFrame(worker.ws, { t: 'cancel', id: req.requestId });
-      fail(new Error(`Worker ${worker.address} did not answer within ${firstByteTimeoutMs}ms`));
-    }, firstByteTimeoutMs);
+    const onAbort = (): void => cancel(new Error('Request aborted'));
+    const entry: InFlight = {
+      handlers,
+      started: false,
+      timer: setTimeout(() => cancel(new Error(`Worker ${worker.address} did not answer within ${firstByteTimeoutMs}ms`)), firstByteTimeoutMs),
+      touch: () => {
+        if (entry.timer) clearTimeout(entry.timer);
+        entry.timer = setTimeout(() => cancel(new Error(`Worker ${worker.address} sent nothing for ${idleTimeoutMs}ms`)), idleTimeoutMs);
+      },
+      bytes: 0,
+      maxBytes,
+      release: () => signal?.removeEventListener('abort', onAbort),
+      startedAt: Date.now(),
+      firstByteAt: null,
+    };
     table.set(req.requestId, entry);
-    signal?.addEventListener('abort', () => {
-      this.sendFrame(worker.ws, { t: 'cancel', id: req.requestId });
-      fail(new Error('Request aborted'));
-    }, { once: true });
+    signal?.addEventListener('abort', onAbort, { once: true });
     this.sendFrame(worker.ws, {
       t: 'request',
       id: req.requestId,
@@ -388,6 +421,7 @@ export class ColonyPool {
   private finish(table: Map<string, InFlight>, requestId: string): void {
     const entry = table.get(requestId);
     if (entry?.timer) clearTimeout(entry.timer);
+    entry?.release();
     table.delete(requestId);
   }
 
@@ -483,6 +517,7 @@ export class ColonyPool {
       verified: new Set(),
       inflight: new Map(),
       finished: new Map(),
+      checks: Promise.resolve(),
       tokensPerSecond: 0,
       assignedAt: [],
     };
@@ -608,7 +643,7 @@ export class ColonyPool {
     }
     for (const service of accepted) {
       if (worker.verified.has(service)) continue;
-      if (this.opts.verifyOnJoin) void this.verify(worker, service);
+      if (this.opts.verifyOnJoin) worker.checks = worker.checks.then(() => this.verify(worker, service));
       else worker.verified.add(service);
     }
     this.emitChangeIfNeeded();
@@ -617,6 +652,17 @@ export class ColonyPool {
 
   /** A short completion the worker must answer correctly before buyers reach it. */
   private async verify(worker: ConnectedWorker, service: string): Promise<void> {
+    // Wait for a free slot, so the check never pushes the worker past its capacity.
+    const deadline = Date.now() + CANARY_TIMEOUT_MS;
+    while (worker.inflight.size >= worker.maxConcurrency) {
+      if (this.workers.get(worker.address) !== worker || !worker.offered.has(service)) return;
+      if (Date.now() >= deadline) {
+        this.log(`worker ${worker.address} stayed busy; skipping the check for ${service} until it offers it again`);
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, CHECK_SLOT_POLL_MS));
+    }
+    if (this.workers.get(worker.address) !== worker || !worker.offered.has(service) || worker.verified.has(service)) return;
     const body = new TextEncoder().encode(JSON.stringify({
       model: service,
       messages: [{ role: 'user', content: 'Reply with the single word: ready' }],
@@ -648,15 +694,23 @@ export class ColonyPool {
         if (!entry || entry.started) return;
         entry.started = true;
         entry.firstByteAt = Date.now();
-        if (entry.timer) clearTimeout(entry.timer);
-        entry.timer = null;
+        entry.touch();
         entry.handlers.onStart(frame.status, frame.headers);
         return;
       }
       case 'response-chunk': {
         const entry = worker.inflight.get(frame.id);
         if (!entry?.started) return;
-        entry.handlers.onChunk(decodeBody(frame.data));
+        const data = decodeBody(frame.data);
+        entry.bytes += data.length;
+        if (entry.bytes > entry.maxBytes) {
+          this.sendFrame(worker.ws, { t: 'cancel', id: frame.id });
+          this.finish(worker.inflight, frame.id);
+          entry.handlers.onError(new Error(`Worker ${worker.address} sent more than ${entry.maxBytes} bytes`));
+          return;
+        }
+        entry.touch();
+        entry.handlers.onChunk(data);
         return;
       }
       case 'response-end': {

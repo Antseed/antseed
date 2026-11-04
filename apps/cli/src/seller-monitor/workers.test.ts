@@ -43,6 +43,26 @@ describe('readSellerWorkers', () => {
     assert.equal(result.available && result.workers.length, 2)
   })
 
+  it('stops open connections at a stale seller\'s last heartbeat', () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'workers-'))
+    writeLedger(dataDir)
+    // The seller died an hour ago without closing 0xaa's connection (opened 2 hours ago).
+    for (const at of [NOW, NOW + 5 * HOUR]) {
+      const result = readSellerWorkers(dataDir, at, NOW - HOUR)
+      assert.equal(result.available, true)
+      const aa = result.available ? result.workers.find((w) => w.address === '0xaa') : undefined
+      assert.equal(aa?.connected, false)
+      assert.equal(aa?.lastSeenAt, NOW - HOUR)
+      assert.equal(aa?.onlineHoursWeek, 1)
+    }
+    // A seller with no heartbeat at all: the open connection counts no time.
+    const unknown = readSellerWorkers(dataDir, NOW, null)
+    const aa = unknown.available ? unknown.workers.find((w) => w.address === '0xaa') : undefined
+    assert.equal(aa?.connected, false)
+    assert.equal(aa?.lastSeenAt, NOW - 2 * HOUR)
+    assert.equal(aa?.onlineHoursWeek, 0)
+  })
+
   it('summarizes each worker from the pool ledger, online ones first', () => {
     const dataDir = mkdtempSync(join(tmpdir(), 'workers-'))
     writeLedger(dataDir)

@@ -10,7 +10,7 @@ import {
   verifyWorkerAttestation,
   verifyWorkerKeyCertificate,
   type WorkerAssignment,
-} from './e2e.js';
+} from './worker-crypto.js';
 
 /** Reassign this long before a worker's key certificate expires. */
 const CERTIFICATE_RENEW_MARGIN_S = 300;
@@ -73,7 +73,7 @@ function workerUsage(usage: UsageLike | null): WorkerUsage {
 
 /**
  * Encrypts requests to a colony pool's workers and keeps one assignment per
- * (seller, service), so a buyer's requests stay on one worker.
+ * (seller, provider, service), so a buyer's requests stay on one worker.
  */
 export class NodeWorkerE2EClient implements WorkerE2EClient {
   /** Each assignment with the time it stops being usable (certificate, attestation or Apple attestation). */
@@ -91,7 +91,8 @@ export class NodeWorkerE2EClient implements WorkerE2EClient {
     assign: (body: Uint8Array) => Promise<SerializedHttpResponse>,
     channelId: string | null,
   ): Promise<SealedWorkerRequest> {
-    const certificate = await this.assignment(peer, service, assign);
+    const provider = Object.entries(request.headers).find(([name]) => name.toLowerCase() === 'x-antseed-provider')?.[1].trim().toLowerCase() ?? '';
+    const certificate = await this.assignment(peer, provider, service, assign);
     const sealed = await sealRequest({
       body: request.body,
       worker: certificate.worker,
@@ -122,15 +123,20 @@ export class NodeWorkerE2EClient implements WorkerE2EClient {
   }
 
   forget(peerId: string, service: string): void {
-    this.assignments.delete(`${peerId.toLowerCase()}|${service}`);
+    const peer = `${peerId.toLowerCase()}|`;
+    for (const key of this.assignments.keys()) {
+      if (key.startsWith(peer) && key.endsWith(`|${service}`)) this.assignments.delete(key);
+    }
   }
 
   private async assignment(
     peer: BuyerPeerView,
+    provider: string,
     service: string,
     assign: (body: Uint8Array) => Promise<SerializedHttpResponse>,
   ): Promise<WorkerAssignment> {
-    const key = `${peer.peerId.toLowerCase()}|${service}`;
+    // Per provider too: two pools on one seller have different workers.
+    const key = `${peer.peerId.toLowerCase()}|${provider}|${service}`;
     const cached = this.assignments.get(key);
     const now = this.now();
     if (cached && now < cached.usableUntil) return cached.assignment;

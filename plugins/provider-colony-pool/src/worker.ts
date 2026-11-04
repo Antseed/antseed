@@ -32,6 +32,11 @@ const DEFAULT_CHANNEL_WAIT_MS = 5_000;
 const CHANNEL_POLL_MS = 1_000;
 /** Bounds the per-channel caches; past it they start over. */
 const MAX_CACHED_CHANNELS = 10_000;
+/** A pool check's decrypted body may be at most this big, so it cannot buy prompt processing either. */
+const MAX_CHECK_BODY_BYTES = 8 * 1024;
+/** How long the local model has to send response headers, and then each next chunk. */
+const DEFAULT_UPSTREAM_TIMEOUT_MS = 5 * 60_000;
+const DEFAULT_UPSTREAM_IDLE_MS = 60_000;
 
 /** Signs attestations about the machine the worker runs on (the Mac app does this with the Secure Enclave). */
 export interface WorkerAttester {
@@ -42,6 +47,20 @@ export interface WorkerAttester {
 
 /** Whether `channel` on-chain belongs to `buyer` and to the pool's `seller`. `null` = not on-chain (yet). */
 export type ChannelVerifier = (channel: string, buyer: string, seller: string) => Promise<boolean | null>;
+
+/**
+ * A ChannelVerifier over `readChannel`, which must read the channel from the
+ * worker's trusted Channels contract (from its chain config), never from a
+ * contract the pool names: a pool could otherwise answer with a contract of
+ * its own that vouches for any channel.
+ */
+export function trustedChannelVerifier(readChannel: (channel: string) => Promise<{ buyer: string; seller: string }>): ChannelVerifier {
+  return async (channel, buyer, seller) => {
+    const session = await readChannel(channel);
+    if (/^0x0+$/.test(session.buyer)) return null; // not visible yet
+    return session.buyer.toLowerCase() === buyer.toLowerCase() && session.seller.toLowerCase() === seller.toLowerCase();
+  };
+}
 
 export interface PoolWorkerOptions {
   /** Pool WebSocket URL, e.g. wss://pool.example.com. */
@@ -60,6 +79,9 @@ export interface PoolWorkerOptions {
   channelVerifier?: ChannelVerifier;
   /** How long a request waits for its channel to be verified before it is refused (default 5 s). */
   channelWaitMs?: number;
+  /** How long the local model has to start answering (default 5 min), and then to send each next chunk (default 60 s). */
+  upstreamTimeoutMs?: number;
+  upstreamIdleMs?: number;
   maxConcurrency?: number;
   checksPerHour?: number;
   agent?: string;
@@ -151,13 +173,13 @@ export class PoolWorker {
     ws.on('message', (data, isBinary) => {
       if (isBinary || this.stopped) return;
       const frame = parsePoolFrame(data.toString());
-      if (frame) void this.handle(frame);
+      if (frame) this.handle(frame).catch((err: unknown) => this.log(`could not handle ${frame.t}: ${err instanceof Error ? err.message : String(err)}`));
     });
     ws.on('open', () => this.log(`connected to ${this.opts.poolUrl}`));
     ws.on('close', (code, reason) => {
       this.welcome = null;
+      // Requests release their slots as they unwind; their answers can't reach the next connection.
       for (const controller of this.active.values()) controller.abort();
-      this.active.clear();
       if (this.stopped) return;
       this.log(`disconnected (${code}${reason.length ? ` ${reason.toString()}` : ''}); retrying in ${Math.round(this.backoffMs / 1000)}s`);
       this.reconnectTimer = setTimeout(() => this.connect(), this.backoffMs);
@@ -196,7 +218,7 @@ export class PoolWorker {
         this.log(`joined pool as ${frame.workerId}: serving ${frame.accepted.join(', ') || 'nothing'}${frame.rejected.length ? ` (pool doesn't sell ${frame.rejected.join(', ')})` : ''}, ${frame.workerShareBps / 100}% share`);
         return;
       case 'request':
-        await this.serve(frame);
+        await this.serve(frame, this.ws);
         return;
       case 'cancel':
         this.active.get(frame.id)?.abort();
@@ -272,100 +294,141 @@ export class PoolWorker {
     }
   }
 
-  private async serve(frame: RequestFrame): Promise<void> {
-    const fail = (message: string): void => { this.send({ t: 'response-error', id: frame.id, message }); };
-    if (frame.method !== 'POST' || !ALLOWED_PATHS.has(frame.path)) {
-      fail(`Unsupported route ${frame.method} ${frame.path}`);
+  /**
+   * Serve one request on the connection it arrived on. Its slot is taken
+   * before any waiting (channel check, model), so the pool can never run
+   * more than `maxConcurrency` at once, and it is cancellable throughout.
+   */
+  private async serve(frame: RequestFrame, ws: WebSocket | null): Promise<void> {
+    const send = (out: WorkerFrame): void => { this.sendOn(ws, out); };
+    const fail = (message: string): void => { send({ t: 'response-error', id: frame.id, message }); };
+    if (this.active.has(frame.id)) {
+      fail('Duplicate request id');
       return;
     }
+    if (this.active.size >= (this.opts.maxConcurrency ?? 1)) {
+      fail('Worker is at capacity');
+      return;
+    }
+    const controller = new AbortController();
+    this.active.set(frame.id, controller);
+    try {
+      await this.run(frame, controller.signal, send);
+    } catch (err) {
+      fail(controller.signal.aborted ? 'cancelled' : err instanceof Error ? err.message : String(err));
+    } finally {
+      if (this.active.get(frame.id) === controller) this.active.delete(frame.id);
+    }
+  }
+
+  private async run(frame: RequestFrame, signal: AbortSignal, send: (out: WorkerFrame) => void): Promise<void> {
+    if (frame.method !== 'POST' || !ALLOWED_PATHS.has(frame.path)) throw new Error(`Unsupported route ${frame.method} ${frame.path}`);
     const sealedBody = decodeBody(frame.body);
-    if (!isSealedRequest(sealedBody)) {
-      fail('Refusing an unencrypted request');
-      return;
-    }
+    if (!isSealedRequest(sealedBody)) throw new Error('Refusing an unencrypted request');
     let opened: ReturnType<typeof openRequest>;
     let body: Record<string, unknown>;
     try {
       opened = openRequest(sealedBody, this.wallet.address, this.opts.encryptionKey);
       body = JSON.parse(new TextDecoder().decode(opened.body)) as Record<string, unknown>;
     } catch {
-      fail('Request could not be decrypted for this worker');
-      return;
+      throw new Error('Request could not be decrypted for this worker');
     }
+    const localModel = this.opts.services[opened.model];
+    if (!localModel || this.paused) throw new Error(`Not serving ${opened.model}`);
 
     if (opened.buyer && opened.channel && !/^0x0+$/.test(opened.channel)) {
-      const verdict = await this.channelVerdict(opened.channel.toLowerCase(), opened.buyer);
-      if (verdict === false) {
-        fail('Request channel does not belong to a buyer of this pool');
-        return;
-      }
-      if (verdict === null) {
-        fail('Request channel is not on-chain yet; retry shortly');
-        return;
-      }
+      const verdict = await abortable(this.channelVerdict(opened.channel.toLowerCase(), opened.buyer), signal);
+      if (verdict === false) throw new Error('Request channel does not belong to a buyer of this pool');
+      if (verdict === null) throw new Error('Request channel is not on-chain yet; retry shortly');
     } else {
-      // No buyer binding: a pool check. Keep it small so it cannot buy real work.
-      if (!this.allowCheck()) {
-        fail('Check rate limit exceeded');
-        return;
-      }
+      // No buyer binding: a pool check. Keep it small so it cannot buy real work, prompt processing included.
+      if (opened.body.length > MAX_CHECK_BODY_BYTES) throw new Error(`Check requests are limited to ${MAX_CHECK_BODY_BYTES} bytes`);
+      if (!this.allowCheck()) throw new Error('Check rate limit exceeded');
       body['max_tokens'] = Math.min(typeof body['max_tokens'] === 'number' ? body['max_tokens'] : CHECK_MAX_TOKENS, CHECK_MAX_TOKENS);
       delete body['max_completion_tokens'];
     }
+    if (signal.aborted || this.stopped) throw new Error('cancelled');
 
-    const localModel = this.opts.services[opened.model];
-    if (!localModel || this.paused) {
-      fail(`Not serving ${opened.model}`);
-      return;
-    }
     body['model'] = localModel;
     // Usage in the final stream event is what the buyer is charged for.
     if (body['stream'] === true) {
       body['stream_options'] = { ...(body['stream_options'] as object | undefined), include_usage: true };
     }
-
     this.log(opened.buyer
       ? `serving ${opened.model} for buyer ${opened.buyer} on channel ${opened.channel?.slice(0, 18)}…`
       : `serving a pool check for ${opened.model}`);
-    const controller = new AbortController();
-    this.active.set(frame.id, controller);
+
+    // The local model gets its own deadlines: one to answer, then one per chunk.
+    const upstreamAbort = new AbortController();
+    const onAbort = (): void => upstreamAbort.abort();
+    signal.addEventListener('abort', onAbort, { once: true });
+    let timedOut = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const arm = (ms: number): void => {
+      clearTimeout(timer);
+      timer = setTimeout(() => { timedOut = true; upstreamAbort.abort(); }, ms);
+    };
+    const idleMs = this.opts.upstreamIdleMs ?? DEFAULT_UPSTREAM_IDLE_MS;
+    arm(this.opts.upstreamTimeoutMs ?? DEFAULT_UPSTREAM_TIMEOUT_MS);
     try {
       const upstream = await fetch(new URL(frame.path, this.opts.baseUrl), {
         method: 'POST',
         headers: { 'content-type': 'application/json', accept: frame.headers['accept'] ?? 'application/json' },
         body: JSON.stringify(body),
-        signal: controller.signal,
+        signal: upstreamAbort.signal,
       });
       const contentType = upstream.headers.get('content-type') ?? '';
       if (contentType.includes('text/event-stream') && upstream.body) {
-        this.send({ t: 'response-start', id: frame.id, status: upstream.status, headers: { 'content-type': contentType } });
+        send({ t: 'response-start', id: frame.id, status: upstream.status, headers: { 'content-type': contentType } });
+        arm(idleMs);
         for await (const chunk of upstream.body) {
+          arm(idleMs);
           const sealed = opened.sealer.pushStream(chunk as Uint8Array);
-          if (sealed.length > 0) this.send({ t: 'response-chunk', id: frame.id, data: encodeBody(sealed) });
+          if (sealed.length > 0) send({ t: 'response-chunk', id: frame.id, data: encodeBody(sealed) });
         }
-        this.send({ t: 'response-chunk', id: frame.id, data: encodeBody(opened.sealer.finishStream()) });
+        send({ t: 'response-chunk', id: frame.id, data: encodeBody(opened.sealer.finishStream()) });
       } else {
         const sealed = opened.sealer.sealBody(new Uint8Array(await upstream.arrayBuffer()));
-        this.send({ t: 'response-start', id: frame.id, status: upstream.status, headers: { 'content-type': 'application/json' } });
-        this.send({ t: 'response-chunk', id: frame.id, data: encodeBody(sealed) });
+        send({ t: 'response-start', id: frame.id, status: upstream.status, headers: { 'content-type': 'application/json' } });
+        send({ t: 'response-chunk', id: frame.id, data: encodeBody(sealed) });
       }
-      this.send({ t: 'response-end', id: frame.id });
+      send({ t: 'response-end', id: frame.id });
     } catch (err) {
-      fail(controller.signal.aborted ? 'cancelled' : err instanceof Error ? err.message : String(err));
+      if (timedOut && !signal.aborted) throw new Error('Local model timed out');
+      throw err;
     } finally {
-      this.active.delete(frame.id);
+      clearTimeout(timer);
+      signal.removeEventListener('abort', onAbort);
     }
   }
 
   private send(frame: WorkerFrame): boolean {
-    if (this.ws?.readyState !== WebSocket.OPEN) return false;
-    this.ws.send(JSON.stringify(frame));
+    return this.sendOn(this.ws, frame);
+  }
+
+  private sendOn(ws: WebSocket | null, frame: WorkerFrame): boolean {
+    if (ws?.readyState !== WebSocket.OPEN) return false;
+    ws.send(JSON.stringify(frame));
     return true;
   }
 
   private log(line: string): void {
     this.opts.log?.(`[worker] ${line}`);
   }
+}
+
+/** `value`, or a rejection once `signal` aborts. */
+function abortable<T>(value: Promise<T> | T, signal: AbortSignal): Promise<T> {
+  if (!(value instanceof Promise)) return signal.aborted ? Promise.reject(new Error('cancelled')) : Promise.resolve(value);
+  if (signal.aborted) return Promise.reject(new Error('cancelled'));
+  let onAbort: (() => void) | undefined;
+  return Promise.race([
+    value,
+    new Promise<T>((_, reject) => {
+      onAbort = () => reject(new Error('cancelled'));
+      signal.addEventListener('abort', onAbort, { once: true });
+    }),
+  ]).finally(() => signal.removeEventListener('abort', onAbort!));
 }
 
 /** `promise`, or a rejection after `ms`. */

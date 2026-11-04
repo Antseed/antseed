@@ -36,6 +36,7 @@ actor LocalModel {
     func generate(
         messages: [[String: Any]],
         maxTokens: Int,
+        maxPromptTokens: Int? = nil,
         temperature: Float,
         onChunk: @escaping @Sendable (String) async -> Void
     ) async throws -> Result {
@@ -50,12 +51,18 @@ actor LocalModel {
             }
         }
         let input = try await container.prepare(input: UserInput(chat: chat))
+        // Checked after tokenizing and before prefill, the costly part.
+        if let maxPromptTokens, input.text.tokens.size > maxPromptTokens {
+            throw NSError(domain: "LocalModel", code: 2, userInfo: [NSLocalizedDescriptionKey: "Prompt too long (\(input.text.tokens.size) tokens, at most \(maxPromptTokens))"])
+        }
+        try Task.checkCancellation()
         let parameters = GenerateParameters(maxTokens: maxTokens, temperature: temperature)
         var text = ""
         var promptTokens = 0
         var completionTokens = 0
         var tokensPerSecond = 0.0
         for await event in try await container.generate(input: input, parameters: parameters) {
+            try Task.checkCancellation()
             switch event {
             case .chunk(let piece):
                 text += piece

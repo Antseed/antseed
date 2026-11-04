@@ -118,7 +118,7 @@ export interface BuyerRequestHandlerDeps {
    * consent to count their stake for this buyer on sellers' staked free tiers.
    */
   freeTierDelegationsHeader?: () => string | null;
-  /** Encrypts requests for colony-pool services to the pool's workers (see peerServiceUsesWorkerE2E). */
+  /** Encrypts requests routed to a colony-pool provider to the pool's workers (see peerServiceUsesWorkerE2E). */
   workerE2E?: WorkerE2EClient | null;
 }
 
@@ -271,7 +271,10 @@ export class BuyerRequestHandler {
     // routes ciphertext. Everything above read the plaintext request; the
     // request sent and the raw response stay on hand for ResponseAuth, which
     // signs wire bytes.
-    const workerE2E = !options?.controlPlane && requestedService && this._deps.workerE2E && peerServiceUsesWorkerE2E(peer, requestedService)
+    // Decided by the provider the request is routed to, not the service alone:
+    // an ordinary provider may offer the same model.
+    const workerE2E = !options?.controlPlane && requestedService && this._deps.workerE2E
+      && peerServiceUsesWorkerE2E(peer, requestedService, billingRoute?.provider)
       ? this._deps.workerE2E
       : null;
     const plainReq = req;
@@ -280,11 +283,13 @@ export class BuyerRequestHandler {
     const sealForAttempt = async (): Promise<void> => {
       if (!workerE2E || !requestedService) return;
       const channelId = this._deps.negotiator?.bpm?.getActiveSession(peer.peerId)?.sessionId ?? null;
+      const provider = billingRoute?.provider;
       sealed = await workerE2E.seal(peer, plainReq, requestedService, (body) => this.sendRequest(peer, {
         requestId: `${plainReq.requestId}-assign`,
         method: 'POST',
         path: WORKER_ASSIGN_PATH,
-        headers: { 'content-type': 'application/json' },
+        // Assigned by the pool the request goes to.
+        headers: { 'content-type': 'application/json', ...(provider ? { 'x-antseed-provider': provider } : {}) },
         body,
       }, undefined, { controlPlane: true, ...(options?.signal ? { signal: options.signal } : {}) }), channelId);
       req = sealed.request;

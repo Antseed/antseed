@@ -1,0 +1,315 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Wallet } from 'ethers';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { WebSocketServer, type WebSocket } from 'ws';
+import { generateWorkerEncryptionKey, sealRequest, workerKeyHex, type WorkerEncryptionKey } from '@antseed/node/worker-e2e';
+import { WorkerLedger } from './ledger.js';
+import { ColonyPool } from './pool.js';
+import { COLONY_POOL_PROTOCOL_VERSION, encodeBody } from './protocol.js';
+import { ColonyPoolProvider } from './provider.js';
+import { PoolWorker, trustedChannelVerifier, type ChannelVerifier } from './worker.js';
+
+const SERVICE = 'qwen3-30b-a3b';
+const SELLER = '0x00000000000000000000000000000000000000aa';
+const CHANNEL = `0x${'cd'.repeat(32)}`;
+const enc = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
+
+async function waitFor(condition: () => boolean, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error('timed out waiting for condition');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+interface Upstream {
+  url: string;
+  server: Server;
+  bodies: Array<Record<string, unknown>>;
+  /** Requests the model is working on right now, and the most at once. */
+  active: number;
+  peak: number;
+  aborted: number;
+}
+
+/** A local model server whose answer `handler` writes. */
+async function startUpstream(handler: (body: Record<string, unknown>, res: ServerResponse, req: IncomingMessage) => void | Promise<void>): Promise<Upstream> {
+  const upstream: Upstream = { url: '', server: createServer(), bodies: [], active: 0, peak: 0, aborted: 0 };
+  upstream.server.on('request', (req, res) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+    req.on('end', () => {
+      const body = JSON.parse(Buffer.concat(chunks).toString()) as Record<string, unknown>;
+      upstream.bodies.push(body);
+      upstream.active++;
+      upstream.peak = Math.max(upstream.peak, upstream.active);
+      res.on('close', () => {
+        upstream.active--;
+        if (!res.writableEnded) upstream.aborted++;
+      });
+      void handler(body, res, req);
+    });
+  });
+  await new Promise<void>((resolve) => upstream.server.listen(0, '127.0.0.1', resolve));
+  upstream.url = `http://127.0.0.1:${(upstream.server.address() as { port: number }).port}`;
+  return upstream;
+}
+
+function answer(res: ServerResponse): void {
+  res.writeHead(200, { 'content-type': 'application/json' });
+  res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'ready' } }], usage: { prompt_tokens: 5, completion_tokens: 1, total_tokens: 6 } }));
+}
+
+/** A pool stand-in: drives one worker frame by frame. */
+async function startFakePool() {
+  const server = new WebSocketServer({ port: 0 });
+  await new Promise<void>((resolve) => server.once('listening', () => resolve()));
+  const frames: Array<Record<string, unknown>> = [];
+  let socket: WebSocket | null = null;
+  server.on('connection', (ws) => {
+    socket = ws;
+    ws.on('message', (data) => {
+      const frame = JSON.parse(data.toString()) as Record<string, unknown>;
+      frames.push(frame);
+      if (frame['t'] === 'hello') {
+        ws.send(JSON.stringify({ t: 'welcome', workerId: frame['address'], accepted: frame['services'], rejected: [], workerShareBps: 9000 }));
+      }
+    });
+    ws.send(JSON.stringify({ t: 'challenge', version: COLONY_POOL_PROTOCOL_VERSION, pool: 'fake', nonce: 'ab'.repeat(32), seller: SELLER }));
+  });
+  return {
+    url: `ws://127.0.0.1:${(server.address() as { port: number }).port}`,
+    frames,
+    send: (frame: unknown) => socket!.send(JSON.stringify(frame)),
+    errorFor: (id: string) => frames.find((f) => f['t'] === 'response-error' && f['id'] === id)?.['message'] as string | undefined,
+    ended: (id: string) => frames.some((f) => f['t'] === 'response-end' && f['id'] === id),
+    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+  };
+}
+
+describe('worker lifecycle', () => {
+  let fakePool: Awaited<ReturnType<typeof startFakePool>>;
+  let upstream: Upstream | null = null;
+  let worker: PoolWorker | null = null;
+  let key: WorkerEncryptionKey;
+  const buyer = Wallet.createRandom();
+
+  function start(opts: { channelVerifier?: ChannelVerifier; maxConcurrency?: number; upstreamIdleMs?: number; upstreamTimeoutMs?: number } = {}): PoolWorker {
+    key = generateWorkerEncryptionKey();
+    worker = new PoolWorker({
+      poolUrl: fakePool.url,
+      baseUrl: upstream!.url,
+      services: { [SERVICE]: 'local' },
+      privateKey: Wallet.createRandom().privateKey,
+      encryptionKey: key,
+      ...opts,
+    });
+    worker.start();
+    return worker;
+  }
+
+  /** Send the worker a sealed request, bound to a buyer's channel unless `unbound`. */
+  async function request(id: string, opts: { unbound?: boolean; content?: string; stream?: boolean } = {}): Promise<void> {
+    const body = enc({ model: SERVICE, stream: opts.stream ?? false, messages: [{ role: 'user', content: opts.content ?? 'hi' }] });
+    const target = { worker: worker!.address, workerKey: workerKeyHex(key.publicKey) };
+    const sealed = opts.unbound
+      ? await sealRequest({ body, ...target })
+      : await sealRequest({ body, ...target, buyer: { address: buyer.address, channel: CHANNEL, signMessage: (m) => buyer.signMessage(m) } });
+    fakePool.send({ t: 'request', id, method: 'POST', path: '/v1/chat/completions', headers: {}, body: encodeBody(sealed.body) });
+  }
+
+  beforeEach(async () => {
+    fakePool = await startFakePool();
+  });
+
+  afterEach(async () => {
+    worker?.stop();
+    worker = null;
+    await fakePool.close();
+    if (upstream) await new Promise<void>((resolve) => upstream!.server.close(() => resolve()));
+    upstream?.server.closeAllConnections();
+    upstream = null;
+  });
+
+  it('drops a request cancelled while its channel check is pending, before it reaches the model', async () => {
+    upstream = await startUpstream((_body, res) => answer(res));
+    let settle: (verdict: boolean) => void = () => {};
+    start({ channelVerifier: () => new Promise((resolve) => { settle = resolve; }) });
+    await waitFor(() => fakePool.frames.some((f) => f['t'] === 'hello'));
+    await request('c1');
+    await sleep(100);
+    fakePool.send({ t: 'cancel', id: 'c1' });
+    await waitFor(() => fakePool.errorFor('c1') !== undefined);
+    expect(fakePool.errorFor('c1')).toBe('cancelled');
+    settle(true);
+    await sleep(100);
+    expect(upstream.bodies).toHaveLength(0);
+  });
+
+  it('drops a request whose worker stops while its channel check is pending', async () => {
+    upstream = await startUpstream((_body, res) => answer(res));
+    let settle: (verdict: boolean) => void = () => {};
+    const w = start({ channelVerifier: () => new Promise((resolve) => { settle = resolve; }) });
+    await waitFor(() => fakePool.frames.some((f) => f['t'] === 'hello'));
+    await request('s1');
+    await sleep(100);
+    w.stop();
+    settle(true);
+    await sleep(200);
+    expect(upstream.bodies).toHaveLength(0);
+  });
+
+  it('refuses requests beyond its own concurrency, counting ones waiting on a channel check', async () => {
+    upstream = await startUpstream((_body, res) => answer(res));
+    let settle: (verdict: boolean) => void = () => {};
+    start({ maxConcurrency: 1, channelVerifier: () => new Promise((resolve) => { settle = resolve; }) });
+    await waitFor(() => fakePool.frames.some((f) => f['t'] === 'hello'));
+    await request('k1');
+    await request('k2');
+    await request('k3', { unbound: true });
+    await waitFor(() => fakePool.errorFor('k2') !== undefined && fakePool.errorFor('k3') !== undefined);
+    expect(fakePool.errorFor('k2')).toBe('Worker is at capacity');
+    expect(fakePool.errorFor('k3')).toBe('Worker is at capacity');
+    settle(true);
+    await waitFor(() => fakePool.ended('k1'));
+    expect(upstream.bodies).toHaveLength(1);
+    // The slot is free again.
+    await request('k4');
+    await waitFor(() => fakePool.ended('k4'));
+  });
+
+  it('refuses a large unbound check before it reaches the model', async () => {
+    upstream = await startUpstream((_body, res) => answer(res));
+    start();
+    await waitFor(() => fakePool.frames.some((f) => f['t'] === 'hello'));
+    await request('big', { unbound: true, content: 'x'.repeat(64 * 1024) });
+    await waitFor(() => fakePool.errorFor('big') !== undefined);
+    expect(fakePool.errorFor('big')).toMatch(/limited to 8192 bytes/);
+    await request('small', { unbound: true });
+    await waitFor(() => fakePool.ended('small'));
+    expect(upstream.bodies).toHaveLength(1);
+    expect(upstream.bodies[0]!['max_tokens']).toBe(16);
+  });
+
+  it('gives up on a local model that stops sending mid-stream', async () => {
+    upstream = await startUpstream((_body, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: 'hel' } }] })}\n\n`);
+      // …and nothing more.
+    });
+    start({ upstreamIdleMs: 200 });
+    await waitFor(() => fakePool.frames.some((f) => f['t'] === 'hello'));
+    await request('i1', { stream: true });
+    await waitFor(() => fakePool.errorFor('i1') !== undefined);
+    expect(fakePool.errorFor('i1')).toBe('Local model timed out');
+    await waitFor(() => upstream!.aborted === 1);
+  });
+
+  it('reads channels only through the trusted Channels contract', async () => {
+    const reads: string[] = [];
+    const sessions: Record<string, { buyer: string; seller: string }> = {
+      [`0x${'01'.repeat(32)}`]: { buyer: buyer.address, seller: SELLER },
+      [`0x${'02'.repeat(32)}`]: { buyer: buyer.address, seller: '0x00000000000000000000000000000000000000bb' },
+      [`0x${'03'.repeat(32)}`]: { buyer: '0x0000000000000000000000000000000000000000', seller: '0x0000000000000000000000000000000000000000' },
+    };
+    const verifier = trustedChannelVerifier(async (channel) => { reads.push(channel); return sessions[channel]!; });
+    expect(await verifier(`0x${'01'.repeat(32)}`, buyer.address.toLowerCase(), SELLER)).toBe(true);
+    // The pool's own seller address must be the channel's seller on the trusted contract.
+    expect(await verifier(`0x${'02'.repeat(32)}`, buyer.address, SELLER)).toBe(false);
+    expect(await verifier(`0x${'03'.repeat(32)}`, buyer.address, SELLER)).toBeNull();
+    expect(reads).toHaveLength(3);
+  });
+});
+
+describe('pool deadlines and capacity', () => {
+  let dir: string;
+  let ledger: WorkerLedger;
+  let pool: ColonyPool;
+  let provider: ColonyPoolProvider;
+  let upstream: Upstream;
+  const workers: PoolWorker[] = [];
+
+  async function setup(handler: Parameters<typeof startUpstream>[0], opts: { responseIdleTimeoutMs?: number; verifyOnJoin?: boolean } = {}): Promise<string> {
+    upstream = await startUpstream(handler);
+    pool = new ColonyPool({
+      poolId: 'test-pool', seller: SELLER, catalog: [SERVICE, 'other-model'], workerShareBps: 9000, ledger, port: 0, host: '127.0.0.1',
+      verifyOnJoin: opts.verifyOnJoin ?? false,
+      ...(opts.responseIdleTimeoutMs ? { responseIdleTimeoutMs: opts.responseIdleTimeoutMs } : {}),
+    });
+    provider = new ColonyPoolProvider({ pool, ledger, pricing: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 4 } }, workerShareBps: 9000, maxConcurrency: 64 });
+    return `ws://127.0.0.1:${await pool.start()}`;
+  }
+
+  function startWorker(poolUrl: string, services: Record<string, string>, maxConcurrency = 1): PoolWorker {
+    const worker = new PoolWorker({
+      poolUrl, baseUrl: upstream.url, services, privateKey: Wallet.createRandom().privateKey, encryptionKey: generateWorkerEncryptionKey(), maxConcurrency,
+    });
+    workers.push(worker);
+    worker.start();
+    return worker;
+  }
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'colony-pool-lifecycle-'));
+    ledger = new WorkerLedger(join(dir, 'ledger.db'));
+  });
+
+  afterEach(async () => {
+    for (const worker of workers.splice(0)) worker.stop();
+    await pool.stop();
+    upstream.server.closeAllConnections();
+    await new Promise<void>((resolve) => upstream.server.close(() => resolve()));
+    ledger.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('cancels a started response that goes silent and frees the worker\'s slot', async () => {
+    const poolUrl = await setup((_body, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: 'hel' } }] })}\n\n`);
+    }, { responseIdleTimeoutMs: 300 });
+    startWorker(poolUrl, { [SERVICE]: 'local' });
+    await waitFor(() => provider.services.includes(SERVICE));
+    const certificate = JSON.parse(new TextDecoder().decode((await provider.handleControlRequest({
+      requestId: 'assign', method: 'POST', path: '/_antseed/provider/colony-pool/assign', headers: {}, body: enc({ model: SERVICE }),
+    })).body)) as { worker: string; key: string };
+    const sealed = await sealRequest({ body: enc({ model: SERVICE, stream: true, messages: [{ role: 'user', content: 'hi' }] }), worker: certificate.worker, workerKey: certificate.key });
+    let started = false;
+    const result = provider.handleRequestStream(
+      { requestId: 'silent', method: 'POST', path: '/v1/chat/completions', headers: {}, body: sealed.body },
+      { onResponseStart: () => { started = true; }, onResponseChunk: () => {} },
+    );
+    await expect(result).rejects.toThrow(/sent nothing for 300ms/);
+    expect(started).toBe(true);
+    expect(pool.capacity().current).toBe(0);
+    // The pool cancelled it, so the worker let go of the model too.
+    await waitFor(() => upstream.aborted === 1);
+  });
+
+  it('runs join checks one at a time within the worker\'s capacity', async () => {
+    const poolUrl = await setup(async (_body, res) => {
+      await sleep(150);
+      answer(res);
+    }, { verifyOnJoin: true });
+    startWorker(poolUrl, { [SERVICE]: 'local', 'other-model': 'local' }, 1);
+    await waitFor(() => provider.services.length === 2);
+    expect(upstream.bodies).toHaveLength(2);
+    expect(upstream.peak).toBe(1);
+  });
+
+  it('fails a join check whose answer is too large', async () => {
+    const poolUrl = await setup((_body, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'x'.repeat(2 * 1024 * 1024) } }] }));
+    }, { verifyOnJoin: true });
+    startWorker(poolUrl, { [SERVICE]: 'local' });
+    await waitFor(() => upstream.bodies.length === 1);
+    await sleep(500);
+    expect(provider.services).toEqual([]);
+  });
+});

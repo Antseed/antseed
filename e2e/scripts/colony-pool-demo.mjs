@@ -333,7 +333,8 @@ async function main() {
       encryptionKey: generateWorkerEncryptionKey(),
       agent: `antseed-mac/${name}`,
       channelVerifier: async (channel, buyer, seller) => {
-        const session = await new ChannelsClient({ rpcUrl: RPC_URL, contractAddress: seller, evmChainId: CHAIN_ID }).getSession(channel);
+        // The deployed Channels contract, never one the pool names.
+        const session = await new ChannelsClient({ rpcUrl: RPC_URL, contractAddress: A.channels, evmChainId: CHAIN_ID }).getSession(channel);
         if (/^0x0+$/.test(session.buyer)) return null;
         const ok = session.buyer.toLowerCase() === buyer.toLowerCase() && session.seller.toLowerCase() === seller.toLowerCase();
         logTo(name, `${ok ? C.green : C.yellow}on-chain check${C.reset}: channel ${channel.slice(0, 12)}… buyer=${session.buyer.slice(0, 10)}… seller=pool → ${ok ? 'genuine buyer' : 'MISMATCH'}`);

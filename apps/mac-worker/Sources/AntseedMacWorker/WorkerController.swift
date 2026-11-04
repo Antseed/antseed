@@ -73,11 +73,14 @@ final class WorkerController: ObservableObject {
     private var socket: URLSessionWebSocketTask?
     private var backoff: UInt64 = 1
     private var active: [String: Task<Void, Never>] = [:]
+    private let gate = RequestGate()
+    /// The Channels contract channels are checked on, once the RPC's chain id is known.
+    private var trustedChannels: String?
     /// On-chain channel checks (when an RPC is set), each read bounded so a slow RPC can't hold a request.
     private lazy var channels: ChannelVerdicts = {
         let verdicts = ChannelVerdicts { [weak self] channel, buyer in
-            guard let self, let rpc = self.config.rpcURL, let pool = self.poolSeller else { return nil }
-            return try await Chain(rpcURL: rpc, timeout: 2).channelBelongs(channel: channel, buyer: buyer, pool: pool)
+            guard let self, let rpc = self.config.rpcURL, let pool = self.poolSeller, let trusted = self.trustedChannels else { return nil }
+            return try await Chain(rpcURL: rpc, timeout: 2).channelBelongs(channel: channel, buyer: buyer, pool: pool, channels: trusted)
         }
         verdicts.onVerdict = { [weak self] channel, buyer, verified in
             self?.log(verified
@@ -86,7 +89,6 @@ final class WorkerController: ObservableObject {
         }
         return verdicts
     }()
-    private var checkTimes: [Date] = []
 
     var address: String { keys.ethereum.address }
 
@@ -219,7 +221,7 @@ final class WorkerController: ObservableObject {
                     "address": address,
                     "signature": try keys.ethereum.personalSign("antseed-colony-pool/v1\npool:\(pool)\nnonce:\(nonce)"),
                     "services": sharing ? [config.service] : [],
-                    "maxConcurrency": 1,
+                    "maxConcurrency": RequestGate.maxConcurrency,
                     "encryption": [
                         "key": keyHex,
                         "expires": expires,
@@ -245,7 +247,13 @@ final class WorkerController: ObservableObject {
             }
         case "request":
             guard let id = frame["id"] as? String else { return }
-            active[id] = Task { await self.serve(frame, id: id) }
+            // The slot is taken before any asynchronous work, so the pool can't run more at once than announced.
+            if let refusal = gate.reserve(id) { return fail(id, refusal) }
+            active[id] = Task {
+                await self.serve(frame, id: id)
+                self.gate.release(id)
+                if self.active[id] != nil { self.active.removeValue(forKey: id) }
+            }
         case "attest":
             guard let nonce = frame["nonce"] as? String else { return }
             guard refreshProtection() else { socket?.cancel(with: .goingAway, reason: nil); return }
@@ -269,47 +277,69 @@ final class WorkerController: ObservableObject {
         send(["t": "response-error", "id": id, "message": message])
     }
 
-    private func allowCheck() -> Bool {
-        let now = Date()
-        checkTimes = checkTimes.filter { now.timeIntervalSince($0) < 3600 }
-        guard checkTimes.count < 240 else { return false }
-        checkTimes.append(now)
-        return true
+    /// How this request's channel binding can be checked: on the trusted
+    /// Channels contract for the RPC's chain (`--channels`, or the known
+    /// deployment). With an RPC but none for its chain, full requests are refused.
+    private func channelCheck(channel: String, buyer: String) async -> ChannelCheck {
+        guard let rpc = config.rpcURL, poolSeller != nil else { return .signatureOnly }
+        if trustedChannels == nil {
+            guard let chainId = try? await Chain(rpcURL: rpc, timeout: 2).chainId() else {
+                return .unavailable("Could not read the chain id to check the request channel; retry shortly")
+            }
+            guard let address = TrustedChannels.address(chainId: chainId, override: config.channelsAddress) else {
+                return .unavailable("No trusted Channels contract for chain \(chainId); start the worker with --channels")
+            }
+            trustedChannels = address
+        }
+        return .verify { [weak self] in
+            guard let self else { return nil }
+            return await self.channels.verdict(channel: channel, buyer: buyer)
+        }
     }
 
     private func serve(_ frame: [String: Any], id: String) async {
-        defer { active.removeValue(forKey: id) }
+        let connection = socket
         guard frame["method"] as? String == "POST", frame["path"] as? String == "/v1/chat/completions",
               let bodyB64 = frame["body"] as? String, let body = Data(base64Encoded: bodyB64) else {
             return fail(id, "Unsupported route")
         }
         guard WorkerE2E.isSealed(body) else { return fail(id, WorkerE2E.Failure.notEncrypted.localizedDescription) }
         let opened: WorkerE2E.OpenedRequest
-        var request: [String: Any]
         do {
             opened = try WorkerE2E.openRequest(body, workerAddress: address, key: keys.encryption)
-            request = try JSONSerialization.jsonObject(with: opened.body) as? [String: Any] ?? [:]
         } catch {
             return fail(id, error.localizedDescription)
         }
         guard opened.model == config.service, sharing else { return fail(id, "Not serving \(opened.model)") }
         log(opened.buyer.map { "decrypted request from buyer \($0.prefix(10))… (pool saw only ciphertext)" } ?? "pool check request")
 
-        var maxTokens = request["max_tokens"] as? Int ?? request["max_completion_tokens"] as? Int ?? 512
+        let check: ChannelCheck
         if let buyer = opened.buyer, let channel = opened.channel, !channel.allSatisfy({ $0 == "0" || $0 == "x" }) {
-            // Without an RPC, bindings are only signature-checked.
-            if config.rpcURL != nil, poolSeller != nil {
-                switch await channels.verdict(channel: channel, buyer: buyer) {
-                case true?: break
-                case false?: return fail(id, "Request channel does not belong to a buyer of this pool")
-                case nil: return fail(id, "Request channel is not on-chain yet; retry shortly")
-                }
-            }
+            check = await channelCheck(channel: channel, buyer: buyer)
         } else {
-            // No buyer binding: a pool check, kept small.
-            guard allowCheck() else { return fail(id, "Check rate limit exceeded") }
-            maxTokens = min(maxTokens, 16)
+            check = .signatureOnly
         }
+        // Pool checks are bounded by size here, before the body is even parsed.
+        let size = opened.body.count
+        var maxTokens = 512
+        var promptLimit: Int?
+        let requested: [String: Any]? = size <= RequestGate.checkBodyBytes || opened.buyer != nil
+            ? (try? JSONSerialization.jsonObject(with: opened.body) as? [String: Any]) : nil
+        let requestedMax = requested?["max_tokens"] as? Int ?? requested?["max_completion_tokens"] as? Int ?? 512
+        switch await gate.admit(buyer: opened.buyer, channel: opened.channel, bodyBytes: size, requestedMaxTokens: requestedMax, check: check) {
+        case .full:
+            maxTokens = max(1, requestedMax)
+        case .check(let limit):
+            maxTokens = limit
+            promptLimit = RequestGate.checkPromptTokens
+        case .refused(let reason):
+            return fail(id, reason)
+        case .cancelled:
+            return
+        }
+        // Cancelled, or the pool connection changed, while the channel was checked: don't start.
+        guard !Task.isCancelled, socket === connection else { return }
+        guard let request = requested else { return fail(id, "Request body is not JSON") }
 
         let stream = request["stream"] as? Bool ?? false
         let messages = request["messages"] as? [[String: Any]] ?? []
@@ -323,7 +353,7 @@ final class WorkerController: ObservableObject {
             if stream {
                 send(["t": "response-start", "id": id, "status": 200, "headers": ["content-type": "text/event-stream"]])
             }
-            let result = try await model.generate(messages: messages, maxTokens: maxTokens, temperature: temperature) { [weak self] piece in
+            let result = try await model.generate(messages: messages, maxTokens: maxTokens, maxPromptTokens: promptLimit, temperature: temperature) { [weak self] piece in
                 guard stream else { return }
                 let chunk: [String: Any] = [
                     "id": completionId, "object": "chat.completion.chunk", "created": created, "model": service,
@@ -404,7 +434,7 @@ final class WorkerController: ObservableObject {
     func refreshPayout() {
         guard let rpc = config.rpcURL, let pool = poolSeller else { return }
         Task {
-            guard let word = try? await Chain(rpcURL: rpc).ethCall(to: pool, data: Chain.selector("payoutOf(address)") + Data(repeating: 0, count: 12) + (try Data(hexString: address))),
+            guard let word = try? await Chain(rpcURL: rpc, timeout: 10).ethCall(to: pool, data: Chain.selector("payoutOf(address)") + Data(repeating: 0, count: 12) + (try Data(hexString: address))),
                   word.count == 32 else { return }
             let recorded = word.suffix(20)
             payout = recorded.allSatisfy({ $0 == 0 }) ? nil : Data(recorded).prefixedHex
@@ -448,7 +478,7 @@ final class WorkerController: ObservableObject {
         }
         linkError = nil
         do {
-            let chain = Chain(rpcURL: rpc)
+            let chain = Chain(rpcURL: rpc, timeout: 10)
             let chainId = try await chain.chainId()
             let nonceWord = try await chain.ethCall(to: pool, data: Chain.selector("payoutNonce(address)") + Data(repeating: 0, count: 12) + (try Data(hexString: address)))
             let nonce = nonceWord.suffix(8).reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }

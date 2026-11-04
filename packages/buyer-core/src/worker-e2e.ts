@@ -73,11 +73,23 @@ function providersOffering(peer: BuyerPeerView, service: string): string[] {
     || peer.providerPricing?.[provider]?.services?.[service] !== undefined);
 }
 
-/** True when `service` on this peer is a colony-pool offering, so requests for it must be encrypted to a worker. */
-export function peerServiceUsesWorkerE2E(peer: BuyerPeerView, service: string): boolean {
+function workerProviders(peer: BuyerPeerView): (provider: string) => boolean {
   const capabilities = new Set(peer.capabilities ?? []);
-  if (!capabilities.has(WORKER_E2E_CAPABILITY)) return false;
-  return providersOffering(peer, service).some((provider) => capabilities.has(workerE2EProviderCapability(provider)));
+  if (!capabilities.has(WORKER_E2E_CAPABILITY)) return () => false;
+  return (provider) => capabilities.has(workerE2EProviderCapability(provider));
+}
+
+/**
+ * True when a request for `service` on this peer must be encrypted to a
+ * worker. With the provider the request is routed to (`x-antseed-provider`),
+ * only that provider decides, so a service an ordinary provider also offers
+ * stays plaintext when the request goes to the ordinary one. Without one, any
+ * colony-pool provider offering the service makes it a pool request.
+ */
+export function peerServiceUsesWorkerE2E(peer: BuyerPeerView, service: string, provider?: string | null): boolean {
+  const isWorkerProvider = workerProviders(peer);
+  if (provider) return isWorkerProvider(provider);
+  return providersOffering(peer, service).some(isWorkerProvider);
 }
 
 export function isWorkerUnavailable(response: SerializedHttpResponse): boolean {

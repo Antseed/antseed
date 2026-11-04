@@ -41,15 +41,31 @@ struct Chain {
         return UInt64(hex, radix: 16) ?? 0
     }
 
-    /// Whether `channel` belongs to `buyer` and to the pool seller. nil = not visible yet.
-    func channelBelongs(channel: String, buyer: String, pool: String) async throws -> Bool? {
-        let channelsWord = try await ethCall(to: pool, data: Self.selector("channelsAddress()"))
-        let channels = Data(channelsWord.suffix(20)).prefixedHex
+    /// Whether `channel`, read from the trusted Channels contract `channels`,
+    /// belongs to `buyer` and to the pool seller. nil = not visible yet.
+    /// `channels` never comes from the pool: a pool could otherwise name a
+    /// contract of its own that vouches for any channel.
+    func channelBelongs(channel: String, buyer: String, pool: String, channels: String) async throws -> Bool? {
         let result = try await ethCall(to: channels, data: Self.selector("channels(bytes32)") + (try Data(hexString: channel)))
         guard result.count >= 64 else { return nil }
         let onChainBuyer = Data(result[12..<32]).prefixedHex
         let onChainSeller = Data(result[44..<64]).prefixedHex
         if onChainBuyer == "0x" + String(repeating: "0", count: 40) { return nil }
         return onChainBuyer.lowercased() == buyer.lowercased() && onChainSeller.lowercased() == pool.lowercased()
+    }
+}
+
+/// The AntseedChannels deployments this app trusts, by EVM chain id (from
+/// packages/node/src/payments/generated-contract-addresses.ts). Other chains,
+/// such as a local test chain, need `--channels`.
+enum TrustedChannels {
+    static let deployments: [UInt64: String] = [
+        8453: "0xBA66d3b4fbCf472F6F11D6F9F96aaCE96516F09d", // Base mainnet
+        84532: "0x3b0b94AC27C042CAC17103A897Fb5cEb7D8b4cf7", // Base Sepolia
+    ]
+
+    /// The Channels contract to check channels on: `--channels` when given, else the chain's deployment.
+    static func address(chainId: UInt64, override: String?) -> String? {
+        override ?? deployments[chainId]
     }
 }

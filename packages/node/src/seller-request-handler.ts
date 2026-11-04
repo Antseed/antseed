@@ -267,8 +267,11 @@ export class SellerRequestHandler {
       body: new TextEncoder().encode(JSON.stringify({ error: { message, type: 'invalid_request_error', code } })),
     });
     const service = this._extractRequestedService(request);
+    // The provider the buyer routes the service to, when it names one (as for any request).
+    const requestedProvider = this._extractRequestedProvider(request);
     const provider = service
-      ? this._deps.providers.find((p) => p.handleControlRequest && p.services.includes(service))
+      ? this._deps.providers.find((p) => p.handleControlRequest && p.services.includes(service)
+        && (!requestedProvider || p.name.toLowerCase() === requestedProvider))
       : undefined;
     if (!provider?.handleControlRequest) return problem(404, `No provider offers control routes for ${service ?? 'this request'}.`, 'control_route_not_found');
     if (!this._allowRate(this._controlRateWindows, buyerPeerId, CONTROL_RATE_MAX_PER_WINDOW)) {

@@ -11,6 +11,9 @@ struct WorkerConfig {
     /// Hugging Face MLX model that serves it.
     var modelId = "mlx-community/Qwen2.5-0.5B-Instruct-4bit"
     var rpcURL: URL?
+    /// The AntseedChannels contract to check request channels on (default: the
+    /// deployment for the RPC's chain; required on other chains, such as a local one).
+    var channelsAddress: String?
     var dataDirectory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("AntseedMacWorker", isDirectory: true)
     /// Write PNG renderings of the dashboard here every few seconds.
@@ -32,6 +35,7 @@ struct WorkerConfig {
             case "--service": config.service = value
             case "--model": config.modelId = value
             case "--rpc": config.rpcURL = URL(string: value)
+            case "--channels": config.channelsAddress = value
             case "--data-dir": config.dataDirectory = URL(fileURLWithPath: value, isDirectory: true)
             case "--snapshot": config.snapshotDirectory = URL(fileURLWithPath: value, isDirectory: true)
             case "--name": config.name = value
@@ -60,16 +64,37 @@ struct WorkerKeys {
     var encryptionKeyHex: String { encryption.publicKey.x963Representation.hex }
     var attestationKeyHex: String { attestation.publicKey.x963Representation.hex }
 
+    enum LoadError: Error, LocalizedError {
+        case damaged(URL, String)
+        var errorDescription: String? {
+            guard case .damaged(let url, let reason) = self else { return nil }
+            return "\(url.path) \(reason). It holds this Mac's worker identity (the address its earnings are credited to), so it was left untouched. Restore it from a backup, or move it aside to start over as a new worker."
+        }
+    }
+
     static func loadOrCreate(in directory: URL) throws -> WorkerKeys {
         let url = directory.appendingPathComponent("keys.json")
         let fm = FileManager.default
         try fm.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        var stored = (try? Data(contentsOf: url)).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: String] } ?? [:]
+        // New keys only on a first launch: a file that exists but can't be read
+        // or decoded is never replaced, since that would lose the worker identity.
+        let firstLaunch = !fm.fileExists(atPath: url.path)
+        var stored: [String: String] = [:]
+        if !firstLaunch {
+            let data: Data
+            do { data = try Data(contentsOf: url) } catch { throw LoadError.damaged(url, "can't be read (\(error.localizedDescription))") }
+            guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: String] else {
+                throw LoadError.damaged(url, "is not a valid key file")
+            }
+            stored = object
+        }
         var changed = false
 
         let ethereum: EthereumKey
         if let hex = stored["ethereum"] {
-            ethereum = try EthereumKey(privateKey: try Data(hexString: hex))
+            do { ethereum = try EthereumKey(privateKey: try Data(hexString: hex)) } catch { throw LoadError.damaged(url, "holds an invalid address key") }
+        } else if !firstLaunch {
+            throw LoadError.damaged(url, "has no address key")
         } else {
             let (key, raw) = try EthereumKey.generate()
             ethereum = key

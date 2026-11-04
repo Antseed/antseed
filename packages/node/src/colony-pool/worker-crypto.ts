@@ -1,0 +1,601 @@
+import {
+  createCipheriv,
+  createDecipheriv,
+  createPrivateKey,
+  createPublicKey,
+  diffieHellman,
+  generateKeyPairSync,
+  hkdfSync,
+  randomBytes,
+  verify,
+  type KeyObject,
+} from 'node:crypto';
+import { StringDecoder } from 'node:string_decoder';
+import { getAddress, getBytes, keccak256, solidityPacked, verifyMessage } from 'ethers';
+import type { DeviceAttestation } from './apple-attestation.js';
+
+/**
+ * End-to-end encryption between a buyer and a colony pool's worker. The pool
+ * routes ciphertext only. Spec: docs/protocol/colony-pool.md.
+ */
+
+export {
+  WORKER_E2E_CAPABILITY,
+  workerE2EProviderCapability,
+  WORKER_ASSIGN_PATH,
+  WORKER_UNAVAILABLE_STATUS,
+  WORKER_UNAVAILABLE_CODE,
+} from '@antseed/buyer-core/worker-e2e';
+export const WORKER_E2E_VERSION = 2;
+
+const INFO = 'antseed-worker-e2e/v2';
+const TAG_BYTES = 16;
+const P256_PUBLIC_HEX = /^04[0-9a-f]{128}$/;
+const ZERO_CHANNEL = `0x${'00'.repeat(32)}`;
+
+// ── keys ──
+
+/**
+ * P-256, so a Mac can keep its key in the Secure Enclave (which has no
+ * X25519). Public keys travel as uncompressed SEC1 points (65 bytes).
+ */
+export interface WorkerEncryptionKey {
+  /** Uncompressed P-256 public key (0x04 ‖ x ‖ y). */
+  publicKey: Uint8Array;
+  /** 32-byte P-256 private scalar. */
+  privateKey: Uint8Array;
+}
+
+const b64url = (bytes: Uint8Array) => Buffer.from(bytes).toString('base64url');
+
+export function generateWorkerEncryptionKey(): WorkerEncryptionKey {
+  const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+  const jwk = privateKey.export({ format: 'jwk' });
+  return {
+    publicKey: new Uint8Array(Buffer.concat([Buffer.from([4]), Buffer.from(jwk.x!, 'base64url'), Buffer.from(jwk.y!, 'base64url')])),
+    privateKey: new Uint8Array(Buffer.from(jwk.d!, 'base64url')),
+  };
+}
+
+function p256Jwk(raw: Uint8Array) {
+  if (raw.length !== 65 || raw[0] !== 4) throw new Error('P-256 public key must be 65 bytes, uncompressed');
+  return { kty: 'EC', crv: 'P-256', x: b64url(raw.subarray(1, 33)), y: b64url(raw.subarray(33)) };
+}
+
+function publicKeyObject(raw: Uint8Array): KeyObject {
+  return createPublicKey({ key: p256Jwk(raw), format: 'jwk' });
+}
+
+function privateKeyObject(key: WorkerEncryptionKey): KeyObject {
+  if (key.privateKey.length !== 32) throw new Error('P-256 private key must be 32 bytes');
+  return createPrivateKey({ key: { ...p256Jwk(key.publicKey), d: b64url(key.privateKey) }, format: 'jwk' });
+}
+
+function toHex(bytes: Uint8Array): string {
+  return Buffer.from(bytes).toString('hex');
+}
+
+// ── key certificates ──
+
+/** A worker's binding of its encryption key (and attestation key) to its address, for one pool. */
+export interface WorkerKeyCertificate {
+  worker: string;
+  /** P-256 encryption public key, lowercase hex without 0x. */
+  key: string;
+  /** Unix seconds. */
+  expires: number;
+  /** EIP-191 signature by `worker` over workerKeyCertificateMessage. */
+  certificate: string;
+  /** Pool seller address. */
+  pool: string;
+  /** P-256 key that signs the worker's attestations (Secure Enclave on a Mac); absent for unattested workers. */
+  attestationKey?: string;
+}
+
+export function workerKeyCertificateMessage(pool: string, keyHex: string, expires: number, attestationKeyHex = ''): string {
+  return `antseed-worker-key/v2\npool:${pool.toLowerCase()}\nkey:${keyHex.toLowerCase()}\nexpires:${expires}\nattestation-key:${attestationKeyHex.toLowerCase()}`;
+}
+
+/** True when the certificate is signed by its worker, names `pool`, and has not expired. */
+export function verifyWorkerKeyCertificate(cert: WorkerKeyCertificate, pool: string, nowSeconds = Math.floor(Date.now() / 1000)): boolean {
+  if (cert.pool.toLowerCase() !== pool.toLowerCase() || cert.expires <= nowSeconds) return false;
+  if (!P256_PUBLIC_HEX.test(cert.key)) return false;
+  if (cert.attestationKey !== undefined && !P256_PUBLIC_HEX.test(cert.attestationKey)) return false;
+  try {
+    return verifyMessage(workerKeyCertificateMessage(cert.pool, cert.key, cert.expires, cert.attestationKey), cert.certificate).toLowerCase()
+      === cert.worker.toLowerCase();
+  } catch {
+    return false;
+  }
+}
+
+/** What a pool hands a buyer for one worker: its certificate, latest attestation, and Apple's, when the pool's MDM has one. */
+export interface WorkerAssignment extends WorkerKeyCertificate {
+  attestation?: WorkerAttestation;
+  deviceAttestation?: DeviceAttestation;
+}
+
+// ── attestations ──
+
+/**
+ * What a worker app reports about itself, signed with its attestation key:
+ * which signed build is running and whether macOS keeps other processes
+ * (the Mac's owner included) out of it. Self-reported: it shows the official
+ * app holds the key, not that no modified app exists (docs/protocol/colony-pool.md).
+ */
+export interface WorkerAttestation {
+  v: 1;
+  /** Apple Developer team that signed the running app; null for unsigned or ad-hoc builds. */
+  teamId: string | null;
+  /** Code-signing identifier (bundle id) of the running app. */
+  signingId: string | null;
+  /** Code directory hash of the running build, lowercase hex. */
+  cdhash: string | null;
+  /** System Integrity Protection fully on. */
+  sip: boolean;
+  /** Signed with the hardened runtime and without get-task-allow. */
+  hardenedRuntime: boolean;
+  /** The process refused debugger attachment (PT_DENY_ATTACH) and none is attached. */
+  debuggerDenied: boolean;
+  /** The decryption key is stored so only this signed app can use it. */
+  keyAppBound: boolean;
+  /** OS name and version, e.g. `macOS 26.2`. */
+  os: string;
+  /** The Mac's serial number and hardware UUID, which the pool's MDM (if any) attests through Apple. */
+  serial: string | null;
+  udid: string | null;
+  /** Unix seconds. */
+  issued: number;
+  /** The pool's challenge nonce this answers. */
+  nonce: string;
+  /** Base64 DER ECDSA-P256-SHA256 signature by the certificate's attestationKey over workerAttestationMessage. */
+  signature: string;
+}
+
+export function workerAttestationMessage(worker: string, keyHex: string, a: Omit<WorkerAttestation, 'signature'>): string {
+  const flag = (value: boolean) => (value ? '1' : '0');
+  return [
+    `antseed-worker-attestation/v${a.v}`,
+    `worker:${worker.toLowerCase()}`,
+    `key:${keyHex.toLowerCase()}`,
+    `team:${a.teamId ?? ''}`,
+    `signing-id:${a.signingId ?? ''}`,
+    `cdhash:${a.cdhash ?? ''}`,
+    `sip:${flag(a.sip)}`,
+    `hardened-runtime:${flag(a.hardenedRuntime)}`,
+    `debugger-denied:${flag(a.debuggerDenied)}`,
+    `key-app-bound:${flag(a.keyAppBound)}`,
+    `os:${a.os}`,
+    `serial:${a.serial ?? ''}`,
+    `udid:${a.udid ?? ''}`,
+    `issued:${a.issued}`,
+    `nonce:${a.nonce}`,
+  ].join('\n');
+}
+
+export function isWorkerAttestation(value: unknown): value is WorkerAttestation {
+  if (typeof value !== 'object' || value === null) return false;
+  const a = value as Record<string, unknown>;
+  const nullableString = (v: unknown) => v === null || typeof v === 'string';
+  return a['v'] === 1 && nullableString(a['teamId']) && nullableString(a['signingId']) && nullableString(a['cdhash'])
+    && typeof a['sip'] === 'boolean' && typeof a['hardenedRuntime'] === 'boolean' && typeof a['debuggerDenied'] === 'boolean'
+    && typeof a['keyAppBound'] === 'boolean' && typeof a['os'] === 'string' && nullableString(a['serial'])
+    && nullableString(a['udid']) && typeof a['issued'] === 'number'
+    && typeof a['nonce'] === 'string' && typeof a['signature'] === 'string';
+}
+
+export interface AttestationPolicy {
+  /** Require this nonce (the pool's live challenge). */
+  nonce?: string;
+  /** Oldest acceptable `issued`, in seconds before now. */
+  maxAgeS: number;
+  /** If set, only these Apple Developer teams count as hardened. */
+  teams?: ReadonlySet<string>;
+  now?: number;
+}
+
+/**
+ * Checks an attestation against the worker's certificate. `valid` means it is
+ * genuinely signed by the certified attestation key, fresh, and for this
+ * worker and key; `hardened` additionally means it reports a signed build
+ * with the hardened runtime, SIP on, no debugger, and an app-bound key.
+ */
+export function verifyWorkerAttestation(
+  attestation: WorkerAttestation,
+  cert: WorkerKeyCertificate,
+  policy: AttestationPolicy,
+): { valid: boolean; hardened: boolean; reason?: string } {
+  const now = policy.now ?? Math.floor(Date.now() / 1000);
+  const fail = (reason: string) => ({ valid: false, hardened: false, reason });
+  if (!cert.attestationKey) return fail('worker has no attestation key');
+  if (policy.nonce !== undefined && attestation.nonce !== policy.nonce) return fail('attestation answers another challenge');
+  if (attestation.issued < now - policy.maxAgeS || attestation.issued > now + 60) return fail('attestation is stale');
+  const { signature, ...statement } = attestation;
+  let signed = false;
+  try {
+    signed = verify(
+      'sha256',
+      Buffer.from(workerAttestationMessage(cert.worker, cert.key, statement)),
+      { key: publicKeyObject(Buffer.from(cert.attestationKey, 'hex')), dsaEncoding: 'der' },
+      Buffer.from(signature, 'base64'),
+    );
+  } catch {
+    signed = false;
+  }
+  if (!signed) return fail('attestation signature does not verify');
+  const hardened = attestation.teamId !== null && attestation.sip && attestation.hardenedRuntime
+    && attestation.debuggerDenied && attestation.keyAppBound
+    && (!policy.teams || policy.teams.has(attestation.teamId));
+  return { valid: true, hardened };
+}
+
+// ── primitives ──
+
+interface SessionKeys {
+  requestKey: Buffer;
+  responseKey: Buffer;
+}
+
+function deriveKeys(shared: Buffer, ephemeralPublic: Uint8Array, workerPublic: Uint8Array): SessionKeys {
+  const okm = Buffer.from(hkdfSync('sha256', shared, Buffer.concat([ephemeralPublic, workerPublic]), INFO, 64));
+  return { requestKey: okm.subarray(0, 32), responseKey: okm.subarray(32, 64) };
+}
+
+function nonceFor(seq: number): Buffer {
+  const nonce = Buffer.alloc(12);
+  nonce.writeBigUInt64BE(BigInt(seq), 4);
+  return nonce;
+}
+
+function seal(key: Buffer, seq: number, aad: string, plaintext: Uint8Array): Buffer {
+  const cipher = createCipheriv('chacha20-poly1305', key, nonceFor(seq), { authTagLength: TAG_BYTES });
+  cipher.setAAD(Buffer.from(aad), { plaintextLength: plaintext.length });
+  return Buffer.concat([cipher.update(plaintext), cipher.final(), cipher.getAuthTag()]);
+}
+
+function open(key: Buffer, seq: number, aad: string, sealed: Uint8Array): Buffer {
+  if (sealed.length < TAG_BYTES) throw new Error('Ciphertext too short');
+  const body = sealed.subarray(0, sealed.length - TAG_BYTES);
+  const decipher = createDecipheriv('chacha20-poly1305', key, nonceFor(seq), { authTagLength: TAG_BYTES });
+  decipher.setAAD(Buffer.from(aad), { plaintextLength: body.length });
+  decipher.setAuthTag(sealed.subarray(sealed.length - TAG_BYTES));
+  return Buffer.concat([decipher.update(body), decipher.final()]);
+}
+
+function requestAad(worker: string, model: string): string {
+  return `${INFO}|req|${worker.toLowerCase()}|${model}`;
+}
+
+/**
+ * Each response is sealed under its own key, from the request's response key
+ * and a random salt the worker picks, so a pool replaying a request never
+ * gets two answers under the same key and nonce.
+ */
+const RESPONSE_SALT_BYTES = 16;
+
+function responseKey(base: Buffer, salt: Buffer): Buffer {
+  if (salt.length !== RESPONSE_SALT_BYTES) throw new Error('Response salt must be 16 bytes');
+  return Buffer.from(hkdfSync('sha256', base, salt, `${INFO}|resp-key`, 32));
+}
+
+function responseAad(seq: number, end: boolean): string {
+  return `${INFO}|resp|${seq}${end ? '|end' : ''}`;
+}
+
+/** Hash the buyer signs to bind a request to its channel and worker. */
+export function requestBindingHash(worker: string, channel: string, ciphertext: Uint8Array): string {
+  return keccak256(solidityPacked(['string', 'address', 'bytes32', 'bytes32'], [INFO, worker, channel, keccak256(ciphertext)]));
+}
+
+// ── envelopes ──
+
+export interface RequestEnvelope {
+  v: number;
+  worker: string;
+  epk: string;
+  ct: string;
+  buyer?: string;
+  channel?: string;
+  sig?: string;
+}
+
+export interface UsageLike {
+  [key: string]: unknown;
+}
+
+export interface BuyerBinding {
+  address: string;
+  channel?: string;
+  signMessage(message: Uint8Array): string | Promise<string>;
+}
+
+export interface SealRequestOptions {
+  /** The original JSON request body. */
+  body: Uint8Array;
+  worker: string;
+  /** Worker P-256 public key (uncompressed bytes or hex). */
+  workerKey: Uint8Array | string;
+  /** Buyer identity that signs the request binding; omitted for pool health checks. */
+  buyer?: BuyerBinding;
+}
+
+export interface SealedRequest {
+  body: Uint8Array;
+  model: string;
+  opener: ResponseOpener;
+}
+
+function keyBytes(key: Uint8Array | string): Uint8Array {
+  return typeof key === 'string' ? new Uint8Array(Buffer.from(key.replace(/^0x/, ''), 'hex')) : key;
+}
+
+/** Buyer side: encrypt a JSON request body for `worker`. */
+export async function sealRequest(opts: SealRequestOptions): Promise<SealedRequest> {
+  const parsed = JSON.parse(Buffer.from(opts.body).toString('utf-8')) as Record<string, unknown>;
+  const model = parsed['model'];
+  if (typeof model !== 'string' || model.length === 0) throw new Error('Request body must name a model');
+  const workerKey = keyBytes(opts.workerKey);
+  const worker = getAddress(opts.worker);
+  const ephemeral = generateWorkerEncryptionKey();
+  const shared = diffieHellman({ privateKey: privateKeyObject(ephemeral), publicKey: publicKeyObject(workerKey) });
+  const keys = deriveKeys(shared, ephemeral.publicKey, workerKey);
+  const ct = seal(keys.requestKey, 0, requestAad(worker, model), opts.body);
+
+  const envelope: RequestEnvelope = {
+    v: WORKER_E2E_VERSION,
+    worker,
+    epk: Buffer.from(ephemeral.publicKey).toString('base64'),
+    ct: ct.toString('base64'),
+  };
+  if (opts.buyer) {
+    const channel = opts.buyer.channel ?? ZERO_CHANNEL;
+    envelope.buyer = getAddress(opts.buyer.address);
+    envelope.channel = channel;
+    envelope.sig = await opts.buyer.signMessage(getBytes(requestBindingHash(worker, channel, ct)));
+  }
+  const outer: Record<string, unknown> = { model };
+  if (typeof parsed['stream'] === 'boolean') outer['stream'] = parsed['stream'];
+  for (const key of ['max_tokens', 'max_completion_tokens']) {
+    if (typeof parsed[key] === 'number') outer[key] = parsed[key];
+  }
+  outer['antseed_e2e'] = envelope;
+  return {
+    body: new TextEncoder().encode(JSON.stringify(outer)),
+    model,
+    opener: new ResponseOpener(keys.responseKey),
+  };
+}
+
+export interface OpenedRequest {
+  /** The original JSON request body. */
+  body: Uint8Array;
+  model: string;
+  /** Set when the buyer signed the binding and the signature recovers to it. */
+  buyer: string | null;
+  channel: string | null;
+  sealer: ResponseSealer;
+}
+
+/** True when a request body carries an encrypted envelope. */
+export function isSealedRequest(body: Uint8Array): boolean {
+  try {
+    const parsed = JSON.parse(Buffer.from(body).toString('utf-8')) as Record<string, unknown>;
+    return typeof parsed['antseed_e2e'] === 'object' && parsed['antseed_e2e'] !== null;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Worker side: decrypt a request addressed to this worker. Throws when the
+ * envelope is not for `workerAddress`, fails authentication, or names a
+ * different model inside than outside.
+ */
+export function openRequest(body: Uint8Array, workerAddress: string, workerKey: WorkerEncryptionKey): OpenedRequest {
+  const outer = JSON.parse(Buffer.from(body).toString('utf-8')) as Record<string, unknown>;
+  const envelope = outer['antseed_e2e'] as RequestEnvelope | undefined;
+  const model = outer['model'];
+  if (!envelope || typeof model !== 'string') throw new Error('Not an encrypted request');
+  if (envelope.v !== WORKER_E2E_VERSION) throw new Error(`Unsupported envelope version ${envelope.v}`);
+  if (envelope.worker.toLowerCase() !== workerAddress.toLowerCase()) throw new Error('Envelope is addressed to another worker');
+  const epk = new Uint8Array(Buffer.from(envelope.epk, 'base64'));
+  const ct = Buffer.from(envelope.ct, 'base64');
+  const shared = diffieHellman({ privateKey: privateKeyObject(workerKey), publicKey: publicKeyObject(epk) });
+  const keys = deriveKeys(shared, epk, workerKey.publicKey);
+  const plaintext = open(keys.requestKey, 0, requestAad(envelope.worker, model), ct);
+  const inner = JSON.parse(plaintext.toString('utf-8')) as Record<string, unknown>;
+  if (inner['model'] !== model) throw new Error('Inner and outer model differ');
+
+  let buyer: string | null = null;
+  let channel: string | null = null;
+  if (envelope.buyer && envelope.sig && envelope.channel) {
+    try {
+      const recovered = verifyMessage(getBytes(requestBindingHash(envelope.worker, envelope.channel, ct)), envelope.sig);
+      if (recovered.toLowerCase() === envelope.buyer.toLowerCase()) {
+        buyer = getAddress(envelope.buyer);
+        channel = envelope.channel;
+      }
+    } catch {
+      // Unsigned or forged binding: treated as an unbound (health check) request.
+    }
+  }
+  return { body: new Uint8Array(plaintext), model, buyer, channel, sealer: new ResponseSealer(keys.responseKey) };
+}
+
+// ── responses ──
+
+function splitEvents(buffer: string): { events: string[]; rest: string } {
+  const normalized = buffer.replace(/\r\n/g, '\n');
+  const parts = normalized.split('\n\n');
+  const rest = parts.pop() ?? '';
+  return { events: parts.filter((event) => event.trim().length > 0), rest };
+}
+
+function eventData(event: string): string | null {
+  const lines = event.split('\n').filter((line) => line.startsWith('data:'));
+  if (lines.length === 0) return null;
+  return lines.map((line) => line.slice(5).replace(/^ /, '')).join('\n');
+}
+
+function usageOf(data: string): UsageLike | null {
+  try {
+    const parsed = JSON.parse(data) as { usage?: unknown };
+    return parsed.usage && typeof parsed.usage === 'object' ? parsed.usage as UsageLike : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Worker side: encrypts a response for the buyer. */
+export class ResponseSealer {
+  private seq = 0;
+  private buffer = '';
+  private ended = false;
+  private readonly key: Buffer;
+  private readonly salt: string;
+  private readonly decoder = new StringDecoder('utf8');
+
+  constructor(base: Buffer, salt: Buffer = randomBytes(RESPONSE_SALT_BYTES)) {
+    this.key = responseKey(base, salt);
+    this.salt = salt.toString('base64');
+  }
+
+  /** Seal a complete (non-streamed) body, exposing `usage` in the clear for metering. */
+  sealBody(body: Uint8Array): Uint8Array {
+    this.ended = true;
+    const envelope: Record<string, unknown> = {
+      antseed_e2e: { v: WORKER_E2E_VERSION, salt: this.salt, ct: seal(this.key, 0, responseAad(0, true), body).toString('base64') },
+    };
+    const usage = usageOf(Buffer.from(body).toString('utf-8'));
+    if (usage) envelope['usage'] = usage;
+    return new TextEncoder().encode(JSON.stringify(envelope));
+  }
+
+  /** Seal upstream SSE bytes; returns the SSE bytes to send (possibly empty). */
+  pushStream(chunk: Uint8Array): Uint8Array {
+    // Upstream chunks can end mid-character; the decoder keeps the partial bytes for the next one.
+    this.buffer += this.decoder.write(Buffer.from(chunk));
+    const { events, rest } = splitEvents(this.buffer);
+    this.buffer = rest;
+    return new TextEncoder().encode(events.map((event) => this.sealEvent(event)).join(''));
+  }
+
+  /** Flush buffered input and emit the authenticated end marker. */
+  finishStream(): Uint8Array {
+    if (this.ended) return new Uint8Array(0);
+    this.ended = true;
+    this.buffer += this.decoder.end();
+    const tail = this.buffer.trim().length > 0 ? this.sealEvent(this.buffer) : '';
+    this.buffer = '';
+    const seq = this.seq++;
+    const ct = seal(this.key, seq, responseAad(seq, true), new Uint8Array(0)).toString('base64');
+    return new TextEncoder().encode(`${tail}data: ${JSON.stringify({ antseed_e2e: { seq, end: true, ct, ...this.saltFor(seq) } })}\n\n`);
+  }
+
+  private sealEvent(event: string): string {
+    const seq = this.seq++;
+    const ct = seal(this.key, seq, responseAad(seq, false), Buffer.from(event)).toString('base64');
+    let out = `data: ${JSON.stringify({ antseed_e2e: { seq, ct, ...this.saltFor(seq) } })}\n\n`;
+    const data = eventData(event);
+    const usage = data ? usageOf(data) : null;
+    if (usage) out += `data: ${JSON.stringify({ choices: [], usage })}\n\n`;
+    return out;
+  }
+
+  /** The first event of a stream carries the salt. */
+  private saltFor(seq: number): { salt?: string } {
+    return seq === 0 ? { salt: this.salt } : {};
+  }
+}
+
+/** Buyer side: decrypts and authenticates a worker's response. */
+export class ResponseOpener {
+  private seq = 0;
+  private buffer = '';
+  private complete = false;
+  private authenticatedUsage: UsageLike | null = null;
+  private clearUsage: UsageLike | null = null;
+
+  /** The response's own key, once its salt arrived. */
+  private key: Buffer | null = null;
+  private readonly decoder = new StringDecoder('utf8');
+
+  constructor(private readonly base: Buffer) {}
+
+  private keyFor(salt: unknown): Buffer {
+    if (this.key) return this.key;
+    if (typeof salt !== 'string') throw new Error('Worker response is missing its salt');
+    this.key = responseKey(this.base, Buffer.from(salt, 'base64'));
+    return this.key;
+  }
+
+  /** True once the worker's end marker verified: the whole response came from the worker. */
+  get verified(): boolean {
+    return this.complete;
+  }
+
+  /** Usage inside the ciphertext, and usage the pool saw in the clear (they should match). */
+  get usage(): { authenticated: UsageLike | null; clear: UsageLike | null } {
+    return { authenticated: this.authenticatedUsage, clear: this.clearUsage };
+  }
+
+  /**
+   * Open a complete body. JSON bodies without an envelope (errors the pool
+   * itself returned) pass through unchanged and leave `verified` false;
+   * anything else that fails to open throws.
+   */
+  openBody(body: Uint8Array): Uint8Array {
+    let parsed: { antseed_e2e?: { ct?: unknown; salt?: unknown }; usage?: unknown };
+    try {
+      parsed = JSON.parse(Buffer.from(body).toString('utf-8')) as typeof parsed;
+    } catch {
+      throw new Error('Worker response is not a sealed envelope');
+    }
+    if (typeof parsed.antseed_e2e?.ct !== 'string') return body;
+    const plaintext = open(this.keyFor(parsed.antseed_e2e.salt), 0, responseAad(0, true), Buffer.from(parsed.antseed_e2e.ct, 'base64'));
+    this.complete = true;
+    this.authenticatedUsage = usageOf(plaintext.toString('utf-8'));
+    this.clearUsage = parsed.usage && typeof parsed.usage === 'object' ? parsed.usage as UsageLike : null;
+    return new Uint8Array(plaintext);
+  }
+
+  /** Decrypt streamed SSE bytes; returns plaintext SSE bytes for the client. Throws on tampering. */
+  pushStream(chunk: Uint8Array): Uint8Array {
+    this.buffer += this.decoder.write(Buffer.from(chunk));
+    const { events, rest } = splitEvents(this.buffer);
+    this.buffer = rest;
+    let out = '';
+    for (const event of events) {
+      const data = eventData(event);
+      if (data === null) continue;
+      let parsed: { antseed_e2e?: { seq?: unknown; ct?: unknown; end?: unknown; salt?: unknown }; usage?: unknown };
+      try {
+        parsed = JSON.parse(data) as typeof parsed;
+      } catch {
+        continue;
+      }
+      const envelope = parsed.antseed_e2e;
+      if (!envelope) {
+        if (parsed.usage && typeof parsed.usage === 'object') this.clearUsage = parsed.usage as UsageLike;
+        continue;
+      }
+      if (this.complete) throw new Error('Worker response continued after its end marker');
+      if (envelope.seq !== this.seq || typeof envelope.ct !== 'string') throw new Error('Worker response events are out of order');
+      const end = envelope.end === true;
+      const key = this.seq === 0 ? this.keyFor(envelope.salt) : this.key!;
+      const plaintext = open(key, this.seq, responseAad(this.seq, end), Buffer.from(envelope.ct, 'base64')).toString('utf-8');
+      this.seq++;
+      if (end) {
+        this.complete = true;
+        continue;
+      }
+      const innerData = eventData(plaintext);
+      const usage = innerData ? usageOf(innerData) : null;
+      if (usage) this.authenticatedUsage = usage;
+      out += `${plaintext}\n\n`;
+    }
+    return new TextEncoder().encode(out);
+  }
+}
+
+export { toHex as workerKeyHex };

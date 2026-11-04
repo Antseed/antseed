@@ -138,15 +138,41 @@ export interface BuyerPaymentConfig {
 
 /** A wire cost that is a positive integer; malformed values are judged later, where they are caught. */
 /** Why a NeedAuth for a colony-pool request must not be signed, or null when it may be judged as usual. */
-function workerDeliveryProblem(delivery: WorkerDelivery, payload: NeedAuthPayload): string | null {
+function workerDeliveryProblem(
+  delivery: WorkerDelivery,
+  payload: NeedAuthPayload,
+  pricing: ServicePricing | null | undefined,
+  unitBilled: boolean,
+): string | null {
   if (delivery.state === 'pending') return 'the worker\'s answer was not verified in time';
   if (delivery.state === 'failed' || !delivery.usage) return 'the worker\'s answer did not verify';
   const usage = delivery.usage;
   const input = BigInt(payload.inputTokens ?? '0');
-  const fresh = payload.freshInputTokens != null ? BigInt(payload.freshInputTokens) : 0n;
+  const cached = BigInt(payload.cachedInputTokens ?? '0');
   const output = BigInt(payload.outputTokens ?? '0');
-  if (input > usage.inputTokens || fresh > usage.inputTokens || output > usage.outputTokens) {
-    return `billed tokens (in=${input} out=${output}) exceed the worker's authenticated usage (in=${usage.inputTokens} out=${usage.outputTokens})`;
+  // The fresh count the cost checks below price, derived the same way they derive it.
+  const fresh = payload.freshInputTokens != null
+    ? BigInt(payload.freshInputTokens)
+    : cached > 0n ? (input > cached ? input - cached : 0n) : input;
+  const authenticatedFresh = usage.inputTokens - usage.cachedInputTokens;
+  // Each priced component on its own: moving cached input to fresh (or
+  // inflating either) would raise the price without raising the total.
+  if (
+    input > usage.inputTokens || fresh > authenticatedFresh
+    || cached > usage.cachedInputTokens || output > usage.outputTokens
+  ) {
+    return `billed tokens (in=${input} fresh=${fresh} cached=${cached} out=${output}) exceed the worker's authenticated usage `
+      + `(in=${usage.inputTokens} fresh=${authenticatedFresh} cached=${usage.cachedInputTokens} out=${usage.outputTokens})`;
+  }
+  // A token-billed request's cost is capped by the authenticated usage itself,
+  // without the tolerance an estimate gets. Unit-billed costs are judged as usual.
+  if (pricing && !unitBilled && payload.lastRequestCost != null) {
+    const allowed = computeCostUsdc(
+      Number(authenticatedFresh), Number(usage.outputTokens), pricing, Number(usage.cachedInputTokens),
+    );
+    if (BigInt(payload.lastRequestCost) > allowed) {
+      return `billed cost ${payload.lastRequestCost} exceeds ${allowed} for the worker's authenticated usage`;
+    }
   }
   return null;
 }
@@ -1659,15 +1685,24 @@ export class BuyerPaymentManager {
 
   private async _signPerRequestAuth(
     sellerPeerId: string,
-    responseStats: PerRequestResponseStats,
+    stats: PerRequestResponseStats,
   ): Promise<PerRequestAuthResult> {
-    const workerDelivery = responseStats.requestId != null ? this._workerDeliveries.get(responseStats.requestId) : undefined;
-    if (workerDelivery && workerDelivery.state !== 'verified') {
+    const workerDelivery = stats.requestId != null ? this._workerDeliveries.get(stats.requestId) : undefined;
+    if (workerDelivery && (workerDelivery.state !== 'verified' || !workerDelivery.usage)) {
       throw buyerFault(
-        `[BuyerPayment] Request ${responseStats.requestId} to a colony-pool worker has no verified answer to pay for`,
+        `[BuyerPayment] Request ${stats.requestId} to a colony-pool worker has no verified answer to pay for`,
         'buyer-session-state',
       );
     }
+    // A colony-pool request is priced from the usage the worker authenticated, not reported counts.
+    const responseStats: PerRequestResponseStats = workerDelivery?.usage
+      ? {
+        ...stats,
+        reportedInputTokens: workerDelivery.usage.inputTokens,
+        reportedCachedInputTokens: workerDelivery.usage.cachedInputTokens,
+        reportedOutputTokens: workerDelivery.usage.outputTokens,
+      }
+      : stats;
     const session = this.getActiveSession(sellerPeerId);
     if (!session) {
       throw buyerFault(
@@ -1966,13 +2001,6 @@ export class BuyerPaymentManager {
     const workerDelivery = payload.requestId && hasPositiveCost(payload.lastRequestCost)
       ? await this._awaitWorkerDelivery(payload.requestId, WORKER_DELIVERY_WAIT_MS)
       : undefined;
-    if (workerDelivery) {
-      const problem = workerDeliveryProblem(workerDelivery, payload);
-      if (problem) {
-        debugWarn(`[BuyerPayment] Refusing NeedAuth from ${sellerPeerId.slice(0, 12)}... for request ${payload.requestId}: ${problem}`);
-        return false;
-      }
-    }
     const session = this.getActiveSession(sellerPeerId);
     if (!session) {
       debugWarn(`[BuyerPayment] NeedAuth for unknown seller: ${sellerPeerId.slice(0, 12)}...`);
@@ -1995,6 +2023,14 @@ export class BuyerPaymentManager {
     const buyerService = requestBilling?.context.service
       ?? this._requestService.get(payload.requestId);
     const buyerBillingContext = requestBilling?.context;
+    if (workerDelivery) {
+      const pricing = requestBilling?.tokenPricing ?? this.getSessionPricing(sellerPeerId, buyerService);
+      const problem = workerDeliveryProblem(workerDelivery, payload, pricing, Boolean(requestBilling?.unitModel));
+      if (problem) {
+        debugWarn(`[BuyerPayment] Refusing NeedAuth from ${sellerPeerId.slice(0, 12)}... for request ${payload.requestId}: ${problem}`);
+        return false;
+      }
+    }
 
     const requiredCumulativeAmount = BigInt(payload.requiredCumulativeAmount);
     const currentCumulative = this._cumulativeAmount.get(sellerPeerId) ?? 0n;

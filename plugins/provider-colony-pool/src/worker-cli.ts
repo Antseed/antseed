@@ -4,9 +4,9 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { Wallet } from 'ethers';
-import { ChannelsClient } from '@antseed/node';
+import { CHAIN_CONFIGS, ChannelsClient } from '@antseed/node';
 import { generateWorkerEncryptionKey, type WorkerEncryptionKey } from '@antseed/node/worker-e2e';
-import { PoolWorker, type ChannelVerifier } from './worker.js';
+import { PoolWorker, trustedChannelVerifier, type ChannelVerifier } from './worker.js';
 
 const USAGE = `Usage: antseed-pool-worker --pool <wss://url> --services <service[=localModel],...> [options]
 
@@ -22,6 +22,10 @@ Options:
                         The encryption key is kept next to it as <path>.p256.
   --rpc-url <url>       Base RPC; with it, the worker checks that each request's
                         channel belongs to a buyer of this pool
+  --chain-id <id>       Chain whose Channels contract those checks read
+                        (base-mainnet, base-sepolia, base-local; default base-mainnet)
+  --channels-address <address>
+                        Channels contract to read instead of the chain's default
   --stats               Print this worker's earnings and exit
 `;
 
@@ -45,16 +49,15 @@ function loadOrCreateEncryptionKey(path: string): WorkerEncryptionKey {
   return key;
 }
 
-/** Reads the channel through the pool's seller contract, which resolves the real channels contract. */
-function channelVerifier(rpcUrl: string): ChannelVerifier {
-  const clients = new Map<string, ChannelsClient>();
-  return async (channel, buyer, seller) => {
-    const client = clients.get(seller) ?? new ChannelsClient({ rpcUrl, contractAddress: seller });
-    clients.set(seller, client);
-    const session = await client.getSession(channel);
-    if (/^0x0+$/.test(session.buyer)) return null; // not visible yet
-    return session.buyer.toLowerCase() === buyer.toLowerCase() && session.seller.toLowerCase() === seller.toLowerCase();
-  };
+/**
+ * Reads channels from the chain's Channels contract, as this worker's own
+ * config names it: never through a contract the pool points at.
+ */
+function channelVerifier(rpcUrl: string, chainId: string, channelsAddress?: string): ChannelVerifier {
+  const chain = (CHAIN_CONFIGS as Record<string, { channelsContractAddress: string; evmChainId: number } | undefined>)[chainId];
+  if (!chain) throw new Error(`Unknown --chain-id ${chainId}`);
+  const client = new ChannelsClient({ rpcUrl, contractAddress: channelsAddress ?? chain.channelsContractAddress, evmChainId: chain.evmChainId });
+  return trustedChannelVerifier((channel) => client.getSession(channel));
 }
 
 function parseServices(raw: string): Record<string, string> {
@@ -73,6 +76,8 @@ async function main(): Promise<void> {
       concurrency: { type: 'string', default: '1' },
       'key-file': { type: 'string', default: join(homedir(), '.antseed-worker', 'key') },
       'rpc-url': { type: 'string' },
+      'chain-id': { type: 'string', default: 'base-mainnet' },
+      'channels-address': { type: 'string' },
       stats: { type: 'boolean', default: false },
       help: { type: 'boolean', default: false },
     },
@@ -90,7 +95,7 @@ async function main(): Promise<void> {
     services: values.services ? parseServices(values.services) : {},
     privateKey: loadOrCreateKey(values['key-file']!),
     encryptionKey: loadOrCreateEncryptionKey(`${values['key-file']!}.p256`),
-    ...(values['rpc-url'] ? { channelVerifier: channelVerifier(values['rpc-url']) } : {}),
+    ...(values['rpc-url'] ? { channelVerifier: channelVerifier(values['rpc-url'], values['chain-id']!, values['channels-address']) } : {}),
     maxConcurrency: concurrency,
     log: (line) => console.log(line),
   });

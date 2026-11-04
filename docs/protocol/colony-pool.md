@@ -48,8 +48,11 @@ attestation-key:<attestation public key, or empty>
 
 Pools advertise the peer capability `colony-pool-e2e.v2`, and
 `colony-pool-e2e.v2.<provider>` for the provider that serves through workers.
-Buyers encrypt only that provider's services, so a seller can run a pool next
-to ordinary providers. Before its first request for a pool service, the buyer
+Whether a request is encrypted to a worker depends on the provider it is
+routed to (`x-antseed-provider`, or the default route, which the buyer names),
+so an ordinary provider offering the same model as the pool gets plaintext
+requests. The assignment request names that provider too, and buyers cache
+one assignment per seller, provider and service. Before its first request for a pool service, the buyer
 asks the pool for a worker:
 
 ```
@@ -165,8 +168,24 @@ only that worker's key can decrypt it, so only that worker can answer it.
 
 - A worker serves only sealed requests addressed to it.
 - A request without a valid buyer binding (or bound to the zero channel) is
-  treated as the pool's own check: `max_tokens` is capped at 16 and checks are
-  rate limited per hour, so a pool cannot buy real work with them.
+  treated as the pool's own check: its decrypted body is limited to 8 KiB (and
+  2,048 prompt tokens in the Mac app), `max_tokens` is capped at 16 and checks
+  are rate limited per hour, so a pool cannot buy real work with them.
+- A worker runs at most the `maxConcurrency` it announces, counting requests
+  still waiting on a channel check, and refuses extras ("Worker is at
+  capacity"). A request cancelled or disconnected while it waits never starts.
+  The pool runs its join checks one at a time, each in a free slot.
+- A started response that sends nothing for 60 seconds
+  (`responseIdleTimeoutMs`) is cancelled and the worker frees its slot. A
+  worker may send at most 64 MiB per response, and 1 MiB answering the pool's
+  own checks. The reference worker gives its local model 5 minutes to start
+  answering and 60 seconds per chunk after that.
+- Workers check channels only on the AntseedChannels contract of their own
+  chain config, never one the pool names: `antseed-pool-worker --chain-id`
+  (default base-mainnet) or `--channels-address`; the Mac app uses the
+  deployment for its RPC's chain (Base mainnet and Base Sepolia built in) or
+  `--channels`, and with an RPC but no trusted contract refuses buyers'
+  requests.
 - With an RPC endpoint, a worker serves a bound request in full only on a
   verified channel: one the chain shows belongs to the signing buyer and to
   the pool seller. A channel that belongs to someone else is refused (cached
@@ -179,9 +198,12 @@ only that worker's key can decrypt it, so only that worker can answer it.
   endpoint the worker checks only the buyer's signature.
 
 Buyers pay for a pool request only after the worker's sealed answer verifies,
-and only for the tokens the worker authenticated: a NeedAuth for a request
-whose answer is tampered with, truncated or missing is refused, as is one
-billing more input or output tokens than the worker sealed.
+and only up to what the worker's sealed usage costs: every billed count
+(input, fresh input, cached input, output) must be within the sealed one, and
+the token cost may not exceed the cost of the sealed usage, with no estimate
+tolerance. A NeedAuth for a request whose answer is tampered with, truncated
+or missing is refused. Per-request authorizations are priced from the sealed
+usage.
 
 ## Hardened Macs
 
@@ -403,4 +425,5 @@ signs a new link. The seller dashboard shows the pool operator each worker's
 status, speed, requests and earnings from the pool's ledger
 (`<data dir>/colony-pool.db`, or the file `COLONY_POOL_LEDGER_PATH` names,
 which the pool records in `<data dir>/colony-pool.ledger-path` for the
-dashboard).
+dashboard). A worker counts as online there only while the seller's heartbeat
+is fresh; after a seller crash, open connections end at its last heartbeat.

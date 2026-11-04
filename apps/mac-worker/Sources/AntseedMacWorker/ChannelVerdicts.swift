@@ -32,19 +32,39 @@ final class ChannelVerdicts {
         self.lookup = lookup
     }
 
-    /// true = verified, false = refused, nil = not on-chain within the wait.
+    /// true = verified, false = refused, nil = not on-chain within the wait,
+    /// or the waiting request was cancelled (it returns at once; the shared
+    /// lookup carries on for the others).
     func verdict(channel: String, buyer: String) async -> Bool? {
         let channel = channel.lowercased(), buyer = buyer.lowercased()
         // A channel proven to be another buyer's never serves this one.
         if let owner = owners[channel] { return owner == buyer }
         let key = "\(channel)|\(buyer)"
         if refused.contains(key) { return false }
-        if let task = pending[key] { return await task.value }
-        let task = Task { await self.look(channel: channel, buyer: buyer) }
-        pending[key] = task
-        let result = await task.value
-        pending[key] = nil
-        return result
+        if Task.isCancelled { return nil }
+        let task = pending[key] ?? {
+            let task = Task { () -> Bool? in
+                let result = await self.look(channel: channel, buyer: buyer)
+                self.pending[key] = nil
+                return result
+            }
+            pending[key] = task
+            return task
+        }()
+        return await Self.value(of: task)
+    }
+
+    /// The task's value, or nil as soon as the caller is cancelled.
+    private static func value(of task: Task<Bool?, Never>) async -> Bool? {
+        let once = ResumeOnce()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                once.set(continuation)
+                Task { once.resume(await task.value) }
+            }
+        } onCancel: {
+            once.resume(nil)
+        }
     }
 
     private func look(channel: String, buyer: String) async -> Bool? {
@@ -66,5 +86,33 @@ final class ChannelVerdicts {
                 try? await Task.sleep(nanoseconds: UInt64(pollInterval * 1_000_000_000))
             }
         }
+    }
+}
+
+/// Resumes a continuation exactly once, from whichever side gets there first.
+private final class ResumeOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Bool?, Never>?
+    private var result: Bool??
+
+    func set(_ continuation: CheckedContinuation<Bool?, Never>) {
+        lock.lock()
+        if let result {
+            lock.unlock()
+            continuation.resume(returning: result)
+            return
+        }
+        self.continuation = continuation
+        lock.unlock()
+    }
+
+    func resume(_ value: Bool?) {
+        lock.lock()
+        guard result == nil else { lock.unlock(); return }
+        result = .some(value)
+        let continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(returning: value)
     }
 }

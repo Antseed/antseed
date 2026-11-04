@@ -31,6 +31,7 @@ export interface PendingPayout {
  */
 export class WorkerLedger {
   private readonly db: Database.Database;
+  private readonly stmts: ReturnType<WorkerLedger['prepareStatements']>;
 
   constructor(path: string) {
     this.db = new Database(path);
@@ -67,13 +68,43 @@ export class WorkerLedger {
     `);
     // A pool that crashed left sessions open; they ended no later than now.
     this.db.prepare('UPDATE connections SET disconnected_at = ? WHERE disconnected_at IS NULL').run(Date.now());
+    this.stmts = this.prepareStatements();
+  }
+
+  /** The ledger's fixed statements, compiled once. */
+  private prepareStatements() {
+    return {
+      insertEarning: this.db.prepare(`
+        INSERT OR IGNORE INTO earnings (request_id, worker, service, gross_usdc, worker_usdc, input_tokens, output_tokens, stream_ms, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `),
+      insertPayout: this.db.prepare('INSERT INTO payouts (worker, amount_usdc, tx_hash, created_at) VALUES (?, ?, ?, ?)'),
+      insertConnection: this.db.prepare('INSERT INTO connections (worker, agent, connected_at) VALUES (?, ?, ?)'),
+      closeConnection: this.db.prepare('UPDATE connections SET disconnected_at = ? WHERE id = ? AND disconnected_at IS NULL'),
+      earningTotals: this.db.prepare(`
+        SELECT COALESCE(SUM(worker_usdc), 0) AS earned,
+               COALESCE(SUM(CASE WHEN created_at >= ? THEN worker_usdc ELSE 0 END), 0) AS today,
+               COALESCE(SUM(CASE WHEN created_at >= ? THEN worker_usdc ELSE 0 END), 0) AS week,
+               COUNT(*) AS requests,
+               COALESCE(SUM(input_tokens), 0) AS input, COALESCE(SUM(output_tokens), 0) AS output
+        FROM earnings WHERE worker = ?
+      `),
+      paidTotal: this.db.prepare('SELECT COALESCE(SUM(amount_usdc), 0) AS total FROM payouts WHERE worker = ?'),
+      connectedMs: this.db.prepare(`
+        SELECT COALESCE(SUM(MIN(COALESCE(disconnected_at, ?), ?) - MAX(connected_at, ?)), 0) AS ms
+        FROM connections WHERE worker = ? AND COALESCE(disconnected_at, ?) > ?
+      `),
+      pendingPayouts: this.db.prepare(`
+        SELECT e.worker AS worker, e.earned - COALESCE(p.paid, 0) AS pending
+        FROM (SELECT worker, SUM(worker_usdc) AS earned FROM earnings GROUP BY worker) e
+        LEFT JOIN (SELECT worker, SUM(amount_usdc) AS paid FROM payouts GROUP BY worker) p ON p.worker = e.worker
+        ORDER BY pending DESC
+      `),
+    };
   }
 
   recordEarning(input: EarningInput): void {
-    this.db.prepare(`
-      INSERT OR IGNORE INTO earnings (request_id, worker, service, gross_usdc, worker_usdc, input_tokens, output_tokens, stream_ms, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
+    this.stmts.insertEarning.run(
       input.requestId,
       input.worker.toLowerCase(),
       input.service ?? null,
@@ -87,18 +118,17 @@ export class WorkerLedger {
   }
 
   recordPayout(worker: string, amountUsdc: bigint, txHash?: string, at = Date.now()): void {
-    this.db.prepare('INSERT INTO payouts (worker, amount_usdc, tx_hash, created_at) VALUES (?, ?, ?, ?)')
-      .run(worker.toLowerCase(), Number(amountUsdc), txHash ?? null, at);
+    this.stmts.insertPayout.run(worker.toLowerCase(), Number(amountUsdc), txHash ?? null, at);
   }
 
   /** Returns the connection row id, to pass to `recordDisconnect`. */
   recordConnect(worker: string, agent?: string, at = Date.now()): number {
-    const result = this.db.prepare('INSERT INTO connections (worker, agent, connected_at) VALUES (?, ?, ?)').run(worker.toLowerCase(), agent ?? null, at);
+    const result = this.stmts.insertConnection.run(worker.toLowerCase(), agent ?? null, at);
     return Number(result.lastInsertRowid);
   }
 
   recordDisconnect(connectionId: number, at = Date.now()): void {
-    this.db.prepare('UPDATE connections SET disconnected_at = ? WHERE id = ? AND disconnected_at IS NULL').run(at, connectionId);
+    this.stmts.closeConnection.run(at, connectionId);
   }
 
   stats(worker: string, now = Date.now()): WorkerStats {
@@ -106,20 +136,9 @@ export class WorkerLedger {
     const startOfDay = new Date(now);
     startOfDay.setUTCHours(0, 0, 0, 0);
     const weekAgo = now - 7 * DAY_MS;
-    const totals = this.db.prepare(`
-      SELECT COALESCE(SUM(worker_usdc), 0) AS earned,
-             COALESCE(SUM(CASE WHEN created_at >= ? THEN worker_usdc ELSE 0 END), 0) AS today,
-             COALESCE(SUM(CASE WHEN created_at >= ? THEN worker_usdc ELSE 0 END), 0) AS week,
-             COUNT(*) AS requests,
-             COALESCE(SUM(input_tokens), 0) AS input, COALESCE(SUM(output_tokens), 0) AS output
-      FROM earnings WHERE worker = ?
-    `).get(startOfDay.getTime(), weekAgo, address) as { earned: number; today: number; week: number; requests: number; input: number; output: number };
-    const paid = (this.db.prepare('SELECT COALESCE(SUM(amount_usdc), 0) AS total FROM payouts WHERE worker = ?')
-      .get(address) as { total: number }).total;
-    const connected = (this.db.prepare(`
-      SELECT COALESCE(SUM(MIN(COALESCE(disconnected_at, ?), ?) - MAX(connected_at, ?)), 0) AS ms
-      FROM connections WHERE worker = ? AND COALESCE(disconnected_at, ?) > ?
-    `).get(now, now, weekAgo, address, now, weekAgo) as { ms: number }).ms;
+    const totals = this.stmts.earningTotals.get(startOfDay.getTime(), weekAgo, address) as { earned: number; today: number; week: number; requests: number; input: number; output: number };
+    const paid = (this.stmts.paidTotal.get(address) as { total: number }).total;
+    const connected = (this.stmts.connectedMs.get(now, now, weekAgo, address, now, weekAgo) as { ms: number }).ms;
     return {
       address,
       earnedToday: String(totals.today),
@@ -136,12 +155,7 @@ export class WorkerLedger {
 
   /** Workers owed at least `minUsdc`, largest balance first. */
   pendingPayouts(minUsdc = 0n): PendingPayout[] {
-    const rows = this.db.prepare(`
-      SELECT e.worker AS worker, e.earned - COALESCE(p.paid, 0) AS pending
-      FROM (SELECT worker, SUM(worker_usdc) AS earned FROM earnings GROUP BY worker) e
-      LEFT JOIN (SELECT worker, SUM(amount_usdc) AS paid FROM payouts GROUP BY worker) p ON p.worker = e.worker
-      ORDER BY pending DESC
-    `).all() as { worker: string; pending: number }[];
+    const rows = this.stmts.pendingPayouts.all() as { worker: string; pending: number }[];
     return rows
       .map((row) => ({ worker: row.worker, pendingUsdc: BigInt(row.pending) }))
       .filter((row) => row.pendingUsdc > 0n && row.pendingUsdc >= minUsdc);

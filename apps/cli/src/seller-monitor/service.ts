@@ -102,9 +102,11 @@ export class SellerMonitor {
     return this._usage.usage(this.seller().dataDir, days)
   }
 
-  /** The colony pool's workers, when the seller runs one. */
-  workers(): SellerWorkers {
-    return readSellerWorkers(this.seller().dataDir)
+  /** The colony pool's workers, when the seller runs one; open connections stop at a stale seller's last heartbeat. */
+  async workers(): Promise<SellerWorkers> {
+    const dataDir = this.seller().dataDir
+    const updatedAt = (await readDaemonState(dataDir))?.updatedAt
+    return readSellerWorkers(dataDir, Date.now(), typeof updatedAt === 'number' && Number.isFinite(updatedAt) ? updatedAt : null)
   }
 
   logs(query: SellerLogQuery = {}): SellerLogPage {

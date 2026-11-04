@@ -44,6 +44,14 @@ const mixedPeer: PeerInfo = {
     'colony-pool': { services: { qwen: ['openai-chat-completions'] } },
   },
 };
+/** An ordinary provider and the colony pool offering the same model. */
+function sharedPeer(order: string[]): PeerInfo {
+  return {
+    ...peer,
+    providers: order,
+    providerServiceApiProtocols: Object.fromEntries(order.map((provider) => [provider, { services: { qwen: ['openai-chat-completions'] } }])),
+  };
+}
 const SELLER = `0x${'a'.repeat(40)}`;
 
 function chatRequest(requestId: string, stream = false, model = 'qwen'): SerializedHttpRequest {
@@ -340,6 +348,42 @@ describe('buyer requests to colony pools', () => {
     const pooled = await pool.handler.sendRequest(mixedPeer, chatRequest('m2'));
     expect(JSON.parse(dec(pooled.body)).choices[0].message.content).toBe(ANSWER);
     expect(dec(pool.wire.at(-1)!.body)).not.toContain(PROMPT);
+  });
+
+  it('encrypts by the provider a request is routed to when both offer the same model', async () => {
+    const withProvider = (requestId: string, provider: string) => {
+      const request = chatRequest(requestId);
+      return { ...request, headers: { ...request.headers, 'x-antseed-provider': provider } };
+    };
+    const pool = fakePool();
+    const shared = sharedPeer(['openai', 'colony-pool']);
+
+    const ordinary = await pool.handler.sendRequest(shared, withProvider('s1', 'openai'));
+    expect(JSON.parse(dec(ordinary.body)).choices[0].message.content).toBe('plain answer');
+    expect(pool.wire.map((req) => req.path)).toEqual(['/v1/chat/completions']);
+    expect(dec(pool.wire[0]!.body)).toContain(PROMPT);
+
+    const pooled = await pool.handler.sendRequest(shared, withProvider('s2', 'colony-pool'));
+    expect(JSON.parse(dec(pooled.body)).choices[0].message.content).toBe(ANSWER);
+    expect(pool.wire.at(-1)!.headers['x-antseed-provider']).toBe('colony-pool');
+    expect(dec(pool.wire.at(-1)!.body)).not.toContain(PROMPT);
+  });
+
+  it('encrypts by the default route\'s provider when both offer the same model', async () => {
+    // The route takes the first provider offering the model, as the seller does, and names it.
+    const ordinaryFirst = fakePool();
+    await ordinaryFirst.handler.sendRequest(sharedPeer(['openai', 'colony-pool']), chatRequest('d1'));
+    expect(ordinaryFirst.wire.map((req) => req.path)).toEqual(['/v1/chat/completions']);
+    expect(ordinaryFirst.wire[0]!.headers['x-antseed-provider']).toBe('openai');
+    expect(dec(ordinaryFirst.wire[0]!.body)).toContain(PROMPT);
+
+    const poolFirst = fakePool();
+    const pooled = await poolFirst.handler.sendRequest(sharedPeer(['colony-pool', 'openai']), chatRequest('d2'));
+    expect(JSON.parse(dec(pooled.body)).choices[0].message.content).toBe(ANSWER);
+    expect(poolFirst.wire.map((req) => req.path)).toEqual([WORKER_ASSIGN_PATH, '/v1/chat/completions']);
+    expect(poolFirst.wire[0]!.headers['x-antseed-provider']).toBe('colony-pool');
+    expect(poolFirst.wire.at(-1)!.headers['x-antseed-provider']).toBe('colony-pool');
+    expect(dec(poolFirst.wire.at(-1)!.body)).not.toContain(PROMPT);
   });
 
   it('does not encrypt when the colony-pool capability names no provider of the service', async () => {
