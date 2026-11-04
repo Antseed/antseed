@@ -229,8 +229,11 @@ contract AntseedVerificationResultsTest is Test {
         gate.setCurrentEpoch(EPOCH + 1);
         vm.recordLogs();
         auditA.record(agentId, SERVICE_A, MODEL_A, SAME);
-        assertEq(vm.getRecordedLogs().length, 0, "the same audit refreshing its verdict: nothing to report");
+        // The same audit refreshing its verdict moves the expiry, which is reported (ServiceStatusChanged
+        // and AgentStatusChanged), but the verdict itself is unchanged.
+        assertEq(vm.getRecordedLogs().length, 2, "a refresh reports the new expiry");
         assertEq(results.serviceStatus(agentId, SERVICE_A).epoch, EPOCH + 1);
+        assertEq(results.serviceStatus(agentId, SERVICE_A).validUntilEpoch, EPOCH + 3);
 
         gate.setCurrentEpoch(EPOCH + 2);
         uint256 updatedAt = results.serviceStatus(agentId, SERVICE_A).updatedAt;
@@ -311,6 +314,17 @@ contract AntseedVerificationResultsTest is Test {
         assertEq(results.agentStatus(agentId).diffCount, 1, "still counting in its last epoch");
         gate.setCurrentEpoch(EPOCH + 4);
         assertEq(results.agentStatus(agentId).diffCount, 0, "gone once it expired");
+    }
+
+    function test_aRepeatInALaterEpochReportsTheNewExpiry() public {
+        auditA.record(agentId, SERVICE_A, MODEL_A, SAME);
+        gate.setCurrentEpoch(EPOCH + 1);
+        vm.expectEmit(true, true, false, true, address(results));
+        emit AntseedVerificationResults.ServiceStatusChanged(
+            agentId, SERVICE_A, MODEL_A, SAME, SAME, address(auditA), EPOCH + 1, EPOCH + 3
+        );
+        auditA.record(agentId, SERVICE_A, MODEL_A, SAME);
+        assertEq(results.serviceStatus(agentId, SERVICE_A).validUntilEpoch, EPOCH + 3);
     }
 
     function test_aNewVerdictMovesTheServiceToItsExpiry() public {

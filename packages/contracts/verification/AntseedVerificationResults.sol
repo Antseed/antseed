@@ -40,11 +40,11 @@ import { IAntseedVerificationResults } from "../interfaces/IAntseedVerificationR
 contract AntseedVerificationResults is IAntseedVerificationResults, Ownable2Step, Pausable, ReentrancyGuard {
     using Checkpoints for Checkpoints.Trace256;
 
-    /// @notice Most epochs any audit's verdict can count for, including the one it was given in:
-    ///         52 weekly epochs, about a year (364 days). A ceiling only; each audit chooses its own
-    ///         lifetime per verdict (KBF: 2 epochs by default, at most 4). The agent status sum only
-    ///         walks up to the agent's latest expiry, so a long ceiling costs nothing while audits
-    ///         use short lifetimes.
+    /// @notice Upper bound on how long any verdict counts: `record` accepts a `validUntilEpoch` at most
+    ///         this many epochs after the current one, i.e. 52 weekly epochs, about a year. Each audit
+    ///         picks the actual lifetime of its verdicts below this bound.
+    /// @dev Also bounds the agent status sum, which reads one counter per epoch from the next epoch up
+    ///      to the latest expiry any of the agent's verdicts ever had.
     uint256 public constant MAX_VERDICT_EPOCHS = 52;
     uint256 public constant MAX_AUDITS = 32;
     uint256 public constant BPS = 10_000;
@@ -276,6 +276,7 @@ contract AntseedVerificationResults is IAntseedVerificationResults, Ownable2Step
         if (service.verdict == verdict && service.epoch == epoch && service.validUntilEpoch == validUntilEpoch) return;
         Verdict previous = _liveVerdict(service, epoch);
         address previousAudit = service.audit;
+        uint256 previousValidUntil = service.validUntilEpoch;
         _uncount(agentId, service);
         EpochCounts storage counts = _expiryCounts[agentId][validUntilEpoch];
         if (validUntilEpoch > _lastExpiry[agentId]) _lastExpiry[agentId] = validUntilEpoch;
@@ -286,8 +287,9 @@ contract AntseedVerificationResults is IAntseedVerificationResults, Ownable2Step
         service.validUntilEpoch = uint64(validUntilEpoch);
         service.audit = msg.sender;
         if (previous != verdict) service.updatedAt = uint64(block.timestamp);
-        else if (previousAudit == msg.sender) return;
-        // Emitted whenever the live verdict or the audit behind it changes.
+        else if (previousAudit == msg.sender && previousValidUntil == validUntilEpoch) return;
+        // Emitted whenever the live verdict, the audit behind it, or how long it counts changes, so
+        // indexers can follow `validUntilEpoch` from events alone.
         _emitServiceChange(agentId, serviceHash, service, previous, epoch, msg.sender);
     }
 
