@@ -48,6 +48,20 @@ An endpoint with a `video_url` field is a video edit (video-to-video) endpoint, 
 
 The buyer pays for `duration`, which must be the source length in whole seconds, rounded down. fal bills every edit for at least the whole source, and an endpoint that takes a `duration` (Kling v4 edit, Wan 2.7 edit) cuts the output to the source, so a longer `duration` would be delivered short and never charged. The seller therefore measures the inline source and answers `422 invalid_video_duration`, without calling fal, unless `duration` is that length; the source must be inline (`data:video/mp4;base64,...`). An endpoint with no `duration` field (Recast, motion control) makes an output as long as the source, and the seller removes `duration` before submitting to fal. The seller uploads an inline `video_url` to fal's file storage (kept for one day) and gives fal that URL, because some endpoints, such as Kling motion control, take only a URL. When fal's `x-fal` metadata on `video_url` gives a `min_duration` and `max_duration`, the seller announces the whole seconds between them as `video.durationsSeconds`.
 
+### Talking avatars
+
+An endpoint that requires `audio_url`, has no `video_url`, and no field that sets the length (`duration`, `num_frames`) makes a video as long as its audio, for example `fal-ai/kling-video/ai-avatar/v2/pro` and `/standard`. fal bills it per second of that video. The seller announces `first_frame` (the face, `image_url`) and `audio` as `video.inputs` and `video.requiredInputs`.
+
+The buyer pays for `duration`, which must be the audio's length in whole seconds, rounded down. The seller measures the inline audio (an MP3 or PCM WAV `data:audio/...;base64` URL; the bytes decide the format) and answers `422 invalid_video_duration`, without calling fal, unless `duration` is that length. A URL or another audio format is refused the same way. It then removes `duration` and uploads the audio to fal's file storage (kept for one day), because some of these endpoints take `audio_url` only as a URL. If fal's schema can't be read at startup, a request with `audio_url` and no `video_url` is checked the same way, unless the service's configured `supportedParameters` include `duration` or `num_frames`.
+
+```bash
+antseed config seller add-service fal fal-ai/kling-video/ai-avatar/v2/pro \
+  --capabilities '{"video":{"audio":true}}' \
+  --unit-billing-models '{"fal-video":{"version":1,"components":[{"unit":"video_seconds","priceUsd":0.13}]}}'
+```
+
+Both length checks (edits and talking avatars) also run before payment, through the provider's `checkRequest`, so a refused create opens no payment channel.
+
 Otherwise the seller does not check the source; fal does, and reports a refused job as `FAILED` with fal's reason, so the job's payment channel closes at once. A create fal does not answer in time (60 s plus 1 s per 256 KB, at most 10 minutes) is answered `504 upstream_upload_timeout`.
 
 `video_seconds` pricing uses the request's `duration` (`5`, `"5"` or `"5s"`); use `video_generations` for models without a numeric duration.

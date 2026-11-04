@@ -1,6 +1,6 @@
-import type { AntseedProviderPlugin, Provider, ProviderStreamCallbacks, SerializedHttpRequest, ServiceCapabilities, ServiceHealthStatus, UpstreamAccountStatus, VideoInputKind } from '@antseed/node';
+import type { AntseedProviderPlugin, Provider, ProviderRequestRefusal, ProviderStreamCallbacks, SerializedHttpRequest, ServiceCapabilities, ServiceHealthStatus, UpstreamAccountStatus, VideoInputKind } from '@antseed/node';
 import { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION, validateServiceCapabilityFields } from '@antseed/node';
-import { nativeVideoRoute, parseJsonObject, requestService, videoSourceLengthProblem } from '@antseed/api-adapter';
+import { audioSourceLengthProblem, nativeVideoRoute, parseJsonObject, requestService, videoSourceLengthProblem } from '@antseed/api-adapter';
 import {
   parseCsv,
   parseServiceCapabilitiesJson,
@@ -125,9 +125,18 @@ export function falEditRule(input: FalInputSchema | null): FalEditRule | null {
  * takes). Options the seller configured are kept.
  */
 export function withEditInputs(capabilities: ServiceCapabilities, input: FalInputSchema | null, rule: FalEditRule | null): ServiceCapabilities {
-  if (!input || !rule) return capabilities;
-  const kinds = (Object.keys(EDIT_INPUT_FIELDS) as VideoInputKind[]).filter(kind => EDIT_INPUT_FIELDS[kind].some(field => input.fields.includes(field)));
-  const required = kinds.filter(kind => EDIT_INPUT_FIELDS[kind].some(field => input.required.includes(field)));
+  return input && rule ? withSchemaInputs(capabilities, input, EDIT_INPUT_FIELDS) : capabilities;
+}
+
+/**
+ * Video options from an endpoint's schema: the media inputs its fields take
+ * (`fieldsByKind`) and require, the source lengths fal takes as durations,
+ * and the resolutions. Options the seller configured are kept.
+ */
+function withSchemaInputs(capabilities: ServiceCapabilities, input: FalInputSchema, fieldsByKind: Partial<Record<VideoInputKind, readonly string[]>>): ServiceCapabilities {
+  const fieldsOf = (kind: VideoInputKind) => fieldsByKind[kind] ?? [];
+  const kinds = (Object.keys(fieldsByKind) as VideoInputKind[]).filter(kind => fieldsOf(kind).some(field => input.fields.includes(field)));
+  const required = kinds.filter(kind => fieldsOf(kind).some(field => input.required.includes(field)));
   const configured = capabilities.video ?? {};
   const inputs = configured.inputs ? [...configured.inputs, ...kinds.filter(kind => !configured.inputs!.includes(kind))] : kinds;
   const requiredInputs = configured.requiredInputs ?? (required.length > 0 ? required : undefined);
@@ -168,6 +177,33 @@ export function withFrameInputs(capabilities: ServiceCapabilities): ServiceCapab
   return added.length > 0 ? { ...capabilities, video: { ...capabilities.video, inputs: [...inputs, ...added] } } : capabilities;
 }
 
+/** Request fields that set a video's length. */
+const LENGTH_FIELDS = ['duration', 'num_frames'];
+
+/**
+ * Whether an endpoint makes a video as long as its input audio, as talking
+ * avatars such as Kling AI Avatar do: it requires `audio_url`, takes no source
+ * video, and has no field that sets the length. fal bills it by that length,
+ * so the buyer pays for a `duration` that must be the audio's measured length;
+ * the seller removes `duration` before the request goes to fal.
+ */
+export function falFollowsAudio(input: FalInputSchema | null): boolean {
+  return !!input && input.required.includes('audio_url') && !input.fields.includes('video_url')
+    && !LENGTH_FIELDS.some(field => input.fields.includes(field));
+}
+
+/** Fields of an endpoint that follows its audio that carry each media input. */
+const AUDIO_INPUT_FIELDS: Partial<Record<VideoInputKind, readonly string[]>> = {
+  ...FRAME_INPUT_FIELDS,
+  reference_image: ['reference_image_urls', 'image_urls'],
+  audio: ['audio_url'],
+};
+
+/** Video options of an endpoint that follows its audio: the media inputs its fields take and require. */
+export function withAudioInputs(capabilities: ServiceCapabilities, input: FalInputSchema | null): ServiceCapabilities {
+  return input && falFollowsAudio(input) ? withSchemaInputs(capabilities, input, AUDIO_INPUT_FIELDS) : capabilities;
+}
+
 /** Time allowed to send a create to fal and get its answer: 60 s plus 1 s per 256 KB of body, at most 10 min. */
 export function falSubmitTimeoutMs(bodyBytes: number): number {
   return Math.min(10 * 60_000, 60_000 + Math.ceil(bodyBytes / (256 * 1024)) * 1000);
@@ -198,20 +234,25 @@ export function falErrorReason(body: Record<string, unknown> | null): string | u
 }
 
 /**
- * Upload an inline `data:video/...;base64` source to fal's file storage (as
- * fal's own clients do) and return its URL, kept for a day. Some fal
- * endpoints (Kling motion control) accept only a URL for `video_url`.
- * Anything else is returned unchanged.
+ * Upload an inline `data:video/...;base64` or `data:audio/...;base64` source
+ * to fal's file storage (as fal's own clients do) and return its URL, kept
+ * for a day. Some fal endpoints (Kling motion control, OmniHuman) accept only
+ * a URL for `video_url` or `audio_url`. Anything else is returned unchanged.
  */
-async function uploadInlineVideo(source: unknown, authorization: string, signal: AbortSignal): Promise<unknown> {
+async function uploadInlineMedia(source: unknown, kind: 'video' | 'audio', authorization: string, signal: AbortSignal): Promise<unknown> {
   if (typeof source !== 'string') return source;
-  const match = /^data:(video\/[a-z0-9.+-]+)(?:;[a-z0-9.+-]+=[^;,]*)*;base64,/i.exec(source.slice(0, 256));
-  if (!match) return source;
-  const contentType = match[1]!.toLowerCase();
+  const match = /^data:([a-z]+\/[a-z0-9.+-]+)(?:;[a-z0-9.+-]+=[^;,]*)*;base64,/i.exec(source.slice(0, 256));
+  const mediaType = match?.[1]?.toLowerCase();
+  if (!match || !mediaType?.startsWith(`${kind}/`)) return source;
+  const bytes = Buffer.from(source.slice(match[0].length), 'base64');
+  // Audio was measured as MP3 or WAV by its bytes, whatever its label.
+  const [contentType, fileName] = kind === 'audio'
+    ? bytes.subarray(0, 4).toString('latin1') === 'RIFF' ? ['audio/wav', 'source.wav'] : ['audio/mpeg', 'source.mp3']
+    : [mediaType, mediaType === 'video/quicktime' ? 'source.mov' : 'source.mp4'];
   const initiate = await fetch(FAL_STORAGE_URL, {
     method: 'POST',
     headers: { authorization, 'content-type': 'application/json', 'x-fal-object-lifecycle': JSON.stringify({ expiration_duration_seconds: 86_400 }) },
-    body: JSON.stringify({ content_type: contentType, file_name: contentType === 'video/quicktime' ? 'source.mov' : 'source.mp4' }),
+    body: JSON.stringify({ content_type: contentType, file_name: fileName }),
     redirect: 'error',
     signal,
   });
@@ -224,7 +265,7 @@ async function uploadInlineVideo(source: unknown, authorization: string, signal:
   const upload = await fetch(uploadUrl, {
     method: 'PUT',
     headers: { 'content-type': contentType },
-    body: Buffer.from(source.slice(match[0].length), 'base64'),
+    body: bytes,
     redirect: 'error',
     signal,
   });
@@ -382,6 +423,10 @@ const plugin: AntseedProviderPlugin = {
 
     // Video-to-video endpoints: `duration` must be the source length, and is removed when fal takes none.
     const editRules = new Map<string, FalEditRule>();
+    // Endpoints whose video is as long as their audio: `duration` must be the audio length, and is removed.
+    const audioServices = new Set<string>();
+    // Endpoints whose fal schema was read.
+    const schemaRead = new Set<string>();
 
     // Announces each endpoint's own input field names, so buyers can call fal's API unchanged.
     const init = async () => {
@@ -391,17 +436,21 @@ const plugin: AntseedProviderPlugin = {
           const input = response.ok ? falInputSchema(await readJson(response), service) : null;
           const capabilities = serviceCapabilities[service]!;
           if (input?.parameters && !capabilities.supportedParameters) capabilities.supportedParameters = input.parameters;
+          if (input) schemaRead.add(service);
           const rule = falEditRule(input);
           if (rule) {
             editRules.set(service, rule);
             serviceCapabilities[service] = withEditInputs(capabilities, input, rule);
+          } else if (falFollowsAudio(input)) {
+            audioServices.add(service);
+            serviceCapabilities[service] = withAudioInputs(capabilities, input);
           }
         } catch {
           // Unknown input fields: buyers fall back to the common names.
         }
       }));
       for (const service of services) {
-        if (!editRules.has(service)) serviceCapabilities[service] = withFrameInputs(serviceCapabilities[service]!);
+        if (!editRules.has(service) && !audioServices.has(service)) serviceCapabilities[service] = withFrameInputs(serviceCapabilities[service]!);
       }
       const account = await readFalAccount(FAL_PLATFORM_URL, authorization);
       if (account.status === 'no_permission') {
@@ -418,6 +467,37 @@ const plugin: AntseedProviderPlugin = {
       return { videoRoute, service: service && services.includes(service) ? service : undefined };
     };
 
+    /**
+     * Whether a create's video is as long as its audio. Without the endpoint's
+     * schema, an `audio_url` without a source video marks one, unless the
+     * service's configured fields include one that sets the length.
+     */
+    const followsAudio = (service: string, input: Record<string, unknown>) => audioServices.has(service)
+      || (!schemaRead.has(service) && input.audio_url !== undefined && input.video_url === undefined
+        && !LENGTH_FIELDS.some(field => serviceCapabilities[service]!.supportedParameters?.includes(field)));
+
+    /**
+     * Why a create can't be paid for its `duration`, or null. The buyer pays
+     * for `duration`, so for an edit it must be the source's measured length
+     * (see FalEditRule), and for an endpoint that follows its audio the
+     * audio's (see falFollowsAudio). Without the endpoint's schema, a source
+     * video marks an edit.
+     */
+    const lengthProblem = (service: string, input: Record<string, unknown>): string | null => {
+      if (editRules.has(service) || input.video_url !== undefined) return videoSourceLengthProblem(input.video_url, input.duration);
+      if (followsAudio(service, input)) return audioSourceLengthProblem(input.audio_url, input.duration);
+      return null;
+    };
+
+    // Run before any payment, so a refused create costs the buyer nothing.
+    const checkRequest = (request: SerializedHttpRequest): ProviderRequestRefusal | null => {
+      const { videoRoute, service } = route(request);
+      if (videoRoute?.action !== 'create' || !service) return null;
+      const body = parseJsonObject(request.body);
+      const refused = body && lengthProblem(service, body);
+      return refused ? { statusCode: 422, code: 'invalid_video_duration', message: refused } : null;
+    };
+
     let active = 0;
     let activeDownloads = 0;
 
@@ -431,18 +511,17 @@ const plugin: AntseedProviderPlugin = {
       try {
         // fal reads the model from the URL; the body is the model input only.
         const { model: _model, service: _service, ...input } = body;
-        // The buyer pays for an edit's `duration`, so it must be the source's measured length (see FalEditRule).
-        // Without the endpoint's schema, a source video marks an edit. An endpoint that takes no `duration` gets none.
-        const rule = editRules.get(service);
-        if (rule || input.video_url !== undefined) {
-          const refused = videoSourceLengthProblem(input.video_url, input.duration);
-          if (refused) return error(request, 422, 'invalid_video_duration', refused);
-          if (rule?.outputFollowsSource) delete input.duration;
-        }
+        // The seller checks this before payment too (checkRequest).
+        const refused = lengthProblem(service, input);
+        if (refused) return error(request, 422, 'invalid_video_duration', refused);
+        const followsAudioLength = followsAudio(service, input);
+        // An endpoint that takes no `duration` gets none: its output follows the source or the audio.
+        if (editRules.get(service)?.outputFollowsSource || audioServices.has(service)) delete input.duration;
         // The upload of a large inline source counts toward the timeout: allow 60 s plus 1 s per 256 KB.
         const signal = AbortSignal.timeout(falSubmitTimeoutMs(request.body.length));
-        // An inline source goes to fal's storage first: some endpoints take video_url only as a URL.
-        if (input.video_url !== undefined) input.video_url = await uploadInlineVideo(input.video_url, authorization, signal);
+        // An inline source goes to fal's storage first: some endpoints take video_url or audio_url only as a URL.
+        if (input.video_url !== undefined) input.video_url = await uploadInlineMedia(input.video_url, 'video', authorization, signal);
+        if (followsAudioLength) input.audio_url = await uploadInlineMedia(input.audio_url, 'audio', authorization, signal);
         const upstream = await fetch(`${baseUrl}/${service}`, {
           method: 'POST',
           headers: { authorization, 'content-type': 'application/json' },
@@ -490,6 +569,7 @@ const plugin: AntseedProviderPlugin = {
       maxConcurrency,
       getCapacity: () => ({ current: active, max: maxConcurrency }),
       init,
+      checkRequest,
       handleRequest,
       async checkServiceHealth(checked) {
         const statuses = await readFalModelStatuses(FAL_PLATFORM_URL, authorization, checked);

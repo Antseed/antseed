@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Provider, ProviderStreamCallbacks, SerializedHttpRequest } from '@antseed/node';
-import plugin, { FAL_BALANCE_CHECK_OFF, FAL_STORAGE_URL, falAppId, falEditRule, falErrorReason, falSubmitTimeoutMs, falInputParameters, falInputSchema, withEditInputs, withFrameInputs } from './index.js';
+import plugin, { FAL_BALANCE_CHECK_OFF, FAL_STORAGE_URL, falAppId, falEditRule, falErrorReason, falFollowsAudio, falSubmitTimeoutMs, falInputParameters, falInputSchema, withAudioInputs, withEditInputs, withFrameInputs } from './index.js';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -378,35 +378,36 @@ describe('checkServiceHealth and checkUpstreamAccount', () => {
   });
 });
 
+/** Real fal input schemas (trimmed to the endpoint's input), saved 2026-10-23 (edits) and 2026-11-04 (avatars). */
+const fixture = (endpointId: string) => JSON.parse(readFileSync(new URL(`./fixtures/${endpointId.replaceAll('/', '_')}.json`, import.meta.url), 'utf8'));
+const serviceConfig = (service: string, capabilities?: object) => ({
+  FAL_VIDEO_API_KEY: 'seller-secret',
+  ANTSEED_ALLOWED_SERVICES: service,
+  ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON: JSON.stringify({ [service]: { 'fal-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.3 }] } } }),
+  ...(capabilities ? { ANTSEED_SERVICE_CAPABILITIES_JSON: JSON.stringify({ [service]: capabilities }) } : {}),
+});
+const ready = async (service: string, capabilities?: object) => {
+  const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+    if (String(url).startsWith('https://fal.ai/api/openapi')) return Response.json(fixture(service));
+    if (String(url).includes('/v1/account/billing')) return Response.json({ credits: { current_balance: 5 } });
+    if (String(url).startsWith('https://rest.fal.ai/storage/upload/initiate')) {
+      return Response.json({ upload_url: 'https://v3b.fal.media/upload/source', file_url: 'https://v3b.fal.media/files/source.mp4' });
+    }
+    if (String(url) === 'https://v3b.fal.media/upload/source') return new Response(null, { status: 200 });
+    return Response.json({ request_id: 'req-1' });
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  const provider = plugin.createProvider(serviceConfig(service, capabilities)) as Provider;
+  await provider.init!();
+  return { provider, fetchMock };
+};
+const create = (service: string, body: object, requestId = 'r') => ({ ...request('/fal/v1/video/queue', { model: service, ...body }), requestId });
+
 describe('video-to-video endpoints', () => {
-  /** Real fal input schemas (trimmed to the endpoint's input), saved 2026-10-23. */
-  const fixture = (endpointId: string) => JSON.parse(readFileSync(new URL(`./fixtures/${endpointId.replaceAll('/', '_')}.json`, import.meta.url), 'utf8'));
   const RECAST = 'minimax/h3-max/recast';
   const KLING_EDIT = 'kling/v4/video-to-video/edit';
   const MOTION = 'fal-ai/kling-video/v3/standard/motion-control';
   const WAN_EDIT = 'fal-ai/wan/v2.7/edit-video';
-  const editConfig = (service: string, capabilities?: object) => ({
-    FAL_VIDEO_API_KEY: 'seller-secret',
-    ANTSEED_ALLOWED_SERVICES: service,
-    ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON: JSON.stringify({ [service]: { 'fal-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.3 }] } } }),
-    ...(capabilities ? { ANTSEED_SERVICE_CAPABILITIES_JSON: JSON.stringify({ [service]: capabilities }) } : {}),
-  });
-  const ready = async (service: string, capabilities?: object) => {
-    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
-      if (String(url).startsWith('https://fal.ai/api/openapi')) return Response.json(fixture(service));
-      if (String(url).includes('/v1/account/billing')) return Response.json({ credits: { current_balance: 5 } });
-      if (String(url).startsWith('https://rest.fal.ai/storage/upload/initiate')) {
-        return Response.json({ upload_url: 'https://v3b.fal.media/upload/source', file_url: 'https://v3b.fal.media/files/source.mp4' });
-      }
-      if (String(url) === 'https://v3b.fal.media/upload/source') return new Response(null, { status: 200 });
-      return Response.json({ request_id: 'req-1' });
-    });
-    vi.stubGlobal('fetch', fetchMock);
-    const provider = plugin.createProvider(editConfig(service, capabilities)) as Provider;
-    await provider.init!();
-    return { provider, fetchMock };
-  };
-  const create = (service: string, body: object, requestId = 'r') => ({ ...request('/fal/v1/video/queue', { model: service, ...body }), requestId });
   it('reads required fields, the x-fal source length and resolutions from the fal schemas', () => {
     expect(falInputSchema(fixture(RECAST), RECAST)).toMatchObject({ required: ['video_url', 'reference_image_urls'], resolutions: ['768P', '1080P'] });
     // Recast states its source length only in a description, so none is read.
@@ -497,5 +498,107 @@ describe('video-to-video endpoints', () => {
     const response = await provider.handleRequest(create(WAN_EDIT, { prompt: 'make it snow', video_url: sourceMp4(5_200), duration: 5 }));
     expect(response.statusCode).toBe(200);
     expect(parse(fetchMock.mock.calls.at(-1)![1].body)).toMatchObject({ duration: 5 });
+  });
+});
+
+describe('endpoints whose video follows their audio', () => {
+  const AVATAR_PRO = 'fal-ai/kling-video/ai-avatar/v2/pro';
+  const AVATAR_STANDARD = 'fal-ai/kling-video/ai-avatar/v2/standard';
+  const INFINITALK = 'fal-ai/infinitalk';
+  /** Inline MP3 of `frames` MPEG-1 layer III frames, 128 kbps at 44.1 kHz (26.1 ms each). */
+  const voiceMp3 = (frames: number) => {
+    const bytes = Buffer.alloc(417 * frames);
+    for (let i = 0; i < frames; i += 1) bytes.set([0xff, 0xfb, 0x90, 0x00], i * 417);
+    return `data:audio/mpeg;base64,${bytes.toString('base64')}`;
+  };
+  /** 192 frames: 5.02 s. */
+  const voice = voiceMp3(192);
+  const face = 'data:image/png;base64,AAAA';
+  const refusal = (provider: Provider, body: object) => provider.checkRequest!(create(AVATAR_PRO, body));
+
+  it('recognises talking avatars from the fal schema: audio_url required, no source video, nothing that sets the length', () => {
+    expect(falFollowsAudio(falInputSchema(fixture(AVATAR_PRO), AVATAR_PRO))).toBe(true);
+    expect(falFollowsAudio(falInputSchema(fixture(AVATAR_STANDARD), AVATAR_STANDARD))).toBe(true);
+    // InfiniTalk stops at `num_frames`, so its length is not the audio's.
+    expect(falFollowsAudio(falInputSchema(fixture(INFINITALK), INFINITALK))).toBe(false);
+    // Optional audio next to a `duration` (Wan 2.5) and lip-sync edits (a source video) are not.
+    expect(falFollowsAudio(falInputSchema(schema(V3, { prompt: {}, image_url: {}, audio_url: {}, duration: {} }), V3))).toBe(false);
+    expect(falFollowsAudio(falInputSchema(schema(V3, { video_url: {}, audio_url: {} }), V3))).toBe(false);
+    expect(falFollowsAudio(null)).toBe(false);
+    expect(withAudioInputs({ outputs: ['video'] }, falInputSchema(fixture(INFINITALK), INFINITALK))).toEqual({ outputs: ['video'] });
+  });
+
+  it('announces the avatar image and the audio as required inputs, and no durations', async () => {
+    const { provider } = await ready(AVATAR_PRO);
+    expect(provider.serviceCapabilities?.[AVATAR_PRO]).toEqual({
+      outputs: ['video'],
+      supportedParameters: ['audio_url', 'enable_safety_checker', 'image_url', 'prompt'],
+      video: { inputs: ['first_frame', 'audio'], requiredInputs: ['first_frame', 'audio'] },
+    });
+    const configured = await ready(AVATAR_STANDARD, { video: { resolutions: ['720p'], audio: true } });
+    expect(configured.provider.serviceCapabilities?.[AVATAR_STANDARD]?.video).toEqual({
+      resolutions: ['720p'], audio: true, inputs: ['first_frame', 'audio'], requiredInputs: ['first_frame', 'audio'],
+    });
+  });
+
+  it('refuses before payment unless duration is the measured audio length', async () => {
+    const { provider, fetchMock } = await ready(AVATAR_PRO);
+    const calls = fetchMock.mock.calls.length;
+    // A 5 s voice paid as 1 s.
+    expect(refusal(provider, { image_url: face, audio_url: voice, duration: 1 }))
+      .toEqual({ statusCode: 422, code: 'invalid_video_duration', message: 'duration must be the source length in whole seconds, rounded down: 5' });
+    // No duration: nothing to price.
+    expect(refusal(provider, { image_url: face, audio_url: voice })?.message).toContain(': 5');
+    // Audio missing, sent as a URL, or in a format the seller cannot measure.
+    for (const audio_url of [undefined, 'https://example.com/voice.mp3', 'data:audio/mp4;base64,AAAAIGZ0eXBNNEEg']) {
+      expect(refusal(provider, { image_url: face, audio_url, duration: 5 })).toMatchObject({ statusCode: 422, code: 'invalid_video_duration', message: expect.stringContaining('send audio_url inline') });
+    }
+    // handleRequest refuses the same way when called directly, without calling fal.
+    const direct = await provider.handleRequest(create(AVATAR_PRO, { image_url: face, audio_url: voice, duration: 1 }));
+    expect(direct.statusCode).toBe(422);
+    expect(parse(direct.body).error.code).toBe('invalid_video_duration');
+    expect(fetchMock.mock.calls.length).toBe(calls);
+  });
+
+  it('accepts the measured length, uploads the audio, and removes duration, which the endpoint does not take', async () => {
+    const { provider, fetchMock } = await ready(AVATAR_PRO);
+    const body = { image_url: face, audio_url: voice, prompt: 'She smiles', duration: '5' };
+    expect(refusal(provider, body)).toBeNull();
+    const response = await provider.handleRequest(create(AVATAR_PRO, body));
+    expect(response.statusCode).toBe(200);
+    const [initiateUrl, initiate] = fetchMock.mock.calls.at(-3)!;
+    expect(initiateUrl).toBe(FAL_STORAGE_URL);
+    expect(parse(initiate.body)).toEqual({ content_type: 'audio/mpeg', file_name: 'source.mp3' });
+    expect(Buffer.from(fetchMock.mock.calls.at(-2)![1].body).toString('base64')).toBe(voice.split(',')[1]);
+    const [url, init] = fetchMock.mock.calls.at(-1)!;
+    expect(url).toBe(`https://queue.fal.run/${AVATAR_PRO}`);
+    expect(parse(init.body)).toEqual({ image_url: face, audio_url: 'https://v3b.fal.media/files/source.mp4', prompt: 'She smiles' });
+  });
+
+  it('uploads a WAV as a WAV, whatever its label', async () => {
+    const { provider, fetchMock } = await ready(AVATAR_STANDARD);
+    const pcm = Buffer.alloc(16_000 * 3);
+    const wav = Buffer.concat([Buffer.from('RIFF\0\0\0\0WAVEfmt ', 'latin1'), Buffer.from([16, 0, 0, 0, 1, 0, 1, 0, 0x40, 0x1f, 0, 0, 0x80, 0x3e, 0, 0, 2, 0, 16, 0]),
+      Buffer.from('data', 'latin1'), Buffer.from([0x80, 0xbb, 0, 0]), pcm]);
+    const response = await provider.handleRequest(create(AVATAR_STANDARD, { image_url: face, audio_url: `data:audio/mpeg;base64,${wav.toString('base64')}`, duration: 3 }));
+    expect(response.statusCode).toBe(200);
+    expect(parse(fetchMock.mock.calls.at(-3)![1].body)).toEqual({ content_type: 'audio/wav', file_name: 'source.wav' });
+  });
+
+  it('checks audio without the fal schema, unless the configured fields set the length', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
+    const offline = plugin.createProvider(serviceConfig(AVATAR_PRO)) as Provider;
+    await offline.init!();
+    expect(offline.checkRequest!(create(AVATAR_PRO, { image_url: face, audio_url: voice, duration: 1 }))?.code).toBe('invalid_video_duration');
+    expect(offline.checkRequest!(create(AVATAR_PRO, { image_url: face, audio_url: voice, duration: 5 }))).toBeNull();
+    expect(offline.checkRequest!(create(AVATAR_PRO, { prompt: 'no audio', duration: 5 }))).toBeNull();
+    const withDuration = plugin.createProvider(serviceConfig(AVATAR_PRO, { supportedParameters: ['audio_url', 'duration', 'image_url', 'prompt'] })) as Provider;
+    await withDuration.init!();
+    expect(withDuration.checkRequest!(create(AVATAR_PRO, { image_url: face, audio_url: voice, duration: 10 }))).toBeNull();
+  });
+
+  it('leaves other endpoints\' audio alone', async () => {
+    const { provider } = await ready(INFINITALK);
+    expect(provider.checkRequest!(create(INFINITALK, { image_url: face, audio_url: 'https://example.com/voice.mp3', prompt: 'hi', duration: 5 }))).toBeNull();
   });
 });
