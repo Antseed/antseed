@@ -166,3 +166,62 @@ describe('upstreams sharing a provider name', () => {
     expect(() => assertSameNameUpstreamsAgree([video(), { ...video(), name: 'fal' }])).not.toThrow();
   });
 });
+
+describe('what a seller tells buyers about its upstream', () => {
+  const upstreamHeaders = {
+    'content-type': 'application/json',
+    'retry-after': '30',
+    'x-antseed-plugin-note': 'kept',
+    'x-codex-plan-type': 'promax',
+    'x-codex-credits-balance': '53029.7',
+    'x-codex-primary-used-percent': '3',
+    'x-ratelimit-remaining-requests': '10',
+    'anthropic-ratelimit-unified-status': 'allowed',
+    'x-request-id': 'req_upstream',
+    'set-cookie': '__cf_bm=abc; path=/',
+  };
+  const kept = { 'content-type': 'application/json', 'retry-after': '30', 'x-antseed-plugin-note': 'kept' };
+
+  it('passes on only safe headers of an upstream answer', async () => {
+    const provider = makeProvider('p', 200);
+    provider.handleRequest = vi.fn(async (req) => ({ requestId: req.requestId, statusCode: 200, headers: upstreamHeaders, body: new TextEncoder().encode('{}') }));
+    const response = await serve([provider]);
+    expect(response.headers).toEqual(kept);
+  });
+
+  it('passes on only safe headers when a streamed answer starts', async () => {
+    const provider = makeProvider('p', 200);
+    provider.handleRequestStream = vi.fn(async (req, callbacks) => {
+      const start = { requestId: req.requestId, statusCode: 200, headers: { ...upstreamHeaders, 'content-type': 'text/event-stream' }, body: new Uint8Array(0) };
+      callbacks.onResponseStart(start);
+      await callbacks.onResponseChunk({ requestId: req.requestId, data: new TextEncoder().encode('data: {}\n\n'), done: true });
+      return start;
+    });
+    const response = await serve([provider]);
+    expect(response.headers).toEqual({ ...kept, 'content-type': 'text/event-stream' });
+  });
+
+  it('answers an upstream usage limit as rate limited, without the plan in its body', async () => {
+    const provider = makeProvider('p', 429);
+    provider.handleRequest = vi.fn(async (req) => ({
+      requestId: req.requestId,
+      statusCode: 429,
+      headers: upstreamHeaders,
+      body: new TextEncoder().encode(JSON.stringify({ error: { type: 'usage_limit_reached', message: 'The usage limit has been reached', plan_type: 'promax', resets_at: 1794407073 } })),
+    }));
+    const response = await serve([provider]);
+    expect(response.statusCode).toBe(429);
+    const text = new TextDecoder().decode(response.body);
+    expect(JSON.parse(text).error).toMatchObject({ code: 'upstream_rate_limited', service: 'test-model' });
+    expect(text).not.toMatch(/promax|plan_type|resets_at|usage limit/);
+    expect(response.headers).toEqual({ 'content-type': 'application/json', 'retry-after': '30' });
+  });
+
+  it('does not tell buyers what a provider exception says', async () => {
+    const provider = makeProvider('p', 200);
+    provider.handleRequest = vi.fn(async () => { throw new Error('OpenAI Codex token refresh failed (401): {"error":"account sirob@example.com suspended"}'); });
+    const response = await serve([provider]);
+    expect(response.statusCode).toBe(500);
+    expect(new TextDecoder().decode(response.body)).toBe('The seller could not complete the request upstream');
+  });
+});
