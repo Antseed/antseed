@@ -472,6 +472,7 @@ Deposits reserved:           0 USDC → 1 USDC`,
       '<strong>What Pi is.</strong> Pi (<code>@mariozechner/pi-coding-agent</code>) is a minimal, hackable terminal coding agent by Mario Zechner - the same lineage as <a href="https://github.com/badlogic/pi-mono">pi-mono</a>. It ships with four default tools (<code>read</code>, <code>write</code>, <code>edit</code>, <code>bash</code>) and lets you extend everything else - commands, providers, themes, even the editor UI - through TypeScript <em>extensions</em>, <em>skills</em>, and <em>prompt templates</em>. No fork required.',
       '<strong>What the Antseed extension does.</strong> <a href="https://github.com/AntSeed/pi-antseed"><code>pi-antseed</code></a> is a Pi extension that registers the local buyer proxy as a Pi provider named <code>antseed</code>. Once installed, every model on the network shows up under <code>antseed/&lt;id&gt;</code> in Pi\'s model picker (Ctrl+L or <code>/model</code>) - you switch with <code>/model antseed/minimax-m2.7</code> just like any built-in.',
       '<strong>Why an extension instead of env vars.</strong> Pi already speaks dozens of provider protocols natively. The extension calls <code>pi.registerProvider("antseed", { api: "openai-responses", authHeader: true, baseUrl: "http://localhost:8377/v1" })</code> - Pi then handles auth headers, streaming, retries, and tool-calling. The Responses API path preserves reasoning items across turns for reasoning-capable models, while the extension still auto-refreshes the model list from <code>GET /v1/models</code> so the menu reflects every model on the network.',
+      '<strong>Running Pi on another machine?</strong> The buyer proxy on port 8377 listens only on localhost, so a remote Pi cannot connect to it directly. Use your gateway endpoint (port 8379) with a gateway API key, or create a secure tunnel endpoint through the Antseed desktop app’s <strong>Agents</strong> view or with <code>antseed tunnel start</code>. Set <code>ANTSEED_BASE_URL</code> to the endpoint URL ending in <code>/v1</code> and <code>ANTSEED_API_KEY</code> to its key. See <a href="/docs/gateway">Gateway</a> and <a href="/docs/tunnels">Tunnels</a>.'
     ],
     install: [
       {
@@ -560,7 +561,7 @@ Deposits reserved:           0 USDC → 1 USDC`,
       {
         problem: 'Want to use a custom buyer proxy URL (remote host, custom port)',
         fix:
-          'Set `ANTSEED_BASE_URL=http://your-host:8377/v1` in the shell that launches `pi`. The extension reads this on startup. If your proxy is fronted by auth, also set `ANTSEED_API_KEY=<token>`.',
+          'For another machine, do not point at port 8377: the buyer proxy is localhost-only. Use your gateway URL (port 8379) with a gateway API key, or create a secure tunnel endpoint via the desktop app’s Agents view or `antseed tunnel start`. Set `ANTSEED_BASE_URL` to the endpoint URL ending in `/v1` and `ANTSEED_API_KEY` to its key. See [Tunnels](/docs/tunnels).',
       },
     ],
     links: [
