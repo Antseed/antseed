@@ -446,9 +446,11 @@ export interface PaymentsCLIConfig {
     identityRegistryAddress?: string;
     /** Deployed AntseedEmissions contract address */
     emissionsContractAddress?: string;
-    /** Deployed AntseedKbfVerification contract address */
+    /** Deployed AntseedKbfAudits contract address (the KBF source auditors submit to; holds the approved auditors) */
     verificationContractAddress?: string;
-    /** Deployment block of the verification contract; floor for verifier event scans */
+    /** AntseedVerificationResults address; discovered from the KBF contract when unset */
+    verificationResultsAddress?: string;
+    /** Deployment block of the KBF audits contract; floor for verifier event scans */
     verificationDeployBlock?: number;
     legacyEmissionsContractAddress?: string;
     legacyStakingContractAddress?: string;

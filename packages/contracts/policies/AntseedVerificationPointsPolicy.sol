@@ -7,26 +7,25 @@ import { Math } from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import { IAntseedPointsModifier } from "../interfaces/IAntseedPointsModifier.sol";
 import { IAntseedSellerPools } from "../interfaces/IAntseedSellerPools.sol";
-import { IAntseedKbfVerification } from "../interfaces/IAntseedKbfVerification.sol";
+import { IAntseedVerificationResults } from "../interfaces/IAntseedVerificationResults.sol";
 
 interface IAntseedSellerPoolsSource {
     function sellerPools() external view returns (IAntseedSellerPools);
 }
 
-/// @notice KBF verification points policy: scales seller points by the agent's KBF-verified and KBF
-///         DIFF services in `verification` (an `AntseedKbfVerification`). Another verification method
-///         gets its own policy next to this one in the points policy registry. Formula:
-///         sellerPoints * max(0, 1 + min(verifiedCount * bonusBps, MAX_BONUS_BPS) / BPS
+/// @notice Verification points policy: scales seller points by the agent's verified and DIFF
+///         services in `results` (an `AntseedVerificationResults`), whatever method recorded them.
+///         Formula: sellerPoints * max(0, 1 + min(verifiedCount * bonusBps, MAX_BONUS_BPS) / BPS
 ///         - diffCount * penaltyBps / BPS). The penalty is uncapped. Both rates start at 0, so
 ///         points are unchanged until the owner sets one, and a change applies from the next
 ///         settlement on. Buyer points pass through.
 /// @dev A reverting points modifier zeroes every settlement in the registry chain, so
 ///      every external read here falls back to returning points unchanged.
-contract AntseedKbfVerificationPointsPolicy is IAntseedPointsModifier, Ownable2Step {
+contract AntseedVerificationPointsPolicy is IAntseedPointsModifier, Ownable2Step {
     uint256 public constant BPS = 10_000;
     uint256 public constant MAX_BONUS_BPS = 5_000;
 
-    IAntseedKbfVerification public immutable verification;
+    IAntseedVerificationResults public immutable results;
     IAntseedSellerPoolsSource public immutable usageAccounting;
     uint256 public bonusBps;
     uint256 public penaltyBps;
@@ -37,12 +36,12 @@ contract AntseedKbfVerificationPointsPolicy is IAntseedPointsModifier, Ownable2S
     error InvalidAddress();
     error InvalidValue();
 
-    constructor(address verification_, address usageAccounting_, uint256 bonusBps_, address initialOwner)
+    constructor(address results_, address usageAccounting_, uint256 bonusBps_, address initialOwner)
         Ownable(initialOwner)
     {
-        if (verification_.code.length == 0 || usageAccounting_.code.length == 0) revert InvalidAddress();
+        if (results_.code.length == 0 || usageAccounting_.code.length == 0) revert InvalidAddress();
         if (bonusBps_ > MAX_BONUS_BPS) revert InvalidValue();
-        verification = IAntseedKbfVerification(verification_);
+        results = IAntseedVerificationResults(results_);
         usageAccounting = IAntseedSellerPoolsSource(usageAccounting_);
         bonusBps = bonusBps_;
         emit BonusBpsSet(bonusBps_);
@@ -83,7 +82,7 @@ contract AntseedKbfVerificationPointsPolicy is IAntseedPointsModifier, Ownable2S
             if (address(pools).code.length == 0) return (0, 0);
             try pools.agentIdForSeller(seller) returns (uint256 agentId) {
                 if (agentId == 0) return (0, 0);
-                try verification.agentStatus(agentId) returns (IAntseedKbfVerification.AgentStatus memory status) {
+                try results.agentStatus(agentId) returns (IAntseedVerificationResults.AgentStatus memory status) {
                     return (status.verifiedCount, status.diffCount);
                 } catch {
                     return (0, 0);

@@ -3,7 +3,7 @@ import { getAddress } from 'ethers'
 import type { AuditorSetEvent } from '@antseed/node/payments'
 import { readJsonIfExists, writeJsonAtomic } from './atomic-files.js'
 
-/** Reads `AuditorSet` events; `VerifierClient` implements it. */
+/** Reads `AuditorSet` events from the KBF audits contract; `VerifierClient` implements it. */
 export interface AuditorSetEventSource {
   readonly contractAddress: string
   latestBlockNumber(): Promise<number>
@@ -44,7 +44,7 @@ export function approvedAuditorsAt(events: readonly AuditorSetEvent[], epochStar
 }
 
 /**
- * Every `AuditorSet` event of the verification contract, reading only blocks the cache in
+ * Every `AuditorSet` event of the KBF audits contract, reading only blocks the cache in
  * `<dataDir>/verifier/auditor-set.json` has not covered yet. The first call scans from the
  * contract's deployment block.
  */
@@ -59,7 +59,7 @@ export async function loadAuditorSetEvents(
   const usable = cached?.version === 1 && cached.contract === contract ? cached : null
   const latest = await source.latestBlockNumber()
   const fromBlock = usable ? usable.scannedThrough + 1 : undefined
-  if (!usable) log('Reading the approved auditors from the verification contract (first run scans from its deployment block; cached afterwards)…')
+  if (!usable) log(`Reading the approved auditors from the KBF audits contract ${contract} (first run scans from its deployment block; cached afterwards)…`)
   const fresh = fromBlock !== undefined && fromBlock > latest ? [] : await source.queryAuditorSetEvents(fromBlock, latest)
   const events = [...(usable?.events ?? []), ...fresh]
   const scannedThrough = latest - AUDITOR_SET_CONFIRMATION_BLOCKS

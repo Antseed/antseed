@@ -139,7 +139,9 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
       ])
       validateRunEpoch(manifest, window)
       if (!options.dryRun && !approved) {
-        throw new Error(`auditor wallet ${address} is not approved by the verification contract`)
+        throw new Error(
+          `auditor wallet ${address} is not approved by the KBF audits contract ${getAddress(verifierClient.contractAddress)}`,
+        )
       }
       const contract = getAddress(verifierClient.contractAddress)
       const ledgerPath = modelAuditLedgerPath(evidenceDir, manifest.runId, network.chainId, contract)
@@ -156,7 +158,7 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
       // Read at most once: the delta filter needs it only for results this auditor already reported.
       let auditorSetEventsRead: Promise<AuditorSetEvent[]> | null = null
       const auditorSetEvents = (): Promise<AuditorSetEvent[]> => (
-        auditorSetEventsRead ??= verifierClient.queryAuditorSetEvents(verifierClient.deploymentBlock)
+        auditorSetEventsRead ??= verifierClient.queryAuditorSetEvents()
       )
       const epochEvents = await loadEpochAuditEvents({
         reader: verifierClient, epochStartedAt: window.startedAt, deploymentBlock: verifierClient.deploymentBlock,

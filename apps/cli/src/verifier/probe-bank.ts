@@ -1,7 +1,9 @@
 import { randomInt } from 'node:crypto'
-import { copyFile, mkdir, readdir } from 'node:fs/promises'
+import { access, copyFile, mkdir, readdir } from 'node:fs/promises'
 import { dirname, join, relative, sep } from 'node:path'
 import {
+  KBF_MAX_PROBE_COUNT,
+  KBF_PROBES_PER_REQUEST,
   KBF_REFERENCE_VERSION,
   aggregateKbfSelfTestOutcomes,
   canonicalHashBytes32,
@@ -274,6 +276,22 @@ async function storeBankExchanges(
     exchangeCount: exchanges.exchangeCount,
     requestCount: exchanges.requestCount,
   }
+}
+
+/**
+ * The bank's recorded reference exchange files that are not on disk. Every audit submission
+ * publishes them, so a missing one would fail the submission after the whole run.
+ */
+export async function missingBankReferenceExchanges(banksDir: string, model: string): Promise<string[]> {
+  const missing: string[] = []
+  for (const entry of await loadBankReferenceExchanges(banksDir, model)) {
+    try {
+      await access(entry.absolutePath)
+    } catch {
+      missing.push(entry.path)
+    }
+  }
+  return missing
 }
 
 /** Raw reference exchanges stored with a model's bank, with absolute paths. */
@@ -1034,7 +1052,13 @@ export async function loadBankEnrollmentReference(banksDir: string, model: strin
     throw new Error(`invalid probe bank for ${model}`)
   }
   assertCurrentBankEnrollment(bank, model)
-  const reference = referenceFromBankEntries(bank, bank.probes, Date.parse(bank.updatedAt))
+  // Only the request settings are used, but a reference must hold a whole number of batches and at
+  // most KBF_MAX_PROBE_COUNT probes, which a bank of any size need not.
+  const seedCount = Math.min(
+    KBF_MAX_PROBE_COUNT,
+    bank.probes.length - (bank.probes.length % KBF_PROBES_PER_REQUEST),
+  )
+  const reference = referenceFromBankEntries(bank, bank.probes.slice(0, seedCount), Date.parse(bank.updatedAt))
   validateKbfReferenceV1(reference, { minimumStatisticalPower: Number.EPSILON })
   if (probeBankCompatibilityHash(model, reference) !== bank.compatibilityHash) {
     throw new Error(`probe bank for ${model} has inconsistent enrollment metadata`)

@@ -142,6 +142,7 @@ type ResolvedCryptoConfig = NonNullable<AntseedConfig['payments']['crypto']> & {
   identityRegistryAddress?: string;
   emissionsContractAddress?: string;
   verificationContractAddress?: string;
+  verificationResultsAddress?: string;
   verificationDeployBlock?: number;
   legacyEmissionsContractAddress?: string;
   legacyStakingContractAddress?: string;
@@ -223,6 +224,10 @@ export function requireCryptoConfig(
     pointsPolicyRegistryAddress: crypto.pointsPolicyRegistryAddress || resolved.pointsPolicyRegistryAddress,
     identityRegistryAddress: crypto.identityRegistryAddress || resolved.identityRegistryAddress,
     verificationContractAddress: crypto.verificationContractAddress || resolved.verificationContractAddress,
+    // The results address belongs to the KBF contract it was deployed with: a custom KBF address
+    // discovers its own unless it is set too.
+    verificationResultsAddress: crypto.verificationResultsAddress
+      || (crypto.verificationContractAddress ? undefined : resolved.verificationResultsAddress),
     // The built-in deploy block only describes the built-in address; a custom
     // address must bring its own block (or scans need an explicit fromBlock).
     verificationDeployBlock: crypto.verificationDeployBlock
@@ -409,12 +414,13 @@ const VERIFIER_LOG_QUERY_CHUNK_BLOCKS = 1_000
 export function createVerifierClient(config: AntseedConfig, overrides?: CryptoConfigOverrides): VerifierClient {
   const crypto = requireCryptoConfig(config, overrides);
   if (!crypto.verificationContractAddress) {
-    throw new Error('No verification contract address configured. Set payments.crypto.verificationContractAddress in your config file.');
+    throw new Error('No KBF audits contract address configured. Set payments.crypto.verificationContractAddress in your config file.');
   }
   return new VerifierClient({
     rpcUrl: crypto.rpcUrl,
     ...fallbackClientOpts(crypto),
     contractAddress: crypto.verificationContractAddress,
+    ...(crypto.verificationResultsAddress ? { resultsAddress: crypto.verificationResultsAddress } : {}),
     evmChainId: crypto.evmChainId,
     logQueryChunkBlocks: VERIFIER_LOG_QUERY_CHUNK_BLOCKS,
     ...(crypto.verificationDeployBlock !== undefined ? { deploymentBlock: crypto.verificationDeployBlock } : {}),

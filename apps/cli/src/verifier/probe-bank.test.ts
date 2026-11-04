@@ -18,7 +18,9 @@ import {
   extensionReferencePath,
   inspectModelProbeBankPower,
   inspectSellerProbeCapacity,
+  loadBankEnrollmentReference,
   loadModelAuditReservation,
+  missingBankReferenceExchanges,
   reserveExtensionReference,
   reserveModelAuditReference,
   SELLER_PROBE_SELECTION_METHOD,
@@ -114,6 +116,27 @@ function reference(count = 200): KbfReferenceV1 {
   return value
 }
 
+/** A reference whose probes come after the first `offset` probes of `reference()`. */
+function shiftedReference(count: number, offset: number): KbfReferenceV1 {
+  const value = reference(count + offset)
+  const keep = new Set(value.probes.slice(offset).map((probe) => probe.id))
+  value.probes = value.probes.slice(offset)
+  value.selfTest.outcomes = value.selfTest.outcomes.filter((outcome) => keep.has(outcome.probeId))
+  value.selfTest.total = count
+  value.selectedProbeCount = count
+  const power = computeBinomialPower({
+    selfHamming: 0, selfTotal: count, probeCount: count, minimumMismatchDelta: 0.1, alpha: 0.05, cpConfidence: 0.99,
+  })
+  value.statisticalPower = power.power
+  value.statisticalPowerEvidence = {
+    ...value.statisticalPowerEvidence, selfTotal: count, probeCount: count, p0UpperBound: power.p0,
+    alternativeMismatchRate: power.p1, criticalMismatchCount: power.criticalMismatchCount, power: power.power,
+  }
+  value.contrasts = [{ model: 'contrast-a', distinguishingProbeIds: [...keep] }]
+  value.referenceId = computeReferenceId(value)
+  return value
+}
+
 test('probe banks append, deduplicate, and discard conflicting canonical variants', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-'))
   try {
@@ -133,6 +156,49 @@ test('probe banks append, deduplicate, and discard conflicting canonical variant
       probes: Array<{ probe: KbfReferenceV1['probes'][number] }>
     }
     assert.equal(bank.probes[0]!.probe.template, 'The test value 1 is ___.')
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a bank of any size gives a valid settings seed for enrollment', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-'))
+  try {
+    // 175 probes are not a whole number of batches, as when a bank is split between auditors.
+    const oddDir = join(directory, 'odd')
+    const odd = await appendReference(oddDir, reference(180))
+    const bank = JSON.parse(await readFile(odd.path, 'utf8')) as { probes: unknown[] }
+    bank.probes = bank.probes.slice(0, 175)
+    await writeFile(odd.path, JSON.stringify(bank))
+    assert.equal((await loadBankEnrollmentReference(oddDir, 'model-a'))?.probes.length, 170)
+
+    // 760 probes are more than one reference may hold.
+    const largeDir = join(directory, 'large')
+    await appendReference(largeDir, reference(380))
+    await appendReference(largeDir, shiftedReference(380, 380))
+    const seed = await loadBankEnrollmentReference(largeDir, 'model-a')
+    assert.equal(seed?.selectedProbeCount, 750)
+    assert.equal(seed?.probes.length, 750)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('missing reference evidence of a bank is reported before a run', async () => {
+  // A bank copied without reference-evidence/ would fail every submission after the run.
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-'))
+  try {
+    const appended = await appendReference(directory)
+    const bank = JSON.parse(await readFile(appended.path, 'utf8')) as { referenceExchanges?: Array<Record<string, unknown>> }
+    const entry = { sha256: 'sha256:00', upstream: null, exchangeCount: 1, requestCount: 1 }
+    bank.referenceExchanges = [
+      { ...entry, referenceId: 'sha256:aa', path: 'reference-evidence/sha256:aa.exchanges.json' },
+      { ...entry, referenceId: 'sha256:bb', path: 'reference-evidence/sha256:bb.exchanges.json' },
+    ]
+    await writeFile(appended.path, JSON.stringify(bank))
+    await mkdir(join(dirname(appended.path), 'reference-evidence'), { recursive: true })
+    await writeFile(join(dirname(appended.path), 'reference-evidence', 'sha256:aa.exchanges.json'), '{}')
+    assert.deepEqual(await missingBankReferenceExchanges(directory, 'model-a'), ['reference-evidence/sha256:bb.exchanges.json'])
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
