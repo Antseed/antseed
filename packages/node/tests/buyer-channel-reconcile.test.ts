@@ -315,6 +315,37 @@ describe('buyer channel reconcile against the chain', () => {
     expect(status(channelId(3))).toBe(CHANNEL_STATUS.ACTIVE);
   });
 
+  it('retires a row stored before recovery fields only when nothing was signed on it and its deadline is an hour past', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const deadline = nowSecs() + 60;
+    // As rows saved before the reserve recovery fields existed read back.
+    const legacy: Partial<StoredChannel> = {
+      deadline,
+      latestReserveDeadline: undefined,
+      reserveAuthPending: undefined,
+      confirmedReserveAmount: undefined,
+      latestReserveAuthSig: undefined,
+      initialReserveAmount: undefined,
+      reserveMaxAmount: undefined,
+      reserveSalt: undefined,
+    };
+    store.upsertChannel(row(channelId(1), sellerPeer(1), { ...legacy, authMax: '0', requestCount: 0 }));
+    store.upsertChannel(row(channelId(2), sellerPeer(2), { ...legacy, authMax: '250000' }));
+    for (const n of [1, 2]) chain.set(channelId(n), MISSING);
+    startBuyer();
+    expect(store.getChannel(channelId(1))?.reserveAuthPending).toBeUndefined();
+
+    vi.setSystemTime((deadline + 60 * 60) * 1000);
+    await negotiator.reconcileChannelsWithChain();
+    expect([1, 2].map((n) => status(channelId(n)))).toEqual([CHANNEL_STATUS.ACTIVE, CHANNEL_STATUS.ACTIVE]);
+
+    vi.setSystemTime((deadline + 60 * 60 + 1) * 1000);
+    await negotiator.reconcileChannelsWithChain();
+    expect(status(channelId(1))).toBe(CHANNEL_STATUS.GHOST);
+    // Something was signed on it: a missing read could be a wrong read, so it stays.
+    expect(status(channelId(2))).toBe(CHANNEL_STATUS.ACTIVE);
+  });
+
   it('keeps a connected seller\'s never-opened channel until the seller disconnects', async () => {
     store.upsertChannel(row(channelId(1), sellerPeer(1), neverConfirmed(nowSecs() - 2 * 3600)));
     chain.set(channelId(1), MISSING);

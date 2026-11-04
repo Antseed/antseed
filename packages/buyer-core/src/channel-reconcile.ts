@@ -184,12 +184,15 @@ export function closedOnChain(state: OnChainChannelState): Extract<ChannelClosur
 }
 
 /**
- * A reserve the seller once confirmed (or a row without recovery fields) that
- * reads missing means the read is wrong, for example a changed channels
- * address, so it never counts.
+ * A reserve the seller once confirmed that reads missing means the read is
+ * wrong, for example a changed channels address, so it never counts. A row
+ * without recovery fields (stored before they existed) counts only when the
+ * buyer never signed a SpendingAuth on it: nothing was ever spent there, so
+ * even a wrong read hides nothing the buyer would have to recover.
  */
 function reserveCanNeverLand(row: StoredChannel, readAtSec: number): boolean {
-  const neverConfirmed = row.reserveAuthPending === true && BigInt(row.confirmedReserveAmount ?? '0') === 0n;
   const lastDeadline = Math.max(row.deadline, row.latestReserveDeadline ?? 0);
-  return neverConfirmed && readAtSec > lastDeadline + RESERVE_LANDING_GRACE_SECS;
+  if (readAtSec <= lastDeadline + RESERVE_LANDING_GRACE_SECS) return false;
+  if (row.reserveAuthPending === undefined) return BigInt(row.authMax || '0') === 0n;
+  return row.reserveAuthPending === true && BigInt(row.confirmedReserveAmount ?? '0') === 0n;
 }
