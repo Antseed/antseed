@@ -15,8 +15,8 @@ import { AntseedStatsV2 } from "../stats/AntseedStatsV2.sol";
  *   ANTSEED_FREE_USAGE
  *
  * Afterwards, in this order:
- *   1. DeployAttributionUsage / DeployReferrals / DeployClientRewards with
- *      ANTSEED_STATS=<statsV2>, then statsV2.setAttributionUsage(...) and
+ *   1. DeployReferrals / DeployClientRewards with
+ *      ANTSEED_STATS=<statsV2>, then statsV2.setClientRewards(...) and
  *      statsV2.setReferrals(...). Wire the sinks BEFORE re-pointing the
  *      registry: settlements Stats forwards while a sink is still unset are
  *      never attributed.
@@ -46,6 +46,6 @@ contract DeployStatsV2 is Script {
         vm.stopBroadcast();
 
         console.log("AntseedStatsV2:", address(stats));
-        console.log("Next: deploy AttributionUsage, Referrals and ClientRewards against it and wire them, then AntseedRegistry.setStats(statsV2).");
+        console.log("Next: deploy Referrals and ClientRewards against it and wire them, then AntseedRegistry.setStats(statsV2).");
     }
 }

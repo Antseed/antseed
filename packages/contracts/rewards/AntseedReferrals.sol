@@ -1,26 +1,18 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+import "@openzeppelin/contracts/access/Ownable2Step.sol";
+import "@openzeppelin/contracts/utils/Pausable.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/math/Math.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 
-import {AntseedEpochShareRewards} from "../emissions/AntseedEpochShareRewards.sol";
-
-interface IAntseedReferralUsageAccounting {
-    function currentEpoch() external view returns (uint256);
-    function buyerPointsByEpoch(uint256 epoch, address buyer) external view returns (uint256);
-    function sellerPointsByEpoch(uint256 epoch, address seller) external view returns (uint256);
-}
+import {IAntseedEmissionsGate} from "../interfaces/IAntseedEmissionsGate.sol";
+import {IAntseedUsageAccounting} from "../interfaces/IAntseedUsageAccounting.sol";
 
 interface IAntseedReferralDeposits {
     function getOperator(address buyer) external view returns (address);
-}
-
-interface IAntseedReferralUsageLedger {
-    function referrerEpochPoints(uint256 epoch, address referrer) external view returns (uint256);
-    function refereeEpochPoints(uint256 epoch, address referee) external view returns (uint256);
-    function totalReferralPointsByEpoch(uint256 epoch) external view returns (uint256);
-    function firstUsageEpoch(address buyer) external view returns (bool seen, uint256 epoch);
 }
 
 /**
@@ -65,29 +57,31 @@ interface IAntseedReferralUsageLedger {
  *         reverts here and Stats swallows it, so a bad invite never blocks a
  *         settlement. `previewInvite` runs the same checks as a view.
  *
- *         Only new buyers can bind: one whose first recognized usage
- *         (`AntseedAttributionUsage.firstUsageEpoch`) is at most
- *         `NEW_BUYER_EPOCHS` epochs before the current one, or that has none
- *         yet. The attribution ledger credits only usage recorded after the
- *         binding.
+ *         Only new buyers can bind: all of the buyer's recognized usage in
+ *         AntseedUsageAccounting must fall within the current epoch and the
+ *         `NEW_BUYER_EPOCHS` before it. Only usage recorded after the binding
+ *         earns rewards.
  *
- *         Rewards: an AntseedEmissionsGate controller. Each epoch's bucket is
- *         split pro rata to the ledger's referral points: every referred
- *         buyer's recognized usage is credited to its referrer and, during the
- *         referee window (`AntseedAttributionUsage.REFEREE_BONUS_EPOCHS`), to
- *         the buyer as referee too, so the two halve that buyer's share. A
- *         lone claimant takes the whole bucket, and every additional one
- *         dilutes it. Claims are per epoch and permissionless, and both roles
+ *         Rewards: an AntseedEmissionsGate controller. A referred buyer's
+ *         share of the bucket is its share of all recognized buyer usage, read
+ *         straight from AntseedUsageAccounting: `bucket * weighted points /
+ *         total weighted points`, final as soon as the epoch ends. During the
+ *         referee window (`REFEREE_BONUS_EPOCHS`) the referrer and the buyer
+ *         each earn half of that share; afterwards the referrer earns all of
+ *         it. Usage by buyers nobody referred leaves its part of the bucket
+ *         un-minted: which part that is cannot be known on-chain without
+ *         summing every referred buyer, so it is never swept.
+ *
+ *         Claims are per buyer and epoch and permissionless, and both roles
  *         are paid only to the wallet's Deposits operator: a claim reverts
  *         while the wallet has none, and can be retried once it has one. Any
  *         wallet (buyer or seller) can set one with `Deposits.setOperator`.
- *         A hot wallet never receives funds in either role.
- *         Referrer and referee claims use distinct keys, so one wallet may
- *         hold both roles.
+ *         A hot wallet never receives funds in either role. A wallet may hold
+ *         both roles; their claims are independent.
  *
  *         Self-referral: an invite signed by the buyer itself, its operator,
  *         or a wallet sharing the buyer's (non-zero) operator is rejected, and
- *         the ledger re-checks both operator rules at every credit.
+ *         both operator rules are checked again at every claim.
  *         Sibling wallets (one person controlling an unrelated referrer and
  *         buyer) are not detectable on-chain. They are bounded by the quota
  *         (the referrer must have spent or sold for real the epoch before),
@@ -96,10 +90,16 @@ interface IAntseedReferralUsageLedger {
  *         epochs, afterwards just the referrer share any genuine referral
  *         earns).
  */
-contract AntseedReferrals is AntseedEpochShareRewards, EIP712 {
+contract AntseedReferrals is Ownable2Step, Pausable, ReentrancyGuard, EIP712 {
     /// @notice A buyer may bind only if its first recognized usage was at
     ///         most this many epochs before the current one.
     uint256 public constant NEW_BUYER_EPOCHS = 2;
+
+    /// @notice Epochs after the binding epoch during which a referred buyer
+    ///         also earns as referee (12 weekly epochs, about 90 days including
+    ///         the binding epoch). The window bounds what a self-referral
+    ///         through a sibling wallet can capture.
+    uint256 public constant REFEREE_BONUS_EPOCHS = 12;
 
     /// @notice Epochs an invite stays usable, counting its issue epoch.
     uint256 public constant INVITE_VALIDITY_EPOCHS = 4;
@@ -115,12 +115,9 @@ contract AntseedReferrals is AntseedEpochShareRewards, EIP712 {
 
     bytes32 public constant INVITE_TYPEHASH = keccak256("Invite(uint256 issuedEpoch,uint256 index)");
 
-    bytes32 private constant REFERRER_ROLE = keccak256("antseed.referrals.referrer");
-    bytes32 private constant REFEREE_ROLE = keccak256("antseed.referrals.referee");
-
-    IAntseedReferralUsageAccounting public immutable usageAccounting;
+    IAntseedEmissionsGate public immutable emissionsGate;
+    IAntseedUsageAccounting public immutable usageAccounting;
     IAntseedReferralDeposits public immutable deposits;
-    IAntseedReferralUsageLedger public immutable attributionUsage;
 
     /// @notice Contract allowed to submit bindings (AntseedStatsV2).
     address public binder;
@@ -128,6 +125,13 @@ contract AntseedReferrals is AntseedEpochShareRewards, EIP712 {
     mapping(address buyer => address referrer) public referrerOf;
     mapping(address buyer => uint256 epoch) public boundAtEpoch;
     mapping(address referrer => uint256 count) public referredCount;
+    /// @notice Buyer's weighted points in its binding epoch before it bound;
+    ///         that usage earns no referral rewards.
+    mapping(address buyer => uint256 points) public pointsBeforeBinding;
+
+    /// @notice Whether the referrer's reward on this buyer's epoch was claimed.
+    mapping(address buyer => mapping(uint256 epoch => bool)) public claimed;
+    mapping(address buyer => mapping(uint256 epoch => bool)) public refereeClaimed;
 
     /// @dev Bit `index` set once invite (referrer, issuedEpoch, index) is used.
     mapping(address referrer => mapping(uint256 issuedEpoch => uint256 bitmap)) private _usedInvites;
@@ -137,8 +141,9 @@ contract AntseedReferrals is AntseedEpochShareRewards, EIP712 {
     );
     event ReferralRewardClaimed(
         address indexed referrer,
+        address indexed buyer,
         uint256 indexed epoch,
-        address indexed recipient,
+        address recipient,
         uint256 points,
         uint256 totalPoints,
         uint256 amount
@@ -153,6 +158,8 @@ contract AntseedReferrals is AntseedEpochShareRewards, EIP712 {
     );
     event BinderUpdated(address indexed binder);
 
+    error InvalidAddress();
+    error NothingToClaim();
     error NotBinder();
     error ReferralAlreadyBound();
     error SelfReferral();
@@ -163,19 +170,16 @@ contract AntseedReferrals is AntseedEpochShareRewards, EIP712 {
     error InviteAlreadyUsed();
     error RewardRecipientUnavailable();
 
-    constructor(
-        address _emissionsGate,
-        address _usageAccounting,
-        address _deposits,
-        address _attributionUsage,
-        address _binder
-    ) AntseedEpochShareRewards(_emissionsGate) EIP712("AntseedReferrals", "1") {
-        if (_usageAccounting == address(0) || _deposits == address(0) || _attributionUsage == address(0)) {
+    constructor(address _emissionsGate, address _usageAccounting, address _deposits, address _binder)
+        Ownable(msg.sender)
+        EIP712("AntseedReferrals", "1")
+    {
+        if (_emissionsGate == address(0) || _usageAccounting == address(0) || _deposits == address(0)) {
             revert InvalidAddress();
         }
-        usageAccounting = IAntseedReferralUsageAccounting(_usageAccounting);
+        emissionsGate = IAntseedEmissionsGate(_emissionsGate);
+        usageAccounting = IAntseedUsageAccounting(_usageAccounting);
         deposits = IAntseedReferralDeposits(_deposits);
-        attributionUsage = IAntseedReferralUsageLedger(_attributionUsage);
         binder = _binder;
     }
 
@@ -243,6 +247,7 @@ contract AntseedReferrals is AntseedEpochShareRewards, EIP712 {
         referrerOf[buyer] = referrer;
         boundAtEpoch[buyer] = epoch;
         referredCount[referrer] += 1;
+        pointsBeforeBinding[buyer] = usageAccounting.weightedBuyerPointsByEpoch(epoch, buyer);
 
         emit ReferralBound(buyer, referrer, epoch, issuedEpoch, index);
     }
@@ -257,15 +262,62 @@ contract AntseedReferrals is AntseedEpochShareRewards, EIP712 {
         return _isNewBuyer(buyer, usageAccounting.currentEpoch());
     }
 
-    // ─── Referrer rewards ────────────────────────────────────────────
+    // ─── Rewards ─────────────────────────────────────────────────────
 
-    /// @notice Mint a referrer's share of an epoch's bucket to the
-    ///         referrer's Deposits operator. Permissionless; reverts while
-    ///         the referrer has no operator so the claim can be retried.
-    function claim(address referrer, uint256 epoch) external nonReentrant whenNotPaused {
-        _claimReferrer(
-            referrer, _operatorOf(referrer), epoch, attributionUsage.referrerEpochPoints(epoch, referrer)
-        );
+    /// @notice An epoch is claimable once it has ended: accounting only ever
+    ///         records the current epoch, so its points are already final.
+    function isClaimable(uint256 epoch) public view returns (bool) {
+        return epoch < emissionsGate.currentEpoch();
+    }
+
+    /// @notice Mint a referrer's rewards on `buyers` for `epochs` to the
+    ///         referrer's Deposits operator. Pairs with nothing to pay are
+    ///         skipped. Permissionless; reverts while the referrer has no
+    ///         operator so the claim can be retried.
+    function claim(address referrer, address[] calldata buyers, uint256[] calldata epochs)
+        external
+        nonReentrant
+        whenNotPaused
+    {
+        address recipient = _operatorOf(referrer);
+        uint256 paid;
+        for (uint256 e = 0; e < epochs.length; e++) {
+            uint256 epoch = epochs[e];
+            uint256 epochAmount;
+            for (uint256 b = 0; b < buyers.length; b++) {
+                address buyer = buyers[b];
+                if (referrerOf[buyer] != referrer || claimed[buyer][epoch]) continue;
+                (uint256 amount, uint256 points, uint256 total) = _referrerReward(buyer, epoch);
+                if (amount == 0) continue;
+                claimed[buyer][epoch] = true;
+                epochAmount += amount;
+                emit ReferralRewardClaimed(referrer, buyer, epoch, recipient, points, total, amount);
+            }
+            if (epochAmount != 0) {
+                paid += epochAmount;
+                emissionsGate.claim(epoch, recipient, epochAmount);
+            }
+        }
+        if (paid == 0) revert NothingToClaim();
+    }
+
+    /// @notice Mint a referee's bonus for `epochs` to the buyer's Deposits
+    ///         operator. Epochs with nothing to pay are skipped. Permissionless;
+    ///         reverts while the buyer has no operator so the claim can be retried.
+    function claimReferee(address buyer, uint256[] calldata epochs) external nonReentrant whenNotPaused {
+        address recipient = _operatorOf(buyer);
+        uint256 paid;
+        for (uint256 e = 0; e < epochs.length; e++) {
+            uint256 epoch = epochs[e];
+            if (refereeClaimed[buyer][epoch]) continue;
+            (uint256 amount, uint256 points, uint256 total) = _refereeReward(buyer, epoch);
+            if (amount == 0) continue;
+            refereeClaimed[buyer][epoch] = true;
+            paid += amount;
+            emit RefereeRewardClaimed(buyer, epoch, recipient, points, total, amount);
+            emissionsGate.claim(epoch, recipient, amount);
+        }
+        if (paid == 0) revert NothingToClaim();
     }
 
     /// @notice Where a referrer's rewards go: its Deposits operator, or
@@ -274,57 +326,16 @@ contract AntseedReferrals is AntseedEpochShareRewards, EIP712 {
         return deposits.getOperator(referrer);
     }
 
-    /// @notice Claim several epochs at once; epochs with nothing to pay are skipped.
-    function claimEpochs(address referrer, uint256[] calldata epochs) external nonReentrant whenNotPaused {
-        address recipient = _operatorOf(referrer);
-        bytes32 key = _referrerKey(referrer);
-        uint256 paid;
-        for (uint256 i = 0; i < epochs.length; i++) {
-            uint256 points = attributionUsage.referrerEpochPoints(epochs[i], referrer);
-            if (_pending(epochs[i], key, points) == 0) continue;
-            paid += _claimReferrer(referrer, recipient, epochs[i], points);
-        }
-        if (paid == 0) revert NothingToClaim();
-    }
-
-    function claimed(address referrer, uint256 epoch) external view returns (bool) {
-        return _isClaimed(epoch, _referrerKey(referrer));
-    }
-
-    /// @notice What a referrer would receive for an epoch right now.
-    function pendingReward(address referrer, uint256 epoch) external view returns (uint256) {
-        return _pending(epoch, _referrerKey(referrer), attributionUsage.referrerEpochPoints(epoch, referrer));
-    }
-
-    // ─── Referee rewards ─────────────────────────────────────────────
-
-    /// @notice Mint a referee's share of an epoch's bucket to the buyer's
-    ///         Deposits operator. Permissionless; reverts while the buyer has
-    ///         no operator so the claim can be retried once it has one.
-    function claimReferee(address buyer, uint256 epoch) external nonReentrant whenNotPaused {
-        _claimReferee(buyer, _operatorOf(buyer), epoch, attributionUsage.refereeEpochPoints(epoch, buyer));
-    }
-
-    /// @notice Claim several referee epochs at once; epochs with nothing to pay are skipped.
-    function claimRefereeEpochs(address buyer, uint256[] calldata epochs) external nonReentrant whenNotPaused {
-        address recipient = _operatorOf(buyer);
-        bytes32 key = _refereeKey(buyer);
-        uint256 paid;
-        for (uint256 i = 0; i < epochs.length; i++) {
-            uint256 points = attributionUsage.refereeEpochPoints(epochs[i], buyer);
-            if (_pending(epochs[i], key, points) == 0) continue;
-            paid += _claimReferee(buyer, recipient, epochs[i], points);
-        }
-        if (paid == 0) revert NothingToClaim();
-    }
-
-    function refereeClaimed(address buyer, uint256 epoch) external view returns (bool) {
-        return _isClaimed(epoch, _refereeKey(buyer));
+    /// @notice What the buyer's referrer would receive on this buyer's epoch right now.
+    function pendingReward(address buyer, uint256 epoch) external view returns (uint256 amount) {
+        if (claimed[buyer][epoch]) return 0;
+        (amount,,) = _referrerReward(buyer, epoch);
     }
 
     /// @notice What a referee would receive for an epoch right now (paid to its operator).
-    function pendingRefereeReward(address buyer, uint256 epoch) external view returns (uint256) {
-        return _pending(epoch, _refereeKey(buyer), attributionUsage.refereeEpochPoints(epoch, buyer));
+    function pendingRefereeReward(address buyer, uint256 epoch) external view returns (uint256 amount) {
+        if (refereeClaimed[buyer][epoch]) return 0;
+        (amount,,) = _refereeReward(buyer, epoch);
     }
 
     // ─── Internal ────────────────────────────────────────────────────
@@ -360,22 +371,47 @@ contract AntseedReferrals is AntseedEpochShareRewards, EIP712 {
         return referrer == buyerOperator || deposits.getOperator(referrer) == buyerOperator;
     }
 
-    function _claimReferrer(address referrer, address recipient, uint256 epoch, uint256 points)
+    function _referrerReward(address buyer, uint256 epoch)
         internal
-        returns (uint256 amount)
+        view
+        returns (uint256 amount, uint256 points, uint256 total)
     {
-        uint256 total;
-        (amount, total) = _claimShare(epoch, _referrerKey(referrer), points, recipient);
-        emit ReferralRewardClaimed(referrer, epoch, recipient, points, total, amount);
+        (amount, points, total) = _buyerShare(buyer, epoch);
+        if (_inRefereeWindow(buyer, epoch)) amount /= 2;
     }
 
-    function _claimReferee(address buyer, address recipient, uint256 epoch, uint256 points)
+    function _refereeReward(address buyer, uint256 epoch)
         internal
-        returns (uint256 amount)
+        view
+        returns (uint256 amount, uint256 points, uint256 total)
     {
-        uint256 total;
-        (amount, total) = _claimShare(epoch, _refereeKey(buyer), points, recipient);
-        emit RefereeRewardClaimed(buyer, epoch, recipient, points, total, amount);
+        if (!_inRefereeWindow(buyer, epoch)) return (0, 0, 0);
+        (amount, points, total) = _buyerShare(buyer, epoch);
+        amount /= 2;
+    }
+
+    /// @dev The referred buyer's share of the epoch's bucket, before any split.
+    ///      Zero for epochs still open, an unbound buyer, and a referrer that
+    ///      became the buyer's operator or shares it since the binding.
+    ///      Shares of distinct buyers sum to at most the bucket.
+    function _buyerShare(address buyer, uint256 epoch)
+        internal
+        view
+        returns (uint256 share, uint256 points, uint256 total)
+    {
+        address referrer = referrerOf[buyer];
+        if (referrer == address(0) || !isClaimable(epoch) || epoch < boundAtEpoch[buyer]) return (0, 0, 0);
+        if (_isSelfReferral(buyer, referrer)) return (0, 0, 0);
+
+        points = usageAccounting.weightedBuyerPointsByEpoch(epoch, buyer);
+        if (epoch == boundAtEpoch[buyer]) points -= Math.min(points, pointsBeforeBinding[buyer]);
+        total = usageAccounting.totalWeightedBuyerPointsByEpoch(epoch);
+        if (points == 0 || total == 0) return (0, points, total);
+        share = Math.mulDiv(emissionsGate.controllerEpochBudget(address(this), epoch), points, total);
+    }
+
+    function _inRefereeWindow(address buyer, uint256 epoch) internal view returns (bool) {
+        return epoch <= boundAtEpoch[buyer] + REFEREE_BONUS_EPOCHS;
     }
 
     /// @dev The only reward recipient for either role: the wallet's operator.
@@ -385,22 +421,11 @@ contract AntseedReferrals is AntseedEpochShareRewards, EIP712 {
     }
 
     function _isNewBuyer(address buyer, uint256 currentEpoch) internal view returns (bool) {
-        (bool seen, uint256 firstEpoch) = attributionUsage.firstUsageEpoch(buyer);
-        return !seen || firstEpoch + NEW_BUYER_EPOCHS >= currentEpoch;
-    }
-
-    /// @dev Role-tagged claim keys: a wallet that is both a referrer and a
-    ///      referee holds two independent claims per epoch.
-    function _referrerKey(address referrer) internal pure returns (bytes32) {
-        return keccak256(abi.encode(REFERRER_ROLE, referrer));
-    }
-
-    function _refereeKey(address buyer) internal pure returns (bytes32) {
-        return keccak256(abi.encode(REFEREE_ROLE, buyer));
-    }
-
-    function _ledgerTotal(uint256 epoch) internal view override returns (uint256) {
-        return attributionUsage.totalReferralPointsByEpoch(epoch);
+        uint256 recent;
+        for (uint256 i = 0; i <= NEW_BUYER_EPOCHS && i <= currentEpoch; i++) {
+            recent += usageAccounting.weightedBuyerPointsByEpoch(currentEpoch - i, buyer);
+        }
+        return usageAccounting.buyerUsageTotal(buyer).weightedPoints <= recent;
     }
 
     // ─── Admin ───────────────────────────────────────────────────────
@@ -408,5 +433,13 @@ contract AntseedReferrals is AntseedEpochShareRewards, EIP712 {
     function setBinder(address _binder) external onlyOwner {
         binder = _binder;
         emit BinderUpdated(_binder);
+    }
+
+    function pause() external onlyOwner {
+        _pause();
+    }
+
+    function unpause() external onlyOwner {
+        _unpause();
     }
 }

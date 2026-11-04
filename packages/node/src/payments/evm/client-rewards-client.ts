@@ -16,7 +16,7 @@ export interface ClientEpochReward {
 }
 
 const CLIENT_REWARDS_ABI = [
-  'function attributionUsage() external view returns (address)',
+  'function emissionsGate() external view returns (address)',
   'function identityRegistry() external view returns (address)',
   'function isClaimable(uint256 epoch) external view returns (bool)',
   'function claimed(uint256 clientAgentId, uint256 epoch) external view returns (bool)',
@@ -26,9 +26,9 @@ const CLIENT_REWARDS_ABI = [
 ] as const;
 
 /**
- * Read/claim client for AntseedClientRewards (the builders program). Each
- * epoch's bucket is split among client apps pro rata to the recognized usage
- * AntseedAttributionUsage credited to their ERC-8004 agent. Claims are
+ * Read/claim client for AntseedClientRewards (the builders program). A client
+ * app earns its share of all recognized buyer usage in an epoch, applied to the
+ * epoch's bucket; usage is credited to the app's ERC-8004 agent. Claims are
  * permissionless and always pay `ownerOf(clientAgentId)`; there is no batch
  * claim, so several epochs take one transaction each.
  */
@@ -50,11 +50,8 @@ export class ClientRewardsClient extends BaseEvmClient {
   }
 
   async currentEpoch(): Promise<number> {
-    // AttributionUsage reads epochs from the same AntseedUsageAccounting clock.
-    const attribution = await this.contract().getFunction('attributionUsage')() as string;
-    const usage = new Contract(attribution, ['function usageAccounting() external view returns (address)'], this._provider);
-    const accounting = await usage.getFunction('usageAccounting')() as string;
-    const contract = new Contract(accounting, ['function currentEpoch() external view returns (uint256)'], this._provider);
+    const gate = await this.contract().getFunction('emissionsGate')() as string;
+    const contract = new Contract(gate, ['function currentEpoch() external view returns (uint256)'], this._provider);
     return Number(await contract.getFunction('currentEpoch')());
   }
 

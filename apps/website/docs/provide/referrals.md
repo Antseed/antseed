@@ -160,23 +160,25 @@ the configured referrals contract.
 Referral rewards are ANTS from a referral bucket of each epoch's emissions,
 paid by `AntseedReferrals` as an emissions-gate controller. Once the
 controller is registered with the emissions gate, the bucket is 2% of each
-epoch's emissions. Each week's bucket is split pro rata to referral points among
-everyone with a claim that week.
+epoch's emissions. A referred buyer earns the same share of that bucket as its
+share of all recognized buyer usage that week: a buyer with 5% of the week's usage
+earns 5% of the bucket. The part of the bucket earned by usage nobody referred
+is not paid out.
 
-A referred buyer's recognized usage after the binding earns referral points:
+That share goes to:
 
-- **Bonus window, 12 weeks after the binding:** the points count for both the
-  inviter and the new user, so the two split that buyer's share 50/50.
-- **After the window:** the inviter keeps earning from that buyer's usage
-  alone.
+- **Bonus window, 12 weeks after the binding:** the inviter and the new user,
+  split 50/50.
+- **After the window:** the inviter alone.
 
 Only usage recorded after the binding counts, and only recognized usage: the
 same reward policies that apply to usage rewards apply here.
 
 ## Claiming
 
-Claims are per week. A week becomes claimable once the following week has fully
-ended. Claiming is permissionless, and the recipient is fixed by the contract:
+A week becomes claimable as soon as it has ended. An inviter claims per referred
+buyer and week, and the ANTS dashboard claims them all in one transaction using
+Antscan's list of your referred buyers. Claiming is permissionless, and the recipient is fixed by the contract:
 
 - **The new user's bonus** is paid only to the buyer's authorized wallet (its
   Deposits operator), never to the buyer hot wallet. Until the buyer has an

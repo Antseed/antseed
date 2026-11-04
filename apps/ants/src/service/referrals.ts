@@ -232,10 +232,9 @@ export async function refereeBonus(ctx: AntsContext): Promise<RefereeView> {
 }
 
 /**
- * Claim every epoch with a payable referral reward for the dashboard wallet.
- * The epochs come from Antscan; the RPC epoch scan is only the fallback when
- * Antscan is unset, does not index referrals, or fails. `claimEpochs` skips
- * epochs with nothing to pay.
+ * Claim every payable referral reward for the dashboard wallet. Rewards are
+ * per referred buyer, and only Antscan lists a referrer's buyers (never an RPC
+ * scan), so this needs it. `claim` skips pairs with nothing to pay.
  */
 export async function claimReferralRewards(
   ctx: AntsContext,
@@ -245,10 +244,11 @@ export async function claimReferralRewards(
   if (!client) throw new Error('Referrals are not configured for this chain.');
   // The buyer account is the referrer (see `referral`); any wallet may send it.
   const indexed = await indexedReferrer(ctx.indexer(), ctx.buyerAddress).catch(() => null);
-  const epochs = indexed ? indexed.claimableEpochs : (await client.pendingRewards(ctx.buyerAddress)).map((entry) => entry.epoch);
+  if (!indexed) throw new Error('Claiming referral rewards needs Antscan, which lists your referred buyers. Try again later.');
+  const epochs = indexed.claimableEpochs;
   if (epochs.length === 0) throw new Error('No referral rewards are payable yet.');
   await report(`Claiming referral rewards for ${epochs.length} ${epochs.length === 1 ? 'epoch' : 'epochs'}`);
-  const hash = await client.claimEpochs(ctx.requireSigner(), ctx.buyerAddress, epochs);
+  const hash = await client.claim(ctx.requireSigner(), ctx.buyerAddress, indexed.buyers.map(({ buyer }) => buyer), epochs);
   await report('Referral rewards claimed', hash);
   return { hash, epochs };
 }
@@ -280,7 +280,7 @@ export async function claimRefereeRewards(
   const epochs = binding ? binding.refereeClaimableEpochs : await pendingRefereeEpochs(client, ctx.buyerAddress);
   if (epochs.length === 0) throw new Error('No invite bonus is payable yet.');
   await report(`Claiming your invite bonus for ${epochs.length} ${epochs.length === 1 ? 'epoch' : 'epochs'}`);
-  const hash = await client.claimRefereeEpochs(ctx.requireSigner(), ctx.buyerAddress, epochs);
+  const hash = await client.claimReferee(ctx.requireSigner(), ctx.buyerAddress, epochs);
   await report('Invite bonus claimed', hash);
   return { hash, epochs };
 }

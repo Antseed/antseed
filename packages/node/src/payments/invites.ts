@@ -23,7 +23,7 @@ import type { InviteFailure, ReferralsClient } from './evm/referrals-client.js';
 
 /** Epochs an invite stays usable, counting its issue epoch (AntseedReferrals.INVITE_VALIDITY_EPOCHS). */
 export const INVITE_VALIDITY_EPOCHS = 4;
-/** Epochs after the binding in which the referee earns its half (AntseedAttributionUsage.REFEREE_BONUS_EPOCHS). */
+/** Epochs after the binding in which the referee earns its half (AntseedReferrals.REFEREE_BONUS_EPOCHS). */
 export const REFEREE_BONUS_EPOCHS = 12;
 export const INVITE_LINK_BASE = 'https://antseed.com/invite/';
 export const INVITE_DEEP_LINK_BASE = 'antseed://invite/';

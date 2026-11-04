@@ -67,7 +67,7 @@ contract AntseedStatsV2Test is Test {
         clientUsage = new StatsClientUsageMock();
         stats.setWriter(writer, true);
         stats.setReferrals(address(binder));
-        stats.setAttributionUsage(address(clientUsage));
+        stats.setClientRewards(address(clientUsage));
     }
 
     /// v3 SpendingAuth metadata: 5 static words + services array (+ optional tail).
@@ -169,7 +169,7 @@ contract AntseedStatsV2Test is Test {
         assertEq(clientUsage.lastClient(), 42);
 
         // A settlement without a tail is still reported (client zero) so the
-        // client ledger's cursor stays exact.
+        // client rewards cursor stays exact.
         vm.prank(writer);
         stats.recordMetadata(agentId, buyer, bytes32("chan-2"), _v3(50, 10, 1, false));
         assertEq(clientUsage.calls(), 2);
@@ -185,7 +185,7 @@ contract AntseedStatsV2Test is Test {
         assertEq(clientUsage.calls(), 1);
 
         // Non-monotonic counters: no token delta, but Channels still accrues
-        // this settlement's points, so the ledger must move its cursor.
+        // this settlement's points, so client rewards must move its cursor.
         vm.prank(writer);
         stats.recordMetadata(agentId, buyer, bytes32("chan-1"), _v3(90, 50, 2, true));
         assertEq(clientUsage.calls(), 2);
@@ -196,7 +196,7 @@ contract AntseedStatsV2Test is Test {
         assertEq(buyerStats.totalRequestCount, 1);
 
         // A blob too short for the legacy head is skipped for stats without
-        // reverting, and still reported to the ledger with a zero client.
+        // reverting, and still reported to client rewards with a zero client.
         vm.prank(writer);
         stats.recordMetadata(agentId, buyer, bytes32("chan-2"), abi.encode(uint256(1), uint256(2), uint256(3)));
         assertEq(clientUsage.calls(), 3);
@@ -247,7 +247,7 @@ contract AntseedStatsV2Test is Test {
 
     function test_recordMetadata_unsetSinksAreNoops() public {
         stats.setReferrals(address(0));
-        stats.setAttributionUsage(address(0));
+        stats.setClientRewards(address(0));
         vm.prank(writer);
         stats.recordMetadata(agentId, buyer, bytes32("chan-1"), _v3(100, 40, 2, true));
         assertEq(binder.lastBuyer(), address(0));

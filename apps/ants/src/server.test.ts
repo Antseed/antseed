@@ -342,8 +342,8 @@ it('keeps the originating buyer as the referrer for inviter reads and claims whi
     claimableEpochs: address === buyer.address ? [3] : [], invites: null, buyers: [],
   }));
   vi.spyOn(server.context, 'indexer').mockReturnValue({ referrer } as never);
-  const claimEpochs = vi.fn(async () => '0xreferral');
-  vi.spyOn(server.context, 'referrals').mockReturnValue({ claimEpochs } as never);
+  const claim = vi.fn(async () => '0xreferral');
+  vi.spyOn(server.context, 'referrals').mockReturnValue({ claim } as never);
   const headers = { authorization: `Bearer ${server.token}` };
   expect((await server.app.inject({ method: 'POST', url: '/api/wallet', headers, payload: { address: operator.address, chainId: 31337 } })).statusCode).toBe(200);
   expect(server.context.address).toBe(operator.address);
@@ -355,7 +355,7 @@ it('keeps the originating buyer as the referrer for inviter reads and claims whi
   await vi.waitFor(() => expect(server.busy).toBe(false));
   const job = (await server.app.inject({ url: `/api/jobs/${started.json().data.id}`, headers })).json().data;
   expect(job.status).toBe('done');
-  expect(claimEpochs).toHaveBeenCalledWith(expect.anything(), buyer.address, [3]);
+  expect(claim).toHaveBeenCalledWith(expect.anything(), buyer.address, [], [3]);
   expect(referrer.mock.calls.every(([address]) => address === buyer.address)).toBe(true);
 });
 

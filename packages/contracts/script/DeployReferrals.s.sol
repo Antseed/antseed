@@ -15,7 +15,6 @@ import { AntseedReferrals } from "../rewards/AntseedReferrals.sol";
  *   EMISSIONS_GATE
  *   USAGE_ACCOUNTING
  *   ANTSEED_DEPOSITS
- *   ATTRIBUTION_USAGE      — AntseedAttributionUsage ledger (referrer/referee points, first-usage epochs)
  *   ANTSEED_STATS          — the AntseedStatsV2 deployment that forwards bindings
  *
  * Usage:
@@ -25,7 +24,6 @@ import { AntseedReferrals } from "../rewards/AntseedReferrals.sol";
  *
  * Afterwards:
  *   cast send $ANTSEED_STATS "setReferrals(address)" <referrals>       (Stats owner)
- *   cast send $ATTRIBUTION_USAGE "setReferrals(address)" <referrals>   (ledger owner)
  * then record it as `contracts.referrals` in deployments/<network>/current.json
  * so `scripts/generate-contract-chain-config.mjs` emits `referralsAddress` for
  * every client; `payments.crypto.referralsAddress` in config.json overrides it
@@ -39,14 +37,13 @@ contract DeployReferrals is Script {
         address gate = vm.envAddress("EMISSIONS_GATE");
         address usageAccounting = vm.envAddress("USAGE_ACCOUNTING");
         address deposits = vm.envAddress("ANTSEED_DEPOSITS");
-        address attributionUsage = vm.envAddress("ATTRIBUTION_USAGE");
         address stats = vm.envAddress("ANTSEED_STATS");
 
         vm.startBroadcast(deployerPrivateKey);
-        referrals = new AntseedReferrals(gate, usageAccounting, deposits, attributionUsage, stats);
+        referrals = new AntseedReferrals(gate, usageAccounting, deposits, stats);
         vm.stopBroadcast();
 
         console.log("AntseedReferrals:", address(referrals));
-        console.log("Next: StatsV2.setReferrals + ledger.setReferrals, register as a gate minter, set payments.crypto.referralsAddress.");
+        console.log("Next: StatsV2.setReferrals, register as a gate minter, set payments.crypto.referralsAddress.");
     }
 }

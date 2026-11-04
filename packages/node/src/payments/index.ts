@@ -124,7 +124,7 @@ export { UsageAccountingClient } from './evm/usage-accounting-client.js';
 export type { UsageAccountingClientConfig, UsagePoints, UsageTotals } from './evm/usage-accounting-client.js';
 export { UsageRewardsClient } from './evm/usage-rewards-client.js';
 export type { UsageRewardsClientConfig, DynamicUsageConfig } from './evm/usage-rewards-client.js';
-export { ReferralsClient, inviteFailureOf, type ReferralsClientConfig, type ReferralEpochReward, type InviteFailure, type InvitePreview } from './evm/referrals-client.js';
+export { ReferralsClient, inviteFailureOf, type ReferralsClientConfig, type InviteFailure, type InvitePreview } from './evm/referrals-client.js';
 export {
   INVITE_DEEP_LINK_BASE,
   INVITE_LINK_BASE,

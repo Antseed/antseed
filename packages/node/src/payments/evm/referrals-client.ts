@@ -1,7 +1,6 @@
 import { Contract, id } from 'ethers';
 import type { AbstractSigner } from 'ethers';
 import type { ReferralInvite } from '@antseed/protocol/signatures';
-import { scanEpochRewards } from '../reward-claims.js';
 import { BaseEvmClient } from './base-evm-client.js';
 
 export interface ReferralsClientConfig {
@@ -9,11 +8,6 @@ export interface ReferralsClientConfig {
   fallbackRpcUrls?: string[];
   contractAddress: string;
   evmChainId?: number;
-}
-
-export interface ReferralEpochReward {
-  epoch: number;
-  amount: bigint;
 }
 
 /** `previewInvite` result: the recovered referrer and the bind failure (null when it would bind). */
@@ -46,16 +40,13 @@ const REFERRALS_ABI = [
   'function previewInvite(address buyer, uint256 issuedEpoch, uint256 index, bytes32 r, bytes32 vs) external view returns (address referrer, bytes4 failure)',
   'function referrerRecipient(address referrer) external view returns (address)',
   'function isClaimable(uint256 epoch) external view returns (bool)',
-  'function claimed(address referrer, uint256 epoch) external view returns (bool)',
+  'function claimed(address buyer, uint256 epoch) external view returns (bool)',
   'function refereeClaimed(address buyer, uint256 epoch) external view returns (bool)',
-  'function pendingReward(address referrer, uint256 epoch) external view returns (uint256)',
+  'function pendingReward(address buyer, uint256 epoch) external view returns (uint256)',
   'function pendingRefereeReward(address buyer, uint256 epoch) external view returns (uint256)',
-  'function settleEpochRemainder(uint256 epoch) external returns (uint256 burnedAmount, uint256 reserveAmount)',
   'function usageAccounting() external view returns (address)',
-  'function claim(address referrer, uint256 epoch) external',
-  'function claimEpochs(address referrer, uint256[] epochs) external',
-  'function claimReferee(address buyer, uint256 epoch) external',
-  'function claimRefereeEpochs(address buyer, uint256[] epochs) external',
+  'function claim(address referrer, address[] buyers, uint256[] epochs) external',
+  'function claimReferee(address buyer, uint256[] epochs) external',
   'event ReferralBound(address indexed buyer, address indexed referrer, uint256 epoch, uint256 inviteEpoch, uint256 inviteIndex)',
 ] as const;
 
@@ -76,10 +67,10 @@ export function inviteFailureOf(selector: string): InviteFailure | null {
  * Read/claim client for AntseedReferrals. Binding is not exposed here: it
  * happens on-chain when AntseedStatsV2 decodes the invite the buyer signed
  * into its settlement metadata (see `UsageAttribution` in @antseed/protocol).
- * Rewards are a per-epoch share of the referral emission bucket, pro rata to
- * the recognized usage of referred buyers: the referrer earns on all of it,
- * the referee on its own usage during its bonus window. Claims are
- * permissionless; referee rewards always pay the buyer's Deposits operator.
+ * A referred buyer's reward is its share of all recognized buyer usage in the
+ * epoch, applied to the referral emission bucket: the referrer earns all of it,
+ * or half during the buyer's bonus window, when the referee earns the other
+ * half. Claims are permissionless and pay the claimant's Deposits operator.
  */
 export class ReferralsClient extends BaseEvmClient {
   constructor(config: ReferralsClientConfig) {
@@ -114,8 +105,9 @@ export class ReferralsClient extends BaseEvmClient {
     return { referrer, failure: inviteFailureOf(selector) };
   }
 
-  pendingReward(referrer: string, epoch: number): Promise<bigint> {
-    return this.contract().getFunction('pendingReward')(referrer, epoch);
+  /** What the buyer's referrer would receive on this buyer's epoch right now. */
+  pendingReward(buyer: string, epoch: number): Promise<bigint> {
+    return this.contract().getFunction('pendingReward')(buyer, epoch);
   }
 
   pendingRefereeReward(buyer: string, epoch: number): Promise<bigint> {
@@ -128,25 +120,13 @@ export class ReferralsClient extends BaseEvmClient {
     return Number(await contract.getFunction('currentEpoch')());
   }
 
-  /**
-   * Epochs with a non-zero payable reward for `referrer`, scanning the last
-   * `lookback` claimable epochs (unclaimed, claimable, budget available).
-   * Fallback for when no explorer indexes referrals.
-   */
-  async pendingRewards(referrer: string, lookback = 26): Promise<ReferralEpochReward[]> {
-    return scanEpochRewards(await this.currentEpoch(), (epoch) => this.pendingReward(referrer, epoch), lookback);
-  }
-
-  claim(signer: AbstractSigner, referrer: string, epoch: number): Promise<string> {
-    return this._execWrite(signer, REFERRALS_ABI, 'claim', referrer, epoch);
-  }
-
-  claimEpochs(signer: AbstractSigner, referrer: string, epochs: number[]): Promise<string> {
-    return this._execWrite(signer, REFERRALS_ABI, 'claimEpochs', referrer, epochs);
+  /** Claim a referrer's rewards on `buyers` for `epochs`, skipping pairs with nothing to pay; pays the referrer's Deposits operator whoever sends it. */
+  claim(signer: AbstractSigner, referrer: string, buyers: string[], epochs: number[]): Promise<string> {
+    return this._execWrite(signer, REFERRALS_ABI, 'claim', referrer, buyers, epochs);
   }
 
   /** Claim a referee's bonus for several epochs; pays the buyer's Deposits operator whoever sends it. */
-  claimRefereeEpochs(signer: AbstractSigner, buyer: string, epochs: number[]): Promise<string> {
-    return this._execWrite(signer, REFERRALS_ABI, 'claimRefereeEpochs', buyer, epochs);
+  claimReferee(signer: AbstractSigner, buyer: string, epochs: number[]): Promise<string> {
+    return this._execWrite(signer, REFERRALS_ABI, 'claimReferee', buyer, epochs);
   }
 }

@@ -49,9 +49,8 @@ function fixture(options: { referrals?: boolean; explorer?: boolean; indexed?: P
   const client = {
     currentEpoch: vi.fn(async () => 24),
     pendingRefereeReward: vi.fn(async (_buyer: string, epoch: number) => (epoch === 20 || epoch === 22 ? 5n : 0n)),
-    pendingRewards: vi.fn(async () => [{ epoch: 7, amount: 1n }]),
-    claimEpochs: vi.fn(async () => '0xhash'),
-    claimRefereeEpochs: vi.fn(async () => '0xreferee'),
+    claim: vi.fn(async () => '0xhash'),
+    claimReferee: vi.fn(async () => '0xreferee'),
   };
   const ctx = {
     address: wallet,
@@ -79,7 +78,6 @@ describe('referral card', () => {
       referredCount: 2,
       invites: { epoch: 30, quota: 5, used: 1, left: 4 },
     });
-    expect(client.pendingRewards).not.toHaveBeenCalled();
   });
 
   it('counts invites already handed out from this install', async () => {
@@ -122,7 +120,6 @@ describe('referred buyers', () => {
   it('hides the list rather than scanning RPC when no explorer is configured', async () => {
     const { ctx, client } = fixture({ explorer: false });
     expect(await referredBuyers(ctx)).toEqual({ available: false, buyers: [] });
-    expect(client.pendingRewards).not.toHaveBeenCalled();
     expect(await referredBuyers(fixture({ referrals: false }).ctx)).toEqual({ available: false, buyers: [] });
   });
 });
@@ -269,7 +266,7 @@ describe('referee bonus', () => {
   it('claims the payable epochs for the buyer account', async () => {
     const { ctx, client } = fixture();
     expect(await claimRefereeRewards(ctx)).toEqual({ hash: '0xreferee', epochs: [20, 21] });
-    expect(client.claimRefereeEpochs).toHaveBeenCalledWith({}, buyer, [20, 21]);
+    expect(client.claimReferee).toHaveBeenCalledWith({}, buyer, [20, 21]);
     await expect(claimRefereeRewards(fixture({ binding: { refereeClaimableEpochs: [] } }).ctx)).rejects.toThrow('No invite bonus');
   });
 
@@ -287,7 +284,7 @@ describe('referee bonus', () => {
     expect(await claimRefereeRewards(ctx)).toEqual({ hash: '0xreferee', epochs: [20, 22] });
     expect(client.pendingRefereeReward).toHaveBeenCalledWith(buyer, 22);
     expect(client.pendingRefereeReward).not.toHaveBeenCalledWith(buyer, 23); // not claimable yet
-    expect(client.claimRefereeEpochs).toHaveBeenCalledWith({}, buyer, [20, 22]);
+    expect(client.claimReferee).toHaveBeenCalledWith({}, buyer, [20, 22]);
   });
 
   it('claims the epochs payable on-chain when the explorer request fails', async () => {
@@ -326,27 +323,26 @@ describe('referral claim', () => {
     const { ctx, client, indexer } = fixture();
     expect(await claimReferralRewards(ctx)).toEqual({ hash: '0xhash', epochs: [3, 5] });
     expect(indexer.referrer).toHaveBeenCalledWith(buyer);
-    expect(client.claimEpochs).toHaveBeenCalledWith({}, buyer, [3, 5]);
-    expect(client.pendingRewards).not.toHaveBeenCalled();
+    expect(client.claim).toHaveBeenCalledWith({}, buyer, [buyer], [3, 5]);
   });
 
-  it('falls back to the on-chain epoch scan only without an explorer', async () => {
+  it('refuses without an explorer, the only source of the referred buyers', async () => {
     const { ctx, client } = fixture({ explorer: false });
-    expect(await claimReferralRewards(ctx)).toEqual({ hash: '0xhash', epochs: [7] });
-    expect(client.pendingRewards).toHaveBeenCalledWith(buyer);
+    await expect(claimReferralRewards(ctx)).rejects.toThrow('needs Antscan');
+    expect(client.claim).not.toHaveBeenCalled();
   });
 
-  it('falls back to the on-chain epoch scan when the explorer request fails', async () => {
+  it('refuses when the explorer request fails', async () => {
     const { ctx, client, indexer } = fixture();
     indexer.referrer.mockRejectedValueOnce(new Error('Antscan unavailable'));
-    expect(await claimReferralRewards(ctx)).toEqual({ hash: '0xhash', epochs: [7] });
-    expect(client.pendingRewards).toHaveBeenCalledWith(buyer);
+    await expect(claimReferralRewards(ctx)).rejects.toThrow('needs Antscan');
+    expect(client.claim).not.toHaveBeenCalled();
   });
 
   it('refuses when nothing is payable', async () => {
     const { ctx, client } = fixture({ indexed: { claimableEpochs: [] } });
     await expect(claimReferralRewards(ctx)).rejects.toThrow('No referral rewards');
-    expect(client.claimEpochs).not.toHaveBeenCalled();
+    expect(client.claim).not.toHaveBeenCalled();
   });
 });
 
