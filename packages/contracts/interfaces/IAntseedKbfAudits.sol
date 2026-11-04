@@ -18,8 +18,10 @@ import { IERC8004Registry } from "./IERC8004Registry.sol";
 ///      whenever the results owner clears the service (`results.serviceClears`), and whenever an
 ///      auditor is revoked (`auditorRevocations`).
 ///
-///      Credits: one credit per model audit that covers at least one agent with staked pool power,
-///      at most `maxCreditsPerModelPerEpoch` per model, granted through `results.credit`. The results
+///      Credits: a model audit that covers at least one agent with staked pool power earns
+///      `creditsFor(modelHash)` credits (owner-set: a default per audit and optional per-model
+///      amounts), for at most `maxCreditsPerModelPerEpoch` audits per model, granted through
+///      `results.credit`. The results
 ///      layer applies this audit's rewards start epoch and per-auditor caps, and auditors claim
 ///      there with `results.claimAuditorReward(<this contract>, epoch)`.
 interface IAntseedKbfAudits {
@@ -115,5 +117,12 @@ interface IAntseedKbfAudits {
 
     /// @notice Safety limit: credited audits of the same model per auditor and epoch.
     function maxCreditsPerModelPerEpoch() external view returns (uint32);
-    function modelCredits(uint256 epoch, address auditor, bytes32 modelHash) external view returns (uint256);
+    /// @notice Audits of `modelHash` by `auditor` in `epoch` that earned credits.
+    function creditedAudits(uint256 epoch, address auditor, bytes32 modelHash) external view returns (uint256);
+    /// @notice Credits a model audit earns unless its model has its own amount (default 1).
+    function creditsPerAudit() external view returns (uint32);
+    /// @notice A model's own credits per audit; 0 when it earns `creditsPerAudit`.
+    function modelCreditsPerAudit(bytes32 modelHash) external view returns (uint32);
+    /// @notice Credits an audit of `modelHash` earns now: its own amount, else `creditsPerAudit`.
+    function creditsFor(bytes32 modelHash) external view returns (uint256);
 }

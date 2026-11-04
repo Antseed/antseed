@@ -557,6 +557,60 @@ contract AntseedKbfAuditsTest is Test {
 
     // ── rewards ──────────────────────────────────────────────────────
 
+    function test_creditsPerAuditAreSetByTheOwnerAndPerModel() public {
+        assertEq(kbf.creditsPerAudit(), 1);
+        assertEq(kbf.creditsFor(MODEL_A), 1, "default");
+
+        vm.expectEmit(false, false, false, true, address(kbf));
+        emit AntseedKbfAudits.CreditsPerAuditSet(3);
+        kbf.setCreditsPerAudit(3);
+        vm.expectEmit(true, false, false, true, address(kbf));
+        emit AntseedKbfAudits.ModelCreditsPerAuditSet(MODEL_B, 10);
+        kbf.setModelCreditsPerAudit(MODEL_B, 10);
+        assertEq(kbf.creditsFor(MODEL_A), 3, "the default applies to models without their own amount");
+        assertEq(kbf.creditsFor(MODEL_B), 10);
+
+        vm.expectEmit(true, true, true, true, address(kbf));
+        emit AntseedKbfAudits.AuditCredited(EPOCH, auditorA, MODEL_A, 3);
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
+        vm.expectEmit(true, true, true, true, address(kbf));
+        emit AntseedKbfAudits.AuditCredited(EPOCH, auditorA, MODEL_B, 10);
+        _audit(auditorA, MODEL_B, agentId, SERVICE_B, SAME);
+        assertEq(results.auditorEpochCredits(address(kbf), EPOCH, auditorA), 13);
+        assertEq(kbf.creditedAudits(EPOCH, auditorA, MODEL_B), 1, "counts audits, not credits");
+
+        _audit(auditorB, MODEL_B, agentId, SERVICE_B, SAME);
+        gate.setCurrentEpoch(EPOCH + 1);
+        assertEq(_claim(auditorA), uint256(900 ether) * 13 / 23, "13 of the 23 credits");
+        assertEq(results.pendingAuditorReward(address(kbf), auditorB, EPOCH), uint256(900 ether) * 10 / 23);
+
+        kbf.setModelCreditsPerAudit(MODEL_B, 0);
+        assertEq(kbf.creditsFor(MODEL_B), 3, "0 removes the override");
+    }
+
+    function test_creditsArePositiveAndOwnerSet() public {
+        vm.expectRevert(AntseedKbfAudits.InvalidValue.selector);
+        kbf.setCreditsPerAudit(0);
+        vm.expectRevert(AntseedKbfAudits.InvalidValue.selector);
+        kbf.setModelCreditsPerAudit(bytes32(0), 2);
+        vm.startPrank(auditorA);
+        vm.expectRevert();
+        kbf.setCreditsPerAudit(2);
+        vm.expectRevert();
+        kbf.setModelCreditsPerAudit(MODEL_A, 2);
+        vm.stopPrank();
+    }
+
+    function test_theResultsCapBoundsLargeCreditAmounts() public {
+        results.setMaxCreditsPerAuditorPerEpoch(address(kbf), 5);
+        kbf.setCreditsPerAudit(4);
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
+        vm.expectEmit(true, true, true, true, address(kbf));
+        emit AntseedKbfAudits.AuditCredited(EPOCH, auditorA, MODEL_B, 1);
+        _audit(auditorA, MODEL_B, agentId, SERVICE_B, SAME);
+        assertEq(results.auditorEpochCredits(address(kbf), EPOCH, auditorA), 5, "clamped to the per-auditor cap");
+    }
+
     function test_oneCreditPerAuditorModelAndEpoch() public {
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
@@ -589,7 +643,7 @@ contract AntseedKbfAuditsTest is Test {
         for (uint256 i = 0; i < 4; i++) {
             _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
         }
-        assertEq(kbf.modelCredits(EPOCH, auditorA, MODEL_A), 3, "fourth audit earns nothing");
+        assertEq(kbf.creditedAudits(EPOCH, auditorA, MODEL_A), 3, "fourth audit earns nothing");
         assertEq(results.auditorEpochCredits(address(kbf), EPOCH, auditorA), 3);
         _audit(auditorA, MODEL_B, agentId, SERVICE_B, SAME);
         assertEq(results.auditorEpochCredits(address(kbf), EPOCH, auditorA), 4, "other models still earn");
@@ -1269,14 +1323,14 @@ contract AntseedKbfAuditsTest is Test {
         results.setMaxCreditsPerAuditorPerEpoch(address(kbf), 1);
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
         _audit(auditorA, MODEL_B, agentId, SERVICE_B, SAME);
-        assertEq(kbf.modelCredits(EPOCH, auditorA, MODEL_A), 1);
-        assertEq(kbf.modelCredits(EPOCH, auditorA, MODEL_B), 0, "the per-auditor cap credited nothing");
+        assertEq(kbf.creditedAudits(EPOCH, auditorA, MODEL_A), 1);
+        assertEq(kbf.creditedAudits(EPOCH, auditorA, MODEL_B), 0, "the per-auditor cap credited nothing");
 
         results.setMaxCreditsPerAuditorPerEpoch(address(kbf), 2);
         vm.expectEmit(true, true, true, true, address(kbf));
-        emit AntseedKbfAudits.AuditCredited(EPOCH, auditorA, MODEL_B);
+        emit AntseedKbfAudits.AuditCredited(EPOCH, auditorA, MODEL_B, 1);
         _audit(auditorA, MODEL_B, agentId, SERVICE_B, SAME);
-        assertEq(kbf.modelCredits(EPOCH, auditorA, MODEL_B), 1, "so the model can still earn once the cap allows");
+        assertEq(kbf.creditedAudits(EPOCH, auditorA, MODEL_B), 1, "so the model can still earn once the cap allows");
         assertEq(results.auditorEpochCredits(address(kbf), EPOCH, auditorA), 2);
     }
 

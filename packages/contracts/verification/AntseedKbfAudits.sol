@@ -36,8 +36,9 @@ import { IERC8004Registry } from "../interfaces/IERC8004Registry.sol";
 ///         contract), so nobody can block another auditor's evidence by submitting its hash first.
 ///
 ///         Credits: a model audit that covers at least one agent with staked pool power earns the
-///         auditor one credit through `results.credit`, at most `maxCreditsPerModelPerEpoch` per
-///         model and epoch. The results layer applies this audit's rewards start epoch and
+///         auditor `creditsFor(modelHash)` credits through `results.credit` (the owner's
+///         `creditsPerAudit`, default 1, or a per-model override), for at most
+///         `maxCreditsPerModelPerEpoch` audits per model and epoch. The results layer applies this audit's rewards start epoch and
 ///         per-verifier caps, and pays claims from this audit's share of the verification bucket.
 contract AntseedKbfAudits is IAntseedKbfAudits, Ownable2Step {
     uint256 public constant MAX_RESULTS_PER_AUDIT = 256;
@@ -67,9 +68,14 @@ contract AntseedKbfAudits is IAntseedKbfAudits, Ownable2Step {
     /// @notice Safety limit: credited audits of the same model per auditor and epoch (default 1).
     ///         Stops an auditor from earning repeatedly by re-auditing one model.
     uint32 public override maxCreditsPerModelPerEpoch = 1;
-    mapping(uint256 epoch => mapping(address auditor => mapping(bytes32 modelHash => uint256 credits)))
+    /// @inheritdoc IAntseedKbfAudits
+    uint32 public override creditsPerAudit = 1;
+    /// @inheritdoc IAntseedKbfAudits
+    mapping(bytes32 modelHash => uint32 credits) public override modelCreditsPerAudit;
+    /// @inheritdoc IAntseedKbfAudits
+    mapping(uint256 epoch => mapping(address auditor => mapping(bytes32 modelHash => uint256 audits)))
         public
-        override modelCredits;
+        override creditedAudits;
 
     // Reports per (epoch, agent, service, model, round): how many auditors report each verdict, and each auditor's report.
     mapping(bytes32 reportKey => mapping(IAntseedVerificationResults.Verdict verdict => uint256 reports)) private
@@ -82,6 +88,9 @@ contract AntseedKbfAudits is IAntseedKbfAudits, Ownable2Step {
     event DiffReplacementReportsSet(uint8 reports);
     event ValidityEpochsSet(uint8 validityEpochs);
     event MaxCreditsPerModelPerEpochSet(uint32 maxCredits);
+    event CreditsPerAuditSet(uint32 credits);
+    /// @param credits Credits an audit of `modelHash` earns; 0 means it earns `creditsPerAudit`.
+    event ModelCreditsPerAuditSet(bytes32 indexed modelHash, uint32 credits);
     event ModelAudited(
         bytes32 indexed modelHash,
         address indexed auditor,
@@ -103,7 +112,8 @@ contract AntseedKbfAudits is IAntseedKbfAudits, Ownable2Step {
         uint256 reports,
         uint256 required
     );
-    event AuditCredited(uint256 indexed epoch, address indexed auditor, bytes32 indexed modelHash);
+    /// @param credits Credits the results layer granted for the audit (after its per-auditor cap).
+    event AuditCredited(uint256 indexed epoch, address indexed auditor, bytes32 indexed modelHash, uint256 credits);
     event UnknownAgentSkipped(uint256 indexed agentId, bytes32 indexed modelHash);
 
     error InvalidAddress();
@@ -174,6 +184,29 @@ contract AntseedKbfAudits is IAntseedKbfAudits, Ownable2Step {
         if (epochs == 0 || epochs > MAX_VALIDITY_EPOCHS) revert InvalidValue();
         validityEpochs = epochs;
         emit ValidityEpochsSet(epochs);
+    }
+
+    /// @notice Credits a model audit earns unless its model has its own amount (default 1).
+    ///         Applies to audits submitted from now on.
+    function setCreditsPerAudit(uint32 credits) external onlyOwner {
+        if (credits == 0) revert InvalidValue();
+        creditsPerAudit = credits;
+        emit CreditsPerAuditSet(credits);
+    }
+
+    /// @notice Credits an audit of `modelHash` earns, e.g. more for a model that costs auditors
+    ///         more to audit. 0 removes the override, so the model earns `creditsPerAudit` again.
+    ///         Applies to audits submitted from now on.
+    function setModelCreditsPerAudit(bytes32 modelHash, uint32 credits) external onlyOwner {
+        if (modelHash == bytes32(0)) revert InvalidValue();
+        modelCreditsPerAudit[modelHash] = credits;
+        emit ModelCreditsPerAuditSet(modelHash, credits);
+    }
+
+    /// @inheritdoc IAntseedKbfAudits
+    function creditsFor(bytes32 modelHash) public view override returns (uint256) {
+        uint32 credits = modelCreditsPerAudit[modelHash];
+        return credits == 0 ? creditsPerAudit : credits;
     }
 
     /// @notice Sets the per-model safety limit on credited audits per auditor and epoch.
@@ -336,12 +369,14 @@ contract AntseedKbfAudits is IAntseedKbfAudits, Ownable2Step {
         results.record(agentId, serviceHash, modelHash, verdict, epoch + validityEpochs);
     }
 
-    /// @dev One credit per audit, up to the per-model cap here and the audit's caps in the results layer.
+    /// @dev `creditsFor(modelHash)` credits per audit, for at most `maxCreditsPerModelPerEpoch` audits
+    ///      of the model per auditor and epoch, and within the results layer's caps.
     function _creditAudit(uint256 epoch, bytes32 modelHash) private {
-        if (modelCredits[epoch][msg.sender][modelHash] >= maxCreditsPerModelPerEpoch) return;
-        if (results.credit(msg.sender, 1) == 0) return;
-        modelCredits[epoch][msg.sender][modelHash] += 1;
-        emit AuditCredited(epoch, msg.sender, modelHash);
+        if (creditedAudits[epoch][msg.sender][modelHash] >= maxCreditsPerModelPerEpoch) return;
+        uint256 credited = results.credit(msg.sender, creditsFor(modelHash));
+        if (credited == 0) return;
+        creditedAudits[epoch][msg.sender][modelHash] += 1;
+        emit AuditCredited(epoch, msg.sender, modelHash, credited);
     }
 
     /// @dev Failing pools never block an audit; they only withhold the credit.
