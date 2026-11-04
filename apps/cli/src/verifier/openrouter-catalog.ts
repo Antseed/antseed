@@ -1,4 +1,5 @@
 import type { VerifierCLIConfig, VerifierModelPricingConfig } from '../config/types.js'
+import { resolveApiKey } from './resolve-api-key.js'
 import { usesOpenRouterCatalog } from './model-config.js'
 import { normalized } from './utils.js'
 
@@ -37,7 +38,7 @@ export async function loadVerifierModelCatalog(
 ): Promise<VerifierModelCatalog> {
   const endpoint = config?.referenceEndpoint
   if (!endpoint) throw new Error('verifier.referenceEndpoint is required')
-  const apiKey = (endpoint.apiKeyEnv ? process.env[endpoint.apiKeyEnv] : undefined) ?? endpoint.apiKey
+  const apiKey = resolveApiKey(endpoint, 'verifier.referenceEndpoint')
   const url = `${endpoint.baseUrl.replace(/\/+$/, '')}/models`
   // Every model's reference build needs the catalog, and a run builds many models at once:
   // they share one download instead of each fetching the ~800 KB list. An injected fetch
@@ -158,7 +159,7 @@ export async function loadHighestEndpointPrice(
 ): Promise<VerifierModelPricingConfig | null> {
   const endpoint = config?.referenceEndpoint
   if (!endpoint) throw new Error('verifier.referenceEndpoint is required')
-  const apiKey = (endpoint.apiKeyEnv ? process.env[endpoint.apiKeyEnv] : undefined) ?? endpoint.apiKey
+  const apiKey = resolveApiKey(endpoint, 'verifier.referenceEndpoint')
   const url = `${endpoint.baseUrl.replace(/\/+$/, '')}/models/${upstreamModel}/endpoints`
   const { status, body } = await fetchOpenRouterJson(url, `OpenRouter endpoints for ${upstreamModel}`, apiKey, fetchFn, options, [404])
   if (status === 404) return null
