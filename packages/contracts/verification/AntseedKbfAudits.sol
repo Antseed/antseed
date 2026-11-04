@@ -9,7 +9,7 @@ import { IAntseedSellerPools } from "../interfaces/IAntseedSellerPools.sol";
 import { IAntseedVerificationResults } from "../interfaces/IAntseedVerificationResults.sol";
 import { IERC8004Registry } from "../interfaces/IERC8004Registry.sol";
 
-/// @notice KBF (Knowledge Boundary Fingerprinting) audit source. See `IAntseedKbfAudits`.
+/// @notice KBF (Knowledge Boundary Fingerprinting) audit. See `IAntseedKbfAudits`.
 ///
 ///         Each submission is one auditor's report for every listed (agent, service) under one
 ///         model. A verdict is recorded into the results layer once `requiredReports[verdict]`
@@ -26,8 +26,8 @@ import { IERC8004Registry } from "../interfaces/IERC8004Registry.sol";
 ///         of DIFF starts a new round, so support given before a DIFF was confirmed cannot clear it
 ///         and support given before a DIFF was cleared cannot restore it. Revoking an auditor starts
 ///         a new round everywhere. The results layer counts moves into or out of DIFF made by any
-///         source (`diffChanges`) and owner clears (`serviceClears`), and both move KBF rounds too,
-///         so support given before another source's DIFF or an owner clear never counts after it.
+///         audit (`diffChanges`) and owner clears (`serviceClears`), and both move KBF rounds too,
+///         so support given before another audit's DIFF or an owner clear never counts after it.
 ///         Any live DIFF, whoever recorded it, needs `diffReplacementReports` support to replace.
 ///
 ///         Results for agents the identity registry cannot resolve are skipped with
@@ -37,15 +37,19 @@ import { IERC8004Registry } from "../interfaces/IERC8004Registry.sol";
 ///
 ///         Credits: a model audit that covers at least one agent with staked pool power earns the
 ///         auditor one credit through `results.credit`, at most `maxCreditsPerModelPerEpoch` per
-///         model and epoch. The results layer applies this source's rewards start epoch and
-///         per-verifier caps, and pays claims from this source's share of the verification bucket.
+///         model and epoch. The results layer applies this audit's rewards start epoch and
+///         per-verifier caps, and pays claims from this audit's share of the verification bucket.
 contract AntseedKbfAudits is IAntseedKbfAudits, Ownable2Step {
     uint256 public constant MAX_RESULTS_PER_AUDIT = 256;
     uint256 public constant MAX_EVIDENCE_URI_BYTES = 200;
     uint256 public constant MAX_PROFILE_NAME_BYTES = 64;
     uint256 public constant MAX_PROFILE_URI_BYTES = 256;
+    /// @notice Most epochs a KBF verdict can count for, including the one it was given in.
+    uint8 public constant MAX_VALIDITY_EPOCHS = 4;
 
     IAntseedVerificationResults public immutable override results;
+    /// @notice ERC-8004 identity registry: resolves agent owners for the self-audit check.
+    IERC8004Registry public immutable override identityRegistry;
     IAntseedSellerPools public override sellerPools;
 
     /// @inheritdoc IAntseedKbfAudits
@@ -57,6 +61,8 @@ contract AntseedKbfAudits is IAntseedKbfAudits, Ownable2Step {
     mapping(IAntseedVerificationResults.Verdict verdict => uint8 reports) public override requiredReports;
     /// @inheritdoc IAntseedKbfAudits
     uint8 public override diffReplacementReports = 1;
+    /// @inheritdoc IAntseedKbfAudits
+    uint8 public override validityEpochs = 2;
 
     /// @notice Safety limit: credited audits of the same model per auditor and epoch (default 1).
     ///         Stops an auditor from earning repeatedly by re-auditing one model.
@@ -74,6 +80,7 @@ contract AntseedKbfAudits is IAntseedKbfAudits, Ownable2Step {
     event SellerPoolsSet(address sellerPools);
     event RequiredReportsSet(IAntseedVerificationResults.Verdict indexed verdict, uint8 reports);
     event DiffReplacementReportsSet(uint8 reports);
+    event ValidityEpochsSet(uint8 validityEpochs);
     event MaxCreditsPerModelPerEpochSet(uint32 maxCredits);
     event ModelAudited(
         bytes32 indexed modelHash,
@@ -109,9 +116,10 @@ contract AntseedKbfAudits is IAntseedKbfAudits, Ownable2Step {
     error SelfAudit();
     error EpochChanged();
 
-    constructor(address results_, address sellerPools_) Ownable(msg.sender) {
-        if (results_.code.length == 0) revert InvalidAddress();
+    constructor(address results_, address sellerPools_, address identityRegistry_) Ownable(msg.sender) {
+        if (results_.code.length == 0 || identityRegistry_.code.length == 0) revert InvalidAddress();
         results = IAntseedVerificationResults(results_);
+        identityRegistry = IERC8004Registry(identityRegistry_);
         _setSellerPools(sellerPools_);
         requiredReports[IAntseedVerificationResults.Verdict.SAME] = 1;
         requiredReports[IAntseedVerificationResults.Verdict.DIFF] = 2;
@@ -157,6 +165,15 @@ contract AntseedKbfAudits is IAntseedKbfAudits, Ownable2Step {
         if (reports == 0) revert InvalidValue();
         diffReplacementReports = reports;
         emit DiffReplacementReportsSet(reports);
+    }
+
+    /// @notice Epochs a KBF verdict counts for, including the one it was given in (default 2: KBF
+    ///         audits every model every epoch, so a verdict lasts until the next audit lands).
+    ///         Applies to verdicts recorded from now on; recorded ones keep their expiry.
+    function setValidityEpochs(uint8 epochs) external onlyOwner {
+        if (epochs == 0 || epochs > MAX_VALIDITY_EPOCHS) revert InvalidValue();
+        validityEpochs = epochs;
+        emit ValidityEpochsSet(epochs);
     }
 
     /// @notice Sets the per-model safety limit on credited audits per auditor and epoch.
@@ -209,7 +226,7 @@ contract AntseedKbfAudits is IAntseedKbfAudits, Ownable2Step {
         if (epoch != expectedEpoch) revert EpochChanged();
 
 
-        IERC8004Registry identity = IERC8004Registry(results.registry().identityRegistry());
+        IERC8004Registry identity = identityRegistry;
         bool staked;
         bool skipAgent;
         uint256 previousAgent;
@@ -245,7 +262,7 @@ contract AntseedKbfAudits is IAntseedKbfAudits, Ownable2Step {
 
     function agentOwner(uint256 agentId) external view override returns (bool known, address owner) {
         if (agentId == 0) return (false, address(0));
-        return _agentOwner(IERC8004Registry(results.registry().identityRegistry()), agentId);
+        return _agentOwner(identityRegistry, agentId);
     }
 
     /// @notice The service's report round: only reports made in it count. It moves on whenever a
@@ -316,10 +333,10 @@ contract AntseedKbfAudits is IAntseedKbfAudits, Ownable2Step {
         emit ServiceAudited(agentId, serviceHash, msg.sender, modelHash, verdict, round, reports, required);
         if (reports < required || (!addsSupport && required != 1)) return;
 
-        results.record(agentId, serviceHash, modelHash, verdict);
+        results.record(agentId, serviceHash, modelHash, verdict, epoch + validityEpochs);
     }
 
-    /// @dev One credit per audit, up to the per-model cap here and the source's caps in the results layer.
+    /// @dev One credit per audit, up to the per-model cap here and the audit's caps in the results layer.
     function _creditAudit(uint256 epoch, bytes32 modelHash) private {
         if (modelCredits[epoch][msg.sender][modelHash] >= maxCreditsPerModelPerEpoch) return;
         if (results.credit(msg.sender, 1) == 0) return;

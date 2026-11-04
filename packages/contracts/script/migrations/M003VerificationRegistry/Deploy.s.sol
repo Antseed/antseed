@@ -16,10 +16,10 @@ interface IM003UsageAccounting {
 
 /// @notice M003: deploys the verification contracts. From `VERIFICATION_OWNER` at
 ///         `VERIFICATION_DEPLOYMENT_NONCE`, in order:
-///         N   `AntseedVerificationResults(registry)`
-///         N+1 `AntseedKbfAudits(results, sellerPools)`
+///         N   `AntseedVerificationResults(emissionsGate)`
+///         N+1 `AntseedKbfAudits(results, sellerPools, identityRegistry)`
 ///         N+2 `AntseedVerificationPointsPolicy(results, usageAccounting, bonusBps, owner)`
-///         then wires the KBF source on the results layer (`setSource`, `setSourceShareBps` 10,000).
+///         then wires KBF as an audit on the results layer (`setAudit`, `setAuditShareBps` 10,000).
 ///         Re-runnable: deploys whose predicted address has code, and wiring already in place, are
 ///         skipped. Everything the verification owner cannot do itself (the emissions gate's minter
 ///         controller, the points policy registry) and the auditor approvals stay manual; see README.
@@ -82,12 +82,13 @@ contract M003DeployVerificationRegistry is Script {
         vm.startBroadcast(config.owner);
         if (predictedResults.code.length == 0) {
             require(vm.getNonce(config.owner) == config.deploymentNonce, "M003: deployment nonce changed");
-            deployment.results = new AntseedVerificationResults(config.registry);
+            deployment.results =
+                new AntseedVerificationResults(IM003UsageAccounting(config.usageAccounting).emissionsGate());
             require(address(deployment.results) == predictedResults, "M003: unexpected results address");
         }
         if (predictedKbf.code.length == 0) {
             require(vm.getNonce(config.owner) == config.deploymentNonce + 1, "M003: KBF nonce changed");
-            deployment.kbf = new AntseedKbfAudits(predictedResults, config.sellerPools);
+            deployment.kbf = new AntseedKbfAudits(predictedResults, config.sellerPools, config.identityRegistry);
             require(address(deployment.kbf) == predictedKbf, "M003: unexpected KBF address");
         }
         if (predictedPolicy.code.length == 0) {
@@ -97,11 +98,11 @@ contract M003DeployVerificationRegistry is Script {
             );
             require(address(deployment.policy) == predictedPolicy, "M003: unexpected policy address");
         }
-        // Wiring the verification owner can do itself: the KBF source writes verdicts and gets the
-        // whole verification bucket until another source is added.
-        if (!deployment.results.isSource(predictedKbf)) deployment.results.setSource(predictedKbf, true);
-        if (deployment.results.sourceShareBps(predictedKbf) != KBF_SHARE_BPS) {
-            deployment.results.setSourceShareBps(predictedKbf, KBF_SHARE_BPS);
+        // Wiring the verification owner can do itself: the KBF audit writes verdicts and gets the
+        // whole verification bucket until another audit is added.
+        if (!deployment.results.isAudit(predictedKbf)) deployment.results.setAudit(predictedKbf, true);
+        if (deployment.results.auditShareBps(predictedKbf) != KBF_SHARE_BPS) {
+            deployment.results.setAuditShareBps(predictedKbf, KBF_SHARE_BPS);
         }
         vm.stopBroadcast();
 
@@ -113,19 +114,20 @@ contract M003DeployVerificationRegistry is Script {
         AntseedKbfAudits kbf = deployment.kbf;
         AntseedVerificationPointsPolicy policy = deployment.policy;
 
-        require(address(results.registry()) == config.registry, "M003: wrong registry");
         require(
             address(results.emissionsGate()) == IM003UsageAccounting(config.usageAccounting).emissionsGate(),
             "M003: wrong emissions gate"
         );
         require(results.owner() == config.owner, "M003: wrong results owner");
         require(results.pendingOwner() == address(0), "M003: pending results ownership transfer");
-        require(results.isSource(address(kbf)), "M003: KBF is not a source");
-        require(results.sourceShareBps(address(kbf)) == KBF_SHARE_BPS, "M003: wrong KBF share");
+        require(results.isAudit(address(kbf)), "M003: KBF is not an audit");
+        require(results.auditShareBps(address(kbf)) == KBF_SHARE_BPS, "M003: wrong KBF share");
         require(results.rewardsStartEpoch(address(kbf)) == results.REWARDS_OFF(), "M003: KBF rewards enabled");
 
         require(address(kbf.results()) == address(results), "M003: wrong KBF results");
         require(address(kbf.sellerPools()) == config.sellerPools, "M003: wrong seller pools");
+        require(address(kbf.identityRegistry()) == config.identityRegistry, "M003: wrong KBF identity registry");
+        require(kbf.validityEpochs() == 2, "M003: wrong KBF validity");
         require(kbf.owner() == config.owner, "M003: wrong KBF owner");
         require(kbf.pendingOwner() == address(0), "M003: pending KBF ownership transfer");
         // Confirmations: a DIFF is recorded only once a second auditor reports it; SAME and
