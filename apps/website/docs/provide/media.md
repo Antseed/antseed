@@ -219,14 +219,31 @@ antseed config seller add-service fal <fal-endpoint-id> \
   --unit-billing-models '{"fal-video":{"version":1,"components":[{"unit":"video_seconds","priceUsd":0.1}]}}'
 ```
 
-Requests are passed to fal unchanged, except that `duration` is removed for video edit endpoints that take none. At startup the seller announces each endpoint's input field names from fal's schema as `supportedParameters`, so buyers can use the model's own field names (for example `start_image_url` for Kling V3).
+Requests are passed to fal unchanged, except that `duration` is removed for video edit and talking-avatar endpoints that take none. At startup the seller announces each endpoint's input field names from fal's schema as `supportedParameters`, so buyers can use the model's own field names (for example `start_image_url` for Kling V3).
+
+### Alibaba Cloud Model Studio models
+
+The `alibaba-video` plugin relays Model Studio's video models, such as Wan 3.0 and HappyHorse. It serves the `fal-video` protocol, so buyers use it like any fal service, and every service needs `fal-video` pricing:
+
+```bash
+export ALIBABA_VIDEO_API_KEY=<your-model-studio-key>
+antseed config seller add-provider alibaba-video --plugin alibaba-video
+
+antseed config seller add-service alibaba-video wan3.0-video \
+  --unit-billing-models '{"fal-video":{"version":1,"components":[
+    {"unit":"video_seconds","priceUsd":0.06,"match":{"resolution":"480p"}},
+    {"unit":"video_seconds","priceUsd":0.12,"match":{"resolution":"720p"}},
+    {"unit":"video_seconds","priceUsd":0.24,"match":{"resolution":"1080p"}}]}}'
+```
+
+API keys belong to one region. The plugin uses the Singapore endpoint unless you set `baseUrl`. Buyers must send `duration`, and video and audio inputs are refused before payment, because Model Studio bills an input video on top of the output. The plugin translates text, first and last frames, and reference images. Each health sweep checks the key only: Model Studio has no free per-model check for video or a balance API, so an account out of credit shows up as a rejected create.
 
 ### Video edit models
 
 Video-to-video models take a buyer's source video (`video_url`) and change part of it: a new character from an image (MiniMax H3 Max Recast, Kling V3 motion control), or a text instruction (Kling v4 edit, Wan 2.7 edit). Add them like any other video service; the plugin does the rest at startup:
 
 - It reads the model's inputs (fal's schema, or Venice's model list) and announces `video` in `capabilities.video.inputs` and `video_url` in `supportedParameters`, so buyers route edits only to you when you take them. It also announces the required inputs and resolutions, and, on fal, the whole-second durations from fal's source limits.
-- It checks only the source's length: `duration` must be the inline source's length in whole seconds, rounded down, or the create is answered `422 invalid_video_duration` without calling the upstream. Otherwise the upstream checks the source. Buyers using the `antseed-videos` skill check the source against the provider's published limits before they pay.
+- It checks only the source's length: `duration` must be the inline source's length in whole seconds, rounded down, or the create is answered `422 invalid_video_duration` before any payment, without calling the upstream. Otherwise the upstream checks the source. Buyers using the `antseed-videos` skill check the source against the provider's published limits before they pay.
 - A job the upstream rejects (for example Recast on a video without a person) is reported as `FAILED`, and its payment channel is closed at once at what the buyer signed so far. For a video above $1.00 that is the opening fee. fal bills nothing for a failed job, and Venice refunds it.
 - On fal, it removes `duration` for endpoints that take none. On Venice, it turns Venice's HTML `413` for a body above 32.5 MB into a JSON `413 request_too_large`.
 
@@ -249,6 +266,30 @@ antseed config seller add-service video minimax-h3-max-recast \
 Upstream prices change; check fal's model page or Venice's video quote before you set yours. Buyers refuse any single video above $5.00, so at these rates a Recast edit fits up to about 15 s at 768P.
 
 The source travels inside the request: inline up to the 64 MiB request limit (about 47 MB of video; 32.5 MB of request on Venice), or as a public `https` URL the upstream fetches. For a video edit, which the upstream bills for at least the whole source, the seller measures the source, which must be inline, and answers `422 invalid_video_duration` before calling the upstream unless `duration` is its length in whole seconds, rounded down. A large inline source is uploaded to you twice, once before the payment channel opens and once after.
+
+### Talking-avatar models
+
+Some fal models animate a face image to an audio file and make a video exactly as long as the audio, with no `duration` field of their own, for example Kling AI Avatar v2 (`fal-ai/kling-video/ai-avatar/v2/pro` and `/standard`). fal bills them per second of that video. The plugin recognises them from fal's schema: `audio_url` is required, there is no `video_url`, and no field sets the length (`duration`, `num_frames`). For those it:
+
+- announces `first_frame` (the face, `image_url`) and `audio` in `capabilities.video.inputs` and `requiredInputs`, and no `durationsSeconds`;
+- measures the buyer's inline audio (MP3 or PCM WAV, read from its bytes) and answers `422 invalid_video_duration` before any payment, unless `duration` is its length in whole seconds, rounded down. Audio sent as a URL or in another format is refused the same way, because the seller cannot measure it;
+- removes `duration` and uploads the audio to fal's file storage (kept for one day), because some of these endpoints take `audio_url` only as a URL.
+
+If fal's schema can't be read at startup, a request with `audio_url` and no `video_url` is checked the same way, unless the service's configured `supportedParameters` include `duration` or `num_frames`.
+
+Price them per second with `video_seconds`: the buyer's `duration` is the audio length, and the video is about as long, so the delivery check (at least 90% of `duration`) passes.
+
+```bash
+# Kling AI Avatar v2 at fal's list price ($0.115/s Pro, $0.0562/s Standard) plus a margin
+antseed config seller add-service fal fal-ai/kling-video/ai-avatar/v2/pro \
+  --capabilities '{"video":{"audio":true}}' \
+  --unit-billing-models '{"fal-video":{"version":1,"components":[{"unit":"video_seconds","priceUsd":0.13}]}}'
+antseed config seller add-service fal fal-ai/kling-video/ai-avatar/v2/standard \
+  --capabilities '{"video":{"audio":true}}' \
+  --unit-billing-models '{"fal-video":{"version":1,"components":[{"unit":"video_seconds","priceUsd":0.065}]}}'
+```
+
+Buyers refuse any single video above $5.00, so at these rates a Pro avatar fits up to about 38 s of audio.
 
 ### Video pricing
 

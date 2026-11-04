@@ -66,6 +66,8 @@ For a video longer than the model's longest clip, plan it as several clips in St
 
 When the user wants a character to speak a recorded or generated voice track (make it with text to speech, `POST /v1/audio/speech`), use a model whose seller lists `audio_url` in `fields` (the price step with `audio_in=yes` keeps only those). Make the first frame or reference images as usual, then send the audio as `audio_url` ([references/requests.md](references/requests.md#lip-sync-audio)). The video is priced as usual; the audio adds nothing. Keep the audio within the model's limit (on Venice WAV or MP3, at most 30 s and 15 MB) and pick a duration at least as long as the audio.
 
+Talking-avatar models (`audio` in the offer's `requiredInputs` and no `duration` in `fields`, for example fal's Kling AI Avatar `fal-ai/kling-video/ai-avatar/v2/pro`) animate one face image (the first frame) to the audio and make a video exactly as long as the audio. There is no duration to choose: `duration` is the audio's length in whole seconds, rounded down, and that is what the user pays for. Send the audio inline (MP3 or WAV); the seller measures it and refuses a URL or another length with `422 invalid_video_duration` before any payment. Quote: "<model>, <seconds> s from your audio: $<price>. Go?" ([references/requests.md](references/requests.md#lip-sync-audio)).
+
 ## Edit a video
 
 When the user brings a video and wants it changed (put them or another character in it, restyle it, change one thing), use a video-to-video model instead of the three stages above. The source video keeps its motion, timing, and camera; the model changes only what is asked. The steps in [references/requests.md](references/requests.md#edit-a-video) do the work.

@@ -238,6 +238,7 @@ function makeSpmMock(overrides: Record<string, unknown> = {}): any {
     hasClosingChannel: () => false,
     waitForClosingChannel: async () => false,
     isTopUpRunning: () => false,
+    isTopUpPendingFor: () => false,
     waitForTopUp: async () => true,
     // The real one waits for in-flight requests, then settles.
     closeSessionWhenIdle(buyerPeerId: string) {
@@ -544,6 +545,36 @@ describe('native video job ownership', () => {
         expect(provider.handleRequest).not.toHaveBeenCalled();
         expect(recordSpend).not.toHaveBeenCalled();
         expect(settleSession).not.toHaveBeenCalled();
+      } finally { store.close(); }
+    });
+
+    it('answers a create the provider refuses before offering a channel, so it costs nothing', async () => {
+      const { provider, create, spm, recordSpend, store } = setupOneOff();
+      provider.checkRequest = vi.fn(request => JSON.parse(new TextDecoder().decode(request.body)).duration === '20s'
+        ? { statusCode: 422, code: 'invalid_video_duration', message: 'duration must be the source length in whole seconds, rounded down: 12' }
+        : null);
+      try {
+        const refused = await create('video-1', bigVideo);
+        expect(refused.statusCode).toBe(422);
+        expect(bodyOf(refused)).toEqual({ error: { code: 'invalid_video_duration', message: 'duration must be the source length in whole seconds, rounded down: 12' } });
+        expect(spm.registerOneOffPlan).not.toHaveBeenCalled();
+        expect(provider.handleRequest).not.toHaveBeenCalled();
+        expect(recordSpend).not.toHaveBeenCalled();
+        // An accepted create is priced by its duration as usual.
+        const accepted = await create('video-2', { model: 'video', duration: '12s' });
+        expect(accepted.statusCode).toBe(402);
+        expect(bodyOf(accepted).oneOffPlan.requestCost).toBe('1200000');
+      } finally { store.close(); }
+    });
+
+    it('answers 500 when the provider check throws, without offering a channel', async () => {
+      const { provider, create, spm, store } = setupOneOff();
+      provider.checkRequest = () => { throw new Error('boom'); };
+      try {
+        const response = await create('video-1', bigVideo);
+        expect(response.statusCode).toBe(500);
+        expect(bodyOf(response).error.code).toBe('request_check_failed');
+        expect(spm.registerOneOffPlan).not.toHaveBeenCalled();
       } finally { store.close(); }
     });
 
@@ -2127,6 +2158,42 @@ it('waits for a running top-up before treating a channel at its ceiling as exhau
     if (!lands) expect(JSON.parse(new TextDecoder().decode(response.body)).error).toBe('top_up_pending');
     expect(settleSession).not.toHaveBeenCalled();
   }
+});
+
+it('waits for a pending top-up to start, between two top-ups, before treating the channel as exhausted', async () => {
+  let reserveMax = 1_000_000n;
+  const settleSession = vi.fn(async () => {});
+  const waitForTopUp = vi.fn(async () => {
+    // The next top-up starts and lands.
+    reserveMax = 2_000_000n;
+    return true;
+  });
+  const handler = makeSellerRequestHandler({
+    providers: [makeProvider(1, 1, { name: 'openai', services: ['test-model'] })],
+    sellerPaymentManager: makeSpmMock({
+      getCumulativeSpend: () => 1_500_000n,
+      getAcceptedCumulative: () => 1_500_000n,
+      getReserveMax: () => reserveMax,
+      settleSession,
+      // The last top-up just landed; the one covering this spend is queued.
+      isTopUpRunning: () => false,
+      isTopUpPendingFor: (_channelId: string, amount: bigint) => amount > reserveMax && amount <= 2_000_000n,
+      waitForTopUp,
+    }),
+    channelsClient: {} as any, sessionTracker: null, announcer: null, emit: () => false,
+  });
+  const frames: Uint8Array[] = [];
+  const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any);
+  await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({
+    requestId: 'between-top-ups', method: 'POST', path: '/v1/chat/completions',
+    headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ model: 'test-model', messages: [] })),
+  }) });
+
+  expect({
+    status: decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload).statusCode,
+    covering: waitForTopUp.mock.calls[0]?.[2],
+    closed: settleSession.mock.calls.length,
+  }).toEqual({ status: 200, covering: 1_500_000n, closed: 0 });
 });
 
 
