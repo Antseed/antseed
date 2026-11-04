@@ -221,6 +221,23 @@ antseed config seller add-service fal <fal-endpoint-id> \
 
 Requests are passed to fal unchanged, except that `duration` is removed for video edit and talking-avatar endpoints that take none. At startup the seller announces each endpoint's input field names from fal's schema as `supportedParameters`, so buyers can use the model's own field names (for example `start_image_url` for Kling V3).
 
+### Alibaba Cloud Model Studio models
+
+The `alibaba-video` plugin relays Model Studio's video models, such as Wan 3.0 and HappyHorse. It serves the `fal-video` protocol, so buyers use it like any fal service, and every service needs `fal-video` pricing:
+
+```bash
+export ALIBABA_VIDEO_API_KEY=<your-model-studio-key>
+antseed config seller add-provider alibaba-video --plugin alibaba-video
+
+antseed config seller add-service alibaba-video wan3.0-video \
+  --unit-billing-models '{"fal-video":{"version":1,"components":[
+    {"unit":"video_seconds","priceUsd":0.06,"match":{"resolution":"480p"}},
+    {"unit":"video_seconds","priceUsd":0.12,"match":{"resolution":"720p"}},
+    {"unit":"video_seconds","priceUsd":0.24,"match":{"resolution":"1080p"}}]}}'
+```
+
+API keys belong to one region. The plugin uses the Singapore endpoint unless you set `baseUrl`. Buyers must send `duration`, and video and audio inputs are refused before payment, because Model Studio bills an input video on top of the output. The plugin translates text, first and last frames, and reference images. Each health sweep checks the key only: Model Studio has no free per-model check for video or a balance API, so an account out of credit shows up as a rejected create.
+
 ### Video edit models
 
 Video-to-video models take a buyer's source video (`video_url`) and change part of it: a new character from an image (MiniMax H3 Max Recast, Kling V3 motion control), or a text instruction (Kling v4 edit, Wan 2.7 edit). Add them like any other video service; the plugin does the rest at startup:

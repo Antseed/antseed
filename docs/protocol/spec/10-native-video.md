@@ -19,6 +19,10 @@ Venice uses the body `model` as the service. Retrieve carries `queue_id` in the 
 
 fal's own API puts the endpoint ID in the URL (`queue.fal.run/{endpoint}`), which AntSeed cannot route on. AntSeed therefore uses fixed paths and carries the fal endpoint ID (for example `fal-ai/kling-video/v2.1/standard/text-to-video`) in the body `model`, which is also the service ID. The create body is fal's model input plus `model`; the seller removes `model` and `service` and submits the rest to `POST {base}/{model}`. The job ID is fal's `request_id`. Retrieve sends `{model, request_id}`; the seller polls `GET {base}/{owner}/{alias}/requests/{request_id}/status` and, once `COMPLETED`, fetches the result and streams the `https` `video.url` (or first `videos[].url`) to the buyer without the seller key. fal's `status_url` and `response_url` are not returned to buyers. A `COMPLETED` status with an `error` is returned as `{"status":"FAILED"}`. Durations are numbers or strings such as `"5"` and `"5s"`. Cancel and webhooks are not relayed.
 
+### Alibaba Cloud Model Studio
+
+The `alibaba-video` plugin serves the `fal-video` paths and translates them to Model Studio's task API, so no separate protocol or buyer change is needed. The seller maps the request fields to `input.media` and `parameters`, returns the task ID as `request_id`, and streams the finished file itself. It requires `duration` and refuses video and audio inputs before payment, because Model Studio bills an input video on top of the output.
+
 ## Image-to-video and video inputs
 
 The create endpoints are not text-only. AntSeed forwards the native JSON fields, including images, reference frames and video inputs; it does not convert these requests into image-generation or chat requests. No separate image-to-video endpoint or AntSeed upload service is needed.
