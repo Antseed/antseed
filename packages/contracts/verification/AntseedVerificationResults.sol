@@ -40,9 +40,12 @@ import { IAntseedVerificationResults } from "../interfaces/IAntseedVerificationR
 contract AntseedVerificationResults is IAntseedVerificationResults, Ownable2Step, Pausable, ReentrancyGuard {
     using Checkpoints for Checkpoints.Trace256;
 
-    /// @notice Most epochs any audit's verdict can count for, including the one it was given in.
-    ///         Bounds the agent status sum; each audit sets its own, lower lifetime.
-    uint256 public constant MAX_VERDICT_EPOCHS = 8;
+    /// @notice Most epochs any audit's verdict can count for, including the one it was given in:
+    ///         52 weekly epochs, about a year (364 days). A ceiling only; each audit chooses its own
+    ///         lifetime per verdict (KBF: 2 epochs by default, at most 4). The agent status sum only
+    ///         walks up to the agent's latest expiry, so a long ceiling costs nothing while audits
+    ///         use short lifetimes.
+    uint256 public constant MAX_VERDICT_EPOCHS = 52;
     uint256 public constant MAX_AUDITS = 32;
     uint256 public constant BPS = 10_000;
     uint16 public constant DEFAULT_MAX_AUDITOR_SHARE_BPS = 2_000;
@@ -93,6 +96,8 @@ contract AntseedVerificationResults is IAntseedVerificationResults, Ownable2Step
     // Latest SAME/DIFF verdicts by the epoch they stop counting in; a verdict moves out when the
     // service gets a new one.
     mapping(uint256 agentId => mapping(uint256 validUntilEpoch => EpochCounts counts)) private _expiryCounts;
+    // The latest expiry any of the agent's verdicts ever had; the status sum stops there.
+    mapping(uint256 agentId => uint256 validUntilEpoch) private _lastExpiry;
 
     mapping(address audit => mapping(uint256 epoch => uint256 credits)) public override epochCredits;
     mapping(address audit => mapping(uint256 epoch => mapping(address auditor => uint256 credits)))
@@ -271,6 +276,7 @@ contract AntseedVerificationResults is IAntseedVerificationResults, Ownable2Step
         address previousAudit = service.audit;
         _uncount(agentId, service);
         EpochCounts storage counts = _expiryCounts[agentId][validUntilEpoch];
+        if (validUntilEpoch > _lastExpiry[agentId]) _lastExpiry[agentId] = validUntilEpoch;
         if (verdict == Verdict.SAME) counts.same += 1;
         else if (verdict == Verdict.DIFF) counts.diff += 1;
         service.verdict = verdict;
@@ -471,13 +477,15 @@ contract AntseedVerificationResults is IAntseedVerificationResults, Ownable2Step
         return stored;
     }
 
-    /// @dev Sums the counters of the verdicts still live in `epoch` (those that stop counting in a
-    ///      later epoch, at most `MAX_VERDICT_EPOCHS` ahead), saturating at uint16.
+    /// @dev Sums the counters of the verdicts still live in `epoch`: those that stop counting in a
+    ///      later epoch, up to the agent's latest expiry (never more than `MAX_VERDICT_EPOCHS` ahead),
+    ///      saturating at uint16.
     function _agentStatusAt(uint256 agentId, uint256 epoch) private view returns (AgentStatus memory status) {
         uint256 same;
         uint256 diff;
-        for (uint256 i = 1; i <= MAX_VERDICT_EPOCHS; i++) {
-            EpochCounts storage counts = _expiryCounts[agentId][epoch + i];
+        uint256 last = _lastExpiry[agentId];
+        for (uint256 until = epoch + 1; until <= last; until++) {
+            EpochCounts storage counts = _expiryCounts[agentId][until];
             same += counts.same;
             diff += counts.diff;
         }

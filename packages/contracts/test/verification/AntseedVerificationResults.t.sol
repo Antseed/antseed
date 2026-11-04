@@ -61,7 +61,7 @@ contract AntseedVerificationResultsTest is Test {
 
     function test_defaults() public view {
         assertEq(address(results.emissionsGate()), address(gate));
-        assertEq(results.MAX_VERDICT_EPOCHS(), 8);
+        assertEq(results.MAX_VERDICT_EPOCHS(), 52, "about a year of weekly epochs");
         assertEq(results.totalAuditShareBps(), 0);
         assertEq(results.owner(), address(this));
         assertEq(results.auditCount(), 2);
@@ -174,8 +174,13 @@ contract AntseedVerificationResultsTest is Test {
         vm.expectRevert(AntseedVerificationResults.InvalidValue.selector);
         results.record(agentId, SERVICE_A, MODEL_A, SAME, EPOCH); // must count at least this epoch
         vm.expectRevert(AntseedVerificationResults.InvalidValue.selector);
-        results.record(agentId, SERVICE_A, MODEL_A, SAME, EPOCH + 9); // at most MAX_VERDICT_EPOCHS
-        results.record(agentId, SERVICE_A, MODEL_A, SAME, EPOCH + 8);
+        results.record(agentId, SERVICE_A, MODEL_A, SAME, EPOCH + 53); // at most MAX_VERDICT_EPOCHS
+        results.record(agentId, SERVICE_A, MODEL_A, SAME, EPOCH + 52);
+        assertTrue(results.isVerified(agentId));
+        gate.setCurrentEpoch(EPOCH + 51);
+        assertTrue(results.isVerified(agentId), "still counting in its last epoch, a year on");
+        gate.setCurrentEpoch(EPOCH + 52);
+        assertFalse(results.isVerified(agentId));
         vm.stopPrank();
     }
 
