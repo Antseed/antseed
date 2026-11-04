@@ -44,7 +44,7 @@ contract AntseedVerificationResults is IAntseedVerificationResults, Ownable2Step
     ///         this many epochs after the current one, i.e. 52 weekly epochs, about a year. Each audit
     ///         picks the actual lifetime of its verdicts below this bound.
     /// @dev Also bounds the agent status sum, which reads one counter per epoch from the next epoch up
-    ///      to the latest expiry any of the agent's verdicts ever had.
+    ///      to the latest expiry any of the agent's SAME or DIFF verdicts ever had.
     uint256 public constant MAX_VERDICT_EPOCHS = 52;
     uint256 public constant MAX_AUDITS = 32;
     uint256 public constant BPS = 10_000;
@@ -98,7 +98,7 @@ contract AntseedVerificationResults is IAntseedVerificationResults, Ownable2Step
     // Latest SAME/DIFF verdicts by the epoch they stop counting in; a verdict moves out when the
     // service gets a new one.
     mapping(uint256 agentId => mapping(uint256 validUntilEpoch => EpochCounts counts)) private _expiryCounts;
-    // The latest expiry any of the agent's verdicts ever had; the status sum stops there.
+    // The latest expiry any of the agent's SAME or DIFF verdicts ever had; the status sum stops there.
     mapping(uint256 agentId => uint256 validUntilEpoch) private _lastExpiry;
 
     mapping(address audit => mapping(uint256 epoch => uint256 credits)) public override epochCredits;
@@ -279,7 +279,10 @@ contract AntseedVerificationResults is IAntseedVerificationResults, Ownable2Step
         uint256 previousValidUntil = service.validUntilEpoch;
         _uncount(agentId, service);
         EpochCounts storage counts = _expiryCounts[agentId][validUntilEpoch];
-        if (validUntilEpoch > _lastExpiry[agentId]) _lastExpiry[agentId] = validUntilEpoch;
+        // Only SAME and DIFF are counted, so only they extend the status sum.
+        if (verdict != Verdict.UNDETERMINED && validUntilEpoch > _lastExpiry[agentId]) {
+            _lastExpiry[agentId] = validUntilEpoch;
+        }
         if (verdict == Verdict.SAME) counts.same += 1;
         else if (verdict == Verdict.DIFF) counts.diff += 1;
         service.verdict = verdict;
@@ -356,6 +359,9 @@ contract AntseedVerificationResults is IAntseedVerificationResults, Ownable2Step
         AuditConfig storage config = _audits[msg.sender];
         uint256 epoch = emissionsGate.currentEpoch();
         if (epoch < config.rewardsStartEpoch) return 0;
+        // No share of this epoch's bucket means nothing could ever pay these credits: grant none, so no
+        // auditor is told it was credited for an epoch it can never claim.
+        if (auditShareBpsAt(msg.sender, epoch) == 0) return 0;
         uint256 have = auditorEpochCredits[msg.sender][epoch][auditor];
         uint256 cap = config.maxCreditsPerAuditorPerEpoch;
         if (have >= cap) return 0;

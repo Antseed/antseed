@@ -1289,7 +1289,9 @@ contract AntseedKbfAuditsTest is Test {
         gate.setBudget(address(results), EPOCH + 1, 900 ether);
         pools.setPower(agentId, EPOCH + 1, 300);
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
-        assertEq(results.auditorEpochCredits(address(kbf), EPOCH + 1, auditorA), 1, "still credited");
+        assertTrue(results.isVerified(agentId), "the audit still records its verdict");
+        assertEq(results.auditorEpochCredits(address(kbf), EPOCH + 1, auditorA), 0, "no share, no credits");
+        assertEq(kbf.creditedAudits(EPOCH + 1, auditorA, MODEL_A), 0, "and the audit slot is not used up");
 
         gate.setCurrentEpoch(EPOCH + 2);
         assertEq(results.pendingAuditorReward(address(kbf), auditorA, EPOCH + 1), 0, "no share, nothing pending");

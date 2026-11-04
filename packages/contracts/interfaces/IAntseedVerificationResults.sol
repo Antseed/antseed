@@ -117,7 +117,8 @@ interface IAntseedVerificationResults {
     function auditorEpochClaimed(address audit, uint256 epoch, address auditor) external view returns (bool);
 
     /// @notice Grants `credits` to `auditor` for the current epoch, from the calling audit. Audits
-    ///         only. Nothing is credited before the audit's rewards start epoch; the amount is
+    ///         only. Nothing is credited before the audit's rewards start epoch or in an epoch the audit has
+    ///         no share of; the amount is
     ///         clamped to the audit's per-auditor cap. Returns what was actually credited.
     function credit(address auditor, uint256 credits) external returns (uint256 credited);
 

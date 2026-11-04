@@ -327,6 +327,31 @@ contract AntseedVerificationResultsTest is Test {
         assertEq(results.serviceStatus(agentId, SERVICE_A).validUntilEpoch, EPOCH + 3);
     }
 
+    function test_aLongUndeterminedDoesNotLengthenTheStatusSum() public {
+        auditA.recordUntil(agentId, SERVICE_A, MODEL_A, UNDETERMINED, EPOCH + 52);
+        uint256 gasBefore = gasleft();
+        results.agentStatus(agentId);
+        uint256 shortSum = gasBefore - gasleft();
+        assertLt(shortSum, 20_000, "an UNDETERMINED counts nothing, so it adds no epochs to walk");
+        assertEq(results.agentStatus(agentId).verifiedCount, 0);
+
+        auditB.recordUntil(agentId, SERVICE_B, MODEL_B, SAME, EPOCH + 52);
+        gate.setCurrentEpoch(EPOCH + 51);
+        assertEq(results.agentStatus(agentId).verifiedCount, 1, "a long SAME still counts to its expiry");
+    }
+
+    function test_noCreditsInAnEpochWithoutAShare() public {
+        results.setRewardsStartEpoch(address(auditA), 0);
+        results.setAuditShareBps(address(auditA), 10_000); // applies from EPOCH + 1
+        vm.recordLogs();
+        assertEq(auditA.credit(verifierA, 1), 0, "no share of this epoch: nothing could pay it");
+        assertEq(vm.getRecordedLogs().length, 0, "and no Credited event");
+        assertEq(results.auditorEpochCredits(address(auditA), EPOCH, verifierA), 0);
+
+        gate.setCurrentEpoch(EPOCH + 1);
+        assertEq(auditA.credit(verifierA, 1), 1, "credited once the share applies");
+    }
+
     function test_aNewVerdictMovesTheServiceToItsExpiry() public {
         auditA.recordUntil(agentId, SERVICE_A, MODEL_A, SAME, EPOCH + 4);
         auditA.recordUntil(agentId, SERVICE_A, MODEL_A, SAME, EPOCH + 1); // same verdict, shorter
@@ -372,8 +397,9 @@ contract AntseedVerificationResultsTest is Test {
         results.setRewardsStartEpoch(address(auditA), uint64(EPOCH + 1));
         assertEq(auditA.credit(verifierA, 5), 0);
         assertEq(results.epochCredits(address(auditA), EPOCH), 0);
-        results.setRewardsStartEpoch(address(auditB), 0);
+        _enable(address(auditB), 5_000);
         assertEq(auditB.credit(verifierA, 1), 1, "each audit starts on its own");
+        results.setAuditShareBps(address(auditA), 5_000); // applies from EPOCH + 1
         gate.setCurrentEpoch(EPOCH + 1);
         vm.expectEmit(true, true, true, true, address(results));
         emit AntseedVerificationResults.Credited(address(auditA), EPOCH + 1, verifierA, 5);
@@ -381,8 +407,8 @@ contract AntseedVerificationResultsTest is Test {
     }
 
     function test_creditClampsToTheAuditsVerifierCap() public {
-        results.setRewardsStartEpoch(address(auditA), 0);
-        results.setRewardsStartEpoch(address(auditB), 0);
+        _enable(address(auditA), 5_000);
+        _enable(address(auditB), 5_000);
         results.setMaxCreditsPerAuditorPerEpoch(address(auditA), 3);
         assertEq(auditA.credit(verifierA, 2), 2);
         assertEq(auditA.credit(verifierA, 2), 1, "clamped to what is left");
