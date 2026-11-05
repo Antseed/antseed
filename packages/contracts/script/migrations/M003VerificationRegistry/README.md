@@ -162,6 +162,31 @@ Optionally, the verification owner tunes KBF afterwards: `kbf.setValidityEpochs`
 `kbf.setCreditsPerAudit`, `kbf.setModelCreditsPerAudit`, `kbf.setRequiredReports`,
 `kbf.setDiffReplacementReports`.
 
+## Replacing only the points policy
+
+M003 deploys its three contracts together, so a policy change that leaves the results layer and the
+KBF audit in place uses `script/DeployVerificationPointsPolicy.s.sol` instead. It deploys one
+`AntseedVerificationPointsPolicy`, owned directly by `POLICY_OWNER` (no `acceptOwnership`), with
+`penaltyBps` 0 and nothing registered; verdicts change no points until the registry owner registers it.
+
+```bash
+cd packages/contracts
+export EXPECTED_CHAIN_ID=8453 POLICY_OWNER=<owner> \
+  VERIFICATION_RESULTS=<current.json verificationResults> KBF_AUDITS=<current.json kbfAudits> \
+  USAGE_ACCOUNTING=<current.json usageAccounting> POINTS_POLICY_REGISTRY=<current.json pointsPolicyRegistry>
+forge script script/DeployVerificationPointsPolicy.s.sol --rpc-url "$RPC_URL" --sender "$POLICY_OWNER"
+# then add: --broadcast --verify --account <name>
+```
+
+Then, in order: set the new policy's rates with `setPenaltyBps` / `setBonusBps`, remove any earlier
+verification policy from the registry, and register the new one. Set the rates first, so no settlement
+sees the policy without them.
+
+Record the deployment by hand: add a new append-only history record for the release, replace
+`contracts.verificationPointsPolicy` and `verificationConfiguration.verificationRegistry.policyAddress`
+in `current.json`, and run `node scripts/validate-contract-deployments.mjs`. Clients don't read the
+policy address, so no package release depends on it.
+
 ## Configuration
 
 - Use the canonical network `current.json` registry, identity registry, seller pools, usage
