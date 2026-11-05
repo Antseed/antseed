@@ -206,6 +206,8 @@ export type TrustBreakdown = {
   identity: { score: number; kind: 'github' | 'domain'; claim: string } | null;
   /** Wash-trading registry verdict; `null` when the registry is unavailable. */
   washFlagged: boolean | null;
+  /** Free-model bonus; `null` when the seller announces no free model. */
+  freeModels?: { score: number; service: string } | null;
   /** Model-verification penalty: the points multiplier below 100% and what it took off; `null` without one. */
   verification?: { multiplierBps: number; sameCount: number; diffCount: number; penalty: number } | null;
 };

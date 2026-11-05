@@ -30,8 +30,28 @@ export function normalizeTrust(raw: unknown): TrustBreakdown | null {
     usage: normalizeSharePart(asObject(value.usage)),
     power: normalizeSharePart(asObject(value.power)),
     identity: normalizeIdentityPart(asObject(value.identity)),
+    freeModels: normalizeFreeModelsPart(asObject(value.freeModels)),
     washFlagged: typeof value.washFlagged === 'boolean' ? value.washFlagged : null,
+    verification: normalizeVerificationPart(asObject(value.verification)),
   };
+}
+
+function normalizeFreeModelsPart(raw: Record<string, unknown> | null): TrustBreakdown['freeModels'] {
+  if (!raw) return null;
+  const score = boundedScore(raw.score);
+  if (score === null || typeof raw.service !== 'string' || raw.service.length === 0) return null;
+  return { score, service: raw.service };
+}
+
+/** The model-verification penalty: a points multiplier below 100% and what it took off the score. */
+function normalizeVerificationPart(raw: Record<string, unknown> | null): TrustBreakdown['verification'] {
+  if (!raw) return null;
+  const multiplierBps = nonNegative(raw.multiplierBps);
+  const sameCount = nonNegative(raw.sameCount);
+  const diffCount = nonNegative(raw.diffCount);
+  const penalty = boundedScore(raw.penalty);
+  if (multiplierBps === null || multiplierBps >= 10_000 || sameCount === null || diffCount === null || penalty === null) return null;
+  return { multiplierBps, sameCount, diffCount, penalty };
 }
 
 function normalizeHistoryPart(raw: Record<string, unknown> | null): TrustBreakdown['history'] {

@@ -23,7 +23,7 @@ const hash = serviceHash;
 /** verdict + epoch given per (agentId, service hash), counting two epochs as KBF does; missing entries are NONE. */
 type Statuses = Record<string, { verdict: number; epoch: number } | 'revert'>;
 
-function fakeProvider(statuses: Statuses, options: { currentEpoch?: number; multicall?: boolean; failEpoch?: boolean; agentStatus?: Record<number, [number, number]> } = {}) {
+function fakeProvider(statuses: Statuses, options: { currentEpoch?: number; multicall?: boolean; failEpoch?: boolean; agentStatus?: Record<number, [number, number]>; failAgentStatus?: boolean } = {}) {
   const answer = (target: string, data: string): string => {
     const parsed = IFACE.parseTransaction({ data })!;
     switch (parsed.name) {
@@ -47,8 +47,8 @@ function fakeProvider(statuses: Statuses, options: { currentEpoch?: number; mult
       }
       case 'agentStatus': {
         const [agentId] = parsed.args as unknown as [bigint];
-        const counts = options.agentStatus?.[Number(agentId)];
-        if (!counts) throw new Error('revert');
+        const counts = options.agentStatus?.[Number(agentId)] ?? [0, 0];
+        if (options.failAgentStatus) throw new Error('revert');
         return coder.encode(['tuple(uint16,uint16)'], [[counts[0], counts[1]]]);
       }
       case 'bonusBps': expect(target.toLowerCase()).toBe(POLICY); return coder.encode(['uint256'], [200]);
@@ -104,7 +104,7 @@ describe('VerificationSignalsClient', () => {
     const result = await client.readServiceVerdicts([
       { agentId: 7, services: ['gpt-6.1-sol', 'Claude-Opus-5.5', 'kimi-k3', 'grok-4.7'] },
     ]);
-    expect(result.get(7)).toEqual({ diff: ['gpt-6.1-sol'], same: ['claude-opus-5.5'] });
+    expect(result.get(7)).toEqual({ diff: ['gpt-6.1-sol'], same: ['claude-opus-5.5'], agent: { sameCount: 0, diffCount: 0, pointsMultiplierBps: null } });
     const calls = call.mock.calls.length;
     await client.readDiffServices([{ agentId: 7, services: ['gpt-6.1-sol'] }]);
     // readDiffServices is the same read: one status multicall and one epoch read, no extra calls.
@@ -122,6 +122,12 @@ describe('VerificationSignalsClient', () => {
     now += 60_000;
     await client.readServiceVerdicts([{ agentId: 7, services: ['a'] }]);
     expect(policyCalls()).toBe(readsBefore);
+  });
+
+  it('omits an agent whose status read failed, so the caller keeps its last good penalty', async () => {
+    const { provider } = fakeProvider({ [`7:${hash('a')}`]: { verdict: 2, epoch: 27 } }, { failAgentStatus: true });
+    const client = new VerificationSignalsClient(provider, VERIFICATION, RESULTS, POLICY);
+    expect((await client.readServiceVerdicts([{ agentId: 7, services: ['a'] }])).has(7)).toBe(false);
   });
 
   it('leaves the multiplier null without a policy address', async () => {

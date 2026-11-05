@@ -12,16 +12,11 @@ export function ModelCheckInfo({ check }: { check: ModelCheckView | undefined })
     <a className="gc-verified-link" href={check.auditUrl} target="_blank" rel="noopener noreferrer"
       onClick={(event) => event.stopPropagation()}><span className="gc-nowrap">View audit</span></a>
   )
-  if (check.verdict === 'same') {
-    return (
-      <span className="gc-status-line gc-status-line--ok" title={modelCheckTitle(check)}>
-        <span className="gc-attention gc-attention--ok" aria-hidden="true" /><span className="gc-nowrap">{modelCheckLabel(check)}</span>{link}
-      </span>
-    )
-  }
+  const same = check.verdict === 'same'
   return (
-    <span className="gc-status-line gc-status-line--attention" title={modelCheckTitle(check)}>
-      <span className="gc-attention" aria-hidden="true" /><span className="gc-nowrap">{modelCheckLabel(check)}</span>{link}
+    <span className={`gc-status-line gc-status-line--${same ? 'ok' : 'attention'}`} title={modelCheckTitle(check)}>
+      <span className={same ? 'gc-attention gc-attention--ok' : 'gc-attention'} aria-hidden="true" />
+      <span className="gc-nowrap">{modelCheckLabel(check)}</span>{link}
     </span>
   )
 }

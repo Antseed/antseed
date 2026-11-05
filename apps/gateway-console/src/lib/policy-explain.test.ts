@@ -63,8 +63,9 @@ describe('which level keeps a seller out', () => {
       'buyer: requires trust 60+ (it has 9, 10% of 90 after a DIFF model check)',
       'key: requires trust 60+ (it has 9, 10% of 90 after a DIFF model check)',
     ])
-    // A buyer that already cut the score reports the score before the cut; it is cut once.
-    expect(exclusionsFor(withTrustFloor, { ...candidate(A, false, 9), trustScoreBeforeCut: 90 }, flagged)
+    // A buyer that already cut the score reports the score before the cut; it is cut once,
+    // even when the peer list is missing or has not seen the DIFF yet.
+    expect(exclusionsFor(withTrustFloor, { ...candidate(A, false, 9), trustScoreBeforeCut: 90 }, PEERS)
       .map((entry) => entry.rule)).toEqual([
       'requires trust 60+ (it has 9, 10% of 90 after a DIFF model check)',
       'requires trust 60+ (it has 9, 10% of 90 after a DIFF model check)',

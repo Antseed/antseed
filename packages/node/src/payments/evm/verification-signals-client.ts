@@ -185,7 +185,13 @@ export class VerificationSignalsClient {
       const status = first(results[index]) as { verifiedCount?: unknown; diffCount?: unknown; [index: number]: unknown } | undefined;
       const sameCount = status?.verifiedCount ?? status?.[0];
       const diffCount = status?.diffCount ?? status?.[1];
-      if (!entry || (typeof sameCount !== 'bigint' && typeof sameCount !== 'number') || (typeof diffCount !== 'bigint' && typeof diffCount !== 'number')) continue;
+      if (!entry) continue;
+      // Without the agent's status the result is partial: drop the agent, so the caller keeps
+      // its last good answer (penalty included) instead of clearing it.
+      if ((typeof sameCount !== 'bigint' && typeof sameCount !== 'number') || (typeof diffCount !== 'bigint' && typeof diffCount !== 'number')) {
+        failed.add(agentId);
+        continue;
+      }
       const same = Number(sameCount);
       const diff = Number(diffCount);
       entry.agent = {

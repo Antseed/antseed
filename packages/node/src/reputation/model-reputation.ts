@@ -54,9 +54,17 @@ export function hasLiveDiffVerdict(
   serviceId: string,
   nowMs: number = Date.now(),
 ): boolean {
-  const services = source?.onChainDiffServices;
+  return hasLiveServiceVerdict(source?.onChainDiffServices, source?.onChainVerificationFetchedAt, serviceId, nowMs);
+}
+
+/** Whether `serviceId` is in a verdict list from a read at most VERIFICATION_STATUS_STALE_MAX_MS old. */
+function hasLiveServiceVerdict(
+  services: readonly string[] | null | undefined,
+  fetchedAt: number | null | undefined,
+  serviceId: string,
+  nowMs: number,
+): boolean {
   if (!Array.isArray(services) || services.length === 0) return false;
-  const fetchedAt = source?.onChainVerificationFetchedAt;
   if (typeof fetchedAt !== 'number' || !Number.isFinite(fetchedAt)) return false;
   if (nowMs - fetchedAt >= VERIFICATION_STATUS_STALE_MAX_MS) return false;
   const key = verificationServiceKey(serviceId);
@@ -72,13 +80,7 @@ export function hasLiveSameVerdict(
   serviceId: string,
   nowMs: number = Date.now(),
 ): boolean {
-  const services = source?.onChainSameServices;
-  if (!Array.isArray(services) || services.length === 0) return false;
-  const fetchedAt = source?.onChainVerificationFetchedAt;
-  if (typeof fetchedAt !== 'number' || !Number.isFinite(fetchedAt)) return false;
-  if (nowMs - fetchedAt >= VERIFICATION_STATUS_STALE_MAX_MS) return false;
-  const key = verificationServiceKey(serviceId);
-  return key.length > 0 && services.includes(key);
+  return hasLiveServiceVerdict(source?.onChainSameServices, source?.onChainVerificationFetchedAt, serviceId, nowMs);
 }
 
 /** The live verification verdict of one offer: 'diff', 'same' or null when there is none or the read is stale. */

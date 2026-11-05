@@ -71,9 +71,12 @@ function exclusion(policy: RoutingPolicy, candidate: Candidate, peer: Peer | und
   if (policy.requireTee && peer && !peer.tee) return 'requires a TEE'
   if (policy.requireVerified && peer && !peer.verified) return 'requires a verified seller'
   if (policy.minTrustScore !== undefined) {
-    const raw = candidate.trustScoreBeforeCut ?? candidate.trustScore ?? 0
-    const cut = hasDiffVerdict(peer, model)
-    const trust = cut ? raw * DIFF_ROUTING_SHARE : raw
+    // A buyer that cut the score already says so (`trustScoreBeforeCut`): its `trustScore` is the
+    // one routing judged. Older buyers send the raw score; cut it here from the peer's verdicts.
+    const before = candidate.trustScoreBeforeCut
+    const raw = before ?? candidate.trustScore ?? 0
+    const cut = before !== undefined || hasDiffVerdict(peer, model)
+    const trust = before !== undefined ? candidate.trustScore ?? 0 : cut ? raw * DIFF_ROUTING_SHARE : raw
     if (trust < policy.minTrustScore) {
       return `requires trust ${policy.minTrustScore}+ (it has ${Math.round(trust)}${cut ? `, ${Math.round(DIFF_ROUTING_SHARE * 100)}% of ${Math.round(raw)} after a DIFF model check` : ''})`
     }

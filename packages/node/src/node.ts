@@ -1319,6 +1319,13 @@ export class AntseedNode extends EventEmitter {
       stale.set(target.agentId, services);
     }
     if (stale.size === 0) return;
+    // A refresh replaces the agent's cache entry, so it must cover every service any peer of
+    // that agent needs, including peers just answered from the old entry.
+    for (const target of targets) {
+      const services = stale.get(target.agentId);
+      if (!services) continue;
+      for (const service of target.services) if (!services.includes(service)) services.push(service);
+    }
     let read: Map<number, ServiceVerdicts> = new Map();
     try {
       read = await client.readServiceVerdicts([...stale].map(([agentId, services]) => ({ agentId, services })));
