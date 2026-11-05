@@ -10,7 +10,7 @@ const start: SerializedHttpResponse = { requestId: request.requestId, statusCode
 /** The final answer once the buyer accepted the file as the finished video. */
 const accepted: SerializedHttpResponse = { ...start, headers: { ...start.headers, 'x-antseed-video-delivered': '1' } }
 
-async function serve(send: (request: SerializedHttpRequest, callbacks: RequestStreamCallbacks, signal: AbortSignal) => Promise<SerializedHttpResponse>, run: (url: string) => Promise<void>, retire?: () => Promise<boolean>, onInterrupted?: (by: 'seller' | 'buyer') => void) {
+async function serve(send: (request: SerializedHttpRequest, callbacks: RequestStreamCallbacks, signal: AbortSignal) => Promise<SerializedHttpResponse>, run: (url: string) => Promise<void>, retire?: () => Promise<boolean>, onInterrupted?: (by: 'seller' | 'buyer' | 'cancelled') => void) {
   const server = createServer((_incoming, response) => {
     const abort = new AbortController()
     response.on('close', () => abort.abort())
@@ -114,7 +114,7 @@ test('destroys truncated streams instead of appending JSON, reported as a seller
 })
 
 test('propagates client disconnect to the single download request', async () => {
-  let dropped = 0
+  const interrupted: string[] = []
   let cancelled!: () => void
   const cancellation = new Promise<void>(resolve => { cancelled = resolve })
   await serve(async (_request, callbacks, signal) => {
@@ -126,10 +126,10 @@ test('propagates client disconnect to the single download request', async () => 
     const response = await fetch(url)
     await response.body!.cancel()
     await cancellation
-  }, undefined, () => { dropped += 1 })
+  }, undefined, by => { interrupted.push(by) })
   await new Promise(resolve => setImmediate(resolve))
   // The client left: a cancellation, not a seller drop.
-  assert.equal(dropped, 0)
+  assert.deepEqual(interrupted, ['cancelled'])
 })
 
 test('forwards a POST download body and passes JSON status answers through', async () => {

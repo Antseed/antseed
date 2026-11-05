@@ -245,7 +245,9 @@ Every event, from every product, includes this envelope:
     on their own (Codex up to five times, shown as "Reconnecting"), so one
     failure would otherwise look like several. A retry keeps its turn number.
     The match uses a hash of the request's content (JSON keys sorted, since
-    Codex reorders them between retries), held in memory only and never sent.
+    Codex reorders them between retries) and of the buyer and client session
+    it came from, so two sessions sending the same text are not retries of
+    each other. The hash is held in memory only and never sent.
   - `seller_id`: the public peer id (the seller's on-chain address, 40 hex
     characters) of the seller that answered, or of the last seller tried
     when none did. Sellers are public on the network, and paid buyer–seller

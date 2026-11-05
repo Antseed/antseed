@@ -83,7 +83,8 @@ export class BatchQueue {
         return;
       }
       const batch = this.queue.splice(0, this.maxBatch);
-      this.inFlight = this.options.send(batch).catch(() => undefined);
+      // Through a promise, so a sender that throws before returning one is contained too.
+      this.inFlight = Promise.resolve().then(() => this.options.send(batch)).catch(() => undefined);
       await this.inFlight;
       this.inFlight = null;
     }

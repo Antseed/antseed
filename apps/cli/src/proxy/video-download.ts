@@ -78,11 +78,10 @@ function sellerErrorCode(body: Uint8Array): string | null {
  * retire it; that answer then carries VIDEO_JOB_RETIRED_HEADER. When the job
  * cannot be retired, the answer is a retryable `unknown` instead, so no caller
  * treats the job as finished while it can still be charged.
- * `onInterrupted` runs when a started MP4 stream is cut off for a reason
- * other than the client leaving, before the connection is destroyed, so the
- * request is reported as a failure, not a cancellation: `buyer` when the
- * file was good but this buyer could not save its delivery, `seller`
- * otherwise.
+ * `onInterrupted` runs when the download is cut off, before the connection is
+ * destroyed, so telemetry reports it for what it was: `cancelled` when the
+ * client left, `buyer` when the file was good but this buyer could not save
+ * its delivery, `seller` otherwise.
  */
 export async function downloadVideo(
   request: SerializedHttpRequest,
@@ -90,7 +89,7 @@ export async function downloadVideo(
   send: SendDownload,
   clientSignal: AbortSignal,
   retire: () => Promise<boolean> = async () => true,
-  onInterrupted: (by: 'seller' | 'buyer') => void = () => {},
+  onInterrupted: (by: 'seller' | 'buyer' | 'cancelled') => void = () => {},
 ): Promise<void> {
   const reply = (httpStatus: number, body: Record<string, unknown>, extraHeaders: Record<string, string> = {}) => {
     response.writeHead(httpStatus, { 'content-type': 'application/json', 'cache-control': 'no-store', ...extraHeaders })
@@ -170,7 +169,7 @@ export async function downloadVideo(
     response.end()
   } catch {
     if (response.headersSent || clientSignal.aborted) {
-      if (!clientSignal.aborted) onInterrupted(unrecorded ? 'buyer' : 'seller')
+      onInterrupted(clientSignal.aborted ? 'cancelled' : unrecorded ? 'buyer' : 'seller')
       response.destroy()
     }
     else if (sellerAnswered) error(502, 'video_download_failed')

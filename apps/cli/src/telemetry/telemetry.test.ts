@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import test, { type TestContext } from 'node:test'
-import type { PeerInfo } from '@antseed/node'
+import type { PeerInfo, RequestStreamCallbacks } from '@antseed/node'
 import type { PostHogEvent } from '@antseed/telemetry'
 import { BuyerProxy } from '../proxy/buyer-proxy.js'
 import { BuyerTelemetry, ConversationMemory, MAX_ATTEMPT_EVENTS, RequestTrace, RetryMemory, attemptEventProperties, publicModelId, telemetryClientTool } from './buyer.js'
@@ -180,6 +180,11 @@ class FakeResponse extends EventEmitter {
     this.writableEnded = true
     this.writableFinished = true
     queueMicrotask(() => this.emit('close'))
+    return this
+  }
+  /** A destroyed socket closes on a later tick, after the proxy has reported the attempt. */
+  destroy() {
+    setImmediate(() => this.emit('close'))
     return this
   }
 }
@@ -582,6 +587,53 @@ test('client retry: the same request after a failure is marked, keeps its turn, 
   assert.deepEqual(finished.map((props) => props['turn_bucket']), ['1', '1', '1', '2_5'], 'a retry is the same turn')
   assert.equal(Object.keys(forwarded[0]!).some((name) => name.includes('telemetry') || name.includes('retry')), false)
   assert.equal(JSON.stringify(events).includes('conv-1'), false)
+})
+
+test('client retry: the same body from another client session is a new request, with its own turns', async (t) => {
+  const { proxy, telemetry, events } = await proxyWithTelemetry(t, {}, 503)
+  const body = { model: 'gpt-5', messages: [{ role: 'user', content: 'hi' }] }
+  await send(proxy, request(body, { 'session-id': 'session-a' }))
+  await send(proxy, request(body, { 'session-id': 'session-b' }))
+  await send(proxy, request(body, { 'session-id': 'session-a' }))
+  await telemetry.close()
+  const finished = events.filter((event) => event.event === 'buyer_request_finished').map((event) => event.properties)
+  assert.deepEqual(finished.map((props) => props['client_retry']), [false, false, true])
+  assert.deepEqual(finished.map((props) => props['turn_bucket']), ['1', '1', '1'])
+  assert.equal(JSON.stringify(events).includes('session-a'), false)
+})
+
+test('a cut-off video download fails its seller attempt as well as its request', async (t) => {
+  const video = Buffer.alloc(1024, 42)
+  const headers = { 'content-type': 'video/mp4', 'content-length': String(video.length) }
+  for (const { delivered, reason } of [
+    { delivered: null, reason: 'seller_dropped_mid_answer' },
+    { delivered: 'unrecorded', reason: 'local_error' },
+  ]) {
+    const { proxy, telemetry, events } = await proxyWithTelemetry(t, {}, 200)
+    const peer = (await (proxy as any)._getPeers())[0] as PeerInfo
+    peer.providers = ['venice']
+    peer.providerPricing = { venice: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 } } } as never
+    peer.providerServiceApiProtocols = { venice: { services: { 'video-model': ['venice-video'] } } } as never
+    ;(proxy as any)._persistResourceRoutes = async () => {}
+    ;(proxy as any)._resourceRoutes.record({ protocol: 'venice-video', resourceId: 'job', sellerPeerId: peer.peerId, provider: 'venice', service: 'video-model' })
+    ;(proxy as any)._node.sendRequestStream = async (_peer: PeerInfo, sent: { requestId: string }, callbacks: RequestStreamCallbacks) => {
+      const start = { requestId: sent.requestId, statusCode: 200, headers, body: new Uint8Array() }
+      callbacks.onResponseStart!(start, { streaming: true })
+      await callbacks.onResponseChunk!({ requestId: sent.requestId, data: delivered ? video : video.subarray(0, 100), done: false })
+      if (!delivered) throw new Error('seller went away')
+      return { ...start, headers: { ...headers, 'x-antseed-video-delivered': delivered } }
+    }
+    const retrieve = request({ model: 'video-model', queue_id: 'job' }) as Readable & Record<string, unknown>
+    retrieve['url'] = '/api/v1/video/retrieve'
+    await send(proxy, retrieve)
+    await telemetry.close()
+    const finished = events.find((event) => event.event === 'buyer_request_finished')!.properties
+    const attempt = events.find((event) => event.event === 'buyer_seller_attempt')!.properties
+    assert.equal(finished['outcome'], 'failed')
+    assert.equal(finished['failure_reason'], reason)
+    assert.equal(attempt['outcome'], 'failed')
+    assert.equal(attempt['failure_reason'], reason)
+  }
 })
 
 test('a proxied answer carries its speed, output tokens, finish reason and cost', async (t) => {

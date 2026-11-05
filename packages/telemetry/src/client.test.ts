@@ -68,6 +68,12 @@ test('a throwing sender or consent check never escapes', async () => {
   const { client } = setup({ sender: async () => { throw new Error('boom'); }, isEnabled: () => true });
   client.capture('ping', { outcome: 'ok' });
   await client.flush();
+  // A sender that throws before it returns a promise, on both ways out.
+  const sync = setup({ sender: () => { throw new Error('boom'); }, isEnabled: () => true });
+  sync.client.capture('ping', { outcome: 'ok' });
+  await sync.client.flush();
+  sync.client.capture('ping', { outcome: 'ok' });
+  await sync.client.close();
   const throwing = setup({ isEnabled: () => { throw new Error('x'); } });
   assert.equal(throwing.client.capture('ping', { outcome: 'ok' }), false);
 });

@@ -227,11 +227,13 @@ export class RequestTrace {
     let httpStatus: number | undefined
     const emptyAnswer = result.emptyAnswer === true
     if (result.done) {
-      if (result.interrupted === 'cancelled') {
+      // A video download marks the trace itself instead of returning this.
+      const interrupted = result.interrupted ?? this.interrupted
+      if (interrupted === 'cancelled') {
         outcome = 'cancelled'
-      } else if (result.interrupted === 'seller') {
+      } else if (interrupted === 'seller') {
         failureReason = hadOutput ? 'seller_dropped_mid_answer' : 'seller_dropped_before_output'
-      } else if (result.interrupted === 'buyer') {
+      } else if (interrupted === 'buyer') {
         failureReason = 'local_error'
       } else if (statusCode >= 400) {
         const signal = { kind: 'http_error', statusCode }
@@ -657,11 +659,13 @@ export class BuyerTelemetry {
    * A parsed JSON body is compared by content with its keys sorted, because
    * clients do not keep key order: Codex resends a turn with the same content
    * but its `client_metadata` keys reordered. Other bodies compare byte for byte.
+   * `scope` names who is asking (buyer and client session), so two independent
+   * sessions sending the same body are not retries of each other.
    */
-  noteRequestBody(trace: RequestTrace, method: string, path: string, body: Uint8Array, parsedBody?: Record<string, unknown> | null): void {
+  noteRequestBody(trace: RequestTrace, method: string, path: string, body: Uint8Array, parsedBody?: Record<string, unknown> | null, scope = ''): void {
     try {
       const content = parsedBody ? canonicalJson(parsedBody) : body
-      const fingerprint = createHash('sha256').update(method).update('\0').update(path).update('\0').update(content).digest('base64url')
+      const fingerprint = createHash('sha256').update(scope).update('\0').update(method).update('\0').update(path).update('\0').update(content).digest('base64url')
       trace.requestFingerprint = fingerprint
       trace.clientRetry = this._retries.seen(fingerprint, this._now())
     } catch {

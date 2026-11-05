@@ -446,7 +446,12 @@ export async function createTelemetryService(
     return 'models';
   };
 
-  const finishStartup = (outcome: 'success' | 'failed', nowMs: number): void => {
+  /** An explicit `failureStage` wins over the derived one. */
+  const finishStartup = (
+    outcome: 'success' | 'failed',
+    nowMs: number,
+    failureStage: StartupFailureStage = 'none',
+  ): void => {
     if (hasEmittedStartupFinished) return;
     if (startupTimer) {
       clearTimeout(startupTimer);
@@ -454,7 +459,9 @@ export async function createTelemetryService(
     }
     hasEmittedStartupFinished = track('startup_finished', {
       outcome,
-      failure_stage: outcome === 'success' ? 'none' : startupFailureStage(),
+      failure_stage: outcome === 'success'
+        ? 'none'
+        : failureStage === 'none' ? startupFailureStage() : failureStage,
       duration_bucket: durationBucket(durationSinceSessionStart(nowMs)),
     }, nowMs);
   };
@@ -646,21 +653,7 @@ export async function createTelemetryService(
     },
 
     async recordStartupFinished(input, nowMs = now()) {
-      if (hasEmittedStartupFinished) return;
-      if (input.outcome === 'failed') {
-        // An explicit stage wins over the derived one.
-        if (startupTimer) {
-          clearTimeout(startupTimer);
-          startupTimer = null;
-        }
-        hasEmittedStartupFinished = track('startup_finished', {
-          outcome: 'failed',
-          failure_stage: input.failureStage === 'none' ? startupFailureStage() : input.failureStage,
-          duration_bucket: durationBucket(durationSinceSessionStart(nowMs)),
-        }, nowMs);
-        return;
-      }
-      finishStartup('success', nowMs);
+      finishStartup(input.outcome, nowMs, input.failureStage);
     },
 
     async recordConnectedAppConnected(app, nowMs = now()) {

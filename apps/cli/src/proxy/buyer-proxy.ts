@@ -4152,8 +4152,7 @@ export class BuyerProxy {
       const trace = this._telemetry?.beginRequest(res, this._cachedPeers.length > 0)
       if (trace) {
         trace.clientTool = telemetryClientTool(conversationIdentity?.tool ?? requestClientTool(serializedReq.headers))
-        // Before the seller-bound session header is added, so a client's retry matches its first copy.
-        this._telemetry?.noteRequestBody(trace, method, path, serializedReq.body, conversationBody)
+        this._telemetry?.noteRequestBody(trace, method, path, serializedReq.body, conversationBody, `${buyerIdentity ?? ''}\0${routingConversationKey ?? ''}`)
       }
     }
     // The seller's upstream may route prompt caching by `session_id`; pass the
@@ -5410,9 +5409,16 @@ export class BuyerProxy {
           res.end(JSON.stringify({ error: { code: 'video_route_not_found', message: 'Unknown video job' } }))
           return
         }
-        await downloadVideo(requestForPeer, res, (request, callbacks, signal) => this._node.sendRequestStream(selectedPeer, request, callbacks, {
+        await downloadVideo(requestForPeer, res, (request, callbacks, signal) => this._node.sendRequestStream(selectedPeer, request, {
+          ...callbacks,
+          onResponseChunk: (chunk) => {
+            if (chunk.data.length) traceFor(res)?.noteFirstByte(Date.now())
+            return callbacks.onResponseChunk?.(chunk)
+          },
+        }, {
           signal, pinned: true, ...(buyerIdentity ? { buyerIdentity } : {}),
         }), requestSignal, () => this._retireVideoJob(protocol, resourceId), (by) => {
+          // On the trace, not in the result: telemetry only. The result feeds routing, which a video does not change.
           const trace = traceFor(res)
           if (trace) trace.interrupted = by
         })

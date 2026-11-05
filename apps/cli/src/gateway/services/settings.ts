@@ -6,7 +6,7 @@ import { ConsoleError } from '../console-api/router.js'
 import { asObject, badRequest } from '../console-api/serialize.js'
 import type { AuthConfig, BuyerSettings, BuyerSettingsInput, ObservabilitySettings, Settings, TelemetrySettings } from '../console-api/types.js'
 import { errorMessage } from '../errors.js'
-import { resolveCliConsent } from '../../telemetry/settings.js'
+import { resolveCliConsent, writeConfiguredTelemetry } from '../../telemetry/settings.js'
 import { OBSERVABILITY_SETTING, observabilitySettings } from '../observability.js'
 import { recordAudit, type Actor, type ServiceContext } from './context.js'
 import { patchConfigFile } from '../../config/patch.js'
@@ -518,9 +518,7 @@ export async function setTelemetrySettings(ctx: SettingsContext, actor: Actor, b
   const enabled = asObject(body)['enabled']
   if (typeof enabled !== 'boolean') throw badRequest('enabled must be true or false')
   const previous = telemetrySettings(ctx.configPath)
-  await patchConfigFile(ctx.configPath, (config) => {
-    childObject(config, 'telemetry')['enabled'] = enabled
-  })
+  await writeConfiguredTelemetry(ctx.configPath, enabled)
   recordAudit(ctx, actor, 'settings.telemetry.update', { kind: 'settings', id: 'telemetry', label: 'Product telemetry' }, {
     previousEnabled: previous.enabled, enabled,
   })
