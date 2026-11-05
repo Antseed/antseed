@@ -17,6 +17,7 @@ import { Sparkline } from './Sparkline';
 import { href } from '../router';
 import { StakeForm } from './StakeForm';
 import { Table, type Column } from './Table';
+import { VerificationLine } from './VerificationLine';
 
 /** Seller name when indexed; otherwise an explicit pool identifier, never a wallet address as its name. */
 export function poolName(pool: PoolView): string {
@@ -215,6 +216,7 @@ export function PoolsTable({ pools, currentEpoch, loading, walletSyncing = false
             <span className="seller-cell-meta">
               {p.stakers != null ? <span>{formatInt(p.stakers)} {p.stakers === 1 ? 'staker' : 'stakers'}</span> : p.openPositions !== undefined ? <span>{formatInt(p.openPositions)} {p.openPositions === 1 ? 'position' : 'positions'}</span> : null}
               {p.profile?.modelsServed != null ? <span>{formatInt(p.profile.modelsServed)} models</span> : null}
+              <VerificationLine verification={p.verification} compact />
             </span>
           </div>
       ),
@@ -354,6 +356,7 @@ export function PoolDrawer({ pool: initialPool, view, onClose, stake }: { pool: 
           <section className="pool-apy-section" aria-label="Estimated APR by lock">
             <div className="pool-section-heading"><h3>Estimated APR by lock</h3><span className="small muted">New 10,000 ANTS stake · longer locks earn more power</span></div>
             <PoolAprEstimates pool={pool} />
+            <VerificationLine verification={pool.verification} />
             <StakerRewardsHelp maxLockEpochs={(pool.yield ?? pool.liveYield)?.maxLockEpochs ?? null} />
           </section>
           <section className="pool-section">

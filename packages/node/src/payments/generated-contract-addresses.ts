@@ -27,6 +27,7 @@ export const DEPLOYED_CONTRACT_ADDRESSES = {
     usageRewardsAddress: '0x78330bf154172f1137219bb559d4f3a270b3201f',
     sellerPoolsRewardsAddress: '0x83cc5b9aa0c8cb8683f35462c385a5baaa755ee5',
     legacyEmissionsEscrowAddress: '0x4d0fc3c0bbb5233af6c4ce33223e5330c34db9ab',
+    verificationPointsPolicyAddress: '0xd58393a752b3b7bdbea6231e0e24c11403e9f32f',
     channelsDeployBlock: 44469557,
     statsDeployBlock: 44469557,
     verificationDeployBlock: 53514467,

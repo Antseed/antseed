@@ -35,11 +35,12 @@ export function Mono({ children, title }: { children: ReactNode; title?: string 
 }
 
 /** A label over a value, for balance and status rows. */
-export function Figure({ label, value, strong }: { label: string; value: ReactNode; strong?: boolean }) {
+export function Figure({ label, value, strong, note }: { label: string; value: ReactNode; strong?: boolean; note?: ReactNode }) {
   return (
     <div className="gc-figure">
       <div className="gc-figure__label">{label}</div>
       <div className={strong ? 'gc-figure__value gc-figure__value--strong' : 'gc-figure__value'}>{value}</div>
+      {note && <div className="gc-figure__note">{note}</div>}
     </div>
   )
 }

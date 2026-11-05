@@ -11,7 +11,7 @@ You don't need to set anything up. Your buyer reads every seller's verification 
 
 ## Routing skips sellers with a DIFF
 
-When a seller's service has a DIFF, its reputation for that service drops to 10%. With the default minimum trust score of 60, automatic routing no longer picks it. The seller's other services aren't affected, and a DIFF that is still waiting for a second auditor changes nothing.
+When a seller's service has a DIFF, its reputation for that service drops to 10%. With the default minimum trust score of 60, automatic routing no longer picks it. The seller's overall trust score also drops by the same amount its ANTS points do (4% for one DIFF service, up to zero at five), so it ranks lower for every model. A DIFF that is still waiting for a second auditor changes nothing.
 
 You can still reach a DIFF service on purpose by pinning it. If you lower your buyer's minimum trust score far enough, automatic routing can pick it again. [Routing](/docs/api/routing) has the details.
 

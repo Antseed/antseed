@@ -474,6 +474,7 @@ export interface PaymentsCLIConfig {
     legacyEmissionsEscrowAddress?: string;
     washTradingRegistryAddress?: string;
     pointsPolicyRegistryAddress?: string;
+    verificationPointsPolicyAddress?: string;
     /** Explorer REST base for seller profiles in `antseed ants`; empty string disables the lookup. */
     explorerApiUrl?: string;
     /** Deployed AntseedDepositRelay contract address (gasless deposit sweeps) */

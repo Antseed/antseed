@@ -2864,6 +2864,42 @@ test('model-only routing cuts a live DIFF service to 10% and excludes it under t
   assert.equal(selectedPeerId, flagged.peerId)
 })
 
+test('gateway policies judge trust per model: a live DIFF cuts it for the trust sort and the trust minimum', async () => {
+  const pricing = { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, services: { 'diff-model': { inputUsdPerMillion: 1, outputUsdPerMillion: 2 } } } }
+  const protocols: PeerInfo['providerServiceApiProtocols'] = { openai: { services: { 'diff-model': ['openai-chat-completions'] } } }
+  const flagged = makePeer('a', ['openai'])
+  flagged.onChainReputationScore = 95
+  flagged.onChainDiffServices = ['diff-model']
+  flagged.onChainVerificationFetchedAt = Date.now()
+  flagged.providerPricing = pricing
+  flagged.providerServiceApiProtocols = protocols
+  const clean = makePeer('b', ['openai'])
+  clean.onChainReputationScore = 70
+  clean.providerPricing = pricing
+  clean.providerServiceApiProtocols = protocols
+  const proxy = makeBuyerProxyWithPeers([flagged, clean], [flagged, clean], permissiveRouter())
+
+  const sorted = await (proxy as any)._routePreview('diff-model', { sort: 'trust' })
+  const byPeer = new Map(sorted.map((candidate: { peerId: string }) => [candidate.peerId, candidate]))
+  assert.deepEqual(sorted.filter((candidate: { eligible: boolean }) => candidate.eligible).map((candidate: { peerId: string }) => candidate.peerId), [clean.peerId, flagged.peerId])
+  assert.equal((byPeer.get(flagged.peerId) as { trustScore: number }).trustScore, 9.5)
+  assert.equal((byPeer.get(flagged.peerId) as { trustScoreBeforeCut?: number }).trustScoreBeforeCut, 95)
+  assert.equal((byPeer.get(clean.peerId) as { trustScoreBeforeCut?: number }).trustScoreBeforeCut, undefined)
+
+  const floored = await (proxy as any)._routePreview('diff-model', { minTrustScore: 50 })
+  const excluded = floored.find((candidate: { peerId: string }) => candidate.peerId === flagged.peerId)
+  assert.equal(excluded?.eligible, false)
+  assert.ok(excluded?.reasons.some((reason: string) => reason.includes('cut to 10% from 95: live DIFF verification verdict')), JSON.stringify(excluded?.reasons))
+  assert.equal(floored.find((candidate: { peerId: string }) => candidate.peerId === clean.peerId)?.eligible, true)
+
+  // Pins and offer listings share these facts: a pinned DIFF model is judged on the cut trust too.
+  const pinnedFacts = (proxy as any)._policyFacts(flagged, { serviceId: 'diff-model' })
+  assert.equal(pinnedFacts.trustScore, 9.5)
+  assert.match(pinnedFacts.trustPenalty, /cut to 10% from 95/)
+  assert.equal((proxy as any)._policyFacts(flagged, { serviceId: 'other-model' }).trustScore, 95)
+  assert.equal((proxy as any)._policyFacts(flagged, null).trustScore, 95)
+})
+
 test('model-only cached-input pricing penalty does not bury a substantially stronger peer', async () => {
   const priced = makePeer('a', ['openai'])
   priced.onChainReputationScore = 20
@@ -4683,6 +4719,29 @@ test('parsePersistedPeers carries live DIFF services through buyer state', () =>
   }, NOW)
   assert.deepEqual(peer?.onChainDiffServices, ['gpt-6.1-sol'])
   assert.equal(peer?.onChainVerificationFetchedAt, NOW - 1_000)
+})
+
+test('parsePersistedPeers keeps a fresh verification penalty on the restored trust score, and drops a stale one', () => {
+  const entry = {
+    peerId: validPeerId,
+    providers: ['openai'],
+    lastSeen: NOW,
+    onChainChannelCount: 100,
+    onChainTotalVolumeUsdcMicros: 100_000_000,
+    onChainWashFlagged: false,
+    onChainSameServices: ['Claude-Opus-5.5'],
+    onChainVerificationStatus: { sameCount: 2, diffCount: 4, pointsMultiplierBps: 4_000 },
+    onChainVerificationFetchedAt: NOW - 60_000,
+  }
+  const [fresh] = parsePersistedPeers({ discoveredPeers: [entry] }, NOW)
+  const [raw] = parsePersistedPeers({ discoveredPeers: [{ ...entry, onChainVerificationStatus: undefined }] }, NOW)
+  assert.deepEqual(fresh?.onChainSameServices, ['claude-opus-5.5'])
+  assert.deepEqual(fresh?.onChainVerificationStatus, { sameCount: 2, diffCount: 4, pointsMultiplierBps: 4_000 })
+  assert.ok(Math.abs(fresh!.onChainReputationScore! - raw!.onChainReputationScore! * 0.4) < 1e-9)
+  const [stale] = parsePersistedPeers({ discoveredPeers: [{ ...entry, onChainVerificationFetchedAt: NOW - 16 * 60_000 }] }, NOW)
+  assert.equal(stale?.onChainReputationScore, raw?.onChainReputationScore)
+  const [junk] = parsePersistedPeers({ discoveredPeers: [{ ...entry, onChainVerificationStatus: { sameCount: -1, diffCount: 'x' } }] }, NOW)
+  assert.equal(junk?.onChainVerificationStatus, undefined)
 })
 
 test('parsePersistedPeers returns [] for null/undefined/junk input', () => {

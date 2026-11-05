@@ -36,7 +36,7 @@ A few rules keep this fair:
 
 ## What a result changes
 
-**Routing.** A service with a DIFF keeps only 10% of its reputation, so automatic routing stops sending requests to it. The seller's other services keep their reputation.
+**Routing.** A service with a DIFF keeps only 10% of its reputation, so automatic routing stops sending requests to it. The seller's overall trust score drops by the same amount as its points (below), so it ranks lower for its other models too; verified services never raise it.
 
 **ANTS rewards.** Every settlement with a seller earns points for the seller and the buyer, and those points decide how much ANTS each of them gets. A seller's results scale those points, counting all of its services together:
 
