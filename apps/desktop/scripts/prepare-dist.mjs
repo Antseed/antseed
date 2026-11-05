@@ -124,6 +124,22 @@ writeFileSync(
 
 console.log(`[prepare-dist] Bundled CLI -> ${bundleOutput}`);
 
+// --- 2b. Ship the gateway console next to the bundled CLI ---
+// @antseed/gateway-console resolves its web app as `new URL('./dist/', import.meta.url)`.
+// Bundled, import.meta.url is cli-dist/cli/index.js, so the gateway the app's
+// Public endpoint runs serves /console from cli-dist/cli/dist/. Without this
+// copy it answers "The gateway console is not built".
+const consoleSourceDir = path.resolve(appDir, '..', 'gateway-console', 'dist');
+const consoleDestDir = path.join(path.dirname(bundleOutput), 'dist');
+if (!existsSync(path.join(consoleSourceDir, 'index.html'))) {
+  throw new Error(
+    `[prepare-dist] Gateway console is not built (${consoleSourceDir}). `
+    + 'Run `pnpm --filter @antseed/gateway-console build` first.',
+  );
+}
+cpSync(consoleSourceDir, consoleDestDir, { recursive: true });
+console.log(`[prepare-dist] Copied gateway console -> ${consoleDestDir}`);
+
 // --- 3. Install Electron-compatible native module prebuilds ---
 // The native modules (better-sqlite3, etc.) may have been compiled for the
 // system node version, which differs from Electron's bundled node.
