@@ -2,7 +2,7 @@ import { isNativeVideoProtocol } from '@antseed/node'
 import type { SellerServiceKind, SellerUnitPrice } from '../gateway/console-api/types.js'
 
 /** When a service bills in several units, the one its price is shown in: what a buyer pays per thing made. */
-const UNIT_ORDER = ['output_images', 'video_generations', 'video_seconds', 'completed_requests']
+const UNIT_ORDER = ['output_images', 'video_generations', 'video_seconds', 'input_characters', 'completed_requests']
 
 const record = (value: unknown): Record<string, unknown> => (value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {})
 
@@ -38,12 +38,12 @@ export function unitPriceOfRow(row: Record<string, unknown>, provider: string, s
 export function serviceKind(apiProtocols: readonly string[], capabilities: { outputs?: readonly string[]; video?: unknown } = {}): SellerServiceKind {
   const outputs = capabilities.outputs ?? []
   if (apiProtocols.some(isNativeVideoProtocol) || capabilities.video !== undefined || outputs.includes('video')) return 'video'
-  if (apiProtocols.includes('typesafe-systemone')) return 'other'
+  if (apiProtocols.includes('typesafe-systemone') || apiProtocols.includes('openai-audio-speech')) return 'other'
   if (apiProtocols.includes('openai-images') || outputs.includes('image')) return 'image'
   return 'text'
 }
 
-const UNIT_NAMES: Record<string, string> = { output_images: 'image', video_generations: 'video', video_seconds: 'video second', completed_requests: 'request' }
+const UNIT_NAMES: Record<string, string> = { output_images: 'image', video_generations: 'video', video_seconds: 'video second', completed_requests: 'request', input_characters: 'character' }
 
 /** "image", "video second": what one unit is, for prices shown as "$0.02 / image". */
 export function unitName(unit: string): string {

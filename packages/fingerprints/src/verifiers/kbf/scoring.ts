@@ -19,10 +19,22 @@ export function matchesTolerance(answer: number, probe: KbfProbe): boolean {
 }
 
 /**
- * Score a completed probe response using the paper's fixed-denominator rule:
- * 1 within tolerance of consensus, otherwise 0. Missing, non-finite, and
- * out-of-range answers are discrepancies. Null match-vector entries are
- * reserved for probes that could not be attempted because transport failed.
+ * Score one answer: 1 within tolerance of consensus, 0 outside it, and null
+ * when the answer is missing, non-finite, or outside the probe's plausible
+ * range. A null answer is left unscored, as in the KBF paper (v3) and its
+ * reference code: it counts neither as a match nor as a discrepancy.
+ */
+export function scoreKbfAnswer(answer: number | null | undefined, probe: KbfProbe): MatchEntry {
+  if (answer === null || answer === undefined || !Number.isFinite(answer)) return null;
+  const range = probe.range;
+  if (Array.isArray(range) && range.length === 2 && (answer < range[0] || answer > range[1])) return null;
+  return matchesTolerance(answer, probe) ? 1 : 0;
+}
+
+/**
+ * Score a completed probe response. Missing, non-finite, and out-of-range
+ * answers are unscored (null), exactly like probes that could not be attempted
+ * because transport failed, so the verdict compares only answered probes.
  */
 export function computeMatchVector(
   answers: ReadonlyArray<number | null>,
@@ -33,9 +45,28 @@ export function computeMatchVector(
       `computeMatchVector: answers length ${answers.length} !== probes length ${probes.length}`,
     );
   }
-  return probes.map((probe, i): MatchEntry => {
-    const answer = answers[i];
-    if (answer === null || answer === undefined || !Number.isFinite(answer)) return 0;
-    return matchesTolerance(answer, probe) ? 1 : 0;
-  });
+  return probes.map((probe, i): MatchEntry => scoreKbfAnswer(answers[i], probe));
 }
+
+/**
+ * True when more than half of a batch's answers are unscoreable. The KBF
+ * reference code re-asks such a batch (up to twice) and keeps the attempt with
+ * the most scoreable answers.
+ */
+export function isLowCoverageKbfBatch(matches: ReadonlyArray<MatchEntry>): boolean {
+  const missing = matches.filter((match) => match === null).length;
+  return matches.length >= 3 && missing * 2 > matches.length;
+}
+
+/**
+ * True when any of a batch's answers is missing or unreadable. Seller audits
+ * re-ask such a batch (up to `KBF_LOW_COVERAGE_RETRIES` times, keeping the
+ * attempt with the most scoreable answers), since every missing answer weakens
+ * the verdict; references keep the KBF rule above.
+ */
+export function hasMissingKbfAnswers(matches: ReadonlyArray<MatchEntry>): boolean {
+  return matches.some((match) => match === null);
+}
+
+/** Re-asks of a low-coverage batch after the first try, as in the KBF reference code. */
+export const KBF_LOW_COVERAGE_RETRIES = 2;

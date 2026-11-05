@@ -206,6 +206,10 @@ export type TrustBreakdown = {
   identity: { score: number; kind: 'github' | 'domain'; claim: string } | null;
   /** Wash-trading registry verdict; `null` when the registry is unavailable. */
   washFlagged: boolean | null;
+  /** Free-model bonus; `null` when the seller announces no free model. */
+  freeModels?: { score: number; service: string } | null;
+  /** Model-verification penalty: the points multiplier below 100% and what it took off; `null` without one. */
+  verification?: { multiplierBps: number; sameCount: number; diffCount: number; penalty: number } | null;
 };
 
 export type DiscoverVerificationLink = {
@@ -290,6 +294,13 @@ export type DiscoverRow = {
   trust?: TrustBreakdown | null;
   /** `AntseedWashTradingRegistry` verdict; `null` when the registry was unavailable. */
   washFlagged: boolean | null;
+  /**
+   * Live verdict on `AntseedVerificationResults` for this service: 'diff' (its
+   * effective reputation keeps 10%), 'same', or null when there is none.
+   */
+  verification?: 'diff' | 'same' | null;
+  /** Explorer page with this service's verdict history, each verdict linking to its audit. */
+  verificationUrl?: string | null;
   onChainSybilRisk: number | null;
   onChainSybilFlags: string[];
 

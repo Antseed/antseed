@@ -22,7 +22,7 @@ export default function SellerSettings() {
     <SellerPage title="Seller settings" description={() => 'Alerts apply within seconds; other settings when the seller restarts.'}>
       {(seller) => (
         <>
-          <Panel title="Alerts" description="A message when a model is withdrawn, gas runs out, the seller restarts unexpectedly or goes quiet.">
+          <Panel title="Alerts" description="A message when a model fails its health checks, gas runs out, the seller restarts unexpectedly or goes quiet.">
             <Loaded query={settings}>{(data) => <SellerAlertsEditor alerts={data.alerts} state={seller.alerts} />}</Loaded>
           </Panel>
           <Panel title="Settings" description="Prices, free tiers, limits and checks from the seller's config. Changes apply when the seller restarts.">

@@ -29,11 +29,18 @@ export function sellerNotices(status: AvailableSeller, now = Date.now()): string
   if (status.gas?.depleted) {
     lines.push(`Out of gas: the seller wallet holds ${formatEth(status.gas.balanceEth)} ETH, below the ${formatEth(status.gas.minBalanceEth)} ETH minimum. Advertising is paused until it is funded.`)
   }
-  const withdrawn = status.models.filter((model) => !model.advertised)
-  if (withdrawn.length > 0) {
-    const names = withdrawn.slice(0, 3).map((model) => model.service).join(', ')
-    const more = withdrawn.length > 3 ? ` and ${withdrawn.length - 3} more` : ''
-    lines.push(`${withdrawn.length} model${withdrawn.length === 1 ? ' is' : 's are'} withdrawn after failing health checks: ${names}${more}.`)
+  const refuel = status.gas?.refuel
+  if (refuel?.lastError) {
+    lines.push(`Gas auto-refuel failed: ${refuel.lastError}. It retries on its own; send ETH to ${status.gas!.address} if it keeps failing.`)
+  } else if (refuel?.skipped) {
+    const why = { daily_cap: `the ${refuel.maxUsdcPerDay} USDC daily cap is used up`, insufficient_usdc: 'the wallet holds too little USDC', insufficient_eth: 'the wallet cannot pay the swap\'s gas' }[refuel.skipped]
+    lines.push(`Gas auto-refuel is waiting: ${why}. Send ETH to ${status.gas!.address} to keep selling.`)
+  }
+  const failing = status.models.filter((model) => model.status === 'failing')
+  if (failing.length > 0) {
+    const names = failing.slice(0, 3).map((model) => model.service).join(', ')
+    const more = failing.length > 3 ? ` and ${failing.length - 3} more` : ''
+    lines.push(`${failing.length} model${failing.length === 1 ? ' is' : 's are'} failing health checks, so buyers skip ${failing.length === 1 ? 'it' : 'them'}: ${names}${more}.`)
   }
   if (status.alerts?.lastError) lines.push(`The last alert could not be delivered: ${status.alerts.lastError}`)
   // The daemon's own notices (today only the out-of-gas one, already covered above).

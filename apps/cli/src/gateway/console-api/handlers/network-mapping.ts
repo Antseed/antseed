@@ -1,11 +1,11 @@
 /** Pure mapping from the buyer's peer, health and verification views to the console's `Peer`. */
-import { isNativeVideoProtocol } from '@antseed/node'
+import { VERIFICATION_STATUS_STALE_MAX_MS, isAudioSpeechProtocol, isNativeVideoProtocol, parseServiceHealth, parseServicePerformance, verificationServiceKey, verificationServiceUrl } from '@antseed/node'
 import { collectPeerVerificationLinks } from '@antseed/node/discovery'
 import { parseVerifierCapabilities } from '@antseed/node/verifier-capabilities'
 import { freeTierProgramForService, isPricedService, normalizeFreeTierProgram, parseFreeTierProgram } from '@antseed/node/free-tier-program'
 import { modelTagsFor } from '@antseed/node/model-metadata'
 import { TEE_VERIFIER_ID, teeScope, type TeeClaim, type TeeScope } from '@antseed/node/tee-status'
-import type { NetworkModel, NetworkModelCapability, NetworkModelOffer, NetworkModelType, NetworkRouter, NetworkRouterOption, Peer, RoutePreview } from '../types.js'
+import type { ModelCheckView, NetworkModel, NetworkModelCapability, NetworkModelOffer, NetworkModelType, NetworkRouter, NetworkRouterOption, Peer, RoutePreview, ServiceHealthView, ServicePerformanceView, TrustBreakdownView } from '../types.js'
 import { parseRouteSelection } from '../../../proxy/route-selection.js'
 
 type Row = Record<string, unknown>
@@ -27,6 +27,34 @@ function str(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null
 }
 
+/** A seller's announced self health check with every field present, as a `health` property; none when not announced. */
+export function serviceHealthField(value: unknown): { health?: ServiceHealthView } {
+  const health = parseServiceHealth(value)
+  if (!health) return {}
+  return { health: {
+    status: health.status,
+    checkedAt: health.checkedAt ?? null,
+    source: health.source ?? null,
+    failingSince: health.failingSince ?? null,
+    consecutiveFailures: health.consecutiveFailures ?? null,
+    reason: health.reason ?? null,
+    httpStatus: health.httpStatus ?? null,
+  } }
+}
+
+/** A seller's announced performance with every field present, as a `performance` property; none when not announced. */
+export function servicePerformanceField(value: unknown): { performance?: ServicePerformanceView } {
+  const performance = parseServicePerformance(value)
+  if (!performance) return {}
+  return { performance: {
+    requests: performance.requests,
+    successRate: performance.successRate,
+    firstTokenMsP50: performance.firstTokenMsP50 ?? null,
+    firstTokenMsP90: performance.firstTokenMsP90 ?? null,
+    tokensPerSecondP50: performance.tokensPerSecondP50 ?? null,
+  } }
+}
+
 function peerKey(peerId: string): string {
   return peerId.trim().toLowerCase().replace(/^0x/, '')
 }
@@ -39,12 +67,47 @@ export interface PeerStat {
   tokensPerSecondP50?: number | null
 }
 
+/**
+ * USD per million `input` characters a speech offer charges, from its speech
+ * protocol's billing model only: the components speech billing applies (no
+ * `match`, or one naming the service), summed; 0 for a model with no
+ * components (free); null when the offer publishes none.
+ */
+function speechUsdPerMillionCharacters(unitBillingModels: unknown, serviceId: string): number | null {
+  const speechModels = Object.entries(asRecord(unitBillingModels))
+    .filter(([protocol]) => isAudioSpeechProtocol(protocol))
+    .map(([, model]) => model)
+  const rates = speechModels.flatMap((model) => {
+    const components = asRecord(model)['components']
+    // A model with no components is explicitly free.
+    if (Array.isArray(components) && components.length === 0) return [0]
+    const applicable = rows(components).filter((component) => {
+      const match = asRecord(component['match'])
+      return component['unit'] === 'input_characters'
+        && Object.entries(match).every(([key, value]) => key === 'model' && value === serviceId)
+    })
+    const prices = applicable.map((component) => num(component['priceUsd']))
+    return applicable.length > 0 && prices.every((price): price is number => price !== null)
+      ? [prices.reduce((sum, price) => sum + price, 0) * 1_000_000]
+      : []
+  })
+  return rates.length > 0 ? Math.min(...rates) : null
+}
+
+/** The voices a speech service's announced capabilities list; empty when none. */
+function speechVoices(capabilities: unknown): string[] {
+  return strings(asRecord(asRecord(capabilities)['speech'])['voices'])
+}
+
 /** One entry per advertised service, priced from the service's own entry or the provider default. */
 export function peerServices(row: Row): Peer['services'] {
   const pricing = asRecord(row['providerPricing'])
   const categories = asRecord(row['providerServiceCategories'])
   const protocols = asRecord(row['providerServiceApiProtocols'])
   const unitModels = asRecord(row['providerServiceUnitBillingModels'])
+  const health = asRecord(row['providerServiceHealth'])
+  const performance = asRecord(row['providerServicePerformance'])
+  const serviceCapabilities = asRecord(row['providerServiceCapabilities'])
   const capabilities = strings(row['capabilities'])
   const providers = new Set<string>([
     ...(Array.isArray(row['providers']) ? row['providers'].filter((p): p is string => typeof p === 'string') : []),
@@ -70,6 +133,8 @@ export function peerServices(row: Row): Peer['services'] {
         unitBillingModels: billing && typeof billing === 'object' ? billing as Record<string, { components?: Array<{ priceUsd: number }> }> : null,
       })
       const video = Array.isArray(apis) && apis.some(isNativeVideoProtocol)
+      const voices = speechVoices(asRecord(asRecord(serviceCapabilities[provider])['services'])[service])
+      const perMillionCharacters = speechUsdPerMillionCharacters(billing, service)
       services.push({
         provider,
         service,
@@ -81,6 +146,10 @@ export function peerServices(row: Row): Peer['services'] {
         paid,
         // A priced service only has a free allowance of its own; the seller-wide program covers free services.
         freeTier: freeTierProgramForService(capabilities, service, paid, { video }),
+        ...serviceHealthField(asRecord(asRecord(health[provider])['services'])[service]),
+        ...servicePerformanceField(asRecord(asRecord(performance[provider])['services'])[service]),
+        ...(voices.length > 0 ? { voices } : {}),
+        ...(perMillionCharacters !== null ? { usdPerMillionCharacters: perMillionCharacters } : {}),
       })
     }
   }
@@ -121,6 +190,8 @@ export function mapPeers(input: {
   verification: unknown | null
   stats: readonly PeerStat[]
   now: number
+  /** The chain's explorer (Antscan), where each verdict's audit history lives; null leaves the links out. */
+  explorerUrl?: string | null
 }): Peer[] {
   const health = new Map(rows(asRecord(input.health)['peers']).map((row) => [peerKey(String(row['peerId'] ?? '')), row]))
   const stats = new Map(input.stats.map((row) => [peerKey(row.peerId), row]))
@@ -140,10 +211,17 @@ export function mapPeers(input: {
     const stake = num(row['onChainPoolStakeAnts'])
     const agentId = num(row['onChainAgentId'])
     const coolingDown = healthRow?.['coolingDown'] === true
+    // Verdict lists from a read older than the buyer's fail-open window no longer count.
+    const verdictReadAt = num(row['onChainVerificationFetchedAt'])
+    const verdictsLive = verdictReadAt !== null && input.now - verdictReadAt < VERIFICATION_STATUS_STALE_MAX_MS
+    const diffServices = verdictsLive ? strings(row['onChainDiffServices']) : []
+    const sameServices = verdictsLive ? strings(row['onChainSameServices']).filter((service) => !diffServices.includes(service)) : []
+    const verificationUrls = verdictUrls(input.explorerUrl ?? null, agentId, [...diffServices, ...sameServices])
+    const checks = { diffServices, sameServices, verificationUrls: verificationUrls ?? undefined }
     return [{
       peerId,
       displayName: str(row['displayName']),
-      services: peerServices(row),
+      services: peerServices(row).map((service) => ({ ...service, ...modelCheckField(checks, service.service) })),
       trustScore: num(trust['score']) ?? num(row['onChainReputationScore']),
       // The reputation the buyer's `minPeerReputation` compares against: its own trust score,
       // else the seller-reported one; null when the buyer knows neither.
@@ -157,6 +235,10 @@ export function mapPeers(input: {
       freeTier: parseFreeTierProgram(strings(row['capabilities'])),
       usageShareBps: num(row['onChainUsageShareBps']),
       washFlagged: row['onChainWashFlagged'] === true || trust['washFlagged'] === true,
+      ...trustBreakdownField(trust),
+      ...(diffServices.length > 0 ? { diffServices } : {}),
+      ...(sameServices.length > 0 ? { sameServices } : {}),
+      ...(verificationUrls ? { verificationUrls } : {}),
       lastSeen: num(row['lastSeen']),
       health: {
         failureStreak: num(healthRow?.['failureStreak']) ?? 0,
@@ -168,6 +250,48 @@ export function mapPeers(input: {
       requests24h: stat?.requests ?? 0,
     }]
   })
+}
+
+/** The buyer's trust breakdown (`/_antseed/peers` `trust`), part by part; none without one. */
+export function trustBreakdownField(trust: Row): { trustBreakdown?: TrustBreakdownView } {
+  const part = (key: string): number | null => num(asRecord(trust[key])['score'])
+  const identityRow = asRecord(trust['identity'])
+  const identityScore = num(identityRow['score'])
+  const kind = identityRow['kind']
+  const breakdown: TrustBreakdownView = {
+    history: part('history'),
+    usage: part('usage'),
+    power: part('power'),
+    identity: identityScore !== null && (kind === 'github' || kind === 'domain') ? { score: identityScore, kind } : null,
+    freeModels: part('freeModels'),
+  }
+  const verificationRow = asRecord(trust['verification'])
+  const multiplierBps = num(verificationRow['multiplierBps'])
+  const penalty = num(verificationRow['penalty'])
+  if (multiplierBps !== null && multiplierBps < 10_000 && penalty !== null) {
+    breakdown.verification = { multiplierBps, diffCount: num(verificationRow['diffCount']) ?? 0, penalty }
+  }
+  return Object.values(breakdown).some((value) => value !== null) ? { trustBreakdown: breakdown } : {}
+}
+
+/** A peer's live model-check verdict for one service, as a `modelCheck` property; none without one. */
+export function modelCheckField(
+  peer: Pick<Peer, 'diffServices' | 'sameServices' | 'verificationUrls'> | undefined,
+  serviceId: string,
+): { modelCheck?: ModelCheckView } {
+  const key = verificationServiceKey(serviceId)
+  const verdict = peer?.diffServices?.includes(key) ? 'diff' : peer?.sameServices?.includes(key) ? 'same' : null
+  return verdict ? { modelCheck: { verdict, auditUrl: peer?.verificationUrls?.[key] ?? null } } : {}
+}
+
+/** Antscan pages of each service's verdict history, keyed by service key; null when there are none. */
+function verdictUrls(explorerUrl: string | null, agentId: number | null, services: readonly string[]): Record<string, string> | null {
+  const urls: Record<string, string> = {}
+  for (const service of services) {
+    const url = verificationServiceUrl(explorerUrl, agentId, service)
+    if (url) urls[service] = url
+  }
+  return Object.keys(urls).length > 0 ? urls : null
 }
 
 /** Normalizes the buyer's route-preview candidates and fills names and trust from its peer list. */
@@ -187,12 +311,14 @@ export function enrichCandidates(candidates: unknown, peers: unknown): RoutePrev
       inputUsdPerMillion: num(row['inputUsdPerMillion']),
       outputUsdPerMillion: num(row['outputUsdPerMillion']),
       trustScore: num(row['trustScore']) ?? trust,
+      ...(num(row['trustScoreBeforeCut']) !== null ? { trustScoreBeforeCut: num(row['trustScoreBeforeCut'])! } : {}),
       selection: parseRouteSelection(row['selection']),
+      ...serviceHealthField(row['health']),
     }]
   })
 }
 
-const MODEL_TYPES: readonly NetworkModelType[] = ['text', 'image', 'decision', 'video']
+const MODEL_TYPES: readonly NetworkModelType[] = ['text', 'image', 'decision', 'video', 'speech']
 
 function range(values: Array<number | null>): { min: number; max: number } | null {
   const known = values.filter((value): value is number => value !== null)
@@ -266,19 +392,24 @@ export function mapNetworkModels(body: unknown, peers: readonly Peer[]): Network
       const minImage = num(offer['minImageUsdPerImage'])
       const maxImage = num(offer['maxImageUsdPerImage']) ?? minImage
       const tokenPriced = input !== null || output !== null
+      const voices = speechVoices(capabilities)
+      const serviceId = str(offer['serviceId']) ?? id
+      const perMillionCharacters = speechUsdPerMillionCharacters(offer['unitBillingModels'], serviceId)
       return [{
         peerId,
         displayName: str(offer['displayName']) ?? peer?.displayName ?? null,
-        serviceId: str(offer['serviceId']) ?? id,
+        serviceId,
         provider: str(offer['provider']) ?? '',
         protocols: [...new Set([str(offer['protocol']), ...strings(offer['protocols'])].filter((value): value is string => value !== null))],
         inputUsdPerMillion: input,
         outputUsdPerMillion: output,
         cachedInputUsdPerMillion: num(offer['cachedInputUsdPerMillion']),
         usdPerImage: minImage !== null && maxImage !== null ? { min: Math.min(minImage, maxImage), max: Math.max(minImage, maxImage) } : null,
+        ...(perMillionCharacters !== null ? { usdPerMillionCharacters: perMillionCharacters } : {}),
         contextLength: num(capabilities['contextWindow']),
         // Free when every advertised price is zero, and at least one is advertised.
-        free: (tokenPriced || minImage !== null) && (input ?? 0) === 0 && (output ?? 0) === 0 && (maxImage ?? 0) === 0,
+        free: (tokenPriced || minImage !== null || perMillionCharacters !== null)
+          && (input ?? 0) === 0 && (output ?? 0) === 0 && (maxImage ?? 0) === 0 && (perMillionCharacters ?? 0) === 0,
         agentId: peer?.agentId ?? null,
         // The program this model is served under: its own, else the seller-wide
         // one, which only covers free models. A priced model's own program is a free allowance.
@@ -293,6 +424,10 @@ export function mapNetworkModels(body: unknown, peers: readonly Peer[]): Network
         latencyMsP50: peer?.latencyMsP50 ?? null,
         firstTokenMsP50: peer?.firstTokenMsP50 ?? null,
         tokensPerSecondP50: peer?.tokensPerSecondP50 ?? null,
+        ...serviceHealthField(offer['health']),
+        ...servicePerformanceField(offer['performance']),
+        ...(voices.length > 0 ? { voices } : {}),
+        ...modelCheckField(peer, serviceId),
       }]
     })
     const capabilityRows = rows(row['peers']).map((offer) => asRecord(offer['capabilities']))
@@ -302,6 +437,7 @@ export function mapNetworkModels(body: unknown, peers: readonly Peer[]): Network
     if (capabilityRows.some((caps) => caps['structuredOutput'] === true)) capabilities.push('structuredOutput')
     if (capabilityRows.some((caps) => strings(caps['inputs']).includes('image'))) capabilities.push('vision')
     const type = MODEL_TYPES.find((value) => value === row['type']) ?? 'text'
+    const voices = strings(row['voices'])
     return [{
       id,
       name: str(row['name']) ?? id,
@@ -321,6 +457,7 @@ export function mapNetworkModels(body: unknown, peers: readonly Peer[]): Network
       fullTeeSellers: offers.filter((offer) => offer.teeScope === 'end-to-end').length,
       verifiedSellers: offers.filter((offer) => offer.verified).length,
       offers,
+      ...(voices.length > 0 ? { voices } : {}),
     }]
   })
 }

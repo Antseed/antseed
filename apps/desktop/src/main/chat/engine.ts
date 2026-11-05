@@ -632,6 +632,15 @@ export function registerPiChatHandlers({
               onChainLastSettledAtSec: typeof rec.onChainLastSettledAtSec === 'number' ? rec.onChainLastSettledAtSec : null,
               onChainReputationScore: typeof rec.onChainReputationScore === 'number' ? rec.onChainReputationScore : null,
               onChainWashFlagged: typeof rec.onChainWashFlagged === 'boolean' ? rec.onChainWashFlagged : null,
+              onChainDiffServices: Array.isArray(rec.onChainDiffServices)
+                ? rec.onChainDiffServices.filter((s: unknown): s is string => typeof s === 'string')
+                : [],
+              onChainSameServices: Array.isArray(rec.onChainSameServices)
+                ? rec.onChainSameServices.filter((s: unknown): s is string => typeof s === 'string')
+                : [],
+              onChainVerificationFetchedAt: typeof rec.onChainVerificationFetchedAt === 'number' && Number.isFinite(rec.onChainVerificationFetchedAt)
+                ? rec.onChainVerificationFetchedAt
+                : null,
               onChainSybilRisk: typeof rec.onChainSybilRisk === 'number' ? rec.onChainSybilRisk : null,
               onChainSybilFlags: Array.isArray(rec.onChainSybilFlags)
                 ? rec.onChainSybilFlags.filter((f: unknown): f is string => typeof f === 'string')
@@ -664,6 +673,7 @@ export function registerPiChatHandlers({
       // Network-wide stats from the chain explorer (aggregator fallback). On
       // non-mainnet chains and on any failure this returns an empty map and
       // buildDiscoverRows falls back to local stats.
+      let explorerUrl: string | null = null;
       const networkStats = await (async () => {
         try {
           const raw = await readFile(configPath, 'utf8');
@@ -674,6 +684,7 @@ export function registerPiChatHandlers({
             ? overrides.chainId
             : 'base-mainnet';
           const cc = resolveChainConfig({ chainId: selectedChain });
+          explorerUrl = cc.explorerApiUrl ?? null;
           return await getNetworkStats({
             explorerApiUrl: cc.explorerApiUrl,
             networkStatsUrl: cc.networkStatsUrl,
@@ -684,7 +695,7 @@ export function registerPiChatHandlers({
       })();
       endPhase('network-stats');
 
-      const rows = (await buildDiscoverRows(entries, statsMap, discoveredPeersMap, networkStats, peerHealthMap))
+      const rows = (await buildDiscoverRows(entries, statsMap, discoveredPeersMap, networkStats, peerHealthMap, explorerUrl))
         .filter((row) => isPriceAllowedByBuyerMax(
           row.inputUsdPerMillion,
           row.outputUsdPerMillion,

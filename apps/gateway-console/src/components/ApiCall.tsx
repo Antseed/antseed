@@ -8,9 +8,11 @@ import { CodeBlock, PageLink, TabPanel, Tabs } from './ui'
  * JavaScript (OpenAI SDK), plus the Anthropic SDK for Messages models. The
  * key is `$ANTSEED_API_KEY`, never a real secret.
  */
-export function ApiCall({ model, format, id = 'gc-api-call', unsupported }: {
+export function ApiCall({ model, format, voice, id = 'gc-api-call', unsupported }: {
   model: string
   format: ApiFormat | null
+  /** The voice a speech call asks for; a placeholder when omitted. */
+  voice?: string
   /** Base id for the tabs; unique per page. */
   id?: string
   /** Shown instead of the snippets when `format` is null. */
@@ -19,7 +21,7 @@ export function ApiCall({ model, format, id = 'gc-api-call', unsupported }: {
   const baseUrl = useGatewayBaseUrl()
   const [tab, setTab] = useState<ConnectTabId>('curl')
   if (!format) return <p className="gc-fineprint">{unsupported ?? 'The gateway does not serve this model through its API.'}</p>
-  const tabs = apiCallTabs(baseUrl, model, format)
+  const tabs = apiCallTabs(baseUrl, model, format, voice)
   const current = tabs.find((entry) => entry.id === tab) ?? tabs[0]!
   return (
     <div className="gc-stack gc-stack--tight">

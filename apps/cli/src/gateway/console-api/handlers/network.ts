@@ -1,4 +1,5 @@
 /** Sellers the buyer knows about, and which of them a request would route to. */
+import { resolveAntsChain } from '@antseed/ants'
 import { resolvePolicy } from '../../policy-resolver.js'
 import { buyerLimits, listNetworkModels, listNetworkPeers, listNetworkRouters, previewRoute, type PreviewTarget } from '../../services/network.js'
 import { audit, canSeeWorkspace, requireOrgAdmin } from '../access.js'
@@ -13,6 +14,8 @@ export interface NetworkRouteOverrides {
   canSeeWorkspace?: typeof canSeeWorkspace
   requireOrgAdmin?: typeof requireOrgAdmin
   resolvePolicy?: typeof resolvePolicy
+  /** The chain's explorer URL (Antscan); null when unknown. */
+  explorerUrl?: () => Promise<string | null>
 }
 
 function param(request: ConsoleRequest, name: string): string | undefined {
@@ -25,10 +28,12 @@ export function registerNetworkRoutes(router: ConsoleRouter, deps: ConsoleDeps, 
   const canSee = overrides.canSeeWorkspace ?? canSeeWorkspace
   const orgAdmin = overrides.requireOrgAdmin ?? requireOrgAdmin
   const resolve = overrides.resolvePolicy ?? resolvePolicy
+  // Read from the config file only; an unreadable one just leaves the audit links out.
+  const explorerUrl = overrides.explorerUrl ?? (async () => (await resolveAntsChain(deps.configPath).catch(() => null))?.explorerApiUrl?.trim() || null)
 
-  router.add('GET', '/peers', async (): Promise<Peer[]> => listNetworkPeers(deps.store, buyer, deps.now()))
+  router.add('GET', '/peers', async (): Promise<Peer[]> => listNetworkPeers(deps.store, buyer, deps.now(), await explorerUrl()))
   /** Every model on the network with the sellers offering it; unfiltered, like `/peers`. */
-  router.add('GET', '/models', async (): Promise<NetworkModel[]> => listNetworkModels(deps.store, buyer, deps.now()))
+  router.add('GET', '/models', async (): Promise<NetworkModel[]> => listNetworkModels(deps.store, buyer, deps.now(), await explorerUrl()))
   /** Every routing service on the network; unfiltered, like `/models`. */
   router.add('GET', '/routers', async (): Promise<NetworkRouter[]> => listNetworkRouters(deps.store, buyer, deps.now()))
 

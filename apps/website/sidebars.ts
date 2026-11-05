@@ -57,6 +57,7 @@ const sidebars: SidebarsConfig = {
         'connect/routing',
         'connect/staked-free-tier',
         'connect/agents',
+        'connect/videos',
         'connect/tunnels',
         'connect/buyer-config',
       ],
@@ -88,6 +89,20 @@ const sidebars: SidebarsConfig = {
         'provide/staking',
         'provide/monitoring',
         'provide/metrics',
+      ],
+    },
+    {
+      type: 'category',
+      label: 'Model Verification',
+      className: 'sidebar-icon sidebar-icon--verify',
+      collapsible: true,
+      collapsed: true,
+      items: [
+        'verify/overview',
+        'verify/buyers',
+        'verify/providers',
+        'verify/become-a-verifier',
+        'verify/audits',
       ],
     },
     {

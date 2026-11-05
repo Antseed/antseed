@@ -4,7 +4,9 @@ import type { Peer, Preset } from '../api/types'
 import { useConsole, useScopeFilter } from '../app/context'
 import { useGatewayBaseUrl } from '../components/copy-actions'
 import { FreeTierInfo } from '../components/FreeTierInfo'
+import { ModelCheckInfo } from '../components/ModelCheckInfo'
 import { PeerActionDialog } from '../components/PeerActionDialog'
+import { ServiceHealthInfo, ServicePerformanceInfo } from '../components/ServiceHealthInfo'
 import { PanelRow, PanelSection } from '../components/SidePanel'
 import { TeeBadge } from '../components/TeeBadge'
 import { VerificationLinks } from '../components/VerificationLinks'
@@ -14,6 +16,8 @@ import {
 import { formatAnts } from '../lib/ants'
 import { isFreeService } from '../lib/free-tier'
 import { formatDateTime, formatLatency, formatNumber, formatRelative, formatSpeed, shortId } from '../lib/format'
+import { diffRoutingNote } from '../lib/model-check'
+import { trustBreakdownLabel } from '../lib/trust-breakdown'
 import { priceSummary } from '../lib/models'
 import { isWorkspaceAdmin } from '../lib/nav'
 import { isFreePeer } from '../lib/peers'
@@ -29,6 +33,7 @@ const FORMAT_LABELS: Record<ApiFormat, string> = {
   'openai-responses': 'Responses',
   'anthropic-messages': 'Messages',
   'openai-images': 'Images',
+  'openai-audio-speech': 'Speech',
 }
 
 function score(value: number | null): string {
@@ -60,9 +65,14 @@ function ProviderMeta({ peer }: { peer: Peer }) {
 
 function ProviderStats({ peer, showReputation }: { peer: Peer; showReputation: boolean }) {
   const coolingDown = (peer.health.coolingDownUntil ?? 0) > Date.now()
+  const diffNote = diffRoutingNote(peer)
+  const breakdown = trustBreakdownLabel(peer.trustBreakdown)
   return (
     <div className="gc-grid gc-grid--2 gc-figures gc-panel-figures">
-      <Figure label="Trust score" value={score(peer.trustScore)} />
+      <Figure label="Trust score" value={score(peer.trustScore)} note={(breakdown || diffNote) && <>
+        {breakdown && <div>{breakdown}</div>}
+        {diffNote && <div>{diffNote}</div>}
+      </>} />
       {showReputation && <Figure label="Reputation" value={score(peer.reputationScore)} />}
       <Figure label="Stake" value={peer.stakeAnts ? formatAnts(peer.stakeAnts) : '—'} />
       {peer.freeTier && <Figure label="Free tier (free models)" value={<FreeTierInfo program={peer.freeTier} agentId={peer.agentId} />} />}
@@ -97,6 +107,9 @@ function ProviderModels({ peer, selected, onSelect }: { peer: Peer; selected: Se
                     : <span>{priceSummary(service)}</span>}
                   {!isFreeService(service) && service.freeTier && <FreeTierInfo program={service.freeTier} agentId={peer.agentId} priced align="center" />}
                   <span>{FORMAT_LABELS[serviceApiFormat(service)]}</span>
+                  <ModelCheckInfo check={service.modelCheck} />
+                  <ServiceHealthInfo health={service.health} />
+                  <ServicePerformanceInfo performance={service.performance} />
                 </>}
                 actions={<>
                   <CopyButton iconOnly value={pinnedModelId(peer.peerId, service.service)} label={`Copy ${service.service} pinned to this provider (peer@model)`} />
@@ -124,7 +137,7 @@ function Connect({ peer, service, onSelect }: { peer: Peer; service: Service; on
   const format = serviceApiFormat(service)
   const modelId = pinnedModelId(peer.peerId, service.service)
   const preset = presets.data?.find((entry) => entry.model === modelId) ?? null
-  const tabs = connectTabs(baseUrl, peer.peerId, service.service, format, preset ? `@preset/${preset.slug}` : null)
+  const tabs = connectTabs(baseUrl, peer.peerId, service.service, format, preset ? `@preset/${preset.slug}` : null, service.voices?.[0])
   const current = tabs.find((entry) => entry.id === tab) ?? tabs[0]!
   const hasKey = (keys.data ?? []).some((key) => key.status === 'active')
   const canCreatePreset = isWorkspaceAdmin(viewer)

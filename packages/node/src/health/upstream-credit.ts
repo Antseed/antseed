@@ -3,11 +3,12 @@
  * problem the operator fixes by topping up), not a model, rate or request
  * fault: HTTP 402, or an error that says so in the words upstreams use
  * (DeepInfra "positive balance", OpenAI `insufficient_quota`, Anthropic
- * "credit balance is too low", OpenRouter "insufficient credits").
+ * "credit balance is too low", OpenRouter "insufficient credits", a Claude
+ * subscription whose third-party use draws from its "extra usage").
  * A per-minute quota ("exceeded your current quota" with RESOURCE_EXHAUSTED)
  * is a rate limit, not credit.
  */
-const OUT_OF_CREDIT = /\b(?:positive balance|insufficient[_ ](?:balance|credits?|funds)|insufficient_quota|billing_hard_limit_reached|credit balance is too low|out of credits?)\b/i;
+const OUT_OF_CREDIT = /\b(?:positive balance|insufficient[_ ](?:balance|credits?|funds)|insufficient_quota|billing_hard_limit_reached|credit balance is too low|out of credits?|extra usage)\b/i;
 
 export function isUpstreamOutOfCredit(statusCode: number | null | undefined, text: string | null | undefined): boolean {
   return statusCode === 402 || (typeof text === 'string' && OUT_OF_CREDIT.test(text));

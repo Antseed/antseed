@@ -6,7 +6,7 @@ import { ConsoleRouter, type Principal } from '../router.js'
 import type { BuyerLimits, NetworkModel, NetworkRouter, Peer, RoutePreview } from '../types.js'
 import { registerNetworkRoutes, type NetworkRouteOverrides } from './network.js'
 import { encodeFreeTierCapabilities } from '@antseed/node/free-tier-program'
-import { enrichCandidates, mapNetworkModels, mapNetworkRouters, mapPeers, peerServices, teeScopes, teeVerifiedPeers } from './network-mapping.js'
+import { enrichCandidates, mapNetworkModels, mapNetworkRouters, mapPeers, modelCheckField, peerServices, teeScopes, teeVerifiedPeers } from './network-mapping.js'
 import {
   call,
   fakeCanSeeWorkspace,
@@ -57,6 +57,8 @@ const PEERS_BODY = {
       capabilities: [],
       providerPricing: { anthropic: { defaults: { inputUsdPerMillion: 3, outputUsdPerMillion: 15 } } },
       onChainWashFlagged: true,
+      onChainDiffServices: ['claude-opus-5.5'],
+      onChainVerificationFetchedAt: NOW - 60_000,
       verificationResults: {
         verified: true,
         checkedAtMs: 1,
@@ -184,6 +186,7 @@ function setup(extra: NetworkRouteOverrides = {}): ConsoleRouter {
     canSeeWorkspace: fakeCanSeeWorkspace,
     requireOrgAdmin: fakeRequireOrgAdmin,
     resolvePolicy: fakeResolvePolicy,
+    explorerUrl: async () => null,
     ...extra,
   })
   return router
@@ -237,6 +240,111 @@ test('peer services and model offers carry a service’s own free-tier program',
   assert.deepEqual(model!.offers[0]!.freeTier, b!.freeTier)
   // The seller-wide program stays on the peer.
   assert.equal(peers[0]!.freeTier?.base.stakersOnly, undefined)
+})
+
+test('peer services, model offers and route-preview candidates carry the seller\'s self health check', () => {
+  const failing = { status: 'failing', checkedAt: 1_793_328_180_000, source: 'probe', failingSince: 1_793_327_880_000, consecutiveFailures: 3, reason: 'timeout', httpStatus: 504 }
+  const row = {
+    ...PEERS_BODY.peers[0],
+    providerServiceHealth: { openai: { services: {
+      'open-model-a': failing,
+      'open-model-b': { status: 'healthy', checkedAt: 1_793_328_100_000, source: 'traffic' },
+      'open-model-free': { status: 'bogus' },
+    } } },
+  }
+  const healthOf = (service: string) => peerServices(row as Record<string, unknown>).find((entry) => entry.service === service)?.health
+  assert.deepEqual(healthOf('open-model-a'), failing)
+  // Every field is present, null when the seller did not announce it.
+  assert.deepEqual(healthOf('open-model-b'), { status: 'healthy', checkedAt: 1_793_328_100_000, source: 'traffic', failingSince: null, consecutiveFailures: null, reason: null, httpStatus: null })
+  assert.equal(healthOf('open-model-free'), undefined, 'an unknown status is not shown')
+
+  const healthy = { status: 'healthy', checkedAt: 1_793_328_100_000, source: 'probe' }
+  const [model] = mapNetworkModels({ data: [{ id: 'open-model-b', peers: [{ peerId: PEER_A, serviceId: 'open-model-b', health: healthy }] }] }, [])
+  assert.equal(model!.offers[0]!.health?.source, 'probe')
+  const [candidate] = enrichCandidates([{ peerId: PEER_A, eligible: false, reasons: [], health: failing }], PEERS_BODY)
+  assert.deepEqual(candidate!.health, failing)
+})
+
+test('peer services and model offers carry the seller\'s measured performance', () => {
+  const performance = { requests: 312, successRate: 0.97, firstTokenMsP50: 420, tokensPerSecondP50: 78 }
+  const row = { ...PEERS_BODY.peers[0], providerServicePerformance: { openai: { services: { 'open-model-a': performance, 'open-model-b': { requests: 'x' } } } } }
+  const services = peerServices(row as Record<string, unknown>)
+  assert.deepEqual(services.find((entry) => entry.service === 'open-model-a')?.performance, { ...performance, firstTokenMsP90: null })
+  assert.equal(services.find((entry) => entry.service === 'open-model-b')?.performance, undefined, 'a malformed entry is not shown')
+  const [model] = mapNetworkModels({ data: [{ id: 'open-model-a', peers: [{ peerId: PEER_A, serviceId: 'open-model-a', performance }] }] }, [])
+  assert.equal(model!.offers[0]!.performance?.requests, 312)
+})
+
+test('peer services, model offers and models carry the voices speech services accept', () => {
+  const row = {
+    ...PEERS_BODY.peers[0],
+    providerServiceCapabilities: { openai: { services: {
+      'open-model-a': { speech: { voices: ['af_sky', 'am_adam'] } },
+      'open-model-b': { outputs: ['text'] },
+    } } },
+  }
+  const services = peerServices(row as Record<string, unknown>)
+  assert.deepEqual(services.find((entry) => entry.service === 'open-model-a')?.voices, ['af_sky', 'am_adam'])
+  assert.equal(services.find((entry) => entry.service === 'open-model-b')?.voices, undefined)
+  const [model] = mapNetworkModels({ data: [{ id: 'tts-kokoro', type: 'speech', voices: ['af_sky'], peers: [
+    { peerId: PEER_A, serviceId: 'tts-kokoro', capabilities: { speech: { voices: ['af_sky', 'am_adam'] } } },
+  ] }] }, [])
+  assert.deepEqual(model!.voices, ['af_sky'])
+  assert.deepEqual(model!.offers[0]!.voices, ['af_sky', 'am_adam'])
+})
+
+test('speech offers keep their per-character price and are free only when it is zero', () => {
+  const speechOffer = (peerId: string, priceUsd: number) => ({
+    peerId, provider: 'openai', serviceId: 'tts-model', protocol: 'openai-audio-speech',
+    unitBillingModels: { 'openai-audio-speech': { version: 1, components: [
+      { unit: 'input_characters', priceUsd },
+      // A component for another model does not apply.
+      { unit: 'input_characters', priceUsd: 1, match: { model: 'other-model' } },
+    ] } },
+  })
+  const [model] = mapNetworkModels({ data: [{ id: 'tts-model', type: 'speech', peers: [speechOffer(PEER_A, 0.000015), speechOffer('b'.repeat(40), 0)] }] }, [])
+  const [paid, free] = model!.offers
+  assert.ok(Math.abs(paid!.usdPerMillionCharacters! - 15) < 1e-9)
+  assert.equal(paid!.free, false)
+  assert.equal(free!.usdPerMillionCharacters, 0)
+  assert.equal(free!.free, true)
+  assert.equal(model!.free, true)
+
+  // A billing model with no components is free too.
+  const [empty] = mapNetworkModels({ data: [{ id: 'tts-free', type: 'speech', peers: [
+    { peerId: PEER_A, provider: 'openai', serviceId: 'tts-free', unitBillingModels: { 'openai-audio-speech': { version: 1, components: [] } } },
+  ] }] }, [])
+  assert.equal(empty!.offers[0]!.usdPerMillionCharacters, 0)
+  assert.equal(empty!.offers[0]!.free, true)
+  assert.equal(empty!.free, true)
+
+  // Only the speech billing model prices characters: a free image model beside it changes nothing.
+  const [mixed] = mapNetworkModels({ data: [{ id: 'tts-model', type: 'speech', peers: [{
+    peerId: PEER_A, provider: 'openai', serviceId: 'tts-model',
+    unitBillingModels: {
+      'openai-audio-speech': { version: 1, components: [{ unit: 'input_characters', priceUsd: 0.000015 }] },
+      'openai-images': { version: 1, components: [] },
+    },
+  }] }] }, [])
+  assert.ok(Math.abs(mixed!.offers[0]!.usdPerMillionCharacters! - 15) < 1e-9)
+  assert.equal(mixed!.offers[0]!.free, false)
+})
+
+test('peer services carry a speech service\'s price per million characters', () => {
+  const row = {
+    ...PEERS_BODY.peers[0],
+    providerPricing: { openai: { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 }, services: { 'tts-paid': {}, 'tts-free': {} } } },
+    providerServiceApiProtocols: { openai: { services: { 'tts-paid': ['openai-audio-speech'], 'tts-free': ['openai-audio-speech'] } } },
+    providerServiceUnitBillingModels: { openai: { services: {
+      'tts-paid': { 'openai-audio-speech': { version: 1, components: [{ unit: 'input_characters', priceUsd: 0.000015 }] } },
+      'tts-free': { 'openai-audio-speech': { version: 1, components: [] } },
+    } } },
+  }
+  const services = peerServices(row as Record<string, unknown>)
+  const paid = services.find((entry) => entry.service === 'tts-paid')!
+  assert.ok(Math.abs(paid.usdPerMillionCharacters! - 15) < 1e-9)
+  assert.equal(paid.paid, true)
+  assert.equal(services.find((entry) => entry.service === 'tts-free')!.usdPerMillionCharacters, 0)
 })
 
 test('peer services give a paid unit-billed service no seller-wide program', () => {
@@ -322,6 +430,10 @@ test('GET peers merges buyer peers, health and gateway stats', async () => {
   ])
   assert.equal(b.tee, false)
   assert.equal(b.washFlagged, true)
+  assert.deepEqual(b.diffServices, ['claude-opus-5.5'])
+  // A DIFF list from a read 15 minutes old or more no longer cuts, so the console stops showing it.
+  const stale = mapPeers({ peers: PEERS_BODY, health: null, verification: null, stats: [], now: NOW + 15 * 60_000 })
+  assert.equal(stale.find((peer) => peer.peerId === PEER_B)?.diffServices, undefined)
   assert.equal(b.trustScore, null)
   assert.equal(b.reputationScore, null)
   assert.deepEqual(b.health, { failureStreak: 3, coolingDownUntil: NOW + 30_000 })
@@ -342,6 +454,43 @@ test('GET peers uses the TEE snapshot when the buyer shares it', async () => {
   } finally {
     verificationAllowed = false
   }
+})
+
+test('model-check verdicts: live DIFF and SAME services, each linked to its audit history', async () => {
+  const row = {
+    peerId: PEER_A,
+    onChainAgentId: 42,
+    onChainDiffServices: ['open-model-a'],
+    // A service on both lists counts as DIFF only.
+    onChainSameServices: ['open-model-b', 'open-model-a'],
+    onChainVerificationFetchedAt: NOW - 60_000,
+  }
+  const [peer] = mapPeers({ peers: { peers: [row] }, health: null, verification: null, stats: [], now: NOW, explorerUrl: 'https://explorer.test/' })
+  assert.deepEqual(peer!.diffServices, ['open-model-a'])
+  assert.deepEqual(peer!.sameServices, ['open-model-b'])
+  assert.deepEqual(Object.keys(peer!.verificationUrls ?? {}), ['open-model-a', 'open-model-b'])
+  assert.match(peer!.verificationUrls!['open-model-a']!, /^https:\/\/explorer\.test\/verification-service\/42~0x[0-9a-f]{64}$/)
+  assert.notEqual(peer!.verificationUrls!['open-model-a'], peer!.verificationUrls!['open-model-b'])
+  // Each offer carries its own verdict, matched case-insensitively.
+  assert.deepEqual(modelCheckField(peer, ' Open-Model-A '), { modelCheck: { verdict: 'diff', auditUrl: peer!.verificationUrls!['open-model-a'] } })
+  assert.deepEqual(modelCheckField(peer, 'open-model-b').modelCheck?.verdict, 'same')
+  assert.deepEqual(modelCheckField(peer, 'open-model-c'), {})
+  const [model] = mapNetworkModels(MODELS_BODY, [peer!])
+  assert.deepEqual(model!.offers.map((offer) => offer.modelCheck?.verdict), ['diff', undefined])
+  const [priced] = mapPeers({ peers: { peers: [{ ...row, ...PEERS_BODY.peers[0], ...row }] }, health: null, verification: null, stats: [], now: NOW, explorerUrl: 'https://explorer.test' })
+  assert.deepEqual(priced!.services.map((service) => [service.service, service.modelCheck?.verdict]), [['open-model-a', 'diff'], ['open-model-b', 'same']])
+
+  // Without an explorer or an agent id the verdicts stay, the links go.
+  const [unlinked] = mapPeers({ peers: { peers: [{ ...row, onChainAgentId: null }] }, health: null, verification: null, stats: [], now: NOW, explorerUrl: 'https://explorer.test' })
+  assert.deepEqual(unlinked!.sameServices, ['open-model-b'])
+  assert.equal(unlinked!.verificationUrls, undefined)
+  // A read past the buyer's fail-open window shows neither.
+  const [stale] = mapPeers({ peers: { peers: [row] }, health: null, verification: null, stats: [], now: NOW + 15 * 60_000, explorerUrl: 'https://explorer.test' })
+  assert.deepEqual([stale!.diffServices, stale!.sameServices, stale!.verificationUrls], [undefined, undefined, undefined])
+
+  // The route threads the chain's explorer through.
+  const peers = await call(setup({ explorerUrl: async () => 'https://explorer.test' }), 'GET', '/peers', member) as Peer[]
+  assert.deepEqual(peers.map((p) => p.verificationUrls), [undefined, undefined], 'B has a DIFF but no agent id')
 })
 
 test('GET peers still answers without peer health', () => {

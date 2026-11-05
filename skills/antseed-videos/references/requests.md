@@ -54,11 +54,11 @@ Match the user's model case-insensitively against `id` and `aliases`. Several fa
 
 ## Price
 
-Lists the sellers that support every chosen option, with their price, cheapest first. Set `last_frame=yes` when a last frame is sent, `refs=yes` when reference images are sent, and `aspect_ratio` to the agreed video ratio (for example `16:9`). A seller is left out when its pricing has no component for the chosen resolution (the buyer refuses that request), when a last frame is sent and it neither advertises `last_frame` nor lists an end-frame field in `fields` (Venice accepts `end_image_url` at create and fails the job later), when reference images are sent and it does not advertise `reference_image` (or they are not sent and it requires them), or when it lists `aspectRatios` without the chosen ratio. A seller that lists no `aspectRatios` is kept. `sendRatio` says whether to send `aspect_ratio` to that seller ([Aspect ratio](#aspect-ratio)), and `fields` is the seller's field list.
+Lists the sellers that support every chosen option, with their price, cheapest first. Set `last_frame=yes` when a last frame is sent, `refs=yes` when reference images are sent, `audio_in=yes` when an `audio_url` is sent (sellers that do not list `audio_url` are left out), and `aspect_ratio` to the agreed video ratio (for example `16:9`). A seller is left out when its pricing has no component for the chosen resolution (the buyer refuses that request), when a last frame is sent and it neither advertises `last_frame` nor lists an end-frame field in `fields` (Venice accepts `end_image_url` at create and fails the job later), when reference images are sent and it does not advertise `reference_image` (or they are not sent and it requires them), or when it lists `aspectRatios` without the chosen ratio. A seller that lists no `aspectRatios` is kept. `sendRatio` says whether to send `aspect_ratio` to that seller ([Aspect ratio](#aspect-ratio)), and `fields` is the seller's field list.
 
 ```bash
 jq --argjson dur "$duration" --arg res "${resolution:-}" \
-   --arg last "${last_frame:-}" --arg refs "${refs:-}" --arg ratio "${aspect_ratio:-}" '
+   --arg last "${last_frame:-}" --arg refs "${refs:-}" --arg ratio "${aspect_ratio:-}" --arg audio_in "${audio_in:-}" '
   [.peers[]
    | .capabilities.video as $v | .serviceId as $svc
    | select(($v.durationsSeconds // [$dur]) | index($dur))
@@ -69,6 +69,7 @@ jq --argjson dur "$duration" --arg res "${resolution:-}" \
    | select(if $refs == "yes" then ($v.inputs // [] | index("reference_image")) != null
             else ($v.requiredInputs // [] | index("reference_image")) == null end)
    | select($ratio == "" or (($v.aspectRatios // [$ratio]) | index($ratio)))
+   | select($audio_in != "yes" or (.capabilities.supportedParameters // [] | index("audio_url")))
    | [.unitBillingModels[.protocol].components[]
       | select((.match.resolution // $res) == $res and (.match.model // $svc) == $svc)] as $parts
    | select($parts | length > 0)
@@ -182,6 +183,25 @@ unset first_url last_url
 echo "references: $(jq length "$refs_json")"
 ```
 
+## Lip-sync audio
+
+To make a character speak an audio track, set `voice_file` to its path (not `audio`, which is the sound on/off switch) and write it as a data URL to `audio_url_file` before [Create once](#create-once); the create block sends it as `audio_url`. Price with `audio_in=yes` so only sellers that take it are listed. WAV or MP3 only:
+
+```bash
+audio_url_file="$(mktemp)"
+case "$(file -b --mime-type "$voice_file")" in
+  audio/mpeg) mime=audio/mpeg ;; audio/x-wav|audio/wav|audio/vnd.wave) mime=audio/wav ;;
+  *) echo "audio must be MP3 or WAV: $voice_file" >&2; false ;;
+esac && { printf 'data:%s;base64,' "$mime"; base64 < "$voice_file" | tr -d '\n'; } > "$audio_url_file"
+```
+
+A talking-avatar model (the offer's `video.requiredInputs` has `audio` and `fields` has no `duration`) makes a video exactly as long as the audio, so `duration` is not a choice: set it to the audio's length in whole seconds, rounded down (at least 1), before [Price](#price). The seller measures the inline audio and refuses any other value with `422 invalid_video_duration` before payment; the number in its message is the length it measured.
+
+```bash
+duration="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$voice_file" | awk '{ s = int($1); print (s < 1 ? 1 : s) }')"
+echo "duration: $duration s (the audio's length)"
+```
+
 ## Create once
 
 Check for a job file first. If `<output>.job.json` exists, go to [Wait and save](#wait-and-save) instead. Set `protocol` and `peer_id` from the chosen [Price](#price) entry and `route_model` to `<peerId>@<model>`. Write the prompt to `prompt.txt` first. Set `aspect_ratio` only when the chosen Price entry has `sendRatio: true`; otherwise leave it unset ([Aspect ratio](#aspect-ratio)). Set `audio=false` only when the user wants a silent video and the seller advertises `audio`; never send `audio=true`, because many models make sound by default and fail the job when `audio` is set. Before an approved retry after a failed job, rename `<name>.job.json` to `<name>.failed.job.json`.
@@ -230,11 +250,13 @@ else
   jq -n --arg model "$route_model" --rawfile prompt prompt.txt --arg duration "$dur" \
     --arg resolution "${resolution:-}" --arg aspect_ratio "${aspect_ratio:-}" --arg audio "${audio:-}" --arg audio_field "$audio_field" \
     --arg first_field "${first_field:-image_url}" --arg last_field "${last_field:-end_image_url}" --arg ref_field "${ref_field:-reference_image_urls}" \
-    --rawfile first "${first_url:-/dev/null}" --rawfile last "${last_url:-/dev/null}" --slurpfile refs "${refs_json:-/dev/null}" '
+    --rawfile first "${first_url:-/dev/null}" --rawfile last "${last_url:-/dev/null}" --slurpfile refs "${refs_json:-/dev/null}" \
+    --rawfile voice "${audio_url_file:-/dev/null}" '
     {model: $model, prompt: ($prompt | rtrimstr("\n")), duration: $duration}
     + (if $first != "" then {($first_field): $first} else {} end)
     + (if $last != "" then {($last_field): $last} else {} end)
     + (if ($refs[0] // []) != [] then {($ref_field): $refs[0]} else {} end)
+    + (if $voice != "" then {audio_url: $voice} else {} end)
     + (if $resolution != "" then {resolution: $resolution} else {} end)
     + (if $aspect_ratio != "" then {aspect_ratio: $aspect_ratio} else {} end)
     + (if $audio != "" then {($audio_field): ($audio == "true")} else {} end)' > "$body"
@@ -338,11 +360,11 @@ duration="$(awk -v s="$seconds" 'BEGIN { d = int(s); if (d < 1) d = 1; print d }
 echo "source: $(wc -c < "$src" | tr -d ' ') bytes, ${seconds}s, ${width}x${height} at ${fps} fps -> duration $duration"
 ```
 
-`duration` is what the buyer pays for. Send the source length in whole seconds, rounded down (`$duration` above), unless the model takes a shorter `duration` and the user wants a shorter clip. Never send more than the source length: some upstreams render and charge the full `duration` even when the source is shorter.
+`duration` is what the buyer pays for, and it must be the source length in whole seconds, rounded down (`$duration` above), on every edit model: the seller measures the source and refuses any other value. For a shorter clip, trim the source first (`ffmpeg -t <seconds>`) and measure again.
 
 ### Source limits
 
-The sellers do not check the source's limits (only, for a model whose output is as long as its source, that `duration` is its length). A source outside the model's limits is refused by the upstream after the job started, and on a video priced above $1.00 that costs the opening fee (see the Rules in SKILL.md). So check it before pricing, against the limits the provider publishes for that model. Never quote limits from memory: read them each time, and say where they came from.
+The sellers do not check the source's limits (only that it is inline and `duration` is its length). A source outside the model's limits is refused by the upstream after the job started, and on a video priced above $1.00 that costs the opening fee (see the Rules in SKILL.md). So check it before pricing, against the limits the provider publishes for that model. Never quote limits from memory: read them each time, and say where they came from.
 
 **fal models** (`fal-video` sellers). fal publishes each model's input schema, without a key. `check_fal_source` reads it and checks the source against fal's machine-readable limits on `video_url` (`x-fal`: length, file size, width, height, aspect ratio, frame rate). It also prints the required fields, the `duration` and `resolution` values, and the limits on image fields. Any `FAIL` line stops before pricing: apply its fix, measure again (`check_fal_source` again), and tell the user what changed. When a model has no `x-fal` limits, the script prints `NOTE` with the `video_url` description and exits 3. The description can state a limit in words (for example "5 to 30 seconds long"): check the source against it by hand, and treat a source outside it like a `FAIL`. Length limits apply to the source's real length, not the rounded-down `duration`: a 10.08 s source fails a 10 s maximum, so trim it first.
 
@@ -386,12 +408,10 @@ check_fal_source() {
         "required fields: \($in.required // [] | join(", "))",
         (if $in.properties.resolution.enum then "resolution: \($in.properties.resolution.enum | join(", "))" else empty end),
         (if $d == null then "duration: fal takes none; the output is as long as the source. Send \"duration\": \($whole) (what is paid for; the seller removes it before fal)"
-         else "duration: \(if ($denum | length) > 0 then ($denum | map(tostring) | join(", ")) else "\($dmin // "?") to \($dmax // "?")" end). \($d.description // "")" end),
+         else "duration: \(if ($denum | length) > 0 then ($denum | map(tostring) | join(", ")) else "\($dmin // "?") to \($dmax // "?")" end). Send the source length, \($whole) (what is paid for; the seller checks it)" end),
         (if $dur == "" then empty
          else ($dur | tonumber) as $n
-         | if $n < 1 then "FAIL duration \($n): send the length paid for, in whole seconds (\($whole))"
-           elif $n > $whole then "FAIL duration \($n) is longer than the source (\($whole) s): send at most \($whole)"
-           elif $d == null and $n != $whole then "FAIL duration \($n): this model has no duration field, so send the source length, \($whole)"
+         | if $n != $whole then "FAIL duration \($n) is not the source length: send \($whole) (trim the source for a shorter clip)"
            elif ($denum | length) > 0 and ($denum | map(tostring) | index([$n | tostring])) == null then "FAIL duration \($n) is not one of \($denum | map(tostring) | join(", "))"
            elif ($dmin != null and $n < $dmin) or ($dmax != null and $n > $dmax) then "FAIL duration \($n) is outside \($dmin) to \($dmax)"
            else "ok   duration \($n)" end end),
@@ -458,7 +478,7 @@ Pick the endpoint whose name matches the model and variant (standard or pro, edi
    ```
 
    Check reference images against `reference_image_*`. To measure an image: `ffprobe -v error -show_entries stream=width,height -of csv=p=0 <image>`.
-2. Find the model's fal twin ([Find a model on fal](#source-limits)) and run `check_fal_source <twin id> "$src"` with no duration (Venice's own `durations` decide `duration`). The model maker sets the source limits and the required fields, so they are the same on both providers. Tell the user they come from fal's listing of the same model. Ignore fal-only fields (`character_orientation`, `enable_safety_checker`). Send only the fields the Venice seller lists in `fields`: Venice refuses any other key.
+2. Find the model's fal twin ([Find a model on fal](#source-limits)) and run `check_fal_source <twin id> "$src"` with no duration (Venice's own `durations` decide which source lengths it takes: with fixed values such as `5s`, trim the source so its length rounded down is one of them). The model maker sets the source limits and the required fields, so they are the same on both providers. Tell the user they come from fal's listing of the same model. Ignore fal-only fields (`character_orientation`, `enable_safety_checker`). Send only the fields the Venice seller lists in `fields`: Venice refuses any other key.
 3. Read Venice's docs: `https://docs.venice.ai/llms.txt` (an index), `https://docs.venice.ai/models/video.md`, `https://docs.venice.ai/api-reference/endpoint/video/queue.md`, and the model family's guide listed in the index. Fetch them with `curl -sS` and search them for the model id.
 4. Nothing found: tell the user that the source limits for this model are not published. Do not guess limits.
 
@@ -466,7 +486,7 @@ Pick the endpoint whose name matches the model and variant (standard or pro, edi
 
 Send the source inline as a data URL when it fits, otherwise as a public `https` URL the user gives you (a file they already host). The buyer never uploads files anywhere else.
 
-An edit whose output is as long as its source (a fal model with no `duration` field, a Venice model whose `durations` is `["Auto"]`) must be inline: the seller measures the source to check the paid `duration`, and refuses a URL with `422 invalid_video_duration`. When such a source is too large, re-encode a smaller copy (below) instead of using a URL.
+A video edit's source must be inline: the seller measures it to check the paid `duration`, and refuses a URL with `422 invalid_video_duration`. When the source is too large, re-encode a smaller copy (below) instead of using a URL.
 
 - **`venice-video`**: the whole request must be at most 32.5 MB, character images included, so the raw video at most about 24 MB less the images (base64 adds a third).
 - **`fal-video`**: up to the Antseed request limit of 64 MiB, so the raw video at most about 47 MB, and within the model's own file limit.
@@ -596,7 +616,7 @@ On a failed create or wait, `error.peer_message` carries the seller's reason, in
 - `502 video_download_failed` without a `status`: the seller started sending the video and the stream broke; the loop retries it.
 - `504 upstream_upload_timeout`: the seller could not hand the request to fal in time. The video is not charged (a price above $1.00 keeps the opening fee); send a smaller file or a URL.
 - Job `FAILED` after it started (for example Venice "No person detected" from motion control or Recast, or fal's message that the source is too short or too small): the source has no real person, is outside the model's limits ([Source limits](#source-limits)), or the upstream rejected it. The job's payment channel is closed at once; a video priced above $1.00 costs the opening fee ($0.65 on Base), a cheaper one nothing.
-- `413 request_too_large`: the request body is larger than the seller's upstream accepts (Venice: 32.5 MB). Re-encode a smaller copy, or send a public `https` URL (not for an edit whose output is as long as its source, see [Inline or URL](#inline-or-url)).
-- `422 invalid_video_duration` on create: the model edits the whole source, so the seller measured it. Send the source inline, with `duration` its length in whole seconds, rounded down (the number in the message). No job started; on a video above $1.00 the opening fee is kept, so measure the source as in [Source](#source) before creating.
+- `413 request_too_large`: the request body is larger than the seller's upstream accepts (Venice: 32.5 MB). Re-encode a smaller copy, or send a public `https` URL (not for a video edit's source, see [Inline or URL](#inline-or-url)).
+- `422 invalid_video_duration` on create: an edit is paid by its source length, and a talking avatar by its audio's length, so the seller measured it. Send the source video (or the audio, as MP3 or WAV) inline, with `duration` its length in whole seconds, rounded down (the number in the message). No job started. Current sellers refuse before the payment channel opens, so nothing is charged; an older seller refuses after it and keeps the opening fee on a video above $1.00, so measure first as in [Source](#source) or [Lip-sync audio](#lip-sync-audio).
 - `422 required_capability_unavailable` naming `video_url`: no seller of that model takes a source video. Pick a model from the `frames=edit` catalog.
 - Connection refused: start Antseed Desktop or `antseed buyer start`.
