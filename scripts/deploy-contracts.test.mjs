@@ -2514,7 +2514,7 @@ test('M003 refuses to start again when the checkpoint is lost but broadcast rece
 
 test('published M001 address inventories match the immutable deployment record', async () => {
   const deployed = JSON.parse(await readFile('packages/contracts/deployments/base-mainnet/history/001-recognized-usage-deployed.json', 'utf8'));
-  for (const file of ['packages/contracts/README.md', 'apps/website/docs/protocol/recognized-usage.md']) {
+  for (const file of ['packages/contracts/README.md', 'apps/website/docs/reference/contracts.md']) {
     const document = (await readFile(file, 'utf8')).toLowerCase();
     for (const [name, contract] of Object.entries(deployed.contracts)) {
       assert.ok(document.includes(contract.address.toLowerCase()), `${file} is missing ${name}`);
