@@ -837,7 +837,7 @@ export class BuyerPaymentNegotiator {
         // What this seller's session would lock from available deposits —
         // suggestedAmount clamped to the buyer's reserve cap.
         ...(requestedReserveAmount != null ? { requiredReserve: requestedReserveAmount.toString() } : {}),
-        message: 'You are out of AntSeed credits for this request. Add funds in the AntSeed app, or run "antseed buyer deposit <amount>" from the CLI, then retry.',
+        message: 'You are out of Antseed credits for this request. Add funds in Antseed Desktop or your gateway console, or run "antseed buyer deposit <amount>" from the CLI, then retry.',
       });
       return {
         action: 'return',

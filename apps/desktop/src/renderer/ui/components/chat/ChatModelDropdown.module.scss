@@ -1,0 +1,309 @@
+.model-dropdown {
+  position: relative;
+  min-width: 0;
+}
+
+.model-dropdown-trigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  /* Fixed height: the trigger is the tallest header child, and the chat
+     header pins its min-height to it (see ChatView .page-header). */
+  height: 36px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: none;
+  cursor: pointer;
+  color: var(--text-muted);
+
+  &:hover {
+    background: none;
+    border-color: var(--border);
+  }
+
+  &:focus-visible {
+    outline: none;
+    background: var(--bg-hover);
+    border-color: var(--border);
+  }
+}
+
+.model-dropdown-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  /* Thin chat header: a long model name must ellipsize instead of pushing
+     into the header's right-side controls. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.model-dropdown-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 340px;
+  max-height: 380px;
+  overflow-y: auto;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-sm);
+  z-index: 200;
+  padding: 4px;
+}
+
+.model-dropdown-section {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 8px 12px 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+
+  &:not(:first-child) {
+    margin-top: 4px;
+    border-top: 1px solid var(--border);
+    padding-top: 8px;
+  }
+}
+
+.model-dropdown-item {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  width: 100%;
+  padding: 10px 12px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 400;
+  text-align: left;
+  cursor: pointer;
+
+  &:hover {
+    background: var(--bg-hover);
+    border: none;
+  }
+
+  &:focus-visible {
+    outline: none;
+    background: var(--bg-hover);
+  }
+
+  &.active {
+    background: rgba(var(--accent-green-rgb), 0.08);
+  }
+}
+
+.item-top-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.item-name-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.item-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.item-price {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.item-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.item-sellers {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* Small labels, as in the gateway console: green Free, blue TEE, outlined otherwise. */
+.tag {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 15px;
+  white-space: nowrap;
+}
+
+.tag-free {
+  border-color: rgba(var(--accent-green-rgb), 0.35);
+  background: rgba(var(--accent-green-rgb), 0.1);
+  color: var(--accent-green);
+}
+
+.tag-tee {
+  border-color: rgba(59, 130, 246, 0.35);
+  background: rgba(59, 130, 246, 0.1);
+  color: #3b82f6;
+}
+
+.tag-brand {
+  border-color: rgba(var(--brand-rgb), 0.35);
+  background: rgba(var(--brand-rgb), 0.12);
+  color: var(--brand);
+}
+
+.item-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.model-dropdown-footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  margin-top: 4px;
+  padding: 9px 12px;
+  border: none;
+  border-top: 1px solid var(--border);
+  border-radius: 0 0 6px 6px;
+  background: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+
+  &:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  &:focus-visible {
+    outline: none;
+    background: var(--bg-hover);
+  }
+}
+
+.model-dropdown-search {
+  width: calc(100% - 8px);
+  margin: 4px 4px 6px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-input, transparent);
+  color: var(--text-primary);
+  font-size: 13px;
+
+  &:focus-visible {
+    outline: none;
+    border-color: var(--text-muted);
+  }
+}
+
+.model-dropdown-status {
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+.model-dropdown-retry {
+  margin-left: 6px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text-primary);
+  font-size: 12px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* Seller picker (ChatSellerPicker): a quieter trigger beside the model. */
+.seller-trigger {
+  gap: 6px;
+  height: 32px;
+  color: var(--text-muted);
+}
+
+.seller-label {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  max-width: 160px;
+}
+
+.seller-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.seller-warn-dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warning, #d97706);
+}
+
+.seller-menu {
+  min-width: 320px;
+}
+
+/* menuAnchor="container": the wrapper stops being the containing block, so
+   the menu lines up with the positioned ancestor's edges. */
+.anchor-container {
+  position: static;
+}
+
+.menu-full-width {
+  left: 0;
+  right: 0;
+  min-width: 0;
+}
+
+.item-disabled {
+  cursor: default;
+  opacity: 0.55;
+
+  &:hover {
+    background: none;
+  }
+}

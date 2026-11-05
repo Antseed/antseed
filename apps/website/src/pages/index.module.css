@@ -86,7 +86,7 @@
   }
 }
 
-/* ---- split hero (copy left, AI VPN demo right) — wide viewports only ---- */
+/* ---- split hero (copy left, Antseed Desktop demo right) — wide viewports only ---- */
 @media (min-width: 997px) {
   .heroSplit {
     text-align: left;

@@ -29,6 +29,16 @@
   cursor: pointer;
 }
 
+.keysButton {
+  @include chip.chip-text;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 2px;
+}
+
+.keysButton:hover,
 .credits:hover {
   @include chip.chip-hover;
 }
@@ -51,6 +61,7 @@
 }
 
 .credits:focus-visible,
+.keysButton:focus-visible,
 .iconButton:focus-visible {
   outline: 2px solid var(--accent-green);
   outline-offset: 2px;

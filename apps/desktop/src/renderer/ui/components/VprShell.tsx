@@ -1,34 +1,27 @@
 import { useEffect, useMemo, useState } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
-import type { BadgeTone } from '../../core/state';
 import type { ViewName } from '../types';
 import { shallowEqual, useUiSelector } from '../hooks/useUiSelector';
-import { useTeeBackgroundVerification } from '../hooks/useTeeVerification';
 import { selectHeadlineBalanceUsdc } from '../../core/balance';
 import { shouldNotifyAppsOnboarding } from '../../modules/app/apps-onboarding';
+import { gatewayResource } from '../../modules/app/vpr-resources';
+import { useCachedResource } from '../../modules/app/cached-resource';
 import { navViews } from './viewRegistry';
 import { ChatListPanel } from './ChatListPanel';
 import { DepositProgressBanner } from './DepositProgressBanner';
 import { NetworkAlertBanner } from './NetworkAlertBanner';
 import { UpdateBanner } from './UpdateBanner';
-import { PublicEndpointModalProvider } from './tunnels/PublicEndpointModal';
 import { VprNavContext } from './vpr/VprNavContext';
 import { VprHeaderActions } from './vpr/VprHeaderActions';
 import styles from './VprShell.module.scss';
 
 /* Views built on VprPage carry the credits pill inside their pinned header,
    so the shell's floating pill would duplicate it. */
-const VIEWS_WITH_HEADER_CREDITS: ReadonlySet<ViewName> = new Set([
+const VIEWS_WITH_HEADER_CREDITS: ReadonlySet<ViewName> = new Set<ViewName>([
   'chat',
-  'explore',
-  'model',
   'tools',
-  'tunnels',
-  'chats',
-  'credits',
-  'deposit',
-  'activity',
   'rewards',
+  'deposit',
   'preferences',
   'help',
 ]);
@@ -45,31 +38,20 @@ type VprShellProps = {
 const mainNavEntries = navViews('main');
 const bottomNavEntries = navViews('bottom');
 
-function statusClassName(tone: BadgeTone): string {
-  if (tone === 'bad') return `${styles.statusItem} ${styles.statusBad}`;
-  if (tone === 'warn') return `${styles.statusItem} ${styles.statusWarn}`;
-  return styles.statusItem;
-}
-
-function networkStatusClassName(networkHealth: string): string {
-  if (networkHealth === 'Down') return `${styles.statusItem} ${styles.statusBad}`;
-  if (networkHealth === 'Limited') return `${styles.statusItem} ${styles.statusWarn}`;
-  return styles.statusItem;
+function gatewayStatusText(status: { mode: 'local' | 'remote'; reachable: boolean; origin: string | null } | undefined): string {
+  if (!status) return 'Gateway starting';
+  const where = status.mode === 'local' ? 'Local gateway' : (status.origin?.replace(/^https?:\/\//, '') ?? 'Remote gateway');
+  return `${where} · ${status.reachable ? 'ready' : 'unreachable'}`;
 }
 
 export function VprShell({ activeView, onSelectView, onNavigateBack, children }: VprShellProps) {
-  useTeeBackgroundVerification();
   const snap = useUiSelector((state) => ({
     headlineBalanceUsdc: selectHeadlineBalanceUsdc(state),
-    connectBadgeLabel: state.connectBadge.label,
-    connectBadgeTone: state.connectBadge.tone,
-    networkHealth: state.ovDhtHealth,
-    proxyPort: state.ovProxyPort,
-    peers: state.ovPeers,
-    serviceCount: state.ovServiceCount,
-    chatNeedsAttention: state.chatPaymentApprovalVisible || state.chatSendingConversationIds.length > 0,
+    chatNeedsAttention: state.chatSendingConversationIds.length > 0,
     chatPanelExpanded: state.chatPanelExpanded,
   }), shallowEqual);
+  const gateway = useCachedResource(gatewayResource);
+  const gatewayStatus = gateway.data?.status;
 
   const [appVersion, setAppVersion] = useState<string>(
     typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '',
@@ -88,14 +70,13 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
   );
 
   return (
-    <PublicEndpointModalProvider>
       <div className={`${styles.shell}${chatPanelVisible ? ` ${styles.shellWithPanel}` : ''}`}>
       {/* Window-drag handle: the hidden-inset title bar has no native drag
           region, so this strip provides one. pointer-events: none keeps web
           clicks working; interactive elements overlapping it opt out with
           -webkit-app-region: no-drag. */}
       <div className={styles.dragStrip} aria-hidden="true" />
-      <nav className={styles.sidebar} aria-label="AI VPN navigation">
+      <nav className={styles.sidebar} aria-label="Main navigation">
         <div className={styles.navGroup}>
           {mainNavEntries.map(({ view, nav }) => {
             const active = activeView === view;
@@ -163,23 +144,12 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
         <DepositProgressBanner onAddFunds={() => onSelectView('deposit')} onDepositView={activeView === 'deposit'} />
       </main>
       <footer className={styles.statusStrip}>
-        <span className={networkStatusClassName(snap.networkHealth)}>
-          {snap.networkHealth}
+        <span className={gatewayStatus && !gatewayStatus.reachable ? `${styles.statusItem} ${styles.statusWarn}` : styles.statusItem}>
+          {gatewayStatusText(gatewayStatus)}
         </span>
-        <span className={styles.statusSep} aria-hidden="true">|</span>
-        <span className={statusClassName(snap.connectBadgeTone)}>
-          {snap.connectBadgeLabel}
-        </span>
-        <span className={styles.statusSep} aria-hidden="true">|</span>
-        <span className={styles.statusItem}>Port: {snap.proxyPort}</span>
-        <span className={styles.statusSep} aria-hidden="true">|</span>
-        <span className={styles.statusItem}>{snap.peers} Peers</span>
-        <span className={styles.statusSep} aria-hidden="true">|</span>
-        <span className={styles.statusItem}>{snap.serviceCount} Services</span>
         <span className={styles.statusSep} aria-hidden="true">|</span>
         <span className={styles.statusItem}>v{appVersion}</span>
       </footer>
       </div>
-    </PublicEndpointModalProvider>
   );
 }

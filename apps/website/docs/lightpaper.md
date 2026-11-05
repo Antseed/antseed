@@ -128,7 +128,7 @@ See [Reward policies](/docs/reward-policies) for how the rule works and [Payment
 
 **Developers and agents seeking better output.** Specialized providers, improved prompting, domain-specific workflows, capabilities that commodity inference alone cannot deliver.
 
-**Everyday users.** The AI VPN brings the open market to non-technical users through chat and co-work interfaces, powered by the same P2P network underneath.
+**Everyday users.** Antseed Desktop brings the open market to non-technical users through chat and co-work interfaces, powered by the same P2P network underneath.
 
 **Privacy-sensitive organizations.** Law firms, healthcare, finance, and journalists who cannot use conventional cloud AI may prefer routes with no central account and TEE-verified providers. TEE can improve confidentiality against a provider operator, but users remain responsible for selecting suitable providers and should not assume all prompts, outputs, metadata, wallet activity, or network information are private.
 

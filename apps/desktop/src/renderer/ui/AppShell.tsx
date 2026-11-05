@@ -34,12 +34,9 @@ export function AppShell() {
     appSetupStatusKnown: state.appSetupStatusKnown,
     appSetupNeeded: state.appSetupNeeded,
     appSetupComplete: state.appSetupComplete,
-    chatServiceCount: state.chatServiceOptions.length,
-    chatPanelExpanded: state.chatPanelExpanded,
-    // A default model backed by a trusted free route — what first-run setup
-    // is actually for. The provisional flag clears exactly when routing
-    // confirms a free-backed default (or the user picks a model).
-    freeDefaultReady: state.vprRouteSelection.model !== null && !state.vprDefaultModelProvisional,
+    chatServiceCount: state.chatModels.length,
+    // A model to chat with — what first-run setup is waiting for.
+    freeDefaultReady: state.chatSelectedModelId !== null,
   }), shallowEqual);
   const [activeView, setActiveView] = useState<ViewName>('home');
   const [setupVisible, setSetupVisible] = useState(false);
@@ -148,17 +145,6 @@ export function AppShell() {
       void preloadViews(viewsForPreload('idle'));
     });
   }, [showSetup]);
-
-  useEffect(() => {
-    if (showSetup) return;
-    // Chat supports both window sizes: wide (standard preset, conversation
-    // list showing) by default, thin when the user collapses the panel.
-    if (activeView === 'chat' && snap.chatPanelExpanded) {
-      void window.antseedDesktop?.applyWindowPreset?.('standard');
-      return;
-    }
-    void window.antseedDesktop?.applyWindowView?.(activeView);
-  }, [activeView, showSetup, snap.chatPanelExpanded]);
 
   if (showSetup) {
     return <SetupScreen />;

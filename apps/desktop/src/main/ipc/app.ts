@@ -4,7 +4,7 @@
  */
 import { ipcMain } from 'electron';
 import { stopPaymentsPortal } from '../payments/portal.js';
-import { stakingSessions } from '../staking/portal.js';
+import { ensureLocalGateway, stopLocalGateway } from '../gateway/service.js';
 import {
   getAppSetupStatus,
 } from '../app-context.js';
@@ -165,14 +165,13 @@ export function registerAppIpc(): void {
         return { ok: false, error: 'Private key must be a string' };
       }
       await ensureSecureIdentity();
-      const result = await stakingSessions.reset(async () => {
-        const imported = await importIdentityPrivateKeyHex(rawKey);
-        if (imported.ok) await stopPaymentsPortal();
-        return imported;
-      });
+      const result = await importIdentityPrivateKeyHex(rawKey);
       if (result.ok) {
+        await stopPaymentsPortal();
         // Balances cached for the previous signer no longer apply.
         invalidateCreditsCache();
+        // The local gateway's buyer signs with the identity it was started with.
+        void stopLocalGateway().then(() => ensureLocalGateway()).catch(() => undefined);
       }
       return result;
     } catch (err) {

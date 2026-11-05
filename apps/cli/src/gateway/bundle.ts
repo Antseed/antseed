@@ -222,7 +222,7 @@ export async function exportGatewayBundle(options: ExportOptions): Promise<Expor
   // The default wallet as the buyer loads it: ANTSEED_IDENTITY_HEX (the desktop app's key) wins over identity.key.
   const defaultIdentity = await loadDefaultBuyerIdentity(dataDir).catch(() => ({ identity: null, fromEnv: false }))
   if (!defaultIdentity.fromEnv && !existsSync(join(dataDir, 'identity.key')) && existsSync(join(dataDir, 'identity.enc'))) {
-    throw new Error('The default wallet is encrypted by the Antseed desktop app (identity.enc), which the CLI cannot read. Export its private key from the app, save it as identity.key in the data dir, and try again.')
+    throw new Error('The default wallet is encrypted by Antseed Desktop (identity.enc), which the CLI cannot read. Export its private key from Antseed Desktop, save it as identity.key in the data dir, and try again.')
   }
 
   const warnings: string[] = []

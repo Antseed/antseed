@@ -134,7 +134,7 @@ const projects: EcosystemProject[] = [
     category: 'Data provider',
     oneLiner: 'Live data for your agent, served as models on Antseed by Sippar.',
     description:
-      'Ask any model in the AI VPN to use the X, Reddit, LinkedIn, news, jobs, flight, hotel or Amazon model. It fetches the live data when you ask and names the source in its answer.',
+      'Ask any model in Antseed Desktop to use the X, Reddit, LinkedIn, news, jobs, flight, hotel or Amazon model. It fetches the live data when you ask and names the source in its answer.',
     glyph: 'SS',
     status: 'Live',
     color: '#d4a074',

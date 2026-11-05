@@ -1,14 +1,13 @@
 /**
  * One turn of the chat agent: prompt in, streamed assistant reply out.
  *
- * Split out of `engine.ts` because it is by far the largest piece of
- * `registerPiChatHandlers` and has a wide blast radius — proxy readiness,
- * peer binding, tool approval, payment-required handling and session
- * persistence all interleave here. The context object below is the complete
- * set of engine state this run touches; nothing else is reachable from it.
+ * Every model call goes to the gateway (`getGatewayEndpoint()`) as a plain
+ * API client: base URL + bearer key + model id. The gateway picks sellers and
+ * pays them; the chat only surfaces its errors (a 402 becomes the calm
+ * "Add funds" notice in the renderer). The context object below is the
+ * complete set of engine state this run touches.
  */
 import { randomUUID } from 'node:crypto';
-import { RESPONSE_ROUTE_ENTRY } from './response-route.js';
 import { existsSync } from 'node:fs';
 import type { AgentSessionEvent, ExtensionAPI } from '@mariozechner/pi-coding-agent';
 import {
@@ -35,12 +34,13 @@ import {
   classifyChatStreamFailure,
   cancelFreeTierRetry,
   formatChatStreamStopForLog,
+  toGatewayStopReason,
   type ChatStreamStopReason,
 } from './stream-stop.js';
 import {
-  allowToolForPeer,
-  getPeerPermissionMode,
-  isToolAllowedForPeer,
+  allowToolForModel,
+  getModelPermissionMode,
+  isToolAllowedForModel,
   normalizePermissionMode,
   type ChatPermissionMode,
   type ToolApprovalDecision,
@@ -57,10 +57,15 @@ import {
   type PreparedChatAttachment,
 } from './attachments/prepare.js';
 import { getCurrentChatWorkspaceDir } from './workspace.js';
-import { PROXY_PROVIDER_ID } from './provider-hint.js';
-import { normalizePeerId, normalizeServiceId } from './normalize.js';
+import { normalizeServiceId } from './normalize.js';
 import { asErrorMessage } from '../utils.js';
-import type { ChatServiceCatalogEntry, ChatServiceProtocol } from './service-catalog.js';
+import {
+  GATEWAY_PROVIDER_ID,
+  makeGatewayModel,
+  resolveSystemPrompt,
+  type ChatModel,
+} from './gateway-model.js';
+import { splitPinnedModel } from '../../shared/pinned-model.js';
 import {
   convertAssistantMessageForUi,
   convertUserMessageForUi,
@@ -70,21 +75,7 @@ import {
   parseAssistantMetaFromSessionEvent,
   toToolOutputString,
 } from './message-projection.js';
-import {
-  makeProxyService,
-  fetchProxyConversationRoute,
-  normalizePaymentBody,
-  paymentRequiredAmount,
-  resolveProxyPort,
-  resolveSystemPrompt,
-  PROXY_RUNTIME_API_KEY,
-} from './proxy-service.js';
-import {
-  CHAT_AGENT_DIR,
-  extractPeerFromEntries,
-  isPersistedPeerBindingPinned,
-  PiConversationStore,
-} from './conversation-store.js';
+import { CHAT_AGENT_DIR, PiConversationStore } from './conversation-store.js';
 import {
   classifyServiceCategory,
   durationBucket,
@@ -94,7 +85,6 @@ import {
   publicModelId,
   type TelemetryEventProperties,
 } from '../telemetry/events.js';
-import { isNativeVideoProtocol } from '@antseed/node';
 import { classifyChatRequestFailure } from '../telemetry/classify.js';
 import {
   generateConversationTitleWithModel,
@@ -103,6 +93,15 @@ import {
 } from './conversation-title.js';
 import type { AiChatMessage, AiMessageMeta } from './conversation-types.js';
 import type { ActiveRun, ChatStreamErrorPayload } from './engine-types.js';
+import type { GatewayEndpoint } from '../gateway/service.js';
+
+/** What the engine knows about a gateway model, for one send. */
+export type ResolvedChatModel = {
+  /** Null when the gateway's list could not be read or does not list the id. */
+  model: ChatModel | null;
+  /** Seller offers the gateway reported for the model (telemetry pricing only). */
+  offers: Parameters<typeof modelPricingSnapshot>[0];
+};
 
 /**
  * Everything a streaming run reaches for outside its own arguments. Passing it
@@ -111,31 +110,15 @@ import type { ActiveRun, ChatStreamErrorPayload } from './engine-types.js';
 export type StreamingRunContext = {
   store: PiConversationStore;
   activeRunsByConversation: Map<string, ActiveRun>;
-  cachedPaymentRequired: Map<string, Record<string, unknown>>;
-  preferredPeerByConversationId: Map<string, string>;
   configPath: string;
   sendToRenderer: (channel: string, payload: unknown) => void;
   appendSystemLog: (line: string) => void;
-  isBuyerRuntimeRunning: () => boolean;
-  ensureBuyerRuntimeStarted?: (() => Promise<boolean>) | undefined;
+  getEndpoint: () => Promise<GatewayEndpoint>;
+  resolveModel: (endpoint: GatewayEndpoint, modelId: string) => Promise<ResolvedChatModel>;
   requestToolApproval: (request: ToolApprovalRequest) => Promise<ToolApprovalDecision>;
-  cacheFallbackPaymentRequired: (conversationId: string, suggestedAmount: string) => void;
   emitChatStreamError: (payload: ChatStreamErrorPayload) => void;
-  emitPaymentRequiredStreamError: (
-    conversationId: string,
-    suggestedAmount: string,
-  ) => ChatStreamStopReason;
   clearActiveRun: (run: ActiveRun | null) => void;
   abortAndClearActiveRun: (run: ActiveRun | null) => Promise<void>;
-  isProxyAvailable: (port: number) => Promise<boolean>;
-  waitForBuyerProxy: (port: number, timeoutMs?: number) => Promise<boolean>;
-  resolveProtocolForSend: (serviceId: string) => Promise<ChatServiceProtocol>;
-  /**
-   * Read-only view of the engine's service-catalog cache. A getter, not a
-   * value: the engine replaces the array wholesale on every refresh.
-   */
-  getServiceCatalogEntries: () => ChatServiceCatalogEntry[];
-  getBuyerEligibleServiceCatalogEntries: () => ChatServiceCatalogEntry[];
   recordFirstChatStarted?: StreamingRunContextTelemetry['recordFirstChatStarted'];
   recordChatRequestStarted?: StreamingRunContextTelemetry['recordChatRequestStarted'];
   recordChatRequestFinished?: StreamingRunContextTelemetry['recordChatRequestFinished'];
@@ -146,43 +129,42 @@ type StreamingRunContextTelemetry = Pick<
   'recordFirstChatStarted' | 'recordChatRequestStarted' | 'recordChatRequestFinished'
 >;
 
+export type StreamingRunResult = { ok: boolean; error?: string; stopReason?: ChatStreamStopReason };
+
 export type StreamingRunner = ReturnType<typeof createStreamingRunner>;
 
 export function createStreamingRunner(ctx: StreamingRunContext) {
   const {
     store,
     activeRunsByConversation,
-    cachedPaymentRequired,
-    preferredPeerByConversationId,
     configPath,
     sendToRenderer,
     appendSystemLog,
-    isBuyerRuntimeRunning,
-    ensureBuyerRuntimeStarted,
+    getEndpoint,
+    resolveModel,
     requestToolApproval,
-    cacheFallbackPaymentRequired,
     emitChatStreamError,
-    emitPaymentRequiredStreamError,
     clearActiveRun,
     abortAndClearActiveRun,
-    isProxyAvailable,
-    waitForBuyerProxy,
-    resolveProtocolForSend,
-    getServiceCatalogEntries,
-    getBuyerEligibleServiceCatalogEntries,
     recordFirstChatStarted,
     recordChatRequestStarted,
     recordChatRequestFinished,
   } = ctx;
 
+  /** Classify a failure the way a gateway client should present it. */
+  const classifyGatewayFailure = (
+    error: unknown,
+    message: string,
+    stopReason: 'error' | 'aborted',
+  ): ChatStreamStopReason => toGatewayStopReason(classifyChatStreamFailure({ error, message, stopReason }), message);
+
   const runStreamingPrompt = async (
     conversationId: string,
     userMessage: string,
-    serviceOverride?: string,
+    modelOverride?: string,
     attachments?: PreparedChatAttachment[],
-    peerOverride?: string,
     permissionModeInput?: unknown,
-  ): Promise<{ ok: boolean; error?: string; stopReason?: ChatStreamStopReason }> => {
+  ): Promise<StreamingRunResult> => {
     const trimmedMessage = userMessage.trim();
     const requestedPermissionMode: ChatPermissionMode | null = (
       permissionModeInput === 'manual' || permissionModeInput === 'full'
@@ -195,7 +177,6 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
       return { ok: false, error: 'Empty message' };
     }
 
-
     const existingRun = activeRunsByConversation.get(conversationId);
     if (existingRun) {
       appendSystemLog(
@@ -204,34 +185,19 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
       await abortAndClearActiveRun(existingRun);
     }
 
-    const proxyPort = await resolveProxyPort(configPath);
-    process.env['ANTSEED_PROXY_URL'] = `http://127.0.0.1:${String(proxyPort)}`;
-    const runtimeRunning = isBuyerRuntimeRunning();
-    let proxyAvailable = await isProxyAvailable(proxyPort);
-    if (!proxyAvailable && ensureBuyerRuntimeStarted) {
-      if (runtimeRunning) {
-        appendSystemLog(`Buyer runtime is running. Waiting for proxy :${proxyPort}...`);
-      } else {
-        appendSystemLog(`Buyer proxy offline on port ${proxyPort}; attempting to start Buyer runtime...`);
-      }
-      try {
-        const started = runtimeRunning ? true : await ensureBuyerRuntimeStarted();
-        if (started) {
-          if (!runtimeRunning) {
-            appendSystemLog(`Buyer runtime start requested. Waiting for proxy :${proxyPort}...`);
-          }
-          proxyAvailable = await waitForBuyerProxy(proxyPort);
-        }
-      } catch (error) {
-        appendSystemLog(`Buyer runtime auto-start failed: ${asErrorMessage(error)}`);
-      }
+    // Starts the local gateway on demand; a remote gateway without a URL or
+    // key throws a readable error the renderer shows as-is.
+    let endpoint: GatewayEndpoint;
+    try {
+      endpoint = await getEndpoint();
+    } catch (error) {
+      const message = asErrorMessage(error);
+      appendSystemLog(`Chat could not reach the gateway: ${message}`);
+      return { ok: false, error: message };
     }
-    if (!proxyAvailable) {
-      return {
-        ok: false,
-        error: `Buyer proxy is not reachable on port ${proxyPort}. Start Buyer runtime or fix buyer.proxyPort in config.`,
-      };
-    }
+    // Bundled skills (images, videos) call the API from the agent's shell.
+    process.env['ANTSEED_PROXY_URL'] = endpoint.origin;
+    process.env['ANTSEED_API_KEY'] = endpoint.apiKey;
 
     const sessionManager = await store.openSessionManager(conversationId);
     if (!sessionManager) {
@@ -239,101 +205,55 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     }
 
     const context = sessionManager.buildSessionContext();
+    const serviceId = normalizeServiceId(modelOverride || context.model?.modelId);
+    if (!serviceId) {
+      return { ok: false, error: 'Choose a model for this chat.' };
+    }
 
-    const serviceId = normalizeServiceId(serviceOverride || context.model?.modelId);
-    const persistedPeer = extractPeerFromEntries(sessionManager);
-    const peerOverrideId = normalizePeerId(peerOverride) ?? null;
-    const persistedPinnedPeerId = isPersistedPeerBindingPinned(persistedPeer) ? persistedPeer.peerId : null;
-    const preferredPeerId = peerOverrideId
-      ?? preferredPeerByConversationId.get(conversationId)
-      ?? persistedPeer?.peerId
-      ?? null;
-    const routeMode = peerOverrideId || persistedPinnedPeerId ? 'pinned' : 'auto';
-    const persistedPermissionMode: ChatPermissionMode = preferredPeerId
-      ? await getPeerPermissionMode(preferredPeerId)
-      : 'manual';
+    const { model: chatModel, offers } = await resolveModel(endpoint, serviceId);
+    if (chatModel && chatModel.type !== 'text') {
+      return {
+        ok: false,
+        error: `"${chatModel.label}" is a ${chatModel.type} model and cannot be used for text chat. Choose a text model.`,
+      };
+    }
+    if (chatModel && !chatModel.protocol) {
+      return { ok: false, error: `"${chatModel.label}" does not offer a chat API. Choose another model.` };
+    }
+    // A model the list does not describe (plain OpenAI-compatible gateway, or
+    // the list failed) is spoken to over chat completions, text only.
+    const protocol = chatModel?.protocol ?? 'openai-chat-completions';
+    const supportsImages = chatModel?.supportsImages ?? false;
+    const modelLabel = chatModel?.label ?? serviceId;
+
+    const persistedPermissionMode = await getModelPermissionMode(splitPinnedModel(serviceId).modelId);
     const permissionMode: ChatPermissionMode = persistedPermissionMode === 'full'
       ? 'full'
       : requestedPermissionMode ?? persistedPermissionMode;
-    if (preferredPeerId) {
-      preferredPeerByConversationId.set(conversationId, preferredPeerId);
-      if (peerOverrideId && persistedPeer?.peerId !== peerOverrideId) {
-        const peerLabel = getServiceCatalogEntries().find((entry) => entry.peerId === peerOverrideId)?.peerLabel;
-        void store.setPeer(conversationId, peerOverrideId, peerLabel, 'pinned');
-      }
-    }
-    // Catalog entry for this (service, peer) pair drives both the API
-    // protocol (so we hit /v1/chat/completions vs /v1/responses vs
-    // /v1/messages on the right peer) and vision-capability info. Look
-    // up the peer-specific row first, then fall back to any row
-    // matching the service alone if the user has no peer pinned.
-    //
-    // We look for a `multimodal` category tag; sellers announce this
-    // via serviceCategories in their peer metadata. Absent catalog
-    // info, we fall back to text-only so we never blindly forward
-    // images to a model whose upstream will reject them (DeepInfra,
-    // for example, returns "Multimodal is not supported for model: …"
-    // for text-only LLMs).
-    const normalizedServiceForCatalog = serviceId.trim().toLowerCase();
-    const catalogEntry = getServiceCatalogEntries().find((entry) => (
-      entry.id.trim().toLowerCase() === normalizedServiceForCatalog
-      && (!preferredPeerId || entry.peerId === preferredPeerId)
-    )) ?? getServiceCatalogEntries().find((entry) => (
-      entry.id.trim().toLowerCase() === normalizedServiceForCatalog
-    ));
-    // Prefer the peer-aware protocol from the catalog entry. The global
-    // serviceProtocolMap is first-write-wins per serviceId across all
-    // peers, so when one peer offers a service via openai-chat-completions
-    // and another via openai-responses, the map can return the wrong
-    // protocol for the peer we're actually pinned to. Fall back to the
-    // map only when we have no catalog row to read from.
-    const advertisedProtocol = catalogEntry?.protocol;
-    if (advertisedProtocol === 'openai-images') {
-      return {
-        ok: false,
-        error: `Service "${serviceId}" generates images and cannot be used for text chat. Select a text-capable model.`,
-      };
-    }
-    if (isNativeVideoProtocol(advertisedProtocol)) {
-      return { ok: false, error: 'Video services cannot be used for text chat.' };
-    }
-    if (advertisedProtocol === 'typesafe-systemone') {
-      return {
-        ok: false,
-        error: `Service "${serviceId}" is a decision model and cannot be used for text chat. Select a text-capable model.`,
-      };
-    }
 
-    const protocol: ChatServiceProtocol = advertisedProtocol ?? await resolveProtocolForSend(serviceId);
-    const supportsMultimodal = catalogEntry?.categories?.includes('multimodal') ?? false;
-    const droppedImageCount = supportsMultimodal ? 0 : attachmentImages.length;
+    const droppedImageCount = supportsImages ? 0 : attachmentImages.length;
     if (droppedImageCount > 0) {
       appendSystemLog(
-        `Dropping ${String(droppedImageCount)} image attachment(s): service `
-        + `"${serviceId}" is not tagged \`multimodal\` in the catalog. `
+        `Dropping ${String(droppedImageCount)} image attachment(s): model "${serviceId}" does not accept image input. `
         + 'Other attachment types (pdf/docs/text) are unaffected.',
       );
     }
-    const effectiveAttachmentImages = supportsMultimodal ? attachmentImages : [];
-    const proxyModel = makeProxyService(
-      serviceId,
-      proxyPort,
+    const effectiveAttachmentImages = supportsImages ? attachmentImages : [];
+    const gatewayModel = makeGatewayModel({
+      modelId: serviceId,
+      endpoint,
       protocol,
-      preferredPeerId,
-      null,
-      supportsMultimodal,
-      routeMode,
-      conversationId,
-    );
+      supportsImages,
+      ...(chatModel?.contextWindow ? { contextWindow: chatModel.contextWindow } : {}),
+    });
 
     const authStorage = AuthStorage.inMemory();
-    authStorage.setRuntimeApiKey(PROXY_PROVIDER_ID, PROXY_RUNTIME_API_KEY);
+    authStorage.setRuntimeApiKey(GATEWAY_PROVIDER_ID, endpoint.apiKey);
     const modelRegistry = ModelRegistry.inMemory(authStorage);
 
     // Pass the system prompt via resourceLoader so it is applied on every turn.
     // (agent-session rebuilds _baseSystemPrompt from the loader each turn, so a
     // one-shot session.agent.setSystemPrompt call would be overridden.)
-    // Priority: user override (env/config) → AI VPN default.
     const userSystemPrompt = await resolveSystemPrompt(configPath);
     const sessionWorkspaceDir = sessionManager.getCwd()?.trim();
     const chatWorkspaceDir = sessionWorkspaceDir && existsSync(sessionWorkspaceDir)
@@ -354,17 +274,14 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
         const input = event.input && typeof event.input === 'object'
           ? event.input as Record<string, unknown>
           : {};
-        const description = describeToolApproval(event.toolName, input, preferredPeerId);
+        const description = describeToolApproval(event.toolName, input, serviceId);
         if (isToolPermissionAutoAllowed(description.permissionKey)) {
           return undefined;
         }
-        if (await isToolAllowedForPeer(preferredPeerId, description.permissionKey)) {
+        if (await isToolAllowedForModel(serviceId, description.permissionKey)) {
           return undefined;
         }
 
-        const peerName = preferredPeerId
-          ? getServiceCatalogEntries().find((entry) => entry.peerId === preferredPeerId)?.peerLabel ?? null
-          : null;
         const decision = await requestToolApproval({
           id: randomUUID(),
           conversationId,
@@ -372,16 +289,16 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
           toolName: event.toolName,
           input,
           workspacePath: chatWorkspaceDir,
-          peerId: preferredPeerId,
-          peerName,
+          modelId: serviceId,
+          modelName: modelLabel,
           ...description,
         });
 
-        if (decision === 'always_allow_peer') {
+        if (decision === 'always_allow') {
           try {
-            await allowToolForPeer(preferredPeerId, description.permissionKey);
+            await allowToolForModel(serviceId, description.permissionKey);
           } catch (error) {
-            appendSystemLog(`Failed to save peer-scoped tool approval rule: ${asErrorMessage(error)}`);
+            appendSystemLog(`Failed to save model-scoped tool approval rule: ${asErrorMessage(error)}`);
           }
           return undefined;
         }
@@ -411,7 +328,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
       sessionManager,
       authStorage,
       modelRegistry,
-      model: proxyModel,
+      model: gatewayModel,
       customTools: [
         webFetchTool,
         createBrowserPreviewTool(sendToRenderer),
@@ -432,7 +349,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
       SHOW_MEDIA_TOOL_NAME, GET_CHAT_IMAGE_PATH_TOOL_NAME, GET_CHAT_VIDEO_PATH_TOOL_NAME,
     ]);
 
-    await session.setModel(proxyModel);
+    await session.setModel(gatewayModel);
     session.agent.sessionId = conversationId;
 
     const firstUserMessageText = getMessageText(session.messages.find((message) => message.role === 'user')) || trimmedMessage;
@@ -441,13 +358,8 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
       firstUserMessageText,
     );
 
-    const turnMetaQueue: AiMessageMeta[] = [];
     let finalAssistantCreatedAt: number | undefined;
     const toolArgsById = new Map<string, Record<string, unknown>>();
-    // Pi's native streaming handles all API formats (anthropic-messages,
-    // openai-completions, openai-responses) via model.api + model.baseUrl.
-    // No custom streamFn needed — the buyer proxy at model.baseUrl is a
-    // transparent HTTP proxy that speaks the same API as the upstream provider.
 
     let turnIndex = 0;
     let userPersisted = false;
@@ -455,19 +367,13 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     let pendingAssistantMessage: AiChatMessage | null = null;
     let terminalStreamError: string | null = null;
     let terminalStreamFailure: ChatStreamStopReason | null = null;
-    let paymentRequiredFailure: ChatStreamStopReason | null = null;
     let automaticRetryAttempted = false;
     let automaticRetrySucceeded = false;
     let hadPartialOutput = false;
     let telemetryFinished = false;
     const requestId = randomUUID();
     const requestStartedAt = Date.now();
-    const eligibleOffersForService = getBuyerEligibleServiceCatalogEntries().filter((entry) => (
-      entry.id.trim().toLowerCase() === normalizedServiceForCatalog
-      && (routeMode !== 'pinned' || entry.peerId === preferredPeerId)
-    ));
-    const offersForService = eligibleOffersForService.length;
-    const pricing = modelPricingSnapshot(eligibleOffersForService);
+    const pricing = modelPricingSnapshot(offers);
     const finishTelemetry = (
       outcome: TelemetryEventProperties['chat_request_finished']['outcome'],
       reason?: ChatStreamStopReason,
@@ -483,14 +389,12 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
         outcome,
         failure_code: failure.failureCode,
         failure_stage: failure.failureStage,
-        public_model_id: publicModelId(serviceId, catalogEntry !== undefined),
+        public_model_id: publicModelId(serviceId, chatModel !== null),
         service_category: classifyServiceCategory(serviceId),
-        route_mode: routeMode,
-        offers_available_bucket: offersAvailableBucket(offersForService),
+        route_mode: 'auto',
+        offers_available_bucket: offersAvailableBucket(offers.length),
         http_status_bucket: httpStatusBucket(failure.statusCode ?? reason?.statusCode),
-        retryable: failure.failureCode === 'model_not_served_by_peer'
-          ? routeMode === 'auto'
-          : failure.retryable,
+        retryable: failure.retryable,
         automatic_retry_attempted: automaticRetryAttempted,
         automatic_retry_succeeded: automaticRetrySucceeded,
         had_partial_output: hadPartialOutput,
@@ -650,7 +554,6 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
           isError: Boolean(event.isError),
           details,
         });
-
         return;
       }
 
@@ -665,91 +568,22 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
           return;
         }
         if (message.role === 'assistant') {
-          // Detect payment errors from the provider's 402 JSON response
-          const msgAny = message as unknown as Record<string, unknown>;
-          const errorMsg = typeof msgAny.errorMessage === 'string' ? msgAny.errorMessage : '';
-          const rawContent = Array.isArray(msgAny.content)
-            ? (msgAny.content as Array<Record<string, unknown>>).map((b) => String(b.text ?? '')).join('')
-            : String(msgAny.content ?? '');
-
-          // Check errorMessage first (Pi agent may put "402 {"error":"payment_required",...}" there)
-          if (/402.*payment_required|payment_required/i.test(errorMsg) || /402.*payment_required|payment_required/i.test(rawContent)) {
-            // Try to parse the full payment body from content, errorMessage, or embedded JSON
-            let paymentBody: Record<string, unknown> | null = null;
-            try { paymentBody = JSON.parse(rawContent) as Record<string, unknown>; } catch { /* not JSON */ }
-            if (!paymentBody) {
-              try { paymentBody = JSON.parse(errorMsg) as Record<string, unknown>; } catch { /* not JSON */ }
-            }
-            // SDK wraps the body as "402 {json}" — extract the embedded JSON
-            if (!paymentBody) {
-              const jsonStart = errorMsg.indexOf('{');
-              if (jsonStart >= 0) {
-                try { paymentBody = JSON.parse(errorMsg.slice(jsonStart)) as Record<string, unknown>; } catch { /* not JSON */ }
-              }
-            }
-            if (paymentBody) paymentBody = normalizePaymentBody(paymentBody);
-            const suggestedAmount = typeof paymentBody?.suggestedAmount === 'string'
-              ? paymentBody.suggestedAmount : '100000';
-            if (paymentBody?.peerId) {
-              cachedPaymentRequired.set(conversationId, paymentBody);
-            } else {
-              cacheFallbackPaymentRequired(conversationId, suggestedAmount);
-            }
-            paymentRequiredFailure = emitPaymentRequiredStreamError(
-              conversationId,
-              paymentRequiredAmount(paymentBody, suggestedAmount),
-            );
-            const activeRun = activeRunsByConversation.get(conversationId);
-            if (activeRun) void abortAndClearActiveRun(activeRun);
-            return;
-          }
-
-          // Also check if the response body itself is a payment_required JSON
-          let paymentBody: Record<string, unknown> | null = null;
-          try { paymentBody = JSON.parse(rawContent) as Record<string, unknown>; } catch { /* not JSON */ }
-          if (paymentBody?.error === 'payment_required') {
-            paymentBody = normalizePaymentBody(paymentBody);
-            const suggestedAmount = typeof paymentBody.suggestedAmount === 'string'
-              ? paymentBody.suggestedAmount : '100000';
-            // Cache payment info so the approve IPC handler can build the SpendingAuth
-            cachedPaymentRequired.set(conversationId, paymentBody);
-            paymentRequiredFailure = emitPaymentRequiredStreamError(
-              conversationId,
-              paymentRequiredAmount(paymentBody, suggestedAmount),
-            );
-            const activeRun = activeRunsByConversation.get(conversationId);
-            if (activeRun) void abortAndClearActiveRun(activeRun);
-            return;
-          }
-
           if (message.stopReason === 'error' || message.stopReason === 'aborted') {
-            terminalStreamError = errorMsg || rawContent || (message.stopReason === 'aborted'
+            const errorMessage = typeof message.errorMessage === 'string' ? message.errorMessage : '';
+            const rawContent = Array.isArray(message.content)
+              ? message.content.map((block) => ('text' in block ? String(block.text ?? '') : '')).join('')
+              : '';
+            terminalStreamError = errorMessage || rawContent || (message.stopReason === 'aborted'
               ? 'Request aborted'
               : 'The request ended unexpectedly.');
-            terminalStreamFailure = classifyChatStreamFailure({
-              error: message,
-              message: terminalStreamError,
-              stopReason: message.stopReason,
-            });
+            terminalStreamFailure = classifyGatewayFailure(message, terminalStreamError, message.stopReason);
             pendingAssistantMessage = null;
             return;
           }
 
-          const proxyMeta = turnMetaQueue.shift();
-          const parsedMeta = parseAssistantMetaFromSessionEvent(message, proxyMeta);
-          const peerId = normalizePeerId(parsedMeta.peerId);
-          if (peerId) {
-            const prevPeerId = preferredPeerByConversationId.get(conversationId);
-            preferredPeerByConversationId.set(conversationId, peerId);
-            // Persist peer to session file if it's new or changed
-            if (peerId !== prevPeerId) {
-              const peerLabel = getServiceCatalogEntries().find((e) => e.peerId === peerId)?.peerLabel;
-              void store.setPeer(conversationId, peerId, peerLabel);
-            }
-          }
           const assistantMessage = message as AssistantMessage & { meta?: AiMessageMeta };
           finalAssistantCreatedAt = assistantMessage.timestamp;
-          assistantMessage.meta = parsedMeta;
+          assistantMessage.meta = parseAssistantMetaFromSessionEvent(message, undefined);
           pendingAssistantMessage = mergeAssistantMessagesForUi(
             pendingAssistantMessage,
             convertAssistantMessageForUi(assistantMessage),
@@ -759,13 +593,10 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
       }
 
       if (event.type === 'auto_retry_start') {
-        const reason = classifyChatStreamFailure({
-          error: event.errorMessage,
-          message: event.errorMessage,
-          stopReason: 'error',
-        });
+        const reason = classifyGatewayFailure(event.errorMessage, event.errorMessage, 'error');
+        // Neither an exhausted free tier nor an empty balance clears on retry.
         if (cancelFreeTierRetry(reason, session)) {
-          appendSystemLog(`AI stream stopped: the seller's free limit is used up [${formatChatStreamStopForLog(reason)}]`);
+          appendSystemLog(`AI stream stopped without retrying [${formatChatStreamStopForLog(reason)}]`);
           return;
         }
         automaticRetryAttempted = true;
@@ -782,19 +613,9 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
           automaticRetrySucceeded = true;
           appendSystemLog(`AI stream retry succeeded on attempt ${String(event.attempt)}.`);
         } else if (event.finalError) {
-          const reason = classifyChatStreamFailure({
-            error: event.finalError,
-            message: event.finalError,
-            stopReason: 'error',
-          });
+          const reason = classifyGatewayFailure(event.finalError, event.finalError, 'error');
           appendSystemLog(`AI stream retry exhausted: ${formatChatStreamStopForLog(reason)}`);
         }
-        return;
-      }
-
-      if (event.type === 'agent_end') {
-        // Don't finalize here — auto-retry may follow with a new agent_start.
-        // The post-session.prompt code handles final chat:ai-done / chat:ai-stream-done.
       }
     });
 
@@ -805,9 +626,9 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
       try {
         void Promise.resolve(recordChatRequestStarted({
           request_id: requestId,
-          public_model_id: publicModelId(serviceId, catalogEntry !== undefined),
+          public_model_id: publicModelId(serviceId, chatModel !== null),
           service_category: classifyServiceCategory(serviceId),
-          route_mode: routeMode,
+          route_mode: 'auto',
           pricing_tier: pricing.pricingTier,
           has_free_eligible_offer: pricing.hasFreeEligibleOffer,
           offers_available_bucket: pricing.eligibleOfferCountBucket,
@@ -832,77 +653,23 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
       const promptText = [trimmedMessage, attachmentPromptText].filter((part) => part.length > 0).join('\n\n');
       await session.prompt(promptText || ' ', { images: effectiveAttachmentImages.length > 0 ? effectiveAttachmentImages : undefined });
 
-      if (paymentRequiredFailure !== null) {
-        const paymentFailure = paymentRequiredFailure as ChatStreamStopReason;
-        finishTelemetry('failed', paymentFailure);
-        return { ok: false, error: 'Payment required', stopReason: paymentFailure };
-      }
-
       if (terminalStreamFailure !== null) {
-        // `terminalStreamFailure` is mutated inside the subscribe callback,
-        // which TypeScript can't see — control-flow analysis narrows it to
-        // `never` here. Cast back to the real type (we already guarded on
-        // `!== null` above).
+        // Mutated inside the subscribe callback, which TypeScript can't see —
+        // control-flow analysis narrows it to `never` here.
         const streamFailure = terminalStreamFailure as ChatStreamStopReason;
-        emitChatStreamError({
-          conversationId,
-          error: terminalStreamError ?? streamFailure.message,
-          stopReason: streamFailure,
-        });
+        const errorText = streamFailure.kind === 'payment_required'
+          ? streamFailure.message
+          : terminalStreamError ?? streamFailure.message;
+        emitChatStreamError({ conversationId, error: errorText, stopReason: streamFailure });
         appendSystemLog(`Pi chat error: ${formatChatStreamStopForLog(streamFailure)}`);
-        finishTelemetry('failed', streamFailure, terminalStreamError ?? streamFailure.message);
-        return {
-          ok: false,
-          error: terminalStreamError ?? streamFailure.message,
-          stopReason: streamFailure,
-        };
-      }
-
-      // Check if the agent received a 402 payment_required response.
-      // The node returns JSON with "error":"payment_required" which the agent
-      // treats as a completed turn with empty/error content.
-      if (pendingAssistantMessage) {
-        const lastMsg = pendingAssistantMessage as AiChatMessage;
-        const c = lastMsg.content;
-        const lastText = typeof c === 'string' ? c : Array.isArray(c)
-          ? c.map((b) => typeof b === 'object' && b !== null && 'text' in b ? String(b.text) : '').join('')
-          : '';
-        let payBody: Record<string, unknown> | null = null;
-        try { payBody = JSON.parse(lastText) as Record<string, unknown>; } catch { /* not JSON */ }
-        if (payBody?.error === 'payment_required') {
-          payBody = normalizePaymentBody(payBody);
-          const amt = typeof payBody.suggestedAmount === 'string' ? payBody.suggestedAmount : '100000';
-          if (payBody.peerId) {
-            cachedPaymentRequired.set(conversationId, payBody);
-          } else {
-            cacheFallbackPaymentRequired(conversationId, amt);
-          }
-          pendingAssistantMessage = null;
-          const reason = emitPaymentRequiredStreamError(conversationId, paymentRequiredAmount(payBody, amt));
-          finishTelemetry('failed', reason, lastText);
-          return { ok: false, error: 'Payment required', stopReason: reason };
-        }
+        finishTelemetry(streamFailure.kind === 'aborted' ? 'cancelled' : 'failed', streamFailure, terminalStreamError ?? streamFailure.message);
+        return { ok: false, error: errorText, stopReason: streamFailure };
       }
 
       const completedAssistantMessage = pendingAssistantMessage as AiChatMessage | null;
       if (completedAssistantMessage) {
-        const routed = await fetchProxyConversationRoute(proxyPort, conversationId);
-        if (routed?.peerId) {
-          const peerLabel = getServiceCatalogEntries().find((entry) => entry.peerId === routed.peerId)?.peerLabel;
-          // The seller's own name, without the "(1d90f467)" id suffix the catalog label carries.
-          const peerName = peerLabel?.replace(/\s*\([^)]*\)\s*$/, '').trim() || undefined;
-          const route = {
-            peerId: routed.peerId,
-            service: routed.service,
-            ...(peerName ? { peerName } : {}),
-            ...(routed.router ? { router: routed.router } : {}),
-          };
-          completedAssistantMessage.meta = { ...(completedAssistantMessage.meta ?? {}), ...route };
-          if (finalAssistantCreatedAt) {
-            sessionManager.appendCustomEntry(RESPONSE_ROUTE_ENTRY, { createdAt: finalAssistantCreatedAt, ...route });
-          }
-          preferredPeerByConversationId.set(conversationId, routed.peerId);
-          await store.setPeer(conversationId, routed.peerId, peerLabel, routeMode);
+        if (finalAssistantCreatedAt && !completedAssistantMessage.createdAt) {
+          completedAssistantMessage.createdAt = finalAssistantCreatedAt;
         }
         sendToRenderer('chat:ai-done', {
           conversationId,
@@ -918,14 +685,12 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
 
       if (shouldGenerateConversationTitle) {
         try {
-          let title = await generateConversationTitleWithModel({
-            proxyPort,
+          const title = await generateConversationTitleWithModel({
+            endpoint,
             serviceId,
             protocol,
-            peerId: preferredPeerId,
             userMessage: firstUserMessageText,
           });
-
           if (title) {
             session.setSessionName(title);
             sendToRenderer('chat:conversation-title-updated', { conversationId, title });
@@ -939,63 +704,18 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
       // Always discard any buffered assistant message on error — it will not be committed.
       pendingAssistantMessage = null;
       if ((error as Error).name === 'AbortError') {
-        if (paymentRequiredFailure) {
-          finishTelemetry('failed', paymentRequiredFailure, asErrorMessage(error));
-        }
-        const reason = classifyChatStreamFailure({
-          error,
-          message: 'Request aborted',
-          stopReason: 'aborted',
-        });
-        emitChatStreamError({
-          conversationId,
-          error: 'Request aborted',
-          stopReason: reason,
-        });
-        if (!paymentRequiredFailure) finishTelemetry('cancelled', reason, 'Request aborted');
+        const reason = classifyChatStreamFailure({ error, message: 'Request aborted', stopReason: 'aborted' });
+        emitChatStreamError({ conversationId, error: 'Request aborted', stopReason: reason });
+        finishTelemetry('cancelled', reason, 'Request aborted');
         return { ok: false, error: 'Aborted', stopReason: reason };
       }
       const message = asErrorMessage(error);
-      // Map insufficient balance / 402 errors to payment_required format
-      // so the renderer shows the Add Credits card
-      const isPaymentError = /insufficient.*balance|escrow.*balance|402.*payment/i.test(message);
-      if (isPaymentError) {
-        // Try to extract the payment_required JSON from the error message (SDK wraps it as "402 {json}")
-        let payBody: Record<string, unknown> | null = null;
-        const jsonStart = message.indexOf('{');
-        if (jsonStart >= 0) {
-          try { payBody = JSON.parse(message.slice(jsonStart)) as Record<string, unknown>; } catch { /* not JSON */ }
-        }
-        if (payBody) payBody = normalizePaymentBody(payBody);
-        const amt = typeof payBody?.suggestedAmount === 'string' ? payBody.suggestedAmount : '100000';
-        if (payBody?.peerId) {
-          cachedPaymentRequired.set(conversationId, payBody);
-        } else {
-          const peerId = preferredPeerByConversationId.get(conversationId) ?? '';
-          cachedPaymentRequired.set(conversationId, {
-            ...(payBody ?? {}),
-            peerId,
-            suggestedAmount: amt,
-          });
-        }
-        const reason = emitPaymentRequiredStreamError(conversationId, paymentRequiredAmount(payBody, amt));
-        finishTelemetry('failed', reason, message);
-        return { ok: false, error: message, stopReason: reason };
-      } else {
-        const reason = classifyChatStreamFailure({
-          error,
-          message,
-          stopReason: 'error',
-        });
-        emitChatStreamError({
-          conversationId,
-          error: message,
-          stopReason: reason,
-        });
-        appendSystemLog(`Pi chat error: ${formatChatStreamStopForLog(reason)}`);
-        finishTelemetry('failed', reason, message);
-        return { ok: false, error: message, stopReason: reason };
-      }
+      const reason = classifyGatewayFailure(error, message, 'error');
+      const errorText = reason.kind === 'payment_required' ? reason.message : message;
+      emitChatStreamError({ conversationId, error: errorText, stopReason: reason });
+      appendSystemLog(`Pi chat error: ${formatChatStreamStopForLog(reason)}`);
+      finishTelemetry('failed', reason, message);
+      return { ok: false, error: errorText, stopReason: reason };
     } finally {
       clearActiveRun(run);
       store.markPersistedIfAvailable(conversationId);

@@ -14,7 +14,7 @@ export function initAppSetupModule({ uiState, bridge }: AppSetupModuleOptions) {
   // - needed:false → plugin already installed before this launch, skip setup screen.
   // - needed:true, complete:false → install in progress, wait for onAppSetupComplete.
   // - needed:true, complete:true → install finished before renderer loaded (fast bundle
-  //   copy), app:setup-complete event was missed — start connect immediately.
+  //   copy), app:setup-complete event was missed — start the gateway immediately.
   void bridge.getAppSetupStatus?.().then((status) => {
     uiState.appSetupNeeded = status.needed;
     uiState.appSetupComplete = status.complete;
@@ -22,7 +22,7 @@ export function initAppSetupModule({ uiState, bridge }: AppSetupModuleOptions) {
     notifyUiStateChanged();
 
     if (status.needed && status.complete) {
-      void bridge.start?.({ mode: 'connect', router: 'local' }).catch(() => {});
+      void bridge.start?.().catch(() => {});
     }
   });
 
@@ -35,11 +35,8 @@ export function initAppSetupModule({ uiState, bridge }: AppSetupModuleOptions) {
     uiState.appSetupComplete = true;
     notifyUiStateChanged();
 
-    // Auto-start connect so the setup screen can show DHT/peer/service progress.
-    void bridge.start?.({
-      mode: 'connect',
-      router: 'local',
-    }).catch(() => {
+    // Start the gateway so the setup screen can show its progress.
+    void bridge.start?.().catch(() => {
       // Error is handled / logged by the runtime module.
     });
   });

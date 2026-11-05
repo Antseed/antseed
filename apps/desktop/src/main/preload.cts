@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { RuntimeMode, RuntimeProcessState, StartOptions } from './runtime/process-manager.js';
+import type { RuntimeMode, RuntimeProcessState } from './runtime/process-manager.js';
+import type { ConnectedAppsState } from './connected-apps/patching/connection.js';
 import type {
   FirstModelShownSignal,
   TelemetryStatus,
@@ -31,6 +32,13 @@ type RuntimeSnapshot = {
   processes: RuntimeProcessState[];
   daemonState: { exists: boolean; state: Record<string, unknown> | null };
   logs: LogEvent[];
+};
+
+type RuntimeControlResult = {
+  ok: boolean;
+  error?: string;
+  processes: RuntimeProcessState[];
+  daemonState: { exists: boolean; state: Record<string, unknown> | null };
 };
 
 type NetworkPeer = {
@@ -129,7 +137,7 @@ type InstallUpdateResult =
   | { ok: false; error: string; details: string; hint?: string };
 
 type ChatPermissionMode = 'manual' | 'full';
-type ToolApprovalDecision = 'allow_once' | 'always_allow_peer' | 'deny';
+type ToolApprovalDecision = 'allow_once' | 'always_allow' | 'deny';
 type ToolApprovalRequest = {
   id: string;
   conversationId: string;
@@ -139,8 +147,8 @@ type ToolApprovalRequest = {
   permissionLabel: string;
   input: Record<string, unknown>;
   workspacePath: string;
-  peerId: string | null;
-  peerName: string | null;
+  modelId: string | null;
+  modelName: string | null;
   title: string;
   description: string;
   subject: string;
@@ -148,24 +156,49 @@ type ToolApprovalRequest = {
   canAlwaysAllow: boolean;
 };
 
-// Mirrors TelegramBridgeStatus in apps/desktop/src/main/telegram/bridge.ts
-// (sandboxed preload cannot import from main). Keep in sync — and with the
-// renderer copy in apps/desktop/src/renderer/types/bridge.ts.
-type TelegramBridgeStatus = {
-  configured: boolean;
-  running: boolean;
-  botUsername: string | null;
-  paired: boolean;
-  ownerName: string | null;
-  pairingLink: string | null;
-  lastError: string | null;
-};
-
 // NOTE: Source of truth lives in apps/desktop/src/main/chat/stream-stop.ts
 // (`ChatStreamStopReason`). This preload runs in a sandboxed context and
 // cannot import from main, so the shape is mirrored here for IPC. Keep the
 // `kind`, `source`, and field set in sync with the source-of-truth type —
 // and with the renderer copy in apps/desktop/src/renderer/types/bridge.ts.
+// Mirrors ChatModel in apps/desktop/src/main/chat/gateway-model.ts.
+type ChatModel = {
+  id: string;
+  label: string;
+  type: string;
+  protocol: 'anthropic-messages' | 'openai-responses' | 'openai-chat-completions' | null;
+  supportsImages: boolean;
+  contextWindow?: number;
+  sellers: number;
+  free: boolean;
+  freeForStakers: boolean;
+  tee: boolean;
+  toolUse: boolean;
+  reasoning: boolean;
+  inputUsdPerMillion: number | null;
+  outputUsdPerMillion: number | null;
+};
+
+type ChatRoutePreview = {
+  model: string;
+  modelAllowed: boolean;
+  sort: string | null;
+  candidates: Array<{
+    peerId: string;
+    name: string | null;
+    rank: number | null;
+    eligible: boolean;
+    reasons: string[];
+    inputUsdPerMillion: number | null;
+    outputUsdPerMillion: number | null;
+    trustScore: number | null;
+    successRate: number | null;
+    firstTokenMs: number | null;
+    tokensPerSecond: number | null;
+    failing: boolean;
+  }>;
+};
+
 type ChatAiStreamStopReason = {
   kind: 'payment_required' | 'aborted' | 'timeout' | 'http_error' | 'network_error' | 'stream_error' | 'unknown';
   source: 'billing' | 'user' | 'transport' | 'upstream' | 'unknown';
@@ -212,14 +245,12 @@ const api = {
   getState(): Promise<RuntimeSnapshot> {
     return ipcRenderer.invoke('runtime:get-state') as Promise<RuntimeSnapshot>;
   },
-  start(options: StartOptions): Promise<{ state: RuntimeProcessState; processes: RuntimeProcessState[]; daemonState: { exists: boolean; state: Record<string, unknown> | null } }> {
-    return ipcRenderer.invoke('runtime:start', options) as Promise<{ state: RuntimeProcessState; processes: RuntimeProcessState[]; daemonState: { exists: boolean; state: Record<string, unknown> | null } }>;
+  /** Starts the local gateway (no-op for a remote one) and resolves once it serves. */
+  start(): Promise<RuntimeControlResult> {
+    return ipcRenderer.invoke('runtime:start') as Promise<RuntimeControlResult>;
   },
-  stop(mode: RuntimeMode): Promise<{ state: RuntimeProcessState; processes: RuntimeProcessState[]; daemonState: { exists: boolean; state: Record<string, unknown> | null } }> {
-    return ipcRenderer.invoke('runtime:stop', mode) as Promise<{ state: RuntimeProcessState; processes: RuntimeProcessState[]; daemonState: { exists: boolean; state: Record<string, unknown> | null } }>;
-  },
-  openDashboard(port?: number): Promise<{ ok: true }> {
-    return ipcRenderer.invoke('runtime:open-dashboard', port) as Promise<{ ok: true }>;
+  restart(): Promise<RuntimeControlResult> {
+    return ipcRenderer.invoke('runtime:restart') as Promise<RuntimeControlResult>;
   },
   clearLogs(): Promise<{ ok: true }> {
     return ipcRenderer.invoke('runtime:clear-logs') as Promise<{ ok: true }>;
@@ -281,11 +312,17 @@ const api = {
   chatAiGetConversation(id: string): Promise<{ ok: boolean; data?: unknown; error?: string }> {
     return ipcRenderer.invoke('chat:ai-get-conversation', id);
   },
-  chatAiCreateConversation(service: string, provider?: string, peerId?: string, routeMode?: 'auto' | 'pinned'): Promise<{ ok: boolean; data?: unknown; error?: string }> {
-    return ipcRenderer.invoke('chat:ai-create-conversation', service, provider, peerId, routeMode);
+  chatAiCreateConversation(model: string): Promise<{ ok: boolean; data?: unknown; error?: string }> {
+    return ipcRenderer.invoke('chat:ai-create-conversation', model);
   },
-  chatAiListDiscoverRows(): Promise<{ ok: boolean; data?: unknown[]; error?: string }> {
-    return ipcRenderer.invoke('chat:ai-list-discover-rows');
+  chatListModels(options?: { force?: boolean }): Promise<{ ok: boolean; data: ChatModel[]; error?: string }> {
+    return ipcRenderer.invoke('chat:list-models', options ?? {});
+  },
+  chatRoutePreview(model: string, options?: { force?: boolean }): Promise<{ ok: boolean; data?: ChatRoutePreview; error?: string }> {
+    return ipcRenderer.invoke('chat:route-preview', { model, force: options?.force === true });
+  },
+  chatAiSetModel(conversationId: string | null, model: string): Promise<{ ok: boolean; error?: string }> {
+    return ipcRenderer.invoke('chat:ai-set-model', conversationId, model);
   },
   chatAiDeleteConversation(id: string): Promise<{ ok: boolean }> {
     return ipcRenderer.invoke('chat:ai-delete-conversation', id);
@@ -299,50 +336,23 @@ const api = {
   attachmentDownload(conversationId: string, attachmentId: string, suggestedName: string): Promise<{ ok: boolean; path?: string; error?: string }> {
     return ipcRenderer.invoke('attachment:download', conversationId, attachmentId, suggestedName);
   },
-  chatGenerateImage(payload: { conversationId: string; prompt: string; peerId?: string; moderation?: 'auto' | 'low'; service: string; sourceImageAttachmentId?: string }): Promise<{ ok: boolean; user?: unknown; assistant?: unknown; error?: string }> {
+  chatGenerateImage(payload: { conversationId: string; prompt: string; model: string; moderation?: 'auto' | 'low'; sourceImageAttachmentId?: string }): Promise<{ ok: boolean; user?: unknown; assistant?: unknown; error?: string }> {
     return ipcRenderer.invoke('chat:generate-image', payload);
   },
-  chatAiSend(conversationId: string, message: string, service?: string, provider?: string, attachments?: PreparedChatAttachment[], peerId?: string, permissionMode?: ChatPermissionMode): Promise<{ ok: boolean; error?: string }> {
-    return ipcRenderer.invoke('chat:ai-send', conversationId, message, service, provider, attachments, peerId, permissionMode);
+  chatAiSendStream(conversationId: string, message: string, model?: string, attachments?: PreparedChatAttachment[], permissionMode?: ChatPermissionMode): Promise<{ ok: boolean; error?: string; stopReason?: ChatAiStreamStopReason }> {
+    return ipcRenderer.invoke('chat:ai-send-stream', conversationId, message, model, attachments, permissionMode);
   },
-  chatAiSendStream(conversationId: string, message: string, service?: string, provider?: string, attachments?: PreparedChatAttachment[], peerId?: string, permissionMode?: ChatPermissionMode): Promise<{ ok: boolean; error?: string; stopReason?: ChatAiStreamStopReason }> {
-    return ipcRenderer.invoke('chat:ai-send-stream', conversationId, message, service, provider, attachments, peerId, permissionMode);
+  chatPermissionModeGet(modelId: string): Promise<{ ok: boolean; mode?: ChatPermissionMode; error?: string }> {
+    return ipcRenderer.invoke('chat:permission-mode-get', modelId);
   },
-  chatPeerPermissionModeGet(peerId: string): Promise<{ ok: boolean; mode?: ChatPermissionMode; error?: string }> {
-    return ipcRenderer.invoke('chat:peer-permission-mode-get', peerId);
-  },
-  chatPeerPermissionModeSet(peerId: string, mode: ChatPermissionMode): Promise<{ ok: boolean; mode?: ChatPermissionMode; error?: string }> {
-    return ipcRenderer.invoke('chat:peer-permission-mode-set', { peerId, mode });
+  chatPermissionModeSet(modelId: string, mode: ChatPermissionMode): Promise<{ ok: boolean; mode?: ChatPermissionMode; error?: string }> {
+    return ipcRenderer.invoke('chat:permission-mode-set', { modelId, mode });
   },
   chatToolApprovalDecision(id: string, decision: ToolApprovalDecision): Promise<{ ok: boolean; error?: string }> {
     return ipcRenderer.invoke('chat:tool-approval-decision', { id, decision });
   },
   chatAiAbort(conversationId?: string): Promise<{ ok: boolean }> {
     return ipcRenderer.invoke('chat:ai-abort', conversationId);
-  },
-  chatAiSelectPeer(payload: { conversationId?: string | null; peerId?: string | null; service?: string | null; provider?: string | null; routeMode?: 'auto' | 'pinned' | null }): Promise<{ ok: boolean; error?: string }> {
-    return ipcRenderer.invoke('chat:ai-select-peer', payload);
-  },
-  chatGetRoutingServices(): Promise<{ ok: boolean; services?: import('../shared/routing-selection.js').RoutingServiceEntry[]; error?: string }> {
-    return ipcRenderer.invoke('chat:get-routing-services');
-  },
-  chatSetBuyerDefaultRoute(payload: { selection: import('../shared/routing-selection.js').DesktopRoutingSelection }): Promise<{ ok: boolean; error?: string }> {
-    return ipcRenderer.invoke('chat:set-buyer-default-route', payload);
-  },
-  chatSyncModelPicker(payload: unknown): Promise<{ ok: boolean }> {
-    return ipcRenderer.invoke('chat:sync-model-picker', payload);
-  },
-  chatAiGetProxyStatus(): Promise<{ ok: boolean; data: { running: boolean; port: number } }> {
-    return ipcRenderer.invoke('chat:ai-get-proxy-status');
-  },
-  apiTryProxyRequest(params: {
-    port: number;
-    path: string;
-    method: string;
-    headers: Record<string, string>;
-    body: string;
-  }): Promise<{ ok: boolean; status: number; body: string; error: string | null }> {
-    return ipcRenderer.invoke('api:try-proxy-request', params);
   },
   chatAiGetWorkspace(): Promise<{ ok: boolean; data?: { current: string; default: string }; error?: string }> {
     return ipcRenderer.invoke('chat:ai-get-workspace');
@@ -383,14 +393,8 @@ const api = {
   listInstalledApps(): Promise<{ ok: boolean; apps: Array<{ name: string; path: string; iconDataUri?: string }>; error?: string }> {
     return ipcRenderer.invoke('desktop:list-installed-apps') as Promise<{ ok: boolean; apps: Array<{ name: string; path: string; iconDataUri?: string }>; error?: string }>;
   },
-  systemProxySetAppLaunch(opts: { name: string; app: { name: string; path: string } | null }): Promise<{ ok: boolean; error?: string }> {
-    return ipcRenderer.invoke('system-proxy:set-app-launch', opts) as Promise<{ ok: boolean; error?: string }>;
-  },
-  applyWindowView(viewName: string): Promise<{ ok: true; skipped?: string }> {
-    return ipcRenderer.invoke('window:apply-view', viewName) as Promise<{ ok: true; skipped?: string }>;
-  },
-  applyWindowPreset(presetName: string): Promise<{ ok: true; skipped?: string }> {
-    return ipcRenderer.invoke('window:apply-preset', presetName) as Promise<{ ok: true; skipped?: string }>;
+  appsSetAppLaunch(opts: { name: string; app: { name: string; path: string } | null }): Promise<{ ok: boolean; error?: string }> {
+    return ipcRenderer.invoke('apps:set-app-launch', opts) as Promise<{ ok: boolean; error?: string }>;
   },
   onNavigateView(handler: (viewName: string) => void): () => void {
     const listener = (_: unknown, viewName: string) => handler(viewName);
@@ -414,11 +418,6 @@ const api = {
     ipcRenderer.on('chat:ai-done', listener);
     return () => ipcRenderer.off('chat:ai-done', listener);
   },
-  onChatAiError(handler: (data: { conversationId: string; error: string }) => void): () => void {
-    const listener = (_: unknown, data: { conversationId: string; error: string }) => handler(data);
-    ipcRenderer.on('chat:ai-error', listener);
-    return () => ipcRenderer.off('chat:ai-error', listener);
-  },
   onChatAiUserPersisted(handler: (data: { conversationId: string; message: { role: string; content: unknown; createdAt?: number } }) => void): () => void {
     const listener = (_: unknown, data: { conversationId: string; message: { role: string; content: unknown; createdAt?: number } }) => handler(data);
     ipcRenderer.on('chat:ai-user-persisted', listener);
@@ -428,11 +427,6 @@ const api = {
     const listener = (_: unknown, data: { conversationId: string; title: string }) => handler(data);
     ipcRenderer.on('chat:conversation-title-updated', listener);
     return () => ipcRenderer.off('chat:conversation-title-updated', listener);
-  },
-  onChatDefaultRouteChanged(handler: (data: { peerId: string; service: string; provider: string | null; router?: import('../shared/routing-selection.js').DesktopRouterSelection }) => void): () => void {
-    const listener = (_: unknown, data: { peerId: string; service: string; provider: string | null; router?: import('../shared/routing-selection.js').DesktopRouterSelection }) => handler(data);
-    ipcRenderer.on('chat:default-route-changed', listener);
-    return () => ipcRenderer.off('chat:default-route-changed', listener);
   },
   // Streaming events
   onChatAiStreamStart(handler: (data: { conversationId: string; turn: number }) => void): () => void {
@@ -479,20 +473,6 @@ const api = {
     const listener = (_: unknown, data: { conversationId: string; toolUseId: string; output: string; isError: boolean; details?: Record<string, unknown> }) => handler(data);
     ipcRenderer.on('chat:ai-tool-result', listener);
     return () => ipcRenderer.off('chat:ai-tool-result', listener);
-  },
-  telegramGetStatus(): Promise<{ ok: boolean; data?: TelegramBridgeStatus; error?: string }> {
-    return ipcRenderer.invoke('telegram:get-status');
-  },
-  telegramConnect(botToken: string): Promise<{ ok: boolean; data?: TelegramBridgeStatus; error?: string }> {
-    return ipcRenderer.invoke('telegram:connect', botToken);
-  },
-  telegramDisconnect(): Promise<{ ok: boolean; data?: TelegramBridgeStatus; error?: string }> {
-    return ipcRenderer.invoke('telegram:disconnect');
-  },
-  onTelegramStatusChanged(handler: (data: TelegramBridgeStatus) => void): () => void {
-    const listener = (_: unknown, data: TelegramBridgeStatus) => handler(data);
-    ipcRenderer.on('telegram:status-changed', listener);
-    return () => ipcRenderer.off('telegram:status-changed', listener);
   },
   onChatToolApprovalRequested(handler: (data: ToolApprovalRequest) => void): () => void {
     const listener = (_: unknown, data: ToolApprovalRequest) => handler(data);
@@ -577,24 +557,14 @@ const api = {
   },
   identityExportKey: () => ipcRenderer.invoke('identity:export-key'),
   identityImportKey: (privateKeyHex: string) => ipcRenderer.invoke('identity:import-key', privateKeyHex),
-  paymentsSignSpendingAuth: (params: unknown) => ipcRenderer.invoke('payments:sign-spending-auth', params),
-  paymentsGetPeerInfo: (peerId: string) => ipcRenderer.invoke('payments:get-peer-info', peerId),
-  stakingOpen: (options?: { page?: 'stake' | 'rewards'; pool?: number }) => ipcRenderer.invoke('staking:open', options),
-  stakingCopyLink: (options?: { page?: 'stake' | 'rewards'; pool?: number }) => ipcRenderer.invoke('staking:copyLink', options),
   freeTierList: () => ipcRenderer.invoke('freeTier:list'),
   freeTierAdd: (code: string) => ipcRenderer.invoke('freeTier:add', code),
   freeTierRemove: (staker: string) => ipcRenderer.invoke('freeTier:remove', staker),
   freeTierStake: () => ipcRenderer.invoke('freeTier:stake'),
-  paymentsOpenPayPage: (opts: { kind?: string; amountUsdc?: string; channelId?: string }) => ipcRenderer.invoke('payments:open-pay-page', opts),
+  paymentsOpenPayPage: (opts: { kind?: string; amountUsdc?: string }) => ipcRenderer.invoke('payments:open-pay-page', opts),
   paymentsCardProviders: () => ipcRenderer.invoke('payments:card-providers'),
   paymentsOpenCardProvider: (opts?: { providerId?: string; amountUsdc?: string }) => ipcRenderer.invoke('payments:open-card-provider', opts),
   paymentsCloseCheckoutWindows: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('payments:close-checkout-windows') as Promise<{ ok: boolean }>,
-  paymentsGetBuyerUsage: () => ipcRenderer.invoke('payments:get-buyer-usage'),
-  paymentsGetPeerMetering: (peerId: string) => ipcRenderer.invoke('payments:get-peer-metering', peerId),
-  paymentsGetBuyerSpendHistory: () => ipcRenderer.invoke('payments:get-buyer-spend-history'),
-  paymentsGetChannels: (opts?: { fresh?: boolean }) => ipcRenderer.invoke('payments:get-channels', opts),
-  paymentsRequestCooperativeClose: (opts: { peerId: string; channelId?: string }) => ipcRenderer.invoke('payments:request-cooperative-close', opts),
-  paymentsGetRewardsSummary: () => ipcRenderer.invoke('payments:get-rewards-summary'),
   onPaymentsCompleted(handler: () => void): () => void {
     const listener = () => handler();
     ipcRenderer.on('payments:completed', listener);
@@ -607,118 +577,42 @@ const api = {
     ipcRenderer.on('deposits:watch-status', listener);
     return () => ipcRenderer.off('deposits:watch-status', listener);
   },
-  systemProxyStart(opts: { peerId: string; port?: number; profiles?: string[]; defaultModel?: string; servedModels?: string[]; toolRoutes?: Record<string, { peerId: string; model: string }>; profileSwitch?: boolean }): Promise<{ ok: boolean; state?: RuntimeProcessState; error?: string }> {
-    return ipcRenderer.invoke('system-proxy:start', opts) as Promise<{ ok: boolean; state?: RuntimeProcessState; error?: string }>;
+  appsListProfiles(): Promise<unknown[]> {
+    return ipcRenderer.invoke('apps:list-profiles') as Promise<unknown[]>;
   },
-  systemProxyListProfiles() {
-    return ipcRenderer.invoke('system-proxy:list-profiles');
+  appsGetState(): Promise<ConnectedAppsState> {
+    return ipcRenderer.invoke('apps:get-state') as Promise<ConnectedAppsState>;
   },
-  systemProxyAddCustomApp(opts: { apiUrl: string; app?: { name: string; path: string } | null; force?: boolean }): Promise<{ ok: boolean; name?: string; unverified?: boolean; error?: string }> {
-    return ipcRenderer.invoke('system-proxy:add-custom-app', opts) as Promise<{ ok: boolean; name?: string; unverified?: boolean; error?: string }>;
+  appsConnect(name: string): Promise<{ ok: boolean; state: ConnectedAppsState; error?: string }> {
+    return ipcRenderer.invoke('apps:connect', { name }) as Promise<{ ok: boolean; state: ConnectedAppsState; error?: string }>;
   },
-  systemProxySetAppIdentity(opts: { name: string; toolSlugs: string[] | null }): Promise<{ ok: boolean; error?: string }> {
-    return ipcRenderer.invoke('system-proxy:set-app-identity', opts) as Promise<{ ok: boolean; error?: string }>;
+  appsDisconnect(name: string): Promise<{ ok: boolean; state: ConnectedAppsState; error?: string }> {
+    return ipcRenderer.invoke('apps:disconnect', { name }) as Promise<{ ok: boolean; state: ConnectedAppsState; error?: string }>;
   },
-  systemProxyRemoveCustomApp(name: string): Promise<{ ok: boolean; error?: string }> {
-    return ipcRenderer.invoke('system-proxy:remove-custom-app', { name }) as Promise<{ ok: boolean; error?: string }>;
+  appsSetAppIdentity(opts: { name: string; toolSlugs: string[] | null }): Promise<{ ok: boolean; error?: string }> {
+    return ipcRenderer.invoke('apps:set-app-identity', opts) as Promise<{ ok: boolean; error?: string }>;
   },
-  systemProxyStop(): Promise<{ ok: boolean; state?: RuntimeProcessState; error?: string }> {
-    return ipcRenderer.invoke('system-proxy:stop') as Promise<{ ok: boolean; state?: RuntimeProcessState; error?: string }>;
+  appsRestartApp(app: string): Promise<{ ok: boolean; error?: string }> {
+    return ipcRenderer.invoke('apps:restart-app', { app }) as Promise<{ ok: boolean; error?: string }>;
   },
-  systemProxyGetState(): Promise<RuntimeProcessState | null> {
-    return ipcRenderer.invoke('system-proxy:get-state') as Promise<RuntimeProcessState | null>;
-  },
-  systemProxyInstallCa(): Promise<{ ok: boolean; warning?: string; error?: string }> {
-    return ipcRenderer.invoke('system-proxy:install-ca') as Promise<{ ok: boolean; warning?: string; error?: string }>;
-  },
-  systemProxyCaExists(): Promise<boolean> {
-    return ipcRenderer.invoke('system-proxy:ca-exists') as Promise<boolean>;
-  },
-  systemProxyCaInfo(): Promise<{ path: string; exists: boolean }> {
-    return ipcRenderer.invoke('system-proxy:ca-info') as Promise<{ path: string; exists: boolean }>;
-  },
-  systemProxyRevealCa(): Promise<{ ok: boolean; error?: string }> {
-    return ipcRenderer.invoke('system-proxy:reveal-ca') as Promise<{ ok: boolean; error?: string }>;
-  },
-  systemProxyCaTrustState(): Promise<{ ok: boolean; exists: boolean; trust: 'trusted' | 'stale' | 'absent' | 'unknown'; error?: string }> {
-    return ipcRenderer.invoke('system-proxy:ca-trust-state') as Promise<{ ok: boolean; exists: boolean; trust: 'trusted' | 'stale' | 'absent' | 'unknown'; error?: string }>;
-  },
-  systemProxyTestGui(opts?: { port?: number }) {
-    return ipcRenderer.invoke('system-proxy:test-gui', opts);
-  },
-  systemProxyRestartApp(app: string): Promise<{ ok: boolean; error?: string }> {
-    return ipcRenderer.invoke('system-proxy:restart-app', { app }) as Promise<{ ok: boolean; error?: string }>;
-  },
-  publicTunnelGetStatus: () => ipcRenderer.invoke('public-tunnel:get-status'),
-  publicTunnelConfigure: (settings: { provider: 'cloudflare' | 'ngrok'; tunnelToken: string; publicUrl: string }) => ipcRenderer.invoke('public-tunnel:configure', settings),
-  publicTunnelStart: (settings?: { provider?: 'cloudflare' | 'ngrok' }) => ipcRenderer.invoke('public-tunnel:start', settings),
-  publicTunnelStop: () => ipcRenderer.invoke('public-tunnel:stop'),
-  publicTunnelGetApiKey: () => ipcRenderer.invoke('public-tunnel:get-api-key'),
-  publicTunnelGetConsoleStatus: () => ipcRenderer.invoke('public-tunnel:get-console-status'),
-  publicTunnelClaimConsole: () => ipcRenderer.invoke('public-tunnel:claim-console'),
-
-  /* Floating always-on-top pill window */
-  vprFloatOpen(data: unknown): Promise<{ ok: boolean }> {
-    return ipcRenderer.invoke('vpr-float:open', data) as Promise<{ ok: boolean }>;
-  },
-  vprFloatClose(): Promise<{ ok: boolean }> {
-    return ipcRenderer.invoke('vpr-float:close') as Promise<{ ok: boolean }>;
-  },
-  vprFloatIsOpen(): Promise<boolean> {
-    return ipcRenderer.invoke('vpr-float:is-open') as Promise<boolean>;
-  },
-  vprFloatGetCompact(): Promise<boolean> {
-    return ipcRenderer.invoke('vpr-float:get-compact') as Promise<boolean>;
-  },
-  vprFloatUpdate(data: unknown): void {
-    ipcRenderer.send('vpr-float:update', data);
-  },
-  vprFloatAction(action: unknown): void {
-    ipcRenderer.send('vpr-float:action', action);
-  },
-  vprFloatSetExpanded(expanded: boolean): void {
-    ipcRenderer.send('vpr-float:set-expanded', expanded);
-  },
-  buyerConversationsList(): Promise<unknown[] | null> {
-    return ipcRenderer.invoke('buyer:conversations-list') as Promise<unknown[] | null>;
-  },
-  buyerConversationsUpdate(opts: { id: string; label?: string | null; pinnedModel?: string; peerSource?: 'auto' | 'user'; delete?: boolean }): Promise<{ ok: boolean; conversation?: unknown; error?: string }> {
-    return ipcRenderer.invoke('buyer:conversations-update', opts) as Promise<{ ok: boolean; conversation?: unknown; error?: string }>;
-  },
-  onVprFloatData(handler: (data: unknown) => void): () => void {
-    const listener = (_: unknown, data: unknown) => handler(data);
-    ipcRenderer.on('vpr-float:data', listener);
-    return () => ipcRenderer.off('vpr-float:data', listener);
-  },
-  onVprFloatCompact(handler: (compact: boolean) => void): () => void {
-    const listener = (_: unknown, compact: boolean) => handler(Boolean(compact));
-    ipcRenderer.on('vpr-float:compact', listener);
-    return () => ipcRenderer.off('vpr-float:compact', listener);
-  },
-  onVprFloatClosed(handler: () => void): () => void {
+  gatewayGetStatus: () => ipcRenderer.invoke('gateway:get-status'),
+  gatewayGetSettings: () => ipcRenderer.invoke('gateway:get-settings'),
+  gatewayUpdateSettings: (opts: { mode?: 'local' | 'remote'; remoteUrl?: string | null; remoteApiKey?: string | null; keyMode?: 'shared' | 'per-app' }) => ipcRenderer.invoke('gateway:update-settings', opts),
+  gatewayRotateKeys: () => ipcRenderer.invoke('gateway:rotate-keys'),
+  gatewayGetEndpoint: () => ipcRenderer.invoke('gateway:get-endpoint'),
+  gatewayGetKeyInfo: () => ipcRenderer.invoke('gateway:get-key-info'),
+  gatewayOpenConsole: (path?: string) => ipcRenderer.invoke('gateway:open-console', { path }),
+  gatewayGetPrivacy: () => ipcRenderer.invoke('gateway:get-privacy'),
+  gatewaySetPrivacy: (mode: 'anonymous' | 'private') => ipcRenderer.invoke('gateway:set-privacy', { mode }),
+  gatewayGetRewards: (opts?: { force?: boolean }) => ipcRenderer.invoke('gateway:get-rewards', opts),
+  agentSkillsList: () => ipcRenderer.invoke('agent-skills:list'),
+  agentSkillsInstall: (id: string) => ipcRenderer.invoke('agent-skills:install', { id }),
+  agentSkillsRemove: (id: string) => ipcRenderer.invoke('agent-skills:remove', { id }),
+  agentSkillsCopyPrompt: () => ipcRenderer.invoke('agent-skills:copy-prompt'),
+  onGatewayChanged(handler: () => void): () => void {
     const listener = () => handler();
-    ipcRenderer.on('vpr-float:closed', listener);
-    return () => ipcRenderer.off('vpr-float:closed', listener);
-  },
-  onVprFloatAction(handler: (action: unknown) => void): () => void {
-    const listener = (_: unknown, action: unknown) => handler(action);
-    ipcRenderer.on('vpr-float:action', listener);
-    return () => ipcRenderer.off('vpr-float:action', listener);
-  },
-  onDesktopOpenFloatingWindow(handler: () => void): () => void {
-    const listener = () => handler();
-    ipcRenderer.on('desktop:open-floating-window', listener);
-    return () => ipcRenderer.off('desktop:open-floating-window', listener);
-  },
-  onDesktopConnectMain(handler: () => void): () => void {
-    const listener = () => handler();
-    ipcRenderer.on('desktop:connect-main', listener);
-    return () => ipcRenderer.off('desktop:connect-main', listener);
-  },
-  onDesktopDisconnectMain(handler: () => void): () => void {
-    const listener = () => handler();
-    ipcRenderer.on('desktop:disconnect-main', listener);
-    return () => ipcRenderer.off('desktop:disconnect-main', listener);
+    ipcRenderer.on('gateway:changed', listener);
+    return () => ipcRenderer.off('gateway:changed', listener);
   },
 };
 

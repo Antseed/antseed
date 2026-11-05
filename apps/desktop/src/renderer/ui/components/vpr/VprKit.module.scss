@@ -1,23 +1,27 @@
-/* Shared brand-guideline primitives for the AI VPN screens. */
+/* Shared brand-guideline primitives for the Antseed Desktop screens. */
 
 /* ---------- Back title ---------- */
 
 /* ---------- Pinned page chrome (VprPage) ---------- */
 
-/* Fixed header zone at the top of a view. The body below scrolls on its own,
-   so the scrollbar thumb starts under the header. Requires the global
+/* Fixed header zone at the top of a view: a full-width bar (title on the
+   left, header actions on the window's right edge, where Home and Chat have
+   them) plus optional pinned rows. The body below scrolls on its own, so the
+   scrollbar thumb starts under the header. Requires the global
    `view-pinned-header` class on the view's root section. */
 .pageTop {
   flex: 0 0 auto;
-  padding: 16px 16px 8px;
+  display: grid;
+  gap: 12px;
+  padding: 12px 16px 12px 24px;
   background: var(--bg-primary);
+  -webkit-app-region: drag;
 }
 
-/* Same width constraint as the views' .stack so pinned rows align with the
-   scrolled content below. */
+/* Extra pinned rows (search, tabs) align with the content column below. */
 .pageTopInner {
   width: 100%;
-  max-width: 392px;
+  max-width: 760px;
   margin: 0 auto;
   min-width: 0;
   display: grid;
@@ -27,17 +31,37 @@
 .pageHeaderRow {
   display: flex;
   min-width: 0;
+  min-height: 34px;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+
+  button, a, input {
+    -webkit-app-region: no-drag;
+  }
 }
 
+.pageTitle {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 24px;
+}
+
+/* The gutter on both sides keeps the centred column centred whether or not
+   the page scrolls. */
 .pageBody {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
   overflow-x: clip;
-  padding: 8px 16px 24px;
+  scrollbar-gutter: stable both-edges;
+  padding: 8px 16px 32px;
 }
 
 .backTitle {

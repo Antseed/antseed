@@ -30,14 +30,9 @@ import {
   effectiveLaunchTarget,
 } from '../connected-apps/profile-targets.js';
 import {
-  allSystemProxyProfiles,
-} from '../system-proxy/profiles.js';
+  connectableProfiles,
+} from '../connected-apps/patching/profiles.js';
 import {
-  systemProxyCaPath,
-} from '../system-proxy/paths.js';
-import {
-  applyWindowPreset,
-  applyWindowView,
   getMainWindow,
 } from '../ui/window.js';
 import {
@@ -72,6 +67,7 @@ export function registerDesktopIpc(): void {
     }
   });
 
+
   ipcMain.handle('desktop:open-tool', async (_event, toolName: string) => {
     try {
       const key = typeof toolName === 'string' ? toolName : '';
@@ -82,7 +78,7 @@ export function registerDesktopIpc(): void {
         if (result.ok) await waitForAppTarget(target);
         return result;
       }
-      const profile = allSystemProxyProfiles().find((item) => item.name === key || item.toolName === key);
+      const profile = connectableProfiles().find((item) => item.name === key || item.toolName === key);
       if (!profile) {
         return { ok: false, error: 'Unknown tool.' };
       }
@@ -90,9 +86,7 @@ export function registerDesktopIpc(): void {
       // for known tools) wins over the packaged open action.
       const launchTarget = effectiveLaunchTarget(profile.name);
       if (launchTarget) {
-        const result = launchAppTarget(launchTarget, {
-          env: { NODE_EXTRA_CA_CERTS: systemProxyCaPath() },
-        });
+        const result = launchAppTarget(launchTarget);
         // Resolve only once the app is actually up — the caller's connect
         // spinner runs off this promise.
         if (result.ok) {
@@ -114,9 +108,7 @@ export function registerDesktopIpc(): void {
         try {
           // A resolved path launches the same way everywhere; macOS name-only
           // targets still go through `open -a`.
-          const result = launchAppTarget(target, {
-            env: { NODE_EXTRA_CA_CERTS: systemProxyCaPath() },
-          });
+          const result = launchAppTarget(target);
           if (!result.ok) return result;
           markAppTargetManaged(target);
           await waitForAppTarget(target);
@@ -184,14 +176,6 @@ export function registerDesktopIpc(): void {
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
-  });
-
-  ipcMain.handle('window:apply-view', (_event, viewName: string) => {
-    return applyWindowView(typeof viewName === 'string' ? viewName : '');
-  });
-
-  ipcMain.handle('window:apply-preset', (_event, presetName: string) => {
-    return applyWindowPreset(typeof presetName === 'string' ? presetName : '');
   });
 
   ipcMain.handle(

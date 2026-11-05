@@ -7,10 +7,10 @@ import {
   requiresToolApproval,
 } from './tool-policy.js';
 
-const PEER_ID = '0123456789abcdef0123456789abcdef01234567';
+const SCOPE_ID = '0123456789abcdef0123456789abcdef01234567';
 
 function describeBash(command: string) {
-  return describeToolApproval('bash', { command }, PEER_ID);
+  return describeToolApproval('bash', { command }, SCOPE_ID);
 }
 
 test('manual mode gates risky tools and full mode bypasses the approval gate', () => {

@@ -1,0 +1,80 @@
+/* Wrapping rows of app / agent pills: icon + name, a dot when connected. */
+.pillList {
+  /* Positioned so a pill's offsetTop is measured from the list (row clipping). */
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-height: 32px;
+  padding: 5px 12px 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-card);
+  font: inherit;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.pill:hover:not(:disabled) {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+}
+
+.pill:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(var(--brand-rgb), 0.4);
+}
+
+.pill:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.pillActive {
+  border-color: rgba(var(--accent-green-rgb), 0.45);
+}
+
+/* Not found on this computer: still selectable, quieter. */
+.pillMuted {
+  opacity: 0.7;
+}
+
+/* A pill on a row the list has no room for is hidden whole. */
+.pillClipped {
+  visibility: hidden;
+}
+
+.pillDot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent-green);
+}
+
+/* Real application icon (extracted from the installed app). */
+.appIcon {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  object-fit: contain;
+}
+
+.pillLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 18px;
+}

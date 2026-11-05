@@ -1,14 +1,11 @@
 /**
- * IPC surface for the buyer/connect runtime: process control, logs, the peer
- * network, plugins, and dashboard config.
+ * IPC surface for the local gateway runtime: process control, logs, the peer
+ * network, plugins, and config.
  */
 import { ipcMain } from 'electron';
-import { stakingSessions } from '../staking/portal.js';
-import { isMultiInstanceDevelopment } from '../dev-instance.js';
 import type { LogEvent } from '../runtime/log-parser.js';
 import type { ProcessManager, RuntimeProcessState } from '../runtime/process-manager.js';
 import { resolveBuyerProxyPort } from '../runtime/active-config.js';
-import { isCompatibleSharedBuyer, refreshSharedBuyerAttachment } from '../runtime/shared-buyer.js';
 import { resolveConnectDataDir } from '../runtime/process-manager.js';
 import { requestTeeSnapshot } from '../runtime/tee-verification.js';
 import type { DesktopTeeStatus } from '@antseed/node/tee-status';
@@ -31,7 +28,6 @@ export type RuntimeIpcDeps = {
   logBuffer: LogEvent[];
   appendLog: (mode: RuntimeMode, stream: 'stdout' | 'stderr' | 'system', line: string) => void;
   getCombinedProcessState: () => RuntimeProcessState[];
-  killOrphanBuyerProxy: () => Promise<void>;
   requestBuyerPeerRefresh: () => Promise<void>;
 };
 
@@ -53,16 +49,7 @@ function sanitizeDashboardConfigPayload(raw: unknown): Record<string, unknown> {
   }
   return safe;
 }
-import {
-  isDesktopDebugEnabled,
-} from '../app-context.js';
-import {
-  invalidateOnChainEnrichmentCache,
-} from '../chat/service-discovery.js';
-import {
-  ensureSecureIdentity,
-  secureIdentityEnv,
-} from '../identity.js';
+import { ensureLocalGateway, stopLocalGateway } from '../gateway/service.js';
 import {
   invalidateChainClients,
 } from '../payments/credits.js';
@@ -94,16 +81,12 @@ import {
   toFileInstallSpec,
   toNpmAliasInstallSpec,
 } from '../runtime/plugins.js';
-import {
-  type RuntimeMode,
-  type StartOptions,
-} from '../runtime/process-manager.js';
+import { type RuntimeMode } from '../runtime/process-manager.js';
 
 export function registerRuntimeIpc(deps: RuntimeIpcDeps): void {
   const {
     appendLog,
     getCombinedProcessState,
-    killOrphanBuyerProxy,
     logBuffer,
     processManager,
     requestBuyerPeerRefresh,
@@ -117,7 +100,7 @@ export function registerRuntimeIpc(deps: RuntimeIpcDeps): void {
       return { snapshot };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Verification unavailable';
-      if (message !== lastTeeError) appendLog('connect', 'system', message);
+      if (message !== lastTeeError) appendLog('gateway', 'system', message);
       lastTeeError = message;
       return { snapshot: null, error: message };
     }
@@ -128,71 +111,31 @@ export function registerRuntimeIpc(deps: RuntimeIpcDeps): void {
     return teeStatus(peerId);
   });
 
-  ipcMain.handle('runtime:get-state', async () => {
-    if (isMultiInstanceDevelopment() && processManager.isAttached('connect')) {
-      const port = await resolveBuyerProxyPort();
-      await refreshSharedBuyerAttachment(processManager, port);
-    }
-    return {
-      processes: getCombinedProcessState(),
-      daemonState: processManager.getDaemonStateSnapshot(),
-      logs: [...logBuffer],
-    };
+  const runtimeSnapshot = () => ({
+    processes: getCombinedProcessState(),
+    daemonState: processManager.getDaemonStateSnapshot(),
   });
 
-  ipcMain.handle('runtime:start', async (_event, options: StartOptions) => {
-    if (options.mode === 'connect' && isMultiInstanceDevelopment()) {
-      const port = await resolveBuyerProxyPort();
-      if (await isCompatibleSharedBuyer(port)) {
-        const state = processManager.attach('connect');
-        appendLog('connect', 'system', `Reusing shared buyer proxy on 127.0.0.1:${port}.`);
-        return {
-          state,
-          processes: getCombinedProcessState(),
-          daemonState: processManager.getDaemonStateSnapshot(),
-        };
-      }
+  ipcMain.handle('runtime:get-state', () => ({ ...runtimeSnapshot(), logs: [...logBuffer] }));
+
+  // Starts the local gateway (no-op with a remote one) and waits until it serves.
+  ipcMain.handle('runtime:start', async () => {
+    try {
+      await ensureLocalGateway();
+      return { ok: true, ...runtimeSnapshot() };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err), ...runtimeSnapshot() };
     }
-
-    await ensureSecureIdentity();
-
-    const startOptions: StartOptions = {
-      ...options,
-      ...(isDesktopDebugEnabled() ? { verbose: true } : {}),
-      env: {
-        ...(options.env ?? {}),
-        ...(isDesktopDebugEnabled() ? { ANTSEED_DEBUG: '1' } : {}),
-        ...secureIdentityEnv(),
-      },
-    };
-    if (isDesktopDebugEnabled()) {
-      appendLog(startOptions.mode, 'system', 'Desktop debug mode enabled (ANTSEED_DEBUG=1, --verbose).');
-    }
-
-    const state = await processManager.start(startOptions);
-    return {
-      state,
-      processes: getCombinedProcessState(),
-      daemonState: processManager.getDaemonStateSnapshot(),
-    };
   });
 
-  ipcMain.handle('runtime:stop', async (_event, mode: RuntimeMode) => {
-    const preserveSharedBuyer = mode === 'connect' && isMultiInstanceDevelopment();
-    const state = await processManager.stop(mode, preserveSharedBuyer);
-    if (mode === 'connect') {
-      // Normal Stop must silence the buyer proxy, not just our child. Named
-      // development instances instead release shared ownership so one test
-      // window cannot break every other window and connected tool.
-      if (!isMultiInstanceDevelopment()) {
-        await killOrphanBuyerProxy();
-      }
+  ipcMain.handle('runtime:restart', async () => {
+    try {
+      await stopLocalGateway();
+      await ensureLocalGateway();
+      return { ok: true, ...runtimeSnapshot() };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err), ...runtimeSnapshot() };
     }
-    return {
-      state,
-      processes: getCombinedProcessState(),
-      daemonState: processManager.getDaemonStateSnapshot(),
-    };
   });
 
   ipcMain.handle('runtime:clear-logs', async () => {
@@ -225,10 +168,10 @@ export function registerRuntimeIpc(deps: RuntimeIpcDeps): void {
     }
 
     try {
-      appendLog('connect', 'system', `Installing plugin "${normalized}"...`);
+      appendLog('gateway', 'system', `Installing plugin "${normalized}"...`);
       await installPluginDependency(normalized);
       const plugins = await listInstalledPlugins();
-      appendLog('connect', 'system', `Installed plugin "${normalized}".`);
+      appendLog('gateway', 'system', `Installed plugin "${normalized}".`);
       return { ok: true, package: normalized, plugins, error: null };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -237,14 +180,14 @@ export function registerRuntimeIpc(deps: RuntimeIpcDeps): void {
       if (legacyPackageName) {
         try {
           const aliasSpec = toNpmAliasInstallSpec(normalized, legacyPackageName);
-          appendLog('connect', 'system', `Registry install failed; retrying via legacy alias: ${aliasSpec}`);
+          appendLog('gateway', 'system', `Registry install failed; retrying via legacy alias: ${aliasSpec}`);
           await installPluginDependency(aliasSpec);
           const plugins = await listInstalledPlugins();
-          appendLog('connect', 'system', `Installed plugin "${normalized}" using legacy package alias "${legacyPackageName}".`);
+          appendLog('gateway', 'system', `Installed plugin "${normalized}" using legacy package alias "${legacyPackageName}".`);
           return { ok: true, package: normalized, plugins, error: null };
         } catch (legacyErr) {
           const legacyMessage = legacyErr instanceof Error ? legacyErr.message : String(legacyErr);
-          appendLog('connect', 'system', `Legacy alias install failed for "${normalized}": ${legacyMessage}`);
+          appendLog('gateway', 'system', `Legacy alias install failed for "${normalized}": ${legacyMessage}`);
         }
       }
 
@@ -252,14 +195,14 @@ export function registerRuntimeIpc(deps: RuntimeIpcDeps): void {
 
       if (localSource) {
         try {
-          appendLog('connect', 'system', `Registry install failed; retrying from local source: ${localSource}`);
+          appendLog('gateway', 'system', `Registry install failed; retrying from local source: ${localSource}`);
           await installPluginDependency(toFileInstallSpec(normalized, localSource));
           const plugins = await listInstalledPlugins();
-          appendLog('connect', 'system', `Installed plugin "${normalized}" from local source.`);
+          appendLog('gateway', 'system', `Installed plugin "${normalized}" from local source.`);
           return { ok: true, package: normalized, plugins, error: null };
         } catch (localErr) {
           const localMessage = localErr instanceof Error ? localErr.message : String(localErr);
-          appendLog('connect', 'system', `Local plugin install failed for "${normalized}": ${localMessage}`);
+          appendLog('gateway', 'system', `Local plugin install failed for "${normalized}": ${localMessage}`);
           return {
             ok: false,
             package: normalized,
@@ -269,7 +212,7 @@ export function registerRuntimeIpc(deps: RuntimeIpcDeps): void {
         }
       }
 
-      appendLog('connect', 'system', `Plugin install failed for "${normalized}": ${message}`);
+      appendLog('gateway', 'system', `Plugin install failed for "${normalized}": ${message}`);
       return {
         ok: false,
         package: normalized,
@@ -359,17 +302,13 @@ export function registerRuntimeIpc(deps: RuntimeIpcDeps): void {
         return { ok: false, data: null, error: 'No valid config keys provided', status: null };
       }
       try {
-        const merged = await stakingSessions.reset(async () => {
-          const config = await mergeConfig(safeConfig, ACTIVE_CONFIG_PATH);
-          await stopPaymentsPortal();
-          return config;
-        });
+        const merged = await mergeConfig(safeConfig, ACTIVE_CONFIG_PATH);
+        await stopPaymentsPortal();
         // Drop cached clients and the RPC backoff so the next read uses the
         // new chain config instead of answers from the old chain. Only the
         // payments section names the chain; other saves (e.g. the routing
         // preferences synced at every launch) must not reset chain reads.
         if ('payments' in safeConfig) invalidateChainClients();
-        invalidateOnChainEnrichmentCache();
         return { ok: true, data: { config: merged }, error: null, status: 200 };
       } catch (err) {
         return { ok: false, data: null, error: err instanceof Error ? err.message : String(err), status: null };

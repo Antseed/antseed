@@ -31,8 +31,8 @@ const ROUTED_SENSITIVE_HEADERS = new Set([
     "something went wrong" UI, so it must read as a sentence for the person
     in front of the app, not as a machine payload. */
 const OUT_OF_CREDITS_MESSAGE =
-  'AntSeed is out of credits, so this request was not sent to a provider. '
-  + 'Open the AntSeed app and add funds to your balance, then send your message again.'
+  'Antseed is out of credits, so this request was not sent to a provider. '
+  + 'Open Antseed Desktop and add funds to your balance, then send your message again.'
 
 export interface BuyerForwardRequest {
   path: string
@@ -360,7 +360,7 @@ export class SystemProxyServer {
    * Connected apps surface that JSON error blob raw ("API Error: 402
    * {\"type\":\"api_error\",...}"), which gives the user no idea what
    * happened or what to do — so keep the 402 status but replace the body
-   * with a plain-text sentence telling them to top up in the AntSeed app.
+   * with a plain-text sentence telling them to top up in Antseed Desktop.
    */
   private respondOutOfCredits(
     proxyRes: http.IncomingMessage,

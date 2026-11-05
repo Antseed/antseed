@@ -55,7 +55,7 @@ export function parseConnectRuntimeActivity(lineRaw: string): RuntimeActivityEve
     const port = proxyBindErrorMatch[1] ?? '8377';
     connectSpecificErrorAt = Date.now();
     return toRuntimeActivity({
-      mode: 'connect',
+      mode: 'gateway',
       tone: 'bad',
       stage: 'proxy-port-in-use',
       message: `Buyer proxy port :${port} is already in use.`,
@@ -70,7 +70,7 @@ export function parseConnectRuntimeActivity(lineRaw: string): RuntimeActivityEve
       return null;
     }
     return toRuntimeActivity({
-      mode: 'connect',
+      mode: 'gateway',
       tone: 'bad',
       stage: 'connect-exit',
       message: 'Buyer runtime exited unexpectedly.',
@@ -84,7 +84,7 @@ export function parseConnectRuntimeActivity(lineRaw: string): RuntimeActivityEve
     const to = adapterMatch[2] ?? 'unknown';
     const provider = adapterMatch[3] ?? 'unknown';
     return toRuntimeActivity({
-      mode: 'connect',
+      mode: 'gateway',
       tone: 'warn',
       stage: 'protocol-adapter',
       message: `Adapting protocol ${from} -> ${to} via ${provider}.`,
@@ -99,7 +99,7 @@ export function parseConnectRuntimeActivity(lineRaw: string): RuntimeActivityEve
     const peerId = sendMatch[3] ?? '';
     const requestId = sendMatch[4] ?? '';
     return toRuntimeActivity({
-      mode: 'connect',
+      mode: 'gateway',
       tone: 'warn',
       stage: 'request-dispatched',
       message: `Request ${shortId(requestId)}: ${method} ${path} to peer ${shortId(peerId)}...`,
@@ -113,7 +113,7 @@ export function parseConnectRuntimeActivity(lineRaw: string): RuntimeActivityEve
   if (routingMatch) {
     const peerId = routingMatch[1] ?? '';
     return toRuntimeActivity({
-      mode: 'connect',
+      mode: 'gateway',
       tone: 'warn',
       stage: 'routing',
       message: `Routing request to peer ${shortId(peerId)}...`,
@@ -127,7 +127,7 @@ export function parseConnectRuntimeActivity(lineRaw: string): RuntimeActivityEve
     const peerId = connectingMatch[1] ?? '';
     const endpoint = connectingMatch[2] ?? 'unknown';
     return toRuntimeActivity({
-      mode: 'connect',
+      mode: 'gateway',
       tone: 'warn',
       stage: 'peer-connecting',
       message: `Connecting to peer ${shortId(peerId)} at ${endpoint}...`,
@@ -141,7 +141,7 @@ export function parseConnectRuntimeActivity(lineRaw: string): RuntimeActivityEve
     const state = (connectionStateMatch[1] ?? '').toLowerCase();
     if (state === 'open') {
       return toRuntimeActivity({
-        mode: 'connect',
+        mode: 'gateway',
         tone: 'active',
         stage: 'peer-connected',
         message: 'Peer connection open.',
@@ -157,7 +157,7 @@ export function parseConnectRuntimeActivity(lineRaw: string): RuntimeActivityEve
     const latencyMs = Number(responseMatch[3] ?? 0);
     const ok = status >= 200 && status < 400;
     return toRuntimeActivity({
-      mode: 'connect',
+      mode: 'gateway',
       tone: ok ? 'active' : 'bad',
       stage: 'response',
       message: ok
@@ -173,7 +173,7 @@ export function parseConnectRuntimeActivity(lineRaw: string): RuntimeActivityEve
     const requestId = timeoutMatch[1] ?? '';
     const timeoutMs = timeoutMatch[2] ?? '30000';
     return toRuntimeActivity({
-      mode: 'connect',
+      mode: 'gateway',
       tone: 'bad',
       stage: 'request-timeout',
       message: `Request ${shortId(requestId)} timed out after ${timeoutMs}ms.`,
@@ -189,7 +189,7 @@ export function parseConnectRuntimeActivity(lineRaw: string): RuntimeActivityEve
     const attempt = retryMatch[3] ?? '?';
     const max = retryMatch[4] ?? '?';
     return toRuntimeActivity({
-      mode: 'connect',
+      mode: 'gateway',
       tone: 'warn',
       stage: 'peer-retry',
       message: `Peer ${shortId(peerId)} returned ${code}. Retrying (${attempt}/${max})...`,
@@ -202,7 +202,7 @@ export function parseConnectRuntimeActivity(lineRaw: string): RuntimeActivityEve
   if (allFailedMatch) {
     const code = allFailedMatch[1] ?? 'unknown';
     return toRuntimeActivity({
-      mode: 'connect',
+      mode: 'gateway',
       tone: 'bad',
       stage: 'routing-failed',
       message: `All candidate peers failed (${code}).`,
@@ -212,7 +212,7 @@ export function parseConnectRuntimeActivity(lineRaw: string): RuntimeActivityEve
 
   if (/\[proxy\]\s+No peers available for request/i.test(line)) {
     return toRuntimeActivity({
-      mode: 'connect',
+      mode: 'gateway',
       tone: 'bad',
       stage: 'no-peers',
       message: 'No peers available for this request.',
@@ -222,7 +222,7 @@ export function parseConnectRuntimeActivity(lineRaw: string): RuntimeActivityEve
 
   if (/\[Node\]\s+Discovering peers/i.test(line)) {
     return toRuntimeActivity({
-      mode: 'connect',
+      mode: 'gateway',
       tone: 'warn',
       stage: 'discovering-peers',
       message: 'Discovering peers from DHT...',
@@ -234,7 +234,7 @@ export function parseConnectRuntimeActivity(lineRaw: string): RuntimeActivityEve
   if (dhtResultMatch) {
     const count = Number(dhtResultMatch[1] ?? 0);
     return toRuntimeActivity({
-      mode: 'connect',
+      mode: 'gateway',
       tone: count > 0 ? 'active' : 'warn',
       stage: 'dht-results',
       message: `DHT discovery returned ${String(count)} peer result${count === 1 ? '' : 's'}.`,
@@ -244,7 +244,7 @@ export function parseConnectRuntimeActivity(lineRaw: string): RuntimeActivityEve
 
   if (/\[proxy\]\s+POST \/v1\/messages/i.test(line)) {
     return toRuntimeActivity({
-      mode: 'connect',
+      mode: 'gateway',
       tone: 'warn',
       stage: 'chat-request',
       message: 'Submitting chat request to buyer proxy...',
@@ -254,7 +254,7 @@ export function parseConnectRuntimeActivity(lineRaw: string): RuntimeActivityEve
 
   if (/\[proxy\]\s+GET \/v1\/models/i.test(line)) {
     return toRuntimeActivity({
-      mode: 'connect',
+      mode: 'gateway',
       tone: 'warn',
       stage: 'service-request',
       message: 'Loading available services from peers...',
@@ -266,7 +266,7 @@ export function parseConnectRuntimeActivity(lineRaw: string): RuntimeActivityEve
 }
 
 export function parseRuntimeActivityFromLog(event: LogEvent): RuntimeActivityEvent | null {
-  if (event.mode === 'connect') {
+  if (event.mode === 'gateway') {
     return parseConnectRuntimeActivity(event.line);
   }
   return null;

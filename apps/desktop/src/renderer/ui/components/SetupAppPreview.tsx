@@ -36,7 +36,7 @@ const PREVIEW_MODELS: Array<{ brand: BrandKey; label: string; chip: string; free
 
 const SCENE_DURATION_SECONDS = 4;
 const PREVIEW_SCENES = [
-  { caption: 'Turn it on — your AI VPN joins the network', icon: SquarePowerIcon },
+  { caption: 'Turn it on — Antseed Desktop joins the network', icon: SquarePowerIcon },
   { caption: 'Chat with any model, pay per use', icon: BubbleChatIcon },
   { caption: 'The latest models, free ones included', icon: DiscoverCircleIcon },
   { caption: 'Connect the apps you already use', icon: ConnectIcon },
@@ -47,7 +47,7 @@ function sceneDelay(index: number): string {
 }
 
 /**
- * Miniature AI VPN window that plays as a walkthrough-loader: the nav rail on
+ * Miniature Antseed Desktop window that plays as a walkthrough-loader: the nav rail on
  * the left, the main pane cycling Home → Models → Apps → Chat at the app's
  * real portrait proportions, and a caption line underneath narrating each
  * scene. Pure CSS timing — one 16s period, 4s per scene, elements staggered
@@ -65,7 +65,7 @@ export function SetupAppPreview() {
         ))}
       </div>
       <div className={styles.frame}>
-        {/* The rail's active tab follows the scene on stage: AI VPN → Models →
+        {/* The rail's active tab follows the scene on stage: Home → Models →
             Apps → Chat, on the same 16s clock as the scenes. */}
         <div className={styles.rail}>
           {PREVIEW_SCENES.map(({ caption, icon }, index) => (
@@ -155,7 +155,7 @@ export function SetupAppPreview() {
                 </span>
               </div>
             ))}
-            <span className={styles.appsHint}>Requests route through your AI VPN</span>
+            <span className={styles.appsHint}>Requests route through Antseed Desktop</span>
           </div>
 
         </div>

@@ -26,16 +26,16 @@ export const TELEMETRY_USER_ACTIONS = [
   'settings_save',
   'plugin_install',
   'api_config_copy',
-  'floating_window_open',
-  'floating_window_close',
+  'gateway_console_open',
+  'gateway_settings_change',
 ] as const;
 
 export type TelemetryUserAction = (typeof TELEMETRY_USER_ACTIONS)[number];
 
 /**
  * Which app an app_connect / app_disconnect action refers to. A fixed local
- * taxonomy: the packaged profile names plus the Telegram bot; anything else
- * (user-added apps) reports as 'custom' so raw names never leave the device.
+ * taxonomy: the packaged profile names; anything else reports as 'custom'
+ * so raw names never leave the device.
  */
 export const TELEMETRY_APP_NAMES = [
   'opencode',
@@ -49,7 +49,7 @@ export const TELEMETRY_APP_NAMES = [
   'crush',
   'goose',
   'zed',
-  'telegram',
+  'claude-code',
   'custom',
 ] as const;
 
@@ -63,24 +63,17 @@ export function normalizeTelemetryAppName(name: string): TelemetryAppName {
 
 export const TELEMETRY_ACTION_SURFACES = [
   'home',
-  'explore',
-  'model',
   'apps',
-  'tunnels',
   'chats',
-  'preferences',
-  'credits',
-  'deposit',
-  'activity',
   'rewards',
+  'preferences',
+  'deposit',
   'chat',
   'help',
-  'peers',
   'connection',
   'desktop',
   'config',
   'setup',
-  'floating_window',
   'unknown',
 ] as const;
 

@@ -1,6 +1,6 @@
 name: Release Desktop
 
-# Builds and publishes the AntSeed Desktop Electron app for macOS,
+# Builds and publishes the Antseed Desktop Electron app for macOS,
 # Windows, and Linux in parallel, attaching artifacts to the same GitHub
 # Release (tagged v<version>, read from apps/desktop/package.json).
 #

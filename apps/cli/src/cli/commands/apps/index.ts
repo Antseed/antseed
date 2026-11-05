@@ -110,9 +110,6 @@ export async function connectApp(ctx: AppsContext, name: string, buyerPort?: num
   const port = buyerPort ?? await resolveDefaultBuyerPort(ctx)
   const warnings: string[] = []
   if (!readDefaultRoutedModel(ctx.dataDir)) warnings.push(noDefaultRouteWarning(port))
-  if (profile.configPatch.format === 'claude-desktop') {
-    warnings.push('Claude Desktop is routed through the Antseed desktop app\'s local Claude gateway; it only works while the desktop app is running.')
-  }
   try {
     writeConfigPatch(profile.configPatch, port, ensureStateDir(ctx))
   } catch (err) {

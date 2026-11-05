@@ -3,12 +3,14 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 
-import { desktopSystemProxyCliDataDir } from '../dev-instance.js';
 import { WORKSPACE_APPS_DIR } from '../paths.js';
 
 const { join, resolve } = path;
 
-export type RuntimeMode = 'connect' | 'system-proxy' | 'tunnel';
+export type RuntimeMode = 'gateway';
+
+/** Where the local gateway serves its API and console (dev instances set their own). */
+export const DEFAULT_LOCAL_GATEWAY_PORT = Number(process.env['ANTSEED_DESKTOP_GATEWAY_PORT']) || 8379;
 
 export interface RuntimeProcessState {
   mode: RuntimeMode;
@@ -21,19 +23,10 @@ export interface RuntimeProcessState {
 
 export interface StartOptions {
   mode: RuntimeMode;
-  router?: string;
-  dashboardPort?: number;
   configPath?: string;
   verbose?: boolean;
   env?: Record<string, string>;
-  // system-proxy-mode options
-  systemProxyPeerId?: string;
-  systemProxyPort?: number;
-  systemProxyProfiles?: string[];
-  systemProxyDefaultModel?: string;
-  systemProxyServedModels?: string[];
-  setSystemProxy?: boolean;
-  tunnelBuyerPort?: number;
+  gatewayPort?: number;
 }
 
 export interface DaemonStateSnapshot {
@@ -59,22 +52,6 @@ const DEFAULT_CONNECT_DATA_DIR = join(homedir(), '.antseed');
 const LEGACY_DESKTOP_DATA_ROOT = join(homedir(), '.antseed-desktop');
 const LEGACY_DESKTOP_CONNECT_DATA_DIR = join(LEGACY_DESKTOP_DATA_ROOT, 'connect');
 const CONNECT_DATA_DIR_ENV = 'ANTSEED_DESKTOP_CONNECT_DATA_DIR';
-
-function normalizeRouterIdentifier(value: string | undefined): string {
-  const raw = (value ?? 'local').trim().toLowerCase();
-  if (!raw) return 'local';
-
-  if (
-    raw === 'claude-code'
-    || raw === '@antseed/router-local'
-    || raw === 'antseed-router-local'
-    || raw === 'antseed-router-claude-code'
-  ) {
-    return 'local';
-  }
-
-  return raw;
-}
 
 function resolveAlignedNodeFromMarker(): string | null {
   const markerCandidates = [
@@ -360,42 +337,9 @@ export function resolveCommandArgs(opts: StartOptions): string[] {
   args.push('--config', configPath);
 
   switch (opts.mode) {
-    case 'connect':
+    case 'gateway':
       args.push('--data-dir', resolveConnectDataDir());
-      args.push('buyer', 'start');
-      {
-        const router = normalizeRouterIdentifier(opts.router);
-        if (router !== 'local') {
-          args.push('--router', router);
-        }
-      }
-      break;
-    case 'system-proxy':
-      args.push('--data-dir', desktopSystemProxyCliDataDir() ?? resolveConnectDataDir());
-      args.push('system-proxy', 'start');
-      if (opts.systemProxyPeerId) {
-        args.push('--peer', opts.systemProxyPeerId);
-      }
-      if (opts.systemProxyPort) {
-        args.push('--port', String(opts.systemProxyPort));
-      }
-      for (const profile of opts.systemProxyProfiles ?? []) {
-        args.push('--profile', profile);
-      }
-      if (opts.systemProxyDefaultModel) {
-        args.push('--default-model', opts.systemProxyDefaultModel);
-      }
-      for (const model of opts.systemProxyServedModels ?? []) {
-        args.push('--served-model', model);
-      }
-      if (opts.setSystemProxy) {
-        args.push('--system-proxy');
-      }
-      break;
-    case 'tunnel':
-      args.push('--data-dir', resolveConnectDataDir());
-      args.push('tunnel', 'start');
-      if (opts.tunnelBuyerPort) args.push('--buyer-port', String(opts.tunnelBuyerPort));
+      args.push('gateway', 'start', '--port', String(opts.gatewayPort ?? DEFAULT_LOCAL_GATEWAY_PORT));
       break;
     default:
       throw new Error(`Unsupported runtime mode: ${String(opts.mode)}`);
@@ -410,9 +354,7 @@ export class ProcessManager {
   private runtimeNativeAligned = false;
   private runtimeNativeAlignmentPromise: Promise<void> | null = null;
   private readonly states = new Map<RuntimeMode, RuntimeProcessState>([
-    ['connect', { mode: 'connect', running: false, pid: null, startedAt: null, lastExitCode: null, lastError: null }],
-    ['system-proxy', { mode: 'system-proxy', running: false, pid: null, startedAt: null, lastExitCode: null, lastError: null }],
-    ['tunnel', { mode: 'tunnel', running: false, pid: null, startedAt: null, lastExitCode: null, lastError: null }],
+    ['gateway', { mode: 'gateway', running: false, pid: null, startedAt: null, lastExitCode: null, lastError: null }],
   ]);
 
   constructor(
@@ -560,7 +502,7 @@ export class ProcessManager {
       'system',
       `Started ${mode} with "${executable}" (pid=${String(child.pid ?? 'unknown')})`,
     );
-    if (mode === 'connect') {
+    if (mode === 'gateway') {
       const dataDir = resolveConnectDataDir();
       this.onLog(mode, 'system', `Connect data dir: ${dataDir}`);
       if (dataDir === DEFAULT_CONNECT_DATA_DIR && existsSync(LEGACY_DESKTOP_CONNECT_DATA_DIR)) {
@@ -575,7 +517,7 @@ export class ProcessManager {
   }
 
   /** `logStdout: false` keeps stdout out of the runtime log (for output that carries secrets). */
-  async runCliCommand(args: string[], mode: RuntimeMode = 'connect', options: { logStdout?: boolean } = {}): Promise<CliCommandResult> {
+  async runCliCommand(args: string[], mode: RuntimeMode = 'gateway', options: { logStdout?: boolean } = {}): Promise<CliCommandResult> {
     const logStdout = options.logStdout !== false;
     const cliExecution = resolveCliExecution();
     const executable = cliExecution.executable;
@@ -801,11 +743,13 @@ export class ProcessManager {
         resolveStop();
       };
 
+      // The gateway stops its buyer first, which drains requests in flight;
+      // a buyer outliving a killed gateway finishes that drain on its own.
       const timeout = setTimeout(() => {
         child.kill('SIGKILL');
-      }, 5_000);
+      }, 10_000);
       const forceKillTimeout = timeout;
-      const resolveTimeout = setTimeout(finish, 7_500);
+      const resolveTimeout = setTimeout(finish, 12_500);
 
       child.once('exit', finish);
 
@@ -816,10 +760,6 @@ export class ProcessManager {
   }
 
   async stopAll(): Promise<void> {
-    await Promise.all([
-      this.stop('system-proxy'),
-      this.stop('connect'),
-      this.stop('tunnel'),
-    ]);
+    await this.stop('gateway');
   }
 }

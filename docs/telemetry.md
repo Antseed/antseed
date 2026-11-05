@@ -1,6 +1,6 @@
-# AI VPN Desktop Telemetry
+# Antseed Desktop Telemetry
 
-The Antseed AI VPN desktop app collects privacy-conscious product telemetry to
+Antseed Desktop collects privacy-conscious product telemetry to
 understand the activation funnel (first open → setup → deposit → first chat),
 network readiness, model selection, and app reliability. Events are associated
 with the buyer's public on-chain address. This document lists every event and

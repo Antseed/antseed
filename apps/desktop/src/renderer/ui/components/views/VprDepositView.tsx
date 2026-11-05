@@ -573,11 +573,11 @@ export function VprDepositView({ onSelectView }: Props) {
   function renderStage(current: Stage): JSX.Element {
     if (current === 'choose') {
       return (
-        <VprPage title="Add credits" backFallback="credits">
+        <VprPage title="Add funds" backFallback="home">
         <div className={styles.stack}>
           <BalanceSummaryCard
             values={balanceValues}
-            notice={<FundingStatusNotice status={funding} onManageSessions={() => onSelectView?.('activity')} />}
+            notice={<FundingStatusNotice status={funding} onManageSessions={() => { void window.antseedDesktop?.gatewayOpenConsole?.('/wallet'); }} />}
           />
 
           <div className={styles.primaryMethods}>

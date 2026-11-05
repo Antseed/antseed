@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { deriveConnectBadge, isBuyerReady } from './connect-badge';
 import type { RuntimeProcessState } from '../../types/bridge';
 
-const running: RuntimeProcessState = { mode: 'connect', running: true, pid: 1, startedAt: 1, lastExitCode: null, lastError: null };
-const stopped: RuntimeProcessState = { mode: 'connect', running: false, pid: null, startedAt: null, lastExitCode: 0, lastError: null };
+const running: RuntimeProcessState = { mode: 'gateway', running: true, pid: 1, startedAt: 1, lastExitCode: null, lastError: null };
+const stopped: RuntimeProcessState = { mode: 'gateway', running: false, pid: null, startedAt: null, lastExitCode: 0, lastError: null };
 const errored: RuntimeProcessState = { ...stopped, lastExitCode: 1, lastError: 'boom' };
 
 describe('deriveConnectBadge', () => {

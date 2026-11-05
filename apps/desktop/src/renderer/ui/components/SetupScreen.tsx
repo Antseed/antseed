@@ -81,23 +81,21 @@ export function SetupScreen() {
       // Catalog reference for the preview's Models scene (rows derived below).
       appSetupComplete: state.appSetupComplete,
       appSetupStep: state.appSetupStep,
-      chatServiceCount: state.chatServiceOptions.length,
+      chatServiceCount: state.chatModels.length,
       networkAlert: state.networkAlert,
       dhtNodeCount: state.dhtNodeCount,
       peerCount: state.lastPeers.length,
       metadataPeerCount,
       modelCount: models.size,
       freeModelCount: freeModels.size,
-      routeModelLabel: state.vprRouteSelection.model?.label ?? null,
-      defaultProvisional: state.vprDefaultModelProvisional,
+      routeModelLabel: state.chatModels.find((model) => model.id === state.chatSelectedModelId)?.label ?? null,
     };
   }, shallowEqual);
 
   const hasServices = snap.chatServiceCount > 0;
-  // The whole point of first-run setup: a model the user can chat with for
-  // free, confirmed by routing (a trusted free seller backs the default —
-  // the provisional flag has cleared). Only then does the screen call it done.
-  const freeReady = hasServices && snap.routeModelLabel !== null && !snap.defaultProvisional;
+  // The whole point of first-run setup: the gateway lists a model the user
+  // can chat with. Only then does the screen call it done.
+  const freeReady = hasServices && snap.routeModelLabel !== null;
 
   // The long tail of first-run setup: discovery counts are all real, but the
   // catalog is still loading and/or no free route has cleared the on-chain
@@ -163,7 +161,7 @@ export function SetupScreen() {
             </div>
           </div>
 
-          {/* The app itself as the loader: a miniature AI VPN window cycling
+          {/* The app itself as the loader: a miniature Antseed Desktop window cycling
               Home → Models → Chat, filling in with real discovered models. */}
 
           {/* networkAlert carries a startup grace period, so this only appears

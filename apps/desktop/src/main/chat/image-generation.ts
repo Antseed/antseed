@@ -3,7 +3,8 @@ import { BlockList, isIP } from 'node:net';
 import { lookup } from 'node:dns/promises';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { LOCALHOST_URL } from '../constants.js';
+import type { GatewayEndpoint } from '../gateway/service.js';
+import { GATEWAY_PROVIDER_ID } from './gateway-model.js';
 import { resolveAttachmentPath, saveAttachment } from './attachments/store.js';
 import type { AiChatMessage } from './conversation-types.js';
 import type { PiConversationStore } from './conversation-store.js';
@@ -51,7 +52,6 @@ for (const [network, prefix, family] of [
 export type GenerateChatImageRequest = {
   conversationId: string;
   prompt: string;
-  peerId?: string | null;
   moderation?: 'auto' | 'low';
   service: string;
   sourceImageAttachmentId?: string | null;
@@ -177,13 +177,12 @@ async function loadSourceAttachment(conversationId: string, attachmentId: string
 
 export async function generateChatImage(
   store: Pick<PiConversationStore, 'appendImageGeneration'>,
-  proxyPort: number,
+  endpoint: GatewayEndpoint,
   request: GenerateChatImageRequest,
   dependencies: GenerateChatImageDependencies = {},
 ): Promise<GenerateChatImageResult> {
   const conversationId = request.conversationId.trim();
   const prompt = request.prompt.trim();
-  const peerId = request.peerId?.trim() ?? '';
   const service = request.service.trim();
   const sourceImageAttachmentId = request.sourceImageAttachmentId?.trim() ?? '';
   if (!conversationId || !prompt || !service) {
@@ -191,11 +190,10 @@ export async function generateChatImage(
   }
 
   try {
-    let endpoint = '/v1/images/generations';
+    let apiPath = '/v1/images/generations';
     let body: string | FormData;
     const headers: Record<string, string> = {
-      authorization: 'Bearer antseed-desktop',
-      ...(request.moderation ? { 'x-antseed-required-parameters': 'moderation' } : {}),
+      authorization: `Bearer ${endpoint.apiKey}`,
     };
     if (sourceImageAttachmentId) {
       const source = await (dependencies.loadSourceAttachment ?? loadSourceAttachment)(conversationId, sourceImageAttachmentId);
@@ -211,13 +209,12 @@ export async function generateChatImage(
       form.append('response_format', 'b64_json');
       if (request.moderation) form.append('moderation', request.moderation);
       form.append('image', new Blob([source.bytes], { type: sourceMimeType }), source.fileName);
-      endpoint = '/v1/images/edits';
+      apiPath = '/v1/images/edits';
       body = form;
-      if (peerId) headers['x-antseed-pin-peer'] = peerId;
     } else {
       headers['content-type'] = 'application/json';
       body = JSON.stringify({
-        model: peerId ? `${peerId}@${service}` : service,
+        model: service,
         prompt,
         n: 1,
         response_format: 'b64_json',
@@ -225,7 +222,7 @@ export async function generateChatImage(
       });
     }
 
-    const response = await fetch(`${LOCALHOST_URL}:${String(proxyPort)}${endpoint}`, {
+    const response = await fetch(`${endpoint.origin}${apiPath}`, {
       method: 'POST',
       headers,
       body,
@@ -236,11 +233,13 @@ export async function generateChatImage(
     const payload = await response.json().catch(() => null) as ImageResponse | null;
     if (!response.ok) {
       const upstreamMessage = typeof payload?.error?.message === 'string' ? payload.error.message : '';
+      if (response.status === 402) {
+        throw new Error(`payment_required: ${upstreamMessage || 'Your gateway balance is too low to generate images. Add funds and try again.'}`);
+      }
       throw new Error(upstreamMessage || `Image generation failed (HTTP ${String(response.status)}).`);
     }
     const image = payload?.data?.[0];
     if (!image) throw new Error('Image service returned no image.');
-    const routedPeerId = response.headers.get('x-antseed-peer-id')?.trim() || peerId;
     const routedService = response.headers.get('x-antseed-service')?.trim() || service;
 
     let bytes: Buffer;
@@ -265,7 +264,6 @@ export async function generateChatImage(
       prompt,
       persistedMarker,
       routedService,
-      routedPeerId || undefined,
     );
     const user: AiChatMessage = { role: 'user', content: prompt, createdAt: persisted.user.timestamp };
     const assistant: AiChatMessage = {
@@ -281,8 +279,7 @@ export async function generateChatImage(
       }],
       createdAt: persisted.assistant.timestamp,
       meta: {
-        ...(routedPeerId ? { peerId: routedPeerId } : {}),
-        provider: 'antseed',
+        provider: GATEWAY_PROVIDER_ID,
         service: routedService,
         tokenSource: 'unknown',
         outputImages: 1,

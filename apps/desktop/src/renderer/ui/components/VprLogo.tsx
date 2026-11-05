@@ -1,12 +1,3 @@
-type VprLogoProps = {
-  height?: number;
-  className?: string;
-};
-
-const WORDMARK_WIDTH = 40.55863;
-const HORIZONTAL_LOGO_WIDTH = WORDMARK_WIDTH + 32;
-const STACKED_LOGO_WIDTH = WORDMARK_WIDTH + 2;
-
 function AntIconPaths({ color = '#1FD87A' }: { color?: string }) {
   return (
     <>
@@ -37,19 +28,6 @@ function AntIconPaths({ color = '#1FD87A' }: { color?: string }) {
   );
 }
 
-function VprWordmark() {
-  return (
-    <>
-      <path d="M2.87394 10.7628L0 0.237196H1.77376L3.88431 8.29054L5.99487 0.237196H7.76863L4.89468 10.7628H2.87394Z" transform="translate(7.76863 11) rotate(180)" fill="currentColor" fillRule="evenodd"/>
-      <path d="M2.1 6.92712H5.66863V8.63712H2.1Z" fill="currentColor" fillRule="evenodd"/>
-      <path d="M9.33 0.237196H11.04V10.7628H9.33Z" fill="currentColor" fillRule="evenodd"/>
-      <path d="M2.87394 10.7628L0 0.237196H1.77376L3.88431 8.29054L5.99487 0.237196H7.76863L4.89468 10.7628H2.87394Z" transform="translate(14.44 0)" fill="currentColor" fillRule="evenodd"/>
-      <path d="M0 10.7628V0.237196H3.9C5.05667 0.237196 5.94667 0.647196 6.57 1.46716C7.19333 2.28712 7.505 3.30712 7.505 4.52716C7.505 5.74712 7.19333 6.76712 6.57 7.58708C5.94667 8.40712 5.05667 8.81712 3.9 8.81712H1.71V10.7628H0ZM1.71 6.92712H3.755C4.28833 6.92712 4.69333 6.71962 4.97 6.30462C5.24667 5.88962 5.385 5.29712 5.385 4.52716C5.385 3.75712 5.24667 3.16462 4.97 2.74962C4.69333 2.33462 4.28833 2.12712 3.755 2.12712H1.71V6.92712Z" transform="translate(23.77 0)" fill="currentColor" fillRule="evenodd"/>
-      <path d="M0 10.7628V0.237196H1.71L6.05863 7.5096V0.237196H7.76863V10.7628H6.05863L1.71 3.4904V10.7628Z" transform="translate(32.79 0)" fill="currentColor" fillRule="evenodd"/>
-    </>
-  );
-}
-
 /** Just the ant mark, no wordmark — square icon contexts (the floating pill
  * badge). The viewBox is shifted so the mark sits optically centered. */
 export function VprMark({ size = 28, className, color }: { size?: number; className?: string; color?: string }) {
@@ -63,52 +41,6 @@ export function VprMark({ size = 28, className, color }: { size?: number; classN
       xmlns="http://www.w3.org/2000/svg"
     >
       <AntIconPaths color={color} />
-    </svg>
-  );
-}
-
-export function VprLogo({ height = 28, className }: VprLogoProps) {
-  const width = Math.round(height * (HORIZONTAL_LOGO_WIDTH / 28));
-
-  return (
-    <svg
-      className={className}
-      width={width}
-      height={height}
-      viewBox={`0 0 ${HORIZONTAL_LOGO_WIDTH} 28`}
-      role="img"
-      aria-label="AI VPN"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-    >
-      <AntIconPaths />
-      <g transform="translate(30, 8.5)">
-        <VprWordmark />
-      </g>
-    </svg>
-  );
-}
-
-export function VprStackedLogo({ height = 56, className }: VprLogoProps) {
-  const width = Math.round(height * (STACKED_LOGO_WIDTH / 44));
-
-  return (
-    <svg
-      className={className}
-      width={width}
-      height={height}
-      viewBox={`0 0 ${STACKED_LOGO_WIDTH} 44`}
-      role="img"
-      aria-label="AI VPN"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-    >
-      <g transform={`translate(${(STACKED_LOGO_WIDTH - 28) / 2}, 0)`}>
-        <AntIconPaths />
-      </g>
-      <g transform="translate(1, 32.5)">
-        <VprWordmark />
-      </g>
     </svg>
   );
 }

@@ -94,12 +94,13 @@ npm run start
 configuration on Linux. For direct electron-builder invocations, pass
 `--config electron-builder.linux.cjs --linux`.
 
-Linux packages keep the visible name **Antseed AI VPN** and branded download
-filenames, but use `antseed-ai-vpn` for the executable, desktop/icon identity,
-and `/opt/antseed-ai-vpn` installation directory. macOS and Windows retain
-their existing installation identities. The Debian package name remains
-`antseed-ai-vpn`, so existing installations upgrade rather than installing a
-second package.
+Linux packages show the name **Antseed Desktop** and use `antseed-desktop`
+for the Debian package, the executable, the desktop/icon identity and the
+`/opt/antseed-desktop` installation directory. Before the rename the package
+was `antseed-ai-vpn`; the new package declares Conflicts, Replaces and
+Provides on it, so installing or updating removes the old package instead of
+installing a second copy. macOS and Windows keep their app id
+(`com.antseed.desktop`), so updates replace the existing install.
 
 The Linux packing hook marks `chrome-sandbox` setuid before archiving. Debian
 configuration enforces `root:root` ownership and mode `4755`, independently
@@ -146,7 +147,7 @@ docker run --rm --platform linux/amd64 \
   ubuntu:24.04 bash -ec '
     apt-get update
     apt-get install -y /fixed.deb desktop-file-utils
-    dpkg --purge antseed-ai-vpn
+    dpkg --purge antseed-desktop
     bash /test-deb.sh /fixed.deb /legacy.deb
   '
 ```

@@ -9,7 +9,7 @@ import type { ViewName } from '../../types';
 import styles from './VprKit.module.scss';
 
 /**
- * Shared brand-guideline primitives for the AI VPN screens (Figma: Toggle -
+ * Shared brand-guideline primitives for the Antseed Desktop screens (Figma: Toggle -
  * Switch, Badge, Slider - Center-biased, Default model tiles, search).
  */
 
@@ -41,8 +41,10 @@ export function VprBackTitle({ title, onBack, fallback = 'home' }: {
  * section must add the global `view-pinned-header` class, which turns it
  * into a non-scrolling flex column.
  */
-export function VprPage({ title, onBack, backFallback, header, children }: {
+export function VprPage({ title, root = false, onBack, backFallback, header, children }: {
   title: string;
+  /** A top-level screen from the nav rail: a plain title, no back chevron. */
+  root?: boolean;
   /** Explicit back handler (in-view stages); omit to pop the nav history. */
   onBack?: () => void;
   /** History-empty fallback when onBack is omitted; defaults to 'home'. */
@@ -56,13 +58,13 @@ export function VprPage({ title, onBack, backFallback, header, children }: {
   return (
     <>
       <div className={styles.pageTop}>
-        <div className={styles.pageTopInner}>
-          <div className={styles.pageHeaderRow}>
-            <VprBackTitle title={title} onBack={onBack} fallback={backFallback} />
-            <VprHeaderActions credits={credits} onSelectView={nav?.navigate} />
-          </div>
-          {header}
+        <div className={styles.pageHeaderRow}>
+          {root
+            ? <h1 className={styles.pageTitle}>{title}</h1>
+            : <VprBackTitle title={title} onBack={onBack} fallback={backFallback} />}
+          <VprHeaderActions credits={credits} onSelectView={nav?.navigate} />
         </div>
+        {header ? <div className={styles.pageTopInner}>{header}</div> : null}
       </div>
       <div className={styles.pageBody} data-view-scroll>
         {children}

@@ -11,7 +11,7 @@ Generate an image, or edit one or more images the user has, through the user's l
 
 - Antseed Desktop or `antseed buyer start` must be running.
 - The buyer must have enough deposited USDC for an eligible seller serving the selected model.
-- Buyer endpoint: use `$ANTSEED_PROXY_URL` when it is set (Antseed Desktop and `pnpm sandbox` set it to the active buyer proxy); otherwise `http://127.0.0.1:8377`. Never hard-code a port in commands; always go through `$proxy_url`.
+- Buyer endpoint: use `$ANTSEED_PROXY_URL` when it is set (Antseed Desktop sets it to its gateway, with the key in `$ANTSEED_API_KEY`; `pnpm sandbox` sets it to the active buyer proxy); otherwise `http://127.0.0.1:8377`. Never hard-code a port in commands; always go through `$proxy_url`.
 
 ## Parameters
 
@@ -30,7 +30,7 @@ Always fetch the current image catalog before generating:
 ```bash
 proxy_url="${proxy_url:-${ANTSEED_PROXY_URL:-http://127.0.0.1:8377}}"
 curl --fail-with-body \
-  -H 'authorization: Bearer antseed-desktop' \
+  -H "authorization: Bearer ${ANTSEED_API_KEY:-antseed-desktop}" \
   "$proxy_url/v1/models?type=images"
 ```
 
@@ -51,7 +51,7 @@ output="${output:-generated-image.png}"
 
 curl --fail-with-body "$proxy_url/v1/images/generations" \
   -H 'content-type: application/json' \
-  -H 'authorization: Bearer antseed-desktop' \
+  -H "authorization: Bearer ${ANTSEED_API_KEY:-antseed-desktop}" \
   --data-binary "$(jq -n \
     --arg model "$model" \
     --arg prompt "$prompt" \
@@ -79,7 +79,7 @@ image_args=()
 for image in "${images[@]}"; do image_args+=(-F "image[]=@$image"); done
 
 curl --fail-with-body "$proxy_url/v1/images/edits" \
-  -H 'authorization: Bearer antseed-desktop' \
+  -H "authorization: Bearer ${ANTSEED_API_KEY:-antseed-desktop}" \
   -F "model=$model" \
   -F "prompt=$prompt" \
   "${image_args[@]}" \

@@ -593,13 +593,13 @@ antseed buyer set-authorized-wallet --self
 antseed --data-dir ~/.antseed-buyer --config ~/.antseed-buyer/config.json buyer set-authorized-wallet
 ```
 
-By default, the command opens the same **Set authorized wallet** browser flow used by AI VPN. The local buyer identity signs the deposits contract's EIP-712 authorization, then the connected external wallet submits `setOperator` and pays ETH gas. The CLI prints the localhost URL as a fallback and waits for confirmation before shutting down the local server. Use `--no-open` to print the URL without launching the browser.
+By default, the command opens the same **Set authorized wallet** browser flow used by Antseed Desktop. The local buyer identity signs the deposits contract's EIP-712 authorization, then the connected external wallet submits `setOperator` and pays ETH gas. The CLI prints the localhost URL as a fallback and waits for confirmation before shutting down the local server. Use `--no-open` to print the URL without launching the browser.
 
 With `--self`, the CLI makes the buyer hot wallet its own authorized wallet. The buyer signs and submits the transaction, so it must have ETH on the configured chain. Both modes respect the selected data directory, identity environment override, and payment chain/contract configuration. The command does not accept an arbitrary address: connect an external wallet to prove control, or explicitly choose the buyer wallet with `--self`.
 
 **The authorized wallet gains control of withdrawals and future authorization transfers.** Choose a wallet you control. Initial authorization is only possible when no authorized wallet is set. Self-authorization sends no transaction when the buyer wallet is already authorized and rejects replacement of a different existing wallet. Changing it later requires an operator-transfer transaction from the current authorized wallet, not the buyer identity.
 
-`antseed buyer withdraw` still submits from the buyer identity. If you authorize an external wallet, withdraw from that wallet through AI VPN's payments UI (for the same buyer identity) or the deposits contract, not through the current CLI withdrawal command. To use CLI withdrawal, the buyer identity itself must be the authorized wallet. Setting an operator does not resolve other withdrawal constraints, such as reserved funds or insufficient available balance.
+`antseed buyer withdraw` still submits from the buyer identity. If you authorize an external wallet, withdraw from that wallet through Antseed Desktop's payments UI (for the same buyer identity) or the deposits contract, not through the current CLI withdrawal command. To use CLI withdrawal, the buyer identity itself must be the authorized wallet. Setting an operator does not resolve other withdrawal constraints, such as reserved funds or insufficient available balance.
 
 
 ### Configuration

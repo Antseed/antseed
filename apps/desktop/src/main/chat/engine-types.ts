@@ -27,8 +27,6 @@ export type RegisterPiChatHandlersOptions = {
   ipcMain: IpcMain;
   sendToRenderer: (channel: string, payload: unknown) => void;
   configPath: string;
-  isBuyerRuntimeRunning: () => boolean;
-  ensureBuyerRuntimeStarted?: () => Promise<boolean>;
   appendSystemLog: (line: string) => void;
   recordFirstChatStarted?: (input: FirstChatTelemetryInput) => void | Promise<void>;
   recordFirstModelShown?: (input: FirstModelShownTelemetryInput) => void | Promise<void>;

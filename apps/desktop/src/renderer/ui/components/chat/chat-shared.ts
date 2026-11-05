@@ -220,13 +220,6 @@ export type ContentBlock = {
 };
 
 export type AssistantMeta = {
-  peerId: string | null;
-  peerAddress: string | null;
-  peerProviders: string[];
-  peerReputation: number | null;
-  peerCurrentLoad: number | null;
-  peerMaxConcurrency: number | null;
-  routeRequestId: string | null;
   provider: string | null;
   service: string | null;
   inputTokens: number;
@@ -345,9 +338,6 @@ export function escapeHtml(text: string): string {
 export function normalizeAssistantMeta(msg: ChatMessage): AssistantMeta | null {
   if (!msg || msg.role !== 'assistant' || !msg.meta || typeof msg.meta !== 'object') return null;
   const meta = msg.meta;
-  const peerId = typeof meta.peerId === 'string' && (meta.peerId as string).trim().length > 0 ? (meta.peerId as string).trim() : null;
-  const peerAddress = typeof meta.peerAddress === 'string' && (meta.peerAddress as string).trim().length > 0 ? (meta.peerAddress as string).trim() : null;
-  const peerProviders = Array.isArray(meta.peerProviders) ? (meta.peerProviders as string[]).map(String).filter(Boolean) : [];
   const provider = typeof meta.provider === 'string' && (meta.provider as string).trim().length > 0 ? (meta.provider as string).trim() : null;
   const service = typeof meta.service === 'string' && (meta.service as string).trim().length > 0 ? (meta.service as string).trim() : null;
   const inputTokens = Math.max(0, Math.floor(Number(meta.inputTokens) || 0));
@@ -358,19 +348,8 @@ export function normalizeAssistantMeta(msg: ChatMessage): AssistantMeta | null {
   const tokenSource = tokenSourceRaw === 'estimated' ? 'estimated' : tokenSourceRaw === 'usage' ? 'usage' : 'unknown';
   const costUsd = Number.isFinite(Number(meta.estimatedCostUsd)) ? Number(meta.estimatedCostUsd) : 0;
   const latencyMs = Number.isFinite(Number(meta.latencyMs)) ? Number(meta.latencyMs) : 0;
-  const peerReputation = Number.isFinite(Number(meta.peerReputation)) ? Number(meta.peerReputation) : null;
-  const peerCurrentLoad = Number.isFinite(Number(meta.peerCurrentLoad)) ? Number(meta.peerCurrentLoad) : null;
-  const peerMaxConcurrency = Number.isFinite(Number(meta.peerMaxConcurrency)) ? Number(meta.peerMaxConcurrency) : null;
-  const routeRequestId = typeof meta.routeRequestId === 'string' && (meta.routeRequestId as string).trim().length > 0 ? (meta.routeRequestId as string).trim() : null;
   const outputImages = Math.max(0, Math.floor(Number(meta.outputImages) || 0));
   return {
-    peerId,
-    peerAddress,
-    peerProviders,
-    peerReputation,
-    peerCurrentLoad,
-    peerMaxConcurrency,
-    routeRequestId,
     provider,
     service,
     inputTokens,
@@ -439,7 +418,6 @@ export function buildChatMetaParts(msg: ChatMessage): string[] {
   const assistantMeta = normalizeAssistantMeta(msg);
 
   if (assistantMeta) {
-    if (assistantMeta.peerId) parts.push(`peer ${assistantMeta.peerId.slice(0, 8)}`);
     if (assistantMeta.outputImages > 0) {
       parts.push(`${assistantMeta.outputImages} ${assistantMeta.outputImages === 1 ? 'image' : 'images'}`);
     }
@@ -454,14 +432,6 @@ export function buildChatMetaParts(msg: ChatMessage): string[] {
     }
     if (assistantMeta.costUsd > 0) parts.push(`$${formatUsd(assistantMeta.costUsd)}`);
     if (assistantMeta.latencyMs > 0) parts.push(`${Math.round(assistantMeta.latencyMs)}ms`);
-    if (assistantMeta.peerReputation !== null) parts.push(`rep ${Math.round(assistantMeta.peerReputation)}`);
-    if (
-      assistantMeta.peerCurrentLoad !== null &&
-      assistantMeta.peerMaxConcurrency !== null &&
-      assistantMeta.peerMaxConcurrency > 0
-    ) {
-      parts.push(`load ${Math.round(assistantMeta.peerCurrentLoad)}/${Math.round(assistantMeta.peerMaxConcurrency)}`);
-    }
   }
 
   return parts;

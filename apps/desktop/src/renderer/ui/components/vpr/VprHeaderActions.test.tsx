@@ -15,15 +15,16 @@ beforeEach(() => {
   initStore(loadedState());
 });
 
-it('renders accessible Help, Settings, and balance buttons in that order', () => {
+it('renders accessible Help, Settings, API keys, and balance buttons in that order', () => {
   const markup = renderToStaticMarkup(<VprHeaderActions credits="228.14" />);
   expect(markup).toContain('$228.14');
   expect(markup).toContain('aria-label="Add credits, balance $228.14"');
   expect(markup).toContain('aria-label="Settings"');
   expect(markup).toContain('aria-label="Help"');
-  expect(markup.match(/<button /g)).toHaveLength(3);
+  expect(markup.match(/<button /g)).toHaveLength(4);
   expect(markup.indexOf('aria-label="Help"')).toBeLessThan(markup.indexOf('aria-label="Settings"'));
-  expect(markup.indexOf('aria-label="Settings"')).toBeLessThan(markup.indexOf('aria-label="Add credits, balance $228.14"'));
+  expect(markup.indexOf('aria-label="Settings"')).toBeLessThan(markup.indexOf('aria-label="API keys"'));
+  expect(markup.indexOf('aria-label="API keys"')).toBeLessThan(markup.indexOf('aria-label="Add credits, balance $228.14"'));
 });
 
 it('preserves deposit navigation and opens the existing preferences and help routes', () => {

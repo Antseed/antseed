@@ -18,9 +18,9 @@ Run your own Antseed gateway and manage it from a web console. Give people and a
 
 → [Quickstart](/docs/quickstart)
 
-### Desktop app (AI VPN)
+### Antseed Desktop
 
-One person on one computer. The desktop app (AI VPN) runs the buyer for you, lets you pick models and sellers, tops up by card or USDC, and launches local coding tools such as Claude Code, Codex and OpenCode from its **Connected apps** view.
+One person on one computer. Antseed Desktop runs a local gateway for you, tops up by card or USDC, and connects local coding tools such as Claude Code, Codex and OpenCode to it from its **Apps** view. Keys, usage and limits are in the gateway's console.
 
 → [Desktop app](/docs/desktop)
 

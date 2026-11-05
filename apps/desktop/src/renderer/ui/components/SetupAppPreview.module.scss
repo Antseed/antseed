@@ -1,4 +1,4 @@
-/* Miniature AI VPN window used as the setup walkthrough-loader. One 16s period,
+/* Miniature Antseed Desktop window used as the setup walkthrough-loader. One 16s period,
    4s per scene (Home, Models, Apps, Chat); elements stagger within their
    scene via inline animation-delay. Sized to the app's real portrait
    proportions so it reads as the actual window, not a squashed card. */
@@ -181,7 +181,7 @@ $period: 16s;
   color: var(--brand);
 }
 
-/* App pill strip — the tools that connect through the AI VPN. */
+/* App pill strip — the tools that connect through Antseed Desktop. */
 .pillRow {
   display: flex;
   justify-content: center;

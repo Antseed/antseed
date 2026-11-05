@@ -54,7 +54,7 @@ export function initRuntimeModule({ uiState }: RuntimeModuleOptions) {
 
   function appendSystemLog(message: string): void {
     appendLog({
-      mode: 'connect' as const,
+      mode: 'gateway' as const,
       stream: 'system' as const,
       line: message,
       timestamp: Date.now(),

@@ -4381,7 +4381,7 @@ export class BuyerProxy {
         error: {
           type: 'no_default_route',
           code: 'no_default_route',
-          message: `Model "${ROUTED_MODEL_ALIAS}" routes to the model selected in the AI VPN, but no route is set. `
+          message: `Model "${ROUTED_MODEL_ALIAS}" routes to the model selected in Antseed Desktop, but no route is set. `
             + 'Pick a model in the desktop app, or request "<peerId>@<model>" explicitly.',
           param: 'model',
         },

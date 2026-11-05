@@ -1275,7 +1275,7 @@ select.form-input {
    The Modal primitive ships the dashboard's `--as-*` look (bordered
    header, boxed close button, generous padding). Restyle it once here
    with the app's tokens so every desktop modal — confirms, settings,
-   pickers — matches the AI VPN views without per-dialog overrides.
+   pickers — matches the app's views without per-dialog overrides.
    Selectors are nested under `.as-modal` / `.as-modal-overlay` so they
    outrank the primitive's own rules whatever the stylesheet order.
    =================================================================== */

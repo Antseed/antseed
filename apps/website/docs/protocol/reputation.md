@@ -42,7 +42,7 @@ The identity part is the strongest single verified identity; several accounts or
 
 ### Not in the score
 
-These stay separate router rules and never change the number: the local sybil heuristic (a display-only warning in the CLI and desktop), ghost-channel count, settlement recency, failure streaks and cooldowns, price limits, and allow/block lists. A seller-reported `reputationScore` is used only when the buyer has not scored the peer.
+These stay separate router rules and never change the number: the local sybil heuristic (a display-only warning in the CLI), ghost-channel count, settlement recency, failure streaks and cooldowns, price limits, and allow/block lists. A seller-reported `reputationScore` is used only when the buyer has not scored the peer.
 
 ## How routing uses the score
 

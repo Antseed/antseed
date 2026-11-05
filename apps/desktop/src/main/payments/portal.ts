@@ -40,10 +40,6 @@ export async function startPaymentsPortal(): Promise<void> {
       port: PAYMENTS_PORT,
       identityHex,
       configPath: ACTIVE_CONFIG_PATH,
-      onOpenRewards: async () => {
-        const { stakingSessions } = await import('../staking/portal.js');
-        await stakingSessions.open('rewards');
-      },
       onPaymentCompleted: () => {
         // The payment landed in the browser — pull the app back up and let
         // the renderer refresh balances/channels/rewards immediately.
@@ -70,8 +66,8 @@ export async function stopPaymentsPortal(): Promise<void> {
   paymentsServer = null;
 }
 
-export type PayPageKind = 'deposit' | 'withdraw' | 'authorize' | 'claim' | 'close-channel';
-export const PAY_PAGE_KINDS: readonly PayPageKind[] = ['deposit', 'withdraw', 'authorize', 'claim', 'close-channel'];
+export type PayPageKind = 'deposit' | 'withdraw' | 'authorize';
+export const PAY_PAGE_KINDS: readonly PayPageKind[] = ['deposit', 'withdraw', 'authorize'];
 
 export let paymentsPopup: BrowserWindow | null = null;
 

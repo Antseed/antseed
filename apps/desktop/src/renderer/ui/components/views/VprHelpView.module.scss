@@ -112,7 +112,7 @@
   flex-direction: column;
   gap: 16px;
   width: 100%;
-  max-width: 392px;
+  max-width: 760px;
   margin: 0 auto;
   min-width: 0;
 }
@@ -369,4 +369,17 @@ button.row:focus-visible {
 
 .rowFlush {
   border-top: 1px solid var(--border);
+}
+
+/* Wide windows: sections flow into two columns, each kept whole. */
+.columns {
+  display: block;
+  max-width: 1040px;
+  columns: 2 400px;
+  column-gap: 20px;
+
+  > * {
+    break-inside: avoid;
+    margin-bottom: 20px;
+  }
 }

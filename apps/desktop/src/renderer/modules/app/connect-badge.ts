@@ -2,16 +2,16 @@ import type { BadgeState } from '../../core/state';
 import type { RuntimeProcessState } from '../../types/bridge';
 
 /**
- * Buyer runtime status badge. `processes[].running` flips true the moment
- * the child process is spawned, well before the buyer proxy accepts
- * connections — so a "running" process with the proxy port still closed is
- * reported as starting, and the UI only lights up once the proxy is reachable.
+ * Local gateway status badge. `processes[].running` flips true the moment
+ * the child process is spawned, well before the gateway (and its buyer)
+ * accepts connections — so a running process that does not answer yet is
+ * reported as starting, and the UI only lights up once it is reachable.
  */
 export function deriveConnectBadge(
   processes: readonly RuntimeProcessState[],
   proxyOnline: boolean,
 ): BadgeState {
-  const connect = processes.find((process) => process.mode === 'connect') ?? null;
+  const connect = processes.find((process) => process.mode === 'gateway') ?? null;
   if (connect?.running) {
     return proxyOnline
       ? { tone: 'active', label: 'Running' }
@@ -21,10 +21,10 @@ export function deriveConnectBadge(
   return { tone: 'bad', label: 'Stopped' };
 }
 
-/** The buyer is actually usable: process running and proxy port reachable. */
+/** The local gateway is actually usable: process running and reachable. */
 export function isBuyerReady(
   processes: readonly RuntimeProcessState[],
   proxyOnline: boolean,
 ): boolean {
-  return proxyOnline && processes.some((process) => process.mode === 'connect' && process.running === true);
+  return proxyOnline && processes.some((process) => process.mode === 'gateway' && process.running === true);
 }
