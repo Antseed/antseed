@@ -963,7 +963,7 @@ export class SellerRequestHandler {
             response = buildUpstreamUnavailableResponse(request.requestId, requestedModel);
             statusCode = response.statusCode;
           } else if (!streamedResponseStarted && statusCode === 429) {
-            response = buildUpstreamRateLimitedResponse(request.requestId, requestedModel, response.headers['retry-after']);
+            response = buildUpstreamRateLimitedResponse(request.requestId, requestedModel, takeHeader({ ...response.headers }, 'retry-after'));
           }
           const health = serviceHealthOf(provider.serviceHealth, requestedModel);
           if (!streamedResponseStarted && isServiceHealthFailing(health) && isUpstreamFailureStatus(statusCode)) {

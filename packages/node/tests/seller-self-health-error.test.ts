@@ -217,6 +217,19 @@ describe('what a seller tells buyers about its upstream', () => {
     expect(response.headers).toEqual({ 'content-type': 'application/json', 'retry-after': '30' });
   });
 
+  it('keeps an upstream Retry-After in any letter case on a rate-limited answer', async () => {
+    const provider = makeProvider('p', 429);
+    provider.handleRequest = vi.fn(async (req) => ({
+      requestId: req.requestId,
+      statusCode: 429,
+      headers: { 'Content-Type': 'application/json', 'Retry-After': '2' },
+      body: new TextEncoder().encode('{}'),
+    }));
+    const response = await serve([provider]);
+    expect(response.statusCode).toBe(429);
+    expect(response.headers).toEqual({ 'content-type': 'application/json', 'retry-after': '2' });
+  });
+
   it('does not tell buyers what a provider exception says', async () => {
     const provider = makeProvider('p', 200);
     provider.handleRequest = vi.fn(async () => { throw new Error('OpenAI Codex token refresh failed (401): {"error":"account sirob@example.com suspended"}'); });
