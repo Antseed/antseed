@@ -303,7 +303,7 @@ export async function createTelemetryService(
   const available = !staticDisabled;
   const isEnabled = () => (
     available
-    && !state.telemetryDisabled
+    && state.telemetryEnabled
     && normalizeDistinctId(options.getDistinctId()) !== null
   );
 
@@ -772,11 +772,12 @@ export async function createTelemetryService(
       ]);
     },
 
-    isUserOptedOut: () => state.telemetryDisabled,
+    // Off until turned on: "opted out" is every state but an explicit yes.
+    isUserOptedOut: () => !state.telemetryEnabled,
 
     async setUserOptedOut(disabled: boolean) {
-      state.telemetryDisabled = Boolean(disabled);
-      if (state.telemetryDisabled) pendingUserActions.length = 0;
+      state.telemetryEnabled = !disabled;
+      if (!state.telemetryEnabled) pendingUserActions.length = 0;
       await save();
     },
   };

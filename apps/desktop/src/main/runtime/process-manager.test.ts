@@ -23,7 +23,11 @@ test('CLI children are told the desktop hosts them, and are off when desktop tel
   assert.equal(env['ANTSEED_TELEMETRY_HOST'], 'desktop');
   assert.equal(env['ANTSEED_TELEMETRY_HOST_SESSION_ID'], '0190a6e2-7b3c-7d4e-8f00-000000000001');
   assert.equal(env['ANTSEED_TELEMETRY'], '0');
+  // Available but never turned on: still off (telemetry is opt-in).
   setDesktopTelemetryHost({ sessionId: '0190a6e2-7b3c-7d4e-8f00-000000000001', available: true });
+  env = buildCliChildEnv({}, false);
+  assert.equal(env['ANTSEED_TELEMETRY'], '0');
+  setDesktopTelemetryHost({ sessionId: '0190a6e2-7b3c-7d4e-8f00-000000000001', available: true, userOptedOut: false });
   env = buildCliChildEnv({}, false);
   assert.equal(env['ANTSEED_TELEMETRY'], undefined);
 });

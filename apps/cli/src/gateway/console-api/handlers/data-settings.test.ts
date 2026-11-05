@@ -279,8 +279,9 @@ test('PUT /settings/telemetry flips telemetry.enabled in the config file, keeps 
   try {
     const path = join(h.dir, 'config.json')
     writeFileSync(path, JSON.stringify({ custom: { keep: true } }))
+    // Off by default: never turned on, the switch shows off and can turn it on.
     const before = await h.as('owner', 'GET', '/settings')
-    assert.deepEqual((before.body as Settings).telemetry, { available: true, enabled: true, userDisabled: false })
+    assert.deepEqual((before.body as Settings).telemetry, { available: true, enabled: false, userDisabled: true })
 
     const off = await h.as('owner', 'PUT', '/settings/telemetry', { enabled: false })
     assert.equal(off.status, 200, JSON.stringify(off.body))

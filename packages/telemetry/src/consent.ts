@@ -5,8 +5,9 @@
  * 2. CI (`CI` set and not false): off.
  * 3. No PostHog project configured (source builds bake none): off.
  * 4. The persisted choice (`telemetry.enabled` in the config file, or the
- *    desktop's own preference), when set.
- * 5. The product default: on, with an opt-out.
+ *    desktop's own preference): `false` turns it off.
+ * 5. The product default: off. Only an explicit `true` (the user turned it
+ *    on) sends anything.
  */
 
 export const TELEMETRY_ENV = 'ANTSEED_TELEMETRY';
@@ -16,7 +17,7 @@ export const POSTHOG_PROJECT_API_KEY_ENV = 'POSTHOG_PROJECT_API_KEY';
 
 export type ConsentDecision =
   | { enabled: true }
-  | { enabled: false; reason: 'do_not_track' | 'env_disabled' | 'ci' | 'not_configured' | 'user_disabled' | 'dev_build' };
+  | { enabled: false; reason: 'do_not_track' | 'env_disabled' | 'ci' | 'not_configured' | 'user_disabled' | 'not_enabled' | 'dev_build' };
 
 const FALSY = new Set(['0', 'false', 'no', 'off']);
 const TRUTHY = new Set(['1', 'true', 'yes', 'on']);
@@ -66,5 +67,6 @@ export function resolveConsent(input: {
   if (isCiEnvironment(env)) return { enabled: false, reason: 'ci' };
   if (!input.configured) return { enabled: false, reason: 'not_configured' };
   if (input.persisted === false) return { enabled: false, reason: 'user_disabled' };
+  if (input.persisted !== true) return { enabled: false, reason: 'not_enabled' };
   return { enabled: true };
 }

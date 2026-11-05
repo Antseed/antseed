@@ -14,6 +14,7 @@ const REASON_TEXT: Record<string, string> = {
   ci: 'off: running in CI',
   not_configured: 'off: this build has no telemetry project (source builds send nothing)',
   user_disabled: 'off: turned off with `antseed telemetry disable`',
+  not_enabled: 'off (the default): turn it on with `antseed telemetry enable`',
   dev_build: 'off: development build',
 }
 

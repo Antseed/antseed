@@ -5,9 +5,9 @@ sent to one PostHog project:
 
 | `product` | What it is | Default |
 | --- | --- | --- |
-| `desktop` | The AI VPN desktop app: its own screens and funnel | On, opt-out in Preferences → Privacy |
-| `gateway` | The API-key gateway: only its setup funnel (`gateway_step`) | On, opt-out in the console's Settings → Privacy; a one-time notice in the server log |
-| `buyer` | The buyer proxy, whoever runs it: the desktop, the gateway, or `antseed buyer start` on its own | On, opt-out |
+| `desktop` | The AI VPN desktop app: its own screens and funnel | Off; turn on in Preferences → Privacy |
+| `gateway` | The API-key gateway: only its setup funnel (`gateway_step`) | Off; turn on in the console's Settings → Privacy; a one-time notice in the server log once on |
+| `buyer` | The buyer proxy, whoever runs it: the desktop, the gateway, or `antseed buyer start` on its own | Off; follows its host's switch, or `antseed telemetry enable` |
 
 The split is simple: a host reports only its own UI (the desktop's screens,
 the gateway's setup steps), and all usage and reliability data comes from the
@@ -450,19 +450,25 @@ telemetry state exists yet. This prevents an upgrade from being counted as a
 new installation. A genuinely fresh install, where the app creates both the
 identity and telemetry state for the first time, still emits the event.
 
-## How to disable telemetry
+## How to turn telemetry on or off
 
-- Desktop: **Preferences → Privacy → Product telemetry**. This also turns off
-  the buyer the desktop runs, within a second, and any buyer it starts later.
+Telemetry is off by default in every product. Nothing is sent until someone
+turns it on; turning it off again stops it right away.
+
+- Desktop: **Preferences → Privacy → Product telemetry**. The switch also
+  turns the buyer the desktop runs on or off, within a second, and any buyer
+  it starts later. Installs from before telemetry became opt-in start off
+  too: the old opt-out setting was the same for everyone, so it is not read
+  as a choice to share.
   If the buyer's config file cannot be written, the switch flips back and
   the setting stays as it was.
 - Desktop environment kill switch: set `TELEMETRY_ENABLED=false` (or `0` / `no`).
-- Buyer (standalone or a gateway's) and gateway: `antseed telemetry disable` (`antseed
-  telemetry status` shows the current state and why). It sets
-  `telemetry.enabled: false` in the config file; a running buyer and gateway pick
-  it up without a restart.
+- Buyer (standalone or a gateway's) and gateway: `antseed telemetry enable` or
+  `antseed telemetry disable` (`antseed telemetry status` shows the current
+  state and why). It sets `telemetry.enabled` in the config file; only `true`
+  sends anything, and a running buyer and gateway pick it up without a restart.
 - Gateway console: **Settings → Privacy → Product telemetry** (org admins),
-  like the desktop's toggle. It flips the same config setting for the
+  a plain switch like the desktop's. It flips the same config setting for the
   gateway and the buyer it runs, and is recorded in the audit log as
   `settings.telemetry.update`.
 - Any product: `DO_NOT_TRACK=1` or `ANTSEED_TELEMETRY=0` in the environment.

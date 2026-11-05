@@ -105,7 +105,6 @@ const TELEMETRY_DOC_URL = 'https://github.com/AntSeed/antseed/blob/main/docs/tel
 /** The desktop's Preferences → Privacy switch, for this gateway and the buyer it runs. */
 function Privacy({ settings }: { settings: SettingsData }) {
   const queryClient = useQueryClient()
-  const toast = useToast()
   const status = settings.telemetry
   const save = useMutation({
     mutationFn: (enabled: boolean) => api.settings.setTelemetry(enabled),
@@ -120,7 +119,6 @@ function Privacy({ settings }: { settings: SettingsData }) {
     onSuccess: (data) => {
       const { restartRequired: _restartRequired, ...next } = data
       queryClient.setQueryData(qk.settings, next)
-      toast(next.telemetry.enabled ? 'Product telemetry on' : 'Product telemetry off')
     },
   })
   return (

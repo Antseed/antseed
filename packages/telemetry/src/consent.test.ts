@@ -14,10 +14,11 @@ test('dev, CI and unconfigured builds send nothing', () => {
   assert.equal(isCiEnvironment({ CI: 'false' }), false);
 });
 
-test('persisted opt-out, then default on', () => {
+test('off by default: only an explicit opt-in sends', () => {
+  assert.deepEqual(resolveConsent({ env: {}, configured: true }), { enabled: false, reason: 'not_enabled' });
   assert.deepEqual(resolveConsent({ env: {}, configured: true, persisted: false }), { enabled: false, reason: 'user_disabled' });
-  assert.deepEqual(resolveConsent({ env: {}, configured: true }), { enabled: true });
-  assert.deepEqual(resolveConsent({ env: { DO_NOT_TRACK: '0' }, configured: true }), { enabled: true });
+  assert.deepEqual(resolveConsent({ env: {}, configured: true, persisted: true }), { enabled: true });
+  assert.deepEqual(resolveConsent({ env: { DO_NOT_TRACK: '0' }, configured: true, persisted: true }), { enabled: true });
 });
 
 test('PostHog config: env wins, HTTPS only', () => {

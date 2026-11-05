@@ -474,10 +474,12 @@ app.whenReady().then(async () => {
   // Must complete before creating the window — the renderer auto-starts the
   // buyer runtime which needs config.json to find the router plugin.
   await ensureConfig(ACTIVE_CONFIG_PATH).catch(() => {});
-  // The buyer reads its own consent from the config; keep a desktop opt-out
-  // there too. Only after ensureConfig, so a missing config still gets the
-  // desktop defaults instead of a file holding just this key.
-  if ((await telemetryReady)?.isUserOptedOut()) await syncBuyerTelemetryConsent(false);
+  // The buyer reads its own consent from the config; keep the desktop's
+  // choice there too (off unless the user turned it on). Only after
+  // ensureConfig, so a missing config still gets the desktop defaults
+  // instead of a file holding just this key.
+  const readyTelemetry = await telemetryReady;
+  if (readyTelemetry) await syncBuyerTelemetryConsent(!readyTelemetry.isUserOptedOut());
   loadPersistedSystemProxyState();
 
   const showMainWindow = () => {

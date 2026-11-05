@@ -9,7 +9,7 @@ import {
   POSTHOG_HOST_ENV,
   POSTHOG_PROJECT_API_KEY_ENV,
   INSTALL_SOURCE_ENV,
-  createTelemetryService,
+  createTelemetryService as createTelemetryServiceUnconsented,
   CONNECTED_APP_FIRST_REQUEST_WINDOW_MS,
   CONNECTED_APP_FINAL_CHECK_GRACE_MS,
   type TelemetryService,
@@ -80,6 +80,22 @@ function captureTransport(captured: Captured) {
   };
 }
 
+// Telemetry is off until the user turns it on. Most tests are about what an
+// opted-in install sends, so the first service created in a directory opts in
+// (as the Preferences switch does); later services in the same directory
+// load whatever the earlier one saved, so opt-outs still persist.
+const optedInDirs = new Set<string>();
+async function createTelemetryService(
+  options: Parameters<typeof createTelemetryServiceUnconsented>[0],
+): Promise<TelemetryService> {
+  const service = await createTelemetryServiceUnconsented(options);
+  if (!optedInDirs.has(options.userDataDir)) {
+    optedInDirs.add(options.userDataDir);
+    if (service.available) await service.setUserOptedOut(false);
+  }
+  return service;
+}
+
 function baseOptions(dir: string, captured: Captured, overrides: Record<string, unknown> = {}) {
   return {
     userDataDir: dir,
@@ -101,6 +117,29 @@ function baseOptions(dir: string, captured: Captured, overrides: Record<string, 
 }
 
 // ── Enablement ──
+
+test('off by default: a fresh install sends nothing until the user turns it on', async (t) => {
+  const dir = await makeTempDir(t);
+  const captured: Captured = { payloads: [] };
+  const service = await createTelemetryServiceUnconsented(baseOptions(dir, captured));
+  assert.equal(service.available, true);
+  assert.equal(service.enabled, false);
+  assert.equal(service.isUserOptedOut(), true);
+  await service.recordAppStarted(0);
+  await service.recordCleanShutdown(1_000);
+  assert.equal(captured.payloads.length, 0);
+  await service.setUserOptedOut(false);
+  assert.equal(service.enabled, true);
+});
+
+test('the old opt-out default (telemetryDisabled: false) does not count as turning it on', async (t) => {
+  const dir = await makeTempDir(t);
+  const state = { ...defaultTelemetryState(), telemetryDisabled: false } as Record<string, unknown>;
+  delete state['telemetryEnabled'];
+  await saveTelemetryState(dir, state as never);
+  const service = await createTelemetryServiceUnconsented(baseOptions(dir, { payloads: [] }));
+  assert.equal(service.enabled, false);
+});
 
 test('disabled in development builds', async (t) => {
   const dir = await makeTempDir(t);

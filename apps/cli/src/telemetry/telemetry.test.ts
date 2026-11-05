@@ -28,14 +28,26 @@ async function tempDir(t: TestContext): Promise<string> {
   return dir
 }
 
+/** A config file where the user turned telemetry on: it is off by default. */
+async function optedInConfig(dir: string): Promise<string> {
+  const path = join(dir, 'config.json')
+  await writeFile(path, JSON.stringify({ telemetry: { enabled: true } }))
+  return path
+}
+
 function capture(): { events: PostHogEvent[]; sender: (batch: PostHogEvent[]) => Promise<void> } {
   const events: PostHogEvent[] = []
   return { events, sender: async (batch) => { events.push(...batch) } }
 }
 
-test('consent: default on when configured; config opt-out, DO_NOT_TRACK and CI turn it off', async (t) => {
+test('consent: off by default; on only once turned on; config opt-out, DO_NOT_TRACK and CI turn it off', async (t) => {
   const dir = await tempDir(t)
   const configPath = join(dir, 'config.json')
+  // Never turned on: off, with or without a config file.
+  assert.deepEqual(resolveCliConsent(configPath, CONFIGURED), { enabled: false, reason: 'not_enabled' })
+  await writeFile(configPath, JSON.stringify({ buyer: { proxyPort: 9999 } }))
+  assert.deepEqual(resolveCliConsent(configPath, CONFIGURED), { enabled: false, reason: 'not_enabled' })
+  await writeConfiguredTelemetry(configPath, true)
   // A release build bakes the project in, so without one in the env this depends on the build.
   if (posthogConfig({}) === null) {
     assert.equal(resolveCliConsent(configPath, {}).enabled, false, 'a source build bakes no project')
@@ -186,7 +198,7 @@ const OK_BODY = { choices: [{ message: { content: 'ok' }, finish_reason: 'stop' 
 async function proxyWithTelemetry(t: TestContext, env: NodeJS.ProcessEnv, status: number, okBody: object = OK_BODY) {
   const dir = await tempDir(t)
   const { events, sender } = capture()
-  const telemetry = new BuyerTelemetry({ configPath: join(dir, 'config.json'), getDistinctId: () => WALLET, env: { ...CONFIGURED, ...env }, sender })
+  const telemetry = new BuyerTelemetry({ configPath: await optedInConfig(dir), getDistinctId: () => WALLET, env: { ...CONFIGURED, ...env }, sender })
   const peer = makePeer()
   const forwarded: Record<string, string>[] = []
   const proxy = new BuyerProxy({
@@ -417,7 +429,7 @@ test('a gateway buyer sends the same per-request event, tagged gateway', async (
 
 test('turning telemetry off in the config stops a running buyer', async (t) => {
   const dir = await tempDir(t)
-  const configPath = join(dir, 'config.json')
+  const configPath = await optedInConfig(dir)
   const { events, sender } = capture()
   const telemetry = new BuyerTelemetry({ configPath, getDistinctId: () => WALLET, env: CONFIGURED, sender })
   assert.equal(telemetry.enabled, true)
@@ -573,7 +585,7 @@ test('a proxied answer carries its speed, output tokens, finish reason and cost'
 test('after a fallback, time to first byte is the answering seller\'s, not the failed seller\'s error', async (t) => {
   const dir = await tempDir(t)
   const { events, sender } = capture()
-  const telemetry = new BuyerTelemetry({ configPath: join(dir, 'config.json'), getDistinctId: () => WALLET, env: CONFIGURED, sender })
+  const telemetry = new BuyerTelemetry({ configPath: await optedInConfig(dir), getDistinctId: () => WALLET, env: CONFIGURED, sender })
   const failing = { ...makePeer(), peerId: '1'.repeat(40) } as PeerInfo
   const answering = { ...makePeer(), peerId: '2'.repeat(40) } as PeerInfo
   const proxy = new BuyerProxy({
@@ -697,7 +709,7 @@ test('the client stopping a streamed answer midway is cancelled, not success, an
 test('a rate-limited seller retried in place: rate_limited, and the wait counts as lost time', async (t) => {
   const dir = await tempDir(t)
   const { events, sender } = capture()
-  const telemetry = new BuyerTelemetry({ configPath: join(dir, 'config.json'), getDistinctId: () => WALLET, env: CONFIGURED, sender })
+  const telemetry = new BuyerTelemetry({ configPath: await optedInConfig(dir), getDistinctId: () => WALLET, env: CONFIGURED, sender })
   const peer = makePeer()
   let calls = 0
   const proxy = new BuyerProxy({
@@ -732,7 +744,7 @@ test('a rate-limited seller retried in place: rate_limited, and the wait counts 
 test('image, decision-model and video requests each send buyer_request_finished', async (t) => {
   const dir = await tempDir(t)
   const { events, sender } = capture()
-  const telemetry = new BuyerTelemetry({ configPath: join(dir, 'config.json'), getDistinctId: () => WALLET, env: CONFIGURED, sender })
+  const telemetry = new BuyerTelemetry({ configPath: await optedInConfig(dir), getDistinctId: () => WALLET, env: CONFIGURED, sender })
   const peer = {
     ...makePeer(),
     providers: ['openai', 'typesafe', 'venice'],
@@ -830,7 +842,7 @@ test('gateway_step: sent from the audit log with only the step, under the gatewa
   const { events, sender } = capture()
   const logs: string[] = []
   const telemetry = new GatewayTelemetry({
-    configPath: join(dir, 'config.json'), dataDir: dir, env: CONFIGURED, sender, onLog: (message) => { logs.push(message) },
+    configPath: await optedInConfig(dir), dataDir: dir, env: CONFIGURED, sender, onLog: (message) => { logs.push(message) },
   })
   store.setAuditObserver((record) => telemetry.observeAudit(record))
   await telemetry.start()
@@ -858,7 +870,7 @@ test('gateway_step: sent from the audit log with only the step, under the gatewa
 test('gateway_step: a step taken with a gateway CLI command is sent, but only once a gateway has run with telemetry on', async (t) => {
   const dir = await tempDir(t)
   await writeFile(join(dir, 'identity.key'), '11'.repeat(32))
-  const configPath = join(dir, 'config.json')
+  const configPath = await optedInConfig(dir)
   const { events, sender } = capture()
   const cliStep = async (action: string): Promise<void> => {
     const store = new GatewayStore(dir)
@@ -894,7 +906,7 @@ test('gateway_step: a step taken with a gateway CLI command is sent, but only on
 test('gateway_step: consent is read live, and a failing observer never breaks the audit write', async (t) => {
   const dir = await tempDir(t)
   await writeFile(join(dir, 'identity.key'), '11'.repeat(32))
-  const configPath = join(dir, 'config.json')
+  const configPath = await optedInConfig(dir)
   const store = new GatewayStore(dir)
   t.after(() => store.close())
   const { events, sender } = capture()

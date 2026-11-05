@@ -503,7 +503,8 @@ export function setObservabilitySettings(
 /** The gateway's telemetry switch, as the desktop reports its own. */
 export function telemetrySettings(configPath: string, env: NodeJS.ProcessEnv = process.env): TelemetrySettings {
   const decision = resolveCliConsent(resolveConfigPath(configPath), env)
-  const userDisabled = !decision.enabled && decision.reason === 'user_disabled'
+  // Off by the user or by default (never turned on): either way the switch can turn it on.
+  const userDisabled = !decision.enabled && (decision.reason === 'user_disabled' || decision.reason === 'not_enabled')
   return { available: decision.enabled || userDisabled, enabled: decision.enabled, userDisabled }
 }
 

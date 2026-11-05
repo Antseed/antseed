@@ -15,12 +15,13 @@ export const TELEMETRY_OFF_ENV = 'ANTSEED_TELEMETRY';
 
 let hostSessionId: string | null = null;
 let available = false;
-let userOptedOut = false;
+let userOptedOut = true;
 
 export function setDesktopTelemetryHost(input: { sessionId: string; available: boolean; userOptedOut?: boolean }): void {
   hostSessionId = input.sessionId;
   available = input.available;
-  userOptedOut = input.userOptedOut ?? false;
+  // Off unless the desktop says the user turned it on.
+  userOptedOut = input.userOptedOut ?? true;
 }
 
 export function setDesktopTelemetryUserOptedOut(optedOut: boolean): void {
