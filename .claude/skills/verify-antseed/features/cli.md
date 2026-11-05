@@ -17,10 +17,10 @@ A user runs `antseed` commands to start a buyer, inspect peers and channels, and
 Preconditions:
 
 - `pnpm run build` (the CLI runs from `apps/cli/dist/cli/index.js`).
-- A data dir under the run directory or the sandbox, never `~/.antseed`.
+- A data dir under the run directory or the testbench, never `~/.antseed`.
 
 - **Run.** `node apps/cli/dist/cli/index.js --data-dir <run>/cli <command>`, capturing stdout, stderr and the exit code: `... > <run>/cli/<name>.out 2>&1; echo "exit $?" >> <run>/cli/<name>.out`.
-- **Against the sandbox.** Commands that need a network use the sandbox's buyer dir and config from `pnpm -s sandbox status --env`.
+- **Against the testbench.** Commands that need a network use the testbench's buyer dir and config from `pnpm -s testbench status --env`.
 - **Proof.** The transcript file: the command, its output and its exit code. For a changed output, show the before and after transcripts.
 
 ## Gotchas

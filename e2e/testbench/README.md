@@ -1,0 +1,387 @@
+# Worktree testbench
+
+`pnpm testbench` tests the current worktree's changes end to end. It covers four cases. Find the one that matches your change and follow its section.
+
+| Case | What changed | Network | Command |
+| --- | --- | --- | --- |
+| [1. Isolated network](#case-1-seller-or-buyer-change-isolated-network) | seller, buyer, `packages/node`, payments, routing, contracts, new seller features | private: your sellers, your buyer, Anvil chain | `pnpm testbench run <scenario>` |
+| [2. Desktop only](#case-2-desktop-only-change-vpr-on-the-isolated-network) | desktop UI or main process (VPR) | the isolated network from case 1 | `pnpm testbench desktop` |
+| [3. Real network](#case-3-local-buyer-against-real-sellers-mainnet-real-funds) | buyer, proxy, routing, desktop buyer, checked against live sellers | Base mainnet, live sellers, a funded test wallet | `pnpm testbench mainnet --real-funds` |
+| [4. On a server](#case-4-on-a-server-with-the-desktop-in-your-browser) | any of the above, run on a Linux server, desktop streamed to your browser | as in cases 1 and 2 | `pnpm testbench share` |
+
+Each case is isolated from your real setup: `~/.antseed`, your keychain, your OS proxy settings and your running desktop are never touched. Every scenario run writes an HTML report with checks, metrics, screenshots and a video.
+
+Agents: the `verify-antseed` skill (`.claude/skills/verify-antseed/SKILL.md`) says which scenario a change requires, how to fix a bug red to green with an `issue-<N>-<slug>` scenario, and what evidence to keep.
+
+## Prerequisites
+
+- Node 24 (`.nvmrc`; `up` refuses other majors because native modules would not load), then `pnpm install && pnpm run build`
+- Desktop scenarios and cases 2 to 4: build the desktop too (`pnpm --filter @antseed/desktop run build`)
+- Desktop scenarios: Playwright's own ffmpeg, which records the run video (`pnpm exec playwright install ffmpeg`, once per machine; it goes to Playwright's cache, `~/.cache/ms-playwright` on Linux, `~/Library/Caches/ms-playwright` on macOS). Without it the window never loads, so `run` refuses a desktop scenario before starting anything.
+- Linux as root (common on servers): Chromium refuses to run as root, so the desktop launchers add `--no-sandbox` there and say so. Run as a normal user to keep Chromium's testbench on.
+- Foundry's `anvil` on `PATH` (plus `forge` and `packages/contracts/lib/forge-std` for `--chain local`: `cd packages/contracts && forge install foundry-rs/forge-std --no-git`; the first `forge build` takes several minutes, later runs reuse `out/`)
+- For the fork chain and for case 3, a dedicated Base mainnet RPC with an API key (Alchemy, QuickNode, ...) as `BASE_MAINNET_RPC_URL` in the worktree's gitignored `.env.local` (or exported in the shell, which wins). Public gateways rate-limit fork reads and Anvil times out. The URL is passed through process environments only and never printed or written to testbench state. Anvil forks through a loopback relay (`http://127.0.0.1:<port>/<random token>`), so the URL and its key never appear on a command line that other users can read with `ps`.
+
+  ```bash
+  echo 'BASE_MAINNET_RPC_URL=https://base-mainnet.g.alchemy.com/v2/<key>' >> .env.local
+  ```
+
+## Case 1: Seller or buyer change (isolated network)
+
+Use this when you change the seller, the buyer, `packages/node`, payments, routing, discovery, provider plugins or contracts, or when you build a new feature that needs a seller. Everything runs on your machine with no real funds:
+
+- an Anvil chain: a fork of Base mainnet (production contracts, fork-only USDC; default), or with `--chain local` a plain Anvil with `packages/contracts` deployed from source (no RPC key)
+- one or more sellers from this worktree, each backed by an OpenAI-compatible mock upstream (or the real upstream with `--live`)
+- a buyer and its proxy from this worktree (the same `BuyerProxy` the CLI and desktop use), paying from the testbench's own wallet (see [Buyer wallet](#buyer-wallet))
+- a private bootstrap DHT node, so testbench nodes only ever see each other
+
+```bash
+pnpm testbench run chat-basic                    # starts a testbench, runs, reports, stops
+pnpm testbench run payment-flow --chain local    # payment lifecycle on this worktree's contracts
+pnpm testbench run routing-smoke                 # two sellers, routing stays in the testbench
+pnpm testbench run desktop-chat                  # the desktop drives a chat through the testbench buyer
+```
+
+Which scenarios a change needs is decided in one place: the table in the `verify-antseed` skill (`.claude/skills/verify-antseed/SKILL.md`, "Decide what to prove"). A new seller feature gets a new scenario with its own `topology` (see [Scenarios](#scenarios)); for your own seller setup add `--config <seller config>`, and `--live` for the real upstream.
+
+To keep the network up and poke at it yourself:
+
+```bash
+pnpm testbench up [--chain fork|local] [--config FILE] [--live]
+pnpm testbench run chat-basic --keep             # reuses the running testbench
+eval "$(pnpm -s testbench status --env)" && curl "$ANTSEED_PROXY_URL/v1/models"
+pnpm testbench down                              # settles and closes channels, then stops
+```
+
+Your seller setup: `--config FILE` takes an existing AntSeed config (such as a seller's `config.json`); see [Config](#config). `--live` uses the real upstream with your provider keys while settlement stays on the testbench chain.
+
+### Buyer wallet
+
+The testbench buyer never uses your real wallet. By default it creates a throwaway key on the first `up` and keeps it in `buyer/identity.key` inside the testbench, so the address stays the same across runs. To pick the address yourself (for example a test wallet you want to reuse on the fork), put its key in the worktree's gitignored `.env.local` or export it (the shell wins):
+
+```bash
+ANTSEED_TESTBENCH_BUYER_IDENTITY_HEX=<64 hex private key of a test wallet>   # never your personal wallet
+```
+
+`up` installs that key as the testbench buyer's `identity.key`, prints the address, and stops the testbench if the running buyer reports a different one. Removing the variable keeps the last key in the testbench; delete `buyer/identity.key` to get a new throwaway key. Real-funds runs (case 3) use their own variable, `ANTSEED_TESTBENCH_MAINNET_IDENTITY_HEX`.
+
+## Case 2: Desktop-only change (VPR on the isolated network)
+
+Use this when only the desktop app changes. The desktop runs attach-only on the case 1 network: it uses the testbench buyer and its wallet, and starts no buyer of its own.
+
+```bash
+pnpm testbench up                  # or: pnpm testbench run desktop-chat --keep
+pnpm testbench desktop             # dev mode: Vite hot reload for the renderer, tsc watch for main
+pnpm testbench:attach              # one step: starts or reuses routing-smoke, then opens the desktop
+```
+
+`pnpm testbench desktop` is the interactive loop. Renderer edits show up immediately; main-process edits recompile on save and load when you quit and rerun the command. It runs next to your normal desktop with its own ports and data: `HOME` is the testbench's `home/`, and Electron's data lives in `$TMPDIR/antseed-desktop/<instance>/` (the dev launcher's location), not in the testbench directory. Add `--cdp-port N` to also open Chrome DevTools Protocol on `127.0.0.1:N`, so an agent can drive it with `agent-browser connect N`.
+
+For an agent-run check with evidence, use `pnpm testbench run desktop-chat` (built desktop under Playwright: screenshots, video, renderer errors). Rebuild first: `pnpm --filter @antseed/desktop run build`. Write a scenario with `tb.desktop()` for a new desktop feature (see [Desktop automation](#desktop-automation)).
+
+## Case 3: Local buyer against real sellers (mainnet, real funds)
+
+Use this to check this worktree's buyer against the sellers that are live on the network, paying real USDC: buyer, proxy and routing changes, and the desktop's own buyer. It runs the full desktop (not attach-only). The desktop starts its own buyer from this worktree's build, discovers real sellers on the public DHT, and pays from a dedicated test wallet.
+
+Setup (once): create a fresh wallet for testing only, put its key in `.env.local`, then fund its AntseedDeposits balance with a few USDC from the deposit view of `pnpm testbench mainnet --real-funds` (the profile desktop shows the test wallet):
+
+```bash
+ANTSEED_TESTBENCH_MAINNET_IDENTITY_HEX=<64 hex private key of the test wallet>   # never your personal wallet
+ANTSEED_TESTBENCH_MAINNET_MAX_RESERVE_USDC=0.50                                # optional; default 0.50, max 5
+BASE_MAINNET_RPC_URL=https://base-mainnet.g.alchemy.com/v2/<key>
+```
+
+```bash
+pnpm testbench run mainnet-smoke --chain mainnet --real-funds   # agent-run check with a report
+pnpm testbench mainnet --real-funds                             # interactive: the built desktop on the profile
+pnpm testbench mainnet --real-funds --dev                       # same, with Vite hot reload (rebuilds the CLI and packages first)
+pnpm testbench mainnet --real-funds --fresh                     # reset the profile first
+```
+
+`mainnet-smoke` checks that the test wallet has a deposit, the desktop's buyer discovers live sellers and lists models, a chat from the UI gets a reply, the chat signed a nonzero amount within the cap, the on-chain reserve grew by at most the cap, and the renderer logged no errors.
+
+Guard rails:
+
+- **Explicit opt-in.** Every real-network command needs `--real-funds`; without it the command refuses. Agents only propose these runs and never start them on their own.
+- **Spend caps.** The profile config sets `payments.maxReserveAmountUsdc` and `maxPerRequestUsdc` to the cap, so a channel can never lock more. The cap is per channel: a buyer with channels to several sellers can lock up to the cap on each. `mainnet-smoke` also fails if this run signed more than the cap.
+- **Isolated profile.** The desktop gets its own `HOME` (`profiles/mainnet/home`), so identity, config, chats and plugins never touch `~/.antseed`. The wallet key is encrypted with a mock keychain, not your login keychain. OS proxy settings and connected-app changes are off (`ANTSEED_DESKTOP_ISOLATED_PROFILE=1`). The buyer proxy uses its own port, never 8377.
+- **This worktree's code.** The profile's `plugins/` links `@antseed/router-local` and its `@antseed/*` dependencies to this worktree's build; nothing is downloaded. Rebuild after changes.
+- **One user per wallet.** A machine-wide lock stops two worktrees from driving the same test wallet at once. A profile created for a different wallet is refused until you pass `--fresh`.
+
+Deposits and withdrawals are not automated: top the wallet up by hand when it runs low.
+
+## Case 4: On a server, with the desktop in your browser
+
+Use this to run cases 1 and 2 on a Linux server and click through the desktop from your laptop.
+
+- **Scenarios:** `pnpm testbench run <scenario>` works on the server as is. Desktop scenarios need a display; on a headless server wrap them in `xvfb-run -a pnpm testbench run desktop-chat`. Inspect the reports from your laptop with `pnpm testbench report --serve` (see [Desktop automation](#desktop-automation)).
+- **Interactive desktop:** `pnpm testbench share` streams the attach-only desktop to your browser over Tailscale. See [Share](#share-linux-server).
+
+`share` streams only the attach-only desktop (case 2), not the real-funds profile.
+
+# Reference
+
+## Commands
+
+```bash
+pnpm testbench up [--chain fork|local] [--config FILE] [--live] [--deposit-usdc N] [--block N] [--scenario NAME]
+pnpm testbench status [--json] [--env]   # ports, wallets, balances, peers, URLs, env exports
+pnpm testbench run <scenario> [--chain fork|local|mainnet] [--keep] [--strict] [--trace] [--real-funds]
+pnpm testbench desktop                  # attach-only desktop (dev mode) on the testbench buyer
+pnpm testbench:attach                   # start/reuse routing-smoke, then open the attached desktop
+pnpm testbench mainnet --real-funds [--dev] [--fresh]   # full desktop on the real network (case 3)
+pnpm testbench logs [supervisor|anvil|seller-<id>] [--follow]
+pnpm testbench down [--force]           # settle + close channels while Anvil is alive, then stop
+pnpm testbench list                     # every testbench on this machine
+pnpm testbench report [run] [--open]    # latest (or named) run: index.html, video, trace paths
+pnpm testbench report --serve [--port N] [--host H]   # serve reports/ over HTTP (loopback by default)
+pnpm testbench share [--idle MIN] [--fresh] [--no-tailscale] [--stop]   # Linux server: desktop in your browser over Tailscale
+```
+
+`--slot NAME` on any command runs an additional testbench for the same worktree (for example two scenarios with different topologies side by side).
+
+## Chains
+
+| | `--chain fork` (default) | `--chain local` |
+| --- | --- | --- |
+| Chain | Anvil fork of Base mainnet, chain 8453 | empty Anvil, chain 31337 |
+| Contracts | deployed production stack (recognized-usage) | this worktree's `packages/contracts`, deployed by `script/Deploy.s.sol` at the `base-local` addresses |
+| Setup | fork-only USDC mint, ERC-8004 + SellerRegistry/ANTS pool stake, deposit | MockUSDC mint, MockERC8004 `register()`, 50 USDC `AntseedStaking.stake`, deposit |
+| Needs | `BASE_MAINNET_RPC_URL` | `forge` + forge-std, no RPC key |
+| Use for | release checks against what is live | contract changes, payment-flow checks, offline work |
+
+`--chain mainnet` is not an Anvil chain: it is case 3 (`run` only, with `--real-funds`).
+
+`run` picks the chain from `--chain`, else the running testbench's chain, else the scenario's first `targets` entry. A scenario lists the chains it supports in `meta.targets`.
+
+`run` starts a testbench with the scenario's topology if none is running and stops it afterwards unless `--keep`. If a testbench is running with a different topology it refuses; run `down` first or use `--slot`.
+
+## Isolation
+
+- **One testbench per worktree (per slot).** The name is `wt-<basename>-<sha1(path)[:8]>[-slot]`. All state lives in `~/.antseed-testbench/<name>/`: `home/`, `anvil-home/`, `buyer/`, `sellers/<id>/`, `config/`, `logs/`, `reports/`, `manifest.json`, `testbench.lock`, `control.json`. Override the root with `ANTSEED_TESTBENCH_HOME` (never inside `~/.antseed`).
+- **Locks with PID-reuse protection.** Lock and manifest entries record each process's PID and its `ps` start time. `up` while running reattaches; a dead or reused PID is treated as stale and cleaned up on the next `up`.
+- **Only owned processes are stopped.** `down` and stale cleanup signal only PIDs from our manifest whose start time still matches.
+- **No defaults, no `~/.antseed`, no keychain.** Every testbench process gets a cleaned environment (AntSeed/provider variables, including `ANTSEED_IDENTITY_HEX`, stripped) with `HOME` set to the testbench's `home/`; starting one with your real home or anything inside `~/.antseed` as `HOME` fails. That includes the attach-only desktop, so it cannot read your wallets, tunnel or Telegram settings or plugins. It also uses a mock keychain (macOS) and a basic password store (Linux, Windows), so it never opens your login keychain or keyring. Its wallet is the testbench buyer's key, read from `buyer/`. Node options are checked before use: `dhtPort: 0`, `signalingPort: 0` (unset or 6881/6882 fail fast), `bindHost: 127.0.0.1`, `noOfficialBootstrap`, `natTraversal: false`, `allowPrivateIPs`, and one private loopback bootstrap node. Listeners take port 0 where possible; Anvil and the proxy retry on `EADDRINUSE`.
+- **Buyer routing stays inside the testbench.** `allowedPeerIds` is set to this testbench's seller peer IDs and `minTrustScore` is forced to 0 (fresh fork sellers have no trust). Other routing preferences come from the config.
+- **Fresh chain per `up`.** Channel, metering and payment databases are cleared on each `up` (they describe a chain that no longer exists); identity keys are kept, so peer IDs and wallet addresses stay stable across runs.
+
+## Config
+
+`--config FILE` points at an existing AntSeed config, such as `~/.antseed/config.json` or a seller config file. Otherwise the testbench uses `ANTSEED_TESTBENCH_CONFIG`, then a gitignored `.antseed-testbench.json` in the worktree, then a built-in single-model OpenAI-compatible seller.
+
+Only these settings are copied; everything else (identity, directories, ports, bootstrap, RPC, contracts, relay, system proxy, verifier) is dropped and set by the testbench, and the dropped keys are printed:
+
+- `seller.providers.<name>`: `plugin`, `baseUrl`, `apiKeyEnv`, `pathRewrite`, `defaults`, `services.<id>` (`upstreamModel`, `categories`, `pricing`, `capabilities`, `unitBillingModels`)
+- `buyer.routingPreferences`, `buyer.maxPricing`
+- `payments.crypto.chainId` (only `base-mainnet` is supported for now)
+
+Inline secrets (any key that looks like a credential, anywhere in the file) are refused; reference them with `apiKeyEnv`. The source file is only read. A cleaned copy goes to `config/source.cleaned.json`, and its hash is recorded in the manifest and every `report.json`.
+
+### Upstream
+
+- **Mock (default).** Each seller gets its own OpenAI-compatible mock that answers every model in its config: `/v1/models`, chat (JSON and SSE streaming with usage), and `/v1/images/generations` (a fixture PNG). Usage is fixed (10 input + 8 output tokens), so costs are exact. Only OpenAI-compatible plugins (`openai`) can be mocked.
+  - `mock.usage: 'load'` sizes usage like real traffic instead (the payment stress mock): prompt tokens from the request size, a random completion within `outTokens` (default 100 to 4000), latency within `latencyRangeMs` (default 50 to 3000 ms), streams chunked over that time.
+  - `mock.fault500Rate` and `mock.disconnectRate` (0 to 1) answer that share of tagged requests with an upstream 500 or cut the response midway. `tb.setMockFaults(id, { ... })` changes them during a run.
+  - Every mock keeps a **delivery ledger** keyed by the `[req:TAG]` marker in the prompt (untagged requests get `untagged-N`): whether any byte reached the wire, how the response ended (`ok`, `500`, `disconnect`, `client-gone`) and what it cost at the seller's price. That ledger is the independent judge of what the buyer owes (`tb.deliveries(id)`, `tb.assertDeliveredWorkPaid`).
+- **Live (`--live`).** Sellers call the real upstream. Every provider needs `apiKeyEnv` (set in your shell or in `--env-file`) and an HTTPS `baseUrl`. Keys reach seller processes through their environment only. Settlement still happens on the fork, so no real funds move.
+
+Live keys come from the shell first, then `--env-file FILE` (default: a gitignored `.antseed-testbench.env` in the worktree). Only names referenced by a provider's `apiKeyEnv` are read from the file; values are never printed, and providers may share one variable. `up` prints which variable and source each provider uses.
+
+```bash
+pnpm testbench up --live --config path/to/config.json --env-file ~/.my-keys.env
+```
+
+## Scenarios
+
+A scenario is a module in `e2e/testbench/scenarios/<name>.mjs`:
+
+```js
+export const meta = {
+  description: 'What this proves',
+  targets: ['fork', 'local'],   // chains it can run on; the first is the default
+  requires: ['mockControl'],    // capabilities: warpTime, sellerControl, buyerControl, mockControl, liveUpstream, desktop, sourceContracts (local only)
+};
+
+// Plain data. Sellers inherit the config's providers unless they bring their own.
+export const topology = {
+  sellers: [{ id: 'fast', mock: { latencyMs: 20 } }, { id: 'slow', mock: { latencyMs: 400 } }],
+  buyer: { depositUsdc: '10', routingPreferences: { preferLowLatency: true } },
+  chain: { block: 52223957 },   // optional fork pin
+  payments: { settlementIdleMs: 5000, minBudgetPerRequestUsdc: '0.01' },  // optional: seller idle-settle timer (default 600000); seller minimum budget per request (SDK default 0.5; `antseed seller start` uses 0.01)
+};
+
+// Payment stress shapes (see "Payment stress" below) add, all optional:
+//   chain:  { rpc: 'base', blockTimeSec: 2, topUpThresholdBps: 6500 }
+//   seller: { mock: { usage: 'load', latencyRangeMs: [50, 3000], outTokens: [100, 4000], fault500Rate: 0.05, disconnectRate: 0.05 } }
+//   buyer:  { depositUsdc: '500', maxReserveUsdc: '0.25', maxPerRequestUsdc: '0.15' }
+
+export async function run(tb) {
+  const reply = await tb.chat({ model: tb.sellers[0].models[0], sellerId: 'fast' });
+  tb.check('fast seller answered', reply.content.length > 0, reply.content);
+  tb.metric('latencyMs', reply.latencyMs);
+  await tb.closeAll();
+  await tb.assertSettlementMatchesSigned();
+}
+```
+
+The `tb` API:
+
+| Area | Calls |
+| --- | --- |
+| Client | `catalog()`, `peers()`, `chat({ model, prompt, stream, sellerId })` |
+| Payments | `channels({ all })`, `signedBySeller()`, `closeAll()`, `closeChannel(id)`, `assertSettlementMatchesSigned(expected?)`, `buyerBalance()` |
+| Chain | `buyerBalance()`, `usdcBalance(address)`, `settledEvents(sellerId)` (on-chain `ChannelSettled`), `channelState(channelId)`, `buyerRequestClose(channelId)` / `buyerWithdraw(channelId)` (the buyer's unilateral exit via Anvil impersonation; warp 15 min before withdraw) |
+| Control | `stopSeller(id)`, `startSeller(id)`, `stopBuyer()` / `startBuyer()` (buyer node + proxy; sellers see a disconnect), `setMockLatency(id, ms)`, `mockRequests(id)`, `warp(seconds)`, `waitFor(fn, label, { timeoutMs })` |
+| Faults | `faults.loseNeedAuths(count)` (the buyer drops its next `count` seller NeedAuth frames, as if lost), `faults.lostNeedAuths()` (the dropped payloads). Use only to reach a state no public path produces |
+| Desktop | `desktop()` → `ui.sendChat(prompt, { expect })`, `ui.openChat()`, `ui.text()`, `ui.screenshot(name)`, `ui.page` (Playwright), `ui.errors`, `ui.close()` |
+| Load and oracle | `load({ concurrency, requests, streamRatio, abortRatio, imageRatio, model, imageModel, sellerId, restart: { who, sellerId, atFraction }, gate })`, `paymentSnapshot()`, `assertDeliveredWorkPaid({ before, results, injected })`, `assertNoCrashes()`, `setMockFaults(id, { fault500Rate, disconnectRate })`, `deliveries(id)`, `health()`, `gates` |
+| Reporting | `check(name, ok, detail)`, `knownIssue(name, ok, detail, issue)`, `metric(name, value)`, `event(type, data)`, `mockCostPerChat(sellerId, model)` |
+
+Each run writes `reports/<timestamp>-<scenario>/index.html` (a self-contained page with checks, metrics, screenshots, video and events), `report.json` (result, checks, known issues, metrics, config hash, fork block, topology, sellers, buyer), `events.jsonl` and `metrics.json`. A failed check fails the run with a nonzero exit.
+
+`knownIssue` records a check for a tracked defect outside the testbench without failing the run; `--strict` makes it fail. It currently tracks one issue: after a cooperative close, `chat-basic` sees one extra request's cost settled (two 18 micro-USDC chats settle 54, not 36). Settle-on-disconnect does not have it (`payment-flow` checks that path exactly). On-chain settlement still matches exactly what the buyer signed.
+
+Shipped scenarios:
+
+- `chat-basic`: catalog, a non-streaming and a streaming chat, receipts, then exact on-chain settlement with zero reserves after close.
+- `desktop-chat`: launches the built attach-only desktop under Playwright, sends a chat from the UI, checks the testbench reply, the upstream request, the signed channel and exact settlement, and saves screenshots plus `desktop-main.log` in the report.
+- `payment-flow`: the CI payment flow and more (default chain: local). Deposit, reserve locked on-chain, three paid chats on one channel with cumulative SpendingAuth, buyer disconnect, seller settles and closes on its own, exact settled amount, fee split and reserve release, buyer reconnects on a fresh channel, cooperative close, exact totals across both channels.
+- `mainnet-smoke`: case 3 on the real network (needs `--chain mainnet --real-funds`). Live discovery, one paid desktop chat, spend within the cap, consistent on-chain reserve.
+- `routing-smoke`: two sellers with different mock latency; the buyer sees only testbench sellers, pinned and auto-routed chats stay inside the testbench, and per-seller settlement is exact.
+- `stress-smoke`, `stress-c32`, `stress-c64`, `stress-smallreserve`, `stress-images`, `stress-faults`, `stress-restart-buyer`, `stress-restart-seller`: the payment stress scenarios on the testbench (see [Payment stress](#payment-stress)).
+- `issue-1050-stale-channel`: #1050. The buyer pays, stops, and the seller closes the channel on disconnect. After a restart the buyer must retire the closed channel in its store, `/_antseed/buyer-usage`, `/_antseed/channels` and `antseed buyer status` (all count 0), then pay again on a fresh channel; the payment oracle judges both phases.
+- `issue-1200-spendingauth-catchup`: #1200. A lost NeedAuth leaves the buyer under-signed, the seller's budget-exhausted 402 asks it to catch up, and the buyer must sign exactly the delivered spend, so settle-on-disconnect charges exactly the delivered work. Fails on a buyer that signs `max(target, signed + minBudgetPerRequest)`.
+
+Mainnet scenarios (`targets: ['mainnet']`) get a smaller `tb`: `check`, `knownIssue`, `metric`, `event`, `waitFor`, `desktop()` (the full profile desktop), `waitForPeers({ min })`, `models()`, `channels({ all })`, `signedSnapshot()`, `spentSince(snapshot)`, `assertWithinCap(snapshot)`, `buyerBalance()` (on-chain deposit) and `capMicros`. There is no chain or seller control on the real network.
+
+## Payment stress
+
+The payment stress harness (`e2e/stress`, run in CI by `node e2e/stress/ci.mjs`) checks that paid traffic under concurrency, Base-like RPC latency, upstream faults and restarts is paid for exactly. Its building blocks are testbench features too, so a stress shape is an ordinary scenario on the testbench network:
+
+| Stress harness | Testbench |
+| --- | --- |
+| `rpc-proxy.mjs` between each peer and Anvil | `chain.rpc: 'base'`: the supervisor puts that same proxy in front of Anvil per node (buyer and each seller) on one shared chain clock, and Anvil mines every `blockTimeSec` (2 s) after setup. `tb.health().rpc` and the report's `metrics.rpc` count calls, 429s, stale reads and missing receipts |
+| `mock-upstream.mjs` (load usage, 500s, disconnects, per-request delivery record) | the testbench mock with `usage: 'load'`, fault rates and its delivery ledger |
+| `harness.mjs` load generator | `tb.load(...)` (same tagged requests, stream and abort ratios, image share, mid-load restart) |
+| `analysis.mjs` payment invariants | `tb.assertDeliveredWorkPaid(...)` runs `analyzePayments` itself on the testbench's seller and buyer stores, chain and mock ledgers |
+| crash patterns, unexpected exits, SIGKILL stops | `tb.assertNoCrashes()` (peer logs since the run started, supervisor health) |
+| `ci.mjs` `GATES` | `tb.gates` / `GATES` in `lib/stress.mjs`, passed as `load({ gate })` |
+| owner-only chain setup (credit limit, 65% top-up threshold) | `buyer.depositUsdc` above 10 sets the Deposits credit limit override; `chain.topUpThresholdBps` sets the channels threshold (owner impersonated on Anvil, fork or local) |
+
+`lib/stress.mjs` exports `stressTopology()` (the stress network: a 3 / 15 USD per million token seller with a 0.04 USD image model, a 500 USDC deposit, a 1 USDC reserve cap, Base-like RPCs, 65% top-up, 15 s idle settle, the CLI seller's 0.01 USDC minimum budget per request) and `stressRun(tb, { load, faults, gate })` (snapshot, warm-up, faults on, gated load, faults off, oracle, crash checks). A new stress shape is a few lines:
+
+```js
+import { GATES, stressRun, stressTopology } from '../lib/stress.mjs';
+export const meta = { description: '...', targets: ['local', 'fork'], requires: ['mockControl'] };
+export const topology = stressTopology({ buyer: { maxReserveUsdc: '0.25' } });
+export async function run(tb) {
+  await stressRun(tb, { load: { concurrency: 32, requests: 256 }, gate: GATES.default });
+}
+```
+
+The oracle fails a run on any of: delivered work not settled, settlement above what reached the wire, a response the client received in full that the mock never delivered, per-channel signed or accepted amounts that differ from what settled, a deposit decrease that differs from the sum settled or from seller plus fee income, reserve left locked, a channel left open, and (with no faults, aborts or restarts) seller spend that differs from the delivered cost. It judges only what happened after the `paymentSnapshot()`, so it also works on a testbench kept with `--keep`; it refuses to run while an earlier channel is still open.
+
+```bash
+pnpm testbench run stress-smoke --chain local        # quick: 6 requests, about a minute with setup
+pnpm testbench run stress-c32 --chain local          # the CI shapes; each takes a few minutes
+pnpm testbench run stress-restart-seller --chain local
+```
+
+`e2e/stress` still runs in CI unchanged; the testbench imports its `rpc-proxy.mjs` and `analysis.mjs` rather than copying them, so both harnesses share one set of invariants.
+
+## Desktop automation
+
+`tb.desktop()` launches the built desktop (`apps/desktop/dist`) under Playwright's Electron driver in attach-only mode on this testbench's buyer. Chats, sessions and projects go to `buyer/desktop/` and Electron data to `desktop-automation/` inside the testbench; telemetry is off; nothing reads or writes `~/.antseed`. Rebuild after desktop changes (`pnpm --filter @antseed/desktop run build:main && pnpm --filter @antseed/desktop run build:renderer`). The window is visible while it runs, and it closes automatically when the scenario ends.
+
+Every desktop run records `video/desktop.webm` and keeps screenshots in `screenshots/`; a chat that times out also saves `chat-timeout.png` and puts the visible screen text in the error. `run --trace` additionally records a Playwright trace (`trace.zip`, 100+ MB) for `npx playwright show-trace`. Each launch starts from an empty desktop state (`desktop-automation/` is reset).
+
+To inspect results from a remote machine, run `pnpm testbench report --serve --port 8799` there and `ssh -L 8799:127.0.0.1:8799 <host>` locally, then open `http://127.0.0.1:8799/`. The server is read-only, serves only report file types inside `reports/`, supports video seeking, and binds to `127.0.0.1` unless `--host` says otherwise.
+
+## Share (Linux server)
+
+`pnpm testbench share` runs the testbench desktop on a Linux server and streams it to your browser on your tailnet. You click a link and use the real app (mouse, keyboard, chat, payments on the testbench chain) while everything runs on the server. Desktop browsers only.
+
+```bash
+# on the server, in the worktree
+pnpm testbench share                   # starts the testbench if needed, prints https://<host>.<tailnet>.ts.net/<testbench-name>/
+pnpm testbench share --stop            # or pnpm testbench down, which also stops the share
+```
+
+The link opens a landing page with the branch, chain, desktop status, a button to open the desktop, and links to the run reports. It does the following:
+
+- Starts a virtual display (Xvfb, 1440x900), openbox if installed, and x11vnc on a unix socket inside the testbench directory.
+- Runs the attach-only desktop on the testbench buyer, with state in `desktop-share/`. `--fresh` resets that state first.
+- Serves noVNC, the landing page and `reports/` on a loopback port.
+- Publishes it with `tailscale serve --https=443 --set-path=/<testbench-name>`, so each worktree gets its own path on the same host.
+- Stops after `--idle` minutes without a viewer (default 120, range 5-1440), when the testbench stops, or on `share --stop`. Stopping removes the `tailscale serve` path.
+
+Server setup (once):
+
+```bash
+sudo apt-get install -y xvfb x11vnc novnc openbox
+sudo apt-get install -y libgtk-3-0 libnss3 libasound2 libgbm1 libxss1   # Electron runtime libraries
+sudo tailscale set --operator=$USER          # lets share run tailscale serve without sudo
+pnpm install && pnpm run build               # share needs apps/desktop/dist
+```
+
+Enable MagicDNS and HTTPS certificates for the tailnet in the Tailscale admin console. If noVNC is not under `/usr/share/novnc`, set `ANTSEED_TESTBENCH_NOVNC_DIR` to the directory that contains `vnc.html`.
+
+Security:
+
+- Only tailnet members can reach the link: the server listens on `127.0.0.1` and Tailscale proxies to it.
+- `share` refuses to run while Tailscale Funnel is on for port 443, because Funnel would put the desktop on the public internet.
+- The VNC socket is never exposed. The WebSocket bridge rejects cross-origin pages.
+- The desktop runs on the testbench wallet and testbench chain only (mock upstream unless the testbench was started with `--live`).
+
+Without Tailscale, use `--no-tailscale`, then `ssh -L PORT:127.0.0.1:PORT <server>` and open `http://127.0.0.1:PORT/`.
+
+For agents: with `ANTSEED_TESTBENCH_SHARE_DEBUG_PORT=N`, the shared desktop listens for Chrome DevTools Protocol on `127.0.0.1:N`. An agent can then read the DOM over CDP to check what a viewer sees through noVNC. Logs: `logs/share.log`, `share-desktop.log`, `share-vnc.log`, `share-xvfb.log`, `share-wm.log`.
+
+## Control API
+
+The supervisor exposes a loopback-only API with a bearer token stored in `control.json` (mode 0600). Scenarios use it through `tb`; you rarely need it directly.
+
+`GET /status`, `GET /health`, `POST /channels/close {sellerId?}`, `POST /chain/warp {seconds}`, `POST /buyer/stop`, `POST /buyer/start`, `POST /sellers/:id/stop`, `POST /sellers/:id/start`, `GET|POST /sellers/:id/mock {latencyMs?, fault500Rate?, disconnectRate?}`, `GET /sellers/:id/deliveries`, `GET|POST /faults/buyer/need-auth-loss {count}`, `POST /shutdown`
+
+## Fork cache
+
+Applies to `--chain fork` only. Anvil's RPC cache makes a warm `up` take a few seconds instead of a minute.
+
+- The shared cache lives in `~/.antseed-testbench/.cache/anvil` (override with `ANTSEED_TESTBENCH_CACHE_DIR`). It is seeded once from the older `~/.antseed-e2e/anvil-home` cache, which is only ever read.
+- Each testbench copies the warm block into its own `anvil-home/`; Anvil never writes the shared cache.
+- On exit the testbench's copy is published back under `cache.lock` with a temp file and an atomic rename, and only if it is larger than the shared copy.
+- Pruning keeps the newest 3 blocks and never removes a block pinned by a running testbench.
+- Without `--block`, the newest warm block younger than 72 hours is reused; otherwise the fork pins a block just behind head.
+
+## Tests
+
+```bash
+pnpm test:testbench       # fast unit tests (node --test): options, config, naming, locks, manifest, ports, cache, mock, control, stress load, gates and ledger
+pnpm test:testbench:e2e   # full flow on a real fork: up, reattach, status, run chat-basic, down, isolation checks
+pnpm testbench run payment-flow --chain local   # payment lifecycle on source-deployed contracts, no RPC key
+```
+
+The e2e flow checks:
+
+- no testbench port collides with an existing listener or a default port
+- `up` reattaches instead of restarting
+- every port is closed after `down`
+- no testbench process ever holds a file under `~/.antseed`
+- `~/.antseed/identity.key` and `config.json` are unchanged
+- foreign Anvil processes survive
+
+Pass scenario names to run more than `chat-basic` (`node e2e/testbench/test/e2e-flow.mjs chat-basic routing-smoke`).
+
+## Roadmap
+
+Deferred (not needed for the four cases):
+
+- a pool of test wallets with rotation and automatic top-ups for case 3
+- a canary seller of ours on mainnet, so case 3 can also test seller changes against real buyers
+- multiple sellers from different configs in one testbench
+- a CI job: the e2e scenarios plus `stress-smoke` on every PR, the full stress set nightly with repeats; then retire `e2e/stress`'s own chain, mock, bootstrap and config writers once the testbench scenarios match its results
+- a `--runs N` repeat mode for stress scenarios (the stress harness's `--runs`)
+- fail points in `packages/node` at payment boundaries (before a settle is sent, after a NeedAuth arrives, before a close), generalizing `faults.loseNeedAuths`
+- retiring `e2e/scripts/full-payment-flow.mjs` once local runs prove stable in CI
+- streaming the real-funds profile desktop with `share`
+- Anvil state snapshots, a Herdr tab launcher, rebasing the video harness onto this

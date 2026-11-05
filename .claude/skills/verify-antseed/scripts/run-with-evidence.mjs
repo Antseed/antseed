@@ -1,13 +1,13 @@
 #!/usr/bin/env node
-// Runs `node e2e/sandbox/cli.mjs run <args>` (what `pnpm sandbox run` runs) on a fresh sandbox and files the
-// evidence into the run's report directory, which `pnpm sandbox down` keeps:
+// Runs `node e2e/testbench/cli.mjs run <args>` (what `pnpm testbench run` runs) on a fresh testbench and files the
+// evidence into the run's report directory, which `pnpm testbench down` keeps:
 //   run-output.log  the full console transcript
 //   checks.log      only the PASS/FAIL/KNOWN lines, the error and the report path (paste into PR bodies)
 //   logs/*.log      the supervisor, seller, Anvil and forge log lines written during this run
 // A run that ends before the scenario starts has no report directory; its transcript goes to
-// <sandbox>/logs/evidence-<timestamp>-<scenario>.log instead.
+// <testbench>/logs/evidence-<timestamp>-<scenario>.log instead.
 // Usage: .claude/skills/verify-antseed/scripts/run-with-evidence.mjs <scenario> [--chain local] [--keep] [--strict] [--slot NAME] ...
-// Refuses when this worktree's sandbox (or slot) is running or starting, so any sandbox up after a
+// Refuses when this worktree's testbench (or slot) is running or starting, so any testbench up after a
 // Ctrl+C or SIGTERM is the one this run started: the helper then stops it with `cli.mjs down`.
 // Exits with the run's exit code.
 import { spawn, spawnSync } from 'node:child_process';
@@ -16,20 +16,20 @@ import { join } from 'node:path';
 
 const args = process.argv.slice(2);
 if (!args.length || args[0].startsWith('-')) {
-  console.error('usage: run-with-evidence.mjs <scenario> [pnpm sandbox run flags]');
+  console.error('usage: run-with-evidence.mjs <scenario> [pnpm testbench run flags]');
   process.exit(2);
 }
 const repo = spawnSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).stdout.trim();
-const cli = join(repo, 'e2e/sandbox/cli.mjs');
-const { sandboxName, sandboxPaths, sandboxRoot, worktreeRoot } = await import(join(repo, 'e2e/sandbox/lib/paths.mjs'));
+const cli = join(repo, 'e2e/testbench/cli.mjs');
+const { testbenchName, testbenchPaths, testbenchRoot, worktreeRoot } = await import(join(repo, 'e2e/testbench/lib/paths.mjs'));
 const slotIndex = args.indexOf('--slot');
 const slotArgs = slotIndex >= 0 ? ['--slot', args[slotIndex + 1]] : [];
-const paths = sandboxPaths(sandboxRoot(), sandboxName(worktreeRoot(repo), slotIndex >= 0 ? args[slotIndex + 1] : undefined));
+const paths = testbenchPaths(testbenchRoot(), testbenchName(worktreeRoot(repo), slotIndex >= 0 ? args[slotIndex + 1] : undefined));
 
 const status = spawnSync(process.execPath, [cli, 'status', '--json', ...slotArgs], { cwd: repo, encoding: 'utf8' });
 const before = (() => { try { return JSON.parse(status.stdout); } catch { return null; } })();
 if (!before || before.running || before.lock === 'held') {
-  console.error(`[evidence] this sandbox is ${before ? 'already running or starting' : 'in an unknown state'}; evidence runs start fresh. Run pnpm sandbox down first.`);
+  console.error(`[evidence] this testbench is ${before ? 'already running or starting' : 'in an unknown state'}; evidence runs start fresh. Run pnpm testbench down first.`);
   process.exit(2);
 }
 
@@ -51,13 +51,13 @@ const transcript = Buffer.concat(chunks).toString('utf8');
 
 // The killed CLI never reaches its own teardown, and the supervisor runs detached, so stop it here.
 if (interrupted) {
-  console.error(`[evidence] ${interrupted}: stopping the sandbox this run started`);
+  console.error(`[evidence] ${interrupted}: stopping the testbench this run started`);
   const stop = spawnSync(process.execPath, [cli, 'down', ...slotArgs], { cwd: repo, stdio: 'inherit' });
-  if (stop.status !== 0) console.error('[evidence] teardown failed: run pnpm sandbox down (add --force only with the user\'s approval)');
+  if (stop.status !== 0) console.error('[evidence] teardown failed: run pnpm testbench down (add --force only with the user\'s approval)');
 }
 
 // The report directory the CLI printed, else the one it created for this run before it was killed.
-const printed = transcript.match(/\[sandbox\] (?:PASSED|FAILED): (.+)\/report\.json/)?.[1];
+const printed = transcript.match(/\[testbench\] (?:PASSED|FAILED): (.+)\/report\.json/)?.[1];
 const created = existsSync(paths.reports)
   ? readdirSync(paths.reports).filter((name) => name.endsWith(`-${scenario}`) && name.slice(0, stamp.length) >= stamp).sort().at(-1)
   : undefined;
@@ -70,7 +70,7 @@ if (!reportDir) {
   process.exit(code);
 }
 writeFileSync(join(reportDir, 'run-output.log'), transcript);
-const checks = transcript.split('\n').filter((line) => /\[sandbox\] (PASS|FAIL|KNOWN|Error:|FAILED:|PASSED:|HTML report:)/.test(line));
+const checks = transcript.split('\n').filter((line) => /\[testbench\] (PASS|FAIL|KNOWN|Error:|FAILED:|PASSED:|HTML report:)/.test(line));
 writeFileSync(join(reportDir, 'checks.log'), `${checks.join('\n')}\n`);
 mkdirSync(join(reportDir, 'logs'), { recursive: true });
 for (const name of logFiles()) {

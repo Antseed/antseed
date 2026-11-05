@@ -537,7 +537,7 @@ export async function startSystemProxyRuntime(opts: SystemProxyStartRequest): Pr
 
 export async function startSystemProxyRuntimeInner(opts: SystemProxyStartRequest): Promise<RuntimeProcessState | null> {
   if (machineWideChangesDisabled()) {
-    throw new Error('System proxy and connected-app changes are disabled in the isolated sandbox desktop.');
+    throw new Error('System proxy and connected-app changes are disabled in the isolated testbench desktop.');
   }
   const port = opts.port ?? DEFAULT_SYSTEM_PROXY_PORT;
   const allProfiles = opts.profiles ?? [];

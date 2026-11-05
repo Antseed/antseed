@@ -4,10 +4,10 @@ import test from 'node:test';
 import { ProcessManager } from './process-manager.js';
 import { assertAttachOnlyRuntime, isCompatibleSharedBuyer, refreshSharedBuyerAttachment } from './shared-buyer.js';
 
-test('sandbox attach-only mode refuses a fallback buyer or another runtime', () => {
+test('testbench attach-only mode refuses a fallback buyer or another runtime', () => {
   assert.doesNotThrow(() => assertAttachOnlyRuntime('connect', true, true));
-  assert.throws(() => assertAttachOnlyRuntime('connect', false, true), /isolated sandbox/);
-  assert.throws(() => assertAttachOnlyRuntime('seed', true, true), /isolated sandbox/);
+  assert.throws(() => assertAttachOnlyRuntime('connect', false, true), /isolated testbench/);
+  assert.throws(() => assertAttachOnlyRuntime('seed', true, true), /isolated testbench/);
   assert.doesNotThrow(() => assertAttachOnlyRuntime('connect', false, false));
 });
 
