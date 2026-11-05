@@ -1,5 +1,6 @@
 import type {
   FreeTierDelegation,
+  SellerBuyerLimitsConfig,
   ServiceApiProtocol,
   ServiceCapabilities,
   UnitBillingModelV1,
@@ -325,6 +326,13 @@ export interface SellerCLIConfig {
   restrictedCountries?: string[];
   /** Free-usage on-chain record batching: flush after N auths or N ms (default 16 / 900000). */
   freeUsage?: { recordBatchSize?: number; recordFlushIntervalMs?: number };
+  /**
+   * Per-buyer token limits (uncached input + output) per provider in a
+   * rolling window, with tighter ones for buyers whose first channel with
+   * this seller is recent. Over a limit, requests are answered 429 with
+   * retry-after. Off unless set.
+   */
+  buyerLimits?: SellerBuyerLimitsConfig;
 }
 
 /**

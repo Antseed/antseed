@@ -12,6 +12,7 @@ import type { ChannelsClient } from './payments/evm/channels-client.js';
 import type { SellerPaymentManager } from './payments/seller-payment-manager.js';
 import type { SellerFreeUsageManager } from './payments/seller-free-usage-manager.js';
 import type { FreeTierDecision, SellerFreeTierLimiter } from './payments/seller-free-tier-limiter.js';
+import type { SellerBuyerLimiter } from './payments/seller-buyer-limiter.js';
 import { FREE_TIER_SERVED_COVERED, FREE_TIER_SERVED_HEADER, powerToAntsEpochs } from './payments/free-tier-program.js';
 import { FREE_TIER_DELEGATIONS_HEADER } from './payments/free-tier-delegation.js';
 
@@ -182,6 +183,8 @@ export interface SellerRequestHandlerDeps {
   sellerPaymentManager: SellerPaymentManager | null;
   sellerFreeUsageManager?: SellerFreeUsageManager | null;
   sellerFreeTierLimiter?: SellerFreeTierLimiter | null;
+  /** Per-buyer token limits; requests over them are answered 429 before any payment step. */
+  sellerBuyerLimiter?: SellerBuyerLimiter | null;
   sessionTracker: SellerSessionTracker | null;
   channelsClient: ChannelsClient | null;
   announcer: PeerAnnouncer | null;
@@ -393,6 +396,20 @@ export class SellerRequestHandler {
       }
       if (refusal) {
         this._sendJsonError(mux, request.requestId, refusal.statusCode, refusal.code, refusal.message);
+        return;
+      }
+
+      const limitRetryAfter = this._deps.sellerBuyerLimiter?.retryAfterSeconds(buyerPeerId, provider.name) ?? null;
+      if (limitRetryAfter !== null) {
+        debugWarn(`[SellerHandler] Buyer ${buyerPeerId.slice(0, 12)}... over its usage limit on provider "${provider.name}", retry in ${limitRetryAfter}s`);
+        mux.sendProxyResponse({
+          requestId: request.requestId,
+          statusCode: 429,
+          headers: { 'content-type': 'application/json', 'retry-after': String(limitRetryAfter) },
+          body: new TextEncoder().encode(JSON.stringify({
+            error: { code: 'buyer_usage_limited', message: 'This buyer has reached its usage limit with this seller; retry later' },
+          })),
+        });
         return;
       }
 
@@ -986,6 +1003,7 @@ export class SellerRequestHandler {
             responseUsage = parseResponseUsage(response.body);
           }
           debugLog(`[SellerHandler] Raw provider usage: in=${responseUsage.inputTokens} fresh=${responseUsage.freshInputTokens} cached=${responseUsage.cachedInputTokens} out=${responseUsage.outputTokens}`);
+          this._deps.sellerBuyerLimiter?.record(buyerPeerId, provider.name, responseUsage.freshInputTokens + responseUsage.outputTokens);
           if (!streamedResponseStarted) {
             mux.sendProxyResponse(response);
           } else if (heldDoneChunkData !== null) {

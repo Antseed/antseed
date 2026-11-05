@@ -211,6 +211,7 @@ Any other npm package that exports a provider plugin works too. See [Provider pl
 | `seller.freeTier` | none | Request allowance for zero-priced services. See below. |
 | `seller.providers.<name>.services.<id>.freeTier` | none | That model's own free-tier program, in place of `seller.freeTier`. On a priced model, a free allowance before the price applies. See [Per-model programs](#per-model-programs). |
 | `seller.freeUsage` | 16 requests / 15 min | How often free usage is recorded on-chain. See below. |
+| `seller.buyerLimits` | none | Tokens each buyer may use per provider per hour, tighter for buyers new to the seller. See below. |
 | `seller.healthCheck` | enabled, 5 min, 3 failures | Model health checks. See below. |
 | `seller.gasCheck` | enabled, 60 s, 0.00005 ETH | Pauses advertising while the seller wallet holds less ETH than `minBalanceEth`, checking every `intervalMs` (at least 10 s). Resumes once funded. |
 | `seller.gasRefuel` | enabled, 0.0005 ETH, 10 USDC, 30 USDC/day | Base mainnet only, and needs `seller.gasCheck` on. When a gas check finds the wallet below `triggerBalanceEth`, the seller swaps `swapUsdc` of the wallet's own USDC for ETH on Uniswap v3 (USDC/WETH 0.05% pool, `slippageBps` default 100), paying the swap's gas from the ETH still there. At most `maxUsdcPerDay` in any 24 hours; failures retry with back-off. Set `enabled: false` to opt out. |
@@ -348,6 +349,26 @@ By default the seller refuses connections from IP addresses in Cuba, Iran, North
 antseed config seller set restrictedCountries '["CU","IR","KP","SY","RU"]'
 antseed config seller set restrictedCountries '[]'    # turn the check off
 ```
+
+### Buyer limits
+
+A provider is usually one upstream account, and one buyer can use it up for everyone. `buyerLimits` caps how many tokens each buyer may use from each provider in a rolling window. Tokens are uncached input plus output; cached input isn't counted. A buyer over its limit gets 429 with `retry-after` until enough of its usage leaves the window.
+
+Buyers whose first payment channel with this seller is less than `newBuyers.forHours` old (default 72) get their own limit, and `newBuyers.maxTokensTotal` caps all of them together, so spreading use across new wallets gains nothing.
+
+```json
+{
+  "seller": {
+    "buyerLimits": {
+      "windowMinutes": 60,
+      "maxTokensPerBuyer": 40000000,
+      "newBuyers": { "forHours": 72, "maxTokensPerBuyer": 2000000, "maxTokensTotal": 10000000 }
+    }
+  }
+}
+```
+
+Every field is optional; a limit left out isn't applied. Counts are kept in memory, so a restart starts them over.
 
 ### Free-usage records
 
