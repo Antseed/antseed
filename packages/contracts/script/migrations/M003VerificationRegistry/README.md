@@ -31,11 +31,12 @@ first. The owner approves KBF auditors on `AntseedKbfAudits` itself (`setAuditor
 another admission rule (a council, a stake-based set) is a new source on the same results layer, so
 readers and the reward bucket stay put.
 
-- **Points change only through the rates.** Once registered, the policy scales seller points by
-  `bonusBps` (from `VERIFICATION_BONUS_BPS`, default 0; e.g. 100 = +1% per verified service, capped
+- **Points change only through the rates.** Once registered, the policy scales seller and buyer points
+  by `bonusBps` (from `VERIFICATION_BONUS_BPS`, default 0; e.g. 100 = +1% per verified service, capped
   at +50% in total) and `penaltyBps` (uncapped, per DIFF service; starts at 0). With both at 0 no
-  seller's points change. A rate set with `setBonusBps` or `setPenaltyBps` applies from the next
-  settlement on. A DIFF only affects its own service.
+  points change. A rate set with `setBonusBps` or `setPenaltyBps` applies from the next
+  settlement on. A DIFF only affects its own service. The multiplier
+  comes from the seller's verdicts, and a buyer's points on that seller's settlements get the same one.
 - **Verdicts expire by epoch.** A SAME or DIFF counts for `validityEpochs` emissions epochs
   including the one it was given in (default 2; owner-settable from 1 to 4), then drops out.
 - **A DIFF needs a second auditor.** `kbf.requiredReports` sets how many distinct approved auditors

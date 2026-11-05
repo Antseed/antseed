@@ -134,8 +134,9 @@ participating; allocation increases smoothly as the inputs grow.
 The usage input is the larger of the epoch's total buyer points and total seller
 points, after points policies. With the deployed pass-through/wash-filter
 behavior, it represents recognized USDC volume without counting buyer and seller
-sides twice. It is not all raw Channels volume, and a different points modifier
-can change how it relates to USDC.
+sides twice. It is not all raw Channels volume. The verification policy scales
+both sides by the seller's verification results, so once its rates are on, the
+usage input moves with them and no longer tracks USDC one to one.
 
 The effective stake target scales with scheduled emissions:
 `400 million ANTS × epoch emission / initial emission`. At the initial 5 million
