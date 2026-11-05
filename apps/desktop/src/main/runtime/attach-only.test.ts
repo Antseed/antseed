@@ -7,9 +7,10 @@ import {
   isAttachOnly,
   isIsolatedProfile,
   machineWideChangesDisabled,
-  preserveSandboxTrustFloor,
+  preserveTestbenchRouting,
   readAttachOnlyIdentityHex,
   resolveBuyerStateDir,
+  secretStoreSwitches,
 } from './attach-only.js';
 
 const ATTACH = { ANTSEED_DESKTOP_ATTACH_ONLY: '1' };
@@ -33,18 +34,18 @@ test('isolated profiles and attach-only desktops both disable machine-wide chang
 test('buyer state follows the connect data dir and defaults to ~/.antseed', () => {
   assert.equal(resolveBuyerStateDir({}, '/home/u'), path.join('/home/u', '.antseed'));
   assert.equal(resolveBuyerStateDir({ ANTSEED_DESKTOP_CONNECT_DATA_DIR: '  ' }, '/home/u'), path.join('/home/u', '.antseed'));
-  assert.equal(resolveBuyerStateDir({ ANTSEED_DESKTOP_CONNECT_DATA_DIR: '/tmp/sb/buyer' }, '/home/u'), '/tmp/sb/buyer');
-  assert.equal(resolveBuyerStateDir({ ANTSEED_DESKTOP_CONNECT_DATA_DIR: '~/sb/buyer' }, '/home/u'), path.join('/home/u', 'sb/buyer'));
+  assert.equal(resolveBuyerStateDir({ ANTSEED_DESKTOP_CONNECT_DATA_DIR: '/tmp/tb/buyer' }, '/home/u'), '/tmp/tb/buyer');
+  assert.equal(resolveBuyerStateDir({ ANTSEED_DESKTOP_CONNECT_DATA_DIR: '~/tb/buyer' }, '/home/u'), path.join('/home/u', 'tb/buyer'));
 });
 
-test('attach-only chat data lives under the sandbox buyer dir, never ~/.antseed', async () => {
-  const env = { ANTSEED_DESKTOP_ATTACH_ONLY: '1', ANTSEED_DESKTOP_CONNECT_DATA_DIR: '/tmp/sb/buyer' };
+test('attach-only chat data lives under the testbench buyer dir, never ~/.antseed', async () => {
+  const env = { ANTSEED_DESKTOP_ATTACH_ONLY: '1', ANTSEED_DESKTOP_CONNECT_DATA_DIR: '/tmp/tb/buyer' };
   const saved = { ...process.env };
   Object.assign(process.env, env);
   try {
     const paths = await import(`../chat/paths.js?attach=${Date.now()}`);
-    assert.equal(paths.ANTSEED_HOME_DIR, path.join('/tmp/sb/buyer', 'desktop'));
-    assert.equal(paths.CHAT_DATA_DIR, path.join('/tmp/sb/buyer', 'desktop', 'chat'));
+    assert.equal(paths.ANTSEED_HOME_DIR, path.join('/tmp/tb/buyer', 'desktop'));
+    assert.equal(paths.CHAT_DATA_DIR, path.join('/tmp/tb/buyer', 'desktop', 'chat'));
   } finally {
     for (const key of Object.keys(env)) delete process.env[key];
     Object.assign(process.env, saved);
@@ -53,8 +54,8 @@ test('attach-only chat data lives under the sandbox buyer dir, never ~/.antseed'
 
 test('trust floor is forced to 0 only in attach-only mode and keeps other preferences', () => {
   const config = { buyer: { routingPreferences: { minTrustScore: 50, preferCheap: true }, other: 1 }, seller: { x: 1 } };
-  assert.equal(preserveSandboxTrustFloor(config, {}), config);
-  assert.deepEqual(preserveSandboxTrustFloor(config, ATTACH), {
+  assert.equal(preserveTestbenchRouting(config, {}, {}), config);
+  assert.deepEqual(preserveTestbenchRouting(config, {}, ATTACH), {
     buyer: { routingPreferences: { minTrustScore: 0, preferCheap: true }, other: 1 },
     seller: { x: 1 },
   });
@@ -63,7 +64,7 @@ test('trust floor is forced to 0 only in attach-only mode and keeps other prefer
 
 test('trust floor leaves configs without routing preferences untouched', () => {
   for (const config of [{}, { buyer: null }, { buyer: [] }, { buyer: {} }, { buyer: { routingPreferences: [] } }]) {
-    assert.equal(preserveSandboxTrustFloor(config as Record<string, unknown>, ATTACH), config);
+    assert.equal(preserveTestbenchRouting(config as Record<string, unknown>, {}, ATTACH), config);
   }
 });
 
@@ -82,4 +83,27 @@ test('attach-only identity reads a 64-hex key and rejects anything else', async 
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test('testbench desktops never use the real keychain or keyring', () => {
+  const profile = { ANTSEED_DESKTOP_ISOLATED_PROFILE: '1' };
+  assert.deepEqual(secretStoreSwitches({}, 'darwin'), []);
+  assert.deepEqual(secretStoreSwitches({}, 'linux'), []);
+  assert.deepEqual(secretStoreSwitches(ATTACH, 'darwin'), [['use-mock-keychain']]);
+  assert.deepEqual(secretStoreSwitches(ATTACH, 'linux'), [['use-mock-keychain'], ['password-store', 'basic']]);
+  assert.deepEqual(secretStoreSwitches(ATTACH, 'win32'), [['use-mock-keychain'], ['password-store', 'basic']]);
+  assert.deepEqual(secretStoreSwitches(profile, 'darwin'), [['use-mock-keychain']]);
+  assert.deepEqual(secretStoreSwitches(profile, 'linux'), [['use-mock-keychain']]);
+});
+
+test('a routing sync keeps the testbench peer allowlist and blocklist', () => {
+  const existing = { buyer: { routingPreferences: { allowedPeerIds: ['a', 'b'], blockedPeerIds: ['z'], preferLowLatency: true, minTrustScore: 0 } } };
+  const synced = { buyer: { routingPreferences: { allowedPeerIds: [], blockedPeerIds: [], minTrustScore: 50, preferCheap: true } } };
+  assert.deepEqual(preserveTestbenchRouting(synced, existing, ATTACH), {
+    buyer: { routingPreferences: { allowedPeerIds: ['a', 'b'], blockedPeerIds: ['z'], minTrustScore: 0, preferCheap: true } },
+  });
+  assert.deepEqual(preserveTestbenchRouting(synced, { buyer: { routingPreferences: {} } }, ATTACH), {
+    buyer: { routingPreferences: { allowedPeerIds: [], blockedPeerIds: [], minTrustScore: 0, preferCheap: true } },
+  });
+  assert.equal(preserveTestbenchRouting(synced, existing, {}), synced);
 });
