@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { apiCallTabs, connectTabs, curlSnippet as modelCurl, gatewayApiUrl, gatewayBaseUrl, keySnippets, modelCallFormat, modelSnippets, pinnedModelId, serviceApiFormat } from './snippets'
+import { apiCallTabs, connectTabs, curlSnippet as modelCurl, gatewayApiUrl, gatewayBaseUrl, keySnippets, localBuyerExample, modelCallFormat, modelSnippets, pinnedModelId, serviceApiFormat } from './snippets'
 
 const PEER = `0xFA1E${'0'.repeat(32)}0004`
 const BASE = 'https://gw.example.test'
@@ -126,8 +126,28 @@ describe('model API calls', () => {
     expect(modelCallFormat('text', offer(['openai-responses']))).toBe('openai-responses')
     expect(modelCallFormat('image')).toBe('openai-images')
     expect(modelCallFormat('image', offer(['openai-chat-completions']))).toBe('openai-images')
+    expect(modelCallFormat('speech')).toBe('openai-audio-speech')
     expect(modelCallFormat('video')).toBeNull()
     expect(modelCallFormat('decision', offer(['typesafe-systemone']))).toBeNull()
+  })
+  it('curl alone for a speech model, asking for a voice and saving the audio file', () => {
+    const tabs = apiCallTabs(BASE, 'peer@tts-kokoro', 'openai-audio-speech', 'af_sky')
+    expect(tabs.map((tab) => tab.id)).toEqual(['curl'])
+    expect(tabs[0]!.code).toContain(`curl ${BASE}/v1/audio/speech`)
+    expect(tabs[0]!.code).toContain('"input":"Hello from Antseed.","voice":"af_sky"')
+    expect(tabs[0]!.code.endsWith('-o speech.mp3')).toBe(true)
+    // Without an announced voice the call names a placeholder rather than relying on an upstream default.
+    expect(apiCallTabs(BASE, 'peer@tts-1', 'openai-audio-speech')[0]!.code).toContain('"voice":"<voice>"')
+    expect(modelSnippets(BASE, 'peer', 'tts-kokoro', 'openai-audio-speech', 'af_sky').map((snippet) => snippet.id)).toEqual(['model', 'curl'])
+  })
+  it('gives a speech-only provider service the speech call', () => {
+    const format = serviceApiFormat({ provider: 'openai', apiProtocols: ['openai-audio-speech'] })
+    expect(format).toBe('openai-audio-speech')
+    const tabs = connectTabs(BASE, 'peer', 'tts-1', format, null, 'alloy')
+    expect(tabs.map((tab) => tab.id)).toEqual(['curl'])
+    expect(tabs[0]!.code).toContain(`${BASE}/v1/audio/speech`)
+    expect(tabs[0]!.code).toContain('"voice":"alloy"')
+    expect(tabs[0]!.code).toContain('-o speech.mp3')
   })
   it('recognizes image sellers', () => {
     expect(serviceApiFormat({ provider: 'fal', apiProtocols: ['openai-images'] })).toBe('openai-images')
@@ -149,5 +169,26 @@ describe('model API calls', () => {
   })
   it('a pinned image model gets no coding-tool tabs', () => {
     expect(connectTabs(BASE, PEER, 'flux-schnell', 'openai-images', null).map((tab) => tab.id)).toEqual(['curl', 'openai-python', 'openai-js'])
+  })
+})
+
+describe('localBuyerExample', () => {
+  const peer = 'fa1e' + '0'.repeat(36)
+  const image = { provider: 'openai', service: 'qwen-image', kind: 'image' as const, apiProtocols: ['openai-images'] }
+  const video = { provider: 'fal', service: 'wan-video', kind: 'video' as const, apiProtocols: ['fal-video'] }
+  const chat = { provider: 'anthropic', service: 'claude-x', kind: 'text' as const, apiProtocols: ['anthropic-messages'] }
+
+  it('prefers a text model, on the API it speaks, with no key for the local buyer', () => {
+    const example = localBuyerExample(peer, [image, chat])!
+    expect(example.service).toBe('claude-x')
+    expect(example.code).toContain('curl http://localhost:8377/v1/messages \\')
+    expect(example.code).toContain(`"model":"${peer}@claude-x"`)
+    expect(example.code).not.toContain('Authorization')
+  })
+
+  it('an image-only seller gets the images API; a video-only seller no request', () => {
+    expect(localBuyerExample(peer, [video, image])!.code).toContain('/v1/images/generations')
+    expect(localBuyerExample(peer, [video])).toEqual({ service: 'wan-video', code: null })
+    expect(localBuyerExample(peer, [])).toBeNull()
   })
 })

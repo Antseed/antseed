@@ -1,4 +1,4 @@
 interface:
   display_name: "Antseed Videos"
-  short_description: "Generate guided videos through Antseed"
+  short_description: "Generate and edit videos through Antseed"
   default_prompt: "Use $antseed-videos to create a video with Antseed."

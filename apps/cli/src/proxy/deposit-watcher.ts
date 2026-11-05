@@ -20,10 +20,10 @@ export type DepositWatchPhase = 'deferred' | 'received' | 'sweeping' | 'credited
 /**
  * Why a sweep is waiting instead of running.
  * below-minimum — the wallet can't cover the relay fee plus the contract's
- *   first-deposit floor (or, once funded, more than the fee). More USDC must
- *   arrive before anything moves.
- * credit-limit — the deposits balance is at the buyer's credit limit; the
- *   wallet tops up automatically as spending frees headroom.
+ *   deposit floor (applied to every sweep, not only the first). More USDC
+ *   must arrive before anything moves.
+ * credit-limit — the deposits balance is at (or near) the buyer's credit
+ *   limit; the wallet tops up automatically once spending frees half of it.
  */
 export type DepositDeferReason = 'below-minimum' | 'credit-limit'
 
@@ -105,6 +105,8 @@ export interface DepositWatcherDeps {
    * Without it the watcher polls on its own timer (one-shot commands).
    */
   scheduler?: DepositWatchScheduler
+  /** What a new session reserves (the buyer's `maxReserveAmountUsdc`); defaults to $1. */
+  sessionReserveBaseUnits?: bigint
 }
 
 /** What a shared poll loop needs from a watcher; `DepositWatchHub` implements the other side. */
@@ -130,11 +132,44 @@ const SWEEP_RETRY_COOLDOWN_MS = 60_000
 // AntseedDeposits enforces a minimum first deposit (net of the fee). Read
 // from the contract; this is the fallback when the read fails.
 const MIN_FIRST_DEPOSIT_BASE_UNITS = 1_000_000n
-// Minimum top-up when the sweep is clamped by the credit-limit headroom.
-// Without a floor, a wallet holding more than the remaining headroom would
-// grind it into the limit gap in dust increments — paying the fixed relay
-// fee on each sliver every time spending frees a few cents of headroom.
+// Minimum top-up when the sweep is clamped by the credit-limit headroom:
+// at least this much, and at least TOPUP_LIMIT_DIVISOR-th of the credit
+// limit. Without it, a wallet holding more than the remaining headroom
+// grinds into the limit gap in small increments — a sweep (and its fixed
+// relay fee, and a deposit row) every time spending frees a dollar or two.
 const MIN_TOPUP_BASE_UNITS = 1_000_000n
+const TOPUP_LIMIT_DIVISOR = 2n
+// The half-limit share applies only while the spendable credits still cover
+// a new session's reservation (the buyer's maxReserveAmountUsdc). Below that,
+// nothing new can be paid for until a refill lands, so the top-up goes as
+// soon as the $1 minimum fits.
+const SESSION_RESERVE_BASE_UNITS = 1_000_000n
+
+/** The smallest headroom a clamped top-up waits for (mirrored in the desktop's funding-status). */
+/** A relayer's progress report on a sweep, with the relayer that sent it. */
+export interface AttributedSweepReceipt {
+  peerId: string
+  payload: SweepReceiptPayload
+}
+
+/**
+ * Whether `next` replaces `current` as the receipt kept for a sweep. A refusal from a relayer other
+ * than the one that took the sweep (one offered it earlier, answering late) does not hide its progress.
+ */
+export function supersedesSweepReceipt(current: AttributedSweepReceipt | null | undefined, next: AttributedSweepReceipt): boolean {
+  if (!current || current.payload.authNonce.toLowerCase() !== next.payload.authNonce.toLowerCase()) return true
+  return current.payload.status === 'rejected' || next.payload.status !== 'rejected' || current.peerId === next.peerId
+}
+
+export function minTopupBaseUnits(creditLimit: bigint): bigint {
+  const share = creditLimit / TOPUP_LIMIT_DIVISOR
+  return share > MIN_TOPUP_BASE_UNITS ? share : MIN_TOPUP_BASE_UNITS
+}
+
+/** A configured `maxReserveAmountUsdc` (base units) as the watcher's session reserve; undefined (the $1 default) when unset or malformed. */
+export function reserveBaseUnits(value: string | undefined): bigint | undefined {
+  return value && /^\d+$/.test(value) && BigInt(value) > 0n ? BigInt(value) : undefined
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -340,10 +375,11 @@ export class DepositWatcher {
     ])
 
     const depositsBalance = deposits.available + deposits.reserved
-    // Below the sweepable minimum (fee, plus the contract's first-deposit
-    // floor) — keep waiting; more USDC may still be on the way. Say so, so
-    // the UI can ask for the shortfall instead of spinning on "preparing".
-    const minRequired = depositsBalance === 0n ? minFirstDeposit + fee : fee + 1n
+    // Below the sweepable minimum (fee, plus the contract's deposit floor —
+    // applied to every sweep, not only the first, so dust never pays a relay
+    // fee on its own) — keep waiting; more USDC may still be on the way. Say
+    // so, so the UI can ask for the shortfall instead of spinning on "preparing".
+    const minRequired = minFirstDeposit + fee
     if (usdcBalance < minRequired) {
       this._emitDeferred({
         reason: 'below-minimum',
@@ -361,9 +397,12 @@ export class DepositWatcher {
       this._emitDeferred({ reason: 'credit-limit' })
       return
     }
-    // Headroom-clamped top-up: wait until at least MIN_TOPUP_BASE_UNITS of
-    // headroom is free instead of sweeping fee-heavy slivers repeatedly.
-    if (usdcBalance - fee > headroom && headroom < MIN_TOPUP_BASE_UNITS) {
+    // Headroom-clamped top-up: wait until a sizeable share of the limit is
+    // free instead of sweeping small slivers repeatedly — or only the $1
+    // minimum when the credits free to spend can no longer open a session.
+    const sessionReserve = this._deps.sessionReserveBaseUnits ?? SESSION_RESERVE_BASE_UNITS
+    const topupFloor = deposits.available >= sessionReserve ? minTopupBaseUnits(creditLimit) : MIN_TOPUP_BASE_UNITS
+    if (usdcBalance - fee > headroom && headroom < topupFloor) {
       this._emitDeferred({ reason: 'credit-limit' })
       return
     }
@@ -473,7 +512,8 @@ export class DepositWatcher {
 
   // Source of truth is on-chain: a matching SweepExecuted relay event, the
   // consumed EIP-3009 authorization, or the deposits-balance increase. Relayer
-  // receipts only surface the txHash faster; zero receipts must be tolerated.
+  // receipts only surface the txHash faster (or, rejected after submitting,
+  // end the wait early); zero receipts must be tolerated.
   private async _waitForConfirmation(params: {
     initialTotal: bigint
     expectedNet: bigint
@@ -509,6 +549,12 @@ export class DepositWatcher {
       const current = await depositsClient.getBuyerBalance(address).catch(() => null)
       if (current && current.available + current.reserved >= initialTotal + expectedNet) {
         return { credited: current.available + current.reserved - initialTotal, ...(txHash ? { txHash } : {}) }
+      }
+
+      // Not on-chain, and the relayer that took it says it could not submit it: retry with another
+      // relayer instead of waiting out the window.
+      if (receipt?.status === 'rejected' && !txHash) {
+        throw new Error('The relayer could not submit the deposit. Your USDC is safe in the wallet — retrying with another relayer.')
       }
 
       await sleep(SWEEP_POLL_INTERVAL_MS)

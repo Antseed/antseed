@@ -76,7 +76,7 @@ describe('templates', () => {
   })
   it('builds each policy', () => {
     expect(templatePolicy('cheapest')).toEqual({ sort: 'price', preferFreePeers: true })
-    expect(templatePolicy('trusted')).toEqual({ sort: 'trust', minTrustScore: 70, minReputation: 60 })
+    expect(templatePolicy('trusted')).toEqual({ sort: 'trust', minTrustScore: 70 })
     expect(templatePolicy('tee')).toEqual({ requireTee: true })
     expect(templatePolicy('own', [A, A, B])).toEqual({ allowedPeerIds: [A, B] })
   })

@@ -3,7 +3,9 @@ import { Button, Modal, TextField } from '@antseed/ui'
 import type { Peer, Preset } from '../api/types'
 import { useConsole, useScopeFilter } from '../app/context'
 import { useGatewayBaseUrl } from '../components/copy-actions'
+import { FreeTierInfo } from '../components/FreeTierInfo'
 import { PeerActionDialog } from '../components/PeerActionDialog'
+import { ServiceHealthInfo, ServicePerformanceInfo } from '../components/ServiceHealthInfo'
 import { PanelRow, PanelSection } from '../components/SidePanel'
 import { TeeBadge } from '../components/TeeBadge'
 import { VerificationLinks } from '../components/VerificationLinks'
@@ -11,6 +13,7 @@ import {
   Badge, CodeBlock, CopyButton, Figure, Mono, PageLink, SelectField, TabPanel, Tabs,
 } from '../components/ui'
 import { formatAnts } from '../lib/ants'
+import { isFreeService } from '../lib/free-tier'
 import { formatDateTime, formatLatency, formatNumber, formatRelative, formatSpeed, shortId } from '../lib/format'
 import { priceSummary } from '../lib/models'
 import { isWorkspaceAdmin } from '../lib/nav'
@@ -27,6 +30,7 @@ const FORMAT_LABELS: Record<ApiFormat, string> = {
   'openai-responses': 'Responses',
   'anthropic-messages': 'Messages',
   'openai-images': 'Images',
+  'openai-audio-speech': 'Speech',
 }
 
 function score(value: number | null): string {
@@ -63,6 +67,7 @@ function ProviderStats({ peer, showReputation }: { peer: Peer; showReputation: b
       <Figure label="Trust score" value={score(peer.trustScore)} />
       {showReputation && <Figure label="Reputation" value={score(peer.reputationScore)} />}
       <Figure label="Stake" value={peer.stakeAnts ? formatAnts(peer.stakeAnts) : '—'} />
+      {peer.freeTier && <Figure label="Free tier (free models)" value={<FreeTierInfo program={peer.freeTier} agentId={peer.agentId} />} />}
       <Figure label="Network usage share" value={peer.usageShareBps === null ? '—' : `${(peer.usageShareBps / 100).toFixed(2)}%`} />
       <Figure label="First token p50 (this gateway)" value={formatLatency(peer.firstTokenMsP50)} />
       <Figure label="Speed p50 (this gateway)" value={formatSpeed(peer.tokensPerSecondP50)} />
@@ -89,8 +94,13 @@ function ProviderModels({ peer, selected, onSelect }: { peer: Peer; selected: Se
               <PanelRow key={serviceKey(service)} selected={on}
                 title={<span className="gc-strong">{service.service}</span>}
                 meta={<>
-                  <span>{priceSummary(service)}</span>
+                  {isFreeService(service) && service.freeTier
+                    ? <FreeTierInfo program={service.freeTier} agentId={peer.agentId} align="center" />
+                    : <span>{priceSummary(service)}</span>}
+                  {!isFreeService(service) && service.freeTier && <FreeTierInfo program={service.freeTier} agentId={peer.agentId} priced align="center" />}
                   <span>{FORMAT_LABELS[serviceApiFormat(service)]}</span>
+                  <ServiceHealthInfo health={service.health} />
+                  <ServicePerformanceInfo performance={service.performance} />
                 </>}
                 actions={<>
                   <CopyButton iconOnly value={pinnedModelId(peer.peerId, service.service)} label={`Copy ${service.service} pinned to this provider (peer@model)`} />
@@ -118,7 +128,7 @@ function Connect({ peer, service, onSelect }: { peer: Peer; service: Service; on
   const format = serviceApiFormat(service)
   const modelId = pinnedModelId(peer.peerId, service.service)
   const preset = presets.data?.find((entry) => entry.model === modelId) ?? null
-  const tabs = connectTabs(baseUrl, peer.peerId, service.service, format, preset ? `@preset/${preset.slug}` : null)
+  const tabs = connectTabs(baseUrl, peer.peerId, service.service, format, preset ? `@preset/${preset.slug}` : null, service.voices?.[0])
   const current = tabs.find((entry) => entry.id === tab) ?? tabs[0]!
   const hasKey = (keys.data ?? []).some((key) => key.status === 'active')
   const canCreatePreset = isWorkspaceAdmin(viewer)

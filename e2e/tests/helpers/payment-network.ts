@@ -1,18 +1,14 @@
 import { afterEach, beforeAll, expect } from 'vitest';
 import { createServer as createNetServer } from 'node:net';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { execFile } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { promisify } from 'node:util';
 import { Interface } from 'ethers';
 import { AntseedNode } from '@antseed/node';
 import type { NodePaymentsConfig, PeerInfo, Provider } from '@antseed/node';
 import { createLocalBootstrap } from './local-bootstrap.js';
 import { MockOpenAIImageProvider } from './mock-openai-provider.js';
-
-const execFileAsync = promisify(execFile);
 
 const mockPaymentViewInterface = new Interface([
   'function channels(bytes32 channelId) external view returns (address buyer, address seller, uint128 deposit, uint128 settled, bytes32 metadataHash, uint256 deadline, uint256 settledAt, uint256 closeRequestedAt, uint8 status)',
@@ -258,7 +254,7 @@ async function getFreePort(): Promise<number> {
 // ─── Seller, buyer and buyer proxy on a mock chain ───────────────────────────
 
 /**
- * Registers hooks that build the @antseed/node package, isolate HOME and tear
+ * Registers hooks that isolate HOME and tear
  * everything down after each test. Call it inside a describe block.
  */
 export function usePaymentNetwork(label: string) {
@@ -278,9 +274,6 @@ export function usePaymentNetwork(label: string) {
   };
 
   beforeAll(async () => {
-    await execFileAsync('pnpm', ['--filter', '@antseed/node', 'build'], {
-      cwd: join(import.meta.dirname, '..', '..', '..'),
-    });
     tempHomeDir = await mkdtemp(join(tmpdir(), 'antseed-home-'));
     process.env['HOME'] = tempHomeDir;
     process.env['USERPROFILE'] = tempHomeDir;

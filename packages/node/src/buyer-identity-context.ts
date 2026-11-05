@@ -69,6 +69,8 @@ export interface BuyerIdentityContextOptions {
   };
   maxUploadBodyBytes?: number;
   requireSecureTransport?: boolean;
+  /** Free-tier delegations header for this identity's requests, or null. */
+  freeTierDelegationsHeader?: () => string | null;
   shared: BuyerIdentitySharedServices;
   /** Receives payment events, each tagged with this identity's name. */
   emit: (event: string, payload: Record<string, unknown>) => void;
@@ -155,6 +157,7 @@ export class BuyerIdentityContext {
       getMux: (peerId, conn) => this._getOrCreateMux(peerId, conn as PeerConnection),
       getVerificationMux: (peerId, conn) => this._getOrCreateVerificationMux(peerId, conn as PeerConnection),
       registerPaymentMux: (peerId, mux) => this._paymentMuxes.set(peerId, mux),
+      ...(_options.freeTierDelegationsHeader ? { freeTierDelegationsHeader: _options.freeTierDelegationsHeader } : {}),
     });
   }
 

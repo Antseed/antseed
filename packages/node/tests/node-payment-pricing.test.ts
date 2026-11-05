@@ -53,13 +53,15 @@ describe('completed-request seller payments', () => {
   });
   it('serves the routing model list for free through the provider, under the authenticated buyer id', async () => {
     const harness = setup();
-    const headers = { ...routingHeaders, 'X-Antseed-Buyer-Peer-Id': 'f'.repeat(40) };
+    const headers = { ...routingHeaders, 'X-Antseed-Buyer-Peer-Id': 'f'.repeat(40), 'X-Antseed-Free-Tier-Delegations': 'delegations' };
     expect((await harness.send('models', { method: 'GET', path: '/v1/routing/models', headers, body: new Uint8Array() })).statusCode).toBe(200);
     const forwarded = vi.mocked(harness.provider.handleRequest).mock.calls[0]![0];
     expect(forwarded.path).toBe('/v1/routing/models');
     // The buyer-sent copy (any casing) is replaced by the id from the authenticated connection.
     expect(forwarded.headers['x-antseed-buyer-peer-id']).toBe('b'.repeat(40));
     expect(Object.keys(forwarded.headers).filter(key => key.toLowerCase() === 'x-antseed-buyer-peer-id')).toEqual(['x-antseed-buyer-peer-id']);
+    // Free-tier delegations are for the seller only and never reach a plugin.
+    expect(Object.keys(forwarded.headers).map(key => key.toLowerCase())).not.toContain('x-antseed-free-tier-delegations');
     expect(harness.spm.recordSpend).not.toHaveBeenCalled();
     expect(harness.paymentMux.sendPaymentRequired).not.toHaveBeenCalled();
   });
@@ -222,6 +224,9 @@ function makeSpmMock(overrides: Record<string, unknown> = {}): any {
     getEffectiveReserveMax() {
       return this.getReserveMax();
     },
+    async refreshReserveMaxFromChain() {
+      return this.getEffectiveReserveMax();
+    },
     isChannelBlocked: () => false,
     getPaymentRequirements: () => ({ minBudgetPerRequest: '10000', suggestedAmount: '1000000' }),
     waitForPendingAuths: async () => {},
@@ -231,6 +236,10 @@ function makeSpmMock(overrides: Record<string, unknown> = {}): any {
     endBillableRequest: vi.fn(() => { inFlight -= 1; }),
     hasInFlightRequests: () => inFlight > 0,
     hasClosingChannel: () => false,
+    waitForClosingChannel: async () => false,
+    isTopUpRunning: () => false,
+    isTopUpPendingFor: () => false,
+    waitForTopUp: async () => true,
     // The real one waits for in-flight requests, then settles.
     closeSessionWhenIdle(buyerPeerId: string) {
       return this.settleSession(buyerPeerId);
@@ -539,6 +548,36 @@ describe('native video job ownership', () => {
       } finally { store.close(); }
     });
 
+    it('answers a create the provider refuses before offering a channel, so it costs nothing', async () => {
+      const { provider, create, spm, recordSpend, store } = setupOneOff();
+      provider.checkRequest = vi.fn(request => JSON.parse(new TextDecoder().decode(request.body)).duration === '20s'
+        ? { statusCode: 422, code: 'invalid_video_duration', message: 'duration must be the source length in whole seconds, rounded down: 12' }
+        : null);
+      try {
+        const refused = await create('video-1', bigVideo);
+        expect(refused.statusCode).toBe(422);
+        expect(bodyOf(refused)).toEqual({ error: { code: 'invalid_video_duration', message: 'duration must be the source length in whole seconds, rounded down: 12' } });
+        expect(spm.registerOneOffPlan).not.toHaveBeenCalled();
+        expect(provider.handleRequest).not.toHaveBeenCalled();
+        expect(recordSpend).not.toHaveBeenCalled();
+        // An accepted create is priced by its duration as usual.
+        const accepted = await create('video-2', { model: 'video', duration: '12s' });
+        expect(accepted.statusCode).toBe(402);
+        expect(bodyOf(accepted).oneOffPlan.requestCost).toBe('1200000');
+      } finally { store.close(); }
+    });
+
+    it('answers 500 when the provider check throws, without offering a channel', async () => {
+      const { provider, create, spm, store } = setupOneOff();
+      provider.checkRequest = () => { throw new Error('boom'); };
+      try {
+        const response = await create('video-1', bigVideo);
+        expect(response.statusCode).toBe(500);
+        expect(bodyOf(response).error.code).toBe('request_check_failed');
+        expect(spm.registerOneOffPlan).not.toHaveBeenCalled();
+      } finally { store.close(); }
+    });
+
     it('needs no serious fee when the video fits under the first-sign cap', async () => {
       const { create, store } = setupOneOff();
       try {
@@ -701,14 +740,14 @@ function makeAttestHarness() {
     provider,
     prove,
     sendPaymentRequired,
-    sendAttest: (i = 0, body = new Uint8Array([1])) => mux.handleFrame({
+    sendAttest: (i = 0, body = new Uint8Array([1]), headers: Record<string, string> = {}) => mux.handleFrame({
       type: MessageType.HttpRequest,
       messageId: i + 1,
       payload: encodeHttpRequest({
         requestId: `req-attest-${i}`,
         method: 'POST',
         path: ATTEST_ROUTE,
-        headers: {},
+        headers,
         body,
       }),
     }),
@@ -803,6 +842,13 @@ describe('SellerRequestHandler payment pricing selection', () => {
     expect(prove).toHaveBeenCalledOnce();
     expect(provider.handleRequest).not.toHaveBeenCalled();
     expect(sendPaymentRequired).not.toHaveBeenCalled();
+  });
+
+  it('never passes free-tier delegations to a prover', async () => {
+    const { prove, sendAttest } = makeAttestHarness();
+    await sendAttest(0, new Uint8Array([1]), { 'X-Antseed-Free-Tier-Delegations': 'delegations' });
+    const headers = prove.mock.calls[0]![0].headers;
+    expect(Object.keys(headers).map((key) => key.toLowerCase())).not.toContain('x-antseed-free-tier-delegations');
   });
 
   it('rate-limits the free attestation route per buyer', async () => {
@@ -1030,6 +1076,32 @@ describe('SellerRequestHandler payment pricing selection', () => {
     expect(recordSpend).not.toHaveBeenCalled();
   });
 
+  it('lets a closing channel finish closing, then asks the buyer for a new one instead of failing the request', async () => {
+    const provider = makeProvider(1, 1, { name: 'openai', services: ['test-model'] });
+    const handleRequest = vi.spyOn(provider, 'handleRequest');
+    let open = true;
+    const handler = makeSellerRequestHandler({
+      providers: [provider],
+      sellerPaymentManager: makeSpmMock({
+        hasSession: () => open,
+        hasClosingChannel: () => open,
+        waitForClosingChannel: async () => { open = false; return true; },
+      }),
+      sessionTracker: null, channelsClient: {} as any, announcer: null, emit: () => false,
+    });
+    const frames: Uint8Array[] = [];
+    const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any);
+    await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({
+      requestId: 'req-after-close', method: 'POST', path: '/v1/chat/completions',
+      headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ model: 'test-model', messages: [] })),
+    }) });
+
+    const response = decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload);
+    expect(response.statusCode).toBe(402);
+    expect(JSON.parse(new TextDecoder().decode(response.body)).error).toBe('payment_required');
+    expect(handleRequest).not.toHaveBeenCalled();
+  });
+
   it('adds image unit billing on top of existing token pricing', async () => {
     const provider = makeProvider(1, 1, {
       name: 'openai',
@@ -1220,13 +1292,17 @@ describe('SellerRequestHandler payment pricing selection', () => {
   it('enforces the configured free tier before forwarding another free request', async () => {
     const provider = makeProvider(0, 0, { name: 'free-tier', services: ['local-test'] });
     provider.handleRequest = vi.fn(async (req) => ({ requestId: req.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify({ ok: true })) }));
+    const stakeTiers = [{ minPower: 520_000, multiplier: 5 }];
+    const program = { base: { maxRequestsPerAddress: 1, maxRequestsPerIp: 3, windowMs: 60_000 }, stakeTiers };
     const consume = vi.fn()
-      .mockReturnValueOnce({ allowed: true, remaining: 0, retryAfterMs: 0, limitedBy: null, buyerAddress: `0x${'b'.repeat(40)}`, remoteIp: '203.0.113.7' })
-      .mockReturnValueOnce({ allowed: false, remaining: 0, retryAfterMs: 12_500, limitedBy: 'ip', buyerAddress: `0x${'b'.repeat(40)}`, remoteIp: '203.0.113.7' });
+      .mockReturnValueOnce({ allowed: true, remaining: 0, retryAfterMs: 0, limitedBy: null, buyerAddress: `0x${'b'.repeat(40)}`, remoteIp: '203.0.113.7', standing: null, tier: null, limit: 1, program })
+      .mockReturnValueOnce({ allowed: false, remaining: 0, retryAfterMs: 12_500, limitedBy: 'ip', buyerAddress: `0x${'b'.repeat(40)}`, remoteIp: '203.0.113.7', standing: null, tier: null, limit: 3, program });
+    const resolveStanding = vi.fn(async () => null);
+    const appliesTo = vi.fn(() => true);
     const handler = makeSellerRequestHandler({
       providers: [provider],
       sellerPaymentManager: null,
-      sellerFreeTierLimiter: { maxRequestsPerAddress: 1, maxRequestsPerIp: 3, windowMs: 60_000, consume } as any,
+      sellerFreeTierLimiter: { appliesTo, consume, resolveStanding } as any,
       sessionTracker: null,
       channelsClient: null,
       announcer: null,
@@ -1247,35 +1323,130 @@ describe('SellerRequestHandler payment pricing selection', () => {
           requestId,
           method: 'POST',
           path: '/v1/chat/completions',
-          headers: { 'content-type': 'application/json' },
+          headers: { 'content-type': 'application/json', 'X-Antseed-Free-Tier-Delegations': 'delegations' },
           body: new TextEncoder().encode(JSON.stringify({ model: 'local-test' })),
         }),
       });
     }
 
     expect(provider.handleRequest).toHaveBeenCalledOnce();
+    expect(appliesTo).toHaveBeenCalledWith('local-test');
+    expect(resolveStanding).toHaveBeenCalledWith('b'.repeat(40), 'delegations');
+    const forwarded = vi.mocked(provider.handleRequest).mock.calls[0]![0] as { headers: Record<string, string> };
+    expect(Object.keys(forwarded.headers).map((name) => name.toLowerCase())).not.toContain('x-antseed-free-tier-delegations');
     expect(consume).toHaveBeenCalledTimes(2);
-    expect(consume).toHaveBeenCalledWith({ buyerPeerId: 'b'.repeat(40), service: 'local-test', remoteIp: '203.0.113.7' });
+    expect(consume).toHaveBeenCalledWith({ buyerPeerId: 'b'.repeat(40), service: 'local-test', remoteIp: '203.0.113.7', standing: null });
     const responses = sentFrames.map((frame) => decodeHttpResponse(decodeFrame(frame)!.message.payload));
     expect(responses.map((response) => response.statusCode)).toEqual([200, 429]);
     expect(responses[1]!.headers['retry-after']).toBe('13');
     expect(JSON.parse(new TextDecoder().decode(responses[1]!.body))).toMatchObject({
-      error: { code: 'free_tier_exhausted' },
+      error: { code: 'free_tier_exhausted', message: expect.stringContaining('Stake ANTS on this seller') },
       limitedBy: 'ip',
       limit: 3,
       windowMs: 60_000,
       retryAfterSeconds: 13,
+      stakeTiers,
+      stakePower: 0,
     });
   });
 
-  it('does not apply the free-tier allowance to paid requests', async () => {
-    const provider = makeProvider(1, 1, { name: 'paid-tier', services: ['local-test'] });
+  it('refuses a buyer without stake on a stakers-only model with the program to stake for', async () => {
+    const provider = makeProvider(0, 0, { name: 'free-tier', services: ['local-test'] });
+    provider.handleRequest = vi.fn();
+    const stakeTiers = [{ minPower: 520_000, multiplier: 5 }];
+    const program = { base: { maxRequestsPerAddress: 10, maxRequestsPerIp: null, windowMs: 86_400_000, stakersOnly: true }, stakeTiers };
+    const consume = vi.fn(() => ({ allowed: false, remaining: 0, retryAfterMs: 0, limitedBy: 'stake_required', buyerAddress: `0x${'b'.repeat(40)}`, remoteIp: '203.0.113.7', standing: null, tier: null, limit: 0, program }));
+    const handler = makeSellerRequestHandler({
+      providers: [provider],
+      sellerPaymentManager: null,
+      sellerFreeTierLimiter: { appliesTo: () => true, consume, resolveStanding: async () => null } as any,
+      sessionTracker: null,
+      channelsClient: null,
+      announcer: null,
+      emit: () => false,
+    });
+
+    const sentFrames: Uint8Array[] = [];
+    const { mux } = handler.handleConnection(
+      makeConn(sentFrames),
+      'b'.repeat(40),
+      { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any,
+    );
+    await mux.handleFrame({
+      type: MessageType.HttpRequest,
+      messageId: 1,
+      payload: encodeHttpRequest({
+        requestId: 'stakers-only-1',
+        method: 'POST',
+        path: '/v1/chat/completions',
+        headers: { 'content-type': 'application/json' },
+        body: new TextEncoder().encode(JSON.stringify({ model: 'local-test' })),
+      }),
+    });
+
+    expect(provider.handleRequest).not.toHaveBeenCalled();
+    const response = decodeHttpResponse(decodeFrame(sentFrames[0]!)!.message.payload);
+    expect(response.statusCode).toBe(429);
+    expect(response.headers['retry-after']).toBe('86400');
+    expect(JSON.parse(new TextDecoder().decode(response.body))).toMatchObject({
+      error: { code: 'free_tier_exhausted', message: 'This model is free only for buyers staked on this seller.' },
+      limitedBy: 'stake_required',
+      limit: 0,
+      stakersOnly: true,
+      baseLimit: 10,
+      stakeTiers,
+      stakePower: 0,
+    });
+  });
+
+  it('serves a free model no free-tier program applies to without counting it', async () => {
+    const provider = makeProvider(0, 0, { name: 'free-tier', services: ['local-test'] });
     provider.handleRequest = vi.fn(async (req) => ({ requestId: req.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify({ ok: true })) }));
+    const consume = vi.fn();
+    const resolveStanding = vi.fn();
+    const handler = makeSellerRequestHandler({
+      providers: [provider],
+      sellerPaymentManager: null,
+      sellerFreeTierLimiter: { appliesTo: () => false, consume, resolveStanding } as any,
+      sessionTracker: null,
+      channelsClient: null,
+      announcer: null,
+      emit: () => false,
+    });
+
+    const sentFrames: Uint8Array[] = [];
+    const { mux } = handler.handleConnection(
+      makeConn(sentFrames),
+      'b'.repeat(40),
+      { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any,
+    );
+    await mux.handleFrame({
+      type: MessageType.HttpRequest,
+      messageId: 1,
+      payload: encodeHttpRequest({
+        requestId: 'unlimited-1',
+        method: 'POST',
+        path: '/v1/chat/completions',
+        headers: { 'content-type': 'application/json' },
+        body: new TextEncoder().encode(JSON.stringify({ model: 'local-test' })),
+      }),
+    });
+
+    expect(provider.handleRequest).toHaveBeenCalledOnce();
+    expect(consume).not.toHaveBeenCalled();
+    expect(resolveStanding).not.toHaveBeenCalled();
+  });
+
+  it('does not apply the free-tier allowance to paid requests, and drops a provider-sent allowance marker', async () => {
+    const provider = makeProvider(1, 1, { name: 'paid-tier', services: ['local-test'] });
+    // Only the seller may say a request was free; an upstream copy of the marker must not reach the buyer.
+    provider.handleRequest = vi.fn(async (req) => ({ requestId: req.requestId, statusCode: 200, headers: { 'content-type': 'application/json', 'X-Antseed-Free-Tier': 'covered' }, body: new TextEncoder().encode(JSON.stringify({ ok: true })) }));
     const consume = vi.fn();
     const handler = makeSellerRequestHandler({
       providers: [provider],
       sellerPaymentManager: makeSpmMock(),
-      sellerFreeTierLimiter: { maxRequestsPerAddress: 1, windowMs: 60_000, consume } as any,
+      // The seller-wide program never applies to a priced service.
+      sellerFreeTierLimiter: { appliesTo: (_service: string, options?: { paid?: boolean }) => !options?.paid, consume } as any,
       sessionTracker: null,
       channelsClient: {} as any,
       announcer: null,
@@ -1302,6 +1473,61 @@ describe('SellerRequestHandler payment pricing selection', () => {
 
     expect(provider.handleRequest).toHaveBeenCalledOnce();
     expect(consume).not.toHaveBeenCalled();
+    const frame = sentFrames.map((f) => decodeFrame(f)).find((d) => d?.message.type === MessageType.HttpResponse);
+    const headers = decodeHttpResponse(frame!.message.payload).headers;
+    expect(Object.keys(headers).map((name) => name.toLowerCase())).not.toContain('x-antseed-free-tier');
+  });
+
+  describe('free allowance on a priced service', () => {
+    const send = async (covered: boolean) => {
+      const provider = makeProvider(1, 1, { name: 'paid-tier', services: ['k3'] });
+      provider.handleRequest = vi.fn(async (req) => ({ requestId: req.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify({ ok: true })) }));
+      const appliesTo = vi.fn((_service: string, options?: { paid?: boolean }) => options?.paid === true);
+      const consume = vi.fn(() => ({ allowed: covered, limitedBy: covered ? undefined : 'stake_required', buyerAddress: '0xb' }));
+      const sendPaymentRequired = vi.fn();
+      const sendNeedAuth = vi.fn();
+      const handler = makeSellerRequestHandler({
+        providers: [provider],
+        sellerPaymentManager: makeSpmMock({ hasSession: () => false, getChannelByPeer: () => undefined, getPaymentRequirements: () => ({ minBudgetPerRequest: '1', suggestedAmount: '1' }) }),
+        sellerFreeTierLimiter: { appliesTo, consume, resolveStanding: async () => null } as any,
+        sessionTracker: null,
+        channelsClient: {} as any,
+        announcer: null,
+        emit: () => false,
+      });
+      const sentFrames: Uint8Array[] = [];
+      const { mux } = handler.handleConnection(makeConn(sentFrames), 'b'.repeat(40), { sendNeedAuth, sendPaymentRequired } as any);
+      await mux.handleFrame({
+        type: MessageType.HttpRequest,
+        messageId: 1,
+        payload: encodeHttpRequest({
+          requestId: 'allowance-1',
+          method: 'POST',
+          path: '/v1/chat/completions',
+          headers: { 'content-type': 'application/json' },
+          body: new TextEncoder().encode(JSON.stringify({ model: 'k3' })),
+        }),
+      });
+      const frame = sentFrames.map((f) => decodeFrame(f)).find((d) => d?.message.type === MessageType.HttpResponse);
+      return { provider, appliesTo, consume, sendNeedAuth, response: decodeHttpResponse(frame!.message.payload) };
+    };
+
+    it('serves a covered request free, without a payment channel, and says so', async () => {
+      const { provider, appliesTo, consume, sendNeedAuth, response } = await send(true);
+      expect(appliesTo).toHaveBeenCalledWith('k3', { paid: true });
+      expect(consume).toHaveBeenCalledWith(expect.objectContaining({ service: 'k3', paid: true }));
+      expect(provider.handleRequest).toHaveBeenCalledOnce();
+      expect(response.statusCode).toBe(200);
+      expect(response.headers['x-antseed-free-tier']).toBe('covered');
+      expect(sendNeedAuth).not.toHaveBeenCalled();
+    });
+
+    it('asks for payment, not a 429, once the allowance does not cover the buyer', async () => {
+      const { provider, response } = await send(false);
+      expect(provider.handleRequest).not.toHaveBeenCalled();
+      expect(response.statusCode).toBe(402);
+      expect(response.headers['x-antseed-free-tier']).toBeUndefined();
+    });
   });
 
   it('skips the first-time buyer 402 when the requested service has a free override on a paid provider', async () => {
@@ -1486,6 +1712,36 @@ describe('SellerRequestHandler payment pricing selection', () => {
     expect(BigInt(body.estimatedInputTokens)).toBeGreaterThan(0n);
   });
 
+  it('checks the chain before closing a channel whose estimate only exceeds a stale stored ceiling', async () => {
+    const provider = makeProvider(0, 1_000_000, { name: 'paid-tier', services: ['local-test'] });
+    provider.handleRequest = vi.fn(async (req) => ({ requestId: req.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify({ ok: true })) }));
+    let reserveMax = 1_000_000n;
+    const settleSession = vi.fn(async () => {});
+    const handler = makeSellerRequestHandler({
+      providers: [provider],
+      sellerPaymentManager: makeSpmMock({
+        getCumulativeSpend: () => 500_000n,
+        getAcceptedCumulative: () => 500_000n,
+        getReserveMax: () => reserveMax,
+        // A top-up to 3M confirmed on-chain but is not in the store.
+        refreshReserveMaxFromChain: vi.fn(async () => { reserveMax = 3_000_000n; return reserveMax; }),
+        settleSession,
+      }),
+      sessionTracker: null,
+      channelsClient: {} as any,
+      announcer: null,
+      reserveEstimateOverdraftUsdc: 0n,
+      emit: () => false,
+    });
+    const sentFrames: Uint8Array[] = [];
+    const { mux } = handler.handleConnection(makeConn(sentFrames), 'b'.repeat(40), { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any);
+
+    await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({ requestId: 'req-estimate-stale-ceiling', method: 'POST', path: '/v1/chat/completions', headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify({ model: 'local-test', max_tokens: 1 })) }) });
+
+    expect(settleSession).not.toHaveBeenCalled();
+    expect(provider.handleRequest).toHaveBeenCalledTimes(1);
+  });
+
   it('stops serving when delivered spend is already at the reserve ceiling', async () => {
     const provider = makeProvider(1, 1, { name: 'paid-tier', services: ['local-test'] });
     provider.handleRequest = vi.fn(async (req) => ({ requestId: req.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify({ ok: true })) }));
@@ -1656,5 +1912,349 @@ describe('SellerRequestHandler payment pricing selection', () => {
     expect(sendNeedAuth).not.toHaveBeenCalled();
     const response = decodeHttpResponse(decodeFrame(sentFrames[0]!)!.message.payload);
     expect(response.statusCode).toBe(402);
+  });
+});
+
+it('asks the buyer for the unsigned spend before parking a request on it, once per spend level', async () => {
+  let accepted = 100_000n;
+  const sendNeedAuth = vi.fn();
+  const promptedBeforeWait: boolean[] = [];
+  const handler = makeSellerRequestHandler({
+    providers: [makeProvider(1, 1, { name: 'openai', services: ['test-model'] })],
+    sellerPaymentManager: makeSpmMock({
+      getCumulativeSpend: () => 300_000n,
+      getAcceptedCumulative: () => accepted,
+      getReserveMax: () => 1_000_000n,
+      awaitAcceptedAtLeast: async (_channelId: string, target: bigint) => {
+        promptedBeforeWait.push(sendNeedAuth.mock.calls.some(([payload]) => payload.requiredCumulativeAmount === target.toString()));
+        accepted = target;
+        return true;
+      },
+    }),
+    channelsClient: {} as any, sessionTracker: null, announcer: null, emit: () => false,
+  });
+  const frames: Uint8Array[] = [];
+  const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), { sendNeedAuth, sendPaymentRequired: vi.fn() } as any);
+  for (const messageId of [1, 2]) {
+    accepted = 100_000n;
+    await mux.handleFrame({ type: MessageType.HttpRequest, messageId, payload: encodeHttpRequest({
+      requestId: `r-${messageId}`, method: 'POST', path: '/v1/chat/completions',
+      headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ model: 'test-model', messages: [] })),
+    }) });
+  }
+
+  expect(promptedBeforeWait).toEqual([true, true]);
+  const prompts = sendNeedAuth.mock.calls.filter(([payload]) => payload.lastRequestCost == null);
+  expect(prompts).toHaveLength(1);
+  expect(prompts[0]![0]).toMatchObject({ requiredCumulativeAmount: '300000', currentAcceptedCumulative: '100000' });
+});
+
+it('re-reads the spend after a parked catch-up: an auth for the earlier spend never releases newer unpaid work', async () => {
+  for (const coversNewSpend of [false, true]) {
+    let spent = 300_000n;
+    let accepted = 100_000n;
+    const targets: bigint[] = [];
+    const handler = makeSellerRequestHandler({
+      providers: [makeProvider(1, 1, { name: 'openai', services: ['test-model'] })],
+      sellerPaymentManager: makeSpmMock({
+        getCumulativeSpend: () => spent,
+        getAcceptedCumulative: () => accepted,
+        getReserveMax: () => 1_000_000n,
+        awaitAcceptedAtLeast: async (_channelId: string, target: bigint) => {
+          targets.push(target);
+          if (targets.length === 1) {
+            // The auth for 300k lands, but another request finished meanwhile.
+            spent = 400_000n;
+            accepted = target;
+            return true;
+          }
+          if (!coversNewSpend) return false;
+          accepted = target;
+          return true;
+        },
+      }),
+      channelsClient: {} as any, sessionTracker: null, announcer: null, emit: () => false,
+    });
+    const frames: Uint8Array[] = [];
+    const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any);
+    await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({
+      requestId: 'parked', method: 'POST', path: '/v1/chat/completions',
+      headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ model: 'test-model', messages: [] })),
+    }) });
+
+    expect(targets).toEqual([300_000n, 400_000n]);
+    const status = decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload).statusCode;
+    expect(status).toBe(coversNewSpend ? 200 : 402);
+  }
+});
+
+it('never serves a request parked on a catch-up when its channel is evicted during the wait', async () => {
+  let spent = 300_000n;
+  let accepted = 100_000n;
+  let channel: { sessionId: string; authMax: string } | null = { sessionId: 'session-1', authMax: '1000000' };
+  const provider = makeProvider(1, 1, { name: 'openai', services: ['test-model'] });
+  const handleRequest = vi.spyOn(provider, 'handleRequest');
+  const handler = makeSellerRequestHandler({
+    providers: [provider],
+    sellerPaymentManager: makeSpmMock({
+      getChannelByPeer: () => channel,
+      getCumulativeSpend: () => spent,
+      getAcceptedCumulative: () => accepted,
+      getReserveMax: () => 1_000_000n,
+      awaitAcceptedAtLeast: async () => {
+        // Eviction forgets the counters and releases waiters with false.
+        channel = null;
+        spent = 0n;
+        accepted = 0n;
+        return false;
+      },
+    }),
+    channelsClient: {} as any, sessionTracker: null, announcer: null, emit: () => false,
+  });
+  const frames: Uint8Array[] = [];
+  const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any);
+  await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({
+    requestId: 'parked-evicted', method: 'POST', path: '/v1/chat/completions',
+    headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ model: 'test-model', messages: [] })),
+  }) });
+
+  expect(handleRequest).not.toHaveBeenCalled();
+  expect(decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload).statusCode).toBe(402);
+});
+
+it('judges exhaustion on the reserve ceiling after a parked catch-up, so a top-up that landed meanwhile keeps the channel open', async () => {
+  let spent = 2_500_000n;
+  let accepted = 1_900_000n;
+  let reserveMax = 2_000_000n;
+  const settleSession = vi.fn(async () => {});
+  const handler = makeSellerRequestHandler({
+    providers: [makeProvider(1, 1, { name: 'openai', services: ['test-model'] })],
+    sellerPaymentManager: makeSpmMock({
+      getCumulativeSpend: () => spent,
+      getAcceptedCumulative: () => accepted,
+      getReserveMax: () => reserveMax,
+      settleSession,
+      awaitAcceptedAtLeast: async (_channelId: string, target: bigint) => {
+        // The top-up to 4M confirms, then the buyer's auth for the spend lands.
+        reserveMax = 4_000_000n;
+        accepted = target;
+        return true;
+      },
+    }),
+    channelsClient: {} as any, sessionTracker: null, announcer: null, emit: () => false,
+  });
+  const frames: Uint8Array[] = [];
+  const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any);
+  await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({
+    requestId: 'parked-topped-up', method: 'POST', path: '/v1/chat/completions',
+    headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ model: 'test-model', messages: [] })),
+  }) });
+
+  expect(decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload).statusCode).toBe(200);
+  expect(settleSession).not.toHaveBeenCalled();
+});
+
+it('checks a stale stored ceiling against the chain before closing a channel as exhausted', async () => {
+  // After a restart the store says 7M, but a top-up to 8M confirmed on-chain.
+  let reserveMax = 7_000_000n;
+  const settleSession = vi.fn(async () => {});
+  const refreshReserveMaxFromChain = vi.fn(async () => {
+    reserveMax = 8_000_000n;
+    return reserveMax;
+  });
+  const handler = makeSellerRequestHandler({
+    providers: [makeProvider(1, 1, { name: 'openai', services: ['test-model'] })],
+    sellerPaymentManager: makeSpmMock({
+      getCumulativeSpend: () => 7_459_839n,
+      getAcceptedCumulative: () => 6_509_280n,
+      getReserveMax: () => reserveMax,
+      refreshReserveMaxFromChain,
+      settleSession,
+    }),
+    channelsClient: {} as any, sessionTracker: null, announcer: null, emit: () => false,
+  });
+  const frames: Uint8Array[] = [];
+  const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any);
+  await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({
+    requestId: 'after-restart', method: 'POST', path: '/v1/chat/completions',
+    headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ model: 'test-model', messages: [] })),
+  }) });
+
+  const response = decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload);
+  expect(refreshReserveMaxFromChain).toHaveBeenCalled();
+  // Still a catch-up 402 for the unsigned spend, but not an exhausted one.
+  expect(response.statusCode).toBe(402);
+  const body = JSON.parse(new TextDecoder().decode(response.body));
+  expect(body.code).toBeUndefined();
+  expect(body.reserveMaxAmount).toBe('8000000');
+  expect(settleSession).not.toHaveBeenCalled();
+});
+
+it('never serves a request whose channel closed during the reserve ceiling check', async () => {
+  let channel: { sessionId: string; authMax: string } | null = { sessionId: 'session-1', authMax: '1000000' };
+  let spent = 1_000_000n;
+  let accepted = 1_000_000n;
+  let reserveMax = 1_000_000n;
+  const provider = makeProvider(1, 1, { name: 'openai', services: ['test-model'] });
+  const handleRequest = vi.spyOn(provider, 'handleRequest');
+  const handler = makeSellerRequestHandler({
+    providers: [provider],
+    sellerPaymentManager: makeSpmMock({
+      getChannelByPeer: () => channel,
+      getCumulativeSpend: () => spent,
+      getAcceptedCumulative: () => accepted,
+      getReserveMax: () => reserveMax,
+      refreshReserveMaxFromChain: async () => {
+        // A cooperative close lands meanwhile and forgets the channel.
+        channel = null;
+        spent = 0n;
+        accepted = 0n;
+        reserveMax = 0n;
+        return 0n;
+      },
+    }),
+    channelsClient: {} as any, sessionTracker: null, announcer: null, emit: () => false,
+  });
+  const frames: Uint8Array[] = [];
+  const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any);
+  await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({
+    requestId: 'closed-during-refresh', method: 'POST', path: '/v1/chat/completions',
+    headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ model: 'test-model', messages: [] })),
+  }) });
+
+  expect(handleRequest).not.toHaveBeenCalled();
+  expect(decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload).statusCode).toBe(402);
+});
+
+it('waits for a running top-up before treating a channel at its ceiling as exhausted', async () => {
+  for (const lands of [true, false]) {
+    let reserveMax = 1_000_000n;
+    const settleSession = vi.fn(async () => {});
+    const handler = makeSellerRequestHandler({
+      providers: [makeProvider(1, 1, { name: 'openai', services: ['test-model'] })],
+      sellerPaymentManager: makeSpmMock({
+        getCumulativeSpend: () => 1_000_000n,
+        getAcceptedCumulative: () => 1_000_000n,
+        getReserveMax: () => reserveMax,
+        settleSession,
+        isTopUpRunning: () => true,
+        waitForTopUp: async () => {
+          if (lands) reserveMax = 2_000_000n;
+          return lands;
+        },
+      }),
+      channelsClient: {} as any, sessionTracker: null, announcer: null, emit: () => false,
+    });
+    const frames: Uint8Array[] = [];
+    const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any);
+    await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({
+      requestId: `at-ceiling-${lands}`, method: 'POST', path: '/v1/chat/completions',
+      headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ model: 'test-model', messages: [] })),
+    }) });
+
+    const response = decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload);
+    // Landed: served on the raised ceiling. Still mining: a retryable answer, never a close.
+    expect(response.statusCode).toBe(lands ? 200 : 503);
+    if (!lands) expect(JSON.parse(new TextDecoder().decode(response.body)).error).toBe('top_up_pending');
+    expect(settleSession).not.toHaveBeenCalled();
+  }
+});
+
+it('waits for a pending top-up to start, between two top-ups, before treating the channel as exhausted', async () => {
+  let reserveMax = 1_000_000n;
+  const settleSession = vi.fn(async () => {});
+  const waitForTopUp = vi.fn(async () => {
+    // The next top-up starts and lands.
+    reserveMax = 2_000_000n;
+    return true;
+  });
+  const handler = makeSellerRequestHandler({
+    providers: [makeProvider(1, 1, { name: 'openai', services: ['test-model'] })],
+    sellerPaymentManager: makeSpmMock({
+      getCumulativeSpend: () => 1_500_000n,
+      getAcceptedCumulative: () => 1_500_000n,
+      getReserveMax: () => reserveMax,
+      settleSession,
+      // The last top-up just landed; the one covering this spend is queued.
+      isTopUpRunning: () => false,
+      isTopUpPendingFor: (_channelId: string, amount: bigint) => amount > reserveMax && amount <= 2_000_000n,
+      waitForTopUp,
+    }),
+    channelsClient: {} as any, sessionTracker: null, announcer: null, emit: () => false,
+  });
+  const frames: Uint8Array[] = [];
+  const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any);
+  await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({
+    requestId: 'between-top-ups', method: 'POST', path: '/v1/chat/completions',
+    headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ model: 'test-model', messages: [] })),
+  }) });
+
+  expect({
+    status: decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload).statusCode,
+    covering: waitForTopUp.mock.calls[0]?.[2],
+    closed: settleSession.mock.calls.length,
+  }).toEqual({ status: 200, covering: 1_500_000n, closed: 0 });
+});
+
+
+/** A speech answer: three 417-byte MPEG-1 layer III frames (128 kbps, 44.1 kHz). */
+const SPEECH_MP3 = new Uint8Array(417 * 3);
+for (const offset of [0, 417, 834]) SPEECH_MP3.set([0xff, 0xfb, 0x90, 0x00], offset);
+
+describe('speech seller payments', () => {
+  function setup(providerResponse?: { statusCode: number; contentType: string; body: Uint8Array }) {
+    let spend = 0n;
+    const provider = makeProvider(0.1, 0.45, { name: 'openai', services: ['tts-kokoro'] });
+    provider.serviceApiProtocols = { 'tts-kokoro': ['openai-audio-speech'] };
+    // $62.50 per million characters.
+    provider.serviceUnitBillingModels = { 'tts-kokoro': { 'openai-audio-speech': { version: 1, components: [{ unit: 'input_characters', priceUsd: 0.0000625 }] } } };
+    provider.serviceCapabilities = { 'tts-kokoro': { inputs: ['text'], outputs: ['audio'], speech: { voices: ['af_sky', 'am_adam'] } } };
+    const answer = providerResponse ?? { statusCode: 200, contentType: 'audio/mpeg', body: SPEECH_MP3 };
+    provider.handleRequest = vi.fn(async request => ({ requestId: request.requestId, statusCode: answer.statusCode, headers: { 'content-type': answer.contentType }, body: answer.body }));
+    delete (provider as Partial<Provider>).handleRequestStream;
+    const spm = makeSpmMock({
+      recordSpend: vi.fn((_channel: string, amount: bigint) => { spend += amount; }),
+      getCumulativeSpend: () => spend, getAcceptedCumulative: () => spend,
+    });
+    const frames: Uint8Array[] = [];
+    const paymentMux = { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() };
+    const handler = makeSellerRequestHandler({ providers: [provider], sellerPaymentManager: spm, sessionTracker: null, channelsClient: {} as any, announcer: null, emit: () => false });
+    const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), paymentMux as any);
+    const send = async (body: Record<string, unknown>, requestId = 'speech') => {
+      await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({
+        requestId, method: 'POST', path: '/v1/audio/speech',
+        headers: { 'content-type': 'application/json' },
+        body: new TextEncoder().encode(JSON.stringify(body)),
+      }) });
+      return frames.map(frame => decodeHttpResponse(decodeFrame(frame).message!.payload)).reverse().find(response => response.requestId === requestId)!;
+    };
+    return { provider, spm, paymentMux, send };
+  }
+
+  it('charges the characters of a delivered speech and passes the audio through', async () => {
+    const harness = setup();
+    const response = await harness.send({ model: 'tts-kokoro', input: 'a'.repeat(1000), voice: 'af_sky' });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-type']).toBe('audio/mpeg');
+    expect(Array.from(response.body)).toEqual(Array.from(SPEECH_MP3));
+    expect(harness.spm.recordSpend).toHaveBeenCalledWith('session-1', 62_500n);
+    expect(harness.paymentMux.sendNeedAuth).toHaveBeenCalledWith(expect.objectContaining({ lastRequestCost: '62500', billingUsage: { version: 1, units: { input_characters: '1000' } } }));
+  });
+
+  it('refuses a voice the service does not offer before reaching the upstream or charging', async () => {
+    const harness = setup();
+    const response = await harness.send({ model: 'tts-kokoro', input: 'Hello', voice: 'alloy' });
+    expect(response.statusCode).toBe(400);
+    expect(JSON.parse(new TextDecoder().decode(response.body))).toEqual({
+      error: { code: 'unsupported_voice', message: 'Voice "alloy" is not offered by this service. Available voices: af_sky, am_adam' },
+    });
+    expect(harness.provider.handleRequest).not.toHaveBeenCalled();
+    expect(harness.spm.recordSpend).not.toHaveBeenCalled();
+  });
+
+  it('charges nothing when the upstream refuses, even with an audio content type', async () => {
+    const harness = setup({ statusCode: 400, contentType: 'audio/mpeg; charset=utf-8', body: new TextEncoder().encode('{"error":"Voice is not supported"}') });
+    expect((await harness.send({ model: 'tts-kokoro', input: 'Hello', voice: 'af_sky' })).statusCode).toBe(400);
+    expect(harness.spm.recordSpend).toHaveBeenCalledWith('session-1', 0n);
   });
 });

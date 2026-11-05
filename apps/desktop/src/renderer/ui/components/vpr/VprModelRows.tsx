@@ -180,6 +180,7 @@ function ModelRow({ entry, checked, checkbox, favorite, badge, compact, dense, c
           <span className={styles.label}>{entry.label}</span>
           {entry.kind === 'image' && <span className={styles.modelTypeTag}>Image</span>}
           {entry.kind === 'video' && <span className={styles.modelTypeTag}>Video</span>}
+          {entry.kind === 'video' && entry.videoEditing && <span className={styles.modelTypeTag}>Edit</span>}
           {!compact && visibleModelTags.map((tag) => (
             <span
               key={tag}

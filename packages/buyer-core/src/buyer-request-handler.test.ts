@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { BuyerRequestHandler, stripPeerControlledResponseHeaders } from './buyer-request-handler.js';
+import { BuyerRequestHandler, selectBillingRoute, stripPeerControlledResponseHeaders } from './buyer-request-handler.js';
 import { ConnectionState, toPeerId } from '@antseed/protocol';
 import type { BuyerPeerView, ResponseAuthContext, StoredResponseAuth } from './interfaces.js';
 import { hashRequest } from './response-auth.js';
@@ -52,7 +52,7 @@ const PAYMENT_REQUIRED = response(402, {
 });
 const ACCEPTED = response(200, { queue_id: 'new-job' });
 
-function makeHandler(responses: SerializedHttpResponse[]) {
+function makeHandler(responses: SerializedHttpResponse[], freeTierDelegationsHeader?: () => string | null) {
   const queue = [...responses];
   const sendProxyRequest = vi.fn((
     _request: SerializedHttpRequest,
@@ -63,6 +63,7 @@ function makeHandler(responses: SerializedHttpResponse[]) {
     getOrCreatePaymentMux: vi.fn(() => ({})),
     trackRequestBillingContext: vi.fn(),
     estimateCostFromResponse: vi.fn(),
+    bpm: { clearRequestBilling: vi.fn(), markRequestCovered: vi.fn(), releaseRequestCoverage: vi.fn(), beginPaidRequest: vi.fn(), endPaidRequest: vi.fn() },
     handle402,
     applyExternalSpendingAuth: vi.fn(async () => {}),
   };
@@ -73,11 +74,12 @@ function makeHandler(responses: SerializedHttpResponse[]) {
     verificationStorage: null,
     verificationSampler: null,
     getConnection: async () => connection as never,
-    getMux: () => ({ sendProxyRequest, cancelProxyRequest: vi.fn() } as never),
+    getMux: () => ({ sendProxyRequest, cancelProxyRequest: vi.fn(), activeRequestCount: () => 2 } as never),
     getVerificationMux: () => ({ waitForResponseAuth: vi.fn(() => new Promise(() => {})) } as never),
     registerPaymentMux: vi.fn(),
+    ...(freeTierDelegationsHeader ? { freeTierDelegationsHeader } : {}),
   });
-  return { handler, handle402, sendProxyRequest };
+  return { handler, handle402, sendProxyRequest, negotiator };
 }
 
 describe('BuyerRequestHandler payment negotiation', () => {
@@ -105,6 +107,66 @@ describe('BuyerRequestHandler payment negotiation', () => {
     expect(sendProxyRequest).toHaveBeenCalledTimes(2);
   });
 
+  const catchUp = (required: string, accepted: string) => response(402, {
+    error: 'payment_required',
+    minBudgetPerRequest: '10000',
+    suggestedAmount: '1000000',
+    requiredCumulativeAmount: required,
+    currentAcceptedCumulative: accepted,
+    reserveMaxAmount: '1000000',
+  });
+
+  it('keeps catching up while the seller catch-up gap shrinks', async () => {
+    const { handler, handle402, sendProxyRequest } = makeHandler([
+      catchUp('500000', '100000'), catchUp('500000', '400000'), ACCEPTED,
+    ]);
+
+    expect((await handler.sendRequest(makePeer(), makeRequest())).statusCode).toBe(200);
+    expect(handle402).toHaveBeenCalledTimes(2);
+    // Counts the in-flight requests to the seller, including this one.
+    expect(handle402).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), expect.anything(), expect.anything(), 3);
+    expect(sendProxyRequest).toHaveBeenCalledTimes(3);
+  });
+
+  it('returns a buyer error instead of the seller 402 when catch-up stays short', async () => {
+    const { handler, handle402, sendProxyRequest } = makeHandler([
+      catchUp('500000', '100000'), catchUp('500000', '300000'), catchUp('500000', '450000'),
+    ]);
+
+    const result = await handler.sendRequest(makePeer(), makeRequest());
+    // Retryable: the channel is fine and the next attempt usually succeeds.
+    expect(result.statusCode).toBe(503);
+    expect(result.headers['retry-after']).toBe('2');
+    const body = Buffer.from(result.body).toString();
+    expect(JSON.parse(body)).toMatchObject({ error: { type: 'payment_negotiation_failed' } });
+    expect(body).not.toContain('requiredCumulativeAmount');
+    expect(handle402).toHaveBeenCalledTimes(2);
+    expect(sendProxyRequest).toHaveBeenCalledTimes(3);
+  });
+
+  it('returns the buyer error without repeating a catch-up that made no progress', async () => {
+    const { handler, handle402, sendProxyRequest } = makeHandler([
+      catchUp('500000', '100000'), catchUp('600000', '100000'),
+    ]);
+
+    const result = await handler.sendRequest(makePeer(), makeRequest());
+    expect(result.statusCode).toBe(503);
+    expect(Buffer.from(result.body).toString()).not.toContain('requiredCumulativeAmount');
+    expect(handle402).toHaveBeenCalledOnce();
+    expect(sendProxyRequest).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps catching up while the seller accepts more, even when other requests widen the gap', async () => {
+    const { handler, handle402, sendProxyRequest } = makeHandler([
+      catchUp('500000', '100000'), catchUp('700000', '250000'), ACCEPTED,
+    ]);
+
+    const result = await handler.sendRequest(makePeer(), makeRequest());
+    expect(result.statusCode).toBe(200);
+    expect(handle402).toHaveBeenCalledTimes(2);
+    expect(sendProxyRequest).toHaveBeenCalledTimes(3);
+  });
+
   it('does not negotiate for a client-provided spending authorization', async () => {
     const { handler, handle402 } = makeHandler([PAYMENT_REQUIRED]);
 
@@ -113,9 +175,72 @@ describe('BuyerRequestHandler payment negotiation', () => {
   });
 });
 
+describe('BuyerRequestHandler free allowance on a priced service', () => {
+  const chatPeer = (): BuyerPeerView => ({
+    peerId: toPeerId('5'.repeat(40)),
+    providers: ['openai'],
+    providerPricing: { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 } } },
+  } as BuyerPeerView);
+  const chatRequest = (): SerializedHttpRequest => ({
+    requestId: 'chat-request',
+    method: 'POST',
+    path: '/v1/chat/completions',
+    headers: { 'content-type': 'application/json' },
+    body: Buffer.from(JSON.stringify({ model: 'k3', messages: [] })),
+  });
+
+  it('expects no charge for a response the seller covered from the allowance', async () => {
+    const covered = { ...response(200, { ok: true }), headers: { 'content-type': 'application/json', 'X-Antseed-Free-Tier': 'covered' } };
+    const { handler, negotiator } = makeHandler([covered]);
+    expect((await handler.sendRequest(chatPeer(), chatRequest())).statusCode).toBe(200);
+    expect(negotiator.estimateCostFromResponse).not.toHaveBeenCalled();
+    expect(negotiator.bpm.releaseRequestCoverage).toHaveBeenCalledWith(chatPeer().peerId, 'chat-request');
+    expect(negotiator.bpm.releaseRequestCoverage.mock.invocationCallOrder[0])
+      .toBeLessThan(negotiator.bpm.markRequestCovered.mock.invocationCallOrder[0]!);
+    expect(negotiator.bpm.markRequestCovered).toHaveBeenCalledWith(chatPeer().peerId, 'chat-request');
+  });
+
+  it('expects the listed price for any other paid response', async () => {
+    const { handler, negotiator } = makeHandler([response(200, { ok: true })]);
+    await handler.sendRequest(chatPeer(), chatRequest());
+    expect(negotiator.estimateCostFromResponse).toHaveBeenCalledOnce();
+  });
+});
+
+describe('BuyerRequestHandler free-tier delegations', () => {
+  it('sends the node’s own delegations and drops any copy a client set', async () => {
+    const { handler, sendProxyRequest } = makeHandler([ACCEPTED], () => 'node-delegations');
+    await handler.sendRequest(makePeer(), makeRequest({ 'X-Antseed-Free-Tier-Delegations': 'client-copy' }));
+    const sent = sendProxyRequest.mock.calls[0]![0].headers;
+    expect(Object.entries(sent).filter(([name]) => name.toLowerCase() === 'x-antseed-free-tier-delegations'))
+      .toEqual([['x-antseed-free-tier-delegations', 'node-delegations']]);
+  });
+
+  it('sends no delegations header when the node has none', async () => {
+    const { handler, sendProxyRequest } = makeHandler([ACCEPTED], () => null);
+    await handler.sendRequest(makePeer(), makeRequest({ 'x-antseed-free-tier-delegations': 'client-copy' }));
+    expect(Object.keys(sendProxyRequest.mock.calls[0]![0].headers)).not.toContain('x-antseed-free-tier-delegations');
+  });
+});
+
+describe('BuyerRequestHandler provider binding', () => {
+  it('names the provider it bills the request under', async () => {
+    const { handler, sendProxyRequest } = makeHandler([ACCEPTED]);
+    await handler.sendRequest(makePeer(), makeRequest());
+    expect(sendProxyRequest.mock.calls[0]![0].headers['x-antseed-provider']).toBe('venice');
+  });
+
+  it('keeps a provider the client named', async () => {
+    const { handler, sendProxyRequest } = makeHandler([ACCEPTED]);
+    await handler.sendRequest(makePeer(), makeRequest({ 'X-Antseed-Provider': 'venice' }));
+    const sent = sendProxyRequest.mock.calls[0]![0].headers;
+    expect(Object.entries(sent).filter(([name]) => name.toLowerCase() === 'x-antseed-provider')).toEqual([['X-Antseed-Provider', 'venice']]);
+  });
+});
+
 describe('BuyerRequestHandler response receipts', () => {
   it('attributes a receipt to the peer the request went to, not the peer the receipt names', async () => {
-    const request = makeRequest();
+    const request = makeRequest({ 'x-antseed-provider': 'venice' });
     const other = toPeerId('6'.repeat(40));
     const receipt = {
       version: 1 as const,
@@ -170,4 +295,51 @@ describe('stripPeerControlledResponseHeaders', () => {
     };
     expect(stripPeerControlledResponseHeaders(response).headers).toEqual({ 'content-type': 'application/json' });
   });
+});
+
+describe('selectBillingRoute', () => {
+  const chatRequest = (): SerializedHttpRequest => ({
+    requestId: 'chat', method: 'POST', path: '/v1/chat/completions',
+    headers: { 'content-type': 'application/json' },
+    body: Buffer.from(JSON.stringify({ model: 'video-model', messages: [] })),
+  });
+
+  it('prefers a provider whose self health check passes', () => {
+    const peer: BuyerPeerView = {
+      peerId: toPeerId('5'.repeat(40)),
+      providers: ['a', 'b'],
+      providerPricing: {
+        a: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 }, services: { 'video-model': {} } },
+        b: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 }, services: { 'video-model': {} } },
+      },
+      providerServiceHealth: { a: { services: { 'video-model': { status: 'failing' } } } },
+    };
+    expect(selectBillingRoute(peer, chatRequest(), 'video-model')?.provider).toBe('b');
+  });
+
+  it('keeps video requests on the first provider serving the protocol, so retrieves reach the job', () => {
+    const peer = makePeer();
+    peer.providers = ['venice', 'backup'];
+    peer.providerServiceApiProtocols = { ...peer.providerServiceApiProtocols, backup: { services: { 'video-model': ['venice-video'] } } };
+    peer.providerServiceUnitBillingModels = { ...peer.providerServiceUnitBillingModels, backup: { services: { 'video-model': { 'venice-video': VIDEO_MODEL } } } };
+    peer.providerServiceHealth = { venice: { services: { 'video-model': { status: 'failing', reason: 'out_of_credit' } } } };
+    const retrieve: SerializedHttpRequest = {
+      ...makeRequest({ 'x-antseed-service': 'video-model' }),
+      path: '/api/v1/video/retrieve',
+      body: Buffer.from(JSON.stringify({ model: 'video-model', queue_id: 'job' })),
+    };
+    expect(selectBillingRoute(peer, makeRequest(), 'video-model')?.provider).toBe('venice');
+    expect(selectBillingRoute(peer, retrieve, 'video-model')?.provider).toBe('venice');
+  });
+
+  it('keeps a failing video provider over a healthy one that cannot serve the video protocol', () => {
+    const peer = makePeer();
+    peer.providers = ['venice', 'chat'];
+    peer.providerServiceApiProtocols = { ...peer.providerServiceApiProtocols, chat: { services: { 'video-model': ['openai-chat-completions'] } } };
+    peer.providerServiceHealth = { venice: { services: { 'video-model': { status: 'failing', reason: 'timeout' } } } };
+    const route = selectBillingRoute(peer, makeRequest(), 'video-model');
+    expect(route?.provider).toBe('venice');
+    expect(route?.unitModel).toEqual(VIDEO_MODEL);
+  });
+
 });

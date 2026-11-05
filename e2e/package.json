@@ -8,6 +8,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "flow:local-chain": "node ./scripts/local-chain-full-flow.mjs",
+    "stress": "node ./stress/ci.mjs",
     "test:sandbox": "node --test sandbox/test/*.test.mjs",
     "flow:sandbox": "node sandbox/test/e2e-flow.mjs"
   },

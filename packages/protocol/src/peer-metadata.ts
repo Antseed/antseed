@@ -1,16 +1,46 @@
 import type { PeerId } from './peer-id.js';
 import type { PeerOffering } from './capability.js';
 import type { ServiceUnitBillingModelsV1 } from './billing.js';
+import type {
+  ProviderPricingMatrixEntry,
+  ProviderServiceApiProtocolMatrixEntry,
+  ProviderServiceCapabilityMatrixEntry,
+  ProviderServiceCategoryMatrixEntry,
+  ProviderServiceHealthMatrixEntry,
+  ProviderServicePerformanceMatrixEntry,
+  ProviderServiceUnitBillingModelMatrixEntry,
+} from './peer-pricing.js';
 import {
   WELL_KNOWN_SERVICE_API_PROTOCOLS,
   type ServiceApiProtocol,
 } from './service-api.js';
 
-export const METADATA_VERSION = 12;
+/** Newest metadata version this build signs and understands. */
+export const METADATA_VERSION = 15;
 /** Oldest announced metadata version buyers still accept from sellers. */
 export const MIN_SUPPORTED_METADATA_VERSION = 10;
+/**
+ * Version a seller serves when the buyer does not say which versions it
+ * understands. Buyers released before version negotiation send no header and
+ * reject anything newer than v12, so this stays at 12 until they are gone.
+ */
+export const LEGACY_METADATA_VERSION = 12;
+/**
+ * Request header a buyer sends on `GET /metadata` with the newest metadata
+ * version it understands. Sellers answer with the newest version they sign
+ * that is not newer than this.
+ */
+export const METADATA_VERSION_HEADER = "x-antseed-metadata-version";
 export const SERVICE_UNIT_BILLING_METADATA_VERSION = 11;
 export const SERVICE_CAPABILITIES_METADATA_VERSION = 12;
+export const SERVICE_HEALTH_METADATA_VERSION = 13;
+export const SERVICE_PERFORMANCE_METADATA_VERSION = 14;
+/**
+ * First version that may carry speech services: the `openai-audio-speech`
+ * protocol, the `input_characters` billing unit and `capabilities.speech`.
+ * Older documents leave such services out (see each version's vocabulary).
+ */
+export const SPEECH_METADATA_VERSION = 15;
 export const WELL_KNOWN_SERVICE_CATEGORIES = [
   "privacy",
   "legal",
@@ -49,12 +79,27 @@ export interface VideoOptions {
 }
 
 /**
+ * Options of a text-to-speech service. `voices` is the complete list of voice
+ * names the service accepts; a request naming another voice is refused, never
+ * served in a different voice. `customVoices` means the upstream also takes
+ * account-specific voice IDs that are not listed. `formats` lists the
+ * `response_format` values it can return.
+ */
+export interface SpeechOptions {
+  voices?: string[];
+  customVoices?: boolean;
+  formats?: string[];
+}
+
+/**
  * Per-service model capability hints announced by sellers. Every field is
  * optional: absent means unknown, so buyers fall back to their own defaults.
  */
 export interface ServiceCapabilities {
   /** Options accepted by a native video model. */
   video?: VideoOptions;
+  /** Voices and formats of a text-to-speech service (metadata v15+). */
+  speech?: SpeechOptions;
   /** Total context window in tokens. */
   contextWindow?: number;
   /** Maximum output tokens per response. */
@@ -88,22 +133,67 @@ const CAPABILITY_PARAMETER_PATTERN = /^[a-z][a-z0-9_]*$/;
 const SERVICE_CAPABILITY_MODALITY_SET = new Set<string>(SERVICE_CAPABILITY_MODALITIES);
 const VIDEO_INPUT_KIND_SET = new Set<string>(VIDEO_INPUT_KINDS);
 const VIDEO_OPTION_PATTERN = /^[A-Za-z0-9:._-]+$/;
+export const MAX_SPEECH_VOICES = 128;
+export const MAX_SPEECH_VOICE_LENGTH = 64;
+export const MAX_SPEECH_FORMATS = 16;
+const SPEECH_VOICE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9 ._:'-]*$/;
+const SPEECH_FORMAT_PATTERN = /^[a-z0-9][a-z0-9_-]{0,15}$/;
+
+/** Problems with a bounded, duplicate-free option list (`field` names it in messages); none when absent. */
+function validateOptionList(
+  field: string,
+  values: unknown,
+  max: number,
+  valid: (value: unknown) => boolean,
+  allowEmpty = false,
+): string[] {
+  if (values === undefined) return [];
+  if (!Array.isArray(values) || (!allowEmpty && values.length === 0) || values.length > max) {
+    return [`${field} must contain ${allowEmpty ? 0 : 1}-${max} values`];
+  }
+  const errors: string[] = [];
+  const seen = new Set<unknown>();
+  for (const value of values) {
+    if (!valid(value)) errors.push(`Invalid ${field} value ${JSON.stringify(value)}`);
+    else if (seen.has(value)) errors.push(`Duplicate ${field} value ${JSON.stringify(value)}`);
+    seen.add(value);
+  }
+  return errors;
+}
+
+function validateSpeechOptions(speech: SpeechOptions): string[] {
+  if (!speech || typeof speech !== "object" || Array.isArray(speech)) return ["speech must be an object"];
+  const errors: string[] = [];
+  errors.push(...validateOptionList("speech.voices", speech.voices, MAX_SPEECH_VOICES,
+    value => typeof value === "string" && value.length <= MAX_SPEECH_VOICE_LENGTH && SPEECH_VOICE_PATTERN.test(value)));
+  errors.push(...validateOptionList("speech.formats", speech.formats, MAX_SPEECH_FORMATS,
+    value => typeof value === "string" && SPEECH_FORMAT_PATTERN.test(value)));
+  if (speech.customVoices !== undefined && typeof speech.customVoices !== "boolean") errors.push("speech.customVoices must be a boolean");
+  const known = new Set(["voices", "customVoices", "formats"]);
+  for (const key of Object.keys(speech)) if (!known.has(key)) errors.push(`Unsupported speech option ${key}`);
+  if (Object.keys(speech).length === 0) errors.push("speech must announce at least one option");
+  return errors;
+}
+
+/**
+ * Why a speech request's voice can't be served, or null. A service that lists
+ * its voices refuses any other voice unless it also takes custom voice IDs:
+ * a buyer that asked for a voice must never get a different one.
+ */
+export function speechVoiceProblem(speech: SpeechOptions | undefined, voice: unknown): string | null {
+  if (voice === undefined) return null;
+  if (typeof voice !== "string" || voice.trim().length === 0) return "voice must be a non-empty string";
+  const voices = speech?.voices;
+  if (!voices || speech?.customVoices === true || voices.includes(voice)) return null;
+  const shown = voices.slice(0, 40).join(", ");
+  return `Voice "${voice}" is not offered by this service. Available voices: ${shown}${voices.length > 40 ? ", ..." : ""}`;
+}
 
 function validateVideoOptions(video: VideoOptions): string[] {
   const errors: string[] = [];
   if (!video || typeof video !== "object" || Array.isArray(video)) return ["video must be an object"];
   const unique = (field: string, values: unknown, valid: (value: unknown) => boolean, allowEmpty = false) => {
-    if (values === undefined) return;
-    if (!Array.isArray(values) || (!allowEmpty && values.length === 0) || values.length > MAX_VIDEO_OPTION_VALUES) {
-      errors.push(`video.${field} must contain ${allowEmpty ? 0 : 1}-${MAX_VIDEO_OPTION_VALUES} values`);
-      return;
-    }
-    const seen = new Set<unknown>();
-    for (const value of values) {
-      if (!valid(value)) errors.push(`Invalid video.${field} value ${JSON.stringify(value)}`);
-      else if (seen.has(value)) errors.push(`Duplicate video.${field} value ${JSON.stringify(value)}`);
-      seen.add(value);
-    }
+    errors.push(...validateOptionList(`video.${field}`, values, MAX_VIDEO_OPTION_VALUES, valid, allowEmpty));
   };
   unique("durationsSeconds", video.durationsSeconds, value => typeof value === "number" && Number.isInteger(value) && value > 0 && value <= 3600);
   for (const field of ["resolutions", "aspectRatios"] as const) {
@@ -128,6 +218,7 @@ function validateVideoOptions(video: VideoOptions): string[] {
 export function validateServiceCapabilityFields(caps: ServiceCapabilities): string[] {
   const errors: string[] = [];
   if (caps.video !== undefined) errors.push(...validateVideoOptions(caps.video));
+  if (caps.speech !== undefined) errors.push(...validateSpeechOptions(caps.speech));
   for (const key of ["contextWindow", "maxOutputTokens"] as const) {
     const value = caps[key];
     if (value === undefined) continue;
@@ -182,6 +273,203 @@ export function validateServiceCapabilityFields(caps: ServiceCapabilities): stri
   return errors;
 }
 
+/*
+ * Health enums go on the wire as ids, and buyers verify a signature by
+ * re-encoding what they received, so a buyer rejects a value it does not
+ * know. Never reorder these. A new value needs a new metadata version whose
+ * `fromLatest` maps it to an existing value for the older documents.
+ */
+export const SERVICE_HEALTH_STATUSES = ["unknown", "healthy", "failing"] as const;
+export type ServiceHealthState = (typeof SERVICE_HEALTH_STATUSES)[number];
+export const SERVICE_HEALTH_REASONS = [
+  "timeout",
+  "rate_limited",
+  "out_of_credit",
+  "auth",
+  "model_unavailable",
+  "upstream_error",
+  "unreachable",
+  "init_failed",
+] as const;
+export type ServiceHealthReason = (typeof SERVICE_HEALTH_REASONS)[number];
+export const SERVICE_HEALTH_SOURCES = ["probe", "traffic"] as const;
+export type ServiceHealthSource = (typeof SERVICE_HEALTH_SOURCES)[number];
+
+/**
+ * The seller's own health check result for one service. Sellers keep failing
+ * services announced and report them here instead, so buyers can hide them
+ * from catalogs and routing while still explaining why a pinned request
+ * failed. Reasons are fixed codes; upstream error text is never announced.
+ */
+export interface ServiceHealth {
+  status: ServiceHealthState;
+  /** Unix ms of the evidence behind `status`: the last probe or live response. */
+  checkedAt?: number;
+  /** Where that evidence came from. */
+  source?: ServiceHealthSource;
+  /** Unix ms of the first failure in the current failing streak. */
+  failingSince?: number;
+  /** Failed checks in a row. */
+  consecutiveFailures?: number;
+  /** Why the last check failed. */
+  reason?: ServiceHealthReason;
+  /** Upstream HTTP status of the last failed check, when there was one. */
+  httpStatus?: number;
+}
+
+/** How far back a seller's announced service performance looks. */
+export const SERVICE_PERFORMANCE_WINDOW_MS = 60 * 60_000;
+/** Limits of the wire encoding, which buyers check when validating. */
+export const MAX_SERVICE_PERFORMANCE_REQUESTS = 0xffff_ffff;
+export const MAX_SERVICE_PERFORMANCE_FIRST_TOKEN_MS = 0xffff_ffff;
+export const MAX_SERVICE_PERFORMANCE_TOKENS_PER_SECOND = 0xffff;
+
+/**
+ * How a service served buyers over the last `SERVICE_PERFORMANCE_WINDOW_MS`,
+ * as the seller measured it on its own buyer traffic. Buyers use it as their
+ * starting estimate for a seller they have no record of, before their own
+ * requests take over. Self-reported: buyers cap how much it can help a seller.
+ */
+export interface ServicePerformance {
+  /** Buyer requests in the window. */
+  requests: number;
+  /** Share of them the upstream answered without a server-side failure, 0..1 (four decimals on the wire). */
+  successRate: number;
+  /** Median and 90th percentile time from the request to the first streamed token, in ms. */
+  firstTokenMsP50?: number;
+  firstTokenMsP90?: number;
+  /** Median output speed of streamed answers, in tokens per second. */
+  tokensPerSecondP50?: number;
+}
+
+/** Reads a ServicePerformance from untrusted JSON, or null when it is malformed. */
+export function parseServicePerformance(value: unknown): ServicePerformance | null {
+  if (!isPlainObject(value)) return null;
+  const { requests, successRate } = value;
+  if (!isWireInteger(requests, MAX_SERVICE_PERFORMANCE_REQUESTS)) return null;
+  if (typeof successRate !== "number" || !Number.isFinite(successRate) || successRate < 0 || successRate > 1) return null;
+  const performance: ServicePerformance = { requests, successRate };
+  if (isWireInteger(value.firstTokenMsP50, MAX_SERVICE_PERFORMANCE_FIRST_TOKEN_MS)) performance.firstTokenMsP50 = value.firstTokenMsP50;
+  if (isWireInteger(value.firstTokenMsP90, MAX_SERVICE_PERFORMANCE_FIRST_TOKEN_MS)) performance.firstTokenMsP90 = value.firstTokenMsP90;
+  if (isWireInteger(value.tokensPerSecondP50, MAX_SERVICE_PERFORMANCE_TOKENS_PER_SECOND)) performance.tokensPerSecondP50 = value.tokensPerSecondP50;
+  return performance;
+}
+
+function isWireInteger(value: unknown, max: number): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= max;
+}
+
+/** Looks up one service's performance in a per-provider map such as PeerInfo.providerServicePerformance. */
+export function providerServicePerformanceFor(
+  providerServicePerformance: Record<string, { services?: Record<string, ServicePerformance> }> | undefined,
+  provider: string,
+  service: string,
+): ServicePerformance | undefined {
+  return own(own(providerServicePerformance, provider)?.services, service);
+}
+
+/** Reads a performance matrix from untrusted JSON (a cache file), keeping only well-formed entries. */
+export function parseProviderServicePerformanceMatrix(value: unknown): Record<string, ProviderServicePerformanceMatrixEntry> | undefined {
+  if (!isPlainObject(value)) return undefined;
+  const matrix: Record<string, ProviderServicePerformanceMatrixEntry> = dict();
+  for (const [provider, entry] of Object.entries(value)) {
+    if (!isPlainObject(entry)) continue;
+    const services: Record<string, ServicePerformance> = dict();
+    for (const [service, performance] of Object.entries(isPlainObject(entry.services) ? entry.services : {})) {
+      const parsed = parseServicePerformance(performance);
+      if (parsed) services[service] = parsed;
+    }
+    if (Object.keys(services).length > 0) matrix[provider] = { services };
+  }
+  return Object.keys(matrix).length > 0 ? matrix : undefined;
+}
+
+/** Latest Unix ms a JS Date can hold; health timestamps above it are rejected. */
+export const MAX_SERVICE_HEALTH_TIME_MS = 8_640_000_000_000_000;
+
+export function isServiceHealthTime(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= MAX_SERVICE_HEALTH_TIME_MS;
+}
+
+/** True when a seller's self health check marks the service failing. */
+export function isServiceHealthFailing(health: ServiceHealth | null | undefined): health is ServiceHealth {
+  return health?.status === "failing";
+}
+
+/** One service's entry in a provider's own health map, never an inherited Object.prototype property. */
+export function serviceHealthOf(serviceHealth: Record<string, ServiceHealth> | undefined, service: string): ServiceHealth | undefined {
+  return own(serviceHealth, service);
+}
+
+/** Looks up one service's health in a per-provider map such as PeerInfo.providerServiceHealth. */
+export function providerServiceHealthFor(
+  providerServiceHealth: Record<string, { services?: Record<string, ServiceHealth> }> | undefined,
+  provider: string,
+  service: string,
+): ServiceHealth | undefined {
+  return own(own(providerServiceHealth, provider)?.services, service);
+}
+
+/** Error code a seller answers with when a service its own health check marks failing also fails a request. */
+export const SELLER_SELF_HEALTH_FAILING_CODE = "seller_self_health_failing";
+
+const SERVICE_HEALTH_REASON_TEXT: Record<ServiceHealthReason, string> = {
+  timeout: "the upstream timed out",
+  rate_limited: "the upstream is rate or usage limited",
+  out_of_credit: "the upstream account is out of credit",
+  auth: "the upstream rejected the seller's credentials",
+  model_unavailable: "the upstream no longer offers this model",
+  upstream_error: "the upstream is unavailable",
+  unreachable: "the upstream could not be reached",
+  init_failed: "the provider failed to initialize",
+};
+
+/**
+ * Reads a ServiceHealth from untrusted JSON (a seller error body), keeping
+ * only well-formed known fields. Returns null when the status is missing.
+ */
+export function parseServiceHealth(value: unknown): ServiceHealth | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.status !== "string" || !(SERVICE_HEALTH_STATUSES as readonly string[]).includes(raw.status)) return null;
+  const health: ServiceHealth = { status: raw.status as ServiceHealthState };
+  const time = (field: unknown) => isServiceHealthTime(field) ? field : undefined;
+  const checkedAt = time(raw.checkedAt);
+  if (checkedAt !== undefined) health.checkedAt = checkedAt;
+  const failingSince = time(raw.failingSince);
+  if (failingSince !== undefined) health.failingSince = failingSince;
+  if (typeof raw.source === "string" && (SERVICE_HEALTH_SOURCES as readonly string[]).includes(raw.source)) health.source = raw.source as ServiceHealthSource;
+  if (typeof raw.reason === "string" && (SERVICE_HEALTH_REASONS as readonly string[]).includes(raw.reason)) health.reason = raw.reason as ServiceHealthReason;
+  if (typeof raw.consecutiveFailures === "number" && Number.isInteger(raw.consecutiveFailures) && raw.consecutiveFailures >= 0 && raw.consecutiveFailures <= 0xffff) {
+    health.consecutiveFailures = raw.consecutiveFailures;
+  }
+  if (typeof raw.httpStatus === "number" && Number.isInteger(raw.httpStatus) && raw.httpStatus >= 100 && raw.httpStatus <= 599) health.httpStatus = raw.httpStatus;
+  return health;
+}
+
+const SERVICE_NAME_PATTERN = /^[A-Za-z0-9._:/@+-]{1,128}$/;
+
+/**
+ * One sentence a person can act on, e.g. in a chat error. Built from fields
+ * only, never seller prose; a service name that does not look like a model
+ * id is left out.
+ */
+export function describeServiceHealth(service: string, health: ServiceHealth): string {
+  const parts: string[] = [];
+  if (health.reason) parts.push(SERVICE_HEALTH_REASON_TEXT[health.reason] ?? health.reason);
+  if (health.httpStatus !== undefined) parts.push(`HTTP ${health.httpStatus}`);
+  if (health.consecutiveFailures !== undefined && health.consecutiveFailures > 0) {
+    parts.push(`${health.consecutiveFailures} failed check${health.consecutiveFailures === 1 ? "" : "s"} in a row`);
+  }
+  const since = isServiceHealthTime(health.failingSince)
+    ? ` since ${new Date(health.failingSince).toISOString().slice(0, 16).replace("T", " ")} UTC`
+    : "";
+  const detail = parts.length > 0 ? ` (${parts.join(", ")})` : "";
+  const verb = health.status === "failing" ? "has been failing" : `reports "${health.status}"`;
+  const subject = SERVICE_NAME_PATTERN.test(service) ? `"${service}"` : "this service";
+  return `The seller's self health check for ${subject} ${verb}${since}${detail}.`;
+}
+
 export interface ProviderAnnouncement {
   provider: string;
   services: string[];
@@ -191,8 +479,177 @@ export interface ProviderAnnouncement {
   serviceApiProtocols?: Record<string, ServiceApiProtocol[]>;
   serviceUnitBillingModels?: ServiceUnitBillingModelsV1;
   serviceCapabilities?: Record<string, ServiceCapabilities>;
+  /** Seller self health check results per service (v13+). */
+  serviceHealth?: Record<string, ServiceHealth>;
+  /** How each service served buyers lately, measured by the seller (v14+). */
+  servicePerformance?: Record<string, ServicePerformance>;
   maxConcurrency: number;
   currentLoad: number;
+}
+
+/**
+ * Per-provider service health from a peer's announcements, as buyers read it.
+ * Several upstreams can share a provider name (with the same terms), and the
+ * seller serves a service through any of them, so it counts as failing only
+ * when every one of them reports failing. Otherwise the best report stands,
+ * and none when a working upstream has not been checked yet.
+ */
+export function providerServiceHealthMatrix(
+  providers: readonly ProviderAnnouncement[],
+): Record<string, ProviderServiceHealthMatrixEntry> {
+  const matrix: Record<string, ProviderServiceHealthMatrixEntry> = dict();
+  for (const [provider, upstreams] of upstreamsByProvider(providers)) {
+    const services: Record<string, ServiceHealth> = dict();
+    for (const service of new Set(upstreams.flatMap((upstream) => [...upstream.services, ...Object.keys(upstream.serviceHealth ?? {})]))) {
+      const serving = upstreams.filter((upstream) => upstream.services.includes(service) || own(upstream.serviceHealth, service));
+      const health = mergeUpstreamHealth(serving.map((upstream) => own(upstream.serviceHealth, service)));
+      if (health) services[service] = { ...health };
+    }
+    if (Object.keys(services).length > 0) matrix[provider] = { services };
+  }
+  return matrix;
+}
+
+/** Reads a health matrix from untrusted JSON (a cache file), keeping only well-formed entries. */
+export function parseProviderServiceHealthMatrix(value: unknown): Record<string, ProviderServiceHealthMatrixEntry> | undefined {
+  if (!isPlainObject(value)) return undefined;
+  const matrix: Record<string, ProviderServiceHealthMatrixEntry> = dict();
+  for (const [provider, entry] of Object.entries(value)) {
+    if (!isPlainObject(entry)) continue;
+    const services: Record<string, ServiceHealth> = dict();
+    for (const [service, health] of Object.entries(isPlainObject(entry.services) ? entry.services : {})) {
+      const parsed = parseServiceHealth(health);
+      if (parsed) services[service] = parsed;
+    }
+    if (Object.keys(services).length > 0) matrix[provider] = { services };
+  }
+  return Object.keys(matrix).length > 0 ? matrix : undefined;
+}
+
+/**
+ * A service-keyed entry of a map, never one inherited from Object.prototype:
+ * a seller can list a service named "constructor".
+ */
+function own<T>(map: Readonly<Record<string, T>> | undefined, key: string): T | undefined {
+  return map !== undefined && Object.prototype.hasOwnProperty.call(map, key) ? map[key] : undefined;
+}
+
+/** A map keyed by provider or service names, with no inherited keys. */
+function dict<T>(): Record<string, T> {
+  return Object.create(null) as Record<string, T>;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+/** A peer's announcements grouped by provider name, in announcement order. */
+function upstreamsByProvider(providers: readonly ProviderAnnouncement[]): Map<string, ProviderAnnouncement[]> {
+  const groups = new Map<string, ProviderAnnouncement[]>();
+  for (const announcement of providers) {
+    const upstreams = groups.get(announcement.provider) ?? [];
+    upstreams.push(announcement);
+    groups.set(announcement.provider, upstreams);
+  }
+  return groups;
+}
+
+function mergeUpstreamHealth(reports: Array<ServiceHealth | undefined>): ServiceHealth | undefined {
+  if (reports.every(isServiceHealthFailing)) {
+    // The newest failure explains it best.
+    return reports.reduce((latest, entry) => ((entry.checkedAt ?? 0) > (latest.checkedAt ?? 0) ? entry : latest));
+  }
+  const healthy = reports.find((entry) => entry?.status === "healthy");
+  if (healthy) return healthy;
+  // A working upstream that has not been checked yet: nothing to report.
+  if (reports.includes(undefined)) return undefined;
+  return reports.find((entry) => !isServiceHealthFailing(entry));
+}
+
+/**
+ * Of the upstreams serving a service, the one a seller routes it to: the first
+ * whose self health check is not failing it, else the first.
+ */
+export function preferHealthyUpstream<T extends { serviceHealth?: Record<string, ServiceHealth> }>(
+  candidates: readonly T[],
+  service: string,
+): T | undefined {
+  return candidates.find((candidate) => !isServiceHealthFailing(own(candidate.serviceHealth, service))) ?? candidates[0];
+}
+
+/** A peer's announcements merged per provider name, as buyers route and bill by them. */
+export interface ProviderServiceMatrices {
+  providerPricing: Record<string, ProviderPricingMatrixEntry>;
+  providerServiceCategories: Record<string, ProviderServiceCategoryMatrixEntry>;
+  providerServiceApiProtocols: Record<string, ProviderServiceApiProtocolMatrixEntry>;
+  providerServiceUnitBillingModels: Record<string, ProviderServiceUnitBillingModelMatrixEntry>;
+  providerServiceCapabilities: Record<string, ProviderServiceCapabilityMatrixEntry>;
+  providerServiceHealth: Record<string, ProviderServiceHealthMatrixEntry>;
+  providerServicePerformance: Record<string, ProviderServicePerformanceMatrixEntry>;
+}
+
+function setServiceEntry<T>(matrix: Record<string, { services: Record<string, T> }>, provider: string, service: string, value: T | undefined): void {
+  if (value === undefined) return;
+  (matrix[provider] ??= { services: dict() }).services[service] = value;
+}
+
+/** Every service the upstreams describe; a wildcard upstream (no services listed) can still describe some in its maps. */
+function describedServices(upstreams: readonly ProviderAnnouncement[]): Set<string> {
+  return new Set(upstreams.flatMap((upstream) => [
+    ...upstream.services,
+    ...Object.keys(upstream.serviceCategories ?? {}),
+    ...Object.keys(upstream.serviceApiProtocols ?? {}),
+    ...Object.keys(upstream.serviceUnitBillingModels ?? {}),
+    ...Object.keys(upstream.serviceCapabilities ?? {}),
+    ...Object.keys(upstream.servicePerformance ?? {}),
+  ]));
+}
+
+/**
+ * Merges a peer's announcements per provider name. Several upstreams can
+ * share a name; a seller refuses to start unless they announce a service with
+ * the same terms, so a service's terms are read from the upstream the seller
+ * would serve it through (`preferHealthyUpstream`), and its health is merged
+ * as in `providerServiceHealthMatrix`.
+ */
+export function mergeProviderAnnouncements(providers: readonly ProviderAnnouncement[]): ProviderServiceMatrices {
+  const matrices: ProviderServiceMatrices = {
+    providerPricing: dict(),
+    providerServiceCategories: dict(),
+    providerServiceApiProtocols: dict(),
+    providerServiceUnitBillingModels: dict(),
+    providerServiceCapabilities: dict(),
+    providerServiceHealth: providerServiceHealthMatrix(providers),
+    providerServicePerformance: dict(),
+  };
+  for (const [name, upstreams] of upstreamsByProvider(providers)) {
+    const { defaultPricing } = upstreams[0]!;
+    const pricing: ProviderPricingMatrixEntry = {
+      defaults: {
+        inputUsdPerMillion: defaultPricing.inputUsdPerMillion,
+        outputUsdPerMillion: defaultPricing.outputUsdPerMillion,
+        ...(defaultPricing.cachedInputUsdPerMillion != null ? { cachedInputUsdPerMillion: defaultPricing.cachedInputUsdPerMillion } : {}),
+      },
+    };
+    matrices.providerPricing[name] = pricing;
+
+    for (const service of describedServices(upstreams)) {
+      const listing = upstreams.filter((upstream) => upstream.services.includes(service));
+      const serving = listing.length > 0 ? listing : upstreams;
+      const owner = preferHealthyUpstream(serving, service)!;
+      if (owner.services.includes(service)) {
+        (pricing.services ??= dict())[service] = own(owner.servicePricing, service) ?? owner.defaultPricing;
+      }
+      setServiceEntry(matrices.providerServiceCategories, name, service, own(owner.serviceCategories, service)?.slice());
+      setServiceEntry(matrices.providerServiceCapabilities, name, service, own(owner.serviceCapabilities, service));
+
+      setServiceEntry(matrices.providerServiceApiProtocols, name, service, own(owner.serviceApiProtocols, service)?.slice());
+      setServiceEntry(matrices.providerServiceUnitBillingModels, name, service, own(owner.serviceUnitBillingModels, service));
+      // Sellers measure performance per provider name, so every upstream of a name announces the same figures.
+      setServiceEntry(matrices.providerServicePerformance, name, service, own(owner.servicePerformance, service));
+    }
+  }
+  return matrices;
 }
 
 export type DomainVerificationMethod = "dns-txt" | "https-well-known";

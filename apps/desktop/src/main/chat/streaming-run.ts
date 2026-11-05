@@ -23,14 +23,17 @@ import { createBrowserPreviewTool, createStartDevServerTool } from './dev-tools.
 import { webFetchTool } from './web-fetch.js';
 import {
   createChatImagePathTool,
+  createChatVideoPathTool,
   createShowMediaTool,
   GET_CHAT_IMAGE_PATH_TOOL_NAME,
+  GET_CHAT_VIDEO_PATH_TOOL_NAME,
   resolveBundledChatSkillPaths,
   SHOW_MEDIA_TOOL_NAME,
 } from './media-tools.js';
 import { buildVprSystemPrompt } from './system-prompt.js';
 import {
   classifyChatStreamFailure,
+  cancelFreeTierRetry,
   formatChatStreamStopForLog,
   type ChatStreamStopReason,
 } from './stream-stop.js';
@@ -415,6 +418,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
         createStartDevServerTool(sendToRenderer),
         createShowMediaTool(conversationId, chatWorkspaceDir),
         createChatImagePathTool(conversationId),
+        createChatVideoPathTool(conversationId),
       ],
       resourceLoader,
     });
@@ -425,7 +429,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     session.setActiveToolsByName([
       'read', 'bash', 'edit', 'write', 'grep', 'find', 'ls',
       'web_fetch', 'open_browser_preview', 'start_dev_server',
-      SHOW_MEDIA_TOOL_NAME, GET_CHAT_IMAGE_PATH_TOOL_NAME,
+      SHOW_MEDIA_TOOL_NAME, GET_CHAT_IMAGE_PATH_TOOL_NAME, GET_CHAT_VIDEO_PATH_TOOL_NAME,
     ]);
 
     await session.setModel(proxyModel);
@@ -755,12 +759,16 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
       }
 
       if (event.type === 'auto_retry_start') {
-        automaticRetryAttempted = true;
         const reason = classifyChatStreamFailure({
           error: event.errorMessage,
           message: event.errorMessage,
           stopReason: 'error',
         });
+        if (cancelFreeTierRetry(reason, session)) {
+          appendSystemLog(`AI stream stopped: the seller's free limit is used up [${formatChatStreamStopForLog(reason)}]`);
+          return;
+        }
+        automaticRetryAttempted = true;
         appendSystemLog(
           `AI stream interrupted. Retrying in ${(event.delayMs / 1000).toFixed(1)}s `
           + `(${String(event.attempt)}/${String(event.maxAttempts)}) `

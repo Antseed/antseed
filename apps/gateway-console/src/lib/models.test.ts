@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import type { NetworkModel } from '../api/types'
+import { formatPricePerMillion } from './format'
 import { findModel, priceSummary } from './models'
 
 const model = (id: string, extra: Partial<NetworkModel> = {}): NetworkModel => ({
   id, name: id, aliases: [], type: 'text', tags: [], contextLength: null, capabilities: [], sellers: 1,
-  inputUsdPerMillion: { min: 1, max: 1 }, outputUsdPerMillion: { min: 2, max: 2 }, free: false, teeSellers: 0, fullTeeSellers: 0, verifiedSellers: 0, offers: [], ...extra,
+  inputUsdPerMillion: { min: 1, max: 1 }, outputUsdPerMillion: { min: 2, max: 2 }, free: false, freeForStakers: false, freeAllowance: false, teeSellers: 0, fullTeeSellers: 0, verifiedSellers: 0, offers: [], ...extra,
 })
 
 const models = [
@@ -28,5 +29,7 @@ describe('priceSummary', () => {
     expect(priceSummary({ inputUsdPerMillion: 0, outputUsdPerMillion: 0 })).toBe('Free')
     expect(priceSummary({ inputUsdPerMillion: null, outputUsdPerMillion: null, usdPerImage: { min: 0.003, max: 0.003 } })).toBe('$0.003 per image')
     expect(priceSummary({ inputUsdPerMillion: null, outputUsdPerMillion: null })).toBe('No price advertised')
+    expect(priceSummary({ inputUsdPerMillion: null, outputUsdPerMillion: null, usdPerMillionCharacters: 15 })).toBe(`${formatPricePerMillion(15)} /M characters`)
+    expect(priceSummary({ inputUsdPerMillion: null, outputUsdPerMillion: null, usdPerMillionCharacters: 0 })).toBe('Free')
   })
 })

@@ -14,6 +14,7 @@ import {
   identityEnvelopeAddress,
   isIdentityEnvelope,
   resolveIdentityPassphrase,
+  type ScryptParams,
 } from "./identity-envelope.js";
 
 export { hexToBytes, bytesToHex };
@@ -44,6 +45,12 @@ export interface FileIdentityStoreOptions {
    * ANTSEED_PASSPHRASE / ANTSEED_PASSPHRASE_FILE; null means no passphrase.
    */
   passphrase?: string | null;
+  /**
+   * scrypt cost for keys this store encrypts. Defaults to
+   * DEFAULT_SCRYPT_PARAMS; tests pass a cheaper cost so they do not spend
+   * seconds per key under load. Decryption always uses the file's own cost.
+   */
+  scrypt?: ScryptParams;
 }
 
 /** Decrypted keys by envelope, so repeated loads in one process skip the deliberately slow scrypt. */
@@ -101,7 +108,7 @@ export class FileIdentityStore implements IdentityStore {
     const passphrase = this.passphrase();
     if (!passphrase) return this.writeKeyFile(hexKey);
     assertNewIdentityPassphrase(passphrase);
-    await this.writeKeyFile(await encryptIdentityKey(hexKey, passphrase));
+    await this.writeKeyFile(await encryptIdentityKey(hexKey, passphrase, this.options.scrypt));
   }
 
   /** How the key file is stored, or null when there is none. */
@@ -148,7 +155,7 @@ export class FileIdentityStore implements IdentityStore {
     if (isIdentityEnvelope(stored)) return false;
     assertNewIdentityPassphrase(passphrase);
     const hexKey = this.validHex(stored);
-    const envelope = await encryptIdentityKey(hexKey, passphrase);
+    const envelope = await encryptIdentityKey(hexKey, passphrase, this.options.scrypt);
     // The plaintext is about to be replaced: make sure the passphrase opens what replaces it.
     if (await decryptIdentityKey(envelope, passphrase) !== hexKey) throw new Error(`Encrypting ${this.keyPath} failed its check; the file was left as it was.`);
     await this.writeKeyFile(envelope);

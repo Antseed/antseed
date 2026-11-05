@@ -19,6 +19,8 @@ export { encodeMetadata, encodeMetadataForSigning, decodeMetadata } from './meta
 export { validateMetadata, MAX_METADATA_SIZE, MAX_PROVIDERS, type ValidationError } from './metadata-validator.js';
 export {
   METADATA_VERSION,
+  LEGACY_METADATA_VERSION,
+  METADATA_VERSION_HEADER,
   WELL_KNOWN_SERVICE_CATEGORIES,
   type DomainVerificationClaim,
   type DomainVerificationMethod,
@@ -68,8 +70,10 @@ export {
   resolveServiceProtocol,
   selectLowestPricedCanonicalOffers,
   selectLowestPricedNetworkServiceOffer,
+  type BuildNetworkServiceOffersOptions,
   type CatalogServiceCapabilities,
   type CatalogServiceProtocol,
   type NetworkServiceCatalogPeer,
   type NetworkServiceOffer,
 } from './service-catalog.js';
+export { getMetadataCodec, negotiateMetadataVersion, SERVED_METADATA_VERSIONS, type MetadataVersionCodec } from './metadata-codec.js';

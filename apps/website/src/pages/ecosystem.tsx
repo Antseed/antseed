@@ -15,7 +15,7 @@ type EcosystemProject = {
   color: string;
   colorSoft: string;
   logo?: string;
-  theme: 'stats' | 'scan' | 'diem' | 'antseedmarkets' | 'lants' | 'seedstore';
+  theme: 'stats' | 'scan' | 'diem' | 'antseedmarkets' | 'lants' | 'seedstore' | 'points';
 };
 
 type Resource = {
@@ -87,6 +87,20 @@ const projects: EcosystemProject[] = [
     colorSoft: 'rgba(31, 216, 122, 0.18)',
     logo: 'https://antscan.co/logos/antseed-public-ant.svg',
     theme: 'scan',
+  },
+  {
+    name: 'Antseed Points',
+    href: 'https://antseedpoints.com',
+    category: 'Rewards',
+    oneLiner: 'Earn points when you spend on AI through Antseed.',
+    description:
+      'Look up any account, estimate this week\'s ANTS reward, and follow the buyers, providers and stakers leaderboards. Every Thursday, your points determine your share of the weekly ANTS rewards.',
+    glyph: 'AP',
+    status: 'Live',
+    color: '#10b981',
+    colorSoft: 'rgba(16, 185, 129, 0.18)',
+    logo: 'https://antseedpoints.com/logo.svg',
+    theme: 'points',
   },
   {
     name: 'antseedmarkets',
@@ -221,6 +235,24 @@ function ProductPreview({project}: {project: EcosystemProject}) {
           <span><b>✓</b>Finds sippar-flight-search</span>
           <span><b>✓</b>Pays for the answer</span>
           <span><b>✓</b>Source: Google Flights</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (project.theme === 'points') {
+    return (
+      <div className={`${styles.preview} ${styles.previewPoints}`}>
+        <div className={styles.previewTop}><span>Antseed Points</span><i>This week</i></div>
+        <div className={styles.pointsFlow}>
+          <span><small>Spend</small><b>AI</b></span>
+          <span><small>Earn</small><b>Points</b></span>
+          <span><small>Thursday</small><b>ANTS</b></span>
+        </div>
+        <div className={styles.pointsRows}>
+          <span><b>Buyers</b><em>Leaderboard</em></span>
+          <span><b>Providers</b><em>Boosts</em></span>
+          <span><b>Stakers</b><em>Rewards</em></span>
         </div>
       </div>
     );

@@ -47,6 +47,75 @@ function withEstablishedHistory(peer: PeerInfo): PeerInfo {
 }
 
 describe('LocalRouter', () => {
+  it('skips a peer whose self health check announces the requested model as failing', () => {
+    const router = new LocalRouter({ maxPricing: { defaults: { inputUsdPerMillion: 1_000, outputUsdPerMillion: 1_000 } } });
+    const pricing = { anthropic: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 }, services: { 'model-x': { inputUsdPerMillion: 1, outputUsdPerMillion: 1 } } } };
+    const failing = makePeer({
+      peerId: '1'.repeat(40) as PeerInfo['peerId'],
+      providerPricing: pricing,
+      providerServiceHealth: { anthropic: { services: { 'model-x': { status: 'failing', reason: 'timeout' } } } },
+    });
+    const healthy = makePeer({
+      peerId: '2'.repeat(40) as PeerInfo['peerId'],
+      providerPricing: { anthropic: { ...pricing.anthropic, defaults: { inputUsdPerMillion: 5, outputUsdPerMillion: 5 }, services: { 'model-x': { inputUsdPerMillion: 5, outputUsdPerMillion: 5 } } } },
+    });
+    expect(router.selectPeer(makeRequest('model-x'), [failing, healthy])?.peerId).toBe(healthy.peerId);
+    expect(router.selectPeer(makeRequest('model-x'), [failing])).toBeNull();
+    // A pinned request is checked against policy only, so it can still reach the failing seller.
+    expect(router.allowsPeerForPolicy(makeRequest('model-x'), failing)).toBe(true);
+  });
+
+  it('skips a failing service priced only by its provider default', () => {
+    const router = new LocalRouter({ maxPricing: { defaults: { inputUsdPerMillion: 1_000, outputUsdPerMillion: 1_000 } } });
+    const failing = makePeer({ providerServiceHealth: { anthropic: { services: { 'model-x': { status: 'failing', reason: 'timeout' } } } } });
+    expect(router.selectPeer(makeRequest('model-x'), [failing])).toBeNull();
+    expect(router.allowsPeerForPolicy(makeRequest('model-x'), failing)).toBe(true);
+    expect(router.selectPeer(makeRequest('model-x'), [makePeer()])).not.toBeNull();
+  });
+
+  it('prefers a healthy provider listing the model at its default price over a failing one pricing it', () => {
+    const router = new LocalRouter({ maxPricing: { defaults: { inputUsdPerMillion: 1_000, outputUsdPerMillion: 1_000 } } });
+    const peer = makePeer({
+      providers: ['anthropic', 'backup'],
+      providerPricing: {
+        anthropic: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 }, services: { 'model-x': { inputUsdPerMillion: 1, outputUsdPerMillion: 1 } } },
+        backup: { defaults: { inputUsdPerMillion: 2, outputUsdPerMillion: 2 } },
+      },
+      providerServiceApiProtocols: { backup: { services: { 'model-x': ['anthropic-messages'] } } },
+      providerServiceHealth: { anthropic: { services: { 'model-x': { status: 'failing', reason: 'timeout' } } } },
+    });
+    expect(router.selectPeer(makeRequest('model-x'), [peer])?.peerId).toBe(peer.peerId);
+    expect(router.allowsPeerForPolicy(makeRequest('model-x'), peer)).toBe(true);
+  });
+
+  it('prices policy through the provider a request names', () => {
+    const router = new LocalRouter({ maxPricing: { defaults: { inputUsdPerMillion: 10, outputUsdPerMillion: 10 } } });
+    const price = (usd: number) => ({ defaults: { inputUsdPerMillion: usd, outputUsdPerMillion: usd }, services: { 'model-x': { inputUsdPerMillion: usd, outputUsdPerMillion: usd } } });
+    const peer = makePeer({
+      providers: ['a', 'b', 'c'],
+      providerPricing: { a: price(1), b: price(100), c: price(2) },
+      providerServiceHealth: { a: { services: { 'model-x': { status: 'failing', reason: 'timeout' } } } },
+    });
+    const named = (provider: string): SerializedHttpRequest => ({ ...makeRequest('model-x'), headers: { 'content-type': 'application/json', 'x-antseed-provider': provider } });
+    expect(router.allowsPeerForPolicy(makeRequest('model-x'), peer)).toBe(false);
+    expect(router.allowsPeerForPolicy(named('c'), peer)).toBe(true);
+    expect(router.allowsPeerForPolicy(named('B'), peer)).toBe(false);
+  });
+
+  it('does not let a healthy chat-only provider stand in for a failing video provider', () => {
+    const router = new LocalRouter({ maxPricing: { defaults: { inputUsdPerMillion: 1_000, outputUsdPerMillion: 1_000 } } });
+    const price = { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 }, services: { 'video-x': { inputUsdPerMillion: 1, outputUsdPerMillion: 1 } } };
+    const peer = makePeer({
+      providers: ['fal', 'chat'],
+      providerPricing: { fal: price, chat: price },
+      providerServiceApiProtocols: { fal: { services: { 'video-x': ['fal-video'] } }, chat: { services: { 'video-x': ['openai-chat-completions'] } } },
+      providerServiceHealth: { fal: { services: { 'video-x': { status: 'failing', reason: 'timeout' } } } },
+    });
+    const videoRequest: SerializedHttpRequest = { ...makeRequest('video-x'), path: '/fal/v1/video/queue' };
+    expect(router.selectPeer(videoRequest, [peer])).toBeNull();
+    expect(router.selectPeer(makeRequest('video-x'), [peer])?.peerId).toBe(peer.peerId);
+  });
+
   it('selects cheapest peer regardless of provider name', () => {
     const router = new LocalRouter({
       maxPricing: {

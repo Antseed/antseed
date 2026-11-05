@@ -1,6 +1,7 @@
 import { Command } from 'commander';
 import { registerSellerCommands } from './commands/seller/index.js';
 import { registerBuyerCommands } from './commands/buyer/index.js';
+import { registerVerifierCommands } from './commands/verifier/index.js';
 import { registerConfigCommand } from './commands/config/index.js';
 import { registerNetworkCommands } from './commands/network/index.js';
 import { registerIdentityCommands } from './commands/identity/index.js';
@@ -34,6 +35,7 @@ export function createProgram(): Command {
 
   registerSellerCommands(program);
   registerBuyerCommands(program);
+  registerVerifierCommands(program);
   registerConfigCommand(program);
   registerNetworkCommands(program);
   registerIdentityCommands(program);

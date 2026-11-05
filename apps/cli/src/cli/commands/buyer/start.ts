@@ -18,7 +18,7 @@ import { loadRouterPlugin, loadVerifierPlugin, buildPluginConfig, getPackageVers
 import { ensurePluginsUpToDate } from '../../../plugins/drift.js'
 import { resolvePluginPackage } from '../../../plugins/registry.js'
 import { BUYER_RESTART_EXIT_CODE, BUYER_SHUTDOWN_DEADLINE_MS, BuyerProxy, type DepositWatcherAbsenceReason } from '../../../proxy/buyer-proxy.js'
-import { DEPOSIT_WATCH_ACTIVE_INTERVAL_MS, DepositWatcher } from '../../../proxy/deposit-watcher.js'
+import { DEPOSIT_WATCH_ACTIVE_INTERVAL_MS, DepositWatcher, reserveBaseUnits } from '../../../proxy/deposit-watcher.js'
 import { DepositWatchHub } from '../../../proxy/deposit-watch-hub.js'
 import { CachedBuyerChainReader, constantRelayReads } from '../../../proxy/buyer-chain-reader.js'
 import { redact, sharedChainProvider } from '../../../proxy/chain-rpc.js'
@@ -329,6 +329,8 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
         channelsContractAddress: cryptoOverrides?.channelsContractAddress,
         freeUsageContractAddress: cryptoOverrides?.freeUsageContractAddress,
         usdcContractAddress: cryptoOverrides?.usdcContractAddress,
+        verificationContractAddress: cryptoOverrides?.verificationContractAddress,
+        verificationResultsAddress: cryptoOverrides?.verificationResultsAddress,
       })
       const settlementEnabled = settlementEnv ?? true
 
@@ -367,6 +369,10 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
           ...(chainConfig.sellerPoolsAddress ? { sellerPoolsAddress: chainConfig.sellerPoolsAddress } : {}),
           ...(chainConfig.usageAccountingAddress ? { usageAccountingAddress: chainConfig.usageAccountingAddress } : {}),
           ...(chainConfig.washTradingRegistryAddress ? { washTradingRegistryAddress: chainConfig.washTradingRegistryAddress } : {}),
+          // Live DIFF verdicts on AntseedVerificationResults (found through the
+          // KBF audits contract) cut a service's effective reputation to 10%.
+          ...(chainConfig.verificationContractAddress ? { verificationContractAddress: chainConfig.verificationContractAddress } : {}),
+          ...(chainConfig.verificationResultsAddress ? { verificationResultsAddress: chainConfig.verificationResultsAddress } : {}),
           chainId: chainConfig.evmChainId,
           defaultDepositAmountUSDC: cryptoOverrides?.defaultLockAmountUSDC
             ? String(Math.round(parseFloat(cryptoOverrides.defaultLockAmountUSDC) * 1_000_000))
@@ -433,9 +439,18 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
         maxStreamDurationMs: effectiveBuyerConfig.maxStreamDurationMs,
         payments: paymentsConfig,
         verification: effectiveBuyerConfig.verification,
+        ...(config.buyer.freeTierDelegations ? { freeTierDelegations: config.buyer.freeTierDelegations } : {}),
       })
 
       node.setRouter(router)
+      // `antseed buyer free-tier share` writes new delegations to the config
+      // file; pick them up without a restart.
+      const freeTierDelegationsReload = setInterval(() => {
+        void loadConfig(globalOpts.config)
+          .then((latest) => node.setFreeTierDelegations(latest.buyer.freeTierDelegations ?? []))
+          .catch(() => {})
+      }, 60_000)
+      freeTierDelegationsReload.unref()
 
       try {
         await node.start()
@@ -521,15 +536,24 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
       // deposit watcher once watchers can run (see below).
       let createDepositWatcher: ((identity: Identity, shared?: boolean) => DepositWatcher) | null = null
       const identityWatchers: DepositWatcher[] = []
-      const buyerIdentities = new BuyerIdentityLoader(node, globalOpts.dataDir, (name, identity) => {
-        console.log(chalk.dim(`Buyer identity ${name} loaded (${identity.wallet.address})`))
-        if (!createDepositWatcher) return
+      // A request can load its identity as soon as the proxy listens, before
+      // watchers can run; those identities get their watcher once they can.
+      const unwatchedIdentities: Array<[string, Identity]> = []
+      const watchIdentity = (name: string, identity: Identity): void => {
+        if (!createDepositWatcher) {
+          unwatchedIdentities.push([name, identity])
+          return
+        }
         // Every identity (workspace wallet) gets its own watcher so the gateway
         // can read and promote it via /_antseed/deposits/*?identity=<name>.
         const watcher = createDepositWatcher(identity, true)
         if (effectiveBuyerConfig.autoSweep !== false) watcher.startIdle()
         identityWatchers.push(watcher)
         proxy.setIdentityDepositWatcher(name, watcher)
+      }
+      const buyerIdentities = new BuyerIdentityLoader(node, globalOpts.dataDir, (name, identity) => {
+        console.log(chalk.dim(`Buyer identity ${name} loaded (${identity.wallet.address})`))
+        watchIdentity(name, identity)
       })
 
       // One graceful shutdown path for signals and for a gateway-requested
@@ -558,6 +582,8 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
         configPath: globalOpts.config,
         routingPreferences: effectiveBuyerConfig.routingPreferences,
         minPeerReputation: effectiveBuyerConfig.minPeerReputation,
+        maxPricing: effectiveBuyerConfig.maxPricing.defaults,
+        maxReserveAmountUsdc: config.payments?.maxReserveAmountUsdc ?? '1000000',
         settingOverrides: buyerSettingOverrides({ buyerOverrides: runtimeOverrides, verifierFlags }),
         backgroundRefreshIntervalMs: effectiveBuyerConfig.peerRefreshIntervalMs,
         ...(verifierPolicy ? { verifier: verifierPolicy } : {}),
@@ -663,6 +689,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
             }
           },
           usdcAddress: chainConfig.usdcContractAddress,
+          sessionReserveBaseUnits: reserveBaseUnits(config.payments?.maxReserveAmountUsdc),
           evmChainId: chainConfig.evmChainId,
           depositRelayAddress,
           dispatch: (payload) => node.dispatchSweepRequest(payload),
@@ -678,6 +705,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
           depositWatcher.startIdle()
           console.log(chalk.dim('Auto-sweep: watching the hot wallet — incoming USDC deposits automatically (buyer.autoSweep=false disables).'))
         }
+        for (const [name, identity] of unwatchedIdentities.splice(0)) watchIdentity(name, identity)
       }
 
       if (ownsProxyListener) {

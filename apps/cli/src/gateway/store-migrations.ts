@@ -368,4 +368,71 @@ export const MIGRATIONS: readonly string[] = [
     PRIMARY KEY (owner_kind, owner_id, model)
   );
   `,
+  // Model-routed requests: why automatic routing picked the seller that served it (its rank, how it was
+  // picked and the numbers it was ranked by), as the buyer reported it.
+  `
+  ALTER TABLE gateway_requests ADD COLUMN route_selection TEXT;
+  `,
+  // Deposit confirmations also cover USDC sent to the workspace wallet ('transfer'): the transfers that
+  // funded its sweeps. One transaction can pay several workspace wallets (an exchange's batched
+  // withdrawal), so a deposit is keyed by workspace and transaction. SQLite cannot widen a CHECK or
+  // change a primary key, so the table is rebuilt.
+  `
+  CREATE TABLE deposits_v2 (
+    tx_hash TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    wallet TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('relay', 'direct', 'transfer')),
+    credited_usdc INTEGER NOT NULL,
+    fee_usdc INTEGER NOT NULL DEFAULT 0,
+    block_number INTEGER NOT NULL,
+    block_time INTEGER NOT NULL,
+    sources TEXT NOT NULL DEFAULT '[]',
+    approved_by_id TEXT,
+    approved_by_label TEXT,
+    approved_at INTEGER,
+    approval_note TEXT,
+    recorded_at INTEGER NOT NULL,
+    PRIMARY KEY (workspace_id, tx_hash)
+  );
+  INSERT INTO deposits_v2 (tx_hash, workspace_id, wallet, kind, credited_usdc, fee_usdc, block_number, block_time, sources,
+    approved_by_id, approved_by_label, approved_at, approval_note, recorded_at)
+  SELECT tx_hash, workspace_id, wallet, kind, credited_usdc, fee_usdc, block_number, block_time, sources,
+    approved_by_id, approved_by_label, approved_at, approval_note, recorded_at FROM deposits;
+  DROP TABLE deposits;
+  ALTER TABLE deposits_v2 RENAME TO deposits;
+  CREATE INDEX deposits_workspace ON deposits(workspace_id, block_time);
+  `,
+  // Purchase statements: the company a workspace buys for (printed on its statements), and each month's
+  // statement once final, kept as issued so later changes (seller names, the exchange rate) never alter it.
+  `
+  CREATE TABLE billing_profiles (
+    workspace_id TEXT PRIMARY KEY,
+    company_name TEXT NOT NULL,
+    address TEXT NOT NULL,
+    country TEXT NOT NULL,
+    vat_number TEXT,
+    registration_number TEXT,
+    vat_valid INTEGER,
+    vat_checked_at INTEGER,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE TABLE purchase_statements (
+    workspace_id TEXT NOT NULL,
+    period TEXT NOT NULL,
+    issued_at INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    PRIMARY KEY (workspace_id, period)
+  );
+  -- The model a seller actually served, which a router picks: statements list purchases by it. Copied
+  -- from the request log while it still has it (spend can reach the ledger before the response names it).
+  ALTER TABLE ledger_entries ADD COLUMN served_model TEXT;
+  UPDATE ledger_entries SET served_model = (SELECT served_model FROM gateway_requests WHERE tag = ledger_entries.request_tag)
+    WHERE routing_fee = 0 AND request_tag IS NOT NULL;
+  `,
+  // Billing details take any company: free-form additional details, and tax IDs are no longer checked
+  // (vat_valid and vat_checked_at stay unused).
+  `
+  ALTER TABLE billing_profiles ADD COLUMN notes TEXT;
+  `,
 ]

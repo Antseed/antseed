@@ -4,12 +4,14 @@ import type { AddressInfo } from 'node:net'
 import { nativeVideoAcceptance, nativeVideoRoute, type NativeVideoRoute } from '@antseed/api-adapter'
 import { DEFAULT_BUYER_IDENTITY, VIDEO_JOB_RETIRED_HEADER, VIDEO_PRICE_HEADER } from '@antseed/node'
 import { SPEND_ATTRIBUTION_HEADER } from '../proxy/spend-attribution.js'
-import { ROUTER_PEER_ID_HEADER, ROUTER_RANK_HEADER, ROUTER_SERVICE_HEADER } from '../proxy/telemetry.js'
+import { decodeServedSelection, ROUTE_SELECTION_HEADER, type ServedSelection } from '../proxy/route-selection.js'
+import { coveredByFreeAllowance, ROUTER_PEER_ID_HEADER, ROUTER_RANK_HEADER, ROUTER_SERVICE_HEADER } from '../proxy/telemetry.js'
 import { BUYER_IDENTITY_HEADER, MAX_VIDEO_COST_HEADER } from '../proxy/request-utils.js'
 import { GATEWAY_CONTROL_HEADER, ROUTING_POLICY_HEADER, encodePolicyHeader, meaningfulPolicy, policyAllowsModel, type RoutingPolicy } from '../routing-policy/policy.js'
 import { effectiveKeyLimits, newRequestTag, videoJobKey, type AdmitOptions, type GatewayAccounting, type KeyContext } from './accounting.js'
 import { errorMessage } from './errors.js'
 import { isClientCredentialHeader } from '../proxy/credential-headers.js'
+import { isBrowserContextHeader } from '../proxy/local-request-guard.js'
 import { parseBearerToken } from './keys.js'
 import { BUDGET_PERIODS, type LimitBreach } from './limits.js'
 import { formatUsdc, optionalUsdcToDecimalString, parseUsdToUsdc, usdcToDecimalString } from './money.js'
@@ -83,6 +85,9 @@ const SPEND_FEED_UNAVAILABLE_MESSAGES: Record<Exclude<SpendFeedState, 'reporting
   unreachable: 'The buyer for this API key is not reachable',
 }
 const KEY_INFO_PATH = '/v1/key'
+const SPEECH_PATH = '/v1/audio/speech'
+/** Set by the buyer: `1` when the served service also charges per unit, `0` when it does not. */
+const UNIT_PRICED_HEADER = 'x-antseed-unit-priced'
 const TOPUP_PATH = '/v1/key/topup'
 
 /**
@@ -99,6 +104,8 @@ const ALLOWED_ROUTES: ReadonlyArray<{ method: string; prefix: string; paid: bool
   { method: 'POST', prefix: '/v1/responses', paid: true },
   { method: 'POST', prefix: '/v1/images/generations', paid: true },
   { method: 'POST', prefix: '/v1/images/edits', paid: true },
+  // Text to speech: JSON in, the audio file streamed back as it is.
+  { method: 'POST', prefix: SPEECH_PATH, paid: true },
   // Native video jobs, as the buyer serves them: queue, then poll retrieve until it streams the MP4 (charged on delivery).
   { method: 'POST', prefix: '/api/v1/video/queue', paid: true },
   { method: 'POST', prefix: '/api/v1/video/retrieve', paid: true },
@@ -584,6 +591,7 @@ export class GatewayServer {
       let gatewayError: RequestError | null = null
       let sellerPeerId: string | null = null
       let servedModel: string | null = null
+      let routeSelection: ServedSelection | null = null
       let router: RequestRouter | null = null
       let reportedLatency: number | null = null
       // Streamed answers: the buyer's time to the seller's first frame, and when that frame reached the gateway.
@@ -624,7 +632,7 @@ export class GatewayServer {
         const tokensPerSecond = firstTokenMs !== null ? outputTokensPerSecond(usage?.outputTokens ?? 0, finishedAt - respondedAt) : null
         try {
           // First, and apart from the rest: the job ID is what lets its key retrieve it after a restart.
-          store.recordRequestOutcome(tag, { sellerPeerId, latencyMs, firstTokenMs, tokensPerSecond, endUser, servedFree, videoJobId, videoDelivered, router, servedModel })
+          store.recordRequestOutcome(tag, { sellerPeerId, latencyMs, firstTokenMs, tokensPerSecond, endUser, servedFree, videoJobId, videoDelivered, router, servedModel, routeSelection })
         } catch (error) {
           this._log(`gateway could not record request ${tag}: ${errorMessage(error)}`)
         }
@@ -689,12 +697,20 @@ export class GatewayServer {
           sellerPeerId = firstHeader(upstreamRes.headers['x-antseed-peer-id']).slice(0, 200) || null
           servedModel = firstHeader(upstreamRes.headers['x-antseed-service']).slice(0, 200) || null
           router = routerHeaders(upstreamRes.headers)
+          routeSelection = decodeServedSelection(upstreamRes.headers[ROUTE_SELECTION_HEADER])
           reportedLatency = latencyHeader(firstHeader(upstreamRes.headers['x-antseed-latency-ms']))
           firstTokenMs = status < 400 ? latencyHeader(firstHeader(upstreamRes.headers['x-antseed-first-token-ms'])) : null
           respondedAt = Date.now()
           const contentType = firstHeader(upstreamRes.headers['content-type']).toLowerCase()
-          // A video is priced per second, not per token: zero token prices do not make it free.
-          servedFree = !request.video && freeSellerPricing(upstreamRes.headers)
+          // Videos are priced per second, not per token: zero token prices do not make them
+          // free. Other services are free at zero token prices unless the buyer says a unit
+          // price applies (images, speech characters); a buyer too old to say so is trusted
+          // for everything but speech, which only it can price. A priced model's response the
+          // seller's free allowance covered is free too (video jobs excepted).
+          const unitPriced = firstHeader(upstreamRes.headers[UNIT_PRICED_HEADER])
+          const perUnit = unitPriced === '1' || (unitPriced !== '0' && request.requestPath === SPEECH_PATH)
+          servedFree = !request.video
+            && (coveredByFreeAllowance(upstreamRes.headers) || (!perUnit && freeSellerPricing(upstreamRes.headers)))
           if (request.video?.action === 'create' && status >= 200 && status < 300) {
             videoCreateChunks = collectPrefix(upstreamRes, MAX_ERROR_BODY_BYTES)
             videoPriceHeader = firstHeader(upstreamRes.headers[VIDEO_PRICE_HEADER])
@@ -704,12 +720,14 @@ export class GatewayServer {
           if (observability.logContent) responseChunks = collectPrefix(upstreamRes, MAX_LOGGED_CONTENT_BYTES)
           if (status >= 400) errorChunks = collectPrefix(upstreamRes, MAX_ERROR_BODY_BYTES)
           // A delivered video is an MP4 stream with no usage to read.
-          else if (request.model !== null && !contentType.startsWith('video/')) usageReader = readUsage(upstreamRes, (message) => this._log(message))
+          else if (request.model !== null && !contentType.startsWith('video/') && !contentType.startsWith('audio/')) usageReader = readUsage(upstreamRes, (message) => this._log(message))
           const responseHeaders: http.OutgoingHttpHeaders = {}
           for (const [name, value] of Object.entries(upstreamRes.headers)) {
             if (!HOP_BY_HOP.has(name.toLowerCase()) && value !== undefined) responseHeaders[name] = value
           }
           responseHeaders.connection = 'close'
+          // The request log is keyed by this tag. The buyer's x-antseed-request-id is a different id.
+          responseHeaders['x-antseed-gateway-tag'] = tag
           upstreamRes.once('error', () => {
             finish!(status, buyerRequestId)
             // The buyer's answer broke off: end the client's too, rather than leave it waiting.
@@ -1174,6 +1192,9 @@ const STRIPPED_HEADERS = new Set([
   GATEWAY_CONTROL_HEADER,
   GATEWAY_INTERNAL_KEY_HEADER,
   END_USER_HEADER,
+  // Proxy-internal hooks for the local verifier; a key holder must not choose them.
+  'x-antseed-request-id',
+  'x-antseed-capture-response-auth-preimages',
 ])
 
 /** Client headers passed on to the buyer, minus everything the key (not the client) decides. */
@@ -1185,6 +1206,9 @@ function forwardedHeaders(incoming: http.IncomingHttpHeaders): http.OutgoingHttp
     // credentials are never needed downstream (see credential-headers.ts).
     if (isClientCredentialHeader(normalized) || STRIPPED_HEADERS.has(normalized)) continue
     if (normalized.startsWith('x-forwarded-') || HOP_BY_HOP.has(normalized)) continue
+    // The key, not the client's page, decides access; the buyer refuses
+    // requests that look like they came from a web page.
+    if (isBrowserContextHeader(normalized)) continue
     headers[name] = value
   }
   return headers

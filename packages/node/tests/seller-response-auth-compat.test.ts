@@ -9,6 +9,8 @@ import {
 } from '../src/types/protocol.js';
 import type { Provider } from '../src/interfaces/seller-provider.js';
 import { VerificationMux } from '../src/verification/index.js';
+import { decodeResponseAuth } from '../src/verification/codec.js';
+import { hashRequest } from '../src/verification/response-auth.js';
 
 function makeProvider(): Provider {
   return {
@@ -44,10 +46,18 @@ function makeHandler(): SellerRequestHandler {
   });
 }
 
+const REQUEST = {
+  requestId: 'req-response-auth-compat',
+  method: 'POST',
+  path: '/v1/messages',
+  headers: { 'content-type': 'application/json' } as Record<string, string>,
+  body: new TextEncoder().encode(JSON.stringify({ model: 'test-model' })),
+};
+
 async function serveRequest(conn: {
   send: ReturnType<typeof vi.fn>;
   hasRemoteCapability: (capability: string) => boolean;
-}): Promise<number[]> {
+}, request = REQUEST): Promise<number[]> {
   const handler = makeHandler();
   const paymentMux = { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any;
   const verificationMux = new VerificationMux(conn as any);
@@ -56,13 +66,7 @@ async function serveRequest(conn: {
   await mux.handleFrame({
     type: MessageType.HttpRequest,
     messageId: 1,
-    payload: encodeHttpRequest({
-      requestId: 'req-response-auth-compat',
-      method: 'POST',
-      path: '/v1/messages',
-      headers: { 'content-type': 'application/json' },
-      body: new TextEncoder().encode(JSON.stringify({ model: 'test-model' })),
-    }),
+    payload: encodeHttpRequest(request),
   });
 
   return conn.send.mock.calls.map(([frame]) => decodeFrame(frame)!.message.type);
@@ -91,5 +95,20 @@ describe('Seller response auth compatibility', () => {
 
     expect(frameTypes).toContain(MessageType.HttpResponse);
     expect(frameTypes).toContain(MessageType.VerificationResponseAuth);
+  });
+
+  it('signs the request as the buyer sent it, including a free-tier delegation header', async () => {
+    const conn = {
+      send: vi.fn(),
+      hasRemoteCapability: vi.fn((capability: string) => capability === CONNECTION_CAPABILITY_RESPONSE_AUTH_V1),
+    };
+    const request = { ...REQUEST, headers: { ...REQUEST.headers, 'x-antseed-free-tier-delegations': 'delegations' } };
+
+    await serveRequest(conn, request);
+
+    const authFrame = conn.send.mock.calls
+      .map(([frame]) => decodeFrame(frame)!.message)
+      .find((message) => message.type === MessageType.VerificationResponseAuth)!;
+    expect(decodeResponseAuth(authFrame.payload).requestHash).toBe(hashRequest(request));
   });
 });

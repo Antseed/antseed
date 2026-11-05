@@ -4,6 +4,7 @@ import { ANTSEED_STREAMING_RESPONSE_HEADER } from '@antseed/node';
 import { swapAuthHeader, validateRequestService } from './auth-swap.js';
 import Bottleneck from 'bottleneck';
 import { stripRelayRequestHeaders, stripRelayResponseHeaders } from './http-headers.js';
+import { pinnedUpstreamModel } from './pinned-upstream-model.js';
 
 export const DEFAULT_HTTP_TIMEOUT_MS = 5 * 60_000;
 
@@ -17,6 +18,7 @@ export interface RelayConfig {
   extraHeadersProvider?: () => Promise<Record<string, string> | undefined>;
   maxConcurrency: number;
   allowedServices: string[];
+  /** Timeout awaiting upstream headers or further response-body data, not a total stream-duration limit. */
   timeoutMs?: number;
   /** Lowercase header-name prefixes to strip before forwarding upstream. */
   stripHeaderPrefixes?: string[];
@@ -52,6 +54,45 @@ export interface RelayConfig {
    * Example: `{ "/v1/chat/completions": "/v4/chat/completions" }`
    */
   pathRewrite?: Record<string, string>;
+  /**
+   * Backup upstreams for the same services, tried in order when an earlier
+   * upstream fails before anything reaches the buyer: a network error or
+   * timeout, or a status in {@link FAILOVER_STATUS_CODES}. They share this
+   * relay's headers, body injection and limits.
+   */
+  fallbackUpstreams?: RelayFallbackUpstream[];
+}
+
+export interface RelayFallbackUpstream {
+  baseUrl: string;
+  /** Auth header value for this upstream. Defaults to the primary upstream's credentials. */
+  authHeaderValue?: string;
+  /** Lowercase announced service -> upstream model here. Merged over the primary's map. */
+  serviceRewriteMap?: Record<string, string>;
+  /** Lowercase announced services this upstream serves. Omit to serve every service. */
+  services?: string[];
+  /** Path rewrites for this upstream. Defaults to the primary's. */
+  pathRewrite?: Record<string, string>;
+}
+
+/**
+ * Upstream statuses that move a request to the next upstream: auth, credit,
+ * missing model, rate limit or quota, and server errors. Request errors such
+ * as 400, 413 and 422 come from the buyer's request and are returned as-is.
+ */
+export const FAILOVER_STATUS_CODES: ReadonlySet<number> = new Set([401, 402, 403, 404, 408, 429, 500, 502, 503, 504, 529]);
+/** How long a failed upstream is skipped for a service when it sent no Retry-After. */
+export const DEFAULT_UPSTREAM_COOLDOWN_MS = 30_000;
+const MAX_UPSTREAM_COOLDOWN_MS = 5 * 60_000;
+
+interface ResolvedUpstream {
+  baseUrl: string;
+  /** null = the primary's credentials (static header or token provider). */
+  authHeaderValue: string | null;
+  serviceRewriteMap?: Record<string, string>;
+  services: ReadonlySet<string> | null;
+  pathRewrite?: Record<string, string>;
+  primary: boolean;
 }
 
 export interface RelayCallbacks {
@@ -71,7 +112,8 @@ function deepMerge(target: Record<string, unknown>, source: Record<string, unkno
   return out;
 }
 
-function getHeader(headers: Record<string, string>, name: string): string {
+/** Case-insensitive header lookup; '' when the header is absent. */
+export function getHeader(headers: Record<string, string>, name: string): string {
   const entry = Object.entries(headers).find(([key]) => key.toLowerCase() === name.toLowerCase());
   return entry?.[1] ?? '';
 }
@@ -81,13 +123,24 @@ function multipartBoundary(contentType: string): string {
   return (match?.[1] ?? match?.[2] ?? '').trim();
 }
 
-function readMultipartTextField(body: Uint8Array, contentType: string, fieldName: string): string | null {
+/**
+ * First non-file value of each named multipart field, trimmed, in one pass over
+ * the body. A field missing from the body is missing from the map; an empty
+ * one maps to ''.
+ */
+function readMultipartTextFields(
+  body: Uint8Array,
+  contentType: string,
+  fieldNames: readonly string[],
+): Map<string, string> {
+  const fields = new Map<string, string>();
   const boundary = multipartBoundary(contentType);
-  if (!boundary) return null;
+  if (!boundary) return fields;
+  const wanted = new Set(fieldNames);
   const text = new TextDecoder('latin1').decode(body);
   const delimiter = `--${boundary}`;
   let index = text.indexOf(delimiter);
-  while (index !== -1) {
+  while (index !== -1 && fields.size < wanted.size) {
     index += delimiter.length;
     if (text.startsWith('--', index)) break;
     const headerEnd = text.indexOf('\r\n\r\n', index);
@@ -97,13 +150,12 @@ function readMultipartTextField(body: Uint8Array, contentType: string, fieldName
     const headers = text.slice(index, headerEnd);
     const params = /content-disposition:\s*form-data\s*;([^\r\n]*)/i.exec(headers)?.[1] ?? '';
     const name = /name="([^"]*)"/i.exec(params)?.[1] ?? '';
-    if (name === fieldName && !/filename\s*=/i.test(params)) {
-      const raw = body.subarray(headerEnd + 4, next);
-      return new TextDecoder().decode(raw).trim();
+    if (wanted.has(name) && !fields.has(name) && !/filename\s*=/i.test(params)) {
+      fields.set(name, new TextDecoder().decode(body.subarray(headerEnd + 4, next)).trim());
     }
     index = next + 2;
   }
-  return null;
+  return fields;
 }
 
 function setMultipartTextField(
@@ -156,6 +208,9 @@ export class HttpRelay {
   private readonly _callbacks: RelayCallbacks;
   private readonly _validationServices: ReadonlySet<string>;
   private readonly _limiter: Bottleneck | null;
+  private readonly _upstreams: ResolvedUpstream[];
+  /** `${upstreamIndex}:${service}` -> time until which that upstream is tried last for the service. */
+  private readonly _cooldownUntil = new Map<string, number>();
   private _activeCount = 0;
 
   constructor(config: RelayConfig, callbacks: RelayCallbacks) {
@@ -175,6 +230,26 @@ export class HttpRelay {
       ...config.allowedServices.map((m) => m.trim().toLowerCase()),
       ...rewriteValues.map((m) => m.trim().toLowerCase()),
     ]);
+    this._upstreams = [
+      {
+        baseUrl: config.baseUrl,
+        authHeaderValue: null,
+        serviceRewriteMap: config.serviceRewriteMap,
+        services: null,
+        pathRewrite: config.pathRewrite,
+        primary: true,
+      },
+      ...(config.fallbackUpstreams ?? []).map((fallback): ResolvedUpstream => ({
+        baseUrl: fallback.baseUrl,
+        authHeaderValue: fallback.authHeaderValue ?? null,
+        serviceRewriteMap: config.serviceRewriteMap || fallback.serviceRewriteMap
+          ? { ...config.serviceRewriteMap, ...fallback.serviceRewriteMap }
+          : undefined,
+        services: fallback.services ? new Set(fallback.services.map((m) => m.trim().toLowerCase())) : null,
+        pathRewrite: fallback.pathRewrite ?? config.pathRewrite,
+        primary: false,
+      })),
+    ];
   }
 
   getActiveCount(): number {
@@ -208,265 +283,49 @@ export class HttpRelay {
     this._activeCount++;
 
     try {
-      // Resolve dynamic auth token if provider uses OAuth / keychain
-      let effectiveConfig: { authHeaderName: string; authHeaderValue: string; extraHeaders?: Record<string, string> } = {
-        authHeaderName: this._config.authHeaderName,
-        authHeaderValue: this._config.authHeaderValue,
-        extraHeaders: this._config.extraHeaders,
-      };
-      if (this._config.tokenProvider) {
-        const freshToken = await this._config.tokenProvider.getToken();
-        // Preserve Bearer prefix for OAuth providers that use Authorization header
-        const isBearer = this._config.authHeaderName === 'authorization';
-        const headerValue = isBearer ? `Bearer ${freshToken}` : freshToken;
-        effectiveConfig = { ...effectiveConfig, authHeaderValue: headerValue };
-      }
-      if (this._config.extraHeadersProvider) {
-        const providedHeaders = await this._config.extraHeadersProvider();
-        if (providedHeaders && Object.keys(providedHeaders).length > 0) {
-          effectiveConfig = {
-            ...effectiveConfig,
-            extraHeaders: {
-              ...(effectiveConfig.extraHeaders ?? {}),
-              ...providedHeaders,
-            },
-          };
-        }
-      }
-
-      // Swap auth headers
-      let swappedRequest = swapAuthHeader(request, effectiveConfig);
-
-      // Normalize the requested service into the upstream model for both JSON
-      // and multipart Images API requests. Multipart edits otherwise bypass
-      // alias rewriting and some upstreams report the model as missing.
-      if (swappedRequest.method !== 'GET' && swappedRequest.method !== 'HEAD') {
-        const contentType = getHeader(swappedRequest.headers, 'content-type');
-        if (/^multipart\/form-data/i.test(contentType.trim())) {
-          const requestedService = getHeader(swappedRequest.headers, 'x-antseed-service').trim()
-            || readMultipartTextField(swappedRequest.body, contentType, 'service')
-            || readMultipartTextField(swappedRequest.body, contentType, 'model')
-            || '';
-          if (requestedService) {
-            const rewrittenService = this._config.serviceRewriteMap?.[requestedService.toLowerCase()]?.trim();
-            const upstreamModel = rewrittenService || requestedService;
-            const rewrittenBody = setMultipartTextField(swappedRequest.body, contentType, 'model', upstreamModel);
-            if (rewrittenBody) swappedRequest = { ...swappedRequest, body: rewrittenBody };
-          }
-        } else {
-          try {
-            const decoded = JSON.parse(new TextDecoder().decode(swappedRequest.body)) as Record<string, unknown>;
-            const transformed: Record<string, unknown> = { ...decoded };
-
-            // Read from both "model" (upstream API compat) and "service" (native) fields
-            const requestedService = (transformed.service ?? transformed.model) as string | undefined;
-
-            if (this._config.serviceRewriteMap && typeof requestedService === 'string' && requestedService.trim().length > 0) {
-              const rewrittenService = this._config.serviceRewriteMap[requestedService.trim().toLowerCase()];
-              if (typeof rewrittenService === 'string' && rewrittenService.trim().length > 0) {
-                transformed.model = rewrittenService.trim();
-              }
-            }
-
-            // Normalize: if client sent "service" without "model", copy to "model" for upstream API compat.
-            if (transformed.service !== undefined && transformed.model === undefined) {
-              transformed.model = transformed.service;
-            }
-            // Remove the "service" field — upstream APIs don't understand it.
-            delete transformed.service;
-
-            // Force `stream_options.include_usage = true` on streaming OpenAI Chat
-            // Completions requests. Without this, strict OpenAI-spec upstreams
-            // (e.g. api.minimax.io) return SSE streams with no `usage` chunk,
-            // which makes `parseResponseUsage` return zeros and causes the
-            // seller to record `cost=0 (in=0 out=0)` for every request —
-            // effectively giving away inference for free.
-            //
-            // We only touch `/v1/chat/completions` with `stream:true`, and we
-            // preserve any caller-supplied `stream_options` fields. We don't
-            // override an explicit `include_usage:false` (operators can still
-            // disable via `injectJsonFields` below if they really need to).
-            if (
-              request.path.toLowerCase().startsWith('/v1/chat/completions')
-              && transformed.stream === true
-            ) {
-              const existing = transformed.stream_options && typeof transformed.stream_options === 'object' && !Array.isArray(transformed.stream_options)
-                ? transformed.stream_options as Record<string, unknown>
-                : {};
-              if (existing.include_usage === undefined) {
-                transformed.stream_options = { ...existing, include_usage: true };
-              }
-            }
-
-            const isImageRequest = request.path.toLowerCase().startsWith('/v1/images/');
-            const merged = this._config.injectJsonFields && !isImageRequest
-              ? deepMerge(transformed, this._config.injectJsonFields)
-              : transformed;
-
-            swappedRequest = { ...swappedRequest, body: new TextEncoder().encode(JSON.stringify(merged)) };
-          } catch {
-            // Not JSON — leave body unchanged
-          }
-        }
-      }
-
-      // Build upstream URL
-      const base = this._config.baseUrl.replace(/\/+$/, '');
-      let path = request.path.startsWith('/') ? request.path : `/${request.path}`;
-      if (this._config.pathRewrite && path in this._config.pathRewrite) {
-        path = this._config.pathRewrite[path]!;
-      }
-      const url = `${base}${path}`;
-
-      // Build fetch headers, stripping hop-by-hop and provider-specific prefixes
-      const stripPrefixes = this._config.stripHeaderPrefixes ?? [];
-      const fetchHeaders = stripRelayRequestHeaders(swappedRequest.headers, {
-        stripHeaderPrefixes: stripPrefixes,
-      });
-
-      const timeoutMs = this._config.timeoutMs ?? DEFAULT_HTTP_TIMEOUT_MS;
-
-      const doFetch = async (headers: Record<string, string>): Promise<Response> => {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), timeoutMs);
+      const service = this._upstreams.length > 1 ? serviceOfRequest(request) : '';
+      const candidates = this._candidateUpstreams(service);
+      for (const [position, { upstream, index }] of candidates.entries()) {
+        const isLast = position === candidates.length - 1;
+        let attempt: UpstreamAttempt | undefined;
         try {
-          return await fetch(url, {
-            redirect: this._config.redirect,
-            method: swappedRequest.method,
-            headers,
-            body: swappedRequest.method !== 'GET' && swappedRequest.method !== 'HEAD'
-              ? Buffer.from(swappedRequest.body)
-              : undefined,
-            signal: controller.signal,
-          });
-        } catch (error) {
-          if (controller.signal.aborted) {
-            throw new Error(`Upstream request timed out after ${timeoutMs}ms`);
+          try {
+            attempt = await this._fetchUpstream(request, upstream);
+          } catch (err) {
+            if (isLast) throw err;
+            this._coolDown(index, service, null);
+            this._logFailover(service, upstream, candidates[position + 1]!.upstream, err instanceof Error ? err.message : String(err));
+            continue;
           }
-          throw error;
+          if (!isLast && FAILOVER_STATUS_CODES.has(attempt.response.status)) {
+            this._coolDown(index, service, attempt.response.headers.get('retry-after'));
+            this._logFailover(service, upstream, candidates[position + 1]!.upstream, `HTTP ${attempt.response.status}`);
+            continue;
+          }
+          if (!isStreamingAttempt(attempt)) {
+            // Buffer a complete response before delivering it, so a connection that
+            // drops mid-body can still fail over: nothing has reached the buyer yet.
+            try {
+              attempt.body = await readUpstreamBody(attempt);
+            } catch (err) {
+              const error = attempt.signal.aborted ? attempt.signal.reason : err;
+              if (isLast) throw error;
+              this._coolDown(index, service, null);
+              this._logFailover(service, upstream, candidates[position + 1]!.upstream, error instanceof Error ? error.message : String(error));
+              continue;
+            }
+          }
+          if (attempt.response.status < 400) {
+            this._cooldownUntil.delete(`${index}:${service}`);
+          }
+          await this._deliver(request, attempt);
+          return;
         } finally {
-          clearTimeout(timeout);
+          // fetch() resolves at headers, not at the end of the body. Keep its
+          // idle timeout alive through buffering/streaming, then release it on every
+          // completion, failure, or failover (including an unread error body).
+          attempt?.dispose();
         }
-      };
-
-      let currentHeaders = fetchHeaders;
-      const maxRetries = this._config.retryOn5xx ?? 0;
-      const baseDelay = this._config.retryBaseDelayMs ?? 1000;
-      const retryableStatusCodes = new Set(this._config.retryStatusCodes ?? []);
-
-      const runFetch = this._limiter
-        ? (headers: Record<string, string>) => this._limiter!.schedule(() => doFetch(headers))
-        : doFetch;
-
-      const fetchWithRetries = async (): Promise<Response> => {
-        let lastError: unknown;
-        for (let attempt = 0; attempt <= maxRetries; attempt++) {
-          if (attempt > 0) {
-            const delay = baseDelay * (2 ** (attempt - 1));
-            await new Promise((resolve) => setTimeout(resolve, delay));
-          }
-
-          try {
-            const response = await runFetch(currentHeaders);
-            if (attempt === maxRetries || (response.status < 500 && !retryableStatusCodes.has(response.status))) {
-              return response;
-            }
-          } catch (error) {
-            lastError = error;
-            if (attempt === maxRetries) {
-              throw error;
-            }
-          }
-        }
-
-        throw (lastError instanceof Error ? lastError : new Error('Upstream request failed after retries'));
-      };
-
-      let fetchResponse = await fetchWithRetries();
-
-      if (fetchResponse.status === 401 && this._config.retryOn401 && this._config.tokenProvider?.forceRefresh) {
-        const refreshedToken = await this._config.tokenProvider.forceRefresh();
-        const isBearer = this._config.authHeaderName === 'authorization';
-        const newHeaderValue = isBearer ? `Bearer ${refreshedToken}` : refreshedToken;
-        currentHeaders = { ...currentHeaders };
-        currentHeaders[this._config.authHeaderName] = newHeaderValue;
-        if (this._config.extraHeadersProvider) {
-          const providedHeaders = await this._config.extraHeadersProvider();
-          if (providedHeaders) {
-            currentHeaders = {
-              ...currentHeaders,
-              ...providedHeaders,
-            };
-          }
-        }
-        fetchResponse = await fetchWithRetries();
-      }
-
-      const contentType = fetchResponse.headers.get('content-type') ?? '';
-      const acceptedSSE = (currentHeaders['accept'] ?? '').includes('text/event-stream');
-      const isSSE = contentType.includes('text/event-stream') || (acceptedSSE && !contentType && fetchResponse.status >= 200 && fetchResponse.status < 300);
-
-      // Build response headers, stripping hop-by-hop and encoding headers.
-      // Node.js fetch auto-decompresses gzip/br responses, so we must strip
-      // content-encoding to prevent the client from double-decompressing.
-      const responseHeaders = stripRelayResponseHeaders(fetchResponse);
-
-      if (isSSE && fetchResponse.body) {
-        responseHeaders[ANTSEED_STREAMING_RESPONSE_HEADER] = '1';
-        this._callbacks.onResponse({
-          requestId: request.requestId,
-          statusCode: fetchResponse.status,
-          headers: responseHeaders,
-          body: new Uint8Array(0),
-        });
-
-        const reader = fetchResponse.body.getReader();
-        let totalStreamBytes = 0;
-        const debugChunks: Uint8Array[] = [];
-        try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            totalStreamBytes += value.byteLength;
-            if (totalStreamBytes <= 500) debugChunks.push(value);
-            this._callbacks.onResponseChunk?.({
-              requestId: request.requestId,
-              data: value,
-              done: false,
-            });
-          }
-        } catch (err) {
-          this._callbacks.onResponseChunk?.({
-            requestId: request.requestId,
-            data: new TextEncoder().encode(
-              `event: error\ndata: ${err instanceof Error ? err.message : 'stream error'}\n\n`
-            ),
-            done: false,
-          });
-        }
-        if (totalStreamBytes < 300) {
-          const body = new TextDecoder().decode(
-            debugChunks.reduce((a, b) => { const r = new Uint8Array(a.byteLength + b.byteLength); r.set(a); r.set(b, a.byteLength); return r; }, new Uint8Array(0))
-          );
-          let model = 'unknown';
-          try { model = JSON.parse(new TextDecoder().decode(request.body))?.model ?? 'unknown'; } catch {}
-          console.warn(`[http-relay] Short stream (${totalStreamBytes}b) model="${model}" url=${url}: ${JSON.stringify(body)}`);
-        }
-
-        this._callbacks.onResponseChunk?.({
-          requestId: request.requestId,
-          data: new Uint8Array(0),
-          done: true,
-        });
-      } else {
-        // Complete response
-        const body = new Uint8Array(await fetchResponse.arrayBuffer());
-        this._callbacks.onResponse({
-          requestId: request.requestId,
-          statusCode: fetchResponse.status,
-          headers: responseHeaders,
-          body,
-        });
       }
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
@@ -475,5 +334,402 @@ export class HttpRelay {
     } finally {
       this._activeCount--;
     }
+  }
+
+  /** Upstreams that serve `service`, in configured order, with ones cooling down after a failure moved last. */
+  private _candidateUpstreams(service: string): Array<{ upstream: ResolvedUpstream; index: number }> {
+    const serving = this._upstreams
+      .map((upstream, index) => ({ upstream, index }))
+      .filter(({ upstream }) => upstream.services === null || upstream.services.has(service));
+    if (serving.length <= 1) return serving;
+    const now = Date.now();
+    const cooling = (index: number) => (this._cooldownUntil.get(`${index}:${service}`) ?? 0) > now;
+    return [
+      ...serving.filter(({ index }) => !cooling(index)),
+      ...serving.filter(({ index }) => cooling(index)),
+    ];
+  }
+
+  private _coolDown(index: number, service: string, retryAfter: string | null): void {
+    this._cooldownUntil.set(`${index}:${service}`, Date.now() + cooldownMs(retryAfter));
+  }
+
+  private _logFailover(service: string, from: ResolvedUpstream, to: ResolvedUpstream, reason: string): void {
+    console.warn(
+      `[http-relay] ${service || 'request'}: ${from.primary ? 'primary' : 'fallback'} upstream ${hostOf(from.baseUrl)} failed (${reason}); trying fallback ${hostOf(to.baseUrl)}`,
+    );
+  }
+
+  private async _fetchUpstream(request: SerializedHttpRequest, upstream: ResolvedUpstream): Promise<UpstreamAttempt> {
+    // Resolve dynamic auth token if provider uses OAuth / keychain
+    let effectiveConfig: { authHeaderName: string; authHeaderValue: string; extraHeaders?: Record<string, string> } = {
+      authHeaderName: this._config.authHeaderName,
+      authHeaderValue: upstream.authHeaderValue ?? this._config.authHeaderValue,
+      extraHeaders: this._config.extraHeaders,
+    };
+    if (upstream.authHeaderValue === null && this._config.tokenProvider) {
+      const freshToken = await this._config.tokenProvider.getToken();
+      // Preserve Bearer prefix for OAuth providers that use Authorization header
+      const isBearer = this._config.authHeaderName === 'authorization';
+      const headerValue = isBearer ? `Bearer ${freshToken}` : freshToken;
+      effectiveConfig = { ...effectiveConfig, authHeaderValue: headerValue };
+    }
+    if (this._config.extraHeadersProvider) {
+      const providedHeaders = await this._config.extraHeadersProvider();
+      if (providedHeaders && Object.keys(providedHeaders).length > 0) {
+        effectiveConfig = {
+          ...effectiveConfig,
+          extraHeaders: {
+            ...(effectiveConfig.extraHeaders ?? {}),
+            ...providedHeaders,
+          },
+        };
+      }
+    }
+
+    // Swap auth headers
+    let swappedRequest = swapAuthHeader(request, effectiveConfig);
+    const pinnedModel = pinnedUpstreamModel(request);
+
+    // Normalize the requested service into the upstream model for both JSON
+    // and multipart Images API requests. Multipart edits otherwise bypass
+    // alias rewriting and some upstreams report the model as missing.
+    if (swappedRequest.method !== 'GET' && swappedRequest.method !== 'HEAD') {
+      const contentType = getHeader(swappedRequest.headers, 'content-type');
+      if (/^multipart\/form-data/i.test(contentType.trim())) {
+        const fields = readMultipartTextFields(swappedRequest.body, contentType, ['service', 'model', 'modelId']);
+        const requestedService = getHeader(swappedRequest.headers, 'x-antseed-service').trim()
+          || fields.get('service')
+          || fields.get('model')
+          || '';
+        if (requestedService) {
+          const rewrittenService = upstream.serviceRewriteMap?.[requestedService.toLowerCase()]?.trim();
+          const upstreamModel = pinnedModel || rewrittenService || requestedService;
+          // Venice's multi-image edit names the model `modelId` and rejects a `model` field.
+          const modelField = !fields.has('model') && fields.has('modelId') ? 'modelId' : 'model';
+          const rewrittenBody = setMultipartTextField(swappedRequest.body, contentType, modelField, upstreamModel);
+          if (rewrittenBody) swappedRequest = { ...swappedRequest, body: rewrittenBody };
+        }
+      } else {
+        try {
+          const decoded = JSON.parse(new TextDecoder().decode(swappedRequest.body)) as Record<string, unknown>;
+          const transformed: Record<string, unknown> = { ...decoded };
+
+          // Read from both "model" (upstream API compat) and "service" (native) fields
+          const requestedService = (transformed.service ?? transformed.model) as string | undefined;
+
+          if (upstream.serviceRewriteMap && typeof requestedService === 'string' && requestedService.trim().length > 0) {
+            const rewrittenService = upstream.serviceRewriteMap[requestedService.trim().toLowerCase()];
+            if (typeof rewrittenService === 'string' && rewrittenService.trim().length > 0) {
+              transformed.model = rewrittenService.trim();
+            }
+          }
+
+          if (pinnedModel) {
+            transformed.model = pinnedModel;
+          }
+
+          // Normalize: if client sent "service" without "model", copy to "model" for upstream API compat.
+          if (transformed.service !== undefined && transformed.model === undefined) {
+            transformed.model = transformed.service;
+          }
+          // Remove the "service" field — upstream APIs don't understand it.
+          delete transformed.service;
+
+          // Force `stream_options.include_usage = true` on streaming OpenAI Chat
+          // Completions requests. Without this, strict OpenAI-spec upstreams
+          // (e.g. api.minimax.io) return SSE streams with no `usage` chunk,
+          // which makes `parseResponseUsage` return zeros and causes the
+          // seller to record `cost=0 (in=0 out=0)` for every request —
+          // effectively giving away inference for free.
+          //
+          // We only touch `/v1/chat/completions` with `stream:true`, and we
+          // preserve any caller-supplied `stream_options` fields. We don't
+          // override an explicit `include_usage:false` (operators can still
+          // disable via `injectJsonFields` below if they really need to).
+          if (
+            request.path.toLowerCase().startsWith('/v1/chat/completions')
+            && transformed.stream === true
+          ) {
+            const existing = transformed.stream_options && typeof transformed.stream_options === 'object' && !Array.isArray(transformed.stream_options)
+              ? transformed.stream_options as Record<string, unknown>
+              : {};
+            if (existing.include_usage === undefined) {
+              transformed.stream_options = { ...existing, include_usage: true };
+            }
+          }
+
+          // Body injection targets chat-style APIs. Image and speech APIs
+          // reject unknown fields (Venice validates them strictly).
+          const lowerPath = request.path.toLowerCase();
+          const isMediaRequest = lowerPath.startsWith('/v1/images/') || lowerPath.startsWith('/v1/audio/');
+          const merged = this._config.injectJsonFields && !isMediaRequest
+            ? deepMerge(transformed, this._config.injectJsonFields)
+            : transformed;
+
+          swappedRequest = { ...swappedRequest, body: new TextEncoder().encode(JSON.stringify(merged)) };
+        } catch {
+          // Not JSON — leave body unchanged
+        }
+      }
+    }
+
+    // Build upstream URL
+    const base = upstream.baseUrl.replace(/\/+$/, '');
+    let path = request.path.startsWith('/') ? request.path : `/${request.path}`;
+    if (upstream.pathRewrite && path in upstream.pathRewrite) {
+      path = upstream.pathRewrite[path]!;
+    }
+    const url = `${base}${path}`;
+
+    // Build fetch headers, stripping hop-by-hop and provider-specific prefixes
+    const stripPrefixes = this._config.stripHeaderPrefixes ?? [];
+    const fetchHeaders = stripRelayRequestHeaders(swappedRequest.headers, {
+      stripHeaderPrefixes: stripPrefixes,
+    });
+
+    const timeoutMs = this._config.timeoutMs ?? DEFAULT_HTTP_TIMEOUT_MS;
+
+    const doFetch = async (headers: Record<string, string>): Promise<UpstreamAttempt> => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(new Error(`Upstream request timed out after ${timeoutMs}ms`)), timeoutMs);
+      const refreshTimeout = () => {
+        if (!controller.signal.aborted) timeout.refresh();
+      };
+      try {
+        const response = await fetch(url, {
+          redirect: this._config.redirect,
+          method: swappedRequest.method,
+          headers,
+          body: swappedRequest.method !== 'GET' && swappedRequest.method !== 'HEAD'
+            ? Buffer.from(swappedRequest.body)
+            : undefined,
+          signal: controller.signal,
+        });
+        refreshTimeout();
+        return {
+          response, headers, url, signal: controller.signal, refreshTimeout,
+          dispose: () => {
+            clearTimeout(timeout);
+            controller.abort();
+          },
+        };
+      } catch (error) {
+        clearTimeout(timeout);
+        if (controller.signal.aborted) {
+          throw controller.signal.reason;
+        }
+        throw error;
+      }
+    };
+
+    let currentHeaders = fetchHeaders;
+    const maxRetries = this._config.retryOn5xx ?? 0;
+    const baseDelay = this._config.retryBaseDelayMs ?? 1000;
+    const retryableStatusCodes = new Set(this._config.retryStatusCodes ?? []);
+
+    const runFetch = this._limiter
+      ? (headers: Record<string, string>) => this._limiter!.schedule(() => doFetch(headers))
+      : doFetch;
+
+    const fetchWithRetries = async (): Promise<UpstreamAttempt> => {
+      let lastError: unknown;
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        if (attempt > 0) {
+          const delay = baseDelay * (2 ** (attempt - 1));
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        }
+
+        try {
+          const result = await runFetch(currentHeaders);
+          if (attempt === maxRetries || (result.response.status < 500 && !retryableStatusCodes.has(result.response.status))) {
+            return result;
+          }
+          result.dispose();
+        } catch (error) {
+          lastError = error;
+          if (attempt === maxRetries) {
+            throw error;
+          }
+        }
+      }
+
+      throw (lastError instanceof Error ? lastError : new Error('Upstream request failed after retries'));
+    };
+
+    let result = await fetchWithRetries();
+
+    if (result.response.status === 401 && upstream.authHeaderValue === null && this._config.retryOn401 && this._config.tokenProvider?.forceRefresh) {
+      result.dispose();
+      const refreshedToken = await this._config.tokenProvider.forceRefresh();
+      const isBearer = this._config.authHeaderName === 'authorization';
+      const newHeaderValue = isBearer ? `Bearer ${refreshedToken}` : refreshedToken;
+      currentHeaders = { ...currentHeaders };
+      currentHeaders[this._config.authHeaderName] = newHeaderValue;
+      if (this._config.extraHeadersProvider) {
+        const providedHeaders = await this._config.extraHeadersProvider();
+        if (providedHeaders) {
+          currentHeaders = {
+            ...currentHeaders,
+            ...providedHeaders,
+          };
+        }
+      }
+      result = await fetchWithRetries();
+    }
+
+    return result;
+  }
+
+  private async _deliver(request: SerializedHttpRequest, attempt: UpstreamAttempt): Promise<void> {
+    const { response: fetchResponse, url } = attempt;
+    const isSSE = isStreamingAttempt(attempt);
+
+    // Build response headers, stripping hop-by-hop and encoding headers.
+    // Node.js fetch auto-decompresses gzip/br responses, so we must strip
+    // content-encoding to prevent the client from double-decompressing.
+    const responseHeaders = stripRelayResponseHeaders(fetchResponse);
+
+    if (isSSE && fetchResponse.body) {
+      responseHeaders[ANTSEED_STREAMING_RESPONSE_HEADER] = '1';
+      this._callbacks.onResponse({
+        requestId: request.requestId,
+        statusCode: fetchResponse.status,
+        headers: responseHeaders,
+        body: new Uint8Array(0),
+      });
+
+      const reader = fetchResponse.body.getReader();
+      let totalStreamBytes = 0;
+      const debugChunks: Uint8Array[] = [];
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          attempt.refreshTimeout();
+          totalStreamBytes += value.byteLength;
+          if (totalStreamBytes <= 500) debugChunks.push(value);
+          this._callbacks.onResponseChunk?.({
+            requestId: request.requestId,
+            data: value,
+            done: false,
+          });
+        }
+      } catch (err) {
+        const error = attempt.signal.aborted ? attempt.signal.reason : err;
+        this._callbacks.onResponseChunk?.({
+          requestId: request.requestId,
+          data: new TextEncoder().encode(
+            `event: error\ndata: ${error instanceof Error ? error.message : 'stream error'}\n\n`
+          ),
+          done: false,
+        });
+      }
+      if (totalStreamBytes < 300) {
+        const body = new TextDecoder().decode(
+          debugChunks.reduce((a, b) => { const r = new Uint8Array(a.byteLength + b.byteLength); r.set(a); r.set(b, a.byteLength); return r; }, new Uint8Array(0))
+        );
+        let model = 'unknown';
+        try { model = JSON.parse(new TextDecoder().decode(request.body))?.model ?? 'unknown'; } catch {}
+        console.warn(`[http-relay] Short stream (${totalStreamBytes}b) model="${model}" url=${url}: ${JSON.stringify(body)}`);
+      }
+
+      this._callbacks.onResponseChunk?.({
+        requestId: request.requestId,
+        data: new Uint8Array(0),
+        done: true,
+      });
+    } else {
+      // Complete response
+      const body = attempt.body ?? await readUpstreamBody(attempt);
+      this._callbacks.onResponse({
+        requestId: request.requestId,
+        statusCode: fetchResponse.status,
+        headers: responseHeaders,
+        body,
+      });
+    }
+  }
+}
+
+interface UpstreamAttempt {
+  response: Response;
+  headers: Record<string, string>;
+  url: string;
+  signal: AbortSignal;
+  /** Activity resets the body timeout without capping a healthy stream's duration. */
+  refreshTimeout: () => void;
+  /** Clear the deadline and abort any unread response body before discarding it. */
+  dispose: () => void;
+  /** The complete response body, once buffered for a non-streaming response. */
+  body?: Uint8Array;
+}
+
+async function readUpstreamBody(attempt: UpstreamAttempt): Promise<Uint8Array> {
+  if (!attempt.response.body) return new Uint8Array(0);
+  const reader = attempt.response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      attempt.refreshTimeout();
+      chunks.push(value);
+      size += value.byteLength;
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const body = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return body;
+}
+
+function isStreamingAttempt({ response, headers }: UpstreamAttempt): boolean {
+  if (!response.body) return false;
+  const contentType = response.headers.get('content-type') ?? '';
+  const acceptedSSE = (headers['accept'] ?? '').includes('text/event-stream');
+  return contentType.includes('text/event-stream') || (acceptedSSE && !contentType && response.status >= 200 && response.status < 300);
+}
+
+/** Lowercase service named by a JSON or multipart request body, or '' when there is none. */
+function serviceOfRequest(request: SerializedHttpRequest): string {
+  if (request.method === 'GET' || request.method === 'HEAD') return '';
+  const contentType = getHeader(request.headers, 'content-type');
+  if (/^multipart\/form-data/i.test(contentType.trim())) {
+    // The header wins, so an image-bearing body is only scanned without one.
+    const fromHeader = getHeader(request.headers, 'x-antseed-service').trim();
+    if (fromHeader) return fromHeader.toLowerCase();
+    const fields = readMultipartTextFields(request.body, contentType, ['service', 'model']);
+    return (fields.get('service') || fields.get('model') || '').toLowerCase();
+  }
+  try {
+    const decoded = JSON.parse(new TextDecoder().decode(request.body)) as Record<string, unknown> | null;
+    const service = decoded?.service ?? decoded?.model;
+    return typeof service === 'string' ? service.trim().toLowerCase() : '';
+  } catch {
+    return '';
+  }
+}
+
+function cooldownMs(retryAfter: string | null): number {
+  const value = retryAfter?.trim();
+  if (!value) return DEFAULT_UPSTREAM_COOLDOWN_MS;
+  const seconds = Number(value);
+  const ms = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(value) - Date.now();
+  if (!Number.isFinite(ms)) return DEFAULT_UPSTREAM_COOLDOWN_MS;
+  return Math.min(MAX_UPSTREAM_COOLDOWN_MS, Math.max(1000, ms));
+}
+
+function hostOf(baseUrl: string): string {
+  try {
+    return new URL(baseUrl).host;
+  } catch {
+    return baseUrl;
   }
 }

@@ -2,68 +2,47 @@
   "$schema": "../schema.json",
   "network": "base-mainnet",
   "chainId": 8453,
-  "release": "001-recognized-usage-activated",
+  "release": "003-verification-split",
   "status": "active",
-  "sourceCommit": null,
+  "sourceCommit": "9152657b322b96a87b3fc66b05583084af25e5f1",
   "transactions": [
     {
-      "action": "deploy AntseedLegacyRewardsPoolRegistry",
-      "hash": "0x8dee61d4aff021c760cdcbd9c1d21495064abc556bc5b92b0177eb8dd6cf7439",
-      "blockNumber": 51096896,
-      "from": "0x48F4142F4AbF7b77a03f0cDffcd511eDD9B6d54a",
+      "action": "deploy AntseedVerificationResults",
+      "hash": "0xd3ddb4aa924fef6bfc44c61fe62e6819113789f53f0f3877edeaa58a6926e9f4",
+      "blockNumber": 53490135,
+      "from": "0xb0b04d4020e9cbd3203d553ae9c1cb9dbffb3040",
       "to": null
     },
     {
-      "action": "setRegistry(address)",
-      "hash": "0x037d853a174cae1026b3a6dec4bfb0927c54c6f25b356c898aa6a6c4dea8ef34",
-      "blockNumber": 51096989,
-      "from": "0x48F4142F4AbF7b77a03f0cDffcd511eDD9B6d54a",
-      "to": "0xA065C0dE80dbd3d824F7b584E231b76b9fefB261"
+      "action": "deploy AntseedKbfAudits",
+      "hash": "0x9468557e47dc52adc8796ff1c6de5e4c37a87b950195423f8d0755a6e2b7669b",
+      "blockNumber": 53490136,
+      "from": "0xb0b04d4020e9cbd3203d553ae9c1cb9dbffb3040",
+      "to": null
     },
     {
-      "action": "setStaking(address)",
-      "hash": "0x5c863a72f38aa5e8ca27766bca608eeeaa00384358bd72cd0da435167f00178c",
-      "blockNumber": 51097111,
-      "from": "0x48F4142F4AbF7b77a03f0cDffcd511eDD9B6d54a",
-      "to": "0xf33fC901BFa97326379A369401F4490E231B69B0"
+      "action": "deploy AntseedVerificationPointsPolicy",
+      "hash": "0x6d4a810592dbaac843ebdb4ac54f0be7c91498109fe468d51f46b30d121ec7be",
+      "blockNumber": 53490137,
+      "from": "0xb0b04d4020e9cbd3203d553ae9c1cb9dbffb3040",
+      "to": null
     },
     {
-      "action": "pause channels",
-      "hash": "0x162e62abf95d605e9b0dc7d6da1ce8d681bc028c45661cf596dde9426b9d7b7e",
-      "blockNumber": 51122257,
-      "from": "0x48F4142F4AbF7b77a03f0cDffcd511eDD9B6d54a",
-      "to": "0xBA66d3b4fbCf472F6F11D6F9F96aaCE96516F09d"
+      "action": "setSource(address,bool)",
+      "hash": "0xb24a27989c548f4d0b1501b73b202e20b3f934ddbe551a112b0d6613c9eff58e",
+      "blockNumber": 53490138,
+      "from": "0xb0b04d4020e9cbd3203d553ae9c1cb9dbffb3040",
+      "to": "0xf2c8482ad2a348854698e93f41fe3cc32307687c"
     },
     {
-      "action": "syncRewardEpochs(uint32)",
-      "hash": "0x48e9b3864c21410a6daa8cde07bfda01aa99c504f59dd59a57674406d9834abf",
-      "blockNumber": 51122383,
-      "from": "0x48F4142F4AbF7b77a03f0cDffcd511eDD9B6d54a",
-      "to": "0x1f228613116E2d08014DfdCC198377C8dedf18C9"
-    },
-    {
-      "action": "claimAnts(uint32[])",
-      "hash": "0xff7aec92ac4784e8e3ac747adf7f904618820e89a2426dc81a8a8192130fae60",
-      "blockNumber": 51122390,
-      "from": "0x48F4142F4AbF7b77a03f0cDffcd511eDD9B6d54a",
-      "to": "0x1f228613116E2d08014DfdCC198377C8dedf18C9"
-    },
-    {
-      "action": "setEmissions(address)",
-      "hash": "0x42f202539258a03a8957efe411032c3ace97918bc13b7828aa344e5c72058d56",
-      "blockNumber": 51122395,
-      "from": "0x48F4142F4AbF7b77a03f0cDffcd511eDD9B6d54a",
-      "to": "0xf33fC901BFa97326379A369401F4490E231B69B0"
-    },
-    {
-      "action": "unpause channels",
-      "hash": "0x1cc57188adc4dc6d074ab15f9274638b83874086e1ae7664f3370cce12f379d5",
-      "blockNumber": 51122440,
-      "from": "0x48F4142F4AbF7b77a03f0cDffcd511eDD9B6d54a",
-      "to": "0xBA66d3b4fbCf472F6F11D6F9F96aaCE96516F09d"
+      "action": "setSourceShareBps(address,uint16)",
+      "hash": "0xf642a903e5b5af7a9619dac82b089f188a5c1aba722765fa750cf2ce0377b5be",
+      "blockNumber": 53490139,
+      "from": "0xb0b04d4020e9cbd3203d553ae9c1cb9dbffb3040",
+      "to": "0xf2c8482ad2a348854698e93f41fe3cc32307687c"
     }
   ],
-  "notes": "Completed through standalone commands. Adapter deployment, verification and pool wiring, and the staking switch occurred on September 9, 2026. Channels paused before epoch 22 on September 10; DIEM epoch 21 was funded before switching emissions; Channels unpaused at 2026-09-10T09:57:07.000Z. Source commit was not captured by the standalone scripts and is recorded as null; original M001 deployment provenance remains in 001-recognized-usage-deployed.json. All eight included transactions were verified successful on Base mainnet. Adapter source verification succeeded on Basescan; its runtime matches the local artifact.",
+  "notes": "M003 deploys the verification results layer, the KBF audit source and the verification points policy, and wires KBF as a source with the whole verification bucket. It approves no auditors and does not register the policy in the points policy registry; the owners do that separately, so verdicts change no seller points until then.",
   "contracts": {
     "usdc": {
       "address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
@@ -368,7 +347,7 @@
       "runtimeCodeHash": "0x5a555dc1e7b0240adaf1c84f9b509cadfb9d9a6dca9a0cbb11d4f35bd2757b68",
       "version": "1",
       "external": false,
-      "deployedInRelease": true,
+      "deployedInRelease": false,
       "constructorArguments": [
         "0xF13bE52c4A3afC6AE29536f073588d01A0564088",
         "0xa87EE81b2C0Bc659307ca2D9ffdC38514DD85263"
@@ -383,6 +362,95 @@
       "version": "1",
       "external": false,
       "deployedInRelease": false
+    },
+    "legacySellerClaimPolicy": {
+      "address": "0xb3ae8460481976ad996eaff71715c7baefb1d829",
+      "deploymentBlock": 53232574,
+      "transactionHash": "0xc873e1aebda1c25c86c442304aadfc1bc55414ada1ca4b324316abeebbd6f2d2",
+      "runtimeCodeHash": "0x852bd9737d98bfb67784ae683ca10bed0de97b8dcb19941cce00dba68abbae96",
+      "version": "1",
+      "external": false,
+      "deployedInRelease": false,
+      "constructorArguments": [
+        "0xF13bE52c4A3afC6AE29536f073588d01A0564088",
+        "21",
+        "1000",
+        "0xc02a111CB94332Cc31C08E079cbe781880b2121C"
+      ],
+      "owner": null
+    },
+    "kbfVerification": {
+      "address": "0x4bdafcc48cc61aaf1ed2f5ebacc05ee305c80916",
+      "deploymentBlock": 53419391,
+      "transactionHash": "0x7ab57e0c461bbc41ceb215b4f77e4d4ff97e0e221570c8bb0f4507ab93679b11",
+      "runtimeCodeHash": "0xf05a5dc5c5c027a0d93959dfe4d9b8ba5979778277c43502cab3c13c6c097ab0",
+      "version": "1",
+      "external": false,
+      "deployedInRelease": false,
+      "constructorArguments": [
+        "0xf33fC901BFa97326379A369401F4490E231B69B0",
+        "0x8Bf4d39AA13F3CB03F87D9500767fBc4D0940652"
+      ],
+      "owner": "0xb0b04d4020E9CBd3203D553Ae9c1cb9DbfFB3040"
+    },
+    "kbfVerificationPointsPolicy": {
+      "address": "0xb252c8c9f5d74114ac525ca8dbdbc5f028ec8c12",
+      "deploymentBlock": 53419392,
+      "transactionHash": "0x7c7ccb0d8b7cbd148d3d1265cdf69887812ade7c823dbdebff4ab8d148deacae",
+      "runtimeCodeHash": "0x3c7361a1034a5dcd8e97df9185d7252bae5391c62a51fc748c85ca8eea1dcd46",
+      "version": "1",
+      "external": false,
+      "deployedInRelease": false,
+      "constructorArguments": [
+        "0x4BdAfcc48cc61Aaf1ed2f5EbaCc05Ee305C80916",
+        "0xAdd2D85316153D7bfaF7921EE9Bf1Bb6c7A1cBc9",
+        "0",
+        "0xb0b04d4020E9CBd3203D553Ae9c1cb9DbfFB3040"
+      ],
+      "owner": "0xb0b04d4020E9CBd3203D553Ae9c1cb9DbfFB3040"
+    },
+    "verificationResults": {
+      "address": "0xf2c8482ad2a348854698e93f41fe3cc32307687c",
+      "deploymentBlock": 53490135,
+      "transactionHash": "0xd3ddb4aa924fef6bfc44c61fe62e6819113789f53f0f3877edeaa58a6926e9f4",
+      "runtimeCodeHash": "0x009587b654e97d9ede4ef93f31b209fb11d0ad7bd3ca3045b35414746339563f",
+      "version": "1",
+      "external": false,
+      "deployedInRelease": true,
+      "constructorArguments": [
+        "0xf33fC901BFa97326379A369401F4490E231B69B0"
+      ],
+      "owner": "0xb0b04d4020E9CBd3203D553Ae9c1cb9DbfFB3040"
+    },
+    "kbfAudits": {
+      "address": "0xe57ab03423a3835571f7d68ac1e23cf8a2763343",
+      "deploymentBlock": 53490136,
+      "transactionHash": "0x9468557e47dc52adc8796ff1c6de5e4c37a87b950195423f8d0755a6e2b7669b",
+      "runtimeCodeHash": "0xcaff68b12caea99b21bbf4322531c43861cfa2928d5a8c11afb3bf8bc5b1921c",
+      "version": "1",
+      "external": false,
+      "deployedInRelease": true,
+      "constructorArguments": [
+        "0xF2C8482aD2A348854698E93f41FE3cc32307687c",
+        "0x8Bf4d39AA13F3CB03F87D9500767fBc4D0940652"
+      ],
+      "owner": "0xb0b04d4020E9CBd3203D553Ae9c1cb9DbfFB3040"
+    },
+    "verificationPointsPolicy": {
+      "address": "0x5d677f5edd69e69c664e3f7fa80f1d3dd61a2212",
+      "deploymentBlock": 53490137,
+      "transactionHash": "0x6d4a810592dbaac843ebdb4ac54f0be7c91498109fe468d51f46b30d121ec7be",
+      "runtimeCodeHash": "0x60f473a045e408ac9a57a4f59ce7cb1d2fecc90f1809718b44778428ede14e0a",
+      "version": "1",
+      "external": false,
+      "deployedInRelease": true,
+      "constructorArguments": [
+        "0xF2C8482aD2A348854698E93f41FE3cc32307687c",
+        "0xAdd2D85316153D7bfaF7921EE9Bf1Bb6c7A1cBc9",
+        "0",
+        "0xb0b04d4020E9CBd3203D553Ae9c1cb9DbfFB3040"
+      ],
+      "owner": "0xb0b04d4020E9CBd3203D553Ae9c1cb9DbfFB3040"
     }
   },
   "effectiveEpoch": 22,
@@ -391,14 +459,25 @@
     "staking": "0x99c533bcc6ca646e543dba835fdbb9c2ee02cb60"
   },
   "verificationConfiguration": {
+    "sellerRewardsPool": "0xA065C0dE80dbd3d824F7b584E231b76b9fefB261",
+    "sellerClaimPolicy": "0xb3ae8460481976ad996eaff71715c7baefb1d829",
+    "poolCanTransfer": true,
+    "lastLockedEpoch": 21,
+    "releaseBps": 1000,
     "washTradingRegistry": "0xc02a111CB94332Cc31C08E079cbe781880b2121C",
-    "washTradingPointsPolicy": "0x7a605aaa3c725aa25012dfDeD6B5dddcC561D6e5",
-    "verificationMinterController": "0x5B3A59088bD5BD5f722571420c09a9251a03AAdb",
-    "verificationMinterShareBps": 10000,
-    "verificationMinterEditable": true,
-    "pointsPolicyCount": 1,
-    "emissionsGateOwner": "0x48F4142F4AbF7b77a03f0cDffcd511eDD9B6d54a",
-    "pointsPolicyRegistryOwner": "0x48F4142F4AbF7b77a03f0cDffcd511eDD9B6d54a"
+    "verificationRegistry": {
+      "registry": "0xf33fC901BFa97326379A369401F4490E231B69B0",
+      "identityRegistry": "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432",
+      "sellerPools": "0x8bf4d39aa13f3cb03f87d9500767fbc4d0940652",
+      "usageAccounting": "0xadd2d85316153d7bfaf7921ee9bf1bb6c7a1cbc9",
+      "pointsPolicyRegistry": "0x212d2c1058b84507de248a147aafeb08fb19e3b6",
+      "owner": "0xb0b04d4020E9CBd3203D553Ae9c1cb9DbfFB3040",
+      "deploymentNonce": 10349,
+      "resultsAddress": "0xF2C8482aD2A348854698E93f41FE3cc32307687c",
+      "kbfAddress": "0xe57aB03423A3835571F7d68AC1E23CF8a2763343",
+      "policyAddress": "0x5d677f5eDd69E69c664E3f7FA80f1D3DD61A2212",
+      "bonusBps": 0
+    }
   },
   "registryBefore": {
     "emissions": "0xF13bE52c4A3afC6AE29536f073588d01A0564088",
