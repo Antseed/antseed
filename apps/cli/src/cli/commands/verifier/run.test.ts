@@ -31,9 +31,9 @@ import {
 } from './run.js'
 
 setAuditedModelsForTesting({
-  'model-a': { upstreamModel: 'vendor/model-a' },
-  'model-b': { upstreamModel: 'vendor/model-b' },
-  'model-c': { upstreamModel: 'vendor/model-c' },
+  'model-a': { upstreamModel: 'vendor/model-a', contrastModels: [] },
+  'model-b': { upstreamModel: 'vendor/model-b', contrastModels: [] },
+  'model-c': { upstreamModel: 'vendor/model-c', contrastModels: [] },
 })
 
 function command(): Command {

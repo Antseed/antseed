@@ -24,7 +24,7 @@ const dependencies = {
 }
 
 /** Pins a model's contrast models in a cloned config, so enrollment keeps the bank's contrasts. */
-function withContrastModels(config: VerifierCLIConfig, service: string, contrastModels: string[]): void {
+export function withContrastModels(config: VerifierCLIConfig, service: string, contrastModels: string[]): void {
   const models = config.models ?? {}
   const key = Object.keys(models).find((name) => findVerifierModel(config, name)?.[0] === service) ?? service
   config.models = { ...models, [key]: { ...models[key], contrastModels: [...contrastModels] } }

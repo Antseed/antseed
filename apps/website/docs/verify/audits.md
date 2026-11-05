@@ -138,6 +138,14 @@ A model's bank holds the questions and the genuine model's answers. Banks live i
 - **Worn out:** each seller only gets questions it hasn't been given in an earlier epoch, so a bank wears out as the same sellers are audited again. When any seller about to be audited lacks an unseen audit set plus a recheck set, it builds fresh questions and adds them to the bank, up to 3 builds per model.
 - **Ready:** no reference calls.
 
+A bank is built to tell the genuine model from a few **contrast models**: cheaper look-alikes a seller might serve instead. Each audited model has its own list built into the CLI, so every verifier's new banks are built against the same reviewed set. Every contrast is cheaper than the model it is listed for, as a substituting seller's model would be, and is one the audits' banks already use, never a `:free` model. `antseed verifier models` shows each model's contrasts and where they come from:
+
+- **config:** `verifier.models.<model>.contrastModels`, up to `contrastSelection.maxModels` (3) OpenRouter ids. It replaces the built-in list.
+- **built-in:** the CLI's list.
+- **automatic:** only when neither is set, or with a manual `referenceEndpoint.contrastModelBank`: the highest-ranked catalog models priced at most 30% of the target (`contrastSelection.maxPriceRatio`), up to 3, never `:free`.
+
+A bank keeps the contrasts it was built with, so a changed list only applies to banks built from scratch.
+
 Each build is billed by the reference API and stops once the bank is ready, or after 2,000 requests in a round (`--max-enrollment-requests` changes it). A build that runs out continues from where it stopped in the next round or run, up to `verifier.referenceMaxRequestsPerBuild` requests in total (default: 3 times the per-round limit). The limit is per build, not per model: one model can need a build to make its bank usable, up to 3 more when it's worn out and up to 3 more for close-call extra questions. Building grows a bank and never replaces it. `--no-enroll` turns this off: the run then stops before sending anything when a bank isn't ready. `antseed verifier reference build [<model> | --all]` builds banks ahead of time, for example to spread the cost before the first run.
 
 ## Reference upstreams

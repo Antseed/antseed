@@ -49,8 +49,8 @@ function appendReference(banksDir: string, value = reference()) {
 }
 
 setAuditedModelsForTesting({
-  'model-a': { upstreamModel: 'upstream-a' },
-  'different-model': { upstreamModel: 'upstream-b' },
+  'model-a': { upstreamModel: 'upstream-a', contrastModels: [] },
+  'different-model': { upstreamModel: 'upstream-b', contrastModels: [] },
 })
 
 function excludedDomainConfig(model = 'model-a'): VerifierCLIConfig {

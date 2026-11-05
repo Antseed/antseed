@@ -6,7 +6,7 @@ import test from 'node:test'
 import { setAuditedModelsForTesting } from './audited-models.js'
 import { BUILD_REQUEST_RUNS, buildRequestLimits, enrollFreshProbes, ensureAuditableReference } from './ensure-auditable-reference.js'
 
-setAuditedModelsForTesting({ 'model-a': { upstreamModel: 'upstream-a' } })
+setAuditedModelsForTesting({ 'model-a': { upstreamModel: 'upstream-a', contrastModels: [] } })
 import { referenceFixture } from './model-audit-fixtures.test-support.js'
 
 async function fixture(body: (input: Parameters<typeof ensureAuditableReference>[0], calls: string[], operations: NonNullable<Parameters<typeof ensureAuditableReference>[1]>) => Promise<void>) {

@@ -672,12 +672,15 @@ answers come from:
 
 A model without an `upstream` takes its genuine answers from `referenceEndpoint`
 (OpenRouter by default); only list the models you send elsewhere. `antseed
-verifier models` prints each model's source, model id and provider pin.
+verifier models` prints each model's source, model id, provider pin and contrast models.
 
 `verifier.models.<model>` is optional and only accepts audited models. It can set
 `upstream`, `referenceProvider`, `contrastModels`, `excludedDomains`,
-`pricing` and `referenceRoute`. Contrast models come from the OpenRouter catalog
-unless `referenceEndpoint.contrastModelBank` is set. A model list under
+`pricing` and `referenceRoute`. Each audited model has built-in contrast
+models (OpenRouter ids, never `:free`); `contrastModels` replaces them. Without
+either, or with `referenceEndpoint.contrastModelBank` set, they are picked
+automatically when a bank is built. A bank keeps the contrasts it was built
+with. `antseed verifier models` shows each model's contrasts and their source. A model list under
 `referenceEndpoint.models` (older configs) is rejected. Models can't be turned
 off: an auditor audits every model assigned to it, so `enabled` is rejected too.
 
