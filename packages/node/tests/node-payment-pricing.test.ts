@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { SellerBuyerLimiter } from '../src/payments/seller-buyer-limiter.js';
 import { SellerRequestHandler, assertSingleRoutingService } from '../src/seller-request-handler.js';
 import type { SerializedHttpRequest } from '../src/types/http.js';
 import type { Provider } from '../src/interfaces/seller-provider.js';
@@ -386,6 +387,29 @@ describe('native video job ownership', () => {
       }
       expect(provider.handleRequest).toHaveBeenCalledTimes(1);
       expect(recordSpend).not.toHaveBeenCalled();
+    } finally { store.close(); }
+  });
+  it('keeps video polls and downloads outside token-based buyer limits', async () => {
+    const provider = makeProvider(0, 0, {
+      name: 'venice', services: ['video'], serviceApiProtocols: { video: ['venice-video'] },
+      serviceUnitBillingModels: { video: { 'venice-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.1 }] } } },
+    });
+    provider.handleRequest = vi.fn(async request => ({ requestId: request.requestId, statusCode: 206, headers: { 'content-type': 'video/mp4' }, body: Buffer.from('video') }));
+    const store = new ResourceOwnershipStore(join(mkdtempSync(join(tmpdir(), 'antseed-video-limits-')), 'metering.db'));
+    store.recordAcceptedCreate('venice-video', 'job', 'b'.repeat(40));
+    const handler = makeSellerRequestHandler({
+      providers: [provider], sellerPaymentManager: makeSpmMock({ hasSession: () => false }), channelsClient: {} as any,
+      sessionTracker: null, announcer: null, emit: () => false, resourceOwnershipStore: store,
+      sellerBuyerLimiter: new SellerBuyerLimiter({ maxTokensPerBuyer: 1_000 }, () => null),
+    });
+    try {
+      const frames: Uint8Array[] = [];
+      const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any);
+      for (let i = 1; i <= 4; i++) {
+        const request = { requestId: `poll-${i}`, method: 'POST', path: '/api/v1/video/retrieve', headers: { 'content-type': 'application/json', 'x-antseed-service': 'video' }, body: new TextEncoder().encode(JSON.stringify({ model: 'video', queue_id: 'job' })) };
+        await mux.handleFrame({ type: MessageType.HttpRequest, messageId: i, payload: encodeHttpRequest(request) });
+        expect(decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload).statusCode).toBe(206);
+      }
     } finally { store.close(); }
   });
   const buyer = 'b'.repeat(40);
