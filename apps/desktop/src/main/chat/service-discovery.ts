@@ -14,7 +14,7 @@ import {
   DESKTOP_DEFAULT_MAX_OUTPUT_USD_PER_MILLION,
 } from '../runtime/config-io.js';
 import { normalizeProviderId } from './provider-hint.js';
-import { isNativeVideoProtocol } from '@antseed/node';
+import { hasLiveDiffVerdict, isNativeVideoProtocol } from '@antseed/node';
 import {
   normalizeVideoOptions,
   sortChatServiceCatalogEntries,
@@ -32,6 +32,7 @@ import {
 } from './normalize.js';
 import type { DesktopVerificationLink } from '../connected-apps/domain-site-metadata.js';
 import type { TrustBreakdown } from '@antseed/node';
+import { freeTierProgramForService, type FreeTierProgram } from '@antseed/node/free-tier-program';
 
 export type BuyerMaxPricingDefaults = {
   inputUsdPerMillion: number;
@@ -75,6 +76,8 @@ export type DiscoverRowEntry = {
   lifetimeLastSessionAt: number | null;
   onChainChannelCount: number | null;
   agentId: number;
+  /** The seller's free-tier program; staked tiers count only stake in this seller's pool (`agentId`). */
+  freeTier: FreeTierProgram | null;
   /** ANTS actively staked in the seller's pool this epoch (whole ANTS). */
   poolStakeAnts: number;
   onChainActiveChannelCount: number;
@@ -84,6 +87,8 @@ export type DiscoverRowEntry = {
   onChainReputationScore: number | null;
   /** Wash-trading registry verdict; `null` when the registry was unavailable. */
   washFlagged: boolean | null;
+  /** True when this service has a live DIFF verdict on AntseedVerificationResults (its reputation keeps 10%). */
+  verificationDiff: boolean;
   effectiveReputationScore: number | null;
   onChainSybilRisk: number | null;
   onChainSybilFlags: string[];
@@ -348,9 +353,15 @@ export type BuyerStateDiscoveredPeer = {
   onChainLastSettledAtSec: number | null;
   onChainReputationScore: number | null;
   onChainWashFlagged: boolean | null;
+  /** Services with a live DIFF verdict, as trimmed lowercase names. */
+  onChainDiffServices?: string[];
+  /** Unix ms of the verification read behind `onChainDiffServices`; a list older than 15 minutes counts for nothing. */
+  onChainVerificationFetchedAt?: number | null;
   onChainSybilRisk: number | null;
   onChainSybilFlags: string[];
   sellerContract?: string;
+  /** The seller's peer-metadata capabilities, which carry its free-tier programs. */
+  capabilities: string[];
   verificationLinks: DiscoverVerificationLink[];
   peerIconUrl: string | null;
 };
@@ -423,6 +434,15 @@ function normalizeIdentityPart(raw: Record<string, unknown> | null): TrustBreakd
 export function invalidateOnChainEnrichmentCache(): void {
   // On-chain enrichment now comes from the buyer daemon's buyer.state.json.
   // The desktop process intentionally performs no staking/channel RPC here.
+}
+
+
+/** Whether a catalog entry has any non-zero price; a free allowance then applies before it. */
+function isPricedEntry(entry: ChatServiceCatalogEntry): boolean {
+  return [
+    entry.inputUsdPerMillion, entry.outputUsdPerMillion, entry.cachedInputUsdPerMillion,
+    entry.maxImageUsdPerImage, entry.maxVideoUsdPerSecond, entry.maxVideoUsdPerVideo,
+  ].some((price) => typeof price === 'number' && price > 0);
 }
 
 export async function buildDiscoverRows(
@@ -499,6 +519,8 @@ export async function buildDiscoverRows(
       lifetimeLastSessionAt: stats?.lastSessionAt ?? null,
       onChainChannelCount: peerBlob?.onChainChannelCount ?? null,
       agentId,
+      // On a free service its own or the seller-wide program; on a priced one only its own free allowance (never on paid video).
+      freeTier: freeTierProgramForService(peerBlob?.capabilities, entry.id, isPricedEntry(entry), { video: isNativeVideoProtocol(entry.protocol) }),
       poolStakeAnts,
       onChainActiveChannelCount,
       onChainGhostCount,
@@ -507,6 +529,7 @@ export async function buildDiscoverRows(
       onChainReputationScore,
       trust: peerBlob?.trust ?? null,
       washFlagged,
+      verificationDiff: hasLiveDiffVerdict(peerBlob, entry.id),
       effectiveReputationScore: entry.effectiveReputationScore ?? null,
       onChainSybilRisk,
       onChainSybilFlags,

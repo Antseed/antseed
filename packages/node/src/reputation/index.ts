@@ -2,9 +2,14 @@ export { UptimeTracker, type UptimeTrackerConfig, type UptimeWindow, type PeerUp
 export { ReportManager, type ReportManagerConfig } from './report-manager.js';
 export { RatingManager, type RatingManagerConfig } from './rating-manager.js';
 export {
+  DIFF_VERIFICATION_REPUTATION_MULTIPLIER,
   MISSING_CACHED_INPUT_PRICE_REPUTATION_MULTIPLIER,
+  VERIFICATION_STATUS_STALE_MAX_MS,
   compareEffectiveModelReputation,
   effectiveModelReputationScore,
+  hasLiveDiffVerdict,
   normalizedModelReputationScore,
+  verificationServiceKey,
   type ModelReputationSource,
+  type VerificationDiffSource,
 } from './model-reputation.js';

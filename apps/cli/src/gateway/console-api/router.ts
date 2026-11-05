@@ -40,11 +40,7 @@ export function respond(status: number, body?: unknown, options: { contentType?:
   return { __consoleResponse: true, status, body, ...options }
 }
 
-export class ConsoleError extends Error {
-  constructor(readonly status: number, readonly code: string, message: string, readonly details?: Record<string, unknown>) {
-    super(message)
-  }
-}
+export { ConsoleError } from '../../console-error.js'
 
 export interface RouteOptions {
   /** Reachable without a session (auth endpoints, config). */

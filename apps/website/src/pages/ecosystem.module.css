@@ -785,3 +785,72 @@
     margin-left: 0;
   }
 }
+
+.previewPoints {
+  padding: 14px;
+  background:
+    linear-gradient(180deg, rgba(16, 185, 129, 0.16), transparent 52%),
+    #e2fff0;
+  color: #001e12;
+}
+
+.previewPoints .previewTop span {
+  color: #0a6f4d;
+  font-size: 15px;
+}
+
+.pointsFlow {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  margin-top: 12px;
+}
+.pointsFlow span {
+  display: grid;
+  gap: 2px;
+  padding: 6px 9px;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 1px 0 rgba(0, 30, 18, 0.06);
+}
+.pointsFlow small {
+  font-family: var(--as-font-data);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #3b5249;
+}
+.pointsFlow b {
+  font-size: 14px;
+  font-weight: 700;
+}
+.pointsFlow span:last-child {
+  background: #10b981;
+  color: #ffffff;
+}
+.pointsFlow span:last-child small {
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.pointsRows {
+  display: grid;
+  gap: 5px;
+  margin-top: 7px;
+}
+.pointsRows span {
+  display: flex;
+  justify-content: space-between;
+  padding: 5px 9px;
+  border: 1px solid rgba(0, 30, 18, 0.1);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.6);
+  font-family: var(--as-font-data);
+  font-size: 10px;
+}
+.pointsRows b {
+  font-weight: 700;
+}
+.pointsRows em {
+  color: #3b5249;
+  font-style: normal;
+}

@@ -127,6 +127,41 @@ test('root updater: a request reads as requested, then the status file takes ove
   }
 })
 
+test('readRootUpdateProgress reads the step a running update is on, and only a known one', () => {
+  const { dir, cleanup } = tempDir()
+  try {
+    const paths = { request: join(dir, 'update-request'), status: join(dir, 'status.json') }
+    const run = { state: 'running', action: 'install', from: '0.1.201', to: '0.1.202', startedAt: 1_000, finishedAt: null, error: null }
+    // What the installer's updater writes while the gateway drains.
+    writeFileSync(paths.status, `${JSON.stringify({ ...run, phase: 'draining-gateway', phaseStartedAt: 61_000, phaseMaxMs: 90_000 })}\n`)
+    assert.deepEqual(readRootUpdateProgress(paths), { ...run, phase: 'draining-gateway', phaseStartedAt: 61_000, phaseMaxMs: 90_000 })
+
+    // Steps without a bound write null; older updaters write no step at all.
+    writeFileSync(paths.status, JSON.stringify({ ...run, phase: 'restarting-buyer', phaseStartedAt: 2_000, phaseMaxMs: null }))
+    assert.deepEqual(readRootUpdateProgress(paths), { ...run, phase: 'restarting-buyer', phaseStartedAt: 2_000 })
+    writeFileSync(paths.status, JSON.stringify(run))
+    assert.deepEqual(readRootUpdateProgress(paths), run)
+
+    // An unknown step is dropped, not passed on.
+    writeFileSync(paths.status, JSON.stringify({ ...run, phase: '<script>', phaseStartedAt: 2_000 }))
+    assert.deepEqual(readRootUpdateProgress(paths), run)
+
+    // A finished run has no step, whatever the file says.
+    const done = { ...run, state: 'succeeded', finishedAt: 150_000 }
+    writeFileSync(paths.status, JSON.stringify({ ...done, phase: null, phaseStartedAt: null, phaseMaxMs: null }))
+    assert.deepEqual(readRootUpdateProgress(paths), done)
+
+    // A run cut off long ago reads as failed, without its last step.
+    writeFileSync(paths.status, JSON.stringify({ ...run, phase: 'checking', phaseStartedAt: 2_000 }))
+    const stale = readRootUpdateProgress(paths, { staleAfterMs: 60_000, now: 1_000 + 60_001 })
+    assert.equal(stale?.state, 'failed')
+    assert.equal(stale?.phase, undefined)
+    assert.equal(stale?.phaseStartedAt, undefined)
+  } finally {
+    cleanup()
+  }
+})
+
 function fakeStream(isTTY: boolean) {
   const lines: string[] = []
   return { lines, stream: { isTTY, write: (chunk: string) => { lines.push(chunk); return true } } as unknown as NodeJS.WriteStream }

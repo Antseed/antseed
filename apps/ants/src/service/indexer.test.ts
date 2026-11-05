@@ -147,9 +147,9 @@ function fakeFetch(routes: Record<string, unknown>, calls: string[] = []): typeo
 describe('AntscanIndexer', () => {
   it('retains PR9 active and pending pool stake', async () => {
     const indexer = new AntscanIndexer('https://scan', fakeFetch({
-      '/api/staking/pools/1?epochs=8': { pool: null, epochs: [], activeStake: '123', pendingStake: '45', openPositions: 3, stakers: 2 },
+      '/api/staking/pools/1?epochs=8': { pool: null, epochs: [], activeStake: '123', pendingStake: '45', nextActiveStake: '130', nextWeight: '260', openPositions: 3, stakers: 2 },
     }));
-    expect(await indexer.pool(1)).toMatchObject({ activeStake: '123', pendingStake: '45' });
+    expect(await indexer.pool(1)).toMatchObject({ activeStake: '123', pendingStake: '45', nextActiveStake: '130', nextWeight: '260' });
   });
   it('normalises pool rows, keeping amounts as strings and ids as numbers', async () => {
     const indexer = new AntscanIndexer('https://scan/', fakeFetch({

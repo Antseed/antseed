@@ -21,6 +21,16 @@ export interface RecognizedUsageDeployment {
   };
 }
 
+/** The Uniswap v3 deployment a seller swaps USDC for ETH through (gas auto-refuel). */
+export interface UsdcEthSwapDeployment {
+  swapRouter02: string;
+  quoterV2: string;
+  /** Wrapped native token, unwrapped to ETH after the swap. */
+  weth: string;
+  /** USDC/WETH pool fee tier, in hundredths of a basis point (500 = 0.05%). */
+  poolFee: number;
+}
+
 export interface ChainConfig {
   chainId: ChainId;
   evmChainId: number;
@@ -66,8 +76,22 @@ export interface ChainConfig {
   networkStatsUrl?: string;
   /** Public REST API of the chain explorer (Antscan). Serves per-seller on-chain stats at /api/sellers. */
   explorerApiUrl?: string;
+  /**
+   * The contract auditors submit KBF audits to: `AntseedKbfAudits` (M003), which also holds the
+   * approved auditors. The results layer is discovered from it unless overridden below.
+   *
+   * Base mainnet defaults to the M003 deployment (release `003-verification-split`); the earlier
+   * `AntseedKbfVerification` it replaces has an ABI the split client cannot read.
+   */
+  verificationContractAddress?: string;
+  /** `AntseedVerificationResults` (verdicts and verification rewards); read from `kbf.results()` when absent. */
+  verificationResultsAddress?: string;
+  /** Block when the KBF audits contract was deployed. Floor for verifier event scans. */
+  verificationDeployBlock?: number;
   /** AntseedDepositRelay contract for gasless USDC sweeps from buyer hot wallets. */
   depositRelayAddress?: string;
+  /** Where sellers swap USDC for ETH to refuel gas; absent on chains without a deep pool. */
+  usdcEthSwap?: UsdcEthSwapDeployment;
 }
 
 /**
@@ -98,6 +122,13 @@ const CHAIN_CONFIGS: Record<ChainId, ChainConfig> = {
     ],
     networkStatsUrl: 'https://network.antseed.com',
     explorerApiUrl: 'https://antscan.co',
+    // Uniswap v3: the deep USDC/WETH 0.05% pool.
+    usdcEthSwap: {
+      swapRouter02: '0x2626664c2603336E57B271c5C0b26F421741e481',
+      quoterV2: '0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a',
+      weth: '0x4200000000000000000000000000000000000006',
+      poolFee: 500,
+    },
   },
   'base-sepolia': {
     ...DEPLOYED_CONTRACT_ADDRESSES['base-sepolia'],
@@ -177,6 +208,8 @@ export function resolveChainConfig(overrides?: {
   legacyStakingContractAddress?: string;
   legacyEmissionsV1ContractAddress?: string;
   antsTokenAddress?: string;
+  verificationContractAddress?: string;
+  verificationResultsAddress?: string;
   emissionsGateAddress?: string;
   sellerPoolsAddress?: string;
   sellerRegistryAddress?: string;
@@ -196,8 +229,16 @@ export function resolveChainConfig(overrides?: {
   const rpcOverridden = !!overrides?.rpcUrl;
   const resolvedFallbacks = overrides?.fallbackRpcUrls
     ?? (rpcOverridden ? [] : base.fallbackRpcUrls);
+  // The results address belongs to the KBF deployment it came with. A caller that points at another
+  // KBF contract without naming its results contract gets none, so readers discover it through
+  // `kbf.results()` instead of reading verdicts from an unrelated default deployment.
+  const kbfOverridden = !!overrides?.verificationContractAddress
+    && overrides.verificationContractAddress.toLowerCase() !== base.verificationContractAddress?.toLowerCase();
+  const { verificationResultsAddress: defaultResultsAddress, ...baseWithoutResults } = base;
+  const inheritedResults = kbfOverridden || !defaultResultsAddress ? {} : { verificationResultsAddress: defaultResultsAddress };
   return {
-    ...base,
+    ...baseWithoutResults,
+    ...inheritedResults,
     ...(overrides?.rpcUrl ? { rpcUrl: overrides.rpcUrl } : {}),
     ...(resolvedFallbacks !== undefined ? { fallbackRpcUrls: resolvedFallbacks } : {}),
     ...(overrides?.depositsContractAddress ? { depositsContractAddress: overrides.depositsContractAddress } : {}),
@@ -212,6 +253,12 @@ export function resolveChainConfig(overrides?: {
     ...(overrides?.legacyStakingContractAddress ? { legacyStakingContractAddress: overrides.legacyStakingContractAddress } : {}),
     ...(overrides?.legacyEmissionsV1ContractAddress ? { legacyEmissionsV1ContractAddress: overrides.legacyEmissionsV1ContractAddress } : {}),
     ...(overrides?.antsTokenAddress ? { antsTokenAddress: overrides.antsTokenAddress } : {}),
+    ...(overrides?.verificationContractAddress
+      ? { verificationContractAddress: overrides.verificationContractAddress }
+      : {}),
+    ...(overrides?.verificationResultsAddress
+      ? { verificationResultsAddress: overrides.verificationResultsAddress }
+      : {}),
     ...(overrides?.emissionsGateAddress ? { emissionsGateAddress: overrides.emissionsGateAddress } : {}),
     ...(overrides?.sellerPoolsAddress ? { sellerPoolsAddress: overrides.sellerPoolsAddress } : {}),
     ...(overrides?.sellerRegistryAddress ? { sellerRegistryAddress: overrides.sellerRegistryAddress } : {}),

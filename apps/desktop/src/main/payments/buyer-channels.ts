@@ -44,7 +44,6 @@ export type DesktopBuyerUsageTotals = {
   totalOutputTokens: string;
   totalSettlements: number;
   uniqueSellers: number;
-  activeChannels: number;
   services: DesktopBuyerServiceUsage[];
 };
 
@@ -89,7 +88,6 @@ const EMPTY_BUYER_USAGE_TOTALS: DesktopBuyerUsageTotals = {
   totalOutputTokens: '0',
   totalSettlements: 0,
   uniqueSellers: 0,
-  activeChannels: 0,
   services: [],
 };
 
@@ -144,14 +142,13 @@ export function normalizeBuyerUsageTotals(value: unknown): DesktopBuyerUsageTota
     totalOutputTokens: readStringField(raw, 'totalOutputTokens') || '0',
     totalSettlements: readNumberField(raw, 'totalSettlements'),
     uniqueSellers: readNumberField(raw, 'uniqueSellers'),
-    activeChannels: readNumberField(raw, 'activeChannels'),
     services,
   };
 }
 
-export async function requestCooperativeChannelClose(peerId: string): Promise<CloseChannelResultPayload> {
+export async function requestCooperativeChannelClose(peerId: string, channelId?: string): Promise<CloseChannelResultPayload> {
   const port = await resolveBuyerProxyPort();
-  return requestCooperativeChannelCloseAtPort(port, peerId);
+  return requestCooperativeChannelCloseAtPort(port, peerId, channelId ? { channelId } : {});
 }
 
 const BUYER_PROXY_TIMEOUT_MS = 10_000;

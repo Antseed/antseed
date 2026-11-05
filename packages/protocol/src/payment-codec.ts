@@ -135,12 +135,14 @@ export function decodeAuthAck(data: Uint8Array): AuthAckPayload {
 
 export function decodeFreeUsageOpen(data: Uint8Array): FreeUsageOpenPayload {
   const obj = parsePaymentJson(data);
-  return {
+  const result: FreeUsageOpenPayload = {
     channelId: requireStringField(obj, 'channelId'),
     salt: requireStringField(obj, 'salt'),
     deadline: requireFiniteNumberField(obj, 'deadline'),
     openSig: requireStringField(obj, 'openSig'),
   };
+  if (typeof obj.freeTierDelegations === 'string') result.freeTierDelegations = obj.freeTierDelegations;
+  return result;
 }
 
 export function decodeFreeUsageAuth(data: Uint8Array): FreeUsageAuthPayload {

@@ -142,7 +142,7 @@ describe('peer actions on key layers and their outcome', () => {
 
   it('says when an allowed seller still cannot serve', () => {
     const candidate = (eligible: boolean, reasons: string[] = [], rank: number | null = null) => ({
-      peerId: A, displayName: null, rank, eligible, reasons, inputUsdPerMillion: null, outputUsdPerMillion: null, trustScore: null,
+      peerId: A, displayName: null, rank, eligible, reasons, inputUsdPerMillion: null, outputUsdPerMillion: null, trustScore: null, selection: null,
     })
     const base = { action: 'allow' as const, name: 'Alpha', scopeLabel: 'key “K”', changed: true, model: 'm', peerId: A }
     const blocked = describePeerOutcome({ ...base, preview: { modelAllowed: true, candidates: [candidate(false, ['not in the workspace allow list'])] } })

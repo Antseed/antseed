@@ -31,6 +31,10 @@ AntseedPositionInit         ── separately funded starter-position faucet
 AntseedSellerPoolsRewards   ── staker rewards and restaking
 AntseedUsageRewards         ── buyer and seller/operator usage rewards
 AntseedLegacyEmissionsEscrow ── pre-minted pot for legacy claims and flushes
+AntseedKbfVerification      ── earlier single KBF verification contract (replaced by the split below)
+AntseedVerificationResults  ── verification results layer: verdicts + verification bucket, per source
+AntseedKbfAudits            ── KBF audit source: approved auditors, confirmations, report rounds, credits
+AntseedVerificationPointsPolicy ── seller point bonus/penalty from AntseedVerificationResults
 MockERC8004Registry         ── mock ERC-8004 IdentityRegistry (local testing only)
 ```
 
@@ -46,6 +50,9 @@ AntseedChannels ──calls──► AntseedStats.recordMetadata() (optional, on
 AntseedChannels ──calls──► AntseedEmissions.accrueSellerPoints() / accrueBuyerPoints()
 AntseedChannels ──reads──► AntseedStaking (seller stake verification)
 AntseedEmissions ──calls──► ANTSToken.mint()
+AntseedKbfAudits ──calls──► AntseedVerificationResults.record() / credit()
+AntseedVerificationPointsPolicy ──reads──► AntseedVerificationResults.agentStatus()
+AntseedVerificationResults ──calls──► AntseedEmissionsGate.claim() (minter controller of the verification bucket)
 ```
 
 ## Build
@@ -701,6 +708,87 @@ States: `ready` (M001 active, at least one install missing), `active`,
 
 ## Configuration
 
+### KBF verification (deployed `AntseedKbfVerification`, replaced by M003)
+
+The contract on Base mainnet today, `AntseedKbfVerification`, records KBF model-verification audits
+from approved auditors and pays them from the verification emission bucket by audit credits, capped
+per model, per auditor and by each auditor's share of the epoch budget. Rewards stay off until the
+owner sets `rewardsStartEpoch`. Its source is removed from this tree; M003 below replaces it with a
+shared results layer, where later verification methods are further sources sharing the same
+bucket and points policy. The confirmation rules below carry over unchanged.
+
+#### Confirmations
+
+Each submitted result is a report. A verdict is recorded once `requiredReports(verdict)`
+distinct approved auditors report it for the same agent, service and model in the same
+epoch: by default 1 for SAME and UNDETERMINED and 2 for DIFF (`setRequiredReports`). A SAME
+or UNDETERMINED that would replace a live DIFF needs as many reports as a DIFF, whatever
+model it is reported as, so one auditor can neither give nor clear a DIFF. Reports count
+per epoch only, and only within the service's current report round (`reportRound`): it moves
+on whenever the service's verdict moves into or out of DIFF, so support given before a DIFF
+was confirmed can't clear it and support given before it was cleared can't restore it. Changes
+between SAME and UNDETERMINED don't move it, so one auditor can't reset a DIFF that waits for its
+second report. Revoking an auditor (`setAuditor(auditor, false)`) moves every service's round on
+(`auditorRevocations`), so a revoked auditor's waiting reports never help record a verdict;
+recorded verdicts stay. An auditor's later report replaces its earlier one, and repeating a report adds
+no support (it records again only where one report is enough). `ServiceAudited` carries the
+`round`, `reports` (distinct auditors reporting that verdict so far this epoch and round) and `required`;
+`antseed verifier run` reads it to find DIFFs waiting for a confirmation. Credits are
+unchanged: every model audit earns one, confirmed or not.
+
+### Verification split (M003)
+
+M003 deploys `AntseedKbfVerification`'s replacement: a results layer and a KBF audit source, so
+readers depend on one stable contract and verification methods can be added or replaced underneath
+it; a KBF source with a different auditor rule is just a new source on the same results layer. KBF behaviour (confirmations, report rounds, one credit per model audit, the audit
+events) is unchanged. Unlike the old contract, reward above the per-auditor cap and unclaimable budget
+are no longer left unminted: they go to the reserve and the remainder route.
+
+- **`AntseedVerificationResults`** (results layer). A verdict registry and the verification
+  bucket. It holds each service's verdict (`serviceStatus`, now with the recording `source`), the
+  per-epoch counters behind `agentStatus` / `isVerified` and the `validityEpochs` window. Only
+  approved sources (`setSource`, at most `MAX_SOURCES` = 32 ever listed) can `record` and
+  `credit`; the latest record from any source wins, and how a verdict is reached is the source's
+  business. The owner can `clearServiceStatuses`, which bumps `serviceClears` so sources drop
+  reports made before the clear. `ServiceStatusChanged` gains `source` and `epoch`; `ServiceCleared(agentId, serviceHash, epoch, clears)` reports every owner clear, also of a service with no live verdict; the evidence stays in the source's own events (KBF: `ModelAudited`).
+  As the minter controller of the verification bucket it splits each epoch's budget between
+  sources by `sourceShareBps` (sum at most 10,000; a change applies from the next epoch, so a
+  running or finished epoch's split never moves; `sourceShareBpsAt(source, epoch)`). Per source:
+  `rewardsStartEpoch` (default `REWARDS_OFF`), `maxCreditsPerAuditorPerEpoch` (default 100) and
+  `maxAuditorShareBps` (default 2,000). Verifiers claim per source after an epoch ends with
+  `claimRewards(source, epochs)` / `pendingReward(source, auditor, epoch)`; the part of a reward
+  above the per-verifier cap is minted to the emissions reserve in the same claim, as in
+  `AntseedUsageRewards`, and a claim with overflow reverts while the gate has no reserve.
+  `settleEpochRemainder(epoch)` is permissionless and sends what no verifier can ever claim
+  (budget assigned to no source, sources without credits, budget freed by `voidCredits`) through
+  the gate's `claimRemainder` (burn up to the gate's cap, then the reserve). `diffChanges` counts
+  every move of a service's live verdict into or out of DIFF, by any source or an owner clear. It can run again when
+  a later void frees more, and always leaves enough of the bucket on the gate for every unpaid claim
+  (`unclaimableRemainder`). `voidCredits(source, epoch, auditor)` removes unclaimed farmed credits.
+- **`AntseedKbfAudits`** (KBF source). `submitModelAudit` and `setAuditor` have the same signatures
+  and rules as before (`approvedAuditors`, `AuditorSet` on every call, carrying the resulting `auditorRevocations`); it
+  holds `sellerPools` for the staking check. Its report round is
+  `results.diffChanges + results.serviceClears + auditorRevocations`: the results layer counts every
+  move into or out of DIFF by any source, so support given before another source's DIFF can't clear
+  it. A SAME or UNDETERMINED replacing a live DIFF from any source needs `diffReplacementReports` reports (default 1, owner-set with `setDiffReplacementReports`). The
+  tallies are public (`reportKey`, `reportOf`, `reportCount`). Any auditor may submit any evidence
+  hash, as on the old contract. New: `agentOwner(agentId)` and a self-service auditor profile
+  (`setAuditorProfile(name, iconUri, url)`, `auditorProfile`, `AuditorProfileSet`; approved auditors
+  only; links must be `https://` or `ipfs://`; the owner can `clearAuditorProfile`). Per-model credit
+  caps stay here (`maxCreditsPerModelPerEpoch`); credits go to `results.credit`.
+- **`AntseedVerificationPointsPolicy`**: the same formula as `AntseedKbfVerificationPointsPolicy`,
+  reading `results.agentStatus`.
+
+Runbook, wiring and the manual owner steps: `script/migrations/M003VerificationRegistry/README.md`.
+Verdicts, credits and auditor approvals on the old contract do not carry over. The redeploy is on
+Base mainnet and recorded as release `003-verification-split` (`deployments/base-mainnet/history/
+003-verification-split.json`; the old `003-kbf-verification` record stays, history is append-only):
+`AntseedVerificationResults` `0xF2C8482aD2A348854698E93f41FE3cc32307687c`, `AntseedKbfAudits`
+`0xe57aB03423A3835571F7d68AC1E23CF8a2763343` and `AntseedVerificationPointsPolicy`
+`0x5d677f5eDd69E69c664E3f7FA80f1D3DD61A2212`, with KBF wired as a source at 10,000 bps. The SDK and
+CLI default to them. Still open are the manual owner steps: moving the verification minter to the
+results layer, registering the policy and turning rewards on.
+
 Administrative parameters use their contract's dedicated setters where available.
 The emissions gate's schedule constants are immutable; do not treat legacy
 owner-configurable emissions parameters as configuration for the standard gate.
@@ -790,3 +878,32 @@ Used for testing and development. Uses MockUSDC with permissionless minting. See
 #### Base Local (Development)
 
 Local anvil chain (chain ID 31337) for development. Deploy with `forge script script/Deploy.s.sol`.
+
+### Standalone verification deployment (no policy or rewards)
+
+When the AntSeed deployer key is unavailable, a separate wallet can deploy the
+verification contracts (`AntseedVerificationResults`, `AntseedKbfAudits`,
+`AntseedVerificationPointsPolicy`) without registering the policy or touching the
+existing points-policy/rewards wiring. Use `script/DeployStandaloneVerificationSplit.s.sol`
+with an existing compatible registry, seller-pools and usage-accounting address
+(`USAGE_ACCOUNTING`: any contract exposing `sellerPools()`, read by the policy):
+
+```bash
+cd packages/contracts
+export EXPECTED_CHAIN_ID=84532 # or the intended chain
+export ANTSEED_REGISTRY=0x...
+export SELLER_POOLS=0x...
+export USAGE_ACCOUNTING=0x...
+export STANDALONE_OWNER=0x... # address of the new signer
+forge script script/DeployStandaloneVerificationSplit.s.sol \
+  --rpc-url "$RPC_URL" --sender "$STANDALONE_OWNER" --via-ir
+```
+
+Review the dry-run output, then repeat with a new keystore or hardware-wallet
+signer and `--broadcast`. The script wires the KBF source on the results layer
+(`setSource`, a 10,000 bps share) with its rewards off, optionally approves the
+supplied `VERIFICATION_AUDITORS` on the KBF contract and sets `VERIFICATION_BONUS_BPS`
+on the policy, and makes no policy-registry, usage-accounting, emissions-gate, or
+existing-registry writes. The new owner still needs gas, and the contracts remain
+read-coupled to the registry's emissions source and seller-pools contract. This is
+not a fresh replacement for the complete AntSeed protocol stack.

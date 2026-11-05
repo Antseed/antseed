@@ -361,6 +361,11 @@ export function registerPaymentsIpc(): void {
     }
   });
 
+  ipcMain.handle('payments:get-peer-metering', async (_event, peerId: unknown): Promise<Record<string, unknown> | null> => {
+    if (typeof peerId !== 'string' || peerId.length === 0) return null;
+    return fetchBuyerProxyJson(`/_antseed/metering/${encodeURIComponent(peerId)}`);
+  });
+
   ipcMain.handle('payments:get-buyer-usage', async (): Promise<{ ok: boolean; data: DesktopBuyerUsageTotals | null; error: string | null; lastActivityAt: number | null }> => {
     const body = await fetchBuyerProxyJson('/_antseed/buyer-usage');
     if (!body) {
@@ -402,13 +407,14 @@ export function registerPaymentsIpc(): void {
     return { ok: true, data: channels, error: null };
   });
 
-  ipcMain.handle('payments:request-cooperative-close', async (_event, opts?: { peerId?: string }) => {
+  ipcMain.handle('payments:request-cooperative-close', async (_event, opts?: { peerId?: string; channelId?: string }) => {
     const peerId = typeof opts?.peerId === 'string' ? opts.peerId.trim() : '';
     if (!peerId) {
       return { ok: false, result: null, error: 'Invalid peerId' };
     }
+    const channelId = typeof opts?.channelId === 'string' ? opts.channelId.trim() : '';
     try {
-      const result = await requestCooperativeChannelClose(peerId);
+      const result = await requestCooperativeChannelClose(peerId, channelId || undefined);
       invalidateChainReads();
       return { ok: true, result, error: null };
     } catch (err) {
