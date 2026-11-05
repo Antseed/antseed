@@ -61,7 +61,7 @@ export function registerVerifierRewardsCommand(verifierCmd: Command): void {
       })).address
 
       const resultsAddress = await verifierClient.resultsAddress()
-      const source = getAddress(verifierClient.contractAddress)
+      const kbf = getAddress(verifierClient.contractAddress)
       const settings = await verifierClient.rewardSettings()
       const pending = await Promise.all(epochs.map(async (epoch) => {
         const [amount, credits] = await Promise.all([
@@ -82,7 +82,7 @@ export function registerVerifierRewardsCommand(verifierCmd: Command): void {
       const total = pending.reduce((sum, entry) => sum + entry.amount, 0n)
       console.log(table.toString())
       console.log(`Auditor: ${auditor}`)
-      console.log(`Source: KBF audits ${source}`)
+      console.log(`Audit: KBF audits ${kbf}`)
       console.log(`Verification results: ${resultsAddress}`)
       console.log(`Total pending: ${formatUnits(total, ANTS_DECIMALS)} ANTS`)
       console.log(describeRewardSettings(settings))
@@ -94,10 +94,11 @@ export function registerVerifierRewardsCommand(verifierCmd: Command): void {
         return
       }
       if (!options.yes) await confirmClaim(claimable.length, formatUnits(total, ANTS_DECIMALS))
-      const transactionHash = await verifierClient.claimAuditorRewards(signer!.wallet, claimable)
+      // The results contract claims one epoch per transaction.
+      const transactionHashes = await verifierClient.claimAuditorRewards(signer!.wallet, claimable)
       console.log(chalk.green(
         `Claimed KBF auditor rewards for epoch(s) ${claimable.join(', ')} from ${resultsAddress} `
-        + `(source ${source}) (${transactionHash})`,
+        + `(audit ${kbf}) (${transactionHashes.join(', ')})`,
       ))
     })
 }

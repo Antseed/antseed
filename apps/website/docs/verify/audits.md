@@ -239,7 +239,7 @@ antseed verifier run; antseed verifier submit --yes
 
 ## Rewards
 
-Auditors share the verification part of ANTS emissions: one credit per model audited per epoch. Once an epoch has ended, claim with `antseed verifier rewards --claim`.
+Auditors share the verification part of ANTS emissions by credits: one credit per model audited per epoch by default, or the amount the KBF owner set for that model. Once an epoch has ended, claim with `antseed verifier rewards --claim`; each epoch is claimed in its own transaction.
 
 ## Configuration
 
