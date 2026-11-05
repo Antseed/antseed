@@ -81,6 +81,7 @@ describe('seller self health error', () => {
       [402, 'Insufficient USD or Diem balance'],
       [429, 'You exceeded your current quota: insufficient_quota'],
       [400, 'Your credit balance is too low to access the Anthropic API.'],
+      [400, 'Third-party apps now draw from your extra usage, not your plan limits. Add more at the usage settings page.'],
       [401, 'Incorrect API key provided: sk-abc'],
       [403, 'This key is not allowed to use this model'],
     ] as const) {
