@@ -4,16 +4,12 @@ pragma solidity ^0.8.24;
 import { Script } from "forge-std/Script.sol";
 import { console } from "forge-std/console.sol";
 
+import { IAntseedVerificationResults } from "../interfaces/IAntseedVerificationResults.sol";
 import { AntseedPointsPolicyRegistry } from "../policies/AntseedPointsPolicyRegistry.sol";
-import { AntseedVerificationPointsPolicy } from "../policies/AntseedVerificationPointsPolicy.sol";
-
-interface IVerificationResultsReads {
-    function isAudit(address audit) external view returns (bool);
-}
-
-interface IPolicyUsageAccounting {
-    function sellerPools() external view returns (address);
-}
+import {
+    AntseedVerificationPointsPolicy,
+    IAntseedSellerPoolsSource
+} from "../policies/AntseedVerificationPointsPolicy.sol";
 
 /// @title DeployVerificationPointsPolicy
 /// @notice Deploys only `AntseedVerificationPointsPolicy` against the live results layer, for a policy
@@ -94,10 +90,10 @@ contract DeployVerificationPointsPolicy is Script {
         for (uint256 index = 0; index < targets.length; ++index) {
             if (targets[index].code.length == 0) revert NoCode(targets[index]);
         }
-        if (!IVerificationResultsReads(config.results).isAudit(config.kbfAudits)) {
+        if (!IAntseedVerificationResults(config.results).isAudit(config.kbfAudits)) {
             revert KbfNotAnAudit(config.kbfAudits);
         }
-        if (IPolicyUsageAccounting(config.usageAccounting).sellerPools() == address(0)) {
+        if (address(IAntseedSellerPoolsSource(config.usageAccounting).sellerPools()) == address(0)) {
             revert NoSellerPools(config.usageAccounting);
         }
     }
