@@ -114,6 +114,19 @@ test('normalizeDiscoverRow preserves safe verified external links only', () => {
   assert.equal(row!.peerIconUrl, 'https://example.com/favicon.ico');
 });
 
+test('normalizeDiscoverRow keeps only known verification verdicts and https audit links', () => {
+  const raw = { peerId: 'abc', serviceId: 'gpt-5' };
+  const url = 'https://antscan.co/verification-service/7~0xabc';
+  const same = normalizeDiscoverRow({ ...raw, verification: 'same', verificationUrl: url });
+  assert.equal(same?.verification, 'same');
+  assert.equal(same?.verificationUrl, url);
+  assert.equal(normalizeDiscoverRow({ ...raw, verification: 'diff' })?.verification, 'diff');
+  assert.equal(normalizeDiscoverRow({ ...raw, verification: 'undetermined' })?.verification, null);
+  assert.equal(normalizeDiscoverRow({ ...raw, verificationUrl: 'javascript:alert(1)' })?.verificationUrl, null);
+  assert.equal(normalizeDiscoverRow(raw)?.verification, null);
+  assert.equal(normalizeDiscoverRow(raw)?.verificationUrl, null);
+});
+
 test('projectRowsToChatServiceOptions dedupes by (provider, service, peer)', () => {
   const rows = [
     { rowKey: 'p1:s1', serviceId: 's1', serviceLabel: 's1', categories: [], provider: 'openai', protocol: 'openai-chat-completions', peerId: 'p1', peerEvmAddress: '', sellerContract: null, verificationLinks: [], peerIconUrl: null, peerDisplayName: null, peerLabel: '', inputUsdPerMillion: 1, outputUsdPerMillion: 2, cachedInputUsdPerMillion: null, lifetimeSessions: 0, lifetimeRequests: 0, lifetimeInputTokens: 0, lifetimeOutputTokens: 0, lifetimeFirstSessionAt: null, lifetimeLastSessionAt: null, onChainChannelCount: null, agentId: 1, poolStakeAnts: 0, onChainActiveChannelCount: 0, onChainGhostCount: 0, onChainTotalVolumeUsdc: '0', onChainLastSettledAt: 0, onChainReputationScore: null, selectionValue: 'openai\u0001s1\u0001p1' },

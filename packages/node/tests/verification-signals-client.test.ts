@@ -13,14 +13,17 @@ const IFACE = new Interface([
   ...VERIFICATION_RESULTS_ABI.filter((entry) => !entry.includes('currentEpoch')),
   ...KBF_AUDITS_ABI.filter((entry) => entry.includes('function results()')),
   'function currentEpoch() view returns (uint256)',
+  'function bonusBps() view returns (uint256)',
+  'function penaltyBps() view returns (uint256)',
 ]);
+const POLICY = '0x' + '44'.repeat(20);
 const coder = AbiCoder.defaultAbiCoder();
 const hash = serviceHash;
 
 /** verdict + epoch given per (agentId, service hash), counting two epochs as KBF does; missing entries are NONE. */
 type Statuses = Record<string, { verdict: number; epoch: number } | 'revert'>;
 
-function fakeProvider(statuses: Statuses, options: { currentEpoch?: number; multicall?: boolean; failEpoch?: boolean } = {}) {
+function fakeProvider(statuses: Statuses, options: { currentEpoch?: number; multicall?: boolean; failEpoch?: boolean; agentStatus?: Record<number, [number, number]> } = {}) {
   const answer = (target: string, data: string): string => {
     const parsed = IFACE.parseTransaction({ data })!;
     switch (parsed.name) {
@@ -42,6 +45,14 @@ function fakeProvider(statuses: Statuses, options: { currentEpoch?: number; mult
           '0x' + '00'.repeat(32), status?.verdict ?? 0, 0, epoch, VERIFICATION, status ? epoch + 2 : 0,
         ]]);
       }
+      case 'agentStatus': {
+        const [agentId] = parsed.args as unknown as [bigint];
+        const counts = options.agentStatus?.[Number(agentId)];
+        if (!counts) throw new Error('revert');
+        return coder.encode(['tuple(uint16,uint16)'], [[counts[0], counts[1]]]);
+      }
+      case 'bonusBps': expect(target.toLowerCase()).toBe(POLICY); return coder.encode(['uint256'], [200]);
+      case 'penaltyBps': expect(target.toLowerCase()).toBe(POLICY); return coder.encode(['uint256'], [400]);
       default: throw new Error(`unexpected ${parsed.name}`);
     }
   };
@@ -80,6 +91,44 @@ describe('VerificationSignalsClient', () => {
     expect(result.has(0)).toBe(false);
     // The results address once, then one batched round for statuses + one for the gate epoch.
     expect(call).toHaveBeenCalledTimes(3);
+  });
+
+  it('returns live SAME services next to DIFF ones from the same reads', async () => {
+    const { provider, call } = fakeProvider({
+      [`7:${hash('gpt-6.1-sol')}`]: { verdict: 2, epoch: 27 },     // DIFF, live
+      [`7:${hash('claude-opus-5.5')}`]: { verdict: 1, epoch: 27 }, // SAME, live
+      [`7:${hash('kimi-k3')}`]: { verdict: 1, epoch: 26 },         // SAME, expired
+      [`7:${hash('grok-4.7')}`]: { verdict: 3, epoch: 27 },        // UNDETERMINED
+    });
+    const client = new VerificationSignalsClient(provider, VERIFICATION);
+    const result = await client.readServiceVerdicts([
+      { agentId: 7, services: ['gpt-6.1-sol', 'Claude-Opus-5.5', 'kimi-k3', 'grok-4.7'] },
+    ]);
+    expect(result.get(7)).toEqual({ diff: ['gpt-6.1-sol'], same: ['claude-opus-5.5'] });
+    const calls = call.mock.calls.length;
+    await client.readDiffServices([{ agentId: 7, services: ['gpt-6.1-sol'] }]);
+    // readDiffServices is the same read: one status multicall and one epoch read, no extra calls.
+    expect(call.mock.calls.length - calls).toBeLessThanOrEqual(2);
+  });
+
+  it('reads the agent status and the policy rates (once an hour) into a points multiplier', async () => {
+    let now = 1_000_000;
+    const { provider, call } = fakeProvider({ [`7:${hash('a')}`]: { verdict: 2, epoch: 27 } }, { agentStatus: { 7: [2, 4] } });
+    const client = new VerificationSignalsClient(provider, VERIFICATION, RESULTS, POLICY, () => now);
+    const first = await client.readServiceVerdicts([{ agentId: 7, services: ['a'] }]);
+    expect(first.get(7)?.agent).toEqual({ sameCount: 2, diffCount: 4, pointsMultiplierBps: 4_000 });
+    const policyCalls = () => call.mock.calls.filter(([tx]) => JSON.stringify(tx).toLowerCase().includes('44'.repeat(20))).length;
+    const readsBefore = policyCalls();
+    now += 60_000;
+    await client.readServiceVerdicts([{ agentId: 7, services: ['a'] }]);
+    expect(policyCalls()).toBe(readsBefore);
+  });
+
+  it('leaves the multiplier null without a policy address', async () => {
+    const { provider } = fakeProvider({}, { agentStatus: { 7: [1, 0] } });
+    const client = new VerificationSignalsClient(provider, VERIFICATION, RESULTS);
+    expect((await client.readServiceVerdicts([{ agentId: 7, services: ['a'] }])).get(7)?.agent)
+      .toEqual({ sameCount: 1, diffCount: 0, pointsMultiplierBps: null });
   });
 
   it('reads a configured results address without asking the KBF contract', async () => {

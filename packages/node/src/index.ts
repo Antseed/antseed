@@ -492,11 +492,20 @@ export {
   compareEffectiveModelReputation,
   effectiveModelReputationScore,
   hasLiveDiffVerdict,
+  hasLiveSameVerdict,
+  liveVerificationVerdict,
   normalizedModelReputationScore,
   verificationServiceKey,
   type ModelReputationSource,
   type VerificationDiffSource,
 } from './reputation/model-reputation.js';
+export { verificationServiceUrl } from './reputation/model-verification-links.js';
+export {
+  VERIFICATION_POINTS_BPS,
+  VERIFICATION_POINTS_MAX_BONUS_BPS,
+  verificationPointsMultiplierBps,
+  type VerificationPointsRates,
+} from './reputation/verification-points.js';
 export {
   buildSybilContext,
   computeOnChainSybilRisk,

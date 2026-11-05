@@ -781,6 +781,16 @@ export interface ServicePerformanceView {
   tokensPerSecondP50: number | null
 }
 
+/**
+ * An on-chain auditor verdict on one seller's offer of one model: 'same' (serves the genuine
+ * model) or 'diff' (very likely a different one; routing keeps 10% of its reputation), with the
+ * explorer page of its audit history (null without an explorer or agent id).
+ */
+export interface ModelCheckView {
+  verdict: 'diff' | 'same'
+  auditUrl: string | null
+}
+
 export interface Peer {
   peerId: string
   displayName: string | null
@@ -805,6 +815,8 @@ export interface Peer {
     voices?: string[]
     /** Speech services: USD per million characters of `input`. Absent when not advertised. */
     usdPerMillionCharacters?: number
+    /** The live model-check verdict for this service; absent when there is none. */
+    modelCheck?: ModelCheckView
   }>
   trustScore: number | null
   reputationScore: number | null
@@ -825,8 +837,17 @@ export interface Peer {
   freeTier: FreeTierProgramView | null
   usageShareBps: number | null
   washFlagged: boolean
-  /** Services with a live DIFF verdict in AntseedVerificationResults (lowercase names); their routing reputation keeps 10%. */
+  /** How the buyer built `trustScore`, part by part; absent when it has no breakdown. */
+  trustBreakdown?: TrustBreakdownView
+  /**
+   * Services with a live DIFF verdict on AntseedVerificationResults (lowercase names): auditors found
+   * they very likely serve a different model. Their routing reputation keeps 10%.
+   */
   diffServices?: string[]
+  /** Services with a live SAME verdict (lowercase names): auditors found they serve the genuine model. */
+  sameServices?: string[]
+  /** Explorer page of each verdict's audit history, keyed by service (lowercase name); absent without an explorer. */
+  verificationUrls?: Record<string, string>
   lastSeen: number | null
   health: { failureStreak: number; coolingDownUntil: number | null }
   /** Medians over this gateway's recent requests: total time, time to first token, and output tokens per second. */
@@ -932,6 +953,8 @@ export interface NetworkModelOffer {
   performance?: ServicePerformanceView
   /** Speech models: the voices this seller accepts. Absent when not announced. */
   voices?: string[]
+  /** The live model-check verdict for this offer; absent when there is none. */
+  modelCheck?: ModelCheckView
 }
 
 /** A model on the network, merged across the sellers that offer it (aliases included). */
@@ -1008,7 +1031,10 @@ export interface RoutePreview {
     reasons: string[]
     inputUsdPerMillion: number | null
     outputUsdPerMillion: number | null
+    /** Trust for this model, as routing judges it: cut to 10% by a live DIFF model check. */
     trustScore: number | null
+    /** The seller's trust before that cut; present only when one applies. */
+    trustScoreBeforeCut?: number
     /** Eligible sellers: the numbers automatic routing ranks them by. Null when ineligible. */
     selection: RouteSelection | null
     /** The seller's last announced self health check for the model; a failing one is never routed to. */
@@ -1778,4 +1804,23 @@ export interface SellerLogQuery {
 export interface SellerRpcDiagnostics {
   process: Record<string, { total: number; lastMinute: number; perMinute: number }>
   daemon: Record<string, { total: number; lastMinute: number; perMinute: number }> | null
+}
+
+/** The parts of a seller's trust score (0-100), as the buyer computed it. Null parts had no data. */
+export interface TrustBreakdownView {
+  /** Settled service history, 0-50. */
+  history: number | null
+  /** Last epoch's recognized-usage share, 0-20. */
+  usage: number | null
+  /** Staking-power share, 0-10. */
+  power: number | null
+  /** Verified identity, 0-20, and which kind. */
+  identity: { score: number; kind: 'github' | 'domain' } | null
+  /** Free-model bonus, +5. */
+  freeModels: number | null
+  /**
+   * Model-verification penalty, taken off the sum: the seller's points multiplier from the
+   * verification policy when below 100%. Absent without one.
+   */
+  verification?: { multiplierBps: number; diffCount: number; penalty: number }
 }

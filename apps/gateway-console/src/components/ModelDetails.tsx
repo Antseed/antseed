@@ -3,6 +3,7 @@ import { Button } from '@antseed/ui'
 import type { NetworkModel, NetworkModelOffer, PeerTeeScope, RoutePreview } from '../api/types'
 import { formatPriceRange, formatTokens, shortId } from '../lib/format'
 import { CAPABILITY_LABELS, MODEL_TYPE_LABELS, priceSummary } from '../lib/models'
+import { modelCheckTitle, offerTrustLabel } from '../lib/model-check'
 import { panelPath } from '../lib/nav'
 import { modelCallFormat, pinnedModelId } from '../lib/snippets'
 import { ApiCall } from './ApiCall'
@@ -11,6 +12,7 @@ import { SellerSelection, type SellerRowExtras } from './SellerSelection'
 import { ServiceHealthInfo, ServicePerformanceInfo } from './ServiceHealthInfo'
 import { PanelRow, PanelSection } from './SidePanel'
 import { FreeTierInfo } from './FreeTierInfo'
+import { ModelCheckInfo } from './ModelCheckInfo'
 import { TeeBadge } from './TeeBadge'
 import { Badge, CopyButton, DetailList, Mono, PageLink, SelectField } from './ui'
 import { VerificationLinks } from './VerificationLinks'
@@ -75,8 +77,9 @@ export function ModelDetails({ model, preview, previewLoading, pin }: {
       meta: <>
         {offer.free && offer.freeTier ? <FreeTierInfo program={offer.freeTier} agentId={offer.agentId} align="center" /> : <span>{priceSummary(offer)}</span>}
         {!offer.free && offer.freeTier && <FreeTierInfo program={offer.freeTier} agentId={offer.agentId} priced align="center" />}
-        <span>Trust {score(offer.trustScore)}</span>
+        <span title={offer.modelCheck?.verdict === 'diff' ? modelCheckTitle(offer.modelCheck) : undefined}>{offerTrustLabel(offer.trustScore, offer.modelCheck)}</span>
         {offers.map((entry) => entry.serviceId !== model.id && <Mono key={entry.serviceId}>{entry.serviceId}</Mono>)}
+        <ModelCheckInfo check={offer.modelCheck} />
         <ServicePerformanceInfo performance={offer.performance} />
       </>,
       badges: (offer.verificationLinks?.length || offer.tee || offer.free || offer.freeTier) ? <>

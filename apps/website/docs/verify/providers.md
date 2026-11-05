@@ -21,7 +21,7 @@ A service is not audited when it costs more than the model does upstream, meanin
 
 **DIFF** does two things:
 
-- That service keeps only 10% of its reputation, so buyers' automatic routing stops sending requests to it. Your other services keep their reputation.
+- That service keeps only 10% of its reputation, so buyers' automatic routing stops sending requests to it. Your overall trust score also drops by the same amount as your points (below), so you rank a little lower for your other models too.
 - Your ANTS points go down on every settlement, whatever model it was for, because rewards count all your services together. One DIFF service costs 4%, two cost 16%, three 36%, four 64%. From five on you earn no points at all.
 
 The bonus and the penalty add up, so 6 SAME services and 1 DIFF give you 108% of your usual points. Your buyers' points and your pool's staker rewards move by the same amount, so a DIFF also costs the buyers and stakers who chose you.

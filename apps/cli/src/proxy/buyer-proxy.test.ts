@@ -2864,6 +2864,35 @@ test('model-only routing cuts a live DIFF service to 10% and excludes it under t
   assert.equal(selectedPeerId, flagged.peerId)
 })
 
+test('gateway policies judge trust per model: a live DIFF cuts it for the trust sort and the trust minimum', async () => {
+  const pricing = { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, services: { 'diff-model': { inputUsdPerMillion: 1, outputUsdPerMillion: 2 } } } }
+  const protocols: PeerInfo['providerServiceApiProtocols'] = { openai: { services: { 'diff-model': ['openai-chat-completions'] } } }
+  const flagged = makePeer('a', ['openai'])
+  flagged.onChainReputationScore = 95
+  flagged.onChainDiffServices = ['diff-model']
+  flagged.onChainVerificationFetchedAt = Date.now()
+  flagged.providerPricing = pricing
+  flagged.providerServiceApiProtocols = protocols
+  const clean = makePeer('b', ['openai'])
+  clean.onChainReputationScore = 70
+  clean.providerPricing = pricing
+  clean.providerServiceApiProtocols = protocols
+  const proxy = makeBuyerProxyWithPeers([flagged, clean], [flagged, clean], permissiveRouter())
+
+  const sorted = await (proxy as any)._routePreview('diff-model', { sort: 'trust' })
+  const byPeer = new Map(sorted.map((candidate: { peerId: string }) => [candidate.peerId, candidate]))
+  assert.deepEqual(sorted.filter((candidate: { eligible: boolean }) => candidate.eligible).map((candidate: { peerId: string }) => candidate.peerId), [clean.peerId, flagged.peerId])
+  assert.equal((byPeer.get(flagged.peerId) as { trustScore: number }).trustScore, 9.5)
+  assert.equal((byPeer.get(flagged.peerId) as { trustScoreBeforeCut?: number }).trustScoreBeforeCut, 95)
+  assert.equal((byPeer.get(clean.peerId) as { trustScoreBeforeCut?: number }).trustScoreBeforeCut, undefined)
+
+  const floored = await (proxy as any)._routePreview('diff-model', { minTrustScore: 50 })
+  const excluded = floored.find((candidate: { peerId: string }) => candidate.peerId === flagged.peerId)
+  assert.equal(excluded?.eligible, false)
+  assert.ok(excluded?.reasons.some((reason: string) => reason.includes('cut to 10% from 95: live DIFF verification verdict')), JSON.stringify(excluded?.reasons))
+  assert.equal(floored.find((candidate: { peerId: string }) => candidate.peerId === clean.peerId)?.eligible, true)
+})
+
 test('model-only cached-input pricing penalty does not bury a substantially stronger peer', async () => {
   const priced = makePeer('a', ['openai'])
   priced.onChainReputationScore = 20

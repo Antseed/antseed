@@ -353,7 +353,10 @@ interface RoutePreviewCandidate {
   reasons: string[]
   inputUsdPerMillion: number | null
   outputUsdPerMillion: number | null
+  /** Trust for this model: the buyer's score, cut to 10% by a live DIFF verdict. */
   trustScore: number | null
+  /** The score before a DIFF cut; present only when one applies. */
+  trustScoreBeforeCut?: number
   selection: RouteSelection | null
   health: ServiceHealth | null
 }
@@ -571,6 +574,17 @@ function addBuyerConfigReasons(reasons: string[], buyerReasons: readonly string[
  * service keeps 10%, and a paid seller that lists no cached-input price for a
  * model other sellers price cache reads on keeps half. Both can apply.
  */
+/** Why a gateway level's trust minimum sees a lower score than the seller's: a DIFF cut. */
+function diffTrustPenalty(raw: number | null): string {
+  return `cut to ${Math.round(DIFF_VERIFICATION_REPUTATION_MULTIPLIER * 100)}% from ${Math.round(raw ?? 0)}: live DIFF verification verdict`
+}
+
+function previewTrust(modelTrust: { trust: number | null; raw: number | null; cut: boolean }): { trustScore: number | null; trustScoreBeforeCut?: number } {
+  return modelTrust.cut && modelTrust.raw !== null
+    ? { trustScore: modelTrust.trust, trustScoreBeforeCut: modelTrust.raw }
+    : { trustScore: modelTrust.trust }
+}
+
 function trustPenalty(candidate: {
   reputation: number
   effectiveReputationScore: number | null
@@ -1097,6 +1111,12 @@ export function parsePersistedPeers(
     }
     if (Array.isArray(entry.onChainDiffServices)) {
       peer.onChainDiffServices = [...new Set(entry.onChainDiffServices
+        .filter((service): service is string => typeof service === 'string')
+        .map((service) => service.trim().toLowerCase())
+        .filter((service) => service.length > 0))]
+    }
+    if (Array.isArray(entry.onChainSameServices)) {
+      peer.onChainSameServices = [...new Set(entry.onChainSameServices
         .filter((service): service is string => typeof service === 'string')
         .map((service) => service.trim().toLowerCase())
         .filter((service) => service.length > 0))]
@@ -1646,6 +1666,17 @@ export class BuyerProxy {
     }
   }
 
+  /**
+   * The seller's trust for one of its models, as every routing level judges it: the buyer's
+   * trust score, cut to DIFF_VERIFICATION_REPUTATION_MULTIPLIER when the model has a live
+   * DIFF verdict. Null when the buyer has no score for the seller.
+   */
+  private _modelTrust(peer: PeerInfo, serviceId: string | null): { trust: number | null; raw: number | null; cut: boolean } {
+    const raw = normalizedModelReputationScore(peer)
+    const cut = raw !== null && serviceId !== null && hasLiveDiffVerdict(peer, serviceId, this._now())
+    return { trust: raw === null ? null : cut ? raw * DIFF_VERIFICATION_REPUTATION_MULTIPLIER : raw, raw, cut }
+  }
+
   /** Health is tracked per seller and model: one seller can serve a small model fast and a large one slowly. */
   private _healthServiceKey(serviceId: string | null): string | null {
     return serviceId ? policyModelKey(serviceId) : null
@@ -1813,7 +1844,11 @@ export class BuyerProxy {
       const buyerPreferences = this._buyerPreferencePolicy()
       const allowed = ranked.filter((candidate) => {
         const facts = this._policyFacts(candidate.peer, candidate.offer)
-        const reasons = policyExclusionReasons(requestPolicy, facts)
+        // Gateway levels judge trust per model too: a live DIFF verdict cuts it, as in automatic routing.
+        const modelTrust = this._modelTrust(candidate.peer, candidate.serviceId)
+        const reasons = policyExclusionReasons(requestPolicy, modelTrust.cut
+          ? { ...facts, trustScore: modelTrust.trust, trustPenalty: diffTrustPenalty(modelTrust.raw) }
+          : facts)
         addBuyerConfigReasons(reasons, policyExclusionReasons(buyerPreferences, {
           ...facts, trustScore: modelRouteReputationScore(candidate), trustPenalty: trustPenalty(candidate),
         }))
@@ -1876,7 +1911,7 @@ export class BuyerProxy {
       const ordering = orderByPolicy(candidates, effectivePolicy, requestedService, {
         peerId: (candidate) => candidate.peerId,
         totalPrice: (candidate) => modelRouteTotalPrice(candidate),
-        trustScore: (candidate) => (candidate.reputation >= 0 ? candidate.reputation : null),
+        trustScore: (candidate) => this._modelTrust(candidate.peer, candidate.serviceId).trust,
         latencyMs: (candidate) => this._peerLatency(candidate.peerId, candidate.serviceId),
         coolingDown: isCooling,
         unhealthy: (candidate) => healthOf(candidate).unhealthy,
@@ -2049,7 +2084,7 @@ export class BuyerProxy {
         reasons: [`self health check failing${offer.health?.reason ? ` (${offer.health.reason})` : ''}`],
         inputUsdPerMillion: offer.inputUsdPerMillion ?? null,
         outputUsdPerMillion: offer.outputUsdPerMillion ?? null,
-        trustScore: peer ? normalizedModelReputationScore(peer) : null,
+        ...(peer ? previewTrust(this._modelTrust(peer, offer.serviceId ?? null)) : { trustScore: null }),
         selection: null,
         health: offer.health ?? null,
       })
@@ -2063,7 +2098,7 @@ export class BuyerProxy {
         reasons: modelAllowed ? verdict.reasons : ['model not allowed', ...verdict.reasons],
         inputUsdPerMillion: verdict.offer.inputUsdPerMillion ?? null,
         outputUsdPerMillion: verdict.offer.outputUsdPerMillion ?? null,
-        trustScore: normalizedModelReputationScore(verdict.peer),
+        ...previewTrust(this._modelTrust(verdict.peer, verdict.serviceId)),
         selection: modelAllowed && verdict.eligible ? verdict.selection ?? null : null,
         health: verdict.offer.health ?? null,
       })), ...failing]
@@ -2737,6 +2772,7 @@ export class BuyerProxy {
         // Services with a live DIFF verdict on AntseedVerificationResults; their
         // effective reputation keeps 10%.
         onChainDiffServices: p.onChainDiffServices ?? null,
+        onChainSameServices: p.onChainSameServices ?? null,
         onChainVerificationFetchedAt: p.onChainVerificationFetchedAt ?? null,
         // Persisted so cold-started buyers can still resolve the facade address
         // for channelId derivation. See parsePersistedPeers for the round-trip.
@@ -3139,6 +3175,7 @@ export class BuyerProxy {
         onChainWashFlagged: p.onChainWashFlagged ?? null,
         onChainWashShareBps: p.onChainWashShareBps ?? null,
         onChainDiffServices: p.onChainDiffServices ?? null,
+        onChainSameServices: p.onChainSameServices ?? null,
         onChainVerificationFetchedAt: p.onChainVerificationFetchedAt ?? null,
         maxConcurrency: p.maxConcurrency ?? null,
         currentLoad: p.currentLoad ?? null,
