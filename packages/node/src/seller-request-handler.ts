@@ -456,7 +456,8 @@ export class SellerRequestHandler {
       }
       const estimatedRequestCost = requestCostEstimate?.cost ?? 0n;
       // Buyer limits: a request is admitted, with its estimated size held against them until it ends, before any payment step.
-      if (this._deps.sellerBuyerLimiter) {
+      // They count tokens, so requests billed by other units (video, speech, images) are outside them.
+      if (this._deps.sellerBuyerLimiter && !videoRoute && !unitBillingModel) {
         const estimatedUsage = this._estimateUsageTokens(request, requestCostEstimate);
         const admission = this._deps.sellerBuyerLimiter.admit(buyerPeerId, provider.name, estimatedUsage);
         if (!admission.admitted) {

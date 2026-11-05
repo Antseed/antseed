@@ -136,7 +136,7 @@ describe('seller buyer limits', () => {
     };
   }
 
-  async function serve(handlerProvider: Provider, limiter: SellerBuyerLimiter, requestId: string) {
+  function connect(handlerProvider: Provider, limiter: SellerBuyerLimiter) {
     const handler = new SellerRequestHandler({
       identity: identityFromPrivateKeyHex('11'.repeat(32)),
       providers: [handlerProvider],
@@ -149,6 +149,11 @@ describe('seller buyer limits', () => {
     });
     const conn = { send: vi.fn(), hasRemoteCapability: vi.fn(() => false) };
     const { mux } = handler.handleConnection(conn as any, '22'.repeat(20), { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any, new VerificationMux(conn as any));
+    return { mux, conn };
+  }
+
+  async function serve(handlerProvider: Provider, limiter: SellerBuyerLimiter, requestId: string) {
+    const { mux, conn } = connect(handlerProvider, limiter);
     await mux.handleFrame({
       type: MessageType.HttpRequest,
       messageId: 1,
@@ -174,18 +179,7 @@ describe('seller buyer limits', () => {
       await held;
       return { requestId: req.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode('{"ok":true}') };
     });
-    const handler = new SellerRequestHandler({
-      identity: identityFromPrivateKeyHex('11'.repeat(32)),
-      providers: [upstream],
-      sellerPaymentManager: null,
-      sellerBuyerLimiter: limiter,
-      sessionTracker: null,
-      channelsClient: null,
-      announcer: null,
-      emit: () => false,
-    });
-    const conn = { send: vi.fn(), hasRemoteCapability: vi.fn(() => false) };
-    const { mux } = handler.handleConnection(conn as any, '22'.repeat(20), { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any, new VerificationMux(conn as any));
+    const { mux, conn } = connect(upstream, limiter);
     // Each request reserves its output maximum (or the default): the second no longer fits beside the first.
     const send = (requestId: string) => mux.handleFrame({
       type: MessageType.HttpRequest,
