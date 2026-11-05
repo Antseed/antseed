@@ -215,6 +215,13 @@ const DEFAULT_CATCH_UP_WAIT_MS = 5_000;
 const CLOSING_CHANNEL_WAIT_MS = 15_000;
 /** How long a request at the reserve ceiling waits for a running top-up before a retryable answer. */
 const TOP_UP_WAIT_MS = 15_000;
+/** A request's buyer-limit reservation, its estimated size, and the tokens it is finished with. */
+interface BuyerUsageHold {
+  reservation: BuyerUsageReservation | null;
+  estimate: number;
+  tokens: number;
+}
+
 /** Output reserved against buyer limits for a running request that sets no output maximum. */
 const DEFAULT_OUTPUT_RESERVATION_TOKENS = 8_192;
 /** Per-buyer rate limit for the free attestation route. */
@@ -275,7 +282,7 @@ export class SellerRequestHandler {
     });
 
     /** A request's buyer-limit reservation, finished with the tokens it used however the request ends. */
-    const handleProxyRequest = async (request: SerializedHttpRequest, usageHold: { reservation: BuyerUsageReservation | null; tokens: number }): Promise<void> => {
+    const handleProxyRequest = async (request: SerializedHttpRequest, usageHold: BuyerUsageHold): Promise<void> => {
       debugLog(`[SellerHandler] Received request: ${request.method} ${request.path} (reqId=${request.requestId.slice(0, 8)})`);
       // Response auth signs the request as the buyer sent it, so keep its headers before removing seller-only ones.
       const wireHeaders = { ...request.headers };
@@ -450,12 +457,14 @@ export class SellerRequestHandler {
       const estimatedRequestCost = requestCostEstimate?.cost ?? 0n;
       // Buyer limits: a request is admitted, with its estimated size held against them until it ends, before any payment step.
       if (this._deps.sellerBuyerLimiter) {
-        const admission = this._deps.sellerBuyerLimiter.admit(buyerPeerId, provider.name, this._estimateUsageTokens(request, requestCostEstimate));
+        const estimatedUsage = this._estimateUsageTokens(request, requestCostEstimate);
+        const admission = this._deps.sellerBuyerLimiter.admit(buyerPeerId, provider.name, estimatedUsage);
         if (!admission.admitted) {
           this._sendBuyerUsageLimited(mux, request.requestId, buyerPeerId, provider.name, admission.retryAfterSeconds);
           return;
         }
         usageHold.reservation = admission.reservation;
+        usageHold.estimate = estimatedUsage;
       }
 
       const freeTierService = this._extractRequestedService(request) ?? 'unknown';
@@ -1180,11 +1189,13 @@ export class SellerRequestHandler {
       } finally {
         this.adjustProviderLoad(provider.name, -1);
         if (isBillable) spm!.endBillableRequest(buyerPeerId);
-        usageHold.tokens = responseUsage.freshInputTokens + responseUsage.outputTokens;
+        const reportedUsage = responseUsage.freshInputTokens + responseUsage.outputTokens;
+        // A served answer without a usage report (a buyer can turn streaming usage off) counts as its estimate.
+        usageHold.tokens = statusCode < 400 && reportedUsage + responseUsage.cachedInputTokens === 0 ? usageHold.estimate : reportedUsage;
       }
     };
     mux.onProxyRequest(async (request: SerializedHttpRequest) => {
-      const usageHold: { reservation: BuyerUsageReservation | null; tokens: number } = { reservation: null, tokens: 0 };
+      const usageHold: BuyerUsageHold = { reservation: null, estimate: 0, tokens: 0 };
       try {
         await handleProxyRequest(request, usageHold);
       } finally {

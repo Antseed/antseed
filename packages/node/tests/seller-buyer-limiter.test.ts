@@ -162,8 +162,11 @@ describe('seller buyer limits', () => {
     return decodeHttpResponse(frame.payload);
   }
 
-  it('holds a concurrent burst on a free model to the limit while the first request is still running', async () => {
-    const limiter = new SellerBuyerLimiter({ maxTokensPerBuyer: 1_000 }, () => null);
+  it.each([
+    { name: 'holds a concurrent burst on a free model to the limit while the first request is still running', maxTokensPerBuyer: 1_000, outputFields: { max_tokens: 600 } },
+    { name: 'reserves output for a request that sets no maximum, so parallel long answers are held too', maxTokensPerBuyer: 10_000, outputFields: {} },
+  ])('$name', async ({ maxTokensPerBuyer, outputFields }) => {
+    const limiter = new SellerBuyerLimiter({ maxTokensPerBuyer }, () => null);
     const upstream = provider();
     let release!: () => void;
     const held = new Promise<void>((resolve) => { release = resolve; });
@@ -183,14 +186,14 @@ describe('seller buyer limits', () => {
     });
     const conn = { send: vi.fn(), hasRemoteCapability: vi.fn(() => false) };
     const { mux } = handler.handleConnection(conn as any, '22'.repeat(20), { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any, new VerificationMux(conn as any));
-    // Each request asks for up to 600 output tokens: the second one already exceeds the limit with the first in flight.
+    // Each request reserves its output maximum (or the default): the second no longer fits beside the first.
     const send = (requestId: string) => mux.handleFrame({
       type: MessageType.HttpRequest,
       messageId: 1,
       payload: encodeHttpRequest({
         requestId, method: 'POST', path: '/v1/chat/completions',
         headers: { 'content-type': 'application/json' },
-        body: new TextEncoder().encode(JSON.stringify({ model: 'test-model', max_tokens: 600 })),
+        body: new TextEncoder().encode(JSON.stringify({ model: 'test-model', ...outputFields })),
       }),
     });
     const burst = Promise.all(['b1', 'b2', 'b3'].map(send));
@@ -204,46 +207,17 @@ describe('seller buyer limits', () => {
     expect(upstream.handleRequest).toHaveBeenCalledTimes(1);
   });
 
-  it('reserves output for a request that sets no maximum, so parallel long answers are held too', async () => {
-    const limiter = new SellerBuyerLimiter({ maxTokensPerBuyer: 10_000 }, () => null);
+  it('counts a served answer without a usage report as its estimate', async () => {
+    const limiter = new SellerBuyerLimiter({ maxTokensPerBuyer: 20_000 }, () => null);
     const upstream = provider();
-    let release!: () => void;
-    const held = new Promise<void>((resolve) => { release = resolve; });
-    upstream.handleRequest = vi.fn(async (req) => {
-      await held;
-      return { requestId: req.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode('{"ok":true}') };
-    });
-    const handler = new SellerRequestHandler({
-      identity: identityFromPrivateKeyHex('11'.repeat(32)),
-      providers: [upstream],
-      sellerPaymentManager: null,
-      sellerBuyerLimiter: limiter,
-      sessionTracker: null,
-      channelsClient: null,
-      announcer: null,
-      emit: () => false,
-    });
-    const conn = { send: vi.fn(), hasRemoteCapability: vi.fn(() => false) };
-    const { mux } = handler.handleConnection(conn as any, '22'.repeat(20), { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any, new VerificationMux(conn as any));
-    // No request names an output maximum: each still holds the default output reservation.
-    const send = (requestId: string) => mux.handleFrame({
-      type: MessageType.HttpRequest,
-      messageId: 1,
-      payload: encodeHttpRequest({
-        requestId, method: 'POST', path: '/v1/chat/completions',
-        headers: { 'content-type': 'application/json' },
-        body: new TextEncoder().encode(JSON.stringify({ model: 'test-model' })),
-      }),
-    });
-    const burst = Promise.all(['b1', 'b2', 'b3'].map(send));
-    await vi.waitFor(() => expect(upstream.handleRequest).toHaveBeenCalledTimes(1));
-    release();
-    await burst;
-    const statuses = conn.send.mock.calls.map(([raw]) => decodeFrame(raw)!.message)
-      .filter((message) => message.type === MessageType.HttpResponse)
-      .map((message) => decodeHttpResponse(message.payload).statusCode);
-    expect(statuses.sort()).toEqual([200, 429, 429]);
-    expect(upstream.handleRequest).toHaveBeenCalledTimes(1);
+    upstream.handleRequest = vi.fn(async (req) => ({
+      requestId: req.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode('{"ok":true}'),
+    }));
+    // No usage comes back, so each answer counts as its estimate (a few input tokens plus the 8,192-token
+    // default output reservation): two fill most of the 20,000 tokens and a third no longer fits.
+    const statuses = [];
+    for (const id of ['n1', 'n2', 'n3']) statuses.push((await serve(upstream, limiter, id)).statusCode);
+    expect(statuses).toEqual([200, 200, 429]);
   });
 
   it('counts served tokens and answers 429 with retry-after before reaching the provider', async () => {

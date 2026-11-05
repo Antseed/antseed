@@ -352,7 +352,7 @@ antseed config seller set restrictedCountries '[]'    # turn the check off
 
 ### Buyer limits
 
-A provider is usually one upstream account, and one buyer can use it up for everyone. `buyerLimits` caps how many tokens each buyer may use from each provider in a rolling window. Tokens are uncached input plus output; cached input isn't counted. Requests still running count with their estimated size (input plus the output they ask for at most, or 8,192 output tokens when they set no maximum), so a burst of parallel requests can't pass on the same usage. A buyer over its limit gets 429 with `retry-after` until enough of its usage leaves the window.
+A provider is usually one upstream account, and one buyer can use it up for everyone. `buyerLimits` caps how many tokens each buyer may use from each provider in a rolling window. Tokens are uncached input plus output; cached input isn't counted. Requests still running count with their estimated size (input plus the output they ask for at most, or 8,192 output tokens when they set no maximum), so a burst of parallel requests can't pass on the same usage. An answer that comes back without a usage report counts as that estimate. A buyer over its limit gets 429 with `retry-after` until enough of its usage leaves the window.
 
 Buyers whose first payment channel with this seller is less than `newBuyers.forHours` old (default 72) get their own limit, and `newBuyers.maxTokensTotal` caps all of them together, so spreading use across new wallets gains nothing.
 
