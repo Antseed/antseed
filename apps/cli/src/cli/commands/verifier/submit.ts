@@ -2,6 +2,8 @@ import { join } from 'node:path'
 import { createInterface } from 'node:readline/promises'
 import chalk from 'chalk'
 import pkg from '../../../../package.json' with { type: 'json' }
+import { closeFinishedAuditWindows, readAuditWindow } from '../../../verifier/audit-window.js'
+import { chainNow } from '../../../verifier/chain-clock.js'
 import { requireCurrentVerifier } from '../../../verifier/release-check.js'
 import Table from 'cli-table3'
 import type { Command } from 'commander'
@@ -91,7 +93,7 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
     .option('--yes', 'submit without an interactive confirmation prompt')
     .option('--rpc-url <url>', 'Base JSON-RPC URL override')
     .option('--keystore <path>', 'sign with this encrypted JSON keystore (e.g. a Foundry keystore) instead of verifier.keystore or the data-dir identity; the password is asked on the terminal')
-    .option('--skip-version-check', 'submit even if this CLI is older than the latest release, or the check cannot be made')
+    .option('--skip-version-check', 'submit even if the latest release audits differently from this CLI, or the check cannot be made')
     .action(async (options: SubmitOptions, command: Command) => {
       const globalOptions = getGlobalOptions(command)
       const config = await loadConfig(globalOptions.config)
@@ -138,6 +140,13 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
         verifierClient.creditLimits(),
       ])
       validateRunEpoch(manifest, window)
+      // Windows whose sellers are all finished (or that the end of the epoch closes) are submitted now.
+      if (!options.dryRun) {
+        for (const closed of await closeFinishedAuditWindows({
+          evidenceDir, epoch: manifest.epoch, state: await loadEpochState(evidenceDir, manifest.epoch),
+          secondsLeftInEpoch: window.endsAt - await chainNow(verifierClient.provider),
+        })) console.log(chalk.green(`${closed.model}: audit window closed (${closed.closeReason})`))
+      }
       if (!options.dryRun && !approved) {
         throw new Error(
           `auditor wallet ${address} is not approved by the KBF audits contract ${getAddress(verifierClient.contractAddress)}`,
@@ -170,6 +179,7 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
         auditor: address,
         resolveAgentOwner: (agentId) => verifierClient.agentOwner(agentId),
         config: config.verifier,
+        auditWindow: (model) => readAuditWindow(evidenceDir, manifest.epoch, model),
         alreadyOnChain: alreadyOnChainFilter({
           events: epochEvents,
           auditor: address,

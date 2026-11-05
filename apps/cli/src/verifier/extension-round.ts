@@ -1,5 +1,4 @@
 import type { KbfReferenceV1 } from '@antseed/fingerprints'
-import { BANK_EXHAUSTED } from './probe-bank.js'
 import { addAuditCostSummaries, emptyAuditCostSummary, type AuditCostSummaryV1 } from './proxy-evidence.js'
 import { closeCallRule, extensionSets, latestExtension, needsExtension, pooledCloseCallVerdict } from './close-call.js'
 import type {
@@ -27,23 +26,19 @@ export interface ExtensionRoundOutcome {
 }
 
 /**
- * A close-call first audit (0.005 <= p < 0.20 with enough answers) is asked an extra set of
- * never-seen probes of the same size and decided on the sets pooled. Under `kbf-extension-v2` a
+ * A close-call first audit (0.005 <= p < 0.20 with enough answers) is asked the epoch question
+ * set's next extra set (the same for every seller, as large as the first) and decided on the sets pooled. Under `kbf-extension-v2` a
  * pooled look that is still a close call gets one more set (at most two extra sets), and the last
  * look is decided at 0.05; under `kbf-extension-v1` the single extra set is decided at 0.05. A pooled
- * DIFF is submitted like any other DIFF, for another auditor to confirm. When an extra set cannot run (no fresh
- * questions, reference endpoint down, seller skipped), the result is kept with `extensionPending`:
- * nothing is submitted for it, and the next run in the same epoch continues it. A close call carried
- * over from an earlier run is extended the same way.
+ * DIFF is submitted like any other DIFF, for another auditor to confirm. When an extra set cannot run (the set has
+ * none, seller skipped), the result is kept with `extensionPending`: the next run of the model's open
+ * audit window continues it, and once the window closes it is submitted as UNDETERMINED. A close
+ * call carried over from an earlier run is extended the same way.
  */
-/** Fresh-question builds a close call short of unseen questions may trigger before it waits for a later run. */
-export const EXTENSION_ENROLLMENT_ROUNDS = 3
 
 export async function runExtensionRounds(input: {
   results: readonly ModelVerificationTargetResult[]
   reserve(first: ModelVerificationTargetResult): Promise<{ reference: KbfReferenceV1; auditId: string }>
-  /** Adds fresh probes to the bank once; null when enrollment is not allowed for this run. */
-  enroll: (() => Promise<void>) | null
   verify(
     first: ModelVerificationTargetResult,
     reference: KbfReferenceV1,
@@ -82,47 +77,18 @@ async function runExtensionPass(
 ): Promise<Map<ModelVerificationTargetResult, ModelVerificationTargetResult>> {
   const reservations = new Map<ModelVerificationTargetResult, { reference: KbfReferenceV1; auditId: string }>()
   const skipReasons = new Map<ModelVerificationTargetResult, string>()
-  const reserveAll = async (targets: readonly ModelVerificationTargetResult[]): Promise<ModelVerificationTargetResult[]> => {
-    const exhausted: ModelVerificationTargetResult[] = []
-    for (const first of targets) {
-      try {
-        reservations.set(first, await input.reserve(first))
-        skipReasons.delete(first)
-      } catch (error) {
-        const message = asError(error).message
-        skipReasons.set(first, message)
-        if (message.startsWith(BANK_EXHAUSTED)) exhausted.push(first)
-      }
-    }
-    return exhausted
-  }
-  let exhausted = await reserveAll(closeCalls)
-  if (exhausted.length > 0) {
-    if (input.enroll) {
-      for (let round = 1; round <= EXTENSION_ENROLLMENT_ROUNDS && exhausted.length > 0; round += 1) {
-        input.log(
-          `${exhausted.length} close call(s) need fresh questions; enrolling (round ${round}/${EXTENSION_ENROLLMENT_ROUNDS})`,
-        )
-        try {
-          await input.enroll()
-        } catch (error) {
-          const message = `enrollment failed: ${asError(error).message}`
-          for (const first of exhausted) skipReasons.set(first, message)
-          break
-        }
-        exhausted = await reserveAll(exhausted)
-      }
-    } else {
-      for (const first of exhausted) {
-        skipReasons.set(first, 'no fresh questions left and enrollment is off (--no-enroll)')
-      }
+  for (const first of closeCalls) {
+    try {
+      reservations.set(first, await input.reserve(first))
+    } catch (error) {
+      skipReasons.set(first, asError(error).message)
     }
   }
 
   const finals = new Map<ModelVerificationTargetResult, ModelVerificationTargetResult>()
   const keepPending = (first: ModelVerificationTargetResult, label: string, reason: string): void => {
     stats.pending += 1
-    input.log(`extra questions could not run ${label}: ${reason} → close call kept, not submitted; the next run this epoch extends it`)
+    input.log(`extra questions could not run ${label}: ${reason} → close call kept; the next run of its audit window extends it, or it is submitted UNDETERMINED when the window closes`)
     finals.set(first, {
       ...first,
       extensionPending: { reason, since: first.extensionPending?.since ?? new Date().toISOString() },

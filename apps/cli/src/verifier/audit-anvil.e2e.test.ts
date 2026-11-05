@@ -20,6 +20,7 @@ import { loadEpochReports, pendingConfirmations } from './pending-confirmations.
 import { roundRobinAssignmentFor, auditorRotationForModel } from './audit-assignment.js'
 import { handoverModelsFor, loadEpochModelAudits } from './audit-handover.js'
 import { chainNow } from './chain-clock.js'
+import { openAuditWindow } from './audit-window.js'
 
 const randomWallet = (): Wallet => new Wallet(Wallet.createRandom().privateKey)
 const RUN_ANVIL_E2E = process.env['ANTSEED_RUN_VERIFIER_ANVIL_E2E'] === '1'
@@ -330,6 +331,107 @@ test('two auditors confirm each other\'s DIFFs: one SAME is recorded at once, a 
     assert.equal(await client.isVerified(2n), false, 'a confirmed DIFF still counts in the next epoch')
     castSend(rpcUrl, gateAddress, 'setCurrentEpoch(uint256)', [String(AUDIT_EPOCH + 2)])
     assert.deepEqual(await client.agentStatus(2n), { verifiedCount: 0, diffCount: 0 }, 'and expires after it')
+  } finally {
+    await stopProcess(anvil)
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('an audit window submits its sellers together once it closes; a late seller gets no record; another auditor confirms the DIFF', {
+  skip: !RUN_ANVIL_E2E,
+  timeout: 300_000,
+}, async () => {
+  requireCommand('anvil')
+  requireCommand('cast')
+  requireCommand('forge')
+
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-verifier-window-e2e-'))
+  const port = await availablePort()
+  const rpcUrl = `http://127.0.0.1:${port}`
+  const anvil = startAnvil(port)
+  try {
+    await waitForRpcReady(rpcUrl, anvil)
+    const registryAddress = deployContract(rpcUrl, 'core/AntseedRegistry.sol:AntseedRegistry')
+    const identityRegistryAddress = deployContract(rpcUrl, 'test/mocks/MockERC8004Registry.sol:MockERC8004Registry')
+    const gateAddress = deployContract(rpcUrl, 'test/mocks/MockVerificationEmissionsGate.sol:MockVerificationEmissionsGate')
+    const poolsAddress = deployContract(rpcUrl, 'test/mocks/MockVerificationSellerPools.sol:MockVerificationSellerPools')
+    castSend(rpcUrl, registryAddress, 'setIdentityRegistry(address)', [identityRegistryAddress])
+    castSend(rpcUrl, registryAddress, 'setEmissions(address)', [gateAddress])
+    const { resultsAddress, kbfAddress: verificationAddress } = deployVerification(rpcUrl, gateAddress, poolsAddress, identityRegistryAddress)
+    castSend(rpcUrl, resultsAddress, 'setRewardsStartEpoch(address,uint64)', [verificationAddress, '0'])
+    castSend(rpcUrl, gateAddress, 'setCurrentEpoch(uint256)', [String(AUDIT_EPOCH)])
+    castSend(rpcUrl, gateAddress, 'setSchedule(uint256,uint256)', [String(GENESIS), String(EPOCH_DURATION)])
+    const auditorA = new Wallet(`0x${AUDITOR_PRIVATE_KEY}`)
+    const auditorB = new Wallet(`0x${SECOND_AUDITOR_PRIVATE_KEY}`)
+    for (const auditor of [auditorA, auditorB]) {
+      castSend(rpcUrl, verificationAddress, 'setAuditor(address,bool)', [auditor.address, 'true'])
+    }
+    const owners = [...SELLER_OWNERS, '0x90F79bf6EB2c4f870365E785982E1f101E93b906']
+    for (const [index, owner] of owners.entries()) {
+      castSend(rpcUrl, identityRegistryAddress, 'setOwner(uint256,address)', [String(index + 1), owner])
+      castSend(rpcUrl, poolsAddress, 'setPower(uint256,uint256,uint256)', [String(index + 1), String(AUDIT_EPOCH), '100'])
+    }
+
+    // Sellers 1 (honest) and 2 (not serving model-a) were online when A's model-a window opened;
+    // seller 3 came online later. A manual run audited all three.
+    const sellers = [randomWallet(), randomWallet(), randomWallet()]
+    const audit = (agent: 1 | 2 | 3, verdict: FixtureAudit['verdict']): FixtureAudit => ({
+      agentId: String(agent), seller: sellers[agent - 1]!, model: 'model-a', service: 'model-a', verdict,
+      reference: referenceFixture('model-a'),
+    })
+    const crypto = {
+      chainId: 'base-local', rpcUrl, verificationContractAddress: verificationAddress, verificationDeployBlock: 0, identityRegistryAddress,
+    }
+    const setUpDataDir = async (name: string, key: string) => {
+      const dataDir = join(directory, name)
+      const evidenceDir = join(dataDir, 'verifier', 'evidence')
+      const banksDir = join(dataDir, 'verifier', 'banks')
+      const configPath = join(dataDir, 'config.json')
+      await mkdir(dataDir, { recursive: true })
+      await writeFile(join(dataDir, 'identity.key'), `${key}\n`, { mode: 0o600 })
+      await writeFile(configPath, JSON.stringify({
+        payments: { preferredMethod: 'crypto', crypto },
+        verifier: { evidenceDir, banksDir, ...FIXTURE_CONFIG },
+      }))
+      const auditor = new Wallet(`0x${key}`)
+      const writeRun = (runId: string, audits: FixtureAudit[]) => (
+        writeSignedAuditRun({ evidenceDir, banksDir, runId, epoch: EPOCH, auditor, audits })
+      )
+      return { dataDir, configPath, evidenceDir, writeRun }
+    }
+    const a = await setUpDataDir('auditor-a', AUDITOR_PRIVATE_KEY)
+    const b = await setUpDataDir('auditor-b', SECOND_AUDITOR_PRIVATE_KEY)
+    const submit = (dirs: typeof a) => runCli(dirs.dataDir, dirs.configPath, rpcUrl, [
+      'submit', '--no-publish-ipfs', '--yes', '--skip-version-check',
+    ])
+    const client = new VerifierClient({ rpcUrl, contractAddress: verificationAddress, evmChainId: 31_337, deploymentBlock: 0 })
+
+    await a.writeRun('a-model-a', [audit(1, 'SAME'), audit(2, 'DIFF'), audit(3, 'SAME')])
+    await openAuditWindow({
+      evidenceDir: a.evidenceDir, epoch: EPOCH, model: 'model-a', runId: 'a-model-a',
+      sellers: [sellers[0]!, sellers[1]!].map((seller) => seller.address.slice(2)),
+    })
+    // While the window is open nothing of model-a is published or submitted (a dry run closes nothing).
+    const whileOpen = runCli(a.dataDir, a.configPath, rpcUrl, ['submit', '--no-publish-ipfs', '--dry-run', '--skip-version-check'])
+    assert.equal(whileOpen.status, 0, whileOpen.output)
+    assert.match(whileOpen.output, /audit window is still open/)
+    assert.equal((await client.queryModelAudits()).length, 0)
+
+    // The real submit closes the finished window and sends its two sellers in one audit.
+    const reportedA = submit(a)
+    assert.equal(reportedA.status, 0, reportedA.output)
+    assert.match(reportedA.output, /model-a: audit window closed \(every seller of the window is finished\)/)
+    assert.match(reportedA.output, /model-a: 1 recorded, 1 waiting for another auditor/)
+    assert.equal((await client.queryModelAudits()).length, 1)
+    assert.equal(await client.isVerified(1n), true)
+    assert.equal((await client.serviceStatus(3n, 'model-a')).verdict, VERIFIER_VERDICT.NONE, 'the late seller has no record')
+    assert.equal((await client.queryServiceAudits(3n)).length, 0)
+
+    // B has no window for model-a: its confirmation of seller 2's DIFF is submitted at once.
+    await b.writeRun('b-confirm-model-a', [audit(2, 'DIFF')])
+    const confirmedByB = submit(b)
+    assert.equal(confirmedByB.status, 0, confirmedByB.output)
+    assert.deepEqual(await client.agentStatus(2n), { verifiedCount: 0, diffCount: 1 })
   } finally {
     await stopProcess(anvil)
     await rm(directory, { recursive: true, force: true })

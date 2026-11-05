@@ -4,12 +4,15 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { setAuditedModelsForTesting } from './audited-models.js'
-import { BUILD_REQUEST_RUNS, buildRequestLimits, enrollFreshProbes, ensureAuditableReference } from './ensure-auditable-reference.js'
+import { BUILD_REQUEST_RUNS, EPOCH_SET_BUILD_ROUNDS, buildRequestLimits, enrollFreshProbes, ensureEpochQuestionSet } from './ensure-auditable-reference.js'
+import type { EpochQuestionSetSelection, EpochQuestionSetV1 } from './probe-bank.js'
 
 setAuditedModelsForTesting({ 'model-a': { upstreamModel: 'upstream-a', contrastModels: [] } })
 import { referenceFixture } from './model-audit-fixtures.test-support.js'
 
-async function fixture(body: (input: Parameters<typeof ensureAuditableReference>[0], calls: string[], operations: NonNullable<Parameters<typeof ensureAuditableReference>[1]>) => Promise<void>) {
+type EnrollOperations = NonNullable<Parameters<typeof enrollFreshProbes>[1]>
+
+async function fixture(body: (input: Parameters<typeof enrollFreshProbes>[0], calls: string[], operations: EnrollOperations) => Promise<void>) {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-ensure-reference-'))
   const calls: string[] = []
   const input = {
@@ -18,12 +21,7 @@ async function fixture(body: (input: Parameters<typeof ensureAuditableReference>
       baseUrl: 'https://reference.test', sourceId: 'test', trust: 'trusted' as const,
     } },
   }
-  let inspections = 0
-  const operations: NonNullable<Parameters<typeof ensureAuditableReference>[1]> = {
-    inspect: async () => {
-      calls.push('inspect')
-      return { totalProbeCount: 100, eligibleProbeCount: 100, selectedProbeCount: inspections++ ? 100 : null, statisticalPower: 0.95 }
-    },
+  const operations: EnrollOperations = {
     loadSeed: async () => { calls.push('seed'); return referenceFixture('model-a', 100) },
     loadIndex: async () => { calls.push('index'); return { contrastModels: ['contrast-x'], probeIds: ['banked-1', 'banked-2'] } },
     catalog: async () => { calls.push('catalog'); return null },
@@ -32,66 +30,14 @@ async function fixture(body: (input: Parameters<typeof ensureAuditableReference>
       // The run's 10 requests per build, within the configured total of 20.
       assert.equal(options.config?.referenceMaxRequestsPerBuild, 20)
       assert.equal(options.maxNewRequests, 10)
-      assert.ok(options.initialReference)
       return { reference: referenceFixture('model-a', 110), path: 'reference.json',
         cost: { totalUsdMicros: '1', requestCount: 1, models: [], purposes: [] },
         finalize: async () => { calls.push('finalize') } }
     },
-    append: async () => { calls.push('append'); return { path: 'bank.json', addedProbeCount: 10, canonicalConflictProbeCount: 0, totalProbeCount: 110 } },
+    append: async () => { calls.push('append'); return { path: 'bank.json', addedProbeCount: 10, addedProbeIds: Array.from({ length: 10 }, (_, index) => `new-${index}`), canonicalConflictProbeCount: 0, totalProbeCount: 110 } },
   }
   try { await body(input, calls, operations) } finally { await rm(directory, { recursive: true, force: true }) }
 }
-
-test('enrollment appends then rechecks readiness before finalizing', async () => fixture(async (input, calls, operations) => {
-  const original = JSON.stringify(input.config)
-  await ensureAuditableReference(input, operations)
-  assert.deepEqual(calls, ['inspect', 'seed', 'catalog', 'build', 'append', 'inspect', 'finalize'])
-  assert.equal(JSON.stringify(input.config), original)
-}))
-
-test('a ready bank makes no reference or catalog calls', async () => fixture(async (input, calls, operations) => {
-  operations.inspect = async () => ({ totalProbeCount: 100, eligibleProbeCount: 100, selectedProbeCount: 100, statisticalPower: 0.95 })
-  await ensureAuditableReference(input, operations)
-  assert.deepEqual(calls, [])
-}))
-
-test('failed readiness after append blocks audit and keeps checkpoint', async () => fixture(async (input, calls, operations) => {
-  operations.inspect = async () => ({ totalProbeCount: 100, eligibleProbeCount: 100, selectedProbeCount: null, statisticalPower: null })
-  await assert.rejects(ensureAuditableReference(input, operations), /no seller audit started/)
-  assert.equal(calls.includes('finalize'), false)
-}))
-
-test('budget exhaustion preserves bank and releases the enrollment lock', async () => fixture(async (input, calls, operations) => {
-  operations.build = async () => { throw new Error('request budget exhausted') }
-  await assert.rejects(ensureAuditableReference(input, operations), /request budget exhausted/)
-  assert.equal(calls.includes('append'), false)
-  assert.equal(calls.includes('finalize'), false)
-  await ensureAuditableReference(input, operations)
-}))
-
-test('missing explicit budget fails before inspection or paid calls', async () => fixture(async (input, calls, operations) => {
-  await assert.rejects(ensureAuditableReference({ ...input, maxRequests: 0 }, operations), /explicit positive/)
-  assert.deepEqual(calls, [])
-}))
-
-test('incompatible banks fail before catalog or build calls', async () => fixture(async (input, calls, operations) => {
-  operations.loadSeed = async () => { throw new Error('incompatible bank') }
-  await assert.rejects(ensureAuditableReference(input, operations), /incompatible bank/)
-  assert.deepEqual(calls, ['inspect'])
-}))
-
-test('top-up preserves existing contrasts rather than choosing easier substitutes', async () => fixture(async (input, calls, operations) => {
-  const seed = referenceFixture('model-a', 100)
-  seed.contrasts = [{ model: 'difficult-contrast', distinguishingProbeIds: [] }]
-  operations.loadSeed = async () => seed
-  const build = operations.build
-  operations.build = async (options) => {
-    assert.deepEqual(options.config!.models!['model-a']!.contrastModels, ['difficult-contrast'])
-    return build(options)
-  }
-  await ensureAuditableReference(input, operations)
-  assert.equal(calls.includes('finalize'), true)
-}))
 
 test('fresh enrollment builds a new reference that excludes every banked probe', async () => fixture(async (input, calls, operations) => {
   operations.build = async (options) => {
@@ -112,85 +58,61 @@ test('fresh enrollment builds a new reference that excludes every banked probe',
   assert.equal(enrolled.addedProbeCount, 10)
 }))
 
-test('sellers short of unseen questions get fresh questions until each has enough', async () => {
-  const { ensureSellerProbeCapacity } = await import('./ensure-auditable-reference.js')
-  let unseen = 40
-  const calls: string[] = []
-  const short = await ensureSellerProbeCapacity({
-    model: 'model-a', banksDir: '/banks', referencesDir: '/refs', config: undefined, maxRequests: 10,
-    epoch: '29', sellerPeerIds: ['aa'.repeat(20), 'bb'.repeat(20)],
-  }, {
-    capacity: async () => {
-      calls.push('capacity')
-      return {
-        selectedProbeCount: 100,
-        sellers: [
-          { sellerPeerId: 'aa'.repeat(20), unseenProbeCount: unseen, neededProbeCount: 200, assignedThisEpoch: false },
-          { sellerPeerId: 'bb'.repeat(20), unseenProbeCount: 500, neededProbeCount: 200, assignedThisEpoch: false },
-        ],
-      }
-    },
-    enrollFresh: async (input) => {
-      calls.push('enroll')
-      assert.equal(input.maxRequests, 10)
-      unseen += 100
-      return { addedProbeCount: 100, costUsdMicros: '1' }
-    },
-  })
-  assert.deepEqual(short, [])
-  assert.deepEqual(calls, ['capacity', 'enroll', 'capacity', 'enroll', 'capacity'])
-})
-
-test('seller capacity makes no calls when every seller has enough unseen questions', async () => {
-  const { ensureSellerProbeCapacity } = await import('./ensure-auditable-reference.js')
-  const calls: string[] = []
-  const short = await ensureSellerProbeCapacity({
-    model: 'model-a', banksDir: '/banks', referencesDir: '/refs', config: undefined, maxRequests: 10,
-    epoch: '29', sellerPeerIds: ['aa'.repeat(20)],
-  }, {
-    capacity: async () => {
-      calls.push('capacity')
-      return { selectedProbeCount: 100, sellers: [{ sellerPeerId: 'aa'.repeat(20), unseenProbeCount: 200, neededProbeCount: 200, assignedThisEpoch: false }] }
-    },
-    enrollFresh: async () => { calls.push('enroll'); return { addedProbeCount: 1, costUsdMicros: '1' } },
-  })
-  assert.deepEqual(short, [])
-  assert.deepEqual(calls, ['capacity'])
-})
-
-test('seller capacity stops after the round limit and returns the sellers still short', async () => {
-  const { ensureSellerProbeCapacity, SELLER_CAPACITY_ENROLLMENT_ROUNDS } = await import('./ensure-auditable-reference.js')
-  let enrolls = 0
-  const short = await ensureSellerProbeCapacity({
-    model: 'model-a', banksDir: '/banks', referencesDir: '/refs', config: undefined, maxRequests: 10,
-    epoch: '29', sellerPeerIds: ['aa'.repeat(20)],
-  }, {
-    capacity: async () => ({ selectedProbeCount: 100, sellers: [{ sellerPeerId: 'aa'.repeat(20), unseenProbeCount: 0, neededProbeCount: 200, assignedThisEpoch: false }] }),
-    enrollFresh: async () => { enrolls += 1; return { addedProbeCount: 10, costUsdMicros: '1' } },
-  })
-  assert.equal(enrolls, SELLER_CAPACITY_ENROLLMENT_ROUNDS)
-  assert.deepEqual(short, ['aa'.repeat(20)])
-})
-
-test('a model with no bank yet gets its first bank built before the audit', async () => fixture(async (input, calls, operations) => {
-  operations.inspect = async () => {
-    calls.push('inspect')
-    // No bank on disk: nothing banked until the build appends its probes.
-    return calls.includes('append')
-      ? { totalProbeCount: 100, eligibleProbeCount: 100, selectedProbeCount: 100, statisticalPower: 0.95 }
-      : { totalProbeCount: 0, eligibleProbeCount: 0, selectedProbeCount: null, statisticalPower: null }
-  }
-  operations.loadSeed = async () => { calls.push('seed'); return undefined }
-  operations.build = async (options) => {
-    calls.push('build')
-    assert.equal(options.initialReference, undefined)
-    return { reference: referenceFixture('model-a', 100), path: 'reference.json',
-      cost: { totalUsdMicros: '1', requestCount: 1, models: [], purposes: [] },
-      finalize: async () => { calls.push('finalize') } }
-  }
-  await ensureAuditableReference(input, operations)
-  assert.deepEqual(calls, ['inspect', 'seed', 'catalog', 'build', 'append', 'inspect', 'finalize'])
+test('fresh enrollment needs an explicit budget before any call', async () => fixture(async (input, calls, operations) => {
+  await assert.rejects(enrollFreshProbes({ ...input, maxRequests: 0 }, operations), /explicit positive/)
+  assert.deepEqual(calls, [])
 }))
+
+const SET = { reference: { probes: [] }, extensions: [], candidateProbeCount: 0, previouslyAskedProbeCount: 0 } as unknown as EpochQuestionSetV1
+
+function setOperations(selections: EpochQuestionSetSelection[], calls: string[], options: { banked?: number; added?: number[] } = {}) {
+  const added = [...(options.added ?? [])]
+  return {
+    inspect: async () => ({ totalProbeCount: options.banked ?? 100, eligibleProbeCount: 0, selectedProbeCount: null, statisticalPower: null }),
+    select: async () => { calls.push('select'); return selections.shift() ?? { status: 'short' as const, reason: 'still short', candidateProbeCount: 0 } },
+    enrollFresh: async () => {
+      calls.push('build')
+      const count = added.shift() ?? 10
+      return { addedProbeCount: count, addedProbeIds: Array.from({ length: count }, (_, index) => `p${calls.length}-${index}`), costUsdMicros: '1' }
+    },
+    record: async (input: { probeIds: readonly string[] }) => { calls.push(`record:${input.probeIds.length}`); return [...input.probeIds] },
+  }
+}
+
+const setInput = {
+  model: 'model-a', banksDir: '/banks', referencesDir: '/references', config: undefined, maxRequests: 10,
+  epoch: '7', runId: 'run-a', extensionCount: 2,
+}
+
+test('an epoch question set already made is used as it is, with no build', async () => {
+  const calls: string[] = []
+  assert.equal(await ensureEpochQuestionSet(setInput, setOperations([{ status: 'ready', set: SET }], calls)), SET)
+  assert.deepEqual(calls, ['select'])
+})
+
+test('new questions are built and recorded for the epoch until they make its question set', async () => {
+  const calls: string[] = []
+  const short = { status: 'short' as const, reason: 'short', candidateProbeCount: 0 }
+  const set = await ensureEpochQuestionSet(setInput, setOperations([short, short, { status: 'ready', set: SET }], calls))
+  assert.equal(set, SET)
+  assert.deepEqual(calls, ['select', 'build', 'record:10', 'select', 'build', 'record:10', 'select'])
+})
+
+test('a model without a bank builds its first questions before selecting', async () => {
+  const calls: string[] = []
+  await ensureEpochQuestionSet(setInput, setOperations([{ status: 'ready', set: SET }], calls, { banked: 0 }))
+  assert.deepEqual(calls, ['build', 'record:10', 'select'])
+})
+
+test('no question set after the build limit, or a build that adds nothing, means no audit of the model', async () => {
+  const calls: string[] = []
+  await assert.rejects(ensureEpochQuestionSet(setInput, setOperations([], calls)), /no question set for epoch 7: still short/)
+  assert.equal(calls.filter((call) => call === 'build').length, EPOCH_SET_BUILD_ROUNDS)
+  const empty: string[] = []
+  await assert.rejects(ensureEpochQuestionSet(setInput, setOperations([], empty, { added: [0] })), /no question set for epoch 7/)
+  assert.equal(empty.filter((call) => call === 'build').length, 1)
+  await assert.rejects(ensureEpochQuestionSet({ ...setInput, maxRequests: 0 }, setOperations([], [])), /explicit positive/)
+})
 
 test('a run spends its budget per build; the build total is the configured one or several runs\' budgets', () => {
   assert.deepEqual(buildRequestLimits(600, undefined), { perRun: 600, total: 600 * BUILD_REQUEST_RUNS })

@@ -22,6 +22,7 @@ import {
 } from './model-audit.js'
 import {
   FIXTURE_CONFIG,
+  peerIdOf,
   referenceFixture,
   writeSignedAuditRun,
   type FixtureAudit,
@@ -47,6 +48,7 @@ async function withRun(
     beforePrepare?: (banksDir: string) => Promise<void>
     maxResultsPerSubmission?: number
     alreadyOnChain?: Parameters<typeof prepareModelAudits>[0]['alreadyOnChain']
+    auditWindow?: Parameters<typeof prepareModelAudits>[0]['auditWindow']
   } = {},
 ): Promise<void> {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-model-audit-'))
@@ -65,6 +67,7 @@ async function withRun(
       config: FIXTURE_CONFIG,
       ...(options.maxResultsPerSubmission ? { maxResultsPerSubmission: options.maxResultsPerSubmission } : {}),
       ...(options.alreadyOnChain ? { alreadyOnChain: options.alreadyOnChain } : {}),
+      ...(options.auditWindow ? { auditWindow: options.auditWindow } : {}),
     })
     await body({ evidenceDir, prepared })
   } finally {
@@ -479,6 +482,35 @@ test('close calls are submitted on the pooled verdict, re-verified from both evi
       ['4', 'close call waiting for its extra questions'],
     ])
   })
+})
+
+test('an open audit window submits nothing; a closed one submits its sellers, open close calls as UNDETERMINED', async () => {
+  const reference = referenceFixture('model-a', 20)
+  const late = randomWallet()
+  const audits: FixtureAudit[] = [
+    audit('1', sellers[0]!, 'model-a'),
+    { ...audit('2', sellers[1]!, 'model-a'), reference, closeCall: { firstWrong: 7 } },
+    audit('3', late, 'model-a', 'DIFF'),
+    audit('4', sellers[2]!, 'model-b'),
+  ]
+  const window = (state: 'open' | 'closed') => async (model: string) => (model === 'model-a'
+    ? { state, sellers: [peerIdOf(sellers[0]!), peerIdOf(sellers[1]!)].map((peer) => peer.replace(/^0x/i, '').toLowerCase()) }
+    : null)
+  await withRun(audits, async ({ prepared }) => {
+    // model-b has no window (a confirmation model): submitted as before.
+    assert.deepEqual(prepared.audits.map((entry) => entry.key), ['model-b'])
+    assert.equal(prepared.excluded.filter((entry) => /audit window is still open/.test(entry.reason)).length, 3)
+  }, { auditWindow: window('open') })
+  await withRun(audits, async ({ prepared }) => {
+    const entry = prepared.audits.find((value) => value.key === 'model-a')!
+    assert.deepEqual(entry.results.map((result) => [result.agentId, result.verdict]), [
+      [1n, VERIFIER_VERDICT.SAME],
+      [2n, VERIFIER_VERDICT.UNDETERMINED],
+    ])
+    assert.deepEqual(prepared.excluded.map((exclusion) => [exclusion.agentId, exclusion.reason.split(' (')[0]]), [
+      ['3', 'not in this epoch\'s audit window'],
+    ])
+  }, { auditWindow: window('closed') })
 })
 
 test('tampered pooled statistics or a reused extension probe are rejected', async () => {

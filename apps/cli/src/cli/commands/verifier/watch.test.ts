@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { Command } from 'commander'
-import { parseWatchInterval, registerVerifierWatchCommand, resolveWatchAuditor, runWatchLoop, watchStepArgs, type WatchStep } from './watch.js'
+import { NEXT_EPOCH_GRACE_SECONDS, nextWatchTickDelayMs, parseWatchInterval, registerVerifierWatchCommand, resolveWatchAuditor, runWatchLoop, unlockWatchKeystore, watchStepArgs, type WatchStep } from './watch.js'
 
 const GLOBALS = { config: '/cfg/config.json', dataDir: '/data', verbose: false }
 
@@ -104,10 +104,10 @@ test('each step forwards the global options and only its own flags', () => {
     '--data-dir', '/data', '--config', '/cfg/config.json', 'verifier', 'run',
   ])
   assert.deepEqual(watchStepArgs('run', GLOBALS, {
-    interval: '10', maxRounds: '5', ignorePreRunChecks: true, allowProbeReuse: true, enroll: false, confirm: false,
+    interval: '10', maxRounds: '5', ignorePreRunChecks: true, enroll: false, confirm: false,
   }), [
     '--data-dir', '/data', '--config', '/cfg/config.json', 'verifier', 'run',
-    '--allow-probe-reuse', '--no-enroll', '--ignore-pre-run-checks', '--max-rounds', '5', '--no-confirm',
+    '--no-enroll', '--ignore-pre-run-checks', '--max-rounds', '5', '--no-confirm',
   ])
   assert.deepEqual(watchStepArgs('submit', { ...GLOBALS, verbose: true }, options), [
     '--data-dir', '/data', '--config', '/cfg/config.json', '--verbose', 'verifier', 'submit',
@@ -118,14 +118,47 @@ test('each step forwards the global options and only its own flags', () => {
   ])
 })
 
+test('watch unlocks the keystore at start: a wrong password or another auditor stops it at once', async () => {
+  const signer = '0x1000000000000000000000000000000000000001'
+  const unlocked = async () => ({ address: signer.toUpperCase().replace('0X', '0x') })
+  assert.equal(await unlockWatchKeystore('~/ks', {}, unlocked), signer)
+  assert.equal(await unlockWatchKeystore('~/ks', { auditor: signer, configAuditor: signer }, unlocked), signer)
+  await assert.rejects(
+    unlockWatchKeystore('~/ks', {}, async () => { throw new Error('incorrect password') }),
+    /could not unlock the keystore ~\/ks \(incorrect password\); check the password/,
+  )
+  const other = '0x2000000000000000000000000000000000000002'
+  await assert.rejects(unlockWatchKeystore('~/ks', { auditor: other }, unlocked), /--auditor 0x2000.* does not match the keystore ~\/ks, which signs as 0x1000/)
+  await assert.rejects(unlockWatchKeystore('~/ks', { configAuditor: other }, unlocked), /verifier\.auditor 0x2000.* does not match/)
+})
+
 test('a keystore given to watch decides the auditor the run step plans for', async () => {
-  const addressOf = async (keystore: string) => `address-of:${keystore}`
-  assert.equal(await resolveWatchAuditor({ keystore: '~/ks' }, addressOf), 'address-of:~/ks')
-  assert.equal(await resolveWatchAuditor({ keystore: '~/ks', auditor: '0xabc' }, addressOf), '0xabc', '--auditor wins')
-  assert.equal(await resolveWatchAuditor({}, addressOf), undefined, 'run resolves verifier.keystore or the data-dir identity itself')
-  const auditor = await resolveWatchAuditor({ keystore: '~/ks' }, addressOf)
-  assert.deepEqual(watchStepArgs('run', GLOBALS, { interval: '10', keystore: '~/ks', auditor }).slice(-2), ['--auditor', 'address-of:~/ks'])
+  const signer = '0x1000000000000000000000000000000000000001'
+  assert.equal(resolveWatchAuditor({ keystore: '~/ks' }, signer), signer)
+  assert.equal(resolveWatchAuditor({ keystore: '~/ks', auditor: '0xabc' }, signer), '0xabc', '--auditor wins')
+  assert.equal(resolveWatchAuditor({}, undefined), undefined, 'run resolves verifier.keystore or the data-dir identity itself')
+  const auditor = resolveWatchAuditor({ keystore: '~/ks' }, signer)
+  assert.deepEqual(watchStepArgs('run', GLOBALS, { interval: '10', keystore: '~/ks', auditor }).slice(-2), ['--auditor', signer])
   assert.ok(!watchStepArgs('run', GLOBALS, { interval: '10' }).includes('--max-rounds'), 'run\'s own rounds by default')
+})
+
+test('the next tick waits the interval, or until just after the epoch ends when that is sooner', () => {
+  const interval = 10 * 60_000
+  assert.equal(nextWatchTickDelayMs(interval, 10_000, 10_000 - 3_600), interval)
+  assert.equal(nextWatchTickDelayMs(interval, 10_000, 10_000 - 120), (120 + NEXT_EPOCH_GRACE_SECONDS) * 1_000)
+  assert.equal(nextWatchTickDelayMs(interval, 10_000, 10_000 + 600), interval, 'an epoch that already ended: the interval')
+})
+
+test('watch waits the delay it is given between ticks', async () => {
+  const controller = new AbortController()
+  const sleeps: number[] = []
+  await runWatchLoop({
+    intervalMs: 600_000, once: false, signal: controller.signal, log: () => undefined,
+    step: async () => 0,
+    nextDelayMs: async () => 150_000,
+    sleep: async (ms) => { sleeps.push(ms); controller.abort() },
+  })
+  assert.deepEqual(sleeps, [150_000])
 })
 
 test('the interval is in minutes and at least one', () => {
@@ -142,7 +175,7 @@ test('watch registers its options', () => {
   assert.deepEqual(watch.options.map((option) => option.long), [
     '--interval', '--once', '--auditor', '--keystore', '--rpc-url', '--no-publish-ipfs', '--skip-version-check',
     // run's tuning options, without watch-side defaults, so run's own defaults apply
-    '--allow-probe-reuse', '--no-enroll', '--max-enrollment-requests', '--ignore-pre-run-checks', '--max-rounds', '--no-confirm',
+    '--no-enroll', '--max-enrollment-requests', '--ignore-pre-run-checks', '--max-rounds', '--no-confirm',
   ])
   assert.equal(watch.options.find((option) => option.long === '--max-rounds')!.defaultValue, undefined)
 })

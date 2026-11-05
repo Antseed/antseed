@@ -3,6 +3,9 @@
   "version": "0.1.228",
   "description": "Antseed Network CLI and Web Dashboard",
   "type": "module",
+  "antseedVerifier": {
+    "compat": 1
+  },
   "files": [
     "dist"
   ],
