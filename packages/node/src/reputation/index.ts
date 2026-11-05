@@ -8,8 +8,11 @@ export {
   compareEffectiveModelReputation,
   effectiveModelReputationScore,
   hasLiveDiffVerdict,
+  hasLiveSameVerdict,
+  liveVerificationVerdict,
   normalizedModelReputationScore,
   verificationServiceKey,
   type ModelReputationSource,
   type VerificationDiffSource,
 } from './model-reputation.js';
+export { verificationServiceUrl } from './model-verification-links.js';

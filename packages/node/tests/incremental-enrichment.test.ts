@@ -400,7 +400,12 @@ describe('AntseedNode incremental discovery enrichment', () => {
       (node as any)._trustSignalsClient = trustClient(async (sellers: string[]) => new Map(sellers
         .filter((seller) => agentOf[seller.replace(/^0x/, '')] !== undefined)
         .map((seller) => [seller, signals({ agentId: agentOf[seller.replace(/^0x/, '')] })])));
-      (node as any)._verificationSignalsClient = { readDiffServices };
+      // The node reads DIFF and SAME together; these tests drive the DIFF side.
+      const readServiceVerdicts = async (queries: unknown) => {
+        const diff = await readDiffServices(queries) as Map<number, string[]>;
+        return new Map([...diff].map(([agentId, services]) => [agentId, { diff: services, same: [] as string[] }]));
+      };
+      (node as any)._verificationSignalsClient = { readServiceVerdicts };
       return node;
     }
 
@@ -421,6 +426,45 @@ describe('AntseedNode incremental discovery enrichment', () => {
       expect(a.onChainDiffServices).toEqual(['gpt-6.1-sol']);
       expect(b.onChainDiffServices).toEqual([]);
       expect(unregistered.onChainDiffServices).toBeUndefined();
+    });
+
+    it('keeps SAME services too, and answers peers sharing an agent id from one read', async () => {
+      const node = new AntseedNode({ role: 'buyer' });
+      (node as any)._trustSignalsClient = trustClient(async (sellers: string[]) => new Map(sellers
+        .map((seller) => [seller, signals({ agentId: 7 })])));
+      const readServiceVerdicts = vi.fn(async () => new Map([[7, { diff: ['gpt-6.1-sol'], same: ['claude-opus-5.5'] }]]));
+      (node as any)._verificationSignalsClient = { readServiceVerdicts };
+      const a = pricedPeer('a'.repeat(40), ['gpt-6.1-sol', 'claude-opus-5.5']);
+      const b = pricedPeer('b'.repeat(40), ['claude-opus-5.5']);
+
+      await (node as any)._enrichPeersWithOnChainStats([a, b]);
+      await (node as any)._enrichPeersWithOnChainStats([a, b]);
+
+      expect(readServiceVerdicts).toHaveBeenCalledTimes(1);
+      expect(a.onChainSameServices).toEqual(['claude-opus-5.5']);
+      expect(b.onChainDiffServices).toEqual([]);
+      expect(b.onChainSameServices).toEqual(['claude-opus-5.5']);
+    });
+
+    it('refreshes a shared agent for every service its peers need, including cache hits', async () => {
+      const node = new AntseedNode({ role: 'buyer' });
+      (node as any)._trustSignalsClient = trustClient(async (sellers: string[]) => new Map(sellers
+        .map((seller) => [seller, signals({ agentId: 7 })])));
+      const readServiceVerdicts = vi.fn(async (queries: Array<{ agentId: number; services: string[] }>) => new Map([[7, {
+        diff: queries[0]!.services.includes('a') ? ['a'] : [],
+        same: [] as string[],
+      }]]));
+      (node as any)._verificationSignalsClient = { readServiceVerdicts };
+      await (node as any)._enrichPeersWithOnChainStats([pricedPeer('a'.repeat(40), ['a', 'b'])]);
+
+      const first = pricedPeer('a'.repeat(40), ['a']);
+      const second = pricedPeer('b'.repeat(40), ['c']);
+      await (node as any)._enrichPeersWithOnChainStats([first, second]);
+
+      expect(readServiceVerdicts).toHaveBeenCalledTimes(2);
+      expect(readServiceVerdicts.mock.calls[1]![0]).toEqual([{ agentId: 7, services: ['c', 'a'] }]);
+      expect(first.onChainDiffServices).toEqual(['a']);
+      expect(second.onChainDiffServices).toEqual([]);
     });
 
     it('reuses a fresh read and refreshes after the TTL', async () => {

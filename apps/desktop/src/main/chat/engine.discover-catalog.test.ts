@@ -79,12 +79,31 @@ test('persisted catalog cuts a live DIFF service to 10% and the discover row fla
     [flashPeerId]: {
       trust: null, onChainAgentId: 7, onChainPoolStakeAnts: null, onChainChannelCount: null, onChainGhostCount: null,
       onChainTotalVolumeUsdcMicros: null, onChainLastSettledAtSec: null, onChainReputationScore: 80, onChainWashFlagged: false,
-      onChainDiffServices: ['diff-model'], onChainVerificationFetchedAt: Date.now() - 60_000, onChainSybilRisk: null, onChainSybilFlags: [], capabilities: [],
+      onChainDiffServices: ['diff-model'], onChainSameServices: ['clean-model'], onChainVerificationFetchedAt: Date.now() - 60_000,
+      onChainSybilRisk: null, onChainSybilFlags: [], capabilities: [],
+      verificationLinks: [], peerIconUrl: null,
+    },
+  }, new Map(), {}, 'https://antscan.co/');
+  const diffRow = rows.find((row) => row.serviceId === 'diff-model');
+  const sameRow = rows.find((row) => row.serviceId === 'clean-model');
+  assert.equal(diffRow?.verification, 'diff');
+  assert.equal(sameRow?.verification, 'same');
+  assert.match(diffRow?.verificationUrl ?? '', /^https:\/\/antscan\.co\/verification-service\/7~0x[0-9a-f]{64}$/);
+  assert.notEqual(diffRow?.verificationUrl, sameRow?.verificationUrl);
+
+  // No explorer (e.g. a local chain): the verdict still shows, without a link.
+  const noExplorer = await buildDiscoverRows(normalizeChatServiceCatalogEntries(catalog), new Map(), {
+    [flashPeerId]: {
+      trust: null, onChainAgentId: 7, onChainPoolStakeAnts: null, onChainChannelCount: null, onChainGhostCount: null,
+      onChainTotalVolumeUsdcMicros: null, onChainLastSettledAtSec: null, onChainReputationScore: 80, onChainWashFlagged: false,
+      onChainDiffServices: ['diff-model'], onChainVerificationFetchedAt: Date.now() - 60_000,
+      onChainSybilRisk: null, onChainSybilFlags: [], capabilities: [],
       verificationLinks: [], peerIconUrl: null,
     },
   }, new Map());
-  assert.equal(rows.find((row) => row.serviceId === 'diff-model')?.verificationDiff, true);
-  assert.equal(rows.find((row) => row.serviceId === 'clean-model')?.verificationDiff, false);
+  assert.equal(noExplorer.find((row) => row.serviceId === 'diff-model')?.verification, 'diff');
+  assert.equal(noExplorer.find((row) => row.serviceId === 'diff-model')?.verificationUrl, null);
+  assert.equal(noExplorer.find((row) => row.serviceId === 'clean-model')?.verification, null);
 
   // Saved state from a read 15 minutes old or more (the buyer could not read the contract since) fails open.
   const stalePeer = { ...peer, onChainVerificationFetchedAt: Date.now() - 15 * 60_000 };

@@ -355,6 +355,8 @@ export { SellerFreeUsageManager } from './payments/seller-free-usage-manager.js'
 export type { SellerFreeUsageConfig } from './payments/seller-free-usage-manager.js';
 export { SellerFreeTierLimiter, DEFAULT_FREE_TIER_WINDOW_MS, normalizeRemoteIp } from './payments/seller-free-tier-limiter.js';
 export type { SellerFreeTierConfig, SellerFreeTierProgramConfig, FreeTierDecision } from './payments/seller-free-tier-limiter.js';
+export { SellerBuyerLimiter } from './payments/seller-buyer-limiter.js';
+export type { SellerBuyerLimitsConfig, SellerNewBuyerLimitsConfig } from './payments/seller-buyer-limiter.js';
 export {
   DEFAULT_FREE_TIER_STAKE_TIERS,
   FREE_TIER_EPOCHS_PER_YEAR,
@@ -492,11 +494,20 @@ export {
   compareEffectiveModelReputation,
   effectiveModelReputationScore,
   hasLiveDiffVerdict,
+  hasLiveSameVerdict,
+  liveVerificationVerdict,
   normalizedModelReputationScore,
   verificationServiceKey,
   type ModelReputationSource,
   type VerificationDiffSource,
 } from './reputation/model-reputation.js';
+export { verificationServiceUrl } from './reputation/model-verification-links.js';
+export {
+  VERIFICATION_POINTS_BPS,
+  VERIFICATION_POINTS_MAX_BONUS_BPS,
+  verificationPointsMultiplierBps,
+  type VerificationPointsRates,
+} from './reputation/verification-points.js';
 export {
   buildSybilContext,
   computeOnChainSybilRisk,

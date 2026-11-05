@@ -593,6 +593,15 @@ table.table { border-collapse: collapse; width: 100%; font-size: 13px; line-heig
 .seller-cell .pool-details-trigger { font-weight: 600; font-size: 13.5px; }
 .seller-cell-meta { display: flex; gap: 8px; align-items: center; font-family: var(--font-mono); font-size: 11px; color: var(--pc-faint); }
 .seller-cell-meta .pill { font-size: 9.5px; padding: 0 5px; min-height: 16px; line-height: 14px; }
+/* Seller model checks: a dot (amber with a DIFF), one line, text links. */
+.verification-line { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin: 0; font-size: 12px; color: var(--pc-sub); }
+.verification-line a { color: var(--pc-sub); text-decoration: underline; text-underline-offset: 2px; }
+.verification-line a:hover { color: var(--pc-ink); }
+.verification-line__dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--pc-faint); }
+.verification-line--amber .verification-line__dot { background: var(--pc-amber); }
+.verification-line--green .verification-line__dot { background: var(--pc-accent); }
+.verification-line__diff { white-space: nowrap; }
+.verification-line--compact { display: inline-flex; flex-wrap: nowrap; font-family: var(--font-mono); font-size: 11px; color: var(--pc-faint); white-space: nowrap; }
 .pool-details-trigger { appearance: none; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
 .pool-details-trigger:hover { color: var(--pc-accent); }
 .pool-details-trigger:focus-visible { outline: 2px solid var(--pc-accent); outline-offset: 4px; border-radius: 2px; }

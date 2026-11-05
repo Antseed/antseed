@@ -809,6 +809,10 @@ the claim path and the events changed, so M003 deployed them again as release
 `AntseedKbfAudits` `0x86B92DC48EF7c5a12de6e44409E83C8EF36657Ff`, `AntseedVerificationPointsPolicy`
 `0x4B586d4361783e9798881DC32c78Cf595a923095`, blocks 53,514,466–53,514,470; history is append-only,
 so the `003-verification-split` record stays). The SDK and CLI default to these addresses.
+That first `AntseedVerificationPointsPolicy` was never registered. Release `003-verification-policy`
+replaced it alone with `0xD58393a752b3b7bdBea6231E0e24C11403e9f32f` (block 53,534,989, from
+`script/DeployVerificationPointsPolicy.s.sol`), set `penaltyBps` 400 and `bonusBps` 200, and
+registered it in `AntseedPointsPolicyRegistry` after `AntseedWashTradingPointsPolicy`.
 
 Administrative parameters use their contract's dedicated setters where available.
 The emissions gate's schedule constants are immutable; do not treat legacy

@@ -331,6 +331,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
         usdcContractAddress: cryptoOverrides?.usdcContractAddress,
         verificationContractAddress: cryptoOverrides?.verificationContractAddress,
         verificationResultsAddress: cryptoOverrides?.verificationResultsAddress,
+        verificationPointsPolicyAddress: cryptoOverrides?.verificationPointsPolicyAddress,
       })
       const settlementEnabled = settlementEnv ?? true
 
@@ -373,6 +374,8 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
           // KBF audits contract) cut a service's effective reputation to 10%.
           ...(chainConfig.verificationContractAddress ? { verificationContractAddress: chainConfig.verificationContractAddress } : {}),
           ...(chainConfig.verificationResultsAddress ? { verificationResultsAddress: chainConfig.verificationResultsAddress } : {}),
+          // The seller's verification points multiplier, when below 100%, cuts its trust score.
+          ...(chainConfig.verificationPointsPolicyAddress ? { verificationPointsPolicyAddress: chainConfig.verificationPointsPolicyAddress } : {}),
           chainId: chainConfig.evmChainId,
           defaultDepositAmountUSDC: cryptoOverrides?.defaultLockAmountUSDC
             ? String(Math.round(parseFloat(cryptoOverrides.defaultLockAmountUSDC) * 1_000_000))

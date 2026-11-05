@@ -29,6 +29,7 @@ import {
   modelRouteTotalPrice,
   normalizedModelReputationScore,
   hasLiveDiffVerdict,
+  verificationServiceKey,
   DIFF_VERIFICATION_REPUTATION_MULTIPLIER,
   peerSupportsCooperativeClose,
   isRoutingSelection,
@@ -353,7 +354,10 @@ interface RoutePreviewCandidate {
   reasons: string[]
   inputUsdPerMillion: number | null
   outputUsdPerMillion: number | null
+  /** Trust for this model: the buyer's score, cut to 10% by a live DIFF verdict. */
   trustScore: number | null
+  /** The score before a DIFF cut; present only when one applies. */
+  trustScoreBeforeCut?: number
   selection: RouteSelection | null
   health: ServiceHealth | null
 }
@@ -571,6 +575,27 @@ function addBuyerConfigReasons(reasons: string[], buyerReasons: readonly string[
  * service keeps 10%, and a paid seller that lists no cached-input price for a
  * model other sellers price cache reads on keeps half. Both can apply.
  */
+/** Why a gateway level's trust minimum sees a lower score than the seller's: a DIFF cut. */
+function diffTrustPenalty(raw: number | null): string {
+  return `cut to ${Math.round(DIFF_VERIFICATION_REPUTATION_MULTIPLIER * 100)}% from ${Math.round(raw ?? 0)}: live DIFF verification verdict`
+}
+
+function previewTrust(modelTrust: { trust: number | null; raw: number | null; cut: boolean }): { trustScore: number | null; trustScoreBeforeCut?: number } {
+  return modelTrust.cut && modelTrust.raw !== null
+    ? { trustScore: modelTrust.trust, trustScoreBeforeCut: modelTrust.raw }
+    : { trustScore: modelTrust.trust }
+}
+
+/** A persisted `onChainVerificationStatus`, validated; null when absent or malformed. */
+function parseVerificationStatus(value: unknown): PeerInfo['onChainVerificationStatus'] | null {
+  if (!value || typeof value !== 'object') return null
+  const { sameCount, diffCount, pointsMultiplierBps } = value as Record<string, unknown>
+  const count = (n: unknown): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0
+  if (!count(sameCount) || !count(diffCount)) return null
+  if (pointsMultiplierBps !== null && !count(pointsMultiplierBps)) return null
+  return { sameCount, diffCount, pointsMultiplierBps: pointsMultiplierBps as number | null }
+}
+
 function trustPenalty(candidate: {
   reputation: number
   effectiveReputationScore: number | null
@@ -1095,12 +1120,16 @@ export function parsePersistedPeers(
     if (typeof entry.onChainStatsFetchedAt === 'number' && Number.isFinite(entry.onChainStatsFetchedAt)) {
       peer.onChainStatsFetchedAt = entry.onChainStatsFetchedAt
     }
-    if (Array.isArray(entry.onChainDiffServices)) {
-      peer.onChainDiffServices = [...new Set(entry.onChainDiffServices
+    for (const key of ['onChainDiffServices', 'onChainSameServices'] as const) {
+      const services = entry[key]
+      if (!Array.isArray(services)) continue
+      peer[key] = [...new Set(services
         .filter((service): service is string => typeof service === 'string')
-        .map((service) => service.trim().toLowerCase())
+        .map(verificationServiceKey)
         .filter((service) => service.length > 0))]
     }
+    const status = parseVerificationStatus(entry.onChainVerificationStatus)
+    if (status) peer.onChainVerificationStatus = status
     if (typeof entry.onChainVerificationFetchedAt === 'number' && Number.isFinite(entry.onChainVerificationFetchedAt)) {
       peer.onChainVerificationFetchedAt = entry.onChainVerificationFetchedAt
     }
@@ -1633,9 +1662,13 @@ export class BuyerProxy {
 
   private _policyFacts(peer: PeerInfo, offer: NetworkServiceOffer | null): PolicyPeerFacts {
     const score = normalizedModelReputationScore(peer)
+    // Trust is judged per model on every path (automatic, pinned, offer listing): a live DIFF
+    // verdict on the offer's model cuts it to 10%.
+    const modelTrust = this._modelTrust(peer, offer?.serviceId ?? null)
     return {
       peerId: peer.peerId,
-      trustScore: score,
+      trustScore: modelTrust.trust,
+      ...(modelTrust.cut ? { trustPenalty: diffTrustPenalty(modelTrust.raw) } : {}),
       reputation: score,
       inputUsdPerMillion: offer?.inputUsdPerMillion ?? null,
       outputUsdPerMillion: offer?.outputUsdPerMillion ?? null,
@@ -1644,6 +1677,17 @@ export class BuyerProxy {
       unverifiedReason: this._unverifiedReason(peer),
       teeCapable: parseVerifierCapabilities(peer.capabilities).supported.includes(TEE_VERIFIER_ID),
     }
+  }
+
+  /**
+   * The seller's trust for one of its models, as every routing level judges it: the buyer's
+   * trust score, cut to DIFF_VERIFICATION_REPUTATION_MULTIPLIER when the model has a live
+   * DIFF verdict. Null when the buyer has no score for the seller.
+   */
+  private _modelTrust(peer: PeerInfo, serviceId: string | null): { trust: number | null; raw: number | null; cut: boolean } {
+    const raw = normalizedModelReputationScore(peer)
+    const cut = raw !== null && serviceId !== null && hasLiveDiffVerdict(peer, serviceId, this._now())
+    return { trust: raw === null ? null : cut ? raw * DIFF_VERIFICATION_REPUTATION_MULTIPLIER : raw, raw, cut }
   }
 
   /** Health is tracked per seller and model: one seller can serve a small model fast and a large one slowly. */
@@ -1876,7 +1920,7 @@ export class BuyerProxy {
       const ordering = orderByPolicy(candidates, effectivePolicy, requestedService, {
         peerId: (candidate) => candidate.peerId,
         totalPrice: (candidate) => modelRouteTotalPrice(candidate),
-        trustScore: (candidate) => (candidate.reputation >= 0 ? candidate.reputation : null),
+        trustScore: (candidate) => this._modelTrust(candidate.peer, candidate.serviceId).trust,
         latencyMs: (candidate) => this._peerLatency(candidate.peerId, candidate.serviceId),
         coolingDown: isCooling,
         unhealthy: (candidate) => healthOf(candidate).unhealthy,
@@ -2049,7 +2093,7 @@ export class BuyerProxy {
         reasons: [`self health check failing${offer.health?.reason ? ` (${offer.health.reason})` : ''}`],
         inputUsdPerMillion: offer.inputUsdPerMillion ?? null,
         outputUsdPerMillion: offer.outputUsdPerMillion ?? null,
-        trustScore: peer ? normalizedModelReputationScore(peer) : null,
+        ...(peer ? previewTrust(this._modelTrust(peer, offer.serviceId ?? null)) : { trustScore: null }),
         selection: null,
         health: offer.health ?? null,
       })
@@ -2063,7 +2107,7 @@ export class BuyerProxy {
         reasons: modelAllowed ? verdict.reasons : ['model not allowed', ...verdict.reasons],
         inputUsdPerMillion: verdict.offer.inputUsdPerMillion ?? null,
         outputUsdPerMillion: verdict.offer.outputUsdPerMillion ?? null,
-        trustScore: normalizedModelReputationScore(verdict.peer),
+        ...previewTrust(this._modelTrust(verdict.peer, verdict.serviceId)),
         selection: modelAllowed && verdict.eligible ? verdict.selection ?? null : null,
         health: verdict.offer.health ?? null,
       })), ...failing]
@@ -2737,6 +2781,8 @@ export class BuyerProxy {
         // Services with a live DIFF verdict on AntseedVerificationResults; their
         // effective reputation keeps 10%.
         onChainDiffServices: p.onChainDiffServices ?? null,
+        onChainSameServices: p.onChainSameServices ?? null,
+        onChainVerificationStatus: p.onChainVerificationStatus ?? null,
         onChainVerificationFetchedAt: p.onChainVerificationFetchedAt ?? null,
         // Persisted so cold-started buyers can still resolve the facade address
         // for channelId derivation. See parsePersistedPeers for the round-trip.
@@ -3139,6 +3185,8 @@ export class BuyerProxy {
         onChainWashFlagged: p.onChainWashFlagged ?? null,
         onChainWashShareBps: p.onChainWashShareBps ?? null,
         onChainDiffServices: p.onChainDiffServices ?? null,
+        onChainSameServices: p.onChainSameServices ?? null,
+        onChainVerificationStatus: p.onChainVerificationStatus ?? null,
         onChainVerificationFetchedAt: p.onChainVerificationFetchedAt ?? null,
         maxConcurrency: p.maxConcurrency ?? null,
         currentLoad: p.currentLoad ?? null,

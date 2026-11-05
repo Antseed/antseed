@@ -35,7 +35,8 @@ export function TrustTip() {
     <InfoTip label="What is the trust score?">
       <span className="gc-tip__title">Trust score, 0 to 100</span>
       Your buyer works it out for each seller from records it can check: service history (up to 50), usage last week (20),
-      staked ANTS (10) and a verified GitHub or domain (20), plus 5 for a free model. Proven wash traders score 0.{' '}
+      staked ANTS (10) and a verified GitHub or domain (20), plus 5 for a free model. Proven wash traders score 0.
+      When auditors find a seller likely serves a different model than it claims, routing counts only 10% of its score for that model.{' '}
       <a href={REPUTATION_DOCS} target="_blank" rel="noreferrer">How it works</a>
     </InfoTip>
   )
