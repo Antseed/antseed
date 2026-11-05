@@ -923,7 +923,7 @@ export class SellerRequestHandler {
         });
         return;
       }
-      const usageAdmission = this._deps.sellerBuyerLimiter?.admit(buyerPeerId, provider.name, requestCostEstimate?.inputTokens ?? 0);
+      const usageAdmission = this._deps.sellerBuyerLimiter?.admit(buyerPeerId, provider.name, this._estimateUsageTokens(request, requestCostEstimate));
       if (usageAdmission && !usageAdmission.admitted) {
         this._sendBuyerUsageLimited(mux, request.requestId, buyerPeerId, provider.name, usageAdmission.retryAfterSeconds);
         return;
@@ -1632,6 +1632,20 @@ export class SellerRequestHandler {
       inputTokens,
       maxOutputTokens,
     };
+  }
+
+  /**
+   * Tokens a request may use, reserved against buyer limits while it runs: its
+   * input plus the output it asks for at most. Estimated whatever the price, so
+   * a burst on a free model is held to the limits too.
+   */
+  private _estimateUsageTokens(
+    request: SerializedHttpRequest,
+    costEstimate: { inputTokens: number; maxOutputTokens: number } | null,
+  ): number {
+    if (costEstimate && costEstimate.inputTokens > 0) return costEstimate.inputTokens + costEstimate.maxOutputTokens;
+    const body = this._isJsonRequest(request) ? tryParseJsonObject(request.body) : null;
+    return estimateTokensFromBytesSampled(request.body) + (body ? this._extractMaxOutputTokens(body) : 0);
   }
 
   private _extractMaxOutputTokens(body: Record<string, unknown>): number {

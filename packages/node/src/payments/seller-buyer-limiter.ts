@@ -79,7 +79,7 @@ export class SellerBuyerLimiter {
    * within its limits. Requests still in flight count with their estimates.
    */
   retryAfterSeconds(buyerPeerId: string, provider: string): number | null {
-    return this._retryAfter(buyerPeerId, provider, this._isNewBuyer(buyerPeerId, this._now()));
+    return this._retryAfter(buyerPeerId, provider, this._isNewBuyer(buyerPeerId, this._now()), 0);
   }
 
   /**
@@ -88,9 +88,9 @@ export class SellerBuyerLimiter {
    */
   admit(buyerPeerId: string, provider: string, estimatedTokens: number): BuyerUsageAdmission {
     const isNew = this._isNewBuyer(buyerPeerId, this._now());
-    const retryAfterSeconds = this._retryAfter(buyerPeerId, provider, isNew);
-    if (retryAfterSeconds !== null) return { admitted: false, retryAfterSeconds };
     const reserved = Math.max(0, estimatedTokens);
+    const retryAfterSeconds = this._retryAfter(buyerPeerId, provider, isNew, reserved);
+    if (retryAfterSeconds !== null) return { admitted: false, retryAfterSeconds };
     const usage = this._providerUsage(provider);
     usage.pending.set(buyerPeerId, (usage.pending.get(buyerPeerId) ?? 0) + reserved);
     if (isNew) usage.newPending += reserved;
@@ -123,17 +123,17 @@ export class SellerBuyerLimiter {
     return parts.join(' ');
   }
 
-  private _retryAfter(buyerPeerId: string, provider: string, isNew: boolean): number | null {
+  private _retryAfter(buyerPeerId: string, provider: string, isNew: boolean, extra: number): number | null {
     const now = this._now();
     const usage = this._usage.get(provider);
     if (!usage) return null;
     const waits: number[] = [];
     const perBuyer = isNew ? this._config.newBuyers?.maxTokensPerBuyer ?? this._config.maxTokensPerBuyer : this._config.maxTokensPerBuyer;
     if (perBuyer !== undefined) {
-      waits.push(this._msUntilUnder(usage.buyers.get(buyerPeerId), perBuyer - (usage.pending.get(buyerPeerId) ?? 0), now));
+      waits.push(this._msUntilFits(usage.buyers.get(buyerPeerId), perBuyer, usage.pending.get(buyerPeerId) ?? 0, extra, now));
     }
     const total = this._config.newBuyers?.maxTokensTotal;
-    if (isNew && total !== undefined) waits.push(this._msUntilUnder(usage.newBuyers, total - usage.newPending, now));
+    if (isNew && total !== undefined) waits.push(this._msUntilFits(usage.newBuyers, total, usage.newPending, extra, now));
     const wait = Math.max(0, ...waits);
     return wait > 0 ? Math.ceil(wait / 1000) : null;
   }
@@ -179,10 +179,13 @@ export class SellerBuyerLimiter {
   }
 
   /**
-   * How long until the tokens in the window drop below the limit (0 when they
-   * already are). A limit at or below zero means in-flight requests alone fill it.
+   * How long until a request reserving `extra` tokens fits under the limit, on
+   * top of the window's usage and the `pending` tokens of requests in flight
+   * (0 when it fits now). A limit already reached holds every request; a
+   * request alone, with no usage or requests before it, is never held back
+   * for its own size.
    */
-  private _msUntilUnder(buckets: Buckets | undefined, limit: number, now: number): number {
+  private _msUntilFits(buckets: Buckets | undefined, limit: number, pending: number, extra: number, now: number): number {
     let used = 0;
     if (buckets) {
       for (const [minute, tokens] of buckets) {
@@ -190,13 +193,15 @@ export class SellerBuyerLimiter {
         else used += tokens;
       }
     }
-    if (used < limit) return 0;
-    if (limit <= 0) return IN_FLIGHT_RETRY_MS;
-    for (const minute of [...buckets!.keys()].sort((a, b) => a - b)) {
+    const fits = (inWindow: number): boolean => inWindow + pending < limit && (inWindow + pending === 0 || inWindow + pending + extra <= limit);
+    if (fits(used)) return 0;
+    // Even an empty window wouldn't make room: wait for requests in flight to finish.
+    if (!fits(0)) return IN_FLIGHT_RETRY_MS;
+    for (const minute of [...(buckets?.keys() ?? [])].sort((a, b) => a - b)) {
       used -= buckets!.get(minute)!;
-      if (used < limit) return this._expiresAt(minute) - now;
+      if (fits(used)) return this._expiresAt(minute) - now;
     }
-    return 0;
+    return IN_FLIGHT_RETRY_MS;
   }
 
   private _sweep(now: number): void {

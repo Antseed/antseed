@@ -54,12 +54,20 @@ describe('SellerBuyerLimiter', () => {
     expect(limiter.retryAfterSeconds('a', 'claude')).toBeNull();
   });
 
+  it('lets a request larger than the limit through alone', () => {
+    const limiter = new SellerBuyerLimiter({ maxTokensPerBuyer: 1_000 }, () => null, clock().now);
+    expect(limiter.admit('a', 'codex', 5_000).admitted).toBe(true);
+    expect(limiter.admit('a', 'codex', 10).admitted).toBe(false);
+  });
+
   it('counts requests still in flight, so a burst cannot pass on the same usage', () => {
     const limiter = new SellerBuyerLimiter({ maxTokensPerBuyer: 1_000, newBuyers: { maxTokensTotal: 1_200 } }, () => null, clock().now);
     const first = limiter.admit('a', 'codex', 600);
     expect(first.admitted).toBe(true);
-    expect(limiter.admit('a', 'codex', 600).admitted).toBe(true);
-    // 1,200 tokens are now reserved for 'a': its next request waits for one to finish.
+    // A request must fit beside the ones in flight: 600 more would pass the limit, 400 fits.
+    expect(limiter.admit('a', 'codex', 600).admitted).toBe(false);
+    expect(limiter.admit('a', 'codex', 400).admitted).toBe(true);
+    // 1,000 tokens are now reserved for 'a': its next request waits for one to finish.
     const held = limiter.admit('a', 'codex', 10);
     expect(held).toEqual({ admitted: false, retryAfterSeconds: 5 });
     // The shared new-buyer total counts the same reservations.
@@ -153,6 +161,48 @@ describe('seller buyer limits', () => {
     const frame = conn.send.mock.calls.map(([raw]) => decodeFrame(raw)!.message).find((message) => message.type === MessageType.HttpResponse)!;
     return decodeHttpResponse(frame.payload);
   }
+
+  it('holds a concurrent burst on a free model to the limit while the first request is still running', async () => {
+    const limiter = new SellerBuyerLimiter({ maxTokensPerBuyer: 1_000 }, () => null);
+    const upstream = provider();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    upstream.handleRequest = vi.fn(async (req) => {
+      await held;
+      return { requestId: req.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode('{"ok":true}') };
+    });
+    const handler = new SellerRequestHandler({
+      identity: identityFromPrivateKeyHex('11'.repeat(32)),
+      providers: [upstream],
+      sellerPaymentManager: null,
+      sellerBuyerLimiter: limiter,
+      sessionTracker: null,
+      channelsClient: null,
+      announcer: null,
+      emit: () => false,
+    });
+    const conn = { send: vi.fn(), hasRemoteCapability: vi.fn(() => false) };
+    const { mux } = handler.handleConnection(conn as any, '22'.repeat(20), { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any, new VerificationMux(conn as any));
+    // Each request asks for up to 600 output tokens: the second one already exceeds the limit with the first in flight.
+    const send = (requestId: string) => mux.handleFrame({
+      type: MessageType.HttpRequest,
+      messageId: 1,
+      payload: encodeHttpRequest({
+        requestId, method: 'POST', path: '/v1/chat/completions',
+        headers: { 'content-type': 'application/json' },
+        body: new TextEncoder().encode(JSON.stringify({ model: 'test-model', max_tokens: 600 })),
+      }),
+    });
+    const burst = Promise.all(['b1', 'b2', 'b3'].map(send));
+    await vi.waitFor(() => expect(upstream.handleRequest).toHaveBeenCalledTimes(1));
+    release();
+    await burst;
+    const statuses = conn.send.mock.calls.map(([raw]) => decodeFrame(raw)!.message)
+      .filter((message) => message.type === MessageType.HttpResponse)
+      .map((message) => decodeHttpResponse(message.payload).statusCode);
+    expect(statuses.sort()).toEqual([200, 429, 429]);
+    expect(upstream.handleRequest).toHaveBeenCalledTimes(1);
+  });
 
   it('counts served tokens and answers 429 with retry-after before reaching the provider', async () => {
     const limiter = new SellerBuyerLimiter({ maxTokensPerBuyer: 1_000 }, () => null);
