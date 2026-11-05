@@ -455,11 +455,12 @@ export class SellerRequestHandler {
         return;
       }
       const estimatedRequestCost = requestCostEstimate?.cost ?? 0n;
+      const requestedService = this._extractRequestedService(request);
       // Buyer limits: a request is admitted, with its estimated size held against them until it ends, before any payment step.
       // They count tokens, so requests billed by other units (video, speech, images) are outside them.
       if (this._deps.sellerBuyerLimiter && !videoRoute && !unitBillingModel) {
         const estimatedUsage = this._estimateUsageTokens(request, requestCostEstimate);
-        const admission = this._deps.sellerBuyerLimiter.admit(buyerPeerId, provider.name, estimatedUsage, this._extractRequestedService(request) ?? undefined);
+        const admission = this._deps.sellerBuyerLimiter.admit(buyerPeerId, provider.name, estimatedUsage, requestedService ?? undefined);
         if (!admission.admitted) {
           this._sendBuyerUsageLimited(mux, request.requestId, buyerPeerId, provider.name, admission.retryAfterSeconds);
           return;
@@ -468,7 +469,7 @@ export class SellerRequestHandler {
         usageHold.estimate = estimatedUsage;
       }
 
-      const freeTierService = this._extractRequestedService(request) ?? 'unknown';
+      const freeTierService = requestedService ?? 'unknown';
       const freeTierLimiter = this._deps.sellerFreeTierLimiter;
       // A priced service with its own program serves the requests that program
       // covers for free; the rest are paid as usual, never refused. Videos are
