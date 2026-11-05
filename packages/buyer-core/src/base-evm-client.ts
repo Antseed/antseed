@@ -46,9 +46,25 @@ function createJsonRpcProvider(url: string, network?: Network, opts?: object): J
   return new JsonRpcProvider(request, network, opts);
 }
 
-function buildProvider(rpcUrl: string, fallbackRpcUrls?: string[], evmChainId?: number): AbstractProvider {
+export interface BaseEvmClientOptions {
+  /**
+   * How long ethers shares identical reads (`eth_blockNumber`, `eth_getLogs`, `eth_call`, ...), in
+   * milliseconds; ethers' default is 250. `-1` turns the cache off, for a client that reads the chain
+   * before and right after its own transaction: the second read, if identical and within 250 ms of the
+   * first, is otherwise answered from the first one and misses the transaction's events.
+   */
+  cacheTimeout?: number;
+}
+
+function buildProvider(
+  rpcUrl: string, fallbackRpcUrls?: string[], evmChainId?: number, options: BaseEvmClientOptions = {},
+): AbstractProvider {
   const network = evmChainId ? Network.from(evmChainId) : undefined;
-  const opts = { batchMaxCount: 1, staticNetwork: network ? true : undefined };
+  const opts = {
+    batchMaxCount: 1,
+    staticNetwork: network ? true : undefined,
+    ...(options.cacheTimeout === undefined ? {} : { cacheTimeout: options.cacheTimeout }),
+  };
   if (!fallbackRpcUrls || fallbackRpcUrls.length === 0) {
     return createJsonRpcProvider(rpcUrl, network, opts);
   }
@@ -107,8 +123,10 @@ export abstract class BaseEvmClient {
   protected readonly _contractAddress: string;
   private readonly _nonceScope: string;
 
-  constructor(rpcUrl: string, contractAddress: string, fallbackRpcUrls?: string[], evmChainId?: number) {
-    this._provider = buildProvider(rpcUrl, fallbackRpcUrls, evmChainId);
+  constructor(
+    rpcUrl: string, contractAddress: string, fallbackRpcUrls?: string[], evmChainId?: number, options?: BaseEvmClientOptions,
+  ) {
+    this._provider = buildProvider(rpcUrl, fallbackRpcUrls, evmChainId, options);
     this._contractAddress = contractAddress;
     this._nonceScope = evmChainId ? `chain:${evmChainId}` : `rpc:${rpcUrl}`;
   }

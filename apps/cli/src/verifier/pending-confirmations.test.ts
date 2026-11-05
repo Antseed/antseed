@@ -281,3 +281,85 @@ test('a finished local result answers a confirmation only for the reported servi
   // A result newer than that report (the re-audit) is submitted next.
   assert.equal(localResultAnswersConfirmation({ ...target, ownReportedAt: 600 }, { service: 'Served-A', completedAt: 700 }), true)
 })
+
+// Liveness edge cases: what happens to a DIFF when the auditor who should confirm it does not.
+
+test('an auditor never confirms its own DIFF, however late in the epoch', () => {
+  const events = [audited({ auditor: A, verdict: VERIFIER_VERDICT.DIFF })]
+  for (const now of [EARLY, LATE, ENDS - 1]) {
+    const [entry] = pendingFor(A, events, { auditors: [A, B, C], now })
+    assert.equal(entry!.mine, false, `at ${now}`)
+    assert.deepEqual(entry!.waiting, [{ verdict: 'DIFF', reports: 1, required: 2 }])
+  }
+  // Reporting it again adds nothing: the contract counts distinct auditors.
+  const twice = [...events, audited({ auditor: A, verdict: VERIFIER_VERDICT.DIFF })]
+  assert.deepEqual(pendingFor(B, twice, { auditors: [A, B, C] })[0]!.waiting, [{ verdict: 'DIFF', reports: 1, required: 2 }])
+})
+
+test('an absent confirmer blocks nothing: before halfway the DIFF waits for it, from halfway every other auditor may confirm', () => {
+  const auditors = [A, B, C, getAddress('0x00000000000000000000000000000000000000d4')]
+  const rotation = auditorRotationForModel('model-a', { auditors, epoch: 7, availableModels: MODELS })
+  const [reporter, confirmer, third, fourth] = rotation as [string, string, string, string]
+  const events = [audited({ auditor: reporter, verdict: VERIFIER_VERDICT.DIFF })]
+  const mine = (auditor: string, now: number) => pendingFor(auditor, events, { auditors, now })[0]!.mine
+  assert.equal(pendingFor(third, events, { auditors })[0]!.confirmer, confirmer)
+  assert.deepEqual([reporter, confirmer, third, fourth].map((auditor) => mine(auditor, EARLY)), [false, true, false, false])
+  assert.deepEqual([reporter, confirmer, third, fourth].map((auditor) => mine(auditor, STARTED + (ENDS - STARTED) / 2 - 1)),
+    [false, true, false, false], 'one second before halfway')
+  assert.deepEqual([reporter, confirmer, third, fourth].map((auditor) => mine(auditor, STARTED + (ENDS - STARTED) / 2)),
+    [false, true, true, true], 'exactly halfway')
+})
+
+test('a confirmer that disagrees moves the confirmation on: the DIFF still waits, for the next auditor in the rotation', () => {
+  const auditors = [A, B, C]
+  const [reporter, confirmer, third] = auditorRotationForModel('model-a', { auditors, epoch: 7, availableModels: MODELS }) as [string, string, string]
+  const events = [
+    audited({ auditor: reporter, verdict: VERIFIER_VERDICT.DIFF }),
+    audited({ auditor: confirmer, verdict: VERIFIER_VERDICT.SAME }),
+  ]
+  const [entry] = pendingFor(third, events, { auditors })
+  assert.deepEqual(entry!.waiting, [{ verdict: 'DIFF', reports: 1, required: 2 }], 'the SAME has its one report and does not wait')
+  assert.equal(entry!.confirmer, third)
+  assert.equal(entry!.mine, true, 'before halfway already: it is the next auditor that has not reported')
+  assert.equal(pendingFor(confirmer, events, { auditors, now: LATE })[0]!.mine, false, 'the confirmer has reported')
+})
+
+test('once every auditor has reported and they disagree, nobody is asked again this epoch', () => {
+  const events = [
+    audited({ auditor: A, verdict: VERIFIER_VERDICT.DIFF }),
+    audited({ auditor: B, verdict: VERIFIER_VERDICT.SAME }),
+  ]
+  for (const auditor of [A, B]) {
+    const [entry] = pendingFor(auditor, events, { now: LATE })
+    assert.equal(entry!.confirmer, null)
+    assert.equal(entry!.mine, false)
+    assert.deepEqual(entry!.reporters.sort(), [A, B].sort())
+  }
+})
+
+test('with two auditors the halfway fallback changes nothing: the other auditor is the confirmer from the start', () => {
+  const events = [audited({ auditor: A, verdict: VERIFIER_VERDICT.DIFF })]
+  assert.deepEqual([EARLY, LATE].map((now) => pendingFor(B, events, { now })[0]!.mine), [true, true])
+  assert.deepEqual([EARLY, LATE].map((now) => pendingFor(A, events, { now })[0]!.mine), [false, false])
+})
+
+test('a second DIFF from the fallback auditor leaves nothing waiting, also for the confirmer that comes back late', () => {
+  const auditors = [A, B, C]
+  const [reporter, confirmer, third] = auditorRotationForModel('model-a', { auditors, epoch: 7, availableModels: MODELS }) as [string, string, string]
+  const events = [
+    audited({ auditor: reporter, verdict: VERIFIER_VERDICT.DIFF }),
+    audited({ auditor: third, verdict: VERIFIER_VERDICT.DIFF }),
+  ]
+  assert.deepEqual(pendingFor(confirmer, events, { auditors, now: LATE }), [])
+})
+
+test('every auditor works out the same confirmer, whatever order or case the auditors are listed in', () => {
+  const auditors = [A, B, C]
+  const events = [audited({ auditor: B, verdict: VERIFIER_VERDICT.DIFF })]
+  const expected = pendingFor(A, events, { auditors })[0]!.confirmer
+  for (const listed of [[C, B, A], [B.toLowerCase(), A.toLowerCase(), C.toLowerCase()], [A, A, B, C]]) {
+    for (const auditor of auditors) {
+      assert.equal(pendingFor(auditor, events, { auditors: listed })[0]!.confirmer, expected)
+    }
+  }
+})

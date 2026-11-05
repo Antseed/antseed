@@ -76,6 +76,40 @@ marked DIFF when two independent auditors agree.
 To run an auditor yourself, see [Become a verifier](/docs/verify). [How audits run](/docs/verify/audits)
 covers each step, including where the genuine model's answers come from.
 
+## Decentralised and trustless
+
+There is no server that hands out audits, collects results or decides verdicts. The
+auditors are independent, and what they agree on is worked out from public data and
+recorded by the contract. Four things make that hold:
+
+- **Nothing to coordinate.** Which auditor audits which model, and which auditor confirms
+  which model's DIFFs, follows from the approved auditors (the contract's `AuditorSet`
+  events), the epoch number and the model list built into the CLI, sorted and rotated
+  round robin. Anyone can recompute the split, and `antseed verifier assignment` does.
+- **Nobody is trusted alone.** One auditor's SAME verifies a seller, which only helps the
+  seller. A DIFF, which costs the seller its verified status, is only a report until a
+  second approved auditor audits the same seller with its own questions and also finds
+  DIFF. The second auditor is the model's confirmer, the next in the rotation, so the
+  confirmer changes every epoch and no two auditors can pair up for long. Reports count
+  only in the epoch they were made in and only since the service's last change into or
+  out of DIFF, an auditor's repeated report adds nothing, and a revoked auditor's waiting
+  reports stop counting. Every audit's evidence is on IPFS, so anyone can check what an
+  auditor asked and what the seller answered.
+- **Nobody is waited for.** The contract takes any approved auditor's audit of any model,
+  so the assignment can't block anything. Halfway through the epoch, a DIFF whose
+  confirmer has not reported can be confirmed by any auditor who hasn't reported on it,
+  and a model whose auditor has not audited it goes to the next auditor in its rotation
+  that is active this epoch (from three quarters on, to the one after that). The stand-in
+  earns the audit's credit. Every auditor reads the time from the chain, so they all
+  switch at the same moment. See [If an auditor goes missing](/docs/verify/audits#if-an-auditor-goes-missing).
+- **Nothing lasts without being rechecked.** A verdict counts for the epoch it was given in
+  and the next one, so a seller stays verified only while auditors keep finding it so, and
+  a missed epoch is bridged by the previous verdict rather than by anyone's say-so.
+
+What is still trusted: the contract owner approves and revokes auditors and sets the
+report counts (one for SAME and UNDETERMINED, two for DIFF, and the floor for replacing a
+live DIFF). Those settings are public on-chain, and changing them is visible to everyone.
+
 ## Public evidence
 
 Every audit is published to IPFS: the questions asked, the seller's raw responses, the

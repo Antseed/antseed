@@ -32,6 +32,10 @@ import {
 import { resolveAuditEpochWindow, type AuditEpochWindow, type OnchainEpochReader } from '../../../verifier/audit-epoch.js'
 import { auditModelListHash, confirmationAssignments, roundRobinAssignmentFor, type AuditAssignment } from '../../../verifier/audit-assignment.js'
 import { approvedAuditorsAt, loadAuditorSetEvents } from '../../../verifier/auditor-set.js'
+import { chainNow } from '../../../verifier/chain-clock.js'
+import {
+  describeHandover, handoverModelsFor, loadEpochModelAudits, type AuditHandover,
+} from '../../../verifier/audit-handover.js'
 import {
   createDepositsClient,
   createEmissionsGateClient,
@@ -272,6 +276,64 @@ export function resolveAssignedAuditModels(
     )
   }
   return roundRobinAssignmentFor(auditor, { auditors: approvedAuditors, epoch: epoch.epoch, availableModels })
+}
+
+/**
+ * Unix seconds now, from the chain when a KBF audits contract is configured (`chainNow`: the latest
+ * block's timestamp), else the wall clock. Everything that depends on how far the epoch has come
+ * (the confirmation fallback, the auditor handover, the time left) reads it, so every auditor sees
+ * the same time and on a local fork it follows the fork's time.
+ */
+export function chainClock(config: AntseedConfig): () => Promise<number> {
+  let client: ReturnType<typeof createVerifierClient> | null = null
+  try {
+    client = createVerifierClient(config)
+  } catch {
+    client = null
+  }
+  return () => (client ? chainNow(client.provider) : Promise.resolve(Math.floor(Date.now() / 1_000)))
+}
+
+/**
+ * The models this auditor stands in for this epoch (`auditHandovers`): those whose assigned auditor
+ * has not audited them by halfway through the epoch, handed to the next active auditor in the
+ * model's rotation. Nothing when the epoch is not on-chain or no KBF audits contract is
+ * configured; a failed read is a warning, not a stop.
+ */
+export async function loadRunHandovers(input: {
+  config: AntseedConfig
+  auditor: string
+  epochWindow: AuditEpochWindow
+  approvedAuditors: readonly string[]
+  now: number
+}): Promise<AuditHandover[]> {
+  if (input.epochWindow.source !== 'onchain') return []
+  let client: ReturnType<typeof createVerifierClient>
+  try {
+    client = createVerifierClient(input.config)
+  } catch {
+    return []
+  }
+  try {
+    const audits = await loadEpochModelAudits({
+      reader: client,
+      epoch: input.epochWindow.epoch,
+      epochStartedAt: input.epochWindow.startedAt,
+      deploymentBlock: client.deploymentBlock,
+    })
+    return handoverModelsFor(input.auditor, {
+      auditors: input.approvedAuditors,
+      epoch: input.epochWindow.epoch,
+      availableModels: configuredVerifierModels(input.config.verifier),
+      audits,
+      epochStartedAt: input.epochWindow.startedAt,
+      epochEndsAt: input.epochWindow.endsAt,
+      now: input.now,
+    })
+  } catch (error) {
+    console.warn(chalk.yellow(`Could not read this epoch's model audits for the auditor handover: ${asError(error).message}`))
+    return []
+  }
 }
 
 /** Auditors approved when the epoch started, from the KBF audits contract's `AuditorSet` events. */
@@ -619,6 +681,7 @@ async function runVerifierRound(
         return resolved.window
       }
       let epochWindow = await resolveEpoch()
+      const clock = chainClock(config)
       let assignedModels: string[] | null = null
       let approvedAuditors: string[] | undefined
       if (isAssignedMode(modelValue, options)) {
@@ -632,7 +695,13 @@ async function runVerifierRound(
           approvedAuditors,
           availableModels: configuredVerifierModels(config.verifier),
         })
-        assignedModels = assignment.models
+        // Liveness: models whose auditor is absent this epoch are audited by a stand-in from halfway on.
+        const handovers = await loadRunHandovers({
+          config, auditor: auditor.address, epochWindow, approvedAuditors, now: await clock(),
+        })
+        for (const entry of handovers) console.log(chalk.cyan(`Stand-in: ${describeHandover(entry)}`))
+        const own = new Set(assignment.models.map((model) => model.toLowerCase()))
+        assignedModels = [...assignment.models, ...handovers.map((entry) => entry.model).filter((model) => !own.has(model.toLowerCase()))]
       }
       const selectedPeerId = options.peer ? normalizeVerifierPeerId(options.peer) : null
       const banksDir = config.verifier?.banksDir ?? join(globalOptions.dataDir, 'verifier', 'banks')
@@ -646,7 +715,7 @@ async function runVerifierRound(
       const confirmations = requestedResumeManifest || options.confirm === false
         ? new Map<string, Map<string, ConfirmationTarget>>()
         : await loadRunConfirmations({
-          config, dataDir: globalOptions.dataDir, auditorFlag: options.auditor, epochWindow, approvedAuditors,
+          config, dataDir: globalOptions.dataDir, auditorFlag: options.auditor, epochWindow, approvedAuditors, now: await clock(),
           // An explicit model run confirms only that model's reports; the assigned run confirms
           // every audited model's it is responsible for.
           models: assignedModels ? configuredVerifierModels(config.verifier) : requestedModels,
@@ -881,15 +950,15 @@ async function runVerifierRound(
             console.warn(chalk.yellow(`No model is ready after building fresh questions (${enrollmentFailures.size} failed).`))
             const now = await resolveEpoch()
             if (now.epoch !== epoch) {
-              return { left: 0, secondsLeftInEpoch: now.endsAt - Date.now() / 1_000, epochChanged: now.epoch }
+              return { left: 0, secondsLeftInEpoch: now.endsAt - await clock(), epochChanged: now.epoch }
             }
-            return { left: enrollmentFailures.size, secondsLeftInEpoch: now.endsAt - Date.now() / 1_000, enrollmentFailures }
+            return { left: enrollmentFailures.size, secondsLeftInEpoch: now.endsAt - await clock(), enrollmentFailures }
           }
           epochWindow = await resolveEpoch()
           if (epochWindow.epoch !== epoch) {
             // Everything planned so far (assignment, finished sellers, waiting close calls) belongs to
             // the previous epoch; the caller plans the round again for the new one.
-            return { left: 0, secondsLeftInEpoch: epochWindow.endsAt - Date.now() / 1_000, epochChanged: epochWindow.epoch }
+            return { left: 0, secondsLeftInEpoch: epochWindow.endsAt - await clock(), epochChanged: epochWindow.epoch }
           }
           proxy = await loadBuyerProxySnapshot(globalOptions.dataDir)
           selectedPeers = selectedPeerId ? [selectVerifierPeer(proxy.peers, selectedPeerId)] : proxy.peers
@@ -1034,7 +1103,7 @@ async function runVerifierRound(
             printEpochTable(epoch, await loadEpochState(evidenceDir, epoch), runModels.length > 0 ? runModels : models)
             console.log(chalk.green(`Epoch ${epoch}: nothing left to audit (sellers still skipped are listed above).`))
             console.log(`Next: antseed verifier submit`)
-            return { left: 0, secondsLeftInEpoch: epochWindow.endsAt - Date.now() / 1_000 }
+            return { left: 0, secondsLeftInEpoch: epochWindow.endsAt - await clock() }
           }
         }
         if (selectedPeerId && preparedModels.every((entry) => entry.targets.length + entry.skipped.length === 0)) {
@@ -1613,7 +1682,7 @@ async function runVerifierRound(
           console.log(chalk.green(`Epoch ${epoch}: every eligible seller is finished.`))
         }
         if (status.failures > 0) process.exitCode = 1
-        return { left: remaining, secondsLeftInEpoch: epochWindow.endsAt - Date.now() / 1_000, enrollmentFailures }
+        return { left: remaining, secondsLeftInEpoch: epochWindow.endsAt - await clock(), enrollmentFailures }
       } catch (error) {
         if (status) {
           status.state = 'failed'

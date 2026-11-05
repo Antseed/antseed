@@ -712,7 +712,13 @@ model is audited every epoch, split round robin across the auditors approved whe
 the epoch started (read from the KBF contract's `AuditorSet` events). Auditors are
 sorted by address and models by name, and in epoch `e` model `i` goes to auditor
 `(i + e) mod auditors`. `antseed verifier assignment [--epoch <n>] [--epochs <count>]`
-shows every auditor's models. The split is off-chain only. `--auditor` cannot be
+shows every auditor's models; an epoch that has not started yet is a preview with the
+auditors approved so far. The split is off-chain only: halfway through the
+epoch, a model its auditor has not audited yet goes to the next auditor in its
+rotation that has submitted an audit this epoch (from three quarters on, to the
+one after that), who audits it like its own; `verifier assignment` shows these
+stand-ins and `verifier run` prints `Stand-in: …`. How far the epoch has come is
+read from the chain's latest block. `--auditor` cannot be
 combined with `<model>`, `--all`, or `--resume-run`.
 
 ## Submitting Model Audits

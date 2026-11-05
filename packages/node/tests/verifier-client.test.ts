@@ -12,6 +12,7 @@ import {
   sortServiceResults,
 } from '../src/payments/evm/verifier-client.js';
 import { queryInBlockChunks, resolveScanFromBlock } from '../src/payments/evm/block-range.js';
+import { DepositsClient } from '../src/payments/evm/deposits-client.js';
 
 const VERIFICATION_ADDRESS = '0x' + '10'.repeat(20);
 const RESULTS_ADDRESS = '0x' + '20'.repeat(20);
@@ -373,5 +374,17 @@ describe('verifier event block ranges', () => {
     ]);
     expect(getBlock).toHaveBeenCalledTimes(2);
     expect(queryFilter.mock.calls[0]?.[1]).toBe(10); // scans from the KBF deployment block
+  });
+});
+
+describe('VerifierClient read cache', () => {
+  const option = (provider: unknown) => (provider as { _getOption(key: string): unknown })._getOption('cacheTimeout');
+
+  it('reads without ethers\' 250 ms cache, so its own just-mined reports are not missed; other clients keep the default', () => {
+    const rpcUrl = 'http://127.0.0.1:1';
+    const verifier = new VerifierClient({ rpcUrl, contractAddress: VERIFICATION_ADDRESS, evmChainId: 31_337 });
+    expect(option(verifier.provider)).toBe(-1);
+    const deposits = new DepositsClient({ rpcUrl, contractAddress: RESULTS_ADDRESS, usdcAddress: RESULTS_ADDRESS, evmChainId: 31_337 });
+    expect(option(deposits.provider)).toBe(250);
   });
 });

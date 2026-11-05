@@ -267,6 +267,13 @@ export interface VerifierServiceStatus {
  *
  * The results address is discovered from the KBF contract on first use and cached.
  */
+/**
+ * The verifier reads this epoch's reports before its own submission and again right after it
+ * (`submit`'s confirmation summary), so the second read must not be answered from ethers' 250 ms
+ * cache of the first.
+ */
+const NO_READ_CACHE = { cacheTimeout: -1 } as const;
+
 export class VerifierClient extends BaseEvmClient {
   private _contractInstance: Contract | null = null;
   private _resultsInstance: Promise<Contract> | null = null;
@@ -275,7 +282,7 @@ export class VerifierClient extends BaseEvmClient {
   private readonly _logQueryChunkBlocks: number | undefined;
 
   constructor(config: VerifierClientConfig) {
-    super(config.rpcUrl, config.contractAddress, config.fallbackRpcUrls, config.evmChainId);
+    super(config.rpcUrl, config.contractAddress, config.fallbackRpcUrls, config.evmChainId, NO_READ_CACHE);
     this._config = config;
     this._deploymentBlock = config.deploymentBlock;
     this._logQueryChunkBlocks = config.logQueryChunkBlocks;
@@ -635,7 +642,7 @@ export class VerifierClient extends BaseEvmClient {
 /** Sends writes to the results contract on the same provider and nonce scope as the client. */
 class ResultsWriter extends BaseEvmClient {
   constructor(config: VerifierClientConfig, resultsAddress: string) {
-    super(config.rpcUrl, resultsAddress, config.fallbackRpcUrls, config.evmChainId);
+    super(config.rpcUrl, resultsAddress, config.fallbackRpcUrls, config.evmChainId, NO_READ_CACHE);
   }
 
   claimAuditorReward(signer: AbstractSigner, audit: string, epoch: bigint): Promise<string> {

@@ -17,6 +17,9 @@ import {
   type FixtureAudit,
 } from './model-audit-fixtures.test-support.js'
 import { loadEpochReports, pendingConfirmations } from './pending-confirmations.js'
+import { roundRobinAssignmentFor, auditorRotationForModel } from './audit-assignment.js'
+import { handoverModelsFor, loadEpochModelAudits } from './audit-handover.js'
+import { chainNow } from './chain-clock.js'
 
 const randomWallet = (): Wallet => new Wallet(Wallet.createRandom().privateKey)
 const RUN_ANVIL_E2E = process.env['ANTSEED_RUN_VERIFIER_ANVIL_E2E'] === '1'
@@ -43,6 +46,7 @@ const cliEntry = join(repoRoot, 'apps', 'cli', 'dist', 'cli', 'index.js')
 interface CommandResult {
   status: number
   output: string
+  stdout: string
 }
 
 interface RunCliOptions {
@@ -332,10 +336,401 @@ test('two auditors confirm each other\'s DIFFs: one SAME is recorded at once, a 
   }
 })
 
+test('a model whose auditor is absent is handed to the next active auditor from halfway through the epoch', {
+  skip: !RUN_ANVIL_E2E,
+  timeout: 300_000,
+}, async () => {
+  requireCommand('anvil')
+  requireCommand('cast')
+  requireCommand('forge')
+
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-verifier-handover-e2e-'))
+  const port = await availablePort()
+  const rpcUrl = `http://127.0.0.1:${port}`
+  const epochStartedAt = GENESIS + AUDIT_EPOCH * EPOCH_DURATION
+  // The chain starts two minutes before the epoch, so the auditors are approved before it starts and
+  // its clock, not the wall clock, says how far the epoch has come.
+  const anvil = startAnvil(port, { timestamp: epochStartedAt - 120 })
+  try {
+    await waitForRpcReady(rpcUrl, anvil)
+    const registryAddress = deployContract(rpcUrl, 'core/AntseedRegistry.sol:AntseedRegistry')
+    const identityRegistryAddress = deployContract(rpcUrl, 'test/mocks/MockERC8004Registry.sol:MockERC8004Registry')
+    const gateAddress = deployContract(rpcUrl, 'test/mocks/MockVerificationEmissionsGate.sol:MockVerificationEmissionsGate')
+    const poolsAddress = deployContract(rpcUrl, 'test/mocks/MockVerificationSellerPools.sol:MockVerificationSellerPools')
+    castSend(rpcUrl, registryAddress, 'setIdentityRegistry(address)', [identityRegistryAddress])
+    castSend(rpcUrl, registryAddress, 'setEmissions(address)', [gateAddress])
+    const { resultsAddress, kbfAddress: verificationAddress } = deployVerification(rpcUrl, gateAddress, poolsAddress, identityRegistryAddress)
+    castSend(rpcUrl, resultsAddress, 'setRewardsStartEpoch(address,uint64)', [verificationAddress, '0'])
+    castSend(rpcUrl, gateAddress, 'setCurrentEpoch(uint256)', [String(AUDIT_EPOCH)])
+    castSend(rpcUrl, gateAddress, 'setSchedule(uint256,uint256)', [String(GENESIS), String(EPOCH_DURATION)])
+    // Three approved auditors; the third never audits.
+    const wallets = {
+      a: new Wallet(`0x${AUDITOR_PRIVATE_KEY}`),
+      b: new Wallet(`0x${SECOND_AUDITOR_PRIVATE_KEY}`),
+      lazy: new Wallet(`0x${UNAPPROVED_PRIVATE_KEY}`),
+    }
+    for (const auditor of Object.values(wallets)) {
+      castSend(rpcUrl, verificationAddress, 'setAuditor(address,bool)', [auditor.address, 'true'])
+    }
+    castSend(rpcUrl, identityRegistryAddress, 'setOwner(uint256,address)', ['1', SELLER_OWNERS[0]])
+    castSend(rpcUrl, poolsAddress, 'setPower(uint256,uint256,uint256)', ['1', String(AUDIT_EPOCH), '100'])
+
+    // Three built-in models, one per auditor this epoch.
+    const models = ['claude-opus-5.5', 'gemini-4-argon', 'glm-5.3']
+    const auditors = Object.values(wallets).map((wallet) => wallet.address)
+    const rotation = { auditors, epoch: AUDIT_EPOCH, availableModels: models }
+    const assigned = (auditor: Wallet) => roundRobinAssignmentFor(auditor.address, rotation).models
+    assert.equal(assigned(wallets.lazy).length, 1)
+    const lazyModel = assigned(wallets.lazy)[0]!
+    const [, standInAddress] = auditorRotationForModel(lazyModel, rotation)
+    const standIn = Object.values(wallets).find((wallet) => wallet.address === standInAddress)!
+    const other = Object.values(wallets).find((wallet) => wallet !== standIn && wallet !== wallets.lazy)!
+
+    const seller = randomWallet()
+    const audit = (model: string): FixtureAudit => ({
+      agentId: '1', seller, model, service: model, verdict: 'SAME', reference: referenceFixture(model),
+    })
+    const crypto = {
+      chainId: 'base-local',
+      rpcUrl,
+      verificationContractAddress: verificationAddress,
+      verificationDeployBlock: 0,
+      identityRegistryAddress,
+    }
+    const setUpDataDir = async (name: string, wallet: Wallet) => {
+      const dataDir = join(directory, name)
+      const evidenceDir = join(dataDir, 'verifier', 'evidence')
+      const banksDir = join(dataDir, 'verifier', 'banks')
+      const configPath = join(dataDir, 'config.json')
+      await mkdir(dataDir, { recursive: true })
+      await writeFile(join(dataDir, 'identity.key'), `${wallet.privateKey.slice(2)}\n`, { mode: 0o600 })
+      await writeFile(configPath, JSON.stringify({
+        payments: { preferredMethod: 'crypto', crypto },
+        verifier: { evidenceDir, banksDir, auditor: wallet.address, testModels: models, ...FIXTURE_CONFIG },
+      }))
+      const writeRun = (runId: string, audits: FixtureAudit[]) => (
+        writeSignedAuditRun({ evidenceDir, banksDir, runId, epoch: EPOCH, auditor: wallet, audits })
+      )
+      return { dataDir, configPath, writeRun }
+    }
+    const dirs = { standIn: await setUpDataDir('stand-in', standIn), other: await setUpDataDir('other', other) }
+    const submit = (who: keyof typeof dirs, runId: string) => runCli(dirs[who].dataDir, dirs[who].configPath, rpcUrl, [
+      'submit', '--run-id', runId, '--no-publish-ipfs', '--yes', '--skip-version-check',
+    ])
+    interface AssignmentJson {
+      epochs: Array<{ epoch: string; handovers: Array<{ model: string; assignedAuditor: string; standIn: string; stage: number }> }>
+    }
+    const handoversShown = (who: keyof typeof dirs) => {
+      const result = runCli(dirs[who].dataDir, dirs[who].configPath, null, ['assignment', '--json'])
+      assert.equal(result.status, 0, result.output)
+      return (JSON.parse(result.stdout) as AssignmentJson).epochs[0]!.handovers
+    }
+    const client = new VerifierClient({ rpcUrl, contractAddress: verificationAddress, evmChainId: 31_337, deploymentBlock: 0 })
+    const provider = client.provider
+    const handoversFor = async (auditor: string) => handoverModelsFor(auditor, {
+      ...rotation,
+      audits: await loadEpochModelAudits({ reader: client, epoch: AUDIT_EPOCH, epochStartedAt, deploymentBlock: 0 }),
+      epochStartedAt,
+      epochEndsAt: epochStartedAt + EPOCH_DURATION,
+      now: await chainNow(provider),
+    })
+
+    // The two active auditors audit their own model, early in the epoch (the chain moves into it first).
+    await rpc(rpcUrl, 'evm_increaseTime', [180])
+    await rpc(rpcUrl, 'evm_mine', [])
+    await dirs.standIn.writeRun('stand-in-own', [audit(assigned(standIn)[0]!)])
+    await dirs.other.writeRun('other-own', [audit(assigned(other)[0]!)])
+    for (const who of ['standIn', 'other'] as const) {
+      const result = submit(who, `${who === 'standIn' ? 'stand-in' : 'other'}-own`)
+      assert.equal(result.status, 0, result.output)
+    }
+    assert.deepEqual(await client.auditCredits(standIn.address, AUDIT_EPOCH), { auditor: 1n, total: 2n })
+    const before = await chainNow(provider)
+    assert.ok(before >= epochStartedAt && before < epochStartedAt + EPOCH_DURATION / 2, `chain time ${before} is early in the epoch`)
+    assert.deepEqual(await handoversFor(standIn.address), [], 'nothing is handed over before halfway')
+    assert.deepEqual(handoversShown('standIn'), [])
+
+    // Halfway through the epoch: the lazy auditor's model goes to the next active auditor in its rotation.
+    await rpc(rpcUrl, 'evm_increaseTime', [EPOCH_DURATION / 2])
+    await rpc(rpcUrl, 'evm_mine', [])
+    const after = await chainNow(provider)
+    assert.ok(after >= epochStartedAt + EPOCH_DURATION / 2, `chain time ${after} is past halfway`)
+    assert.ok(after < epochStartedAt + EPOCH_DURATION * 0.75, `chain time ${after} is before three quarters`)
+    const expected = [{ model: lazyModel, assignedAuditor: wallets.lazy.address, standIn: standIn.address, stage: 1 }]
+    assert.deepEqual(await handoversFor(standIn.address), expected)
+    assert.deepEqual(await handoversFor(other.address), [])
+    assert.deepEqual(handoversShown('standIn'), expected, 'verifier assignment shows the stand-in')
+    assert.deepEqual(handoversShown('other'), expected)
+
+    // The stand-in audits it like any other model, and the contract credits the audit.
+    await dirs.standIn.writeRun('stand-in-handover', [audit(lazyModel)])
+    const handedOver = submit('standIn', 'stand-in-handover')
+    assert.equal(handedOver.status, 0, handedOver.output)
+    assert.deepEqual(await client.auditCredits(standIn.address, AUDIT_EPOCH), { auditor: 2n, total: 3n })
+    assert.deepEqual(await client.auditCredits(wallets.lazy.address, AUDIT_EPOCH), { auditor: 0n, total: 3n })
+    const events = await client.queryModelAudits({ model: modelHash(lazyModel) }, 0)
+    assert.deepEqual(events.map((event) => [event.auditor, event.epoch]), [[standIn.address, BigInt(AUDIT_EPOCH)]])
+    assert.deepEqual(await handoversFor(standIn.address), [], 'once audited, the model is no longer handed over')
+    assert.deepEqual(handoversShown('standIn'), [])
+  } finally {
+    await stopProcess(anvil)
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a DIFF whose confirmer never reports is confirmed by another auditor from halfway through the epoch', {
+  skip: !RUN_ANVIL_E2E,
+  timeout: 300_000,
+}, async () => {
+  requireCommand('anvil')
+  requireCommand('cast')
+  requireCommand('forge')
+
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-verifier-absent-confirmer-e2e-'))
+  const port = await availablePort()
+  const rpcUrl = `http://127.0.0.1:${port}`
+  const epochStartedAt = GENESIS + AUDIT_EPOCH * EPOCH_DURATION
+  const anvil = startAnvil(port, { timestamp: epochStartedAt - 120 })
+  try {
+    await waitForRpcReady(rpcUrl, anvil)
+    // Three approved auditors; the third never runs.
+    const wallets = [AUDITOR_PRIVATE_KEY, SECOND_AUDITOR_PRIVATE_KEY, UNAPPROVED_PRIVATE_KEY].map((key) => new Wallet(`0x${key}`))
+    const absent = wallets[2]!
+    const chain = deployAuditChain(rpcUrl, wallets, 1)
+    const models = ['claude-opus-5.5', 'gemini-4-argon', 'glm-5.3']
+    const rotation = { auditors: wallets.map((wallet) => wallet.address), epoch: AUDIT_EPOCH, availableModels: models }
+    // The model whose DIFFs the absent auditor is to confirm: it is second in that model's rotation.
+    const model = models.find((entry) => auditorRotationForModel(entry, rotation)[1] === absent.address)!
+    const [reporterAddress, , fallbackAddress] = auditorRotationForModel(model, rotation)
+    const reporter = wallets.find((wallet) => wallet.address === reporterAddress)!
+    const fallback = wallets.find((wallet) => wallet.address === fallbackAddress)!
+    assert.ok(reporter !== absent && fallback !== absent && reporter !== fallback)
+
+    const seller = randomWallet()
+    const diff: FixtureAudit = { agentId: '1', seller, model, service: model, verdict: 'DIFF', reference: referenceFixture(model) }
+    const dirs = {
+      reporter: await auditorDataDir(directory, 'reporter', reporter, chain.crypto, models),
+      fallback: await auditorDataDir(directory, 'fallback', fallback, chain.crypto, models),
+    }
+    const submit = (who: keyof typeof dirs, runId: string) => runCli(dirs[who].dataDir, dirs[who].configPath, rpcUrl, [
+      'submit', '--run-id', runId, '--no-publish-ipfs', '--yes', '--skip-version-check',
+    ])
+    const client = new VerifierClient({ rpcUrl, contractAddress: chain.verificationAddress, evmChainId: 31_337, deploymentBlock: 0 })
+    // What `verifier run` works out for each auditor, on the chain's clock.
+    const pendingFor = async (auditor: Wallet) => pendingConfirmations({
+      reports: await loadEpochReports({ reader: client, epochStartedAt, deploymentBlock: 0 }),
+      epoch: AUDIT_EPOCH,
+      epochStartedAt,
+      epochEndsAt: epochStartedAt + EPOCH_DURATION,
+      now: await chainNow(client.provider),
+      auditor: auditor.address,
+      auditors: rotation.auditors,
+      auditedModels: models,
+    }).map((entry) => ({
+      model: entry.model, agentId: entry.agentId, waiting: entry.waiting, confirmer: entry.confirmer, mine: entry.mine,
+    }))
+    const waiting = (mine: boolean) => [{
+      model, agentId: 1n, waiting: [{ verdict: 'DIFF', reports: 1, required: 2 }], confirmer: absent.address, mine,
+    }]
+
+    // Early in the epoch one auditor reports a DIFF. Its confirmer is the absent auditor.
+    await rpc(rpcUrl, 'evm_increaseTime', [180])
+    await rpc(rpcUrl, 'evm_mine', [])
+    await dirs.reporter.writeRun('reporter-diff', [diff])
+    const reported = submit('reporter', 'reporter-diff')
+    assert.equal(reported.status, 0, reported.output)
+    assert.ok(reported.output.includes(`${model}: 0 recorded, 1 waiting for another auditor`), reported.output)
+    assert.deepEqual(await client.agentStatus(1n), { verifiedCount: 0, diffCount: 0 }, 'one DIFF is only a report')
+    assert.deepEqual(await pendingFor(absent), waiting(true))
+    assert.deepEqual(await pendingFor(fallback), waiting(false), 'before halfway the third auditor leaves it to the confirmer')
+    assert.deepEqual(await pendingFor(reporter), waiting(false))
+
+    // Halfway through the epoch the confirmer still has not reported: the third auditor takes it.
+    await rpc(rpcUrl, 'evm_increaseTime', [EPOCH_DURATION / 2])
+    await rpc(rpcUrl, 'evm_mine', [])
+    assert.ok(await chainNow(client.provider) >= epochStartedAt + EPOCH_DURATION / 2)
+    assert.deepEqual(await pendingFor(fallback), waiting(true))
+    assert.deepEqual(await pendingFor(reporter), waiting(false), 'the reporter never confirms its own DIFF')
+
+    // It audits the seller itself, also finds DIFF, and the contract records the DIFF.
+    await dirs.fallback.writeRun('fallback-confirm', [diff])
+    const confirmed = submit('fallback', 'fallback-confirm')
+    assert.equal(confirmed.status, 0, confirmed.output)
+    assert.ok(confirmed.output.includes(`${model}: 1 recorded, 0 waiting for another auditor`), confirmed.output)
+    assert.deepEqual(await client.agentStatus(1n), { verifiedCount: 0, diffCount: 1 })
+    assert.equal(await client.isVerified(1n), false)
+    const events = await client.queryServiceAudits(1n, null, 0)
+    assert.deepEqual(events.map(({ auditor, reports, required }) => [auditor, reports, required]), [
+      [reporter.address, 1, 2], [fallback.address, 2, 2],
+    ])
+    for (const auditor of wallets) assert.deepEqual(await pendingFor(auditor), [], 'nothing is left to confirm, also for the absent auditor')
+    assert.equal((await client.auditCredits(absent.address, AUDIT_EPOCH)).auditor, 0n, 'the absent auditor earned nothing')
+    assert.equal((await client.auditCredits(fallback.address, AUDIT_EPOCH)).auditor, 1n, 'the confirming audit is credited')
+  } finally {
+    await stopProcess(anvil)
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a model nobody took by three quarters goes to the second stand-in, and its own auditor\'s late audit still counts', {
+  skip: !RUN_ANVIL_E2E,
+  timeout: 300_000,
+}, async () => {
+  requireCommand('anvil')
+  requireCommand('cast')
+  requireCommand('forge')
+
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-verifier-second-stand-in-e2e-'))
+  const port = await availablePort()
+  const rpcUrl = `http://127.0.0.1:${port}`
+  const epochStartedAt = GENESIS + AUDIT_EPOCH * EPOCH_DURATION
+  const anvil = startAnvil(port, { timestamp: epochStartedAt - 120 })
+  try {
+    await waitForRpcReady(rpcUrl, anvil)
+    const wallets = [AUDITOR_PRIVATE_KEY, SECOND_AUDITOR_PRIVATE_KEY, UNAPPROVED_PRIVATE_KEY].map((key) => new Wallet(`0x${key}`))
+    const late = wallets[2]!
+    const chain = deployAuditChain(rpcUrl, wallets, 1)
+    const models = ['claude-opus-5.5', 'gemini-4-argon', 'glm-5.3']
+    const rotation = { auditors: wallets.map((wallet) => wallet.address), epoch: AUDIT_EPOCH, availableModels: models }
+    const assigned = (auditor: Wallet) => roundRobinAssignmentFor(auditor.address, rotation).models
+    const lateModel = assigned(late)[0]!
+    const [, firstAddress, secondAddress] = auditorRotationForModel(lateModel, rotation)
+    const first = wallets.find((wallet) => wallet.address === firstAddress)!
+    const second = wallets.find((wallet) => wallet.address === secondAddress)!
+
+    const seller = randomWallet()
+    const audit = (model: string): FixtureAudit => ({
+      agentId: '1', seller, model, service: model, verdict: 'SAME', reference: referenceFixture(model),
+    })
+    const dirs = {
+      first: await auditorDataDir(directory, 'first', first, chain.crypto, models),
+      second: await auditorDataDir(directory, 'second', second, chain.crypto, models),
+      late: await auditorDataDir(directory, 'late', late, chain.crypto, models),
+    }
+    const submit = (who: keyof typeof dirs, runId: string) => runCli(dirs[who].dataDir, dirs[who].configPath, rpcUrl, [
+      'submit', '--run-id', runId, '--no-publish-ipfs', '--yes', '--skip-version-check',
+    ])
+    interface AssignmentJson {
+      epochs: Array<{ epoch: string; handovers: Array<{ model: string; assignedAuditor: string; standIn: string; stage: number }> }>
+    }
+    // What `verifier assignment` shows each auditor: all three must see the same stand-in.
+    const handoversShown = () => (Object.keys(dirs) as Array<keyof typeof dirs>).map((who) => {
+      const result = runCli(dirs[who].dataDir, dirs[who].configPath, null, ['assignment', '--json'])
+      assert.equal(result.status, 0, result.output)
+      return (JSON.parse(result.stdout) as AssignmentJson).epochs[0]!.handovers
+    })
+    const client = new VerifierClient({ rpcUrl, contractAddress: chain.verificationAddress, evmChainId: 31_337, deploymentBlock: 0 })
+    const handoversFor = async (auditor: Wallet) => handoverModelsFor(auditor.address, {
+      ...rotation,
+      audits: await loadEpochModelAudits({ reader: client, epoch: AUDIT_EPOCH, epochStartedAt, deploymentBlock: 0 }),
+      epochStartedAt,
+      epochEndsAt: epochStartedAt + EPOCH_DURATION,
+      now: await chainNow(client.provider),
+    })
+
+    // Both active auditors audit their own model early in the epoch.
+    await rpc(rpcUrl, 'evm_increaseTime', [180])
+    await rpc(rpcUrl, 'evm_mine', [])
+    for (const who of ['first', 'second'] as const) {
+      await dirs[who].writeRun(`${who}-own`, [audit(assigned(who === 'first' ? first : second)[0]!)])
+      const result = submit(who, `${who}-own`)
+      assert.equal(result.status, 0, result.output)
+    }
+
+    // Halfway: the late auditor's model goes to the first stand-in, who does not take it.
+    await rpc(rpcUrl, 'evm_increaseTime', [EPOCH_DURATION / 2])
+    await rpc(rpcUrl, 'evm_mine', [])
+    const stageOne = [{ model: lateModel, assignedAuditor: late.address, standIn: first.address, stage: 1 }]
+    assert.deepEqual(handoversShown(), [stageOne, stageOne, stageOne])
+    assert.deepEqual(await handoversFor(second), [], 'the second stand-in waits')
+
+    // Three quarters: it moves on to the second stand-in, for every auditor at the same block.
+    await rpc(rpcUrl, 'evm_increaseTime', [EPOCH_DURATION / 4])
+    await rpc(rpcUrl, 'evm_mine', [])
+    const now = await chainNow(client.provider)
+    assert.ok(now >= epochStartedAt + EPOCH_DURATION * 0.75 && now < epochStartedAt + EPOCH_DURATION, `chain time ${now} is in the last quarter`)
+    const stageTwo = [{ model: lateModel, assignedAuditor: late.address, standIn: second.address, stage: 2 }]
+    assert.deepEqual(handoversShown(), [stageTwo, stageTwo, stageTwo])
+    assert.deepEqual(await handoversFor(first), [], 'the first stand-in is no longer asked')
+    assert.deepEqual(await handoversFor(second), stageTwo)
+
+    await dirs.second.writeRun('second-handover', [audit(lateModel)])
+    const handedOver = submit('second', 'second-handover')
+    assert.equal(handedOver.status, 0, handedOver.output)
+    assert.deepEqual(await client.auditCredits(second.address, AUDIT_EPOCH), { auditor: 2n, total: 3n })
+    assert.deepEqual(handoversShown(), [[], [], []], 'once audited, the model is no longer handed over')
+
+    // The model's own auditor comes back in the last quarter: the contract takes and credits its audit too.
+    await dirs.late.writeRun('late-own', [audit(lateModel)])
+    const lateRun = submit('late', 'late-own')
+    assert.equal(lateRun.status, 0, lateRun.output)
+    assert.deepEqual(await client.auditCredits(late.address, AUDIT_EPOCH), { auditor: 1n, total: 4n })
+    assert.deepEqual(await client.auditCredits(second.address, AUDIT_EPOCH), { auditor: 2n, total: 4n }, 'the stand-in keeps its credit')
+    const events = await client.queryModelAudits({ model: modelHash(lateModel) }, 0)
+    assert.deepEqual(events.map((event) => event.auditor), [second.address, late.address])
+    assert.deepEqual(handoversShown(), [[], [], []])
+    assert.equal(await client.isVerified(1n), true)
+  } finally {
+    await stopProcess(anvil)
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+/**
+ * Deploys the audits contracts in `AUDIT_EPOCH` on a local chain, approves `auditors` (before the
+ * epoch starts when the chain was started before it) and registers seller agents 1..`sellerAgents`.
+ */
+function deployAuditChain(rpcUrl: string, auditors: readonly Wallet[], sellerAgents: number) {
+  const registryAddress = deployContract(rpcUrl, 'core/AntseedRegistry.sol:AntseedRegistry')
+  const identityRegistryAddress = deployContract(rpcUrl, 'test/mocks/MockERC8004Registry.sol:MockERC8004Registry')
+  const gateAddress = deployContract(rpcUrl, 'test/mocks/MockVerificationEmissionsGate.sol:MockVerificationEmissionsGate')
+  const poolsAddress = deployContract(rpcUrl, 'test/mocks/MockVerificationSellerPools.sol:MockVerificationSellerPools')
+  castSend(rpcUrl, registryAddress, 'setIdentityRegistry(address)', [identityRegistryAddress])
+  castSend(rpcUrl, registryAddress, 'setEmissions(address)', [gateAddress])
+  const { resultsAddress, kbfAddress: verificationAddress } = deployVerification(rpcUrl, gateAddress, poolsAddress, identityRegistryAddress)
+  castSend(rpcUrl, resultsAddress, 'setRewardsStartEpoch(address,uint64)', [verificationAddress, '0'])
+  castSend(rpcUrl, gateAddress, 'setCurrentEpoch(uint256)', [String(AUDIT_EPOCH)])
+  castSend(rpcUrl, gateAddress, 'setSchedule(uint256,uint256)', [String(GENESIS), String(EPOCH_DURATION)])
+  for (const auditor of auditors) {
+    castSend(rpcUrl, verificationAddress, 'setAuditor(address,bool)', [auditor.address, 'true'])
+  }
+  for (let agent = 1; agent <= sellerAgents; agent += 1) {
+    castSend(rpcUrl, identityRegistryAddress, 'setOwner(uint256,address)', [String(agent), SELLER_OWNERS[agent - 1]!])
+    castSend(rpcUrl, poolsAddress, 'setPower(uint256,uint256,uint256)', [String(agent), String(AUDIT_EPOCH), '100'])
+  }
+  const crypto = {
+    chainId: 'base-local',
+    rpcUrl,
+    verificationContractAddress: verificationAddress,
+    verificationDeployBlock: 0,
+    identityRegistryAddress,
+  }
+  return { verificationAddress, crypto }
+}
+
+/** One auditor's data directory and config on the local chain, auditing `models`. */
+async function auditorDataDir(directory: string, name: string, wallet: Wallet, crypto: object, models: readonly string[]) {
+  const dataDir = join(directory, name)
+  const evidenceDir = join(dataDir, 'verifier', 'evidence')
+  const banksDir = join(dataDir, 'verifier', 'banks')
+  const configPath = join(dataDir, 'config.json')
+  await mkdir(dataDir, { recursive: true })
+  await writeFile(join(dataDir, 'identity.key'), `${wallet.privateKey.slice(2)}\n`, { mode: 0o600 })
+  await writeFile(configPath, JSON.stringify({
+    payments: { preferredMethod: 'crypto', crypto },
+    verifier: { evidenceDir, banksDir, auditor: wallet.address, testModels: models, ...FIXTURE_CONFIG },
+  }))
+  const writeRun = (runId: string, audits: FixtureAudit[]) => (
+    writeSignedAuditRun({ evidenceDir, banksDir, runId, epoch: EPOCH, auditor: wallet, audits })
+  )
+  return { dataDir, configPath, writeRun }
+}
+
 function runCli(
   dataDir: string,
   configPath: string,
-  rpcUrl: string,
+  /** `--rpc-url` for commands that take it; null for those that read `payments.crypto.rpcUrl`. */
+  rpcUrl: string | null,
   args: string[],
   options: RunCliOptions = {},
 ): CommandResult {
@@ -346,7 +741,7 @@ function runCli(
     '--config', configPath,
     'verifier',
     ...args,
-    '--rpc-url', rpcUrl,
+    ...(rpcUrl ? ['--rpc-url', rpcUrl] : []),
   ], {
     cwd: repoRoot,
     encoding: 'utf8',
@@ -355,7 +750,19 @@ function runCli(
   return {
     status: result.status ?? 1,
     output: `${result.stdout ?? ''}${result.stderr ?? ''}`,
+    stdout: result.stdout ?? '',
   }
+}
+
+async function rpc(rpcUrl: string, method: string, params: unknown[] = []): Promise<unknown> {
+  const response = await fetch(rpcUrl, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+  })
+  const body = await response.json() as { result?: unknown; error?: { message: string } }
+  if (body.error) throw new Error(`${method}: ${body.error.message}`)
+  return body.result
 }
 
 async function writeMockPinataPreload(path: string, logPath: string): Promise<void> {
@@ -459,8 +866,11 @@ async function availablePort(): Promise<number> {
   return port
 }
 
-function startAnvil(port: number): ChildProcessWithoutNullStreams {
-  return spawn('anvil', ['--host', '127.0.0.1', '--port', String(port), '--silent'], {
+function startAnvil(port: number, options: { timestamp?: number } = {}): ChildProcessWithoutNullStreams {
+  return spawn('anvil', [
+    '--host', '127.0.0.1', '--port', String(port), '--silent',
+    ...(options.timestamp !== undefined ? ['--timestamp', String(options.timestamp)] : []),
+  ], {
     cwd: repoRoot,
     stdio: ['pipe', 'pipe', 'pipe'],
     env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' },
