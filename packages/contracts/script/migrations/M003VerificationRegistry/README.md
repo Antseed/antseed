@@ -35,11 +35,13 @@ verdicts count; KBF (`AntseedKbfAudits`) is the first. The owner approves KBF au
 stake-based set) is a new audit on the same results layer, so readers and the reward bucket stay
 put.
 
-- **Points change only through the rates.** Once registered, the policy scales seller points by
-  `bonusBps` (from `VERIFICATION_BONUS_BPS`, default 0; e.g. 100 = +1% per verified service, capped
-  at +50% in total) and `penaltyBps` (uncapped, per DIFF service; starts at 0). With both at 0 no
-  seller's points change. A rate set with `setBonusBps` or `setPenaltyBps` applies from the next
-  settlement on. A DIFF only affects its own service.
+- **Points change only through the rates.** Once registered, the policy scales seller and buyer points
+  by `bonusBps` (from `VERIFICATION_BONUS_BPS`, default 0; e.g. 100 = +1% per verified service, capped
+  at +50% in total) and `penaltyBps` (uncapped, times the square of the DIFF services; starts at 0; e.g. 400 = -4% for one
+  DIFF, -16% for two, -100% for five). With both at 0 no
+  points change. A rate set with `setBonusBps` or `setPenaltyBps` applies from the next
+  settlement on. A DIFF only affects its own service. The multiplier comes from the seller's verdicts,
+  and a buyer's points on that seller's settlements get the same one.
 - **Verdicts expire by epoch, as the audit decides.** Every recorded verdict carries the epoch it
   stops counting in (`validUntilEpoch`, at most `MAX_VERDICT_EPOCHS` = 52 ahead), and the results
   layer counts it while `currentEpoch < validUntilEpoch`. KBF sets it from its own
@@ -160,6 +162,31 @@ verifiers), verdicts change no points (the policy is not registered), and audits
 Optionally, the verification owner tunes KBF afterwards: `kbf.setValidityEpochs`,
 `kbf.setCreditsPerAudit`, `kbf.setModelCreditsPerAudit`, `kbf.setRequiredReports`,
 `kbf.setDiffReplacementReports`.
+
+## Replacing only the points policy
+
+M003 deploys its three contracts together, so a policy change that leaves the results layer and the
+KBF audit in place uses `script/DeployVerificationPointsPolicy.s.sol` instead. It deploys one
+`AntseedVerificationPointsPolicy`, owned directly by `POLICY_OWNER` (no `acceptOwnership`), with
+`penaltyBps` 0 and nothing registered; verdicts change no points until the registry owner registers it.
+
+```bash
+cd packages/contracts
+export EXPECTED_CHAIN_ID=8453 POLICY_OWNER=<owner> \
+  VERIFICATION_RESULTS=<current.json verificationResults> KBF_AUDITS=<current.json kbfAudits> \
+  USAGE_ACCOUNTING=<current.json usageAccounting> POINTS_POLICY_REGISTRY=<current.json pointsPolicyRegistry>
+forge script script/DeployVerificationPointsPolicy.s.sol --rpc-url "$RPC_URL" --sender "$POLICY_OWNER"
+# then add: --broadcast --verify --account <name>
+```
+
+Then, in order: set the new policy's rates with `setPenaltyBps` / `setBonusBps`, remove any earlier
+verification policy from the registry, and register the new one. Set the rates first, so no settlement
+sees the policy without them.
+
+Record the deployment by hand: add a new append-only history record for the release, replace
+`contracts.verificationPointsPolicy` and `verificationConfiguration.verificationRegistry.policyAddress`
+in `current.json`, and run `node scripts/validate-contract-deployments.mjs`. Clients don't read the
+policy address, so no package release depends on it.
 
 ## Configuration
 

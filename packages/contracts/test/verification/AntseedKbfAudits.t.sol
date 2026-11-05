@@ -1385,7 +1385,8 @@ contract AntseedKbfAuditsTest is Test {
             assertEq(agent.diffCount, diffs);
             assertEq(results.isVerified(agentId), verified > 0 && diffs == 0);
             uint256 multiplier = 100 + 10 * verified;
-            assertEq(_sellerPoints(policy), multiplier > 10 * diffs ? multiplier - 10 * diffs : 0);
+            uint256 penalty = 10 * uint256(diffs) * diffs;
+            assertEq(_sellerPoints(policy), multiplier > penalty ? multiplier - penalty : 0);
         }
     }
 

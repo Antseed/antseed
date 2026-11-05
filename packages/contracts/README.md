@@ -34,7 +34,7 @@ AntseedLegacyEmissionsEscrow ── pre-minted pot for legacy claims and flushes
 AntseedKbfVerification      ── earlier single KBF verification contract (replaced by the split below)
 AntseedVerificationResults  ── verification results layer: verdicts + verification bucket, per audit
 AntseedKbfAudits            ── KBF audit: approved auditors, confirmations, report rounds, credits
-AntseedVerificationPointsPolicy ── seller point bonus/penalty from AntseedVerificationResults
+AntseedVerificationPointsPolicy ── seller and buyer point bonus/penalty from AntseedVerificationResults
 MockERC8004Registry         ── mock ERC-8004 IdentityRegistry (local testing only)
 ```
 
@@ -794,8 +794,9 @@ chosen by the audit and stored per verdict.
   `results.credit`. `agentOwner(agentId)` and the self-service auditor profile
   (`setAuditorProfile(name, iconUri, url)`, `auditorProfile`, `AuditorProfileSet`; approved auditors
   only; links must be `https://` or `ipfs://`; the owner can `clearAuditorProfile`) are unchanged.
-- **`AntseedVerificationPointsPolicy`**: the same formula as `AntseedKbfVerificationPointsPolicy`,
-  reading `results.agentStatus`.
+- **`AntseedVerificationPointsPolicy`**: the formula of `AntseedKbfVerificationPointsPolicy`,
+  reading `results.agentStatus`, applied to both seller and buyer points, with a penalty of `diffCount^2 * penaltyBps` instead of
+  a linear one.
 
 Runbook, wiring and the manual owner steps: `script/migrations/M003VerificationRegistry/README.md`.
 Verdicts, credits and auditor approvals on the old contracts do not carry over. These contracts are
