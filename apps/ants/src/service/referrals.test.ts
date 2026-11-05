@@ -286,8 +286,8 @@ describe('referee bonus', () => {
   ] as const)('claims the epochs payable on-chain when the explorer is %s', async (_label, options) => {
     const { ctx, client } = fixture(options);
     expect(await claimRefereeRewards(ctx)).toEqual({ hash: '0xreferee', epochs: [20, 22] });
-    expect(client.pendingRefereeReward).toHaveBeenCalledWith(buyer, 22);
-    expect(client.pendingRefereeReward).not.toHaveBeenCalledWith(buyer, 23); // not claimable yet
+    expect(client.pendingRefereeReward).toHaveBeenCalledWith(buyer, 23); // the latest finished epoch
+    expect(client.pendingRefereeReward).not.toHaveBeenCalledWith(buyer, 24); // still open
     expect(client.claimReferee).toHaveBeenCalledWith(operatorSigner, buyer, [20, 22]);
   });
 
