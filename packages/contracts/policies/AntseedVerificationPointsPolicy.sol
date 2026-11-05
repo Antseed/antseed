@@ -16,8 +16,9 @@ interface IAntseedSellerPoolsSource {
 /// @notice Verification points policy: scales seller and buyer points by the seller agent's
 ///         verified and DIFF services in `results` (an `AntseedVerificationResults`), whatever
 ///         method recorded them. Both sides get the same multiplier:
-///         max(0, 1 + min(verifiedCount * bonusBps, MAX_BONUS_BPS) / BPS - diffCount * penaltyBps / BPS).
-///         The penalty is uncapped. Both rates start at 0, so points are unchanged until the owner
+///         max(0, 1 + min(verifiedCount * bonusBps, MAX_BONUS_BPS) / BPS - diffCount^2 * penaltyBps / BPS).
+///         The penalty grows with the square of the DIFF count, so one DIFF costs far less than a share
+///         of five, and it is uncapped. Both rates start at 0, so points are unchanged until the owner
 ///         sets one, and a change applies from the next settlement on.
 /// @dev A reverting points modifier zeroes every settlement in the registry chain, so
 ///      every external read here falls back to returning points unchanged.
@@ -53,7 +54,8 @@ contract AntseedVerificationPointsPolicy is IAntseedPointsModifier, Ownable2Step
         emit BonusBpsSet(bonusBps_);
     }
 
-    /// @notice Points removed per DIFF service, in bps of the seller's points. Uncapped; 0 disables it.
+    /// @notice Points removed for a single DIFF service, in bps; n DIFF services remove n^2 times this.
+    ///         Uncapped; 0 disables it.
     function setPenaltyBps(uint256 penaltyBps_) external onlyOwner {
         penaltyBps = penaltyBps_;
         emit PenaltyBpsSet(penaltyBps_);
@@ -72,7 +74,7 @@ contract AntseedVerificationPointsPolicy is IAntseedPointsModifier, Ownable2Step
         (uint256 verifiedModels, uint256 diffModels) = _modelCounts(seller);
         bonus *= verifiedModels;
         if (bonus > MAX_BONUS_BPS) bonus = MAX_BONUS_BPS;
-        penalty = Math.saturatingMul(penalty, diffModels);
+        penalty = Math.saturatingMul(Math.saturatingMul(penalty, diffModels), diffModels);
         if (bonus == 0 && penalty == 0) return (sellerPoints, buyerPoints);
         uint256 multiplier = Math.saturatingSub(BPS + bonus, penalty);
         return (Math.mulDiv(sellerPoints, multiplier, BPS), Math.mulDiv(buyerPoints, multiplier, BPS));

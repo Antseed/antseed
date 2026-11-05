@@ -795,7 +795,8 @@ chosen by the audit and stored per verdict.
   (`setAuditorProfile(name, iconUri, url)`, `auditorProfile`, `AuditorProfileSet`; approved auditors
   only; links must be `https://` or `ipfs://`; the owner can `clearAuditorProfile`) are unchanged.
 - **`AntseedVerificationPointsPolicy`**: the formula of `AntseedKbfVerificationPointsPolicy`,
-  reading `results.agentStatus`, applied to both seller and buyer points.
+  reading `results.agentStatus`, applied to both seller and buyer points, with a penalty of `diffCount^2 * penaltyBps` instead of
+  a linear one.
 
 Runbook, wiring and the manual owner steps: `script/migrations/M003VerificationRegistry/README.md`.
 Verdicts, credits and auditor approvals on the old contracts do not carry over. These contracts are

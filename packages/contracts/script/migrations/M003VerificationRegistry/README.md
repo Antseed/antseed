@@ -37,7 +37,8 @@ put.
 
 - **Points change only through the rates.** Once registered, the policy scales seller and buyer points
   by `bonusBps` (from `VERIFICATION_BONUS_BPS`, default 0; e.g. 100 = +1% per verified service, capped
-  at +50% in total) and `penaltyBps` (uncapped, per DIFF service; starts at 0). With both at 0 no
+  at +50% in total) and `penaltyBps` (uncapped, times the square of the DIFF services; starts at 0; e.g. 400 = -4% for one
+  DIFF, -16% for two, -100% for five). With both at 0 no
   points change. A rate set with `setBonusBps` or `setPenaltyBps` applies from the next
   settlement on. A DIFF only affects its own service. The multiplier comes from the seller's verdicts,
   and a buyer's points on that seller's settlements get the same one.
