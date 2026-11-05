@@ -15,10 +15,8 @@ import { AntseedClientRewards } from "../emissions/AntseedClientRewards.sol";
  *   EMISSIONS_GATE
  *   USAGE_ACCOUNTING
  *   IDENTITY_REGISTRY      — ERC-8004 IdentityRegistry (clients register there)
- *   ANTSEED_STATS          — the AntseedStatsV2 deployment that forwards settlements
  *
- * Afterwards (owner of AntseedStatsV2):
- *   cast send $ANTSEED_STATS "setClientRewards(address)" <rewards>
+ * DeployChannelsMiddleware then authorizes the middleware as its recorder.
  *
  * The controller pays nothing until the gate owner registers it as a gate
  * minter with script/RegisterAttributionMinters.s.sol (client rewards 4%).
@@ -29,13 +27,12 @@ contract DeployClientRewards is Script {
         address gate = vm.envAddress("EMISSIONS_GATE");
         address usageAccounting = vm.envAddress("USAGE_ACCOUNTING");
         address identityRegistry = vm.envAddress("IDENTITY_REGISTRY");
-        address stats = vm.envAddress("ANTSEED_STATS");
 
         vm.startBroadcast(deployerPrivateKey);
-        rewards = new AntseedClientRewards(gate, usageAccounting, identityRegistry, stats);
+        rewards = new AntseedClientRewards(gate, usageAccounting, identityRegistry, address(0));
         vm.stopBroadcast();
 
         console.log("AntseedClientRewards:", address(rewards));
-        console.log("Next: StatsV2.setClientRewards, register as a gate minter; clients claim per epoch via claim(agentId, epoch).");
+        console.log("Next: DeployChannelsMiddleware, then RegisterAttributionMinters.");
     }
 }

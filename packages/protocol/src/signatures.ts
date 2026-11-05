@@ -195,7 +195,7 @@ export interface ReferralInvite {
  *              uint256 inviteEpoch, uint256 inviteIndex, bytes32 inviteR, bytes32 inviteVs)
  *
  * Offsets are absolute, so every decoder that stops at the services array
- * keeps working (see `decodeMetadataAttribution`). AntseedStatsV2 forwards a
+ * keeps working (see `decodeMetadataAttribution`). AntseedChannelsMiddleware forwards a
  * present invite (non-zero r or vs) to AntseedReferrals, which binds the
  * buyer to the invite's signer, and credits the buyer's recognized usage to
  * the client. The tail is covered by metadataHash, so the binding is
@@ -250,7 +250,7 @@ export function attributionTailAbi(attribution: UsageAttribution | undefined): {
  *
  * The tail grows the ABI head by exactly five words, so its presence shows in
  * the services-array offset: `(staticWords + 1) * 32` without a tail,
- * `(staticWords + 6) * 32` with one (the AntseedStatsV2 rule). Any other
+ * `(staticWords + 6) * 32` with one (the AntseedChannelsMiddleware rule). Any other
  * shape, including the retired two-word referrer/clientId tail, reads as none.
  */
 export function decodeMetadataAttribution(encoded: string): { clientId: string; invite: ReferralInvite | null } | null {
@@ -274,7 +274,7 @@ export function decodeMetadataAttribution(encoded: string): { clientId: string; 
  * Static head words before the services-array offset, by metadata version:
  * v5 adds the input characters, v4 the two video counters, v3
  * cumulativeOutputImages; v1/v2 (and FreeUsage v1) carry version, in, out and
- * requests. Mirrors AntseedStatsV2.
+ * requests. Mirrors AntseedChannelsMiddleware.
  */
 export function metadataStaticWords(version: bigint): number {
   if (version === 5n) return 8;

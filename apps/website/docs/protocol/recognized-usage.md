@@ -110,7 +110,7 @@ reserve:
   the [referrals guide](../provide/referrals.md).
 - **Clients** (`AntseedClientRewards`): usage credited to the ERC-8004 agent
   of the client software that produced it, claimed by that agent's owner. An
-  epoch is claimable after one further epoch. The unearned part of the bucket is never minted.
+  epoch is claimable once it ends. The unearned part of the bucket is never minted.
 
 Each controller pays nothing until it is registered as an emissions-gate
 minter. Both buckets come out of the 10% verification bucket: once they are

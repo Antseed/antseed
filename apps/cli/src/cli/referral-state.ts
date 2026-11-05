@@ -91,7 +91,7 @@ export type ReferralAttributionWatch = {
  * The file's mtime short-circuits the poll only while no invite is carried:
  * binding happens on-chain without touching the file, and every settlement
  * that still carries a bound invite costs the seller a reverting bindReferral
- * call inside AntseedStatsV2.
+ * call inside AntseedChannelsMiddleware.
  */
 export async function watchReferralAttribution(options: ClientAgentOptions & {
   dataDir: string

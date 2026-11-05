@@ -6,7 +6,7 @@ import type { InviteFailure, ReferralsClient } from './evm/referrals-client.js';
 /**
  * Referral invites (AntseedReferrals). A referrer issues one off-chain by
  * signing the EIP-712 `Invite(uint256 issuedEpoch,uint256 index)`; the buyer
- * carries it in its signed settlement metadata until AntseedStatsV2 binds it.
+ * carries it in its signed settlement metadata until AntseedChannelsMiddleware binds it.
  *
  * Shareable form: base64url (RFC 4648 §5, no padding) of 68 bytes,
  *

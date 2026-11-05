@@ -19,7 +19,7 @@ interface IAttributionMintersGate {
  *         rewards) 4%, referrals 2%. The total minter share is unchanged.
  *
  * Run by the gate owner after AntseedReferrals and AntseedClientRewards are
- * deployed and wired, before AntseedRegistry.setStats(statsV2). Every share
+ * deployed, before ActivateChannelsMiddleware. Every share
  * change takes effect from the next epoch; the script refuses to start near an
  * epoch boundary so all three land in the same epoch.
  *

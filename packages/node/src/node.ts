@@ -310,7 +310,7 @@ export interface NodePaymentsConfig {
   /**
    * Buyer-side attribution appended to every signed SpendingAuth / FreeUsage
    * metadata blob: the bytes32 client id of this software and, until the
-   * referral is bound, the invite (bound on-chain by AntseedStatsV2 on the
+   * referral is bound, the invite (bound on-chain by AntseedChannelsMiddleware on the
    * buyer's first settlement that carries it). The invite belongs to the
    * default buyer wallet it was redeemed for; identities added with
    * `addBuyerIdentity` carry the client id only.

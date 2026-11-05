@@ -5,7 +5,7 @@
  * we run `previewInvite` for this install's buyer wallet and, if it would
  * bind, save it as pending in `<connect data dir>/referral.json` (shared with
  * the CLI via @antseed/node). The buyer daemon carries it in the metadata it
- * signs until AntseedStatsV2 binds it on a settlement; Antscan reports the
+ * signs until AntseedChannelsMiddleware binds it on a settlement; Antscan reports the
  * binding and one `referrerOf` read confirms it. State is scoped to the
  * wallet and the configured referrals deployment. Until it binds, a pending
  * invite can be replaced or removed. Inviting: we sign a fresh invite with the identity wallet (no

@@ -65,7 +65,7 @@ export function inviteFailureOf(selector: string): InviteFailure | null {
 
 /**
  * Read/claim client for AntseedReferrals. Binding is not exposed here: it
- * happens on-chain when AntseedStatsV2 decodes the invite the buyer signed
+ * happens on-chain when AntseedChannelsMiddleware decodes the invite the buyer signed
  * into its settlement metadata (see `UsageAttribution` in @antseed/protocol).
  * A referred buyer's reward is its share of all recognized buyer usage in the
  * epoch, applied to the referral emission bucket: the referrer earns all of it,

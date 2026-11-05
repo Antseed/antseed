@@ -337,7 +337,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
       const settlementEnabled = settlementEnv ?? true
 
       // Client / invite attribution appended to every buyer-signed settlement
-      // metadata blob. AntseedStatsV2 binds a redeemed invite on-chain at the
+      // metadata blob. AntseedChannelsMiddleware binds a redeemed invite on-chain at the
       // first settlement (paid or free) that carries it; the daemon only has
       // to carry it. Whether it is bound yet comes from Antscan, confirmed by
       // one `referrerOf` read when Antscan reports it. The invite is scoped to

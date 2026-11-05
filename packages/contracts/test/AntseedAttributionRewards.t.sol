@@ -5,7 +5,8 @@ import "forge-std/Test.sol";
 
 import { AntseedClientRewards } from "../emissions/AntseedClientRewards.sol";
 import { AntseedReferrals } from "../rewards/AntseedReferrals.sol";
-import { AntseedStatsV2 } from "../stats/AntseedStatsV2.sol";
+import { AntseedChannelsMiddleware } from "../payments/AntseedChannelsMiddleware.sol";
+import { AntseedStats } from "../stats/AntseedStats.sol";
 import { IAntseedUsageAccounting } from "../interfaces/IAntseedUsageAccounting.sol";
 import { EmissionsGateMock } from "./mocks/EmissionsGateMock.sol";
 import { MockERC8004Registry } from "./mocks/MockERC8004Registry.sol";
@@ -27,7 +28,9 @@ contract RewardsAccountingMock {
         return gate.currentEpoch();
     }
 
-    function settle(address buyer, uint256 weightedDelta) external {
+    function accrueSellerPoints(address, uint256) external {}
+
+    function accrueBuyerPoints(address buyer, uint256 weightedDelta) external {
         uint256 epoch = gate.currentEpoch();
         _weighted[buyer] += weightedDelta;
         buyerPointsByEpoch[epoch][buyer] += weightedDelta;
@@ -45,6 +48,14 @@ contract RewardsAccountingMock {
     }
 }
 
+contract RewardsRegistryMock {
+    address public stats;
+
+    function setStats(address value) external {
+        stats = value;
+    }
+}
+
 contract RewardsDepositsMock {
     mapping(address => address) private _operator;
 
@@ -57,79 +68,21 @@ contract RewardsDepositsMock {
     }
 }
 
-/// Credits against claims on the real controller: a flush landing after an epoch
-/// became claimable must not change that epoch's shares.
-contract AntseedClientAttributionRewardsTest is Test {
-    EmissionsGateMock private gate;
-    RewardsAccountingMock private accounting;
-    AntseedClientRewards private rewards;
-
-    address private stats = address(0x57A75);
-    address private desktopOwner = address(0xD1);
-    address private cliOwner = address(0xC1);
-    address private x1 = address(0xB1);
-    address private x2 = address(0xB2);
-    address private x3 = address(0xB3);
-    uint256 private desktop;
-    uint256 private cli;
-
-    function setUp() public {
-        gate = new EmissionsGateMock();
-        gate.setCurrentEpoch(20);
-        accounting = new RewardsAccountingMock(gate);
-        MockERC8004Registry identity = new MockERC8004Registry();
-        rewards = new AntseedClientRewards(address(gate), address(accounting), address(identity), stats);
-        vm.prank(desktopOwner);
-        desktop = identity.register();
-        vm.prank(cliOwner);
-        cli = identity.register();
-    }
-
-    function _settle(address buyer, uint256 client, uint256 weightedDelta) private {
-        vm.prank(stats);
-        rewards.record(buyer, client);
-        accounting.settle(buyer, weightedDelta);
-    }
-
-    function _flush(address buyer) private {
-        address[] memory buyers = new address[](1);
-        buyers[0] = buyer;
-        rewards.flush(buyers);
-    }
-
-    function test_flushAfterAnEpochIsClaimableCannotChangeItsShares() public {
-        _settle(x1, desktop, 30);
-        _flush(x1);
-        _settle(x2, 0, 20); // an old client: counts in the total, earns nobody anything
-        _flush(x2);
-        _settle(x3, cli, 50); // left unflushed on purpose
-        assertEq(accounting.totalWeightedBuyerPointsByEpoch(20), 100);
-
-        gate.setCurrentEpoch(22);
-        gate.setBudget(address(rewards), 20, 100 ether);
-        vm.prank(desktopOwner);
-        rewards.claimClientReward(desktop, 20);
-        assertEq(gate.balanceOf(desktopOwner), 5 ether); // 30 gross, capped at 5%
-        assertEq(gate.balanceOf(gate.emissionsReserve()), 25 ether);
-
-        _flush(x3); // lands in the oldest open epoch, never in the claimable one
-        assertEq(rewards.clientEpochPoints(20, cli), 0);
-        assertEq(rewards.clientEpochPoints(21, cli), 50);
-        assertEq(rewards.pendingClientReward(cli, 20), 0);
-
-        // Epoch 21 settled nothing, so the rolled credit sets its denominator.
-        gate.setCurrentEpoch(23);
-        gate.setBudget(address(rewards), 21, 40 ether);
-        vm.prank(cliOwner);
-        rewards.claimClientReward(cli, 21);
-        assertEq(gate.balanceOf(cliOwner), 2 ether); // 5% of the 40 bucket
+/// Makes one settlement's calls inside a single call, as AntseedChannels does.
+contract RewardsChannelsCaller {
+    function settle(AntseedChannelsMiddleware middleware, address who, bytes32 channelId, bytes calldata metadata, uint256 delta)
+        external
+    {
+        middleware.recordMetadata(1, who, channelId, metadata);
+        middleware.accrueSellerPoints(address(0x5E), delta);
+        middleware.accrueBuyerPoints(who, delta);
     }
 }
 
 /// Full referral program: a referrer signs an invite off-chain, the buyer's
-/// client carries it in the signed metadata tail, and the real StatsV2 forwards
-/// it to the real client and referral controllers, as Channels does on every
-/// settlement.
+/// client carries it in the signed metadata tail, and the real middleware
+/// forwards it to the real client and referral controllers, as Channels does on
+/// every settlement.
 contract AntseedReferralProgramIntegrationTest is Test {
     struct Invite {
         uint256 epoch;
@@ -147,9 +100,10 @@ contract AntseedReferralProgramIntegrationTest is Test {
     MockERC8004Registry private identity;
     AntseedClientRewards private clientRewards;
     AntseedReferrals private referrals;
-    AntseedStatsV2 private stats;
+    AntseedStats private stats;
+    AntseedChannelsMiddleware private middleware;
 
-    address private channels = address(0xC4A);
+    RewardsChannelsCaller private channels;
     address private referrer = vm.addr(REFERRER_KEY);
     address private buyer = vm.addr(BUYER_KEY);
     address private buyerOperator = address(0x0B0B0);
@@ -160,18 +114,23 @@ contract AntseedReferralProgramIntegrationTest is Test {
     Invite private none;
 
     function setUp() public {
+        channels = new RewardsChannelsCaller();
         gate = new EmissionsGateMock();
         gate.setCurrentEpoch(20);
         accounting = new RewardsAccountingMock(gate);
         identity = new MockERC8004Registry();
         deposits = new RewardsDepositsMock();
-        stats = new AntseedStatsV2();
-        clientRewards =
-            new AntseedClientRewards(address(gate), address(accounting), address(identity), address(stats));
-        referrals = new AntseedReferrals(address(gate), address(accounting), address(deposits), address(stats));
-        stats.setWriter(channels, true);
-        stats.setReferrals(address(referrals));
-        stats.setClientRewards(address(clientRewards));
+        stats = new AntseedStats();
+        clientRewards = new AntseedClientRewards(address(gate), address(accounting), address(identity), address(0));
+        referrals = new AntseedReferrals(address(gate), address(accounting), address(deposits), address(0));
+        RewardsRegistryMock registry = new RewardsRegistryMock();
+        registry.setStats(address(stats));
+        middleware = new AntseedChannelsMiddleware(
+            address(registry), address(accounting), address(clientRewards), address(referrals), address(channels), address(0xF0)
+        );
+        clientRewards.setRecorder(address(middleware));
+        referrals.setBinder(address(middleware));
+        stats.setWriter(address(middleware), true);
         deposits.setOperator(buyer, buyerOperator);
         deposits.setOperator(newcomer, newcomerOperator);
         deposits.setOperator(referrer, referrerOperator); // referrer rewards are paid only to an operator
@@ -192,22 +151,14 @@ contract AntseedReferralProgramIntegrationTest is Test {
         );
     }
 
-    /// One settlement: Stats sees the buyer-signed metadata, then accounting accrues.
+    /// One settlement, in the order AntseedChannels makes these calls.
     function _settleWith(address who, bytes memory metadata, uint256 weightedDelta) private {
-        vm.prank(channels);
-        stats.recordMetadata(1, who, keccak256(abi.encode(who, channelId)), metadata);
-        accounting.settle(who, weightedDelta);
+        channels.settle(middleware, who, keccak256(abi.encode(who, channelId)), metadata, weightedDelta);
         channelId = bytes32(uint256(channelId) + 1);
     }
 
     function _settle(address who, Invite memory inv, uint256 weightedDelta) private {
         _settleWith(who, _metadata(inv, 0), weightedDelta);
-    }
-
-    function _flush(address who) private {
-        address[] memory buyers = new address[](1);
-        buyers[0] = who;
-        clientRewards.flush(buyers);
     }
 
     function _one(uint256 epoch) private pure returns (uint256[] memory epochs) {
@@ -222,15 +173,15 @@ contract AntseedReferralProgramIntegrationTest is Test {
 
     function test_inviteToFiftyFiftySplitThenReferrerOnly() public {
         Invite memory inv = _invite(REFERRER_KEY, 20, 0);
-        vm.expectEmit(true, false, false, true, address(stats));
-        emit AntseedStatsV2.InviteForwarded(buyer, 20, 0, true, bytes4(0));
+        vm.expectEmit(true, false, false, true, address(middleware));
+        emit AntseedChannelsMiddleware.InviteForwarded(buyer, 20, 0, true, bytes4(0));
         _settle(buyer, inv, 30e6); // binds in epoch 20; this settlement counts
         assertEq(referrals.referrerOf(buyer), referrer);
         assertEq(referrals.pointsBeforeBinding(buyer), 0);
         assertTrue(referrals.inviteUsed(referrer, 20, 0));
         _settle(newcomer, none, 30e6); // someone nobody referred
 
-        // Final and claimable as soon as the epoch ends, with no flush.
+        // Final and claimable as soon as the epoch ends.
         gate.setCurrentEpoch(21);
         gate.setBudget(address(referrals), 20, 100 ether);
         assertEq(referrals.pendingReferrerReward(buyer, 20), 5 ether); // 25 gross, capped at 5%
@@ -261,8 +212,8 @@ contract AntseedReferralProgramIntegrationTest is Test {
     function test_reusedInviteIsRejectedButTheSettlementSucceeds() public {
         Invite memory inv = _invite(REFERRER_KEY, 20, 1);
         _settle(buyer, inv, 1e6);
-        vm.expectEmit(true, false, false, true, address(stats));
-        emit AntseedStatsV2.InviteForwarded(newcomer, 20, 1, false, AntseedReferrals.InviteAlreadyUsed.selector);
+        vm.expectEmit(true, false, false, true, address(middleware));
+        emit AntseedChannelsMiddleware.InviteForwarded(newcomer, 20, 1, false, AntseedReferrals.InviteAlreadyUsed.selector);
         _settle(newcomer, inv, 1e6);
         assertEq(referrals.referrerOf(newcomer), address(0));
     }
@@ -316,8 +267,8 @@ contract AntseedReferralProgramIntegrationTest is Test {
         _settle(newcomer, none, 5e6);
         assertFalse(referrals.isNewBuyer(newcomer));
 
-        vm.expectEmit(true, false, false, true, address(stats));
-        emit AntseedStatsV2.InviteForwarded(newcomer, 23, 0, false, AntseedReferrals.NotNewBuyer.selector);
+        vm.expectEmit(true, false, false, true, address(middleware));
+        emit AntseedChannelsMiddleware.InviteForwarded(newcomer, 23, 0, false, AntseedReferrals.NotNewBuyer.selector);
         _settle(newcomer, _invite(REFERRER_KEY, 23, 0), 7e6); // must not revert
         assertEq(referrals.referrerOf(newcomer), address(0));
         assertFalse(referrals.inviteUsed(referrer, 23, 0)); // the invite is still good for a new buyer
@@ -325,22 +276,22 @@ contract AntseedReferralProgramIntegrationTest is Test {
     }
 
     function test_selfInviteIsRejectedButTheSettlementSucceeds() public {
-        vm.expectEmit(true, false, false, true, address(stats));
-        emit AntseedStatsV2.InviteForwarded(referrer, 20, 0, false, AntseedReferrals.SelfReferral.selector);
+        vm.expectEmit(true, false, false, true, address(middleware));
+        emit AntseedChannelsMiddleware.InviteForwarded(referrer, 20, 0, false, AntseedReferrals.SelfReferral.selector);
         _settle(referrer, _invite(REFERRER_KEY, 20, 0), 1e6);
         assertEq(referrals.referrerOf(referrer), address(0));
 
         deposits.setOperator(newcomer, referrer); // inviting a wallet you operate is self-referral too
-        vm.expectEmit(true, false, false, true, address(stats));
-        emit AntseedStatsV2.InviteForwarded(newcomer, 20, 0, false, AntseedReferrals.SelfReferral.selector);
+        vm.expectEmit(true, false, false, true, address(middleware));
+        emit AntseedChannelsMiddleware.InviteForwarded(newcomer, 20, 0, false, AntseedReferrals.SelfReferral.selector);
         _settle(newcomer, _invite(REFERRER_KEY, 20, 0), 1e6);
         assertEq(stats.getBuyerMetadataStats(1, referrer).totalRequestCount, 1);
     }
 
     function test_sharedOperatorInviteIsRejectedButTheSettlementSucceeds() public {
         deposits.setOperator(referrer, buyerOperator); // one operator runs both wallets
-        vm.expectEmit(true, false, false, true, address(stats));
-        emit AntseedStatsV2.InviteForwarded(buyer, 20, 0, false, AntseedReferrals.SelfReferral.selector);
+        vm.expectEmit(true, false, false, true, address(middleware));
+        emit AntseedChannelsMiddleware.InviteForwarded(buyer, 20, 0, false, AntseedReferrals.SelfReferral.selector);
         _settle(buyer, _invite(REFERRER_KEY, 20, 0), 1e6);
         assertEq(referrals.referrerOf(buyer), address(0));
         assertFalse(referrals.inviteUsed(referrer, 20, 0));
@@ -355,7 +306,7 @@ contract AntseedReferralProgramIntegrationTest is Test {
         _settleWith(buyer, retired, 1e6);
         Vm.Log[] memory logs = vm.getRecordedLogs();
         for (uint256 i = 0; i < logs.length; i++) {
-            assertTrue(logs[i].topics[0] != AntseedStatsV2.InviteForwarded.selector);
+            assertTrue(logs[i].topics[0] != AntseedChannelsMiddleware.InviteForwarded.selector);
         }
         assertEq(referrals.referrerOf(buyer), address(0));
         assertEq(stats.getBuyerMetadataStats(1, buyer).totalRequestCount, 1);
@@ -366,8 +317,22 @@ contract AntseedReferralProgramIntegrationTest is Test {
         uint256 desktop = identity.register();
         _settleWith(buyer, _metadata(_invite(REFERRER_KEY, 20, 0), desktop), 4e6);
         _settleWith(buyer, _metadata(none, desktop), 6e6);
-        _flush(buyer);
         assertEq(referrals.referrerOf(buyer), referrer);
         assertEq(clientRewards.clientEpochPoints(20, desktop), 10e6);
+    }
+
+    function test_clientsAreClaimableAsSoonAsTheEpochEnds() public {
+        vm.prank(address(0xD1));
+        uint256 desktop = identity.register();
+        _settleWith(buyer, _metadata(none, desktop), 30e6);
+        _settle(newcomer, none, 70e6); // an old client: counts in the total, earns nobody anything
+
+        gate.setCurrentEpoch(21);
+        gate.setBudget(address(clientRewards), 20, 100 ether);
+        vm.prank(address(0xD1));
+        clientRewards.claimClientReward(desktop, 20);
+        assertEq(gate.balanceOf(address(0xD1)), 5 ether); // 30 gross, capped at 5%
+        assertEq(gate.balanceOf(gate.emissionsReserve()), 25 ether);
+        assertEq(gate.minted(address(clientRewards), 20), 30 ether);
     }
 }

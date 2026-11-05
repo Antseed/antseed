@@ -53,11 +53,11 @@ interface IAntseedReferralDeposits {
  *
  *         Binding: the buyer's client puts the invite in the attribution tail
  *         of the metadata it signs for every settlement (SpendingAuth /
- *         FreeUsageAuth) until it is bound. AntseedStatsV2 decodes it and
+ *         FreeUsageAuth) until it is bound. AntseedChannelsMiddleware decodes it and
  *         calls `bindReferral`, so the binding is buyer-signed, gasless for
  *         both sides, and works during free usage. Only the configured binder
- *         (Stats) may bind; the first binding is immutable. Any rejection
- *         reverts here and Stats swallows it, so a bad invite never blocks a
+ *         (the middleware) may bind; the first binding is immutable. Any rejection
+ *         reverts here and the middleware swallows it, so a bad invite never blocks a
  *         settlement. `previewInvite` runs the same checks as a view.
  *
  *         Only new buyers can bind: all of the buyer's recognized usage in
@@ -138,7 +138,7 @@ contract AntseedReferrals is Ownable2Step, Pausable, ReentrancyGuard, EIP712 {
     IAntseedReferralDeposits public immutable deposits;
     IAntseedSellerPools public sellerPools;
 
-    /// @notice Contract allowed to submit bindings (AntseedStatsV2).
+    /// @notice Contract allowed to submit bindings (AntseedChannelsMiddleware).
     address public binder;
 
     mapping(address buyer => address referrer) public referrerOf;
@@ -273,9 +273,9 @@ contract AntseedReferrals is Ownable2Step, Pausable, ReentrancyGuard, EIP712 {
     // ─── Binding ─────────────────────────────────────────────────────
 
     /// @notice Bind `buyer` to the signer of the invite. Called by
-    ///         AntseedStatsV2 with the invite from the buyer-signed metadata
-    ///         tail. Reverts with the reason on any failed check; Stats
-    ///         swallows the revert.
+    ///         AntseedChannelsMiddleware with the invite from the buyer-signed
+    ///         metadata tail. Reverts with the reason on any failed check; the
+    ///         middleware swallows the revert.
     function bindReferral(address buyer, uint256 issuedEpoch, uint256 index, bytes32 r, bytes32 vs)
         external
         whenNotPaused

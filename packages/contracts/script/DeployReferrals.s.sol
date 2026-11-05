@@ -15,16 +15,13 @@ import { AntseedReferrals } from "../rewards/AntseedReferrals.sol";
  *   EMISSIONS_GATE
  *   USAGE_ACCOUNTING
  *   ANTSEED_DEPOSITS
- *   ANTSEED_STATS          — the AntseedStatsV2 deployment that forwards bindings
  *
  * Usage:
  *   cd packages/contracts
  *   source .env
  *   forge script script/DeployReferrals.s.sol --rpc-url $BASE_MAINNET_RPC_URL --broadcast --verify --via-ir
  *
- * Afterwards:
- *   cast send $ANTSEED_STATS "setReferrals(address)" <referrals>       (Stats owner)
- * then record it as `contracts.referrals` in deployments/<network>/current.json
+ * DeployChannelsMiddleware then authorizes the middleware as its binder. Record it as `contracts.referrals` in deployments/<network>/current.json
  * so `scripts/generate-contract-chain-config.mjs` emits `referralsAddress` for
  * every client; `payments.crypto.referralsAddress` in config.json overrides it
  * per install (CLI and Desktop both read that key). The controller pays
@@ -37,13 +34,12 @@ contract DeployReferrals is Script {
         address gate = vm.envAddress("EMISSIONS_GATE");
         address usageAccounting = vm.envAddress("USAGE_ACCOUNTING");
         address deposits = vm.envAddress("ANTSEED_DEPOSITS");
-        address stats = vm.envAddress("ANTSEED_STATS");
 
         vm.startBroadcast(deployerPrivateKey);
-        referrals = new AntseedReferrals(gate, usageAccounting, deposits, stats);
+        referrals = new AntseedReferrals(gate, usageAccounting, deposits, address(0));
         vm.stopBroadcast();
 
         console.log("AntseedReferrals:", address(referrals));
-        console.log("Next: StatsV2.setReferrals, register as a gate minter, set payments.crypto.referralsAddress.");
+        console.log("Next: DeployChannelsMiddleware, then RegisterAttributionMinters, then set payments.crypto.referralsAddress.");
     }
 }

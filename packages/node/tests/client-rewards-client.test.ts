@@ -11,15 +11,15 @@ describe('ClientRewardsClient', () => {
     const rewards = client();
     vi.spyOn(rewards, 'currentEpoch').mockResolvedValue(10);
     const pending = vi.spyOn(rewards, 'pendingReward').mockImplementation(async (_agentId, epoch) => (epoch % 3 === 0 ? BigInt(epoch) : 0n));
-    expect(await rewards.pendingRewards(7, 4)).toEqual([{ epoch: 6, amount: 6n }]);
-    // current 10 → epochs 5..8 (the finalized epoch 9 is still in its settlement grace)
-    expect(pending.mock.calls.map((call) => call[1])).toEqual([5, 6, 7, 8]);
+    expect(await rewards.pendingRewards(7, 4)).toEqual([{ epoch: 6, amount: 6n }, { epoch: 9, amount: 9n }]);
+    // current 10 → epochs 6..9 (an epoch is claimable once it ends)
+    expect(pending.mock.calls.map((call) => call[1])).toEqual([6, 7, 8, 9]);
     expect(pending.mock.calls.every((call) => call[0] === 7)).toBe(true);
   });
 
   it('returns nothing before any epoch is claimable', async () => {
     const rewards = client();
-    vi.spyOn(rewards, 'currentEpoch').mockResolvedValue(1);
+    vi.spyOn(rewards, 'currentEpoch').mockResolvedValue(0);
     const pending = vi.spyOn(rewards, 'pendingReward');
     expect(await rewards.pendingRewards(7)).toEqual([]);
     expect(pending).not.toHaveBeenCalled();

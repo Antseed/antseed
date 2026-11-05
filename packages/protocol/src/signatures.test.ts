@@ -224,7 +224,7 @@ describe('connection auth signing', () => {
 describe('metadata attribution tail', () => {
   const clientId = clientIdFromAgentId(42);
   // Fixed vectors from packages/contracts (AntseedReferralsTest.test_inviteSignatureVector
-  // and AntseedStatsV2Test.test_attributionTailVector).
+  // and AntseedChannelsMiddlewareTest.test_attributionTailVector).
   const invite = {
     epoch: 42n,
     index: 7n,
@@ -248,7 +248,7 @@ describe('metadata attribution tail', () => {
     }],
   };
 
-  it('matches the AntseedStatsV2 tail vector byte for byte', () => {
+  it('matches the AntseedChannelsMiddleware tail vector byte for byte', () => {
     // The contract vector uses a uint256[] services array ([5]); the tail
     // words that follow it are what this package encodes.
     const tail = attributionTailAbi({ clientId: clientIdFromAgentId(42), invite });

@@ -90,7 +90,7 @@ export interface ChainConfig {
   verificationDeployBlock?: number;
   /** AntseedDepositRelay contract for gasless USDC sweeps from buyer hot wallets. */
   depositRelayAddress?: string;
-  /** AntseedReferrals contract: emission-funded referral rewards (bindings land via AntseedStatsV2). */
+  /** AntseedReferrals contract: emission-funded referral rewards (bindings land via AntseedChannelsMiddleware). */
   referralsAddress?: string;
   /** AntseedClientRewards contract: the builders program, emission rewards per client ERC-8004 agent. */
   clientRewardsAddress?: string;

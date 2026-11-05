@@ -10,7 +10,7 @@ import { withFileLock } from '../utils/file-lock.js';
  * Local referral state shared by Desktop and the CLI, stored at
  * `<dataDir>/referral.json`. Redeeming an invite (after `previewInvite`
  * passed) saves it as `invited`; the buyer daemon carries it in the metadata
- * it signs until AntseedStatsV2 binds it on a settlement, which Antscan hints
+ * it signs until AntseedChannelsMiddleware binds it on a settlement, which Antscan hints
  * and `referrerOf` confirms before it is recorded as `bound`. Nothing here
  * signs or sends anything on-chain.
  *
