@@ -81,6 +81,7 @@ describe('seller self health error', () => {
       [402, 'Insufficient USD or Diem balance'],
       [429, 'You exceeded your current quota: insufficient_quota'],
       [400, 'Your credit balance is too low to access the Anthropic API.'],
+      [400, 'Third-party apps now draw from your extra usage, not your plan limits. Add more at the usage settings page.'],
       [401, 'Incorrect API key provided: sk-abc'],
       [403, 'This key is not allowed to use this model'],
     ] as const) {
@@ -179,8 +180,8 @@ describe('what a seller tells buyers about its upstream', () => {
     'content-type': 'application/json',
     'retry-after': '30',
     'x-antseed-plugin-note': 'kept',
-    'x-codex-plan-type': 'promax',
-    'x-codex-credits-balance': '53029.7',
+    'x-codex-plan-type': 'pro',
+    'x-codex-credits-balance': '100',
     'x-codex-primary-used-percent': '3',
     'x-ratelimit-remaining-requests': '10',
     'anthropic-ratelimit-unified-status': 'allowed',
@@ -214,13 +215,13 @@ describe('what a seller tells buyers about its upstream', () => {
       requestId: req.requestId,
       statusCode: 429,
       headers: upstreamHeaders,
-      body: new TextEncoder().encode(JSON.stringify({ error: { type: 'usage_limit_reached', message: 'The usage limit has been reached', plan_type: 'promax', resets_at: 1794407073 } })),
+      body: new TextEncoder().encode(JSON.stringify({ error: { type: 'usage_limit_reached', message: 'The usage limit has been reached', plan_type: 'pro', resets_at: 1900000000 } })),
     }));
     const response = await serve([provider]);
     expect(response.statusCode).toBe(429);
     const text = new TextDecoder().decode(response.body);
     expect(JSON.parse(text).error).toMatchObject({ code: 'upstream_rate_limited', service: 'test-model' });
-    expect(text).not.toMatch(/promax|plan_type|resets_at|usage limit/);
+    expect(text).not.toMatch(/plan_type|resets_at|usage limit/);
     expect(response.headers).toEqual({ 'content-type': 'application/json', 'retry-after': '30' });
   });
 
@@ -238,7 +239,7 @@ describe('what a seller tells buyers about its upstream', () => {
   });
 
   it('answers a streamed upstream usage limit as rate limited, without the plan in any frame', async () => {
-    const leak = 'data: {"type":"error","error":{"type":"usage_limit_reached","plan_type":"promax","resets_at":1794407073}}\n\n';
+    const leak = 'data: {"type":"error","error":{"type":"usage_limit_reached","plan_type":"pro","resets_at":1900000000}}\n\n';
     const provider = makeProvider('p', 429);
     provider.handleRequestStream = vi.fn(async (req, callbacks) => {
       const start = { requestId: req.requestId, statusCode: 429, headers: { ...upstreamHeaders, 'content-type': 'text/event-stream' }, body: new Uint8Array(0) };
@@ -250,12 +251,12 @@ describe('what a seller tells buyers about its upstream', () => {
     expect(response.statusCode).toBe(429);
     expect(JSON.parse(new TextDecoder().decode(response.body)).error).toMatchObject({ code: 'upstream_rate_limited' });
     expect(response.headers).toEqual({ 'content-type': 'application/json', 'retry-after': '30' });
-    expect(sentText).not.toMatch(/promax|plan_type|resets_at/);
+    expect(sentText).not.toMatch(/plan_type|resets_at/);
   });
 
   it('does not tell buyers what a provider exception says', async () => {
     const provider = makeProvider('p', 200);
-    provider.handleRequest = vi.fn(async () => { throw new Error('OpenAI Codex token refresh failed (401): {"error":"account sirob@example.com suspended"}'); });
+    provider.handleRequest = vi.fn(async () => { throw new Error('Upstream token refresh failed (401): {"error":"account user@example.com suspended"}'); });
     const response = await serve([provider]);
     expect(response.statusCode).toBe(500);
     expect(new TextDecoder().decode(response.body)).toBe('The seller could not complete the request upstream');
