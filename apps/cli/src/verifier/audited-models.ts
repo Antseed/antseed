@@ -69,22 +69,17 @@ export const AUDITED_MODELS: Readonly<Record<string, AuditedModel>> = Object.fre
     serviceAliases: ['openai-gpt-61-sol', 'gpt-61-sol', 'openai/gpt-6.1-sol'],
   },
   'grok-4.7': { upstreamModel: 'x-ai/grok-4.7', referenceProvider: ['xai'], serviceAliases: ['grok-4-7', 'x-ai/grok-4.7'] },
-  // OpenRouter has no DeepSeek endpoint for this model; Baidu (fp8) had the lowest self-test error
-  // of the hosts that answered past builds.
+  // OpenRouter has no DeepSeek endpoint for this model. Nebius (fp8) agreed best with the other
+  // hosts' majority answer; Baidu (fp8) no longer reproduced its own bank's answers.
   'deepseek-v4-pro': {
     upstreamModel: 'deepseek/deepseek-v4-pro',
-    referenceProvider: ['baidu/fp8'],
+    referenceProvider: ['nebius/fp8'],
     serviceAliases: ['deepseek/deepseek-v4-pro'],
   },
   'deepseek-v4-pro-0813': {
     upstreamModel: 'deepseek/deepseek-v4-pro-0813',
     referenceProvider: ['deepseek'],
     serviceAliases: ['deepseek/deepseek-v4-pro-0813'],
-  },
-  'kimi-k3': {
-    upstreamModel: 'moonshotai/kimi-k3',
-    referenceProvider: ['moonshotai'],
-    serviceAliases: ['moonshotai/kimi-k3', 'moonshot/kimi-k3', 'kimi-k3:fast', 'kimi-k3-fast', 'kimi-k3-fast-api'],
   },
   'kimi-k3.1-pro': {
     upstreamModel: 'moonshotai/kimi-k3.1-pro',
@@ -100,6 +95,21 @@ export const AUDITED_MODELS: Readonly<Record<string, AuditedModel>> = Object.fre
     upstreamModel: 'z-ai/glm-5.3',
     referenceProvider: ['z-ai/fp8'],
     serviceAliases: ['glm-5-3', 'z-ai/glm-5.3', 'zai/glm-5.3', 'z-ai-glm-5-3'],
+  },
+  'qwen3.8-27b': {
+    upstreamModel: 'qwen/qwen3.8-27b',
+    referenceProvider: ['alibaba'],
+    serviceAliases: ['qwen-3-8-27b', 'qwen-3.8-27b', 'qwen3-8-27b', 'qwen/qwen3.8-27b'],
+  },
+  'minimax-m3': {
+    upstreamModel: 'minimax/minimax-m3',
+    referenceProvider: ['minimax'],
+    serviceAliases: ['minimax/minimax-m3', 'minimax-m-3'],
+  },
+  'mimo-v2.6-pro': {
+    upstreamModel: 'xiaomi/mimo-v2.6-pro',
+    referenceProvider: ['xiaomi/fp8'],
+    serviceAliases: ['xiaomi/mimo-v2.6-pro', 'mimo-v2-6-pro'],
   },
 })
 

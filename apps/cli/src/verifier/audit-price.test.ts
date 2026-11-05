@@ -63,8 +63,8 @@ test('a reference route or upstream price wins over configured pricing and the c
 
 test('a model without any reference price cannot be audited', () => {
   assert.throws(
-    () => resolveAuditPriceCap({ referenceEndpoint: endpoint }, 'kimi-k3', catalog),
-    /no reference price for kimi-k3: moonshotai\/kimi-k3 is not priced/,
+    () => resolveAuditPriceCap({ referenceEndpoint: endpoint }, 'kimi-k3.1-pro', catalog),
+    /no reference price for kimi-k3\.1-pro: moonshotai\/kimi-k3\.1-pro is not priced/,
   )
 })
 
@@ -79,12 +79,12 @@ test('the run resolves every model, loads the catalog at most once, and reports 
   let loads = 0
   const { caps, unpriced } = await resolveAuditPriceCaps(
     { referenceEndpoint: endpoint },
-    ['claude-fable-5.1', 'grok-4.7', 'kimi-k3'],
+    ['claude-fable-5.1', 'grok-4.7', 'kimi-k3.1-pro'],
     async () => { loads += 1; return catalog },
   )
   assert.equal(loads, 1)
   assert.deepEqual([...caps.keys()], ['claude-fable-5.1', 'grok-4.7'])
-  assert.deepEqual([...unpriced.keys()], ['kimi-k3'])
+  assert.deepEqual([...unpriced.keys()], ['kimi-k3.1-pro'])
 
   const failed = await resolveAuditPriceCaps({ referenceEndpoint: endpoint }, ['grok-4.7'], async () => {
     throw new Error('OpenRouter model catalog 503: down')
