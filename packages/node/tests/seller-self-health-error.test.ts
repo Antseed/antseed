@@ -23,6 +23,9 @@ function makeProvider(name: string, statusCode: number): Provider {
   };
 }
 
+/** Everything the last serve() call sent to the buyer, decoded as text. */
+let lastSentText = '';
+
 async function serve(providers: Provider[], emit: (event: string, ...args: unknown[]) => boolean = () => false, headers: Record<string, string> = {}) {
   const handler = new SellerRequestHandler({
     identity: identityFromPrivateKeyHex('11'.repeat(32)),
@@ -44,7 +47,9 @@ async function serve(providers: Provider[], emit: (event: string, ...args: unkno
       body: new TextEncoder().encode(JSON.stringify({ model: 'test-model' })),
     }),
   });
-  const frame = conn.send.mock.calls.map(([raw]) => decodeFrame(raw)!.message).find((message) => message.type === MessageType.HttpResponse)!;
+  const messages = conn.send.mock.calls.map(([raw]) => decodeFrame(raw)!.message);
+  lastSentText = messages.map((message) => new TextDecoder().decode(message.payload)).join('\n');
+  const frame = messages.find((message) => message.type === MessageType.HttpResponse)!;
   return decodeHttpResponse(frame.payload);
 }
 
@@ -228,6 +233,22 @@ describe('what a seller tells buyers about its upstream', () => {
     const response = await serve([provider]);
     expect(response.statusCode).toBe(429);
     expect(response.headers).toEqual({ 'content-type': 'application/json', 'retry-after': '2' });
+  });
+
+  it('answers a streamed upstream usage limit as rate limited, without the plan in any frame', async () => {
+    const leak = 'data: {"type":"error","error":{"type":"usage_limit_reached","plan_type":"promax","resets_at":1794407073}}\n\n';
+    const provider = makeProvider('p', 429);
+    provider.handleRequestStream = vi.fn(async (req, callbacks) => {
+      const start = { requestId: req.requestId, statusCode: 429, headers: { ...upstreamHeaders, 'content-type': 'text/event-stream' }, body: new Uint8Array(0) };
+      callbacks.onResponseStart(start);
+      await callbacks.onResponseChunk({ requestId: req.requestId, data: new TextEncoder().encode(leak), done: true });
+      return { ...start, body: new TextEncoder().encode(leak) };
+    });
+    const response = await serve([provider]);
+    expect(response.statusCode).toBe(429);
+    expect(JSON.parse(new TextDecoder().decode(response.body)).error).toMatchObject({ code: 'upstream_rate_limited' });
+    expect(response.headers).toEqual({ 'content-type': 'application/json', 'retry-after': '30' });
+    expect(lastSentText).not.toMatch(/promax|plan_type|resets_at/);
   });
 
   it('does not tell buyers what a provider exception says', async () => {

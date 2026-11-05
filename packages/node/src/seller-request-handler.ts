@@ -1650,9 +1650,18 @@ export class SellerRequestHandler {
   ): Promise<SerializedHttpResponse> {
     // Buyers only ever see the headers buyerFacingResponseHeaders lets through.
     if (streamCallbacks && provider.handleRequestStream) {
+      // A streamed 429 is held back like a buffered one, so its upstream body can be replaced before the buyer sees it.
+      let heldRateLimit = false;
       const response = await provider.handleRequestStream(request, {
         ...streamCallbacks,
-        onResponseStart: (start) => streamCallbacks.onResponseStart({ ...start, headers: buyerFacingResponseHeaders(start.headers) }),
+        onResponseStart: (start) => {
+          if (start.statusCode === 429) {
+            heldRateLimit = true;
+            return;
+          }
+          streamCallbacks.onResponseStart({ ...start, headers: buyerFacingResponseHeaders(start.headers) });
+        },
+        onResponseChunk: (chunk) => (heldRateLimit ? undefined : streamCallbacks.onResponseChunk(chunk)),
       });
       return { ...response, headers: buyerFacingResponseHeaders(response.headers) };
     }
