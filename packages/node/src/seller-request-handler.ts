@@ -403,17 +403,10 @@ export class SellerRequestHandler {
         return;
       }
 
+      // Over its usage limit: answered before any payment step. In-flight requests are held to it again at admission below.
       const limitRetryAfter = this._deps.sellerBuyerLimiter?.retryAfterSeconds(buyerPeerId, provider.name) ?? null;
       if (limitRetryAfter !== null) {
-        debugWarn(`[SellerHandler] Buyer ${buyerPeerId.slice(0, 12)}... over its usage limit on provider "${provider.name}", retry in ${limitRetryAfter}s`);
-        mux.sendProxyResponse({
-          requestId: request.requestId,
-          statusCode: 429,
-          headers: { 'content-type': 'application/json', 'retry-after': String(limitRetryAfter) },
-          body: new TextEncoder().encode(JSON.stringify({
-            error: { code: 'buyer_usage_limited', message: 'This buyer has reached its usage limit with this seller; retry later' },
-          })),
-        });
+        this._sendBuyerUsageLimited(mux, request.requestId, buyerPeerId, provider.name, limitRetryAfter);
         return;
       }
 
@@ -930,6 +923,11 @@ export class SellerRequestHandler {
         });
         return;
       }
+      const usageAdmission = this._deps.sellerBuyerLimiter?.admit(buyerPeerId, provider.name, requestCostEstimate?.inputTokens ?? 0);
+      if (usageAdmission && !usageAdmission.admitted) {
+        this._sendBuyerUsageLimited(mux, request.requestId, buyerPeerId, provider.name, usageAdmission.retryAfterSeconds);
+        return;
+      }
       if (isBillable) spm!.beginBillableRequest(buyerPeerId);
       this.adjustProviderLoad(provider.name, 1);
       try {
@@ -1009,7 +1007,6 @@ export class SellerRequestHandler {
             responseUsage = parseResponseUsage(response.body);
           }
           debugLog(`[SellerHandler] Raw provider usage: in=${responseUsage.inputTokens} fresh=${responseUsage.freshInputTokens} cached=${responseUsage.cachedInputTokens} out=${responseUsage.outputTokens}`);
-          this._deps.sellerBuyerLimiter?.record(buyerPeerId, provider.name, responseUsage.freshInputTokens + responseUsage.outputTokens);
           if (!streamedResponseStarted) {
             mux.sendProxyResponse(response);
           } else if (heldDoneChunkData !== null) {
@@ -1182,6 +1179,7 @@ export class SellerRequestHandler {
       } finally {
         this.adjustProviderLoad(provider.name, -1);
         if (isBillable) spm!.endBillableRequest(buyerPeerId);
+        if (usageAdmission?.admitted) usageAdmission.reservation.finish(responseUsage.freshInputTokens + responseUsage.outputTokens);
       }
     });
 
@@ -1340,17 +1338,23 @@ export class SellerRequestHandler {
     });
   }
 
+  private _sendBuyerUsageLimited(mux: ProxyMux, requestId: string, buyerPeerId: string, provider: string, retryAfterSeconds: number): void {
+    debugWarn(`[SellerHandler] Buyer ${buyerPeerId.slice(0, 12)}... over its usage limit on provider "${provider}", retry in ${retryAfterSeconds}s`);
+    this._sendJsonError(mux, requestId, 429, 'buyer_usage_limited', 'This buyer has reached its usage limit with this seller; retry later', { 'retry-after': String(retryAfterSeconds) });
+  }
+
   private _sendJsonError(
     mux: ProxyMux,
     requestId: string,
     statusCode: number,
     code: string,
     message: string,
+    extraHeaders: Record<string, string> = {},
   ): void {
     mux.sendProxyResponse({
       requestId,
       statusCode,
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...extraHeaders },
       body: new TextEncoder().encode(JSON.stringify({ error: { code, message } })),
     });
   }

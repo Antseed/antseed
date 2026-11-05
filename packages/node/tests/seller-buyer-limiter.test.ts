@@ -16,26 +16,57 @@ function clock(at = START) {
   return { now: () => state.now, advance: (ms: number) => { state.now += ms; } };
 }
 
+/** Admits a request and finishes it at once with the tokens it used. */
+function use(limiter: SellerBuyerLimiter, buyer: string, provider: string, tokens: number): void {
+  const admission = limiter.admit(buyer, provider, 0);
+  if (!admission.admitted) throw new Error(`${buyer} was not admitted`);
+  admission.reservation.finish(tokens);
+}
+
 describe('SellerBuyerLimiter', () => {
   it('lets a buyer use up to its limit in the window, then names when to retry', () => {
     const time = clock();
     const limiter = new SellerBuyerLimiter({ windowMinutes: 60, maxTokensPerBuyer: 1_000 }, () => null, time.now);
-    limiter.record('a', 'codex', 600);
+    use(limiter, 'a', 'codex', 600);
     expect(limiter.retryAfterSeconds('a', 'codex')).toBeNull();
     time.advance(10 * 60_000);
-    limiter.record('a', 'codex', 500);
-    // Over the limit until the first 600 tokens leave the window, 50 minutes on.
-    expect(limiter.retryAfterSeconds('a', 'codex')).toBe(50 * 60);
-    time.advance(50 * 60_000);
+    use(limiter, 'a', 'codex', 500);
+    // The first 600 tokens were counted in the minute starting at START: they stay a full window after it ends.
+    expect(limiter.retryAfterSeconds('a', 'codex')).toBe(51 * 60);
+    time.advance(51 * 60_000);
     expect(limiter.retryAfterSeconds('a', 'codex')).toBeNull();
+  });
+
+  it('never forgets usage before a full window has passed, also mid-minute and for short windows', () => {
+    const time = clock(START + 45_000);
+    const limiter = new SellerBuyerLimiter({ windowMinutes: 0.5, maxTokensPerBuyer: 1_000 }, () => null, time.now);
+    use(limiter, 'a', 'codex', 1_000);
+    expect(limiter.retryAfterSeconds('a', 'codex')).not.toBeNull();
+    time.advance(29_000);
+    expect(limiter.retryAfterSeconds('a', 'codex')).not.toBeNull();
   });
 
   it('counts each buyer and each provider on its own', () => {
     const limiter = new SellerBuyerLimiter({ maxTokensPerBuyer: 1_000 }, () => null, clock().now);
-    limiter.record('a', 'codex', 1_000);
+    use(limiter, 'a', 'codex', 1_000);
     expect(limiter.retryAfterSeconds('a', 'codex')).not.toBeNull();
     expect(limiter.retryAfterSeconds('b', 'codex')).toBeNull();
     expect(limiter.retryAfterSeconds('a', 'claude')).toBeNull();
+  });
+
+  it('counts requests still in flight, so a burst cannot pass on the same usage', () => {
+    const limiter = new SellerBuyerLimiter({ maxTokensPerBuyer: 1_000, newBuyers: { maxTokensTotal: 1_200 } }, () => null, clock().now);
+    const first = limiter.admit('a', 'codex', 600);
+    expect(first.admitted).toBe(true);
+    expect(limiter.admit('a', 'codex', 600).admitted).toBe(true);
+    // 1,200 tokens are now reserved for 'a': its next request waits for one to finish.
+    const held = limiter.admit('a', 'codex', 10);
+    expect(held).toEqual({ admitted: false, retryAfterSeconds: 5 });
+    // The shared new-buyer total counts the same reservations.
+    expect(limiter.admit('b', 'codex', 400).admitted).toBe(false);
+    // A finished request counts what it used, not what was reserved.
+    if (first.admitted) first.reservation.finish(100);
+    expect(limiter.admit('a', 'codex', 10).admitted).toBe(true);
   });
 
   it('holds buyers new to the seller to their own tighter limit', () => {
@@ -46,7 +77,7 @@ describe('SellerBuyerLimiter', () => {
       (buyer) => firstChannel.get(buyer) ?? null,
       time.now,
     );
-    for (const buyer of ['old', 'recent', 'unknown']) limiter.record(buyer, 'codex', 2_000);
+    for (const buyer of ['old', 'recent', 'unknown']) use(limiter, buyer, 'codex', 2_000);
     expect(limiter.retryAfterSeconds('old', 'codex')).toBeNull();
     expect(limiter.retryAfterSeconds('recent', 'codex')).not.toBeNull();
     expect(limiter.retryAfterSeconds('unknown', 'codex')).not.toBeNull();
@@ -60,7 +91,7 @@ describe('SellerBuyerLimiter', () => {
     );
     for (const buyer of ['w1', 'w2', 'w3']) {
       expect(limiter.retryAfterSeconds(buyer, 'codex')).toBeNull();
-      limiter.record(buyer, 'codex', 900);
+      use(limiter, buyer, 'codex', 900);
     }
     expect(limiter.retryAfterSeconds('w4', 'codex')).not.toBeNull();
     expect(limiter.retryAfterSeconds('regular', 'codex')).toBeNull();
@@ -73,7 +104,7 @@ describe('SellerBuyerLimiter', () => {
       () => START,
       time.now,
     );
-    limiter.record('a', 'codex', 5_000);
+    use(limiter, 'a', 'codex', 5_000);
     expect(limiter.retryAfterSeconds('a', 'codex')).not.toBeNull();
     time.advance(HOUR);
     expect(limiter.retryAfterSeconds('a', 'codex')).toBeNull();

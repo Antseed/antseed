@@ -33,13 +33,28 @@ const BUCKET_MS = 60_000;
 /** Records between sweeps of buyers whose usage has left the window. */
 const SWEEP_EVERY_RECORDS = 1_000;
 
+/** Retry-after while a buyer is held back only by its own requests still in flight. */
+const IN_FLIGHT_RETRY_MS = 5_000;
+
 /** Token counts per minute, keyed by minute index. */
 type Buckets = Map<number, number>;
 
 interface ProviderUsage {
   buyers: Map<string, Buckets>;
   newBuyers: Buckets;
+  /** Tokens reserved by requests still in flight, per buyer and for all new buyers. */
+  pending: Map<string, number>;
+  newPending: number;
 }
+
+/** An admitted request's reservation; finish it exactly once with the tokens it really used. */
+export interface BuyerUsageReservation {
+  finish(tokens: number): void;
+}
+
+export type BuyerUsageAdmission =
+  | { admitted: true; reservation: BuyerUsageReservation }
+  | { admitted: false; retryAfterSeconds: number };
 
 export class SellerBuyerLimiter {
   private readonly _windowMs: number;
@@ -59,38 +74,41 @@ export class SellerBuyerLimiter {
     this._newBuyerMs = (_config.newBuyers?.forHours ?? DEFAULT_NEW_BUYER_HOURS) * 3_600_000;
   }
 
-  /** Seconds until the buyer may use the provider again, or null while it is within its limits. */
+  /**
+   * Seconds until the buyer may use the provider again, or null while it is
+   * within its limits. Requests still in flight count with their estimates.
+   */
   retryAfterSeconds(buyerPeerId: string, provider: string): number | null {
-    const now = this._now();
-    const usage = this._usage.get(provider);
-    const isNew = this._isNewBuyer(buyerPeerId, now);
-    const waits: number[] = [];
-    const perBuyer = isNew ? this._config.newBuyers?.maxTokensPerBuyer ?? this._config.maxTokensPerBuyer : this._config.maxTokensPerBuyer;
-    const buyerBuckets = usage?.buyers.get(buyerPeerId);
-    if (perBuyer !== undefined && buyerBuckets) waits.push(this._msUntilUnder(buyerBuckets, perBuyer, now));
-    const total = this._config.newBuyers?.maxTokensTotal;
-    if (isNew && total !== undefined && usage) waits.push(this._msUntilUnder(usage.newBuyers, total, now));
-    const wait = Math.max(0, ...waits);
-    return wait > 0 ? Math.ceil(wait / 1000) : null;
+    return this._retryAfter(buyerPeerId, provider, this._isNewBuyer(buyerPeerId, this._now()));
   }
 
-  /** Counts a served request's uncached input and output tokens. */
-  record(buyerPeerId: string, provider: string, tokens: number): void {
-    if (!(tokens > 0)) return;
-    const now = this._now();
-    let usage = this._usage.get(provider);
-    if (!usage) {
-      usage = { buyers: new Map(), newBuyers: new Map() };
-      this._usage.set(provider, usage);
-    }
-    let buckets = usage.buyers.get(buyerPeerId);
-    if (!buckets) {
-      buckets = new Map();
-      usage.buyers.set(buyerPeerId, buckets);
-    }
-    addTokens(buckets, now, tokens);
-    if (this._isNewBuyer(buyerPeerId, now)) addTokens(usage.newBuyers, now, tokens);
-    if (++this._recordsSinceSweep >= SWEEP_EVERY_RECORDS) this._sweep(now);
+  /**
+   * Admits a request about to go upstream and reserves its estimated tokens
+   * until it finishes, so concurrent requests can't all pass on the same usage.
+   */
+  admit(buyerPeerId: string, provider: string, estimatedTokens: number): BuyerUsageAdmission {
+    const isNew = this._isNewBuyer(buyerPeerId, this._now());
+    const retryAfterSeconds = this._retryAfter(buyerPeerId, provider, isNew);
+    if (retryAfterSeconds !== null) return { admitted: false, retryAfterSeconds };
+    const reserved = Math.max(0, estimatedTokens);
+    const usage = this._providerUsage(provider);
+    usage.pending.set(buyerPeerId, (usage.pending.get(buyerPeerId) ?? 0) + reserved);
+    if (isNew) usage.newPending += reserved;
+    let finished = false;
+    return {
+      admitted: true,
+      reservation: {
+        finish: (tokens) => {
+          if (finished) return;
+          finished = true;
+          const left = (usage.pending.get(buyerPeerId) ?? 0) - reserved;
+          if (left > 0) usage.pending.set(buyerPeerId, left);
+          else usage.pending.delete(buyerPeerId);
+          if (isNew) usage.newPending = Math.max(0, usage.newPending - reserved);
+          this._record(buyerPeerId, usage, tokens, isNew);
+        },
+      },
+    };
   }
 
   describe(): string {
@@ -105,6 +123,44 @@ export class SellerBuyerLimiter {
     return parts.join(' ');
   }
 
+  private _retryAfter(buyerPeerId: string, provider: string, isNew: boolean): number | null {
+    const now = this._now();
+    const usage = this._usage.get(provider);
+    if (!usage) return null;
+    const waits: number[] = [];
+    const perBuyer = isNew ? this._config.newBuyers?.maxTokensPerBuyer ?? this._config.maxTokensPerBuyer : this._config.maxTokensPerBuyer;
+    if (perBuyer !== undefined) {
+      waits.push(this._msUntilUnder(usage.buyers.get(buyerPeerId), perBuyer - (usage.pending.get(buyerPeerId) ?? 0), now));
+    }
+    const total = this._config.newBuyers?.maxTokensTotal;
+    if (isNew && total !== undefined) waits.push(this._msUntilUnder(usage.newBuyers, total - usage.newPending, now));
+    const wait = Math.max(0, ...waits);
+    return wait > 0 ? Math.ceil(wait / 1000) : null;
+  }
+
+  /** Counts a finished request's uncached input and output tokens. */
+  private _record(buyerPeerId: string, usage: ProviderUsage, tokens: number, isNew: boolean): void {
+    if (!(tokens > 0)) return;
+    const now = this._now();
+    let buckets = usage.buyers.get(buyerPeerId);
+    if (!buckets) {
+      buckets = new Map();
+      usage.buyers.set(buyerPeerId, buckets);
+    }
+    addTokens(buckets, now, tokens);
+    if (isNew) addTokens(usage.newBuyers, now, tokens);
+    if (++this._recordsSinceSweep >= SWEEP_EVERY_RECORDS) this._sweep(now);
+  }
+
+  private _providerUsage(provider: string): ProviderUsage {
+    let usage = this._usage.get(provider);
+    if (!usage) {
+      usage = { buyers: new Map(), newBuyers: new Map(), pending: new Map(), newPending: 0 };
+      this._usage.set(provider, usage);
+    }
+    return usage;
+  }
+
   private _isNewBuyer(buyer: string, now: number): boolean {
     if (!this._config.newBuyers) return false;
     let first = this._firstSeen.get(buyer);
@@ -117,31 +173,40 @@ export class SellerBuyerLimiter {
     return now - first < this._newBuyerMs;
   }
 
-  /** How long until the tokens in the window drop below the limit (0 when they already are). */
-  private _msUntilUnder(buckets: Buckets, limit: number, now: number): number {
-    const oldest = Math.floor((now - this._windowMs) / BUCKET_MS);
+  /** A minute's tokens stay counted until a full window after the minute ends, never less. */
+  private _expiresAt(minute: number): number {
+    return (minute + 1) * BUCKET_MS + this._windowMs;
+  }
+
+  /**
+   * How long until the tokens in the window drop below the limit (0 when they
+   * already are). A limit at or below zero means in-flight requests alone fill it.
+   */
+  private _msUntilUnder(buckets: Buckets | undefined, limit: number, now: number): number {
     let used = 0;
-    for (const [minute, tokens] of buckets) {
-      if (minute <= oldest) buckets.delete(minute);
-      else used += tokens;
+    if (buckets) {
+      for (const [minute, tokens] of buckets) {
+        if (this._expiresAt(minute) <= now) buckets.delete(minute);
+        else used += tokens;
+      }
     }
     if (used < limit) return 0;
-    for (const minute of [...buckets.keys()].sort((a, b) => a - b)) {
-      used -= buckets.get(minute)!;
-      if (used < limit) return minute * BUCKET_MS + this._windowMs - now;
+    if (limit <= 0) return IN_FLIGHT_RETRY_MS;
+    for (const minute of [...buckets!.keys()].sort((a, b) => a - b)) {
+      used -= buckets!.get(minute)!;
+      if (used < limit) return this._expiresAt(minute) - now;
     }
     return 0;
   }
 
   private _sweep(now: number): void {
     this._recordsSinceSweep = 0;
-    const oldest = Math.floor((now - this._windowMs) / BUCKET_MS);
     for (const usage of this._usage.values()) {
       for (const [buyer, buckets] of usage.buyers) {
-        for (const minute of buckets.keys()) if (minute <= oldest) buckets.delete(minute);
+        for (const minute of buckets.keys()) if (this._expiresAt(minute) <= now) buckets.delete(minute);
         if (buckets.size === 0) usage.buyers.delete(buyer);
       }
-      for (const minute of usage.newBuyers.keys()) if (minute <= oldest) usage.newBuyers.delete(minute);
+      for (const minute of usage.newBuyers.keys()) if (this._expiresAt(minute) <= now) usage.newBuyers.delete(minute);
     }
   }
 }
