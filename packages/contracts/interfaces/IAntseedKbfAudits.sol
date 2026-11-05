@@ -3,24 +3,27 @@ pragma solidity ^0.8.24;
 
 import { IAntseedSellerPools } from "./IAntseedSellerPools.sol";
 import { IAntseedVerificationResults } from "./IAntseedVerificationResults.sol";
+import { IERC8004Registry } from "./IERC8004Registry.sol";
 
 /// @notice KBF (Knowledge Boundary Fingerprinting) model audits, submitted by owner-approved
 ///         auditors, one model per submission, and recorded into an
 ///         `IAntseedVerificationResults` once enough auditors agree. KBF is one of several
-///         verification methods: each method is its own source contract next to this one, with
+///         verification methods: each method is its own audit contract next to this one, with
 ///         its own admission rule, consensus and reward rules, writing into the same results layer.
 /// @dev Confirmations: a result is recorded once `requiredReports[verdict]` distinct approved
 ///      auditors report it for the same (agent, service, model) in the same epoch and report
-///      round. Replacing a live DIFF (from any source) needs as many reports as a DIFF does. Reports
+///      round. Replacing a live DIFF (from any audit) needs `diffReplacementReports` reports (default 1). Reports
 ///      count per epoch only, and only in the current round: `reportRound` moves on whenever the
-///      service's live verdict moves into or out of DIFF, by any source (`results.diffChanges`),
+///      service's live verdict moves into or out of DIFF, by any audit (`results.diffChanges`),
 ///      whenever the results owner clears the service (`results.serviceClears`), and whenever an
 ///      auditor is revoked (`auditorRevocations`).
 ///
-///      Credits: one credit per model audit that covers at least one agent with staked pool power,
-///      at most `maxCreditsPerModelPerEpoch` per model, granted through `results.credit`. The results
-///      layer applies this source's rewards start epoch and per-verifier caps, and verifiers claim
-///      there with this contract as the source.
+///      Credits: a model audit that covers at least one agent with staked pool power earns
+///      `creditsFor(modelHash)` credits (owner-set: a default per audit and optional per-model
+///      amounts), for at most `maxCreditsPerModelPerEpoch` audits per model, granted through
+///      `results.credit`. The results
+///      layer applies this audit's rewards start epoch and per-auditor caps, and auditors claim
+///      there with `results.claimAuditorReward(<this contract>, epoch)`.
 interface IAntseedKbfAudits {
     /// @param agentId Seller agent the result is for.
     /// @param serviceHash keccak256 of the lowercased service name in the seller's signed metadata.
@@ -52,6 +55,7 @@ interface IAntseedKbfAudits {
 
     function results() external view returns (IAntseedVerificationResults);
     function sellerPools() external view returns (IAntseedSellerPools);
+    function identityRegistry() external view returns (IERC8004Registry);
 
     // ───────────────────────────── auditors ───────────────────────────
 
@@ -82,6 +86,10 @@ interface IAntseedKbfAudits {
     ///         so one SAME is enough); the result's own `requiredReports` applies when higher.
     function diffReplacementReports() external view returns (uint8);
 
+    /// @notice Epochs a KBF verdict counts for, including the one it was given in (default 2, at
+    ///         most 4). KBF passes the resulting expiry to `results.record`.
+    function validityEpochs() external view returns (uint8);
+
     /// @notice Records one auditor's KBF results for every seller audited as `modelHash`.
     /// @dev Reverts unless the caller is an approved auditor, `expectedEpoch` is the results layer's current epoch, `evidenceHash` is non-zero, and `results` is non-empty, bounded, and strictly ordered by
     ///      (agentId, serviceHash).
@@ -109,5 +117,12 @@ interface IAntseedKbfAudits {
 
     /// @notice Safety limit: credited audits of the same model per auditor and epoch.
     function maxCreditsPerModelPerEpoch() external view returns (uint32);
-    function modelCredits(uint256 epoch, address auditor, bytes32 modelHash) external view returns (uint256);
+    /// @notice Audits of `modelHash` by `auditor` in `epoch` that earned credits.
+    function creditedAudits(uint256 epoch, address auditor, bytes32 modelHash) external view returns (uint256);
+    /// @notice Credits a model audit earns unless its model has its own amount (default 1).
+    function creditsPerAudit() external view returns (uint32);
+    /// @notice A model's own credits per audit; 0 when it earns `creditsPerAudit`.
+    function modelCreditsPerAudit(bytes32 modelHash) external view returns (uint32);
+    /// @notice Credits an audit of `modelHash` earns now: its own amount, else `creditsPerAudit`.
+    function creditsFor(bytes32 modelHash) external view returns (uint256);
 }
