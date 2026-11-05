@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { inviteAllowance } from '@antseed/ants/invite-allowance';
 import { Button, CopyButton } from '@antseed/ui';
 import { formatCredits, formatInt, shortAddress } from '../../../core/format';
 import type { CreateInviteResult, ReferralInvites } from '../../../types/bridge';
@@ -83,14 +84,9 @@ export function inviteCardState(invites: ReferralInvites, creation: InviteCreati
   const allowance = invites.allowance;
   const result = creation.latest;
   const link = result?.link ?? null;
-  // A creation for the allowance's week, or a later one Antscan has not reached, stands in for it.
-  const createdWeek = result?.epoch ?? null;
-  const sameWeek = !!allowance && createdWeek === allowance.epoch;
-  const laterWeek = !!result && (!allowance || (createdWeek !== null && createdWeek > allowance.epoch));
-  const left = result && sameWeek ? Math.min(result.left, allowance!.left)
-    : result && laterWeek ? result.left
-      : allowance?.left ?? null;
-  const quota = result && laterWeek ? result.quota : allowance?.quota ?? null;
+  const { left, quota } = inviteAllowance(allowance, result);
+  // A creation in a later week than Antscan has reached answers for that week's quota too.
+  const laterWeek = !!result && (!allowance || result.epoch > allowance.epoch);
   const noQuota = (!laterWeek && allowance?.quota === 0) || (inviteFailureCurrent(invites, creation) && !!creation.failure?.noQuota);
   return { link, left, quota, noQuota, canCreate: !noQuota && left !== 0 };
 }

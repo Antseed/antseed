@@ -3,7 +3,6 @@ import chalk from 'chalk'
 import {
   AntsContext,
   InviteQuotaError,
-  formatAnts,
   issueInvite,
   refereeBonusFromExplorer,
   referral,
@@ -27,7 +26,7 @@ import { getGlobalOptions } from './types.js'
 import { loadConfig } from '../../config/loader.js'
 import { loadCryptoContext, requireCryptoConfig } from '../payment-utils.js'
 import { referralLookups, referralScope, shortWallet } from '../referral-state.js'
-import { printJson } from './ants/shared.js'
+import { ants, printJson } from './ants/shared.js'
 
 /**
  * `antseed referral`: invite-only, two-sided referrals (AntseedReferrals).
@@ -140,10 +139,6 @@ export async function referralStatus(context: ReferralCommandContext): Promise<R
   }
 }
 
-function antsAmount(baseUnits: string): string {
-  return `${formatAnts(baseUnits, 4)} ANTS`
-}
-
 export function formatReferralStatus(status: ReferralStatus): string[] {
   if (!status.configured) return [NOT_AVAILABLE]
   const { state, referee, invites } = status
@@ -156,7 +151,7 @@ export function formatReferralStatus(status: ReferralStatus): string[] {
       const window = referee.weeksLeft === null
         ? (referee.windowEnd !== null ? `through week ${referee.windowEnd}` : 'active')
         : referee.weeksLeft > 0 ? `${referee.weeksLeft} ${referee.weeksLeft === 1 ? 'week' : 'weeks'} left` : 'ended'
-      lines.push(`Invite bonus: ${window} · ${antsAmount(referee.payable)} payable. Paid to your authorized wallet.`)
+      lines.push(`Invite bonus: ${window} · ${ants(referee.payable)} payable. Paid to your authorized wallet.`)
     }
   } else if (state?.state === 'invited') {
     lines.push(`Invite from ${shortWallet(state.referrer ?? '')} pending. Binds with your first paid or free request.`)
@@ -165,7 +160,7 @@ export function formatReferralStatus(status: ReferralStatus): string[] {
   }
 
   if (invites.available) {
-    const parts = [`${invites.referredCount} invited`, `${antsAmount(invites.payable)} payable`]
+    const parts = [`${invites.referredCount} invited`, `${ants(invites.payable)} payable`]
     if (invites.invites) parts.push(invites.invites.quota === 0 ? 'no invites this week' : `${invites.invites.left} of ${invites.invites.quota} invites left this week`)
     lines.push(`Your invites: ${parts.join(' · ')}.`)
     if (invites.invites?.quota === 0) lines.push(chalk.dim('Invites unlock after at least 1 USDC of usage or sales in the previous week.'))

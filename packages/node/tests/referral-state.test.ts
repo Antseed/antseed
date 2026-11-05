@@ -156,12 +156,35 @@ describe('referral state', () => {
     expect(pendingInvite(await readReferralState(dir, SCOPE))).toEqual(INVITE);
   });
 
-  it('only asks while an invite is pending or a binding is unverified', async () => {
+  it('discovers a binding when nothing is recorded, as for a restored wallet', async () => {
+    let now = 0;
+    const clock = { now: () => now };
+    for (const seed of [null, { state: 'none' } as const]) {
+      const dir = await dataDir();
+      if (seed) await writeReferralState(dir, SCOPE, seed);
+      const denies = counted(async () => null);
+      await syncReferralState(dir, SCOPE, { explorer: async () => null, chain: denies }, clock);
+      await syncReferralState(dir, SCOPE, { explorer: async () => null, chain: denies }, clock);
+      expect(denies.calls).toBe(1); // backed off, not read on every status
+
+      const bound = await syncReferralState(dir, SCOPE, { explorer: async () => REFERRER, chain: async () => REFERRER }, clock);
+      expect(bound).toMatchObject({ state: 'bound', referrer: REFERRER });
+      expect(await readReferralState(dir, SCOPE)).toMatchObject({ state: 'bound', referrer: REFERRER });
+      now += 1;
+    }
+  });
+
+  it('records nothing for an unrecorded wallet the chain does not confirm', async () => {
     const dir = await dataDir();
-    await writeReferralState(dir, SCOPE, { state: 'none' });
+    expect(await syncReferralState(dir, SCOPE, { explorer: async () => REFERRER, chain: async () => null })).toBeNull();
+    expect(await syncReferralState(dir, SCOPE, { explorer: async () => REFERRER })).toBeNull();
+    expect(await readReferralState(dir, SCOPE)).toBeNull();
+  });
+
+  it('only asks about a binding that is not confirmed yet', async () => {
+    const dir = await dataDir();
     const explorer = counted(async () => REFERRER);
     const chain = counted(async () => REFERRER);
-    await syncReferralState(dir, SCOPE, { explorer, chain });
     await writeReferralState(dir, SCOPE, { state: 'bound', referrer: REFERRER });
     await syncReferralState(dir, SCOPE, { explorer, chain });
     expect([explorer.calls, chain.calls]).toEqual([0, 0]);

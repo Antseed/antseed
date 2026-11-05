@@ -282,7 +282,7 @@ export const REFERRAL_CHAIN_RECHECK_MIN_MS = 10 * 60_000;
 export const REFERRAL_CHAIN_RECHECK_MAX_MS = 60 * 60_000;
 
 /**
- * When `referrerOf` may next be read for a pending invite, by data directory
+ * When `referrerOf` may next be read for an unbound scope, by data directory
  * and scope. Kept in memory: each process reads at most once per backoff
  * window (plus once per Antscan hint), and a restart only costs one read.
  */
@@ -298,14 +298,16 @@ export type SyncReferralOptions = {
  * Re-read this scope's state and record a binding once it is confirmed on
  * the configured deployment, so the daemon stops carrying the invite.
  *
- * While an invite is pending, Antscan (`explorer`) is the cheap trigger: when
- * it reports a binding, `referrerOf` (`chain`) is read, and only its answer
- * is persisted. Antscan may be absent, down, or not index this deployment,
- * so `referrerOf` is also read on a backoff while Antscan does not report a
- * binding: at once, then after REFERRAL_CHAIN_RECHECK_MIN_MS, doubling up to
- * REFERRAL_CHAIN_RECHECK_MAX_MS. A hint Antscan repeats without the chain
- * confirming it waits for that schedule too, so RPC reads stay bounded. An
- * unknown or unconfirmed answer keeps the invite. A legacy `bound` record is
+ * While this scope has no confirmed binding (an invite is pending, or nothing
+ * is recorded, as for a wallet restored without its referral file), Antscan
+ * (`explorer`) is the cheap trigger: when it reports a binding, `referrerOf`
+ * (`chain`) is read, and only its answer is persisted. Antscan may be absent,
+ * down, or not index this deployment, so `referrerOf` is also read on a backoff
+ * while Antscan does not report a binding: at once, then after
+ * REFERRAL_CHAIN_RECHECK_MIN_MS, doubling up to REFERRAL_CHAIN_RECHECK_MAX_MS. A
+ * hint Antscan repeats without the chain confirming it waits for that schedule
+ * too, so RPC reads stay bounded. An unknown or unconfirmed answer keeps the
+ * current state. A legacy `bound` record is
  * checked with `referrerOf` directly and becomes this scope's binding, or
  * `none` when the buyer is unbound here.
  */
@@ -318,13 +320,13 @@ export async function syncReferralState(
   const now = options.now ?? Date.now;
   const state = await readReferralState(dataDir, scope);
   const recheckKey = `${dataDir}\0${scopeKey(scope)}`;
-  if (state?.state !== 'invited') chainRechecks.delete(recheckKey);
-  if (state?.state === 'invited') {
+  if (state?.state === 'bound') chainRechecks.delete(recheckKey);
+  if (state?.state !== 'bound') {
     const hint = await ask(lookups.explorer, scope.wallet);
     if (!lookups.chain) return state;
     let recheck = chainRechecks.get(recheckKey);
-    if (!recheck || recheck.invite !== state.invite) {
-      recheck = { invite: state.invite ?? '', nextAt: 0, delayMs: REFERRAL_CHAIN_RECHECK_MIN_MS, hinted: false };
+    if (!recheck || recheck.invite !== (state?.invite ?? '')) {
+      recheck = { invite: state?.invite ?? '', nextAt: 0, delayMs: REFERRAL_CHAIN_RECHECK_MIN_MS, hinted: false };
       chainRechecks.set(recheckKey, recheck);
     }
     const due = now() >= recheck.nextAt;

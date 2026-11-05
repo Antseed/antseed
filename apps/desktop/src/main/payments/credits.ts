@@ -118,9 +118,6 @@ type CryptoConfig = {
   recognizedUsageEffectiveEpoch?: number;
   antsTokenAddress?: string;
   depositRelayAddress?: string;
-  referralsAddress?: string;
-  /** Antscan REST base for referral reads; empty disables them. */
-  explorerApiUrl?: string;
 };
 let cachedCryptoConfig: CryptoConfig | null = null;
 
@@ -144,18 +141,12 @@ export async function loadCachedCryptoConfig(): Promise<CryptoConfig | null> {
     // No config — no crypto config available
   }
   // Resolve chain config from the selected chain ID (default: base-mainnet).
-  // Contract addresses come from the preset in chain-config.ts, except the
-  // referrals address: it is rolled out via payments.crypto.referralsAddress
-  // (the CLI child honors the same key), so honor it here too or Desktop
-  // reports referrals dark while the daemon carries the referrer.
+  // Contract addresses come from the preset in chain-config.ts.
   const selectedChain = asString(overrides.chainId as string, '') || 'base-mainnet';
   const userRpcUrl = asString(overrides.rpcUrl as string, '');
-  const userReferralsAddress = asString(overrides.referralsAddress as string, '');
-  const userExplorerApiUrl = typeof overrides.explorerApiUrl === 'string' ? overrides.explorerApiUrl.trim() : undefined;
   const cc = resolveChainConfig({
     chainId: selectedChain,
     ...(userRpcUrl ? { rpcUrl: userRpcUrl } : {}),
-    ...(userReferralsAddress ? { referralsAddress: userReferralsAddress } : {}),
   });
   cachedCryptoConfig = {
     rpcUrl: cc.rpcUrl,
@@ -179,8 +170,6 @@ export async function loadCachedCryptoConfig(): Promise<CryptoConfig | null> {
       : {}),
     ...(cc.antsTokenAddress ? { antsTokenAddress: cc.antsTokenAddress } : {}),
     ...(cc.depositRelayAddress ? { depositRelayAddress: cc.depositRelayAddress } : {}),
-    ...(cc.referralsAddress ? { referralsAddress: cc.referralsAddress } : {}),
-    ...((userExplorerApiUrl ?? cc.explorerApiUrl) ? { explorerApiUrl: userExplorerApiUrl ?? cc.explorerApiUrl } : {}),
   };
   return cachedCryptoConfig;
 }

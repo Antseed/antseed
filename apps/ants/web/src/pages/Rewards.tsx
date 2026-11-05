@@ -1,6 +1,7 @@
 import { Button, Card } from '../components/ui';
 import { useContext, useEffect, useState } from 'react';
 import type { ClaimRequest, CreatedInviteView, InviteAllowanceView, PoolView, ReferralView, ReferredBuyerView, RestakeRequest, RewardBucket, RewardsView, StakeUsageRequest } from '../../../src/api-types';
+import { inviteAllowance } from '../../../src/invite-allowance';
 import { request, api } from '../api';
 import { BuyerWalletAction } from '../wallet';
 import { useConfig, useEpochInfo } from '../app-context';
@@ -81,17 +82,6 @@ function ReferralRewardsCard() {
       </> : null}
     </Card>
   );
-}
-
-/**
- * The invite allowance to show: the refreshed one, lowered by an invite just
- * created for the same epoch (until the refetch counts it). A created invite
- * only stands in for the allowance of its own epoch, never a later one.
- */
-export function inviteAllowance(invites: InviteAllowanceView | null, created: CreatedInviteView | null): { quota: number | null; left: number | null } {
-  if (!created || (invites && invites.epoch > created.epoch)) return { quota: invites?.quota ?? null, left: invites?.left ?? null };
-  if (!invites || created.epoch > invites.epoch) return { quota: created.quota, left: created.left };
-  return { quota: invites.quota, left: Math.min(invites.left, created.left) };
 }
 
 /**

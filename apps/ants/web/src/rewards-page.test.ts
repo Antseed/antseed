@@ -5,7 +5,8 @@ import type { BuildersView, CreatedInviteView, JobView, PoolView, RefereeView, R
 import { AppContext, type AppValue } from './app-context';
 import type { ActionButtonProps } from './components/Confirm';
 import { BUILDER_LIMIT_HINT, missingBuilderIds, takeRegisteredAgents } from './pages/BuildersCard';
-import { RewardsPage, inviteAllowance, inviteErrorFor, inviteRowState } from './pages/Rewards';
+import { inviteAllowance } from '../../src/invite-allowance';
+import { RewardsPage, inviteErrorFor, inviteRowState } from './pages/Rewards';
 
 const state = vi.hoisted(() => ({ rewards: null as RewardsView | null, pools: [] as PoolView[], actions: [] as ActionButtonProps[], configReady: true, configLoading: false, configError: null as string | null, rewardsLoading: false, rewardsError: null as string | null, reconciling: false, builders: null as BuildersView | null, referral: null as ReferralView | null, referredBuyers: null as ReferredBuyersView | null, referee: null as RefereeView | null, refreshed: [] as string[], buttons: [] as Array<{ children?: unknown; onClick?: () => unknown; disabled?: boolean }>, createInvite: null as null | (() => Promise<CreatedInviteView>) }));
 vi.mock('./data', () => ({ usePageData: (key: string | null) => ({
