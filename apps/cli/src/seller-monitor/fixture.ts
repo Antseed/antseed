@@ -49,7 +49,7 @@ export function fakeNetworkRows(myPeerId: string, myServices: Record<string, [nu
   const peer = (n: number) => `fa1e${String(n).padStart(36, '0')}`
   const trust = (channels: number, usage: number, power: number, identity: number, free: boolean) => ({
     score: Math.min(100, usage + power + identity + (free ? 5 : 0)),
-    history: { channelCount: channels, totalVolumeUsdcMicros: channels * 600_000 },
+    history: { score: 0, channelCount: channels, totalVolumeUsdcMicros: channels * 600_000 },
     usage: usage ? { score: usage, shareBps: Math.round(usage * 30), epoch: 27 } : null,
     power: power ? { score: power, shareBps: Math.round(power * 8), epoch: 28 } : null,
     identity: identity ? { score: identity, kind: 'domain', claim: 'example.com' } : null,

@@ -60,7 +60,12 @@ export interface TrustBreakdown {
   /** Final trust score, 0-100. */
   score: number;
   /** Settled service history, for display only; `null` when channel stats are unavailable. */
-  history: { channelCount: number; totalVolumeUsdcMicros: number } | null;
+  history: {
+    /** @deprecated Always 0: service history no longer feeds the score. */
+    score: number;
+    channelCount: number;
+    totalVolumeUsdcMicros: number;
+  } | null;
   /** Last epoch's usage-points share, weighted 0-30; `null` when usage accounting data is unavailable. */
   usage: { score: number; shareBps: number; epoch: number } | null;
   /** Current epoch's staking-power share, weighted 0-70; `null` when pool data is unavailable. */
@@ -76,7 +81,14 @@ export interface TrustBreakdown {
    * the points it added (positive) or took off (negative).
    * `null` when it changes nothing or there is no fresh verification read.
    */
-  verification?: { multiplierBps: number; sameCount: number; diffCount: number; change: number } | null;
+  verification?: {
+    multiplierBps: number;
+    sameCount: number;
+    diffCount: number;
+    change: number;
+    /** @deprecated Use `change`. The points taken off, 0 for a bonus. */
+    penalty: number;
+  } | null;
 }
 
 function finite(value: number | undefined): number | null {
@@ -129,7 +141,7 @@ export function computeTrustScore(peer: PeerInfo, nowMs = Date.now()): TrustBrea
   const channelCount = finite(peer.onChainChannelCount);
   const totalVolumeUsdcMicros = finite(peer.onChainTotalVolumeUsdcMicros);
   const history = channelCount !== null && totalVolumeUsdcMicros !== null
-    ? { channelCount, totalVolumeUsdcMicros }
+    ? { score: 0, channelCount, totalVolumeUsdcMicros }
     : null;
 
   const epoch = finite(peer.onChainUsageEpoch);
@@ -164,6 +176,7 @@ export function computeTrustScore(peer: PeerInfo, nowMs = Date.now()): TrustBrea
     sameCount: peer.onChainVerificationStatus!.sameCount,
     diffCount: peer.onChainVerificationStatus!.diffCount,
     change: score - sum,
+    penalty: Math.max(0, sum - score),
   };
   return { score, history, usage, power, identity, freeModels, washFlagged, verification };
 }

@@ -12,7 +12,7 @@ test('normalizeDiscoverRow carries only normalized advertised verifier IDs', () 
 test('normalizeDiscoverRow validates the trust breakdown and its nullable parts', () => {
   const trust = {
     score: 74,
-    history: { channelCount: 50, totalVolumeUsdcMicros: 75_000_000 },
+    history: { score: 0, channelCount: 50, totalVolumeUsdcMicros: 75_000_000 },
     usage: { score: 10, shareBps: 500, epoch: 11 },
     power: { score: 4, shareBps: 20, epoch: 12 },
     identity: { score: 20, kind: 'github', claim: 'portfolio' },
@@ -203,7 +203,7 @@ test('a penalized trust breakdown survives normalization and reaches the reputat
     onChainReputationScore: 40,
     trust: {
       score: 40,
-      history: { channelCount: 100, totalVolumeUsdcMicros: 100_000_000 },
+      history: { score: 0, channelCount: 100, totalVolumeUsdcMicros: 100_000_000 },
       usage: null,
       power: null,
       identity: { score: 30, kind: 'github', claim: 'example' },
@@ -211,12 +211,17 @@ test('a penalized trust breakdown survives normalization and reaches the reputat
       verification: { multiplierBps: 5_000, sameCount: 0, diffCount: 3, change: -40 },
     },
   });
-  assert.deepEqual(row?.trust?.verification, { multiplierBps: 5_000, sameCount: 0, diffCount: 3, change: -40 });
+  assert.deepEqual(row?.trust?.verification, { multiplierBps: 5_000, sameCount: 0, diffCount: 3, change: -40, penalty: 40 });
   assert.match(sellerReputationExplanation(row!), /− model checks 4\.0 \(3 DIFF: points at 50%\)/);
   // A bonus is kept and shown as added points; a change of 0 is dropped.
   const bonus = normalizeDiscoverRow({ peerId: 'abc', serviceId: 'gpt-5', trust: { score: 44, washFlagged: false, verification: { multiplierBps: 11_000, sameCount: 5, diffCount: 0, change: 4 } } });
-  assert.deepEqual(bonus?.trust?.verification, { multiplierBps: 11_000, sameCount: 5, diffCount: 0, change: 4 });
+  assert.deepEqual(bonus?.trust?.verification, { multiplierBps: 11_000, sameCount: 5, diffCount: 0, change: 4, penalty: 0 });
   assert.match(sellerReputationExplanation(bonus!), /\+ model checks 0\.4 \(5 verified: points at 110%\)/);
+  // A state file from an older buyer daemon has `penalty` and no `change`; the explanation survives.
+  const legacy = normalizeDiscoverRow({ peerId: 'abc', serviceId: 'gpt-5', trust: { score: 40, washFlagged: false, verification: { multiplierBps: 5_000, sameCount: 0, diffCount: 3, penalty: 40 } } });
+  assert.equal(legacy?.trust?.verification?.change, -40);
+  assert.match(sellerReputationExplanation(legacy!), /− model checks 4\.0 \(3 DIFF: points at 50%\)/);
+  assert.equal(normalizeDiscoverRow({ peerId: 'abc', serviceId: 'gpt-5', trust: { score: 40, washFlagged: false, verification: { multiplierBps: 5_000, sameCount: 0, diffCount: 3, penalty: 'x' } } })?.trust?.verification, null);
   const unchanged = normalizeDiscoverRow({ peerId: 'abc', serviceId: 'gpt-5', trust: { score: 40, washFlagged: false, verification: { multiplierBps: 10_000, sameCount: 0, diffCount: 0, change: 0 } } });
   assert.equal(unchanged?.trust?.verification, null);
 });

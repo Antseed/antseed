@@ -41,9 +41,13 @@ function normalizeVerificationPart(raw: Record<string, unknown> | null): TrustBr
   const multiplierBps = nonNegative(raw.multiplierBps);
   const sameCount = nonNegative(raw.sameCount);
   const diffCount = nonNegative(raw.diffCount);
-  const change = typeof raw.change === 'number' && Number.isFinite(raw.change) ? raw.change : null;
+  // A state file from an older buyer daemon has a positive `penalty` instead of a signed `change`.
+  const legacyPenalty = boundedScore(raw.penalty);
+  const change = typeof raw.change === 'number' && Number.isFinite(raw.change)
+    ? raw.change
+    : legacyPenalty === null ? null : -legacyPenalty;
   if (multiplierBps === null || sameCount === null || diffCount === null || change === null || change === 0) return null;
-  return { multiplierBps, sameCount, diffCount, change };
+  return { multiplierBps, sameCount, diffCount, change, penalty: Math.max(0, -change) };
 }
 
 function normalizeFreeModelsPart(raw: Record<string, unknown> | null): TrustBreakdown['freeModels'] {
@@ -58,7 +62,7 @@ function normalizeHistoryPart(raw: Record<string, unknown> | null): TrustBreakdo
   const channelCount = nonNegative(raw.channelCount);
   const totalVolumeUsdcMicros = nonNegative(raw.totalVolumeUsdcMicros);
   if (channelCount === null || totalVolumeUsdcMicros === null) return null;
-  return { channelCount, totalVolumeUsdcMicros };
+  return { score: boundedScore(raw.score) ?? 0, channelCount, totalVolumeUsdcMicros };
 }
 
 /** A usage or power part: weighted score plus the share and epoch it came from. */

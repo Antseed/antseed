@@ -4,10 +4,10 @@ import { trustBreakdownField } from './network-mapping.js'
 
 test('trustBreakdownField maps the current buyer format, with history left unscored', () => {
   const { trustBreakdown } = trustBreakdownField({
-    history: { channelCount: 100, totalVolumeUsdcMicros: 100_000_000 },
+    history: { score: 0, channelCount: 100, totalVolumeUsdcMicros: 100_000_000 },
     usage: { score: 12 },
     power: { score: 44 },
-    verification: { multiplierBps: 10_200, sameCount: 9, diffCount: 2, change: 1.2 },
+    verification: { multiplierBps: 10_200, sameCount: 9, diffCount: 2, change: 1.2, penalty: 0 },
   })
   assert.deepEqual(trustBreakdown, {
     usage: 12,

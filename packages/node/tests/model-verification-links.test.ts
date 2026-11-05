@@ -49,10 +49,11 @@ describe('verification multiplier in the trust score', () => {
     const raw = computeTrustScore(base, now)!.score;
     const cut = computeTrustScore({ ...base, onChainVerificationStatus: { sameCount: 2, diffCount: 4, pointsMultiplierBps: 4_000 } }, now)!;
     expect(cut.score).toBeCloseTo(raw * 0.4);
-    expect(cut.verification).toEqual({ multiplierBps: 4_000, sameCount: 2, diffCount: 4, change: cut.score - raw });
+    expect(cut.verification).toEqual({ multiplierBps: 4_000, sameCount: 2, diffCount: 4, change: cut.score - raw, penalty: raw - cut.score });
     const bonus = computeTrustScore({ ...base, onChainVerificationStatus: { sameCount: 10, diffCount: 0, pointsMultiplierBps: 12_000 } }, now)!;
     expect(bonus.score).toBeCloseTo(Math.min(100, raw * 1.2));
     expect(bonus.verification?.change).toBeCloseTo(bonus.score - raw);
+    expect(bonus.verification?.penalty).toBe(0);
     const neutral = computeTrustScore({ ...base, onChainVerificationStatus: { sameCount: 0, diffCount: 0, pointsMultiplierBps: 10_000 } }, now)!;
     expect(neutral.score).toBe(raw);
     expect(neutral.verification).toBeNull();

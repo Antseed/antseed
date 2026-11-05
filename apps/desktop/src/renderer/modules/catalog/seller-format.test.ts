@@ -9,7 +9,7 @@ test('seller reputation explains the trust formula part by part', () => {
     onChainReputationScore: 65,
     trust: {
       score: 65,
-      history: { channelCount: 100, totalVolumeUsdcMicros: 100_000_000 },
+      history: { score: 0, channelCount: 100, totalVolumeUsdcMicros: 100_000_000 },
       usage: { score: 10, shareBps: 1_000, epoch: 11 },
       power: { score: 5, shareBps: 1_000, epoch: 12 },
       identity: { score: 20, kind: 'github', claim: 'portfolio' },
@@ -40,7 +40,7 @@ test('seller reputation calls out proven wash traders', () => {
     onChainReputationScore: 0,
     trust: {
       score: 0,
-      history: { channelCount: 100, totalVolumeUsdcMicros: 100_000_000 },
+      history: { score: 0, channelCount: 100, totalVolumeUsdcMicros: 100_000_000 },
       usage: { score: 38, shareBps: 7_000, epoch: 11 },
       power: { score: 5, shareBps: 20, epoch: 12 },
       identity: null,

@@ -55,7 +55,8 @@ describe('computeTrustScore', () => {
     const established = chainPeer({ onChainChannelCount: 1_000, onChainTotalVolumeUsdcMicros: 1_000_000_000 });
     expect(computeTrustScore(established, NOW)).toMatchObject({
       score: 0,
-      history: { channelCount: 1_000, totalVolumeUsdcMicros: 1_000_000_000 },
+      // `history.score` stays for existing consumers of the published type.
+      history: { score: 0, channelCount: 1_000, totalVolumeUsdcMicros: 1_000_000_000 },
     });
     // History alone still makes the peer known, so a seller-reported score cannot stand in for it.
     expect(computeTrustScore({ peerId: PEER_ID, providers: [], lastSeen: NOW, reputationScore: 100,
