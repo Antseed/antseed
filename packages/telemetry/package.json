@@ -1,0 +1,27 @@
+{
+  "name": "@antseed/telemetry",
+  "version": "0.1.0",
+  "description": "Privacy-safe product telemetry shared by the Antseed desktop app, gateway and buyer: buckets, failure classifiers, a strict sanitizer, consent resolution and a bounded PostHog transport",
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "prebuild": "node ../../scripts/remove-paths.mjs dist",
+    "build": "tsc",
+    "test": "node ../../scripts/remove-paths.mjs test-dist && tsc -p tsconfig.test.json && node --test test-dist/*.test.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "typescript": "^5.5.0"
+  }
+}

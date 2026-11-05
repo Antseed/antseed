@@ -10,11 +10,11 @@ const start: SerializedHttpResponse = { requestId: request.requestId, statusCode
 /** The final answer once the buyer accepted the file as the finished video. */
 const accepted: SerializedHttpResponse = { ...start, headers: { ...start.headers, 'x-antseed-video-delivered': '1' } }
 
-async function serve(send: (request: SerializedHttpRequest, callbacks: RequestStreamCallbacks, signal: AbortSignal) => Promise<SerializedHttpResponse>, run: (url: string) => Promise<void>, retire?: () => Promise<boolean>) {
+async function serve(send: (request: SerializedHttpRequest, callbacks: RequestStreamCallbacks, signal: AbortSignal) => Promise<SerializedHttpResponse>, run: (url: string) => Promise<void>, retire?: () => Promise<boolean>, onInterrupted?: (by: 'seller' | 'buyer' | 'cancelled') => void) {
   const server = createServer((_incoming, response) => {
     const abort = new AbortController()
     response.on('close', () => abort.abort())
-    void downloadVideo(request, response, send, abort.signal, retire)
+    void downloadVideo(request, response, send, abort.signal, retire, onInterrupted)
   })
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
   try { await run(`http://127.0.0.1:${(server.address() as { port: number }).port}`) }
@@ -62,6 +62,7 @@ test('cuts off a stream the buyer did not accept as the finished video, so it ne
 
 test('cuts off a good video whose delivery the buyer could not save, but keeps its job for another download', async () => {
   let retired = 0
+  const interrupted: string[] = []
   const unrecorded: SerializedHttpResponse = { ...start, headers: { ...start.headers, 'x-antseed-video-delivered': 'unrecorded' } }
   await serve(async (sent, callbacks) => {
     callbacks.onResponseStart!(start, { streaming: true })
@@ -70,8 +71,10 @@ test('cuts off a good video whose delivery the buyer could not save, but keeps i
   }, async url => {
     const response = await fetch(url)
     await assert.rejects(response.arrayBuffer())
-  }, async () => { retired += 1; return true })
+  }, async () => { retired += 1; return true }, by => { interrupted.push(by) })
   assert.equal(retired, 0)
+  // The seller delivered a good file: telemetry counts this buyer's failure, not the seller's.
+  assert.deepEqual(interrupted, ['buyer'])
 })
 
 test('returns errors before a stream starts', async () => {
@@ -97,17 +100,21 @@ test('rejects missing and oversized lengths', async () => {
   }
 })
 
-test('destroys truncated streams instead of appending JSON', async () => {
+test('destroys truncated streams instead of appending JSON, reported as a seller drop', async () => {
+  const interrupted: string[] = []
   await serve(async (_request, callbacks) => {
     callbacks.onResponseStart!(start, { streaming: true })
     await callbacks.onResponseChunk!({ requestId: request.requestId, data: video.subarray(0, 65536), done: false })
     throw new Error('upstream failed')
   }, async url => {
     await assert.rejects(async () => { const response = await fetch(url); await response.arrayBuffer() })
-  })
+  }, undefined, by => { interrupted.push(by) })
+  // Telemetry must count this as the seller failing, not the client cancelling.
+  assert.deepEqual(interrupted, ['seller'])
 })
 
 test('propagates client disconnect to the single download request', async () => {
+  const interrupted: string[] = []
   let cancelled!: () => void
   const cancellation = new Promise<void>(resolve => { cancelled = resolve })
   await serve(async (_request, callbacks, signal) => {
@@ -119,7 +126,10 @@ test('propagates client disconnect to the single download request', async () => 
     const response = await fetch(url)
     await response.body!.cancel()
     await cancellation
-  })
+  }, undefined, by => { interrupted.push(by) })
+  await new Promise(resolve => setImmediate(resolve))
+  // The client left: a cancellation, not a seller drop.
+  assert.deepEqual(interrupted, ['cancelled'])
 })
 
 test('forwards a POST download body and passes JSON status answers through', async () => {
