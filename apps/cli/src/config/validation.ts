@@ -672,5 +672,10 @@ function sellerBuyerLimitsErrors(limits: unknown): string[] {
       positive('seller.buyerLimits.newBuyers.maxTokensTotal', newBuyers['maxTokensTotal']);
     }
   }
+  const weights = limits['serviceWeights'];
+  if (weights !== undefined) {
+    if (!isRecord(weights)) errors.push('seller.buyerLimits.serviceWeights must be an object of service ids to weights');
+    else for (const [service, weight] of Object.entries(weights)) positive(`seller.buyerLimits.serviceWeights.${service}`, weight);
+  }
   return errors;
 }

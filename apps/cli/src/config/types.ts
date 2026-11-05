@@ -327,10 +327,10 @@ export interface SellerCLIConfig {
   /** Free-usage on-chain record batching: flush after N auths or N ms (default 16 / 900000). */
   freeUsage?: { recordBatchSize?: number; recordFlushIntervalMs?: number };
   /**
-   * Per-buyer token limits (uncached input + output) per provider in a
-   * rolling window, with tighter ones for buyers whose first channel with
-   * this seller is recent. Over a limit, requests are answered 429 with
-   * retry-after. Off unless set.
+   * Per-buyer load limits: tokens (uncached input + output) each buyer may
+   * use from each provider in a rolling window, tighter for buyers whose first
+   * channel with this seller is recent, with optional per-service weights.
+   * Over a limit, requests are answered 429 with retry-after. Off unless set.
    */
   buyerLimits?: SellerBuyerLimitsConfig;
 }

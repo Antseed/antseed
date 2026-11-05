@@ -1,12 +1,12 @@
 /**
- * Per-buyer usage limits for a seller: how many tokens one buyer may use from
+ * Per-buyer load limits for a seller: how many tokens one buyer may use from
  * one provider in a rolling window, with tighter limits for buyers new to this
- * seller. A provider is usually one upstream account, so each provider is
- * counted on its own.
+ * seller. Each provider is counted on its own, so a seller can size the load it
+ * accepts per backend.
  *
- * Tokens are uncached input plus output: cached input costs an upstream
- * subscription little, so a buyer that reuses its prompt cache is not limited
- * for it.
+ * Tokens are uncached input plus output; cached input is light work, so a
+ * buyer that reuses its prompt cache is not limited for it. A service can be
+ * weighted, so its tokens count more (a heavier model) or less.
  */
 
 export interface SellerNewBuyerLimitsConfig {
@@ -25,6 +25,8 @@ export interface SellerBuyerLimitsConfig {
   maxTokensPerBuyer?: number;
   /** Tighter limits for buyers new to this seller. */
   newBuyers?: SellerNewBuyerLimitsConfig;
+  /** How much each token of a service counts against the limits, by service id. Default: 1. */
+  serviceWeights?: Record<string, number>;
 }
 
 const DEFAULT_WINDOW_MINUTES = 60;
@@ -63,6 +65,7 @@ export class SellerBuyerLimiter {
   /** First channel time per buyer, once known; it never changes after that. */
   private readonly _firstSeen = new Map<string, number>();
   private _recordsSinceSweep = 0;
+  private readonly _weights: Map<string, number>;
 
   constructor(
     private readonly _config: SellerBuyerLimitsConfig,
@@ -72,6 +75,7 @@ export class SellerBuyerLimiter {
   ) {
     this._windowMs = (_config.windowMinutes ?? DEFAULT_WINDOW_MINUTES) * 60_000;
     this._newBuyerMs = (_config.newBuyers?.forHours ?? DEFAULT_NEW_BUYER_HOURS) * 3_600_000;
+    this._weights = new Map(Object.entries(_config.serviceWeights ?? {}).map(([service, weight]) => [service.toLowerCase(), weight]));
   }
 
   /**
@@ -86,9 +90,10 @@ export class SellerBuyerLimiter {
    * Admits a request about to go upstream and reserves its estimated tokens
    * until it finishes, so concurrent requests can't all pass on the same usage.
    */
-  admit(buyerPeerId: string, provider: string, estimatedTokens: number): BuyerUsageAdmission {
+  admit(buyerPeerId: string, provider: string, estimatedTokens: number, service?: string): BuyerUsageAdmission {
     const isNew = this._isNewBuyer(buyerPeerId, this._now());
-    const reserved = Math.max(0, estimatedTokens);
+    const weight = this._weight(service);
+    const reserved = Math.max(0, estimatedTokens) * weight;
     const retryAfterSeconds = this._retryAfter(buyerPeerId, provider, isNew, reserved);
     if (retryAfterSeconds !== null) return { admitted: false, retryAfterSeconds };
     const usage = this._providerUsage(provider);
@@ -105,10 +110,16 @@ export class SellerBuyerLimiter {
           if (left > 0) usage.pending.set(buyerPeerId, left);
           else usage.pending.delete(buyerPeerId);
           if (isNew) usage.newPending = Math.max(0, usage.newPending - reserved);
-          this._record(buyerPeerId, usage, tokens, isNew);
+          this._record(buyerPeerId, usage, tokens * weight, isNew);
         },
       },
     };
+  }
+
+  /** How much each token of a service counts (its configured weight, else 1). */
+  private _weight(service: string | undefined): number {
+    if (!service) return 1;
+    return this._weights.get(service.toLowerCase()) ?? 1;
   }
 
   describe(): string {
@@ -120,6 +131,7 @@ export class SellerBuyerLimiter {
       if (fresh.maxTokensPerBuyer !== undefined) parts.push(`newPerBuyer=${fresh.maxTokensPerBuyer}`);
       if (fresh.maxTokensTotal !== undefined) parts.push(`newTotal=${fresh.maxTokensTotal}`);
     }
+    for (const [service, weight] of this._weights) parts.push(`${service}×${weight}`);
     return parts.join(' ');
   }
 

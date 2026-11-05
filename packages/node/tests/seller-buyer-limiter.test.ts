@@ -105,6 +105,21 @@ describe('SellerBuyerLimiter', () => {
     expect(limiter.retryAfterSeconds('regular', 'codex')).toBeNull();
   });
 
+  it('counts a weighted service\'s tokens that many times, matching its id in any letter case', () => {
+    const limiter = new SellerBuyerLimiter({ maxTokensPerBuyer: 1_000, serviceWeights: { 'Heavy-Model': 10 } }, () => null, clock().now);
+    const heavy = limiter.admit('a', 'codex', 0, 'heavy-model');
+    if (!heavy.admitted) throw new Error('not admitted');
+    heavy.reservation.finish(100);
+    expect(limiter.retryAfterSeconds('a', 'codex')).not.toBeNull();
+    // The same tokens on an unweighted service leave room.
+    use(limiter, 'b', 'codex', 100);
+    expect(limiter.retryAfterSeconds('b', 'codex')).toBeNull();
+    // A weighted request's estimate is weighted too: 60 × 10 no longer fits beside 500 used.
+    use(limiter, 'c', 'codex', 500);
+    expect(limiter.admit('c', 'codex', 60, 'heavy-model').admitted).toBe(false);
+    expect(limiter.admit('c', 'codex', 60, 'light-model').admitted).toBe(true);
+  });
+
   it('stops counting a buyer as new once its first channel is old enough', () => {
     const time = clock();
     const limiter = new SellerBuyerLimiter(
