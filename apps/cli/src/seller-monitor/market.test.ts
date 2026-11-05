@@ -46,15 +46,17 @@ test('market without config uses the announced services; a seller not found stil
 test('reputation: trust parts with their maximum, rank among sellers, next steps biggest gain first', () => {
   const rows = fakeNetworkRows(ME, { 'glm-5.3': [0.9, 3] })
   const trust = trustOfRow(rows[0])!
-  assert.ok(Math.abs(trust.score - 47.7) < 1e-9)
-  assert.deepEqual([trust.history!.max, trust.usage!.max, trust.power!.max, trust.freeModels!.max], [50, 20, 10, 5])
+  assert.ok(Math.abs(trust.score - 70.6) < 1e-9)
+  assert.deepEqual([trust.usage!.max, trust.power!.max, trust.freeModels!.max], [30, 70, 5])
+  assert.equal(trust.history!.channelCount, 125)
   assert.equal(trust.identity, null)
-  assert.deepEqual(trustRank(rows, ME), { position: 6, of: 8 })
+  assert.deepEqual(trustRank(rows, ME), { position: 3, of: 8 })
   const steps = trustSteps(trust)
-  assert.deepEqual(steps.map((step) => step.part), ['identity', 'history', 'usage', 'power'])
-  assert.match(steps[0]!.text, /domain or a GitHub/)
+  assert.deepEqual(steps.map((step) => step.part), ['power', 'identity', 'usage'])
+  assert.match(steps[0]!.text, /stake/)
+  assert.match(steps[1]!.text, /domain or a GitHub/)
   assert.deepEqual(trustSteps({ ...trust, washFlagged: true }).map((step) => step.part), ['wash'])
-  assert.equal(trustSteps(null)[0]!.part, 'history')
+  assert.equal(trustSteps(null)[0]!.part, 'standing')
 })
 
 test('market: with no network loaded, nothing is ranked or called only yours', () => {

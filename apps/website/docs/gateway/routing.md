@@ -17,7 +17,7 @@ The policy editor groups its settings under **Sellers**, **Quality** (the minimu
 |---|---|
 | **Which sellers may serve** | **Any seller**, or **Only these**: chosen providers or seller lists |
 | **Never use**, **Never use these lists** | Providers that never serve |
-| **Minimum trust score** | 0 to 100, from the seller's settled service history, recognized usage, staking power and verified identity. The ⓘ next to it in the editor explains the parts. It is judged per model: for a model with a live DIFF [model check](/docs/verify/overview), a seller counts at 10% of its score, and **Sort by trust** uses the same number. See [Trust score](/docs/reputation). |
+| **Minimum trust score** | 0 to 100, from the seller's staking power, recognized usage, verified identity and model checks. The ⓘ next to it in the editor explains the parts. It is judged per model: for a model with a live DIFF [model check](/docs/verify/overview), a seller counts at 10% of its score, and **Sort by trust** uses the same number. See [Trust score](/docs/reputation). |
 | **TEE sellers only** | Only providers that advertise running models in a trusted execution environment (TEE) |
 | **Verified sellers only** | Only providers whose responses pass a verifier, such as a TEE attestation check |
 | **Sort by** | **Balanced**, **Lowest price**, **Lowest latency** or **Highest trust**. **Balanced** keeps the buyer's automatic order: the cheapest provider that passes the trust minimum, with trust only breaking ties (see [Router plugin API](/docs/router-api)). **Lowest latency** ranks by time to first token, which the buyer measures per provider and model on streamed answers; providers it hasn't measured yet come after the measured ones. |

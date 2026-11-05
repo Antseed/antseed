@@ -1644,7 +1644,8 @@ export interface SellerTrustPart {
 
 export interface SellerTrust {
   score: number
-  history: (SellerTrustPart & { channelCount: number; volumeUsdc: number }) | null
+  /** Settled service history, shown next to the score and not part of it. */
+  history: { channelCount: number; volumeUsdc: number } | null
   usage: (SellerTrustPart & { shareBps: number; epoch: number }) | null
   power: (SellerTrustPart & { shareBps: number; epoch: number }) | null
   identity: (SellerTrustPart & { kind: 'github' | 'domain'; claim: string }) | null
@@ -1683,7 +1684,7 @@ export interface SellerReputation {
   /** Position by trust score among the sellers in the snapshot. */
   rank: { position: number; of: number } | null
   /** One plain next step per part that has room to grow. */
-  steps: Array<{ part: 'history' | 'usage' | 'power' | 'identity' | 'freeModels' | 'wash' | 'standing'; text: string }>
+  steps: Array<{ part: 'usage' | 'power' | 'identity' | 'freeModels' | 'wash' | 'standing'; text: string }>
   standing: SellerStanding | null
   standingError: string | null
   standingRefreshedAt: number | null
@@ -1808,19 +1809,17 @@ export interface SellerRpcDiagnostics {
 
 /** The parts of a seller's trust score (0-100), as the buyer computed it. Null parts had no data. */
 export interface TrustBreakdownView {
-  /** Settled service history, 0-50. */
-  history: number | null
-  /** Last epoch's recognized-usage share, 0-20. */
+  /** Last epoch's recognized-usage share, 0-30. */
   usage: number | null
-  /** Staking-power share, 0-10. */
+  /** Staking-power share, 0-70. */
   power: number | null
   /** Verified identity, 0-20, and which kind. */
   identity: { score: number; kind: 'github' | 'domain' } | null
   /** Free-model bonus, +5. */
   freeModels: number | null
   /**
-   * Model-verification penalty, taken off the sum: the seller's points multiplier from the
-   * verification policy when below 100%. Absent without one.
+   * Model-verification effect on the sum: the seller's points multiplier from the verification
+   * policy, and the points it added or (negative) took off. Absent when it changes nothing.
    */
-  verification?: { multiplierBps: number; diffCount: number; penalty: number }
+  verification?: { multiplierBps: number; sameCount: number; diffCount: number; change: number }
 }

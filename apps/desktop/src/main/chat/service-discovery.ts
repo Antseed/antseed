@@ -404,15 +404,15 @@ export function normalizeTrustBreakdown(raw: unknown): TrustBreakdown | null {
   };
 }
 
-/** The model-verification penalty: the points multiplier below 100% and what it took off. */
+/** The model-verification effect: the points multiplier and what it added to or took off the score. */
 function normalizeVerificationPart(raw: Record<string, unknown> | null): TrustBreakdown['verification'] {
   if (!raw) return null;
   const multiplierBps = nonNegative(raw.multiplierBps);
   const sameCount = nonNegative(raw.sameCount);
   const diffCount = nonNegative(raw.diffCount);
-  const penalty = boundedScore(raw.penalty);
-  if (multiplierBps === null || multiplierBps >= 10_000 || sameCount === null || diffCount === null || penalty === null) return null;
-  return { multiplierBps, sameCount, diffCount, penalty };
+  const change = typeof raw.change === 'number' && Number.isFinite(raw.change) ? raw.change : null;
+  if (multiplierBps === null || sameCount === null || diffCount === null || change === null || change === 0) return null;
+  return { multiplierBps, sameCount, diffCount, change };
 }
 
 function normalizeFreeModelsPart(raw: Record<string, unknown> | null): TrustBreakdown['freeModels'] {
@@ -424,11 +424,10 @@ function normalizeFreeModelsPart(raw: Record<string, unknown> | null): TrustBrea
 
 function normalizeHistoryPart(raw: Record<string, unknown> | null): TrustBreakdown['history'] {
   if (!raw) return null;
-  const score = boundedScore(raw.score);
   const channelCount = nonNegative(raw.channelCount);
   const totalVolumeUsdcMicros = nonNegative(raw.totalVolumeUsdcMicros);
-  if (score === null || channelCount === null || totalVolumeUsdcMicros === null) return null;
-  return { score, channelCount, totalVolumeUsdcMicros };
+  if (channelCount === null || totalVolumeUsdcMicros === null) return null;
+  return { channelCount, totalVolumeUsdcMicros };
 }
 
 /** A usage or power part: weighted score plus the share and epoch it came from. */

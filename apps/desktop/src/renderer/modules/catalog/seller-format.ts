@@ -19,7 +19,7 @@ const IDENTITY_KIND_LABELS: Record<NonNullable<TrustBreakdown['identity']>['kind
 
 /**
  * Tooltip spelling out the trust formula for one seller, e.g.
- * `Trust 7.0/10 = history 3.0 + usage 1.0 + power 0.5 + identity 2.0 GitHub + free models 0.5. Not flagged for wash trading.`
+ * `Trust 7.0/10 = power 4.0 + usage 1.0 + identity 1.5 GitHub + free models 0.5. Not flagged for wash trading.`
  * Flagged sellers read `Trust 0/10: flagged as a proven wash trader by the on-chain registry.`
  */
 export function sellerReputationExplanation(route: DiscoverRow): string {
@@ -36,7 +36,6 @@ function sellerTrustExplanation(route: DiscoverRow): string {
   const trust = route.trust;
   if (!trust) return `Trust: ${sellerReputationLabel(route)}/10`;
   if (trust.washFlagged) return 'Trust 0/10: flagged as a proven wash trader by the on-chain registry.';
-  const history = trust.history ? `history ${reputationScaleLabel(trust.history.score)}` : 'history n/a';
   const usage = trust.usage ? `usage ${reputationScaleLabel(trust.usage.score)}` : 'usage n/a';
   const power = trust.power ? `power ${reputationScaleLabel(trust.power.score)}` : 'power n/a';
   const identity = trust.identity
@@ -44,11 +43,14 @@ function sellerTrustExplanation(route: DiscoverRow): string {
     : 'identity none';
   const free = trust.freeModels ? ` + free models ${reputationScaleLabel(trust.freeModels.score)}` : '';
   const v = trust.verification;
+  const counts = v
+    ? [v.sameCount > 0 ? `${v.sameCount} verified` : null, v.diffCount > 0 ? `${v.diffCount} DIFF` : null].filter(Boolean).join(', ')
+    : '';
   const checks = v
-    ? ` − model checks ${reputationScaleLabel(v.penalty)} (${v.diffCount} DIFF ${v.diffCount === 1 ? 'service' : 'services'}: points at ${Math.round(v.multiplierBps / 100)}%)`
+    ? ` ${v.change < 0 ? '−' : '+'} model checks ${reputationScaleLabel(Math.abs(v.change))} (${counts}: points at ${Math.round(v.multiplierBps / 100)}%)`
     : '';
   const wash = trust.washFlagged === false ? ' Not flagged for wash trading.' : ' Wash-trading registry unavailable.';
-  return `Trust ${reputationScaleLabel(trust.score)}/10 = ${history} + ${usage} + ${power} + ${identity}${free}${checks}.${wash}`;
+  return `Trust ${reputationScaleLabel(trust.score)}/10 = ${power} + ${usage} + ${identity}${free}${checks}.${wash}`;
 }
 
 /** 0-100 score → "9.8" (10-point scale). */

@@ -190,14 +190,14 @@ export type VprModelCatalogEntry = {
  * (`packages/node/src/reputation/trust-score.ts`). The renderer only imports
  * `@antseed/node` subpath modules, so the shape is restated here.
  *
- *   trust = washFlagged ? 0 : history + usage + power + identity
- *   (weights 50 / 20 / 10 / 20)
+ *   trust = washFlagged ? 0 : (power + usage + identity + freeModels) * verification multiplier
+ *   (power up to 70, usage 30, identity +20, free models +5; capped at 100)
  */
 export type TrustBreakdown = {
   /** Final trust score, 0-100. */
   score: number;
-  /** Settled service history; `null` when channel stats are unavailable. */
-  history: { score: number; channelCount: number; totalVolumeUsdcMicros: number } | null;
+  /** Settled service history, for display only; `null` when channel stats are unavailable. */
+  history: { channelCount: number; totalVolumeUsdcMicros: number } | null;
   /** Last epoch's share of all pools' usage points; `null` when usage accounting data is unavailable. */
   usage: { score: number; shareBps: number; epoch: number } | null;
   /** Current epoch's share of all pools' staking power; `null` when pool data is unavailable. */
@@ -208,8 +208,8 @@ export type TrustBreakdown = {
   washFlagged: boolean | null;
   /** Free-model bonus; `null` when the seller announces no free model. */
   freeModels?: { score: number; service: string } | null;
-  /** Model-verification penalty: the points multiplier below 100% and what it took off; `null` without one. */
-  verification?: { multiplierBps: number; sameCount: number; diffCount: number; penalty: number } | null;
+  /** Model-verification effect: the points multiplier and what it added or (negative) took off; `null` without one. */
+  verification?: { multiplierBps: number; sameCount: number; diffCount: number; change: number } | null;
 };
 
 export type DiscoverVerificationLink = {
