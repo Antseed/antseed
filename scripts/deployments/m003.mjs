@@ -14,12 +14,13 @@ import { clearPlan } from './runtime/plan.mjs';
 import { CONTRACTS_ROOT } from './runtime/paths.mjs';
 
 /**
- * The split verification deployment. It replaces M003's earlier single-contract deployment, whose
- * record (`003-kbf-verification`) stays in the append-only history; that release has no owner now.
+ * The verification deployment with audits, per-epoch claims and per-verdict lifetimes. It replaces
+ * M003's earlier deployments, whose records (`003-kbf-verification`, `003-verification-split`) stay
+ * in the append-only history; those releases have no owner now.
  */
-export const RELEASE = '003-verification-split';
-export const POLICY_NOTE = 'M003 deploys the verification results layer, the KBF audit source and '
-  + 'the verification points policy, and wires KBF as a source with the whole verification bucket. It approves no '
+export const RELEASE = '003-verification-audits';
+export const POLICY_NOTE = 'M003 deploys the verification results layer, the KBF audit and '
+  + 'the verification points policy, and wires KBF as an audit with the whole verification bucket. It approves no '
   + 'auditors and does not register the policy in the points policy registry; the owners do that separately, so '
   + 'verdicts change no seller points until then.';
 const ZERO = '0x0000000000000000000000000000000000000000';
@@ -75,7 +76,7 @@ export function parseBonusBps(value) {
 }
 
 export function validateBaseline(canonical) {
-  for (const name of ['registry', 'identityRegistry', 'sellerPools', 'usageAccounting', 'pointsPolicyRegistry']) {
+  for (const name of ['registry', 'identityRegistry', 'sellerPools', 'usageAccounting', 'pointsPolicyRegistry', 'emissionsGate']) {
     if (!ADDRESS.test(canonical.contracts?.[name]?.address ?? '')) throw new Error(`M003 missing ${name}`);
   }
 }
@@ -92,7 +93,7 @@ export function recordErrors(record) {
   const contracts = record.contracts ?? {};
   if (!config || DEPLOYMENTS.some(([key]) => !contracts[key])) return ['M003 requires verification contracts and configuration'];
   const errors = [];
-  for (const key of ['registry', 'identityRegistry', 'sellerPools', 'usageAccounting', 'pointsPolicyRegistry', 'owner',
+  for (const key of ['registry', 'identityRegistry', 'sellerPools', 'usageAccounting', 'pointsPolicyRegistry', 'emissionsGate', 'owner',
     ...DEPLOYMENTS.map(([, field]) => field)]) {
     if (!ADDRESS.test(config[key] ?? '') || sameAddress(config[key], ZERO)) errors.push(`M003 invalid ${key}`);
   }
@@ -101,8 +102,8 @@ export function recordErrors(record) {
     if (!sameAddress(contracts[key].owner, config.owner)) errors.push(`M003 ${key} owner mismatch`);
   }
   const expectedArguments = {
-    verificationResults: [config.registry],
-    kbfAudits: [config.resultsAddress, config.sellerPools],
+    verificationResults: [config.emissionsGate],
+    kbfAudits: [config.resultsAddress, config.sellerPools, config.identityRegistry],
     verificationPointsPolicy: [config.resultsAddress, config.usageAccounting, config.bonusBps, config.owner],
   };
   for (const [key] of DEPLOYMENTS) {
@@ -169,6 +170,10 @@ async function observe(context) {
     || !sameAddress(call(rpcUrl, expected.usageAccounting, 'pointsPolicy()(address)'), expected.pointsPolicyRegistry)) {
     throw new Error('M003 usage accounting or points policy registry mismatch');
   }
+  if (!hasCode(rpcUrl, expected.emissionsGate)
+    || !sameAddress(call(rpcUrl, expected.usageAccounting, 'emissionsGate()(address)'), expected.emissionsGate)) {
+    throw new Error('M003 emissions gate mismatch');
+  }
   let checkpoint = await readCheckpoint(context, RELEASE, (record) => ({
     ...record.verificationConfiguration.verificationRegistry,
     sourceCommit: record.sourceCommit, contracts: record.contracts, transactions: record.transactions,
@@ -177,7 +182,10 @@ async function observe(context) {
     throw new Error(`M003 checkpoint ${context.checkpointFile} is not a ${RELEASE} checkpoint (an earlier M003 release?); move it aside`);
   }
   if (!checkpoint) {
-    if (DEPLOYMENTS.some(([key]) => canonical.contracts[key])) throw new Error('M003 verification exists without its history record');
+    // The earlier split release used the same ledger keys; only this release's own entries need a history record.
+    if (canonical.release === RELEASE && DEPLOYMENTS.some(([key]) => canonical.contracts[key])) {
+      throw new Error('M003 verification exists without its history record');
+    }
     const file = receiptFile(context);
     if (await fileExists(file)) {
       const broadcast = await readJson(file);
@@ -196,7 +204,8 @@ async function observe(context) {
     if (!sameAddress(checkpoint.registry, expected.registry) || !sameAddress(checkpoint.identityRegistry, expected.identityRegistry)
       || !sameAddress(checkpoint.sellerPools, expected.sellerPools)
       || !sameAddress(checkpoint.usageAccounting, expected.usageAccounting)
-      || !sameAddress(checkpoint.pointsPolicyRegistry, expected.pointsPolicyRegistry)) {
+      || !sameAddress(checkpoint.pointsPolicyRegistry, expected.pointsPolicyRegistry)
+      || !sameAddress(checkpoint.emissionsGate, expected.emissionsGate)) {
       throw new Error('M003 checkpoint baseline mismatch');
     }
     if (process.env.VERIFICATION_BONUS_BPS !== undefined
@@ -218,8 +227,11 @@ async function observe(context) {
     throw new Error('M003 deployment is missing or its nonce is in use; reconcile the original broadcast');
   }
   const wiring = {
-    verificationResults: { 'registry()(address)': expected.registry },
-    kbfAudits: { 'results()(address)': checkpoint.resultsAddress, 'sellerPools()(address)': expected.sellerPools },
+    verificationResults: { 'emissionsGate()(address)': expected.emissionsGate },
+    kbfAudits: {
+      'results()(address)': checkpoint.resultsAddress, 'sellerPools()(address)': expected.sellerPools,
+      'identityRegistry()(address)': expected.identityRegistry,
+    },
     verificationPointsPolicy: { 'results()(address)': checkpoint.resultsAddress, 'usageAccounting()(address)': checkpoint.usageAccounting },
   };
   // One artifact index per observation, built only when something is deployed.
@@ -232,9 +244,9 @@ async function observe(context) {
   }
   let state = 'ready';
   if (count === DEPLOYMENTS.length) {
-    const isSource = call(rpcUrl, checkpoint.resultsAddress, 'isSource(address)(bool)', [checkpoint.kbfAddress]);
-    const share = numberValue(call(rpcUrl, checkpoint.resultsAddress, 'sourceShareBps(address)(uint16)', [checkpoint.kbfAddress]));
-    if (String(isSource) === 'true' && share === KBF_SHARE_BPS) state = 'active';
+    const isAudit = call(rpcUrl, checkpoint.resultsAddress, 'isAudit(address)(bool)', [checkpoint.kbfAddress]);
+    const share = numberValue(call(rpcUrl, checkpoint.resultsAddress, 'auditShareBps(address)(uint16)', [checkpoint.kbfAddress]));
+    if (String(isAudit) === 'true' && share === KBF_SHARE_BPS) state = 'active';
   }
   // Approving auditors, the minter controller and registering the policy are manual steps outside M003.
   return { state, deployment: { checkpoint } };
@@ -287,7 +299,7 @@ const deployPhase = {
         before: context.canonical.contracts[key]?.address ?? 'not deployed',
         after: observation.deployment.checkpoint[field],
       }])),
-      'verificationResults.sources': { before: 'none', after: 'kbfAudits at 10000 bps' },
+      'verificationResults.audits': { before: 'none', after: 'kbfAudits at 10000 bps' },
       'pointsPolicyRegistry.policies': {
         before: 'unchanged',
         after: 'unchanged (register the policy manually later)',
@@ -313,9 +325,9 @@ const deployPhase = {
 };
 export const migration = {
   id: 'M003',
-  // The earlier M003 release (a single AntseedKbfVerification) kept its checkpoint at
-  // `.deployments/m003-<network>.json`; this release must not read it.
-  checkpointName: 'm003-verification-split',
+  // Earlier M003 releases kept their checkpoints at `.deployments/m003-<network>.json` (single
+  // AntseedKbfVerification) and `m003-verification-split-<network>.json`; this release must not read them.
+  checkpointName: 'm003-verification-audits',
   networks: ['base-sepolia', 'base-mainnet'],
   releases: [RELEASE],
   phases: [deployPhase],
@@ -331,6 +343,7 @@ export const migration = {
     sellerPools: canonical.contracts.sellerPools.address,
     usageAccounting: canonical.contracts.usageAccounting.address,
     pointsPolicyRegistry: canonical.contracts.pointsPolicyRegistry.address,
+    emissionsGate: canonical.contracts.emissionsGate.address,
   }),
   observe,
   printStatus: (observation) => console.log(`M003 state: ${observation.state}`),

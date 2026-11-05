@@ -6,12 +6,12 @@ import { verificationServiceKey } from '../../reputation/model-reputation.js';
 /**
  * Reads which advertised services of a batch of sellers have a live DIFF
  * verdict on `AntseedVerificationResults`, the verification results layer,
- * whatever verification method (source) recorded it. Two Multicall3 round
+ * whatever verification method (audit) recorded it. Two Multicall3 round
  * trips per read, plus one on the first read when the results address has to
  * be discovered from the KBF audits contract (`kbf.results()`, cached):
  *
- *   round 1: results.validityEpochs, results.emissionsGate (first read only;
- *            it is immutable), and per (agentId, service) results.serviceStatus
+ *   round 1: results.emissionsGate (first read only; it is immutable), and per
+ *            (agentId, service) results.serviceStatus
  *   round 2: emissionsGate.currentEpoch
  *
  * `serviceStatus` holds only recorded results. KBF records a DIFF once
@@ -21,8 +21,8 @@ import { verificationServiceKey } from '../../reputation/model-reputation.js';
  * previous result, so it never cuts reputation here.
  *
  * A recorded verdict is live exactly as the contract counts it:
- * `currentEpoch < verdict.epoch + validityEpochs`. SAME, UNDETERMINED, NONE
- * and expired verdicts are not DIFF.
+ * `currentEpoch < verdict.validUntilEpoch`, the expiry the recording audit
+ * chose. SAME, UNDETERMINED, NONE and expired verdicts are not DIFF.
  */
 
 export interface VerificationServiceQuery {
@@ -73,8 +73,8 @@ export class VerificationSignalsClient {
    * Live DIFF services per agent id, as verification keys (trimmed,
    * lowercased service names). An agent is missing from the result when any
    * of its reads failed, so a caller can keep its previous answer instead of
-   * clearing a penalty on an RPC hiccup. Throws when the epoch or validity
-   * window cannot be read at all.
+   * clearing a penalty on an RPC hiccup. Throws when the current epoch
+   * cannot be read at all.
    */
   async readDiffServices(queries: readonly VerificationServiceQuery[]): Promise<Map<number, string[]>> {
     const out = new Map<number, string[]>();
@@ -91,7 +91,7 @@ export class VerificationSignalsClient {
     if (agents.size === 0) return out;
 
     const target = await this._results();
-    const requests: MulticallRequest[] = [{ target, iface: RESULTS_IFACE, method: 'validityEpochs' }];
+    const requests: MulticallRequest[] = [];
     const needsGate = this._emissionsGate === undefined;
     if (needsGate) requests.push({ target, iface: RESULTS_IFACE, method: 'emissionsGate' });
     const statusCalls: Array<{ agentId: number; key: string; index: number }> = [];
@@ -102,10 +102,8 @@ export class VerificationSignalsClient {
       }
     }
     const results = await this._read(requests);
-    const validity = first(results[0]);
-    if (typeof validity !== 'bigint') throw new Error('verification validityEpochs read failed');
     if (needsGate) {
-      const gate = first(results[1]);
+      const gate = first(results[0]);
       if (typeof gate !== 'string') throw new Error('verification emissionsGate read failed');
       this._emissionsGate = getAddress(gate);
     }
@@ -116,18 +114,18 @@ export class VerificationSignalsClient {
     const failed = new Set<number>();
     for (const [agentId] of agents) out.set(agentId, []);
     for (const call of statusCalls) {
-      const status = first(results[call.index]) as { verdict?: unknown; epoch?: unknown; [index: number]: unknown } | undefined;
+      const status = first(results[call.index]) as { verdict?: unknown; validUntilEpoch?: unknown; [index: number]: unknown } | undefined;
       if (!status) {
         failed.add(call.agentId);
         continue;
       }
       const verdict = status.verdict ?? status[1];
-      const epoch = status.epoch ?? status[3];
-      if (typeof verdict !== 'bigint' || typeof epoch !== 'bigint') {
+      const validUntil = status.validUntilEpoch ?? status[5];
+      if (typeof verdict !== 'bigint' || typeof validUntil !== 'bigint') {
         failed.add(call.agentId);
         continue;
       }
-      if (verdict === VERDICT_DIFF && currentEpoch < epoch + validity) out.get(call.agentId)!.push(call.key);
+      if (verdict === VERDICT_DIFF && currentEpoch < validUntil) out.get(call.agentId)!.push(call.key);
     }
     for (const agentId of failed) out.delete(agentId);
     for (const keys of out.values()) keys.sort();

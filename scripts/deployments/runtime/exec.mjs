@@ -15,7 +15,10 @@ export function run(command, args, options = {}) {
   if (options.capture && result.stdout) process.stdout.write(options.echo === false ? '' : result.stdout);
   if (options.capture && result.stderr) process.stderr.write(options.echo === false ? '' : result.stderr);
   if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(`${command} exited with status ${result.status}`);
+  if (result.status !== 0) {
+    const detail = options.capture && result.stderr?.trim() ? `: ${result.stderr.trim()}` : '';
+    throw new Error(`${command} exited with status ${result.status}${detail}`);
+  }
   return (result.stdout ?? '').trim();
 }
 

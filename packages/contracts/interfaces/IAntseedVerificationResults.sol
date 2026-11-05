@@ -2,32 +2,32 @@
 pragma solidity ^0.8.24;
 
 import { IAntseedEmissionsGate } from "./IAntseedEmissionsGate.sol";
-import { IAntseedRegistry } from "./IAntseedRegistry.sol";
 
 /// @notice The verification results layer: a verdict registry and the holder of the verification
 ///         emission bucket. It is the one place a seller service's verification verdict lives,
-///         whatever method produced it. Readers (points policies, the node, dashboards) read this
-///         contract only and never need to know which sources exist.
+///         whatever audit produced it. Readers (points policies, the node, dashboards) read this
+///         contract only and never need to know which audits exist.
 ///
-///         Sources are owner-approved contracts. Each one brings its own admission rule and
-///         consensus (e.g. `AntseedKbfAudits`: an auditor set and report confirmations) and decides
-///         what earns its verifiers a credit. This contract does not judge what a source records:
-///         the latest record from any approved source is the service's verdict.
+///         Audits are owner-approved contracts, one per verification method. Each one brings its
+///         own admission rule and consensus (e.g. `AntseedKbfAudits`: an auditor set and report
+///         confirmations) and decides what earns its auditors a credit. This contract does not
+///         judge what an audit records: the latest record from any approved audit is the
+///         service's verdict.
 /// @dev Verdicts: status is kept per (agent, service). The latest recorded result (SAME, DIFF, or
-///      UNDETERMINED) is the service's verdict, with the emissions epoch it was given in and the
-///      source that gave it; it is live while `currentEpoch < epoch + validityEpochs` and drops out
-///      on its own afterwards. Only SAME and DIFF count in the agent's status.
+///      UNDETERMINED) is the service's verdict, with the emissions epoch it was given in, the epoch
+///      it stops counting in (`validUntilEpoch`, chosen by the audit) and the audit that gave it; it
+///      is live while `currentEpoch < validUntilEpoch` and drops out on its own afterwards. Only
+///      SAME and DIFF count in the agent's status.
 ///
-///      Rewards: each source has a share of the bucket this contract controls on the emissions
-///      gate, its own rewards start epoch and its own safety caps. Sources grant credits with
-///      `credit`; once an epoch is final a verifier claims, per source,
-///      `gross = sourceBudget * credits / sourceCredits`, receiving at most
-///      `sourceBudget * maxAuditorShareBps / BPS`; anything above that cap goes to the emissions
-///      reserve in the same claim. Budget no verifier can ever claim (sources with no credits that
-///      epoch, any part of the bucket assigned to no source, and what voided credits free up) is
-///      swept through the gate's remainder route (burn, then reserve) by anyone with
-///      `settleEpochRemainder`. Source shares are checkpointed per epoch: a change applies from the
-///      next epoch, so a running or finished epoch's split never moves.
+///      Rewards: each audit has a share of the bucket this contract controls on the emissions
+///      gate, its own rewards start epoch and its own safety caps. Audits grant credits with
+///      `credit`; once an epoch is final an auditor claims it with `claimAuditorReward`, one audit
+///      and epoch per call: `gross = auditBudget * credits / auditCredits`, of which it receives at
+///      most `auditBudget * maxAuditorShareBps / BPS`; the rest goes to the emissions reserve in
+///      the same claim. Budget nobody can claim (an epoch without credits, a share given to no
+///      audit, a reward never claimed) stays unminted: the bucket is fixed, so there is no dynamic
+///      remainder to sweep. Audit shares are checkpointed per epoch: a change applies from the next
+///      epoch, so a running or finished epoch's split never moves.
 interface IAntseedVerificationResults {
     enum Verdict {
         NONE,
@@ -37,18 +37,21 @@ interface IAntseedVerificationResults {
     }
 
     /// @param modelHash Model the service was last recorded as (keccak256 of the model id).
-    /// @param verdict Latest recorded result. Live only while `currentEpoch < epoch + validityEpochs`;
+    /// @param verdict Latest recorded result. Live only while `currentEpoch < validUntilEpoch`;
     ///        only SAME and DIFF count in the agent's status.
     /// @param updatedAt When the live verdict last changed.
     /// @param epoch Emissions epoch `verdict` was given in; every recorded result moves it to the
     ///        current epoch. Zero while `verdict` is NONE.
-    /// @param source The source contract that recorded `verdict`; zero while `verdict` is NONE.
+    /// @param audit The audit contract that recorded `verdict`; zero while `verdict` is NONE.
+    /// @param validUntilEpoch The first epoch `verdict` no longer counts in, set by the audit that
+    ///        recorded it. Zero while `verdict` is NONE.
     struct ServiceStatus {
         bytes32 modelHash;
         Verdict verdict;
         uint64 updatedAt;
         uint64 epoch;
-        address source;
+        address audit;
+        uint64 validUntilEpoch;
     }
 
     /// @param verifiedCount Services whose live verdict is SAME.
@@ -60,31 +63,30 @@ interface IAntseedVerificationResults {
 
     // ───────────────────────────── wiring ─────────────────────────────
 
-    function registry() external view returns (IAntseedRegistry);
-    /// @notice Emissions gate pinned at deployment; every epoch in this contract and its sources comes from it.
+    /// @notice Emissions gate pinned at deployment; every epoch in this contract and its audits comes from it.
     function emissionsGate() external view returns (IAntseedEmissionsGate);
-    /// @notice The current epoch of the pinned gate. Sources should use this, never the gate directly.
+    /// @notice The current epoch of the pinned gate. Audits should use this, never the gate directly.
     function currentEpoch() external view returns (uint256);
-    /// @notice Epochs a SAME or DIFF verdict counts for, including the one it was given in.
-    function validityEpochs() external view returns (uint8);
-    /// @notice True for contracts allowed to `record` and `credit`.
-    function isSource(address source) external view returns (bool);
+    /// @notice True for audit contracts allowed to `record` and `credit`.
+    function isAudit(address audit) external view returns (bool);
 
     // ───────────────────────────── verdicts ───────────────────────────
 
     /// @notice Records a verdict for (agentId, serviceHash) under `modelHash` in the current epoch,
-    ///         replacing whatever was there. Sources only. Reverts on a NONE verdict or a zero
-    ///         service or model hash; the source is responsible for everything else (which agents
-    ///         exist, how many verifiers had to agree, where the evidence is: a source emits its
-    ///         own evidence events).
-    function record(uint256 agentId, bytes32 serviceHash, bytes32 modelHash, Verdict verdict) external;
+    ///         replacing whatever was there; it counts until `validUntilEpoch` (exclusive). Audits
+    ///         only. Reverts on a NONE verdict, a zero service or model hash, or a `validUntilEpoch`
+    ///         not after the current epoch or more than `MAX_VERDICT_EPOCHS` after it. The audit is
+    ///         responsible for everything else (which agents exist, how many auditors had to agree,
+    ///         how long its verdicts count, where the evidence is: an audit emits its own evidence events).
+    function record(uint256 agentId, bytes32 serviceHash, bytes32 modelHash, Verdict verdict, uint256 validUntilEpoch)
+        external;
 
     function serviceStatus(uint256 agentId, bytes32 serviceHash) external view returns (ServiceStatus memory);
-    /// @notice Times the owner cleared this service with `clearServiceStatuses`. Sources fold it into
+    /// @notice Times the owner cleared this service with `clearServiceStatuses`. Audits fold it into
     ///         their report rounds so reports made before a clear stop counting.
     function serviceClears(uint256 agentId, bytes32 serviceHash) external view returns (uint256);
-    /// @notice Times the service's live verdict moved into or out of DIFF, by any source or an owner
-    ///         clear. Sources fold it into their report rounds so support given before a DIFF was
+    /// @notice Times the service's live verdict moved into or out of DIFF, by any audit or an owner
+    ///         clear. Audits fold it into their report rounds so support given before a DIFF was
     ///         recorded can't clear it, and support given before it was cleared can't restore it.
     function diffChanges(uint256 agentId, bytes32 serviceHash) external view returns (uint256);
     /// @notice The service's verdict if it is live in the current epoch, else NONE.
@@ -95,48 +97,35 @@ interface IAntseedVerificationResults {
 
     // ───────────────────────────── rewards ────────────────────────────
 
-    /// @notice The source's latest share of the bucket's epoch budget, in bps of 10,000: what applies
+    /// @notice The audit's latest share of the bucket's epoch budget, in bps of 10,000: what applies
     ///         from the next epoch on. Shares sum to at most 10,000.
-    function sourceShareBps(address source) external view returns (uint16);
-    /// @notice The source's share for `epoch`.
-    function sourceShareBpsAt(address source, uint256 epoch) external view returns (uint16);
-    /// @notice First epoch whose credits from `source` count; `type(uint64).max` while its rewards are off.
-    function rewardsStartEpoch(address source) external view returns (uint64);
-    /// @notice Most of `source`'s epoch budget one verifier can receive, in bps of 10,000.
-    function maxAuditorShareBps(address source) external view returns (uint16);
-    /// @notice Safety limit: credits one verifier can earn from `source` per epoch.
-    function maxCreditsPerAuditorPerEpoch(address source) external view returns (uint32);
-    /// @notice What `source`'s verifiers share for `epoch`: the bucket's budget times the source's
+    function auditShareBps(address audit) external view returns (uint16);
+    /// @notice The audit's share for `epoch`.
+    function auditShareBpsAt(address audit, uint256 epoch) external view returns (uint16);
+    /// @notice First epoch whose credits from `audit` count; `type(uint64).max` while its rewards are off.
+    function rewardsStartEpoch(address audit) external view returns (uint64);
+    /// @notice Most of `audit`'s epoch budget one auditor can receive, in bps of 10,000.
+    function maxAuditorShareBps(address audit) external view returns (uint16);
+    /// @notice Safety limit: credits one auditor can earn from `audit` per epoch.
+    function maxCreditsPerAuditorPerEpoch(address audit) external view returns (uint32);
+    /// @notice What `audit`'s auditors share for `epoch`: the bucket's budget times the audit's
     ///         share for that epoch.
-    function sourceBudget(address source, uint256 epoch) external view returns (uint256);
+    function auditBudget(address audit, uint256 epoch) external view returns (uint256);
 
-    function epochCredits(address source, uint256 epoch) external view returns (uint256);
-    function auditorEpochCredits(address source, uint256 epoch, address auditor) external view returns (uint256);
-    function auditorEpochClaimed(address source, uint256 epoch, address auditor) external view returns (bool);
-    /// @notice Credits of verifiers that already claimed from `source` for `epoch`.
-    function claimedCredits(address source, uint256 epoch) external view returns (uint256);
-    /// @notice Minted from `source`'s share for `epoch` so far, overflow to the reserve included.
-    function paidRewards(address source, uint256 epoch) external view returns (uint256);
-    /// @notice Swept through `settleEpochRemainder` for `epoch` so far.
-    function settledRemainder(uint256 epoch) external view returns (uint256);
-    /// @notice What `settleEpochRemainder(epoch)` would sweep now; 0 for the current epoch.
-    function unclaimableRemainder(uint256 epoch) external view returns (uint256);
+    function epochCredits(address audit, uint256 epoch) external view returns (uint256);
+    function auditorEpochCredits(address audit, uint256 epoch, address auditor) external view returns (uint256);
+    function auditorEpochClaimed(address audit, uint256 epoch, address auditor) external view returns (bool);
 
-    /// @notice Grants `credits` to `auditor` for the current epoch, from the calling source. Sources
-    ///         only. Nothing is credited before the source's rewards start epoch; the amount is
-    ///         clamped to the source's per-verifier cap. Returns what was actually credited.
+    /// @notice Grants `credits` to `auditor` for the current epoch, from the calling audit. Audits
+    ///         only. Nothing is credited before the audit's rewards start epoch or in an epoch the audit has
+    ///         no share of; the amount is
+    ///         clamped to the audit's per-auditor cap. Returns what was actually credited.
     function credit(address auditor, uint256 credits) external returns (uint256 credited);
 
-    /// @notice Claims the caller's rewards from `source` for finalized epochs; the part above the
-    ///         per-verifier cap goes to the emissions reserve. Epochs with nothing to claim, or whose
-    ///         bucket has no budget yet, are skipped and stay claimable.
-    function claimRewards(address source, uint256[] calldata epochs) external returns (uint256 total);
-    /// @notice What the verifier would receive from `source` for a finalized epoch; 0 for the current epoch.
-    function pendingReward(address source, address auditor, uint256 epoch) external view returns (uint256);
-
-    /// @notice Sweeps a finalized epoch's budget no verifier can ever claim (sources without credits,
-    ///         the part of the bucket assigned to no source, budget freed by voided credits) through the
-    ///         gate's remainder route. Anyone may call it, again whenever more is freed; reverts
-    ///         `NothingToSettle` when there is nothing to sweep.
-    function settleEpochRemainder(uint256 epoch) external returns (uint256 burnedAmount, uint256 reserveAmount);
+    /// @notice Claims the caller's reward from `audit` for one finalized epoch; the part above the
+    ///         per-auditor cap goes to the emissions reserve. Reverts when there is nothing to claim.
+    function claimAuditorReward(address audit, uint256 epoch) external;
+    /// @notice What the auditor would receive from `audit` for a finalized epoch; 0 for the current
+    ///         epoch, an epoch already claimed, or one without credits.
+    function pendingAuditorReward(address audit, address auditor, uint256 epoch) external view returns (uint256);
 }
