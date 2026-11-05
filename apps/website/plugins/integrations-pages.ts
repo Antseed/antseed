@@ -16,6 +16,7 @@ import fs from 'node:fs/promises';
 import type {LoadContext, Plugin} from '@docusaurus/types';
 import {
   integrations,
+  LIST_MODELS_COMMAND,
   CATEGORY_LABELS,
   FORMAT_LABELS,
   FORMAT_ENDPOINT,
@@ -64,7 +65,7 @@ function renderConfigBlock(b: ConfigBlock): string {
   if (b.note) {
     body += '\n\n_' + htmlToMarkdown(b.note) + '_';
   }
-  return body;
+  return b.title ? `*${b.title}:*\n\n${body}` : body;
 }
 
 function renderStep(s: Step): string {
@@ -113,7 +114,7 @@ function renderWireFormatBlock(i: Integration): string {
   const endpoint = FORMAT_ENDPOINT[fmt];
 
   lines.push(
-    `- **Wire format sent by ${i.name}:** ${FORMAT_LABELS[fmt]} (hits \`${endpoint}\` on the buyer proxy).`,
+    `- **Wire format sent by ${i.name}:** ${FORMAT_LABELS[fmt]} (hits \`${endpoint}\` on your gateway or buyer proxy).`,
   );
   lines.push(
     `- **Best-fit services:** any service whose \`protocols\` array contains \`${protocol}\` — ` +
@@ -227,7 +228,7 @@ function renderSkillMarkdown(): string {
   const out: string[] = [];
   out.push('---');
   out.push('name: antseed-connect');
-  out.push('description: Connect coding agents, AI SDKs, and LLM tools to the Antseed buyer proxy locally or through an authenticated public endpoint. Use when configuring Claude Code, Codex, OpenCode, Pi, OpenClaw, Hermes, GenLayer Studio, Vercel AI SDK, LangChain, or raw HTTP.');
+  out.push('description: Connect coding agents, AI SDKs, and LLM tools to Antseed through a gateway API key (recommended, works from any machine) or the local buyer proxy on the same computer. Use when configuring Claude Code, Codex, OpenCode, Pi, OpenClaw, Hermes, GenLayer Studio, Vercel AI SDK, LangChain, or raw HTTP.');
   out.push('---');
   out.push('');
   out.push('# Antseed — Integration Skill');
@@ -239,28 +240,39 @@ function renderSkillMarkdown(): string {
 
   out.push('## What is Antseed?');
   out.push('');
-  out.push('Antseed is a peer-to-peer marketplace for AI inference. Buyers run a small');
-  out.push('local daemon (the **buyer proxy**) that exposes an HTTP API at');
-  out.push('`http://localhost:8377` speaking the three caller-facing LLM API protocols:');
-  out.push('Anthropic Messages, OpenAI Chat Completions, and OpenAI Responses. Legacy');
-  out.push('OpenAI Completions is supported internally for adapter translation. The proxy');
-  out.push('discovers providers on a DHT, routes the');
-  out.push('request to a peer, translates between protocols when needed (via');
-  out.push('`@antseed/api-adapter`), and settles in USDC on Base.');
+  out.push('Antseed is a peer-to-peer marketplace for AI inference. Tools reach it through');
+  out.push('one of two endpoints, both speaking the three caller-facing LLM API protocols');
+  out.push('(Anthropic Messages, OpenAI Chat Completions, OpenAI Responses):');
+  out.push('');
+  out.push('- **Gateway (recommended)** — the API server you run with `antseed gateway start`');
+  out.push('  or the server installer, at `/v1` on port 8379. Every tool gets its own API key');
+  out.push('  (sent as `Authorization: Bearer`) with budgets, routing policy and usage logs.');
+  out.push('  It works from any machine: locally (`http://localhost:8379/v1`), on a server');
+  out.push('  (`https://gateway.example.com/v1`), or behind a tunnel.');
+  out.push('- **Local buyer proxy** — `http://localhost:8377/v1`, no key. It only listens on');
+  out.push('  localhost, so use it only when the tool runs on the same computer as the buyer.');
+  out.push('');
+  out.push('Behind both, the buyer discovers providers on a DHT, routes each request to a');
+  out.push('peer, translates between protocols when needed (via `@antseed/api-adapter`), and');
+  out.push('settles in USDC on Base.');
   out.push('');
   out.push('Important: Antseed is for value-added AI services (specialized models, agents,');
   out.push('TEEs, fine-tunes, managed workflows), not raw resale of API keys or subscription');
   out.push('access. Providers must comply with upstream terms of service.');
   out.push('');
-  out.push('From the perspective of any tool, SDK, or agent, **Antseed is just a local');
-  out.push('OpenAI/Anthropic-compatible endpoint** — point a `base_url` at it and you are done.');
+  out.push('From the perspective of any tool, SDK, or agent, **Antseed is just an');
+  out.push('OpenAI/Anthropic-compatible endpoint** — point a `base_url` at your gateway, set');
+  out.push('its key, and you are done. Most entries below read `ANTSEED_BASE_URL` (ending in');
+  out.push('`/v1`) and `ANTSEED_API_KEY`.');
   out.push('');
 
   out.push('## Glossary (mental model)');
   out.push('');
-  out.push('- **Buyer proxy** — the local server on `localhost:8377` that accepts API calls');
-  out.push('  from your tools and forwards them to Antseed peers. It is the only thing your');
-  out.push('  editor / agent / SDK ever talks to.');
+  out.push('- **Gateway** — the API-key server in front of a buyer (port 8379, `/v1`). The');
+  out.push('  recommended endpoint for every tool, local or remote.');
+  out.push('- **Buyer proxy** — the local server on `localhost:8377` that finds sellers and');
+  out.push('  pays them. Localhost-only, no key; tools call it directly only on the same');
+  out.push('  computer.');
   out.push('- **Peer** — someone selling inference. Each peer has a `peerId` (40-char hex),');
   out.push('  a display name, and a list of services. List with `antseed network browse`.');
   out.push('- **Service** — a single model id like `kimi-k2.6` or `deepseek-v4-flash`.');
@@ -278,13 +290,13 @@ function renderSkillMarkdown(): string {
   out.push('  tool schemas, prior conversation turns, long files you keep referencing. The CLI');
   out.push('  exposes it as `cachedInputUsdPerMillion`. For long-running agents and chatbots,');
   out.push('  this is often the dominant cost line.');
-  out.push('- **Pin** — optionally telling the buyer proxy "route requests to *this* peer."');
+  out.push('- **Pin** — optionally telling Antseed "route requests to *this* peer."');
   out.push('  Pinning is not required: a request that names only a model auto-selects the');
   out.push('  highest-ranked eligible offer under the shared Price + Trust preferences, and');
   out.push('  fails over to the next ranked peer on peer-attributed retryable failures');
   out.push('  (rate-limited peers get up to 3 same-peer retries before fallback). Pin when');
   out.push('  you want to force one specific seller:');
-  out.push('  - **Session pin**: `antseed buyer connection set --peer <peerId>`. Persists in');
+  out.push('  - **Session pin** (local buyer proxy only): `antseed buyer connection set --peer <peerId>`. Persists in');
   out.push('    `~/.antseed/buyer.state.json` and applies to every request until you change it.');
   out.push('  - **Per-request header**: `x-antseed-pin-peer: <peerId>` on each call. Overrides');
   out.push('    the session pin for that request.');
@@ -301,7 +313,37 @@ function renderSkillMarkdown(): string {
 
   out.push('## Universal setup (do this once)');
   out.push('');
-  out.push('### Option A — AI VPN desktop app (recommended)');
+  out.push('### Option A — a gateway on a server (recommended)');
+  out.push('');
+  out.push('One command on a Linux VPS with systemd installs the buyer and the gateway,');
+  out.push('serves them over HTTPS and keeps them running. Every tool on every machine then');
+  out.push('uses the same URL with its own key. Guide: https://antseed.com/docs/gateway/server.');
+  out.push('');
+  out.push('```bash');
+  out.push('# On the server (DNS for the domain points at it, ports 80 and 443 open):');
+  out.push('curl -fsSL https://antseed.com/install.sh | bash -s -- --domain gateway.example.com');
+  out.push('');
+  out.push('# Wherever the tool runs:');
+  out.push('export ANTSEED_BASE_URL="https://gateway.example.com/v1"');
+  out.push('export ANTSEED_API_KEY="antseed_…"   # printed once by the installer; never print or commit it');
+  out.push('');
+  out.push(LIST_MODELS_COMMAND);
+  out.push('curl "$ANTSEED_BASE_URL/chat/completions" \\');
+  out.push('  -H "Authorization: Bearer $ANTSEED_API_KEY" -H \'content-type: application/json\' \\');
+  out.push('  -d \'{ "model": "deepseek-v4-flash", "messages": [{"role": "user", "content": "Hello"}] }\'');
+  out.push('```');
+  out.push('');
+  out.push('Add funds to the workspace wallet in the console (**Wallet & Funding**, card or');
+  out.push('USDC on Base).');
+  out.push('');
+  out.push('To try it on your own computer instead: `curl -fsSL https://antseed.com/install.sh | bash`');
+  out.push('starts a gateway at `http://localhost:8379/v1` and opens a link to claim its');
+  out.push('console (https://antseed.com/docs/quickstart). Its keys only work while the');
+  out.push('computer is on; other machines reach it through a tunnel (`antseed tunnel start`,');
+  out.push('or **Agents → Internet-accessible endpoint** in the desktop app; claim the');
+  out.push('published console right away) or, on a trusted network, with `--host 0.0.0.0`.');
+  out.push('');
+  out.push('### Option B — desktop app, same computer');
   out.push('');
   out.push('Download from https://antseed.com — it ships the buyer proxy, a wallet, and a');
   out.push('peer browser in a GUI. While the app is open the proxy is reachable at');
@@ -310,7 +352,7 @@ function renderSkillMarkdown(): string {
   out.push('its Price + Trust preferences into the buyer config, so internal chat,');
   out.push('connected apps, and direct API calls all use the same routing policy.');
   out.push('');
-  out.push('### Option B — CLI (headless / servers / agents)');
+  out.push('### Option C — CLI buyer proxy, same computer (no gateway)');
   out.push('');
   out.push('```bash');
   out.push('# 1. Install');
@@ -401,19 +443,20 @@ function renderSkillMarkdown(): string {
   out.push('');
   out.push('- Treat `ANTSEED_IDENTITY_HEX` / `~/.antseed/identity.key` as a hot wallet key.');
   out.push('  Never print it, paste it into chat, commit it, or copy it off the buyer host.');
-  out.push('- Keep the buyer proxy bound to `127.0.0.1` / `localhost`. Do not expose');
-  out.push('  `:8377` directly to the public internet. For a remote agent, open **Agents**');
-  out.push('  in the AI VPN and configure ngrok or Cloudflare under **Define your');
-  out.push('  internet-accessible Antseed endpoint**. Use the displayed `/v1` URL and');
-  out.push('  generated `antseed_...` API key.');
+  out.push('- Treat gateway API keys (`antseed_…`) as bearer secrets: keep them in the');
+  out.push('  environment or a secret store, never in code, logs or chat. Give each tool its');
+  out.push('  own key with a budget, and revoke keys you no longer use.');
+  out.push('- Keep the buyer proxy bound to `127.0.0.1` / `localhost`. Never expose');
+  out.push('  `:8377` (port forward, `socat`, reverse proxy): it spends from the deposit');
+  out.push('  without checking a key. For a remote agent, use a gateway (server or tunnel).');
   out.push('- Start with small USDC deposits and conservative reserve caps for autonomous');
   out.push('  agents. The funding wallet does not need to stay connected after depositing.');
   out.push('- For the local buyer proxy, a required API-key field can use a non-secret');
-  out.push('  placeholder such as `antseed`. The public endpoint requires its generated key');
-  out.push('  as `Authorization: Bearer <API_KEY>`.');
+  out.push('  placeholder such as `antseed`. A gateway requires its key as');
+  out.push('  `Authorization: Bearer <API_KEY>`.');
   out.push('');
 
-  out.push('## Endpoints exposed by the buyer proxy');
+  out.push('## Endpoints (gateway and buyer proxy)');
   out.push('');
   out.push('| Path | Wire format | Common callers |');
   out.push('|------|-------------|----------------|');
@@ -430,17 +473,18 @@ function renderSkillMarkdown(): string {
   out.push('format and is routed to a peer whose service advertises a different `protocols`');
   out.push('value is transformed both directions (request and streaming response).');
   out.push('');
-  out.push('No `Authorization` header is required by the local buyer proxy. It authenticates');
-  out.push("and pays peers using the local node's identity key and on-chain USDC deposits.");
-  out.push('The public AI VPN endpoint is different: it requires the generated bearer key on');
-  out.push('every request and permits only the routes listed above.');
+  out.push('A gateway requires `Authorization: Bearer <gateway key>` on every request and');
+  out.push('applies that key\'s budgets and routing policy; anthropic-format clients use the');
+  out.push('gateway root without `/v1` and must send the key as Bearer (Claude Code:');
+  out.push('`ANTHROPIC_AUTH_TOKEN`). No `Authorization` header is required by the local buyer');
+  out.push("proxy: it pays peers from the local node's identity key and on-chain USDC deposits.");
   out.push('');
   out.push('### Explicit seller overrides');
   out.push('');
   out.push('Pinning is optional — a request that names a model routes automatically. Use');
   out.push('one of these overrides only when you need a specific seller:');
   out.push('');
-  out.push('1. **Session pin** — `antseed buyer connection set --peer <peerId>`. Persists in');
+  out.push('1. **Session pin** (local buyer proxy only) — `antseed buyer connection set --peer <peerId>`. Persists in');
   out.push('   `~/.antseed/buyer.state.json` (`pinnedPeerId`) and applies to every request');
   out.push('   until you change it. Best for single-tenant setups (laptops, dedicated agents).');
   out.push('2. **Per-request header** — send `x-antseed-pin-peer: <peerId>` on each call.');
@@ -459,7 +503,8 @@ function renderSkillMarkdown(): string {
   out.push('Example (per-request, no session pin):');
   out.push('');
   out.push('```bash');
-  out.push('curl http://localhost:8377/v1/chat/completions \\');
+  out.push('curl "$ANTSEED_BASE_URL/chat/completions" \\');
+  out.push('  -H "Authorization: Bearer $ANTSEED_API_KEY" \\');
   out.push("  -H 'content-type: application/json' \\");
   out.push("  -H 'x-antseed-pin-peer: cccccccccccccccccccccccccccccccccccccccc' \\");
   out.push('  -d \'{ "model": "minimax-m2.7", "messages": [{"role":"user","content":"hi"}] }\'');

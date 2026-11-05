@@ -85,10 +85,12 @@ export interface StoredChannelServiceTotal {
   cumulativeRequestCount: string; // bigint as string
   /** bigint as string; optional — rows/callers predating migration 005 default to '0'. */
   cumulativeOutputImages?: string;
-  /** bigint as string; optional — rows/callers predating migration 007 default to '0'. */
+  /** bigint as string; optional — rows/callers predating migration 006 default to '0'. */
   cumulativeVideoGenerations?: string;
-  /** bigint as string; optional — rows/callers predating migration 007 default to '0'. */
+  /** bigint as string; optional — rows/callers predating migration 006 default to '0'. */
   cumulativeVideoSeconds?: string;
+  /** bigint as string; optional — rows/callers predating migration 007 default to '0'. */
+  cumulativeInputCharacters?: string;
   updatedAt: number;
 }
 

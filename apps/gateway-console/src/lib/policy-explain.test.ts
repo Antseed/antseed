@@ -56,6 +56,23 @@ describe('which level keeps a seller out', () => {
     expect(exclusionsFor(preview, preview.candidates[0]!, PEERS)).toEqual([])
   })
 
+  it('judges every level\'s trust minimum on the 10% a DIFF model check leaves', () => {
+    const flagged = [{ ...PEERS[0]!, diffServices: ['m1'] }, PEERS[1]!, PEERS[2]!]
+    const withTrustFloor = { ...preview, sources: [...preview.sources, { level: 'key' as const, id: 'k', policy: { minTrustScore: 60 } }] }
+    expect(exclusionsFor(withTrustFloor, candidate(A, false, 90), flagged).map((entry) => `${entry.level}: ${entry.rule}`)).toEqual([
+      'buyer: requires trust 60+ (it has 9, 10% of 90 after a DIFF model check)',
+      'key: requires trust 60+ (it has 9, 10% of 90 after a DIFF model check)',
+    ])
+    // A buyer that already cut the score reports the score before the cut; it is cut once,
+    // even when the peer list is missing or has not seen the DIFF yet.
+    expect(exclusionsFor(withTrustFloor, { ...candidate(A, false, 9), trustScoreBeforeCut: 90 }, PEERS)
+      .map((entry) => entry.rule)).toEqual([
+      'requires trust 60+ (it has 9, 10% of 90 after a DIFF model check)',
+      'requires trust 60+ (it has 9, 10% of 90 after a DIFF model check)',
+    ])
+    expect(exclusionsFor({ ...withTrustFloor, model: 'm2' }, candidate(A, false, 90), flagged)).toEqual([])
+  })
+
   it('counts what each level keeps out', () => {
     expect(Object.fromEntries(exclusionCounts(preview, PEERS))).toEqual({ buyer: 1, gateway: 1, workspace: 1 })
   })

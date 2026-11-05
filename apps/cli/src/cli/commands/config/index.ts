@@ -82,6 +82,7 @@ export function registerConfigCommand(program: Command): void {
     .command('add-service <provider> <serviceId>')
     .description('Add a service offering under a provider (e.g., add-service openai gpt-4 --input 5 --output 15 --categories chat,coding)')
     .option('--upstream <model>', 'upstream model identifier (defaults to serviceId)')
+    .option('--venice-edit-model <model>', 'Venice-only native edit model; enables image editing for this service')
     .option('--input <usd>', 'input price in USD per 1M tokens', parseFloat)
     .option('--output <usd>', 'output price in USD per 1M tokens', parseFloat)
     .option('--cached <usd>', 'cached-input price in USD per 1M tokens', parseFloat)
@@ -108,6 +109,9 @@ export function registerConfigCommand(program: Command): void {
           service.upstreamModel = options.upstream as string;
         } else if (!service.upstreamModel) {
           service.upstreamModel = serviceId;
+        }
+        if (options.veniceEditModel) {
+          service.imageEditModel = options.veniceEditModel as string;
         }
         const hasInput = typeof options.input === 'number';
         const hasOutput = typeof options.output === 'number';
@@ -326,6 +330,11 @@ export function setConfigValue(config: Record<string, unknown>, key: string, val
     }
   }
 
+  if (trimmed === 'true' || trimmed === 'false') {
+    current[lastKey] = trimmed === 'true';
+    return;
+  }
+
   // Auto-parse numeric scalars. Non-numeric strings use `trimmed` to match
   // loader normalization (e.g. normalizeSellerProvider strips whitespace), so
   // on-disk state matches what `loadConfig` would produce.
@@ -349,6 +358,14 @@ const DYNAMIC_KEYS = new Set([
   'seller.freeUsage.recordBatchSize',
   'seller.freeUsage.recordFlushIntervalMs',
   'seller.restrictedCountries',
+  'seller.gasCheck.enabled',
+  'seller.gasCheck.intervalMs',
+  'seller.gasCheck.minBalanceEth',
+  'seller.gasRefuel.enabled',
+  'seller.gasRefuel.triggerBalanceEth',
+  'seller.gasRefuel.swapUsdc',
+  'seller.gasRefuel.maxUsdcPerDay',
+  'seller.gasRefuel.slippageBps',
 ]);
 
 export function isDynamicKey(key: string): boolean {

@@ -193,8 +193,26 @@ export interface PoolEpochPoint {
   settled: boolean;
 }
 
+/** A seller service with a verdict, linked to its Antscan audit page. */
+export interface VerificationServiceLink { service: string; url: string; }
+
+/**
+ * The seller's live model-verification verdicts. The verification points policy scales the
+ * seller's (and its buyers') points by one multiplier from them, which moves this pool's rewards.
+ */
+export interface PoolVerification {
+  sameCount: number;
+  diffCount: number;
+  /** Points multiplier in bps (10,000 = unchanged); null when the policy rates could not be read. */
+  pointsMultiplierBps: number | null;
+  sameServices: VerificationServiceLink[];
+  diffServices: VerificationServiceLink[];
+}
+
 export interface PoolView {
   displaySource?: DisplaySource;
+  /** Present when the seller has at least one SAME or DIFF verdict on Antscan. */
+  verification?: PoolVerification;
   /** Per-epoch history (oldest first) for charts; present on the single-pool endpoint when the indexer is reachable. */
   history?: PoolEpochPoint[];
   openPositions?: number;

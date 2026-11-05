@@ -101,7 +101,7 @@ jobs:
     # Tag-push always runs every platform.
     if: github.event_name != 'workflow_dispatch' || inputs.platforms == 'all' || inputs.platforms == 'mac'
     needs: create-draft
-    runs-on: macos-14  # Apple Silicon; electron-builder cross-builds x64
+    runs-on: macos-15  # Apple Silicon; electron-builder cross-builds x64
     timeout-minutes: 60
 
     steps:

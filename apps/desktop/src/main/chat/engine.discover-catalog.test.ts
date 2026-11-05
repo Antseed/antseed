@@ -60,6 +60,66 @@ test('persisted catalog uses the buyer trust score and falls back to the seller-
   assert.equal(unknown[0]?.effectiveReputationScore, null);
 });
 
+test('persisted catalog cuts a live DIFF service to 10% and the discover row flags it', async () => {
+  const pricing = { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, services: {
+    'diff-model': { inputUsdPerMillion: 1, outputUsdPerMillion: 2 },
+    'clean-model': { inputUsdPerMillion: 1, outputUsdPerMillion: 2 },
+  } } };
+  const peer = {
+    peerId: flashPeerId, providers: ['openai'], onChainReputationScore: 80,
+    onChainDiffServices: ['diff-model'], onChainVerificationFetchedAt: Date.now() - 60_000, providerPricing: pricing,
+  };
+  const catalog = buildChatServiceCatalogFromPersistedPeers({ discoveredPeers: [peer] });
+  const diff = catalog.find((entry) => entry.id === 'diff-model');
+  const clean = catalog.find((entry) => entry.id === 'clean-model');
+  assert.ok(Math.abs((diff?.effectiveReputationScore ?? 0) - 8) < 1e-9);
+  assert.equal(clean?.effectiveReputationScore, 80);
+
+  const rows = await buildDiscoverRows(normalizeChatServiceCatalogEntries(catalog), new Map(), {
+    [flashPeerId]: {
+      trust: null, onChainAgentId: 7, onChainPoolStakeAnts: null, onChainChannelCount: null, onChainGhostCount: null,
+      onChainTotalVolumeUsdcMicros: null, onChainLastSettledAtSec: null, onChainReputationScore: 80, onChainWashFlagged: false,
+      onChainDiffServices: ['diff-model'], onChainSameServices: ['clean-model'], onChainVerificationFetchedAt: Date.now() - 60_000,
+      onChainSybilRisk: null, onChainSybilFlags: [], capabilities: [],
+      verificationLinks: [], peerIconUrl: null,
+    },
+  }, new Map(), {}, null, 'https://antscan.co/');
+  const diffRow = rows.find((row) => row.serviceId === 'diff-model');
+  const sameRow = rows.find((row) => row.serviceId === 'clean-model');
+  assert.equal(diffRow?.verification, 'diff');
+  assert.equal(sameRow?.verification, 'same');
+  assert.match(diffRow?.verificationUrl ?? '', /^https:\/\/antscan\.co\/verification-service\/7~0x[0-9a-f]{64}$/);
+  assert.notEqual(diffRow?.verificationUrl, sameRow?.verificationUrl);
+
+  // No explorer (e.g. a local chain): the verdict still shows, without a link.
+  const noExplorer = await buildDiscoverRows(normalizeChatServiceCatalogEntries(catalog), new Map(), {
+    [flashPeerId]: {
+      trust: null, onChainAgentId: 7, onChainPoolStakeAnts: null, onChainChannelCount: null, onChainGhostCount: null,
+      onChainTotalVolumeUsdcMicros: null, onChainLastSettledAtSec: null, onChainReputationScore: 80, onChainWashFlagged: false,
+      onChainDiffServices: ['diff-model'], onChainVerificationFetchedAt: Date.now() - 60_000,
+      onChainSybilRisk: null, onChainSybilFlags: [], capabilities: [],
+      verificationLinks: [], peerIconUrl: null,
+    },
+  }, new Map());
+  assert.equal(noExplorer.find((row) => row.serviceId === 'diff-model')?.verification, 'diff');
+  assert.equal(noExplorer.find((row) => row.serviceId === 'diff-model')?.verificationUrl, null);
+  assert.equal(noExplorer.find((row) => row.serviceId === 'clean-model')?.verification, null);
+
+  // Saved state from a read 15 minutes old or more (the buyer could not read the contract since) fails open.
+  const stalePeer = { ...peer, onChainVerificationFetchedAt: Date.now() - 15 * 60_000 };
+  const staleCatalog = buildChatServiceCatalogFromPersistedPeers({ discoveredPeers: [stalePeer] });
+  assert.equal(staleCatalog.find((entry) => entry.id === 'diff-model')?.effectiveReputationScore, 80);
+});
+
+test('persisted catalog applies the cached-input penalty like the live catalog', () => {
+  const catalog = buildChatServiceCatalogFromPersistedPeers({ discoveredPeers: [
+    { peerId: flashPeerId, providers: ['openai'], onChainReputationScore: 80, providerPricing: { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, services: { 'cache-model': { inputUsdPerMillion: 1, outputUsdPerMillion: 2 } } } } },
+    { peerId: venicePeerId, providers: ['openai'], onChainReputationScore: 60, providerPricing: { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, services: { 'cache-model': { inputUsdPerMillion: 1, outputUsdPerMillion: 2, cachedInputUsdPerMillion: 0.1 } } } } },
+  ] });
+  assert.equal(catalog.find((entry) => entry.peerId === flashPeerId)?.effectiveReputationScore, 40);
+  assert.equal(catalog.find((entry) => entry.peerId === venicePeerId)?.effectiveReputationScore, 60);
+});
+
 function modelsPayload(): unknown {
   return {
     object: 'list',

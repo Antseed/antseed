@@ -7,6 +7,7 @@ import { Command } from 'commander';
 import { ChannelsClient, loadOrCreateIdentity, type StoredChannel } from '@antseed/node';
 import { openChannelStore } from '../../payment-utils.js';
 import { registerBuyerChannelsCommand } from './channels.js';
+import { buyerChannel, buyerCommandHarness, onChain } from './test-helpers.js';
 import {
   CHANNEL_CLOSE_GRACE_PERIOD_SECONDS,
   resolveBuyerChannelById,
@@ -134,3 +135,15 @@ for (const operation of ['list', 'request-close', 'withdraw', 'close'] as const)
     }
   });
 }
+
+test('channels --status active leaves out a channel the seller settled on-chain', async (context) => {
+  const harness = await buyerCommandHarness(context);
+  const settledId = '0x' + 'ee'.repeat(32);
+  harness.seed(buyerChannel(settledId, harness.buyer));
+
+  const { stdout } = await harness.run(registerBuyerChannelsCommand, ['channels', '--status', 'active', '--json'], {
+    [settledId]: onChain(harness.buyer, 2, 400_000n),
+  });
+
+  assert.deepEqual(JSON.parse(stdout), []);
+});

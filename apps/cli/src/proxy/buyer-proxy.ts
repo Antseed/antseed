@@ -13,6 +13,11 @@ import {
   ANTSEED_FAULT_ATTRIBUTION_HEADER,
   ANTSEED_ATTEST_PATH,
   adaptPeerFaultErrorResponse,
+  describeServiceHealth,
+  parseProviderServiceHealthMatrix,
+  parseProviderServicePerformanceMatrix,
+  SELF_HEALTH_ERROR_STATUS,
+  SELLER_SELF_HEALTH_FAILING_CODE,
   isFreeTierExhaustedResponse,
   computeTrustScore,
   decodeSweepRequest,
@@ -23,17 +28,24 @@ import {
   modelRouteReputationScore,
   modelRouteTotalPrice,
   normalizedModelReputationScore,
+  hasLiveDiffVerdict,
+  verificationServiceKey,
+  DIFF_VERIFICATION_REPUTATION_MULTIPLIER,
   peerSupportsCooperativeClose,
   isRoutingSelection,
   DEFAULT_BUYER_IDENTITY,
   rankModelRoutes,
   SellerHealthBook,
   orderAdaptiveRoutes,
+  reportedSuccessPrior,
   adaptiveFirstTokenTimeoutMs,
   sanitizePeerDisplayName,
+  speechOfferUsdPerCharacter,
+  speechVoiceProblem,
   type AntseedNode,
   type FaultAttribution,
   type BuyerSpendEvent,
+  type ServiceHealth,
   type ResponseAuthEvent,
   type AdaptiveRouteScore,
   type RouteRequestShape,
@@ -50,6 +62,7 @@ import {
   type SerializedHttpResponse,
   type SerializedHttpResponseChunk,
   type SweepReceiptPayload,
+  type TokenPricingUsdPerMillion,
   VIDEO_JOB_RETIRED_HEADER,
 } from '@antseed/node'
 import { encodeServedSelection, ROUTE_SELECTION_HEADER, type RouteSelection, type ServedSelection } from './route-selection.js'
@@ -91,10 +104,12 @@ import {
   type NetworkRouterEntry,
 } from './network-models.js'
 import {
-  findMissingRequiredParameters,
+  findFailingServiceRoutes,
+  findMissingRouteParameters,
   findUnannouncedRequestParameters,
   findAdvertisedServiceOffer,
   findAdvertisedServiceProtocols,
+  findFailingServiceOffers,
   getExplicitProviderOverride,
   getExplicitPeerIdOverride,
   parseRequiredParametersHeader,
@@ -127,7 +142,7 @@ import { ConversationStore, type ConversationRouterSelection, type StoredConvers
 import { eligibleRouterCandidates, executeRouterSelection, NoEligibleCandidatesError, requestForRecommendation, RoutingModelsCache } from './router-execution.js'
 import { recordRouterUsage } from './routing-usage.js'
 import { SPEND_ATTRIBUTION_DB_FILE, SPEND_ATTRIBUTION_HEADER, SpendAttributionFeed, parseSpendAttributionTag } from './spend-attribution.js'
-import { DEPOSIT_WATCH_ACTIVE_TTL_MS, type DepositWatcher } from './deposit-watcher.js'
+import { DEPOSIT_WATCH_ACTIVE_TTL_MS, supersedesSweepReceipt, type AttributedSweepReceipt, type DepositWatcher } from './deposit-watcher.js'
 import { DepositLog, type DepositLogEntry } from './deposit-log.js'
 import {
   recordPeerFailureEntry,
@@ -246,6 +261,13 @@ export interface BuyerProxyConfig {
   buyerIdentities?: BuyerIdentityLoader
   /** `buyer.minPeerReputation`, so gateway policies narrow under it (also enforced by the router plugin). */
   minPeerReputation?: number
+  /**
+   * The effective `buyer.maxPricing.defaults` the router plugin enforces. Only recorded in
+   * buyer.state.json (`settings`), so `verifier run` can check it audits under the same limits.
+   */
+  maxPricing?: TokenPricingUsdPerMillion
+  /** `payments.maxReserveAmountUsdc` (USDC base units) each new payment channel reserves; recorded like `maxPricing`. */
+  maxReserveAmountUsdc?: string
   /** Chain reads behind `GET /_antseed/balances`; absent when payments are disabled. */
   balanceReader?: BuyerBalanceReader
   /**
@@ -332,8 +354,12 @@ interface RoutePreviewCandidate {
   reasons: string[]
   inputUsdPerMillion: number | null
   outputUsdPerMillion: number | null
+  /** Trust for this model: the buyer's score, cut to 10% by a live DIFF verdict. */
   trustScore: number | null
+  /** The score before a DIFF cut; present only when one applies. */
+  trustScoreBeforeCut?: number
   selection: RouteSelection | null
+  health: ServiceHealth | null
 }
 
 type RequestPolicyResult =
@@ -402,12 +428,42 @@ type FailedAttempt = {
   weight: number
 }
 
-function classifyFailedAttempt(result: DispatchFailure): FailedAttempt {
+/** A buyer-authored payment negotiation failure, flat or adapted to a model API's error shape. */
+function isBuyerPaymentNegotiationError(body: Buffer): boolean {
+  if (body.length === 0 || body.length > 4_096) return false
+  try {
+    const error = (JSON.parse(body.toString('utf8')) as { error?: unknown }).error
+    if (error === 'payment_negotiation_failed') return true
+    if (!error || typeof error !== 'object') return false
+    const { type, code } = error as { type?: unknown; code?: unknown }
+    return type === 'payment_negotiation_failed' || code === 'payment_negotiation_failed'
+  } catch {
+    return false
+  }
+}
+
+/**
+ * The status peer health records for a response. A payment catch-up still
+ * pending is the buyer's own channel state with a live seller: record it like
+ * busy, which never escalates to a cooldown.
+ * @internal Exported for tests.
+ */
+export function healthStatusFor(response: { statusCode: number; body: Uint8Array }): number {
+  if (response.statusCode >= 500 && isBuyerPaymentNegotiationError(Buffer.from(response.body.buffer, response.body.byteOffset, response.body.byteLength))) return 429
+  return response.statusCode
+}
+
+/** @internal Exported for tests. */
+export function classifyFailedAttempt(result: DispatchFailure): FailedAttempt {
   if (result.emptyAnswer) return { description: 'answered with no text or tool call', sellerOnly: false, weight: 1 }
   if (result.timedOut) return { description: result.errorMessage ?? 'no answer in time', sellerOnly: true, weight: 0.5 }
   if (result.errorMessage) return { description: `request failed (${result.errorMessage.split('\n')[0]!.slice(0, 120)})`, sellerOnly: true, weight: 1 }
   // Busy is not broken: it costs the seller less, and only when another seller served.
   if (result.statusCode === 429) return { description: 'HTTP 429 (busy)', sellerOnly: false, weight: 0.5 }
+  // The buyer's own payment state with the seller (a catch-up still short, a
+  // channel being recovered) is transient and partly the buyer's: count it
+  // like busy, not as a broken seller.
+  if (isBuyerPaymentNegotiationError(result.responseBody)) return { description: `HTTP ${result.statusCode} (payment catch-up pending)`, sellerOnly: false, weight: 0.5 }
   const sellerOnly = result.statusCode >= 500 || result.statusCode === 401 || result.statusCode === 403 || result.statusCode === 408
   return { description: `HTTP ${result.statusCode}`, sellerOnly, weight: 1 }
 }
@@ -487,6 +543,11 @@ function withRoutedModel(request: SerializedHttpRequest, serviceId: string): Ser
     : request
 }
 
+function withProviderHeader(request: SerializedHttpRequest, provider: string): SerializedHttpRequest {
+  const headers = Object.fromEntries(Object.entries(request.headers).filter(([name]) => name.toLowerCase() !== 'x-antseed-provider'))
+  return { ...request, headers: { ...headers, 'x-antseed-provider': provider } }
+}
+
 function peerAllowedByPolicy(
   policyRouter: BuyerPolicyRouter | null | undefined,
   request: SerializedHttpRequest,
@@ -509,14 +570,47 @@ function addBuyerConfigReasons(reasons: string[], buyerReasons: readonly string[
 }
 
 /**
- * Why a route candidate's effective trust is below its seller's score: the
- * only penalty (`effectiveModelReputationScore`) halves a paid seller that
- * lists no cached-input price for a model other sellers price cache reads on.
+ * Why a route candidate's effective trust is below its seller's score
+ * (`effectiveModelReputationScore`): a live DIFF verification verdict for the
+ * service keeps 10%, and a paid seller that lists no cached-input price for a
+ * model other sellers price cache reads on keeps half. Both can apply.
  */
-function trustPenalty(candidate: { reputation: number; effectiveReputationScore: number | null }): string | null {
+/** Why a gateway level's trust minimum sees a lower score than the seller's: a DIFF cut. */
+function diffTrustPenalty(raw: number | null): string {
+  return `cut to ${Math.round(DIFF_VERIFICATION_REPUTATION_MULTIPLIER * 100)}% from ${Math.round(raw ?? 0)}: live DIFF verification verdict`
+}
+
+function previewTrust(modelTrust: { trust: number | null; raw: number | null; cut: boolean }): { trustScore: number | null; trustScoreBeforeCut?: number } {
+  return modelTrust.cut && modelTrust.raw !== null
+    ? { trustScore: modelTrust.trust, trustScoreBeforeCut: modelTrust.raw }
+    : { trustScore: modelTrust.trust }
+}
+
+/** A persisted `onChainVerificationStatus`, validated; null when absent or malformed. */
+function parseVerificationStatus(value: unknown): PeerInfo['onChainVerificationStatus'] | null {
+  if (!value || typeof value !== 'object') return null
+  const { sameCount, diffCount, pointsMultiplierBps } = value as Record<string, unknown>
+  const count = (n: unknown): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0
+  if (!count(sameCount) || !count(diffCount)) return null
+  if (pointsMultiplierBps !== null && !count(pointsMultiplierBps)) return null
+  return { sameCount, diffCount, pointsMultiplierBps: pointsMultiplierBps as number | null }
+}
+
+function trustPenalty(candidate: {
+  reputation: number
+  effectiveReputationScore: number | null
+  hasDiffVerdict?: boolean
+  cachedInputPenalty?: boolean
+}): string | null {
   const effective = candidate.effectiveReputationScore
   if (candidate.reputation < 0 || effective === null || effective >= candidate.reputation) return null
-  return `halved from ${Math.round(candidate.reputation)}: no cached-input price listed`
+  const from = Math.round(candidate.reputation)
+  const diff = 'live DIFF verification verdict'
+  const cached = 'no cached-input price listed'
+  if (candidate.hasDiffVerdict && candidate.cachedInputPenalty) return `cut from ${from}: ${diff}, ${cached}`
+  if (candidate.hasDiffVerdict) return `cut to ${Math.round(DIFF_VERIFICATION_REPUTATION_MULTIPLIER * 100)}% from ${from}: ${diff}`
+  if (candidate.cachedInputPenalty) return `halved from ${from}: ${cached}`
+  return `reduced from ${from}`
 }
 
 function isControlPlaneServicesPath(path: string): boolean {
@@ -565,6 +659,8 @@ const PEER_CATALOG_FIELDS = [
   'providerServiceApiProtocols',
   'providerServiceUnitBillingModels',
   'providerServiceCapabilities',
+  'providerServiceHealth',
+  'providerServicePerformance',
 ] as const satisfies readonly (keyof PeerInfo)[]
 /**
  * Requests kept in the spend-attribution map. Entries outlive their request on
@@ -572,6 +668,9 @@ const PEER_CATALOG_FIELDS = [
  * sized for in-flight plus recently-finished traffic, not for concurrency.
  */
 const MAX_TRACKED_REQUEST_CONVERSATIONS = 512
+/** Why a speech seller is not a route: it does not list the voice the request asks for. */
+const UNSUPPORTED_VOICE_REASON = 'does not offer the requested voice'
+
 /** Min gap between background peer refreshes triggered by model_not_found responses. */
 const MODEL_NOT_FOUND_REFRESH_THROTTLE_MS = 30_000
 
@@ -648,7 +747,7 @@ type PeerDispatchResult =
     timedOut?: boolean
   }
 
-type DispatchFailure = Extract<PeerDispatchResult, { done: false }>
+export type DispatchFailure = Extract<PeerDispatchResult, { done: false }>
 
 function dispatchFailure(statusCode: number, responseHeaders: Record<string, string>, body: string): DispatchFailure {
   return { done: false, statusCode, responseHeaders, responseBody: Buffer.from(body), errorMessage: null }
@@ -684,6 +783,7 @@ function adaptOpenAICompatibleErrorResponse(
     requestProtocol !== 'openai-responses'
     && requestProtocol !== 'openai-chat-completions'
     && requestProtocol !== 'openai-images'
+    && requestProtocol !== 'openai-audio-speech'
   ) {
     return response;
   }
@@ -948,6 +1048,14 @@ export function parsePersistedPeers(
     if (entry.providerServiceCapabilities && typeof entry.providerServiceCapabilities === 'object') {
       peer.providerServiceCapabilities = entry.providerServiceCapabilities as PeerInfo['providerServiceCapabilities']
     }
+    const persistedHealth = parseProviderServiceHealthMatrix(entry.providerServiceHealth)
+    if (persistedHealth) {
+      peer.providerServiceHealth = persistedHealth
+    }
+    const persistedPerformance = parseProviderServicePerformanceMatrix(entry.providerServicePerformance)
+    if (persistedPerformance) {
+      peer.providerServicePerformance = persistedPerformance
+    }
     if (typeof entry.defaultInputUsdPerMillion === 'number') {
       peer.defaultInputUsdPerMillion = entry.defaultInputUsdPerMillion
     }
@@ -1011,6 +1119,19 @@ export function parsePersistedPeers(
     }
     if (typeof entry.onChainStatsFetchedAt === 'number' && Number.isFinite(entry.onChainStatsFetchedAt)) {
       peer.onChainStatsFetchedAt = entry.onChainStatsFetchedAt
+    }
+    for (const key of ['onChainDiffServices', 'onChainSameServices'] as const) {
+      const services = entry[key]
+      if (!Array.isArray(services)) continue
+      peer[key] = [...new Set(services
+        .filter((service): service is string => typeof service === 'string')
+        .map(verificationServiceKey)
+        .filter((service) => service.length > 0))]
+    }
+    const status = parseVerificationStatus(entry.onChainVerificationStatus)
+    if (status) peer.onChainVerificationStatus = status
+    if (typeof entry.onChainVerificationFetchedAt === 'number' && Number.isFinite(entry.onChainVerificationFetchedAt)) {
+      peer.onChainVerificationFetchedAt = entry.onChainVerificationFetchedAt
     }
     // Carry sellerContract through the persistence layer so the buyer's
     // SellerAddressResolver can return the facade address for facade-fronted
@@ -1237,7 +1358,7 @@ export class BuyerProxy {
   private _heartbeatHandle: ReturnType<typeof setInterval> | null = null
   private readonly _now: () => number
   /** Latest relayer receipt per sweep authNonce, for CLI progress polling. */
-  private readonly _sweepReceipts = new Map<string, SweepReceiptPayload>()
+  private readonly _sweepReceipts = new Map<string, AttributedSweepReceipt>()
   /**
    * Hot-wallet deposit watcher (auto-sweep). Owned by `buyer start`, attached
    * here so the desktop and `antseed deposit` can drive it over the control
@@ -1262,6 +1383,8 @@ export class BuyerProxy {
   private readonly _spendAttribution: SpendAttributionFeed
 
   private readonly _minPeerReputation: number | null
+  private readonly _maxPricing: TokenPricingUsdPerMillion | null
+  private readonly _maxReserveAmountUsdc: string | null
   /** Gateway control secret, read lazily (the gateway may create it after the buyer starts). */
   private _controlSecret: string | null = null
   private _controlSecretCheckedAt = 0
@@ -1277,6 +1400,8 @@ export class BuyerProxy {
 
   constructor(config: BuyerProxyConfig) {
     this._minPeerReputation = config.minPeerReputation ?? null
+    this._maxPricing = config.maxPricing ? { ...config.maxPricing } : null
+    this._maxReserveAmountUsdc = config.maxReserveAmountUsdc ?? null
     this._balanceReader = config.balanceReader ?? null
     this._restartHandler = config.onRestartRequested ?? null
     this._restartAllowedAt = Date.now() + (config.minRestartIntervalMs ?? MIN_RESTART_INTERVAL_MS)
@@ -1324,8 +1449,11 @@ export class BuyerProxy {
       on?: (event: 'sweep:receipt', listener: (event: { peerId: string; payload: SweepReceiptPayload }) => void) => unknown
     }
     if (typeof sweepEventNode.on === 'function') {
-      sweepEventNode.on('sweep:receipt', ({ payload }) => {
-        this._sweepReceipts.set(payload.authNonce.toLowerCase(), payload)
+      sweepEventNode.on('sweep:receipt', (receipt) => {
+        const key = receipt.payload.authNonce.toLowerCase()
+        if (!supersedesSweepReceipt(this._sweepReceipts.get(key), receipt)) return
+        this._sweepReceipts.delete(key)
+        this._sweepReceipts.set(key, receipt)
         if (this._sweepReceipts.size > 64) {
           const oldest = this._sweepReceipts.keys().next().value
           if (oldest !== undefined) this._sweepReceipts.delete(oldest)
@@ -1534,9 +1662,13 @@ export class BuyerProxy {
 
   private _policyFacts(peer: PeerInfo, offer: NetworkServiceOffer | null): PolicyPeerFacts {
     const score = normalizedModelReputationScore(peer)
+    // Trust is judged per model on every path (automatic, pinned, offer listing): a live DIFF
+    // verdict on the offer's model cuts it to 10%.
+    const modelTrust = this._modelTrust(peer, offer?.serviceId ?? null)
     return {
       peerId: peer.peerId,
-      trustScore: score,
+      trustScore: modelTrust.trust,
+      ...(modelTrust.cut ? { trustPenalty: diffTrustPenalty(modelTrust.raw) } : {}),
       reputation: score,
       inputUsdPerMillion: offer?.inputUsdPerMillion ?? null,
       outputUsdPerMillion: offer?.outputUsdPerMillion ?? null,
@@ -1545,6 +1677,17 @@ export class BuyerProxy {
       unverifiedReason: this._unverifiedReason(peer),
       teeCapable: parseVerifierCapabilities(peer.capabilities).supported.includes(TEE_VERIFIER_ID),
     }
+  }
+
+  /**
+   * The seller's trust for one of its models, as every routing level judges it: the buyer's
+   * trust score, cut to DIFF_VERIFICATION_REPUTATION_MULTIPLIER when the model has a live
+   * DIFF verdict. Null when the buyer has no score for the seller.
+   */
+  private _modelTrust(peer: PeerInfo, serviceId: string | null): { trust: number | null; raw: number | null; cut: boolean } {
+    const raw = normalizedModelReputationScore(peer)
+    const cut = raw !== null && serviceId !== null && hasLiveDiffVerdict(peer, serviceId, this._now())
+    return { trust: raw === null ? null : cut ? raw * DIFF_VERIFICATION_REPUTATION_MULTIPLIER : raw, raw, cut }
   }
 
   /** Health is tracked per seller and model: one seller can serve a small model fast and a large one slowly. */
@@ -1635,17 +1778,20 @@ export class BuyerProxy {
     const effectivePolicy = requestPolicy ? narrowPolicy(this._buyerPolicy(), requestPolicy) : null
     const verdicts = new Map<string, ModelRouteVerdict>()
     const routeCandidates = []
+    // A speech seller refuses a voice it does not list, so it is not a route for one.
+    const speechBody = requestProtocol === 'openai-audio-speech' ? extractRequestBodyFields(request.headers, request.body) : null
+    const voice = speechBody?.['voice']
+    // What a speech request costs on a route: its price per character times the characters it reads.
+    const speechCharacters = typeof speechBody?.['input'] === 'string' ? [...speechBody['input']].length : null
     for (const peer of modelPeers) {
       const plan = modelPlans.get(peer.peerId)
-        ?? resolvePeerRoutePlan(peer, requestProtocol, requestedService, explicitProvider, 'strict')
+        ?? resolvePeerRoutePlan(peer, requestProtocol, requestedService, explicitProvider, 'strict', voice)
       if (!plan?.serviceId) continue
       const offer = findAdvertisedServiceOffer(peer, plan.provider, plan.serviceId)
       if (!offer) continue
       const verdict: ModelRouteVerdict = { peer, serviceId: plan.serviceId, offer, eligible: false, rank: null, reasons: [] }
       verdicts.set(peer.peerId, verdict)
-      const missingRequired = plan.selection?.requiresTransform
-        ? [...requiredParameters]
-        : findMissingRequiredParameters(peer, plan.provider, plan.serviceId, requiredParameters)
+      const missingRequired = findMissingRouteParameters(peer, plan, plan.serviceId, requiredParameters)
       if (missingRequired.length > 0) {
         log(
           `Capability filter: peer ${peer.peerId.slice(0, 12)}... service="${plan.serviceId}" `
@@ -1654,9 +1800,16 @@ export class BuyerProxy {
         verdict.reasons.push(`missing required parameter(s): ${missingRequired.join(', ')}`)
         continue
       }
+      if (voice !== undefined && speechVoiceProblem(offer.capabilities?.speech, voice)) {
+        log(`Voice filter: peer ${peer.peerId.slice(0, 12)}... service="${plan.serviceId}" does not offer the requested voice`)
+        verdict.reasons.push(UNSUPPORTED_VOICE_REASON)
+        continue
+      }
       const requestForPolicy = withRoutedModel(request, plan.serviceId)
-      if (!peerAllowedByPolicy(policyRouter, requestForPolicy, peer)) {
-        verdict.reasons.push(buyerConfigReason(policyRouter?.explainPolicyRejection?.(requestForPolicy, peer) ?? 'outside buyer pricing/reputation limits'))
+      // Price policy against the provider this route sends through, not the router's own pick.
+      const policyRequest = withProviderHeader(requestForPolicy, plan.provider)
+      if (!peerAllowedByPolicy(policyRouter, policyRequest, peer)) {
+        verdict.reasons.push(buyerConfigReason(policyRouter?.explainPolicyRejection?.(policyRequest, peer) ?? 'outside buyer pricing/reputation limits'))
         continue
       }
       routeCandidates.push({
@@ -1667,22 +1820,27 @@ export class BuyerProxy {
         request: requestForPolicy,
         reputation: normalizedModelReputationScore(peer) ?? -1,
         hasCachedInputPricing: offer.cachedInputUsdPerMillion !== undefined,
+        hasDiffVerdict: hasLiveDiffVerdict(peer, plan.serviceId, this._now()),
         inputUsdPerMillion: offer.inputUsdPerMillion ?? null,
         outputUsdPerMillion: offer.outputUsdPerMillion ?? null,
         minImageUsdPerImage: offer.minImageUsdPerImage ?? null,
+        speechUsdPerCharacter: speechOfferUsdPerCharacter(offer),
       })
     }
     const now = this._now()
     const preferCachedPricing = routeCandidates.some((candidate) => candidate.hasCachedInputPricing)
     const ranked = routeCandidates.map((candidate) => {
       const health = this._peerHealth.get(candidate.peer.peerId)
+      const isFree = modelRouteTotalPrice(candidate) === 0
       return {
         ...candidate,
+        cachedInputPenalty: preferCachedPricing && !candidate.hasCachedInputPricing && !isFree,
         effectiveReputationScore: effectiveModelReputationScore(
           candidate.reputation >= 0 ? candidate.reputation : null,
           candidate.hasCachedInputPricing,
           preferCachedPricing,
-          modelRouteTotalPrice(candidate) === 0,
+          isFree,
+          candidate.hasDiffVerdict,
         ),
         peerCooldownUntil: health?.cooldownUntil ?? null,
         peerFailureStreak: health?.failureStreak ?? 0,
@@ -1735,11 +1893,14 @@ export class BuyerProxy {
       serviceId: this._healthServiceKey(candidate.serviceId),
       inputUsdPerMillion: candidate.inputUsdPerMillion,
       outputUsdPerMillion: candidate.outputUsdPerMillion,
-      requestUsd: candidate.minImageUsdPerImage,
+      requestUsd: candidate.speechUsdPerCharacter != null && speechCharacters !== null
+        ? candidate.speechUsdPerCharacter * speechCharacters
+        : candidate.minImageUsdPerImage,
       coolingDown: isCooling(candidate),
       ...(openChannels ? { channelOpen: modelRouteTotalPrice(candidate) === 0 || openChannels.has(candidate.peerId.toLowerCase()) } : {}),
       saturated: typeof candidate.peer.maxConcurrency === 'number' && candidate.peer.maxConcurrency > 0
         && (this._inFlightBySeller.get(candidate.peerId.toLowerCase()) ?? 0) >= candidate.peer.maxConcurrency,
+      reported: candidate.offer.performance ?? null,
     }), this._sellerHealth, requestShape(request), {
       now,
       affinityKey: input.affinityKey ?? null,
@@ -1759,7 +1920,7 @@ export class BuyerProxy {
       const ordering = orderByPolicy(candidates, effectivePolicy, requestedService, {
         peerId: (candidate) => candidate.peerId,
         totalPrice: (candidate) => modelRouteTotalPrice(candidate),
-        trustScore: (candidate) => (candidate.reputation >= 0 ? candidate.reputation : null),
+        trustScore: (candidate) => this._modelTrust(candidate.peer, candidate.serviceId).trust,
         latencyMs: (candidate) => this._peerLatency(candidate.peerId, candidate.serviceId),
         coolingDown: isCooling,
         unhealthy: (candidate) => healthOf(candidate).unhealthy,
@@ -1808,7 +1969,12 @@ export class BuyerProxy {
       else if (health.unhealthy) verdict.reasons.push(`failing lately: ${health.stats?.lastFailureReason ?? 'failed requests'} (tried after healthy sellers)`)
       if (pool.length > 1 && pool.includes(candidate)) verdict.reasons.push(`shares traffic with ${pool.length - 1} other seller(s)`)
       if (modelRouteTotalPrice(candidate) === 0) verdict.reasons.push('free')
-      verdict.reasons.push(`success ~${Math.round(health.successProbability * 100)}%${health.stats ? '' : ' (no data yet)'}`)
+      const reported = candidate.offer.performance
+      let basis = ''
+      if (!health.stats) {
+        basis = reported && reportedSuccessPrior(reported) !== null ? ` (seller reports ${reported.requests} requests in the last hour)` : ' (no data yet)'
+      }
+      verdict.reasons.push(`success ~${Math.round(health.successProbability * 100)}%${basis}`)
       const latency = this._peerLatency(candidate.peerId, candidate.serviceId)
       if (latency !== null) verdict.reasons.push(`first token ~${Math.round(latency)}ms`)
       const throughput = this._peerThroughput(candidate.peerId, candidate.serviceId)
@@ -1840,6 +2006,14 @@ export class BuyerProxy {
         inFlight: this._inFlightBySeller.get(candidate.peerId.toLowerCase()) ?? 0,
         maxConcurrency,
         routeChainPosition: position !== undefined ? position + 1 : null,
+        ...(reported ? {
+          reported: {
+            requests: reported.requests,
+            successRate: reported.successRate,
+            firstTokenMsP50: reported.firstTokenMsP50 ?? null,
+            tokensPerSecondP50: reported.tokensPerSecondP50 ?? null,
+          },
+        } : {}),
       }
       verdict.selection = selection
       selections.set(candidate, selection)
@@ -1903,7 +2077,28 @@ export class BuyerProxy {
     })
     const effective = plan.effectivePolicy
     const modelAllowed = policyAllowsModel(effective, model)
-    return plan.verdicts
+    // Routing never considers a service its seller announces as failing, so
+    // those sellers are listed here with the reason.
+    const planned = new Set<string>(plan.verdicts.map((verdict) => verdict.peer.peerId))
+    const failing: RoutePreviewCandidate[] = []
+    for (const offer of findFailingServiceOffers(peers, model)) {
+      if (planned.has(offer.peerId)) continue
+      planned.add(offer.peerId)
+      const peer = peers.find((candidate) => candidate.peerId === offer.peerId)
+      failing.push({
+        peerId: offer.peerId,
+        displayName: peer?.displayName ?? null,
+        rank: null,
+        eligible: false,
+        reasons: [`self health check failing${offer.health?.reason ? ` (${offer.health.reason})` : ''}`],
+        inputUsdPerMillion: offer.inputUsdPerMillion ?? null,
+        outputUsdPerMillion: offer.outputUsdPerMillion ?? null,
+        ...(peer ? previewTrust(this._modelTrust(peer, offer.serviceId ?? null)) : { trustScore: null }),
+        selection: null,
+        health: offer.health ?? null,
+      })
+    }
+    return [...plan.verdicts
       .map((verdict): RoutePreviewCandidate => ({
         peerId: verdict.peer.peerId,
         displayName: verdict.peer.displayName ?? null,
@@ -1912,9 +2107,10 @@ export class BuyerProxy {
         reasons: modelAllowed ? verdict.reasons : ['model not allowed', ...verdict.reasons],
         inputUsdPerMillion: verdict.offer.inputUsdPerMillion ?? null,
         outputUsdPerMillion: verdict.offer.outputUsdPerMillion ?? null,
-        trustScore: normalizedModelReputationScore(verdict.peer),
+        ...previewTrust(this._modelTrust(verdict.peer, verdict.serviceId)),
         selection: modelAllowed && verdict.eligible ? verdict.selection ?? null : null,
-      }))
+        health: verdict.offer.health ?? null,
+      })), ...failing]
       .sort((a, b) => (a.rank ?? Number.POSITIVE_INFINITY) - (b.rank ?? Number.POSITIVE_INFINITY)
         || a.peerId.localeCompare(b.peerId))
   }
@@ -2118,7 +2314,7 @@ export class BuyerProxy {
 
   /** Latest relayer receipt for a sweep authNonce, if one has arrived. */
   getSweepReceipt(authNonce: string): SweepReceiptPayload | null {
-    return this._sweepReceipts.get(authNonce.toLowerCase()) ?? null
+    return this._sweepReceipts.get(authNonce.toLowerCase())?.payload ?? null
   }
 
   async start(): Promise<void> {
@@ -2452,6 +2648,12 @@ export class BuyerProxy {
       state,
       pid: process.pid,
       port: this._port,
+      // The limits this process enforces, as started (neither is reloaded from the config file).
+      settings: {
+        minPeerReputation: this._minPeerReputation,
+        maxPricing: this._maxPricing,
+        maxReserveAmountUsdc: this._maxReserveAmountUsdc,
+      },
       ...sessionOverrides,
     })
   }
@@ -2545,6 +2747,8 @@ export class BuyerProxy {
         providerServiceApiProtocols: p.providerServiceApiProtocols ?? null,
         providerServiceUnitBillingModels: p.providerServiceUnitBillingModels ?? null,
         providerServiceCapabilities: p.providerServiceCapabilities ?? null,
+        providerServiceHealth: p.providerServiceHealth ?? null,
+        providerServicePerformance: p.providerServicePerformance ?? null,
         defaultInputUsdPerMillion: p.defaultInputUsdPerMillion ?? 0,
         defaultOutputUsdPerMillion: p.defaultOutputUsdPerMillion ?? 0,
         defaultCachedInputUsdPerMillion: p.defaultCachedInputUsdPerMillion ?? null,
@@ -2574,6 +2778,12 @@ export class BuyerProxy {
         onChainSybilRisk: p.onChainSybilRisk ?? null,
         onChainSybilFlags: p.onChainSybilFlags ?? null,
         onChainStatsFetchedAt: p.onChainStatsFetchedAt ?? null,
+        // Services with a live DIFF verdict on AntseedVerificationResults; their
+        // effective reputation keeps 10%.
+        onChainDiffServices: p.onChainDiffServices ?? null,
+        onChainSameServices: p.onChainSameServices ?? null,
+        onChainVerificationStatus: p.onChainVerificationStatus ?? null,
+        onChainVerificationFetchedAt: p.onChainVerificationFetchedAt ?? null,
         // Persisted so cold-started buyers can still resolve the facade address
         // for channelId derivation. See parsePersistedPeers for the round-trip.
         sellerContract: p.metadata?.sellerContract ?? null,
@@ -2961,6 +3171,8 @@ export class BuyerProxy {
         providerServiceApiProtocols: p.providerServiceApiProtocols,
         providerServiceUnitBillingModels: p.providerServiceUnitBillingModels,
         providerServiceCapabilities: p.providerServiceCapabilities,
+        providerServiceHealth: p.providerServiceHealth,
+        providerServicePerformance: p.providerServicePerformance,
         reputationScore: p.reputationScore,
         onChainReputationScore: p.onChainReputationScore ?? null,
         trust: p.trust ?? null,
@@ -2973,6 +3185,10 @@ export class BuyerProxy {
         onChainUsageLastEpochUsdcMicros: p.onChainUsageLastEpochUsdcMicros ?? null,
         onChainWashFlagged: p.onChainWashFlagged ?? null,
         onChainWashShareBps: p.onChainWashShareBps ?? null,
+        onChainDiffServices: p.onChainDiffServices ?? null,
+        onChainSameServices: p.onChainSameServices ?? null,
+        onChainVerificationStatus: p.onChainVerificationStatus ?? null,
+        onChainVerificationFetchedAt: p.onChainVerificationFetchedAt ?? null,
         maxConcurrency: p.maxConcurrency ?? null,
         currentLoad: p.currentLoad ?? null,
         onChainChannelCount: p.onChainChannelCount ?? null,
@@ -3519,7 +3735,7 @@ export class BuyerProxy {
 
     const sweepReceiptMatch = path.match(/^\/_antseed\/sweep\/(0x[0-9a-fA-F]{64})$/)
     if (sweepReceiptMatch && method === 'GET') {
-      const receipt = this._sweepReceipts.get(sweepReceiptMatch[1]!.toLowerCase()) ?? null
+      const receipt = this.getSweepReceipt(sweepReceiptMatch[1]!)
       res.writeHead(200, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ ok: true, receipt }))
       return
@@ -3579,7 +3795,7 @@ export class BuyerProxy {
       res.writeHead(400, responseHeaders)
       res.end(JSON.stringify({
         error: {
-          message: `Unknown model type "${url.searchParams.get('type') ?? ''}" — expected "text", "images", "decisions", "videos", or "routers".`,
+          message: `Unknown model type "${url.searchParams.get('type') ?? ''}" — expected "text", "images", "decisions", "videos", "speech", or "routers".`,
           type: 'invalid_request_error',
           param: 'type',
         },
@@ -3685,6 +3901,7 @@ export class BuyerProxy {
       normalizedPath.startsWith('/v1/responses') ||
       normalizedPath.startsWith('/v1/images/generations') ||
       normalizedPath.startsWith('/v1/images/edits') ||
+      normalizedPath === '/v1/audio/speech' ||
       normalizedPath.startsWith('/v1/systemone') ||
       normalizedPath.startsWith('/v1/models')
     if (!isKnownApiPath) {
@@ -4283,6 +4500,10 @@ export class BuyerProxy {
 
     const requestProtocol = detectRequestServiceApiProtocol(serializedReq)
     const requestedService = extractRequestedService(serializedReq)
+    // A speech request prefers, on each peer (pinned or not), a provider that offers its voice.
+    const requestedVoice = requestProtocol === 'openai-audio-speech'
+      ? extractRequestBodyFields(serializedReq.headers, serializedReq.body)?.['voice']
+      : undefined
     log(`Routing: protocol=${requestProtocol ?? 'null'} service=${requestedService ?? 'null'}`)
     const explicitProvider = getExplicitProviderOverride(serializedReq)
     const explicitPeerId = getExplicitPeerIdOverride(serializedReq, effectivePinnedPeer ?? undefined, bodyPinnedPeer)
@@ -4340,17 +4561,18 @@ export class BuyerProxy {
         ? [...requiredParameters, 'image']
         : [...requiredParameters]
       // Likewise a video edit needs a seller whose model takes the source
-      // (or reference) videos the create sends.
+      // (or reference) videos the create sends, and a lip-synced video one
+      // whose model takes the audio.
       if (nativeVideo?.action === 'create') {
         const fields = extractRequestBodyFields(serializedReq.headers, serializedReq.body)
-        for (const field of ['video_url', 'reference_video_urls']) {
+        for (const field of ['video_url', 'reference_video_urls', 'audio_url']) {
           const value = fields?.[field]
           if ((typeof value === 'string' || Array.isArray(value)) && value.length > 0
             && !routeRequiredParameters.includes(field)) routeRequiredParameters.push(field)
         }
       }
       const selectModelPeers = (candidateSources: PeerInfo[]): CandidatePeerRouteSelection =>
-        selectCandidatePeersForRouting(candidateSources, requestProtocol, requestedService, explicitProvider, 'strict')
+        selectCandidatePeersForRouting(candidateSources, requestProtocol, requestedService, explicitProvider, 'strict', requestedVoice)
       let discoveredPeers = peers
       let { candidatePeers: modelPeers, routePlanByPeerId: modelPlans } = selectModelPeers(discoveredPeers)
       const cacheAgeMs = Date.now() - this._cacheLastUpdatedAtMs
@@ -4360,7 +4582,7 @@ export class BuyerProxy {
       }
 
       const router = this._node.router
-      const { candidates, effectivePolicy, explored, selections, firstPick } = this._planModelRoutes({
+      const { candidates, verdicts, effectivePolicy, explored, selections, firstPick } = this._planModelRoutes({
         modelPeers,
         modelPlans,
         request: serializedReq,
@@ -4376,7 +4598,54 @@ export class BuyerProxy {
       })
       const requireVerified = effectivePolicy?.requireVerified === true
       if (candidates.length === 0) {
+        // Every seller of the model was left out only for not offering the voice asked for.
+        const voiceVerdicts = verdicts.filter((verdict) => verdict.reasons.includes(UNSUPPORTED_VOICE_REASON))
+        if (voiceVerdicts.length > 0 && voiceVerdicts.length === verdicts.length) {
+          const voices = [...new Set(voiceVerdicts.flatMap((verdict) => verdict.offer.capabilities?.speech?.voices ?? []))].sort()
+          const voice = extractRequestBodyFields(serializedReq.headers, serializedReq.body)?.['voice']
+          log(`Request rejected: no seller of ${requestedService} offers voice ${JSON.stringify(voice)}`)
+          return dispatchFailure(400, { 'content-type': 'application/json' }, JSON.stringify({
+            error: {
+              type: 'invalid_request_error',
+              code: 'unsupported_voice',
+              message: `No seller of "${requestedService}" offers voice ${JSON.stringify(voice)}. Available voices: ${voices.slice(0, 40).join(', ')}${voices.length > 40 ? ', ...' : ''}`,
+              param: 'voice',
+              available_voices: voices,
+            },
+          }))
+        }
         const capabilityRequired = routeRequiredParameters.length > 0
+        // Served, but the health check of every seller that could take it
+        // announces the route failing (the model, or the protocol this request
+        // needs). Only when no healthy seller could take it either: if one
+        // could and policy ruled it out, the policy answer below is the true one.
+        const healthyRouteExists = modelPeers.some((peer) => {
+          const plan = modelPlans.get(peer.peerId)
+            ?? resolvePeerRoutePlan(peer, requestProtocol, requestedService, explicitProvider, 'strict')
+          return plan?.serviceId != null
+            && findMissingRouteParameters(peer, plan, requestedService, routeRequiredParameters).length === 0
+        })
+        const failingRoutes = healthyRouteExists
+          ? []
+          : findFailingServiceRoutes(discoveredPeers, requestProtocol, requestedService, explicitProvider, routeRequiredParameters)
+        if (failingRoutes.length > 0) {
+          const latest = failingRoutes.reduce((a, b) => ((b.health.checkedAt ?? 0) > (a.health.checkedAt ?? 0) ? b : a))
+          const sellers = new Set(failingRoutes.map((route) => route.peerId)).size
+          log(`Request rejected: every seller serving ${requestedService} reports it failing (${sellers} seller(s))`)
+          return dispatchFailure(SELF_HEALTH_ERROR_STATUS, { 'content-type': 'application/json' }, JSON.stringify({
+            error: {
+              type: SELLER_SELF_HEALTH_FAILING_CODE,
+              code: SELLER_SELF_HEALTH_FAILING_CODE,
+              message: [
+                `${sellers === 1 ? 'The only seller' : `All ${sellers} sellers`} serving "${requestedService}" ${sellers === 1 ? 'reports' : 'report'} it failing.`,
+                describeServiceHealth(latest.serviceId, latest.health),
+                'Try again later or pick another model.',
+              ].join('\n'),
+              param: 'model',
+              service_health: latest.health,
+            },
+          }))
+        }
         // The model exists on the network but only behind an API this
         // request does not speak (e.g. a decision model asked via chat).
         // Say so instead of claiming nobody serves it.
@@ -4586,6 +4855,7 @@ export class BuyerProxy {
       requestedService,
       explicitProvider,
       'lenient',
+      requestedVoice,
     )
 
     let hasForcedRefresh = false
@@ -4687,15 +4957,10 @@ export class BuyerProxy {
     }
     const policyRouter = router as BuyerPolicyRouter | null | undefined
     const selectedPlan = routingPlans.get(selectedPeer.peerId)
-      ?? resolvePeerRoutePlan(selectedPeer, requestProtocol, requestedService, explicitProvider, 'lenient')
+      ?? resolvePeerRoutePlan(selectedPeer, requestProtocol, requestedService, explicitProvider, 'lenient', requestedVoice)
     const pinnedServiceId = selectedPlan?.serviceId ?? requestedService
-    const missingRequired = selectedPlan && !selectedPlan.selection?.requiresTransform
-      ? findMissingRequiredParameters(
-          selectedPeer,
-          selectedPlan.provider,
-          pinnedServiceId,
-          requiredParameters,
-        )
+    const missingRequired = selectedPlan
+      ? findMissingRouteParameters(selectedPeer, selectedPlan, pinnedServiceId, requiredParameters)
       : requiredParameters
     if (missingRequired.length > 0) {
       return dispatchFailure(422, { 'content-type': 'application/json' }, JSON.stringify({
@@ -4716,7 +4981,7 @@ export class BuyerProxy {
     const pinnedPolicy = this._effectivePolicy(requestPolicy)
     if (requestPolicy) {
       const offer = selectedPlan && pinnedServiceId
-        ? findAdvertisedServiceOffer(selectedPeer, selectedPlan.provider, pinnedServiceId)
+        ? findAdvertisedServiceOffer(selectedPeer, selectedPlan.provider, pinnedServiceId, true)
         : null
       const facts = this._policyFacts(selectedPeer, offer)
       const reasons = pinnedPeerExclusionReasons(requestPolicy, facts, requestedService)
@@ -5165,7 +5430,7 @@ export class BuyerProxy {
           this._recordPeerFailure(selectedPeer.peerId, 'buyer-local', 'buyer')
         } else {
           this._recordPeerResponseHealth(
-            selectedPeer.peerId, responseForClient.statusCode, requestForPeer.path,
+            selectedPeer.peerId, healthStatusFor(responseForClient), requestForPeer.path,
           )
         }
 
@@ -5301,7 +5566,7 @@ export class BuyerProxy {
         if (responseFault === 'buyer') {
           this._recordPeerFailure(selectedPeer.peerId, 'buyer-local', 'buyer')
         } else {
-          this._recordPeerResponseHealth(selectedPeer.peerId, response.statusCode, requestForPeer.path)
+          this._recordPeerResponseHealth(selectedPeer.peerId, healthStatusFor(response), requestForPeer.path)
         }
 
         // Check if retryable

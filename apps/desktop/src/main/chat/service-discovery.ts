@@ -15,7 +15,7 @@ import {
   DESKTOP_DEFAULT_MAX_OUTPUT_USD_PER_MILLION,
 } from '../runtime/config-io.js';
 import { normalizeProviderId } from './provider-hint.js';
-import { isNativeVideoProtocol } from '@antseed/node';
+import { isNativeVideoProtocol, liveVerificationVerdict, verificationServiceUrl } from '@antseed/node';
 import {
   normalizeVideoOptions,
   sortChatServiceCatalogEntries,
@@ -90,6 +90,13 @@ export type DiscoverRowEntry = {
   onChainReputationScore: number | null;
   /** Wash-trading registry verdict; `null` when the registry was unavailable. */
   washFlagged: boolean | null;
+  /**
+   * Live verdict on AntseedVerificationResults for this service: 'diff' (its
+   * reputation keeps 10%), 'same', or null when there is none or the read is stale.
+   */
+  verification: 'diff' | 'same' | null;
+  /** Explorer page with this service's verdict history; null without a verdict or an explorer. */
+  verificationUrl: string | null;
   effectiveReputationScore: number | null;
   onChainSybilRisk: number | null;
   onChainSybilFlags: string[];
@@ -354,6 +361,12 @@ export type BuyerStateDiscoveredPeer = {
   onChainLastSettledAtSec: number | null;
   onChainReputationScore: number | null;
   onChainWashFlagged: boolean | null;
+  /** Services with a live DIFF verdict, as trimmed lowercase names. */
+  onChainDiffServices?: string[];
+  /** Services with a live SAME verdict, as trimmed lowercase names. */
+  onChainSameServices?: string[];
+  /** Unix ms of the verification read behind both service lists; a read older than 15 minutes counts for nothing. */
+  onChainVerificationFetchedAt?: number | null;
   onChainSybilRisk: number | null;
   onChainSybilFlags: string[];
   sellerContract?: string;
@@ -390,7 +403,19 @@ export function normalizeTrustBreakdown(raw: unknown): TrustBreakdown | null {
     identity: normalizeIdentityPart(asPlainObject(value.identity)),
     freeModels: normalizeFreeModelsPart(asPlainObject(value.freeModels)),
     washFlagged: typeof value.washFlagged === 'boolean' ? value.washFlagged : null,
+    verification: normalizeVerificationPart(asPlainObject(value.verification)),
   };
+}
+
+/** The model-verification penalty: the points multiplier below 100% and what it took off. */
+function normalizeVerificationPart(raw: Record<string, unknown> | null): TrustBreakdown['verification'] {
+  if (!raw) return null;
+  const multiplierBps = nonNegative(raw.multiplierBps);
+  const sameCount = nonNegative(raw.sameCount);
+  const diffCount = nonNegative(raw.diffCount);
+  const penalty = boundedScore(raw.penalty);
+  if (multiplierBps === null || multiplierBps >= 10_000 || sameCount === null || diffCount === null || penalty === null) return null;
+  return { multiplierBps, sameCount, diffCount, penalty };
 }
 
 function normalizeFreeModelsPart(raw: Record<string, unknown> | null): TrustBreakdown['freeModels'] {
@@ -456,6 +481,8 @@ export async function buildDiscoverRows(
   networkStats: Map<number, { requests: bigint; inputTokens: bigint; outputTokens: bigint }>,
   peerHealth: Record<string, RawPeerHealth> = {},
   sellerBoosts: BoostBySeller | null = null,
+  /** The chain explorer (`explorerApiUrl`) that verdict links point at; no links without it. */
+  explorerUrl: string | null = null,
 ): Promise<DiscoverRowEntry[]> {
   const rows: DiscoverRowEntry[] = [];
   for (const entry of catalog) {
@@ -482,6 +509,7 @@ export async function buildDiscoverRows(
     const networkInputTokens = netForAgent ? netForAgent.inputTokens.toString() : null;
     const networkOutputTokens = netForAgent ? netForAgent.outputTokens.toString() : null;
     const health = readPeerHealth(peerHealth[peerId], Date.now());
+    const verification = liveVerificationVerdict(peerBlob, entry.id);
 
     rows.push({
       rowKey: `${peerId}:${entry.id}`,
@@ -529,6 +557,8 @@ export async function buildDiscoverRows(
       onChainReputationScore,
       trust: peerBlob?.trust ?? null,
       washFlagged,
+      verification,
+      verificationUrl: verification ? verificationServiceUrl(explorerUrl, agentId, entry.id) : null,
       effectiveReputationScore: entry.effectiveReputationScore ?? null,
       onChainSybilRisk,
       onChainSybilFlags,

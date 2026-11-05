@@ -204,3 +204,56 @@ describe('pool loading', () => {
     }
   });
 });
+
+describe('pool verification', () => {
+  const POLICY = '0x00000000000000000000000000000000000000d5';
+  const HASH = `0x${'ab'.repeat(32)}`;
+  const verifications = {
+    baseUrl: 'https://scan',
+    providers: new Map([[1, { agentId: 1, sameCount: 6, diffCount: 1, services: [
+      { service: 'model-a', serviceHash: HASH, verdict: 'SAME' },
+      { service: 'model-b', serviceHash: `0x${'cd'.repeat(32)}`, verdict: 'DIFF' },
+    ] }]]),
+  };
+
+  function withPolicy(rates: unknown[] | null = [200n]) {
+    const setupResult = setup();
+    const { ctx, indexer } = setupResult;
+    Object.assign(ctx.chain, { verificationPointsPolicyAddress: POLICY });
+    Object.assign(indexer, { verifications: vi.fn(async () => verifications) });
+    const base = vi.mocked(multicallRead).getMockImplementation()!;
+    vi.mocked(multicallRead).mockImplementation(async (provider, requests) => {
+      const results = await base(provider, requests);
+      return requests.map((r, i) => r.method === 'bonusBps' ? rates : r.method === 'penaltyBps' ? (rates ? [400n] : null) : results[i]!);
+    });
+    return setupResult;
+  }
+
+  it('adds verdicts and the policy multiplier to the list and the detail, reading the rates once', async () => {
+    const { ctx, methods } = withPolicy();
+    const list = await poolsView(ctx);
+    expect(list.pools[0]!.verification).toEqual({
+      sameCount: 6, diffCount: 1, pointsMultiplierBps: 10_800,
+      sameServices: [{ service: 'model-a', url: `https://scan/verification-service/1~${HASH}` }],
+      diffServices: [{ service: 'model-b', url: `https://scan/verification-service/1~0x${'cd'.repeat(32)}` }],
+    });
+    expect((await singlePool(ctx, 1)).verification).toEqual(list.pools[0]!.verification);
+    await poolsView(ctx);
+    expect(methods.filter(method => method === 'bonusBps')).toHaveLength(1);
+    expect(methods.filter(method => method === 'penaltyBps')).toHaveLength(1);
+  });
+
+  it('shows counts without a multiplier when the rates cannot be read', async () => {
+    const { ctx } = withPolicy(null);
+    expect((await poolsView(ctx)).pools[0]!.verification).toMatchObject({ sameCount: 6, diffCount: 1, pointsMultiplierBps: null });
+  });
+
+  it('leaves the pools view intact when Antscan verifications fail', async () => {
+    const { ctx, indexer } = withPolicy();
+    Object.assign(indexer, { verifications: vi.fn(async () => { throw new Error('down'); }) });
+    const list = await poolsView(ctx);
+    expect(list.source).toBe('indexer');
+    expect(list.pools[0]).toMatchObject({ agentId: 1, yield: { status: 'settled' } });
+    expect(list.pools[0]!.verification).toBeUndefined();
+  });
+});

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { SellerBuyerLimiter } from '../src/payments/seller-buyer-limiter.js';
 import { SellerRequestHandler, assertSingleRoutingService } from '../src/seller-request-handler.js';
 import type { SerializedHttpRequest } from '../src/types/http.js';
 import type { Provider } from '../src/interfaces/seller-provider.js';
@@ -224,6 +225,9 @@ function makeSpmMock(overrides: Record<string, unknown> = {}): any {
     getEffectiveReserveMax() {
       return this.getReserveMax();
     },
+    async refreshReserveMaxFromChain() {
+      return this.getEffectiveReserveMax();
+    },
     isChannelBlocked: () => false,
     getPaymentRequirements: () => ({ minBudgetPerRequest: '10000', suggestedAmount: '1000000' }),
     waitForPendingAuths: async () => {},
@@ -233,6 +237,10 @@ function makeSpmMock(overrides: Record<string, unknown> = {}): any {
     endBillableRequest: vi.fn(() => { inFlight -= 1; }),
     hasInFlightRequests: () => inFlight > 0,
     hasClosingChannel: () => false,
+    waitForClosingChannel: async () => false,
+    isTopUpRunning: () => false,
+    isTopUpPendingFor: () => false,
+    waitForTopUp: async () => true,
     // The real one waits for in-flight requests, then settles.
     closeSessionWhenIdle(buyerPeerId: string) {
       return this.settleSession(buyerPeerId);
@@ -379,6 +387,29 @@ describe('native video job ownership', () => {
       }
       expect(provider.handleRequest).toHaveBeenCalledTimes(1);
       expect(recordSpend).not.toHaveBeenCalled();
+    } finally { store.close(); }
+  });
+  it('keeps video polls and downloads outside token-based buyer limits', async () => {
+    const provider = makeProvider(0, 0, {
+      name: 'venice', services: ['video'], serviceApiProtocols: { video: ['venice-video'] },
+      serviceUnitBillingModels: { video: { 'venice-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.1 }] } } },
+    });
+    provider.handleRequest = vi.fn(async request => ({ requestId: request.requestId, statusCode: 206, headers: { 'content-type': 'video/mp4' }, body: Buffer.from('video') }));
+    const store = new ResourceOwnershipStore(join(mkdtempSync(join(tmpdir(), 'antseed-video-limits-')), 'metering.db'));
+    store.recordAcceptedCreate('venice-video', 'job', 'b'.repeat(40));
+    const handler = makeSellerRequestHandler({
+      providers: [provider], sellerPaymentManager: makeSpmMock({ hasSession: () => false }), channelsClient: {} as any,
+      sessionTracker: null, announcer: null, emit: () => false, resourceOwnershipStore: store,
+      sellerBuyerLimiter: new SellerBuyerLimiter({ maxTokensPerBuyer: 1_000 }, () => null),
+    });
+    try {
+      const frames: Uint8Array[] = [];
+      const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any);
+      for (let i = 1; i <= 4; i++) {
+        const request = { requestId: `poll-${i}`, method: 'POST', path: '/api/v1/video/retrieve', headers: { 'content-type': 'application/json', 'x-antseed-service': 'video' }, body: new TextEncoder().encode(JSON.stringify({ model: 'video', queue_id: 'job' })) };
+        await mux.handleFrame({ type: MessageType.HttpRequest, messageId: i, payload: encodeHttpRequest(request) });
+        expect(decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload).statusCode).toBe(206);
+      }
     } finally { store.close(); }
   });
   const buyer = 'b'.repeat(40);
@@ -538,6 +569,36 @@ describe('native video job ownership', () => {
         expect(provider.handleRequest).not.toHaveBeenCalled();
         expect(recordSpend).not.toHaveBeenCalled();
         expect(settleSession).not.toHaveBeenCalled();
+      } finally { store.close(); }
+    });
+
+    it('answers a create the provider refuses before offering a channel, so it costs nothing', async () => {
+      const { provider, create, spm, recordSpend, store } = setupOneOff();
+      provider.checkRequest = vi.fn(request => JSON.parse(new TextDecoder().decode(request.body)).duration === '20s'
+        ? { statusCode: 422, code: 'invalid_video_duration', message: 'duration must be the source length in whole seconds, rounded down: 12' }
+        : null);
+      try {
+        const refused = await create('video-1', bigVideo);
+        expect(refused.statusCode).toBe(422);
+        expect(bodyOf(refused)).toEqual({ error: { code: 'invalid_video_duration', message: 'duration must be the source length in whole seconds, rounded down: 12' } });
+        expect(spm.registerOneOffPlan).not.toHaveBeenCalled();
+        expect(provider.handleRequest).not.toHaveBeenCalled();
+        expect(recordSpend).not.toHaveBeenCalled();
+        // An accepted create is priced by its duration as usual.
+        const accepted = await create('video-2', { model: 'video', duration: '12s' });
+        expect(accepted.statusCode).toBe(402);
+        expect(bodyOf(accepted).oneOffPlan.requestCost).toBe('1200000');
+      } finally { store.close(); }
+    });
+
+    it('answers 500 when the provider check throws, without offering a channel', async () => {
+      const { provider, create, spm, store } = setupOneOff();
+      provider.checkRequest = () => { throw new Error('boom'); };
+      try {
+        const response = await create('video-1', bigVideo);
+        expect(response.statusCode).toBe(500);
+        expect(bodyOf(response).error.code).toBe('request_check_failed');
+        expect(spm.registerOneOffPlan).not.toHaveBeenCalled();
       } finally { store.close(); }
     });
 
@@ -1037,6 +1098,32 @@ describe('SellerRequestHandler payment pricing selection', () => {
     expect(provider.handleRequest).not.toHaveBeenCalled();
     expect(beginBillableRequest).not.toHaveBeenCalled();
     expect(recordSpend).not.toHaveBeenCalled();
+  });
+
+  it('lets a closing channel finish closing, then asks the buyer for a new one instead of failing the request', async () => {
+    const provider = makeProvider(1, 1, { name: 'openai', services: ['test-model'] });
+    const handleRequest = vi.spyOn(provider, 'handleRequest');
+    let open = true;
+    const handler = makeSellerRequestHandler({
+      providers: [provider],
+      sellerPaymentManager: makeSpmMock({
+        hasSession: () => open,
+        hasClosingChannel: () => open,
+        waitForClosingChannel: async () => { open = false; return true; },
+      }),
+      sessionTracker: null, channelsClient: {} as any, announcer: null, emit: () => false,
+    });
+    const frames: Uint8Array[] = [];
+    const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any);
+    await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({
+      requestId: 'req-after-close', method: 'POST', path: '/v1/chat/completions',
+      headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ model: 'test-model', messages: [] })),
+    }) });
+
+    const response = decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload);
+    expect(response.statusCode).toBe(402);
+    expect(JSON.parse(new TextDecoder().decode(response.body)).error).toBe('payment_required');
+    expect(handleRequest).not.toHaveBeenCalled();
   });
 
   it('adds image unit billing on top of existing token pricing', async () => {
@@ -1649,6 +1736,36 @@ describe('SellerRequestHandler payment pricing selection', () => {
     expect(BigInt(body.estimatedInputTokens)).toBeGreaterThan(0n);
   });
 
+  it('checks the chain before closing a channel whose estimate only exceeds a stale stored ceiling', async () => {
+    const provider = makeProvider(0, 1_000_000, { name: 'paid-tier', services: ['local-test'] });
+    provider.handleRequest = vi.fn(async (req) => ({ requestId: req.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify({ ok: true })) }));
+    let reserveMax = 1_000_000n;
+    const settleSession = vi.fn(async () => {});
+    const handler = makeSellerRequestHandler({
+      providers: [provider],
+      sellerPaymentManager: makeSpmMock({
+        getCumulativeSpend: () => 500_000n,
+        getAcceptedCumulative: () => 500_000n,
+        getReserveMax: () => reserveMax,
+        // A top-up to 3M confirmed on-chain but is not in the store.
+        refreshReserveMaxFromChain: vi.fn(async () => { reserveMax = 3_000_000n; return reserveMax; }),
+        settleSession,
+      }),
+      sessionTracker: null,
+      channelsClient: {} as any,
+      announcer: null,
+      reserveEstimateOverdraftUsdc: 0n,
+      emit: () => false,
+    });
+    const sentFrames: Uint8Array[] = [];
+    const { mux } = handler.handleConnection(makeConn(sentFrames), 'b'.repeat(40), { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any);
+
+    await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({ requestId: 'req-estimate-stale-ceiling', method: 'POST', path: '/v1/chat/completions', headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify({ model: 'local-test', max_tokens: 1 })) }) });
+
+    expect(settleSession).not.toHaveBeenCalled();
+    expect(provider.handleRequest).toHaveBeenCalledTimes(1);
+  });
+
   it('stops serving when delivered spend is already at the reserve ceiling', async () => {
     const provider = makeProvider(1, 1, { name: 'paid-tier', services: ['local-test'] });
     provider.handleRequest = vi.fn(async (req) => ({ requestId: req.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify({ ok: true })) }));
@@ -1819,5 +1936,349 @@ describe('SellerRequestHandler payment pricing selection', () => {
     expect(sendNeedAuth).not.toHaveBeenCalled();
     const response = decodeHttpResponse(decodeFrame(sentFrames[0]!)!.message.payload);
     expect(response.statusCode).toBe(402);
+  });
+});
+
+it('asks the buyer for the unsigned spend before parking a request on it, once per spend level', async () => {
+  let accepted = 100_000n;
+  const sendNeedAuth = vi.fn();
+  const promptedBeforeWait: boolean[] = [];
+  const handler = makeSellerRequestHandler({
+    providers: [makeProvider(1, 1, { name: 'openai', services: ['test-model'] })],
+    sellerPaymentManager: makeSpmMock({
+      getCumulativeSpend: () => 300_000n,
+      getAcceptedCumulative: () => accepted,
+      getReserveMax: () => 1_000_000n,
+      awaitAcceptedAtLeast: async (_channelId: string, target: bigint) => {
+        promptedBeforeWait.push(sendNeedAuth.mock.calls.some(([payload]) => payload.requiredCumulativeAmount === target.toString()));
+        accepted = target;
+        return true;
+      },
+    }),
+    channelsClient: {} as any, sessionTracker: null, announcer: null, emit: () => false,
+  });
+  const frames: Uint8Array[] = [];
+  const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), { sendNeedAuth, sendPaymentRequired: vi.fn() } as any);
+  for (const messageId of [1, 2]) {
+    accepted = 100_000n;
+    await mux.handleFrame({ type: MessageType.HttpRequest, messageId, payload: encodeHttpRequest({
+      requestId: `r-${messageId}`, method: 'POST', path: '/v1/chat/completions',
+      headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ model: 'test-model', messages: [] })),
+    }) });
+  }
+
+  expect(promptedBeforeWait).toEqual([true, true]);
+  const prompts = sendNeedAuth.mock.calls.filter(([payload]) => payload.lastRequestCost == null);
+  expect(prompts).toHaveLength(1);
+  expect(prompts[0]![0]).toMatchObject({ requiredCumulativeAmount: '300000', currentAcceptedCumulative: '100000' });
+});
+
+it('re-reads the spend after a parked catch-up: an auth for the earlier spend never releases newer unpaid work', async () => {
+  for (const coversNewSpend of [false, true]) {
+    let spent = 300_000n;
+    let accepted = 100_000n;
+    const targets: bigint[] = [];
+    const handler = makeSellerRequestHandler({
+      providers: [makeProvider(1, 1, { name: 'openai', services: ['test-model'] })],
+      sellerPaymentManager: makeSpmMock({
+        getCumulativeSpend: () => spent,
+        getAcceptedCumulative: () => accepted,
+        getReserveMax: () => 1_000_000n,
+        awaitAcceptedAtLeast: async (_channelId: string, target: bigint) => {
+          targets.push(target);
+          if (targets.length === 1) {
+            // The auth for 300k lands, but another request finished meanwhile.
+            spent = 400_000n;
+            accepted = target;
+            return true;
+          }
+          if (!coversNewSpend) return false;
+          accepted = target;
+          return true;
+        },
+      }),
+      channelsClient: {} as any, sessionTracker: null, announcer: null, emit: () => false,
+    });
+    const frames: Uint8Array[] = [];
+    const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any);
+    await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({
+      requestId: 'parked', method: 'POST', path: '/v1/chat/completions',
+      headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ model: 'test-model', messages: [] })),
+    }) });
+
+    expect(targets).toEqual([300_000n, 400_000n]);
+    const status = decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload).statusCode;
+    expect(status).toBe(coversNewSpend ? 200 : 402);
+  }
+});
+
+it('never serves a request parked on a catch-up when its channel is evicted during the wait', async () => {
+  let spent = 300_000n;
+  let accepted = 100_000n;
+  let channel: { sessionId: string; authMax: string } | null = { sessionId: 'session-1', authMax: '1000000' };
+  const provider = makeProvider(1, 1, { name: 'openai', services: ['test-model'] });
+  const handleRequest = vi.spyOn(provider, 'handleRequest');
+  const handler = makeSellerRequestHandler({
+    providers: [provider],
+    sellerPaymentManager: makeSpmMock({
+      getChannelByPeer: () => channel,
+      getCumulativeSpend: () => spent,
+      getAcceptedCumulative: () => accepted,
+      getReserveMax: () => 1_000_000n,
+      awaitAcceptedAtLeast: async () => {
+        // Eviction forgets the counters and releases waiters with false.
+        channel = null;
+        spent = 0n;
+        accepted = 0n;
+        return false;
+      },
+    }),
+    channelsClient: {} as any, sessionTracker: null, announcer: null, emit: () => false,
+  });
+  const frames: Uint8Array[] = [];
+  const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any);
+  await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({
+    requestId: 'parked-evicted', method: 'POST', path: '/v1/chat/completions',
+    headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ model: 'test-model', messages: [] })),
+  }) });
+
+  expect(handleRequest).not.toHaveBeenCalled();
+  expect(decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload).statusCode).toBe(402);
+});
+
+it('judges exhaustion on the reserve ceiling after a parked catch-up, so a top-up that landed meanwhile keeps the channel open', async () => {
+  let spent = 2_500_000n;
+  let accepted = 1_900_000n;
+  let reserveMax = 2_000_000n;
+  const settleSession = vi.fn(async () => {});
+  const handler = makeSellerRequestHandler({
+    providers: [makeProvider(1, 1, { name: 'openai', services: ['test-model'] })],
+    sellerPaymentManager: makeSpmMock({
+      getCumulativeSpend: () => spent,
+      getAcceptedCumulative: () => accepted,
+      getReserveMax: () => reserveMax,
+      settleSession,
+      awaitAcceptedAtLeast: async (_channelId: string, target: bigint) => {
+        // The top-up to 4M confirms, then the buyer's auth for the spend lands.
+        reserveMax = 4_000_000n;
+        accepted = target;
+        return true;
+      },
+    }),
+    channelsClient: {} as any, sessionTracker: null, announcer: null, emit: () => false,
+  });
+  const frames: Uint8Array[] = [];
+  const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any);
+  await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({
+    requestId: 'parked-topped-up', method: 'POST', path: '/v1/chat/completions',
+    headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ model: 'test-model', messages: [] })),
+  }) });
+
+  expect(decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload).statusCode).toBe(200);
+  expect(settleSession).not.toHaveBeenCalled();
+});
+
+it('checks a stale stored ceiling against the chain before closing a channel as exhausted', async () => {
+  // After a restart the store says 7M, but a top-up to 8M confirmed on-chain.
+  let reserveMax = 7_000_000n;
+  const settleSession = vi.fn(async () => {});
+  const refreshReserveMaxFromChain = vi.fn(async () => {
+    reserveMax = 8_000_000n;
+    return reserveMax;
+  });
+  const handler = makeSellerRequestHandler({
+    providers: [makeProvider(1, 1, { name: 'openai', services: ['test-model'] })],
+    sellerPaymentManager: makeSpmMock({
+      getCumulativeSpend: () => 7_459_839n,
+      getAcceptedCumulative: () => 6_509_280n,
+      getReserveMax: () => reserveMax,
+      refreshReserveMaxFromChain,
+      settleSession,
+    }),
+    channelsClient: {} as any, sessionTracker: null, announcer: null, emit: () => false,
+  });
+  const frames: Uint8Array[] = [];
+  const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any);
+  await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({
+    requestId: 'after-restart', method: 'POST', path: '/v1/chat/completions',
+    headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ model: 'test-model', messages: [] })),
+  }) });
+
+  const response = decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload);
+  expect(refreshReserveMaxFromChain).toHaveBeenCalled();
+  // Still a catch-up 402 for the unsigned spend, but not an exhausted one.
+  expect(response.statusCode).toBe(402);
+  const body = JSON.parse(new TextDecoder().decode(response.body));
+  expect(body.code).toBeUndefined();
+  expect(body.reserveMaxAmount).toBe('8000000');
+  expect(settleSession).not.toHaveBeenCalled();
+});
+
+it('never serves a request whose channel closed during the reserve ceiling check', async () => {
+  let channel: { sessionId: string; authMax: string } | null = { sessionId: 'session-1', authMax: '1000000' };
+  let spent = 1_000_000n;
+  let accepted = 1_000_000n;
+  let reserveMax = 1_000_000n;
+  const provider = makeProvider(1, 1, { name: 'openai', services: ['test-model'] });
+  const handleRequest = vi.spyOn(provider, 'handleRequest');
+  const handler = makeSellerRequestHandler({
+    providers: [provider],
+    sellerPaymentManager: makeSpmMock({
+      getChannelByPeer: () => channel,
+      getCumulativeSpend: () => spent,
+      getAcceptedCumulative: () => accepted,
+      getReserveMax: () => reserveMax,
+      refreshReserveMaxFromChain: async () => {
+        // A cooperative close lands meanwhile and forgets the channel.
+        channel = null;
+        spent = 0n;
+        accepted = 0n;
+        reserveMax = 0n;
+        return 0n;
+      },
+    }),
+    channelsClient: {} as any, sessionTracker: null, announcer: null, emit: () => false,
+  });
+  const frames: Uint8Array[] = [];
+  const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any);
+  await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({
+    requestId: 'closed-during-refresh', method: 'POST', path: '/v1/chat/completions',
+    headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ model: 'test-model', messages: [] })),
+  }) });
+
+  expect(handleRequest).not.toHaveBeenCalled();
+  expect(decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload).statusCode).toBe(402);
+});
+
+it('waits for a running top-up before treating a channel at its ceiling as exhausted', async () => {
+  for (const lands of [true, false]) {
+    let reserveMax = 1_000_000n;
+    const settleSession = vi.fn(async () => {});
+    const handler = makeSellerRequestHandler({
+      providers: [makeProvider(1, 1, { name: 'openai', services: ['test-model'] })],
+      sellerPaymentManager: makeSpmMock({
+        getCumulativeSpend: () => 1_000_000n,
+        getAcceptedCumulative: () => 1_000_000n,
+        getReserveMax: () => reserveMax,
+        settleSession,
+        isTopUpRunning: () => true,
+        waitForTopUp: async () => {
+          if (lands) reserveMax = 2_000_000n;
+          return lands;
+        },
+      }),
+      channelsClient: {} as any, sessionTracker: null, announcer: null, emit: () => false,
+    });
+    const frames: Uint8Array[] = [];
+    const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any);
+    await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({
+      requestId: `at-ceiling-${lands}`, method: 'POST', path: '/v1/chat/completions',
+      headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ model: 'test-model', messages: [] })),
+    }) });
+
+    const response = decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload);
+    // Landed: served on the raised ceiling. Still mining: a retryable answer, never a close.
+    expect(response.statusCode).toBe(lands ? 200 : 503);
+    if (!lands) expect(JSON.parse(new TextDecoder().decode(response.body)).error).toBe('top_up_pending');
+    expect(settleSession).not.toHaveBeenCalled();
+  }
+});
+
+it('waits for a pending top-up to start, between two top-ups, before treating the channel as exhausted', async () => {
+  let reserveMax = 1_000_000n;
+  const settleSession = vi.fn(async () => {});
+  const waitForTopUp = vi.fn(async () => {
+    // The next top-up starts and lands.
+    reserveMax = 2_000_000n;
+    return true;
+  });
+  const handler = makeSellerRequestHandler({
+    providers: [makeProvider(1, 1, { name: 'openai', services: ['test-model'] })],
+    sellerPaymentManager: makeSpmMock({
+      getCumulativeSpend: () => 1_500_000n,
+      getAcceptedCumulative: () => 1_500_000n,
+      getReserveMax: () => reserveMax,
+      settleSession,
+      // The last top-up just landed; the one covering this spend is queued.
+      isTopUpRunning: () => false,
+      isTopUpPendingFor: (_channelId: string, amount: bigint) => amount > reserveMax && amount <= 2_000_000n,
+      waitForTopUp,
+    }),
+    channelsClient: {} as any, sessionTracker: null, announcer: null, emit: () => false,
+  });
+  const frames: Uint8Array[] = [];
+  const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any);
+  await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({
+    requestId: 'between-top-ups', method: 'POST', path: '/v1/chat/completions',
+    headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ model: 'test-model', messages: [] })),
+  }) });
+
+  expect({
+    status: decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload).statusCode,
+    covering: waitForTopUp.mock.calls[0]?.[2],
+    closed: settleSession.mock.calls.length,
+  }).toEqual({ status: 200, covering: 1_500_000n, closed: 0 });
+});
+
+
+/** A speech answer: three 417-byte MPEG-1 layer III frames (128 kbps, 44.1 kHz). */
+const SPEECH_MP3 = new Uint8Array(417 * 3);
+for (const offset of [0, 417, 834]) SPEECH_MP3.set([0xff, 0xfb, 0x90, 0x00], offset);
+
+describe('speech seller payments', () => {
+  function setup(providerResponse?: { statusCode: number; contentType: string; body: Uint8Array }) {
+    let spend = 0n;
+    const provider = makeProvider(0.1, 0.45, { name: 'openai', services: ['tts-kokoro'] });
+    provider.serviceApiProtocols = { 'tts-kokoro': ['openai-audio-speech'] };
+    // $62.50 per million characters.
+    provider.serviceUnitBillingModels = { 'tts-kokoro': { 'openai-audio-speech': { version: 1, components: [{ unit: 'input_characters', priceUsd: 0.0000625 }] } } };
+    provider.serviceCapabilities = { 'tts-kokoro': { inputs: ['text'], outputs: ['audio'], speech: { voices: ['af_sky', 'am_adam'] } } };
+    const answer = providerResponse ?? { statusCode: 200, contentType: 'audio/mpeg', body: SPEECH_MP3 };
+    provider.handleRequest = vi.fn(async request => ({ requestId: request.requestId, statusCode: answer.statusCode, headers: { 'content-type': answer.contentType }, body: answer.body }));
+    delete (provider as Partial<Provider>).handleRequestStream;
+    const spm = makeSpmMock({
+      recordSpend: vi.fn((_channel: string, amount: bigint) => { spend += amount; }),
+      getCumulativeSpend: () => spend, getAcceptedCumulative: () => spend,
+    });
+    const frames: Uint8Array[] = [];
+    const paymentMux = { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() };
+    const handler = makeSellerRequestHandler({ providers: [provider], sellerPaymentManager: spm, sessionTracker: null, channelsClient: {} as any, announcer: null, emit: () => false });
+    const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), paymentMux as any);
+    const send = async (body: Record<string, unknown>, requestId = 'speech') => {
+      await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({
+        requestId, method: 'POST', path: '/v1/audio/speech',
+        headers: { 'content-type': 'application/json' },
+        body: new TextEncoder().encode(JSON.stringify(body)),
+      }) });
+      return frames.map(frame => decodeHttpResponse(decodeFrame(frame).message!.payload)).reverse().find(response => response.requestId === requestId)!;
+    };
+    return { provider, spm, paymentMux, send };
+  }
+
+  it('charges the characters of a delivered speech and passes the audio through', async () => {
+    const harness = setup();
+    const response = await harness.send({ model: 'tts-kokoro', input: 'a'.repeat(1000), voice: 'af_sky' });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-type']).toBe('audio/mpeg');
+    expect(Array.from(response.body)).toEqual(Array.from(SPEECH_MP3));
+    expect(harness.spm.recordSpend).toHaveBeenCalledWith('session-1', 62_500n);
+    expect(harness.paymentMux.sendNeedAuth).toHaveBeenCalledWith(expect.objectContaining({ lastRequestCost: '62500', billingUsage: { version: 1, units: { input_characters: '1000' } } }));
+  });
+
+  it('refuses a voice the service does not offer before reaching the upstream or charging', async () => {
+    const harness = setup();
+    const response = await harness.send({ model: 'tts-kokoro', input: 'Hello', voice: 'alloy' });
+    expect(response.statusCode).toBe(400);
+    expect(JSON.parse(new TextDecoder().decode(response.body))).toEqual({
+      error: { code: 'unsupported_voice', message: 'Voice "alloy" is not offered by this service. Available voices: af_sky, am_adam' },
+    });
+    expect(harness.provider.handleRequest).not.toHaveBeenCalled();
+    expect(harness.spm.recordSpend).not.toHaveBeenCalled();
+  });
+
+  it('charges nothing when the upstream refuses, even with an audio content type', async () => {
+    const harness = setup({ statusCode: 400, contentType: 'audio/mpeg; charset=utf-8', body: new TextEncoder().encode('{"error":"Voice is not supported"}') });
+    expect((await harness.send({ model: 'tts-kokoro', input: 'Hello', voice: 'af_sky' })).statusCode).toBe(400);
+    expect(harness.spm.recordSpend).toHaveBeenCalledWith('session-1', 0n);
   });
 });

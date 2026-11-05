@@ -17,8 +17,11 @@ const teeCheckAttempts = new Map<string, number>()
 
 export type PreviewTarget = Pick<PolicyTarget, 'keyId' | 'workspaceId' | 'memberId' | 'presetSlug'>
 
-/** Sellers the buyer knows, with health, verification, this gateway's own 24 h stats and (when given) boosts. */
-export async function listNetworkPeers(store: GatewayStore, buyer: BuyerClient, now: number, boostSource?: PeerBoostSource): Promise<Peer[]> {
+/**
+ * Sellers the buyer knows, with health, verification, this gateway's own 24 h stats and (when given) boosts.
+ * `explorerUrl` (the chain's explorer) links each model-check verdict to its audit history.
+ */
+export async function listNetworkPeers(store: GatewayStore, buyer: BuyerClient, now: number, boostSource?: PeerBoostSource, explorerUrl: string | null = null): Promise<Peer[]> {
   const [peers, health, verification, boosts] = await Promise.all([
     buyerJson(buyer, '/_antseed/peers'),
     optionalBuyerJson(buyer, '/_antseed/peer-health'),
@@ -27,7 +30,7 @@ export async function listNetworkPeers(store: GatewayStore, buyer: BuyerClient, 
     readPeerBoosts(boostSource),
   ])
   const stats = store.peerStats(now - DAY_MS) as PeerStat[]
-  const mapped = mapPeers({ peers, health, verification, stats, now, boosts })
+  const mapped = mapPeers({ peers, health, verification, stats, now, boosts, explorerUrl })
   if (verification?.['verificationEnabled'] === true) checkUnattestedTeePeer(buyer, mapped, now)
   return mapped
 }
@@ -51,10 +54,10 @@ function checkUnattestedTeePeer(buyer: BuyerClient, peers: readonly Peer[], now:
  * verification, trust and latency from the peer list. The peer list is
  * enrichment only: when it fails the models still answer.
  */
-export async function listNetworkModels(store: GatewayStore, buyer: BuyerClient, now: number): Promise<NetworkModel[]> {
+export async function listNetworkModels(store: GatewayStore, buyer: BuyerClient, now: number, explorerUrl: string | null = null): Promise<NetworkModel[]> {
   const [models, peers] = await Promise.all([
     buyerJson(buyer, '/v1/models'),
-    listNetworkPeers(store, buyer, now).catch((): Peer[] => []),
+    listNetworkPeers(store, buyer, now, undefined, explorerUrl).catch((): Peer[] => []),
   ])
   return mapNetworkModels(models, peers)
 }

@@ -46,6 +46,16 @@ const IDENTITY_KIND_LABELS: Record<NonNullable<TrustBreakdown['identity']>['kind
  * Flagged sellers read `Trust 0/10: flagged as a proven wash trader by the on-chain registry.`
  */
 export function sellerReputationExplanation(route: DiscoverRow): string {
+  const base = sellerTrustExplanation(route);
+  if (!route.verification) return base;
+  const sentence = base.endsWith('.') ? base : `${base}.`;
+  if (route.verification === 'same') {
+    return `${sentence} Model verification: SAME. An on-chain audit found this service answers like the genuine model.`;
+  }
+  return `${sentence} Model verification: DIFF. An on-chain audit suspects this service is not the model it claims, so its reputation is cut to 10% (${sellerReputationLabel(route)}/10).`;
+}
+
+function sellerTrustExplanation(route: DiscoverRow): string {
   const trust = route.trust;
   if (!trust) return `Trust: ${sellerReputationLabel(route)}/10`;
   if (trust.washFlagged) return 'Trust 0/10: flagged as a proven wash trader by the on-chain registry.';
@@ -56,8 +66,12 @@ export function sellerReputationExplanation(route: DiscoverRow): string {
     ? `identity ${reputationScaleLabel(trust.identity.score)} ${IDENTITY_KIND_LABELS[trust.identity.kind]}`
     : 'identity none';
   const free = trust.freeModels ? ` + free models ${reputationScaleLabel(trust.freeModels.score)}` : '';
+  const v = trust.verification;
+  const checks = v
+    ? ` − model checks ${reputationScaleLabel(v.penalty)} (${v.diffCount} DIFF ${v.diffCount === 1 ? 'service' : 'services'}: points at ${Math.round(v.multiplierBps / 100)}%)`
+    : '';
   const wash = trust.washFlagged === false ? ' Not flagged for wash trading.' : ' Wash-trading registry unavailable.';
-  return `Trust ${reputationScaleLabel(trust.score)}/10 = ${history} + ${usage} + ${power} + ${identity}${free}.${wash}`;
+  return `Trust ${reputationScaleLabel(trust.score)}/10 = ${history} + ${usage} + ${power} + ${identity}${free}${checks}.${wash}`;
 }
 
 /** 0-100 score → "9.8" (10-point scale). */

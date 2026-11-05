@@ -1,5 +1,6 @@
 import type { Peer, PeerList, RoutingPolicy } from '../api/types'
 import { normalizePeerId } from './peer-id'
+import { offerTrust } from './model-check'
 
 /**
  * Client-side approximation of the gateway's policy combination and seller
@@ -86,11 +87,12 @@ export function matchingPeers(policy: RoutingPolicy, peers: readonly Peer[], lis
     const id = normalizePeerId(peer.peerId)
     if (blocked.has(id)) return false
     if (allowed && !allowed.has(id)) return false
-    if (p.minTrustScore !== undefined && (peer.trustScore ?? 0) < p.minTrustScore) return false
     if (p.minReputation !== undefined && (peer.reputationScore ?? 0) < p.minReputation) return false
     if (p.requireVerified && !peer.verified) return false
     if (p.requireTee && !peer.tee) return false
-    return peer.services.some((service) => serviceFits(p, service))
+    // Trust is judged per model: a live DIFF model check cuts it to 10% for that model only.
+    return peer.services.some((service) => serviceFits(p, service)
+      && (p.minTrustScore === undefined || (offerTrust(peer.trustScore ?? 0, service.modelCheck) ?? 0) >= p.minTrustScore))
   })
 }
 

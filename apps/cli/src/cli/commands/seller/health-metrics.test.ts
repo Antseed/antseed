@@ -54,7 +54,17 @@ test('gas health state converts the monitor snapshot to ETH', () => {
   const state = gasHealthState({
     getSnapshot: () => ({ address: '0xabc', depleted: true, lastBalanceWei: 10_000_000_000_000n, lastCheckedAt: 5, minBalanceWei: 50_000_000_000_000n }),
   });
-  assert.deepEqual(state, { address: '0xabc', depleted: true, balanceEth: 0.00001, minBalanceEth: 0.00005, lastCheckedAt: 5 });
+  assert.deepEqual(state, { address: '0xabc', depleted: true, balanceEth: 0.00001, minBalanceEth: 0.00005, lastCheckedAt: 5, refuel: null });
+  const refuelState = gasHealthState(
+    { getSnapshot: () => ({ address: '0xabc', depleted: false, lastBalanceWei: 1n, lastCheckedAt: 5, minBalanceWei: 1n }) },
+    { getSnapshot: () => ({
+      address: '0xabc', triggerBalanceWei: 500_000_000_000_000n, swapUsdcUnits: 10_000_000n, maxUsdcPerDayUnits: 30_000_000n, usdcLast24hUnits: 10_000_000n,
+      inFlight: false, lastRefuel: { at: 7, usdcUnits: '10000000', txHash: '0xtx' }, lastError: null, skipped: null, nextAttemptAt: null,
+    }) },
+  )?.refuel;
+  assert.deepEqual(refuelState, {
+    triggerBalanceEth: 0.0005, swapUsdc: 10, maxUsdcPerDay: 30, usdcLast24h: 10, lastRefuel: { at: 7, usdc: 10, txHash: '0xtx' }, lastError: null, skipped: null, nextAttemptAt: null,
+  });
   assert.equal(gasHealthState({ getSnapshot: () => ({ address: '0xabc', depleted: false, lastBalanceWei: null, lastCheckedAt: null, minBalanceWei: 1n }) })?.balanceEth, null);
 });
 

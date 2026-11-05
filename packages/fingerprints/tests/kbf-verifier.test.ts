@@ -163,21 +163,29 @@ describe('verifyKbf', () => {
     expect(fragment.stats.pValueBinomial!).toBeLessThan(0.05);
   });
 
-  it('counts missing answers from a completed response as discrepancies', () => {
+  it('leaves missing answers unscored and needs half the probes scored', () => {
     const reference = makeReference();
-    const answers = PROBES.map((p, i) => (i < 5 ? p.consensus : null));
-    const fragment = verifyKbf(reference, makeObservation(answers));
-    expect(fragment.verdict).toBe('DIFF');
-    expect(fragment.parsedProbeCount).toBe(PROBES.length);
-    expect(fragment.stats.targetHamming).toBe(15);
-    expect(fragment.stats.targetTotal).toBe(PROBES.length);
+    const tooFew = PROBES.map((p, i) => (i < 5 ? p.consensus : null));
+    const undetermined = verifyKbf(reference, makeObservation(tooFew), { minCoverage: 0.5 });
+    expect(undetermined.verdict).toBe('UNDETERMINED');
+    expect(undetermined.parsedProbeCount).toBe(5);
+    expect(undetermined.stats.targetHamming).toBe(0);
+    expect(undetermined.stats.targetTotal).toBe(5);
+
+    const half = PROBES.map((p, i) => (i < 10 ? p.consensus : null));
+    const same = verifyKbf(reference, makeObservation(half), { minCoverage: 0.5 });
+    expect(same.verdict).toBe('SAME');
+    expect(same.stats.targetHamming).toBe(0);
+    expect(same.stats.targetTotal).toBe(10);
+    expect(same.stats.targetCoverage).toBe(0.5);
   });
 
-  it('uses the full denominator when a completed response omits 49 of 100 answers', () => {
+  it('scores only answered probes when a completed response omits 49 of 100 answers', () => {
     const probes: KbfProbe[] = Array.from({ length: 100 }, (_, index) => ({
       ...PROBES[index % PROBES.length]!,
-      id: `fixed-denominator-${index + 1}`,
+      id: `unscored-${index + 1}`,
       consensus: index + 1,
+      range: [0, 1_000],
     }));
     const outcomes = probes.map((probe) => ({
       probeId: probe.id,
@@ -190,13 +198,21 @@ describe('verifyKbf', () => {
     });
     const answers = probes.map((probe, index) => (index < 51 ? probe.consensus : null));
 
-    const fragment = verifyKbf(reference, makeObservation(answers));
+    const fragment = verifyKbf(reference, makeObservation(answers), { minCoverage: 0.5 });
 
+    expect(fragment.verdict).toBe('SAME');
+    expect(fragment.parsedProbeCount).toBe(51);
+    expect(fragment.stats.targetHamming).toBe(0);
+    expect(fragment.stats.targetTotal).toBe(51);
+  });
+
+  it('still returns DIFF when the answered probes are wrong', () => {
+    const reference = makeReference();
+    const answers = PROBES.map((p, i) => (i < 12 ? p.consensus + 5 : null));
+    const fragment = verifyKbf(reference, makeObservation(answers), { minCoverage: 0.5 });
     expect(fragment.verdict).toBe('DIFF');
-    expect(fragment.parsedProbeCount).toBe(100);
-    expect(fragment.stats.targetHamming).toBe(49);
-    expect(fragment.stats.targetTotal).toBe(100);
-    expect(fragment.stats.pValueBinomial).toBeLessThan(0.05);
+    expect(fragment.stats.targetHamming).toBe(12);
+    expect(fragment.stats.targetTotal).toBe(12);
   });
 
   it('derives p0 from pooled self-test runs of the audited probes', () => {

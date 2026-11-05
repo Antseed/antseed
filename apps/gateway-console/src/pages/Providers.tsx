@@ -17,6 +17,7 @@ import { useConsole } from '../app/context'
 import { SellerListsButton } from '../components/PeerLists'
 import { samePeerId } from '../lib/peer-id'
 import { filterPeers, inputPrice, isFreePeer, isPaidPeer, outputPrice, priceRange, type PeerFilter } from '../lib/peers'
+import { diffRoutingNote, offerTrust } from '../lib/model-check'
 import { hasReputationData } from '../lib/policy-match'
 import { modelsFromPeers, qk, usePeers } from '../lib/queries'
 import { routingPlaces, type RoutingPlace } from '../lib/selection'
@@ -38,6 +39,28 @@ function RoutingCell({ place }: { place: RoutingPlace | undefined }) {
 
 function score(value: number | null): string {
   return value === null ? '—' : String(Math.round(value))
+}
+
+/**
+ * The trust routing ranks a provider by: for a picked model, its trust for that model (cut to
+ * 10% by a live DIFF model check); across all models, its trust score.
+ */
+function providerTrust(peer: Peer, model: string): number | null {
+  if (!model) return peer.trustScore
+  const service = peer.services.find((entry) => entry.service.trim().toLowerCase() === model.trim().toLowerCase())
+  return offerTrust(peer.trustScore, service?.modelCheck)
+}
+
+function TrustCell({ peer, model }: { peer: Peer; model: string }) {
+  const trust = providerTrust(peer, model)
+  const cut = trust !== peer.trustScore && peer.trustScore !== null
+  const diffs = peer.diffServices?.length ?? 0
+  return (
+    <span className="gc-nowrap gc-trust-cell" title={cut ? `Cut from ${Math.round(peer.trustScore!)}: a DIFF model check on ${model}` : diffs > 0 ? diffRoutingNote(peer) ?? undefined : undefined}>
+      {!model && diffs > 0 && <span className="gc-attention" aria-hidden="true" />}
+      {score(trust)}
+    </span>
+  )
 }
 
 function ProviderBadges({ peer, model }: { peer: Peer; model: string }) {
@@ -117,7 +140,7 @@ export default function Providers() {
                 { key: 'models', header: 'Models', secondary: true, optional: true, render: (peer) => <span className="gc-muted">{peer.services.length}</span> },
                 { key: 'input', header: 'Input $/M', align: 'right', sortValue: (peer) => inputPrice(peer, filter.model), render: (peer) => formatPriceRange(priceRange(peer, 'inputUsdPerMillion', filter.model)) },
                 { key: 'output', header: 'Output $/M', align: 'right', secondary: true, sortValue: (peer) => outputPrice(peer, filter.model), render: (peer) => formatPriceRange(priceRange(peer, 'outputUsdPerMillion', filter.model)) },
-                { key: 'trust', header: 'Trust', align: 'right', sortValue: (peer) => peer.trustScore, render: (peer) => score(peer.trustScore) },
+                { key: 'trust', header: 'Trust', align: 'right', sortValue: (peer) => providerTrust(peer, filter.model), render: (peer) => <TrustCell peer={peer} model={filter.model} /> },
                 // Free usage earns no points, so a provider that charges nothing (for the chosen model) has no boost to show.
                 { key: 'boost', header: 'Boost', headerInfo: <BoostTip />, align: 'right', sortValue: (peer) => (isPaidPeer(peer, filter.model) ? peer.boost : null), render: (peer) => (
                   isPaidPeer(peer, filter.model)

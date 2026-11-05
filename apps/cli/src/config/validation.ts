@@ -116,6 +116,19 @@ function validateFallbackUpstreams(
   }
 }
 
+const OPENAI_PLUGINS = new Set(['openai', '@antseed/provider-openai']);
+
+/** Venice image edits need the openai plugin pointed at Venice, which it detects from the base URL. */
+function isVeniceOpenAiProvider(providerCfg: SellerProviderConfig): boolean {
+  if (!OPENAI_PLUGINS.has(providerCfg.plugin?.trim())) return false;
+  try {
+    const host = new URL(providerCfg.baseUrl ?? '').hostname.toLowerCase();
+    return host === 'venice.ai' || host.endsWith('.venice.ai');
+  } catch {
+    return false;
+  }
+}
+
 function validateSellerProviders(
   path: string,
   providers: Record<string, SellerProviderConfig>,
@@ -142,6 +155,11 @@ function validateSellerProviders(
       const servicePath = `${providerPath}.services.${serviceId}`;
       if (serviceCfg.upstreamModel !== undefined && serviceCfg.upstreamModel.trim().length === 0) {
         errors.push(`${servicePath}.upstreamModel must be a non-empty string when provided`);
+      }
+      if (serviceCfg.imageEditModel !== undefined && serviceCfg.imageEditModel.trim().length === 0) {
+        errors.push(`${servicePath}.imageEditModel must be a non-empty string when provided`);
+      } else if (serviceCfg.imageEditModel !== undefined && !isVeniceOpenAiProvider(providerCfg)) {
+        errors.push(`${servicePath}.imageEditModel requires the openai plugin with a Venice baseUrl (https://api.venice.ai/api)`);
       }
       if (serviceCfg.pricing) {
         validatePricingLeaf(`${servicePath}.pricing`, serviceCfg.pricing, errors);
@@ -472,6 +490,27 @@ export function validateConfig(config: AntseedConfig): string[] {
     }
   }
 
+  if (config.seller.gasRefuel !== undefined && (typeof config.seller.gasRefuel !== 'object' || config.seller.gasRefuel === null || Array.isArray(config.seller.gasRefuel))) {
+    errors.push('seller.gasRefuel must be an object, e.g. { "enabled": false }');
+  } else if (config.seller.gasRefuel !== undefined) {
+    const gasRefuel = config.seller.gasRefuel;
+    if (gasRefuel.enabled !== undefined && typeof gasRefuel.enabled !== 'boolean') {
+      errors.push('seller.gasRefuel.enabled must be a boolean');
+    }
+    const positive = (value: number | undefined) => value === undefined || (typeof value === 'number' && Number.isFinite(value) && value > 0);
+    if (!positive(gasRefuel.triggerBalanceEth)) errors.push('seller.gasRefuel.triggerBalanceEth must be a number > 0');
+    if (!positive(gasRefuel.swapUsdc) || (gasRefuel.swapUsdc !== undefined && gasRefuel.swapUsdc < 1)) {
+      errors.push('seller.gasRefuel.swapUsdc must be a number >= 1');
+    }
+    if (!positive(gasRefuel.maxUsdcPerDay)) errors.push('seller.gasRefuel.maxUsdcPerDay must be a number > 0');
+    if (
+      gasRefuel.slippageBps !== undefined &&
+      (!Number.isInteger(gasRefuel.slippageBps) || gasRefuel.slippageBps < 1 || gasRefuel.slippageBps > 1_000)
+    ) {
+      errors.push('seller.gasRefuel.slippageBps must be an integer from 1 to 1000');
+    }
+  }
+
   if (config.seller.freeTier !== undefined) {
     validateFreeTierProgram('seller.freeTier', config.seller.freeTier, errors);
   }
@@ -500,6 +539,8 @@ export function validateConfig(config: AntseedConfig): string[] {
   ) {
     errors.push('seller.restrictedCountries must be an array of 2-letter uppercase ISO country codes');
   }
+
+  errors.push(...sellerBuyerLimitsErrors(config.seller.buyerLimits));
 
   if (config.seller.freeUsage !== undefined) {
     const { recordBatchSize, recordFlushIntervalMs } = config.seller.freeUsage;
@@ -606,4 +647,35 @@ function validateFreeTierProgram(path: string, freeTier: SellerFreeTierCLIConfig
   } catch {
     errors.push(`${path} is too large to advertise in peer metadata: lower its limits or window`);
   }
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
+
+function sellerBuyerLimitsErrors(limits: unknown): string[] {
+  if (limits === undefined) return [];
+  if (!isRecord(limits)) return ['seller.buyerLimits must be an object'];
+  const errors: string[] = [];
+  const positive = (path: string, value: unknown): void => {
+    if (value !== undefined && (typeof value !== 'number' || !Number.isFinite(value) || value <= 0)) {
+      errors.push(`${path} must be a positive number`);
+    }
+  };
+  positive('seller.buyerLimits.windowMinutes', limits['windowMinutes']);
+  positive('seller.buyerLimits.maxTokensPerBuyer', limits['maxTokensPerBuyer']);
+  const newBuyers = limits['newBuyers'];
+  if (newBuyers !== undefined) {
+    if (!isRecord(newBuyers)) {
+      errors.push('seller.buyerLimits.newBuyers must be an object');
+    } else {
+      positive('seller.buyerLimits.newBuyers.forHours', newBuyers['forHours']);
+      positive('seller.buyerLimits.newBuyers.maxTokensPerBuyer', newBuyers['maxTokensPerBuyer']);
+      positive('seller.buyerLimits.newBuyers.maxTokensTotal', newBuyers['maxTokensTotal']);
+    }
+  }
+  const weights = limits['serviceWeights'];
+  if (weights !== undefined) {
+    if (!isRecord(weights)) errors.push('seller.buyerLimits.serviceWeights must be an object of service ids to weights');
+    else for (const [service, weight] of Object.entries(weights)) positive(`seller.buyerLimits.serviceWeights.${service}`, weight);
+  }
+  return errors;
 }

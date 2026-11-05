@@ -17,6 +17,9 @@ export function auditSummaryJson(result: AuditResult): Record<string, unknown> {
     stats: result.evaluation.stats,
     probes: result.probeIds.length,
     statisticalPower: result.statisticalPower,
+    ...(result.thinkingDiscovery ? {
+      thinking: { strategy: result.thinkingDiscovery.strategy, maxTokens: result.thinkingDiscovery.maxTokens },
+    } : {}),
   }
 }
 
@@ -28,6 +31,12 @@ export function formatAuditSummary(result: AuditResult): string[] {
     `Reference  ${result.referenceModel} (${result.referenceId})`,
     `Probes     ${result.probeIds.length} (power ${result.statisticalPower.toFixed(3)})`,
   ]
+  const thinking = result.thinkingDiscovery
+  if (thinking) {
+    lines.push(thinking.strategy === null
+      ? `Thinking   no suppression found; sent the reference's (${thinking.failure ?? 'unknown'})`
+      : `Thinking   ${thinking.strategy}, max_tokens ${thinking.maxTokens}`)
+  }
   if (stats.targetTotal !== null) {
     lines.push(`Mismatches ${stats.targetHamming}/${stats.targetTotal} (reference honest-error bound ${formatRate(stats.p0Cp99)})`)
   }

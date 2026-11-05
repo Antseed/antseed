@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { AntseedProviderPlugin, Provider, SerializedHttpRequest, ServiceCapabilities, ServiceHealthStatus, UpstreamAccountStatus, VideoInputKind } from '@antseed/node';
+import type { AntseedProviderPlugin, Provider, ProviderRequestRefusal, SerializedHttpRequest, ServiceCapabilities, ServiceHealthStatus, UpstreamAccountStatus, VideoInputKind } from '@antseed/node';
 import { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION, validateServiceCapabilityFields } from '@antseed/node';
 import { nativeVideoRoute, parseJsonObject, requestService, videoSourceLengthProblem } from '@antseed/api-adapter';
 import {
@@ -8,7 +8,7 @@ import {
   parseCsv,
   parseServiceCapabilitiesJson,
   parseServiceUnitBillingModelsJson,
-  streamVideoResponse,
+  createVideoResponseStreamer,
   videoDownloadError,
   videoDownloadSignal,
 } from '@antseed/provider-core';
@@ -65,6 +65,8 @@ function saveDownloadUrls(dataDir: string | undefined, urls: DownloadUrls): void
 }
 
 const FRAME_FIELDS = { first_frame: 'image_url', last_frame: 'end_image_url', reference_image: 'reference_image_urls' } as const;
+/** Venice's queue field for an audio input (video input kind `audio`). */
+const AUDIO_INPUT_FIELD = 'audio_url';
 
 /**
  * Largest create body Venice accepts. Measured on 2026-10-23: 32.5 MB passed
@@ -91,9 +93,11 @@ export function isVeniceEditModel(model: unknown): boolean {
  * are kept.
  */
 export function veniceEditCapabilities(capabilities: ServiceCapabilities, model: unknown, references: VeniceReferenceImages | null): ServiceCapabilities {
-  const kinds: VideoInputKind[] = ['video', 'reference_image'];
-  const required: VideoInputKind[] = ['video', ...(references === 'required' ? ['reference_image' as const] : [])];
   const configured = capabilities.video ?? {};
+  // Audio follows the seller's inputs when it announced them, else Venice's `audio_input`.
+  const audio = !configured.inputs && veniceConstraints(model)?.audio_input === true;
+  const kinds: VideoInputKind[] = ['video', 'reference_image', ...(audio ? ['audio' as const] : [])];
+  const required: VideoInputKind[] = ['video', ...(references === 'required' ? ['reference_image' as const] : [])];
   // Case-sensitive, as Venice lists them (`768P` for Recast, `720p` for Wan).
   const listed = veniceConstraints(model)?.resolutions;
   const resolutions = Array.isArray(listed) && listed.length > 0 && listed.length <= 16
@@ -148,7 +152,9 @@ export async function veniceReferenceImages(baseUrl: string, apiKey: string, mod
  * image-to-video model takes `image_url`, plus `end_image_url` when
  * `endFrame` is true (Venice's model list does not say, see veniceAcceptsEndFrame).
  * A video-to-video model takes `video_url` and `image_url`, plus
- * `reference_image_urls` when `referenceImages` is true.
+ * `reference_image_urls` when `referenceImages` is true. Audio input
+ * (`audio_url`, e.g. narration to lip-sync to) follows `audio` in the
+ * announced inputs, or Venice's `audio_input` when inputs were not announced.
  */
 export function veniceInputParameters(model: unknown, inputs?: readonly string[], endFrame = false, referenceImages = inputs?.includes('reference_image') === true): string[] | null {
   const constraints = veniceConstraints(model);
@@ -163,10 +169,12 @@ export function veniceInputParameters(model: unknown, inputs?: readonly string[]
       : constraints.model_type === 'image-to-video'
         ? [FRAME_FIELDS.first_frame, ...(endFrame ? [FRAME_FIELDS.last_frame] : [])]
         : [];
+  const audioInput = inputs ? inputs.includes('audio') : constraints.audio_input === true;
   const parameters = [
     'prompt',
     'duration',
     ...(edit ? ['video_url'] : []),
+    ...(audioInput ? [AUDIO_INPUT_FIELD] : []),
     ...(Array.isArray(constraints.resolutions) && constraints.resolutions.length > 0 ? ['resolution'] : []),
     ...(Array.isArray(constraints.aspect_ratios) && constraints.aspect_ratios.length > 0 ? ['aspect_ratio'] : []),
     ...(constraints.audio_configurable === true ? ['audio'] : []),
@@ -215,7 +223,7 @@ function retrieveBody(service: string, queueId: string, deleteMedia: unknown): U
 
 type VeniceAccount =
   | { status: 'ok'; balanceUsd: number }
-  | { status: 'unavailable'; reason: string }
+  | Extract<UpstreamAccountStatus, { status: 'unavailable' }>
   | { status: 'unknown'; reason: string };
 
 /**
@@ -237,8 +245,12 @@ async function readVeniceAccount(baseUrl: string, apiKey: string): Promise<Venic
     const data = (parseJsonObject(Buffer.from(await response.arrayBuffer()))?.data ?? null) as
       { accessPermitted?: unknown; balances?: Record<string, unknown> } | null;
     if (!data || typeof data !== 'object') return { status: 'unknown', reason: 'Venice account check returned no data' };
-    if (data.accessPermitted === false) return { status: 'unavailable', reason: 'Venice API access is not permitted for this key' };
     const balances = Object.values(data.balances ?? {}).filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+    // Venice also refuses access to a key whose account has no balance left: that is credit, not the key.
+    if (data.accessPermitted === false) {
+      const outOfCredit = balances.length > 0 && balances.every((value) => value <= 0);
+      return { status: 'unavailable', reason: outOfCredit ? 'Venice balance is empty' : 'Venice API access is not permitted for this key', ...(outOfCredit ? { outOfCredit: true } : {}) };
+    }
     if (balances.length === 0) return { status: 'unknown', reason: 'Venice account check returned no balance' };
     return { status: 'ok', balanceUsd: balances.reduce((sum, value) => sum + value, 0) };
   } catch (cause) {
@@ -341,6 +353,24 @@ const plugin: AntseedProviderPlugin = {
     // Edit models, whose `duration` must be the source length; null until Venice's model list was read.
     let editModels: Set<string> | null = null;
 
+    /**
+     * Why a create can't be paid for its `duration`, or null. The buyer pays
+     * for an edit's `duration`. Venice bills a whole-source edit (`Auto`) for
+     * the whole source, and a shorter output than `duration` is never charged,
+     * so `duration` must be the measured source length. Without Venice's model
+     * list, a source video marks an edit.
+     */
+    const lengthProblem = (service: string, input: Record<string, unknown> | null): string | null =>
+      input?.video_url !== undefined && (editModels?.has(service) ?? true) ? videoSourceLengthProblem(input.video_url, input.duration) : null;
+
+    // Run before any payment, so a refused create costs the buyer nothing.
+    const checkRequest = (request: SerializedHttpRequest): ProviderRequestRefusal | null => {
+      const { videoRoute, service } = route(request);
+      if (videoRoute?.action !== 'create' || !service) return null;
+      const refused = lengthProblem(service, parseJsonObject(request.body));
+      return refused ? { statusCode: 422, code: 'invalid_video_duration', message: refused } : null;
+    };
+
     // Announces the queue fields each model takes, so buyers send only those.
     const init = async () => {
       try {
@@ -385,8 +415,6 @@ const plugin: AntseedProviderPlugin = {
         // Unknown model fields: buyers fall back to their defaults.
       }
     };
-
-    let activeDownloads = 0;
     // Private (VPS-backed) Venice models return a pre-signed download_url on
     // create instead of streaming the file from retrieve. The seller keeps
     // that URL and streams the file itself, so every video reaches the buyer
@@ -410,14 +438,9 @@ const plugin: AntseedProviderPlugin = {
     const handleRequest: Provider['handleRequest'] = async (request) => {
       const { videoRoute, service } = route(request);
       if (videoRoute?.action !== 'create' || !service) return error(request, 400, 'unsupported_video_request', 'Unsupported video endpoint or service');
-      // The buyer pays for an edit's `duration`. Venice bills a whole-source edit (`Auto`) for the whole source,
-      // and a shorter output than `duration` is never charged, so `duration` must be the measured source length.
-      // Without Venice's model list, a source video marks an edit.
-      const input = parseJsonObject(request.body);
-      if (input?.video_url !== undefined && (editModels?.has(service) ?? true)) {
-        const refused = videoSourceLengthProblem(input.video_url, input.duration);
-        if (refused) return error(request, 422, 'invalid_video_duration', refused);
-      }
+      // The seller checks this before payment too (checkRequest).
+      const refused = lengthProblem(service, parseJsonObject(request.body));
+      if (refused) return error(request, 422, 'invalid_video_duration', refused);
       const response = await relay.handleRequest({ ...request, path: new URL(request.path, 'http://local').pathname });
       if (response.statusCode === 413) {
         // Venice answers an oversized body with an HTML page.
@@ -431,18 +454,7 @@ const plugin: AntseedProviderPlugin = {
       return { ...response, headers, body: Buffer.from(JSON.stringify(rest)) };
     };
 
-    const streamUpstream = async (request: SerializedHttpRequest, upstream: Response, callbacks: Parameters<NonNullable<Provider['handleRequestStream']>>[1], download: ReturnType<typeof videoDownloadSignal>) => {
-      if (activeDownloads >= MAX_ACTIVE_DOWNLOADS) {
-        await upstream.body?.cancel();
-        return error(request, 429, 'video_download_busy', 'Too many concurrent video downloads');
-      }
-      activeDownloads += 1;
-      try {
-        return await streamVideoResponse(request, upstream, callbacks, download);
-      } finally {
-        activeDownloads -= 1;
-      }
-    };
+    const streamUpstream = createVideoResponseStreamer(MAX_ACTIVE_DOWNLOADS);
 
     return {
       name: relay.name,
@@ -454,6 +466,7 @@ const plugin: AntseedProviderPlugin = {
       maxConcurrency,
       getCapacity: () => relay.getCapacity(),
       init,
+      checkRequest,
       handleRequest,
       async checkServiceHealth(checked) {
         const models = await readVeniceVideoModels(baseUrl);

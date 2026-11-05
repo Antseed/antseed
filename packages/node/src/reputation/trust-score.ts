@@ -1,4 +1,6 @@
 import type { PeerInfo } from '../types/peer.js';
+import { VERIFICATION_POINTS_BPS } from './verification-points.js';
+import { VERIFICATION_STATUS_STALE_MAX_MS } from './model-reputation.js';
 import { IDENTITY_GITHUB_MAX_POINTS as IDENTITY_MAX_POINTS, scoreIdentityHistory } from './identity-history.js';
 
 /**
@@ -62,6 +64,12 @@ export interface TrustBreakdown {
   freeModels: { score: number; service: string } | null;
   /** Wash-trading registry verdict; `null` when the registry is unavailable. */
   washFlagged: boolean | null;
+  /**
+   * Model-verification penalty: the seller's points multiplier from the verification policy,
+   * applied to the sum of the parts when it is below 100% (a bonus never raises trust).
+   * `null` when there is no penalty or no fresh verification read.
+   */
+  verification?: { multiplierBps: number; sameCount: number; diffCount: number; penalty: number } | null;
 }
 
 function finite(value: number | undefined): number | null {
@@ -144,9 +152,29 @@ export function computeTrustScore(peer: PeerInfo, nowMs = Date.now()): TrustBrea
 
   if (history === null && usage === null && power === null && identity === null && washFlagged === null) return null;
 
-  const score = washFlagged ? 0 : Math.min(100,
+  const raw = washFlagged ? 0 : Math.min(100,
     (history?.score ?? 0) + (usage?.score ?? 0) + (power?.score ?? 0) + (identity?.score ?? 0) + (freeModels?.score ?? 0));
-  return { score, history, usage, power, identity, freeModels, washFlagged };
+  const multiplierBps = verificationPenaltyBps(peer, nowMs);
+  const score = multiplierBps === null ? raw : raw * multiplierBps / VERIFICATION_POINTS_BPS;
+  const verification = multiplierBps === null ? null : {
+    multiplierBps,
+    sameCount: peer.onChainVerificationStatus!.sameCount,
+    diffCount: peer.onChainVerificationStatus!.diffCount,
+    penalty: raw - score,
+  };
+  return { score, history, usage, power, identity, freeModels, washFlagged, verification };
+}
+
+/**
+ * The seller's verification points multiplier when it is a penalty (below 100%) from a read at
+ * most VERIFICATION_STATUS_STALE_MAX_MS old; null otherwise, so stale reads fail open.
+ */
+function verificationPenaltyBps(peer: PeerInfo, nowMs: number): number | null {
+  const multiplier = peer.onChainVerificationStatus?.pointsMultiplierBps;
+  const fetchedAt = peer.onChainVerificationFetchedAt;
+  if (typeof multiplier !== 'number' || !Number.isFinite(multiplier) || multiplier >= VERIFICATION_POINTS_BPS) return null;
+  if (typeof fetchedAt !== 'number' || nowMs - fetchedAt >= VERIFICATION_STATUS_STALE_MAX_MS) return null;
+  return Math.max(0, multiplier);
 }
 
 /** Trust score alone, or `null` when the peer is unscored. */

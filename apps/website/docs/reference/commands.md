@@ -30,7 +30,7 @@ Run the local buyer proxy (port 8377) that pays sellers. Guides: [Local buyer AP
 | `antseed buyer identity unprotect [name]` | Store encrypted wallet keys as plaintext again | `--all`, `--yes` |
 | `antseed buyer identity remove <name>` | Stop using an identity; its key is archived, not deleted | |
 | `antseed buyer activity` | Tokens, spending history, savings, active channels and claimable ANTS | `--days 7\|30\|90`, `--json` |
-| `antseed buyer metering` | Channel and usage stats from the local database | `--peer <peerId>`, `--json` |
+| `antseed buyer metering` | Channel and usage stats, after checking active channels on-chain | `--peer <peerId>`, `--json` |
 
 </CommandTable>
 
@@ -242,7 +242,7 @@ Offer AI services on the network. Guides: [Become a provider](/docs/provide), [P
 | `antseed seller register` | Register your peer identity on-chain (ERC-8004) | `--agent-id <id>`, `--metadata <uri>` |
 | `antseed seller doctor` | Diagnose the announced seller endpoint | `--timeout-ms` (3000), `--json` |
 | `antseed seller dashboard` | Open the local seller dashboard: the running seller's, or one served by this command | `--port` (3120), `--host` (127.0.0.1), `--no-open` |
-| `antseed seller events` | Recent seller events: starts and stops, models withdrawn or restored, gas, alerts | `--limit` (25), `--json` |
+| `antseed seller events` | Recent seller events: starts and stops, models failing or recovered, gas, alerts | `--limit` (25), `--json` |
 | `antseed seller usage` | Requests, tokens and revenue per UTC day | `--days` (14, up to 30), `--json` |
 | `antseed seller logs` | Served requests, newest first, or everything kept about one request | `--limit` (50), `--cursor`, `--model`, `--buyer`, `--since <30m\|6h\|2d\|date>`, `--errors`, `--id <id>`, `--json` |
 | `antseed seller market` | Your prices against other sellers of the same models | `--model <id>`, `--refresh`, `--json` |
@@ -281,7 +281,7 @@ Fund the buyer and manage payment channels. Guides: [Gateway funding](/docs/gate
 | `antseed buyer free-tier share` | Sign in the browser to share a wallet's ANTS stake with this buyer for staked free tiers | `--no-open`, `--identity <name>` |
 | `antseed buyer free-tier list` | List the stakers sharing with this buyer and the stake each seller pool counts, with when it runs down | `--identity <name>`, `--no-stake` |
 | `antseed buyer free-tier remove <staker>` | Stop sending a staker's delegation | `--identity <name>` |
-| `antseed buyer channels [list]` | List payment channels from the local store | `--status active\|settled\|timeout\|ghost`, `--limit` (20) |
+| `antseed buyer channels [list]` | List payment channels from the local store, after checking active ones on-chain | `--status active\|settled\|timeout\|ghost`, `--limit` (20) |
 | `antseed buyer channels close <channelId>` | Ask the seller to close a channel now | `--no-auth` |
 | `antseed buyer channels request-close <channelId>` | Start a timeout close so reserved funds can be withdrawn after the grace period | |
 | `antseed buyer channels withdraw <channelId>` | Release reserved funds after the grace period | |
@@ -362,6 +362,27 @@ Browse sellers and run network infrastructure. Guides: [Routing and catalog](/do
 
 </CommandTable>
 
+## Verifier
+
+Run KBF audits of sellers' model claims (one of the first of many [verification methods](/docs/model-verification#one-method-among-many)), submit results on-chain and claim auditor rewards. Guides: [Become a verifier](/docs/verify), [How audits run](/docs/verify/audits).
+
+<CommandTable>
+
+| Command | Purpose | Key flags |
+|---|---|---|
+| `antseed verifier models` | List the built-in audited models and where each takes its genuine answers from | `--json` |
+| `antseed verifier reference build [model]` | Build or grow the probe bank of one audited model | `--all` (every audited model without a powered bank) |
+| `antseed verifier run [model]` | Audit the sellers your buyer has discovered, for the models assigned to your auditor this epoch (or one `<model>`) | `--all`, `--auditor <address>`, `--peer <peerId>`, `--no-enroll`, `--max-enrollment-requests <n>`, `--allow-probe-reuse`, `--resume-run <runId>`, `--ignore-pre-run-checks`, `--fresh`, `--max-rounds <n>`, `--no-confirm`, `--skip-version-check` |
+| `antseed verifier watch` | Keep auditing: every interval, run your assigned models and the confirmations you're responsible for, then submit | `--interval <minutes>`, `--once`, `--auditor <address>`, `--keystore <path>`, `--rpc-url <url>`, `--no-publish-ipfs`, `--skip-version-check`, and `run`'s `--max-rounds <n>`, `--max-enrollment-requests <n>`, `--no-enroll`, `--ignore-pre-run-checks`, `--allow-probe-reuse`, `--no-confirm` |
+| `antseed verifier assignment` | Show which models each approved auditor audits; every model is audited every epoch, split round robin | `--epoch <n>`, `--epochs <count>`, `--json` |
+| `antseed verifier status` | Progress of the latest run | `--json` |
+| `antseed verifier overview` | Write the seller × model overview page of an epoch from all its runs, with the reason for every inconclusive or skipped result | `--epoch <n>`, `--run <ids...>` |
+| `antseed verifier submit` | Publish evidence and submit one audit per model for the whole current epoch (approved auditors); only results not already on-chain are sent, and a model with nothing new is skipped | `--run-id <id>` (one run only), `--dry-run`, `--no-publish-ipfs`, `--publish-only`, `--auditor <address>`, `--keystore <path>`, `--yes`, `--rpc-url`, `--skip-version-check` |
+| `antseed verifier rewards` | Credits and pending ANTS per epoch; claim finished epochs | `--epochs <list>`, `--claim`, `--yes`, `--auditor <address>`, `--rpc-url` |
+| `antseed verifier check <model>` | Re-run the latest published audit against any endpoint. Exit code 0 `SAME`, 2 `DIFF`, 3 `UNDETERMINED` | `--base-url <url>`, `--target-model <id>`, `--protocol openai\|anthropic`, `--api-key-env` (`VERIFY_API_KEY`), `--audit <ipfs://cid>`, `--ipfs-gateway`, `--out <file>`, `--json` |
+
+</CommandTable>
+
 ## Config
 
 Read and change `~/.antseed/config.json`. Guides: [Buyer configuration](/docs/buyer-config), [Provider configuration](/docs/provide/config).
@@ -379,7 +400,7 @@ Read and change `~/.antseed/config.json`. Guides: [Buyer configuration](/docs/bu
 | `antseed config seller set <key> <value>` | Set a seller value | |
 | `antseed config seller add-provider <name>` | Add a provider (installs its plugin) | `--plugin <name>`, `--base-url`, `--input`, `--output`, `--cached` |
 | `antseed config seller remove-provider <name>` | Remove a provider | |
-| `antseed config seller add-service <provider> <serviceId>` | Add a service under a provider | `--upstream`, `--input`, `--output`, `--cached`, `--categories`, `--capabilities <json>`, `--unit-billing-models <json>`, `--base-url` |
+| `antseed config seller add-service <provider> <serviceId>` | Add a service under a provider | `--upstream`, `--venice-edit-model <model>` (Venice only: the native edit model that serves `/v1/images/edits` for this image service; see [Venice image edits](/docs/provide/media#venice-image-edits)), `--input`, `--output`, `--cached`, `--categories`, `--capabilities <json>`, `--unit-billing-models <json>`, `--base-url` |
 | `antseed config seller remove-service <provider> <serviceId>` | Remove a service | |
 
 </CommandTable>

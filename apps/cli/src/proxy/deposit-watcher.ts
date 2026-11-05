@@ -146,6 +146,21 @@ const TOPUP_LIMIT_DIVISOR = 2n
 const SESSION_RESERVE_BASE_UNITS = 1_000_000n
 
 /** The smallest headroom a clamped top-up waits for (mirrored in the desktop's funding-status). */
+/** A relayer's progress report on a sweep, with the relayer that sent it. */
+export interface AttributedSweepReceipt {
+  peerId: string
+  payload: SweepReceiptPayload
+}
+
+/**
+ * Whether `next` replaces `current` as the receipt kept for a sweep. A refusal from a relayer other
+ * than the one that took the sweep (one offered it earlier, answering late) does not hide its progress.
+ */
+export function supersedesSweepReceipt(current: AttributedSweepReceipt | null | undefined, next: AttributedSweepReceipt): boolean {
+  if (!current || current.payload.authNonce.toLowerCase() !== next.payload.authNonce.toLowerCase()) return true
+  return current.payload.status === 'rejected' || next.payload.status !== 'rejected' || current.peerId === next.peerId
+}
+
 export function minTopupBaseUnits(creditLimit: bigint): bigint {
   const share = creditLimit / TOPUP_LIMIT_DIVISOR
   return share > MIN_TOPUP_BASE_UNITS ? share : MIN_TOPUP_BASE_UNITS
@@ -497,7 +512,8 @@ export class DepositWatcher {
 
   // Source of truth is on-chain: a matching SweepExecuted relay event, the
   // consumed EIP-3009 authorization, or the deposits-balance increase. Relayer
-  // receipts only surface the txHash faster; zero receipts must be tolerated.
+  // receipts only surface the txHash faster (or, rejected after submitting,
+  // end the wait early); zero receipts must be tolerated.
   private async _waitForConfirmation(params: {
     initialTotal: bigint
     expectedNet: bigint
@@ -533,6 +549,12 @@ export class DepositWatcher {
       const current = await depositsClient.getBuyerBalance(address).catch(() => null)
       if (current && current.available + current.reserved >= initialTotal + expectedNet) {
         return { credited: current.available + current.reserved - initialTotal, ...(txHash ? { txHash } : {}) }
+      }
+
+      // Not on-chain, and the relayer that took it says it could not submit it: retry with another
+      // relayer instead of waiting out the window.
+      if (receipt?.status === 'rejected' && !txHash) {
+        throw new Error('The relayer could not submit the deposit. Your USDC is safe in the wallet — retrying with another relayer.')
       }
 
       await sleep(SWEEP_POLL_INTERVAL_MS)

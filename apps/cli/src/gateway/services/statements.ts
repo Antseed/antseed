@@ -68,6 +68,8 @@ async function fetchWithTimeout(fetchImpl: Fetch, url: string, init: RequestInit
 
 export interface Settlement {
   seller: string
+  /** The payment channel it settled; null when the explorer did not say. */
+  channelId: string | null
   txHash: string
   /** Epoch ms. */
   time: number
@@ -95,7 +97,7 @@ export async function fetchSettlements(explorerUrl: string, buyer: string, from:
       ${after === null ? '_meta { status }' : ''}
       settlementServices(where: { buyer: $buyer, timestamp_gte: $from, timestamp_lt: $to, deltaAmountUsdc_gt: "0" },
         orderBy: "timestamp", orderDirection: "asc", limit: ${SETTLEMENT_PAGE}, after: $after) {
-        items { txHash seller deltaAmountUsdc timestamp }
+        items { txHash seller channelId deltaAmountUsdc timestamp }
         pageInfo { hasNextPage endCursor }
       }
     }`
@@ -124,7 +126,7 @@ export async function fetchSettlements(explorerUrl: string, buyer: string, from:
       const key = `${seller}:${txHash}`
       const known = merged.get(key)
       if (known) known.amountUsdc += amount
-      else merged.set(key, { seller, txHash, time: Number(item['timestamp'] ?? 0) * 1000, amountUsdc: amount })
+      else merged.set(key, { seller, channelId: String(item['channelId'] ?? '').toLowerCase() || null, txHash, time: Number(item['timestamp'] ?? 0) * 1000, amountUsdc: amount })
     }
     if (!result.pageInfo?.hasNextPage || !result.pageInfo.endCursor) return { settlements: [...merged.values()], indexed }
     after = result.pageInfo.endCursor
@@ -143,6 +145,11 @@ export interface StatementInput {
   /** Seller names and proven claims, by peer id. */
   peers: ReadonlyMap<string, { name: string | null; verificationLinks: StatementSupplier['verificationLinks'] }>
   settlements: Settlement[] | null
+  /**
+   * The buyer's own payment channels: the peer each one paid, by channel id. A delegated seller is paid at its
+   * seller contract while its purchases are under its peer id; its settlements are listed under that peer.
+   */
+  channelPeers: ReadonlyMap<string, string>
   settlementsSource: string | null
   /** How many other workspaces paid from the same wallet by the month's end. */
   sharedWallet: number
@@ -158,16 +165,19 @@ export function buildStatement(input: StatementInput): PurchaseStatement {
     const key = peerKey(line.sellerPeerId ?? '')
     bySeller.set(key, [...(bySeller.get(key) ?? []), line])
   }
+  // The peer the buyer paid on the settled channel; the address paid when the buyer has no record of the channel.
+  const supplierOf = (settlement: Settlement): string =>
+    (settlement.channelId ? input.channelPeers.get(settlement.channelId) : undefined) ?? peerKey(settlement.seller)
   // A seller paid this month for what was bought before is listed too, with no purchases, so its settlement is on the record.
   // Not with a shared wallet: that seller may have sold only to another workspace.
   for (const settlement of input.sharedWallet ? [] : input.settlements ?? []) {
-    const key = peerKey(settlement.seller)
+    const key = supplierOf(settlement)
     if (!bySeller.has(key)) bySeller.set(key, [])
   }
   const suppliers: StatementSupplier[] = [...bySeller].map(([key, lines]) => {
     const peer = input.peers.get(key)
     const settlements = input.settlements
-      ?.filter((settlement) => peerKey(settlement.seller) === key)
+      ?.filter((settlement) => supplierOf(settlement) === key)
       .sort((a, b) => a.time - b.time)
       .map((settlement) => ({ txHash: settlement.txHash, time: settlement.time, amount: usdcToDecimalString(settlement.amountUsdc) })) ?? null
     return {

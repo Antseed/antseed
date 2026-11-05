@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 test('native video runtime configuration maps each video seller endpoint to its credentials', () => {
-  for (const [plugin, prefix, protocol] of [['venice-video', 'VENICE_VIDEO', 'venice-video'], ['fal-video', 'FAL_VIDEO', 'fal-video']] as const) {
+  for (const [plugin, prefix, protocol] of [['venice-video', 'VENICE_VIDEO', 'venice-video'], ['fal-video', 'FAL_VIDEO', 'fal-video'], ['alibaba-video', 'ALIBABA_VIDEO', 'fal-video']] as const) {
     const config = createDefaultConfig();
     config.seller.providers = { video: { plugin, baseUrl: 'https://seller.example.test', apiKeyEnv: 'TEST_VIDEO_KEY', services: { model: { unitBillingModels: { [protocol]: { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.1 }] } } } } } };
     const previous = process.env['TEST_VIDEO_KEY'];
@@ -26,6 +26,7 @@ import {
   buildSellerRuntimeOverridesFromFlags,
   buildSellerPluginRuntimeEnv,
   getUnsupportedFallbackUpstreamsWarning,
+  getImageEditUnitBillingWarning,
   getUnsupportedUnitBillingWarning,
   isPublicRpcUrl,
   mergeSellerRuntimeEnv,
@@ -82,6 +83,7 @@ test('buildSellerPluginRuntimeEnv translates unified config into flat ANTSEED_* 
       services: {
         'claude-sonnet-4-5-20250929': {
           upstreamModel: 'claude-sonnet-4-5-20250929',
+          imageEditModel: 'qwen-edit',
           categories: ['coding', 'chat'],
           pricing: {
             inputUsdPerMillion: 18,
@@ -136,6 +138,9 @@ test('buildSellerPluginRuntimeEnv translates unified config into flat ANTSEED_* 
   // When upstream == serviceId, no alias entry is emitted.
   assert.equal(aliases['claude-sonnet-4-5-20250929'], undefined);
 
+  const editModels = JSON.parse(runtimeEnv['ANTSEED_SERVICE_IMAGE_EDIT_MODEL_MAP_JSON'] ?? '{}') as Record<string, string>;
+  assert.equal(editModels['claude-sonnet-4-5-20250929'], 'qwen-edit');
+
   const capabilities = JSON.parse(runtimeEnv['ANTSEED_SERVICE_CAPABILITIES_JSON'] ?? '{}') as Record<string, unknown>;
   assert.deepEqual(capabilities['claude-sonnet-4-5-20250929'], {
     contextWindow: 200000,
@@ -187,6 +192,50 @@ test('getUnsupportedUnitBillingWarning identifies plugins that ignore configured
       label: 'Unit billing',
       type: 'string',
     }]),
+    undefined,
+  );
+});
+
+test('getImageEditUnitBillingWarning identifies edit services without image pricing', () => {
+  const provider = {
+    plugin: 'openai',
+    services: {
+      unpriced: { imageEditModel: 'qwen-edit' },
+      priced: {
+        imageEditModel: 'flux-2-max-edit',
+        unitBillingModels: {
+          'openai-images': {
+            version: 1 as const,
+            components: [
+              {
+                unit: 'output_images' as const,
+                priceUsd: 0.04,
+              },
+            ],
+          },
+        },
+      },
+      free: {
+        imageEditModel: 'qwen-edit',
+        unitBillingModels: {
+          'openai-images': { version: 1 as const, components: [] },
+        },
+      },
+    },
+  };
+
+  assert.match(
+    getImageEditUnitBillingWarning('venice', provider) ?? '',
+    /Provider "venice".*unpriced.*shared output_images price/,
+  );
+  assert.equal(
+    getImageEditUnitBillingWarning('venice', {
+      ...provider,
+      services: {
+        priced: provider.services.priced,
+        free: provider.services.free,
+      },
+    }),
     undefined,
   );
 });

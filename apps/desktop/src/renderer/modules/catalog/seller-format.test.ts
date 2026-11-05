@@ -58,6 +58,32 @@ test('seller reputation falls back to the label when no breakdown is available',
   assert.equal(sellerReputationExplanation(route), 'Trust: 4.2/10');
 });
 
+test('seller reputation appends the DIFF verification penalty to the trust explanation', () => {
+  const route = {
+    effectiveReputationScore: 7,
+    onChainReputationScore: 70,
+    verification: 'diff',
+    trust: null,
+  } as DiscoverRow;
+  assert.equal(
+    sellerReputationExplanation(route),
+    'Trust: 0.7/10. Model verification: DIFF. An on-chain audit suspects this service is not the model it claims, so its reputation is cut to 10% (0.7/10).',
+  );
+});
+
+test('seller reputation adds the SAME verification sentence to the trust explanation', () => {
+  const route = {
+    effectiveReputationScore: 70,
+    onChainReputationScore: 70,
+    verification: 'same',
+    trust: null,
+  } as DiscoverRow;
+  assert.equal(
+    sellerReputationExplanation(route),
+    'Trust: 7.0/10. Model verification: SAME. An on-chain audit found this service answers like the genuine model.',
+  );
+});
+
 test('seller reputation displays the effective model score, not the raw trust score', () => {
   const route = {
     effectiveReputationScore: 78.4,

@@ -92,7 +92,8 @@ interface Provider {
   serviceUnitBillingModels?: Record<string, Partial<Record<ServiceApiProtocol, UnitBillingModelV1>>>
   serviceCapabilities?: Record<string, ServiceCapabilities>
   maxConcurrency: number
-  healthCheckAvailable?: boolean        // managed by the node's health checker
+  healthCheckAvailable?: boolean        // false after a failed init; the health checker resets it
+  serviceHealth?: Record<string, ServiceHealth> // written by the node's health checker
 
   handleRequest(req: SerializedHttpRequest): Promise<SerializedHttpResponse>
   handleRequestStream?(req: SerializedHttpRequest, callbacks: ProviderStreamCallbacks): Promise<SerializedHttpResponse>
@@ -140,11 +141,11 @@ The node charges the buyer from the token usage in your response body. It reads 
 
 Declare `ANTSEED_SERVICE_CAPABILITIES_JSON` in `configSchema` and set `serviceCapabilities` from it to announce context windows, modalities and other [capabilities](/docs/provide/config#capabilities).
 
-To bill per image or per video instead of per token, declare `ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON` and set `serviceUnitBillingModels` from it. Buyers can meter units only for the `openai-images` (`output_images`), `venice-video` and `fal-video` (`video_generations`, `video_seconds`) protocols, so your services must speak one of them. If a seller configures unit billing on a plugin that doesn't declare the key, `antseed seller start` warns that it's ignored. See [Image and video services](/docs/provide/media).
+To bill per image or per video instead of per token, declare `ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON` and set `serviceUnitBillingModels` from it. Buyers can meter units only for the `openai-images` (`output_images`), `openai-audio-speech` (`input_characters`), `venice-video` and `fal-video` (`video_generations`, `video_seconds`) protocols, so your services must speak one of them. If a seller configures unit billing on a plugin that doesn't declare the key, `antseed seller start` warns that it's ignored. See [Image, video and speech services](/docs/provide/media).
 
 ### Health checks
 
-The node probes text services at startup and periodically, and stops advertising services that keep failing. It sets `healthCheckAvailable` to `false` when every service is down, so leave that field alone. Image and video services are not probed.
+The node checks text services at startup and periodically (skipping services that just served buyers) and publishes each result on `serviceHealth`, which is signed into metadata. A service that keeps failing stays advertised with a failing status, so buyers skip it. Leave `serviceHealth` alone. Set `healthCheckAvailable` to `false` only when your provider failed to initialize and should be announced as failing until a check passes. Image and video services are not probed; their failed buyer requests count as the checks.
 
 ## Example: relay to an HTTP upstream
 
