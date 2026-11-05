@@ -5,7 +5,7 @@ import { shallowEqual, useUiSelector } from '../../hooks/useUiSelector';
 import { useActions } from '../../hooks/useActions';
 import { formatCredits, formatInt, shortAddress } from '../../../core/format';
 import type { RendererUiState } from '../../../core/state';
-import type { CreateInviteResult, RefereeBonus, ReferralInvites } from '../../../types/bridge';
+import type { CreateInviteResult, RefereeBonus, ReferralInvites, ReferralStatus } from '../../../types/bridge';
 import { useReferralStatus } from '../../hooks/useReferralStatus';
 import { ReferralStatusRow } from '../ReferralStatusRow';
 import { VprBadge, VprCard, VprPage, VprSettingRow } from '../vpr/VprKit';

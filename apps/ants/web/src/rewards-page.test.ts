@@ -4,7 +4,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BuildersView, CreatedInviteView, JobView, PoolView, RefereeView, ReferralView, ReferredBuyersView, RewardsView } from '../../src/api-types';
 import { AppContext, type AppValue } from './app-context';
 import type { ActionButtonProps } from './components/Confirm';
-import { BUILDER_LIMIT_HINT, RewardsPage, inviteAllowance, inviteErrorFor, inviteRowState, missingBuilderIds, takeRegisteredAgents } from './pages/Rewards';
+import { BUILDER_LIMIT_HINT, missingBuilderIds, takeRegisteredAgents } from './pages/BuildersCard';
+import { RewardsPage, inviteAllowance, inviteErrorFor, inviteRowState } from './pages/Rewards';
 
 const state = vi.hoisted(() => ({ rewards: null as RewardsView | null, pools: [] as PoolView[], actions: [] as ActionButtonProps[], configReady: true, configLoading: false, configError: null as string | null, rewardsLoading: false, rewardsError: null as string | null, reconciling: false, builders: null as BuildersView | null, referral: null as ReferralView | null, referredBuyers: null as ReferredBuyersView | null, referee: null as RefereeView | null, refreshed: [] as string[], buttons: [] as Array<{ children?: unknown; onClick?: () => unknown; disabled?: boolean }>, createInvite: null as null | (() => Promise<CreatedInviteView>) }));
 vi.mock('./data', () => ({ usePageData: (key: string | null) => ({
@@ -634,7 +635,7 @@ describe('client agents registered from the builders card', () => {
     expect(takeRegisteredAgents([job('register-reload', 34)], [])).toEqual({ ids: [34], untracked: [] });
     vi.resetModules();
     stubWindow();
-    const reloaded = await import('./pages/Rewards');
+    const reloaded = await import('./pages/BuildersCard');
     expect(reloaded.takeRegisteredAgents([job('register-reload', 34)], [])).toBeNull();
   });
 

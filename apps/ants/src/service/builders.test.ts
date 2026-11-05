@@ -1,15 +1,29 @@
 import { makeError } from 'ethers';
-import { describe, expect, it, vi } from 'vitest';
+import { multicallRead } from '@antseed/node/payments';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AntsContext } from './context.js';
 import { builders, claimBuilderRewards, registerClientAgent } from './builders.js';
+
+vi.mock('@antseed/node/payments', async (original) => ({ ...await original<object>(), multicallRead: vi.fn() }));
 
 const wallet = '0x0000000000000000000000000000000000000001';
 const other = '0x0000000000000000000000000000000000000002';
 const signer = { getAddress: async () => wallet };
 
+/** Batch reads answer like Multicall3 with allowFailure: an unminted id is null. */
+function answerOwners(owners: Record<number, string>) {
+  vi.mocked(multicallRead).mockImplementation(async (_provider, requests) =>
+    requests.map((request) => {
+      const owner = owners[request.args![0] as number];
+      return owner ? [owner] : null;
+    }));
+}
+
 function fixture(options: { clientRewards?: boolean; explorer?: boolean } = {}) {
   const owners: Record<number, string> = { 5: wallet, 6: other, 7: wallet, 9: other };
+  answerOwners(owners);
   const identity = {
+    contractAddress: '0x0000000000000000000000000000000000000008',
     getAgentWallet: vi.fn(async (agentId: number) => {
       const owner = owners[agentId];
       if (!owner) throw makeError('execution reverted', 'CALL_EXCEPTION', { action: 'call', data: '0x', reason: null, transaction: { to: null, data: '0x' }, invocation: null, revert: null });
@@ -33,6 +47,7 @@ function fixture(options: { clientRewards?: boolean; explorer?: boolean } = {}) 
   const ctx = {
     address: wallet,
     chain: { clientAgentIds: { cli: 5, desktop: 6 }, ...(options.clientRewards === false ? {} : { clientRewardsAddress: '0x0000000000000000000000000000000000000009' }) },
+    provider: () => ({}),
     indexer: () => (options.explorer === false ? null : indexer),
     identity: () => identity,
     clientRewards: () => (options.clientRewards === false ? null : clientRewards),
@@ -43,12 +58,14 @@ function fixture(options: { clientRewards?: boolean; explorer?: boolean } = {}) 
 }
 
 describe('builders program', () => {
+  beforeEach(() => { vi.mocked(multicallRead).mockReset(); });
+
   it('reports unavailable without a client rewards contract or an explorer, never scanning RPC epochs', async () => {
     expect(await builders(fixture({ clientRewards: false }).ctx, [5])).toEqual({ available: false, agents: [] });
     const { ctx, clientRewards, identity } = fixture({ explorer: false });
     expect(await builders(ctx, [5])).toEqual({ available: false, agents: [] });
     expect(clientRewards.pendingRewards).not.toHaveBeenCalled();
-    expect(identity.getAgentWallet).not.toHaveBeenCalled();
+    expect(multicallRead).not.toHaveBeenCalled();
   });
 
   it('reads payable amounts for every candidate in one Antscan request', async () => {
@@ -77,15 +94,15 @@ describe('builders program', () => {
   });
 
   it('lists owned agents first, first-party before user-added, then the rest in request order', async () => {
-    const { ctx, identity } = fixture();
-    identity.getAgentWallet.mockImplementation(async (agentId: number) => ({ 5: wallet, 6: other, 9: other, 12: wallet, 13: other } as Record<number, string>)[agentId]!);
+    const { ctx } = fixture();
+    answerOwners({ 5: wallet, 6: other, 9: other, 12: wallet, 13: other });
     const view = await builders(ctx, [13, 12, 9]);
     expect(view.agents.map((agent) => agent.agentId)).toEqual([5, 12, 13, 9]);
   });
 
   it('fails the read on an RPC error rather than treating the agent as unregistered', async () => {
-    const { ctx, identity } = fixture();
-    identity.getAgentWallet.mockRejectedValueOnce(new Error('rate limited'));
+    const { ctx } = fixture();
+    vi.mocked(multicallRead).mockRejectedValueOnce(new Error('rate limited'));
     await expect(builders(ctx, [9])).rejects.toThrow('rate limited');
   });
 

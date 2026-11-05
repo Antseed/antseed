@@ -9,6 +9,7 @@ import { shallowEqual, useUiSelector } from '../../hooks/useUiSelector';
 import { useActions } from '../../hooks/useActions';
 import { activeThemeMode, applyThemeMode, type ThemeMode } from '../../lib/theme';
 import type { TelemetryStatus } from '../../../../shared/telemetry';
+import type { ReferralStatus } from '../../../types/bridge';
 import { useReferralStatus } from '../../hooks/useReferralStatus';
 import { ReferralStatusRow } from '../ReferralStatusRow';
 import { formatUsdShort, VprCard, VprPage, VprSettingRow, VprSlider, VprToggle } from '../vpr/VprKit';

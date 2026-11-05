@@ -1,9 +1,12 @@
-import { isError } from 'ethers';
+import { Interface, isError, ZeroAddress } from 'ethers';
+import { multicallRead } from '@antseed/node/payments';
 import { MAX_BUILDER_AGENTS, type BuilderAgentView, type BuildersView } from '../api-types.js';
 import type { AntsContext } from './context.js';
 import { assertAgentId, silentReporter, type StepReporter } from './steps.js';
 
 export { MAX_BUILDER_AGENTS };
+
+const OWNER_ABI = new Interface(['function ownerOf(uint256 agentId) view returns (address)']);
 
 /** ERC-8004 owner of `agentId`, or null when the id is not minted (ownerOf reverts). */
 async function agentOwner(ctx: AntsContext, agentId: number): Promise<string | null> {
@@ -15,6 +18,19 @@ async function agentOwner(ctx: AntsContext, agentId: number): Promise<string | n
     if (isError(error, 'CALL_EXCEPTION')) return null;
     throw error;
   }
+}
+
+/** Owners of `agentIds` in one batch; null for an id that is not minted. An RPC failure throws. */
+async function agentOwners(ctx: AntsContext, agentIds: number[]): Promise<Array<readonly [number, string | null]>> {
+  const identity = ctx.identity();
+  if (!identity) return agentIds.map((agentId) => [agentId, null] as const);
+  const results = await multicallRead(ctx.provider(), agentIds.map((agentId) => ({
+    target: identity.contractAddress, iface: OWNER_ABI, method: 'ownerOf', args: [agentId],
+  })));
+  return agentIds.map((agentId, index) => {
+    const owner = results[index]?.[0] as string | undefined;
+    return [agentId, !owner || owner === ZeroAddress ? null : owner] as const;
+  });
 }
 
 /**
@@ -36,7 +52,7 @@ export async function builders(ctx: AntsContext, agentIds: number[]): Promise<Bu
   }
   const candidates = [...new Set([...requested, ...firstParty.keys()])];
   const [ownerEntries, indexed] = await Promise.all([
-    Promise.all(candidates.map(async (id) => [id, await agentOwner(ctx, id)] as const)),
+    agentOwners(ctx, candidates),
     indexer.builders(candidates),
   ]);
   if (!indexed.available) return { available: false, agents: [] };

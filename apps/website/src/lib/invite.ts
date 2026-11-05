@@ -1,5 +1,6 @@
 import {secp256k1} from '@noble/curves/secp256k1';
 import {keccak_256} from '@noble/hashes/sha3';
+import {bytesToHex as hex, concatBytes as concat, utf8ToBytes as utf8} from '@noble/hashes/utils';
 import {EPOCH_DURATION, GENESIS} from './useEpochCountdown';
 
 /* ── Referral invites ─────────────────────────────────────────────
@@ -40,26 +41,12 @@ export function inviteExpiry(invite: Invite): Date {
   return new Date((GENESIS + (invite.epoch + INVITE_VALIDITY_EPOCHS) * EPOCH_DURATION) * 1000);
 }
 
-const utf8 = (text: string) => new TextEncoder().encode(text);
-
 function word(value: bigint | Uint8Array): Uint8Array {
   if (value instanceof Uint8Array) return value;
   const out = new Uint8Array(32);
   for (let i = 31, v = value; i >= 0; i -= 1, v >>= 8n) out[i] = Number(v & 0xffn);
   return out;
 }
-
-function concat(...parts: Uint8Array[]): Uint8Array {
-  const out = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
-  let offset = 0;
-  for (const part of parts) {
-    out.set(part, offset);
-    offset += part.length;
-  }
-  return out;
-}
-
-const hex = (bytes: Uint8Array) => Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
 
 function addressBytes(address: string): Uint8Array {
   const out = new Uint8Array(32);
