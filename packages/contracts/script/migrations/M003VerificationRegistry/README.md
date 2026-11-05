@@ -102,7 +102,10 @@ nonces 10,356–10,360, blocks 53,514,466–53,514,470): `AntseedVerificationRes
 `0x86B92DC48EF7c5a12de6e44409E83C8EF36657Ff`, `AntseedVerificationPointsPolicy`
 `0x4B586d4361783e9798881DC32c78Cf595a923095`, with KBF wired at 10,000 bps and auditors 1 and 2
 approved again on the new KBF contract. The old contracts stay
-on-chain unused.
+on-chain unused. That release's policy was never registered: release `003-verification-policy`
+replaced it with `0xD58393a752b3b7bdBea6231E0e24C11403e9f32f` (see
+[Replacing only the points policy](#replacing-only-the-points-policy)), set `penaltyBps` 400 and
+`bonusBps` 200, and registered it.
 
 **Nothing carries over.** Verdicts, report tallies, credits and auditor approvals live in the old
 contracts. Their verdicts expire within 2 epochs; readers of the old results layer keep seeing them
