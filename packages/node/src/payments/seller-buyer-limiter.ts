@@ -197,8 +197,8 @@ export class SellerBuyerLimiter {
     if (fits(used)) return 0;
     // Even an empty window wouldn't make room: wait for requests in flight to finish.
     if (!fits(0)) return IN_FLIGHT_RETRY_MS;
-    for (const minute of [...(buckets?.keys() ?? [])].sort((a, b) => a - b)) {
-      used -= buckets!.get(minute)!;
+    for (const [minute, tokens] of [...(buckets?.entries() ?? [])].sort(([a], [b]) => a - b)) {
+      used -= tokens;
       if (fits(used)) return this._expiresAt(minute) - now;
     }
     return IN_FLIGHT_RETRY_MS;

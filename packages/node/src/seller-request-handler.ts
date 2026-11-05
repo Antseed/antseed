@@ -12,7 +12,7 @@ import type { ChannelsClient } from './payments/evm/channels-client.js';
 import type { SellerPaymentManager } from './payments/seller-payment-manager.js';
 import type { SellerFreeUsageManager } from './payments/seller-free-usage-manager.js';
 import type { FreeTierDecision, SellerFreeTierLimiter } from './payments/seller-free-tier-limiter.js';
-import type { SellerBuyerLimiter } from './payments/seller-buyer-limiter.js';
+import type { BuyerUsageReservation, SellerBuyerLimiter } from './payments/seller-buyer-limiter.js';
 import { FREE_TIER_SERVED_COVERED, FREE_TIER_SERVED_HEADER, powerToAntsEpochs } from './payments/free-tier-program.js';
 import { FREE_TIER_DELEGATIONS_HEADER } from './payments/free-tier-delegation.js';
 
@@ -215,6 +215,8 @@ const DEFAULT_CATCH_UP_WAIT_MS = 5_000;
 const CLOSING_CHANNEL_WAIT_MS = 15_000;
 /** How long a request at the reserve ceiling waits for a running top-up before a retryable answer. */
 const TOP_UP_WAIT_MS = 15_000;
+/** Output reserved against buyer limits for a running request that sets no output maximum. */
+const DEFAULT_OUTPUT_RESERVATION_TOKENS = 8_192;
 /** Per-buyer rate limit for the free attestation route. */
 const ATTEST_RATE_WINDOW_MS = 60_000;
 const ATTEST_RATE_MAX_PER_WINDOW = 10;
@@ -272,7 +274,8 @@ export class SellerRequestHandler {
       maxUploadBodyBytes: this._deps.maxUploadBodyBytes,
     });
 
-    mux.onProxyRequest(async (request: SerializedHttpRequest) => {
+    /** A request's buyer-limit reservation, finished with the tokens it used however the request ends. */
+    const handleProxyRequest = async (request: SerializedHttpRequest, usageHold: { reservation: BuyerUsageReservation | null; tokens: number }): Promise<void> => {
       debugLog(`[SellerHandler] Received request: ${request.method} ${request.path} (reqId=${request.requestId.slice(0, 8)})`);
       // Response auth signs the request as the buyer sent it, so keep its headers before removing seller-only ones.
       const wireHeaders = { ...request.headers };
@@ -403,12 +406,6 @@ export class SellerRequestHandler {
         return;
       }
 
-      // Over its usage limit: answered before any payment step. In-flight requests are held to it again at admission below.
-      const limitRetryAfter = this._deps.sellerBuyerLimiter?.retryAfterSeconds(buyerPeerId, provider.name) ?? null;
-      if (limitRetryAfter !== null) {
-        this._sendBuyerUsageLimited(mux, request.requestId, buyerPeerId, provider.name, limitRetryAfter);
-        return;
-      }
 
       const requestPricing = this.resolveProviderPricing(provider, request);
       let requestBilling: SellerBillingContext | null;
@@ -451,6 +448,15 @@ export class SellerRequestHandler {
         return;
       }
       const estimatedRequestCost = requestCostEstimate?.cost ?? 0n;
+      // Buyer limits: a request is admitted, with its estimated size held against them until it ends, before any payment step.
+      if (this._deps.sellerBuyerLimiter) {
+        const admission = this._deps.sellerBuyerLimiter.admit(buyerPeerId, provider.name, this._estimateUsageTokens(request, requestCostEstimate));
+        if (!admission.admitted) {
+          this._sendBuyerUsageLimited(mux, request.requestId, buyerPeerId, provider.name, admission.retryAfterSeconds);
+          return;
+        }
+        usageHold.reservation = admission.reservation;
+      }
 
       const freeTierService = this._extractRequestedService(request) ?? 'unknown';
       const freeTierLimiter = this._deps.sellerFreeTierLimiter;
@@ -923,11 +929,6 @@ export class SellerRequestHandler {
         });
         return;
       }
-      const usageAdmission = this._deps.sellerBuyerLimiter?.admit(buyerPeerId, provider.name, this._estimateUsageTokens(request, requestCostEstimate));
-      if (usageAdmission && !usageAdmission.admitted) {
-        this._sendBuyerUsageLimited(mux, request.requestId, buyerPeerId, provider.name, usageAdmission.retryAfterSeconds);
-        return;
-      }
       if (isBillable) spm!.beginBillableRequest(buyerPeerId);
       this.adjustProviderLoad(provider.name, 1);
       try {
@@ -1179,7 +1180,15 @@ export class SellerRequestHandler {
       } finally {
         this.adjustProviderLoad(provider.name, -1);
         if (isBillable) spm!.endBillableRequest(buyerPeerId);
-        if (usageAdmission?.admitted) usageAdmission.reservation.finish(responseUsage.freshInputTokens + responseUsage.outputTokens);
+        usageHold.tokens = responseUsage.freshInputTokens + responseUsage.outputTokens;
+      }
+    };
+    mux.onProxyRequest(async (request: SerializedHttpRequest) => {
+      const usageHold: { reservation: BuyerUsageReservation | null; tokens: number } = { reservation: null, tokens: 0 };
+      try {
+        await handleProxyRequest(request, usageHold);
+      } finally {
+        usageHold.reservation?.finish(usageHold.tokens);
       }
     });
 
@@ -1636,16 +1645,19 @@ export class SellerRequestHandler {
 
   /**
    * Tokens a request may use, reserved against buyer limits while it runs: its
-   * input plus the output it asks for at most. Estimated whatever the price, so
-   * a burst on a free model is held to the limits too.
+   * input plus the output it asks for at most, or DEFAULT_OUTPUT_RESERVATION_TOKENS
+   * when it sets no maximum. Estimated whatever the price, so a burst on a free
+   * model is held to the limits too.
    */
   private _estimateUsageTokens(
     request: SerializedHttpRequest,
     costEstimate: { inputTokens: number; maxOutputTokens: number } | null,
   ): number {
-    if (costEstimate && costEstimate.inputTokens > 0) return costEstimate.inputTokens + costEstimate.maxOutputTokens;
+    if (costEstimate && costEstimate.inputTokens > 0) {
+      return costEstimate.inputTokens + (costEstimate.maxOutputTokens || DEFAULT_OUTPUT_RESERVATION_TOKENS);
+    }
     const body = this._isJsonRequest(request) ? tryParseJsonObject(request.body) : null;
-    return estimateTokensFromBytesSampled(request.body) + (body ? this._extractMaxOutputTokens(body) : 0);
+    return estimateTokensFromBytesSampled(request.body) + ((body && this._extractMaxOutputTokens(body)) || DEFAULT_OUTPUT_RESERVATION_TOKENS);
   }
 
   private _extractMaxOutputTokens(body: Record<string, unknown>): number {
