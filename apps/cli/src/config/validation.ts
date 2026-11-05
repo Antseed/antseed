@@ -540,6 +540,8 @@ export function validateConfig(config: AntseedConfig): string[] {
     errors.push('seller.restrictedCountries must be an array of 2-letter uppercase ISO country codes');
   }
 
+  errors.push(...sellerBuyerLimitsErrors(config.seller.buyerLimits));
+
   if (config.seller.freeUsage !== undefined) {
     const { recordBatchSize, recordFlushIntervalMs } = config.seller.freeUsage;
     if (recordBatchSize !== undefined && (!Number.isSafeInteger(recordBatchSize) || recordBatchSize < 1)) {
@@ -645,4 +647,35 @@ function validateFreeTierProgram(path: string, freeTier: SellerFreeTierCLIConfig
   } catch {
     errors.push(`${path} is too large to advertise in peer metadata: lower its limits or window`);
   }
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
+
+function sellerBuyerLimitsErrors(limits: unknown): string[] {
+  if (limits === undefined) return [];
+  if (!isRecord(limits)) return ['seller.buyerLimits must be an object'];
+  const errors: string[] = [];
+  const positive = (path: string, value: unknown): void => {
+    if (value !== undefined && (typeof value !== 'number' || !Number.isFinite(value) || value <= 0)) {
+      errors.push(`${path} must be a positive number`);
+    }
+  };
+  positive('seller.buyerLimits.windowMinutes', limits['windowMinutes']);
+  positive('seller.buyerLimits.maxTokensPerBuyer', limits['maxTokensPerBuyer']);
+  const newBuyers = limits['newBuyers'];
+  if (newBuyers !== undefined) {
+    if (!isRecord(newBuyers)) {
+      errors.push('seller.buyerLimits.newBuyers must be an object');
+    } else {
+      positive('seller.buyerLimits.newBuyers.forHours', newBuyers['forHours']);
+      positive('seller.buyerLimits.newBuyers.maxTokensPerBuyer', newBuyers['maxTokensPerBuyer']);
+      positive('seller.buyerLimits.newBuyers.maxTokensTotal', newBuyers['maxTokensTotal']);
+    }
+  }
+  const weights = limits['serviceWeights'];
+  if (weights !== undefined) {
+    if (!isRecord(weights)) errors.push('seller.buyerLimits.serviceWeights must be an object of service ids to weights');
+    else for (const [service, weight] of Object.entries(weights)) positive(`seller.buyerLimits.serviceWeights.${service}`, weight);
+  }
+  return errors;
 }

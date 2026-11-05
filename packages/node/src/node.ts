@@ -93,6 +93,8 @@ import {
   SellerFreeUsageManager,
   SellerFreeTierLimiter,
   type SellerFreeTierConfig,
+  SellerBuyerLimiter,
+  type SellerBuyerLimitsConfig,
   StakingClient,
   ChannelStore,
   CHANNEL_KIND,
@@ -375,6 +377,8 @@ export interface NodeConfig {
   autoReconcileBuyerChannels?: boolean;
   /** Optional per-address request limit for zero-priced seller services. */
   freeTier?: SellerFreeTierConfig;
+  /** Optional per-buyer token limits per provider, tighter for buyers new to this seller. */
+  buyerLimits?: SellerBuyerLimitsConfig;
   /**
    * Buyer side: stakers' signed consent to count their stake toward this
    * node's buyer identities on sellers' staked free tiers. Each identity sends
@@ -2248,6 +2252,10 @@ export class AntseedNode extends EventEmitter {
         debugWarn('[Node] Seller free-tier limits are using in-memory accounting because metering storage is unavailable; counters reset on restart.');
       }
     }
+    const sellerBuyerLimiter = this._config.buyerLimits
+      ? new SellerBuyerLimiter(this._config.buyerLimits, (buyerPeerId) => this._channelStore?.getFirstChannelCreatedAt(buyerPeerId, CHANNEL_ROLE.SELLER) ?? null)
+      : null;
+    if (sellerBuyerLimiter) debugLog(`[Node] Seller buyer limits enabled: ${sellerBuyerLimiter.describe()}`);
 
     // Create seller request handler
     this._sellerHandler = new SellerRequestHandler({
@@ -2257,6 +2265,7 @@ export class AntseedNode extends EventEmitter {
       sellerPaymentManager: this._sellerPaymentManager,
       sellerFreeUsageManager: this._sellerFreeUsageManager,
       sellerFreeTierLimiter,
+      sellerBuyerLimiter,
       sessionTracker: this._sessionTracker,
       channelsClient: this._channelsClient,
       announcer: this._announcer,
