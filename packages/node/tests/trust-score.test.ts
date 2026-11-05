@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  computeTrustScore, trustScore, shareCurve, TRUST_WEIGHTS,
+  computeTrustScore, historyCurve, trustScore, shareCurve, TRUST_WEIGHTS,
 } from '../src/reputation/trust-score.js';
 import { DefaultRouter } from '../src/routing/default-router.js';
 import type { PeerInfo } from '../src/types/peer.js';
@@ -33,6 +33,16 @@ describe('shareCurve', () => {
 
   it('keeps the power and usage weights summing to 100', () => {
     expect(TRUST_WEIGHTS.power + TRUST_WEIGHTS.usage).toBe(100);
+  });
+});
+
+describe('historyCurve', () => {
+  it('stays exported with its behavior for existing consumers', () => {
+    expect(historyCurve(0, 100)).toBe(0);
+    expect(historyCurve(9, 100)).toBeCloseTo(0.499, 2);
+    expect(historyCurve(100, 100)).toBe(1);
+    expect(historyCurve(1_000, 100)).toBe(1);
+    expect(historyCurve(NaN, 100)).toBe(0);
   });
 });
 

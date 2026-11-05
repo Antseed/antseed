@@ -19,6 +19,11 @@ describe('trustBreakdownLabel', () => {
       .toBe('Usage 14 · Power 44 · Model checks +1 (9 verified, 2 DIFF, points at 102%)')
   })
 
+  it('shows the history an older buyer daemon still scores', () => {
+    expect(trustBreakdownLabel({ history: 50, usage: 12, power: null, identity: null, freeModels: null }))
+      .toBe('History 50 · Usage 12')
+  })
+
   it('is null without a breakdown or any part', () => {
     expect(trustBreakdownLabel(undefined)).toBeNull()
     expect(trustBreakdownLabel({ usage: null, power: null, identity: null, freeModels: null })).toBeNull()

@@ -266,7 +266,11 @@ export function trustBreakdownField(trust: Row): { trustBreakdown?: TrustBreakdo
   }
   const verificationRow = asRecord(trust['verification'])
   const multiplierBps = num(verificationRow['multiplierBps'])
-  const change = num(verificationRow['change'])
+  // An older buyer daemon scores history and reports a positive `penalty` instead of a signed `change`.
+  const legacyHistory = part('history')
+  if (legacyHistory !== null) breakdown.history = legacyHistory
+  const legacyPenalty = num(verificationRow['penalty'])
+  const change = num(verificationRow['change']) ?? (legacyPenalty === null ? null : -legacyPenalty)
   if (multiplierBps !== null && change !== null && change !== 0) {
     breakdown.verification = { multiplierBps, sameCount: num(verificationRow['sameCount']) ?? 0, diffCount: num(verificationRow['diffCount']) ?? 0, change }
   }

@@ -1809,6 +1809,8 @@ export interface SellerRpcDiagnostics {
 
 /** The parts of a seller's trust score (0-100), as the buyer computed it. Null parts had no data. */
 export interface TrustBreakdownView {
+  /** History contribution from an older buyer daemon, which still scores it; newer buyers send none. */
+  history?: number
   /** Last epoch's recognized-usage share, 0-30. */
   usage: number | null
   /** Staking-power share, 0-70. */

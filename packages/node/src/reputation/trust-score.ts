@@ -47,6 +47,12 @@ export const TRUST_FREE_MODELS_BONUS = 5;
 /** The network share that earns full marks in `shareCurve`, in basis points. */
 export const TRUST_FULL_SHARE_BPS = 5_000;
 
+/** @deprecated Service history no longer feeds the trust score. */
+export const TRUST_HISTORY_CHANNEL_TARGET = 100;
+
+/** @deprecated Service history no longer feeds the trust score. */
+export const TRUST_HISTORY_VOLUME_USDC_MICROS_TARGET = 100_000_000;
+
 /** Dynamic range of the share curve: a share of 1/SHARE_CURVE_RANGE maps to ~0. */
 export const SHARE_CURVE_RANGE = 1_000;
 
@@ -103,6 +109,15 @@ export function firstFreeService(peer: PeerInfo): string | null {
     if (Object.keys(services).length === 0 && isFreePrice(entry.defaults)) return provider;
   }
   return null;
+}
+
+/**
+ * Bounded logarithmic progress toward a non-zero target.
+ * @deprecated Service history no longer feeds the trust score.
+ */
+export function historyCurve(value: number, target: number): number {
+  if (!Number.isFinite(value) || value <= 0 || !Number.isFinite(target) || target <= 0) return 0;
+  return Math.min(1, Math.log10(1 + value) / Math.log10(1 + target));
 }
 
 /**

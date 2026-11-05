@@ -9,6 +9,7 @@ export function trustBreakdownLabel(breakdown: TrustBreakdownView | undefined): 
   if (!breakdown) return null
   const parts: string[] = []
   const add = (label: string, value: number | null) => { if (value !== null) parts.push(`${label} ${Math.round(value)}`) }
+  add('History', breakdown.history ?? null)
   add('Usage', breakdown.usage)
   add('Power', breakdown.power)
   if (breakdown.identity) add(breakdown.identity.kind === 'github' ? 'GitHub' : 'Domain', breakdown.identity.score)
