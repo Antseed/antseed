@@ -104,3 +104,27 @@ export function buildUpstreamUnavailableResponse(requestId: string, service: str
     })),
   };
 }
+
+/** Error code a seller answers with when its upstream rate or usage limits a request. */
+export const UPSTREAM_RATE_LIMITED_CODE = 'upstream_rate_limited';
+
+/**
+ * What a buyer gets for an upstream 429: still a 429 with the upstream's
+ * `retry-after`, so buyers back off or retry as before, but none of the
+ * upstream's body, which can name the seller's plan and when its limit resets.
+ */
+export function buildUpstreamRateLimitedResponse(requestId: string, service: string, retryAfter: string | undefined): SerializedHttpResponse {
+  return {
+    requestId,
+    statusCode: 429,
+    headers: { 'content-type': 'application/json', ...(retryAfter ? { 'retry-after': retryAfter } : {}) },
+    body: new TextEncoder().encode(JSON.stringify({
+      error: {
+        type: UPSTREAM_RATE_LIMITED_CODE,
+        code: UPSTREAM_RATE_LIMITED_CODE,
+        message: `${service} is rate limited on this seller right now`,
+        service,
+      },
+    })),
+  };
+}

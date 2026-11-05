@@ -32,6 +32,7 @@ import {
   estimateTokensFromBytesSampled,
 } from './payments/pricing.js';
 import { debugLog, debugWarn } from './utils/debug.js';
+import { buyerFacingResponseHeaders } from './proxy/buyer-response-headers.js';
 import {
   CONNECTION_CAPABILITY_RESPONSE_AUTH_V1,
   DEFAULT_FIRST_SIGN_CAP,
@@ -60,7 +61,7 @@ import {
 } from '@antseed/api-adapter';
 import { parseResponseUsage } from './utils/response-usage.js';
 import { requestBodyService } from './requested-service.js';
-import { buildSelfHealthErrorResponse, buildUpstreamUnavailableResponse, isUpstreamAccountError, isUpstreamFailureStatus } from './health/self-health-error.js';
+import { buildSelfHealthErrorResponse, buildUpstreamRateLimitedResponse, buildUpstreamUnavailableResponse, isUpstreamAccountError, isUpstreamFailureStatus } from './health/self-health-error.js';
 import type { ServicePerformanceTracker } from './health/service-performance.js';
 import { StreamOutcome } from './health/stream-outcome.js';
 import { routingProtocolForPath, routingProtocolOf, routingRequestOf, routingWireProtocol, ROUTING_PROTOCOLS, type RoutingProtocol } from '@antseed/protocol/routing';
@@ -147,6 +148,9 @@ function isZeroTokenPricing(pricing: ProviderTokenPricing): boolean {
  * Set a header the seller controls. Header names are case-insensitive, so any
  * buyer-sent copy (in any letter case) is removed first and only ours remains.
  */
+/** What a buyer is told when the provider throws; the exception itself stays in the seller's log. */
+const PROVIDER_FAILURE_MESSAGE = 'The seller could not complete the request upstream';
+
 function setTrustedHeader(headers: Record<string, string>, name: string, value: string): void {
   for (const key of Object.keys(headers)) {
     if (key.toLowerCase() === name) delete headers[key];
@@ -958,6 +962,8 @@ export class SellerRequestHandler {
             debugWarn(`[SellerHandler] Upstream account error: status=${statusCode} provider="${provider.name}" model="${requestedModel}" body=${upstreamError.slice(0, 200)}`);
             response = buildUpstreamUnavailableResponse(request.requestId, requestedModel);
             statusCode = response.statusCode;
+          } else if (!streamedResponseStarted && statusCode === 429) {
+            response = buildUpstreamRateLimitedResponse(request.requestId, requestedModel, takeHeader({ ...response.headers }, 'retry-after'));
           }
           const health = serviceHealthOf(provider.serviceHealth, requestedModel);
           if (!streamedResponseStarted && isServiceHealthFailing(health) && isUpstreamFailureStatus(statusCode)) {
@@ -1003,13 +1009,14 @@ export class SellerRequestHandler {
           this._deps.emit('provider:failure', { provider, service: requestedModel, billable: videoRoute?.action !== 'retrieve' });
           debugWarn(`[SellerHandler] Provider exception: provider="${provider.name}" model="${requestedModel}" buyer=${buyerPeerId.slice(0, 12)}... (${Date.now() - startTime}ms) ${message}`);
           if (videoRoute?.action === 'create') this._closeOneOffBestEffort(oneOffChannelId, 'video create failed');
-          responseBody = new TextEncoder().encode(message);
+          // The exception can quote the upstream (its account, its answer): the buyer only learns the request failed.
+          responseBody = new TextEncoder().encode(PROVIDER_FAILURE_MESSAGE);
           if (streamedResponseStarted && isDownload) {
             statusCode = 502;
             responseForAuth = null;
             mux.sendProxyError(request.requestId);
           } else if (streamedResponseStarted) {
-            const errorFrame = new TextEncoder().encode(`event: error\ndata: ${message}\n\n`);
+            const errorFrame = new TextEncoder().encode(`event: error\ndata: ${PROVIDER_FAILURE_MESSAGE}\n\n`);
             responseBody = errorFrame;
             mux.sendProxyChunk({
               requestId: request.requestId,
@@ -1349,7 +1356,7 @@ export class SellerRequestHandler {
     setTrustedHeader(request.headers, 'x-antseed-buyer-peer-id', buyerPeerId);
     try {
       const response = await provider.handleRequest(request);
-      return { ...response, requestId: request.requestId };
+      return { ...response, requestId: request.requestId, headers: buyerFacingResponseHeaders(response.headers) };
     } catch (error) {
       return failure(503, 'unavailable', `Routing catalog failed: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -1641,10 +1648,25 @@ export class SellerRequestHandler {
     request: SerializedHttpRequest,
     streamCallbacks?: ProviderStreamCallbacks,
   ): Promise<SerializedHttpResponse> {
+    // Buyers only ever see the headers buyerFacingResponseHeaders lets through.
     if (streamCallbacks && provider.handleRequestStream) {
-      return provider.handleRequestStream(request, streamCallbacks);
+      // A streamed 429 is held back like a buffered one, so its upstream body can be replaced before the buyer sees it.
+      let heldRateLimit = false;
+      const response = await provider.handleRequestStream(request, {
+        ...streamCallbacks,
+        onResponseStart: (start) => {
+          if (start.statusCode === 429) {
+            heldRateLimit = true;
+            return;
+          }
+          streamCallbacks.onResponseStart({ ...start, headers: buyerFacingResponseHeaders(start.headers) });
+        },
+        onResponseChunk: (chunk) => (heldRateLimit ? undefined : streamCallbacks.onResponseChunk(chunk)),
+      });
+      return { ...response, headers: buyerFacingResponseHeaders(response.headers) };
     }
-    return provider.handleRequest(request);
+    const response = await provider.handleRequest(request);
+    return { ...response, headers: buyerFacingResponseHeaders(response.headers) };
   }
 
   private _sendNeedAuthBestEffort(
