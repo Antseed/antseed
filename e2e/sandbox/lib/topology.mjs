@@ -35,26 +35,88 @@ export function normalizeTopology(topology = {}, source, overrides = {}) {
     const providers = seller.providers
       ? sanitizeConfig({ seller: { providers: seller.providers } }).cleaned.seller.providers
       : structuredClone(source.seller.providers);
-    const latencyMs = seller.mock?.latencyMs ?? 0;
-    if (!Number.isInteger(latencyMs) || latencyMs < 0 || latencyMs > 60_000) throw new Error(`seller ${id} mock.latencyMs must be 0-60000`);
-    return { id, providers, mock: { latencyMs } };
+    return { id, providers, mock: normalizeMock(seller.mock ?? {}, id) };
   });
   const buyerIn = topology.buyer ?? {};
   const depositUsdc = overrides.depositUsdc ?? buyerIn.depositUsdc ?? '10';
-  const block = overrides.block ?? topology.chain?.block;
+  const chainIn = topology.chain ?? {};
+  const block = overrides.block ?? chainIn.block;
   const settlementIdleMs = topology.payments?.settlementIdleMs;
+  // Sellers built on the SDK default to a 0.5 USDC minimum budget per request; `antseed seller start` uses 0.01.
+  const minBudgetPerRequestUsdc = topology.payments?.minBudgetPerRequestUsdc;
   if (settlementIdleMs !== undefined && !(Number.isInteger(settlementIdleMs) && settlementIdleMs >= 1000 && settlementIdleMs <= 600_000)) throw new Error('payments.settlementIdleMs must be 1000-600000');
   if (block !== undefined && !(/^\d+$/.test(String(block)) && Number.isSafeInteger(Number(block)))) throw new Error('block must be a block number');
+  const rpc = chainIn.rpc ?? 'direct';
+  if (!RPC_PROFILES.has(rpc)) throw new Error(`chain.rpc must be one of ${[...RPC_PROFILES].join(', ')}`);
+  // Base-like RPCs come with Base's 2 s blocks unless the topology says otherwise; direct RPCs keep Anvil's automine.
+  const blockTimeSec = chainIn.blockTimeSec ?? (rpc === 'base' ? 2 : undefined);
+  if (blockTimeSec !== undefined && !(Number.isInteger(blockTimeSec) && blockTimeSec >= 1 && blockTimeSec <= 30)) throw new Error('chain.blockTimeSec must be 1-30');
+  const topUpThresholdBps = chainIn.topUpThresholdBps;
+  if (topUpThresholdBps !== undefined && !(Number.isInteger(topUpThresholdBps) && topUpThresholdBps >= 1 && topUpThresholdBps <= 10_000)) throw new Error('chain.topUpThresholdBps must be 1-10000');
+  const caps = {};
+  for (const key of ['maxReserveUsdc', 'maxPerRequestUsdc']) {
+    if (buyerIn[key] !== undefined) caps[key.replace('Usdc', 'Micros')] = String(microsFromUsdc(buyerIn[key], `buyer.${key}`));
+  }
   return {
     sellers,
     buyer: {
       depositMicros: String(microsFromUsdc(depositUsdc, 'depositUsdc')),
       routingPreferences: { ...(source.buyer.routingPreferences ?? {}), ...(buyerIn.routingPreferences ?? {}) },
       ...(buyerIn.maxPricing ?? source.buyer.maxPricing ? { maxPricing: structuredClone(buyerIn.maxPricing ?? source.buyer.maxPricing) } : {}),
+      ...caps,
     },
-    chain: { ...(block !== undefined ? { block: Number(block) } : {}) },
-    payments: { ...(settlementIdleMs !== undefined ? { settlementIdleMs } : {}) },
+    chain: {
+      ...(block !== undefined ? { block: Number(block) } : {}),
+      rpc,
+      ...(blockTimeSec !== undefined ? { blockTimeSec } : {}),
+      ...(topUpThresholdBps !== undefined ? { topUpThresholdBps } : {}),
+    },
+    payments: {
+      ...(settlementIdleMs !== undefined ? { settlementIdleMs } : {}),
+      ...(minBudgetPerRequestUsdc !== undefined ? { minBudgetPerRequestMicros: String(microsFromUsdc(minBudgetPerRequestUsdc, 'payments.minBudgetPerRequestUsdc')) } : {}),
+    },
   };
+}
+
+/**
+ * Chain links between each sandbox node and Anvil. `direct` talks to Anvil; `base` puts a proxy in front of
+ * it per node that behaves like a public Base RPC (latency with a slow tail, 429s above a rate limit, reads a
+ * block behind and missing receipts right after a transaction; see e2e/stress/rpc-proxy.mjs).
+ */
+export const RPC_PROFILES = new Set(['direct', 'base']);
+
+/** Mock upstream usage: `fixed` answers 10 in + 8 out tokens instantly (exact costs); `load` sizes usage like real traffic. */
+export const MOCK_USAGE_MODES = new Set(['fixed', 'load']);
+
+const LOAD_MOCK_DEFAULTS = { latencyRangeMs: [50, 3000], outTokens: [100, 4000] };
+
+function range(value, label, max) {
+  if (!Array.isArray(value) || value.length !== 2 || !value.every((n) => Number.isInteger(n) && n >= 0 && n <= max) || value[0] > value[1]) {
+    throw new Error(`${label} must be [min, max] integers within 0-${max}`);
+  }
+  return [value[0], value[1]];
+}
+
+function rate(value, label) {
+  if (value === undefined) return 0;
+  if (typeof value !== 'number' || !(value >= 0 && value <= 1)) throw new Error(`${label} must be a rate between 0 and 1`);
+  return value;
+}
+
+/** A seller's mock upstream: latency, usage mode and the fault rates it starts with (all but usage can change at run time). */
+export function normalizeMock(mock, id) {
+  const latencyMs = mock.latencyMs ?? 0;
+  if (!Number.isInteger(latencyMs) || latencyMs < 0 || latencyMs > 60_000) throw new Error(`seller ${id} mock.latencyMs must be 0-60000`);
+  const usage = mock.usage ?? 'fixed';
+  if (!MOCK_USAGE_MODES.has(usage)) throw new Error(`seller ${id} mock.usage must be one of ${[...MOCK_USAGE_MODES].join(', ')}`);
+  const normalized = { latencyMs, usage, fault500Rate: rate(mock.fault500Rate, `seller ${id} mock.fault500Rate`), disconnectRate: rate(mock.disconnectRate, `seller ${id} mock.disconnectRate`) };
+  if (usage === 'load') {
+    normalized.latencyRangeMs = range(mock.latencyRangeMs ?? LOAD_MOCK_DEFAULTS.latencyRangeMs, `seller ${id} mock.latencyRangeMs`, 60_000);
+    normalized.outTokens = range(mock.outTokens ?? LOAD_MOCK_DEFAULTS.outTokens, `seller ${id} mock.outTokens`, 100_000);
+  } else if (mock.latencyRangeMs !== undefined || mock.outTokens !== undefined) {
+    throw new Error(`seller ${id} mock.latencyRangeMs and mock.outTokens need mock.usage 'load'`);
+  }
+  return normalized;
 }
 
 /** Buyer routing preferences: config/topology values, but only our sellers and no trust floor. */
@@ -96,5 +158,7 @@ export function chooseTarget(scenario, { requested, running } = {}) {
 
 /** Two topologies are compatible when they produce the same sellers/models; used before reusing a running sandbox. */
 export function topologyFingerprint(normalized) {
-  return normalized.sellers.map((seller) => `${seller.id}:${Object.entries(seller.providers).map(([name, p]) => `${name}=${Object.keys(p.services).sort().join('+')}`).sort().join(',')}`).join('|');
+  const sellers = normalized.sellers.map((seller) => `${seller.id}:${Object.entries(seller.providers).map(([name, p]) => `${name}=${Object.keys(p.services).sort().join('+')}`).sort().join(',')}${seller.mock?.usage === 'load' ? '~load' : ''}`).join('|');
+  // The chain link is fixed at `up`; a scenario that needs Base-like RPCs cannot reuse a direct sandbox.
+  return normalized.chain?.rpc === 'base' ? `${sellers}#rpc=base` : sellers;
 }

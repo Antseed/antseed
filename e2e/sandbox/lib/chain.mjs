@@ -7,12 +7,48 @@ const { Contract, JsonRpcProvider, Wallet } = require('ethers');
 
 const ETH_BALANCE = '0x56BC75E2D63100000';
 const WEEK = 604_800;
+/** AntseedDeposits' default per-buyer credit limit (BASE_CREDIT_LIMIT); larger sandbox deposits need an owner override. */
+export const BASE_CREDIT_LIMIT_MICROS = 10_000_000n;
+
+/**
+ * Owner-only payment settings a topology can ask for, sent on Anvil by impersonating each contract's owner
+ * (works on the fork and the local chain): a credit limit override so the buyer can deposit more than the
+ * default 10 USDC, and the channels' top-up threshold (Base runs 65%; the source default is 85%).
+ * Runs before the deposit, which is where the credit limit is checked.
+ */
+export async function applyOwnerSettings(provider, chain, { buyer, depositMicros, topUpThresholdBps, log = () => {} }) {
+  const ownable = ['function owner() view returns(address)'];
+  const asOwner = async (address, abi, action) => {
+    const owner = await new Contract(address, ownable, provider).owner();
+    await provider.send('anvil_setBalance', [owner, ETH_BALANCE]);
+    await provider.send('anvil_impersonateAccount', [owner]);
+    try {
+      const receipt = await (await action(new Contract(address, abi, await provider.getSigner(owner)))).wait();
+      assert.equal(receipt.status, 1);
+    } finally {
+      await provider.send('anvil_stopImpersonatingAccount', [owner]);
+    }
+  };
+  const applied = {};
+  if (BigInt(depositMicros) > BASE_CREDIT_LIMIT_MICROS) {
+    log(`Raising the buyer credit limit to ${depositMicros} micro-USDC (owner override, sandbox chain only)`);
+    await asOwner(chain.depositsContractAddress, ['function setCreditLimitOverride(address,uint256)'], (deposits) => deposits.setCreditLimitOverride(buyer, BigInt(depositMicros)));
+    applied.creditLimitMicros = String(depositMicros);
+  }
+  if (topUpThresholdBps !== undefined) {
+    log(`Setting the channels top-up threshold to ${topUpThresholdBps} bps`);
+    await asOwner(chain.channelsContractAddress, ['function setTopUpSettledThresholdBps(uint256)'], (channels) => channels.setTopUpSettledThresholdBps(topUpThresholdBps));
+    applied.topUpThresholdBps = topUpThresholdBps;
+  }
+  const threshold = await new Contract(chain.channelsContractAddress, ['function TOP_UP_SETTLED_THRESHOLD_BPS() view returns(uint256)'], provider).TOP_UP_SETTLED_THRESHOLD_BPS().catch(() => null);
+  return { ...applied, ...(threshold !== null ? { topUpThresholdBpsOnChain: Number(threshold) } : {}) };
+}
 
 /**
  * Prepares a fresh Base fork for the sandbox. Every write happens on the local Anvil fork only:
  * mints USDC to the buyer and deposits it, registers and stakes each seller.
  */
-export async function prepareChain({ rpcUrl, sdk, sellers, buyer: buyerIdentity, depositMicros, log = () => {} }) {
+export async function prepareChain({ rpcUrl, sdk, sellers, buyer: buyerIdentity, depositMicros, topUpThresholdBps, log = () => {} }) {
   assertLocalUrl(rpcUrl, 'Fork RPC');
   const provider = new JsonRpcProvider(rpcUrl, 8453, { cacheTimeout: -1, batchMaxCount: 1, staticNetwork: true });
   provider.pollingInterval = 100;
@@ -109,6 +145,7 @@ export async function prepareChain({ rpcUrl, sdk, sellers, buyer: buyerIdentity,
       'function setOperator(address,address,uint256,bytes)', 'function deposit(address,uint256)',
       'function getBuyerBalance(address) view returns(uint256 available,uint256 reserved,uint256 lastActivityAt)',
     ], buyer);
+    const ownerSettings = await applyOwnerSettings(provider, chain, { buyer: buyer.address, depositMicros, topUpThresholdBps, log });
     log('Depositing buyer USDC into AntseedDeposits');
     const signature = await sdk.signSetOperator(buyer, sdk.makeDepositsDomain(8453, chain.depositsContractAddress), { operator: buyer.address, nonce: 0n });
     await transact(deposits.setOperator(buyer.address, buyer.address, 0n, signature));
@@ -127,6 +164,7 @@ export async function prepareChain({ rpcUrl, sdk, sellers, buyer: buyerIdentity,
       startBlock: await provider.getBlockNumber(),
       sellerUsdcBefore,
       depositMicros: String(depositMicros),
+      ownerSettings,
     };
   } finally {
     destroy();
@@ -146,7 +184,7 @@ export const LOCAL_CONTRACT_KEYS = ['usdcContractAddress', 'identityRegistryAddr
  * registry and stakes it in AntseedStaking, then sets the buyer operator and deposits. Mirrors the
  * setup of e2e/scripts/full-payment-flow.mjs so CI coverage carries over.
  */
-export async function prepareLocalChain({ rpcUrl, sdk, sellers, buyer: buyerIdentity, depositMicros, log = () => {} }) {
+export async function prepareLocalChain({ rpcUrl, sdk, sellers, buyer: buyerIdentity, depositMicros, topUpThresholdBps, log = () => {} }) {
   assertLocalUrl(rpcUrl, 'Local RPC');
   const provider = new JsonRpcProvider(rpcUrl, LOCAL_CHAIN_ID, { cacheTimeout: -1, batchMaxCount: 1, staticNetwork: true });
   provider.pollingInterval = 100;
@@ -186,6 +224,7 @@ export async function prepareLocalChain({ rpcUrl, sdk, sellers, buyer: buyerIden
       assert(await staking.isStakedAboveMin(wallet.address), `Seller ${seller.id} is not staked above the minimum`);
       sellerState.push({ id: seller.id, address: wallet.address, agentId: String(agentId) });
     }
+    const ownerSettings = await applyOwnerSettings(provider, chain, { buyer: buyer.address, depositMicros, topUpThresholdBps, log });
     log(`Minting ${depositMicros} MockUSDC to the buyer and depositing it`);
     await transact(usdc.mint(buyer.address, depositMicros));
     const deposits = new Contract(chain.depositsContractAddress, [
@@ -209,6 +248,7 @@ export async function prepareLocalChain({ rpcUrl, sdk, sellers, buyer: buyerIden
       startBlock: await provider.getBlockNumber(),
       sellerUsdcBefore,
       depositMicros: String(depositMicros),
+      ownerSettings,
     };
   } finally {
     provider.destroy();
@@ -227,6 +267,8 @@ export function chainReader(rpcUrl, chain) {
   const channels = new Contract(chain.channelsContractAddress, [
     'event ChannelSettled(bytes32 indexed channelId,address indexed buyer,address indexed seller,uint128 cumulativeAmount,uint128 delta,uint128 totalSettled,uint256 platformFee,bytes metadata)',
   ], provider);
+  const depositsRegistry = new Contract(chain.depositsContractAddress, ['function registry() view returns(address)'], provider);
+  let feeRecipient = null;
   const channelsRead = new Contract(chain.channelsContractAddress, [
     'function channels(bytes32) view returns(address buyer,address seller,uint128 deposit,uint128 settled,bytes32 metadataHash,uint256 deadline,uint256 settledAt,uint256 closeRequestedAt,uint8 status)',
     'function requestClose(bytes32 channelId)',
@@ -239,6 +281,25 @@ export function chainReader(rpcUrl, chain) {
       return { available: value.available, reserved: value.reserved };
     },
     usdcBalance: (address) => usdc.balanceOf(address),
+    /** Where platform fees go: the registry's protocolReserve (zero address means no fee is taken). */
+    async feeRecipient() {
+      if (feeRecipient) return feeRecipient;
+      const registry = new Contract(await depositsRegistry.registry(), ['function protocolReserve() view returns(address)'], provider);
+      feeRecipient = await registry.protocolReserve();
+      return feeRecipient;
+    },
+    /**
+     * Balances the payment oracle compares before and after a run (bigints, micro-USDC): the buyer's deposit,
+     * the sellers' USDC and the fee recipient's USDC. Shaped like e2e/stress/chain.mjs chainSnapshot.
+     */
+    async paymentSnapshot(buyer, sellerAddresses) {
+      const balance = await deposits.getBuyerBalance(buyer);
+      let sellerUsdc = 0n;
+      for (const address of sellerAddresses) sellerUsdc += await usdc.balanceOf(address);
+      const recipient = await this.feeRecipient();
+      const reserveUsdc = /^0x0{40}$/i.test(recipient) ? 0n : await usdc.balanceOf(recipient);
+      return { buyerAvailable: balance.available, buyerReserved: balance.reserved, buyerBalance: balance.available + balance.reserved, sellerUsdc, reserveUsdc };
+    },
     async settledEvents(buyer, seller, fromBlock) {
       return channels.queryFilter(channels.filters.ChannelSettled(null, buyer, seller), fromBlock);
     },

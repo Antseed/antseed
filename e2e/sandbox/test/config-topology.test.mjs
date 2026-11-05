@@ -201,7 +201,8 @@ describe('scenario modules', () => {
   });
 
   it('every shipped scenario is valid', async () => {
-    for (const name of ['chat-basic', 'routing-smoke', 'desktop-chat', 'payment-flow', 'issue-1200-spendingauth-catchup']) {
+    const stress = ['stress-smoke', 'stress-c32', 'stress-c64', 'stress-smallreserve', 'stress-images', 'stress-faults', 'stress-restart-buyer', 'stress-restart-seller', 'issue-1050-stale-channel'];
+    for (const name of ['chat-basic', 'routing-smoke', 'desktop-chat', 'payment-flow', 'issue-1200-spendingauth-catchup', ...stress]) {
       const scenario = validateScenarioModule(await import(`../scenarios/${name}.mjs`), name);
       for (const target of scenario.targets) assertScenarioSupported(scenario, target);
       assert.ok(scenario.description);

@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import { appendFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { chainReader, verifySettlement } from './chain.mjs';
 import { launchDesktop } from './desktop.mjs';
 import { assertLocalUrl } from './env.mjs';
 import { MOCK_USAGE } from './mock.mjs';
+import { analyzePayments, analyzeRecordedCosts, channelRows, CRASH_PATTERN, GATES, gateProblems, logOffsets, mergeDeliveries, runLoad, scanLogs } from './stress.mjs';
 
 /** Parses an OpenAI SSE stream into its text and the final usage chunk. */
 export function parseSse(text) {
@@ -44,6 +46,18 @@ export function createSandboxApi({ manifest, control, eventsPath, chain, strict 
   };
   const proxy = async (path, init = {}) => fetch(`${manifest.proxyUrl}${path}`, { ...init, signal: AbortSignal.timeout(init.timeoutMs ?? 120_000) });
   const desktops = [];
+  const sleep = (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
+  const sellerDir = (id) => join(manifest.dir, 'sellers', id);
+  const sellerLogs = manifest.dir ? manifest.sellers.map((seller) => join(manifest.dir, 'logs', `seller-${seller.id}.log`)) : [];
+  const peerLogs = manifest.dir ? [join(manifest.dir, 'logs', 'supervisor.log'), ...sellerLogs] : [];
+  // Crash scans and the seller's cost log cover only what this run appends.
+  const logStart = logOffsets(peerLogs);
+  /** Records several named checks at once, then fails the run if any failed. */
+  const checkAll = (entries) => {
+    for (const entry of entries) checks.push({ name: entry.name, ok: Boolean(entry.ok), ...(entry.detail !== undefined ? { detail: entry.detail } : {}) });
+    const failed = entries.filter((entry) => !entry.ok);
+    assert(failed.length === 0, failed.map((entry) => `${entry.name}${entry.detail !== undefined ? `: ${JSON.stringify(entry.detail)}` : ''}`).join('; '));
+  };
 
   const sb = {
     manifest,
@@ -190,6 +204,137 @@ export function createSandboxApi({ manifest, control, eventsPath, chain, strict 
       lostNeedAuths: async () => (await control.needAuthLoss()).lost,
     },
     setMockLatency: async (id, latencyMs) => { await event('mock-latency', { id, latencyMs }); return control.setMockLatency(id, latencyMs); },
+    /** Upstream faults on a seller's mock from now on: { fault500Rate, disconnectRate } (0..1 each; 0 turns one off). */
+    setMockFaults: async (id, faults) => { await event('mock-faults', { id, ...faults }); return control.setMockFaults(id, faults); },
+    /** A seller mock's delivery ledger: per `[req:TAG]` what reached the wire and its cost, plus totals. */
+    deliveries: (id) => control.deliveries(id),
+    /** Crashes, unexpected seller exits, stops that needed SIGKILL, and Base-like RPC counters, since `up`. */
+    health: () => control.health(),
+    /** The ok-share and failure-kind gates of the stress CI (e2e/stress/ci.mjs), by name. */
+    gates: GATES,
+
+    /**
+     * Concurrent paid load through the buyer proxy, as in the payment stress harness. Shape: { concurrency,
+     * requests, streamRatio, abortRatio, imageRatio, minInTokens, maxInTokens }. `model` defaults to the first
+     * seller's first model, `sellerId` pins it, `imageModel` serves the image share. `restart: { who: 'buyer' |
+     * 'seller', sellerId, atFraction }` restarts a peer once that share is done. `gate` (a GATES entry) records the
+     * ok-share check. Returns { results, client, restart, loadMs }.
+     */
+    async load({ model, imageModel, sellerId, restart, gate, ...shape } = {}) {
+      const pin = (name) => (name && sellerId ? `${sb.seller(sellerId).peerId}@${name}` : name);
+      const chosen = model ?? (sellerId ? sb.seller(sellerId) : sb.sellers[0]).models[0];
+      const restartSpec = restart ? {
+        atFraction: restart.atFraction,
+        run: async () => {
+          if (restart.who === 'buyer') { await sb.stopBuyer(); await sb.startBuyer(); }
+          else if (restart.who === 'seller') {
+            const id = restart.sellerId ?? sellerId ?? sb.sellers[0].id;
+            await sb.stopSeller(id);
+            await sb.startSeller(id);
+          } else throw new Error(`restart.who must be buyer or seller, got ${restart.who}`);
+          return { who: restart.who };
+        },
+      } : null;
+      await event('load-start', { model: chosen, sellerId: sellerId ?? null, ...shape, restart: restart ?? null });
+      const run = await runLoad({ proxyUrl: manifest.proxyUrl, model: pin(chosen), imageModel: pin(imageModel), load: { ...shape, restart: restartSpec } });
+      metrics.load = [...(metrics.load ?? []), { ...run.client, loadMs: run.loadMs, restart: run.restart }];
+      await event('load', { client: run.client, restart: run.restart, loadMs: run.loadMs });
+      if (gate) {
+        const problems = gateProblems(run.client, gate);
+        sb.check(`load gate: at least ${Math.round(gate.minOk * 100)}% ok${gate.allowedFailures ? ', only injected failures' : ''}${gate.restart ? ', no failures outside the restart window' : ''}`, problems.length === 0, problems.length ? problems : run.client);
+      }
+      return run;
+    },
+
+    /**
+     * What the payment oracle compares against later: chain balances (the buyer's deposit, the sellers' and the
+     * fee recipient's USDC), the channels both stores already know (closed ones are left out of the next
+     * judgement, open ones make it refuse) and the mock deliveries already recorded. Lets the oracle run on a
+     * reused sandbox (run --keep) and judge only what happened after the snapshot.
+     */
+    async paymentSnapshot() {
+      const chainBalances = await reader.paymentSnapshot(manifest.buyer.address, manifest.sellers.map((seller) => seller.address));
+      const ids = [...new Set([...manifest.sellers.flatMap((seller) => channelRows(sellerDir(seller.id), 'seller')), ...channelRows(manifest.buyerDir, 'buyer')].map((row) => row.session_id))];
+      const channels = { closed: [], open: [] };
+      for (const id of ids) channels[(await reader.channelState(id)).status === 1 ? 'open' : 'closed'].push(id);
+      const deliveredTags = [];
+      for (const seller of manifest.sellers) if (seller.mockUrl) deliveredTags.push(...Object.keys((await control.deliveries(seller.id)).byTag));
+      return { chain: chainBalances, channels, deliveredTags };
+    },
+
+    /**
+     * The payment stress oracle (e2e/stress/analysis.mjs) on this sandbox: waits `quiesceMs` for in-flight
+     * auths, closes every channel cooperatively, then compares the sellers' and buyer's channel stores, the
+     * chain and the mock ledgers. The mock is the judge: every response the client received in full was
+     * delivered and paid, nothing settled beyond what reached the wire, each channel settled exactly what the
+     * buyer signed and the seller accepted, the deposit decrease equals the sum settled and seller plus fee
+     * income equals it, no reserve or open channel is left. With no faults, aborts or restarts the seller's
+     * recorded spend must equal the delivered cost exactly. `before` is a paymentSnapshot taken before the load;
+     * `results` are load results; `injected` names what the run injected ({ fault500Rate, disconnectRate,
+     * abortRatio, restart }) so the fault-free rule applies only when nothing was.
+     */
+    async assertDeliveredWorkPaid({ before, results = [], injected = {}, quiesceMs = 10_000 } = {}) {
+      assert(before?.chain, 'assertDeliveredWorkPaid needs the paymentSnapshot taken before the load');
+      assert(before.channels.open.length === 0, `The oracle needs every earlier channel closed before the snapshot; ${before.channels.open.length} were open (close them with sb.closeAll() first)`);
+      const earlier = new Set(before.channels.closed);
+      await sleep(quiesceMs);
+      const sellerRows = () => manifest.sellers.flatMap((seller) => channelRows(sellerDir(seller.id), 'seller'));
+      const sellerRowsPre = sellerRows();
+      const buyerRowsPre = channelRows(manifest.buyerDir, 'buyer');
+      const closed = await sb.closeAll();
+      const allIds = [...new Set([...sellerRowsPre, ...buyerRowsPre].map((row) => row.session_id))].filter((id) => !earlier.has(id));
+      const onchain = {};
+      const readAll = async () => {
+        for (const id of allIds) {
+          const row = await reader.channelState(id);
+          onchain[id] = { settled: BigInt(row.settled), deposit: BigInt(row.deposit), status: row.status };
+        }
+        return Object.values(onchain).every((row) => row.status !== 1);
+      };
+      const notes = [];
+      await sb.waitFor(readAll, 'every channel closed on-chain', { timeoutMs: 60_000, intervalMs: 1000 }).catch((error) => notes.push(error.message));
+      await readAll();
+      await sleep(1500);
+      const fresh = (rows) => rows.filter((row) => !earlier.has(row.session_id));
+      const sellerRowsPost = fresh(sellerRows());
+      const buyerRowsPost = fresh(channelRows(manifest.buyerDir, 'buyer'));
+      const after = await sb.paymentSnapshot();
+      const ledgers = [];
+      for (const seller of manifest.sellers) if (seller.mockUrl) ledgers.push(await control.deliveries(seller.id));
+      const sc = { fault500Rate: injected.fault500Rate ?? 0, disconnectRate: injected.disconnectRate ?? 0, abortRatio: injected.abortRatio ?? 0, restart: injected.restart ?? null };
+      const analysis = analyzePayments({ sellerRowsPre: fresh(sellerRowsPre), sellerRowsPost, buyerRowsPost, chain0: before.chain, chain1: after.chain, allIds, onchain, mockStats: mergeDeliveries(ledgers, new Set(before.deliveredTags)), results, sc });
+      // Second opinion from the seller's own per-request cost lines, when it logs them (ANTSEED_DEBUG).
+      const costLines = await scanLogs(sellerLogs, await logStart, /Cost recorded: .*?cost=(\d+)/, Infinity);
+      const recordedLines = Object.values(costLines).flatMap((hit) => hit.examples);
+      if (recordedLines.length) {
+        const recordedCost = recordedLines.reduce((sum, line) => sum + BigInt(line.match(/cost=(\d+)/)[1]), 0n);
+        const recorded = analyzeRecordedCosts({ recordedCost, recordedCount: recordedLines.length, settled: BigInt(analysis.money.onchainSettled) });
+        Object.assign(analysis.money, recorded.money);
+        analysis.violations.push(...recorded.violations);
+      }
+      analysis.notes.push(...notes);
+      metrics.money = analysis.money;
+      metrics.channels = analysis.channels.length;
+      await event('payment-oracle', { closed, ...analysis });
+      checkAll(analysis.violations.length
+        ? analysis.violations.map((violation) => ({ name: `payment oracle: ${violation.kind}`, ok: false, detail: violation }))
+        : [{ name: `payment oracle: delivered work paid exactly across ${analysis.channels.length} channel(s), deposits conserved`, ok: true, detail: analysis.money }]);
+      return analysis;
+    },
+
+    /** No crash lines in peer logs, no unexpected seller exit, no stop that needed SIGKILL, no unhandled rejection. */
+    async assertNoCrashes() {
+      const health = await control.health();
+      const crashes = await scanLogs(peerLogs, await logStart, CRASH_PATTERN);
+      checkAll([
+        { name: 'no crash lines in peer logs', ok: Object.keys(crashes).length === 0, detail: crashes },
+        { name: 'no seller exited unexpectedly', ok: health.unexpectedExits.length === 0, detail: health.unexpectedExits },
+        { name: 'every stop finished without SIGKILL', ok: health.forcedStops.length === 0, detail: health.forcedStops },
+        { name: 'no unhandled rejections', ok: health.unhandledRejections.length === 0, detail: health.unhandledRejections },
+      ]);
+      if (Object.keys(health.rpc ?? {}).length) metrics.rpc = health.rpc;
+      return health;
+    },
     buyerBalance: () => reader.buyerBalance(manifest.buyer.address),
     /** On-chain state of a channel: { status (1 Active, 2 Settled, 3 TimedOut), deposit, settled, closeRequestedAt }. */
     channelState: (channelId) => reader.channelState(channelId),
