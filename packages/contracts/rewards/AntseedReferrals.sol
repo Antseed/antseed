@@ -475,10 +475,12 @@ contract AntseedReferrals is Ownable2Step, Pausable, ReentrancyGuard, EIP712 {
         uint256 budget = emissionsGate.controllerEpochBudget(address(this), epoch);
         uint256 cap = _rewardCap(budget);
         uint256 paid = referrerEpochPaid[referrer][epoch];
+        uint256 total = usageAccounting.totalWeightedBuyerPointsByEpoch(epoch);
+        if (total == 0) return reward;
         for (uint256 b = 0; b < buyers.length; b++) {
             address buyer = buyers[b];
             if (referrerOf[buyer] != referrer || referrerEpochClaimed[buyer][epoch]) continue;
-            (uint256 points, uint256 total) = _buyerPoints(buyer, epoch);
+            uint256 points = _eligiblePoints(buyer, epoch);
             if (points == 0) continue;
             uint256 gross = _referrerGross(buyer, epoch, budget, points, total);
             if (gross == 0) continue;
@@ -524,18 +526,24 @@ contract AntseedReferrals is Ownable2Step, Pausable, ReentrancyGuard, EIP712 {
         if (_inRefereeWindow(buyer, epoch)) gross /= 2;
     }
 
-    /// @dev The referred buyer's points after binding and the epoch's total.
-    ///      Zero points for epochs still open, an unbound buyer, and a referrer
-    ///      that became the buyer's operator or shares it since the binding.
+    /// @dev The referred buyer's points after binding and the epoch's total,
+    ///      both zero when the buyer earns nothing or the epoch has no usage.
     function _buyerPoints(address buyer, uint256 epoch) internal view returns (uint256 points, uint256 total) {
+        points = _eligiblePoints(buyer, epoch);
+        if (points == 0) return (0, 0);
+        total = usageAccounting.totalWeightedBuyerPointsByEpoch(epoch);
+        if (total == 0) return (0, 0);
+    }
+
+    /// @dev Zero for epochs still open, an unbound buyer, and a referrer that
+    ///      became the buyer's operator or shares it since the binding.
+    function _eligiblePoints(address buyer, uint256 epoch) internal view returns (uint256 points) {
         address referrer = referrerOf[buyer];
-        if (referrer == address(0) || !isClaimable(epoch) || epoch < boundAtEpoch[buyer]) return (0, 0);
-        if (_isSelfReferral(buyer, referrer)) return (0, 0);
+        if (referrer == address(0) || !isClaimable(epoch) || epoch < boundAtEpoch[buyer]) return 0;
+        if (_isSelfReferral(buyer, referrer)) return 0;
 
         points = usageAccounting.weightedBuyerPointsByEpoch(epoch, buyer);
         if (epoch == boundAtEpoch[buyer]) points -= Math.min(points, pointsBeforeBinding[buyer]);
-        total = usageAccounting.totalWeightedBuyerPointsByEpoch(epoch);
-        if (total == 0) return (0, 0);
     }
 
     function _rewardCap(uint256 budget) internal pure returns (uint256) {

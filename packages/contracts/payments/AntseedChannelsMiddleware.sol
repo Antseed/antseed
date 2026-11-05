@@ -150,6 +150,8 @@ contract AntseedChannelsMiddleware is IAntseedRegistry {
         if (attribution.inviteR != bytes32(0) || attribution.inviteVs != bytes32(0)) {
             _forwardInvite(buyer, attribution);
         }
+        // AntseedFreeUsage is not a writer on the live Stats, so free usage adds
+        // no token stats today, and this keeps it that way.
         if (!paid) return;
 
         _setPendingClient(uint256(attribution.clientId));

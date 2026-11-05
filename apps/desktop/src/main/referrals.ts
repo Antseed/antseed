@@ -64,7 +64,7 @@ async function referralContext(): Promise<{ chain: AntsChainConfig & { referrals
   return { chain: chain as AntsChainConfig & { referralsAddress: string }, wallet: identity.wallet };
 }
 
-function scopeOf(context: NonNullable<Awaited<ReturnType<typeof referralContext>>>): ReferralScope {
+function scopeOf(context: ReferralContext): ReferralScope {
   return { wallet: context.wallet.address, chainId: context.chain.evmChainId, referralsAddress: context.chain.referralsAddress };
 }
 
@@ -92,29 +92,40 @@ export async function getReferralStatus(): Promise<ReferralStatus> {
   return statusOf(state);
 }
 
-/** Decode an invite or link and run `previewInvite` for this wallet (one view call). */
+type ReferralContext = NonNullable<Awaited<ReturnType<typeof referralContext>>>;
+
+/** Decode an invite or link and run `previewInvite` for this context's wallet (one view call). */
+async function checkInContext(context: ReferralContext, value: string): Promise<InviteCheckResult> {
+  const client = new AntsContext({ chain: context.chain, address: context.wallet.address }).referrals();
+  if (!client) return { ok: false, reason: 'Invites are not available on this network.' };
+  const result = await checkInvite(client, context.wallet.address, value);
+  return result.ok
+    ? { ok: true, referrer: getAddress(result.referrer), invite: result.encoded }
+    : { ok: false, reason: result.reason };
+}
+
 export async function checkReferralInvite(value: string): Promise<InviteCheckResult> {
   try {
     const context = await referralContext();
     if (!context) return { ok: false, reason: 'Invites are not available on this network.' };
-    const client = new AntsContext({ chain: context.chain, address: context.wallet.address }).referrals();
-    if (!client) return { ok: false, reason: 'Invites are not available on this network.' };
-    const result = await checkInvite(client, context.wallet.address, value);
-    return result.ok
-      ? { ok: true, referrer: getAddress(result.referrer), invite: result.encoded }
-      : { ok: false, reason: result.reason };
+    return await checkInContext(context, value);
   } catch (error) {
     return { ok: false, reason: errorText(error) };
   }
 }
 
-/** Check the invite again and save it as pending (replacing an unbound one) so the buyer daemon carries it. */
+/**
+ * Check the invite and save it as pending (replacing an unbound one) so the
+ * buyer daemon carries it. One context covers both, so a wallet or network
+ * change during the check cannot save an invite under a scope it was not
+ * checked for.
+ */
 export async function redeemReferralInvite(value: string): Promise<InviteCheckResult> {
-  const checked = await checkReferralInvite(value);
-  if (!checked.ok) return checked;
   try {
     const context = await referralContext();
     if (!context) return { ok: false, reason: 'Invites are not available on this network.' };
+    const checked = await checkInContext(context, value);
+    if (!checked.ok) return checked;
     const saved = await saveReferralInvite(resolveConnectDataDir(), scopeOf(context), checked.invite, checked.referrer);
     if (saved.state === 'bound') return { ok: false, reason: 'This wallet already has an inviter.' };
     return checked;

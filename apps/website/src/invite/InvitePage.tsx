@@ -17,9 +17,10 @@ import {decodeInvite, inviteExpiry, recoverInviter, shortAddress, type Invite} f
 
 type Decoded = {raw: string; invite: Invite | null; referrer: string | null};
 
+/** Invites are base64url, so nothing needs URI decoding: `decodeInvite` rejects anything else. */
 function inviteFromPath(pathname: string): string {
   const match = /\/invite\/([^/?#]+)\/?$/.exec(pathname);
-  return match ? decodeURIComponent(match[1]) : '';
+  return match ? match[1] : '';
 }
 
 export default function InvitePage() {
