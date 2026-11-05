@@ -112,6 +112,23 @@ describe('auditEndpoint', () => {
       .rejects.toThrow(/answered none of the 2 requests.*HTTP 401.*check the API key/)
   })
 
+  it('asks each domain in its own batches and scores answers against the probe that was asked', async () => {
+    const reference = testReference(200)
+    const mixed = {
+      ...reference,
+      probes: reference.probes.map((probe, index) => ({ ...probe, domain: `domain-${index % 3}` })),
+    }
+    const result = await auditEndpoint({ endpoint: new FakeEndpoint(), reference: mixed, probeCount: 60 })
+
+    const domainOf = new Map(mixed.probes.map((probe) => [probe.id, probe.domain]))
+    for (const batch of result.batches) {
+      expect(new Set(batch.probeIds.map((id) => domainOf.get(id))).size).toBe(1)
+      expect(batch.probeIds.length).toBeLessThanOrEqual(10)
+    }
+    expect(result.probeIds).toEqual(result.batches.flatMap((batch) => batch.probeIds))
+    expect(result.evaluation.verdict).toBe('SAME')
+  })
+
   it('varies the prompt wording between batches', async () => {
     const endpoint = new FakeEndpoint()
     const result = await auditEndpoint({ endpoint, reference: testReference(), probeCount: 200 })

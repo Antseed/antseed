@@ -31,9 +31,9 @@ import {
 } from './run.js'
 
 setAuditedModelsForTesting({
-  'model-a': { upstreamModel: 'vendor/model-a' },
-  'model-b': { upstreamModel: 'vendor/model-b' },
-  'model-c': { upstreamModel: 'vendor/model-c' },
+  'model-a': { upstreamModel: 'vendor/model-a', contrastModels: [] },
+  'model-b': { upstreamModel: 'vendor/model-b', contrastModels: [] },
+  'model-c': { upstreamModel: 'vendor/model-c', contrastModels: [] },
 })
 
 function command(): Command {
@@ -73,7 +73,7 @@ test('verifier run accepts one model, all configured models, or an auditor assig
   assert.deepEqual(
     run.options.map((option) => option.long),
     ['--all', '--auditor', '--peer', '--resume-run', '--fresh', '--skip-version-check',
-      '--allow-probe-reuse', '--no-enroll', '--max-enrollment-requests', '--ignore-pre-run-checks', '--max-rounds', '--no-confirm'],
+      '--no-enroll', '--max-enrollment-requests', '--ignore-pre-run-checks', '--max-rounds', '--no-confirm'],
   )
   assert.deepEqual(run.registeredArguments.map((argument) => argument.name()), ['model'])
 })

@@ -111,7 +111,7 @@ export async function auditEndpoint(options: AuditOptions): Promise<AuditResult>
   const startedAt = new Date().toISOString()
   const draw = options.randomInt ?? ((max: number) => randomInt(max))
   const model = options.model ?? options.reference.queryProfile.upstreamModel
-  const { probes, power } = selectProbes(options.reference, {
+  const { probes: selected, power } = selectProbes(options.reference, {
     draw,
     minimumPower: options.minimumPower ?? 0.9,
     ...(options.probeCount !== undefined ? { probeCount: options.probeCount } : {}),
@@ -119,7 +119,9 @@ export async function auditEndpoint(options: AuditOptions): Promise<AuditResult>
 
   const thinkingDiscovery = options.discoverThinking === false ? null : await discoverEndpointThinking(options, model)
   const settings = batchSettings(options.reference, thinkingDiscovery)
-  const batches = chunk(probes, KBF_PROBES_PER_REQUEST)
+  const batches = domainBatches(selected, KBF_PROBES_PER_REQUEST)
+  // Answers come back batch by batch, so everything scored against them follows the batch order.
+  const probes = batches.flat()
   const records: AuditBatchRecord[] = new Array(batches.length)
   let next = 0
   let completed = 0
@@ -450,6 +452,22 @@ function shuffle<T>(items: readonly T[], draw: (max: number) => number): T[] {
     ;[copy[i], copy[j]] = [copy[j]!, copy[i]!]
   }
   return copy
+}
+
+/**
+ * Batches holding one domain each, keeping the given order inside a domain. A reference's
+ * consensus and self-test error are measured on single-domain batches, as in the KBF reference
+ * code and `antseed verifier run`, and answers shift when the questions around them do: mixing
+ * domains nearly doubled genuine MiniMax M3's mismatches (about 17% to 27%) and read as a DIFF.
+ */
+function domainBatches(probes: readonly KbfProbe[], size: number): KbfProbe[][] {
+  const byDomain = new Map<string, KbfProbe[]>()
+  for (const probe of probes) {
+    const group = byDomain.get(probe.domain)
+    if (group) group.push(probe)
+    else byDomain.set(probe.domain, [probe])
+  }
+  return [...byDomain.values()].flatMap((group) => chunk(group, size))
 }
 
 function chunk<T>(items: readonly T[], size: number): T[][] {

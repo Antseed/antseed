@@ -27,7 +27,7 @@ antseed-verifier verifier submit --yes
 antseed-verifier verifier status
 ```
 
-- `verifier run` builds any missing question banks, audits every seller of your models, audits the sellers whose `DIFF` from another auditor waits for your confirmation, and retries failures on its own. Running it again in the same epoch continues where it left off.
+- `verifier run` builds each model's question set for the epoch (the same questions for every seller, never used again), audits every seller of your models, audits the sellers whose `DIFF` from another auditor waits for your confirmation, and retries failures on its own. Each model is audited once per epoch: running it again in the same epoch only finishes the sellers its first run found, and `submit` sends a model once all of them are done (see [Audit windows](/docs/verify/audits#audit-windows)).
 - Until you're approved, use `verifier run --all` to try an audit; you can't submit it yet.
 - Once approved, `antseed-verifier verifier watch` keeps doing the run and the submit every 10 minutes, including the `DIFF`s other auditors need you to confirm (see [Keeping a verifier running](/docs/verify/audits#keeping-a-verifier-running)).
 - `submit` publishes the audit evidence on IPFS, so set `PINATA_JWT` first (`--no-publish-ipfs` submits without it).

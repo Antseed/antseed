@@ -3,7 +3,9 @@ import type { Command } from 'commander'
 import { join } from 'node:path'
 import { canonicalHashBytes32 } from '@antseed/fingerprints'
 import { loadConfig } from '../../../config/loader.js'
+import type { VerifierCLIConfig } from '../../../config/types.js'
 import { writeJsonAtomic } from '../../../verifier/atomic-files.js'
+import { withContrastModels } from '../../../verifier/ensure-auditable-reference.js'
 import { resolveVerifierCommandModels, resolveVerifierModelConfig } from '../../../verifier/model-config.js'
 import { buildModelReference, createReferenceRequestLimiter } from '../../../verifier/model-reference.js'
 import { loadConfiguredVerifierModelCatalog } from '../../../verifier/openrouter-catalog.js'
@@ -11,6 +13,7 @@ import { asError } from '../../../verifier/utils.js'
 import {
   appendModelReferenceToBank,
   inspectModelProbeBankPower,
+  loadBankProbeIndex,
   type ProbeBankPowerStatus,
 } from '../../../verifier/probe-bank.js'
 import { getGlobalOptions } from '../types.js'
@@ -34,9 +37,15 @@ export function registerVerifierReferenceCommand(verifier: Command): void {
       const banksDir = config.verifier?.banksDir ?? join(globalOptions.dataDir, 'verifier', 'banks')
       const catalog = await loadConfiguredVerifierModelCatalog(config.verifier)
       const startedAt = new Date().toISOString()
+      // A model with a bank keeps the bank's contrasts, whatever the config or built-in list says now.
+      const modelConfigs = new Map<string, VerifierCLIConfig | undefined>()
       const plans: ReferenceProgressPlan[] = await Promise.all(models.map(async (model) => {
         try {
-          const selected = resolveVerifierModelConfig(config.verifier, model, catalog)
+          const bank = await loadBankProbeIndex(banksDir, model)
+          const modelConfig = bank && config.verifier ? structuredClone(config.verifier) : config.verifier
+          if (bank && modelConfig) withContrastModels(modelConfig, model, bank.contrastModels)
+          modelConfigs.set(model, modelConfig)
+          const selected = resolveVerifierModelConfig(modelConfig, model, catalog)
           const bankStatus = await inspectModelProbeBankPower({ banksDir, model, config: config.verifier })
           const skipReason = referenceBuildSkipReason(options.all === true, bankStatus)
           return {
@@ -87,7 +96,7 @@ export function registerVerifierReferenceCommand(verifier: Command): void {
           const built = await buildModelReference({
             model,
             referencesDir,
-            config: config.verifier,
+            config: modelConfigs.get(model),
             catalog,
             buyerProxyPort: config.buyer.proxyPort,
             requestLimiter,

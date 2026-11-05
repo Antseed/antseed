@@ -27,7 +27,8 @@ import { readJsonIfExists, writeJsonAtomic } from './atomic-files.js'
 import { failureBlame } from './failure-blame.js'
 import type { VerificationOutcomeReasonV1 } from './outcome-reason.js'
 import type { ReferenceUpstreamProvenanceV1 } from './model-reference.js'
-import { findEpochProbeReference, loadBankReferenceExchanges } from './probe-bank.js'
+import { windowIncludesSeller, type AuditWindowV1 } from './audit-window.js'
+import { EPOCH_QUESTION_SET_METHOD, findEpochProbeReference, loadBankReferenceExchanges, loadEpochQuestionSet } from './probe-bank.js'
 import { closeCallRule, pooledCloseCallVerdict, stageOneVerdict, type CloseCallRuleId } from './close-call.js'
 import { verifyProxyAuditEvidenceFile, type ProxyAuditEvidenceV1 } from './proxy-evidence.js'
 import { resolveReferenceSizingPolicy } from './reference-sizing.js'
@@ -115,6 +116,16 @@ export interface ModelAuditEvidenceV1 {
     /** Full KBF reference, relative to the evidence document; null when it could not be exported. */
     path: string | null
   }>
+  /**
+   * How the questions were chosen: `epoch-shared-set-v1` when every reference is this auditor's
+   * question set for the model and epoch (every seller got the same audit set, every close call the
+   * same extra sets). Absent on evidence from per-seller draws.
+   */
+  questionSelection?: {
+    method: typeof EPOCH_QUESTION_SET_METHOD
+    referenceId: string
+    extensionReferenceIds: string[]
+  }
   /**
    * Raw upstream request/response bytes behind the probe bank these references were drawn
    * from, one file per reference build. Absent on evidence written before they were recorded.
@@ -239,6 +250,13 @@ export async function prepareModelAudits(input: {
    * results sent; a model with nothing left is not prepared at all.
    */
   alreadyOnChain?: (modelHash: string, candidates: readonly SubmissionCandidate[]) => Promise<boolean[]>
+  /**
+   * The model's audit window this epoch (`audit-window.ts`), or null when it has none (confirmations).
+   * An open window's results are not submitted yet; in a closed one, a close call still waiting for
+   * its extra questions is submitted as UNDETERMINED, and a seller outside the window (one that came
+   * online after it opened) gets no result, unless the result confirms another auditor's DIFF.
+   */
+  auditWindow?: (model: string) => Promise<Pick<AuditWindowV1, 'state' | 'sellers'> | null>
 }): Promise<{
   audits: PreparedModelAudit[]
   excluded: Array<ExcludedSellerAuditV1 & { model: string }>
@@ -270,6 +288,7 @@ export async function prepareModelAudits(input: {
     const modelManifest = input.manifest.models.find((entry) => normalized(entry.model) === normalized(model))
     if (!modelManifest) throw new Error(`run manifest is missing the model summary for ${model}`)
     const summary = await readModelSummary(modelManifest.summaryPath, input.manifest.runId, model)
+    const window = await input.auditWindow?.(model) ?? null
     const excluded: ExcludedSellerAuditV1[] = []
     for (const entry of [...summary.failures, ...summary.skipped]) {
       excluded.push({
@@ -320,7 +339,16 @@ export async function prepareModelAudits(input: {
         exclude(`invalid audit evidence: ${asError(error).message}`)
         continue
       }
-      const finalVerdict = finalAuditVerdict(result)
+      if (window?.state === 'open') {
+        exclude('its audit window is still open: the model\'s results are submitted together once every seller of the window is finished')
+        continue
+      }
+      if (window && !result.confirmsDiff && !windowIncludesSeller(window, result.peerId)) {
+        exclude('not in this epoch\'s audit window (it came online after the window opened); audited next epoch')
+        continue
+      }
+      // A closed window asks no more extra questions: its open close calls are audited but undecided.
+      const finalVerdict = finalAuditVerdict(result) ?? (window?.state === 'closed' ? 'UNDETERMINED' : null)
       if (finalVerdict === null) {
         exclude(result.extensionPending
           ? `close call waiting for its extra questions (${result.extensionPending.reason}); a later run this epoch asks them, so it is not submitted yet`
@@ -417,6 +445,17 @@ export async function prepareModelAudits(input: {
         })
       }
       referenceEntries.sort((left, right) => left.referenceId.localeCompare(right.referenceId))
+      const questionSet = await loadEpochQuestionSet({ banksDir: input.banksDir, model, epoch: input.manifest.epoch, config: input.config })
+        .catch(() => null)
+      const setReferenceIds = new Set(questionSet ? [questionSet.reference, ...questionSet.extensions].map((entry) => entry.referenceId) : [])
+      const questionSelection: ModelAuditEvidenceV1['questionSelection'] | null = questionSet
+        && referenceEntries.every((entry) => setReferenceIds.has(entry.referenceId))
+        ? {
+          method: EPOCH_QUESTION_SET_METHOD,
+          referenceId: questionSet.reference.referenceId,
+          extensionReferenceIds: questionSet.extensions.map((entry) => entry.referenceId),
+        }
+        : null
       const referenceEvidence: PreparedModelAudit['referenceEvidence'] = []
       const referenceEvidenceEntries: ModelAuditReferenceEvidenceV1[] = []
       for (const stored of await loadBankReferenceExchanges(input.banksDir, model)) {
@@ -465,6 +504,7 @@ export async function prepareModelAudits(input: {
         part,
         partCount,
         references: referenceEntries,
+        ...(questionSelection ? { questionSelection } : {}),
         ...(referenceEvidenceEntries.length > 0 ? { referenceEvidence: referenceEvidenceEntries } : {}),
         kbfOptions: KBF_VERIFY_OPTIONS,
         ...closeCallRulesEvidence(slice.map(({ result }) => result)),

@@ -7,7 +7,7 @@ buyer proxy, another network, or a provider's own API.
 It uses Knowledge Boundary Fingerprinting (KBF). A published reference holds numeric
 recall probes that the genuine model answers consistently and cheaper substitutes get
 wrong, plus the genuine model's own error rate on them. An audit sends a fresh random
-subset in a fresh order, with varied prompt wording, and runs a one-sided binomial
+subset in a fresh order, one domain per request as the reference was measured, with varied prompt wording, and runs a one-sided binomial
 test of the endpoint's mismatches against that honest error rate.
 
 ```bash

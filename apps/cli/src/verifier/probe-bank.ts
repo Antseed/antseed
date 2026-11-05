@@ -34,7 +34,6 @@ import {
 import { safeServiceSlug } from './slug.js'
 import { normalized } from './utils.js'
 
-export const BANK_EXHAUSTED = 'BANK_EXHAUSTED'
 const CURRENT_ANTSEED_REFERENCE_BUILDER_VERSION = '6'
 
 interface BankProbeV1 {
@@ -126,13 +125,48 @@ export interface EpochProbeReferenceV1 {
 }
 
 /**
- * Each seller gets its own probe subset and order, drawn from a CSPRNG shuffle
- * of the bank probes this seller has not been assigned in an earlier epoch.
- * Colluding sellers audited on the same day therefore cannot share answers by
- * probe position or rely on receiving the same questions.
+ * Legacy: each seller got its own probe subset and order, drawn from a CSPRNG shuffle of the bank
+ * probes it had not been assigned in an earlier epoch. Read-only now (runs from earlier epochs).
  */
 export const SELLER_PROBE_SELECTION_METHOD = 'per-seller-csprng-shuffle-v1'
-export type SellerProbeSelectionMethod = typeof SELLER_PROBE_SELECTION_METHOD
+/**
+ * One question set per auditor, model and epoch (`epochs/<epoch>/set.json`): every seller of the
+ * model gets the same questions in the same order, and every close call the same extra sets. The set
+ * is built fresh for the epoch, never contains a question asked before (matched by its text, not
+ * only its id), and is not used again after its epoch.
+ */
+export const EPOCH_QUESTION_SET_METHOD = 'epoch-shared-set-v1'
+export type SellerProbeSelectionMethod = typeof SELLER_PROBE_SELECTION_METHOD | typeof EPOCH_QUESTION_SET_METHOD
+/** No question set for the model and epoch yet (or it has no extra set for a close call). */
+export const NO_EPOCH_QUESTION_SET = 'NO_EPOCH_QUESTION_SET'
+
+export interface EpochQuestionSetV1 {
+  version: 1
+  kind: 'antseed-kbf-epoch-question-set'
+  method: typeof EPOCH_QUESTION_SET_METHOD
+  model: string
+  epoch: string
+  compatibilityHash: string
+  /** Fresh questions built for this epoch that were eligible for the set. */
+  candidateProbeCount: number
+  /** Fresh questions left out because a question with the same text was asked before. */
+  previouslyAskedProbeCount: number
+  /** The audit set every seller gets, power-sized like any reference. */
+  reference: KbfReferenceV1
+  /** The extra sets for close calls, in order, each as large as `reference`. */
+  extensions: KbfReferenceV1[]
+  createdAt: string
+  createdByRunId: string
+}
+
+/** Probes the builds for one epoch's set added to the bank; only these can be in the set. */
+interface EpochQuestionPoolV1 {
+  version: 1
+  kind: 'antseed-kbf-epoch-question-pool'
+  model: string
+  epoch: string
+  probeIds: string[]
+}
 
 export interface SellerEpochProbeReferenceV1 {
   version: 1
@@ -174,6 +208,8 @@ export async function appendModelReferenceToBank(input: {
 }): Promise<{
   path: string
   addedProbeCount: number
+  /** Ids of the probes this append added, in reference order. */
+  addedProbeIds: string[]
   canonicalConflictProbeCount: number
   totalProbeCount: number
 }> {
@@ -200,6 +236,7 @@ export async function appendModelReferenceToBank(input: {
       return {
         path,
         addedProbeCount: incoming.probes.length,
+        addedProbeIds: incoming.probes.map((entry) => entry.probe.id),
         canonicalConflictProbeCount: 0,
         totalProbeCount: incoming.probes.length,
       }
@@ -214,14 +251,14 @@ export async function appendModelReferenceToBank(input: {
       throw new Error(`probe bank for ${input.model} is incompatible with the new reference`)
     }
     const byId = new Map(bank.probes.map((entry) => [entry.probe.id, entry]))
-    let addedProbeCount = 0
+    const addedProbeIds: string[] = []
     let canonicalConflictProbeCount = 0
     for (const entry of incoming.probes) {
       const previous = byId.get(entry.probe.id)
       if (!previous) {
         bank.probes.push(entry)
         byId.set(entry.probe.id, entry)
-        addedProbeCount += 1
+        addedProbeIds.push(entry.probe.id)
         continue
       }
       if (canonicalHashBytes32(canonicalBankProbe(previous.probe))
@@ -254,7 +291,7 @@ export async function appendModelReferenceToBank(input: {
     }
     bank.updatedAt = new Date().toISOString()
     await writeJsonAtomic(path, bank)
-    return { path, addedProbeCount, canonicalConflictProbeCount, totalProbeCount: bank.probes.length }
+    return { path, addedProbeCount: addedProbeIds.length, addedProbeIds, canonicalConflictProbeCount, totalProbeCount: bank.probes.length }
   } finally {
     await lock.release()
   }
@@ -312,6 +349,11 @@ function canonicalBankProbe(probe: KbfProbe): Record<string, unknown> {
   ].includes(key)))
 }
 
+/**
+ * Reserves this epoch's question set (`epochs/<epoch>/set.json`) for one seller audit: every seller
+ * of the model gets the same questions. The seller's ledger records the reservation, so a resumed
+ * run finds it and a failed audit can be voided; it no longer decides which questions a seller gets.
+ */
 export async function reserveModelAuditReference(input: {
   banksDir: string
   model: string
@@ -319,42 +361,16 @@ export async function reserveModelAuditReference(input: {
   service: string
   runId: string
   epoch: string
-  allowProbeReuse?: boolean
   config?: VerifierCLIConfig
   now?: () => number
-  shuffle?: <T>(values: readonly T[]) => T[]
 }): Promise<{ reference: KbfReferenceV1; auditId: string; ledgerPath: string }> {
-  const path = bankPath(input.banksDir, input.model)
   const ledgerPath = sellerLedgerPath(input.banksDir, input.model, input.sellerPeerId)
   const lock = await acquirePidFileLock(`${ledgerPath}.lock`)
   try {
-    const bank = await readRequiredBank(path, input.model)
-    const ledger = await readJsonIfExists<SellerProbeLedgerV1>(ledgerPath) ?? {
-      version: 1,
-      kind: 'antseed-kbf-seller-probe-ledger',
-      model: input.model,
-      sellerPeerId: input.sellerPeerId,
-      assignments: [],
-    }
-    if (normalized(ledger.model) !== normalized(input.model)
-      || normalized(ledger.sellerPeerId) !== normalized(input.sellerPeerId)) {
-      throw new Error(`invalid seller probe ledger at ${ledgerPath}`)
-    }
-    const now = input.now?.() ?? Date.now()
-    const reference = await loadOrCreateSellerEpochProbeReference({
-      banksDir: input.banksDir,
-      model: input.model,
-      sellerPeerId: input.sellerPeerId,
-      epoch: input.epoch,
-      runId: input.runId,
-      allowProbeReuse: input.allowProbeReuse === true,
-      config: input.config,
-      now,
-      shuffle: input.shuffle,
-      bank,
-      ledger,
-    })
-    const reservedAt = new Date(now).toISOString()
+    const set = await requireEpochQuestionSet(input)
+    const ledger = await readSellerLedger(ledgerPath, input.model, input.sellerPeerId)
+    const reference = set.reference
+    const reservedAt = new Date(input.now?.() ?? Date.now()).toISOString()
     const auditId = canonicalHashBytes32({
       domain: 'antseed-verifier-audit-reservation-v1',
       runId: input.runId,
@@ -365,31 +381,29 @@ export async function reserveModelAuditReference(input: {
       referenceId: reference.referenceId,
       reservedAt,
     })
-    const probeIds = reference.probes.map((probe) => probe.id)
     ledger.assignments.push({
       auditId,
       runId: input.runId,
       epoch: input.epoch,
       service: input.service,
       referenceId: reference.referenceId,
-      probeIds,
-      selection: SELLER_PROBE_SELECTION_METHOD,
+      probeIds: reference.probes.map((probe) => probe.id),
+      selection: EPOCH_QUESTION_SET_METHOD,
       reservedAt,
     })
     await mkdir(dirname(ledgerPath), { recursive: true })
     await writeJsonAtomic(ledgerPath, ledger)
-    return { reference, auditId, ledgerPath }
+    return { reference: structuredClone(reference), auditId, ledgerPath }
   } finally {
     await lock.release()
   }
 }
 
-
 /**
- * Reserves the extra probes for a close-call first audit (`kbf-extension-v1`): exactly
- * `probeCount` probes this seller has never been assigned, in any epoch. The set is never judged on
- * its own (only pooled with the first set), so it is not power-sized again. It is stored per seller,
- * model and epoch, so a resumed run asks the same probes.
+ * Reserves the epoch set's extra questions for a close-call first audit (`kbf-extension-v1` /
+ * `-v2`): extra set `extensionIndex` of `epochs/<epoch>/set.json`, the same for every seller in the
+ * grey zone. Its size must be the first set's (`probeCount`); a set without that extra set throws
+ * `NO_EPOCH_QUESTION_SET`, and the close call stays undecided.
  */
 export async function reserveExtensionReference(input: {
   banksDir: string
@@ -403,7 +417,6 @@ export async function reserveExtensionReference(input: {
   extensionIndex?: number
   config?: VerifierCLIConfig
   now?: () => number
-  shuffle?: <T>(values: readonly T[]) => T[]
 }): Promise<{ reference: KbfReferenceV1; auditId: string }> {
   if (!Number.isInteger(input.probeCount) || input.probeCount <= 0) {
     throw new Error(`extension probe count must be a positive integer, got ${input.probeCount}`)
@@ -415,66 +428,21 @@ export async function reserveExtensionReference(input: {
   const ledgerPath = sellerLedgerPath(input.banksDir, input.model, input.sellerPeerId)
   const lock = await acquirePidFileLock(`${ledgerPath}.lock`)
   try {
-    const bank = await readRequiredBank(bankPath(input.banksDir, input.model), input.model)
-    const ledger = await readJsonIfExists<SellerProbeLedgerV1>(ledgerPath)
-    if (!ledger
-      || normalized(ledger.model) !== normalized(input.model)
-      || normalized(ledger.sellerPeerId) !== normalized(input.sellerPeerId)) {
-      throw new Error(`invalid seller probe ledger at ${ledgerPath}`)
-    }
-    const path = extensionReferencePath(input.banksDir, input.model, input.epoch, input.sellerPeerId, extensionIndex)
-    const existing = await readJsonIfExists<SellerEpochProbeReferenceV1>(path)
-    const existingAssignment = existing && (existing.extensionIndex ?? 1) === extensionIndex && ledger.assignments.find((entry) => (
-      entry.purpose === 'extension' && (entry.extensionIndex ?? 1) === extensionIndex
-      && entry.epoch === input.epoch && !entry.voidedAt
-      && entry.referenceId === existing.reference.referenceId
-    ))
-    if (existing && existingAssignment) {
-      const reference = validateSellerEpochProbeReference({
-        value: existing, bank, model: input.model, sellerPeerId: input.sellerPeerId, epoch: input.epoch,
-        config: input.config, requirePower: false,
-      })
-      if (reference.probes.length === input.probeCount) return { reference, auditId: existingAssignment.auditId }
-    }
-    const used = new Set(ledger.assignments.flatMap((assignment) => assignment.probeIds))
-    const activeContrasts = new Set(bank.contrastModels.map(normalized))
-    const excludedDomains = excludedVerifierDomains(input.config, input.model)
-    const candidates = bank.probes.filter((entry) => !excludedDomains.has(entry.probe.domain)
-      && entry.distinguishingContrastModels.some((model) => activeContrasts.has(normalized(model))))
-    const available = candidates.filter((entry) => !used.has(entry.probe.id))
-    if (available.length < input.probeCount) {
+    const set = await requireEpochQuestionSet(input)
+    const reference = set.extensions[extensionIndex - 1]
+    if (!reference || reference.probes.length !== input.probeCount) {
       throw new Error(
-        `${BANK_EXHAUSTED}: ${available.length} probes never assigned to seller ${input.sellerPeerId} `
-        + `remain for a ${input.model} close-call extension of ${input.probeCount}`,
+        `${NO_EPOCH_QUESTION_SET}: the ${input.model} question set for epoch ${input.epoch} has no extra set ${extensionIndex} `
+        + `of ${input.probeCount} questions`,
       )
     }
-    const now = input.now?.() ?? Date.now()
-    const selected = (input.shuffle ?? cryptoShuffle)(available).slice(0, input.probeCount)
-    const reference = validateKbfReferenceV1(referenceFromBankEntries(bank, selected, now), {
-      minimumStatisticalPower: Number.EPSILON,
-    })
-    const value: SellerEpochProbeReferenceV1 = {
-      version: 1,
-      kind: 'antseed-kbf-seller-epoch-probe-reference',
-      model: input.model,
-      epoch: input.epoch,
-      sellerPeerId: input.sellerPeerId,
-      compatibilityHash: bank.compatibilityHash,
-      selection: {
-        method: SELLER_PROBE_SELECTION_METHOD,
-        eligibleProbeCount: available.length,
-        excludedPreviouslyAssignedProbeCount: candidates.length - available.length,
-        allowProbeReuse: false,
-      },
-      purpose: 'extension',
-      ...(extensionIndex === 1 ? {} : { extensionIndex }),
-      reference,
-      createdAt: new Date(now).toISOString(),
-      createdByRunId: input.runId,
-    }
-    await mkdir(dirname(path), { recursive: true })
-    await writeJsonAtomic(path, value)
-    const reservedAt = new Date(now).toISOString()
+    const ledger = await readSellerLedger(ledgerPath, input.model, input.sellerPeerId)
+    const existing = ledger.assignments.find((entry) => (
+      entry.purpose === 'extension' && (entry.extensionIndex ?? 1) === extensionIndex
+      && entry.epoch === input.epoch && !entry.voidedAt && entry.referenceId === reference.referenceId
+    ))
+    if (existing) return { reference: structuredClone(reference), auditId: existing.auditId }
+    const reservedAt = new Date(input.now?.() ?? Date.now()).toISOString()
     const auditId = canonicalHashBytes32({
       domain: 'antseed-verifier-extension-reservation-v1',
       runId: input.runId,
@@ -492,11 +460,12 @@ export async function reserveExtensionReference(input: {
       service: input.service,
       referenceId: reference.referenceId,
       probeIds: reference.probes.map((probe) => probe.id),
-      selection: SELLER_PROBE_SELECTION_METHOD,
+      selection: EPOCH_QUESTION_SET_METHOD,
       purpose: 'extension',
       ...(extensionIndex === 1 ? {} : { extensionIndex }),
       reservedAt,
     })
+    await mkdir(dirname(ledgerPath), { recursive: true })
     await writeJsonAtomic(ledgerPath, ledger)
     return { reference: structuredClone(reference), auditId }
   } finally {
@@ -504,6 +473,34 @@ export async function reserveExtensionReference(input: {
   }
 }
 
+async function readSellerLedger(ledgerPath: string, model: string, sellerPeerId: string): Promise<SellerProbeLedgerV1> {
+  const ledger = await readJsonIfExists<SellerProbeLedgerV1>(ledgerPath) ?? {
+    version: 1,
+    kind: 'antseed-kbf-seller-probe-ledger',
+    model,
+    sellerPeerId,
+    assignments: [],
+  }
+  if (normalized(ledger.model) !== normalized(model) || normalized(ledger.sellerPeerId) !== normalized(sellerPeerId)) {
+    throw new Error(`invalid seller probe ledger at ${ledgerPath}`)
+  }
+  return ledger
+}
+
+async function requireEpochQuestionSet(input: {
+  banksDir: string
+  model: string
+  epoch: string
+  config?: VerifierCLIConfig
+}): Promise<EpochQuestionSetV1> {
+  const set = await loadEpochQuestionSet(input)
+  if (!set) {
+    throw new Error(`${NO_EPOCH_QUESTION_SET}: no ${input.model} question set for epoch ${input.epoch} has been built`)
+  }
+  return set
+}
+
+/** Legacy per-seller extension set (`epochs/<epoch>/extensions/…`). Read-only. */
 export function extensionReferencePath(
   banksDir: string,
   model: string,
@@ -558,6 +555,15 @@ export async function loadModelAuditReservation(input: {
       throw new Error(`audit reservation ${input.auditId} does not match its seller epoch probe reference`)
     }
     return { reference, assignment: structuredClone(assignment) }
+  }
+  // This epoch's shared question set (`epoch-shared-set-v1`).
+  const set = await loadEpochQuestionSet({ banksDir: input.banksDir, model: input.model, epoch: assignment.epoch, config: input.config })
+  const setReference = set && [set.reference, ...set.extensions].find((reference) => reference.referenceId === assignment.referenceId)
+  if (setReference) {
+    if (!sameValues(setReference.probes.map((probe) => probe.id), assignment.probeIds)) {
+      throw new Error(`audit reservation ${input.auditId} does not match its epoch question set`)
+    }
+    return { reference: structuredClone(setReference), assignment: structuredClone(assignment) }
   }
   // Legacy reservations drew one shared reference per model and epoch.
   const epochReference = await readJsonIfExists<EpochProbeReferenceV1>(
@@ -657,83 +663,6 @@ export function sellerEpochProbeReferencePath(
     'sellers',
     `${sellerPeerHash(sellerPeerId)}.json`,
   )
-}
-
-async function loadOrCreateSellerEpochProbeReference(input: {
-  banksDir: string
-  model: string
-  sellerPeerId: string
-  epoch: string
-  runId: string
-  allowProbeReuse: boolean
-  config?: VerifierCLIConfig
-  now: number
-  shuffle?: <T>(values: readonly T[]) => T[]
-  bank: ProbeBankV1
-  ledger: SellerProbeLedgerV1
-}): Promise<KbfReferenceV1> {
-  // The caller holds the seller ledger lock, which serializes this per seller.
-  const path = sellerEpochProbeReferencePath(input.banksDir, input.model, input.epoch, input.sellerPeerId)
-  const existing = await readJsonIfExists<SellerEpochProbeReferenceV1>(path)
-  if (existing) {
-    return validateSellerEpochProbeReference({
-      value: existing,
-      bank: input.bank,
-      model: input.model,
-      sellerPeerId: input.sellerPeerId,
-      epoch: input.epoch,
-      config: input.config,
-    })
-  }
-  const used = input.allowProbeReuse
-    ? new Set<string>()
-    : sellerProbeIdsFromOtherEpochs(input.ledger, input.epoch)
-  const activeContrasts = new Set(input.bank.contrastModels.map(normalized))
-  const excludedDomains = excludedVerifierDomains(input.config, input.model)
-  const candidates = input.bank.probes.filter((entry) => !excludedDomains.has(entry.probe.domain)
-    && entry.distinguishingContrastModels.some((model) => activeContrasts.has(normalized(model))))
-  const available = candidates.filter((entry) => !used.has(entry.probe.id))
-  const shuffled = (input.shuffle ?? cryptoShuffle)(available)
-  const reference = selectPoweredReference(input.bank, shuffled, input.config, input.now)
-  if (!reference) {
-    throw new Error(
-      `${BANK_EXHAUSTED}: ${available.length} probes not yet assigned to seller ${input.sellerPeerId} `
-      + `remain for ${input.model} epoch ${input.epoch}`,
-    )
-  }
-  const value: SellerEpochProbeReferenceV1 = {
-    version: 1,
-    kind: 'antseed-kbf-seller-epoch-probe-reference',
-    model: input.model,
-    epoch: input.epoch,
-    sellerPeerId: input.sellerPeerId,
-    compatibilityHash: input.bank.compatibilityHash,
-    selection: {
-      method: SELLER_PROBE_SELECTION_METHOD,
-      eligibleProbeCount: available.length,
-      excludedPreviouslyAssignedProbeCount: candidates.length - available.length,
-      allowProbeReuse: input.allowProbeReuse,
-    },
-    reference,
-    createdAt: new Date(input.now).toISOString(),
-    createdByRunId: input.runId,
-  }
-  await mkdir(dirname(path), { recursive: true })
-  await writeJsonAtomic(path, value)
-  return structuredClone(reference)
-}
-
-/**
- * Probes this seller was assigned in any other epoch, voided or not: a voided
- * audit may still have sent its probes to the seller before it was voided.
- */
-function sellerProbeIdsFromOtherEpochs(ledger: SellerProbeLedgerV1, epoch: string): Set<string> {
-  const used = new Set<string>()
-  for (const assignment of ledger.assignments) {
-    if (assignment.epoch === epoch) continue
-    for (const probeId of assignment.probeIds) used.add(probeId)
-  }
-  return used
 }
 
 function validateSellerEpochProbeReference(input: {
@@ -901,7 +830,13 @@ export async function findEpochProbeReference(banksDir: string, referenceId: str
         continue
       }
       if (!entry.isFile() || !entry.name.endsWith('.json')) continue
-      const value = await readJsonIfExists<EpochProbeReferenceV1 | SellerEpochProbeReferenceV1>(path)
+      const value = await readJsonIfExists<EpochProbeReferenceV1 | SellerEpochProbeReferenceV1 | EpochQuestionSetV1>(path)
+      if (value?.kind === 'antseed-kbf-epoch-question-set') {
+        for (const reference of [value.reference, ...(value.extensions ?? [])]) {
+          if (reference?.referenceId === referenceId) return structuredClone(reference)
+        }
+        continue
+      }
       if ((value?.kind === 'antseed-kbf-seller-epoch-probe-reference' || value?.kind === 'antseed-kbf-epoch-probe-reference')
         && value.reference) {
         if (value.reference.referenceId === referenceId) return structuredClone(value.reference)
@@ -1243,48 +1178,169 @@ function assertCurrentBankEnrollment(bank: ProbeBankV1, model: string): void {
   }
 }
 
+/** This auditor's question set for a model and epoch. */
+export function epochQuestionSetPath(banksDir: string, model: string, epoch: string): string {
+  return join(banksDir, safeServiceSlug(model), 'epochs', safeServiceSlug(epoch), 'set.json')
+}
+
+function epochQuestionPoolPath(banksDir: string, model: string, epoch: string): string {
+  return join(banksDir, safeServiceSlug(model), 'epochs', safeServiceSlug(epoch), 'pool.json')
+}
+
 /**
- * Before a run: how many probes each seller has never been assigned, against the probes one audit
- * uses. A first audit needs one unseen set; a seller already assigned this epoch needs none (the
- * reservation reuses its set). Throws when the bank can't be loaded.
+ * What makes two questions the same question: domain, name and template, normalized. A rebuild
+ * that writes an old question again gets a new id, so ids alone can't tell it was asked before.
  */
-export async function inspectSellerProbeCapacity(input: {
+export function questionTextKey(probe: Pick<KbfProbe, 'domain' | 'name' | 'template'>): string {
+  const text = (value: unknown) => String(value ?? '').normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim()
+  return canonicalHashBytes32({ domain: text(probe.domain), name: text(probe.name), template: text(probe.template) })
+}
+
+/** Records probes a build for this epoch's set added to the bank (they are the set's only candidates). */
+export async function recordEpochQuestionPool(input: {
   banksDir: string
   model: string
   epoch: string
-  sellerPeerIds: readonly string[]
-  config?: VerifierCLIConfig
-  /** `--allow-probe-reuse`: the first audit may reuse questions the seller saw in earlier epochs, as the reservation does. */
-  allowProbeReuse?: boolean
-}): Promise<{
-  selectedProbeCount: number | null
-  sellers: Array<{ sellerPeerId: string; unseenProbeCount: number; neededProbeCount: number; assignedThisEpoch: boolean }>
-}> {
-  const power = await inspectModelProbeBankPower({ banksDir: input.banksDir, model: input.model, config: input.config })
-  if (power.totalProbeCount === 0) {
-    throw new Error(`no probe bank exists for ${input.model}; run antseed verifier reference build ${input.model}`)
-  }
-  const bank = await readRequiredBank(bankPath(input.banksDir, input.model), input.model)
-  const activeContrasts = new Set(bank.contrastModels.map(normalized))
-  const excludedDomains = excludedVerifierDomains(input.config, input.model)
-  const eligibleIds = bank.probes
-    .filter((entry) => !excludedDomains.has(entry.probe.domain)
-      && entry.distinguishingContrastModels.some((model) => activeContrasts.has(normalized(model))))
-    .map((entry) => entry.probe.id)
-  const selected = power.selectedProbeCount
-  const sellers = await Promise.all(input.sellerPeerIds.map(async (sellerPeerId) => {
-    const ledger = await readJsonIfExists<SellerProbeLedgerV1>(sellerLedgerPath(input.banksDir, input.model, sellerPeerId))
-    const used = new Set(ledger?.assignments.flatMap((assignment) => assignment.probeIds) ?? [])
-    const assignedThisEpoch = ledger?.assignments.some((assignment) => assignment.epoch === input.epoch
-      && assignment.purpose === undefined && !assignment.voidedAt) ?? false
-    return {
-      sellerPeerId,
-      unseenProbeCount: eligibleIds.filter((id) => !used.has(id)).length,
-      neededProbeCount: selected === null
-        ? 0
-        : selected * (assignedThisEpoch || input.allowProbeReuse ? 0 : 1),
-      assignedThisEpoch,
+  probeIds: readonly string[]
+}): Promise<string[]> {
+  const path = epochQuestionPoolPath(input.banksDir, input.model, input.epoch)
+  const lock = await acquirePidFileLock(`${path}.lock`)
+  try {
+    const pool = await readJsonIfExists<EpochQuestionPoolV1>(path) ?? {
+      version: 1, kind: 'antseed-kbf-epoch-question-pool', model: input.model, epoch: input.epoch, probeIds: [],
     }
+    const known = new Set(pool.probeIds)
+    for (const id of input.probeIds) if (!known.has(id)) { pool.probeIds.push(id); known.add(id) }
+    await mkdir(dirname(path), { recursive: true })
+    await writeJsonAtomic(path, pool)
+    return [...pool.probeIds]
+  } finally {
+    await lock.release()
+  }
+}
+
+export type EpochQuestionSetSelection =
+  | { status: 'ready'; set: EpochQuestionSetV1 }
+  | { status: 'short'; reason: string; candidateProbeCount: number }
+
+/**
+ * Makes this epoch's question set from the questions built for it (`recordEpochQuestionPool`), once:
+ * an existing set is returned as it is. A question whose text matches any other question of the bank
+ * (every earlier epoch's, and every question of the banks from before shared sets) is left out. The
+ * candidates are shuffled once; the audit set is the smallest powered prefix (as for any reference:
+ * statistical power, and every testable contrast detected), and each of the `extensionCount` extra
+ * sets takes the next questions, as many as the audit set. `short` when the candidates don't reach
+ * that; nothing is written then.
+ */
+export async function selectEpochQuestionSet(input: {
+  banksDir: string
+  model: string
+  epoch: string
+  runId: string
+  extensionCount: number
+  config?: VerifierCLIConfig
+  now?: () => number
+  shuffle?: <T>(values: readonly T[]) => T[]
+}): Promise<EpochQuestionSetSelection> {
+  const path = epochQuestionSetPath(input.banksDir, input.model, input.epoch)
+  const lock = await acquirePidFileLock(`${path}.lock`)
+  try {
+    const existing = await loadEpochQuestionSet(input)
+    if (existing) return { status: 'ready', set: existing }
+    const bank = await readRequiredBank(bankPath(input.banksDir, input.model), input.model)
+    const pool = await readJsonIfExists<EpochQuestionPoolV1>(epochQuestionPoolPath(input.banksDir, input.model, input.epoch))
+    const poolIds = new Set(pool?.probeIds ?? [])
+    const askedBefore = new Set(bank.probes.filter((entry) => !poolIds.has(entry.probe.id)).map((entry) => questionTextKey(entry.probe)))
+    const activeContrasts = new Set(bank.contrastModels.map(normalized))
+    const excludedDomains = excludedVerifierDomains(input.config, input.model)
+    const seen = new Set<string>()
+    let previouslyAskedProbeCount = 0
+    const candidates = bank.probes.filter((entry) => {
+      if (!poolIds.has(entry.probe.id) || excludedDomains.has(entry.probe.domain)
+        || !entry.distinguishingContrastModels.some((model) => activeContrasts.has(normalized(model)))) return false
+      const key = questionTextKey(entry.probe)
+      if (askedBefore.has(key)) {
+        previouslyAskedProbeCount += 1
+        return false
+      }
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    const now = input.now?.() ?? Date.now()
+    const shuffled = (input.shuffle ?? cryptoShuffle)(candidates)
+    // Contrasts are testable when one of these candidates tells them apart, not one of the old questions.
+    const reference = selectPoweredReference({ ...bank, probes: candidates }, shuffled, input.config, now)
+    if (!reference) {
+      return { status: 'short', reason: `${candidates.length} new questions are not enough for a powered audit set`, candidateProbeCount: candidates.length }
+    }
+    const inSet = new Set(reference.probes.map((probe) => probe.id))
+    const rest = shuffled.filter((entry) => !inSet.has(entry.probe.id))
+    const size = reference.probes.length
+    if (rest.length < size * input.extensionCount) {
+      return {
+        status: 'short',
+        reason: `${candidates.length} new questions: ${size} for the audit set leave ${rest.length} for ${input.extensionCount} extra set(s) of ${size}`,
+        candidateProbeCount: candidates.length,
+      }
+    }
+    const extensions = Array.from({ length: input.extensionCount }, (_, index) => validateKbfReferenceV1(
+      referenceFromBankEntries(bank, rest.slice(index * size, (index + 1) * size), now),
+      { minimumStatisticalPower: Number.EPSILON },
+    ))
+    const set: EpochQuestionSetV1 = {
+      version: 1,
+      kind: 'antseed-kbf-epoch-question-set',
+      method: EPOCH_QUESTION_SET_METHOD,
+      model: input.model,
+      epoch: input.epoch,
+      compatibilityHash: bank.compatibilityHash,
+      candidateProbeCount: candidates.length,
+      previouslyAskedProbeCount,
+      reference,
+      extensions,
+      createdAt: new Date(now).toISOString(),
+      createdByRunId: input.runId,
+    }
+    await mkdir(dirname(path), { recursive: true })
+    await writeJsonAtomic(path, set)
+    return { status: 'ready', set: validateEpochQuestionSet(set, bank, input) }
+  } finally {
+    await lock.release()
+  }
+}
+
+/** This epoch's question set, validated against the bank, or null when none has been made. */
+export async function loadEpochQuestionSet(input: {
+  banksDir: string
+  model: string
+  epoch: string
+  config?: VerifierCLIConfig
+}): Promise<EpochQuestionSetV1 | null> {
+  const value = await readJsonIfExists<EpochQuestionSetV1>(epochQuestionSetPath(input.banksDir, input.model, input.epoch))
+  if (!value) return null
+  const bank = await readRequiredBank(bankPath(input.banksDir, input.model), input.model)
+  return validateEpochQuestionSet(value, bank, input)
+}
+
+function validateEpochQuestionSet(
+  value: EpochQuestionSetV1,
+  bank: ProbeBankV1,
+  input: { model: string; epoch: string; config?: VerifierCLIConfig },
+): EpochQuestionSetV1 {
+  if (value.version !== 1 || value.kind !== 'antseed-kbf-epoch-question-set' || value.method !== EPOCH_QUESTION_SET_METHOD
+    || normalized(value.model) !== normalized(input.model) || value.epoch !== input.epoch
+    || value.compatibilityHash !== bank.compatibilityHash || !Array.isArray(value.extensions)) {
+    throw new Error(`invalid ${input.model} question set for epoch ${input.epoch}`)
+  }
+  const label = `${input.model} question set for epoch ${input.epoch}`
+  const reference = validateBankProbeReference({ reference: value.reference, bank, model: input.model, label, config: input.config })
+  const extensions = value.extensions.map((extension, index) => validateBankProbeReference({
+    reference: extension, bank, model: input.model, label: `${label}, extra set ${index + 1}`, config: input.config, requirePower: false,
   }))
-  return { selectedProbeCount: selected, sellers }
+  const ids = [reference, ...extensions].flatMap((entry) => entry.probes.map((probe) => probe.id))
+  if (new Set(ids).size !== ids.length || extensions.some((extension) => extension.probes.length !== reference.probes.length)) {
+    throw new Error(`${label} repeats a question or has an extra set of another size`)
+  }
+  return { ...structuredClone(value), reference, extensions }
 }

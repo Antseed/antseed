@@ -72,7 +72,7 @@ import { CandidateWritingPolicy, candidateWritingFallback, isRamblingCandidateAn
 import { createDomainHomogeneousKbfBatches } from './kbf-batching.js'
 import { asError, normalized, sleep } from './utils.js'
 
-const REFERENCE_BUILDER_VERSION = '6'
+export const REFERENCE_BUILDER_VERSION = '6'
 const CANDIDATE_COUNT = 300
 const CANDIDATE_BATCH_SIZE = 20
 const DEFAULT_MAX_REQUESTS_PER_BUILD = 2_000
@@ -98,7 +98,7 @@ const NEW_ACCOUNT_MINIMUM_REQUEST_INTERVAL_MS = 6_500
 const NEW_ACCOUNT_RATE_LIMIT_COOLDOWN_MS = 65_000
 const MAX_TOKENS = 1600
 const ANTHROPIC_VERSION = '2023-06-01'
-const REFERENCE_SIZING_ALGORITHM_VERSION = 2
+export const REFERENCE_SIZING_ALGORITHM_VERSION = 2
 const MINIMUM_SUPPORTED_REASONING_STRATEGY = 'reasoning-effort-minimum-supported' as const
 const DISABLED_REASONING_STRATEGY = 'reasoning-effort-none' as const
 const BARE_REASONING_STRATEGY = 'bare' as const

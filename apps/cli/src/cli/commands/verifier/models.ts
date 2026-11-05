@@ -3,7 +3,12 @@ import Table from 'cli-table3'
 import type { Command } from 'commander'
 import type { VerifierCLIConfig } from '../../../config/types.js'
 import { loadConfig } from '../../../config/loader.js'
-import { auditedVerifierModels, builtInReferenceProvider } from '../../../verifier/model-config.js'
+import {
+  auditedVerifierModels,
+  builtInReferenceProvider,
+  configuredContrastModels,
+  type VerifierContrastSource,
+} from '../../../verifier/model-config.js'
 import { getGlobalOptions } from '../types.js'
 
 export interface VerifierModelSource {
@@ -17,6 +22,9 @@ export interface VerifierModelSource {
   providerPin: string[] | null
   /** True when `providerPin` is the built-in default rather than the verifier's own setting. */
   providerPinBuiltIn: boolean
+  /** Look-alikes a new bank is built against; empty when they are picked automatically at build time. */
+  contrastModels: string[]
+  contrastSource: VerifierContrastSource
 }
 
 /** Where each built-in audited model takes its genuine answers from, after the verifier's settings. */
@@ -25,6 +33,7 @@ export function describeVerifierModelSources(config: VerifierCLIConfig | undefin
     const upstream = settings.upstream ? config?.upstreams?.[settings.upstream.name] : undefined
     const route = settings.referenceRoute
     const builtIn = builtInReferenceProvider(config, model, settings)
+    const contrasts = configuredContrastModels(config, model, settings)
     const source = route
       ? { source: `referenceRoute`, sourceType: 'antseed', sourceModel: route.service }
       : settings.upstream
@@ -36,6 +45,8 @@ export function describeVerifierModelSources(config: VerifierCLIConfig | undefin
       ...source,
       providerPin: settings.referenceProvider?.order ?? builtIn?.order ?? null,
       providerPinBuiltIn: !settings.referenceProvider && builtIn !== undefined,
+      contrastModels: contrasts?.models ?? [],
+      contrastSource: contrasts?.source ?? 'automatic',
     }
   })
 }
@@ -43,7 +54,7 @@ export function describeVerifierModelSources(config: VerifierCLIConfig | undefin
 export function registerVerifierModelsCommand(verifier: Command): void {
   verifier
     .command('models')
-    .description('List the built-in audited models and where each takes its genuine answers from')
+    .description('List the built-in audited models, where each takes its genuine answers from, and the look-alike models its new banks are built against')
     .option('--json', 'print the list as JSON')
     .action(async (options: { json?: boolean }, command: Command) => {
       const config = await loadConfig(getGlobalOptions(command).config)
@@ -56,15 +67,19 @@ export function registerVerifierModelsCommand(verifier: Command): void {
       console.log(endpoint
         ? chalk.dim(`Default reference: referenceEndpoint ${endpoint.baseUrl} (${endpoint.sourceId})`)
         : chalk.yellow('verifier.referenceEndpoint is not configured; reference builds will fail'))
-      const table = new Table({ head: ['Model', 'Reference from', 'Model id there', 'Provider pin'] })
+      const table = new Table({ head: ['Model', 'Reference from', 'Model id there', 'Provider pin', 'Contrast models'] })
       for (const row of rows) {
         table.push([
           row.aliases.length ? `${row.model}\n${chalk.dim(row.aliases.join(', '))}` : row.model,
           row.sourceType === 'default' ? 'referenceEndpoint' : `${row.source} (${row.sourceType})`,
           row.sourceModel,
           row.providerPin ? `${row.providerPin.join(', ')}${row.providerPinBuiltIn ? chalk.dim(' (built-in)') : ''}` : '',
+          row.contrastModels.length
+            ? `${row.contrastModels.join('\n')}\n${chalk.dim(`(${row.contrastSource})`)}`
+            : chalk.dim('automatic, picked when a bank is built'),
         ])
       }
       console.log(table.toString())
+      console.log(chalk.dim('A bank keeps the contrast models it was built with; these apply to new banks.'))
     })
 }

@@ -60,7 +60,7 @@ const DISCOVERY_ANSWERS = ['78.37', '79', '299792458', '1538', '206', '12', '100
 
 const buildModelReference: typeof buildModelReferenceWithoutDiscoveryStub = (input) =>
   buildModelReferenceWithoutDiscoveryStub({ ...input, fetchFn: answerThinkingDiscovery(input.fetchFn) })
-setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test' } })
+setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test', contrastModels: [] } })
 
 test('collector promotes reserve probes that distinguish the failing contrast first', async () => {
   const probes = reference(100).probes.slice(0, 2)
@@ -210,14 +210,14 @@ test('bank top-up reuses enrolled measurements, grows against the failed contras
       model: MODEL, referencesDir: directory, config: changedContrast, initialReference,
       fetchFn: async () => { throw new Error('must not mix contrast enrollments') },
     }), /incompatible/)
-    setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'other-model' } })
+    setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'other-model', contrastModels: [] } })
     try {
       await assert.rejects(buildModelReference({
         model: MODEL, referencesDir: directory, config: config(), initialReference,
         fetchFn: async () => { throw new Error('must not make paid requests') },
       }), /incompatible/)
     } finally {
-      setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test' } })
+      setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test', contrastModels: [] } })
     }
   } finally {
     await rm(directory, { recursive: true, force: true })
@@ -372,7 +372,7 @@ test('missing references fail with the explicit build command', async () => {
 test('reference build discovers thinking suppression like the KBF reference code and records it', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-build-'))
   const value = config()
-  setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test', serviceAliases: ['model.test-alias'] } })
+  setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test', contrastModels: [], serviceAliases: ['model.test-alias'] } })
   const requestBodies: Array<Record<string, unknown>> = []
   const discoveryBodies: Array<Record<string, unknown>> = []
   const fetchFn: typeof fetch = async (_url, init) => {
@@ -457,7 +457,7 @@ test('reference build discovers thinking suppression like the KBF reference code
     await built.finalize()
     await assert.rejects(readFile(join(directory, '.checkpoints', `${MODEL}.json`), 'utf8'), { code: 'ENOENT' })
   } finally {
-    setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test' } })
+    setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test', contrastModels: [] } })
     await rm(directory, { recursive: true, force: true })
   }
 })
@@ -2130,7 +2130,7 @@ test('a pinned endpoint tag matches the provider name OpenRouter reports', async
 
 test('a new OpenRouter bank uses the built-in provider pin; a bank built unpinned stays unpinned', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-builtin-pin-'))
-  setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test', referenceProvider: ['maker/fp8'] } })
+  setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test', contrastModels: [], referenceProvider: ['maker/fp8'] } })
   const openRouter = () => {
     const value = config()
     value.referenceEndpoint!.baseUrl = 'https://openrouter.ai/api/v1'
@@ -2153,10 +2153,10 @@ test('a new OpenRouter bank uses the built-in provider pin; a bank built unpinne
     })
 
     // A bank enrolled before the built-in pin keeps being extended unpinned, so its measurements stay comparable.
-    setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test' } })
+    setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test', contrastModels: [] } })
     const unpinned = await buildModelReference({ model: MODEL, referencesDir: join(directory, 'old'), config: openRouter(), fetchFn })
     await unpinned.finalize()
-    setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test', referenceProvider: ['maker/fp8'] } })
+    setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test', contrastModels: [], referenceProvider: ['maker/fp8'] } })
     bodies.length = 0
     const extended = await buildModelReference({
       model: MODEL, referencesDir: join(directory, 'extended'), config: openRouter(), fetchFn,
@@ -2170,7 +2170,7 @@ test('a new OpenRouter bank uses the built-in provider pin; a bank built unpinne
     await buildModelReference({ model: MODEL, referencesDir: join(directory, 'other'), config: config(), fetchFn })
     assert.equal(bodies.every((body) => body.provider === undefined), true)
   } finally {
-    setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test' } })
+    setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test', contrastModels: [] } })
     await rm(directory, { recursive: true, force: true })
   }
 })
