@@ -21,6 +21,7 @@ import { setClaudeDesktopGatewayModelSource } from './connected-apps/claude-desk
 import { emitChatEvent } from './chat/event-bus.js';
 import { createTelegramBridge } from './telegram/bridge.js';
 import { ensureSecureIdentity, getSecureIdentity, hasStoredIdentity, secureIdentityEnv } from './identity.js';
+import { isAttachOnly } from './runtime/attach-only.js';
 import type { LogEvent, RuntimeActivityEvent } from './runtime/log-parser.js';
 import { parseRuntimeActivityFromLog } from './runtime/log-parser.js';
 import {
@@ -445,7 +446,9 @@ app.whenReady().then(async () => {
   if (process.platform === 'darwin' && APP_ICON_PATH && app.dock) {
     app.dock.setIcon(APP_ICON_PATH);
   }
-  const hadExistingIdentity = hasStoredIdentity();
+  const hadExistingIdentity = !isAttachOnly() && hasStoredIdentity();
+  // Attach-only loads the testbench buyer key from its data dir (memory only,
+  // never the keychain) so balance and wallet views show the fork wallet.
   await ensureSecureIdentity();
   telemetryReady = initializeTelemetry(hadExistingIdentity);
   await telemetryReady;
@@ -477,13 +480,17 @@ app.whenReady().then(async () => {
 
   showMainWindow();
 
-  void publicTunnelRuntime.restoreAtLaunch().then((result) => {
-    if (result && !result.ok) {
-      appendLog('tunnel', 'system', `Public tunnel auto-start failed: ${result.error ?? 'Unknown error'}`);
-    }
-  }).catch((err) => {
-    appendLog('tunnel', 'system', `Public tunnel auto-start failed: ${err instanceof Error ? err.message : String(err)}`);
-  });
+  // A testbench desktop never resumes a public tunnel: it would publish the
+  // testbench buyer on a real hostname.
+  if (!isAttachOnly()) {
+    void publicTunnelRuntime.restoreAtLaunch().then((result) => {
+      if (result && !result.ok) {
+        appendLog('tunnel', 'system', `Public tunnel auto-start failed: ${result.error ?? 'Unknown error'}`);
+      }
+    }).catch((err) => {
+      appendLog('tunnel', 'system', `Public tunnel auto-start failed: ${err instanceof Error ? err.message : String(err)}`);
+    });
+  }
 
   // Fail open before anything else. Whatever the OS proxy is set to right now
   // was left behind by the previous run — and if that run ended in a crash,
@@ -551,24 +558,32 @@ app.whenReady().then(async () => {
 
   // Resume the Telegram bridge if a bot was connected in a previous session.
   // Needs app-ready because the token store decrypts via safeStorage.
-  void telegramBridge.start().catch((err) => {
-    appendLog('connect', 'system', `[telegram] Bridge resume failed: ${err instanceof Error ? err.message : String(err)}`);
-  });
+  // A testbench desktop never resumes a bot: real Telegram users would get
+  // testbench replies.
+  if (!isAttachOnly()) {
+    void telegramBridge.start().catch((err) => {
+      appendLog('connect', 'system', `[telegram] Bridge resume failed: ${err instanceof Error ? err.message : String(err)}`);
+    });
+  }
 
   // Payments portal starts lazily on first open (via payments:open-portal IPC)
 
-  void ensureDefaultPlugin('@antseed/router-local', {
-    getAppSetupNeeded: () => getAppSetupStatus().needed,
-    setAppSetupNeeded: (v) => { setAppSetupStatus({ needed: v }); },
-    getAppSetupComplete: () => getAppSetupStatus().complete,
-    setAppSetupComplete: (v) => { setAppSetupStatus({ complete: v }); },
-    onAppSetupStarted: () => { void telemetryReady.then((telemetry) => telemetry?.recordSetupStarted()); },
-    onAppSetupCompleted: () => { void telemetryReady.then((telemetry) => telemetry?.recordSetupCompleted()); },
-    getMainWindow,
-    appendLog,
-  }).catch(() => {
-    // Failure is already logged via appendLog inside ensureDefaultPlugin.
-  });
+  if (isAttachOnly()) {
+    setAppSetupStatus({ needed: false, complete: true });
+  } else {
+    void ensureDefaultPlugin('@antseed/router-local', {
+      getAppSetupNeeded: () => getAppSetupStatus().needed,
+      setAppSetupNeeded: (v) => { setAppSetupStatus({ needed: v }); },
+      getAppSetupComplete: () => getAppSetupStatus().complete,
+      setAppSetupComplete: (v) => { setAppSetupStatus({ complete: v }); },
+      onAppSetupStarted: () => { void telemetryReady.then((telemetry) => telemetry?.recordSetupStarted()); },
+      onAppSetupCompleted: () => { void telemetryReady.then((telemetry) => telemetry?.recordSetupCompleted()); },
+      getMainWindow,
+      appendLog,
+    }).catch(() => {
+      // Failure is already logged via appendLog inside ensureDefaultPlugin.
+    });
+  }
 
   // Auto-update: check for updates silently on launch and every 30 minutes.
   // If an in-flight download stops emitting progress events for a couple of

@@ -18,7 +18,12 @@ child.once('exit', (code, signal) => {
     process.exitCode = code ?? (signal ? 1 : 0);
     return;
   }
-  child = spawn('pnpm', ['exec', 'electron', '.', ...process.argv.slice(2)], {
+  // Chromium refuses to run as root on Linux unless its own sandbox is off (servers often run as root).
+  const rootArgs = process.platform === 'linux' && process.getuid?.() === 0 ? ['--no-sandbox'] : [];
+  if (rootArgs.length) console.warn('[dev-electron] running as root on Linux: starting Electron with --no-sandbox');
+  const cdpPort = process.env.ANTSEED_DESKTOP_CDP_PORT;
+  const cdpArgs = cdpPort ? [`--remote-debugging-port=${cdpPort}`, '--remote-debugging-address=127.0.0.1'] : [];
+  child = spawn('pnpm', ['exec', 'electron', '.', ...rootArgs, ...cdpArgs, ...process.argv.slice(2)], {
     env: { ...process.env, VITE_DEV_SERVER_URL: `http://127.0.0.1:${port}` },
     stdio: 'inherit',
   });
