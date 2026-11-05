@@ -8,6 +8,7 @@ import {
   isGetStartedUrl,
   isOutboundUrl,
   platformFromUrl,
+  rememberLandingUtm,
   sectionOf,
   visibleLabel,
   withGaAttribution,
@@ -64,6 +65,8 @@ function useScrollState() {
  */
 function useClickTracking() {
   useEffect(() => {
+    // Keep campaign tags from the landing URL for later download clicks.
+    rememberLandingUtm();
     const onClick = (e: MouseEvent) => {
       // Only real user input. Programmatic .click() calls are not user intent.
       // Ctrl/Cmd-click still arrives here as a normal `click` and does count —

@@ -23,7 +23,9 @@ GA4 event) and "user actually received the installer".
 
 | Route | Behavior |
 | --- | --- |
-| `GET /vpr/<platform>-<arch>` | Streams the latest matching installer. Platforms: `mac` (.dmg), `win` (.exe), `linux` (.AppImage); arch `arm64` \| `x64`. |
+| `GET /vpr/<platform>-<arch>` | Streams the latest matching installer. Platforms: `mac` (.dmg), `win` (.exe), `linux` (.AppImage); arch `arm64` \| `x64`. When the visitor's GA ids are present and `ATTRIBUTION_SECRET` is set, the served filename carries a signed attribution token (see below). |
+| `POST /app-events` | Desktop app milestones (`{token?, install_id?, events: [{name, params}]}`), forwarded to GA4 under the download's client id. Fixed event catalog and param allowlist; 8 KB / 10 events per request. |
+| `GET /i?f=<installer filename>` | `installer_started` beacon sent by the Windows installer itself. |
 | `GET /` and unresolvable targets | 302 to the GitHub releases page. |
 
 "Latest" is resolved from the GitHub API and cached at the edge for 5
@@ -68,12 +70,58 @@ event carries `attributed` (1/0) in both the console line and the GA4 params;
 is why the proxy's `download_started` is the reliable top of the download
 funnel and the click event is best read for page/section breakdowns only.
 
+## Where the link was clicked
+
+Every download event also carries `referrer_host` — the public site the
+download link was on, from the request's `Referer` header — and, when the
+website carried the landing page's campaign tags onto the link,
+`link_source` / `link_medium` / `link_campaign`. Both survive a blocked GA:
+they are read server-side, so the "no session" downloads (developers with ad
+blockers, the highest-converting group) get a source. Privacy: only the host
+is used, and only hosts on a short public allowlist in `referrer.ts` are
+named (GitHub, X, Reddit, Hacker News, Discord, the AI assistants, search
+engines, npm, …); anything else — a company wiki, a private Slack — is
+reported as `other`. No path, query, or fragment is ever read.
+
+## Install attribution
+
+Session attribution used to stop at the installer: the app's own telemetry
+reached GA4 under an unrelated id and could never be tied to a campaign.
+`attribution.ts` closes that without storing anything: the GA client id and
+session id are encoded into a short HMAC-signed token
+(`1.<payload>.<sig>`, filename-safe) and stamped into the served filename —
+`AntSeed-VPR-Setup-0.2.38.exe` becomes
+`AntSeed-VPR-Setup-0.2.38.a-<token>.exe`. The Windows installer writes its
+own filename next to the app and pings `GET /i?f=<name>`; AppImage exposes
+its path as `$APPIMAGE`; the desktop app reads the token and reports
+milestones to `POST /app-events` (`app-events.ts`), which verifies the token
+and forwards each event to GA4 under the original ids. Tokens expire after 30
+days and may carry an affiliate code from the download URL (`?ref=...`),
+forwarded as the `ref` param on every milestone. The token proves origin only:
+holding one lets you attribute events to that download session and nothing
+else, and the signature stops forged ids.
+
+**macOS and renamed files** cannot carry the stamp, so `match.ts` adds a
+server-side fallback: at `download_completed` the worker stores a 48-hour
+record in Workers KV keyed by platform and an HMAC of the client IP (the raw
+address is never stored) holding the GA ids, arch and ref. A milestone that
+arrives without a token is matched to a record with the same platform and IP
+hash, accepted only when exactly one download fits (arch breaks ties);
+ambiguity is treated as no match. A matched install id is remembered for 90
+days so later milestones need no re-match, and the download record is
+consumed so no second install can claim it. Every forwarded milestone says
+how it was attributed — `attribution_method`: `token` (exact), `match`
+(probabilistic), `none` (delivered under the app's random install id,
+`attributed=0`) — so reports and affiliate payouts can weight them.
+
 ## Deploy
 
 ```bash
 pnpm --filter @antseed/download-proxy deploy       # wrangler deploy
 wrangler secret put GA4_API_SECRET                 # GA4 MP API secret (Admin → Data Streams → Measurement Protocol)
 wrangler secret put GITHUB_TOKEN                   # optional: raises the release-lookup rate limit
+wrangler secret put ATTRIBUTION_SECRET             # HMAC key for install attribution tokens (any long random string)
+wrangler kv namespace create ATTRIBUTION_KV        # then add the binding to wrangler.toml (see the commented block)
 ```
 
 Also set `GA4_MEASUREMENT_ID` in `wrangler.toml` (`G-…`, not a secret).
