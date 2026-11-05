@@ -168,6 +168,9 @@ Inline secrets (any key that looks like a credential, anywhere in the file) are 
 ### Upstream
 
 - **Mock (default).** Each seller gets its own OpenAI-compatible mock that answers every model in its config: `/v1/models`, chat (JSON and SSE streaming with usage), and `/v1/images/generations` (a fixture PNG). Usage is fixed (10 input + 8 output tokens), so costs are exact. Only OpenAI-compatible plugins (`openai`) can be mocked.
+  - `mock.usage: 'load'` sizes usage like real traffic instead (the payment stress mock): prompt tokens from the request size, a random completion within `outTokens` (default 100 to 4000), latency within `latencyRangeMs` (default 50 to 3000 ms), streams chunked over that time.
+  - `mock.fault500Rate` and `mock.disconnectRate` (0 to 1) answer that share of tagged requests with an upstream 500 or cut the response midway. `sb.setMockFaults(id, { ... })` changes them during a run.
+  - Every mock keeps a **delivery ledger** keyed by the `[req:TAG]` marker in the prompt (untagged requests get `untagged-N`): whether any byte reached the wire, how the response ended (`ok`, `500`, `disconnect`, `client-gone`) and what it cost at the seller's price. That ledger is the independent judge of what the buyer owes (`sb.deliveries(id)`, `sb.assertDeliveredWorkPaid`).
 - **Live (`--live`).** Sellers call the real upstream. Every provider needs `apiKeyEnv` (set in your shell or in `--env-file`) and an HTTPS `baseUrl`. Keys reach seller processes through their environment only. Settlement still happens on the fork, so no real funds move.
 
 Live keys come from the shell first, then `--env-file FILE` (default: a gitignored `.antseed-sandbox.env` in the worktree). Only names referenced by a provider's `apiKeyEnv` are read from the file; values are never printed, and providers may share one variable. `up` prints which variable and source each provider uses.
@@ -192,8 +195,13 @@ export const topology = {
   sellers: [{ id: 'fast', mock: { latencyMs: 20 } }, { id: 'slow', mock: { latencyMs: 400 } }],
   buyer: { depositUsdc: '10', routingPreferences: { preferLowLatency: true } },
   chain: { block: 52223957 },   // optional fork pin
-  payments: { settlementIdleMs: 5000 },  // optional: seller idle-settle timer (default 600000)
+  payments: { settlementIdleMs: 5000, minBudgetPerRequestUsdc: '0.01' },  // optional: seller idle-settle timer (default 600000); seller minimum budget per request (SDK default 0.5; `antseed seller start` uses 0.01)
 };
+
+// Payment stress shapes (see "Payment stress" below) add, all optional:
+//   chain:  { rpc: 'base', blockTimeSec: 2, topUpThresholdBps: 6500 }
+//   seller: { mock: { usage: 'load', latencyRangeMs: [50, 3000], outTokens: [100, 4000], fault500Rate: 0.05, disconnectRate: 0.05 } }
+//   buyer:  { depositUsdc: '500', maxReserveUsdc: '0.25', maxPerRequestUsdc: '0.15' }
 
 export async function run(sb) {
   const reply = await sb.chat({ model: sb.sellers[0].models[0], sellerId: 'fast' });
@@ -214,6 +222,7 @@ The `sb` API:
 | Control | `stopSeller(id)`, `startSeller(id)`, `stopBuyer()` / `startBuyer()` (buyer node + proxy; sellers see a disconnect), `setMockLatency(id, ms)`, `mockRequests(id)`, `warp(seconds)`, `waitFor(fn, label, { timeoutMs })` |
 | Faults | `faults.loseNeedAuths(count)` (the buyer drops its next `count` seller NeedAuth frames, as if lost), `faults.lostNeedAuths()` (the dropped payloads). Use only to reach a state no public path produces |
 | Desktop | `desktop()` → `ui.sendChat(prompt, { expect })`, `ui.openChat()`, `ui.text()`, `ui.screenshot(name)`, `ui.page` (Playwright), `ui.errors`, `ui.close()` |
+| Load and oracle | `load({ concurrency, requests, streamRatio, abortRatio, imageRatio, model, imageModel, sellerId, restart: { who, sellerId, atFraction }, gate })`, `paymentSnapshot()`, `assertDeliveredWorkPaid({ before, results, injected })`, `assertNoCrashes()`, `setMockFaults(id, { fault500Rate, disconnectRate })`, `deliveries(id)`, `health()`, `gates` |
 | Reporting | `check(name, ok, detail)`, `knownIssue(name, ok, detail, issue)`, `metric(name, value)`, `event(type, data)`, `mockCostPerChat(sellerId, model)` |
 
 Each run writes `reports/<timestamp>-<scenario>/index.html` (a self-contained page with checks, metrics, screenshots, video and events), `report.json` (result, checks, known issues, metrics, config hash, fork block, topology, sellers, buyer), `events.jsonl` and `metrics.json`. A failed check fails the run with a nonzero exit.
@@ -227,9 +236,46 @@ Shipped scenarios:
 - `payment-flow`: the CI payment flow and more (default chain: local). Deposit, reserve locked on-chain, three paid chats on one channel with cumulative SpendingAuth, buyer disconnect, seller settles and closes on its own, exact settled amount, fee split and reserve release, buyer reconnects on a fresh channel, cooperative close, exact totals across both channels.
 - `mainnet-smoke`: case 3 on the real network (needs `--chain mainnet --real-funds`). Live discovery, one paid desktop chat, spend within the cap, consistent on-chain reserve.
 - `routing-smoke`: two sellers with different mock latency; the buyer sees only sandbox sellers, pinned and auto-routed chats stay inside the sandbox, and per-seller settlement is exact.
+- `stress-smoke`, `stress-c32`, `stress-c64`, `stress-smallreserve`, `stress-images`, `stress-faults`, `stress-restart-buyer`, `stress-restart-seller`: the payment stress scenarios on the sandbox (see [Payment stress](#payment-stress)).
+- `issue-1050-stale-channel`: #1050. The buyer pays, stops, and the seller closes the channel on disconnect. After a restart the buyer must retire the closed channel in its store, `/_antseed/buyer-usage`, `/_antseed/channels` and `antseed buyer status` (all count 0), then pay again on a fresh channel; the payment oracle judges both phases.
 - `issue-1200-spendingauth-catchup`: #1200. A lost NeedAuth leaves the buyer under-signed, the seller's budget-exhausted 402 asks it to catch up, and the buyer must sign exactly the delivered spend, so settle-on-disconnect charges exactly the delivered work. Fails on a buyer that signs `max(target, signed + minBudgetPerRequest)`.
 
 Mainnet scenarios (`targets: ['mainnet']`) get a smaller `sb`: `check`, `knownIssue`, `metric`, `event`, `waitFor`, `desktop()` (the full profile desktop), `waitForPeers({ min })`, `models()`, `channels({ all })`, `signedSnapshot()`, `spentSince(snapshot)`, `assertWithinCap(snapshot)`, `buyerBalance()` (on-chain deposit) and `capMicros`. There is no chain or seller control on the real network.
+
+## Payment stress
+
+The payment stress harness (`e2e/stress`, run in CI by `node e2e/stress/ci.mjs`) checks that paid traffic under concurrency, Base-like RPC latency, upstream faults and restarts is paid for exactly. Its building blocks are sandbox features too, so a stress shape is an ordinary scenario on the sandbox network:
+
+| Stress harness | Sandbox |
+| --- | --- |
+| `rpc-proxy.mjs` between each peer and Anvil | `chain.rpc: 'base'`: the supervisor puts that same proxy in front of Anvil per node (buyer and each seller) on one shared chain clock, and Anvil mines every `blockTimeSec` (2 s) after setup. `sb.health().rpc` and the report's `metrics.rpc` count calls, 429s, stale reads and missing receipts |
+| `mock-upstream.mjs` (load usage, 500s, disconnects, per-request delivery record) | the sandbox mock with `usage: 'load'`, fault rates and its delivery ledger |
+| `harness.mjs` load generator | `sb.load(...)` (same tagged requests, stream and abort ratios, image share, mid-load restart) |
+| `analysis.mjs` payment invariants | `sb.assertDeliveredWorkPaid(...)` runs `analyzePayments` itself on the sandbox's seller and buyer stores, chain and mock ledgers |
+| crash patterns, unexpected exits, SIGKILL stops | `sb.assertNoCrashes()` (peer logs since the run started, supervisor health) |
+| `ci.mjs` `GATES` | `sb.gates` / `GATES` in `lib/stress.mjs`, passed as `load({ gate })` |
+| owner-only chain setup (credit limit, 65% top-up threshold) | `buyer.depositUsdc` above 10 sets the Deposits credit limit override; `chain.topUpThresholdBps` sets the channels threshold (owner impersonated on Anvil, fork or local) |
+
+`lib/stress.mjs` exports `stressTopology()` (the stress network: a 3 / 15 USD per million token seller with a 0.04 USD image model, a 500 USDC deposit, a 1 USDC reserve cap, Base-like RPCs, 65% top-up, 15 s idle settle, the CLI seller's 0.01 USDC minimum budget per request) and `stressRun(sb, { load, faults, gate })` (snapshot, warm-up, faults on, gated load, faults off, oracle, crash checks). A new stress shape is a few lines:
+
+```js
+import { GATES, stressRun, stressTopology } from '../lib/stress.mjs';
+export const meta = { description: '...', targets: ['local', 'fork'], requires: ['mockControl'] };
+export const topology = stressTopology({ buyer: { maxReserveUsdc: '0.25' } });
+export async function run(sb) {
+  await stressRun(sb, { load: { concurrency: 32, requests: 256 }, gate: GATES.default });
+}
+```
+
+The oracle fails a run on any of: delivered work not settled, settlement above what reached the wire, a response the client received in full that the mock never delivered, per-channel signed or accepted amounts that differ from what settled, a deposit decrease that differs from the sum settled or from seller plus fee income, reserve left locked, a channel left open, and (with no faults, aborts or restarts) seller spend that differs from the delivered cost. It judges only what happened after the `paymentSnapshot()`, so it also works on a sandbox kept with `--keep`; it refuses to run while an earlier channel is still open.
+
+```bash
+pnpm sandbox run stress-smoke --chain local        # quick: 6 requests, about a minute with setup
+pnpm sandbox run stress-c32 --chain local          # the CI shapes; each takes a few minutes
+pnpm sandbox run stress-restart-seller --chain local
+```
+
+`e2e/stress` still runs in CI unchanged; the sandbox imports its `rpc-proxy.mjs` and `analysis.mjs` rather than copying them, so both harnesses share one set of invariants.
 
 ## Desktop automation
 
@@ -283,7 +329,7 @@ For agents: with `ANTSEED_SANDBOX_SHARE_DEBUG_PORT=N`, the shared desktop listen
 
 The supervisor exposes a loopback-only API with a bearer token stored in `control.json` (mode 0600). Scenarios use it through `sb`; you rarely need it directly.
 
-`GET /status`, `POST /channels/close {sellerId?}`, `POST /chain/warp {seconds}`, `POST /buyer/stop`, `POST /buyer/start`, `POST /sellers/:id/stop`, `POST /sellers/:id/start`, `GET|POST /sellers/:id/mock {latencyMs}`, `GET|POST /faults/buyer/need-auth-loss {count}`, `POST /shutdown`
+`GET /status`, `GET /health`, `POST /channels/close {sellerId?}`, `POST /chain/warp {seconds}`, `POST /buyer/stop`, `POST /buyer/start`, `POST /sellers/:id/stop`, `POST /sellers/:id/start`, `GET|POST /sellers/:id/mock {latencyMs?, fault500Rate?, disconnectRate?}`, `GET /sellers/:id/deliveries`, `GET|POST /faults/buyer/need-auth-loss {count}`, `POST /shutdown`
 
 ## Fork cache
 
@@ -298,7 +344,7 @@ Applies to `--chain fork` only. Anvil's RPC cache makes a warm `up` take a few s
 ## Tests
 
 ```bash
-pnpm test:sandbox       # fast unit tests (node --test): options, config, naming, locks, manifest, ports, cache, mock, control
+pnpm test:sandbox       # fast unit tests (node --test): options, config, naming, locks, manifest, ports, cache, mock, control, stress load, gates and ledger
 pnpm test:sandbox:e2e   # full flow on a real fork: up, reattach, status, run chat-basic, down, isolation checks
 pnpm sandbox run payment-flow --chain local   # payment lifecycle on source-deployed contracts, no RPC key
 ```
@@ -321,7 +367,9 @@ Deferred (not needed for the four cases):
 - a pool of test wallets with rotation and automatic top-ups for case 3
 - a canary seller of ours on mainnet, so case 3 can also test seller changes against real buyers
 - multiple sellers from different configs in one sandbox
-- mock failure and latency modes
-- a CI job for local-chain scenarios (and retiring `e2e/scripts/full-payment-flow.mjs`) once local runs prove stable
+- a CI job: the e2e scenarios plus `stress-smoke` on every PR, the full stress set nightly with repeats; then retire `e2e/stress`'s own chain, mock, bootstrap and config writers once the sandbox scenarios match its results
+- a `--runs N` repeat mode for stress scenarios (the stress harness's `--runs`)
+- fail points in `packages/node` at payment boundaries (before a settle is sent, after a NeedAuth arrives, before a close), generalizing `faults.loseNeedAuths`
+- retiring `e2e/scripts/full-payment-flow.mjs` once local runs prove stable in CI
 - streaming the real-funds profile desktop with `share`
 - Anvil state snapshots, a Herdr tab launcher, rebasing the video harness onto this
