@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, expect, it, vi } from 'vitest';
 import { createInitialUiState } from '../../../core/state';
 import { initStore } from '../../../core/store';
-import { VprHeaderActions } from './VprHeaderActions';
+import { openGatewayConsole, VprHeaderActions } from './VprHeaderActions';
 
 function loadedState() {
   const state = createInitialUiState();
@@ -15,15 +15,44 @@ beforeEach(() => {
   initStore(loadedState());
 });
 
-it('renders accessible Help, Settings, and balance buttons in that order', () => {
+it('renders accessible Help, gateway console, Settings, and balance buttons in that order', () => {
   const markup = renderToStaticMarkup(<VprHeaderActions credits="228.14" />);
   expect(markup).toContain('$228.14');
   expect(markup).toContain('aria-label="Add credits, balance $228.14"');
   expect(markup).toContain('aria-label="Settings"');
   expect(markup).toContain('aria-label="Help"');
-  expect(markup.match(/<button /g)).toHaveLength(3);
-  expect(markup.indexOf('aria-label="Help"')).toBeLessThan(markup.indexOf('aria-label="Settings"'));
+  expect(markup.match(/<button /g)).toHaveLength(4);
+  expect(markup.indexOf('aria-label="Help"')).toBeLessThan(markup.indexOf('aria-label="Open gateway console"'));
+  expect(markup.indexOf('aria-label="Open gateway console"')).toBeLessThan(markup.indexOf('aria-label="Settings"'));
   expect(markup.indexOf('aria-label="Settings"')).toBeLessThan(markup.indexOf('aria-label="Add credits, balance $228.14"'));
+});
+
+it('places the gateway console slot between Help and Settings', () => {
+  const actions = VprHeaderActions({ credits: '0' });
+  const children = Children.toArray(actions.props.children);
+  expect(children).toHaveLength(4);
+  expect(isValidElement(children[1]) && children[1].type).not.toBe('button');
+});
+
+it('always shows the gateway console button', () => {
+  const markup = renderToStaticMarkup(<VprHeaderActions credits="0" />);
+  expect(markup).toContain('aria-label="Open gateway console"');
+});
+
+it('opens the console through the claim call when an endpoint is running', async () => {
+  const claim = vi.fn(async () => ({ ok: true }));
+  const openDialog = vi.fn();
+  await openGatewayConsole(claim, openDialog);
+  expect(claim).toHaveBeenCalledOnce();
+  expect(openDialog).not.toHaveBeenCalled();
+});
+
+it('opens the Public endpoint dialog when there is no console to open', async () => {
+  const openDialog = vi.fn();
+  await openGatewayConsole(async () => ({ ok: false }), openDialog);
+  await openGatewayConsole(async () => { throw new Error('ipc failed'); }, openDialog);
+  await openGatewayConsole(undefined, openDialog);
+  expect(openDialog).toHaveBeenCalledTimes(3);
 });
 
 it('preserves deposit navigation and opens the existing preferences and help routes', () => {
@@ -32,7 +61,7 @@ it('preserves deposit navigation and opens the existing preferences and help rou
   const buttons = Children.toArray(actions.props.children);
   for (const button of buttons) {
     expect(isValidElement(button)).toBe(true);
-    if (isValidElement<{ onClick: () => void }>(button)) button.props.onClick();
+    if (isValidElement<{ onClick?: () => void }>(button)) button.props.onClick?.();
   }
   expect(onSelectView.mock.calls).toEqual([['help'], ['preferences'], ['deposit']]);
 });
@@ -40,8 +69,8 @@ it('preserves deposit navigation and opens the existing preferences and help rou
 it('tolerates rendering outside a navigation provider', () => {
   const actions = VprHeaderActions({ credits: '0' });
   for (const button of Children.toArray(actions.props.children)) {
-    if (isValidElement<{ onClick: () => void }>(button)) {
-      expect(() => button.props.onClick()).not.toThrow();
+    if (isValidElement<{ onClick?: () => void }>(button)) {
+      expect(() => button.props.onClick?.()).not.toThrow();
     }
   }
 });

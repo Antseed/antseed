@@ -19,6 +19,11 @@ export function usePublicEndpointModal(): PublicEndpointModalContextValue {
   return value;
 }
 
+/** Same as usePublicEndpointModal, but null outside the provider instead of throwing. */
+export function useOptionalPublicEndpointModal(): PublicEndpointModalContextValue | null {
+  return useContext(PublicEndpointModalContext);
+}
+
 export function PublicEndpointModalProvider({ children }: { children: ReactNode }) {
   const [isOpen, setIsOpen] = useState(false);
   const [status, setStatus] = useState<PublicTunnelStatus | null>(null);

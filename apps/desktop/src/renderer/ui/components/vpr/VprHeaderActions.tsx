@@ -1,10 +1,12 @@
 import { HugeiconsIcon } from '@hugeicons/react';
-import { HelpCircleIcon, Settings01Icon } from '@hugeicons/core-free-icons';
+import { Globe02Icon, HelpCircleIcon, Settings01Icon } from '@hugeicons/core-free-icons';
+import { useState } from 'react';
 import { Skeleton } from '@antseed/ui';
 import { formatCredits } from '../../../core/format';
 import type { ViewName } from '../../types';
 import { useFundingStatus } from '../../hooks/useFundingStatus';
 import { useUiSelector } from '../../hooks/useUiSelector';
+import { useOptionalPublicEndpointModal } from '../tunnels/PublicEndpointModal';
 import styles from './VprHeaderActions.module.scss';
 
 type Props = {
@@ -25,6 +27,7 @@ export function VprHeaderActions({ credits, onSelectView, className }: Props) {
       >
         <HugeiconsIcon icon={HelpCircleIcon} size={18} strokeWidth={1.8} />
       </button>
+      <GatewayConsoleButton />
       <button
         type="button"
         className={styles.iconButton}
@@ -36,6 +39,55 @@ export function VprHeaderActions({ credits, onSelectView, className }: Props) {
       </button>
       <CreditsButton credits={credits} onClick={() => onSelectView?.('deposit')} />
     </div>
+  );
+}
+
+/** Opens the console (or its setup link); falls back to the Public endpoint dialog when there is none. */
+export async function openGatewayConsole(
+  claimConsole: (() => Promise<{ ok: boolean }>) | undefined,
+  onOpenPublicEndpoint: (() => void) | undefined,
+): Promise<void> {
+  try {
+    const result = await claimConsole?.();
+    if (!result?.ok) onOpenPublicEndpoint?.();
+  } catch {
+    onOpenPublicEndpoint?.();
+  }
+}
+
+/**
+ * Globe that opens the gateway console. The console only exists while a public
+ * endpoint runs, so the click depends on that: a claimed console opens in the
+ * browser, an unclaimed one opens its one-time setup link, and with no endpoint
+ * running the Public endpoint dialog opens so the user can start one.
+ */
+function GatewayConsoleButton() {
+  const modal = useOptionalPublicEndpointModal();
+  return <GatewayConsoleLink onOpenPublicEndpoint={modal?.openPublicEndpointModal} />;
+}
+
+function GatewayConsoleLink({ onOpenPublicEndpoint }: { onOpenPublicEndpoint?: () => void }) {
+  const [opening, setOpening] = useState(false);
+  const open = async () => {
+    if (opening) return;
+    setOpening(true);
+    try {
+      await openGatewayConsole(window.antseedDesktop?.publicTunnelClaimConsole, onOpenPublicEndpoint);
+    } finally {
+      setOpening(false);
+    }
+  };
+  return (
+    <button
+      type="button"
+      className={styles.iconButton}
+      title="Gateway console"
+      aria-label="Open gateway console"
+      disabled={opening}
+      onClick={() => void open()}
+    >
+      <HugeiconsIcon icon={Globe02Icon} size={18} strokeWidth={1.8} />
+    </button>
   );
 }
 
