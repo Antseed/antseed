@@ -75,7 +75,7 @@ describe('computeTrustScore', () => {
   });
 
   it('keeps a seller with no stake at 0 whatever its usage history, and below the default gate on usage alone', () => {
-    expect(trustScore(chainPeer({ onChainChannelCount: 616, onChainTotalVolumeUsdcMicros: 189_137_403 }), NOW)).toBe(0);
+    expect(trustScore(chainPeer({ onChainChannelCount: 500, onChainTotalVolumeUsdcMicros: 200_000_000 }), NOW)).toBe(0);
     expect(trustScore(chainPeer({ onChainUsageShareBps: 5_000 }), NOW)).toBeLessThan(60);
     // Real stake clears it.
     expect(trustScore(chainPeer({ onChainUsageShareBps: 500, onChainPoolPowerShareBps: 500 }), NOW)).toBeGreaterThan(60);
