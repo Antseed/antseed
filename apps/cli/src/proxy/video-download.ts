@@ -78,9 +78,11 @@ function sellerErrorCode(body: Uint8Array): string | null {
  * retire it; that answer then carries VIDEO_JOB_RETIRED_HEADER. When the job
  * cannot be retired, the answer is a retryable `unknown` instead, so no caller
  * treats the job as finished while it can still be charged.
- * `onSellerDropped` runs when a started MP4 stream is cut off for a reason
+ * `onInterrupted` runs when a started MP4 stream is cut off for a reason
  * other than the client leaving, before the connection is destroyed, so the
- * request is reported as a failure, not a cancellation.
+ * request is reported as a failure, not a cancellation: `buyer` when the
+ * file was good but this buyer could not save its delivery, `seller`
+ * otherwise.
  */
 export async function downloadVideo(
   request: SerializedHttpRequest,
@@ -88,7 +90,7 @@ export async function downloadVideo(
   send: SendDownload,
   clientSignal: AbortSignal,
   retire: () => Promise<boolean> = async () => true,
-  onSellerDropped: () => void = () => {},
+  onInterrupted: (by: 'seller' | 'buyer') => void = () => {},
 ): Promise<void> {
   const reply = (httpStatus: number, body: Record<string, unknown>, extraHeaders: Record<string, string> = {}) => {
     response.writeHead(httpStatus, { 'content-type': 'application/json', 'cache-control': 'no-store', ...extraHeaders })
@@ -104,6 +106,8 @@ export async function downloadVideo(
   let length: number | null = null
   let received = 0
   let sellerAnswered = false
+  // The file was good but this buyer could not save its delivery: a buyer-side failure.
+  let unrecorded = false
   try {
     const body = request.method === 'GET' ? new Uint8Array(0) : request.body
     const result = await send({ ...request, headers: { ...headers, [VIDEO_DOWNLOAD_STREAM_HEADER]: VIDEO_DOWNLOAD_STREAM_VERSION }, body }, {
@@ -158,6 +162,7 @@ export async function downloadVideo(
     // again), so the next poll answers it is gone and a gateway stops holding its price; a good file whose delivery
     // could not be saved keeps its job, so it can be downloaded again.
     const delivered = result.headers[VIDEO_DELIVERED_HEADER]
+    if (delivered === VIDEO_DELIVERY_UNRECORDED) unrecorded = true
     if (delivered !== '1') {
       if (delivered !== VIDEO_DELIVERY_UNRECORDED) await retire().catch(() => false)
       throw new Error('Video not accepted')
@@ -165,7 +170,7 @@ export async function downloadVideo(
     response.end()
   } catch {
     if (response.headersSent || clientSignal.aborted) {
-      if (!clientSignal.aborted) onSellerDropped()
+      if (!clientSignal.aborted) onInterrupted(unrecorded ? 'buyer' : 'seller')
       response.destroy()
     }
     else if (sellerAnswered) error(502, 'video_download_failed')

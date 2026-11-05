@@ -25,7 +25,7 @@ import {
 } from '../telemetry/runtime.js';
 import { watchConnectedAppFirstRequest } from '../telemetry/connected-app-watch.js';
 import { syncBuyerTelemetryConsent } from '../telemetry/buyer-consent.js';
-import { setDesktopTelemetryUserOptedOut } from '../telemetry/host-env.js';
+import { setDesktopTelemetryChoiceInConfig } from '../telemetry/host-env.js';
 import {
   getMainWindow,
 } from '../ui/window.js';
@@ -103,7 +103,7 @@ export function registerAppIpc(): void {
       await telemetry.setUserOptedOut(previouslyOptedOut);
       return { ok: false, error: 'Could not update the buyer config; telemetry setting unchanged' };
     }
-    setDesktopTelemetryUserOptedOut(!enabled);
+    setDesktopTelemetryChoiceInConfig(true);
     return {
       ok: true,
       available: telemetry.available,

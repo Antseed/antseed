@@ -96,7 +96,7 @@ import {
 import { resolveBuyerProxyPort } from './runtime/active-config.js';
 import { createTelemetryService } from './telemetry/telemetry.js';
 import { setTelemetryService } from './telemetry/runtime.js';
-import { setDesktopTelemetryHost } from './telemetry/host-env.js';
+import { setDesktopTelemetryChoiceInConfig, setDesktopTelemetryHost } from './telemetry/host-env.js';
 import { syncBuyerTelemetryConsent } from './telemetry/buyer-consent.js';
 import { firstChatDepositSnapshot } from './telemetry/events.js';
 import { cachedBuyerBalanceIsZero, refreshCreditsInfo } from './payments/credits.js';
@@ -131,7 +131,7 @@ function initializeTelemetry(hadExistingIdentity: boolean): Promise<Awaited<Retu
     hadExistingIdentity,
   }).then(async (service) => {
     setTelemetryService(service);
-    setDesktopTelemetryHost({ sessionId: service.sessionId, available: service.available, userOptedOut: service.isUserOptedOut() });
+    setDesktopTelemetryHost({ sessionId: service.sessionId, available: service.available });
     await service.recordAppStarted();
     return service;
   }).catch(() => null);
@@ -479,7 +479,10 @@ app.whenReady().then(async () => {
   // ensureConfig, so a missing config still gets the desktop defaults
   // instead of a file holding just this key.
   const readyTelemetry = await telemetryReady;
-  if (readyTelemetry) await syncBuyerTelemetryConsent(!readyTelemetry.isUserOptedOut());
+  if (readyTelemetry) {
+    // Until this write succeeds, buyers start with the env off switch.
+    setDesktopTelemetryChoiceInConfig(await syncBuyerTelemetryConsent(!readyTelemetry.isUserOptedOut()));
+  }
   loadPersistedSystemProxyState();
 
   const showMainWindow = () => {

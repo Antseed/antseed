@@ -9,8 +9,9 @@
  *   property passes through ./sanitize.ts's allowlist — unknown properties
  *   are dropped, strings truncated, numbers bounded.
  * - Disabled in development builds, when the TELEMETRY_ENABLED kill switch
- *   is falsy, when PostHog config is missing, or when the user opts out in
- *   Settings.
+ *   is falsy, under the opt-outs every AntSeed product honors
+ *   (`DO_NOT_TRACK=1`, `ANTSEED_TELEMETRY=0`), when PostHog config is
+ *   missing, and until the user turns it on in Settings.
  * - Routine captures are fire-and-forget; clean shutdown uses a bounded flush.
  * - First-open and first-chat events fire exactly once per installation.
  */
@@ -46,6 +47,9 @@ import {
 import type { TelemetryAppName, UserActionSignal } from '../../shared/telemetry.js';
 
 export const TELEMETRY_ENABLED_ENV = 'TELEMETRY_ENABLED';
+/** The opt-outs every AntSeed product honors (see packages/telemetry's consent rule). */
+export const ANTSEED_TELEMETRY_ENV = 'ANTSEED_TELEMETRY';
+export const DO_NOT_TRACK_ENV = 'DO_NOT_TRACK';
 export const POSTHOG_HOST_ENV = 'POSTHOG_HOST';
 export const POSTHOG_PROJECT_API_KEY_ENV = 'POSTHOG_PROJECT_API_KEY';
 export const INSTALL_SOURCE_ENV = 'INSTALL_SOURCE';
@@ -87,7 +91,13 @@ export function uuidV7(timestampMs: number): string {
 function isFalsyEnv(value: string | undefined): boolean {
   if (!value) return false;
   const normalized = value.trim().toLowerCase();
-  return normalized === 'false' || normalized === '0' || normalized === 'no';
+  return normalized === 'false' || normalized === '0' || normalized === 'no' || normalized === 'off';
+}
+
+function isTruthyEnv(value: string | undefined): boolean {
+  if (!value) return false;
+  const normalized = value.trim().toLowerCase();
+  return normalized === 'true' || normalized === '1' || normalized === 'yes' || normalized === 'on';
 }
 
 function configValue(env: NodeJS.ProcessEnv, key: string, baked: string | null): string {
@@ -230,7 +240,9 @@ export async function createTelemetryService(
   const env = options.env ?? process.env;
   const now = options.nowMs ?? (() => Date.now());
 
-  const envDisabled = isFalsyEnv(env[TELEMETRY_ENABLED_ENV]);
+  const envDisabled = isFalsyEnv(env[TELEMETRY_ENABLED_ENV])
+    || isFalsyEnv(env[ANTSEED_TELEMETRY_ENV])
+    || isTruthyEnv(env[DO_NOT_TRACK_ENV]);
   const host = configValue(env, POSTHOG_HOST_ENV, BAKED_POSTHOG_HOST);
   const apiKey = configValue(env, POSTHOG_PROJECT_API_KEY_ENV, BAKED_POSTHOG_PROJECT_API_KEY);
   const configMissing = host.length === 0 || apiKey.length === 0 || !isValidHttpsUrl(host);

@@ -168,6 +168,27 @@ test('disabled when TELEMETRY_ENABLED is false/0/no', async (t) => {
   }
 });
 
+test('DO_NOT_TRACK and ANTSEED_TELEMETRY=0 turn off a desktop the user opted in', async (t) => {
+  for (const optOut of [{ DO_NOT_TRACK: '1' }, { ANTSEED_TELEMETRY: '0' }, { ANTSEED_TELEMETRY: 'off' }]) {
+    const dir = await makeTempDir(t);
+    const captured: Captured = { payloads: [] };
+    // The user turned it on in an earlier launch...
+    const optedIn = await createTelemetryService(baseOptions(dir, captured));
+    assert.equal(optedIn.enabled, true);
+    // ...and this launch runs under a cross-product opt-out.
+    const service = await createTelemetryService(baseOptions(dir, captured, {
+      env: {
+        [POSTHOG_HOST_ENV]: 'https://posthog.example.com',
+        [POSTHOG_PROJECT_API_KEY_ENV]: 'phc_test',
+        ...optOut,
+      } as NodeJS.ProcessEnv,
+    }));
+    assert.equal(service.enabled, false, `expected disabled for ${JSON.stringify(optOut)}`);
+    await service.recordAppStarted();
+    assert.equal(captured.payloads.length, 0);
+  }
+});
+
 test('disabled when PostHog host or key is missing', async (t) => {
   const dir = await makeTempDir(t);
   const captured: Captured = { payloads: [] };

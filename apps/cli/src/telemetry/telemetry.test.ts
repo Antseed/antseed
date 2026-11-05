@@ -441,6 +441,22 @@ test('turning telemetry off in the config stops a running buyer', async (t) => {
   assert.equal(events.length, 0)
 })
 
+test('turning telemetry on in the config starts a running buyer that began off', async (t) => {
+  // The desktop's case: a buyer started before the user opted in, with no env off switch.
+  const dir = await tempDir(t)
+  const configPath = join(dir, 'config.json')
+  await writeConfiguredTelemetry(configPath, false)
+  const { events, sender } = capture()
+  const telemetry = new BuyerTelemetry({ configPath, getDistinctId: () => WALLET, env: { ...CONFIGURED, ANTSEED_TELEMETRY_HOST: 'desktop' }, sender })
+  assert.equal(telemetry.enabled, false)
+  await writeConfiguredTelemetry(configPath, true)
+  telemetry.reloadConsent()
+  assert.equal(telemetry.enabled, true)
+  telemetry.started({ paymentsEnabled: true, verifierEnabled: false, ownsProxyPort: true })
+  await telemetry.close()
+  assert.equal(events.length, 1)
+})
+
 test('speed and cost: exact times, output tokens, finish reason and listed-price cost', () => {
   const trace = new RequestTrace(1_000, true)
   trace.noteAttempt(SECRET_PEER)
