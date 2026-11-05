@@ -105,6 +105,210 @@
   line-height: 16px;
 }
 
+/* ---------- Points calculator ("What would you earn?", as on the Points site) ---------- */
+
+.calcCard {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+}
+
+.calcTop {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.calcTitle {
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 18px;
+}
+
+.calcLive {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #3dc799;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.calcLive i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #3dc799;
+  animation: calc-pulse 2s infinite;
+}
+
+@keyframes calc-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(61, 199, 153, 0.5); }
+  70% { box-shadow: 0 0 0 7px rgba(61, 199, 153, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(61, 199, 153, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .calcLive i { animation: none; }
+}
+
+.calcQ {
+  display: grid;
+  gap: 6px;
+}
+
+.calcQ > span {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.calcOpts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.calcOpt {
+  height: 30px;
+  padding: 0 12px;
+  border: none;
+  border-radius: 999px;
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.calcOpt[aria-pressed='true'] {
+  background: #10b981;
+  color: #001e12;
+}
+
+.calcSelect {
+  width: 100%;
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.calcSteps {
+  display: grid;
+  gap: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.calcSteps div {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.calcSteps span {
+  color: var(--text-secondary);
+}
+
+.calcSteps b {
+  color: var(--text-primary);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.calcTotal {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.calcTotal span {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.calcTotal b {
+  color: #d9a441;
+  font-size: 28px;
+  font-weight: 650;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.calcTotal b.calcZero {
+  color: #e0705f;
+}
+
+.calcRange {
+  display: grid;
+  gap: 6px;
+}
+
+.calcBar {
+  position: relative;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--bg-hover);
+}
+
+.calcBar i {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(242, 196, 109, 0.35), #f2c46d);
+}
+
+.calcBar b {
+  position: absolute;
+  top: -4px;
+  width: 4px;
+  height: 16px;
+  margin-left: -2px;
+  border-radius: 2px;
+  background: var(--text-primary);
+}
+
+.calcRangeLabels {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 15px;
+}
+
+.textLink {
+  align-self: flex-start;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 16px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.textLink:hover {
+  color: var(--accent-green);
+}
+
 .errorNote {
   color: var(--text-secondary);
   font-size: 11px;

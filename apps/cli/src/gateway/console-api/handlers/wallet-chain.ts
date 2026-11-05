@@ -4,7 +4,7 @@
  * provider (and an endpoint-probing burst) per request. Balances are not
  * read here: they come from the buyer's cached `GET /_antseed/balances`.
  */
-import { AntsContext, rewards, type AntsChainConfig, type RewardsView } from '@antseed/ants'
+import { AntsContext, buyerPoints, rewards, type AntsChainConfig, type BuyerPointsView, type RewardsView } from '@antseed/ants'
 import { multicallRead } from '@antseed/node/payments'
 import { Interface, ZeroAddress, type AbstractProvider } from 'ethers'
 import { sharedChainProvider, type ChainRpcProvider } from '../../../proxy/chain-rpc.js'
@@ -40,7 +40,7 @@ class SharedAntsContext extends AntsContext {
  * than per request; reads run one at a time because the context carries the
  * buyer address.
  */
-export function createRewardsReader(): (chain: AntsChainConfig, address: string) => Promise<RewardsView & { legacyEpochs: number[] }> {
+export function createRewardsReader(): (chain: AntsChainConfig, address: string) => Promise<RewardsView & { legacyEpochs: number[]; points: BuyerPointsView | null }> {
   const contexts = new Map<string, SharedAntsContext>()
   let queue: Promise<unknown> = Promise.resolve()
   return (chain, address) => {
@@ -56,7 +56,9 @@ export function createRewardsReader(): (chain: AntsChainConfig, address: string)
       const view = await rewards(ctx)
       // The epochs a legacy buyer claim may name (finalized, before the current program took over).
       const legacyEpochs = BigInt(view.legacy.buyer || '0') > 0n ? (await ctx.claimableEpochs()).legacy : []
-      return { ...view, legacyEpochs }
+      // Antseed Points from the explorer; rewards still answer when it cannot be read.
+      const points = await buyerPoints(ctx).catch(() => null)
+      return { ...view, legacyEpochs, points }
     })
     queue = run.catch(() => {})
     return run

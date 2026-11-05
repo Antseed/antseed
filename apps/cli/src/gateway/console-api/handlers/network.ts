@@ -31,7 +31,7 @@ export function registerNetworkRoutes(router: ConsoleRouter, deps: ConsoleDeps, 
   // Read from the config file only; an unreadable one just leaves the audit links out.
   const explorerUrl = overrides.explorerUrl ?? (async () => (await resolveAntsChain(deps.configPath).catch(() => null))?.explorerApiUrl?.trim() || null)
 
-  router.add('GET', '/peers', async (): Promise<Peer[]> => listNetworkPeers(deps.store, buyer, deps.now(), await explorerUrl()))
+  router.add('GET', '/peers', async (): Promise<Peer[]> => listNetworkPeers(deps.store, buyer, deps.now(), deps.peerBoosts, await explorerUrl()))
   /** Every model on the network with the sellers offering it; unfiltered, like `/peers`. */
   router.add('GET', '/models', async (): Promise<NetworkModel[]> => listNetworkModels(deps.store, buyer, deps.now(), await explorerUrl()))
   /** Every routing service on the network; unfiltered, like `/models`. */

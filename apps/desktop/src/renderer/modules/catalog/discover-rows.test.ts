@@ -195,6 +195,15 @@ test('projectRowsToChatServiceOptions preserves peer display name and cached inp
   assert.equal(option.cachedInputUsdPerMillion, 0.5);
 });
 
+test('normalizeDiscoverRow keeps a known boost and an unknown one apart', () => {
+  const raw = { peerId: 'abc', serviceId: 'example' };
+  assert.equal(normalizeDiscoverRow({ ...raw, boost: 15.87 })?.boost, 15.87);
+  assert.equal(normalizeDiscoverRow({ ...raw, boost: 0 })?.boost, 0);
+  assert.equal(normalizeDiscoverRow({ ...raw, boost: null })?.boost, null);
+  assert.equal(normalizeDiscoverRow({ ...raw, boost: -1 })?.boost, null);
+  assert.equal(normalizeDiscoverRow(raw)?.boost, null);
+});
+
 test('a penalized trust breakdown survives normalization and reaches the reputation tooltip', async () => {
   const { sellerReputationExplanation } = await import('./seller-format.js');
   const row = normalizeDiscoverRow({

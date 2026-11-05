@@ -273,6 +273,44 @@
   background: var(--border);
 }
 
+/* Antseed Points line under the auto-select row. */
+.boostLine {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 0 2px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.boostLine strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.boostLabel {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.boostPin {
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 16px;
+  cursor: pointer;
+}
+
+.boostPin:hover {
+  border-color: var(--accent-green);
+  color: var(--accent-green);
+}
+
 /* ---------- Sellers ---------- */
 
 .stack > .sellerSection {

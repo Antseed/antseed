@@ -18,7 +18,8 @@ import { buildImageModelSkillPrompt } from '../../../modules/chat/image-model-in
 import { favoriteModelKey, loadFavoriteModels, toggleFavoriteModel } from '../../../modules/catalog/favorites';
 import { vprModelPageTarget } from '../../../modules/catalog/model-page-target';
 import { modelPinKey, vprModelPinFor } from '../../../modules/routing/model-pins';
-import { isFreeRoute, sellerMetaLabel, sellerReputationLabel } from '../../../modules/catalog/seller-format';
+import { BOOST_EARNING_MIN, formatBoost, isFreeRoute, sellerBoostLabel, sellerMetaLabel, sellerReputationLabel } from '../../../modules/catalog/seller-format';
+import { boostOptionFromRoute, summarizeModelBoost, type ModelBoostSummary } from '../../../modules/catalog/boost-summary';
 import { getKnownProxy } from '../../../core/known-proxies';
 import type { DiscoverRow, DiscoverVerificationLink } from '../../../core/state';
 import { shallowEqual, useUiSelector } from '../../hooks/useUiSelector';
@@ -122,6 +123,10 @@ function VprModelDetails({ onSelectView }: Props) {
   // The active route (auto-chosen or pinned) leads the list with a checkmark.
   const activePeerId = autoSelect ? bestRoute?.peerId : pinnedPeerId;
   const selectedRoute = routes.find((route) => route.peerId === activePeerId) ?? bestRoute;
+  const boostSummary = useMemo(
+    () => summarizeModelBoost(routes.map(boostOptionFromRoute), selectedRoute?.peerId),
+    [routes, selectedRoute],
+  );
 
   if (!model || !entry) {
     return (
@@ -155,6 +160,12 @@ function VprModelDetails({ onSelectView }: Props) {
     : videoOnly ? ['Video generation', ...modelTags] : modelTags;
 
   const viewedModel = model;
+  /** Pin a seller for this model; only the applied model touches the live route. */
+  function pinSeller(peerId: string): void {
+    if (applied) actions.selectVprModel(viewedModel.provider, viewedModel.serviceId, peerId);
+    else actions.setVprModelSellerPin(viewedModel.provider, viewedModel.serviceId, peerId);
+  }
+
   /** Make the browsed text model (and its previewed pin) the active route. */
   function applyModel(): void {
     actions.selectVprModel(viewedModel.provider, viewedModel.serviceId, pinnedPeerId);
@@ -331,6 +342,8 @@ function VprModelDetails({ onSelectView }: Props) {
           />
         </div>
 
+        {boostSummary && <ModelBoostLine summary={boostSummary} auto={autoSelect} onPin={pinSeller} />}
+
         <div className={styles.divider} aria-hidden="true" />
 
         <div className={styles.sellerSection}>
@@ -364,10 +377,8 @@ function VprModelDetails({ onSelectView }: Props) {
                       if (active && !autoSelect) {
                         if (applied) actions.clearVprPinnedPeer();
                         else actions.setVprModelSellerPin(model.provider, model.serviceId, null);
-                      } else if (applied) {
-                        actions.selectVprModel(model.provider, model.serviceId, route.peerId);
                       } else {
-                        actions.setVprModelSellerPin(model.provider, model.serviceId, route.peerId);
+                        pinSeller(route.peerId);
                       }
                     }}
                   />
@@ -463,6 +474,36 @@ function ModelTagBadges({ tags }: { tags: string[] }) {
   );
 }
 
+/** "Auto: ~2.0× · up to 16× with GesundAI [Pin]": Antseed Points per $1 now, and the paid seller that earns most. */
+function ModelBoostLine({ summary, auto, onPin }: {
+  summary: ModelBoostSummary;
+  auto: boolean;
+  onPin: (peerId: string) => void;
+}) {
+  const { current, best, better } = summary;
+  const now = !current ? null
+    : current.free ? 'Free, no points'
+      : current.boost === null ? '—'
+        : `${auto ? '~' : ''}${formatBoost(current.boost)}`;
+  return (
+    <div className={styles.boostLine} aria-label="Antseed Points boost">
+      <InfoTooltip align="left" content={<span>Antseed Points per $1 you spend: the seller&apos;s boost. Free usage earns no points. Auto may spread requests across sellers, so its figure is approximate.</span>}>
+        <span className={styles.boostLabel}>Points</span>
+      </InfoTooltip>
+      {now !== null && <span>{auto ? 'Auto' : 'Pinned'}: <strong>{now}</strong></span>}
+      {best && better && (
+        <>
+          <span aria-hidden="true">·</span>
+          <span>up to <strong>{formatBoost(best.boost)}</strong> with {best.name}</span>
+          <button type="button" className={styles.boostPin} onClick={() => onPin(best.peerId)}>Pin</button>
+        </>
+      )}
+      {best && !better && current?.peerId === best.peerId && <><span aria-hidden="true">·</span><span>the highest for this model</span></>}
+      {!best && <><span aria-hidden="true">·</span><span>no seller of this model earns points yet</span></>}
+    </div>
+  );
+}
+
 function SellerRow({ route, active, auto, onClick, tee }: {
   route: DiscoverRow;
   /** This seller currently serves the model (auto-chosen or pinned). */
@@ -483,6 +524,7 @@ function SellerRow({ route, active, auto, onClick, tee }: {
       .map((parameter) => parameter.replaceAll('_', ' ')),
   ].join(' · ');
   const sellerName = route.peerDisplayName || route.peerLabel || route.peerId;
+  const boostLabel = sellerBoostLabel(route);
   return (
     <div className={`${styles.sellerRow}${active ? ` ${styles.sellerRowActive}` : ''}`}>
     <button
@@ -514,6 +556,11 @@ function SellerRow({ route, active, auto, onClick, tee }: {
           {isFreeRoute(route) && !route.freeTier?.base.stakersOnly && <VprBadge tone="green">Free</VprBadge>}
           <VprFreeTierStake program={route.freeTier} agentId={route.agentId} priced={!isFreeRoute(route)} />
           {hasModerationControl && <VprBadge tone="neutral">Moderation control</VprBadge>}
+          {boostLabel && (
+            <InfoTooltip align="left" narrow content={<span>Antseed Points boost: each $1 you spend with this seller earns this many points.</span>}>
+              <span><VprBadge tone={(route.boost ?? 0) < BOOST_EARNING_MIN ? 'neutral' : 'green'}>{boostLabel}</VprBadge></span>
+            </InfoTooltip>
+          )}
         </div>
         <span className={styles.sellerMeta}>
           {sellerMetaLabel(route)}

@@ -1,5 +1,5 @@
 /** Pure mapping from buyer-daemon and chain responses to the console's wallet shapes. */
-import type { AntsChainConfig, RewardsView } from '@antseed/ants'
+import type { AntsChainConfig, BuyerPointsView, RewardsView } from '@antseed/ants'
 import { formatAntsExact } from '@antseed/ants'
 import { getChainConfig } from '@antseed/node'
 import { CHANNEL_CLOSE_GRACE_MS, type Channel, type ChainInfo, type DepositWatch, type Rewards, type Usdc, type Wallet } from '../types.js'
@@ -189,7 +189,7 @@ export function mapChannels(body: unknown): Channel[] {
 }
 
 /** Buyer-side rewards only, like the desktop's VPR summary: usage rewards plus legacy buyer emissions, each claimable on its own. */
-export function mapRewards(view: RewardsView & { legacyEpochs?: number[] }, address: string): Rewards {
+export function mapRewards(view: RewardsView & { legacyEpochs?: number[]; points?: BuyerPointsView | null }, address: string): Rewards {
   const legacyBuyer = BigInt(view.legacy.buyer || '0')
   const pending = BigInt(view.buyerUsage.total || '0') + legacyBuyer
   const legacyEpochs = view.legacyEpochs ?? []
@@ -203,6 +203,7 @@ export function mapRewards(view: RewardsView & { legacyEpochs?: number[] }, addr
       ? { pendingAnts: formatAntsExact(legacyBuyer), contract: view.legacy.contract, epochs: legacyEpochs }
       : null,
     operator: view.buyerUsage.operator,
+    ...(view.points !== undefined ? { points: view.points } : {}),
   }
 }
 

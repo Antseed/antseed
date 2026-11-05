@@ -19,6 +19,8 @@ export interface DataTableColumn<T> {
    * button, so it may hold its own buttons (e.g. copy an id).
    */
   after?: (row: T) => ReactNode;
+  /** Beside the header, outside its sort button, so it may hold its own button (e.g. an ⓘ). */
+  headerInfo?: ReactNode;
 }
 
 function cellClass<T>(column: DataTableColumn<T>): string | undefined {
@@ -101,6 +103,7 @@ export function DataTable<T>({ rows, columns, rowKey, onRowClick, rowLabel, acti
                       <span aria-hidden="true" className="as-table__arrow">{sortArrow(sort, column.key)}</span>
                     </button>
                   ) : column.header}
+                  {column.headerInfo && <span className="as-table__head-info">{column.headerInfo}</span>}
                 </th>
               );
             })}

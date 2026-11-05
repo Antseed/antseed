@@ -77,6 +77,27 @@ export function formatLatency(ms: number | null | undefined): string {
   return ms >= 1000 ? `${(ms / 1000).toFixed(ms >= 10_000 ? 0 : 1)} s` : `${Math.round(ms)} ms`
 }
 
+/** Antseed Points boost, as the Points site shows it: "7.2×", "16×", "<0.1×", "0×"; "—" when unknown. */
+export function formatBoost(boost: number | null | undefined): string {
+  if (boost === null || boost === undefined || Number.isNaN(boost)) return '—'
+  if (boost === 0) return '0×'
+  if (boost < 0.1) return '<0.1×'
+  return `${boost.toFixed(boost < 10 ? 1 : 0)}×`
+}
+
+/** An ANTS amount for points estimates: "12,557" from 100 up, "85.2" below. */
+export function formatAntsAmount(value: number): string {
+  return value.toLocaleString('en-US', { maximumFractionDigits: value >= 100 ? 0 : 2 })
+}
+
+/** Antseed Points, whole: "1,241". */
+export function formatPoints(points: number | null | undefined): string {
+  return points === null || points === undefined || !Number.isFinite(points) ? '—' : Math.round(points).toLocaleString('en-US')
+}
+
+/** Below this a seller earns its buyers no ANTS to speak of (the Points site's "0× earns nothing"). */
+export const BOOST_EARNING_MIN = 0.01
+
 /** Output speed, e.g. "55 tok/s". */
 export function formatSpeed(tokensPerSecond: number | null | undefined): string {
   if (tokensPerSecond === null || tokensPerSecond === undefined) return '—'

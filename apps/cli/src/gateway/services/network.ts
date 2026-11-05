@@ -4,6 +4,7 @@ import { buyerJson, optionalBuyerJson, type BuyerClient } from '../console-api/h
 import { enrichCandidates, mapNetworkModels, mapNetworkRouters, mapPeers, type PeerStat } from '../console-api/handlers/network-mapping.js'
 import type { BuyerLimits, NetworkModel, NetworkRouter, Peer, RoutePreview } from '../console-api/types.js'
 import { resolvePolicy, type PolicyTarget } from '../policy-resolver.js'
+import { readPeerBoosts, type PeerBoostSource } from './peer-boosts.js'
 import type { GatewayStore } from '../store.js'
 
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -17,18 +18,19 @@ const teeCheckAttempts = new Map<string, number>()
 export type PreviewTarget = Pick<PolicyTarget, 'keyId' | 'workspaceId' | 'memberId' | 'presetSlug'>
 
 /**
- * Sellers the buyer knows, with health, verification and this gateway's own 24 h stats.
+ * Sellers the buyer knows, with health, verification, this gateway's own 24 h stats and (when given) boosts.
  * `explorerUrl` (the chain's explorer) links each model-check verdict to its audit history.
  */
-export async function listNetworkPeers(store: GatewayStore, buyer: BuyerClient, now: number, explorerUrl: string | null = null): Promise<Peer[]> {
-  const [peers, health, verification] = await Promise.all([
+export async function listNetworkPeers(store: GatewayStore, buyer: BuyerClient, now: number, boostSource?: PeerBoostSource, explorerUrl: string | null = null): Promise<Peer[]> {
+  const [peers, health, verification, boosts] = await Promise.all([
     buyerJson(buyer, '/_antseed/peers'),
     optionalBuyerJson(buyer, '/_antseed/peer-health'),
     // Needs the buyer's own verification token today; when refused, `verified` falls back.
     optionalBuyerJson(buyer, '/_antseed/verification'),
+    readPeerBoosts(boostSource),
   ])
   const stats = store.peerStats(now - DAY_MS) as PeerStat[]
-  const mapped = mapPeers({ peers, health, verification, stats, now, explorerUrl })
+  const mapped = mapPeers({ peers, health, verification, stats, now, boosts, explorerUrl })
   if (verification?.['verificationEnabled'] === true) checkUnattestedTeePeer(buyer, mapped, now)
   return mapped
 }
@@ -55,7 +57,7 @@ function checkUnattestedTeePeer(buyer: BuyerClient, peers: readonly Peer[], now:
 export async function listNetworkModels(store: GatewayStore, buyer: BuyerClient, now: number, explorerUrl: string | null = null): Promise<NetworkModel[]> {
   const [models, peers] = await Promise.all([
     buyerJson(buyer, '/v1/models'),
-    listNetworkPeers(store, buyer, now, explorerUrl).catch((): Peer[] => []),
+    listNetworkPeers(store, buyer, now, undefined, explorerUrl).catch((): Peer[] => []),
   ])
   return mapNetworkModels(models, peers)
 }

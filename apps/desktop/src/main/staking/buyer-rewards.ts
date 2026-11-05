@@ -1,4 +1,4 @@
-import { formatAntsExact, rewards, type AntsChainConfig } from '@antseed/ants/service';
+import { buyerPoints, formatAntsExact, rewards, type AntsChainConfig } from '@antseed/ants/service';
 import type { DesktopRewardsSummary } from '../payments/buyer-channels.js';
 import { sharedChainContext } from '../payments/shared-chain.js';
 
@@ -8,9 +8,11 @@ export async function readBuyerRewardsSummary(chain: AntsChainConfig, buyerAddre
   // refreshes. VPR has one wallet, so pointing it at the current buyer is safe.
   const ctx = await sharedChainContext(chain);
   ctx.buyerAddress = buyerAddress;
-  const [view, transfersEnabled] = await Promise.all([
+  const [view, transfersEnabled, points] = await Promise.all([
     rewards(ctx),
     chain.antsTokenAddress ? ctx.antsToken().transfersEnabled() : Promise.resolve(false),
+    // Antseed Points from the explorer; the rewards summary still answers when it cannot be read.
+    buyerPoints(ctx).catch(() => null),
   ]);
   return {
     available: !!(chain.emissionsContractAddress || chain.usageRewardsAddress),
@@ -18,5 +20,9 @@ export async function readBuyerRewardsSummary(chain: AntsChainConfig, buyerAddre
     currentEpoch: view.currentEpoch,
     transfersEnabled,
     error: null,
+    points: points && {
+      points: points.points, estimatedAnts: points.estimatedAnts, capped: points.capped, endsAt: points.endsAt,
+      potAnts: points.potAnts, totalPoints: points.totalPoints, startsAt: points.startsAt, busyPointsPerDay: points.busyPointsPerDay,
+    },
   };
 }

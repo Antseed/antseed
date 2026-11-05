@@ -9,7 +9,8 @@
   "main": "dist/index.js",
   "exports": {
     ".": "./dist/index.js",
-    "./service": "./dist/service/index.js"
+    "./service": "./dist/service/index.js",
+    "./points": "./dist/service/points-math.js"
   },
   "scripts": {
     "build": "npm run build:server && npm run build:web",

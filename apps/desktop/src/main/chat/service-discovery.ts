@@ -7,6 +7,7 @@
  */
 
 import { readFile } from 'node:fs/promises';
+import type { BoostBySeller } from '@antseed/ants/service';
 import { normalizeAdvertisedVerifierIds } from '@antseed/node/verifier-capabilities';
 import { readPeerHealth, type RawPeerHealth } from '../runtime/peer-health.js';
 import {
@@ -80,6 +81,8 @@ export type DiscoverRowEntry = {
   freeTier: FreeTierProgram | null;
   /** ANTS actively staked in the seller's pool this epoch (whole ANTS). */
   poolStakeAnts: number;
+  /** Antseed Points per $1 spent with this seller (pool power ÷ 10,000 ANTS × 104 epochs); null when Antscan is unreachable. */
+  boost: number | null;
   onChainActiveChannelCount: number;
   onChainGhostCount: number;
   onChainTotalVolumeUsdc: string;
@@ -477,6 +480,7 @@ export async function buildDiscoverRows(
   buyerStateDiscoveredPeers: Record<string, BuyerStateDiscoveredPeer>,
   networkStats: Map<number, { requests: bigint; inputTokens: bigint; outputTokens: bigint }>,
   peerHealth: Record<string, RawPeerHealth> = {},
+  sellerBoosts: BoostBySeller | null = null,
   /** The chain explorer (`explorerApiUrl`) that verdict links point at; no links without it. */
   explorerUrl: string | null = null,
 ): Promise<DiscoverRowEntry[]> {
@@ -544,6 +548,8 @@ export async function buildDiscoverRows(
       // On a free service its own or the seller-wide program; on a priced one only its own free allowance (never on paid video).
       freeTier: freeTierProgramForService(peerBlob?.capabilities, entry.id, isPricedEntry(entry), { video: isNativeVideoProtocol(entry.protocol) }),
       poolStakeAnts,
+      // A seller with no pool on Antscan earns nothing: 0×, unlike an unknown (null) boost.
+      boost: sellerBoosts ? sellerBoosts.get(sellerEvmAddress.toLowerCase())?.boost ?? 0 : null,
       onChainActiveChannelCount,
       onChainGhostCount,
       onChainTotalVolumeUsdc,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { describeLimits, formatDuration, formatElapsed, formatPricePerMillion, formatPriceRange, formatUsd, parseUsdInput, periodStart, shortId, usdcForInput, usdcToNumber } from './format'
+import { describeLimits, formatBoost, formatDuration, formatElapsed, formatPricePerMillion, formatPriceRange, formatUsd, parseUsdInput, periodStart, shortId, usdcForInput, usdcToNumber } from './format'
 import { draftToLimits, limitsToDraft } from './limits'
 import { formatAnts } from './ants'
 
@@ -95,5 +95,15 @@ describe('time helpers', () => {
     expect(formatElapsed(151_000)).toBe('02:31')
     expect(formatElapsed(-5_000)).toBe('00:00')
     expect(formatElapsed(3_725_000)).toBe('1:02:05')
+  })
+})
+
+describe('boost', () => {
+  it('formats like the Points site and never turns unknown into 0×', () => {
+    expect(formatBoost(15.87)).toBe('16×')
+    expect(formatBoost(7.23)).toBe('7.2×')
+    expect(formatBoost(0.05)).toBe('<0.1×')
+    expect(formatBoost(0)).toBe('0×')
+    expect(formatBoost(null)).toBe('—')
   })
 })

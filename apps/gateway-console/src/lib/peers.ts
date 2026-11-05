@@ -41,6 +41,11 @@ export function isFreePeer(peer: Peer, model = ''): boolean {
   return servicesFor(peer, model).some((service) => isFreeService(service) && service.freeTier?.base.stakersOnly !== true)
 }
 
+/** Charges for at least one service (for the chosen model, if any). Only paid usage earns Antseed Points. */
+export function isPaidPeer(peer: Peer, model = ''): boolean {
+  return servicesFor(peer, model).some((service) => (service.inputUsdPerMillion ?? 0) > 0 || (service.outputUsdPerMillion ?? 0) > 0)
+}
+
 export function filterPeers(peers: readonly Peer[], filter: PeerFilter): Peer[] {
   const needle = filter.search.trim().toLowerCase()
   return peers.filter((peer) => {

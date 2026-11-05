@@ -3,12 +3,17 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button, DataTable, LoadingRows, Modal, useToast } from '@antseed/ui'
 import { api } from '../api'
 import { useConsole } from '../app/context'
+import { pointsUrl } from '../config'
 import { ChainGate } from '../components/ChainGate'
+import { PointsCalculator } from '../components/PointsCalculator'
 import { Icon } from '../components/icons'
 import { Badge, EmptyState, Mono, PageHeader, PageLink, Panel, QueryView, StaleHint, StatTile } from '../components/ui'
 import { antsIsPositive, formatAnts } from '../lib/ants'
 import { isSetAddress } from '../lib/chain'
-import { shortId } from '../lib/format'
+import { formatPoints, shortId } from '../lib/format'
+import { pointsTileSummary } from '../lib/points-summary'
+import type { RewardsPoints } from '../api/types'
+import { PointsTip } from '../components/TrustInfo'
 import { useOperator } from '../lib/operator'
 import { qk, useChain } from '../lib/queries'
 
@@ -16,6 +21,15 @@ const RewardsClaim = lazy(() => import('../wallet/RewardsClaim'))
 const StakingDashboard = lazy(() => import('../staking/StakingDashboard').then((module) => ({ default: module.StakingDashboard })))
 /** The staking dashboard's Rewards page without its buyer rewards, which this page shows. */
 const STAKING_REWARDS = ['rewards'] as const
+
+/** This epoch's Antseed Points with the ANTS they convert to at the live rate. */
+function PointsTile({ points }: { points: RewardsPoints | null | undefined }) {
+  if (!points) return <StatTile label="Points this week" value="—" sub="Points can't be read right now" />
+  return (
+    <StatTile label={<span className="gc-info-label">Points this week<PointsTip /></span>} value={formatPoints(points.points)}
+      sub={pointsTileSummary(points, Date.now())} />
+  )
+}
 
 export default function Rewards() {
   const { workspace } = useConsole()
@@ -35,10 +49,12 @@ export default function Rewards() {
         {(loaded) => {
           const authorized = operator.data ? operator.data.operator : loaded.operator
           const data = { ...loaded, operator: authorized }
+          const pointsByEpoch = new Map((data.points?.history ?? []).map((row) => [row.epoch, row.points]))
           return (
           <>
             <StaleHint stale={loaded.stale} />
-            <div className="gc-grid gc-grid--3">
+            <div className="gc-grid gc-grid--4">
+              <PointsTile points={data.points} />
               <StatTile label="Ready to claim" value={formatAnts(data.pendingAnts)} />
               <StatTile label="From the legacy program" value={formatAnts(data.legacy?.pendingAnts ?? '0')}
                 sub={data.legacy ? 'Claimed together with the rest' : undefined} />
@@ -58,6 +74,11 @@ export default function Rewards() {
                 <Button size="sm" variant="outline" disabled={!isSetAddress(data.operator)} onClick={() => setClaiming(true)}>Claim rewards</Button>
               </div>
             </Panel>
+            <p className="gc-fineprint">
+              Points belong to the buyer wallet <Mono title={data.address}>{shortId(data.address)}</Mono>: each $1 it spends earns points times the provider's boost, and each week's points convert to ANTS.{' '}
+              <a className="gc-link" href={pointsUrl(data.address)} target="_blank" rel="noreferrer">Leaderboard and how points work <Icon.external size={12} /></a>
+            </p>
+            {data.points && <PointsCalculator points={data.points} />}
             <Modal isOpen={claiming} onClose={() => setClaiming(false)} title="Claim rewards"
               subtitle={`${formatAnts(data.pendingAnts)} ready. Sent to the authorized wallet${isSetAddress(data.operator) ? ` ${shortId(data.operator)}` : ''}.`}>
               <ChainGate chain={chain.data} error={chain.error}>
@@ -77,6 +98,7 @@ export default function Rewards() {
                 empty={<EmptyState icon={<Icon.rewards size={18} />} title="No rewards yet" body="Rewards accrue per epoch as this workspace's keys are used." />}
                 columns={[
                   { key: 'epoch', header: 'Epoch', render: (row) => row.epoch },
+                  { key: 'points', header: 'Points', align: 'right', render: (row) => formatPoints(pointsByEpoch.get(row.epoch) ?? null) },
                   { key: 'amount', header: 'Amount', align: 'right', render: (row) => formatAnts(row.pendingAnts) },
                   { key: 'state', header: 'Status', render: (row) => row.claimed ? <Badge tone="success">Claimed</Badge> : <Badge tone="warning">Unclaimed</Badge> },
                 ]} />

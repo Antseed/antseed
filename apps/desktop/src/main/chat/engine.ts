@@ -3,6 +3,7 @@ import { checkBuyerRoute, forgetBuyerRoute, isBuyerRouteKnown, writeBuyerRoute, 
 import { isRoutingSelection } from '@antseed/node';
 import { readFile } from 'node:fs/promises';
 import { getNetworkStats } from '../runtime/fetch-network-stats.js';
+import { readSellerBoosts } from './seller-boosts.js';
 import { raceBudget } from './race-budget.js';
 import { type ChatStreamStopReason } from './stream-stop.js';
 import {
@@ -529,6 +530,8 @@ export function registerPiChatHandlers({
   const METERING_PHASE_BUDGET_MS = 5_000;
   const ENRICHMENT_BUDGET_MS = 4_000;
   const NETWORK_STATS_BUDGET_MS = 8_000;
+  /** Antscan pool powers for the boost badges; runs alongside network stats. */
+  const SELLER_BOOSTS_BUDGET_MS = 4_000;
   const DISCOVER_ROWS_SLOW_MS = 3_000;
   /** Last successful per-peer metering, reused when a cycle's fetch times out. */
   const lastMeteringStats = new Map<string, PeerMeteringStats>();
@@ -666,11 +669,7 @@ export function registerPiChatHandlers({
       }
       endPhase('enrichment');
 
-      // Network-wide stats from the chain explorer (aggregator fallback). On
-      // non-mainnet chains and on any failure this returns an empty map and
-      // buildDiscoverRows falls back to local stats.
-      let explorerUrl: string | null = null;
-      const networkStats = await (async () => {
+      const explorer = await (async () => {
         try {
           const raw = await readFile(configPath, 'utf8');
           const parsed = JSON.parse(raw) as Record<string, unknown>;
@@ -680,18 +679,31 @@ export function registerPiChatHandlers({
             ? overrides.chainId
             : 'base-mainnet';
           const cc = resolveChainConfig({ chainId: selectedChain });
-          explorerUrl = cc.explorerApiUrl ?? null;
-          return await getNetworkStats({
-            explorerApiUrl: cc.explorerApiUrl,
-            networkStatsUrl: cc.networkStatsUrl,
-          }, { budgetMs: NETWORK_STATS_BUDGET_MS });
+          return { explorerApiUrl: cc.explorerApiUrl, networkStatsUrl: cc.networkStatsUrl };
         } catch {
-          return new Map<number, { requests: bigint; inputTokens: bigint; outputTokens: bigint }>();
+          return null;
         }
       })();
+      const [networkStats, sellerBoosts] = await Promise.all([
+        // Network-wide stats from the chain explorer (aggregator fallback). On
+        // non-mainnet chains and on any failure this returns an empty map and
+        // buildDiscoverRows falls back to local stats.
+        (async () => {
+          try {
+            if (!explorer) throw new Error('no chain config');
+            return await getNetworkStats(explorer, { budgetMs: NETWORK_STATS_BUDGET_MS });
+          } catch {
+            return new Map<number, { requests: bigint; inputTokens: bigint; outputTokens: bigint }>();
+          }
+        })(),
+        // Display-only boost per seller; null (shown as unknown, never 0×) when Antscan is slow or down.
+        raceBudget(readSellerBoosts(explorer?.explorerApiUrl), SELLER_BOOSTS_BUDGET_MS, () => null),
+      ]);
       endPhase('network-stats');
 
-      const rows = (await buildDiscoverRows(entries, statsMap, discoveredPeersMap, networkStats, peerHealthMap, explorerUrl))
+      // The chain explorer that model-check verdict links point at.
+      const explorerUrl = explorer?.explorerApiUrl ?? null;
+      const rows = (await buildDiscoverRows(entries, statsMap, discoveredPeersMap, networkStats, peerHealthMap, sellerBoosts, explorerUrl))
         .filter((row) => isPriceAllowedByBuyerMax(
           row.inputUsdPerMillion,
           row.outputUsdPerMillion,
