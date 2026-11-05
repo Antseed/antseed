@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  computeTrustScore, historyCurve, trustScore, shareCurve, TRUST_WEIGHTS,
+  computeTrustScore, historyCurve, trustScore, shareCurve, TRUST_IDENTITY_BONUS, TRUST_WEIGHTS,
 } from '../src/reputation/trust-score.js';
 import { DefaultRouter } from '../src/routing/default-router.js';
 import type { PeerInfo } from '../src/types/peer.js';
@@ -33,6 +33,11 @@ describe('shareCurve', () => {
 
   it('keeps the power and usage weights summing to 100', () => {
     expect(TRUST_WEIGHTS.power + TRUST_WEIGHTS.usage).toBe(100);
+  });
+
+  it('keeps the deprecated weights for existing consumers', () => {
+    expect(TRUST_WEIGHTS.history).toBe(0);
+    expect(TRUST_WEIGHTS.identity).toBe(TRUST_IDENTITY_BONUS);
   });
 });
 

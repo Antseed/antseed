@@ -35,11 +35,18 @@ import { IDENTITY_GITHUB_MAX_POINTS as IDENTITY_MAX_POINTS, scoreIdentityHistory
  * router rules.
  */
 
-/** Maximum contribution of the two network shares; these weights sum to 100. */
-export const TRUST_WEIGHTS = { usage: 30, power: 70 } as const;
-
 /** Most a verified identity adds on top of the weights; the total caps at 100. */
 export const TRUST_IDENTITY_BONUS = 20;
+
+/** Maximum contribution of each part. `usage` and `power`, the two network shares, sum to 100. */
+export const TRUST_WEIGHTS = {
+  usage: 30,
+  power: 70,
+  /** @deprecated Service history no longer feeds the score. */
+  history: 0,
+  /** @deprecated Use `TRUST_IDENTITY_BONUS`. */
+  identity: TRUST_IDENTITY_BONUS,
+} as const;
 
 /** Bonus for offering a free model, added on top of the weights; the total caps at 100. */
 export const TRUST_FREE_MODELS_BONUS = 5;
