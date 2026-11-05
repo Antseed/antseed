@@ -37,6 +37,8 @@ const SWEEP_EVERY_RECORDS = 1_000;
 
 /** Retry-after while a buyer is held back only by its own requests still in flight. */
 const IN_FLIGHT_RETRY_MS = 5_000;
+/** Most tokens one request counts for, so a huge requested maximum can't overflow the counters. */
+const MAX_REQUEST_TOKENS = 1e12;
 
 /** Token counts per minute, keyed by minute index. */
 type Buckets = Map<number, number>;
@@ -93,7 +95,7 @@ export class SellerBuyerLimiter {
   admit(buyerPeerId: string, provider: string, estimatedTokens: number, service?: string): BuyerUsageAdmission {
     const isNew = this._isNewBuyer(buyerPeerId, this._now());
     const weight = this._weight(service);
-    const reserved = Math.max(0, estimatedTokens) * weight;
+    const reserved = boundTokens(estimatedTokens * weight);
     const retryAfterSeconds = this._retryAfter(buyerPeerId, provider, isNew, reserved);
     if (retryAfterSeconds !== null) return { admitted: false, retryAfterSeconds };
     const usage = this._providerUsage(provider);
@@ -110,7 +112,7 @@ export class SellerBuyerLimiter {
           if (left > 0) usage.pending.set(buyerPeerId, left);
           else usage.pending.delete(buyerPeerId);
           if (isNew) usage.newPending = Math.max(0, usage.newPending - reserved);
-          this._record(buyerPeerId, usage, tokens * weight, isNew);
+          this._record(buyerPeerId, usage, boundTokens(tokens * weight), isNew);
         },
       },
     };
@@ -226,6 +228,12 @@ export class SellerBuyerLimiter {
       for (const minute of usage.newBuyers.keys()) if (this._expiresAt(minute) <= now) usage.newBuyers.delete(minute);
     }
   }
+}
+
+/** A token count between 0 and MAX_REQUEST_TOKENS; anything not a number counts as the most. */
+function boundTokens(tokens: number): number {
+  if (Number.isNaN(tokens)) return MAX_REQUEST_TOKENS;
+  return Math.min(Math.max(0, tokens), MAX_REQUEST_TOKENS);
 }
 
 function addTokens(buckets: Buckets, now: number, tokens: number): void {

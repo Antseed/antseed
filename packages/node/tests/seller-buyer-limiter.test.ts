@@ -132,6 +132,18 @@ describe('SellerBuyerLimiter', () => {
     time.advance(HOUR);
     expect(limiter.retryAfterSeconds('a', 'codex')).toBeNull();
   });
+
+  it('keeps the shared new-buyer total working after a request with an overflowing weighted estimate', () => {
+    const limiter = new SellerBuyerLimiter(
+      { newBuyers: { maxTokensTotal: 1_000 }, serviceWeights: { 'heavy-model': 10 } },
+      () => null,
+      clock().now,
+    );
+    const huge = limiter.admit('a', 'codex', 1e308, 'heavy-model');
+    if (!huge.admitted) throw new Error('a lone request should be admitted');
+    huge.reservation.finish(0);
+    expect(limiter.admit('b', 'codex', 10).admitted).toBe(true);
+  });
 });
 
 describe('seller buyer limits', () => {
