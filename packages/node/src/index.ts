@@ -240,6 +240,7 @@ export { BalanceManager } from './payments/balance-manager.js';
 export {
   computeCostUsdc,
   estimateTokensFromBytes,
+  estimateTokensFromBytesSampled,
   estimateTokensFromText,
   type ServicePricing,
 } from './payments/pricing.js';
@@ -402,6 +403,8 @@ export { SellerFreeUsageManager } from './payments/seller-free-usage-manager.js'
 export type { SellerFreeUsageConfig } from './payments/seller-free-usage-manager.js';
 export { SellerFreeTierLimiter, DEFAULT_FREE_TIER_WINDOW_MS, normalizeRemoteIp } from './payments/seller-free-tier-limiter.js';
 export type { SellerFreeTierConfig, SellerFreeTierProgramConfig, FreeTierDecision } from './payments/seller-free-tier-limiter.js';
+export { SellerBuyerLimiter } from './payments/seller-buyer-limiter.js';
+export type { SellerBuyerLimitsConfig, SellerNewBuyerLimitsConfig } from './payments/seller-buyer-limiter.js';
 export {
   DEFAULT_FREE_TIER_STAKE_TIERS,
   FREE_TIER_EPOCHS_PER_YEAR,

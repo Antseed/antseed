@@ -42,7 +42,7 @@ export interface RoundRobinAssignmentInput {
 
 /**
  * Splits every audited model across the approved auditors each epoch, rotating round robin, so
- * every model is audited every epoch (a verdict only counts for `validityEpochs` epochs). Assignment
+ * every model is audited every epoch (a KBF verdict only counts for `validityEpochs` epochs, 2 by default). Assignment
  * is off-chain only: the contract credits any approved auditor's audit of any model.
  *
  * Auditors are sorted by address and models by name. In epoch `e`, model `i` goes to auditor

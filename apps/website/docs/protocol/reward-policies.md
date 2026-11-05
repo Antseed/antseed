@@ -1,7 +1,7 @@
 ---
 slug: /reward-policies
 title: Reward policies
-description: How points policies, including the historical wash-trading filter, decide which paid usage earns ANTS rewards.
+description: How points policies, including the historical wash-trading filter and the model-verification bonus and penalty, decide which paid usage earns ANTS rewards.
 hide_title: true
 ---
 
@@ -51,7 +51,9 @@ rules and its ability to execute reliably.
 
 ## Historical wash-trading policy
 
-The points registry on Base mainnet runs `AntseedWashTradingPointsPolicy`. For each usage record, it asks
+The points registry on Base mainnet runs two modifiers, in this order:
+`AntseedWashTradingPointsPolicy` and then the
+[verification policy](#verification-policy). For each usage record, the wash-trading policy asks
 the pinned `AntseedWashTradingRegistry` whether the seller is a proven wash
 trader. If yes, it returns zero buyer and seller points. Otherwise, it leaves
 both amounts unchanged.
@@ -129,17 +131,50 @@ Authentication is split into chunks to bound gas, and interrupted submissions
 can resume. Backfilling a missing hash into Chainlink's store is a separate step;
 neither staging a proof nor backfilling its hashes makes it finalized.
 
-## KBF verification policy
+## Verification policy
 
-`AntseedVerificationPointsPolicy` scales seller points by the seller's on-chain
-verification results: a small bonus per verified service (capped at +50% in
-total) and a penalty per service marked DIFF. Both start at 0, so points are
-unchanged until the owner turns them on. Buyer points always pass through. The
-policy reads `AntseedVerificationResults`, the one contract that holds every
-verification method's verdicts, so a new method changes points without a new
-policy. KBF is the first method. It replaces `AntseedKbfVerificationPointsPolicy`,
-which read the single KBF contract and stays live on Base mainnet until the split
-contracts are deployed. See [Model verification](/docs/model-verification).
+`AntseedVerificationPointsPolicy` scales points by the seller's model-verification
+results. It reads the seller agent's live verdicts from `AntseedVerificationResults`,
+the contract that holds the verdicts of every verification method (KBF is the first),
+and turns them into one multiplier:
+
+```text
+multiplier = max(0, 1 + min(SAME services × bonus, 50%) − (DIFF services)² × penalty)
+```
+
+The same multiplier applies to the seller's points and the buyer's points for that
+settlement, so buyers earn more on verified sellers and less on sellers serving a
+different model. On Base mainnet the policy runs with a **2% bonus** per SAME service
+(`bonusBps` 200, at most +50% in total) and a **4% penalty** (`penaltyBps` 400) that grows
+with the square of the DIFF count:
+
+| DIFF services | Penalty |
+|---|---|
+| 1 | −4% |
+| 2 | −16% |
+| 3 | −36% |
+| 4 | −64% |
+| 5 or more | −100% (no points) |
+
+For example, a seller with 6 SAME and 1 DIFF services gets 1 + 12% − 4% = 108% of its
+points, and a seller with 2 SAME and 4 DIFF gets 1 + 4% − 64% = 40%.
+
+- **It counts the whole agent.** The SAME and DIFF counts cover all of the seller
+  agent's services, and the multiplier applies to every settlement with that seller,
+  whichever model the request used.
+- **Only recorded, live verdicts count.** A DIFF reported by one auditor and still
+  waiting for a second one counts for nothing, and verdicts stop counting when they
+  expire. UNDETERMINED and missing results count as neither SAME nor DIFF. See
+  [Model verification](/docs/model-verification) for how verdicts are recorded.
+- **It applies from the next settlement.** Changing a verdict or a rate does not
+  change points already recorded.
+- **It fails open.** If the policy cannot read a seller's verdicts, the points pass
+  through unchanged, so a broken read never zeroes a settlement.
+
+The owner can change both rates (`setBonusBps`, `setPenaltyBps`). The policy runs after
+the wash-trading policy in the registry, so a proven wash trader stays at zero whatever
+its verification results. This deployment replaced an earlier version that scaled only
+seller points with a linear penalty and was never registered.
 
 ## Other policy interfaces
 

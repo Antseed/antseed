@@ -12,10 +12,10 @@ import { AntseedVerificationPointsPolicy } from "../../policies/AntseedVerificat
 import { MockERC8004Registry } from "../mocks/MockERC8004Registry.sol";
 import { MockVerificationEmissionsGate } from "../mocks/MockVerificationEmissionsGate.sol";
 import { MockVerificationSellerPools } from "../mocks/MockVerificationSellerPools.sol";
-import { MockVerificationSource } from "../mocks/MockVerificationSource.sol";
-import { UsageAccountingFront, VerificationPointsAccounting } from "../mocks/MockVerificationAccounting.sol";
+import { MockVerificationAudit } from "../mocks/MockVerificationAudit.sol";
+import { VerificationPointsAccounting } from "../mocks/MockVerificationAccounting.sol";
 
-/// @dev The KBF source on the results layer: confirmations, report rounds, credits and the
+/// @dev The KBF audit on the results layer: confirmations, report rounds, credits and the
 ///      checks KBF owns (auditor epochs, evidence ownership, self-audits, staked agents), with
 ///      rewards claimed on the results layer.
 contract AntseedKbfAuditsTest is Test {
@@ -142,7 +142,7 @@ contract AntseedKbfAuditsTest is Test {
         _advance(2);
         vm.expectEmit(true, true, false, true, address(results));
         emit AntseedVerificationResults.ServiceStatusChanged(
-            agentId, SERVICE_A, MODEL_A, NONE, SAME, address(kbf), gate.currentEpoch()
+            agentId, SERVICE_A, MODEL_A, NONE, SAME, address(kbf), gate.currentEpoch(), gate.currentEpoch() + 2
         );
         vm.expectEmit(true, false, false, true, address(results));
         emit AntseedVerificationResults.AgentStatusChanged(agentId, 1, 0);
@@ -150,18 +150,29 @@ contract AntseedKbfAuditsTest is Test {
         assertTrue(results.isVerified(agentId));
     }
 
-    function test_validityEpochsAppliesToExistingVerdicts() public {
+    function test_kbfSetsHowLongItsVerdictsCount() public {
+        assertEq(kbf.validityEpochs(), 2);
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
+        assertEq(results.serviceStatus(agentId, SERVICE_A).validUntilEpoch, EPOCH + 2, "this epoch and the next");
         _advance(2);
         assertFalse(results.isVerified(agentId));
-        results.setValidityEpochs(3);
-        assertTrue(results.isVerified(agentId));
-        results.setValidityEpochs(1);
+
+        vm.expectEmit(false, false, false, true, address(kbf));
+        emit AntseedKbfAudits.ValidityEpochsSet(3);
+        kbf.setValidityEpochs(3);
+        assertFalse(results.isVerified(agentId), "recorded verdicts keep their expiry");
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
+        assertEq(results.serviceStatus(agentId, SERVICE_A).validUntilEpoch, EPOCH + 5);
+        _advance(2);
+        assertTrue(results.isVerified(agentId), "a new verdict counts for three epochs");
+        _advance(1);
         assertFalse(results.isVerified(agentId));
+
+        kbf.setValidityEpochs(1);
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
         assertTrue(results.isVerified(agentId));
         _advance(1);
-        assertFalse(results.isVerified(agentId));
+        assertFalse(results.isVerified(agentId), "one epoch only");
     }
 
     function test_agentStatusAtEpochZero() public {
@@ -227,7 +238,7 @@ contract AntseedKbfAuditsTest is Test {
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
         vm.expectEmit(true, true, false, true, address(results));
         emit AntseedVerificationResults.ServiceStatusChanged(
-            agentId, SERVICE_A, MODEL_A, SAME, DIFF, address(kbf), gate.currentEpoch()
+            agentId, SERVICE_A, MODEL_A, SAME, DIFF, address(kbf), gate.currentEpoch(), gate.currentEpoch() + 2
         );
         _audit(auditorB, MODEL_A, agentId, SERVICE_A, DIFF);
         assertEq(results.agentStatus(agentId).diffCount, 1, "one auditor's DIFF counts");
@@ -260,7 +271,7 @@ contract AntseedKbfAuditsTest is Test {
         _advance(1);
         vm.expectEmit(true, true, false, true, address(results));
         emit AntseedVerificationResults.ServiceStatusChanged(
-            agentId, SERVICE_A, MODEL_A, SAME, UNDETERMINED, address(kbf), gate.currentEpoch()
+            agentId, SERVICE_A, MODEL_A, SAME, UNDETERMINED, address(kbf), gate.currentEpoch(), gate.currentEpoch() + 2
         );
         vm.expectEmit(true, false, false, true, address(results));
         emit AntseedVerificationResults.AgentStatusChanged(agentId, 0, 0);
@@ -506,7 +517,7 @@ contract AntseedKbfAuditsTest is Test {
         vm.expectRevert();
         kbf.setAuditor(address(0xB0B), true);
         vm.expectRevert();
-        results.setValidityEpochs(3);
+        kbf.setValidityEpochs(3);
         vm.expectRevert();
         results.setMaxAuditorShareBps(address(kbf), 5_000);
         vm.expectRevert();
@@ -520,8 +531,6 @@ contract AntseedKbfAuditsTest is Test {
         vm.expectRevert();
         results.clearServiceStatuses(new uint256[](0), new bytes32[](0));
         vm.expectRevert();
-        results.voidCredits(address(kbf), EPOCH, auditorB);
-        vm.expectRevert();
         kbf.setRequiredReports(DIFF, 3);
         vm.stopPrank();
 
@@ -530,10 +539,10 @@ contract AntseedKbfAuditsTest is Test {
         vm.expectRevert(AntseedKbfAudits.InvalidValue.selector);
         kbf.setRequiredReports(SAME, 0);
 
-        vm.expectRevert(AntseedVerificationResults.InvalidValue.selector);
-        results.setValidityEpochs(0);
-        vm.expectRevert(AntseedVerificationResults.InvalidValue.selector);
-        results.setValidityEpochs(5);
+        vm.expectRevert(AntseedKbfAudits.InvalidValue.selector);
+        kbf.setValidityEpochs(0);
+        vm.expectRevert(AntseedKbfAudits.InvalidValue.selector);
+        kbf.setValidityEpochs(5);
         vm.expectRevert(AntseedVerificationResults.InvalidValue.selector);
         results.setMaxAuditorShareBps(address(kbf), 0);
         vm.expectRevert(AntseedVerificationResults.InvalidValue.selector);
@@ -548,6 +557,60 @@ contract AntseedKbfAuditsTest is Test {
 
     // ── rewards ──────────────────────────────────────────────────────
 
+    function test_creditsPerAuditAreSetByTheOwnerAndPerModel() public {
+        assertEq(kbf.creditsPerAudit(), 1);
+        assertEq(kbf.creditsFor(MODEL_A), 1, "default");
+
+        vm.expectEmit(false, false, false, true, address(kbf));
+        emit AntseedKbfAudits.CreditsPerAuditSet(3);
+        kbf.setCreditsPerAudit(3);
+        vm.expectEmit(true, false, false, true, address(kbf));
+        emit AntseedKbfAudits.ModelCreditsPerAuditSet(MODEL_B, 10);
+        kbf.setModelCreditsPerAudit(MODEL_B, 10);
+        assertEq(kbf.creditsFor(MODEL_A), 3, "the default applies to models without their own amount");
+        assertEq(kbf.creditsFor(MODEL_B), 10);
+
+        vm.expectEmit(true, true, true, true, address(kbf));
+        emit AntseedKbfAudits.AuditCredited(EPOCH, auditorA, MODEL_A, 3);
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
+        vm.expectEmit(true, true, true, true, address(kbf));
+        emit AntseedKbfAudits.AuditCredited(EPOCH, auditorA, MODEL_B, 10);
+        _audit(auditorA, MODEL_B, agentId, SERVICE_B, SAME);
+        assertEq(results.auditorEpochCredits(address(kbf), EPOCH, auditorA), 13);
+        assertEq(kbf.creditedAudits(EPOCH, auditorA, MODEL_B), 1, "counts audits, not credits");
+
+        _audit(auditorB, MODEL_B, agentId, SERVICE_B, SAME);
+        gate.setCurrentEpoch(EPOCH + 1);
+        assertEq(_claim(auditorA), uint256(900 ether) * 13 / 23, "13 of the 23 credits");
+        assertEq(results.pendingAuditorReward(address(kbf), auditorB, EPOCH), uint256(900 ether) * 10 / 23);
+
+        kbf.setModelCreditsPerAudit(MODEL_B, 0);
+        assertEq(kbf.creditsFor(MODEL_B), 3, "0 removes the override");
+    }
+
+    function test_creditsArePositiveAndOwnerSet() public {
+        vm.expectRevert(AntseedKbfAudits.InvalidValue.selector);
+        kbf.setCreditsPerAudit(0);
+        vm.expectRevert(AntseedKbfAudits.InvalidValue.selector);
+        kbf.setModelCreditsPerAudit(bytes32(0), 2);
+        vm.startPrank(auditorA);
+        vm.expectRevert();
+        kbf.setCreditsPerAudit(2);
+        vm.expectRevert();
+        kbf.setModelCreditsPerAudit(MODEL_A, 2);
+        vm.stopPrank();
+    }
+
+    function test_theResultsCapBoundsLargeCreditAmounts() public {
+        results.setMaxCreditsPerAuditorPerEpoch(address(kbf), 5);
+        kbf.setCreditsPerAudit(4);
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
+        vm.expectEmit(true, true, true, true, address(kbf));
+        emit AntseedKbfAudits.AuditCredited(EPOCH, auditorA, MODEL_B, 1);
+        _audit(auditorA, MODEL_B, agentId, SERVICE_B, SAME);
+        assertEq(results.auditorEpochCredits(address(kbf), EPOCH, auditorA), 5, "clamped to the per-auditor cap");
+    }
+
     function test_oneCreditPerAuditorModelAndEpoch() public {
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
@@ -561,31 +624,10 @@ contract AntseedKbfAuditsTest is Test {
         gate.setCurrentEpoch(EPOCH + 1);
         assertEq(_claim(auditorA), 600 ether);
         assertEq(_claim(auditorB), 300 ether);
-        assertEq(_claim(auditorA), 0, "second claim pays nothing");
-        assertEq(gate.minted(auditorA), 600 ether);
-    }
-
-    function test_usesTheGateBehindUsageAccounting() public {
-        registry.setEmissions(address(new UsageAccountingFront(address(gate))));
-        gate.setCurrentEpoch(EPOCH - 1);
-        (results, kbf) = _deploy();
-        gate.setCurrentEpoch(EPOCH);
-        kbf.setAuditor(auditorA, true);
-        results.setRewardsStartEpoch(address(kbf), uint64(0));
-        results.setMaxAuditorShareBps(address(kbf), 10_000);
-        gate.setBudget(address(results), EPOCH, 900 ether);
-        assertEq(address(results.emissionsGate()), address(gate));
-        _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
-        assertEq(results.auditorEpochCredits(address(kbf), EPOCH, auditorA), 1);
-
         vm.prank(auditorA);
-        vm.expectRevert(AntseedKbfAudits.EpochChanged.selector);
-        kbf.submitModelAudit(EPOCH + 1, MODEL_A, _evidence(), "", _single(agentId, SERVICE_A, SAME));
-
-        gate.setCurrentEpoch(EPOCH + 1);
-        assertEq(results.pendingReward(address(kbf), auditorA, EPOCH), 900 ether);
-        assertEq(_claim(auditorA), 900 ether);
-        assertEq(gate.minted(auditorA), 900 ether);
+        vm.expectRevert(AntseedVerificationResults.AlreadyClaimed.selector);
+        results.claimAuditorReward(address(kbf), EPOCH);
+        assertEq(gate.minted(auditorA), 600 ether);
     }
 
     function test_undeterminedAuditEarnsCredit() public {
@@ -601,7 +643,7 @@ contract AntseedKbfAuditsTest is Test {
         for (uint256 i = 0; i < 4; i++) {
             _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
         }
-        assertEq(kbf.modelCredits(EPOCH, auditorA, MODEL_A), 3, "fourth audit earns nothing");
+        assertEq(kbf.creditedAudits(EPOCH, auditorA, MODEL_A), 3, "fourth audit earns nothing");
         assertEq(results.auditorEpochCredits(address(kbf), EPOCH, auditorA), 3);
         _audit(auditorA, MODEL_B, agentId, SERVICE_B, SAME);
         assertEq(results.auditorEpochCredits(address(kbf), EPOCH, auditorA), 4, "other models still earn");
@@ -668,8 +710,8 @@ contract AntseedKbfAuditsTest is Test {
         _audit(auditorB, MODEL_A, agentId, SERVICE_A, SAME);
 
         gate.setCurrentEpoch(EPOCH + 1);
-        assertEq(results.pendingReward(address(kbf), auditorA, EPOCH), 180 ether, "675 capped at 20% of 900");
-        assertEq(results.pendingReward(address(kbf), auditorB, EPOCH), 180 ether, "225 capped at 20% of 900");
+        assertEq(results.pendingAuditorReward(address(kbf), auditorA, EPOCH), 180 ether, "675 capped at 20% of 900");
+        assertEq(results.pendingAuditorReward(address(kbf), auditorB, EPOCH), 180 ether, "225 capped at 20% of 900");
         assertEq(_claim(auditorA), 180 ether);
         assertEq(_claim(auditorB), 180 ether);
         assertEq(gate.minted(address(0x5E5E)), 540 ether, "the capped part goes to the reserve");
@@ -689,58 +731,30 @@ contract AntseedKbfAuditsTest is Test {
 
     function test_claimsOnlyFinalizedEpochs() public {
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
-        uint256[] memory epochs = new uint256[](1);
-        epochs[0] = EPOCH;
         vm.prank(auditorA);
         vm.expectRevert(AntseedVerificationResults.EpochNotFinalized.selector);
-        results.claimRewards(address(kbf), epochs);
+        results.claimAuditorReward(address(kbf), EPOCH);
     }
 
-    function test_currentEpochShowsNoPendingRewardSoClaimsSkipIt() public {
+    function test_currentEpochShowsNoPendingReward() public {
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
         assertGt(results.auditorEpochCredits(address(kbf), EPOCH, auditorA), 0);
-        assertEq(results.pendingReward(address(kbf), auditorA, EPOCH), 0, "current epoch is not final");
+        assertEq(results.pendingAuditorReward(address(kbf), auditorA, EPOCH), 0, "current epoch is not final");
 
         gate.setCurrentEpoch(EPOCH + 1);
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
-        assertEq(results.pendingReward(address(kbf), auditorA, EPOCH + 1), 0, "new current epoch is not final");
-        assertEq(results.pendingReward(address(kbf), auditorA, EPOCH), 900 ether, "finished epoch is claimable");
+        assertEq(results.pendingAuditorReward(address(kbf), auditorA, EPOCH + 1), 0, "new current epoch is not final");
+        assertEq(results.pendingAuditorReward(address(kbf), auditorA, EPOCH), 900 ether, "finished epoch is claimable");
         assertEq(_claim(auditorA), 900 ether);
-    }
-
-    function test_voidingCreditsRestoresHonestShares() public {
-        results.setMaxAuditorShareBps(address(kbf), 10_000);
-        _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
-        _audit(auditorA, MODEL_B, agentId, SERVICE_B, SAME);
-        _audit(auditorA, keccak256("model-c"), agentId, bytes32(uint256(3)), SAME);
-        _audit(auditorB, MODEL_A, agentId, SERVICE_A, SAME);
-        assertEq(results.epochCredits(address(kbf), EPOCH), 4);
-
-        vm.expectEmit(true, true, true, true, address(results));
-        emit AntseedVerificationResults.CreditsVoided(address(kbf), EPOCH, auditorA, 3);
-        results.voidCredits(address(kbf), EPOCH, auditorA);
-        assertEq(results.auditorEpochCredits(address(kbf), EPOCH, auditorA), 0);
-        assertEq(results.epochCredits(address(kbf), EPOCH), 1);
-
-        gate.setCurrentEpoch(EPOCH + 1);
-        assertEq(results.pendingReward(address(kbf), auditorA, EPOCH), 0);
-        assertEq(_claim(auditorB), 900 ether, "the honest auditor gets the whole budget back");
-        results.voidCredits(address(kbf), EPOCH, auditorA);
-    }
-
-    function test_cannotVoidClaimedCredits() public {
-        _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
-        gate.setCurrentEpoch(EPOCH + 1);
-        _claim(auditorA);
-        vm.expectRevert(AntseedVerificationResults.AlreadyClaimed.selector);
-        results.voidCredits(address(kbf), EPOCH, auditorA);
     }
 
     function test_unfundedBucketStaysClaimable() public {
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
         gate.setBudget(address(results), EPOCH, 0);
         gate.setCurrentEpoch(EPOCH + 1);
-        assertEq(_claim(auditorA), 0);
+        vm.prank(auditorA);
+        vm.expectRevert(AntseedVerificationResults.NothingToClaim.selector);
+        results.claimAuditorReward(address(kbf), EPOCH);
         assertFalse(results.auditorEpochClaimed(address(kbf), EPOCH, auditorA));
 
         gate.setBudget(address(results), EPOCH, 100 ether);
@@ -756,24 +770,18 @@ contract AntseedKbfAuditsTest is Test {
 
     function test_requiresAndPinsTheEmissionsGate() public {
         assertEq(address(results.emissionsGate()), address(gate));
+        assertEq(address(kbf.identityRegistry()), address(identityRegistry));
 
-        AntseedRegistry noGateRegistry = new AntseedRegistry();
-        noGateRegistry.setIdentityRegistry(address(identityRegistry));
         vm.expectRevert(AntseedVerificationResults.InvalidAddress.selector);
-        new AntseedVerificationResults(address(noGateRegistry));
-
-        MockVerificationEmissionsGate other = new MockVerificationEmissionsGate();
-        other.setCurrentEpoch(EPOCH + 50);
-        registry.setEmissions(address(other));
-        _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
-        assertEq(results.serviceStatus(agentId, SERVICE_A).epoch, EPOCH, "registry changes do not move the gate");
-        assertTrue(results.isVerified(agentId));
+        new AntseedVerificationResults(address(0));
+        vm.expectRevert(AntseedVerificationResults.InvalidAddress.selector);
+        new AntseedVerificationResults(address(0x1234));
     }
 
     // ── confirmations ────────────────────────────────────────────────
 
     function test_defaultsNeedASecondAuditorForADiffOnly() public {
-        AntseedKbfAudits fresh = new AntseedKbfAudits(address(results), address(pools));
+        AntseedKbfAudits fresh = new AntseedKbfAudits(address(results), address(pools), address(identityRegistry));
         assertEq(fresh.requiredReports(SAME), 1);
         assertEq(fresh.requiredReports(DIFF), 2);
         assertEq(fresh.requiredReports(UNDETERMINED), 1);
@@ -800,7 +808,7 @@ contract AntseedKbfAuditsTest is Test {
         emit AntseedKbfAudits.ServiceAudited(agentId, SERVICE_A, auditorC, MODEL_A, DIFF, 0, 2, 2);
         vm.expectEmit(true, true, false, true, address(results));
         emit AntseedVerificationResults.ServiceStatusChanged(
-            agentId, SERVICE_A, MODEL_A, SAME, DIFF, address(kbf), gate.currentEpoch()
+            agentId, SERVICE_A, MODEL_A, SAME, DIFF, address(kbf), gate.currentEpoch(), gate.currentEpoch() + 2
         );
         _audit(auditorC, MODEL_A, agentId, SERVICE_A, DIFF);
         assertFalse(results.isVerified(agentId));
@@ -1162,39 +1170,41 @@ contract AntseedKbfAuditsTest is Test {
         vm.expectRevert(AntseedKbfAudits.InvalidAddress.selector);
         kbf.setAuditor(address(0), true);
         vm.expectRevert(AntseedKbfAudits.InvalidAddress.selector);
-        new AntseedKbfAudits(address(0x1234), address(pools));
+        new AntseedKbfAudits(address(0x1234), address(pools), address(identityRegistry));
+        vm.expectRevert(AntseedKbfAudits.InvalidAddress.selector);
+        new AntseedKbfAudits(address(results), address(pools), address(0x1234));
     }
 
-    function test_anotherSourcesDiffNeedsAKbfDiffQuorumToReplace() public {
+    function test_anotherAuditsDiffNeedsAKbfDiffQuorumToReplace() public {
         kbf.setDiffReplacementReports(2); // strict mode: clearing a DIFF needs two auditors
         kbf.setRequiredReports(DIFF, 2);
-        MockVerificationSource probes = new MockVerificationSource(address(results));
-        results.setSource(address(probes), true);
+        MockVerificationAudit probes = new MockVerificationAudit(address(results));
+        results.setAudit(address(probes), true);
         probes.record(agentId, SERVICE_A, MODEL_A, DIFF);
-        assertEq(results.diffChanges(agentId, SERVICE_A), 1, "another source's DIFF moves the KBF round too");
+        assertEq(results.diffChanges(agentId, SERVICE_A), 1, "another audit's DIFF moves the KBF round too");
 
         vm.expectEmit(true, true, true, true, address(kbf));
         emit AntseedKbfAudits.ServiceAudited(agentId, SERVICE_A, auditorA, MODEL_A, SAME, 1, 1, 2);
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
         IAntseedVerificationResults.ServiceStatus memory status = results.serviceStatus(agentId, SERVICE_A);
         assertEq(uint8(status.verdict), uint8(DIFF), "one SAME does not clear a live DIFF");
-        assertEq(status.source, address(probes));
+        assertEq(status.audit, address(probes));
         assertEq(results.auditorEpochCredits(address(kbf), EPOCH, auditorA), 1, "the audit still earns its credit");
 
         _audit(auditorB, MODEL_A, agentId, SERVICE_A, SAME);
         status = results.serviceStatus(agentId, SERVICE_A);
         assertEq(uint8(status.verdict), uint8(SAME), "a DIFF-sized quorum clears it");
-        assertEq(status.source, address(kbf));
+        assertEq(status.audit, address(kbf));
         assertEq(results.diffChanges(agentId, SERVICE_A), 2, "clearing the DIFF starts a new round");
         assertTrue(results.isVerified(agentId));
     }
 
-    function test_supportFromBeforeAnotherSourcesDiffCannotClearIt() public {
+    function test_supportFromBeforeAnotherAuditsDiffCannotClearIt() public {
         kbf.setDiffReplacementReports(2); // strict mode: clearing a DIFF needs two auditors
         kbf.setRequiredReports(DIFF, 2);
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME); // recorded: SAME needs one report
-        MockVerificationSource probes = new MockVerificationSource(address(results));
-        results.setSource(address(probes), true);
+        MockVerificationAudit probes = new MockVerificationAudit(address(results));
+        results.setAudit(address(probes), true);
         probes.record(agentId, SERVICE_A, MODEL_A, DIFF);
 
         _audit(auditorB, MODEL_A, agentId, SERVICE_A, SAME);
@@ -1205,13 +1215,13 @@ contract AntseedKbfAuditsTest is Test {
         assertEq(uint8(results.serviceStatus(agentId, SERVICE_A).verdict), uint8(SAME), "two fresh reports clear it");
     }
 
-    function test_anotherSourceCanOverwriteKbfVerdicts() public {
+    function test_anotherAuditCanOverwriteKbfVerdicts() public {
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, DIFF);
-        MockVerificationSource probes = new MockVerificationSource(address(results));
-        results.setSource(address(probes), true);
+        MockVerificationAudit probes = new MockVerificationAudit(address(results));
+        results.setAudit(address(probes), true);
         probes.record(agentId, SERVICE_A, MODEL_A, SAME);
-        assertEq(results.serviceStatus(agentId, SERVICE_A).source, address(probes));
-        assertTrue(results.isVerified(agentId), "the results layer takes the latest record from any source");
+        assertEq(results.serviceStatus(agentId, SERVICE_A).audit, address(probes));
+        assertTrue(results.isVerified(agentId), "the results layer takes the latest record from any audit");
     }
 
     function test_roundsMoveOnlyWhenAServiceMovesIntoOrOutOfDiff() public {
@@ -1273,23 +1283,22 @@ contract AntseedKbfAuditsTest is Test {
         assertEq(owner, address(0));
     }
 
-    function test_anEpochWithoutAKbfShareSkipsClaimsAndSettlesInFull() public {
-        results.setSourceShareBps(address(kbf), 0); // from EPOCH + 1 on
+    function test_anEpochWithoutAKbfShareHasNothingToClaim() public {
+        results.setAuditShareBps(address(kbf), 0); // from EPOCH + 1 on
         gate.setCurrentEpoch(EPOCH + 1);
         gate.setBudget(address(results), EPOCH + 1, 900 ether);
         pools.setPower(agentId, EPOCH + 1, 300);
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
-        assertEq(results.auditorEpochCredits(address(kbf), EPOCH + 1, auditorA), 1, "still credited");
+        assertTrue(results.isVerified(agentId), "the audit still records its verdict");
+        assertEq(results.auditorEpochCredits(address(kbf), EPOCH + 1, auditorA), 0, "no share, no credits");
+        assertEq(kbf.creditedAudits(EPOCH + 1, auditorA, MODEL_A), 0, "and the audit slot is not used up");
 
         gate.setCurrentEpoch(EPOCH + 2);
-        assertEq(results.pendingReward(address(kbf), auditorA, EPOCH + 1), 0, "no share, nothing pending");
-        uint256[] memory epochs = new uint256[](1);
-        epochs[0] = EPOCH + 1;
+        assertEq(results.pendingAuditorReward(address(kbf), auditorA, EPOCH + 1), 0, "no share, nothing pending");
         vm.prank(auditorA);
-        assertEq(results.claimRewards(address(kbf), epochs), 0, "skipped");
+        vm.expectRevert(AntseedVerificationResults.NothingToClaim.selector);
+        results.claimAuditorReward(address(kbf), EPOCH + 1);
         assertFalse(results.auditorEpochClaimed(address(kbf), EPOCH + 1, auditorA));
-        (, uint256 reserved) = results.settleEpochRemainder(EPOCH + 1);
-        assertEq(reserved, 900 ether, "the unassigned bucket goes to the remainder route");
     }
 
     function test_reportViewsReflectTheTally() public {
@@ -1316,20 +1325,20 @@ contract AntseedKbfAuditsTest is Test {
         results.setMaxCreditsPerAuditorPerEpoch(address(kbf), 1);
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
         _audit(auditorA, MODEL_B, agentId, SERVICE_B, SAME);
-        assertEq(kbf.modelCredits(EPOCH, auditorA, MODEL_A), 1);
-        assertEq(kbf.modelCredits(EPOCH, auditorA, MODEL_B), 0, "the per-auditor cap credited nothing");
+        assertEq(kbf.creditedAudits(EPOCH, auditorA, MODEL_A), 1);
+        assertEq(kbf.creditedAudits(EPOCH, auditorA, MODEL_B), 0, "the per-auditor cap credited nothing");
 
         results.setMaxCreditsPerAuditorPerEpoch(address(kbf), 2);
         vm.expectEmit(true, true, true, true, address(kbf));
-        emit AntseedKbfAudits.AuditCredited(EPOCH, auditorA, MODEL_B);
+        emit AntseedKbfAudits.AuditCredited(EPOCH, auditorA, MODEL_B, 1);
         _audit(auditorA, MODEL_B, agentId, SERVICE_B, SAME);
-        assertEq(kbf.modelCredits(EPOCH, auditorA, MODEL_B), 1, "so the model can still earn once the cap allows");
+        assertEq(kbf.creditedAudits(EPOCH, auditorA, MODEL_B), 1, "so the model can still earn once the cap allows");
         assertEq(results.auditorEpochCredits(address(kbf), EPOCH, auditorA), 2);
     }
 
-    function test_removedSourceCannotRecord() public {
-        results.setSource(address(kbf), false);
-        _expectAuditRevert(AntseedVerificationResults.NotSource.selector);
+    function test_removedAuditCannotRecord() public {
+        results.setAudit(address(kbf), false);
+        _expectAuditRevert(AntseedVerificationResults.NotAudit.selector);
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
     }
 
@@ -1357,18 +1366,17 @@ contract AntseedKbfAuditsTest is Test {
             } else if (step % 7 == 1) {
                 _clear(agentId, service);
             } else if (step % 7 == 2) {
-                results.setValidityEpochs(uint8(1 + (step >> 5) % 4));
+                kbf.setValidityEpochs(uint8(1 + (step >> 5) % 4));
             } else {
                 IAntseedVerificationResults.Verdict verdict = step % 3 == 0 ? SAME : step % 3 == 1 ? DIFF : UNDETERMINED;
                 _audit(auditors[(step >> 1) % 3], models[(step >> 5) % 3], agentId, service, verdict);
             }
             uint256 current = gate.currentEpoch();
-            uint256 window = results.validityEpochs();
             uint256 verified;
             uint256 diffs;
             for (uint256 j = 0; j < services.length; j++) {
                 IAntseedVerificationResults.ServiceStatus memory status = results.serviceStatus(agentId, services[j]);
-                if (current >= status.epoch + window) continue;
+                if (current >= status.validUntilEpoch) continue;
                 if (status.verdict == SAME) verified += 1;
                 else if (status.verdict == DIFF) diffs += 1;
             }
@@ -1377,7 +1385,8 @@ contract AntseedKbfAuditsTest is Test {
             assertEq(agent.diffCount, diffs);
             assertEq(results.isVerified(agentId), verified > 0 && diffs == 0);
             uint256 multiplier = 100 + 10 * verified;
-            assertEq(_sellerPoints(policy), multiplier > 10 * diffs ? multiplier - 10 * diffs : 0);
+            uint256 penalty = 10 * uint256(diffs) * diffs;
+            assertEq(_sellerPoints(policy), multiplier > penalty ? multiplier - penalty : 0);
         }
     }
 
@@ -1416,12 +1425,12 @@ contract AntseedKbfAuditsTest is Test {
         return keccak256(abi.encode("evidence", evidenceNonce + 1));
     }
 
-    /// @dev A results layer and the KBF source on it at the whole bucket.
+    /// @dev A results layer and the KBF audit on it at the whole bucket.
     function _deploy() private returns (AntseedVerificationResults results_, AntseedKbfAudits kbf_) {
-        results_ = new AntseedVerificationResults(address(registry));
-        kbf_ = new AntseedKbfAudits(address(results_), address(pools));
-        results_.setSource(address(kbf_), true);
-        results_.setSourceShareBps(address(kbf_), 10_000);
+        results_ = new AntseedVerificationResults(address(gate));
+        kbf_ = new AntseedKbfAudits(address(results_), address(pools), address(identityRegistry));
+        results_.setAudit(address(kbf_), true);
+        results_.setAuditShareBps(address(kbf_), 10_000);
     }
 
     function _pointsPolicy() private returns (AntseedVerificationPointsPolicy policy) {
@@ -1473,11 +1482,12 @@ contract AntseedKbfAuditsTest is Test {
         results.clearServiceStatuses(agents, services);
     }
 
+    /// @dev Claims `auditor`'s reward for EPOCH and returns what it received.
     function _claim(address auditor) private returns (uint256) {
-        uint256[] memory epochs = new uint256[](1);
-        epochs[0] = EPOCH;
+        uint256 before = gate.minted(auditor);
         vm.prank(auditor);
-        return results.claimRewards(address(kbf), epochs);
+        results.claimAuditorReward(address(kbf), EPOCH);
+        return gate.minted(auditor) - before;
     }
 
     function _expectInvalidResults(IAntseedKbfAudits.ServiceResult[] memory batch) private {

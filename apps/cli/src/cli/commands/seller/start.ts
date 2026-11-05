@@ -873,6 +873,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         ...(maxUploadBodyBytes !== undefined ? { maxUploadBodyBytes } : {}),
         ...(sellerFreeTier ? { freeTier: sellerFreeTier } : {}),
         ...(effectiveSellerConfig.freeUsage ? { freeUsage: effectiveSellerConfig.freeUsage } : {}),
+        ...(effectiveSellerConfig.buyerLimits ? { buyerLimits: effectiveSellerConfig.buyerLimits } : {}),
         ...(acceptInboundAddress ? { acceptInboundAddress } : {}),
         payments: {
           enabled: paymentsEnabled,

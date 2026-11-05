@@ -528,6 +528,8 @@ function mergeSellerConfig(
       ? { restrictedCountries: value['restrictedCountries'] as string[] }
       : {}),
     ...(normalizeSellerFreeUsage(value['freeUsage'], defaults.freeUsage)),
+    // Kept as written so validateConfig reports a malformed one.
+    ...(value['buyerLimits'] !== undefined ? { buyerLimits: structuredClone(value['buyerLimits']) as AntseedConfig['seller']['buyerLimits'] } : {}),
     // Kept as written (even malformed) so validateConfig reports it and a save round-trips it.
     ...(value['alerts'] !== undefined ? { alerts: structuredClone(value['alerts']) as AntseedConfig['seller']['alerts'] } : {}),
   };

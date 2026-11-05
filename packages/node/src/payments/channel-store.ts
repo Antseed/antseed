@@ -76,6 +76,7 @@ export class ChannelStore {
     getOneOffByRequest: Database.Statement;
     getActiveByPeerAndBuyer: Database.Statement;
     getLatestByPeer: Database.Statement;
+    getFirstCreatedByPeer: Database.Statement;
     getLatestByPeerAndBuyer: Database.Statement;
     updateStatusWithAmount: Database.Statement;
     updateStatus: Database.Statement;
@@ -180,6 +181,9 @@ export class ChannelStore {
       ),
       getLatestByPeer: this._db.prepare(
         'SELECT * FROM payment_channels WHERE peer_id = ? AND role = ? AND channel_kind = ? ORDER BY created_at DESC LIMIT 1',
+      ),
+      getFirstCreatedByPeer: this._db.prepare(
+        'SELECT MIN(created_at) AS first FROM payment_channels WHERE peer_id = ? AND role = ?',
       ),
       getLatestByPeerAndBuyer: this._db.prepare(
         'SELECT * FROM payment_channels WHERE peer_id = ? AND role = ? AND buyer_evm_addr = ? AND channel_kind = ? ORDER BY created_at DESC LIMIT 1',
@@ -331,6 +335,12 @@ export class ChannelStore {
   getLatestChannel(peerId: string, role: ChannelRole, channelKind: ChannelKind = CHANNEL_KIND.PAID): StoredChannel | null {
     const row = this._stmts.getLatestByPeer.get(peerId, role, channelKind) as ChannelRow | undefined;
     return row ? rowToChannel(row) : null;
+  }
+
+  /** When the first channel with this peer in this role was created (ms), or null when there is none. */
+  getFirstChannelCreatedAt(peerId: string, role: ChannelRole): number | null {
+    const row = this._stmts.getFirstCreatedByPeer.get(peerId, role) as { first: number | null } | undefined;
+    return row?.first ?? null;
   }
 
   getLatestChannelByPeerAndBuyer(peerId: string, role: ChannelRole, buyerEvmAddr: string, channelKind: ChannelKind = CHANNEL_KIND.PAID): StoredChannel | null {

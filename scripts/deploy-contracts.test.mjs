@@ -2072,7 +2072,7 @@ test('M003 registers one deploy phase with no M002 requirement', () => {
   assert.doesNotThrow(() => m003.validateBaseline({ contracts: {
     registry: { address: ADDRESS.registry }, identityRegistry: { address: ADDRESS.channels },
     sellerPools: { address: ADDRESS.sellerRewardsPool }, usageAccounting: { address: ADDRESS.usageAccounting },
-    pointsPolicyRegistry: { address: ADDRESS.pointsPolicyRegistry },
+    pointsPolicyRegistry: { address: ADDRESS.pointsPolicyRegistry }, emissionsGate: { address: M003.gate },
   } }));
   assert.throws(() => m003.validateBaseline({ contracts: {} }), /missing registry/);
   assert.throws(() => m003.validateBaseline({ contracts: {
@@ -2103,6 +2103,7 @@ const M003 = {
   results: ADDRESS.sellerRegistry,
   kbf: '0x00000000000000000000000000000000000000f4',
   policy: ADDRESS.verificationPointsPolicy,
+  gate: '0x00000000000000000000000000000000000000f5',
 };
 const M003_ARTIFACTS = ['AntseedVerificationResults', 'AntseedKbfAudits', 'AntseedVerificationPointsPolicy'];
 
@@ -2115,12 +2116,13 @@ function m003Checkpoint() {
     registry: ADDRESS.registry, identityRegistry: ADDRESS.channels, owner: ADDRESS.ants,
     deploymentNonce: 7, sellerPools: ADDRESS.sellerRewardsPool,
     usageAccounting: ADDRESS.usageAccounting, pointsPolicyRegistry: ADDRESS.pointsPolicyRegistry,
+    emissionsGate: M003.gate,
     resultsAddress: M003.results, kbfAddress: M003.kbf, policyAddress: M003.policy,
     bonusBps: 100,
     sourceCommit: 'a'.repeat(40),
     contracts: {
-      verificationResults: m003Contract(M003.results, [ADDRESS.registry], '1'),
-      kbfAudits: m003Contract(M003.kbf, [M003.results, ADDRESS.sellerRewardsPool], '3'),
+      verificationResults: m003Contract(M003.results, [M003.gate], '1'),
+      kbfAudits: m003Contract(M003.kbf, [M003.results, ADDRESS.sellerRewardsPool, ADDRESS.channels], '3'),
       verificationPointsPolicy: m003Contract(M003.policy, [M003.results, ADDRESS.usageAccounting, '100', ADDRESS.ants], '4'),
     },
     transactions: [],
@@ -2151,7 +2153,7 @@ test('M003 activation preserves previous contracts/configuration and generates i
   assert.deepEqual(renderNetwork(current, deployed).recognizedUsage, renderNetwork(original, deployed).recognizedUsage);
   assert.ok(m003.recordErrors({ ...record, contracts: {} }).length);
   const wrongConstructor = structuredClone(record);
-  wrongConstructor.contracts.kbfAudits.constructorArguments = [M003.results, ADDRESS.ants];
+  wrongConstructor.contracts.kbfAudits.constructorArguments = [M003.results, ADDRESS.sellerRewardsPool, ADDRESS.ants];
   assert.ok(m003.recordErrors(wrongConstructor).includes('M003 kbfAudits constructor mismatch'));
   const wrongPolicy = structuredClone(record);
   wrongPolicy.contracts.verificationPointsPolicy.constructorArguments[2] = '200';
@@ -2170,10 +2172,11 @@ test('the replaced AntseedKbfVerification stays in history but is no longer a de
   assert.ok(current.contracts.kbfVerification, 'append-only history keeps the earlier deployment');
   assert.equal(current.contracts.kbfVerification.deployedInRelease, false);
   await readFile('packages/contracts/deployments/base-mainnet/history/003-kbf-verification.json', 'utf8');
-  await readFile(`packages/contracts/deployments/base-mainnet/history/${M003_RELEASE}.json`, 'utf8');
+  await readFile('packages/contracts/deployments/base-mainnet/history/003-verification-split.json', 'utf8');
   assert.notEqual(M003_RELEASE, '003-kbf-verification', 'the replacement is its own release');
   assert.equal(buildReleaseOwners().get('003-kbf-verification'), undefined);
-  assert.equal(current.release, M003_RELEASE);
+  assert.equal(buildReleaseOwners().get('003-verification-split'), undefined, 'the split release is replaced too');
+  assert.notEqual(M003_RELEASE, '003-verification-split');
   const rendered = renderNetwork(current);
   assert.notEqual(rendered.verificationContractAddress, current.contracts.kbfVerification.address.toLowerCase());
   assert.equal(rendered.verificationContractAddress, current.contracts.kbfAudits.address.toLowerCase());
@@ -2187,7 +2190,7 @@ async function m003Context(t, checkpoint = m003Checkpoint()) {
   const canonical = { chainId: 8453, contracts: {
     registry: { address: ADDRESS.registry }, identityRegistry: { address: ADDRESS.channels },
     sellerPools: { address: ADDRESS.sellerRewardsPool }, usageAccounting: { address: ADDRESS.usageAccounting },
-    pointsPolicyRegistry: { address: ADDRESS.pointsPolicyRegistry },
+    pointsPolicyRegistry: { address: ADDRESS.pointsPolicyRegistry }, emissionsGate: { address: M003.gate },
   } };
   const context = {
     network: 'base-mainnet', rpcUrl: 'http://127.0.0.1:0', canonical,
@@ -2214,6 +2217,7 @@ test('M003 rejects an auditor list, a changed bonus or baseline before sending t
     if (args[0] === 'call') {
       if (args[2] === 'sellerPools()(address)') return ADDRESS.sellerRewardsPool;
       if (args[2] === 'pointsPolicy()(address)') return ADDRESS.pointsPolicyRegistry;
+      if (args[2] === 'emissionsGate()(address)') return M003.gate;
       return ADDRESS.channels;
     }
     assert.fail(`unexpected call ${args}`);
@@ -2235,6 +2239,10 @@ test('M003 deploys next to the recorded earlier AntseedKbfVerification', async (
   assert.equal((await m003.observe(context)).state, 'active');
   context.canonical.contracts.kbfAudits = { address: M003.kbf };
   await rm(context.checkpointFile);
+  // The earlier split release used the same keys: its entries alone don't need this release's history.
+  context.canonical.release = '003-verification-split';
+  await assert.rejects(m003.observe(context), /VERIFICATION_OWNER must be/);
+  context.canonical.release = M003_RELEASE;
   await assert.rejects(m003.observe(context), /exists without its history record/);
 });
 
@@ -2325,15 +2333,15 @@ function mockM003Chain(t, options, context) {
       const owner = (args[1] === M003.policy ? options.policyOwner : options.owner) ?? checkpoint.owner;
       const values = {
         'identityRegistry()(address)': checkpoint.identityRegistry,
-        'registry()(address)': options.registry ?? checkpoint.registry,
+        'emissionsGate()(address)': options.gate ?? checkpoint.emissionsGate,
         'owner()(address)': owner,
         'pendingOwner()(address)': options.pendingOwner ?? '0x0000000000000000000000000000000000000000',
         'sellerPools()(address)': options.sellerPools ?? checkpoint.sellerPools,
         'pointsPolicy()(address)': checkpoint.pointsPolicyRegistry,
         'results()(address)': args[1] === M003.policy ? (options.policyResults ?? M003.results) : (options.kbfResults ?? M003.results),
         'usageAccounting()(address)': checkpoint.usageAccounting,
-        'isSource(address)(bool)': String(options.wired ?? true),
-        'sourceShareBps(address)(uint16)': (options.wired ?? true) ? '10000' : '0',
+        'isAudit(address)(bool)': String(options.wired ?? true),
+        'auditShareBps(address)(uint16)': (options.wired ?? true) ? '10000' : '0',
       };
       assert.ok(Object.hasOwn(values, args[2]), `unexpected getter ${args[2]}`);
       return values[args[2]];
@@ -2352,8 +2360,9 @@ test('M003 keeps its checkpoint apart from the earlier M003 release and rejects 
     'base-mainnet',
     { canonicalRoot: directory, outputRoot: directory, rpcUrl: 'http://127.0.0.1:0' },
   );
-  assert.equal(path.basename(context.checkpointFile), 'm003-verification-split-base-mainnet.json');
+  assert.equal(path.basename(context.checkpointFile), 'm003-verification-audits-base-mainnet.json');
   assert.notEqual(path.basename(context.checkpointFile), 'm003-base-mainnet.json');
+  assert.notEqual(path.basename(context.checkpointFile), 'm003-verification-split-base-mainnet.json');
 
   // A legacy-shaped checkpoint at this release's path still stops before any transaction.
   const legacy = m003Checkpoint();
@@ -2367,11 +2376,12 @@ test('M003 keeps its checkpoint apart from the earlier M003 release and rejects 
     if (args[0] === 'call') {
       if (args[2] === 'sellerPools()(address)') return ADDRESS.sellerRewardsPool;
       if (args[2] === 'pointsPolicy()(address)') return ADDRESS.pointsPolicyRegistry;
+      if (args[2] === 'emissionsGate()(address)') return M003.gate;
       return ADDRESS.channels;
     }
     assert.fail(`unexpected cast ${args}`);
   });
-  await assert.rejects(m003.observe(legacyContext), /is not a 003-verification-split checkpoint/);
+  await assert.rejects(m003.observe(legacyContext), /is not a 003-verification-audits checkpoint/);
 });
 
 test('M003 recovers partial receipts and retains CREATE provenance through a resumed deployment', async (t) => {
@@ -2383,7 +2393,7 @@ test('M003 recovers partial receipts and retains CREATE provenance through a res
     transaction: { hash: hashes[index], transactionType: 'CREATE', contractName: name, contractAddress: address, arguments: args },
     receipt: { transactionHash: hashes[index], status: '0x1', blockNumber: `0x${block.toString(16)}`, from: checkpoint.owner, to: null },
   });
-  const first = [creation(0, 'AntseedVerificationResults', M003.results, [checkpoint.registry], 10)];
+  const first = [creation(0, 'AntseedVerificationResults', M003.results, [checkpoint.emissionsGate], 10)];
   const options = { deployed: 1, nonce: '8', broadcast: {
     transactions: first.map((entry) => entry.transaction), receipts: first.map((entry) => entry.receipt),
   } };
@@ -2396,11 +2406,11 @@ test('M003 recovers partial receipts and retains CREATE provenance through a res
   assert.equal(partial.deployment.checkpoint.contracts.verificationResults.transactionHash, hashes[0]);
 
   const rest = [
-    creation(1, 'AntseedKbfAudits', M003.kbf, [M003.results, checkpoint.sellerPools], 11),
+    creation(1, 'AntseedKbfAudits', M003.kbf, [M003.results, checkpoint.sellerPools, checkpoint.identityRegistry], 11),
     creation(2, 'AntseedVerificationPointsPolicy', M003.policy, [M003.results, checkpoint.usageAccounting, '100', checkpoint.owner], 11),
   ];
   const wiring = [3, 4].map((index) => ({
-    transaction: { hash: hashes[index], transactionType: 'CALL', function: index === 3 ? 'setSource(address,bool)' : 'setSourceShareBps(address,uint16)' },
+    transaction: { hash: hashes[index], transactionType: 'CALL', function: index === 3 ? 'setAudit(address,bool)' : 'setAuditShareBps(address,uint16)' },
     receipt: { transactionHash: hashes[index], status: '0x1', blockNumber: '0xc', from: checkpoint.owner, to: M003.results },
   }));
   options.deployed = 3;
@@ -2462,6 +2472,7 @@ test('M003 rejects a gap in the deployment order', async (t) => {
     if (args[0] === 'call') {
       if (args[2] === 'sellerPools()(address)') return ADDRESS.sellerRewardsPool;
       if (args[2] === 'pointsPolicy()(address)') return ADDRESS.pointsPolicyRegistry;
+      if (args[2] === 'emissionsGate()(address)') return M003.gate;
       return ADDRESS.channels;
     }
     return '7';
@@ -2503,7 +2514,7 @@ test('M003 refuses to start again when the checkpoint is lost but broadcast rece
 
 test('published M001 address inventories match the immutable deployment record', async () => {
   const deployed = JSON.parse(await readFile('packages/contracts/deployments/base-mainnet/history/001-recognized-usage-deployed.json', 'utf8'));
-  for (const file of ['packages/contracts/README.md', 'apps/website/docs/protocol/recognized-usage.md']) {
+  for (const file of ['packages/contracts/README.md', 'apps/website/docs/reference/contracts.md']) {
     const document = (await readFile(file, 'utf8')).toLowerCase();
     for (const [name, contract] of Object.entries(deployed.contracts)) {
       assert.ok(document.includes(contract.address.toLowerCase()), `${file} is missing ${name}`);

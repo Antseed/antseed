@@ -94,11 +94,14 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
-      label: 'Verifiers',
+      label: 'Model Verification',
       className: 'sidebar-icon sidebar-icon--verify',
       collapsible: true,
       collapsed: true,
       items: [
+        'verify/overview',
+        'verify/buyers',
+        'verify/providers',
         'verify/become-a-verifier',
         'verify/audits',
       ],
