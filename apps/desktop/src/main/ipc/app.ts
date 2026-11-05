@@ -104,6 +104,7 @@ export function registerAppIpc(): void {
       return { ok: false, error: 'Could not update the buyer config; telemetry setting unchanged' };
     }
     setDesktopTelemetryChoiceInConfig(true);
+    if (enabled) await telemetry.recordTelemetryTurnedOn();
     return {
       ok: true,
       available: telemetry.available,

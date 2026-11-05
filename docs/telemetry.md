@@ -47,7 +47,9 @@ Every event, from every product, includes this envelope:
 
 ### Events
 
-- `app_first_opened` — once per installation. Properties: `first_open_date`
+- `app_first_opened` — once per installation. The first launch happens before
+  anyone can turn telemetry on, so it is sent when the user turns telemetry on,
+  still carrying the date of that first launch. Properties: `first_open_date`
   (YYYY-MM-DD).
 - `app_started` — once per launch. Properties: `is_first_launch`.
 - `network_runtime_started` — once per launch when the buyer runtime's

@@ -602,6 +602,34 @@ test('client retry: the same body from another client session is a new request, 
   assert.equal(JSON.stringify(events).includes('session-a'), false)
 })
 
+test('an error answered straight to the client keeps what its text says, on the attempt and the request', () => {
+  const cases = [
+    { status: 404, body: '{"error":{"code":"model_not_found"}}', buyerFault: false, reason: 'no_seller_available' },
+    { status: 503, body: '{"error":{"message":"down"}}', buyerFault: true, reason: 'local_error' },
+    { status: 503, body: '{"error":{"message":"down"}}', buyerFault: false, reason: 'seller_5xx' },
+    { status: 400, body: '{"error":{"message":"bad field"}}', buyerFault: false, reason: 'request_rejected' },
+  ]
+  for (const { status, body, buyerFault, reason } of cases) {
+    const trace = new RequestTrace(0, true)
+    trace.noteAttempt(SECRET_PEER, 0)
+    trace.noteAnswered(10, status, false, { body: Buffer.from(body), buyerFault })
+    trace.noteAttemptResult({ done: true }, status, 20)
+    const props = trace.finish(status, false, 30)!
+    assert.equal(props['failure_reason'], reason, `request: ${status} ${body}`)
+    assert.equal(attemptEventProperties(trace)[0]!['failure_reason'], reason, `attempt: ${status} ${body}`)
+    assert.equal(JSON.stringify(props).includes('bad field'), false)
+  }
+})
+
+test('an earlier seller\'s error text is not the next attempt\'s', () => {
+  const trace = new RequestTrace(0, true)
+  trace.noteAttempt(SECRET_PEER, 0)
+  trace.noteAnswered(5, 503, false, { body: Buffer.from('{"error":{"code":"model_not_found"}}'), buyerFault: true })
+  trace.noteAttempt(SECRET_PEER.replace(/.$/, 'b'), 10)
+  assert.equal(trace.failureText, '')
+  assert.equal(trace.buyerFaultAnswer, false)
+})
+
 test('a cut-off video download fails its seller attempt as well as its request', async (t) => {
   const video = Buffer.alloc(1024, 42)
   const headers = { 'content-type': 'video/mp4', 'content-length': String(video.length) }

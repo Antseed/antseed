@@ -151,6 +151,8 @@ export class RequestTrace {
   interrupted: 'seller' | 'buyer' | 'cancelled' | null = null
   failureText = ''
   failureKind: 'http_error' | 'network_error' | 'timeout' = 'http_error'
+  /** The running attempt's error answer was marked as the buyer's own fault. */
+  buyerFaultAnswer = false
   freeSellersKnown = 0
   /** The seller of the final attempt: the one that answered, or the last to fail. */
   lastSeller: string | null = null
@@ -205,6 +207,9 @@ export class RequestTrace {
     })
     // A later attempt answers for itself: an earlier seller's error reply is
     // not this answer's first byte, and its usage and finish are not this one's.
+    this.failureText = ''
+    this.failureKind = 'http_error'
+    this.buyerFaultAnswer = false
     this.firstByteAtMs = null
     this.streamed = false
     this.usage = null
@@ -237,7 +242,7 @@ export class RequestTrace {
         failureReason = 'local_error'
       } else if (statusCode >= 400) {
         const signal = { kind: 'http_error', statusCode }
-        failureReason = classifyFailureReason(signal, '', context)
+        failureReason = this.buyerFaultAnswer ? 'local_error' : classifyFailureReason(signal, this.failureText, context)
         httpStatus = statusCode
       } else {
         // An empty answer that was sent anyway is still the answer; `empty_answer` marks it.
@@ -306,10 +311,16 @@ export class RequestTrace {
    * A whole (non-streamed) reply arrived. Only an answer is a first byte: an
    * error reply is not output, and the request may still fall back.
    */
-  noteAnswered(atMs: number, statusCode: number, freeTierRefusal = false): void {
+  noteAnswered(atMs: number, statusCode: number, freeTierRefusal = false, answer?: { body: Uint8Array; buyerFault: boolean }): void {
     // A used-up free allowance is also a 429, but it is a limit, not a busy seller.
     if (statusCode === 429 && !freeTierRefusal) this.rateLimited = true
     if (statusCode < 400 && this.firstByteAtMs === null) this.firstByteAtMs = atMs
+    // An error may go straight to the client, with nothing else reporting why.
+    // Its text is only classified here; it never leaves the process.
+    if (statusCode >= 400 && answer) {
+      this.noteFailure({ statusCode, responseBody: Buffer.from(answer.body.subarray(0, MAX_FAILURE_TEXT)), errorMessage: null })
+      this.buyerFaultAnswer = answer.buyerFault
+    }
   }
 
   noteFailure(failure: { statusCode: number; responseBody: Buffer; errorMessage: string | null; timedOut?: boolean }): void {
@@ -336,7 +347,7 @@ export class RequestTrace {
         failureReason = this.interrupted === 'buyer' ? 'local_error' : 'seller_dropped_mid_answer'
       } else {
         const signal = { kind: this.failureKind, statusCode }
-        failureReason = classifyFailureReason(signal, this.failureText, {
+        failureReason = this.buyerFaultAnswer ? 'local_error' : classifyFailureReason(signal, this.failureText, {
           hadPartialOutput: this.firstByteAtMs !== null,
           peersDiscoveredAtSend: this.peersKnownAtSend,
           freeSellersKnown: this.freeSellersKnown,

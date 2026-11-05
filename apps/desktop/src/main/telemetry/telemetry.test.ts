@@ -132,6 +132,54 @@ test('off by default: a fresh install sends nothing until the user turns it on',
   assert.equal(service.enabled, true);
 });
 
+test('first open: nothing is sent while off, then once when the user turns telemetry on, with the first launch\'s date', async (t) => {
+  const dir = await makeTempDir(t);
+  const captured: Captured = { payloads: [] };
+  const firstLaunch = Date.UTC(2026, 0, 2);
+  const options = (nowMs: number) => baseOptions(dir, captured, { nowMs: () => nowMs, startupTimeoutMs: null, heartbeatIntervalMs: null });
+  // The production order: startup runs before the user can reach Preferences.
+  const service = await createTelemetryServiceUnconsented(options(firstLaunch));
+  await service.recordAppStarted();
+  assert.equal(captured.payloads.length, 0);
+  await service.setUserOptedOut(false);
+  await service.recordTelemetryTurnedOn(firstLaunch + 5 * 86_400_000);
+  const events = () => captured.payloads.filter((payload) => payload.event === 'app_first_opened');
+  assert.equal(events().length, 1);
+  assert.equal(events()[0]!.properties['first_open_date'], '2026-01-02');
+  // Never again: not by flipping the switch, not on the next launch.
+  await service.recordTelemetryTurnedOn();
+  const next = await createTelemetryServiceUnconsented(options(firstLaunch + 6 * 86_400_000));
+  await next.recordAppStarted();
+  assert.equal(events().length, 1);
+  const started = captured.payloads.filter((payload) => payload.event === 'app_started');
+  assert.equal(started.at(-1)!.properties['is_first_launch'], false);
+});
+
+test('first open: if the choice was saved but the event could not go out, the next launch sends it', async (t) => {
+  const dir = await makeTempDir(t);
+  const captured: Captured = { payloads: [] };
+  let wallet: string | null = null;
+  const options = baseOptions(dir, captured, { getDistinctId: () => wallet, startupTimeoutMs: null, heartbeatIntervalMs: null });
+  const first = await createTelemetryServiceUnconsented(options);
+  await first.recordAppStarted();
+  await first.setUserOptedOut(false);
+  await first.recordTelemetryTurnedOn();
+  assert.equal(captured.payloads.filter((payload) => payload.event === 'app_first_opened').length, 0, 'no wallet yet');
+  wallet = BUYER_ADDRESS;
+  const next = await createTelemetryServiceUnconsented(options);
+  await next.recordAppStarted();
+  assert.equal(captured.payloads.filter((payload) => payload.event === 'app_first_opened').length, 1);
+});
+
+test('first open: an install that stays off never sends it', async (t) => {
+  const dir = await makeTempDir(t);
+  const captured: Captured = { payloads: [] };
+  const options = baseOptions(dir, captured, { startupTimeoutMs: null, heartbeatIntervalMs: null });
+  await (await createTelemetryServiceUnconsented(options)).recordAppStarted();
+  await (await createTelemetryServiceUnconsented(options)).recordAppStarted();
+  assert.equal(captured.payloads.length, 0);
+});
+
 test('the old opt-out default (telemetryDisabled: false) does not count as turning it on', async (t) => {
   const dir = await makeTempDir(t);
   const state = { ...defaultTelemetryState(), telemetryDisabled: false } as Record<string, unknown>;

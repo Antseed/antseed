@@ -167,6 +167,8 @@ export type TelemetryService = {
     amountUsdc?: number;
   }, nowMs?: number) => Promise<void>;
   /** Once per launch: the first visible model ends startup as a success. */
+  /** Sends what had to wait for the user's consent. Call once their choice is saved everywhere. */
+  recordTelemetryTurnedOn: (nowMs?: number) => Promise<void>;
   recordStartupFinished: (input: {
     outcome: 'success' | 'failed';
     failureStage: StartupFailureStage;
@@ -466,6 +468,13 @@ export async function createTelemetryService(
     }, nowMs);
   };
 
+  // The first launch runs before anyone can turn telemetry on, so reporting it
+  // waits: `hasEmittedFirstOpen` is set only once the event was really sent.
+  const reportFirstOpen = (nowMs: number): void => {
+    if (state.hasEmittedFirstOpen || !state.firstOpenDate) return;
+    state.hasEmittedFirstOpen = track('app_first_opened', { first_open_date: state.firstOpenDate }, nowMs);
+  };
+
   const resolvePremiumBlocked = (nextAction: TelemetryEventProperties['premium_blocked_followup']['next_action'], nowMs: number): Promise<void> | null => {
     if (!premiumBlockedPending) return null;
     premiumBlockedPending = false;
@@ -521,13 +530,12 @@ export async function createTelemetryService(
         }, recoveredAtMs, previousSessionId ?? sessionId);
       }
 
-      const isFirstLaunch = !state.hasEmittedFirstOpen;
+      const isFirstLaunch = !state.hasEmittedFirstOpen && state.firstOpenedAtMs === null;
       if (isFirstLaunch) {
-        state.hasEmittedFirstOpen = true;
         state.firstOpenedAtMs = nowMs;
         state.firstOpenDate = new Date(nowMs).toISOString().slice(0, 10);
-        track('app_first_opened', { first_open_date: state.firstOpenDate }, nowMs);
       }
+      reportFirstOpen(nowMs);
 
       state.sessionActive = true;
       state.lastSessionId = sessionId;
@@ -783,6 +791,11 @@ export async function createTelemetryService(
     async setUserOptedOut(disabled: boolean) {
       state.telemetryEnabled = !disabled;
       if (!state.telemetryEnabled) pendingUserActions.length = 0;
+      await save();
+    },
+
+    async recordTelemetryTurnedOn(nowMs = now()) {
+      reportFirstOpen(nowMs);
       await save();
     },
   };

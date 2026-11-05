@@ -5516,7 +5516,12 @@ export class BuyerProxy {
         }
 
         const finishedAt = Date.now()
-        if (!streamed) traceFor(res)?.noteAnswered(finishedAt, response.statusCode, freeTierRefusal !== null)
+        if (!streamed) {
+          traceFor(res)?.noteAnswered(finishedAt, response.statusCode, freeTierRefusal !== null, {
+            body: responseForClient.body,
+            buyerFault: responseFaultAttribution(responseForClient) === 'buyer',
+          })
+        }
         const latencyMs = finishedAt - startTime
         log(`Response: ${responseForClient.statusCode} (${latencyMs}ms, ${responseForClient.body.length} bytes)`)
         if (responseForClient.statusCode >= 400) {
@@ -5671,7 +5676,10 @@ export class BuyerProxy {
         }
         const latencyMs = Date.now() - startTime
         this._markModelActivity()
-        traceFor(res)?.noteAnswered(Date.now(), response.statusCode, freeTierRefusal !== null)
+        traceFor(res)?.noteAnswered(Date.now(), response.statusCode, freeTierRefusal !== null, {
+          body: response.body,
+          buyerFault: responseFaultAttribution(response) === 'buyer',
+        })
 
         log(`Response: ${response.statusCode} (${latencyMs}ms, ${response.body.length} bytes)`)
         if (response.statusCode >= 400) {
