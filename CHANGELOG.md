@@ -260,6 +260,8 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- Docs: `/llms.txt` is rewritten as an agent entry point. It starts with "If you are an agent, start here: /skill.md", gives the gateway and buyer proxy base URLs and the headless `antseed gateway key create --json` key, and lists every docs page, integration page and `llms-connect.txt` with a one-line summary. It no longer links the missing `/docs/providers` or calls the `/docs/pricing` redirect stub the full docs, and it describes `/stats` and `antseed network browse --json` as the different shapes they are, with a working `jq` query for each. `/docs/pricing` now gets a server-side 301 to **Routing and catalog** through `static/_redirects`, so fetchers that don't run JavaScript land on the page.
+
 - Sellers (`@antseed/node`): usage receipts now price cached input at the cached rate, as the payment channel charge does. They priced every input token at the full input rate, so the receipt cost on the seller dashboard and request log, and session cost totals, came out well above what buyers paid for prompt-cached traffic.
 
 - Sellers (`@antseed/node`): an upstream answer saying the account's "extra usage" is used up is treated as an account error, like running out of credit: buyers get the generic `upstream_unavailable` 503 instead of the upstream's message, and health checks mark the model failing.
