@@ -268,6 +268,15 @@ export function parseOptionalPositiveIntegerEnv(value: string | undefined): numb
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined
 }
 
+/** Like parseOptionalPositiveIntegerEnv, but 0 is a value (it turns the setting off). */
+export function parseOptionalNonNegativeIntegerEnv(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined
+  const trimmed = value.trim()
+  if (!/^\d+$/.test(trimmed)) return undefined
+  const parsed = Number(trimmed)
+  return Number.isSafeInteger(parsed) ? parsed : undefined
+}
+
 export function buildSellerRuntimeOverridesFromFlags(options: {
   reserve?: number
   inputUsdPerMillion?: number
@@ -807,6 +816,16 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       if (maxUploadBodyBytes !== undefined) {
         console.log(chalk.dim(`  max upload body bytes: ${maxUploadBodyBytes}`))
       }
+      const maxInboundConnections = parseOptionalPositiveIntegerEnv(process.env['ANTSEED_MAX_INBOUND_CONNECTIONS'])
+        ?? effectiveSellerConfig.maxInboundConnections
+      if (maxInboundConnections !== undefined) {
+        console.log(chalk.dim(`  max inbound connections: ${maxInboundConnections}`))
+      }
+      const inboundIdleTimeoutMs = parseOptionalNonNegativeIntegerEnv(process.env['ANTSEED_INBOUND_IDLE_TIMEOUT_MS'])
+        ?? effectiveSellerConfig.inboundIdleTimeoutMs
+      if (inboundIdleTimeoutMs !== undefined) {
+        console.log(chalk.dim(`  idle buyer connections: ${inboundIdleTimeoutMs === 0 ? 'kept' : `closed after ${Math.round(inboundIdleTimeoutMs / 60_000)} min`}`))
+      }
       const verificationDomains = (effectiveSellerConfig.verifications?.domains ?? []).map((claim) => claim.domain)
       if (verificationDomains.length > 0) {
         console.log(chalk.dim(`  domain verification: ${verificationDomains.join(', ')}`))
@@ -871,6 +890,8 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         ...(dhtPort ? { dhtPort } : {}),
         ...(signalingPort ? { signalingPort } : {}),
         ...(maxUploadBodyBytes !== undefined ? { maxUploadBodyBytes } : {}),
+        ...(maxInboundConnections !== undefined ? { maxInboundConnections } : {}),
+        ...(inboundIdleTimeoutMs !== undefined ? { inboundIdleTimeoutMs } : {}),
         ...(sellerFreeTier ? { freeTier: sellerFreeTier } : {}),
         ...(effectiveSellerConfig.freeUsage ? { freeUsage: effectiveSellerConfig.freeUsage } : {}),
         ...(effectiveSellerConfig.buyerLimits ? { buyerLimits: effectiveSellerConfig.buyerLimits } : {}),
