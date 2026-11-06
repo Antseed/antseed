@@ -14,12 +14,21 @@ export interface MetadataVocabulary {
   readonly units: ReadonlySet<string>;
   /** Service capability options (`serviceCapabilities.<service>.<option>`). */
   readonly capabilityOptions: ReadonlySet<keyof ServiceCapabilities>;
+  /** Unit billing match keys (`serviceUnitBillingModels` component `match`). */
+  readonly matchKeys: ReadonlySet<string>;
+  /** Most components one unit billing model may carry. */
+  readonly maxBillingComponents: number;
 }
+
+/** Vocabulary entries that are name sets. */
+export type MetadataVocabularyNameKind = "protocols" | "units" | "capabilityOptions" | "matchKeys";
 
 export interface MetadataVocabularyAdditions {
   protocols?: readonly string[];
   units?: readonly string[];
   capabilityOptions?: readonly (keyof ServiceCapabilities)[];
+  matchKeys?: readonly string[];
+  maxBillingComponents?: number;
 }
 
 /** What v10-v14 know: everything defined before speech. */
@@ -47,6 +56,8 @@ export const BASE_METADATA_VOCABULARY: MetadataVocabulary = {
     "structuredOutput",
     "supportedParameters",
   ]),
+  matchKeys: new Set(["model", "size", "quality", "resolution"]),
+  maxBillingComponents: 8,
 };
 
 /** `base` plus the names a newer version adds. */
@@ -55,6 +66,8 @@ export function extendVocabulary(base: MetadataVocabulary, added: MetadataVocabu
     protocols: new Set([...base.protocols, ...(added.protocols ?? [])]),
     units: new Set([...base.units, ...(added.units ?? [])]),
     capabilityOptions: new Set([...base.capabilityOptions, ...(added.capabilityOptions ?? [])]),
+    matchKeys: new Set([...base.matchKeys, ...(added.matchKeys ?? [])]),
+    maxBillingComponents: added.maxBillingComponents ?? base.maxBillingComponents,
   };
 }
 
@@ -69,12 +82,18 @@ const PER_SERVICE_KEYS = [
   "servicePerformance",
 ] as const satisfies ReadonlyArray<keyof ProviderAnnouncement>;
 
-/** Whether `service` needs a protocol or billing unit outside `vocabulary`. */
+/**
+ * Whether `service` needs a protocol, billing unit or match key outside
+ * `vocabulary`, or more billing components than it allows.
+ */
 function needsUnknownName(provider: ProviderAnnouncement, service: string, vocabulary: MetadataVocabulary): boolean {
   if (provider.serviceApiProtocols?.[service]?.some((protocol) => !vocabulary.protocols.has(protocol))) return true;
   for (const [protocol, model] of Object.entries(provider.serviceUnitBillingModels?.[service] ?? {})) {
     if (!vocabulary.protocols.has(protocol)) return true;
-    if (model?.components.some((component) => !vocabulary.units.has(component.unit))) return true;
+    if (!model) continue;
+    if (model.components.length > vocabulary.maxBillingComponents) return true;
+    if (model.components.some((component) => !vocabulary.units.has(component.unit))) return true;
+    if (model.components.some((component) => Object.keys(component.match ?? {}).some((key) => !vocabulary.matchKeys.has(key)))) return true;
   }
   return false;
 }
