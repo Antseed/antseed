@@ -1,5 +1,5 @@
 import { randomInt } from 'node:crypto'
-import type { KbfProbe } from '@antseed/fingerprints'
+import { KBF_PROBES_PER_REQUEST, type KbfProbe } from '@antseed/fingerprints'
 
 export interface IndexedKbfProbeBatch {
   probes: KbfProbe[]
@@ -30,6 +30,14 @@ export function createDomainHomogeneousKbfBatches(
     }
   }
   return batches
+}
+
+/**
+ * The batches of a question set exactly as sellers get them: set order, one domain per request. The
+ * reference is calibrated on these same batches, so its limit is measured on what is audited.
+ */
+export function kbfAuditBatches(probes: readonly KbfProbe[]): IndexedKbfProbeBatch[] {
+  return createDomainHomogeneousKbfBatches(probes, KBF_PROBES_PER_REQUEST, (values) => [...values])
 }
 
 function cryptoShuffle<T>(values: readonly T[]): T[] {

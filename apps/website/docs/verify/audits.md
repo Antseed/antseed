@@ -33,7 +33,7 @@ The rest of this page explains what these commands do.
 |---|---|
 | `SAME` | The seller misses about as often as the genuine model |
 | `DIFF` | The seller misses clearly more often: probably a different model |
-| `UNDETERMINED` | Too few usable answers to decide |
+| `UNDETERMINED` | Too few usable answers to decide, or the seller refuses the request settings the genuine answers were measured with |
 
    A missing, empty or unreadable answer is left out of the score, not counted as wrong. A `SAME` needs at least half the questions answered and a `DIFF` at least 80%, so a seller can't make a `DIFF` more likely by dropping answers; below that the result is `UNDETERMINED`. A batch with any answer missing is asked again up to two more times, and the try with the most answers is kept. Answers sent as `<number>X</number>` lines without question numbers are read in order when there is exactly one per question.
 
@@ -128,7 +128,9 @@ All auditors must audit the same models in the same way, or the round-robin spli
 
 If the npm registry can't be reached, `verifier run` warns and continues, and `verifier submit` stops (`submit --dry-run` only warns). `--skip-version-check` skips the check on both.
 
-Releases that raise the compat number are published at the end of an epoch, so every auditor moves to the new rules at the same epoch start. A CI test pins a hash of the audit rules for each compat number, so a change to them without a bump fails the build.
+Releases that raise the compat number are published at the end of an epoch, so every auditor moves to the new rules at the same epoch start. A CI test pins a hash of the audit rules for each compat number: the model list, the split, the thresholds, the domain table, the prompt variants, the calibration and layout filter settings, and sample verdicts, parsed replies and scored answers. A change to those without a bump fails the build. A change to the audit code that none of the samples reaches still needs a manual bump.
+
+Three local settings change the rules, so `verifier run` stops when they differ from their defaults: `verifier.closeCallExtensions` (2), `verifier.referenceSelfTestRuns` (3) and `verifier.referenceLayoutFilterPasses` (2). Remove them from your config, or pass `--skip-version-check` for a test.
 
 ### Price limit
 
@@ -147,7 +149,7 @@ A model's bank holds the questions and the genuine model's answers. Banks live i
 `verifier run` builds banks on its own, before it asks any seller:
 
 - **No question set for this epoch yet:** it builds new questions and adds them to the bank until they make the epoch's set (see below), up to 4 builds per model and run. A model without a bank gets one this way.
-- **This epoch's set is ready:** no reference calls.
+- **This epoch's set is ready and calibrated:** no reference calls. A set that isn't calibrated yet is calibrated first (see below).
 
 ### Questions for each epoch
 
@@ -158,7 +160,15 @@ Each auditor uses one question set per model and epoch (`<banks>/<model>/epochs/
 - **Used once:** after its epoch, a set's questions, including extra questions nobody needed, are never asked again. Its evidence is published when its results are submitted.
 - **Sized like any reference:** the audit set is the smallest that has the statistical power and detects every testable contrast model. Each of the two extra sets is as large as the audit set, so a set needs about three times the audit set's questions.
 
+- **Calibrated before use:** before any seller is asked, the auditor asks the genuine model the audit set and both extra sets once, in the same batches sellers get: one domain per request, up to ten questions, temperature 0, under the same rules for cut-off and incomplete replies. How often it misses its own stored answers here is the limit sellers are judged against, so the limit is measured on what is audited, minutes before the audit. The trials and the batches are stored on each reference (`calibration`), and the raw requests and replies are published with the bank's evidence. The questions' earlier self-test stays in the bank and is used for sizing.
+
+If the genuine model answers under 80% of any set, **the model isn't audited that epoch**. If it misses more than the 99% limit of the sets' self-test, the run prints a warning and goes on: the seller's limit comes from these trials anyway. Sets are sized so they reach the required power on the calibration's trials.
+
 Every epoch therefore needs a new build per model. The cost is in the bank's `referenceCosts` and in each build's log line.
+
+Before the self-test, a bank's new questions go through a **layout filter**: the unchecked pool is asked again in shuffled single-domain batches of up to ten, with audit prompt variants at temperature 0, twice by default, and any question whose answer moves in either pass is dropped. A question that only holds up next to the questions it was generated with would just add noise to the limit without telling models apart.
+
+A bank built by an earlier reference builder can't be used or extended: archive it and let `verifier run` build a new one.
 
 A bank is built to tell the genuine model from a few **contrast models**: cheaper look-alikes a seller might serve instead. Each audited model has its own list built into the CLI, so every verifier's new banks are built against the same reviewed set. Every contrast is cheaper than the model it is listed for, as a substituting seller's model would be, and is one the audits' banks already use, never a `:free` model. `antseed verifier models` shows each model's contrasts and where they come from:
 

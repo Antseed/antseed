@@ -5,12 +5,17 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { Wallet } from 'ethers'
 import {
+  KBF_CALIBRATION_METHOD,
   KBF_PROMPT_VARIANT_IDS,
+  aggregateKbfSelfTestOutcomes,
+  clopperPearsonUpper,
   computeBinomialPower,
+  computeMatchVector,
   computeReferenceId,
   createReferenceQueryProfile,
   getKbfPromptVariant,
   validateKbfReferenceV1,
+  type KbfReferenceCalibrationV1,
   type KbfReferenceV1,
 } from '@antseed/fingerprints'
 import {
@@ -25,6 +30,7 @@ import {
 } from '@antseed/node'
 import { ConcurrencyLimiter } from './audit-concurrency.js'
 import { writeJsonAtomic } from './atomic-files.js'
+import { kbfAuditBatches } from './kbf-batching.js'
 import {
   classifyVerificationTarget,
   classifyVerificationTargetServices,
@@ -1024,7 +1030,7 @@ test('deleted upstream credentials skip after the first batch with a structured 
   assert.equal(run.evidence.result.outcomeReason?.code, 'upstream_credentials_invalid')
 })
 
-test('a seller refusing temperature is re-asked without it and the omission is recorded', async () => {
+test('a seller refusing temperature is detected, asked without it and judged', async () => {
   const run = await runTarget(40, 'sampling-rejected')
   assert.equal(run.result.status, 'SAME')
   const bodies = run.requests.map((request) => JSON.parse(request.body) as Record<string, unknown>)
@@ -1037,6 +1043,28 @@ test('a seller refusing temperature is re-asked without it and the omission is r
     assert.equal('temperature' in sent, false)
     assert.equal('top_p' in sent, false)
   }
+})
+
+test('a seller is judged against the calibration of its set, sent in the same batches, and the evidence carries it', async () => {
+  const base = reference(40)
+  const outcomes = base.probes.map((probe, index) => {
+    const answers = [index < 4 ? probe.consensus + 5 : probe.consensus]
+    return { probeId: probe.id, answers, matches: computeMatchVector(answers, [probe]) }
+  })
+  const calibration: KbfReferenceCalibrationV1 = {
+    version: 1, method: KBF_CALIBRATION_METHOD, passes: 1, ...aggregateKbfSelfTestOutcomes(outcomes), calibratedAt: '2026-08-06T00:00:00.000Z',
+    batches: kbfAuditBatches(base.probes).map((batch, batchIndex) => ({
+      pass: 0, batchIndex, probeIds: batch.probes.map((probe) => probe.id), promptVariantId: 'v1', attempts: 1,
+    })),
+  }
+  const calibrated = { ...base, calibration }
+  calibrated.referenceId = computeReferenceId(calibrated)
+  const run = await runTarget(40, 'valid', 0, 'verified', true, 10_000, undefined, undefined, calibrated)
+  assert.equal(run.evidence.result.stats.selfHamming, 4)
+  assert.equal(run.evidence.result.stats.selfTotal, 40)
+  assert.ok(run.evidence.result.stats.p0Cp99! > clopperPearsonUpper(base.selfTest.hamming, base.selfTest.total, 0.99))
+  assert.deepEqual(run.evidence.reference.calibration, calibration)
+  assert.deepEqual(run.evidence.exchanges.map((exchange) => exchange.probeIds), calibration.batches.map((batch) => batch.probeIds))
 })
 
 test('canonical audits send temperature and record no omission', async () => {

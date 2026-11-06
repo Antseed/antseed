@@ -179,10 +179,9 @@ export function buildKbfChatRequestBody(
 }
 
 /**
- * Sampling fields an audit drops when an endpoint refuses them. Some newer
- * models fix their own sampling and reject `temperature` outright, so leaving
- * it out asks for the same deterministic answer the reference holds. Audits
- * never send `top_p` (the KBF reference code does not either).
+ * Sampling fields an audit drops when an endpoint refuses them, recording that it did. The
+ * endpoint then answers at its default temperature. The KBF reference code stops on such a
+ * refusal instead. Audits never send `top_p` (the KBF reference code does not either).
  */
 export const KBF_OPTIONAL_SAMPLING_FIELDS = ['temperature'] as const;
 
@@ -203,8 +202,9 @@ export function isKbfSamplingFieldRejection(status: number | undefined, errorTex
 /**
  * True when an HTTP 400/422 error refuses a thinking-suppression field (`reasoning`,
  * `reasoning_effort`, `thinking`, `enable_thinking`) or an assistant prefill, so the
- * request can be sent again without it. Audits send the reference's suppression to
- * the target, as the KBF reference code does for every endpoint.
+ * request can be sent again without it. Audits send the target its own discovered
+ * suppression, or the reference's when discovery finds none. The KBF reference code
+ * discovers one per endpoint and stops on a refusal.
  */
 export function isKbfThinkingSuppressionRejection(status: number | undefined, errorText: string): boolean {
   if (status !== 400 && status !== 422) return false;

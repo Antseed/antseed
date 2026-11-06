@@ -4,13 +4,17 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import test from 'node:test'
 import {
+  KBF_CALIBRATION_METHOD,
+  aggregateKbfSelfTestOutcomes,
   computeBinomialPower,
   computeReferenceId,
   createReferenceQueryProfile,
+  type KbfReferenceCalibrationV1,
   type KbfReferenceV1,
 } from '@antseed/fingerprints'
 import type { VerifierCLIConfig } from '../config/types.js'
 import { setAuditedModelsForTesting } from './audited-models.js'
+import { kbfAuditBatches } from './kbf-batching.js'
 import {
   appendModelReferenceToBank,
   bankPath,
@@ -25,6 +29,7 @@ import {
   NO_EPOCH_QUESTION_SET,
   questionTextKey,
   recordEpochQuestionPool,
+  recordEpochSetCalibration,
   reserveExtensionReference,
   reserveModelAuditReference,
   selectEpochQuestionSet,
@@ -53,7 +58,35 @@ function appendReference(banksDir: string, value = reference()) {
 
 const identityShuffle = <T>(values: readonly T[]) => [...values]
 
-/** Makes `epoch`'s question set from every question banked so far, in bank order. */
+/** One pass in which the reference gives every label. */
+function cleanCalibration(value: KbfReferenceV1): KbfReferenceCalibrationV1 {
+  const outcomes = value.probes.map((probe) => ({ probeId: probe.id, answers: [probe.consensus], matches: [1 as const] }))
+  return {
+    version: 1,
+    method: KBF_CALIBRATION_METHOD,
+    passes: 1,
+    ...aggregateKbfSelfTestOutcomes(outcomes),
+    batches: kbfAuditBatches(value.probes).map((batch, batchIndex) => ({
+      pass: 0, batchIndex, probeIds: batch.probes.map((probe) => probe.id), promptVariantId: 'v1', attempts: 1,
+    })),
+    calibratedAt: '2026-08-06T00:00:00.000Z',
+  }
+}
+
+async function calibrate(banksDir: string, epoch: string, set: EpochQuestionSetV1, config?: VerifierCLIConfig): Promise<EpochQuestionSetV1> {
+  const path = join(banksDir, 'calibration.exchanges.json')
+  await writeFile(path, '{}')
+  return recordEpochSetCalibration({
+    banksDir, model: 'model-a', epoch, config, passes: 1, cost: referenceCost,
+    calibrations: [set.reference, ...set.extensions].map(cleanCalibration),
+    exchanges: {
+      path, sha256: 'sha256:00', exchangeCount: 1, requestCount: 1,
+      upstream: { name: 'referenceEndpoint', type: 'openai', baseUrl: 'https://reference.test/v1', model: 'upstream-a', protocol: 'openai-chat-completions', request: { overrides: {}, omissions: [] }, providerPin: null },
+    },
+  })
+}
+
+/** Makes `epoch`'s question set from every question banked so far, in bank order, and calibrates it. */
 async function makeSet(
   banksDir: string,
   epoch: string,
@@ -66,7 +99,7 @@ async function makeSet(
     config: options.config, shuffle: identityShuffle,
   })
   if (selection.status !== 'ready') throw new Error(`no set: ${selection.reason}`)
-  return selection.set
+  return calibrate(banksDir, epoch, selection.set, options.config)
 }
 
 setAuditedModelsForTesting({
@@ -687,6 +720,37 @@ test('every seller of a model gets the same question set this epoch, and every c
     for (const value of [set.reference, ...set.extensions]) {
       assert.equal((await findEpochProbeReference(directory, value.referenceId) as KbfReferenceV1 | null)?.referenceId, value.referenceId)
     }
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('sellers wait for calibration: an uncalibrated or failed set reserves nothing, and a passed one stays put', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-uncalibrated-'))
+  const reserve = () => reserveModelAuditReference({
+    banksDir: directory, model: 'model-a', sellerPeerId: '11'.repeat(20), service: 'model-a', runId: 'run-a', epoch: '4',
+  })
+  try {
+    const appended = await appendReference(directory, reference(200))
+    await recordEpochQuestionPool({ banksDir: directory, model: 'model-a', epoch: '4', probeIds: appended.addedProbeIds })
+    const selection = await selectEpochQuestionSet({
+      banksDir: directory, model: 'model-a', epoch: '4', runId: 'set-run', extensionCount: 0, shuffle: identityShuffle,
+    })
+    assert.equal(selection.status, 'ready')
+    if (selection.status !== 'ready') return
+    await assert.rejects(reserve(), /NO_EPOCH_QUESTION_SET.*has not been calibrated/)
+    assert.equal(selection.set.calibration, undefined)
+    const set = await calibrate(directory, '4', selection.set)
+    assert.equal(set.calibration?.status, 'passed')
+    assert.equal(set.calibration?.passes, 1)
+    assert.notEqual(set.reference.referenceId, selection.set.reference.referenceId)
+    const reserved = await reserve()
+    assert.equal(reserved.reference.referenceId, set.reference.referenceId)
+    assert.equal(reserved.reference.calibration?.total, reserved.reference.probes.length)
+    // Calibrated once: a second record changes nothing, and the published reference is found by its new id.
+    const again = await calibrate(directory, '4', { ...set, reference: selection.set.reference })
+    assert.equal(again.reference.referenceId, set.reference.referenceId)
+    assert.equal((await findEpochProbeReference(directory, set.reference.referenceId) as KbfReferenceV1 | null)?.referenceId, set.reference.referenceId)
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

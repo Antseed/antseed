@@ -219,8 +219,9 @@ export const VerifierConfigSchema = strictObject({
   referenceMaxNoProgressRounds: positiveIntegerSchema.optional(),
   referenceSelfTestRuns: positiveIntegerSchema.optional(),
   /**
-   * KBF layout-filter passes for new banks (default 1; 0 turns it off). Each pass re-asks every new
-   * probe once the way audits do and drops probes whose answer moves. A bank keeps its own setting.
+   * KBF layout-filter passes for new banks (default 2; 0 turns it off). Each pass re-asks the pool of
+   * new probes in single-domain batches of ten and drops probes whose answer moves. A bank keeps its
+   * own setting. Part of the audit rules: see `verifierRuleOverrides`.
    */
   referenceLayoutFilterPasses: z.number().int().min(0, 'must be an integer >= 0').optional(),
   /**

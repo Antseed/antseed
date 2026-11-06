@@ -425,7 +425,7 @@ test('a model whose question build fails is retried in the next round, not dropp
   const last = await runVerifierRounds(3, async (round) => { rounds.push(round); return outcomes[round - 1]! }, (line) => lines.push(line))
   assert.deepEqual(rounds, [1, 2, 3])
   assert.equal(last?.left, 0)
-  assert.ok(!lines.some((line) => line.includes('could not be built')), lines.join('\n'))
+  assert.ok(!lines.some((line) => line.includes('no usable question set')), lines.join('\n'))
 })
 
 test('a build that keeps failing is reported once at the end, and a round without progress stops', async () => {
@@ -438,7 +438,7 @@ test('a build that keeps failing is reported once at the end, and a round withou
   assert.equal(last?.enrollmentFailures?.size, 1)
   const report = lines.join('\n')
   assert.match(report, /made no progress/)
-  assert.match(report, /fresh questions could not be built \(1\)/)
+  assert.match(report, /no usable question set \(1\)/)
   assert.match(report, /glm-5\.3: no contrast models selected/)
 })
 

@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { KBF_CALIBRATION_PASSES, KBF_DEFAULT_SELF_TEST_RUNS } from '@antseed/fingerprints'
 import { AUDITED_MODELS } from './audited-models.js'
-import { VERIFIER_COMPAT, readCompat, verifierRulesHash } from './verifier-compat.js'
+import { DEFAULT_LAYOUT_FILTER_PASSES } from './model-reference.js'
+import { VERIFIER_COMPAT, readCompat, verifierRuleOverrides, verifierRulesFingerprint, verifierRulesHash } from './verifier-compat.js'
 
 /**
  * The audit rules each verifier compat number stands for. When this test fails, the change alters how
@@ -11,6 +13,7 @@ import { VERIFIER_COMPAT, readCompat, verifierRulesHash } from './verifier-compa
  */
 const RULES_BY_COMPAT: Readonly<Record<number, string>> = {
   1: '0x6f6ad26fc799721018d248d22fba70ba99db7a80e9d7fdfaab6c281f242816c3',
+  2: '0x4c1d0a1dbcf1ccf1b9d73554254b90f9c1eced139551b996538c2b3cedacd478',
 }
 
 test('the audit rules match the hash pinned for this verifier compat', () => {
@@ -41,6 +44,34 @@ test('a change to the audited models without a compat bump no longer matches the
   }
   // Order in the source does not matter: the same models in reverse give the same hash.
   assert.equal(verifierRulesHash({ auditedModels: Object.fromEntries(Object.entries(AUDITED_MODELS).reverse()) }), pinned)
+})
+
+test('the fingerprint covers the tolerance table, prompts, parsing, scoring and the settings auditors must share', () => {
+  const fingerprint = verifierRulesFingerprint() as {
+    domains: Array<{ key: string; tolerance: unknown }>
+    parsed: Array<Array<number | null>>
+    scored: Array<0 | 1 | null>
+    calibration: { passes: number }
+    reference: { layoutFilterPasses: number }
+    kbf: { promptVariantsHash: string; closeCallExtensions: number; selfTestRuns: number }
+  }
+  assert.ok(fingerprint.domains.some((domain) => domain.key === 'physics'))
+  assert.match(fingerprint.kbf.promptVariantsHash, /^sha256:/)
+  assert.ok(fingerprint.parsed.some((answers) => answers.includes(-78.5)), 'a Unicode minus is read as a sign')
+  assert.ok(fingerprint.parsed.some((answers) => answers.join() === '3.14,2.71'), 'decimals are not read as labels')
+  assert.deepEqual([...new Set(fingerprint.scored)].sort(), [0, 1, null].sort())
+  assert.equal(fingerprint.calibration.passes, KBF_CALIBRATION_PASSES)
+  assert.equal(fingerprint.reference.layoutFilterPasses, DEFAULT_LAYOUT_FILTER_PASSES)
+  assert.equal(fingerprint.kbf.closeCallExtensions, 2)
+  assert.equal(fingerprint.kbf.selfTestRuns, KBF_DEFAULT_SELF_TEST_RUNS)
+})
+
+test('config that changes the audit rules is named; the pinned values and unset settings are not', () => {
+  assert.deepEqual(verifierRuleOverrides(undefined), [])
+  assert.deepEqual(verifierRuleOverrides({ closeCallExtensions: 2, referenceSelfTestRuns: KBF_DEFAULT_SELF_TEST_RUNS }), [])
+  const overrides = verifierRuleOverrides({ closeCallExtensions: 1, referenceSelfTestRuns: 5, referenceLayoutFilterPasses: 1 })
+  assert.equal(overrides.length, 3)
+  assert.match(overrides[1]!, /referenceSelfTestRuns is 5/)
 })
 
 test('a bumped compat without a pinned hash fails', () => {

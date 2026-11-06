@@ -50,8 +50,9 @@ export function computeMatchVector(
 
 /**
  * True when more than half of a batch's answers are unscoreable. The KBF
- * reference code re-asks such a batch (up to twice) and keeps the attempt with
- * the most scoreable answers.
+ * reference code re-asks such a batch, and one whose answers are shifted by a
+ * position (which we do not check), up to twice; when no attempt passes it keeps
+ * the one with the most scoreable answers.
  */
 export function isLowCoverageKbfBatch(matches: ReadonlyArray<MatchEntry>): boolean {
   const missing = matches.filter((match) => match === null).length;

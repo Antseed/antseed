@@ -1,6 +1,7 @@
 import chalk from 'chalk'
 import pkg from '../../../../package.json' with { type: 'json' }
 import { requireCurrentVerifier } from '../../../verifier/release-check.js'
+import { verifierRuleOverrides } from '../../../verifier/verifier-compat.js'
 import type { Command } from 'commander'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -75,6 +76,7 @@ import {
 import { buyerCapShortfall, describeAuditPriceCap, requiredBuyerCap, resolveAuditPriceCaps } from '../../../verifier/audit-price.js'
 import { loadHighestEndpointPrice, loadVerifierModelCatalog } from '../../../verifier/openrouter-catalog.js'
 import {
+  epochSetCalibrationProblem,
   loadEpochQuestionSet,
   missingBankReferenceExchanges,
   loadModelAuditReservation,
@@ -624,7 +626,7 @@ export async function runVerifierRounds(
   }
   const failedBuilds = [...(last?.enrollmentFailures ?? new Map<string, string>())]
   if (failedBuilds.length > 0) {
-    log(chalk.yellow(`Not audited this run, fresh questions could not be built (${failedBuilds.length}):`))
+    log(chalk.yellow(`Not audited this run, no usable question set (${failedBuilds.length}):`))
     for (const [model, reason] of failedBuilds) log(chalk.yellow(`  - ${model}: ${reason}`))
   }
   return last
@@ -669,6 +671,12 @@ async function runVerifierRound(
         strictWhenUnavailable: false,
         warn: (text) => console.warn(chalk.yellow(text)),
       })
+      const ruleOverrides = verifierRuleOverrides(config.verifier)
+      if (ruleOverrides.length > 0) {
+        const text = `this config audits differently from other auditors on the same compat: ${ruleOverrides.join('; ')}`
+        if (options.skipVersionCheck !== true) throw new Error(`${text}. Remove these settings, or pass --skip-version-check for a test.`)
+        console.warn(chalk.yellow(`Skipping the rule check (--skip-version-check): ${text}.`))
+      }
       if (config.verifier?.testModels) {
         console.warn(chalk.yellow(
           `verifier.testModels is set: auditing only ${configuredVerifierModels(config.verifier).join(', ')}. For testing only; other auditors must use the same list.`,
@@ -1691,7 +1699,7 @@ async function runVerifierRound(
           console.log(chalk.yellow(
             `Epoch ${epoch}: ${left.retryAuditor + left.retrySeller} audit(s) can be retried and ${left.extend} `
             + 'close call(s) wait for extra questions'
-            + (enrollmentFailures.size > 0 ? `; fresh questions for ${enrollmentFailures.size} model(s) must be built again.` : '.'),
+            + (enrollmentFailures.size > 0 ? `; ${enrollmentFailures.size} model(s) have no usable question set.` : '.'),
           ))
         } else {
           console.log(chalk.green(`Epoch ${epoch}: every eligible seller is finished.`))
@@ -1762,8 +1770,15 @@ async function collectPreRunProblems(input: {
   for (const { model, sellerPeerIds } of input.models) {
     if (sellerPeerIds.length === 0) continue
     try {
-      if (!await loadEpochQuestionSet({ banksDir: input.banksDir, model, epoch: input.epoch, config: input.config.verifier })) {
+      const set = await loadEpochQuestionSet({ banksDir: input.banksDir, model, epoch: input.epoch, config: input.config.verifier })
+      if (!set) {
         problems.push(`${model}: no question set for epoch ${input.epoch} yet; run without --no-enroll to build it`)
+        continue
+      }
+      const calibrationProblem = epochSetCalibrationProblem(set)
+      if (calibrationProblem) {
+        problems.push(`${model}: the question set for epoch ${input.epoch} ${calibrationProblem}`
+          + `${set.calibration ? '; the model is not audited this epoch' : '; run without --no-enroll to calibrate it'}`)
         continue
       }
       const missing = await missingBankReferenceExchanges(input.banksDir, model)

@@ -205,3 +205,25 @@ describe('isKbfAnswersOnlyReply', () => {
     expect(isKbfAnswersOnlyReply('1) Shenghuo Weekly was founded by Huang Yanpei in 1925')).toBe(false);
   });
 });
+
+describe('replies the KBF reference code reads', () => {
+  it('reads a Unicode minus as a negative number', () => {
+    expect(parseKbfAnswers('(1) \u2212273.15\n(2) \u22125', 2)).toEqual([-273.15, -5]);
+  });
+
+  it('does not take a bare decimal for answer labels', () => {
+    expect(parseKbfAnswers('3.14\n2.72', 2)).toEqual([3.14, 2.72]);
+  });
+
+  it('reads an unlabelled reply in line order when each probe has one number-only line', () => {
+    expect(parseKbfAnswers('100\n200\n300', 3)).toEqual([100, 200, 300]);
+  });
+
+  it('leaves an unlabelled reply unread when the line count does not match', () => {
+    expect(parseKbfAnswers('100\n200', 3)).toEqual([null, null, null]);
+  });
+
+  it('still reads labelled answers by their label', () => {
+    expect(parseKbfAnswers('(2) 20\n(1) 10', 2)).toEqual([10, 20]);
+  });
+});

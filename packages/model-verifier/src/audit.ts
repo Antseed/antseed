@@ -19,10 +19,10 @@ import {
   getKbfPromptVariant,
   isKbfSamplingFieldRejection,
   isKbfThinkingSuppressionRejection,
+  kbfAuditBaseline,
   kbfTargetThinkingSuppression,
   hasMissingKbfAnswers,
   parseKbfAnswers,
-  subsetReferenceSelfTest,
   verifyKbf,
   type FingerprintEvaluation,
   type KbfProbe,
@@ -193,8 +193,10 @@ function hintFor(reason: string): string {
 
 /**
  * Picks a fresh random probe subset and order for this audit. Without a fixed size it
- * grows in steps of ten until the subset's own reference self-test gives the required
- * statistical power, falling back to every probe.
+ * grows in steps of ten until the subset's own reference baseline gives the required
+ * statistical power, falling back to every probe. A calibrated reference is an epoch question
+ * set whose limit was measured on its own batches, so without a fixed size it is asked whole and
+ * in its stored order, in those batches.
  */
 export function selectProbes(
   reference: KbfReferenceV1,
@@ -202,7 +204,7 @@ export function selectProbes(
 ): { probes: KbfProbe[]; power: number } {
   const shuffled = shuffle(reference.probes, options.draw)
   const powerOf = (probes: readonly KbfProbe[]): number => {
-    const selfTest = subsetReferenceSelfTest(reference, probes.map((probe) => probe.id))
+    const selfTest = kbfAuditBaseline(reference, probes.map((probe) => probe.id))
     return computeBinomialPower({
       selfHamming: selfTest.hamming,
       selfTotal: selfTest.total,
@@ -221,6 +223,7 @@ export function selectProbes(
     const probes = shuffled.slice(0, count)
     return { probes, power: powerOf(probes) }
   }
+  if (reference.calibration) return { probes: [...reference.probes], power: powerOf(reference.probes) }
   for (let count = KBF_PROBES_PER_REQUEST; count <= shuffled.length; count += KBF_PROBES_PER_REQUEST) {
     const probes = shuffled.slice(0, count)
     const power = powerOf(probes)

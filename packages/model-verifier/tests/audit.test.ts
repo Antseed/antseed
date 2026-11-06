@@ -1,6 +1,64 @@
 import { describe, expect, it } from 'vitest'
+import {
+  KBF_CALIBRATION_METHOD,
+  KBF_DEFAULT_PROMPT_VARIANT_ID,
+  aggregateKbfSelfTestOutcomes,
+  clopperPearsonUpper,
+  computeReferenceId,
+  type KbfReferenceV1,
+} from '@antseed/fingerprints'
 import { auditEndpoint, selectProbes } from '../src/audit.js'
+import type { ModelCallResult } from '../src/endpoint.js'
 import { FakeEndpoint, answerDiscovery, testReference } from './fixtures.js'
+
+const TEMPERATURE_REFUSAL: ModelCallResult = {
+  ok: false, status: 400, retryable: false, message: 'HTTP 400: `temperature` is deprecated for this model.',
+}
+
+/** An endpoint that answers correctly, but refuses any request that sets `temperature`. */
+function refusingTemperature(): FakeEndpoint {
+  const endpoint = new FakeEndpoint()
+  const answer = endpoint.call.bind(endpoint)
+  endpoint.call = async (request, signal) => {
+    if ('temperature' in request) {
+      endpoint.requests.push(request)
+      return TEMPERATURE_REFUSAL
+    }
+    return answer(request, signal)
+  }
+  return endpoint
+}
+
+/** A set over three domains, out of domain order, calibrated on its own batches with `misses` wrong answers. */
+function calibratedSet(misses: number): KbfReferenceV1 {
+  const base = testReference(90)
+  const probes = base.probes.map((probe, index) => ({ ...probe, domain: `domain-${index % 3}` }))
+  const outcomes = probes.map((probe, index) => {
+    const miss = index < misses
+    return { probeId: probe.id, answers: [miss ? probe.consensus + 7 : probe.consensus], matches: [miss ? 0 as const : 1 as const] }
+  })
+  const groups = [0, 1, 2].map((domain) => probes.filter((_probe, index) => index % 3 === domain))
+  const value: KbfReferenceV1 = {
+    ...base,
+    probes,
+    calibration: {
+      version: 1,
+      method: KBF_CALIBRATION_METHOD,
+      passes: 1,
+      ...aggregateKbfSelfTestOutcomes(outcomes),
+      batches: groups.flatMap((group) => [0, 10, 20].map((offset) => group.slice(offset, offset + 10))).map((batch, batchIndex) => ({
+        pass: 0,
+        batchIndex,
+        probeIds: batch.map((probe) => probe.id),
+        promptVariantId: KBF_DEFAULT_PROMPT_VARIANT_ID,
+        attempts: 1,
+      })),
+      calibratedAt: '2026-11-05T00:00:00.000Z',
+    },
+  }
+  value.referenceId = computeReferenceId(value)
+  return value
+}
 
 describe('auditEndpoint', () => {
   it('returns SAME for an endpoint serving the reference model', async () => {
@@ -148,19 +206,12 @@ describe('auditEndpoint', () => {
     }
   })
 
-  it('re-asks without temperature when the endpoint refuses it, and records it', async () => {
-    const endpoint = new FakeEndpoint()
-    const answer = endpoint.call.bind(endpoint)
-    endpoint.call = async (request, signal) => 'temperature' in request
-      ? { ok: false, status: 400, retryable: false, message: 'HTTP 400: `temperature` is deprecated for this model.' }
-      : answer(request, signal)
+  it('detects an endpoint that refuses temperature, asks without it and judges the answers', async () => {
+    const endpoint = refusingTemperature()
     const result = await auditEndpoint({ endpoint, reference: testReference(), probeCount: 20, concurrency: 1 })
     expect(result.evaluation.verdict).toBe('SAME')
-    for (const batch of result.batches) {
-      expect(batch.status).toBe('succeeded')
-      expect(batch.attempts).toBe(2)
-      expect(batch.omittedSamplingFields).toEqual(['temperature'])
-    }
+    expect(result.batches.every((batch) => batch.status === 'succeeded')).toBe(true)
+    expect(result.batches.some((batch) => batch.omittedSamplingFields?.includes('temperature'))).toBe(true)
   })
 
   it('without discovery, sends the reference thinking suppression and drops it when refused', async () => {
@@ -203,6 +254,29 @@ describe('selectProbes', () => {
     expect(first.probes.length % 10).toBe(0)
     expect(first.probes.length).toBeLessThan(reference.probes.length)
     expect(first.probes.map((probe) => probe.id)).not.toEqual(second.probes.map((probe) => probe.id))
+  })
+
+  it('asks a calibrated reference whole and in stored order, and rates its power on the calibration', () => {
+    const reference = calibratedSet(3)
+    const { probes, power } = selectProbes(reference, { draw: () => 0, minimumPower: 0.9 })
+    expect(probes.map((probe) => probe.id)).toEqual(reference.probes.map((probe) => probe.id))
+    expect(power).toBeLessThan(selectProbes({ ...reference, calibration: undefined }, { draw: () => 0, minimumPower: 0.1, probeCount: 90 }).power)
+  })
+
+  it('still draws a subset of a calibrated reference when given a probe count', () => {
+    const reference = calibratedSet(3)
+    const { probes } = selectProbes(reference, { draw: () => 0, minimumPower: 0.9, probeCount: 30 })
+    expect(probes).toHaveLength(30)
+    expect(probes.map((probe) => probe.id)).not.toEqual(reference.probes.slice(0, 30).map((probe) => probe.id))
+  })
+
+  it('audits a calibrated reference in the batches it was calibrated on, against the calibration', async () => {
+    const reference = calibratedSet(3)
+    const result = await auditEndpoint({ endpoint: new FakeEndpoint(), reference, concurrency: 1 })
+    expect(result.batches.map((batch) => batch.probeIds)).toEqual(reference.calibration!.batches.map((batch) => batch.probeIds))
+    expect(result.evaluation.stats.selfHamming).toBe(3)
+    expect(result.evaluation.stats.selfTotal).toBe(90)
+    expect(result.evaluation.stats.p0Cp99).toBe(clopperPearsonUpper(3, 90, 0.99))
   })
 
   it('rejects probe counts that are not whole batches', () => {

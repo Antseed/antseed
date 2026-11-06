@@ -1,15 +1,20 @@
 import { join } from 'node:path'
+import { KBF_CALIBRATION_PASSES } from '@antseed/fingerprints'
 import type { VerifierCLIConfig } from '../config/types.js'
 import { acquirePidFileLock } from './atomic-files.js'
 import { findVerifierModel } from './model-config.js'
-import { buildModelReference, type ReferenceRequestLimiter } from './model-reference.js'
+import { buildModelReference, calibrateReferenceSets, type ReferenceRequestLimiter } from './model-reference.js'
 import { loadConfiguredVerifierModelCatalog } from './openrouter-catalog.js'
 import {
   appendModelReferenceToBank,
+  epochQuestionSetPath,
+  epochSetCalibrationProblem,
   inspectModelProbeBankPower,
   loadBankEnrollmentReference,
   loadBankProbeIndex,
+  loadEpochQuestionSet,
   recordEpochQuestionPool,
+  recordEpochSetCalibration,
   selectEpochQuestionSet,
   type EpochQuestionSetV1,
 } from './probe-bank.js'
@@ -106,6 +111,87 @@ export async function enrollFreshProbes(input: {
   }
 }
 
+/**
+ * Measures this epoch's set on the batches sellers will get, once: the audit set and each extra set
+ * get `KBF_CALIBRATION_PASSES` passes against the pinned reference, and their limit comes from these
+ * trials. A set that has a calibration is returned as it is; one without gets it here, and an
+ * interrupted calibration continues from its checkpoint, so nothing is paid for twice. Throws when
+ * the reference fails the sanity gates: the model is not audited this epoch.
+ */
+export async function calibrateEpochQuestionSet(input: {
+  model: string
+  banksDir: string
+  config: VerifierCLIConfig | undefined
+  maxRequests: number
+  epoch: string
+  set: EpochQuestionSetV1
+  buyerProxyPort?: number
+  requestLimiter?: ReferenceRequestLimiter
+  fetchFn?: typeof fetch
+  log?: (message: string) => void
+  now?: () => number
+}, operations: {
+  catalog: typeof loadConfiguredVerifierModelCatalog
+  ask: typeof calibrateReferenceSets
+  record: typeof recordEpochSetCalibration
+} = { catalog: loadConfiguredVerifierModelCatalog, ask: calibrateReferenceSets, record: recordEpochSetCalibration }): Promise<EpochQuestionSetV1> {
+  const stopped = (set: EpochQuestionSetV1): EpochQuestionSetV1 => {
+    const problem = set.calibration?.status === 'failed' ? epochSetCalibrationProblem(set) : null
+    if (problem) throw new Error(`the ${input.model} question set for epoch ${input.epoch} ${problem}; not audited this epoch`)
+    return set
+  }
+  if (input.set.calibration) return stopped(input.set)
+  const setPath = epochQuestionSetPath(input.banksDir, input.model, input.epoch)
+  const lock = await acquirePidFileLock(`${setPath}.calibration.lock`)
+  try {
+    const set = await loadEpochQuestionSet(input) ?? input.set
+    if (set.calibration) return stopped(set)
+    const references = [set.reference, ...set.extensions]
+    const config = structuredClone(input.config)
+    const entry = findVerifierModel(config, input.model)
+    if (!config?.referenceEndpoint || !entry) throw new Error(`no reference configuration for ${input.model}`)
+    withContrastModels(config, entry[0], set.reference.contrasts.map((contrast) => contrast.model))
+    const limits = buildRequestLimits(input.maxRequests, config.referenceMaxRequestsPerBuild)
+    input.log?.(`calibrating ${references.length} question set(s) on their own batches (${KBF_CALIBRATION_PASSES} pass(es))`)
+    const asked = await operations.ask({
+      model: input.model,
+      references,
+      passes: KBF_CALIBRATION_PASSES,
+      checkpointPath: `${setPath}.calibration.json`,
+      exchangesPath: `${setPath}.calibration.exchanges.json`,
+      config,
+      catalog: await operations.catalog(config),
+      maxNewRequests: limits.perRun,
+      maxRequests: limits.total,
+      ...(input.buyerProxyPort !== undefined ? { buyerProxyPort: input.buyerProxyPort } : {}),
+      ...(input.requestLimiter ? { requestLimiter: input.requestLimiter } : {}),
+      ...(input.fetchFn ? { fetchFn: input.fetchFn } : {}),
+      ...(input.log ? { log: input.log } : {}),
+      ...(input.now ? { now: input.now } : {}),
+    })
+    const recorded = await operations.record({
+      banksDir: input.banksDir, model: input.model, epoch: input.epoch, config: input.config,
+      calibrations: asked.calibrations, passes: KBF_CALIBRATION_PASSES, exchanges: asked.exchanges, cost: asked.cost,
+      ...(input.now ? { now: input.now } : {}),
+    })
+    await asked.finalize()
+    const { hamming, total, errorRate, enrollmentErrorLimit } = recorded.calibration!
+    input.log?.(
+      `calibration: ${hamming}/${total} missed (${(errorRate * 100).toFixed(1)}%), enrollment limit ${(enrollmentErrorLimit * 100).toFixed(1)}%, `
+      + `$${(Number(asked.cost.totalUsdMicros) / 1_000_000).toFixed(6)}`,
+    )
+    if (errorRate > enrollmentErrorLimit) {
+      input.log?.(
+        `warning: the reference missed more than its enrollment limit; it may have changed since enrollment. `
+        + 'The audit goes on, with its limit from this calibration.',
+      )
+    }
+    return stopped(recorded)
+  } finally {
+    await lock.release()
+  }
+}
+
 /** Fresh-question builds per model and run, at most, to complete an epoch's question set. */
 export const EPOCH_SET_BUILD_ROUNDS = 4
 
@@ -113,8 +199,9 @@ export const EPOCH_SET_BUILD_ROUNDS = 4
  * This epoch's question set for a model (`epochs/<epoch>/set.json`), built on the spot when there is
  * none yet: fresh questions are built and added to the bank (up to `EPOCH_SET_BUILD_ROUNDS` builds
  * per run, recorded so an interrupted run's builds still count) until they make an audit set and
- * `extensionCount` extra sets. Only questions built for this epoch can be in it. Throws when the
- * builds don't get there; the model is then not audited in this run.
+ * `extensionCount` extra sets, then calibrated. Only questions built for this epoch can be in it.
+ * Throws when the builds don't get there or calibration stops the model; it is then not audited in
+ * this run.
  */
 export async function ensureEpochQuestionSet(input: {
   model: string
@@ -133,8 +220,10 @@ export async function ensureEpochQuestionSet(input: {
   select: typeof selectEpochQuestionSet
   enrollFresh: typeof enrollFreshProbes
   record: typeof recordEpochQuestionPool
+  calibrate: typeof calibrateEpochQuestionSet
 } = {
   inspect: inspectModelProbeBankPower, select: selectEpochQuestionSet, enrollFresh: enrollFreshProbes, record: recordEpochQuestionPool,
+  calibrate: calibrateEpochQuestionSet,
 }): Promise<EpochQuestionSetV1> {
   if (!Number.isSafeInteger(input.maxRequests) || input.maxRequests <= 0) {
     throw new Error('enrollment requires an explicit positive integer request budget')
@@ -143,13 +232,19 @@ export async function ensureEpochQuestionSet(input: {
     banksDir: input.banksDir, model: input.model, epoch: input.epoch, runId: input.runId,
     extensionCount: input.extensionCount, config: input.config,
   })
+  const ready = async (set: EpochQuestionSetV1): Promise<EpochQuestionSetV1> => {
+    input.log?.(`question set for epoch ${input.epoch} ready: ${describeSet(set)}`)
+    return operations.calibrate({
+      model: input.model, banksDir: input.banksDir, config: input.config, maxRequests: input.maxRequests,
+      epoch: input.epoch, set, buyerProxyPort: input.buyerProxyPort,
+      ...(input.requestLimiter ? { requestLimiter: input.requestLimiter } : {}),
+      ...(input.log ? { log: input.log } : {}),
+    })
+  }
   // A model without a bank has nothing to select from yet: its first build makes the bank.
   let selection = await operations.inspect({ banksDir: input.banksDir, model: input.model, config: input.config })
     .then((status) => status.totalProbeCount === 0 ? null : select())
-  if (selection?.status === 'ready') {
-    input.log?.(`question set for epoch ${input.epoch} ready: ${describeSet(selection.set)}`)
-    return selection.set
-  }
+  if (selection?.status === 'ready') return ready(selection.set)
   for (let round = 1; round <= EPOCH_SET_BUILD_ROUNDS; round += 1) {
     input.log?.(
       `building new questions for the epoch ${input.epoch} question set (build ${round}/${EPOCH_SET_BUILD_ROUNDS}`
@@ -163,10 +258,7 @@ export async function ensureEpochQuestionSet(input: {
     })
     await operations.record({ banksDir: input.banksDir, model: input.model, epoch: input.epoch, probeIds: enrolled.addedProbeIds })
     selection = await select()
-    if (selection.status === 'ready') {
-      input.log?.(`question set for epoch ${input.epoch} ready: ${describeSet(selection.set)}`)
-      return selection.set
-    }
+    if (selection.status === 'ready') return ready(selection.set)
     if (enrolled.addedProbeCount === 0) break
   }
   throw new Error(`no question set for epoch ${input.epoch}: ${selection?.reason ?? 'the build added no questions'}`)

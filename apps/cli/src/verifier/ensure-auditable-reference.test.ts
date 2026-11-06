@@ -76,6 +76,7 @@ function setOperations(selections: EpochQuestionSetSelection[], calls: string[],
       return { addedProbeCount: count, addedProbeIds: Array.from({ length: count }, (_, index) => `p${calls.length}-${index}`), costUsdMicros: '1' }
     },
     record: async (input: { probeIds: readonly string[] }) => { calls.push(`record:${input.probeIds.length}`); return [...input.probeIds] },
+    calibrate: async ({ set }: { set: EpochQuestionSetV1 }) => { calls.push('calibrate'); return set },
   }
 }
 
@@ -84,10 +85,10 @@ const setInput = {
   epoch: '7', runId: 'run-a', extensionCount: 2,
 }
 
-test('an epoch question set already made is used as it is, with no build', async () => {
+test('an epoch question set already made gets no build, only its calibration if it lacks one', async () => {
   const calls: string[] = []
   assert.equal(await ensureEpochQuestionSet(setInput, setOperations([{ status: 'ready', set: SET }], calls)), SET)
-  assert.deepEqual(calls, ['select'])
+  assert.deepEqual(calls, ['select', 'calibrate'])
 })
 
 test('new questions are built and recorded for the epoch until they make its question set', async () => {
@@ -95,13 +96,13 @@ test('new questions are built and recorded for the epoch until they make its que
   const short = { status: 'short' as const, reason: 'short', candidateProbeCount: 0 }
   const set = await ensureEpochQuestionSet(setInput, setOperations([short, short, { status: 'ready', set: SET }], calls))
   assert.equal(set, SET)
-  assert.deepEqual(calls, ['select', 'build', 'record:10', 'select', 'build', 'record:10', 'select'])
+  assert.deepEqual(calls, ['select', 'build', 'record:10', 'select', 'build', 'record:10', 'select', 'calibrate'])
 })
 
 test('a model without a bank builds its first questions before selecting', async () => {
   const calls: string[] = []
   await ensureEpochQuestionSet(setInput, setOperations([{ status: 'ready', set: SET }], calls, { banked: 0 }))
-  assert.deepEqual(calls, ['build', 'record:10', 'select'])
+  assert.deepEqual(calls, ['build', 'record:10', 'select', 'calibrate'])
 })
 
 test('no question set after the build limit, or a build that adds nothing, means no audit of the model', async () => {

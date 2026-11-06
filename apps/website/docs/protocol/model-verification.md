@@ -24,8 +24,9 @@ without being caught.
 ## The idea in one paragraph
 
 Every model has a "knowledge boundary": a set of obscure facts it remembers in a
-particular way, including the ones it gets slightly wrong. A different model, a
-smaller sibling, or a heavily quantized copy has a different boundary. The KBF audit asks a
+particular way, including the ones it gets slightly wrong. A different model or a
+smaller sibling has a different boundary; a quantized copy of the same model can differ
+too little to be told apart. The KBF audit asks a
 seller a batch of short questions with exact numeric answers (for example "the
 melting point of tantalum carbide is ___°C") and compares the answers
 with what the genuine model answers. This is called **Knowledge Boundary
@@ -39,17 +40,21 @@ Fingerprinting (KBF)**.
    where cheaper look-alikes give the same answers are dropped, because they cannot
    tell models apart. The reference also measures the genuine model's own
    error rate, since even the real model is not perfectly consistent.
-2. **The seller is asked a fresh random subset.** Each check picks a new random set of
-   about 100 questions from the reference, in a new order and with varied wording, so a
-   seller cannot memorize a fixed test.
-3. **A statistical test gives the verdict.** The seller's wrong answers are compared
-   with the genuine model's own error rate:
+2. **The seller is asked this epoch's question set.** Each auditor builds a new set of at
+   least 100 questions per model and epoch, asks every seller of that model the same set
+   with varied wording, and never uses it again, so a seller cannot memorize a fixed test.
+3. **The set is calibrated.** Before any seller is asked, the genuine model answers the
+   set in the same batches sellers will get. How often it misses its own stored answers
+   here sets the limit for that set. If it leaves too many unanswered, the model is not
+   audited that epoch.
+4. **A statistical test gives the verdict.** The seller's wrong answers are compared
+   with that error rate of the genuine model:
 
 | Verdict | Meaning |
 |---|---|
 | **SAME** | No evidence of substitution: the seller misses about as often as the genuine model does. This is strong evidence, not proof, that it is the advertised model. |
 | **DIFF** | Significantly more misses than the genuine model makes. The seller very likely serves a different model. |
-| **UNDETERMINED** | Too few usable answers to decide either way: fewer than half the questions were answered (errors, timeouts, empty or unreadable answers), or a seller looked different but answered fewer than 80% of the questions. |
+| **UNDETERMINED** | Too few usable answers to decide either way: fewer than half the questions were answered (errors, timeouts, empty or unreadable answers), or a seller looked different but answered fewer than 80% of the questions. Also when a seller refuses `temperature` and the genuine answers were measured with it, since its answers could not be compared. |
 
 A missing or unreadable answer is left out of the score, not counted as wrong, so a
 flaky seller doesn't look like a substituted model.

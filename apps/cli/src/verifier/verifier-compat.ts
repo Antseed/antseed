@@ -1,5 +1,7 @@
 import {
   KBF_AUDIT_VERIFY_OPTIONS,
+  KBF_CALIBRATION_METHOD,
+  KBF_CALIBRATION_PASSES,
   KBF_DEFAULT_PROMPT_VARIANT_ID,
   KBF_DEFAULT_SELF_TEST_RUNS,
   KBF_ENROLLMENT_TEMPERATURES,
@@ -10,11 +12,17 @@ import {
   KBF_REFERENCE_VERSION,
   canonicalHashBytes32,
   computeKbfVerdict,
+  kbfPromptVariantsHash,
+  parseKbfAnswers,
+  scoreKbfAnswer,
+  stripKbfThinkBlocks,
   type FingerprintStats,
+  type KbfProbe,
   type MatchVector,
 } from '@antseed/fingerprints'
 import { modelHash, verifierVerdict } from '@antseed/node/payments'
 import pkg from '../../package.json' with { type: 'json' }
+import type { VerifierCLIConfig } from '../config/types.js'
 import { assignAuditModelsRoundRobin, confirmationAssignments } from './audit-assignment.js'
 import { auditHandovers } from './audit-handover.js'
 import { MIN_SECONDS_FOR_ANOTHER_ROUND } from './audit-window.js'
@@ -25,10 +33,11 @@ import {
   SELLER_FAILURE_ATTEMPTS,
   SELLER_RETRY_SPACING_SECONDS,
 } from './epoch-plan.js'
-import { EPOCH_QUESTION_SET_METHOD } from './probe-bank.js'
+import { CALIBRATION_MINIMUM_COVERAGE, EPOCH_QUESTION_SET_METHOD } from './probe-bank.js'
 import { AUDITED_MODELS, type AuditedModel } from './audited-models.js'
 import { CLOSE_CALL_RULE_ID, closeCallRuleForExtensions, needsExtension, pooledCloseCallVerdict } from './close-call.js'
-import { REFERENCE_BUILDER_VERSION, REFERENCE_SIZING_ALGORITHM_VERSION } from './model-reference.js'
+import { CANONICAL_KBF_DOMAINS } from './canonical-kbf-domains.js'
+import { DEFAULT_LAYOUT_FILTER_PASSES, REFERENCE_BUILDER_VERSION, REFERENCE_SIZING_ALGORITHM_VERSION } from './model-reference.js'
 import { pendingConfirmations, type EpochReport } from './pending-confirmations.js'
 import {
   DEFAULT_REFERENCE_MAXIMUM_PROBE_COUNT,
@@ -66,6 +75,25 @@ export function readCompat(manifest: unknown): number {
   return compat
 }
 
+/** The default of `verifier.closeCallExtensions`: every extra set a close call may get. */
+const CLOSE_CALL_EXTENSIONS = 2
+
+/**
+ * Config settings that change the audit rules, set away from the values the compat number stands
+ * for. Auditors that differ on them judge sellers differently under the same compat, so `verifier
+ * run` stops unless `--skip-version-check` is given.
+ */
+export function verifierRuleOverrides(config: VerifierCLIConfig | undefined): string[] {
+  const pinned = [
+    ['closeCallExtensions', config?.closeCallExtensions, CLOSE_CALL_EXTENSIONS],
+    ['referenceSelfTestRuns', config?.referenceSelfTestRuns, KBF_DEFAULT_SELF_TEST_RUNS],
+    ['referenceLayoutFilterPasses', config?.referenceLayoutFilterPasses, DEFAULT_LAYOUT_FILTER_PASSES],
+  ] as const
+  return pinned.flatMap(([name, value, expected]) => (
+    value === undefined || value === expected ? [] : [`verifier.${name} is ${value}; these rules use ${expected}`]
+  ))
+}
+
 const SAMPLE_AUDITORS = [
   '0x1000000000000000000000000000000000000001',
   '0x2000000000000000000000000000000000000002',
@@ -79,9 +107,10 @@ const EPOCH_SECONDS = 86_400
 /**
  * Everything that must be the same for every auditor in an epoch: the audited models (keys, upstream
  * ids, aliases, provider pins, contrasts), how questions are chosen (one set per epoch), the audit
- * window and retry rules (which sellers get a result), the reference and scoring settings, and what the
- * assignment, confirmation and stand-in rules give for fixed sample inputs (so a change to their code
- * shows up, not only a change to a constant). A test pins its hash for the current compat number.
+ * window and retry rules (which sellers get a result), the reference, calibration and scoring settings,
+ * the domain table and prompt variants, and what the assignment, confirmation, stand-in, parsing and
+ * scoring rules give for fixed sample inputs (so a change to their code shows up, not only a change
+ * to a constant). A test pins its hash for the current compat number.
  */
 export function verifierRulesFingerprint(input: { auditedModels?: Readonly<Record<string, AuditedModel>> } = {}): unknown {
   const models = Object.entries(input.auditedModels ?? AUDITED_MODELS)
@@ -135,7 +164,17 @@ export function verifierRulesFingerprint(input: { auditedModels?: Readonly<Recor
       powerAlpha: REFERENCE_POWER_ALPHA,
       powerConfidence: REFERENCE_POWER_CONFIDENCE,
       maximumSelfTestErrorRate: REFERENCE_MAXIMUM_SELF_TEST_ERROR_RATE,
+      layoutFilterPasses: DEFAULT_LAYOUT_FILTER_PASSES,
     },
+    calibration: {
+      method: KBF_CALIBRATION_METHOD,
+      passes: KBF_CALIBRATION_PASSES,
+      minimumCoverage: CALIBRATION_MINIMUM_COVERAGE,
+      // Only coverage stops a model, and epoch sets reach the power on the calibration's trials.
+      stopsOnRate: false,
+      sizedOnCalibrationTrials: true,
+    },
+    domains: CANONICAL_KBF_DOMAINS.map(({ key, range, tolerance, template }) => ({ key, range, tolerance, template })),
     kbf: {
       referenceVersion: KBF_REFERENCE_VERSION,
       parserVersion: KBF_PARSER_VERSION,
@@ -144,9 +183,13 @@ export function verifierRulesFingerprint(input: { auditedModels?: Readonly<Recor
       executionTemperature: KBF_EXECUTION_TEMPERATURE,
       selfTestRuns: KBF_DEFAULT_SELF_TEST_RUNS,
       promptVariant: KBF_DEFAULT_PROMPT_VARIANT_ID,
+      promptVariantsHash: kbfPromptVariantsHash(),
       lowCoverageRetries: KBF_LOW_COVERAGE_RETRIES,
       auditVerifyOptions: KBF_AUDIT_VERIFY_OPTIONS,
+      closeCallExtensions: CLOSE_CALL_EXTENSIONS,
     },
+    parsed: SAMPLE_REPLIES.map(([reply, count]) => parseKbfAnswers(stripKbfThinkBlocks(reply), count)),
+    scored: SAMPLE_SCORES.map(([answer, domain, consensus]) => scoreKbfAnswer(answer, sampleProbe(domain, consensus))),
     verdicts: sampleVerdicts(),
     questions: { selection: EPOCH_QUESTION_SET_METHOD },
     window: {
@@ -163,6 +206,39 @@ export function verifierRulesFingerprint(input: { auditedModels?: Readonly<Recor
 
 export function verifierRulesHash(input: Parameters<typeof verifierRulesFingerprint>[0] = {}): string {
   return canonicalHashBytes32(verifierRulesFingerprint(input))
+}
+
+/** Replies that take the parser's different paths, with the probes asked: a change to how it reads them shows up. */
+const SAMPLE_REPLIES: ReadonlyArray<readonly [string, number]> = [
+  ['(1) 1934\n(2) 52\n(3) 7', 3],
+  ['1) -40\n2) 1,250\n3. 3.2e5', 3],
+  ['(1) −78.5\n(2) 9.81 m/s^2\n(3) 3.2 × 10^5', 3],
+  ['Q1: 12\nQ2: 14', 2],
+  ['126\n57\n98', 3],
+  ['3.14\n2.71', 2],
+  ['<think>(1) 5</think>\n(1) 6', 1],
+  ['(1) ran from 1923 to 1924', 1],
+  ['(1) 10–20', 1],
+  ['I am not sure', 2],
+]
+
+/** Answers around the rounding and tolerance edges of each kind of domain. */
+const SAMPLE_SCORES: ReadonlyArray<readonly [number | null, string, number]> = [
+  [100, 'biology', 100],
+  [100.4, 'biology', 100],
+  [null, 'biology', 100],
+  [2001, 'biology', 100],
+  [503, 'chemistry_bp', 500],
+  [504, 'chemistry_bp', 500],
+  [1.02, 'physics', 1],
+  [1.03, 'physics', 1],
+  [11, 'medical', 10],
+  [11.5, 'medical', 10],
+]
+
+function sampleProbe(domain: string, consensus: number): KbfProbe {
+  const { range, tolerance, template } = CANONICAL_KBF_DOMAINS.find((entry) => entry.key === domain)!
+  return { id: `sample-${domain}`, name: 'sample', domain, template, consensus, range: [...range], tolerance }
 }
 
 const SAMPLE_PROBES = 100

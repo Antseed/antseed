@@ -28,7 +28,13 @@ import { failureBlame } from './failure-blame.js'
 import type { VerificationOutcomeReasonV1 } from './outcome-reason.js'
 import type { ReferenceUpstreamProvenanceV1 } from './model-reference.js'
 import { windowIncludesSeller, type AuditWindowV1 } from './audit-window.js'
-import { EPOCH_QUESTION_SET_METHOD, findEpochProbeReference, loadBankReferenceExchanges, loadEpochQuestionSet } from './probe-bank.js'
+import {
+  EPOCH_QUESTION_SET_METHOD,
+  findEpochProbeReference,
+  loadBankReferenceExchanges,
+  loadEpochQuestionSet,
+  type EpochSetCalibrationV1,
+} from './probe-bank.js'
 import { closeCallRule, pooledCloseCallVerdict, stageOneVerdict, type CloseCallRuleId } from './close-call.js'
 import { verifyProxyAuditEvidenceFile, type ProxyAuditEvidenceV1 } from './proxy-evidence.js'
 import { resolveReferenceSizingPolicy } from './reference-sizing.js'
@@ -125,6 +131,8 @@ export interface ModelAuditEvidenceV1 {
     method: typeof EPOCH_QUESTION_SET_METHOD
     referenceId: string
     extensionReferenceIds: string[]
+    /** The set's calibration, whose trials each reference carries; absent on earlier evidence. */
+    calibration?: EpochSetCalibrationV1
   }
   /**
    * Raw upstream request/response bytes behind the probe bank these references were drawn
@@ -454,6 +462,7 @@ export async function prepareModelAudits(input: {
           method: EPOCH_QUESTION_SET_METHOD,
           referenceId: questionSet.reference.referenceId,
           extensionReferenceIds: questionSet.extensions.map((entry) => entry.referenceId),
+          ...(questionSet.calibration ? { calibration: questionSet.calibration } : {}),
         }
         : null
       const referenceEvidence: PreparedModelAudit['referenceEvidence'] = []

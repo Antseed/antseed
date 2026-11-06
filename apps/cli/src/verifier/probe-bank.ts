@@ -2,11 +2,13 @@ import { randomInt } from 'node:crypto'
 import { access, copyFile, mkdir, readdir } from 'node:fs/promises'
 import { dirname, join, relative, sep } from 'node:path'
 import {
+  KBF_CALIBRATION_PASSES,
   KBF_MAX_PROBE_COUNT,
   KBF_PROBES_PER_REQUEST,
   KBF_REFERENCE_VERSION,
   aggregateKbfSelfTestOutcomes,
   canonicalHashBytes32,
+  clopperPearsonUpper,
   computeBinomialPower,
   computeContrastDetection,
   computeReferenceId,
@@ -15,6 +17,7 @@ import {
   rescoreKbfSelfTestOutcome,
   validateKbfReferenceV1,
   type KbfProbe,
+  type KbfReferenceCalibrationV1,
   type KbfReferenceV1,
   type ReferenceProbeSelfTestV1,
 } from '@antseed/fingerprints'
@@ -34,7 +37,7 @@ import {
 import { safeServiceSlug } from './slug.js'
 import { normalized } from './utils.js'
 
-const CURRENT_ANTSEED_REFERENCE_BUILDER_VERSION = '6'
+const CURRENT_ANTSEED_REFERENCE_BUILDER_VERSION = '7'
 
 interface BankProbeV1 {
   probe: KbfProbe
@@ -155,8 +158,37 @@ export interface EpochQuestionSetV1 {
   reference: KbfReferenceV1
   /** The extra sets for close calls, in order, each as large as `reference`. */
   extensions: KbfReferenceV1[]
+  /** Absent until the set is calibrated; no seller is asked before it says `passed`. */
+  calibration?: EpochSetCalibrationV1
   createdAt: string
   createdByRunId: string
+}
+
+/** Below this share of answers on any set, a calibration stops the model's audit for the epoch. */
+export const CALIBRATION_MINIMUM_COVERAGE = 0.8
+
+/**
+ * Whether the reference still answers this epoch's set as it did at enrollment, judged on the audit
+ * set and the extra sets together. The trials themselves are in each reference's `calibration`.
+ */
+export interface EpochSetCalibrationV1 {
+  version: 1
+  status: 'passed' | 'failed'
+  /** Why a failed calibration stopped the model; its audits wait for the next epoch's set. */
+  failureReason?: string
+  passes: number
+  hamming: number
+  total: number
+  errorRate: number
+  /** Lowest coverage of any one set. */
+  minimumCoverage: number
+  /** 99% Clopper-Pearson limit of the same probes' enrollment self-test; the rate must not pass it. */
+  enrollmentErrorLimit: number
+  requestCount: number
+  costUsdMicros: string
+  completedAt: string
+  /** The trials of a failed calibration, which no reference carries. */
+  failedCalibrations?: KbfReferenceCalibrationV1[]
 }
 
 /** Probes the builds for one epoch's set added to the bank; only these can be in the set. */
@@ -497,7 +529,127 @@ async function requireEpochQuestionSet(input: {
   if (!set) {
     throw new Error(`${NO_EPOCH_QUESTION_SET}: no ${input.model} question set for epoch ${input.epoch} has been built`)
   }
+  if (set.calibration?.status !== 'passed') {
+    throw new Error(`${NO_EPOCH_QUESTION_SET}: the ${input.model} question set for epoch ${input.epoch} ${epochSetCalibrationProblem(set)}`)
+  }
   return set
+}
+
+/** Why sellers can't be asked this set yet, for messages; null when they can. */
+export function epochSetCalibrationProblem(set: EpochQuestionSetV1): string | null {
+  if (set.calibration?.status === 'passed') return null
+  return set.calibration ? `failed calibration: ${set.calibration.failureReason}` : 'has not been calibrated'
+}
+
+/**
+ * The sanity gate of a calibration; null when it passed. Only coverage stops a model. A calibration rate
+ * above the enrollment limit doesn't: the limit comes from these trials, so a drifted reference can't turn
+ * into false DIFFs, and the KBF reference code has no such stop. `verifier run` warns about it instead.
+ */
+function calibrationFailure(
+  calibrations: readonly KbfReferenceCalibrationV1[],
+  summary: Pick<EpochSetCalibrationV1, 'minimumCoverage'>,
+): string | null {
+  if (calibrations.length === 0) return 'no set was calibrated'
+  if (summary.minimumCoverage < CALIBRATION_MINIMUM_COVERAGE) {
+    return `the reference answered ${percent(summary.minimumCoverage)} of a set's questions, under the ${percent(CALIBRATION_MINIMUM_COVERAGE)} needed`
+  }
+  return null
+}
+
+function percent(value: number): string {
+  return `${(value * 100).toFixed(1)}%`
+}
+
+/**
+ * Stores a finished calibration in `epochs/<epoch>/set.json`, once, with its raw exchanges in the
+ * bank (which every audit submission publishes). When it passes, each reference gets its trials and
+ * so its limit (and a new id); when it fails the gates, the references stay as they were, the failure
+ * is recorded, and sellers of the model aren't asked this set. Either way it is not asked again.
+ */
+export async function recordEpochSetCalibration(input: {
+  banksDir: string
+  model: string
+  epoch: string
+  /** One per set, in set order: the audit set, then the extra sets. */
+  calibrations: readonly KbfReferenceCalibrationV1[]
+  passes: number
+  exchanges: ReferenceExchangesFileV1
+  cost: ReferenceBuildCostV1
+  config?: VerifierCLIConfig
+  now?: () => number
+}): Promise<EpochQuestionSetV1> {
+  const path = epochQuestionSetPath(input.banksDir, input.model, input.epoch)
+  const lock = await acquirePidFileLock(`${path}.lock`)
+  try {
+    const set = await loadEpochQuestionSet(input)
+    if (!set) throw new Error(`no ${input.model} question set for epoch ${input.epoch} to calibrate`)
+    if (set.calibration) return set
+    const references = [set.reference, ...set.extensions]
+    if (references.length !== input.calibrations.length) {
+      throw new Error(`${references.length} sets but ${input.calibrations.length} calibrations`)
+    }
+    const trials = aggregateKbfSelfTestOutcomes(input.calibrations.flatMap((calibration) => calibration.outcomes))
+    const enrollment = aggregateKbfSelfTestOutcomes(references.flatMap((reference) => reference.selfTest.outcomes))
+    const summary = {
+      version: 1 as const,
+      passes: input.passes,
+      hamming: trials.hamming,
+      total: trials.total,
+      errorRate: trials.errorRate,
+      minimumCoverage: Math.min(...input.calibrations.map((calibration) => calibration.coverage)),
+      enrollmentErrorLimit: clopperPearsonUpper(
+        enrollment.hamming, enrollment.total, set.reference.statisticalPowerEvidence.clopperPearsonConfidence,
+      ),
+      requestCount: input.cost.requestCount,
+      costUsdMicros: input.cost.totalUsdMicros,
+      completedAt: new Date(input.now?.() ?? Date.now()).toISOString(),
+    }
+    const failureReason = calibrationFailure(input.calibrations, summary)
+    const calibrated = failureReason ? references : references.map((reference, index) => {
+      const calibration = input.calibrations[index]!
+      if (calibration.outcomes.some((outcome, position) => outcome.probeId !== reference.probes[position]?.id)) {
+        throw new Error(`calibration ${index} is of other questions than its set`)
+      }
+      const withCalibration: KbfReferenceV1 = { ...reference, calibration }
+      withCalibration.referenceId = computeReferenceId(withCalibration)
+      return validateKbfReferenceV1(withCalibration, { minimumStatisticalPower: Number.EPSILON })
+    })
+    const result: EpochQuestionSetV1 = {
+      ...set,
+      reference: calibrated[0]!,
+      extensions: calibrated.slice(1),
+      calibration: failureReason
+        ? { ...summary, status: 'failed', failureReason, failedCalibrations: [...input.calibrations] }
+        : { ...summary, status: 'passed' },
+    }
+    await addBankReferenceExchanges(input.banksDir, input.model, calibrated[0]!.referenceId, input.exchanges)
+    await writeJsonAtomic(path, result)
+    return result
+  } finally {
+    await lock.release()
+  }
+}
+
+async function addBankReferenceExchanges(
+  banksDir: string,
+  model: string,
+  referenceId: string,
+  exchanges: ReferenceExchangesFileV1,
+): Promise<void> {
+  const path = bankPath(banksDir, model)
+  const lock = await acquirePidFileLock(join(dirname(path), '.bank.lock'))
+  try {
+    const bank = await readJsonIfExists<ProbeBankV1>(path)
+    if (!bank) throw new Error(`no probe bank exists for ${model}`)
+    if (bank.referenceExchanges?.some((entry) => entry.referenceId === referenceId)) return
+    const stored = await storeBankExchanges(dirname(path), referenceId, exchanges)
+    bank.referenceExchanges = [...(bank.referenceExchanges ?? []), stored]
+    bank.updatedAt = new Date().toISOString()
+    await writeJsonAtomic(path, bank)
+  } finally {
+    await lock.release()
+  }
 }
 
 /** Legacy per-seller extension set (`epochs/<epoch>/extensions/…`). Read-only. */
@@ -1049,7 +1201,7 @@ function selectPoweredReference(
   available: readonly BankProbeV1[],
   config: VerifierCLIConfig | undefined,
   now: number,
-  options: { onlyDetectableContrasts?: boolean } = {},
+  options: { onlyDetectableContrasts?: boolean; sizeForCalibration?: boolean } = {},
 ): KbfReferenceV1 | null {
   const sizing = resolveReferenceSizingPolicy(config)
   const excludedDomains = excludedVerifierDomains(config, bank.model)
@@ -1074,6 +1226,20 @@ function selectPoweredReference(
     })
     if (selfTest.coverage < 0.8 || selfTest.errorRate > REFERENCE_MAXIMUM_SELF_TEST_ERROR_RATE
       || power.power < sizing.minimumStatisticalPower) continue
+    // An epoch set's limit comes from its calibration, fewer trials than the enrollment self-test and so
+    // a wider limit: it has to reach the power on those trials too.
+    if (options.sizeForCalibration) {
+      const calibrationTrials = count * KBF_CALIBRATION_PASSES
+      const calibrated = computeBinomialPower({
+        selfHamming: Math.round(selfTest.errorRate * calibrationTrials),
+        selfTotal: calibrationTrials,
+        probeCount: count,
+        minimumMismatchDelta: bank.referenceTemplate.minimumMismatchDelta,
+        alpha: bank.statisticalAssumptions.alpha,
+        cpConfidence: bank.statisticalAssumptions.clopperPearsonConfidence,
+      })
+      if (calibrated.power < sizing.minimumStatisticalPower) continue
+    }
     const selectedIds = new Set(selected.map((entry) => entry.probe.id))
     const contrasts = bank.contrastModels.map((model) => ({
       model,
@@ -1270,7 +1436,7 @@ export async function selectEpochQuestionSet(input: {
     const now = input.now?.() ?? Date.now()
     const shuffled = (input.shuffle ?? cryptoShuffle)(candidates)
     // Contrasts are testable when one of these candidates tells them apart, not one of the old questions.
-    const reference = selectPoweredReference({ ...bank, probes: candidates }, shuffled, input.config, now)
+    const reference = selectPoweredReference({ ...bank, probes: candidates }, shuffled, input.config, now, { sizeForCalibration: true })
     if (!reference) {
       return { status: 'short', reason: `${candidates.length} new questions are not enough for a powered audit set`, candidateProbeCount: candidates.length }
     }
@@ -1341,6 +1507,10 @@ function validateEpochQuestionSet(
   const ids = [reference, ...extensions].flatMap((entry) => entry.probes.map((probe) => probe.id))
   if (new Set(ids).size !== ids.length || extensions.some((extension) => extension.probes.length !== reference.probes.length)) {
     throw new Error(`${label} repeats a question or has an extra set of another size`)
+  }
+  if (value.calibration?.status === 'passed'
+    && [reference, ...extensions].some((entry) => entry.calibration?.passes !== value.calibration!.passes)) {
+    throw new Error(`${label} is marked calibrated, but a set has no calibration of ${value.calibration.passes} pass(es)`)
   }
   return { ...structuredClone(value), reference, extensions }
 }

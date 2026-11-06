@@ -1,8 +1,9 @@
 /**
  * KBF (Knowledge Boundary Fingerprinting) verifier — spec 07 F1.
- * Reference-based verification: the reference model's own self-test bounds
- * the honest error rate; the target's mismatch count is binomial-tested
- * against that bound.
+ * Reference-based verification: the reference model's own self-test (or, when
+ * the reference has one, its calibration on the audited batches) bounds the
+ * honest error rate; the target's mismatch count is binomial-tested against
+ * that bound.
  */
 
 import {
@@ -18,7 +19,7 @@ import {
 import { canonicalHash } from '../../canonical-json.js';
 import { computeMatchVector } from './scoring.js';
 import { computeKbfVerdict } from './verdict.js';
-import { subsetReferenceSelfTest, type KbfReferenceV1 } from './reference.js';
+import { kbfAuditBaseline, type KbfReferenceV1 } from './reference.js';
 
 export * from './prompts.js';
 export * from './parser.js';
@@ -32,10 +33,10 @@ export const KBF_KIND = 'kbf';
 
 /**
  * Verification options for KBF audits of a seller or endpoint. Missing answers are
- * left unscored, and at least half the probes must be scored, as in the KBF paper (v3)
- * and its reference code; below that the verdict is UNDETERMINED. A DIFF additionally
- * needs 80% of the probes scored, so a seller cannot steer the verdict by leaving out
- * answers it would get wrong.
+ * left unscored, as in the KBF paper (v3) and its reference code. At least half the
+ * probes must be scored, as in the reference code (the paper sets no minimum); below
+ * that the verdict is UNDETERMINED. A DIFF additionally needs 80% of the probes
+ * scored (ours only): a significant result on fewer answers is UNDETERMINED.
  */
 export const KBF_AUDIT_VERIFY_OPTIONS = { minCoverage: 0.5, minDiffCoverage: 0.8 } as const satisfies VerifyKbfOptions;
 
@@ -100,7 +101,7 @@ export function verifyKbf(
 
     let selectedSelfTest;
     try {
-      selectedSelfTest = subsetReferenceSelfTest(
+      selectedSelfTest = kbfAuditBaseline(
         reference as KbfReferenceV1,
         reference.probes.map((probe) => probe.id),
       );
@@ -142,12 +143,13 @@ export function verifyKbf(
 }
 
 function emptyStats(reference: FingerprintReference): FingerprintStats {
+  const baseline = (reference as KbfReferenceV1).calibration ?? reference.selfTest;
   return {
-    selfHamming: reference.selfTest.hamming,
-    selfTotal: reference.selfTest.total,
+    selfHamming: baseline.hamming,
+    selfTotal: baseline.total,
     targetHamming: null,
     targetTotal: null,
-    selfCoverage: reference.selfTest.coverage,
+    selfCoverage: baseline.coverage,
     targetCoverage: null,
     p0Cp99: null,
     pValueBinomial: null,
