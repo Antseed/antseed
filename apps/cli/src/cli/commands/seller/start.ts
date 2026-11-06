@@ -984,6 +984,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
           sellerWalletAddress,
           paymentConfig,
           minBudgetPerRequest: config.payments.minBudgetPerRequest ?? '10000',
+          ...(config.payments.suggestedReserveAmount ? { suggestedReserveAmount: config.payments.suggestedReserveAmount } : {}),
           minSettleDelta,
           ...(config.payments.serveWhileClosePending !== undefined
             ? { serveWhileClosePending: config.payments.serveWhileClosePending }

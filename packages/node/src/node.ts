@@ -297,6 +297,8 @@ export interface NodePaymentsConfig {
   defaultAuthDurationSecs?: number;
   /** Minimum USDC per request (base units) for seller. Default: "10000" ($0.01). */
   minBudgetPerRequest?: string;
+  /** First reserve the seller suggests to a new buyer (base units). Default: "1000000" ($1.00). */
+  suggestedReserveAmount?: string;
   /** Minimum unsettled delta (base units) required before idle settle submits a tx. Default: "2000" (~$0.002). */
   minSettleDelta?: string;
   /** Serve channels whose buyer already requested close on-chain, risking uncollectible work. Default: false. */
@@ -2742,6 +2744,7 @@ export class AntseedNode extends EventEmitter {
         chainId: payments.chainId ?? 8453,
         dataDir: paymentsDir,
         ...(payments.minBudgetPerRequest ? { minBudgetPerRequest: payments.minBudgetPerRequest } : {}),
+        ...(payments.suggestedReserveAmount ? { suggestedReserveAmount: payments.suggestedReserveAmount } : {}),
         ...(payments.minSettleDelta ? { minSettleDelta: payments.minSettleDelta } : {}),
         ...(payments.serveWhileClosePending !== undefined
           ? { serveWhileClosePending: payments.serveWhileClosePending }

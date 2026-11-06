@@ -33,6 +33,13 @@ export interface SellerPaymentConfig {
   dataDir: string;
   /** Minimum USDC per request (base units). Default: "10000" ($0.01). */
   minBudgetPerRequest?: string;
+  /**
+   * First reserve suggested to a buyer with no channel here (base units).
+   * Default: "1000000" ($1.00), the contract's default first-sign cap. A seller of
+   * small per-request services may suggest less, so a buyer's deposit reaches
+   * more sellers. Kept between `minBudgetPerRequest` and the cap.
+   */
+  suggestedReserveAmount?: string;
   /** Whether to immediately settle when buyer disconnects. Default: true. */
   settleOnDisconnect?: boolean;
   /**
@@ -2521,6 +2528,23 @@ export class SellerPaymentManager {
   private static readonly DEFAULT_SUGGESTED_AMOUNT = 1_000_000n; // $1.00 — matches contract FIRST_SIGN_CAP and buyer default
 
   /**
+   * The first reserve to suggest: the seller's `suggestedReserveAmount`, never
+   * under one request's minimum budget and never over the contract's
+   * first-sign cap. An unreadable setting falls back to the default.
+   */
+  private _suggestedReserveAmount(minBudgetPerRequest: string): bigint {
+    const cap = SellerPaymentManager.DEFAULT_SUGGESTED_AMOUNT;
+    const configured = this._config.suggestedReserveAmount;
+    if (configured === undefined || !/^[0-9]+$/.test(configured.trim())) return cap;
+    const amount = BigInt(configured.trim());
+    const floor = /^[0-9]+$/.test(minBudgetPerRequest) ? BigInt(minBudgetPerRequest) : 0n;
+    if (amount <= 0n || amount > cap) return cap;
+    // The request minimum lifts a low value; the cap still wins when the minimum is above it.
+    const lifted = amount < floor ? floor : amount;
+    return lifted > cap ? cap : lifted;
+  }
+
+  /**
    * Build the PaymentRequired payload for a buyer that doesn't have a session.
    */
   getPaymentRequirements(
@@ -2530,13 +2554,13 @@ export class SellerPaymentManager {
   ): PaymentRequiredPayload {
     const minBudgetPerRequest = this._config.minBudgetPerRequest ?? DEFAULT_MIN_BUDGET_PER_REQUEST;
 
-    let suggestedAmount = SellerPaymentManager.DEFAULT_SUGGESTED_AMOUNT;
+    let suggestedAmount = this._suggestedReserveAmount(minBudgetPerRequest);
     if (buyerPeerId) {
       const priorSession = this._channelStore.getLatestChannel(buyerPeerId, 'seller');
       if (priorSession && priorSession.status === CHANNEL_STATUS.SETTLED) {
         // Returning buyer with proven history — could use a different amount
-        // For now, use the same default; config can override later
-        suggestedAmount = SellerPaymentManager.DEFAULT_SUGGESTED_AMOUNT;
+        // For now, use the same amount as for a new buyer
+        suggestedAmount = this._suggestedReserveAmount(minBudgetPerRequest);
       }
     }
 
