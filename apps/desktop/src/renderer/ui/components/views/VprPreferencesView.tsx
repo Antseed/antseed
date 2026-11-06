@@ -79,6 +79,8 @@ export function VprPreferencesView({ onSelectView }: Props) {
     return routes.find((route) => route.peerId === snap.selection.peerId) ?? null;
   }, [snap.discoverRows, snap.selection]);
 
+  const trustPreference = snap.preferences.trustPreference ?? 0;
+
   return (
     <section className={`view view-vpr-preferences view-pinned-header ${styles.view}`} role="tabpanel">
       <VprPage title="Preferences" backFallback="home">
@@ -132,7 +134,25 @@ export function VprPreferencesView({ onSelectView }: Props) {
 
           <div className={styles.sliderGroup}>
             <div className={styles.sliderHead}>
-              <span className={styles.sliderTitle}>Price preference</span>
+              <span className={styles.sliderTitle}>Price or trust</span>
+              <span className={styles.sliderReadingSmall}>
+                {trustPreference === 0 ? 'Price only' : `${trustPreference}% trust`}
+              </span>
+            </div>
+            <VprSlider
+              min={0}
+              max={100}
+              step={5}
+              value={trustPreference}
+              onChange={(next) => actions.updateVprRoutingPreferences({ trustPreference: next })}
+              ariaLabel="Price or trust"
+            />
+            <div className={styles.sliderHint}>Move right to pay more for sellers with a higher trust score</div>
+          </div>
+
+          <div className={styles.sliderGroup}>
+            <div className={styles.sliderHead}>
+              <span className={styles.sliderTitle}>Price limit</span>
               <span className={styles.sliderReadingSmall}>
                 {formatUsdShort(snap.preferences.maxInputUsdPerMillion)}/m tok
               </span>
@@ -143,9 +163,9 @@ export function VprPreferencesView({ onSelectView }: Props) {
               step={0.5}
               value={snap.preferences.maxInputUsdPerMillion}
               onChange={(next) => actions.updateVprRoutingPreferences({ maxInputUsdPerMillion: next })}
-              ariaLabel="Price preference"
+              ariaLabel="Price limit"
             />
-            <div className={styles.sliderHint}>Sellers above this input price receive a strong ranking penalty</div>
+            <div className={styles.sliderHint}>Sellers above this input price are used only after those within it</div>
           </div>
 
           <VprSettingRow

@@ -1967,6 +1967,7 @@ const priceAndTrustPreferences: ModelRoutingPreferences = {
   preferFreePeers: false,
   maxInputUsdPerMillion: 25,
   minTrustScore: 60,
+  trustPreference: 0,
   allowedPeerIds: [],
   blockedPeerIds: [],
 }
@@ -2090,6 +2091,7 @@ test('BuyerProxy reloads model routing preferences from config', async (t) => {
     preferFreePeers: true,
     maxInputUsdPerMillion: 8,
     minTrustScore: 72,
+    trustPreference: 0,
     allowedPeerIds: [allowedPeerId],
     blockedPeerIds: [],
   })
@@ -3167,6 +3169,37 @@ test('/models order and model-only dispatch use the same Price + Trust ranking',
   assert.deepEqual(peerOrder, [emberRoute.peerId, cobaltRelay.peerId])
   assert.equal(completionRes.statusCode, 200)
   assert.equal(selectedPeerId, emberRoute.peerId)
+})
+
+test('the trust preference and input price limit change which seller automatic routing picks', async () => {
+  const lowTrust = makePeer('a', ['openai'])
+  lowTrust.onChainReputationScore = 61
+  lowTrust.providerPricing = { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 3 } } }
+  lowTrust.providerServiceApiProtocols = { openai: { services: { 'kimi-k3': ['openai-chat-completions'] } } }
+  const highTrust = makePeer('b', ['openai'])
+  highTrust.onChainReputationScore = 99
+  highTrust.providerPricing = { openai: { defaults: { inputUsdPerMillion: 1.2, outputUsdPerMillion: 3.6 } } }
+  highTrust.providerServiceApiProtocols = { openai: { services: { 'kimi-k3': ['openai-chat-completions'] } } }
+  const pick = async (preferences: ModelRoutingPreferences): Promise<string> => {
+    const proxy = makeBuyerProxyWithPeers([lowTrust, highTrust], [lowTrust, highTrust], permissiveRouter(), undefined, preferences)
+    let selected = ''
+    ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
+      selected = peer.peerId
+      return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{}') }
+    }
+    assert.equal((await invokeProxy(proxy, makeProxyRequest({ body: { model: 'kimi-k3', messages: [] } }))).statusCode, 200)
+    return selected
+  }
+
+  assert.equal(await pick(priceAndTrustPreferences), lowTrust.peerId)
+  const { trustPreference: _omitted, ...withoutTrustPreference } = priceAndTrustPreferences
+  assert.equal(await pick(withoutTrustPreference), lowTrust.peerId, 'preferences from before the setting route the same')
+  assert.equal(await pick({ ...priceAndTrustPreferences, trustPreference: 100 }), highTrust.peerId)
+  assert.equal(await pick({ ...priceAndTrustPreferences, maxInputUsdPerMillion: 0.5 }), lowTrust.peerId, 'nobody within the limit: still routes')
+  highTrust.providerPricing = { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 30 } } }
+  lowTrust.providerPricing = { openai: { defaults: { inputUsdPerMillion: 2, outputUsdPerMillion: 3 } } }
+  assert.equal(await pick(priceAndTrustPreferences), lowTrust.peerId, 'cheaper overall wins with the limit out of the way')
+  assert.equal(await pick({ ...priceAndTrustPreferences, maxInputUsdPerMillion: 1.5 }), highTrust.peerId, 'the seller within the limit wins though it costs more')
 })
 
 test('Price + Trust routing falls back after the preferred cheaper peer fails', async () => {

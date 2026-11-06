@@ -377,6 +377,10 @@ export function validateConfig(config: AntseedConfig): string[] {
   if (!Number.isFinite(routingPreferences.minTrustScore) || routingPreferences.minTrustScore < 0 || routingPreferences.minTrustScore > 100) {
     errors.push('buyer.routingPreferences.minTrustScore must be in range 0-100');
   }
+  const trustPreference = routingPreferences.trustPreference ?? 0;
+  if (!Number.isFinite(trustPreference) || trustPreference < 0 || trustPreference > 100) {
+    errors.push('buyer.routingPreferences.trustPreference must be in range 0-100');
+  }
   for (const key of ['allowedPeerIds', 'blockedPeerIds'] as const) {
     const peerIds = routingPreferences[key];
     if (!Array.isArray(peerIds) || peerIds.some((peerId) => typeof peerId !== 'string' || !PEER_ID_PATTERN.test(peerId.trim()))) {

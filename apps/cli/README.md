@@ -321,6 +321,7 @@ antseed config buyer set maxPricing.defaults.inputUsdPerMillion 25
 antseed config buyer set maxPricing.defaults.cachedInputUsdPerMillion 12
 antseed config buyer set maxPricing.defaults.outputUsdPerMillion 75
 antseed config buyer set routingPreferences.minTrustScore 60
+antseed config buyer set routingPreferences.trustPreference 0
 antseed config buyer set routingPreferences.maxInputUsdPerMillion 25
 antseed config buyer set peerRefreshIntervalMs 300000
 antseed config buyer set metadataFetchTimeoutMs 1500

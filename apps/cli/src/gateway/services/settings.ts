@@ -81,6 +81,7 @@ export function buyerSettingsFromConfig(
     minPeerReputation: buyer.minPeerReputation,
     routingPreferences: {
       minTrustScore: prefs.minTrustScore,
+      trustPreference: prefs.trustPreference ?? 0,
       maxInputUsdPerMillion: prefs.maxInputUsdPerMillion,
       allowedPeerIds: [...prefs.allowedPeerIds],
       blockedPeerIds: [...prefs.blockedPeerIds],
@@ -268,6 +269,7 @@ function parseBuyerSettingsPatch(body: unknown): BuyerSettingsPatch {
   if (prefs) {
     const out: NonNullable<BuyerSettingsPatch['routingPreferences']> = {}
     if (prefs['minTrustScore'] !== undefined) out.minTrustScore = numberIn(prefs['minTrustScore'], 'routingPreferences.minTrustScore', { min: 0, max: 100 })
+    if (prefs['trustPreference'] !== undefined) out.trustPreference = numberIn(prefs['trustPreference'], 'routingPreferences.trustPreference', { min: 0, max: 100 })
     if (prefs['maxInputUsdPerMillion'] !== undefined) out.maxInputUsdPerMillion = numberIn(prefs['maxInputUsdPerMillion'], 'routingPreferences.maxInputUsdPerMillion', { min: 0 })
     if (prefs['allowedPeerIds'] !== undefined) out.allowedPeerIds = peerIdList(prefs['allowedPeerIds'], 'routingPreferences.allowedPeerIds')
     if (prefs['blockedPeerIds'] !== undefined) out.blockedPeerIds = peerIdList(prefs['blockedPeerIds'], 'routingPreferences.blockedPeerIds')

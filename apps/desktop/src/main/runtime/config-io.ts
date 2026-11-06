@@ -172,6 +172,12 @@ function migrateDesktopBuyerDefaults(config: Record<string, unknown>): {
       && routingPreferences.minTrustScore <= 100
       ? routingPreferences.minTrustScore
       : DEFAULT_MODEL_ROUTING_PREFERENCES.minTrustScore,
+    trustPreference: typeof routingPreferences.trustPreference === 'number'
+      && Number.isFinite(routingPreferences.trustPreference)
+      && routingPreferences.trustPreference >= 0
+      && routingPreferences.trustPreference <= 100
+      ? routingPreferences.trustPreference
+      : DEFAULT_MODEL_ROUTING_PREFERENCES.trustPreference,
     allowedPeerIds: allowedPeerIds ?? [],
     blockedPeerIds: blockedPeerIds ?? [],
   };
@@ -179,6 +185,7 @@ function migrateDesktopBuyerDefaults(config: Record<string, unknown>): {
     typeof routingPreferences.preferFreePeers !== 'boolean'
     || routingPreferences.maxInputUsdPerMillion !== nextRoutingPreferences.maxInputUsdPerMillion
     || routingPreferences.minTrustScore !== nextRoutingPreferences.minTrustScore
+    || routingPreferences.trustPreference !== nextRoutingPreferences.trustPreference
     || allowedPeerIds === null
     || blockedPeerIds === null
   ) {

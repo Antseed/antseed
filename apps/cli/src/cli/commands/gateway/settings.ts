@@ -63,6 +63,7 @@ export function registerGatewaySettingsCommands(gateway: Command): void {
       console.log(`  Min peer reputation: ${buyer.minPeerReputation}${mark('minPeerReputation')}`)
       console.log(chalk.bold('  Routing preferences') + chalk.dim(' (apply at once)'))
       console.log(`    Min trust score: ${buyer.routingPreferences.minTrustScore}`)
+      console.log(`    Trust preference: ${buyer.routingPreferences.trustPreference} of 100`)
       console.log(`    Soft input-price limit: $${buyer.routingPreferences.maxInputUsdPerMillion}/M`)
       console.log(`    Free sellers first: ${buyer.routingPreferences.preferFreePeers ? 'yes' : 'no'}`)
       console.log(`    Allowed sellers: ${list(buyer.routingPreferences.allowedPeerIds)}`)
@@ -141,7 +142,8 @@ export function registerGatewaySettingsCommands(gateway: Command): void {
       .option('--max-cached-input-price <usd>', 'cap on cached input price, USD per million tokens ("none" removes it)')
       .option('--min-reputation <score>', 'minimum seller reputation, 0-100, for every request')
       .option('--min-trust <score>', 'routing preference: minimum trust score, 0-100')
-      .option('--soft-max-input-price <usd>', 'routing preference: sellers above this input price rank lower')
+      .option('--trust-preference <0-100>', 'routing preference: how much trust counts against expected cost, 0 for not at all')
+      .option('--soft-max-input-price <usd>', 'routing preference: sellers above this input price come after those within it')
       .option('--prefer-free <state>', 'routing preference: free sellers first, on or off')
       .option('--allow-peer <peerId>', 'routing preference: add a seller to the allow list (repeatable)', collect)
       .option('--unallow-peer <peerId>', 'remove a seller from the allow list (repeatable)', collect)
@@ -199,6 +201,7 @@ interface SetBuyerOptions {
   maxCachedInputPrice?: string
   minReputation?: string
   minTrust?: string
+  trustPreference?: string
   softMaxInputPrice?: string
   preferFree?: string
   allowPeer?: string[]
@@ -253,6 +256,7 @@ function buyerPatchFromOptions(options: SetBuyerOptions, current: BuyerSettings)
 
   const prefs: NonNullable<BuyerSettingsInput['routingPreferences']> = {}
   if (options.minTrust !== undefined) prefs.minTrustScore = number(options.minTrust, '--min-trust', 100)
+  if (options.trustPreference !== undefined) prefs.trustPreference = number(options.trustPreference, '--trust-preference', 100)
   if (options.softMaxInputPrice !== undefined) prefs.maxInputUsdPerMillion = number(options.softMaxInputPrice, '--soft-max-input-price')
   if (options.preferFree !== undefined) prefs.preferFreePeers = parseOnOff(options.preferFree, '--prefer-free')
   const allowed = editedList(current.routingPreferences.allowedPeerIds, options.allowPeer, options.unallowPeer, options.clearAllowed)

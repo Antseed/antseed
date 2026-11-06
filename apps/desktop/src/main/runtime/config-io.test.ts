@@ -52,6 +52,7 @@ test('ensureConfig creates config with desktop buyer max pricing defaults', asyn
     preferFreePeers: false,
     maxInputUsdPerMillion: 25,
     minTrustScore: 60,
+    trustPreference: 0,
     allowedPeerIds: [],
     blockedPeerIds: [],
   });
@@ -187,6 +188,7 @@ test('ensureConfig preserves valid buyer routing preferences', async (t) => {
     preferFreePeers: true,
     maxInputUsdPerMillion: 8,
     minTrustScore: 72,
+    trustPreference: 0,
     allowedPeerIds: [peerId],
     blockedPeerIds: [],
   });

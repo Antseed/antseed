@@ -1180,7 +1180,9 @@ export interface BuyerSettings {
   /** Automatic routing preferences; the top level of every routing policy. */
   routingPreferences: {
     minTrustScore: number
-    /** Soft input-price limit: sellers above it rank lower, never excluded. */
+    /** How much trust counts against expected cost, 0 (not at all) to 100. */
+    trustPreference: number
+    /** Soft input-price limit: sellers above it come after those within it, never excluded. */
     maxInputUsdPerMillion: number
     allowedPeerIds: string[]
     blockedPeerIds: string[]
