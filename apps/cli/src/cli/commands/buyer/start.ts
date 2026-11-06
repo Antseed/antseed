@@ -28,7 +28,7 @@ import { curatedVerifierIds, resolveVerifierPolicy, type VerifierPolicy } from '
 import { buyerSettingOverrides, resolveEffectiveBuyerConfig, type BuyerRuntimeOverrides } from '../../../config/effective.js'
 import type { BuyerCLIConfig } from '../../../config/types.js'
 import { BuyerTelemetry } from '../../../telemetry/buyer.js'
-import { toolHintBaseUrl, type ToolHint } from '@antseed/router-core'
+import { formatToolHints, toolHintBaseUrl, type ToolHint } from '@antseed/router-core'
 
 const SHUTDOWN_DEADLINE_MS = BUYER_SHUTDOWN_DEADLINE_MS
 
@@ -94,7 +94,7 @@ export function ignoreBrokenPipes(streams: NodeJS.EventEmitter[] = [process.stdo
  */
 export function buyerToolHintLines(proxyUrl: string, toolHints: ToolHint[]): string[] {
   if (toolHints.length > 0) {
-    return toolHints.map((hint) => `  export ${hint.envVar}=${toolHintBaseUrl(hint.envVar, proxyUrl)}   # ${hint.name}`)
+    return formatToolHints(toolHints, proxyUrl).map((line) => `  ${line}`)
   }
   return [
     `  export ANTHROPIC_BASE_URL=${toolHintBaseUrl('ANTHROPIC_BASE_URL', proxyUrl)}`,
