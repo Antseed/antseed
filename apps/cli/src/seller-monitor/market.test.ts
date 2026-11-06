@@ -46,15 +46,32 @@ test('market without config uses the announced services; a seller not found stil
 test('reputation: trust parts with their maximum, rank among sellers, next steps biggest gain first', () => {
   const rows = fakeNetworkRows(ME, { 'glm-5.3': [0.9, 3] })
   const trust = trustOfRow(rows[0])!
-  assert.ok(Math.abs(trust.score - 47.7) < 1e-9)
-  assert.deepEqual([trust.history!.max, trust.usage!.max, trust.power!.max, trust.freeModels!.max], [50, 20, 10, 5])
+  assert.ok(Math.abs(trust.score - 70.6) < 1e-9)
+  assert.deepEqual([trust.usage!.max, trust.power!.max, trust.freeModels!.max], [30, 70, 5])
+  assert.equal(trust.history!.channelCount, 125)
   assert.equal(trust.identity, null)
-  assert.deepEqual(trustRank(rows, ME), { position: 6, of: 8 })
+  assert.deepEqual(trustRank(rows, ME), { position: 3, of: 8 })
   const steps = trustSteps(trust)
-  assert.deepEqual(steps.map((step) => step.part), ['identity', 'history', 'usage', 'power'])
-  assert.match(steps[0]!.text, /domain or a GitHub/)
+  assert.deepEqual(steps.map((step) => step.part), ['power', 'identity', 'usage'])
+  assert.match(steps[0]!.text, /stake/)
+  assert.match(steps[1]!.text, /domain or a GitHub/)
   assert.deepEqual(trustSteps({ ...trust, washFlagged: true }).map((step) => step.part), ['wash'])
-  assert.equal(trustSteps(null)[0]!.part, 'history')
+  assert.equal(trustSteps(null)[0]!.part, 'standing')
+})
+
+test('reputation: says what the verification policy did to the score', () => {
+  const row = (verification: unknown) => ({ peerId: ME.slice(2), trust: { score: 50, usage: null, power: null, identity: null, freeModels: null, washFlagged: false, verification } })
+  const penalty = trustOfRow(row({ multiplierBps: 9_600, sameCount: 1, diffCount: 2, change: -6 }))!
+  assert.deepEqual(penalty.verification, { multiplierBps: 9_600, sameCount: 1, diffCount: 2, change: -6 })
+  const step = trustSteps(penalty).find((entry) => entry.part === 'verification')!
+  assert.match(step.text, /take 6\.0 points off your score: 2 DIFF verdicts leave your points at 96%/)
+
+  const bonus = trustOfRow(row({ multiplierBps: 10_400, sameCount: 2, diffCount: 0, change: 2 }))!
+  assert.equal(bonus.verification?.change, 2)
+  assert.ok(!trustSteps(bonus).some((entry) => entry.part === 'verification'))
+
+  assert.equal(trustOfRow(row({ multiplierBps: 9_600, sameCount: 0, diffCount: 1, penalty: 2 }))!.verification?.change, -2)
+  assert.equal(trustOfRow(row(null))!.verification, null)
 })
 
 test('market: with no network loaded, nothing is ranked or called only yours', () => {

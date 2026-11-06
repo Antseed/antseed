@@ -17,7 +17,7 @@ import { formatAnts } from '../lib/ants'
 import { isFreeService } from '../lib/free-tier'
 import { formatDateTime, formatLatency, formatNumber, formatRelative, formatSpeed, shortId } from '../lib/format'
 import { diffRoutingNote } from '../lib/model-check'
-import { trustBreakdownLabel } from '../lib/trust-breakdown'
+import { modelChecksEffect, trustBreakdownLabel } from '../lib/trust-breakdown'
 import { priceSummary } from '../lib/models'
 import { isWorkspaceAdmin } from '../lib/nav'
 import { isFreePeer } from '../lib/peers'
@@ -67,10 +67,13 @@ function ProviderStats({ peer, showReputation }: { peer: Peer; showReputation: b
   const coolingDown = (peer.health.coolingDownUntil ?? 0) > Date.now()
   const diffNote = diffRoutingNote(peer)
   const breakdown = trustBreakdownLabel(peer.trustBreakdown)
+  const checks = peer.trustBreakdown?.verification
+  const checksEffect = checks && peer.trustScore !== null ? modelChecksEffect(checks, peer.trustScore) : null
   return (
     <div className="gc-grid gc-grid--2 gc-figures gc-panel-figures">
       <Figure label="Trust score" value={score(peer.trustScore)} note={(breakdown || diffNote) && <>
         {breakdown && <div>{breakdown}</div>}
+        {checksEffect && <div>{checksEffect}</div>}
         {diffNote && <div>{diffNote}</div>}
       </>} />
       {showReputation && <Figure label="Reputation" value={score(peer.reputationScore)} />}

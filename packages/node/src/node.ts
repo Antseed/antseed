@@ -1306,7 +1306,7 @@ export class AntseedNode extends EventEmitter {
       if (entry.agent) peer.onChainVerificationStatus = { ...entry.agent };
       else delete peer.onChainVerificationStatus;
       peer.onChainVerificationFetchedAt = entry.fetchedAt;
-      // The trust score carries the verification penalty: recompute it from its parts.
+      // The trust score carries the verification multiplier: recompute it from its parts.
       applyTrust(peer);
     };
     const stale = new Map<number, string[]>();
