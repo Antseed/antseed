@@ -18,7 +18,7 @@ A request names its model in one of two ways:
 
 | Model id | Routing |
 |---|---|
-| `deepseek-v4-flash` | Automatic. The gateway picks the cheapest provider that passes your minimum trust score and [routing policy](/docs/gateway/routing); trust only breaks ties. |
+| `deepseek-v4-flash` | Automatic. The gateway picks among the providers that pass your minimum trust score and [routing policy](/docs/gateway/routing), by the expected cost of a good answer. |
 | `<peerId>@deepseek-v4-flash` | Pinned. Every request goes to that provider. The peer id is lowercase, without `0x`. |
 
 Routing policies apply to pinned requests too: a pinned provider that your policy blocks is refused.

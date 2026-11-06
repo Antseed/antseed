@@ -15,7 +15,7 @@ For a model-only request such as `"model": "deepseek-v4-flash"`, the buyer:
 1. Normalizes the model name, so cosmetic variants of the same model share one catalog entry.
 2. Collects every seller that offers the model in a compatible API format.
 3. Drops sellers your preferences exclude: below the minimum trust score (default `60`; unscored sellers are excluded too), above your hard price caps, on your block list, or outside your allow list when one is set.
-4. Picks the cheapest of the rest (input plus output price per million tokens, or the per-image price). Trust only breaks price ties, together with penalties for recent failures and a boost for free sellers when you prefer them; sellers cooling down after failures go last.
+4. Ranks the rest by the expected cost of one good answer: the price plus the value of the time it takes, divided by the chance it succeeds. Sellers close to the best share the traffic. Sellers above your input price limit come after those within it, sellers failing lately after the healthy ones, and sellers cooling down last. Trust doesn't affect the order unless you set `trustPreference`.
 5. Rewrites the model to the chosen seller's own service id and sends the request.
 
 The ranking weights and defaults are documented once, in the [router plugin API](/docs/router-api).

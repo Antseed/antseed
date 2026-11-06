@@ -218,4 +218,61 @@ describe('seller health', () => {
     expect(result.pool).toEqual([openAlternative]);
     expect(result.ordered.map((s) => s.peerId[0])).toEqual(['b', 'a']);
   });
+
+  describe('trust preference', () => {
+    const lowTrust = seller('a', 1, 3, { trustScore: 60 });
+    const highTrust = seller('b', 1.2, 3.6, { trustScore: 100 });
+    const orderWith = (sellers: Seller[], trustPreference?: number) => orderAdaptiveRoutes(sellers, (s) => s, new SellerHealthBook(), SHAPE, {
+      now: NOW, random: () => 0, explorationRate: 0, spreadTolerance: 0, ...(trustPreference === undefined ? {} : { trustPreference }),
+    });
+
+    it('leaves the order and scores alone at 0', () => {
+      const plain = orderWith([lowTrust, highTrust]);
+      const zero = orderWith([lowTrust, highTrust], 0);
+      expect(zero.ordered).toEqual(plain.ordered);
+      expect(zero.ordered[0]).toBe(lowTrust);
+      expect(zero.scores.get(highTrust)!.rankScore).toBe(zero.scores.get(highTrust)!.score);
+    });
+
+    it('lets a pricier seller with higher trust win as it rises', () => {
+      expect(orderWith([lowTrust, highTrust], 25).ordered[0]).toBe(lowTrust);
+      expect(orderWith([lowTrust, highTrust], 100).ordered[0]).toBe(highTrust);
+    });
+
+    it('reports the real expected cost, not the weighed one', () => {
+      const weighed = orderWith([lowTrust, highTrust], 100);
+      const plain = orderWith([lowTrust, highTrust]);
+      expect(weighed.scores.get(lowTrust)!.score).toBe(plain.scores.get(lowTrust)!.score);
+      expect(weighed.scores.get(lowTrust)!.rankScore).toBeCloseTo(plain.scores.get(lowTrust)!.score / 0.6);
+    });
+
+    it('treats a seller with no score as trust 0, and stays finite', () => {
+      const unscored = seller('c', 1, 3, { trustScore: null });
+      const result = orderWith([unscored, highTrust], 100);
+      expect(result.ordered[0]).toBe(highTrust);
+      expect(Number.isFinite(result.scores.get(unscored)!.rankScore)).toBe(true);
+    });
+  });
+
+  describe('input price limit', () => {
+    const over = seller('a', 1, 3, { overPriceLimit: true });
+    const within = seller('b', 5, 15);
+
+    it('tries a seller over the limit after one within it, even when cheaper', () => {
+      const result = order([over, within], new SellerHealthBook());
+      expect(result.ordered).toEqual([within, over]);
+      expect(result.pool).toEqual([within]);
+    });
+
+    it('still routes when every seller is over the limit', () => {
+      const other = seller('c', 2, 6, { overPriceLimit: true });
+      expect(order([other, over], new SellerHealthBook()).ordered[0]).toBe(over);
+    });
+
+    it('never probes a seller over the limit', () => {
+      const result = orderAdaptiveRoutes([within, over], (s) => s, new SellerHealthBook(), SHAPE, { now: NOW, random: () => 0, explorationRate: 1 });
+      expect(result.explored).toBeNull();
+      expect(result.ordered[0]).toBe(within);
+    });
+  });
 });

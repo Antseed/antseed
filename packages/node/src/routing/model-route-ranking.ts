@@ -4,6 +4,12 @@ export type ModelRoutingPreferences = {
   preferFreePeers: boolean;
   maxInputUsdPerMillion: number;
   minTrustScore: number;
+  /**
+   * How much a seller's trust counts against its expected cost, 0 to 100.
+   * 0 ranks on price, time and reliability alone. At 100 a seller at trust 50
+   * has to cost half as much as one at trust 100 to rank level.
+   */
+  trustPreference: number;
   allowedPeerIds: string[];
   blockedPeerIds: string[];
 };
@@ -12,6 +18,7 @@ export const DEFAULT_MODEL_ROUTING_PREFERENCES: ModelRoutingPreferences = {
   preferFreePeers: false,
   maxInputUsdPerMillion: 25,
   minTrustScore: 60,
+  trustPreference: 0,
   allowedPeerIds: [],
   blockedPeerIds: [],
 };
@@ -88,6 +95,21 @@ export function isModelRouteCoolingDown(
   return until - now <= MAX_COOLDOWN_MS;
 }
 
+/**
+ * Above the buyer's input-price limit. Such a seller is never excluded, so a
+ * model sold only above the limit still works, but it comes after every seller
+ * within the limit. `buyer.maxPricing` is the limit that excludes.
+ */
+export function isModelRouteOverPriceLimit(
+  route: Pick<ModelRouteCandidate, 'inputUsdPerMillion'>,
+  preferences: Pick<ModelRoutingPreferences, 'maxInputUsdPerMillion'>,
+): boolean {
+  const inputPrice = route.inputUsdPerMillion;
+  return typeof inputPrice === 'number'
+    && Number.isFinite(inputPrice)
+    && inputPrice > preferences.maxInputUsdPerMillion;
+}
+
 export function isModelRoutePeerAllowed(
   peerId: string,
   preferences: ModelRoutingPreferences,
@@ -136,12 +158,7 @@ export function scoreModelRoute<T extends ModelRouteCandidate>(
     reasons.push('free peer preferred');
   }
 
-  const inputPrice = route.inputUsdPerMillion;
-  if (
-    typeof inputPrice === 'number'
-    && Number.isFinite(inputPrice)
-    && inputPrice > preferences.maxInputUsdPerMillion
-  ) {
+  if (isModelRouteOverPriceLimit(route, preferences)) {
     score -= 50;
     reasons.push('input price exceeds maximum');
   }
@@ -176,6 +193,10 @@ function compareScoredModelRoutes<T extends ModelRouteCandidate>(
   const aCooling = isModelRouteCoolingDown(a.route, now);
   const bCooling = isModelRouteCoolingDown(b.route, now);
   if (aCooling !== bCooling) return aCooling ? 1 : -1;
+
+  const aOverLimit = isModelRouteOverPriceLimit(a.route, preferences);
+  const bOverLimit = isModelRouteOverPriceLimit(b.route, preferences);
+  if (aOverLimit !== bOverLimit) return aOverLimit ? 1 : -1;
 
   const aPrice = modelRouteTotalPrice(a.route);
   const bPrice = modelRouteTotalPrice(b.route);

@@ -5,9 +5,10 @@
  * model: how often requests succeed, how soon the answer starts and how fast
  * it streams. Observations fade with a half-life, so a seller that blipped
  * once barely moves and a seller that fixed itself recovers as soon as it
- * serves again — no timers. Trust stays a gate applied before this: every
- * seller the buyer has not used starts from the same prior, so with no
- * observations the order is plain price order.
+ * serves again — no timers. Trust is a gate applied before this: every seller
+ * the buyer has not used starts from the same prior, so with no observations
+ * the order is plain price order. A buyer who sets a trust preference also has
+ * trust weigh on the order, on top of the gate.
  *
  * Sellers are ranked by expected cost of one successful answer: price plus the
  * value of the time it takes, divided by the chance it succeeds. Traffic is
@@ -282,6 +283,10 @@ export type AdaptiveRouteInput = {
    * with room, never drawn for spreading.
    */
   saturated?: boolean
+  /** Above the buyer's input-price limit: tried after sellers within it, never drawn for spreading or probing. */
+  overPriceLimit?: boolean
+  /** The buyer's trust score for this seller, 0 to 100. Only counts with a trust preference. */
+  trustScore?: number | null
   /** How the seller says this model served all its buyers lately (its signed metadata). */
   reported?: ReportedPerformance | null
 }
@@ -307,6 +312,8 @@ export type AdaptiveRouteScore = {
   expectedPriceUsd: number | null
   /** Expected cost of one successful answer, price and time together, in USD. Lower is better. */
   score: number
+  /** What the order and traffic shares use: `score` weighed by the buyer's trust preference, the same as `score` without one. */
+  rankScore: number
   unhealthy: boolean
   /** Not observed within `SELLER_STALE_AFTER_MS`, or never. */
   stale: boolean
@@ -330,6 +337,13 @@ export function networkSpeed(stats: Array<SellerHealthStats | null>): NetworkSpe
   }
 }
 
+/** What a seller's expected cost is divided by for ranking: 1 without a trust preference or at full trust. */
+function trustRankFactor(trustScore: number | null | undefined, trustPreference: number): number {
+  const weight = Math.min(100, Math.max(0, trustPreference)) / 100
+  const trust = Math.min(100, Math.max(0, finiteNonNegative(trustScore) ? trustScore : 0)) / 100
+  return Math.max(1 - weight + weight * trust, 0.01)
+}
+
 export function scoreAdaptiveRoute(
   input: AdaptiveRouteInput,
   stats: SellerHealthStats | null,
@@ -337,6 +351,7 @@ export function scoreAdaptiveRoute(
   network: NetworkSpeed,
   now: number,
   timeValueUsdPerSecond = DEFAULT_TIME_VALUE_USD_PER_SECOND,
+  trustPreference = 0,
 ): AdaptiveRouteScore {
   const probability = successProbability(stats, reportedSuccessPrior(input.reported) ?? SELLER_SUCCESS_PRIOR)
   const firstTokenMs = stats?.firstTokenMs ?? input.reported?.firstTokenMsP50 ?? network.firstTokenMs
@@ -352,11 +367,13 @@ export function scoreAdaptiveRoute(
   // among themselves, count them at a dollar per million tokens.
   const pricePart = expectedPriceUsd ?? (shape.inputTokens + shape.outputTokens) / 1_000_000
   const lastObservedAt = Math.max(stats?.lastSuccessAt ?? 0, stats?.lastFailureAt ?? 0)
+  const score = (pricePart + timeValueUsdPerSecond * expectedSeconds) / Math.max(probability, 0.01)
   return {
     successProbability: probability,
     expectedSeconds,
     expectedPriceUsd,
-    score: (pricePart + timeValueUsdPerSecond * expectedSeconds) / Math.max(probability, 0.01),
+    score,
+    rankScore: score / trustRankFactor(input.trustScore, trustPreference),
     unhealthy: probability < UNHEALTHY_SUCCESS_PROBABILITY,
     stale: now - lastObservedAt >= SELLER_STALE_AFTER_MS,
     stats,
@@ -374,6 +391,8 @@ export type AdaptiveOrderOptions = {
   /** Uniform [0, 1). Injected so tests are deterministic. */
   random?: () => number
   timeValueUsdPerSecond?: number
+  /** The buyer's `trustPreference`, 0 to 100. */
+  trustPreference?: number
   spreadTolerance?: number
   explorationRate?: number
 }
@@ -414,25 +433,27 @@ export function orderAdaptiveRoutes<T>(
   const network = networkSpeed([...stats.values()])
   const scores = new Map(candidates.map((candidate) => [
     candidate,
-    scoreAdaptiveRoute(inputs.get(candidate)!, stats.get(candidate)!, shape, network, now, options.timeValueUsdPerSecond),
+    scoreAdaptiveRoute(inputs.get(candidate)!, stats.get(candidate)!, shape, network, now, options.timeValueUsdPerSecond, options.trustPreference),
   ]))
 
   // Priced sellers first, then by expected cost; ties keep the incoming order.
   const position = new Map(candidates.map((candidate, index) => [candidate, index]))
   const byScore = (a: T, b: T): number => Number(scores.get(a)!.expectedPriceUsd === null) - Number(scores.get(b)!.expectedPriceUsd === null)
-    || scores.get(a)!.score - scores.get(b)!.score
+    || scores.get(a)!.rankScore - scores.get(b)!.rankScore
     || position.get(a)! - position.get(b)!
   const cooling = candidates.filter((candidate) => inputs.get(candidate)!.coolingDown).sort(byScore)
   const ready = candidates.filter((candidate) => !inputs.get(candidate)!.coolingDown)
   const saturated = (candidate: T): boolean => inputs.get(candidate)!.saturated === true
+  const overLimit = (candidate: T): boolean => inputs.get(candidate)!.overPriceLimit === true
   const healthy = ready.filter((candidate) => !scores.get(candidate)!.unhealthy)
-    .sort((a, b) => Number(saturated(a)) - Number(saturated(b)) || byScore(a, b))
+    .sort((a, b) => Number(overLimit(a)) - Number(overLimit(b)) || Number(saturated(a)) - Number(saturated(b)) || byScore(a, b))
   const unhealthy = ready.filter((candidate) => scores.get(candidate)!.unhealthy).sort(byScore)
 
   const leader = healthy[0]
-  const best = leader ? scores.get(leader)!.score : null
+  const best = leader ? scores.get(leader)!.rankScore : null
   const leaderPriced = leader ? scores.get(leader)!.expectedPriceUsd !== null : false
-  let pool = best === null ? [] : healthy.filter((candidate) => scores.get(candidate)!.score <= best * (1 + tolerance)
+  let pool = best === null ? [] : healthy.filter((candidate) => scores.get(candidate)!.rankScore <= best * (1 + tolerance)
+    && overLimit(candidate) === overLimit(leader!)
     && (scores.get(candidate)!.expectedPriceUsd !== null) === leaderPriced
     && saturated(candidate) === saturated(leader!))
   // Spreading must not open payment channels for its own sake: share traffic
@@ -448,7 +469,7 @@ export function orderAdaptiveRoutes<T>(
     // Weight 1/score²: twice as expensive gets a quarter of the traffic. The
     // pool may no longer hold the leader (it needed a new channel), so even a
     // single remaining seller goes first.
-    const weights = pool.map((candidate) => 1 / Math.max(scores.get(candidate)!.score, 1e-9) ** 2)
+    const weights = pool.map((candidate) => 1 / Math.max(scores.get(candidate)!.rankScore, 1e-9) ** 2)
     const picked = pool.length === 1
       ? pool[0]!
       : options.affinityKey
@@ -460,10 +481,10 @@ export function orderAdaptiveRoutes<T>(
   let explored: T | null = null
   // Probes are separate requests, never a turn of an ongoing conversation
   // (that would move it off its cached seller), never open a channel, and
-  // never go to a seller already at its concurrency limit.
+  // never go to a seller already at its concurrency limit or above the buyer's price limit.
   if (pool.length > 0 && !options.affinityKey && explorationRate > 0 && random() < explorationRate) {
     explored = ready.filter((candidate) => !pool.includes(candidate) && scores.get(candidate)!.stale
-      && channelOpen(candidate) !== false && !saturated(candidate)).sort(byScore)[0] ?? null
+      && channelOpen(candidate) !== false && !saturated(candidate) && !overLimit(candidate)).sort(byScore)[0] ?? null
     if (explored) ordered = [explored, ...ordered.filter((candidate) => candidate !== explored)]
   }
   return { ordered, scores, pool, explored }

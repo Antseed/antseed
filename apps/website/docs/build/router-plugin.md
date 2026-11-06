@@ -13,12 +13,12 @@ To change routing without code, use the buyer's `buyer.routingPreferences` setti
 
 ## How the buyer chooses a seller
 
-The CLI buyer proxy, the desktop app and the gateway share one ranking, from `@antseed/node/model-routing`, so the model catalog and actual routing agree on seller order.
+The CLI buyer proxy, the desktop app and the gateway share one ranking, from `@antseed/node/model-routing`, so the model catalog and actual routing use the same limits.
 
 1. **Hard limits.** Only sellers that offer the requested service are considered. The router plugin then rejects sellers below `buyer.minPeerReputation` or priced above `buyer.maxPricing`.
 2. **Eligibility.** A seller is eligible when it isn't in `blockedPeerIds`, is in `allowedPeerIds` (when that list is non-empty), and has a trust score of at least `minTrustScore`. A seller without a usable score is ineligible unless `minTrustScore` is `0`.
-3. **Order.** Eligible sellers come first, then sellers that aren't cooling down after failures, then sellers with a known price. Among those, the **cheapest total price wins**: input plus output price per million tokens, or the per-image price for image services. Trust is a gate, not a ranking factor above the minimum.
-4. **Tie-break.** Sellers at the same price are ordered by the blended score below, then by peer ID.
+3. **Order.** Eligible sellers are ranked by the expected cost of one good answer: the price plus the value of the time it takes, divided by the chance it succeeds. `trustPreference`, when set, counts higher trust like a lower cost. Sellers within 30% of the best share the traffic. Sellers above `maxInputUsdPerMillion` come after those within it, sellers failing lately after the healthy ones, and sellers cooling down last.
+4. **Tie-break.** Sellers at the same expected cost keep the catalog's order: cheapest total price (input plus output price per million tokens, or the per-image price), then the blended score below, then peer ID.
 5. **Conversation affinity.** For a recognized conversation, the seller that served it last is moved to the front if it is still allowed and not cooling down. A pinned seller (`--peer`, the `x-antseed-pin-peer` header or `<peerId>@deepseek-v4-flash`) always wins.
 
 If a seller fails with a retryable error, the buyer tries the next one in this order.
@@ -28,7 +28,8 @@ If a seller fails with a retryable error, the buyer tries the next one in this o
 | Setting (`buyer.routingPreferences`) | Default | Effect |
 |---|---|---|
 | `minTrustScore` | `60` | Hard eligibility gate on the buyer's [trust score](/docs/reputation#trust-score); `0` disables it |
-| `maxInputUsdPerMillion` | `25` | Sellers above this input price lose 50 points in the tie-break score; not a hard cap |
+| `trustPreference` | `0` | How much trust counts against expected cost, `0` to `100`. `0` ignores trust above the minimum. At `100`, a seller at trust 50 has to cost half as much as one at trust 100 to rank level |
+| `maxInputUsdPerMillion` | `25` | Sellers above this input price are tried only after sellers within it; not a hard cap, so a model sold only above it still works |
 | `preferFreePeers` | `false` | Free sellers gain 25 points in the tie-break score |
 | `allowedPeerIds` | `[]` | When non-empty, only these sellers are eligible |
 | `blockedPeerIds` | `[]` | These sellers are never eligible |

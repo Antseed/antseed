@@ -23,7 +23,9 @@ Discovery takes a few seconds. If **Models** is still empty, open it and select 
 
 Open **Models** to browse what sellers currently offer, with live prices and expected savings where a retail comparison exists. Selecting a model sets the route for new sessions; existing conversations keep theirs.
 
-On a model's page, leave **Auto select seller** on to let the app pick the cheapest seller that passes your minimum trust score (trust only breaks ties, and sellers that recently failed are tried last), and fail over after retryable errors. Select a seller to pin it instead. A pin is hard: it never fails over, so remove it before troubleshooting availability.
+On a model's page, leave **Auto select seller** on to let the app pick a seller that passes your minimum trust score, weighing price against speed and reliability (sellers that recently failed are tried last), and fail over after retryable errors. Select a seller to pin it instead. A pin is hard: it never fails over, so remove it before troubleshooting availability.
+
+In **Preferences**, **Price or trust** sets how much a seller's trust counts in that choice; at the far left it counts only for the minimum. **Price limit** tries sellers above that input price only after those within it.
 
 A seller's trust score is a routing input, not a guarantee of quality, privacy or availability. See [Reputation](/docs/reputation).
 

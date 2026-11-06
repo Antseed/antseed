@@ -12,6 +12,7 @@ const preferences: ModelRoutingPreferences = {
   preferFreePeers: false,
   maxInputUsdPerMillion: 25,
   minTrustScore: 60,
+  trustPreference: 0,
   allowedPeerIds: [],
   blockedPeerIds: [],
 };
@@ -100,5 +101,14 @@ describe('model route ranking', () => {
     };
 
     expect(chooseBestModelRoute([cheaper, allowed], restricted)?.peerId).toBe(allowed.peerId);
+  });
+
+  it('ranks a seller above the input price limit after one within it, without excluding it', () => {
+    const limited = { ...preferences, maxInputUsdPerMillion: 5 };
+    const over = route({ peerId: 'a'.repeat(40), inputUsdPerMillion: 6, outputUsdPerMillion: 1 });
+    const within = route({ peerId: 'b'.repeat(40), inputUsdPerMillion: 4, outputUsdPerMillion: 20 });
+
+    expect(rankModelRoutes([over, within], limited).map((r) => r.peerId)).toEqual([within.peerId, over.peerId]);
+    expect(chooseBestModelRoute([over], limited)?.peerId).toBe(over.peerId);
   });
 });

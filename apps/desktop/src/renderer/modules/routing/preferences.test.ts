@@ -19,6 +19,7 @@ const fallbackPreferences: VprRoutingPreferences = {
   preferFreePeers: false,
   maxInputUsdPerMillion: 25,
   minTrustScore: 60,
+  trustPreference: 0,
   allowedPeerIds: [],
   blockedPeerIds: [],
 };
@@ -30,6 +31,16 @@ test('migrates the previous zero default to the new 6.0 minimum', () => {
   );
 
   assert.equal(loadVprRoutingPreferences(fallbackPreferences).minTrustScore, 60);
+});
+
+test('a trust preference saved before the setting existed loads as 0, and a saved one is kept', () => {
+  const { trustPreference: _, ...older } = fallbackPreferences;
+  localStorage.setItem(VPR_PREFERENCES_STORAGE_KEY, JSON.stringify(older));
+  assert.equal(loadVprRoutingPreferences(fallbackPreferences).trustPreference, 0);
+
+  saveVprRoutingPreferences({ ...fallbackPreferences, trustPreference: 35 });
+  assert.equal(loadVprRoutingPreferences(fallbackPreferences).trustPreference, 35);
+  assert.equal(buyerModelRoutingPreferences({ ...fallbackPreferences, trustPreference: 35 }).trustPreference, 35);
 });
 
 test('preserves an explicitly saved zero minimum in the current format', () => {
@@ -76,6 +87,8 @@ test('valid AI VPN preferences and route selection save and load', () => {
     preferFreePeers: true,
     maxInputUsdPerMillion: 3.5,
     minTrustScore: 62,
+    trustPreference: 35,
+    trustPreference: 0,
     allowedPeerIds: ['peer-1'],
     blockedPeerIds: ['peer-2', 'peer-3'],
   };
@@ -102,6 +115,7 @@ test('buyer config projection excludes the Desktop-only auto-routing toggle', ()
     preferFreePeers: fallbackPreferences.preferFreePeers,
     maxInputUsdPerMillion: fallbackPreferences.maxInputUsdPerMillion,
     minTrustScore: fallbackPreferences.minTrustScore,
+    trustPreference: fallbackPreferences.trustPreference,
     allowedPeerIds: fallbackPreferences.allowedPeerIds,
     blockedPeerIds: fallbackPreferences.blockedPeerIds,
   });

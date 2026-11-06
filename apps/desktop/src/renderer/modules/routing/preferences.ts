@@ -98,6 +98,7 @@ export function loadVprRoutingPreferences(fallback: VprRoutingPreferences): VprR
       fallback.maxInputUsdPerMillion,
     ),
     minTrustScore,
+    trustPreference: Math.min(100, readNonNegativeFiniteNumber(parsed.trustPreference, fallback.trustPreference)),
     allowedPeerIds: Array.isArray(parsed.allowedPeerIds)
       ? normalizePeerIdList(parsed.allowedPeerIds)
       : fallback.allowedPeerIds,
@@ -126,6 +127,7 @@ export function buyerModelRoutingPreferences(
     preferFreePeers: value.preferFreePeers,
     maxInputUsdPerMillion: value.maxInputUsdPerMillion,
     minTrustScore: value.minTrustScore,
+    trustPreference: value.trustPreference,
     allowedPeerIds: validPeerIds(value.allowedPeerIds),
     blockedPeerIds: validPeerIds(value.blockedPeerIds),
   };
