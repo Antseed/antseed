@@ -260,6 +260,8 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- CLI: `antseed buyer start` and `antseed dev` print `OPENAI_BASE_URL` with `/v1` (`export OPENAI_BASE_URL=http://localhost:8377/v1`, on the port the buyer listens on). OpenAI SDKs append `/chat/completions` to the base URL, so the printed line without `/v1` got a 404. `ANTHROPIC_BASE_URL` stays the proxy root, which Anthropic SDKs and Claude Code expect. Router plugin tool hints for `OPENAI_BASE_URL` and `OPENAI_API_BASE` get `/v1` too.
+
 - Sellers (`@antseed/node`): usage receipts now price cached input at the cached rate, as the payment channel charge does. They priced every input token at the full input rate, so the receipt cost on the seller dashboard and request log, and session cost totals, came out well above what buyers paid for prompt-cached traffic.
 
 - Sellers (`@antseed/node`): an upstream answer saying the account's "extra usage" is used up is treated as an account error, like running out of credit: buyers get the generic `upstream_unavailable` 503 instead of the upstream's message, and health checks mark the model failing.

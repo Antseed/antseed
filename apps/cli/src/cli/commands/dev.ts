@@ -92,7 +92,7 @@ export function registerDevCommand(program: Command): void {
       console.log(chalk.dim('  # Anthropic (Claude Code)'));
       console.log(`  export ANTHROPIC_BASE_URL=${proxyUrl}`);
       console.log(chalk.dim('  # OpenAI (Codex)'));
-      console.log(`  export OPENAI_BASE_URL=${proxyUrl}`);
+      console.log(`  export OPENAI_BASE_URL=${proxyUrl}/v1`);
       console.log(chalk.dim('  # Google'));
       console.log(`  export GOOGLE_API_BASE_URL=${proxyUrl}`);
       console.log('');
