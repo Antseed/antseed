@@ -260,6 +260,8 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- Docs: the `join-buyer` skill (`/skill.md`) now works for a user without funds. A new **Free models only** step caps the gateway's prices at zero (`antseed gateway routing set --max-input-price 0 --max-output-price 0 --max-cached-input-price 0`), so no request reaches a paid seller and fails with `402 insufficient_deposits`, and shows how to list the models with a free seller and check one with `antseed gateway routing preview`. The Claude Code and buyer-only examples use `deepseek-v4-flash` instead of the paid `kimi-k2.6`, the Codex example creates the `@preset/coder` preset it uses (a new gateway has none, so it failed with `preset_not_found`), and the buyer-only section gives the zero price caps for `antseed buyer start`. Troubleshooting covers `402 insufficient_deposits`, `model_not_found` and `429 free_tier_exhausted`.
+
 - Sellers (`@antseed/node`): usage receipts now price cached input at the cached rate, as the payment channel charge does. They priced every input token at the full input rate, so the receipt cost on the seller dashboard and request log, and session cost totals, came out well above what buyers paid for prompt-cached traffic.
 
 - Sellers (`@antseed/node`): an upstream answer saying the account's "extra usage" is used up is treated as an account error, like running out of credit: buyers get the generic `upstream_unavailable` 503 instead of the upstream's message, and health checks mark the model failing.
