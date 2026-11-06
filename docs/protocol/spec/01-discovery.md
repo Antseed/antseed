@@ -64,10 +64,10 @@ Custom bootstrap nodes can be supplied and are merged (deduplicated by `host:por
 
 ### Metadata Version
 
-**Source:** `node/src/discovery/peer-metadata.ts`
+**Source:** `packages/protocol/src/peer-metadata.ts`
 
 ```
-METADATA_VERSION = 14
+METADATA_VERSION = 15
 MIN_SUPPORTED_METADATA_VERSION = 10
 LEGACY_METADATA_VERSION = 12   // served to buyers that do not ask for a version
 METADATA_VERSION_HEADER = "x-antseed-metadata-version"
@@ -278,7 +278,7 @@ Metadata validation is intentionally bounded: buyers accept versions from `MIN_S
 
 The decoder cannot safely ignore unknown newer versions because provider extensions are embedded in the signed binary layout. Metadata v12 widens service and service-map counts from `uint8` to `uint16`; removing optional fields from config does not make a v12 seller emit an older version.
 
-From v13, sellers negotiate the version. A seller signs one document per version it serves (currently 12, 13 and 14) on every refresh. A buyer sends `x-antseed-metadata-version: <newest version it understands>` on `GET /metadata`; the seller answers with the newest version it signs that is not newer. A buyer that sends no header gets `LEGACY_METADATA_VERSION` (12), so buyers released before negotiation keep working. The v12 document has no health block, so it leaves out services announced as failing (and a provider whose services are all failing), which is how sellers withdrew them before v13.
+From v13, sellers negotiate the version. A seller signs one document per version it serves (`SERVED_METADATA_VERSIONS`, currently 12 to 15) on every refresh. A buyer sends `x-antseed-metadata-version: <newest version it understands>` on `GET /metadata`; the seller answers with the newest version it signs that is not newer. A buyer that sends no header gets `LEGACY_METADATA_VERSION` (12), so buyers released before negotiation keep working. The v12 document has no health block, so it leaves out services announced as failing (and a provider whose services are all failing), which is how sellers withdrew them before v13.
 
 The body (everything except the trailing 65-byte signature) is the data that is signed. `encodeMetadataForSigning()` produces this body without the signature for signing and verification purposes.
 

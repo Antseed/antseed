@@ -260,6 +260,8 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- Docs: **Protocol → Discovery** said metadata v14 was the newest version and that sellers serve v12 to v14. Current releases sign and accept v15, which adds speech services; the page now says so and points to `METADATA_VERSION` and `SERVED_METADATA_VERSIONS` in the source, and the protocol spec's version block is updated. The **FAQ** privacy answers no longer say TEE verification is coming in a future release or list AMD SEV: buyers check Intel TDX attestation today, on by default and best-effort, on their own machine (nothing is handed to the user), and the check covers the provider's node, not necessarily the downstream inference. **Reference → Commands** and the CLI README no longer present `antseed peer <peerId>` as working: it only prints a notice, and `antseed network peer <peerId>` shows the peer.
+
 - Sellers (`@antseed/node`): usage receipts now price cached input at the cached rate, as the payment channel charge does. They priced every input token at the full input rate, so the receipt cost on the seller dashboard and request log, and session cost totals, came out well above what buyers paid for prompt-cached traffic.
 
 - Sellers (`@antseed/node`): an upstream answer saying the account's "extra usage" is used up is treated as an account error, like running out of credit: buyers get the generic `upstream_unavailable` 503 instead of the upstream's message, and health checks mark the model failing.
