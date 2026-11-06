@@ -7,7 +7,8 @@ import type { AntsContext } from './service/context.js';
 import { IndexerSyncingError } from './read-state.js';
 
 const service = vi.hoisted(() => ({
-  previewWithdraw: vi.fn(), registerBinding: vi.fn(), rewards: vi.fn(), poolsView: vi.fn(),
+  previewWithdraw: vi.fn(), registerBinding: vi.fn(), rewards: vi.fn(), poolsView: vi.fn(), builders: vi.fn(), referredBuyers: vi.fn(),
+  referral: vi.fn(), refereeBonus: vi.fn(), createInvite: vi.fn(),
 }));
 vi.mock('./service/index.js', async (original) => ({
   ...await original<typeof import('./service/index.js')>(), ...service,
@@ -18,7 +19,7 @@ function setup(readOnly = false, chainOverrides: Partial<AntsContext['chain']> =
   const app = Fastify();
   apps.push(app);
   const ctx = { signer: readOnly ? undefined : {}, address: '0x123', chain: { chainId: 'base-local', evmChainId: 31337, ...chainOverrides }, invalidate: vi.fn() } as unknown as AntsContext;
-  registerRoutes(app, { ctx, jobs: new JobRunner(), views: new ViewCache(), readOnly, dataDir: null, originBuyer: ctx.buyerAddress });
+  registerRoutes(app, { ctx, jobs: new JobRunner(), views: new ViewCache(), readOnly, dataDir: '/host/data', originBuyer: ctx.buyerAddress });
   return app;
 }
 
@@ -147,6 +148,70 @@ describe('dashboard API', () => {
     expect(response.statusCode).toBe(400);
     expect(response.json()).toEqual({ ok: false, error: 'RPC temporarily unavailable' });
   });
+
+  it('normalizes builder agent ids so one id set shares one cached read', async () => {
+    const app = setup(true);
+    service.builders.mockResolvedValue({ available: true, agents: [] });
+    await app.inject('/api/builders?agentIds=9,3,abc,3,-1');
+    await app.inject('/api/builders?agentIds=3,9');
+    expect(service.builders).toHaveBeenCalledTimes(1);
+    expect(service.builders.mock.calls[0]![1]).toEqual([3, 9]);
+  });
+
+  it('caps builder agent ids in requested order, so a later id never displaces an earlier one', async () => {
+    const app = setup(true);
+    service.builders.mockResolvedValue({ available: true, agents: [] });
+    const tracked = [...Array.from({ length: 20 }, (_, index) => index + 10), 1];
+    await app.inject(`/api/builders?agentIds=${tracked.join(',')}`);
+    expect(service.builders.mock.calls.at(-1)![1]).toEqual(tracked.slice(0, 20));
+  });
+
+  it('serves referred buyers from one cached Antscan read', async () => {
+    const app = setup(true);
+    const view = { available: true, buyers: [{ buyer: '0xabc', boundEpoch: 3, points: '10', ants: '5', pendingPoints: '0' }] };
+    service.referredBuyers.mockResolvedValue(view);
+    expect((await app.inject('/api/referrals/buyers')).json()).toEqual({ ok: true, data: view });
+    await app.inject('/api/referrals/buyers');
+    expect(service.referredBuyers).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes the data dir to the referral card and serves the referee bonus', async () => {
+    const app = setup(true);
+    service.referral.mockResolvedValue({ available: false });
+    service.refereeBonus.mockResolvedValue({ available: true, referrer: null });
+    expect((await app.inject('/api/referrals')).json()).toEqual({ ok: true, data: { available: false } });
+    expect(service.referral.mock.calls[0]![1]).toBe('/host/data');
+    expect((await app.inject('/api/referrals/referee')).json()).toEqual({ ok: true, data: { available: true, referrer: null } });
+  });
+
+  it('creates an invite directly, and refuses in read-only mode', async () => {
+    const created = { invite: 'abc', link: 'https://antseed.com/invite/abc', epoch: 30, index: 0, quota: 3, left: 2, expiresEpoch: 34 };
+    service.createInvite.mockResolvedValue(created);
+    const app = setup();
+    expect((await app.inject({ method: 'POST', url: '/api/referrals/invite' })).json()).toEqual({ ok: true, data: created });
+    const readOnly = setup(true);
+    expect((await readOnly.inject({ method: 'POST', url: '/api/referrals/invite' })).statusCode).toBe(403);
+    expect(service.createInvite).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps invite bookkeeping in a hosted session without telling browsers where', async () => {
+    service.createInvite.mockResolvedValue({ invite: 'abc' });
+    const app = Fastify();
+    apps.push(app);
+    const ctx = { signer: {}, address: '0x123', chain: { chainId: 'base-local', evmChainId: 31337 }, invalidate: vi.fn() } as unknown as AntsContext;
+    registerRoutes(app, { ctx, jobs: new JobRunner(), views: new ViewCache(), readOnly: false, dataDir: '/host/data', hideDataDir: true, originBuyer: '0x123' });
+    await app.inject({ method: 'POST', url: '/api/referrals/invite' });
+    expect(service.createInvite).toHaveBeenCalledWith(ctx, '/host/data');
+    expect((await app.inject('/api/config')).json().data.dataDir).toBeNull();
+    expect((await setup().inject('/api/config')).json().data.dataDir).toBe('/host/data');
+  });
+
+  it('reports why an invite could not be created', async () => {
+    service.createInvite.mockRejectedValue(new Error('Invites unlock after at least 1 USDC of usage or sales in the previous week.'));
+    const response = await setup().inject({ method: 'POST', url: '/api/referrals/invite' });
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error).toContain('1 USDC');
+  });
 });
 
 describe('free-tier codes', () => {
@@ -154,7 +219,7 @@ describe('free-tier codes', () => {
     const app = Fastify();
     apps.push(app);
     const ctx = { signer: wallet ?? undefined, address: wallet?.address ?? '0x0000000000000000000000000000000000000abc', chain: { chainId: 'base-local', evmChainId: 31337 }, invalidate: vi.fn() } as unknown as AntsContext;
-    registerRoutes(app, { ctx, jobs: new JobRunner(), views: new ViewCache(), readOnly: !wallet, dataDir: null, originBuyer: ctx.address, ...(browserSigning ? { browserSigning: {} as never } : {}) });
+    registerRoutes(app, { ctx, jobs: new JobRunner(), views: new ViewCache(), readOnly: !wallet, dataDir: '/host/data', originBuyer: ctx.address, ...(browserSigning ? { browserSigning: {} as never } : {}) });
     return app;
   }
   const buyer = `0x${'11'.repeat(20)}`;

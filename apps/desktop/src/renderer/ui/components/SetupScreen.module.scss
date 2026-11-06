@@ -18,13 +18,19 @@
   position: fixed;
   inset: 0;
   display: flex;
-  justify-content: center;
+  flex-direction: column;
+  align-items: center;
   background: var(--bg-primary);
   z-index: 9999;
 }
 
+/* Scrolls when the invite field makes it taller than the window, so the
+   footer below (in normal flow) never covers it. */
 .content {
-  margin-top: 6%;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6% 0 12px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -32,6 +38,10 @@
   max-width: 380px;
   width: 100%;
   text-align: center;
+
+  > * {
+    flex-shrink: 0;
+  }
 }
 
 /* Ant mark + "AI VPN" wordmark — the setup screen's only branding. */
@@ -93,10 +103,9 @@
 /* ------------------------------------------------------------------ */
 
 .footer {
-  position: absolute;
-  bottom: 20px;
-  left: 0;
-  right: 0;
+  flex-shrink: 0;
+  width: 100%;
+  padding: 12px 0 20px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -235,4 +244,14 @@
   border: 1px solid rgba(251, 191, 36, 0.2);
   border-radius: 8px;
   animation: rise-in 0.4s ease;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Invite code                                                        */
+/* ------------------------------------------------------------------ */
+
+.invite {
+  width: 100%;
+  max-width: 380px;
+  margin-top: 20px;
 }

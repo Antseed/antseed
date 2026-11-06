@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ViewHost } from './components/ViewHost';
 import { SetupScreen } from './components/SetupScreen';
+import { receiveInviteLink } from './components/InviteCodeField';
 import { preloadViews, viewsForPreload } from './components/viewRegistry';
 import { shallowEqual, useUiSelector } from './hooks/useUiSelector';
 import { VIEW_NAMES, type ViewName } from './types';
@@ -137,6 +138,24 @@ export function AppShell() {
       if (!(VIEW_NAMES as readonly string[]).includes(viewName)) return;
       handleSelectView(viewName as ViewName);
     });
+  }, [handleSelectView]);
+
+  // antseed://invite/<invite>: prefill the invite field (setup screen, or
+  // Rewards once the app is in use; Preferences shares the same field).
+  const showSetupRef = useRef(showSetup);
+  showSetupRef.current = showSetup;
+  useEffect(() => {
+    const bridge = window.antseedDesktop;
+    const open = (invite: string | null) => {
+      if (!invite) return;
+      receiveInviteLink(invite);
+      if (!showSetupRef.current) handleSelectView('rewards');
+    };
+    // Subscribe first: asking for the held invite tells the main process this
+    // renderer is listening, so later links are pushed instead of held.
+    const unsubscribe = bridge?.onReferralDeepLink?.(open);
+    void bridge?.referralTakeDeepLink?.().then(open).catch(() => {});
+    return unsubscribe;
   }, [handleSelectView]);
 
   useEffect(() => {

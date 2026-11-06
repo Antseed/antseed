@@ -47,6 +47,7 @@ interface IAntseedUsageAccounting {
     error UsageRewardsNotSet();
 
     function currentEpoch() external view returns (uint256);
+    function firstRewardedEpoch() external view returns (uint256);
     function pendingSellerAccrual() external view returns (address seller);
 
     function accrueSellerPoints(address seller, uint256 pointsDelta) external;

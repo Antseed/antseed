@@ -141,10 +141,13 @@ export async function loadCachedCryptoConfig(): Promise<CryptoConfig | null> {
     // No config — no crypto config available
   }
   // Resolve chain config from the selected chain ID (default: base-mainnet).
-  // All contract addresses come from the preset in chain-config.ts.
+  // Contract addresses come from the preset in chain-config.ts.
   const selectedChain = asString(overrides.chainId as string, '') || 'base-mainnet';
   const userRpcUrl = asString(overrides.rpcUrl as string, '');
-  const cc = resolveChainConfig({ chainId: selectedChain, ...(userRpcUrl ? { rpcUrl: userRpcUrl } : {}) });
+  const cc = resolveChainConfig({
+    chainId: selectedChain,
+    ...(userRpcUrl ? { rpcUrl: userRpcUrl } : {}),
+  });
   cachedCryptoConfig = {
     rpcUrl: cc.rpcUrl,
     ...(cc.fallbackRpcUrls ? { fallbackRpcUrls: cc.fallbackRpcUrls } : {}),
