@@ -1,4 +1,5 @@
 import {
+  dataServiceRoute,
   detectRequestServiceApiProtocol,
   isNativeVideoProtocol,
   isServiceHealthFailing,
@@ -188,6 +189,10 @@ export class LocalRouter implements Router {
   }
 
   private _extractRequestedService(req: SerializedHttpRequest): string | null {
+    // A data service is named in the path; a `model` field in its body is the operation's own.
+    const dataRoute = dataServiceRoute(req);
+    if (dataRoute) return dataRoute.service;
+
     const contentType = req.headers['content-type'] ?? req.headers['Content-Type'] ?? '';
     if (!contentType.toLowerCase().includes('application/json')) {
       return null;

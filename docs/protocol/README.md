@@ -4,6 +4,7 @@ Antseed is a peer-to-peer AI services network that enables direct connections be
 
 ## Repository Structure
 
+- [data-services.md](data-services.md) — Data services: a seller's HTTP API on the `openapi-data` protocol, billed per completed request
 - [spec/](spec/) — Protocol specification
   - [10-native-video.md](spec/10-native-video.md) — Native video relays, routing, and billing
   - [00-conventions.md](spec/00-conventions.md) — Data formats and conventions

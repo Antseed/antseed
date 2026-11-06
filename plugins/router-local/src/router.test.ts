@@ -116,6 +116,20 @@ describe('LocalRouter', () => {
     expect(router.selectPeer(makeRequest('video-x'), [peer])?.peerId).toBe(peer.peerId);
   });
 
+  it('judges a data request by the service in its path, not by a `model` field in its body', () => {
+    const router = new LocalRouter({ maxPricing: { defaults: { inputUsdPerMillion: 5, outputUsdPerMillion: 5 } } });
+    const free = { inputUsdPerMillion: 0, outputUsdPerMillion: 0 };
+    const peer = makePeer({
+      providers: ['openapi'],
+      providerPricing: { openapi: { defaults: free, services: { flights: free, 'dear-chat': { inputUsdPerMillion: 50, outputUsdPerMillion: 50 } } } },
+    });
+    // The operation's own `model` field happens to name a chat model priced over the buyer's cap.
+    const dataRequest: SerializedHttpRequest = { ...makeRequest('dear-chat'), path: '/v1/data/flights/search' };
+    expect(router.allowsPeerForPolicy(dataRequest, peer)).toBe(true);
+    expect(router.selectPeer(dataRequest, [peer])?.peerId).toBe(peer.peerId);
+    expect(router.allowsPeerForPolicy(makeRequest('dear-chat'), peer)).toBe(false);
+  });
+
   it('selects cheapest peer regardless of provider name', () => {
     const router = new LocalRouter({
       maxPricing: {

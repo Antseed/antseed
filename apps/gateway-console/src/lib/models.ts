@@ -1,7 +1,7 @@
 import type { NetworkModel, NetworkModelCapability, NetworkModelType } from '../api/types'
 import { formatPricePerMillion, formatPriceRange } from './format'
 
-export const MODEL_TYPE_LABELS: Record<NetworkModelType, string> = { text: 'Text', image: 'Image', video: 'Video', decision: 'Decision', speech: 'Speech' }
+export const MODEL_TYPE_LABELS: Record<NetworkModelType, string> = { text: 'Text', image: 'Image', video: 'Video', decision: 'Decision', speech: 'Speech', data: 'Data' }
 
 export const CAPABILITY_LABELS: Record<NetworkModelCapability, string> = {
   toolUse: 'Tool use', reasoning: 'Reasoning', structuredOutput: 'Structured output', vision: 'Vision',

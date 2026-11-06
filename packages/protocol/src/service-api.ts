@@ -17,6 +17,13 @@ export const ROUTING_PROTOCOLS = ['irp-suggest'] as const;
  */
 export const AUDIO_SPEECH_PROTOCOLS = ['openai-audio-speech'] as const;
 
+/**
+ * Data APIs: a seller's own HTTP API offered as a service. It is described by the seller's
+ * OpenAPI document, and its operations are reached unchanged under `/v1/data/<service>/`.
+ * Appended only, after the speech protocols, for the same reason.
+ */
+export const DATA_SERVICE_PROTOCOLS = ['openapi-data'] as const;
+
 export const WELL_KNOWN_SERVICE_API_PROTOCOLS = [
   'anthropic-messages',
   'openai-chat-completions',
@@ -27,6 +34,7 @@ export const WELL_KNOWN_SERVICE_API_PROTOCOLS = [
   ...NATIVE_VIDEO_PROTOCOLS,
   ...ROUTING_PROTOCOLS,
   ...AUDIO_SPEECH_PROTOCOLS,
+  ...DATA_SERVICE_PROTOCOLS,
 ] as const;
 
 export type ServiceApiProtocol = (typeof WELL_KNOWN_SERVICE_API_PROTOCOLS)[number];
@@ -47,6 +55,12 @@ export type AudioSpeechProtocol = (typeof AUDIO_SPEECH_PROTOCOLS)[number];
 
 export function isAudioSpeechProtocol(value: unknown): value is AudioSpeechProtocol {
   return AUDIO_SPEECH_PROTOCOLS.includes(value as AudioSpeechProtocol);
+}
+
+export type DataServiceProtocol = (typeof DATA_SERVICE_PROTOCOLS)[number];
+
+export function isDataServiceProtocol(value: unknown): value is DataServiceProtocol {
+  return DATA_SERVICE_PROTOCOLS.includes(value as DataServiceProtocol);
 }
 
 const SERVICE_API_PROTOCOL_SET = new Set<string>(WELL_KNOWN_SERVICE_API_PROTOCOLS);

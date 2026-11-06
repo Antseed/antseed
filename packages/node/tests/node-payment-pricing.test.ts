@@ -2322,3 +2322,135 @@ describe('speech seller payments', () => {
     expect(harness.spm.recordSpend).toHaveBeenCalledWith('session-1', 0n);
   });
 });
+
+describe('data service seller payments', () => {
+  const answer = { flights: [{ id: 'LY1' }] };
+  function setup(overrides: Record<string, unknown> = {}, handlerOptions: Record<string, unknown> = {}) {
+    let spend = 0n;
+    const provider = makeProvider(10, 10, { name: 'openapi', services: ['flights', 'chat'] });
+    provider.serviceApiProtocols = { flights: ['openapi-data'] };
+    provider.serviceUnitBillingModels = { flights: { 'openapi-data': { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.005 }] } } };
+    provider.pricing = { defaults: { inputUsdPerMillion: 10, outputUsdPerMillion: 10 }, services: { flights: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } } };
+    provider.handleRequest = vi.fn(async request => ({ requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify(answer)) }));
+    delete (provider as Partial<Provider>).handleRequestStream;
+    const spm = makeSpmMock({
+      recordSpend: vi.fn((_channel: string, amount: bigint) => { spend += amount; }),
+      getCumulativeSpend: () => spend, getAcceptedCumulative: () => spend, ...overrides,
+    });
+    const frames: Uint8Array[] = [];
+    const paymentMux = { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() };
+    const handler = makeSellerRequestHandler({ providers: [provider], sellerPaymentManager: spm, sessionTracker: null, channelsClient: {} as any, announcer: null, emit: () => false, ...handlerOptions });
+    const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), paymentMux as any);
+    const send = async (requestId = 'fixed', patch: Partial<SerializedHttpRequest> = {}) => {
+      await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({
+        requestId, method: 'POST', path: '/v1/data/flights/search?limit=5',
+        headers: { 'content-type': 'application/json' },
+        // The body is the operation's own: a `model` field in it names nothing here.
+        body: new TextEncoder().encode(JSON.stringify({ from: 'TLV', to: 'LIS', model: 'chat' })), ...patch,
+      }) });
+      return frames.map(frame => decodeHttpResponse(decodeFrame(frame).message!.payload)).reverse().find(response => response.requestId === requestId)!;
+    };
+    return { provider, spm, paymentMux, send };
+  }
+
+  it('charges the per-request price for a delivered answer, with zero tokens', async () => {
+    const harness = setup();
+    const response = await harness.send();
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(new TextDecoder().decode(response.body))).toEqual(answer);
+    expect(vi.mocked(harness.provider.handleRequest).mock.calls[0]![0].path).toBe('/v1/data/flights/search?limit=5');
+    expect(harness.spm.recordSpend).toHaveBeenCalledWith('session-1', 5000n);
+    expect(harness.paymentMux.sendNeedAuth).toHaveBeenCalledWith(expect.objectContaining({ lastRequestCost: '5000', inputTokens: '0', outputTokens: '0', billingUsage: { version: 1, units: { completed_requests: '1' } } }));
+  });
+
+  it('serves the service description for free, before any payment step', async () => {
+    const harness = setup({ hasSession: () => false });
+    const headers = { 'X-Antseed-Buyer-Peer-Id': 'f'.repeat(40) };
+    expect((await harness.send('describe', { method: 'GET', path: '/v1/data/flights/openapi.json', headers, body: new Uint8Array() })).statusCode).toBe(200);
+    const forwarded = vi.mocked(harness.provider.handleRequest).mock.calls[0]![0];
+    expect(forwarded.path).toBe('/v1/data/flights/openapi.json');
+    expect(forwarded.headers['x-antseed-buyer-peer-id']).toBe('b'.repeat(40));
+    expect(harness.spm.recordSpend).not.toHaveBeenCalled();
+    expect(harness.paymentMux.sendPaymentRequired).not.toHaveBeenCalled();
+  });
+
+  it('answers a description request for a service this seller does not offer with 404', async () => {
+    const harness = setup();
+    const response = await harness.send('missing', { method: 'GET', path: '/v1/data/hotels/openapi.json', headers: {}, body: new Uint8Array() });
+    expect(response.statusCode).toBe(404);
+    expect(JSON.parse(new TextDecoder().decode(response.body))).toMatchObject({ error: { code: 'model_not_found' } });
+    expect(harness.provider.handleRequest).not.toHaveBeenCalled();
+  });
+
+  it('negotiates payment before running an operation', async () => {
+    let hasSession = false;
+    const harness = setup({ hasSession: () => hasSession });
+    expect((await harness.send()).statusCode).toBe(402);
+    expect(harness.provider.handleRequest).not.toHaveBeenCalled();
+    expect(harness.paymentMux.sendPaymentRequired).toHaveBeenCalledOnce();
+    hasSession = true;
+    expect((await harness.send()).statusCode).toBe(200);
+    expect(harness.provider.handleRequest).toHaveBeenCalledOnce();
+  });
+
+  it('does not charge an error or an empty answer', async () => {
+    for (const [statusCode, body] of [[400, '{"error":"unknown airport"}'], [502, '{}'], [200, '']] as const) {
+      const harness = setup();
+      vi.mocked(harness.provider.handleRequest).mockImplementation(async request => ({ requestId: request.requestId, statusCode, headers: {}, body: new TextEncoder().encode(body) }));
+      expect((await harness.send()).statusCode).toBe(statusCode);
+      expect(harness.spm.recordSpend).toHaveBeenCalledWith('session-1', 0n);
+      expect(harness.paymentMux.sendNeedAuth).toHaveBeenCalledWith(expect.objectContaining({ lastRequestCost: '0', billingUsage: { version: 1, units: { completed_requests: '0' } } }));
+    }
+  });
+
+  it('lets the provider refuse an operation it does not serve, before any payment step', async () => {
+    const harness = setup({ hasSession: () => false });
+    harness.provider.checkRequest = vi.fn(request => request.path.startsWith('/v1/data/flights/search')
+      ? null
+      : { statusCode: 404, code: 'unknown_operation', message: 'flights has no operation at /book' });
+    const refused = await harness.send('refused', { path: '/v1/data/flights/book' });
+    expect(refused.statusCode).toBe(404);
+    expect(JSON.parse(new TextDecoder().decode(refused.body))).toEqual({ error: { code: 'unknown_operation', message: 'flights has no operation at /book' } });
+    expect(harness.provider.handleRequest).not.toHaveBeenCalled();
+    expect(harness.paymentMux.sendPaymentRequired).not.toHaveBeenCalled();
+    expect(harness.spm.recordSpend).not.toHaveBeenCalled();
+    // The description is answered before the provider's check runs.
+    expect((await harness.send('describe', { method: 'GET', path: '/v1/data/flights/openapi.json', body: new Uint8Array() })).statusCode).toBe(200);
+    expect(harness.provider.checkRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it('serves one service on chat and on data, each billed its own way', async () => {
+    const harness = setup();
+    harness.provider.serviceApiProtocols = { flights: ['openai-chat-completions', 'openapi-data'] };
+    const chat = await harness.send('chat', {
+      path: '/v1/chat/completions',
+      body: new TextEncoder().encode(JSON.stringify({ model: 'flights', messages: [{ role: 'user', content: 'TLV to LIS' }] })),
+    });
+    expect(chat.statusCode).toBe(200);
+    expect(harness.spm.recordSpend).not.toHaveBeenCalledWith('session-1', 5000n);
+    const data = await harness.send('data');
+    expect(data.statusCode).toBe(200);
+    expect(harness.spm.recordSpend).toHaveBeenCalledWith('session-1', 5000n);
+    expect(vi.mocked(harness.provider.handleRequest).mock.calls.map(call => call[0].path)).toEqual(['/v1/chat/completions', '/v1/data/flights/search?limit=5']);
+  });
+
+  it('refuses an operation whose price does not fit in what is left of the reserve, when the seller checks estimates', async () => {
+    const harness = setup({ getReserveMax: () => 8_000n }, { reserveEstimateOverdraftUsdc: 0n });
+    expect((await harness.send('first')).statusCode).toBe(200);
+    // 5,000 of 8,000 is spent. The estimate of a data call is its price, so a second one does not fit and is not run.
+    const second = await harness.send('second');
+    expect(second.statusCode).toBe(402);
+    expect(JSON.parse(new TextDecoder().decode(second.body))).toMatchObject({ estimatedRequestCost: '5000', remainingLockedReserve: '3000' });
+    expect(harness.provider.handleRequest).toHaveBeenCalledTimes(1);
+    expect(harness.spm.recordSpend).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a request for a data service this seller does not offer before any payment step', async () => {
+    const harness = setup();
+    const response = await harness.send('other', { path: '/v1/data/hotels/search' });
+    expect(response.statusCode).toBe(400);
+    expect(JSON.parse(new TextDecoder().decode(response.body))).toMatchObject({ error: { code: 'model_not_found' } });
+    expect(harness.provider.handleRequest).not.toHaveBeenCalled();
+    expect(harness.paymentMux.sendPaymentRequired).not.toHaveBeenCalled();
+  });
+});

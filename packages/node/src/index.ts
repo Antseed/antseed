@@ -93,6 +93,7 @@ export {
   selectLowestPricedCanonicalOffers,
   selectLowestPricedNetworkServiceOffer,
   speechOfferUsdPerCharacter,
+  dataOfferUsdPerRequest,
 } from './discovery/service-catalog.js';
 
 // Fault attribution — lets consumers tell a dead peer from a broken buyer.
@@ -145,6 +146,8 @@ export {
   isNativeVideoProtocol,
   AUDIO_SPEECH_PROTOCOLS,
   isAudioSpeechProtocol,
+  DATA_SERVICE_PROTOCOLS,
+  isDataServiceProtocol,
   SERVICE_CAPABILITY_MODALITIES,
   MAX_CAPABILITY_TOKEN_COUNT,
   MAX_CAPABILITY_SUPPORTED_PARAMETERS,
@@ -178,9 +181,11 @@ export {
   type VideoOptions,
   type SpeechOptions,
   type AudioSpeechProtocol,
+  type DataServiceProtocol,
   SPEECH_METADATA_VERSION,
   VIDEO_OPTION_PRICING_METADATA_VERSION,
   REFERENCE_VIDEO_PRICING_METADATA_VERSION,
+  DATA_SERVICES_METADATA_VERSION,
   speechVoiceProblem,
   type PeerMetadata,
   type PeerVerifications,
@@ -426,12 +431,14 @@ export {
 export { resolveProvider } from './proxy/provider-detection.js';
 export {
   detectRequestServiceApiProtocol,
+  dataServiceRoute,
   createStreamingAdapter,
   inferProviderDefaultServiceApiProtocols,
   renderRequestBodyAsOpenAIChat,
   selectTargetProtocolForRequest,
   transformRequest,
   transformResponse,
+  type DataServiceRoute,
   type TargetProtocolSelection,
   type ServiceApiRequestTransformOptions,
   type ServiceApiRequestTransformResult,

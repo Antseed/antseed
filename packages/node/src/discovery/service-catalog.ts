@@ -1,6 +1,6 @@
 import { CODING_ONLY_SUFFIX_RE, canonicalModelKey } from '../model-identity.js';
 import { parseVerifierCapabilities } from './verifier-capabilities.js';
-import { AUDIO_SPEECH_PROTOCOLS, NATIVE_VIDEO_PROTOCOLS, isAudioSpeechProtocol, isNativeVideoProtocol, isRoutingProtocol, type AudioSpeechProtocol, type NativeVideoProtocol } from '@antseed/protocol/service-api';
+import { AUDIO_SPEECH_PROTOCOLS, DATA_SERVICE_PROTOCOLS, NATIVE_VIDEO_PROTOCOLS, isAudioSpeechProtocol, isDataServiceProtocol, isNativeVideoProtocol, isRoutingProtocol, type AudioSpeechProtocol, type DataServiceProtocol, type NativeVideoProtocol } from '@antseed/protocol/service-api';
 import { isServiceHealthFailing, providerServiceHealthFor, providerServicePerformanceFor, type ServiceHealth, type ServicePerformance, type SpeechOptions, type VideoOptions } from '@antseed/protocol/peer-metadata';
 import type { ProviderServiceHealthMatrixEntry, ProviderServicePerformanceMatrixEntry } from '@antseed/protocol/peer-pricing';
 import { componentMatchesAttributes } from '@antseed/protocol/billing';
@@ -12,7 +12,8 @@ export type CatalogServiceProtocol =
   | 'openai-images'
   | 'typesafe-systemone'
   | NativeVideoProtocol
-  | AudioSpeechProtocol;
+  | AudioSpeechProtocol
+  | DataServiceProtocol;
 
 export type CatalogServiceCapabilities = {
   contextWindow?: number;
@@ -70,8 +71,9 @@ export type NetworkServiceCatalogPeer = {
 /**
  * `decision`: System One models return typed answers, not text or images.
  * `speech`: text-to-speech models return an audio file.
+ * `data`: a seller's own HTTP API, described by its OpenAPI document and billed per completed request.
  */
-export type NetworkServiceOfferType = 'text' | 'image' | 'decision' | 'video' | 'speech';
+export type NetworkServiceOfferType = 'text' | 'image' | 'decision' | 'video' | 'speech' | 'data';
 
 export type NetworkServiceOffer = {
   unitBillingModels?: NonNullable<NetworkServiceCatalogPeer['providerServiceUnitBillingModels']>[string]['services'][string];
@@ -113,6 +115,7 @@ const VALID_PROTOCOLS = new Set<string>([
   'typesafe-systemone',
   ...NATIVE_VIDEO_PROTOCOLS,
   ...AUDIO_SPEECH_PROTOCOLS,
+  ...DATA_SERVICE_PROTOCOLS,
 ]);
 
 export function inferServiceProtocol(provider: string): Exclude<CatalogServiceProtocol, 'openai-images'> | null {
@@ -202,6 +205,7 @@ function serviceOfferType(
 ): NetworkServiceOfferType {
   if (isNativeVideoProtocol(protocol)) return 'video';
   if (isAudioSpeechProtocol(protocol)) return 'speech';
+  if (isDataServiceProtocol(protocol)) return 'data';
   if (protocol === 'typesafe-systemone') return 'decision';
   if (protocol === 'openai-images' || capabilities?.outputs?.includes('image')) return 'image';
   return 'text';
@@ -220,13 +224,16 @@ export function buildNetworkServiceOffers(
         const performance = providerServicePerformanceFor(peer.providerServicePerformance, provider, serviceId);
         const protocols = peer.providerServiceApiProtocols?.[provider]?.services?.[serviceId] ?? [];
         const billingModels = peer.providerServiceUnitBillingModels?.[provider]?.services?.[serviceId];
-        if (protocols.some(isRoutingProtocol) || Object.values(billingModels ?? {}).some(model => (model?.components ?? []).some(component => component.unit === 'completed_requests'))) continue;
+        // Routers are listed apart (see routing-services). Completed requests alone do not mark
+        // a router: data services bill the same unit.
+        const billsCompletedRequests = Object.values(billingModels ?? {}).some(model => (model?.components ?? []).some(component => component.unit === 'completed_requests'));
+        if (protocols.some(isRoutingProtocol) || (billsCompletedRequests && !protocols.some(isDataServiceProtocol))) continue;
         const capabilities = peer.providerServiceCapabilities?.[provider]?.services?.[serviceId];
         const categories = peer.providerServiceCategories?.[provider]?.services?.[serviceId];
         const protocol = resolveServiceProtocol(protocols, provider);
         const type = serviceOfferType(protocol, capabilities);
         const pricing = resolvePricing(peer, provider, serviceId);
-        const unitPriced = type === 'video' || type === 'speech';
+        const unitPriced = type === 'video' || type === 'speech' || type === 'data';
         offers.push({
           advertisedVerifierIds: parseVerifierCapabilities(peer.capabilities).supported,
           serviceId,
@@ -275,9 +282,25 @@ export function speechOfferUsdPerCharacter(offer: NetworkServiceOffer): number |
     : null;
 }
 
+/**
+ * USD per completed request a data offer bills. 0 for a billing model with no
+ * components (free); null when the offer is not data or publishes no request price.
+ */
+export function dataOfferUsdPerRequest(offer: NetworkServiceOffer): number | null {
+  if (offer.type !== 'data') return null;
+  const model = offer.protocol ? offer.unitBillingModels?.[offer.protocol] : undefined;
+  if (model && model.components.length === 0) return 0;
+  const applicable = (model?.components ?? []).filter((component) =>
+    component.unit === 'completed_requests' && Number.isFinite(component.priceUsd) && component.priceUsd >= 0);
+  return applicable.length > 0
+    ? applicable.reduce((sum, component) => sum + component.priceUsd, 0)
+    : null;
+}
+
 function comparableOfferPrice(offer: NetworkServiceOffer): number {
   if (offer.type === 'image') return offer.minImageUsdPerImage ?? Number.POSITIVE_INFINITY;
   if (offer.type === 'speech') return speechOfferUsdPerCharacter(offer) ?? Number.POSITIVE_INFINITY;
+  if (offer.type === 'data') return dataOfferUsdPerRequest(offer) ?? Number.POSITIVE_INFINITY;
   if (offer.inputUsdPerMillion === undefined || offer.outputUsdPerMillion === undefined) {
     return Number.POSITIVE_INFINITY;
   }

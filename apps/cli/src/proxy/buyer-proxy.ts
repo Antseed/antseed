@@ -1,4 +1,4 @@
-import { nativeVideoRoute, type NativeVideoProtocol } from '@antseed/api-adapter'
+import { DATA_SERVICE_PATH_PREFIX, dataServiceRoute, nativeVideoRoute, withDataService, type NativeVideoProtocol } from '@antseed/api-adapter'
 import { ResourceRoutes } from './resource-routes.js'
 import { prepareVideoRequest, recordVideoAcceptance } from './native-video-proxy.js'
 import { downloadVideo } from './video-download.js'
@@ -83,6 +83,7 @@ import {
   DEBUG,
   log,
   extractRequestedService,
+  rewritePeerPinnedDataService,
   summarizeRequestShape,
   summarizeErrorResponse,
   requestWantsStreaming,
@@ -578,6 +579,8 @@ function sameRoutingServiceTarget(a: RoutingServiceTarget | undefined, b: Routin
 
 /** Returns `request` with its body's model field rewritten to `serviceId`, or unchanged if nothing rewrote. */
 function withRoutedModel(request: SerializedHttpRequest, serviceId: string): SerializedHttpRequest {
+  // A data request names its service in the path. Its body is the operation's own and is never rewritten.
+  if (dataServiceRoute(request)) return withDataService(request, serviceId) ?? request
   const rewritten = overrideRoutedModelInBody(request.body, request.headers, serviceId)
   return rewritten.overridden
     ? { ...request, body: rewritten.body, headers: rewritten.headers }
@@ -3948,7 +3951,7 @@ export class BuyerProxy {
       res.writeHead(400, responseHeaders)
       res.end(JSON.stringify({
         error: {
-          message: `Unknown model type "${url.searchParams.get('type') ?? ''}" — expected "text", "images", "decisions", "videos", "speech", or "routers".`,
+          message: `Unknown model type "${url.searchParams.get('type') ?? ''}" — expected "text", "images", "decisions", "videos", "speech", "data", or "routers".`,
           type: 'invalid_request_error',
           param: 'type',
         },
@@ -4056,6 +4059,7 @@ export class BuyerProxy {
       normalizedPath.startsWith('/v1/images/edits') ||
       normalizedPath === '/v1/audio/speech' ||
       normalizedPath.startsWith('/v1/systemone') ||
+      normalizedPath.startsWith(DATA_SERVICE_PATH_PREFIX) ||
       normalizedPath.startsWith('/v1/models')
     if (!isKnownApiPath) {
       res.writeHead(404, { 'content-type': 'application/json' })
@@ -4558,7 +4562,12 @@ export class BuyerProxy {
     // so the regular `<peerId>@<service>` pin rewrite below picks up the
     // substituted value. Tool configs written by the desktop carry the alias
     // so route changes apply to running sessions without config rewrites.
-    const aliasResult = substituteRoutedModelAlias(serializedReq.body, serializedReq.headers, effectiveRoutedModel)
+    // A data service is named in the path. Its body is the operation's own:
+    // a `model` or `service` field there is the provider's, never a route.
+    const isDataRequest = dataServiceRoute(serializedReq) !== null
+    const aliasResult = isDataRequest
+      ? { body: serializedReq.body, headers: serializedReq.headers, aliasRequested: false, substituted: false }
+      : substituteRoutedModelAlias(serializedReq.body, serializedReq.headers, effectiveRoutedModel)
     if (aliasResult.aliasRequested && !aliasResult.substituted) {
       log(`Request rejected: model alias "${ROUTED_MODEL_ALIAS}" with no default route set`)
       res.writeHead(400, { 'content-type': 'application/json' })
@@ -4584,7 +4593,7 @@ export class BuyerProxy {
     // does for alias-carrying configs; otherwise pinning a chat in the
     // desktop silently does nothing for intercepted apps.
     let chatPinOverrideApplied = false
-    if (systemRoutedModel && !aliasResult.aliasRequested && chatPinnedModel) {
+    if (!isDataRequest && systemRoutedModel && !aliasResult.aliasRequested && chatPinnedModel) {
       const pinOverride = overrideRoutedModelInBody(serializedReq.body, serializedReq.headers, chatPinnedModel)
       if (pinOverride.overridden) {
         serializedReq = { ...serializedReq, body: pinOverride.body, headers: pinOverride.headers }
@@ -4670,16 +4679,22 @@ export class BuyerProxy {
     let serializedReq = request
     const { requiredParameters, requestPolicy, signal, effectivePinnedPeer,
       preferredConversationPeerId, routingConversationKey } = context
+    // A data request carries its `<peerId>@<service>` pin in the path, and its body is left alone.
+    const dataPin = dataServiceRoute(serializedReq) ? rewritePeerPinnedDataService(serializedReq) : null
     const {
       body: servicePinBody,
       headers: servicePinHeaders,
       pinnedPeerId: bodyPinnedPeer,
-    } = rewritePeerPinnedServiceInBody(serializedReq.body, serializedReq.headers)
-    if (servicePinBody !== serializedReq.body) {
+    } = dataPin
+      ? { body: serializedReq.body, headers: serializedReq.headers, pinnedPeerId: dataPin.pinnedPeerId }
+      : rewritePeerPinnedServiceInBody(serializedReq.body, serializedReq.headers)
+    if (dataPin) {
+      serializedReq = dataPin.request
+    } else if (servicePinBody !== serializedReq.body) {
       serializedReq = { ...serializedReq, body: servicePinBody, headers: servicePinHeaders }
-      if (bodyPinnedPeer) {
-        log(`Model peer pin applied: peer=${bodyPinnedPeer.slice(0, 12)}...`)
-      }
+    }
+    if (bodyPinnedPeer && (dataPin || servicePinBody !== request.body)) {
+      log(`Model peer pin applied: peer=${bodyPinnedPeer.slice(0, 12)}...`)
     }
 
     const requestProtocol = detectRequestServiceApiProtocol(serializedReq)
@@ -5579,7 +5594,9 @@ export class BuyerProxy {
     // Forward through P2P
     const videoRoute = nativeVideoRoute(requestForPeer)
     // Video responses are JSON job objects or a streamed MP4, never SSE.
-    const wantsStreaming = clientWantsStreaming && !videoRoute
+    // A data call is one request and one buffered response: its body may carry
+    // a `stream` field of its own, which is the operation's and not a transport choice.
+    const wantsStreaming = clientWantsStreaming && !videoRoute && !dataServiceRoute(requestForPeer)
     if (videoRoute?.action === 'retrieve') {
       // The seller hands a job only to the buyer that created it: retrieve with the same wallet.
       const { protocol, resourceId } = videoRoute

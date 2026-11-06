@@ -51,7 +51,7 @@ import { isServiceHealthFailing, preferHealthyUpstream, serviceHealthOf } from '
 import { hasJsonContentType, tryParseJsonObject } from './utils/json-codec.js';
 import type { UnitBillingContext, UnitBillingModelV1, UnitBillingUsage, UnitBillingUsageReportV1 } from './types/billing.js';
 import { captureUnitBillingContext, computeFinalUnitBilling, estimateUnitRequestCost, isFreeUnitBillingModel, type BillingRequestFacts } from './billing/unit.js';
-import { nativeVideoAcceptance, nativeVideoDelivered, nativeVideoRoute, requestService, type NativeVideoRoute } from '@antseed/api-adapter';
+import { dataServiceRoute, nativeVideoAcceptance, nativeVideoDelivered, nativeVideoRoute, requestService, type DataServiceRoute, type NativeVideoRoute } from '@antseed/api-adapter';
 import type { PendingResourceCharge, ResourceOwnershipStore } from './resources/resource-ownership-store.js';
 import type { ServiceApiProtocol } from './types/service-api.js';
 import { announcedProviderId } from './discovery/provider-id.js';
@@ -307,6 +307,13 @@ export class SellerRequestHandler {
       const routingRequest = routingRequestOf(request.method, request.path);
       if (routingRequest?.action === 'catalog') {
         mux.sendProxyResponse(await this._handleRoutingCatalog(request, buyerPeerId, routingRequest.protocol));
+        return;
+      }
+
+      // A data service's description is free: answered before any payment step.
+      const dataRoute = dataServiceRoute(request);
+      if (dataRoute?.action === 'describe') {
+        mux.sendProxyResponse(await this._handleDataDescription(request, buyerPeerId, dataRoute));
         return;
       }
 
@@ -1416,6 +1423,29 @@ export class SellerRequestHandler {
     }
   }
 
+  /**
+   * Free description of a data service (`GET /v1/data/<service>/openapi.json`): forward to the
+   * provider that serves it. The document is the seller's own; nothing is charged for it.
+   */
+  private async _handleDataDescription(request: SerializedHttpRequest, buyerPeerId: string, route: DataServiceRoute): Promise<SerializedHttpResponse> {
+    const failure = (statusCode: number, code: string, message: string): SerializedHttpResponse => ({
+      requestId: request.requestId,
+      statusCode,
+      headers: { 'content-type': 'application/json' },
+      body: new TextEncoder().encode(JSON.stringify({ error: { message, type: 'invalid_request_error', code } })),
+    });
+    const provider = this._deps.providers.find((candidate) =>
+      candidate.services.includes(route.service) && Boolean(candidate.serviceApiProtocols?.[route.service]?.includes(route.protocol)));
+    if (!provider) return failure(404, 'model_not_found', `Data service "${route.service}" is not served by this peer.`);
+    setTrustedHeader(request.headers, 'x-antseed-buyer-peer-id', buyerPeerId);
+    try {
+      const response = await provider.handleRequest(request);
+      return { ...response, requestId: request.requestId, headers: buyerFacingResponseHeaders(response.headers) };
+    } catch (error) {
+      return failure(503, 'data_description_unavailable', `Data service description failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   private _handleModelsRequest(request: SerializedHttpRequest): SerializedHttpResponse {
     const allServices = this._deps.providers.flatMap((p) => p.services);
     const now = Math.floor(Date.now() / 1000);
@@ -1563,6 +1593,9 @@ export class SellerRequestHandler {
       return routingServices(this._deps.providers, routingProtocol)[0]?.service ?? null;
     }
     if (nativeVideoRoute(request)) return requestService(request) ?? null;
+    // A data request names its service in the path; its body is the operation's own.
+    const dataRoute = dataServiceRoute(request);
+    if (dataRoute) return dataRoute.service;
     return requestBodyService(request);
   }
 

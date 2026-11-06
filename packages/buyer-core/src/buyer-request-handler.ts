@@ -1,4 +1,4 @@
-import { nativeVideoDelivered, nativeVideoRoute, requestService } from '@antseed/api-adapter';
+import { dataServiceRoute, nativeVideoDelivered, nativeVideoRoute, requestService } from '@antseed/api-adapter';
 import {
   ANTSEED_FAULT_ATTRIBUTION_HEADER,
   ANTSEED_STREAMING_RESPONSE_HEADER,
@@ -725,14 +725,16 @@ export class BuyerRequestHandler {
 
 /**
  * The requested service: on a routing protocol whose paths name no service, the peer's single
- * service of that protocol; else `service`/`model` from a JSON or multipart body.
+ * service of that protocol; on a data request, the service in its path; else `service`/`model`
+ * from a JSON or multipart body.
  */
 function extractRequestedService(peer: BuyerPeerView, request: SerializedHttpRequest): string | undefined {
   const routingProtocol = routingProtocolForPath(request.path);
   if (routingProtocol && routingWireProtocol(routingProtocol).oneServicePerSeller) {
     return findRoutingService(peer.providerServiceApiProtocols, routingProtocol)?.serviceId;
   }
-  if (nativeVideoRoute(request)) return requestService(request);
+  // Video routes and data requests name their service outside the body.
+  if (nativeVideoRoute(request) || dataServiceRoute(request)) return requestService(request);
   const parsed = extractRequestBodyFields(request.headers, request.body);
   const service = parsed?.service ?? parsed?.model;
   if (typeof service === 'string' && service.length > 0) return service;

@@ -3,6 +3,7 @@ import type { NativeVideoProtocol, SerializedHttpRequest, SerializedHttpResponse
 import { extractRequestBodyFields, headerValue, parseJsonObject } from './utils.js';
 import { inlineVideoSeconds } from './mp4.js';
 import { inlineAudioSeconds } from './speech-audio.js';
+import { dataServiceRoute } from './data-service.js';
 
 export type { NativeVideoProtocol };
 
@@ -84,6 +85,8 @@ export function nativeVideoDelivered(response: SerializedHttpResponse, requested
 }
 
 export function requestService(request: SerializedHttpRequest): string | undefined {
+  const dataRoute = dataServiceRoute(request);
+  if (dataRoute) return dataRoute.service;
   const route = nativeVideoRoute(request);
   if (route?.action === 'retrieve') {
     const header = Object.entries(request.headers).find(([key]) => key.toLowerCase() === 'x-antseed-service')?.[1];

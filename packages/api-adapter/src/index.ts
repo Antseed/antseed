@@ -55,12 +55,24 @@ export {
   type NativeVideoProtocol,
   type RoutingProtocol,
   type AudioSpeechProtocol,
+  type DataServiceProtocol,
   WELL_KNOWN_SERVICE_API_PROTOCOLS,
   NATIVE_VIDEO_PROTOCOLS,
   ROUTING_PROTOCOLS,
   AUDIO_SPEECH_PROTOCOLS,
+  DATA_SERVICE_PROTOCOLS,
   isKnownServiceApiProtocol,
   isNativeVideoProtocol,
   isRoutingProtocol,
   isAudioSpeechProtocol,
+  isDataServiceProtocol,
 } from './types.js';
+
+export {
+  DATA_SERVICE_PATH_PREFIX,
+  DATA_SERVICE_DOCUMENT_PATH,
+  dataServiceRoute,
+  dataServiceDelivered,
+  withDataService,
+  type DataServiceRoute,
+} from './data-service.js';
