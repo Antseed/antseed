@@ -6,7 +6,7 @@ import { GatewayAccounting, videoJobKey } from './accounting.js'
 import { generateApiKey } from './keys.js'
 import { findLimitBreach, periodResetsAt, periodStart } from './limits.js'
 import { formatUsdc, parseUsdToUsdc, usdcToDecimalString } from './money.js'
-import { GatewayServer, type GatewayTopupOptions } from './server.js'
+import { GatewayServer, workspaceOutOfCreditsBody, type GatewayTopupOptions } from './server.js'
 import { SpendFeedPoller } from './spend-feed.js'
 import { DEFAULT_BUYER_IDENTITY } from '@antseed/node'
 import { BUYER_IDENTITY_HEADER } from '../proxy/request-utils.js'
@@ -63,11 +63,15 @@ async function request(port: number, path: string, options: { method?: string; k
   })
 }
 
+const BUYER_OUT_OF_CREDITS = 'You are out of AntSeed credits for this request. Add funds in the AntSeed app, or run "antseed buyer deposit" in the CLI to show your funding address, then retry. Free sellers need no funds: pin one as <peerId>@<model>.'
+const OPENAI_OUT_OF_CREDITS = { error: { type: 'api_error', code: 'antseed_buyer_fault', message: BUYER_OUT_OF_CREDITS, param: 'insufficient_deposits' } }
+const ANTHROPIC_OUT_OF_CREDITS = { type: 'error', error: { type: 'antseed_buyer_fault', message: `${BUYER_OUT_OF_CREDITS} (insufficient_deposits)` } }
+
 /**
  * Stand-in for `antseed buyer start`: answers API routes, records the tag the
  * gateway attaches, and serves the attributed-spend feed for tagged requests.
  */
-async function fakeBuyer(options: { costUsdc?: number; spendFeed?: boolean; reportIdentity?: string } = {}) {
+async function fakeBuyer(options: { costUsdc?: number; spendFeed?: boolean; reportIdentity?: string; outOfCredits?: boolean } = {}) {
   const feed = new SpendAttributionFeed()
   const captured: Array<{ url: string; auth?: string; source?: string; tag?: string; identity?: string; headers: http.IncomingHttpHeaders }> = []
   let requestCounter = 0
@@ -118,6 +122,12 @@ async function fakeBuyer(options: { costUsdc?: number; spendFeed?: boolean; repo
         // Speech: the audio file comes back as it is, with no usage in it.
         res.writeHead(200, { 'content-type': 'audio/mpeg', 'x-antseed-request-id': requestId, 'x-antseed-peer-id': 'seller' })
         res.end(Buffer.from('ID3-speech-audio'))
+        return
+      }
+      if (options.outOfCredits) {
+        // What the buyer answers when the wallet has no credits for a paid seller.
+        res.writeHead(402, { 'content-type': 'application/json', 'x-antseed-request-id': requestId })
+        res.end(JSON.stringify(req.url === '/v1/messages' ? ANTHROPIC_OUT_OF_CREDITS : OPENAI_OUT_OF_CREDITS))
         return
       }
       res.writeHead(200, { 'content-type': 'application/json', 'x-antseed-request-id': requestId })
@@ -1792,6 +1802,63 @@ test('x402 top-up is unavailable without a facilitator, for keys on the operator
     await withoutTopup.stop()
     await buyer.close()
     await facilitator.close()
+    cleanup()
+  }
+})
+
+test('the buyer\'s out-of-credits 402 names the workspace and its funding, and keeps its codes', () => {
+  const workspace = { name: 'Research', walletAddress: '0x00000000000000000000000000000000000000aa' }
+  const openAi = JSON.parse(workspaceOutOfCreditsBody(Buffer.from(JSON.stringify(OPENAI_OUT_OF_CREDITS)), workspace)!.toString())
+  assert.equal(openAi.error.type, 'api_error')
+  assert.equal(openAi.error.code, 'antseed_buyer_fault')
+  assert.equal(openAi.error.param, 'insufficient_deposits')
+  assert.equal(
+    openAi.error.message,
+    "This API key's workspace (Research) is out of AntSeed credits for this request. A workspace admin can add funds in the gateway console "
+      + 'under Wallet & Funding, or send USDC on Base to the workspace wallet 0x00000000000000000000000000000000000000aa, then retry. '
+      + 'Free sellers need no funds: pin one as <peerId>@<model>.',
+  )
+
+  const anthropic = JSON.parse(workspaceOutOfCreditsBody(Buffer.from(JSON.stringify(ANTHROPIC_OUT_OF_CREDITS)), { name: 'Default', walletAddress: null })!.toString())
+  assert.equal(anthropic.type, 'error')
+  assert.equal(anthropic.error.type, 'antseed_buyer_fault')
+  assert.match(anthropic.error.message, /^This API key's workspace \(Default\) is out of AntSeed credits/)
+  assert.match(anthropic.error.message, /under Wallet & Funding, then retry\./)
+  assert.match(anthropic.error.message, /\(insufficient_deposits\)$/)
+  assert.doesNotMatch(anthropic.error.message, /antseed buyer deposit|AntSeed app/)
+
+  // Any other 402 passes through unchanged.
+  const other = { error: { type: 'insufficient_quota', code: 'spend_limit_reached', message: 'This API key reached its daily spend limit of $1.00.' } }
+  assert.equal(workspaceOutOfCreditsBody(Buffer.from(JSON.stringify(other)), workspace), null)
+  const sellerFault = { error: { type: 'api_error', code: 'upstream_error', message: 'x', param: 'insufficient_deposits' } }
+  assert.equal(workspaceOutOfCreditsBody(Buffer.from(JSON.stringify(sellerFault)), workspace), null)
+  assert.equal(workspaceOutOfCreditsBody(Buffer.from('not json'), workspace), null)
+})
+
+test('gateway rewrites the buyer\'s out-of-credits 402 for the key\'s workspace', async () => {
+  const { store, cleanup } = tempDataDir()
+  const buyer = await fakeBuyer({ outOfCredits: true })
+  store.setWalletAddress(DEFAULT_BUYER_IDENTITY, '0x00000000000000000000000000000000000000bb')
+  const { secret } = store.createKey({ label: 'Team', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
+  const gateway = await startGateway(store, buyer.port)
+  try {
+    const chat = await request(gateway.port, '/v1/chat/completions', { method: 'POST', key: secret, body: '{"model":"kimi-k2.6"}' })
+    assert.equal(chat.status, 402)
+    assert.equal(chat.headers['content-length'], String(Buffer.byteLength(chat.body)))
+    const error = JSON.parse(chat.body).error
+    assert.equal(error.code, 'antseed_buyer_fault')
+    assert.equal(error.param, 'insufficient_deposits')
+    assert.match(error.message, /^This API key's workspace \(Default\) is out of AntSeed credits/)
+    assert.match(error.message, /Wallet & Funding, or send USDC on Base to the workspace wallet 0x0{38}bb, then retry/)
+
+    const messages = await request(gateway.port, '/v1/messages', { method: 'POST', key: secret, body: '{"model":"kimi-k2.6"}' })
+    assert.equal(messages.status, 402)
+    const anthropic = JSON.parse(messages.body)
+    assert.equal(anthropic.error.type, 'antseed_buyer_fault')
+    assert.match(anthropic.error.message, /Wallet & Funding.*\(insufficient_deposits\)$/)
+  } finally {
+    await gateway.stop()
+    await buyer.close()
     cleanup()
   }
 })

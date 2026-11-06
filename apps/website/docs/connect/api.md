@@ -226,9 +226,17 @@ Streaming responses carry only the request id, seller identity and price headers
 | 400 | `no_default_route` | `model: "antseed"` was sent but the desktop app has no model selected. |
 | 400 | `invalid_routing` | A routing service serves the request and the body's `routing` object is malformed or has a setting the router's protocol does not accept (for `irp-suggest`: `cost_quality_tradeoff`, an integer from 0 to 10). On other requests a `routing` object is removed and ignored. |
 | 422 | `no_eligible_candidates` | A routing service was named, but no allowed model is left for it to rank. Nothing was charged. |
-| 402 | `insufficient_deposits` | Not enough USDC deposited. Run `antseed buyer deposit`. |
+| 402 | `antseed_buyer_fault` with `insufficient_deposits` | The wallet has too few credits for a paid seller. Run `antseed buyer deposit` to show your funding address, or add funds in the desktop app. Free sellers need no funds: pin one as `<peerId>@<model>`. |
 | 413 | `upload_body_too_large` | The request is larger than the seller's upload limit. |
 | 502 | `model_not_found` | No seller your routing preferences allow offers this model. |
+
+The 402 comes back with the code `antseed_buyer_fault`, which marks a failure on the buyer's side, not the seller's. In OpenAI format the reason is in `error.param`:
+
+```json
+{"error":{"type":"api_error","code":"antseed_buyer_fault","param":"insufficient_deposits","message":"You are out of AntSeed credits for this request. ..."}}
+```
+
+In Anthropic format (`/v1/messages`) `error.type` is `antseed_buyer_fault` and the message ends with the reason in brackets, for example `(insufficient_deposits)`.
 
 ## Diagnostics
 

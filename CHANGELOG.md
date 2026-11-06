@@ -260,6 +260,9 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- Buyer/Gateway: the 402 for a wallet with too few credits named a command the CLI rejects (`antseed buyer deposit <amount>`). It now says `antseed buyer deposit`, and that free sellers need no funds. Through a gateway the message names the key's workspace and points to **Wallet & Funding** and the workspace wallet instead of the desktop app and CLI. The status, `code` (`antseed_buyer_fault`) and `param` (`insufficient_deposits`) are unchanged. `checkBuyerReadiness` in `@antseed/node` no longer suggests `antseed buyer deposit 10` either.
+- Docs: the API error table listed the out-of-credits 402 as `insufficient_deposits`; it documents the real `antseed_buyer_fault` shape for OpenAI and Anthropic formats, and gateway troubleshooting gains a row for it.
+
 - Sellers (`@antseed/node`): usage receipts now price cached input at the cached rate, as the payment channel charge does. They priced every input token at the full input rate, so the receipt cost on the seller dashboard and request log, and session cost totals, came out well above what buyers paid for prompt-cached traffic.
 
 - Sellers (`@antseed/node`): an upstream answer saying the account's "extra usage" is used up is treated as an account error, like running out of credit: buyers get the generic `upstream_unavailable` 503 instead of the upstream's message, and health checks mark the model failing.
