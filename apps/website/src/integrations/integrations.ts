@@ -1139,18 +1139,18 @@ ANTSEED_API_KEY=${GATEWAY_KEY}`,
     status: 'verified',
     seoTitle: 'Vercel AI SDK on any model, OpenAI-compatible',
     headline: 'Use Antseed with the Vercel AI SDK',
-    oneLiner: "Use `@ai-sdk/openai-compatible` to call Antseed from `generateText` / `streamText` / `generateObject`.",
+    oneLiner: "Use `@ai-sdk/openai-compatible` to call Antseed from `generateText` / `streamText`.",
     description: [
-      '<strong>What the AI SDK is.</strong> Vercel\'s <code>ai</code> package is a provider-agnostic TypeScript toolkit for building LLM apps and agents. You pick a <em>provider</em> (a small adapter package), instantiate a model from it, and pass that model into one of the framework\'s primitives: <code>generateText</code>, <code>streamText</code>, <code>generateObject</code>, or <code>streamObject</code>. The AI SDK handles tool-calling, structured output, message history, and streaming for you.',
+      '<strong>What the AI SDK is.</strong> Vercel\'s <code>ai</code> package is a provider-agnostic TypeScript toolkit for building LLM apps and agents. You pick a <em>provider</em> (a small adapter package), instantiate a model from it, and pass that model into one of the framework\'s primitives: <code>generateText</code> or <code>streamText</code>, with an <code>output</code> setting for structured data. The AI SDK handles tool-calling, structured output, message history, and streaming for you.',
       '<strong>How Antseed plugs in.</strong> Your Antseed gateway is OpenAI-Chat-compatible at its <code>/v1</code> URL, so the right adapter is <code>@ai-sdk/openai-compatible</code> (not <code>@ai-sdk/openai</code>). The official OpenAI provider is locked to OpenAI\'s API surface and quietly drops third-party fields; the openai-compatible provider is the one Vercel\'s own docs recommend for proxies, gateways, and any non-OpenAI server that speaks Chat Completions. You pass the gateway URL as <code>baseURL</code> and a gateway key as <code>apiKey</code>, which the SDK sends as <code>Authorization: Bearer</code>. On the same computer as a buyer you can use the local buyer proxy instead (<code>http://localhost:8377/v1</code>, any non-empty key).',
       '<strong>Which model ids work.</strong> The first argument to the provider call is a model id from the Antseed catalog (e.g. <code>deepseek-v4-flash</code>, <code>kimi-k2.6</code>). Any model on the network works - list them with <code>GET /v1/models</code>. To route to a specific peer per call, prefix that peer offer\'s service id: <code>&lt;peerId&gt;@deepseek-v4-flash</code>.',
     ],
-    prereqs: ['Node.js 18 or newer'],
+    prereqs: ['Node.js 22 or newer (`ai` 7 requires it)'],
     install: [
       {
-        label: 'Install the SDK and the openai-compatible provider',
-        command: 'npm install ai @ai-sdk/openai-compatible zod',
-        note: '`zod` is only needed if you call `generateObject` / `streamObject`. Skip it for plain text generation.',
+        label: 'Create an ES module project and install the SDK and the openai-compatible provider',
+        command: 'npm init -y\nnpm pkg set type=module\nnpm install ai @ai-sdk/openai-compatible zod',
+        note: 'The examples below use top-level `await`, which only works in an ES module, so the package needs `"type": "module"`. Without it, `npx tsx` fails with "Top-level await is currently not supported with the "cjs" output format". `zod` is only needed for structured output (`structured.ts`).',
       },
     ],
     configure: [
@@ -1166,6 +1166,7 @@ export const antseed = createOpenAICompatible({
   baseURL: process.env.ANTSEED_BASE_URL!, // gateway URL ending in /v1
   apiKey: process.env.ANTSEED_API_KEY!,   // gateway key, sent as Authorization: Bearer
   includeUsage: true, // surface token counts in streaming responses too
+  supportsStructuredOutputs: true, // send the zod schema as a JSON schema (structured.ts)
 });`,
         note: 'Same computer as a buyer, no gateway: `baseURL: \'http://localhost:8377/v1\'` and any non-empty `apiKey`, such as `\'antseed\'`; the local proxy checks no key.',
       },
@@ -1186,25 +1187,29 @@ for await (const chunk of result.textStream) {
   process.stdout.write(chunk);
 }
 
-console.log('\\nusage:', await result.usage);`,
+const { inputTokens, outputTokens } = await result.usage;
+console.log(\`\\ntokens: \${inputTokens} in, \${outputTokens} out\`);`,
       },
       {
         kind: 'code',
         language: 'typescript',
-        snippet: `// structured.ts - generateObject works the same way
-import { generateObject } from 'ai';
+        snippet: `// structured.ts - a typed object instead of text
+import { generateText, Output } from 'ai';
 import { z } from 'zod';
 import { antseed } from './antseed';
 
-const { object } = await generateObject({
+const { output } = await generateText({
   model: antseed('deepseek-v4-flash'),
-  schema: z.object({
-    title: z.string(),
-    bullets: z.array(z.string()).min(3).max(5),
+  output: Output.object({
+    schema: z.object({
+      title: z.string(),
+      bullets: z.array(z.string()).min(3).max(5),
+    }),
   }),
-  prompt: 'Summarize the Antseed buyer-proxy README as a slide.',
+  prompt: 'Make one slide that explains why the sky is blue.',
 });
-console.log(object);`,
+console.log(output);`,
+        note: '`generateObject` and `streamObject` still work but are deprecated in `ai` 7; `Output.object` replaces them. The schema is only enforced because `antseed.ts` sets `supportsStructuredOutputs: true`.',
       },
     ],
     modelHints: {
@@ -1217,12 +1222,23 @@ console.log(object);`,
         label: 'Run a smoke test with `tsx`',
         command: 'npx tsx stream.ts',
         outputLabel: 'Example output',
-        output: `The sky is blue because shorter (blue) wavelengths of sunlight
-scatter much more than longer (red) wavelengths in Earth's atmosphere…
+        output: `The sky appears blue due to a phenomenon called **Rayleigh scattering**…
 
-usage: { promptTokens: 14, completionTokens: 78, totalTokens: 92 }`,
+tokens: 1698 in, 215 out`,
         note:
           'If you see `502 model_not_found`, no seller your routing policy allows currently advertises the id you passed - check `GET /v1/models`. A `401` means `ANTSEED_API_KEY` is missing or not a valid gateway key.',
+      },
+      {
+        label: 'Check structured output',
+        command: 'npx tsx structured.ts',
+        outputLabel: 'Example output',
+        output: `{
+  title: 'Why the Sky Is Blue',
+  bullets: [
+    'Sunlight appears white but contains all colors of the rainbow.',
+    …
+  ]
+}`,
       },
       {
         label: 'Per-request peer override (no session pin needed)',
@@ -1247,9 +1263,9 @@ const result = streamText({
           'You imported from `@ai-sdk/openai` instead of `@ai-sdk/openai-compatible`. Switch the package - the SDK\'s official OpenAI provider is locked to OpenAI\'s service ids and rejects unknown ones.',
       },
       {
-        problem: '`generateObject` returns malformed JSON',
+        problem: '`NoObjectGeneratedError: No object generated: response did not match schema`',
         fix:
-          'The AI SDK is strict about JSON Schema support. Pass `supportsStructuredOutputs: true` to `createOpenAICompatible` only if the routed service supports OpenAI-style structured outputs natively. If unsure, leave it off - the SDK falls back to tool-call-based JSON which works everywhere.',
+          'Without `supportsStructuredOutputs: true` on `createOpenAICompatible`, the provider asks only for JSON (`response_format: json_object`) and never sends your schema, so the model invents its own fields. Set it, as in `antseed.ts` above, to send the schema as `json_schema`. If it still fails, the seller that served the call ignores JSON schemas: pick a model whose offers in `GET /v1/models` list `structuredOutput: true` under `capabilities`, or pin such a seller with `<peerId>@<id>`.',
       },
       {
         problem: '`includeUsage` is set but `result.usage` is undefined',
@@ -1271,7 +1287,7 @@ const result = streamText({
       { label: '`ai` on npm', href: 'https://www.npmjs.com/package/ai' },
     ],
     agentSummary:
-      "createOpenAICompatible({ name: 'antseed', baseURL: process.env.ANTSEED_BASE_URL, apiKey: process.env.ANTSEED_API_KEY }) with a gateway URL ending in /v1 and a gateway key (recommended); on the same computer as a buyer, baseURL 'http://localhost:8377/v1' with apiKey 'antseed'. Then antseed('<model-id>') as the model. Use @ai-sdk/openai-compatible (NOT @ai-sdk/openai). Model ids come from GET /v1/models. Per-request peer override: headers: { 'x-antseed-pin-peer': '<peerId>' }, or model '<peerId>@<model-id>'. Server-side only: never expose the gateway key to a browser.",
+      "createOpenAICompatible({ name: 'antseed', baseURL: process.env.ANTSEED_BASE_URL, apiKey: process.env.ANTSEED_API_KEY }) with a gateway URL ending in /v1 and a gateway key (recommended); on the same computer as a buyer, baseURL 'http://localhost:8377/v1' with apiKey 'antseed'. Then antseed('<model-id>') as the model. Use @ai-sdk/openai-compatible (NOT @ai-sdk/openai). The examples use top-level await: set \"type\": \"module\" in package.json (npm pkg set type=module) or tsx fails. For structured output use generateText with output: Output.object({ schema }) and set supportsStructuredOutputs: true on the provider, or the schema is never sent. Model ids come from GET /v1/models. Per-request peer override: headers: { 'x-antseed-pin-peer': '<peerId>' }, or model '<peerId>@<model-id>'. Server-side only: never expose the gateway key to a browser.",
   },
   {
     slug: 'langchain-python',

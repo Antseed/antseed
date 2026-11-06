@@ -260,6 +260,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- Docs: the Vercel AI SDK integration's snippets run as written. Setup creates an ES module project (`npm pkg set type=module`), since `npx tsx` refuses the snippets' top-level `await` in a CommonJS package; the provider sets `supportsStructuredOutputs: true`, without which the schema is never sent and structured output fails with `NoObjectGeneratedError`; `structured.ts` uses `generateText` with `Output.object` (`generateObject` is deprecated in `ai` 7) and a prompt that needs no outside text; the usage line matches `ai` 7; and the Node.js prerequisite is 22, which `ai` 7 requires. Tested with `ai` 7.0.163, `@ai-sdk/openai-compatible` 3.0.85, `zod` 4.6.7 and `tsx` 4.23.15.
 - Sellers (`@antseed/node`): usage receipts now price cached input at the cached rate, as the payment channel charge does. They priced every input token at the full input rate, so the receipt cost on the seller dashboard and request log, and session cost totals, came out well above what buyers paid for prompt-cached traffic.
 
 - Sellers (`@antseed/node`): an upstream answer saying the account's "extra usage" is used up is treated as an account error, like running out of credit: buyers get the generic `upstream_unavailable` 503 instead of the upstream's message, and health checks mark the model failing.
