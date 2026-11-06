@@ -56,6 +56,8 @@ export interface AntsChainConfig {
   clientRewardsAddress?: string;
   /** First-party client ERC-8004 agent ids (the builders card preselects the ones this wallet owns). */
   clientAgentIds?: { cli?: number; desktop?: number };
+  /** AntseedVerificationPointsPolicy: scales points by the seller's model-verification verdicts. */
+  verificationPointsPolicyAddress?: string;
   recognizedUsage?: { status: 'deployed' | 'active'; effectiveEpoch: number; deploymentBlock?: number };
   /** Explorer REST base (Antscan) for seller profiles; optional. */
   explorerApiUrl?: string;
@@ -314,6 +316,7 @@ export class AntsContext {
       ['clientRewards', this.chain.clientRewardsAddress],
       ['positionInit', this.chain.positionInitAddress],
       ['pointsPolicyRegistry', this.chain.pointsPolicyRegistryAddress],
+      ['verificationPointsPolicy', this.chain.verificationPointsPolicyAddress],
       ['washTradingRegistry', this.chain.washTradingRegistryAddress],
       ['legacyEmissionsEscrow', this.chain.legacyEmissionsEscrowAddress],
       ['emissions', this.chain.emissionsContractAddress],

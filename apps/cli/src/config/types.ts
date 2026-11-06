@@ -481,6 +481,7 @@ export interface PaymentsCLIConfig {
     legacyEmissionsEscrowAddress?: string;
     washTradingRegistryAddress?: string;
     pointsPolicyRegistryAddress?: string;
+    verificationPointsPolicyAddress?: string;
     /** Explorer REST base for seller profiles in `antseed ants`; empty string disables the lookup. */
     explorerApiUrl?: string;
     /** Deployed AntseedDepositRelay contract address (gasless deposit sweeps) */
@@ -540,4 +541,10 @@ export interface AntseedConfig {
   network: NetworkCLIConfig;
   /** Installed plugins */
   plugins?: { name: string; package: string; installedAt: string }[];
+  /**
+   * Anonymous product telemetry (docs/telemetry.md). On unless `enabled` is
+   * false; `antseed telemetry disable` and the desktop and gateway privacy
+   * toggles write it, and a running buyer picks the change up live.
+   */
+  telemetry?: { enabled?: boolean };
 }

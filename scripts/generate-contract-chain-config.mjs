@@ -39,6 +39,7 @@ export const contractFields = {
   legacyEmissionsEscrow: 'legacyEmissionsEscrowAddress',
   referrals: 'referralsAddress',
   clientRewards: 'clientRewardsAddress',
+  verificationPointsPolicy: 'verificationPointsPolicyAddress',
 };
 
 async function readDeployment(network) {

@@ -14,7 +14,7 @@ import {
   DESKTOP_DEFAULT_MAX_OUTPUT_USD_PER_MILLION,
 } from '../runtime/config-io.js';
 import { normalizeProviderId } from './provider-hint.js';
-import { hasLiveDiffVerdict, isNativeVideoProtocol } from '@antseed/node';
+import { isNativeVideoProtocol, liveVerificationVerdict, verificationServiceUrl } from '@antseed/node';
 import {
   normalizeVideoOptions,
   sortChatServiceCatalogEntries,
@@ -32,6 +32,7 @@ import {
 } from './normalize.js';
 import type { DesktopVerificationLink } from '../connected-apps/domain-site-metadata.js';
 import type { TrustBreakdown } from '@antseed/node';
+import { normalizeTrustBreakdown } from '../../shared/trust-breakdown.js';
 import { freeTierProgramForService, type FreeTierProgram } from '@antseed/node/free-tier-program';
 
 export type BuyerMaxPricingDefaults = {
@@ -87,8 +88,13 @@ export type DiscoverRowEntry = {
   onChainReputationScore: number | null;
   /** Wash-trading registry verdict; `null` when the registry was unavailable. */
   washFlagged: boolean | null;
-  /** True when this service has a live DIFF verdict on AntseedVerificationResults (its reputation keeps 10%). */
-  verificationDiff: boolean;
+  /**
+   * Live verdict on AntseedVerificationResults for this service: 'diff' (its
+   * reputation keeps 10%), 'same', or null when there is none or the read is stale.
+   */
+  verification: 'diff' | 'same' | null;
+  /** Explorer page with this service's verdict history; null without a verdict or an explorer. */
+  verificationUrl: string | null;
   effectiveReputationScore: number | null;
   onChainSybilRisk: number | null;
   onChainSybilFlags: string[];
@@ -355,7 +361,9 @@ export type BuyerStateDiscoveredPeer = {
   onChainWashFlagged: boolean | null;
   /** Services with a live DIFF verdict, as trimmed lowercase names. */
   onChainDiffServices?: string[];
-  /** Unix ms of the verification read behind `onChainDiffServices`; a list older than 15 minutes counts for nothing. */
+  /** Services with a live SAME verdict, as trimmed lowercase names. */
+  onChainSameServices?: string[];
+  /** Unix ms of the verification read behind both service lists; a read older than 15 minutes counts for nothing. */
   onChainVerificationFetchedAt?: number | null;
   onChainSybilRisk: number | null;
   onChainSybilFlags: string[];
@@ -366,70 +374,7 @@ export type BuyerStateDiscoveredPeer = {
   peerIconUrl: string | null;
 };
 
-function boundedScore(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 100 ? value : null;
-}
-
-function nonNegative(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
-}
-
-/**
- * Validate a `trust` blob read from buyer.state.json. The buyer daemon writes
- * `TrustBreakdown`, but the file may predate the field or be hand-edited, so
- * every part is checked and the whole breakdown is dropped when the final
- * score is missing or out of range.
- */
-export function normalizeTrustBreakdown(raw: unknown): TrustBreakdown | null {
-  const value = asPlainObject(raw);
-  if (!value) return null;
-  const score = boundedScore(value.score);
-  if (score === null) return null;
-  return {
-    score,
-    history: normalizeHistoryPart(asPlainObject(value.history)),
-    usage: normalizeSharePart(asPlainObject(value.usage)),
-    power: normalizeSharePart(asPlainObject(value.power)),
-    identity: normalizeIdentityPart(asPlainObject(value.identity)),
-    freeModels: normalizeFreeModelsPart(asPlainObject(value.freeModels)),
-    washFlagged: typeof value.washFlagged === 'boolean' ? value.washFlagged : null,
-  };
-}
-
-function normalizeFreeModelsPart(raw: Record<string, unknown> | null): TrustBreakdown['freeModels'] {
-  if (!raw) return null;
-  const score = boundedScore(raw.score);
-  if (score === null || typeof raw.service !== 'string' || raw.service.length === 0) return null;
-  return { score, service: raw.service };
-}
-
-function normalizeHistoryPart(raw: Record<string, unknown> | null): TrustBreakdown['history'] {
-  if (!raw) return null;
-  const score = boundedScore(raw.score);
-  const channelCount = nonNegative(raw.channelCount);
-  const totalVolumeUsdcMicros = nonNegative(raw.totalVolumeUsdcMicros);
-  if (score === null || channelCount === null || totalVolumeUsdcMicros === null) return null;
-  return { score, channelCount, totalVolumeUsdcMicros };
-}
-
-/** A usage or power part: weighted score plus the share and epoch it came from. */
-function normalizeSharePart(raw: Record<string, unknown> | null): TrustBreakdown['usage'] {
-  if (!raw) return null;
-  const score = boundedScore(raw.score);
-  const shareBps = nonNegative(raw.shareBps);
-  const epoch = nonNegative(raw.epoch);
-  if (score === null || shareBps === null || epoch === null) return null;
-  return { score, shareBps, epoch };
-}
-
-function normalizeIdentityPart(raw: Record<string, unknown> | null): TrustBreakdown['identity'] {
-  if (!raw) return null;
-  const score = boundedScore(raw.score);
-  if (score === null) return null;
-  if (raw.kind !== 'github' && raw.kind !== 'domain') return null;
-  const claim = typeof raw.claim === 'string' ? raw.claim : '';
-  return { score, kind: raw.kind, claim };
-}
+export { normalizeTrustBreakdown };
 
 export function invalidateOnChainEnrichmentCache(): void {
   // On-chain enrichment now comes from the buyer daemon's buyer.state.json.
@@ -458,6 +403,8 @@ export async function buildDiscoverRows(
   buyerStateDiscoveredPeers: Record<string, BuyerStateDiscoveredPeer>,
   networkStats: Map<number, { requests: bigint; inputTokens: bigint; outputTokens: bigint }>,
   peerHealth: Record<string, RawPeerHealth> = {},
+  /** The chain explorer (`explorerApiUrl`) that verdict links point at; no links without it. */
+  explorerUrl: string | null = null,
 ): Promise<DiscoverRowEntry[]> {
   const rows: DiscoverRowEntry[] = [];
   for (const entry of catalog) {
@@ -484,6 +431,7 @@ export async function buildDiscoverRows(
     const networkInputTokens = netForAgent ? netForAgent.inputTokens.toString() : null;
     const networkOutputTokens = netForAgent ? netForAgent.outputTokens.toString() : null;
     const health = readPeerHealth(peerHealth[peerId], Date.now());
+    const verification = liveVerificationVerdict(peerBlob, entry.id);
 
     rows.push({
       rowKey: `${peerId}:${entry.id}`,
@@ -529,7 +477,8 @@ export async function buildDiscoverRows(
       onChainReputationScore,
       trust: peerBlob?.trust ?? null,
       washFlagged,
-      verificationDiff: hasLiveDiffVerdict(peerBlob, entry.id),
+      verification,
+      verificationUrl: verification ? verificationServiceUrl(explorerUrl, agentId, entry.id) : null,
       effectiveReputationScore: entry.effectiveReputationScore ?? null,
       onChainSybilRisk,
       onChainSybilFlags,

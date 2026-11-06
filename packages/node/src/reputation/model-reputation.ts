@@ -20,6 +20,8 @@ export const VERIFICATION_STATUS_STALE_MAX_MS = 15 * 60_000;
 export type VerificationDiffSource = {
   /** Services (verification keys) with a live DIFF verdict. See `verificationServiceKey`. */
   onChainDiffServices?: readonly string[] | null;
+  /** Services (verification keys) with a live SAME verdict. */
+  onChainSameServices?: readonly string[] | null;
   /** Unix ms of the verification read behind `onChainDiffServices`; without it the list counts for nothing. */
   onChainVerificationFetchedAt?: number | null;
 };
@@ -52,13 +54,44 @@ export function hasLiveDiffVerdict(
   serviceId: string,
   nowMs: number = Date.now(),
 ): boolean {
-  const services = source?.onChainDiffServices;
+  return hasLiveServiceVerdict(source?.onChainDiffServices, source?.onChainVerificationFetchedAt, serviceId, nowMs);
+}
+
+/** Whether `serviceId` is in a verdict list from a read at most VERIFICATION_STATUS_STALE_MAX_MS old. */
+function hasLiveServiceVerdict(
+  services: readonly string[] | null | undefined,
+  fetchedAt: number | null | undefined,
+  serviceId: string,
+  nowMs: number,
+): boolean {
   if (!Array.isArray(services) || services.length === 0) return false;
-  const fetchedAt = source?.onChainVerificationFetchedAt;
   if (typeof fetchedAt !== 'number' || !Number.isFinite(fetchedAt)) return false;
   if (nowMs - fetchedAt >= VERIFICATION_STATUS_STALE_MAX_MS) return false;
   const key = verificationServiceKey(serviceId);
   return key.length > 0 && services.includes(key);
+}
+
+/**
+ * Whether the seller's offer of `serviceId` has a live on-chain SAME
+ * verification verdict, under the same freshness rule as `hasLiveDiffVerdict`.
+ */
+export function hasLiveSameVerdict(
+  source: VerificationDiffSource | null | undefined,
+  serviceId: string,
+  nowMs: number = Date.now(),
+): boolean {
+  return hasLiveServiceVerdict(source?.onChainSameServices, source?.onChainVerificationFetchedAt, serviceId, nowMs);
+}
+
+/** The live verification verdict of one offer: 'diff', 'same' or null when there is none or the read is stale. */
+export function liveVerificationVerdict(
+  source: VerificationDiffSource | null | undefined,
+  serviceId: string,
+  nowMs: number = Date.now(),
+): 'diff' | 'same' | null {
+  if (hasLiveDiffVerdict(source, serviceId, nowMs)) return 'diff';
+  if (hasLiveSameVerdict(source, serviceId, nowMs)) return 'same';
+  return null;
 }
 
 /**

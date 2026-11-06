@@ -65,6 +65,8 @@ export interface ChainConfig {
   legacyEmissionsEscrowAddress?: string;
   washTradingRegistryAddress?: string;
   pointsPolicyRegistryAddress?: string;
+  /** AntseedVerificationPointsPolicy: scales seller and buyer points by the seller's model-verification verdicts. */
+  verificationPointsPolicyAddress?: string;
   recognizedUsage?: RecognizedUsageDeployment;
   /** Block when Channels contract was deployed. Floor for event log scans. */
   channelsDeployBlock?: number;
@@ -230,6 +232,7 @@ export function resolveChainConfig(overrides?: {
   legacyEmissionsEscrowAddress?: string;
   washTradingRegistryAddress?: string;
   pointsPolicyRegistryAddress?: string;
+  verificationPointsPolicyAddress?: string;
   depositRelayAddress?: string;
   referralsAddress?: string;
   clientRewardsAddress?: string;
@@ -281,6 +284,7 @@ export function resolveChainConfig(overrides?: {
     ...(overrides?.legacyEmissionsEscrowAddress ? { legacyEmissionsEscrowAddress: overrides.legacyEmissionsEscrowAddress } : {}),
     ...(overrides?.washTradingRegistryAddress ? { washTradingRegistryAddress: overrides.washTradingRegistryAddress } : {}),
     ...(overrides?.pointsPolicyRegistryAddress ? { pointsPolicyRegistryAddress: overrides.pointsPolicyRegistryAddress } : {}),
+    ...(overrides?.verificationPointsPolicyAddress ? { verificationPointsPolicyAddress: overrides.verificationPointsPolicyAddress } : {}),
     ...(overrides?.depositRelayAddress ? { depositRelayAddress: overrides.depositRelayAddress } : {}),
     ...(overrides?.referralsAddress ? { referralsAddress: overrides.referralsAddress } : {}),
     ...(overrides?.clientRewardsAddress ? { clientRewardsAddress: overrides.clientRewardsAddress } : {}),

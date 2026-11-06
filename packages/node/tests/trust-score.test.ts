@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  computeTrustScore, historyCurve, trustScore, shareCurve, TRUST_HISTORY_CHANNEL_TARGET,
-  TRUST_HISTORY_VOLUME_USDC_MICROS_TARGET, TRUST_WEIGHTS,
+  computeTrustScore, historyCurve, trustScore, shareCurve, TRUST_IDENTITY_BONUS, TRUST_WEIGHTS,
 } from '../src/reputation/trust-score.js';
 import { DefaultRouter } from '../src/routing/default-router.js';
 import type { PeerInfo } from '../src/types/peer.js';
@@ -23,22 +22,27 @@ function chainPeer(overrides: Partial<PeerInfo> = {}): PeerInfo {
 }
 
 describe('shareCurve', () => {
-  it('maps a share of all pools onto a 0-1 log curve with a 1000x range', () => {
+  it('maps basis points to 0-1, with full marks at a 50% share', () => {
     expect(shareCurve(0)).toBe(0);
-    expect(shareCurve(100)).toBeCloseTo(0.347, 2);
-    expect(shareCurve(1_000)).toBeCloseTo(0.667, 2);
+    expect(shareCurve(50)).toBeCloseTo(0.347, 2);
+    expect(shareCurve(500)).toBeCloseTo(0.667, 2);
+    expect(shareCurve(5_000)).toBe(1);
     expect(shareCurve(10_000)).toBe(1);
-    expect(shareCurve(50_000)).toBe(1);
     expect(shareCurve(NaN)).toBe(0);
   });
 
-  it('weights sum to 100', () => {
-    expect(Object.values(TRUST_WEIGHTS).reduce((a, b) => a + b, 0)).toBe(100);
+  it('keeps the power and usage weights summing to 100', () => {
+    expect(TRUST_WEIGHTS.power + TRUST_WEIGHTS.usage).toBe(100);
+  });
+
+  it('keeps the deprecated weights for existing consumers', () => {
+    expect(TRUST_WEIGHTS.history).toBe(0);
+    expect(TRUST_WEIGHTS.identity).toBe(TRUST_IDENTITY_BONUS);
   });
 });
 
 describe('historyCurve', () => {
-  it('rewards service history logarithmically and saturates at the target', () => {
+  it('stays exported with its behavior for existing consumers', () => {
     expect(historyCurve(0, 100)).toBe(0);
     expect(historyCurve(9, 100)).toBeCloseTo(0.499, 2);
     expect(historyCurve(100, 100)).toBe(1);
@@ -52,71 +56,53 @@ describe('computeTrustScore', () => {
     expect(computeTrustScore({ peerId: PEER_ID, providers: [], lastSeen: NOW, reputationScore: 100 }, NOW)).toBeNull();
   });
 
-  it('gives established sellers up to 50 points for settled service history', () => {
-    const established = chainPeer({
-      onChainChannelCount: TRUST_HISTORY_CHANNEL_TARGET,
-      onChainTotalVolumeUsdcMicros: TRUST_HISTORY_VOLUME_USDC_MICROS_TARGET,
-    });
+  it('reports settled service history without scoring it', () => {
+    const established = chainPeer({ onChainChannelCount: 1_000, onChainTotalVolumeUsdcMicros: 1_000_000_000 });
     expect(computeTrustScore(established, NOW)).toMatchObject({
-      score: 50,
-      history: {
-        score: 50,
-        channelCount: TRUST_HISTORY_CHANNEL_TARGET,
-        totalVolumeUsdcMicros: TRUST_HISTORY_VOLUME_USDC_MICROS_TARGET,
-      },
+      score: 0,
+      // `history.score` stays for existing consumers of the published type.
+      history: { score: 0, channelCount: 1_000, totalVolumeUsdcMicros: 1_000_000_000 },
     });
-    expect(trustScore(chainPeer({ onChainChannelCount: 9, onChainTotalVolumeUsdcMicros: 0 }), NOW)).toBeCloseTo(50 * 0.499 / 2, 1);
-    expect(trustScore(chainPeer({ onChainChannelCount: 0, onChainTotalVolumeUsdcMicros: 9_000_000 }), NOW)).toBeCloseTo(50 * 0.499 / 2, 1);
+    // History alone still makes the peer known, so a seller-reported score cannot stand in for it.
+    expect(computeTrustScore({ peerId: PEER_ID, providers: [], lastSeen: NOW, reputationScore: 100,
+      onChainChannelCount: 1_000, onChainTotalVolumeUsdcMicros: 1_000_000_000 }, NOW)?.score).toBe(0);
   });
 
-  it('keeps an established seller below the default gate on history and power alone', () => {
-    const seller = chainPeer({
-      onChainChannelCount: TRUST_HISTORY_CHANNEL_TARGET,
-      onChainTotalVolumeUsdcMicros: TRUST_HISTORY_VOLUME_USDC_MICROS_TARGET,
-      onChainUsageShareBps: 0,
-      onChainPoolPowerShareBps: 588,
-    });
-    expect(trustScore(seller, NOW)).toBeLessThan(60);
-    // A 1% share of last epoch's recognized usage is enough to clear it.
-    expect(trustScore(chainPeer({
-      onChainChannelCount: TRUST_HISTORY_CHANNEL_TARGET,
-      onChainTotalVolumeUsdcMicros: TRUST_HISTORY_VOLUME_USDC_MICROS_TARGET,
-      onChainUsageShareBps: 100,
-      onChainPoolPowerShareBps: 588,
-    }), NOW)).toBeGreaterThan(60);
-    // So does offering a free model.
-    expect(trustScore({ ...seller, providerPricing: FREE_PRICING }, NOW)).toBeGreaterThan(60);
-  });
-
-  it('adds weighted last-epoch usage share and current-epoch power share', () => {
-    const balanced = chainPeer({ onChainUsageShareBps: 1_000, onChainPoolPowerShareBps: 1_000 });
+  it('weighs current-epoch power at 70 and last-epoch usage at 30', () => {
+    const balanced = chainPeer({ onChainUsageShareBps: 500, onChainPoolPowerShareBps: 500 });
     expect(computeTrustScore(balanced, NOW)).toMatchObject({
-      usage: { shareBps: 1_000, epoch: 21 }, power: { shareBps: 1_000, epoch: 22 }, identity: null, washFlagged: false,
+      usage: { shareBps: 500, epoch: 21 }, power: { shareBps: 500, epoch: 22 }, identity: null, washFlagged: false,
     });
-    expect(trustScore(balanced, NOW)).toBeCloseTo(30 * shareCurve(1_000));
-    const powerOnly = chainPeer({ onChainPoolPowerShareBps: 1_000 });
-    expect(trustScore(powerOnly, NOW)).toBeCloseTo(10 * shareCurve(1_000));
+    expect(trustScore(balanced, NOW)).toBeCloseTo(100 * shareCurve(500));
+    expect(trustScore(chainPeer({ onChainPoolPowerShareBps: 500 }), NOW)).toBeCloseTo(70 * shareCurve(500));
+    expect(trustScore(chainPeer({ onChainUsageShareBps: 500 }), NOW)).toBeCloseTo(30 * shareCurve(500));
     expect(trustScore(chainPeer(), NOW)).toBe(0);
-    expect(trustScore(chainPeer({ onChainUsageShareBps: 10_000, onChainPoolPowerShareBps: 10_000 }), NOW)).toBe(30);
+    expect(trustScore(chainPeer({ onChainUsageShareBps: 5_000, onChainPoolPowerShareBps: 5_000 }), NOW)).toBe(100);
+  });
+
+  it('keeps a seller with no stake at 0 whatever its usage history, and below the default gate on usage alone', () => {
+    expect(trustScore(chainPeer({ onChainChannelCount: 500, onChainTotalVolumeUsdcMicros: 200_000_000 }), NOW)).toBe(0);
+    expect(trustScore(chainPeer({ onChainUsageShareBps: 5_000 }), NOW)).toBeLessThan(60);
+    // Real stake clears it.
+    expect(trustScore(chainPeer({ onChainUsageShareBps: 500, onChainPoolPowerShareBps: 500 }), NOW)).toBeGreaterThan(60);
   });
 
   it('has no usage part in the first epoch and no power part without pool data', () => {
     expect(computeTrustScore(chainPeer({ onChainUsageEpoch: 0, onChainUsageShareBps: 5_000 }), NOW)?.usage).toBeNull();
     const noPools = computeTrustScore(chainPeer({ onChainUsageShareBps: 1_000, onChainPoolPowerShareBps: undefined }), NOW);
     expect(noPools?.power).toBeNull();
-    expect(noPools?.score).toBeCloseTo(20 * shareCurve(1_000));
+    expect(noPools?.score).toBeCloseTo(30 * shareCurve(1_000));
   });
 
-  it('adds up to 20 points for a verified identity on top of the on-chain parts', () => {
+  it('adds up to 20 points for a verified identity on top of the weighted parts', () => {
     const identityOnly = peerWithGithub();
     expect(computeTrustScore(identityOnly, NOW)).toMatchObject({ score: 20, history: null, usage: null, power: null, identity: { score: 20, kind: 'github', claim: 'portfolio' }, washFlagged: null });
-    const strong = { ...peerWithGithub(), ...chainPeer({ onChainChannelCount: 100, onChainTotalVolumeUsdcMicros: 100_000_000,
-      onChainUsageShareBps: 10_000, onChainPoolPowerShareBps: 10_000 }) };
+    const strong = { ...peerWithGithub(), ...chainPeer({ onChainUsageShareBps: 5_000, onChainPoolPowerShareBps: 5_000 }) };
     expect(trustScore(strong, NOW)).toBe(100);
     // The free-model bonus never pushes the total past 100.
     expect(trustScore({ ...strong, providerPricing: FREE_PRICING }, NOW)).toBe(100);
-    const typical = { ...peerWithGithub(), ...chainPeer({ onChainUsageShareBps: 1_000, onChainPoolPowerShareBps: 1_000 }) };
-    expect(trustScore(typical, NOW)).toBeCloseTo(20 + 30 * shareCurve(1_000));
+    const typical = { ...peerWithGithub(), ...chainPeer({ onChainUsageShareBps: 100, onChainPoolPowerShareBps: 100 }) };
+    expect(trustScore(typical, NOW)).toBeCloseTo(20 + 100 * shareCurve(100));
     const domainOnly = peerWithGithub([]);
     domainOnly.verificationResults!.identityHistory = { version: 1, identities: [{ kind: 'domain', claim: 'portfolio.example',
       status: 'available', identityId: 'domain:portfolio.example', fetchedAtMs: NOW, createdAtMs: NOW - 20 * 365.25 * 86_400_000 }] };
@@ -152,9 +138,9 @@ describe('computeTrustScore', () => {
   });
 
   it('ignores ghost count, stake amount and the local sybil heuristic', () => {
-    const peer = chainPeer({ onChainUsageShareBps: 1_000, onChainPoolPowerShareBps: 1_000, onChainChannelCount: 0, onChainGhostCount: 500,
+    const peer = chainPeer({ onChainUsageShareBps: 100, onChainPoolPowerShareBps: 100, onChainChannelCount: 0, onChainGhostCount: 500,
       onChainSybilRisk: 1, onChainTotalVolumeUsdcMicros: 0, onChainPoolStakeAnts: 1_000_000, onChainUsageLastEpochUsdcMicros: 5 });
-    expect(trustScore(peer, NOW)).toBeCloseTo(30 * shareCurve(1_000));
+    expect(trustScore(peer, NOW)).toBeCloseTo(100 * shareCurve(100));
   });
 
   it('feeds the default router: price-first among eligible peers, trust as the eligibility gate', () => {
@@ -162,8 +148,7 @@ describe('computeTrustScore', () => {
     vi.setSystemTime(NOW);
     try {
       const cheap: PeerInfo = { ...chainPeer(), peerId: 'b'.repeat(40) as PeerInfo['peerId'], onChainReputationScore: 0, defaultInputUsdPerMillion: 1 };
-      const established: PeerInfo = { ...chainPeer({ onChainChannelCount: 100, onChainTotalVolumeUsdcMicros: 100_000_000,
-        onChainUsageShareBps: 2_000, onChainPoolPowerShareBps: 2_000 }), onChainReputationScore: 75, defaultInputUsdPerMillion: 2 };
+      const established: PeerInfo = { ...chainPeer({ onChainUsageShareBps: 2_000, onChainPoolPowerShareBps: 2_000 }), onChainReputationScore: 75, defaultInputUsdPerMillion: 2 };
       const request = {} as SerializedHttpRequest;
       expect(new DefaultRouter().selectPeer(request, [established, cheap])).toBe(cheap);
       expect(new DefaultRouter({ minReputation: 60 }).selectPeer(request, [cheap, established])).toBe(established);
