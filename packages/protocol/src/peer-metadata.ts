@@ -16,7 +16,7 @@ import {
 } from './service-api.js';
 
 /** Newest metadata version this build signs and understands. */
-export const METADATA_VERSION = 15;
+export const METADATA_VERSION = 16;
 /** Oldest announced metadata version buyers still accept from sellers. */
 export const MIN_SUPPORTED_METADATA_VERSION = 10;
 /**
@@ -41,6 +41,12 @@ export const SERVICE_PERFORMANCE_METADATA_VERSION = 14;
  * Older documents leave such services out (see each version's vocabulary).
  */
 export const SPEECH_METADATA_VERSION = 15;
+/**
+ * First version that may carry `capabilities.maxPromptTokens`: the largest prompt
+ * a seller accepts for a service, a policy limit distinct from `contextWindow`.
+ * Older documents leave it out (see each version's vocabulary).
+ */
+export const PROMPT_LIMIT_METADATA_VERSION = 16;
 export const WELL_KNOWN_SERVICE_CATEGORIES = [
   "privacy",
   "legal",
@@ -102,6 +108,13 @@ export interface ServiceCapabilities {
   speech?: SpeechOptions;
   /** Total context window in tokens. */
   contextWindow?: number;
+  /**
+   * Largest prompt (input tokens) the seller will accept for this service, a seller
+   * policy independent of and usually smaller than `contextWindow` (e.g. a free or
+   * size-limited tier). A hint buyers may pre-validate against; the seller still
+   * enforces. Absent means unknown (metadata v16+).
+   */
+  maxPromptTokens?: number;
   /** Maximum output tokens per response. */
   maxOutputTokens?: number;
   /** Supported input modalities. */
@@ -122,7 +135,7 @@ export interface ServiceCapabilities {
   supportedParameters?: string[];
 }
 
-/** Ceiling for announced contextWindow / maxOutputTokens (fits the u32 wire field). */
+/** Ceiling for announced contextWindow / maxPromptTokens / maxOutputTokens (fits the u32 wire field). */
 export const MAX_CAPABILITY_TOKEN_COUNT = 1_000_000_000;
 export const MAX_CAPABILITY_SUPPORTED_PARAMETERS = 32;
 export const MAX_CAPABILITY_PARAMETER_LENGTH = 32;
@@ -219,7 +232,7 @@ export function validateServiceCapabilityFields(caps: ServiceCapabilities): stri
   const errors: string[] = [];
   if (caps.video !== undefined) errors.push(...validateVideoOptions(caps.video));
   if (caps.speech !== undefined) errors.push(...validateSpeechOptions(caps.speech));
-  for (const key of ["contextWindow", "maxOutputTokens"] as const) {
+  for (const key of ["contextWindow", "maxPromptTokens", "maxOutputTokens"] as const) {
     const value = caps[key];
     if (value === undefined) continue;
     if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0 || value > MAX_CAPABILITY_TOKEN_COUNT) {

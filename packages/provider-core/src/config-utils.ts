@@ -153,7 +153,7 @@ export function parseServiceCapabilitiesJson(raw: string | undefined, key = 'ANT
     }
     const caps = rawCaps as Record<string, unknown>;
     const normalized: ServiceCapabilities = {};
-    for (const field of ['contextWindow', 'maxOutputTokens'] as const) {
+    for (const field of ['contextWindow', 'maxPromptTokens', 'maxOutputTokens'] as const) {
       if (caps[field] !== undefined) normalized[field] = caps[field] as number;
     }
     if (caps.inputs !== undefined) normalized.inputs = caps.inputs as ServiceCapabilities['inputs'];

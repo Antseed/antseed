@@ -1,5 +1,5 @@
 import type { ServiceCapabilities, ServiceCapabilityModality, SpeechOptions, VideoInputKind, VideoOptions } from "../../peer-metadata.js";
-import { SERVICE_CAPABILITY_MODALITIES, SPEECH_METADATA_VERSION, VIDEO_INPUT_KINDS } from "../../peer-metadata.js";
+import { PROMPT_LIMIT_METADATA_VERSION, SERVICE_CAPABILITY_MODALITIES, SPEECH_METADATA_VERSION, VIDEO_INPUT_KINDS } from "../../peer-metadata.js";
 import type { ProviderField } from "../field.js";
 import { compareCodeUnits, type MetadataReader, type MetadataWriter, serviceMap } from "../wire.js";
 
@@ -22,6 +22,8 @@ const CAP_VAL_STRUCTURED_OUTPUT = 1 << 2;
 const CAP_VAL_VIDEO_OPTIONS = 1 << 3;
 /** v15+: a speech options block follows the video options. */
 const CAP_VAL_SPEECH_OPTIONS = 1 << 4;
+/** v16+: a uint32 maxPromptTokens follows the speech options at the end of the entry. */
+const CAP_VAL_MAX_PROMPT_TOKENS = 1 << 5;
 const CAP_VALUE_MASK = CAP_VAL_REASONING | CAP_VAL_TOOL_USE | CAP_VAL_STRUCTURED_OUTPUT
   | CAP_VAL_VIDEO_OPTIONS;
 const SPEECH_HAS_VOICES = 1 << 0;
@@ -149,11 +151,13 @@ function decodeSpeechOptions(reader: MetadataReader): SpeechOptions {
 /**
  * [count:1|2] then [serviceLen:1][service:N][presence:1][contextWindow:4?][maxOutputTokens:4?]
  * [inputs:1?][outputs:1?][valueBits:1][parameterCount:1 + params?][videoOptions?][speechOptions? (v15+)]
+ * [maxPromptTokens:4? (v16+)]
  */
 export const serviceCapabilitiesField: ProviderField = {
   key: "serviceCapabilities",
   encode(writer, provider, ctx) {
     const speechAllowed = ctx.version >= SPEECH_METADATA_VERSION;
+    const promptLimitAllowed = ctx.version >= PROMPT_LIMIT_METADATA_VERSION;
     // Code-unit sort, not localeCompare: buyers verify signatures by re-encoding
     // decoded metadata, so entry order must not depend on the verifier's locale.
     const entries = Object.entries(provider.serviceCapabilities ?? {}).sort(([a], [b]) => compareCodeUnits(a, b));
@@ -183,6 +187,10 @@ export const serviceCapabilitiesField: ProviderField = {
         if (!speechAllowed) throw new Error(`Speech capabilities require metadata version ${SPEECH_METADATA_VERSION}`);
         valueBits |= CAP_VAL_SPEECH_OPTIONS;
       }
+      if (caps.maxPromptTokens !== undefined) {
+        if (!promptLimitAllowed) throw new Error(`maxPromptTokens requires metadata version ${PROMPT_LIMIT_METADATA_VERSION}`);
+        valueBits |= CAP_VAL_MAX_PROMPT_TOKENS;
+      }
       writer.u8(valueBits);
       if (caps.supportedParameters !== undefined) {
         // Code-unit sort for the same reason as the entry sort above.
@@ -195,10 +203,13 @@ export const serviceCapabilitiesField: ProviderField = {
       }
       if (caps.video !== undefined) encodeVideoOptions(writer, caps.video);
       if (caps.speech !== undefined) encodeSpeechOptions(writer, caps.speech);
+      if (caps.maxPromptTokens !== undefined) writer.u32(caps.maxPromptTokens);
     }
   },
   decode(reader, provider, ctx) {
-    const valueMask = ctx.version >= SPEECH_METADATA_VERSION ? CAP_VALUE_MASK | CAP_VAL_SPEECH_OPTIONS : CAP_VALUE_MASK;
+    const valueMask = CAP_VALUE_MASK
+      | (ctx.version >= SPEECH_METADATA_VERSION ? CAP_VAL_SPEECH_OPTIONS : 0)
+      | (ctx.version >= PROMPT_LIMIT_METADATA_VERSION ? CAP_VAL_MAX_PROMPT_TOKENS : 0);
     const count = reader.serviceEntryCount(ctx.wideServiceCounts);
     const serviceCapabilities: Record<string, ServiceCapabilities> = serviceMap();
     for (let i = 0; i < count; i += 1) {
@@ -230,6 +241,7 @@ export const serviceCapabilitiesField: ProviderField = {
       }
       if (valueBits & CAP_VAL_VIDEO_OPTIONS) caps.video = decodeVideoOptions(reader);
       if (valueBits & CAP_VAL_SPEECH_OPTIONS) caps.speech = decodeSpeechOptions(reader);
+      if (valueBits & CAP_VAL_MAX_PROMPT_TOKENS) caps.maxPromptTokens = reader.u32();
       serviceCapabilities[service] = caps;
     }
     if (Object.keys(serviceCapabilities).length > 0) provider.serviceCapabilities = serviceCapabilities;
