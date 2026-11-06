@@ -19,7 +19,7 @@ function setup(readOnly = false, chainOverrides: Partial<AntsContext['chain']> =
   const app = Fastify();
   apps.push(app);
   const ctx = { signer: readOnly ? undefined : {}, address: '0x123', chain: { chainId: 'base-local', evmChainId: 31337, ...chainOverrides }, invalidate: vi.fn() } as unknown as AntsContext;
-  registerRoutes(app, { ctx, jobs: new JobRunner(), views: new ViewCache(), readOnly, dataDir: null, originBuyer: ctx.buyerAddress });
+  registerRoutes(app, { ctx, jobs: new JobRunner(), views: new ViewCache(), readOnly, dataDir: '/host/data', originBuyer: ctx.buyerAddress });
   return app;
 }
 
@@ -180,7 +180,7 @@ describe('dashboard API', () => {
     service.referral.mockResolvedValue({ available: false });
     service.refereeBonus.mockResolvedValue({ available: true, referrer: null });
     expect((await app.inject('/api/referrals')).json()).toEqual({ ok: true, data: { available: false } });
-    expect(service.referral.mock.calls[0]![1]).toBeNull();
+    expect(service.referral.mock.calls[0]![1]).toBe('/host/data');
     expect((await app.inject('/api/referrals/referee')).json()).toEqual({ ok: true, data: { available: true, referrer: null } });
   });
 
@@ -192,6 +192,18 @@ describe('dashboard API', () => {
     const readOnly = setup(true);
     expect((await readOnly.inject({ method: 'POST', url: '/api/referrals/invite' })).statusCode).toBe(403);
     expect(service.createInvite).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps invite bookkeeping in a hosted session without telling browsers where', async () => {
+    service.createInvite.mockResolvedValue({ invite: 'abc' });
+    const app = Fastify();
+    apps.push(app);
+    const ctx = { signer: {}, address: '0x123', chain: { chainId: 'base-local', evmChainId: 31337 }, invalidate: vi.fn() } as unknown as AntsContext;
+    registerRoutes(app, { ctx, jobs: new JobRunner(), views: new ViewCache(), readOnly: false, dataDir: '/host/data', hideDataDir: true, originBuyer: '0x123' });
+    await app.inject({ method: 'POST', url: '/api/referrals/invite' });
+    expect(service.createInvite).toHaveBeenCalledWith(ctx, '/host/data');
+    expect((await app.inject('/api/config')).json().data.dataDir).toBeNull();
+    expect((await setup().inject('/api/config')).json().data.dataDir).toBe('/host/data');
   });
 
   it('reports why an invite could not be created', async () => {
@@ -207,7 +219,7 @@ describe('free-tier codes', () => {
     const app = Fastify();
     apps.push(app);
     const ctx = { signer: wallet ?? undefined, address: wallet?.address ?? '0x0000000000000000000000000000000000000abc', chain: { chainId: 'base-local', evmChainId: 31337 }, invalidate: vi.fn() } as unknown as AntsContext;
-    registerRoutes(app, { ctx, jobs: new JobRunner(), views: new ViewCache(), readOnly: !wallet, dataDir: null, originBuyer: ctx.address, ...(browserSigning ? { browserSigning: {} as never } : {}) });
+    registerRoutes(app, { ctx, jobs: new JobRunner(), views: new ViewCache(), readOnly: !wallet, dataDir: '/host/data', originBuyer: ctx.address, ...(browserSigning ? { browserSigning: {} as never } : {}) });
     return app;
   }
   const buyer = `0x${'11'.repeat(20)}`;

@@ -2,8 +2,6 @@
 pragma solidity ^0.8.24;
 
 import "@openzeppelin/contracts/access/Ownable2Step.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/utils/Pausable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/math/Math.sol";
@@ -12,6 +10,7 @@ import {IAntseedEmissionsGate} from "../interfaces/IAntseedEmissionsGate.sol";
 import {IAntseedSellerPools} from "../interfaces/IAntseedSellerPools.sol";
 import {IAntseedUsageAccounting} from "../interfaces/IAntseedUsageAccounting.sol";
 import {IERC8004Registry} from "../interfaces/IERC8004Registry.sol";
+import {AntseedRewardPayout} from "../rewards/AntseedRewardPayout.sol";
 
 /**
  * @title AntseedClientRewards
@@ -35,8 +34,6 @@ import {IERC8004Registry} from "../interfaces/IERC8004Registry.sol";
  *         is final and claimable as soon as it ends.
  */
 contract AntseedClientRewards is Ownable2Step, Pausable, ReentrancyGuard {
-    using SafeERC20 for IERC20;
-
     /// @dev Values shared by the claim and stake tails of a reward.
     struct PreparedReward {
         address recipient;
@@ -137,7 +134,7 @@ contract AntseedClientRewards is Ownable2Step, Pausable, ReentrancyGuard {
     /// @notice Mint a client's reward to the agent owner, who must send this.
     function claimClientReward(uint256 clientAgentId, uint256 epoch) external nonReentrant whenNotPaused {
         PreparedReward memory reward = _prepareClientReward(clientAgentId, epoch);
-        _mintReward(epoch, reward.recipient, reward.claimableAmount, reward.reserveAmount);
+        AntseedRewardPayout.mint(emissionsGate, epoch, reward.recipient, reward.claimableAmount, reward.reserveAmount);
         emit ClientRewardClaimed(
             reward.recipient,
             clientAgentId,
@@ -159,7 +156,9 @@ contract AntseedClientRewards is Ownable2Step, Pausable, ReentrancyGuard {
     {
         if (stakeAgentId == 0) revert InvalidAddress();
         PreparedReward memory reward = _prepareClientReward(clientAgentId, epoch);
-        newPositionId = _stakeClaimedReward(
+        newPositionId = AntseedRewardPayout.stake(
+            emissionsGate,
+            sellerPools,
             reward.recipient, stakeAgentId, stakeEpochs, epoch, reward.claimableAmount, reward.reserveAmount
         );
         emit ClientRewardStaked(
@@ -215,36 +214,6 @@ contract AntseedClientRewards is Ownable2Step, Pausable, ReentrancyGuard {
 
     function _rewardCap(uint256 budget) internal pure returns (uint256) {
         return (budget * MAX_REWARD_SHARE_BPS) / BPS_DENOMINATOR;
-    }
-
-    function _mintReward(uint256 epoch, address recipient, uint256 claimableAmount, uint256 reserveAmount) internal {
-        if (claimableAmount != 0) emissionsGate.claim(epoch, recipient, claimableAmount);
-        if (reserveAmount != 0) emissionsGate.claim(epoch, _emissionsReserve(), reserveAmount);
-    }
-
-    function _stakeClaimedReward(
-        address staker,
-        uint256 stakeAgentId,
-        uint256 stakeEpochs,
-        uint256 epoch,
-        uint256 claimableAmount,
-        uint256 reserveAmount
-    ) internal returns (uint256 newPositionId) {
-        IAntseedSellerPools pools = sellerPools;
-        if (address(pools) == address(0)) revert InvalidAddress();
-
-        _mintReward(epoch, address(this), claimableAmount, reserveAmount);
-
-        IERC20 token = pools.antsToken();
-        if (address(token) == address(0)) revert InvalidAddress();
-        token.forceApprove(address(pools), claimableAmount);
-        newPositionId = pools.stakeFor(staker, stakeAgentId, claimableAmount, stakeEpochs);
-        token.forceApprove(address(pools), 0);
-    }
-
-    function _emissionsReserve() internal view returns (address reserve) {
-        reserve = emissionsGate.emissionsReserve();
-        if (reserve == address(0)) revert InvalidAddress();
     }
 
     /// @dev ERC-721 registries revert for unknown ids; treat that as no owner.

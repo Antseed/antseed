@@ -31,7 +31,10 @@ export interface RouteContext {
   jobs: JobRunner;
   views: ViewCache;
   readOnly: boolean;
-  dataDir: string | null;
+  /** Where the session keeps its files, such as the invites it issued. */
+  dataDir: string;
+  /** Hosted sessions do not tell browsers where the host keeps its files. */
+  hideDataDir?: boolean;
   selectedAddress?: string;
   /** The buyer account this session started for; the local authorization flow only applies to it. */
   originBuyer: string;
@@ -68,7 +71,7 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext): voi
 
   app.get('/api/config', async () => ({
     ok: true,
-    data: { address: ctx.address, selectedAddress: context.selectedAddress, walletAddress: context.selectedAddress ? await ctx.signer?.getAddress() ?? null : ctx.address, chainId: ctx.chain.chainId, evmChainId: ctx.chain.evmChainId, walletRpcUrl: ctx.chain.evmChainId === 31337 && /^http:\/\/(127\.0\.0\.1|localhost):[0-9]+\/?$/.test(ctx.chain.rpcUrl) ? ctx.chain.rpcUrl : undefined, readOnly: !ctx.signer, browserWallet: !!context.browserSigning, buyerAddress: ctx.buyerAddress, canAuthorize: !!context.onAuthorize && ctx.buyerAddress.toLowerCase() === context.originBuyer.toLowerCase(), dataDir: context.dataDir },
+    data: { address: ctx.address, selectedAddress: context.selectedAddress, walletAddress: context.selectedAddress ? await ctx.signer?.getAddress() ?? null : ctx.address, chainId: ctx.chain.chainId, evmChainId: ctx.chain.evmChainId, walletRpcUrl: ctx.chain.evmChainId === 31337 && /^http:\/\/(127\.0\.0\.1|localhost):[0-9]+\/?$/.test(ctx.chain.rpcUrl) ? ctx.chain.rpcUrl : undefined, readOnly: !ctx.signer, browserWallet: !!context.browserSigning, buyerAddress: ctx.buyerAddress, canAuthorize: !!context.onAuthorize && ctx.buyerAddress.toLowerCase() === context.originBuyer.toLowerCase(), dataDir: context.hideDataDir ? null : context.dataDir },
   }));
 
   app.post('/api/wallet/authorize', (_request, reply) => respond(reply, async () => {

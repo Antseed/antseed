@@ -11,7 +11,6 @@ import {
   scanEpochRewards,
   signInvite,
   withFileLock,
-  type ReferralScope,
   type ReferralsClient,
 } from '@antseed/node';
 import type { CreatedInviteView, InviteAllowanceView, RefereeView, ReferralView, ReferredBuyersView } from '../api-types.js';
@@ -34,7 +33,7 @@ const HIDDEN_REFEREE: RefereeView = {
  * scans; without an explorer, or one that does not index referrals, the card
  * is hidden.
  */
-export async function referral(ctx: AntsContext, dataDir: string | null = null): Promise<ReferralView> {
+export async function referral(ctx: AntsContext, dataDir: string): Promise<ReferralView> {
   const indexed = ctx.chain.referralsAddress ? await indexedReferrer(ctx.indexer(), ctx.buyerAddress) : null;
   if (!indexed) return HIDDEN_REFERRAL;
   return {
@@ -43,7 +42,7 @@ export async function referral(ctx: AntsContext, dataDir: string | null = null):
     claimableEpochs: indexed.claimableEpochs,
     referredCount: indexed.referredCount,
     invites: indexed.invites
-      ? allowanceView(indexed.invites, await issuedIndices(dataDir, { wallet: ctx.buyerAddress, chainId: ctx.chain.evmChainId, referralsAddress: ctx.chain.referralsAddress! }, indexed.invites.epoch))
+      ? allowanceView(indexed.invites, await readIssuedInviteIndices(dataDir, { wallet: ctx.buyerAddress, chainId: ctx.chain.evmChainId, referralsAddress: ctx.chain.referralsAddress! }, indexed.invites.epoch))
       : null,
   };
 }
@@ -59,11 +58,6 @@ async function indexedReferrer(indexer: Indexer | null, address: string): Promis
   if (!indexer?.referrer) return null;
   const indexed = await indexer.referrer(address);
   return indexed.available ? indexed : null;
-}
-
-/** Indices this install handed out for `epoch`, signed by `scope.wallet` on its deployment. */
-async function issuedIndices(dataDir: string | null, scope: ReferralScope, epoch: number): Promise<number[]> {
-  return dataDir ? readIssuedInviteIndices(dataDir, scope, epoch) : [];
 }
 
 /** Invites gone this epoch: |bound ∪ handed out here| (the bound count alone when Antscan lists no indexes). */
@@ -107,7 +101,7 @@ export async function issueInvite(options: {
   signer: AbstractSigner;
   chainId: number;
   referralsAddress: string;
-  dataDir: string | null;
+  dataDir: string;
   /** Index picker randomness (tests). */
   random?: () => number;
 }): Promise<CreatedInviteView> {
@@ -123,7 +117,7 @@ export async function issueInvite(options: {
 
   const scope = { wallet: referrer, chainId: options.chainId, referralsAddress: options.referralsAddress };
   const allocate = async (): Promise<CreatedInviteView> => {
-    const issued = await issuedIndices(options.dataDir, scope, epoch);
+    const issued = await readIssuedInviteIndices(options.dataDir, scope, epoch);
     const taken = new Set([...(explorer?.usedIndices ?? []), ...issued]);
     // Without Antscan's bound indexes, check every other index once (one view
     // call each) so both the pick and the count left are exact. With them,
@@ -141,7 +135,7 @@ export async function issueInvite(options: {
     if (index === null) throw new InviteQuotaError(`All ${quota} invites for this week are taken. More unlock next week.`, quota);
 
     const invite = await signInvite(options.signer, { chainId: options.chainId, referralsAddress: options.referralsAddress }, epoch, index);
-    if (options.dataDir) await recordIssuedInvite(options.dataDir, scope, epoch, index);
+    await recordIssuedInvite(options.dataDir, scope, epoch, index);
     const encoded = encodeInvite(invite);
     return {
       invite: encoded,
@@ -153,7 +147,7 @@ export async function issueInvite(options: {
       expiresEpoch: epoch + INVITE_VALIDITY_EPOCHS,
     };
   };
-  return options.dataDir ? withFileLock(inviteLockPath(options.dataDir), allocate) : allocate();
+  return withFileLock(inviteLockPath(options.dataDir), allocate);
 }
 
 /**
@@ -172,7 +166,7 @@ function inviteLockPath(dataDir: string): string {
  * `issueInvite` for the buyer account. Only its own wallet can sign its
  * invites: an operator signing them would hand out the operator's invites.
  */
-export async function createInvite(ctx: AntsContext, dataDir: string | null = null, report: StepReporter = silentReporter): Promise<CreatedInviteView> {
+export async function createInvite(ctx: AntsContext, dataDir: string, report: StepReporter = silentReporter): Promise<CreatedInviteView> {
   const client = ctx.referrals();
   if (!client || !ctx.chain.referralsAddress) throw new Error('Referrals are not configured for this chain.');
   const signer = ctx.requireSigner();

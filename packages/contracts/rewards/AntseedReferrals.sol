@@ -2,8 +2,6 @@
 pragma solidity ^0.8.24;
 
 import "@openzeppelin/contracts/access/Ownable2Step.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/utils/Pausable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/math/Math.sol";
@@ -13,6 +11,7 @@ import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import {IAntseedEmissionsGate} from "../interfaces/IAntseedEmissionsGate.sol";
 import {IAntseedSellerPools} from "../interfaces/IAntseedSellerPools.sol";
 import {IAntseedUsageAccounting} from "../interfaces/IAntseedUsageAccounting.sol";
+import {AntseedRewardPayout} from "./AntseedRewardPayout.sol";
 
 interface IAntseedReferralDeposits {
     function getOperator(address buyer) external view returns (address);
@@ -99,8 +98,6 @@ interface IAntseedReferralDeposits {
  *         earns).
  */
 contract AntseedReferrals is Ownable2Step, Pausable, ReentrancyGuard, EIP712 {
-    using SafeERC20 for IERC20;
-
     /// @dev Totals shared by the claim and stake tails of a reward.
     struct PreparedReward {
         uint256 grossAmount;
@@ -332,7 +329,7 @@ contract AntseedReferrals is Ownable2Step, Pausable, ReentrancyGuard, EIP712 {
         for (uint256 e = 0; e < epochs.length; e++) {
             PreparedReward memory reward = _prepareReferrerReward(referrer, buyers, epochs[e], recipient);
             gross += reward.grossAmount;
-            _mintReward(epochs[e], recipient, reward.claimableAmount, reward.reserveAmount);
+            AntseedRewardPayout.mint(emissionsGate, epochs[e], recipient, reward.claimableAmount, reward.reserveAmount);
         }
         if (gross == 0) revert NothingToClaim();
     }
@@ -350,7 +347,9 @@ contract AntseedReferrals is Ownable2Step, Pausable, ReentrancyGuard, EIP712 {
         address recipient = _rewardRecipient(referrer);
         PreparedReward memory reward = _prepareReferrerReward(referrer, buyers, epoch, recipient);
         if (reward.grossAmount == 0) revert NothingToClaim();
-        newPositionId = _stakeClaimedReward(
+        newPositionId = AntseedRewardPayout.stake(
+            emissionsGate,
+            sellerPools,
             recipient, stakeAgentId, stakeEpochs, epoch, reward.claimableAmount, reward.reserveAmount
         );
         emit ReferrerRewardStaked(
@@ -373,7 +372,7 @@ contract AntseedReferrals is Ownable2Step, Pausable, ReentrancyGuard, EIP712 {
         for (uint256 e = 0; e < epochs.length; e++) {
             PreparedReward memory reward = _prepareRefereeReward(buyer, epochs[e], recipient);
             gross += reward.grossAmount;
-            _mintReward(epochs[e], recipient, reward.claimableAmount, reward.reserveAmount);
+            AntseedRewardPayout.mint(emissionsGate, epochs[e], recipient, reward.claimableAmount, reward.reserveAmount);
         }
         if (gross == 0) revert NothingToClaim();
     }
@@ -390,7 +389,9 @@ contract AntseedReferrals is Ownable2Step, Pausable, ReentrancyGuard, EIP712 {
         address recipient = _rewardRecipient(buyer);
         PreparedReward memory reward = _prepareRefereeReward(buyer, epoch, recipient);
         if (reward.grossAmount == 0) revert NothingToClaim();
-        newPositionId = _stakeClaimedReward(
+        newPositionId = AntseedRewardPayout.stake(
+            emissionsGate,
+            sellerPools,
             recipient, stakeAgentId, stakeEpochs, epoch, reward.claimableAmount, reward.reserveAmount
         );
         emit RefereeRewardStaked(
@@ -553,36 +554,6 @@ contract AntseedReferrals is Ownable2Step, Pausable, ReentrancyGuard, EIP712 {
 
     function _rewardCap(uint256 budget) internal pure returns (uint256) {
         return (budget * MAX_REWARD_SHARE_BPS) / BPS_DENOMINATOR;
-    }
-
-    function _mintReward(uint256 epoch, address recipient, uint256 claimableAmount, uint256 reserveAmount) internal {
-        if (claimableAmount != 0) emissionsGate.claim(epoch, recipient, claimableAmount);
-        if (reserveAmount != 0) emissionsGate.claim(epoch, _emissionsReserve(), reserveAmount);
-    }
-
-    function _stakeClaimedReward(
-        address staker,
-        uint256 stakeAgentId,
-        uint256 stakeEpochs,
-        uint256 epoch,
-        uint256 claimableAmount,
-        uint256 reserveAmount
-    ) internal returns (uint256 newPositionId) {
-        IAntseedSellerPools pools = sellerPools;
-        if (address(pools) == address(0)) revert InvalidAddress();
-
-        _mintReward(epoch, address(this), claimableAmount, reserveAmount);
-
-        IERC20 token = pools.antsToken();
-        if (address(token) == address(0)) revert InvalidAddress();
-        token.forceApprove(address(pools), claimableAmount);
-        newPositionId = pools.stakeFor(staker, stakeAgentId, claimableAmount, stakeEpochs);
-        token.forceApprove(address(pools), 0);
-    }
-
-    function _emissionsReserve() internal view returns (address reserve) {
-        reserve = emissionsGate.emissionsReserve();
-        if (reserve == address(0)) revert InvalidAddress();
     }
 
     function _inRefereeWindow(address buyer, uint256 epoch) internal view returns (bool) {
