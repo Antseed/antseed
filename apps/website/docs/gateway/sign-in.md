@@ -164,6 +164,19 @@ A recovery link can only be created from the CLI on the gateway machine. It work
 
 Admins can also remove a member's broken method from the CLI: `antseed gateway member credentials list <member>` and `antseed gateway member credentials remove <member> <credentialId>`. Removing a method ends all of that member's console sessions, and a member's last method is kept unless you add `--allow-last`.
 
+## Without a browser {#without-a-browser}
+
+Claiming the console, accepting an invite and using a recovery link all need a browser: they finish with a passkey, a wallet signature or single sign-on. Agents, scripts and servers without a browser can still do the rest from the gateway machine, even before the console has an owner:
+
+| Task | Command on the gateway machine |
+|---|---|
+| Create an API key | `antseed gateway key create --label "my-agent" --json` (the secret is in `apiKey`) |
+| Script the console API | `antseed gateway admin-token create --label "ops" --scope admin --json` (the secret is in `token`), then call `/console/api` with it. See [Management API](/docs/gateway/management-api) |
+| Invite a person | `antseed gateway member invite --label "Alice" --role admin` prints a link. They open it in their own browser |
+| Give the console an owner | `antseed gateway console-link` prints the setup link. A person opens it |
+
+Keys, management tokens and invites created before the console is claimed keep working after it. A management token created with the CLI has no member behind it, so it keeps working until it expires or is revoked.
+
 ## Passkey gotchas
 
 A passkey belongs to a hostname (its relying party), not to a gateway. Most passkey problems come from that.

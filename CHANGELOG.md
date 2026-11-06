@@ -260,6 +260,8 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- Docs: **Quickstart** has a **Without a browser** path for agents and scripts: create an API key with `antseed gateway key create --label <name> --json` before anyone claims the console, send the first request, and have a person claim the console later. **Sign-in and access** gains a **Without a browser** section: claiming, accepting invites and recovery need a browser, while keys, management tokens (`antseed gateway admin-token create`), invite links and the setup link can all be made on the gateway machine, before the console has an owner.
+
 - Sellers (`@antseed/node`): usage receipts now price cached input at the cached rate, as the payment channel charge does. They priced every input token at the full input rate, so the receipt cost on the seller dashboard and request log, and session cost totals, came out well above what buyers paid for prompt-cached traffic.
 
 - Sellers (`@antseed/node`): an upstream answer saying the account's "extra usage" is used up is treated as an account error, like running out of credit: buyers get the generic `upstream_unavailable` 503 instead of the upstream's message, and health checks mark the model failing.
