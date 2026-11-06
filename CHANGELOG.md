@@ -260,6 +260,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- Docs: example model ids now exist on the network. The gateway preset example on **Gateway → Routing** (and so the Codex `@preset/coder` setup), the Claude Code example on **Gateway → Calling the API**, the example `/v1/models` output, and the suggested models on the GenLayer Studio, Vercel AI SDK and LangChain pages used `qwen3-coder-480b`, which no seller offers (`502 model_not_found`); they now use `deepseek-v4-flash` and `glm-5.2`. The first curl example on the curl integration page uses `deepseek-v4-flash`, which has a free seller, instead of `kimi-k2.6`, which got a `402` on an unfunded gateway. `apps/website/scripts/list-example-model-ids.mjs` lists the model ids in the docs, integration pages and skills, and with `--check <url of /v1/models>` marks the ones no seller offers.
 - Sellers (`@antseed/node`): usage receipts now price cached input at the cached rate, as the payment channel charge does. They priced every input token at the full input rate, so the receipt cost on the seller dashboard and request log, and session cost totals, came out well above what buyers paid for prompt-cached traffic.
 
 - Sellers (`@antseed/node`): an upstream answer saying the account's "extra usage" is used up is treated as an account error, like running out of credit: buyers get the generic `upstream_unavailable` 503 instead of the upstream's message, and health checks mark the model failing.
