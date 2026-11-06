@@ -240,7 +240,10 @@ test('DO_NOT_TRACK and ANTSEED_TELEMETRY=0 turn off a desktop the user opted in'
 test('disabled when PostHog host or key is missing', async (t) => {
   const dir = await makeTempDir(t);
   const captured: Captured = { payloads: [] };
-  const service = await createTelemetryService(baseOptions(dir, captured, { env: {} as NodeJS.ProcessEnv }));
+  // Set but empty, so a release build's baked config doesn't fill them in.
+  const service = await createTelemetryService(baseOptions(dir, captured, {
+    env: { [POSTHOG_HOST_ENV]: '', [POSTHOG_PROJECT_API_KEY_ENV]: '' } as NodeJS.ProcessEnv,
+  }));
   assert.equal(service.enabled, false);
   await service.recordAppStarted();
   assert.equal(captured.payloads.length, 0);
