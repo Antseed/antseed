@@ -96,13 +96,20 @@ The balance updates by itself once funds arrive. **Never send funds yourself and
 
 ### Free models only
 
-Some sellers serve some models for free. Without funds, a request that routes to a paid seller fails with `402 … insufficient_deposits` ("You are out of AntSeed credits"). Automatic routing is not limited to free sellers, so for a user without funds, cap the gateway's prices at zero on the gateway host:
+Some sellers serve some models for free. Without funds, a request that routes to a paid seller fails with `402 … insufficient_deposits` ("You are out of AntSeed credits"). Automatic routing is not limited to free sellers, so for a user without funds, cap the gateway's prices at zero on the gateway host. Save the current gateway policy first, then add the caps with `--merge`, which keeps any sellers, models, TEE or other rules already set:
 
 ```bash
-antseed gateway routing set --max-input-price 0 --max-output-price 0 --max-cached-input-price 0
+antseed gateway routing show --json > ~/routing-before-free.json
+antseed gateway routing set --merge --max-input-price 0 --max-output-price 0 --max-cached-input-price 0
 ```
 
-Every key now routes only to free sellers. A model with no free seller returns `model_not_found` ("No policy-allowed peer currently serves model …") instead of spending. When the user adds funds and wants paid models, remove the cap with `antseed gateway routing clear`. Pick a model with a free seller in Step 5.
+Without `--merge`, `routing set` replaces the whole policy. Every key now routes only to free sellers. A model with no free seller returns `model_not_found` ("No policy-allowed peer currently serves model …") instead of spending. When the user adds funds and wants paid models, put the saved policy back:
+
+```bash
+antseed gateway routing set --file ~/routing-before-free.json
+```
+
+Pick a model with a free seller in Step 5.
 
 Headless only (no browser available): the Default workspace pays from the buyer's `default` wallet, so `antseed buyer deposit --no-watch` prints its address and a QR code. For another workspace, `antseed gateway workspace show <workspace>` prints its wallet address. The running buyer deposits incoming USDC automatically. Card checkout is only in the console.
 
