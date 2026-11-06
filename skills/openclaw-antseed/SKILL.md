@@ -176,7 +176,14 @@ curl -s "$ANTSEED_BASE_URL/models/<model-id>" -H "Authorization: Bearer $ANTSEED
 
 `antseed network browse` remains useful for a peer-oriented table of services and pricing.
 
-A request that names only a model selects the highest-ranked eligible offer under the shared Price + Trust preferences and can fail over on retryable peer failures. To force a specific seller instead, use `<peerId>@<service-id>` as the model id — explicit pins never fail over.
+A request that names only a model selects the highest-ranked eligible offer under the shared Price + Trust preferences and can fail over on retryable peer failures. OpenClaw cuts model ids at `@`, so `<peerId>@<service-id>` reaches the gateway as a bare peer id and fails with `502 model_not_found`. To force a specific seller, create a gateway preset and use `@preset/<slug>` as the model id (presets pass through unchanged):
+
+```bash
+antseed gateway preset create --slug openclaw-pinned --name "OpenClaw pinned" \
+  --model SERVICE_ID_HERE --allow-peer <peerId>
+```
+
+On an unfunded gateway, use a preset that prefers free sellers instead of a plain model id (`--model deepseek-v4-flash --prefer-free`, or add `--max-input-price 0 --max-output-price 0` to never pay). A plain id can land on a paid seller, and after a `402` OpenClaw disables the `antseed` key for about 10 minutes for every model; `openclaw models status` shows it under **Unavailable auth profiles**.
 
 Set as default with OpenClaw's current model command:
 

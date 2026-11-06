@@ -680,6 +680,14 @@ Deposits reserved:           0 USDC → 1 USDC`,
         'Same computer as the buyer, no gateway: use `http://127.0.0.1:8377/v1` and any placeholder key, such as `antseed-p2p`.',
       ),
       {
+        kind: 'code',
+        title: 'Create a gateway preset that prefers free sellers',
+        language: 'bash',
+        snippet: `antseed gateway preset create --slug openclaw --name OpenClaw \\
+  --model deepseek-v4-flash --prefer-free`,
+        note: 'Run it where the gateway runs, or create the preset on the console\'s **Presets** page. OpenClaw then calls it as the model `@preset/openclaw`. With a plain model id, OpenClaw\'s requests can land on a paid seller and get a `402` on an unfunded gateway, even for a model that has a free seller. To never pay, add `--max-input-price 0 --max-output-price 0`: with no free seller available you get a `502` instead of a `402`. The local buyer proxy has no presets, so through it OpenClaw needs a funded buyer.',
+      },
+      {
         kind: 'file',
         path: '~/.openclaw/openclaw.json  (merge into the existing `models.providers` object)',
         language: 'json',
@@ -693,19 +701,19 @@ Deposits reserved:           0 USDC → 1 USDC`,
         "api": "openai-completions",
         "models": [
           {
-            "id": "kimi-k2.6",
-            "name": "Kimi K2.6 (via Antseed)",
-            "reasoning": false,
-            "input": ["text"],
-            "contextWindow": 256000,
-            "maxTokens": 8192
-          },
-          {
-            "id": "deepseek-v4-flash",
-            "name": "DeepSeek v4 Flash (via Antseed)",
+            "id": "@preset/openclaw",
+            "name": "DeepSeek v4 Flash, free sellers first (via Antseed)",
             "reasoning": false,
             "input": ["text"],
             "contextWindow": 128000,
+            "maxTokens": 8192
+          },
+          {
+            "id": "kimi-k2.6",
+            "name": "Kimi K2.6 (via Antseed, paid)",
+            "reasoning": false,
+            "input": ["text"],
+            "contextWindow": 256000,
             "maxTokens": 8192
           }
         ]
@@ -718,14 +726,15 @@ Deposits reserved:           0 USDC → 1 USDC`,
       {
         kind: 'code',
         language: 'bash',
-        snippet: `openclaw models set "antseed/kimi-k2.6"
+        snippet: `openclaw models set "antseed/@preset/openclaw"
 openclaw gateway restart`,
+        note: 'The restart is only for a running OpenClaw gateway service. One-off `openclaw agent exec` runs read the config directly.',
       },
     ],
     modelHints: {
       suggested: ['kimi-k2.6', 'deepseek-v4-flash', 'minimax-m2.7', 'gpt-oss-120b'],
       note:
-        'Every `id` under `models[]` must match a model id from `GET /v1/models`. Route to a specific peer with `<peerId>@<service-id>`. With the local buyer proxy and the desktop app, the special id `antseed` follows the model picked in the app; it does not work through a gateway.',
+        'Every `id` under `models[]` must be a model id from `GET /v1/models` or a gateway preset (`@preset/<slug>`). `kimi-k2.6` has no free seller, so it needs a funded gateway. Don\'t pin a seller with `<peerId>@<service-id>`: OpenClaw drops everything from the `@`, so the gateway gets a bare peer id and answers `502 model_not_found`. Pin with a preset instead: `antseed gateway preset create --slug openclaw-pinned --name "OpenClaw pinned" --model deepseek-v4-flash --allow-peer <peerId>`, then use `@preset/openclaw-pinned`. With the local buyer proxy and the desktop app, the special id `antseed` follows the model picked in the app; it does not work through a gateway.',
     },
     test: [
       {
@@ -737,17 +746,17 @@ openclaw gateway restart`,
 "kimi-k2.6"
 "minimax-m2.7"`,
         note:
-          'If a model id you listed in `openclaw.json` doesn\'t appear here, no seller your routing policy allows serves it right now. Remove the entry or pick another model from the list.',
+          'Presets are not listed here. If a model id you listed in `openclaw.json` doesn\'t appear here, no seller your routing policy allows serves it right now. Remove the entry or pick another model from the list.',
       },
       {
         label: 'Check the configured model catalog',
         command: 'openclaw models list',
         note:
-          'Run `openclaw gateway restart` after editing the config. You should see the `antseed` provider and its configured models.',
+          'You should see the `antseed` provider and its configured models.',
       },
       {
         label: 'Run an agent against Antseed',
-        command: 'openclaw agent exec "Summarize the README in this repo" --model antseed/kimi-k2.6',
+        command: 'openclaw agent exec "Summarize the README in this repo" --model "antseed/@preset/openclaw"',
       },
     ],
     troubleshooting: [
@@ -763,7 +772,12 @@ openclaw gateway restart`,
       {
         problem: 'OpenClaw lists `antseed/<id>` but every call returns `502 model_not_found`',
         fix:
-          'No seller your routing policy allows currently advertises that model. Check `GET $ANTSEED_BASE_URL/models` with the bearer key and update `models[]`, or pick another model.',
+          'No seller your routing policy allows currently advertises that model. Check `GET $ANTSEED_BASE_URL/models` with the bearer key and update `models[]`, or pick another model. If the error names a 40-character peer id instead of a model, the id was `<peerId>@<service-id>`, which OpenClaw cuts at the `@`; pin with a preset instead (see **Pick a model**).',
+      },
+      {
+        problem: '`returned a billing error`, then `Inline API key for provider "antseed" is temporarily disabled after a provider auth/billing failure`',
+        fix:
+          'The gateway answered `402`: the request was routed to a paid seller and the workspace wallet is empty. OpenClaw then disables the `antseed` key for about 10 minutes for every model, free ones included; `openclaw models status` lists it under **Unavailable auth profiles** with the time left. Wait it out, then use the `@preset/openclaw` preset above, or fund the workspace wallet (console → **Wallet & Funding**).',
       },
       {
         problem: 'Streaming errors on long-running agents',
@@ -793,7 +807,7 @@ openclaw gateway restart`,
       { label: 'Antseed tunnels', href: '/docs/tunnels' },
     ],
     agentSummary:
-      'Gateway (recommended): set ANTSEED_BASE_URL=<gateway URL ending in /v1> and ANTSEED_API_KEY=<gateway key>. Same computer as a buyer, no gateway: http://127.0.0.1:8377/v1 with a placeholder key. In models.providers.antseed use baseUrl/apiKey from those variables, api="openai-completions" and authHeader=true (Bearer, required by the gateway), list model ids from GET /v1/models, run `openclaw models set "antseed/<model-id>"`, then `openclaw gateway restart`.',
+      'Gateway (recommended): set ANTSEED_BASE_URL=<gateway URL ending in /v1> and ANTSEED_API_KEY=<gateway key>. Same computer as a buyer, no gateway: http://127.0.0.1:8377/v1 with a placeholder key. In models.providers.antseed use baseUrl/apiKey from those variables, api="openai-completions" and authHeader=true (Bearer, required by the gateway), list model ids from GET /v1/models, run `openclaw models set "antseed/<model-id>"`, then `openclaw gateway restart` (only needed for a running OpenClaw gateway). On an unfunded gateway, create a preset with `antseed gateway preset create --slug openclaw --name OpenClaw --model deepseek-v4-flash --prefer-free` and use model id `@preset/openclaw`: a 402 makes OpenClaw disable the antseed key for about 10 minutes, free models included. Never use `<peerId>@<model>` in OpenClaw (it strips everything from the @, giving 502 model_not_found); pin with a preset made with `--allow-peer <peerId>`.',
   },
   {
     slug: 'hermes',

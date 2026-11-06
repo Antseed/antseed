@@ -260,6 +260,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- Docs: the OpenClaw integration works on an unfunded gateway. Its default model was `kimi-k2.6`, which has no free seller: the first run got a `402`, and OpenClaw then disables the `antseed` key for about 10 minutes for every model. The page now creates a gateway preset that prefers free sellers (`antseed gateway preset create --slug openclaw … --prefer-free`) and uses `@preset/openclaw` as the default, and troubleshooting covers the lockout. It no longer suggests `<peerId>@<service-id>` pinning, which OpenClaw cuts at the `@` (the gateway gets a bare peer id and answers `502 model_not_found`); it pins with a preset made with `--allow-peer`. Also in **Connect → Agents** and the `openclaw-antseed` skill.
 - Sellers (`@antseed/node`): usage receipts now price cached input at the cached rate, as the payment channel charge does. They priced every input token at the full input rate, so the receipt cost on the seller dashboard and request log, and session cost totals, came out well above what buyers paid for prompt-cached traffic.
 
 - Sellers (`@antseed/node`): an upstream answer saying the account's "extra usage" is used up is treated as an account error, like running out of credit: buyers get the generic `upstream_unavailable` 503 instead of the upstream's message, and health checks mark the model failing.
