@@ -80,6 +80,19 @@ describe('ConnectionManager inbound connection limits', () => {
     expect(response).toContain(sellerIdentity.peerId);
   });
 
+  it('lets a connected buyer reconnect at the limit, replacing its old connection', async () => {
+    const port = await listen(1);
+    const first = connectBuyer(port, 0);
+    expect(await settle(first)).toBeNull();
+    const firstClosed = new Promise<void>((resolve) => first.on('stateChange', (state) => {
+      if (state === ConnectionState.Closed || state === ConnectionState.Failed) resolve();
+    }));
+
+    expect(await settle(connectBuyer(port, 0))).toBeNull();
+    await firstClosed;
+    expect((await settle(connectBuyer(port, 1)))?.message).toBe(INBOUND_AT_CAPACITY_MESSAGE);
+  });
+
   it('frees a slot when a buyer disconnects', async () => {
     const port = await listen(1);
     const first = connectBuyer(port, 0);

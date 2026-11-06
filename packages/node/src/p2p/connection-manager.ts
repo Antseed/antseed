@@ -974,14 +974,6 @@ export class ConnectionManager extends EventEmitter {
         return;
       }
 
-      // Peers are counted apart from pending sockets, so a full house of buyers never blocks metadata requests.
-      if (this._inboundPeerSockets.size >= this._maxInboundConnections) {
-        socket.end(JSON.stringify({ type: "refused", reason: INBOUND_AT_CAPACITY_MESSAGE }) + LINE_SEPARATOR);
-        return;
-      }
-      this._pendingInboundSockets.delete(socket);
-      this._inboundPeerSockets.add(socket);
-
       let intro: InitialWireMessage;
       try {
         intro = JSON.parse(line) as InitialWireMessage;
@@ -1008,6 +1000,15 @@ export class ConnectionManager extends EventEmitter {
         socket.destroy();
         return;
       }
+
+      // Peers are counted apart from pending sockets, so a full house of buyers never blocks metadata requests.
+      // A peer that is already connected replaces its old connection when accepted, so it needs no new slot.
+      if (this._inboundPeerSockets.size >= this._maxInboundConnections && !this._hasLiveConnection(verified.peerId)) {
+        socket.end(JSON.stringify({ type: "refused", reason: INBOUND_AT_CAPACITY_MESSAGE }) + LINE_SEPARATOR);
+        return;
+      }
+      this._pendingInboundSockets.delete(socket);
+      this._inboundPeerSockets.add(socket);
 
       const remoteCapabilities = normalizeCapabilities(intro.capabilities);
 
@@ -1051,6 +1052,11 @@ export class ConnectionManager extends EventEmitter {
     socket.on("close", () => {
       clearTimeout(timeout);
     });
+  }
+
+  private _hasLiveConnection(peerId: PeerId): boolean {
+    const existing = this._connections.get(peerId);
+    return existing !== undefined && existing.state !== ConnectionState.Closed && existing.state !== ConnectionState.Failed;
   }
 
   private _serveHttpMetadata(socket: Socket, requestLine: string, refused: boolean, initialData: Buffer): void {

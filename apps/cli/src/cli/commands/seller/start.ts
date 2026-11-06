@@ -260,21 +260,18 @@ function toUSDCBaseUnits(value: string | undefined, fallbackBaseUnits: string): 
   return String(Math.round(parsed * 1_000_000))
 }
 
-export function parseOptionalPositiveIntegerEnv(value: string | undefined): number | undefined {
-  if (value === undefined) return undefined
-  const trimmed = value.trim()
-  if (!/^\d+$/.test(trimmed)) return undefined
-  const parsed = Number(trimmed)
-  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined
-}
-
-/** Like parseOptionalPositiveIntegerEnv, but 0 is a value (it turns the setting off). */
+/** A whole number from an env var, 0 included (it turns a setting off); undefined when unset or malformed. */
 export function parseOptionalNonNegativeIntegerEnv(value: string | undefined): number | undefined {
   if (value === undefined) return undefined
   const trimmed = value.trim()
   if (!/^\d+$/.test(trimmed)) return undefined
   const parsed = Number(trimmed)
   return Number.isSafeInteger(parsed) ? parsed : undefined
+}
+
+export function parseOptionalPositiveIntegerEnv(value: string | undefined): number | undefined {
+  const parsed = parseOptionalNonNegativeIntegerEnv(value)
+  return parsed !== undefined && parsed > 0 ? parsed : undefined
 }
 
 export function buildSellerRuntimeOverridesFromFlags(options: {
