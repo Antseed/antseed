@@ -24,6 +24,7 @@ import {
   DEFAULT_MIN_GAS_BALANCE_WEI,
   SellerFreeTierLimiter,
   formatEther,
+  isFreeUnitBillingModel,
   type Provider,
   type Prover,
   type ConfigField,
@@ -31,7 +32,7 @@ import {
   loadOrCreateIdentity,
 } from '@antseed/node'
 import type { PaymentConfig } from '@antseed/node/payments'
-import { checkSellerReadiness, DEFAULT_MIN_SETTLE_DELTA_STR } from '@antseed/node/payments'
+import { checkSellerReadiness, DEFAULT_MIN_SETTLE_DELTA_STR, probeRpcEndpoint } from '@antseed/node/payments'
 import {
   ANTSEED_BASE_RPC_URL_ENV,
   createIdentityClient,
@@ -45,7 +46,7 @@ import { parseBootstrapList, toBootstrapConfig } from '@antseed/node/discovery'
 import { isRestarting, setupShutdownHandler, shutdownForRestart } from '../../shutdown.js'
 import { loadProviderPlugin, loadProverPlugin, buildPluginConfig, getPackageVersions } from '../../../plugins/loader.js'
 import { ensurePluginsUpToDate } from '../../../plugins/drift.js'
-import { dropDisabledServices, pricedSellerServices, resolveEffectiveSellerConfig, resolveSellerFreeTier, type SellerRuntimeOverrides } from '../../../config/effective.js'
+import { dropDisabledServices, isPricedSellerService, pricedSellerServices, resolveEffectiveSellerConfig, resolveSellerFreeTier, type SellerRuntimeOverrides } from '../../../config/effective.js'
 import { ensureDerivedIdentityDisplayName } from '../../../config/identity-display-name.js'
 import { AntAgentProvider, loadAntAgent, type AntAgentDefinition } from '@antseed/ant-agent'
 import { resolvePluginPackage } from '../../../plugins/registry.js'
@@ -242,40 +243,6 @@ export const RPC_PROBE_TIMEOUT_MS = 5_000
 export const RPC_PROBE_ATTEMPTS = 3
 const RPC_PROBE_RETRY_DELAY_MS = 1_000
 
-type FetchLike = (input: string, init: RequestInit) => Promise<Response>
-
-export async function isRpcReachable(
-  rpcUrl: string,
-  timeoutMs = RPC_PROBE_TIMEOUT_MS,
-  fetchImpl: FetchLike = fetch,
-): Promise<boolean> {
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), timeoutMs)
-
-  try {
-    const response = await fetchImpl(rpcUrl, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: 1,
-        method: 'eth_chainId',
-        params: [],
-      }),
-      signal: controller.signal,
-    })
-
-    if (!response.ok) return false
-
-    const payload = await response.json() as { result?: unknown }
-    return typeof payload.result === 'string' && payload.result.startsWith('0x')
-  } catch {
-    return false
-  } finally {
-    clearTimeout(timeout)
-  }
-}
-
 /**
  * True once any of `rpcUrls` (the primary and its fallbacks, as the payment
  * clients use them) answers `eth_chainId`. Retries, so one slow or
@@ -283,19 +250,18 @@ export async function isRpcReachable(
  */
 export async function probeRpcUrls(
   rpcUrls: readonly string[],
-  options: { timeoutMs?: number; attempts?: number; retryDelayMs?: number; fetchImpl?: FetchLike } = {},
+  options: { timeoutMs?: number; attempts?: number; retryDelayMs?: number } = {},
 ): Promise<boolean> {
   const {
     timeoutMs = RPC_PROBE_TIMEOUT_MS,
     attempts = RPC_PROBE_ATTEMPTS,
     retryDelayMs = RPC_PROBE_RETRY_DELAY_MS,
-    fetchImpl = fetch,
   } = options
   const urls = [...new Set(rpcUrls.filter((url) => url.length > 0))]
   if (urls.length === 0) return false
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     const answered = await Promise.any(urls.map(async (url) => {
-      if (await isRpcReachable(url, timeoutMs, fetchImpl)) return true
+      if (await probeRpcEndpoint(url, timeoutMs)) return true
       throw new Error('no answer')
     })).catch(() => false)
     if (answered) return true
@@ -328,20 +294,21 @@ export async function resolveSellerPaymentsAfterRpcProbe(input: {
 
 /**
  * Services the loaded providers announce with a price: the seller config's
- * own prices and unit billing, plus any default a plugin applies itself.
+ * own token and unit prices, plus any token default or unit billing model a
+ * plugin applies itself (as the node decides a service is paid).
  */
 export function announcedPricedServices(
   seller: SellerCLIConfig,
   providerNames: readonly string[],
-  providers: ReadonlyArray<Pick<Provider, 'services' | 'pricing'>>,
+  providers: ReadonlyArray<Pick<Provider, 'services' | 'pricing' | 'serviceUnitBillingModels'>>,
 ): string[] {
   const priced = new Set(pricedSellerServices(seller, providerNames))
   for (const provider of providers) {
     for (const serviceId of provider.services) {
       const pricing = provider.pricing.services?.[serviceId] ?? provider.pricing.defaults
-      if (pricing.inputUsdPerMillion > 0 || pricing.outputUsdPerMillion > 0 || (pricing.cachedInputUsdPerMillion ?? 0) > 0) {
-        priced.add(serviceId)
-      }
+      const unitPriced = Object.values(provider.serviceUnitBillingModels?.[serviceId] ?? {})
+        .some((model) => model !== undefined && !isFreeUnitBillingModel(model))
+      if (isPricedSellerService(undefined, { pricing }) || unitPriced) priced.add(serviceId)
     }
   }
   return [...priced]

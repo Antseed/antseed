@@ -713,3 +713,64 @@ test('assertSellerPrerequisites refuses a priced seller whose RPC did not answer
   assert.match(output, /ANTSEED_ENABLE_SETTLEMENT=false/);
   await assertSellerPrerequisites({ ...input, skipChainChecks: true });
 });
+
+test('a plugin unit price with zero token defaults and no config pricing keeps payments on and fails the prerequisites when the RPC is down', async () => {
+  const config = createDefaultConfig();
+  // provider-irp-router: zero token defaults, IRP_ROUTER_PRICE_USD as a completed_requests price, no pricing in config.
+  config.seller.providers = { router: { plugin: 'irp-router', services: { 'irp-router': {} } } };
+  const zero = { inputUsdPerMillion: 0, outputUsdPerMillion: 0 };
+  const pricedServiceIds = announcedPricedServices(config.seller, ['router'], [{
+    services: ['irp-router'],
+    pricing: { defaults: zero },
+    serviceUnitBillingModels: { 'irp-router': { 'irp-suggest': { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.001 }] } } },
+  }]);
+  assert.deepEqual(pricedServiceIds, ['irp-router']);
+  // The same plugin at $0 is free.
+  assert.deepEqual(announcedPricedServices(config.seller, ['router'], [{
+    services: ['irp-router'],
+    pricing: { defaults: zero },
+    serviceUnitBillingModels: { 'irp-router': { 'irp-suggest': { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0 }] } } },
+  }]), []);
+
+  const rpcUrls = ['http://10.255.255.1:8545'];
+  const decision = await resolveSellerPaymentsAfterRpcProbe({
+    paymentsEnabled: true, settlementEnv: null, rpcUrls, pricedServiceIds, probe: async () => false,
+  });
+  assert.deepEqual(decision, { paymentsEnabled: true, rpcReachable: false });
+  const originalError = console.error;
+  const errors: string[] = [];
+  console.error = (...args: unknown[]) => { errors.push(args.join(' ')); };
+  try {
+    await assert.rejects(assertSellerPrerequisites({
+      dataDir: '/tmp/no-identity-here',
+      config,
+      effectiveSeller: config.seller,
+      providerNames: ['router'],
+      paymentsEnabled: decision.paymentsEnabled,
+      runtimePricingOverride: false,
+      skipChainChecks: false,
+      unreachableRpc: { urls: rpcUrls, pricedServiceIds },
+    }), /seller prerequisites not met/);
+  } finally {
+    console.error = originalError;
+  }
+  assert.match(errors.join('\n'), /Base RPC unreachable[\s\S]*irp-router/);
+});
+
+test('announcedPricedServices counts unit prices set in the seller config (image, video, speech)', () => {
+  const config = createDefaultConfig();
+  config.seller.providers = {
+    media: {
+      plugin: 'openai',
+      services: {
+        'qwen-image': { unitBillingModels: { 'openai-images': { version: 1, components: [{ unit: 'output_images', priceUsd: 0.02 }] } } },
+        'free-image': { unitBillingModels: { 'openai-images': { version: 1, components: [{ unit: 'output_images', priceUsd: 0 }] } } },
+      },
+    },
+  };
+  const zero = { inputUsdPerMillion: 0, outputUsdPerMillion: 0 };
+  assert.deepEqual(
+    announcedPricedServices(config.seller, ['media'], [{ services: ['qwen-image', 'free-image'], pricing: { defaults: zero } }]),
+    ['qwen-image'],
+  );
+});
