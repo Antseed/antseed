@@ -260,6 +260,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- CLI: `antseed config seller set` (and `config set seller.…`) now works with service IDs that contain a dot, such as `kimi-k2.6` or `glm-4.7-flash`: a key segment that names an existing service is kept whole. Before, `set providers.inference.services.kimi-k2.6.pricing.inputUsdPerMillion 0.2` printed "Set …", exited 0 and wrote a new `kimi-k2` entry with a nested `6` key, leaving the real price unchanged. A key under `providers` that doesn't resolve to a real field, or names a provider or service that doesn't exist, is now refused with an error that lists the valid names, exits 1 and leaves the file unchanged.
 - Sellers (`@antseed/node`): usage receipts now price cached input at the cached rate, as the payment channel charge does. They priced every input token at the full input rate, so the receipt cost on the seller dashboard and request log, and session cost totals, came out well above what buyers paid for prompt-cached traffic.
 
 - Sellers (`@antseed/node`): an upstream answer saying the account's "extra usage" is used up is treated as an account error, like running out of credit: buyers get the generic `upstream_unavailable` 503 instead of the upstream's message, and health checks mark the model failing.
