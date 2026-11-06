@@ -24,6 +24,7 @@ import {
   replayedThinkingDiscovery,
   resolveReferenceRequestOverrides,
   retryDelayMs,
+  referenceConcurrencyWarning,
 } from './model-reference.js'
 import type { VerifierModelCatalog } from './openrouter-catalog.js'
 import { setAuditedModelsForTesting } from './audited-models.js'
@@ -1089,6 +1090,13 @@ test('reference build skips a stability batch the provider content filter refuse
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
+})
+
+test('a per-model reference limit of 1 is called out, other limits are not', () => {
+  assert.match(referenceConcurrencyWarning({ referenceMaxConcurrentRequestsPerModel: 1 }) ?? '', /one batch at a time/)
+  assert.equal(referenceConcurrencyWarning({ referenceMaxConcurrentRequestsPerModel: 2 }), null)
+  assert.equal(referenceConcurrencyWarning({}), null)
+  assert.equal(referenceConcurrencyWarning(undefined), null)
 })
 
 test('reference build adaptively isolates and caches a refused self-test probe', async () => {

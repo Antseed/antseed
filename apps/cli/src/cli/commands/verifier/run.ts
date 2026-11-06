@@ -114,7 +114,7 @@ import {
   windowIncludesSeller,
   type AuditWindowV1,
 } from '../../../verifier/audit-window.js'
-import { createReferenceRequestLimiter } from '../../../verifier/model-reference.js'
+import { createReferenceRequestLimiter, referenceConcurrencyWarning } from '../../../verifier/model-reference.js'
 import { runExtensionRounds, type ExtensionRoundStats } from '../../../verifier/extension-round.js'
 import { closeCallRuleForExtensions, extensionSets, latestExtension } from '../../../verifier/close-call.js'
 import {
@@ -934,6 +934,8 @@ async function runVerifierRound(
         if (enrollmentBudget !== null) {
           if (resumeOnly) throw new Error('an audit resume is pending; complete it before enrolling new probes')
           // Every model enrolls at once; one shared limiter caps the reference requests in flight.
+          const concurrencyWarning = referenceConcurrencyWarning(config.verifier)
+          if (concurrencyWarning) console.warn(chalk.yellow(concurrencyWarning))
           const requestLimiter = createReferenceRequestLimiter(config.verifier)
           const enrolled = await Promise.all(runModels.map(async (model) => {
             const sellersToAudit = selectedPeers.filter((peer) => auditsPeer(model, peer) && !finished(model, peer)

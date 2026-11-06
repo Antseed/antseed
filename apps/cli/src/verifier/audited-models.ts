@@ -89,11 +89,11 @@ export const AUDITED_MODELS: Readonly<Record<string, AuditedModel>> = Object.fre
     serviceAliases: ['grok-4-7', 'x-ai/grok-4.7'],
     contrastModels: ['anthropic/claude-haiku-5.5', 'xiaomi/mimo-v2.6-pro', 'z-ai/glm-5.3'],
   },
-  // OpenRouter has no DeepSeek endpoint for this model; Baidu (fp8) had the lowest self-test error
-  // of the hosts that answered past builds.
+  // OpenRouter has no DeepSeek endpoint for this model. Nebius (fp8) answers with thinking off, at
+  // 3.9% self-test error and 4.7% on real batches; Baidu no longer reproduced its own bank.
   'deepseek-v4-pro': {
     upstreamModel: 'deepseek/deepseek-v4-pro',
-    referenceProvider: ['baidu/fp8'],
+    referenceProvider: ['nebius/fp8'],
     serviceAliases: ['deepseek/deepseek-v4-pro'],
     contrastModels: ['anthropic/claude-haiku-5.5', 'xiaomi/mimo-v2.6-pro', 'z-ai/glm-5.3'],
   },

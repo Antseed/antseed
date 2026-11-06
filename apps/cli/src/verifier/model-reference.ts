@@ -101,8 +101,8 @@ export const DEFAULT_LAYOUT_FILTER_PASSES = 2
 // Candidate batches ask for a long list (up to 6000 tokens) and nothing is scored from them, so
 // they get more time than the measured requests, whose timeout is part of the bank settings.
 const CANDIDATE_GENERATION_TIMEOUT_MS = 300_000
-const DEFAULT_MAX_CONCURRENT_REQUESTS = 4
-const DEFAULT_MAX_CONCURRENT_REQUESTS_PER_MODEL = 3
+const DEFAULT_MAX_CONCURRENT_REQUESTS = 16
+const DEFAULT_MAX_CONCURRENT_REQUESTS_PER_MODEL = 6
 const NEW_ACCOUNT_MINIMUM_REQUEST_INTERVAL_MS = 6_500
 const NEW_ACCOUNT_RATE_LIMIT_COOLDOWN_MS = 65_000
 const MAX_TOKENS = 1600
@@ -198,6 +198,17 @@ export interface ReferenceBuildCostV1 {
 export interface ReferenceRequestLimiter {
   run: <T>(model: string, execute: () => Promise<T>) => Promise<T>
   recordSuccess: (model: string) => void
+}
+
+/**
+ * A warning for a per-model limit of 1, or null. Builds then ask one question batch at a time, so a
+ * model that thinks for a minute per request takes many hours and holds up every other audit of
+ * that run.
+ */
+export function referenceConcurrencyWarning(config: VerifierCLIConfig | undefined): string | null {
+  if (config?.referenceMaxConcurrentRequestsPerModel !== 1) return null
+  return `verifier.referenceMaxConcurrentRequestsPerModel is 1: reference builds ask one batch at a time and can take `
+    + `many hours. Remove it to use the default of ${DEFAULT_MAX_CONCURRENT_REQUESTS_PER_MODEL}.`
 }
 
 export function createReferenceRequestLimiter(

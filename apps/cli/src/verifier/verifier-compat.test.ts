@@ -13,7 +13,7 @@ import { VERIFIER_COMPAT, readCompat, verifierRuleOverrides, verifierRulesFinger
  */
 const RULES_BY_COMPAT: Readonly<Record<number, string>> = {
   1: '0x6f6ad26fc799721018d248d22fba70ba99db7a80e9d7fdfaab6c281f242816c3',
-  2: '0x4c1d0a1dbcf1ccf1b9d73554254b90f9c1eced139551b996538c2b3cedacd478',
+  2: '0x1f1f65636518c46688b4c4b712b951e3c0aada8d7501cabf1232154ec327901e',
 }
 
 test('the audit rules match the hash pinned for this verifier compat', () => {
