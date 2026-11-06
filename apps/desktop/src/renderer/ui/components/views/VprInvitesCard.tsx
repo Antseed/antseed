@@ -138,6 +138,15 @@ export function VprInvitesCardBody({ invites, creation, creating, onCreate }: {
       : leftHint ?? 'Single-use link, valid for 4 weeks.';
   const failure = creation.failure && !creation.failure.noQuota && inviteFailureCurrent(invites, creation) ? creation.failure.reason : null;
   const count = invites.buyers.length;
+  let createLabel = 'Check again';
+  if (creating) createLabel = canCreate ? 'Creating…' : 'Checking…';
+  else if (canCreate) createLabel = link ? 'Create another' : 'Create link';
+  // The allowance can lag a new week, so "Check again" stays available: the main process checks it on-chain.
+  const createButton = (
+    <Button size="sm" variant={!link && canCreate ? 'outline' : 'link'} onClick={onCreate} disabled={creating} aria-busy={creating}>
+      {createLabel}
+    </Button>
+  );
   return (
     <VprCard className={styles.aboutCard}>
       <span className={styles.aboutTitle}>Your invites</span>
@@ -149,22 +158,11 @@ export function VprInvitesCardBody({ invites, creation, creating, onCreate }: {
         hint={hint}
         control={link ? (
           <span className={styles.inviteActions}>
-            <Button size="sm" variant="link" onClick={onCreate} disabled={creating} aria-busy={creating}>
-              {creating ? (canCreate ? 'Creating…' : 'Checking…') : canCreate ? 'Create another' : 'Check again'}
-            </Button>
+            {createButton}
             {/* Keyed by the link, so a new link starts at Copy again. */}
             <CopyButton key={link} value={link} size="sm" variant="outline" />
           </span>
-        ) : canCreate ? (
-          <Button size="sm" variant="outline" onClick={onCreate} disabled={creating} aria-busy={creating}>
-            {creating ? 'Creating…' : 'Create link'}
-          </Button>
-        ) : (
-          // The allowance can lag a new week; the main process checks it on-chain.
-          <Button size="sm" variant="link" onClick={onCreate} disabled={creating} aria-busy={creating}>
-            {creating ? 'Checking…' : 'Check again'}
-          </Button>
-        )}
+        ) : createButton}
       />
       {failure ? <span className={styles.errorNote}>{failure}</span> : null}
       {invites.listed && count > 0 ? (

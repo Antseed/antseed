@@ -14,6 +14,7 @@ import { AntseedReferrals } from "../rewards/AntseedReferrals.sol";
  *   DEPLOYER_PRIVATE_KEY
  *   EMISSIONS_GATE
  *   USAGE_ACCOUNTING
+ *   SELLER_POOLS           — AntseedSellerPools, for staking a reward instead of claiming it
  *   ANTSEED_DEPOSITS
  *
  * Usage:
@@ -37,6 +38,7 @@ contract DeployReferrals is Script {
 
         vm.startBroadcast(deployerPrivateKey);
         referrals = new AntseedReferrals(gate, usageAccounting, deposits, address(0));
+        referrals.setSellerPools(vm.envAddress("SELLER_POOLS"));
         vm.stopBroadcast();
 
         console.log("AntseedReferrals:", address(referrals));

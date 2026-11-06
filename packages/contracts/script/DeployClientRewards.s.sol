@@ -14,6 +14,7 @@ import { AntseedClientRewards } from "../emissions/AntseedClientRewards.sol";
  *   DEPLOYER_PRIVATE_KEY
  *   EMISSIONS_GATE
  *   USAGE_ACCOUNTING
+ *   SELLER_POOLS           — AntseedSellerPools, for staking a reward instead of claiming it
  *   IDENTITY_REGISTRY      — ERC-8004 IdentityRegistry (clients register there)
  *
  * DeployChannelsMiddleware then authorizes the middleware as its recorder.
@@ -30,6 +31,7 @@ contract DeployClientRewards is Script {
 
         vm.startBroadcast(deployerPrivateKey);
         rewards = new AntseedClientRewards(gate, usageAccounting, identityRegistry, address(0));
+        rewards.setSellerPools(vm.envAddress("SELLER_POOLS"));
         vm.stopBroadcast();
 
         console.log("AntseedClientRewards:", address(rewards));

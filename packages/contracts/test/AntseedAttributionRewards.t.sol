@@ -19,6 +19,7 @@ contract RewardsAccountingMock {
     mapping(uint256 => mapping(address => uint256)) public sellerPointsByEpoch;
     mapping(uint256 => mapping(address => uint256)) public weightedBuyerPointsByEpoch;
     mapping(uint256 => uint256) public totalWeightedBuyerPointsByEpoch;
+    uint256 public constant firstRewardedEpoch = 0;
 
     constructor(EmissionsGateMock _gate) {
         gate = _gate;

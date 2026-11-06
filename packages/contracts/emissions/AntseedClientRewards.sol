@@ -52,6 +52,8 @@ contract AntseedClientRewards is Ownable2Step, Pausable, ReentrancyGuard {
     IAntseedEmissionsGate public immutable emissionsGate;
     IAntseedUsageAccounting public immutable usageAccounting;
     IERC8004Registry public immutable identityRegistry;
+    /// @notice The accounting records earlier settlements under this epoch, so credits do too.
+    uint256 public immutable firstCreditEpoch;
     IAntseedSellerPools public sellerPools;
 
     /// @notice Contract allowed to credit usage (AntseedChannelsMiddleware).
@@ -106,6 +108,7 @@ contract AntseedClientRewards is Ownable2Step, Pausable, ReentrancyGuard {
         if (_identityRegistry.code.length == 0) revert InvalidAddress();
         emissionsGate = IAntseedEmissionsGate(_emissionsGate);
         usageAccounting = IAntseedUsageAccounting(_usageAccounting);
+        firstCreditEpoch = IAntseedUsageAccounting(_usageAccounting).firstRewardedEpoch();
         identityRegistry = IERC8004Registry(_identityRegistry);
         recorder = _recorder;
     }
@@ -118,7 +121,7 @@ contract AntseedClientRewards is Ownable2Step, Pausable, ReentrancyGuard {
     function creditClientUsage(uint256 clientAgentId, address buyer, uint256 points) external {
         if (msg.sender != recorder) revert NotRecorder();
         if (_agentOwner(clientAgentId) == address(0)) return;
-        uint256 epoch = emissionsGate.currentEpoch();
+        uint256 epoch = Math.max(emissionsGate.currentEpoch(), firstCreditEpoch);
         clientEpochPoints[epoch][clientAgentId] += points;
         emit ClientUsageCredited(epoch, clientAgentId, buyer, points);
     }

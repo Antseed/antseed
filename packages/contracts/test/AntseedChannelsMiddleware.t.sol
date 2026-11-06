@@ -522,8 +522,8 @@ contract AntseedChannelsMiddlewareIntegrationTest is Test {
         gate = new AntseedEmissionsGate(address(0xA11CE), address(0xB0B), 15_000, 15_000);
         pools = new MiddlewareSellerPoolsMock();
         accounting = new AntseedUsageAccounting(address(pools), address(channels), address(gate));
-        vm.warp(block.timestamp + 7 days); // past the accounting's first rewarded epoch, as on mainnet
         clientRewards = new AntseedClientRewards(address(gate), address(accounting), address(identity), address(0));
+        vm.warp(block.timestamp + 7 days); // past the accounting's first rewarded epoch, as on mainnet
         referrals = new MiddlewareBinderMock();
 
         registry.setChannels(address(channels));

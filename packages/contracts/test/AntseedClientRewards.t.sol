@@ -13,6 +13,11 @@ import { MockERC8004Registry } from "./mocks/MockERC8004Registry.sol";
 /// A settable epoch total.
 contract ClientAccountingMock {
     mapping(uint256 => uint256) public totalWeightedBuyerPointsByEpoch;
+    uint256 public firstRewardedEpoch;
+
+    function setFirstRewardedEpoch(uint256 epoch) external {
+        firstRewardedEpoch = epoch;
+    }
 
     function setTotal(uint256 epoch, uint256 points) external {
         totalWeightedBuyerPointsByEpoch[epoch] = points;
@@ -60,6 +65,16 @@ contract AntseedClientAttributionTest is ClientRewardsFixture {
         assertEq(rewards.clientEpochPoints(20, desktop), 17);
         assertEq(rewards.clientEpochPoints(20, cli), 4);
         assertEq(rewards.clientEpochPoints(21, desktop), 1);
+    }
+
+    function test_creditsUsageBeforeTheFirstRewardedEpochWhereTheAccountingRecordsIt() public {
+        accounting.setFirstRewardedEpoch(22);
+        rewards = new AntseedClientRewards(address(gate), address(accounting), address(identity), recorder);
+        _credit(20, desktop, 10);
+        _credit(23, desktop, 1);
+        assertEq(rewards.clientEpochPoints(20, desktop), 0);
+        assertEq(rewards.clientEpochPoints(22, desktop), 10);
+        assertEq(rewards.clientEpochPoints(23, desktop), 1);
     }
 
     function test_emitsTheCredit() public {

@@ -88,7 +88,11 @@ export type ReferralAttributionWatch = {
  * explorer/chain sync that drops a bound invite runs afterward in the
  * background, then every `intervalMs`.
  *
- * The file's mtime short-circuits the poll only while no invite is carried:
+ * A redeemed, replaced or removed invite only changes the file, and a signed
+ * invite can bind permanently, so the file's mtime is also checked every
+ * `localIntervalMs` and a change is applied at once, whatever the sync is doing.
+ *
+ * The file's mtime short-circuits the sync only while no invite is carried:
  * binding happens on-chain without touching the file, and every settlement
  * that still carries a bound invite costs the seller a reverting bindReferral
  * call inside AntseedChannelsMiddleware.
@@ -100,6 +104,7 @@ export async function watchReferralAttribution(options: ClientAgentOptions & {
   apply: (attribution: BuyerAttribution) => void
   log?: ((message: string) => void) | undefined
   intervalMs?: number | undefined
+  localIntervalMs?: number | undefined
   env?: NodeJS.ProcessEnv
   /** Overridable for tests. */
   syncState?: typeof syncReferralState
@@ -109,6 +114,7 @@ export async function watchReferralAttribution(options: ClientAgentOptions & {
   const attributionOptions = { clientAgentId: options.clientAgentId, clientAgentIds: options.clientAgentIds, ...(options.env ? { env: options.env } : {}) }
   let carrying = false
   let lastMtime = await referralStateMtimeMs(dataDir)
+  let localMtime = lastMtime
   // A slow sync must not overwrite the result of a newer read.
   let generation = 0
   const install = (referralState: ReferralState | null, current: number): void => {
@@ -134,12 +140,30 @@ export async function watchReferralAttribution(options: ClientAgentOptions & {
     lastMtime = mtime
     install(referralState, current)
   }
+  const applyLocalChange = async (): Promise<void> => {
+    if (!scope) return
+    // Taken before the read: a write during the read is picked up by the next check.
+    const mtime = await referralStateMtimeMs(dataDir)
+    if (mtime === localMtime) return
+    localMtime = mtime
+    const current = ++generation
+    const referralState = await readReferralState(dataDir, scope)
+    install(referralState, current)
+  }
 
   install(scope ? await readReferralState(dataDir, scope).catch(() => null) : null, ++generation)
   const synced = sync(true).catch(() => {})
   const timer = setInterval(() => { void sync(false).catch(() => {}) }, options.intervalMs ?? 60_000)
   timer.unref()
-  return { synced, stop: () => clearInterval(timer) }
+  const localTimer = setInterval(() => { void applyLocalChange().catch(() => {}) }, options.localIntervalMs ?? 1_000)
+  localTimer.unref()
+  return {
+    synced,
+    stop: () => {
+      clearInterval(timer)
+      clearInterval(localTimer)
+    },
+  }
 }
 
 function resolveClientAgentId(options: ClientAgentOptions, env: NodeJS.ProcessEnv): number | undefined {

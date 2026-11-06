@@ -3,6 +3,7 @@ import chalk from 'chalk'
 import {
   AntsContext,
   InviteQuotaError,
+  NO_INVITE_QUOTA_MESSAGE,
   issueInvite,
   refereeBonusFromExplorer,
   referral,
@@ -163,7 +164,7 @@ export function formatReferralStatus(status: ReferralStatus): string[] {
     const parts = [`${invites.referredCount} invited`, `${ants(invites.payable)} payable`]
     if (invites.invites) parts.push(invites.invites.quota === 0 ? 'no invites this week' : `${invites.invites.left} of ${invites.invites.quota} invites left this week`)
     lines.push(`Your invites: ${parts.join(' · ')}.`)
-    if (invites.invites?.quota === 0) lines.push(chalk.dim('Invites unlock after at least 1 USDC of usage or sales in the previous week.'))
+    if (invites.invites?.quota === 0) lines.push(chalk.dim(NO_INVITE_QUOTA_MESSAGE))
   } else {
     lines.push(chalk.dim('Invite stats unavailable (no Antscan explorer configured).'))
   }
