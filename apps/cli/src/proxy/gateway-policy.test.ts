@@ -776,21 +776,109 @@ test('gateway-policy automatic routing without deposits also tries a paid seller
   assert.deepEqual(h.dispatched.map((entry) => entry.peerId), [paid.peerId, allowance.peerId])
 })
 
-test('without a gateway policy a 402 reaches the client from the first seller, as before', async (t) => {
+// The buyer's own 402: it holds no deposits to pay this seller.
+const unfunded402 = (request: SerializedHttpRequest) => ({
+  requestId: request.requestId, statusCode: 402,
+  headers: { 'content-type': 'application/json', 'x-antseed-fault-attribution': 'buyer' },
+  body: Buffer.from('{"error":"payment_required","code":"insufficient_deposits"}'),
+})
+
+/** A buyer with no deposits: paid sellers refuse with the buyer's 402, free ones answer. */
+function unfundedNode(h: Harness, free: Set<string>): void {
+  const answer = async (peer: PeerInfo, request: SerializedHttpRequest) => {
+    h.dispatched.push({ peerId: peer.peerId, headers: request.headers })
+    if (!free.has(peer.peerId)) return unfunded402(request)
+    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{"choices":[{"message":{"role":"assistant","content":"ok"}}]}') }
+  }
+  ;(h.proxy as any)._node.sendRequest = answer
+  // A 402 or a whole answer arrives without streaming frames, as it does from a seller.
+  ;(h.proxy as any)._node.sendRequestStream = answer
+}
+
+/** The free seller has been slow lately and the paid one fast, so expected cost ranks the paid seller first for a long answer. */
+function makeSlow(h: Harness, slow: PeerInfo, fast: PeerInfo): void {
+  for (let i = 0; i < 3; i += 1) {
+    ;(h.proxy as any)._recordSellerSuccess(slow.peerId, 'gpt-5', { firstTokenMs: 20_000, streamMs: 200_000, outputTokens: 1_000, streamed: true })
+    ;(h.proxy as any)._recordSellerSuccess(fast.peerId, 'gpt-5', { firstTokenMs: 500, streamMs: 5_000, outputTokens: 1_000, streamed: true })
+  }
+}
+
+function longChat(h: Harness, extra: Record<string, unknown> = {}, headers: Record<string, string> = {}, model = 'gpt-5'): Promise<Response> {
+  return fetch(`${h.url}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...headers },
+    body: JSON.stringify({ model, max_tokens: 8192, messages: [{ role: 'user', content: 'hi' }], ...extra }),
+  })
+}
+
+test('without a gateway policy, automatic routing without deposits falls back to a free seller after a paid one refuses', async (t) => {
   const paid = makePeer('a', { input: 1, output: 1, trust: 95 })
   const free = makePeer('e', { input: 0, output: 0, trust: 70 })
-  const h = await startHarness(t, [paid, free])
-  ;(h.proxy as any)._node.sendRequest = async (peer: PeerInfo, request: SerializedHttpRequest) => {
-    h.dispatched.push({ peerId: peer.peerId, headers: request.headers })
-    return {
-      requestId: request.requestId, statusCode: 402,
-      headers: { 'content-type': 'application/json', 'x-antseed-fault-attribution': 'buyer' },
-      body: Buffer.from('{"error":"payment_required","code":"insufficient_deposits"}'),
-    }
+  const other = makePeer('b', { input: 2, output: 2, trust: 90 })
+  for (const stream of [false, true]) {
+    const h = await startHarness(t, [paid, other, free], { routingPreferences: prefs60 })
+    makeSlow(h, free, paid)
+    unfundedNode(h, new Set([free.peerId]))
+    const res = await longChat(h, { stream }, { 'x-antseed-chat-session-id': `thread-${stream}` })
+    assert.equal(res.status, 200, `stream=${stream}`)
+    await res.text()
+    // The paid seller ranked first and refused; the other paid one is skipped; the free one answered.
+    assert.deepEqual(h.dispatched.map((entry) => entry.peerId), [paid.peerId, free.peerId], `stream=${stream}`)
+    const served = decodeServedSelection(res.headers.get(ROUTE_SELECTION_HEADER) ?? undefined)
+    assert.equal(served?.channel, 'free')
+    assert.equal(served?.pick, 'failover')
+    const conversation = (h.proxy as any)._conversations.get(`antseed-chat:thread-${stream}`)
+    assert.match(conversation?.pinnedModel ?? '', new RegExp(`^${free.peerId}@`))
   }
-  const res = await chat(h)
-  assert.equal(res.status, 402)
-  assert.equal(h.dispatched.length, 1)
+})
+
+test('without deposits and with only paid sellers, the first seller\'s 402 reaches the client as before', async (t) => {
+  const paid = makePeer('a', { input: 1, output: 1, trust: 95 })
+  const other = makePeer('b', { input: 2, output: 2, trust: 90 })
+  for (const routingPreferences of [undefined, prefs60]) {
+    const h = await startHarness(t, [paid, other], routingPreferences ? { routingPreferences } : {})
+    unfundedNode(h, new Set())
+    const res = await longChat(h)
+    assert.equal(res.status, 402)
+    const body = await res.json() as { error: { code: string } }
+    assert.equal(body.error.code, 'antseed_buyer_fault')
+    assert.equal(res.headers.get('x-antseed-peer-id'), paid.peerId)
+    assert.equal(h.dispatched.length, 1)
+  }
+})
+
+test('a funded buyer keeps the expected-cost order: the faster paid seller serves, the slow free one is not tried', async (t) => {
+  const paid = makePeer('a', { input: 1, output: 1, trust: 95 })
+  const free = makePeer('e', { input: 0, output: 0, trust: 70 })
+  const h = await startHarness(t, [paid, free], { routingPreferences: prefs60 })
+  makeSlow(h, free, paid)
+  // Funded: every seller answers.
+  unfundedNode(h, new Set([paid.peerId, free.peerId]))
+  const res = await longChat(h)
+  assert.equal(res.status, 200)
+  assert.deepEqual(h.dispatched.map((entry) => entry.peerId), [paid.peerId])
+})
+
+test('a pinned paid seller keeps its 402 without deposits, even with a free seller available', async (t) => {
+  const paid = makePeer('a', { input: 1, output: 1, trust: 95 })
+  const free = makePeer('e', { input: 0, output: 0, trust: 70 })
+  const h = await startHarness(t, [paid, free], { routingPreferences: prefs60 })
+  unfundedNode(h, new Set([free.peerId]))
+  const byModel = await longChat(h, {}, {}, `${paid.peerId}@gpt-5`)
+  assert.equal(byModel.status, 402)
+  const byHeader = await longChat(h, {}, { 'x-antseed-pin-peer': paid.peerId })
+  assert.equal(byHeader.status, 402)
+  assert.deepEqual(h.dispatched.map((entry) => entry.peerId), [paid.peerId, paid.peerId])
+})
+
+test('without a gateway policy the buyer\'s preferFreePeers puts free sellers first', async (t) => {
+  const paid = makePeer('a', { input: 1, output: 1, trust: 95 })
+  const free = makePeer('e', { input: 0, output: 0, trust: 70 })
+  const h = await startHarness(t, [paid, free], { routingPreferences: { ...prefs60, preferFreePeers: true } })
+  makeSlow(h, free, paid)
+  unfundedNode(h, new Set([paid.peerId, free.peerId]))
+  assert.equal((await longChat(h)).status, 200)
+  assert.deepEqual(h.dispatched.map((entry) => entry.peerId), [free.peerId])
 })
 
 test('model_not_found moves to the next seller with or without a gateway policy', async (t) => {
