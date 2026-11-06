@@ -137,12 +137,13 @@ antseed seller status
 
 ## Step 7: Make the seller reachable
 
-Buyers connect on UDP 6881 (DHT) and TCP 6882. The user must open both on their firewall or router. Then set the public address buyers dial and check it:
+Buyers connect on UDP 6881 (DHT) and TCP 6882. The user must open both on their firewall or router. Then set the public address buyers dial:
 
 ```bash
 antseed config seller set publicAddress "<public-host-or-ip>:6882"
-antseed seller doctor
 ```
+
+Don't run `antseed seller doctor` yet. It opens a TCP connection to this address, and nothing listens on port 6882 until the seller starts, so before Step 8 it always fails, even when the firewall and port forwarding are right.
 
 **Stop and confirm with the user** before Step 8: starting the seller announces it to the public network.
 
@@ -164,6 +165,14 @@ curl -s http://localhost:6882/metadata
 ```
 
 The response lists each provider's `services`, `servicePricing` and `maxConcurrency`.
+
+Then check reachability. Keep `seller start` running, and from a second terminal on the same machine:
+
+```bash
+antseed seller doctor
+```
+
+It checks that the announced address is public and opens a TCP connection to it, and exits 1 if either fails. A successful local probe doesn't prove the port is open from outside, so confirm from another network with `antseed network peer <peer-id>`.
 
 ## After it's running
 
