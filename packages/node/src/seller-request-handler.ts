@@ -1557,6 +1557,7 @@ export class SellerRequestHandler {
       service,
       serviceApiProtocol: this._selectSellerProtocolForService(provider, service, request),
       request,
+      ...(provider.serviceCapabilities?.[service]?.video ? { videoOptions: provider.serviceCapabilities[service]!.video } : {}),
     });
   }
 

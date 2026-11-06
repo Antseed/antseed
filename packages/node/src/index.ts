@@ -179,6 +179,7 @@ export {
   type SpeechOptions,
   type AudioSpeechProtocol,
   SPEECH_METADATA_VERSION,
+  VIDEO_OPTION_PRICING_METADATA_VERSION,
   speechVoiceProblem,
   type PeerMetadata,
   type PeerVerifications,
