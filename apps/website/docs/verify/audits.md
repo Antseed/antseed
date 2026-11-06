@@ -97,6 +97,12 @@ the running buyer would refuse sellers priced at or below the reference:
 Set buyer.maxPricing.defaults to at least input $10, output $50 (and cachedInputUsdPerMillion, if set, to at least the input value) and restart the buyer.
 ```
 
+The check reads the cap the running buyer reports, so a config change only counts after you restart it. A buyer set up for another app, such as a desktop buyer, may have a much lower cap than an audit needs.
+
+:::warning A high cap applies to everything sent through that buyer
+Raising the cap doesn't raise what an audit pays, because a seller above the model's reference price is skipped before any request. Other traffic through the same buyer can pay up to the cap, so keep a high-cap buyer for audits only.
+:::
+
 ### Checks before the run
 
 Before sending anything, `verifier run` stops with a list of problems and how to fix each when:

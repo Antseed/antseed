@@ -79,7 +79,7 @@ Then open `$ANTSEED_VERIFIER_DIR/config.json` and add the chain and the referenc
 
 - You don't set the verification contract: the CLI knows its address and deploy block on Base. Only for your own deployment (for example a local test chain), set `payments.crypto.verificationContractAddress` together with `verificationDeployBlock`, the block it was deployed in. Without the block, the CLI searches the whole chain history for the approved auditors.
 - `referenceEndpoint` is where the genuine answers come from. The example uses OpenRouter, which serves every audited model with one key. To use other providers, see [Reference upstreams](/docs/verify/audits#reference-upstreams).
-- Leave `buyer.maxPricing` at the `config init` default.
+- Leave `buyer.maxPricing` at the `config init` default. If you start from an existing config, such as your desktop app's, check its cap first: a lower one stops the audit.
 
 The audited models are built into the CLI. Set the API key and check the setup:
 
@@ -103,6 +103,14 @@ antseed-verifier buyer start
 If another Antseed app already uses port 8377, set `buyer.proxyPort` to a free port in the config first.
 
 If its price cap is too low for an audited model, `verifier run` stops and says what to set (see [Your buyer's price cap](/docs/verify/audits#your-buyers-price-cap)).
+
+:::warning Give every auditor a buyer of its own
+`verifier run` finds its buyer through `buyer.state.json` in its data dir, and that buyer pays sellers in real USDC. Keep a data dir and buyer for auditing only:
+
+- **Anything sharing the data dir can spend.** An old auditor, script or cron job that uses the same data dir starts auditing, and paying, as soon as a buyer runs there.
+- **A test chain doesn't change this.** `--rpc-url` and a local fork decide where audits are submitted. The buyer pays on the chain in its own config.
+- **The cap comes from the running buyer.** If your data dir points at another app's buyer, the audit gets that buyer's cap, not the one in your config.
+:::
 
 ## 3. Run the audit
 

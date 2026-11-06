@@ -230,6 +230,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- Docs: **Become a verifier** and **Verify → Audits** warn that an auditor's data dir decides which buyer pays, that the running buyer's price cap is the one checked, and that a high cap applies to all traffic through that buyer.
 - Model verifier (`@antseed/model-verifier`, `antseed-verify`, `antseed verifier check`): an audit now asks each domain in its own requests, as references are measured, the KBF reference code does and `antseed verifier run` already did. It mixed domains in one request, which nearly doubled the genuine model's mismatches (about 17% to 27% for first-party MiniMax M3 on OpenRouter) and could report a genuine endpoint as DIFF. Published audits and on-chain verdicts are not affected.
 - Verifiers (CLI): `antseed verifier watch` starts the new epoch's audits right after it begins: when the epoch ends before the next tick, it waits only until just after the end instead of a whole interval. With less than 45 minutes left in an epoch, a tick opens no new audit window, so a late tick no longer starts a first round it can't finish.
 - Verifiers (CLI): `antseed verifier watch` unlocks its keystore (`--keystore` or `verifier.keystore`) when it starts, so a wrong password, or a keystore that signs as another address than `--auditor` or `verifier.auditor`, stops it at once. Before, the keystore was only unlocked at the first submit, after a whole run.
