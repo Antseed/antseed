@@ -72,6 +72,7 @@ import { VerificationSampler } from "./verification/samples.js";
 import type { ResponseAuthSink } from "@antseed/buyer-core";
 import { FrameDecoder, encodeFrame } from "./p2p/message-protocol.js";
 import { KeepaliveManager, buildPongPayload } from "./p2p/keepalive.js";
+import { DEFAULT_INBOUND_IDLE_TIMEOUT_MS, InboundIdleTracker } from "./p2p/inbound-idle-tracker.js";
 import { MessageType } from "./types/protocol.js";
 import type {
   Provider,
@@ -346,6 +347,14 @@ export interface NodeConfig {
   requireSecureTransport?: boolean;
   /** Seller only: inbound sockets whose remote address this returns false for are closed on accept. */
   acceptInboundAddress?: (remoteAddress: string) => boolean;
+  /** Seller only: inbound buyer connections held at once; past it new buyers are refused. Metadata requests never count. Default 2048. */
+  maxInboundConnections?: number;
+  /**
+   * Seller only: close a buyer's connection after this long with no traffic,
+   * unless the buyer has a paid channel or a free usage session open. 0 keeps
+   * idle connections. Default 30 minutes.
+   */
+  inboundIdleTimeoutMs?: number;
   dataDir?: string;           // Default: ~/.antseed
   dhtPort?: number;           // Default: 6881 for seller, 0 for buyer
   signalingPort?: number;     // Default: 6882 for seller
@@ -509,6 +518,9 @@ export class AntseedNode extends EventEmitter {
   private _muxes = new Map<PeerId, ProxyMux>();
   private _decoders = new Map<PeerId, FrameDecoder>();
   private _keepalives = new Map<PeerId, KeepaliveManager>();
+  /** Seller side: closes buyer connections left idle with nothing open on them. */
+  private _inboundIdle: InboundIdleTracker | null = null;
+  private _inboundIdleSweep: ReturnType<typeof setInterval> | null = null;
   private _nat: NatTraversal | null = null;
   private _metering: MeteringStorage | null = null;
   private _resourceOwnership: ResourceOwnershipStore | null = null;
@@ -924,6 +936,12 @@ export class AntseedNode extends EventEmitter {
       clearInterval(this._timeoutCheckerInterval);
       this._timeoutCheckerInterval = null;
     }
+
+    if (this._inboundIdleSweep) {
+      clearInterval(this._inboundIdleSweep);
+      this._inboundIdleSweep = null;
+    }
+    this._inboundIdle = null;
 
     if (this._channelStore) {
       try {
@@ -1991,6 +2009,7 @@ export class AntseedNode extends EventEmitter {
           this._keepalives.get(peerId)?.handlePong(frame.payload);
           continue;
         }
+        this._inboundIdle?.touch(peerId);
         if (paymentMux && PaymentMux.isPaymentMessage(frame.type)) {
           paymentMux.handleFrame(frame).catch((err) => {
             const message = err instanceof Error ? err.message : String(err);
@@ -2012,11 +2031,13 @@ export class AntseedNode extends EventEmitter {
             debugWarn(`[Node] Failed to handle sweep frame from ${peerId.slice(0, 12)}...: ${message}`);
           });
         } else if (proxyMux) {
+          // A request stays in flight until its response is sent, however long the provider takes.
+          const finished = this._inboundIdle?.begin(peerId);
           proxyMux.handleFrame(frame).catch((err) => {
             const message = err instanceof Error ? err.message : String(err);
             debugWarn(`[Node] Failed to handle frame from ${peerId.slice(0, 12)}...: ${message}`);
             conn.fail(err instanceof Error ? err : new Error(message));
-          });
+          }).finally(() => finished?.());
         }
       }
     });
@@ -2025,6 +2046,7 @@ export class AntseedNode extends EventEmitter {
 
     conn.on("stateChange", (state: ConnectionState) => {
       if (state === ConnectionState.Closed || state === ConnectionState.Failed) {
+        this._inboundIdle?.untrack(peerId, conn);
         // Guard against stale close events: if a reconnect arrived before this
         // connection finished closing, a new decoder will have been registered.
         // Wiping the maps would evict the live session, so bail out early.
@@ -2156,7 +2178,21 @@ export class AntseedNode extends EventEmitter {
     this._connectionManager = await ConnectionManager.init(undefined, {
       requireSecureTransport: this._config.requireSecureTransport,
       ...(this._config.acceptInboundAddress ? { acceptInboundAddress: this._config.acceptInboundAddress } : {}),
+      ...(this._config.maxInboundConnections !== undefined ? { maxInboundConnections: this._config.maxInboundConnections } : {}),
     });
+    const inboundIdleTimeoutMs = this._config.inboundIdleTimeoutMs ?? DEFAULT_INBOUND_IDLE_TIMEOUT_MS;
+    if (inboundIdleTimeoutMs > 0) {
+      this._inboundIdle = new InboundIdleTracker({
+        idleTimeoutMs: inboundIdleTimeoutMs,
+        holdsSession: (buyerPeerId) => Boolean(this._channelStore?.getActiveChannelByPeer(buyerPeerId, CHANNEL_ROLE.SELLER))
+          || (this._sellerFreeUsageManager?.hasSession(buyerPeerId) ?? false),
+      });
+      this._inboundIdleSweep = setInterval(() => {
+        const closed = this._inboundIdle?.sweep() ?? [];
+        if (closed.length > 0) debugLog(`[Node] Closed ${closed.length} idle buyer connection(s) with no channel open`);
+      }, Math.min(60_000, inboundIdleTimeoutMs));
+      this._inboundIdleSweep.unref?.();
+    }
     this._connectionManager.setLocalIdentity(identity);
     this._connectionManager.on("error", (err: Error) => {
       debugWarn(`[ConnectionManager] ${err.message}`);
@@ -2512,6 +2548,7 @@ export class AntseedNode extends EventEmitter {
 
     this._muxes.set(buyerPeerId, mux);
     this._wireConnection(conn, buyerPeerId);
+    this._inboundIdle?.track(buyerPeerId, conn);
     this.emit("connection", conn);
   }
 
