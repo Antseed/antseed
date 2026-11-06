@@ -1,7 +1,6 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
 import { ArrowUp02Icon } from '@hugeicons/core-free-icons';
-import { Logo } from '@antseed/ui';
 import type { ConnectedAppProfile } from '../../../types/bridge';
 import { appsResource } from '../../../modules/app/vpr-resources';
 import { useCachedResource } from '../../../modules/app/cached-resource';
@@ -15,7 +14,9 @@ import { ChatSellerPicker } from '../chat/ChatSellerPicker';
 import { joinPinnedModel } from '../../../../shared/pinned-model.js';
 import { AgentSkillsPanel } from '../vpr/AgentSkillsPanel';
 import { AppPillIcon, appPillStyles as pills } from '../vpr/AppPills';
-import { modelsForPrivacy, PrivacyToggle, usePrivateMode } from '../vpr/PrivacyToggle';
+import { HomeField } from '../vpr/HomeField';
+import { modelsForPrivacy, PrivacyNote, PrivacyToggle, usePrivacyControl } from '../vpr/PrivacyToggle';
+import { privacyResource, usePrivacySwitch } from '../../../modules/app/vpr-resources';
 import styles from './VprHomeView.module.scss';
 
 type Props = { onSelectView?: (view: ViewName) => void };
@@ -35,7 +36,18 @@ export function VprHomeView({ onSelectView }: Props) {
   const apps = useCachedResource(appsResource);
   const [draft, setDraft] = useState('');
   const [connecting, setConnecting] = useState<string | null>(null);
-  const privateMode = usePrivateMode();
+  const privacy = useCachedResource(privacyResource);
+  const privateMode = privacy.data?.mode === 'private';
+  const { switching } = usePrivacySwitch();
+  const privacyControl = usePrivacyControl((mode) => {
+    // Private lists only models a TEE seller serves: move off one that isn't.
+    const selected = snap.chatModels.find((model) => model.id === snap.chatSelectedModelId);
+    if (mode !== 'private' || !selected || selected.tee) return;
+    const next = snap.chatModels.find((model) => model.tee && model.type === 'text');
+    if (!next) return;
+    if (snap.chatActiveConversation) actions.startNewChat();
+    actions.selectChatModel(next.id);
+  });
   const models = modelsForPrivacy(snap.chatModels, privateMode);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const appListRef = useRef<HTMLDivElement>(null);
@@ -86,7 +98,7 @@ export function VprHomeView({ onSelectView }: Props) {
 
   function submitDraft(): void {
     const text = draft.trim();
-    if (!text) return;
+    if (!text || switching) return;
     // Home always starts a new chat rather than continuing the open one.
     if (snap.chatActiveConversation) actions.startNewChat();
     actions.sendMessage(text);
@@ -95,22 +107,18 @@ export function VprHomeView({ onSelectView }: Props) {
   }
 
   return (
-    <section className={`view view-vpr-home ${styles.view}`} role="tabpanel">
+    <section className={`view view-vpr-home ${styles.view}${privateMode ? '' : ` ${styles.day}`}`} role="tabpanel">
+      <HomeField night={privacy.data ? privateMode : undefined} />
       <div className={styles.dragBar} aria-hidden="true" />
+      <div className={styles.toggleSlot}>
+        <PrivacyToggle control={privacyControl} />
+      </div>
       <div className={styles.stack}>
         <div className={styles.hero}>
-          <Logo height={40} className={styles.logo} />
-          <PrivacyToggle
-            onChange={(mode) => {
-              // Private lists only models a TEE seller serves: move off one that isn't.
-              const selected = snap.chatModels.find((model) => model.id === snap.chatSelectedModelId);
-              if (mode !== 'private' || !selected || selected.tee) return;
-              const next = snap.chatModels.find((model) => model.tee && model.type === 'text');
-              if (!next) return;
-              if (snap.chatActiveConversation) actions.startNewChat();
-              actions.selectChatModel(next.id);
-            }}
-          />
+          <h1 className={styles.heading}>
+            {privateMode ? <>Private,<br /> and proven</> : <>Ask anything,<br /> on any model</>}
+          </h1>
+          <p className={styles.subline}>At the best available prices, with the privacy you want.</p>
           <form
             className={styles.composer}
             onSubmit={(event) => { event.preventDefault(); submitDraft(); }}
@@ -120,7 +128,7 @@ export function VprHomeView({ onSelectView }: Props) {
               className={styles.askInput}
               rows={2}
               value={draft}
-              placeholder="Ask anything, on any model"
+              placeholder="Ask anything…"
               aria-label="Ask anything, on any model"
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={(event) => {
@@ -166,17 +174,18 @@ export function VprHomeView({ onSelectView }: Props) {
                 className={styles.askSend}
                 aria-label="Send message"
                 title="Send message"
-                disabled={draft.trim().length === 0}
+                disabled={draft.trim().length === 0 || switching}
               >
                 <HugeiconsIcon icon={ArrowUp02Icon} size={20} strokeWidth={2} />
               </button>
             </div>
           </form>
+          <PrivacyNote control={privacyControl} />
         </div>
 
-        <AgentSkillsPanel className={styles.agents} />
+        <AgentSkillsPanel className={`${styles.glass} ${styles.agents}`} />
 
-        <div className={styles.appsSection}>
+        <div className={`${styles.glass} ${styles.appsSection}`}>
           <div className={styles.sectionHeader}>
             <p className={styles.sectionTitle}>
               {connectedCount > 0 ? `${connectedCount} ${connectedCount === 1 ? 'app' : 'apps'} connected` : 'Connect your apps'}

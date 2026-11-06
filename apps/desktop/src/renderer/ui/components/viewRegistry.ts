@@ -2,9 +2,8 @@ import { lazy } from 'react';
 import type { ComponentType, LazyExoticComponent } from 'react';
 import type { IconSvgElement } from '@hugeicons/react';
 import {
-  BubbleChatIcon,
-  ConnectIcon,
   Home01Icon,
+  ConnectIcon,
   Settings01Icon,
 } from '@hugeicons/core-free-icons';
 import type { ViewName } from '../types';
@@ -87,7 +86,7 @@ export const VIEW_REGISTRY = {
       receivesOnSelectView: true,
       slideIndex: 2,
       preloadPriority: 'eager',
-      nav: { slot: 'main', label: 'Apps', icon: ConnectIcon },
+      nav: { slot: 'main', label: 'Agents & apps', icon: ConnectIcon },
     },
   ),
   rewards: createViewEntry(
@@ -118,7 +117,6 @@ export const VIEW_REGISTRY = {
       receivesOnSelectView: true,
       slideIndex: 1,
       preloadPriority: 'eager',
-      nav: { slot: 'main', label: 'Chat', icon: BubbleChatIcon },
     },
   ),
   help: createViewEntry(

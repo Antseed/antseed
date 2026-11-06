@@ -1,0 +1,37 @@
+import { Skeleton } from '@antseed/ui';
+import { formatCredits } from '../../../core/format';
+import { useFundingStatus } from '../../hooks/useFundingStatus';
+import { useUiSelector } from '../../hooks/useUiSelector';
+import { gatewayResource } from '../../../modules/app/vpr-resources';
+import { useCachedResource } from '../../../modules/app/cached-resource';
+import styles from './SidebarBalance.module.scss';
+
+/** Balance and Add funds; an amber dot (reason in the tooltip) when something blocks paid use. */
+export function SidebarBalance({ credits, onAddFunds }: { credits: string; onAddFunds: () => void }) {
+  const balance = formatCredits(credits);
+  const balanceKnown = useUiSelector((state) => state.creditsBalanceKnown);
+  const funding = useFundingStatus();
+  // A remote gateway pays from its own wallet; this app's balance says nothing about it.
+  const remote = useCachedResource(gatewayResource).data?.status.mode === 'remote';
+  const blocked = balanceKnown && funding.tone === 'warning';
+  if (remote) return null;
+  return (
+    <div className={styles.card}>
+      <div className={styles.row} title={blocked ? funding.title : undefined}>
+        <span>Balance</span>
+        {balanceKnown ? (
+          <span className={styles.amount}>
+            {blocked ? <span className={styles.dot} role="img" aria-label={funding.title} /> : null}
+            ${balance}
+          </span>
+        ) : (
+          // Never a fake $0.00 while the first read is in flight.
+          <Skeleton className={styles.skeleton} />
+        )}
+      </div>
+      <button type="button" className={styles.addFunds} onClick={onAddFunds}>
+        Add funds
+      </button>
+    </div>
+  );
+}

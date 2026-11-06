@@ -2,7 +2,6 @@ import { useContext } from 'react';
 import type { CSSProperties, JSX, ReactNode } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
 import { ArrowLeft01Icon, Search01Icon } from '@hugeicons/core-free-icons';
-import { useUiSelector } from '../../hooks/useUiSelector';
 import { VprNavContext, useVprNavBack } from './VprNavContext';
 import { VprHeaderActions } from './VprHeaderActions';
 import type { ViewName } from '../../types';
@@ -41,8 +40,10 @@ export function VprBackTitle({ title, onBack, fallback = 'home' }: {
  * section must add the global `view-pinned-header` class, which turns it
  * into a non-scrolling flex column.
  */
-export function VprPage({ title, root = false, onBack, backFallback, header, children }: {
+export function VprPage({ title, root = false, titleInBody = false, onBack, backFallback, header, children }: {
   title: string;
+  /** The page shows its own title in the body (a banner): the header keeps only its actions. */
+  titleInBody?: boolean;
   /** A top-level screen from the nav rail: a plain title, no back chevron. */
   root?: boolean;
   /** Explicit back handler (in-view stages); omit to pop the nav history. */
@@ -54,15 +55,14 @@ export function VprPage({ title, root = false, onBack, backFallback, header, chi
   children: ReactNode;
 }): JSX.Element {
   const nav = useContext(VprNavContext);
-  const credits = useUiSelector((state) => state.creditsTotalOwnedUsdc);
   return (
     <>
       <div className={styles.pageTop}>
         <div className={styles.pageHeaderRow}>
-          {root
+          {titleInBody ? <span /> : root
             ? <h1 className={styles.pageTitle}>{title}</h1>
             : <VprBackTitle title={title} onBack={onBack} fallback={backFallback} />}
-          <VprHeaderActions credits={credits} onSelectView={nav?.navigate} />
+          <VprHeaderActions onSelectView={nav?.navigate} />
         </div>
         {header ? <div className={styles.pageTopInner}>{header}</div> : null}
       </div>

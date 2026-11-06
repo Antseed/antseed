@@ -1,8 +1,5 @@
-import { useState } from 'react';
-import { HugeiconsIcon } from '@hugeicons/react';
-import { IncognitoIcon, LockIcon } from '@hugeicons/core-free-icons';
 import type { ChatModel, GatewayPrivacyMode } from '../../../types/bridge';
-import { privacyResource } from '../../../modules/app/vpr-resources';
+import { privacyResource, requestPrivacyMode, usePrivacySwitch } from '../../../modules/app/vpr-resources';
 import { useCachedResource } from '../../../modules/app/cached-resource';
 import styles from './PrivacyToggle.module.scss';
 
@@ -15,48 +12,44 @@ export function modelsForPrivacy(models: ChatModel[], privateMode: boolean): Cha
   return privateMode ? models.filter((model) => model.tee) : models;
 }
 
-const OPTIONS: Array<{ mode: GatewayPrivacyMode; label: string; icon: typeof LockIcon; hint: string }> = [
+const OPTIONS: Array<{ mode: GatewayPrivacyMode; label: string; iconClass: string; hint: string }> = [
   {
     mode: 'anonymous',
     label: 'Anonymous',
-    icon: IncognitoIcon,
+    iconClass: styles.iconAnonymous,
     hint: 'Any seller your routing policy allows. Sellers see a pseudonymous address, never your name or email.',
   },
   {
     mode: 'private',
     label: 'Private',
-    icon: LockIcon,
+    iconClass: styles.iconPrivate,
     hint: 'TEE sellers only: requests go only to sellers that advertise TEE attestation. Fewer models and sellers.',
   },
 ];
+
+export type PrivacyControl = {
+  current: GatewayPrivacyMode;
+  disabled: boolean;
+  error: string | null;
+  hint: string | undefined;
+  select: (mode: GatewayPrivacyMode) => void;
+};
 
 /**
  * Anonymous / Private: Private adds "TEE sellers only" to the desktop key's
  * routing policy, so the chat and every app on that key route to TEE sellers.
  */
-export function PrivacyToggle({ onChange }: { onChange?: (mode: GatewayPrivacyMode) => void }) {
+export function usePrivacyControl(onChange?: (mode: GatewayPrivacyMode) => void): PrivacyControl {
   const privacy = useCachedResource(privacyResource);
-  const [saving, setSaving] = useState<GatewayPrivacyMode | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const current = saving ?? privacy.data?.mode ?? 'anonymous';
+  const { error } = usePrivacySwitch();
+  const current = privacy.data?.mode ?? 'anonymous';
   const editable = privacy.data?.editable !== false;
   const locked = privacy.data?.requiredAbove === true;
 
-  async function select(mode: GatewayPrivacyMode): Promise<void> {
-    if (mode === current || saving || !editable || locked) return;
-    setSaving(mode);
-    setError(null);
-    try {
-      const result = await window.antseedDesktop?.gatewaySetPrivacy?.(mode);
-      if (result?.ok && result.privacy) {
-        privacyResource.setData(result.privacy);
-        onChange?.(result.privacy.mode);
-      } else {
-        setError(result?.error ?? 'Could not change the privacy mode');
-      }
-    } finally {
-      setSaving(null);
-    }
+  function select(mode: GatewayPrivacyMode): void {
+    if (mode === current || !editable || locked) return;
+    onChange?.(mode);
+    void requestPrivacyMode(mode);
   }
 
   const hint = error
@@ -64,26 +57,45 @@ export function PrivacyToggle({ onChange }: { onChange?: (mode: GatewayPrivacyMo
       : locked ? 'Your gateway requires TEE sellers for this key.'
         : OPTIONS.find((option) => option.mode === current)?.hint);
 
+  return { current, disabled: !editable || locked, error, hint, select };
+}
+
+export function PrivacyToggle({ control }: { control: PrivacyControl }) {
   return (
-    <div className={styles.wrap}>
-      <div className={styles.segment} role="radiogroup" aria-label="Privacy">
-        {OPTIONS.map((option) => (
+    <div className={styles.segment} role="radiogroup" aria-label="Privacy">
+      {OPTIONS.map((option) => {
+        const active = control.current === option.mode;
+        const activeClass = option.mode === 'private' ? styles.activePrivate : styles.activeAnonymous;
+        return (
           <button
             key={option.mode}
             type="button"
             role="radio"
-            aria-checked={current === option.mode}
-            className={`${styles.option}${current === option.mode ? ` ${styles.active}` : ''}`}
-            disabled={!editable || locked || saving !== null}
-            onClick={() => { void select(option.mode); }}
+            aria-checked={active}
+            className={`${styles.option}${active ? ` ${activeClass}` : ''}`}
+            disabled={control.disabled}
+            onClick={() => control.select(option.mode)}
             title={option.hint}
           >
-            <HugeiconsIcon icon={option.icon} size={14} strokeWidth={1.8} />
+            <span className={`${styles.icon} ${option.iconClass}`} aria-hidden="true" />
             {option.label}
           </button>
-        ))}
-      </div>
-      {hint ? <p className={error ? `${styles.hint} ${styles.hintError}` : styles.hint} role={error ? 'alert' : undefined}>{hint}</p> : null}
+        );
+      })}
+    </div>
+  );
+}
+
+/** The mode's explanation (or a save error) as a glass note with the mode's badge. */
+export function PrivacyNote({ control, className }: { control: PrivacyControl; className?: string }) {
+  if (!control.hint) return null;
+  const isPrivate = control.current === 'private';
+  return (
+    <div className={`${styles.note}${isPrivate ? ` ${styles.notePrivate}` : ''}${className ? ` ${className}` : ''}`}>
+      <span className={`${styles.badge} ${isPrivate ? styles.badgePrivate : styles.badgeAnonymous}`} aria-hidden="true" />
+      <p className={styles.noteText} role={control.error ? 'alert' : undefined}>
+        <b>{isPrivate ? 'Private.' : 'Anonymous.'}</b> {control.hint}
+      </p>
     </div>
   );
 }

@@ -17,6 +17,8 @@ import { appsResource, gatewayResource, installedAppsResource } from '../../../m
 import { useCachedResource } from '../../../modules/app/cached-resource';
 import { VprCard, VprPage, VprSearch } from '../vpr/VprKit';
 import { AgentSkillsPanel } from '../vpr/AgentSkillsPanel';
+import { appLogoUrl } from '../vpr/AppPills';
+import { AppsBanner } from '../vpr/AppsBanner';
 import { AppsOnboarding } from './AppsOnboarding';
 import { isAppsOnboardingSeen, persistAppsOnboardingSeen } from '../../../modules/app/apps-onboarding';
 import styles from './VprToolsView.module.scss';
@@ -391,20 +393,21 @@ export function VprToolsView() {
 
   return (
     <section className={`view view-vpr-tools view-pinned-header ${styles.view}`} role="tabpanel">
-      <VprPage title="Apps" root>
+      <VprPage title="Agents &amp; apps" root titleInBody>
       <div className={styles.stack}>
         {message ? <p className={styles.note} role="status">{message}</p> : null}
 
-        <VprCard className={styles.agentCard}>
-          <AgentSkillsPanel />
-        </VprCard>
-
-        <div className={styles.listHeader}>
-          <p className={styles.listTitle}>Run an app on Antseed&apos;s models</p>
-          <p className={styles.listCaption}>The app uses your gateway as its model provider, and you pick models inside it.</p>
-        </div>
-
         <div className={styles.appScroll}>
+          <AppsBanner title="Agents &amp; apps" subtitle="Let your agent call Antseed for another model, or run your apps on Antseed." />
+          <VprCard className={styles.agentCard}>
+            <AgentSkillsPanel />
+          </VprCard>
+
+          <div className={styles.listHeader}>
+            <p className={styles.listTitle}>Run an app on Antseed&apos;s models</p>
+            <p className={styles.listCaption}>The app uses your gateway as its model provider, and you pick models inside it.</p>
+          </div>
+
           <div className={styles.appList}>
             {orderedProfiles.map((profile) => {
               const connected = profile.connected;
@@ -415,7 +418,9 @@ export function VprToolsView() {
                 <div key={profile.name} className={`${styles.appPill}${connected ? ` ${styles.appPillConnected}` : ''}`}>
                   <div className={styles.appHead}>
                     <span className={styles.appIdentity}>
-                      {profile.iconDataUri && !isThemeAwareAppBrand(brandKey) ? (
+                      {appLogoUrl(profile.name, profile.displayName) ? (
+                        <img src={appLogoUrl(profile.name, profile.displayName)} alt="" className={styles.appLogo} />
+                      ) : profile.iconDataUri && !isThemeAwareAppBrand(brandKey) ? (
                         <img src={profile.iconDataUri} alt="" className={styles.appIcon} />
                       ) : (
                         <BrandIcon brand={brandKey} size={24} />

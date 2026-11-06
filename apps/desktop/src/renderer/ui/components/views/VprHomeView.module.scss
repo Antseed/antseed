@@ -1,8 +1,9 @@
+@use '../../../theme-tokens' as tokens;
+
 /* Doubled class beats the global `.view` rule regardless of stylesheet
-   injection order. Home is one centred column that always fits the window:
-   the prompt around the middle of the screen (as in OpenCode and Claude
-   Code), then the agent skills, then the apps, whose rows that don't fit are
-   hidden whole. It never scrolls. */
+   injection order. Home is one centred column over the living field that
+   always fits the window: heading, prompt and mode note, then the agent skills
+   and the apps, whose rows that don't fit are hidden whole. It never scrolls. */
 .view.view {
   position: relative;
   height: 100%;
@@ -10,17 +11,42 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  padding: 0 24px 20px;
+  padding: 0 24px 16px;
+}
+
+/* The Anonymous field is daylight art, so it keeps the day palette even when
+   the rest of the app follows a dark theme setting. */
+.day {
+  @include tokens.day-tokens;
+  color: var(--text-primary);
 }
 
 /* The hidden-inset title bar has no drag region of its own. */
 .dragBar {
-  flex: 0 0 40px;
+  position: relative;
+  flex: 0 0 58px;
   margin: 0 -24px;
   -webkit-app-region: drag;
 }
 
+.toggleSlot {
+  position: absolute;
+  z-index: 3;
+  top: 14px;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+
+  > * {
+    pointer-events: auto;
+  }
+}
+
 .stack {
+  position: relative;
+  z-index: 2;
   flex: 1 1 auto;
   min-height: 0;
   width: 100%;
@@ -28,27 +54,37 @@
   margin: 0 auto;
   display: flex;
   flex-direction: column;
-  gap: clamp(20px, 4vh, 36px);
+  gap: 10px;
   min-width: 0;
 }
 
-/* Puts the prompt around the middle of a full window, near the top of a short one. */
 .hero {
   flex: 0 0 auto;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: clamp(14px, 3vh, 24px);
-  padding-top: clamp(0px, calc(30vh - 150px), 220px);
+  gap: 12px;
+  padding-top: clamp(0px, calc(9vh - 40px), 72px);
+  text-align: center;
 }
 
-.agents {
-  flex: 0 0 auto;
-}
-
-.logo {
-  display: block;
+.heading {
+  margin: 0;
   color: var(--text-primary);
+  font-size: clamp(34px, 7.5vh, 68px);
+  font-weight: 470;
+  line-height: 1.02;
+  letter-spacing: -0.025em;
+}
+
+.subline {
+  margin: -4px 0 clamp(4px, 2vh, 18px);
+  /* Sits directly on the painting, so it needs the stronger ink in both modes. */
+  color: var(--text-primary);
+  opacity: 0.86;
+  font-size: clamp(14px, 2vh, 18px);
+  font-weight: 450;
+  line-height: 1.4;
 }
 
 .composer {
@@ -58,30 +94,32 @@
   width: 100%;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 16px 12px 12px 18px;
+  gap: 8px;
+  padding: 16px 16px 12px 18px;
   border-radius: 20px;
-  border: 1px solid var(--border);
-  background: var(--bg-card);
-  box-shadow: var(--shadow-sm);
-  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+  border: 1px solid var(--surface-glass-border);
+  background: var(--surface-glass);
+  backdrop-filter: blur(20px) saturate(1.4);
+  box-shadow: var(--shadow);
+  text-align: left;
+  transition: border-color 0.12s ease;
 }
 
 .composer:focus-within {
-  border-color: rgba(var(--brand-rgb), 0.5);
+  border-color: var(--border-strong);
 }
 
 .askInput {
   width: 100%;
   min-width: 0;
   min-height: 44px;
-  padding: 0;
+  padding: 2px 0 0;
   border: none;
   background: transparent;
   color: var(--text-primary);
   font: inherit;
-  font-size: 15px;
-  line-height: 22px;
+  font-size: 17px;
+  line-height: 1.5;
   outline: none;
   resize: none;
 }
@@ -95,7 +133,7 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 4px;
+  gap: 8px;
 }
 
 .composerSpacer {
@@ -104,32 +142,46 @@
 
 .askSend {
   flex: 0 0 auto;
-  width: 36px;
-  height: 36px;
+  width: 38px;
+  height: 38px;
   display: grid;
   padding: 0;
   place-items: center;
   border: none;
-  border-radius: 10px;
-  background: rgba(var(--brand-rgb), 0.12);
-  color: var(--brand);
+  border-radius: 50%;
+  background: var(--btn-bg);
+  color: var(--btn-ink);
   cursor: pointer;
-  transition: background 0.12s ease;
+  transition: opacity 0.12s ease;
 }
 
 .askSend:hover:not(:disabled) {
-  background: rgba(var(--brand-rgb), 0.24);
+  opacity: 0.88;
 }
 
 .askSend:disabled {
   cursor: default;
-  opacity: 0.6;
+  opacity: 0.45;
 }
 
-/* ---------- Apps ---------- */
+/* ---------- Agents and apps, as glass over the field ---------- */
+
+.glass {
+  --pill-bg: var(--surface-glass);
+  --pill-border: var(--surface-glass-border);
+  padding: 12px 16px;
+  border-radius: 16px;
+  border: 1px solid var(--surface-glass-border);
+  background: var(--surface-glass);
+  backdrop-filter: blur(18px);
+}
+
+.agents {
+  flex: 0 0 auto;
+}
 
 .appsSection {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -172,7 +224,7 @@
   padding: 0;
   border: none;
   background: transparent;
-  color: var(--text-secondary);
+  color: var(--leaf-ink);
   font: inherit;
   font-size: 12px;
   font-weight: 500;
@@ -181,6 +233,20 @@
 }
 
 .sectionLink:hover {
-  color: var(--text-primary);
   text-decoration: underline;
+}
+
+/* Short windows: the heading goes on one line and the extras step aside. */
+@media (max-height: 760px) {
+  .heading br {
+    display: none;
+  }
+
+  .subline {
+    display: none;
+  }
+
+  .sectionCaption {
+    display: none;
+  }
 }

@@ -11,8 +11,6 @@ import {
   Cancel01Icon,
   Folder01Icon,
   Mic01Icon,
-  PanelLeftCloseIcon,
-  PanelLeftOpenIcon,
   Search01Icon,
   SecurityWarningIcon,
   Shield01Icon
@@ -29,6 +27,7 @@ import { ImageGenerationPlaceholder } from '../chat/ImageGenerationPlaceholder';
 import { ToolApprovalCard } from '../chat/ToolApprovalCard';
 import { FundingStatusNotice } from './FundingStatusNotice';
 import { useFundingStatus } from '../../hooks/useFundingStatus';
+import { ChatBoxAnt } from '../chat/ChatBoxAnt';
 import { ChatModelDropdown } from '../chat/ChatModelDropdown';
 import { ChatSellerPicker } from '../chat/ChatSellerPicker';
 import { joinPinnedModel } from '../../../../shared/pinned-model.js';
@@ -37,11 +36,10 @@ import { BrowserPreview } from '../BrowserPreview';
 import type { ChatMessage } from '../chat/chat-shared';
 import { buildDisplayMessages } from '../chat/chat-shared';
 import type { ChatPermissionMode, RawChatAttachment } from '../../../types/bridge';
-import { selectHeadlineBalanceUsdc } from '../../../core/balance';
-import { getUiStateRef, notifyUiStateChangedSync } from '../../../core/store';
 import { VprHeaderActions } from '../vpr/VprHeaderActions';
 import { cancelVoiceRecording, startVoiceRecording, stopVoiceRecording } from '../../lib/voice-recorder';
 import { modelsForPrivacy, usePrivateMode } from '../vpr/PrivacyToggle';
+import { usePrivacySwitch } from '../../../modules/app/vpr-resources';
 import styles from './ChatView.module.scss';
 import bubbleStyles from '../chat/ChatBubble.module.scss';
 
@@ -222,18 +220,18 @@ const chatViewCache: ChatViewCache = {
 
 export function ChatView({ onSelectView }: ChatViewProps) {
   const privateMode = usePrivateMode();
+  // Nothing goes out until a mode change has reached the routing policy.
+  const { switching: privacySwitching } = usePrivacySwitch();
   // Blockers only (a deposit short of the minimum, credits all held in
   // sessions); dismissing hides this one until the situation changes.
   const funding = useFundingStatus();
   const fundingKey = `${funding.kind}:${funding.title}`;
   const [dismissedFundingKey, setDismissedFundingKey] = useState<string | null>(null);
   const snap = useUiSelector((state) => ({
-    headlineBalanceUsdc: selectHeadlineBalanceUsdc(state),
     browserPreviewRequestId: state.browserPreviewRequestId,
     browserPreviewUrl: state.browserPreviewUrl,
     chatAbortVisible: state.chatAbortVisible,
     chatActiveConversation: state.chatActiveConversation,
-    chatPanelExpanded: state.chatPanelExpanded,
     chatConversations: state.chatConversations,
     chatConversationsLoaded: state.chatConversationsLoaded,
     chatError: state.chatError,
@@ -587,12 +585,6 @@ export function ChatView({ onSelectView }: ChatViewProps) {
   // Toggle between the thin chat panel and the expanded layout. The store
   // flag drives both the conversation-list panel (VprShell) and the window
   // size preset (AppShell).
-  const handleTogglePanelExpanded = useCallback(() => {
-    const state = getUiStateRef();
-    state.chatPanelExpanded = !state.chatPanelExpanded;
-    notifyUiStateChangedSync();
-  }, []);
-
   const resetComposer = useCallback(() => {
     setInputValue('');
     setAttachedFiles([]);
@@ -608,7 +600,7 @@ export function ChatView({ onSelectView }: ChatViewProps) {
   const handleSend = useCallback(() => {
     const text = inputValue.trim();
     if (!text && attachedFiles.length === 0) return;
-    if (noModelAvailable) return;
+    if (noModelAvailable || privacySwitching) return;
     // If the current turn is still streaming, park the draft as a pending
     // card above the composer and clear the input so the user can keep
     // typing the next one. The disabled→enabled effect flushes the queue
@@ -634,7 +626,7 @@ export function ChatView({ onSelectView }: ChatViewProps) {
       actions.sendMessage(text, filesToSend);
     }
     scrollChatToBottom('smooth');
-  }, [inputValue, attachedFiles, actions, snap.chatInputDisabled, snap.chatActiveConversation, resetComposer, noModelAvailable, imageMode]);
+  }, [inputValue, attachedFiles, actions, snap.chatInputDisabled, snap.chatActiveConversation, resetComposer, noModelAvailable, privacySwitching, imageMode]);
 
   const handleRemovePending = useCallback((id: string) => {
     setPendingQueue((prev) => prev.filter((item) => item.id !== id));
@@ -907,6 +899,7 @@ export function ChatView({ onSelectView }: ChatViewProps) {
   const imageRequestInProgress = showThinkingIndicator && isImageRequestPhase(snap.chatThinkingPhase);
   const chatComposerDisabled = noModelAvailable;
   const chatSendDisabled = chatComposerDisabled
+    || privacySwitching
     || (imageMode ? snap.chatSendDisabled || inputValue.trim().length === 0 : snap.chatSendDisabled && attachedFiles.length === 0);
 
   const workspacePath = snap.chatWorkspacePath || snap.chatWorkspaceDefaultPath;
@@ -920,32 +913,10 @@ export function ChatView({ onSelectView }: ChatViewProps) {
     ? { flex: `0 0 ${previewFraction * 100}%`, minWidth: PREVIEW_MIN_WIDTH }
     : undefined;
 
-  // In the thin layout there is no room for the rest of the header chrome
-  // while searching — the search bar takes the top bar over entirely. Only
-  // with an active conversation: that is what gates the search bar itself.
-  const searchOnlyHeader =
-    messageSearchOpen && !snap.chatPanelExpanded && Boolean(snap.chatActiveConversation);
-
   return (
     <section className={`view view-chat`} role="tabpanel">
       <div className={styles.pageHeader}>
-        {!searchOnlyHeader && (
         <div className={styles.pageHeaderLeft}>
-          <button
-            type="button"
-            className={styles.panelToggle}
-            onClick={handleTogglePanelExpanded}
-            title={snap.chatPanelExpanded ? 'Hide chats' : 'View chats'}
-            aria-label={snap.chatPanelExpanded ? 'Hide chats' : 'View chats'}
-            aria-pressed={snap.chatPanelExpanded}
-          >
-            <HugeiconsIcon
-              icon={snap.chatPanelExpanded ? PanelLeftOpenIcon : PanelLeftCloseIcon}
-              size={17}
-              strokeWidth={1.8}
-            />
-            <span>{snap.chatPanelExpanded ? 'Hide chats' : 'View chats'}</span>
-          </button>
           <div className={styles.serviceSwitcherAnchor}>
             <ChatModelDropdown
               models={modelsForPrivacy(snap.chatModels, privateMode)}
@@ -966,19 +937,18 @@ export function ChatView({ onSelectView }: ChatViewProps) {
             ) : null}
           </div>
         </div>
-        )}
-          <div className={`${styles.pageHeaderRight}${messageSearchOpen ? ` ${styles.pageHeaderRightSearching}` : ''}${searchOnlyHeader ? ` ${styles.pageHeaderRightSearchOnly}` : ''}`}>
+          <div className={`${styles.pageHeaderRight}${messageSearchOpen ? ` ${styles.pageHeaderRightSearching}` : ''}`}>
             {snap.chatActiveConversation && <>
-            {!searchOnlyHeader && snap.chatActiveConversation && snap.chatSelectedModelId && (
+            {snap.chatSelectedModelId && (
               <button
                 type="button"
-                className={`${styles.headerActionButton}${snap.chatPanelExpanded ? '' : ` ${styles.headerActionButtonIconOnly}`}`}
+                className={styles.headerActionButton}
                 onClick={handleNewChatWithCurrentModel}
                 title="Start a new chat with the same model"
                 aria-label="Start a new chat with the same model"
               >
                 <HugeiconsIcon icon={Add01Icon} size={12} strokeWidth={2} />
-                {snap.chatPanelExpanded && <span>New chat</span>}
+                <span>New chat</span>
               </button>
             )}
             {messageSearchOpen ? (
@@ -1051,7 +1021,7 @@ export function ChatView({ onSelectView }: ChatViewProps) {
               </button>
             )}
             </>}
-            <VprHeaderActions credits={snap.headlineBalanceUsdc} onSelectView={onSelectView} />
+            <VprHeaderActions onSelectView={onSelectView} />
           </div>
       </div>
 
@@ -1280,6 +1250,13 @@ export function ChatView({ onSelectView }: ChatViewProps) {
             )}
 
             <div className={styles.chatInputRow}>
+              <ChatBoxAnt
+                typing={inputValue.length > 0}
+                sending={snap.chatSending}
+                answering={Boolean(snap.chatStreamingMessage)}
+                error={snap.chatError}
+                privateMode={privateMode}
+              />
               <input
                 ref={fileInputRef}
                 id={fileInputId}

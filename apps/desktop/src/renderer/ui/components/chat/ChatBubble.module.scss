@@ -631,7 +631,7 @@
       transition: background 0.1s, border-color 0.1s;
 
       &:hover {
-        background: rgba(31, 216, 122, 0.08);
+        background: rgba(var(--accent-rgb), 0.08);
         border-color: var(--accent);
       }
     }

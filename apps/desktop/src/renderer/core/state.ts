@@ -161,7 +161,6 @@ export type RendererUiState = {
   chatProxyOnline: boolean;
   /** Chat opens thin (compact window, no conversation list). The header
       toggle expands the window to the standard preset and shows the panel. */
-  chatPanelExpanded: boolean;
   chatMessages: unknown[];
   chatStreamingMessage: ChatMessage | null;
   chatSending: boolean;
@@ -298,7 +297,6 @@ export function createInitialUiState(): RendererUiState {
     chatProxyOnline: false,
     // Chat opens wide (standard preset) with the conversation list showing;
     // the in-view toggle collapses it to the thin panel.
-    chatPanelExpanded: true,
     chatMessages: [],
     chatStreamingMessage: null,
     chatSending: false,

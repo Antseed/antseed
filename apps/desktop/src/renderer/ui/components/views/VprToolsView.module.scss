@@ -522,7 +522,7 @@
   border: none;
   border-radius: 8px;
   background: var(--brand);
-  color: #ffffff;
+  color: var(--accent-contrast);
   font-size: 12px;
   font-weight: 500;
   line-height: 20px;
@@ -675,7 +675,7 @@
   border: none;
   border-radius: 8px;
   background: var(--brand);
-  color: #ffffff;
+  color: var(--accent-contrast);
   font-size: 12px;
   font-weight: 500;
   line-height: 20px;
@@ -809,6 +809,16 @@
   height: 24px;
   border-radius: 5px;
   object-fit: contain;
+}
+
+/* Brand logo: the mark already sits on its own white tile. */
+.appLogo {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: #ffffff;
 }
 
 /* ---------- Add custom app ---------- */

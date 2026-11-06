@@ -9,18 +9,18 @@
   gap: 8px;
   /* Fixed height: the trigger is the tallest header child, and the chat
      header pins its min-height to it (see ChatView .page-header). */
-  height: 36px;
+  height: 32px;
   max-width: 100%;
   min-width: 0;
-  padding: 0 8px;
+  padding: 0 10px;
   border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-  background: none;
+  border-radius: 9px;
+  background: var(--surface-chip);
   cursor: pointer;
   color: var(--text-muted);
 
   &:hover {
-    background: none;
+    background: var(--surface-chip);
     border-color: var(--border);
   }
 
@@ -32,8 +32,8 @@
 }
 
 .model-dropdown-label {
-  font-size: 14px;
-  font-weight: 600;
+  font-size: 13.5px;
+  font-weight: 500;
   color: var(--text-primary);
   white-space: nowrap;
   /* Thin chat header: a long model name must ellipsize instead of pushing
@@ -52,8 +52,8 @@
   overflow-y: auto;
   background: var(--bg-card);
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  box-shadow: var(--shadow-sm);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
   z-index: 200;
   padding: 4px;
 }

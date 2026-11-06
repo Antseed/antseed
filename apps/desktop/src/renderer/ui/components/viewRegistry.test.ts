@@ -34,10 +34,11 @@ describe('view registry', () => {
   });
 
   it('derives the nav rail from registry metadata in slide order', () => {
-    expect(navViews('main').map((entry) => entry.view)).toEqual(['home', 'chat', 'tools', 'rewards'] satisfies ViewName[]);
+    expect(navViews('main').map((entry) => entry.view)).toEqual(['home', 'tools', 'rewards'] satisfies ViewName[]);
     expect(navViews('bottom').map((entry) => entry.view)).toEqual(['preferences'] satisfies ViewName[]);
     expect(getViewRegistryEntry('home').nav?.label).toBe('Home');
-    expect(getViewRegistryEntry('tools').nav?.label).toBe('Apps');
+    expect(getViewRegistryEntry('chat').nav).toBeNull();
+    expect(getViewRegistryEntry('tools').nav?.label).toBe('Agents & apps');
     expect(getViewRegistryEntry('preferences').nav?.label).toBe('Settings');
     expect(getViewRegistryEntry('help').nav).toBeNull();
     expect(getViewRegistryEntry('deposit').nav).toBeNull();

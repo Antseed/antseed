@@ -14,7 +14,7 @@ let mainWindow: BrowserWindow | null = null;
 
 // One resizable window for every view. The minimum keeps the nav rail, the
 // chat list and a readable conversation side by side.
-const WINDOW_SIZE = { width: 1240, height: 900, minWidth: 760, minHeight: 600 };
+const WINDOW_SIZE = { width: 1240, height: 900, minWidth: 920, minHeight: 600 };
 
 export interface WindowConfig {
   appName: string;

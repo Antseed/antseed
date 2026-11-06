@@ -32,14 +32,14 @@ In **Settings → Gateway**:
 
 ## Home
 
-The app opens in one window you can resize, down to 760×600. Home has:
+The app opens in one window you can resize, down to 920×600. Home has:
 
 - **Anonymous / Private**, above the prompt. **Anonymous** (the default) routes to any seller your routing policy allows; sellers see a pseudonymous address, never your name or email. **Private** adds **TEE sellers only** to the owner routing policy of the app's **Desktop** key, so the chat and every app using that key go only to sellers that advertise TEE attestation, and the model pickers list only models a TEE seller serves. Other settings on that key's policy are kept, and the key's admin policy is never changed. With a remote gateway, set this in its console. See [Verify a seller's TEE](/docs/verify-tee) for what the attestation checks.
 - **The prompt**, in the middle: pick a model and, optionally, a seller (only sellers your gateway's routing policy allows), type and press Enter to start a chat.
-- **Use it with your agent** (also at the top of **Apps**): add Antseed's skills to an AI agent you already use, so it keeps its own model and calls Antseed only when you ask, for example "using Antseed, generate an image of…", "make a video of…" or "ask Kimi on Antseed for a second opinion". Select an agent (Claude Code, Codex, OpenCode, Pi, Hermes or Droid) to add the `antseed-ask`, `antseed-images` and `antseed-videos` skills to its skills folder; select it again to remove them. The skills use your gateway: its URL is written into them and its API key is saved in `~/.antseed/agent-skills.key`, readable only by you. Start a new agent session after adding them. **Copy for any agent** copies instructions with the gateway URL and key to paste into any other agent.
+- **Use it with your agent** (also at the top of **Agents & apps**): add Antseed's skills to an AI agent you already use, so it keeps its own model and calls Antseed only when you ask, for example "using Antseed, generate an image of…", "make a video of…" or "ask Kimi on Antseed for a second opinion". Select an agent (Claude Code, Codex, OpenCode, Pi, Hermes or Droid) to add the `antseed-ask`, `antseed-images` and `antseed-videos` skills to its skills folder; select it again to remove them. The skills use your gateway: its URL is written into them and its API key is saved in `~/.antseed/agent-skills.key`, readable only by you. Start a new agent session after adding them. **Copy for any agent** copies instructions with the gateway URL and key to paste into any other agent.
 - **Connect your apps**: run an app on Antseed's models instead, with your gateway as its model provider (see [Connect an AI app](#connect-an-ai-app)).
 
-The top bar has **Help**, **Settings**, **API keys**, which opens the Gateway Console in your browser, and your balance, which opens **Add funds**.
+The sidebar has **New chat** (⌘N or Ctrl+N), your recent chats with search, your balance with **Add funds**, and **Settings**. The top right of each page has **Help** and **API keys**, which opens the Gateway Console in your browser.
 
 ### Claim the console
 
@@ -57,7 +57,7 @@ For withdrawals and payment channels, use the Gateway Console; see [Funding](/do
 
 ## Connect an AI app
 
-Open **Apps** and connect a detected tool. The app edits the tool's own configuration file so it points at the gateway (base URL and a real API key) and lists the gateway's text models. Pick and switch models inside each tool, as you normally would.
+Open **Agents & apps** and connect a detected tool. The app edits the tool's own configuration file so it points at the gateway (base URL and a real API key) and lists the gateway's text models. Pick and switch models inside each tool, as you normally would.
 
 - When a row shows **Restart**, restart the tool before testing.
 - **Disconnect** restores the tool's original configuration.
@@ -100,7 +100,7 @@ There is no Antseed account or platform API key. Sellers see a pseudonymous peer
 ### A connected app sends no requests
 
 1. Check the gateway status at the bottom of the window.
-2. Disconnect and reconnect the app in **Apps**.
+2. Disconnect and reconnect the app in **Agents & apps**.
 3. Restart it if its row shows **Restart**.
 4. Check that the tool is not overriding the base URL or API key the app wrote.
 5. Check that the model you picked in the tool supports the tool's API format.

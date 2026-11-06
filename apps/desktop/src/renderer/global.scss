@@ -3,39 +3,12 @@
    Light theme is default. Add class "dark-theme" to <body> for dark.
    =================================================================== */
 
+@use './theme-tokens' as tokens;
+
 :root {
-  /* ---------- Light theme (default) ----------
-     Brand palette from the Antseed Figma guideline: warm cream surfaces
-     (surface/0 #fbf9f4, surface/1 white), deep green primary (#008359)
-     with the brighter brand emerald (#10b981) reserved for fills. */
-  --bg-primary: #fbf9f4;
-  --bg-secondary: #fbf9f4;
-  --bg-surface: #f1efe8;
-  --bg-hover: #eef2ea;
-  --bg-card: #ffffff;
-  --bg-card-alt: #fdfcf8;
-  --bg-sidebar-active: #eef2ea;
-  --text-primary: #111714;
-  --text-secondary: #4b5450;
-  --text-muted: #6b7570;
-  --text-faint: #b7c0bb;
-  --accent: #008359;
-  --accent-green: #008359;
-  --brand: #10b981;
-  --accent-blue: #3b82f6;
-  --accent-yellow: #fbbf24;
-  --danger: #ef4444;
-  --border: #d4dbd7;
-  --border-strong: #b7c0bb;
-  --border-light: #e4e9e5;
-  --success-subtle-bg: #e9ffdd;
-  --success-subtle-border: #c0f6a2;
-  --success-subtle-text: #0a1e00;
-  --accent-rgb: 0, 131, 89;
-  --accent-green-rgb: 0, 131, 89;
-  --brand-rgb: 16, 185, 129;
-  --warning-rgb: 251, 191, 36;
-  --danger-rgb: 239, 68, 68;
+  /* Colour tokens live in _theme-tokens.scss (AI VPN v4 day and night). */
+  @include tokens.day-tokens;
+
   /* Typography (Figma guideline) — Geist throughout, three body sizes:
      16px/24 (400-700), 14px/20 (400-600), 12px/20 (400-500), and a
      12px/16 variant reserved for badges and the nav rail labels. */
@@ -56,79 +29,25 @@
   --space-11: 56px;
   --space-12: 64px;
 
-  --sidebar-width: 220px;
+  --sidebar-width: 232px;
   --radius: 16px;
   --radius-md: 12px;
   --radius-sm: 8px;
-
-  /* Shadow scale (Figma guideline): shadow/1 for resting cards,
-     shadow/2 for floating emphasis, shadow/popup for overlays. */
-  --shadow-sm: 0px 2px 8px rgba(17, 23, 20, 0.08);
-  --shadow-float: 0px 2px 10px rgba(17, 23, 20, 0.16);
-  --shadow: 0px 12px 32px rgba(17, 23, 20, 0.14);
 
   /* Motion — screen-change slides and anything that should feel like part of
      the same gesture. Duration must match VIEW_SLIDE_MS in ViewHost.tsx. */
   --motion-duration: 300ms;
   --motion-ease: cubic-bezier(0.22, 0.61, 0.36, 1);
-
-  /* Chat specific */
-  --chat-user-bubble: #eef2ea;
-  --chat-user-bubble-border: #d4dbd7;
-  --chat-input-bg: #ffffff;
-  --chat-header-bg: #fbf9f4;
-  --chat-area-bg: #fdfcf8;
-  --drop-overlay-bg: rgba(251, 249, 244, 0.82);
-
-  /* Scrollbar */
-  --scrollbar-thumb: rgba(17, 23, 20, 0.18);
-  --scrollbar-thumb-hover: rgba(17, 23, 20, 0.3);
 }
 
 body.dark-theme {
-  --bg-primary: #1c1c1e;
-  --bg-secondary: #222224;
-  --bg-surface: #2f2f31;
-  --bg-hover: #363638;
-  --bg-card: #2a2a2c;
-  --bg-card-alt: #252527;
-  --text-primary: #e6edf3;
-  --text-secondary: #8b949e;
-  --text-muted: #8b949e;
-  --text-faint: #5f656b;
-  --bg-sidebar-active: rgba(52, 211, 153, 0.12);
-  --accent: #1fd87a;
-  --accent-green: #1fd87a;
-  /* The dark accent is a bright mint, so on-accent text must be dark —
-     white-on-mint fails contrast (shared primitives read this via
-     --as-accent-contrast for primary buttons). */
-  --accent-contrast: #06281a;
-  --brand: #10b981;
-  --accent-blue: #58a6ff;
-  --accent-yellow: #f2cc60;
-  --danger: #ff7b72;
-  --border: rgba(255, 255, 255, 0.08);
-  --border-strong: rgba(255, 255, 255, 0.12);
-  --border-light: rgba(255, 255, 255, 0.04);
-  --success-subtle-bg: rgba(74, 222, 128, 0.12);
-  --success-subtle-border: rgba(74, 222, 128, 0.35);
-  --success-subtle-text: #bbf7d0;
-  --accent-rgb: 31, 216, 122;
-  --accent-green-rgb: 31, 216, 122;
-  --brand-rgb: 16, 185, 129;
-  --warning-rgb: 242, 204, 96;
-  --danger-rgb: 255, 123, 114;
-  --shadow: 0px 12px 32px rgba(0, 0, 0, 0.5);
-  --shadow-sm: 0px 2px 8px rgba(0, 0, 0, 0.3);
-  --shadow-float: 0px 2px 10px rgba(0, 0, 0, 0.4);
-  --chat-user-bubble: rgba(255, 255, 255, 0.06);
-  --chat-user-bubble-border: rgba(255, 255, 255, 0.08);
-  --chat-input-bg: #2a2a2c;
-  --chat-header-bg: #252527;
-  --chat-area-bg: #1c1c1e;
-  --drop-overlay-bg: rgba(28, 28, 30, 0.82);
-  --scrollbar-thumb: rgba(255, 255, 255, 0.16);
-  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.28);
+  @include tokens.night-tokens;
+}
+
+/* v4 primary actions are ink on paper, not the accent colour. */
+body .as-button--primary:not(:disabled) {
+  background: var(--btn-bg);
+  color: var(--btn-ink);
 }
 
 /* ===================================================================

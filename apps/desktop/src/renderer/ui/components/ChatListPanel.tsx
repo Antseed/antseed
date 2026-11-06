@@ -7,7 +7,7 @@ import {
   type RefObject,
 } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
-import { MoreVerticalIcon, Add01Icon, Search01Icon } from '@hugeicons/core-free-icons';
+import { MoreVerticalIcon, Search01Icon } from '@hugeicons/core-free-icons';
 import { formatCompactTokens } from '../../core/peer-utils';
 import { formatUsdcAmount } from '../../core/format';
 import { shallowEqual, useUiSelector } from '../hooks/useUiSelector';
@@ -211,6 +211,7 @@ function ConversationRow({
     <div
       className={`${styles.convItem}${isActive ? ` ${styles.active}` : ''}`}
       onClick={() => onSelectConv(id)}
+      title={[title, modelLabel, costLabel, timeLabel].filter(Boolean).join(' · ')}
     >
       <div className={styles.convTop}>
         <div className={styles.convTitle}>{title}</div>
@@ -234,11 +235,6 @@ function ConversationRow({
             <HugeiconsIcon icon={MoreVerticalIcon} size={14} strokeWidth={1.5} />
           </button>
         </div>
-      </div>
-      <div className={styles.meta}>
-        {modelLabel && <span className={styles.peerName}>{modelLabel}</span>}
-        {costLabel && <span className={styles.cost}>{costLabel}</span>}
-        <span className={styles.time}>{timeLabel}</span>
       </div>
       {menuOpenId === id && (
         <ConvContextMenu
@@ -376,7 +372,12 @@ function ChatSearchModal({
   );
 }
 
-export function ChatListPanel(_props: { onSelectView?: (view: import('../types').ViewName) => void } = {}) {
+/** The sidebar's Recent section: every conversation, with search, rename and delete. */
+export function ChatListPanel({ onOpenConversation, highlightActive }: {
+  onOpenConversation: () => void;
+  /** Only the chat screen is "in" a conversation; Home starts a new one. */
+  highlightActive: boolean;
+}) {
   const {
     chatConversations,
     chatActiveConversation,
@@ -434,43 +435,22 @@ export function ChatListPanel(_props: { onSelectView?: (view: import('../types')
 
   const handleSelectConv = useCallback((id: string) => {
     void actions.openConversation(id);
-  }, [actions]);
-
-  const handleStartNewChat = useCallback(() => {
-    actions.startNewChat();
-  }, [actions]);
+    onOpenConversation();
+  }, [actions, onOpenConversation]);
 
   return (
     <aside className={styles.panel} aria-labelledby="chat-list-label">
-      <div className={styles.header} id="chat-list-label">
-        <span className={styles.headerText}>
-          <span>Conversations</span>
-          {allConversations.length > 0 && (
-            <span className={styles.count} aria-label={`${allConversations.length} total conversations`}>
-              {allConversations.length}
-            </span>
-          )}
-        </span>
-        <span className={styles.headerActions}>
-          <button
-            type="button"
-            className={styles.iconBtn}
-            onClick={handleStartNewChat}
-            aria-label="Start a new chat"
-            title="Start a new chat"
-          >
-            <HugeiconsIcon icon={Add01Icon} size={13} strokeWidth={1.9} />
-          </button>
-          <button
-            type="button"
-            className={styles.iconBtn}
-            onClick={() => setChatSearchOpen(true)}
-            aria-label="Search conversations"
-            title="Search conversations"
-          >
-            <HugeiconsIcon icon={Search01Icon} size={13} strokeWidth={1.8} />
-          </button>
-        </span>
+      <div className={styles.header}>
+        <span id="chat-list-label">Recent</span>
+        <button
+          type="button"
+          className={styles.iconBtn}
+          onClick={() => setChatSearchOpen(true)}
+          aria-label="Search conversations"
+          title="Search conversations"
+        >
+          <HugeiconsIcon icon={Search01Icon} size={13} strokeWidth={1.8} />
+        </button>
       </div>
       <div className={styles.list}>
         {sortedConversations.length === 0 ? (
@@ -480,7 +460,7 @@ export function ChatListPanel(_props: { onSelectView?: (view: import('../types')
             <ConversationRow
               key={getConversationId(conv)}
               conv={conv}
-              activeConvId={chatActiveConversation}
+              activeConvId={highlightActive ? chatActiveConversation : null}
               sendingConvIds={sendingConvIds}
               approvalConvIds={approvalConvIds}
               modelLabelById={modelLabelById}

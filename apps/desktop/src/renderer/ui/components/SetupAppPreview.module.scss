@@ -374,7 +374,7 @@ $period: 16s;
 .bubbleUser {
   align-self: flex-end;
   background: var(--brand);
-  color: #fff;
+  color: var(--accent-contrast);
   animation-delay: 4.4s;
 }
 
