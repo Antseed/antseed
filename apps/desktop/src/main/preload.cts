@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type { RuntimeMode, RuntimeProcessState, StartOptions } from './runtime/process-manager.js';
+import type { CreateInviteResult, InviteCheckResult, RefereeBonus, ReferralInvites, ReferralStatus } from '../shared/referrals.js';
 import type {
   DepositStepSignal,
   FirstModelShownSignal,
@@ -526,14 +527,14 @@ const api = {
   getAppSetupStatus(): Promise<{ needed: boolean; complete: boolean }> {
     return ipcRenderer.invoke('app:get-setup-status') as Promise<{ needed: boolean; complete: boolean }>;
   },
-  referralGetStatus: () => ipcRenderer.invoke('referral:get-status'),
-  referralCheckInvite: (value: string) => ipcRenderer.invoke('referral:check-invite', value),
-  referralRedeemInvite: (value: string) => ipcRenderer.invoke('referral:redeem-invite', value),
-  referralClearInvite: () => ipcRenderer.invoke('referral:clear-invite'),
-  referralGetInvites: () => ipcRenderer.invoke('referral:get-invites'),
-  referralCreateInvite: () => ipcRenderer.invoke('referral:create-invite'),
-  referralGetReferee: () => ipcRenderer.invoke('referral:get-referee'),
-  referralTakeDeepLink: () => ipcRenderer.invoke('referral:take-deep-link'),
+  referralGetStatus: (): Promise<ReferralStatus> => ipcRenderer.invoke('referral:get-status'),
+  referralCheckInvite: (value: string): Promise<InviteCheckResult> => ipcRenderer.invoke('referral:check-invite', value),
+  referralRedeemInvite: (value: string): Promise<InviteCheckResult> => ipcRenderer.invoke('referral:redeem-invite', value),
+  referralClearInvite: (): Promise<ReferralStatus> => ipcRenderer.invoke('referral:clear-invite'),
+  referralGetInvites: (): Promise<ReferralInvites> => ipcRenderer.invoke('referral:get-invites'),
+  referralCreateInvite: (): Promise<CreateInviteResult> => ipcRenderer.invoke('referral:create-invite'),
+  referralGetReferee: (): Promise<RefereeBonus> => ipcRenderer.invoke('referral:get-referee'),
+  referralTakeDeepLink: (): Promise<string | null> => ipcRenderer.invoke('referral:take-deep-link'),
   onReferralDeepLink(handler: (invite: string) => void): () => void {
     const listener = (_: unknown, invite: string) => handler(invite);
     ipcRenderer.on('referral:deep-link', listener);

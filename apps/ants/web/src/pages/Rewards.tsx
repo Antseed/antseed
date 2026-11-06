@@ -1,7 +1,8 @@
 import { Button, Card } from '../components/ui';
 import { useContext, useEffect, useState } from 'react';
 import type { ClaimRequest, CreatedInviteView, InviteAllowanceView, PoolView, ReferralView, ReferredBuyerView, RestakeRequest, RewardBucket, RewardsView, StakeUsageRequest } from '../../../src/api-types';
-import { inviteAllowance } from '../../../src/invite-allowance';
+import { copyText } from '@antseed/ui';
+import { inviteAllowance, NO_INVITE_QUOTA_MESSAGE } from '../../../src/invite-allowance';
 import { request, api } from '../api';
 import { BuyerWalletAction } from '../wallet';
 import { useConfig, useEpochInfo } from '../app-context';
@@ -39,7 +40,7 @@ export function RewardsPage() {
         {host().buyerRewards ? <BuyerRewardsCard data={data} /> : null}
         {data.scope !== 'buyer' ? <RewardsBody onRefresh={page.refresh} data={data} />
           : host().buyerRewards ? null : <p className="hint">Connect the wallet that holds your staking positions to see its staking rewards.</p>}
-        {data.scope !== 'buyer' ? <ReferralRewardsCard /> : null}
+        {data.scope !== 'buyer' ? <ReferralRewardsCard operator={data.buyerUsage.operator} /> : null}
         {data.scope !== 'buyer' ? <BuildersCard /> : null}
       </RewardRefreshContext.Provider> : null}
     </>
@@ -52,14 +53,25 @@ function shortInviteLink(link: string): string {
   return match ? `${match[1]}${match[2]!.slice(0, 6)}…${match[2]!.slice(-4)}` : link;
 }
 
-const NO_INVITE_QUOTA = 'Invites unlock after at least 1 USDC of usage or sales in the previous week.';
+/** Whether this session can act for the buyer account: the contract accepts only its operator. */
+function isBuyerOperator(dashboard: ReturnType<typeof useConfig>, operator: string | null | undefined): boolean {
+  return !!operator && operator.toLowerCase() === (dashboard.walletAddress ?? dashboard.address).toLowerCase() && !dashboard.readOnly;
+}
 
-function ReferralRewardsCard() {
+/** Why a referral claim is off, most actionable first; null when it can be sent. */
+function referralClaimBlocked(session: { readOnly?: boolean }, authorized: boolean, payable: string): string | null {
+  if (session.readOnly) return 'Connect a wallet with a signer to claim.';
+  if (isZero(payable)) return 'Nothing to claim yet.';
+  return authorized ? null : 'Connect the authorized wallet for this buyer account.';
+}
+
+function ReferralRewardsCard({ operator }: { operator: string | null }) {
   const dashboard = useConfig();
   const page = usePageData('referrals', api.referral, 60_000);
   const view = page.data;
   if (view && !view.available) return null;
   const epochs = view?.claimableEpochs.length ?? 0;
+  const blocked = view ? referralClaimBlocked(dashboard, isBuyerOperator(dashboard, operator), view.payable) : null;
   return (
     <Card className="hero" aria-label="Referral rewards">
       <div className="tile-label">Referral rewards</div>
@@ -74,8 +86,8 @@ function ReferralRewardsCard() {
             amountDetail={`${formatInt(view.referredCount)} ${view.referredCount === 1 ? 'referred buyer' : 'referred buyers'}`}
             note={epochs > 0 ? `${epochs} ${epochs === 1 ? 'week is' : 'weeks are'} ready to claim.` : 'Weeks become claimable once they end.'}
             actions={<ActionButton label="Claim" title="Claim referral rewards" path="/api/referrals/claim" body={{}}
-              disabled={dashboard.readOnly || isZero(view.payable)}
-              disabledReason={dashboard.readOnly ? 'Connect a wallet with a signer to claim.' : 'Nothing to claim yet.'}
+              disabled={!!blocked}
+              disabledReason={blocked ?? undefined}
               summary={[['Payable now', `${formatAnts(view.payable, 4)} ANTS`], ['Weeks', String(epochs)]]} />} />
         </div>
         <ReferredBuyersTable />
@@ -93,7 +105,7 @@ function ReferralRewardsCard() {
 export function inviteRowState(session: { readOnly?: boolean; browserWallet?: boolean }, quota: number | null, left: number | null): { blocked: string | null; exhausted: string | null } {
   const blocked = session.readOnly ? 'Connect a wallet with a signer to create invites.'
     : session.browserWallet ? 'Invites are signed by the local Antseed wallet. Run `antseed referral invite` instead.' : null;
-  const exhausted = quota === 0 ? NO_INVITE_QUOTA
+  const exhausted = quota === 0 ? NO_INVITE_QUOTA_MESSAGE
     : left === 0 ? 'All invites for this week are taken. More unlock next week.' : null;
   return { blocked, exhausted: blocked ? null : exhausted };
 }
@@ -134,7 +146,7 @@ function InviteRow({ view, onCreated }: { view: ReferralView; onCreated: () => v
           : exhausted ? <>{exhausted}{recheck}</>
             : blocked ?? 'Each invite works once, for a new buyer, within 4 weeks.'}
       actions={<>
-        {created ? <Button variant="outline" size="sm" onClick={() => { void navigator.clipboard?.writeText(created.link); }}>Copy</Button> : null}
+        {created ? <Button variant="outline" size="sm" onClick={() => { void copyText(created.link); }}>Copy</Button> : null}
         <span className="btn-wrap" title={blocked ?? exhausted ?? undefined}>
           <Button variant="outline" size="sm" disabled={!!blocked || !!exhausted || creating} onClick={() => void create()}>{creating ? 'Creating…' : 'Create invite'}</Button>
         </span>
@@ -143,20 +155,21 @@ function InviteRow({ view, onCreated }: { view: ReferralView; onCreated: () => v
 }
 
 /** The buyer account's two-sided invite bonus: weeks left in the window, payable now, and a claim paid to its authorized wallet (operator). */
-function RefereeBonusRow() {
+function RefereeBonusRow({ authorized }: { authorized: boolean }) {
   const dashboard = useConfig();
   const page = usePageData('referrals:referee', api.referee, 60_000);
   const view = page.data;
   if (!view?.available || !view.referrer) return null;
   const epochs = view.claimableEpochs.length;
   if (view.weeksLeft === 0 && isZero(view.payable)) return null;
+  const blocked = referralClaimBlocked(dashboard, authorized, view.payable);
   const weeks = view.weeksLeft === null ? null : `${view.weeksLeft} ${view.weeksLeft === 1 ? 'week' : 'weeks'} left`;
   return (
     <BucketRow visible name="Invite bonus" amount={view.payable} amountDetail={weeks ?? undefined}
       note={<>Invited by <AddressLink value={view.referrer} />. Paid to your authorized wallet.</>}
       actions={<ActionButton label="Claim" title="Claim invite bonus" path="/api/referrals/referee/claim" body={{}}
-        disabled={dashboard.readOnly || isZero(view.payable)}
-        disabledReason={dashboard.readOnly ? 'Connect a wallet with a signer to claim.' : 'Nothing to claim yet.'}
+        disabled={!!blocked}
+        disabledReason={blocked ?? undefined}
         summary={[['Payable now', `${formatAnts(view.payable, 4)} ANTS`], ['Weeks', String(epochs)]]} />} />
   );
 }
@@ -190,7 +203,7 @@ function BuyerRewardsCard({ data }: { data: RewardsView }) {
   const inviteBonus = referee?.available && referee.referrer ? referee.payable : '0';
   const amount = sumBig([data.buyerUsage.total, data.legacy.buyer, inviteBonus]);
   const operator = data.buyerUsage.operator;
-  const authorized = !!operator && operator.toLowerCase() === (dashboard.walletAddress ?? dashboard.address).toLowerCase() && !dashboard.readOnly;
+  const authorized = isBuyerOperator(dashboard, operator);
   const showAuthorization = !operator && dashboard.canAuthorize;
   const showWalletConnection = operator && !authorized && dashboard.browserWallet;
   const stakeUnavailable = isZero(data.buyerUsage.total)
@@ -232,7 +245,7 @@ function BuyerRewardsCard({ data }: { data: RewardsView }) {
         actions={<ClaimButton bucket="legacy" scope="buyer" amount={data.legacy.buyer} title="Claim legacy buyer rewards"
           disabled={!authorized || !data.legacy.buyerClaimable} reason="Connect the authorized wallet for this buyer account."
           />} />
-      <RefereeBonusRow />
+      <RefereeBonusRow authorized={authorized} />
     </div>
   </Card>;
 }

@@ -23,7 +23,8 @@ import {IERC8004Registry} from "../interfaces/IERC8004Registry.sol";
  *         points earns 3% of the bucket. Each client is capped at 5% of the
  *         bucket per epoch and the excess goes to the emissions reserve. The
  *         part of the bucket earned by usage no client produced is never
- *         minted. Only the ERC-8004 agent owner claims or stakes.
+ *         minted. Only the ERC-8004 agent owner claims or stakes, so
+ *         transferring an agent hands over its unclaimed past epochs too.
  *
  *         Attribution: AntseedChannelsMiddleware reads the client from the
  *         buyer-signed metadata and credits the growth in the buyer's weighted
@@ -77,6 +78,7 @@ contract AntseedClientRewards is Ownable2Step, Pausable, ReentrancyGuard {
     event ClientRewardStaked(
         address indexed recipient,
         uint256 indexed clientAgentId,
+        uint256 indexed stakeAgentId,
         uint256 epoch,
         uint256 newPositionId,
         uint256 weightedPoints,
@@ -148,20 +150,22 @@ contract AntseedClientRewards is Ownable2Step, Pausable, ReentrancyGuard {
         );
     }
 
-    /// @notice Stake a client's reward into the agent's seller pool for its owner.
-    function stakeClientReward(uint256 clientAgentId, uint256 epoch, uint256 stakeEpochs)
+    /// @notice Stake a client's reward into any seller's pool for the agent's owner.
+    function stakeClientReward(uint256 clientAgentId, uint256 epoch, uint256 stakeAgentId, uint256 stakeEpochs)
         external
         nonReentrant
         whenNotPaused
         returns (uint256 newPositionId)
     {
+        if (stakeAgentId == 0) revert InvalidAddress();
         PreparedReward memory reward = _prepareClientReward(clientAgentId, epoch);
         newPositionId = _stakeClaimedReward(
-            reward.recipient, clientAgentId, stakeEpochs, epoch, reward.claimableAmount, reward.reserveAmount
+            reward.recipient, stakeAgentId, stakeEpochs, epoch, reward.claimableAmount, reward.reserveAmount
         );
         emit ClientRewardStaked(
             reward.recipient,
             clientAgentId,
+            stakeAgentId,
             epoch,
             newPositionId,
             reward.weightedPoints,

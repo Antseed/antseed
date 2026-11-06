@@ -258,6 +258,16 @@ contract AntseedChannelsMiddlewareTest is Test {
         _assertTail(middleware.decodeAttribution(_free(1, 2, 3, true)));
     }
 
+    function test_decodeAttribution_ignoresUnknownVersions() public view {
+        bytes memory metadata = _v5(1, 2, 3, true);
+        assembly ("memory-safe") {
+            mstore(add(metadata, 32), 6)
+        }
+        AntseedChannelsMiddleware.Attribution memory attribution = middleware.decodeAttribution(metadata);
+        assertEq(attribution.clientId, bytes32(0));
+        assertEq(attribution.inviteR, bytes32(0));
+    }
+
     function test_decodeAttribution_zeroWithoutTail() public view {
         _assertEmpty(middleware.decodeAttribution(_v4(1, 2, 3, false)));
         _assertEmpty(middleware.decodeAttribution(_v5(1, 2, 3, false)));

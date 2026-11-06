@@ -560,6 +560,26 @@ describe('reward row actions and confirmations', () => {
     expect(claim.disabled).toBe(false);
   });
 
+  it.each([
+    ['another wallet is the operator', pool],
+    ['no wallet is the operator', null],
+  ])('turns referral claims off when %s', (_name, operator) => {
+    state.rewards!.buyerUsage.operator = operator;
+    state.referral = { available: true, payable: ants(6), claimableEpochs: [20], referredCount: 1, invites: null };
+    state.referee = { available: true, referrer: pool, boundEpoch: 20, windowEnd: 32, weeksLeft: 10, payable: ants(6), claimableEpochs: [20] };
+    render();
+    for (const title of ['Claim referral rewards', 'Claim invite bonus']) {
+      expect(action(title).disabled).toBe(true);
+      expect(action(title).disabledReason).toBe('Connect the authorized wallet for this buyer account.');
+    }
+  });
+
+  it('turns the referral claim on for the operator', () => {
+    state.referral = { available: true, payable: ants(6), claimableEpochs: [20], referredCount: 1, invites: null };
+    render();
+    expect(action('Claim referral rewards').disabled).toBe(false);
+  });
+
   it('counts the invite bonus in the buyer rewards headline', () => {
     const before = render();
     expect(before).toContain('1,250');

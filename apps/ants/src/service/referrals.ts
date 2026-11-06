@@ -17,6 +17,7 @@ import {
 import type { CreatedInviteView, InviteAllowanceView, RefereeView, ReferralView, ReferredBuyersView } from '../api-types.js';
 import type { AntsContext } from './context.js';
 import { createIndexer, type IndexedReferralBinding, type IndexedReferrer, type Indexer } from './indexer.js';
+import { NO_INVITE_QUOTA_MESSAGE } from '../invite-allowance.js';
 import { buyerOperator } from './rewards.js';
 import { silentReporter, type StepReporter } from './steps.js';
 
@@ -84,7 +85,7 @@ export class InviteQuotaError extends Error {
   }
 }
 
-export const NO_INVITE_QUOTA_MESSAGE = 'Invites unlock after at least 1 USDC of usage or sales in the previous week.';
+export { NO_INVITE_QUOTA_MESSAGE };
 
 /**
  * Sign a fresh invite for the current epoch with `signer` (the referrer).

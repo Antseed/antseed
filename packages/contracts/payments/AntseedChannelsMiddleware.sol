@@ -61,7 +61,9 @@ interface IAntseedMiddlewareClientRewards {
  *
  *         Nothing here is configurable. To change anything, deploy a new
  *         middleware and call `setRegistry` again; `setRegistry` back to the main
- *         registry removes it.
+ *         registry removes it. That includes moving the accounting:
+ *         `mainRegistry.setEmissions` no longer reaches Channels while it is
+ *         routed through this contract.
  */
 contract AntseedChannelsMiddleware is IAntseedRegistry {
     struct Attribution {
@@ -235,6 +237,8 @@ contract AntseedChannelsMiddleware is IAntseedRegistry {
     function _decodeAttribution(bytes calldata metadata) internal pure returns (Attribution memory a) {
         if (metadata.length < 32) return a;
         uint256 version = uint256(bytes32(metadata[0:32]));
+        // A future version has an unknown head, so a tail cannot be located in it.
+        if (version > METADATA_V5) return a;
         uint256 staticWords = version == METADATA_V5
             ? V5_STATIC_WORDS
             : version == METADATA_V4

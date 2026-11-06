@@ -211,6 +211,11 @@ contract AntseedReferralsTest is Test {
         assertFalse(referrals.inviteUsed(referrer, 10, 0));
     }
 
+    function test_aWalletTheBuyerOperatesCannotInvite() public {
+        deposits.setOperator(referrer, buyer);
+        _expectBindRevert(buyer, REFERRER_KEY, 10, 0, AntseedReferrals.SelfReferral.selector);
+    }
+
     function test_walletsSharingTheBuyersOperatorCannotInvite() public {
         address shared = address(0x5A5E);
         deposits.setOperator(buyer, shared);
@@ -571,7 +576,7 @@ contract AntseedReferralsTest is Test {
         assertEq(gate.balanceOf(BUYER_OPERATOR), 1 ether);
     }
 
-    function test_operatorSetAfterTheBindingVoidsBothSides() public {
+    function test_operatorChangeAfterTheBindingVoidsOnlyTheReferrerSide() public {
         _bind(buyer, REFERRER_KEY, 10, 0);
         accounting.setWeighted(10, buyer, 2, 100);
         gate.setBudget(address(referrals), 10, 100 ether);
@@ -579,7 +584,12 @@ contract AntseedReferralsTest is Test {
 
         deposits.setOperator(buyer, referrer); // the referrer now operates the buyer
         assertEq(referrals.pendingReferrerReward(buyer, 10), 0);
-        assertEq(referrals.pendingRefereeReward(buyer, 10), 0);
+        assertEq(referrals.pendingRefereeReward(buyer, 10), 1 ether);
+
+        deposits.setOperator(buyer, REFERRER_OPERATOR);
+        deposits.setOperator(referrer, buyer); // the buyer now operates the referrer
+        assertEq(referrals.pendingReferrerReward(buyer, 10), 0);
+        assertEq(referrals.pendingRefereeReward(buyer, 10), 1 ether);
 
         address shared = address(0x5A5E);
         deposits.setOperator(buyer, shared);
@@ -590,6 +600,11 @@ contract AntseedReferralsTest is Test {
         vm.prank(shared);
         vm.expectRevert(AntseedReferrals.NothingToClaim.selector);
         referrals.claimReferrerRewards(referrer, buyers, epochs);
+
+        // Matching operators, which a referrer can set alone, cost the buyer nothing.
+        vm.prank(shared);
+        referrals.claimRefereeRewards(buyer, epochs);
+        assertEq(gate.balanceOf(shared), 1 ether);
 
         deposits.setOperator(referrer, REFERRER_OPERATOR); // distinct again
         assertEq(referrals.pendingReferrerReward(buyer, 10), 1 ether);

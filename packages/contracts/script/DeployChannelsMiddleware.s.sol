@@ -9,9 +9,10 @@ import { AntseedReferrals } from "../rewards/AntseedReferrals.sol";
 
 /**
  * @title DeployChannelsMiddleware
- * @notice Deploys the middleware and authorizes it on AntseedClientRewards and
- *         AntseedReferrals. Nothing routes through it until
- *         script/ActivateChannelsMiddleware.s.sol runs.
+ * @notice Deploys the middleware, authorizes it on AntseedClientRewards and
+ *         AntseedReferrals, and offers both controllers to the protocol owner,
+ *         which accepts them in script/ActivateChannelsMiddleware.s.sol. Nothing
+ *         routes through the middleware until that script runs.
  *
  * Run by the owner of both controllers, after DeployClientRewards and DeployReferrals.
  *
@@ -23,12 +24,14 @@ import { AntseedReferrals } from "../rewards/AntseedReferrals.sol";
  *   ANTSEED_REFERRALS
  *   ANTSEED_CHANNELS
  *   ANTSEED_FREE_USAGE
+ *   PROTOCOL_OWNER           — owner of Stats, Channels and accounting
  */
 contract DeployChannelsMiddleware is Script {
     function run() external returns (AntseedChannelsMiddleware middleware) {
         uint256 deployerPrivateKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
         address clientRewards = vm.envAddress("ANTSEED_CLIENT_REWARDS");
         address referrals = vm.envAddress("ANTSEED_REFERRALS");
+        address protocolOwner = vm.envAddress("PROTOCOL_OWNER");
 
         vm.startBroadcast(deployerPrivateKey);
         middleware = new AntseedChannelsMiddleware(
@@ -41,6 +44,8 @@ contract DeployChannelsMiddleware is Script {
         );
         AntseedClientRewards(clientRewards).setRecorder(address(middleware));
         AntseedReferrals(referrals).setBinder(address(middleware));
+        AntseedClientRewards(clientRewards).transferOwnership(protocolOwner);
+        AntseedReferrals(referrals).transferOwnership(protocolOwner);
         vm.stopBroadcast();
 
         console.log("AntseedChannelsMiddleware:", address(middleware));

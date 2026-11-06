@@ -9,8 +9,15 @@ import { AntseedClientRewards } from "../emissions/AntseedClientRewards.sol";
 import { EmissionsGateMock } from "./mocks/EmissionsGateMock.sol";
 import { SellerPoolsStakeMock } from "./mocks/SellerPoolsStakeMock.sol";
 import { MockERC8004Registry } from "./mocks/MockERC8004Registry.sol";
+import { acceptRewardController } from "../script/ActivateChannelsMiddleware.s.sol";
 
 /// A settable epoch total.
+contract RewardControllerAcceptor {
+    function accept(address controller) external {
+        acceptRewardController(controller, address(this));
+    }
+}
+
 contract ClientAccountingMock {
     mapping(uint256 => uint256) public totalWeightedBuyerPointsByEpoch;
     uint256 public firstRewardedEpoch;
@@ -228,19 +235,47 @@ contract AntseedClientRewardsTest is ClientRewardsFixture {
 
         vm.prank(desktopOwner);
         vm.expectRevert(AntseedClientRewards.InvalidAddress.selector);
-        rewards.stakeClientReward(desktop, 10, 4); // no pools configured
+        rewards.stakeClientReward(desktop, 10, 42, 4); // no pools configured
 
         rewards.setSellerPools(address(pools));
         vm.prank(desktopOwner);
-        assertEq(rewards.stakeClientReward(desktop, 10, 4), 7);
+        assertEq(rewards.stakeClientReward(desktop, 10, 42, 4), 7);
         assertEq(pools.lastStaker(), desktopOwner);
-        assertEq(pools.lastAgentId(), desktop);
+        assertEq(pools.lastAgentId(), 42); // any seller's pool, not the client's own
         assertEq(pools.lastAmount(), 5 ether);
         assertEq(pools.lastEpochs(), 4);
         assertEq(gate.balanceOf(address(pools)), 5 ether);
         assertEq(gate.balanceOf(address(rewards)), 0);
         assertEq(gate.allowance(address(rewards), address(pools)), 0);
         assertEq(gate.balanceOf(gate.emissionsReserve()), 20 ether);
+    }
+
+    function test_stakingNeedsAPool() public {
+        accounting.setTotal(10, 200);
+        _credit(10, desktop, 50);
+        gate.setBudget(address(rewards), 10, 100 ether);
+        gate.setCurrentEpoch(11);
+        vm.prank(desktopOwner);
+        vm.expectRevert(AntseedClientRewards.InvalidAddress.selector);
+        rewards.stakeClientReward(desktop, 10, 0, 4);
+    }
+
+    function test_activationTakesOwnershipOnlyOnceTheControllerHasBudget() public {
+        RewardControllerAcceptor acceptor = new RewardControllerAcceptor();
+        gate.setCurrentEpoch(30);
+
+        vm.expectRevert("controller is not owned by the protocol owner");
+        acceptor.accept(address(rewards)); // never offered
+
+        rewards.transferOwnership(address(acceptor));
+        vm.expectRevert("controller has no budget this epoch"); // shares start next epoch
+        acceptor.accept(address(rewards));
+        assertEq(rewards.owner(), address(this));
+
+        gate.setBudget(address(rewards), 30, 1 ether);
+        acceptor.accept(address(rewards));
+        assertEq(rewards.owner(), address(acceptor));
+        acceptor.accept(address(rewards)); // a rerun is fine
     }
 
     function testFuzz_sharesNeverExceedTheBucket(

@@ -1,3 +1,5 @@
+export const NO_INVITE_QUOTA_MESSAGE = 'Invites unlock after at least 1 USDC of usage or sales in the previous week.';
+
 export type InviteAllowanceSnapshot = { epoch: number; quota: number; left: number };
 
 /**

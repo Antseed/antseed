@@ -1,4 +1,4 @@
-import { Signature, TypedDataEncoder, getBytes, hexlify, recoverAddress, zeroPadValue } from 'ethers';
+import { Signature, TypedDataEncoder, decodeBase64, encodeBase64, getBytes, hexlify, recoverAddress, zeroPadValue } from 'ethers';
 import type { AbstractSigner } from 'ethers';
 import { INVITE_TYPES, makeReferralsDomain, type ReferralInvite } from '@antseed/protocol/signatures';
 import type { InviteFailure, ReferralsClient } from './evm/referrals-client.js';
@@ -72,15 +72,12 @@ export function recoverInviter(invite: ReferralInvite, domain: InviteDomain): st
 }
 
 function toBase64Url(bytes: Uint8Array): string {
-  let binary = '';
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  return encodeBase64(bytes).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
 function fromBase64Url(value: string): Uint8Array {
   const base64 = value.replace(/-/g, '+').replace(/_/g, '/');
-  const binary = atob(base64 + '='.repeat((4 - (base64.length % 4)) % 4));
-  return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+  return decodeBase64(base64 + '='.repeat((4 - (base64.length % 4)) % 4));
 }
 
 /** The shareable invite string (see the module comment for the layout). */

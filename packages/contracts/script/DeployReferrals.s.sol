@@ -4,6 +4,7 @@ pragma solidity ^0.8.24;
 import "forge-std/Script.sol";
 
 import { AntseedReferrals } from "../rewards/AntseedReferrals.sol";
+import { whitelistRewardController } from "./WhitelistRewardController.sol";
 
 /**
  * @title DeployReferrals
@@ -35,10 +36,12 @@ contract DeployReferrals is Script {
         address gate = vm.envAddress("EMISSIONS_GATE");
         address usageAccounting = vm.envAddress("USAGE_ACCOUNTING");
         address deposits = vm.envAddress("ANTSEED_DEPOSITS");
+        address sellerPools = vm.envAddress("SELLER_POOLS");
 
         vm.startBroadcast(deployerPrivateKey);
         referrals = new AntseedReferrals(gate, usageAccounting, deposits, address(0));
-        referrals.setSellerPools(vm.envAddress("SELLER_POOLS"));
+        referrals.setSellerPools(sellerPools);
+        whitelistRewardController(sellerPools, address(referrals), vm.addr(deployerPrivateKey));
         vm.stopBroadcast();
 
         console.log("AntseedReferrals:", address(referrals));

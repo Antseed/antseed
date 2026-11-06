@@ -4,6 +4,7 @@ pragma solidity ^0.8.24;
 import "forge-std/Script.sol";
 
 import { AntseedClientRewards } from "../emissions/AntseedClientRewards.sol";
+import { whitelistRewardController } from "./WhitelistRewardController.sol";
 
 /**
  * @title DeployClientRewards
@@ -28,10 +29,12 @@ contract DeployClientRewards is Script {
         address gate = vm.envAddress("EMISSIONS_GATE");
         address usageAccounting = vm.envAddress("USAGE_ACCOUNTING");
         address identityRegistry = vm.envAddress("IDENTITY_REGISTRY");
+        address sellerPools = vm.envAddress("SELLER_POOLS");
 
         vm.startBroadcast(deployerPrivateKey);
         rewards = new AntseedClientRewards(gate, usageAccounting, identityRegistry, address(0));
-        rewards.setSellerPools(vm.envAddress("SELLER_POOLS"));
+        rewards.setSellerPools(sellerPools);
+        whitelistRewardController(sellerPools, address(rewards), vm.addr(deployerPrivateKey));
         vm.stopBroadcast();
 
         console.log("AntseedClientRewards:", address(rewards));

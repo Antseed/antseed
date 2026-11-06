@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { inviteAllowance } from '@antseed/ants/invite-allowance';
+import { inviteAllowance, NO_INVITE_QUOTA_MESSAGE } from '@antseed/ants/invite-allowance';
 import { Button, CopyButton } from '@antseed/ui';
 import { formatCredits, formatInt, shortAddress } from '../../../core/format';
 import type { CreateInviteResult, ReferralInvites } from '../../../types/bridge';
@@ -13,8 +13,6 @@ function shortInviteLink(link: string): string {
   const match = /^https?:\/\/(.*\/invite\/)([A-Za-z0-9_-]+)$/.exec(link);
   return match && match[2]!.length > 14 ? `${match[1]}${match[2]!.slice(0, 6)}…${match[2]!.slice(-4)}` : link;
 }
-
-const NO_QUOTA_HINT = 'Invites unlock after at least 1 USDC of usage or sales in the previous week.';
 
 /** "12,500 pts" plus "· 250 pts pending" when part of it is in weeks not claimable yet. */
 function invitePoints(points: string, pendingPoints: string): string {
@@ -132,7 +130,7 @@ export function VprInvitesCardBody({ invites, creation, creating, onCreate }: {
   const { link, left, quota, noQuota, canCreate } = inviteCardState(invites, creation);
   const leftHint = left !== null && quota !== null ? `${formatInt(left)} of ${formatInt(quota)} left this week.` : null;
   const hint = noQuota
-    ? NO_QUOTA_HINT
+    ? NO_INVITE_QUOTA_MESSAGE
     : link
       ? [shortInviteLink(link), leftHint].filter(Boolean).join(' · ')
       : leftHint ?? 'Single-use link, valid for 4 weeks.';

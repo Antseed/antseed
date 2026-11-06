@@ -85,9 +85,11 @@ interface IAntseedReferralDeposits {
  *         wallet never receives funds in either role. A wallet may hold both
  *         roles; their claims are independent.
  *
- *         Self-referral: an invite signed by the buyer itself, its operator,
- *         or a wallet sharing the buyer's (non-zero) operator is rejected, and
- *         both operator rules are checked again at every claim.
+ *         Self-referral: an invite signed by the buyer itself, its operator, a
+ *         wallet the buyer operates, or a wallet sharing the buyer's (non-zero)
+ *         operator is rejected. The operator rules are checked again at every
+ *         referrer claim, because operators can change after the binding; they
+ *         void only the referrer side, never the referee's bonus.
  *         Sibling wallets (one person controlling an unrelated referrer and
  *         buyer) are not detectable on-chain. They are bounded by the quota
  *         (the referrer must have spent or sold for real the epoch before),
@@ -412,7 +414,7 @@ contract AntseedReferrals is Ownable2Step, Pausable, ReentrancyGuard, EIP712 {
     /// @notice What the buyer's referrer would receive on this buyer's epoch
     ///         right now, given what the referrer has already been paid for it.
     function pendingReferrerReward(address buyer, uint256 epoch) external view returns (uint256) {
-        if (referrerEpochClaimed[buyer][epoch]) return 0;
+        if (referrerEpochClaimed[buyer][epoch] || _isSelfReferral(buyer, referrerOf[buyer])) return 0;
         (uint256 points, uint256 total) = _buyerPoints(buyer, epoch);
         if (points == 0) return 0;
         uint256 budget = emissionsGate.controllerEpochBudget(address(this), epoch);
@@ -454,13 +456,15 @@ contract AntseedReferrals is Ownable2Step, Pausable, ReentrancyGuard, EIP712 {
         if (!_isNewBuyer(buyer, current)) return (referrer, NotNewBuyer.selector);
     }
 
-    /// @dev The buyer itself, the buyer's operator, or a wallet run by the
-    ///      same operator as the buyer.
+    /// @dev The buyer itself, the buyer's operator, a wallet the buyer operates,
+    ///      or a wallet run by the same operator as the buyer.
     function _isSelfReferral(address buyer, address referrer) internal view returns (bool) {
         if (referrer == buyer) return true;
+        address referrerOperator = deposits.getOperator(referrer);
+        if (referrerOperator == buyer) return true;
         address buyerOperator = deposits.getOperator(buyer);
         if (buyerOperator == address(0)) return false;
-        return referrer == buyerOperator || deposits.getOperator(referrer) == buyerOperator;
+        return referrer == buyerOperator || referrerOperator == buyerOperator;
     }
 
     /// @dev Marks the payable pairs claimed and totals their amounts. The cap
@@ -480,6 +484,7 @@ contract AntseedReferrals is Ownable2Step, Pausable, ReentrancyGuard, EIP712 {
         for (uint256 b = 0; b < buyers.length; b++) {
             address buyer = buyers[b];
             if (referrerOf[buyer] != referrer || referrerEpochClaimed[buyer][epoch]) continue;
+            if (_isSelfReferral(buyer, referrer)) continue;
             uint256 points = _eligiblePoints(buyer, epoch);
             if (points == 0) continue;
             uint256 gross = _referrerGross(buyer, epoch, budget, points, total);
@@ -535,12 +540,12 @@ contract AntseedReferrals is Ownable2Step, Pausable, ReentrancyGuard, EIP712 {
         if (total == 0) return (0, 0);
     }
 
-    /// @dev Zero for epochs still open, an unbound buyer, and a referrer that
-    ///      became the buyer's operator or shares it since the binding.
+    /// @dev Zero for epochs still open and an unbound buyer. The referrer side
+    ///      also checks `_isSelfReferral`; the referee side must not, or a
+    ///      referrer could void its buyer's bonus by changing its own operator.
     function _eligiblePoints(address buyer, uint256 epoch) internal view returns (uint256 points) {
         address referrer = referrerOf[buyer];
         if (referrer == address(0) || !isClaimable(epoch) || epoch < boundAtEpoch[buyer]) return 0;
-        if (_isSelfReferral(buyer, referrer)) return 0;
 
         points = usageAccounting.weightedBuyerPointsByEpoch(epoch, buyer);
         if (epoch == boundAtEpoch[buyer]) points -= Math.min(points, pointsBeforeBinding[buyer]);
