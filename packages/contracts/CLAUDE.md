@@ -14,11 +14,11 @@ Who earns what is decided by policy contracts set by address, never by branches 
 
 | Rule | Enforced by |
 | --- | --- |
-| Settlement equals what the buyer signed, never more. | `forge test` |
-| The buyer never needs gas: every action is seller-initiated or permissionless. Channels holds no USDC. | review only |
+| Settlement equals what the buyer signed, never more. | `forge test`, which CI doesn't run |
+| Normal use needs no buyer gas: the seller submits `reserve`, `settle` and `close`. `requestClose`, channel `withdraw` and Deposits `withdraw` are operator-only, so the operator pays their gas. Channels holds no USDC. | review only |
 | A failing policy never blocks settlement: it records zero points and emits `PointsPolicyFailed` or `PoolWeightPolicyFailed`. | `test/fuzz/AntseedUsageAccountingFuzz.t.sol` |
 | A side zeroed by one modifier stays zero. No policy means raw points. | `test/AntseedPointsPolicyRegistry.t.sol` |
 
 **Ask first:** every change. Deployed contracts are one-way, and repointing a policy slot changes everyone's rewards.
 
-**Prove it:** `forge test`. Settle-path changes get a fuzz or invariant test.
+**Prove it:** `forge test`. CI doesn't run it, and root `pnpm test` skips this package, so run it yourself. Settle-path changes get a fuzz or invariant test. Before a deployment, run `pnpm contracts:check`.

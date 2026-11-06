@@ -40,13 +40,14 @@ An area's **Ask first** line lists changes to raise with the user before you wri
 | `packages/api-adapter` (guide) | Translation between API standards |
 | `packages/buyer-core` (guide) | The buyer. Environment-free, so the CLI and the browser run the same code |
 | `packages/node` (guide) | Runtime: P2P, discovery, metering, sqlite, plugin host |
-| `packages/provider-core` | Building blocks for provider plugins (`BaseProvider`, `HttpRelay`) |
+| `packages/provider-core` (guide) | Building blocks for provider plugins (`BaseProvider`, `HttpRelay`) |
 | `packages/router-core` (guide) | Peer scoring and the routing-service client |
 | `packages/web-sdk` (guide) | Browser buyer |
 | `packages/telemetry` (guide) | The privacy boundary for product telemetry |
 | `packages/contracts` (guide) | Solidity contracts (Foundry). Map in its `README.md` |
-| `packages/fingerprints`, `model-verifier` | Model verification math; standalone KBF model verifier |
-| `packages/antseed-verifier`, `connected-apps`, `ant-agent`, `ui`, `wallet-config` | Seller attestation; local AI tool setup; knowledge agents; shared UI; wallet constants |
+| `packages/fingerprints` (guide), `model-verifier` (guide) | Model verification math; standalone KBF model verifier |
+| `packages/antseed-verifier` (guide), `connected-apps`, `ant-agent` (guide), `ui` (guide) | Seller attestation; local AI tool setup; knowledge agents; shared UI |
+| `packages/wallet-config` | Browser wallet constants, USDC amount and EIP-681 helpers, ABIs and RainbowKit themes. Private and source-only, so only Vite-bundled browser code can import it. Its Base RPC list copies `packages/node/src/payments/chain-config.ts`, and its EIP-681 URI is duplicated in `apps/cli/src/cli/commands/buyer/deposit.ts`, so change both sides |
 | `plugins/` (guide) | One plugin per upstream |
 | `apps/cli` (guide), `apps/cli/src/gateway` (guide) | The `antseed` command, the buyer proxy, the gateway |
 | `apps/desktop` (guide) | Electron app |
@@ -61,7 +62,7 @@ Dependency direction: `protocol` and `api-adapter` ← `buyer-core` ← `node` �
 2. The buyer signs a ReserveAuth off-chain, and the seller calls `reserve()` on `AntseedChannels`.
 3. For each request, the buyer signs a SpendingAuth with a growing `cumulativeAmount`.
 4. The seller calls `settle()` or `close()` with the latest one.
-5. If the seller disappears, the buyer calls `requestClose()`, then `withdraw()` after 15 minutes.
+5. If the seller disappears, the buyer's operator calls `requestClose()`, then `withdraw()` after 15 minutes. The operator pays the gas.
 
 ## Commands and toolchain
 
