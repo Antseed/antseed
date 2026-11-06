@@ -412,7 +412,6 @@ Read and change `~/.antseed/config.json`. Guides: [Buyer configuration](/docs/bu
 | Command | Purpose | Key flags |
 |---|---|---|
 | `antseed metrics serve` | Serve Prometheus metrics ([guide](/docs/provide/metrics)) | `--role buyer\|seller\|both\|auto`, `--host` (127.0.0.1), `--port` (9108), `--path` (/metrics), `--instance`, `--include-chain` |
-| `antseed dev` | Run a seller and a buyer locally for development | `--port <buyerPort>` |
 | `antseed agent dev <agentDir>` | Test an ant agent locally in an interactive chat | `--endpoint <url>`, `--api-key`, `--model` |
 | `antseed update` | Install the latest CLI the way this copy was installed ([details](#updating)) | `--check` (only report), `--json` |
 | `antseed help [command]` | Show help for a command | |
