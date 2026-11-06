@@ -15,7 +15,7 @@ For a model-only request such as `"model": "deepseek-v4-flash"`, the buyer:
 1. Normalizes the model name, so cosmetic variants of the same model share one catalog entry.
 2. Collects every seller that offers the model in a compatible API format.
 3. Drops sellers your preferences exclude: below the minimum trust score (default `60`; unscored sellers are excluded too), above your hard price caps, on your block list, or outside your allow list when one is set.
-4. Picks the cheapest of the rest (input plus output price per million tokens, or the per-image price). Trust only breaks price ties, together with penalties for recent failures and a boost for free sellers when you prefer them; sellers cooling down after failures go last.
+4. Ranks the rest by the expected cost of one good answer: the price plus the value of the time it takes, divided by the chance it succeeds. Sellers close to the best share the traffic. Sellers failing lately come after the healthy ones, and sellers cooling down go last. Trust doesn't affect the order above the minimum. **Answer length and speed** below gives the numbers.
 5. Rewrites the model to the chosen seller's own service id and sends the request.
 
 The ranking weights and defaults are documented once, in the [router plugin API](/docs/router-api).
@@ -73,6 +73,8 @@ To stay on free sellers:
   antseed config buyer set maxPricing.defaults.inputUsdPerMillion 0
   antseed config buyer set maxPricing.defaults.outputUsdPerMillion 0
   ```
+
+  The CLI buyer and the desktop app read only `maxPricing.defaults`, so no per-provider or per-service cap can raise these again. Check what applies with `antseed config buyer show`; the buyer also prints `max pricing defaults (USD/1M): input=0, output=0` at start. `antseed buyer start --max-input-usd-per-million 0 --max-output-usd-per-million 0` does the same for one run.
 
   A model with no free seller that passes your minimum trust score then fails with `502 model_not_found` instead of `402`.
 - **Pin a free seller.** Find one in the catalog and send `<peerId>@<model>`:
