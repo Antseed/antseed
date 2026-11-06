@@ -59,6 +59,21 @@ test('reputation: trust parts with their maximum, rank among sellers, next steps
   assert.equal(trustSteps(null)[0]!.part, 'standing')
 })
 
+test('reputation: says what the verification policy did to the score', () => {
+  const row = (verification: unknown) => ({ peerId: ME.slice(2), trust: { score: 50, usage: null, power: null, identity: null, freeModels: null, washFlagged: false, verification } })
+  const penalty = trustOfRow(row({ multiplierBps: 9_600, sameCount: 1, diffCount: 2, change: -6 }))!
+  assert.deepEqual(penalty.verification, { multiplierBps: 9_600, sameCount: 1, diffCount: 2, change: -6 })
+  const step = trustSteps(penalty).find((entry) => entry.part === 'verification')!
+  assert.match(step.text, /take 6\.0 points off your score: 2 DIFF verdicts leave your points at 96%/)
+
+  const bonus = trustOfRow(row({ multiplierBps: 10_400, sameCount: 2, diffCount: 0, change: 2 }))!
+  assert.equal(bonus.verification?.change, 2)
+  assert.ok(!trustSteps(bonus).some((entry) => entry.part === 'verification'))
+
+  assert.equal(trustOfRow(row({ multiplierBps: 9_600, sameCount: 0, diffCount: 1, penalty: 2 }))!.verification?.change, -2)
+  assert.equal(trustOfRow(row(null))!.verification, null)
+})
+
 test('market: with no network loaded, nothing is ranked or called only yours', () => {
   const market = marketView([], ME, mine, meta)
   assert.ok(market.services.every((service) => !service.unique && service.rank === null))

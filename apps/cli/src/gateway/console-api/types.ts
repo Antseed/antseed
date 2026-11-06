@@ -1651,6 +1651,8 @@ export interface SellerTrust {
   identity: (SellerTrustPart & { kind: 'github' | 'domain'; claim: string }) | null
   freeModels: (SellerTrustPart & { service: string }) | null
   washFlagged: boolean | null
+  /** What the verification policy did to the score; `null` when it changed nothing. */
+  verification: { multiplierBps: number; sameCount: number; diffCount: number; change: number } | null
 }
 
 export interface SellerStanding {
@@ -1684,7 +1686,7 @@ export interface SellerReputation {
   /** Position by trust score among the sellers in the snapshot. */
   rank: { position: number; of: number } | null
   /** One plain next step per part that has room to grow. */
-  steps: Array<{ part: 'usage' | 'power' | 'identity' | 'freeModels' | 'wash' | 'standing'; text: string }>
+  steps: Array<{ part: 'usage' | 'power' | 'identity' | 'freeModels' | 'verification' | 'wash' | 'standing'; text: string }>
   standing: SellerStanding | null
   standingError: string | null
   standingRefreshedAt: number | null

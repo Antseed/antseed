@@ -47,7 +47,7 @@ function sellerTrustExplanation(route: DiscoverRow): string {
     ? [v.sameCount > 0 ? `${v.sameCount} verified` : null, v.diffCount > 0 ? `${v.diffCount} DIFF` : null].filter(Boolean).join(', ')
     : '';
   const checks = v
-    ? ` ${v.change < 0 ? '−' : '+'} model checks ${reputationScaleLabel(Math.abs(v.change))} (${counts}: points at ${Math.round(v.multiplierBps / 100)}%)`
+    ? ` ${v.change < 0 ? '−' : '+'} model checks ${reputationScaleLabel(Math.abs(v.change))} (${counts}: earns ${Math.round(v.multiplierBps / 100)}% of normal points)`
     : '';
   const wash = trust.washFlagged === false ? ' Not flagged for wash trading.' : ' Wash-trading registry unavailable.';
   return `Trust ${reputationScaleLabel(trust.score)}/10 = ${power} + ${usage} + ${identity}${free}${checks}.${wash}`;

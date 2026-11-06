@@ -212,15 +212,15 @@ test('a penalized trust breakdown survives normalization and reaches the reputat
     },
   });
   assert.deepEqual(row?.trust?.verification, { multiplierBps: 5_000, sameCount: 0, diffCount: 3, change: -40, penalty: 40 });
-  assert.match(sellerReputationExplanation(row!), /− model checks 4\.0 \(3 DIFF: points at 50%\)/);
+  assert.match(sellerReputationExplanation(row!), /− model checks 4\.0 \(3 DIFF: earns 50% of normal points\)/);
   // A bonus is kept and shown as added points; a change of 0 is dropped.
   const bonus = normalizeDiscoverRow({ peerId: 'abc', serviceId: 'gpt-5', trust: { score: 44, washFlagged: false, verification: { multiplierBps: 11_000, sameCount: 5, diffCount: 0, change: 4 } } });
   assert.deepEqual(bonus?.trust?.verification, { multiplierBps: 11_000, sameCount: 5, diffCount: 0, change: 4, penalty: 0 });
-  assert.match(sellerReputationExplanation(bonus!), /\+ model checks 0\.4 \(5 verified: points at 110%\)/);
+  assert.match(sellerReputationExplanation(bonus!), /\+ model checks 0\.4 \(5 verified: earns 110% of normal points\)/);
   // A state file from an older buyer daemon has `penalty` and no `change`; the explanation survives.
   const legacy = normalizeDiscoverRow({ peerId: 'abc', serviceId: 'gpt-5', trust: { score: 40, washFlagged: false, verification: { multiplierBps: 5_000, sameCount: 0, diffCount: 3, penalty: 40 } } });
   assert.equal(legacy?.trust?.verification?.change, -40);
-  assert.match(sellerReputationExplanation(legacy!), /− model checks 4\.0 \(3 DIFF: points at 50%\)/);
+  assert.match(sellerReputationExplanation(legacy!), /− model checks 4\.0 \(3 DIFF: earns 50% of normal points\)/);
   assert.equal(normalizeDiscoverRow({ peerId: 'abc', serviceId: 'gpt-5', trust: { score: 40, washFlagged: false, verification: { multiplierBps: 5_000, sameCount: 0, diffCount: 3, penalty: 'x' } } })?.trust?.verification, null);
   const unchanged = normalizeDiscoverRow({ peerId: 'abc', serviceId: 'gpt-5', trust: { score: 40, washFlagged: false, verification: { multiplierBps: 10_000, sameCount: 0, diffCount: 0, change: 0 } } });
   assert.equal(unchanged?.trust?.verification, null);

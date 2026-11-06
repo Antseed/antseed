@@ -139,8 +139,9 @@ export function mockSellerReputation(now = Date.now()): SellerReputation {
   return {
     network: network(now), found: true,
     trust: {
-      score: 70.6, history: { channelCount: 125, volumeUsdc: 74.88 }, usage: { score: 21.8, max: 30, shareBps: 756, epoch: 27 },
+      score: 74.8, history: { channelCount: 125, volumeUsdc: 74.88 }, usage: { score: 21.8, max: 30, shareBps: 756, epoch: 27 },
       power: { score: 43.8, max: 70, shareBps: 372, epoch: 28 }, identity: null, freeModels: { score: 5, max: 5, service: 'gemma-4-e4b' }, washFlagged: false,
+      verification: { multiplierBps: 10_600, sameCount: 3, diffCount: 0, change: 4.2 },
     },
     rank: { position: 3, of: 8 },
     steps: [

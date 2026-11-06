@@ -126,7 +126,7 @@ function formatTrustLine(peer: PeerInfo): string {
   const power = trust.power ? `power ${Math.round(trust.power.score)}` : chalk.dim('power —');
   const identity = trust.identity ? `identity ${Math.round(trust.identity.score)} ${trust.identity.kind}` : chalk.dim('identity —');
   const free = trust.freeModels ? ` + free models ${Math.round(trust.freeModels.score)}` : '';
-  const checks = trust.verification ? ` ${trust.verification.change < 0 ? '−' : '+'} model checks ${Math.round(Math.abs(trust.verification.change))}` : '';
+  const checks = trust.verification ? ` ${trust.verification.change < 0 ? '−' : '+'} model checks ${Math.round(Math.abs(trust.verification.change))} (earns ${Math.round(trust.verification.multiplierBps / 100)}% of normal points)` : '';
   const flagged = trust.washFlagged === null ? chalk.dim('wash registry unavailable') : 'not flagged';
   return `${chalk.bold(String(Math.round(trust.score)))} = ${usage} + ${power} + ${identity}${free}${checks}; ${flagged}`;
 }

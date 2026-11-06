@@ -6,6 +6,7 @@ import { TrustTip } from '../components/TrustInfo'
 import { DetailList, EmptyState, ErrorAlert, LoadingRows, Panel, StatTile } from '../components/ui'
 import { formatNumber, formatRelative, formatUsd } from '../lib/format'
 import { qk, useSellerReputation } from '../lib/queries'
+import { modelChecksEffect } from '../lib/trust-breakdown'
 import '../styles/seller.scss'
 
 const points = (value: number) => (Math.round(value * 10) / 10).toLocaleString('en-US')
@@ -70,6 +71,8 @@ function TrustTiles({ data }: { data: Reputation }) {
       <div className="gc-grid gc-grid--4">
         {part('Free model bonus', trust.freeModels, trust.freeModels ? `${trust.freeModels.service} is free` : 'No free model')}
         <StatTile label="Settled channels" value={trust.history ? formatNumber(trust.history.channelCount) : '—'} sub={trust.history ? `${formatUsd(trust.history.volumeUsdc)} settled. Shown only, not scored` : 'No settled channels read'} />
+        <StatTile label="Model checks" value={trust.verification ? `${trust.verification.change < 0 ? '−' : '+'}${points(Math.abs(trust.verification.change))}` : 'No change'}
+          sub={trust.verification ? modelChecksEffect(trust.verification, trust.score) : 'The verification policy is not changing your score'} />
         <StatTile label="Wash trading" value={trust.washFlagged === null ? 'Unknown' : trust.washFlagged ? 'Flagged' : 'Clear'} sub={trust.washFlagged ? 'The score is 0 while flagged' : 'From the on-chain registry'} />
       </div>
     </>

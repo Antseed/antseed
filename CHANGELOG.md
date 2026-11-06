@@ -8,6 +8,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Changed
 
+- CLI/Desktop/Gateway console: trust score views now explain what the verification policy did to a seller's score: the verdict counts, the share of normal points the seller earns, and the score before and after. The seller Reputation page gains a Model checks tile and a next step when DIFF verdicts cost points, and `antseed seller reputation` prints the effect.
 - Node/CLI/Desktop/Gateway console: the trust score now estimates what a buyer's spend with a seller earns. It is `min(100, min(100, power + usage + identity + freeModels) * verification multiplier)` with power up to 70 and usage up to 30, both reaching full marks at a 50% network share, plus the unchanged verified identity (up to 20) and free-model bonus (5). Verified services now raise the score as well as DIFFs lowering it. Settled service history is shown but no longer scored, so a seller with no pool stake, no identity and no free model scores 0. The default minimum trust score stays at 60.
 
 ### Added
