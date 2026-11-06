@@ -200,7 +200,8 @@ describe('announced aspect ratios and audio', () => {
     expect(unannouncedVideoOption(video, {})).toBeNull();
     expect(unannouncedVideoOption(video, { aspect_ratio: '21:9' })).toBe('aspect_ratio must be one of: 16:9, 9:16');
     expect(unannouncedVideoOption(video, { aspect_ratio: 16 })).toBe('aspect_ratio must be one of: 16:9, 9:16');
-    expect(unannouncedVideoOption(video, { audio: false })).toContain('always generates audio');
+    // A service that makes audio may be asked for silence: its price can match `audio`.
+    expect(unannouncedVideoOption(video, { audio: false })).toBeNull();
     expect(unannouncedVideoOption({ audio: false }, { audio: true })).toContain('silent');
     expect(unannouncedVideoOption(undefined, { aspect_ratio: '21:9', audio: false })).toBeNull();
   });
@@ -216,12 +217,12 @@ describe('announced aspect ratios and audio', () => {
   });
 
   it('refuses an unannounced aspect ratio or audio setting before payment and before calling Venice', async () => {
-    const { provider, fetchMock } = await ready({ aspectRatios: ['16:9'], audio: true });
+    const { provider, fetchMock } = await ready({ aspectRatios: ['16:9'], audio: false });
     const calls = fetchMock.mock.calls.length;
     expect(provider.checkRequest!(create({ aspect_ratio: '21:9' })))
       .toEqual({ statusCode: 422, code: 'unsupported_video_option', message: 'aspect_ratio must be one of: 16:9' });
-    expect(provider.checkRequest!(create({ audio: false }))).toMatchObject({ statusCode: 422, code: 'unsupported_video_option' });
-    expect(provider.checkRequest!(create({ aspect_ratio: '16:9', audio: true }))).toBeNull();
+    expect(provider.checkRequest!(create({ audio: true }))).toMatchObject({ statusCode: 422, code: 'unsupported_video_option' });
+    expect(provider.checkRequest!(create({ aspect_ratio: '16:9', audio: false }))).toBeNull();
     const response = await provider.handleRequest(create({ aspect_ratio: '1:1' }));
     expect(response.statusCode).toBe(422);
     expect(JSON.parse(Buffer.from(response.body).toString()).error).toMatchObject({ code: 'unsupported_video_option' });

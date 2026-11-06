@@ -210,12 +210,13 @@ export async function veniceAcceptsEndFrame(baseUrl: string, apiKey: string, mod
 }
 
 /**
- * Why a create asks for an aspect ratio or audio setting the seller did not
- * announce, or null. Venice prices a clip by its aspect ratio and audio as well
- * as its resolution and duration, but a unit price can only match resolution
- * and duration, so the seller prices each resolution at the options it
- * announces. Another option would cost a different Venice price for the same
- * charge. Unannounced options are not checked. `audioConfigurable` is whether
+ * Why a create asks for an aspect ratio or audio the seller did not announce,
+ * or null. Venice prices a clip by its aspect ratio and audio, and the seller's
+ * unit price covers the announced aspect ratios (`video.aspectRatios`) and,
+ * for a silent service (`video.audio: false`), no audio. Another aspect ratio,
+ * or audio from a silent service, would cost Venice a price the seller never
+ * set. A service that makes audio may still be asked for silence: its price
+ * can match `audio`. Unannounced options are not checked. `audioConfigurable` is whether
  * Venice lets the model's audio be turned off, undefined while unknown: a
  * silent service can't then make an omitted `audio` silent, so the create must
  * say `audio: false` itself.
@@ -225,10 +226,8 @@ export function unannouncedVideoOption(video: VideoOptions | undefined, input: R
   if (video?.aspectRatios && aspectRatio !== undefined && !video.aspectRatios.includes(aspectRatio as string)) {
     return `aspect_ratio must be one of: ${video.aspectRatios.join(', ')}`;
   }
-  if (video?.audio !== undefined && input.audio !== undefined && input.audio !== video.audio) {
-    return video.audio
-      ? 'This service always generates audio: audio must be true or omitted'
-      : 'This service generates silent video: audio must be false or omitted';
+  if (video?.audio === false && input.audio !== undefined && input.audio !== false) {
+    return 'This service generates silent video: audio must be false or omitted';
   }
   if (video?.audio === false && input.audio === undefined && audioConfigurable === undefined) {
     return 'This service generates silent video: send audio: false';

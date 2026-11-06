@@ -37,12 +37,18 @@ At startup the seller reads Venice's video model list (`GET /api/v1/models?type=
 
 ### Aspect ratio and audio
 
-Venice prices a clip by its aspect ratio and audio as well as its resolution and duration (for example Seedance 2.5 at 480p for 4 s: $0.51 at 16:9, $0.67 at 21:9; Veo 3.1 costs less without audio). A unit price matches only `resolution` and duration, so price each resolution at the options you announce and announce only options that cost the same:
+Venice prices a clip by its aspect ratio and audio as well as its resolution and duration (for example Seedance 2.5 at 480p for 4 s: $0.51 at 16:9, $0.67 at 21:9; Veo 3.1 costs less without audio). Price them with components that match `aspect_ratio` and `audio` (`"true"` / `"false"`) next to `resolution` (metadata v16, up to 64 components per model), for example:
+
+```json
+{ "unit": "video_seconds", "priceUsd": 0.0701, "match": { "resolution": "480p", "aspect_ratio": "16:9", "audio": "true" } }
+```
+
+Buyers price a create that leaves out `aspect_ratio` at the first announced one, and one that leaves out `audio` at `video.audio`, and the plugin sends Venice the same:
 
 - `video.aspectRatios`: a create with another `aspect_ratio` is answered `422 unsupported_video_option` before payment and without calling Venice. A create without one is sent with the first listed.
-- `video.audio`: `true` refuses `audio: false`; `false` refuses `audio: true` and, for a model whose audio Venice lets you turn off (`audio_configurable`), sends `audio: false` when the create leaves it out (Venice adds audio by default). While Venice's model list hasn't been read (or lacks the model), a create without `audio` is refused instead, so it must say `audio: false`.
+- `video.audio`: `false` (a silent service) refuses `audio: true` and, for a model whose audio Venice lets you turn off (`audio_configurable`), sends `audio: false` when the create leaves it out (Venice adds audio by default). While Venice's model list hasn't been read (or lacks the model), a create without `audio` is refused instead, so it must say `audio: false`.
 
-Options you don't announce are relayed as sent.
+A service with `video.audio: true` accepts `audio: false`; give it its own price if Venice charges less. Options you don't announce are relayed as sent.
 
 ### Video edits
 
