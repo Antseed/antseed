@@ -4,7 +4,13 @@ import ora from 'ora';
 import { getGlobalOptions } from '../types.js';
 import { configFromObject, loadConfig, saveConfig } from '../../../config/loader.js';
 import { patchValidatedConfig } from '../../../config/patch.js';
-import type { AntseedConfig, SellerProviderConfig } from '../../../config/types.js';
+import type {
+  AntseedConfig,
+  SellerFreeTierCLIConfig,
+  SellerProviderConfig,
+  SellerServiceConfig,
+  TokenPricingUsdPerMillion,
+} from '../../../config/types.js';
 import { assertValidConfig } from '../../../config/validation.js';
 import {
   parseServiceCapabilitiesInput,
@@ -328,13 +334,19 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 /** Settable fields under a provider or service. `true`: a leaf. `'any'`: free-form below. */
 type KeyShape = true | 'any' | { [field: string]: KeyShape };
 
-const PRICING_SHAPE: KeyShape = {
+/**
+ * One entry per field of `T`, optional ones included, and no others, so a
+ * field added to or renamed in the config types fails to compile here.
+ */
+type FieldShapes<T> = { [K in keyof Required<T>]: KeyShape };
+
+const PRICING_SHAPE = {
   inputUsdPerMillion: true,
   outputUsdPerMillion: true,
   cachedInputUsdPerMillion: true,
-};
+} satisfies FieldShapes<TokenPricingUsdPerMillion>;
 
-const SERVICE_SHAPE: KeyShape = {
+const SERVICE_SHAPE = {
   upstreamModel: true,
   imageEditModel: true,
   categories: true,
@@ -348,10 +360,10 @@ const SERVICE_SHAPE: KeyShape = {
     windowMs: true,
     stakeTiers: true,
     stakersOnly: true,
-  },
-};
+  } satisfies FieldShapes<SellerFreeTierCLIConfig>,
+} satisfies FieldShapes<SellerServiceConfig>;
 
-const PROVIDER_SHAPE: KeyShape = {
+const PROVIDER_SHAPE = {
   plugin: true,
   baseUrl: true,
   apiKeyEnv: true,
@@ -359,7 +371,7 @@ const PROVIDER_SHAPE: KeyShape = {
   fallbackUpstreams: true,
   defaults: PRICING_SHAPE,
   services: true,
-};
+} satisfies FieldShapes<SellerProviderConfig>;
 
 function checkShape(shape: KeyShape, fields: string[], fullKey: string, where: string): void {
   let current: KeyShape = shape;
