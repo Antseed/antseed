@@ -67,7 +67,7 @@ A buyer with no deposits can only be served by free sellers. Automatic routing c
 
 To stay on free sellers:
 
-- **Cap prices at zero.** Only free sellers stay eligible, for automatic and pinned requests. Restart the buyer to apply:
+- **Cap token prices at zero (text models).** Only sellers with free token prices stay eligible, for automatic and pinned requests. Restart the buyer to apply:
 
   ```bash
   antseed config buyer set maxPricing.defaults.inputUsdPerMillion 0
@@ -77,20 +77,28 @@ To stay on free sellers:
   The CLI buyer and the desktop app read only `maxPricing.defaults`, so no per-provider or per-service cap can raise these again. Check what applies with `antseed config buyer show`; the buyer also prints `max pricing defaults (USD/1M): input=0, output=0` at start. `antseed buyer start --max-input-usd-per-million 0 --max-output-usd-per-million 0` does the same for one run.
 
   A model with no free seller that passes your minimum trust score then fails with `502 model_not_found` instead of `402`.
+
+  These are token caps, so they cover only what they price:
+  - **Image models** are priced per image, not per token, and the buyer has no per-image cap. An image seller with zero token prices and a per-image price still gets the request, which then fails with `402`. Pick a seller whose catalog offer has `minImageUsdPerImage` of `0`, and pin it.
+  - **Video and speech** sellers advertise no token price, so these caps leave them out.
+  - **Routing services** (`<routerPeerId>@<routerServiceId>`) charge per ranking and aren't judged by these caps, so a request that names one still tries to pay.
 - **Pin a free seller.** Find one in the catalog and send `<peerId>@<model>`:
 
   ```bash
   curl -s http://localhost:8377/v1/models/deepseek-v4-flash \
-    | jq -r '.peers[] | select(.inputUsdPerMillion == 0 and .outputUsdPerMillion == 0) | "\(.peerId)@\(.serviceId)  trust \(.effectiveReputationScore)"'
+    | jq -r '.peers[] | select(.inputUsdPerMillion == 0 and .outputUsdPerMillion == 0 and (.minImageUsdPerImage // 0) == 0) | "\(.peerId)@\(.serviceId)  trust \(.effectiveReputationScore)"'
   ```
 
   A pin never fails over, so if that seller goes offline, pick another.
-- **On a gateway,** create a preset that allows only free sellers, then call it as the model `@preset/<slug>`. Use `--prefer-free` instead of the two price caps to try free sellers first but still allow paid ones. See [Routing policies](/docs/gateway/routing).
+- **On a gateway,** create a preset that allows only free sellers, then call it as the model `@preset/<slug>`. A gateway policy can also cap the per-image price, which has no flag, so set it from a policy file:
 
   ```bash
+  echo '{"maxImageUsdPerImage": 0}' > free-only.json
   antseed gateway preset create --slug free-oss --name "Free gpt-oss" --model gpt-oss-120b \
-    --max-input-price 0 --max-output-price 0
+    --file free-only.json --max-input-price 0 --max-output-price 0 --max-cached-input-price 0
   ```
+
+  Use `--prefer-free` instead of the caps to try free sellers first but still allow paid ones. Routing services aren't judged by these caps either. See [Routing policies](/docs/gateway/routing).
 
 Some sellers list a model at $0 but serve it only to buyers staked in their pool; they answer others with `429`. Their catalog offer has `freeTier.base.stakersOnly: true`.
 
