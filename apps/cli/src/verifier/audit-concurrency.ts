@@ -77,6 +77,32 @@ export async function mapConcurrently<T, R>(
   return results
 }
 
+/**
+ * Runs every item in its own lane. `prepare` starts for all items at once, so a slow one holds up no
+ * other; a prepared item then takes one of `concurrency` slots for `execute`. Results keep item
+ * order and leave out items `prepare` declined with null. Every lane ends before a failure is
+ * rethrown, so work in flight still finishes and keeps its evidence.
+ */
+export async function mapInLanes<T, P, R>(
+  items: readonly T[],
+  concurrency: number,
+  prepare: (item: T, index: number) => Promise<P | null>,
+  execute: (prepared: P, index: number) => Promise<R>,
+): Promise<R[]> {
+  const slots = new ConcurrencyLimiter(concurrency)
+  const settled = await Promise.allSettled(items.map(async (item, index) => {
+    const prepared = await prepare(item, index)
+    if (prepared === null) return { ran: false as const }
+    return { ran: true as const, result: await slots.run(() => execute(prepared, index)) }
+  }))
+  const results: R[] = []
+  for (const outcome of settled) {
+    if (outcome.status === 'rejected') throw outcome.reason
+    if (outcome.value.ran) results.push(outcome.value.result)
+  }
+  return results
+}
+
 export interface AdaptiveConcurrencyControl {
   reduceToOne(): void
 }

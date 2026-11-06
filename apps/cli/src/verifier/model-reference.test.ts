@@ -1016,6 +1016,196 @@ test('reference build rejects a refused stability batch without aborting the tar
   }
 })
 
+test('reference build skips a stability batch that keeps timing out', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-timeout-stability-'))
+  let slowPrompt: string | null = null
+  let slowAttempts = 0
+  const logs: string[] = []
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as {
+      model: string
+      temperature: number
+      messages: Array<{ content: string }>
+    }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    if (slowPrompt === null && body.model === 'upstream-test' && !prompt.startsWith('Generate ') && body.temperature === 0) {
+      slowPrompt = prompt
+    }
+    if (prompt === slowPrompt && body.temperature === 0) {
+      slowAttempts += 1
+      // Like a model thinking past the limit: nothing arrives until our timer aborts the request.
+      return await new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new DOMException('This operation was aborted', 'AbortError')))
+      })
+    }
+    return response(successfulContent(body.model, prompt))
+  }
+  try {
+    const built = await buildModelReference({
+      model: MODEL,
+      referencesDir: directory,
+      config: { ...config(), probeRequestTimeoutMs: 200, referenceRetryBaseDelayMs: 1 },
+      fetchFn,
+      log: (message) => logs.push(message),
+    })
+    assert.equal(built.reference.probes.length, 100)
+    assert.equal(slowAttempts, 4)
+    assert.equal(logs.some((message) => message.includes('skipping 10-probe stability batch') && message.includes('timed out after 200ms')), true)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+for (const [name, failure] of [
+  ['a server error', () => response('overloaded', 503)],
+  ['a capacity error inside a 200 body', () => Response.json({ error: { message: 'at capacity', code: 502 } })],
+] as const) {
+  test(`reference build skips a stability batch that keeps failing with ${name}`, async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-failing-stability-'))
+    let failingPrompt: string | null = null
+    let attempts = 0
+    const logs: string[] = []
+    const fetchFn: typeof fetch = async (_url, init) => {
+      const body = JSON.parse(String(init?.body)) as { model: string; temperature: number; messages: Array<{ content: string }> }
+      const prompt = body.messages.at(-1)?.content ?? ''
+      if (failingPrompt === null && body.model === 'upstream-test' && !prompt.startsWith('Generate ') && body.temperature === 0) {
+        failingPrompt = prompt
+      }
+      if (prompt === failingPrompt && body.temperature === 0) {
+        attempts += 1
+        return failure()
+      }
+      return response(successfulContent(body.model, prompt))
+    }
+    try {
+      const built = await buildModelReference({
+        model: MODEL,
+        referencesDir: directory,
+        config: { ...config(), referenceRetryBaseDelayMs: 1 },
+        fetchFn,
+        log: (message) => logs.push(message),
+      })
+      assert.equal(built.reference.probes.length, 100)
+      assert.equal(attempts, 4)
+      assert.equal(logs.some((message) => message.includes('skipping 10-probe stability batch')), true)
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+}
+
+test('reference build leaves a self-test batch unanswered when its retries run out', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-failing-self-test-'))
+  let contrastChecked = false
+  let failingProbe: string | null = null
+  const logs: string[] = []
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    if (body.model === 'contrast-test') contrastChecked = true
+    if (contrastChecked && body.model === 'upstream-test' && failingProbe === null) {
+      failingProbe = prompt.split('\n').find((line) => PROBE_LINE_LABEL.test(line))?.replace(PROBE_LINE_LABEL, '') ?? null
+    }
+    if (body.model === 'upstream-test' && failingProbe !== null && prompt.includes(failingProbe)) {
+      return response('overloaded', 503)
+    }
+    return response(successfulContent(body.model, prompt))
+  }
+  try {
+    const built = await buildModelReference({
+      model: MODEL,
+      referencesDir: directory,
+      config: { ...config({ referenceLayoutFilterPasses: 0 }), referenceRetryBaseDelayMs: 1 },
+      fetchFn,
+      log: (message) => logs.push(message),
+    })
+    assert.equal(built.reference.probes.length > 0, true)
+    assert.equal(logs.some((message) => message.includes('-probe self-test batch')), true)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a rate limit that outlasts its retries still stops a reference build', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-throttled-'))
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { messages: Array<{ content: string }> }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    if (prompt.startsWith('Generate ')) return response(successfulContent('upstream-test', prompt))
+    return new Response(JSON.stringify({ error: 'slow down' }), { status: 429, headers: { 'retry-after': '0' } })
+  }
+  try {
+    await assert.rejects(buildModelReference({
+      model: MODEL,
+      referencesDir: directory,
+      config: { ...config(), referenceRetryBaseDelayMs: 1, referenceBatchRetryCount: 0 },
+      fetchFn,
+      log: () => undefined,
+    }))
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a contrast batch that keeps failing loses only its own questions', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-failing-contrast-'))
+  let failingPrompt: string | null = null
+  const otherContrastPrompts = new Set<string>()
+  const logs: string[] = []
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    if (body.model === 'contrast-test') {
+      failingPrompt ??= prompt
+      if (prompt === failingPrompt) return response('overloaded', 503)
+      otherContrastPrompts.add(prompt)
+    }
+    return response(successfulContent(body.model, prompt))
+  }
+  try {
+    const built = await buildModelReference({
+      model: MODEL,
+      referencesDir: directory,
+      config: { ...config(), referenceRetryBaseDelayMs: 1 },
+      fetchFn,
+      log: (message) => logs.push(message),
+    })
+    assert.equal(built.reference.probes.length, 100)
+    assert.equal(otherContrastPrompts.size > 0, true)
+    assert.equal(logs.some((message) => message.includes('continuing with the next batch')), true)
+    assert.equal(logs.some((message) => message.includes('unavailable')), false)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a contrast model whose batches all fail is given up after a few', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-dead-contrast-'))
+  const failedPrompts = new Set<string>()
+  const logs: string[] = []
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    if (body.model === 'contrast-test') {
+      failedPrompts.add(prompt)
+      return response('overloaded', 503)
+    }
+    return response(successfulContent(body.model, prompt))
+  }
+  try {
+    await buildModelReference({
+      model: MODEL,
+      referencesDir: directory,
+      config: { ...config(), referenceRetryBaseDelayMs: 1 },
+      fetchFn,
+      log: (message) => logs.push(message),
+    }).catch(() => undefined)
+    assert.equal(logs.some((message) => message.includes('contrast model contrast-test unavailable')), true)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test('reference build skips a stability batch the model filters as sensitive', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-sensitive-stability-'))
   let refusedPrompt: string | null = null

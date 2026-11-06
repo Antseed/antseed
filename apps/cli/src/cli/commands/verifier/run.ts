@@ -50,8 +50,10 @@ import {
   KeyedSerialLimiter,
   SerialOperationQueue,
   mapConcurrently,
+  mapInLanes,
 } from '../../../verifier/audit-concurrency.js'
 import { acquirePidFileLock } from '../../../verifier/atomic-files.js'
+import { findAdvertisedService } from '../../../verifier/service-discovery.js'
 import { configuredVerifierModels, resolveVerifierCommandModels, verifierModelServices } from '../../../verifier/model-config.js'
 import { describeAuditorSource, resolveAuditorAddress } from './auditor-identity.js'
 import { asError, normalized } from '../../../verifier/utils.js'
@@ -97,6 +99,9 @@ import {
   CONFIRMATION_RECHECK_SPACING_SECONDS,
   sellerRetryWaitUntil,
   countPlan,
+  decideRetryGiveUps,
+  writeRetryGiveUps,
+  type RetryGiveUpV1,
   epochCellKey,
   heldForConfirmationRecheck,
   epochModelRows,
@@ -109,6 +114,7 @@ import { BUILD_REQUEST_RUNS, ensureEpochQuestionSet } from '../../../verifier/en
 import {
   MIN_SECONDS_FOR_ANOTHER_ROUND,
   closeFinishedAuditWindows,
+  listAuditWindows,
   openAuditWindow,
   readAuditWindow,
   windowIncludesSeller,
@@ -596,8 +602,9 @@ export async function runVerifierRounds(
     // enrollment budget, so a bank build that ran out of requests can finish from its checkpoint.
     const outcome = await runRound(round)
     if (outcome.epochChanged) {
-      // The round was planned for the previous epoch (assignment, finished sellers, close calls),
-      // so nothing was audited; plan it again for the new epoch, once, without using up a round.
+      // The round was planned for the previous epoch (assignment, finished sellers, close calls).
+      // Models it audited before the change keep their evidence; plan the rest again for the new
+      // epoch, once, without using up a round.
       if (replannedForNewEpoch) {
         log(chalk.yellow('The epoch changed again; run `antseed verifier run` again.'))
         break
@@ -626,7 +633,7 @@ export async function runVerifierRounds(
   }
   const failedBuilds = [...(last?.enrollmentFailures ?? new Map<string, string>())]
   if (failedBuilds.length > 0) {
-    log(chalk.yellow(`Not audited this run, no usable question set (${failedBuilds.length}):`))
+    log(chalk.yellow(`Not audited this run (${failedBuilds.length}):`))
     for (const [model, reason] of failedBuilds) log(chalk.yellow(`  - ${model}: ${reason}`))
   }
   return last
@@ -646,14 +653,17 @@ export interface VerifierRoundOutcome {
   /** Audits, close calls and question builds a later round can retry. */
   left: number
   secondsLeftInEpoch: number
-  /** Set to the new epoch when it started during enrollment; the round audited nothing. */
+  /** Set to the new epoch when it started during a build. Models audited before that keep their evidence. */
   epochChanged?: string
-  /** Models whose fresh-question build failed this round, with the reason; retried next round. */
+  /** Models that could not be audited this round, usually a failed build, with the reason; retried next round. */
   enrollmentFailures?: Map<string, string>
 }
 
+/** The part of a model's plan that the run status counts. */
+type StatusPlan = { targets: readonly unknown[]; skipped: readonly ModelVerificationSkip[] }
+
 /** One pass over the epoch's remaining work. Returns how much is still left to retry. */
-async function runVerifierRound(
+export async function runVerifierRound(
   modelValue: string | undefined,
   options: RunOptions,
   command: Command,
@@ -687,7 +697,7 @@ async function runVerifierRound(
         if (resolved.warning) console.warn(chalk.yellow(resolved.warning))
         return resolved.window
       }
-      let epochWindow = await resolveEpoch()
+      const epochWindow = await resolveEpoch()
       const clock = chainClock(config)
       let assignedModels: string[] | null = null
       let approvedAuditors: string[] | undefined
@@ -743,27 +753,14 @@ async function runVerifierRound(
       // sellers; later runs only finish those sellers, and a closed window audits nobody new. Only
       // confirmations are audited outside windows. No window opens late in the epoch.
       const windowsOpenable = !options.peer && !options.resumeRun
-      await closeFinishedAuditWindows({
-        evidenceDir, epoch: epochWindow.epoch,
-        state: await loadEpochState(evidenceDir, epochWindow.epoch),
-        secondsLeftInEpoch: epochWindow.endsAt - await clock(),
-      })
       const lateInEpoch = epochWindow.endsAt - await clock() < MIN_SECONDS_FOR_ANOTHER_ROUND
       const auditWindows = new Map<string, AuditWindowV1 | null>()
-      for (const model of models) {
-        if (!confirmationOnly.has(model)) auditWindows.set(model, await readAuditWindow(evidenceDir, epochWindow.epoch, model))
-      }
       const auditsPeer = (model: string, peer: { peerId: string; onChainAgentId?: number | bigint | string | null }): boolean => {
         if (confirmationFor(model, peer) !== undefined) return true
         if (confirmationOnly.has(model)) return false
         const window = auditWindows.get(model)
         if (window) return window.state === 'open' && windowIncludesSeller(window, peer.peerId)
         return !lateInEpoch
-      }
-      if (lateInEpoch && [...auditWindows.values()].some((window) => window === null)) {
-        console.log(chalk.yellow(
-          `Less than ${MIN_SECONDS_FOR_ANOTHER_ROUND / 60} minutes left in the epoch: models not audited yet this epoch wait for the next one.`,
-        ))
       }
       const runLock = await acquirePidFileLock(join(evidenceDir, '.run.lock'))
       let responseAuthReader: Awaited<ReturnType<typeof openResponseAuthReader>> | null = null
@@ -776,6 +773,36 @@ async function runVerifierRound(
           throw new Error(
             `resume run ${requestedResumeManifest.runId} belongs to epoch ${requestedResumeManifest.epoch}; current epoch is ${epoch}`,
           )
+        }
+        // Windows close here, after a look at the buyer's peers: a seller that stopped listing a model
+        // must not hold its window, and one that came back must be seen before its window closes.
+        // A buyer that can't be read decides nothing, and fails the run further down.
+        const peerList = await loadBuyerProxySnapshot(globalOptions.dataDir).catch(() => null)
+        if (peerList) {
+          await updateRetryGiveUps({
+            evidenceDir, epoch, peers: peerList.peers,
+            servicesFor: (cell, peer) => {
+              const confirmation = confirmationFor(cell.model, peer)
+              return [
+                ...verifierModelServices(config.verifier, cell.model),
+                ...(cell.result ? [cell.result.service] : []),
+                ...(confirmation ? [confirmation.service] : []),
+              ]
+            },
+          })
+        }
+        await closeFinishedAuditWindows({
+          evidenceDir, epoch,
+          state: await loadEpochState(evidenceDir, epoch),
+          secondsLeftInEpoch: epochWindow.endsAt - await clock(),
+        })
+        for (const model of models) {
+          if (!confirmationOnly.has(model)) auditWindows.set(model, await readAuditWindow(evidenceDir, epoch, model))
+        }
+        if (lateInEpoch && [...auditWindows.values()].some((window) => window === null)) {
+          console.log(chalk.yellow(
+            `Less than ${MIN_SECONDS_FOR_ANOTHER_ROUND / 60} minutes left in the epoch: models not audited yet this epoch wait for the next one.`,
+          ))
         }
         // Everything this epoch's earlier runs settled: finished sellers are skipped, the rest are
         // retried, extended or audited for the first time. `--fresh` and `--resume-run` ignore it.
@@ -869,7 +896,7 @@ async function runVerifierRound(
           const peerSuffix = selectedPeerId ? ` and peer ${selectedPeerId}` : ''
           throw new Error(`resume run ${resumeSourceRunId} has no undetermined audits for the selected models${peerSuffix}`)
         }
-        let proxy = await loadBuyerProxySnapshot(globalOptions.dataDir)
+        const proxy = peerList ?? await loadBuyerProxySnapshot(globalOptions.dataDir)
         // The limits the running buyer enforces; a buyer from an older build doesn't record them,
         // so this config's buyer settings stand in.
         const configBuyer = resolveEffectiveBuyerConfig({ config })
@@ -878,7 +905,7 @@ async function runVerifierRound(
           maxPricing: proxy.settings?.maxPricing ?? configBuyer.maxPricing.defaults,
           reported: proxy.settings?.maxPricing != null,
         }
-        let selectedPeers = selectedPeerId
+        const selectedPeers = selectedPeerId
           ? [selectVerifierPeer(proxy.peers, selectedPeerId)]
           : proxy.peers
         // Each audited model is audited only at or below its genuine price: the highest price any
@@ -931,61 +958,8 @@ async function runVerifierRound(
             throw new Error(`peer ${selectedPeerId} does not advertise model ${runModels[0]}`)
           }
         }
-        if (enrollmentBudget !== null) {
-          if (resumeOnly) throw new Error('an audit resume is pending; complete it before enrolling new probes')
-          // Every model enrolls at once; one shared limiter caps the reference requests in flight.
-          const concurrencyWarning = referenceConcurrencyWarning(config.verifier)
-          if (concurrencyWarning) console.warn(chalk.yellow(concurrencyWarning))
-          const requestLimiter = createReferenceRequestLimiter(config.verifier)
-          const enrolled = await Promise.all(runModels.map(async (model) => {
-            const sellersToAudit = selectedPeers.filter((peer) => auditsPeer(model, peer) && !finished(model, peer)
-              && classifyVerificationTargetServices(peer, targetServicesFor(model, peer), targetPolicyFor(model)).eligible)
-            if (sellersToAudit.length === 0) {
-              console.log(chalk.dim(`[enrollment:${model}] no eligible seller left to audit; no enrollment calls needed`))
-              return true
-            }
-            try {
-              const referencesDir = config.verifier?.referencesDir ?? join(globalOptions.dataDir, 'verifier', 'references')
-              const log = (message: string) => console.log(chalk.dim(`[enrollment:${model}] ${message}`))
-              // Every seller of the model is asked this epoch's question set, built now when there is none.
-              await ensureEpochQuestionSet({
-                model, banksDir, referencesDir,
-                config: config.verifier,
-                maxRequests: enrollmentBudget,
-                epoch,
-                runId: canonicalHashBytes32({ domain: 'antseed-verifier-question-set-build-v1', epoch, model, at: Date.now() }),
-                extensionCount: closeCallRuleForExtensions(config.verifier?.closeCallExtensions ?? 2)?.maxExtensions ?? 0,
-                buyerProxyPort: config.buyer.proxyPort,
-                requestLimiter,
-                log,
-              })
-              return true
-            } catch (error) {
-              const reason = asError(error).message
-              console.warn(chalk.yellow(`SKIPPED ${model}: enrollment failed: ${reason}`))
-              enrollmentFailures.set(model, reason)
-              return false
-            }
-          }))
-          const readyModels = runModels.filter((_, index) => enrolled[index])
-          runModels = readyModels
-          if (runModels.length === 0) {
-            // Nothing to audit this round; the next round (with another budget) builds them again.
-            console.warn(chalk.yellow(`No model is ready after building fresh questions (${enrollmentFailures.size} failed).`))
-            const now = await resolveEpoch()
-            if (now.epoch !== epoch) {
-              return { left: 0, secondsLeftInEpoch: now.endsAt - await clock(), epochChanged: now.epoch }
-            }
-            return { left: enrollmentFailures.size, secondsLeftInEpoch: now.endsAt - await clock(), enrollmentFailures }
-          }
-          epochWindow = await resolveEpoch()
-          if (epochWindow.epoch !== epoch) {
-            // Everything planned so far (assignment, finished sellers, waiting close calls) belongs to
-            // the previous epoch; the caller plans the round again for the new one.
-            return { left: 0, secondsLeftInEpoch: epochWindow.endsAt - await clock(), epochChanged: epochWindow.epoch }
-          }
-          proxy = await loadBuyerProxySnapshot(globalOptions.dataDir)
-          selectedPeers = selectedPeerId ? [selectVerifierPeer(proxy.peers, selectedPeerId)] : proxy.peers
+        if (enrollmentBudget !== null && resumeOnly) {
+          throw new Error('an audit resume is pending; complete it before enrolling new probes')
         }
         responseAuthReader = await openResponseAuthReader({
           dataDir: globalOptions.dataDir,
@@ -1004,10 +978,10 @@ async function runVerifierRound(
         // result this epoch), and why each of the seller's other peers did not.
         const auditedConfirmations = new Set<string>()
         const confirmationSkipReasons = new Map<string, string[]>()
-        const plannedModels = runModels.map((model) => {
+        const planModel = (model: string, peers: readonly PeerInfo[]) => {
           let doneCount = 0
           const skipped: ModelVerificationSkip[] = []
-          const targets = selectedPeers.flatMap((peer) => {
+          const targets = peers.flatMap((peer) => {
             if (!auditsPeer(model, peer)) return []
             const confirmationKey = confirmationFor(model, peer) ? confirmationPlanKey(model, String(peer.onChainAgentId)) : null
             const notAudited = (reason: string): void => {
@@ -1086,7 +1060,8 @@ async function runVerifierRound(
             return []
           })
           return { model, skipped, targets, doneCount }
-        })
+        }
+        const plannedModels = runModels.map((model) => planModel(model, selectedPeers))
         // A confirmation that gets no audit stays waiting; say why instead of dropping it silently.
         if (!resumeOnly) {
           // A --peer run only answers for the selected seller's confirmations.
@@ -1114,20 +1089,12 @@ async function runVerifierRound(
             ))
           }
         }
-        // The first run of a model this epoch opens its window with the sellers it audits now.
-        if (windowsOpenable) {
-          for (const { model, targets } of plannedModels) {
-            if (!auditWindows.has(model) || auditWindows.get(model) || targets.length === 0) continue
-            const opened = await openAuditWindow({
-              evidenceDir, epoch, model, runId, sellers: targets.map((target) => target.peer.peerId),
-            })
-            auditWindows.set(model, opened)
-            console.log(chalk.cyan(`${model}: audit window opened with ${opened.sellers.length} seller(s); results are submitted once all of them are finished`))
-          }
-        }
         // A model whose sellers are all finished this epoch has nothing left to run.
+        const hasWorkLeft = (entry: { targets: unknown[]; skipped: unknown[]; doneCount: number }): boolean => (
+          entry.targets.length + entry.skipped.length > 0 || entry.doneCount === 0
+        )
         const preparedModels = plannedModels
-          .filter((entry) => entry.targets.length + entry.skipped.length > 0 || entry.doneCount === 0)
+          .filter(hasWorkLeft)
           .map(({ model, skipped, targets }) => ({ model, skipped, targets }))
         runModels = preparedModels.map((entry) => entry.model)
         if (epochState) {
@@ -1153,6 +1120,7 @@ async function runVerifierRound(
           epochSource: epochWindow.source,
           reserveUsdc: proxy.settings?.maxReserveAmountUsdc ?? null,
           models: preparedModels.map(({ model, targets }) => ({ model, sellerPeerIds: targets.map((target) => target.peer.peerId) })),
+          checkQuestionSets: false,
         })
         if (preRunProblems.length > 0) {
           if (!options.ignorePreRunChecks) throw preRunError(preRunProblems)
@@ -1241,6 +1209,10 @@ async function runVerifierRound(
           `Concurrency: ${maxConcurrentModels} models, ${maxConcurrentPeersPerModel} peers/model, `
           + `${maxConcurrentBatches} total batches, ${maxConcurrentBatchesPerPeer} batches/audit`,
         ))
+        // One shared limiter caps the reference requests in flight across every model's build.
+        const concurrencyWarning = enrollmentBudget === null ? null : referenceConcurrencyWarning(config.verifier)
+        if (concurrencyWarning) console.warn(chalk.yellow(concurrencyWarning))
+        const requestLimiter = enrollmentBudget === null ? null : createReferenceRequestLimiter(config.verifier)
         runProgress = new VerifierRunProgress(preparedModels.map(({ model, targets, skipped }) => ({
           model,
           providerCount: targets.length + skipped.length,
@@ -1248,10 +1220,10 @@ async function runVerifierRound(
         })))
         runProgress.start()
 
-        const epochModels = await mapConcurrently(
-          preparedModels,
-          maxConcurrentModels,
-          async ({ model, skipped, targets }): Promise<EpochAuditSummaryV1['models'][number]> => {
+        type ModelLane = (typeof preparedModels)[number] & { proxy: typeof proxy }
+        const auditModel = async (
+          { model, skipped, targets, proxy: laneProxy }: ModelLane,
+        ): Promise<EpochAuditSummaryV1['models'][number]> => {
           const modelStartedAt = new Date().toISOString()
           await appendEvent({
             type: 'model-started', runId, epoch, model, at: modelStartedAt,
@@ -1272,7 +1244,7 @@ async function runVerifierRound(
           const referenceSources = new Map<string, KbfReferenceV1>()
           // First audits and extra sets share timeouts and concurrency; only where evidence goes differs.
           const verificationContext = (peer: PeerInfo, auditEvidenceDir: string): ProxyVerificationContext => ({
-            proxy,
+            proxy: laneProxy,
             evidenceDir: auditEvidenceDir,
             checkpointRootDir: modelAuditsDirectory(evidenceDir, epoch, model, runId),
             requestTimeoutMs: config.verifier?.probeRequestTimeoutMs ?? 120_000,
@@ -1612,8 +1584,158 @@ async function runVerifierRound(
           })
           runProgress!.complete(model)
           return modelSummary
+        }
+
+        const buildQuestionSet = async (model: string): Promise<boolean> => {
+          const log = (message: string) => runProgress!.above(() => console.log(chalk.dim(`[enrollment:${model}] ${message}`)))
+          const sellersToAudit = selectedPeers.filter((peer) => auditsPeer(model, peer) && !finished(model, peer)
+            && classifyVerificationTargetServices(peer, targetServicesFor(model, peer), targetPolicyFor(model)).eligible)
+          if (sellersToAudit.length === 0) {
+            log('no eligible seller left to audit; no enrollment calls needed')
+            return true
+          }
+          try {
+            const referencesDir = config.verifier?.referencesDir ?? join(globalOptions.dataDir, 'verifier', 'references')
+            // Every seller of the model is asked this epoch's question set, built now when there is none.
+            await ensureEpochQuestionSet({
+              model, banksDir, referencesDir,
+              config: config.verifier,
+              maxRequests: enrollmentBudget!,
+              epoch,
+              runId: canonicalHashBytes32({ domain: 'antseed-verifier-question-set-build-v1', epoch, model, at: Date.now() }),
+              extensionCount: closeCallRuleForExtensions(config.verifier?.closeCallExtensions ?? 2)?.maxExtensions ?? 0,
+              buyerProxyPort: config.buyer.proxyPort,
+              requestLimiter: requestLimiter!,
+              log,
+            })
+            return true
+          } catch (error) {
+            const reason = asError(error).message
+            runProgress!.above(() => console.warn(chalk.yellow(`SKIPPED ${model}: enrollment failed: ${reason}`)))
+            enrollmentFailures.set(model, reason)
+            return false
+          }
+        }
+
+        // What a model's plan adds to the status totals. Lanes change it as they plan again or stop.
+        const replaceStatusPlan = (before: StatusPlan, after: StatusPlan): Promise<void> => updateStatus((value) => {
+          value.queuedAudits += after.targets.length - before.targets.length
+          value.skipped += after.skipped.length - before.skipped.length
+          for (const entry of before.skipped) decrementReasonCount(value.reasonCounts, entry.outcomeReason)
+          for (const entry of after.skipped) incrementReasonCount(value.reasonCounts, entry.outcomeReason)
         })
+
+        // Each model runs in its own lane: its build, then its audits as soon as the build is done.
+        let epochChangedTo: string | undefined
+        const prepareLane = async (prepared: (typeof preparedModels)[number]): Promise<ModelLane | null> => {
+          const { model } = prepared
+          let statusPlan: StatusPlan = prepared
+          const leaveRun = async (phase: string, failure?: string): Promise<null> => {
+            if (failure !== undefined) enrollmentFailures.set(model, failure)
+            await replaceStatusPlan(statusPlan, { targets: [], skipped: [] })
+            await updateStatus((value) => { value.modelsTotal -= 1 })
+            runProgress!.setPhase(model, phase)
+            return null
+          }
+          try {
+            let lane: ModelLane = { ...prepared, proxy }
+            if (enrollmentBudget !== null) {
+              runProgress!.setPhase(model, 'building questions')
+              const built = await buildQuestionSet(model)
+              const now = await resolveEpoch()
+              if (now.epoch !== epoch) {
+                // This model's plan belongs to the previous epoch; the caller plans it again for the new one.
+                epochChangedTo = now.epoch
+                return await leaveRun('epoch changed')
+              }
+              if (!built) return await leaveRun('no question set')
+              // A build can take hours, and sellers come and go in the meantime.
+              const laneProxy = await loadBuyerProxySnapshot(globalOptions.dataDir)
+              const peers = selectedPeerId ? [selectVerifierPeer(laneProxy.peers, selectedPeerId)] : laneProxy.peers
+              const planned = planModel(model, peers)
+              await replaceStatusPlan(statusPlan, planned)
+              statusPlan = planned
+              runProgress!.updatePlan(model, planned.targets.length + planned.skipped.length, planned.skipped.length)
+              if (!hasWorkLeft(planned)) return await leaveRun('nothing left')
+              lane = { model, skipped: planned.skipped, targets: planned.targets, proxy: laneProxy }
+              runProgress!.setPhase(model, 'waiting')
+            }
+            const problems = await collectPreRunProblems({
+              config,
+              dataDir: globalOptions.dataDir,
+              banksDir,
+              epoch,
+              epochSource: epochWindow.source,
+              reserveUsdc: lane.proxy.settings?.maxReserveAmountUsdc ?? null,
+              models: [{ model, sellerPeerIds: lane.targets.map((target) => target.peer.peerId) }],
+              checkAuditor: false,
+            })
+            if (problems.length > 0) {
+              const ignored = options.ignorePreRunChecks === true
+              runProgress!.above(() => {
+                for (const problem of problems) {
+                  console.warn(chalk.yellow(ignored ? `Ignoring (--ignore-pre-run-checks): ${problem}` : `SKIPPED ${problem}`))
+                }
+              })
+              if (!ignored) return await leaveRun('no usable question set', problems.join('; '))
+            }
+            // The first run of a model this epoch opens its window with the sellers it audits now.
+            if (windowsOpenable && auditWindows.has(model) && !auditWindows.get(model) && lane.targets.length > 0) {
+              const opened = await openAuditWindow({
+                evidenceDir, epoch, model, runId, sellers: lane.targets.map((target) => target.peer.peerId),
+              })
+              auditWindows.set(model, opened)
+              runProgress!.above(() => console.log(chalk.cyan(`${model}: audit window opened with ${opened.sellers.length} seller(s); results are submitted together once every seller of it is finished`)))
+            }
+            return lane
+          } catch (error) {
+            // For example the buyer stopped, or a --peer seller left, during this model's build.
+            const reason = asError(error).message
+            runProgress!.above(() => console.warn(chalk.yellow(`SKIPPED ${model}: ${reason}`)))
+            return await leaveRun('failed', reason)
+          }
+        }
+        // A model that fails here has no summary, so it stays out of the manifest and its window stays
+        // open for the next round. The other models' finished audits are still recorded.
+        const runLane = async (lane: ModelLane): Promise<EpochAuditSummaryV1['models'][number] | null> => {
+          try {
+            return await auditModel(lane)
+          } catch (error) {
+            const reason = asError(error).message
+            runProgress!.above(() => console.warn(chalk.yellow(`FAILED ${lane.model}: ${reason}`)))
+            enrollmentFailures.set(lane.model, reason)
+            await updateStatus((value) => { value.modelsTotal -= 1 })
+            runProgress!.setPhase(lane.model, 'failed')
+            return null
+          }
+        }
+        const laneSummaries = await mapInLanes(preparedModels, maxConcurrentModels, prepareLane, runLane)
+        const epochModels = laneSummaries.flatMap((entry) => entry ? [entry] : [])
         runProgress.finish()
+        if (epochModels.length === 0) {
+          // Nothing was audited, so there is no run to record. The next round builds the models again.
+          const stopped = epochChangedTo !== undefined
+            ? 'the epoch changed'
+            : enrollmentFailures.size > 0 ? 'no model could be audited' : null
+          if (epochChangedTo === undefined && enrollmentFailures.size > 0) {
+            console.warn(chalk.yellow(`No model could be audited (${enrollmentFailures.size} failed).`))
+          }
+          status.state = stopped ? 'failed' : 'completed'
+          status.completedAt = new Date().toISOString()
+          status.currentModel = null
+          status.currentPeerId = null
+          status.message = stopped ?? 'nothing left to audit'
+          await writeVerifierStatus(evidenceDir, status)
+          await appendVerifierEvent(evidenceDir, epoch, {
+            type: 'run-stopped', runId, epoch, reason: status.message, at: status.completedAt,
+          })
+          return {
+            left: epochChangedTo === undefined ? enrollmentFailures.size : 0,
+            secondsLeftInEpoch: epochWindow.endsAt - await clock(),
+            enrollmentFailures,
+            ...(epochChangedTo === undefined ? {} : { epochChanged: epochChangedTo }),
+          }
+        }
 
         const completedAt = new Date().toISOString()
         const epochSummary = {
@@ -1648,7 +1770,7 @@ async function runVerifierRound(
           completedAt,
           summaryPath: epochSummaryPath,
           selection: selectedPeerId ? { peerIds: [selectedPeerId] } : undefined,
-          modelOrder: runModels,
+          modelOrder: epochModels.map((entry) => entry.model),
           models: epochModels,
           failureCount: status.failures,
         })
@@ -1701,13 +1823,18 @@ async function runVerifierRound(
           console.log(chalk.yellow(
             `Epoch ${epoch}: ${left.retryAuditor + left.retrySeller} audit(s) can be retried and ${left.extend} `
             + 'close call(s) wait for extra questions'
-            + (enrollmentFailures.size > 0 ? `; ${enrollmentFailures.size} model(s) have no usable question set.` : '.'),
+            + (enrollmentFailures.size > 0 ? `; ${enrollmentFailures.size} model(s) were not audited.` : '.'),
           ))
         } else {
           console.log(chalk.green(`Epoch ${epoch}: every eligible seller is finished.`))
         }
         if (status.failures > 0) process.exitCode = 1
-        return { left: remaining, secondsLeftInEpoch: epochWindow.endsAt - await clock(), enrollmentFailures }
+        return {
+          left: remaining,
+          secondsLeftInEpoch: epochWindow.endsAt - await clock(),
+          enrollmentFailures,
+          ...(epochChangedTo === undefined ? {} : { epochChanged: epochChangedTo }),
+        }
       } catch (error) {
         if (status) {
           status.state = 'failed'
@@ -1723,10 +1850,60 @@ async function runVerifierRound(
       }
 }
 
+/** The buyer's peer list counts as fresh if it saw a peer this recently; it refreshes every 5 minutes. */
+const PEER_LIST_MAX_AGE_MS = 30 * 60_000
+
+/**
+ * Gives up the retries of sellers that stopped listing their model, and takes back the ones whose
+ * seller is listed again (`decideRetryGiveUps`). A stale peer list decides nothing.
+ */
+export async function updateRetryGiveUps(input: {
+  evidenceDir: string
+  epoch: string
+  peers: readonly PeerInfo[]
+  servicesFor: (cell: EpochCell, peer: PeerInfo) => string[]
+  nowMs?: number
+}): Promise<void> {
+  const { evidenceDir, epoch } = input
+  const nowMs = input.nowMs ?? Date.now()
+  if (nowMs - Math.max(...input.peers.map((peer) => peer.lastSeen)) > PEER_LIST_MAX_AGE_MS) {
+    console.warn(chalk.yellow('The buyer\'s peer list is out of date, so no retry is given up this run.'))
+    return
+  }
+  const state = await loadEpochState(evidenceDir, epoch)
+  const closedModels = new Set((await listAuditWindows(evidenceDir, epoch))
+    .filter((window) => window.state === 'closed')
+    .map((window) => normalized(window.model)))
+  const peers = new Map(input.peers.map((peer) => [peer.peerId.toLowerCase(), peer]))
+  const { entries, added, restored } = decideRetryGiveUps({
+    cells: state.cells.values(),
+    nowSeconds: nowMs / 1_000,
+    windowClosed: (cell) => closedModels.has(normalized(cell.model)),
+    offersModel: (cell) => {
+      const peer = peers.get(cell.peerId.trim().replace(/^0x/i, '').toLowerCase())
+      return peer !== undefined && input.servicesFor(cell, peer).some((service) => findAdvertisedService(peer, service) !== null)
+    },
+  })
+  if (added.length + restored.length === 0) return
+  await writeRetryGiveUps(evidenceDir, epoch, entries)
+  const seller = (entry: RetryGiveUpV1): string => `${entry.displayName ?? 'seller'} (${entry.peerId.slice(0, 12)}…)`
+  const at = new Date(nowMs).toISOString()
+  for (const entry of added) {
+    console.log(chalk.yellow(`${entry.model}: gave up on ${seller(entry)}: ${entry.reason}. It keeps its result (attempt ${entry.attempts}).`))
+    await appendVerifierEvent(evidenceDir, epoch, { type: 'retry-given-up', epoch, ...entry, at })
+  }
+  for (const entry of restored) {
+    console.log(chalk.cyan(`${entry.model}: ${seller(entry)} is listed again, so its retry is back on.`))
+    await appendVerifierEvent(evidenceDir, epoch, { type: 'retry-restored', epoch, model: entry.model, peerId: entry.peerId, at })
+  }
+}
+
 /**
  * What would make this run fail on the auditor's side: no on-chain epoch (the chain can't be
  * reached), a deposit too small for the new payment channels, or a model without this epoch's
- * question set. Empty when the run can start.
+ * question set. Empty when the run can start. A run checks the chain and deposit once, before any
+ * build (`checkQuestionSets: false`), and each model's question set in its lane, when it's built
+ * (`checkAuditor: false`).
  */
 async function collectPreRunProblems(input: {
   config: AntseedConfig
@@ -1736,15 +1913,17 @@ async function collectPreRunProblems(input: {
   epochSource: AuditEpochWindow['source']
   reserveUsdc: bigint | null
   models: ReadonlyArray<{ model: string; sellerPeerIds: readonly string[] }>
+  checkAuditor?: boolean
+  checkQuestionSets?: boolean
 }): Promise<string[]> {
   const problems: string[] = []
-  if (input.epochSource !== 'onchain') {
+  if (input.checkAuditor !== false && input.epochSource !== 'onchain') {
     problems.push('the chain can\'t be reached (on-chain epoch unavailable), so this run\'s evidence could not be submitted. '
       + 'Check payments.crypto.rpcUrl or ANTSEED_BASE_RPC_URL')
   }
 
   const sellers = [...new Set(input.models.flatMap((entry) => entry.sellerPeerIds.map((id) => id.toLowerCase())))]
-  if (sellers.length > 0 && input.config.payments?.crypto) {
+  if (input.checkAuditor !== false && sellers.length > 0 && input.config.payments?.crypto) {
     try {
       const { address } = await loadCryptoContext(input.dataDir)
       const store = openChannelStore(input.dataDir)
@@ -1770,7 +1949,7 @@ async function collectPreRunProblems(input: {
   }
 
   for (const { model, sellerPeerIds } of input.models) {
-    if (sellerPeerIds.length === 0) continue
+    if (input.checkQuestionSets === false || sellerPeerIds.length === 0) continue
     try {
       const set = await loadEpochQuestionSet({ banksDir: input.banksDir, model, epoch: input.epoch, config: input.config.verifier })
       if (!set) {
@@ -2067,4 +2246,13 @@ function incrementReasonCount(
 ): void {
   if (!counts || !reason) return
   counts[reason.code] = (counts[reason.code] ?? 0) + 1
+}
+
+function decrementReasonCount(
+  counts: Record<string, number> | undefined,
+  reason?: { code: string } | null,
+): void {
+  if (!counts?.[reason?.code ?? '']) return
+  counts[reason!.code]! -= 1
+  if (counts[reason!.code] === 0) delete counts[reason!.code]
 }

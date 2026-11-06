@@ -7,7 +7,9 @@ import type { ModelAuditSummaryV1, VerifierRunManifestV1 } from './audit-artifac
 import {
   AUDITOR_FAILURE_ATTEMPTS,
   CONFIRMATION_ATTEMPTS,
+  applyRetryGiveUps,
   countPlan,
+  decideRetryGiveUps,
   epochCellKey,
   heldForConfirmationRecheck,
   SELLER_RETRY_SPACING_SECONDS,
@@ -16,6 +18,8 @@ import {
   epochModelRows,
   failureBlame,
   mergeEpochRuns,
+  type EpochCell,
+  type RetryGiveUpV1,
   writeEpochSubmissionManifest,
 } from './epoch-plan.js'
 import type { ModelVerificationTargetResult } from './model-run.js'
@@ -395,6 +399,121 @@ test('the submission leaves out a held confirmation UNDETERMINED and says why', 
     assert.deepEqual(summary.results.map((entry) => entry.peerId), ['b'])
     assert.deepEqual(summary.failures.map((entry) => entry.peerId), ['a'])
     assert.match(summary.failures[0]!.reason, /^held: UNDETERMINED .*\(attempt 1 of 3\)$/)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+const GONE = 'dd'.repeat(20)
+const LAST_ATTEMPT = Date.parse('2026-10-28T12:00:00.000Z') / 1_000
+const gaveUp = (runId: string): RetryGiveUpV1 => ({
+  model: 'm', peerId: GONE, displayName: null, runId, lastAttemptAt: LAST_ATTEMPT, attempts: 1,
+  givenUpAt: '2026-10-28T20:00:00.000Z', reason: 'its retry was due and the buyer\'s peers show it no longer offers m',
+})
+
+function retryCell(runResult: ModelVerificationTargetResult = result(GONE, 'UNDETERMINED', { outcomeReason: sellerDown })): {
+  runs: ReturnType<typeof run>[]
+  cells: Map<string, EpochCell>
+  cell: EpochCell
+} {
+  const runs = [run('r1', '2026-10-28T12:00:00.000Z', [{ model: 'm', results: [runResult] }])]
+  const cells = mergeEpochRuns(EPOCH, runs)
+  return { runs, cells, cell: cells.get(epochCellKey('m', GONE))! }
+}
+
+const dueAt = LAST_ATTEMPT + SELLER_RETRY_SPACING_SECONDS
+
+test('giving up a retry: only once it is due, and only when the seller does not offer the model', () => {
+  const { cell } = retryCell()
+  assert.equal(cell.action, 'retry')
+  const decide = (nowSeconds: number, offers: boolean) => decideRetryGiveUps({
+    cells: [cell], nowSeconds, offersModel: () => offers, windowClosed: () => false,
+  })
+  assert.equal(decide(dueAt - 1, false).added.length, 0)
+  assert.equal(decide(dueAt, true).added.length, 0)
+  const decided = decide(dueAt, false)
+  assert.equal(decided.added[0]?.peerId, GONE)
+  assert.match(decided.added[0]!.reason, /no longer offers m/)
+  assert.deepEqual(decided.entries, decided.added)
+})
+
+test('giving up a retry: a cell with no known last attempt is left alone', () => {
+  const { cell } = retryCell()
+  const decided = decideRetryGiveUps({
+    cells: [{ ...cell, lastAttemptAt: null }], nowSeconds: dueAt, offersModel: () => false, windowClosed: () => false,
+  })
+  assert.equal(decided.added.length, 0)
+})
+
+test('giving up a retry: a close call waiting for its extra questions and an auditor retry are given up too', () => {
+  const { cell } = retryCell()
+  for (const extra of [{ action: 'extend', state: 'pending_extension' }, { action: 'retry', blame: 'auditor' }] as const) {
+    const decided = decideRetryGiveUps({
+      cells: [{ ...cell, ...extra }], nowSeconds: dueAt, offersModel: () => false, windowClosed: () => false,
+    })
+    assert.equal(decided.added.length, 1)
+  }
+})
+
+test('a given-up cell keeps its verdict and stops counting as left', () => {
+  const { cells } = retryCell()
+  applyRetryGiveUps(cells, [gaveUp('r1')])
+  const cell = cells.get(epochCellKey('m', GONE))!
+  assert.equal(cell.state, 'undetermined')
+  assert.equal(cell.action, 'done')
+  assert.equal(cell.result?.status, 'UNDETERMINED')
+  assert.equal(countPlan(cells.values()).retrySeller, 0)
+  assert.equal(epochModelRows(cells.values())[0]!.left, 0)
+  assert.equal(epochModelRows(cells.values())[0]!.undetermined, 1)
+})
+
+test('a newer audit of the seller ends the give-up', () => {
+  const { runs } = retryCell()
+  const later = run('r2', '2026-10-28T14:00:00.000Z', [{
+    model: 'm', failures: [{
+      peerId: GONE, displayName: null, agentId: '1', service: 'svc', status: 'FAILED', reason: 'x', outcomeReason: sellerDown,
+    }],
+  }])
+  const cells = mergeEpochRuns(EPOCH, [...runs, later])
+  applyRetryGiveUps(cells, [gaveUp('r1')])
+  assert.equal(cells.get(epochCellKey('m', GONE))!.givenUp, undefined)
+})
+
+test('a seller listed again gets its retry back, unless the window has closed', () => {
+  const { cells } = retryCell()
+  applyRetryGiveUps(cells, [gaveUp('r1')])
+  const decide = (windowClosed: boolean) => decideRetryGiveUps({
+    cells: cells.values(), nowSeconds: dueAt, offersModel: () => true, windowClosed: () => windowClosed,
+  })
+  assert.deepEqual(decide(false), { entries: [], added: [], restored: [gaveUp('r1')] })
+  assert.deepEqual(decide(true), { entries: [gaveUp('r1')], added: [], restored: [] })
+})
+
+test('a given-up seller\'s UNDETERMINED is submitted unchanged', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'epoch-plan-give-up-'))
+  try {
+    const { runs, cells } = retryCell()
+    applyRetryGiveUps(cells, [gaveUp('r1')])
+    const manifest = await writeEpochSubmissionManifest(directory, { epoch: EPOCH, manifests: [runs[0]!.manifest], cells })
+    const summary = JSON.parse(await readFile(manifest.models[0]!.summaryPath, 'utf8')) as ModelAuditSummaryV1
+    assert.deepEqual(summary.results.map((entry) => entry.status), ['UNDETERMINED'])
+    assert.equal(summary.failures.length, 0)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a seller that delisted during its confirmation holds nothing, and its UNDETERMINED does not answer the DIFF', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'epoch-plan-give-up-'))
+  try {
+    const { runs, cells, cell } = retryCell(result(GONE, 'UNDETERMINED', { outcomeReason: sellerDown, confirmsDiff: true }))
+    assert.equal(heldForConfirmationRecheck(cell), true)
+    applyRetryGiveUps(cells, [gaveUp('r1')])
+    assert.equal(epochModelRows(cells.values())[0]!.left, 0)
+    const manifest = await writeEpochSubmissionManifest(directory, { epoch: EPOCH, manifests: [runs[0]!.manifest], cells })
+    const summary = JSON.parse(await readFile(manifest.models[0]!.summaryPath, 'utf8')) as ModelAuditSummaryV1
+    assert.equal(summary.results.length, 0)
+    assert.match(summary.failures[0]!.reason, /^not submitted: no answer to the DIFF/)
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

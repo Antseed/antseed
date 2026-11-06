@@ -49,6 +49,18 @@ test('the first run opens a model\'s window with its sellers; a later run keeps 
   assert.equal(await readAuditWindow(evidenceDir, '8', 'model-a'), null)
 }))
 
+test('a run that skipped the model does not end its window, also when that run opened it', () => withDir(async (evidenceDir) => {
+  const window = await openAuditWindow({ evidenceDir, epoch: '7', model: 'model-a', runId: 'run-1', sellers: [A] })
+  const otherModelOnly = {
+    cells: new Map(),
+    manifests: [{ runId: 'run-1', startedAt: '2026-11-05T00:00:00.000Z', modelOrder: ['model-b'] } as VerifierRunManifestV1],
+  }
+  assert.deepEqual(auditWindowSellersLeft(window, otherModelOnly), [A])
+  // The opening run started before its window, after the model's build began.
+  const opener = { ...otherModelOnly, manifests: [{ ...otherModelOnly.manifests[0]!, modelOrder: ['model-a'] }] }
+  assert.deepEqual(auditWindowSellersLeft(window, opener), [])
+}))
+
 test('a window stays open while a seller has a retry or a close call left, and closes once none has', () => withDir(async (evidenceDir) => {
   const window = await openAuditWindow({ evidenceDir, epoch: '7', model: 'model-a', runId: 'run-1', sellers: [A, B] })
   assert.deepEqual(auditWindowSellersLeft(window, state([cell(A, 'done'), cell(B, 'retry')])), [B])
@@ -77,3 +89,38 @@ test('near the end of the epoch every open window closes, with what is left unde
   })
   assert.match(closed?.closeReason ?? '', /epoch is nearly over; 1 seller\(s\) left undecided/)
 }))
+
+test('closing a window records the sellers given up', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'audit-window-'))
+  try {
+    await openAuditWindow({ evidenceDir: directory, epoch: '7', model: 'model-a', runId: 'run-1', sellers: [A, B] })
+    const givenUp = {
+      ...cell(B, 'done'),
+      givenUp: {
+        model: 'model-a', peerId: B, displayName: null, runId: 'run-1', lastAttemptAt: 1, attempts: 1,
+        givenUpAt: '2026-11-06T00:00:00.000Z', reason: 'gone',
+      },
+    }
+    const [closed] = await closeFinishedAuditWindows({
+      evidenceDir: directory, epoch: '7', state: state([cell(A, 'done'), givenUp]), secondsLeftInEpoch: 86_400,
+    })
+    assert.equal(closed?.state, 'closed')
+    assert.deepEqual(closed?.givenUpSellers, [B])
+    assert.match(closed?.closeReason ?? '', /retry given up for 1 seller/)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a given-up seller does not close the window while another seller has work left', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'audit-window-'))
+  try {
+    await openAuditWindow({ evidenceDir: directory, epoch: '7', model: 'model-a', runId: 'run-1', sellers: [A, B] })
+    const closed = await closeFinishedAuditWindows({
+      evidenceDir: directory, epoch: '7', state: state([cell(A, 'retry'), cell(B, 'done')]), secondsLeftInEpoch: 86_400,
+    })
+    assert.deepEqual(closed, [])
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})

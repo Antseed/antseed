@@ -12,8 +12,9 @@ import { normalized } from './utils.js'
  * in the epoch opens its window and fixes its sellers (the eligible ones it found); later runs only
  * finish those sellers: their retries (`SELLER_FAILURE_ATTEMPTS`, `AUDITOR_FAILURE_ATTEMPTS`, spaced
  * like before) and their close calls' extra questions. A seller that turns up later gets no result
- * this epoch. Once none of the window's sellers has anything left, the window closes and
- * `verifier submit` sends the model's results together; nothing is submitted while it is open, so
+ * this epoch, and one that stops listing the model is given up once its retry is due
+ * (`decideRetryGiveUps`), keeping its result. Once none of the window's sellers has anything left,
+ * the window closes and `verifier submit` sends the model's results together; nothing is submitted while it is open, so
  * the epoch's questions are not published before every seller has been asked them.
  *
  * Confirmations of other auditors' DIFFs are not windowed: they are audited and submitted as before.
@@ -30,6 +31,8 @@ export interface AuditWindowV1 {
   sellers: string[]
   closedAt?: string
   closeReason?: string
+  /** Sellers whose retry was given up when the window closed (`RetryGiveUpV1`, also in the epoch's events). */
+  givenUpSellers?: string[]
 }
 
 /** No window opens, and every open one closes, with less than this left in the epoch, so there is time to submit. */
@@ -102,9 +105,10 @@ export function windowIncludesSeller(window: Pick<AuditWindowV1, 'sellers'>, pee
  */
 export function auditWindowSellersLeft(window: AuditWindowV1, state: Pick<EpochState, 'cells' | 'manifests'>): string[] {
   const completedRun = state.manifests.some((manifest) => (
-    Date.parse(manifest.startedAt) >= Date.parse(window.openedAt) - 1_000
+    // The opening run started before its window: a model's build comes first.
+    (manifest.runId === window.openedByRunId || Date.parse(manifest.startedAt) >= Date.parse(window.openedAt) - 1_000)
     && manifest.modelOrder.some((model) => normalized(model) === normalized(window.model))
-  )) || state.manifests.some((manifest) => manifest.runId === window.openedByRunId)
+  ))
   return window.sellers.filter((peerId) => {
     const cell = state.cells.get(epochCellKey(window.model, peerId))
     if (!cell) return !completedRun
@@ -127,13 +131,21 @@ export async function closeFinishedAuditWindows(input: {
   for (const window of await listAuditWindows(input.evidenceDir, input.epoch)) {
     if (window.state !== 'open') continue
     const left = auditWindowSellersLeft(window, input.state)
+    const givenUp = window.sellers.filter((peerId) => input.state.cells.get(epochCellKey(window.model, peerId))?.givenUp)
     const reason = left.length === 0
       ? 'every seller of the window is finished'
+        + (givenUp.length > 0 ? `; retry given up for ${givenUp.length} seller(s) that no longer offer the model` : '')
       : input.secondsLeftInEpoch < MIN_SECONDS_FOR_ANOTHER_ROUND
         ? `the epoch is nearly over; ${left.length} seller(s) left undecided`
         : null
     if (!reason) continue
-    const next: AuditWindowV1 = { ...window, state: 'closed', closedAt: new Date(input.now?.() ?? Date.now()).toISOString(), closeReason: reason }
+    const next: AuditWindowV1 = {
+      ...window,
+      state: 'closed',
+      closedAt: new Date(input.now?.() ?? Date.now()).toISOString(),
+      closeReason: reason,
+      ...(givenUp.length > 0 ? { givenUpSellers: givenUp } : {}),
+    }
     await writeJsonAtomic(auditWindowPath(input.evidenceDir, input.epoch, window.model), next)
     closed.push(next)
   }

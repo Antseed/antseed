@@ -837,8 +837,8 @@ submitted on-chain.
 Audits use existing reference banks and make reference-building calls only
 when a selected model's bank is missing, fails the self-test, statistical-power
 or contrast-detection checks, or is worn out for the sellers about to be audited.
-This is on by default; `--no-enroll` turns it off, and the run then stops before
-sending anything when a bank isn't ready:
+This is on by default; `--no-enroll` turns it off. A model whose bank isn't ready
+is then not audited, and the run audits the others and exits with an error:
 
 ```bash
 antseed --config ./audit-config.json verifier run gpt-6.1-sol --max-enrollment-requests 1000

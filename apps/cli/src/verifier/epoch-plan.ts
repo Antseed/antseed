@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { canonicalHashBytes32 } from '@antseed/fingerprints'
-import { writeJsonAtomic } from './atomic-files.js'
+import { readJsonIfExists, writeJsonAtomic } from './atomic-files.js'
 import {
   epochDirectory,
   type ModelAuditSummaryV1,
@@ -59,6 +59,8 @@ export interface EpochCell {
   /** The result submitted for this cell, when there is one. */
   result: ModelVerificationTargetResult | null
   action: EpochCellAction
+  /** Set when the cell's retry or extra questions were given up (`RetryGiveUpV1`); its action is then `done`. */
+  givenUp?: RetryGiveUpV1
 }
 
 export interface EpochState {
@@ -123,6 +125,97 @@ export function sellerRetryWaitUntil(
   if (!cell || explicitResume) return null
   const dueAt = sellerRetryDueAt(cell)
   return dueAt !== null && dueAt > nowSeconds ? dueAt : null
+}
+
+/**
+ * A retry or close call's extra questions that a run gave up, because the seller stopped listing the
+ * model after its last audit. The cell keeps its result and only stops counting as work left, so the
+ * model's audit window can close. It lasts while the cell has no newer audit, and until a run sees
+ * the seller list the model again before the window closes.
+ */
+export interface RetryGiveUpV1 {
+  model: string
+  peerId: string
+  displayName: string | null
+  /** The cell's run and last attempt: a newer audit of the seller ends the give-up. */
+  runId: string
+  lastAttemptAt: number
+  attempts: number
+  givenUpAt: string
+  reason: string
+}
+
+interface RetryGiveUpsFileV1 {
+  version: 1
+  kind: 'antseed-verifier-retry-give-ups'
+  epoch: string
+  entries: RetryGiveUpV1[]
+}
+
+function retryGiveUpsPath(evidenceDir: string, epoch: string): string {
+  return join(epochDirectory(evidenceDir, epoch), 'retry-give-ups.json')
+}
+
+export async function readRetryGiveUps(evidenceDir: string, epoch: string): Promise<RetryGiveUpV1[]> {
+  const file = await readJsonIfExists<RetryGiveUpsFileV1>(retryGiveUpsPath(evidenceDir, epoch))
+  return file?.kind === 'antseed-verifier-retry-give-ups' && file.epoch === epoch ? file.entries : []
+}
+
+export async function writeRetryGiveUps(evidenceDir: string, epoch: string, entries: readonly RetryGiveUpV1[]): Promise<void> {
+  const file: RetryGiveUpsFileV1 = { version: 1, kind: 'antseed-verifier-retry-give-ups', epoch, entries: [...entries] }
+  await writeJsonAtomic(retryGiveUpsPath(evidenceDir, epoch), file)
+}
+
+/** Marks the cells whose latest attempt was given up as done. */
+export function applyRetryGiveUps(cells: Map<string, EpochCell>, entries: readonly RetryGiveUpV1[]): void {
+  for (const entry of entries) {
+    const key = epochCellKey(entry.model, entry.peerId)
+    const cell = cells.get(key)
+    if (!cell || cell.action === 'done' || cell.action === 'audit') continue
+    if (cell.runId !== entry.runId || cell.lastAttemptAt !== entry.lastAttemptAt) continue
+    cells.set(key, { ...cell, action: 'done', givenUp: entry })
+  }
+}
+
+/**
+ * What a run with a fresh buyer peer list changes. A retry is given up once it could have run (the
+ * spacing after its last attempt has passed, so a brief disappearance costs nothing) and the seller
+ * doesn't offer the model. A give-up ends when the seller lists the model again, unless the
+ * model's window has closed: `windowClosed` cells keep theirs, since nothing audits them any more.
+ */
+export function decideRetryGiveUps(input: {
+  cells: Iterable<EpochCell>
+  nowSeconds: number
+  offersModel: (cell: EpochCell) => boolean
+  windowClosed: (cell: EpochCell) => boolean
+}): { entries: RetryGiveUpV1[]; added: RetryGiveUpV1[]; restored: RetryGiveUpV1[] } {
+  const entries: RetryGiveUpV1[] = []
+  const added: RetryGiveUpV1[] = []
+  const restored: RetryGiveUpV1[] = []
+  for (const cell of input.cells) {
+    if (cell.givenUp) {
+      if (input.offersModel(cell) && !input.windowClosed(cell)) restored.push(cell.givenUp)
+      else entries.push(cell.givenUp)
+      continue
+    }
+    if (cell.action !== 'retry' && cell.action !== 'extend') continue
+    if (cell.lastAttemptAt === null) continue
+    if (input.nowSeconds < cell.lastAttemptAt + SELLER_RETRY_SPACING_SECONDS) continue
+    if (input.offersModel(cell)) continue
+    const entry: RetryGiveUpV1 = {
+      model: cell.model,
+      peerId: cell.peerId,
+      displayName: cell.result?.displayName ?? null,
+      runId: cell.runId,
+      lastAttemptAt: cell.lastAttemptAt,
+      attempts: cell.attempts,
+      givenUpAt: new Date(input.nowSeconds * 1_000).toISOString(),
+      reason: `its ${cell.action === 'extend' ? 'extra questions were' : 'retry was'} due and the buyer's peers show it no longer offers ${cell.model}`,
+    }
+    entries.push(entry)
+    added.push(entry)
+  }
+  return { entries, added, restored }
 }
 
 /** Whether a cell is a confirmation's UNDETERMINED that is audited again before it is submitted. */
@@ -326,7 +419,9 @@ export async function loadEpochState(evidenceDir: string, epoch: string): Promis
     }
     runs.push({ manifest, summaries })
   }
-  return { epoch, manifests, cells: mergeEpochRuns(epoch, runs) }
+  const cells = mergeEpochRuns(epoch, runs)
+  applyRetryGiveUps(cells, await readRetryGiveUps(evidenceDir, epoch))
+  return { epoch, manifests, cells }
 }
 
 export interface EpochPlanCounts {
@@ -429,9 +524,24 @@ export async function writeEpochSubmissionManifest(
     for (const cell of state.cells.values()) {
       if (normalized(cell.model) !== normalized(model)) continue
       const peer = normalized(cell.peerId)
+      const notAnswered = (result: ModelVerificationTargetResult): void => {
+        failures.push({
+          peerId: result.peerId,
+          displayName: result.displayName,
+          agentId: result.agentId,
+          service: result.service,
+          status: 'FAILED',
+          reason: `not submitted: no answer to the DIFF waiting for this auditor's confirmation, because ${cell.givenUp!.reason}`,
+          ...(result.outcomeReason ? { outcomeReason: result.outcomeReason } : {}),
+        })
+      }
       if (cell.state === 'pending_extension') {
         const pending = latestBy(runSummaries, (summary) => summary.results, peer, (result) => finalAuditVerdict(result) === null)
-        if (pending) results.push(pending)
+        // A seller must not escape a waiting DIFF by delisting the model during its confirmation.
+        if (pending && cell.givenUp && pending.confirmsDiff) notAnswered(pending)
+        else if (pending) results.push(pending)
+      } else if (cell.givenUp && cell.result?.confirmsDiff) {
+        notAnswered(cell.result)
       } else if (heldForConfirmationRecheck(cell)) {
         // Not submitted yet: it would replace the DIFF waiting for this auditor's confirmation.
         const result = cell.result!

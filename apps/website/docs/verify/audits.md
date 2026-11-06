@@ -26,6 +26,8 @@ The rest of this page explains what these commands do.
 1. **Reference banks.** For each model, the auditor asks the genuine model short questions with exact answers. It keeps the ones it answers consistently and that cheaper look-alike models get wrong (see [Reference banks](#reference-banks)).
 2. **Questions.** `verifier run` asks every seller of the model the same question set: this epoch's, built fresh for it and never used again (see [Questions for each epoch](#questions-for-each-epoch)). These are normal paid requests, and the seller must sign every response.
 
+   Each model runs in its own lane. Its audits start as soon as its questions are ready, so a model that takes hours to build doesn't hold up the others. Up to `verifier.auditMaxConcurrentModels` models (6 by default) audit at once, and a model that is still building doesn't use up one of those places. When its questions are ready, the model re-reads which sellers your buyer can see. All of this is one `verifier run`, so `verifier submit` gets the results when every model has finished.
+
    Before the questions, the auditor works out how to turn off the seller's hidden reasoning ("thinking"), the way the KBF reference code does for every endpoint it checks. It sends a fixed batch of ten easy questions with each setting in turn: `reasoning: {effort: "none"}`, `reasoning: {effort: "minimal"}`, `thinking: {type: "disabled"}`, `enable_thinking: false`, a `<think></think>` prefill, then nothing. It uses the first setting that gets at least 5 answers with no reasoning tokens. If the seller keeps thinking whatever it is sent, its questions go out with 50 times the token budget (40,000 tokens per request), so it has room to think and still answer. This is worked out once per seller and model in each run; the requests and their cost are part of the audit's evidence (`sellerThinking`). Text inside `<think>…</think>` is not read as an answer.
 3. **Verdict.** The seller's answers are compared with the genuine ones:
 
@@ -108,9 +110,14 @@ Raising the cap doesn't raise what an audit pays, because a seller above the mod
 Before sending anything, `verifier run` stops with a list of problems and how to fix each when:
 
 - the chain can't be reached, so the run could not be submitted;
-- your buyer deposit can't cover a payment channel for every seller you don't have one with yet (each reserves `payments.maxReserveAmountUsdc`, $1 by default);
-- a model's probe bank can't be loaded (rebuild it with `verifier reference build <model>`);
-- a model has no question set for this epoch (only with `--no-enroll`; by default the run builds it, see [Questions for each epoch](#questions-for-each-epoch)).
+- your buyer deposit can't cover a payment channel for every seller you don't have one with yet (each reserves `payments.maxReserveAmountUsdc`, $1 by default).
+
+Each model is then checked on its own, once its questions are ready. A model isn't audited when:
+
+- its probe bank can't be loaded (rebuild it with `verifier reference build <model>`);
+- it has no usable question set for this epoch. With `--no-enroll` this means the set is missing; by default the run builds it, see [Questions for each epoch](#questions-for-each-epoch).
+
+The other models carry on. The run lists the models it didn't audit, with the reason, and exits with an error.
 
 To run anyway, add `--ignore-pre-run-checks`: the problems are printed as warnings. Audits that fail because of them can come back `UNDETERMINED`.
 
@@ -178,7 +185,7 @@ A bank is built to tell the genuine model from a few **contrast models**: cheape
 
 A bank keeps the contrasts it was built with, so a changed list only applies to banks built from scratch.
 
-Each build is billed by the reference API and stops once the bank is ready, or after 2,000 requests in a round (`--max-enrollment-requests` changes it). A build that runs out continues from where it stopped in the next round or run, up to `verifier.referenceMaxRequestsPerBuild` requests in total (default: 3 times the per-round limit). The limit is per build, not per model: one model can need several builds for its epoch set. Building grows a bank and never replaces it. `--no-enroll` turns this off: the run then stops before sending anything when a model has no set for the epoch. `antseed verifier reference build [<model> | --all]` builds banks ahead of time, for example to spread the cost before the first run.
+Each build is billed by the reference API and stops once the bank is ready, or after 2,000 requests in a round (`--max-enrollment-requests` changes it). A build that runs out continues from where it stopped in the next round or run, up to `verifier.referenceMaxRequestsPerBuild` requests in total (default: 3 times the per-round limit). The limit is per build, not per model: one model can need several builds for its epoch set. Building grows a bank and never replaces it. `--no-enroll` turns this off: a model with no set for the epoch is then not audited, and the run audits the others and exits with an error. `antseed verifier reference build [<model> | --all]` builds banks ahead of time, for example to spread the cost before the first run.
 
 ## Reference upstreams
 

@@ -27,12 +27,14 @@ export class VerifierRunProgress {
   private readonly states = new Map<string, VerifierRunProgressState>()
   private active = false
   private rendered = false
+  private readonly plans: VerifierRunProgressPlan[]
 
   constructor(
-    private readonly plans: readonly VerifierRunProgressPlan[],
+    plans: readonly VerifierRunProgressPlan[],
     private readonly output: VerifierRunProgressOutput = process.stdout,
   ) {
     this.interactive = output.isTTY === true
+    this.plans = plans.map((plan) => ({ ...plan }))
     for (const plan of plans) {
       this.states.set(plan.model, {
         same: 0,
@@ -56,6 +58,35 @@ export class VerifierRunProgress {
     if (!this.interactive || !state) return
     state.phase = 'running'
     this.render()
+  }
+
+  setPhase(model: string, phase: string): void {
+    const state = this.states.get(model)
+    if (!this.interactive || !state) return
+    state.phase = phase
+    this.render()
+  }
+
+  /** Prints above the table: a line printed into it would be overwritten by the next redraw. */
+  above(print: () => void): void {
+    if (!this.active || !this.rendered) {
+      print()
+      return
+    }
+    this.output.write(`\x1b[${this.plans.length}A\x1b[J`)
+    this.rendered = false
+    print()
+    this.render()
+  }
+
+  /** Sellers can change while a model's questions are built. */
+  updatePlan(model: string, providerCount: number, skippedCount: number): void {
+    const plan = this.plans.find((entry) => entry.model === model)
+    const state = this.states.get(model)
+    if (!plan || !state) return
+    plan.providerCount = providerCount
+    state.skipped = skippedCount
+    if (this.interactive) this.render()
   }
 
   recordVerdict(

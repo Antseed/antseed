@@ -122,6 +122,21 @@ Follow it from a second terminal with `antseed-verifier verifier status`. The fi
 
 Until you are approved, the run has no models to audit: add `--all` (or name one model) to try an audit without submitting it.
 
+## Logs
+
+`verifier run`, `watch`, `submit`, `assignment`, `check` and `reference build` write what they print to `<evidenceDir>/logs/verifier-<date>.log`, one file per UTC day, kept for 14 days. By default that's `~/.antseed/verifier/evidence/logs`. Each line has its time and the command that wrote it, and live progress bars are left out.
+
+API keys, passwords and RPC URLs that hold a key are removed before a line is written. Logs stay on your machine and aren't part of the evidence published to IPFS.
+
+To report a problem, pack the last 7 days into one file and send it to us:
+
+```bash
+antseed verifier logs            # list the logs
+antseed verifier logs --bundle   # write antseed-verifier-logs-<time>.log.gz here
+```
+
+Use `--days <n>` for a different range and `--out <path>` to choose the file. The bundle starts with your CLI version and `verifier` settings, with sensitive values removed. Look through it before you share it, because a seller's or provider's error text can appear in a log.
+
 ## Next
 
 - [How audits run](/docs/verify/audits): question banks, which models and sellers you audit, verdicts, submitting on-chain and rewards.

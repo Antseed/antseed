@@ -1135,9 +1135,9 @@ async function askCalibrationBatch(input: {
         __antseedReferenceCacheDomain: cacheDomain,
       }, { onUsage: (usage) => { finishReason = usage.finishReason } })
     } catch (error) {
-      // A seller's empty reply is an unanswered batch, asked again; so is the reference's.
-      if (!(error instanceof EmptyReferenceResponseError)) throw error
-      finishReason = error.finishReason
+      // A seller's empty or timed-out reply is an unanswered batch, asked again; so is the reference's.
+      if (error instanceof EmptyReferenceResponseError) finishReason = error.finishReason
+      else if (!isUnansweredBatchError(error)) throw error
     }
     const truncated = isKbfTokenLimitFinishReason(finishReason)
     const answers = content === null || truncated ? empty() : parseKbfAnswers(stripKbfThinkBlocks(content), probes.length)
@@ -1446,15 +1446,18 @@ async function queryDomainGroupedProbeAnswers(
         continue
       }
       consecutiveEmptyBatches += 1
-      if (!isTerminalEmptyReferenceError(lastError) || answeredBatches === 0
+      // As in the KBF reference code, a batch that fails for a passing reason loses only its own
+      // questions. Several in a row, or a refusal of the first batch, mean the model is unavailable.
+      const passing = isUnansweredBatchError(lastError)
+      if ((!passing && (!isTerminalEmptyReferenceError(lastError) || answeredBatches === 0))
         || consecutiveEmptyBatches >= CONTRAST_MAX_CONSECUTIVE_EMPTY_BATCHES) {
         log?.(`contrast model ${model} unavailable; skipping remaining probe answers: ${asError(lastError).message}`)
         break
       }
-      log?.(
-        `contrast model ${model} returned no text for a ${batch.probes.length}-probe batch after `
-        + `${CONTRAST_EMPTY_BATCH_RETRIES + 1} attempts; continuing with the next batch`,
-      )
+      log?.(passing
+        ? `contrast model ${model} failed a ${batch.probes.length}-probe batch: ${asError(lastError).message}; continuing with the next batch`
+        : `contrast model ${model} returned no text for a ${batch.probes.length}-probe batch after `
+          + `${CONTRAST_EMPTY_BATCH_RETRIES + 1} attempts; continuing with the next batch`)
     }
   } else {
     await allSettledOrThrow(batches.map(queryBatch))
@@ -1787,15 +1790,20 @@ function createReferenceQuery(input: {
     for (;;) {
       attempt += 1
       await reserve()
+      const purpose = referenceRequestPurpose(__antseedReferenceCacheDomain)
+      let requestStartedAt = Date.now()
       try {
-        const response = await input.limiter.run(model, () => postChatCompletion(
-          route,
-          requestBody,
-          referenceRequestPurpose(__antseedReferenceCacheDomain) === 'candidate-generation'
-            ? Math.max(input.timeoutMs, CANDIDATE_GENERATION_TIMEOUT_MS)
-            : input.timeoutMs,
-          input.fetchFn,
-        ))
+        const response = await input.limiter.run(model, () => {
+          requestStartedAt = Date.now()
+          return postChatCompletion(
+            route,
+            requestBody,
+            purpose === 'candidate-generation'
+              ? Math.max(input.timeoutMs, CANDIDATE_GENERATION_TIMEOUT_MS)
+              : input.timeoutMs,
+            input.fetchFn,
+          )
+        })
         const pricing = input.pricingForModel(model)
         const cachedResponse: ReferenceCachedSuccessV1 = {
           outcome: 'success',
@@ -1858,9 +1866,13 @@ function createReferenceQuery(input: {
           consumed.set(cacheKey, cachedResponse)
         }
         const retryable = isRetryableReferenceError(error)
-        if (!retryable || attempt >= input.retryCount + 1) throw error
+        const elapsedSeconds = ((Date.now() - requestStartedAt) / 1000).toFixed(1)
+        if (!retryable || attempt >= input.retryCount + 1) {
+          input.log?.(`reference request failed for ${model} (${purpose}) after ${elapsedSeconds}s, attempt ${attempt}/${input.retryCount + 1}: ${asError(error).message}`)
+          throw error
+        }
         const delayMs = retryDelayMs(error, input.retryBaseDelayMs, attempt)
-        input.log?.(`reference request retry ${attempt}/${input.retryCount + 1} for ${model} in ${delayMs}ms: ${asError(error).message}`)
+        input.log?.(`reference request retry ${attempt}/${input.retryCount + 1} for ${model} (${purpose}, took ${elapsedSeconds}s) in ${delayMs}ms: ${asError(error).message}`)
         await sleep(delayMs)
       }
     }
@@ -2247,7 +2259,8 @@ async function queryProbeAnswers(
       // As audits and the KBF reference code do before parsing: `<think>…</think>` blocks are not answers.
       answers.push(...parseKbfAnswers(stripKbfThinkBlocks(content), batch.length))
     } catch (error) {
-      if (options.recoverTerminalEmptyBatches && (isTerminalEmptyReferenceError(error) || isContentFilterRefusal(error))) {
+      if (options.recoverTerminalEmptyBatches
+        && (isTerminalEmptyReferenceError(error) || isContentFilterRefusal(error) || isUnansweredBatchError(error))) {
         const domain = options.stabilityDomain ? ` in domain ${options.stabilityDomain}` : ''
         options.log?.(`skipping ${batch.length}-probe stability batch for ${model}${domain}: ${asError(error).message}`)
         answers.push(...new Array<number | null>(batch.length).fill(null))
@@ -2357,6 +2370,10 @@ async function querySelfTestBatch(
   try {
     return await queryProbeAnswers(model, probes, 0, cacheDomain, query, { variantId })
   } catch (error) {
+    if (isUnansweredBatchError(error)) {
+      log?.(`skipping ${probes.length}-probe self-test batch: ${asError(error).message}`)
+      return probes.map(() => null)
+    }
     if (!isTerminalEmptyReferenceError(error)) throw error
     if (probes.length === 1) {
       log?.(`skipping refused self-test probe ${probes[0]!.id}: ${asError(error).message}`)
@@ -2421,13 +2438,21 @@ async function postChatCompletion(
         signal: controller.signal,
       })
     } catch (error) {
+      if (controller.signal.aborted) throw new ReferenceTimeoutError(timeoutMs)
       if (route.type !== 'antseed') throw error
       throw new Error(
         `Antseed reference route unavailable for peer ${route.peerId} service ${route.model}: ${asError(error).message}`,
         { cause: error },
       )
     }
-    const responseBody = await response.text()
+    let responseBody: string
+    try {
+      responseBody = await response.text()
+    } catch (error) {
+      // OpenRouter sends 200 and keep-alive padding at once, so a slow answer times out here.
+      if (controller.signal.aborted) throw new ReferenceTimeoutError(timeoutMs)
+      throw error
+    }
     if (!response.ok) {
       const detail = responseBody.slice(0, 200)
       throw new ReferenceEndpointError(
@@ -2456,6 +2481,11 @@ async function postChatCompletion(
         null,
         `HTTP ${response.status} body (${responseBody.length} bytes) was not valid JSON: ${asError(error).message}`,
       )
+    }
+    if (parsed.upstreamError) {
+      // OpenRouter sends 200 and padding first, so an upstream failure such as xAI's "at capacity"
+      // arrives as an `error` object in a 200 body. It's a failed request, not an empty answer.
+      throw new ReferenceEndpointError(parsed.upstreamError.status, null, parsed.upstreamError.message)
     }
     assertPinnedProvider(route, parsed.provider)
     if (parsed.content === null) {
@@ -2495,6 +2525,7 @@ function parseCompletion(anthropic: boolean, responseBody: string): {
   finishReason: string | null
   nativeFinishReason: string | null
   emptyDetail: string
+  upstreamError?: { status: number; message: string }
 } {
   if (anthropic) {
     const parsed = JSON.parse(responseBody) as {
@@ -2523,6 +2554,7 @@ function parseCompletion(anthropic: boolean, responseBody: string): {
   const parsed = JSON.parse(responseBody) as {
     provider?: unknown
     choices?: Array<{ message?: { content?: unknown }; finish_reason?: unknown; native_finish_reason?: unknown }>
+    error?: { code?: unknown; message?: unknown }
     usage?: {
       prompt_tokens?: unknown
       completion_tokens?: unknown
@@ -2532,7 +2564,14 @@ function parseCompletion(anthropic: boolean, responseBody: string): {
   const choice = parsed.choices?.[0]
   const finishReason = optionalString(choice?.finish_reason)
   const nativeFinishReason = optionalString(choice?.native_finish_reason)
+  const upstreamError = parsed.error && !choice
+    ? {
+      status: typeof parsed.error.code === 'number' ? parsed.error.code : 502,
+      message: optionalString(parsed.error.message) ?? JSON.stringify(parsed.error),
+    }
+    : undefined
   return {
+    ...(upstreamError ? { upstreamError } : {}),
     content: completionText(choice?.message?.content),
     inputTokens: nonNegativeInteger(parsed.usage?.prompt_tokens),
     outputTokens: nonNegativeInteger(parsed.usage?.completion_tokens),
@@ -2619,6 +2658,18 @@ export function resolveReferenceRequestOverrides(
  */
 function isContentFilterRefusal(error: unknown): boolean {
   return error instanceof ReferenceEndpointError && error.message.includes('data_inspection_failed')
+}
+
+/**
+ * A reference request passed its time limit. The model was still thinking, or the upstream stalled.
+ * Asked again it often answers, so it's retried; once the retries are spent the batch goes
+ * unanswered, as in the KBF reference code (`query_api` returns None), instead of ending the build.
+ */
+export class ReferenceTimeoutError extends Error {
+  constructor(readonly timeoutMs: number) {
+    super(`reference request timed out after ${timeoutMs}ms`)
+    this.name = 'ReferenceTimeoutError'
+  }
 }
 
 export class ReferenceEndpointError extends Error {
@@ -2940,6 +2991,7 @@ function nonNegativeInteger(value: unknown): number | null {
 function isRetryableReferenceError(error: unknown): boolean {
   if (error instanceof ReferenceEndpointError) return error.status === 429 || error.status >= 500
   if (error instanceof EmptyReferenceResponseError) return !isTerminalEmptyReferenceError(error)
+  if (error instanceof ReferenceTimeoutError) return true
   if (error instanceof Error && error.name === 'AbortError') return true
   const retryableCodes = new Set([
     'EAI_AGAIN', 'ECONNRESET', 'ECONNREFUSED', 'EHOSTDOWN', 'EHOSTUNREACH', 'ENETDOWN', 'ENETRESET',
@@ -2962,7 +3014,19 @@ function isTerminalEmptyReferenceError(error: unknown): error is EmptyReferenceR
 }
 
 function isRecoverableContrastError(error: unknown): boolean {
-  return error instanceof ReferenceEndpointError || error instanceof EmptyReferenceResponseError
+  return error instanceof ReferenceEndpointError
+    || error instanceof EmptyReferenceResponseError
+    || isUnansweredBatchError(error)
+}
+
+/**
+ * A failure that outlasted its retries and says nothing about the questions: a timeout, a server
+ * error, a dropped connection. The KBF reference code leaves such a batch unanswered (`query_api`
+ * returns None) and drops its questions. A rate limit stays an error, so a throttled build stops
+ * instead of quietly losing questions.
+ */
+function isUnansweredBatchError(error: unknown): boolean {
+  return isRetryableReferenceError(error) && !isThrottleError(error)
 }
 
 function isThrottleError(error: unknown): error is ReferenceEndpointError {
