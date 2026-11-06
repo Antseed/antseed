@@ -3,6 +3,7 @@ import { SellerSessionTracker } from '../src/metering/seller-session-tracker.js'
 import { ReceiptGenerator } from '../src/metering/receipt-generator.js';
 import type { MeteringStorage } from '../src/metering/storage.js';
 import type { Identity } from '../src/p2p/identity.js';
+import type { ProviderTokenPricingUsdPerMillion } from '../src/interfaces/seller-provider.js';
 import type { UsageReceipt } from '../src/types/metering.js';
 
 function track(receipts: UsageReceipt[]): SellerSessionTracker {
@@ -22,7 +23,7 @@ function track(receipts: UsageReceipt[]): SellerSessionTracker {
 }
 
 async function receiptCost(
-  pricing: { inputUsdPerMillion: number; outputUsdPerMillion: number; cachedInputUsdPerMillion?: number },
+  pricing: ProviderTokenPricingUsdPerMillion,
   providerUsage: { inputTokens: number; outputTokens: number; freshInputTokens?: number; cachedInputTokens?: number },
 ): Promise<number> {
   const receipts: UsageReceipt[] = [];

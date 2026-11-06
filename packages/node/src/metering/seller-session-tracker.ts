@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 
 import type { Identity } from '../p2p/identity.js';
+import type { ProviderTokenPricingUsdPerMillion } from '../interfaces/seller-provider.js';
 import type { SerializedHttpRequest } from '../types/http.js';
 import type { MeteringEvent, SessionMetrics, TokenCount } from '../types/metering.js';
 import type { MeteringStorage } from './storage.js';
@@ -142,7 +143,7 @@ export class SellerSessionTracker {
   async recordMetering(input: {
     buyerPeerId: string;
     providerName: string;
-    pricing: { inputUsdPerMillion: number; outputUsdPerMillion: number; cachedInputUsdPerMillion?: number };
+    pricing: ProviderTokenPricingUsdPerMillion;
     request: SerializedHttpRequest;
     statusCode: number;
     latencyMs: number;
