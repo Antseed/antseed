@@ -356,16 +356,18 @@ function imageUnitUsage(facts: ImageRequestFacts): UnitBillingUsage {
 /**
  * The attributes a video create is priced by. A create that leaves out its
  * aspect ratio is priced at the service's first announced one, and one that
- * leaves out audio at the announced `video.audio`: sellers send the upstream
- * those values (the Venice plugin does), so buyer and seller price the same clip.
+ * leaves out audio at the announced `video.audio`. Only Venice: its plugin sends
+ * those values upstream, so the price is the clip's. Other protocols price what
+ * the create names, so one leaving out a priced option matches no component.
  */
 export function videoAttributes(
   service: string,
   video: NativeVideoFacts,
   options: VideoOptions | undefined,
 ): Partial<Record<UnitBillingMatchKeyV1, string>> {
-  const aspectRatio = video.aspectRatio ?? options?.aspectRatios?.[0];
-  const audio = video.audio ?? options?.audio;
+  const defaults = video.protocol === 'venice-video' ? options : undefined;
+  const aspectRatio = video.aspectRatio ?? defaults?.aspectRatios?.[0];
+  const audio = video.audio ?? defaults?.audio;
   return {
     model: service,
     ...(video.resolution ? { resolution: video.resolution } : {}),

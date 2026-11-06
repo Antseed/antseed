@@ -217,7 +217,7 @@ Some upstreams charge differently for the same resolution and length depending o
   {"unit":"video_seconds","priceUsd":0.0921,"match":{"resolution":"480p","aspect_ratio":"21:9","audio":"true"}}]}}
 ```
 
-A create that leaves out `aspect_ratio` is priced at the first entry of `capabilities.video.aspectRatios`, and one that leaves out `audio` at `capabilities.video.audio`. The `venice-video` plugin sends Venice those same values, and refuses an aspect ratio you don't list (`422 unsupported_video_option`, before payment), so every create it serves has a price. A request no component matches is refused, not served for free.
+A create that leaves out `aspect_ratio` is priced at the first entry of `capabilities.video.aspectRatios`, and one that leaves out `audio` at `capabilities.video.audio`. The `venice-video` plugin sends Venice those same values, and refuses an aspect ratio you don't list (`422 unsupported_video_option`, before payment), so every create it serves has a price. On `fal-video` nothing is filled in: a create is priced by the options it names, so one that leaves out an option your components require is refused. A request no component matches is refused, not served for free.
 
 ### fal.ai models
 

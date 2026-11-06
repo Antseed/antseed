@@ -498,10 +498,7 @@ const plugin: AntseedProviderPlugin = {
       const response = await relay.handleRequest({
         ...request,
         path: new URL(request.path, 'http://local').pathname,
-        ...(priced ? {
-          headers: Object.fromEntries(Object.entries(request.headers).filter(([key]) => key.toLowerCase() !== 'content-length')),
-          body: Buffer.from(JSON.stringify(priced)),
-        } : {}),
+        ...(priced ? { body: Buffer.from(JSON.stringify(priced)) } : {}),
       });
       if (response.statusCode === 413) {
         // Venice answers an oversized body with an HTML page.

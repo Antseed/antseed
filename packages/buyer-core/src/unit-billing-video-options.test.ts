@@ -59,6 +59,12 @@ describe('video prices by aspect ratio and audio', () => {
     expect(price({ aspect_ratio: '16:9', audio: false }, options, 'fal-video').attributes).toMatchObject({ audio: 'false' });
   });
 
+  it('does not assume announced options on a fal create, whose plugin does not send them', () => {
+    expect(price({}, options, 'fal-video').attributes).toEqual({ model: 'seedance', resolution: '480p' });
+    expect(() => price({}, options, 'fal-video').cost()).toThrow(/No billing component/);
+    expect(price({ aspect_ratio: '16:9', generate_audio: true }, options, 'fal-video').cost()).toBe(280_000n);
+  });
+
   it('builds the attributes from the facts and the announced options', () => {
     const facts = { protocol: 'venice-video' as const, action: 'create' as const, duration: 4 };
     expect(videoAttributes('seedance', facts, undefined)).toEqual({ model: 'seedance' });
