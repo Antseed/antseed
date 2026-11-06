@@ -74,19 +74,19 @@ To stay on free sellers:
   antseed config buyer set maxPricing.defaults.outputUsdPerMillion 0
   ```
 
-  The CLI buyer and the desktop app read only `maxPricing.defaults`, so no per-provider or per-service cap can raise these again. Check what applies with `antseed config buyer show`; the buyer also prints `max pricing defaults (USD/1M): input=0, output=0` at start. `antseed buyer start --max-input-usd-per-million 0 --max-output-usd-per-million 0` does the same for one run.
+  Check the result with `antseed config buyer show`: `maxPricing` should list only `defaults`, both at `0`. The buyer also prints `max pricing defaults (USD/1M): input=0, output=0` at start. If your `config.json` has a `buyer.maxPricing.providers` block (per-provider or per-service caps), delete it or set its prices to `0` too. CLI 0.1.231 doesn't read that block, but the router applies those caps before the defaults whenever it gets them. `antseed buyer start --max-input-usd-per-million 0 --max-output-usd-per-million 0` sets only the defaults, for one run.
 
   A model with no free seller that passes your minimum trust score then fails with `502 model_not_found` instead of `402`.
 
   These are token caps, so they cover only what they price:
-  - **Image models** are priced per image, not per token, and the buyer has no per-image cap. An image seller with zero token prices and a per-image price still gets the request, which then fails with `402`. Pick a seller whose catalog offer has `minImageUsdPerImage` of `0`, and pin it.
+  - **Image models** are priced per image, not per token, and the buyer has no per-image cap. An image seller with zero token prices and a per-image price still gets the request, which then fails with `402`. Pick a seller whose catalog offer has `maxImageUsdPerImage` of `0` (or none), and pin it. `minImageUsdPerImage` isn't enough: an offer with one free and one paid image size has a minimum of `0`. Other priced units, such as per-second video or per-character speech, also make an offer paid.
   - **Video and speech** sellers advertise no token price, so these caps leave them out.
   - **Routing services** (`<routerPeerId>@<routerServiceId>`) charge per ranking and aren't judged by these caps, so a request that names one still tries to pay.
 - **Pin a free seller.** Find one in the catalog and send `<peerId>@<model>`:
 
   ```bash
   curl -s http://localhost:8377/v1/models/deepseek-v4-flash \
-    | jq -r '.peers[] | select(.inputUsdPerMillion == 0 and .outputUsdPerMillion == 0 and (.minImageUsdPerImage // 0) == 0) | "\(.peerId)@\(.serviceId)  trust \(.effectiveReputationScore)"'
+    | jq -r '.peers[] | select(.inputUsdPerMillion == 0 and .outputUsdPerMillion == 0 and (.cachedInputUsdPerMillion // 0) == 0 and (.maxImageUsdPerImage // 0) == 0) | "\(.peerId)@\(.serviceId)  trust \(.effectiveReputationScore)"'
   ```
 
   A pin never fails over, so if that seller goes offline, pick another.
