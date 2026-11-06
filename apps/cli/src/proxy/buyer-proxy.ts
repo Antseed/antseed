@@ -2434,7 +2434,7 @@ export class BuyerProxy {
     // emits each accepted metadata document as it arrives, so buyer.state.json
     // gets useful rows while slower endpoints continue timing out.
     this._startIncrementalDiscoverySweep()
-    const sweep = (this._node as { peerDiscoverySweep?: Promise<unknown> | null }).peerDiscoverySweep
+    const sweep = this._node.peerDiscoverySweep
     if (sweep) {
       const done = (): void => { this._initialDiscoveryPending = false }
       sweep.then(done, done)
@@ -3129,15 +3129,28 @@ export class BuyerProxy {
     return this._initialDiscoveryPending && Date.now() - this._startedAtMs < INITIAL_DISCOVERY_MAX_MS
   }
 
-  /** Waits (briefly) while the first discovery sweep runs until `found` accepts the peers seen so far. */
+  /**
+   * Waits at most `_initialDiscoveryWaitMs` while the first discovery sweep
+   * runs, until `found` accepts the peers it has added to the cache. It only
+   * reads the cache the sweep fills (never starts a lookup of its own, which
+   * could outlast the budget) and stops as soon as the client goes away.
+   */
   private async _waitForInitialDiscovery(found: (peers: PeerInfo[]) => boolean, signal?: AbortSignal): Promise<PeerInfo[]> {
     const deadline = Date.now() + this._initialDiscoveryWaitMs
-    let peers = await this._getPeers()
-    while (!found(peers) && this._initialDiscoveryRunning() && Date.now() < deadline && !signal?.aborted) {
-      await new Promise((resolve) => setTimeout(resolve, INITIAL_DISCOVERY_POLL_MS))
-      peers = await this._getPeers()
+    while (!found(this._cachedPeers) && this._initialDiscoveryRunning() && !signal?.aborted) {
+      const remainingMs = deadline - Date.now()
+      if (remainingMs <= 0) break
+      await new Promise<void>((resolve) => {
+        const done = (): void => {
+          clearTimeout(timer)
+          signal?.removeEventListener('abort', done)
+          resolve()
+        }
+        const timer = setTimeout(done, Math.min(INITIAL_DISCOVERY_POLL_MS, remainingMs))
+        signal?.addEventListener('abort', done, { once: true })
+      })
     }
-    return peers
+    return this._cachedPeers
   }
 
   private _discoveryInProgressFailure(requestedService: string | null): DispatchFailure {

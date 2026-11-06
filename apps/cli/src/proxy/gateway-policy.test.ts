@@ -567,7 +567,9 @@ test('no policy, or one that changes nothing, routes like main; unknown models g
 
 // Right after start the first discovery sweep is still finding sellers: a
 // model nobody serves yet is not "not found", only not found yet.
-function startDiscovery(h: Harness, { startedAgoMs = 1_000, waitMs = 100 } = {}): void {
+// The harness's _getPeers() returns `peers`; the discovery wait reads the cache, so it gets the same list.
+function startDiscovery(h: Harness, { startedAgoMs = 1_000, waitMs = 100, peers }: { startedAgoMs?: number; waitMs?: number; peers?: PeerInfo[] } = {}): void {
+  if (peers) (h.proxy as any)._cachedPeers = peers
   ;(h.proxy as any)._startedAtMs = Date.now() - startedAgoMs
   ;(h.proxy as any)._initialDiscoveryPending = true
   ;(h.proxy as any)._initialDiscoveryWaitMs = waitMs
@@ -594,7 +596,7 @@ test('while the first discovery runs, a model nobody serves yet gets a retryable
 test('while the first discovery runs, a request waits for a seller of its model to be found', async (t) => {
   const peers = [cheap]
   const h = await startHarness(t, peers)
-  startDiscovery(h, { waitMs: 5_000 })
+  startDiscovery(h, { waitMs: 5_000, peers })
   const late = { ...makePeer('e', { input: 1, output: 1, trust: 90 }), providerServiceApiProtocols: { openai: { services: { 'qwen3-coder': ['openai-chat-completions' as const] } } } }
   setTimeout(() => peers.push(late), 300)
   const res = await chat(h, {}, 'qwen3-coder')
@@ -611,7 +613,7 @@ test('while the first discovery runs, a seller the routing policy cannot take ye
   const res = await chat(h)
   assert.equal(res.status, 503)
   assert.equal(((await res.json()) as any).error.code, 'discovery_in_progress')
-  startDiscovery(h, { waitMs: 5_000 })
+  startDiscovery(h, { waitMs: 5_000, peers: [lowTrust] })
   setTimeout(() => { lowTrust.onChainReputationScore = 90 }, 300)
   assert.equal((await chat(h)).status, 200)
   assert.equal(h.dispatched[0]?.peerId, lowTrust.peerId)
@@ -634,6 +636,56 @@ test('once the first discovery ends, or after two minutes, unknown models get mo
   const res = await chat(h, {}, 'qwen3-coder')
   assert.equal(res.status, 502)
   assert.equal(((await res.json()) as any).error.code, 'model_not_found')
+})
+
+test('the discovery wait starts no lookup of its own and keeps to its budget with an empty cache', async (t) => {
+  // No _getPeers() override: the request's own first lookup is the node's
+  // discoverPeers(). It finds nothing; any later lookup would hang for 30 s.
+  const dataDir = await mkdtemp(join(tmpdir(), 'antseed-discovery-'))
+  let lookups = 0
+  const node = {
+    router: { allowsPeerForPolicy: () => true, onResult: () => {} },
+    buyerIdentities: () => [],
+    discoverPeers: async () => {
+      lookups += 1
+      await new Promise((resolve) => setTimeout(resolve, lookups === 1 ? 200 : 30_000).unref())
+      return []
+    },
+  }
+  const proxy = new BuyerProxy({ port: 0, dataDir, node: node as any })
+  ;(proxy as any)._mergeStateFile = async () => {}
+  const server = (proxy as any)._server
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  t.after(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+    await rm(dataDir, { recursive: true, force: true })
+  })
+  const { port } = server.address() as AddressInfo
+  ;(proxy as any)._startedAtMs = Date.now()
+  ;(proxy as any)._initialDiscoveryPending = true
+  ;(proxy as any)._initialDiscoveryWaitMs = 300
+  const started = Date.now()
+  const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'gpt-5', messages: [] }),
+  })
+  const elapsed = Date.now() - started
+  assert.equal(res.status, 503)
+  assert.equal(((await res.json()) as any).error.code, 'discovery_in_progress')
+  assert.equal(lookups, 1)
+  // The 200 ms lookup plus the 300 ms wait, with room for a slow machine; far below the 30 s lookup.
+  assert.ok(elapsed >= 450 && elapsed < 3_000, `took ${elapsed} ms`)
+})
+
+test('the discovery wait ends as soon as the client goes away', async (t) => {
+  const h = await startHarness(t, [])
+  startDiscovery(h, { waitMs: 10_000, peers: [] })
+  const controller = new AbortController()
+  setTimeout(() => controller.abort(), 100)
+  const started = Date.now()
+  await (h.proxy as any)._waitForInitialDiscovery(() => false, controller.signal)
+  assert.ok(Date.now() - started < 1_000)
 })
 
 test('start() reports discovery until the node\'s first sweep ends', async (t) => {
