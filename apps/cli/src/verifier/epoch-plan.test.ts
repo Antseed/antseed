@@ -147,18 +147,18 @@ test('a failure caused by the auditor does not use up the seller\'s retry', () =
 })
 
 test('seller failures less than SELLER_RETRY_SPACING_SECONDS apart count as one, and the retry waits for it', () => {
-  // A seller's upstream usage limit can outlast a retry two hours later.
+  // A seller's outage can outlast a retry minutes later.
   const failure = (runId: string, at: string) => run(runId, at, [{
     model: 'm', results: [result('a', 'UNDETERMINED', { outcomeReason: sellerDown })],
   }])
-  assert.equal(SELLER_RETRY_SPACING_SECONDS, 3 * 60 * 60)
+  assert.equal(SELLER_RETRY_SPACING_SECONDS, 30 * 60)
   const close = mergeEpochRuns(EPOCH, [
     failure('r1', '2026-10-28T14:23:00.000Z'),
-    failure('r2', '2026-10-28T16:17:00.000Z'),
+    failure('r2', '2026-10-28T14:43:00.000Z'),
   ]).get(epochCellKey('m', 'a'))!
   assert.equal(close.attempts, 1)
   assert.equal(close.action, 'retry')
-  assert.equal(sellerRetryDueAt(close), Date.parse('2026-10-28T16:17:00.000Z') / 1_000 + SELLER_RETRY_SPACING_SECONDS)
+  assert.equal(sellerRetryDueAt(close), Date.parse('2026-10-28T14:43:00.000Z') / 1_000 + SELLER_RETRY_SPACING_SECONDS)
   // An auditor failure has no such wait.
   const ours = mergeEpochRuns(EPOCH, [run('r1', '2026-10-28T14:23:00.000Z', [{
     model: 'm', results: [result('b', 'UNDETERMINED', { outcomeReason: { ...sellerDown, summary: 'seller audit reached its time limit of 3600000ms' } })],
@@ -174,10 +174,10 @@ test('an automatic resume of a seller failure waits for the retry spacing; only 
   }])]).get(epochCellKey('m', 'a'))!
   const failedAt = Date.parse(at) / 1_000
   const dueAt = failedAt + SELLER_RETRY_SPACING_SECONDS
-  // An hour later the retry cell is still an automatic resume candidate, and it waits.
-  assert.equal(sellerRetryWaitUntil(cell, failedAt + 3_600, false), dueAt)
+  // Ten minutes later the retry cell is still an automatic resume candidate, and it waits.
+  assert.equal(sellerRetryWaitUntil(cell, failedAt + 600, false), dueAt)
   assert.equal(sellerRetryWaitUntil(cell, dueAt + 1, false), null, 'runs once the spacing has passed')
-  assert.equal(sellerRetryWaitUntil(cell, failedAt + 3_600, true), null, 'an explicit --resume-run repair is not held')
+  assert.equal(sellerRetryWaitUntil(cell, failedAt + 600, true), null, 'an explicit --resume-run repair is not held')
   assert.equal(sellerRetryWaitUntil(undefined, failedAt, false), null)
 })
 
@@ -469,14 +469,17 @@ test('a given-up cell keeps its verdict and stops counting as left', () => {
 
 test('a newer audit of the seller ends the give-up', () => {
   const { runs } = retryCell()
-  const later = run('r2', '2026-10-28T14:00:00.000Z', [{
+  // Within the spacing, so the cell still has its retry.
+  const later = run('r2', '2026-10-28T12:10:00.000Z', [{
     model: 'm', failures: [{
       peerId: GONE, displayName: null, agentId: '1', service: 'svc', status: 'FAILED', reason: 'x', outcomeReason: sellerDown,
     }],
   }])
   const cells = mergeEpochRuns(EPOCH, [...runs, later])
   applyRetryGiveUps(cells, [gaveUp('r1')])
-  assert.equal(cells.get(epochCellKey('m', GONE))!.givenUp, undefined)
+  const cell = cells.get(epochCellKey('m', GONE))!
+  assert.equal(cell.action, 'retry')
+  assert.equal(cell.givenUp, undefined)
 })
 
 test('a seller listed again gets its retry back, unless the window has closed', () => {
@@ -503,17 +506,18 @@ test('a given-up seller\'s UNDETERMINED is submitted unchanged', async () => {
   }
 })
 
-test('a seller that delisted during its confirmation holds nothing, and its UNDETERMINED does not answer the DIFF', async () => {
+test('a seller that delisted during its confirmation holds nothing, and its UNDETERMINED is submitted', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'epoch-plan-give-up-'))
   try {
     const { runs, cells, cell } = retryCell(result(GONE, 'UNDETERMINED', { outcomeReason: sellerDown, confirmsDiff: true }))
     assert.equal(heldForConfirmationRecheck(cell), true)
     applyRetryGiveUps(cells, [gaveUp('r1')])
+    assert.equal(heldForConfirmationRecheck(cells.get(epochCellKey('m', GONE))!), false)
     assert.equal(epochModelRows(cells.values())[0]!.left, 0)
     const manifest = await writeEpochSubmissionManifest(directory, { epoch: EPOCH, manifests: [runs[0]!.manifest], cells })
     const summary = JSON.parse(await readFile(manifest.models[0]!.summaryPath, 'utf8')) as ModelAuditSummaryV1
-    assert.equal(summary.results.length, 0)
-    assert.match(summary.failures[0]!.reason, /^not submitted: no answer to the DIFF/)
+    assert.deepEqual(summary.results.map((entry) => entry.status), ['UNDETERMINED'])
+    assert.equal(summary.failures.length, 0)
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

@@ -78,11 +78,11 @@ export const SELLER_FAILURE_ATTEMPTS = 2
 
 /**
  * A seller or unclear failure is retried no sooner than this after the audit that failed, and
- * audits closer together than this count as one attempt. A seller's outage (an upstream rate or
- * usage limit, a failing self-health check) usually lasts hours, so a retry minutes later fails the
- * same way and uses up the seller's retry. The epoch lasts a week.
+ * audits closer together than this count as one attempt. A retry minutes later would fail the same
+ * way and use up the seller's only retry, but a model's results wait for its retries, so the wait
+ * stays short. An outage longer than this ends the seller UNDETERMINED for the epoch.
  */
-export const SELLER_RETRY_SPACING_SECONDS = 3 * 60 * 60
+export const SELLER_RETRY_SPACING_SECONDS = 30 * 60
 
 /**
  * Audits per epoch that may fail because of the auditor before the seller is left alone for the
@@ -524,24 +524,9 @@ export async function writeEpochSubmissionManifest(
     for (const cell of state.cells.values()) {
       if (normalized(cell.model) !== normalized(model)) continue
       const peer = normalized(cell.peerId)
-      const notAnswered = (result: ModelVerificationTargetResult): void => {
-        failures.push({
-          peerId: result.peerId,
-          displayName: result.displayName,
-          agentId: result.agentId,
-          service: result.service,
-          status: 'FAILED',
-          reason: `not submitted: no answer to the DIFF waiting for this auditor's confirmation, because ${cell.givenUp!.reason}`,
-          ...(result.outcomeReason ? { outcomeReason: result.outcomeReason } : {}),
-        })
-      }
       if (cell.state === 'pending_extension') {
         const pending = latestBy(runSummaries, (summary) => summary.results, peer, (result) => finalAuditVerdict(result) === null)
-        // A seller must not escape a waiting DIFF by delisting the model during its confirmation.
-        if (pending && cell.givenUp && pending.confirmsDiff) notAnswered(pending)
-        else if (pending) results.push(pending)
-      } else if (cell.givenUp && cell.result?.confirmsDiff) {
-        notAnswered(cell.result)
+        if (pending) results.push(pending)
       } else if (heldForConfirmationRecheck(cell)) {
         // Not submitted yet: it would replace the DIFF waiting for this auditor's confirmation.
         const result = cell.result!

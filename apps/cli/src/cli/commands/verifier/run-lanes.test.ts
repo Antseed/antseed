@@ -15,6 +15,10 @@ import type { RunOptions, VerifierRoundOutcome } from './run.js'
  */
 type Fakes = Record<string, (...args: never[]) => unknown>
 const FAKE_EXPORTS: Readonly<Record<string, readonly string[]>> = {
+  'cli/payment-utils.js': ['createVerifierClient'],
+  'cli/commands/verifier/auditor-identity.js': ['resolveAuditorAddress'],
+  'verifier/auditor-set.js': ['loadAuditorSetEvents'],
+  'verifier/pending-confirmations.js': ['confirmationTargetsByModel', 'loadEpochAuditEvents', 'pendingConfirmations'],
   'config/loader.js': ['loadConfig'],
   'config/effective.js': ['resolveEffectiveBuyerConfig'],
   'verifier/audit-epoch.js': ['resolveAuditEpochWindow'],
@@ -97,6 +101,8 @@ interface Scenario {
   maxConcurrentModels?: number
   /** Models whose summary can't be written. */
   brokenModels: Set<string>
+  /** The confirmations waiting for this auditor, as model and seller agent id. Needs `confirm: true`. */
+  confirmations: Array<{ model: string; agentId: string }>
   run(options?: Partial<RunOptions>): Promise<VerifierRoundOutcome>
 }
 
@@ -113,6 +119,7 @@ async function withScenario(body: (scenario: Scenario) => Promise<void>): Promis
     audit: async () => undefined,
     questionSets: new Set(['model-a', 'model-b']),
     brokenModels: new Set(),
+    confirmations: [],
     async run(options = {}) {
       const command = new Command().option('--data-dir <path>').option('--config <path>')
       command.setOptionValue('dataDir', dir)
@@ -121,7 +128,23 @@ async function withScenario(body: (scenario: Scenario) => Promise<void>): Promis
     },
   }
   let snapshotReads = 0
+  const realNow = Date.now
   fakeHolder.laneFakes = {
+    createVerifierClient: () => {
+      if (scenario.confirmations.length === 0) throw new Error('no KBF audits contract configured')
+      return { provider: { getBlock: async () => null }, requiredReports: async () => ({ DIFF: 2 }), deploymentBlock: 0 }
+    },
+    resolveAuditorAddress: () => ({ address: '0x'.padEnd(42, '1'), source: 'flag' }),
+    loadAuditorSetEvents: () => [],
+    loadEpochAuditEvents: () => [],
+    pendingConfirmations: () => [],
+    confirmationTargetsByModel: () => {
+      const targets = new Map<string, Map<string, unknown>>()
+      for (const { model, agentId } of scenario.confirmations) {
+        targets.set(model, new Map([[agentId, { agentId: BigInt(agentId), service: model, waiting: [], ownReportedAt: null }]]))
+      }
+      return targets
+    },
     loadConfig: () => ({
       buyer: { proxyPort: 1 },
       verifier: {
@@ -183,6 +206,7 @@ async function withScenario(body: (scenario: Scenario) => Promise<void>): Promis
   try {
     await body(scenario)
   } finally {
+    Date.now = realNow
     process.exitCode = undefined
     await rm(dir, { recursive: true, force: true })
   }
@@ -481,6 +505,17 @@ test('a seller that stopped listing the model is given up once its retry is due,
   })
 }))
 
+test('a seller still listed but no longer offering the model is given up, and one that offers it is not', LANE_TIMEOUT, () => withScenario(async (scenario) => {
+  await firstRunFails(scenario, [FAILING, STILL_LEFT])
+  await afterRetrySpacing(async () => {
+    await updateRetryGiveUps({
+      evidenceDir: scenario.evidenceDir, epoch: EPOCH, servicesFor: () => ['model-a'],
+      peers: [seller(FAILING, ['model-b']), seller(STILL_LEFT, ['model-a'])],
+    })
+    assert.deepEqual((await readRetryGiveUps(scenario.evidenceDir, EPOCH)).map((entry) => entry.peerId), [FAILING])
+  })
+}))
+
 test('a seller gone before its retry is due keeps the retry and the window', LANE_TIMEOUT, () => withScenario(async (scenario) => {
   await firstRunFails(scenario, [FAILING])
   scenario.snapshots = [snapshot([seller('aa'.repeat(20), ['model-a'])])]
@@ -544,4 +579,151 @@ test('a seller listed again after the window closed stays given up', LANE_TIMEOU
     assert.deepEqual(scenario.log, [])
     assert.equal((await readRetryGiveUps(scenario.evidenceDir, EPOCH)).length, 1)
   })
+}))
+
+/** Moves the wall clock, which the round's chain clock falls back to here, for the rest of the test. */
+function moveClockOnce(seconds: number): () => void {
+  let moved = false
+  return () => {
+    if (moved) return
+    moved = true
+    const before = Date.now
+    Date.now = () => before() + seconds * 1_000
+  }
+}
+
+const secondsFromNow = (seconds: number): number => Math.floor(Date.now() / 1_000) + seconds
+const INTO_LAST_45_MINUTES = 20 * 60
+
+test('a build that ends inside the last 45 minutes opens no window and starts no audit', LANE_TIMEOUT, () => withScenario(async (scenario) => {
+  scenario.window = { ...scenario.window, endsAt: secondsFromNow(3_600) }
+  const moveClock = moveClockOnce(INTO_LAST_45_MINUTES)
+  scenario.build = async () => { moveClock() }
+
+  const outcome = await scenario.run()
+
+  assert.ok(!scenario.log.some((entry) => entry.startsWith('audit ')), scenario.log.join('\n'))
+  for (const model of ['model-a', 'model-b']) assert.equal(await readAuditWindow(scenario.evidenceDir, EPOCH, model), null)
+  // Not a failure, and not work left: the models wait for the next epoch.
+  assert.equal(outcome.left, 0)
+  assert.equal(outcome.enrollmentFailures?.size, 0)
+  assert.equal(process.exitCode, undefined)
+  assert.deepEqual(await runManifests(scenario), [])
+  const final = await status(scenario)
+  assert.equal(final.state, 'completed')
+  assert.equal(final.message, 'too late in the epoch to open an audit window')
+  assert.equal(final.queuedAudits, 0)
+  assert.equal(final.modelsTotal, 0)
+}))
+
+test('a late build stops only its model; a model already audited keeps its results', LANE_TIMEOUT, () => withScenario(async (scenario) => {
+  scenario.window = { ...scenario.window, endsAt: secondsFromNow(3_600) }
+  const otherAudited = deferred()
+  const moveClock = moveClockOnce(INTO_LAST_45_MINUTES)
+  scenario.build = async (model) => {
+    if (model !== 'model-a') return
+    await otherAudited.promise
+    moveClock()
+  }
+  scenario.audit = async (model) => { if (model === 'model-b') otherAudited.resolve() }
+
+  const outcome = await scenario.run()
+
+  assert.ok(!scenario.log.some((entry) => entry.startsWith('audit model-a')))
+  assert.equal(await readAuditWindow(scenario.evidenceDir, EPOCH, 'model-a'), null)
+  assert.equal(outcome.enrollmentFailures?.size, 0)
+  const [manifest] = await runManifests(scenario)
+  assert.deepEqual(manifest!.modelOrder, ['model-b'])
+  const final = await status(scenario)
+  assert.equal(final.modelsTotal, 1)
+  assert.equal(final.queuedAudits, 0)
+}))
+
+test('a model whose window is open keeps finishing past the cutoff', LANE_TIMEOUT, () => withScenario(async (scenario) => {
+  await firstRunFails(scenario, [FAILING])
+  await afterRetrySpacing(async () => {
+    scenario.window = { ...scenario.window, endsAt: secondsFromNow(3_600) }
+    scenario.audit = async () => undefined
+    scenario.snapshots = [snapshot([seller(FAILING, ['model-a']), seller(STILL_LEFT, ['model-b'])])]
+    fakeHolder.laneFakes.loadBuyerProxySnapshot = (async () => scenario.snapshots[0]!) as Fakes[string]
+    const moveClock = moveClockOnce(INTO_LAST_45_MINUTES)
+    // model-b, which has no window yet, meets the cutoff first; model-a's build ends after that.
+    scenario.build = async (model) => {
+      if (model === 'model-b') moveClock()
+      else await new Promise((resolve) => setTimeout(resolve, 100))
+    }
+
+    await scenario.run()
+
+    assert.ok(scenario.log.includes(`audited model-a ${FAILING.slice(0, 2)}`), scenario.log.join('\n'))
+    assert.ok(!scenario.log.some((entry) => entry.startsWith('audit model-b')), scenario.log.join('\n'))
+    assert.equal(await readAuditWindow(scenario.evidenceDir, EPOCH, 'model-b'), null)
+  })
+}))
+
+test('a build that ends with time to spare still opens its window and audits', LANE_TIMEOUT, () => withScenario(async (scenario) => {
+  scenario.window = { ...scenario.window, endsAt: secondsFromNow(3_600) }
+  const moveClock = moveClockOnce(10 * 60)
+  scenario.build = async () => { moveClock() }
+
+  await scenario.run()
+
+  for (const model of ['model-a', 'model-b']) {
+    assert.ok(scenario.log.includes(`audited ${model} aa`), scenario.log.join('\n'))
+    assert.ok(await readAuditWindow(scenario.evidenceDir, EPOCH, model))
+  }
+}))
+
+test('a model that waits for an audit slot past the cutoff opens no window', LANE_TIMEOUT, () => withScenario(async (scenario) => {
+  scenario.maxConcurrentModels = 1
+  scenario.window = { ...scenario.window, endsAt: secondsFromNow(3_600) }
+  scenario.snapshots = [snapshot([seller('aa'.repeat(20), ['model-a']), seller('bb'.repeat(20), ['model-b'])])]
+  const moveClock = moveClockOnce(INTO_LAST_45_MINUTES)
+  scenario.audit = async () => {
+    // Long enough for the other lane to be through its build and waiting for this slot.
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    moveClock()
+  }
+
+  const outcome = await scenario.run()
+
+  const audited = scenario.log.filter((entry) => entry.startsWith('audited '))
+  assert.equal(audited.length, 1, scenario.log.join('\n'))
+  const waited = audited[0]!.includes('model-a') ? 'model-b' : 'model-a'
+  assert.equal(await readAuditWindow(scenario.evidenceDir, EPOCH, waited), null)
+  assert.equal(outcome.enrollmentFailures?.size, 0)
+  assert.equal((await status(scenario)).queuedAudits, 0)
+}))
+
+test('past the cutoff a model\'s confirmations are still audited, outside any window', LANE_TIMEOUT, () => withScenario(async (scenario) => {
+  const confirming = 'aa'.repeat(20)
+  const other = 'bb'.repeat(20)
+  scenario.window = { ...scenario.window, endsAt: secondsFromNow(3_600) }
+  scenario.confirmations = [{ model: 'model-a', agentId: '5' }]
+  scenario.snapshots = [snapshot([
+    { ...seller(confirming, ['model-a']), onChainAgentId: 5 } as PeerInfo,
+    seller(other, ['model-a']),
+  ])]
+  const moveClock = moveClockOnce(INTO_LAST_45_MINUTES)
+  scenario.build = async () => { moveClock() }
+
+  const outcome = await scenario.run({ confirm: true })
+
+  assert.ok(scenario.log.includes('audited model-a aa'), scenario.log.join('\n'))
+  assert.ok(!scenario.log.includes('audit model-a bb'))
+  assert.equal(await readAuditWindow(scenario.evidenceDir, EPOCH, 'model-a'), null)
+  assert.equal(outcome.enrollmentFailures?.size, 0)
+  assert.deepEqual((await runManifests(scenario))[0]!.modelOrder, ['model-a'])
+}))
+
+test('a question set that can\'t be used is no failure once the model is past the cutoff', LANE_TIMEOUT, () => withScenario(async (scenario) => {
+  scenario.window = { ...scenario.window, endsAt: secondsFromNow(3_600) }
+  scenario.questionSets = new Set()
+  const moveClock = moveClockOnce(INTO_LAST_45_MINUTES)
+  scenario.build = async () => { moveClock() }
+
+  const outcome = await scenario.run()
+
+  assert.equal(outcome.left, 0)
+  assert.equal(outcome.enrollmentFailures?.size, 0)
 }))

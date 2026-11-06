@@ -751,9 +751,15 @@ export async function runVerifierRound(
       )
       // Audit windows (`audit-window.ts`): a model's first run this epoch opens its window and fixes its
       // sellers; later runs only finish those sellers, and a closed window audits nobody new. Only
-      // confirmations are audited outside windows. No window opens late in the epoch.
+      // confirmations are audited outside windows. No window opens late in the epoch, and a build or
+      // a wait for an audit slot can run into that time, so each lane reads the clock again.
       const windowsOpenable = !options.peer && !options.resumeRun
-      const lateInEpoch = epochWindow.endsAt - await clock() < MIN_SECONDS_FOR_ANOTHER_ROUND
+      const pastCutoff = async (): Promise<boolean> => epochWindow.endsAt - await clock() < MIN_SECONDS_FOR_ANOTHER_ROUND
+      let lateInEpoch = await pastCutoff()
+      const readLateInEpoch = async (): Promise<boolean> => {
+        if (await pastCutoff()) lateInEpoch = true
+        return lateInEpoch
+      }
       const auditWindows = new Map<string, AuditWindowV1 | null>()
       const auditsPeer = (model: string, peer: { peerId: string; onChainAgentId?: number | bigint | string | null }): boolean => {
         if (confirmationFor(model, peer) !== undefined) return true
@@ -998,7 +1004,7 @@ export async function runVerifierRound(
                 + `is audited again from ${new Date(recheckDueAt * 1_000).toISOString()}`)
               return []
             }
-            // A seller's outage usually lasts hours: its one retry waits instead of failing again, also
+            // A seller's one retry waits instead of failing again in the same outage, also
             // when it resumes automatically from this epoch's retry cell. Only --resume-run skips it.
             const retryDueAt = sellerRetryWaitUntil(epochCellFor(model, peer.peerId), Date.now() / 1_000, resumeOnly)
             if (retryDueAt !== null) {
@@ -1625,18 +1631,42 @@ export async function runVerifierRound(
           for (const entry of after.skipped) incrementReasonCount(value.reasonCounts, entry.outcomeReason)
         })
 
+        // A model that leaves the run before its audits start gives back what its plan added.
+        const leaveRun = async (model: string, plan: StatusPlan, phase: string, failure?: string): Promise<null> => {
+          if (failure !== undefined) enrollmentFailures.set(model, failure)
+          await replaceStatusPlan(plan, { targets: [], skipped: [] })
+          await updateStatus((value) => { value.modelsTotal -= 1 })
+          runProgress!.setPhase(model, phase)
+          return null
+        }
+        const planLane = async (model: string, before: StatusPlan, laneProxy: typeof proxy) => {
+          const peers = selectedPeerId ? [selectVerifierPeer(laneProxy.peers, selectedPeerId)] : laneProxy.peers
+          const planned = planModel(model, peers)
+          await replaceStatusPlan(before, planned)
+          runProgress!.updatePlan(model, planned.targets.length + planned.skipped.length, planned.skipped.length)
+          return planned
+        }
+        // Models the epoch's cutoff stopped. That isn't a failure or work left: they wait for the next epoch.
+        const modelsPastCutoff = new Set<string>()
+        // The start of the round's rule, applied to a lane now. Past the cutoff a model without a window
+        // gets none: its confirmations are still audited, and with none it stops here.
+        const applyEpochCutoff = async (lane: ModelLane): Promise<ModelLane | null> => {
+          const { model } = lane
+          if (auditWindows.get(model) !== null || !(await readLateInEpoch())) return lane
+          const planned = await planLane(model, lane, lane.proxy)
+          if (planned.targets.length > 0) return { ...lane, targets: planned.targets, skipped: planned.skipped }
+          modelsPastCutoff.add(model)
+          runProgress!.above(() => console.log(chalk.yellow(
+            `Less than ${MIN_SECONDS_FOR_ANOTHER_ROUND / 60} minutes left in the epoch: ${model}, not audited yet this epoch, waits for the next one.`,
+          )))
+          return await leaveRun(model, planned, 'waits for the next epoch')
+        }
+
         // Each model runs in its own lane: its build, then its audits as soon as the build is done.
         let epochChangedTo: string | undefined
         const prepareLane = async (prepared: (typeof preparedModels)[number]): Promise<ModelLane | null> => {
           const { model } = prepared
           let statusPlan: StatusPlan = prepared
-          const leaveRun = async (phase: string, failure?: string): Promise<null> => {
-            if (failure !== undefined) enrollmentFailures.set(model, failure)
-            await replaceStatusPlan(statusPlan, { targets: [], skipped: [] })
-            await updateStatus((value) => { value.modelsTotal -= 1 })
-            runProgress!.setPhase(model, phase)
-            return null
-          }
           try {
             let lane: ModelLane = { ...prepared, proxy }
             if (enrollmentBudget !== null) {
@@ -1646,20 +1676,21 @@ export async function runVerifierRound(
               if (now.epoch !== epoch) {
                 // This model's plan belongs to the previous epoch; the caller plans it again for the new one.
                 epochChangedTo = now.epoch
-                return await leaveRun('epoch changed')
+                return await leaveRun(model, statusPlan, 'epoch changed')
               }
-              if (!built) return await leaveRun('no question set')
+              if (!built) return await leaveRun(model, statusPlan, 'no question set')
               // A build can take hours, and sellers come and go in the meantime.
               const laneProxy = await loadBuyerProxySnapshot(globalOptions.dataDir)
-              const peers = selectedPeerId ? [selectVerifierPeer(laneProxy.peers, selectedPeerId)] : laneProxy.peers
-              const planned = planModel(model, peers)
-              await replaceStatusPlan(statusPlan, planned)
+              const planned = await planLane(model, statusPlan, laneProxy)
               statusPlan = planned
-              runProgress!.updatePlan(model, planned.targets.length + planned.skipped.length, planned.skipped.length)
-              if (!hasWorkLeft(planned)) return await leaveRun('nothing left')
+              if (!hasWorkLeft(planned)) return await leaveRun(model, statusPlan, 'nothing left')
               lane = { model, skipped: planned.skipped, targets: planned.targets, proxy: laneProxy }
               runProgress!.setPhase(model, 'waiting')
             }
+            const beforeChecks = await applyEpochCutoff(lane)
+            if (!beforeChecks) return null
+            lane = beforeChecks
+            statusPlan = lane
             const problems = await collectPreRunProblems({
               config,
               dataDir: globalOptions.dataDir,
@@ -1677,10 +1708,26 @@ export async function runVerifierRound(
                   console.warn(chalk.yellow(ignored ? `Ignoring (--ignore-pre-run-checks): ${problem}` : `SKIPPED ${problem}`))
                 }
               })
-              if (!ignored) return await leaveRun('no usable question set', problems.join('; '))
+              if (!ignored) return await leaveRun(model, statusPlan, 'no usable question set', problems.join('; '))
             }
+            return lane
+          } catch (error) {
+            // For example the buyer stopped, or a --peer seller left, during this model's build.
+            const reason = asError(error).message
+            runProgress!.above(() => console.warn(chalk.yellow(`SKIPPED ${model}: ${reason}`)))
+            return await leaveRun(model, statusPlan, 'failed', reason)
+          }
+        }
+        // With an audit slot taken, right before the audits: a lane can wait for its slot past the cutoff.
+        const startLane = async (prepared: ModelLane): Promise<ModelLane | null> => {
+          const { model } = prepared
+          let lane = prepared
+          try {
+            const ready = await applyEpochCutoff(lane)
+            if (!ready) return null
+            lane = ready
             // The first run of a model this epoch opens its window with the sellers it audits now.
-            if (windowsOpenable && auditWindows.has(model) && !auditWindows.get(model) && lane.targets.length > 0) {
+            if (windowsOpenable && !lateInEpoch && auditWindows.get(model) === null && lane.targets.length > 0) {
               const opened = await openAuditWindow({
                 evidenceDir, epoch, model, runId, sellers: lane.targets.map((target) => target.peer.peerId),
               })
@@ -1689,15 +1736,16 @@ export async function runVerifierRound(
             }
             return lane
           } catch (error) {
-            // For example the buyer stopped, or a --peer seller left, during this model's build.
             const reason = asError(error).message
             runProgress!.above(() => console.warn(chalk.yellow(`SKIPPED ${model}: ${reason}`)))
-            return await leaveRun('failed', reason)
+            return await leaveRun(model, lane, 'failed', reason)
           }
         }
         // A model that fails here has no summary, so it stays out of the manifest and its window stays
         // open for the next round. The other models' finished audits are still recorded.
-        const runLane = async (lane: ModelLane): Promise<EpochAuditSummaryV1['models'][number] | null> => {
+        const runLane = async (prepared: ModelLane): Promise<EpochAuditSummaryV1['models'][number] | null> => {
+          const lane = await startLane(prepared)
+          if (!lane) return null
           try {
             return await auditModel(lane)
           } catch (error) {
@@ -1724,7 +1772,7 @@ export async function runVerifierRound(
           status.completedAt = new Date().toISOString()
           status.currentModel = null
           status.currentPeerId = null
-          status.message = stopped ?? 'nothing left to audit'
+          status.message = stopped ?? (modelsPastCutoff.size > 0 ? 'too late in the epoch to open an audit window' : 'nothing left to audit')
           await writeVerifierStatus(evidenceDir, status)
           await appendVerifierEvent(evidenceDir, epoch, {
             type: 'run-stopped', runId, epoch, reason: status.message, at: status.completedAt,
@@ -1825,7 +1873,7 @@ export async function runVerifierRound(
             + 'close call(s) wait for extra questions'
             + (enrollmentFailures.size > 0 ? `; ${enrollmentFailures.size} model(s) were not audited.` : '.'),
           ))
-        } else {
+        } else if (modelsPastCutoff.size === 0) {
           console.log(chalk.green(`Epoch ${epoch}: every eligible seller is finished.`))
         }
         if (status.failures > 0) process.exitCode = 1

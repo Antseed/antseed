@@ -272,7 +272,7 @@ Run the same `antseed verifier run` command again; it continues the epoch. It fi
 
 - **Finished:** SAME or DIFF. Not asked again.
 - **Retry, our side:** a payment channel timed out, or the deposit or the epoch's question set was missing. Retried up to 3 times per epoch. A seller our buyer refuses is not retried, since every attempt would fail the same way. An UNDETERMINED caused on our side is never submitted: it says nothing about the seller's model.
-- **Retry, seller or unclear:** the seller was unreachable, sent no answer for 10 minutes or sent bad answers. Retried once per epoch, at least 3 hours after the audit that failed, since a seller's outage (an upstream usage limit, a failing health check) usually lasts hours; audits closer together than that count as one. A retry keeps the answers the seller already gave. An audit that failed on our side doesn't use up the seller's retry.
+- **Retry, seller or unclear:** the seller was unreachable, sent no answer for 10 minutes or sent bad answers. Retried once per epoch, at least 30 minutes after the audit that failed, so a short outage doesn't use up the retry; audits closer together than that count as one. A longer outage (an upstream usage limit, a failing health check) can still fail the retry, and the seller then stays `UNDETERMINED` for the epoch. A retry keeps the answers the seller already gave. An audit that failed on our side doesn't use up the seller's retry.
 - **Close call:** a close call whose extra questions couldn't be asked yet.
 - **New:** a model not audited yet this epoch. Its first run opens its audit window.
 
@@ -286,12 +286,14 @@ The run ends with a table of the whole epoch and the next command. `--fresh` ign
 
 Each auditor audits each of its models once per epoch:
 
-1. **Opens:** the model's first run of the epoch builds its question set, then audits every eligible seller it finds. Those sellers are the window's; the list is in `<evidence>/epochs/<epoch>/windows/<model>.json`.
+1. **Opens:** the model's first run of the epoch builds its question set, then audits every eligible seller it finds. Those sellers are the window's; the list is in `<evidence>/epochs/<epoch>/windows/<model>.json`. No window opens with less than 45 minutes left in the epoch, also when a build or a wait for an audit slot runs into that time: the model stops, without an error, and waits for the next epoch. Its confirmations are still audited.
 2. **Retries:** later runs (or `watch` ticks) only finish the window's sellers: the retries above, at their spacing, and close calls' extra questions. Nothing of the model is submitted while the window is open, so the epoch's questions aren't published while sellers are still being asked them.
+
+   A seller that stops listing the model doesn't hold the window. Once its retry is due and a run's peer list from the buyer shows it no longer offers the model, the retry is given up: the seller keeps the result it has, and the decision is logged, written to `<evidence>/epochs/<epoch>/retry-give-ups.json` and to the epoch's events (`retry-given-up`), and named in the window file (`givenUpSellers`). If the seller is listed again before the window closes, it's audited as normal. A run that can't read the peer list, or whose list is out of date, gives nothing up. A close call waiting for its extra questions and a retry on our side are treated the same way, once the same spacing has passed.
 3. **Closes:** once none of its sellers has anything left, or with less than 45 minutes left in the epoch. `submit` then sends the model's results in one audit. A seller that was tried but couldn't be decided is submitted as `UNDETERMINED`, as is a close call whose extra questions couldn't be asked.
 4. **Late sellers:** a seller that came online after the window opened gets no result this epoch, not even `UNDETERMINED`. Its earlier verdict runs out as usual, and it is audited in the next epoch with new questions.
 
-Confirmations of other auditors' `DIFF`s and the models you stand in for are audited as before: a stand-in model opens its own window when it is handed to you, and confirmations are submitted as soon as they are done.
+Confirmations of other auditors' `DIFF`s and the models you stand in for are audited as before: a stand-in model opens its own window when it is handed to you, and confirmations are submitted as soon as they are done. A seller that stops listing the model during a confirmation is given up the same way, and its `UNDETERMINED` is submitted, as after the last failed attempt.
 
 ## Running every epoch
 
