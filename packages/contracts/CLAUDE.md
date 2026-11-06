@@ -7,7 +7,7 @@ Who earns what is decided by policy contracts set by address, never by branches 
 | Slot | Interface | Set on | Decides | Today |
 | --- | --- | --- | --- | --- |
 | Points | `IAntseedPointsPolicy` | `AntseedUsageAccounting` | seller and buyer points per settlement | `AntseedPointsPolicyRegistry` |
-| Modifiers | `IAntseedPointsModifier` | the registry (max 8, in order) | one step on the previous step's seller and buyer points | `AntseedWashTradingPointsPolicy` |
+| Modifiers | `IAntseedPointsModifier` | the registry (max 8, in order) | one step on the previous step's seller and buyer points | `AntseedWashTradingPointsPolicy`, then `AntseedVerificationPointsPolicy` |
 | Pool weight | `IAntseedPoolWeightPolicy` | `AntseedUsageAccounting` | stake power to reward weight | unset (raw power) |
 | Seller claim | `IAntseedSellerClaimPolicy` | `AntseedSellerRewardsPool` | claimable share of locked rewards | `AntseedLegacySellerClaimPolicy` |
 | Seller unlock | `IAntseedSellerUnlockPolicy` | `AntseedEmissionsV2` (legacy) | claim now instead of vesting | `AntseedSellerUnlockPolicy` |

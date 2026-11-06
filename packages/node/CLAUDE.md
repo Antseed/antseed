@@ -1,6 +1,6 @@
 # @antseed/node
 
-The runtime around buyer-core and the plugins: P2P transport and identity, discovery, metering, seller request handling and sqlite. It is the plugin host. `src/interfaces/plugin.ts` and `seller-provider.ts` define what a plugin implements, including `serviceApiProtocols`, and the node does everything else. `seller-request-handler.ts` keeps the buyer's protocol when the provider supports it and translates otherwise. `src/payments/*` only re-exports buyer-core.
+The runtime around buyer-core and the plugins: P2P transport and identity, discovery, metering, seller request handling and sqlite. It is the plugin host. `src/interfaces/plugin.ts` and `seller-provider.ts` define what a plugin implements, including `serviceApiProtocols`, and the node does everything else. `seller-request-handler.ts` keeps the buyer's protocol when the provider supports it and translates otherwise. `src/payments/` re-exports the buyer's payment code from buyer-core; the seller side (`seller-payment-manager.ts`), the sqlite channel store (`channel-store.ts`) and the chain config are node's own.
 
 | Rule | Enforced by |
 | --- | --- |

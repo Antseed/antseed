@@ -1,6 +1,6 @@
 ---
 name: verify-antseed
-description: Says which checks prove an AntSeed change and what counts as proof, from the package tests, the local-chain payment flow and the stress job. Use when verifying a change, or when asked to "verify it", "prove it works" or "reproduce this bug". Not for runs that spend real funds or touch mainnet.
+description: Says which checks prove an AntSeed change and what counts as proof, from a one-minute smoke run through the real buyer proxy, the package tests, the local-chain payment flow and the stress job. Use when verifying a change, or when asked to "verify it", "prove it works" or "reproduce this bug". Not for runs that spend real funds or touch mainnet.
 ---
 
 # Verify AntSeed
@@ -10,6 +10,28 @@ description: Says which checks prove an AntSeed change and what counts as proof,
 - Use Node 24 (`.nvmrc`). On another major version, native modules fail with `ERR_DLOPEN_FAILED`. That is the environment, not the change.
 - E2E tests and flows load `dist/`, so run `pnpm run build` after an edit.
 - Contracts need Foundry and `git submodule update --init packages/contracts/lib/forge-std`.
+
+## Doctor
+
+Run these from the repo root when you start, and again if anything looks off.
+
+```bash
+node -v                                   # must print v24
+command -v anvil cast forge               # must print all three
+test -f apps/cli/dist/cli/index.js && echo built
+```
+
+## Smoke run
+
+This is the fastest proof through the real app. Use it for any change to the buyer, seller, payments or contracts, then add the matching row below.
+
+```bash
+node e2e/stress/ci.mjs --scenarios smoke --out "$(mktemp -d)/antseed-verify"
+```
+
+It starts a local chain, a mock upstream and the real `antseed` seller and buyer from `dist/` with their own data dirs and homes. It sends 6 chats through the buyer proxy, closes the channel and compares what was delivered, signed and settled. It takes about a minute, longer if the contracts need compiling.
+
+It passes when it exits 0 and the `smoke` row shows ✅. A pass means every chat was answered, and the amounts delivered, signed and settled all match, with nothing unpaid or overpaid.
 
 ## What to run
 
@@ -44,6 +66,20 @@ It runs the real `antseed` seller and buyer from `dist/` with their own data dir
 
 It sometimes fails on `main` with `served-unpaid`, seen on `restart-seller` and `smallreserve`. Report that with the scenario and numbers, even if a rerun passes.
 
+## Evidence
+
+The smoke run prints its `--out` directory. Keep it, and report from it:
+
+- `runs/smoke-1/result.json`: `client`, `money`, `channels` and `violations`. `buyerTreeInfo` shows which commit and build ran.
+- `runs/smoke-1/requests.json`: each request's `stream`, `status` and `usage`. Streamed requests have no `usage`.
+- `runs/smoke-1/buyer.log` and `seller.log`.
+
+`--out` wipes its directory first, so give every run a new one. The directory also holds throwaway test keys, so quote from it and don't commit it.
+
+## Cleanup
+
+The smoke run stops everything it started, also when it fails, and leaves the evidence. Stop `anvil` yourself after the payment flow. Never kill by process name: other checkouts and the user's own buyer may be running here. Stop only the PIDs you started.
+
 ## What counts as proof
 
 - Show each command, its exit code and the lines that matter.
@@ -61,6 +97,8 @@ It sometimes fails on `main` with `served-unpaid`, seen on `restart-seller` and 
 
 ## Gaps
 
+- The smoke run is scripted. It shuts down when it ends, so you can't keep a buyer running to try a change by hand.
+- The smoke run uses one pinned seller with seller verification off, and doesn't call `/v1/models` or `/v1/responses`. It doesn't prove routing or verification.
 - Nothing automated drives the desktop UI.
 - `scripts/setup-local-test.sh` is the manual route to a desktop on a local chain, and it prints the settings the desktop needs. It hardcodes one developer's home path and writes to `~/.antseed`, so get a yes before running it.
 - `apps/cli/src/gateway/**` has unit tests only.
