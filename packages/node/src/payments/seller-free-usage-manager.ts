@@ -127,6 +127,11 @@ export class SellerFreeUsageManager {
     });
   }
 
+  /** Whether this buyer has a free usage channel open on its current connection. */
+  hasSession(buyerPeerId: string): boolean {
+    return this._sessions.has(buyerPeerId);
+  }
+
   onPeerDisconnect(buyerPeerId: string): void {
     const session = this._sessions.get(buyerPeerId);
     if (session) {
