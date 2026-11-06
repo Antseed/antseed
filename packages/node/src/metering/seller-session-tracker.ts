@@ -7,6 +7,7 @@ import type { MeteringStorage } from './storage.js';
 import type { ReceiptGenerator } from './receipt-generator.js';
 import { debugLog, debugWarn } from '../utils/debug.js';
 import { parseResponseUsage } from '../utils/response-usage.js';
+import { computeCostUsdc } from '../payments/pricing.js';
 
 export interface SellerSessionState {
   sessionId: string;
@@ -141,7 +142,7 @@ export class SellerSessionTracker {
   async recordMetering(input: {
     buyerPeerId: string;
     providerName: string;
-    pricing: { inputUsdPerMillion: number; outputUsdPerMillion: number };
+    pricing: { inputUsdPerMillion: number; outputUsdPerMillion: number; cachedInputUsdPerMillion?: number };
     request: SerializedHttpRequest;
     statusCode: number;
     latencyMs: number;
@@ -149,7 +150,7 @@ export class SellerSessionTracker {
     outputBytes: number;
     responseBody: Uint8Array;
     /** Pre-computed usage from parseResponseUsage — avoids re-parsing the same body. */
-    providerUsage?: { inputTokens: number; outputTokens: number; cachedInputTokens?: number };
+    providerUsage?: { inputTokens: number; outputTokens: number; freshInputTokens?: number; cachedInputTokens?: number };
     /** Service (model id) the buyer asked for, recorded for the seller's request log. */
     service?: string;
     /** Why the request failed, when the status code does not carry it (the provider call threw). */
@@ -218,10 +219,13 @@ export class SellerSessionTracker {
     }
 
     if (this._receiptGenerator) {
+      // Price cached input at the cached rate, as the channel charge does.
+      const cachedInputTokens = tokens.method === 'provider-usage' ? providerUsage.cachedInputTokens ?? 0 : 0;
+      const freshInputTokens = tokens.method === 'provider-usage'
+        ? providerUsage.freshInputTokens ?? Math.max(0, tokens.inputTokens - cachedInputTokens)
+        : tokens.inputTokens;
       const estimatedCostUsd =
-        (tokens.inputTokens * providerPricingUsdPerMillion.inputUsdPerMillion +
-          tokens.outputTokens * providerPricingUsdPerMillion.outputUsdPerMillion) /
-        1_000_000;
+        Number(computeCostUsdc(freshInputTokens, tokens.outputTokens, providerPricingUsdPerMillion, cachedInputTokens)) / 1_000_000;
       const effectiveUsdPerThousandTokens =
         tokens.totalTokens > 0 ? (estimatedCostUsd / tokens.totalTokens) * 1000 : 0;
       const unitPriceCentsPerThousandTokens = Math.max(0, effectiveUsdPerThousandTokens * 100);
