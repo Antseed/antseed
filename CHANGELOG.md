@@ -260,6 +260,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- CLI buyer and gateway (`@antseed/node` adds `AntseedNode.peerDiscoverySweep`): right after `antseed buyer start`, `antseed gateway start` or the installers, a valid model no longer answers `502 model_not_found` because the buyer has not found its sellers yet. While the first discovery sweep runs (at most two minutes after start), a request with no usable seller for its model yet waits up to 10 seconds for one, then answers `503 discovery_in_progress` with `Retry-After: 5`; the gateway passes it on. `/_antseed/status` reports `discovering`. `install.sh` and `install-gateway.sh` wait (up to a minute) for discovery before printing that the gateway is running. Before, every request for a model on a seller not found yet failed with `model_not_found` for 25 s or more after install. Docs: **API → Errors**, gateway **Troubleshooting**.
 - Sellers (`@antseed/node`): usage receipts now price cached input at the cached rate, as the payment channel charge does. They priced every input token at the full input rate, so the receipt cost on the seller dashboard and request log, and session cost totals, came out well above what buyers paid for prompt-cached traffic.
 
 - Sellers (`@antseed/node`): an upstream answer saying the account's "extra usage" is used up is treated as an account error, like running out of credit: buyers get the generic `upstream_unavailable` 503 instead of the upstream's message, and health checks mark the model failing.

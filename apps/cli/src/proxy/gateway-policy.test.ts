@@ -565,6 +565,102 @@ test('no policy, or one that changes nothing, routes like main; unknown models g
   assert.deepEqual(h.dispatched.map((entry) => entry.peerId), [pricey.peerId, pricey.peerId])
 })
 
+// Right after start the first discovery sweep is still finding sellers: a
+// model nobody serves yet is not "not found", only not found yet.
+function startDiscovery(h: Harness, { startedAgoMs = 1_000, waitMs = 100 } = {}): void {
+  ;(h.proxy as any)._startedAtMs = Date.now() - startedAgoMs
+  ;(h.proxy as any)._initialDiscoveryPending = true
+  ;(h.proxy as any)._initialDiscoveryWaitMs = waitMs
+}
+
+test('while the first discovery runs, a model nobody serves yet gets a retryable 503, not model_not_found', async (t) => {
+  const h = await startHarness(t, [cheap, pricey])
+  startDiscovery(h)
+  const res = await chat(h, {}, 'qwen3-coder')
+  assert.equal(res.status, 503)
+  assert.equal(res.headers.get('retry-after'), '5')
+  const error = ((await res.json()) as any).error
+  assert.equal(error.code, 'discovery_in_progress')
+  assert.equal(error.param, 'model')
+  assert.match(error.message, /still discovering sellers \(no usable seller of "qwen3-coder" found yet\)\. Retry in a few seconds\./)
+  // The same through a gateway policy.
+  assert.equal((await chat(h, withPolicy({ sort: 'price' }), 'qwen3-coder')).status, 503)
+  // Models already found route as usual.
+  assert.equal((await chat(h)).status, 200)
+  const status = await (await fetch(`${h.url}/_antseed/status`)).json() as any
+  assert.equal(status.discovering, true)
+})
+
+test('while the first discovery runs, a request waits for a seller of its model to be found', async (t) => {
+  const peers = [cheap]
+  const h = await startHarness(t, peers)
+  startDiscovery(h, { waitMs: 5_000 })
+  const late = { ...makePeer('e', { input: 1, output: 1, trust: 90 }), providerServiceApiProtocols: { openai: { services: { 'qwen3-coder': ['openai-chat-completions' as const] } } } }
+  setTimeout(() => peers.push(late), 300)
+  const res = await chat(h, {}, 'qwen3-coder')
+  assert.equal(res.status, 200)
+  assert.equal(h.dispatched[0]?.peerId, late.peerId)
+})
+
+test('while the first discovery runs, a seller the routing policy cannot take yet is waited for, then 503', async (t) => {
+  // Found, but below the buyer's minimum trust (its on-chain stats have not arrived yet).
+  const lowTrust = { ...makePeer('f', { input: 1, output: 1, trust: 58 }) }
+  const prefs = { preferFreePeers: false, maxInputUsdPerMillion: 25, minTrustScore: 60, allowedPeerIds: [], blockedPeerIds: [] }
+  const h = await startHarness(t, [lowTrust], { routingPreferences: prefs })
+  startDiscovery(h)
+  const res = await chat(h)
+  assert.equal(res.status, 503)
+  assert.equal(((await res.json()) as any).error.code, 'discovery_in_progress')
+  startDiscovery(h, { waitMs: 5_000 })
+  setTimeout(() => { lowTrust.onChainReputationScore = 90 }, 300)
+  assert.equal((await chat(h)).status, 200)
+  assert.equal(h.dispatched[0]?.peerId, lowTrust.peerId)
+})
+
+test('while the first discovery runs with no sellers found at all, requests get the same 503', async (t) => {
+  const h = await startHarness(t, [])
+  startDiscovery(h)
+  const res = await chat(h)
+  assert.equal(res.status, 503)
+  assert.equal(((await res.json()) as any).error.code, 'discovery_in_progress')
+})
+
+test('once the first discovery ends, or after two minutes, unknown models get model_not_found again', async (t) => {
+  const h = await startHarness(t, [cheap])
+  startDiscovery(h)
+  ;(h.proxy as any)._initialDiscoveryPending = false
+  assert.equal((await chat(h, {}, 'qwen3-coder')).status, 502)
+  startDiscovery(h, { startedAgoMs: 121_000 })
+  const res = await chat(h, {}, 'qwen3-coder')
+  assert.equal(res.status, 502)
+  assert.equal(((await res.json()) as any).error.code, 'model_not_found')
+})
+
+test('start() reports discovery until the node\'s first sweep ends', async (t) => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'antseed-discovery-'))
+  let finishSweep!: () => void
+  const sweep = new Promise<PeerInfo[]>((resolve) => { finishSweep = () => resolve([]) })
+  const node = {
+    router: null,
+    buyerIdentities: () => [],
+    startBackgroundPeerDiscoverySweep: () => {},
+    get peerDiscoverySweep() { return sweep },
+  }
+  const proxy = new BuyerProxy({ port: 0, dataDir, node: node as any, backgroundRefreshIntervalMs: 60_000 })
+  t.after(async () => {
+    await proxy.stop()
+    await rm(dataDir, { recursive: true, force: true })
+  })
+  await proxy.start()
+  const { port } = (proxy as any)._server.address() as AddressInfo
+  const status = async () => ((await (await fetch(`http://127.0.0.1:${port}/_antseed/status`)).json()) as any).discovering
+  assert.equal(await status(), true)
+  finishSweep()
+  await sweep
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(await status(), false)
+})
+
 test('the buyer\'s own limits are judged once, by its router, not again by a gateway policy', async (t) => {
   // The router plugin (fake: allows everyone) is where buyer.minPeerReputation
   // is enforced; a gateway policy must not re-apply it with other inputs.

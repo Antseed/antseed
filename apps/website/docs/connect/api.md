@@ -229,6 +229,7 @@ Streaming responses carry only the request id, seller identity and price headers
 | 402 | `insufficient_deposits` | Not enough USDC deposited. Run `antseed buyer deposit`. |
 | 413 | `upload_body_too_large` | The request is larger than the seller's upload limit. |
 | 502 | `model_not_found` | No seller your routing preferences allow offers this model. |
+| 503 | `discovery_in_progress` | The buyer started less than two minutes ago and is still discovering sellers. It has not found a seller it can use for this model yet. Retry after the `Retry-After` seconds. |
 
 ## Diagnostics
 

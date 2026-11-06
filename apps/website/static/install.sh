@@ -91,6 +91,18 @@ install_cli() {
 
 gateway_up() { curl -fsS -o /dev/null --max-time 2 "http://127.0.0.1:$PORT/console/api/auth/config" 2>/dev/null; }
 
+# Just after start the buyer is still discovering sellers, and a model it has
+# not found yet answers 503 with Retry-After. Wait for that, up to a minute.
+wait_for_sellers() {
+  local i
+  for ((i = 0; i < 60; i++)); do
+    curl -fsS --max-time 2 "http://127.0.0.1:8377/_antseed/status" 2>/dev/null | grep -q '"discovering":true' || return 0
+    if [[ "$i" -eq 0 ]]; then step "Waiting for the buyer to discover sellers (up to a minute)"; fi
+    sleep 1
+  done
+  note "Still discovering sellers: for a few more seconds, a model not found yet answers 503 (retry it)."
+}
+
 start_gateway() {
   if gateway_up; then step "The gateway is already running on port $PORT"; return 0; fi
   if lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
@@ -105,7 +117,7 @@ start_gateway() {
   # The gateway listens once its buyer answers, which can take up to a minute.
   local i
   for ((i = 0; i < 90; i++)); do
-    if gateway_up; then return 0; fi
+    if gateway_up; then wait_for_sellers; return 0; fi
     kill -0 "$GATEWAY_PID" 2>/dev/null || { tail -n 20 "$LOG_FILE" >&2; die "the gateway exited; see $LOG_FILE"; }
     sleep 1
   done
