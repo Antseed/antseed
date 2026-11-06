@@ -215,9 +215,12 @@ export async function veniceAcceptsEndFrame(baseUrl: string, apiKey: string, mod
  * as its resolution and duration, but a unit price can only match resolution
  * and duration, so the seller prices each resolution at the options it
  * announces. Another option would cost a different Venice price for the same
- * charge. Unannounced options are not checked.
+ * charge. Unannounced options are not checked. `audioConfigurable` is whether
+ * Venice lets the model's audio be turned off, undefined while unknown: a
+ * silent service can't then make an omitted `audio` silent, so the create must
+ * say `audio: false` itself.
  */
-export function unannouncedVideoOption(video: VideoOptions | undefined, input: Record<string, unknown>): string | null {
+export function unannouncedVideoOption(video: VideoOptions | undefined, input: Record<string, unknown>, audioConfigurable?: boolean): string | null {
   const aspectRatio = input.aspect_ratio;
   if (video?.aspectRatios && aspectRatio !== undefined && !video.aspectRatios.includes(aspectRatio as string)) {
     return `aspect_ratio must be one of: ${video.aspectRatios.join(', ')}`;
@@ -226,6 +229,9 @@ export function unannouncedVideoOption(video: VideoOptions | undefined, input: R
     return video.audio
       ? 'This service always generates audio: audio must be true or omitted'
       : 'This service generates silent video: audio must be false or omitted';
+  }
+  if (video?.audio === false && input.audio === undefined && audioConfigurable === undefined) {
+    return 'This service generates silent video: send audio: false';
   }
   return null;
 }
@@ -386,8 +392,8 @@ const plugin: AntseedProviderPlugin = {
 
     // Edit models, whose `duration` must be the source length; null until Venice's model list was read.
     let editModels: Set<string> | null = null;
-    // Models whose audio can be turned off (Venice's `audio_configurable`); empty until the model list was read.
-    let audioConfigurable = new Set<string>();
+    // Whether Venice lets each service's audio be turned off (`audio_configurable`); absent while unknown.
+    const audioConfigurable = new Map<string, boolean>();
 
     /**
      * Why a create can't be paid for its `duration`, or null. The buyer pays
@@ -403,7 +409,7 @@ const plugin: AntseedProviderPlugin = {
     const createRefusal = (service: string, input: Record<string, unknown> | null): ProviderRequestRefusal | null => {
       const length = lengthProblem(service, input);
       if (length) return { statusCode: 422, code: 'invalid_video_duration', message: length };
-      const option = input ? unannouncedVideoOption(serviceCapabilities[service]?.video, input) : null;
+      const option = input ? unannouncedVideoOption(serviceCapabilities[service]?.video, input, audioConfigurable.get(service)) : null;
       return option ? { statusCode: 422, code: 'unsupported_video_option', message: option } : null;
     };
 
@@ -426,7 +432,10 @@ const plugin: AntseedProviderPlugin = {
         const data = response.ok && body.length <= MAX_MODELS_BYTES ? parseJsonObject(body)?.data : null;
         if (!Array.isArray(data)) return;
         editModels = new Set(services.filter(service => isVeniceEditModel(data.find(entry => entry?.id === service))));
-        audioConfigurable = new Set(services.filter(service => veniceConstraints(data.find(entry => entry?.id === service))?.audio_configurable === true));
+        for (const service of services) {
+          const constraints = veniceConstraints(data.find(entry => entry?.id === service));
+          if (constraints) audioConfigurable.set(service, constraints.audio_configurable === true);
+        }
         let checks = 0;
         for (const service of services) {
           const model = data.find(entry => entry?.id === service);
@@ -486,7 +495,7 @@ const plugin: AntseedProviderPlugin = {
       const input = parseJsonObject(request.body);
       const refused = createRefusal(service, input);
       if (refused) return error(request, refused.statusCode, refused.code, refused.message);
-      const priced = input ? withAnnouncedVideoOptions(serviceCapabilities[service]?.video, input, audioConfigurable.has(service)) : null;
+      const priced = input ? withAnnouncedVideoOptions(serviceCapabilities[service]?.video, input, audioConfigurable.get(service) === true) : null;
       const response = await relay.handleRequest({
         ...request,
         path: new URL(request.path, 'http://local').pathname,

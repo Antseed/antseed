@@ -40,7 +40,7 @@ At startup the seller reads Venice's video model list (`GET /api/v1/models?type=
 Venice prices a clip by its aspect ratio and audio as well as its resolution and duration (for example Seedance 2.5 at 480p for 4 s: $0.51 at 16:9, $0.67 at 21:9; Veo 3.1 costs less without audio). A unit price matches only `resolution` and duration, so price each resolution at the options you announce and announce only options that cost the same:
 
 - `video.aspectRatios`: a create with another `aspect_ratio` is answered `422 unsupported_video_option` before payment and without calling Venice. A create without one is sent with the first listed.
-- `video.audio`: `true` refuses `audio: false`; `false` refuses `audio: true` and, for a model whose audio Venice lets you turn off (`audio_configurable`), sends `audio: false` when the create leaves it out (Venice adds audio by default).
+- `video.audio`: `true` refuses `audio: false`; `false` refuses `audio: true` and, for a model whose audio Venice lets you turn off (`audio_configurable`), sends `audio: false` when the create leaves it out (Venice adds audio by default). While Venice's model list hasn't been read (or lacks the model), a create without `audio` is refused instead, so it must say `audio: false`.
 
 Options you don't announce are relayed as sent.
 

@@ -236,6 +236,24 @@ describe('announced aspect ratios and audio', () => {
     expect(sent(fetchMock)).toEqual({ model: 'wan-2.5', prompt: 'cat', duration: '4s', aspect_ratio: '9:16', audio: false });
   });
 
+  it('refuses an omitted audio on a silent service while Venice\'s model details are unknown', async () => {
+    expect(unannouncedVideoOption({ audio: false }, {})).toBe('This service generates silent video: send audio: false');
+    expect(unannouncedVideoOption({ audio: false }, {}, true)).toBeNull();
+    expect(unannouncedVideoOption({ audio: false }, {}, false)).toBeNull();
+    for (const models of [vi.fn().mockRejectedValue(new Error('offline')), vi.fn().mockResolvedValue(Response.json({ data: [] }))]) {
+      vi.stubGlobal('fetch', models);
+      const provider = plugin.createProvider(announced({ audio: false })) as Provider;
+      await provider.init!();
+      expect(provider.checkRequest!(create({}))).toMatchObject({ statusCode: 422, code: 'unsupported_video_option' });
+      const fetchMock = vi.fn().mockResolvedValue(Response.json({ model: 'wan-2.5', queue_id: 'queue-1' }));
+      vi.stubGlobal('fetch', fetchMock);
+      expect((await provider.handleRequest(create({}))).statusCode).toBe(422);
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect((await provider.handleRequest(create({ audio: false }))).statusCode).toBe(200);
+      expect(sent(fetchMock)).toMatchObject({ audio: false });
+    }
+  });
+
   it('relays a create unchanged when the seller announced neither option', async () => {
     const { provider, fetchMock } = await ready({ resolutions: ['480p'] });
     expect((await provider.handleRequest(create({ aspect_ratio: '21:9', audio: false }))).statusCode).toBe(200);
