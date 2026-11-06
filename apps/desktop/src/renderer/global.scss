@@ -244,8 +244,81 @@ textarea {
   }
 }
 
+/* Home <-> chat: the composer glides (ViewHost) while everything else fades.
+   Timings are the v4 design's: text .35s, the field 1s and it drifts 6%. */
+.view-host-glide {
+  background: var(--bg-primary);
+}
+
+.view-host-glide .view-pane {
+  background: transparent;
+}
+
+.view-pane-glide-out {
+  z-index: 1;
+  pointer-events: none;
+}
+
+.view-pane-glide-in {
+  z-index: 2;
+}
+
+.view-pane-glide-out [data-composer] {
+  visibility: hidden;
+}
+
+.view-pane-glide-out [data-glide-fade] {
+  animation: glide-fade-out 0.35s ease both;
+}
+
+/* The chat rebuilt for the way out has no messages: it should barely show. */
+.view-pane-glide-out .view-chat {
+  animation: glide-fade-out 0.15s ease both;
+}
+
+.view-pane-glide-in [data-glide-fade] {
+  animation: glide-fade-in 0.35s ease both;
+}
+
+.view-pane-glide-out [data-glide-field] {
+  animation: glide-field-out 1s ease both;
+}
+
+.view-pane-glide-in [data-glide-field] {
+  animation: glide-field-in 1s ease both;
+}
+
+@keyframes glide-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes glide-fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@keyframes glide-field-in {
+  from { opacity: 0; transform: translateY(6%); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes glide-field-out {
+  from { opacity: 1; transform: translateY(0); }
+  to { opacity: 0; transform: translateY(6%); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .view-host-sliding .view-pane {
+    animation: none;
+  }
+
+  .view-pane-glide-out {
+    display: none;
+  }
+
+  .view-pane-glide-in [data-glide-fade],
+  .view-pane-glide-in [data-glide-field] {
     animation: none;
   }
 

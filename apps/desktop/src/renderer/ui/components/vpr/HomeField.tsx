@@ -151,7 +151,7 @@ function FieldLayers({ night }: { night: boolean }) {
     `${styles.layer}${crossfade || reducedMotion ? ` ${styles.crossfade}` : ''}${loopMode === mode ? '' : ` ${styles.hidden}`}`;
 
   return (
-    <div className={styles.field} aria-hidden="true">
+    <div className={styles.field} aria-hidden="true" data-glide-field>
       {MODES.map((mode) => (reducedMotion
         ? <img key={mode} src={asset[mode].still} alt="" className={layerClass(mode)} />
         : (

@@ -5,7 +5,7 @@ import { Button, Segmented, TextField } from '@antseed/ui';
 import { activeThemeMode, applyThemeMode, type ThemeMode } from '../../lib/theme';
 import type { TelemetryStatus } from '../../../../shared/telemetry';
 import type { GatewayKeyMode, GatewayMode, GatewaySettings } from '../../../types/bridge';
-import { appsResource, gatewayResource } from '../../../modules/app/vpr-resources';
+import { appsResource, clearPrivacySwitchError, gatewayResource, privacyResource } from '../../../modules/app/vpr-resources';
 import { useCachedResource } from '../../../modules/app/cached-resource';
 import { VprCard, VprPage, VprSettingRow, VprToggle } from '../vpr/VprKit';
 import { ExportSignerKeyDialog, ImportSignerKeyDialog } from './SignerKeyDialogs';
@@ -55,9 +55,12 @@ function GatewaySection() {
       setMode(result.settings.mode);
       setRemoteKey('');
       setMessage('Saved. Connected apps now use the new settings.');
+    } finally {
+      // Refused settings are still saved, so everything showing the gateway follows either way.
       void gatewayResource.refresh();
       void appsResource.refresh();
-    } finally {
+      clearPrivacySwitchError();
+      void privacyResource.refresh();
       setBusy(null);
     }
   };

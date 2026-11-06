@@ -1,3 +1,4 @@
+import { describeChatError } from './chat-errors';
 import type { RendererUiState } from '../../core/state';
 import { notifyUiStateChanged, notifyUiStateChangedSync } from '../../core/store';
 import type {
@@ -129,7 +130,10 @@ export function initChatModule({
   }
 
   function showChatError(message: unknown): void {
-    uiState.chatError = toErrorMessage(message, 'Unexpected chat error');
+    uiState.chatError = describeChatError(
+      toErrorMessage(message, 'Unexpected chat error'),
+      (id) => uiState.chatModels.find((model) => model.id === id)?.label,
+    );
     notifyUiStateChanged();
   }
 

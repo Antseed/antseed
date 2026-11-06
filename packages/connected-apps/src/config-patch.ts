@@ -1258,6 +1258,63 @@ function applyCodexConfigPatch(patch: CodexConfigPatchDef, t: ResolvedTarget, ws
   });
 }
 
+const CODEX_MODEL_CATALOG_FILE = 'antseed-models.json';
+
+function runCodexDebugModels(filePath: string, args: readonly string[] = []): string {
+  return execFileSync('codex', ['debug', 'models', ...args], {
+    env: { ...process.env, CODEX_HOME: path.dirname(filePath) },
+    encoding: 'utf8',
+    maxBuffer: 128 * 1024 * 1024,
+    stdio: ['ignore', 'pipe', 'ignore'],
+    timeout: 15_000,
+    windowsHide: true,
+    shell: process.platform === 'win32',
+  });
+}
+
+/**
+ * Codex lists only its own catalog, so the gateway's models go in a catalog of
+ * our own. Entries take their instructions and limits from the installed
+ * Codex, so they match its version. Null when Codex can't be asked.
+ */
+function codexModelCatalog(filePath: string, t: ResolvedTarget): string | null {
+  try {
+    const bundled = JSON.parse(runCodexDebugModels(filePath, ['--bundled'])) as { models?: JsonObject[] };
+    const base = bundled.models?.[0];
+    if (!base) return null;
+    return JSON.stringify({
+      models: t.models.map((model, priority) => ({
+        slug: model.id,
+        display_name: modelLabel(model),
+        description: '',
+        default_reasoning_level: 'medium',
+        supported_reasoning_levels: [{ effort: 'medium', description: 'Default' }],
+        // The bundled GPT entries use tools other models can't call.
+        shell_type: 'shell_command',
+        apply_patch_tool_type: 'freeform',
+        experimental_supported_tools: [],
+        visibility: 'list',
+        supported_in_api: true,
+        priority,
+        support_verbosity: false,
+        context_window: ANTSEED_MODEL_CONTEXT_WINDOW,
+        truncation_policy: base['truncation_policy'],
+        base_instructions: base['base_instructions'],
+      })),
+    });
+  } catch {
+    return null;
+  }
+}
+
+function removeCodexModelCatalog(filePath: string): void {
+  try {
+    unlinkSync(path.join(path.dirname(filePath), CODEX_MODEL_CATALOG_FILE));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+  }
+}
+
 function applyCodexProviderToFile(filePath: string, patch: CodexConfigPatchDef, baseURL: string, t: ResolvedTarget): void {
   backupConfigFile(filePath);
   const raw = existsSync(filePath) ? readFileSync(filePath, 'utf8') : '';
@@ -1286,6 +1343,20 @@ function applyCodexProviderToFile(filePath: string, patch: CodexConfigPatchDef, 
     ...(t.legacy ? [] : [`experimental_bearer_token = ${tomlBasicString(t.apiKey)}`]),
   );
   writeTextFile(filePath, `${lines.join('\n')}\n`);
+  // A catalog can only be built by the Codex on this machine, not one inside WSL.
+  if (t.legacy || t.models.length === 0 || filePath.startsWith('\\\\')) return;
+  const catalog = codexModelCatalog(filePath, t);
+  if (!catalog) return;
+  mkdirSync(path.dirname(filePath), { recursive: true });
+  writeFileSync(path.join(path.dirname(filePath), CODEX_MODEL_CATALOG_FILE), catalog, 'utf8');
+  writeTextFile(filePath, `${setTomlTopLevelString(lines, 'model_catalog_json', CODEX_MODEL_CATALOG_FILE).join('\n')}\n`);
+  // Codex refuses to start on a catalog it can't parse, so never leave one behind.
+  try {
+    runCodexDebugModels(filePath);
+  } catch {
+    writeTextFile(filePath, `${lines.join('\n')}\n`);
+    removeCodexModelCatalog(filePath);
+  }
 }
 
 function removeCodexConfigPatch(patch: CodexConfigPatchDef, wslTargetsFile?: string): boolean {
@@ -1302,6 +1373,11 @@ function removeCodexProviderFromFile(filePath: string, patch: CodexConfigPatchDe
   const removal = removeCodexProviderTable(raw.split('\n'), patch.providerKey);
   let lines = removal.lines;
   let changed = removal.changed;
+  if (readTomlTopLevelString(lines, 'model_catalog_json') === CODEX_MODEL_CATALOG_FILE) {
+    lines = removeTomlTopLevelKey(lines, 'model_catalog_json');
+    removeCodexModelCatalog(filePath);
+    changed = true;
+  }
   if (readTomlTopLevelString(lines, 'model_provider') === patch.providerKey) {
     lines = removeTomlTopLevelKey(lines, 'model_provider');
     lines = removeTomlTopLevelKey(lines, 'model');
@@ -1586,7 +1662,60 @@ function deleteGoosePatchState(filePath: string): void {
   }
 }
 
+/**
+ * Goose reads API keys from its keyring, never from config.yaml. A custom
+ * provider carries the key as a header, and is the only place that takes a
+ * list of models.
+ */
+const GOOSE_CUSTOM_PROVIDER = 'custom_antseed';
+
+function gooseCustomProviderPath(filePath: string): string {
+  return path.join(path.dirname(filePath), 'custom_providers', `${GOOSE_CUSTOM_PROVIDER}.json`);
+}
+
+function removeGooseCustomProvider(filePath: string): boolean {
+  try {
+    unlinkSync(gooseCustomProviderPath(filePath));
+    return true;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    return false;
+  }
+}
+
+function applyGooseCustomProviderToFile(filePath: string, patch: GooseConfigPatchDef, baseURL: string, t: ResolvedTarget): void {
+  backupConfigFile(filePath);
+  const previous = existsSync(filePath) ? readFileSync(filePath, 'utf8').split('\n') : [];
+  const provider = readYamlTopLevelString(previous, 'GOOSE_PROVIDER');
+  // A pick from an earlier patch (which pointed goose's openai provider at the
+  // gateway) is still the user's.
+  const owned = provider === GOOSE_CUSTOM_PROVIDER || (provider === patch.providerKey && readGoosePatchState(filePath) !== null);
+  const selected = pickModel(t, owned ? readYamlTopLevelString(previous, 'GOOSE_MODEL') : undefined);
+  removeGooseProviderFromFile(filePath, patch, []);
+  let lines = existsSync(filePath) ? readFileSync(filePath, 'utf8').split('\n') : [];
+  while (lines.length > 0 && lines[lines.length - 1]!.trim() === '') lines.pop();
+  lines = setYamlTopLevelString(lines, 'GOOSE_PROVIDER', GOOSE_CUSTOM_PROVIDER);
+  if (selected) lines = setYamlTopLevelString(lines, 'GOOSE_MODEL', selected);
+  writeTextFile(filePath, `${lines.join('\n')}\n`);
+  writeJsonFile(gooseCustomProviderPath(filePath), {
+    name: GOOSE_CUSTOM_PROVIDER,
+    engine: 'openai',
+    display_name: 'Antseed',
+    description: 'Models on your Antseed gateway',
+    api_key_env: '',
+    base_url: `${baseURL}/v1/chat/completions`,
+    models: t.models.map((model) => ({ name: model.id, context_limit: ANTSEED_MODEL_CONTEXT_WINDOW })),
+    headers: { Authorization: `Bearer ${t.apiKey}` },
+    supports_streaming: true,
+    requires_auth: false,
+  });
+}
+
 function applyGooseProviderToFile(filePath: string, patch: GooseConfigPatchDef, baseURL: string, t: ResolvedTarget): void {
+  if (!t.legacy) {
+    applyGooseCustomProviderToFile(filePath, patch, baseURL, t);
+    return;
+  }
   backupConfigFile(filePath);
   const raw = existsSync(filePath) ? readFileSync(filePath, 'utf8') : '';
   let lines = raw.length > 0 ? raw.split('\n') : [];
@@ -1600,11 +1729,7 @@ function applyGooseProviderToFile(filePath: string, patch: GooseConfigPatchDef, 
   lines = setYamlTopLevelString(lines, 'OPENAI_HOST', baseURL);
   lines = setYamlTopLevelString(lines, 'OPENAI_API_KEY', t.apiKey);
   writeTextFile(filePath, `${lines.join('\n')}\n`);
-  if (t.legacy) {
-    deleteGoosePatchState(filePath);
-  } else {
-    writeJsonFile(goosePatchStatePath(filePath), { version: 1, host: baseURL, apiKeySha256: sha256Hex(t.apiKey) });
-  }
+  deleteGoosePatchState(filePath);
 }
 
 function removeGooseConfigPatch(patch: GooseConfigPatchDef, wslTargetsFile?: string): boolean {
@@ -1621,7 +1746,12 @@ function removeGooseProviderFromFile(filePath: string, patch: GooseConfigPatchDe
   if (!existsSync(filePath)) return false;
   let lines = readFileSync(filePath, 'utf8').split('\n');
   const state = readGoosePatchState(filePath);
-  let changed = false;
+  let changed = removeGooseCustomProvider(filePath);
+  if (readYamlTopLevelString(lines, 'GOOSE_PROVIDER') === GOOSE_CUSTOM_PROVIDER) {
+    lines = removeYamlTopLevelKey(lines, 'GOOSE_PROVIDER');
+    lines = removeYamlTopLevelKey(lines, 'GOOSE_MODEL');
+    changed = true;
+  }
   const host = readYamlTopLevelString(lines, 'OPENAI_HOST');
   const ownsGatewayHost = state !== null && host === state.host;
   if (isLoopbackHost(host, extraHosts) || ownsGatewayHost) {
@@ -2392,6 +2522,7 @@ function nativeConfigPatchConnected(patch: ConfigPatchDef): boolean {
   if (patch.format === 'goose') {
     if (!existsSync(filePath)) return false;
     const lines = readFileSync(filePath, 'utf8').split('\n');
+    if (readYamlTopLevelString(lines, 'GOOSE_PROVIDER') === GOOSE_CUSTOM_PROVIDER) return true;
     if (readYamlTopLevelString(lines, 'GOOSE_PROVIDER') !== patch.providerKey) return false;
     if (readYamlTopLevelString(lines, 'GOOSE_MODEL') === ROUTED_MODEL_ALIAS) return true;
     const state = readGoosePatchState(filePath);

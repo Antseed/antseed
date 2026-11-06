@@ -30,7 +30,7 @@ import {
   connectedAppsWslTargetsPath,
   legacyDesktopStatePath,
 } from './paths.js';
-import { connectableProfiles, findConnectableProfile, normalizeDesktopSystemProxyProfile, readStringArray, removeAllConfigPatches } from './profiles.js';
+import { connectableProfiles, findConnectableProfile, normalizeDesktopSystemProxyProfile, readStringArray, removeAllConfigPatches, retiredDesktopProfiles } from './profiles.js';
 import { stopWslRelays, syncWslRelays } from './wsl-relay.js';
 
 export type ConnectedAppsDeps = {
@@ -64,8 +64,11 @@ export function initConnectedApps(deps: ConnectedAppsDeps): void {
  * have pointed them at Antseed, so restore their config once, at launch.
  */
 function removeRetiredAppPatches(): void {
-  RETIRED_APP_PROFILES.forEach((raw, index) => {
-    const profile = normalizeDesktopSystemProxyProfile(raw, index);
+  const retired = [
+    ...RETIRED_APP_PROFILES.map((raw, index) => normalizeDesktopSystemProxyProfile(raw, index)),
+    ...retiredDesktopProfiles(),
+  ];
+  retired.forEach((profile) => {
     if (!profile.configPatch) return;
     try {
       if (!isConfigPatchConnected(profile.configPatch, connectedAppsWslTargetsPath())) return;

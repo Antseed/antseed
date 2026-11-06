@@ -73,6 +73,11 @@ function subscribePrivacySwitch(listener: () => void): () => void {
   return () => { privacySwitchListeners.delete(listener); };
 }
 
+/** A failed switch says nothing about a gateway the user has since moved to. */
+export function clearPrivacySwitchError(): void {
+  if (privacySwitchState.error) publishPrivacySwitch({ ...privacySwitchState, error: null });
+}
+
 export function getPrivacySwitchState(): PrivacySwitchState {
   return privacySwitchState;
 }

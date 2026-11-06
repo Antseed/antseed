@@ -39,7 +39,7 @@ const OOPS_MS = 3700;
  * The ant peeking over the chat box, reacting to what the chat is already
  * doing. Purely presentational: it reads state and never changes it.
  */
-export function ChatBoxAnt({ typing, sending, answering, error, privateMode }: {
+export function ChatBoxAnt({ typing, sending, answering, error, privateMode, hidden = false }: {
   typing: boolean;
   /** A request is in flight. */
   sending: boolean;
@@ -47,6 +47,8 @@ export function ChatBoxAnt({ typing, sending, answering, error, privateMode }: {
   answering: boolean;
   error: string | null;
   privateMode: boolean;
+  /** Something sits where the ant peeks, like a tool approval's buttons, or a menu is open. */
+  hidden?: boolean;
 }) {
   const [routing, setRouting] = useState(false);
   const [happy, setHappy] = useState(false);
@@ -93,7 +95,7 @@ export function ChatBoxAnt({ typing, sending, answering, error, privateMode }: {
 
   return (
     <>
-      <div className={styles.ant} role="img" aria-label={`${who} ${ALT[face]}`}>
+      <div className={`${styles.ant}${hidden ? ` ${styles.antHidden}` : ''}`} role="img" aria-label={`${who} ${ALT[face]}`}>
         <div className={styles.rise}>
           <div className={`${styles.move} ${thinking ? styles.moveThink : styles.moveBreath}`}>
             {FACE_NAMES.map((name) => (

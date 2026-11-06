@@ -95,6 +95,7 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
   }, [startNewChat]);
 
   const openConversation = useCallback(() => onSelectView('chat'), [onSelectView]);
+  const goHome = useCallback(() => onSelectView('home'), [onSelectView]);
   const isMac = globalThis.window?.antseedDesktop?.platform === 'darwin';
 
   return (
@@ -138,7 +139,7 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
             );
           })}
         </div>
-        <ChatListPanel onOpenConversation={openConversation} highlightActive={activeView === 'chat'} />
+        <ChatListPanel onOpenConversation={openConversation} onOpenConversationDeleted={goHome} highlightActive={activeView === 'chat'} />
         <SidebarBalance credits={snap.headlineBalanceUsdc} onAddFunds={() => onSelectView('deposit')} />
         {bottomNavEntries.map(({ view, nav }) => (
           <button

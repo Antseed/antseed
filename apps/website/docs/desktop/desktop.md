@@ -63,7 +63,8 @@ Open **Agents & apps** and connect a detected tool. The app edits the tool's own
 - **Disconnect** restores the tool's original configuration.
 - With the local gateway, the app removes its changes when it quits and applies them again at launch. With a remote gateway, the changes stay.
 - **Zed** keeps API keys in its keychain, so paste the key into Zed once.
-- **Cursor** needs a gateway with a public URL. With the local gateway it is shown disabled with an explanation.
+- **Claude Code** is not in this list: its model list only takes Claude-named models, so it can't offer the network's. If an earlier version connected it, the app restores its original settings. You can still add Antseed's skills to it under **Use it with your agent**.
+- **Codex** gets its model list from a catalog the app writes next to its config. A Codex inside WSL keeps its own list.
 - **Claude Desktop** is no longer supported: its model picker only lists Claude's own model names, so it cannot offer the network's models. If an earlier version connected it, the app restores Claude Desktop's original configuration at launch.
 
 ### Use with any other tool

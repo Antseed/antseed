@@ -8,6 +8,11 @@
   height: 112px;
   overflow: hidden;
   pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+
+.antHidden {
+  opacity: 0;
 }
 
 .rise {

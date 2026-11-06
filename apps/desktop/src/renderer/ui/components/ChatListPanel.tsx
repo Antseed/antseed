@@ -4,6 +4,7 @@ import {
   useRef,
   useEffect,
   useCallback,
+  type MouseEvent,
   type RefObject,
 } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
@@ -85,15 +86,23 @@ function conversationMatchesSearch(
   return terms.every((term) => haystack.includes(term));
 }
 
+/** The menu sits inside its row, whose click opens the chat. Without this,
+ *  Delete would re-open the conversation it just removed. */
+function stopRowClick(event: MouseEvent<HTMLDivElement>) {
+  event.stopPropagation();
+}
+
 function ConvContextMenu({
   convId,
   convTitle,
   anchorRef,
+  onDelete,
   onClose,
 }: {
   convId: string;
   convTitle: string;
   anchorRef: RefObject<HTMLButtonElement | null>;
+  onDelete: (id: string) => void;
   onClose: () => void;
 }) {
   const menuRef = useRef<HTMLDivElement>(null);
@@ -104,7 +113,7 @@ function ConvContextMenu({
   const actions = useActions();
 
   useEffect(() => {
-    function handleClick(e: MouseEvent) {
+    function handleClick(e: globalThis.MouseEvent) {
       if (
         menuRef.current && !menuRef.current.contains(e.target as Node) &&
         anchorRef.current && !anchorRef.current.contains(e.target as Node)
@@ -135,7 +144,7 @@ function ConvContextMenu({
 
   if (renaming) {
     return (
-      <div className={styles.contextMenu} ref={menuRef}>
+      <div className={styles.contextMenu} ref={menuRef} onClick={stopRowClick}>
         <input
           ref={renameInputRef}
           className={styles.renameInput}
@@ -156,14 +165,14 @@ function ConvContextMenu({
   }
 
   return (
-    <div className={styles.contextMenu} ref={menuRef}>
+    <div className={styles.contextMenu} ref={menuRef} onClick={stopRowClick}>
       <button className={styles.contextItem} onClick={() => setRenaming(true)}>
         Rename
       </button>
       <button
         className={`${styles.contextItem} ${styles.contextItemDanger}`}
         onClick={() => {
-          void actions.deleteConversation(convId);
+          onDelete(convId);
           onClose();
         }}
       >
@@ -180,6 +189,7 @@ function ConversationRow({
   approvalConvIds,
   modelLabelById,
   onSelectConv,
+  onDeleteConv,
   menuOpenId,
   setMenuOpenId,
   menuBtnRefs,
@@ -190,6 +200,7 @@ function ConversationRow({
   approvalConvIds: ReadonlySet<string>;
   modelLabelById: ReadonlyMap<string, string>;
   onSelectConv: (id: string) => void;
+  onDeleteConv: (id: string) => void;
   menuOpenId: string | null;
   setMenuOpenId: (id: string | null) => void;
   menuBtnRefs: RefObject<Map<string, HTMLButtonElement | null>>;
@@ -241,6 +252,7 @@ function ConversationRow({
           convId={id}
           convTitle={title}
           anchorRef={{ current: menuBtnRefs.current?.get(id) ?? null }}
+          onDelete={onDeleteConv}
           onClose={() => setMenuOpenId(null)}
         />
       )}
@@ -373,8 +385,10 @@ function ChatSearchModal({
 }
 
 /** The sidebar's Recent section: every conversation, with search, rename and delete. */
-export function ChatListPanel({ onOpenConversation, highlightActive }: {
+export function ChatListPanel({ onOpenConversation, onOpenConversationDeleted, highlightActive }: {
   onOpenConversation: () => void;
+  /** The chat on screen was deleted, so there is nothing left to show. */
+  onOpenConversationDeleted: () => void;
   /** Only the chat screen is "in" a conversation; Home starts a new one. */
   highlightActive: boolean;
 }) {
@@ -438,6 +452,12 @@ export function ChatListPanel({ onOpenConversation, highlightActive }: {
     onOpenConversation();
   }, [actions, onOpenConversation]);
 
+  const handleDeleteConv = useCallback((id: string) => {
+    const wasOnScreen = highlightActive && id === chatActiveConversation;
+    void actions.deleteConversation(id);
+    if (wasOnScreen) onOpenConversationDeleted();
+  }, [actions, chatActiveConversation, highlightActive, onOpenConversationDeleted]);
+
   return (
     <aside className={styles.panel} aria-labelledby="chat-list-label">
       <div className={styles.header}>
@@ -465,6 +485,7 @@ export function ChatListPanel({ onOpenConversation, highlightActive }: {
               approvalConvIds={approvalConvIds}
               modelLabelById={modelLabelById}
               onSelectConv={handleSelectConv}
+              onDeleteConv={handleDeleteConv}
               menuOpenId={menuOpenId}
               setMenuOpenId={setMenuOpenId}
               menuBtnRefs={menuBtnRefs}

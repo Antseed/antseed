@@ -157,18 +157,22 @@ test('pi and crush: key, full model list, per-slot selection', async () => {
   });
 });
 
-test('goose: remote gateway patch is recognized and removed via its sidecar', async () => {
+test('goose: gateway patch is a custom provider with the key and every model', async () => {
   await withDir(async (dir) => {
     const configPath = path.join(dir, 'config.yaml');
+    const providerPath = path.join(dir, 'custom_providers', 'custom_antseed.json');
     await writeFile(configPath, 'keep_me: true\n', 'utf8');
     const patch: ConfigPatchDef = { format: 'goose', configPath, providerKey: 'openai', baseURL: 'http://localhost:{buyerPort}' };
     writeConfigPatch(patch, REMOTE);
     let config = parse(await readFile(configPath, 'utf8')) as Record<string, unknown>;
-    assert.equal(config['OPENAI_HOST'], 'https://gw.example.com');
-    assert.equal(config['OPENAI_API_KEY'], KEY);
+    assert.equal(config['GOOSE_PROVIDER'], 'custom_antseed');
     assert.equal(config['GOOSE_MODEL'], 'kimi-k2');
+    assert.equal(config['OPENAI_API_KEY'], undefined);
+    const provider = JSON.parse(await readFile(providerPath, 'utf8'));
+    assert.equal(provider.base_url, 'https://gw.example.com/v1/chat/completions');
+    assert.equal(provider.headers.Authorization, `Bearer ${KEY}`);
+    assert.equal(provider.models.length, REMOTE.models.length);
     assert.equal(isConfigPatchConnected(patch), true);
-    assert.ok(!(await readFile(`${configPath}.antseed.state.json`, 'utf8')).includes(KEY));
 
     // User switches model in goose.
     await writeFile(configPath, (await readFile(configPath, 'utf8')).replace('"kimi-k2"', '"qwen3-coder"'), 'utf8');
@@ -178,8 +182,61 @@ test('goose: remote gateway patch is recognized and removed via its sidecar', as
 
     assert.equal(removeConfigPatch(patch), true);
     assert.deepEqual(parse(await readFile(configPath, 'utf8')), { keep_me: true });
-    assert.equal(existsSync(`${configPath}.antseed.state.json`), false);
+    assert.equal(existsSync(providerPath), false);
     assert.equal(isConfigPatchConnected(patch), false);
+  });
+});
+
+test('goose: the earlier gateway patch moves to the custom provider, keeping the pick', async () => {
+  await withDir(async (dir) => {
+    const configPath = path.join(dir, 'config.yaml');
+    await writeFile(configPath, 'GOOSE_PROVIDER: "openai"\nGOOSE_MODEL: "qwen3-coder"\nOPENAI_HOST: "https://gw.example.com"\nOPENAI_API_KEY: "old"\n', 'utf8');
+    await writeFile(`${configPath}.antseed.state.json`, JSON.stringify({ version: 1, host: 'https://gw.example.com', apiKeySha256: 'x' }), 'utf8');
+    const patch: ConfigPatchDef = { format: 'goose', configPath, providerKey: 'openai', baseURL: 'http://localhost:{buyerPort}' };
+    writeConfigPatch(patch, REMOTE);
+    const config = parse(await readFile(configPath, 'utf8')) as Record<string, unknown>;
+    assert.equal(config['GOOSE_PROVIDER'], 'custom_antseed');
+    assert.equal(config['GOOSE_MODEL'], 'qwen3-coder');
+    assert.equal(config['OPENAI_HOST'], undefined);
+    assert.equal(existsSync(`${configPath}.antseed.state.json`), false);
+  });
+});
+
+test('codex: every model goes in a catalog, dropped again if Codex rejects it', { skip: process.platform === 'win32' }, async () => {
+  await withDir(async (dir) => {
+    const bin = path.join(dir, 'bin');
+    await mkdir(bin);
+    const fakeCodex = (exitCode: number) => writeFile(path.join(bin, 'codex'), `#!/bin/sh
+if [ "$3" = "--bundled" ]; then echo '{"models":[{"base_instructions":"be good","truncation_policy":{"mode":"tokens","limit":1}}]}'; exit 0; fi
+exit ${exitCode}
+`, { mode: 0o755 });
+    const originalPath = process.env['PATH'];
+    process.env['PATH'] = `${bin}${path.delimiter}${originalPath}`;
+    try {
+      const home = path.join(dir, 'home');
+      await mkdir(home);
+      const configPath = path.join(home, 'config.toml');
+      const catalogPath = path.join(home, 'antseed-models.json');
+      const patch: ConfigPatchDef = { format: 'codex', configPath, providerKey: 'antseed', providerName: 'Antseed', baseURL: 'http://localhost:{buyerPort}/v1' };
+
+      await fakeCodex(0);
+      writeConfigPatch(patch, REMOTE);
+      assert.ok((await readFile(configPath, 'utf8')).includes('model_catalog_json = "antseed-models.json"'));
+      const catalog = JSON.parse(await readFile(catalogPath, 'utf8'));
+      assert.deepEqual(catalog.models.map((m: { slug: string }) => m.slug), REMOTE.models.map((m) => m.id));
+      assert.equal(catalog.models[0].base_instructions, 'be good');
+
+      assert.equal(removeConfigPatch(patch), true);
+      assert.equal(existsSync(catalogPath), false);
+      assert.equal(await readFile(configPath, 'utf8'), '');
+
+      await fakeCodex(1);
+      writeConfigPatch(patch, REMOTE);
+      assert.ok(!(await readFile(configPath, 'utf8')).includes('model_catalog_json'));
+      assert.equal(existsSync(catalogPath), false);
+    } finally {
+      process.env['PATH'] = originalPath;
+    }
   });
 });
 

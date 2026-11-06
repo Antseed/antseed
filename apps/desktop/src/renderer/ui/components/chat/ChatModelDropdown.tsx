@@ -20,6 +20,7 @@ type ChatModelDropdownProps = {
   onSelect: (modelId: string) => void;
   /** Called when the menu opens, so the list can refresh. */
   onOpen?: () => void;
+  onOpenChange?: (open: boolean) => void;
   onRetry?: () => void;
   /** Caps the menu's height where there is less room below than in the chat header. */
   menuMaxHeight?: number;
@@ -43,11 +44,13 @@ export function ChatModelDropdown({
   disabled,
   onSelect,
   onOpen,
+  onOpenChange,
   onRetry,
   menuMaxHeight,
   menuAnchor = 'trigger',
 }: ChatModelDropdownProps) {
   const [open, setOpen] = useState(false);
+  useEffect(() => onOpenChange?.(open), [open, onOpenChange]);
   const [query, setQuery] = useState('');
   const ref = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);

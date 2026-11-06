@@ -22,12 +22,13 @@ import { useRetainedState } from '../../hooks/useRetainedState';
 import { ChatBubble } from '../chat/ChatBubble';
 import { isImageRequestPhase } from '../chat/chat-shared';
 import { hasSearchPhraseMatch, isToolResultOnlyMessage } from '../chat/chat-utils.js';
-import { WalkingAnt } from '../chat/WalkingAnt';
+import { ThinkingDots } from '../chat/ThinkingDots';
 import { ImageGenerationPlaceholder } from '../chat/ImageGenerationPlaceholder';
 import { ToolApprovalCard } from '../chat/ToolApprovalCard';
 import { FundingStatusNotice } from './FundingStatusNotice';
 import { useFundingStatus } from '../../hooks/useFundingStatus';
 import { ChatBoxAnt } from '../chat/ChatBoxAnt';
+import { ChatNote } from '../chat/ChatNote';
 import { ChatModelDropdown } from '../chat/ChatModelDropdown';
 import { ChatSellerPicker } from '../chat/ChatSellerPicker';
 import { joinPinnedModel } from '../../../../shared/pinned-model.js';
@@ -250,7 +251,6 @@ export function ChatView({ onSelectView }: ChatViewProps) {
     chatSendingConversationId: state.chatSendingConversationId,
     chatSendingConversationIds: state.chatSendingConversationIds,
     chatStreamingMessage: state.chatStreamingMessage,
-    chatThinkingElapsedMs: state.chatThinkingElapsedMs,
     chatThinkingPhase: state.chatThinkingPhase,
     chatToolApprovalRequests: state.chatToolApprovalRequests,
     chatWorkspaceDefaultPath: state.chatWorkspaceDefaultPath,
@@ -259,6 +259,8 @@ export function ChatView({ onSelectView }: ChatViewProps) {
   const actions = useActions();
   const [inputValue, setInputValue] = useRetainedState(chatViewCache, 'inputValue');
   const [attachedFiles, setAttachedFiles] = useRetainedState(chatViewCache, 'attachedFiles');
+  const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const [sellerMenuOpen, setSellerMenuOpen] = useState(false);
   const [attachmentError, setAttachmentError] = useRetainedState(chatViewCache, 'attachmentError');
   const [attachmentWarning, setAttachmentWarning] = useRetainedState(chatViewCache, 'attachmentWarning');
   const [voiceError, setVoiceError] = useRetainedState(chatViewCache, 'voiceError');
@@ -406,6 +408,13 @@ export function ChatView({ onSelectView }: ChatViewProps) {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [closeMessageSearch, messageSearchOpen, openMessageSearch]);
+
+  // A new note lands below the last message: bring it into view.
+  const noteKey = [snap.chatError, snap.chatFundsNotice?.message, attachmentError, voiceError].filter(Boolean).join('|');
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (noteKey && el) el.scrollTop = el.scrollHeight;
+  }, [noteKey]);
 
   // Track whether the user has scrolled away from the bottom.
   useEffect(() => {
@@ -915,10 +924,11 @@ export function ChatView({ onSelectView }: ChatViewProps) {
 
   return (
     <section className={`view view-chat`} role="tabpanel">
-      <div className={styles.pageHeader}>
+      <div className={styles.pageHeader} data-glide-fade>
         <div className={styles.pageHeaderLeft}>
           <div className={styles.serviceSwitcherAnchor}>
             <ChatModelDropdown
+              onOpenChange={setModelMenuOpen}
               models={modelsForPrivacy(snap.chatModels, privateMode)}
               selectedModelId={imageMode ? snap.chatImageModelId ?? '' : snap.chatSelectedModelId}
               loading={snap.chatModelsLoading}
@@ -930,6 +940,7 @@ export function ChatView({ onSelectView }: ChatViewProps) {
             />
             {!imageMode && snap.chatSelectedModelId ? (
               <ChatSellerPicker
+                onOpenChange={setSellerMenuOpen}
                 modelId={snap.chatSelectedModelId}
                 disabled={snap.chatInputDisabled || snap.chatSending}
                 onChange={(peerId) => actions.selectChatModel(joinPinnedModel(snap.chatSelectedModelId, peerId))}
@@ -1052,7 +1063,7 @@ export function ChatView({ onSelectView }: ChatViewProps) {
               </div>
             </div>
           )}
-          <div className={styles.chatMessages} ref={scrollRef} data-chat-scroll>
+          <div className={styles.chatMessages} ref={scrollRef} data-chat-scroll data-glide-fade>
             {showWelcome ? (
               <div className={styles.chatWelcome}>
                 <Logo height={32} />
@@ -1097,11 +1108,24 @@ export function ChatView({ onSelectView }: ChatViewProps) {
             {imageRequestInProgress ? (
               <ImageGenerationPlaceholder editing={snap.chatThinkingPhase === 'Editing image'} />
             ) : showThinkingIndicator ? (
-              <WalkingAnt
-                elapsedMs={snap.chatThinkingElapsedMs}
-                phaseLabel={snap.chatThinkingPhase}
-              />
+              <ThinkingDots label={snap.chatThinkingPhase} />
             ) : null}
+            {snap.chatError && <ChatNote>{snap.chatError}</ChatNote>}
+            {snap.chatFundsNotice && (
+              <ChatNote
+                actions={[
+                  ...(snap.chatFundsNotice.canAddFunds
+                    ? [{ label: 'Add funds', primary: true, onClick: () => onSelectView?.('deposit') }]
+                    : []),
+                  { label: 'Try again', onClick: () => actions.retryAfterPayment() },
+                  { label: 'Dismiss', onClick: () => actions.dismissFundsNotice() },
+                ]}
+              >
+                {snap.chatFundsNotice.message}
+              </ChatNote>
+            )}
+            {attachmentError && <ChatNote>{attachmentError}</ChatNote>}
+            {voiceError && <ChatNote>{voiceError}</ChatNote>}
             {activePendingQueue.map((item) => (
               <div
                 key={`pending-${item.id}`}
@@ -1158,30 +1182,6 @@ export function ChatView({ onSelectView }: ChatViewProps) {
           ) : null}
 
           <div className={styles.chatInputArea}>
-            {snap.chatError && <div className={styles.chatError}>{snap.chatError}</div>}
-            {snap.chatFundsNotice && (
-              <div className={styles.fundsNotice} role="status">
-                <span className={styles.fundsNoticeDot} aria-hidden="true" />
-                <span className={styles.fundsNoticeText}>{snap.chatFundsNotice.message}</span>
-                {snap.chatFundsNotice.canAddFunds && (
-                  <button
-                    type="button"
-                    className={styles.fundsNoticeLink}
-                    onClick={() => { void window.antseedDesktop?.gatewayOpenConsole?.('/wallet?fund=1'); }}
-                  >
-                    Add funds in your gateway
-                  </button>
-                )}
-                <button type="button" className={styles.fundsNoticeLink} onClick={() => actions.retryAfterPayment()}>
-                  Retry
-                </button>
-                <button type="button" className={styles.fundsNoticeLink} onClick={() => actions.dismissFundsNotice()}>
-                  Dismiss
-                </button>
-              </div>
-            )}
-            {attachmentError && <div className={styles.chatError}>{attachmentError}</div>}
-            {voiceError && <div className={styles.chatError}>{voiceError}</div>}
             {attachmentWarning && <div className={styles.chatWarning}>{attachmentWarning}</div>}
             {dismissedFundingKey !== fundingKey ? (
               <FundingStatusNotice
@@ -1249,13 +1249,14 @@ export function ChatView({ onSelectView }: ChatViewProps) {
               </div>
             )}
 
-            <div className={styles.chatInputRow}>
+            <div className={styles.chatInputRow} data-composer>
               <ChatBoxAnt
                 typing={inputValue.length > 0}
                 sending={snap.chatSending}
                 answering={Boolean(snap.chatStreamingMessage)}
-                error={snap.chatError}
+                error={snap.chatError ?? snap.chatFundsNotice?.message ?? null}
                 privateMode={privateMode}
+                hidden={Boolean(activeToolApprovalRequest) || Boolean(attachmentWarning) || modelMenuOpen || sellerMenuOpen}
               />
               <input
                 ref={fileInputRef}

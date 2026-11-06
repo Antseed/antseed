@@ -8,6 +8,7 @@ import { usePrivateMode } from '../vpr/PrivacyToggle';
 import styles from './ChatModelDropdown.module.scss';
 
 type ChatSellerPickerProps = {
+  onOpenChange?: (open: boolean) => void;
   /** The chat's model, `peer@model` when a seller is pinned. */
   modelId: string;
   disabled: boolean;
@@ -61,9 +62,10 @@ const SORT_LABELS: Record<string, string> = {
  * key's policy allows can be pinned — the route preview says which, and the
  * gateway refuses any other pin.
  */
-export function ChatSellerPicker({ modelId, disabled, onChange, menuMaxHeight, compact = false, menuAnchor = 'trigger' }: ChatSellerPickerProps) {
+export function ChatSellerPicker({ modelId, disabled, onChange, onOpenChange, menuMaxHeight, compact = false, menuAnchor = 'trigger' }: ChatSellerPickerProps) {
   const { modelId: listedId, peerId: pinnedPeerId } = splitPinnedModel(modelId);
   const [open, setOpen] = useState(false);
+  useEffect(() => onOpenChange?.(open), [open, onOpenChange]);
   const [preview, setPreview] = useState<ChatRoutePreview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);

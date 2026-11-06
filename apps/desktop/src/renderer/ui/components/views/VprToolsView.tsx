@@ -13,7 +13,7 @@ import {
 } from '@hugeicons/core-free-icons';
 import { BrandIcon, isThemeAwareAppBrand, Modal, resolveBrandKey } from '@antseed/ui';
 import type { ConnectedAppProfile, GatewayEndpointInfo, InstalledAppEntry } from '../../../types/bridge';
-import { appsResource, gatewayResource, installedAppsResource } from '../../../modules/app/vpr-resources';
+import { appsResource, installedAppsResource } from '../../../modules/app/vpr-resources';
 import { useCachedResource } from '../../../modules/app/cached-resource';
 import { VprCard, VprPage, VprSearch } from '../vpr/VprKit';
 import { AgentSkillsPanel } from '../vpr/AgentSkillsPanel';
@@ -112,8 +112,7 @@ function CopyRow({ label, value, display }: { label: string; value: string; disp
 
 /**
  * Base URL + key for any OpenAI- or Anthropic-compatible tool the list does
- * not cover. Cursor gets its own row: it calls the API from Cursor's servers,
- * so it can only reach a gateway with a public URL — never a local one.
+ * not cover.
  */
 function GatewayEndpointCard({ onOpenConsole }: { onOpenConsole: (path: string) => void }) {
   const [open, setOpen] = useState(false);
@@ -157,53 +156,6 @@ function GatewayEndpointCard({ onOpenConsole }: { onOpenConsole: (path: string) 
   );
 }
 
-function CursorCard({ remote }: { remote: boolean }) {
-  const [open, setOpen] = useState(false);
-  const [endpoint, setEndpoint] = useState<GatewayEndpointInfo | null>(null);
-  useEffect(() => {
-    if (!open || !remote || endpoint?.ok) return;
-    void window.antseedDesktop?.gatewayGetEndpoint?.().then(setEndpoint);
-  }, [endpoint?.ok, open, remote]);
-  return (
-    <div className={`${styles.endpointCard}${remote ? '' : ` ${styles.endpointDisabled}`}`}>
-      <button type="button" className={styles.endpointHead} aria-expanded={open} onClick={() => setOpen(!open)}>
-        <BrandIcon name="cursor" hints={['Cursor']} size={16} />
-        <span className={styles.endpointTitle}>Cursor</span>
-        <span className={styles.appMeta}>{remote ? 'Paste URL and key' : 'Needs a public gateway'}</span>
-        <HugeiconsIcon
-          icon={ArrowDown01Icon}
-          size={14}
-          strokeWidth={2}
-          className={`${styles.endpointChevron}${open ? ` ${styles.endpointChevronOpen}` : ''}`}
-        />
-      </button>
-      {open ? (
-        remote ? (
-          <>
-            <p className={styles.endpointHint}>
-              In Cursor → Settings → Models, turn on “Override OpenAI Base URL”, paste the URL, then paste the
-              key as the OpenAI API key and add the model names you want.
-            </p>
-            {endpoint?.ok && endpoint.baseUrl && endpoint.apiKey ? (
-              <div className={styles.endpointRows}>
-                <CopyRow label="Copy URL" value={endpoint.baseUrl} />
-                <CopyRow label="Copy key" value={endpoint.apiKey} display={maskKey(endpoint.apiKey)} />
-              </div>
-            ) : (
-              <p className={styles.endpointHint}>{endpoint?.error ?? 'Loading…'}</p>
-            )}
-          </>
-        ) : (
-          <p className={styles.endpointHint}>
-            Cursor sends AI requests from its own servers, so it cannot reach a gateway running on this
-            computer. Point the desktop at a gateway with a public URL (Settings → Gateway) to use Cursor.
-          </p>
-        )
-      ) : null}
-    </div>
-  );
-}
-
 /** The first clause of a connect error; the full text stays in the tooltip. */
 function shortError(error: string): string {
   const first = error.split(/ — |\. /)[0]!.trim().replace(/\.$/, '');
@@ -212,9 +164,7 @@ function shortError(error: string): string {
 
 export function VprToolsView() {
   const appsSnapshot = useCachedResource(appsResource);
-  const gateway = useCachedResource(gatewayResource);
   const profiles = appsSnapshot.data ?? [];
-  const remote = gateway.data?.status.mode === 'remote';
   // First-ever visit to this screen (however the user got here): play the
   // coach-mark walkthrough once, and mark it seen immediately so the nav dot
   // never comes back.
@@ -526,9 +476,7 @@ export function VprToolsView() {
                   </div>
                 </div>
               );
-              return profile.name === 'claude-code'
-                ? [profileCard, <CursorCard key="cursor" remote={remote} />]
-                : profileCard;
+              return profileCard;
             })}
           </div>
 

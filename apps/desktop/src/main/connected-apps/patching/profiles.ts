@@ -73,9 +73,22 @@ export function loadDesktopSystemProxyProfiles(env: NodeJS.ProcessEnv = process.
   };
 }
 
+/**
+ * Claude Code's model list only takes Claude-named models, so it can't offer
+ * the network's. The CLI's `antseed apps` still connects it.
+ */
+const NOT_CONNECTED_BY_DESKTOP: ReadonlySet<string> = new Set(['claude-code']);
+
+/** Apps the desktop stopped connecting; a patch from an earlier version gets removed. */
+export function retiredDesktopProfiles(): DesktopSystemProxyProfile[] {
+  return SYSTEM_PROXY_PROFILES.filter((profile) => NOT_CONNECTED_BY_DESKTOP.has(profile.name));
+}
+
 /** Profiles that can be connected: those that patch the app's own config. */
 export function connectableProfiles(): DesktopSystemProxyProfile[] {
-  return SYSTEM_PROXY_PROFILES.filter((profile) => profile.kind === 'config-patch' && profile.configPatch);
+  return SYSTEM_PROXY_PROFILES.filter((profile) => (
+    profile.kind === 'config-patch' && profile.configPatch && !NOT_CONNECTED_BY_DESKTOP.has(profile.name)
+  ));
 }
 
 export function findConnectableProfile(name: string): DesktopSystemProxyProfile | undefined {

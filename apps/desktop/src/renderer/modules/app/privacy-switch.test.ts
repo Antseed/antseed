@@ -36,6 +36,16 @@ describe('requestPrivacyMode', () => {
     expect(getPrivacySwitchState()).toEqual({ switching: false, error: null });
   });
 
+  it('drops a failed switch\'s error once the gateway changes', async () => {
+    const { requestPrivacyMode, clearPrivacySwitchError, getPrivacySwitchState, calls } = await setup();
+    const done = requestPrivacyMode('private');
+    calls[0].settle({ ok: false, error: 'nope' });
+    await done;
+    expect(getPrivacySwitchState().error).toBe('nope');
+    clearPrivacySwitchError();
+    expect(getPrivacySwitchState().error).toBeNull();
+  });
+
   it('restores the confirmed mode and reports the error when the write fails', async () => {
     const { requestPrivacyMode, getPrivacySwitchState, calls, shownMode } = await setup();
     const done = requestPrivacyMode('private');

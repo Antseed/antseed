@@ -110,17 +110,18 @@ export function VprHomeView({ onSelectView }: Props) {
     <section className={`view view-vpr-home ${styles.view}${privateMode ? '' : ` ${styles.day}`}`} role="tabpanel">
       <HomeField night={privacy.data ? privateMode : undefined} />
       <div className={styles.dragBar} aria-hidden="true" />
-      <div className={styles.toggleSlot}>
+      <div className={styles.toggleSlot} data-glide-fade>
         <PrivacyToggle control={privacyControl} />
       </div>
       <div className={styles.stack}>
         <div className={styles.hero}>
-          <h1 className={styles.heading}>
+          <h1 className={styles.heading} data-glide-fade>
             {privateMode ? <>Private,<br /> and proven</> : <>Ask anything,<br /> on any model</>}
           </h1>
-          <p className={styles.subline}>At the best available prices, with the privacy you want.</p>
+          <p className={styles.subline} data-glide-fade>At the best available prices, with the privacy you want.</p>
           <form
             className={styles.composer}
+            data-composer
             onSubmit={(event) => { event.preventDefault(); submitDraft(); }}
           >
             <textarea
@@ -180,12 +181,16 @@ export function VprHomeView({ onSelectView }: Props) {
               </button>
             </div>
           </form>
-          <PrivacyNote control={privacyControl} />
+          <div data-glide-fade>
+            <PrivacyNote control={privacyControl} />
+          </div>
         </div>
 
-        <AgentSkillsPanel className={`${styles.glass} ${styles.agents}`} />
+        <div data-glide-fade>
+          <AgentSkillsPanel className={`${styles.glass} ${styles.agents}`} />
+        </div>
 
-        <div className={`${styles.glass} ${styles.appsSection}`}>
+        <div className={`${styles.glass} ${styles.appsSection}`} data-glide-fade>
           <div className={styles.sectionHeader}>
             <p className={styles.sectionTitle}>
               {connectedCount > 0 ? `${connectedCount} ${connectedCount === 1 ? 'app' : 'apps'} connected` : 'Connect your apps'}
