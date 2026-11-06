@@ -423,11 +423,19 @@ function retryableStatusCodesFor(gatewayAutoRoute: boolean): Set<number> {
  */
 function shouldTryNextPeer(
   statusCode: number,
-  modelNotFound: boolean,
-  pinned: boolean,
-  gatewayAutoRoute: boolean,
-  extraAttempt = false,
-  buyerFault = false,
+  {
+    modelNotFound,
+    pinned,
+    gatewayAutoRoute,
+    extraAttempt = false,
+    buyerFault = false,
+  }: {
+    modelNotFound: boolean
+    pinned: boolean
+    gatewayAutoRoute: boolean
+    extraAttempt?: boolean
+    buyerFault?: boolean
+  },
 ): boolean {
   return retryableStatusCodesFor(gatewayAutoRoute).has(statusCode)
     || (modelNotFound && !pinned)
@@ -5629,7 +5637,13 @@ export class BuyerProxy {
         const answeredEmpty = !pinned && responseForClient.statusCode < 300
           && isEmptyAnswer(responseForClient.headers['content-type'], responseForClient.body)
         const emptyAnswer = extraAttempt && answeredEmpty
-        if (emptyAnswer || shouldTryNextPeer(responseForClient.statusCode, modelNotFound, pinned, gatewayAutoRoute, extraAttempt && responseFault !== 'buyer', responseFault === 'buyer')) {
+        if (emptyAnswer || shouldTryNextPeer(responseForClient.statusCode, {
+          modelNotFound,
+          pinned,
+          gatewayAutoRoute,
+          extraAttempt: extraAttempt && responseFault !== 'buyer',
+          buyerFault: responseFault === 'buyer',
+        })) {
           return {
             done: false,
             statusCode: responseForClient.statusCode,
@@ -5744,7 +5758,13 @@ export class BuyerProxy {
         const answeredEmpty = !pinned && response.statusCode < 300 && !videoRoute
           && isEmptyAnswer(response.headers['content-type'], response.body)
         const emptyAnswer = extraAttempt && answeredEmpty
-        if (emptyAnswer || shouldTryNextPeer(response.statusCode, modelNotFound, pinned, gatewayAutoRoute, extraAttempt && responseFault !== 'buyer', responseFault === 'buyer')) {
+        if (emptyAnswer || shouldTryNextPeer(response.statusCode, {
+          modelNotFound,
+          pinned,
+          gatewayAutoRoute,
+          extraAttempt: extraAttempt && responseFault !== 'buyer',
+          buyerFault: responseFault === 'buyer',
+        })) {
           return { done: false, statusCode: response.statusCode, responseBody: Buffer.from(response.body), responseHeaders, errorMessage: null, modelNotFound, emptyAnswer }
         }
 
