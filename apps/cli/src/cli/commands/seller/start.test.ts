@@ -35,6 +35,7 @@ import {
   getUnsupportedUnitBillingWarning,
   isPublicRpcUrl,
   mergeSellerRuntimeEnv,
+  parseOptionalNonNegativeIntegerEnv,
   parseOptionalPositiveIntegerEnv,
   restartSupervisor,
   selectSellerProviderNames,
@@ -414,6 +415,14 @@ test('parseOptionalPositiveIntegerEnv accepts positive integer env values', () =
   assert.equal(parseOptionalPositiveIntegerEnv('0'), undefined);
   assert.equal(parseOptionalPositiveIntegerEnv('123abc'), undefined);
   assert.equal(parseOptionalPositiveIntegerEnv('not-a-number'), undefined);
+});
+
+test('parseOptionalNonNegativeIntegerEnv accepts 0 and positive integer env values', () => {
+  assert.equal(parseOptionalNonNegativeIntegerEnv('0'), 0);
+  assert.equal(parseOptionalNonNegativeIntegerEnv(' 1800000 '), 1800000);
+  assert.equal(parseOptionalNonNegativeIntegerEnv(undefined), undefined);
+  assert.equal(parseOptionalNonNegativeIntegerEnv('-1'), undefined);
+  assert.equal(parseOptionalNonNegativeIntegerEnv('30m'), undefined);
 });
 
 test('isPublicRpcUrl detects built-in public Base RPC endpoints', () => {

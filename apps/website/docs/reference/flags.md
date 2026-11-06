@@ -93,6 +93,8 @@ The CLI also reads `.env.local` and `.env` from the current directory, and the f
 | `ANTSEED_DEFAULT_DEPOSIT_USDC` | seller | Read by `seller start` but currently has no effect: the node does not use the value |
 | `ANTSEED_SETTLEMENT_IDLE_MS` | seller | Idle time before the seller settles a channel, in milliseconds (default 600000) |
 | `ANTSEED_MAX_UPLOAD_BODY_BYTES` | seller | Largest accepted request body; overrides `seller.maxUploadBodyBytes` |
+| `ANTSEED_MAX_INBOUND_CONNECTIONS` | seller | Buyer connections held open at once; overrides `seller.maxInboundConnections` |
+| `ANTSEED_INBOUND_IDLE_TIMEOUT_MS` | seller | Idle time before a buyer connection with no channel open is closed, in milliseconds; `0` keeps them. Overrides `seller.inboundIdleTimeoutMs` |
 | `ANTSEED_VERIFIER_SDKS` | seller | Comma-separated verifier SDK ids the seller supports, first is the default (same as `seller start --verifiers`) |
 | `ANTSEED_VERIFIER_*`, `ANTSEED_TEE_PEER_ID` | TEE seller | TEE attestation settings. See [TEE provider](/docs/provide/tee) and [Verify TEE](/docs/verify-tee) |
 | `ANTSEED_METRICS_ROLE`, `ANTSEED_METRICS_HOST`, `ANTSEED_METRICS_PORT`, `ANTSEED_METRICS_PATH`, `ANTSEED_METRICS_INSTANCE` | metrics | Defaults for the matching `antseed metrics serve` flags. See [Metrics](/docs/provide/metrics) |
