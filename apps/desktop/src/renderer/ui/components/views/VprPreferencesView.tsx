@@ -79,6 +79,8 @@ export function VprPreferencesView({ onSelectView }: Props) {
     return routes.find((route) => route.peerId === snap.selection.peerId) ?? null;
   }, [snap.discoverRows, snap.selection]);
 
+  const trustPreference = snap.preferences.trustPreference ?? 0;
+
   return (
     <section className={`view view-vpr-preferences view-pinned-header ${styles.view}`} role="tabpanel">
       <VprPage title="Preferences" backFallback="home">
@@ -134,14 +136,14 @@ export function VprPreferencesView({ onSelectView }: Props) {
             <div className={styles.sliderHead}>
               <span className={styles.sliderTitle}>Price or trust</span>
               <span className={styles.sliderReadingSmall}>
-                {snap.preferences.trustPreference === 0 ? 'Price only' : `${snap.preferences.trustPreference}% trust`}
+                {trustPreference === 0 ? 'Price only' : `${trustPreference}% trust`}
               </span>
             </div>
             <VprSlider
               min={0}
               max={100}
               step={5}
-              value={snap.preferences.trustPreference}
+              value={trustPreference}
               onChange={(next) => actions.updateVprRoutingPreferences({ trustPreference: next })}
               ariaLabel="Price or trust"
             />

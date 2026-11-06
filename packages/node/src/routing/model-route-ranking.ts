@@ -7,9 +7,9 @@ export type ModelRoutingPreferences = {
   /**
    * How much a seller's trust counts against its expected cost, 0 to 100.
    * 0 ranks on price, time and reliability alone. At 100 a seller at trust 50
-   * has to cost half as much as one at trust 100 to rank level.
+   * has to cost half as much as one at trust 100 to rank level. Omitted counts as 0.
    */
-  trustPreference: number;
+  trustPreference?: number;
   allowedPeerIds: string[];
   blockedPeerIds: string[];
 };

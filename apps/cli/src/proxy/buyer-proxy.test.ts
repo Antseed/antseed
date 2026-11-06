@@ -3192,6 +3192,8 @@ test('the trust preference and input price limit change which seller automatic r
   }
 
   assert.equal(await pick(priceAndTrustPreferences), lowTrust.peerId)
+  const { trustPreference: _omitted, ...withoutTrustPreference } = priceAndTrustPreferences
+  assert.equal(await pick(withoutTrustPreference), lowTrust.peerId, 'preferences from before the setting route the same')
   assert.equal(await pick({ ...priceAndTrustPreferences, trustPreference: 100 }), highTrust.peerId)
   assert.equal(await pick({ ...priceAndTrustPreferences, maxInputUsdPerMillion: 0.5 }), lowTrust.peerId, 'nobody within the limit: still routes')
   highTrust.providerPricing = { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 30 } } }

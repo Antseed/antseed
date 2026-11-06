@@ -98,7 +98,7 @@ export function loadVprRoutingPreferences(fallback: VprRoutingPreferences): VprR
       fallback.maxInputUsdPerMillion,
     ),
     minTrustScore,
-    trustPreference: Math.min(100, readNonNegativeFiniteNumber(parsed.trustPreference, fallback.trustPreference)),
+    trustPreference: Math.min(100, readNonNegativeFiniteNumber(parsed.trustPreference, fallback.trustPreference ?? 0)),
     allowedPeerIds: Array.isArray(parsed.allowedPeerIds)
       ? normalizePeerIdList(parsed.allowedPeerIds)
       : fallback.allowedPeerIds,

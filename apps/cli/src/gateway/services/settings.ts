@@ -81,7 +81,7 @@ export function buyerSettingsFromConfig(
     minPeerReputation: buyer.minPeerReputation,
     routingPreferences: {
       minTrustScore: prefs.minTrustScore,
-      trustPreference: prefs.trustPreference,
+      trustPreference: prefs.trustPreference ?? 0,
       maxInputUsdPerMillion: prefs.maxInputUsdPerMillion,
       allowedPeerIds: [...prefs.allowedPeerIds],
       blockedPeerIds: [...prefs.blockedPeerIds],
