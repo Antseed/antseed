@@ -61,7 +61,7 @@ The CLI also reads `.env.local` and `.env` from the current directory, and the f
 | `ANTSEED_PASSPHRASE_FILE` | all | File whose first line is the passphrase; used when `ANTSEED_PASSPHRASE` is not set, and keeps it out of the process environment |
 | `ANTSEED_IDENTITY_HEX` | all | Wallet private key (64 hex characters) to use instead of `identity.key`. Removed from the environment after it is read |
 | `ANTSEED_BASE_RPC_URL` | buyer, seller, gateway | Base JSON-RPC URL; overrides `payments.crypto.rpcUrl`. `seller start --base-rpc-url` takes precedence |
-| `ANTSEED_ENABLE_SETTLEMENT` | buyer, seller | `false` runs without payments. On a seller, `true` keeps payments on even when the RPC does not answer at startup |
+| `ANTSEED_ENABLE_SETTLEMENT` | buyer, seller | `false` runs without payments. On a seller, `true` skips the startup RPC check and keeps payments on. Without it, a seller with priced services won't start if the RPC does not answer |
 | `ANTSEED_SKIP_PLUGIN_UPDATE_CHECK` | all | `1` skips the plugin update check (air-gapped hosts, CI) |
 | `ANTSEED_BUYER_MAX_INPUT_USD_PER_MILLION` | buyer | Overrides `buyer.maxPricing.defaults.inputUsdPerMillion` (default 100) |
 | `ANTSEED_BUYER_MAX_OUTPUT_USD_PER_MILLION` | buyer | Overrides `buyer.maxPricing.defaults.outputUsdPerMillion` (default 100) |

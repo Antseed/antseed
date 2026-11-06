@@ -260,6 +260,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- CLI seller: a slow or unreachable Base RPC no longer turns payments off for a seller with priced services. `antseed seller start` gave the RPC 1.5 s to answer, then disabled payments, skipped the registration and gas checks, and announced and served priced services for free. It now asks the RPC and its fallbacks up to 3 times (5 s each), and if none answers, a seller with priced services refuses to start with a "Base RPC unreachable" error. With `--skip-prereq-check` it starts with payments on. A seller whose services are all free still runs without payments, as before. `ANTSEED_ENABLE_SETTLEMENT=false` still runs without payments, and `true` still skips the probe.
 - Sellers (`@antseed/node`): usage receipts now price cached input at the cached rate, as the payment channel charge does. They priced every input token at the full input rate, so the receipt cost on the seller dashboard and request log, and session cost totals, came out well above what buyers paid for prompt-cached traffic.
 
 - Sellers (`@antseed/node`): an upstream answer saying the account's "extra usage" is used up is treated as an account error, like running out of credit: buyers get the generic `upstream_unavailable` 503 instead of the upstream's message, and health checks mark the model failing.
