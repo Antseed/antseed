@@ -260,6 +260,8 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- Docs: command examples no longer contain text Cloudflare's email obfuscation rewrites to `[email protected]` in the served page, which broke them for agents that fetch the HTML and for copying without JavaScript. **Gateway → Budgets**, **Migrate** and **Sign-in and access** use `<member>` (a member id or email) and `<email>` placeholders instead of example addresses; **Connect → API** uploads `@./sofa.png` instead of `@sofa.png`; **Connect → Videos** says "CLI versions before 0.1.171".
+
 - Sellers (`@antseed/node`): usage receipts now price cached input at the cached rate, as the payment channel charge does. They priced every input token at the full input rate, so the receipt cost on the seller dashboard and request log, and session cost totals, came out well above what buyers paid for prompt-cached traffic.
 
 - Sellers (`@antseed/node`): an upstream answer saying the account's "extra usage" is used up is treated as an account error, like running out of credit: buyers get the generic `upstream_unavailable` 503 instead of the upstream's message, and health checks mark the model failing.

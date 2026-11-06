@@ -116,7 +116,7 @@ For a video longer than the model's longest clip, the agent plans it as several 
 |---|---|
 | Connection refused | Start Antseed Desktop or `antseed buyer start`. |
 | `402` | The buyer needs more deposited USDC or payment-channel capacity. See [Payments](/docs/payments). |
-| `402 one_off_channel_required` | Update the buyer; versions before `@antseed/cli@0.1.171` hit this. |
+| `402 one_off_channel_required` | Update the buyer; CLI versions before 0.1.171 hit this. |
 | Price above $5.00, or "above the configured limit" | Choose a shorter duration or a lower resolution. |
 | `400` on create | The seller rejected a field, named in the error. Nothing started; the agent fixes the field and asks before trying again. Above $1.00, the opening fee is kept. |
 | `422 invalid_video_duration` | An edit's `duration` must be the source's length in whole seconds, rounded down. The agent corrects it and asks before trying again. |
