@@ -3135,20 +3135,12 @@ export class BuyerProxy {
    * reads the cache the sweep fills (never starts a lookup of its own, which
    * could outlast the budget) and stops as soon as the client goes away.
    */
-  private async _waitForInitialDiscovery(found: (peers: PeerInfo[]) => boolean, signal?: AbortSignal): Promise<PeerInfo[]> {
+  private async _waitForInitialDiscovery(found: (peers: PeerInfo[]) => boolean, signal: AbortSignal): Promise<PeerInfo[]> {
     const deadline = Date.now() + this._initialDiscoveryWaitMs
-    while (!found(this._cachedPeers) && this._initialDiscoveryRunning() && !signal?.aborted) {
+    while (!found(this._cachedPeers) && this._initialDiscoveryRunning()) {
       const remainingMs = deadline - Date.now()
       if (remainingMs <= 0) break
-      await new Promise<void>((resolve) => {
-        const done = (): void => {
-          clearTimeout(timer)
-          signal?.removeEventListener('abort', done)
-          resolve()
-        }
-        const timer = setTimeout(done, Math.min(INITIAL_DISCOVERY_POLL_MS, remainingMs))
-        signal?.addEventListener('abort', done, { once: true })
-      })
+      if (!await waitForRetry(Math.min(INITIAL_DISCOVERY_POLL_MS, remainingMs), signal)) break
     }
     return this._cachedPeers
   }
