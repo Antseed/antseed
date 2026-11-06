@@ -100,10 +100,15 @@ Some sellers serve some models for free. Without funds, a request that routes to
 
 ```bash
 antseed gateway routing show --json > ~/routing-before-free.json
-antseed gateway routing set --merge --max-input-price 0 --max-output-price 0 --max-cached-input-price 0
+echo '{"maxInputUsdPerMillion":0,"maxOutputUsdPerMillion":0,"maxCachedInputUsdPerMillion":0,"maxImageUsdPerImage":0}' > ~/free-only-caps.json
+antseed gateway routing set --merge --file ~/free-only-caps.json
 ```
 
-Without `--merge`, `routing set` replaces the whole policy. Every key now routes only to free sellers. A model with no free seller returns `model_not_found` ("No policy-allowed peer currently serves model …") instead of spending. When the user adds funds and wants paid models, put the saved policy back:
+Without `--merge`, `routing set` replaces the whole policy. The token caps cover text models, and `maxImageUsdPerImage` covers image models (it has no CLI flag, so the caps go in a file). A model with no free seller returns `model_not_found` ("No policy-allowed peer currently serves model …") instead of spending. What the caps don't make free:
+
+- Video and speech models are priced per second or per character, not per token, so the caps refuse every video and speech seller, free ones included.
+- Routing services (`<routerPeerId>@<routerServiceId>`) charge per ranking and no cap applies to them. Don't use one for a user without funds.
+ When the user adds funds and wants paid models, put the saved policy back:
 
 ```bash
 antseed gateway routing set --file ~/routing-before-free.json
@@ -221,7 +226,7 @@ antseed buyer deposit           # paid models only: funding address + QR for USD
 antseed claude --model deepseek-v4-flash
 ```
 
-For free models only, start the buyer with its price caps at zero, so it never routes to a paid seller: `antseed buyer start --max-input-usd-per-million 0 --max-output-usd-per-million 0`.
+For free text models only, start the buyer with its token price caps at zero, so it never routes a text request to a paid seller: `antseed buyer start --max-input-usd-per-million 0 --max-output-usd-per-million 0`. These caps don't cover image models, which can still go to a paid seller, so for a free-only setup that includes images, use the gateway and its caps above.
 
 The wrappers `antseed claude | codex | opencode` work against it unchanged. Full guide: https://antseed.com/docs/api.
 
