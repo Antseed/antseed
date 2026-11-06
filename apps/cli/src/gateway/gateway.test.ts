@@ -138,7 +138,16 @@ async function fakeBuyer(options: { costUsdc?: number; spendFeed?: boolean; repo
   return { port, captured, close: () => new Promise<void>((resolve) => server.close(() => { feed.close(); resolve() })) }
 }
 
-async function startGateway(store: GatewayStore, buyerPort: number, holdUsdc = 300_000, topup: GatewayTopupOptions | null = null, settleGraceMs = 50) {
+const TEST_IDENTITY_ADDRESS = async (name: string): Promise<string | null> => (name === 'team-a' ? '0x00000000000000000000000000000000000000aa' : null)
+
+async function startGateway(
+  store: GatewayStore,
+  buyerPort: number,
+  holdUsdc = 300_000,
+  topup: GatewayTopupOptions | null = null,
+  settleGraceMs = 50,
+  identityAddress: (name: string) => Promise<string | null> = TEST_IDENTITY_ADDRESS,
+) {
   const accounting = new GatewayAccounting(store, { holdUsdc, settleGraceMs })
   const feed = new SpendFeedPoller({
     buyerPort,
@@ -151,7 +160,7 @@ async function startGateway(store: GatewayStore, buyerPort: number, holdUsdc = 3
     accounting,
     buyerPort,
     topup,
-    identityAddress: async (name) => (name === 'team-a' ? '0x00000000000000000000000000000000000000aa' : null),
+    identityAddress,
     spendFeedState: () => feed.state,
     refreshSpendFeed: () => feed.pollOnce(),
     videoBudgetEnforced: () => feed.videoBudgetEnforced,
@@ -1835,12 +1844,15 @@ test('the buyer\'s out-of-credits 402 names the workspace and its funding, and k
   assert.equal(workspaceOutOfCreditsBody(Buffer.from('not json'), workspace), null)
 })
 
-test('gateway rewrites the buyer\'s out-of-credits 402 for the key\'s workspace', async () => {
+test('gateway rewrites the buyer\'s out-of-credits 402 with the live wallet, never the cached one', async () => {
   const { store, cleanup } = tempDataDir()
   const buyer = await fakeBuyer({ outOfCredits: true })
-  store.setWalletAddress(DEFAULT_BUYER_IDENTITY, '0x00000000000000000000000000000000000000bb')
+  // The display cache holds an old wallet; the running buyer pays from another.
+  const cached = '0x00000000000000000000000000000000000000bb'
+  const live = '0x00000000000000000000000000000000000000cc'
+  store.setWalletAddress(DEFAULT_BUYER_IDENTITY, cached)
   const { secret } = store.createKey({ label: 'Team', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
-  const gateway = await startGateway(store, buyer.port)
+  const gateway = await startGateway(store, buyer.port, 300_000, null, 50, async (name) => (name === DEFAULT_BUYER_IDENTITY ? live : null))
   try {
     const chat = await request(gateway.port, '/v1/chat/completions', { method: 'POST', key: secret, body: '{"model":"kimi-k2.6"}' })
     assert.equal(chat.status, 402)
@@ -1849,13 +1861,38 @@ test('gateway rewrites the buyer\'s out-of-credits 402 for the key\'s workspace'
     assert.equal(error.code, 'antseed_buyer_fault')
     assert.equal(error.param, 'insufficient_deposits')
     assert.match(error.message, /^This API key's workspace \(Default\) is out of AntSeed credits/)
-    assert.match(error.message, /Wallet & Funding, or send USDC on Base to the workspace wallet 0x0{38}bb, then retry/)
+    assert.match(error.message, new RegExp(`Wallet & Funding, or send USDC on Base to the workspace wallet ${live}, then retry`))
+    assert.doesNotMatch(error.message, new RegExp(cached))
 
     const messages = await request(gateway.port, '/v1/messages', { method: 'POST', key: secret, body: '{"model":"kimi-k2.6"}' })
     assert.equal(messages.status, 402)
     const anthropic = JSON.parse(messages.body)
     assert.equal(anthropic.error.type, 'antseed_buyer_fault')
-    assert.match(anthropic.error.message, /Wallet & Funding.*\(insufficient_deposits\)$/)
+    assert.match(anthropic.error.message, new RegExp(`${live}.*\\(insufficient_deposits\\)$`))
+    assert.doesNotMatch(anthropic.error.message, new RegExp(cached))
+  } finally {
+    await gateway.stop()
+    await buyer.close()
+    cleanup()
+  }
+})
+
+test('gateway leaves the wallet out of an out-of-credits 402 when the buyer cannot say it in time', async () => {
+  const { store, cleanup } = tempDataDir()
+  const buyer = await fakeBuyer({ outOfCredits: true })
+  store.setWalletAddress(DEFAULT_BUYER_IDENTITY, '0x00000000000000000000000000000000000000bb')
+  const { secret } = store.createKey({ label: 'Team', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
+  // A buyer that never answers the address lookup.
+  const gateway = await startGateway(store, buyer.port, 300_000, null, 50, () => new Promise<string | null>(() => {}))
+  try {
+    const startedAt = Date.now()
+    const chat = await request(gateway.port, '/v1/chat/completions', { method: 'POST', key: secret, body: '{"model":"kimi-k2.6"}' })
+    assert.ok(Date.now() - startedAt < 2_500, 'the 402 is not held open by the lookup')
+    assert.equal(chat.status, 402)
+    const error = JSON.parse(chat.body).error
+    assert.equal(error.param, 'insufficient_deposits')
+    assert.match(error.message, /under Wallet & Funding, then retry\./)
+    assert.doesNotMatch(error.message, /send USDC|0x0/)
   } finally {
     await gateway.stop()
     await buyer.close()

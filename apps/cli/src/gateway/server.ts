@@ -44,6 +44,9 @@ import type { ApiKeyRecord, GatewayStore, PresetRecord, RequestError, RequestRou
  */
 export const GATEWAY_INTERNAL_KEY_HEADER = 'x-antseed-gateway-key'
 
+/** How long an out-of-credits 402 waits for the buyer's live wallet address before leaving it out. */
+const OUT_OF_CREDITS_ADDRESS_TIMEOUT_MS = 1_000
+
 const HOP_BY_HOP = new Set([
   'connection',
   'keep-alive',
@@ -575,15 +578,28 @@ export class GatewayServer {
     try {
       const workspace = this._options.store.getWorkspace(key.workspaceId)
       if (!workspace) return null
-      // Name the address only when the key pays from the workspace's wallet. The cached address is
-      // filled in once the console reads the wallet; until then, ask the buyer.
-      const walletAddress = key.buyerIdentity !== workspace.buyerIdentity
-        ? null
-        : workspace.walletAddress ?? await this._options.identityAddress(key.buyerIdentity).catch(() => null)
+      // Name a transfer address only when the key pays from the workspace's wallet, and only as the
+      // running buyer reports it: the address cached on the workspace is for display and can be stale
+      // (a replaced identity, or one the buyer was handed in its environment). No live answer in time,
+      // no address: the console instructions still apply.
+      const walletAddress = key.buyerIdentity === workspace.buyerIdentity
+        ? await this._liveIdentityAddress(key.buyerIdentity, OUT_OF_CREDITS_ADDRESS_TIMEOUT_MS)
+        : null
       return workspaceOutOfCreditsBody(body, { name: workspace.name, walletAddress })
     } catch (error) {
       this._log(`gateway could not read workspace ${key.workspaceId}: ${errorMessage(error)}`)
       return null
+    }
+  }
+
+  /** The buyer's live address for an identity, or null when it fails or takes longer than `timeoutMs`. */
+  private async _liveIdentityAddress(buyerIdentity: string, timeoutMs: number): Promise<string | null> {
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const timeout = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), timeoutMs) })
+    try {
+      return await Promise.race([this._options.identityAddress(buyerIdentity).catch(() => null), timeout])
+    } finally {
+      if (timer) clearTimeout(timer)
     }
   }
 
@@ -1125,13 +1141,7 @@ export function workspaceOutOfCreditsMessage(workspace: { name: string; walletAd
  * and param stay as the buyer sent them. Null for any other body.
  */
 export function workspaceOutOfCreditsBody(body: Buffer, workspace: { name: string; walletAddress: string | null }): Buffer | null {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(body.toString('utf8'))
-  } catch {
-    return null
-  }
-  const root = jsonObject(parsed)
+  const root = parseJsonBody(body, undefined)
   const error = jsonObject(root?.['error'])
   const message = typeof error?.['message'] === 'string' ? error['message'] : null
   if (!root || !error || message === null) return null
