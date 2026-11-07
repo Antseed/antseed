@@ -161,6 +161,11 @@ export function initChatModule({
     }
   }
 
+  function forgetFundsNotice(convId: string): void {
+    fundsNoticeByConversation.delete(convId);
+    imageRetryByConversation.delete(convId);
+  }
+
   function getConversationSummaries(): ChatConversationSummary[] {
     return Array.isArray(uiState.chatConversations)
       ? (uiState.chatConversations as ChatConversationSummary[])
@@ -318,6 +323,12 @@ export function initChatModule({
     if (model && model.type !== 'text') {
       // Image models drive the image tool; the conversation keeps its text model.
       uiState.chatImageModelId = model.type === 'image' ? id : null;
+      // A stopped image request would otherwise retry on the model just replaced.
+      const openConvId = activeConversation?.id ?? null;
+      if (openConvId && imageRetryByConversation.has(openConvId)) {
+        forgetFundsNotice(openConvId);
+        clearChatNotices();
+      }
       if (model.type !== 'image') showChatError(`${model.label} cannot be used in the chat.`);
       notifyUiStateChanged();
       return;
@@ -329,6 +340,7 @@ export function initChatModule({
     clearChatNotices();
     saveLastChatModel(id);
     const convId = activeConversation?.id ?? null;
+    if (convId) forgetFundsNotice(convId);
     if (activeConversation && convId) {
       activeConversation.service = id;
       const summary = getConversationSummaries().find((c) => c.id === convId);
@@ -1103,10 +1115,7 @@ export function initChatModule({
 
   function dismissFundsNotice(): void {
     const convId = uiState.chatActiveConversation;
-    if (convId) {
-      fundsNoticeByConversation.delete(convId);
-      imageRetryByConversation.delete(convId);
-    }
+    if (convId) forgetFundsNotice(convId);
     uiState.chatFundsNotice = null;
     notifyUiStateChanged();
   }

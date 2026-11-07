@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
@@ -74,6 +74,43 @@ test('never overwrites a skill folder the user made', async () => {
   await assert.rejects(installAgentSkills('claude-code', endpoint, options), /not installed by Antseed Desktop/);
   await removeAgentSkills('claude-code', options);
   assert.ok(existsSync(path.join(options.home, '.claude', 'skills', 'antseed-images')));
+});
+
+test('a conflict on a later skill changes nothing: not the key, not the earlier skills', async () => {
+  const { home, sourceRoot } = fixture();
+  const options = { home, sourceRoot, keyFile: path.join(home, '.antseed', 'key') };
+  await installAgentSkills('claude-code', endpoint, options);
+  const skillsDir = path.join(home, '.claude', 'skills');
+  const first = path.join(skillsDir, AGENT_SKILL_NAMES[0]!, 'SKILL.md');
+  const before = readFileSync(first, 'utf8');
+
+  const last = AGENT_SKILL_NAMES[AGENT_SKILL_NAMES.length - 1]!;
+  rmSync(path.join(skillsDir, last), { recursive: true });
+  mkdirSync(path.join(skillsDir, last));
+  writeFileSync(path.join(skillsDir, last, 'SKILL.md'), 'mine');
+
+  await assert.rejects(
+    installAgentSkills('claude-code', { origin: 'https://other.example', apiKey: 'sk-new' }, options),
+    /already exists/,
+  );
+  assert.equal(readFileSync(options.keyFile, 'utf8').trim(), endpoint.apiKey);
+  assert.equal(readFileSync(first, 'utf8'), before);
+  assert.equal(readFileSync(path.join(skillsDir, last, 'SKILL.md'), 'utf8'), 'mine');
+});
+
+test('a failed copy changes nothing and leaves no staging folder behind', async () => {
+  const { home, sourceRoot } = fixture();
+  const options = { home, sourceRoot, keyFile: path.join(home, '.antseed', 'key') };
+  await installAgentSkills('claude-code', endpoint, options);
+  const skillsDir = path.join(home, '.claude', 'skills');
+  const first = path.join(skillsDir, AGENT_SKILL_NAMES[0]!, 'SKILL.md');
+  const before = readFileSync(first, 'utf8');
+
+  rmSync(path.join(sourceRoot, AGENT_SKILL_NAMES[AGENT_SKILL_NAMES.length - 1]!), { recursive: true });
+  await assert.rejects(installAgentSkills('claude-code', { origin: 'https://other.example', apiKey: 'sk-new' }, options));
+  assert.equal(readFileSync(options.keyFile, 'utf8').trim(), endpoint.apiKey);
+  assert.equal(readFileSync(first, 'utf8'), before);
+  assert.deepEqual(readdirSync(skillsDir).sort(), [...AGENT_SKILL_NAMES].sort());
 });
 
 test('the copy prompt carries the base URL and key', () => {

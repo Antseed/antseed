@@ -7,10 +7,11 @@
  * needs `syncAgentSkills()`.
  */
 import { existsSync, readdirSync } from 'node:fs';
-import { chmod, cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, cp, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { WORKSPACE_APPS_DIR } from './paths.js';
+import type { AgentSkillStatus } from '../shared/gateway-types.js';
 
 export const AGENT_SKILL_NAMES = ['antseed-ask', 'antseed-images', 'antseed-videos'] as const;
 
@@ -37,13 +38,7 @@ export const AGENT_SKILL_TARGETS: readonly AgentSkillTarget[] = [
   { id: 'droid', label: 'Droid', skillsDir: '.factory/skills', detect: ['.factory'] },
 ];
 
-export type AgentSkillStatus = {
-  id: string;
-  label: string;
-  detected: boolean;
-  installed: boolean;
-  skillsDir: string;
-};
+export type { AgentSkillStatus };
 
 export type AgentSkillsEndpoint = { origin: string; apiKey: string };
 
@@ -147,22 +142,37 @@ async function writeKeyFile(apiKey: string, options: Options): Promise<string> {
 async function installInto(skillsDir: string, endpoint: AgentSkillsEndpoint, options: Options): Promise<void> {
   const sourceRoot = bundledSkillsRoot(options);
   if (!sourceRoot) throw new Error('The Antseed skills are missing from this install.');
-  const keyFile = await writeKeyFile(endpoint.apiKey, options);
-  await mkdir(skillsDir, { recursive: true });
+  // Never overwrite a skill of that name the user put there themselves.
   for (const name of AGENT_SKILL_NAMES) {
     const dest = path.join(skillsDir, name);
-    // Never overwrite a skill of that name the user put there themselves.
     if (existsSync(dest) && !existsSync(path.join(dest, MARKER_FILE))) {
       throw new Error(`${dest} already exists and was not installed by Antseed Desktop. Remove or rename it, then try again.`);
     }
-    await rm(dest, { recursive: true, force: true });
-    await cp(path.join(sourceRoot, name), dest, { recursive: true });
-    for (const file of listMarkdown(dest)) {
-      let text = pointSkillAtGateway(await readFile(file, 'utf8'), endpoint.origin, keyFile);
-      if (path.basename(file) === 'SKILL.md' && path.dirname(file) === dest) text = withGatewayNote(text, endpoint.origin, keyFile);
-      await writeFile(file, text, 'utf8');
+  }
+  const keyFile = agentSkillsKeyFile(options);
+  await mkdir(skillsDir, { recursive: true });
+  // Built beside the final folders, so a failed copy changes nothing and the
+  // swap below is a rename. The key and the installed skills only change after this.
+  const staging = await mkdtemp(path.join(skillsDir, '.antseed-install-'));
+  try {
+    for (const name of AGENT_SKILL_NAMES) {
+      const dest = path.join(staging, name);
+      await cp(path.join(sourceRoot, name), dest, { recursive: true });
+      for (const file of listMarkdown(dest)) {
+        let text = pointSkillAtGateway(await readFile(file, 'utf8'), endpoint.origin, keyFile);
+        if (path.basename(file) === 'SKILL.md' && path.dirname(file) === dest) text = withGatewayNote(text, endpoint.origin, keyFile);
+        await writeFile(file, text, 'utf8');
+      }
+      await writeFile(path.join(dest, MARKER_FILE), 'Installed by Antseed Desktop. Removing the skill from the app deletes this folder.\n', 'utf8');
     }
-    await writeFile(path.join(dest, MARKER_FILE), 'Installed by Antseed Desktop. Removing the skill from the app deletes this folder.\n', 'utf8');
+    await writeKeyFile(endpoint.apiKey, options);
+    for (const name of AGENT_SKILL_NAMES) {
+      const dest = path.join(skillsDir, name);
+      await rm(dest, { recursive: true, force: true });
+      await rename(path.join(staging, name), dest);
+    }
+  } finally {
+    await rm(staging, { recursive: true, force: true });
   }
 }
 

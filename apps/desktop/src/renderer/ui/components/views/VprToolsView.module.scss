@@ -139,6 +139,18 @@
   cursor: pointer;
 }
 
+.settingTextLink {
+  width: fit-content;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--brand);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
 .modalAppSubtitle .settingWebsiteLink {
   margin-left: 6px;
 }

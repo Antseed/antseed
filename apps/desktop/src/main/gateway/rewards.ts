@@ -5,19 +5,13 @@
  * the Gateway Console's Rewards page.
  */
 import { formatAntsExact, rewards } from '@antseed/ants/service';
+import type { GatewayRewardsSummary } from '../../shared/gateway-types.js';
 import { readConfig } from '../runtime/config-io.js';
 import { ACTIVE_CONFIG_PATH } from '../runtime/active-config.js';
 import { resolveStakingChain } from '../payments/chain-config.js';
 import { sharedChainContext } from '../payments/shared-chain.js';
 
-export type GatewayRewardsSummary = {
-  /** Rewards contracts are configured on this chain. */
-  available: boolean;
-  address: string;
-  pendingAnts: string;
-  currentEpoch: number | null;
-  transfersEnabled: boolean;
-};
+export type { GatewayRewardsSummary };
 
 const TTL_MS = 5 * 60_000;
 let cached: { address: string; at: number; summary: GatewayRewardsSummary } | null = null;

@@ -27,6 +27,8 @@ import {
   type GatewayMode,
 } from '../gateway/settings.js';
 import { reconnectAllApps } from '../connected-apps/patching/connection.js';
+import { findConnectableProfile } from '../connected-apps/patching/profiles.js';
+import type { GatewayEndpointInfo } from '../../shared/gateway-types.js';
 import { readGatewayRewards } from '../gateway/rewards.js';
 import { ensureSecureIdentity, getSecureIdentity } from '../identity.js';
 import {
@@ -106,9 +108,12 @@ export function registerGatewayIpc(deps: GatewayIpcDeps): void {
     }
   });
 
-  ipcMain.handle('gateway:get-endpoint', async () => {
+  ipcMain.handle('gateway:get-endpoint', async (_event, opts?: { app?: string }): Promise<GatewayEndpointInfo> => {
     try {
-      const endpoint = await getGatewayEndpoint();
+      // In per-app key mode an app has its own key, which is the one to hand it.
+      const profile = opts?.app ? findConnectableProfile(opts.app) : undefined;
+      if (opts?.app && !profile) throw new Error(`Unknown app: ${opts.app}`);
+      const endpoint = await getGatewayEndpoint(profile ? { name: profile.name, label: profile.label } : undefined);
       return { ok: true, baseUrl: `${endpoint.origin}/v1`, origin: endpoint.origin, apiKey: endpoint.apiKey, mode: endpoint.mode };
     } catch (err) {
       return errorResult(err);

@@ -1,4 +1,16 @@
 import type { FreeTierStakeView } from '@antseed/node/free-tier-program';
+import type {
+  AgentSkillStatus as AgentSkillTarget,
+  GatewayEndpointInfo,
+  GatewayKeyInfo,
+  GatewayKeyMode,
+  GatewayMode,
+  GatewayPrivacy,
+  GatewayPrivacyMode,
+  GatewayRewardsSummary,
+  GatewaySettingsView as GatewaySettings,
+  GatewayStatus,
+} from '../../shared/gateway-types.js';
 export type RuntimeMode = 'gateway';
 
 export type RuntimeProcessState = {
@@ -49,66 +61,17 @@ export type ConnectedAppsState = {
   connectedAt: number | null;
 };
 
-export type GatewayMode = 'local' | 'remote';
-export type GatewayKeyMode = 'shared' | 'per-app';
-
-export type GatewayStatus = {
-  mode: GatewayMode;
-  origin: string | null;
-  keyMode: GatewayKeyMode;
-  running: boolean;
-  reachable: boolean;
-  hasKey: boolean;
-  lastError: string | null;
-};
-
-export type GatewaySettings = {
-  mode: GatewayMode;
-  remoteUrl: string | null;
-  keyMode: GatewayKeyMode;
-  hasRemoteKey: boolean;
-};
-
-export type GatewayPrivacyMode = 'anonymous' | 'private';
-
-export type GatewayPrivacy = {
-  mode: GatewayPrivacyMode;
-  editable: boolean;
-  requiredAbove: boolean;
-};
-
-export type GatewayRewardsSummary = {
-  available: boolean;
-  address: string;
-  pendingAnts: string;
-  currentEpoch: number | null;
-  transfersEnabled: boolean;
-};
-
-export type AgentSkillTarget = {
-  id: string;
-  label: string;
-  detected: boolean;
-  installed: boolean;
-  skillsDir: string;
-};
-
-export type GatewayKeyInfo = {
-  label: string | null;
-  buyerAddress: string | null;
-  requests: number;
-  spentUsd: string | null;
-  limits: Record<string, { limitUsd: string | null; spentUsd: string | null }>;
-};
-
-export type GatewayEndpointInfo = {
-  ok: boolean;
-  baseUrl?: string;
-  origin?: string;
-  apiKey?: string;
-  mode?: GatewayMode;
-  error?: string;
-};
+export type {
+  GatewayEndpointInfo,
+  GatewayKeyInfo,
+  GatewayKeyMode,
+  GatewayMode,
+  GatewayPrivacy,
+  GatewayPrivacyMode,
+  GatewayRewardsSummary,
+  GatewayStatus,
+} from '../../shared/gateway-types.js';
+export type { AgentSkillStatus as AgentSkillTarget, GatewaySettingsView as GatewaySettings } from '../../shared/gateway-types.js';
 
 export type RuntimeControlResult = {
   ok: boolean;
@@ -383,7 +346,7 @@ export type DesktopBridge = {
   gatewayUpdateSettings?: (opts: { mode?: GatewayMode; remoteUrl?: string | null; remoteApiKey?: string | null; keyMode?: GatewayKeyMode }) => Promise<{ ok: boolean; settings?: GatewaySettings; error?: string }>;
   gatewayRotateKeys?: () => Promise<{ ok: boolean; error?: string }>;
   /** Base URL (with /v1) + the desktop key, for pasting into any OpenAI- or Anthropic-compatible tool. */
-  gatewayGetEndpoint?: () => Promise<GatewayEndpointInfo>;
+  gatewayGetEndpoint?: (opts?: { app?: string }) => Promise<GatewayEndpointInfo>;
   gatewayGetKeyInfo?: () => Promise<GatewayKeyInfo | null>;
   /** Opens the gateway console in the browser at `path` (e.g. `/keys`, `/wallet?fund=1`). */
   gatewayOpenConsole?: (path?: string) => Promise<{ ok: boolean; error?: string }>;

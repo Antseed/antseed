@@ -240,6 +240,45 @@ exit ${exitCode}
   });
 });
 
+test('goose: a custom_antseed provider the user already had comes back on disconnect', async () => {
+  await withDir(async (dir) => {
+    const configPath = path.join(dir, 'config.yaml');
+    const providerPath = path.join(dir, 'custom_providers', 'custom_antseed.json');
+    await mkdir(path.dirname(providerPath), { recursive: true });
+    const mine = '{"name":"custom_antseed","description":"mine","base_url":"https://mine.example"}\n';
+    await writeFile(providerPath, mine, 'utf8');
+    await writeFile(configPath, 'GOOSE_PROVIDER: custom_antseed\nGOOSE_MODEL: my-model\n', 'utf8');
+    const patch: ConfigPatchDef = { format: 'goose', configPath, providerKey: 'openai', baseURL: 'http://localhost:{buyerPort}' };
+
+    assert.equal(isConfigPatchConnected(patch), false);
+    writeConfigPatch(patch, REMOTE);
+    assert.equal(JSON.parse(await readFile(providerPath, 'utf8')).base_url, 'https://gw.example.com/v1/chat/completions');
+    // A reconnect must not lose it either.
+    writeConfigPatch(patch, REMOTE);
+    assert.equal(isConfigPatchConnected(patch), true);
+
+    assert.equal(removeConfigPatch(patch), true);
+    assert.equal(await readFile(providerPath, 'utf8'), mine);
+    assert.deepEqual(parse(await readFile(configPath, 'utf8')), { GOOSE_PROVIDER: 'custom_antseed', GOOSE_MODEL: 'my-model' });
+  });
+});
+
+test('goose: disconnecting without having connected leaves the user\'s own custom_antseed alone', async () => {
+  await withDir(async (dir) => {
+    const configPath = path.join(dir, 'config.yaml');
+    const providerPath = path.join(dir, 'custom_providers', 'custom_antseed.json');
+    await mkdir(path.dirname(providerPath), { recursive: true });
+    const mine = '{"name":"custom_antseed","description":"mine"}\n';
+    await writeFile(providerPath, mine, 'utf8');
+    await writeFile(configPath, 'GOOSE_PROVIDER: custom_antseed\nGOOSE_MODEL: my-model\n', 'utf8');
+    const patch: ConfigPatchDef = { format: 'goose', configPath, providerKey: 'openai', baseURL: 'http://localhost:{buyerPort}' };
+
+    removeConfigPatch(patch);
+    assert.equal(await readFile(providerPath, 'utf8'), mine);
+    assert.deepEqual(parse(await readFile(configPath, 'utf8')), { GOOSE_PROVIDER: 'custom_antseed', GOOSE_MODEL: 'my-model' });
+  });
+});
+
 test('goose: legacy patch still removes after the upgrade', async () => {
   await withDir(async (dir) => {
     const configPath = path.join(dir, 'config.yaml');

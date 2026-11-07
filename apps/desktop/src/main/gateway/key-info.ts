@@ -1,11 +1,6 @@
-export type GatewayKeyInfo = {
-  label: string | null;
-  buyerAddress: string | null;
-  requests: number;
-  spentUsd: string | null;
-  /** Today's and this month's spend against the key's caps, as the gateway enforces them. */
-  limits: Record<string, { limitUsd: string | null; spentUsd: string | null }>;
-};
+import type { GatewayKeyInfo } from '../../shared/gateway-types.js';
+
+export type { GatewayKeyInfo };
 
 /** The gateway's `{ data: … }` answer from `GET /v1/key`. */
 export function parseGatewayKeyInfo(payload: unknown): GatewayKeyInfo | null {

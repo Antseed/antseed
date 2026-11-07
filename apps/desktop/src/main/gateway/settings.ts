@@ -11,17 +11,9 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { resolveConnectDataDir } from '../runtime/process-manager.js';
 import { normalizeGatewayUrl } from './remote-url.js';
+import type { GatewayKeyMode, GatewayMode, GatewayPrivacyMode, GatewaySettings } from '../../shared/gateway-types.js';
 
-export type GatewayMode = 'local' | 'remote';
-/** `shared`: one key for the chat and every app. `per-app`: a key per app, so the gateway shows usage per app. */
-export type GatewayKeyMode = 'shared' | 'per-app';
-
-/**
- * `anonymous`: any seller the routing policy allows (sellers see a
- * pseudonymous address). `private`: TEE sellers only, through the desktop
- * key's owner routing policy.
- */
-export type GatewayPrivacyMode = 'anonymous' | 'private';
+export type { GatewayKeyMode, GatewayMode, GatewayPrivacyMode, GatewaySettings };
 
 /** The key every surface uses in shared mode, and the chat's key in per-app mode. */
 export const DESKTOP_KEY_SCOPE = 'desktop';
@@ -31,13 +23,6 @@ export type StoredGatewayKey = {
   id: string | null;
   label: string;
   secret: string;
-};
-
-export type GatewaySettings = {
-  mode: GatewayMode;
-  remoteUrl: string | null;
-  keyMode: GatewayKeyMode;
-  privacy: GatewayPrivacyMode;
 };
 
 type StoredFile = GatewaySettings & {

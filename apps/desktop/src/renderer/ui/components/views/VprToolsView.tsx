@@ -13,6 +13,7 @@ import {
 } from '@hugeicons/core-free-icons';
 import { BrandIcon, isThemeAwareAppBrand, Modal, resolveBrandKey, useCopyFeedback } from '@antseed/ui';
 import type { ConnectedAppProfile, GatewayEndpointInfo, InstalledAppEntry } from '../../../types/bridge';
+import { ZED_APP, useZedKeyPaste } from './zed-key-paste';
 import { appsResource, installedAppsResource } from '../../../modules/app/vpr-resources';
 import { useCachedResource } from '../../../modules/app/cached-resource';
 import { TelegramBotCard } from './TelegramBotCard';
@@ -62,7 +63,7 @@ const BUILT_IN_APP_INFO: Readonly<Record<string, { description: string; websiteU
     websiteUrl: 'https://hermes-agent.nousresearch.com/',
   },
   zed: {
-    description: 'A high-performance collaborative code editor with built-in AI assistance. Zed keeps API keys in its own keychain: paste your gateway key into Zed’s Antseed provider once.',
+    description: 'A high-performance collaborative code editor with built-in AI assistance.',
     websiteUrl: 'https://zed.dev/download',
   },
   droid: {
@@ -279,6 +280,7 @@ export function VprToolsView() {
   }, []);
 
   const settingsProfile = settingsFor ? profiles.find((profile) => profile.name === settingsFor) ?? null : null;
+  const zedKey = useZedKeyPaste(profiles.some((profile) => profile.name === ZED_APP && profile.connected), settingsFor);
   const settingsInfo = settingsProfile ? appInfo(settingsProfile) : null;
   const settingsIdentity = settingsProfile
     ? (settingsProfile.toolSlugs?.length ? settingsProfile.toolSlugs : [settingsProfile.name]).join(', ')
@@ -359,6 +361,8 @@ export function VprToolsView() {
             <TelegramBotCard />
             {orderedProfiles.map((profile) => {
               const connected = profile.connected;
+              const needsKey = connected && profile.name === ZED_APP && !zedKey.pasted;
+              const needsAttention = needsKey || profile.needsRestart;
               const canRestart = connected && profile.canRestart === true;
               const notInstalled = !connected && profile.installed === false;
               const brandKey = resolveBrandKey(profile.name, profile.displayName);
@@ -430,9 +434,9 @@ export function VprToolsView() {
                       </>
                     ) : connected ? (
                       <span className={styles.appConnectedRow}>
-                        <span className={profile.needsRestart ? styles.appStatusWarn : styles.appStatus}>
-                          <span className={profile.needsRestart ? styles.restartDot : styles.connectedDot} aria-hidden="true" />
-                          {profile.needsRestart ? 'Restart required' : 'Connected'}
+                        <span className={needsAttention ? styles.appStatusWarn : styles.appStatus} title={needsKey ? 'Open Zed’s settings here to copy the key' : undefined}>
+                          <span className={needsAttention ? styles.restartDot : styles.connectedDot} aria-hidden="true" />
+                          {needsKey ? 'Paste key in Zed' : profile.needsRestart ? 'Restart required' : 'Connected'}
                         </span>
                         <button
                           type="button"
@@ -593,6 +597,32 @@ export function VprToolsView() {
                       : `Connect from the apps list to point ${settingsProfile.displayName} at your gateway.`}
                   </p>
                 </section>
+
+                {settingsProfile.name === ZED_APP && settingsProfile.connected && zedKey.apiKey ? (
+                  <section className={styles.settingSection}>
+                    <div className={styles.settingHead}>
+                      <span className={styles.settingTitle}>API key</span>
+                      {zedKey.pasted ? (
+                        <span className={styles.settingConnected}>
+                          <span className={styles.connectedDot} aria-hidden="true" />
+                          Pasted
+                        </span>
+                      ) : null}
+                    </div>
+                    <p className={styles.settingHint}>
+                      Zed keeps API keys in its own keychain, so Antseed can’t add this one for you. Paste it into
+                      the Antseed provider in Zed’s AI settings.
+                    </p>
+                    <div className={styles.endpointRows}>
+                      <CopyRow label="Copy key" value={zedKey.apiKey} display={maskKey(zedKey.apiKey)} />
+                    </div>
+                    {zedKey.pasted ? null : (
+                      <button type="button" className={styles.settingTextLink} onClick={zedKey.markPasted}>
+                        I’ve pasted it
+                      </button>
+                    )}
+                  </section>
+                ) : null}
 
                 <section className={styles.settingSection}>
                   <div className={styles.settingHead}>

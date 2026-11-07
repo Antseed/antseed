@@ -1,7 +1,7 @@
 import { ANTSEED_MODEL_CONTEXT_WINDOW, ANTSEED_MODEL_MAX_OUTPUT_TOKENS } from '@antseed/protocol/service-api';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { Document, parseDocument } from 'yaml';
@@ -1778,24 +1778,51 @@ function deleteGoosePatchState(filePath: string): void {
  * list of models.
  */
 const GOOSE_CUSTOM_PROVIDER = 'custom_antseed';
+/** Tells the provider file we wrote from one of the user's under the same name. */
+const GOOSE_CUSTOM_PROVIDER_DESCRIPTION = 'Models on your Antseed gateway';
 
 function gooseCustomProviderPath(filePath: string): string {
   return path.join(path.dirname(filePath), 'custom_providers', `${GOOSE_CUSTOM_PROVIDER}.json`);
 }
 
-function removeGooseCustomProvider(filePath: string): boolean {
+/** Where a provider the user already had under our name waits until disconnect. */
+function savedGooseUserProviderPath(filePath: string): string {
+  return `${filePath}.antseed.custom-provider.json`;
+}
+
+function readGooseCustomProvider(filePath: string): { exists: boolean; ours: boolean; models: unknown[] } {
+  const providerPath = gooseCustomProviderPath(filePath);
+  if (!existsSync(providerPath)) return { exists: false, ours: false, models: [] };
   try {
-    unlinkSync(gooseCustomProviderPath(filePath));
-    return true;
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
-    return false;
+    const provider = tryReadConfigPatchFile(providerPath);
+    const ours = provider?.['description'] === GOOSE_CUSTOM_PROVIDER_DESCRIPTION;
+    return { exists: true, ours, models: ours && Array.isArray(provider?.['models']) ? provider['models'] : [] };
+  } catch {
+    return { exists: true, ours: false, models: [] };
   }
 }
 
-function savedGooseCustomModels(filePath: string): unknown[] {
-  const models = tryReadConfigPatchFile(gooseCustomProviderPath(filePath))?.['models'];
-  return Array.isArray(models) ? models : [];
+function saveGooseUserProvider(filePath: string): void {
+  renameSync(gooseCustomProviderPath(filePath), savedGooseUserProviderPath(filePath));
+}
+
+/** Removes the provider only if we wrote it; one the user put there stays. */
+function removeGooseCustomProvider(filePath: string): boolean {
+  if (!readGooseCustomProvider(filePath).ours) return false;
+  unlinkSync(gooseCustomProviderPath(filePath));
+  return true;
+}
+
+function restoreGooseUserProvider(filePath: string): boolean {
+  const saved = savedGooseUserProviderPath(filePath);
+  if (!existsSync(saved)) return false;
+  if (readGooseCustomProvider(filePath).exists) {
+    // The user made a new one while connected, and that one is the current one.
+    unlinkSync(saved);
+    return false;
+  }
+  renameSync(saved, gooseCustomProviderPath(filePath));
+  return true;
 }
 
 function rememberGooseSelection(filePath: string, lines: readonly string[]): void {
@@ -1820,13 +1847,16 @@ function applyGooseCustomProviderToFile(filePath: string, patch: GooseConfigPatc
     || previousModel === ROUTED_MODEL_ALIAS
     || (previousModel?.includes('@') ?? false)
   );
-  const owned = provider === GOOSE_CUSTOM_PROVIDER || legacyPatch || (provider === patch.providerKey && readGoosePatchState(filePath) !== null);
+  const existingProvider = readGooseCustomProvider(filePath);
+  const userProvider = existingProvider.exists && !existingProvider.ours;
+  const owned = (provider === GOOSE_CUSTOM_PROVIDER && !userProvider) || legacyPatch || (provider === patch.providerKey && readGoosePatchState(filePath) !== null);
   // Model discovery failed for now: the pick and the list stay until it's back.
   const selected = pickModel(t, owned ? previousModel : undefined) ?? (owned && !legacyPatch ? previousModel : undefined);
   const models = t.models.length > 0
     ? t.models.map((model) => ({ name: model.id, context_limit: ANTSEED_MODEL_CONTEXT_WINDOW }))
-    : savedGooseCustomModels(filePath);
+    : existingProvider.models;
   if (!owned) rememberGooseSelection(filePath, previous);
+  if (userProvider) saveGooseUserProvider(filePath);
   removeGooseProviderFromFile(filePath, patch, [], { keepSelection: true });
   let lines = existsSync(filePath) ? readFileSync(filePath, 'utf8').split('\n') : [];
   while (lines.length > 0 && lines[lines.length - 1]!.trim() === '') lines.pop();
@@ -1837,7 +1867,7 @@ function applyGooseCustomProviderToFile(filePath: string, patch: GooseConfigPatc
     name: GOOSE_CUSTOM_PROVIDER,
     engine: 'openai',
     display_name: 'Antseed',
-    description: 'Models on your Antseed gateway',
+    description: GOOSE_CUSTOM_PROVIDER_DESCRIPTION,
     api_key_env: '',
     base_url: `${baseURL}/v1/chat/completions`,
     models,
@@ -1888,8 +1918,10 @@ function removeGooseProviderFromFile(
   if (!existsSync(filePath)) return false;
   let lines = readFileSync(filePath, 'utf8').split('\n');
   const state = readGoosePatchState(filePath);
+  const provider = readGooseCustomProvider(filePath);
   let changed = removeGooseCustomProvider(filePath);
-  if (readYamlTopLevelString(lines, 'GOOSE_PROVIDER') === GOOSE_CUSTOM_PROVIDER) {
+  // Selecting a provider of the user's own under that name isn't our patch.
+  if (readYamlTopLevelString(lines, 'GOOSE_PROVIDER') === GOOSE_CUSTOM_PROVIDER && (provider.ours || !provider.exists)) {
     lines = removeYamlTopLevelKey(lines, 'GOOSE_PROVIDER');
     lines = removeYamlTopLevelKey(lines, 'GOOSE_MODEL');
     changed = true;
@@ -1915,6 +1947,7 @@ function removeGooseProviderFromFile(
     changed = true;
   }
   if (!keepSelection) {
+    changed = restoreGooseUserProvider(filePath) || changed;
     const saved = takeSelection(filePath);
     if (changed && readYamlTopLevelString(lines, 'GOOSE_PROVIDER') === undefined) {
       for (const key of ['GOOSE_PROVIDER', 'GOOSE_MODEL']) {
@@ -2239,15 +2272,17 @@ function applyClaudeCodeSettingsToFile(filePath: string, patch: ClaudeCodeConfig
   backupConfigFile(filePath);
   const config = readConfigPatchFile(filePath);
   const existingEnv = claudeCodeEnv(config, filePath);
-  if (!readClaudeCodePatchState(filePath)) {
+  let state = readClaudeCodePatchState(filePath);
+  if (!state) {
     const envSource = existingEnv ?? {};
-    writeClaudeCodePatchState(filePath, {
+    state = {
       version: 1,
       configExisted,
       envPresent: existingEnv !== undefined,
       env: Object.fromEntries(CLAUDE_CODE_MANAGED_ENV_KEYS.map((key) => [key, savedValue(envSource, key)])) as Record<ClaudeCodeManagedEnvKey, ClaudeCodeSavedValue>,
       model: savedValue(config, 'model'),
-    });
+    };
+    writeClaudeCodePatchState(filePath, state);
   }
 
   const env = existingEnv ?? {};
@@ -2263,7 +2298,6 @@ function applyClaudeCodeSettingsToFile(filePath: string, patch: ClaudeCodeConfig
   if (selected) config['model'] = selected;
   writeJsonFile(filePath, config);
   if (!t.legacy) {
-    const state = readClaudeCodePatchState(filePath)!;
     writeClaudeCodePatchState(filePath, {
       ...state,
       // A refresh with no models left the selection alone, so it stays ours.
@@ -2703,7 +2737,7 @@ function nativeConfigPatchConnected(patch: ConfigPatchDef): boolean {
   if (patch.format === 'goose') {
     if (!existsSync(filePath)) return false;
     const lines = readFileSync(filePath, 'utf8').split('\n');
-    if (readYamlTopLevelString(lines, 'GOOSE_PROVIDER') === GOOSE_CUSTOM_PROVIDER) return true;
+    if (readYamlTopLevelString(lines, 'GOOSE_PROVIDER') === GOOSE_CUSTOM_PROVIDER) return readGooseCustomProvider(filePath).ours;
     if (readYamlTopLevelString(lines, 'GOOSE_PROVIDER') !== patch.providerKey) return false;
     if (readYamlTopLevelString(lines, 'GOOSE_MODEL') === ROUTED_MODEL_ALIAS) return true;
     const state = readGoosePatchState(filePath);

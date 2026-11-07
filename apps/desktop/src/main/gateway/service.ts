@@ -4,7 +4,8 @@
  * connected apps use, and builds links into the gateway console where usage,
  * keys, limits and funding are managed.
  */
-import { parseGatewayKeyInfo, type GatewayKeyInfo } from './key-info.js';
+import { parseGatewayKeyInfo } from './key-info.js';
+import type { GatewayKeyInfo, GatewayPrivacy, GatewayStatus } from '../../shared/gateway-types.js';
 import { publishKeyWithPolicy } from './key-with-policy.js';
 import { resolveConnectDataDir, DEFAULT_LOCAL_GATEWAY_PORT, type ProcessManager, type RuntimeMode } from '../runtime/process-manager.js';
 import { ACTIVE_CONFIG_PATH } from '../runtime/active-config.js';
@@ -22,30 +23,18 @@ import {
   listLocalKeys,
   setLocalKey,
   updateGatewaySettings,
-  type GatewayKeyMode,
   type GatewayPrivacyMode,
   type GatewayMode,
   type StoredGatewayKey,
 } from './settings.js';
+
+export type { GatewayPrivacy, GatewayStatus };
 
 export type GatewayEndpoint = {
   mode: GatewayMode;
   /** Origin without `/v1`. */
   origin: string;
   apiKey: string;
-};
-
-export type GatewayStatus = {
-  mode: GatewayMode;
-  origin: string | null;
-  keyMode: GatewayKeyMode;
-  /** Local: the gateway process runs. Remote: always true (nothing to run). */
-  running: boolean;
-  /** The gateway answered the last health probe. */
-  reachable: boolean;
-  /** A key is configured for the chat / shared scope. */
-  hasKey: boolean;
-  lastError: string | null;
 };
 
 type Deps = {
@@ -322,14 +311,6 @@ export async function getGatewayKeyInfo(): Promise<GatewayKeyInfo | null> {
     return null;
   }
 }
-
-export type GatewayPrivacy = {
-  mode: GatewayPrivacyMode;
-  /** False with a remote gateway: its routing policy is set in its console. */
-  editable: boolean;
-  /** TEE-only routing is required above the key (gateway, workspace or the key's admin layer). */
-  requiredAbove: boolean;
-};
 
 type KeyPolicyView = { ownerRoutingPolicy: Record<string, unknown> | null; effective: Record<string, unknown> };
 

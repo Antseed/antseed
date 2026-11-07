@@ -61,7 +61,7 @@ Open **Agents & apps** and connect a detected tool. The app edits the tool's own
 - When a row shows **Restart**, restart the tool before testing.
 - **Disconnect** restores the tool's original configuration.
 - With the local gateway, the app removes its changes when it quits and applies them again at launch. With a remote gateway, the changes stay.
-- **Zed** keeps API keys in its keychain, so paste the key into Zed once.
+- **Zed** keeps API keys in its keychain, so the app can't add the key for you. Its row shows **Paste key in Zed** until you copy the key from Zed's settings here, paste it into the Antseed provider in Zed, and choose **I've pasted it**. The row asks again if the key or the gateway changes.
 - **Claude Code** is not in this list: its model list only takes Claude-named models, so it can't offer the network's. If an earlier version connected it, the app restores its original settings. You can still add Antseed's skills to it under **Use it with your agent**.
 - **Codex** gets its model list from a catalog the app writes next to its config. A Codex inside WSL keeps its own list.
 - **Telegram Bot** lets you message the agent on your computer from your phone. Create a bot with [@BotFather](https://t.me/BotFather), paste its token in the **Telegram Bot** row, then open the pairing link; the bot answers only you. It uses `/new`, `/model` and `/stop`, asks you in Telegram before running a tool, and only answers while the app is open. Its chats are billed like any chat in the app and follow your Anonymous or Private choice.

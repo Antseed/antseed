@@ -14,6 +14,7 @@ import { CHAT_DATA_DIR, getCurrentChatWorkspaceDir } from './workspace.js';
 import { normalizeServiceId, normalizeTokenCount } from './normalize.js';
 import { GATEWAY_PROVIDER_ID } from './gateway-model.js';
 import { clearLegacySellerPin, sessionServiceId } from './legacy-seller-pin.js';
+import { restoreResponseRoutes } from './response-route.js';
 import {
   convertPiMessagesToUi,
   deriveCost,
@@ -149,9 +150,9 @@ export class PiConversationStore {
 
   private async buildConversationFromManager(manager: SessionManager): Promise<AiConversation> {
     const context = manager.buildSessionContext();
-    // Sessions written before the gateway also carry `antseed-response-route`
-    // custom entries; they are ignored here.
-    const messages = convertPiMessagesToUi(context.messages as Message[]);
+    // Sessions written before the gateway name each reply's model and seller in
+    // `antseed-response-route` custom entries.
+    const messages = restoreResponseRoutes(convertPiMessagesToUi(context.messages as Message[]), manager.getBranch());
     const usage = deriveUsage(messages);
     const header = manager.getHeader();
     const createdAtRaw = header ? Date.parse(header.timestamp) : Date.now();

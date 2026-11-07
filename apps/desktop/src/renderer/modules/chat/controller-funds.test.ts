@@ -69,4 +69,34 @@ describe('a request stopped for funds', () => {
     await api.openConversation('conv-1');
     expect(uiState.chatFundsNotice).toBeNull();
   });
+
+  it('forgets the image retry when another model is chosen, so it cannot come back on the old one', async () => {
+    const { api, uiState, chatGenerateImage } = setup(lowFunds);
+    api.generateImage('a cat');
+    await tick();
+    expect(uiState.chatFundsNotice).not.toBeNull();
+
+    api.selectChatModel('text-model');
+    expect(uiState.chatFundsNotice).toBeNull();
+    api.startNewChat();
+    await api.openConversation('conv-1');
+    expect(uiState.chatFundsNotice).toBeNull();
+
+    api.retryAfterPayment();
+    await tick();
+    expect(chatGenerateImage).toHaveBeenCalledTimes(1);
+  });
+
+  it('forgets the image retry when another image model is chosen', async () => {
+    const { api, uiState, chatGenerateImage } = setup(lowFunds);
+    uiState.chatModels = [...uiState.chatModels, model('image-model-2', 'image')] as never;
+    api.generateImage('a cat');
+    await tick();
+
+    api.selectChatModel('image-model-2');
+    expect(uiState.chatFundsNotice).toBeNull();
+    api.retryAfterPayment();
+    await tick();
+    expect(chatGenerateImage).toHaveBeenCalledTimes(1);
+  });
 });
