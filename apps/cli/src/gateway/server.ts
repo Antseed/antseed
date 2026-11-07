@@ -2,7 +2,7 @@ import { timingSafeEqual } from 'node:crypto'
 import * as http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { nativeVideoAcceptance, nativeVideoRoute, type NativeVideoRoute } from '@antseed/api-adapter'
-import { DEFAULT_BUYER_IDENTITY, VIDEO_JOB_RETIRED_HEADER, VIDEO_PRICE_HEADER } from '@antseed/node'
+import { ANTSEED_BUYER_FAULT_ERROR_CODE, DEFAULT_BUYER_IDENTITY, VIDEO_JOB_RETIRED_HEADER, VIDEO_PRICE_HEADER } from '@antseed/node'
 import { SPEND_ATTRIBUTION_HEADER } from '../proxy/spend-attribution.js'
 import { decodeServedSelection, ROUTE_SELECTION_HEADER, type ServedSelection } from '../proxy/route-selection.js'
 import { coveredByFreeAllowance, ROUTER_PEER_ID_HEADER, ROUTER_RANK_HEADER, ROUTER_SERVICE_HEADER } from '../proxy/telemetry.js'
@@ -43,6 +43,9 @@ import type { ApiKeyRecord, GatewayStore, PresetRecord, RequestError, RequestRou
  * loopback only. Stripped from everything forwarded to the buyer.
  */
 export const GATEWAY_INTERNAL_KEY_HEADER = 'x-antseed-gateway-key'
+
+/** How long an out-of-credits 402 waits for the buyer's live wallet address before leaving it out. */
+const OUT_OF_CREDITS_ADDRESS_TIMEOUT_MS = 1_000
 
 const HOP_BY_HOP = new Set([
   'connection',
@@ -570,6 +573,36 @@ export class GatewayServer {
     else if (outcome.delivered) accounting.videoDelivered(job)
   }
 
+  /** The buyer's out-of-credits 402 rewritten for the key's workspace, or null to pass it on unchanged. */
+  private async _workspaceOutOfCredits(key: ApiKeyRecord, body: Buffer): Promise<Buffer | null> {
+    try {
+      const workspace = this._options.store.getWorkspace(key.workspaceId)
+      if (!workspace) return null
+      // Name a transfer address only when the key pays from the workspace's wallet, and only as the
+      // running buyer reports it: the address cached on the workspace is for display and can be stale
+      // (a replaced identity, or one the buyer was handed in its environment). No live answer in time,
+      // no address: the console instructions still apply.
+      const walletAddress = key.buyerIdentity === workspace.buyerIdentity
+        ? await this._liveIdentityAddress(key.buyerIdentity, OUT_OF_CREDITS_ADDRESS_TIMEOUT_MS)
+        : null
+      return workspaceOutOfCreditsBody(body, { name: workspace.name, walletAddress })
+    } catch (error) {
+      this._log(`gateway could not read workspace ${key.workspaceId}: ${errorMessage(error)}`)
+      return null
+    }
+  }
+
+  /** The buyer's live address for an identity, or null when it fails or takes longer than `timeoutMs`. */
+  private async _liveIdentityAddress(buyerIdentity: string, timeoutMs: number): Promise<string | null> {
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const timeout = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), timeoutMs) })
+    try {
+      return await Promise.race([this._options.identityAddress(buyerIdentity).catch(() => null), timeout])
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
+  }
+
   /**
    * Sends an admitted request to the buyer and streams the answer back.
    * Every path must finish the request (and so release or start expiring
@@ -742,6 +775,20 @@ export class GatewayServer {
               const listing = filterModelList(Buffer.concat(chunks), modelListPolicy)
               res.writeHead(status, { ...responseHeaders, 'content-length': String(listing.length) })
               res.end(listing)
+              finish!(status, buyerRequestId)
+            })
+            return
+          }
+          // The buyer's out-of-credits answer names the desktop app and the CLI; here the funds are the workspace's.
+          if (status === 402 && contentType.startsWith('application/json')) {
+            const chunks: Buffer[] = []
+            upstreamRes.on('data', (chunk: Buffer) => chunks.push(chunk))
+            upstreamRes.once('end', async () => {
+              const original = Buffer.concat(chunks)
+              const answer = await this._workspaceOutOfCredits(key, original) ?? original
+              delete responseHeaders['transfer-encoding']
+              res.writeHead(status, { ...responseHeaders, 'content-length': String(answer.length) })
+              res.end(answer)
               finish!(status, buyerRequestId)
             })
             return
@@ -1078,6 +1125,34 @@ function parseJsonBody(body: Buffer, contentType: string | undefined): Record<st
   } catch {
     return null
   }
+}
+
+/** What a gateway key holder is told when the workspace wallet cannot pay a seller. */
+export function workspaceOutOfCreditsMessage(workspace: { name: string; walletAddress: string | null }): string {
+  const send = workspace.walletAddress ? `, or send USDC on Base to the workspace wallet ${workspace.walletAddress}` : ''
+  return `This API key's workspace (${workspace.name}) is out of AntSeed credits for this request. `
+    + `A workspace admin can add funds in the gateway console under Wallet & Funding${send}, then retry. `
+    + 'Free sellers need no funds: pin one as <peerId>@<model>.'
+}
+
+/**
+ * The buyer's 402 for a wallet with too few credits, with its message pointed at the workspace's
+ * funding instead of the desktop app and the CLI. Only the message changes: the status, type, code
+ * and param stay as the buyer sent them. Null for any other body.
+ */
+export function workspaceOutOfCreditsBody(body: Buffer, workspace: { name: string; walletAddress: string | null }): Buffer | null {
+  const root = parseJsonBody(body, undefined)
+  const error = jsonObject(root?.['error'])
+  const message = typeof error?.['message'] === 'string' ? error['message'] : null
+  if (!root || !error || message === null) return null
+  // OpenAI format: code antseed_buyer_fault, param insufficient_deposits.
+  // Anthropic format: type antseed_buyer_fault, the reason in brackets at the end of the message.
+  const openAi = error['code'] === ANTSEED_BUYER_FAULT_ERROR_CODE && error['param'] === 'insufficient_deposits'
+  const anthropic = error['type'] === ANTSEED_BUYER_FAULT_ERROR_CODE && message.endsWith('(insufficient_deposits)')
+  if (!openAi && !anthropic) return null
+  const text = workspaceOutOfCreditsMessage(workspace)
+  error['message'] = anthropic ? `${text} (insufficient_deposits)` : text
+  return Buffer.from(JSON.stringify(root))
 }
 
 function jsonObject(value: unknown): Record<string, unknown> | null {

@@ -267,6 +267,9 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- Buyer/Gateway: the 402 for a wallet with too few credits named a command the CLI rejects (`antseed buyer deposit <amount>`). It now says `antseed buyer deposit`, and that free sellers need no funds. Through a gateway the message names the key's workspace and points to **Wallet & Funding** and the workspace wallet instead of the desktop app and CLI. The status, `code` (`antseed_buyer_fault`) and `param` (`insufficient_deposits`) are unchanged. `checkBuyerReadiness` in `@antseed/node` no longer suggests `antseed buyer deposit 10` either.
+- Docs: the API error table listed the out-of-credits 402 as `insufficient_deposits`; it documents the real `antseed_buyer_fault` shape for OpenAI and Anthropic formats, and gateway troubleshooting gains a row for it.
+
 - CLI: `antseed buyer start` and `antseed dev` print `OPENAI_BASE_URL` with `/v1` (`export OPENAI_BASE_URL=http://localhost:8377/v1`, on the port the buyer listens on). OpenAI SDKs append `/chat/completions` to the base URL, so the printed line without `/v1` got a 404. `ANTHROPIC_BASE_URL` stays the proxy root, which Anthropic SDKs and Claude Code expect. Router plugin tool hints for `OPENAI_BASE_URL` and `OPENAI_API_BASE` get `/v1` too.
 
 - CLI buyer and node: a seller that moves to a new public address is picked up again without restarting the buyer.
