@@ -94,9 +94,13 @@ gateway_up() { curl -fsS -o /dev/null --max-time 2 "http://127.0.0.1:$PORT/conso
 # Just after start the buyer is still discovering sellers, and a model it has
 # not found yet answers 503 with Retry-After. Wait for that, up to a minute.
 wait_for_sellers() {
-  local i
+  local i buyer_port
+  # The buyer's port comes from the same config `gateway start` read (buyer.proxyPort).
+  buyer_port="$("$ANTSEED" gateway settings show --json 2>/dev/null \
+    | node -e 'try{const p=JSON.parse(require("fs").readFileSync(0,"utf8")).buyer.proxyPort;if(Number.isInteger(p))console.log(p)}catch{}' 2>/dev/null)"
+  buyer_port="${buyer_port:-8377}"
   for ((i = 0; i < 60; i++)); do
-    curl -fsS --max-time 2 "http://127.0.0.1:8377/_antseed/status" 2>/dev/null | grep -q '"discovering":true' || return 0
+    curl -fsS --max-time 2 "http://127.0.0.1:$buyer_port/_antseed/status" 2>/dev/null | grep -q '"discovering":true' || return 0
     if [[ "$i" -eq 0 ]]; then step "Waiting for the buyer to discover sellers (up to a minute)"; fi
     sleep 1
   done
