@@ -134,7 +134,7 @@ curl http://localhost:8377/v1/images/edits \
   -H 'x-antseed-pin-peer: <peerId>' \
   -F model=qwen-image-3-pro \
   -F prompt='Put the cat from the second image on the sofa' \
-  -F 'image[]=@sofa.png' -F 'image[]=@cat.png' \
+  -F 'image[]=@./sofa.png' -F 'image[]=@./cat.png' \
   | jq -r '.data[0].b64_json' | base64 --decode > edited.png
 ```
 
