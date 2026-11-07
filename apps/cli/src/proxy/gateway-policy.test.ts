@@ -769,6 +769,21 @@ test('while the first discovery runs, a seller the sweep finds releases the requ
   assert.ok(Date.now() - started < 3_000)
 })
 
+test('while the first discovery runs, finding an unrelated seller does not restart the wait budget', async (t) => {
+  // The cache starts empty, and late in the budget the sweep finds a seller of a different model.
+  const peers: PeerInfo[] = []
+  const h = await startHarness(t, peers)
+  startDiscovery(h, { waitMs: 1_000, peers })
+  setTimeout(() => peers.push(cheap), 800)
+  const started = Date.now()
+  const res = await chat(h, {}, 'qwen3-coder')
+  const elapsed = Date.now() - started
+  assert.equal(res.status, 503)
+  assert.equal(((await res.json()) as any).error.code, 'discovery_in_progress')
+  // One 1 s budget for both waits, not 0.8 s and then a fresh 1 s.
+  assert.ok(elapsed >= 900 && elapsed < 1_600, `took ${elapsed} ms`)
+})
+
 test('the discovery wait ends as soon as the client goes away', async (t) => {
   const h = await startHarness(t, [])
   startDiscovery(h, { waitMs: 10_000, peers: [] })

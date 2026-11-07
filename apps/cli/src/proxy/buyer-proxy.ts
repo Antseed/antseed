@@ -3166,13 +3166,18 @@ export class BuyerProxy {
   }
 
   /**
-   * Waits at most `_initialDiscoveryWaitMs` while the first discovery sweep
-   * runs, until `found` accepts the peers it has added to the cache. It only
+   * Waits until `deadline` (by default `_initialDiscoveryWaitMs` from now) while
+   * the first discovery sweep runs, until `found` accepts the peers it has added
+   * to the cache. A request that waits more than once passes the same deadline,
+   * so its waits share one budget. It only
    * reads the cache the sweep fills (never starts a lookup of its own, which
    * could outlast the budget) and stops as soon as the client goes away.
    */
-  private async _waitForInitialDiscovery(found: (peers: PeerInfo[]) => boolean, signal: AbortSignal): Promise<PeerInfo[]> {
-    const deadline = Date.now() + this._initialDiscoveryWaitMs
+  private async _waitForInitialDiscovery(
+    found: (peers: PeerInfo[]) => boolean,
+    signal: AbortSignal,
+    deadline = Date.now() + this._initialDiscoveryWaitMs,
+  ): Promise<PeerInfo[]> {
     while (!found(this._cachedPeers) && this._initialDiscoveryRunning()) {
       const remainingMs = deadline - Date.now()
       if (remainingMs <= 0) break
@@ -4738,10 +4743,12 @@ export class BuyerProxy {
     // While the first discovery sweep runs, an unpinned request routes from the cache the sweep
     // fills instead of starting a foreground lookup, which could outlast the discovery wait.
     const awaitingInitialDiscovery = !explicitPeerId && this._initialDiscoveryRunning()
+    // Both discovery waits below share this one budget.
+    const discoveryDeadline = Date.now() + this._initialDiscoveryWaitMs
     let peers = awaitingInitialDiscovery ? this._cachedPeers : await this._getPeers()
     // A pinned seller is still looked up on its own DHT topic below, even when discovery found no one.
     if (peers.length === 0 && !explicitPeerId && this._initialDiscoveryRunning()) {
-      peers = await this._waitForInitialDiscovery((found) => found.length > 0, signal)
+      peers = await this._waitForInitialDiscovery((found) => found.length > 0, signal, discoveryDeadline)
     }
     if (peers.length === 0 && !explicitPeerId) {
       if (this._initialDiscoveryRunning()) {
@@ -4774,11 +4781,11 @@ export class BuyerProxy {
       const selectModelPeers = (candidateSources: PeerInfo[]): CandidatePeerRouteSelection =>
         selectCandidatePeersForRouting(candidateSources, requestProtocol, requestedService, explicitProvider, 'strict', requestedVoice)
       let discoveredPeers = peers
-      let { candidatePeers: modelPeers, routePlanByPeerId: modelPlans } = selectModelPeers(discoveredPeers)
+      let selection = selectModelPeers(discoveredPeers)
       const cacheAgeMs = Date.now() - this._cacheLastUpdatedAtMs
-      if ((modelPeers.length === 0 || cacheAgeMs > this._peerCacheTtlMs) && !this._initialDiscoveryRunning()) {
+      if ((selection.candidatePeers.length === 0 || cacheAgeMs > this._peerCacheTtlMs) && !this._initialDiscoveryRunning()) {
         discoveredPeers = await this._getPeers({ forceRefresh: true })
-        ;({ candidatePeers: modelPeers, routePlanByPeerId: modelPlans } = selectModelPeers(discoveredPeers))
+        selection = selectModelPeers(discoveredPeers)
       }
       const router = this._node.router
       // Conversations the client identifies (session id, prompt-cache key)
@@ -4797,17 +4804,18 @@ export class BuyerProxy {
         affinityKey,
         ...(deterministic ? { deterministic } : {}),
       })
-      let plan = planRoutes({ candidatePeers: modelPeers, routePlanByPeerId: modelPlans })
+      let plan = planRoutes(selection)
       if (plan.candidates.length === 0 && this._initialDiscoveryRunning()) {
         // Just started: the first discovery sweep may not have reached a seller
         // of this model yet, or the trust data that lets the routing policy take one.
         discoveredPeers = await this._waitForInitialDiscovery((found) => {
-          const selection = selectModelPeers(found)
-          return selection.candidatePeers.length > 0 && planRoutes(selection, true).candidates.length > 0
-        }, signal)
-        ;({ candidatePeers: modelPeers, routePlanByPeerId: modelPlans } = selectModelPeers(discoveredPeers))
-        plan = planRoutes({ candidatePeers: modelPeers, routePlanByPeerId: modelPlans })
+          const available = selectModelPeers(found)
+          return available.candidatePeers.length > 0 && planRoutes(available, true).candidates.length > 0
+        }, signal, discoveryDeadline)
+        selection = selectModelPeers(discoveredPeers)
+        plan = planRoutes(selection)
       }
+      const { candidatePeers: modelPeers, routePlanByPeerId: modelPlans } = selection
       const { candidates, verdicts, effectivePolicy, explored, selections, firstPick } = plan
       const requireVerified = effectivePolicy?.requireVerified === true
       const requireTee = effectivePolicy?.requireTee === true
