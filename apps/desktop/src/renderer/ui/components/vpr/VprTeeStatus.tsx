@@ -55,8 +55,7 @@ export function VprTeeStatus({ evidence, now, checking, available, error, classN
         <Hop name="Seller" tee />
         <Hop name="Model provider" tee={scope.providerTee} />
       </span>
-      <span>{scope.description}</span>
-      {upstreams.length > 0 && <span>Sends prompts to {upstreams.join(', ')}.</span>}
+      <span>{scope.description}{upstreams.length > 0 && ` Sends prompts to ${upstreams.join(', ')}.`}</span>
     </span>
   );
   return (
