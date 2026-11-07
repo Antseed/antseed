@@ -1,4 +1,4 @@
-import { request } from 'node:http'
+import { postUnix } from './unix-http.js'
 
 /**
  * dstack collector: it mints a TDX quote via the dstack guest-agent unix socket. This is the
@@ -14,7 +14,7 @@ import { request } from 'node:http'
 
 /** Default guest-agent socket locations, tried in order (mirrors @phala/dstack-sdk). */
 const DEFAULT_DSTACK_SOCKETS = ['/var/run/dstack.sock', '/run/dstack.sock']
-const DSTACK_TIMEOUT_MS = 20_000
+const DSTACK_REQUEST = { timeoutMs: 20_000, timeoutMessage: 'dstack request timed out' }
 
 function msg(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
@@ -24,29 +24,6 @@ function msg(err: unknown): string {
 function isConnError(err: unknown): boolean {
   const code = (err as { code?: string } | undefined)?.code
   return code === 'ENOENT' || code === 'ECONNREFUSED' || code === 'EACCES'
-}
-
-/** POST JSON to a unix-socket HTTP server and read the whole response body. */
-function postUnix(socketPath: string, path: string, body: string): Promise<{ status: number; body: string }> {
-  return new Promise((resolve, reject) => {
-    const req = request(
-      {
-        socketPath,
-        path,
-        method: 'POST',
-        headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) },
-        timeout: DSTACK_TIMEOUT_MS,
-      },
-      (res) => {
-        const chunks: Buffer[] = []
-        res.on('data', (c) => chunks.push(c as Buffer))
-        res.on('end', () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') }))
-      },
-    )
-    req.on('error', reject)
-    req.on('timeout', () => req.destroy(new Error('dstack request timed out')))
-    req.end(body)
-  })
 }
 
 /**
@@ -62,7 +39,7 @@ export async function generateDstackQuote(reportData: Uint8Array, socketPath?: s
 /** The app-compose.json the CVM was measured with (tcb_info.app_compose of the agent's Info), if available. */
 async function readAppCompose(socketPath: string): Promise<string | undefined> {
   try {
-    const { status, body } = await postUnix(socketPath, '/Info', '{}')
+    const { status, body } = await postUnix(socketPath, '/Info', '{}', DSTACK_REQUEST)
     if (status !== 200) return undefined
     const info = JSON.parse(body) as { tcb_info?: unknown }
     const tcb = (typeof info.tcb_info === 'string' ? JSON.parse(info.tcb_info) : info.tcb_info) as { app_compose?: unknown } | undefined
@@ -89,7 +66,7 @@ export async function generateDstackAttestation(
   let lastErr: unknown
   for (const sock of candidates) {
     try {
-      const { status, body: resp } = await postUnix(sock, '/GetQuote', body)
+      const { status, body: resp } = await postUnix(sock, '/GetQuote', body, DSTACK_REQUEST)
       if (status !== 200) throw new Error(`dstack GetQuote returned HTTP ${status}`)
       const parsed = JSON.parse(resp) as { quote?: string; event_log?: unknown }
       if (typeof parsed.quote !== 'string' || parsed.quote.length === 0) {

@@ -33,15 +33,22 @@ LABEL org.opencontainers.image.title="antseed-tee-seller" \
       org.opencontainers.image.description="Antseed seller for dstack confidential VMs" \
       org.opencontainers.image.source="https://github.com/AntSeed/antseed" \
       org.opencontainers.image.version="${ANTSEED_VERSION}"
+# Google Confidential Space launch policy: the operator may set only these env variables (the
+# token shows them to buyers, who check them against the same rules) and can't replace the
+# command. The operator may send the container's output to Cloud Logging: the seller runs in
+# content-free mode (launch.mjs), so its logs hold no prompts or answers, nor upstream error text about a request.
+LABEL "tee.launch_policy.allow_env_override"="ANTSEED_TEE_PEER_ID,ANTSEED_BASE_RPC_URL,ANTSEED_SELLER_CONFIG_JSON,ANTSEED_GCP_SECRETS,ANTSEED_GCP_STATE,OPENAI_BODY_INJECT_JSON,ANTSEED_VERIFIER_PROVIDER_ADAPTER,ANTSEED_VERIFIER_PROVIDER_EVIDENCE_URL,ANTSEED_VERIFIER_PROVIDER_TEE_FIELD,ANTSEED_VERIFIER_PROVIDER_GPU_FIELD,ANTSEED_VERIFIER_PROVIDER_CLAIMS_FIELD,ANTSEED_VERIFIER_PROVIDER_BINDING_SCHEME,ANTSEED_VERIFIER_PROVIDER_BINDING_PUBKEY_FIELD" \
+      "tee.launch_policy.allow_cmd_override"="false" \
+      "tee.launch_policy.log_redirect"="always"
 COPY --from=build /out/ /
+COPY launch.mjs state.mjs /home/nonroot/
 ENV HOME=/home/nonroot \
     NODE_ENV=production \
     ANTSEED_NO_UPDATE_CHECK=1 \
-    ANTSEED_VERIFIER_SDKS=antseed-verifier \
-    ANTSEED_VERIFIER_NODE_TEE=dstack
+    ANTSEED_VERIFIER_SDKS=antseed-verifier
 USER 65532:65532
 VOLUME ["/var/lib/antseed"]
-# The seller config comes from the app compose (/etc/antseed/config.json); the dashboard, which
-# can change settings at runtime, stays off.
-ENTRYPOINT ["/nodejs/bin/node", "/home/nonroot/.antseed/plugins/node_modules/@antseed/cli/dist/cli/index.js", "--config", "/etc/antseed/config.json", "--data-dir", "/var/lib/antseed"]
+# launch.mjs picks the TEE (dstack or Google Confidential Space) and its seller config; the
+# dashboard, which can change settings at runtime, stays off.
+ENTRYPOINT ["/nodejs/bin/node", "/home/nonroot/launch.mjs"]
 CMD ["seller", "start", "--no-dashboard"]

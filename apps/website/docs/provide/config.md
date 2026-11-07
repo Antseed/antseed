@@ -207,6 +207,7 @@ Any other npm package that exports a provider plugin works too. See [Provider pl
 | `seller.publicAddress` | empty | `host:port` buyers should dial. Needed when the address the DHT sees isn't the one buyers can reach, such as behind a load balancer. Check it with `antseed seller doctor`. |
 | `seller.maxConcurrentBuyers` | `50` | Maximum concurrent requests each provider plugin handles. |
 | `seller.maxUploadBodyBytes` | 64 MiB | Largest request body accepted from a buyer; at least 1 MiB. `ANTSEED_MAX_UPLOAD_BODY_BYTES` overrides it. |
+| `seller.maxInboundConnectionsPerIp` | `64` | Buyer connections accepted from one IP at once. Raise it when every buyer reaches the seller through one address, such as a TLS gateway or `antseed seller forward`. |
 | `seller.maxInboundConnections` | `2048` | Buyer connections held open at once. A buyer keeps its connection between requests, so a busy seller holds one per active buyer; past the limit new buyers are refused. Metadata requests from discovery never count. `ANTSEED_MAX_INBOUND_CONNECTIONS` overrides it. |
 | `seller.inboundIdleTimeoutMs` | 30 min | Closes a buyer's connection after this long with no traffic, unless the buyer has a paid channel or a free usage session open. The buyer reconnects on its next request. `0` keeps idle connections. `ANTSEED_INBOUND_IDLE_TIMEOUT_MS` overrides it. |
 | `seller.restrictedCountries` | `["CU","IR","KP","SY","RU"]` | Countries whose IP addresses are refused. See below. |
