@@ -63,7 +63,6 @@ Command-line interface and web dashboard for the AntSeed Network — a P2P netwo
 | `antseed dashboard` | Start the web dashboard |
 | `antseed metrics serve` | Serve Prometheus metrics for buyers and sellers |
 | `antseed buyer channels` | List payment channels |
-| `antseed dev` | Run seller + buyer locally for testing |
 | `antseed network bootstrap` | Run a dedicated DHT bootstrap node |
 
 ## Configuration Workflow

@@ -12,7 +12,7 @@ import { loadOrCreateIdentity } from "./p2p/identity.js";
 import type { PeerId } from "./types/peer.js";
 import type { PeerInfo, PeerVerificationResults } from "./types/peer.js";
 import { peerIdToAddress } from "./types/peer.js";
-import { isFreeUnitBillingModel } from "./billing/unit.js";
+import { isPricedProviderService } from "./billing/priced-service.js";
 import type {
   SerializedHttpRequest,
   SerializedHttpResponse,
@@ -1040,6 +1040,11 @@ export class AntseedNode extends EventEmitter {
 
   startBackgroundPeerDiscoverySweep(): void {
     this._startBackgroundPeerDiscoverySweep();
+  }
+
+  /** The exhaustive discovery sweep in progress (it resolves when the sweep ends), or null when none is running. */
+  get peerDiscoverySweep(): Promise<PeerInfo[]> | null {
+    return this._backgroundPeerDiscoveryPromise;
   }
 
   private _startBackgroundPeerDiscoverySweep(): void {
@@ -3115,11 +3120,7 @@ export class AntseedNode extends EventEmitter {
     for (const provider of this._providers) {
       for (const service of provider.services) {
         offered.add(service);
-        const pricing = provider.pricing.services?.[service] ?? provider.pricing.defaults;
-        const tokenPriced = pricing.inputUsdPerMillion > 0 || pricing.outputUsdPerMillion > 0 || (pricing.cachedInputUsdPerMillion ?? 0) > 0;
-        const unitPriced = Object.values(provider.serviceUnitBillingModels?.[service] ?? {})
-          .some((model) => model !== undefined && !isFreeUnitBillingModel(model));
-        if (tokenPriced || unitPriced) paid.add(service);
+        if (isPricedProviderService(provider, service)) paid.add(service);
       }
     }
     return { paid: [...paid], free: [...offered].filter((service) => !paid.has(service)) };

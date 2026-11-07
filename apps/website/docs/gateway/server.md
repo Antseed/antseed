@@ -17,7 +17,7 @@ A [gateway](/docs/gateway) is most useful when it is always on. The gateway inst
 curl -fsSL --proto '=https' --tlsv1.2 https://antseed.com/install-gateway.sh | sudo bash -s -- --domain gateway.example.com
 ```
 
-The short form does the same: on a Linux server with systemd, `install.sh` downloads `install-gateway.sh` and runs it as root through `sudo`, passing every option through.
+The short form does the same: on Linux with systemd, `install.sh` downloads `install-gateway.sh` and runs it as root through `sudo`, passing every option through. It does this when you pass an option, or with none when there is no desktop session (over SSH, or from cloud-init). From a desktop session it installs for your user instead; add `--server` to get the server install there.
 
 ```bash
 curl -fsSL https://antseed.com/install.sh | bash -s -- --domain gateway.example.com

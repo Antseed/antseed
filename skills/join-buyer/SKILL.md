@@ -43,7 +43,8 @@ curl -fsSL https://antseed.com/install.sh | bash
 ```
 
 - **macOS**: installs `@antseed/cli` with npm, starts `antseed gateway start` in the background and prints the console setup link.
-- **Linux with systemd**: runs the server installer with `sudo`, which installs the gateway and buyer as services. For HTTPS at a hostname: `curl -fsSL https://antseed.com/install.sh | bash -s -- --domain <host>`. The server installer prints a summary with the base URL, a first API key labelled `admin` (shown once), the wallet address, the console URL and the setup link. See https://antseed.com/docs/gateway/server.
+- **Linux desktop session or WSL**: same as macOS (per-user, no sudo). Add `--local` to force this anywhere: `curl -fsSL https://antseed.com/install.sh | bash -s -- --local`.
+- **Linux with systemd and no desktop session (e.g. over SSH), or with any server option**: runs the server installer with `sudo`, which installs the gateway and buyer as services. Add `--server` to force it. For HTTPS at a hostname: `curl -fsSL https://antseed.com/install.sh | bash -s -- --domain <host>`. The server installer prints a summary with the base URL, a first API key labelled `admin` (shown once), the wallet address, the console URL and the setup link. See https://antseed.com/docs/gateway/server.
 
 Manual alternative (any machine with Node.js):
 

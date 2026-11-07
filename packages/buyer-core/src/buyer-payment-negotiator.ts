@@ -89,6 +89,14 @@ const ONE_OFF_ACK_TIMEOUT_MS = 45_000;
 const ONE_OFF_CHAIN_CONFIRM_GRACE_MS = 15_000;
 /** Upper bound on stored sessions for one seller checked against the chain in a single pass. */
 const MAX_STALE_SESSION_CHECKS = 5;
+/**
+ * The message of the buyer's 402 `insufficient_deposits` answer. Clients
+ * match its first sentence, so keep it. A gateway rewrites the rest to name
+ * the workspace and its funding path.
+ */
+export const OUT_OF_CREDITS_MESSAGE =
+  'You are out of Antseed credits for this request. Add funds in Antseed Desktop or your gateway console, or run "antseed buyer deposit" ' +
+  'in the CLI to show your funding address, then retry. Free sellers need no funds: pin one as <peerId>@<model>.';
 /** Emitter interface — subset of EventEmitter used by the negotiator. */
 export interface NegotiationEmitter {
   emit(event: string, ...args: unknown[]): boolean;
@@ -841,7 +849,7 @@ export class BuyerPaymentNegotiator {
         // What this seller's session would lock from available deposits —
         // suggestedAmount clamped to the buyer's reserve cap.
         ...(requestedReserveAmount != null ? { requiredReserve: requestedReserveAmount.toString() } : {}),
-        message: 'You are out of Antseed credits for this request. Add funds in Antseed Desktop or your gateway console, or run "antseed buyer deposit <amount>" from the CLI, then retry.',
+        message: OUT_OF_CREDITS_MESSAGE,
       });
       return {
         action: 'return',
@@ -1985,12 +1993,12 @@ export class BuyerPaymentNegotiator {
         `- Deposits may be below the reserve ceiling the seller will lock ` +
         `(${formatUsdc(reserve)} USDC). The seller's on-chain reserve() reverts ` +
         `with InsufficientBalance before AuthAck. ` +
-        `Check with "antseed buyer status"; top up with "antseed buyer deposit <amount>".`,
+        `Check with "antseed buyer status"; add funds with "antseed buyer deposit".`,
       );
     } else if (min != null && min > 0n) {
       lines.push(
         `- Deposits may be below seller minBudgetPerRequest (${formatUsdc(min)} USDC). ` +
-        `Check with "antseed buyer status"; top up with "antseed buyer deposit <amount>".`,
+        `Check with "antseed buyer status"; add funds with "antseed buyer deposit".`,
       );
     }
     lines.push('- Seller may be overloaded or gated on subscription (try another peer).');

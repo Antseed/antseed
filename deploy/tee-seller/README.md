@@ -48,11 +48,9 @@ To release an image after a CLI release:
 
 1. `node deploy/tee-seller/update-lock.mjs <cli version>` writes `package.json` and
    `package-lock.json` pinning that CLI, the current plugin releases and the verifier version the
-   CLI pins; open a PR with them. There is no lock until the first release with these checks. The
-   build ([`check-lock.mjs`](check-lock.mjs)) refuses a lock whose verifier can't bind
-   attestations to the buyer's connection or whose provider relay follows upstream redirects, so
-   the first image comes from the release that ships `@antseed/antseed-verifier` 0.1.1 and the
-   redirect-refusing `@antseed/provider-core`.
+   CLI pins; open a PR with them. The build ([`check-lock.mjs`](check-lock.mjs)) refuses a lock
+   whose verifier can't bind attestations to the buyer's connection, whose provider relay follows
+   upstream redirects or that lacks content-free logging.
 2. After it merges, run the **Publish TEE seller image** workflow
    ([`.github/workflows/tee-seller-image.yml`](../../.github/workflows/tee-seller-image.yml)). It
    pushes `ghcr.io/antseed/tee-seller:<cli version>` with an SBOM and a signed build provenance
@@ -216,3 +214,20 @@ Add the release's MRTD and RTMR0-2 to `APPROVED_DSTACK_OS` in
 `approved-node-measurements.ts`, one entry per VM shape (RTMR0 depends on the vCPU and memory
 size). Use a production (non-dev) dstack image, and recompute the values from the release
 artifacts rather than copying them from a running CVM.
+
+The approved release is dstack 0.6.1 on Phala Cloud's CPU instance types (`tdx.small` to
+`tdx.8xlarge`). To compute a release's values, take its `os_image_hash` (Phala Cloud lists them
+at `https://cloud-api.phala.com/api/v1/os-images`), build `dstack-mr` from the same dstack
+release, and measure each shape:
+
+```bash
+curl -LO https://download.dstack.org/os-images/mr_<os_image_hash>.tar.gz
+tar xzf mr_<os_image_hash>.tar.gz && shasum -a 256 -c sha256sum.txt
+test "$(shasum -a 256 sha256sum.txt | cut -d' ' -f1)" = <os_image_hash>
+cargo build --release --manifest-path dstack/Cargo.toml -p dstack-mr-cli   # in the dstack checkout
+dstack-mr measure -c <vCPUs> -m <memory>G --qemu-version 8.2.2 --hotplug-off false metadata.json
+```
+
+The QEMU version and hotplug setting are the hosts' (Phala Cloud's run QEMU 8.2.2 with hotplug
+on), and change MRTD and RTMR0, so recompute when the provider changes them. Check one shape
+against a real CVM's quote before approving the release.

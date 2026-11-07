@@ -27,6 +27,8 @@ curl -fsSL https://antseed.com/install.sh | bash
 
 It needs Node.js 20 or later (on macOS with Homebrew it installs Node.js for you), installs `@antseed/cli` with npm without sudo, logs to `~/.antseed/gateway.log` and prints how to stop the gateway. Set `ANTSEED_CLI_VERSION` to install a specific CLI version. [Read the script](https://antseed.com/install.sh) before running it.
 
+On Linux with systemd you get this install from a desktop session or WSL. Elsewhere, for example over SSH, `install.sh` runs the [server installer](#on-a-server) instead. Add `--local` to force the install for your user: `curl -fsSL https://antseed.com/install.sh | bash -s -- --local`.
+
 Or install the CLI (Node.js 20 or later) yourself, then start the gateway:
 
 ```bash
@@ -52,7 +54,7 @@ One command installs the buyer and the gateway as systemd services on a Linux se
 curl -fsSL https://antseed.com/install.sh | bash -s -- --domain gateway.example.com
 ```
 
-On Linux with systemd, `install.sh` runs the server installer as root. See [Run a gateway on a server](/docs/gateway/server).
+On Linux with systemd, `install.sh` runs the server installer as root when you pass an option such as `--domain`, or when there is no desktop session (over SSH, or from cloud-init). Add `--server` to force it. See [Run a gateway on a server](/docs/gateway/server).
 
 Next: [Quickstart](/docs/quickstart).
 
