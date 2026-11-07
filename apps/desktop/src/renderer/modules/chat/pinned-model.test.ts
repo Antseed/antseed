@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest';
-import { joinPinnedModel, modelAcceptsImages, splitPinnedModel } from '../../../shared/pinned-model.js';
+import { imageModelCanEdit, joinPinnedModel, modelAcceptsImages, splitPinnedModel } from '../../../shared/pinned-model.js';
 
 const PEER = '1d90f467689d499dc435e5744b4613c3203eb0aa';
 
@@ -23,4 +23,14 @@ test('a pinned chat can send images when its seller takes them, even if not ever
   expect(modelAcceptsImages(mixed, 'vision-model')).toBe(false);
   expect(modelAcceptsImages(mixed, `${'b'.repeat(40)}@vision-model`)).toBe(false);
   expect(modelAcceptsImages({ supportsImages: true }, 'vision-model')).toBe(true);
+});
+
+test('imageModelCanEdit: one capable seller is enough unless another seller is pinned', () => {
+  const other = 'a'.repeat(40);
+  const mixed = { supportsImages: false, imageInputSellerIds: [PEER] };
+  expect(imageModelCanEdit(mixed, 'qwen-image')).toBe(true);
+  expect(imageModelCanEdit(mixed, `${PEER}@qwen-image`)).toBe(true);
+  expect(imageModelCanEdit(mixed, `${other}@qwen-image`)).toBe(false);
+  expect(imageModelCanEdit({ supportsImages: false }, 'qwen-image')).toBe(false);
+  expect(imageModelCanEdit({ supportsImages: true }, 'qwen-image')).toBe(true);
 });

@@ -95,7 +95,7 @@ const MAX_STALE_SESSION_CHECKS = 5;
  * the workspace and its funding path.
  */
 export const OUT_OF_CREDITS_MESSAGE =
-  'You are out of Antseed credits for this request. Add funds in Antseed Desktop or your gateway console, or run "antseed buyer deposit" ' +
+  'You are out of AntSeed credits for this request. Add funds in the AntSeed app, or run "antseed buyer deposit" ' +
   'in the CLI to show your funding address, then retry. Free sellers need no funds: pin one as <peerId>@<model>.';
 /** Emitter interface — subset of EventEmitter used by the negotiator. */
 export interface NegotiationEmitter {

@@ -218,4 +218,18 @@ describe('chat controller', () => {
     await tick(20);
     expect(uiState.chatWorkspacePath).toBe('/project-b');
   });
+
+  it('edits the last generated image when only some sellers of the image model can', async () => {
+    const generated = { role: 'assistant', content: [{ type: 'file', generated: true, attachmentId: 'img-1' }], createdAt: 2 };
+    const conversations = [{ ...conv('conv-a', 'model-a'), messages: [{ role: 'user', content: 'a cat', createdAt: 1 }, generated] }];
+    const chatGenerateImage = vi.fn().mockResolvedValue({ ok: true, user: { role: 'user', content: 'make it blue' }, assistant: { role: 'assistant', content: 'done' } });
+    const { api, uiState } = setup(conversations, { chatGenerateImage });
+    uiState.chatModels = [...uiState.chatModels, { ...model('image-model'), type: 'image', imageInputSellerIds: ['a'.repeat(40)] }] as never;
+    await api.refreshChatConversations();
+    await api.openConversation('conv-a');
+    uiState.chatImageModelId = 'image-model';
+    api.generateImage('make it blue');
+    await waitFor(() => chatGenerateImage.mock.calls.length === 1);
+    expect(JSON.stringify(chatGenerateImage.mock.calls[0])).toContain('img-1');
+  });
 });

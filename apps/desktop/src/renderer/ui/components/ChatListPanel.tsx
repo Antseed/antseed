@@ -237,6 +237,7 @@ function ConversationRow({
         <div className={styles.convRight}>
           <button
             className={styles.menuBtn}
+            aria-label="Conversation options"
             ref={(el) => { if (el) menuBtnRefs.current?.set(id, el); else menuBtnRefs.current?.delete(id); }}
             onClick={(e) => {
               e.stopPropagation();

@@ -26,3 +26,15 @@ export function modelAcceptsImages(
   const { peerId } = splitPinnedModel(modelId);
   return Boolean(peerId && model.imageInputSellerIds?.includes(peerId));
 }
+
+/**
+ * Whether an image model can edit an image. Unpinned, one seller that takes
+ * image input is enough: the gateway sends edits only to sellers that do.
+ */
+export function imageModelCanEdit(
+  model: { supportsImages: boolean; imageInputSellerIds?: string[] },
+  modelId: string,
+): boolean {
+  if (splitPinnedModel(modelId).peerId) return modelAcceptsImages(model, modelId);
+  return model.supportsImages || (model.imageInputSellerIds?.length ?? 0) > 0;
+}

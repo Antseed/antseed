@@ -1060,25 +1060,25 @@ function applyDroidModelToFile(filePath: string, patch: DroidConfigPatchDef, bas
 
   const extraHeaders = patch.originator ? { originator: patch.originator } : {};
   const headerFields = Object.keys(extraHeaders).length > 0 ? { extraHeaders } : {};
+  const commonFields = {
+    baseUrl: baseURL,
+    provider: 'generic-chat-completion-api',
+    maxOutputTokens: ANTSEED_MODEL_MAX_OUTPUT_TOKENS,
+    ...headerFields,
+  };
   const entries: JsonObject[] = t.legacy
     ? [{
       model: patch.providerKey,
       id: DROID_ROUTED_MODEL_ID,
       displayName: patch.providerName,
-      baseUrl: baseURL,
-      provider: 'generic-chat-completion-api',
-      maxOutputTokens: ANTSEED_MODEL_MAX_OUTPUT_TOKENS,
-      ...headerFields,
+      ...commonFields,
     }]
     : t.models.map((model, index) => ({
       model: model.id,
       id: droidGatewayModelId(model, index),
       displayName: modelLabel(model),
-      baseUrl: baseURL,
+      ...commonFields,
       apiKey: t.apiKey,
-      provider: 'generic-chat-completion-api',
-      maxOutputTokens: ANTSEED_MODEL_MAX_OUTPUT_TOKENS,
-      ...headerFields,
     }));
   const newIds = entries.map((entry) => entry['id'] as string);
 
@@ -1097,7 +1097,7 @@ function applyDroidModelToFile(filePath: string, patch: DroidConfigPatchDef, bas
   // Model discovery failed for now: the selection still names our entries, so
   // keep them rather than lose the way back to the user's own default. They
   // still move to the current gateway and key.
-  if (state && !t.legacy && newIds.length === 0 && managedIds.length > 0) {
+  if (state && !t.legacy && newIds.length === 0) {
     config['customModels'] = customModels.map((model) => (isManagedDroidModel(model, patch, managedIds)
       ? { ...(model as JsonObject), baseUrl: baseURL, apiKey: t.apiKey, ...headerFields }
       : model));
@@ -1857,7 +1857,11 @@ function applyGooseCustomProviderToFile(filePath: string, patch: GooseConfigPatc
     : existingProvider.models;
   if (!owned) rememberGooseSelection(filePath, previous);
   if (userProvider) saveGooseUserProvider(filePath);
-  removeGooseProviderFromFile(filePath, patch, [], { keepSelection: true });
+  // Only an earlier patch of ours has anything to clean up: a local endpoint the
+  // user set up for goose's own openai provider isn't ours, and stays.
+  if (owned || readGoosePatchState(filePath) !== null || readYamlTopLevelString(previous, 'OPENAI_API_KEY') === 'antseed') {
+    removeGooseProviderFromFile(filePath, patch, [], { keepSelection: true });
+  }
   let lines = existsSync(filePath) ? readFileSync(filePath, 'utf8').split('\n') : [];
   while (lines.length > 0 && lines[lines.length - 1]!.trim() === '') lines.pop();
   lines = setYamlTopLevelString(lines, 'GOOSE_PROVIDER', GOOSE_CUSTOM_PROVIDER);
@@ -1928,11 +1932,15 @@ function removeGooseProviderFromFile(
   }
   const host = readYamlTopLevelString(lines, 'OPENAI_HOST');
   const ownsGatewayHost = state !== null && host === state.host;
-  if (isLoopbackHost(host, extraHosts) || ownsGatewayHost) {
+  const apiKey = readYamlTopLevelString(lines, 'OPENAI_API_KEY');
+  const legacyModel = readYamlTopLevelString(lines, 'GOOSE_MODEL');
+  // The buyer-proxy patch wrote a loopback host with a dummy key and an alias
+  // model. A loopback host without those is the user's own local server.
+  const legacyProxyPatch = apiKey === 'antseed' || legacyModel === ROUTED_MODEL_ALIAS || (legacyModel?.includes('@') ?? false);
+  if ((isLoopbackHost(host, extraHosts) && legacyProxyPatch) || ownsGatewayHost) {
     lines = removeYamlTopLevelKey(lines, 'OPENAI_HOST');
     changed = true;
   }
-  const apiKey = readYamlTopLevelString(lines, 'OPENAI_API_KEY');
   if (apiKey === 'antseed' || (state !== null && apiKey !== undefined && sha256Hex(apiKey) === state.apiKeySha256)) {
     lines = removeYamlTopLevelKey(lines, 'OPENAI_API_KEY');
     changed = true;

@@ -1,5 +1,5 @@
 import { describeChatError } from './chat-errors';
-import { modelAcceptsImages, splitPinnedModel } from '../../../shared/pinned-model.js';
+import { imageModelCanEdit, modelAcceptsImages, splitPinnedModel } from '../../../shared/pinned-model.js';
 import { selectHasFunds } from '../../core/balance';
 import type { RendererUiState } from '../../core/state';
 import { notifyUiStateChanged, notifyUiStateChangedSync } from '../../core/store';
@@ -1221,7 +1221,7 @@ export function initChatModule({
           }
         }
       }
-      const editing = Boolean(sourceImageAttachmentId) && imageModel?.supportsImages === true;
+      const editing = Boolean(sourceImageAttachmentId) && Boolean(imageModel) && imageModelCanEdit(imageModel!, imageModelId);
       const priorImagePrompts = existingBeforeRequest.flatMap((message, messageIndex) => {
         const nextMessage = existingBeforeRequest[messageIndex + 1];
         const generatedImageFollows = nextMessage?.role === 'assistant'

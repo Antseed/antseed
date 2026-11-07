@@ -279,6 +279,24 @@ test('goose: disconnecting without having connected leaves the user\'s own custo
   });
 });
 
+test('goose: a local endpoint of the user\'s own survives connect and disconnect', async () => {
+  await withDir(async (dir) => {
+    const configPath = path.join(dir, 'config.yaml');
+    const original = { GOOSE_PROVIDER: 'openai', GOOSE_MODEL: 'local-llm', OPENAI_HOST: 'http://localhost:11434', OPENAI_API_KEY: 'local-key' };
+    await writeFile(configPath, Object.entries(original).map(([key, value]) => `${key}: ${JSON.stringify(value)}`).join('\n') + '\n', 'utf8');
+    const patch: ConfigPatchDef = { format: 'goose', configPath, providerKey: 'openai', baseURL: 'http://localhost:{buyerPort}' };
+
+    writeConfigPatch(patch, LOCAL);
+    const connected = parse(await readFile(configPath, 'utf8')) as Record<string, unknown>;
+    assert.equal(connected['GOOSE_PROVIDER'], 'custom_antseed');
+    assert.equal(connected['OPENAI_HOST'], original.OPENAI_HOST);
+    assert.equal(connected['OPENAI_API_KEY'], original.OPENAI_API_KEY);
+
+    assert.equal(removeConfigPatch(patch), true);
+    assert.deepEqual(parse(await readFile(configPath, 'utf8')), original);
+  });
+});
+
 test('goose: legacy patch still removes after the upgrade', async () => {
   await withDir(async (dir) => {
     const configPath = path.join(dir, 'config.yaml');
@@ -385,6 +403,31 @@ test('t3code: remote instance is owned via the source header and removable', asy
     assert.equal(isConfigPatchConnected(patch), true);
     assert.equal(removeConfigPatch(patch), true);
     assert.equal((await readJson(configPath))['providerInstances'], undefined);
+  });
+});
+
+test('droid: moving off the legacy proxy while the model list is unreadable keeps the selection working', async () => {
+  await withDir(async (dir) => {
+    const configPath = path.join(dir, 'settings.json');
+    const patch: ConfigPatchDef = { format: 'droid', configPath, providerKey: 'antseed', providerName: 'Antseed', baseURL: 'http://localhost:{buyerPort}/v1' };
+    await writeFile(configPath, JSON.stringify({ sessionDefaultSettings: { model: 'mine' } }), 'utf8');
+    writeConfigPatch(patch, 8377);
+
+    writeConfigPatch(patch, { ...LOCAL, models: [] });
+    let config = await readJson(configPath);
+    const selected = config['sessionDefaultSettings']['model'];
+    const entry = config['customModels'].find((model: Record<string, unknown>) => model['id'] === selected);
+    assert.ok(entry, 'the selected custom model still exists');
+    assert.equal(entry['baseUrl'], 'http://localhost:8379/v1');
+    assert.equal(entry['apiKey'], KEY);
+
+    // The list comes back: the real models replace the old entry.
+    writeConfigPatch(patch, LOCAL);
+    config = await readJson(configPath);
+    assert.deepEqual(config['customModels'].map((model: Record<string, unknown>) => model['model']), MODELS.map((model) => model.id));
+
+    assert.equal(removeConfigPatch(patch), true);
+    assert.equal((await readJson(configPath))['sessionDefaultSettings']['model'], 'mine');
   });
 });
 
