@@ -9,6 +9,7 @@ import { DHTNode } from '@antseed/node/discovery';
 import { toPeerId } from '@antseed/node';
 import { parseBootstrapList, toBootstrapConfig } from '@antseed/node/discovery';
 import { setupShutdownHandler } from '../shutdown.js';
+import { toolHintBaseUrl } from '@antseed/router-core';
 
 export function registerDevCommand(program: Command): void {
   program
@@ -90,11 +91,11 @@ export function registerDevCommand(program: Command): void {
       console.log('');
       console.log(chalk.bold('Configure your CLI tools:'));
       console.log(chalk.dim('  # Anthropic (Claude Code)'));
-      console.log(`  export ANTHROPIC_BASE_URL=${proxyUrl}`);
+      console.log(`  export ANTHROPIC_BASE_URL=${toolHintBaseUrl('ANTHROPIC_BASE_URL', proxyUrl)}`);
       console.log(chalk.dim('  # OpenAI (Codex)'));
-      console.log(`  export OPENAI_BASE_URL=${proxyUrl}/v1`);
+      console.log(`  export OPENAI_BASE_URL=${toolHintBaseUrl('OPENAI_BASE_URL', proxyUrl)}`);
       console.log(chalk.dim('  # Google'));
-      console.log(`  export GOOGLE_API_BASE_URL=${proxyUrl}`);
+      console.log(`  export GOOGLE_API_BASE_URL=${toolHintBaseUrl('GOOGLE_API_BASE_URL', proxyUrl)}`);
       console.log('');
 
       setupShutdownHandler(async () => {
