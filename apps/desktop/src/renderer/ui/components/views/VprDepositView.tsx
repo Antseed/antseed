@@ -419,7 +419,7 @@ export function VprDepositView({ onSelectView }: Props) {
   useEffect(() => {
     const bridge = window.antseedDesktop;
     let cancelled = false;
-    void bridge?.depositsWatchStart?.().then((result) => {
+    void bridge?.depositsWatchStart?.()?.then((result) => {
       if (cancelled) return;
       if (result.ok && result.data) {
         setWatchInfo({ address: result.data.address, usdcAddress: result.data.usdcAddress, chainId: result.data.chainId });
@@ -507,7 +507,7 @@ export function VprDepositView({ onSelectView }: Props) {
     // Peer Pay's method was chosen on the chooser; its own step only opens checkout.
     if (providerId !== 'peer-pay') chooseMethod(method);
     setCardNotice(null);
-    void window.antseedDesktop?.paymentsOpenCardProvider?.({ providerId, amountUsdc: amount }).then((result) => {
+    void window.antseedDesktop?.paymentsOpenCardProvider?.({ providerId, amountUsdc: amount })?.then((result) => {
       if (!result.ok) {
         setCardNotice(result.error ?? 'Could not open the payment page.');
       } else {

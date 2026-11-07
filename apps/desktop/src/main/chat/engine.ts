@@ -42,7 +42,7 @@ import { PiConversationStore } from './conversation-store.js';
 import { createStreamingRunner, type ResolvedChatModel } from './streaming-run.js';
 import { generateChatImage } from './image-generation.js';
 import type { PiChatEngine } from './engine-types.js';
-import { recommendAppModels, toChatModel, toChatModels, type ChatModel } from './gateway-model.js';
+import { recommendAppModels, toChatModel, toChatModels, type ChatModel } from '../gateway/catalog.js';
 import { fetchRoutePreview } from '../gateway/route-preview.js';
 import { splitPinnedModel } from '../../shared/pinned-model.js';
 import { getGatewayEndpoint, whenPrivacySettled, type GatewayEndpoint } from '../gateway/service.js';

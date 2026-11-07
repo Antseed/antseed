@@ -30,7 +30,7 @@ function GatewaySection() {
   const [message, setMessage] = useState<string | null>(null);
 
   useEffect(() => {
-    void window.antseedDesktop?.gatewayGetSettings?.().then((loaded) => {
+    void window.antseedDesktop?.gatewayGetSettings?.()?.then((loaded) => {
       if (!loaded) return;
       setSettings(loaded);
       setMode(loaded.mode);
@@ -85,7 +85,7 @@ function GatewaySection() {
   };
 
   const openConsole = (path: string) => {
-    void window.antseedDesktop?.gatewayOpenConsole?.(path).then((result) => {
+    void window.antseedDesktop?.gatewayOpenConsole?.(path)?.then((result) => {
       if (result && !result.ok) setMessage(result.error ?? 'Could not open your gateway');
     });
   };

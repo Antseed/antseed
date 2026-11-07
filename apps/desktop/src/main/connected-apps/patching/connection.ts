@@ -22,7 +22,7 @@ import { getGatewayEndpoint, localGatewayOrigin, type GatewayEndpoint } from '..
 import { relayTarget } from './relay-target.js';
 import { oncePerGatewayKey } from './once-per-key.js';
 import { fetchGatewayModelEntries, toGatewayModel, type GatewayModel } from '../../gateway/models.js';
-import { recommendAppModels, toChatModels, type ChatModel } from '../../chat/gateway-model.js';
+import { recommendAppModels, toChatModels, type ChatModel } from '../../gateway/catalog.js';
 import { getGatewaySettings } from '../../gateway/settings.js';
 import {
   claudeGatewaySlotsPath,
@@ -265,13 +265,23 @@ export function connectApp(name: string): Promise<ConnectedAppsState> {
 export function disconnectApp(name: string): Promise<ConnectedAppsState> {
   return serialized(async () => {
     const profile = findConnectableProfile(name);
+    // It stays connected until its config is clean: otherwise it would keep using
+    // the gateway with no Disconnect left to offer.
+    if (profile?.configPatch) {
+      try {
+        removeConfigPatch(profile.configPatch, connectedAppsWslTargetsPath());
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        errors[name] = message;
+        log(`${profile.label}: disconnect failed — ${message}`);
+        await persist();
+        throw err;
+      }
+      log(`${profile.label}: removed the Antseed gateway from its config`);
+    }
     connected = connected.filter((entry) => entry !== name);
     delete errors[name];
     await persist();
-    if (profile?.configPatch) {
-      removeConfigPatch(profile.configPatch, connectedAppsWslTargetsPath());
-      log(`${profile.label}: removed the Antseed gateway from its config`);
-    }
     await syncRelays();
     await restartApps([name]);
     return getConnectedAppsState();

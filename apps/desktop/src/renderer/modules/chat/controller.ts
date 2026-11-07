@@ -384,7 +384,7 @@ export function initChatModule({
     const nextMode = normalizePermissionMode(mode);
     uiState.chatPermissionMode = nextMode;
     const modelId = uiState.chatSelectedModelId;
-    if (modelId) void bridge?.chatPermissionModeSet?.(modelId, nextMode).catch(() => undefined);
+    if (modelId) void bridge?.chatPermissionModeSet?.(modelId, nextMode)?.catch(() => undefined);
     notifyUiStateChanged();
   }
 
@@ -902,7 +902,7 @@ export function initChatModule({
       uiState.chatConversations = [...conversations];
     }
     notifyUiStateChanged();
-    void bridge?.chatAiRenameConversation?.(convId, newTitle).catch((err: unknown) => {
+    void bridge?.chatAiRenameConversation?.(convId, newTitle)?.catch((err: unknown) => {
       appendSystemLog(`Failed to persist conversation rename: ${String(err)}`);
     });
   }

@@ -22,7 +22,7 @@ export function TelegramBotCard() {
   useEffect(() => {
     const bridge = window.antseedDesktop;
     let disposed = false;
-    void bridge?.telegramGetStatus?.().then((result) => {
+    void bridge?.telegramGetStatus?.()?.then((result) => {
       if (!disposed && result.ok && result.data) setStatus(result.data);
     });
     const off = bridge?.onTelegramStatusChanged?.((next) => setStatus(next));

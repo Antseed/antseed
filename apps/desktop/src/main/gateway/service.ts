@@ -8,6 +8,7 @@ import { parseGatewayKeyInfo } from './key-info.js';
 import type { GatewayKeyInfo, GatewayPrivacy, GatewayStatus } from '../../shared/gateway-types.js';
 import { publishKeyWithPolicy } from './key-with-policy.js';
 import { assertKeyMayBeRecreated, keyIsUsable, rotateKeys, type KeyRecord } from './rotate-keys.js';
+import { createSerialQueue } from './serial-queue.js';
 import { startUnlessClosing } from './start-guard.js';
 import { resolveConnectDataDir, DEFAULT_LOCAL_GATEWAY_PORT, type ProcessManager, type RuntimeMode } from '../runtime/process-manager.js';
 import { ACTIVE_CONFIG_PATH } from '../runtime/active-config.js';
@@ -408,17 +409,16 @@ export async function getGatewayPrivacy(): Promise<GatewayPrivacy> {
   return { mode, editable: true, requiredAbove };
 }
 
-/** Settles once no privacy switch is being applied. Sends that the renderer can't hold wait on it. */
-let privacySwitch: Promise<unknown> = Promise.resolve();
+const privacySwitches = createSerialQueue();
 
+/** Settles once no privacy switch is being applied. Sends that the renderer can't hold wait on it. */
 export function whenPrivacySettled(): Promise<void> {
-  return privacySwitch.then(() => undefined, () => undefined);
+  return privacySwitches.whenSettled();
 }
 
+/** One at a time: run together, two quick choices could land in either order. */
 export function setGatewayPrivacy(mode: GatewayPrivacyMode): Promise<GatewayPrivacy> {
-  const applying = applyGatewayPrivacy(mode);
-  privacySwitch = applying;
-  return applying;
+  return privacySwitches.run(() => applyGatewayPrivacy(mode));
 }
 
 async function applyGatewayPrivacy(mode: GatewayPrivacyMode): Promise<GatewayPrivacy> {

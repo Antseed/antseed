@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { makeGatewayModel, recommendAppModels, resolveEntryProtocol, toChatModel, toChatModels } from './gateway-model.js';
+import { makeGatewayModel } from './gateway-model.js';
+import { recommendAppModels, resolveEntryProtocol, toChatModel, toChatModels } from '../gateway/catalog.js';
 
 const ENDPOINT = { mode: 'local' as const, origin: 'http://127.0.0.1:8379', apiKey: 'antseed_key' };
 

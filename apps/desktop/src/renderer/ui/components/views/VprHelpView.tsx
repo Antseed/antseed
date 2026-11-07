@@ -338,7 +338,7 @@ export function VprHelpView({ onSelectView }: Props) {
     typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '',
   );
   useEffect(() => {
-    window.antseedDesktop?.getAppVersion?.().then(setAppVersion).catch(() => {});
+    window.antseedDesktop?.getAppVersion?.()?.then(setAppVersion).catch(() => {});
   }, []);
 
   // Developer mode is the single switch for diagnostics: it enables debug

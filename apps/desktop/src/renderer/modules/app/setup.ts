@@ -15,14 +15,14 @@ export function initAppSetupModule({ uiState, bridge }: AppSetupModuleOptions) {
   // - needed:true, complete:false → install in progress, wait for onAppSetupComplete.
   // - needed:true, complete:true → install finished before renderer loaded (fast bundle
   //   copy), app:setup-complete event was missed — start the gateway immediately.
-  void bridge.getAppSetupStatus?.().then((status) => {
+  void bridge.getAppSetupStatus?.()?.then((status) => {
     uiState.appSetupNeeded = status.needed;
     uiState.appSetupComplete = status.complete;
     uiState.appSetupStatusKnown = true;
     notifyUiStateChanged();
 
     if (status.needed && status.complete) {
-      void bridge.start?.().catch(() => {});
+      void bridge.start?.()?.catch(() => {});
     }
   });
 
@@ -36,7 +36,7 @@ export function initAppSetupModule({ uiState, bridge }: AppSetupModuleOptions) {
     notifyUiStateChanged();
 
     // Start the gateway so the setup screen can show its progress.
-    void bridge.start?.().catch(() => {
+    void bridge.start?.()?.catch(() => {
       // Error is handled / logged by the runtime module.
     });
   });

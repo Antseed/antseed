@@ -154,7 +154,7 @@ async function refreshAll(): Promise<void> {
   try {
     const [snapshot, gatewayStatus] = await Promise.all([
       bridge.getState(),
-      bridge.gatewayGetStatus?.().catch(() => null) ?? null,
+      bridge.gatewayGetStatus?.()?.catch(() => null) ?? null,
     ]);
     uiState.gatewayStatus = gatewayStatus;
     renderLogs(snapshot.logs);

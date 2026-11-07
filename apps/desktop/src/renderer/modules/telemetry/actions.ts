@@ -37,7 +37,7 @@ export function recordUserAction(
       action,
       surface,
       ...(app !== undefined ? { app } : {}),
-    }).catch(() => undefined);
+    })?.catch(() => undefined);
   } catch {
     // Telemetry must never affect user actions.
   }
@@ -58,7 +58,7 @@ export function recordUserActionCoalesced(
 
 export function recordFirstModelShown(signal: FirstModelShownSignal): void {
   try {
-    void window.antseedDesktop?.telemetryRecordFirstModelShown?.(signal).catch(() => undefined);
+    void window.antseedDesktop?.telemetryRecordFirstModelShown?.(signal)?.catch(() => undefined);
   } catch {
     // Telemetry must never affect rendering.
   }
@@ -66,7 +66,7 @@ export function recordFirstModelShown(signal: FirstModelShownSignal): void {
 
 export function recordDepositStep(signal: DepositStepSignal): void {
   try {
-    void window.antseedDesktop?.telemetryRecordDepositStep?.(signal).catch(() => undefined);
+    void window.antseedDesktop?.telemetryRecordDepositStep?.(signal)?.catch(() => undefined);
   } catch {
     // Telemetry must never affect the deposit flow.
   }

@@ -129,7 +129,8 @@ test('codex: settings in other valid TOML forms come back as they were', async (
     assert.match(after, /^model_context_window = 128_000$/m);
     assert.match(after, /^model = "mine"$/m);
     assert.match(after, /^model_provider = "theirs"$/m);
-    assert.match(after, /^model_catalog_json = "my-models\.json"$/m);
+    // Rewritten only when an installed Codex accepted our catalog; either way it's the user's value.
+    assert.match(after, /^model_catalog_json = ["']my-models\.json["']$/m);
   });
 });
 

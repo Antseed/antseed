@@ -158,4 +158,26 @@ describe('requestPrivacyMode', () => {
     expect(getPrivacySwitchState().switching).toBe(true);
     expect(getPrivacySwitchState().error).toMatch(/privacy mode/);
   });
+
+  it('an older reload can neither release sending early nor hold it again', async () => {
+    const { reloadPrivacyForNewGateway, getPrivacySwitchState } = await setup();
+    const answers: Array<(value: { ok: boolean; privacy?: GatewayPrivacy; error?: string }) => void> = [];
+    (window as unknown as { antseedDesktop: { gatewayGetPrivacy: unknown } }).antseedDesktop.gatewayGetPrivacy = () => new Promise((resolve) => answers.push(resolve));
+    const older = reloadPrivacyForNewGateway();
+    const newer = reloadPrivacyForNewGateway();
+    answers[0]!({ ok: true, privacy: privacy('anonymous') });
+    await older;
+    expect(getPrivacySwitchState().switching).toBe(true);
+    answers[1]!({ ok: true, privacy: privacy('anonymous') });
+    await newer;
+    expect(getPrivacySwitchState()).toEqual({ switching: false, error: null });
+
+    const olderFails = reloadPrivacyForNewGateway();
+    const newest = reloadPrivacyForNewGateway();
+    answers[3]!({ ok: true, privacy: privacy('anonymous') });
+    await newest;
+    answers[2]!({ ok: false, error: 'down' });
+    await olderFails;
+    expect(getPrivacySwitchState()).toEqual({ switching: false, error: null });
+  });
 });

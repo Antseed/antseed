@@ -110,7 +110,7 @@ function GatewayEndpointCard({ onOpenConsole }: { onOpenConsole: (path: string) 
   const [endpoint, setEndpoint] = useState<GatewayEndpointInfo | null>(null);
   useEffect(() => {
     if (!open || endpoint?.ok) return;
-    void window.antseedDesktop?.gatewayGetEndpoint?.().then(setEndpoint);
+    void window.antseedDesktop?.gatewayGetEndpoint?.()?.then(setEndpoint);
   }, [endpoint?.ok, open]);
   return (
     <div className={styles.endpointCard}>
@@ -185,7 +185,7 @@ export function VprToolsView() {
   const privacyControl = usePrivacyControl((mode) => { actions.privacyModeChosen(mode); });
   const connectedCount = (appsSnapshot.data ?? []).filter((profile) => profile.connected).length;
   const openConsole = useCallback((path: string) => {
-    void window.antseedDesktop?.gatewayOpenConsole?.(path).then((result) => {
+    void window.antseedDesktop?.gatewayOpenConsole?.(path)?.then((result) => {
       if (result && !result.ok) setMessage(result.error ?? 'Could not open your gateway');
     });
   }, []);

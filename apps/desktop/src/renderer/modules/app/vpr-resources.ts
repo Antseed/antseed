@@ -103,11 +103,12 @@ export function clearPrivacySwitchError(): void {
  * until the new gateway has said.
  */
 export async function reloadPrivacyForNewGateway(): Promise<void> {
-  privacyGeneration += 1;
+  const thisReload = ++privacyGeneration;
   privacyUnconfirmedError = null;
   if (!requestedPrivacyMode) publishPrivacySwitch({ switching: true, error: null });
   const read = await privacyResource.reload();
-  if (requestedPrivacyMode) return;
+  // A newer reload or switch now decides whether sending may go ahead.
+  if (thisReload !== privacyGeneration) return;
   if (read) {
     publishPrivacySwitch({ switching: false, error: null });
     return;
@@ -157,7 +158,7 @@ export async function requestPrivacyMode(mode: GatewayPrivacyMode): Promise<void
       error = null;
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
-      const actual = await window.antseedDesktop?.gatewayGetPrivacy?.().catch(() => null);
+      const actual = await window.antseedDesktop?.gatewayGetPrivacy?.()?.catch(() => null);
       confirmed = actual?.ok && actual.privacy ? actual.privacy : null;
     }
     // A choice made meanwhile still applies, even if the write before it failed.

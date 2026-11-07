@@ -86,7 +86,7 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
     typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '',
   );
   useEffect(() => {
-    window.antseedDesktop?.getAppVersion?.().then(setAppVersion).catch(() => {});
+    window.antseedDesktop?.getAppVersion?.()?.then(setAppVersion).catch(() => {});
   }, []);
 
   const navValue = useMemo(
