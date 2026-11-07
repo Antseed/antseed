@@ -339,9 +339,17 @@ that it will pay.
 
 ## Hardened Macs
 
-On a Mac the decrypted prompt exists in the worker app's memory. The Antseed
-Mac app keeps the Mac's owner out of it with the protections macOS gives a
-signed app, and reports them in an attestation:
+The Antseed Mac app runs models on the bundled TensorFold engine, a separate
+process it reaches over loopback. The decrypted prompt therefore leaves the app:
+the Mac's owner can read loopback traffic, and the app's protections below
+don't cover the engine. **Every current build attests `debuggerDenied: false`,
+so it is not hardened**, and pools and buyers that require attestation refuse
+it. The rest of this section describes what the app enforces and what a build
+that keeps inference inside the app would attest.
+
+With inference in the app, the decrypted prompt exists only in its memory. The
+app keeps the Mac's owner out of it with the protections macOS gives a signed
+app, and reports them in an attestation:
 
 - **Signed app with the hardened runtime.** A Developer ID build with the
   hardened runtime and without `get-task-allow`: macOS refuses to let other

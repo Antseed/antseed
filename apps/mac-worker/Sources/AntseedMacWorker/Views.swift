@@ -49,7 +49,7 @@ struct MenuPanel: View {
             HStack {
                 Text("Model").foregroundStyle(.secondary)
                 Spacer()
-                Text(worker.config.modelId.replacingOccurrences(of: "mlx-community/", with: "")).lineLimit(1)
+                Text(worker.config.modelName).lineLimit(1)
             }
             .font(.system(size: 12))
             HStack(alignment: .top, spacing: 6) {

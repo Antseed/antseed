@@ -7,9 +7,11 @@ import Security
 struct WorkerConfig {
     var poolURL = URL(string: "ws://127.0.0.1:8790")!
     /// Service name the pool sells.
-    var service = "qwen2.5-0.5b"
-    /// Hugging Face MLX model that serves it.
-    var modelId = "mlx-community/Qwen2.5-0.5B-Instruct-4bit"
+    var service = "qwen3.5-2b"
+    /// Hugging Face checkpoint that serves it, pinned to a revision the engine was checked with.
+    var modelId = "mlx-community/Qwen3.5-2B-MLX-4bit@93760be4f1f69842a46bc13dbdc0f19e291392a3"
+    /// The TensorFold engine; `scripts/build-app.sh` bundles it.
+    var engineURL = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/tensorfold/bin/tensorfold-native")
     /// RPC that request channels (and the payout wallet) are read on: Base
     /// mainnet's public RPC unless `--rpc` names another. Buyer requests are
     /// refused without one, so the pool can't buy work with made-up channels.
@@ -28,6 +30,12 @@ struct WorkerConfig {
     /// screen); the code is also written to the log.
     var linkPayoutTo: String?
 
+    /// The model's short name, for display.
+    var modelName: String {
+        let repository = modelId.split(separator: "@", maxSplits: 1).first.map(String.init) ?? modelId
+        return repository.split(separator: "/").last.map(String.init) ?? repository
+    }
+
     static func fromCommandLine(_ arguments: [String] = CommandLine.arguments) -> WorkerConfig {
         var config = WorkerConfig()
         var iterator = arguments.dropFirst().makeIterator()
@@ -37,6 +45,7 @@ struct WorkerConfig {
             case "--pool": config.poolURL = URL(string: value) ?? config.poolURL
             case "--service": config.service = value
             case "--model": config.modelId = value
+            case "--engine": config.engineURL = URL(fileURLWithPath: value)
             case "--rpc": config.rpcURL = URL(string: value)
             case "--channels": config.channelsAddress = value
             case "--data-dir": config.dataDirectory = URL(fileURLWithPath: value, isDirectory: true)

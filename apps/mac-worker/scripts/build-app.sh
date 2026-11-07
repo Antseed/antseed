@@ -6,20 +6,37 @@
 #                                                         Secure Enclave keys to this app (needed to attest hardened)
 #   NOTARY_PROFILE=name                                    notarize (xcrun notarytool keychain profile) and staple
 #
-# Without SIGN_IDENTITY the app is ad-hoc signed: it runs, and attests that it is not hardened.
+# Without SIGN_IDENTITY the app is ad-hoc signed. Every build attests not hardened for now:
+# decrypted prompts reach the bundled TensorFold engine over loopback (docs/protocol/colony-pool.md).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 BUNDLE_ID=com.antseed.macworker
 APP="${OUT:-build/Antseed Worker.app}"
+# The inference engine (https://github.com/ashhart/TensorFold), pinned by hash.
+TENSORFOLD_VERSION=1.2.3
+TENSORFOLD_SHA256=760a517dea45f83fc30257dc02921bf9c79fc7086f4e17e90fba2aaa510e3906
 
-# xcodebuild, not `swift build`: only it compiles MLX's Metal shaders (default.metallib).
-xcodebuild -scheme AntseedMacWorker -configuration Release -destination 'platform=macOS,arch=arm64' -derivedDataPath build -skipMacroValidation -quiet build
-PRODUCTS=build/Build/Products/Release
+swift build -c release --arch arm64 --product AntseedMacWorker
+PRODUCTS=$(swift build -c release --arch arm64 --show-bin-path)
+
+TENSORFOLD=tensorfold-$TENSORFOLD_VERSION-macos-arm64
+mkdir -p build
+if [ ! -f "build/$TENSORFOLD.tar.gz" ]; then
+  curl -fL --retry 3 -o "build/$TENSORFOLD.tar.gz.part" "https://github.com/ashhart/TensorFold/releases/download/v$TENSORFOLD_VERSION/$TENSORFOLD.tar.gz"
+  mv "build/$TENSORFOLD.tar.gz.part" "build/$TENSORFOLD.tar.gz"
+fi
+shasum -a 256 -c <<<"$TENSORFOLD_SHA256  build/$TENSORFOLD.tar.gz"
+rm -rf "build/$TENSORFOLD"
+tar -xzf "build/$TENSORFOLD.tar.gz" -C build
+
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+ENGINE="$APP/Contents/Helpers/tensorfold"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/tensorfold-licenses" "$ENGINE"
 cp "$PRODUCTS/AntseedMacWorker" "$APP/Contents/MacOS/"
 cp -R "$PRODUCTS"/*.bundle "$APP/Contents/Resources/"
+cp -R "build/$TENSORFOLD/bin" "build/$TENSORFOLD/lib" "$ENGINE/"
+cp -R "build/$TENSORFOLD/LICENSE" "build/$TENSORFOLD/NOTICE" "build/$TENSORFOLD/THIRD_PARTY_NOTICES.md" "build/$TENSORFOLD/LICENSES" "$APP/Contents/Resources/tensorfold-licenses/"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -37,6 +54,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 
 if [ -z "${SIGN_IDENTITY:-}" ]; then
+  codesign --force --sign - "$ENGINE/lib/libtfgrammar.dylib"
+  codesign --force --sign - "$ENGINE/bin/tensorfold-native"
   codesign --force --sign - "$APP"
   echo "Built $APP (ad-hoc: not hardened)"
   exit 0
@@ -61,6 +80,8 @@ else
 fi
 
 # Hardened runtime, no get-task-allow: macOS refuses debuggers and code injection while SIP is on.
+codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$ENGINE/lib/libtfgrammar.dylib"
+codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$ENGINE/bin/tensorfold-native"
 codesign --force --options runtime --timestamp --entitlements "$ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$APP"
 rm -f "$ENTITLEMENTS"
 codesign --verify --strict --verbose=2 "$APP"

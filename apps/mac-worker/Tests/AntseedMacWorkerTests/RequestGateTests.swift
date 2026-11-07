@@ -127,3 +127,23 @@ actor AsyncGate {
         waiters.removeAll()
     }
 }
+
+final class LocalModelParsingTests: XCTestCase {
+    func testPullFractionReadsProgressLinesOnly() {
+        XCTAssertEqual(LocalModel.pullFraction("  0.80 of 1.60 GiB, 35.2 MiB/s"), 0.5)
+        XCTAssertNil(LocalModel.pullFraction("  config.json: 0.00 MiB"))
+        XCTAssertNil(LocalModel.pullFraction("stored repo at /path"))
+    }
+
+    func testParseEventReadsContentRateAndUsage() throws {
+        let chunk = try XCTUnwrap(LocalModel.parseEvent(#"data: {"choices":[{"index":0,"delta":{"content":"Hi"}}]}"#))
+        XCTAssertEqual(chunk.content, "Hi")
+        let finish = try XCTUnwrap(LocalModel.parseEvent(#"data: {"choices":[{"delta":{},"finish_reason":"stop"}],"tensorfold":{"tokens_per_second":140.5}}"#))
+        XCTAssertEqual(finish.tokensPerSecond, 140.5)
+        let usage = try XCTUnwrap(LocalModel.parseEvent(#"data: {"choices":[],"usage":{"prompt_tokens":26,"completion_tokens":10}}"#)?.usage)
+        XCTAssertEqual(usage.prompt, 26)
+        XCTAssertEqual(usage.completion, 10)
+        XCTAssertNil(LocalModel.parseEvent("data: [DONE]"))
+        XCTAssertNil(LocalModel.parseEvent(""))
+    }
+}

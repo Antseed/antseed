@@ -104,6 +104,15 @@ final class InteropTests: XCTestCase {
         XCTAssertFalse(publicKey.isValidSignature(signature, for: Data(message.replacingOccurrences(of: "sip:1", with: "sip:0").utf8)))
     }
 
+    func testAFullySignedBuildIsNotHardenedWhilePromptsReachTheEngine() throws {
+        let identity = Protection.CodeIdentity(teamId: "H3M5BXXQR2", signingId: "com.antseed.macworker", cdhash: "ab", hardenedRuntime: true)
+        let report = Protection.Report(identity: identity, sip: true, debuggerDenied: true, keyAppBound: true)
+        XCTAssertFalse(report.hardened)
+        XCTAssertTrue(report.summary.contains("TensorFold"))
+        let attestation = try Protection.attest(report, nonce: "n1", worker: "0x70997970C51812dc3A010C7d01b50e0d17dc79C8", keyHex: "04ab", signer: AttestationKey(P256.Signing.PrivateKey()))
+        XCTAssertEqual(attestation["debuggerDenied"] as? Bool, false)
+    }
+
     func testThisMacReportsItsProtectionsAndSignsWithTheSecureEnclave() throws {
         let identity = Protection.codeIdentity()
         // `swift test` runs unsigned: never reported as hardened.

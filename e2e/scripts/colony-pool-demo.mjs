@@ -41,7 +41,8 @@ const CHAIN_ID = 31337;
 const DEPLOYER_KEY = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80';
 const OLLAMA_URL = process.env.OLLAMA_URL ?? 'http://127.0.0.1:11434';
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL ?? 'qwen2.5:0.5b';
-const SERVICE = 'qwen2.5-0.5b';
+/** Pass qwen3.5-2b when the Mac app joins with its default model. */
+const SERVICE = process.env.DEMO_SERVICE ?? 'qwen2.5-0.5b';
 const POOL_PORT = 8790;
 const PAUSE_MS = Number(process.env.DEMO_PAUSE_MS ?? 1500);
 /** Interface the chain and pool listen on: 0.0.0.0 lets a Mac on the LAN join. */
@@ -319,7 +320,7 @@ async function main() {
 
   // ── workers ──
   await step(EXPECT_WORKERS > LOCAL_WORKERS
-    ? 'Macs join the pool: one local worker, plus the Antseed Mac app on another Mac (MLX)'
+    ? 'Macs join the pool: one local worker, plus the Antseed Mac app on another Mac (TensorFold)'
     : 'Two Macs join the pool (each with its own key and a local model)');
   const workers = [];
   for (const name of ['worker-a', 'worker-b'].slice(0, LOCAL_WORKERS)) {

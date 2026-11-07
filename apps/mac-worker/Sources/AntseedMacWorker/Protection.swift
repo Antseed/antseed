@@ -93,14 +93,20 @@ enum Protection {
         let debuggerDenied: Bool
         let keyAppBound: Bool
 
+        /// False while decrypted prompts leave this app for the TensorFold engine:
+        /// the app's protections don't cover that process, and the Mac's owner can
+        /// read its loopback traffic. Set true only once inference runs in the app.
+        static let promptsStayInApp = false
+
         /// What pools and buyers that require attestation accept.
-        var hardened: Bool { identity.teamId != nil && identity.hardenedRuntime && sip && debuggerDenied && keyAppBound }
+        var hardened: Bool { Self.promptsStayInApp && identity.teamId != nil && identity.hardenedRuntime && sip && debuggerDenied && keyAppBound }
 
         /// One line for the menubar panel.
         var summary: String {
             if hardened { return "Prompts protected: signed app, SIP on, key in the Secure Enclave" }
             if identity.teamId != nil && !sip { return "System Integrity Protection is off: not serving" }
             if identity.teamId == nil { return "Development build: prompts are not protected from this Mac's owner" }
+            if !Self.promptsStayInApp { return "Prompts pass through the TensorFold engine: not protected from this Mac's owner" }
             if !keyAppBound { return "Key not bound to this app: prompts are not protected" }
             return "Debugger protection is off: prompts are not protected"
         }
@@ -137,7 +143,9 @@ enum Protection {
             "cdhash": report.identity.cdhash ?? NSNull(),
             "sip": report.sip,
             "hardenedRuntime": report.identity.hardenedRuntime,
-            "debuggerDenied": report.debuggerDenied,
+            // Pools and buyers derive "hardened" from these flags, so a worker whose
+            // prompts reach a process that doesn't deny debuggers can't report this.
+            "debuggerDenied": report.debuggerDenied && Report.promptsStayInApp,
             "keyAppBound": report.keyAppBound,
             "os": osVersion,
             "serial": device.serial ?? NSNull(),

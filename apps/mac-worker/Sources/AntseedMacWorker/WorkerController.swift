@@ -72,6 +72,7 @@ final class WorkerController: ObservableObject {
     private let identity: Protection.CodeIdentity
     private let debuggerDenied: Bool
     private let model: LocalModel
+    private let terminationSignal = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
     private var socket: URLSessionWebSocketTask?
     private var backoff: UInt64 = 1
     private var active: [String: Task<Void, Never>] = [:]
@@ -114,7 +115,7 @@ final class WorkerController: ObservableObject {
         self.config = config
         let keys = try WorkerKeys.loadOrCreate(in: config.dataDirectory)
         self.keys = keys
-        self.model = LocalModel(modelId: config.modelId)
+        self.model = LocalModel(modelId: config.modelId, engine: config.engineURL, directory: config.dataDirectory)
         let identity = Protection.codeIdentity()
         self.identity = identity
         // Signed builds refuse debuggers for the life of the process; development builds stay debuggable.
@@ -139,15 +140,23 @@ final class WorkerController: ObservableObject {
     func start() {
         log(protection.summary)
         guard refreshProtection() else { return }
+        let config = self.config
+        NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: nil) { _ in
+            LocalModel.stopEngine(in: config.dataDirectory, engine: config.engineURL)
+        }
+        // `kill` skips that notification unless it becomes a normal quit.
+        signal(SIGTERM, SIG_IGN)
+        terminationSignal.setEventHandler { NSApplication.shared.terminate(nil) }
+        terminationSignal.resume()
         Task {
             do {
                 status = .loadingModel(0)
                 log("Antseed Mac app \(config.name) · payout address \(address)")
-                log("loading \(config.modelId) with MLX…")
+                log("loading \(config.modelId) with TensorFold…")
                 try await model.load { progress in
                     Task { @MainActor in self.status = .loadingModel(progress) }
                 }
-                log("model ready on MLX (Apple GPU)")
+                log("model ready on TensorFold (Apple GPU)")
                 connect()
                 startPolling()
             } catch {
@@ -428,7 +437,7 @@ final class WorkerController: ObservableObject {
                 send(["t": "response-chunk", "id": id, "data": sealed.base64EncodedString()])
             }
             send(["t": "response-end", "id": id])
-            log("answered with MLX: \(result.promptTokens) in / \(result.completionTokens) out · \(Int(result.tokensPerSecond)) tok/s · sealed for the buyer")
+            log("answered with TensorFold: \(result.promptTokens) in / \(result.completionTokens) out · \(Int(result.tokensPerSecond)) tok/s · sealed for the buyer")
             requestStats()
         } catch {
             fail(id, Task.isCancelled ? "cancelled" : error.localizedDescription)
