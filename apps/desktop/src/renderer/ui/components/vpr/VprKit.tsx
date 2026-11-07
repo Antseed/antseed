@@ -40,8 +40,16 @@ export function VprBackTitle({ title, onBack, fallback = 'home' }: {
  * section must add the global `view-pinned-header` class, which turns it
  * into a non-scrolling flex column.
  */
-export function VprPage({ title, root = false, titleInBody = false, onBack, backFallback, header, children }: {
+export function VprPage({ title, subtitle, large = false, action, root = false, titleInBody = false, onBack, backFallback, center, header, children }: {
   title: string;
+  /** With a subtitle the page opens with the design's large heading, and the bar keeps only Back. */
+  subtitle?: string;
+  /** The large heading, for a page with no subtitle to give. */
+  large?: boolean;
+  /** Beside the large heading, like a page's own buttons or status. */
+  action?: ReactNode;
+  /** Pinned in the middle of the top bar, like the mode switch. */
+  center?: ReactNode;
   /** The page shows its own title in the body (a banner): the header keeps only its actions. */
   titleInBody?: boolean;
   /** A top-level screen from the nav rail: a plain title, no back chevron. */
@@ -55,18 +63,29 @@ export function VprPage({ title, root = false, titleInBody = false, onBack, back
   children: ReactNode;
 }): JSX.Element {
   const nav = useContext(VprNavContext);
+  const hero = large || Boolean(subtitle);
   return (
     <>
       <div className={styles.pageTop}>
         <div className={styles.pageHeaderRow}>
-          {titleInBody ? <span /> : root
+          {titleInBody || (root && hero) ? <span /> : root
             ? <h1 className={styles.pageTitle}>{title}</h1>
-            : <VprBackTitle title={title} onBack={onBack} fallback={backFallback} />}
+            : <VprBackTitle title={hero ? 'Back' : title} onBack={onBack} fallback={backFallback} />}
+          {center ? <div className={styles.pageCenter}>{center}</div> : null}
           <VprHeaderActions onSelectView={nav?.navigate} />
         </div>
         {header ? <div className={styles.pageTopInner}>{header}</div> : null}
       </div>
       <div className={styles.pageBody} data-view-scroll>
+        {hero ? (
+          <div className={styles.pageHero}>
+            <div className={styles.pageHeroRow}>
+              <h1 className={styles.pageHeroTitle}>{title}</h1>
+              {action ?? null}
+            </div>
+            {subtitle ? <p className={styles.pageHeroSubtitle}>{subtitle}</p> : null}
+          </div>
+        ) : null}
         {children}
       </div>
     </>
@@ -126,6 +145,27 @@ export function VprSearch({ value, onChange, placeholder, ariaLabel }: {
         onChange={(event) => onChange(event.currentTarget.value)}
       />
     </label>
+  );
+}
+
+/** A titled block of a page: the design's section heading with its caption. */
+export function VprSection({ title, caption, action, children }: {
+  title: string;
+  caption?: ReactNode;
+  action?: ReactNode;
+  children: ReactNode;
+}): JSX.Element {
+  return (
+    <section className={styles.section}>
+      <div className={styles.sectionHead}>
+        <div className={styles.sectionHeadText}>
+          <h2 className={styles.sectionTitle}>{title}</h2>
+          {caption ? <p className={styles.sectionCaption}>{caption}</p> : null}
+        </div>
+        {action ?? null}
+      </div>
+      {children}
+    </section>
   );
 }
 

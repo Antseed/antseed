@@ -6,13 +6,11 @@
 }
 
 .stack {
-  height: 100%;
-  min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 34px;
   width: 100%;
-  max-width: 760px;
+  max-width: 1000px;
   margin: 0 auto;
   min-width: 0;
 }
@@ -914,4 +912,205 @@
 
 .settingHintLink:hover code {
   color: var(--text-primary);
+}
+
+/* ---------- Agents & apps (v4 design) ---------- */
+
+.agentCard {
+  display: grid;
+  padding: 20px;
+}
+
+.appGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+.appCard {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+  min-height: 122px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg-card);
+}
+
+.appTile {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: #ffffff;
+}
+
+.appTileImage {
+  width: 34px;
+  height: 34px;
+  object-fit: contain;
+}
+
+.appCardCorner {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: inline-flex;
+  gap: 2px;
+}
+
+.appCornerButton {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.appCornerButton:hover {
+  background: var(--surface-chip);
+  color: var(--text-primary);
+}
+
+.appCardName {
+  max-width: 100%;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 550;
+  line-height: 20px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+button.appCardName {
+  cursor: pointer;
+}
+
+button.appCardName:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.appCardFoot {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 28px;
+  max-width: 100%;
+  margin-top: auto;
+}
+
+.appChip {
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--surface-chip);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.appChip:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.appGet {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.appGet:hover {
+  color: var(--text-primary);
+}
+
+.appMuted {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.appStatus,
+.appStatusWarn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.appStatus {
+  color: var(--leaf-ink);
+}
+
+.appStatusWarn {
+  color: var(--accent-yellow);
+}
+
+/* Disconnect takes over from the status while the card is hovered or focused. */
+.appConnectedRow {
+  display: grid;
+  min-width: 0;
+}
+
+.appConnectedRow > * {
+  grid-area: 1 / 1;
+}
+
+.appDisconnect {
+  visibility: hidden;
+  justify-self: start;
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--surface-chip);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.appCard:hover .appDisconnect,
+.appCard:focus-within .appDisconnect {
+  visibility: visible;
+}
+
+.appCard:hover .appConnectedRow > span,
+.appCard:focus-within .appConnectedRow > span {
+  visibility: hidden;
 }

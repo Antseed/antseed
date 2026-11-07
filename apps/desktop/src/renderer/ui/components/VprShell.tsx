@@ -28,6 +28,9 @@ const VIEWS_WITH_HEADER_ACTIONS: ReadonlySet<ViewName> = new Set<ViewName>([
   'tools',
   'rewards',
   'deposit',
+  'desktop',
+  'connection',
+  'config',
   'preferences',
   'help',
 ]);
@@ -128,7 +131,7 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
         <div className={styles.navGroup}>
           {mainNavEntries.map(({ view, nav }) => {
             // Home stays lit while a conversation is open: that is where chats start.
-            const active = activeView === view || (view === 'home' && activeView === 'chat');
+            const active = activeView === view;
             return (
               <button
                 key={view}

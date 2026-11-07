@@ -52,11 +52,11 @@ const HELP_TOPICS: HelpTopic[] = [
           },
           {
             heading: 'Connected apps',
-            body: 'Connect coding agents and AI clients from Apps. Each app is pointed at your gateway with its key and lists the gateway’s models in its own model picker.',
+            body: 'Connect coding agents and AI clients from Agents & apps. Each app is pointed at your gateway with its key and lists the gateway’s models in its own model picker.',
           },
           {
             heading: 'Usage, keys and limits',
-            body: 'Spend, request history, API keys and limits live in your gateway’s console. Use Manage API keys on Home to open it.',
+            body: 'Spend, request history, API keys and limits live in your gateway’s console. Use API keys at the top of the window to open it.',
           },
         ],
         links: [
@@ -89,7 +89,7 @@ const HELP_TOPICS: HelpTopic[] = [
       {
         key: 'connect',
         label: 'Connect an app',
-        intro: 'Open Apps and click Connect. The app’s own config file gets your gateway’s address and API key; Disconnect restores the original (a backup is kept next to it).',
+        intro: 'Open Agents & apps and click Connect. The app’s own config file gets your gateway’s address and API key; Disconnect restores the original (a backup is kept next to it).',
         sections: [
           {
             heading: 'Choose models in the app',
@@ -101,7 +101,7 @@ const HELP_TOPICS: HelpTopic[] = [
           },
           {
             heading: 'Zed',
-            body: 'Zed keeps API keys in its own keychain. After connecting, paste your gateway key into Zed’s Antseed provider once. Copy it from Apps → Use with any other tool.',
+            body: 'Zed keeps API keys in its own keychain. After connecting, paste your gateway key into Zed’s Antseed provider once. Copy it from Agents & apps → Use with any other tool.',
           },
         ],
       },
@@ -112,7 +112,7 @@ const HELP_TOPICS: HelpTopic[] = [
         sections: [
           {
             heading: 'URL and key',
-            body: 'Apps → Use with any other tool shows the base URL and key to paste into the tool’s settings. Send the key as a Bearer token (Authorization header).',
+            body: 'Agents & apps → Use with any other tool shows the base URL and key to paste into the tool’s settings. Send the key as a Bearer token (Authorization header).',
           },
           {
             heading: 'Cursor',
@@ -208,7 +208,7 @@ const HELP_TOPICS: HelpTopic[] = [
           },
           {
             heading: 'App still uses its old settings',
-            body: 'Restart the app or start a new session. Apps shows Restart required next to apps that started before they were connected.',
+            body: 'Restart the app or start a new session. Agents & apps shows Restart required next to apps that started before they were connected.',
           },
           {
             heading: 'Out of funds',
@@ -371,9 +371,8 @@ export function VprHelpView({ onSelectView }: Props) {
   function renderArticlePage(topic: HelpTopic, article: HelpArticle) {
     const next = nextArticle(topic.key, article.key);
     return (
-      <VprPage title={topic.label} onBack={() => goTo({ topicKey: topic.key, articleKey: null })}>
-      <div className={styles.stack}>
-        <h2 className={styles.title}>{article.label}</h2>
+      <VprPage title={article.label} large onBack={() => goTo({ topicKey: topic.key, articleKey: null })}>
+      <div className={`${styles.stack} ${styles.reading}`}>
         <VprCard className={styles.articleCard}>
           <p className={styles.paragraph}>{article.intro}</p>
           {article.sections.map((section) => (
@@ -429,9 +428,8 @@ export function VprHelpView({ onSelectView }: Props) {
 
   function renderTopicPage(topic: HelpTopic) {
     return (
-      <VprPage title="Help & Support" onBack={() => goTo({ topicKey: null, articleKey: null })}>
-      <div className={styles.stack}>
-        <h2 className={styles.title}>{topic.label}</h2>
+      <VprPage title={topic.label} large onBack={() => goTo({ topicKey: null, articleKey: null })}>
+      <div className={`${styles.stack} ${styles.reading}`}>
         <VprCard>
           {topic.articles.map((entry) => (
             <button
@@ -452,7 +450,7 @@ export function VprHelpView({ onSelectView }: Props) {
 
   function renderRootPage() {
     return (
-      <VprPage title="Help & Support" backFallback="preferences">
+      <VprPage title="Help & Support" backFallback="preferences" subtitle="Ask the community, report a bug, or read the guides.">
       <div className={`${styles.stack} ${styles.columns}`}>
 
         <div className={styles.section}>

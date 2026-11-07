@@ -80,10 +80,10 @@ function isLocalRunning(): boolean {
   return deps().processManager.getState().some((state) => state.mode === 'gateway' && state.running);
 }
 
-/** Any HTTP answer counts: `/v1/models` without a key is a 401 from a live gateway. */
+/** Any HTTP answer counts: a remote gateway from before `/healthz` answers 404. */
 async function probe(origin: string, timeoutMs = 2_000): Promise<boolean> {
   try {
-    const response = await fetch(`${origin}/v1/models`, { signal: AbortSignal.timeout(timeoutMs) });
+    const response = await fetch(`${origin}/healthz`, { signal: AbortSignal.timeout(timeoutMs) });
     await response.body?.cancel().catch(() => undefined);
     return true;
   } catch {

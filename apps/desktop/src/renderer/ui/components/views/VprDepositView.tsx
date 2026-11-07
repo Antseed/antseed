@@ -626,8 +626,8 @@ export function VprDepositView({ onSelectView }: Props) {
   function renderStage(current: Stage): JSX.Element {
     if (current === 'choose') {
       return (
-        <VprPage title="Add funds" backFallback="home">
-        <div className={styles.stack}>
+        <VprPage title="Add funds" backFallback="home" subtitle="Add to your balance with a card, a payment app or USDC.">
+        <div className={`${styles.stack} ${styles.chooseStack}`}>
           <BalanceSummaryCard
             values={balanceValues}
             notice={<FundingStatusNotice status={funding} onManageSessions={() => { void window.antseedDesktop?.gatewayOpenConsole?.('/wallet'); }} />}
@@ -791,7 +791,7 @@ export function VprDepositView({ onSelectView }: Props) {
 
     if (current === 'peer') {
       return (
-        <VprPage title="Deposit using Peer" onBack={() => goToStage('choose')}>
+        <VprPage title="Deposit using Peer" subtitle="Add to your balance from a bank or payment app." onBack={() => goToStage('choose')}>
           <div className={styles.stack}>
 
             {amountForm}
@@ -819,7 +819,7 @@ export function VprDepositView({ onSelectView }: Props) {
     }
 
     return (
-      <VprPage title="Pay with USDC on Base" onBack={() => goToStage('choose')}>
+      <VprPage title="Pay with USDC on Base" subtitle="Scan the code or copy the address. Credits update automatically." onBack={() => goToStage('choose')}>
         <div className={styles.stack}>
 
           {amountForm}

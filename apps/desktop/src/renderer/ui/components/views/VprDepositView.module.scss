@@ -11,7 +11,7 @@
   flex-direction: column;
   gap: 12px;
   width: 100%;
-  max-width: 760px;
+  max-width: 1000px;
   margin: 0 auto;
   min-width: 0;
 }
@@ -38,8 +38,8 @@
   text-align: left;
   border: 1px solid var(--border);
   border-radius: 14px;
-  background: #0e0e12;
-  color: #ffffff;
+  background: var(--btn-bg);
+  color: var(--btn-ink);
   font-size: 15px;
   font-weight: 650;
   line-height: 20px;
@@ -563,4 +563,27 @@
 
 .trustLine svg {
   flex: 0 0 auto;
+}
+
+/* Add funds: the balance beside the ways to add to it, when there's room. */
+.chooseStack {
+  gap: 14px;
+}
+
+@media (min-width: 1040px) {
+  .chooseStack {
+    display: grid;
+    grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+    column-gap: 24px;
+    align-items: start;
+
+    > * {
+      grid-column: 2;
+    }
+
+    > :first-child {
+      grid-column: 1;
+      grid-row: 1 / span 6;
+    }
+  }
 }

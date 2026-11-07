@@ -16,7 +16,9 @@ import type { ConnectedAppProfile, GatewayEndpointInfo, InstalledAppEntry } from
 import { appsResource, installedAppsResource } from '../../../modules/app/vpr-resources';
 import { useCachedResource } from '../../../modules/app/cached-resource';
 import { TelegramBotCard } from './TelegramBotCard';
-import { VprCard, VprPage, VprSearch } from '../vpr/VprKit';
+import { VprCard, VprPage, VprSearch, VprSection } from '../vpr/VprKit';
+import { PrivacyToggle, usePrivacyControl } from '../vpr/PrivacyToggle';
+import { useActions } from '../../hooks/useActions';
 import { AgentSkillsPanel } from '../vpr/AgentSkillsPanel';
 import { appLogoUrl } from '../vpr/AppPills';
 import { AppsBanner } from '../vpr/AppsBanner';
@@ -178,6 +180,9 @@ export function VprToolsView() {
   const installedApps = installedAppsResourceSnapshot.data;
   const installedAppsError = installedAppsResourceSnapshot.error;
 
+  const actions = useActions();
+  const privacyControl = usePrivacyControl((mode) => { actions.privacyModeChosen(mode); });
+  const connectedCount = (appsSnapshot.data ?? []).filter((profile) => profile.connected).length;
   const openConsole = useCallback((path: string) => {
     void window.antseedDesktop?.gatewayOpenConsole?.(path).then((result) => {
       if (result && !result.ok) setMessage(result.error ?? 'Could not open your gateway');
@@ -331,146 +336,138 @@ export function VprToolsView() {
 
   return (
     <section className={`view view-vpr-tools view-pinned-header ${styles.view}`} role="tabpanel">
-      <VprPage title="Agents &amp; apps" root titleInBody>
+      <VprPage title="Agents &amp; apps" titleInBody center={<PrivacyToggle control={privacyControl} />}>
       <div className={styles.stack}>
         {message ? <p className={styles.note} role="status">{message}</p> : null}
 
-        <div className={styles.appScroll}>
-          <AppsBanner title="Agents &amp; apps" subtitle="Let your agent call Antseed for another model, or run your apps on Antseed." />
+        <AppsBanner title="Agents &amp; apps" subtitle="Let your agent call Antseed for another model, or run your apps on Antseed." />
+
+        <VprSection
+          title="Use Antseed from your agent"
+          caption="Your agent keeps its own model and calls Antseed when you ask, for an image or a second opinion."
+        >
           <VprCard className={styles.agentCard}>
-            <AgentSkillsPanel />
+            <AgentSkillsPanel page />
           </VprCard>
+        </VprSection>
 
-          <div className={styles.listHeader}>
-            <p className={styles.listTitle}>Run an app on Antseed&apos;s models</p>
-            <p className={styles.listCaption}>The app uses your gateway as its model provider, and you pick models inside it.</p>
-          </div>
-
-          <div className={styles.appList}>
+        <VprSection
+          title="Run your apps on Antseed"
+          caption={`Each app uses Antseed as its model provider. ${connectedCount} connected.`}
+        >
+          <div className={styles.appGrid}>
             <TelegramBotCard />
             {orderedProfiles.map((profile) => {
               const connected = profile.connected;
               const canRestart = connected && profile.canRestart === true;
               const notInstalled = !connected && profile.installed === false;
               const brandKey = resolveBrandKey(profile.name, profile.displayName);
-              const profileCard = (
-                <div key={profile.name} className={`${styles.appPill}${connected ? ` ${styles.appPillConnected}` : ''}`}>
-                  <div className={styles.appHead}>
-                    <span className={styles.appIdentity}>
-                      {appLogoUrl(profile.name, profile.displayName) ? (
-                        <img src={appLogoUrl(profile.name, profile.displayName)} alt="" className={styles.appLogo} />
-                      ) : profile.iconDataUri && !isThemeAwareAppBrand(brandKey) ? (
-                        <img src={profile.iconDataUri} alt="" className={styles.appIcon} />
-                      ) : (
-                        <BrandIcon brand={brandKey} size={24} />
-                      )}
-                      <span className={styles.appText}>
-                        <span className={styles.appNameRow}>
-                          {/* The name itself launches the associated app when one is available. */}
-                          {profile.launchAppName || profile.appAction === 'open-url' || profile.appAction === 'open-tool' ? (
-                            <button
-                              type="button"
-                              className={styles.appNameLink}
-                              onClick={() => {
-                                void (profile.appAction === 'open-url' && profile.openUrl && !profile.launchAppName
-                                  ? openUrl(profile.openUrl)
-                                  : openTool(profile.toolName ?? profile.name));
-                              }}
-                              title={`Open ${profile.launchAppName ?? profile.displayName}`}
-                            >
-                              {profile.displayName}
-                            </button>
-                          ) : (
-                            <span className={styles.appName}>{profile.displayName}</span>
-                          )}
-                        </span>
-                        {notInstalled ? (
-                          <span className={`${styles.appMeta} ${styles.appMetaMuted}`}>Not installed</span>
-                        ) : profile.error ? (
-                          <span className={`${styles.appMeta} ${styles.appMetaWarning}`} title={profile.error}>
-                            <span className={styles.restartDot} aria-hidden="true" />
-                            {shortError(profile.error)}
-                          </span>
-                        ) : connected ? (
-                          <span className={`${styles.appMeta}${profile.needsRestart ? ` ${styles.appMetaWarning}` : ''}`}>
-                            <span className={profile.needsRestart ? styles.restartDot : styles.connectedDot} aria-hidden="true" />
-                            {profile.needsRestart ? 'Restart required' : 'Connected'}
-                          </span>
-                        ) : null}
-                      </span>
-                    </span>
-                    {busy === profile.name ? (
-                      <span
-                        className={styles.appBusy}
-                        role="status"
-                        aria-label={`${connected ? 'Disconnecting' : 'Connecting'} ${profile.displayName}`}
-                      />
-                    ) : canRestart ? (
+              const launchable = profile.launchAppName || profile.appAction === 'open-url' || profile.appAction === 'open-tool';
+              return (
+                <div key={profile.name} className={styles.appCard}>
+                  <span className={styles.appTile}>
+                    {appLogoUrl(profile.name, profile.displayName) ? (
+                      <img src={appLogoUrl(profile.name, profile.displayName)} alt="" className={styles.appTileImage} />
+                    ) : profile.iconDataUri && !isThemeAwareAppBrand(brandKey) ? (
+                      <img src={profile.iconDataUri} alt="" className={styles.appTileImage} />
+                    ) : (
+                      <BrandIcon brand={brandKey} size={30} />
+                    )}
+                  </span>
+                  <span className={styles.appCardCorner}>
+                    {canRestart && busy !== profile.name ? (
                       <button
                         type="button"
-                        className={`${styles.appOpen}${profile.needsRestart ? ` ${styles.appRestartNeeded}` : ''}`}
+                        className={styles.appCornerButton}
                         onClick={() => { void restartApp(profile.name, profile.displayName); }}
                         disabled={actionBusy === profile.name}
                         aria-label={`Restart ${profile.displayName}`}
                         title={profile.needsRestart ? `Restart ${profile.displayName} to apply the connection` : `Restart ${profile.displayName}`}
                       >
-                        <HugeiconsIcon icon={ArrowReloadHorizontalIcon} size={16} strokeWidth={2} />
+                        <HugeiconsIcon icon={ArrowReloadHorizontalIcon} size={15} strokeWidth={1.8} />
                       </button>
                     ) : null}
-                    {notInstalled ? null : <button
-                      type="button"
-                      className={`${styles.configAction}${settingsFor === profile.name ? ` ${styles.configActionActive}` : ''}`}
-                      onClick={() => openSettings(profile)}
-                      aria-haspopup="dialog"
-                      aria-label={`${profile.displayName} settings`}
-                      title={`${profile.displayName} settings`}
-                    >
-                      <HugeiconsIcon icon={Settings02Icon} size={15} strokeWidth={2} />
-                    </button>}
-                    {connected ? (
+                    {notInstalled ? null : (
                       <button
                         type="button"
-                        role="switch"
-                        aria-checked
-                        className={styles.connectedToggle}
-                        disabled={busy !== null}
-                        onClick={() => { void disconnectProfile(profile); }}
-                        aria-label={`Disconnect ${profile.displayName}`}
-                        title={`Disconnect ${profile.displayName}`}
+                        className={styles.appCornerButton}
+                        onClick={() => openSettings(profile)}
+                        aria-haspopup="dialog"
+                        aria-label={`${profile.displayName} settings`}
+                        title={`${profile.displayName} settings`}
                       >
-                        <span />
+                        <HugeiconsIcon icon={Settings02Icon} size={15} strokeWidth={1.8} />
                       </button>
+                    )}
+                  </span>
+                  {/* The name itself launches the associated app when one is available. */}
+                  {launchable ? (
+                    <button
+                      type="button"
+                      className={styles.appCardName}
+                      onClick={() => {
+                        void (profile.appAction === 'open-url' && profile.openUrl && !profile.launchAppName
+                          ? openUrl(profile.openUrl)
+                          : openTool(profile.toolName ?? profile.name));
+                      }}
+                      title={`Open ${profile.launchAppName ?? profile.displayName}`}
+                    >
+                      {profile.displayName}
+                    </button>
+                  ) : (
+                    <span className={styles.appCardName}>{profile.displayName}</span>
+                  )}
+                  <span className={styles.appCardFoot}>
+                    {busy === profile.name ? (
+                      <span className={styles.appBusy} role="status" aria-label={`${connected ? 'Disconnecting' : 'Connecting'} ${profile.displayName}`} />
+                    ) : profile.error ? (
+                      <>
+                        <span className={styles.appStatusWarn} title={profile.error}>
+                          <span className={styles.restartDot} aria-hidden="true" />
+                          {shortError(profile.error)}
+                        </span>
+                        {!connected && <button type="button" className={styles.appChip} disabled={busy !== null} onClick={() => { void connectProfile(profile); }}>Connect</button>}
+                      </>
+                    ) : connected ? (
+                      <span className={styles.appConnectedRow}>
+                        <span className={profile.needsRestart ? styles.appStatusWarn : styles.appStatus}>
+                          <span className={profile.needsRestart ? styles.restartDot : styles.connectedDot} aria-hidden="true" />
+                          {profile.needsRestart ? 'Restart required' : 'Connected'}
+                        </span>
+                        <button
+                          type="button"
+                          className={styles.appDisconnect}
+                          disabled={busy !== null}
+                          onClick={() => { void disconnectProfile(profile); }}
+                          aria-label={`Disconnect ${profile.displayName}`}
+                        >
+                          Disconnect
+                        </button>
+                      </span>
                     ) : notInstalled ? (
                       profile.downloadUrl ? (
                         <button
                           type="button"
-                          className={styles.downloadAction}
+                          className={styles.appGet}
                           onClick={() => { void openUrl(profile.downloadUrl!); }}
                           title={`Get ${profile.displayName}, then connect it here`}
                         >
-                          Download
+                          Get
                           <HugeiconsIcon icon={ArrowUpRight01Icon} size={13} strokeWidth={2} />
                         </button>
-                      ) : null
+                      ) : <span className={styles.appMuted}>Not installed</span>
                     ) : (
-                      <button
-                        type="button"
-                        className={styles.connectAction}
-                        disabled={busy !== null}
-                        onClick={() => { void connectProfile(profile); }}
-                      >
+                      <button type="button" className={styles.appChip} disabled={busy !== null} onClick={() => { void connectProfile(profile); }}>
                         Connect
                       </button>
                     )}
-                  </div>
+                  </span>
                 </div>
               );
-              return profileCard;
             })}
           </div>
-
           <GatewayEndpointCard onOpenConsole={openConsole} />
-        </div>
+        </VprSection>
 
         <div className={styles.appFooter}>
           <button type="button" className={styles.learnMore} onClick={() => setHelpOpen(true)}>

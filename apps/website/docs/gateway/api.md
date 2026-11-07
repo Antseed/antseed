@@ -67,6 +67,7 @@ A router counts as a model in the key's policy: a key limited to certain models 
 
 | Method | Route | Purpose |
 |---|---|---|
+| `GET` | `/healthz` | Whether the gateway is up. Needs no key. |
 | `GET` | `/v1/models` | Models on the network. With a key limited to certain models, only those. Free. |
 | `POST` | `/v1/chat/completions` | OpenAI-compatible chat completions |
 | `POST` | `/v1/responses` | OpenAI Responses API |

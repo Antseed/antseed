@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Button } from '@antseed/ui';
 import type { GatewayRewardsSummary } from '../../../types/bridge';
 import { formatCredits } from '../../../core/format';
-import { VprBadge, VprCard, VprPage } from '../vpr/VprKit';
+import { VprBadge, VprCard, VprSection, VprPage } from '../vpr/VprKit';
 import styles from './VprRewardsView.module.scss';
 
 function shortAddress(address: string): string {
@@ -50,7 +49,7 @@ export function VprRewardsView() {
 
   return (
     <section className={`view view-vpr-rewards view-pinned-header ${styles.view}`} role="tabpanel">
-      <VprPage title="Rewards" root>
+      <VprPage title="Rewards" root subtitle="$ANTS for the volume you move on the network.">
         <div className={styles.stack}>
           <VprCard className={styles.heroCard}>
             <div className={styles.heroText}>
@@ -70,22 +69,21 @@ export function VprRewardsView() {
                   {rewards.transfersEnabled ? 'Transfers live' : 'Transfers not enabled yet'}
                 </VprBadge>
               )}
-              <Button variant="brand" size="sm" onClick={() => { void openRewards(); }}>
+              <button type="button" className={styles.primaryAction} onClick={() => { void openRewards(); }}>
                 View rewards in your gateway ↗
-              </Button>
+              </button>
               {consoleError && <span className={styles.errorNote} role="alert">{consoleError}</span>}
             </div>
           </VprCard>
 
-          <VprCard className={styles.aboutCard}>
-            <span className={styles.aboutTitle}>About $ANTS</span>
-            <span className={styles.aboutText}>
+          <VprSection title="About $ANTS">
+            <p className={styles.aboutText}>
               $ANTS are emitted every epoch to the buyers and sellers who moved real USDC volume on the
               network. Your gateway earns them on what your apps and chats spend. Claiming and the
               history per epoch are in your gateway&apos;s Rewards page, where you sign with the wallet
               that operates it.
-            </span>
-          </VprCard>
+            </p>
+          </VprSection>
         </div>
       </VprPage>
     </section>

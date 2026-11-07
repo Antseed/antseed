@@ -87,44 +87,37 @@ export function TelegramBotCard() {
 
   return (
     <>
-      <div className={`${styles.appPill}${paired ? ` ${styles.appPillConnected}` : ''}`}>
-        <div className={styles.appHead}>
-          <span className={styles.appIdentity}>
-            <BrandIcon name="telegram" hints={['Telegram']} size={24} />
-            <span className={styles.appText}>
-              <span className={styles.appNameRow}>
-                <span className={styles.appName}>Telegram Bot</span>
-                {paired ? (
-                  <span className={styles.appMeta}>
-                    <span className={styles.connectedDot} aria-hidden="true" />
-                    Connected
-                  </span>
-                ) : null}
-              </span>
-              {meta ? <span className={styles.appMeta}>{meta}</span> : null}
-            </span>
-          </span>
-          {configured ? (
+      <div className={styles.appCard}>
+        <span className={styles.appTile}>
+          <BrandIcon name="telegram" hints={['Telegram']} size={30} />
+        </span>
+        {configured ? (
+          <span className={styles.appCardCorner}>
             <button
               type="button"
-              className={`${styles.configAction}${modalOpen ? ` ${styles.configActionActive}` : ''}`}
+              className={styles.appCornerButton}
               onClick={() => setModalOpen(true)}
               aria-haspopup="dialog"
               aria-label="Telegram Bot settings"
               title="Telegram Bot settings"
             >
-              <HugeiconsIcon icon={Settings02Icon} size={15} strokeWidth={2} />
+              <HugeiconsIcon icon={Settings02Icon} size={15} strokeWidth={1.8} />
             </button>
+          </span>
+        ) : null}
+        <span className={styles.appCardName}>Telegram Bot</span>
+        <span className={styles.appCardFoot}>
+          {paired ? (
+            <span className={styles.appStatus} title={meta ?? undefined}>
+              <span className={styles.connectedDot} aria-hidden="true" />
+              Connected
+            </span>
+          ) : configured ? (
+            <span className={styles.appMuted} title={meta ?? undefined}>{meta}</span>
           ) : (
-            <button
-              type="button"
-              className={styles.connectAction}
-              onClick={() => setModalOpen(true)}
-            >
-              Connect
-            </button>
+            <button type="button" className={styles.appChip} onClick={() => setModalOpen(true)}>Connect</button>
           )}
-        </div>
+        </span>
       </div>
 
       <Modal

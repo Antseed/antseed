@@ -11,7 +11,7 @@
   flex-direction: column;
   gap: 16px;
   width: 100%;
-  max-width: 760px;
+  max-width: 1000px;
   margin: 0 auto;
   min-width: 0;
 }
@@ -46,14 +46,15 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 4px 12px;
-  border: 1px solid var(--border-light);
-  border-radius: 6px;
-  background: transparent;
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--surface-chip);
   color: var(--text-primary);
-  font-size: 12px;
+  font: inherit;
+  font-size: 13px;
   font-weight: 500;
-  line-height: 16px;
+  white-space: nowrap;
   cursor: pointer;
 }
 
@@ -65,21 +66,23 @@
 
 .appearanceSection {
   display: grid;
-  gap: 8px;
+  gap: 14px;
 }
 
+/* The design's section heading. */
 .sectionLabel {
   color: var(--text-primary);
-  font-size: 12px;
-  font-weight: 500;
-  line-height: 16px;
+  font-size: 19px;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
 }
 
 .card {
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  padding: 16px;
+  gap: 18px;
+  padding: 20px;
 }
 
 .telemetryDetails {
@@ -87,9 +90,10 @@
   padding: 0;
   border: none;
   background: transparent;
-  color: var(--accent-primary);
+  color: var(--leaf-ink);
   font: inherit;
-  font-size: 12px;
+  font-size: 13px;
+  font-weight: 500;
   cursor: pointer;
 }
 
@@ -101,23 +105,24 @@
 .themeSegment {
   display: inline-flex;
   gap: 2px;
-  padding: 2px;
-  border-radius: 8px;
-  background: var(--bg-surface);
+  padding: 3px;
+  border-radius: 10px;
+  background: var(--surface-chip);
 }
 
 .themeSegmentButton {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 4px 10px;
+  padding: 5px 10px;
   border: none;
-  border-radius: 6px;
+  border-radius: 8px;
   background: transparent;
   color: var(--text-secondary);
-  font-size: 12px;
+  font: inherit;
+  font-size: 13px;
   font-weight: 500;
-  line-height: 16px;
+  line-height: 18px;
   cursor: pointer;
 }
 
@@ -149,12 +154,12 @@
 /* Wide windows: sections flow into two columns, each kept whole. */
 .columns {
   display: block;
-  max-width: 1040px;
+  max-width: 1000px;
   columns: 2 400px;
-  column-gap: 20px;
+  column-gap: 24px;
 
   > * {
     break-inside: avoid;
-    margin-bottom: 20px;
+    margin-bottom: 30px;
   }
 }

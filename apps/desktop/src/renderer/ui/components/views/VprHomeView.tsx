@@ -1,19 +1,14 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
 import { ArrowUp02Icon } from '@hugeicons/core-free-icons';
-import type { ConnectedAppProfile } from '../../../types/bridge';
-import { appsResource } from '../../../modules/app/vpr-resources';
 import { useCachedResource } from '../../../modules/app/cached-resource';
 import { shallowEqual, useUiSelector } from '../../hooks/useUiSelector';
 import { useActions } from '../../hooks/useActions';
 import type { ViewName } from '../../types';
-import { recordUserAction } from '../../../modules/telemetry/actions';
-import { normalizeTelemetryAppName } from '../../../../shared/telemetry.js';
 import { ChatModelDropdown } from '../chat/ChatModelDropdown';
 import { ChatSellerPicker } from '../chat/ChatSellerPicker';
 import { joinPinnedModel, splitPinnedModel } from '../../../../shared/pinned-model.js';
 import { AgentSkillsPanel } from '../vpr/AgentSkillsPanel';
-import { AppPillIcon, appPillStyles as pills } from '../vpr/AppPills';
 import { HomeField } from '../vpr/HomeField';
 import { modelsForPrivacy, PrivacyNote, PrivacyToggle, usePrivacyControl } from '../vpr/PrivacyToggle';
 import { privacyResource, usePrivacySwitch } from '../../../modules/app/vpr-resources';
@@ -33,35 +28,13 @@ export function VprHomeView({ onSelectView }: Props) {
     chatImageModelId: state.chatImageModelId,
     chatActiveConversation: state.chatActiveConversation,
   }), shallowEqual);
-  const apps = useCachedResource(appsResource);
   const [draft, setDraft] = useState('');
-  const [connecting, setConnecting] = useState<string | null>(null);
   const privacy = useCachedResource(privacyResource);
   const privateMode = privacy.data?.mode === 'private';
   const { switching } = usePrivacySwitch();
   const privacyControl = usePrivacyControl((mode) => { actions.privacyModeChosen(mode); });
   const models = modelsForPrivacy(snap.chatModels, privateMode);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const appListRef = useRef<HTMLDivElement>(null);
-
-  const profiles = apps.data ?? [];
-  const connectedCount = profiles.filter((profile) => profile.connected).length;
-
-  // Home never scrolls: when the window is too short for every app row, the
-  // rows that would be cut off are hidden whole (all apps are on the Apps page).
-  useLayoutEffect(() => {
-    const list = appListRef.current;
-    if (!list || typeof ResizeObserver === 'undefined') return undefined;
-    const clipRows = () => {
-      for (const pill of Array.from(list.children) as HTMLElement[]) {
-        pill.classList.toggle(pills.pillClipped, pill.offsetTop + pill.offsetHeight > list.clientHeight + 1);
-      }
-    };
-    const observer = new ResizeObserver(clipRows);
-    observer.observe(list);
-    clipRows();
-    return () => observer.disconnect();
-  }, [apps.data, connecting]);
 
   // The prompt grows with its text, up to a few lines.
   useLayoutEffect(() => {
@@ -70,23 +43,6 @@ export function VprHomeView({ onSelectView }: Props) {
     input.style.height = 'auto';
     input.style.height = `${Math.min(input.scrollHeight, COMPOSER_MAX_HEIGHT)}px`;
   }, [draft]);
-
-  async function connectApp(profile: ConnectedAppProfile): Promise<void> {
-    if (profile.connected) {
-      onSelectView?.('tools');
-      return;
-    }
-    if (connecting) return;
-    recordUserAction('app_connect', 'home', normalizeTelemetryAppName(profile.name));
-    setConnecting(profile.name);
-    try {
-      const result = await window.antseedDesktop?.appsConnect?.(profile.name);
-      void appsResource.refresh();
-      if (!result?.ok) onSelectView?.('tools');
-    } finally {
-      setConnecting(null);
-    }
-  }
 
   function submitDraft(): void {
     const text = draft.trim();
@@ -187,37 +143,6 @@ export function VprHomeView({ onSelectView }: Props) {
           <AgentSkillsPanel className={`${styles.glass} ${styles.agents}`} />
         </div>
 
-        <div className={`${styles.glass} ${styles.appsSection}`} data-glide-fade>
-          <div className={styles.sectionHeader}>
-            <p className={styles.sectionTitle}>
-              {connectedCount > 0 ? `${connectedCount} ${connectedCount === 1 ? 'app' : 'apps'} connected` : 'Connect your apps'}
-            </p>
-            <button type="button" className={styles.sectionLink} onClick={() => onSelectView?.('tools')}>
-              All apps
-            </button>
-          </div>
-          <p className={styles.sectionCaption}>
-            Or run an app on Antseed&apos;s models: it uses your gateway as its model provider, and you pick models inside it.
-          </p>
-          <div className={`${pills.pillList} ${styles.appList}`} ref={appListRef}>
-            {profiles.map((profile) => (
-              <button
-                key={profile.name}
-                type="button"
-                className={`${pills.pill}${profile.connected ? ` ${pills.pillActive}` : ''}`}
-                disabled={!profile.connected && connecting !== null}
-                onClick={() => { void connectApp(profile); }}
-                title={profile.connected ? `${profile.displayName} is connected` : `Connect ${profile.displayName}`}
-              >
-                <AppPillIcon name={profile.name} displayName={profile.displayName} iconDataUri={profile.iconDataUri} />
-                <span className={pills.pillLabel}>
-                  {connecting === profile.name ? 'Connecting…' : profile.displayName}
-                </span>
-                {profile.connected && <span className={pills.pillDot} aria-label="Connected" />}
-              </button>
-            ))}
-          </div>
-        </div>
       </div>
     </section>
   );

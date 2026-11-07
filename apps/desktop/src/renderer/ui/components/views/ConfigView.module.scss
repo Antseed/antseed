@@ -1,17 +1,9 @@
-.view {
-  height: 100%;
-  min-height: 0;
-  overflow-y: auto;
-  overflow-x: clip;
-  padding: 8px 16px 24px;
-}
-
 .stack {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 16px;
   width: 100%;
-  max-width: 760px;
+  max-width: 1000px;
   margin: 0 auto;
   min-width: 0;
 }
@@ -19,17 +11,15 @@
 .card {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  padding: 14px 16px;
+  gap: 16px;
+  padding: 18px 20px;
 }
 
 .cardTitle {
-  color: var(--text-secondary);
-  font-size: 11px;
-  font-weight: 650;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  line-height: 15px;
+  color: var(--text-primary);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 20px;
 }
 
 .input,

@@ -242,7 +242,7 @@ export function VprPreferencesView({ onSelectView }: Props) {
 
   return (
     <section className={`view view-vpr-preferences view-pinned-header ${styles.view}`} role="tabpanel">
-      <VprPage title="Settings" root>
+      <VprPage title="Settings" root subtitle="Your gateway, wallet, privacy and appearance.">
       <div className={`${styles.stack} ${styles.columns}`}>
         <GatewaySection />
 
