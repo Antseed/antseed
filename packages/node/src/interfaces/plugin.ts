@@ -58,6 +58,11 @@ export interface SellerResponse {
   statusCode: number
   headers: Record<string, string>
   body: Uint8Array
+  /**
+   * Buyer-local, never sent by the seller: hex session hash of the buyer's encrypted
+   * connection to the seller (see ANTSEED_CHANNEL_BINDING_HEADER).
+   */
+  channelBinding?: string
 }
 
 export interface VerifyContext {
@@ -82,6 +87,13 @@ export const ANTSEED_ATTEST_PATH = '/_antseed/attest'
  * body's `model`, through `Provider.handleControlRequest`.
  */
 export const ANTSEED_PROVIDER_CONTROL_PATH = '/_antseed/provider'
+
+/**
+ * Header the seller node sets on attestation requests it hands to its prover: the hex session
+ * hash of the connection the request arrived on (any buyer-sent value is replaced). A TEE
+ * prover binds it into its quote so the buyer can check its own connection ends in the TEE.
+ */
+export const ANTSEED_CHANNEL_BINDING_HEADER = 'x-antseed-channel-binding'
 
 export interface Prover extends AntseedPluginBase {
   type: 'prover'
