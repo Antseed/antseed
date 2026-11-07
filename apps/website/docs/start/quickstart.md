@@ -25,6 +25,12 @@ curl -fsSL https://antseed.com/install.sh | bash
 
 It needs Node.js 20 or later (on macOS with Homebrew it installs Node.js for you) and installs the CLI with npm, without sudo. When it finishes it prints the setup link, the console URL, the API base URL `http://localhost:8379/v1`, the log file (`~/.antseed/gateway.log`) and how to stop the gateway. Continue with [Claim the console](#claim-the-console).
 
+On Linux with systemd, this is what you get from a desktop session or WSL. Run anywhere else on Linux with systemd, for example over SSH, it does the [server install](#on-a-server) instead, and says so. Add `--local` to install for your user either way:
+
+```bash
+curl -fsSL https://antseed.com/install.sh | bash -s -- --local
+```
+
 ### Or step by step
 
 1. Install the Antseed CLI. See [Install](/docs/install) for requirements.
@@ -67,7 +73,7 @@ Run the installer on a Linux server with systemd. With `--domain`, it serves the
 curl -fsSL https://antseed.com/install.sh | bash -s -- --domain gateway.example.com
 ```
 
-On a Linux server with systemd, `install.sh` downloads and runs the server installer, [`install-gateway.sh`](https://antseed.com/install-gateway.sh), as root (through `sudo`, which may ask for your password), passing every option through. You can also run the server installer directly:
+On Linux with systemd, `install.sh` downloads and runs the server installer, [`install-gateway.sh`](https://antseed.com/install-gateway.sh), as root (through `sudo`, which may ask for your password), passing every option through. It does this when you pass an option such as `--domain`, or with no options when there is no desktop session (over SSH, or from cloud-init). Add `--server` to force it from a desktop session. You can also run the server installer directly:
 
 ```bash
 curl -fsSL --proto '=https' --tlsv1.2 https://antseed.com/install-gateway.sh | sudo bash -s -- --domain gateway.example.com
