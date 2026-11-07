@@ -4311,8 +4311,7 @@ export class BuyerProxy {
         const routerPeer = peers.find((peer) => peer.peerId.toLowerCase() === selection.service!.peerId.toLowerCase())
         if (!routerPeer) throw new Error('Selected routing service is not on the network')
         const buyerIdentity = request.headers[BUYER_IDENTITY_HEADER]
-        const outcome = await this._verifyPeer(routerPeer,
-          (chosenId) => makeVerifierReach(this._node, routerPeer, chosenId, signal, buyerIdentity), signal, false, true, buyerIdentity)
+        const outcome = await this._verifyPeer(routerPeer, signal, false, true, buyerIdentity)
         if (!outcome.ok) throw new Error(`Routing service failed its TEE check (${outcome.reason ?? 'failed'})`)
         routerBinding = outcome.boundTo
       }
@@ -4826,9 +4825,7 @@ export class BuyerProxy {
         let teeBinding: string | null = null
         if (this._verifier || requireTee) {
           const buyerIdentity = selected.request.headers[BUYER_IDENTITY_HEADER]
-          const makeReach = (chosenId: string): SellerReach =>
-            makeVerifierReach(this._node, selected.peer, chosenId, signal, buyerIdentity)
-          const outcome = await this._verifyPeer(selected.peer, makeReach, signal, requireVerified, requireTee, buyerIdentity)
+          const outcome = await this._verifyPeer(selected.peer, signal, requireVerified, requireTee, buyerIdentity)
           teeBinding = outcome.boundTo ?? null
           if (!outcome.ok) {
             lastVerificationError = `Peer ${selected.peer.peerId.slice(0, 12)}... failed required verification (${outcome.reason ?? 'failed'}).`
@@ -4872,17 +4869,19 @@ export class BuyerProxy {
             router,
             false,
             signal,
-            requestPolicy !== null,
-            routingConversationKey,
-            !comparisonUsed && index + 1 < candidates.length,
-            // With another seller to fall back on, don't wait far longer than
-            // this one usually takes; the last seller gets the full timeout. A
-            // probe of a seller with no recent data waits no longer than the
-            // seller it stands in for would.
-            index + 1 < candidates.length && !nativeVideo
-              ? this._attemptTimeoutMs(selected === explored ? candidates[index + 1]! : selected, selected.request)
-              : null,
-            teeBinding,
+            {
+              gatewayRouted: requestPolicy !== null,
+              routingConversationKey,
+              extraAttempt: !comparisonUsed && index + 1 < candidates.length,
+              // With another seller to fall back on, don't wait far longer than
+              // this one usually takes; the last seller gets the full timeout. A
+              // probe of a seller with no recent data waits no longer than the
+              // seller it stands in for would.
+              attemptTimeoutMs: index + 1 < candidates.length && !nativeVideo
+                ? this._attemptTimeoutMs(selected === explored ? candidates[index + 1]! : selected, selected.request)
+                : null,
+              teeBinding,
+            },
           )
           trace?.noteAttemptResult(result, res.statusCode, Date.now())
           if (result.done) {
@@ -5125,9 +5124,7 @@ export class BuyerProxy {
     let teeBinding: string | null = null
     if (this._verifier || pinnedPolicy?.requireTee === true) {
       const buyerIdentity = pinnedRequest.headers[BUYER_IDENTITY_HEADER]
-      const makeReach = (chosenId: string): SellerReach =>
-        makeVerifierReach(this._node, selectedPeer, chosenId, signal, buyerIdentity)
-      const outcome = await this._verifyPeer(selectedPeer, makeReach, signal, pinnedPolicy?.requireVerified === true, pinnedPolicy?.requireTee === true, buyerIdentity)
+      const outcome = await this._verifyPeer(selectedPeer, signal, pinnedPolicy?.requireVerified === true, pinnedPolicy?.requireTee === true, buyerIdentity)
       teeBinding = outcome.boundTo ?? null
       const short = selectedPeer.peerId.slice(0, 12)
       if (outcome.verified) {
@@ -5168,11 +5165,7 @@ export class BuyerProxy {
       router,
       true,
       signal,
-      false,
-      routingConversationKey,
-      false,
-      null,
-      teeBinding,
+      { routingConversationKey, teeBinding },
     )
     trace?.noteAttemptResult(result, res.statusCode, Date.now())
     if (trace && result.done && result.interrupted) trace.interrupted = result.interrupted
@@ -5194,12 +5187,14 @@ export class BuyerProxy {
 
   private async _verifyPeer(
     peer: PeerInfo,
-    makeReach: (chosenId: string) => SellerReach,
     signal: AbortSignal,
     requireVerified = false,
     requireTee = false,
     buyerIdentity?: string,
   ): Promise<VerifyOutcome & { boundTo?: string }> {
+    // Attest over the same buyer identity's connection the request will use.
+    const makeReach = (chosenId: string): SellerReach =>
+      makeVerifierReach(this._node, peer, chosenId, signal, buyerIdentity)
     const configured = this._verifier
     if (!configured) {
       return requireTee
@@ -5325,13 +5320,21 @@ export class BuyerProxy {
     router: Router | null,
     pinned: boolean,
     requestSignal: AbortSignal,
-    gatewayRouted = false,
-    routingConversationKey: string | null = null,
-    extraAttempt = false,
-    /** Give up on this seller if it has not started answering by then, so the next one can be tried. */
-    attemptTimeoutMs: number | null = null,
-    /** Send only on the connection with this session hash (a required TEE attestation's). */
-    teeBinding: string | null = null,
+    {
+      gatewayRouted = false,
+      routingConversationKey = null,
+      extraAttempt = false,
+      attemptTimeoutMs = null,
+      teeBinding = null,
+    }: {
+      gatewayRouted?: boolean
+      routingConversationKey?: string | null
+      extraAttempt?: boolean
+      /** Give up on this seller if it has not started answering by then, so the next one can be tried. */
+      attemptTimeoutMs?: number | null
+      /** Send only on the connection with this session hash (a required TEE attestation's). */
+      teeBinding?: string | null
+    } = {},
   ): Promise<PeerDispatchResult> {
     traceFor(res)?.noteAttempt(selectedPeer.peerId, Date.now())
     const gatewayAutoRoute = gatewayRouted && !pinned

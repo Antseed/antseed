@@ -78,9 +78,12 @@ export function faultCodeOf(err: unknown, depth = 0): AntseedErrorCode | null {
   return null;
 }
 
-const ANTSEED_ERROR_CODES: ReadonlySet<AntseedErrorCode> = new Set<AntseedErrorCode>([
-  'node-not-started', 'node-stopped', 'invalid-request', 'buyer-stream-limit',
-  'buyer-budget-too-low', 'buyer-reserve-misconfigured', 'buyer-session-state',
-  'buyer-deposits-insufficient', 'buyer-reserve-topup-timeout', 'buyer-transport-closed', 'invalid-spending-auth-header',
-  'chain-rpc-unavailable', 'peer-not-authorized', 'peer-protocol-violation',
-]);
+// A Record so a code added to AntseedErrorCode but not here fails to compile.
+const ANTSEED_ERROR_CODE_MAP: Record<AntseedErrorCode, true> = {
+  'node-not-started': true, 'node-stopped': true, 'invalid-request': true, 'buyer-stream-limit': true,
+  'buyer-budget-too-low': true, 'buyer-reserve-misconfigured': true, 'buyer-session-state': true,
+  'buyer-deposits-insufficient': true, 'buyer-reserve-topup-timeout': true, 'buyer-transport-closed': true,
+  'buyer-tee-connection-changed': true, 'invalid-spending-auth-header': true,
+  'chain-rpc-unavailable': true, 'peer-not-authorized': true, 'peer-protocol-violation': true,
+};
+const ANTSEED_ERROR_CODES: ReadonlySet<AntseedErrorCode> = new Set(Object.keys(ANTSEED_ERROR_CODE_MAP) as AntseedErrorCode[]);

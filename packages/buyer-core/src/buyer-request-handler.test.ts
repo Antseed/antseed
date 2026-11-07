@@ -3,6 +3,7 @@ import { BuyerRequestHandler, selectBillingRoute, stripPeerControlledResponseHea
 import { ConnectionState, toPeerId } from '@antseed/protocol';
 import type { BuyerPeerView, ResponseAuthContext, StoredResponseAuth } from './interfaces.js';
 import { hashRequest } from './response-auth.js';
+import { faultCodeOf } from './errors.js';
 import { CONNECTION_CAPABILITY_RESPONSE_AUTH_V1 } from '@antseed/protocol/messages';
 import type { SerializedHttpRequest, SerializedHttpResponse } from '@antseed/protocol/http';
 
@@ -92,8 +93,8 @@ describe('BuyerRequestHandler TEE connection binding', () => {
   it('refuses before sending when the connection is not the attested one', async () => {
     for (const binding of ['d'.repeat(64), null]) {
       const { handler, sendProxyRequest } = makeHandler([response(200, {})], undefined, binding);
-      await expect(handler.sendRequest(makePeer(), makeRequest(), undefined, { channelBinding: 'c'.repeat(64) }))
-        .rejects.toMatchObject({ code: 'buyer-tee-connection-changed' });
+      const err = await handler.sendRequest(makePeer(), makeRequest(), undefined, { channelBinding: 'c'.repeat(64) }).catch((e: unknown) => e);
+      expect(faultCodeOf(err)).toBe('buyer-tee-connection-changed');
       expect(sendProxyRequest).not.toHaveBeenCalled();
     }
   });
