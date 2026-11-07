@@ -229,6 +229,7 @@ Streaming responses carry only the request id, seller identity and price headers
 | 402 | `antseed_buyer_fault` with `insufficient_deposits` | The wallet has too few credits for a paid seller. Run `antseed buyer deposit` to show your funding address, or add funds in the desktop app. Free sellers need no funds: pin one as `<peerId>@<model>`. |
 | 413 | `upload_body_too_large` | The request is larger than the seller's upload limit. |
 | 502 | `model_not_found` | No seller your routing preferences allow offers this model. |
+| 503 | `discovery_in_progress` | The buyer started less than two minutes ago and is still discovering sellers. It has not found a seller it can use for this model yet. Retry after the `Retry-After` seconds. |
 
 The 402 comes back with the code `antseed_buyer_fault`, which marks a failure on the buyer's side, not the seller's. In OpenAI format the reason is in `error.param`:
 

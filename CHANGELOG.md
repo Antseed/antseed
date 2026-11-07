@@ -269,6 +269,8 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- CLI buyer and gateway (`@antseed/node` adds `AntseedNode.peerDiscoverySweep`): right after `antseed buyer start`, `antseed gateway start` or the installers, a valid model no longer answers `502 model_not_found` because the buyer has not found its sellers yet. While the first discovery sweep runs (at most two minutes after start), a request with no usable seller for its model yet waits up to 10 seconds for one, then answers `503 discovery_in_progress` with `Retry-After: 5`; the gateway passes it on. `/_antseed/status` reports `discovering`. `install.sh` and `install-gateway.sh` wait (up to a minute) for discovery before printing that the gateway is running. Before, every request for a model on a seller not found yet failed with `model_not_found` for 25 s or more after install. Docs: **API → Errors**, gateway **Troubleshooting**.
+
 - Buyer/Gateway: the 402 for a wallet with too few credits named a command the CLI rejects (`antseed buyer deposit <amount>`). It now says `antseed buyer deposit`, and that free sellers need no funds. Through a gateway the message names the key's workspace and points to **Wallet & Funding** and the workspace wallet instead of the desktop app and CLI. The status, `code` (`antseed_buyer_fault`) and `param` (`insufficient_deposits`) are unchanged. `checkBuyerReadiness` in `@antseed/node` no longer suggests `antseed buyer deposit 10` either.
 - Docs: the API error table listed the out-of-credits 402 as `insufficient_deposits`; it documents the real `antseed_buyer_fault` shape for OpenAI and Anthropic formats, and gateway troubleshooting gains a row for it.
 

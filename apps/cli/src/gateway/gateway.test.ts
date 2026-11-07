@@ -71,7 +71,7 @@ const ANTHROPIC_OUT_OF_CREDITS = { type: 'error', error: { type: 'antseed_buyer_
  * Stand-in for `antseed buyer start`: answers API routes, records the tag the
  * gateway attaches, and serves the attributed-spend feed for tagged requests.
  */
-async function fakeBuyer(options: { costUsdc?: number; spendFeed?: boolean; reportIdentity?: string; outOfCredits?: boolean } = {}) {
+async function fakeBuyer(options: { costUsdc?: number; spendFeed?: boolean; reportIdentity?: string; outOfCredits?: boolean; answer?: { status: number; headers: Record<string, string>; body: string } } = {}) {
   const feed = new SpendAttributionFeed()
   const captured: Array<{ url: string; auth?: string; source?: string; tag?: string; identity?: string; headers: http.IncomingHttpHeaders }> = []
   let requestCounter = 0
@@ -116,6 +116,11 @@ async function fakeBuyer(options: { costUsdc?: number; spendFeed?: boolean; repo
         // A finished video: the MP4 streams back, with no usage in it.
         res.writeHead(200, { 'content-type': 'video/mp4', 'x-antseed-request-id': requestId, 'x-antseed-peer-id': 'seller' })
         res.end(Buffer.concat([Buffer.from([0, 0, 0, 0x18]), Buffer.from('ftypisom'), randomBytes(4096)]))
+        return
+      }
+      if (options.answer) {
+        res.writeHead(options.answer.status, { ...options.answer.headers, 'x-antseed-request-id': requestId })
+        res.end(options.answer.body)
         return
       }
       if (req.url === '/v1/audio/speech') {
@@ -449,6 +454,24 @@ test('gateway returns its journal tag and still forwards the buyer request id', 
     assert.equal(response.headers['x-antseed-request-id'], 'req-1')
     assert.equal(response.headers['x-antseed-gateway-tag'], buyer.captured[0]?.tag)
     assert.match(String(response.headers['x-antseed-gateway-tag']), /^gw_/)
+  } finally {
+    await gateway.stop()
+    await buyer.close()
+    cleanup()
+  }
+})
+
+test('gateway passes the buyer\'s retryable 503 while it is still discovering sellers, Retry-After included', async () => {
+  const { store, cleanup } = tempDataDir()
+  const body = JSON.stringify({ error: { type: 'api_error', code: 'discovery_in_progress', message: 'The buyer started 3 s ago and is still discovering sellers (no usable seller of "m" found yet). Retry in a few seconds.', param: 'model' } })
+  const buyer = await fakeBuyer({ answer: { status: 503, headers: { 'content-type': 'application/json', 'retry-after': '5' }, body } })
+  const { secret } = store.createKey({ label: 'Cursor', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
+  const gateway = await startGateway(store, buyer.port)
+  try {
+    const response = await request(gateway.port, '/v1/chat/completions', { method: 'POST', key: secret, body: '{"model":"m"}' })
+    assert.equal(response.status, 503)
+    assert.equal(response.headers['retry-after'], '5')
+    assert.equal(JSON.parse(response.body).error.code, 'discovery_in_progress')
   } finally {
     await gateway.stop()
     await buyer.close()
