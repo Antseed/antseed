@@ -16,6 +16,8 @@ export type { SellerUpstream } from './seller-config-rules.js'
  *   - app-compose: runner docker-compose; no pre-launch or bash script; the allowed encrypted
  *     variables are only the secrets the compose file uses. Logs may be public: the image runs
  *     the seller in content-free mode, so they hold no prompts or answers, nor upstream error text about a request.
+ *     A launch token hash (launch_token_hash) is allowed: it only stops the CVM from booting
+ *     without the matching token.
  *   - compose file: written as JSON; one service; image pinned by an approved digest; no command,
  *     entrypoint, user or other service options; the only volumes are the seller data volume and
  *     the dstack socket; the seller config is one inline config at /etc/antseed/config.json.
@@ -35,7 +37,7 @@ const APP_COMPOSE_KEYS = new Set([
   'manifest_version', 'name', 'features', 'runner', 'docker_compose_file', 'docker_config',
   'public_logs', 'public_sysinfo', 'public_tcbinfo', 'kms_enabled', 'gateway_enabled', 'tproxy_enabled',
   'local_key_provider_enabled', 'key_provider', 'key_provider_id', 'allowed_envs', 'no_instance_id',
-  'secure_time', 'pre_launch_script', 'storage_fs', 'swap_size',
+  'secure_time', 'pre_launch_script', 'storage_fs', 'swap_size', 'launch_token_hash',
 ])
 const SERVICE_KEYS = new Set(['image', 'restart', 'ports', 'environment', 'volumes', 'configs', 'container_name'])
 const CONFIG_PATH = '/etc/antseed/config.json'

@@ -103,6 +103,8 @@ antseed seller start
 
 `seller start` checks before it begins announcing: at least one service per provider, ETH for gas, and on-chain registration. It prints what is missing and the command that fixes it.
 
+The checks need the Base RPC. If it and its fallbacks don't answer after 3 tries, a seller with priced services doesn't start. A seller whose services are all free starts without payments. To test without payments, set `ANTSEED_ENABLE_SETTLEMENT=false`.
+
 It also serves your seller dashboard on `127.0.0.1:3120`: status, model health, gas, earnings, request logs, prices against other sellers, settings and alerts. In a terminal, `seller start` prints the link. For a seller running as a service, `antseed seller dashboard` prints it. Pass `--no-dashboard` to turn it off. See [Monitoring](/docs/provide/monitoring).
 
 ## 6. Make sure buyers can reach you

