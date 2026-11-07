@@ -213,7 +213,10 @@ export class BuyerRequestHandler {
       return { ...adapted, headers: { ...headers, [VIDEO_PRICE_HEADER]: videoPriceUsdc.toString() } };
     };
     const explicitProvider = extractRequestedProvider(req);
-    const billingRoute = requestedService ? selectBillingRoute(peer, req, requestedService) : null;
+    // The seller trims the model name, so the route is resolved trimmed too:
+    // otherwise a padded pool-only model falls back to another provider and is sent in the clear.
+    const routedService = requestedService?.trim() || requestedService;
+    const billingRoute = routedService ? selectBillingRoute(peer, req, routedService) : null;
     // Name the provider the request is billed under, so the seller serves it
     // through the same upstream instead of choosing one by itself.
     if (billingRoute && !extractRequestedProvider(req)) {
@@ -223,11 +226,8 @@ export class BuyerRequestHandler {
     // its workers, or not sent at all. Decided by the provider the request is
     // routed to, not by whether this client can encrypt: an ordinary provider
     // may offer the same model, but a pool must never see a prompt in the clear.
-    const workerService = !options?.controlPlane ? requestedService?.trim() : undefined;
-    // The seller trims the model name, so a padded name is resolved trimmed too.
-    const routedProvider = billingRoute?.provider
-      ?? (workerService && workerService !== requestedService ? selectBillingRoute(peer, req, workerService)?.provider : null);
-    const needsWorkerE2E = Boolean(workerService) && peerServiceUsesWorkerE2E(peer, { explicitProvider, routedProvider });
+    const workerService = !options?.controlPlane ? routedService : undefined;
+    const needsWorkerE2E = Boolean(workerService) && peerServiceUsesWorkerE2E(peer, { explicitProvider, routedProvider: billingRoute?.provider });
     if (needsWorkerE2E && !this._deps.workerE2E) {
       throw buyerFault(
         `Service "${workerService}" on ${peer.peerId.slice(0, 12)}... is served by a colony pool, which needs worker encryption this client does not support`,

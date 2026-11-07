@@ -46,14 +46,16 @@ export function readSellerWorkers(dataDir: string, now = Date.now(), sellerSeenA
     const rows = db.prepare(`
       SELECT w.worker AS address,
              (SELECT agent FROM connections c WHERE c.worker = w.worker ORDER BY connected_at DESC LIMIT 1) AS agent,
-             @live AND EXISTS (SELECT 1 FROM connections c WHERE c.worker = w.worker AND c.disconnected_at IS NULL) AS connected,
-             (SELECT MAX(${end}) FROM connections c WHERE c.worker = w.worker) AS last_seen,
-             (SELECT COALESCE(SUM(MIN(${end}, @now) - MAX(connected_at, @weekAgo)), 0) FROM connections c
-               WHERE c.worker = w.worker AND ${end} > @weekAgo) AS online_ms,
+             @live AND COALESCE(s.open, 0) AS connected, s.last_seen, COALESCE(s.online_ms, 0) AS online_ms,
              COALESCE(e.requests, 0) AS requests, COALESCE(e.output_tokens, 0) AS output_tokens,
              COALESCE(e.timed_tokens, 0) AS timed_tokens, COALESCE(e.stream_ms, 0) AS stream_ms,
              COALESCE(e.earned_week, 0) AS earned_week, COALESCE(t.earned_total, 0) AS earned_total
       FROM (SELECT worker FROM connections UNION SELECT worker FROM earnings) w
+      LEFT JOIN (
+        SELECT worker, MAX(disconnected_at IS NULL) AS open, MAX(${end}) AS last_seen,
+               SUM(CASE WHEN ${end} > @weekAgo THEN MIN(${end}, @now) - MAX(connected_at, @weekAgo) ELSE 0 END) AS online_ms
+        FROM connections GROUP BY worker
+      ) s ON s.worker = w.worker
       LEFT JOIN (
         SELECT worker, COUNT(*) AS requests, SUM(output_tokens) AS output_tokens, SUM(worker_usdc) AS earned_week,
                SUM(CASE WHEN stream_ms > 0 THEN output_tokens ELSE 0 END) AS timed_tokens, SUM(COALESCE(stream_ms, 0)) AS stream_ms

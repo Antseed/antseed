@@ -487,6 +487,19 @@ describe('buyer requests to colony pools', () => {
     expect(dec(pool.wire.at(-1)!.body)).not.toContain(PROMPT);
   });
 
+  it('encrypts a padded pool-only model on a seller listing an ordinary provider first', async () => {
+    // Untrimmed, " qwen " matches no provider and would fall back to openai, in the clear.
+    const pool = fakePool();
+    const answer = await pool.handler.sendRequest(mixedPeer, chatRequest('w2', false, ' qwen '));
+    expect(JSON.parse(dec(answer.body)).choices[0].message.content).toBe(ANSWER);
+    expect(pool.wire.map((req) => req.path)).toEqual([WORKER_ASSIGN_PATH, '/v1/chat/completions']);
+    expect(pool.wire.at(-1)!.headers['x-antseed-provider']).toBe('colony-pool');
+    expect(pool.wire.some((req) => dec(req.body).includes(PROMPT))).toBe(false);
+    const noHook = fakePool({ noHook: true });
+    await expect(noHook.handler.sendRequest(mixedPeer, chatRequest('w3', false, ' qwen '))).rejects.toThrow(/needs worker encryption/);
+    expect(noHook.wire).toHaveLength(0);
+  });
+
   it('sends nothing but the assignment when the pool assigns no worker', async () => {
     const pool = fakePool({ assignFails: true });
     await expect(pool.handler.sendRequest(peer, chatRequest('a1'))).rejects.toThrow();
