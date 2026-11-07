@@ -6,7 +6,7 @@
 //
 //   node deploy/tee-seller/update-lock.mjs <cli version>
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -18,12 +18,9 @@ if (!/^\d+\.\d+\.\d+$/.test(cliVersion ?? '')) {
   process.exit(1)
 }
 
-// The provider plugins buyers accept in a TEE seller config (PLUGINS in
-// packages/antseed-verifier/src/dstack-app-compose.ts), and their shared core.
-const PLUGINS = [
-  '@antseed/provider-anthropic', '@antseed/provider-openai', '@antseed/provider-typesafe',
-  '@antseed/provider-venice-video', '@antseed/provider-alibaba-video', '@antseed/provider-core',
-]
+// The provider plugins buyers accept in a TEE seller config, and their shared core.
+const teeProviderPlugins = JSON.parse(readFileSync(new URL('../../packages/antseed-verifier/src/tee-provider-plugins.json', import.meta.url), 'utf8'))
+const PLUGINS = [...Object.keys(teeProviderPlugins).map((name) => `@antseed/provider-${name}`), '@antseed/provider-core']
 
 const npm = (args, cwd = here) => execFileSync('npm', args, { cwd, encoding: 'utf8' }).trim()
 

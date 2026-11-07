@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { ApprovedSellerImage } from './approved-seller-images.js'
+import teeProviderPlugins from './tee-provider-plugins.json' with { type: 'json' }
 
 /**
  * A dstack app is measured as the SHA-256 of its app-compose.json, which embeds the docker
@@ -41,18 +42,13 @@ export interface CheckedAppCompose {
 }
 
 /**
- * The provider plugins a TEE seller may use: each one's default upstream, and whether the
- * config's baseUrl (and fallbackUpstreams) changes it. Each sends buyer content only to that
- * upstream. fal-video is left out: it uploads buyer media to a storage host the storage service
- * names at runtime, which the config cannot show.
+ * The provider plugins a TEE seller may use (tee-provider-plugins.json, which also decides the
+ * image's plugins): each one's default upstream, and whether the config's baseUrl (and
+ * fallbackUpstreams) changes it. Each sends buyer content only to that upstream. fal-video is
+ * left out: it uploads buyer media to a storage host the storage service names at runtime, which
+ * the config cannot show.
  */
-const PLUGINS: Readonly<Record<string, { defaultUrl: string; baseUrl: boolean; fallbacks?: boolean }>> = {
-  openai: { defaultUrl: 'https://api.openai.com', baseUrl: true, fallbacks: true },
-  anthropic: { defaultUrl: 'https://api.anthropic.com', baseUrl: false },
-  typesafe: { defaultUrl: 'https://api.typesafe.ai', baseUrl: true },
-  'venice-video': { defaultUrl: 'https://api.venice.ai', baseUrl: true },
-  'alibaba-video': { defaultUrl: 'https://dashscope-intl.aliyuncs.com', baseUrl: true },
-}
+const PLUGINS: Readonly<Record<string, { defaultUrl: string; baseUrl: boolean; fallbacks?: boolean }>> = teeProviderPlugins
 
 const APP_COMPOSE_KEYS = new Set([
   'manifest_version', 'name', 'features', 'runner', 'docker_compose_file', 'docker_config',
