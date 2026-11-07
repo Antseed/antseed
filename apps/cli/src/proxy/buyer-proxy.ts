@@ -4049,8 +4049,12 @@ export class BuyerProxy {
     return routable
   }
 
-  /** The route plan for a model-only chat request: what model listing and route preview mean by routable. */
-  private _planChatModelRoutes(peers: PeerInfo[], model: string, requestPolicy: RoutingPolicy | null, requestProtocol: ServiceApiProtocol = 'openai-chat-completions') {
+  /**
+   * The route plan for a model-only request: what model listing and route preview
+   * mean by routable. Without a protocol it covers every kind of model (images,
+   * video, speech); with one it resolves the provider a request of that kind uses.
+   */
+  private _planChatModelRoutes(peers: PeerInfo[], model: string, requestPolicy: RoutingPolicy | null, requestProtocol: ServiceApiProtocol | null = null) {
     const request: SerializedHttpRequest = {
       requestId: randomUUID(),
       method: 'POST',

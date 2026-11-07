@@ -10,6 +10,7 @@ import {
   configPatchBaseUrl,
   isConfigPatchConnected,
   removeConfigPatch,
+  wslShareRoot,
   writeConfigPatch,
   type ConfigPatchDef,
   type ConfigPatchTarget,
@@ -680,6 +681,24 @@ test('pi: a provider of the user\'s own named antseed-something is left to them'
     assert.equal(after['defaultModel'], 'a');
     assert.ok((await readJson(models))['providers']['antseed-personal']);
   });
+});
+
+test('wsl: a share that does not answer is not taken as cleaned up', { skip: process.platform === 'win32' }, async () => {
+  await withDir(async (dir) => {
+    const native = path.join(dir, 'opencode.json');
+    await writeFile(native, '{}\n', 'utf8');
+    const gone = path.join(dir, 'no-such-share', 'opencode.json');
+    const targetsFile = path.join(dir, 'wsl-targets.json');
+    saveWslTargetsForTool(targetsFile, 'opencode', [{ tool: 'opencode', distro: 'Ubuntu', configPath: gone, host: '172.29.32.1', needsRelay: false }]);
+    const patch = { format: 'opencode', configPath: native, providerKey: 'antseed', providerName: 'Antseed', baseURL: 'http://localhost:{buyerPort}/v1', installProbe: 'opencode' } as ConfigPatchDef;
+    assert.throws(() => removeConfigPatch(patch, targetsFile), /Could not reach WSL \(Ubuntu\)/);
+    assert.equal(readWslTargetsForTool(targetsFile, 'opencode').length, 1);
+  });
+});
+
+test('wslShareRoot finds the distro share', () => {
+  assert.equal(wslShareRoot('\\\\wsl.localhost\\Ubuntu\\home\\me\\.config\\opencode\\opencode.json'), '\\\\wsl.localhost\\Ubuntu\\');
+  assert.equal(wslShareRoot('/tmp/a/b.json'), '/tmp/a');
 });
 
 test('wsl: a distro that cannot be reached stays remembered and the disconnect says so', { skip: process.platform === 'win32' }, async () => {

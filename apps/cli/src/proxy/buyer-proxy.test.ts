@@ -4340,6 +4340,16 @@ test('GET /v1/models keeps a model whose cheaper provider fits the price cap, as
   assert.ok(!ids.includes('only-pricey'), `listed: ${ids.join(', ')}`)
 })
 
+test('route preview keeps sellers of models that are not chat models', async () => {
+  const imager = makePeer('a', ['openai'])
+  imager.onChainReputationScore = 90
+  imager.providerPricing = { openai: { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 }, services: { 'picture-model': { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } } } }
+  imager.providerServiceApiProtocols = { openai: { services: { 'picture-model': ['openai-images'] } } }
+  const proxy = makeBuyerProxyWithPeers([imager], [imager], permissiveRouter())
+  const preview = await (proxy as any)._routePreview('picture-model', null)
+  assert.deepEqual(preview.map((candidate: { peerId: string }) => candidate.peerId), [imager.peerId])
+})
+
 test('GET /v1/models?type= filters by model type and rejects unknown types', async () => {
   const proxy = makeBuyerProxyWithPeers(makeNetworkModelPeers())
 

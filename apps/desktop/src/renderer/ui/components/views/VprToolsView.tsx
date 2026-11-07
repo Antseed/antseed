@@ -14,6 +14,7 @@ import {
 import { BrandIcon, isThemeAwareAppBrand, Modal, resolveBrandKey, useCopyFeedback } from '@antseed/ui';
 import type { ConnectedAppProfile, GatewayEndpointInfo, InstalledAppEntry } from '../../../types/bridge';
 import { ZED_APP, useZedKeyPaste } from './zed-key-paste';
+import { offersConnectAnyway } from './app-card-actions';
 import { appsResource, installedAppsResource } from '../../../modules/app/vpr-resources';
 import { useCachedResource } from '../../../modules/app/cached-resource';
 import { TelegramBotCard } from './TelegramBotCard';
@@ -446,6 +447,12 @@ export function VprToolsView() {
                           aria-label={`Disconnect ${profile.displayName}`}
                         >
                           Disconnect
+                        </button>
+                      </span>
+                    ) : notInstalled && offersConnectAnyway(window.antseedDesktop?.platform) ? (
+                      <span className={styles.appConnectedRow}>
+                        <button type="button" className={styles.appChip} disabled={busy !== null} onClick={() => { void connectProfile(profile); }} title={`Connect ${profile.displayName} if it is installed in WSL`}>
+                          Connect
                         </button>
                       </span>
                     ) : notInstalled ? (

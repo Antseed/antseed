@@ -29,10 +29,10 @@ function normalizeProtocol(value: string): string {
 }
 
 /** Every protocol the gateway reports for an entry: `supported_protocols`, then the peers' own. */
-export function entryProtocols(entry: GatewayModelEntry): string[] {
+export function entryProtocols(entry: GatewayModelEntry, peers = records(entry['peers'])): string[] {
   const reported = [
     ...strings(entry['supported_protocols']),
-    ...records(entry['peers']).flatMap((peer) => [
+    ...peers.flatMap((peer) => [
       ...(typeof peer['protocol'] === 'string' ? [peer['protocol']] : []),
       ...strings(peer['protocols']),
     ]),
@@ -46,8 +46,7 @@ export function entryProtocols(entry: GatewayModelEntry): string[] {
  * entry that reports none (a plain OpenAI-compatible gateway) gets
  * chat-completions; one that reports only non-chat protocols gets null.
  */
-export function resolveEntryProtocol(entry: GatewayModelEntry): ChatServiceProtocol | null {
-  const protocols = entryProtocols(entry);
+export function resolveEntryProtocol(entry: GatewayModelEntry, protocols = entryProtocols(entry)): ChatServiceProtocol | null {
   if (protocols.length === 0) return 'openai-chat-completions';
   return PROTOCOL_PREFERENCE.find((protocol) => protocols.includes(protocol)) ?? null;
 }
@@ -64,13 +63,12 @@ function entryType(entry: GatewayModelEntry, protocols: string[]): string {
  * every peer serving the model advertises image input / the `multimodal`
  * category — the gateway may route to any of them.
  */
-function entrySupportsImages(entry: GatewayModelEntry): boolean {
+function entrySupportsImages(entry: GatewayModelEntry, peers: Array<Record<string, unknown>>): boolean {
   const architecture = entry['architecture'];
   if (architecture && typeof architecture === 'object'
     && strings((architecture as Record<string, unknown>)['input_modalities']).includes('image')) {
     return true;
   }
-  const peers = records(entry['peers']);
   return peers.length > 0 && peers.every(peerTakesImages);
 }
 
@@ -82,8 +80,8 @@ function peerTakesImages(peer: Record<string, unknown>): boolean {
   return inputs.includes('image') || strings(peer['categories']).includes('multimodal');
 }
 
-function imageInputSellerIds(entry: GatewayModelEntry): string[] {
-  return records(entry['peers'])
+function imageInputSellerIds(peers: Array<Record<string, unknown>>): string[] {
+  return peers
     .filter(peerTakesImages)
     .flatMap((peer) => (typeof peer['peerId'] === 'string' ? [peer['peerId'].toLowerCase().replace(/^0x/, '')] : []));
 }
@@ -105,8 +103,7 @@ function record(value: unknown): Record<string, unknown> {
 }
 
 /** The offer summary the picker shows, worked out like the gateway console's chat. */
-function entryOfferSummary(entry: GatewayModelEntry): Pick<ChatModel, 'sellers' | 'free' | 'minImageUsd' | 'freeSellerId' | 'freeForStakers' | 'tee' | 'toolUse' | 'reasoning' | 'inputUsdPerMillion' | 'outputUsdPerMillion'> {
-  const peers = records(entry['peers']);
+function entryOfferSummary(entry: GatewayModelEntry, peers: Array<Record<string, unknown>>): Pick<ChatModel, 'sellers' | 'free' | 'minImageUsd' | 'freeSellerId' | 'freeForStakers' | 'tee' | 'toolUse' | 'reasoning' | 'inputUsdPerMillion' | 'outputUsdPerMillion'> {
   const declared = record(entry['capabilities']);
   // Coverage only counts sellers that reported at all, including those reporting false.
   const anyPeerDeclares = (capability: 'toolUse' | 'reasoning'): boolean => peers.some((peer) => record(peer['capabilities'])[capability] === true);
@@ -133,20 +130,22 @@ function entryOfferSummary(entry: GatewayModelEntry): Pick<ChatModel, 'sellers' 
 }
 
 export function toChatModel(entry: GatewayModelEntry): ChatModel {
-  const protocols = entryProtocols(entry);
+  // Normalized once; every projection below reads the same peer list.
+  const peers = records(entry['peers']);
+  const protocols = entryProtocols(entry, peers);
   const type = entryType(entry, protocols);
   const name = typeof entry['name'] === 'string' && entry['name'].trim() ? entry['name'].trim() : entry.id;
   const contextWindow = entryContextWindow(entry);
-  const imageSellers = imageInputSellerIds(entry);
+  const imageSellers = imageInputSellerIds(peers);
   return {
     id: entry.id,
     label: name,
     type,
-    protocol: type === 'text' ? resolveEntryProtocol(entry) : null,
-    supportsImages: entrySupportsImages(entry),
+    protocol: type === 'text' ? resolveEntryProtocol(entry, protocols) : null,
+    supportsImages: entrySupportsImages(entry, peers),
     ...(imageSellers.length > 0 ? { imageInputSellerIds: imageSellers } : {}),
     ...(contextWindow ? { contextWindow } : {}),
-    ...entryOfferSummary(entry),
+    ...entryOfferSummary(entry, peers),
   };
 }
 

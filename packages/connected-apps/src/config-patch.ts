@@ -785,6 +785,12 @@ function applyWithInstallProbe(opts: {
   if (opts.wslTargetsFile) saveWslTargetsForTool(opts.wslTargetsFile, opts.tool, wslTargets);
 }
 
+/** The distro's share (`\\\\wsl$\\Ubuntu\\`), or the config's folder for any other path. */
+export function wslShareRoot(configPath: string): string {
+  const share = /^(\\\\[^\\]+\\[^\\]+)(\\|$)/.exec(configPath);
+  return share ? `${share[1]}\\` : path.dirname(configPath);
+}
+
 /**
  * Unpatch the WSL targets remembered for `tool` and forget them. One that can't
  * be reached (a stopped distro, an unavailable share) is kept and reported: its
@@ -799,6 +805,12 @@ function removeWslInstalls(
   let changed = false;
   const failed: WslConfigTarget[] = [];
   for (const target of readWslTargetsForTool(wslTargetsFile, tool)) {
+    // An unavailable share looks like a missing file, which the removers take as
+    // nothing to remove. Only a share that answers counts as cleaned up.
+    if (!existsSync(wslShareRoot(target.configPath))) {
+      failed.push(target);
+      continue;
+    }
     try {
       if (removeFrom(target)) changed = true;
     } catch {
