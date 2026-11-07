@@ -749,6 +749,16 @@ export class AntseedNode extends EventEmitter {
   }
 
   /**
+   * Session hash of the encrypted TCP connection to a peer (see PeerConnection.channelBinding),
+   * for the default buyer identity or a named one, else null.
+   */
+  getChannelBinding(peerId: PeerId, buyerIdentity?: string): string | null {
+    const context = this._buyerContext(buyerIdentity);
+    if (context) return context.getChannelBinding(peerId);
+    return this._connectionManager?.getConnection(peerId)?.channelBinding ?? null;
+  }
+
+  /**
    * Active seller sessions currently tracked in-memory.
    * Includes open sessions before they are finalized/settled.
    */
