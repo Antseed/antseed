@@ -1063,7 +1063,7 @@ ANTSEED_API_KEY=${GATEWAY_KEY}`,
       },
     ],
     modelHints: {
-      suggested: ['kimi-k2.6', 'deepseek-v4-flash', 'gpt-oss-120b', 'qwen3-coder-480b'],
+      suggested: ['kimi-k2.6', 'deepseek-v4-flash', 'gpt-oss-120b', 'glm-5.2'],
       note: 'Each provider JSON file defines exactly one `model`. Studio enumerates these into the validator-creation UI; pick model ids from the network-wide list (`GET /v1/models` on your gateway). To expose more models later, drop in more `antseed_<model>.json` files - no schema edit needed. To lock a file to one specific peer, set `model` to `<peerId>@<service-id>`.',
     },
     test: [
@@ -1208,7 +1208,7 @@ console.log(object);`,
       },
     ],
     modelHints: {
-      suggested: ['deepseek-v4-flash', 'kimi-k2.6', 'gpt-oss-120b', 'qwen3-coder-480b'],
+      suggested: ['deepseek-v4-flash', 'kimi-k2.6', 'gpt-oss-120b', 'glm-5.2'],
       note:
         `The string you pass to \`antseed('<id>')\` is forwarded verbatim as \`model\` in the OpenAI Chat request. Run \`${LIST_MODELS_COMMAND}\` to list every model on the network. \`antseed('<peerId>@<id>')\` routes that one call to a specific peer.`,
     },
@@ -1355,7 +1355,7 @@ print(result["messages"][-1].content)`,
       },
     ],
     modelHints: {
-      suggested: ['deepseek-v4-flash', 'kimi-k2.6', 'gpt-oss-120b', 'qwen3-coder-480b'],
+      suggested: ['deepseek-v4-flash', 'kimi-k2.6', 'gpt-oss-120b', 'glm-5.2'],
       note:
         'Pick services whose `protocols` array includes `openai-chat-completions` (most do natively; the rest are translated automatically by `@antseed/api-adapter`). Tool calling and structured output rely on the service supporting OpenAI-style function-call syntax - confirm with a quick smoke test before building large agents. `model="<peerId>@<service-id>"` routes to a specific peer.',
     },
@@ -1462,7 +1462,7 @@ curl "$ANTSEED_BASE_URL/messages" \\
   -H "Authorization: Bearer $ANTSEED_API_KEY" \\
   -H 'content-type: application/json' \\
   -d '{
-    "model": "kimi-k2.6",
+    "model": "deepseek-v4-flash",
     "max_tokens": 1024,
     "messages": [{"role": "user", "content": "Hello"}]
   }'

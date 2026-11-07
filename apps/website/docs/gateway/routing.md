@@ -110,7 +110,7 @@ curl https://gateway.example.com/v1/chat/completions \
 
 The gateway:
 
-- Replaces the model with the preset's, for example `<peerId>@qwen3-coder-480b`.
+- Replaces the model with the preset's, for example `<peerId>@deepseek-v4-flash`.
 - Puts the preset's system prompt before the client's.
 - Merges its parameters under the client's own, so the client's values win.
 
@@ -125,7 +125,7 @@ antseed gateway routing set --min-trust 30 --max-input-price 5
 antseed gateway workspace policy set Research --layer org --require-tee
 antseed gateway key policy set <keyId> --allow-model deepseek-v4-flash --sort price
 antseed gateway routing preview --model deepseek-v4-flash --workspace Research
-antseed gateway preset create --slug coder --name Coder --model qwen3-coder-480b --param temperature=0.2
+antseed gateway preset create --slug coder --name Coder --model deepseek-v4-flash --param temperature=0.2
 ```
 
 A `policy set` replaces the policy at that level unless you add `--merge`. See [Commands](/docs/commands) for every flag.
