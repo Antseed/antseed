@@ -183,7 +183,9 @@ One VM serves at a time: a seller holds a lease (`<prefix>/lease`) before it res
 renews it every 20 seconds and releases it after its last save. A replacement VM waits until the
 old one releases it, or for up to 2 minutes if the old one died. A watchdog stops a seller whose
 lease hasn't been renewed for a minute, even while a renewal hangs, and kills it if it hasn't
-stopped 30 seconds later; every request to Google has a time limit. Each save is also written only over the version the seller last saw, so a
+stopped 30 seconds later; every request to Google has a time limit. A state write must finish
+within the minute the seller surely holds the lease, so one that lost its lease, even while
+shutting down, never writes over the state its replacement restored. Each save is also written only over the version the seller last saw, so a
 second writer is caught even then.
 
 ## Logs and data

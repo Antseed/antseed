@@ -110,15 +110,6 @@ export function encodeConfidentialSpaceEvidence(token: string): Uint8Array {
   return new TextEncoder().encode(JSON.stringify({ confidentialSpaceToken: token }))
 }
 
-function confidentialSpaceToken(evidence: Uint8Array): string | undefined {
-  try {
-    const parsed = JSON.parse(new TextDecoder().decode(evidence)) as { confidentialSpaceToken?: unknown }
-    return typeof parsed.confidentialSpaceToken === 'string' ? parsed.confidentialSpaceToken : undefined
-  } catch {
-    return undefined
-  }
-}
-
 /**
  * tee-tdx evidence blob: the raw quote (b64), optional DCAP collateral and binding, and on dstack
  * the RTMR3 event log and app-compose.json.
@@ -148,7 +139,13 @@ export function encodeTeeTdxEvidence(
 }
 
 export function decodeTeeTdxEvidence(bytes: Uint8Array): Omit<TeeTdxEvidence, 'quote'> & { quote: Uint8Array } {
-  const parsed = JSON.parse(new TextDecoder().decode(bytes)) as Partial<TeeTdxEvidence>
+  return decodeTeeTdxEnvelope(JSON.parse(new TextDecoder().decode(bytes)))
+}
+
+/** Validate a parsed tee-tdx evidence envelope. */
+function decodeTeeTdxEnvelope(envelope: unknown): Omit<TeeTdxEvidence, 'quote'> & { quote: Uint8Array } {
+  if (!envelope || typeof envelope !== 'object') throw new Error('tee-tdx evidence is not an object')
+  const parsed = envelope as Partial<TeeTdxEvidence>
   if (typeof parsed.quote !== 'string' || parsed.quote.length === 0) {
     throw new Error('tee-tdx evidence missing "quote"')
   }
@@ -217,8 +214,14 @@ export async function verifyTdxEvidence(
   nowSecs: number,
   verifyConfidentialSpaceToken: VerifyConfidentialSpaceTokenFn = defaultVerifyConfidentialSpaceToken,
 ): Promise<ParsedTdxQuote> {
-  const token = confidentialSpaceToken(evidence)
-  if (token !== undefined) {
+  let envelope: unknown
+  try {
+    envelope = JSON.parse(new TextDecoder().decode(evidence))
+  } catch (err) {
+    return { quoteEvidence: evidence, status: '', td: null, error: `malformed tee-tdx evidence: ${msg(err)}` }
+  }
+  const token = envelope && typeof envelope === 'object' ? (envelope as { confidentialSpaceToken?: unknown }).confidentialSpaceToken : undefined
+  if (typeof token === 'string') {
     try {
       return { quoteEvidence: evidence, status: '', td: null, confidentialSpace: await verifyConfidentialSpaceToken(token) }
     } catch (err) {
@@ -231,7 +234,7 @@ export async function verifyTdxEvidence(
   let eventLog: DstackEvent[] | undefined
   let appCompose: string | undefined
   try {
-    ;({ quote, collateral, binding, eventLog, appCompose } = decodeTeeTdxEvidence(evidence))
+    ;({ quote, collateral, binding, eventLog, appCompose } = decodeTeeTdxEnvelope(envelope))
   } catch (err) {
     return { quoteEvidence: evidence, status: '', td: null, error: `malformed tee-tdx evidence: ${msg(err)}` }
   }

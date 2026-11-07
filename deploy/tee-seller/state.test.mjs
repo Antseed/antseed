@@ -185,6 +185,26 @@ describe('seller state snapshots', () => {
     assert.equal(sync.generation, String(store.generation))
   })
 
+  it('aborts a stalled final save at the end of its lease, and starts no write after it', async () => {
+    const store = memoryStore()
+    let ownedUntil = Date.now() + 100
+    const sync = new StateFileSync({ file: PAYMENTS, store, key: KEY, location: LOCATION, dataDir: seller.dir, Database, ownedUntil: () => ownedUntil })
+    await sync.restore()
+    let started = 0
+    // The upload stalls until its deadline aborts it.
+    store.write = (_data, _generation, { signal }) => {
+      started += 1
+      return new Promise((_, reject) => signal.addEventListener('abort', () => reject(signal.reason)))
+    }
+    await assert.rejects(sync.saveFinal({ delayMs: 200 }), StateConflictError)
+    assert.equal(started, 1)
+    assert.equal(store.object, null)
+    // Lost outright (e.g. another instance took the lease): nothing is sent at all.
+    ownedUntil = 0
+    await assert.rejects(sync.saveFinal({ delayMs: 1 }), /no longer holds the state lease/)
+    assert.equal(started, 1)
+  })
+
   it('keeps each database in its own object under the prefix', () => {
     const syncs = stateSyncs({ bucket: 'seller-state', prefix: 'tee' }, async () => 'tok', '11'.repeat(32), seller.dir, Database)
     assert.deepEqual(syncs.map((s) => s.location), ['gs://seller-state/tee/payments/sessions.db', 'gs://seller-state/tee/metering.db'])
@@ -313,6 +333,7 @@ describe('keepLease', () => {
     await clock.advance(10_000)
     assert.deepEqual(lost, ['could not renew the state lease for 60 s'])
     assert.equal(keeper.valid(), false)
+    assert.equal(keeper.ownedUntil(), 0)
   })
 
   it('keeps the lease through a long restore, and fences at once when another instance holds it', async () => {
@@ -324,6 +345,8 @@ describe('keepLease', () => {
     const keeper = keepLease(lease, { onLost: (reason) => lost.push(reason), ...clock })
     await clock.advance(10 * 60_000)
     assert.equal(keeper.valid(), true)
+    // Writes may run until 60 s after the last confirmed renewal, well inside the lease.
+    assert.ok(keeper.ownedUntil() > clock.now() && keeper.ownedUntil() <= clock.now() + 60_000)
     assert.deepEqual(lost, [])
     // Another instance, whose clock is past this lease's expiry, takes it.
     await new StateLease({ store, holder: 'vm-b', now: () => clock.now() + 200_000 }).acquire()

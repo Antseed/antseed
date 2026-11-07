@@ -99,16 +99,20 @@ export async function snapshot(dataDir, file, Database, now = Date.now()) {
   }
 }
 
-/** One Cloud Storage object, written only over the generation this seller last saw. Each request gives up after `timeoutMs`. */
+/**
+ * One Cloud Storage object, written only over the generation this seller last saw. Each request
+ * gives up after `timeoutMs`, or sooner when `signal` (a write's ownership deadline) aborts.
+ */
 export function gcsObject({ bucket, object }, accessToken, fetchImpl = fetch, { timeoutMs = 300_000 } = {}) {
   const name = encodeURIComponent(object)
-  const request = async (url, init = {}) => {
+  const request = async (url, { signal, ...init } = {}) => {
     const token = await accessToken()
+    const timeout = AbortSignal.timeout(timeoutMs)
     return fetchImpl(url, {
       ...init,
       headers: { authorization: `Bearer ${token}`, ...init.headers },
       redirect: 'error',
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: signal ? AbortSignal.any([timeout, signal]) : timeout,
     })
   }
   return {
@@ -123,11 +127,12 @@ export function gcsObject({ bucket, object }, accessToken, fetchImpl = fetch, { 
       if (!res.ok) throw new Error(`reading gs://${bucket}/${object}: HTTP ${res.status} ${(await res.text()).slice(0, 300)}`)
       return { data: Buffer.from(await res.arrayBuffer()), generation: res.headers.get('x-goog-generation') ?? '0' }
     },
-    async write(data, ifGenerationMatch) {
+    async write(data, ifGenerationMatch, { signal } = {}) {
       const res = await request(`https://storage.googleapis.com/upload/storage/v1/b/${bucket}/o?uploadType=media&name=${name}&ifGenerationMatch=${ifGenerationMatch}`, {
         method: 'POST',
         headers: { 'content-type': 'application/octet-stream' },
         body: data,
+        signal,
       })
       if (res.status === 412) throw new StateConflictError(`gs://${bucket}/${object} changed since this seller last wrote it`)
       if (!res.ok) throw new Error(`writing gs://${bucket}/${object}: HTTP ${res.status} ${(await res.text()).slice(0, 300)}`)
@@ -242,7 +247,9 @@ export function keepLease(lease, { renewMs = 20_000, fenceMs = 60_000, checkMs =
   timers.push(every(() => {
     if (now() - lease.confirmedAt > fenceMs) lose(`could not renew the state lease for ${fenceMs / 1000} s`)
   }, checkMs))
-  return { valid: () => !lost && now() - lease.confirmedAt <= fenceMs, stop }
+  // Until when this holder surely holds the lease: the lease outlives it by its lifetime less fenceMs.
+  const ownedUntil = () => (lost ? 0 : lease.confirmedAt + fenceMs)
+  return { valid: () => now() < ownedUntil(), ownedUntil, stop }
 }
 
 /** This data dir's lease holder id, kept so a container restarted on the same VM takes its lease back at once. */
@@ -255,10 +262,15 @@ export function leaseHolder(dataDir) {
   return holder
 }
 
-/** Restores one state database on boot, then saves it whenever it changed. */
+/**
+ * Restores one state database on boot, then saves it whenever it changed. Every write must finish
+ * while this seller surely holds the state lease (`ownedUntil`, from keepLease): it is aborted at
+ * that deadline and not started after it, so a seller that lost its lease (even while shutting
+ * down) never writes over the state its successor restored.
+ */
 export class StateFileSync {
-  constructor({ file, store, key, location, dataDir, Database }) {
-    Object.assign(this, { file, store, key, location, dataDir, Database })
+  constructor({ file, store, key, location, dataDir, Database, ownedUntil = () => Infinity, now = Date.now }) {
+    Object.assign(this, { file, store, key, location, dataDir, Database, ownedUntil, now })
     this.generation = '0'
     this.savedHash = ''
     // Hashes of snapshots sent since the last confirmed write: one may have landed with its answer lost.
@@ -332,8 +344,11 @@ export class StateFileSync {
   }
 
   async _write(data, hash) {
+    const remainingMs = this.ownedUntil() - this.now()
+    if (remainingMs <= 0) throw new StateConflictError(`${this.location}: this seller no longer holds the state lease`)
     this.unconfirmed.add(hash)
-    this.generation = await this.store.write(seal(this.key, data, this.location), this.generation)
+    const signal = Number.isFinite(remainingMs) ? AbortSignal.timeout(remainingMs) : undefined
+    this.generation = await this.store.write(seal(this.key, data, this.location), this.generation, { signal })
     this.unconfirmed.clear()
     writeFileSync(this.generationPath, this.generation)
     this.savedHash = hash
@@ -360,11 +375,11 @@ export function stateLease({ bucket, prefix }, accessToken, holder, fetchImpl = 
   return new StateLease({ store: gcsObject({ bucket, object: `${prefix}/lease` }, accessToken, fetchImpl, { timeoutMs: 15_000 }), holder })
 }
 
-/** A sync per state file, each stored at `<prefix>/<file name>` in the operator's bucket. */
-export function stateSyncs({ bucket, prefix }, accessToken, identityHex, dataDir, Database, fetchImpl = fetch) {
+/** A sync per state file, each stored at `<prefix>/<file name>` in the operator's bucket, written only while `ownedUntil` allows. */
+export function stateSyncs({ bucket, prefix }, accessToken, identityHex, dataDir, Database, ownedUntil, fetchImpl = fetch) {
   const key = stateKey(identityHex)
   return STATE_FILES.map((file) => {
     const object = `${prefix}/${file.name}`
-    return new StateFileSync({ file, store: gcsObject({ bucket, object }, accessToken, fetchImpl), key, location: `gs://${bucket}/${object}`, dataDir, Database })
+    return new StateFileSync({ file, store: gcsObject({ bucket, object }, accessToken, fetchImpl), key, location: `gs://${bucket}/${object}`, dataDir, Database, ownedUntil })
   })
 }

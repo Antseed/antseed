@@ -114,7 +114,7 @@ try {
       onRetry: (err) => console.error(`[tee-seller] renewing the state lease failed, retrying: ${err instanceof Error ? err.message : String(err)}`),
     })
     const Database = createRequire(`${PLUGINS}/@antseed/node/package.json`)('better-sqlite3')
-    state = stateSyncs(location, accessToken, process.env.ANTSEED_IDENTITY_HEX, DATA_DIR, Database)
+    state = stateSyncs(location, accessToken, process.env.ANTSEED_IDENTITY_HEX, DATA_DIR, Database, keeper.ownedUntil)
     for (const sync of state) {
       console.log(`[tee-seller] ${(await sync.restore()) ? 'restored' : 'keeping'} ${sync.file.name} in ${sync.location}`)
     }
