@@ -14,7 +14,8 @@ antseed plugin add @antseed/router-local
 antseed buyer start
 
 # Then configure your tools:
-export ANTHROPIC_BASE_URL=http://localhost:8377
+export ANTHROPIC_BASE_URL=http://localhost:8377   # Anthropic clients, Claude Code
+export OPENAI_BASE_URL=http://localhost:8377/v1   # OpenAI clients
 ```
 
 Works with Claude Code, Aider, Continue.dev, OpenAI Codex, and any tool that supports custom base URLs.

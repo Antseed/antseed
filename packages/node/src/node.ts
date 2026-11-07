@@ -1042,6 +1042,11 @@ export class AntseedNode extends EventEmitter {
     this._startBackgroundPeerDiscoverySweep();
   }
 
+  /** The exhaustive discovery sweep in progress (it resolves when the sweep ends), or null when none is running. */
+  get peerDiscoverySweep(): Promise<PeerInfo[]> | null {
+    return this._backgroundPeerDiscoveryPromise;
+  }
+
   private _startBackgroundPeerDiscoverySweep(): void {
     if (!this._peerLookup || this._backgroundPeerDiscoveryPromise) {
       return;
