@@ -36,6 +36,15 @@ import {
 import { CONNECTION_CAPABILITY_RESPONSE_AUTH_V1 } from '@antseed/protocol/messages';
 import { buyerFault, peerFault } from './errors.js';
 import { adaptPeerFaultErrorResponse } from './peer-error-response.js';
+import {
+  WORKER_ASSIGN_PATH,
+  isWorkerUnavailable,
+  peerAnnouncesWorkerE2E,
+  peerServiceUsesWorkerE2E,
+  isWorkerE2EProvider,
+  type SealedWorkerRequest,
+  type WorkerE2EClient,
+} from './worker-e2e.js';
 
 export interface RequestStreamResponseMetadata {
   streaming: boolean;
@@ -116,6 +125,8 @@ export interface BuyerRequestHandlerDeps {
    * consent to count their stake for this buyer on sellers' staked free tiers.
    */
   freeTierDelegationsHeader?: () => string | null;
+  /** Encrypts requests routed to a colony-pool provider to the pool's workers (see peerServiceUsesWorkerE2E). */
+  workerE2E?: WorkerE2EClient | null;
 }
 
 export const FREE_TIER_DELEGATIONS_HEADER = 'x-antseed-free-tier-delegations';
@@ -168,6 +179,9 @@ export class BuyerRequestHandler {
     const mux = this._deps.getMux(peer.peerId, conn);
     const verificationMux = this._deps.getVerificationMux(peer.peerId, conn);
     const negotiator = options?.controlPlane ? null : this._deps.negotiator;
+    // Before any payment frame can arrive: a seller announcing colony-pool
+    // workers is paid only for requests this buyer sent it (see trackPoolSellerRequest).
+    if (peerAnnouncesWorkerE2E(peer)) this._deps.negotiator?.bpm?.markWorkerSeller(peer.peerId);
     if (negotiator) {
       this._deps.registerPaymentMux(peer.peerId, negotiator.getOrCreatePaymentMux(peer.peerId, conn));
       // A retry reuses the request ID: an earlier covered attempt must not refuse this one's charge.
@@ -209,11 +223,35 @@ export class BuyerRequestHandler {
       const headers = Object.fromEntries(Object.entries(adapted.headers).filter(([name]) => name.toLowerCase() !== VIDEO_PRICE_HEADER));
       return { ...adapted, headers: { ...headers, [VIDEO_PRICE_HEADER]: videoPriceUsdc.toString() } };
     };
-    const billingRoute = requestedService ? selectBillingRoute(peer, req, requestedService) : null;
+    const explicitProvider = extractRequestedProvider(req);
+    // The seller trims the model name, so the route is resolved trimmed too:
+    // otherwise a padded pool-only model falls back to another provider and is sent in the clear.
+    const routedService = requestedService?.trim() || requestedService;
+    const billingRoute = routedService ? selectBillingRoute(peer, req, routedService) : null;
     // Name the provider the request is billed under, so the seller serves it
     // through the same upstream instead of choosing one by itself.
     if (billingRoute && !extractRequestedProvider(req)) {
       req = { ...req, headers: { ...req.headers, "x-antseed-provider": billingRoute.provider } };
+    }
+    // Colony pools: a request routed to a colony-pool provider is encrypted to
+    // its workers, or not sent at all. Decided by the provider the request is
+    // routed to, not by whether this client can encrypt: an ordinary provider
+    // may offer the same model, but a pool must never see a prompt in the clear.
+    const workerService = !options?.controlPlane ? routedService : undefined;
+    // A route that fell back to a provider not offering the service is no proof plaintext is safe.
+    const offeringProvider = billingRoute && providerOffersService(peer, billingRoute.provider, billingRoute.service)
+      ? billingRoute.provider
+      : null;
+    const needsWorkerE2E = Boolean(workerService) && peerServiceUsesWorkerE2E(peer, { explicitProvider, routedProvider: offeringProvider });
+    if (needsWorkerE2E && !this._deps.workerE2E) {
+      throw buyerFault(
+        `Service "${workerService}" on ${peer.peerId.slice(0, 12)}... is served by a colony pool, which needs worker encryption this client does not support`,
+        'invalid-request',
+      );
+    }
+    // Any other request to a pool seller: its payment claims must name it.
+    if (!options?.controlPlane && !needsWorkerE2E && peerAnnouncesWorkerE2E(peer)) {
+      this._deps.negotiator?.bpm?.trackPoolSellerRequest(peer.peerId, req.requestId);
     }
     // Decide free vs paid from the resolved route (provider + protocol), mirroring
     // the seller's per-request gate so both sides classify the request the same way.
@@ -269,9 +307,40 @@ export class BuyerRequestHandler {
       ? this._deps.negotiator?.bpm?.videoJobDuration(peer.peerId, videoRoute.protocol, videoJobId)
       : undefined;
 
+    // Colony pools: encrypt to a few of the seller's workers so the seller only
+    // routes ciphertext. Everything above read the plaintext request; the
+    // request sent and the raw response stay on hand for ResponseAuth, which
+    // signs wire bytes.
+    const workerE2E = needsWorkerE2E ? this._deps.workerE2E! : null;
+    const plainReq = req;
+    let sealed: SealedWorkerRequest | null = null;
+    let wireResponse: SerializedHttpResponse | null = null;
+    const sealForAttempt = async (): Promise<void> => {
+      if (!workerE2E || !workerService) return;
+      const channelId = this._deps.negotiator?.bpm?.getActiveSession(peer.peerId)?.sessionId ?? null;
+      // The pool the request is for: the one it names, else the one it was routed to. A request
+      // that names an ordinary provider without that model is left to the seller to place.
+      const provider = [explicitProvider, billingRoute?.provider].find((name) => name && isWorkerE2EProvider(peer, name));
+      sealed = await workerE2E.seal(peer, plainReq, workerService, (body) => this.sendRequest(peer, {
+        requestId: `${plainReq.requestId}-assign`,
+        method: 'POST',
+        path: WORKER_ASSIGN_PATH,
+        // Assigned by the pool the request goes to.
+        headers: { 'content-type': 'application/json', ...(provider ? { 'x-antseed-provider': provider } : {}) },
+        body,
+      }, undefined, { controlPlane: true, ...(options?.signal ? { signal: options.signal } : {}) }), channelId);
+      req = sealed.request;
+      // Only a worker it is encrypted for can answer it; the one that does is credited.
+      this._deps.negotiator?.bpm?.recordWorkerAttribution(peer.peerId, plainReq.requestId, sealed.recipients);
+    };
+
     let startTime = Date.now();
 
     const executeRequest = (): Promise<SerializedHttpResponse> => new Promise<SerializedHttpResponse>((resolve, reject) => {
+      const session = sealed;
+      const rawChunks: Uint8Array[] = [];
+      let rawBytes = 0;
+      let decryptStream = false;
       const timeoutMs = this._config.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
       const maxStreamBufferBytes = Math.max(1, this._config.maxStreamBufferBytes ?? 16 * 1024 * 1024);
       const maxStreamDurationMs = Math.max(1, this._config.maxStreamDurationMs ?? DEFAULT_MAX_STREAM_DURATION_MS);
@@ -362,12 +431,13 @@ export class BuyerRequestHandler {
 
       resetTimeout(streamInitialResponseTimeoutMs);
 
-      const finish = (response: SerializedHttpResponse): void => {
+      const finish = (response: SerializedHttpResponse, raw: SerializedHttpResponse = response): void => {
         if (settled) return;
         settled = true;
         if (activeTimeout) clearTimeout(activeTimeout);
         cleanupAbortListener();
         cleanupConnectionListener();
+        wireResponse = stripPeerControlledResponseHeaders(stripStreamingHeader(raw));
         const cleaned = stripPeerControlledResponseHeaders(stripStreamingHeader(response));
         debugLog(`[BuyerRequest] Response for ${req.requestId.slice(0, 8)}: status=${cleaned.statusCode} (${Date.now() - startTime}ms, ${cleaned.body.length}b)`);
         resolve(cleaned);
@@ -409,6 +479,13 @@ export class BuyerRequestHandler {
             streamBufferedBytes = 0;
             streamStartResponse = stripPeerControlledResponseHeaders(stripStreamingHeader(response));
             forwardStreamToCallbacks = response.statusCode < 400;
+            decryptStream = session !== null && (response.headers['content-type'] ?? '').includes('text/event-stream');
+            // A worker's successful answer streams only as sealed SSE; anything else would skip decryption and verification.
+            if (session && response.statusCode < 400 && !decryptStream) {
+              mux.cancelProxyRequest(req.requestId);
+              fail(peerFault(`Worker stream for ${req.requestId} is not sealed SSE`, 'peer-protocol-violation'));
+              return;
+            }
             debugLog(`[BuyerRequest] Stream started for ${req.requestId.slice(0, 8)}; idle-timeout=${streamIdleTimeoutMs}ms`);
             resetTimeout(streamIdleTimeoutMs);
             if (forwardStreamToCallbacks) {
@@ -417,13 +494,25 @@ export class BuyerRequestHandler {
             return;
           }
 
+          let plainResponse = response;
+          if (session) {
+            try {
+              plainResponse = { ...response, body: session.openBody(response.body) };
+              // Only the pool's own errors may arrive unsealed.
+              if (response.statusCode < 400 && !session.verified) throw new Error('unsealed success');
+              if (!session.usageConsistent) throw new Error('usage mismatch');
+            } catch {
+              fail(peerFault(`Worker response for ${req.requestId} failed verification`, 'peer-protocol-violation'));
+              return;
+            }
+          }
           callbacks?.onResponseStart?.(
             adaptPeerResponse(
-              stripPeerControlledResponseHeaders(stripStreamingHeader(response)),
+              stripPeerControlledResponseHeaders(stripStreamingHeader(plainResponse)),
             ),
             { streaming: false },
           );
-          finish(response);
+          finish(plainResponse, response);
         },
         async (chunk) => {
           if (settled) return;
@@ -449,6 +538,25 @@ export class BuyerRequestHandler {
             mux.cancelProxyRequest(req.requestId);
             fail(new Error(`Stream ${req.requestId} exceeded max duration (${maxStreamDurationMs}ms)`));
             return;
+          }
+
+          if (decryptStream) {
+            // The wire bytes are kept for the response receipt: bound them too, since events
+            // the opener ignores add wire bytes without any plaintext.
+            rawBytes += chunk.data.length;
+            if (rawBytes > maxStreamBufferBytes) {
+              mux.cancelProxyRequest(req.requestId);
+              fail(buyerFault(`Stream ${req.requestId} exceeded max buffered size (${maxStreamBufferBytes} bytes)`, 'buyer-stream-limit'));
+              return;
+            }
+            rawChunks.push(chunk.data);
+            try {
+              chunk = { ...chunk, data: session!.pushStream(chunk.data) };
+            } catch {
+              mux.cancelProxyRequest(req.requestId);
+              fail(peerFault(`Worker stream for ${req.requestId} failed verification`, 'peer-protocol-violation'));
+              return;
+            }
           }
 
           if (forwardStreamToCallbacks) {
@@ -480,10 +588,19 @@ export class BuyerRequestHandler {
             return;
           }
 
+          // A sealed stream counts only if the worker's end marker verified and the billed usage is the worker's.
+          if (decryptStream && streamStartResponse.statusCode < 400 && (!session!.verified || !session!.usageConsistent)) {
+            fail(peerFault(
+              `Worker stream for ${req.requestId} ${session!.verified ? 'billed usage that differs from its worker\'s' : 'ended without its end marker'}`,
+              'peer-protocol-violation',
+            ));
+            return;
+          }
+
           finish({
             ...streamStartResponse,
             body: concatChunks(streamChunks),
-          });
+          }, decryptStream ? { ...streamStartResponse, body: concatChunks(rawChunks) } : undefined);
         },
       );
     });
@@ -492,8 +609,34 @@ export class BuyerRequestHandler {
     const bpm = isFreeService ? undefined : this._deps.negotiator?.bpm;
     const executeCountedRequest = async (): Promise<SerializedHttpResponse> => {
       bpm?.beginPaidRequest(peer.peerId);
+      // Tell the payment manager whether the worker's sealed answer verified:
+      // a NeedAuth for the request waits for this before it is signed.
+      const attempt = async (): Promise<SerializedHttpResponse> => {
+        try {
+          await sealForAttempt();
+        } catch (error) {
+          if (sealed) this._deps.negotiator?.bpm?.recordWorkerDelivery(plainReq.requestId, null);
+          throw error;
+        }
+        const session: SealedWorkerRequest | null = sealed;
+        try {
+          const response = await executeRequest();
+          if (session) {
+            const verified = session.verified && session.usageConsistent;
+            this._deps.negotiator?.bpm?.recordWorkerDelivery(plainReq.requestId, verified ? session.usage : null, session.worker);
+          }
+          return response;
+        } catch (error) {
+          if (session) this._deps.negotiator?.bpm?.recordWorkerDelivery(plainReq.requestId, null);
+          throw error;
+        }
+      };
       try {
-        return await executeRequest();
+        const response = await attempt();
+        if (!sealed || !isWorkerUnavailable(response)) return response;
+        // None of the assigned workers could take it (the pool already tried each): take new ones, once.
+        workerE2E!.forget(peer.peerId, workerService!);
+        return await attempt();
       } finally {
         bpm?.endPaidRequest(peer.peerId);
       }
@@ -556,7 +699,7 @@ export class BuyerRequestHandler {
       this._recordResponseAuth(
         peer,
         req,
-        retriedResponse,
+        wireResponse ?? retriedResponse,
         requestedService,
         verificationMux,
         options?.captureResponseAuthPreimages === true,
@@ -571,7 +714,7 @@ export class BuyerRequestHandler {
     this._recordResponseAuth(
       peer,
       req,
-      response,
+      wireResponse ?? response,
       requestedService,
       verificationMux,
       options?.captureResponseAuthPreimages === true,

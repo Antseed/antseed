@@ -57,6 +57,7 @@ export const qk = {
   sellerStatus: ['seller', 'status'] as const,
   sellerEvents: ['seller', 'events'] as const,
   sellerUsage: (days: number) => ['seller', 'usage', days] as const,
+  sellerWorkers: ['seller', 'workers'] as const,
   sellerSettings: ['seller', 'settings'] as const,
   sellerMarket: ['seller', 'market'] as const,
   sellerReputation: ['seller', 'reputation'] as const,
@@ -225,6 +226,10 @@ export function useSellerEvents(enabled = true) {
 
 export function useSellerUsage(days: number, enabled = true) {
   return useQuery({ queryKey: qk.sellerUsage(days), queryFn: () => api.seller.usage(days), enabled, refetchInterval: 60_000 })
+}
+
+export function useSellerWorkers(enabled = true) {
+  return useQuery({ queryKey: qk.sellerWorkers, queryFn: api.seller.workers, enabled, refetchInterval: 15_000 })
 }
 
 export function useSellerSettings(enabled = true) {

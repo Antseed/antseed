@@ -440,3 +440,37 @@ export interface StakeUsageRequest { side: 'seller' | 'buyer'; epochs: number; s
 /** Restake staker + seller usage (+ buyer usage when operator) rewards in one job; `targetAgentId` moves the new positions into that pool. */
 export interface CompoundRequest { includeBuyer?: boolean; epochs: number; targetAgentId?: number; stakeAgentId?: number; }
 export interface SubmitProofRequest { artifact: unknown; }
+
+/** What AntseedColonyPool contracts owe this wallet as the payout address of one or more Macs. */
+export interface ColonyPoolsView {
+  pools: Array<{
+    address: string;
+    /** USDC base units. */
+    usdcOwed: string;
+    /** ANTS wei, from emissions already pulled into the pool. */
+    antsOwed: string;
+    /** Finished epochs with ANTS owed. */
+    antsEpochs: number[];
+    /** Finished epochs this wallet earned in whose emissions the pool hasn't pulled yet; claiming pulls them first. */
+    unfundedEpochs: number[];
+    /** Why this pool could not be read; its amounts are then zero and must not be claimed. */
+    error?: string;
+    /** Linked through this dashboard (not configured), so it can be forgotten here. */
+    forgettable: boolean;
+  }>;
+}
+
+export interface ColonyPoolForgetRequest {
+  pool: string;
+}
+
+export interface ColonyPoolClaimRequest {
+  pool: string;
+  usdc: boolean;
+  ants: boolean;
+}
+
+export interface WorkerPayoutLinkRequest {
+  /** The `antseed-link:` code the Mac app copies. */
+  code: string;
+}

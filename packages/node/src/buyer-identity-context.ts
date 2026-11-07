@@ -27,6 +27,7 @@ import {
   type RequestStreamCallbacks,
 } from "./buyer-request-handler.js";
 import { debugWarn } from "./utils/debug.js";
+import { NodeWorkerE2EClient, type NodeWorkerE2EClientOptions } from './colony-pool/client.js';
 
 /** The identity loaded from the node's own data dir. */
 export const DEFAULT_BUYER_IDENTITY = "default";
@@ -69,6 +70,8 @@ export interface BuyerIdentityContextOptions {
   };
   maxUploadBodyBytes?: number;
   requireSecureTransport?: boolean;
+  /** The node's colony pool trust policy, applied to this identity's requests too. */
+  workerPolicy?: NodeWorkerE2EClientOptions;
   /** Free-tier delegations header for this identity's requests, or null. */
   freeTierDelegationsHeader?: () => string | null;
   shared: BuyerIdentitySharedServices;
@@ -158,6 +161,7 @@ export class BuyerIdentityContext {
       getVerificationMux: (peerId, conn) => this._getOrCreateVerificationMux(peerId, conn as PeerConnection),
       registerPaymentMux: (peerId, mux) => this._paymentMuxes.set(peerId, mux),
       ...(_options.freeTierDelegationsHeader ? { freeTierDelegationsHeader: _options.freeTierDelegationsHeader } : {}),
+      workerE2E: new NodeWorkerE2EClient(this.identity.wallet, _options.workerPolicy ?? {}),
     });
   }
 

@@ -26,3 +26,4 @@ export {
   type StripRelayRequestHeadersOptions,
 } from './http-headers.js';
 export { createVideoResponseStreamer, readVideoJson, streamVideoResponse, videoDownloadSignal, videoDownloadError, videoJsonResponse, videoSubmitTimeoutMs } from './video-download.js';
+export { rankScores, type RankCandidate } from './worker-ranking.js';

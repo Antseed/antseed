@@ -159,6 +159,24 @@ describe('completed-request seller payments', () => {
       await Promise.all([first, second]);
     }
   });
+  it('reports each paid charge to the provider that served it', async () => {
+    const harness = setup({}, false);
+    const onRequestCharged = vi.fn();
+    harness.provider.onRequestCharged = onRequestCharged;
+    vi.mocked(harness.provider.handleRequest).mockImplementation(async request => ({
+      requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' },
+      body: new TextEncoder().encode(JSON.stringify({ choices: [{ message: { content: 'hi' } }], usage: { prompt_tokens: 1000, completion_tokens: 500 } })),
+    }));
+    const response = await harness.send('chat-1', {
+      path: '/v1/chat/completions', headers: { 'content-type': 'application/json', 'x-antseed-provider': 'alpha' },
+      body: new TextEncoder().encode(JSON.stringify({ model: 'image', messages: [{ role: 'user', content: 'hi' }] })),
+    });
+    expect(response.statusCode).toBe(200);
+    // 1000 × $10/M + 500 × $10/M = $0.015
+    expect(onRequestCharged).toHaveBeenCalledWith(expect.objectContaining({
+      requestId: 'chat-1', service: 'image', costUsdc: 15_000n, inputTokens: 1000, outputTokens: 500,
+    }));
+  });
   it('keeps legacy image charges and v1 reports unchanged on a mixed seller', async () => {
     const harness = setup();
     harness.provider.pricing = { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } };

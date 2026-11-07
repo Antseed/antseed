@@ -23,6 +23,7 @@ import {
   boundServiceMetadata,
 } from '@antseed/protocol/signatures';
 import type { SpendingAuthMessage, SpendingAuthMetadata } from '@antseed/protocol/signatures';
+import { decodeWorkerTail, withWorkerAttribution } from '@antseed/protocol/worker-attribution';
 import { debugLog, debugWarn } from './debug.js';
 import { peerIdToAddress, type PeerId } from '@antseed/protocol/peer-id';
 import type { SellerAddressResolver } from './seller-address-resolver.js';
@@ -44,6 +45,8 @@ import type { BillingRequestFacts } from './unit-billing.js';
 import { evaluateUnitBilling, unitUsageFromReport, validateUnitBillingUsage } from '@antseed/protocol/billing';
 import { isUnitBilledProtocol, nativeVideoUnitUsage } from './unit-billing.js';
 import { buyerFault, faultCodeOf } from './errors.js';
+import type { WorkerUsage } from './worker-e2e.js';
+import { WorkerDeliveryTracker, type WorkerDelivery } from './worker-delivery-tracker.js';
 
 /** Default tolerance: accept seller claims up to 1.4x buyer's estimate. */
 const DEFAULT_COST_TOLERANCE = 1.4;
@@ -74,7 +77,8 @@ const MAX_REQUEST_BILLING_ENTRIES = 512;
 /** How long NeedAuth validation waits for the buyer's own response processing
  *  to record delivered unit usage before rejecting a positive claim. */
 const OBSERVED_UNIT_USAGE_WAIT_MS = 5_000;
-
+/** How long a NeedAuth for a colony-pool request waits for the buyer to verify the worker's sealed answer. */
+const WORKER_DELIVERY_WAIT_MS = 15_000;
 /**
  * Whole units of `unit` in `usage`, never negative. Speech billing reports no
  * `input_characters` for undelivered audio.
@@ -121,6 +125,46 @@ export interface BuyerPaymentConfig {
 }
 
 /** A wire cost that is a positive integer; malformed values are judged later, where they are caught. */
+/** Why a NeedAuth for a colony-pool request must not be signed, or null when it may be judged as usual. */
+function workerDeliveryProblem(
+  delivery: WorkerDelivery,
+  payload: NeedAuthPayload,
+  pricing: ServicePricing | null | undefined,
+  unitBilled: boolean,
+): string | null {
+  if (delivery.state === 'pending') return 'the worker\'s answer was not verified in time';
+  if (delivery.state === 'failed' || !delivery.usage) return 'the worker\'s answer did not verify';
+  const usage = delivery.usage;
+  const input = BigInt(payload.inputTokens ?? '0');
+  const cached = BigInt(payload.cachedInputTokens ?? '0');
+  const output = BigInt(payload.outputTokens ?? '0');
+  // The fresh count the cost checks below price, derived the same way they derive it.
+  const fresh = payload.freshInputTokens != null
+    ? BigInt(payload.freshInputTokens)
+    : cached > 0n ? (input > cached ? input - cached : 0n) : input;
+  const authenticatedFresh = usage.inputTokens - usage.cachedInputTokens;
+  // Each priced component on its own: moving cached input to fresh (or
+  // inflating either) would raise the price without raising the total.
+  if (
+    input > usage.inputTokens || fresh > authenticatedFresh
+    || cached > usage.cachedInputTokens || output > usage.outputTokens
+  ) {
+    return `billed tokens (in=${input} fresh=${fresh} cached=${cached} out=${output}) exceed the worker's authenticated usage `
+      + `(in=${usage.inputTokens} fresh=${authenticatedFresh} cached=${usage.cachedInputTokens} out=${usage.outputTokens})`;
+  }
+  // A token-billed request's cost is capped by the authenticated usage itself,
+  // without the tolerance an estimate gets. Unit-billed costs are judged as usual.
+  if (pricing && !unitBilled && payload.lastRequestCost != null) {
+    const allowed = computeCostUsdc(
+      Number(authenticatedFresh), Number(usage.outputTokens), pricing, Number(usage.cachedInputTokens),
+    );
+    if (BigInt(payload.lastRequestCost) > allowed) {
+      return `billed cost ${payload.lastRequestCost} exceeds ${allowed} for the worker's authenticated usage`;
+    }
+  }
+  return null;
+}
+
 function hasPositiveCost(cost: string | undefined): boolean {
   try {
     return BigInt(cost ?? '0') > 0n;
@@ -301,6 +345,11 @@ export class BuyerPaymentManager {
    *  Used in handleNeedAuth to validate cost with the correct pricing tier
    *  without trusting the seller's claim of which service was used. */
   private readonly _requestService = new RequestServiceTracker();
+  /** Colony-pool requests and their worker deliveries, for the node's lifetime (see WorkerDeliveryTracker). */
+  // A verified worker request is kept until its counted cost is fully signed (not evicted as completed).
+  private readonly _workerDeliveries: WorkerDeliveryTracker = new WorkerDeliveryTracker(
+    (requestId: string): boolean => this._serviceTokensCounted.has(requestId) && this._serviceTokensCounted.unpaid(requestId) > 0n,
+  );
   /**
    * requestId -> trusted buyer-owned billing identity, request facts, and mode.
    *
@@ -421,7 +470,10 @@ export class BuyerPaymentManager {
     const peerId = channel.peerId;
     const persistedCumulative = BigInt(channel.authMax);
     this._cumulativeAmount.set(peerId, persistedCumulative);
-    const metadata = this._sanitizeMetadata(this._channelStore.getChannelMetadata(channel));
+    const stored = this._channelStore.getChannelMetadata(channel);
+    // Worker attribution lives only in the signed metadata bytes, not in store columns.
+    const workers = channel.latestMetadata ? decodeWorkerTail(channel.latestMetadata) : null;
+    const metadata = this._sanitizeMetadata(workers ? { ...stored, workers } : stored);
     this._metadata.set(peerId, metadata);
     if (persistServiceMetadata && !this._disableMetadataV2Services) {
       this._persistServiceMetadata(channel.sessionId, metadata);
@@ -518,6 +570,7 @@ export class BuyerPaymentManager {
       cumulativeVideoSeconds: current.cumulativeVideoSeconds ?? 0n,
       cumulativeInputCharacters: current.cumulativeInputCharacters ?? 0n,
       services: [],
+      ...(current.workers ? { workers: current.workers } : {}),
     };
   }
 
@@ -525,12 +578,67 @@ export class BuyerPaymentManager {
     previous: SpendingAuthMetadata | undefined,
     service: string | undefined,
     delta: Parameters<typeof advanceUsageMetadata>[2],
+    requestId?: string,
+    sellerPeerId?: string,
   ): SpendingAuthMetadata {
-    return advanceUsageMetadata(
+    const next = advanceUsageMetadata(
       this._sanitizeMetadata(previous),
       this._disableMetadataV2Services ? undefined : service,
       delta,
     );
+    // Only the seller the request went to, and only for an answer that verified.
+    const worker = this._workerDeliveries.verifiedWorker(requestId, sellerPeerId);
+    return worker ? { ...next, workers: withWorkerAttribution(next.workers, worker, delta.amount) } : next;
+  }
+
+  /**
+   * A request was encrypted for these pool workers. Its signed amount is
+   * attributed to the one whose sealed answer verifies (recordWorkerDelivery):
+   * only a recipient can decrypt it, and each answers under its own key.
+   */
+  recordWorkerAttribution(sellerPeerId: string, requestId: string, workers: string | readonly string[]): void {
+    this._workerDeliveries.recordAttribution(sellerPeerId, requestId, workers);
+  }
+
+  /** Retire a verified worker request once it has been counted and nothing of its cost is left unsigned. */
+  private _retireWorkerDeliveryIfPaid(requestId: string | undefined): void {
+    if (requestId == null) return;
+    if (
+      this._workerDeliveries.get(requestId)?.state === 'verified'
+      && this._serviceTokensCounted.has(requestId)
+      && this._serviceTokensCounted.unpaid(requestId) === 0n
+    ) {
+      this._workerDeliveries.retire(requestId);
+    }
+  }
+
+  /**
+   * The seller announces colony-pool workers. From now on a delivered cost it
+   * claims is paid only for a request the buyer sent it: a worker request
+   * (judged by its verified answer) or one tracked with trackPoolSellerRequest.
+   * A claim naming no request, or one the buyer never sent, is refused, so a
+   * pool cannot turn a failed worker answer into an ordinary claim by
+   * changing or dropping its request ID.
+   */
+  markWorkerSeller(sellerPeerId: string): void {
+    this._workerDeliveries.markSeller(sellerPeerId);
+  }
+
+  /** The buyer sent a pool seller a request that is not encrypted to a worker (an ordinary provider of that seller). */
+  trackPoolSellerRequest(sellerPeerId: string, requestId: string): void {
+    this._workerDeliveries.trackPoolSellerRequest(sellerPeerId, requestId);
+  }
+
+  /**
+   * The buyer checked the worker's sealed answer to a pool request: `usage` is
+   * what the answering `worker` authenticated, or null when the answer did not
+   * verify (or never came). A NeedAuth for the request is signed only after a
+   * verified answer, only for the tokens that worker reported, and only that
+   * worker is credited. An answer from a worker the request was not encrypted
+   * for (or, with several recipients, an unnamed one) counts as failed.
+   */
+  recordWorkerDelivery(requestId: string, usage: WorkerUsage | null, worker?: string | null): void {
+    this._workerDeliveries.recordDelivery(requestId, usage, worker);
   }
 
   private _getCeiling(sellerPeerId: string): bigint {
@@ -552,6 +660,8 @@ export class BuyerPaymentManager {
     this._rejectedPeers.delete(sellerPeerId);
     this._responseTokenTotals.delete(sellerPeerId);
     this._clearRequestBillingForSeller(sellerPeerId);
+    // Worker delivery state outlives the session: a NeedAuth names a request,
+    // and a forgotten worker request must stay refused on the next channel too.
   }
 
   getActiveSession(sellerPeerId: string): StoredChannel | null {
@@ -938,7 +1048,11 @@ export class BuyerPaymentManager {
    * response first records its requestId here so the other path does not
    * duplicate its service amount, token totals, or request count.
    */
-  private readonly _serviceTokensCounted = new CountedRequestTracker();
+  // A live worker request's remainder is never trimmed while its delivery record exists.
+  private readonly _serviceTokensCounted: CountedRequestTracker = new CountedRequestTracker(
+    undefined,
+    (requestId: string): boolean => this._workerDeliveries.get(requestId) !== undefined,
+  );
 
   private _spendListener: BuyerSpendListener | null = null;
 
@@ -1555,8 +1669,28 @@ export class BuyerPaymentManager {
 
   private async _signPerRequestAuth(
     sellerPeerId: string,
-    responseStats: PerRequestResponseStats,
+    stats: PerRequestResponseStats,
   ): Promise<PerRequestAuthResult> {
+    const workerDelivery = stats.requestId != null ? this._workerDeliveries.get(stats.requestId) : undefined;
+    if (
+      this._workerDeliveries.isForgotten(sellerPeerId, stats.requestId)
+      || this._workerDeliveries.isUntrackedPoolSellerClaim(sellerPeerId, stats.requestId, workerDelivery)
+      || (workerDelivery && (workerDelivery.sellerPeerId !== sellerPeerId || workerDelivery.state !== 'verified' || !workerDelivery.usage))
+    ) {
+      throw buyerFault(
+        `[BuyerPayment] Request ${stats.requestId} to a colony-pool worker has no verified answer to pay for`,
+        'buyer-session-state',
+      );
+    }
+    // A colony-pool request is priced from the usage the worker authenticated, not reported counts.
+    const responseStats: PerRequestResponseStats = workerDelivery?.usage
+      ? {
+        ...stats,
+        reportedInputTokens: workerDelivery.usage.inputTokens,
+        reportedCachedInputTokens: workerDelivery.usage.cachedInputTokens,
+        reportedOutputTokens: workerDelivery.usage.outputTokens,
+      }
+      : stats;
     const session = this.getActiveSession(sellerPeerId);
     if (!session) {
       throw buyerFault(
@@ -1697,7 +1831,9 @@ export class BuyerPaymentManager {
     // in the verified cost and (unless NeedAuth was capped at the reserve
     // ceiling) the signed cumulative. Charge only the part it left unsigned,
     // so the request is neither paid twice nor left short before a close.
-    const alreadyCounted = this._serviceTokensCounted.has(responseStats.requestId);
+    // A worker request retired as paid stays counted even once the tracker has trimmed it.
+    const alreadyCounted = this._serviceTokensCounted.has(responseStats.requestId)
+      || this._workerDeliveries.isCompleted(sellerPeerId, responseStats.requestId);
     if (alreadyCounted) {
       acceptedCost = this._serviceTokensCounted.unpaid(responseStats.requestId);
       verifiedCostDelta = 0n;
@@ -1735,6 +1871,8 @@ export class BuyerPaymentManager {
         // Any remainder of a NeedAuth-counted request is still this service's amount.
         amount: signedDelta,
       },
+      responseStats.requestId,
+      sellerPeerId,
     );
     debugLog(
       `[BuyerPayment] signPerRequestAuth #${newMeta.cumulativeRequestCount}: ` +
@@ -1774,8 +1912,10 @@ export class BuyerPaymentManager {
     if (alreadyCounted) {
       this._serviceTokensCounted.pay(responseStats.requestId, signedDelta);
     } else {
-      this._serviceTokensCounted.mark(responseStats.requestId);
+      // Capped at the ceiling: the rest is still this request's (and its worker's) to sign.
+      this._serviceTokensCounted.mark(responseStats.requestId, acceptedCost - signedDelta);
     }
+    this._retireWorkerDeliveryIfPaid(responseStats.requestId);
     this._reportSpend({
       sellerPeerId,
       requestId: responseStats.requestId ?? null,
@@ -1846,6 +1986,17 @@ export class BuyerPaymentManager {
     ) {
       await this._waitForObservedUnitUsage(payload.requestId, OBSERVED_UNIT_USAGE_WAIT_MS);
     }
+    // A colony-pool request is paid only once the buyer has verified the
+    // worker's sealed answer, and only for the tokens the worker authenticated:
+    // the pool could otherwise bill for an answer that was tampered with,
+    // truncated or never came. Waits inside the lock for the same reason as
+    // above; the response path records the result without taking the lock.
+    // Any frame reporting a delivered response is judged, a zero-cost one too:
+    // it would otherwise count (and so retire) a request whose answer failed.
+    const reportsDelivery = payload.lastRequestCost != null || payload.billingUsage != null;
+    const workerDelivery = payload.requestId && reportsDelivery
+      ? await this._workerDeliveries.awaitDelivery(sellerPeerId, payload.requestId, WORKER_DELIVERY_WAIT_MS)
+      : undefined;
     const session = this.getActiveSession(sellerPeerId);
     if (!session) {
       debugWarn(`[BuyerPayment] NeedAuth for unknown seller: ${sellerPeerId.slice(0, 12)}...`);
@@ -1868,6 +2019,30 @@ export class BuyerPaymentManager {
     const buyerService = requestBilling?.context.service
       ?? this._requestService.get(payload.requestId);
     const buyerBillingContext = requestBilling?.context;
+    if (reportsDelivery && this._workerDeliveries.isForgotten(sellerPeerId, payload.requestId)) {
+      debugWarn(`[BuyerPayment] Refusing NeedAuth from ${sellerPeerId.slice(0, 12)}... for colony-pool request ${payload.requestId}: its delivery was never verified`);
+      return false;
+    }
+    if (reportsDelivery && this._workerDeliveries.isCompleted(sellerPeerId, payload.requestId)) {
+      debugWarn(`[BuyerPayment] Refusing NeedAuth from ${sellerPeerId.slice(0, 12)}... for colony-pool request ${payload.requestId}: it is already paid`);
+      return false;
+    }
+    if (workerDelivery && workerDelivery.sellerPeerId !== sellerPeerId) {
+      debugWarn(`[BuyerPayment] Refusing NeedAuth from ${sellerPeerId.slice(0, 12)}... for request ${payload.requestId} sent to another seller`);
+      return false;
+    }
+    if (reportsDelivery && this._workerDeliveries.isUntrackedPoolSellerClaim(sellerPeerId, payload.requestId, workerDelivery)) {
+      debugWarn(`[BuyerPayment] Refusing NeedAuth from colony-pool seller ${sellerPeerId.slice(0, 12)}... for request ${payload.requestId ?? '(none)'} it was never sent`);
+      return false;
+    }
+    if (workerDelivery) {
+      const pricing = requestBilling?.tokenPricing ?? this.getSessionPricing(sellerPeerId, buyerService);
+      const problem = workerDeliveryProblem(workerDelivery, payload, pricing, Boolean(requestBilling?.unitModel));
+      if (problem) {
+        debugWarn(`[BuyerPayment] Refusing NeedAuth from ${sellerPeerId.slice(0, 12)}... for request ${payload.requestId}: ${problem}`);
+        return false;
+      }
+    }
 
     const requiredCumulativeAmount = BigInt(payload.requiredCumulativeAmount);
     const currentCumulative = this._cumulativeAmount.get(sellerPeerId) ?? 0n;
@@ -2024,6 +2199,12 @@ export class BuyerPaymentManager {
       verifiedCostDelta += sellerCost;
     }
 
+    // If post-response signing or an earlier NeedAuth counted this response,
+    // its cost is already verified: a repeated claim adds none, so it cannot
+    // grow the overdraft window, and only pays down the unsigned remainder below.
+    const alreadyCounted = this._serviceTokensCounted.has(payload.requestId);
+    if (alreadyCounted) verifiedCostDelta = 0n;
+
     // Cap at overdraft limit: verifiedCost + maxPerRequestUsdc, then at reserve ceiling.
     // This prevents a malicious seller from claiming a small cost but requesting the full reserve.
     const previousVerifiedCost = this._verifiedCost.get(sellerPeerId) ?? 0n;
@@ -2032,6 +2213,17 @@ export class BuyerPaymentManager {
     const ceiling = this._getCeiling(sellerPeerId);
     let needsTopUp = this._needsCeilingAdvance(requiredCumulativeAmount, maxSignable, ceiling);
     if (maxSignable <= currentCumulative && !needsTopUp) {
+      // A colony-pool seller gets no new window from its own frames: its
+      // prepaid window is spent only by verified worker answers (which raise
+      // verifiedCost) or reopened by the buyer's next request (the 402 path).
+      // Otherwise repeated headroom prompts would each advance verifiedCost to
+      // what is already signed and buy another window with no answer behind it.
+      if (this._workerDeliveries.isWorkerSeller(sellerPeerId)) {
+        debugWarn(
+          `[BuyerPayment] NeedAuth: colony-pool seller ${sellerPeerId.slice(0, 12)}... reached its overdraft window (${currentCumulative}) without a verified answer — not reopening`,
+        );
+        return false;
+      }
       const reopened = this._reopenOverdraftWindowIfCollapsed(
         sellerPeerId,
         currentCumulative,
@@ -2076,9 +2268,8 @@ export class BuyerPaymentManager {
     const serviceAmountDelta = acceptedServiceCost > 0n
       ? (acceptedServiceCost < signedDelta ? acceptedServiceCost : signedDelta)
       : 0n;
-    // If post-response signing counted this response first, deduplicate the
-    // response's service amount and usage together.
-    const alreadyCounted = this._serviceTokensCounted.has(payload.requestId);
+    // A response counted before (alreadyCounted, above) deduplicates its
+    // service amount and usage together.
     // Attribution only — never cost; mirrors signPerRequestAuth.
     let attributedInputTokens = reportedInputTokens;
     let attributedOutputTokens = reportedOutputTokens;
@@ -2088,20 +2279,28 @@ export class BuyerPaymentManager {
         attributedInputTokens = BigInt(imagePromptTokens(requestBilling));
       }
     }
+    // Post-response signing counted this request first but left part of it
+    // unsigned (capped at the ceiling): what this signs of that part is still
+    // the request's amount, and its worker's, as in signPerRequestAuth.
+    const unpaidRemainder = alreadyCounted ? this._serviceTokensCounted.unpaid(payload.requestId) : 0n;
+    const remainderPaid = unpaidRemainder < signedDelta ? unpaidRemainder : signedDelta;
+    const usageDelta = normalizeRequestUsageDelta({
+      amount: serviceAmountDelta,
+      inputTokens: attributedInputTokens,
+      cachedInputTokens: reportedCachedInputTokens,
+      outputTokens: attributedOutputTokens,
+      requests: 1n,
+      outputImages: acceptedOutputImages,
+      videoGenerations: acceptedVideoGenerations,
+      videoSeconds: acceptedVideoSeconds,
+      inputCharacters: acceptedInputCharacters,
+    }, { deliveredResponse, alreadyCounted });
     const newMeta = this._advanceUsageMetadata(
       this._metadata.get(sellerPeerId),
       buyerService,
-      normalizeRequestUsageDelta({
-        amount: serviceAmountDelta,
-        inputTokens: attributedInputTokens,
-        cachedInputTokens: reportedCachedInputTokens,
-        outputTokens: attributedOutputTokens,
-        requests: 1n,
-        outputImages: acceptedOutputImages,
-        videoGenerations: acceptedVideoGenerations,
-        videoSeconds: acceptedVideoSeconds,
-        inputCharacters: acceptedInputCharacters,
-      }, { deliveredResponse, alreadyCounted }),
+      alreadyCounted ? { ...usageDelta, amount: remainderPaid } : usageDelta,
+      payload.requestId,
+      sellerPeerId,
     );
     // Persistence and transport failures must propagate to the connection
     // owner. In particular, swallowing an IndexedDB failure leaves the browser
@@ -2117,6 +2316,8 @@ export class BuyerPaymentManager {
     this._metadata.set(sellerPeerId, newMeta);
     if (deliveredResponse && !alreadyCounted) {
       this._serviceTokensCounted.mark(payload.requestId, acceptedServiceCost - serviceAmountDelta);
+    } else if (alreadyCounted) {
+      this._serviceTokensCounted.pay(payload.requestId, remainderPaid);
     }
     this._reportSpend({
       sellerPeerId,
@@ -2139,9 +2340,10 @@ export class BuyerPaymentManager {
     // Only a NeedAuth that reports a request's delivered cost is done with its
     // billing context; a catch-up or headroom prompt may name a request that is
     // still being served.
-    if (payload.requestId && deliveredResponse) {
-      this.clearRequestBilling(payload.requestId);
-    }
+    if (payload.requestId && deliveredResponse) this.clearRequestBilling(payload.requestId);
+    // A worker request is retired only once verified and paid in full; a
+    // capped NeedAuth keeps it (and its worker) for the remainder.
+    this._retireWorkerDeliveryIfPaid(payload.requestId);
     return needsTopUp || this._needsTopUp(sellerPeerId);
   }
 

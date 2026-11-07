@@ -105,6 +105,7 @@ import {
   type StoredChannel,
 } from "./payments/index.js";
 import { debugLog, debugWarn } from "./utils/debug.js";
+import { NodeWorkerE2EClient, type NodeWorkerE2EClientOptions } from "./colony-pool/client.js";
 import { parsePublicAddress } from "./discovery/public-address.js";
 import { MAX_PEER_CAPABILITIES } from "./discovery/metadata-validator.js";
 import { sanitizePeerDisplayName } from "./discovery/display-name.js";
@@ -369,6 +370,17 @@ export interface NodeConfig {
   maxUploadBodyBytes?: number;
   /** Maximum wall time allowed for a streaming response. Default: 30 minutes. */
   maxStreamDurationMs?: number;
+  /** Only send colony pools requests for workers attesting a hardened Mac (docs/protocol/colony-pool.md). */
+  requireAttestedWorkers?: boolean;
+  /** Also require Apple's attestation of the worker's Mac, from the pool operator's MDM. */
+  requireAppleVerifiedWorkers?: boolean;
+  /**
+   * How many of a colony pool's top-ranked workers each request is encrypted
+   * for (1 to 3, default 2), so the pool can fail over without a round trip.
+   * Any of them could read the request if the pool forwarded it; 1 keeps each
+   * request readable by a single worker.
+   */
+  colonyPoolRecipients?: number;
   /** Allow private/loopback IPs in DHT lookups. Default: false. Set true for local testing. */
   allowPrivateIPs?: boolean;
   /** Use only the provided bootstrapNodes and skip the official public DHT nodes. Default: false.
@@ -501,6 +513,12 @@ export interface ResponseAuthEvent {
   advertisedService: string;
   verified: boolean;
   verificationError: string | null;
+}
+
+/** `capabilities` without repeats and without any already in `present`, in first-seen order. */
+function uniqueCapabilities(capabilities: readonly string[], present: readonly string[] = []): string[] {
+  const seen = new Set(present);
+  return capabilities.filter((capability) => !seen.has(capability) && (seen.add(capability), true));
 }
 
 export class AntseedNode extends EventEmitter {
@@ -899,6 +917,11 @@ export class AntseedNode extends EventEmitter {
       this._connectionManager.closeAll();
       this._connectionManager = null;
     }
+
+    // Providers last among the seller's parts: no request can reach them now.
+    await Promise.all(this._providers.map((provider) => provider.stop?.().catch((err: unknown) => {
+      debugWarn(`[Node] Failed to stop provider "${provider.name}": ${err instanceof Error ? err.message : err}`);
+    })));
 
     // Stop DHT
     if (this._dht) {
@@ -1867,6 +1890,15 @@ export class AntseedNode extends EventEmitter {
     };
   }
 
+  /** Colony pool trust policy, the same for every buyer identity. */
+  private _workerPolicy(): NodeWorkerE2EClientOptions {
+    return {
+      requireAttestedWorkers: this._config.requireAttestedWorkers === true,
+      requireAppleVerifiedWorkers: this._config.requireAppleVerifiedWorkers === true,
+      ...(this._config.colonyPoolRecipients !== undefined ? { recipients: this._config.colonyPoolRecipients } : {}),
+    };
+  }
+
   /**
    * Let this buyer node also pay as another wallet. The identity reuses the
    * node's discovery, routing and chain clients; sellers see it as its own
@@ -1909,6 +1941,7 @@ export class AntseedNode extends EventEmitter {
       },
       maxUploadBodyBytes: this._config.maxUploadBodyBytes,
       requireSecureTransport: this._config.requireSecureTransport,
+      workerPolicy: this._workerPolicy(),
       freeTierDelegationsHeader: () => this._freeTierDelegationsHeader(identity.wallet.address),
       shared: {
         channelStore: this._channelStore,
@@ -2223,12 +2256,16 @@ export class AntseedNode extends EventEmitter {
 
     // Set up announcer for providers
     if (this._providers.length > 0) {
-      const baseCapabilities = [
+      // One set: providers (two colony pools, say) can contribute the same
+      // capability, and metadata with a duplicate fails validation.
+      const builtin = builtinPeerCapabilities(this._depositRelayer !== null);
+      const baseCapabilities = uniqueCapabilities([
         ...(this._connectionManager.supportsWebRtc ? [CONNECTION_CAPABILITY_WEBRTC_V1] : []),
         ...(this._config.capabilities ?? []),
-      ];
-      const usedCapabilities = builtinPeerCapabilities(this._depositRelayer !== null).length + baseCapabilities.length;
-      const extraCapabilities = [...baseCapabilities, ...this._freeTierCapabilities(usedCapabilities)];
+        ...this._providers.flatMap((provider) => provider.peerCapabilities ?? []),
+      ], builtin);
+      const usedCapabilities = builtin.length + baseCapabilities.length;
+      const extraCapabilities = uniqueCapabilities([...baseCapabilities, ...this._freeTierCapabilities(usedCapabilities)], builtin);
       const announcerConfig: AnnouncerConfig = {
         identity,
         dht: this._dht,
@@ -2278,6 +2315,11 @@ export class AntseedNode extends EventEmitter {
       };
       this._announcer = new PeerAnnouncer(announcerConfig);
       this._announcer.startPeriodicAnnounce();
+      for (const provider of this._providers) {
+        provider.setServicesChangedListener?.(() => {
+          void this.refreshSellerMetadata().catch((err) => debugWarn(`[Node] Metadata refresh after ${provider.name} services changed failed: ${err instanceof Error ? err.message : err}`));
+        });
+      }
 
       // Serve metadata on the signaling port (HTTP requests are auto-detected)
       this._connectionManager!.setMetadataProvider(
@@ -2423,6 +2465,7 @@ export class AntseedNode extends EventEmitter {
         getVerificationMux: (peerId, conn) => this._getOrCreateVerificationMux(peerId, conn as PeerConnection),
         registerPaymentMux: (peerId, pmux) => this._paymentMuxes.set(peerId, pmux),
         freeTierDelegationsHeader: () => this._freeTierDelegationsHeader(identity.wallet.address),
+        workerE2E: new NodeWorkerE2EClient(identity.wallet, this._workerPolicy()),
       },
     );
 

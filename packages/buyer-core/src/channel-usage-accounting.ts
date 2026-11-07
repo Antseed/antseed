@@ -41,7 +41,23 @@ export class CountedRequestTracker {
   // capped at the reserve ceiling counts the request but signs only part of it).
   private readonly _unpaid = new Map<string, bigint>();
 
-  constructor(private readonly _limit = DEFAULT_REQUEST_TRACKER_LIMIT) {}
+  /**
+   * `keep` names requests that must not be trimmed (a worker request whose
+   * delivery record still exists: its unpaid remainder is still owed to it).
+   */
+  constructor(
+    private readonly _limit = DEFAULT_REQUEST_TRACKER_LIMIT,
+    private readonly _keep: (requestId: string) => boolean = () => false,
+  ) {}
+
+  private _trim(): void {
+    if (this._unpaid.size < this._limit) return;
+    for (const requestId of this._unpaid.keys()) {
+      if (this._keep(requestId)) continue;
+      this._unpaid.delete(requestId);
+      return;
+    }
+  }
 
   has(requestId: string | undefined): boolean {
     return requestId != null && this._unpaid.has(requestId);
@@ -49,7 +65,7 @@ export class CountedRequestTracker {
 
   mark(requestId: string | undefined, unpaidAmount = 0n): void {
     if (!requestId) return;
-    trimOldestMapEntry(this._unpaid, this._limit);
+    if (!this._unpaid.has(requestId)) this._trim();
     this._unpaid.set(requestId, unpaidAmount > 0n ? unpaidAmount : 0n);
   }
 
@@ -105,6 +121,7 @@ export function advanceUsageMetadata(
     cumulativeVideoSeconds: (prev.cumulativeVideoSeconds ?? 0n) + (delta.videoSeconds ?? 0n),
     cumulativeInputCharacters: (prev.cumulativeInputCharacters ?? 0n) + (delta.inputCharacters ?? 0n),
     services: prev.services ?? [],
+    ...(prev.workers ? { workers: prev.workers } : {}),
   };
   return withServiceMetadata(totals, service, delta);
 }
