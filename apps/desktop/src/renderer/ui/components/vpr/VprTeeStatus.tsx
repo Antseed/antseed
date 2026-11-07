@@ -1,6 +1,6 @@
 import { HugeiconsIcon, type IconSvgElement } from '@hugeicons/react';
 import { SecurityBlockIcon, SecurityCheckIcon, ShieldHalfIcon } from '@hugeicons/core-free-icons';
-import { isFreshSellerNodeEvidence, teeScope, type TeeEvidence, type TeeScope } from '@antseed/node/tee-status';
+import { isFreshSellerNodeEvidence, teeScope, teeUpstreams, type TeeEvidence, type TeeScope } from '@antseed/node/tee-status';
 import { InfoTooltip } from '../InfoTooltip';
 import modelRowStyles from './VprModelRows.module.scss';
 import styles from './VprTeeAvailability.module.scss';
@@ -47,6 +47,8 @@ function Hop({ name, tee }: { name: string; tee: boolean }) {
 export function VprTeeStatus({ evidence, now, checking, available, error, className }: Props) {
   if (!available || checking || error || !evidence || !isFreshSellerNodeEvidence(evidence, now)) return null;
   const scope = SCOPES[teeScope(evidence)];
+  // The attested seller config names where prompts go.
+  const upstreams = teeUpstreams(evidence);
   const content = (
     <span className={styles.scope}>
       <span className={styles.hops}>
@@ -54,6 +56,7 @@ export function VprTeeStatus({ evidence, now, checking, available, error, classN
         <Hop name="Model provider" tee={scope.providerTee} />
       </span>
       <span>{scope.description}</span>
+      {upstreams.length > 0 && <span>Sends prompts to {upstreams.join(', ')}.</span>}
     </span>
   );
   return (

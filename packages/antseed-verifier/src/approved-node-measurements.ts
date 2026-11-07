@@ -1,58 +1,68 @@
 import { readFileSync } from 'node:fs'
+import { APPROVED_SELLER_IMAGES, type ApprovedSellerImage } from './approved-seller-images.js'
+
+export type { ApprovedSellerImage } from './approved-seller-images.js'
 
 /**
- * Seller node builds approved for the seller-node-tee-genuine claim. A node quote passes only
- * when its TD measurement matches one entry, so the buyer knows which reviewed software handles
- * its prompts, not just that the hardware is genuine:
- *   - MRTD and RTMR0-2 (firmware, VM shape, kernel, boot config and root filesystem) always;
- *   - the workload as either RTMR3 itself, or, on dstack (Phala) CVMs where RTMR3 differs per
- *     instance, the app compose hash replayed from the event log.
- *
- * An entry is added for a reproducible seller build that, once reviewed, gives its operator no
- * way to read prompts: no shell, SSH, exec or debug access, no prompt logging, and upstream
- * URLs, proxy settings and CA roots fixed in the measured image.
+ * What a seller node quote must match for the seller-node-tee-genuine claim, so the buyer knows
+ * which reviewed software handles its prompts, not just that the hardware is genuine. A seller
+ * node runs Antseed's TEE seller image (deploy/tee-seller) as a dstack (Phala) app:
+ *   - the CVM's OS (MRTD and RTMR0-2: firmware, VM shape, kernel, boot config, root filesystem)
+ *     is a released dstack production image listed in `os`;
+ *   - the app compose (measured into RTMR3 as its hash) runs one of the `images` and passes the
+ *     compose rules in dstack-app-compose.ts, which keep every setting that decides where
+ *     prompts go readable by the buyer.
  */
-export interface ApprovedNodeMeasurement {
-  /** Who runs the build and which version; shown in claim details. */
+export interface ApprovedDstackOs {
+  /** dstack release and VM shape (RTMR0 depends on the vCPU and memory size); shown in claim details. */
   name: string
   mrtd: string
   rtmr0: string
   rtmr1: string
   rtmr2: string
-  /** Exactly one of rtmr3 and composeHash. */
-  rtmr3?: string
-  /** dstack: SHA-256 of app-compose.json (64 hex). */
-  composeHash?: string
 }
 
-export const APPROVED_NODE_MEASUREMENTS: readonly ApprovedNodeMeasurement[] = []
+export interface ApprovedNodeBuilds {
+  os: readonly ApprovedDstackOs[]
+  images: readonly ApprovedSellerImage[]
+}
+
+/** dstack production OS images, one entry per release and VM shape. */
+export const APPROVED_DSTACK_OS: readonly ApprovedDstackOs[] = []
 
 const MEASUREMENT_FIELDS = ['mrtd', 'rtmr0', 'rtmr1', 'rtmr2'] as const
 const isMeasurement = (v: unknown): boolean => typeof v === 'string' && /^[0-9a-fA-F]{96}$/.test(v)
 
-function isApprovedNodeMeasurement(m: unknown): m is ApprovedNodeMeasurement {
+function isApprovedDstackOs(m: unknown): m is ApprovedDstackOs {
   if (!m || typeof m !== 'object') return false
   const e = m as Record<string, unknown>
-  const workload = e['rtmr3'] !== undefined
-    ? isMeasurement(e['rtmr3']) && e['composeHash'] === undefined
-    : typeof e['composeHash'] === 'string' && /^[0-9a-fA-F]{64}$/.test(e['composeHash'])
-  return typeof e['name'] === 'string' && MEASUREMENT_FIELDS.every((f) => isMeasurement(e[f])) && workload
+  return typeof e['name'] === 'string' && MEASUREMENT_FIELDS.every((f) => isMeasurement(e[f]))
+}
+
+function isApprovedSellerImage(m: unknown): m is ApprovedSellerImage {
+  if (!m || typeof m !== 'object') return false
+  const e = m as Record<string, unknown>
+  return typeof e['version'] === 'string' && typeof e['digest'] === 'string' && /^sha256:[0-9a-f]{64}$/.test(e['digest'])
 }
 
 /**
- * The approved list plus a buyer's own additions from ANTSEED_VERIFIER_NODE_MEASUREMENTS (a JSON
- * array of entries, inline or "@/path/to/file.json"). Additions only widen what this buyer
- * accepts; malformed entries are ignored.
+ * The approved builds plus a buyer's own additions from ANTSEED_VERIFIER_NODE_BUILDS: JSON
+ * `{ "os": [...], "images": [...] }`, inline or "@/path/to/file.json". Additions only widen what
+ * this buyer accepts; malformed entries are ignored.
  */
-export function readApprovedNodeMeasurements(): ApprovedNodeMeasurement[] {
-  const raw = process.env['ANTSEED_VERIFIER_NODE_MEASUREMENTS']?.trim()
-  if (!raw) return [...APPROVED_NODE_MEASUREMENTS]
+export function readApprovedNodeBuilds(): ApprovedNodeBuilds {
+  const builds = { os: [...APPROVED_DSTACK_OS], images: [...APPROVED_SELLER_IMAGES] }
+  const raw = process.env['ANTSEED_VERIFIER_NODE_BUILDS']?.trim()
+  if (!raw) return builds
   try {
-    const parsed: unknown = JSON.parse(raw.startsWith('@') ? readFileSync(raw.slice(1), 'utf8') : raw)
-    const extra = Array.isArray(parsed) ? parsed.filter(isApprovedNodeMeasurement) : []
-    return [...APPROVED_NODE_MEASUREMENTS, ...extra]
+    const parsed = JSON.parse(raw.startsWith('@') ? readFileSync(raw.slice(1), 'utf8') : raw) as Record<string, unknown> | null
+    const list = (key: string): unknown[] => (Array.isArray(parsed?.[key]) ? parsed[key] as unknown[] : [])
+    return {
+      os: [...builds.os, ...list('os').filter(isApprovedDstackOs)],
+      images: [...builds.images, ...list('images').filter(isApprovedSellerImage)],
+    }
   } catch (err) {
-    process.stderr.write(`[verifier] ignoring ANTSEED_VERIFIER_NODE_MEASUREMENTS: ${err instanceof Error ? err.message : String(err)}\n`)
-    return [...APPROVED_NODE_MEASUREMENTS]
+    process.stderr.write(`[verifier] ignoring ANTSEED_VERIFIER_NODE_BUILDS: ${err instanceof Error ? err.message : String(err)}\n`)
+    return builds
   }
 }

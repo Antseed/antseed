@@ -25,12 +25,13 @@ If the prover fails to load at startup, the seller exits rather than advertising
 
 ## Approved seller builds
 
-Buyers accept a seller node only when its measurements match an approved TEE seller build listed in the verifier SDK: MRTD and RTMR0–2 (firmware, VM shape, kernel and boot configuration), plus either RTMR3 or, on dstack (Phala) confidential VMs, the app compose hash that the buyer replays from the dstack event log. A build is approved when it is reproducible and, once reviewed, leaves its operator no way to read prompts:
+Buyers accept a seller node that runs Antseed's official TEE seller image as a dstack (Phala) confidential VM app. The image runs on a distroless runtime with no shell, package manager, runtime plugin installs or dashboard, so its operator has no way into it. From the quote and the evidence the seller sends with it, the buyer checks that:
 
-- no shell, SSH, `exec` or debug access, and no prompt logging;
-- upstream URLs, proxy settings and CA roots fixed in the measured image or compose file, with only secrets such as API keys supplied at runtime.
+- MRTD and RTMR0–2 (firmware, VM shape, kernel and boot configuration) are a released dstack production OS listed in the verifier SDK;
+- the app compose, which the buyer authenticates against the compose hash replayed from the dstack event log, runs an approved image: one that the **Publish TEE seller image** workflow built from this repository and added to the verifier SDK;
+- the compose follows the TEE seller rules: one service, no command or entrypoint override, only the seller data volume and the dstack socket mounted, public logs off, no pre-launch or init scripts, and the seller config inline. Only secrets (the identity key, API keys and the RPC URL) come in as encrypted variables, so every setting that decides where prompts go is readable, and every upstream is HTTPS.
 
-The simplest route is the official TEE seller image on a dstack confidential VM: [`deploy/tee-seller`](https://github.com/AntSeed/antseed/tree/main/deploy/tee-seller) has the image, a reference compose file and the review checklist. To list a build, open a pull request adding its entry to `packages/antseed-verifier/src/approved-node-measurements.ts`. Buyers testing a build before it is listed can add it locally with `ANTSEED_VERIFIER_NODE_MEASUREMENTS` (a JSON array of `{ name, mrtd, rtmr0, rtmr1, rtmr2 }` entries, each with `rtmr3` or `composeHash`).
+Any seller deploying an approved image this way passes, with no per-seller approval. Buyers also see the upstream hosts the seller config sends prompts to. [`deploy/tee-seller`](https://github.com/AntSeed/antseed/tree/main/deploy/tee-seller) has the image, a compose generator and the deployment steps. Buyers can accept extra OS releases or images locally with `ANTSEED_VERIFIER_NODE_BUILDS` (JSON `{ "os": [{ name, mrtd, rtmr0, rtmr1, rtmr2 }], "images": [{ version, digest }] }`).
 
 ## 1. Install the verifier SDK
 

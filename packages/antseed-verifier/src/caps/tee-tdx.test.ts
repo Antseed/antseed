@@ -9,6 +9,7 @@ vi.mock('../collect/configfs.js', () => ({
 
 import {
   NODE_TEE_CAP_ID,
+  NODE_UPSTREAMS_CLAIM,
   PROVIDER_TEE_CAP_ID,
   decodeTeeTdxEvidence,
   encodeTeeTdxEvidence,
@@ -20,17 +21,22 @@ import {
   type VerifyQuoteFn,
 } from './tee-tdx.js'
 import type { Capability } from '../capability.js'
+import type { ClaimResult } from '../antseed-node-types.js'
 import { claimId, computeReportData } from '../shared.js'
 import { noncePubkeySha256V1 } from '../report-data.js'
-import { DSTACK_RUNTIME_EVENT_TYPE, runtimeEventDigest, type DstackEvent } from '../dstack-event-log.js'
-import { createHash } from 'node:crypto'
+import { appCompose, bootEvents, referenceCompose, testBuilds } from '../dstack-build.fixture.js'
 
 const NONCE = randomBytes(32)
 const PEER = 'f'.repeat(40)
 /** Session hash of the buyer's connection the round ran over. */
 const BINDING = 'c'.repeat(64)
-/** The approved build matching td()'s default measurements. */
-const APPROVED = [{ name: 'test-build', mrtd: 'aa'.repeat(48), rtmr0: '00'.repeat(48), rtmr1: '00'.repeat(48), rtmr2: '00'.repeat(48), rtmr3: '00'.repeat(48) }]
+/** The approved builds matching td()'s default measurements: the test dstack OS and seller image. */
+const APPROVED = testBuilds('aa'.repeat(48))
+/** A conforming app compose and the RTMR3 boot events that measure it. */
+const APP = appCompose(referenceCompose())
+const BOOT = bootEvents(APP)
+/** Node evidence from a dstack CVM: the quote plus its event log and app compose. */
+const dstackEvidence = (app = APP, eventLog = BOOT.eventLog) => encodeTeeTdxEvidence(randomBytes(64), undefined, undefined, { eventLog, appCompose: app })
 
 afterEach(() => vi.unstubAllGlobals())
 
@@ -44,23 +50,23 @@ function td(over: Partial<TdMeasurements> = {}): TdMeasurements {
     rtMr0: new Uint8Array(48),
     rtMr1: new Uint8Array(48),
     rtMr2: new Uint8Array(48),
-    rtMr3: new Uint8Array(48),
+    rtMr3: BOOT.rtmr3,
     reportData: new Uint8Array(computeReportData(NONCE, PEER, BINDING)),
     debug: false,
     ...over,
   }
 }
 
-/** Run verifyTdxEvidence with a stub DCAP, then the cap policy check, as the orchestrator does. */
-async function run(
+/** Run verifyTdxEvidence with a stub DCAP, then the cap policy check, as the orchestrator does; all claims. */
+async function runAll(
   cap: Capability,
   stub: VerifyQuoteFn,
-  evidence = encodeTeeTdxEvidence(randomBytes(64)),
+  evidence = dstackEvidence(),
   opts: { channelBinding?: string; approved?: unknown } = {},
 ) {
   const parsed = await verifyTdxEvidence(evidence, stub, Math.floor(Date.now() / 1000))
   const channelBinding = 'channelBinding' in opts ? opts.channelBinding : BINDING
-  return cap.verify({
+  const out = await cap.verify({
     nonce: NONCE,
     peerId: PEER,
     evidence,
@@ -68,6 +74,12 @@ async function run(
     policy: 'approved' in opts ? opts.approved : APPROVED,
     ...(channelBinding ? { channelBinding } : {}),
   })
+  return Array.isArray(out) ? out : [out]
+}
+
+/** The cap's own claim. */
+async function run(...args: Parameters<typeof runAll>) {
+  return (await runAll(...args))[0]!
 }
 
 // One factory builds the verify logic for both caps. Exercise it through the node cap.
@@ -78,19 +90,45 @@ describe('TDX cap verify (seller-node-tee-genuine)', () => {
     const r = await run(nodeTeeCapability, async () => ({ status: 'UpToDate', td: td() }))
     expect(r).toMatchObject({ claim: CLAIM, ok: true })
     expect(r.detail).toMatch(/genuine Intel TDX quote/)
-    expect(r.detail).toMatch(/approved build test-build, bound to this connection/)
+    expect(r.detail).toMatch(/Antseed TEE seller image 0\.0\.0-test on dstack test, bound to this connection/)
   })
 
-  it('rejects genuine hardware running a build that is not approved', async () => {
-    const r = await run(nodeTeeCapability, async () => ({ status: 'UpToDate', td: td({ rtMr3: new Uint8Array(48).fill(1) }) }))
-    expect(r.ok).toBe(false)
-    expect(r.detail).toMatch(/not an approved TEE seller build/)
+  it('reports the upstreams of a passing seller node', async () => {
+    const claims = await runAll(nodeTeeCapability, async () => ({ status: 'UpToDate', td: td() }))
+    expect(claims).toEqual([
+      expect.objectContaining({ claim: CLAIM, ok: true }),
+      { claim: claimId(NODE_UPSTREAMS_CLAIM), ok: true, detail: 'https://upstream.example' },
+    ])
   })
 
-  it('rejects every build when no approved build is listed', async () => {
-    const r = await run(nodeTeeCapability, async () => ({ status: 'UpToDate', td: td() }), undefined, { approved: [] })
-    expect(r.ok).toBe(false)
-    expect(r.detail).toMatch(/not an approved TEE seller build/)
+  it('rejects genuine hardware whose OS is not an approved dstack release', async () => {
+    const r = await run(nodeTeeCapability, async () => ({ status: 'UpToDate', td: td({ rtMr1: new Uint8Array(48).fill(1) }) }))
+    expect(r).toMatchObject({ ok: false, detail: expect.stringMatching(/not an approved TEE seller build: the CVM OS .* is not an approved dstack release/) })
+    expect(await runAll(nodeTeeCapability, async () => ({ status: 'UpToDate', td: td() }), undefined, { approved: { os: [], images: [] } }))
+      .toEqual([expect.objectContaining({ ok: false, detail: expect.stringMatching(/not an approved dstack release/) })])
+  })
+
+  it('rejects an app that is not an approved image under the compose rules', async () => {
+    const r = await run(nodeTeeCapability, async () => ({ status: 'UpToDate', td: td() }), undefined, { approved: { ...APPROVED, images: [] } })
+    expect(r).toMatchObject({ ok: false, detail: expect.stringMatching(/not an approved Antseed TEE seller image/) })
+    // A measured, genuine app that breaks a rule.
+    const app = appCompose(referenceCompose(), { public_logs: true })
+    const boot = bootEvents(app)
+    const logs = await run(nodeTeeCapability, async () => ({ status: 'UpToDate', td: td({ rtMr3: boot.rtmr3 }) }), dstackEvidence(app, boot.eventLog))
+    expect(logs).toMatchObject({ ok: false, detail: expect.stringMatching(/app logs must not be public/) })
+  })
+
+  it('rejects an app compose that is not the one RTMR3 measured', async () => {
+    const other = appCompose(referenceCompose(), { name: 'other' })
+    const r = await run(nodeTeeCapability, async () => ({ status: 'UpToDate', td: td() }), dstackEvidence(other))
+    expect(r).toMatchObject({ ok: false, detail: expect.stringMatching(/does not match the measured compose hash/) })
+  })
+
+  it('rejects a seller that sends no event log or no app compose', async () => {
+    const stub: VerifyQuoteFn = async () => ({ status: 'UpToDate', td: td() })
+    expect(await run(nodeTeeCapability, stub, encodeTeeTdxEvidence(randomBytes(64)))).toMatchObject({ ok: false, detail: expect.stringMatching(/seller sent no dstack event log/) })
+    const noCompose = encodeTeeTdxEvidence(randomBytes(64), undefined, undefined, { eventLog: BOOT.eventLog })
+    expect(await run(nodeTeeCapability, stub, noCompose)).toMatchObject({ ok: false, detail: expect.stringMatching(/seller sent no app compose/) })
   })
 
   it('rejects when the buyer has no connection binding (e.g. WebRTC)', async () => {
@@ -103,28 +141,6 @@ describe('TDX cap verify (seller-node-tee-genuine)', () => {
     const r = await run(nodeTeeCapability, async () => ({ status: 'UpToDate', td: td() }), undefined, { channelBinding: 'd'.repeat(64) })
     expect(r.ok).toBe(false)
     expect(r.detail).toMatch(/does not match scheme "antseed-rd-v1"/)
-  })
-
-  it('accepts a dstack CVM whose event log replays to an approved compose hash', async () => {
-    const compose = 'ab'.repeat(32)
-    const ev = (name: string, payload: string): DstackEvent => ({
-      imr: 3, event_type: DSTACK_RUNTIME_EVENT_TYPE, event: name, event_payload: payload,
-      digest: runtimeEventDigest(name, Buffer.from(payload, 'hex'), 1).toString('hex'),
-    })
-    const log = [ev('app-id', '11'.repeat(20)), ev('compose-hash', compose), ev('instance-id', '22'.repeat(20)), ev('boot-mr-done', '')]
-    const rtMr3 = log.reduce((mr, e) => createHash('sha384').update(Buffer.concat([mr, Buffer.from(e.digest, 'hex')])).digest(), Buffer.alloc(48))
-    const dstackBuild = [{ name: 'phala-build', mrtd: 'aa'.repeat(48), rtmr0: '00'.repeat(48), rtmr1: '00'.repeat(48), rtmr2: '00'.repeat(48), composeHash: compose }]
-    const evidence = encodeTeeTdxEvidence(randomBytes(64), undefined, undefined, log)
-    const stub: VerifyQuoteFn = async () => ({ status: 'UpToDate', td: td({ rtMr3: new Uint8Array(rtMr3) }) })
-
-    const ok = await run(nodeTeeCapability, stub, evidence, { approved: dstackBuild })
-    expect(ok).toMatchObject({ ok: true, detail: expect.stringMatching(/approved build phala-build/) })
-
-    const otherCompose = [{ ...dstackBuild[0]!, composeHash: 'cd'.repeat(32) }]
-    expect((await run(nodeTeeCapability, stub, evidence, { approved: otherCompose })).ok).toBe(false)
-
-    const noLog = await run(nodeTeeCapability, stub, encodeTeeTdxEvidence(randomBytes(64)), { approved: dstackBuild })
-    expect(noLog).toMatchObject({ ok: false, detail: expect.stringMatching(/seller sent no dstack event log/) })
   })
 
   it('rejects a quote bound only to nonce+peerId (a seller on the old prover)', async () => {
@@ -206,7 +222,7 @@ describe('provider cap — declared report_data scheme binding', () => {
     const rd = noncePubkeySha256V1.build(NONCE, { e2ePubkey: PUBKEY }) // commitment in [0:32]
     const ev = encodeTeeTdxEvidence(rd, undefined, { scheme: 'nonce-pubkey-sha256-v1', ingredients: { e2ePubkey: PUBKEY } })
     const parsed = await verifyTdxEvidence(ev, reflect, now)
-    const r = await providerTeeCapability.verify({ nonce: NONCE, peerId: PEER, evidence: ev, parsedQuote: parsed })
+    const r = await providerTeeCapability.verify({ nonce: NONCE, peerId: PEER, evidence: ev, parsedQuote: parsed }) as ClaimResult
     expect(r.ok).toBe(true)
   })
 
@@ -214,7 +230,7 @@ describe('provider cap — declared report_data scheme binding', () => {
     const rd = noncePubkeySha256V1.build(NONCE, { e2ePubkey: PUBKEY })
     const ev = encodeTeeTdxEvidence(rd, undefined, { scheme: 'nonce-pubkey-sha256-v1', ingredients: { e2ePubkey: 'AAAA' } })
     const parsed = await verifyTdxEvidence(ev, reflect, now)
-    const r = await providerTeeCapability.verify({ nonce: NONCE, peerId: PEER, evidence: ev, parsedQuote: parsed })
+    const r = await providerTeeCapability.verify({ nonce: NONCE, peerId: PEER, evidence: ev, parsedQuote: parsed }) as ClaimResult
     expect(r.ok).toBe(false)
     expect(r.detail).toMatch(/does not match scheme/)
   })

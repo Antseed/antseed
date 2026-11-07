@@ -4,7 +4,7 @@ import { collectPeerVerificationLinks } from '@antseed/node/discovery'
 import { parseVerifierCapabilities } from '@antseed/node/verifier-capabilities'
 import { freeTierProgramForService, isPricedService, normalizeFreeTierProgram, parseFreeTierProgram } from '@antseed/node/free-tier-program'
 import { modelTagsFor } from '@antseed/node/model-metadata'
-import { TEE_VERIFIER_ID, teeScope, type TeeClaim, type TeeScope } from '@antseed/node/tee-status'
+import { TEE_VERIFIER_ID, teeScope, teeUpstreams, type TeeClaim, type TeeScope } from '@antseed/node/tee-status'
 import type { ModelCheckView, NetworkModel, NetworkModelCapability, NetworkModelOffer, NetworkModelType, NetworkRouter, NetworkRouterOption, Peer, RoutePreview, ServiceHealthView, ServicePerformanceView, TrustBreakdownView } from '../types.js'
 import { parseRouteSelection } from '../../../proxy/route-selection.js'
 
@@ -158,10 +158,11 @@ export function peerServices(row: Row): Peer['services'] {
 
 /**
  * Peer ids with a current, passing TEE attestation in a `/_antseed/verification` snapshot,
- * mapped to how far it reaches: the seller node only, or end to end through its provider.
+ * mapped to how far it reaches (the seller node only, or end to end through its provider) and
+ * the upstream hosts the attested seller config sends prompts to.
  */
-export function teeScopes(snapshot: unknown, now: number): Map<string, TeeScope> {
-  const scopes = new Map<string, TeeScope>()
+export function teeAttestations(snapshot: unknown, now: number): Map<string, { scope: TeeScope; upstreams: string[] }> {
+  const attested = new Map<string, { scope: TeeScope; upstreams: string[] }>()
   for (const evidence of rows(asRecord(snapshot)['evidence'])) {
     if (evidence['verifierId'] !== TEE_VERIFIER_ID || evidence['sellerNodeVerified'] !== true) continue
     if (evidence['checking'] === true || evidence['unavailable'] === true) continue
@@ -169,9 +170,14 @@ export function teeScopes(snapshot: unknown, now: number): Map<string, TeeScope>
     if (expiresAt !== null && expiresAt <= now) continue
     const peerId = str(evidence['peerId'])
     const claims = rows(evidence['claims']).filter((claim): claim is Row & TeeClaim => typeof claim['claim'] === 'string')
-    if (peerId) scopes.set(peerKey(peerId), teeScope({ claims }))
+    if (peerId) attested.set(peerKey(peerId), { scope: teeScope({ claims }), upstreams: teeUpstreams({ claims }) })
   }
-  return scopes
+  return attested
+}
+
+/** Peer ids with a current, passing TEE attestation, mapped to how far it reaches. */
+export function teeScopes(snapshot: unknown, now: number): Map<string, TeeScope> {
+  return new Map([...teeAttestations(snapshot, now)].map(([peerId, { scope }]) => [peerId, scope]))
 }
 
 /** Peer ids with a current, passing TEE attestation in a `/_antseed/verification` snapshot. */
@@ -195,7 +201,7 @@ export function mapPeers(input: {
 }): Peer[] {
   const health = new Map(rows(asRecord(input.health)['peers']).map((row) => [peerKey(String(row['peerId'] ?? '')), row]))
   const stats = new Map(input.stats.map((row) => [peerKey(row.peerId), row]))
-  const teeVerified = input.verification ? teeScopes(input.verification, input.now) : null
+  const teeVerified = input.verification ? teeAttestations(input.verification, input.now) : null
   return rows(asRecord(input.peers)['peers']).flatMap((row): Peer[] => {
     const peerId = str(row['peerId'])
     if (!peerId) return []
@@ -229,7 +235,8 @@ export function mapPeers(input: {
       verified,
       verificationLinks: collectPeerVerificationLinks(row),
       tee,
-      teeScope: tee ? teeVerified?.get(key) ?? null : null,
+      teeScope: tee ? teeVerified?.get(key)?.scope ?? null : null,
+      ...(tee && teeVerified?.get(key)?.upstreams.length ? { teeUpstreams: teeVerified.get(key)!.upstreams } : {}),
       stakeAnts: stake === null ? null : String(stake),
       agentId: agentId !== null && agentId > 0 ? agentId : null,
       freeTier: parseFreeTierProgram(strings(row['capabilities'])),

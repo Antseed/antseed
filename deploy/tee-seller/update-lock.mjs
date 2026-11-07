@@ -18,10 +18,12 @@ if (!/^\d+\.\d+\.\d+$/.test(cliVersion ?? '')) {
   process.exit(1)
 }
 
+// The provider plugins buyers accept in a TEE seller config (PLUGINS in
+// packages/antseed-verifier/src/dstack-app-compose.ts), and their shared core.
 const PLUGINS = [
-  '@antseed/provider-anthropic', '@antseed/provider-openai', '@antseed/provider-openai-responses',
-  '@antseed/provider-local-llm', '@antseed/provider-typesafe', '@antseed/provider-venice-video',
-  '@antseed/provider-fal-video', '@antseed/provider-alibaba-video', '@antseed/provider-core',
+  '@antseed/provider-anthropic', '@antseed/provider-openai', '@antseed/provider-typesafe',
+  '@antseed/provider-venice-video', '@antseed/provider-fal-video', '@antseed/provider-alibaba-video',
+  '@antseed/provider-core',
 ]
 
 const npm = (args, cwd = here) => execFileSync('npm', args, { cwd, encoding: 'utf8' }).trim()

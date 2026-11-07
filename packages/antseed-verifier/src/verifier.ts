@@ -13,7 +13,7 @@ import {
 import { PROVIDER_CLAIMS_CAP_ID } from './caps/provider-claims.js'
 import { readFileSync } from 'node:fs'
 import type { MeasuredImagePolicy } from './caps/measured-image.js'
-import { readApprovedNodeMeasurements } from './approved-node-measurements.js'
+import { readApprovedNodeBuilds } from './approved-node-measurements.js'
 import {
   NONCE_BYTES,
   VERIFIER_ID,
@@ -144,7 +144,7 @@ export async function runVerify(
   // Verify the required caps, any cap the seller returned evidence for, and derived caps.
   const wanted = new Set([...requiredCaps, ...Object.keys(evidence), ...DERIVED_CAPS])
   const measuredImagePolicy = readMeasuredImagePolicy()
-  const approvedNodeBuilds = readApprovedNodeMeasurements()
+  const approvedNodeBuilds = readApprovedNodeBuilds()
   const channelBinding = resp.channelBinding
   const claims: ClaimResult[] = []
   for (const capId of capabilityIds()) {

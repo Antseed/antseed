@@ -6,7 +6,8 @@ import { generateDstackAttestation } from '../collect/dstack.js'
 import { composeHashFromEventLog, isDstackEventLog, rtmr3Events, type DstackEvent } from '../dstack-event-log.js'
 import { collectViaHttp, collectTdxAndPubkey } from '../collect/http.js'
 import { antseedRdV1, verifyReportData, type BindingIngredients } from '../report-data.js'
-import type { ApprovedNodeMeasurement } from '../approved-node-measurements.js'
+import type { ApprovedDstackOs, ApprovedNodeBuilds } from '../approved-node-measurements.js'
+import { checkAppCompose, type CheckedAppCompose } from '../dstack-app-compose.js'
 
 /** A provider quote's declared report_data binding: a frozen scheme id + its string ingredients. */
 export interface ReportDataBinding {
@@ -31,6 +32,11 @@ export interface ReportDataBinding {
 export const NODE_TEE_CAP_ID = 'seller-node-tee-genuine'
 /** The downstream inference provider's TEE (quote fetched from the provider's evidence route). */
 export const PROVIDER_TEE_CAP_ID = 'seller-provider-tee-genuine'
+/**
+ * Reported with a passing seller node claim: the https origins its measured config forwards
+ * prompts to, comma-separated. It describes the node claim and has no evidence of its own.
+ */
+export const NODE_UPSTREAMS_CLAIM = 'seller-node-upstreams'
 
 /**
  * Config-key convention: each TDX cap reads its own collector settings from `<capId>.<key>`
@@ -92,29 +98,41 @@ export interface ParsedTdxQuote {
   binding?: ReportDataBinding
   /** dstack RTMR3 event log, if the evidence carried one. */
   eventLog?: DstackEvent[]
+  /** dstack app-compose.json, if the evidence carried one. */
+  appCompose?: string
   /** Set when DCAP verification or evidence decoding threw. */
   error?: string
 }
 
-/** tee-tdx evidence blob: the raw quote (b64), optional DCAP collateral, binding and dstack RTMR3 event log. */
+/**
+ * tee-tdx evidence blob: the raw quote (b64), optional DCAP collateral and binding, and on dstack
+ * the RTMR3 event log and app-compose.json.
+ */
 interface TeeTdxEvidence {
   quote: string
   collateral?: unknown
   binding?: ReportDataBinding
   eventLog?: DstackEvent[]
+  appCompose?: string
 }
 
-export function encodeTeeTdxEvidence(quote: Uint8Array, collateral?: unknown, binding?: ReportDataBinding, eventLog?: DstackEvent[]): Uint8Array {
+export function encodeTeeTdxEvidence(
+  quote: Uint8Array,
+  collateral?: unknown,
+  binding?: ReportDataBinding,
+  dstack?: { eventLog?: DstackEvent[]; appCompose?: string },
+): Uint8Array {
   const blob: TeeTdxEvidence = {
     quote: Buffer.from(quote).toString('base64'),
     ...(collateral !== undefined ? { collateral } : {}),
     ...(binding !== undefined ? { binding } : {}),
-    ...(eventLog !== undefined ? { eventLog } : {}),
+    ...(dstack?.eventLog !== undefined ? { eventLog: dstack.eventLog } : {}),
+    ...(dstack?.appCompose !== undefined ? { appCompose: dstack.appCompose } : {}),
   }
   return new TextEncoder().encode(JSON.stringify(blob))
 }
 
-export function decodeTeeTdxEvidence(bytes: Uint8Array): { quote: Uint8Array; collateral?: unknown; binding?: ReportDataBinding; eventLog?: DstackEvent[] } {
+export function decodeTeeTdxEvidence(bytes: Uint8Array): Omit<TeeTdxEvidence, 'quote'> & { quote: Uint8Array } {
   const parsed = JSON.parse(new TextDecoder().decode(bytes)) as Partial<TeeTdxEvidence>
   if (typeof parsed.quote !== 'string' || parsed.quote.length === 0) {
     throw new Error('tee-tdx evidence missing "quote"')
@@ -126,11 +144,15 @@ export function decodeTeeTdxEvidence(bytes: Uint8Array): { quote: Uint8Array; co
   if (parsed.eventLog !== undefined && !isDstackEventLog(parsed.eventLog)) {
     throw new Error('tee-tdx evidence "eventLog" is not a dstack event log')
   }
+  if (parsed.appCompose !== undefined && typeof parsed.appCompose !== 'string') {
+    throw new Error('tee-tdx evidence "appCompose" is not a string')
+  }
   return {
     quote,
     ...(parsed.collateral !== undefined ? { collateral: parsed.collateral } : {}),
     ...(parsed.binding !== undefined ? { binding: parsed.binding } : {}),
     ...(parsed.eventLog !== undefined ? { eventLog: parsed.eventLog } : {}),
+    ...(parsed.appCompose !== undefined ? { appCompose: parsed.appCompose } : {}),
   }
 }
 
@@ -177,14 +199,18 @@ export async function verifyTdxEvidence(
   let collateral: unknown
   let binding: ReportDataBinding | undefined
   let eventLog: DstackEvent[] | undefined
+  let appCompose: string | undefined
   try {
-    ;({ quote, collateral, binding, eventLog } = decodeTeeTdxEvidence(evidence))
+    ;({ quote, collateral, binding, eventLog, appCompose } = decodeTeeTdxEvidence(evidence))
   } catch (err) {
     return { quoteEvidence: evidence, status: '', td: null, error: `malformed tee-tdx evidence: ${msg(err)}` }
   }
   try {
     const raw = await verifyQuote(quote, collateral, nowSecs)
-    return { quoteEvidence: evidence, status: raw.status, td: raw.td, ...(binding ? { binding } : {}), ...(eventLog !== undefined ? { eventLog } : {}) }
+    return {
+      quoteEvidence: evidence, status: raw.status, td: raw.td,
+      ...(binding ? { binding } : {}), ...(eventLog !== undefined ? { eventLog } : {}), ...(appCompose !== undefined ? { appCompose } : {}),
+    }
   } catch (err) {
     return { quoteEvidence: evidence, status: '', td: null, ...(binding ? { binding } : {}), error: `quote verification failed: ${msg(err)}` }
   }
@@ -199,28 +225,25 @@ function hex(b: Uint8Array): string {
 }
 
 /**
- * The approved build this quote runs, if any: MRTD and RTMR0-2 must equal the entry's, and the
- * workload must match its RTMR3 or, for a dstack entry, the compose hash replayed from the event
- * log. The second value says why a dstack event log could not be used, for the claim detail.
+ * The approved build this quote runs: MRTD and RTMR0-2 must be an approved dstack OS, and the app
+ * compose measured into RTMR3 (replayed from the event log) must run an approved seller image under
+ * the compose rules. Returns the OS, image and upstreams, or why the build is not approved.
  */
 function approvedBuild(
-  approved: readonly ApprovedNodeMeasurement[],
+  approved: ApprovedNodeBuilds,
   td: TdMeasurements,
   eventLog: DstackEvent[] | undefined,
-): { build?: ApprovedNodeMeasurement; eventLogError?: string } {
+  appCompose: string | undefined,
+): ({ os: ApprovedDstackOs } & CheckedAppCompose) | { error: string } {
   const base = [td.mrTd, td.rtMr0, td.rtMr1, td.rtMr2].map(hex)
-  const rtmr3 = hex(td.rtMr3)
-  let replay: ReturnType<typeof composeHashFromEventLog> | undefined
-  const composeHash = (): string | undefined => {
-    replay ??= eventLog === undefined ? { error: 'seller sent no dstack event log' } : composeHashFromEventLog(eventLog, td.rtMr3)
-    return 'composeHash' in replay ? replay.composeHash : undefined
-  }
-  const build = approved.find((m) => {
-    if (![m.mrtd, m.rtmr0, m.rtmr1, m.rtmr2].every((v, i) => v.toLowerCase() === base[i])) return false
-    if (m.rtmr3 !== undefined) return m.rtmr3.toLowerCase() === rtmr3
-    return m.composeHash !== undefined && m.composeHash.toLowerCase() === composeHash()
-  })
-  return { ...(build ? { build } : {}), ...(replay && 'error' in replay ? { eventLogError: replay.error } : {}) }
+  const os = approved.os.find((m) => [m.mrtd, m.rtmr0, m.rtmr1, m.rtmr2].every((v, i) => v.toLowerCase() === base[i]))
+  if (!os) return { error: `the CVM OS (MRTD ${base[0]!.slice(0, 16)}…) is not an approved dstack release` }
+  if (eventLog === undefined) return { error: 'seller sent no dstack event log' }
+  const replay = composeHashFromEventLog(eventLog, td.rtMr3)
+  if ('error' in replay) return replay
+  if (appCompose === undefined) return { error: 'seller sent no app compose' }
+  const app = checkAppCompose(appCompose, replay.composeHash, approved.images)
+  return 'error' in app ? app : { os, ...app }
 }
 
 /**
@@ -242,7 +265,7 @@ export function makeTdxCap(
   return {
     id,
 
-    verify(input: CapabilityVerifyInput): ClaimResult {
+    verify(input: CapabilityVerifyInput): ClaimResult | ClaimResult[] {
       const claim = claimId(id)
       if (!input.evidence) return { claim, ok: false, detail: 'seller returned no TDX quote' }
       const p = input.parsedQuote as ParsedTdxQuote | undefined
@@ -254,18 +277,17 @@ export function makeTdxCap(
       // The seller node must also run an approved build and answer on the buyer's own connection:
       // the quote commits to that connection's session hash, so it was minted by the approved
       // build terminating this connection, not relayed from another machine.
-      let build: ApprovedNodeMeasurement | undefined
+      let build: ({ os: ApprovedDstackOs } & CheckedAppCompose) | undefined
       const channelBinding = input.channelBinding
       if (opts?.sellerNode) {
         if (!channelBinding) {
           return { claim, ok: false, detail: 'no connection binding: TEE attestation needs an encrypted TCP connection to the seller' }
         }
-        const match = approvedBuild((input.policy as readonly ApprovedNodeMeasurement[] | undefined) ?? [], p.td, p.eventLog)
-        build = match.build
-        if (!build) {
-          const why = match.eventLogError ? ` (${match.eventLogError})` : ''
-          return { claim, ok: false, detail: `genuine Intel TDX hardware, but the seller build (MRTD ${hex(p.td.mrTd).slice(0, 16)}…) is not an approved TEE seller build${why}` }
+        const match = approvedBuild((input.policy as ApprovedNodeBuilds | undefined) ?? { os: [], images: [] }, p.td, p.eventLog, p.appCompose)
+        if ('error' in match) {
+          return { claim, ok: false, detail: `genuine Intel TDX hardware, but not an approved TEE seller build: ${match.error}` }
         }
+        build = match
       }
       // Bind report_data to this round: the node cap to its {peerId, channelBinding}, a provider
       // cap to whatever frozen scheme its evidence declares. Fail-closed — a borrowed, relayed, or
@@ -281,12 +303,13 @@ export function makeTdxCap(
       const freshness = binding
         ? `bound to this round (${binding.scheme})`
         : 'freshness/instance binding NOT verified (no report_data scheme declared)'
-      const scope = build ? `approved build ${build.name}, bound to this connection` : `MRTD ${hex(p.td.mrTd).slice(0, 16)}…`
-      return {
-        claim,
-        ok: true,
-        detail: `genuine Intel TDX quote (TCB ${p.status}); ${scope}; ${freshness}`,
-      }
+      const scope = build
+        ? `Antseed TEE seller image ${build.image.version} on ${build.os.name}, bound to this connection`
+        : `MRTD ${hex(p.td.mrTd).slice(0, 16)}…`
+      const result: ClaimResult = { claim, ok: true, detail: `genuine Intel TDX quote (TCB ${p.status}); ${scope}; ${freshness}` }
+      if (!build) return result
+      const origins = [...new Set(build.upstreams.map((u) => u.origin))].sort()
+      return [result, { claim: claimId(NODE_UPSTREAMS_CLAIM), ok: true, detail: origins.join(', ') }]
     },
 
     async collect(input: CapabilityCollectInput): Promise<Uint8Array> {
@@ -298,9 +321,12 @@ export function makeTdxCap(
       }
       if (source === 'dstack') {
         const socket = input.config[tdxConfigKey(id, 'dstack.socket')] || undefined
-        const { quote, eventLog } = await generateDstackAttestation(computeReportData(input.nonce, input.peerId, channelBinding), socket)
-        // Only the RTMR3 events: the buyer replays them to the app's compose hash.
-        return encodeTeeTdxEvidence(quote, undefined, undefined, eventLog ? rtmr3Events(eventLog) : undefined)
+        const { quote, eventLog, appCompose } = await generateDstackAttestation(computeReportData(input.nonce, input.peerId, channelBinding), socket)
+        // Only the RTMR3 events: the buyer replays them to the app's compose hash, then checks the compose.
+        return encodeTeeTdxEvidence(quote, undefined, undefined, {
+          ...(eventLog ? { eventLog: rtmr3Events(eventLog) } : {}),
+          ...(appCompose ? { appCompose } : {}),
+        })
       }
       if (source === 'http') {
         const url = input.config[tdxConfigKey(id, 'url')]

@@ -2,7 +2,7 @@
 
 The official image for running an Antseed seller in a dstack (Phala) confidential VM so that
 buyers' TEE check passes: the seller node proves to every buyer, before payment, that it runs an
-approved build whose operator cannot read prompts.
+approved Antseed image whose operator cannot read prompts, and which upstreams it sends them to.
 
 ## What a buyer checks
 
@@ -11,17 +11,23 @@ Intel TDX quote:
 
 - is genuine (Intel DCAP, acceptable TCB, debug off);
 - is bound to the buyer's nonce, the seller's peer ID and the buyer's own encrypted connection;
-- matches an entry in [`approved-node-measurements.ts`](../../packages/antseed-verifier/src/approved-node-measurements.ts):
-  the dstack OS measurements (MRTD, RTMR0-2) and the app compose hash, which the buyer replays
-  from the dstack event log. A VM that ran init scripts outside the compose file does not match.
+- shows a released dstack production OS (MRTD and RTMR0-2) listed in
+  [`approved-node-measurements.ts`](../../packages/antseed-verifier/src/approved-node-measurements.ts);
+- measured (RTMR3, replayed from the dstack event log) an app compose that runs an image listed in
+  [`approved-seller-images.ts`](../../packages/antseed-verifier/src/approved-seller-images.ts)
+  and follows the rules in [`dstack-app-compose.ts`](../../packages/antseed-verifier/src/dstack-app-compose.ts).
+  A CVM that ran init scripts outside the compose file does not pass.
+
+The seller sends its `app-compose.json` with the quote, so the buyer reads the seller config
+itself and reports the upstreams it sends prompts to (`seller-node-upstreams`).
 
 ## The image
 
-[`Dockerfile`](Dockerfile) installs the npm-published `@antseed/cli`, every provider plugin and
-the verifier prover exactly as locked in [`package-lock.json`](package-lock.json) (`npm ci`), on a
-distroless runtime: no shell, no package manager, no runtime plugin installs or updates. The
-seller dashboard is off, so settings can't change at runtime. A commit therefore determines all
-the code in the image: rebuild it from that commit to check a digest's contents.
+[`Dockerfile`](Dockerfile) installs the npm-published `@antseed/cli`, the provider plugins a TEE
+seller may use and the verifier prover exactly as locked in [`package-lock.json`](package-lock.json)
+(`npm ci`), on a distroless runtime: no shell, no package manager, no runtime plugin installs or
+updates. The seller dashboard is off, so settings can't change at runtime. A commit therefore
+determines all the code in the image: rebuild it from that commit to check a digest's contents.
 
 To release an image after a CLI release:
 
@@ -32,41 +38,42 @@ To release an image after a CLI release:
 2. After it merges, run the **Publish TEE seller image** workflow
    ([`.github/workflows/tee-seller-image.yml`](../../.github/workflows/tee-seller-image.yml)). It
    pushes `ghcr.io/antseed/tee-seller:<cli version>` with an SBOM and a signed build provenance
-   attestation, so anyone can check which commit and workflow produced a digest:
+   attestation, and opens a pull request adding the image's digest to the approved images
+   (`approve-image.mjs`). Anyone can check which commit and workflow produced a digest:
 
-```bash
-gh attestation verify oci://ghcr.io/antseed/tee-seller@sha256:<digest> --repo AntSeed/antseed
-```
+   ```bash
+   gh attestation verify oci://ghcr.io/antseed/tee-seller@sha256:<digest> --repo AntSeed/antseed
+   ```
+
+3. Merge that pull request. Buyers accept sellers running the image from the verifier release
+   that includes it.
 
 ## Run a TEE seller on Phala
 
-1. Copy [`docker-compose.yml`](docker-compose.yml) and fill in every `<...>`: the release image
-   digest, your peer ID and your seller config, with upstream URLs written out.
-2. Deploy it as a dstack app with KMS enabled. Pass only secrets as encrypted environment
-   variables (`ANTSEED_IDENTITY_HEX` and your provider API keys), and allow exactly those.
-   Keep public logs off.
-3. Read the app compose hash and the OS measurements (MRTD, RTMR0-2) from the deployment's
-   attestation.
-4. Open a pull request adding an entry to `approved-node-measurements.ts`:
+1. Write your seller config (`config.json`). Each provider sets `apiKeyEnv` to a variable name
+   ending in `_API_KEY` (not starting with `ANTSEED_`, `POSTHOG_` or `CDP_`), and every
+   `baseUrl` is HTTPS. Don't put a key in a URL: buyers read the
+   whole config. Allowed plugins: `openai`, `anthropic`, `typesafe`, `venice-video`, `fal-video`,
+   `alibaba-video`.
+2. Generate the compose file (JSON, which is valid compose YAML and what buyers parse):
 
-   ```ts
-   { name: '<seller name> <image version>', mrtd: '…', rtmr0: '…', rtmr1: '…', rtmr2: '…', composeHash: '…' }
+   ```bash
+   node deploy/tee-seller/compose.mjs --image ghcr.io/antseed/tee-seller@sha256:<digest> \
+     --peer <peer id, 40 hex> --config config.json > docker-compose.json
    ```
 
-   with your `app-compose.json` attached so reviewers can recompute the hash. Before it is
-   listed, buyers can test it with `ANTSEED_VERIFIER_NODE_MEASUREMENTS`.
+   Add `--rpc-url-secret` to pass `ANTSEED_BASE_RPC_URL` as a secret, and
+   `--env ANTSEED_VERIFIER_PROVIDER_...=<value>` for provider attestation settings. It prints the
+   encrypted variables to allow. [`docker-compose.json`](docker-compose.json) is an example.
+3. Deploy it as a dstack app with KMS enabled. Pass the printed secrets as encrypted environment
+   variables, allow exactly those, keep public logs off, and add no pre-launch script.
 
-Any change to the compose file (image, config, prices) changes the compose hash and needs a new
-entry.
+Any change to the compose file (image, config, prices) changes the compose hash; buyers
+re-check the new one against the same rules, so no approval is needed.
 
-## Review checklist for an approval
+## Approving a dstack OS release
 
-- `image` is an official release digest with a valid provenance attestation.
-- One service; ports are only the signaling (TCP) and DHT (UDP) ports; volumes are only the
-  seller data volume and `/var/run/dstack.sock`; no `privileged`, capabilities, devices or
-  host namespaces.
-- `${...}` appears only for secrets (identity key, provider API keys). Upstream URLs, extra
-  headers, body injection, proxy settings (`*_PROXY`), `NODE_OPTIONS`, `NODE_EXTRA_CA_CERTS`
-  and debug flags (`ANTSEED_DEBUG`, `--verbose`) are absent or literal and acceptable.
-- The app allows only those secret variables, has public logs off, and runs no init scripts.
-- The OS measurements are a released dstack production image, not a dev image.
+Add the release's MRTD and RTMR0-2 to `APPROVED_DSTACK_OS` in
+`approved-node-measurements.ts`, one entry per VM shape (RTMR0 depends on the vCPU and memory
+size). Use a production (non-dev) dstack image, and recompute the values from the release
+artifacts rather than copying them from a running CVM.
