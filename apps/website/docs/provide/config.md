@@ -179,7 +179,7 @@ antseed config seller remove-service inference kimi-k2.6
 antseed config seller remove-provider inference
 ```
 
-`config seller set` splits the key on dots, so it can't address a service whose ID contains a dot, such as `kimi-k2.6`. Use `add-service` again, which updates an existing service, or edit the file. `set` accepts keys that already exist in the file, any key under `providers`, and the `freeTier`, `freeUsage` and `restrictedCountries` keys shown below; add other blocks, such as `healthCheck`, by editing the file.
+`config seller set` works with service IDs that contain a dot, such as `kimi-k2.6`, once the service exists: `providers.inference.services.kimi-k2.6.pricing.inputUsdPerMillion`. Add a new service with `add-service`. `set` accepts keys that already exist in the file, the provider and service fields on this page, and the `freeTier`, `freeUsage` and `restrictedCountries` keys shown below. It refuses any other key, and a provider or service that doesn't exist, with an error and a non-zero exit code; add other blocks, such as `healthCheck`, by editing the file.
 
 `antseed seller setup` builds the capabilities object with one question per field, tailored to the service: image services are asked about input modalities and supported parameters, text services about context window, modalities, reasoning, tool use and structured output. You can paste a JSON object at the capabilities prompt instead.
 
@@ -341,7 +341,7 @@ This config gives a free model 100 requests a day, raised for stakers, and makes
 
 Each model's program is advertised under a short hash of its id, as `free-tier.v1.m<hash>.*`. A program that uses the same tiers as `seller.freeTier` takes one capability string; one with its own tiers takes one string plus one per tier. Peer metadata allows 16 capability strings, and the node always uses 4 or 5 of them. A program that doesn't fit is still enforced, but not advertised, and the node logs a warning.
 
-A response the allowance covered carries `x-antseed-free-tier: covered`. The seller records no spend for it, and the buyer expects no charge. `config seller set` can't address a service id with a dot, so add these programs by editing the file.
+A response the allowance covered carries `x-antseed-free-tier: covered`. The seller records no spend for it, and the buyer expects no charge. To add a program from the CLI, pass the whole object: `antseed config seller set providers.my-provider.services.glm-5.3-flash.freeTier '{"maxRequestsPerAddress":100}'`.
 
 ### Restricted countries
 

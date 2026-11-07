@@ -267,6 +267,8 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- CLI: `antseed config seller set` (and `config set seller.…`) now works with service IDs that contain a dot, such as `kimi-k2.6` or `glm-4.7-flash`: a key segment that names an existing service is kept whole. Before, `set providers.inference.services.kimi-k2.6.pricing.inputUsdPerMillion 0.2` printed "Set …", exited 0 and wrote a new `kimi-k2` entry with a nested `6` key, leaving the real price unchanged. A key under `providers` that doesn't resolve to a real field, or names a provider or service that doesn't exist, is now refused with an error that lists the valid names, exits 1 and leaves the file unchanged.
+
 - CLI seller: a slow or unreachable Base RPC no longer turns payments off for a seller with priced services. `antseed seller start` gave the RPC 1.5 s to answer, then disabled payments, skipped the registration and gas checks, and announced and served priced services for free. It now asks the RPC and its fallbacks up to 3 times (5 s each), and if none answers, a seller with priced services refuses to start with a "Base RPC unreachable" error. With `--skip-prereq-check` it starts with payments on. A seller whose services are all free still runs without payments, as before. `ANTSEED_ENABLE_SETTLEMENT=false` still runs without payments, and `true` still skips the probe.
 
 - CLI buyer and node: a seller that moves to a new public address is picked up again without restarting the buyer.
