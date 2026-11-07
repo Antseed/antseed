@@ -188,6 +188,10 @@ within the minute the seller surely holds the lease, so one that lost its lease,
 shutting down, never writes over the state its replacement restored. Each save is also written only over the version the seller last saw, so a
 second writer is caught even then.
 
+To move an existing seller onto the image, or to upgrade to a new image (on Confidential Space the
+workload identity condition must allow the new digest first), see
+[Run a TEE-attested seller](../../apps/website/docs/provide/tee.md#move-an-existing-seller-to-the-tee-image).
+
 ## Logs and data
 
 The image runs the seller in content-free mode (`ANTSEED_CONTENT_FREE_LOGS=1`, set by the
