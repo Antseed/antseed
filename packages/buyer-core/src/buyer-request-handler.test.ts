@@ -3,6 +3,7 @@ import { BuyerRequestHandler, selectBillingRoute, stripPeerControlledResponseHea
 import { ConnectionState, toPeerId } from '@antseed/protocol';
 import type { BuyerPeerView, ResponseAuthContext, StoredResponseAuth } from './interfaces.js';
 import { hashRequest } from './response-auth.js';
+import { faultCodeOf } from './errors.js';
 import { CONNECTION_CAPABILITY_RESPONSE_AUTH_V1 } from '@antseed/protocol/messages';
 import type { SerializedHttpRequest, SerializedHttpResponse } from '@antseed/protocol/http';
 
@@ -52,7 +53,7 @@ const PAYMENT_REQUIRED = response(402, {
 });
 const ACCEPTED = response(200, { queue_id: 'new-job' });
 
-function makeHandler(responses: SerializedHttpResponse[], freeTierDelegationsHeader?: () => string | null) {
+function makeHandler(responses: SerializedHttpResponse[], freeTierDelegationsHeader?: () => string | null, channelBinding: string | null = null) {
   const queue = [...responses];
   const sendProxyRequest = vi.fn((
     _request: SerializedHttpRequest,
@@ -67,7 +68,7 @@ function makeHandler(responses: SerializedHttpResponse[], freeTierDelegationsHea
     handle402,
     applyExternalSpendingAuth: vi.fn(async () => {}),
   };
-  const connection = { state: ConnectionState.Connected, send: vi.fn(), on: vi.fn(), off: vi.fn() };
+  const connection = { state: ConnectionState.Connected, send: vi.fn(), on: vi.fn(), off: vi.fn(), channelBinding };
   const handler = new BuyerRequestHandler({}, {
     localPeerId: toPeerId('4'.repeat(40)),
     negotiator: negotiator as never,
@@ -81,6 +82,23 @@ function makeHandler(responses: SerializedHttpResponse[], freeTierDelegationsHea
   });
   return { handler, handle402, sendProxyRequest, negotiator };
 }
+
+describe('BuyerRequestHandler TEE connection binding', () => {
+  it('sends on the connection a TEE attestation was bound to', async () => {
+    const { handler, sendProxyRequest } = makeHandler([response(200, {})], undefined, 'c'.repeat(64));
+    expect((await handler.sendRequest(makePeer(), makeRequest(), undefined, { channelBinding: 'c'.repeat(64) })).statusCode).toBe(200);
+    expect(sendProxyRequest).toHaveBeenCalledOnce();
+  });
+
+  it('refuses before sending when the connection is not the attested one', async () => {
+    for (const binding of ['d'.repeat(64), null]) {
+      const { handler, sendProxyRequest } = makeHandler([response(200, {})], undefined, binding);
+      const err = await handler.sendRequest(makePeer(), makeRequest(), undefined, { channelBinding: 'c'.repeat(64) }).catch((e: unknown) => e);
+      expect(faultCodeOf(err)).toBe('buyer-tee-connection-changed');
+      expect(sendProxyRequest).not.toHaveBeenCalled();
+    }
+  });
+});
 
 describe('BuyerRequestHandler payment negotiation', () => {
   it.each([400, 409, 500, 503])('returns a non-payment response without negotiation (%s)', async (statusCode) => {

@@ -4,7 +4,7 @@ import type {
   ProviderRequestRefusal,
   ProviderStreamCallbacks,
 } from './interfaces/seller-provider.js';
-import { ANTSEED_ATTEST_PATH, type Prover } from './interfaces/plugin.js';
+import { ANTSEED_ATTEST_PATH, ANTSEED_CHANNEL_BINDING_HEADER, type Prover } from './interfaces/plugin.js';
 import type { SellerSessionTracker } from './metering/seller-session-tracker.js';
 import type { PaymentMux } from './p2p/payment-mux.js';
 import type { Identity } from './p2p/identity.js';
@@ -346,10 +346,14 @@ export class SellerRequestHandler {
           return;
         }
         try {
+          // The binding names the connection this request arrived on; a buyer cannot supply it.
+          const headers = { ...request.headers };
+          takeHeader(headers, ANTSEED_CHANNEL_BINDING_HEADER);
+          if (conn.channelBinding) headers[ANTSEED_CHANNEL_BINDING_HEADER] = conn.channelBinding;
           const resp = await prover.prove({
             method: request.method,
             path: request.path,
-            headers: request.headers,
+            headers,
             body: request.body,
           });
           mux.sendProxyResponse({
