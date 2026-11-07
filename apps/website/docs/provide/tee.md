@@ -60,7 +60,7 @@ It writes a compose file (JSON, which compose also reads) with the image pinned 
 
 ## 3. Deploy it on dstack
 
-Deploy `docker-compose.json` as a dstack app with KMS enabled:
+Deploy `docker-compose.json` as a dstack app with KMS enabled, on the dstack 0.6.1 OS image and a CPU instance type (`tdx.small` to `tdx.8xlarge` on Phala Cloud), the OS releases and VM shapes buyers accept:
 
 - set the printed variables as encrypted environment variables: `ANTSEED_IDENTITY_HEX` (your identity key, hex) and your API keys, and allow exactly those;
 - add no pre-launch script. Public logs may be on: the image runs the seller in content-free mode, so its logs and databases hold no prompts or answers, nor upstream error text about a request, only metadata such as status codes, token counts and buyer peer IDs.
