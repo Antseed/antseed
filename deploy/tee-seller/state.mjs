@@ -102,19 +102,21 @@ export async function snapshot(dataDir, file, Database, now = Date.now()) {
 /** One Cloud Storage object, written only over the generation this seller last saw. Each request gives up after `timeoutMs`. */
 export function gcsObject({ bucket, object }, accessToken, fetchImpl = fetch, { timeoutMs = 300_000 } = {}) {
   const name = encodeURIComponent(object)
-  const request = (url, init) => fetchImpl(url, { ...init, signal: AbortSignal.timeout(timeoutMs) })
+  const request = async (url, init = {}) => {
+    const token = await accessToken()
+    return fetchImpl(url, {
+      ...init,
+      headers: { authorization: `Bearer ${token}`, ...init.headers },
+      redirect: 'error',
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+  }
   return {
     async read() {
-      const res = await request(`https://storage.googleapis.com/storage/v1/b/${bucket}/o/${name}?alt=media`, {
-        headers: { authorization: `Bearer ${await accessToken()}` },
-        redirect: 'error',
-      })
+      const res = await request(`https://storage.googleapis.com/storage/v1/b/${bucket}/o/${name}?alt=media`)
       if (res.status === 404) {
         // No snapshot yet, unless the bucket itself is missing: then a mistyped location would start the seller empty.
-        const list = await request(`https://storage.googleapis.com/storage/v1/b/${bucket}/o?maxResults=1&prefix=${name}`, {
-          headers: { authorization: `Bearer ${await accessToken()}` },
-          redirect: 'error',
-        })
+        const list = await request(`https://storage.googleapis.com/storage/v1/b/${bucket}/o?maxResults=1&prefix=${name}`)
         if (list.ok) return null
         throw new Error(`reading gs://${bucket}/${object}: bucket listing answered HTTP ${list.status} ${(await list.text()).slice(0, 300)}`)
       }
@@ -124,20 +126,15 @@ export function gcsObject({ bucket, object }, accessToken, fetchImpl = fetch, { 
     async write(data, ifGenerationMatch) {
       const res = await request(`https://storage.googleapis.com/upload/storage/v1/b/${bucket}/o?uploadType=media&name=${name}&ifGenerationMatch=${ifGenerationMatch}`, {
         method: 'POST',
-        headers: { authorization: `Bearer ${await accessToken()}`, 'content-type': 'application/octet-stream' },
+        headers: { 'content-type': 'application/octet-stream' },
         body: data,
-        redirect: 'error',
       })
       if (res.status === 412) throw new StateConflictError(`gs://${bucket}/${object} changed since this seller last wrote it`)
       if (!res.ok) throw new Error(`writing gs://${bucket}/${object}: HTTP ${res.status} ${(await res.text()).slice(0, 300)}`)
       return String((await res.json()).generation)
     },
     async remove(ifGenerationMatch) {
-      const res = await request(`https://storage.googleapis.com/storage/v1/b/${bucket}/o/${name}?ifGenerationMatch=${ifGenerationMatch}`, {
-        method: 'DELETE',
-        headers: { authorization: `Bearer ${await accessToken()}` },
-        redirect: 'error',
-      })
+      const res = await request(`https://storage.googleapis.com/storage/v1/b/${bucket}/o/${name}?ifGenerationMatch=${ifGenerationMatch}`, { method: 'DELETE' })
       if (!res.ok && res.status !== 404 && res.status !== 412) throw new Error(`removing gs://${bucket}/${object}: HTTP ${res.status}`)
     },
   }
