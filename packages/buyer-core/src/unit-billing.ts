@@ -16,6 +16,7 @@ import {
   type NativeVideoFacts,
 } from '@antseed/api-adapter';
 import type { SerializedHttpRequest, SerializedHttpResponse } from '@antseed/protocol/http';
+import type { VideoOptions } from '@antseed/protocol/peer-metadata';
 import type {
   UnitBillingContext,
   UnitBillingMatchKeyV1,
@@ -66,6 +67,8 @@ export interface CaptureUnitBillingArgs {
   service: string;
   serviceApiProtocol: ServiceApiProtocol;
   request: SerializedHttpRequest;
+  /** The service's announced video options: what an omitted aspect ratio or audio setting means. */
+  videoOptions?: VideoOptions;
 }
 
 export interface UnitBillingAdapter {
@@ -239,7 +242,7 @@ function captureVideoUnitBillingContext(args: CaptureUnitBillingArgs): CapturedU
       service: args.service,
       serviceApiProtocol: args.serviceApiProtocol,
       unitLimits: requestUsage.units,
-      attributes: { model: args.service, ...(video.resolution ? { resolution: video.resolution } : {}) },
+      attributes: videoAttributes(args.service, video, args.videoOptions),
     },
     requestUsage,
     requestFacts: { kind: 'video', video },
@@ -347,6 +350,29 @@ function imageUnitUsage(facts: ImageRequestFacts): UnitBillingUsage {
     units: {
       ...(facts.requestedImages !== undefined ? { output_images: facts.requestedImages } : {}),
     },
+  };
+}
+
+/**
+ * The attributes a video create is priced by. A create that leaves out its
+ * aspect ratio is priced at the service's first announced one, and one that
+ * leaves out audio at the announced `video.audio`. Only Venice: its plugin sends
+ * those values upstream, so the price is the clip's. Other protocols price what
+ * the create names, so one leaving out a priced option matches no component.
+ */
+export function videoAttributes(
+  service: string,
+  video: NativeVideoFacts,
+  options: VideoOptions | undefined,
+): Partial<Record<UnitBillingMatchKeyV1, string>> {
+  const defaults = video.protocol === 'venice-video' ? options : undefined;
+  const aspectRatio = video.aspectRatio ?? defaults?.aspectRatios?.[0];
+  const audio = video.audio ?? defaults?.audio;
+  return {
+    model: service,
+    ...(video.resolution ? { resolution: video.resolution } : {}),
+    ...(aspectRatio ? { aspect_ratio: aspectRatio } : {}),
+    ...(audio !== undefined ? { audio: String(audio) } : {}),
   };
 }
 

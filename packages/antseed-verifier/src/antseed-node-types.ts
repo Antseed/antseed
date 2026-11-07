@@ -37,6 +37,12 @@ export interface SellerResponse {
   statusCode: number
   headers: Record<string, string>
   body: Uint8Array
+  /**
+   * Buyer-local, never sent by the seller: hex session hash of the buyer's encrypted connection
+   * that carried this response. The seller node passes its side of it to the prover in the
+   * x-antseed-channel-binding request header.
+   */
+  channelBinding?: string
 }
 
 export interface VerifyContext {

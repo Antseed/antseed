@@ -83,6 +83,8 @@ export interface VerifyOutcome {
   sellerNodeVerified?: boolean
   claims?: TeeClaim[]
   version?: string
+  /** Session hash of the connection a passing seller-node attestation was bound to. */
+  channelBinding?: string
 }
 
 /** Stable fingerprint of a peer's verifier-relevant capabilities. */
@@ -136,7 +138,14 @@ export async function runVerifier(
   const sup = parseVerifierCapabilities(caps)
   const chosen = selectVerifier(policy, sup)
   if (!chosen) return { ok: !policy.require, verified: false, reason: 'no supported + trusted verifier' }
-  const reach = makeReach(chosen)
+  // The session hash of the connection the attestation ran over, as this buyer's node reports it.
+  let channelBinding: string | undefined
+  const sellerReach = makeReach(chosen)
+  const reach: SellerReach = async (req) => {
+    const resp = await sellerReach(req)
+    channelBinding = resp.channelBinding
+    return resp
+  }
   let sdk
   try {
     sdk = await load(chosen, { install: false })
@@ -172,6 +181,7 @@ export async function runVerifier(
     return {
       ok: !policy.require || verified, verified, sellerNodeVerified, sdk: chosen,
       version: sdk.version, claims,
+      ...(sellerNodeVerified && channelBinding ? { channelBinding } : {}),
       ...(!sellerNodeVerified ? { reason: (failed || 'Required seller-node claims did not pass').slice(0, 2048) } : {}),
     }
   } catch (err) {
