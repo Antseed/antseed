@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { JWTPayload, JWTVerifyGetKey } from 'jose'
 import type { ApprovedSellerImage } from './approved-seller-images.js'
+import { isTcbAcceptable } from './caps/tee-tdx.js'
 import { LITERAL_ENV, RuleError, check, checkHiddenSecrets, checkSellerConfig, isObj, parseJson, type SellerUpstream } from './seller-config-rules.js'
 
 /**
@@ -63,6 +64,9 @@ export function checkConfidentialSpaceClaims(
     check(claims['swname'] === 'CONFIDENTIAL_SPACE', 'token is not from a Confidential Space image')
     check(claims['dbgstat'] === 'disabled-since-boot', 'Confidential Space debug image (debugging enabled)')
     check(claims['secboot'] === true, 'Confidential Space VM did not boot with Secure Boot')
+    // Google's verdict on the TDX platform's TCB, held to the same acceptance as a raw quote's.
+    const tcb = isObj(claims['tdx']) ? claims['tdx']['gcp_attester_tcb_status'] : undefined
+    check(typeof tcb === 'string' && isTcbAcceptable(tcb), `TCB status not acceptable: ${String(tcb ?? 'unknown')}`)
     const submods = isObj(claims['submods']) ? claims['submods'] : {}
     const space = isObj(submods['confidential_space']) ? submods['confidential_space'] : {}
     const support = space['support_attributes']

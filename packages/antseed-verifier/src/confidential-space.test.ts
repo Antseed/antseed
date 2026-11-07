@@ -22,6 +22,7 @@ function claims(over: Record<string, unknown> = {}, env: Record<string, string> 
     swname: 'CONFIDENTIAL_SPACE',
     dbgstat: 'disabled-since-boot',
     secboot: true,
+    tdx: { gcp_attester_tcb_status: 'UpToDate', gcp_attester_tcb_date: '2025-05-14T00:00:00Z', tcb_evaluation_data_number: 19 },
     submods: {
       confidential_space: { support_attributes: ['LATEST', 'STABLE', 'USABLE'] },
       container: {
@@ -58,6 +59,10 @@ describe('checkConfidentialSpaceClaims', () => {
     expect(check(claims({ swname: 'GCE' }))).toMatchObject({ error: expect.stringMatching(/not from a Confidential Space image/) })
     expect(check(claims({ dbgstat: 'enabled' }))).toMatchObject({ error: expect.stringMatching(/debug image/) })
     expect(check(claims({ secboot: false }))).toMatchObject({ error: expect.stringMatching(/Secure Boot/) })
+    expect(check(claims({ tdx: { gcp_attester_tcb_status: 'OutOfDate' } }))).toMatchObject({ error: 'TCB status not acceptable: OutOfDate' })
+    expect(check(claims({ tdx: undefined }))).toMatchObject({ error: 'TCB status not acceptable: unknown' })
+    // A single nonce comes as a string, as Google issues it.
+    expect(check(claims({ eat_nonce: ROUND_NONCE }))).not.toHaveProperty('error')
     const debugImage = claims()
     ;(debugImage['submods'] as any).confidential_space.support_attributes = []
     expect(check(debugImage)).toMatchObject({ error: expect.stringMatching(/production release/) })
@@ -79,6 +84,8 @@ describe('checkConfidentialSpaceClaims', () => {
   it('applies the seller config rules to the config override', () => {
     const http = { seller: { providers: { o: { plugin: 'openai', baseUrl: 'http://upstream.example', apiKeyEnv: 'VENICE_API_KEY', services: {} } } } }
     expect(check(claims({}, { [CS_SELLER_CONFIG_ENV]: JSON.stringify(http) }))).toMatchObject({ error: expect.stringMatching(/https URL/) })
+    const agent = { seller: { ...CONFIG.seller, agentDir: '/var/lib/antseed/agent' } }
+    expect(check(claims({}, { [CS_SELLER_CONFIG_ENV]: JSON.stringify(agent) }))).toMatchObject({ error: 'seller.agentDir is not allowed in a TEE seller config' })
     const withoutConfig = claims()
     delete (withoutConfig['submods'] as any).container.env_override[CS_SELLER_CONFIG_ENV]
     expect(check(withoutConfig)).toMatchObject({ error: expect.stringMatching(/seller config must be set/) })

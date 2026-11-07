@@ -40,7 +40,8 @@ Write the seller config as for any seller (see [Seller configuration](/docs/prov
 
 - providers use the `openai`, `anthropic`, `typesafe`, `venice-video` or `alibaba-video` plugin;
 - every `baseUrl` is HTTPS, and every `pathRewrite` value is a path on that upstream (starting with `/`);
-- each provider sets `apiKeyEnv` to a variable name ending in `_API_KEY` (not starting with `ANTSEED_`, `POSTHOG_` or `CDP_`).
+- each provider sets `apiKeyEnv` to a variable name ending in `_API_KEY` (not starting with `ANTSEED_`, `POSTHOG_` or `CDP_`);
+- no setting that loads code or configures another role: `seller.agentDir` (agent tool modules), `plugins`, `buyer`, `verifier` and `relayer` are rejected.
 
 Buyers read the whole config, so don't put keys in URLs.
 
