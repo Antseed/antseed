@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -125,6 +125,26 @@ describe('node-tee capability — dstack source', () => {
     expect(Buffer.from(decoded.quote).equals(computeReportData(nonce, peerId, binding))).toBe(true)
     expect(decoded.eventLog).toEqual([rtmr3Event])
     expect(decoded.appCompose).toBe(appCompose)
+  })
+
+  it("ships the image's build record from GitHub for the digest its compose runs", async () => {
+    const digest = `sha256:${'3'.repeat(64)}`
+    const appCompose = JSON.stringify({ docker_compose_file: JSON.stringify({ services: { seller: { image: `ghcr.io/antseed/tee-seller@${digest}` } } }) })
+    stub = await startDstackStub((rdHex) => ({ quote: rdHex }), { tcb_info: JSON.stringify({ app_compose: appCompose }) })
+    const record = { mediaType: 'application/vnd.dev.sigstore.bundle.v0.3+json' }
+    const urls: string[] = []
+    vi.stubGlobal('fetch', async (url: string) => { urls.push(url); return new Response(JSON.stringify({ attestations: [{ bundle: record }] })) })
+    try {
+      const config = {
+        [tdxConfigKey(NODE_TEE_CAP_ID, 'source')]: 'dstack',
+        [tdxConfigKey(NODE_TEE_CAP_ID, 'dstack.socket')]: stub.socketPath,
+      }
+      const decoded = decodeTeeTdxEvidence(await nodeTeeCapability.collect!({ nonce: new Uint8Array(32), peerId: 'a'.repeat(40), config }))
+      expect(decoded.imageBuild).toEqual(record)
+      expect(urls).toEqual([expect.stringContaining(`/repos/Antseed/antseed/attestations/${digest}?`)])
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 
   it('still returns the quote when the agent has no Info', async () => {

@@ -5,6 +5,7 @@ import { CS_AUDIENCE, CS_ISSUER, CS_SECRETS_ENV, CS_SELLER_CONFIG_ENV, CS_STATE_
 import { NODE_TEE_CAP_ID, NODE_UPSTREAMS_CLAIM, encodeConfidentialSpaceEvidence, nodeTeeCapability, providerTeeCapability, verifyTdxEvidence } from './caps/tee-tdx.js'
 import { claimId, computeReportData } from './shared.js'
 import { TEST_IMAGE } from './dstack-build.fixture.js'
+import record from './image-build.fixture.json' with { type: 'json' }
 
 const NONCE = randomBytes(32)
 const PEER = 'f'.repeat(40)
@@ -119,12 +120,29 @@ describe('seller node on Confidential Space', () => {
     const verifyToken = async (token: string) => (await jwtVerify(token, jwks, { issuer: CS_ISSUER, audience: CS_AUDIENCE })).payload
     return { sign, verifyToken }
   }
-  const run = async (token: string, verifyToken: (t: string) => Promise<JWTPayload>, cap = nodeTeeCapability, channelBinding: string | null = BINDING) => {
-    const evidence = encodeConfidentialSpaceEvidence(token)
+  const run = async (token: string, verifyToken: (t: string) => Promise<JWTPayload>, cap = nodeTeeCapability, channelBinding: string | null = BINDING, opts: { imageBuild?: unknown; images?: typeof TEST_IMAGE[] } = {}) => {
+    const evidence = encodeConfidentialSpaceEvidence(token, opts.imageBuild)
     const parsedQuote = await verifyTdxEvidence(evidence, async () => { throw new Error('no quote') }, 0, verifyToken)
-    const out = await cap.verify({ nonce: NONCE, peerId: PEER, evidence, parsedQuote, policy: { os: [], images: [TEST_IMAGE] }, ...(channelBinding !== null ? { channelBinding } : {}) })
+    const out = await cap.verify({ nonce: NONCE, peerId: PEER, evidence, parsedQuote, policy: { os: [], images: opts.images ?? [TEST_IMAGE] }, ...(channelBinding !== null ? { channelBinding } : {}) })
     return Array.isArray(out) ? out : [out]
   }
+
+  it('passes on an image approved by the build record the seller sends, not by the list', async () => {
+    const { sign, verifyToken } = await signer()
+    const built = 'sha256:74972a3ce21531fcfc4bdd48a3cac95d20afe39f234cb7c472fae2e004e605bc'
+    const { iss: _i, aud: _a, ...payload } = claims()
+    payload.submods.container.image_digest = built
+    const token = await sign(payload)
+    const [node] = await run(token, verifyToken, nodeTeeCapability, BINDING, { imageBuild: record, images: [] })
+    expect(node).toMatchObject({ ok: true, detail: expect.stringMatching(/Antseed TEE seller image built 2026-11-07 from 2a3bd77, bound to this connection/) })
+    // Without the record, or with a record that does not verify, the image is not approved.
+    expect((await run(token, verifyToken, nodeTeeCapability, BINDING, { images: [] }))[0]).toMatchObject({ ok: false, detail: expect.stringMatching(/not an approved Antseed TEE seller image$/) })
+    const broken = { ...record, dsseEnvelope: { ...record.dsseEnvelope, signatures: [] } }
+    expect((await run(token, verifyToken, nodeTeeCapability, BINDING, { imageBuild: broken, images: [] }))[0]).toMatchObject({ ok: false, detail: expect.stringMatching(/not an approved Antseed TEE seller image \(build record does not verify/) })
+    // A verified record approves only the images it names.
+    const { iss: _j, aud: _b, ...other } = claims()
+    expect((await run(await sign(other), verifyToken, nodeTeeCapability, BINDING, { imageBuild: record, images: [] }))[0]).toMatchObject({ ok: false })
+  })
 
   it('passes on a Google-signed token for this round, and reports the upstreams', async () => {
     const { sign, verifyToken } = await signer()

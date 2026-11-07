@@ -29,7 +29,7 @@ If the prover fails to load at startup, the seller exits rather than advertising
 Buyers accept a seller node that runs Antseed's official TEE seller image as a dstack (Phala) confidential VM app. The image runs on a distroless runtime with no shell, package manager, runtime plugin installs or dashboard, so its operator has no way into it. From the quote and the evidence the seller sends with it, the buyer checks that:
 
 - MRTD and RTMR0–2 (firmware, VM shape, kernel and boot configuration) are a released dstack production OS listed in the verifier SDK;
-- the app compose, which the buyer authenticates against the compose hash replayed from the dstack event log, runs an approved image: one that the **Publish TEE seller image** workflow built from this repository and added to the verifier SDK;
+- the app compose, which the buyer authenticates against the compose hash replayed from the dstack event log, runs an approved image: one that the **Publish TEE seller image** workflow built from this repository's main branch, which the seller proves with the image's signed build record (the buyer checks it offline against Sigstore's public trust root);
 - the compose follows the TEE seller rules: one service, no command or entrypoint override, only the seller data volume and the dstack socket mounted, no pre-launch or init scripts, and the seller config inline. Only secrets (the identity key, API keys and optionally the RPC URL) come in as encrypted variables, so every setting that decides where prompts go is readable, and every upstream is HTTPS, with path rewrites that stay on it.
 
 Any seller deploying an approved image this way passes, with no per-seller approval. Buyers also see the upstream hosts the seller config sends prompts to. [`deploy/tee-seller`](https://github.com/AntSeed/antseed/tree/main/deploy/tee-seller) has the image, a compose generator and the deployment steps. Buyers can accept extra OS releases or images locally with `ANTSEED_VERIFIER_NODE_BUILDS` (JSON `{ "os": [{ name, mrtd, rtmr0, rtmr1, rtmr2 }], "images": [{ version, digest }] }`).
@@ -47,7 +47,7 @@ Buyers read the whole config, so don't put keys in URLs.
 
 ## 2. Generate the compose file
 
-Use an image digest listed in the verifier's [approved images](https://github.com/AntSeed/antseed/blob/main/packages/antseed-verifier/src/approved-seller-images.ts) (buyers accept only those, from the verifier release that added them), then:
+Use the digest of an image the **Publish TEE seller image** workflow built (its run summary shows it, or see `ghcr.io/antseed/tee-seller` on GitHub), then:
 
 ```bash
 node deploy/tee-seller/compose.mjs \
@@ -125,7 +125,7 @@ Buyers on the current verifier accept only the approved image, deployed as above
 
 ## Upgrade to a new image
 
-Each image release is added to the verifier's approved images, and buyers accept it from the verifier release that includes it. To move to a new one:
+Buyers accept an image as soon as the workflow builds it, through its build record, if they run verifier 0.1.3 or later; earlier buyers accept only the images listed in their verifier. To move to a new one:
 
 - **dstack:** regenerate the compose file with the new digest and update the existing app in place, keeping its app ID, so that its data volume and encrypted variables stay. Redeploying needs no approval.
 - **Google Confidential Space:** the workload identity provider releases secrets and the state bucket only to the image digest in its condition, so allow the new digest first, then restart the VM on it:
@@ -146,7 +146,7 @@ Each image release is added to the verifier's approved images, and buyers accept
 
 | Symptom | Cause |
 |---|---|
-| `seller-node-tee-genuine` fails with "not an approved TEE seller build" | The detail names the reason: an OS or image the verifier doesn't list (use a released image; a new dstack release needs adding to the verifier), or a compose rule the file breaks (regenerate it with `compose.mjs`) |
+| `seller-node-tee-genuine` fails with "not an approved TEE seller build" | The detail names the reason: an OS the verifier doesn't list (a new dstack release needs adding to the verifier), an image without a build record from the workflow on main (use one it built; the seller must reach `api.github.com` to fetch the record), or a compose rule the file breaks (regenerate it with `compose.mjs`) |
 | `seller-node-tee-genuine` fails with "no connection binding" | The buyer reached the seller over WebRTC; make the signaling TCP port reachable |
 | `seller-bound` missing from verdicts | `ANTSEED_VERIFIER_SIGNING_KEY` unset, or its address doesn't match `ANTSEED_TEE_PEER_ID` |
 | Buyer reports TCB failures | Host platform needs microcode/TCB updates; buyers running `ANTSEED_VERIFIER_STRICT_TCB=true` accept only `UpToDate` |
