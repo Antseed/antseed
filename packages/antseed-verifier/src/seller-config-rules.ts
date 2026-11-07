@@ -32,10 +32,11 @@ const PLUGINS: Readonly<Record<string, { defaultUrl: string; baseUrl: boolean; f
 
 /**
  * Settings an operator may set in the open (the buyer reads them): the peer id, provider
- * attestation settings and the request-body fields the openai plugin adds (OPENAI_BODY_INJECT_JSON,
- * which cannot change where a request goes).
+ * attestation settings, the request-body fields the openai plugin adds (OPENAI_BODY_INJECT_JSON,
+ * which cannot change where a request goes) and the Base RPC URL (it never sees a request; one
+ * holding an API key belongs in a secret instead, since buyers read open settings).
  */
-export const LITERAL_ENV = /^(?:ANTSEED_TEE_PEER_ID|OPENAI_BODY_INJECT_JSON|ANTSEED_VERIFIER_PROVIDER_[A-Z0-9_]+)$/
+export const LITERAL_ENV = /^(?:ANTSEED_TEE_PEER_ID|ANTSEED_BASE_RPC_URL|OPENAI_BODY_INJECT_JSON|ANTSEED_VERIFIER_PROVIDER_[A-Z0-9_]+)$/
 /** Names a hidden secret may have (checkHiddenSecrets narrows API keys to the ones the config names). */
 export const SECRET_ENV = /^(?:ANTSEED_IDENTITY_HEX|ANTSEED_BASE_RPC_URL|[A-Z][A-Z0-9_]*_API_KEY)$/
 /** Secrets the CLI reads itself; any other hidden variable must be a provider API key the config names. */

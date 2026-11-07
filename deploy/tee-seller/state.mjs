@@ -4,9 +4,8 @@
 // in a Cloud Storage object under the prefix the operator names (ANTSEED_GCP_STATE); on boot it
 // restores them.
 //
-// Only payment and metering state leaves the TEE, never prompts or responses: each snapshot is
-// taken from a copy with upstream error text and response hashes removed, then rebuilt (VACUUM)
-// so no freed page still holds them.
+// Only payment and metering state leaves the TEE. The seller runs in content-free mode, so these
+// databases hold no prompts, answers or upstream error text (e2e/tests/seller-content-leak.test.ts).
 import { createCipheriv, createDecipheriv, createHash, hkdfSync, randomBytes } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -20,20 +19,18 @@ const DAY_MS = 24 * 60 * 60 * 1000
  *   - its payment channels, with the latest buyer-signed spending authorizations it settles with;
  *   - its metering: free-tier usage, pending resource charges and the last week of its request
  *     log (older history would make every snapshot grow with the seller's age).
- * `scrub` lists `[table, statement]` pairs run on the copy; they clear columns that can carry text
- * derived from prompts or responses.
+ * `trim` lists `[table, statement]` pairs run on the copy before it is saved.
  */
 export const STATE_FILES = [
   {
     name: 'payments/sessions.db',
     everyMs: 30_000,
-    scrub: () => [['payment_receipts', "UPDATE payment_receipts SET response_hash = '' WHERE response_hash <> ''"]],
+    trim: () => [],
   },
   {
     name: 'metering.db',
     everyMs: 5 * 60_000,
-    scrub: (now) => [
-      ['metering_events', 'UPDATE metering_events SET error = NULL WHERE error IS NOT NULL'],
+    trim: (now) => [
       ['metering_events', `DELETE FROM metering_events WHERE timestamp < ${now - 7 * DAY_MS}`],
       ['usage_receipts', `DELETE FROM usage_receipts WHERE timestamp < ${now - 7 * DAY_MS}`],
       ['receipt_verifications', 'DELETE FROM receipt_verifications WHERE receipt_id NOT IN (SELECT receipt_id FROM usage_receipts)'],
@@ -73,7 +70,7 @@ export function unseal(key, blob, location) {
   return gunzipSync(packed)
 }
 
-/** A consistent copy of a state database (SQLite online backup) with its scrub applied, or null if it doesn't exist yet. */
+/** A consistent copy of a state database (SQLite online backup), trimmed, or null if it doesn't exist yet. */
 export async function snapshot(dataDir, file, Database, now = Date.now()) {
   const source = join(dataDir, file.name)
   if (!existsSync(source)) return null
@@ -90,8 +87,8 @@ export async function snapshot(dataDir, file, Database, now = Date.now()) {
     try {
       db.pragma('journal_mode = DELETE')
       const tables = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").pluck().all())
-      // A table an older schema lacks has nothing to clear.
-      for (const [table, sql] of file.scrub(now)) if (tables.has(table)) db.exec(sql)
+      // A table an older schema lacks has nothing to trim.
+      for (const [table, sql] of file.trim(now)) if (tables.has(table)) db.exec(sql)
       db.exec('VACUUM')
     } finally {
       db.close()

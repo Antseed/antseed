@@ -81,11 +81,13 @@ To release an image after a CLI release:
      --peer <peer id, 40 hex> --config config.json > docker-compose.json
    ```
 
-   Add `--rpc-url-secret` to pass `ANTSEED_BASE_RPC_URL` as a secret, and
+   Add `--rpc-url-secret` to pass `ANTSEED_BASE_RPC_URL` as a secret (or
+   `--env ANTSEED_BASE_RPC_URL=<url>` for one without an API key in it, which buyers can read), and
    `--env ANTSEED_VERIFIER_PROVIDER_...=<value>` for provider attestation settings. It prints the
    encrypted variables to allow. [`docker-compose.json`](docker-compose.json) is an example.
 3. Deploy it as a dstack app with KMS enabled. Pass the printed secrets as encrypted environment
-   variables, allow exactly those, keep public logs off, and add no pre-launch script.
+   variables, allow exactly those, and add no pre-launch script. Public logs may be on (see
+   [Logs and data](#logs-and-data)).
 
 Any change to the compose file (image, config, prices) changes the compose hash; buyers
 re-check the new one against the same rules, so no approval is needed.
@@ -113,11 +115,12 @@ The image's launcher (`launch.mjs`) detects Confidential Space, writes the selle
 `ANTSEED_SELLER_CONFIG_JSON`, and fetches the secrets named in `ANTSEED_GCP_SECRETS` from Secret
 Manager with the workload's own attestation. Google's token shows every env override to buyers,
 so secret values never go in env overrides. The image's launch policy lets the operator set only
-its listed env variables, and never replace its command or stream its logs from a production
-image.
+its listed env variables and never replace its command. Its logs may go to Cloud Logging
+(`tee-container-log-redirect=true`; see [Logs and data](#logs-and-data)).
 
 1. Write the seller config as for dstack (same rules), and store each secret in Secret Manager:
-   `ANTSEED_IDENTITY_HEX`, the API keys the config names, and optionally `ANTSEED_BASE_RPC_URL`.
+   `ANTSEED_IDENTITY_HEX`, the API keys the config names, and optionally `ANTSEED_BASE_RPC_URL`
+   (or set it as an env override, which buyers can read, if it holds no API key).
 2. Release the secrets only to the attested image, through a workload identity pool that trusts
    Google's attestation:
 
@@ -159,12 +162,28 @@ image.
 With `ANTSEED_GCP_STATE` set, the image restores the seller's payment and metering databases
 from objects under that prefix on boot, and saves them while they change: payment channels every
 30 seconds, metering every 5 minutes, and both once more after the seller stops. Snapshots are
-encrypted with a key derived from the seller identity and hold no prompts or responses: upstream
-error text and response hashes are removed first. Metering keeps free-tier usage, pending
+encrypted with a key derived from the seller identity and, like the seller's logs, hold no prompts
+or responses (see [Logs and data](#logs-and-data)). Metering keeps free-tier usage, pending
 resource charges and the last 7 days of request log. An abrupt VM loss can drop the last 30
 seconds of payment updates. Each save is written only over the version the seller last saw, so if
 a second VM with the same identity writes the state, the older one stops instead of overwriting
 it.
+
+## Logs and data
+
+The image runs the seller in content-free mode (`ANTSEED_CONTENT_FREE_LOGS=1`, set by the
+launcher, which the operator can't override), so its logs and databases may be read by the
+operator, or by anyone when dstack logs are public:
+
+- nothing the seller logs or stores holds a prompt, an answer or an upstream's error text, which
+  can quote the request: failed requests keep only their status and the upstream's error code,
+  and out-of-credit and video job failures likewise;
+- debug logging, which prints more, stays off: buyers reject a seller that sets `ANTSEED_DEBUG`.
+
+They do hold metadata the operator also sees on the network or on-chain: buyer peer IDs, the IPs of
+free-tier buyers, token counts, timings and payments. `e2e/tests/seller-content-leak.test.ts`
+sends marked prompts and answers, including short streams and upstream errors that quote the
+request, through a seller and fails if a marker reaches its logs or data directory.
 
 ## Approving a dstack OS release
 

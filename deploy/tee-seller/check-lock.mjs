@@ -23,21 +23,31 @@ const pinned = TRUSTED_VERIFIER_PLUGINS.find((p) => p.name === 'antseed-verifier
 const installed = JSON.parse(readFileSync(join(verifier, 'package.json'), 'utf8')).version
 if (pinned !== installed) fail(`verifier ${installed} installed, CLI pins ${pinned}`)
 
-// Every provider-core copy must refuse upstream redirects, which would resend the buyer's
-// request to a destination the measured config does not name.
-const cores = []
+// Every copy of these packages must keep a buyer's request on the measured upstreams and its
+// content out of the seller's logs and databases, which the operator may read:
+//   - provider-core refuses upstream redirects (they would resend the request elsewhere) and never
+//     logs a stream's content;
+//   - buyer-core has the content-free mode the image turns on (ANTSEED_CONTENT_FREE_LOGS).
+const copies = { 'provider-core': [], 'buyer-core': [] }
 const walk = (dir) => {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue
     const path = join(dir, entry.name)
-    if (path.endsWith(join('@antseed', 'provider-core'))) cores.push(path)
+    for (const name of Object.keys(copies)) if (path.endsWith(join('@antseed', name))) copies[name].push(path)
     walk(path)
   }
 }
 walk(modules)
-if (cores.length === 0) fail('no @antseed/provider-core installed')
-for (const core of cores) {
-  if (!readFileSync(join(core, 'dist/http-relay.js'), 'utf8').includes("this._config.redirect ?? 'error'")) {
+for (const [name, paths] of Object.entries(copies)) if (paths.length === 0) fail(`no @antseed/${name} installed`)
+for (const core of copies['provider-core']) {
+  const relay = readFileSync(join(core, 'dist/http-relay.js'), 'utf8')
+  if (!relay.includes("this._config.redirect ?? 'error'")) {
     fail(`${core} follows upstream redirects; run update-lock.mjs with releases that refuse them.`)
+  }
+  if (relay.includes('debugChunks')) fail(`${core} logs short streams' content; run update-lock.mjs with a release that doesn't.`)
+}
+for (const core of copies['buyer-core']) {
+  if (!readFileSync(join(core, 'dist/debug.js'), 'utf8').includes('ANTSEED_CONTENT_FREE_LOGS')) {
+    fail(`${core} has no content-free logging; run update-lock.mjs with a release that has it.`)
   }
 }

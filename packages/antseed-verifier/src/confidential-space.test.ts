@@ -79,6 +79,7 @@ describe('checkConfidentialSpaceClaims', () => {
     expect(check(claims({}, { HTTPS_PROXY: 'http://proxy.example' }))).toMatchObject({ error: 'environment HTTPS_PROXY is not allowed' })
     expect(check(claims({}, { VENICE_API_KEY: 'sk-…' }))).toMatchObject({ error: 'environment VENICE_API_KEY is not allowed' })
     expect(check(claims({}, { OPENAI_BODY_INJECT_JSON: '{"venice_parameters":{"include_venice_system_prompt":false}}' }))).not.toHaveProperty('error')
+    expect(check(claims({}, { ANTSEED_BASE_RPC_URL: 'https://mainnet.base.org' }))).not.toHaveProperty('error')
   })
 
   it('accepts a Cloud Storage location for the seller state, and nothing else there', () => {

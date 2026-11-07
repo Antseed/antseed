@@ -34,11 +34,12 @@ LABEL org.opencontainers.image.title="antseed-tee-seller" \
       org.opencontainers.image.source="https://github.com/AntSeed/antseed" \
       org.opencontainers.image.version="${ANTSEED_VERSION}"
 # Google Confidential Space launch policy: the operator may set only these env variables (the
-# token shows them to buyers, who check them against the same rules), can't replace the command,
-# and production images never send the container's output to Cloud Logging.
-LABEL "tee.launch_policy.allow_env_override"="ANTSEED_TEE_PEER_ID,ANTSEED_SELLER_CONFIG_JSON,ANTSEED_GCP_SECRETS,ANTSEED_GCP_STATE,OPENAI_BODY_INJECT_JSON,ANTSEED_VERIFIER_PROVIDER_ADAPTER,ANTSEED_VERIFIER_PROVIDER_EVIDENCE_URL,ANTSEED_VERIFIER_PROVIDER_TEE_FIELD,ANTSEED_VERIFIER_PROVIDER_GPU_FIELD,ANTSEED_VERIFIER_PROVIDER_CLAIMS_FIELD,ANTSEED_VERIFIER_PROVIDER_BINDING_SCHEME,ANTSEED_VERIFIER_PROVIDER_BINDING_PUBKEY_FIELD" \
+# token shows them to buyers, who check them against the same rules) and can't replace the
+# command. The operator may send the container's output to Cloud Logging: the seller runs in
+# content-free mode (launch.mjs), so its logs hold no prompts, answers or upstream error text.
+LABEL "tee.launch_policy.allow_env_override"="ANTSEED_TEE_PEER_ID,ANTSEED_BASE_RPC_URL,ANTSEED_SELLER_CONFIG_JSON,ANTSEED_GCP_SECRETS,ANTSEED_GCP_STATE,OPENAI_BODY_INJECT_JSON,ANTSEED_VERIFIER_PROVIDER_ADAPTER,ANTSEED_VERIFIER_PROVIDER_EVIDENCE_URL,ANTSEED_VERIFIER_PROVIDER_TEE_FIELD,ANTSEED_VERIFIER_PROVIDER_GPU_FIELD,ANTSEED_VERIFIER_PROVIDER_CLAIMS_FIELD,ANTSEED_VERIFIER_PROVIDER_BINDING_SCHEME,ANTSEED_VERIFIER_PROVIDER_BINDING_PUBKEY_FIELD" \
       "tee.launch_policy.allow_cmd_override"="false" \
-      "tee.launch_policy.log_redirect"="debugonly"
+      "tee.launch_policy.log_redirect"="always"
 COPY --from=build /out/ /
 COPY launch.mjs state.mjs /home/nonroot/
 ENV HOME=/home/nonroot \

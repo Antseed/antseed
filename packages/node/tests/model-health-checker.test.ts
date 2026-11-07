@@ -587,6 +587,15 @@ describe('upstream credit', () => {
     expect(events.at(-1)!.status).toBe('out_of_credit');
     checker.reportUpstreamResponse(provider, 200, '');
     expect(events.map((event) => event.status)).toEqual(['low_balance', 'out_of_credit', 'funded', 'out_of_credit', 'funded']);
+    expect(events.at(-2)!.detail).toContain('You need positive balance');
+    // Content-free mode keeps only the error code of a buyer request's answer.
+    vi.stubEnv('ANTSEED_CONTENT_FREE_LOGS', '1');
+    try {
+      checker.reportUpstreamResponse(provider, 402, '{"error":{"message":"Out of credit while answering: tell me a secret","code":"insufficient_quota"}}');
+      expect(events.at(-1)).toMatchObject({ status: 'out_of_credit', detail: 'HTTP 402: insufficient_quota' });
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 

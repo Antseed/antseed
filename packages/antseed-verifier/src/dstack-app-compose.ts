@@ -13,8 +13,9 @@ export type { SellerUpstream } from './seller-config-rules.js'
  * in hidden, as encrypted environment variables, and no secret can redirect prompts.
  *
  * The rules (anything not listed is rejected):
- *   - app-compose: runner docker-compose; no pre-launch or bash script; public logs off; the
- *     allowed encrypted variables are only the secrets the compose file uses.
+ *   - app-compose: runner docker-compose; no pre-launch or bash script; the allowed encrypted
+ *     variables are only the secrets the compose file uses. Logs may be public: the image runs
+ *     the seller in content-free mode, so they hold no prompts, answers or upstream error text.
  *   - compose file: written as JSON; one service; image pinned by an approved digest; no command,
  *     entrypoint, user or other service options; the only volumes are the seller data volume and
  *     the dstack socket; the seller config is one inline config at /etc/antseed/config.json.
@@ -136,7 +137,6 @@ export function checkAppCompose(
     check(extra.length === 0, `app compose option ${extra[0]} is not allowed`)
     check(app['runner'] === 'docker-compose' && typeof app['docker_compose_file'] === 'string', 'app must run a docker compose file')
     check(!app['pre_launch_script'], 'app may not run a pre-launch script')
-    check(app['public_logs'] !== true, 'app logs must not be public')
     const { image, upstreams, secrets } = checkComposeFile(parseJson(app['docker_compose_file'], 'compose file (write it as JSON)'), images)
     const allowed = app['allowed_envs'] ?? []
     check(Array.isArray(allowed) && allowed.every((n) => typeof n === 'string' && secrets.has(n)), 'app may only accept the encrypted variables its compose file uses as secrets')

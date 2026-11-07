@@ -114,6 +114,8 @@ try {
 } catch (err) {
   fail(err instanceof Error ? err.message : String(err))
 }
+// Logs and databases keep no upstream text, so the operator may read them (see isContentFreeLogging).
+process.env.ANTSEED_CONTENT_FREE_LOGS = '1'
 if (process.env.ANTSEED_IDENTITY_HEX && !process.env.ANTSEED_VERIFIER_SIGNING_KEY) process.env.ANTSEED_VERIFIER_SIGNING_KEY = process.env.ANTSEED_IDENTITY_HEX
 
 // The seller runs as a child so its state can be saved once more after it has shut down cleanly.
