@@ -358,7 +358,7 @@ Browse sellers and run network infrastructure. Guides: [Routing and catalog](/do
 |---|---|---|
 | `antseed network browse` | Browse peers: prices, services and on-chain settlements | `--service <name>`, `--tag <tags>`, `--services`, `--sort score\|volume\|sessions\|price\|recent`, `--top` (20), `--json` |
 | `antseed network peer <peerId>` | Full details for one peer | `--tag <tags>`, `--json` |
-| `antseed peer <peerId>` | Show a peer's profile | |
+| `antseed peer <peerId>` | Not implemented yet: prints the ID and a notice, without looking the peer up. Use `antseed network peer <peerId>` | |
 | `antseed network bootstrap` | Run a dedicated DHT bootstrap node (no provider, no payments) | `--port` (6881), `--bootstrap <host:port,...>` |
 
 </CommandTable>

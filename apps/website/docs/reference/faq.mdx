@@ -89,7 +89,7 @@ export const faqLd = {
       "name": "Can providers see my prompts?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "Standard providers can. TEE-verified providers cannot — the hardware prevents it even if the operator wanted to look. When paying for a TEE-verified request, you receive a cryptographic attestation proving the enclave was genuine."
+        "text": "Standard providers can. A TEE-verified provider runs its node inside a genuine Intel TDX enclave, which is designed to keep the operator from reading what passes through it. You don't have to collect any proof: your buyer node checks the provider's attestation on your machine before paying. The check covers the provider's node; whether the downstream inference also runs in a TEE is reported separately and not guaranteed. See Verify a provider's TEE."
       }
     },
     {
@@ -105,7 +105,7 @@ export const faqLd = {
       "name": "Can a provider see what I send?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "Requests route peer-to-peer with no platform in the middle, so a provider sees a peer and a wallet, not an account. A standard provider can read the prompt it serves; a TEE-verified provider cannot, and you get an attestation to prove it."
+        "text": "Requests route peer-to-peer with no platform in the middle, so a provider sees a peer and a wallet, not an account. A standard provider can read the prompt it serves; a TEE-verified provider's node runs in a hardware enclave designed to keep the operator out, and your buyer checks its attestation before paying."
       }
     },
     {
@@ -345,7 +345,7 @@ Privacy on Antseed works in two layers:
 
 **Layer 1 — Anonymous access (default).** Antseed is designed for use without a central account, sign-up, or platform-issued API key. Requests route peer-to-peer, so providers generally see a peer/wallet rather than a platform identity account.
 
-**Layer 2 — TEE-verified providers.** These run inside Trusted Execution Environments (Intel TDX, AMD SEV) — hardware enclaves that can reduce what the node operator can see. This is cryptographic proof, not just a policy promise. TEE provider verification is being rolled out in a future release.
+**Layer 2 — TEE-verified providers.** These run their node inside an Intel TDX Trusted Execution Environment, a hardware enclave that can reduce what the node operator can see. Your buyer checks the enclave's hardware attestation before paying, so this is a proof, not just a policy promise. The check is on by default and best-effort; you can require it (see [How do I verify a provider's TEE?](#how-do-i-verify-a-providers-tee)).
 
 Antseed's privacy model is architectural rather than account-based: users can route requests without a central identity account, platform-issued API key, or centralized chat database, and TEE providers can add hardware-backed confidentiality where available. It is not, however, a promise that every piece of data is hidden from every participant. Independent providers and supporting infrastructure may process data needed to deliver and settle requests, and public-chain activity remains visible on-chain. Users should choose providers and routes appropriate to the sensitivity of their work.
 
@@ -353,7 +353,7 @@ Most users are well-served by no-account routing. Journalists, lawyers, security
 
 ### Can providers see my prompts?
 
-Standard providers can. TEE-verified providers cannot — the hardware prevents it even if the operator wanted to look. When paying for a TEE-verified request, you receive a cryptographic attestation proving the enclave was genuine.
+Standard providers can. A TEE-verified provider runs its node inside a genuine Intel TDX enclave, which is designed to keep the operator from reading what passes through it. You don't have to collect any proof: your buyer node checks the provider's attestation on your machine before paying. The check covers the provider's node; whether the downstream inference also runs in a TEE is reported separately and not guaranteed. See [Verify a provider's TEE](/docs/verify-tee).
 
 ### Does Antseed log my requests?
 
@@ -361,7 +361,7 @@ Antseed the protocol does not create a central request log, but independent prov
 
 ### Can a provider see what I send?
 
-Requests route peer-to-peer with no platform in the middle, so a provider sees a peer and a wallet, not an account. A standard provider can read the prompt it serves; a TEE-verified provider cannot, and you get an attestation to prove it. See the [privacy page](/privacy) for a side-by-side of what each kind of provider sees.
+Requests route peer-to-peer with no platform in the middle, so a provider sees a peer and a wallet, not an account. A standard provider can read the prompt it serves; a TEE-verified provider's node runs in a hardware enclave designed to keep the operator out, and your buyer checks its attestation before paying. See the [privacy page](/privacy) for a side-by-side of what each kind of provider sees.
 
 ### How do I verify a provider's TEE?
 

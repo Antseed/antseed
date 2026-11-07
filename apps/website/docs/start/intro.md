@@ -49,7 +49,7 @@ Your tool (curl, SDK, coding agent)
 ```
 
 1. Providers announce their services and prices on a distributed hash table.
-2. Your buyer discovers them and sends each request to the cheapest seller that passes your minimum trust score, or to the exact seller you pin with `<peerId>@<model>`.
+2. Your buyer discovers them and sends each request to the seller that passes your minimum trust score with the best mix of price, speed and reliability for it, or to the exact seller you pin with `<peerId>@<model>`.
 3. Payment runs through capped payment channels on Base: you sign a running total as requests complete, and the seller settles on-chain.
 
 Read more in the [protocol overview](/docs/overview) or the [lightpaper](/docs/lightpaper).

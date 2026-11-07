@@ -130,7 +130,7 @@ Anyone with a gateway API key can paste it into the **API key** field on the sig
 Organization owners and admins invite people from **Members → Invite member**: fill in **Name**, **Email (optional)**, **Organization role**, the role in each workspace and **Link expires after**, then **Create invite link**. Or, on the gateway machine:
 
 ```bash
-antseed gateway member invite --label "Alice" --email alice@example.com --workspace "Research:admin"
+antseed gateway member invite --label "Alice" --email <email> --workspace "Research:admin"
 ```
 
 An invite is a single-use link of the form `https://gateway.example.com/console/invite#…`, valid for 72 hours by default (`--expires-in-hours` changes it). It is shown once: send it to the person. Open invites appear under **Pending invites**, where **Revoke invite** stops a link working. Only an owner can invite an owner. An email on the invite lets the person join with single sign-on instead of the link.
@@ -152,8 +152,8 @@ Disabling a member (on **Members**, or `antseed gateway member disable <id|email
 When a member has lost every sign-in method (for example passkeys after the console moved to a new domain, a lost device, or a removed wallet), create a one-time **recovery link** on the gateway machine:
 
 ```bash
-antseed gateway console-link --recover                         # the owner
-antseed gateway console-link --recover --member bob@example.com
+antseed gateway console-link --recover                   # the owner
+antseed gateway console-link --recover --member <member> # another member, by member id or email
 ```
 
 1. Run the command on the gateway machine (with `sudo` on an installed server). Without `--member`, it targets the owner; with several owners, name one.
@@ -163,6 +163,19 @@ antseed gateway console-link --recover --member bob@example.com
 A recovery link can only be created from the CLI on the gateway machine. It works once, expires after one hour, replaces that member's earlier unused link, and is recorded in the audit log when it is created and when it is used.
 
 Admins can also remove a member's broken method from the CLI: `antseed gateway member credentials list <member>` and `antseed gateway member credentials remove <member> <credentialId>`. Removing a method ends all of that member's console sessions, and a member's last method is kept unless you add `--allow-last`.
+
+## Without a browser {#without-a-browser}
+
+Claiming the console, accepting an invite and using a recovery link all need a browser: they finish with a passkey, a wallet signature or single sign-on. Agents, scripts and servers without a browser can still do the rest from the gateway machine, even before the console has an owner:
+
+| Task | Command on the gateway machine |
+|---|---|
+| Create an API key | `antseed gateway key create --label "my-agent" --json` (the secret is in `apiKey`) |
+| Script the console API | `antseed gateway admin-token create --label "ops" --scope admin --json` (the secret is in `token`), then call `/console/api` with it. See [Management API](/docs/gateway/management-api) |
+| Invite a person | `antseed gateway member invite --label "Alice" --role admin` prints a link. They open it in their own browser |
+| Give the console an owner | `antseed gateway console-link` prints the setup link. A person opens it |
+
+Keys, management tokens and invites created before the console is claimed keep working after it. A management token created with the CLI has no member behind it, so it keeps working until it expires or is revoked.
 
 ## Passkey gotchas
 

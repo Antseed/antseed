@@ -12,4 +12,5 @@ export interface ApprovedSellerImage {
  * (deploy/tee-seller/approve-image.mjs); keep one entry per line.
  */
 export const APPROVED_SELLER_IMAGES: readonly ApprovedSellerImage[] = [
+  { version: '0.1.234', digest: 'sha256:74972a3ce21531fcfc4bdd48a3cac95d20afe39f234cb7c472fae2e004e605bc' },
 ]
