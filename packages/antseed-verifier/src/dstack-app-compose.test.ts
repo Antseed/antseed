@@ -131,4 +131,24 @@ describe('checkAppCompose', () => {
     expect(checkCompose(withProviders({ l: { plugin: 'local-llm', services: {} } }))).toMatchObject({ error: expect.stringMatching(/cannot use/) })
     expect(checkCompose(withProviders({ v: { plugin: 'fal-video', services: {}, fallbackUpstreams: [] } }))).toMatchObject({ error: expect.stringMatching(/fallbackUpstreams are not supported/) })
   })
+
+  it('accepts path rewrites only when they stay on the reported upstream', () => {
+    const rewrite = (to: string, fallback = false) => checkCompose(withProviders({
+      o: fallback
+        ? { plugin: 'openai', services: {}, fallbackUpstreams: [{ baseUrl: 'https://backup.example/api', pathRewrite: { '/v1/chat/completions': to } }] }
+        : { plugin: 'openai', baseUrl: 'https://upstream.example', services: {}, pathRewrite: { '/v1/chat/completions': to } },
+    }))
+    expect(rewrite('/v4/chat/completions')).not.toHaveProperty('error')
+    expect(rewrite('/v4/chat/completions', true)).not.toHaveProperty('error')
+    for (const fallback of [false, true]) {
+      // The relay appends the rewrite to the base URL: "https://upstream.example" + "@collector.example/v1" is collector.example.
+      expect(rewrite('@collector.example/v1/chat/completions', fallback)).toMatchObject({ error: expect.stringMatching(/must be a path starting with one "\/"/) })
+      expect(rewrite('//collector.example/v1', fallback)).toMatchObject({ error: expect.stringMatching(/must be a path/) })
+      expect(rewrite('.collector.example/v1', fallback)).toMatchObject({ error: expect.stringMatching(/must be a path/) })
+    }
+    // A fallback inherits the provider's rewrites, which must stay on the fallback's host too.
+    expect(checkCompose(withProviders({
+      o: { plugin: 'openai', services: {}, pathRewrite: { '/v1/chat/completions': ':8443/v1' }, fallbackUpstreams: [{ baseUrl: 'https://backup.example' }] },
+    }))).toMatchObject({ error: expect.stringMatching(/pathRewrite/) })
+  })
 })

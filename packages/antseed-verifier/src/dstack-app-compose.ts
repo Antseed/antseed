@@ -20,7 +20,9 @@ import type { ApprovedSellerImage } from './approved-seller-images.js'
  *     names the seller config gives as apiKeyEnv (never one the CLI reads for itself), plus
  *     `ANTSEED_VERIFIER_SIGNING_KEY: ${ANTSEED_IDENTITY_HEX}`. No `$` anywhere else, because
  *     compose substitutes variables in every value, the inline config included.
- *   - seller config: each provider uses a plugin listed below, and every upstream is https.
+ *   - seller config: each provider uses a plugin listed below, every upstream is https, and
+ *     every path rewrite is a path on that upstream (the relay appends it to the base URL, so a
+ *     value like "@other.example/v1" would move the request to another host).
  */
 
 /** One place a seller node forwards prompts to, read from its measured config. */
@@ -124,6 +126,17 @@ function origin(url: unknown, where: string): string {
 }
 
 /** The seller config's upstreams and the API key variables it reads (apiKeyEnv). */
+/** A path rewrite must keep requests on the upstream it belongs to. */
+function checkPathRewrite(rewrite: unknown, baseUrl: string, where: string): void {
+  if (rewrite === undefined) return
+  check(isObj(rewrite), `${where} pathRewrite must be a map`)
+  const base = baseUrl.replace(/\/+$/, '')
+  for (const [from, to] of Object.entries(rewrite)) {
+    check(typeof to === 'string' && to.startsWith('/') && !to.startsWith('//'), `${where} pathRewrite for ${from} must be a path starting with one "/"`)
+    check(origin(base + to, `${where} pathRewrite for ${from}`) === origin(baseUrl, `${where} baseUrl`), `${where} pathRewrite for ${from} leaves the upstream`)
+  }
+}
+
 function sellerUpstreams(config: unknown): { upstreams: SellerUpstream[]; apiKeyEnvs: Set<string> } {
   check(isObj(config), 'seller config must be an object')
   const providers = isObj(config['seller']) ? config['seller']['providers'] : undefined
@@ -140,14 +153,19 @@ function sellerUpstreams(config: unknown): { upstreams: SellerUpstream[]; apiKey
     const spec = PLUGINS[plugin]
     check(spec, `provider ${provider} uses plugin "${cfg['plugin']}", which a TEE seller cannot use`)
     check(spec.baseUrl || cfg['baseUrl'] === undefined, `provider ${provider} sets a baseUrl its plugin ignores`)
-    upstreams.push({ provider, plugin, origin: origin(cfg['baseUrl'] ?? spec.defaultUrl, `provider ${provider} baseUrl`) })
+    const baseUrl = cfg['baseUrl'] ?? spec.defaultUrl
+    upstreams.push({ provider, plugin, origin: origin(baseUrl, `provider ${provider} baseUrl`) })
+    checkPathRewrite(cfg['pathRewrite'], baseUrl as string, `provider ${provider}`)
     const fallbacks = cfg['fallbackUpstreams']
     if (fallbacks === undefined) continue
     check(spec.fallbacks && Array.isArray(fallbacks), `provider ${provider} fallbackUpstreams are not supported`)
     fallbacks.forEach((f, i) => {
       check(isObj(f), `provider ${provider} fallbackUpstreams[${i}] must be an object`)
       keyEnv(f['apiKeyEnv'])
-      upstreams.push({ provider, plugin, origin: origin(f['baseUrl'], `provider ${provider} fallbackUpstreams[${i}].baseUrl`) })
+      const where = `provider ${provider} fallbackUpstreams[${i}]`
+      upstreams.push({ provider, plugin, origin: origin(f['baseUrl'], `${where}.baseUrl`) })
+      // A fallback without its own rewrites uses the provider's, so check those against it too.
+      checkPathRewrite(f['pathRewrite'] ?? cfg['pathRewrite'], f['baseUrl'] as string, where)
     })
   }
   return { upstreams, apiKeyEnvs }

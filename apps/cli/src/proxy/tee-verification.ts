@@ -19,12 +19,12 @@ export class TeeVerification {
 
   /** `buyerIdentity` keeps a verdict to the connection of the identity that checked it. */
   async verify(peer: Peer, policy: VerifierPolicy, run: () => Promise<VerifyOutcome>, force = false, buyerIdentity?: string): Promise<VerifyOutcome> {
-    return this.verifyCached(peer, policy, run, TEE_MAX_AGE_MS, force, false, buyerIdentity)
+    return this.verifyCached(peer, policy, run, { maxAgeMs: TEE_MAX_AGE_MS, force, ...(buyerIdentity ? { buyerIdentity } : {}) })
   }
 
   async verifyForDisplay(peer: Peer, run: () => Promise<VerifyOutcome>): Promise<VerifyOutcome> {
     return this.verifyCached(peer,
-      { require: true, prefer: [TEE_VERIFIER_ID] }, run, TEE_BADGE_MAX_AGE_MS, false, true)
+      { require: true, prefer: [TEE_VERIFIER_ID] }, run, { maxAgeMs: TEE_BADGE_MAX_AGE_MS, requireSellerNode: true })
   }
 
   private cacheExpiry(entry: Entry, maxAgeMs: number): number {
@@ -32,7 +32,18 @@ export class TeeVerification {
       ? entry.checkedAt + maxAgeMs : entry.checkedAt + TEE_MAX_AGE_MS
   }
 
-  private async verifyCached(peer: Peer, policy: VerifierPolicy, run: () => Promise<VerifyOutcome>, maxAgeMs: number, force = false, requireSellerNode = false, buyerIdentity?: string): Promise<VerifyOutcome> {
+  private async verifyCached(
+    peer: Peer,
+    policy: VerifierPolicy,
+    run: () => Promise<VerifyOutcome>,
+    { maxAgeMs, force = false, requireSellerNode = false, buyerIdentity }: {
+      maxAgeMs: number
+      force?: boolean
+      /** Pass only on a seller-node TEE attestation (the display badge), not any verifier's verdict. */
+      requireSellerNode?: boolean
+      buyerIdentity?: string
+    },
+  ): Promise<VerifyOutcome> {
     if (this.closed) return { ok: false, verified: false, reason: 'Buyer stopped', transient: true }
     const chosen = selectVerifier(policy, parseVerifierCapabilities(peer.capabilities))
     const fingerprint = verifierSupportFingerprint(peer.capabilities)

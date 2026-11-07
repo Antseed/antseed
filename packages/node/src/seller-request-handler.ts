@@ -347,9 +347,8 @@ export class SellerRequestHandler {
         }
         try {
           // The binding names the connection this request arrived on; a buyer cannot supply it.
-          const headers = Object.fromEntries(
-            Object.entries(request.headers).filter(([name]) => name.toLowerCase() !== ANTSEED_CHANNEL_BINDING_HEADER),
-          );
+          const headers = { ...request.headers };
+          takeHeader(headers, ANTSEED_CHANNEL_BINDING_HEADER);
           if (conn.channelBinding) headers[ANTSEED_CHANNEL_BINDING_HEADER] = conn.channelBinding;
           const resp = await prover.prove({
             method: request.method,

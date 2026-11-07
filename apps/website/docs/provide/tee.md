@@ -2,12 +2,12 @@
 title: Run a TEE-attested seller
 slug: /provide/tee
 sidebar_label: TEE seller
-description: Add Intel TDX attestation to an existing seller with the antseed-verifier SDK so buyers can verify your node before they pay.
+description: Run your seller as Antseed's TEE seller image on a dstack confidential VM so buyers can verify your node before they pay.
 ---
 
 # Run a TEE-attested seller
 
-A seller running on Intel TDX hardware can prove it cryptographically to every buyer, before any payment. This guide takes an existing seller (see [Become a provider](/docs/provide)) and adds TEE attestation with the [`antseed-verifier`](https://github.com/AntSeed/antseed/tree/main/packages/antseed-verifier) SDK, so buyers that require verification will route to you.
+A seller running on Intel TDX hardware can prove it cryptographically to every buyer, before any payment. This guide takes your seller config (see [Become a provider](/docs/provide)) and runs it as Antseed's TEE seller image on a dstack (Phala) confidential VM, with attestation by the [`antseed-verifier`](https://github.com/AntSeed/antseed/tree/main/packages/antseed-verifier) SDK, so buyers that require verification will route to you.
 
 ## How it works
 
@@ -19,9 +19,10 @@ If the prover fails to load at startup, the seller exits rather than advertising
 
 ## Prerequisites
 
-- A genuine **Intel TDX** VM, for example a GCP `c3` confidential VM (Ubuntu 24.04) with TDX enabled. The prover mints quotes through `configfs-tsm` (`/sys/kernel/config/tsm/report`), which only exists on real TDX hardware and requires **root**.
-- A working seller (`antseed seller start` serving requests) on that VM, reachable by buyers over encrypted TCP (its signaling port). The connection binding is not available over WebRTC.
-- Node.js 20+.
+- A dstack confidential VM host with Intel TDX, such as Phala Cloud, where you can deploy an app with KMS and encrypted environment variables.
+- Your seller's identity key and peer ID, and API keys for its upstreams.
+- The signaling (TCP) and DHT (UDP) ports reachable from the internet at the same port numbers as in the container. Buyers attest over encrypted TCP; the connection binding is not available over WebRTC.
+- Node.js 20+ and a checkout of the [Antseed repository](https://github.com/AntSeed/antseed) on your own machine, to generate the compose file.
 
 ## Approved seller builds
 
@@ -29,65 +30,41 @@ Buyers accept a seller node that runs Antseed's official TEE seller image as a d
 
 - MRTD and RTMR0–2 (firmware, VM shape, kernel and boot configuration) are a released dstack production OS listed in the verifier SDK;
 - the app compose, which the buyer authenticates against the compose hash replayed from the dstack event log, runs an approved image: one that the **Publish TEE seller image** workflow built from this repository and added to the verifier SDK;
-- the compose follows the TEE seller rules: one service, no command or entrypoint override, only the seller data volume and the dstack socket mounted, public logs off, no pre-launch or init scripts, and the seller config inline. Only secrets (the identity key, API keys and the RPC URL) come in as encrypted variables, so every setting that decides where prompts go is readable, and every upstream is HTTPS.
+- the compose follows the TEE seller rules: one service, no command or entrypoint override, only the seller data volume and the dstack socket mounted, public logs off, no pre-launch or init scripts, and the seller config inline. Only secrets (the identity key, API keys and the RPC URL) come in as encrypted variables, so every setting that decides where prompts go is readable, and every upstream is HTTPS, with path rewrites that stay on it.
 
 Any seller deploying an approved image this way passes, with no per-seller approval. Buyers also see the upstream hosts the seller config sends prompts to. [`deploy/tee-seller`](https://github.com/AntSeed/antseed/tree/main/deploy/tee-seller) has the image, a compose generator and the deployment steps. Buyers can accept extra OS releases or images locally with `ANTSEED_VERIFIER_NODE_BUILDS` (JSON `{ "os": [{ name, mrtd, rtmr0, rtmr1, rtmr2 }], "images": [{ version, digest }] }`).
 
-## 1. Install the verifier SDK
+## 1. Write your seller config
 
-The CLI resolves the ID `antseed-verifier` to the npm package `@antseed/antseed-verifier` at a pinned version, and installs it into `~/.antseed/plugins` on first use.
+Write the seller config as for any seller (see [Seller configuration](/docs/provide/config)), with these limits so buyers accept it:
 
-To test an unpublished source checkout, install it into the plugins directory from the monorepo package:
+- providers use the `openai`, `anthropic`, `typesafe`, `venice-video`, `fal-video` or `alibaba-video` plugin;
+- every `baseUrl` is HTTPS, and every `pathRewrite` value is a path on that upstream (starting with `/`);
+- each provider sets `apiKeyEnv` to a variable name ending in `_API_KEY` (not starting with `ANTSEED_`, `POSTHOG_` or `CDP_`).
 
-```bash
-git clone https://github.com/AntSeed/antseed.git
-cd antseed
-pnpm install
-pnpm --filter @antseed/antseed-verifier build
-cd packages/antseed-verifier
-npm pack
-npm install --prefix ~/.antseed/plugins ./antseed-antseed-verifier-*.tgz
-```
+Buyers read the whole config, so don't put keys in URLs.
 
-The loader expects the package at `~/.antseed/plugins/node_modules/@antseed/antseed-verifier`.
+## 2. Generate the compose file
 
-## 2. Configure the prover
-
-The prover reads its configuration from the environment only, never from buyer-supplied values:
+Pick the release digest from the **Publish TEE seller image** run (or `ghcr.io/antseed/tee-seller` on GitHub), then:
 
 ```bash
-# Required: your peer ID (EVM address, without 0x)
-export ANTSEED_TEE_PEER_ID=<peerId>
-
-# Recommended: your seller identity key (hex). Enables the seller-bound
-# capability: the evidence bundle is signed so buyers can recover your peer ID.
-# Disabled automatically if the key's address doesn't match ANTSEED_TEE_PEER_ID.
-export ANTSEED_VERIFIER_SIGNING_KEY=<hex-private-key>
-
-# Node quote source. Defaults to configfs; leave unset on a standard TDX VM.
-# export ANTSEED_VERIFIER_NODE_TEE=configfs
+node deploy/tee-seller/compose.mjs \
+  --image ghcr.io/antseed/tee-seller@sha256:<digest> \
+  --peer <peerId, without 0x> \
+  --config config.json > docker-compose.json
 ```
 
-## 3. Start the seller with the verifier
+It writes a compose file (JSON, which compose also reads) with the image pinned by digest, your config inline, and each secret as an encrypted variable, and it prints the encrypted variables to allow. Add `--rpc-url-secret` to pass `ANTSEED_BASE_RPC_URL` as a secret.
 
-```bash
-sudo -E antseed seller start --verifiers antseed-verifier
-```
+## 3. Deploy it on dstack
 
-`sudo` is needed because `configfs` quote minting requires root; `-E` keeps your environment.
+Deploy `docker-compose.json` as a dstack app with KMS enabled:
 
-You can enable the verifier three ways, in precedence order:
+- set the printed variables as encrypted environment variables: `ANTSEED_IDENTITY_HEX` (your identity key, hex) and your API keys, and allow exactly those;
+- keep public logs off and add no pre-launch script.
 
-1. `--verifiers antseed-verifier` on the command line
-2. `ANTSEED_VERIFIER_SDKS=antseed-verifier` in the environment
-3. `"verifiers": ["antseed-verifier"]` under `seller` in `~/.antseed/config.json` (the `antseed seller setup` wizard can write this)
-
-The first ID in the list becomes your advertised default. On success the seller prints:
-
-```text
-Verifier prover embedded: antseed-verifier
-Verifiers advertised: antseed-verifier
-```
+The image starts `antseed seller start` with the verifier's prover, which mints its quotes through the dstack guest agent. Any change to the compose file (image, config, prices) gives a new compose hash, which buyers check against the same rules, so redeploying needs no approval.
 
 ## 4. Confirm you're advertising
 
@@ -103,21 +80,22 @@ The output includes `Verifiers:       antseed-verifier (default)`.
 
 ## 5. Attest your inference provider too (optional)
 
-The two gating capabilities, `seller-node-tee-genuine` and `seller-bound`, cover your **node**. If your downstream inference provider also runs confidential hardware, the prover can relay its evidence so buyers see it. `seller-provider-tee-genuine`, `seller-provider-gpu-cc` (NVIDIA Confidential Computing) and `seller-provider-measured-image` are reported for buyer policy:
+The two gating capabilities, `seller-node-tee-genuine` and `seller-bound`, cover your **node**. If your downstream inference provider also runs confidential hardware, the prover can relay its evidence so buyers see it. `seller-provider-tee-genuine`, `seller-provider-gpu-cc` (NVIDIA Confidential Computing) and `seller-provider-measured-image` are reported for buyer policy.
+
+Pass the settings to `compose.mjs` with `--env`, which writes them into the compose file where buyers can read them:
+
+- `ANTSEED_VERIFIER_PROVIDER_EVIDENCE_URL`: an endpoint that returns the provider's evidence for a nonce (`{nonce}` → hex);
+- `ANTSEED_VERIFIER_PROVIDER_TEE_FIELD`: the JSON field holding the provider's quote;
+- `ANTSEED_VERIFIER_PROVIDER_BINDING_SCHEME`: the frozen report_data binding scheme the provider's quote uses, `antseed-rd-v1` (Antseed's canonical scheme) or `nonce-pubkey-sha256-v1` (used by some third-party providers), with `ANTSEED_VERIFIER_PROVIDER_BINDING_PUBKEY_FIELD` naming the field that holds its pubkey;
+- optionally `ANTSEED_VERIFIER_PROVIDER_GPU_FIELD`: the per-GPU NVIDIA CC evidence field, which enables `seller-provider-gpu-cc`.
 
 ```bash
-# An endpoint that returns the provider's evidence for a nonce ({nonce} → hex)
-export ANTSEED_VERIFIER_PROVIDER_EVIDENCE_URL='http://127.0.0.1:9000/evidence?nonce={nonce}'
-export ANTSEED_VERIFIER_PROVIDER_TEE_FIELD=quote
-
-# The frozen report_data binding scheme the provider's quote uses:
-#   antseed-rd-v1            Antseed's canonical scheme
-#   nonce-pubkey-sha256-v1   used by some third-party providers
-export ANTSEED_VERIFIER_PROVIDER_BINDING_SCHEME=antseed-rd-v1
-export ANTSEED_VERIFIER_PROVIDER_BINDING_PUBKEY_FIELD=e2e_pubkey
-
-# Optional: per-GPU NVIDIA CC evidence field → enables seller-provider-gpu-cc
-# export ANTSEED_VERIFIER_PROVIDER_GPU_FIELD=gpu_evidence
+node deploy/tee-seller/compose.mjs --image ghcr.io/antseed/tee-seller@sha256:<digest> \
+  --peer <peerId> --config config.json \
+  --env 'ANTSEED_VERIFIER_PROVIDER_EVIDENCE_URL=https://provider.example/evidence?nonce={nonce}' \
+  --env ANTSEED_VERIFIER_PROVIDER_TEE_FIELD=quote \
+  --env ANTSEED_VERIFIER_PROVIDER_BINDING_SCHEME=antseed-rd-v1 \
+  --env ANTSEED_VERIFIER_PROVIDER_BINDING_PUBKEY_FIELD=e2e_pubkey > docker-compose.json
 ```
 
 The SDK is provider-agnostic: no vendor hosts or schemas are built in, so pointing it at a different confidential-inference backend is configuration only. For a worked example against a live third-party TDX provider, see the [SDK's end-to-end guide](https://github.com/AntSeed/antseed/blob/main/packages/antseed-verifier/docs/e2e-report-data-schemes.md).
@@ -138,10 +116,14 @@ If attestation fails under `--require-verifier`, the request is refused with a 5
 
 | Symptom | Cause |
 |---|---|
-| Seller exits at startup with a verifier load error | SDK not installed in `~/.antseed/plugins`, or its version doesn't match the CLI's pinned version |
-| `seller-node-tee-genuine` fails locally | Not a genuine TDX VM, not running as root, or `configfs-tsm` unavailable |
+| `seller-node-tee-genuine` fails with "not an approved TEE seller build" | The detail names the reason: an OS or image the verifier doesn't list (use a released image; a new dstack release needs adding to the verifier), or a compose rule the file breaks (regenerate it with `compose.mjs`) |
+| `seller-node-tee-genuine` fails with "no connection binding" | The buyer reached the seller over WebRTC; make the signaling TCP port reachable |
 | `seller-bound` missing from verdicts | `ANTSEED_VERIFIER_SIGNING_KEY` unset, or its address doesn't match `ANTSEED_TEE_PEER_ID` |
 | Buyer reports TCB failures | Host platform needs microcode/TCB updates; buyers running `ANTSEED_VERIFIER_STRICT_TCB=true` accept only `UpToDate` |
+
+## Developing the prover outside dstack
+
+To work on the prover itself, you can run it on any Intel TDX VM (for example a GCP `c3` confidential VM): install the SDK into `~/.antseed/plugins` from a source checkout (`pnpm --filter @antseed/antseed-verifier build`, then `npm pack` and `npm install --prefix ~/.antseed/plugins` the tarball), set `ANTSEED_TEE_PEER_ID` and `ANTSEED_VERIFIER_SIGNING_KEY`, and start `sudo -E antseed seller start --verifiers antseed-verifier` (quotes come from `configfs-tsm`, which needs root). Buyers see a genuine quote but don't accept such a node: it is not an approved image under the compose rules.
 
 ## See also
 
