@@ -15,10 +15,10 @@ function relayKey(host: string, port: number): string {
   return `${host}:${port}`;
 }
 
-function startRelay(host: string, port: number): Promise<net.Server> {
+function startRelay(host: string, port: number, upstreamHost: string): Promise<net.Server> {
   return new Promise((resolve, reject) => {
     const server = net.createServer((client) => {
-      const upstream = net.connect(port, '127.0.0.1');
+      const upstream = net.connect(port, upstreamHost);
       client.pipe(upstream);
       upstream.pipe(client);
       client.on('error', () => upstream.destroy());
@@ -47,6 +47,7 @@ export async function syncWslRelays(
   hosts: readonly string[],
   buyerPort: number,
   logLine?: (line: string) => void,
+  upstreamHost = '127.0.0.1',
 ): Promise<void> {
   const wanted = new Set(hosts.map((host) => relayKey(host, buyerPort)));
   for (const [key, server] of [...relays]) {
@@ -58,8 +59,8 @@ export async function syncWslRelays(
     const key = relayKey(host, buyerPort);
     if (relays.has(key)) continue;
     try {
-      relays.set(key, await startRelay(host, buyerPort));
-      logLine?.(`WSL relay listening on ${key} → 127.0.0.1:${buyerPort}`);
+      relays.set(key, await startRelay(host, buyerPort, upstreamHost));
+      logLine?.(`WSL relay listening on ${key} → ${upstreamHost}:${buyerPort}`);
     } catch (err) {
       logLine?.(
         `WSL relay could not listen on ${key}: ${err instanceof Error ? err.message : String(err)} — `

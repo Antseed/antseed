@@ -68,6 +68,7 @@ import {
   type ChatModel,
 } from './gateway-model.js';
 import { modelAcceptsImages, routeModeOf, splitPinnedModel } from '../../shared/pinned-model.js';
+import { createGatewayBashTool } from './gateway-bash-tool.js';
 import { sessionServiceId } from './legacy-seller-pin.js';
 import {
   convertAssistantMessageForUi,
@@ -215,9 +216,6 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
       appendSystemLog(`Chat could not reach the gateway: ${message}`);
       return { ok: false, error: message };
     }
-    // Bundled skills (images, videos) call the API from the agent's shell.
-    process.env['ANTSEED_PROXY_URL'] = endpoint.origin;
-    process.env['ANTSEED_API_KEY'] = endpoint.apiKey;
 
     const sessionManager = await store.openSessionManager(conversationId);
     if (!sessionManager) {
@@ -351,6 +349,8 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
       modelRegistry,
       model: gatewayModel,
       customTools: [
+        // Registered under the built-in's name, so it takes that tool's place.
+        createGatewayBashTool(chatWorkspaceDir, endpoint, settingsManager.getShellCommandPrefix()),
         webFetchTool,
         createBrowserPreviewTool(sendToRenderer),
         createStartDevServerTool(sendToRenderer),

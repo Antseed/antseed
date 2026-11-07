@@ -26,7 +26,7 @@ test('a failure keeps the key for another try, reports it and still replaces the
     if (id === 'a') throw new Error('database is locked');
     return `new-${id}`;
   };
-  await assert.rejects(rotateKeys(['desktop', 'zed'], s.ops), /desktop key: the old one still works.*database is locked/);
+  await assert.rejects(rotateKeys(['desktop', 'zed'], s.ops), /desktop key could not be changed and still works.*database is locked/);
   assert.deepEqual(s.keys, { desktop: { id: 'a', secret: 'old-a' }, zed: { id: 'b', secret: 'new-b' } });
 });
 

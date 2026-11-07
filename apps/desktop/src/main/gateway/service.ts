@@ -264,7 +264,11 @@ export async function getGatewayEndpoint(app?: { name: string; label?: string })
 export async function rotateLocalKeys(scope?: string): Promise<void> {
   if (getGatewaySettings().mode !== 'local') throw new Error('Keys of a remote gateway are managed in its console');
   await ensureLocalGateway();
-  await rotateKeys(scope ? [scope] : listLocalKeys().map((entry) => entry.scope), {
+  // Unused keys that failed to revoke earlier get another try rather than a new secret.
+  const unusedFailure = scope ? null : await revokeUnusedAppKeys().then(() => null, (err: unknown) => err);
+  const usedScopes = scope ? [scope] : listLocalKeys().map((entry) => entry.scope)
+    .filter((target) => getGatewaySettings().keyMode === 'per-app' || target === DESKTOP_KEY_SCOPE);
+  await rotateKeys(usedScopes, {
     get: getLocalKey,
     rotate: async (id) => {
       // The user asked for a working key, so here a revoked or expired one gives way to a new one.
@@ -282,16 +286,26 @@ export async function rotateLocalKeys(scope?: string): Promise<void> {
     },
     forget: deleteLocalKey,
   });
+  if (unusedFailure) throw unusedFailure;
 }
 
-/** Revokes per-app keys that are no longer used (after switching back to one shared key). */
+/**
+ * Revokes per-app keys that are no longer used (after switching back to one
+ * shared key). One that can't be revoked stays saved for the next try, and the
+ * failure is reported: it still works.
+ */
 export async function revokeUnusedAppKeys(): Promise<void> {
   if (getGatewaySettings().keyMode === 'per-app') return;
-  for (const entry of listLocalKeys()) {
-    if (entry.scope === DESKTOP_KEY_SCOPE) continue;
-    deleteLocalKey(entry.scope);
-    if (entry.id) await revokeLocalKey(entry.id);
-  }
+  const unused = listLocalKeys().map((entry) => entry.scope).filter((scope) => scope !== DESKTOP_KEY_SCOPE);
+  await rotateKeys(unused, {
+    get: getLocalKey,
+    rotate: async (id) => {
+      await runGatewayCli(['key', 'revoke', id]);
+      return null;
+    },
+    save: () => undefined,
+    forget: deleteLocalKey,
+  });
 }
 
 /**

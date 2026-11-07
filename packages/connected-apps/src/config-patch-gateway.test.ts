@@ -101,6 +101,21 @@ test('empty model list writes base URL + key but no selection', async () => {
   });
 });
 
+test('codex: a context window set only inside a profile does not become a global one', async () => {
+  await withDir(async (dir) => {
+    const configPath = path.join(dir, 'config.toml');
+    const original = 'model = "mine"\n\n[profiles.big]\nmodel_context_window = 500000\n';
+    await writeFile(configPath, original, 'utf8');
+    const patch: ConfigPatchDef = { format: 'codex', configPath, providerKey: 'antseed', providerName: 'Antseed', baseURL: 'http://localhost:{buyerPort}/v1' };
+    writeConfigPatch(patch, LOCAL);
+    assert.equal(removeConfigPatch(patch), true);
+    const after = await readFile(configPath, 'utf8');
+    const beforeFirstTable = after.split('[')[0]!;
+    assert.doesNotMatch(beforeFirstTable, /model_context_window/);
+    assert.match(after, /\[profiles\.big\]\nmodel_context_window = 500000/);
+  });
+});
+
 test('codex: bearer token in the provider table and selection rules', async () => {
   await withDir(async (dir) => {
     const configPath = path.join(dir, 'config.toml');

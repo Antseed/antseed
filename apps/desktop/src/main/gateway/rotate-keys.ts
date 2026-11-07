@@ -40,7 +40,7 @@ export async function rotateKeys(
     }
   }
   if (failed.length > 0) {
-    throw new Error(`Could not replace the ${failed.join(', ')} key: the old one still works. Try again. (${reason})`);
+    throw new Error(`The ${failed.join(', ')} key could not be changed and still works. Try again. (${reason})`);
   }
 }
 

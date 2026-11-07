@@ -18,8 +18,8 @@ import type { AppLaunchTarget } from '../launch-settings.js';
 import { isAppTargetRunning, namedAppTarget, restartAppTarget } from '../launcher.js';
 import { isMultiInstanceDevelopment } from '../../dev-instance.js';
 import type { RuntimeMode } from '../../runtime/process-manager.js';
-import { DEFAULT_LOCAL_GATEWAY_PORT } from '../../runtime/process-manager.js';
-import { getGatewayEndpoint, type GatewayEndpoint } from '../../gateway/service.js';
+import { getGatewayEndpoint, localGatewayOrigin, type GatewayEndpoint } from '../../gateway/service.js';
+import { relayTarget } from './relay-target.js';
 import { oncePerGatewayKey } from './once-per-key.js';
 import { fetchGatewayModelEntries, toGatewayModel, type GatewayModel } from '../../gateway/models.js';
 import { recommendAppModels, toChatModels, type ChatModel } from '../../chat/gateway-model.js';
@@ -197,14 +197,16 @@ async function patchApp(name: string, modelsFor: (endpoint: GatewayEndpoint) => 
   log(`${profile.label}: connected to the gateway at ${endpoint.origin}`);
 }
 
-/** WSL distros reach the loopback-only local gateway through a relay; a remote gateway needs none. */
+/** WSL distros reach a gateway on this computer's loopback through a relay; one elsewhere needs none. */
 async function syncRelays(): Promise<void> {
-  if (getGatewaySettings().mode !== 'local') {
+  const settings = getGatewaySettings();
+  const target = relayTarget(settings.mode === 'local' ? localGatewayOrigin() : settings.remoteUrl);
+  if (!target) {
     await stopWslRelays();
     return;
   }
-  const targets = readWslTargets(connectedAppsWslTargetsPath()).filter((target) => target.needsRelay);
-  await syncWslRelays(targets.map((target) => target.host), DEFAULT_LOCAL_GATEWAY_PORT, log);
+  const hosts = readWslTargets(connectedAppsWslTargetsPath()).filter((wsl) => wsl.needsRelay).map((wsl) => wsl.host);
+  await syncWslRelays(hosts, target.port, log, target.upstreamHost);
 }
 
 async function textModels(endpoint: GatewayEndpoint): Promise<AppModels> {

@@ -927,6 +927,10 @@ test('readConfigPatch parses every default app profile under its declared format
   }
 });
 
+test('substituteBaseUrlHost replaces a whole IPv6 host', () => {
+  assert.equal(substituteBaseUrlHost('http://[::1]:8379/v1', '172.20.0.1'), 'http://172.20.0.1:8379/v1');
+});
+
 test('substituteBaseUrlHost swaps only the host', () => {
   assert.equal(
     substituteBaseUrlHost('http://localhost:{buyerPort}/v1', '172.29.32.1'),

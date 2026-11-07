@@ -2161,26 +2161,7 @@ export class BuyerProxy {
   /** `GET /_antseed/route-preview`: what routing would do for a model-only request, ineligible sellers included. */
   private async _routePreview(model: string, requestPolicy: RoutingPolicy | null): Promise<RoutePreviewCandidate[]> {
     const peers = await this._getPeers()
-    const request: SerializedHttpRequest = {
-      requestId: randomUUID(),
-      method: 'POST',
-      path: '/v1/chat/completions',
-      headers: { 'content-type': 'application/json' },
-      body: new TextEncoder().encode(JSON.stringify({ model })),
-    }
-    const { candidatePeers, routePlanByPeerId } = selectCandidatePeersForRouting(peers, null, model, null, 'strict')
-    const plan = this._planModelRoutes({
-      modelPeers: candidatePeers,
-      modelPlans: routePlanByPeerId,
-      request,
-      requestProtocol: null,
-      requestedService: model,
-      explicitProvider: null,
-      requiredParameters: [],
-      requestPolicy,
-      preferredPeerId: null,
-      deterministic: true,
-    })
+    const plan = this._planChatModelRoutes(peers, model, requestPolicy)
     const effective = plan.effectivePolicy
     const modelAllowed = policyAllowsModel(effective, model)
     // Routing never considers a service its seller announces as failing, so
@@ -4053,26 +4034,32 @@ export class BuyerProxy {
    */
   /** Which of these sellers a chat request for this model could be routed to right now. */
   private _routableChatSellers(peers: PeerInfo[], serviceId: string, requestPolicy: RoutingPolicy): Set<string> {
-    const { candidatePeers, routePlanByPeerId } = selectCandidatePeersForRouting(peers, null, serviceId, null, 'strict')
-    const plan = this._planModelRoutes({
+    const plan = this._planChatModelRoutes(peers, serviceId, requestPolicy)
+    return new Set(plan.verdicts.filter((verdict) => verdict.eligible).map((verdict) => verdict.peer.peerId))
+  }
+
+  /** The route plan for a model-only chat request: what model listing and route preview mean by routable. */
+  private _planChatModelRoutes(peers: PeerInfo[], model: string, requestPolicy: RoutingPolicy | null) {
+    const request: SerializedHttpRequest = {
+      requestId: randomUUID(),
+      method: 'POST',
+      path: '/v1/chat/completions',
+      headers: { 'content-type': 'application/json' },
+      body: new TextEncoder().encode(JSON.stringify({ model })),
+    }
+    const { candidatePeers, routePlanByPeerId } = selectCandidatePeersForRouting(peers, null, model, null, 'strict')
+    return this._planModelRoutes({
       modelPeers: candidatePeers,
       modelPlans: routePlanByPeerId,
-      request: {
-        requestId: randomUUID(),
-        method: 'POST',
-        path: '/v1/chat/completions',
-        headers: { 'content-type': 'application/json' },
-        body: new TextEncoder().encode(JSON.stringify({ model: serviceId })),
-      },
+      request,
       requestProtocol: null,
-      requestedService: serviceId,
+      requestedService: model,
       explicitProvider: null,
       requiredParameters: [],
       requestPolicy,
       preferredPeerId: null,
       deterministic: true,
     })
-    return new Set(plan.verdicts.filter((verdict) => verdict.eligible).map((verdict) => verdict.peer.peerId))
   }
 
   private _policyAllowsOffer(requestPolicy: RoutingPolicy, peer: PeerInfo | undefined, offer: NetworkServiceOffer): boolean {

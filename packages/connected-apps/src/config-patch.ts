@@ -705,7 +705,7 @@ export function writeConfigPatch(patch: ConfigPatchDef, target: ConfigPatchTarge
     Regex rather than URL because the string may still carry the `{buyerPort}`
     placeholder, which URL refuses to parse. */
 export function substituteBaseUrlHost(baseURL: string, host: string): string {
-  return baseURL.replace(/^(https?:\/\/)[^/:]+/, `$1${host}`);
+  return baseURL.replace(/^(https?:\/\/)(?:\[[^\]]*\]|[^/:]+)/, `$1${host}`);
 }
 
 function wslBaseUrl(baseURL: string, wslHost: string, loopback: boolean): string {
@@ -1396,7 +1396,7 @@ function applyCodexProviderToFile(filePath: string, patch: CodexConfigPatchDef, 
   const selected = pickModel(t, ownedSelection);
   if (readTomlTopLevelString(lines, 'model_provider') !== patch.providerKey) {
     const userCatalog = readTomlTopLevelString(lines, 'model_catalog_json');
-    const contextWindow = lines.map((line) => /^model_context_window\s*=\s*(\d+)/.exec(line)?.[1]).find(Boolean);
+    const contextWindow = /^\s*model_context_window\s*=\s*(\d+)/.exec(lines[tomlTopLevelKeyIndex(lines, 'model_context_window')] ?? '')?.[1];
     rememberSelection(filePath, {
       ...Object.fromEntries(['model', 'model_provider'].flatMap((key) => {
         const value = readTomlTopLevelString(lines, key);
