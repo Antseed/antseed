@@ -830,6 +830,8 @@ export interface Peer {
    * seller is not TEE-capable or the buyer has not verified it yet.
    */
   teeScope: PeerTeeScope | null
+  /** Hosts a TEE-verified seller node sends prompts to, from its attested config; absent when unknown. */
+  teeUpstreams?: string[]
   stakeAnts: string | null
   /** The seller's pool in the seller pools (its ERC-8004 agent id); null when it has none. */
   agentId: number | null
