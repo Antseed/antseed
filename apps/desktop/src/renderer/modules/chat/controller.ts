@@ -1,5 +1,5 @@
 import { describeChatError } from './chat-errors';
-import { splitPinnedModel } from '../../../shared/pinned-model.js';
+import { modelAcceptsImages, splitPinnedModel } from '../../../shared/pinned-model.js';
 import { selectHasFunds } from '../../core/balance';
 import type { RendererUiState } from '../../core/state';
 import { notifyUiStateChanged, notifyUiStateChangedSync } from '../../core/store';
@@ -117,8 +117,8 @@ export function initChatModule({
   const pendingStreamingUiFlushes = new Set<string>();
   /** In-flight model rebinds, awaited before the conversation's next send. */
   const pendingModelUpdates = new Map<string, Promise<{ ok: boolean; error?: string }>>();
-  /** Conversations whose last send stopped for lack of funds. */
-  const fundsBlockedConversationIds = new Set<string>();
+  /** Conversations whose last send stopped for lack of funds, with the notice to show when reopened. */
+  const fundsNoticeByConversation = new Map<string, { message: string; canAddFunds: boolean }>();
 
   // ---------------------------------------------------------------------------
   // Small helpers
@@ -153,7 +153,7 @@ export function initChatModule({
   }
 
   function showFundsNotice(convId: string, notice: { message: string; canAddFunds: boolean }): void {
-    fundsBlockedConversationIds.add(convId);
+    fundsNoticeByConversation.set(convId, notice);
     if (convId === uiState.chatActiveConversation) {
       uiState.chatError = null;
       uiState.chatFundsNotice = notice;
@@ -760,6 +760,7 @@ export function initChatModule({
     uiState.chatActiveConversation = convId;
     uiState.chatOpeningConversationId = convId;
     clearChatNotices();
+    uiState.chatFundsNotice = fundsNoticeByConversation.get(convId) ?? null;
     notifyUiStateChanged();
 
     try {
@@ -771,7 +772,8 @@ export function initChatModule({
       }
       const conv = result.data as ChatConversation;
       const serverMessages = normalizeInlineThinkInMessages(Array.isArray(conv.messages) ? conv.messages : []);
-      const preferLocal = hasConversationStreamingMessage(convId) || isConversationSending(convId);
+      // A prompt waiting on funds may not be in the session yet; Try again needs it on screen.
+      const preferLocal = hasConversationStreamingMessage(convId) || isConversationSending(convId) || fundsNoticeByConversation.has(convId);
       const nextMessages = preferLocal ? (getLocalConversationMessages(convId) ?? serverMessages) : serverMessages;
       activeConversation = { ...conv, messages: nextMessages };
       uiState.chatMessages = nextMessages;
@@ -867,7 +869,8 @@ export function initChatModule({
     streamingMessagesByConversation.delete(convId);
     sendingConversationIds.delete(convId);
     streamStartedAtByConversation.delete(convId);
-    fundsBlockedConversationIds.delete(convId);
+    fundsNoticeByConversation.delete(convId);
+    imageRetryByConversation.delete(convId);
     syncActiveConversationSendingState();
     if (convId === uiState.chatActiveConversation) startNewChat();
     else notifyUiStateChanged();
@@ -959,7 +962,7 @@ export function initChatModule({
     }
     const content = text.trim();
     clearChatNotices();
-    fundsBlockedConversationIds.delete(convId);
+    fundsNoticeByConversation.delete(convId);
     setConversationSending(convId, true);
     void (async () => {
       let preparedAttachments: PreparedChatAttachment[];
@@ -982,7 +985,7 @@ export function initChatModule({
       const modelId = findConversationSummary(convId)?.service || uiState.chatSelectedModelId;
       const hasReadyImage = preparedAttachments.some((attachment) => attachment.kind === 'image' && attachment.status === 'ready');
       const model = findChatModel(uiState.chatModels, modelId);
-      if (hasReadyImage && model && !model.supportsImages) {
+      if (hasReadyImage && model && !modelAcceptsImages(model, modelId)) {
         showChatError(`${model.label} doesn't accept images. Sending without image input for this turn.`);
       }
 
@@ -1081,24 +1084,29 @@ export function initChatModule({
 
   function retryAfterPayment(): void {
     const convId = uiState.chatActiveConversation;
-    if (!convId || !fundsBlockedConversationIds.has(convId) || isConversationSending(convId)) return;
+    if (!convId || !fundsNoticeByConversation.has(convId) || isConversationSending(convId)) return;
     const imageRequest = imageRetryByConversation.get(convId);
     if (imageRequest) {
       imageRetryByConversation.delete(convId);
-      fundsBlockedConversationIds.delete(convId);
+      fundsNoticeByConversation.delete(convId);
       clearChatNotices();
       void runImageRequest(convId, imageRequest);
       return;
     }
     const last = lastUserMessage(convId);
     if (!last) return;
-    fundsBlockedConversationIds.delete(convId);
+    fundsNoticeByConversation.delete(convId);
     clearChatNotices();
     setConversationSending(convId, true);
     void dispatchChatRequest(convId, last.content, last.attachments.length > 0 ? last.attachments : undefined);
   }
 
   function dismissFundsNotice(): void {
+    const convId = uiState.chatActiveConversation;
+    if (convId) {
+      fundsNoticeByConversation.delete(convId);
+      imageRetryByConversation.delete(convId);
+    }
     uiState.chatFundsNotice = null;
     notifyUiStateChanged();
   }
@@ -1126,6 +1134,12 @@ export function initChatModule({
     queueScrollChatToBottom();
     try {
       const result = await bridge.chatGenerateImage({ conversationId: convId, ...request });
+      const funds = fundsNoticeFromStopReason(result.stopReason);
+      if (funds) {
+        imageRetryByConversation.set(convId, request);
+        showFundsNotice(convId, funds);
+        return;
+      }
       if (!result.ok || !result.user || !result.assistant) {
         throw new Error(result.error || 'Image generation failed.');
       }
@@ -1143,10 +1157,7 @@ export function initChatModule({
       queueScrollChatToBottom();
     } catch (error) {
       const message = toErrorMessage(error, 'Image generation failed');
-      if (message.startsWith('payment_required:')) {
-        imageRetryByConversation.set(convId, request);
-        showFundsNotice(convId, { message: message.slice('payment_required:'.length).trim(), canAddFunds: true });
-      } else if (message !== 'Request aborted') {
+      if (message !== 'Request aborted') {
         reportChatError(message, 'Image generation failed');
       }
     } finally {
@@ -1182,6 +1193,9 @@ export function initChatModule({
       }
 
       clearChatNotices();
+      // This prompt supersedes one waiting on funds.
+      fundsNoticeByConversation.delete(convId);
+      imageRetryByConversation.delete(convId);
       const existingBeforeRequest = getLocalConversationMessages(convId)
         ?? (convId === uiState.chatActiveConversation ? uiState.chatMessages as ChatMessage[] : []);
       // Edit the last generated image when the model takes image input;

@@ -46,8 +46,8 @@ export function VprHomeView({ onSelectView }: Props) {
 
   function submitDraft(): void {
     const text = draft.trim();
-    // The model may still move once Private's list is in.
-    if (!text || switching || (privateMode && snap.chatModelsLoading)) return;
+    // The model may still move once Private's list is in. An image chat needs a text model too.
+    if (!text || switching || !snap.chatSelectedModelId || (privateMode && snap.chatModelsLoading)) return;
     // Home always starts a new chat rather than continuing the open one.
     if (snap.chatActiveConversation) actions.startNewChatOnModel(snap.chatSelectedModelId);
     if (snap.chatImageModelId) {
@@ -128,7 +128,7 @@ export function VprHomeView({ onSelectView }: Props) {
                 className={styles.askSend}
                 aria-label="Send message"
                 title="Send message"
-                disabled={draft.trim().length === 0 || switching}
+                disabled={draft.trim().length === 0 || switching || !snap.chatSelectedModelId}
               >
                 <HugeiconsIcon icon={ArrowUp02Icon} size={20} strokeWidth={2} />
               </button>

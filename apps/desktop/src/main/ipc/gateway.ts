@@ -49,13 +49,19 @@ export type GatewayIpcDeps = {
   onEndpointChanged: () => void;
 };
 
+/** Re-points installed skills at the current gateway and key. Asks for no key when none are installed. */
+export async function syncInstalledAgentSkills(): Promise<void> {
+  if (!listAgentSkillTargets().some((target) => target.installed)) return;
+  await syncAgentSkills(await getGatewayEndpoint(AGENT_SKILLS_APP));
+}
+
 export function registerGatewayIpc(deps: GatewayIpcDeps): void {
   const endpointChanged = async (restartApps: boolean) => {
     clearGatewayModelCache();
     clearRoutePreviewCache();
     deps.onEndpointChanged();
     await reconnectAllApps({ restart: restartApps });
-    await syncAgentSkills(await getGatewayEndpoint(AGENT_SKILLS_APP)).catch(() => undefined);
+    await syncInstalledAgentSkills().catch(() => undefined);
   };
 
   ipcMain.handle('gateway:get-status', () => getGatewayStatus());

@@ -63,11 +63,13 @@ export type GenerateChatImageResult = {
   user?: AiChatMessage;
   assistant?: AiChatMessage;
   error?: string;
+  /** Set when the gateway could not pay, as a text reply's stop reports it. */
+  stopReason?: { kind: 'payment_required'; message: string; errorCode?: string };
 };
 
 type ImageResponse = {
   data?: Array<{ url?: unknown; b64_json?: unknown }>;
-  error?: { message?: unknown };
+  error?: { message?: unknown; code?: unknown };
 };
 
 function safeErrorMessage(value: unknown, fallback: string): string {
@@ -196,6 +198,8 @@ export async function generateChatImage(
     let body: string | FormData;
     const headers: Record<string, string> = {
       authorization: `Bearer ${endpoint.apiKey}`,
+      // The buyer routes only to sellers that take this option; it doesn't read it from the body.
+      ...(request.moderation ? { 'x-antseed-required-parameters': 'moderation' } : {}),
     };
     if (sourceImageAttachmentId) {
       const source = await (dependencies.loadSourceAttachment ?? loadSourceAttachment)(conversationId, sourceImageAttachmentId);
@@ -238,7 +242,9 @@ export async function generateChatImage(
     if (!response.ok) {
       const upstreamMessage = typeof payload?.error?.message === 'string' ? payload.error.message : '';
       if (response.status === 402) {
-        throw new Error(`payment_required: ${upstreamMessage || 'Your gateway balance is too low to generate images. Add funds and try again.'}`);
+        const message = upstreamMessage || 'Your gateway balance is too low to generate images. Add funds and try again.';
+        const errorCode = typeof payload?.error?.code === 'string' ? payload.error.code : undefined;
+        return { ok: false, error: message, stopReason: { kind: 'payment_required', message, ...(errorCode ? { errorCode } : {}) } };
       }
       throw new Error(upstreamMessage || `Image generation failed (HTTP ${String(response.status)}).`);
     }

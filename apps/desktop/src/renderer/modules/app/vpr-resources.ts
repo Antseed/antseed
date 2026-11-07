@@ -126,19 +126,21 @@ export async function requestPrivacyMode(mode: GatewayPrivacyMode): Promise<void
 
   let confirmed: GatewayPrivacy | null = null;
   let error: string | null = null;
-  try {
-    let target: GatewayPrivacyMode;
-    do {
-      target = requestedPrivacyMode;
+  let target: GatewayPrivacyMode;
+  do {
+    target = requestedPrivacyMode;
+    try {
       const result = await window.antseedDesktop?.gatewaySetPrivacy?.(target);
       if (!result?.ok || !result.privacy) throw new Error(result?.error ?? 'Could not change the privacy mode');
       confirmed = result.privacy;
-    } while (requestedPrivacyMode !== target);
-  } catch (err) {
-    error = err instanceof Error ? err.message : String(err);
-    const actual = await window.antseedDesktop?.gatewayGetPrivacy?.().catch(() => null);
-    confirmed = actual?.ok && actual.privacy ? actual.privacy : null;
-  }
+      error = null;
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err);
+      const actual = await window.antseedDesktop?.gatewayGetPrivacy?.().catch(() => null);
+      confirmed = actual?.ok && actual.privacy ? actual.privacy : null;
+    }
+    // A choice made meanwhile still applies, even if the write before it failed.
+  } while (requestedPrivacyMode !== target);
   requestedPrivacyMode = null;
   privacyGeneration += 1;
   if (!confirmed) {

@@ -73,7 +73,7 @@ import { registerFreeTierIpc } from './ipc/free-tier.js';
 import { registerPaymentsIpc } from './ipc/payments.js';
 import { registerRuntimeIpc } from './ipc/runtime.js';
 import { registerConnectedAppsIpc } from './ipc/connected-apps.js';
-import { registerGatewayIpc } from './ipc/gateway.js';
+import { registerGatewayIpc, syncInstalledAgentSkills } from './ipc/gateway.js';
 import { registerTelegramIpc } from './ipc/telegram.js';
 import {
   effectiveLaunchTarget,
@@ -413,6 +413,11 @@ app.whenReady().then(async () => {
     .then(() => reconnectAllApps())
     .catch((err) => {
       appendLog('gateway', 'system', `Reconnecting apps failed: ${err instanceof Error ? err.message : String(err)}`);
+    })
+    // The gateway may have replaced a key it no longer accepts while starting.
+    .then(() => syncInstalledAgentSkills())
+    .catch((err) => {
+      appendLog('gateway', 'system', `Updating agent skills failed: ${err instanceof Error ? err.message : String(err)}`);
     });
 
   // Resume the Telegram bridge if a bot was connected in a previous session.
@@ -746,6 +751,8 @@ app.on('before-quit', (event) => {
 
   event.preventDefault();
   isQuitting = true;
+  // The gateway may take a while to finish requests in flight; nothing is left to do in the windows.
+  for (const window of BrowserWindow.getAllWindows()) window.hide();
 
   // Briefly flush the final close event and clear the local crash marker before
   // exit, otherwise delivery is lost or the next launch reports a false crash.

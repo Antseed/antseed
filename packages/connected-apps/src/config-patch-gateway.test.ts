@@ -592,3 +592,58 @@ exit ${code}
     }
   });
 });
+
+test('an unread model list keeps every catalog and selection, and takes the new gateway and key', async () => {
+  await withDir(async (dir) => {
+    const unread: ConfigPatchTarget = { origin: 'https://gw.example.com', apiKey: 'antseed_new_key', models: [] };
+    const cases: Array<{ patch: ConfigPatchDef; file: string; read: (raw: string) => any; catalog: (config: any) => unknown; picked: (config: any) => unknown }> = [
+      {
+        patch: { format: 'opencode', configPath: path.join(dir, 'opencode.json'), providerKey: 'antseed', providerName: 'Antseed', npm: '@ai-sdk/openai-compatible', baseURL: 'http://localhost:{buyerPort}/v1' } as ConfigPatchDef,
+        file: 'opencode.json', read: JSON.parse,
+        catalog: (config) => Object.keys(config.provider.antseed.models), picked: (config) => config.model,
+      },
+      {
+        patch: { format: 'crush', configPath: path.join(dir, 'crush.json'), providerKey: 'antseed', providerName: 'Antseed', baseURL: 'http://localhost:{buyerPort}/v1' } as ConfigPatchDef,
+        file: 'crush.json', read: JSON.parse,
+        catalog: (config) => config.providers.antseed.models.map((model: { id: string }) => model.id), picked: (config) => config.models.large.model,
+      },
+      {
+        patch: { format: 'zed', configPath: path.join(dir, 'zed.json'), providerKey: 'antseed', providerName: 'Antseed', baseURL: 'http://localhost:{buyerPort}/v1' } as ConfigPatchDef,
+        file: 'zed.json', read: JSON.parse,
+        catalog: (config) => config.language_models.openai_compatible.Antseed.available_models.map((model: { name: string }) => model.name), picked: (config) => config.agent.default_model.model,
+      },
+      {
+        patch: { format: 'hermes', configPath: path.join(dir, 'hermes.yaml'), providerKey: 'antseed', baseURL: 'http://localhost:{buyerPort}/v1' } as ConfigPatchDef,
+        file: 'hermes.yaml', read: parse,
+        catalog: (config) => Object.keys(config.providers.antseed.models), picked: (config) => config.model.default,
+      },
+      {
+        patch: { format: 't3code', configPath: path.join(dir, 't3.json'), providerKey: 'antseed', providerName: 'Antseed', baseURL: 'http://localhost:{buyerPort}' } as ConfigPatchDef,
+        file: 't3.json', read: JSON.parse,
+        catalog: (config) => config.providerInstances.antseed.config.customModels, picked: () => undefined,
+      },
+    ];
+    for (const { patch, file, read, catalog, picked } of cases) {
+      writeConfigPatch(patch, LOCAL);
+      const before = read(await readFile(path.join(dir, file), 'utf8'));
+      writeConfigPatch(patch, unread);
+      const raw = await readFile(path.join(dir, file), 'utf8');
+      const after = read(raw);
+      assert.deepEqual(catalog(after), MODELS.map((model) => model.id), patch.format);
+      assert.equal(picked(after), picked(before), patch.format);
+      assert.ok(raw.includes('gw.example.com'), `${patch.format} takes the new gateway`);
+      if (patch.format !== 'zed') assert.ok(raw.includes('antseed_new_key'), `${patch.format} takes the new key`);
+    }
+
+    const modelsPath = path.join(dir, 'models.json');
+    const settingsPath = path.join(dir, 'settings.json');
+    const pi: ConfigPatchDef = { format: 'pi', configPath: modelsPath, settingsPath, providerKey: 'antseed', baseURL: 'http://localhost:{buyerPort}/v1', api: 'openai-completions' };
+    writeConfigPatch(pi, LOCAL);
+    const picked = (await readJson(settingsPath))['defaultModel'];
+    writeConfigPatch(pi, unread);
+    const provider = (await readJson(modelsPath))['providers']['antseed'];
+    assert.deepEqual(provider['models'].map((model: { id: string }) => model.id), MODELS.map((model) => model.id));
+    assert.equal(provider['apiKey'], 'antseed_new_key');
+    assert.equal((await readJson(settingsPath))['defaultModel'], picked);
+  });
+});

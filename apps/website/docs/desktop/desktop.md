@@ -21,7 +21,7 @@ The app creates an API key named **Desktop** on the gateway and gives it to the 
 
 ### Use a remote gateway instead
 
-In **Settings → Gateway**, choose **Remote gateway** and enter the gateway's URL and an API key that gateway issued. Nothing runs locally then: the chat and connected apps use the remote gateway, and funding and keys are managed in that gateway's console.
+In **Settings → Gateway**, choose **Remote gateway** and enter the gateway's URL and an API key that gateway issued. The URL must use `https://`, except for an address on your own machine or private network. The app checks the gateway with that key before switching. Nothing runs locally then: the chat and connected apps use the remote gateway, and funding and keys are managed in that gateway's console.
 
 ### API keys
 

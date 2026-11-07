@@ -67,7 +67,8 @@ import {
   resolveSystemPrompt,
   type ChatModel,
 } from './gateway-model.js';
-import { splitPinnedModel } from '../../shared/pinned-model.js';
+import { modelAcceptsImages, splitPinnedModel } from '../../shared/pinned-model.js';
+import { sessionServiceId } from './legacy-seller-pin.js';
 import {
   convertAssistantMessageForUi,
   convertUserMessageForUi,
@@ -223,8 +224,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
       return { ok: false, error: 'Conversation not found' };
     }
 
-    const context = sessionManager.buildSessionContext();
-    const serviceId = normalizeServiceId(modelOverride || context.model?.modelId);
+    const serviceId = normalizeServiceId(modelOverride) || sessionServiceId(sessionManager);
     if (!serviceId) {
       return { ok: false, error: 'Choose a model for this chat.' };
     }
@@ -242,7 +242,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     // A model the list does not describe (plain OpenAI-compatible gateway, or
     // the list failed) is spoken to over chat completions, text only.
     const protocol = chatModel?.protocol ?? 'openai-chat-completions';
-    const supportsImages = chatModel?.supportsImages ?? false;
+    const supportsImages = chatModel ? modelAcceptsImages(chatModel, serviceId) : false;
     const modelLabel = chatModel?.label ?? serviceId;
 
     // Permissions belong to the model, whichever seller serves it.

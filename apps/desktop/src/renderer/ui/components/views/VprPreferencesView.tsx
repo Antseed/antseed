@@ -115,8 +115,8 @@ function GatewaySection() {
               label="Gateway"
               value={mode}
               options={[
-                { value: 'local', label: 'This computer' },
-                { value: 'remote', label: 'Remote' },
+                { value: 'local', label: 'This computer', disabled: busy !== null },
+                { value: 'remote', label: 'Remote', disabled: busy !== null },
               ]}
               onChange={(value) => {
                 setMode(value);

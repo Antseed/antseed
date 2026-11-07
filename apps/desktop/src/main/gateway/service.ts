@@ -4,6 +4,7 @@
  * connected apps use, and builds links into the gateway console where usage,
  * keys, limits and funding are managed.
  */
+import { parseGatewayKeyInfo, type GatewayKeyInfo } from './key-info.js';
 import { publishKeyWithPolicy } from './key-with-policy.js';
 import { resolveConnectDataDir, DEFAULT_LOCAL_GATEWAY_PORT, type ProcessManager, type RuntimeMode } from '../runtime/process-manager.js';
 import { ACTIVE_CONFIG_PATH } from '../runtime/active-config.js';
@@ -307,15 +308,6 @@ export async function gatewayConsoleUrl(pathname = ''): Promise<string> {
   return `${base}${suffix}`;
 }
 
-export type GatewayKeyInfo = {
-  label: string | null;
-  buyerAddress: string | null;
-  requests: number;
-  spentUsd: string | null;
-  /** Today's and this month's spend against the key's caps, as the gateway enforces them. */
-  limits: Record<string, { limitUsd: string | null; spentUsd: string | null }>;
-};
-
 /** What the gateway reports for the desktop key (`GET /v1/key`): spend, caps, paying wallet. */
 export async function getGatewayKeyInfo(): Promise<GatewayKeyInfo | null> {
   try {
@@ -325,20 +317,7 @@ export async function getGatewayKeyInfo(): Promise<GatewayKeyInfo | null> {
       signal: AbortSignal.timeout(5_000),
     });
     if (!response.ok) return null;
-    const body = await response.json() as Record<string, unknown>;
-    const str = (value: unknown) => (typeof value === 'string' ? value : null);
-    const usage = (body['usage'] ?? {}) as Record<string, unknown>;
-    const limits: GatewayKeyInfo['limits'] = {};
-    for (const [period, raw] of Object.entries((body['limits'] ?? {}) as Record<string, Record<string, unknown>>)) {
-      limits[period] = { limitUsd: str(raw?.['limit_usd']), spentUsd: str(raw?.['spent_usd']) };
-    }
-    return {
-      label: str(body['label']),
-      buyerAddress: str(body['buyer_address']),
-      requests: Number(usage['requests']) || 0,
-      spentUsd: str(usage['spent_usd']),
-      limits,
-    };
+    return parseGatewayKeyInfo(await response.json());
   } catch {
     return null;
   }

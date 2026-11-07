@@ -501,6 +501,7 @@ export function registerPiChatHandlers({
     createConversation: (model) => store.create(model),
     hasConversation: async (conversationId) => (await store.get(conversationId)) !== null,
     setConversationModel: (conversationId, model) => store.setModel(conversationId, model),
+    getConversationModel: async (conversationId) => (await store.get(conversationId))?.service || null,
     sendMessageStream: async (conversationId, userMessage) => {
       await whenPrivacySettled();
       return runStreamingPrompt(conversationId, userMessage);

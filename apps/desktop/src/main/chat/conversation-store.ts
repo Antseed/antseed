@@ -13,6 +13,7 @@ import { SessionManager } from '@mariozechner/pi-coding-agent';
 import { CHAT_DATA_DIR, getCurrentChatWorkspaceDir } from './workspace.js';
 import { normalizeServiceId, normalizeTokenCount } from './normalize.js';
 import { GATEWAY_PROVIDER_ID } from './gateway-model.js';
+import { clearLegacySellerPin, sessionServiceId } from './legacy-seller-pin.js';
 import {
   convertPiMessagesToUi,
   deriveCost,
@@ -148,8 +149,8 @@ export class PiConversationStore {
 
   private async buildConversationFromManager(manager: SessionManager): Promise<AiConversation> {
     const context = manager.buildSessionContext();
-    // Sessions written before the gateway carry `antseed:peer` and
-    // `antseed-response-route` custom entries; they are ignored here.
+    // Sessions written before the gateway also carry `antseed-response-route`
+    // custom entries; they are ignored here.
     const messages = convertPiMessagesToUi(context.messages as Message[]);
     const usage = deriveUsage(messages);
     const header = manager.getHeader();
@@ -179,7 +180,7 @@ export class PiConversationStore {
     return {
       id: manager.getSessionId(),
       title: manager.getSessionName() || deriveTitle(messages),
-      service: normalizeServiceId(context.model?.modelId),
+      service: sessionServiceId(manager),
       messages,
       createdAt,
       updatedAt,
@@ -292,6 +293,7 @@ export class PiConversationStore {
     if (!modelId) return;
     const manager = await this.openSessionManager(id);
     if (!manager) return;
+    clearLegacySellerPin(manager);
     manager.appendModelChange(GATEWAY_PROVIDER_ID, modelId);
   }
 

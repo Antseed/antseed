@@ -824,12 +824,14 @@ function applyOpencodeProviderToFile(filePath: string, patch: OpencodeConfigPatc
       baseURL,
       apiKey: t.apiKey,
     },
-    models: Object.fromEntries(t.models.map((model) => [model.id, {
-      name: modelLabel(model),
-      attachment: true,
-      modalities: { input: ['text', 'image'], output: ['text'] },
-      limit: { context: ANTSEED_MODEL_CONTEXT_WINDOW, output: ANTSEED_MODEL_MAX_OUTPUT_TOKENS },
-    }])),
+    models: t.models.length > 0
+      ? Object.fromEntries(t.models.map((model) => [model.id, {
+        name: modelLabel(model),
+        attachment: true,
+        modalities: { input: ['text', 'image'], output: ['text'] },
+        limit: { context: ANTSEED_MODEL_CONTEXT_WINDOW, output: ANTSEED_MODEL_MAX_OUTPUT_TOKENS },
+      }]))
+      : asObject(asObject(providers[patch.providerKey])['models']),
   };
   config['provider'] = providers;
   const prefix = `${patch.providerKey}/`;
@@ -1500,12 +1502,14 @@ function applyPiProviderToFiles(modelsPath: string, settingsPath: string, patch:
     api: patch.api,
     apiKey: t.apiKey,
     ...(patch.originator ? { headers: { originator: patch.originator } } : {}),
-    models: t.models.map((model) => ({
-      id: model.id,
-      name: modelLabel(model),
-      contextWindow: ANTSEED_MODEL_CONTEXT_WINDOW,
-      maxTokens: ANTSEED_MODEL_MAX_OUTPUT_TOKENS,
-    })),
+    models: t.models.length > 0
+      ? t.models.map((model) => ({
+        id: model.id,
+        name: modelLabel(model),
+        contextWindow: ANTSEED_MODEL_CONTEXT_WINDOW,
+        maxTokens: ANTSEED_MODEL_MAX_OUTPUT_TOKENS,
+      }))
+      : savedList(asObject(providers[patch.providerKey])['models']),
   };
   config['providers'] = providers;
   writeJsonFile(modelsPath, config);
@@ -1568,6 +1572,11 @@ function removePiProviderFromFiles(modelsPath: string, settingsPath: string, pat
   return changed;
 }
 
+/** What a writer keeps when the model list could not be read: the entries it wrote last time. */
+function savedList(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
 function asObject(value: unknown): JsonObject {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as JsonObject : {};
 }
@@ -1605,9 +1614,11 @@ function applyCrushProviderToFile(filePath: string, patch: CrushConfigPatchDef, 
     name: patch.providerName,
     base_url: baseURL,
     api_key: t.apiKey,
-    models: t.models.map((model) => (
-      { id: model.id, name: modelLabel(model), context_window: ANTSEED_MODEL_CONTEXT_WINDOW, default_max_tokens: ANTSEED_MODEL_MAX_OUTPUT_TOKENS }
-    )),
+    models: t.models.length > 0
+      ? t.models.map((model) => (
+        { id: model.id, name: modelLabel(model), context_window: ANTSEED_MODEL_CONTEXT_WINDOW, default_max_tokens: ANTSEED_MODEL_MAX_OUTPUT_TOKENS }
+      ))
+      : savedList(asObject(providers[patch.providerKey])['models']),
   };
   config['providers'] = providers;
   const models = asObject(config['models']);
@@ -1941,7 +1952,8 @@ function applyHermesConfigPatch(patch: HermesConfigPatchDef, t: ResolvedTarget):
   const filePath = expandTilde(patch.configPath);
   const document = readHermesConfigDocument(filePath);
   backupConfigFile(filePath);
-  const providerDefault = t.defaultModel ?? t.models[0]?.id;
+  const saved = asObject(asObject(asObject(document.toJS())['providers'])[patch.providerKey]);
+  const providerDefault = t.defaultModel ?? t.models[0]?.id ?? saved['default_model'];
   document.setIn(['providers', patch.providerKey], {
     name: HERMES_PROVIDER_NAME,
     api: t.baseUrl(patch.baseURL),
@@ -1951,9 +1963,11 @@ function applyHermesConfigPatch(patch: HermesConfigPatchDef, t: ResolvedTarget):
       originator: 'hermes',
     },
     ...(providerDefault ? { default_model: providerDefault } : {}),
-    models: Object.fromEntries(t.models.map((model) => [model.id, {
-      context_length: ANTSEED_MODEL_CONTEXT_WINDOW,
-    }])),
+    models: t.models.length > 0
+      ? Object.fromEntries(t.models.map((model) => [model.id, {
+        context_length: ANTSEED_MODEL_CONTEXT_WINDOW,
+      }]))
+      : asObject(saved['models']),
   });
   const selected = pickModel(
     t,
@@ -2033,9 +2047,11 @@ function applyZedConfigPatch(patch: ZedConfigPatchDef, t: ResolvedTarget): void 
   const compatible = asObject(languageModels['openai_compatible']);
   compatible[patch.providerName] = {
     api_url: t.baseUrl(patch.baseURL),
-    available_models: t.models.map((model) => (
-      { name: model.id, display_name: modelLabel(model), max_tokens: ANTSEED_MODEL_CONTEXT_WINDOW }
-    )),
+    available_models: t.models.length > 0
+      ? t.models.map((model) => (
+        { name: model.id, display_name: modelLabel(model), max_tokens: ANTSEED_MODEL_CONTEXT_WINDOW }
+      ))
+      : savedList(asObject(compatible[patch.providerName])['available_models']),
   };
   languageModels['openai_compatible'] = compatible;
   config['language_models'] = languageModels;
@@ -2168,13 +2184,14 @@ function readClaudeCodePatchState(filePath: string): ClaudeCodePatchState | null
     key,
     readSavedValue((env as JsonObject)[key], statePath, key),
   ])) as Record<ClaudeCodeManagedEnvKey, ClaudeCodeSavedValue>;
+  const written = readClaudeCodeWritten(state['written']);
   return {
     version: 1,
     configExisted: state['configExisted'],
     envPresent: state['envPresent'],
     env: savedEnv,
     model: readSavedValue(state['model'], statePath, 'model'),
-    ...(readClaudeCodeWritten(state['written']) ? { written: readClaudeCodeWritten(state['written'])! } : {}),
+    ...(written ? { written } : {}),
   };
 }
 
@@ -2346,7 +2363,9 @@ function applyT3CodeConfigPatch(patch: T3CodeConfigPatchDef, t: ResolvedTarget):
   backupConfigFile(filePath);
   const config = readConfigPatchFile(filePath);
   const providerInstances = asObject(config['providerInstances']);
-  const customModels = [...t.modelIds];
+  const customModels = t.modelIds.length > 0
+    ? [...t.modelIds]
+    : savedList(asObject(asObject(providerInstances[patch.providerKey])['config'])['customModels']);
   // Gateways take the key as a bearer token; the empty ANTHROPIC_API_KEY
   // stops the Claude agent from also sending x-api-key.
   const auth = t.legacy

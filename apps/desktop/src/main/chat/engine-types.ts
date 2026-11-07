@@ -82,6 +82,7 @@ export type PiChatEngine = {
   invalidateModelCatalog(): void;
   createConversation(model: string): Promise<AiConversation>;
   hasConversation(conversationId: string): Promise<boolean>;
+  getConversationModel(conversationId: string): Promise<string | null>;
   setConversationModel(conversationId: string, model: string): Promise<void>;
   sendMessageStream(conversationId: string, userMessage: string): Promise<{ ok: boolean; error?: string; stopReason?: ChatStreamStopReason }>;
   abort(conversationId?: string): Promise<void>;

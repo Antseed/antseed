@@ -62,6 +62,7 @@ test('generateChatImage calls the gateway with the bearer key and persists the s
       model: 'image-model', prompt: 'A tiny ant astronaut', n: 1, response_format: 'b64_json', moderation: 'low',
     });
     assert.equal(calls[0]?.headers.get('authorization'), 'Bearer antseed_test');
+    assert.equal(calls[0]?.headers.get('x-antseed-required-parameters'), 'moderation');
     assert.equal(persistedPrompt, 'A tiny ant astronaut');
     assert.equal(persistedService, 'image-model-v2');
     assert.match(persistedMarker, /^<generated-image id="([^"]+)" mime="image\/png" name="generated-[a-f0-9]{8}\.png">$/);
@@ -126,6 +127,7 @@ test('generateChatImage edits a prior generated image with multipart routing', a
     assert.equal(requestUrl, 'http://127.0.0.1:8379/v1/images/edits');
     assert.equal(requestHeaders.get('authorization'), 'Bearer antseed_test');
     assert.equal(requestHeaders.has('x-antseed-pin-peer'), false);
+    assert.equal(requestHeaders.get('x-antseed-required-parameters'), 'moderation');
     assert.equal(requestHeaders.has('content-type'), false);
     assert.equal(loadedAttachmentId, 'source-image');
     assert.ok(requestBody instanceof FormData);
@@ -310,6 +312,42 @@ test('generateChatImage rejects empty upstream image arrays', async () => {
     });
     assert.equal(result.ok, false);
     assert.equal(result.error, 'Image service returned no image.');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('a 402 reports its reason, so a spend limit does not offer Add funds', async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    const answer = (error: Record<string, unknown>) => {
+      globalThis.fetch = (async () => new Response(JSON.stringify({ error }), { status: 402 })) as typeof fetch;
+    };
+    const store = { appendImageGeneration: async () => { throw new Error('nothing to persist'); } };
+    const request = { conversationId: 'conversation-1', prompt: 'An ant', service: 'image-model' };
+
+    answer({ code: 'spend_limit_reached', message: 'This key reached its daily limit of $5.00.' });
+    const capped = await generateChatImage(store, ENDPOINT, request);
+    assert.equal(capped.ok, false);
+    assert.deepEqual(capped.stopReason, { kind: 'payment_required', message: 'This key reached its daily limit of $5.00.', errorCode: 'spend_limit_reached' });
+
+    answer({ message: 'Too low.' });
+    assert.deepEqual((await generateChatImage(store, ENDPOINT, request)).stopReason, { kind: 'payment_required', message: 'Too low.' });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('no moderation option, no capability requirement', async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    let headers = new Headers();
+    globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      headers = new Headers(init?.headers);
+      return new Response(JSON.stringify({ data: [] }), { status: 200 });
+    }) as typeof fetch;
+    await generateChatImage({ appendImageGeneration: async () => { throw new Error('unused'); } }, ENDPOINT, { conversationId: 'conversation-1', prompt: 'An ant', service: 'image-model' });
+    assert.equal(headers.has('x-antseed-required-parameters'), false);
   } finally {
     globalThis.fetch = originalFetch;
   }

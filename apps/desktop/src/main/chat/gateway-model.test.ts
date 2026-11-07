@@ -135,3 +135,15 @@ test('an image model charging per image is not free, though its token prices are
   assert.equal(paid?.minImageUsd, 0.005);
   assert.equal(free?.free, true);
 });
+
+test('sellers that take images are listed, for a chat pinned to one when not all of them do', () => {
+  const model = toChatModel({
+    id: 'mixed',
+    peers: [
+      { peerId: `0x${'A'.repeat(40)}`, capabilities: { inputs: ['text', 'image'] } },
+      { peerId: 'b'.repeat(40), capabilities: { inputs: ['text'] } },
+    ],
+  } as never);
+  assert.equal(model.supportsImages, false);
+  assert.deepEqual(model.imageInputSellerIds, ['a'.repeat(40)]);
+});

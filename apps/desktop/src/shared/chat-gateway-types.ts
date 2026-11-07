@@ -10,6 +10,8 @@ export type ChatModel = {
   protocol: ChatServiceProtocol | null;
   /** Accepts image input: vision for text models, image edits for image models. */
   supportsImages: boolean;
+  /** Sellers that take image input, for a chat pinned to one when not all of them do. */
+  imageInputSellerIds?: string[];
   contextWindow?: number;
   /** Sellers offering it, as the gateway lists them (before routing policy). */
   sellers: number;

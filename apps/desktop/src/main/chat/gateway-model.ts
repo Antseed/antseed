@@ -87,13 +87,21 @@ function entrySupportsImages(entry: GatewayModelEntry): boolean {
     return true;
   }
   const peers = records(entry['peers']);
-  return peers.length > 0 && peers.every((peer) => {
-    const capabilities = peer['capabilities'];
-    const inputs = capabilities && typeof capabilities === 'object'
-      ? strings((capabilities as Record<string, unknown>)['inputs'])
-      : [];
-    return inputs.includes('image') || strings(peer['categories']).includes('multimodal');
-  });
+  return peers.length > 0 && peers.every(peerTakesImages);
+}
+
+function peerTakesImages(peer: Record<string, unknown>): boolean {
+  const capabilities = peer['capabilities'];
+  const inputs = capabilities && typeof capabilities === 'object'
+    ? strings((capabilities as Record<string, unknown>)['inputs'])
+    : [];
+  return inputs.includes('image') || strings(peer['categories']).includes('multimodal');
+}
+
+function imageInputSellerIds(entry: GatewayModelEntry): string[] {
+  return records(entry['peers'])
+    .filter(peerTakesImages)
+    .flatMap((peer) => (typeof peer['peerId'] === 'string' ? [peer['peerId'].toLowerCase().replace(/^0x/, '')] : []));
 }
 
 function entryContextWindow(entry: GatewayModelEntry): number | undefined {
@@ -143,12 +151,14 @@ export function toChatModel(entry: GatewayModelEntry): ChatModel {
   const type = entryType(entry, protocols);
   const name = typeof entry['name'] === 'string' && entry['name'].trim() ? entry['name'].trim() : entry.id;
   const contextWindow = entryContextWindow(entry);
+  const imageSellers = imageInputSellerIds(entry);
   return {
     id: entry.id,
     label: name,
     type,
     protocol: type === 'text' ? resolveEntryProtocol(entry) : null,
     supportsImages: entrySupportsImages(entry),
+    ...(imageSellers.length > 0 ? { imageInputSellerIds: imageSellers } : {}),
     ...(contextWindow ? { contextWindow } : {}),
     ...entryOfferSummary(entry),
   };

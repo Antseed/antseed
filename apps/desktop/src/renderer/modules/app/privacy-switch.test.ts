@@ -71,6 +71,20 @@ describe('requestPrivacyMode', () => {
     expect(getPrivacySwitchState().switching).toBe(false);
   });
 
+  it('still applies a newer choice when the write before it fails', async () => {
+    const { requestPrivacyMode, getPrivacySwitchState, calls, shownMode } = await setup();
+    const done = requestPrivacyMode('private');
+    void requestPrivacyMode('anonymous');
+    calls[0].settle({ ok: false, error: 'gateway busy' });
+    await tick();
+    expect(calls.map((call) => call.mode)).toEqual(['private', 'anonymous']);
+    expect(getPrivacySwitchState().switching).toBe(true);
+    calls[1].settle({ ok: true, privacy: privacy('anonymous') });
+    await done;
+    expect(shownMode()).toBe('anonymous');
+    expect(getPrivacySwitchState()).toEqual({ switching: false, error: null });
+  });
+
   it('reads the mode back when a write fails, since it may have landed', async () => {
     const { requestPrivacyMode, getPrivacySwitchState, calls, shownMode } = await setup();
     (window as any).antseedDesktop.gatewayGetPrivacy = async () => ({ ok: true, privacy: privacy('private') });

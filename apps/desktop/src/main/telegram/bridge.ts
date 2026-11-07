@@ -6,6 +6,7 @@
 // keyboards; whichever surface (desktop dialog or Telegram) decides first
 // wins via PiChatEngine.resolveToolApproval.
 
+import { splitPinnedModel } from '../../shared/pinned-model.js';
 import { randomBytes } from 'node:crypto';
 import { onChatEvents } from '../chat/event-bus.js';
 import type { ChatStreamStopReason } from '../chat/stream-stop.js';
@@ -431,10 +432,27 @@ export function createTelegramBridge({ engine, appendLog, onStatusChanged }: Tel
     await client.editMessageText(pick.chatId, pick.messageId, `Model: ${option.label}`).catch(() => {});
   };
 
+  /** Private may have narrowed the list since this chat's model was chosen; its messages would all fail. */
+  const moveOffUnlistedModel = async (conversationId: string): Promise<void> => {
+    const current = await engine.getConversationModel(conversationId);
+    if (!current) return;
+    const models = await engine.listModels();
+    const { modelId } = splitPinnedModel(current);
+    if (models.length === 0 || models.some((model) => model.id === modelId)) return;
+    const next = await resolveModel();
+    if (!next) return;
+    await engine.setConversationModel(conversationId, next);
+    const label = models.find((model) => model.id === next)?.label || next;
+    void sendToOwner(`${modelId} isn't available with your current privacy setting, so this chat now uses ${label}.`);
+  };
+
   const ensureConversation = async (): Promise<string> => {
     const active = settings?.activeConversationId;
     // The chat may have been deleted in the app since the last message.
     if (active && await engine.hasConversation(active)) {
+      await moveOffUnlistedModel(active).catch((err: unknown) => {
+        log(`Could not check this chat's model: ${asErrorMessage(err)}`);
+      });
       bridgeConversationIds.add(active);
       return active;
     }

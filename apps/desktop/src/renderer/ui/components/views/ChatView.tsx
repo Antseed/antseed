@@ -16,6 +16,7 @@ import {
   Shield01Icon
 } from '@hugeicons/core-free-icons';
 import { findChatModel, fundsNoticeAction } from '../../../modules/chat/models';
+import { modelAcceptsImages } from '../../../../shared/pinned-model.js';
 import { shallowEqual, useUiSelector } from '../../hooks/useUiSelector';
 import { useActions } from '../../hooks/useActions';
 import { useRetainedState } from '../../hooks/useRetainedState';
@@ -487,7 +488,7 @@ export function ChatView({ onSelectView }: ChatViewProps) {
   const imageMode = imageModel?.type === 'image';
   // Unknown models (a plain OpenAI-compatible gateway, or the list still
   // loading) are treated as text-only.
-  const supportsMultimodal = selectedTextModel?.supportsImages ?? false;
+  const supportsMultimodal = selectedTextModel ? modelAcceptsImages(selectedTextModel, snap.chatSelectedModelId) : false;
   const hasAttachedImages = useMemo(
     () => attachedFiles.some((file) => isImageAttachmentLike(file.name, file.mimeType)),
     [attachedFiles],
@@ -577,11 +578,13 @@ export function ChatView({ onSelectView }: ChatViewProps) {
 
   // Start a fresh conversation on the model this one uses.
   const handleNewChatWithCurrentModel = useCallback(() => {
-    const modelId = snap.chatSelectedModelId;
+    const { chatSelectedModelId: modelId, chatImageModelId: imageModelId } = snap;
     actions.startNewChat();
     if (modelId) actions.selectChatModel(modelId);
+    // Choosing a text model leaves image mode, so the image model goes back on last.
+    if (imageModelId) actions.selectChatModel(imageModelId);
     inputRef.current?.focus();
-  }, [actions, snap.chatSelectedModelId]);
+  }, [actions, snap.chatSelectedModelId, snap.chatImageModelId]);
 
   // Toggle between the thin chat panel and the expanded layout. The store
   // flag drives both the conversation-list panel (VprShell) and the window

@@ -347,6 +347,14 @@ export function resolveCommandArgs(opts: StartOptions): string[] {
   return args;
 }
 
+/**
+ * The gateway drains requests in flight (60s), then stops its buyer (up to 90s).
+ * Killed before that, it never signals the buyer, which runs on in its own
+ * process group and would be attached by the next start, even after a signer
+ * import. It exits at once when nothing is in flight.
+ */
+const GATEWAY_STOP_KILL_MS = 155_000;
+
 export class ProcessManager {
   private readonly processes = new Map<RuntimeMode, ChildProcessWithoutNullStreams>();
   private runtimeNativeAligned = false;
@@ -700,13 +708,11 @@ export class ProcessManager {
         resolveStop();
       };
 
-      // The gateway stops its buyer first, which drains requests in flight;
-      // a buyer outliving a killed gateway finishes that drain on its own.
       const timeout = setTimeout(() => {
         child.kill('SIGKILL');
-      }, 10_000);
+      }, GATEWAY_STOP_KILL_MS);
       const forceKillTimeout = timeout;
-      const resolveTimeout = setTimeout(finish, 12_500);
+      const resolveTimeout = setTimeout(finish, GATEWAY_STOP_KILL_MS + 2_500);
 
       child.once('exit', finish);
 
