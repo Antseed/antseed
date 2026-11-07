@@ -11,6 +11,7 @@ Send one prompt to a text model on the Antseed network through the user's gatewa
 
 - Antseed Desktop (or an Antseed gateway) is running.
 - Gateway URL: `$ANTSEED_PROXY_URL` when it is set, otherwise `http://127.0.0.1:8377`. API key: `$ANTSEED_API_KEY`, otherwise `antseed-desktop`. Always go through `$proxy_url`; never hard-code a port.
+- If `$ANTSEED_PROXY_URL` is not set and the commands below still default to the local buyer port (8377), this copy was not installed by Antseed Desktop. Stop and ask the user for the gateway URL and key (Antseed Desktop: **Agents & apps → Use with any other tool**), then export them as `ANTSEED_PROXY_URL` and `ANTSEED_API_KEY`. Calling the local buyer directly skips the gateway's policy, limits and usage, so do that only if the user runs the CLI buyer and says so.
 - `curl` and `jq`.
 - Paid models need a funded balance; the catalog marks free offers.
 

@@ -190,9 +190,12 @@ async function runGatewayCli(args: string[]): Promise<string> {
   return result.stdout;
 }
 
+async function runGatewayJson<T>(args: string[]): Promise<T> {
+  return JSON.parse(await runGatewayCli([...args, '--json'])) as T;
+}
+
 async function createLocalKey(label: string): Promise<StoredGatewayKey> {
-  const stdout = await runGatewayCli(['key', 'create', '--label', label, '--json']);
-  const parsed = JSON.parse(stdout) as { id?: unknown; apiKey?: unknown };
+  const parsed = await runGatewayJson<{ id?: unknown; apiKey?: unknown }>(['key', 'create', '--label', label]);
   if (typeof parsed.apiKey !== 'string' || !parsed.apiKey) throw new Error('The gateway did not return an API key');
   return { id: typeof parsed.id === 'string' ? parsed.id : null, label, secret: parsed.apiKey };
 }
@@ -204,7 +207,7 @@ async function revokeLocalKey(id: string): Promise<void> {
 }
 
 async function readKeyRecord(id: string): Promise<KeyRecord> {
-  return JSON.parse(await runGatewayCli(['key', 'show', id, '--json'])) as KeyRecord;
+  return runGatewayJson<KeyRecord>(['key', 'show', id]);
 }
 
 /** True when the gateway rejects this key (revoked, expired, replaced, or the gateway's database was reset). */
@@ -289,7 +292,7 @@ export async function rotateLocalKeys(scope?: string): Promise<void> {
         await revokeLocalKey(id);
         return null;
       }
-      const parsed = JSON.parse(await runGatewayCli(['key', 'rotate', id, '--json'])) as { apiKey?: unknown };
+      const parsed = await runGatewayJson<{ apiKey?: unknown }>(['key', 'rotate', id]);
       if (typeof parsed.apiKey !== 'string' || !parsed.apiKey) throw new Error('The gateway did not return an API key');
       return parsed.apiKey;
     },
@@ -359,7 +362,7 @@ export async function getGatewayKeyInfo(): Promise<GatewayKeyInfo | null> {
 type KeyPolicyView = { ownerRoutingPolicy: Record<string, unknown> | null; effective: Record<string, unknown> };
 
 async function readKeyPolicy(id: string): Promise<KeyPolicyView> {
-  const parsed = JSON.parse(await runGatewayCli(['key', 'policy', 'show', id, '--json'])) as Partial<KeyPolicyView>;
+  const parsed = await runGatewayJson<Partial<KeyPolicyView>>(['key', 'policy', 'show', id]);
   const owner = parsed.ownerRoutingPolicy;
   return {
     ownerRoutingPolicy: owner && typeof owner === 'object' ? owner : null,

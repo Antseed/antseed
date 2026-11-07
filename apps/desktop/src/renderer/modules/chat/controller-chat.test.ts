@@ -268,4 +268,23 @@ describe('chat controller', () => {
     answers['conv-b']!({ ok: true, data: conv('conv-b', 'model-b') });
     await second;
   });
+
+  it('reads an empty model list again, past the cache, until peers have been found', async () => {
+    vi.useFakeTimers();
+    try {
+      const chatListModels = vi.fn()
+        .mockResolvedValueOnce({ ok: true, data: [] })
+        .mockResolvedValue({ ok: true, data: [model('model-a')] });
+      const { api, uiState } = setup(undefined, { chatListModels });
+      uiState.chatModels = [] as never;
+      uiState.chatSelectedModelId = '';
+      await api.refreshChatModels();
+      expect(uiState.chatModels).toEqual([]);
+      await vi.advanceTimersByTimeAsync(16_000);
+      expect(chatListModels).toHaveBeenLastCalledWith({ force: true });
+      expect(uiState.chatSelectedModelId).toBe('model-a');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

@@ -1,3 +1,4 @@
+import { getPrivacySwitchState } from '../app/vpr-resources';
 import { describeChatError } from './chat-errors';
 import { imageModelCanEdit, modelAcceptsImages, splitPinnedModel } from '../../../shared/pinned-model.js';
 import { selectHasFunds } from '../../core/balance';
@@ -240,8 +241,11 @@ export function initChatModule({
       try {
         const result = await bridge.chatListModels!(options.force ? { force: true } : undefined);
         if (result.ok) {
-          modelRetryCount = 0;
           uiState.chatModels = Array.isArray(result.data) ? result.data : [];
+          // The list comes from the peers found so far, so it can be empty just after
+          // launch, with a short-lived cache in front of it.
+          if (uiState.chatModels.some((model) => model.type === 'text')) modelRetryCount = 0;
+          else scheduleModelRetry({ force: true });
           uiState.chatModelsError = null;
           applyDefaultModel();
           if (uiState.chatImageModelId && !findChatModel(uiState.chatModels, uiState.chatImageModelId)) {
@@ -308,12 +312,12 @@ export function initChatModule({
     }
   }
 
-  function scheduleModelRetry(): void {
+  function scheduleModelRetry(options: { force?: boolean } = {}): void {
     if (modelRetryTimer || modelRetryCount >= MODEL_LIST_MAX_AUTO_RETRIES) return;
     modelRetryCount += 1;
     modelRetryTimer = setTimeout(() => {
       modelRetryTimer = null;
-      void refreshChatModels();
+      void refreshChatModels(options);
     }, MODEL_LIST_RETRY_MS);
   }
 
@@ -1093,6 +1097,8 @@ export function initChatModule({
   function retryAfterPayment(): void {
     const convId = uiState.chatActiveConversation;
     if (!convId || !fundsNoticeByConversation.has(convId) || isConversationSending(convId)) return;
+    // Nothing goes out under a policy the screen doesn't show.
+    if (getPrivacySwitchState().switching) return;
     const imageRequest = imageRetryByConversation.get(convId);
     if (imageRequest) {
       imageRetryByConversation.delete(convId);

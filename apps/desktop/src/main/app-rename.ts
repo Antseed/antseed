@@ -89,11 +89,12 @@ export function gatewaySettingsStore(file: string): EncryptedStore {
     }
     return out;
   };
+  const parse = (contents: Buffer): Settings => JSON.parse(contents.toString('utf8')) as Settings;
   return {
     file,
-    read: (contents) => slots(JSON.parse(contents.toString('utf8')) as Settings).map((slot) => slot.get()),
+    read: (contents) => slots(parse(contents)).map((slot) => slot.get()),
     write: (contents, values) => {
-      const settings = JSON.parse(contents.toString('utf8')) as Settings;
+      const settings = parse(contents);
       slots(settings).forEach((slot, index) => slot.set(values[index]!));
       return Buffer.from(JSON.stringify(settings, null, 2));
     },

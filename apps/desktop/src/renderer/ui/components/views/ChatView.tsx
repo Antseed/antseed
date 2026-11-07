@@ -1115,7 +1115,7 @@ export function ChatView({ onSelectView }: ChatViewProps) {
                   ...(fundsAction === 'console'
                     ? [{ label: 'Open gateway console', primary: true, onClick: () => { void window.antseedDesktop?.gatewayOpenConsole?.('/'); } }]
                     : []),
-                  { label: 'Try again', onClick: () => actions.retryAfterPayment() },
+                  ...(privacySwitching ? [] : [{ label: 'Try again', onClick: () => actions.retryAfterPayment() }]),
                   { label: 'Dismiss', onClick: () => actions.dismissFundsNotice() },
                 ]}
               >

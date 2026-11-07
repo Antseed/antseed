@@ -99,4 +99,19 @@ describe('a request stopped for funds', () => {
     await tick();
     expect(chatGenerateImage).toHaveBeenCalledTimes(1);
   });
+
+  it('holds Try again while a privacy switch is settling', async () => {
+    const { api, chatGenerateImage } = setup(lowFunds);
+    api.generateImage('a cat');
+    await tick();
+    const resources = await import('../app/vpr-resources');
+    const write = vi.fn(() => new Promise(() => undefined));
+    (window as unknown as { antseedDesktop: unknown }).antseedDesktop = { gatewaySetPrivacy: write };
+    resources.privacyResource.setData({ mode: 'anonymous', editable: true, requiredAbove: false });
+    void resources.requestPrivacyMode('private');
+    expect(resources.getPrivacySwitchState().switching).toBe(true);
+    api.retryAfterPayment();
+    await tick();
+    expect(chatGenerateImage).toHaveBeenCalledTimes(1);
+  });
 });

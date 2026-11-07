@@ -68,6 +68,7 @@ import {
 } from './gateway-model.js';
 import { modelAcceptsImages, routeModeOf, splitPinnedModel } from '../../shared/pinned-model.js';
 import { createGatewayBashTool } from './gateway-bash-tool.js';
+import { grantShellGateway } from './gateway-shell-relay.js';
 import { resolveSystemPrompt } from './system-prompt.js';
 import { sessionServiceId } from './legacy-seller-pin.js';
 import {
@@ -217,6 +218,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
       return { ok: false, error: message };
     }
 
+    let revokeShellGateway = (): void => undefined;
     const sessionManager = await store.openSessionManager(conversationId);
     if (!sessionManager) {
       return { ok: false, error: 'Conversation not found' };
@@ -341,6 +343,8 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     });
     await resourceLoader.reload();
 
+    const shellGateway = await grantShellGateway(endpoint);
+    revokeShellGateway = shellGateway.revoke;
     const { session } = await createAgentSession({
       cwd: chatWorkspaceDir,
       agentDir: CHAT_AGENT_DIR,
@@ -350,7 +354,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
       model: gatewayModel,
       customTools: [
         // Registered under the built-in's name, so it takes that tool's place.
-        createGatewayBashTool(chatWorkspaceDir, endpoint, settingsManager.getShellCommandPrefix()),
+        createGatewayBashTool(chatWorkspaceDir, shellGateway, settingsManager.getShellCommandPrefix()),
         webFetchTool,
         createBrowserPreviewTool(sendToRenderer),
         createStartDevServerTool(sendToRenderer),
@@ -830,6 +834,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
       finishTelemetry('failed', reason, message);
       return { ok: false, error: errorText, stopReason: reason };
     } finally {
+      revokeShellGateway();
       clearActiveRun(run);
       store.markPersistedIfAvailable(conversationId);
     }

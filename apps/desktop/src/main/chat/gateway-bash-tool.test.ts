@@ -9,15 +9,15 @@ async function run(tool: ReturnType<typeof createGatewayBashTool>): Promise<stri
 }
 
 test('each run\'s shell sees its own gateway, even with two running at once', async () => {
-  const first = createGatewayBashTool(tmpdir(), { origin: 'http://one', apiKey: 'key-one' });
-  const second = createGatewayBashTool(tmpdir(), { origin: 'https://two', apiKey: 'key-two' });
+  const first = createGatewayBashTool(tmpdir(), { url: 'http://one', token: 'token-one' });
+  const second = createGatewayBashTool(tmpdir(), { url: 'https://two', token: 'token-two' });
   const [a, b] = await Promise.all([run(first), run(second)]);
-  assert.equal(a, 'http://one key-one');
-  assert.equal(b, 'https://two key-two');
+  assert.equal(a, 'http://one token-one');
+  assert.equal(b, 'https://two token-two');
 });
 
-test('the key stays out of the process environment', async () => {
-  await run(createGatewayBashTool(tmpdir(), { origin: 'http://one', apiKey: 'key-one' }));
+test('the token stays out of the process environment', async () => {
+  await run(createGatewayBashTool(tmpdir(), { url: 'http://one', token: 'token-one' }));
   assert.equal(process.env['ANTSEED_API_KEY'], undefined);
   assert.equal(process.env['ANTSEED_PROXY_URL'], undefined);
 });

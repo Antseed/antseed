@@ -139,7 +139,7 @@ async function writeKeyFile(apiKey: string, options: Options): Promise<string> {
   return keyFile;
 }
 
-async function installInto(skillsDir: string, endpoint: AgentSkillsEndpoint, options: Options): Promise<void> {
+async function installInto(skillsDir: string, endpoint: AgentSkillsEndpoint, options: Options, writeKey = true): Promise<void> {
   const sourceRoot = bundledSkillsRoot(options);
   if (!sourceRoot) throw new Error('The Antseed skills are missing from this install.');
   // Never overwrite a skill of that name the user put there themselves.
@@ -165,7 +165,7 @@ async function installInto(skillsDir: string, endpoint: AgentSkillsEndpoint, opt
       }
       await writeFile(path.join(dest, MARKER_FILE), 'Installed by Antseed Desktop. Removing the skill from the app deletes this folder.\n', 'utf8');
     }
-    await writeKeyFile(endpoint.apiKey, options);
+    if (writeKey) await writeKeyFile(endpoint.apiKey, options);
     for (const name of AGENT_SKILL_NAMES) {
       const dest = path.join(skillsDir, name);
       await rm(dest, { recursive: true, force: true });
@@ -194,9 +194,10 @@ export async function removeAgentSkills(id: string, options: Options = {}): Prom
 
 /** Re-points every installed copy at the current gateway and key (after a key replacement or a gateway switch). */
 export async function syncAgentSkills(endpoint: AgentSkillsEndpoint, options: Options = {}): Promise<void> {
-  for (const target of listAgentSkillTargets(options)) {
-    if (target.installed) await installInto(target.skillsDir, endpoint, options);
-  }
+  const installed = listAgentSkillTargets(options).filter((target) => target.installed);
+  if (installed.length === 0) return;
+  await writeKeyFile(endpoint.apiKey, options);
+  for (const target of installed) await installInto(target.skillsDir, endpoint, options, false);
 }
 
 /** For any other agent: what to paste so it can call the gateway. Holds the key, so it is only built on request. */

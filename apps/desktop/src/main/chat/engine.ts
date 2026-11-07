@@ -440,6 +440,8 @@ export function registerPiChatHandlers({
     const controller = new AbortController();
     activeImageRunsByConversation.set(conversationId, controller);
     try {
+      // An image goes out under whichever policy the switch settles on, like a text send.
+      await whenPrivacySettled();
       const endpoint = await getGatewayEndpoint();
       return await generateChatImage(store, endpoint, {
         conversationId,
