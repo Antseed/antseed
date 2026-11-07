@@ -83,6 +83,11 @@ export interface RequestExecutionOptions {
   captureResponseAuthPreimages?: boolean;
   /** Refuse a video create priced above this many USDC base units (the caller's remaining budget). */
   maxVideoCostUsdc?: bigint;
+  /**
+   * Send only on the connection with this session hash: the one a seller's TEE attestation was
+   * bound to. A request that would go out on any other connection is refused before sending.
+   */
+  channelBinding?: string;
 }
 
 export interface BuyerRequestHandlerConfig {
@@ -154,6 +159,12 @@ export class BuyerRequestHandler {
 
     const conn = await this._deps.getConnection(peer);
     debugLog(`[BuyerRequest] Connection to ${peer.peerId.slice(0, 12)}... state=${conn.state}`);
+    if (options?.channelBinding !== undefined && conn.channelBinding !== options.channelBinding) {
+      throw buyerFault(
+        `Connection to ${peer.peerId.slice(0, 12)}... is not the one its TEE attestation covered; verify the seller again`,
+        'buyer-tee-connection-changed',
+      );
+    }
     const mux = this._deps.getMux(peer.peerId, conn);
     const verificationMux = this._deps.getVerificationMux(peer.peerId, conn);
     const negotiator = options?.controlPlane ? null : this._deps.negotiator;
@@ -737,12 +748,14 @@ export function selectBillingRoute(
   const serviceApiProtocol = selectProtocolForService(peer, provider, service, request);
   const unitModel = peer.providerServiceUnitBillingModels?.[provider]?.services[service]?.[serviceApiProtocol];
   const tokenPricing = selectTokenPricing(peer, provider, service);
+  const videoOptions = peer.providerServiceCapabilities?.[provider]?.services[service]?.video;
   return {
     sellerPeerId: peer.peerId,
     provider,
     service,
     serviceApiProtocol,
     ...(unitModel ? { unitModel } : {}),
+    ...(videoOptions ? { videoOptions } : {}),
     ...(tokenPricing ? { tokenPricing } : {}),
   };
 }

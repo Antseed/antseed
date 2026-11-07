@@ -173,6 +173,8 @@ export async function executeRouterSelection(args: {
   onRoutingRequest?: (requestId: string) => void;
   /** Buyer identity that pays for the ranking (a gateway key's wallet); the default identity when unset. */
   buyerIdentity?: string;
+  /** Send the conversation to the router only on this attested connection (a required TEE check's). */
+  channelBinding?: string;
 }): Promise<RouteRecommendation[]> {
   const { node, client, request, peers, conversationKey, signal } = args
   const routingService = args.selection.service
@@ -204,7 +206,11 @@ export async function executeRouterSelection(args: {
         // Routing and inference are separate purchases, so they need separate billing IDs.
         if (!serviceRequest.requestId || serviceRequest.requestId === request.requestId) throw new Error('Routing purchases require a distinct request ID')
         args.onRoutingRequest?.(serviceRequest.requestId)
-        return node.sendRequest(peer, serviceRequest, { ...options, signal, ...(args.buyerIdentity ? { buyerIdentity: args.buyerIdentity } : {}) })
+        return node.sendRequest(peer, serviceRequest, {
+          ...options, signal,
+          ...(args.buyerIdentity ? { buyerIdentity: args.buyerIdentity } : {}),
+          ...(args.channelBinding ? { channelBinding: args.channelBinding } : {}),
+        })
       },
     }))
     signal.throwIfAborted()
