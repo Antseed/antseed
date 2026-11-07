@@ -114,6 +114,8 @@ Add Antseed under `models.providers` in `~/.openclaw/openclaw.json`:
 
 Then run `openclaw models set "antseed/kimi-k2.6"` and `openclaw gateway restart`. `authHeader: true` sends the key as `Authorization: Bearer <key>`, which gateway keys and tunnel endpoints require. Antseed translates the chat-completions request when a seller speaks another API. For the local buyer proxy on the same computer, use `"baseUrl": "http://127.0.0.1:8377/v1"` and `"apiKey": "antseed-p2p"`.
 
+`kimi-k2.6` has no free seller, so it needs a funded gateway. After a `402`, OpenClaw disables the key for about 10 minutes for every model. On an unfunded gateway, use a gateway preset that prefers free sellers as the model id, such as `@preset/openclaw`. Only a gateway resolves presets; through the local buyer proxy, OpenClaw needs a concrete model id. On a local buyer with no deposits, pick a model that has a free seller: newer CLIs retry a free seller after a paid one answers `402`, while CLI 0.1.234 and earlier pass the `402` on, so there it needs a funded buyer or a gateway. To keep paid text sellers out entirely, give the buyer zero token price caps ([Routing](./routing.md)). OpenClaw cuts model ids at `@`, so `<peerId>@<service-id>` doesn't work there; pin a seller with a preset made with `--allow-peer <peerId>`. The [OpenClaw integration](/integrations/openclaw) has the commands.
+
 ## Switch an agent between endpoints
 
 To move an agent from the local buyer proxy to a gateway key or tunnel endpoint, or back, change the base URL (ending in `/v1`) and the key:

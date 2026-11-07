@@ -485,7 +485,7 @@ function RunFirstBanner() {
                 snippet={`"deepseek-v4-flash"
 "gpt-oss-120b"
 "gemma-3-27b"
-"qwen3-coder-480b"
+"glm-5.2"
 "kimi-k2.6"
 "minimax-m2.7"`}
               />
