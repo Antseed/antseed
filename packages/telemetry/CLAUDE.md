@@ -1,6 +1,6 @@
 # @antseed/telemetry
 
-The privacy boundary the desktop app, the gateway and the buyer share. A host reports only its own UI (the desktop's screens, the gateway's setup funnel); all usage comes from the buyer, whichever host (desktop, gateway, `antseed buyer start`) runs it. It holds buckets, failure classifiers, a strict allowlist sanitizer, consent resolution and a bounded PostHog transport. Each product keeps its own event catalog (names and allowed properties). This package only enforces the rules. The public doc is `docs/telemetry.md`. Change it with every event or field.
+The privacy boundary for the CLI process (buyer and gateway). The desktop does not import this package; its copy is `apps/desktop/src/main/telemetry/`, so a rule change here does not reach it. A host reports only its own UI (the desktop's screens, the gateway's setup funnel); all usage comes from the buyer, whichever host (desktop, gateway, `antseed buyer start`) runs it. It holds buckets, failure classifiers, a strict allowlist sanitizer, consent resolution and a bounded PostHog transport. Each product keeps its own event catalog (names and allowed properties). This package only enforces the rules. The public doc is `docs/telemetry.md`. Change it with every event or field.
 
 | Rule | Enforced by |
 | --- | --- |
