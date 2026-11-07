@@ -169,6 +169,23 @@ export class StateFileSync {
     return true
   }
 
+  /**
+   * The last save, after the seller has stopped: waits out a save still running (even one that
+   * fails), then retries with backoff, since nothing saves this state again before the VM goes.
+   * Throws if it still fails, or at once on a conflict.
+   */
+  async saveFinal({ attempts = 5, delayMs = 1000 } = {}) {
+    await this.saving?.catch(() => {})
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        return await this.save()
+      } catch (err) {
+        if (err instanceof StateConflictError || attempt >= attempts) throw err
+        await new Promise((resolve) => setTimeout(resolve, delayMs * 2 ** (attempt - 1)))
+      }
+    }
+  }
+
   /** Upload a snapshot if the database changed since the last one. One save runs at a time. */
   save() {
     this.saving ??= this._save().finally(() => { this.saving = null })

@@ -301,7 +301,6 @@ export {
   getDebugFilters,
   isContentFreeLogging,
   shouldEmitDebugLine,
-  upstreamErrorForLogs,
 } from './utils/debug.js';
 export { withFileLock, type FileLockOptions } from './utils/file-lock.js';
 export {

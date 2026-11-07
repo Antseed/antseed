@@ -138,7 +138,7 @@ its listed env variables and never replace its command. Its logs may go to Cloud
 
    Confidential Space keeps no data across a VM restart (its only mounts are memory-backed), so
    give the seller a private bucket for its payment channels and metering, which it needs to
-   settle with buyers after a restart:
+   settle with buyers after a restart (the image refuses to start without one):
 
    ```bash
    gcloud storage buckets create gs://<bucket> --location=<region> --uniform-bucket-level-access
@@ -171,13 +171,14 @@ its listed env variables and never replace its command. Its logs may go to Cloud
    gcloud compute firewall-rules create antseed-tee-seller --allow=tcp:6882,udp:6881
    ```
 
-With `ANTSEED_GCP_STATE` set, the image restores the seller's payment and metering databases
+With `ANTSEED_GCP_STATE`, which it requires, the image restores the seller's payment and metering databases
 from objects under that prefix on boot, and saves them while they change: payment channels every
 30 seconds, metering every 5 minutes, and both once more after the seller stops. Snapshots are
 encrypted with a key derived from the seller identity and, like the seller's logs, hold no prompts
 or responses (see [Logs and data](#logs-and-data)). Metering keeps free-tier usage, pending
 resource charges and the last 7 days of request log. An abrupt VM loss can drop the last 30
-seconds of payment updates. Each save is written only over the version the seller last saw, so if
+seconds of payment updates; the last save, after the seller stops, is retried with backoff.
+Each save is written only over the version the seller last saw, so if
 a second VM with the same identity writes the state, the older one stops instead of overwriting
 it.
 

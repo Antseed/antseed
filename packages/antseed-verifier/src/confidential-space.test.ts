@@ -13,7 +13,16 @@ const ROUND_NONCE = confidentialSpaceNonce(computeReportData(NONCE, PEER, BINDIN
 const CONFIG = { seller: { providers: { venice: { plugin: 'openai', baseUrl: 'https://api.venice.ai/api', apiKeyEnv: 'VENICE_API_KEY', services: {} } } } }
 
 /** Claims as Google issues them for a conforming production workload. */
-function claims(over: Record<string, unknown> = {}, env: Record<string, string> = {}): JWTPayload {
+function claims(over: Record<string, unknown> = {}, env: Record<string, string> = {}) {
+  const envOverride: Record<string, string> = {
+    ANTSEED_TEE_PEER_ID: PEER,
+    [CS_SELLER_CONFIG_ENV]: JSON.stringify(CONFIG),
+    [CS_SECRETS_ENV]: JSON.stringify({
+      audience: '//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/attestation',
+      secrets: { ANTSEED_IDENTITY_HEX: 'projects/1/secrets/identity/versions/1', VENICE_API_KEY: 'projects/1/secrets/venice/versions/latest' },
+    }),
+    ...env,
+  }
   return {
     iss: CS_ISSUER,
     aud: CS_AUDIENCE,
@@ -27,19 +36,11 @@ function claims(over: Record<string, unknown> = {}, env: Record<string, string> 
       confidential_space: { support_attributes: ['LATEST', 'STABLE', 'USABLE'] },
       container: {
         image_digest: TEST_IMAGE.digest,
-        env_override: {
-          ANTSEED_TEE_PEER_ID: PEER,
-          [CS_SELLER_CONFIG_ENV]: JSON.stringify(CONFIG),
-          [CS_SECRETS_ENV]: JSON.stringify({
-            audience: '//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/attestation',
-            secrets: { ANTSEED_IDENTITY_HEX: 'projects/1/secrets/identity/versions/1', VENICE_API_KEY: 'projects/1/secrets/venice/versions/latest' },
-          }),
-          ...env,
-        },
+        env_override: envOverride,
       },
     },
     ...over,
-  }
+  } satisfies JWTPayload
 }
 
 const check = (c: JWTPayload) => checkConfidentialSpaceClaims(c, ROUND_NONCE, [TEST_IMAGE])
@@ -64,13 +65,13 @@ describe('checkConfidentialSpaceClaims', () => {
     // A single nonce comes as a string, as Google issues it.
     expect(check(claims({ eat_nonce: ROUND_NONCE }))).not.toHaveProperty('error')
     const debugImage = claims()
-    ;(debugImage['submods'] as any).confidential_space.support_attributes = []
+    debugImage.submods.confidential_space.support_attributes = []
     expect(check(debugImage)).toMatchObject({ error: expect.stringMatching(/production release/) })
   })
 
   it('requires an approved image digest', () => {
     const other = claims()
-    ;(other['submods'] as any).container.image_digest = `sha256:${'ab'.repeat(32)}`
+    other.submods.container.image_digest = `sha256:${'ab'.repeat(32)}`
     expect(check(other)).toMatchObject({ error: expect.stringMatching(/not an approved Antseed TEE seller image/) })
   })
 
@@ -96,7 +97,7 @@ describe('checkConfidentialSpaceClaims', () => {
     const agent = { seller: { ...CONFIG.seller, agentDir: '/var/lib/antseed/agent' } }
     expect(check(claims({}, { [CS_SELLER_CONFIG_ENV]: JSON.stringify(agent) }))).toMatchObject({ error: 'seller.agentDir is not allowed in a TEE seller config' })
     const withoutConfig = claims()
-    delete (withoutConfig['submods'] as any).container.env_override[CS_SELLER_CONFIG_ENV]
+    delete withoutConfig.submods.container.env_override[CS_SELLER_CONFIG_ENV]
     expect(check(withoutConfig)).toMatchObject({ error: expect.stringMatching(/seller config must be set/) })
   })
 

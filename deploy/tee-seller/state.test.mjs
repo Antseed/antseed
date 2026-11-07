@@ -128,6 +128,36 @@ describe('seller state snapshots', () => {
     rmSync(winnerDir, { recursive: true, force: true })
   })
 
+  it('retries the last save until it lands, after a save still running fails', async () => {
+    const store = memoryStore()
+    const write = store.write
+    let failures = 2
+    store.write = async (data, generation) => {
+      if (failures-- > 0) throw new Error('storage unavailable')
+      return write(data, generation)
+    }
+    const sync = new StateFileSync({ file: PAYMENTS, store, key: KEY, location: LOCATION, dataDir: seller.dir, Database })
+    await sync.restore()
+    const running = sync.save()
+    running.catch(() => {})
+    assert.equal(await sync.saveFinal({ delayMs: 1 }), true)
+    await assert.rejects(running, /storage unavailable/)
+    assert.equal(store.writes, 1)
+  })
+
+  it('gives up on the last save after its attempts, and at once on a conflict', async () => {
+    const store = memoryStore()
+    let calls = 0
+    store.write = async () => { calls += 1; throw new Error('storage unavailable') }
+    const sync = new StateFileSync({ file: PAYMENTS, store, key: KEY, location: LOCATION, dataDir: seller.dir, Database })
+    await assert.rejects(sync.saveFinal({ attempts: 3, delayMs: 1 }), /storage unavailable/)
+    assert.equal(calls, 3)
+    store.write = async () => { calls += 1; throw new StateConflictError('written by another seller instance') }
+    calls = 0
+    await assert.rejects(sync.saveFinal({ attempts: 3, delayMs: 1 }), StateConflictError)
+    assert.equal(calls, 1)
+  })
+
   it('keeps each database in its own object under the prefix', () => {
     const syncs = stateSyncs({ bucket: 'seller-state', prefix: 'tee' }, async () => 'tok', '11'.repeat(32), seller.dir, Database)
     assert.deepEqual(syncs.map((s) => s.location), ['gs://seller-state/tee/payments/sessions.db', 'gs://seller-state/tee/metering.db'])
