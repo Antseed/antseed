@@ -5,7 +5,7 @@
 # The seller runs on a distroless runtime: no shell, no package manager, so nothing in the
 # container can open a session into it, install or update code, or fetch plugins at runtime.
 # The CLI, every provider plugin and the verifier prover come from the committed package-lock.json
-# (see update-lock.mjs) via `npm ci`, so the commit determines all the code that sees prompts and
+# (written by update-lock.mjs for a CLI release) via `npm ci`, so the commit determines all the code that sees prompts and
 # the image digest (pinned in the app compose, measured into RTMR3) names it.
 #
 # Built and published by .github/workflows/tee-seller-image.yml; see deploy/tee-seller/README.md.

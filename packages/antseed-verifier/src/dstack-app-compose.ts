@@ -123,18 +123,19 @@ function origin(url: unknown, where: string): string {
   return u.origin
 }
 
-/** The seller config's upstreams and the API key variables it reads (apiKeyEnv). */
 /** A path rewrite must keep requests on the upstream it belongs to. */
 function checkPathRewrite(rewrite: unknown, baseUrl: string, where: string): void {
   if (rewrite === undefined) return
   check(isObj(rewrite), `${where} pathRewrite must be a map`)
   const base = baseUrl.replace(/\/+$/, '')
+  const baseOrigin = origin(baseUrl, `${where} baseUrl`)
   for (const [from, to] of Object.entries(rewrite)) {
     check(typeof to === 'string' && to.startsWith('/') && !to.startsWith('//'), `${where} pathRewrite for ${from} must be a path starting with one "/"`)
-    check(origin(base + to, `${where} pathRewrite for ${from}`) === origin(baseUrl, `${where} baseUrl`), `${where} pathRewrite for ${from} leaves the upstream`)
+    check(origin(base + to, `${where} pathRewrite for ${from}`) === baseOrigin, `${where} pathRewrite for ${from} leaves the upstream`)
   }
 }
 
+/** The seller config's upstreams and the API key variables it reads (apiKeyEnv). */
 function sellerUpstreams(config: unknown): { upstreams: SellerUpstream[]; apiKeyEnvs: Set<string> } {
   check(isObj(config), 'seller config must be an object')
   const providers = isObj(config['seller']) ? config['seller']['providers'] : undefined

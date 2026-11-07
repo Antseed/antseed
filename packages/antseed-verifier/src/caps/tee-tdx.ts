@@ -249,9 +249,10 @@ function approvedBuild(
 /**
  * Mint one TDX capability. `id` names the target (node or provider); `defaultSource`
  * is the collector used when config supplies no `<id>.source` override:
- *   'configfs': self-hosted TDX minted locally via configfs-tsm; report_data = antseed-rd-v1 {peerId}
+ *   'configfs': self-hosted TDX minted locally via configfs-tsm; report_data = antseed-rd-v1
+ *               {peerId, channelBinding} for seller-node attestations
  *   'dstack'  : self-hosted TDX minted via the dstack guest-agent socket (Phala CVMs, where
- *               configfs-tsm is absent); same antseed-rd-v1 {peerId} report_data as configfs
+ *               configfs-tsm is absent); the same binding, plus the event log and app compose
  *   'http'    : a pre-made quote fetched from a config-supplied evidence route ({nonce} hex)
  * verify reads this cap's own parsed quote (the orchestrator DCAP-verifies each cap's
  * own evidence entry independently). collect throws when its source is unavailable

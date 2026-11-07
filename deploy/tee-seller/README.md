@@ -24,15 +24,15 @@ itself and reports the upstreams it sends prompts to (`seller-node-upstreams`).
 ## The image
 
 [`Dockerfile`](Dockerfile) installs the npm-published `@antseed/cli`, the provider plugins a TEE
-seller may use and the verifier prover exactly as locked in [`package-lock.json`](package-lock.json)
-(`npm ci`), on a distroless runtime: no shell, no package manager, no runtime plugin installs or
+seller may use and the verifier prover exactly as locked in `package-lock.json` (`npm ci`), on a distroless runtime: no shell, no package manager, no runtime plugin installs or
 updates. The seller dashboard is off, so settings can't change at runtime. A commit therefore
 determines all the code in the image: rebuild it from that commit to check a digest's contents.
 
 To release an image after a CLI release:
 
-1. `node deploy/tee-seller/update-lock.mjs <cli version>` pins that CLI, the current plugin
-   releases and the verifier version the CLI pins; open a PR with the regenerated files. The
+1. `node deploy/tee-seller/update-lock.mjs <cli version>` writes `package.json` and
+   `package-lock.json` pinning that CLI, the current plugin releases and the verifier version the
+   CLI pins; open a PR with them. There is no lock until the first release with these checks. The
    build ([`check-lock.mjs`](check-lock.mjs)) refuses a lock whose verifier can't bind
    attestations to the buyer's connection or whose provider relay follows upstream redirects, so
    the first image comes from the release that ships `@antseed/antseed-verifier` 0.1.1 and the

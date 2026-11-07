@@ -37,6 +37,9 @@ jobs:
       - name: Read the locked CLI version
         id: version
         run: |
+          if [ ! -f deploy/tee-seller/package-lock.json ]; then
+            echo "::error::no deploy/tee-seller lock; run update-lock.mjs for a released CLI and merge it first"; exit 1
+          fi
           version="$(node -p "require('./deploy/tee-seller/package.json').dependencies['@antseed/cli']")"
           if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::error::deploy/tee-seller/package.json pins no exact @antseed/cli version ('$version')"; exit 1
