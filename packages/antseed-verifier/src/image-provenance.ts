@@ -1,4 +1,6 @@
+import { X509Certificate } from 'node:crypto'
 import type { ApprovedSellerImage } from './approved-seller-images.js'
+import { isObj } from './seller-config-rules.js'
 import trustedRoot from './sigstore-trusted-root.json' with { type: 'json' }
 
 /**
@@ -35,8 +37,6 @@ export interface ImageBuildPolicy {
 
 const DEFAULT_POLICY: ImageBuildPolicy = { ...IMAGE_BUILD, builtAfter: IMAGES_BUILT_AFTER }
 
-const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
-
 /**
  * Verify a TEE seller image's build record. Returns the images it approves (each digest it names
  * for the image, labelled with its build date and commit), or why it approves none.
@@ -61,8 +61,12 @@ export async function verifyImageBuild(
     const statement: unknown = JSON.parse(Buffer.from(envelope.payload).toString('utf8'))
     if (!isObj(statement) || statement['predicateType'] !== SLSA_PROVENANCE_V1) return { error: 'build record is not SLSA provenance' }
 
-    // The log entry's time, covered by the log's signature that the verifier just checked.
-    const builtAt = Number(parsed.verificationMaterial.tlogEntries[0]?.integratedTime ?? NaN) * 1000
+    // The signing certificate's start, which Fulcio signed and sets to when it issued the certificate
+    // for the build (the verifier just checked its chain); log entry times are not all signed.
+    const material = parsed.verificationMaterial.content
+    const leaf = material.$case === 'certificate' ? material.certificate : material.$case === 'x509CertificateChain' ? material.x509CertificateChain.certificates[0] : undefined
+    if (!leaf) return { error: 'build record has no signing certificate' }
+    const builtAt = Date.parse(new X509Certificate(leaf.rawBytes).validFrom)
     if (!(builtAt >= Date.parse(policy.builtAfter))) return { error: `image was built before ${policy.builtAfter}` }
     const predicate = isObj(statement['predicate']) ? statement['predicate'] : {}
     const definition = isObj(predicate['buildDefinition']) ? predicate['buildDefinition'] : {}

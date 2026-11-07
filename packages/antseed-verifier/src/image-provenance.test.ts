@@ -22,6 +22,13 @@ describe('verifyImageBuild', () => {
     expect(await verifyImageBuild(tampered)).toMatchObject({ error: expect.stringMatching(/does not verify/) })
   })
 
+  it('dates the build by its signing certificate, not by a log entry time the seller could add', async () => {
+    const [entry] = record.verificationMaterial.tlogEntries
+    const { inclusionPromise: _p, ...proofOnly } = entry!
+    const forged = { ...record, verificationMaterial: { ...record.verificationMaterial, tlogEntries: [{ ...proofOnly, integratedTime: '1900000000' }, entry] } }
+    expect(await verifyImageBuild(forged, { ...policy, builtAfter: '2026-11-08T00:00:00Z' })).toMatchObject({ error: expect.stringMatching(/built before|does not verify/) })
+  })
+
   it('rejects an image built before the cutoff, and anything that is not a record', async () => {
     expect(await verifyImageBuild(record, { ...policy, builtAfter: '2026-11-08T00:00:00Z' })).toEqual({ error: 'image was built before 2026-11-08T00:00:00Z' })
     expect(await verifyImageBuild(record, { ...policy, image: 'ghcr.io/other/image' })).toEqual({ error: 'build record names no ghcr.io/other/image image' })
