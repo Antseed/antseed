@@ -13,7 +13,7 @@ const modules = 'node_modules'
 // quote to the buyer's connection, send the dstack event log and app compose, and attest on Google
 // Confidential Space (launch.mjs also loads its seller config rules and state location check).
 const verifier = join(modules, '@antseed/antseed-verifier')
-const verifierFiles = ['dist/dstack-app-compose.js', 'dist/confidential-space.js', 'dist/seller-config-rules.js']
+const verifierFiles = ['dist/dstack-app-compose.js', 'dist/confidential-space.js', 'dist/seller-config-rules.js', 'dist/collect/unix-http.js']
 if (!(await import(`./${verifier}/dist/shared.js`)).CHANNEL_BINDING_HEADER || !verifierFiles.every((f) => existsSync(join(verifier, f)))
   || !(await import(`./${verifier}/dist/confidential-space.js`)).parseStateLocation) {
   fail('The locked verifier cannot bind attestations to the buyer connection; run update-lock.mjs with a CLI release that pins one that can.')

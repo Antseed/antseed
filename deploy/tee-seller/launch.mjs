@@ -24,7 +24,7 @@ const CS_SOCKET = '/run/container_launcher/teeserver.sock'
 const VERIFIER = `${PLUGINS}/@antseed/antseed-verifier/dist`
 const { checkHiddenSecrets, checkSellerConfig } = await import(`${VERIFIER}/seller-config-rules.js`)
 const { parseStateLocation } = await import(`${VERIFIER}/confidential-space.js`)
-const { postUnix } = await import(`${VERIFIER}/collect/dstack.js`)
+const { postUnix } = await import(`${VERIFIER}/collect/unix-http.js`)
 
 function fail(message) {
   console.error(`[tee-seller] ${message}`)

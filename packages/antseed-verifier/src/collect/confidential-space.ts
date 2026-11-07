@@ -1,5 +1,5 @@
 import { CS_AUDIENCE } from '../confidential-space.js'
-import { postUnix } from './dstack.js'
+import { postUnix } from './unix-http.js'
 
 /**
  * Confidential Space collector: asks the container launcher for a Google attestation token
