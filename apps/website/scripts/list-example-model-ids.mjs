@@ -73,6 +73,20 @@ for (const file of files) {
   });
 }
 
+/**
+ * An offer is free only when it lists its token prices as zero and charges nothing
+ * else: no cached-input or image price and no priced unit-billing component (the
+ * same charges as `isPricedService` in packages/node/src/payments/free-tier-program.ts).
+ * Missing token prices mean the price is unknown, not free.
+ */
+function isFreeOffer(offer) {
+  if (offer.inputUsdPerMillion !== 0 || offer.outputUsdPerMillion !== 0) return false;
+  const positive = (value) => typeof value === 'number' && value > 0;
+  if (positive(offer.cachedInputUsdPerMillion) || positive(offer.maxImageUsdPerImage)) return false;
+  return !Object.values(offer.unitBillingModels ?? {}).some((model) =>
+    (model?.components ?? []).some((component) => !(component.priceUsd <= 0)));
+}
+
 const checkIndex = process.argv.indexOf('--check');
 let catalog = null;
 if (checkIndex !== -1) {
@@ -89,7 +103,7 @@ if (checkIndex !== -1) {
   }
   catalog = new Map();
   for (const model of (await res.json()).data ?? []) {
-    const free = (model.peers ?? []).some((p) => p.inputUsdPerMillion === 0 && p.outputUsdPerMillion === 0);
+    const free = (model.peers ?? []).some(isFreeOffer);
     for (const name of [model.id, ...(model.aliases ?? [])]) catalog.set(String(name).toLowerCase(), { id: model.id, free });
   }
 }
