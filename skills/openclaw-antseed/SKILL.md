@@ -185,7 +185,7 @@ antseed gateway preset create --slug openclaw-pinned --name "OpenClaw pinned" \
 
 On an unfunded gateway, use a preset that prefers free sellers instead of a plain model id (`--model deepseek-v4-flash --prefer-free`, or add `--max-input-price 0 --max-output-price 0` to never pay). A plain id can land on a paid seller, and after a `402` OpenClaw disables the `antseed` key for about 10 minutes for every model; `openclaw models status` shows it under **Unavailable auth profiles**.
 
-Presets resolve only in a gateway. Through the local buyer proxy (funded or not), use a concrete model id and a funded buyer; an unfunded user on one computer can run `antseed gateway start` and point OpenClaw at `http://127.0.0.1:8379/v1` with a key from `antseed gateway key create --label openclaw`.
+Presets resolve only in a gateway. Through the local buyer proxy (funded or not), use a concrete model id. An unfunded local buyer works with a model that has a free seller: newer CLIs retry a free seller after a paid one answers `402`, and zero token price caps (`antseed buyer start --max-input-usd-per-million 0 --max-output-usd-per-million 0`) keep paid text sellers out entirely. A model with no free seller, such as `kimi-k2.6`, needs a funded buyer. CLI 0.1.234 and earlier pass the `402` on even when a free seller exists (check with `antseed --version`); there, fund the buyer or run `antseed gateway start` and point OpenClaw at `http://127.0.0.1:8379/v1` with a key from `antseed gateway key create --label openclaw`.
 
 Set as default with OpenClaw's current model command:
 

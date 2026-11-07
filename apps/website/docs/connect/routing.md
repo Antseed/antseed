@@ -63,7 +63,7 @@ Pinned requests don't carry it.
 
 ## Using only free models
 
-A buyer with no deposits can only be served by free sellers. Automatic routing can still rank a paid seller first, for example a faster one for a long answer, and coding tools such as Claude Code and OpenCode send large `max_tokens`. With CLI 0.1.231 and earlier, the request then fails with `402` ("You are out of AntSeed credits") and is not retried on a free seller, unless a gateway routing policy applies to it.
+A buyer with no deposits can only be served by free sellers. Automatic routing can still rank a paid seller first, for example a faster one for a long answer, and coding tools such as Claude Code and OpenCode send large `max_tokens`. With CLI 0.1.234 and earlier, the request then fails with `402` ("You are out of AntSeed credits") and is not retried on a free seller, unless a gateway routing policy applies to it.
 
 To stay on free sellers:
 

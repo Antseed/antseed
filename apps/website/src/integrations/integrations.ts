@@ -737,7 +737,7 @@ openclaw gateway restart`,
         language: 'bash',
         snippet: `openclaw models set "antseed/kimi-k2.6"
 openclaw gateway restart`,
-        note: 'The local buyer proxy needs a funded buyer for OpenClaw (`antseed buyer deposit`). Through it, OpenClaw\'s requests went to paid sellers even for models that have a free seller, and a `402` disables the key for about 10 minutes (see Troubleshooting).',
+        note: 'Without deposits, use a model that has a free seller: the local buyer retries a free seller after a paid one answers `402`. CLI 0.1.234 and earlier pass that `402` on, and OpenClaw then disables the key for about 10 minutes (see Troubleshooting), so on those versions fund the buyer (`antseed buyer deposit`) or use a gateway. A model with no free seller, such as `kimi-k2.6`, always needs a funded buyer.',
       },
     ],
     modelHints: {
@@ -817,7 +817,7 @@ openclaw gateway restart`,
       { label: 'Antseed tunnels', href: '/docs/tunnels' },
     ],
     agentSummary:
-      'Gateway (recommended): set ANTSEED_BASE_URL=<gateway URL ending in /v1> and ANTSEED_API_KEY=<gateway key>. Same computer as a buyer, no gateway: http://127.0.0.1:8377/v1 with a placeholder key. In models.providers.antseed use baseUrl/apiKey from those variables, api="openai-completions" and authHeader=true (Bearer, required by the gateway), list model ids from GET /v1/models, run `openclaw models set "antseed/<model-id>"`, then `openclaw gateway restart` (only needed for a running OpenClaw gateway). On an unfunded gateway, create a preset with `antseed gateway preset create --slug openclaw --name OpenClaw --model deepseek-v4-flash --prefer-free` and use model id `@preset/openclaw`. Presets work only through a gateway, never the local buyer proxy (funded or not): there, use a concrete model id such as kimi-k2.6 with a funded buyer, or run `antseed gateway start` on the same computer to use the preset without funds. Note: a 402 makes OpenClaw disable the antseed key for about 10 minutes, free models included. Never use `<peerId>@<model>` in OpenClaw (it strips everything from the @, giving 502 model_not_found); pin with a preset made with `--allow-peer <peerId>`.',
+      'Gateway (recommended): set ANTSEED_BASE_URL=<gateway URL ending in /v1> and ANTSEED_API_KEY=<gateway key>. Same computer as a buyer, no gateway: http://127.0.0.1:8377/v1 with a placeholder key. In models.providers.antseed use baseUrl/apiKey from those variables, api="openai-completions" and authHeader=true (Bearer, required by the gateway), list model ids from GET /v1/models, run `openclaw models set "antseed/<model-id>"`, then `openclaw gateway restart` (only needed for a running OpenClaw gateway). On an unfunded gateway, create a preset with `antseed gateway preset create --slug openclaw --name OpenClaw --model deepseek-v4-flash --prefer-free` and use model id `@preset/openclaw`. Presets work only through a gateway, never the local buyer proxy (funded or not): there, use a concrete model id. Unfunded, pick one with a free seller (the buyer retries a free seller after a 402; CLI 0.1.234 and earlier don't, so on those fund the buyer or run `antseed gateway start` on the same computer and use the preset); a model with no free seller, such as kimi-k2.6, needs a funded buyer. Note: a 402 makes OpenClaw disable the antseed key for about 10 minutes, free models included. Never use `<peerId>@<model>` in OpenClaw (it strips everything from the @, giving 502 model_not_found); pin with a preset made with `--allow-peer <peerId>`.',
   },
   {
     slug: 'hermes',
