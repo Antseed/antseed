@@ -1,0 +1,7 @@
+# Server-side redirects, applied by the static host like _headers.
+# The client-side redirect pages from @docusaurus/plugin-client-redirects stay
+# as a fallback, but they only redirect in a browser: curl and agents that
+# fetch a page get an empty meta-refresh stub. /docs/pricing was the pricing
+# link agents were given in llms.txt, so it gets a real redirect.
+/docs/pricing   /docs/api/routing/  301
+/docs/pricing/  /docs/api/routing/  301

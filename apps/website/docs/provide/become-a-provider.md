@@ -45,6 +45,8 @@ export ANTSEED_IDENTITY_HEX=<64-hex-char-private-key>
 
 Use a dedicated key for your seller. To encrypt `identity.key` at rest, see [Protecting wallet keys](/docs/gateway/wallet-keys); an encrypted key needs `ANTSEED_PASSPHRASE` or `ANTSEED_PASSPHRASE_FILE` set whenever the seller starts.
 
+To try the whole loop first, with no funds and nothing announced, see [Test your seller before going live](/docs/provide/test-locally).
+
 ## 3. Fund and register
 
 Send a small amount of ETH on Base to your seller address, then register your identity on-chain:
