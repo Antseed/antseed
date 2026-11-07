@@ -267,6 +267,8 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- CLI seller: a slow or unreachable Base RPC no longer turns payments off for a seller with priced services. `antseed seller start` gave the RPC 1.5 s to answer, then disabled payments, skipped the registration and gas checks, and announced and served priced services for free. It now asks the RPC and its fallbacks up to 3 times (5 s each), and if none answers, a seller with priced services refuses to start with a "Base RPC unreachable" error. With `--skip-prereq-check` it starts with payments on. A seller whose services are all free still runs without payments, as before. `ANTSEED_ENABLE_SETTLEMENT=false` still runs without payments, and `true` still skips the probe.
+
 - CLI buyer and node: a seller that moves to a new public address is picked up again without restarting the buyer.
   - When the same seller is listed at several endpoints (its old address can stay in the DHT for a while after a move), discovery keeps its newest signed announcement instead of whichever endpoint happened to answer first.
   - A request pinned to a seller the last network refresh missed now looks that seller up on its own DHT topic before answering that it is not reachable.
