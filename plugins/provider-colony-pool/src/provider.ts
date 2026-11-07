@@ -72,7 +72,7 @@ export class ColonyPoolProvider implements Provider {
 
   private readonly pool: ColonyPool;
   private readonly ledger: WorkerLedger;
-  private readonly workerShareBps: bigint;
+  private workerShareBps: bigint;
   private readonly protocolFeeBps: bigint;
   /**
    * The worker and dispatch that served each request, until it is charged.
@@ -80,6 +80,11 @@ export class ColonyPoolProvider implements Provider {
    */
   private readonly servedBy = new WeakMap<SerializedHttpRequest, { worker: string; dispatchId: string }>();
   private servicesChanged: (() => void) | null = null;
+
+  /** The share now credited to workers, when it changes on-chain (see share.ts). */
+  setWorkerShareBps(bps: number): void {
+    this.workerShareBps = BigInt(bps);
+  }
 
   constructor(opts: ColonyPoolProviderOptions) {
     this.pool = opts.pool;

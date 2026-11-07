@@ -8,7 +8,7 @@ export interface ColonyPoolClientConfig {
   evmChainId?: number;
 }
 
-const COLONY_POOL_ABI = [
+export const COLONY_POOL_ABI = [
   'function claimUsdc() external',
   'function claimAnts(uint256[] epochs) external',
   'function claimEpochEmissions(uint256[] epochs) external',

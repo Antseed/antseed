@@ -16,6 +16,7 @@ const LEDGER_POINTER_FILE = 'colony-pool.ledger-path';
 import { ColonyPool } from './pool.js';
 import { ColonyPoolProvider } from './provider.js';
 import { parseWorkerPriority } from './ranking.js';
+import { readWorkerShareBps, WORKER_SHARE_REFRESH_MS } from './share.js';
 
 export { WorkerLedger } from './ledger.js';
 export { ColonyPool, NoWorkerAvailableError, WorkerUnavailableError, type ColonyPoolOptions, type WorkerSummary } from './pool.js';
@@ -45,7 +46,8 @@ const plugin: AntseedProviderPlugin = {
     { key: 'COLONY_POOL_ID', label: 'Pool ID', type: 'string', required: false, description: 'Name workers sign into their join message (defaults to "antseed-pool")' },
     { key: 'COLONY_POOL_TLS_CERT', label: 'TLS Certificate', type: 'string', required: false, description: 'Path to a PEM certificate; serve wss:// directly instead of behind a TLS proxy' },
     { key: 'COLONY_POOL_TLS_KEY', label: 'TLS Key', type: 'string', required: false, description: 'Path to the PEM private key for COLONY_POOL_TLS_CERT' },
-    { key: 'COLONY_POOL_WORKER_SHARE_BPS', label: 'Worker Share', type: 'number', required: false, default: 9000, description: 'Share of each paid request credited to the worker, in basis points (9000 = 90%)' },
+    { key: 'COLONY_POOL_RPC_URL', label: 'RPC URL', type: 'string', required: false, description: 'Chain RPC for an AntseedColonyPool seller address: the worker share is read from its operator fee (and refreshed every 10 minutes), so estimates match what it pays' },
+    { key: 'COLONY_POOL_WORKER_SHARE_BPS', label: 'Worker Share', type: 'number', required: false, default: 9000, description: 'Only when the seller address is this seller\'s own: the share of each paid request it credits workers, in basis points (9000 = 90%). A pool contract\'s share comes from its operator fee instead (COLONY_POOL_RPC_URL)' },
     { key: 'COLONY_POOL_PROTOCOL_FEE_BPS', label: 'Protocol Fee', type: 'number', required: false, default: 200, description: 'AntseedChannels protocol fee in basis points, for the local earnings estimate workers see' },
     { key: 'COLONY_POOL_ALLOWED_WORKERS', label: 'Allowed Workers', type: 'string[]', required: false, description: 'Worker addresses allowed to join (empty = anyone)' },
     { key: 'COLONY_POOL_WORKER_PRIORITY', label: 'Worker Priority', type: 'string[]', required: false, description: 'Weights for ranking workers, as address=weight (default 1; 2 doubles its score; 0 never routes to it)' },
@@ -81,6 +83,10 @@ const plugin: AntseedProviderPlugin = {
       ...(servicePricing ? { services: servicePricing } : {}),
     };
 
+    const rpcUrl = config['COLONY_POOL_RPC_URL'] || undefined;
+    if (rpcUrl && config['COLONY_POOL_WORKER_SHARE_BPS']) {
+      throw new Error('COLONY_POOL_WORKER_SHARE_BPS is read from the pool contract\'s operator fee when COLONY_POOL_RPC_URL is set; remove it');
+    }
     const workerShareBps = parseNonNegativeNumber(config['COLONY_POOL_WORKER_SHARE_BPS'], 'COLONY_POOL_WORKER_SHARE_BPS', 9000);
     if (!Number.isInteger(workerShareBps) || workerShareBps > 10_000) {
       throw new Error('COLONY_POOL_WORKER_SHARE_BPS must be a whole number from 0 to 10000');
@@ -153,11 +159,24 @@ const plugin: AntseedProviderPlugin = {
       ...(serviceCapabilities ? { serviceCapabilities } : {}),
     });
     let stopped: Promise<void> | null = null;
+    let shareTimer: ReturnType<typeof setInterval> | undefined;
+    const applyShare = (bps: number): void => {
+      pool.setWorkerShareBps(bps);
+      provider.setWorkerShareBps(bps);
+    };
     // Pool (and with it the MDM webhook) before the ledger it writes to.
-    const stop = (): Promise<void> => (stopped ??= pool.stop().finally(() => ledger.close()));
+    const stop = (): Promise<void> => (stopped ??= (clearInterval(shareTimer), pool.stop().finally(() => ledger.close())));
     return Object.assign(provider, {
       async init(): Promise<void> {
         try {
+          if (rpcUrl) {
+            const read = (): Promise<number> => readWorkerShareBps(rpcUrl, seller);
+            applyShare(await read());
+            shareTimer = setInterval(() => {
+              read().then(applyShare, (err: unknown) => console.warn(`[colony-pool] could not refresh the worker share: ${(err as Error).message}`));
+            }, WORKER_SHARE_REFRESH_MS);
+            shareTimer.unref?.();
+          }
           await deviceAttestor?.start();
           const boundPort = await pool.start();
           console.log(`[colony-pool] accepting workers on port ${boundPort}`);

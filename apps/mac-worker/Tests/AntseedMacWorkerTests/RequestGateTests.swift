@@ -147,3 +147,32 @@ final class LocalModelParsingTests: XCTestCase {
         XCTAssertNil(LocalModel.parseEvent(""))
     }
 }
+
+final class LocalModelLifecycleTests: XCTestCase {
+    /// Quitting mid-download stops the download, not only a started server.
+    func testStopEngineStopsAModelDownload() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        // A stand-in engine whose `pull` never finishes: `yes pull MODEL` runs until stopped.
+        let engine = directory.appendingPathComponent("engine")
+        try FileManager.default.copyItem(at: URL(fileURLWithPath: "/usr/bin/yes"), to: engine)
+        let model = LocalModel(modelId: "test/model", engine: engine, directory: directory)
+        let loading = Task { try await model.load { _ in } }
+
+        let pidFile = directory.appendingPathComponent("engine.pid")
+        var pid: pid_t = 0
+        for _ in 0..<100 where pid == 0 {
+            pid = (try? String(contentsOf: pidFile, encoding: .utf8)).flatMap { pid_t($0) } ?? 0
+            if pid == 0 { try await Task.sleep(nanoseconds: 50_000_000) }
+        }
+        XCTAssertGreaterThan(pid, 0, "the download's PID is recorded")
+
+        LocalModel.stopEngine(in: directory, engine: engine)
+        do {
+            try await loading.value
+            XCTFail("a stopped download does not finish loading")
+        } catch {}
+        XCTAssertNotEqual(kill(pid, 0), 0, "the download process is gone")
+    }
+}

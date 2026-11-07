@@ -2106,6 +2106,51 @@ describe('BuyerPaymentManager', () => {
     expect(decodeWorkerTail(last.metadata)).toEqual([{ worker, cumulativeAmount: 50_000n }]);
   });
 
+  it('counts a partly paid worker request\'s cost once however often NeedAuth repeats it', async () => {
+    store.close();
+    store = new ChannelStore(tempDir);
+    manager = new BuyerPaymentManager(
+      identity,
+      makeConfig(tempDir, { maxReserveAmountUsdc: 100_000n, maxPerRequestUsdc: 100_000n }),
+      store,
+    );
+    manager.setSigner(Wallet.createRandom());
+    const worker = '0x1000000000000000000000000000000000000001';
+    const sellerPeerId = fakePeerId('seller-pool-repeated-remainder');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 100_000n);
+    manager.handleAuthAck(sellerPeerId, { channelId });
+
+    await manager.handleNeedAuth(sellerPeerId, {
+      channelId, requestId: 'chat-1', requiredCumulativeAmount: '60000', currentAcceptedCumulative: '0',
+      deposit: '1000000', lastRequestCost: '60000',
+    }, mux);
+    manager.recordWorkerAttribution(sellerPeerId, 'chat-2', worker);
+    manager.recordWorkerDelivery('chat-2', { inputTokens: 1000n, cachedInputTokens: 0n, outputTokens: 400n });
+    await manager.handleNeedAuth(sellerPeerId, {
+      channelId, requestId: 'chat-2', requiredCumulativeAmount: '110000', currentAcceptedCumulative: '60000',
+      deposit: '1000000', lastRequestCost: '50000',
+    }, mux);
+    expect(manager.getCumulativeAmount(sellerPeerId)).toBe(100_000n);
+
+    // The seller repeats chat-2's claim, one unit at a time, then asks for far more.
+    for (let i = 0; i < 6; i++) {
+      const current = manager.getCumulativeAmount(sellerPeerId);
+      await manager.handleNeedAuth(sellerPeerId, {
+        channelId, requestId: 'chat-2', requiredCumulativeAmount: String(current + 1n), currentAcceptedCumulative: String(current),
+        deposit: '1000000', lastRequestCost: '50000',
+      }, mux);
+    }
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const current = manager.getCumulativeAmount(sellerPeerId);
+      await manager.handleNeedAuth(sellerPeerId, {
+        channelId, requestId: 'chat-2', requiredCumulativeAmount: '1000000', currentAcceptedCumulative: String(current),
+        deposit: '1000000', lastRequestCost: '50000',
+      }, mux);
+    }
+    // Delivered: 60,000 + 50,000. The window past it is maxPerRequestUsdc, never another 50,000 per repeat.
+    expect(manager.getCumulativeAmount(sellerPeerId)).toBeLessThanOrEqual(110_000n + 100_000n);
+  });
+
   it('handleNeedAuth caps at reserve ceiling', async () => {
     const sellerPeerId = fakePeerId('seller-needauth-cap');
     // Reserve ceiling = 10_000 (initial suggested amount)

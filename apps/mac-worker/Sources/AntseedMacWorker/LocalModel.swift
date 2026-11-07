@@ -116,9 +116,9 @@ actor LocalModel {
         return Result(text: text, promptTokens: usage.prompt, completionTokens: usage.completion, tokensPerSecond: tokensPerSecond)
     }
 
-    /// Stop the engine this data directory last started, if it is still that
-    /// engine. Synchronous so it can run while the app quits, and at launch to
-    /// clear one left behind by a crash.
+    /// Stop the engine process (server or model download) this data directory
+    /// last started, if it is still that engine. Synchronous so it can run while
+    /// the app quits, and at launch to clear one left behind by a crash.
     nonisolated static func stopEngine(in directory: URL, engine: URL) {
         let file = directory.appendingPathComponent(pidFile)
         defer { try? FileManager.default.removeItem(at: file) }
@@ -168,6 +168,13 @@ actor LocalModel {
         process.standardOutput = pipe
         process.standardError = pipe
         try process.run()
+        // Recorded like the server's, so quitting mid-download stops it too.
+        let pidURL = directory.appendingPathComponent(Self.pidFile)
+        try String(process.processIdentifier).write(to: pidURL, atomically: true, encoding: .utf8)
+        defer {
+            if process.isRunning { process.terminate() }
+            try? FileManager.default.removeItem(at: pidURL)
+        }
         var last = ""
         for try await line in pipe.fileHandleForReading.bytes.lines {
             last = line

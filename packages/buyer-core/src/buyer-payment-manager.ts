@@ -2199,6 +2199,12 @@ export class BuyerPaymentManager {
       verifiedCostDelta += sellerCost;
     }
 
+    // If post-response signing or an earlier NeedAuth counted this response,
+    // its cost is already verified: a repeated claim adds none, so it cannot
+    // grow the overdraft window, and only pays down the unsigned remainder below.
+    const alreadyCounted = this._serviceTokensCounted.has(payload.requestId);
+    if (alreadyCounted) verifiedCostDelta = 0n;
+
     // Cap at overdraft limit: verifiedCost + maxPerRequestUsdc, then at reserve ceiling.
     // This prevents a malicious seller from claiming a small cost but requesting the full reserve.
     const previousVerifiedCost = this._verifiedCost.get(sellerPeerId) ?? 0n;
@@ -2262,9 +2268,8 @@ export class BuyerPaymentManager {
     const serviceAmountDelta = acceptedServiceCost > 0n
       ? (acceptedServiceCost < signedDelta ? acceptedServiceCost : signedDelta)
       : 0n;
-    // If post-response signing counted this response first, deduplicate the
-    // response's service amount and usage together.
-    const alreadyCounted = this._serviceTokensCounted.has(payload.requestId);
+    // A response counted before (alreadyCounted, above) deduplicates its
+    // service amount and usage together.
     // Attribution only — never cost; mirrors signPerRequestAuth.
     let attributedInputTokens = reportedInputTokens;
     let attributedOutputTokens = reportedOutputTokens;

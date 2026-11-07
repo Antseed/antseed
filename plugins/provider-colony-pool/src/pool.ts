@@ -241,7 +241,7 @@ const STOP_GRACE_MS = 1_000;
  * best-ranked worker that serves the requested service (ranking.ts).
  */
 export class ColonyPool {
-  private readonly opts: ColonyPoolOptions;
+  private opts: ColonyPoolOptions;
   private readonly catalog: Set<string>;
   private readonly workers = new Map<string, ConnectedWorker>();
   /** Every worker's rank, kept across reconnects (and in the ledger across restarts). */
@@ -251,6 +251,11 @@ export class ColonyPool {
   private wss: WebSocketServer | null = null;
   private pingTimer: NodeJS.Timeout | null = null;
   private lastServices = '';
+
+  /** The share workers are told when they join, when it changes on-chain (see share.ts). */
+  setWorkerShareBps(bps: number): void {
+    this.opts = { ...this.opts, workerShareBps: bps };
+  }
 
   constructor(opts: ColonyPoolOptions) {
     this.opts = opts;

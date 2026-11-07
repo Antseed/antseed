@@ -1,4 +1,4 @@
-import { multicallRead, parseWorkerPayoutLink } from '@antseed/node/payments';
+import { COLONY_POOL_ABI, multicallRead, parseWorkerPayoutLink } from '@antseed/node/payments';
 import { Interface, ZeroAddress } from 'ethers';
 import type { WorkerPayoutLinkRequest, ColonyPoolClaimRequest, ColonyPoolForgetRequest, ColonyPoolsView } from '../api-types.js';
 import type { AntsContext } from './context.js';
@@ -17,11 +17,7 @@ function finishedEpochs(currentEpoch: number): number[] {
 }
 
 /** The per-epoch views read in bulk; claims and single reads go through ColonyPoolClient. */
-const EPOCH_READS = new Interface([
-  'function epochWeight(uint256 epoch, address account) view returns (uint256)',
-  'function pendingAnts(address account, uint256[] epochs) view returns (uint256)',
-  'function epochAnts(uint256 epoch) view returns (uint256)',
-]);
+const EPOCH_READS = new Interface(COLONY_POOL_ABI);
 
 /**
  * One view per argument list, batched through Multicall3 (one `eth_call` per

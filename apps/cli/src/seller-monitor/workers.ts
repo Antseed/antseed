@@ -4,6 +4,7 @@ import Database from 'better-sqlite3'
 import { rankScores } from '@antseed/provider-core'
 import type { SellerWorkers } from '../gateway/console-api/types.js'
 import { SELLER_STALE_MS } from './reader.js'
+import { median } from './statistics.js'
 
 const DAY_MS = 86_400_000
 const MICRO_USDC = 1_000_000
@@ -15,12 +16,6 @@ export const COLONY_POOL_LEDGER_POINTER_FILE = 'colony-pool.ledger-path'
 /** Recent first-byte samples per worker the median is taken over. */
 const FIRST_BYTE_SAMPLES = 500
 
-function median(values: number[]): number | null {
-  if (values.length === 0) return null
-  const sorted = [...values].sort((a, b) => a - b)
-  const mid = Math.floor(sorted.length / 2)
-  return sorted.length % 2 === 1 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2
-}
 
 function ledgerPath(dataDir: string): string {
   const pointer = join(dataDir, COLONY_POOL_LEDGER_POINTER_FILE)

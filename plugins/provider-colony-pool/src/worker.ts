@@ -40,6 +40,8 @@ const VERIFIED_CHANNEL_TTL_MS = 60_000;
 const CHANNEL_ACTIVE = 1;
 /** A pool check's decrypted body may be at most this big, so it cannot buy prompt processing either. */
 const MAX_CHECK_BODY_BYTES = 8 * 1024;
+/** Sealed bytes per response-chunk frame: base64 keeps it well under the pool's 16 MiB WebSocket frame limit. */
+export const MAX_CHUNK_BYTES = 4 * 1024 * 1024;
 /** How long the local model has to send response headers, and then each next chunk. */
 const DEFAULT_UPSTREAM_TIMEOUT_MS = 5 * 60_000;
 const DEFAULT_UPSTREAM_IDLE_MS = 60_000;
@@ -427,6 +429,11 @@ export class PoolWorker {
       timer = setTimeout(() => { timedOut = true; upstreamAbort.abort(); }, ms);
     };
     const idleMs = this.opts.upstreamIdleMs ?? DEFAULT_UPSTREAM_IDLE_MS;
+    const sendChunks = (bytes: Uint8Array): void => {
+      for (let at = 0; at < bytes.length; at += MAX_CHUNK_BYTES) {
+        send({ t: 'response-chunk', id: frame.id, data: encodeBody(bytes.subarray(at, at + MAX_CHUNK_BYTES)) });
+      }
+    };
     arm(this.opts.upstreamTimeoutMs ?? DEFAULT_UPSTREAM_TIMEOUT_MS);
     try {
       const upstream = await fetch(new URL(frame.path, this.opts.baseUrl), {
@@ -442,13 +449,13 @@ export class PoolWorker {
         for await (const chunk of upstream.body) {
           arm(idleMs);
           const sealed = opened.sealer.pushStream(chunk as Uint8Array);
-          if (sealed.length > 0) send({ t: 'response-chunk', id: frame.id, data: encodeBody(sealed) });
+          sendChunks(sealed);
         }
-        send({ t: 'response-chunk', id: frame.id, data: encodeBody(opened.sealer.finishStream()) });
+        sendChunks(opened.sealer.finishStream());
       } else {
         const sealed = opened.sealer.sealBody(new Uint8Array(await upstream.arrayBuffer()));
         send({ t: 'response-start', id: frame.id, status: upstream.status, headers: { 'content-type': 'application/json' } });
-        send({ t: 'response-chunk', id: frame.id, data: encodeBody(sealed) });
+        sendChunks(sealed);
       }
       send({ t: 'response-end', id: frame.id });
     } catch (err) {

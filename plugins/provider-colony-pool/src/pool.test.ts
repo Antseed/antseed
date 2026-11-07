@@ -107,6 +107,8 @@ const SELLER = '0x00000000000000000000000000000000000000aa';
 const CHANNEL = `0x${'cd'.repeat(32)}`;
 const PROMPT = 'my private prompt';
 const ANSWER = 'my private answer';
+/** What the fake upstream answers a non-streamed request with; a test may make it large. */
+let jsonAnswer = ANSWER;
 const enc = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
 const dec = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
 
@@ -135,7 +137,7 @@ async function startUpstream(): Promise<FakeUpstream> {
         return;
       }
       res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: ANSWER } }], usage }));
+      res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: jsonAnswer } }], usage }));
     });
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -306,6 +308,21 @@ describe('colony pool', () => {
     await expect(worker.requestStats()).resolves.toMatchObject({ earnedTotal: '2646', requestsTotal: 1 });
   });
 
+  it('credits workers the share the pool contract pays now, once it changes', async () => {
+    await setup();
+    const worker = startWorker();
+    await waitFor(() => provider.services.includes(SERVICE));
+    provider.setWorkerShareBps(7500); // a 25% operator fee read from the contract
+    const { request } = await buyerSeal('req-share', false);
+    await provider.handleRequest(request);
+    provider.onRequestCharged({
+      requestId: 'req-share', request, service: SERVICE, costUsdc: 3000n,
+      inputTokens: 1000, outputTokens: 500, freshInputTokens: 1000, cachedInputTokens: 0,
+    });
+    // 3000 − 2% protocol fee = 2940, then the worker's 75% = 2205.
+    expect(ledger.stats(worker.address).earnedTotal).toBe('2205');
+  });
+
   it('serves a non-streamed encrypted request', async () => {
     await setup();
     startWorker();
@@ -315,6 +332,24 @@ describe('colony pool', () => {
     expect(response.statusCode).toBe(200);
     expect(dec(response.body)).not.toContain(ANSWER);
     expect(JSON.parse(dec(sealed.opener.openBody(response.body))).choices[0].message.content).toBe(ANSWER);
+  });
+
+  it('splits a large non-streamed answer across frames instead of dropping the worker', async () => {
+    await setup();
+    startWorker();
+    await waitFor(() => provider.services.includes(SERVICE));
+    jsonAnswer = 'x'.repeat(10 * 1024 * 1024); // sealed and base64-encoded, past one 16 MiB frame
+    try {
+      const { sealed, request } = await buyerSeal('req-large', false);
+      const response = await provider.handleRequest(request);
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(dec(sealed.opener.openBody(response.body))).choices[0].message.content).toBe(jsonAnswer);
+    } finally {
+      jsonAnswer = ANSWER;
+    }
+    const { sealed, request } = await buyerSeal('req-after', false);
+    const after = await provider.handleRequest(request);
+    expect(JSON.parse(dec(sealed.opener.openBody(after.body))).choices[0].message.content).toBe(ANSWER);
   });
 
   it('refuses plaintext buyer requests', async () => {
