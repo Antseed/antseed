@@ -19,6 +19,7 @@ import { liveBuyerAddresses } from '../../../gateway/services/wallet-address.js'
 import { setupShutdownHandler } from '../../shutdown.js'
 import { getGlobalOptions } from '../types.js'
 import { parsePositiveInteger } from '../parse-positive-integer.js'
+import { observeCliGatewayAudit } from '../../../telemetry/gateway.js'
 
 export const DEFAULT_GATEWAY_PORT = 8379
 
@@ -161,12 +162,15 @@ export async function withGateway<T>(cmd: Command, fn: (gateway: CliGateway) => 
       return defaultBuyerClient({ buyerPort: await buyerPort(), controlSecret: loadOrCreateControlSecret(dataDir) })
     },
   }
+  // Setup-funnel telemetry for steps taken here rather than in the running gateway (docs/telemetry.md).
+  const flushTelemetry = observeCliGatewayAudit(store, { configPath, dataDir })
   try {
     return await fn(gateway)
   } catch (error) {
     throw cliError(error)
   } finally {
     store.close()
+    await flushTelemetry?.()
   }
 }
 

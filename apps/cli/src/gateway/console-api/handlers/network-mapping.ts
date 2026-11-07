@@ -259,7 +259,6 @@ export function trustBreakdownField(trust: Row): { trustBreakdown?: TrustBreakdo
   const identityScore = num(identityRow['score'])
   const kind = identityRow['kind']
   const breakdown: TrustBreakdownView = {
-    history: part('history'),
     usage: part('usage'),
     power: part('power'),
     identity: identityScore !== null && (kind === 'github' || kind === 'domain') ? { score: identityScore, kind } : null,
@@ -267,9 +266,13 @@ export function trustBreakdownField(trust: Row): { trustBreakdown?: TrustBreakdo
   }
   const verificationRow = asRecord(trust['verification'])
   const multiplierBps = num(verificationRow['multiplierBps'])
-  const penalty = num(verificationRow['penalty'])
-  if (multiplierBps !== null && multiplierBps < 10_000 && penalty !== null) {
-    breakdown.verification = { multiplierBps, diffCount: num(verificationRow['diffCount']) ?? 0, penalty }
+  // An older buyer daemon scores history and reports a positive `penalty` instead of a signed `change`.
+  const legacyHistory = part('history')
+  if (legacyHistory !== null && legacyHistory > 0) breakdown.history = legacyHistory
+  const legacyPenalty = num(verificationRow['penalty'])
+  const change = num(verificationRow['change']) ?? (legacyPenalty === null ? null : -legacyPenalty)
+  if (multiplierBps !== null && change !== null && change !== 0) {
+    breakdown.verification = { multiplierBps, sameCount: num(verificationRow['sameCount']) ?? 0, diffCount: num(verificationRow['diffCount']) ?? 0, change }
   }
   return Object.values(breakdown).some((value) => value !== null) ? { trustBreakdown: breakdown } : {}
 }

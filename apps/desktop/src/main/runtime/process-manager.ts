@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 
 import { WORKSPACE_APPS_DIR } from '../paths.js';
+import { desktopTelemetryChildEnv } from '../telemetry/host-env.js';
 
 const { join, resolve } = path;
 
@@ -295,7 +296,7 @@ export function buildCliChildEnv(
   baseEnv: NodeJS.ProcessEnv,
   isLocalDevScript: boolean,
 ): NodeJS.ProcessEnv {
-  const childEnv = { ...baseEnv };
+  const childEnv: NodeJS.ProcessEnv = { ...baseEnv, ...desktopTelemetryChildEnv() };
   if (isLocalDevScript) {
     delete childEnv['ANTSEED_SKIP_PLUGIN_UPDATE_CHECK'];
   } else {

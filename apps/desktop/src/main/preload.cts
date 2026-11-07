@@ -4,6 +4,7 @@ import type { ConnectedAppsState } from './connected-apps/patching/connection.js
 import type { TelegramBridgeStatus } from './telegram/bridge.js';
 import type { ChatModel, ChatRoutePreview } from '../shared/chat-gateway-types.js';
 import type {
+  DepositStepSignal,
   FirstModelShownSignal,
   TelemetryStatus,
   TelemetryStatusUpdateResult,
@@ -366,6 +367,9 @@ const api = {
   },
   telemetryRecordFirstModelShown(payload: FirstModelShownSignal): Promise<{ ok: boolean }> {
     return ipcRenderer.invoke('telemetry:first-model-shown', payload) as Promise<{ ok: boolean }>;
+  },
+  telemetryRecordDepositStep(payload: DepositStepSignal): Promise<{ ok: boolean }> {
+    return ipcRenderer.invoke('telemetry:deposit-step', payload) as Promise<{ ok: boolean }>;
   },
   onAppSetupStep(handler: (data: { step: string; label: string }) => void): () => void {
     const listener = (_: unknown, data: { step: string; label: string }) => handler(data);

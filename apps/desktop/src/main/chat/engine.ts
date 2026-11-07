@@ -90,6 +90,8 @@ export function registerPiChatHandlers({
   recordChatRequestStarted,
   recordChatRequestFinished,
   recordDiscoveryFailed,
+  getChatSendTelemetryContext,
+  recordPremiumBlocked,
 }: RegisterPiChatHandlersOptions): PiChatEngine {
   void loadChatWorkspaceDir().catch(() => {});
   const store = new PiConversationStore();
@@ -293,6 +295,8 @@ export function registerPiChatHandlers({
     ...(recordFirstChatStarted ? { recordFirstChatStarted } : {}),
     ...(recordChatRequestStarted ? { recordChatRequestStarted } : {}),
     ...(recordChatRequestFinished ? { recordChatRequestFinished } : {}),
+    ...(getChatSendTelemetryContext ? { getChatSendTelemetryContext } : {}),
+    ...(recordPremiumBlocked ? { recordPremiumBlocked } : {}),
   });
 
   // ── Conversations ──

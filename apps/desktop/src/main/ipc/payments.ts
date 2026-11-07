@@ -29,6 +29,7 @@ import { openCheckoutPopup } from '../payments/checkout-window.js';
 import { antseedPayLinkAmount, resolveCardProviderUrl, signAntseedPayUrl } from '@antseed/payments/card-link';
 import { createPeerPayCheckout } from '../payments/peer-pay.js';
 import { getMainWindow } from '../ui/window.js';
+import { getTelemetryService } from '../telemetry/runtime.js';
 
 export function registerPaymentsIpc(): void {
   // Slim payment pages: only actions that need an external wallet signature
@@ -43,6 +44,8 @@ export function registerPaymentsIpc(): void {
     try {
       const kind: PayPageKind = opts?.kind && PAY_PAGE_KINDS.includes(opts.kind) ? opts.kind : 'deposit';
       await startPaymentsPortal();
+      if (kind === 'withdraw') void getTelemetryService()?.recordWithdrawStarted();
+      else getTelemetryService()?.clearPendingWithdraw();
       const token = getPaymentsPortalToken();
       const params = new URLSearchParams();
       if (token) params.set('token', token);

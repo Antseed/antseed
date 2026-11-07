@@ -30,10 +30,10 @@ describe('liveVerificationVerdict', () => {
   });
 });
 
-describe('verification penalty in the trust score', () => {
+describe('verification multiplier in the trust score', () => {
   const now = 1_000_000_000;
   const base = {
-    peerId: 'p', lastSeen: now, providers: [], onChainChannelCount: 100, onChainTotalVolumeUsdcMicros: 100_000_000,
+    peerId: 'p', lastSeen: now, providers: [], onChainUsageEpoch: 22, onChainUsageShareBps: 500, onChainPoolPowerShareBps: 500,
     onChainWashFlagged: false, onChainVerificationFetchedAt: now - 60_000,
   } as any;
 
@@ -45,14 +45,20 @@ describe('verification penalty in the trust score', () => {
     expect(verificationPointsMultiplierBps(30, 0, rates)).toBe(15_000);
   });
 
-  it('cuts trust by a multiplier below 100% and never raises it', () => {
+  it('scales trust by the policy multiplier, up as well as down, capped at 100', () => {
     const raw = computeTrustScore(base, now)!.score;
     const cut = computeTrustScore({ ...base, onChainVerificationStatus: { sameCount: 2, diffCount: 4, pointsMultiplierBps: 4_000 } }, now)!;
     expect(cut.score).toBeCloseTo(raw * 0.4);
-    expect(cut.verification).toEqual({ multiplierBps: 4_000, sameCount: 2, diffCount: 4, penalty: raw - cut.score });
+    expect(cut.verification).toEqual({ multiplierBps: 4_000, sameCount: 2, diffCount: 4, change: cut.score - raw, penalty: raw - cut.score });
     const bonus = computeTrustScore({ ...base, onChainVerificationStatus: { sameCount: 10, diffCount: 0, pointsMultiplierBps: 12_000 } }, now)!;
-    expect(bonus.score).toBe(raw);
-    expect(bonus.verification).toBeNull();
+    expect(bonus.score).toBeCloseTo(Math.min(100, raw * 1.2));
+    expect(bonus.verification?.change).toBeCloseTo(bonus.score - raw);
+    expect(bonus.verification?.penalty).toBe(0);
+    const neutral = computeTrustScore({ ...base, onChainVerificationStatus: { sameCount: 0, diffCount: 0, pointsMultiplierBps: 10_000 } }, now)!;
+    expect(neutral.score).toBe(raw);
+    expect(neutral.verification).toBeNull();
+    const top = { ...base, onChainUsageShareBps: 5_000, onChainPoolPowerShareBps: 5_000 };
+    expect(computeTrustScore({ ...top, onChainVerificationStatus: { sameCount: 25, diffCount: 0, pointsMultiplierBps: 15_000 } }, now)!.score).toBe(100);
   });
 
   it('fails open on a stale read or unknown rates', () => {

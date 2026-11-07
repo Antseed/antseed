@@ -71,7 +71,6 @@ function sellerErrorCode(body: Uint8Array): string | null {
   }
 }
 
-/** Streams a finished video from the seller that owns the job to the client. */
 /**
  * Streams a finished video, or answers the job's status. Before an answer that
  * ends the job (it failed, including a JSON `completed` with no video, or the
@@ -79,6 +78,10 @@ function sellerErrorCode(body: Uint8Array): string | null {
  * retire it; that answer then carries VIDEO_JOB_RETIRED_HEADER. When the job
  * cannot be retired, the answer is a retryable `unknown` instead, so no caller
  * treats the job as finished while it can still be charged.
+ * `onInterrupted` runs when the download is cut off, before the connection is
+ * destroyed, so telemetry reports it for what it was: `cancelled` when the
+ * client left, `buyer` when the file was good but this buyer could not save
+ * its delivery, `seller` otherwise.
  */
 export async function downloadVideo(
   request: SerializedHttpRequest,
@@ -86,6 +89,7 @@ export async function downloadVideo(
   send: SendDownload,
   clientSignal: AbortSignal,
   retire: () => Promise<boolean> = async () => true,
+  onInterrupted: (by: 'seller' | 'buyer' | 'cancelled') => void = () => {},
 ): Promise<void> {
   const reply = (httpStatus: number, body: Record<string, unknown>, extraHeaders: Record<string, string> = {}) => {
     response.writeHead(httpStatus, { 'content-type': 'application/json', 'cache-control': 'no-store', ...extraHeaders })
@@ -101,6 +105,8 @@ export async function downloadVideo(
   let length: number | null = null
   let received = 0
   let sellerAnswered = false
+  // The file was good but this buyer could not save its delivery: a buyer-side failure.
+  let unrecorded = false
   try {
     const body = request.method === 'GET' ? new Uint8Array(0) : request.body
     const result = await send({ ...request, headers: { ...headers, [VIDEO_DOWNLOAD_STREAM_HEADER]: VIDEO_DOWNLOAD_STREAM_VERSION }, body }, {
@@ -155,13 +161,17 @@ export async function downloadVideo(
     // again), so the next poll answers it is gone and a gateway stops holding its price; a good file whose delivery
     // could not be saved keeps its job, so it can be downloaded again.
     const delivered = result.headers[VIDEO_DELIVERED_HEADER]
+    if (delivered === VIDEO_DELIVERY_UNRECORDED) unrecorded = true
     if (delivered !== '1') {
       if (delivered !== VIDEO_DELIVERY_UNRECORDED) await retire().catch(() => false)
       throw new Error('Video not accepted')
     }
     response.end()
   } catch {
-    if (response.headersSent || clientSignal.aborted) response.destroy()
+    if (response.headersSent || clientSignal.aborted) {
+      onInterrupted(clientSignal.aborted ? 'cancelled' : unrecorded ? 'buyer' : 'seller')
+      response.destroy()
+    }
     else if (sellerAnswered) error(502, 'video_download_failed')
     else pending(signal.aborted ? 504 : 502, 'seller_unreachable', 'video_download_failed', 'The seller holding this video job could not be reached; the job is kept, poll again later')
   } finally {

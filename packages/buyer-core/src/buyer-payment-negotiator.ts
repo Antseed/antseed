@@ -3,6 +3,7 @@ import type { BuyerIdentity } from './interfaces.js';
 import type { BuyerConnection } from './interfaces.js';
 import { PaymentMux } from './payment-mux.js';
 import type { PeerId } from '@antseed/protocol/peer-id';
+import type { VideoOptions } from '@antseed/protocol/peer-metadata';
 import type { BuyerPeerView } from './interfaces.js';
 import {
   ANTSEED_FAULT_ATTRIBUTION_HEADER,
@@ -120,6 +121,8 @@ export interface SelectedBillingRoute {
   serviceApiProtocol: ServiceApiProtocol;
   unitModel?: UnitBillingModelV1;
   tokenPricing?: ServicePricing;
+  /** The service's announced video options, for pricing an omitted aspect ratio or audio setting. */
+  videoOptions?: VideoOptions;
 }
 
 function parsePaymentRequiredBody(body: Uint8Array): Record<string, unknown> | null {
@@ -344,6 +347,7 @@ export class BuyerPaymentNegotiator {
           service: route.service,
           serviceApiProtocol: route.serviceApiProtocol,
           request,
+          ...(route.videoOptions ? { videoOptions: route.videoOptions } : {}),
         });
         if (isVideo && captured.requestFacts.kind === 'video' && route.unitModel) {
           estimatedCost = estimateUnitRequestCost(route.unitModel, captured.context, captured.requestUsage);
