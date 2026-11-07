@@ -13,37 +13,46 @@ const IFACE = new Interface([
   ...VERIFICATION_RESULTS_ABI.filter((entry) => !entry.includes('currentEpoch')),
   ...KBF_AUDITS_ABI.filter((entry) => entry.includes('function results()')),
   'function currentEpoch() view returns (uint256)',
+  'function bonusBps() view returns (uint256)',
+  'function penaltyBps() view returns (uint256)',
 ]);
+const POLICY = '0x' + '44'.repeat(20);
 const coder = AbiCoder.defaultAbiCoder();
 const hash = serviceHash;
 
-/** verdict + epoch per (agentId, service hash); missing entries are NONE. */
+/** verdict + epoch given per (agentId, service hash), counting two epochs as KBF does; missing entries are NONE. */
 type Statuses = Record<string, { verdict: number; epoch: number } | 'revert'>;
 
-function fakeProvider(statuses: Statuses, options: { currentEpoch?: number; multicall?: boolean; failValidity?: boolean } = {}) {
+function fakeProvider(statuses: Statuses, options: { currentEpoch?: number; multicall?: boolean; failEpoch?: boolean; agentStatus?: Record<number, [number, number]>; failAgentStatus?: boolean } = {}) {
   const answer = (target: string, data: string): string => {
     const parsed = IFACE.parseTransaction({ data })!;
     switch (parsed.name) {
       case 'results':
         expect(target.toLowerCase()).toBe(VERIFICATION);
         return coder.encode(['address'], [RESULTS]);
-      case 'validityEpochs':
-        expect(target.toLowerCase()).toBe(RESULTS);
-        if (options.failValidity) throw new Error('revert');
-        return coder.encode(['uint8'], [2]);
       case 'emissionsGate': return coder.encode(['address'], [GATE]);
       case 'currentEpoch':
         expect(target.toLowerCase()).toBe(GATE);
+        if (options.failEpoch) throw new Error('revert');
         return coder.encode(['uint256'], [options.currentEpoch ?? 28]);
       case 'serviceStatus': {
         const [agentId, serviceHash] = parsed.args as unknown as [bigint, string];
         const status = statuses[`${agentId}:${serviceHash}`];
         if (status === 'revert') throw new Error('revert');
         expect(target.toLowerCase()).toBe(RESULTS);
-        return coder.encode(['tuple(bytes32,uint8,uint64,uint64,address)'], [[
-          '0x' + '00'.repeat(32), status?.verdict ?? 0, 0, status?.epoch ?? 0, VERIFICATION,
+        const epoch = status?.epoch ?? 0;
+        return coder.encode(['tuple(bytes32,uint8,uint64,uint64,address,uint64)'], [[
+          '0x' + '00'.repeat(32), status?.verdict ?? 0, 0, epoch, VERIFICATION, status ? epoch + 2 : 0,
         ]]);
       }
+      case 'agentStatus': {
+        const [agentId] = parsed.args as unknown as [bigint];
+        const counts = options.agentStatus?.[Number(agentId)] ?? [0, 0];
+        if (options.failAgentStatus) throw new Error('revert');
+        return coder.encode(['tuple(uint16,uint16)'], [[counts[0], counts[1]]]);
+      }
+      case 'bonusBps': expect(target.toLowerCase()).toBe(POLICY); return coder.encode(['uint256'], [200]);
+      case 'penaltyBps': expect(target.toLowerCase()).toBe(POLICY); return coder.encode(['uint256'], [400]);
       default: throw new Error(`unexpected ${parsed.name}`);
     }
   };
@@ -82,6 +91,50 @@ describe('VerificationSignalsClient', () => {
     expect(result.has(0)).toBe(false);
     // The results address once, then one batched round for statuses + one for the gate epoch.
     expect(call).toHaveBeenCalledTimes(3);
+  });
+
+  it('returns live SAME services next to DIFF ones from the same reads', async () => {
+    const { provider, call } = fakeProvider({
+      [`7:${hash('gpt-6.1-sol')}`]: { verdict: 2, epoch: 27 },     // DIFF, live
+      [`7:${hash('claude-opus-5.5')}`]: { verdict: 1, epoch: 27 }, // SAME, live
+      [`7:${hash('kimi-k3')}`]: { verdict: 1, epoch: 26 },         // SAME, expired
+      [`7:${hash('grok-4.7')}`]: { verdict: 3, epoch: 27 },        // UNDETERMINED
+    });
+    const client = new VerificationSignalsClient(provider, VERIFICATION);
+    const result = await client.readServiceVerdicts([
+      { agentId: 7, services: ['gpt-6.1-sol', 'Claude-Opus-5.5', 'kimi-k3', 'grok-4.7'] },
+    ]);
+    expect(result.get(7)).toEqual({ diff: ['gpt-6.1-sol'], same: ['claude-opus-5.5'], agent: { sameCount: 0, diffCount: 0, pointsMultiplierBps: null } });
+    const calls = call.mock.calls.length;
+    await client.readDiffServices([{ agentId: 7, services: ['gpt-6.1-sol'] }]);
+    // readDiffServices is the same read: one status multicall and one epoch read, no extra calls.
+    expect(call.mock.calls.length - calls).toBeLessThanOrEqual(2);
+  });
+
+  it('reads the agent status and the policy rates (once an hour) into a points multiplier', async () => {
+    let now = 1_000_000;
+    const { provider, call } = fakeProvider({ [`7:${hash('a')}`]: { verdict: 2, epoch: 27 } }, { agentStatus: { 7: [2, 4] } });
+    const client = new VerificationSignalsClient(provider, VERIFICATION, RESULTS, POLICY, () => now);
+    const first = await client.readServiceVerdicts([{ agentId: 7, services: ['a'] }]);
+    expect(first.get(7)?.agent).toEqual({ sameCount: 2, diffCount: 4, pointsMultiplierBps: 4_000 });
+    const policyCalls = () => call.mock.calls.filter(([tx]) => JSON.stringify(tx).toLowerCase().includes('44'.repeat(20))).length;
+    const readsBefore = policyCalls();
+    now += 60_000;
+    await client.readServiceVerdicts([{ agentId: 7, services: ['a'] }]);
+    expect(policyCalls()).toBe(readsBefore);
+  });
+
+  it('omits an agent whose status read failed, so the caller keeps its last good penalty', async () => {
+    const { provider } = fakeProvider({ [`7:${hash('a')}`]: { verdict: 2, epoch: 27 } }, { failAgentStatus: true });
+    const client = new VerificationSignalsClient(provider, VERIFICATION, RESULTS, POLICY);
+    expect((await client.readServiceVerdicts([{ agentId: 7, services: ['a'] }])).has(7)).toBe(false);
+  });
+
+  it('leaves the multiplier null without a policy address', async () => {
+    const { provider } = fakeProvider({}, { agentStatus: { 7: [1, 0] } });
+    const client = new VerificationSignalsClient(provider, VERIFICATION, RESULTS);
+    expect((await client.readServiceVerdicts([{ agentId: 7, services: ['a'] }])).get(7)?.agent)
+      .toEqual({ sameCount: 1, diffCount: 0, pointsMultiplierBps: null });
   });
 
   it('reads a configured results address without asking the KBF contract', async () => {
@@ -134,10 +187,17 @@ describe('VerificationSignalsClient', () => {
     expect(result.get(8)).toEqual(['b']);
   });
 
-  it('throws when the validity window cannot be read', async () => {
-    const { provider } = fakeProvider({}, { failValidity: true });
+  it('uses the expiry each verdict carries', async () => {
+    const { provider } = fakeProvider({ [`7:${hash('a')}`]: { verdict: 2, epoch: 26 } }, { currentEpoch: 27 });
+    // Given in 26 and counting until 28 (exclusive), so still live in 27.
+    expect((await new VerificationSignalsClient(provider, VERIFICATION)
+      .readDiffServices([{ agentId: 7, services: ['a'] }])).get(7)).toEqual(['a']);
+  });
+
+  it('throws when the current epoch cannot be read', async () => {
+    const { provider } = fakeProvider({}, { failEpoch: true });
     await expect(new VerificationSignalsClient(provider, VERIFICATION)
-      .readDiffServices([{ agentId: 7, services: ['a'] }])).rejects.toThrow(/validityEpochs/);
+      .readDiffServices([{ agentId: 7, services: ['a'] }])).rejects.toThrow(/currentEpoch/);
   });
 
   it('works without Multicall3', async () => {

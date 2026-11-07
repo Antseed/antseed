@@ -58,12 +58,11 @@ Command-line interface and web dashboard for the AntSeed Network — a P2P netwo
 | `antseed buyer status` | Show buyer status |
 | `antseed config` | Manage configuration |
 | `antseed profile` | Manage your peer profile |
-| `antseed peer <peerId>` | Show a peer's profile (lightweight) |
+| `antseed peer <peerId>` | Not implemented yet; use `antseed network peer <peerId>` |
 | `antseed network peer <peerId>` | Show full peer details (providers, services, on-chain stats) |
 | `antseed dashboard` | Start the web dashboard |
 | `antseed metrics serve` | Serve Prometheus metrics for buyers and sellers |
 | `antseed buyer channels` | List payment channels |
-| `antseed dev` | Run seller + buyer locally for testing |
 | `antseed network bootstrap` | Run a dedicated DHT bootstrap node |
 
 ## Configuration Workflow
@@ -640,8 +639,9 @@ results address through the KBF contract; `payments.crypto.verificationResultsAd
 overrides it. Each new verification method is its own contract next to `AntseedKbfAudits`.
 They replace the earlier single contract, `AntseedKbfVerification`, which this CLI can no
 longer read. On Base mainnet the CLI defaults to `AntseedKbfAudits`
-`0xe57aB03423A3835571F7d68AC1E23CF8a2763343` and `AntseedVerificationResults`
-`0xF2C8482aD2A348854698E93f41FE3cc32307687c`, so no configuration is needed.
+`0x86B92DC48EF7c5a12de6e44409E83C8EF36657Ff` and `AntseedVerificationResults`
+`0x139ab1722a62a23371f491220902c460E9fAeAb2` (release `003-verification-audits`), so no
+configuration is needed.
 
 The audited models are a list built into the CLI (`src/verifier/audited-models.ts`):
 each model's service id, the aliases sellers use for it, and its OpenRouter id. A
@@ -778,10 +778,12 @@ or skipped result in the same words as AntScan. `verifier overview [--epoch <n>]
 
 `verifier rewards --epochs <list>` shows the credits earned per epoch and claims
 the auditor share once an epoch is final; the current epoch shows 0 until it ends.
-Rewards are claimed on `AntseedVerificationResults` from the KBF source's share of
-the verification bucket (`claimRewards(kbf, epochs)`); the command prints both
-addresses, whether KBF rewards are on yet, KBF's share and the per-auditor cap
-(20% by default; the rest of a capped reward goes to the emissions reserve).
+Rewards are claimed on `AntseedVerificationResults` from the KBF audit's share of
+the verification bucket, one transaction per epoch
+(`claimAuditorReward(kbf, epoch)`); the command prints both addresses, whether
+KBF rewards are on yet, KBF's share and the per-auditor cap (20% by default; the
+rest of a capped reward goes to the emissions reserve in the same claim). Credits
+per audit are set by the KBF owner (one by default, optionally per model).
 
 `verifier profile` shows your public auditor profile on the KBF audits contract;
 `--name`, `--icon` and `--url` set it (each flag replaces its field, `""` clears

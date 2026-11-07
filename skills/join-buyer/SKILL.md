@@ -22,7 +22,7 @@ Your tool / agent  →  gateway :8379 (API keys, budgets, console)  →  buyer :
 ## Prerequisites
 
 - macOS or Linux, Node.js 20+ and `npm` (the installer handles a Linux server with systemd itself).
-- No account. Free models need no funds.
+- No account. Models that a seller serves for free need no funds; for a user without funds, follow **Free models only** in Step 3.
 
 ## Parameters
 
@@ -43,7 +43,8 @@ curl -fsSL https://antseed.com/install.sh | bash
 ```
 
 - **macOS**: installs `@antseed/cli` with npm, starts `antseed gateway start` in the background and prints the console setup link.
-- **Linux with systemd**: runs the server installer with `sudo`, which installs the gateway and buyer as services. For HTTPS at a hostname: `curl -fsSL https://antseed.com/install.sh | bash -s -- --domain <host>`. The server installer prints a summary with the base URL, a first API key labelled `admin` (shown once), the wallet address, the console URL and the setup link. See https://antseed.com/docs/gateway/server.
+- **Linux desktop session or WSL**: same as macOS (per-user, no sudo). Add `--local` to force this anywhere: `curl -fsSL https://antseed.com/install.sh | bash -s -- --local`.
+- **Linux with systemd and no desktop session (e.g. over SSH), or with any server option**: runs the server installer with `sudo`, which installs the gateway and buyer as services. Add `--server` to force it. For HTTPS at a hostname: `curl -fsSL https://antseed.com/install.sh | bash -s -- --domain <host>`. The server installer prints a summary with the base URL, a first API key labelled `admin` (shown once), the wallet address, the console URL and the setup link. See https://antseed.com/docs/gateway/server.
 
 Manual alternative (any machine with Node.js):
 
@@ -85,7 +86,7 @@ ssh -N -L 8379:127.0.0.1:8379 <user>@<server>
 
 ## Step 3: The user adds funds
 
-Skip this if the user only wants free models (marked **Free** on the console's **Models** page).
+Skip this if the user only wants free models, and set up **Free models only** below instead.
 
 The user opens **Wallet & Funding** and clicks **Add funds**, then either:
 
@@ -93,6 +94,28 @@ The user opens **Wallet & Funding** and clicks **Add funds**, then either:
 - **Quick deposit**: send USDC on Base to the workspace's address (QR code shown), from an exchange withdrawal or another wallet. The first deposit into a wallet must be at least $1.
 
 The balance updates by itself once funds arrive. **Never send funds yourself and never suggest an amount**; the user decides. Details: https://antseed.com/docs/gateway/funding.
+
+### Free models only
+
+Some sellers serve some models for free. Without funds, a request that routes to a paid seller fails with `402 … insufficient_deposits` ("You are out of AntSeed credits"). Automatic routing is not limited to free sellers, so for a user without funds, cap the gateway's prices at zero on the gateway host. Save the current gateway policy first, then add the caps with `--merge`, which keeps any sellers, models, TEE or other rules already set:
+
+```bash
+antseed gateway routing show --json > ~/routing-before-free.json
+echo '{"maxInputUsdPerMillion":0,"maxOutputUsdPerMillion":0,"maxCachedInputUsdPerMillion":0,"maxImageUsdPerImage":0}' > ~/free-only-caps.json
+antseed gateway routing set --merge --file ~/free-only-caps.json
+```
+
+Without `--merge`, `routing set` replaces the whole policy. The token caps cover text models, and `maxImageUsdPerImage` covers image models (it has no CLI flag, so the caps go in a file). A model with no free seller returns `model_not_found` ("No policy-allowed peer currently serves model …") instead of spending. What the caps don't make free:
+
+- Video and speech models are priced per second or per character, not per token, so the caps refuse every video and speech seller, free ones included.
+- Routing services (`<routerPeerId>@<routerServiceId>`) charge per ranking and no cap applies to them. Don't use one for a user without funds.
+ When the user adds funds and wants paid models, put the saved policy back:
+
+```bash
+antseed gateway routing set --file ~/routing-before-free.json
+```
+
+Pick a model with a free seller in Step 5.
 
 Headless only (no browser available): the Default workspace pays from the buyer's `default` wallet, so `antseed buyer deposit --no-watch` prints its address and a QR code. For another workspace, `antseed gateway workspace show <workspace>` prints its wallet address. The running buyer deposits incoming USDC automatically. Card checkout is only in the console.
 
@@ -115,6 +138,15 @@ Use the base URL shown in the console's top bar: `http://localhost:8379/v1` loca
 
 Models: copy ids from the console's **Models** page. A bare id (`deepseek-v4-flash`, `kimi-k2.6`, `gpt-oss-120b`) lets the gateway pick the best provider and fail over. `<peerId>@deepseek-v4-flash` pins one provider; use it only when the user asks to pin.
 
+Without funds, use a model with a free seller. This lists the ones automatic routing will use (free, and at or above the default minimum trust score of 60):
+
+```bash
+curl -s http://localhost:8379/v1/models -H "Authorization: Bearer $ANTSEED_API_KEY" \
+  | jq -r '.data[] | select(.type == "text" and any(.peers[]; .inputUsdPerMillion == 0 and .outputUsdPerMillion == 0 and (.effectiveReputationScore // 0) >= 60)) | .id'
+```
+
+The list changes as sellers come and go. `antseed gateway routing preview --model <id>` shows which seller a request would go to and its price. Free sellers can limit requests (`429 free_tier_exhausted`), and a model named `…-free-for-stakers` is free only to buyers staked on that seller. The examples below use `deepseek-v4-flash`, which had a free seller when this was written; swap in a model from the list if it is not there.
+
 ### Any OpenAI-compatible tool or SDK (Cursor, Python, JS)
 
 ```bash
@@ -136,13 +168,19 @@ The base URL has **no** `/v1`. Use a bearer token (`ANTHROPIC_AUTH_TOKEN` / `aut
 ```bash
 export ANTHROPIC_BASE_URL=http://localhost:8379
 export ANTHROPIC_AUTH_TOKEN="$ANTSEED_API_KEY"
-export ANTHROPIC_MODEL=kimi-k2.6
+export ANTHROPIC_MODEL=deepseek-v4-flash
 claude
 ```
 
 ### Codex
 
-Add a provider to `~/.codex/config.toml`. Prefer a preset (`@preset/<slug>`, from the console's **Presets** page) as the model:
+Prefer a preset as the model: `@preset/<slug>`, a model with default parameters and a routing policy, from the console's **Presets** page. A new gateway has no presets, so create one on the gateway host first:
+
+```bash
+antseed gateway preset create --slug coder --name Coder --model deepseek-v4-flash
+```
+
+Then add a provider to `~/.codex/config.toml`:
 
 ```toml
 model = "@preset/coder"
@@ -185,9 +223,11 @@ For a single local tool with no keys, budgets or console, run just the buyer:
 ```bash
 npm install -g @antseed/cli
 antseed buyer start             # OpenAI/Anthropic API at http://localhost:8377, no API key
-antseed buyer deposit           # funding address + QR for USDC on Base
-antseed claude --model kimi-k2.6
+antseed buyer deposit           # paid models only: funding address + QR for USDC on Base
+antseed claude --model deepseek-v4-flash
 ```
+
+For free text models only, start the buyer with its token price caps at zero, so it never routes a text request to a paid seller: `antseed buyer start --max-input-usd-per-million 0 --max-output-usd-per-million 0`. These caps don't cover image models, which can still go to a paid seller, so for a free-only setup that includes images, use the gateway and its caps above.
 
 The wrappers `antseed claude | codex | opencode` work against it unchanged. Full guide: https://antseed.com/docs/api.
 
@@ -197,7 +237,7 @@ The wrappers `antseed claude | codex | opencode` work against it unchanged. Full
 - Never open a setup, recovery or invite link yourself, and never register a passkey or wallet sign-in for the user.
 - Do not expose ports 8379 or 8377 beyond loopback: no `--host 0.0.0.0`, port forwards or ad-hoc reverse proxies. For remote access use the server installer with `--domain`, a Cloudflare tunnel, or an SSH forward.
 - Never send funds, never invent funding amounts, and never send USDC anywhere except a workspace address shown by the console or the CLI, on Base only.
-- Do not construct `<peerId>@<model>` unless the user asks to pin a provider.
+- Do not construct `<peerId>@<model>` unless the user asks to pin a provider. For a user without funds, use the free-only cap in Step 3 rather than pins.
 - Long-running commands (`curl … | bash`, `npm install -g`, `antseed gateway start`) need a long timeout or a background process. Keep the gateway running after setup.
 - After setup, tell the user the base URL, the console URL, the tool configuration you applied (without the secret) and whether funds are needed.
 
@@ -213,6 +253,9 @@ The wrappers `antseed claude | codex | opencode` work against it unchanged. Full
 ## Troubleshooting
 
 - **`401 invalid_api_key` / `key_revoked` / `key_expired`**: wrong, revoked or expired key, or the wrong base URL. Check the `Authorization: Bearer` header; create a new key on **Keys**.
+- **`402 antseed_buyer_fault` / `insufficient_deposits`** ("You are out of AntSeed credits"): the request went to a paid seller and the wallet has no funds. Have the user add funds (Step 3), or set the free-only cap in Step 3 and use a model with a free seller.
+- **`502 model_not_found`** ("No policy-allowed peer currently serves model …"): no seller that your routing policy allows serves the model. With the free-only cap, the model has no free seller; pick one from the free list in Step 5. Right after `antseed gateway start` the buyer is still discovering sellers; wait a minute and retry.
+- **`429 free_tier_exhausted`**: a free seller's rate limit, or a model that is free only to stakers. Wait, or use another free model.
 - **`402 spend_limit_reached`**: a key, member or workspace budget ran out; `error.limit` says which and `resets_at`. Wait, or have an admin raise it.
 - **`403 model_not_allowed`**: a routing policy allows only certain models. Use an allowed model; the **Routing** page shows the effective policy.
 - **`502 buyer_unavailable` / `503 spend_tracking_unavailable`**: the buyer isn't running or doesn't match the gateway. Run both from `antseed gateway start` with the same `--data-dir`.

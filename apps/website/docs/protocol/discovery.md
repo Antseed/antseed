@@ -67,7 +67,7 @@ Each seller runs an HTTP server exposing `GET /metadata` which returns JSON-seri
 ```json title="metadata structure"
 {
   "peerId": "<peerId>",
-  "version": 13,
+  "version": 16,
   "displayName": "Example Inference",
   "publicAddress": "peer.example.com:6882",
   "providers": [{
@@ -144,11 +144,11 @@ Metadata v11 added `serviceUnitBillingModels`; v12 adds `serviceCapabilities` an
 }
 ```
 
-Capability fields are optional; absence means unknown. `inputs` and `outputs` declare accepted and produced modalities (`text`, `image`, `audio`, `video`, `pdf`); `supportedParameters` lists extra request-body parameter names the service accepts (lowercase snake_case, announced in code-unit sorted order). Unit-billing components may match `model`, `size`, `quality`, or `resolution`. Discovery only includes capability and billing entries for services currently advertised by the provider.
+Capability fields are optional; absence means unknown. `inputs` and `outputs` declare accepted and produced modalities (`text`, `image`, `audio`, `video`, `pdf`); `supportedParameters` lists extra request-body parameter names the service accepts (lowercase snake_case, announced in code-unit sorted order). Unit-billing components may match `model`, `size`, `quality`, `resolution`, and (metadata v16+) a video create's `aspect_ratio` and `audio`. Discovery only includes capability and billing entries for services currently advertised by the provider.
 
 Capabilities are hints, not enforced contracts. The buyer proxy performs one advisory check: when a peer announces `supportedParameters` for the routed service and the request body carries parameters outside that list, the proxy logs a warning and forwards the request unchanged. The upstream provider remains the authority on which parameters it accepts.
 
-Buyers accept metadata versions 10 through 14 and reject versions newer than they understand. Version 13 added `serviceHealth`, the seller's own health check result for each service, and version 14 (the current one) adds `servicePerformance`, how each service served the seller's buyers in the last hour.
+Buyers accept metadata versions from 10 up to the newest version their release understands, and reject newer ones. Version 13 added `serviceHealth`, the seller's own health check result for each service, version 14 added `servicePerformance`, how each service served the seller's buyers in the last hour, and version 15 adds speech services (the `openai-audio-speech` protocol, the `input_characters` billing unit and a `speech` capability block; see [Speech services](/docs/provide/media#speech-services)), and version 16 adds video prices by aspect ratio and audio (`aspect_ratio` and `audio` match keys, and up to 64 components per billing model instead of 8; see [Prices by aspect ratio and audio](/docs/provide/media#prices-by-aspect-ratio-and-audio)). The newest version is `METADATA_VERSION` in [`packages/protocol/src/peer-metadata.ts`](https://github.com/AntSeed/antseed/blob/main/packages/protocol/src/peer-metadata.ts); it is 16 in current releases.
 
 ```json
 "serviceHealth": {
@@ -171,7 +171,7 @@ The seller measures these on its own buyer traffic over the last hour: every buy
 
 Buyers use these figures as their starting point for a seller they have not used yet. Without them, a new seller is assumed to succeed 80% of the time and to be as fast as the sellers the buyer has measured. With them, the buyer starts from the reported success rate (once it covers at least 10 requests, and never above 95%, since sellers grade themselves) and the reported speed. A seller reporting failures is tried after healthier ones from the first request. The buyer's own requests quickly outweigh what the seller reports.
 
-Buyers ask for the version they understand with the `x-antseed-metadata-version` request header. Sellers sign a v12, a v13 and a v14 document and answer with the newest one the buyer understands; a buyer that sends no header gets v12, without the services that are failing.
+Buyers ask for the version they understand with the `x-antseed-metadata-version` request header. Sellers sign one document for each version they serve (`SERVED_METADATA_VERSIONS`, currently v12 to v16) and answer with the newest one the buyer understands; a buyer that sends no header gets v12, without the services that are failing. Each older document leaves out what its version can't carry, such as speech services before v15 or video option prices before v16.
 
 `publicAddress` is optional. When present, buyers should prefer it over the raw host learned from the DHT announcement. This is intended for deployments where DHT traffic exits from one IP but buyers must connect to another address, such as a Kubernetes load balancer.
 

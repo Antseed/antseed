@@ -15,7 +15,7 @@ For a model-only request such as `"model": "deepseek-v4-flash"`, the buyer:
 1. Normalizes the model name, so cosmetic variants of the same model share one catalog entry.
 2. Collects every seller that offers the model in a compatible API format.
 3. Drops sellers your preferences exclude: below the minimum trust score (default `60`; unscored sellers are excluded too), above your hard price caps, on your block list, or outside your allow list when one is set.
-4. Picks the cheapest of the rest (input plus output price per million tokens, or the per-image price). Trust only breaks price ties, together with penalties for recent failures and a boost for free sellers when you prefer them; sellers cooling down after failures go last.
+4. Ranks the rest by the expected cost of one good answer: the price plus the value of the time it takes, divided by the chance it succeeds. Sellers close to the best share the traffic. Sellers failing lately come after the healthy ones, and sellers cooling down go last. Trust doesn't affect the order above the minimum. **Answer length and speed** below gives the numbers.
 5. Rewrites the model to the chosen seller's own service id and sends the request.
 
 The ranking weights and defaults are documented once, in the [router plugin API](/docs/router-api).
@@ -23,14 +23,84 @@ The ranking weights and defaults are documented once, in the [router plugin API]
 Some details that affect the result:
 
 - **Cached-input pricing.** When at least one seller of a model advertises a cached-input price, a seller that omits it has its effective reputation for that model halved, because cache-heavy workloads may cost more there. If no seller advertises one, nobody is penalized.
-- **Model verification.** A seller service with a live DIFF result on-chain (two independent auditors found it very likely serves a different model; see [Model verification](/docs/model-verification)) keeps 10% of its effective reputation for that service, free or paid. Its other services are not affected, and a DIFF reported by one auditor that is still waiting for a second changes nothing. The two penalties multiply: a seller at 100 with both lands at 5. With the default minimum trust of `60`, a DIFF service drops out of automatic routing; a pin still reaches it. The buyer reads results from the verification contract at most every two minutes per seller. If the contract can't be read, the last result is used for up to 15 minutes; after that no penalty applies.
+- **Model verification.** A seller service with a live DIFF result on-chain (two independent auditors found it very likely serves a different model; see [Model verification](/docs/verify/overview)) keeps 10% of its effective reputation for that service, free or paid. Its other services are not affected, and a DIFF reported by one auditor that is still waiting for a second changes nothing. The two penalties multiply: a seller at 100 with both lands at 5. With the default minimum trust of `60`, a DIFF service drops out of automatic routing; a pin still reaches it. The buyer reads results from the verification contract at most every two minutes per seller. If the contract can't be read, the last result is used for up to 15 minutes; after that no penalty applies.
+- **Answer length and speed.** Automatic routing weighs a seller's price against the time it takes, at $0.0002 per second of waiting, divided by its recent success rate. The time is the seller's usual time to first token plus the expected answer length at its usual output speed, counting `max_tokens` (or `max_completion_tokens`, `max_output_tokens`) up to 2,000 tokens, or 400 when the request sets none. Speeds come from your buyer's own requests, else the seller's reported figures. A first request to a paid seller you have no payment channel with counts 5 seconds more. So the same model can go to a cheaper seller for a short answer and to a faster, pricier one for a long answer. Sellers within 30% of the best share the traffic, and about 5% of requests try a seller your buyer has not heard from lately.
 - **One offer per seller.** If a seller advertises several names for the same model, only its cheapest offer is kept.
 - **Seller-reported performance.** Each seller announces, per model, how its last hour of buyer traffic went: requests, success rate, time to first token and output speed. Until your buyer has its own record of a seller on a model, it starts from these figures instead of fixed defaults, so a seller that reports failures is tried after healthier ones from the first request. A reported success rate counts once it covers at least 10 requests and never above 95%; your buyer's own requests outweigh it quickly. See [discovery](/docs/discovery).
 - **Conversation affinity.** For a recognized conversation, later turns prefer the seller that served the earlier ones, while it stays healthy and eligible. This is a preference, not a pin.
-- **Failover.** After a retryable failure blamed on the seller, the buyer moves to the next ranked offer. HTTP `429` is retried on the same seller first. Requests are not failed over after streaming has started, after a client cancel, or on non-retryable errors.
+- **Failover.** After a retryable failure blamed on the seller, the buyer moves to the next ranked offer. HTTP `429` is retried on the same seller first. Requests are not failed over after streaming has started, after a client cancel, or on non-retryable errors. A buyer without deposits that a paid seller asks to pay (`402`) moves on to the model's free sellers and free allowances; the `402` comes back only when none is left.
 - **Pins are hard.** `<peerId>@<model>`, the `x-antseed-pin-peer` header and a session pin never fail over. See [Choose the model and seller](/docs/api#choose-the-model-and-seller).
 
+To see why a request went where it did, read the `x-antseed-route-selection` response header (see [Which seller served a request](#which-seller-served-a-request)).
+
 Routing preferences live in `buyer.routingPreferences`; see [Buyer configuration](/docs/buyer-config#routing-preferences). On a gateway, routing policies narrow them per workspace, member, key or preset; see [Routing policies](/docs/gateway/routing).
+
+## Which seller served a request
+
+Every response names its seller in `x-antseed-peer-id`. A model-routed response also carries `x-antseed-route-selection`: base64url-encoded JSON with how the seller was picked. Decode it with:
+
+```bash
+curl -s -D - -o /dev/null http://localhost:8377/v1/chat/completions \
+  -H 'content-type: application/json' \
+  -d '{"model":"deepseek-v4-flash","max_tokens":64,"messages":[{"role":"user","content":"Reply with: ok"}]}' \
+  | tr -d '\r' | awk -F': ' 'tolower($1)=="x-antseed-route-selection"{print $2}' \
+  | node -e 'process.stdin.on("data",d=>console.log(JSON.parse(Buffer.from(String(d).trim(),"base64url"))))'
+```
+
+The most useful fields:
+
+| Field | Meaning |
+|---|---|
+| `rank`, `of` | Position of the serving seller among the eligible ones, and how many there were |
+| `pick` | `best`, `spread` (drawn from the sellers sharing traffic), `conversation`, `exploration`, `failover` (the sellers before it failed) or `order` |
+| `ordering` | `expected-cost` (the buyer's automatic order), `trust`, or a gateway policy's `price` or `latency` sort |
+| `expectedCostUsd` | Price plus waiting time, over the success rate. Lower ranks first. |
+| `expectedPriceUsd`, `expectedSeconds` | The price and time behind it |
+| `successRate`, `observations`, `record` | Chance of a good answer, and how much of your buyer's own record it rests on |
+| `channel` | `free`, `open` (you already pay this seller) or `new` (the first request reserves funds) |
+
+Pinned requests don't carry it.
+
+## Using only free models
+
+A buyer with no deposits can only be served by free sellers. Automatic routing can still rank a paid seller first, for example a faster one for a long answer, and coding tools such as Claude Code and OpenCode send large `max_tokens`. With CLI 0.1.234 and earlier, the request then fails with `402` ("You are out of AntSeed credits") and is not retried on a free seller, unless a gateway routing policy applies to it.
+
+To stay on free sellers:
+
+- **Cap token prices at zero (text models).** Only sellers with free token prices stay eligible, for automatic and pinned requests. Restart the buyer to apply:
+
+  ```bash
+  antseed config buyer set maxPricing.defaults.inputUsdPerMillion 0
+  antseed config buyer set maxPricing.defaults.outputUsdPerMillion 0
+  ```
+
+  Check the result with `antseed config buyer show`: `maxPricing` should list only `defaults`, both at `0`. The buyer also prints `max pricing defaults (USD/1M): input=0, output=0` at start. If your `config.json` has a `buyer.maxPricing.providers` block (per-provider or per-service caps), delete it or set its prices to `0` too. CLI 0.1.231 doesn't read that block, but the router applies those caps before the defaults whenever it gets them. `antseed buyer start --max-input-usd-per-million 0 --max-output-usd-per-million 0` sets only the defaults, for one run.
+
+  A model with no free seller that passes your minimum trust score then fails with `502 model_not_found` instead of `402`.
+
+  These are token caps, so they cover only what they price:
+  - **Image models** are priced per image, not per token, and the buyer has no per-image cap. An image seller with zero token prices and a per-image price still gets the request, which then fails with `402`. Pick a seller whose catalog offer has `maxImageUsdPerImage` of `0` (or none), and pin it. `minImageUsdPerImage` isn't enough: an offer with one free and one paid image size has a minimum of `0`. Other priced units, such as per-second video or per-character speech, also make an offer paid.
+  - **Video and speech** sellers advertise no token price, so these caps leave them out.
+  - **Routing services** (`<routerPeerId>@<routerServiceId>`) charge per ranking and aren't judged by these caps, so a request that names one still tries to pay.
+- **Pin a free seller.** Find one in the catalog and send `<peerId>@<model>`:
+
+  ```bash
+  curl -s http://localhost:8377/v1/models/deepseek-v4-flash \
+    | jq -r '.peers[] | select(.inputUsdPerMillion == 0 and .outputUsdPerMillion == 0 and (.cachedInputUsdPerMillion // 0) == 0 and (.maxImageUsdPerImage // 0) == 0) | "\(.peerId)@\(.serviceId)  trust \(.effectiveReputationScore)"'
+  ```
+
+  A pin never fails over, so if that seller goes offline, pick another.
+- **On a gateway,** create a preset that allows only free sellers, then call it as the model `@preset/<slug>`. A gateway policy can also cap the per-image price, which has no flag, so set it from a policy file:
+
+  ```bash
+  echo '{"maxImageUsdPerImage": 0}' > free-only.json
+  antseed gateway preset create --slug free-oss --name "Free gpt-oss" --model gpt-oss-120b \
+    --file free-only.json --max-input-price 0 --max-output-price 0 --max-cached-input-price 0
+  ```
+
+  Use `--prefer-free` instead of the caps to try free sellers first but still allow paid ones. Routing services aren't judged by these caps either. See [Routing policies](/docs/gateway/routing).
+
+Some sellers list a model at $0 but serve it only to buyers staked in their pool; they answer others with `429`. Their catalog offer has `freeTier.base.stakersOnly: true`.
 
 ## Use a routing service
 
@@ -93,7 +163,7 @@ Each entry includes:
 | `supported_protocols` | Every API format some seller offers it in |
 | `context_length`, `max_output_tokens`, `architecture`, `capabilities`, `supported_parameters` | Limits and features every seller guarantees. A field is left out when any seller does not report it. |
 | `capability_coverage` | How many offers reported each field |
-| `peers` | One offer per seller, in the same order automatic routing ranks them |
+| `peers` | One offer per seller: sellers your preferences allow first, then by total price. This is not the order automatic routing tries them in, which also weighs speed and success rate per request (see [How automatic routing chooses](#how-automatic-routing-chooses)). |
 
 Each item in `peers` has the seller's `peerId`, `provider`, `serviceId`, protocols, prices (`inputUsdPerMillion`, `outputUsdPerMillion`, `cachedInputUsdPerMillion`, or image prices), `reputationScore`, `effectiveReputationScore` (the model-specific score used for ranking), its own capabilities, `performance` (the seller's figures for its last hour of buyer traffic, for example `{ "requests": 312, "successRate": 0.97, "firstTokenMsP50": 420, "tokensPerSecondP50": 78 }`) and `health`: the seller's last self health check for the model, for example `{ "status": "healthy", "checkedAt": 1793328100000, "source": "traffic" }` when a paid buyer request last succeeded (`"probe"` when the seller's own check passed). Offers the seller reports failing are left out, and a model whose every seller reports it failing is not listed. See [discovery](/docs/discovery) for every field. To pin one offer, send `<peerId>@<serviceId>` from the same item.
 

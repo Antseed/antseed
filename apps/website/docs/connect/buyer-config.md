@@ -43,7 +43,7 @@ Settings resolve in this order: command-line flags, then environment variables, 
 | `payments.maxPerRequestUsdc` | `300000` ($0.30) | Most the buyer authorizes beyond its own cost estimate in one request, in USDC base units |
 | `payments.maxVideoRequestUsdc` | `5000000` ($5.00) | Most one video may cost, in USDC base units |
 | `payments.maxReserveAmountUsdc` | `1000000` ($1.00) | Most the buyer reserves for one payment channel, in USDC base units |
-| `network.bootstrapNodes` | `[]` | Extra DHT bootstrap nodes, added to the built-in ones |
+| `network.bootstrapNodes` | `[]` | Extra DHT bootstrap nodes. They are added to the built-in public nodes and can't replace them; see [Test your seller before going live](/docs/provide/test-locally) |
 | `network.noOfficialBootstrap` | `false` | Use only `network.bootstrapNodes`, for an isolated test network |
 | `network.dhtPort` | OS-assigned | UDP port of the node's DHT socket |
 | `network.bindHost` | all interfaces | Local address the node's DHT socket binds to |

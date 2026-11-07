@@ -4,7 +4,13 @@ import ora from 'ora';
 import { getGlobalOptions } from '../types.js';
 import { configFromObject, loadConfig, saveConfig } from '../../../config/loader.js';
 import { patchValidatedConfig } from '../../../config/patch.js';
-import type { AntseedConfig, SellerProviderConfig } from '../../../config/types.js';
+import type {
+  AntseedConfig,
+  SellerFreeTierCLIConfig,
+  SellerProviderConfig,
+  SellerServiceConfig,
+  TokenPricingUsdPerMillion,
+} from '../../../config/types.js';
 import { assertValidConfig } from '../../../config/validation.js';
 import {
   parseServiceCapabilitiesInput,
@@ -292,15 +298,163 @@ export function redactConfig(config: AntseedConfig): Record<string, unknown> {
 }
 
 /**
+ * Split a dot-separated key into path segments. IDs such as `kimi-k2.6`
+ * contain dots, so at each level the longest run of segments that already
+ * names a key there is taken as one segment. Anything else splits on dots.
+ *
+ * @example resolveConfigKeyPath({ s: { 'kimi-k2.6': {} } }, 's.kimi-k2.6.pricing') // ['s', 'kimi-k2.6', 'pricing']
+ */
+export function resolveConfigKeyPath(config: Record<string, unknown>, key: string): string[] {
+  const segments = key.split('.');
+  const parts: string[] = [];
+  let current: unknown = config;
+  let i = 0;
+  while (i < segments.length) {
+    let end = i + 1;
+    if (isPlainObject(current)) {
+      for (let j = segments.length; j > i + 1; j--) {
+        if (Object.prototype.hasOwnProperty.call(current, segments.slice(i, j).join('.'))) {
+          end = j;
+          break;
+        }
+      }
+    }
+    const part = segments.slice(i, end).join('.');
+    parts.push(part);
+    current = isPlainObject(current) ? current[part] : undefined;
+    i = end;
+  }
+  return parts;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** Settable fields under a provider or service. `true`: a leaf. `'any'`: free-form below. */
+type KeyShape = true | 'any' | { [field: string]: KeyShape };
+
+/**
+ * One entry per field of `T`, optional ones included, and no others, so a
+ * field added to or renamed in the config types fails to compile here.
+ */
+type FieldShapes<T> = { [K in keyof Required<T>]: KeyShape };
+
+const PRICING_SHAPE = {
+  inputUsdPerMillion: true,
+  outputUsdPerMillion: true,
+  cachedInputUsdPerMillion: true,
+} satisfies FieldShapes<TokenPricingUsdPerMillion>;
+
+const SERVICE_SHAPE = {
+  upstreamModel: true,
+  imageEditModel: true,
+  categories: true,
+  enabled: true,
+  pricing: PRICING_SHAPE,
+  capabilities: 'any',
+  unitBillingModels: 'any',
+  freeTier: {
+    maxRequestsPerAddress: true,
+    maxRequestsPerIp: true,
+    windowMs: true,
+    stakeTiers: true,
+    stakersOnly: true,
+  } satisfies FieldShapes<SellerFreeTierCLIConfig>,
+} satisfies FieldShapes<SellerServiceConfig>;
+
+const PROVIDER_SHAPE = {
+  plugin: true,
+  baseUrl: true,
+  apiKeyEnv: true,
+  pathRewrite: 'any',
+  fallbackUpstreams: true,
+  defaults: PRICING_SHAPE,
+  services: true,
+} satisfies FieldShapes<SellerProviderConfig>;
+
+function checkShape(shape: KeyShape, fields: string[], fullKey: string, where: string): void {
+  let current: KeyShape = shape;
+  for (let i = 0; i < fields.length; i++) {
+    if (current === 'any') return;
+    const field = fields[i]!;
+    const next: KeyShape | undefined = current === true ? undefined : current[field];
+    if (next === undefined) {
+      const parent = fields.slice(0, i).join('.');
+      const allowed = current === true ? [] : Object.keys(current);
+      throw new Error(
+        `Unknown key ${fullKey}: "${field}" is not a field of ${where}${parent ? `.${parent}` : ''}`
+        + (allowed.length > 0 ? `. Fields: ${allowed.join(', ')}` : ''),
+      );
+    }
+    current = next;
+  }
+}
+
+/**
+ * Refuse a `seller.providers.*` path that would not land on a real field,
+ * instead of writing an entry the loader ignores. A field of a provider or a
+ * service needs that provider or service to exist already.
+ */
+export function assertSellerProviderKeyPath(config: Record<string, unknown>, parts: string[], key: string): void {
+  if (parts[0] !== 'seller' || parts[1] !== 'providers' || parts.length <= 3) return;
+  const seller = config['seller'] as Record<string, unknown> | undefined;
+  const providers = (seller?.['providers'] ?? {}) as Record<string, unknown>;
+  const providerName = parts[2]!;
+  const provider = providers[providerName];
+  if (!isPlainObject(provider)) {
+    const names = Object.keys(providers);
+    throw new Error(
+      `No provider "${providerName}" in seller.providers`
+      + (names.length > 0 ? ` (providers: ${names.join(', ')})` : '')
+      + `. Add it with: antseed config seller add-provider ${providerName} --plugin <plugin>`,
+    );
+  }
+  const providerFields = parts.slice(3);
+  if (providerFields[0] !== 'services') {
+    checkShape(PROVIDER_SHAPE, providerFields, key, `provider "${providerName}"`);
+    return;
+  }
+  // `services` or `services.<id>` takes a whole JSON object, and may add a service.
+  if (providerFields.length <= 2) return;
+  const services = isPlainObject(provider['services']) ? provider['services'] : {};
+  const serviceId = providerFields[1]!;
+  const rest = key.slice(`seller.providers.${providerName}.services.`.length);
+  const ids = Object.keys(services);
+  if (!isPlainObject(services[serviceId])) {
+    throw new Error(
+      `No service of provider "${providerName}" matches "${rest}"`
+      + (ids.length > 0 ? ` (services: ${ids.join(', ')})` : '')
+      + `. Add it with: antseed config seller add-service ${providerName} <serviceId>`,
+    );
+  }
+  // An unknown first field usually means a dotted id that isn't configured
+  // (`kimi-k2.7` read as service `kimi-k2`, field `7`), so say both.
+  const firstField = providerFields[2]!;
+  if (!Object.prototype.hasOwnProperty.call(SERVICE_SHAPE, firstField)) {
+    throw new Error(
+      `No service of provider "${providerName}" matches "${rest}" (services: ${ids.join(', ')}),`
+      + ` and "${firstField}" is not a field of service "${serviceId}" (fields: ${Object.keys(SERVICE_SHAPE).join(', ')})`,
+    );
+  }
+  checkShape(SERVICE_SHAPE, providerFields.slice(2), key, `service "${serviceId}"`);
+}
+
+/**
  * Set a nested config value by dot-separated key path. Auto-creates missing
  * intermediate objects so dynamic paths under `seller.providers.<name>.services.<id>`
- * can be set before the provider or service entry exists in the file.
+ * can be set before the provider or service entry exists in the file. A
+ * segment that names an existing key may contain dots (see `resolveConfigKeyPath`).
  *
  * @example setConfigValue(config, 'seller.reserveFloor', '20')
  * @example setConfigValue(config, 'seller.providers.openai.services.gpt-4.pricing.inputUsdPerMillion', '3')
+ * @example setConfigValue(config, 'seller.providers.openai.services.kimi-k2.6.pricing.inputUsdPerMillion', '3')
  */
 export function setConfigValue(config: Record<string, unknown>, key: string, value: string): void {
-  const parts = key.split('.');
+  setConfigPath(config, resolveConfigKeyPath(config, key), key, value);
+}
+
+function setConfigPath(config: Record<string, unknown>, parts: string[], key: string, value: string): void {
   let current: Record<string, unknown> = config;
   for (let i = 0; i < parts.length - 1; i++) {
     const part = parts[i]!;
@@ -423,8 +577,11 @@ async function setRoleScopedValue(
  * its default, so validating only the loaded file would let it through.
  */
 export function setValidatedConfigValue(raw: Record<string, unknown>, key: string, value: string): void {
-  const effective = configFromObject(structuredClone(raw));
-  setConfigValue(effective as unknown as Record<string, unknown>, key, value);
-  assertValidConfig(effective);
-  setConfigValue(raw, key, value);
+  const effective = configFromObject(structuredClone(raw)) as unknown as Record<string, unknown>;
+  // Resolve once against the effective config so the file gets the same path.
+  const parts = resolveConfigKeyPath(effective, key);
+  assertSellerProviderKeyPath(effective, parts, key);
+  setConfigPath(effective, parts, key, value);
+  assertValidConfig(effective as unknown as AntseedConfig);
+  setConfigPath(raw, parts, key, value);
 }

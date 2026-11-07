@@ -1,6 +1,6 @@
 {
   "name": "@antseed/antseed-verifier",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "AntSeed capability-based attestation SDK: buyer verifier + seller prover. A menu of independent seller capabilities (seller-node-tee-genuine, seller-provider-tee-genuine, seller-bound, seller-provider-measured-image, seller-provider-gpu-cc), one claim each.",
   "license": "GPL-3.0-only",
   "type": "module",

@@ -64,7 +64,7 @@ To compare sellers beyond price, [AntSeedStats](https://antseedstats.com/sellers
 
 ## Reputation
 
-**Reputation** shows the trust score buyers compute for your seller (0-100) part by part: service history (up to 50), recognized usage (20), staking power (10), verified identity (20), the free model bonus (+5) and the wash-trading check. Each part has a plain next step for raising it, biggest gain first. Next to it is your on-chain standing: agent id and binding, eligibility, pool stake against the minimum, pool power and stakers, pending seller rewards, and settled volume, buyers, requests and ghost rate when the explorer answers.
+**Reputation** shows the trust score buyers compute for your seller (0-100) part by part: staking power (up to 70), recognized usage (30), verified identity (+20), the free model bonus (+5), the points model checks added or took off, and the wash-trading check, with your settled channels and volume shown alongside. Each part has a plain next step for raising it, biggest gain first. Next to it is your on-chain standing: agent id and binding, eligibility, pool stake against the minimum, pool power and stakers, pending seller rewards, and settled volume, buyers, requests and ghost rate when the explorer answers.
 
 ![Reputation: trust score and its parts, how to raise it, and on-chain standing](/img/docs/seller/reputation.webp)
 

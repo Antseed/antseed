@@ -64,10 +64,10 @@ Custom bootstrap nodes can be supplied and are merged (deduplicated by `host:por
 
 ### Metadata Version
 
-**Source:** `node/src/discovery/peer-metadata.ts`
+**Source:** `packages/protocol/src/peer-metadata.ts`
 
 ```
-METADATA_VERSION = 14
+METADATA_VERSION = 16
 MIN_SUPPORTED_METADATA_VERSION = 10
 LEGACY_METADATA_VERSION = 12   // served to buyers that do not ask for a version
 METADATA_VERSION_HEADER = "x-antseed-metadata-version"
@@ -213,7 +213,9 @@ Per provider (repeated providerCount times):
   Per unit billing entry:
     [service][protocolId:1][modelVersion:1][componentCount:1][components...]
     Components encode unit id, float32 USD price, and optional match key/value pairs.
-    Unit ids are positions in UNIT_BILLING_UNITS_V1: output_images=0, completed_requests=1, video_generations=2, video_seconds=3.
+    Unit ids are positions in UNIT_BILLING_UNITS_V1: output_images=0, completed_requests=1, video_generations=2, video_seconds=3, input_characters=4 (v15+).
+    Match key ids are positions in UNIT_BILLING_MATCH_KEYS_V1: model=0, size=1, quality=2, resolution=3, aspect_ratio=4 and audio=5 (v16+).
+    A model carries at most 8 components through v15 and 64 in v16+. A seller serving an older version leaves out services that use a newer unit or match key or more components than it allows.
     protocolId is the protocol's index in the append-only WELL_KNOWN_SERVICE_API_PROTOCOLS list.
   [serviceCapabilityEntryCount : 2 bytes uint16 ]    // v12+
   Per capability entry:
@@ -278,7 +280,7 @@ Metadata validation is intentionally bounded: buyers accept versions from `MIN_S
 
 The decoder cannot safely ignore unknown newer versions because provider extensions are embedded in the signed binary layout. Metadata v12 widens service and service-map counts from `uint8` to `uint16`; removing optional fields from config does not make a v12 seller emit an older version.
 
-From v13, sellers negotiate the version. A seller signs one document per version it serves (currently 12, 13 and 14) on every refresh. A buyer sends `x-antseed-metadata-version: <newest version it understands>` on `GET /metadata`; the seller answers with the newest version it signs that is not newer. A buyer that sends no header gets `LEGACY_METADATA_VERSION` (12), so buyers released before negotiation keep working. The v12 document has no health block, so it leaves out services announced as failing (and a provider whose services are all failing), which is how sellers withdrew them before v13.
+From v13, sellers negotiate the version. A seller signs one document per version it serves (`SERVED_METADATA_VERSIONS`, currently 12 to 16) on every refresh. A buyer sends `x-antseed-metadata-version: <newest version it understands>` on `GET /metadata`; the seller answers with the newest version it signs that is not newer. A buyer that sends no header gets `LEGACY_METADATA_VERSION` (12), so buyers released before negotiation keep working. The v12 document has no health block, so it leaves out services announced as failing (and a provider whose services are all failing), which is how sellers withdrew them before v13.
 
 The body (everything except the trailing 65-byte signature) is the data that is signed. `encodeMetadataForSigning()` produces this body without the signature for signing and verification purposes.
 

@@ -8,6 +8,7 @@ import {
   buildBuyerRuntimeOverridesFromFlags,
   buildBuyerBootstrapEntries,
   buildRouterRuntimeEnvFromBuyerConfig,
+  buyerToolHintLines,
   ignoreBrokenPipes,
   isCompatibleBuyerProxy,
   isSupervisedProcess,
@@ -151,4 +152,30 @@ test('a broken output pipe does not crash the buyer; other stream errors still t
   ignoreBrokenPipes([stream]);
   stream.emit('error', Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }));
   assert.throws(() => stream.emit('error', Object.assign(new Error('boom'), { code: 'EIO' })), /boom/);
+});
+
+test('buyerToolHintLines prints OPENAI_BASE_URL with /v1 and ANTHROPIC_BASE_URL without it', () => {
+  assert.deepEqual(buyerToolHintLines('http://localhost:8377', []), [
+    '  export ANTHROPIC_BASE_URL=http://localhost:8377',
+    '  export OPENAI_BASE_URL=http://localhost:8377/v1',
+  ]);
+});
+
+test('buyerToolHintLines keeps a custom --port', () => {
+  assert.deepEqual(buyerToolHintLines('http://localhost:18377', []), [
+    '  export ANTHROPIC_BASE_URL=http://localhost:18377',
+    '  export OPENAI_BASE_URL=http://localhost:18377/v1',
+  ]);
+});
+
+test('buyerToolHintLines gives plugin tool hints the base URL their variable expects', () => {
+  assert.deepEqual(buyerToolHintLines('http://localhost:8377', [
+    { name: 'Claude Code', envVar: 'ANTHROPIC_BASE_URL' },
+    { name: 'Aider', envVar: 'OPENAI_API_BASE' },
+    { name: 'Codex', envVar: 'OPENAI_BASE_URL' },
+  ]), [
+    '  export ANTHROPIC_BASE_URL=http://localhost:8377   # Claude Code',
+    '  export OPENAI_API_BASE=http://localhost:8377/v1   # Aider',
+    '  export OPENAI_BASE_URL=http://localhost:8377/v1   # Codex',
+  ]);
 });

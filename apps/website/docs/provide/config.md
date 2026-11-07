@@ -179,7 +179,7 @@ antseed config seller remove-service inference kimi-k2.6
 antseed config seller remove-provider inference
 ```
 
-`config seller set` splits the key on dots, so it can't address a service whose ID contains a dot, such as `kimi-k2.6`. Use `add-service` again, which updates an existing service, or edit the file. `set` accepts keys that already exist in the file, any key under `providers`, and the `freeTier`, `freeUsage` and `restrictedCountries` keys shown below; add other blocks, such as `healthCheck`, by editing the file.
+`config seller set` works with service IDs that contain a dot, such as `kimi-k2.6`, once the service exists: `providers.inference.services.kimi-k2.6.pricing.inputUsdPerMillion`. Add a new service with `add-service`. `set` accepts keys that already exist in the file, the provider and service fields on this page, and the `freeTier`, `freeUsage` and `restrictedCountries` keys shown below. It refuses any other key, and a provider or service that doesn't exist, with an error and a non-zero exit code; add other blocks, such as `healthCheck`, by editing the file.
 
 `antseed seller setup` builds the capabilities object with one question per field, tailored to the service: image services are asked about input modalities and supported parameters, text services about context window, modalities, reasoning, tool use and structured output. You can paste a JSON object at the capabilities prompt instead.
 
@@ -207,10 +207,14 @@ Any other npm package that exports a provider plugin works too. See [Provider pl
 | `seller.publicAddress` | empty | `host:port` buyers should dial. Needed when the address the DHT sees isn't the one buyers can reach, such as behind a load balancer. Check it with `antseed seller doctor`. |
 | `seller.maxConcurrentBuyers` | `50` | Maximum concurrent requests each provider plugin handles. |
 | `seller.maxUploadBodyBytes` | 64 MiB | Largest request body accepted from a buyer; at least 1 MiB. `ANTSEED_MAX_UPLOAD_BODY_BYTES` overrides it. |
+| `seller.maxInboundConnectionsPerIp` | `64` | Buyer connections accepted from one IP at once. Raise it when every buyer reaches the seller through one address, such as a TLS gateway or `antseed seller forward`. |
+| `seller.maxInboundConnections` | `2048` | Buyer connections held open at once. A buyer keeps its connection between requests, so a busy seller holds one per active buyer; past the limit new buyers are refused. Metadata requests from discovery never count. `ANTSEED_MAX_INBOUND_CONNECTIONS` overrides it. |
+| `seller.inboundIdleTimeoutMs` | 30 min | Closes a buyer's connection after this long with no traffic, unless the buyer has a paid channel or a free usage session open. The buyer reconnects on its next request. `0` keeps idle connections. `ANTSEED_INBOUND_IDLE_TIMEOUT_MS` overrides it. |
 | `seller.restrictedCountries` | `["CU","IR","KP","SY","RU"]` | Countries whose IP addresses are refused. See below. |
 | `seller.freeTier` | none | Request allowance for zero-priced services. See below. |
 | `seller.providers.<name>.services.<id>.freeTier` | none | That model's own free-tier program, in place of `seller.freeTier`. On a priced model, a free allowance before the price applies. See [Per-model programs](#per-model-programs). |
 | `seller.freeUsage` | 16 requests / 15 min | How often free usage is recorded on-chain. See below. |
+| `seller.buyerLimits` | none | Per-buyer load limits: tokens each buyer may use per provider per hour, tighter for buyers new to the seller, with optional per-service weights. See below. |
 | `seller.healthCheck` | enabled, 5 min, 3 failures | Model health checks. See below. |
 | `seller.gasCheck` | enabled, 60 s, 0.00005 ETH | Pauses advertising while the seller wallet holds less ETH than `minBalanceEth`, checking every `intervalMs` (at least 10 s). Resumes once funded. |
 | `seller.gasRefuel` | enabled, 0.0005 ETH, 10 USDC, 30 USDC/day | Base mainnet only, and needs `seller.gasCheck` on. When a gas check finds the wallet below `triggerBalanceEth`, the seller swaps `swapUsdc` of the wallet's own USDC for ETH on Uniswap v3 (USDC/WETH 0.05% pool, `slippageBps` default 100), paying the swap's gas from the ETH still there. At most `maxUsdcPerDay` in any 24 hours; failures retry with back-off. Set `enabled: false` to opt out. |
@@ -338,7 +342,7 @@ This config gives a free model 100 requests a day, raised for stakers, and makes
 
 Each model's program is advertised under a short hash of its id, as `free-tier.v1.m<hash>.*`. A program that uses the same tiers as `seller.freeTier` takes one capability string; one with its own tiers takes one string plus one per tier. Peer metadata allows 16 capability strings, and the node always uses 4 or 5 of them. A program that doesn't fit is still enforced, but not advertised, and the node logs a warning.
 
-A response the allowance covered carries `x-antseed-free-tier: covered`. The seller records no spend for it, and the buyer expects no charge. `config seller set` can't address a service id with a dot, so add these programs by editing the file.
+A response the allowance covered carries `x-antseed-free-tier: covered`. The seller records no spend for it, and the buyer expects no charge. To add a program from the CLI, pass the whole object: `antseed config seller set providers.my-provider.services.glm-5.3-flash.freeTier '{"maxRequestsPerAddress":100}'`.
 
 ### Restricted countries
 
@@ -348,6 +352,32 @@ By default the seller refuses connections from IP addresses in Cuba, Iran, North
 antseed config seller set restrictedCountries '["CU","IR","KP","SY","RU"]'
 antseed config seller set restrictedCountries '[]'    # turn the check off
 ```
+
+### Buyer limits
+
+`buyerLimits` lets a seller control how much load each buyer puts on each provider, so no single buyer can take all of a provider's capacity. It caps the tokens each buyer may use from each provider in a rolling window. Each provider is counted on its own.
+
+- **What counts:** uncached input plus output tokens. Cached input is light work and isn't counted.
+- **Requests still running** count with their estimated size: input plus the output they ask for at most, or 8,192 output tokens when they set no maximum. A burst of parallel requests can't pass on the same usage. An answer that comes back without a usage report counts as that estimate.
+- **Over a limit**, the buyer gets 429 `buyer_usage_limited` with `retry-after`, before any payment step, until enough of its usage leaves the window.
+- **New buyers:** a buyer whose first payment channel with this seller is less than `newBuyers.forHours` old (default 72) gets `newBuyers.maxTokensPerBuyer`, and `newBuyers.maxTokensTotal` caps all new buyers together, so spreading load across new wallets gains nothing.
+- **Service weights:** `serviceWeights` makes a service's tokens count more (or less) against the limits, by service ID. Weight a heavy model so its tokens count as the extra work they are; a service without a weight counts 1.
+- **Only tokens:** services billed by other units (video, speech, images) are outside these limits.
+
+```json
+{
+  "seller": {
+    "buyerLimits": {
+      "windowMinutes": 60,
+      "maxTokensPerBuyer": 30000000,
+      "newBuyers": { "forHours": 72, "maxTokensPerBuyer": 5000000, "maxTokensTotal": 20000000 },
+      "serviceWeights": { "large-model": 10 }
+    }
+  }
+}
+```
+
+Every field is optional; a limit left out isn't applied. Counts are kept in memory, so a restart starts them over.
 
 ### Free-usage records
 

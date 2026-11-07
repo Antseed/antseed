@@ -4,6 +4,7 @@ import type { Peer, Preset } from '../api/types'
 import { useConsole, useScopeFilter } from '../app/context'
 import { useGatewayBaseUrl } from '../components/copy-actions'
 import { FreeTierInfo } from '../components/FreeTierInfo'
+import { ModelCheckInfo } from '../components/ModelCheckInfo'
 import { PeerActionDialog } from '../components/PeerActionDialog'
 import { ServiceHealthInfo, ServicePerformanceInfo } from '../components/ServiceHealthInfo'
 import { PanelRow, PanelSection } from '../components/SidePanel'
@@ -15,6 +16,8 @@ import {
 import { formatAnts } from '../lib/ants'
 import { isFreeService } from '../lib/free-tier'
 import { formatDateTime, formatLatency, formatNumber, formatRelative, formatSpeed, shortId } from '../lib/format'
+import { diffRoutingNote } from '../lib/model-check'
+import { modelChecksEffect, trustBreakdownLabel } from '../lib/trust-breakdown'
 import { priceSummary } from '../lib/models'
 import { isWorkspaceAdmin } from '../lib/nav'
 import { isFreePeer } from '../lib/peers'
@@ -51,7 +54,7 @@ function ProviderMeta({ peer }: { peer: Peer }) {
     <span className="gc-seller__meta">
       <span className="gc-peer-id"><Mono title={peer.peerId}>{shortId(peer.peerId, 6, 4)}</Mono><CopyButton iconOnly value={peer.peerId} label="Copy peer id" /></span>
       <VerificationLinks links={peer.verificationLinks} />
-      <TeeBadge tee={peer.tee} scope={peer.teeScope} />
+      <TeeBadge tee={peer.tee} scope={peer.teeScope} upstreams={peer.teeUpstreams} />
       {isFreePeer(peer, '') && <Badge tone="success">Free</Badge>}
       {peer.washFlagged && <Badge tone="danger">Flagged</Badge>}
       {coolingDown && <Badge tone="warning">Cooling down</Badge>}
@@ -62,9 +65,17 @@ function ProviderMeta({ peer }: { peer: Peer }) {
 
 function ProviderStats({ peer, showReputation }: { peer: Peer; showReputation: boolean }) {
   const coolingDown = (peer.health.coolingDownUntil ?? 0) > Date.now()
+  const diffNote = diffRoutingNote(peer)
+  const breakdown = trustBreakdownLabel(peer.trustBreakdown)
+  const checks = peer.trustBreakdown?.verification
+  const checksEffect = checks && peer.trustScore !== null ? modelChecksEffect(checks, peer.trustScore) : null
   return (
     <div className="gc-grid gc-grid--2 gc-figures gc-panel-figures">
-      <Figure label="Trust score" value={score(peer.trustScore)} />
+      <Figure label="Trust score" value={score(peer.trustScore)} note={(breakdown || diffNote) && <>
+        {breakdown && <div>{breakdown}</div>}
+        {checksEffect && <div>{checksEffect}</div>}
+        {diffNote && <div>{diffNote}</div>}
+      </>} />
       {showReputation && <Figure label="Reputation" value={score(peer.reputationScore)} />}
       <Figure label="Stake" value={peer.stakeAnts ? formatAnts(peer.stakeAnts) : '—'} />
       {peer.freeTier && <Figure label="Free tier (free models)" value={<FreeTierInfo program={peer.freeTier} agentId={peer.agentId} />} />}
@@ -99,6 +110,7 @@ function ProviderModels({ peer, selected, onSelect }: { peer: Peer; selected: Se
                     : <span>{priceSummary(service)}</span>}
                   {!isFreeService(service) && service.freeTier && <FreeTierInfo program={service.freeTier} agentId={peer.agentId} priced align="center" />}
                   <span>{FORMAT_LABELS[serviceApiFormat(service)]}</span>
+                  <ModelCheckInfo check={service.modelCheck} />
                   <ServiceHealthInfo health={service.health} />
                   <ServicePerformanceInfo performance={service.performance} />
                 </>}

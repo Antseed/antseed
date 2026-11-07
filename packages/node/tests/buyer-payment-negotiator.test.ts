@@ -923,6 +923,11 @@ describe('BuyerPaymentNegotiator', () => {
       expect(body.currentSpent).toBeUndefined();
       expect(body.inputUsdPerMillion).toBeUndefined();
       expect(typeof body.message).toBe('string');
+      // Clients match the first sentence; the command must be one the CLI accepts.
+      expect(body.message).toMatch(/^You are out of AntSeed credits for this request\./);
+      expect(body.message).toContain('"antseed buyer deposit"');
+      expect(body.message).not.toContain('<amount>');
+      expect(body.message).toContain('Free sellers need no funds');
     });
 
     it('throws on negotiation failure and clears locked state', async () => {

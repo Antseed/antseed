@@ -13,13 +13,17 @@ interface IStandaloneUsageAccounting {
     function sellerPools() external view returns (address);
 }
 
+interface IStandaloneEmissionsGateSource {
+    function emissionsGate() external view returns (address);
+}
+
 /// @title DeployStandaloneVerificationSplit
 /// @notice Deploys the split verification contracts (results layer, KBF audit
-///         source, points policy) without registering the policy or enabling rewards.
+///         audit, points policy) without registering the policy or enabling rewards.
 ///
 /// Separate from M003. It only reads the existing registry, seller-pools and usage-accounting
-/// addresses, deploys three independently owned contracts, wires the KBF source on the results layer
-/// (`setSource`, a 10,000 bps share) and optionally approves auditors on the KBF contract. It never calls
+/// addresses, deploys three independently owned contracts, wires KBF as an audit on the results layer
+/// (`setAudit`, a 10,000 bps share) and optionally approves auditors on the KBF contract. It never calls
 /// a points policy registry, usage-accounting setter, emissions-gate setter, or rewards setter, so
 /// verdicts change no points and audits earn no credits.
 ///
@@ -80,15 +84,16 @@ contract DeployStandaloneVerificationSplit is Script {
 
         address emissions = IAntseedRegistry(config.registry).emissions();
         address identityRegistry = IAntseedRegistry(config.registry).identityRegistry();
+        address gate = _emissionsGate(emissions);
 
         vm.startBroadcast(config.owner);
-        deployment.results = new AntseedVerificationResults(config.registry);
-        deployment.kbf = new AntseedKbfAudits(address(deployment.results), config.sellerPools);
+        deployment.results = new AntseedVerificationResults(gate);
+        deployment.kbf = new AntseedKbfAudits(address(deployment.results), config.sellerPools, identityRegistry);
         deployment.policy = new AntseedVerificationPointsPolicy(
             address(deployment.results), config.usageAccounting, config.bonusBps, config.owner
         );
-        deployment.results.setSource(address(deployment.kbf), true);
-        deployment.results.setSourceShareBps(address(deployment.kbf), 10_000);
+        deployment.results.setAudit(address(deployment.kbf), true);
+        deployment.results.setAuditShareBps(address(deployment.kbf), 10_000);
         for (uint256 index; index < config.auditors.length; index++) {
             deployment.kbf.setAuditor(config.auditors[index], true);
         }
@@ -99,12 +104,13 @@ contract DeployStandaloneVerificationSplit is Script {
         require(results.owner() == config.owner, "standalone: wrong owner");
         require(deployment.kbf.owner() == config.owner, "standalone: wrong owner");
         require(deployment.policy.owner() == config.owner, "standalone: wrong owner");
-        require(address(results.registry()) == config.registry, "standalone: wrong registry");
+        require(address(results.emissionsGate()) == gate, "standalone: wrong emissions gate");
+        require(address(deployment.kbf.identityRegistry()) == identityRegistry, "standalone: wrong identity registry");
         require(address(deployment.kbf.sellerPools()) == config.sellerPools, "standalone: wrong seller pools");
         require(
             results.rewardsStartEpoch(address(deployment.kbf)) == results.REWARDS_OFF(), "standalone: rewards enabled"
         );
-        require(results.isSource(address(deployment.kbf)), "standalone: KBF is not a source");
+        require(results.isAudit(address(deployment.kbf)), "standalone: KBF is not an audit");
         require(address(deployment.kbf.results()) == address(results), "standalone: wrong KBF results");
         require(IAntseedRegistry(config.registry).emissions() == emissions, "standalone: registry changed");
         require(
@@ -115,7 +121,7 @@ contract DeployStandaloneVerificationSplit is Script {
         console.log("Owner:                 ", config.owner);
         console.log("AntseedRegistry:       ", config.registry);
         console.log("SellerPools:           ", config.sellerPools);
-        console.log("Emissions source:      ", emissions);
+        console.log("Emissions gate:        ", gate);
         console.log("VerificationResults:   ", address(results));
         console.log("KbfAudits:             ", address(deployment.kbf));
         console.log("VerificationPolicy:    ", address(deployment.policy));
@@ -138,7 +144,7 @@ contract DeployStandaloneVerificationSplit is Script {
         require(config.bonusBps <= 5_000, "standalone: bonus above cap");
 
         address emissions = IAntseedRegistry(config.registry).emissions();
-        require(emissions.code.length != 0, "standalone: missing emissions source");
+        require(emissions.code.length != 0, "standalone: missing emissions");
         require(
             IAntseedRegistry(config.registry).identityRegistry() != address(0), "standalone: missing identity registry"
         );
@@ -146,5 +152,14 @@ contract DeployStandaloneVerificationSplit is Script {
         for (uint256 index; index < config.auditors.length; index++) {
             require(config.auditors[index] != address(0), "standalone: zero auditor");
         }
+    }
+
+    /// @dev After M001 the registry's emissions entry is usage accounting, which exposes the gate;
+    ///      otherwise the entry is the gate itself.
+    function _emissionsGate(address emissions) private view returns (address gate) {
+        gate = emissions;
+        try IStandaloneEmissionsGateSource(emissions).emissionsGate() returns (address source) {
+            if (source.code.length != 0) gate = source;
+        } catch { }
     }
 }

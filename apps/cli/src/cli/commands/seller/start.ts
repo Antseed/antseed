@@ -25,6 +25,7 @@ import {
   DEFAULT_MIN_GAS_BALANCE_WEI,
   SellerFreeTierLimiter,
   formatEther,
+  isPricedProviderService,
   type Provider,
   type Prover,
   type ConfigField,
@@ -32,7 +33,7 @@ import {
   loadOrCreateIdentity,
 } from '@antseed/node'
 import type { PaymentConfig } from '@antseed/node/payments'
-import { checkSellerReadiness, DEFAULT_MIN_SETTLE_DELTA_STR } from '@antseed/node/payments'
+import { checkSellerReadiness, DEFAULT_MIN_SETTLE_DELTA_STR, probeRpcEndpoint } from '@antseed/node/payments'
 import {
   ANTSEED_BASE_RPC_URL_ENV,
   createIdentityClient,
@@ -147,6 +148,8 @@ export async function assertSellerPrerequisites(input: {
   runtimePricingOverride: boolean
   skipChainChecks: boolean
   baseRpcUrlOverride?: string
+  /** Set when the startup probe got no answer from any RPC: the chain checks fail without querying. */
+  unreachableRpc?: { urls: string[]; pricedServiceIds: string[] }
 }): Promise<void> {
   const {
     dataDir,
@@ -157,6 +160,7 @@ export async function assertSellerPrerequisites(input: {
     runtimePricingOverride,
     skipChainChecks,
     baseRpcUrlOverride,
+    unreachableRpc,
   } = input
 
   const failures: Array<{ title: string; detail: string; command?: string }> = []
@@ -185,7 +189,15 @@ export async function assertSellerPrerequisites(input: {
   }
 
   // 3. On-chain readiness — only when payments are actually on.
-  if (paymentsEnabled && config.payments.crypto && !skipChainChecks) {
+  if (paymentsEnabled && config.payments.crypto && !skipChainChecks && unreachableRpc) {
+    // A priced seller must not fall back to serving for free: fail closed.
+    failures.push({
+      title: 'Base RPC unreachable',
+      detail: `No answer from ${unreachableRpc.urls.join(', ')} after ${RPC_PROBE_ATTEMPTS} tries (${RPC_PROBE_TIMEOUT_MS / 1000} s each). `
+        + `This seller charges for ${unreachableRpc.pricedServiceIds.join(', ')}, so it needs the chain to check registration and gas and to settle payments. `
+        + 'Check the network, or set a working RPC with --base-rpc-url or payments.crypto.rpcUrl. To run without payments (local testing only), set ANTSEED_ENABLE_SETTLEMENT=false.',
+    })
+  } else if (paymentsEnabled && config.payments.crypto && !skipChainChecks) {
     try {
       const identity = await loadOrCreateIdentity(dataDir)
       const identityClient = createIdentityClient(config, { rpcUrl: baseRpcUrlOverride })
@@ -226,32 +238,78 @@ export async function assertSellerPrerequisites(input: {
   throw new Error('seller prerequisites not met')
 }
 
-async function isRpcReachable(rpcUrl: string, timeoutMs = 1500): Promise<boolean> {
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), timeoutMs)
+/** Per-request timeout of the startup RPC probe. Public RPCs can take a few seconds under load. */
+export const RPC_PROBE_TIMEOUT_MS = 5_000
+/** Rounds of the startup RPC probe. Each round asks every configured RPC at once. */
+export const RPC_PROBE_ATTEMPTS = 3
+const RPC_PROBE_RETRY_DELAY_MS = 1_000
 
-  try {
-    const response = await fetch(rpcUrl, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: 1,
-        method: 'eth_chainId',
-        params: [],
-      }),
-      signal: controller.signal,
-    })
-
-    if (!response.ok) return false
-
-    const payload = await response.json() as { result?: unknown }
-    return typeof payload.result === 'string' && payload.result.startsWith('0x')
-  } catch {
-    return false
-  } finally {
-    clearTimeout(timeout)
+/**
+ * True once any of `rpcUrls` (the primary and its fallbacks, as the payment
+ * clients use them) answers `eth_chainId`. Retries, so one slow or
+ * rate-limited answer does not count as "unreachable".
+ */
+export async function probeRpcUrls(
+  rpcUrls: readonly string[],
+  options: { timeoutMs?: number; attempts?: number; retryDelayMs?: number } = {},
+): Promise<boolean> {
+  const {
+    timeoutMs = RPC_PROBE_TIMEOUT_MS,
+    attempts = RPC_PROBE_ATTEMPTS,
+    retryDelayMs = RPC_PROBE_RETRY_DELAY_MS,
+  } = options
+  const urls = [...new Set(rpcUrls.filter((url) => url.length > 0))]
+  if (urls.length === 0) return false
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const answered = await Promise.any(urls.map(async (url) => {
+      if (await probeRpcEndpoint(url, timeoutMs)) return true
+      throw new Error('no answer')
+    })).catch(() => false)
+    if (answered) return true
+    if (attempt < attempts) await new Promise((resolve) => setTimeout(resolve, retryDelayMs))
   }
+  return false
+}
+
+/**
+ * Whether payments stay on after the startup RPC probe. Without an answer, a
+ * free-only seller runs without payments as before. A seller with priced
+ * services keeps them on, so it never serves those services for free just
+ * because the RPC was slow; the prerequisite check then refuses to start.
+ * `ANTSEED_ENABLE_SETTLEMENT` (`true` or `false`) skips the probe.
+ */
+export async function resolveSellerPaymentsAfterRpcProbe(input: {
+  paymentsEnabled: boolean
+  settlementEnv: boolean | null
+  rpcUrls: readonly string[]
+  pricedServiceIds: readonly string[]
+  probe?: (rpcUrls: readonly string[]) => Promise<boolean>
+}): Promise<{ paymentsEnabled: boolean; rpcReachable: boolean | null }> {
+  const { paymentsEnabled, settlementEnv, rpcUrls, pricedServiceIds, probe = probeRpcUrls } = input
+  if (!paymentsEnabled || settlementEnv !== null || rpcUrls.length === 0) {
+    return { paymentsEnabled, rpcReachable: null }
+  }
+  if (await probe(rpcUrls)) return { paymentsEnabled: true, rpcReachable: true }
+  return { paymentsEnabled: pricedServiceIds.length > 0, rpcReachable: false }
+}
+
+/**
+ * Services the loaded providers announce with a price: the seller config's
+ * own token and unit prices, plus any token default or unit billing model a
+ * plugin applies itself (as the node decides a service is paid).
+ */
+export function announcedPricedServices(
+  seller: SellerCLIConfig,
+  providerNames: readonly string[],
+  providers: ReadonlyArray<Pick<Provider, 'services' | 'pricing' | 'serviceUnitBillingModels'>>,
+): string[] {
+  const priced = new Set(pricedSellerServices(seller, providerNames))
+  for (const provider of providers) {
+    for (const serviceId of provider.services) {
+      if (isPricedProviderService(provider, serviceId)) priced.add(serviceId)
+    }
+  }
+  return [...priced]
 }
 
 function toUSDCBaseUnits(value: string | undefined, fallbackBaseUnits: string): string {
@@ -261,12 +319,18 @@ function toUSDCBaseUnits(value: string | undefined, fallbackBaseUnits: string): 
   return String(Math.round(parsed * 1_000_000))
 }
 
-export function parseOptionalPositiveIntegerEnv(value: string | undefined): number | undefined {
+/** A whole number from an env var, 0 included (it turns a setting off); undefined when unset or malformed. */
+export function parseOptionalNonNegativeIntegerEnv(value: string | undefined): number | undefined {
   if (value === undefined) return undefined
   const trimmed = value.trim()
   if (!/^\d+$/.test(trimmed)) return undefined
   const parsed = Number(trimmed)
-  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined
+  return Number.isSafeInteger(parsed) ? parsed : undefined
+}
+
+export function parseOptionalPositiveIntegerEnv(value: string | undefined): number | undefined {
+  const parsed = parseOptionalNonNegativeIntegerEnv(value)
+  return parsed !== undefined && parsed > 0 ? parsed : undefined
 }
 
 export function buildSellerRuntimeOverridesFromFlags(options: {
@@ -663,16 +727,22 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       }
 
       const settlementEnv = parseOptionalBoolEnv(process.env['ANTSEED_ENABLE_SETTLEMENT'])
-      let paymentsEnabled = settlementEnv ?? paymentConfig !== null
       const cryptoRpcUrl = paymentConfig?.crypto?.rpcUrl
-
-      if (paymentsEnabled && cryptoRpcUrl && settlementEnv !== true) {
-        const rpcUp = await isRpcReachable(cryptoRpcUrl)
-        if (!rpcUp) {
-          paymentsEnabled = false
-          console.log(chalk.yellow(`Payments disabled: RPC node unreachable at ${cryptoRpcUrl}`))
-          console.log(chalk.dim('Start your chain node or set ANTSEED_ENABLE_SETTLEMENT=true to force-enable payments.'))
-        }
+      const rpcUrls = cryptoRpcUrl ? [cryptoRpcUrl, ...(paymentConfig?.crypto?.fallbackRpcUrls ?? [])] : []
+      const pricedServiceIds = announcedPricedServices(effectiveSellerConfig, selectedProviderNames, providers)
+      const rpcProbe = await resolveSellerPaymentsAfterRpcProbe({
+        paymentsEnabled: settlementEnv ?? paymentConfig !== null,
+        settlementEnv,
+        rpcUrls,
+        pricedServiceIds,
+      })
+      const paymentsEnabled = rpcProbe.paymentsEnabled
+      if (rpcProbe.rpcReachable === false && !paymentsEnabled) {
+        console.log(chalk.yellow(`Payments disabled: RPC node unreachable at ${cryptoRpcUrl}`))
+        console.log(chalk.dim('Every service is free, so the seller runs without payments. Start your chain node or set ANTSEED_ENABLE_SETTLEMENT=true to force-enable payments.'))
+      } else if (rpcProbe.rpcReachable === false && options.skipPrereqCheck) {
+        console.log(chalk.yellow(`RPC node unreachable at ${cryptoRpcUrl}. Payments stay on because this seller charges for ${pricedServiceIds.join(', ')}; paid requests settle once the RPC answers.`))
+        console.log(chalk.dim('To run without payments (local testing only), set ANTSEED_ENABLE_SETTLEMENT=false.'))
       }
 
       const primaryProviderName = selectedProviderNames[0] ?? providers[0]?.name ?? 'unknown'
@@ -690,6 +760,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
           runtimePricingOverride: forcePricingOverride,
           skipChainChecks: Boolean(options.skipPrereqCheck),
           baseRpcUrlOverride,
+          ...(rpcProbe.rpcReachable === false ? { unreachableRpc: { urls: rpcUrls, pricedServiceIds } } : {}),
         })
       } catch {
         process.exit(1)
@@ -808,6 +879,20 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       if (maxUploadBodyBytes !== undefined) {
         console.log(chalk.dim(`  max upload body bytes: ${maxUploadBodyBytes}`))
       }
+      const maxInboundConnections = parseOptionalPositiveIntegerEnv(process.env['ANTSEED_MAX_INBOUND_CONNECTIONS'])
+        ?? effectiveSellerConfig.maxInboundConnections
+      if (maxInboundConnections !== undefined) {
+        console.log(chalk.dim(`  max inbound connections: ${maxInboundConnections}`))
+      }
+      const maxInboundConnectionsPerIp = effectiveSellerConfig.maxInboundConnectionsPerIp
+      if (maxInboundConnectionsPerIp !== undefined) {
+        console.log(chalk.dim(`  max inbound connections per IP: ${maxInboundConnectionsPerIp}`))
+      }
+      const inboundIdleTimeoutMs = parseOptionalNonNegativeIntegerEnv(process.env['ANTSEED_INBOUND_IDLE_TIMEOUT_MS'])
+        ?? effectiveSellerConfig.inboundIdleTimeoutMs
+      if (inboundIdleTimeoutMs !== undefined) {
+        console.log(chalk.dim(`  idle buyer connections: ${inboundIdleTimeoutMs === 0 ? 'kept' : `closed after ${Math.round(inboundIdleTimeoutMs / 60_000)} min`}`))
+      }
       const verificationDomains = (effectiveSellerConfig.verifications?.domains ?? []).map((claim) => claim.domain)
       if (verificationDomains.length > 0) {
         console.log(chalk.dim(`  domain verification: ${verificationDomains.join(', ')}`))
@@ -871,8 +956,12 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
           signalingPort: options.signalingPort as number | undefined,
         }),
         ...(maxUploadBodyBytes !== undefined ? { maxUploadBodyBytes } : {}),
+        ...(maxInboundConnections !== undefined ? { maxInboundConnections } : {}),
+        ...(maxInboundConnectionsPerIp !== undefined ? { maxInboundConnectionsPerIp } : {}),
+        ...(inboundIdleTimeoutMs !== undefined ? { inboundIdleTimeoutMs } : {}),
         ...(sellerFreeTier ? { freeTier: sellerFreeTier } : {}),
         ...(effectiveSellerConfig.freeUsage ? { freeUsage: effectiveSellerConfig.freeUsage } : {}),
+        ...(effectiveSellerConfig.buyerLimits ? { buyerLimits: effectiveSellerConfig.buyerLimits } : {}),
         ...(acceptInboundAddress ? { acceptInboundAddress } : {}),
         payments: {
           enabled: paymentsEnabled,

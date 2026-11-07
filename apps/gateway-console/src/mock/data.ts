@@ -1,4 +1,5 @@
 import type {
+  TrustBreakdownView,
   AdminToken, ApiKey, AuditEntry, AuthConfig, Channel, ChainInfo, Invite, Member, NetworkModel, NetworkModelOffer, NetworkRouter, Peer, PeerList, Preset, RequestDetail, RoutingPolicy, Settings, Workspace, WorkspaceRole, RouteSelection, ServedSelection,
 } from '../api/types'
 
@@ -95,6 +96,17 @@ export function seed() {
       inputUsdPerMillion: Number(base.toFixed(2)), outputUsdPerMillion: Number((base * 3.5).toFixed(2)), cachedInputUsdPerMillion: m % 4 === 0 ? null : Number((base / 5).toFixed(3)),
     }
   })
+  // How each mock trust score adds up (usage + power + identity + free models, then model checks); index 5 has no score.
+  const MOCK_TRUST_PARTS: Array<TrustBreakdownView | null> = [
+    { usage: 22, power: 52, identity: { score: 18, kind: 'github' }, freeModels: null },
+    { usage: 18, power: 42, identity: { score: 18, kind: 'github' }, freeModels: null },
+    { usage: 24, power: 46, identity: { score: 18, kind: 'github' }, freeModels: null },
+    { usage: 10, power: 26, identity: null, freeModels: 5 },
+    { usage: 17, power: 42, identity: { score: 6, kind: 'domain' }, freeModels: null, verification: { multiplierBps: 9600, sameCount: 0, diffCount: 1, change: -2.6 } },
+    null,
+    { usage: 15, power: 34, identity: { score: 6, kind: 'domain' }, freeModels: null },
+    { usage: 21, power: 46, identity: { score: 16, kind: 'github' }, freeModels: null },
+  ]
   const names = ['Fake Seller Alpha', 'Fake Seller Beta', 'Fake TEE Gamma', 'Fake Free Delta', 'Fake Seller Epsilon', null, 'Fake Seller Eta', 'Fake Seller Theta']
   const peers: Peer[] = names.map((displayName, index) => ({
     peerId: fakePeerId(index + 1),
@@ -104,7 +116,8 @@ export function seed() {
       const base = 0.2 + ((index * 7 + m * 3) % 10) / 4
       return { provider: 'openai', service, inputUsdPerMillion: free ? 0 : Number(base.toFixed(2)), outputUsdPerMillion: free ? 0 : Number((base * 3).toFixed(2)), cachedInputUsdPerMillion: free ? 0 : Number((base / 4).toFixed(3)), categories: ['chat'], paid: !free }
     }),
-    trustScore: [92, 78, 88, 41, 65, null, 55, 83][index]!,
+    trustScore: [92, 78, 88, 41, 62.4, null, 55, 83][index]!,
+    ...(MOCK_TRUST_PARTS[index] ? { trustBreakdown: MOCK_TRUST_PARTS[index]! } : {}),
     reputationScore: [90, 74, 85, 50, 60, null, 52, 80][index]!,
     verified: index === 2 || index === 0,
     // Obvious fake identities on example domains.
@@ -114,6 +127,7 @@ export function seed() {
     tee: index === 2 || index === 1 || index === 4,
     // Gamma is attested end to end, Beta at the seller node only, Epsilon not checked yet.
     teeScope: index === 2 ? 'end-to-end' as const : index === 1 ? 'seller-node' as const : null,
+    ...(index === 2 ? { teeUpstreams: ['inference.gamma.example'] } : index === 1 ? { teeUpstreams: ['api.beta.example'] } : {}),
     stakeAnts: index < 5 ? `${(index + 1) * 2500}.0` : null,
     agentId: 86_900 + index,
     // Delta's free models come with the default staked tiers.
@@ -159,6 +173,20 @@ export function seed() {
         },
       }),
     }))
+  }
+  // Model checks: auditors found Epsilon's qwen3-coder-480b is very likely another model (DIFF);
+  // Alpha's and Gamma's offers of it, and Gamma's deepseek-v3.1, check out (SAME).
+  const checks: Array<[number, string[], string[]]> = [[4, ['qwen3-coder-480b'], []], [0, [], ['qwen3-coder-480b']], [2, [], ['deepseek-v3.1', 'qwen3-coder-480b']]]
+  for (const [index, diffServices, sameServices] of checks) {
+    const peer = peers[index]!
+    const verificationUrls = Object.fromEntries([...diffServices, ...sameServices].map((service, n) => [
+      service, `https://antscan.co/verification-service/${peer.agentId}~0x${(index * 16 + n + 1).toString(16).padStart(64, '0')}`,
+    ]))
+    Object.assign(peer, diffServices.length ? { diffServices } : {}, sameServices.length ? { sameServices } : {}, { verificationUrls })
+    peer.services = peer.services.map((service) => {
+      const verdict = diffServices.includes(service.service) ? 'diff' as const : sameServices.includes(service.service) ? 'same' as const : null
+      return verdict ? { ...service, modelCheck: { verdict, auditUrl: verificationUrls[service.service] ?? null } } : service
+    })
   }
   const fakeRouter: Peer = { ...peers[7]!, peerId: fakePeerId(9), displayName: 'Fake Router Iota', services: [], verified: false, verificationLinks: [], tee: false, teeScope: null, washFlagged: false, requests24h: 48 }
   peers.push(fakeRouter)
@@ -243,6 +271,7 @@ export function seed() {
       overrides: ['network.metadataFetchTimeoutMs'],
     },
     observability: { otlpEndpoint: null, otlpHeaders: {}, logContent: false, retentionDays: 30 },
+    telemetry: { available: true, enabled: false, userDisabled: true },
     auth: { setupRequired: false, passkey: true, wallet: true, oidc: { label: 'Example SSO' }, cloudflareAccess: false, apiKeyLogin: true },
   }
   const chain: ChainInfo = {
@@ -292,7 +321,10 @@ export function mockNetworkModels(peers: readonly Peer[]): NetworkModel[] {
         outputUsdPerMillion: service.outputUsdPerMillion, cachedInputUsdPerMillion: service.cachedInputUsdPerMillion, usdPerImage: null,
         contextLength: service.service.includes('llama') ? 128_000 : service.service.includes('qwen') ? 262_144 : null, free,
         agentId: peer.agentId, freeTier: service.freeTier ?? (free ? peer.freeTier : null),
-        reputationScore: peer.reputationScore, trustScore: peer.trustScore, verified: peer.verified, verificationLinks: peer.verificationLinks, tee: peer.tee, teeScope: peer.teeScope, latencyMsP50: peer.latencyMsP50, firstTokenMsP50: peer.firstTokenMsP50, tokensPerSecondP50: peer.tokensPerSecondP50,
+        // A live DIFF verdict leaves the offer 10% of its routing reputation.
+        reputationScore: peer.reputationScore !== null && service.modelCheck?.verdict === 'diff' ? peer.reputationScore * 0.1 : peer.reputationScore,
+        trustScore: peer.trustScore, verified: peer.verified, verificationLinks: peer.verificationLinks, tee: peer.tee, teeScope: peer.teeScope, latencyMsP50: peer.latencyMsP50, firstTokenMsP50: peer.firstTokenMsP50, tokensPerSecondP50: peer.tokensPerSecondP50,
+        ...(service.modelCheck ? { modelCheck: service.modelCheck } : {}),
         ...(service.health ? { health: service.health } : {}),
         ...(service.performance ? { performance: service.performance } : {}),
       })

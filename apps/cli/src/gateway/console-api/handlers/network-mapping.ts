@@ -1,11 +1,11 @@
 /** Pure mapping from the buyer's peer, health and verification views to the console's `Peer`. */
-import { VERIFICATION_STATUS_STALE_MAX_MS, isAudioSpeechProtocol, isNativeVideoProtocol, parseServiceHealth, parseServicePerformance } from '@antseed/node'
+import { VERIFICATION_STATUS_STALE_MAX_MS, isAudioSpeechProtocol, isNativeVideoProtocol, parseServiceHealth, parseServicePerformance, verificationServiceKey, verificationServiceUrl } from '@antseed/node'
 import { collectPeerVerificationLinks } from '@antseed/node/discovery'
 import { parseVerifierCapabilities } from '@antseed/node/verifier-capabilities'
 import { freeTierProgramForService, isPricedService, normalizeFreeTierProgram, parseFreeTierProgram } from '@antseed/node/free-tier-program'
 import { modelTagsFor } from '@antseed/node/model-metadata'
-import { TEE_VERIFIER_ID, teeScope, type TeeClaim, type TeeScope } from '@antseed/node/tee-status'
-import type { NetworkModel, NetworkModelCapability, NetworkModelOffer, NetworkModelType, NetworkRouter, NetworkRouterOption, Peer, RoutePreview, ServiceHealthView, ServicePerformanceView } from '../types.js'
+import { TEE_VERIFIER_ID, teeScope, teeUpstreams, type TeeClaim, type TeeScope } from '@antseed/node/tee-status'
+import type { ModelCheckView, NetworkModel, NetworkModelCapability, NetworkModelOffer, NetworkModelType, NetworkRouter, NetworkRouterOption, Peer, RoutePreview, ServiceHealthView, ServicePerformanceView, TrustBreakdownView } from '../types.js'
 import { parseRouteSelection } from '../../../proxy/route-selection.js'
 
 type Row = Record<string, unknown>
@@ -158,10 +158,11 @@ export function peerServices(row: Row): Peer['services'] {
 
 /**
  * Peer ids with a current, passing TEE attestation in a `/_antseed/verification` snapshot,
- * mapped to how far it reaches: the seller node only, or end to end through its provider.
+ * mapped to how far it reaches (the seller node only, or end to end through its provider) and
+ * the upstream hosts the attested seller config sends prompts to.
  */
-export function teeScopes(snapshot: unknown, now: number): Map<string, TeeScope> {
-  const scopes = new Map<string, TeeScope>()
+export function teeAttestations(snapshot: unknown, now: number): Map<string, { scope: TeeScope; upstreams: string[] }> {
+  const attested = new Map<string, { scope: TeeScope; upstreams: string[] }>()
   for (const evidence of rows(asRecord(snapshot)['evidence'])) {
     if (evidence['verifierId'] !== TEE_VERIFIER_ID || evidence['sellerNodeVerified'] !== true) continue
     if (evidence['checking'] === true || evidence['unavailable'] === true) continue
@@ -169,9 +170,14 @@ export function teeScopes(snapshot: unknown, now: number): Map<string, TeeScope>
     if (expiresAt !== null && expiresAt <= now) continue
     const peerId = str(evidence['peerId'])
     const claims = rows(evidence['claims']).filter((claim): claim is Row & TeeClaim => typeof claim['claim'] === 'string')
-    if (peerId) scopes.set(peerKey(peerId), teeScope({ claims }))
+    if (peerId) attested.set(peerKey(peerId), { scope: teeScope({ claims }), upstreams: teeUpstreams({ claims }) })
   }
-  return scopes
+  return attested
+}
+
+/** Peer ids with a current, passing TEE attestation, mapped to how far it reaches. */
+export function teeScopes(snapshot: unknown, now: number): Map<string, TeeScope> {
+  return new Map([...teeAttestations(snapshot, now)].map(([peerId, { scope }]) => [peerId, scope]))
 }
 
 /** Peer ids with a current, passing TEE attestation in a `/_antseed/verification` snapshot. */
@@ -190,10 +196,12 @@ export function mapPeers(input: {
   verification: unknown | null
   stats: readonly PeerStat[]
   now: number
+  /** The chain's explorer (Antscan), where each verdict's audit history lives; null leaves the links out. */
+  explorerUrl?: string | null
 }): Peer[] {
   const health = new Map(rows(asRecord(input.health)['peers']).map((row) => [peerKey(String(row['peerId'] ?? '')), row]))
   const stats = new Map(input.stats.map((row) => [peerKey(row.peerId), row]))
-  const teeVerified = input.verification ? teeScopes(input.verification, input.now) : null
+  const teeVerified = input.verification ? teeAttestations(input.verification, input.now) : null
   return rows(asRecord(input.peers)['peers']).flatMap((row): Peer[] => {
     const peerId = str(row['peerId'])
     if (!peerId) return []
@@ -203,21 +211,24 @@ export function mapPeers(input: {
     const stat = stats.get(key)
     // TEE-capable is what a policy's `requireTee` filters on: the seller advertises the TEE verifier.
     const tee = parseVerifierCapabilities(row['capabilities']).supported.includes(TEE_VERIFIER_ID)
+    const attestation = tee ? teeVerified?.get(key) : undefined
     // Verified: every ownership claim (domain, GitHub) checked out, or a current TEE attestation
     // when the buyer shares its verification snapshot.
     const verified = asRecord(row['verificationResults'])['verified'] === true || (teeVerified?.has(key) ?? false)
     const stake = num(row['onChainPoolStakeAnts'])
     const agentId = num(row['onChainAgentId'])
     const coolingDown = healthRow?.['coolingDown'] === true
-    // A DIFF list from a read older than the buyer's fail-open window no longer cuts anything.
-    const diffReadAt = num(row['onChainVerificationFetchedAt'])
-    const diffServices = diffReadAt !== null && input.now - diffReadAt < VERIFICATION_STATUS_STALE_MAX_MS
-      ? strings(row['onChainDiffServices'])
-      : []
+    // Verdict lists from a read older than the buyer's fail-open window no longer count.
+    const verdictReadAt = num(row['onChainVerificationFetchedAt'])
+    const verdictsLive = verdictReadAt !== null && input.now - verdictReadAt < VERIFICATION_STATUS_STALE_MAX_MS
+    const diffServices = verdictsLive ? strings(row['onChainDiffServices']) : []
+    const sameServices = verdictsLive ? strings(row['onChainSameServices']).filter((service) => !diffServices.includes(service)) : []
+    const verificationUrls = verdictUrls(input.explorerUrl ?? null, agentId, [...diffServices, ...sameServices])
+    const checks = { diffServices, sameServices, verificationUrls: verificationUrls ?? undefined }
     return [{
       peerId,
       displayName: str(row['displayName']),
-      services: peerServices(row),
+      services: peerServices(row).map((service) => ({ ...service, ...modelCheckField(checks, service.service) })),
       trustScore: num(trust['score']) ?? num(row['onChainReputationScore']),
       // The reputation the buyer's `minPeerReputation` compares against: its own trust score,
       // else the seller-reported one; null when the buyer knows neither.
@@ -225,13 +236,17 @@ export function mapPeers(input: {
       verified,
       verificationLinks: collectPeerVerificationLinks(row),
       tee,
-      teeScope: tee ? teeVerified?.get(key) ?? null : null,
+      teeScope: attestation?.scope ?? null,
+      ...(attestation?.upstreams.length ? { teeUpstreams: attestation.upstreams } : {}),
       stakeAnts: stake === null ? null : String(stake),
       agentId: agentId !== null && agentId > 0 ? agentId : null,
       freeTier: parseFreeTierProgram(strings(row['capabilities'])),
       usageShareBps: num(row['onChainUsageShareBps']),
       washFlagged: row['onChainWashFlagged'] === true || trust['washFlagged'] === true,
+      ...trustBreakdownField(trust),
       ...(diffServices.length > 0 ? { diffServices } : {}),
+      ...(sameServices.length > 0 ? { sameServices } : {}),
+      ...(verificationUrls ? { verificationUrls } : {}),
       lastSeen: num(row['lastSeen']),
       health: {
         failureStreak: num(healthRow?.['failureStreak']) ?? 0,
@@ -243,6 +258,51 @@ export function mapPeers(input: {
       requests24h: stat?.requests ?? 0,
     }]
   })
+}
+
+/** The buyer's trust breakdown (`/_antseed/peers` `trust`), part by part; none without one. */
+export function trustBreakdownField(trust: Row): { trustBreakdown?: TrustBreakdownView } {
+  const part = (key: string): number | null => num(asRecord(trust[key])['score'])
+  const identityRow = asRecord(trust['identity'])
+  const identityScore = num(identityRow['score'])
+  const kind = identityRow['kind']
+  const breakdown: TrustBreakdownView = {
+    usage: part('usage'),
+    power: part('power'),
+    identity: identityScore !== null && (kind === 'github' || kind === 'domain') ? { score: identityScore, kind } : null,
+    freeModels: part('freeModels'),
+  }
+  const verificationRow = asRecord(trust['verification'])
+  const multiplierBps = num(verificationRow['multiplierBps'])
+  // An older buyer daemon scores history and reports a positive `penalty` instead of a signed `change`.
+  const legacyHistory = part('history')
+  if (legacyHistory !== null && legacyHistory > 0) breakdown.history = legacyHistory
+  const legacyPenalty = num(verificationRow['penalty'])
+  const change = num(verificationRow['change']) ?? (legacyPenalty === null ? null : -legacyPenalty)
+  if (multiplierBps !== null && change !== null && change !== 0) {
+    breakdown.verification = { multiplierBps, sameCount: num(verificationRow['sameCount']) ?? 0, diffCount: num(verificationRow['diffCount']) ?? 0, change }
+  }
+  return Object.values(breakdown).some((value) => value !== null) ? { trustBreakdown: breakdown } : {}
+}
+
+/** A peer's live model-check verdict for one service, as a `modelCheck` property; none without one. */
+export function modelCheckField(
+  peer: Pick<Peer, 'diffServices' | 'sameServices' | 'verificationUrls'> | undefined,
+  serviceId: string,
+): { modelCheck?: ModelCheckView } {
+  const key = verificationServiceKey(serviceId)
+  const verdict = peer?.diffServices?.includes(key) ? 'diff' : peer?.sameServices?.includes(key) ? 'same' : null
+  return verdict ? { modelCheck: { verdict, auditUrl: peer?.verificationUrls?.[key] ?? null } } : {}
+}
+
+/** Antscan pages of each service's verdict history, keyed by service key; null when there are none. */
+function verdictUrls(explorerUrl: string | null, agentId: number | null, services: readonly string[]): Record<string, string> | null {
+  const urls: Record<string, string> = {}
+  for (const service of services) {
+    const url = verificationServiceUrl(explorerUrl, agentId, service)
+    if (url) urls[service] = url
+  }
+  return Object.keys(urls).length > 0 ? urls : null
 }
 
 /** Normalizes the buyer's route-preview candidates and fills names and trust from its peer list. */
@@ -262,6 +322,7 @@ export function enrichCandidates(candidates: unknown, peers: unknown): RoutePrev
       inputUsdPerMillion: num(row['inputUsdPerMillion']),
       outputUsdPerMillion: num(row['outputUsdPerMillion']),
       trustScore: num(row['trustScore']) ?? trust,
+      ...(num(row['trustScoreBeforeCut']) !== null ? { trustScoreBeforeCut: num(row['trustScoreBeforeCut'])! } : {}),
       selection: parseRouteSelection(row['selection']),
       ...serviceHealthField(row['health']),
     }]
@@ -377,6 +438,7 @@ export function mapNetworkModels(body: unknown, peers: readonly Peer[]): Network
         ...serviceHealthField(offer['health']),
         ...servicePerformanceField(offer['performance']),
         ...(voices.length > 0 ? { voices } : {}),
+        ...modelCheckField(peer, serviceId),
       }]
     })
     const capabilityRows = rows(row['peers']).map((offer) => asRecord(offer['capabilities']))

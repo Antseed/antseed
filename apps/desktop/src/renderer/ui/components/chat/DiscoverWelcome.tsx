@@ -1,7 +1,7 @@
 import { useState, useMemo, useCallback, useEffect } from 'react';
-import type { CSSProperties, MouseEvent } from 'react';
+import type { CSSProperties, KeyboardEvent, MouseEvent } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
-import { Copy01Icon, Tick02Icon, ContractsIcon, GithubIcon, Globe02Icon } from '@hugeicons/core-free-icons';
+import { Copy01Icon, Tick02Icon, ContractsIcon, GithubIcon, Globe02Icon, SecurityCheckIcon } from '@hugeicons/core-free-icons';
 import Skeleton from 'react-loading-skeleton';
 import 'react-loading-skeleton/dist/skeleton.css';
 import type { ChatServiceOptionEntry, DiscoverRow, DiscoverVerificationLink } from '../../../core/state';
@@ -26,6 +26,7 @@ import {
 import { getKnownProxy, type KnownProxy } from '../../../core/known-proxies';
 import { InfoTooltip } from '../InfoTooltip';
 import styles from './DiscoverWelcome.module.scss';
+import noticeStyles from '../views/FundingStatusNotice.module.scss';
 
 /**
  * Cap the visible tag count on Discover cards to avoid wrapping onto a
@@ -78,7 +79,8 @@ type CardItem = {
   volumeUsdc: number;         // settled on-chain USDC volume
   poolStakeAnts: number;      // ANTS staked in the seller pool this epoch
   washFlagged: boolean | null; // AntseedWashTradingRegistry verdict; null when unavailable
-  verificationDiff: boolean;  // live DIFF verdict on AntseedVerificationResults; reputation keeps 10%
+  verification: 'diff' | 'same' | null; // live verdict on AntseedVerificationResults; DIFF keeps 10% reputation
+  verificationUrl: string | null;        // explorer page with this service's verdicts and their audits
   sybilRisk: number | null;
   sybilFlags: string[];
   lifetimeRequests: number;   // network-wide (mainnet) or local buyer total (fallback)
@@ -169,7 +171,8 @@ function buildCards(options: ChatServiceOptionEntry[]): CardItem[] {
       volumeUsdc: 0,
       poolStakeAnts: 0,
       washFlagged: null,
-      verificationDiff: false,
+      verification: null,
+      verificationUrl: null,
       sybilRisk: null,
       sybilFlags: [],
       lifetimeRequests: 0,
@@ -233,7 +236,8 @@ function buildCardsFromRows(rows: DiscoverRow[]): CardItem[] {
       volumeUsdc: Number(row.onChainTotalVolumeUsdc) / 1_000_000,
       poolStakeAnts: row.poolStakeAnts,
       washFlagged: row.washFlagged,
-      verificationDiff: row.verificationDiff === true,
+      verification: row.verification ?? null,
+      verificationUrl: row.verificationUrl ?? null,
       sybilRisk: row.onChainSybilRisk,
       sybilFlags: row.onChainSybilFlags,
       lifetimeRequests: pickRequests(row),
@@ -385,8 +389,42 @@ function VerificationBadges({ links }: { links: DiscoverVerificationLink[] }) {
   );
 }
 
+function openAudit(url: string, e: MouseEvent | KeyboardEvent<HTMLElement>): void {
+  e.stopPropagation();
+  void window.antseedDesktop?.openExternalUrl?.(url);
+}
+
+/** Green mark for a service an on-chain audit found to be the genuine model. */
+function ModelVerifiedBadge({ url }: { url: string | null }) {
+  return (
+    <InfoTooltip
+      align="left"
+      content={(
+        <>
+          <strong>Model verified</strong>
+          <span>An on-chain audit found this service answers like the genuine model.</span>
+        </>
+      )}
+    >
+      <span
+        className={`${styles.proxyBadge} ${styles.modelVerifiedBadge}`}
+        tabIndex={0}
+        role={url ? 'link' : undefined}
+        aria-label="Model verified"
+        onClick={(e) => (url ? openAudit(url, e) : e.stopPropagation())}
+        onKeyDown={(e) => {
+          if (url && e.key === 'Enter') openAudit(url, e);
+          else e.stopPropagation();
+        }}
+      >
+        <HugeiconsIcon icon={SecurityCheckIcon} size={11} strokeWidth={1.8} />
+      </span>
+    </InfoTooltip>
+  );
+}
+
 function CardBadges({ item }: { item: CardItem }) {
-  if (!item.knownProxy && item.verificationLinks.length === 0) return null;
+  if (!item.knownProxy && item.verificationLinks.length === 0 && item.verification !== 'same') return null;
   return (
     <span className={styles.cardBadges}>
       {item.knownProxy && (
@@ -413,6 +451,7 @@ function CardBadges({ item }: { item: CardItem }) {
           </span>
         </InfoTooltip>
       )}
+      {item.verification === 'same' && <ModelVerifiedBadge url={item.verificationUrl} />}
       <VerificationBadges links={item.verificationLinks} />
     </span>
   );
@@ -760,6 +799,9 @@ function Card({
     && item.outputUsdPerMillion === 0
     && (!hasCachedInput || item.cachedInputUsdPerMillion === 0);
   const lowReputation = isLowReputation(item.reputationScore);
+  // A DIFF line carries its own amber dot, so the row text stays neutral.
+  const showsDiffNotice = item.washFlagged !== true && item.verification === 'diff';
+  const statsWarning = !showsDiffNotice && (lowReputation || sybilHasSignals(item) || item.washFlagged === true);
   const reputationTooltip = formatReputationTooltip(item);
   const hiddenTags = item.tags.slice(MAX_VISIBLE_CARD_TAGS);
   const hiddenTagLabels = hiddenTags.map(formatCategoryLabel).join(', ');
@@ -875,19 +917,22 @@ function Card({
                   {item.washFlagged === true && (
                     <span>⛔ Flagged as a proven wash trader by the on-chain registry.</span>
                   )}
-                  {item.verificationDiff && (
+                  {item.verification === 'diff' && (
                     <span>⚠ Model verification: DIFF. An on-chain audit suspects this service is not the model it claims, so its reputation is cut to 10%.</span>
+                  )}
+                  {item.verification === 'same' && (
+                    <span>Model verification: SAME. An on-chain audit found this service answers like the genuine model.</span>
                   )}
                   {sybilHasSignals(item) && (
                     <span>
                       ⚠ Sybil risk signals: {item.sybilFlags.map(formatSybilFlag).join(', ')}.
                     </span>
                   )}
-                  <span>Trust = settled service history (up to 50) + last epoch usage share (up to 20) + this epoch power share (up to 10) + verified identity (up to 20); proven wash traders score 0.</span>
+                  <span>Trust = this epoch power share (up to 70) + last epoch usage share (up to 30) + verified identity (up to 20) + free model (5), scaled by the seller's model checks; proven wash traders score 0.</span>
                 </>
               )}
             >
-              <span className={`${styles.cardScoreBadge}${lowReputation || item.washFlagged === true || item.verificationDiff ? ` ${styles.cardScoreBadgeWarn}` : ''}`} tabIndex={0}>
+              <span className={`${styles.cardScoreBadge}${lowReputation || item.washFlagged === true || item.verification === 'diff' ? ` ${styles.cardScoreBadgeWarn}` : ''}`} tabIndex={0}>
                 {formatReputationScore(item.reputationScore)}
                 <span className={styles.cardScoreStar} aria-hidden="true">★</span>
                 {lowReputation && <span className={styles.cardScoreLowText}>Low</span>}
@@ -895,12 +940,28 @@ function Card({
             </InfoTooltip>
           </div>
         </div>
-        <div className={`${styles.cardStats}${lowReputation || sybilHasSignals(item) || item.washFlagged === true ? ` ${styles.cardStatsWarning}` : ''}`}>
+        <div className={`${styles.cardStats}${statsWarning ? ` ${styles.cardStatsWarning}` : ''}`}>
           {item.washFlagged === true ? (
             /* Registry verdict outranks the local sybil heuristic: a filled
                pill (reusing the tag-warn styling) rather than plain warn text. */
             <span className={`${styles.tag} ${styles.tagWarn}`} title="Flagged as a proven wash trader by the on-chain registry">
               ⛔ Wash trader
+            </span>
+          ) : showsDiffNotice ? (
+            /* A DIFF verdict on this service outranks the seller-wide signals below. */
+            <span className={noticeStyles.notice} role="status">
+              <span className={`${noticeStyles.dot} ${noticeStyles.dotWarning}`} aria-hidden="true" />
+              <span>Audit flagged a different model</span>
+              {item.verificationUrl && (
+                <button
+                  type="button"
+                  className={noticeStyles.link}
+                  onClick={(e) => openAudit(item.verificationUrl!, e)}
+                  onKeyDown={(e) => e.stopPropagation()}
+                >
+                  View audit
+                </button>
+              )}
             </span>
           ) : sybilIsAlarming(item) ? (
             <span>⚠ Suspected wash activity: {item.sybilFlags.map(formatSybilFlag).join(', ')}</span>

@@ -73,13 +73,13 @@ contract M003VerificationRegistryTest is Test {
         assertEq(address(d.kbf), vm.computeCreateAddress(owner, settings.deploymentNonce + 1));
         assertEq(address(d.policy), vm.computeCreateAddress(owner, settings.deploymentNonce + 2));
 
-        assertEq(address(d.results.registry()), address(registry));
+        assertEq(address(d.kbf.identityRegistry()), address(identity));
         assertEq(address(d.kbf.sellerPools()), address(pools));
         assertEq(address(d.results.emissionsGate()), address(gate));
         assertEq(d.results.owner(), owner);
-        assertTrue(d.results.isSource(address(d.kbf)));
-        assertEq(d.results.sourceShareBps(address(d.kbf)), 10_000);
-        assertEq(d.results.totalSourceShareBps(), 10_000);
+        assertTrue(d.results.isAudit(address(d.kbf)));
+        assertEq(d.results.auditShareBps(address(d.kbf)), 10_000);
+        assertEq(d.results.totalAuditShareBps(), 10_000);
         assertEq(d.results.rewardsStartEpoch(address(d.kbf)), type(uint64).max, "rewards stay off");
         assertFalse(d.kbf.approvedAuditors(auditor), "M003 approves no auditors");
         assertEq(address(d.kbf.results()), address(d.results));
@@ -126,14 +126,14 @@ contract M003VerificationRegistryTest is Test {
     function test_resumesAfterAPartialDeployment() public {
         M003DeployVerificationRegistry.Config memory settings = config();
         vm.startPrank(owner);
-        AntseedVerificationResults results = new AntseedVerificationResults(address(registry));
-        AntseedKbfAudits kbf = new AntseedKbfAudits(address(results), address(pools));
+        AntseedVerificationResults results = new AntseedVerificationResults(address(gate));
+        AntseedKbfAudits kbf = new AntseedKbfAudits(address(results), address(pools), address(identity));
         vm.stopPrank();
         M003DeployVerificationRegistry.Deployment memory d = script.runWith(settings);
         assertEq(address(d.results), address(results));
         assertEq(address(d.kbf), address(kbf));
         assertEq(address(d.kbf.results()), address(results));
-        assertTrue(results.isSource(address(d.kbf)));
+        assertTrue(results.isAudit(address(d.kbf)));
         assertFalse(pointsPolicyRegistry.isPolicyRegistered(address(d.policy)));
     }
 
@@ -141,9 +141,9 @@ contract M003VerificationRegistryTest is Test {
         M003DeployVerificationRegistry.Config memory settings = config();
         M003DeployVerificationRegistry.Deployment memory d = script.runWith(settings);
         vm.prank(owner);
-        d.results.setSourceShareBps(address(d.kbf), 0);
+        d.results.setAuditShareBps(address(d.kbf), 0);
         script.runWith(settings);
-        assertEq(d.results.sourceShareBps(address(d.kbf)), 10_000);
+        assertEq(d.results.auditShareBps(address(d.kbf)), 10_000);
     }
 
     function test_rejectsChangedNonceRatherThanDeployingElsewhere() public {
@@ -156,7 +156,7 @@ contract M003VerificationRegistryTest is Test {
     function test_rejectsKbfNonceDrift() public {
         M003DeployVerificationRegistry.Config memory settings = config();
         vm.startPrank(owner);
-        new AntseedVerificationResults(address(registry));
+        new AntseedVerificationResults(address(gate));
         vm.setNonce(owner, uint64(settings.deploymentNonce + 2));
         vm.stopPrank();
         vm.expectRevert("M003: KBF nonce changed");
@@ -236,8 +236,8 @@ contract M003VerificationRegistryTest is Test {
     /// @dev The manual steps from the README, then one audit end to end: verdict, points, reward.
     function test_manualStepsThenAnAuditVerifiesAndPays() public {
         M003DeployVerificationRegistry.Deployment memory d = script.runWith(config());
-        assertEq(d.results.sourceShareBpsAt(address(d.kbf), 0), 0, "KBF's share starts the epoch after deploy");
-        assertEq(d.results.sourceShareBpsAt(address(d.kbf), 1), 10_000);
+        assertEq(d.results.auditShareBpsAt(address(d.kbf), 0), 0, "KBF's share starts the epoch after deploy");
+        assertEq(d.results.auditShareBpsAt(address(d.kbf), 1), 10_000);
         gate.setCurrentEpoch(1);
         gate.setBudget(address(d.results), 1, 1_000 ether); // stands in for setMinterController
         vm.startPrank(owner);
@@ -267,9 +267,8 @@ contract M003VerificationRegistryTest is Test {
         assertEq(sellerPoints, 1_000_000, "zero rates leave points unchanged");
 
         gate.setCurrentEpoch(2);
-        uint256[] memory epochs = new uint256[](1);
-        epochs[0] = 1;
         vm.prank(auditor);
-        assertEq(d.results.claimRewards(address(d.kbf), epochs), 200 ether, "20% cap of the KBF share");
+        d.results.claimAuditorReward(address(d.kbf), 1);
+        assertEq(gate.minted(auditor), 200 ether, "20% cap of the KBF share");
     }
 }

@@ -1,5 +1,6 @@
 import type {
   FreeTierDelegation,
+  SellerBuyerLimitsConfig,
   ServiceApiProtocol,
   ServiceCapabilities,
   UnitBillingModelV1,
@@ -285,6 +286,15 @@ export interface SellerCLIConfig {
   verifications?: VerificationConfig;
   /** Maximum upload body size (bytes) accepted from buyers per request. Default: 64 MiB. */
   maxUploadBodyBytes?: number;
+  /** Buyer connections held open at once; past it new buyers are refused. Metadata requests never count. Default: 2048. */
+  maxInboundConnections?: number;
+  /**
+   * Buyer connections accepted from one IP at once. Raise it when every buyer reaches this seller
+   * through one address, such as Phala Cloud's TLS gateway. Default: 64.
+   */
+  maxInboundConnectionsPerIp?: number;
+  /** Close a buyer's connection after this long with no traffic and no channel open on it; 0 keeps idle connections. Default: 30 minutes. */
+  inboundIdleTimeoutMs?: number;
   /**
    * Verifier SDK ids this seller advertises and runs provers for (first is the
    * default). Chosen in `antseed seller setup`; overridden at launch by
@@ -325,6 +335,13 @@ export interface SellerCLIConfig {
   restrictedCountries?: string[];
   /** Free-usage on-chain record batching: flush after N auths or N ms (default 16 / 900000). */
   freeUsage?: { recordBatchSize?: number; recordFlushIntervalMs?: number };
+  /**
+   * Per-buyer load limits: tokens (uncached input + output) each buyer may
+   * use from each provider in a rolling window, tighter for buyers whose first
+   * channel with this seller is recent, with optional per-service weights.
+   * Over a limit, requests are answered 429 with retry-after. Off unless set.
+   */
+  buyerLimits?: SellerBuyerLimitsConfig;
 }
 
 /**
@@ -468,6 +485,7 @@ export interface PaymentsCLIConfig {
     legacyEmissionsEscrowAddress?: string;
     washTradingRegistryAddress?: string;
     pointsPolicyRegistryAddress?: string;
+    verificationPointsPolicyAddress?: string;
     /** Explorer REST base for seller profiles in `antseed ants`; empty string disables the lookup. */
     explorerApiUrl?: string;
     /** Deployed AntseedDepositRelay contract address (gasless deposit sweeps) */
@@ -537,4 +555,10 @@ export interface AntseedConfig {
   network: NetworkCLIConfig;
   /** Installed plugins */
   plugins?: { name: string; package: string; installedAt: string }[];
+  /**
+   * Anonymous product telemetry (docs/telemetry.md). On unless `enabled` is
+   * false; `antseed telemetry disable` and the desktop and gateway privacy
+   * toggles write it, and a running buyer picks the change up live.
+   */
+  telemetry?: { enabled?: boolean };
 }

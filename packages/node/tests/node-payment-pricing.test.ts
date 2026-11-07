@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { SellerBuyerLimiter } from '../src/payments/seller-buyer-limiter.js';
 import { SellerRequestHandler, assertSingleRoutingService } from '../src/seller-request-handler.js';
 import type { SerializedHttpRequest } from '../src/types/http.js';
 import type { Provider } from '../src/interfaces/seller-provider.js';
@@ -388,6 +389,29 @@ describe('native video job ownership', () => {
       expect(recordSpend).not.toHaveBeenCalled();
     } finally { store.close(); }
   });
+  it('keeps video polls and downloads outside token-based buyer limits', async () => {
+    const provider = makeProvider(0, 0, {
+      name: 'venice', services: ['video'], serviceApiProtocols: { video: ['venice-video'] },
+      serviceUnitBillingModels: { video: { 'venice-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.1 }] } } },
+    });
+    provider.handleRequest = vi.fn(async request => ({ requestId: request.requestId, statusCode: 206, headers: { 'content-type': 'video/mp4' }, body: Buffer.from('video') }));
+    const store = new ResourceOwnershipStore(join(mkdtempSync(join(tmpdir(), 'antseed-video-limits-')), 'metering.db'));
+    store.recordAcceptedCreate('venice-video', 'job', 'b'.repeat(40));
+    const handler = makeSellerRequestHandler({
+      providers: [provider], sellerPaymentManager: makeSpmMock({ hasSession: () => false }), channelsClient: {} as any,
+      sessionTracker: null, announcer: null, emit: () => false, resourceOwnershipStore: store,
+      sellerBuyerLimiter: new SellerBuyerLimiter({ maxTokensPerBuyer: 1_000 }, () => null),
+    });
+    try {
+      const frames: Uint8Array[] = [];
+      const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any);
+      for (let i = 1; i <= 4; i++) {
+        const request = { requestId: `poll-${i}`, method: 'POST', path: '/api/v1/video/retrieve', headers: { 'content-type': 'application/json', 'x-antseed-service': 'video' }, body: new TextEncoder().encode(JSON.stringify({ model: 'video', queue_id: 'job' })) };
+        await mux.handleFrame({ type: MessageType.HttpRequest, messageId: i, payload: encodeHttpRequest(request) });
+        expect(decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload).statusCode).toBe(206);
+      }
+    } finally { store.close(); }
+  });
   const buyer = 'b'.repeat(40);
   const other = 'c'.repeat(40);
   const pricing = { version: 1 as const, components: [{ unit: 'video_seconds' as const, priceUsd: 0.1 }] };
@@ -704,7 +728,7 @@ describe('native video job ownership', () => {
   });
 });
 
-function makeAttestHarness() {
+function makeAttestHarness(channelBinding: string | null = null) {
   const provider = makeProvider(1, 1, { name: 'openai', services: ['gpt-5.5'] });
   provider.handleRequest = vi.fn(provider.handleRequest);
   const prove = vi.fn(async (req: SellerRequest) => ({
@@ -732,7 +756,7 @@ function makeAttestHarness() {
   });
   const sentFrames: Uint8Array[] = [];
   const { mux } = handler.handleConnection(
-    makeConn(sentFrames),
+    { ...makeConn(sentFrames), channelBinding },
     'b'.repeat(40),
     { sendNeedAuth: vi.fn(), sendPaymentRequired } as any,
   );
@@ -849,6 +873,22 @@ describe('SellerRequestHandler payment pricing selection', () => {
     await sendAttest(0, new Uint8Array([1]), { 'X-Antseed-Free-Tier-Delegations': 'delegations' });
     const headers = prove.mock.calls[0]![0].headers;
     expect(Object.keys(headers).map((key) => key.toLowerCase())).not.toContain('x-antseed-free-tier-delegations');
+  });
+
+  it('hands the prover the session hash of the connection the request arrived on, never a buyer-sent one', async () => {
+    const binding = 'c'.repeat(64);
+    const { prove, sendAttest } = makeAttestHarness(binding);
+    await sendAttest(0, new Uint8Array([1]), { 'X-Antseed-Channel-Binding': 'd'.repeat(64) });
+    const headers: Record<string, string> = prove.mock.calls[0]![0].headers;
+    const sent = Object.entries(headers).filter(([key]) => key.toLowerCase() === 'x-antseed-channel-binding');
+    expect(sent).toEqual([['x-antseed-channel-binding', binding]]);
+  });
+
+  it('drops a buyer-sent session hash on a connection without one', async () => {
+    const { prove, sendAttest } = makeAttestHarness();
+    await sendAttest(0, new Uint8Array([1]), { 'x-antseed-channel-binding': 'd'.repeat(64) });
+    const headers: Record<string, string> = prove.mock.calls[0]![0].headers;
+    expect(Object.keys(headers).map((key) => key.toLowerCase())).not.toContain('x-antseed-channel-binding');
   });
 
   it('rate-limits the free attestation route per buyer', async () => {

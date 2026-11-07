@@ -130,6 +130,18 @@ export function peerTopic(peerId: string): string {
   return "antseed:peer:" + peerId.trim().toLowerCase().replace(/^0x/, "");
 }
 
+/**
+ * The topics every seller announces under, before its offering topics:
+ *   - its subnet topic, which shards the peer set across SUBNET_COUNT infohashes so no single
+ *     one carries every announcer (buyers fan out lookups across all subnets);
+ *   - the wildcard, kept during the transition so older buyers still on the single-infohash scan
+ *     find it (see SUBNET_COUNT);
+ *   - its per-peer topic, for a lookup by peerId.
+ */
+export function sellerTopics(peerId: string): string[] {
+  return [subnetTopic(subnetOf(peerId)), ANTSEED_WILDCARD_TOPIC, peerTopic(peerId)];
+}
+
 export function capabilityTopic(capability: string, name?: string): string {
   const base = "antseed:" + normalizeTopicSegment(capability);
   return name ? base + ":" + normalizeTopicSegment(name) : base;

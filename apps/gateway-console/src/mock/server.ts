@@ -474,6 +474,11 @@ function preview(query: URLSearchParams): RoutePreview {
     if (policy.requireTee && !peer.tee) reasons.push('no TEE')
     if (policy.requireVerified && !peer.verified) reasons.push('not verified')
     if (policy.maxInputUsdPerMillion !== undefined && (service.inputUsdPerMillion ?? 0) > policy.maxInputUsdPerMillion) reasons.push('over input price cap')
+    // The buyer judges its own trust minimum on the effective trust: a live DIFF verdict keeps 10%.
+    const buyerMinTrust = db.settings.buyer.routingPreferences.minTrustScore
+    if (service.modelCheck?.verdict === 'diff' && peer.trustScore !== null && peer.trustScore * 0.1 < buyerMinTrust) {
+      reasons.push(`buyer config: trust ${Math.round(peer.trustScore * 0.1)} (cut to 10% from ${Math.round(peer.trustScore)}: live DIFF verification verdict) below buyer minimum ${buyerMinTrust}`)
+    }
     if (service.health?.status === 'failing') reasons.push(`self health check failing${service.health.reason ? ` (${service.health.reason})` : ''}`)
     return { peerId: peer.peerId, displayName: peer.displayName, rank: null as number | null, eligible: reasons.length === 0, reasons, inputUsdPerMillion: service.inputUsdPerMillion, outputUsdPerMillion: service.outputUsdPerMillion, trustScore: peer.trustScore, selection: null as RouteSelection | null, ...(service.health ? { health: service.health } : {}) }
   })
@@ -1093,6 +1098,13 @@ const routes: Array<[string, string, Handler]> = [
     return { ...db.settings, restartRequired: true }
   }],
   ['PUT', '/settings/observability', ({ body }) => { requireOrgAdmin(); db.settings.observability = observability(body); return maskedSettings() }],
+  ['PUT', '/settings/telemetry', ({ body }) => {
+    requireOrgAdmin()
+    if (typeof body?.enabled !== 'boolean') throw new MockError(400, 'invalid_request', 'enabled must be true or false')
+    db.settings.telemetry = { available: true, enabled: body.enabled, userDisabled: !body.enabled }
+    audit('settings.telemetry.update')
+    return maskedSettings()
+  }],
 ]
 
 /**

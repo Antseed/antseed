@@ -6,7 +6,7 @@ import { ConsoleRouter, type Principal } from '../router.js'
 import type { BuyerLimits, NetworkModel, NetworkRouter, Peer, RoutePreview } from '../types.js'
 import { registerNetworkRoutes, type NetworkRouteOverrides } from './network.js'
 import { encodeFreeTierCapabilities } from '@antseed/node/free-tier-program'
-import { enrichCandidates, mapNetworkModels, mapNetworkRouters, mapPeers, peerServices, teeScopes, teeVerifiedPeers } from './network-mapping.js'
+import { enrichCandidates, mapNetworkModels, mapNetworkRouters, mapPeers, modelCheckField, peerServices, teeAttestations, teeScopes, teeVerifiedPeers } from './network-mapping.js'
 import {
   call,
   fakeCanSeeWorkspace,
@@ -186,6 +186,7 @@ function setup(extra: NetworkRouteOverrides = {}): ConsoleRouter {
     canSeeWorkspace: fakeCanSeeWorkspace,
     requireOrgAdmin: fakeRequireOrgAdmin,
     resolvePolicy: fakeResolvePolicy,
+    explorerUrl: async () => null,
     ...extra,
   })
   return router
@@ -389,6 +390,16 @@ test('TEE snapshot: full only when the provider TEE claim passes too', () => {
   assert.deepEqual([...scopes], [[PEER_A, 'end-to-end'], [PEER_B, 'seller-node']])
 })
 
+test('TEE snapshot: a verified seller node reports the upstream hosts of its attested config', () => {
+  const node = [{ claim: 'antseed-verifier:seller-node-tee-genuine', ok: true }, { claim: 'antseed-verifier:seller-bound', ok: true }]
+  const attested = teeAttestations({
+    evidence: [{ peerId: PEER_A, verifierId: 'antseed-verifier', sellerNodeVerified: true, expiresAt: NOW + 1, claims: [
+      ...node, { claim: 'antseed-verifier:seller-node-upstreams', ok: true, detail: 'https://api.example.com, https://backup.example' },
+    ] }],
+  }, NOW)
+  assert.deepEqual(attested.get(PEER_A), { scope: 'seller-node', upstreams: ['api.example.com', 'backup.example'] })
+})
+
 test('GET peers merges buyer peers, health and gateway stats', async () => {
   verificationAllowed = false
   const peers = await call(setup(), 'GET', '/peers', member) as Peer[]
@@ -453,6 +464,43 @@ test('GET peers uses the TEE snapshot when the buyer shares it', async () => {
   } finally {
     verificationAllowed = false
   }
+})
+
+test('model-check verdicts: live DIFF and SAME services, each linked to its audit history', async () => {
+  const row = {
+    peerId: PEER_A,
+    onChainAgentId: 42,
+    onChainDiffServices: ['open-model-a'],
+    // A service on both lists counts as DIFF only.
+    onChainSameServices: ['open-model-b', 'open-model-a'],
+    onChainVerificationFetchedAt: NOW - 60_000,
+  }
+  const [peer] = mapPeers({ peers: { peers: [row] }, health: null, verification: null, stats: [], now: NOW, explorerUrl: 'https://explorer.test/' })
+  assert.deepEqual(peer!.diffServices, ['open-model-a'])
+  assert.deepEqual(peer!.sameServices, ['open-model-b'])
+  assert.deepEqual(Object.keys(peer!.verificationUrls ?? {}), ['open-model-a', 'open-model-b'])
+  assert.match(peer!.verificationUrls!['open-model-a']!, /^https:\/\/explorer\.test\/verification-service\/42~0x[0-9a-f]{64}$/)
+  assert.notEqual(peer!.verificationUrls!['open-model-a'], peer!.verificationUrls!['open-model-b'])
+  // Each offer carries its own verdict, matched case-insensitively.
+  assert.deepEqual(modelCheckField(peer, ' Open-Model-A '), { modelCheck: { verdict: 'diff', auditUrl: peer!.verificationUrls!['open-model-a'] } })
+  assert.deepEqual(modelCheckField(peer, 'open-model-b').modelCheck?.verdict, 'same')
+  assert.deepEqual(modelCheckField(peer, 'open-model-c'), {})
+  const [model] = mapNetworkModels(MODELS_BODY, [peer!])
+  assert.deepEqual(model!.offers.map((offer) => offer.modelCheck?.verdict), ['diff', undefined])
+  const [priced] = mapPeers({ peers: { peers: [{ ...row, ...PEERS_BODY.peers[0], ...row }] }, health: null, verification: null, stats: [], now: NOW, explorerUrl: 'https://explorer.test' })
+  assert.deepEqual(priced!.services.map((service) => [service.service, service.modelCheck?.verdict]), [['open-model-a', 'diff'], ['open-model-b', 'same']])
+
+  // Without an explorer or an agent id the verdicts stay, the links go.
+  const [unlinked] = mapPeers({ peers: { peers: [{ ...row, onChainAgentId: null }] }, health: null, verification: null, stats: [], now: NOW, explorerUrl: 'https://explorer.test' })
+  assert.deepEqual(unlinked!.sameServices, ['open-model-b'])
+  assert.equal(unlinked!.verificationUrls, undefined)
+  // A read past the buyer's fail-open window shows neither.
+  const [stale] = mapPeers({ peers: { peers: [row] }, health: null, verification: null, stats: [], now: NOW + 15 * 60_000, explorerUrl: 'https://explorer.test' })
+  assert.deepEqual([stale!.diffServices, stale!.sameServices, stale!.verificationUrls], [undefined, undefined, undefined])
+
+  // The route threads the chain's explorer through.
+  const peers = await call(setup({ explorerUrl: async () => 'https://explorer.test' }), 'GET', '/peers', member) as Peer[]
+  assert.deepEqual(peers.map((p) => p.verificationUrls), [undefined, undefined], 'B has a DIFF but no agent id')
 })
 
 test('GET peers still answers without peer health', () => {

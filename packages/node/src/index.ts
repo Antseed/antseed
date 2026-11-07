@@ -179,6 +179,7 @@ export {
   type SpeechOptions,
   type AudioSpeechProtocol,
   SPEECH_METADATA_VERSION,
+  VIDEO_OPTION_PRICING_METADATA_VERSION,
   speechVoiceProblem,
   type PeerMetadata,
   type PeerVerifications,
@@ -298,6 +299,7 @@ export {
 export { signData, verifySignature, signUtf8, verifyUtf8 } from './p2p/identity.js';
 export {
   getDebugFilters,
+  isContentFreeLogging,
   shouldEmitDebugLine,
 } from './utils/debug.js';
 export { withFileLock, type FileLockOptions } from './utils/file-lock.js';
@@ -355,6 +357,8 @@ export { SellerFreeUsageManager } from './payments/seller-free-usage-manager.js'
 export type { SellerFreeUsageConfig } from './payments/seller-free-usage-manager.js';
 export { SellerFreeTierLimiter, DEFAULT_FREE_TIER_WINDOW_MS, normalizeRemoteIp } from './payments/seller-free-tier-limiter.js';
 export type { SellerFreeTierConfig, SellerFreeTierProgramConfig, FreeTierDecision } from './payments/seller-free-tier-limiter.js';
+export { SellerBuyerLimiter } from './payments/seller-buyer-limiter.js';
+export type { SellerBuyerLimitsConfig, SellerNewBuyerLimitsConfig } from './payments/seller-buyer-limiter.js';
 export {
   DEFAULT_FREE_TIER_STAKE_TIERS,
   FREE_TIER_EPOCHS_PER_YEAR,
@@ -470,13 +474,13 @@ export {
 } from './routing/seller-health.js';
 
 export type { AntseedPlugin, AntseedProviderPlugin, AntseedRouterPlugin, AntseedVerifierPlugin, Prover, VerifyContext, VerifyResult, ClaimResult, SellerRequest, SellerResponse, PluginConfigKey, ConfigField } from './interfaces/plugin.js'
-export { ANTSEED_ATTEST_PATH } from './interfaces/plugin.js'
+export { ANTSEED_ATTEST_PATH, ANTSEED_CHANNEL_BINDING_HEADER } from './interfaces/plugin.js'
 
 // Reputation
 export { UptimeTracker } from './reputation/uptime-tracker.js';
 export {
   computeTrustScore, historyCurve, trustScore, shareCurve, SHARE_CURVE_RANGE,
-  TRUST_HISTORY_CHANNEL_TARGET, TRUST_HISTORY_VOLUME_USDC_MICROS_TARGET, TRUST_WEIGHTS, TRUST_FREE_MODELS_BONUS,
+  TRUST_FULL_SHARE_BPS, TRUST_HISTORY_CHANNEL_TARGET, TRUST_HISTORY_VOLUME_USDC_MICROS_TARGET, TRUST_IDENTITY_BONUS, TRUST_WEIGHTS, TRUST_FREE_MODELS_BONUS,
   type TrustBreakdown,
 } from './reputation/trust-score.js';
 export {
@@ -492,11 +496,20 @@ export {
   compareEffectiveModelReputation,
   effectiveModelReputationScore,
   hasLiveDiffVerdict,
+  hasLiveSameVerdict,
+  liveVerificationVerdict,
   normalizedModelReputationScore,
   verificationServiceKey,
   type ModelReputationSource,
   type VerificationDiffSource,
 } from './reputation/model-reputation.js';
+export { verificationServiceUrl } from './reputation/model-verification-links.js';
+export {
+  VERIFICATION_POINTS_BPS,
+  VERIFICATION_POINTS_MAX_BONUS_BPS,
+  verificationPointsMultiplierBps,
+  type VerificationPointsRates,
+} from './reputation/verification-points.js';
 export {
   buildSybilContext,
   computeOnChainSybilRisk,

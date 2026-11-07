@@ -46,6 +46,9 @@ jobs:
       - name: Test
         run: pnpm -r --filter '!@antseed/e2e' run test
 
+      - name: Test (TEE seller image launcher)
+        run: node --test deploy/tee-seller/*.test.mjs
+
       - name: Test (e2e)
         run: pnpm --filter '@antseed/e2e' run test
 

@@ -2,47 +2,54 @@
   "$schema": "../schema.json",
   "network": "base-mainnet",
   "chainId": 8453,
-  "release": "003-verification-split",
+  "release": "003-verification-policy",
   "status": "active",
-  "sourceCommit": "9152657b322b96a87b3fc66b05583084af25e5f1",
+  "sourceCommit": "77c09da764f9767c229c2773cc30812e72ec1a88",
   "transactions": [
     {
-      "action": "deploy AntseedVerificationResults",
-      "hash": "0xd3ddb4aa924fef6bfc44c61fe62e6819113789f53f0f3877edeaa58a6926e9f4",
-      "blockNumber": 53490135,
-      "from": "0xb0b04d4020e9cbd3203d553ae9c1cb9dbffb3040",
-      "to": null
-    },
-    {
-      "action": "deploy AntseedKbfAudits",
-      "hash": "0x9468557e47dc52adc8796ff1c6de5e4c37a87b950195423f8d0755a6e2b7669b",
-      "blockNumber": 53490136,
-      "from": "0xb0b04d4020e9cbd3203d553ae9c1cb9dbffb3040",
-      "to": null
-    },
-    {
       "action": "deploy AntseedVerificationPointsPolicy",
-      "hash": "0x6d4a810592dbaac843ebdb4ac54f0be7c91498109fe468d51f46b30d121ec7be",
-      "blockNumber": 53490137,
-      "from": "0xb0b04d4020e9cbd3203d553ae9c1cb9dbffb3040",
+      "hash": "0x95f7f663b89a74477fe50778df28007066c1174182d5f447d54cb15914583ad6",
+      "blockNumber": 53534989,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
       "to": null
     },
     {
-      "action": "setSource(address,bool)",
-      "hash": "0xb24a27989c548f4d0b1501b73b202e20b3f934ddbe551a112b0d6613c9eff58e",
-      "blockNumber": 53490138,
-      "from": "0xb0b04d4020e9cbd3203d553ae9c1cb9dbffb3040",
-      "to": "0xf2c8482ad2a348854698e93f41fe3cc32307687c"
+      "action": "setPenaltyBps(uint256)",
+      "hash": "0x6c20af7faa4823d92ae37ab577ae9783a46c5ca84f85e0a8d5c18bae980220e3",
+      "blockNumber": 53535014,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": "0xd58393a752b3b7bdbea6231e0e24c11403e9f32f"
     },
     {
-      "action": "setSourceShareBps(address,uint16)",
-      "hash": "0xf642a903e5b5af7a9619dac82b089f188a5c1aba722765fa750cf2ce0377b5be",
-      "blockNumber": 53490139,
-      "from": "0xb0b04d4020e9cbd3203d553ae9c1cb9dbffb3040",
-      "to": "0xf2c8482ad2a348854698e93f41fe3cc32307687c"
+      "action": "acceptOwnership()",
+      "hash": "0xe1c783d00e0ddc7fe1b2ae5a0304d4348667940919f157a7ba782918278a0b02",
+      "blockNumber": 53535044,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": "0x139ab1722a62a23371f491220902c460e9faeab2"
+    },
+    {
+      "action": "acceptOwnership()",
+      "hash": "0xea13fec6811dca1325b17b2c2308538f13c4be7f975c9328acd6ea7dd136d3d4",
+      "blockNumber": 53535051,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": "0x86b92dc48ef7c5a12de6e44409e83c8ef36657ff"
+    },
+    {
+      "action": "registerPolicy(address)",
+      "hash": "0x9dc4c013ac292bb01069a41c3473381698a3c1bf234fd3f23315c6f22d62584a",
+      "blockNumber": 53535067,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": "0x212d2c1058b84507de248a147aafeb08fb19e3b6"
+    },
+    {
+      "action": "setBonusBps(uint256)",
+      "hash": "0x5dd759f664dff0854c81408c375ff9de93e2d7e09591d997d37a44a3dff8d31b",
+      "blockNumber": 53535482,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": "0xd58393a752b3b7bdbea6231e0e24c11403e9f32f"
     }
   ],
-  "notes": "M003 deploys the verification results layer, the KBF audit source and the verification points policy, and wires KBF as a source with the whole verification bucket. It approves no auditors and does not register the policy in the points policy registry; the owners do that separately, so verdicts change no seller points until then.",
+  "notes": "Replaces only the verification points policy: the redeployed AntseedVerificationPointsPolicy applies one multiplier, from the seller agent's live verdicts, to both seller and buyer points, with a penalty that grows with the square of the DIFF count. The owner set penaltyBps 400 and bonusBps 200, accepted ownership of the results layer and the KBF audit, and registered the policy in the points policy registry. The earlier policy 0x4B586d4361783e9798881DC32c78Cf595a923095 was never registered and is retired.",
   "contracts": {
     "usdc": {
       "address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
@@ -410,47 +417,48 @@
       "owner": "0xb0b04d4020E9CBd3203D553Ae9c1cb9DbfFB3040"
     },
     "verificationResults": {
-      "address": "0xf2c8482ad2a348854698e93f41fe3cc32307687c",
-      "deploymentBlock": 53490135,
-      "transactionHash": "0xd3ddb4aa924fef6bfc44c61fe62e6819113789f53f0f3877edeaa58a6926e9f4",
-      "runtimeCodeHash": "0x009587b654e97d9ede4ef93f31b209fb11d0ad7bd3ca3045b35414746339563f",
+      "address": "0x139ab1722a62a23371f491220902c460e9faeab2",
+      "deploymentBlock": 53514466,
+      "transactionHash": "0xf20d2aa8efe533f4cf5131948cdfa22bf9e9222a26aa437c4a4d2dfc3db7806f",
+      "runtimeCodeHash": "0x53767f1c84e0c865375207560ac07a428c2e79db02f91d6c9f6fe18a32af58db",
       "version": "1",
       "external": false,
       "deployedInRelease": true,
       "constructorArguments": [
-        "0xf33fC901BFa97326379A369401F4490E231B69B0"
+        "0xE60a31E6CD2F8455503cA0B3f6545Dd3DDF543BD"
       ],
-      "owner": "0xb0b04d4020E9CBd3203D553Ae9c1cb9DbfFB3040"
+      "owner": "0x48F4142F4AbF7b77a03f0cDffcd511eDD9B6d54a"
     },
     "kbfAudits": {
-      "address": "0xe57ab03423a3835571f7d68ac1e23cf8a2763343",
-      "deploymentBlock": 53490136,
-      "transactionHash": "0x9468557e47dc52adc8796ff1c6de5e4c37a87b950195423f8d0755a6e2b7669b",
-      "runtimeCodeHash": "0xcaff68b12caea99b21bbf4322531c43861cfa2928d5a8c11afb3bf8bc5b1921c",
+      "address": "0x86b92dc48ef7c5a12de6e44409e83c8ef36657ff",
+      "deploymentBlock": 53514467,
+      "transactionHash": "0x1f36ee44dc1e75e2a0f713eb44b893fc77a037138ae3488f844585323145d8dc",
+      "runtimeCodeHash": "0xd6e3ff95f002a36dfb12fe1539102584bd694caaa1280b55420584cf13d24c3f",
       "version": "1",
       "external": false,
       "deployedInRelease": true,
       "constructorArguments": [
-        "0xF2C8482aD2A348854698E93f41FE3cc32307687c",
-        "0x8Bf4d39AA13F3CB03F87D9500767fBc4D0940652"
+        "0x139ab1722a62a23371f491220902c460E9fAeAb2",
+        "0x8Bf4d39AA13F3CB03F87D9500767fBc4D0940652",
+        "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432"
       ],
-      "owner": "0xb0b04d4020E9CBd3203D553Ae9c1cb9DbfFB3040"
+      "owner": "0x48F4142F4AbF7b77a03f0cDffcd511eDD9B6d54a"
     },
     "verificationPointsPolicy": {
-      "address": "0x5d677f5edd69e69c664e3f7fa80f1d3dd61a2212",
-      "deploymentBlock": 53490137,
-      "transactionHash": "0x6d4a810592dbaac843ebdb4ac54f0be7c91498109fe468d51f46b30d121ec7be",
-      "runtimeCodeHash": "0x60f473a045e408ac9a57a4f59ce7cb1d2fecc90f1809718b44778428ede14e0a",
+      "address": "0xd58393a752b3b7bdbea6231e0e24c11403e9f32f",
+      "deploymentBlock": 53534989,
+      "transactionHash": "0x95f7f663b89a74477fe50778df28007066c1174182d5f447d54cb15914583ad6",
+      "runtimeCodeHash": "0xb22266872ae22738eacec21b3bc8f8bd05ac7dc3efbe465442af10308439ed25",
       "version": "1",
       "external": false,
       "deployedInRelease": true,
       "constructorArguments": [
-        "0xF2C8482aD2A348854698E93f41FE3cc32307687c",
+        "0x139ab1722a62a23371f491220902c460E9fAeAb2",
         "0xAdd2D85316153D7bfaF7921EE9Bf1Bb6c7A1cBc9",
         "0",
-        "0xb0b04d4020E9CBd3203D553Ae9c1cb9DbfFB3040"
+        "0x48F4142F4AbF7b77a03f0cDffcd511eDD9B6d54a"
       ],
-      "owner": "0xb0b04d4020E9CBd3203D553Ae9c1cb9DbfFB3040"
+      "owner": "0x48F4142F4AbF7b77a03f0cDffcd511eDD9B6d54a"
     }
   },
   "effectiveEpoch": 22,
@@ -471,12 +479,15 @@
       "sellerPools": "0x8bf4d39aa13f3cb03f87d9500767fbc4d0940652",
       "usageAccounting": "0xadd2d85316153d7bfaf7921ee9bf1bb6c7a1cbc9",
       "pointsPolicyRegistry": "0x212d2c1058b84507de248a147aafeb08fb19e3b6",
-      "owner": "0xb0b04d4020E9CBd3203D553Ae9c1cb9DbfFB3040",
-      "deploymentNonce": 10349,
-      "resultsAddress": "0xF2C8482aD2A348854698E93f41FE3cc32307687c",
-      "kbfAddress": "0xe57aB03423A3835571F7d68AC1E23CF8a2763343",
-      "policyAddress": "0x5d677f5eDd69E69c664E3f7FA80f1D3DD61A2212",
-      "bonusBps": 0
+      "emissionsGate": "0xe60a31e6cd2f8455503ca0b3f6545dd3ddf543bd",
+      "owner": "0x48F4142F4AbF7b77a03f0cDffcd511eDD9B6d54a",
+      "deploymentNonce": 164,
+      "resultsAddress": "0x139ab1722a62a23371f491220902c460E9fAeAb2",
+      "kbfAddress": "0x86B92DC48EF7c5a12de6e44409E83C8EF36657Ff",
+      "policyAddress": "0xD58393a752b3b7bdBea6231E0e24C11403e9f32f",
+      "bonusBps": 200,
+      "penaltyBps": 400,
+      "policyRegistered": true
     }
   },
   "registryBefore": {
