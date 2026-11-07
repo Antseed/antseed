@@ -37,7 +37,9 @@ function makePeer(seed: string, opts: { input: number; output: number; trust: nu
 interface Harness {
   proxy: BuyerProxy
   url: string
-  dispatched: Array<{ peerId: string; headers: Record<string, string>; buyerIdentity?: string }>
+  dispatched: Array<{ peerId: string; headers: Record<string, string>; buyerIdentity?: string; channelBinding?: string }>
+  /** The session hash the buyer's node reports for its connection to any seller. */
+  binding: { current: string | null }
 }
 
 async function startHarness(t: TestContext, peers: PeerInfo[], extra: Partial<BuyerProxyConfig> = {}, withSecret = true): Promise<Harness> {
@@ -53,11 +55,13 @@ async function startHarness(t: TestContext, peers: PeerInfo[], extra: Partial<Bu
     await writeFile(join(dataDir, GATEWAY_CONTROL_SECRET_FILE), `${SECRET}\n`, { mode: 0o600 })
   }
   const dispatched: Harness['dispatched'] = []
+  const binding: Harness['binding'] = { current: 'c'.repeat(64) }
   const node = {
+    getChannelBinding: () => binding.current,
     router: { allowsPeerForPolicy: () => true, onResult: () => {} },
     buyerIdentities: () => [{ name: 'default', address: '0x' + '1'.repeat(40) }],
-    sendRequest: async (peer: PeerInfo, request: SerializedHttpRequest, options?: { buyerIdentity?: string }) => {
-      dispatched.push({ peerId: peer.peerId, headers: request.headers, buyerIdentity: options?.buyerIdentity })
+    sendRequest: async (peer: PeerInfo, request: SerializedHttpRequest, options?: { buyerIdentity?: string; channelBinding?: string }) => {
+      dispatched.push({ peerId: peer.peerId, headers: request.headers, buyerIdentity: options?.buyerIdentity, ...(options?.channelBinding ? { channelBinding: options.channelBinding } : {}) })
       return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{}') }
     },
   }
@@ -69,7 +73,7 @@ async function startHarness(t: TestContext, peers: PeerInfo[], extra: Partial<Bu
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   t.after(() => new Promise<void>((resolve) => server.close(() => resolve())))
   const { port } = server.address() as AddressInfo
-  return { proxy, url: `http://127.0.0.1:${port}`, dispatched }
+  return { proxy, url: `http://127.0.0.1:${port}`, dispatched, binding }
 }
 
 function chat(h: Harness, headers: Record<string, string> = {}, model = 'gpt-5'): Promise<Response> {
@@ -384,9 +388,30 @@ test('a malformed or oversized route-selection header decodes to null', () => {
   assert.equal(decodeServedSelection('a'.repeat(4096)), null)
 })
 
+/**
+ * Stub the buyer's TEE check: only the peers in `attested` pass the seller-node attestation, bound
+ * to the connection hash current when checked. A cached verdict keeps its old hash unless forced.
+ */
+function stubTeeAttestation(h: Harness, attested: string[]): string[] {
+  const checked: string[] = []
+  const cached = new Map<string, string | null>()
+  ;(h.proxy as any)._teeVerification.verify = async (peer: PeerInfo, policy: { require: boolean }, _run: unknown, force = false) => {
+    checked.push(peer.peerId)
+    const pass = attested.includes(peer.peerId)
+    if (force || !cached.has(peer.peerId)) cached.set(peer.peerId, h.binding.current)
+    const channelBinding = cached.get(peer.peerId)
+    return {
+      ok: !policy.require || pass, verified: pass, sdk: 'antseed-verifier', sellerNodeVerified: pass,
+      ...(pass && channelBinding ? { channelBinding } : {}), ...(pass ? {} : { reason: 'not an approved TEE seller build' }),
+    }
+  }
+  return checked
+}
+
 test('requireTee only admits sellers advertising the TEE verifier, on automatic, pinned and preview paths', async (t) => {
   const tee = makePeer('c', { input: 5, output: 5, trust: 50, capabilities: ['verifier.antseed-verifier'] })
-  const h = await startHarness(t, [cheap, pricey, tee])
+  const h = await startHarness(t, [cheap, pricey, tee], { verifier: { require: false } })
+  const checked = stubTeeAttestation(h, [tee.peerId])
   const policy = withPolicy({ requireTee: true })
 
   assert.equal((await chat(h, policy)).status, 200)
@@ -401,6 +426,49 @@ test('requireTee only admits sellers advertising the TEE verifier, on automatic,
   const byId = new Map(body.candidates.map((candidate) => [candidate.peerId, candidate]))
   assert.equal(byId.get(tee.peerId)?.eligible, true)
   assert.deepEqual(byId.get(cheap.peerId)?.reasons, ['no TEE'])
+  assert.deepEqual(checked, [tee.peerId])
+  // The request goes out only on the connection the attestation was bound to.
+  assert.equal(h.dispatched[0]?.channelBinding, 'c'.repeat(64))
+})
+
+test('requireTee checks a seller again after a reconnect instead of reusing the verdict for the old connection', async (t) => {
+  const tee = makePeer('c', { input: 5, output: 5, trust: 50, capabilities: ['verifier.antseed-verifier'] })
+  const h = await startHarness(t, [tee], { verifier: { require: false } })
+  const checked = stubTeeAttestation(h, [tee.peerId])
+  const policy = withPolicy({ requireTee: true })
+
+  assert.equal((await chat(h, policy)).status, 200)
+  h.binding.current = 'd'.repeat(64)
+  assert.equal((await chat(h, policy)).status, 200)
+
+  assert.deepEqual(checked, [tee.peerId, tee.peerId, tee.peerId])
+  assert.deepEqual(h.dispatched.map((entry) => entry.channelBinding), ['c'.repeat(64), 'd'.repeat(64)])
+})
+
+test('requireTee refuses a seller that advertises TEE but whose attestation does not pass', async (t) => {
+  const tee = makePeer('c', { input: 5, output: 5, trust: 50, capabilities: ['verifier.antseed-verifier'] })
+  const h = await startHarness(t, [cheap, tee], { verifier: { require: false } })
+  stubTeeAttestation(h, [])
+  const policy = withPolicy({ requireTee: true })
+
+  const automatic = await chat(h, policy)
+  assert.notEqual(automatic.status, 200)
+  const pinned = await chat(h, { ...policy, 'x-antseed-pin-peer': tee.peerId })
+  assert.equal(pinned.status, 502)
+  assert.match(await pinned.text(), /not an approved TEE seller build/)
+  assert.deepEqual(h.dispatched, [])
+
+  // Without requireTee the same seller still serves; the check is optional by default.
+  assert.equal((await chat(h, { 'x-antseed-pin-peer': tee.peerId })).status, 200)
+})
+
+test('requireTee refuses every seller when this buyer has verification turned off', async (t) => {
+  const tee = makePeer('c', { input: 5, output: 5, trust: 50, capabilities: ['verifier.antseed-verifier'] })
+  const h = await startHarness(t, [tee])
+  const pinned = await chat(h, { ...withPolicy({ requireTee: true }), 'x-antseed-pin-peer': tee.peerId })
+  assert.equal(pinned.status, 502)
+  assert.match(await pinned.text(), /verification, which is disabled on this buyer/)
+  assert.deepEqual(h.dispatched, [])
 })
 
 test('restart is refused with restart_unsupported when the buyer is not supervised', async (t) => {
@@ -883,6 +951,25 @@ test('a pinned routing service ranks only the sellers the key policy allows and 
   assert.equal(contexts[0]!.options?.cost_quality_tradeoff, 8)
   assert.deepEqual(contexts[0]!.candidates.map((candidate) => candidate.peerId), [cheap.peerId])
   assert.deepEqual(h.dispatched.map((entry) => [entry.peerId, entry.buyerIdentity]), [[router.peerId, 'team-a'], [cheap.peerId, 'team-a']])
+})
+
+test('under requireTee a routing service gets the conversation only after its own TEE check passes, on the attested connection', async (t) => {
+  const router = { ...makeRoutingPeer('d'), capabilities: ['verifier.antseed-verifier'] }
+  const tee = makePeer('c', { input: 5, output: 5, trust: 50, capabilities: ['verifier.antseed-verifier'] })
+  const contexts: Array<{ options?: Record<string, unknown>; candidates: Array<{ peerId?: string }> }> = []
+  const h = await startHarness(t, [tee, router], { modelRoutingClient: routerClient(tee, contexts) as any, verifier: { require: false } })
+  const policy = withPolicy({ requireTee: true })
+
+  stubTeeAttestation(h, [tee.peerId])
+  const refused = await chat(h, policy, `${router.peerId}@alpha-route`)
+  assert.equal(refused.status, 502)
+  assert.match(await refused.text(), /Routing service failed its TEE check/)
+  assert.equal(contexts.length, 0)
+  assert.equal(h.dispatched.length, 0)
+
+  stubTeeAttestation(h, [tee.peerId, router.peerId])
+  assert.equal((await chat(h, policy, `${router.peerId}@alpha-route`)).status, 200)
+  assert.deepEqual(h.dispatched.map((entry) => [entry.peerId, entry.channelBinding]), [[router.peerId, 'c'.repeat(64)], [tee.peerId, 'c'.repeat(64)]])
 })
 
 test('a pinned routing service the key policy blocks is refused before any ranking is bought', async (t) => {

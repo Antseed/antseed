@@ -24,7 +24,7 @@ With the [`antseed-verifier`](https://github.com/AntSeed/antseed/tree/main/packa
 
 | Claim | Proves |
 |---|---|
-| `seller-node-tee-genuine` | The seller node runs in a genuine Intel TDX enclave: the quote checks out against Intel's DCAP certificate chain with an acceptable TCB and debug off, and it was created for your nonce and bound to the seller's peer id. Replayed quotes and non-TDX machines fail. |
+| `seller-node-tee-genuine` | The seller node runs an approved TEE seller build in a genuine Intel TDX enclave, on your own connection: the quote checks out against Intel's DCAP certificate chain with an acceptable TCB and debug off, its measurements show an approved TEE seller image on a released dstack OS, under rules that keep the seller's upstreams readable, and it was created for your nonce and bound to the seller's peer id and to the encrypted connection your buyer holds with the seller. Replayed or relayed quotes, unapproved builds and non-TDX machines fail. |
 | `seller-bound` | The seller's identity key signed the whole evidence bundle, so the enclave belongs to the peer you are paying. |
 
 Four more claims are reported for your own policy but do not decide the verdict:
