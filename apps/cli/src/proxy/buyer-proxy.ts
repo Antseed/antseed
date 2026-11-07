@@ -4758,6 +4758,9 @@ export class BuyerProxy {
         ;({ candidatePeers: modelPeers, routePlanByPeerId: modelPlans } = selectModelPeers(discoveredPeers))
       }
       const router = this._node.router
+      // Conversations the client identifies (session id, prompt-cache key)
+      // stay on one seller so its prompt cache keeps paying off.
+      const affinityKey = routingConversationKey ?? promptCacheKey(serializedReq)
       const planRoutes = (deterministic = false) => this._planModelRoutes({
         modelPeers,
         modelPlans,
@@ -4768,9 +4771,7 @@ export class BuyerProxy {
         requiredParameters: routeRequiredParameters,
         requestPolicy,
         preferredPeerId: preferredConversationPeerId,
-        // Conversations the client identifies (session id, prompt-cache key)
-        // stay on one seller so its prompt cache keeps paying off.
-        affinityKey: routingConversationKey ?? promptCacheKey(serializedReq),
+        affinityKey,
         ...(deterministic ? { deterministic } : {}),
       })
       let plan = planRoutes()
