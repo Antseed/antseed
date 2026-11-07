@@ -49,8 +49,6 @@ const RUNTIME_NATIVE_SCRIPT_RELATIVE = ['scripts', 'ensure-runtime-native-module
 const RUNTIME_NATIVE_MARKER_FILE = '.runtime-native-meta.json';
 const DEFAULT_CONFIG_PATH = join(homedir(), '.antseed', 'config.json');
 const DEFAULT_CONNECT_DATA_DIR = join(homedir(), '.antseed');
-const LEGACY_DESKTOP_DATA_ROOT = join(homedir(), '.antseed-desktop');
-const LEGACY_DESKTOP_CONNECT_DATA_DIR = join(LEGACY_DESKTOP_DATA_ROOT, 'connect');
 const CONNECT_DATA_DIR_ENV = 'ANTSEED_DESKTOP_CONNECT_DATA_DIR';
 
 function resolveAlignedNodeFromMarker(): string | null {
@@ -350,7 +348,6 @@ export function resolveCommandArgs(opts: StartOptions): string[] {
 
 export class ProcessManager {
   private readonly processes = new Map<RuntimeMode, ChildProcessWithoutNullStreams>();
-  private readonly attachedModes = new Set<RuntimeMode>();
   private runtimeNativeAligned = false;
   private runtimeNativeAlignmentPromise: Promise<void> | null = null;
   private readonly states = new Map<RuntimeMode, RuntimeProcessState>([
@@ -363,34 +360,6 @@ export class ProcessManager {
 
   getState(): RuntimeProcessState[] {
     return [...this.states.values()].map((s) => ({ ...s }));
-  }
-
-  attach(mode: RuntimeMode): RuntimeProcessState {
-    const state = this.states.get(mode)!;
-    this.attachedModes.add(mode);
-    state.running = true;
-    state.pid = null;
-    state.startedAt = Date.now();
-    state.lastExitCode = null;
-    state.lastError = null;
-    this.onLog(mode, 'system', `Attached to existing ${mode} runtime`);
-    return { ...state };
-  }
-
-  isAttached(mode: RuntimeMode): boolean {
-    return this.attachedModes.has(mode);
-  }
-
-  detach(mode: RuntimeMode, reason: string): RuntimeProcessState {
-    const state = this.states.get(mode)!;
-    if (!this.attachedModes.delete(mode)) {
-      return { ...state };
-    }
-    state.running = false;
-    state.pid = null;
-    state.lastError = reason;
-    this.onLog(mode, 'system', reason);
-    return { ...state };
   }
 
   getDaemonStateSnapshot(): DaemonStateSnapshot {
@@ -411,7 +380,6 @@ export class ProcessManager {
     if (this.processes.has(mode)) {
       throw new Error(`${mode} is already running`);
     }
-    this.attachedModes.delete(mode);
 
     const cliExecution = resolveCliExecution();
     const args = resolveCommandArgs(opts);
@@ -505,13 +473,6 @@ export class ProcessManager {
     if (mode === 'gateway') {
       const dataDir = resolveConnectDataDir();
       this.onLog(mode, 'system', `Connect data dir: ${dataDir}`);
-      if (dataDir === DEFAULT_CONNECT_DATA_DIR && existsSync(LEGACY_DESKTOP_CONNECT_DATA_DIR)) {
-        this.onLog(
-          mode,
-          'system',
-          `Legacy desktop connect data dir detected at ${LEGACY_DESKTOP_CONNECT_DATA_DIR}. Set ${CONNECT_DATA_DIR_ENV} to use it explicitly.`,
-        );
-      }
     }
     return { ...state };
   }
@@ -716,16 +677,11 @@ export class ProcessManager {
     });
   }
 
-  async stop(mode: RuntimeMode, preserve = false): Promise<RuntimeProcessState> {
+  async stop(mode: RuntimeMode): Promise<RuntimeProcessState> {
     const child = this.processes.get(mode);
     const state = this.states.get(mode)!;
-    this.attachedModes.delete(mode);
 
-    if (!child || preserve) {
-      if (child) {
-        this.processes.delete(mode);
-        child.unref();
-      }
+    if (!child) {
       state.running = false;
       state.pid = null;
       return { ...state };

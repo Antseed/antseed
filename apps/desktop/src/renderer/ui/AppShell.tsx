@@ -3,7 +3,7 @@ import { ViewHost } from './components/ViewHost';
 import { SetupScreen } from './components/SetupScreen';
 import { preloadViews, viewsForPreload } from './components/viewRegistry';
 import { shallowEqual, useUiSelector } from './hooks/useUiSelector';
-import { VIEW_NAMES, type ViewName } from './types';
+import type { ViewName } from './types';
 import { VprShell } from './components/VprShell';
 import { recordUserAction, telemetrySurfaceForView } from '../modules/telemetry/actions';
 
@@ -128,13 +128,6 @@ export function AppShell() {
   }, [snap.appSetupStatusKnown, snap.appSetupNeeded, snap.appSetupComplete, snap.freeDefaultReady, hasServices, setupDismissed]);
 
   const showSetup = setupVisible;
-
-  useEffect(() => {
-    return window.antseedDesktop?.onNavigateView?.((viewName) => {
-      if (!(VIEW_NAMES as readonly string[]).includes(viewName)) return;
-      handleSelectView(viewName as ViewName);
-    });
-  }, [handleSelectView]);
 
   useEffect(() => {
     if (showSetup) return undefined;

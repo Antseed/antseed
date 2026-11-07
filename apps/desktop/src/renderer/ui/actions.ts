@@ -4,11 +4,8 @@ import type { ChatPermissionMode, RawChatAttachment, ToolApprovalDecision } from
 export type AppActions = {
   /** Restart the local gateway (and its buyer); connected apps stay connected across it. */
   restartConnect: () => Promise<void>;
-  refreshAll: () => Promise<void>;
   clearLogs: () => Promise<void>;
-  scanDht: () => Promise<void>;
   saveConfig: (formData: ConfigFormData) => Promise<void>;
-  createNewConversation: () => Promise<void>;
   startNewChat: () => void;
   openConversation: (id: string) => Promise<void>;
   sendMessage: (text: string, attachments?: RawChatAttachment[]) => void;
@@ -27,10 +24,7 @@ export type AppActions = {
   retryAfterPayment: () => void;
   dismissFundsNotice: () => void;
   refreshCredits: () => Promise<void>;
-  refreshWorkspace: () => Promise<void>;
   chooseWorkspace: () => Promise<void>;
-  refreshPlugins: () => Promise<void>;
-  installPlugin: () => Promise<void>;
 };
 
 let _actions: AppActions | null = null;

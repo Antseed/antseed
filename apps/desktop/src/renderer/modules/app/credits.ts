@@ -81,12 +81,6 @@ export function initCreditsModule({
         uiState.creditsEvmAddress = result.data.evmAddress;
         uiState.creditsOperatorAddress = result.data.operatorAddress ?? null;
 
-        // Clear channel badges when no funds are reserved (all channels closed)
-        const reserved = parseFloat(uiState.creditsReservedUsdc);
-        if (reserved === 0 && uiState.chatActiveChannels.size > 0) {
-          uiState.chatActiveChannels.clear();
-        }
-
         if (changed) notifyUiStateChanged();
         await onPaymentStateChanged?.();
 

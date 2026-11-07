@@ -69,12 +69,6 @@ export async function sharedChainProvider(endpoints: ChainEndpoints): Promise<Ab
     return null;
   }
 }
-
-/** Forget cached wallet reads (after a claim or stake) while keeping the ranked endpoints and stack. */
-export function invalidateSharedChainReads(): void {
-  void shared?.context.then((context) => context.invalidate({ walletOnly: true }), () => {});
-}
-
 /** Drop the shared context; the next read builds one for the current config. */
 export function resetSharedChain(): void {
   shared = null;

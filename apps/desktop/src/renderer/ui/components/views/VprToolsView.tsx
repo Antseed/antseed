@@ -34,14 +34,6 @@ const BUILT_IN_APP_INFO: Readonly<Record<string, { description: string; websiteU
     description: 'OpenAI’s coding agent for building, reviewing, and shipping software.',
     websiteUrl: 'https://openai.com/codex/',
   },
-  'claude-code': {
-    description: 'Anthropic’s terminal coding agent.',
-    websiteUrl: 'https://code.claude.com/docs/en/overview',
-  },
-  'claude-desktop': {
-    description: 'Anthropic’s desktop app, in its third-party inference mode.',
-    websiteUrl: 'https://claude.ai/download',
-  },
   t3code: {
     description: 'A desktop interface for running multiple coding agents in parallel.',
     websiteUrl: 'https://github.com/pingdotgg/t3code',

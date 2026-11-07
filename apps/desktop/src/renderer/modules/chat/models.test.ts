@@ -20,6 +20,20 @@ test('the default model is the last one used while still listed as text, else th
   assert.equal(chooseDefaultChatModel([model('flux', 'image')], null), null);
 });
 
+test('with no last model, the default works without funds', () => {
+  const paid = { ...model('paid', 'text'), free: false, toolUse: true, sellers: 30 } as ChatModel;
+  const free = { ...model('free', 'text'), free: true, toolUse: true, sellers: 2 } as ChatModel;
+  assert.equal(chooseDefaultChatModel([paid, free], null), 'free');
+  assert.equal(chooseDefaultChatModel([paid], null), 'paid');
+});
+
+test('the dropdown lists free models first and can show only them', () => {
+  const paid = { ...model('paid'), free: false } as ChatModel;
+  const free = { ...model('free'), free: true } as ChatModel;
+  assert.deepEqual(filterChatModels([paid, free], '').text.map((m) => m.id), ['free', 'paid']);
+  assert.deepEqual(filterChatModels([paid, free], '', true).text.map((m) => m.id), ['free']);
+});
+
 test('the dropdown search matches ids and labels and splits text from image models', () => {
   const models = [model('qwen-3', 'text', 'Qwen 3'), model('flux-1', 'image', 'FLUX'), model('glm-5')];
   assert.deepEqual(filterChatModels(models, 'qwen').text.map((m) => m.id), ['qwen-3']);

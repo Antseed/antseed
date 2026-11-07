@@ -114,97 +114,6 @@
   word-break: break-word;
 }
 
-/* ---------- Fill layout: table-only scrolling ----------
-
-   The peers screen pins the title and filter and scrolls just the table:
-   the view stops scrolling as a page, the stack/card stretch to the
-   remaining height, and the table wrapper becomes the scroll region. */
-
-.viewFill {
-  display: flex;
-  flex-direction: column;
-  overflow-y: hidden;
-}
-
-.stackFill {
-  flex: 1 1 auto;
-  min-height: 0;
-}
-
-.cardFill {
-  flex: 1 1 auto;
-  min-height: 0;
-}
-
-/* ---------- Tables ---------- */
-
-.tableWrap {
-  overflow-x: auto;
-  min-width: 0;
-}
-
-.tableScroll {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-y: auto;
-}
-
-.tableScroll th {
-  position: sticky;
-  top: 0;
-  background: var(--bg-card);
-  z-index: 1;
-}
-
-.table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 11px;
-  line-height: 15px;
-}
-
-.table th {
-  padding: 4px 8px 6px;
-  color: var(--text-secondary);
-  font-size: 10px;
-  font-weight: 650;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  text-align: left;
-  white-space: nowrap;
-}
-
-.table td {
-  padding: 6px 8px;
-  border-top: 1px solid var(--border);
-  color: var(--text-primary);
-  white-space: nowrap;
-}
-
-.sortable {
-  cursor: pointer;
-  user-select: none;
-}
-
-.sortable:hover {
-  color: var(--text-primary);
-}
-
-.empty {
-  color: var(--text-secondary);
-  text-align: center;
-  padding: 14px 8px !important;
-}
-
-.online {
-  color: var(--accent-green);
-  font-weight: 600;
-}
-
-.offline {
-  color: var(--text-secondary);
-}
-
 /* ---------- Toolbar controls ---------- */
 
 .input {
@@ -248,12 +157,6 @@
 .button:disabled {
   opacity: 0.6;
   cursor: default;
-}
-
-.toolbar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
 }
 
 /* ---------- Log stream ---------- */

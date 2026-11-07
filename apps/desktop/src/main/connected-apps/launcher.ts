@@ -16,11 +16,6 @@ import { promisify } from 'node:util';
 import type { AppLaunchTarget } from './launch-settings.js';
 import { launchAppTarget, listInstalledApplications } from './installed.js';
 import { APPS_FOLDER_PREFIX, isAppsFolderTarget } from './windows-start-menu.js';
-
-export function isCertificateTrustError(message: string): boolean {
-  return /certificate|cert_|err_cert|authority|trust|ssl|tls/i.test(message);
-}
-
 export type AppProcessInfo = { running: boolean; pid?: number; startedAt?: number };
 
 type ManagedAppProcess = { launchedAt: number; pid?: number; startedAt?: number };
@@ -314,24 +309,6 @@ export async function waitForAppTarget(target: AppLaunchTarget, timeoutMs = 30_0
     await new Promise((resolve) => setTimeout(resolve, 300));
   }
 }
-
-/** Restart an app we know only by name. `restartAppTarget` handles macOS and
-    Windows; the name is resolved to a real target first because Windows can't
-    launch by name alone. */
-export async function restartNamedApp(
-  appName: string,
-  opts: { env?: Record<string, string> } = {},
-): Promise<{ ok: boolean; error?: string }> {
-  const target = namedAppTarget(appName);
-  if (!target) {
-    return process.platform === 'darwin' || process.platform === 'win32'
-      ? { ok: false, error: `Could not find ${appName} on this device. Quit and reopen it to apply the connection.` }
-      : { ok: false, error: `${appName} restart is not supported on this platform.` };
-  }
-  const result = await restartAppTarget(target, { force: true, launchIfStopped: true, env: opts.env });
-  return { ok: result.ok, ...(result.error ? { error: result.error } : {}) };
-}
-
 /** A launch target for an app we only know by name. macOS addresses those
     through `open -a` / AppleScript, so the bare name is enough; Windows has no
     name-based launcher, so the name is resolved against installed apps to

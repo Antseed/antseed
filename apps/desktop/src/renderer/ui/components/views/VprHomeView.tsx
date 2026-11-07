@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
 import { ArrowUp02Icon } from '@hugeicons/core-free-icons';
 import type { ConnectedAppProfile } from '../../../types/bridge';
@@ -11,10 +11,11 @@ import { recordUserAction } from '../../../modules/telemetry/actions';
 import { normalizeTelemetryAppName } from '../../../../shared/telemetry.js';
 import { ChatModelDropdown } from '../chat/ChatModelDropdown';
 import { ChatSellerPicker } from '../chat/ChatSellerPicker';
-import { joinPinnedModel } from '../../../../shared/pinned-model.js';
+import { joinPinnedModel, splitPinnedModel } from '../../../../shared/pinned-model.js';
 import { AgentSkillsPanel } from '../vpr/AgentSkillsPanel';
 import { AppPillIcon, appPillStyles as pills } from '../vpr/AppPills';
 import { HomeField } from '../vpr/HomeField';
+import { chooseDefaultChatModel } from '../../../modules/chat/models';
 import { modelsForPrivacy, PrivacyNote, PrivacyToggle, usePrivacyControl } from '../vpr/PrivacyToggle';
 import { privacyResource, usePrivacySwitch } from '../../../modules/app/vpr-resources';
 import styles from './VprHomeView.module.scss';
@@ -22,6 +23,9 @@ import styles from './VprHomeView.module.scss';
 type Props = { onSelectView?: (view: ViewName) => void };
 
 const COMPOSER_MAX_HEIGHT = 200;
+
+/** Survives leaving Home and coming back while Private is on. */
+let modelMovedForPrivate: { from: string; to: string } | null = null;
 
 export function VprHomeView({ onSelectView }: Props) {
   const actions = useActions();
@@ -40,14 +44,36 @@ export function VprHomeView({ onSelectView }: Props) {
   const privateMode = privacy.data?.mode === 'private';
   const { switching } = usePrivacySwitch();
   const privacyControl = usePrivacyControl((mode) => {
+    if (mode !== 'private') {
+      // Back from Private: return to the model Private moved away from, unless
+      // the user has since picked another one.
+      const previous = modelMovedForPrivate;
+      modelMovedForPrivate = null;
+      if (!previous || snap.chatSelectedModelId !== previous.to) return;
+      if (snap.chatActiveConversation) actions.startNewChat();
+      actions.selectChatModel(previous.from);
+      return;
+    }
     // Private lists only models a TEE seller serves: move off one that isn't.
-    const selected = snap.chatModels.find((model) => model.id === snap.chatSelectedModelId);
-    if (mode !== 'private' || !selected || selected.tee) return;
-    const next = snap.chatModels.find((model) => model.tee && model.type === 'text');
+    const { modelId: listedId } = splitPinnedModel(snap.chatSelectedModelId);
+    const selected = snap.chatModels.find((model) => model.id === listedId);
+    if (!selected || selected.tee) return;
+    const next = chooseDefaultChatModel(snap.chatModels.filter((model) => model.tee), null);
     if (!next) return;
+    modelMovedForPrivate = { from: snap.chatSelectedModelId, to: next };
     if (snap.chatActiveConversation) actions.startNewChat();
-    actions.selectChatModel(next.id);
+    actions.selectChatModel(next);
   });
+  // The gateway lists what the key's policy allows, so a seller's price and the
+  // Free badge change with the mode: re-read once the switch has landed.
+  const landedMode = switching ? null : privacy.data?.mode ?? null;
+  const previousMode = useRef(landedMode);
+  useEffect(() => {
+    if (!landedMode) return;
+    const changed = previousMode.current !== null && previousMode.current !== landedMode;
+    previousMode.current = landedMode;
+    if (changed) void actions.refreshChatModels(true);
+  }, [actions, landedMode]);
   const models = modelsForPrivacy(snap.chatModels, privateMode);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const appListRef = useRef<HTMLDivElement>(null);

@@ -186,51 +186,6 @@
   }
 }
 
-.chat-routed-label {
-  font-size: 12px;
-  color: var(--text-muted);
-}
-
-.chat-routed-peer {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--accent-green);
-  max-width: 300px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.peer-service-indicator {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  background: none;
-  border: 1px solid var(--border-light);
-  border-radius: 6px;
-  padding: 4px 10px;
-  cursor: pointer;
-  font-size: 13px;
-  color: var(--text-primary);
-  transition: background 0.15s;
-
-  &:hover {
-    background: rgba(255, 255, 255, 0.06);
-  }
-}
-
-.header-label-group {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
-}
-
-.peer-name {
-  font-weight: 500;
-  color: var(--accent-green);
-}
-
 /* Small text + icon buttons that sit after the service switcher in the
    chat header. Two flavours:
    - default  → neutral utility action (e.g. "Copy IDs")
@@ -273,42 +228,6 @@
     outline: none;
     box-shadow: 0 0 0 2px rgba(var(--accent-green-rgb), 0.35);
   }
-}
-
-/* Thin layout: no room for the label next to the model dropdown — the
-   New chat button collapses to just the plus glyph. */
-.header-action-button-copy {
-  border: none;
-  border-color: var(--border-light);
-  background: transparent;
-  color: var(--text-muted);
-}
-
-/* Copied confirmation — lock to green while the toast is visible so the
-   user gets unambiguous feedback. */
-.header-action-button-copied {
-  color: var(--accent-green);
-  border-color: rgba(var(--accent-green-rgb), 0.4);
-  background: rgba(var(--accent-green-rgb), 0.08);
-
-  &:hover {
-    color: var(--accent-green);
-    border-color: rgba(var(--accent-green-rgb), 0.4);
-    background: rgba(var(--accent-green-rgb), 0.08);
-  }
-}
-
-.service-separator {
-  color: var(--text-muted);
-}
-
-.service-name {
-  color: var(--text-secondary);
-}
-
-.service-label {
-  font-size: 13px;
-  color: var(--text-muted);
 }
 
 /* ===================================================================
@@ -360,14 +279,6 @@
   }
 }
 
-
-.chat-empty {
-  color: var(--text-muted);
-  font-size: 14px;
-  text-align: center;
-  padding: 40px 16px;
-}
-
 .scroll-to-latest-button {
   position: absolute;
   left: 50%;
@@ -399,7 +310,6 @@
 .scroll-to-latest-icon {
   transform: rotate(180deg);
 }
-
 
 /* ===================================================================
    Chat input area
@@ -488,93 +398,6 @@
   text-align: left;
 }
 
-
-.git-status-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  max-width: 320px;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  background: var(--bg-card);
-  color: var(--text-muted);
-  padding: 6px 8px;
-  cursor: pointer;
-}
-
-/* .git-status-pill-clean {
-  border-color: rgba(var(--accent-rgb), 0.28);
-}
-
-.git-status-pill-dirty {
-  border-color: rgba(255, 184, 77, 0.32);
-}
-
-.git-status-pill-missing {
-  border-color: rgba(255, 255, 255, 0.1);
-  opacity: 0.78;
-} */
-
-.git-status-branch {
-  flex: 0 1 auto;
-  min-width: 0;
-  max-width: 96px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--text-primary);
-  font-size: 11px;
-  font-family: var(--font-mono, monospace);
-}
-
-.git-status-summary {
-  flex: 1 1 auto;
-  min-width: 0;
-  color: var(--text-muted);
-  font-size: 11px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-
-.chat-image-attach-preview {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  padding: 4px 16px 8px;
-}
-
-.chat-image-attach-thumb {
-  width: 64px;
-  height: 64px;
-  object-fit: cover;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border);
-}
-
-.chat-image-remove-btn {
-  background: var(--bg-hover);
-  border: 1px solid var(--border);
-  border-radius: 50%;
-  width: 20px;
-  height: 20px;
-  font-size: 10px;
-  line-height: 1;
-  cursor: pointer;
-  color: var(--text-muted);
-  padding: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-
-  &:hover {
-    color: var(--text-primary);
-    background: var(--bg-surface);
-  }
-}
-
 .chat-attachment-tray {
   display: flex;
   flex-wrap: wrap;
@@ -653,13 +476,6 @@
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-}
-
-.chat-input-controls-left {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
 }
 
 .permission-mode-picker {

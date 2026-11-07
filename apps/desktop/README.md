@@ -2,15 +2,16 @@
 
 Alternative GUI interface for Antseed on macOS/Linux/Windows.
 
-This app runs Antseed runtime commands in the background (seller start / buyer start / dashboard)
-so end users do not need to use terminal commands directly.
+The app runs a local Antseed gateway in the background (`antseed gateway start`, which
+starts its own buyer), or uses a remote gateway you point it at, so end users do not need
+terminal commands. Its chat and the apps you connect all reach the network through that
+gateway with an API key.
 
 ## What it controls
 
-- Seller mode (`antseed seller start`)
-- Buyer mode (`antseed buyer start`)
-- Dashboard server (`antseed dashboard --port <port> --no-open`)
-- Embedded dashboard panel inside Electron (no browser tab required)
+- The local gateway process (`antseed gateway start`), or the connection to a remote gateway
+- API keys for the chat and for connected apps
+- Connected apps: each app's own config file is pointed at the gateway
 - Live process logs and daemon state snapshot (`~/.antseed/daemon.state.json`)
 
 ## Prerequisites
@@ -55,7 +56,7 @@ npm run dev
 ```
 
 Run multiple development worktrees at once while sharing the normal Antseed
-buyer, configuration, plugins, and identity:
+configuration, plugins, and identity:
 
 ```bash
 # Run from the repository/worktree root after selecting Node 24
@@ -65,15 +66,11 @@ pnpm dev:desktop:instance ui
 pnpm dev:desktop:instance feature-x
 ```
 
-Any instance name receives stable, separate renderer, payments, and system-proxy ports
-plus its own temporary Electron Chromium profile and volatile system-proxy
-runtime files. The buyer proxy and durable `~/.antseed` data remain shared.
-The first instance starts the buyer; later instances validate its Antseed
-status endpoint and attach without starting duplicate buyer nodes.
-In multi-instance mode, stopping, quitting, or disconnecting any
-window does not remove shared Codex/tool config patches or kill the shared
-buyer listener. Use the normal single-instance workflow when you intentionally
-want the Stop button to shut down the buyer.
+Any instance name receives stable, separate renderer, payments, and gateway
+ports plus its own temporary Electron Chromium profile. Durable `~/.antseed`
+data remains shared. In multi-instance mode, quitting a window does not remove
+the shared app config patches. Use the normal single-instance workflow when you
+want quitting to restore those configs.
 
 Build desktop assets:
 

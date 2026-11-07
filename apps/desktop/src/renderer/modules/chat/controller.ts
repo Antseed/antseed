@@ -1,4 +1,5 @@
 import { describeChatError } from './chat-errors';
+import { splitPinnedModel } from '../../../shared/pinned-model.js';
 import type { RendererUiState } from '../../core/state';
 import { notifyUiStateChanged, notifyUiStateChangedSync } from '../../core/store';
 import type {
@@ -13,7 +14,6 @@ import type {
 import type { ChatMessage, ContentBlock } from '../../ui/components/chat/chat-shared';
 import {
   cloneContentBlock,
-  getMyrmecochoryLabel,
   isImageRequestPhase,
   normalizeAssistantMeta,
   paymentLogToThinkingPhase,
@@ -62,9 +62,7 @@ export type ChatModuleApi = {
   /** Reload the gateway's model list (`force` skips main's one-minute cache). */
   refreshChatModels: (options?: { force?: boolean }) => Promise<void>;
   refreshChatConversations: () => Promise<void>;
-  refreshWorkspace: () => Promise<void>;
   chooseWorkspace: () => Promise<void>;
-  createNewConversation: () => Promise<void>;
   startNewChat: () => void;
   deleteConversation: (convId?: string) => Promise<void>;
   renameConversation: (convId: string, newTitle: string) => void;
@@ -98,14 +96,12 @@ export function initChatModule({
   // ---------------------------------------------------------------------------
 
   let activeConversation: ChatConversation | null = null;
-  let streamingIndicatorTimer: number | null = null;
   let workspaceSwitchToken = 0;
   let permissionRefreshToken = 0;
   let desiredWorkspacePath: string | null = uiState.chatWorkspacePath || null;
   let newChatDraftVersion = 0;
   let firstModelShownRecorded = false;
   const sendingConversationIds = new Set<string>();
-  const streamTurnsByConversation = new Map<string, number>();
   const streamStartedAtByConversation = new Map<string, number>();
   const streamCompletedAtByConversation = new Map<string, number>();
   const streamFailedAtByConversation = new Map<string, number>();
@@ -175,15 +171,6 @@ export function initChatModule({
     return typeof id === 'string' && id.length > 0 ? id : null;
   }
 
-  function isToolResultOnlyMessage(msg: ChatMessage): boolean {
-    return (
-      msg.role === 'user'
-      && Array.isArray(msg.content)
-      && msg.content.length > 0
-      && (msg.content as Array<{ type: string }>).every((b) => b.type === 'tool_result')
-    );
-  }
-
   // ---------------------------------------------------------------------------
   // Models
   // ---------------------------------------------------------------------------
@@ -197,8 +184,21 @@ export function initChatModule({
     if (activeConversation) return;
     const current = uiState.chatSelectedModelId;
     const listed = current ? findChatModel(uiState.chatModels, current) : null;
-    if (current && (listed?.type === 'text' || (!listed && uiState.chatModels.length === 0))) return;
-    const next = chooseDefaultChatModel(uiState.chatModels, loadLastChatModel());
+    const lastModel = loadLastChatModel();
+    if (!listed && current && uiState.chatModels.length === 0) return;
+    // Sellers appear over the first seconds, so a default picked early may be
+    // paid only because no free seller had been found yet. Nobody chose it, so
+    // it moves to a free one as soon as there is one.
+    // A list that dropped the chosen model (Private lists fewer) moved us off it;
+    // once it is listed again, go back to what the user chose.
+    if (lastModel && current !== lastModel && findChatModel(uiState.chatModels, lastModel)?.type === 'text') {
+      uiState.chatSelectedModelId = lastModel;
+      void refreshPermissionModeForModel(lastModel);
+      return;
+    }
+    const keep = listed?.type === 'text' && (lastModel !== null || listed.free || splitPinnedModel(current).peerId);
+    if (keep) return;
+    const next = chooseDefaultChatModel(uiState.chatModels, lastModel);
     if (next && next !== current) {
       uiState.chatSelectedModelId = next;
       void refreshPermissionModeForModel(next);
@@ -221,7 +221,6 @@ export function initChatModule({
           modelRetryCount = 0;
           uiState.chatModels = Array.isArray(result.data) ? result.data : [];
           uiState.chatModelsError = null;
-          uiState.chatModelsLoaded = true;
           applyDefaultModel();
           if (uiState.chatImageModelId && !findChatModel(uiState.chatModels, uiState.chatImageModelId)) {
             uiState.chatImageModelId = null;
@@ -336,32 +335,6 @@ export function initChatModule({
   // Sending state + streaming indicator
   // ---------------------------------------------------------------------------
 
-  function updateStreamingIndicator(): void {
-    const activeConvId = uiState.chatActiveConversation;
-    const activeSending = activeConvId ? sendingConversationIds.has(activeConvId) : uiState.chatSending;
-    const startedAt = activeConvId ? streamStartedAtByConversation.get(activeConvId) ?? 0 : 0;
-    uiState.chatThinkingElapsedMs = activeSending && startedAt > 0 ? Date.now() - startedAt : 0;
-    notifyUiStateChanged();
-  }
-
-  function clearStreamingIndicatorTimer(): void {
-    if (streamingIndicatorTimer !== null) {
-      clearInterval(streamingIndicatorTimer);
-      streamingIndicatorTimer = null;
-    }
-  }
-
-  function ensureStreamingIndicatorTimer(): void {
-    if (streamingIndicatorTimer !== null) return;
-    streamingIndicatorTimer = window.setInterval(() => {
-      if (sendingConversationIds.size === 0 && !uiState.chatSending) {
-        clearStreamingIndicatorTimer();
-        return;
-      }
-      updateStreamingIndicator();
-    }, 1000);
-  }
-
   function isConversationSending(convId: string | null | undefined): boolean {
     return Boolean(convId && sendingConversationIds.has(convId));
   }
@@ -378,12 +351,7 @@ export function initChatModule({
     uiState.chatWaitingForStream = sending;
     uiState.chatThinkingPhase = null;
     clearThinkingPhaseExpiry();
-    if (sendingConversationIds.size > 0 || sending) {
-      ensureStreamingIndicatorTimer();
-    } else {
-      clearStreamingIndicatorTimer();
-    }
-    updateStreamingIndicator();
+    notifyUiStateChanged();
   }
 
   function setConversationSending(convId: string, sending: boolean): void {
@@ -394,7 +362,6 @@ export function initChatModule({
       }
     } else {
       sendingConversationIds.delete(convId);
-      streamTurnsByConversation.delete(convId);
       streamStartedAtByConversation.delete(convId);
     }
     syncActiveConversationSendingState();
@@ -413,9 +380,7 @@ export function initChatModule({
       uiState.chatThinkingPhase = null;
       clearThinkingPhaseExpiry();
     }
-    if (sending) ensureStreamingIndicatorTimer();
-    else if (sendingConversationIds.size === 0) clearStreamingIndicatorTimer();
-    updateStreamingIndicator();
+    notifyUiStateChanged();
   }
 
   // ---------------------------------------------------------------------------
@@ -647,7 +612,7 @@ export function initChatModule({
       // Chat unavailable
     } finally {
       uiState.chatConversationsLoaded = true;
-      updateStreamingIndicator();
+      notifyUiStateChanged();
     }
   }
 
@@ -819,10 +784,6 @@ export function initChatModule({
     return null;
   }
 
-  async function createNewConversation(): Promise<void> {
-    await createConversationForModel(uiState.chatSelectedModelId, { activate: true });
-  }
-
   async function deleteConversation(targetId?: string): Promise<void> {
     const convId = targetId || uiState.chatActiveConversation;
     if (!convId || !bridge?.chatAiDeleteConversation) return;
@@ -831,7 +792,6 @@ export function initChatModule({
     localConversationMessages.delete(convId);
     streamingMessagesByConversation.delete(convId);
     sendingConversationIds.delete(convId);
-    streamTurnsByConversation.delete(convId);
     streamStartedAtByConversation.delete(convId);
     fundsBlockedConversationIds.delete(convId);
     syncActiveConversationSendingState();
@@ -1274,9 +1234,8 @@ export function initChatModule({
         notifyUiStateChanged();
       }
       if (isConversationSending(data.conversationId)) {
-        streamTurnsByConversation.set(data.conversationId, Number(data.turn) + 1);
         streamStartedAtByConversation.set(data.conversationId, Date.now());
-        updateStreamingIndicator();
+        notifyUiStateChanged();
       }
       if (!hasConversationStreamingMessage(data.conversationId)) {
         setConversationStreamingMessage(data.conversationId, { role: 'assistant', content: [], createdAt: Date.now(), meta: {} });
@@ -1298,8 +1257,6 @@ export function initChatModule({
           message.content = blocks;
         });
       } else if (data.blockType === 'thinking') {
-        const turn = streamTurnsByConversation.get(data.conversationId) ?? 0;
-        const thinkingLabel = getMyrmecochoryLabel(turn + Number(data.index || 0));
         updateStreamingMessage(data.conversationId, (message) => {
           const blocks = getStreamingBlocks(message);
           const thinkingInstance = blocks.filter((block) => block?.type === 'thinking').length;
@@ -1307,7 +1264,6 @@ export function initChatModule({
             type: 'thinking',
             renderKey: createStreamingRenderKey('thinking', `${data.index}-${thinkingInstance}`),
             id: getStreamingBlockId('thinking', `${data.index}-${thinkingInstance}`),
-            name: thinkingLabel,
             thinking: '',
             details: { streamContentIndex: String(data.index) },
             streaming: true,
@@ -1557,16 +1513,14 @@ export function initChatModule({
   // ---------------------------------------------------------------------------
 
   uiState.chatSelectedModelId = uiState.chatSelectedModelId || loadLastChatModel() || '';
-  updateStreamingIndicator();
+  notifyUiStateChanged();
   void refreshChatModels();
   void refreshPermissionModeForModel();
 
   return {
     refreshChatModels,
     refreshChatConversations,
-    refreshWorkspace,
     chooseWorkspace,
-    createNewConversation,
     startNewChat,
     deleteConversation,
     renameConversation,

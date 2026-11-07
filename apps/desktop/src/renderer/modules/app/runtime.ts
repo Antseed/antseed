@@ -38,9 +38,9 @@ export function initRuntimeModule({ uiState }: RuntimeModuleOptions) {
   function renderProcesses(processes: RuntimeProcessState[]): void {
     uiState.processes = Array.isArray(processes) ? processes : [];
 
-    // The proxy-reachability probe (chat controller) refines this: a spawned
-    // process whose proxy port is still closed shows as "Starting...".
-    uiState.connectBadge = deriveConnectBadge(uiState.processes, uiState.chatProxyOnline);
+    // The gateway health probe (refreshed with each poll) refines this: a
+    // spawned process that does not answer yet shows as "Starting...".
+    uiState.connectBadge = deriveConnectBadge(uiState.processes, uiState.gatewayStatus);
 
     notifyUiStateChanged();
   }
@@ -64,7 +64,6 @@ export function initRuntimeModule({ uiState }: RuntimeModuleOptions) {
   return {
     appendLog,
     renderLogs,
-    processByMode,
     isModeRunning,
     renderProcesses,
     renderDaemonState,

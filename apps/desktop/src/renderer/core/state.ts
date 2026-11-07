@@ -1,5 +1,6 @@
 import type {
   DaemonStateSnapshot,
+  GatewayStatus,
   LogEvent,
   RuntimeProcessState,
 } from '../types/bridge';
@@ -11,17 +12,6 @@ export type BadgeTone = 'active' | 'idle' | 'warn' | 'bad';
 export type BadgeState = {
   tone: BadgeTone;
   label: string;
-};
-
-export type SortDirection = 'asc' | 'desc';
-
-export type SortState = {
-  key: string;
-  dir: SortDirection;
-};
-
-export type PluginHints = {
-  router: string | null;
 };
 
 export type PeerEntry = {
@@ -57,20 +47,15 @@ export type ConfigFormData = {
   cryptoChainId: string;
 };
 
-export type ActiveChannelInfo = {
-  reservedUsdc: string;
-  peerName: string;
-};
-
 export type RendererUiState = {
   // --- Process / runtime state ---
   processes: RuntimeProcessState[];
-  refreshing: boolean;
+  /** The gateway's last health probe; null until the first poll answers. */
+  gatewayStatus: GatewayStatus | null;
   daemonState: DaemonStateSnapshot | null;
 
   // --- Runtime display ---
   connectBadge: BadgeState;
-  runtimeActivity: { tone: BadgeTone; message: string };
 
   // --- Logs ---
   logs: LogEvent[];
@@ -85,20 +70,12 @@ export type RendererUiState = {
   dhtNodeCount: number;
 
   // --- Overview display ---
-  overviewBadge: BadgeState;
-  ovNodeState: string;
   ovPeers: string;
   ovDhtHealth: string;
-  ovProxyPort: string;
   ovServiceCount: string;
-  ovLastScan: string;
-  ovPeersCount: string;
-  overviewPeers: PeerEntry[];
 
   // --- Peers display ---
-  peersMessage: string;
   lastPeers: PeerEntry[];
-  peerSort: SortState;
   lastDebugKey: string;
 
   // --- Connection display ---
@@ -113,11 +90,6 @@ export type RendererUiState = {
   configFormData: ConfigFormData | null;
   configSaving: boolean;
   devMode: boolean;
-
-  // --- Plugin setup ---
-  installedPlugins: Set<string>;
-  pluginHints: PluginHints;
-  pluginInstallBusy: boolean;
 
   // --- Credits / Payments ---
   /** Unreserved deposits — what a new channel reserve or a withdrawal draws on.
@@ -149,18 +121,11 @@ export type RendererUiState = {
   chatToolApprovalRequests: ToolApprovalRequest[];
   chatToolApprovalRequest: ToolApprovalRequest | null;
 
-  // --- Active payment channels (keyed by peerId) ---
-  chatActiveChannels: Map<string, ActiveChannelInfo>;
-
   // --- Chat display ---
   chatActiveConversation: string | null;
   chatOpeningConversationId: string | null;
   chatConversations: unknown[];
   chatConversationsLoaded: boolean;
-  /** Buyer proxy port answered the last reachability probe. */
-  chatProxyOnline: boolean;
-  /** Chat opens thin (compact window, no conversation list). The header
-      toggle expands the window to the standard preset and shows the panel. */
   chatMessages: unknown[];
   chatStreamingMessage: ChatMessage | null;
   chatSending: boolean;
@@ -176,8 +141,6 @@ export type RendererUiState = {
   chatFundsNotice: { message: string; canAddFunds: boolean } | null;
   /** Gateway models for the chat picker, one row per model id. */
   chatModels: ChatModel[];
-  /** A model list has arrived at least once (empty or not). */
-  chatModelsLoaded: boolean;
   chatModelsLoading: boolean;
   /** Why the last model list failed (gateway unreachable, 401, not configured); null when it loaded. */
   chatModelsError: string | null;
@@ -196,13 +159,8 @@ export type RendererUiState = {
   chatWorkspaceDefaultPath: string;
 
   // --- Streaming indicator ---
-  chatThinkingElapsedMs: number;
   chatWaitingForStream: boolean;
   chatThinkingPhase: string | null;
-
-  // --- Router input value (for plugin setup + chat) ---
-  connectRouterValue: string;
-  dashboardPortValue: string;
 
   // --- First-run setup ---
   appSetupStatusKnown: boolean;
@@ -217,12 +175,11 @@ export function createInitialUiState(): RendererUiState {
   return {
     // Process / runtime
     processes: [],
-    refreshing: false,
+    gatewayStatus: null,
     daemonState: null,
 
     // Runtime display
     connectBadge: { tone: 'bad', label: 'Stopped' },
-    runtimeActivity: { tone: 'idle', message: 'Idle' },
 
     // Logs
     logs: [],
@@ -232,20 +189,12 @@ export function createInitialUiState(): RendererUiState {
     dhtNodeCount: 0,
 
     // Overview
-    overviewBadge: { tone: 'idle', label: 'Idle' },
-    ovNodeState: 'idle',
     ovPeers: '0',
     ovDhtHealth: 'Down',
-    ovProxyPort: '-',
     ovServiceCount: '0',
-    ovLastScan: 'n/a',
-    ovPeersCount: '0',
-    overviewPeers: [],
 
     // Peers
-    peersMessage: 'Loading peer visibility...',
     lastPeers: [],
-    peerSort: { key: 'reputation', dir: 'desc' },
     lastDebugKey: '',
 
     // Connection
@@ -260,11 +209,6 @@ export function createInitialUiState(): RendererUiState {
     configFormData: null,
     configSaving: false,
     devMode: false,
-
-    // Plugin setup
-    installedPlugins: new Set<string>(),
-    pluginHints: { router: null },
-    pluginInstallBusy: false,
 
     // Credits / Payments
     creditsAvailableUsdc: '0',
@@ -286,17 +230,11 @@ export function createInitialUiState(): RendererUiState {
     chatToolApprovalRequests: [],
     chatToolApprovalRequest: null,
 
-    // Active payment channels
-    chatActiveChannels: new Map(),
-
     // Chat
     chatActiveConversation: null,
     chatOpeningConversationId: null,
     chatConversations: [],
     chatConversationsLoaded: false,
-    chatProxyOnline: false,
-    // Chat opens wide (standard preset) with the conversation list showing;
-    // the in-view toggle collapses it to the thin panel.
     chatMessages: [],
     chatStreamingMessage: null,
     chatSending: false,
@@ -305,7 +243,6 @@ export function createInitialUiState(): RendererUiState {
     chatError: null,
     chatFundsNotice: null,
     chatModels: [],
-    chatModelsLoaded: false,
     chatModelsLoading: false,
     chatModelsError: null,
     chatSelectedModelId: '',
@@ -321,13 +258,8 @@ export function createInitialUiState(): RendererUiState {
     chatWorkspaceDefaultPath: '',
 
     // Streaming indicator
-    chatThinkingElapsedMs: 0,
     chatWaitingForStream: false,
     chatThinkingPhase: null,
-
-    // Router / dashboard port
-    connectRouterValue: 'local',
-    dashboardPortValue: '3117',
 
     // First-run setup
     appSetupStatusKnown: false,

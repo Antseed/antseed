@@ -1,6 +1,6 @@
 /**
  * IPC surface for app-level queries: version and locale, first-run setup
- * state, the signing identity, voice transcription, and price references.
+ * state, the signing identity, and voice transcription.
  */
 import { ipcMain } from 'electron';
 import { stopPaymentsPortal } from '../payments/portal.js';
@@ -9,12 +9,8 @@ import {
   getAppSetupStatus,
 } from '../app-context.js';
 import {
-  getOpenRouterReferencePrices,
-} from '../billing/openrouter-catalog.js';
-import {
   ensureSecureIdentity,
   exportIdentityPrivateKeyHex,
-  getSecureIdentity,
   importIdentityPrivateKeyHex,
 } from '../identity.js';
 import {
@@ -112,25 +108,6 @@ export function registerAppIpc(): void {
       ...(candidate.app !== undefined ? { app: candidate.app as UserActionSignal['app'] } : {}),
     });
     return { ok: true };
-  });
-
-  ipcMain.handle('openrouter:reference-prices', () => getOpenRouterReferencePrices());
-
-  ipcMain.handle('identity:get', async () => {
-    try {
-      await ensureSecureIdentity();
-      const identity = getSecureIdentity();
-      if (!identity) {
-        return { ok: false, data: null, error: 'Identity not available (safeStorage may not be ready)' };
-      }
-      return {
-        ok: true,
-        data: { peerId: identity.peerId },
-        error: null,
-      };
-    } catch (err) {
-      return { ok: false, data: null, error: err instanceof Error ? err.message : String(err) };
-    }
   });
 
   ipcMain.handle('identity:export-key', async () => {

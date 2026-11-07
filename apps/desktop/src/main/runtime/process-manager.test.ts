@@ -54,18 +54,3 @@ test('resolveCommandArgs starts the local gateway on its port', () => {
   ]);
 });
 
-test('attached runtimes can be stopped locally without owning the shared process', async () => {
-  const logs: string[] = [];
-  const processManager = new ProcessManager((_mode, _stream, line) => logs.push(line));
-
-  const attached = processManager.attach('gateway');
-  assert.equal(attached.running, true);
-  assert.equal(attached.pid, null);
-  assert.equal(processManager.isAttached('gateway'), true);
-
-  const stopped = await processManager.stop('gateway', true);
-  assert.equal(stopped.running, false);
-  assert.equal(stopped.pid, null);
-  assert.equal(processManager.isAttached('gateway'), false);
-  assert.deepEqual(logs, ['Attached to existing gateway runtime']);
-});

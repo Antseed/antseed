@@ -17,8 +17,7 @@ import {
 } from './runtime/process-manager.js';
 import { registerPiChatHandlers } from './chat/engine.js';
 import { encryptedIdentityPath, ensureSecureIdentity, getSecureIdentity, hasStoredIdentity } from './identity.js';
-import type { LogEvent, RuntimeActivityEvent } from './runtime/log-parser.js';
-import { parseRuntimeActivityFromLog } from './runtime/log-parser.js';
+import type { LogEvent } from './runtime/log-parser.js';
 import {
   setPluginAppendLog,
   ensureDefaultPlugin,
@@ -64,7 +63,6 @@ import { isMultiInstanceDevelopment } from './dev-instance.js';
 import { runSafeStorageExport } from './safe-storage-export.js';
 import { exportWithOldName, gatewaySettingsStore, migrateEncryptedStores, wholeFileStore } from './app-rename.js';
 import { releaseLegacySystemProxy } from './connected-apps/patching/legacy-os-proxy.js';
-import { LOCALHOST_URL } from './constants.js';
 import { registerAppIpc } from './ipc/app.js';
 import { registerDesktopIpc } from './ipc/desktop.js';
 import { registerFreeTierIpc } from './ipc/free-tier.js';
@@ -78,16 +76,11 @@ import {
 import {
   stopPaymentsPortal,
 } from './payments/portal.js';
-import { ACTIVE_CONFIG_PATH, resolveBuyerProxyPort } from './runtime/active-config.js';
+import { ACTIVE_CONFIG_PATH } from './runtime/active-config.js';
 import { createTelemetryService } from './telemetry/telemetry.js';
 import { setTelemetryService } from './telemetry/runtime.js';
 import { firstChatDepositSnapshot } from './telemetry/events.js';
 import { refreshCreditsInfo } from './payments/credits.js';
-
-// Re-export types that may be used by other main-process modules
-export type { LogEvent, RuntimeActivityEvent } from './runtime/log-parser.js';
-export type { DashboardNetworkPeer, DashboardNetworkStats, DashboardNetworkResult } from './runtime/peer-cache.js';
-export type { InstalledPlugin } from './runtime/plugins.js';
 
 // Internal runtime name (INTERNAL_APP_NAME, app-context.ts): on macOS the
 // safeStorage encryption key lives in the "<app.setName value> Safe Storage"
@@ -180,61 +173,6 @@ if (!IS_SAFE_STORAGE_EXPORT && !isMultiInstanceDevelopment()) {
 }
 
 const logBuffer: LogEvent[] = [];
-let lastRuntimeActivityHash = '';
-
-async function requestBuyerPeerRefresh(): Promise<void> {
-  const port = await resolveBuyerProxyPort();
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 60_000);
-
-  try {
-    const response = await fetch(`${LOCALHOST_URL}:${port}/_antseed/peers/refresh`, {
-      method: 'POST',
-      signal: controller.signal,
-    });
-    const text = await response.text();
-    let payload: Record<string, unknown> = {};
-    try {
-      payload = text ? JSON.parse(text) as Record<string, unknown> : {};
-    } catch {
-      payload = {};
-    }
-
-    if (!response.ok || payload['ok'] !== true) {
-      const error = typeof payload['error'] === 'string' && payload['error'].trim().length > 0
-        ? payload['error']
-        : `Buyer proxy returned HTTP ${response.status}`;
-      throw new Error(error);
-    }
-  } catch (err) {
-    if (err instanceof Error && err.name === 'AbortError') {
-      throw new Error(`Timed out refreshing peers via buyer proxy on port ${port}`);
-    }
-    const message = err instanceof Error ? err.message : String(err);
-    throw new Error(`Unable to refresh peers via buyer proxy on port ${port}: ${message}`);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-// ── Runtime Activity & Log Wiring ──
-
-function emitRuntimeActivity(activity: RuntimeActivityEvent): void {
-  const hash = [
-    activity.mode,
-    activity.stage,
-    activity.tone,
-    activity.message,
-    activity.requestId ?? '',
-    activity.peerId ?? '',
-  ].join('|');
-
-  if (hash === lastRuntimeActivityHash) {
-    return;
-  }
-  lastRuntimeActivityHash = hash;
-  getMainWindow()?.webContents.send('runtime:activity', activity);
-}
 
 function emitRuntimeState(): void {
   getMainWindow()?.webContents.send('runtime:state', getCombinedProcessState());
@@ -248,10 +186,6 @@ function appendLog(mode: RuntimeMode, stream: 'stdout' | 'stderr' | 'system', li
   }
 
   getMainWindow()?.webContents.send('runtime:log', event);
-  const activity = parseRuntimeActivityFromLog(event);
-  if (activity) {
-    emitRuntimeActivity(activity);
-  }
   emitRuntimeState();
 }
 
@@ -303,9 +237,7 @@ registerGatewayIpc({
 registerRuntimeIpc({
   processManager,
   logBuffer,
-  appendLog,
   getCombinedProcessState,
-  requestBuyerPeerRefresh,
 });
 
 // ── AI Chat IPC Handlers ──
@@ -399,20 +331,10 @@ app.whenReady().then(async () => {
   // local system proxy after a crash; nothing listens there any more.
   void releaseLegacySystemProxy();
 
-  // The local gateway (and its buyer) comes up with the app; connected apps
-  // are re-pointed at it once it serves. Nothing to start for a remote one.
-  void ensureLocalGateway()
-    .catch((err) => {
-      appendLog('gateway', 'system', `Gateway start failed: ${err instanceof Error ? err.message : String(err)}`);
-    })
-    .then(() => reconnectAllApps())
-    .catch((err) => {
-      appendLog('gateway', 'system', `Reconnecting apps failed: ${err instanceof Error ? err.message : String(err)}`);
-    });
-
-  // Payments portal starts lazily on first open (via payments:open-portal IPC)
-
-  void ensureDefaultPlugin('@antseed/router-local', {
+  // The buyer loads the router plugin, and installing it replaces the plugins
+  // folder, so the gateway only starts once the install has settled. Failure is
+  // already logged inside ensureDefaultPlugin; the gateway then reports its own.
+  const pluginReady = ensureDefaultPlugin('@antseed/router-local', {
     getAppSetupNeeded: () => getAppSetupStatus().needed,
     setAppSetupNeeded: (v) => { setAppSetupStatus({ needed: v }); },
     getAppSetupComplete: () => getAppSetupStatus().complete,
@@ -424,6 +346,20 @@ app.whenReady().then(async () => {
   }).catch(() => {
     // Failure is already logged via appendLog inside ensureDefaultPlugin.
   });
+
+  // The local gateway (and its buyer) comes up with the app; connected apps
+  // are re-pointed at it once it serves. Nothing to start for a remote one.
+  void pluginReady
+    .then(() => ensureLocalGateway())
+    .catch((err) => {
+      appendLog('gateway', 'system', `Gateway start failed: ${err instanceof Error ? err.message : String(err)}`);
+    })
+    .then(() => reconnectAllApps())
+    .catch((err) => {
+      appendLog('gateway', 'system', `Reconnecting apps failed: ${err instanceof Error ? err.message : String(err)}`);
+    });
+
+  // Payments portal starts lazily on first open (via payments:open-portal IPC)
 
   // Auto-update: check for updates silently on launch and every 30 minutes.
   // If an in-flight download stops emitting progress events for a couple of

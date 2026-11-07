@@ -17,16 +17,6 @@
   min-width: 0;
 }
 
-.pageTitle {
-  min-height: 24px;
-  display: flex;
-  align-items: center;
-  color: var(--text-secondary);
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 16px;
-}
-
 .note {
   padding: 8px 12px;
   border-radius: 12px;
@@ -34,19 +24,6 @@
   color: var(--text-secondary);
   font-size: 12px;
   line-height: 16px;
-}
-
-.empty {
-  min-height: 96px;
-  display: grid;
-  place-items: center;
-  padding: 16px;
-  border-radius: 16px;
-  background: var(--bg-card);
-  box-shadow: var(--shadow-sm);
-  color: var(--text-muted);
-  font-size: 13px;
-  text-align: center;
 }
 
 /* ---------- App rows (Figma "apps connect") ---------- */
@@ -321,26 +298,6 @@
   font-size: 10px;
 }
 
-/* Inline hint text that opens an external link (e.g. @BotFather). */
-.settingHintLink {
-  padding: 0;
-  border: none;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  cursor: pointer;
-}
-
-.settingHintLink code {
-  text-decoration: underline;
-  text-underline-offset: 2px;
-  transition: color 0.12s ease;
-}
-
-.settingHintLink:hover code {
-  color: var(--text-primary);
-}
-
 /* Current-value row (selected application) — click slides to the picker.
    Transparent fill: a surface tint here reads as a disabled control. */
 .settingValueRow {
@@ -414,16 +371,6 @@
   display: flex;
   align-items: center;
   gap: 6px;
-}
-
-/* Required / Optional marker next to a section title. */
-.settingTag {
-  flex: 0 0 auto;
-  color: var(--text-muted);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
 }
 
 /* Primary connection action (Connect / Disconnect) parks bottom-centered. */
@@ -745,11 +692,6 @@
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
 }
 
-.connectedToggleOff {
-  justify-content: flex-start;
-  background: var(--border-strong);
-}
-
 .connectedToggle:hover:not(:disabled) {
   filter: brightness(1.06);
 }
@@ -762,14 +704,6 @@
 .connectedToggle:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px rgba(var(--brand-rgb), 0.4);
-}
-
-/* ---------- Expanded body ---------- */
-
-.appBody {
-  display: grid;
-  gap: 10px;
-  padding: 4px 0 0;
 }
 
 .actions {
@@ -799,10 +733,6 @@
   cursor: default;
 }
 
-.dangerAction {
-  color: var(--danger) !important;
-}
-
 .appIcon {
   flex: 0 0 auto;
   width: 24px;
@@ -819,30 +749,6 @@
   border-radius: 8px;
   border: 1px solid var(--border);
   background: #ffffff;
-}
-
-/* ---------- Add custom app ---------- */
-
-.addAppButton {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  min-height: 36px;
-  padding: 6px 12px;
-  border: 1px dashed var(--border-strong);
-  border-radius: 12px;
-  background: transparent;
-  color: var(--text-secondary);
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: border-color 0.12s ease, color 0.12s ease;
-}
-
-.addAppButton:hover:not(:disabled) {
-  border-color: rgba(var(--brand-rgb), 0.5);
-  color: var(--text-primary);
 }
 
 /* Recent chats card moved to the shared VprRecentChats component. */

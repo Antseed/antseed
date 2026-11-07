@@ -1,14 +1,10 @@
 /**
  * IPC surface for the local gateway runtime: process control, logs, the peer
- * network, plugins, and config.
+ * network, and config.
  */
 import { ipcMain } from 'electron';
 import type { LogEvent } from '../runtime/log-parser.js';
 import type { ProcessManager, RuntimeProcessState } from '../runtime/process-manager.js';
-import { resolveBuyerProxyPort } from '../runtime/active-config.js';
-import { resolveConnectDataDir } from '../runtime/process-manager.js';
-import { requestTeeSnapshot } from '../runtime/tee-verification.js';
-import type { DesktopTeeStatus } from '@antseed/node/tee-status';
 
 /** Shape every dashboard-style handler answers with. */
 export type ApiResult = {
@@ -26,9 +22,7 @@ export type ApiResult = {
 export type RuntimeIpcDeps = {
   processManager: ProcessManager;
   logBuffer: LogEvent[];
-  appendLog: (mode: RuntimeMode, stream: 'stdout' | 'stderr' | 'system', line: string) => void;
   getCombinedProcessState: () => RuntimeProcessState[];
-  requestBuyerPeerRefresh: () => Promise<void>;
 };
 
 const DASHBOARD_CONFIG_ALLOWED_KEYS = new Set([
@@ -66,50 +60,14 @@ import {
 } from '../runtime/config-io.js';
 import {
   getNetworkSnapshot,
-  lookupPeer,
   refreshPeerCache,
-  touchPeer,
 } from '../runtime/peer-cache.js';
-import {
-  type InstalledPlugin,
-  installPluginDependency,
-  isSafePluginPackageName,
-  listInstalledPlugins,
-  normalizePluginPackageName,
-  resolveLegacyPluginPackage,
-  resolveLocalPluginSource,
-  toFileInstallSpec,
-  toNpmAliasInstallSpec,
-} from '../runtime/plugins.js';
-import { type RuntimeMode } from '../runtime/process-manager.js';
-
 export function registerRuntimeIpc(deps: RuntimeIpcDeps): void {
   const {
-    appendLog,
     getCombinedProcessState,
     logBuffer,
     processManager,
-    requestBuyerPeerRefresh,
   } = deps;
-
-  let lastTeeError: string | undefined;
-  const teeStatus = async (peerId?: string): Promise<DesktopTeeStatus> => {
-    try {
-      const snapshot = await requestTeeSnapshot(resolveConnectDataDir(), await resolveBuyerProxyPort(), peerId);
-      lastTeeError = undefined;
-      return { snapshot };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Verification unavailable';
-      if (message !== lastTeeError) appendLog('gateway', 'system', message);
-      lastTeeError = message;
-      return { snapshot: null, error: message };
-    }
-  };
-  ipcMain.handle('tee:status', () => teeStatus());
-  ipcMain.handle('tee:check', (_event, peerId: string) => {
-    if (typeof peerId !== 'string' || !/^(?:0x)?[a-f0-9]{40}$/i.test(peerId)) throw new Error('Invalid seller peer ID');
-    return teeStatus(peerId);
-  });
 
   const runtimeSnapshot = () => ({
     processes: getCombinedProcessState(),
@@ -143,111 +101,9 @@ export function registerRuntimeIpc(deps: RuntimeIpcDeps): void {
     return { ok: true };
   });
 
-  ipcMain.handle('plugins:list', async () => {
-    try {
-      const plugins = await listInstalledPlugins();
-      return { ok: true, plugins, error: null };
-    } catch (err) {
-      return {
-        ok: false,
-        plugins: [] as InstalledPlugin[],
-        error: err instanceof Error ? err.message : String(err),
-      };
-    }
-  });
-
-  ipcMain.handle('plugins:install', async (_event, packageName: string) => {
-    const normalized = typeof packageName === 'string' ? normalizePluginPackageName(packageName) : '';
-    if (!normalized || !isSafePluginPackageName(normalized)) {
-      return {
-        ok: false,
-        package: normalized,
-        plugins: [] as InstalledPlugin[],
-        error: `Invalid plugin package name: ${packageName}`,
-      };
-    }
-
-    try {
-      appendLog('gateway', 'system', `Installing plugin "${normalized}"...`);
-      await installPluginDependency(normalized);
-      const plugins = await listInstalledPlugins();
-      appendLog('gateway', 'system', `Installed plugin "${normalized}".`);
-      return { ok: true, package: normalized, plugins, error: null };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      const legacyPackageName = resolveLegacyPluginPackage(normalized);
-
-      if (legacyPackageName) {
-        try {
-          const aliasSpec = toNpmAliasInstallSpec(normalized, legacyPackageName);
-          appendLog('gateway', 'system', `Registry install failed; retrying via legacy alias: ${aliasSpec}`);
-          await installPluginDependency(aliasSpec);
-          const plugins = await listInstalledPlugins();
-          appendLog('gateway', 'system', `Installed plugin "${normalized}" using legacy package alias "${legacyPackageName}".`);
-          return { ok: true, package: normalized, plugins, error: null };
-        } catch (legacyErr) {
-          const legacyMessage = legacyErr instanceof Error ? legacyErr.message : String(legacyErr);
-          appendLog('gateway', 'system', `Legacy alias install failed for "${normalized}": ${legacyMessage}`);
-        }
-      }
-
-      const localSource = await resolveLocalPluginSource(normalized);
-
-      if (localSource) {
-        try {
-          appendLog('gateway', 'system', `Registry install failed; retrying from local source: ${localSource}`);
-          await installPluginDependency(toFileInstallSpec(normalized, localSource));
-          const plugins = await listInstalledPlugins();
-          appendLog('gateway', 'system', `Installed plugin "${normalized}" from local source.`);
-          return { ok: true, package: normalized, plugins, error: null };
-        } catch (localErr) {
-          const localMessage = localErr instanceof Error ? localErr.message : String(localErr);
-          appendLog('gateway', 'system', `Local plugin install failed for "${normalized}": ${localMessage}`);
-          return {
-            ok: false,
-            package: normalized,
-            plugins: await listInstalledPlugins(),
-            error: `Registry install failed: ${message}\nLocal fallback failed: ${localMessage}`,
-          };
-        }
-      }
-
-      appendLog('gateway', 'system', `Plugin install failed for "${normalized}": ${message}`);
-      return {
-        ok: false,
-        package: normalized,
-        plugins: await listInstalledPlugins(),
-        error: message,
-      };
-    }
-  });
-
-  ipcMain.handle('runtime:get-network', async () => {
-    await refreshPeerCache();
-    return getNetworkSnapshot();
-  });
-
-  ipcMain.handle('runtime:lookup-peer', async (_event, peerId: string) => {
-    if (typeof peerId !== 'string' || peerId.trim().length === 0) {
-      return { ok: false, peer: null, error: 'Invalid peerId' };
-    }
-    await refreshPeerCache();
-    const peer = lookupPeer(peerId.trim());
-    return { ok: Boolean(peer), peer, error: peer ? null : 'Peer not found' };
-  });
-
-  ipcMain.handle('runtime:touch-peer', (_event, peerId: string) => {
-    if (typeof peerId !== 'string' || peerId.trim().length === 0) return { ok: false };
-    return { ok: touchPeer(peerId.trim()) };
-  });
-
   ipcMain.handle(
     'runtime:get-data',
-    async (
-      _event,
-      endpoint: string,
-      _options?: { port?: number; query?: Record<string, unknown> },
-    ) => {
+    async (_event, endpoint: string) => {
       // Serve status, config, and network directly from files — no dashboard needed.
       if (endpoint === 'status') {
         try {
@@ -315,22 +171,4 @@ export function registerRuntimeIpc(deps: RuntimeIpcDeps): void {
       }
     },
   );
-
-  ipcMain.handle('runtime:scan-network', async () => {
-    try {
-      await requestBuyerPeerRefresh();
-      await refreshPeerCache();
-      const snapshot = getNetworkSnapshot();
-      return { ok: snapshot.ok, data: snapshot, error: snapshot.error, status: 200 };
-    } catch (err) {
-      await refreshPeerCache();
-      const snapshot = getNetworkSnapshot();
-      return {
-        ok: false,
-        data: snapshot,
-        error: err instanceof Error ? err.message : String(err),
-        status: null,
-      };
-    }
-  });
 }

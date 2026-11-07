@@ -57,12 +57,15 @@ export function ChatModelDropdown({
 
   const selected = useMemo(() => findChatModel(models, selectedModelId), [models, selectedModelId]);
   const selectedListedId = splitPinnedModel(selectedModelId).modelId;
-  const { text, image } = useMemo(() => filterChatModels(models, query), [models, query]);
+  const [freeOnly, setFreeOnly] = useState(false);
+  const { text, image } = useMemo(() => filterChatModels(models, query, freeOnly), [models, query, freeOnly]);
+  const hasFree = useMemo(() => models.some((model) => model.free), [models]);
   const showSearch = models.length >= SEARCH_THRESHOLD;
 
   useEffect(() => {
     if (!open) {
       setQuery('');
+      setFreeOnly(false);
       return undefined;
     }
     const handlePointerDown = (event: MouseEvent) => {
@@ -153,15 +156,29 @@ export function ChatModelDropdown({
           role="listbox"
           style={menuMaxHeight ? { maxHeight: menuMaxHeight } : undefined}
         >
-          {showSearch && (
-            <input
-              ref={searchRef}
-              className={styles.modelDropdownSearch}
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search models…"
-              aria-label="Search models"
-            />
+          {(showSearch || hasFree) && (
+            <div className={styles.modelDropdownFilters}>
+              {showSearch && (
+                <input
+                  ref={searchRef}
+                  className={styles.modelDropdownSearch}
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  placeholder="Search models…"
+                  aria-label="Search models"
+                />
+              )}
+              {hasFree && (
+                <button
+                  type="button"
+                  className={`${styles.freeFilter}${freeOnly ? ` ${styles.freeFilterOn}` : ''}`}
+                  aria-pressed={freeOnly}
+                  onClick={() => setFreeOnly((value) => !value)}
+                >
+                  Free
+                </button>
+              )}
+            </div>
           )}
           {error && (
             <div className={styles.modelDropdownStatus} role="alert">
@@ -173,7 +190,7 @@ export function ChatModelDropdown({
           )}
           {!error && empty && (
             <div className={styles.modelDropdownStatus}>
-              {loading ? 'Loading models…' : query ? 'No models match.' : 'The gateway lists no models yet.'}
+              {loading ? 'Loading models…' : query || freeOnly ? 'No models match.' : 'The gateway lists no models yet.'}
             </div>
           )}
           {text.length > 0 && image.length > 0 && <div className={styles.modelDropdownSection}>Text models</div>}

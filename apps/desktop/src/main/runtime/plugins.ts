@@ -17,19 +17,8 @@ const NODE_BUILTINS = new Set([
 
 export const DEFAULT_PLUGINS_DIR = path.join(homedir(), '.antseed', 'plugins');
 const DEFAULT_PLUGINS_PACKAGE_JSON = path.join(DEFAULT_PLUGINS_DIR, 'package.json');
-export const SAFE_PLUGIN_PACKAGE_PATTERN = /^(@?[a-z0-9][a-z0-9._-]*)(\/[a-z0-9][a-z0-9._-]*)?$/i;
-export const PLUGIN_PACKAGE_ALIAS_MAP: Record<string, string> = {
-  'local': '@antseed/router-local',
-  'router-local': '@antseed/router-local',
-  'antseed-router-local': '@antseed/router-local',
-};
-export const SCOPED_TO_LEGACY_PLUGIN_PACKAGE_MAP: Record<string, string> = {
+const SCOPED_TO_LEGACY_PLUGIN_PACKAGE_MAP: Record<string, string> = {
   '@antseed/router-local': 'antseed-router-local',
-};
-
-export type InstalledPlugin = {
-  package: string;
-  version: string;
 };
 
 export interface EnsureDefaultPluginContext {
@@ -41,34 +30,6 @@ export interface EnsureDefaultPluginContext {
   onAppSetupCompleted?: () => void;
   getMainWindow: () => BrowserWindow | null;
   appendLog: AppendLogFn;
-}
-
-export function isSafePluginPackageName(value: string): boolean {
-  return SAFE_PLUGIN_PACKAGE_PATTERN.test(value);
-}
-
-export function normalizePluginPackageName(value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) return '';
-
-  const lower = trimmed.toLowerCase();
-  if (PLUGIN_PACKAGE_ALIAS_MAP[lower]) {
-    return PLUGIN_PACKAGE_ALIAS_MAP[lower]!;
-  }
-
-  if (trimmed.startsWith('@')) {
-    return trimmed;
-  }
-
-  if (lower.startsWith('provider-') || lower.startsWith('router-')) {
-    return `@antseed/${lower}`;
-  }
-
-  return trimmed;
-}
-
-export function resolveLegacyPluginPackage(packageName: string): string | null {
-  return SCOPED_TO_LEGACY_PLUGIN_PACKAGE_MAP[packageName] ?? null;
 }
 
 export function resolveLocalPackageNameAliases(packageName: string): Set<string> {
@@ -86,10 +47,6 @@ export function resolveLocalPackageNameAliases(packageName: string): Set<string>
 export function toFileInstallSpec(packageName: string, localPath: string): string {
   const normalizedPath = localPath.startsWith('file:') ? localPath.slice(5) : localPath;
   return `${packageName}@file:${normalizedPath}`;
-}
-
-export function toNpmAliasInstallSpec(packageName: string, legacyPackageName: string): string {
-  return `${packageName}@npm:${legacyPackageName}`;
 }
 
 function packageNodeModulesPath(root: string, packageName: string): string {
@@ -175,21 +132,6 @@ export async function ensurePluginsDirectory(): Promise<void> {
       dependencies: {},
     };
     await writeFile(DEFAULT_PLUGINS_PACKAGE_JSON, JSON.stringify(emptyPackageJson, null, 2), 'utf-8');
-  }
-}
-
-export async function listInstalledPlugins(): Promise<InstalledPlugin[]> {
-  await ensurePluginsDirectory();
-
-  try {
-    const raw = await readFile(DEFAULT_PLUGINS_PACKAGE_JSON, 'utf-8');
-    const parsed = JSON.parse(raw) as { dependencies?: Record<string, string> };
-    const deps = parsed.dependencies ?? {};
-    return Object.entries(deps)
-      .map(([pkg, version]) => ({ package: pkg, version }))
-      .sort((left, right) => left.package.localeCompare(right.package));
-  } catch {
-    return [];
   }
 }
 

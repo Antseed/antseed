@@ -17,7 +17,6 @@ import {
 } from './attachments/store.js';
 import {
   CHAT_WORKSPACE_DIR,
-  getWorkspaceGitStatus,
   loadChatWorkspaceDir,
   persistChatWorkspaceDir,
 } from './workspace.js';
@@ -369,15 +368,6 @@ export function registerPiChatHandlers({
   ipcMain.handle('chat:ai-get-workspace', async () => {
     const workspaceDir = await loadChatWorkspaceDir();
     return { ok: true, data: { current: workspaceDir, default: CHAT_WORKSPACE_DIR } };
-  });
-
-  ipcMain.handle('chat:ai-get-workspace-git-status', async () => {
-    try {
-      const workspaceDir = await loadChatWorkspaceDir();
-      return { ok: true, data: await getWorkspaceGitStatus(workspaceDir) };
-    } catch (error) {
-      return { ok: false, error: asErrorMessage(error) };
-    }
   });
 
   ipcMain.handle('chat:ai-set-workspace', async (_event, workspaceDir: string) => {

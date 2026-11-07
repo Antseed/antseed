@@ -8,11 +8,9 @@
  * changes under us.
  */
 import {
-  ANTSTokenClient,
   ChannelsClient,
   DepositRelayClient,
   DepositsClient,
-  EmissionsClient,
   formatUsdc,
   resolveChainConfig,
 } from '@antseed/node';
@@ -121,10 +119,8 @@ type CryptoConfig = {
 };
 let cachedCryptoConfig: CryptoConfig | null = null;
 
-// Cached on-chain clients for the rewards summary — invalidated together with
-// cachedCryptoConfig on config updates.
-let cachedEmissionsClient: EmissionsClient | null = null;
-let cachedAntsTokenClient: ANTSTokenClient | null = null;
+// Cached on-chain client, invalidated together with cachedCryptoConfig on
+// config updates.
 let cachedChannelsClient: ChannelsClient | null = null;
 // One deposits client for the credits poll and the deposit watcher, reading
 // through the shared chain provider.
@@ -325,8 +321,6 @@ export function invalidateChainClients(): void {
   clearChainReads();
   cachedCryptoConfig = null;
   cachedDepositsClient = null;
-  cachedEmissionsClient = null;
-  cachedAntsTokenClient = null;
   cachedChannelsClient = null;
   cachedCreditsComponents = null;
   cachedDepositRules = null;
@@ -353,20 +347,4 @@ export function getCachedChannelsClient(): ChannelsClient | null {
 
 export function setCachedChannelsClient(client: ChannelsClient): void {
   cachedChannelsClient = client;
-}
-
-export function getCachedEmissionsClient(): EmissionsClient | null {
-  return cachedEmissionsClient;
-}
-
-export function setCachedEmissionsClient(client: EmissionsClient): void {
-  cachedEmissionsClient = client;
-}
-
-export function getCachedAntsTokenClient(): ANTSTokenClient | null {
-  return cachedAntsTokenClient;
-}
-
-export function setCachedAntsTokenClient(client: ANTSTokenClient): void {
-  cachedAntsTokenClient = client;
 }

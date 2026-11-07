@@ -15,19 +15,6 @@ type LogEvent = {
   timestamp: number;
 };
 
-type RuntimeActivityTone = 'active' | 'idle' | 'warn' | 'bad';
-
-type RuntimeActivityEvent = {
-  mode: RuntimeMode;
-  tone: RuntimeActivityTone;
-  stage: string;
-  message: string;
-  holdMs: number;
-  timestamp: number;
-  requestId?: string;
-  peerId?: string;
-};
-
 type RuntimeSnapshot = {
   processes: RuntimeProcessState[];
   daemonState: { exists: boolean; state: Record<string, unknown> | null };
@@ -41,38 +28,6 @@ type RuntimeControlResult = {
   daemonState: { exists: boolean; state: Record<string, unknown> | null };
 };
 
-type NetworkPeer = {
-  peerId: string;
-  host: string;
-  port: number;
-  providers: string[];
-  inputUsdPerMillion: number;
-  outputUsdPerMillion: number;
-  capacityMsgPerHour: number;
-  reputation: number;
-  lastSeen: number;
-  source: 'dht' | 'daemon';
-};
-
-type NetworkStats = {
-  totalPeers: number;
-  dhtNodeCount: number;
-  dhtHealthy: boolean;
-  lastScanAt: number | null;
-  totalLookups?: number;
-  successfulLookups?: number;
-  lookupSuccessRate?: number;
-  averageLookupLatencyMs?: number;
-  healthReason?: string;
-};
-
-type NetworkSnapshot = {
-  ok: boolean;
-  peers: NetworkPeer[];
-  stats: NetworkStats;
-  error: string | null;
-};
-
 type DataEndpoint = 'status' | 'network' | 'peers' | 'config' | 'data-sources';
 
 type DataResult = {
@@ -80,17 +35,6 @@ type DataResult = {
   data: unknown | null;
   error: string | null;
   status: number | null;
-};
-
-type PluginInfo = {
-  package: string;
-  version: string;
-};
-
-type PluginListResult = {
-  ok: boolean;
-  plugins: PluginInfo[];
-  error: string | null;
 };
 
 type RawChatAttachment = {
@@ -116,13 +60,6 @@ type PreparedChatAttachment = {
   error?: string;
   truncated?: boolean;
   native?: { provider?: string; payload?: unknown };
-};
-
-type PluginInstallResult = {
-  ok: boolean;
-  package: string;
-  plugins: PluginInfo[];
-  error: string | null;
 };
 
 type UpdateStatus =
@@ -237,11 +174,6 @@ const api = {
   getAppVersion(): Promise<string> {
     return ipcRenderer.invoke('app:get-version') as Promise<string>;
   },
-  getOpenRouterReferencePrices(): Promise<Record<string, { input: number | null; output: number | null }>> {
-    return ipcRenderer.invoke('openrouter:reference-prices') as Promise<
-      Record<string, { input: number | null; output: number | null }>
-    >;
-  },
   getState(): Promise<RuntimeSnapshot> {
     return ipcRenderer.invoke('runtime:get-state') as Promise<RuntimeSnapshot>;
   },
@@ -255,34 +187,13 @@ const api = {
   clearLogs(): Promise<{ ok: true }> {
     return ipcRenderer.invoke('runtime:clear-logs') as Promise<{ ok: true }>;
   },
-  pluginsList(): Promise<PluginListResult> {
-    return ipcRenderer.invoke('plugins:list') as Promise<PluginListResult>;
-  },
-  pluginsInstall(packageName: string): Promise<PluginInstallResult> {
-    return ipcRenderer.invoke('plugins:install', packageName) as Promise<PluginInstallResult>;
-  },
-  getNetwork(port?: number): Promise<NetworkSnapshot> {
-    return ipcRenderer.invoke('runtime:get-network', port) as Promise<NetworkSnapshot>;
-  },
-  getData(
-    endpoint: DataEndpoint,
-    options?: { port?: number; query?: Record<string, string | number | boolean> },
-  ): Promise<DataResult> {
-    return ipcRenderer.invoke('runtime:get-data', endpoint, options) as Promise<DataResult>;
+  getData(endpoint: DataEndpoint): Promise<DataResult> {
+    return ipcRenderer.invoke('runtime:get-data', endpoint) as Promise<DataResult>;
   },
   updateConfig(
     config: Record<string, unknown>,
   ): Promise<DataResult> {
     return ipcRenderer.invoke('runtime:update-config', config) as Promise<DataResult>;
-  },
-  scanNetwork(): Promise<DataResult> {
-    return ipcRenderer.invoke('runtime:scan-network') as Promise<DataResult>;
-  },
-  lookupPeer(peerId: string): Promise<{ ok: boolean; peer: unknown; error: string | null }> {
-    return ipcRenderer.invoke('runtime:lookup-peer', peerId) as Promise<{ ok: boolean; peer: unknown; error: string | null }>;
-  },
-  touchPeer(peerId: string): void {
-    void ipcRenderer.invoke('runtime:touch-peer', peerId);
   },
   onLog(handler: (event: LogEvent) => void): () => void {
     const listener = (_: unknown, event: LogEvent) => handler(event);
@@ -298,11 +209,6 @@ const api = {
     const listener = (_: unknown, states: RuntimeProcessState[]) => handler(states);
     ipcRenderer.on('runtime:state', listener);
     return () => ipcRenderer.off('runtime:state', listener);
-  },
-  onRuntimeActivity(handler: (event: RuntimeActivityEvent) => void): () => void {
-    const listener = (_: unknown, event: RuntimeActivityEvent) => handler(event);
-    ipcRenderer.on('runtime:activity', listener);
-    return () => ipcRenderer.off('runtime:activity', listener);
   },
 
   // AI Chat API
@@ -357,24 +263,6 @@ const api = {
   chatAiGetWorkspace(): Promise<{ ok: boolean; data?: { current: string; default: string }; error?: string }> {
     return ipcRenderer.invoke('chat:ai-get-workspace');
   },
-  chatAiGetWorkspaceGitStatus(): Promise<{
-    ok: boolean;
-    data?: {
-      available: boolean;
-      rootPath: string | null;
-      branch: string | null;
-      isDetached: boolean;
-      ahead: number;
-      behind: number;
-      stagedFiles: number;
-      modifiedFiles: number;
-      untrackedFiles: number;
-      error: string | null;
-    };
-    error?: string;
-  }> {
-    return ipcRenderer.invoke('chat:ai-get-workspace-git-status');
-  },
   chatAiSetWorkspace(workspacePath: string): Promise<{ ok: boolean; data?: { current: string; default: string }; error?: string }> {
     return ipcRenderer.invoke('chat:ai-set-workspace', workspacePath);
   },
@@ -387,19 +275,11 @@ const api = {
   openTool(toolName: string): Promise<{ ok: boolean; error?: string; fallback?: string }> {
     return ipcRenderer.invoke('desktop:open-tool', toolName) as Promise<{ ok: boolean; error?: string; fallback?: string }>;
   },
-  openToolSession(tool: string, sessionKey: string, target?: 'terminal' | 'app'): Promise<{ ok: boolean; command?: string; error?: string }> {
-    return ipcRenderer.invoke('desktop:open-tool-session', tool, sessionKey, target ?? 'terminal') as Promise<{ ok: boolean; command?: string; error?: string }>;
-  },
   listInstalledApps(): Promise<{ ok: boolean; apps: Array<{ name: string; path: string; iconDataUri?: string }>; error?: string }> {
     return ipcRenderer.invoke('desktop:list-installed-apps') as Promise<{ ok: boolean; apps: Array<{ name: string; path: string; iconDataUri?: string }>; error?: string }>;
   },
   appsSetAppLaunch(opts: { name: string; app: { name: string; path: string } | null }): Promise<{ ok: boolean; error?: string }> {
     return ipcRenderer.invoke('apps:set-app-launch', opts) as Promise<{ ok: boolean; error?: string }>;
-  },
-  onNavigateView(handler: (viewName: string) => void): () => void {
-    const listener = (_: unknown, viewName: string) => handler(viewName);
-    ipcRenderer.on('desktop:navigate-view', listener);
-    return () => ipcRenderer.off('desktop:navigate-view', listener);
   },
   voiceTranscribe(audio: ArrayBuffer): Promise<{ ok: boolean; text?: string; error?: string }> {
     return ipcRenderer.invoke('voice:transcribe', audio) as Promise<{ ok: boolean; text?: string; error?: string }>;
@@ -505,12 +385,6 @@ const api = {
   getAppSetupStatus(): Promise<{ needed: boolean; complete: boolean }> {
     return ipcRenderer.invoke('app:get-setup-status') as Promise<{ needed: boolean; complete: boolean }>;
   },
-  getTeeStatus(): Promise<unknown> {
-    return ipcRenderer.invoke('tee:status');
-  },
-  checkSellerTee(peerId: string): Promise<unknown> {
-    return ipcRenderer.invoke('tee:check', peerId);
-  },
   getTelemetryStatus(): Promise<TelemetryStatus> {
     return ipcRenderer.invoke('telemetry:get-status') as Promise<TelemetryStatus>;
   },
@@ -562,9 +436,7 @@ const api = {
   freeTierRemove: (staker: string) => ipcRenderer.invoke('freeTier:remove', staker),
   freeTierStake: () => ipcRenderer.invoke('freeTier:stake'),
   paymentsOpenPayPage: (opts: { kind?: string; amountUsdc?: string }) => ipcRenderer.invoke('payments:open-pay-page', opts),
-  paymentsCardProviders: () => ipcRenderer.invoke('payments:card-providers'),
   paymentsOpenCardProvider: (opts?: { providerId?: string; amountUsdc?: string }) => ipcRenderer.invoke('payments:open-card-provider', opts),
-  paymentsCloseCheckoutWindows: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('payments:close-checkout-windows') as Promise<{ ok: boolean }>,
   onPaymentsCompleted(handler: () => void): () => void {
     const listener = () => handler();
     ipcRenderer.on('payments:completed', listener);
@@ -579,9 +451,6 @@ const api = {
   },
   appsListProfiles(): Promise<unknown[]> {
     return ipcRenderer.invoke('apps:list-profiles') as Promise<unknown[]>;
-  },
-  appsGetState(): Promise<ConnectedAppsState> {
-    return ipcRenderer.invoke('apps:get-state') as Promise<ConnectedAppsState>;
   },
   appsConnect(name: string): Promise<{ ok: boolean; state: ConnectedAppsState; error?: string }> {
     return ipcRenderer.invoke('apps:connect', { name }) as Promise<{ ok: boolean; state: ConnectedAppsState; error?: string }>;

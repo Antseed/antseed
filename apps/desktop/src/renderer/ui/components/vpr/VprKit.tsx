@@ -1,5 +1,5 @@
 import { useContext } from 'react';
-import type { CSSProperties, JSX, ReactNode } from 'react';
+import type { JSX, ReactNode } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
 import { ArrowLeft01Icon, Search01Icon } from '@hugeicons/core-free-icons';
 import { VprNavContext, useVprNavBack } from './VprNavContext';
@@ -109,64 +109,6 @@ export function VprBadge({ tone = 'green', children }: {
 }): JSX.Element {
   return <span className={`${styles.badge} ${BADGE_TONE_CLASS[tone]}`}>{children}</span>;
 }
-
-export function VprSlider({ min, max, step, value, onChange, ariaLabel }: {
-  min: number;
-  max: number;
-  step: number;
-  value: number;
-  onChange: (next: number) => void;
-  ariaLabel: string;
-}): JSX.Element {
-  const clamped = Math.min(max, Math.max(min, value));
-  const pct = max > min ? ((clamped - min) / (max - min)) * 100 : 0;
-  return (
-    <input
-      type="range"
-      className={styles.slider}
-      min={min}
-      max={max}
-      step={step}
-      value={clamped}
-      style={{ '--slider-fill': `${pct}%` } as CSSProperties}
-      onChange={(event) => onChange(Number(event.currentTarget.value))}
-      aria-label={ariaLabel}
-    />
-  );
-}
-
-export function VprStatRow({ children }: { children: ReactNode }): JSX.Element {
-  return <div className={styles.statRow}>{children}</div>;
-}
-
-export function VprStatTile({ label, value, suffix, tone, strong, outlined }: {
-  label: string;
-  value: ReactNode;
-  suffix?: string;
-  /** 'success' renders the value in the accent green (Figma price/saving tiles). */
-  tone?: 'success';
-  /** Bold value (Figma "Saving" tile). */
-  strong?: boolean;
-  /** Bordered 12px-radius tile variant (Figma "Default model" tiles). */
-  outlined?: boolean;
-}): JSX.Element {
-  const valueClass = [
-    styles.statValue,
-    tone === 'success' ? styles.statValueSuccess : '',
-    strong ? styles.statValueStrong : '',
-  ].filter(Boolean).join(' ');
-  return (
-    <div className={`${styles.statTile}${outlined ? ` ${styles.statTileOutlined}` : ''}`}>
-      <span className={styles.statLabel}>{label}</span>
-      <span className={valueClass}>
-        <span className={styles.statValueText}>{value}</span>
-        {/* Real space: gives the browser a wrap point before the unit. */}
-        {suffix ? <> <span className={styles.statSuffix}>{suffix}</span></> : null}
-      </span>
-    </div>
-  );
-}
-
 export function VprSearch({ value, onChange, placeholder, ariaLabel }: {
   value: string;
   onChange: (next: string) => void;

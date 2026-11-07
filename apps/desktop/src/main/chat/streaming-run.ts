@@ -130,9 +130,6 @@ type StreamingRunContextTelemetry = Pick<
 >;
 
 export type StreamingRunResult = { ok: boolean; error?: string; stopReason?: ChatStreamStopReason };
-
-export type StreamingRunner = ReturnType<typeof createStreamingRunner>;
-
 export function createStreamingRunner(ctx: StreamingRunContext) {
   const {
     store,

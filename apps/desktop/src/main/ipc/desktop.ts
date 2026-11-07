@@ -4,10 +4,6 @@
  */
 import { ipcMain } from 'electron';
 import {
-  toolDesktopAppNames,
-  toolResumeCommand,
-} from '../../shared/tool-resume.js';
-import {
   setDesktopDebugEnabled,
 } from '../app-context.js';
 import {
@@ -40,10 +36,6 @@ import {
   dialog,
   shell,
 } from 'electron';
-import {
-  execFileSync,
-  spawn,
-} from 'node:child_process';
 import {
   copyFile,
 } from 'node:fs/promises';
@@ -119,60 +111,6 @@ export function registerDesktopIpc(): void {
         }
       }
       return { ok: false, error: 'No open target configured for this tool.' };
-    } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : String(err) };
-    }
-  });
-
-  // Reopen a tool chat session — target 'terminal' runs the tool's resume
-  // command (e.g. `codex resume <id>`), target 'app' launches the tool's
-  // desktop app (app-level; none expose a per-session deep link). The command
-  // string comes from the shared toolResumeCommand mapping only — session
-  // keys are validated to shell-inert characters there.
-  ipcMain.handle('desktop:open-tool-session', (_event, tool: unknown, sessionKey: unknown, target: unknown) => {
-    const toolSlug = typeof tool === 'string' ? tool : '';
-    if (target === 'app') {
-      const appNames = toolDesktopAppNames(toolSlug);
-      if (appNames.length === 0) {
-        return { ok: false, error: 'This tool has no known desktop app.' };
-      }
-      if (process.platform !== 'darwin') {
-        return { ok: false, error: `Open the ${appNames[0]} app manually on this platform.` };
-      }
-      for (const appName of appNames) {
-        try {
-          execFileSync('open', ['-a', appName], { stdio: 'pipe' });
-          return { ok: true };
-        } catch {
-          // Try the next release-channel variant.
-        }
-      }
-      return { ok: false, error: `The ${appNames[0]} app doesn't seem to be installed.` };
-    }
-    const command = toolResumeCommand(
-      toolSlug,
-      typeof sessionKey === 'string' ? sessionKey : '',
-    );
-    if (!command) {
-      return { ok: false, error: 'This tool has no session-resume command.' };
-    }
-    try {
-      if (process.platform === 'darwin') {
-        execFileSync('osascript', [
-          '-e', `tell application "Terminal" to do script ${JSON.stringify(command)}`,
-          '-e', 'tell application "Terminal" to activate',
-        ], { stdio: 'pipe' });
-        return { ok: true, command };
-      }
-      if (process.platform === 'win32') {
-        const child = spawn('cmd.exe', ['/c', 'start', '', 'cmd.exe', '/k', command], {
-          detached: true,
-          stdio: 'ignore',
-        });
-        child.unref();
-        return { ok: true, command };
-      }
-      return { ok: false, error: `Run it yourself: ${command}` };
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }

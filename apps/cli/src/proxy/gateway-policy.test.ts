@@ -1,3 +1,4 @@
+import { DEFAULT_MODEL_ROUTING_PREFERENCES } from '@antseed/node/model-routing'
 import assert from 'node:assert/strict'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import type { AddressInfo } from 'node:net'
@@ -942,6 +943,18 @@ test('spend on a pinned router, ranking and inference, is attributed to the gate
   const events = feed.page(0).events as Array<{ tag: string; sellerPeerId: string; amountUsdc: string }>
   assert.deepEqual(events.map((event) => [event.tag, event.sellerPeerId, event.amountUsdc]),
     [['gw_key1', router.peerId, '1000'], ['gw_key1', cheap.peerId, '25000']])
+})
+
+test('/v1/models under a gateway policy leaves out sellers below the buyer\'s minimum trust', async (t) => {
+  const low = makePeer('c', { input: 1, output: 1, trust: 20 })
+  const high = makePeer('d', { input: 1, output: 1, trust: 90 })
+  const h = await startHarness(t, [low, high], { routingPreferences: { ...DEFAULT_MODEL_ROUTING_PREFERENCES, minTrustScore: 60 } })
+  const listed = async (path: string) => {
+    const body = await (await fetch(`${h.url}${path}`)).json() as { data: Array<{ peers: Array<{ peerId: string }> }> }
+    return body.data.flatMap((model) => model.peers.map((peer) => peer.peerId)).sort()
+  }
+  assert.deepEqual(await listed('/v1/models'), [high.peerId])
+  assert.deepEqual(await listed('/v1/models?scope=network'), [low.peerId, high.peerId].sort())
 })
 
 test('/v1/models?type=router lists only routers the key policy allows, with only its allowed models', async (t) => {

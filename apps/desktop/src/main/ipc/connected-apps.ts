@@ -64,8 +64,6 @@ export function registerConnectedAppsIpc(): void {
     }));
   });
 
-  ipcMain.handle('apps:get-state', () => getConnectedAppsState());
-
   ipcMain.handle('apps:connect', async (_event, opts: { name?: string }) => {
     try {
       return { ok: true, state: await connectApp(typeof opts?.name === 'string' ? opts.name : '') };

@@ -19,14 +19,13 @@ import {
   PAYMENTS_PORT,
   PAY_PAGE_KINDS,
   type PayPageKind,
-  focusMainWindow,
   getPaymentsPortalToken,
   openPaymentsPopup,
   payPageProvider,
   readCardProviders,
   startPaymentsPortal,
 } from '../payments/portal.js';
-import { closeCheckoutWindows, openCheckoutPopup } from '../payments/checkout-window.js';
+import { openCheckoutPopup } from '../payments/checkout-window.js';
 import { antseedPayLinkAmount, resolveCardProviderUrl, signAntseedPayUrl } from '@antseed/payments/card-link';
 import { createPeerPayCheckout } from '../payments/peer-pay.js';
 import { getMainWindow } from '../ui/window.js';
@@ -69,16 +68,6 @@ export function registerPaymentsIpc(): void {
       return { ok: true, url: fallbackUrl };
     } catch (err) {
       console.error('[payments] open-pay-page failed:', err instanceof Error ? err.message : String(err));
-      return { ok: false, error: err instanceof Error ? err.message : String(err) };
-    }
-  });
-
-  ipcMain.handle('payments:card-providers', async () => {
-    try {
-      const providers = await readCardProviders();
-      // Only id + label cross into the renderer — URLs stay in the main process.
-      return { ok: true, data: providers.map(({ id, label }) => ({ id, label })) };
-    } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
   });
@@ -159,13 +148,6 @@ export function registerPaymentsIpc(): void {
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
-  });
-
-  // The renderer closes checkout popup windows on flows that never produce
-  // a deposit.
-  ipcMain.handle('payments:close-checkout-windows', () => {
-    if (closeCheckoutWindows()) focusMainWindow();
-    return { ok: true };
   });
 
   ipcMain.handle('credits:get-info', async (_event, opts?: { fresh?: boolean }): Promise<{ ok: boolean; data: CreditsInfo | null; error: string | null }> => {

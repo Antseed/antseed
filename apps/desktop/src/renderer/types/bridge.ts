@@ -116,28 +116,6 @@ export type RuntimeControlResult = {
   processes: RuntimeProcessState[];
   daemonState: { exists: boolean; state: Record<string, unknown> | null };
 };
-
-/** Per-service usage from the buyer daemon. `serviceName` is resolved by
-    the main process from the buyer peer cache; null when unresolvable. */
-export type DesktopBuyerServiceUsage = {
-  serviceIdHash: string;
-  serviceName: string | null;
-  amountUsdc: string;
-  inputTokens: string;
-  cachedInputTokens: string;
-  outputTokens: string;
-  requestCount: number;
-};
-
-export type DesktopBuyerUsageTotals = {
-  totalRequests: number;
-  totalInputTokens: string;
-  totalOutputTokens: string;
-  totalSettlements: number;
-  uniqueSellers: number;
-  services?: DesktopBuyerServiceUsage[];
-};
-
 export type DepositWatchStatus = {
   phase: 'deferred' | 'received' | 'sweeping' | 'credited' | 'error';
   /** USDC base units (6 decimals), bigint string. */
@@ -155,19 +133,6 @@ export type LogEvent = {
   stream: 'stdout' | 'stderr' | 'system' | string;
   line: string;
   timestamp: number;
-};
-
-export type RuntimeActivityTone = 'active' | 'idle' | 'warn' | 'bad';
-
-export type RuntimeActivityEvent = {
-  mode: RuntimeMode | string;
-  tone: RuntimeActivityTone;
-  stage: string;
-  message: string;
-  holdMs: number;
-  timestamp: number;
-  requestId?: string;
-  peerId?: string;
 };
 
 export type DaemonStateSnapshot = {
@@ -195,24 +160,6 @@ export type DataResult<T = unknown> = {
   status: number | null;
 };
 
-export type PluginInfo = {
-  package: string;
-  version: string;
-};
-
-export type PluginListResult = {
-  ok: boolean;
-  plugins: PluginInfo[];
-  error: string | null;
-};
-
-export type PluginInstallResult = {
-  ok: boolean;
-  package: string;
-  plugins: PluginInfo[];
-  error: string | null;
-};
-
 export type UpdateStatus =
   | { status: 'available'; version: string }
   | { status: 'downloading'; version: string; percent: number }
@@ -223,19 +170,6 @@ export type UpdateStatus =
 export type InstallUpdateResult =
   | { ok: true }
   | { ok: false; error: string; details: string; hint?: string };
-
-export type ChatWorkspaceGitStatus = {
-  available: boolean;
-  rootPath: string | null;
-  branch: string | null;
-  isDetached: boolean;
-  ahead: number;
-  behind: number;
-  stagedFiles: number;
-  modifiedFiles: number;
-  untrackedFiles: number;
-  error: string | null;
-};
 
 // NOTE: Source of truth lives in apps/desktop/src/main/chat/stream-stop.ts
 // (`ChatStreamStopReason`). The renderer cannot import from main, so the
@@ -370,36 +304,19 @@ export type DesktopBridge = {
   getSystemLocale?: () => Promise<string>;
   /** Current app version from Electron `app.getVersion()`. */
   getAppVersion?: () => Promise<string>;
-  /**
-   * OpenRouter reference/retail prices keyed by normalized model id/name
-   * (USD per million tokens). Used to render the struck-through baseline on
-   * the Home "Popular" list. Empty map when OpenRouter is unreachable.
-   */
-  getOpenRouterReferencePrices?: () => Promise<
-    Record<string, { input: number | null; output: number | null }>
-  >;
   getState?: () => Promise<RuntimeSnapshot>;
   /** Starts the local gateway (no-op for a remote one) and resolves once it serves. */
   start?: () => Promise<RuntimeControlResult>;
   restart?: () => Promise<RuntimeControlResult>;
   clearLogs?: () => Promise<{ ok: true }>;
 
-  pluginsList?: () => Promise<PluginListResult>;
-  pluginsInstall?: (packageName: string) => Promise<PluginInstallResult>;
-
-  getNetwork?: (port?: number) => Promise<{ ok: boolean; peers?: unknown[]; error?: string | null; [key: string]: unknown }>;
-  getData?: (
-    endpoint: DataEndpoint,
-    options?: { port?: number; query?: Record<string, string | number | boolean> }
-  ) => Promise<DataResult>;
+  getData?: (endpoint: DataEndpoint) => Promise<DataResult>;
   updateConfig?: (
     config: Record<string, unknown>,
   ) => Promise<DataResult>;
-  scanNetwork?: () => Promise<DataResult>;
 
   onLog?: (handler: (event: LogEvent) => void) => () => void;
   onState?: (handler: (states: RuntimeProcessState[]) => void) => () => void;
-  onRuntimeActivity?: (handler: (event: RuntimeActivityEvent) => void) => () => void;
   onPeersChanged?: (handler: () => void) => () => void;
 
   chatAiListConversations?: () => Promise<{ ok: boolean; data: unknown[] }>;
@@ -420,23 +337,11 @@ export type DesktopBridge = {
   chatPermissionModeSet?: (modelId: string, mode: ChatPermissionMode) => Promise<{ ok: boolean; mode?: ChatPermissionMode; error?: string }>;
   chatToolApprovalDecision?: (id: string, decision: ToolApprovalDecision) => Promise<{ ok: boolean; error?: string }>;
   chatAiAbort?: (conversationId?: string) => Promise<{ ok: boolean }>;
-  apiTryProxyRequest?: (params: {
-    port: number;
-    path: string;
-    method: string;
-    headers: Record<string, string>;
-    body: string;
-  }) => Promise<{ ok: boolean; status: number; body: string; error: string | null }>;
   chatAiGetWorkspace?: () => Promise<{ ok: boolean; data?: { current: string; default: string }; error?: string }>;
-  chatAiGetWorkspaceGitStatus?: () => Promise<{ ok: boolean; data?: ChatWorkspaceGitStatus; error?: string }>;
   chatAiSetWorkspace?: (workspacePath: string) => Promise<{ ok: boolean; data?: { current: string; default: string }; error?: string }>;
   pickDirectory?: () => Promise<{ ok: boolean; path: string | null }>;
   openExternalUrl?: (url: string) => Promise<{ ok: boolean; error?: string }>;
   openTool?: (toolName: string) => Promise<{ ok: boolean; error?: string; fallback?: string }>;
-  /** Reopen a tool chat session: 'terminal' runs the tool's resume command
-      (`codex resume <id>`, ...); 'app' launches the tool's desktop app. */
-  openToolSession?: (tool: string, sessionKey: string, target?: 'terminal' | 'app') => Promise<{ ok: boolean; command?: string; error?: string }>;
-  onNavigateView?: (handler: (viewName: string) => void) => () => void;
   voiceTranscribe?: (audio: ArrayBuffer) => Promise<{ ok: boolean; text?: string; error?: string }>;
   voiceGetStatus?: () => Promise<unknown>;
   voiceSetModel?: (modelId: string) => Promise<unknown>;
@@ -461,8 +366,6 @@ export type DesktopBridge = {
   onWindowFocusChange?: (handler: (isFocused: boolean) => void) => () => void;
   getAppSetupStatus?: () => Promise<{ needed: boolean; complete: boolean }>;
   getTelemetryStatus?: () => Promise<import('../../shared/telemetry.js').TelemetryStatus>;
-  getTeeStatus?: () => Promise<import('@antseed/node/tee-status').DesktopTeeStatus>;
-  checkSellerTee?: (peerId: string) => Promise<import('@antseed/node/tee-status').DesktopTeeStatus>;
   setTelemetryEnabled?: (enabled: boolean) => Promise<import('../../shared/telemetry.js').TelemetryStatusUpdateResult>;
   telemetryRecordUserAction?: (payload: import('../../shared/telemetry.js').UserActionSignal) => Promise<{ ok: boolean }>;
   telemetryRecordFirstModelShown?: (payload: import('../../shared/telemetry.js').FirstModelShownSignal) => Promise<{ ok: boolean }>;
@@ -486,10 +389,7 @@ export type DesktopBridge = {
   /** This buyer's counted seller-pool stake (its own plus shared), by pool. */
   freeTierStake?: () => Promise<{ ok: boolean; data?: FreeTierStakeView & { buyer: string }; error?: string }>;
   paymentsOpenPayPage?: (opts: { kind?: 'deposit' | 'withdraw' | 'authorize'; amountUsdc?: string }) => Promise<{ ok: boolean; url?: string; error?: string }>;
-  paymentsCardProviders?: () => Promise<{ ok: boolean; data?: Array<{ id: string; label: string }>; error?: string }>;
   paymentsOpenCardProvider?: (opts?: { providerId?: string; amountUsdc?: string }) => Promise<{ ok: boolean; url?: string; error?: string }>;
-  /** Closes any app-owned Fun checkout/sign-in popup windows (login-only flows produce no deposit, so the deposit watcher can't close them). */
-  paymentsCloseCheckoutWindows?: () => Promise<{ ok: boolean }>;
   /** Fired when a browser pay page reports a completed payment action. */
   onPaymentsCompleted?: (handler: () => void) => () => void;
   depositsWatchStart?: () => Promise<{ ok: boolean; data?: { address: string; walletUsdcBaseUnits: string; usdcAddress: string; chainId: number }; error?: string }>;
@@ -497,7 +397,6 @@ export type DesktopBridge = {
   onDepositsWatchStatus?: (handler: (data: DepositWatchStatus) => void) => () => void;
 
   appsListProfiles?: () => Promise<ConnectedAppProfile[]>;
-  appsGetState?: () => Promise<ConnectedAppsState>;
   appsConnect?: (name: string) => Promise<{ ok: boolean; state: ConnectedAppsState; error?: string }>;
   appsDisconnect?: (name: string) => Promise<{ ok: boolean; state: ConnectedAppsState; error?: string }>;
   /** Installed applications for the "Open with" picker (macOS .app bundles,

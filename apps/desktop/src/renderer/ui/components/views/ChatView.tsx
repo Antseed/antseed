@@ -133,15 +133,6 @@ function getNormalizedSearchQuery(query: string): string {
   return query.trim().toLowerCase();
 }
 
-function getPathTail(value: string | null | undefined): string {
-  const trimmed = String(value || '').trim().replace(/[\\/]+$/, '');
-  if (!trimmed) {
-    return 'Workspace';
-  }
-  const parts = trimmed.split(/[\\/]/);
-  return parts[parts.length - 1] || trimmed;
-}
-
 function getPathEnding(value: string | null | undefined): string {
   const trimmed = String(value || '').trim().replace(/[\\/]+$/, '');
   if (!trimmed) {
@@ -486,10 +477,6 @@ export function ChatView({ onSelectView }: ChatViewProps) {
     return () => observer.disconnect();
   }, [visibleMessages, snap.chatStreamingMessage, snap.chatSending, scrollChatToBottom]);
 
-  const openingActiveConversation = Boolean(
-    snap.chatOpeningConversationId
-    && snap.chatOpeningConversationId === snap.chatActiveConversation,
-  );
   const selectedTextModel = findChatModel(snap.chatModels, snap.chatSelectedModelId);
   const imageModel = findChatModel(snap.chatModels, snap.chatImageModelId);
   // An image model picked in the dropdown makes Send generate an image until

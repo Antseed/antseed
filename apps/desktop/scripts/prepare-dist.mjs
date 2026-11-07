@@ -11,8 +11,7 @@
  * directory, which causes electron-builder's asar packer to fail with
  * "must be under <appDir>" errors.
  *
- * Handles both top-level packages (e.g. antseed-dashboard) and scoped
- * packages (e.g. @antseed/node).
+ * Handles both top-level packages and scoped packages (e.g. @antseed/node).
  */
 
 import { readdirSync, lstatSync, readlinkSync, realpathSync, rmSync, cpSync, existsSync, mkdirSync, chmodSync, writeFileSync, readFileSync } from 'node:fs';

@@ -1,10 +1,4 @@
 export type ChannelCloseAction = 'seller-and-on-chain' | 'on-chain' | 'withdraw' | 'none';
-
-export type ChannelCloseFeedback = {
-  tone: 'success' | 'error';
-  message: string;
-};
-
 export function isCurrentChannelStatus(status: string): boolean {
   return status === 'active'
     || status === 'open'

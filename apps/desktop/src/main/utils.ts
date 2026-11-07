@@ -20,14 +20,6 @@ export function asNumber(value: unknown, fallback: number): number {
   }
   return fallback;
 }
-
-export function asStringArray(value: unknown, fallback: string[]): string[] {
-  if (!Array.isArray(value)) {
-    return fallback;
-  }
-  return value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
-}
-
 export function asErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim().length > 0) {
     return error.message;

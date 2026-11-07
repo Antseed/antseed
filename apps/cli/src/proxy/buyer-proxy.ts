@@ -3755,11 +3755,14 @@ export class BuyerProxy {
     const responseHeaders = { 'content-type': 'application/json', 'x-antseed-request-id': randomUUID() }
     const peers = await this._getPeers()
     const peerById = new Map<string, PeerInfo>(peers.map((peer) => [peer.peerId, peer]))
+    // Lists what a request could be routed to. `?scope=network` is the console
+    // browsing everything on the network, usable or not.
+    const listPolicy = requestPolicy ?? (url.searchParams.get('scope') === 'network' ? null : {})
     const models = buildNetworkModels(peers, this._now(), {
       routingPreferences: this._routingPreferences,
       peerHealth: this._peerHealth,
-      ...(requestPolicy
-        ? { offerFilter: (offer: NetworkServiceOffer) => this._policyAllowsOffer(requestPolicy, peerById.get(offer.peerId), offer) }
+      ...(listPolicy
+        ? { offerFilter: (offer: NetworkServiceOffer) => this._policyAllowsOffer(listPolicy, peerById.get(offer.peerId), offer) }
         : {}),
     })
 
@@ -3866,7 +3869,9 @@ export class BuyerProxy {
     if (!peer || !policyAllowsModel(this._effectivePolicy(requestPolicy), offer.serviceId)) return false
     const facts = this._policyFacts(peer, offer)
     return pinnedPeerExclusionReasons(requestPolicy, facts, offer.serviceId).length === 0
-      && policyExclusionReasons(this._buyerHardPolicy(), facts).length === 0
+      // The whole buyer level, as routing applies it: a seller below the buyer's
+      // minimum trust can't be routed to, so listing it offers a model that fails.
+      && policyExclusionReasons(this._buyerPolicy(), facts).length === 0
   }
 
   private async _handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {

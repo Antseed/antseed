@@ -1,12 +1,11 @@
 /**
- * TCP relay that makes the loopback-only buyer proxy reachable from WSL.
+ * TCP relay that makes the loopback-only local gateway reachable from WSL.
  *
  * Under WSL2 NAT networking a distro cannot reach the Windows host's
  * 127.0.0.1; it can reach the host's address on the WSL virtual switch (its
- * default-route gateway). The buyer proxy deliberately binds only 127.0.0.1 —
- * it is keyless, so exposing it on 0.0.0.0 would let anyone on the LAN spend
- * the buyer's funds. Listening on the gateway address alone keeps the
- * exposure to the WSL subnet while giving distros a way in.
+ * default-route gateway). The gateway deliberately binds only 127.0.0.1, so
+ * it isn't exposed to the LAN. Listening on the virtual switch address alone
+ * keeps the exposure to the WSL subnet while giving distros a way in.
  */
 import net from 'node:net';
 

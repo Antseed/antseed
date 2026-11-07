@@ -67,8 +67,6 @@ asarUnpack:
   - "node_modules/keytar/**"
 
 extraResources:
-  - from: build/system-proxy-profiles.json
-    to: system-proxy-profiles.json
   # NOTE: whisper binaries are shipped per-platform (see the mac/win/linux
   # extraResources blocks below). The tiny model is no longer bundled — the app
   # downloads it into userData on first transcription (voice-transcription.ts),

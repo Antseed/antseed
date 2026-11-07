@@ -30,22 +30,36 @@ export function findChatModel(models: ChatModel[], modelId: string | null | unde
   return models.find((model) => model.id === listedId) ?? null;
 }
 
-/** The new-chat default: the last model used while the gateway still lists it as text, else the first text model. */
+/**
+ * The new-chat default: the last model used while the gateway still lists it as
+ * text, else one that works without funds (the catalog's order isn't stable, so
+ * a first chat could otherwise land on a paid model and fail).
+ */
 export function chooseDefaultChatModel(models: ChatModel[], lastModelId: string | null): string | null {
   const last = findChatModel(models, lastModelId);
   if (last?.type === 'text') return last.id;
-  return models.find((model) => model.type === 'text')?.id ?? null;
+  const text = models.filter((model) => model.type === 'text');
+  const best = [...text].sort((left, right) => Number(right.free) - Number(left.free)
+    || Number(right.toolUse) - Number(left.toolUse)
+    || right.sellers - left.sellers)[0];
+  return best?.id ?? null;
 }
 
-/** Text and image models for the dropdown, filtered by a search query on id and label. */
-export function filterChatModels(models: ChatModel[], query: string): { text: ChatModel[]; image: ChatModel[] } {
+/** Text and image models for the dropdown, free first, filtered by a search query on id and label. */
+export function filterChatModels(
+  models: ChatModel[],
+  query: string,
+  freeOnly = false,
+): { text: ChatModel[]; image: ChatModel[] } {
   const needle = query.trim().toLowerCase();
   const matches = needle
     ? models.filter((model) => model.id.toLowerCase().includes(needle) || model.label.toLowerCase().includes(needle))
     : models;
+  const shown = freeOnly ? matches.filter((model) => model.free) : matches;
+  const freeFirst = (left: ChatModel, right: ChatModel) => Number(right.free) - Number(left.free);
   return {
-    text: matches.filter((model) => model.type === 'text'),
-    image: matches.filter((model) => model.type === 'image'),
+    text: shown.filter((model) => model.type === 'text').sort(freeFirst),
+    image: shown.filter((model) => model.type === 'image').sort(freeFirst),
   };
 }
 

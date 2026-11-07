@@ -2,7 +2,6 @@ export const TELEMETRY_USER_ACTIONS = [
   'view_opened',
   'runtime_start',
   'runtime_stop',
-  'discovery_refresh',
   'chat_new',
   'chat_open',
   'chat_send',
@@ -24,7 +23,6 @@ export const TELEMETRY_USER_ACTIONS = [
   'chat_permission_change',
   'tool_approval_decision',
   'settings_save',
-  'plugin_install',
   'api_config_copy',
   'gateway_console_open',
   'gateway_settings_change',
@@ -73,7 +71,6 @@ export const TELEMETRY_ACTION_SURFACES = [
   'connection',
   'desktop',
   'config',
-  'setup',
   'unknown',
 ] as const;
 

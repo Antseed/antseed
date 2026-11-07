@@ -46,13 +46,6 @@ export function toGatewayModel(entry: GatewayModelEntry): GatewayModel {
   const type = typeof entry['type'] === 'string' ? entry['type'] : null;
   return { id: entry.id, label: name, type };
 }
-
-/** Chat-capable models: those typed `text`, or untyped ones from a plain OpenAI-compatible gateway. */
-export async function fetchGatewayTextModels(endpoint: GatewayEndpoint): Promise<GatewayModel[]> {
-  const entries = await fetchGatewayModelEntries(endpoint);
-  return entries.map(toGatewayModel).filter((model) => model.type === null || model.type === 'text');
-}
-
 export function clearGatewayModelCache(): void {
   cache = null;
 }

@@ -4,22 +4,11 @@ import { initSettingsModule } from './modules/app/settings';
 import { initRuntimeModule } from './modules/app/runtime';
 import { initDashboardRenderModule } from './modules/dashboard/render';
 import { initDashboardApiModule } from './modules/dashboard/api';
-import {
-  initPluginSetupModule,
-  resolveRouterPackageName,
-} from './modules/app/plugin-setup';
 import { initAppSetupModule } from './modules/app/setup';
 import { initCreditsModule } from './modules/app/credits';
 import { mountAppShell } from './ui/mount';
 import { initThemeMode } from './ui/lib/theme';
 import { registerActions } from './ui/actions';
-import {
-  DEFAULT_DASHBOARD_PORT,
-  POLL_INTERVAL_MS,
-  UI_MESSAGES,
-} from './core/constants';
-import { safeNumber, safeString } from './core/safe';
-import type { BadgeTone } from './core/state';
 import { createInitialUiState } from './core/state';
 import { initStore, notifyUiStateChanged } from './core/store';
 import type { DesktopBridge } from './types/bridge';
@@ -28,6 +17,8 @@ import { recordUserAction } from './modules/telemetry/actions';
 /* ------------------------------------------------------------------ */
 /*  Bootstrap                                                          */
 /* ------------------------------------------------------------------ */
+
+const POLL_INTERVAL_MS = 5000;
 
 const bridge = window.antseedDesktop as DesktopBridge | undefined;
 
@@ -102,40 +93,16 @@ const {
 } = initRuntimeModule({ uiState });
 
 const {
-  getDashboardPort,
   getDashboardData,
   updateDashboardConfig,
-  scanDhtNow,
   setRefreshHooks,
   refreshDashboardData,
-} = initDashboardApiModule({
-  bridge,
-  uiState,
-  defaultDashboardPort: DEFAULT_DASHBOARD_PORT,
-});
-
-
-const {
-  clearRouterPluginHint,
-  updatePluginHintFromLog,
-  renderPluginSetupState,
-  refreshPluginInventory,
-  installPluginPackage,
-} = initPluginSetupModule({
-  bridge,
-  uiState,
-  appendSystemLog,
-});
+} = initDashboardApiModule({ bridge });
 
 const { populateSettingsForm, saveConfig } = initSettingsModule({
   uiState,
-  getDashboardData: getDashboardData as (
-    endpoint: string,
-    query?: Record<string, string | number | boolean>,
-  ) => Promise<{ ok: boolean; data: unknown; error?: string | null }>,
-  updateDashboardConfig: updateDashboardConfig as (
-    config: Record<string, unknown>,
-  ) => Promise<{ ok: boolean; data: unknown; error?: string | null; status?: number | null }>,
+  getDashboardData,
+  updateDashboardConfig,
   setDebugLogs: (enabled: boolean) => bridge?.setDebugLogs?.(enabled) ?? Promise.resolve(),
 });
 
@@ -174,128 +141,29 @@ bridge?.onPaymentsCompleted?.(() => {
 
 
 /* ------------------------------------------------------------------ */
-/*  Runtime activity helpers                                           */
-/* ------------------------------------------------------------------ */
-
-let runtimeActivityHoldUntil = 0;
-
-function setRuntimeActivity(tone: BadgeTone, message: string, holdMs = 0): void {
-  if (holdMs > 0) {
-    runtimeActivityHoldUntil = Math.max(runtimeActivityHoldUntil, Date.now() + holdMs);
-  }
-  const text = safeString(message, '').trim() || 'Idle';
-  if (uiState.runtimeActivity.message === text && uiState.runtimeActivity.tone === tone) {
-    return;
-  }
-  uiState.runtimeActivity = { tone, message: text };
-  notifyUiStateChanged();
-}
-
-function setRuntimeSteadyActivity(tone: BadgeTone, message: string): void {
-  if (Date.now() < runtimeActivityHoldUntil) return;
-  setRuntimeActivity(tone, message);
-}
-
-function syncRuntimeActivityFromProcesses(processes = uiState.processes): void {
-  const buyerConnected = isModeRunning('gateway', processes);
-  setRuntimeSteadyActivity(
-    buyerConnected ? 'active' : 'idle',
-    buyerConnected
-      ? 'Ready'
-      : 'Buyer runtime offline. Waiting for local runtime start...',
-  );
-}
-
-function syncBuyerRuntimeOverview(processes = uiState.processes): void {
-  const buyerConnected = isModeRunning('gateway', processes);
-  uiState.ovNodeState = buyerConnected ? 'connected' : 'offline';
-
-  if (!uiState.refreshing) {
-    const badgeLabel = uiState.overviewBadge.label.toLowerCase();
-    if (buyerConnected) {
-      if (badgeLabel.includes('offline') || badgeLabel.includes('idle')) {
-        uiState.overviewBadge = { tone: 'active', label: 'CONNECTED • Refreshing DHT status...' };
-      }
-    } else {
-      uiState.overviewBadge = { tone: 'idle', label: 'OFFLINE' };
-    }
-  }
-
-  notifyUiStateChanged();
-}
-
-function updateRuntimeActivityFromLog(mode: string, lineRaw: string): void {
-  const line = safeString(lineRaw, '').toLowerCase();
-  if (!line) return;
-
-  if (mode === 'gateway') {
-    if (line.includes('connecting to p2p network')) {
-      setRuntimeActivity('warn', 'Connecting to P2P network...', 6_000);
-      return;
-    }
-    if (line.includes('connected to p2p network')) {
-      setRuntimeActivity('active', 'Connected to P2P network.', 3_000);
-      return;
-    }
-    if (line.includes('discovering peers')) {
-      setRuntimeActivity('warn', 'Searching DHT for peers...', 6_000);
-      return;
-    }
-    if (line.includes('/v1/models')) {
-      setRuntimeActivity('warn', 'Loading service catalog from peers...', 8_000);
-      return;
-    }
-    if (line.includes('proxy listening on')) {
-      setRuntimeActivity('active', 'Buyer proxy online.', 4_000);
-      return;
-    }
-    if (line.includes('no peers available')) {
-      setRuntimeActivity('warn', 'No peers available for this request.', 8_000);
-      return;
-    }
-    if (line.includes('timed out')) {
-      setRuntimeActivity('bad', 'Peer request timed out. Retrying another route...', 10_000);
-      return;
-    }
-  }
-
-}
-
-/* ------------------------------------------------------------------ */
 /*  Refresh                                                            */
 /* ------------------------------------------------------------------ */
 
-type RefreshReason = 'poll' | 'manual' | 'startup';
+let refreshing = false;
 
-async function refreshAll(reason: RefreshReason = 'poll'): Promise<void> {
-  if (!bridge?.getState || uiState.refreshing) return;
-
-  uiState.refreshing = true;
-  uiState.overviewBadge = { tone: 'warn', label: 'Refreshing runtime and peers...' };
-  uiState.peersMessage = 'Refreshing peers and runtime status...';
-  notifyUiStateChanged();
-
-  if (reason !== 'poll') {
-    setRuntimeActivity('warn', 'Refreshing runtime and peer snapshots...', 8_000);
-  }
+async function refreshAll(): Promise<void> {
+  if (!bridge?.getState || refreshing) return;
+  refreshing = true;
 
   try {
-    const snapshot = await bridge.getState();
+    const [snapshot, gatewayStatus] = await Promise.all([
+      bridge.getState(),
+      bridge.gatewayGetStatus?.().catch(() => null) ?? null,
+    ]);
+    uiState.gatewayStatus = gatewayStatus;
     renderLogs(snapshot.logs);
     renderProcesses(snapshot.processes);
-    syncBuyerRuntimeOverview(snapshot.processes);
     renderDaemonState(snapshot.daemonState);
-    await refreshDashboardData(snapshot.processes);
-    syncRuntimeActivityFromProcesses(snapshot.processes);
+    await refreshDashboardData();
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    appendSystemLog(`Refresh failed: ${message}`);
-    uiState.peersMessage = `Unable to refresh runtime and peers: ${message}`;
-    notifyUiStateChanged();
-    setRuntimeActivity('bad', `Refresh failed: ${message}`, 10_000);
+    appendSystemLog(`Refresh failed: ${err instanceof Error ? err.message : String(err)}`);
   } finally {
-    uiState.refreshing = false;
-    notifyUiStateChanged();
+    refreshing = false;
   }
 }
 
@@ -321,55 +189,25 @@ async function ensureConnectRuntimeStarted(): Promise<void> {
   // Don't start until plugin setup is resolved — starting without the router
   // plugin makes the buyer exit with "plugin not found".
   if (uiState.appSetupStatusKnown && uiState.appSetupNeeded && !uiState.appSetupComplete) return;
-  setRuntimeActivity('warn', 'Starting your gateway...', 8_000);
   const result = await bridge.start();
-  if (result.ok) {
-    setRuntimeActivity('active', 'Gateway ready.', 4_000);
-    return;
-  }
-  appendSystemLog(`Gateway start failed: ${result.error ?? 'unknown error'}`);
-  setRuntimeActivity('bad', `Gateway start failed: ${result.error ?? 'unknown error'}`, 10_000);
+  if (!result.ok) appendSystemLog(`Gateway start failed: ${result.error ?? 'unknown error'}`);
 }
 
 async function actionRestartConnect(): Promise<void> {
   const restart = requireBridgeMethod('restart', 'Gateway restart is unavailable in this build');
-  clearRouterPluginHint();
+  uiState.gatewayStatus = null;
   uiState.connectBadge = { tone: 'idle', label: 'Restarting...' };
   notifyUiStateChanged();
-  setRuntimeActivity('warn', 'Restarting your gateway...', 8_000);
   const result = await restart();
-  if (!result.ok) {
-    appendSystemLog(`Gateway restart failed: ${result.error ?? 'unknown error'}`);
-    setRuntimeActivity('bad', `Gateway restart failed: ${result.error ?? 'unknown error'}`, 8_000);
-  }
-  await refreshAll('manual');
-}
-
-async function actionScanDht(): Promise<void> {
-  uiState.peersMessage = 'Scanning DHT for peers...';
-  uiState.overviewBadge = { tone: 'warn', label: 'Scanning DHT for peers...' };
-  notifyUiStateChanged();
-  setRuntimeActivity('warn', 'Scanning DHT for peers...', 12_000);
-  try {
-    const result = await scanDhtNow();
-    if (!result.ok) {
-      throw new Error(result.error ?? 'DHT scan failed');
-    }
-    appendSystemLog('Triggered immediate DHT scan.');
-    setRuntimeActivity('active', 'DHT scan completed.', 4_000);
-    await refreshAll('manual');
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    appendSystemLog(`DHT scan failed: ${message}`);
-    setRuntimeActivity('bad', `DHT scan failed: ${message}`, 8_000);
-  }
+  if (!result.ok) appendSystemLog(`Gateway restart failed: ${result.error ?? 'unknown error'}`);
+  await refreshAll();
 }
 
 async function actionClearLogs(): Promise<void> {
   const clearLogs = requireBridgeMethod('clearLogs', 'Log clearing is unavailable in this build');
   try {
     await clearLogs();
-    await refreshAll('manual');
+    await refreshAll();
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     appendSystemLog(`Clear logs failed: ${message}`);
@@ -382,11 +220,8 @@ async function actionClearLogs(): Promise<void> {
 
 registerActions({
   restartConnect: () => { recordUserAction('runtime_start', 'connection'); return actionRestartConnect(); },
-  refreshAll: () => { recordUserAction('discovery_refresh', 'unknown'); return refreshAll('manual'); },
   clearLogs: actionClearLogs,
-  scanDht: () => { recordUserAction('discovery_refresh', 'connection'); return actionScanDht(); },
   saveConfig: (formData) => { recordUserAction('settings_save', 'config'); return saveConfig(formData); },
-  createNewConversation: () => { recordUserAction('chat_new', 'chat'); return chatApi.createNewConversation(); },
   startNewChat: () => { recordUserAction('chat_new', 'chat'); chatApi.startNewChat(); },
   openConversation: (id) => { recordUserAction('chat_open', 'chats'); return chatApi.openConversation(id); },
   sendMessage: (text, attachments) => {
@@ -413,19 +248,10 @@ registerActions({
   retryAfterPayment: () => { recordUserAction('chat_retry', 'chat'); chatApi.retryAfterPayment(); },
   dismissFundsNotice: chatApi.dismissFundsNotice,
   refreshCredits: () => creditsApi.refreshCredits(),
-  refreshWorkspace: chatApi.refreshWorkspace,
   chooseWorkspace: () => { recordUserAction('workspace_change', 'chat'); return chatApi.chooseWorkspace(); },
-  refreshPlugins: refreshPluginInventory,
-  installPlugin: () => {
-    recordUserAction('plugin_install', 'setup');
-    const packageName = resolveRouterPackageName(
-      uiState.pluginHints.router || uiState.connectRouterValue,
-    );
-    return installPluginPackage(packageName);
-  },
 });
 
-bridge?.onGatewayChanged?.(() => { void refreshAll('manual'); });
+bridge?.onGatewayChanged?.(() => { void refreshAll(); });
 
 /* ------------------------------------------------------------------ */
 /*  Mount React (store + actions both ready)                           */
@@ -438,20 +264,8 @@ mountAppShell();
 /* ------------------------------------------------------------------ */
 
 setRefreshHooks({
-  setDashboardRefreshState: (busy: boolean, stage: string) => {
-    if (busy) {
-      uiState.peersMessage = stage;
-      uiState.overviewBadge = { tone: 'active', label: stage };
-      notifyUiStateChanged();
-      return;
-    }
-    syncBuyerRuntimeOverview();
-    syncRuntimeActivityFromProcesses();
-  },
   renderDashboardData,
   refreshChatConversations: chatApi.refreshChatConversations,
-  // The chat no longer probes a buyer proxy; its model list follows the gateway.
-  refreshChatProxyStatus: () => undefined,
 });
 
 /* ------------------------------------------------------------------ */
@@ -460,29 +274,15 @@ setRefreshHooks({
 
 function initializeBridge(): void {
   if (!bridge) {
-    appendSystemLog(UI_MESSAGES.desktopBridgeUnavailable);
+    appendSystemLog('Desktop bridge unavailable: preload failed to inject API. Restart app after main/preload compile.');
     renderOfflineState('Desktop bridge unavailable.');
-    setRuntimeActivity('bad', 'Desktop bridge unavailable.', 15_000);
     return;
   }
 
-  let hasStructuredRuntimeActivity = false;
-
-  bridge.onRuntimeActivity?.((activity) => {
-    hasStructuredRuntimeActivity = true;
-    const holdMs = Math.max(0, safeNumber(activity.holdMs, 0));
-    setRuntimeActivity(activity.tone, activity.message, holdMs);
-  });
-
   bridge.onLog?.((event) => {
-    updatePluginHintFromLog(event);
     appendLog(event);
     if (event.mode === 'gateway') {
       chatApi.handleLogLineForThinkingPhase(event.line);
-    }
-    renderPluginSetupState();
-    if (!hasStructuredRuntimeActivity) {
-      updateRuntimeActivityFromLog(event.mode, event.line);
     }
   });
 
@@ -492,29 +292,16 @@ function initializeBridge(): void {
 
   bridge.onState?.((processes) => {
     renderProcesses(processes);
-    syncBuyerRuntimeOverview(processes);
-    syncRuntimeActivityFromProcesses(processes);
-
-    if (isModeRunning('gateway', processes)) {
-      clearRouterPluginHint();
-    }
-
-    renderPluginSetupState();
   });
 
   void (async () => {
-    await refreshAll('startup');
+    await refreshAll();
     await ensureConnectRuntimeStarted();
-    await refreshAll('startup');
+    await refreshAll();
   })();
 
-  void refreshPluginInventory().catch((err) => {
-    const message = err instanceof Error ? err.message : String(err);
-    appendSystemLog(`Plugin inventory refresh failed: ${message}`);
-  });
-
   setInterval(() => {
-    void refreshAll('poll');
+    void refreshAll();
   }, POLL_INTERVAL_MS);
 }
 
@@ -522,6 +309,4 @@ function initializeBridge(): void {
 /*  Start                                                              */
 /* ------------------------------------------------------------------ */
 
-renderPluginSetupState();
-setRuntimeActivity('idle', 'Initializing desktop runtime...', 6_000);
 initializeBridge();
