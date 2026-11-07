@@ -21,7 +21,9 @@ import teeProviderPlugins from './tee-provider-plugins.json' with { type: 'json'
  *     names the seller config gives as apiKeyEnv (never one the CLI reads for itself), plus
  *     `ANTSEED_VERIFIER_SIGNING_KEY: ${ANTSEED_IDENTITY_HEX}`. No `$` anywhere else, because
  *     compose substitutes variables in every value, the inline config included.
- *   - seller config: each provider uses a plugin listed below, every upstream is https, and
+ *   - seller config: only the settings listed in CONFIG_KEYS (anything that loads code, such as
+ *     seller.agentDir, which imports tool modules from the data volume, is rejected); each
+ *     provider uses a plugin listed below, every upstream is https, and
  *     every path rewrite is a path on that upstream (the relay appends it to the base URL, so a
  *     value like "@other.example/v1" would move the request to another host). The approved
  *     images' relay refuses upstream redirects, so requests stay on these origins.
@@ -66,6 +68,27 @@ const SECRET_ENV = /^(?:ANTSEED_IDENTITY_HEX|ANTSEED_BASE_RPC_URL|[A-Z][A-Z0-9_]
 const NODE_SECRETS = new Set(['ANTSEED_IDENTITY_HEX', 'ANTSEED_BASE_RPC_URL'])
 /** Prefixes of variables the CLI reads for its own settings (telemetry, payments, tunnels), never API keys. */
 const RESERVED_ENV = /^(?:ANTSEED_|POSTHOG_|CDP_)/
+/**
+ * The seller config settings a TEE seller may use, by section. Each one only tunes the seller;
+ * none loads code (seller.agentDir imports agent tool modules from disk, which no measurement
+ * covers) or configures the buyer, verifier or relayer roles.
+ */
+const CONFIG_KEYS: Readonly<Record<string, ReadonlySet<string>>> = {
+  config: new Set(['identity', 'seller', 'payments', 'network', 'telemetry']),
+  seller: new Set([
+    'reserveFloor', 'maxConcurrentBuyers', 'providers', 'publicAddress', 'verifications', 'maxUploadBodyBytes',
+    'maxInboundConnections', 'inboundIdleTimeoutMs', 'verifiers', 'healthCheck', 'gasCheck', 'gasRefuel', 'freeTier',
+    'alerts', 'restrictedCountries', 'freeUsage', 'buyerLimits',
+  ]),
+  provider: new Set(['plugin', 'baseUrl', 'apiKeyEnv', 'pathRewrite', 'fallbackUpstreams', 'defaults', 'services']),
+  fallback: new Set(['baseUrl', 'apiKeyEnv', 'pathRewrite', 'services']),
+}
+
+function checkKeys(value: Obj, section: keyof typeof CONFIG_KEYS, where: string): void {
+  const extra = Object.keys(value).filter((k) => !CONFIG_KEYS[section]!.has(k))
+  check(extra.length === 0, `${where}${extra[0]} is not allowed in a TEE seller config`)
+}
+
 const IMAGE = /^[a-z0-9][a-z0-9._/:-]*@(sha256:[0-9a-f]{64})$/
 
 type Obj = Record<string, unknown>
@@ -138,7 +161,10 @@ function checkPathRewrite(rewrite: unknown, baseUrl: string, where: string): voi
 /** The seller config's upstreams and the API key variables it reads (apiKeyEnv). */
 function sellerUpstreams(config: unknown): { upstreams: SellerUpstream[]; apiKeyEnvs: Set<string> } {
   check(isObj(config), 'seller config must be an object')
-  const providers = isObj(config['seller']) ? config['seller']['providers'] : undefined
+  checkKeys(config, 'config', '')
+  check(isObj(config['seller']), 'seller config has no seller section')
+  checkKeys(config['seller'], 'seller', 'seller.')
+  const providers = config['seller']['providers']
   check(isObj(providers) && Object.keys(providers).length > 0, 'seller config has no providers')
   const upstreams: SellerUpstream[] = []
   const apiKeyEnvs = new Set<string>()
@@ -147,6 +173,7 @@ function sellerUpstreams(config: unknown): { upstreams: SellerUpstream[]; apiKey
   }
   for (const [provider, cfg] of Object.entries(providers)) {
     check(isObj(cfg) && typeof cfg['plugin'] === 'string', `provider ${provider} has no plugin`)
+    checkKeys(cfg, 'provider', `provider ${provider} `)
     keyEnv(cfg['apiKeyEnv'])
     const plugin = cfg['plugin'].replace(/^@antseed\/provider-/, '')
     const spec = PLUGINS[plugin]
@@ -160,6 +187,7 @@ function sellerUpstreams(config: unknown): { upstreams: SellerUpstream[]; apiKey
     check(spec.fallbacks && Array.isArray(fallbacks), `provider ${provider} fallbackUpstreams are not supported`)
     fallbacks.forEach((f, i) => {
       check(isObj(f), `provider ${provider} fallbackUpstreams[${i}] must be an object`)
+      checkKeys(f, 'fallback', `provider ${provider} fallbackUpstreams[${i}] `)
       keyEnv(f['apiKeyEnv'])
       const where = `provider ${provider} fallbackUpstreams[${i}]`
       upstreams.push({ provider, plugin, origin: origin(f['baseUrl'], `${where}.baseUrl`) })

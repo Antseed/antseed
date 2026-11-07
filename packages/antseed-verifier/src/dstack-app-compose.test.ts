@@ -134,6 +134,22 @@ describe('checkAppCompose', () => {
     expect(checkCompose(withProviders({ v: { plugin: 'fal-video', baseUrl: 'https://queue.example', services: {} } }))).toMatchObject({ error: expect.stringMatching(/cannot use/) })
   })
 
+  it('accepts only seller settings that cannot load code or change roles', () => {
+    const withConfig = (change: (config: Obj) => void) => {
+      const compose = referenceCompose()
+      const config = sellerConfig(compose)
+      change(config)
+      return checkCompose(withSellerConfig(compose, config))
+    }
+    // seller.agentDir imports agent tool modules from disk, which the measurement doesn't cover.
+    expect(withConfig((c) => { c['seller']['agentDir'] = '/var/lib/antseed/agent' })).toMatchObject({ error: 'seller.agentDir is not allowed in a TEE seller config' })
+    expect(withConfig((c) => { c['seller']['agentDir'] = { 'service-id': '/var/lib/antseed/agent' } })).toMatchObject({ error: 'seller.agentDir is not allowed in a TEE seller config' })
+    expect(withConfig((c) => { c['plugins'] = [{ name: 'x', package: 'x', installedAt: '' }] })).toMatchObject({ error: 'plugins is not allowed in a TEE seller config' })
+    expect(withConfig((c) => { c['buyer'] = {} })).toMatchObject({ error: 'buyer is not allowed in a TEE seller config' })
+    expect(withConfig((c) => { c['seller']['providers']['inference']['injectJson'] = {} })).toMatchObject({ error: 'provider inference injectJson is not allowed in a TEE seller config' })
+    expect(withConfig((c) => { c['seller']['maxConcurrentBuyers'] = 50; c['seller']['buyerLimits'] = {}; c['network'] = { bootstrapNodes: [] } })).not.toHaveProperty('error')
+  })
+
   it('accepts path rewrites only when they stay on the reported upstream', () => {
     const rewrite = (to: string, fallback = false) => checkCompose(withProviders({
       o: fallback
