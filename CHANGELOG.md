@@ -267,6 +267,8 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- CLI: `antseed buyer start` and `antseed dev` print `OPENAI_BASE_URL` with `/v1` (`export OPENAI_BASE_URL=http://localhost:8377/v1`, on the port the buyer listens on). OpenAI SDKs append `/chat/completions` to the base URL, so the printed line without `/v1` got a 404. `ANTHROPIC_BASE_URL` stays the proxy root, which Anthropic SDKs and Claude Code expect. Router plugin tool hints for `OPENAI_BASE_URL` and `OPENAI_API_BASE` get `/v1` too.
+
 - CLI buyer and node: a seller that moves to a new public address is picked up again without restarting the buyer.
   - When the same seller is listed at several endpoints (its old address can stay in the DHT for a while after a move), discovery keeps its newest signed announcement instead of whichever endpoint happened to answer first.
   - A request pinned to a seller the last network refresh missed now looks that seller up on its own DHT topic before answering that it is not reachable.
