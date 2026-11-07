@@ -27,7 +27,12 @@ function isConnError(err: unknown): boolean {
 }
 
 /** POST JSON to a unix-socket HTTP server and read the whole response body. */
-export function postUnix(socketPath: string, path: string, body: string): Promise<{ status: number; body: string }> {
+export function postUnix(
+  socketPath: string,
+  path: string,
+  body: string,
+  { timeoutMs = DSTACK_TIMEOUT_MS, timeoutMessage = 'dstack request timed out' }: { timeoutMs?: number; timeoutMessage?: string } = {},
+): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
     const req = request(
       {
@@ -35,7 +40,7 @@ export function postUnix(socketPath: string, path: string, body: string): Promis
         path,
         method: 'POST',
         headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) },
-        timeout: DSTACK_TIMEOUT_MS,
+        timeout: timeoutMs,
       },
       (res) => {
         const chunks: Buffer[] = []
@@ -44,7 +49,7 @@ export function postUnix(socketPath: string, path: string, body: string): Promis
       },
     )
     req.on('error', reject)
-    req.on('timeout', () => req.destroy(new Error('dstack request timed out')))
+    req.on('timeout', () => req.destroy(new Error(timeoutMessage)))
     req.end(body)
   })
 }

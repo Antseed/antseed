@@ -195,7 +195,8 @@ operator, or by anyone when dstack logs are public:
 - nothing the seller logs or stores holds a prompt, an answer or an upstream's error text, which
   can quote the request: failed requests keep only their status and the upstream's error code,
   and failed video jobs are logged without the upstream's reason (out-of-credit notices and alerts
-  keep the upstream's billing message, which is about the account, not the request);
+  keep the upstream's billing message, which is about the account, not the request: only its
+  error message when that names the account's credit, else its error code);
 - debug logging, which prints more, stays off: buyers reject a seller that sets `ANTSEED_DEBUG`.
 
 They do hold metadata the operator also sees on the network or on-chain: buyer peer IDs, the IPs of

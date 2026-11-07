@@ -14,7 +14,6 @@
 // Either way the seller config and secret names must pass the same rules buyers check.
 import { spawn } from 'node:child_process'
 import { existsSync, writeFileSync } from 'node:fs'
-import { request } from 'node:http'
 import { createRequire } from 'node:module'
 import { StateConflictError, keepLease, leaseHolder, stateLease, stateSyncs } from './state.mjs'
 
@@ -25,6 +24,7 @@ const CS_SOCKET = '/run/container_launcher/teeserver.sock'
 const VERIFIER = `${PLUGINS}/@antseed/antseed-verifier/dist`
 const { checkHiddenSecrets, checkSellerConfig } = await import(`${VERIFIER}/seller-config-rules.js`)
 const { parseStateLocation } = await import(`${VERIFIER}/confidential-space.js`)
+const { postUnix } = await import(`${VERIFIER}/collect/dstack.js`)
 
 function fail(message) {
   console.error(`[tee-seller] ${message}`)
@@ -32,18 +32,11 @@ function fail(message) {
 }
 
 /** A Confidential Space attestation token for `audience`, from the container launcher. */
-function launcherToken(audience) {
+async function launcherToken(audience) {
   const body = JSON.stringify({ audience, token_type: 'OIDC' })
-  return new Promise((resolve, reject) => {
-    const req = request({ socketPath: CS_SOCKET, path: '/v1/token', method: 'POST', headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) } }, (res) => {
-      const chunks = []
-      res.on('data', (c) => chunks.push(c))
-      res.on('end', () => (res.statusCode === 200 ? resolve(Buffer.concat(chunks).toString('utf8').trim()) : reject(new Error(`launcher token HTTP ${res.statusCode}`))))
-    })
-    req.setTimeout(REQUEST_TIMEOUT_MS, () => req.destroy(new Error('launcher token request timed out')))
-    req.on('error', reject)
-    req.end(body)
-  })
+  const { status, body: token } = await postUnix(CS_SOCKET, '/v1/token', body, { timeoutMs: REQUEST_TIMEOUT_MS, timeoutMessage: 'launcher token request timed out' })
+  if (status !== 200) throw new Error(`launcher token HTTP ${status}`)
+  return token.trim()
 }
 
 async function json(url, init) {
