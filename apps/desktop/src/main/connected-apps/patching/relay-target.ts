@@ -17,3 +17,11 @@ export function relayTarget(origin: string | null | undefined): { port: number; 
   const port = url.port ? Number(url.port) : url.protocol === 'https:' ? 443 : 80;
   return { port, upstreamHost: ipv6 ? '::1' : host === 'localhost' ? '127.0.0.1' : host };
 }
+
+/**
+ * A local gateway stops with the app, and so does any relay, so a WSL app relying
+ * on one would be left pointing at nothing. A gateway elsewhere stays reachable.
+ */
+export function patchesComeOffAtQuit(settings: { mode: string; remoteUrl?: string | null }, relayedInWsl: boolean): boolean {
+  return settings.mode === 'local' || (relayedInWsl && relayTarget(settings.remoteUrl) !== null);
+}

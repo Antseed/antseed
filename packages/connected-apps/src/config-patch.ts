@@ -374,7 +374,7 @@ type ResolvedTarget = {
 function isLoopbackOrigin(origin: string): boolean {
   try {
     const host = new URL(origin).hostname.toLowerCase();
-    return host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1';
+    return host === 'localhost' || /^127\./.test(host) || host === '[::1]' || host === '::1';
   } catch {
     return false;
   }

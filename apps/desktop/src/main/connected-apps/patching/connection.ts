@@ -19,7 +19,8 @@ import { isAppTargetRunning, namedAppTarget, restartAppTarget } from '../launche
 import { isMultiInstanceDevelopment } from '../../dev-instance.js';
 import type { RuntimeMode } from '../../runtime/process-manager.js';
 import { getGatewayEndpoint, localGatewayOrigin, type GatewayEndpoint } from '../../gateway/service.js';
-import { relayTarget } from './relay-target.js';
+import { patchesComeOffAtQuit, relayTarget } from './relay-target.js';
+import { createSerialQueue } from '../../gateway/serial-queue.js';
 import { oncePerGatewayKey } from './once-per-key.js';
 import { fetchGatewayModelEntries, toGatewayModel, type GatewayModel } from '../../gateway/models.js';
 import { recommendAppModels, toChatModels, type ChatModel } from '../../gateway/catalog.js';
@@ -52,7 +53,7 @@ let connected: string[] = [];
 let errors: Record<string, string> = {};
 let connectedAt: number | null = null;
 /** Serializes connects so concurrent clicks don't interleave config writes. */
-let queue: Promise<unknown> = Promise.resolve();
+const queue = createSerialQueue();
 
 export function initConnectedApps(deps: ConnectedAppsDeps): void {
   injected = deps;
@@ -100,10 +101,10 @@ let shuttingDown = false;
 const SHUTDOWN_WAIT_MS = 5_000;
 
 function serialized<T>(task: () => Promise<T>): Promise<T> {
-  const guarded = (): Promise<T> => (shuttingDown ? Promise.reject(new Error('Antseed Desktop is closing')) : task());
-  const run = queue.then(guarded, guarded);
-  queue = run.catch(() => undefined);
-  return run;
+  return queue.run(async () => {
+    if (shuttingDown) throw new Error('Antseed Desktop is closing');
+    return task();
+  });
 }
 
 /** connected-apps.json, else (first launch after the update) the config-patched apps the old system-proxy state had connected. */
@@ -308,11 +309,13 @@ export async function releaseConnectedAppsOnQuit(): Promise<void> {
   shuttingDown = true;
   // Work already running finishes first; shutting down stops it writing more.
   await Promise.race([
-    queue.catch(() => undefined),
+    queue.whenSettled(),
     new Promise((resolve) => { setTimeout(resolve, SHUTDOWN_WAIT_MS).unref?.(); }),
   ]);
   try {
-    if (getGatewaySettings().mode === 'local' && !isMultiInstanceDevelopment()) {
+    const settings = getGatewaySettings();
+    const relayedInWsl = readWslTargets(connectedAppsWslTargetsPath()).some((target) => target.needsRelay);
+    if (patchesComeOffAtQuit(settings, relayedInWsl) && !isMultiInstanceDevelopment()) {
       removeAllConfigPatches(log);
     }
   } finally {

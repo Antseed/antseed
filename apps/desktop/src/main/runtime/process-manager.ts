@@ -1,3 +1,4 @@
+import { askProcessToStop, forceProcessToStop } from './stop-process.js';
 import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -709,14 +710,14 @@ export class ProcessManager {
       };
 
       const timeout = setTimeout(() => {
-        child.kill('SIGKILL');
+        forceProcessToStop(child);
       }, GATEWAY_STOP_KILL_MS);
       const forceKillTimeout = timeout;
       const resolveTimeout = setTimeout(finish, GATEWAY_STOP_KILL_MS + 2_500);
 
       child.once('exit', finish);
 
-      child.kill('SIGTERM');
+      askProcessToStop(child);
     });
 
     return { ...state };

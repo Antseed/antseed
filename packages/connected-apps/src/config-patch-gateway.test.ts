@@ -41,6 +41,8 @@ test('configPatchBaseUrl swaps the origin in and only rewrites loopback hosts fo
   assert.equal(configPatchBaseUrl('http://localhost:{buyerPort}/v1', REMOTE), 'https://gw.example.com/v1');
   assert.equal(configPatchBaseUrl('http://localhost:{buyerPort}/v1', LOCAL, '172.29.32.1'), 'http://172.29.32.1:8379/v1');
   assert.equal(configPatchBaseUrl('http://localhost:{buyerPort}/v1', REMOTE, '172.29.32.1'), 'https://gw.example.com/v1');
+  // The whole IPv4 loopback range is this computer.
+  assert.equal(configPatchBaseUrl('http://localhost:{buyerPort}/v1', { ...LOCAL, origin: 'http://127.0.0.2:9000' }, '172.29.32.1'), 'http://172.29.32.1:9000/v1');
   // Legacy port form is unchanged.
   assert.equal(configPatchBaseUrl('http://127.0.0.1:{buyerPort}/v1', 9456), 'http://127.0.0.1:9456/v1');
   assert.equal(configPatchBaseUrl('http://localhost:{buyerPort}/v1', 9456, '172.29.32.1'), 'http://172.29.32.1:9456/v1');

@@ -141,6 +141,8 @@ export async function ensureLocalGateway(): Promise<void> {
           ...(isDesktopDebugEnabled() ? { verbose: true } : {}),
           env: {
             ...(isDesktopDebugEnabled() ? { ANTSEED_DEBUG: '1' } : {}),
+            // How ProcessManager asks it to stop on Windows; also stops it if the app crashes.
+            ANTSEED_GATEWAY_STOP_ON_STDIN_CLOSE: '1',
             ...secureIdentityEnv(),
           },
         }).catch((err: unknown) => {
