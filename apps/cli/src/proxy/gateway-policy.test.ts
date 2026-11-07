@@ -957,6 +957,19 @@ test('/v1/models under a gateway policy leaves out sellers below the buyer\'s mi
   assert.deepEqual(await listed('/v1/models?scope=network'), [low.peerId, high.peerId].sort())
 })
 
+test('/v1/models leaves out sellers the router refuses, like one over the buyer\'s price cap', async (t) => {
+  const cheap = makePeer('c', { input: 1, output: 1, trust: 90 })
+  const pricey = makePeer('d', { input: 50, output: 50, trust: 90 })
+  const h = await startHarness(t, [cheap, pricey])
+  ;(h.proxy as any)._node.router = { allowsPeerForPolicy: (_req: unknown, peer: PeerInfo) => peer.peerId === cheap.peerId, onResult: () => {} }
+  const listed = async (path: string) => {
+    const body = await (await fetch(`${h.url}${path}`)).json() as { data: Array<{ peers: Array<{ peerId: string }> }> }
+    return body.data.flatMap((model) => model.peers.map((peer) => peer.peerId)).sort()
+  }
+  assert.deepEqual(await listed('/v1/models'), [cheap.peerId])
+  assert.deepEqual(await listed('/v1/models?scope=network'), [cheap.peerId, pricey.peerId].sort())
+})
+
 test('/v1/models?type=router lists only routers the key policy allows, with only its allowed models', async (t) => {
   const router = makeRoutingPeer('d')
   const h = await startHarness(t, [cheap, router], { modelRoutingClient: routerClient(cheap) as any })

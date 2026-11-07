@@ -61,12 +61,15 @@ export function initConnectedApps(deps: ConnectedAppsDeps): void {
 
 /**
  * Apps Antseed no longer connects (Claude Desktop): an earlier version may
- * have pointed them at Antseed, so restore their config once, at launch.
+ * have pointed them at Antseed, so restore their config at launch. Apps only
+ * the desktop stopped connecting are restored once, on the first launch after
+ * the update, so a later `antseed apps connect` isn't undone by opening the app.
  */
 function removeRetiredAppPatches(): void {
+  const firstLaunchAfterUpdate = !existsSync(connectedAppsStatePath());
   const retired = [
     ...RETIRED_APP_PROFILES.map((raw, index) => normalizeDesktopSystemProxyProfile(raw, index)),
-    ...retiredDesktopProfiles(),
+    ...(firstLaunchAfterUpdate ? retiredDesktopProfiles() : []),
   ];
   retired.forEach((profile) => {
     if (!profile.configPatch) return;
@@ -79,6 +82,7 @@ function removeRetiredAppPatches(): void {
     }
   });
   rmSync(claudeGatewaySlotsPath(), { force: true });
+  if (firstLaunchAfterUpdate) void persist();
 }
 
 function deps(): ConnectedAppsDeps {

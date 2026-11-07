@@ -1,6 +1,8 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type { RuntimeMode, RuntimeProcessState } from './runtime/process-manager.js';
 import type { ConnectedAppsState } from './connected-apps/patching/connection.js';
+import type { TelegramBridgeStatus } from './telegram/bridge.js';
+import type { ChatModel, ChatRoutePreview } from '../shared/chat-gateway-types.js';
 import type {
   FirstModelShownSignal,
   TelemetryStatus,
@@ -99,43 +101,6 @@ type ToolApprovalRequest = {
 // `kind`, `source`, and field set in sync with the source-of-truth type —
 // and with the renderer copy in apps/desktop/src/renderer/types/bridge.ts.
 // Mirrors ChatModel in apps/desktop/src/main/chat/gateway-model.ts.
-type ChatModel = {
-  id: string;
-  label: string;
-  type: string;
-  protocol: 'anthropic-messages' | 'openai-responses' | 'openai-chat-completions' | null;
-  supportsImages: boolean;
-  contextWindow?: number;
-  sellers: number;
-  free: boolean;
-  freeForStakers: boolean;
-  tee: boolean;
-  toolUse: boolean;
-  reasoning: boolean;
-  inputUsdPerMillion: number | null;
-  outputUsdPerMillion: number | null;
-};
-
-type ChatRoutePreview = {
-  model: string;
-  modelAllowed: boolean;
-  sort: string | null;
-  candidates: Array<{
-    peerId: string;
-    name: string | null;
-    rank: number | null;
-    eligible: boolean;
-    reasons: string[];
-    inputUsdPerMillion: number | null;
-    outputUsdPerMillion: number | null;
-    trustScore: number | null;
-    successRate: number | null;
-    firstTokenMs: number | null;
-    tokensPerSecond: number | null;
-    failing: boolean;
-  }>;
-};
-
 type ChatAiStreamStopReason = {
   kind: 'payment_required' | 'aborted' | 'timeout' | 'http_error' | 'network_error' | 'stream_error' | 'unknown';
   source: 'billing' | 'user' | 'transport' | 'upstream' | 'unknown';
@@ -451,6 +416,20 @@ const api = {
   },
   appsListProfiles(): Promise<unknown[]> {
     return ipcRenderer.invoke('apps:list-profiles') as Promise<unknown[]>;
+  },
+  telegramGetStatus(): Promise<{ ok: boolean; data?: TelegramBridgeStatus; error?: string }> {
+    return ipcRenderer.invoke('telegram:get-status');
+  },
+  telegramConnect(botToken: string): Promise<{ ok: boolean; data?: TelegramBridgeStatus; error?: string }> {
+    return ipcRenderer.invoke('telegram:connect', botToken);
+  },
+  telegramDisconnect(): Promise<{ ok: boolean; data?: TelegramBridgeStatus; error?: string }> {
+    return ipcRenderer.invoke('telegram:disconnect');
+  },
+  onTelegramStatusChanged(handler: (data: TelegramBridgeStatus) => void): () => void {
+    const listener = (_: unknown, data: TelegramBridgeStatus) => handler(data);
+    ipcRenderer.on('telegram:status-changed', listener);
+    return () => ipcRenderer.off('telegram:status-changed', listener);
   },
   appsConnect(name: string): Promise<{ ok: boolean; state: ConnectedAppsState; error?: string }> {
     return ipcRenderer.invoke('apps:connect', { name }) as Promise<{ ok: boolean; state: ConnectedAppsState; error?: string }>;

@@ -4,6 +4,7 @@ import { ArrowDown01Icon } from '@hugeicons/core-free-icons';
 import type { ChatModel } from '../../../types/bridge';
 import { filterChatModels, findChatModel, formatPriceRange } from '../../../modules/chat/models';
 import { splitPinnedModel } from '../../../../shared/pinned-model.js';
+import { useDropdownDismiss } from '../../hooks/useDropdownDismiss';
 import styles from './ChatModelDropdown.module.scss';
 
 /** Show the search box once the list is long enough to need it. */
@@ -62,26 +63,16 @@ export function ChatModelDropdown({
   const hasFree = useMemo(() => models.some((model) => model.free), [models]);
   const showSearch = models.length >= SEARCH_THRESHOLD;
 
+  useDropdownDismiss(ref, open, setOpen);
+
   useEffect(() => {
     if (!open) {
       setQuery('');
       setFreeOnly(false);
       return undefined;
     }
-    const handlePointerDown = (event: MouseEvent) => {
-      if (ref.current && !ref.current.contains(event.target as Node)) setOpen(false);
-    };
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(false);
-    };
-    document.addEventListener('mousedown', handlePointerDown);
-    document.addEventListener('keydown', handleKeyDown);
     const frame = requestAnimationFrame(() => searchRef.current?.focus());
-    return () => {
-      document.removeEventListener('mousedown', handlePointerDown);
-      document.removeEventListener('keydown', handleKeyDown);
-      cancelAnimationFrame(frame);
-    };
+    return () => cancelAnimationFrame(frame);
   }, [open]);
 
   const triggerLabel = selected?.label || selectedListedId || (loading ? 'Loading models…' : 'Select a model');

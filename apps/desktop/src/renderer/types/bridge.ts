@@ -208,57 +208,21 @@ export type RawChatAttachment = {
 
 export type ChatPermissionMode = 'manual' | 'full';
 
-/** One gateway model in the chat picker. Mirrors ChatModel in main/chat/gateway-model.ts. */
-export type ChatModel = {
-  id: string;
-  label: string;
-  /** `text`, `image`, `video`, `speech`, … as the gateway reports it. */
-  type: string;
-  /** Chat protocol for text models; null for models the chat cannot talk to. */
-  protocol: 'anthropic-messages' | 'openai-responses' | 'openai-chat-completions' | null;
-  supportsImages: boolean;
-  contextWindow?: number;
-  /** Sellers offering it, as the gateway lists them (before routing policy). */
-  sellers: number;
-  /** Some seller serves it for $0 to everyone. */
-  free: boolean;
-  /** Some seller's free tier is for its stakers only. */
-  freeForStakers: boolean;
-  /** Some seller runs it in a verified TEE. */
-  tee: boolean;
-  toolUse: boolean;
-  reasoning: boolean;
-  /** Cheapest advertised prices, USD per million tokens. */
-  inputUsdPerMillion: number | null;
-  outputUsdPerMillion: number | null;
-};
-/** A seller for one model under the key's routing policy, as the gateway's route preview ranks it. */
-export type ChatRouteCandidate = {
-  peerId: string;
-  name: string | null;
-  /** Auto-routing order among eligible sellers (1 = first choice); null when ineligible. */
-  rank: number | null;
-  /** Allowed by the routing policy; an ineligible seller cannot be pinned either. */
-  eligible: boolean;
-  /** Why it was excluded, or how it scored ("free", "success ~98%", …). */
-  reasons: string[];
-  inputUsdPerMillion: number | null;
-  outputUsdPerMillion: number | null;
-  trustScore: number | null;
-  successRate: number | null;
-  firstTokenMs: number | null;
-  tokensPerSecond: number | null;
-  failing: boolean;
-};
-export type ChatRoutePreview = {
-  model: string;
-  /** The key's policy allows this model at all. */
-  modelAllowed: boolean;
-  /** How Auto orders eligible sellers (balanced, price, …). */
-  sort: string | null;
-  candidates: ChatRouteCandidate[];
-};
+import type { ChatModel, ChatRoutePreview } from '../../shared/chat-gateway-types.js';
+export type { ChatModel, ChatRouteCandidate, ChatRoutePreview } from '../../shared/chat-gateway-types.js';
+
 export type ToolApprovalDecision = 'allow_once' | 'always_allow' | 'deny';
+// Mirrors TelegramBridgeStatus in apps/desktop/src/main/telegram/bridge.ts
+export type TelegramBridgeStatus = {
+  configured: boolean;
+  running: boolean;
+  botUsername: string | null;
+  paired: boolean;
+  ownerName: string | null;
+  pairingLink: string | null;
+  lastError: string | null;
+};
+
 export type ToolApprovalRequest = {
   id: string;
   conversationId: string;
@@ -397,6 +361,10 @@ export type DesktopBridge = {
   onDepositsWatchStatus?: (handler: (data: DepositWatchStatus) => void) => () => void;
 
   appsListProfiles?: () => Promise<ConnectedAppProfile[]>;
+  telegramGetStatus?: () => Promise<{ ok: boolean; data?: TelegramBridgeStatus; error?: string }>;
+  telegramConnect?: (botToken: string) => Promise<{ ok: boolean; data?: TelegramBridgeStatus; error?: string }>;
+  telegramDisconnect?: () => Promise<{ ok: boolean; data?: TelegramBridgeStatus; error?: string }>;
+  onTelegramStatusChanged?: (handler: (data: TelegramBridgeStatus) => void) => () => void;
   appsConnect?: (name: string) => Promise<{ ok: boolean; state: ConnectedAppsState; error?: string }>;
   appsDisconnect?: (name: string) => Promise<{ ok: boolean; state: ConnectedAppsState; error?: string }>;
   /** Installed applications for the "Open with" picker (macOS .app bundles,

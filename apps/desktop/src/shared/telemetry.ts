@@ -32,8 +32,8 @@ export type TelemetryUserAction = (typeof TELEMETRY_USER_ACTIONS)[number];
 
 /**
  * Which app an app_connect / app_disconnect action refers to. A fixed local
- * taxonomy: the packaged profile names; anything else reports as 'custom'
- * so raw names never leave the device.
+ * taxonomy: the packaged profile names plus the Telegram bot; anything else
+ * reports as 'custom' so raw names never leave the device.
  */
 export const TELEMETRY_APP_NAMES = [
   'opencode',
@@ -48,6 +48,7 @@ export const TELEMETRY_APP_NAMES = [
   'goose',
   'zed',
   'claude-code',
+  'telegram',
   'custom',
 ] as const;
 

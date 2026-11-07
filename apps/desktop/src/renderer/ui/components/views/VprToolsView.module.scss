@@ -897,3 +897,21 @@
   font-size: 12px;
   line-height: 18px;
 }
+
+.settingHintLink {
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.settingHintLink code {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.settingHintLink:hover code {
+  color: var(--text-primary);
+}

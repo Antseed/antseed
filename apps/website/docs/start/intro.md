@@ -20,7 +20,7 @@ Run your own Antseed gateway and manage it from a web console. Give people and a
 
 ### Antseed Desktop
 
-One person on one computer. Antseed Desktop runs a local gateway for you, tops up by card or USDC, and connects local coding tools such as Claude Code, Codex and OpenCode to it from its **Apps** view. Keys, usage and limits are in the gateway's console.
+One person on one computer. Antseed Desktop runs a local gateway for you, tops up by card or USDC, and connects local coding tools such as Codex and OpenCode to it from its **Agents & apps** view. Keys, usage and limits are in the gateway's console.
 
 → [Desktop app](/docs/desktop)
 

@@ -186,7 +186,7 @@ curl -s http://localhost:8377/v1/models | jq '.data[].id'
 
 ## Tools
 
-- **Desktop app**: connect Claude Code, Codex, OpenCode and others from **Apps**. The app points them at its local gateway with an API key, not at this proxy. See [Desktop app](/docs/desktop).
+- **Desktop app**: connect Codex, OpenCode and others from **Agents & apps**. The app points them at its local gateway with an API key, not at this proxy. See [Desktop app](/docs/desktop).
 - **CLI wrappers**: `antseed claude`, `antseed codex` and `antseed opencode` launch the tool against the running buyer and pass your other flags through:
 
   ```bash

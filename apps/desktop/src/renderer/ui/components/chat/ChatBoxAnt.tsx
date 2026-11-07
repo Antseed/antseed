@@ -66,13 +66,16 @@ export function ChatBoxAnt({ typing, sending, answering, error, privateMode, hid
   }, [waiting]);
 
   useEffect(() => {
-    const firstToken = answering && !wasAnswering.current;
+    if (answering && !wasAnswering.current) setHappy(true);
     wasAnswering.current = answering;
-    if (!firstToken) return undefined;
-    setHappy(true);
+  }, [answering]);
+
+  // Its own effect: a reply can end (or be stopped) before the timer does.
+  useEffect(() => {
+    if (!happy) return undefined;
     const timer = window.setTimeout(() => setHappy(false), HAPPY_MS);
     return () => window.clearTimeout(timer);
-  }, [answering]);
+  }, [happy]);
 
   useEffect(() => {
     if (!error) {

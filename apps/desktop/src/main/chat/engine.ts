@@ -41,10 +41,11 @@ import { normalizeServiceId } from './normalize.js';
 import { PiConversationStore } from './conversation-store.js';
 import { createStreamingRunner, type ResolvedChatModel } from './streaming-run.js';
 import { generateChatImage } from './image-generation.js';
-import { toChatModel, toChatModels, type ChatModel } from './gateway-model.js';
+import type { PiChatEngine } from './engine-types.js';
+import { recommendAppModels, toChatModel, toChatModels, type ChatModel } from './gateway-model.js';
 import { fetchRoutePreview } from '../gateway/route-preview.js';
 import { splitPinnedModel } from '../../shared/pinned-model.js';
-import { getGatewayEndpoint, type GatewayEndpoint } from '../gateway/service.js';
+import { getGatewayEndpoint, whenPrivacySettled, type GatewayEndpoint } from '../gateway/service.js';
 import { clearGatewayModelCache, fetchGatewayModelEntries, type GatewayModelEntry } from '../gateway/models.js';
 import type {
   ActiveRun,
@@ -55,11 +56,7 @@ import type { FirstModelShownSignal } from '../../shared/telemetry.js';
 
 augmentChatToolPath();
 
-export type PiChatEngine = {
-  /** Drops the cached model list; call when the gateway URL or key changes. */
-  invalidateModelCatalog(): void;
-  abort(conversationId?: string): Promise<void>;
-};
+export type { PiChatEngine } from './engine-types.js';
 
 type OfferPricing = ResolvedChatModel['offers'][number];
 
@@ -486,6 +483,21 @@ export function registerPiChatHandlers({
       clearGatewayModelCache();
       lastEntries = [];
     },
+    createConversation: (model) => store.create(model),
+    hasConversation: async (conversationId) => (await store.get(conversationId)) !== null,
+    setConversationModel: (conversationId, model) => store.setModel(conversationId, model),
+    sendMessageStream: async (conversationId, userMessage) => {
+      await whenPrivacySettled();
+      return runStreamingPrompt(conversationId, userMessage);
+    },
     abort: abortConversations,
+    resolveToolApproval,
+    listModels: async () => {
+      // Not the minute-long cache: the list narrows the moment Private turns on.
+      await whenPrivacySettled();
+      const entries = await fetchGatewayModelEntries(await getGatewayEndpoint(), { force: true });
+      lastEntries = entries;
+      return recommendAppModels(toChatModels(entries));
+    },
   };
 }

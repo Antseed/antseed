@@ -345,7 +345,8 @@ test('hermes: api_key and models; remote provider removable', async () => {
     assert.equal(removeConfigPatch(patch), true);
     const after = parse(await readFile(configPath, 'utf8')) as Record<string, any>;
     assert.equal(after['providers']?.['antseed'], undefined);
-    assert.equal(after['model']?.['provider'], undefined);
+    assert.equal(after['model']?.['provider'], 'other');
+    assert.equal(after['model']?.['default'], 'x');
   });
 });
 
@@ -380,5 +381,135 @@ test('claude-desktop: gateway key is written as inferenceGatewayApiKey', async (
     const profile = (await readJson(path.join(dir, 'Claude-3p', 'configLibrary', '00000000-0000-4000-8000-0000a4753eed.json')));
     assert.equal(profile['inferenceGatewayApiKey'], KEY);
     assert.match(profile['inferenceGatewayBaseUrl'], /^http:\/\/127\.0\.0\.1:\d+$/);
+  });
+});
+
+test('disconnecting gives the user their own model selection back', async () => {
+  await withDir(async (dir) => {
+    const cases: Array<{ patch: ConfigPatchDef; file: string; seed: string; read: (raw: string) => unknown; expected: unknown }> = [
+      {
+        patch: { format: 'opencode', configPath: path.join(dir, 'opencode.json'), providerKey: 'antseed', providerName: 'Antseed', baseURL: 'http://localhost:{buyerPort}/v1', npm: '@ai-sdk/openai-compatible' } as ConfigPatchDef,
+        file: 'opencode.json', seed: '{"model":"mine/a"}', read: (raw) => JSON.parse(raw).model, expected: 'mine/a',
+      },
+      {
+        patch: { format: 'codex', configPath: path.join(dir, 'config.toml'), providerKey: 'antseed', providerName: 'Antseed', baseURL: 'http://localhost:{buyerPort}/v1' } as ConfigPatchDef,
+        file: 'config.toml', seed: 'model = "gpt-5"\nmodel_provider = "mine"\nmodel_context_window = 1000\n',
+        read: (raw) => ['model = "gpt-5"', 'model_provider = "mine"', 'model_context_window = 1000'].every((line) => raw.includes(line)), expected: true,
+      },
+      {
+        patch: { format: 'crush', configPath: path.join(dir, 'crush.json'), providerKey: 'antseed', providerName: 'Antseed', baseURL: 'http://localhost:{buyerPort}/v1' } as ConfigPatchDef,
+        file: 'crush.json', seed: '{"models":{"large":{"provider":"mine","model":"a"}}}', read: (raw) => JSON.parse(raw).models, expected: { large: { provider: 'mine', model: 'a' } },
+      },
+      {
+        patch: { format: 'zed', configPath: path.join(dir, 'zed.json'), providerKey: 'antseed', providerName: 'Antseed', baseURL: 'http://localhost:{buyerPort}/v1' } as ConfigPatchDef,
+        file: 'zed.json', seed: '{"agent":{"default_model":{"provider":"mine","model":"a"}}}', read: (raw) => JSON.parse(raw).agent.default_model, expected: { provider: 'mine', model: 'a' },
+      },
+      {
+        patch: { format: 'goose', configPath: path.join(dir, 'goose.yaml'), providerKey: 'openai', baseURL: 'http://localhost:{buyerPort}' } as ConfigPatchDef,
+        file: 'goose.yaml', seed: 'GOOSE_PROVIDER: mine\nGOOSE_MODEL: a\n', read: (raw) => parse(raw), expected: { GOOSE_PROVIDER: 'mine', GOOSE_MODEL: 'a' },
+      },
+      {
+        patch: { format: 'hermes', configPath: path.join(dir, 'hermes.yaml'), providerKey: 'antseed', baseURL: 'http://localhost:{buyerPort}/v1' } as ConfigPatchDef,
+        file: 'hermes.yaml', seed: 'model:\n  default: a\n  provider: mine\n', read: (raw) => parse(raw), expected: { model: { default: 'a', provider: 'mine' } },
+      },
+      {
+        patch: { format: 'hermes', configPath: path.join(dir, 'hermes-short.yaml'), providerKey: 'antseed', baseURL: 'http://localhost:{buyerPort}/v1' } as ConfigPatchDef,
+        file: 'hermes-short.yaml', seed: 'model: a\n', read: (raw) => parse(raw), expected: { model: 'a' },
+      },
+    ];
+    for (const { patch, file, seed, read, expected } of cases) {
+      const filePath = path.join(dir, file);
+      await writeFile(filePath, seed);
+      writeConfigPatch(patch, LOCAL);
+      // A relaunch re-applies the patch; the saved selection must survive it.
+      writeConfigPatch(patch, LOCAL);
+      assert.ok(isConfigPatchConnected(patch), `${patch.format} connected`);
+      removeConfigPatch(patch);
+      assert.deepEqual(read(await readFile(filePath, 'utf8')), expected, `${patch.format} restored`);
+      assert.equal(existsSync(`${filePath}.antseed.selection.json`), false);
+    }
+  });
+});
+
+test('a model the user picks elsewhere while connected is not overwritten on disconnect', async () => {
+  await withDir(async (dir) => {
+    const filePath = path.join(dir, 'opencode.json');
+    const patch = { format: 'opencode', configPath: filePath, providerKey: 'antseed', providerName: 'Antseed', baseURL: 'http://localhost:{buyerPort}/v1', npm: '@ai-sdk/openai-compatible' } as ConfigPatchDef;
+    await writeFile(filePath, '{"model":"mine/a"}');
+    writeConfigPatch(patch, LOCAL);
+    const config = await readJson(filePath);
+    config.model = 'other/b';
+    await writeFile(filePath, JSON.stringify(config));
+    removeConfigPatch(patch);
+    assert.equal((await readJson(filePath)).model, 'other/b');
+  });
+});
+
+test('pi and GooeyPi share the selection: it returns once both are gone, in either order', async () => {
+  for (const order of [['pi', 'gooeypi'], ['gooeypi', 'pi']]) {
+    await withDir(async (dir) => {
+      const models = path.join(dir, 'models.json');
+      const settings = path.join(dir, 'settings.json');
+      const patches: Record<string, ConfigPatchDef> = {
+        pi: { format: 'pi', configPath: models, settingsPath: settings, providerKey: 'antseed', baseURL: 'http://localhost:{buyerPort}/v1', api: 'openai-responses' } as ConfigPatchDef,
+        gooeypi: { format: 'pi', configPath: models, settingsPath: settings, providerKey: 'antseed-gooeypi', baseURL: 'http://localhost:{buyerPort}/v1', api: 'openai-responses' } as ConfigPatchDef,
+      };
+      await writeFile(settings, '{"defaultProvider":"mine","defaultModel":"a"}');
+      writeConfigPatch(patches.pi!, LOCAL);
+      writeConfigPatch(patches.gooeypi!, LOCAL);
+      removeConfigPatch(patches[order[0]!]!);
+      removeConfigPatch(patches[order[1]!]!);
+      const after = await readJson(settings);
+      assert.equal(after.defaultProvider, 'mine', order.join(' then '));
+      assert.equal(after.defaultModel, 'a');
+    });
+  }
+});
+
+test('codex: a catalog rejected on a later refresh leaves no reference to the deleted file', { skip: process.platform === 'win32' }, async () => {
+  await withDir(async (dir) => {
+    const bin = path.join(dir, 'bin');
+    await mkdir(bin);
+    const codex = path.join(bin, 'codex');
+    const fake = (rejecting: boolean) => `#!/bin/sh
+if [ "$3" = "--bundled" ]; then echo '{"models":[{"base_instructions":"be good","truncation_policy":{"mode":"tokens","limit":1}}]}'; exit 0; fi
+exit ${rejecting ? 1 : 0}
+`;
+    await writeFile(codex, fake(false), { mode: 0o755 });
+    const previousPath = process.env['PATH'];
+    process.env['PATH'] = `${bin}${path.delimiter}${previousPath ?? ''}`;
+    try {
+      const configPath = path.join(dir, 'config.toml');
+      const patch = { format: 'codex', configPath, providerKey: 'antseed', providerName: 'Antseed', baseURL: 'http://localhost:{buyerPort}/v1' } as ConfigPatchDef;
+      writeConfigPatch(patch, LOCAL);
+      const applied = (await readFile(configPath, 'utf8')).includes('model_catalog_json');
+      await writeFile(codex, fake(true), { mode: 0o755 });
+      writeConfigPatch(patch, LOCAL);
+      const after = await readFile(configPath, 'utf8');
+      assert.equal(after.includes('model_catalog_json'), false, `applied first: ${String(applied)}`);
+      assert.equal(existsSync(path.join(dir, 'antseed-models.json')), false);
+    } finally {
+      process.env['PATH'] = previousPath;
+    }
+  });
+});
+
+test('a refresh with no models keeps the way back to the user\'s own default', async () => {
+  await withDir(async (dir) => {
+    const droid = path.join(dir, 'droid.json');
+    const droidPatch = { format: 'droid', configPath: droid, modelDisplayName: 'Antseed', baseURL: 'http://localhost:{buyerPort}/v1', provider: 'generic-chat-completion-api' } as unknown as ConfigPatchDef;
+    await writeFile(droid, JSON.stringify({ sessionDefaultSettings: { model: 'mine' } }));
+    writeConfigPatch(droidPatch, LOCAL);
+    writeConfigPatch(droidPatch, { ...LOCAL, models: [] });
+    removeConfigPatch(droidPatch);
+    assert.equal((await readJson(droid)).sessionDefaultSettings.model, 'mine');
+
+    const claude = path.join(dir, 'claude.json');
+    const claudePatch = { format: 'claude-code', configPath: claude, baseURL: 'http://localhost:{buyerPort}' } as unknown as ConfigPatchDef;
+    await writeFile(claude, JSON.stringify({ model: 'opus' }));
+    writeConfigPatch(claudePatch, LOCAL);
+    writeConfigPatch(claudePatch, { ...LOCAL, models: [] });
+    removeConfigPatch(claudePatch);
+    assert.equal((await readJson(claude)).model, 'opus');
   });
 });

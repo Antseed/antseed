@@ -218,7 +218,7 @@ const AGENT_FAQ = [
   },
   {
     q: 'My agent runs on a server. Can it still use Antseed?',
-    a: "Yes. The simplest way is to install the CLI on that server and start the endpoint next to the agent, so it talks to <code>localhost:8377</code> as usual. If the agent must reach an endpoint on a different machine, publish an authenticated endpoint from Antseed Desktop's Agents view, using ngrok or Cloudflare, and swap in the URL and key it shows. <a href=\"/docs/tunnels\">Public HTTPS tunnels guide →</a> <a href=\"/docs/faq\">More questions in the FAQ →</a>",
+    a: "Yes. The simplest way is to install the CLI on that server and start the endpoint next to the agent, so it talks to <code>localhost:8377</code> as usual. If the agent must reach an endpoint on a different machine, publish an authenticated endpoint with <code>antseed tunnel start</code>, using ngrok or Cloudflare, and swap in the URL and key it shows. <a href=\"/docs/tunnels\">Public HTTPS tunnels guide →</a> <a href=\"/docs/faq\">More questions in the FAQ →</a>",
   },
 ];
 

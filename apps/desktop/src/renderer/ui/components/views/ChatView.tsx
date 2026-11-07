@@ -509,6 +509,8 @@ export function ChatView({ onSelectView }: ChatViewProps) {
     // jerking the pane mid-slide.
     if (inputRef.current) inputRef.current.focus({ preventScroll: true });
     if (activePendingQueue.length === 0) return;
+    // Nothing goes out under a policy the screen doesn't show.
+    if (privacySwitching) return;
     const head = activePendingQueue[0];
     if (!head) return;
     setPendingQueue((prev) => prev.filter((item) => item.id !== head.id));
@@ -519,7 +521,7 @@ export function ChatView({ onSelectView }: ChatViewProps) {
     } else {
       actions.sendMessage(head.text, head.attachments);
     }
-  }, [snap.chatInputDisabled, activePendingQueue, actions]);
+  }, [snap.chatInputDisabled, activePendingQueue, actions, privacySwitching]);
 
   // --- Divider drag (pointer capture — no orphaned listeners) ---
   const handleDividerPointerDown = useCallback((e: React.PointerEvent) => {

@@ -127,7 +127,11 @@ export function VprHomeView({ onSelectView }: Props) {
     if (!text || switching) return;
     // Home always starts a new chat rather than continuing the open one.
     if (snap.chatActiveConversation) actions.startNewChat();
-    actions.sendMessage(text);
+    if (snap.chatImageModelId) {
+      actions.generateImage(text);
+    } else {
+      actions.sendMessage(text);
+    }
     setDraft('');
     onSelectView?.('chat');
   }

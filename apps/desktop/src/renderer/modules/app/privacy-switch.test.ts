@@ -71,6 +71,46 @@ describe('requestPrivacyMode', () => {
     expect(getPrivacySwitchState().switching).toBe(false);
   });
 
+  it('reads the mode back when a write fails, since it may have landed', async () => {
+    const { requestPrivacyMode, getPrivacySwitchState, calls, shownMode } = await setup();
+    (window as any).antseedDesktop.gatewayGetPrivacy = async () => ({ ok: true, privacy: privacy('private') });
+    const done = requestPrivacyMode('private');
+    calls[0].settle({ ok: false, error: 'the read after the write failed' });
+    await done;
+    expect(shownMode()).toBe('private');
+    expect(getPrivacySwitchState()).toEqual({ switching: false, error: 'the read after the write failed' });
+  });
+
+  it('keeps sending held while the mode is unknown, until a read succeeds', async () => {
+    const { requestPrivacyMode, privacyResource, getPrivacySwitchState, calls } = await setup();
+    let readable = false;
+    (window as any).antseedDesktop.gatewayGetPrivacy = async () => (readable
+      ? { ok: true, privacy: privacy('anonymous') }
+      : { ok: false, error: 'gateway down' });
+    (window as any).setTimeout = () => 0;
+    const done = requestPrivacyMode('private');
+    calls[0].settle({ ok: false, error: 'nope' });
+    await done;
+    expect(getPrivacySwitchState()).toEqual({ switching: true, error: 'nope' });
+    readable = true;
+    await privacyResource.refresh();
+    expect(getPrivacySwitchState()).toEqual({ switching: false, error: 'nope' });
+    expect(privacyResource.getSnapshot().data?.mode).toBe('anonymous');
+  });
+
+  it('does not let a read that began before a switch overwrite its result', async () => {
+    const { requestPrivacyMode, privacyResource, calls, shownMode } = await setup();
+    let finishRead: (result: { ok: boolean; privacy: GatewayPrivacy }) => void = () => {};
+    (window as any).antseedDesktop.gatewayGetPrivacy = () => new Promise((resolve) => { finishRead = resolve; });
+    const poll = privacyResource.refresh();
+    const done = requestPrivacyMode('private');
+    calls[0].settle({ ok: true, privacy: privacy('private') });
+    await done;
+    finishRead({ ok: true, privacy: privacy('anonymous') });
+    await poll;
+    expect(shownMode()).toBe('private');
+  });
+
   it('does not let a poll landing mid-switch flip the screen back', async () => {
     const { requestPrivacyMode, privacyResource, calls, shownMode } = await setup();
     const done = requestPrivacyMode('private');

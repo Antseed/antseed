@@ -5,6 +5,7 @@
  * API — base URL, bearer key, `/v1/models` — with no peer routing of its own.
  */
 
+import type { ChatModel, ChatServiceProtocol } from '../../shared/chat-gateway-types.js';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { Model } from '@mariozechner/pi-ai';
@@ -16,33 +17,10 @@ import type { GatewayModelEntry } from '../gateway/models.js';
 /** pi-ai provider id for gateway models; never sent on the wire. */
 export const GATEWAY_PROVIDER_ID = 'antseed-gateway';
 
-export type ChatServiceProtocol = 'anthropic-messages' | 'openai-responses' | 'openai-chat-completions';
+export type { ChatServiceProtocol };
 
 /** One row of the chat model picker: a gateway model id, not a peer offer. */
-export type ChatModel = {
-  id: string;
-  label: string;
-  /** `text`, `image`, `video`, `speech`, … as the gateway reports it; `text` for untyped entries. */
-  type: string;
-  /** Chat protocol for text models; null for models the chat cannot talk to (image, video, …). */
-  protocol: ChatServiceProtocol | null;
-  /** Accepts image input: vision for text models, image edits for image models. */
-  supportsImages: boolean;
-  contextWindow?: number;
-  /** Sellers offering it, as the gateway lists them (before routing policy). */
-  sellers: number;
-  /** Some seller serves it for $0 to everyone (not only to stakers). */
-  free: boolean;
-  /** Some seller's free tier is for its stakers only. */
-  freeForStakers: boolean;
-  /** Some seller runs it in a verified TEE. */
-  tee: boolean;
-  toolUse: boolean;
-  reasoning: boolean;
-  /** Cheapest advertised prices across sellers, USD per million tokens; null when none advertised. */
-  inputUsdPerMillion: number | null;
-  outputUsdPerMillion: number | null;
-};
+export type { ChatModel };
 
 export const CHAT_SYSTEM_PROMPT_ENV = 'ANTSEED_CHAT_SYSTEM_PROMPT';
 export const CHAT_SYSTEM_PROMPT_FILE_ENV = 'ANTSEED_CHAT_SYSTEM_PROMPT_FILE';

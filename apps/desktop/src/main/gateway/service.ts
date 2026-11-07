@@ -371,7 +371,20 @@ export async function getGatewayPrivacy(): Promise<GatewayPrivacy> {
   return { mode, editable: true, requiredAbove };
 }
 
-export async function setGatewayPrivacy(mode: GatewayPrivacyMode): Promise<GatewayPrivacy> {
+/** Settles once no privacy switch is being applied. Sends that the renderer can't hold wait on it. */
+let privacySwitch: Promise<unknown> = Promise.resolve();
+
+export function whenPrivacySettled(): Promise<void> {
+  return privacySwitch.then(() => undefined, () => undefined);
+}
+
+export function setGatewayPrivacy(mode: GatewayPrivacyMode): Promise<GatewayPrivacy> {
+  const applying = applyGatewayPrivacy(mode);
+  privacySwitch = applying;
+  return applying;
+}
+
+async function applyGatewayPrivacy(mode: GatewayPrivacyMode): Promise<GatewayPrivacy> {
   if (getGatewaySettings().mode === 'remote') throw new Error('A remote gateway\'s routing policy is set in its console');
   await ensureLocalGateway();
   const key = await ensureLocalKey(DESKTOP_KEY_SCOPE);

@@ -16,6 +16,8 @@ import {
   type RuntimeProcessState,
 } from './runtime/process-manager.js';
 import { registerPiChatHandlers } from './chat/engine.js';
+import { emitChatEvent } from './chat/event-bus.js';
+import { createTelegramBridge } from './telegram/bridge.js';
 import { encryptedIdentityPath, ensureSecureIdentity, getSecureIdentity, hasStoredIdentity } from './identity.js';
 import type { LogEvent } from './runtime/log-parser.js';
 import {
@@ -70,6 +72,7 @@ import { registerPaymentsIpc } from './ipc/payments.js';
 import { registerRuntimeIpc } from './ipc/runtime.js';
 import { registerConnectedAppsIpc } from './ipc/connected-apps.js';
 import { registerGatewayIpc } from './ipc/gateway.js';
+import { registerTelegramIpc } from './ipc/telegram.js';
 import {
   effectiveLaunchTarget,
 } from './connected-apps/profile-targets.js';
@@ -211,6 +214,7 @@ if (!IS_SAFE_STORAGE_EXPORT) {
 
 async function stopDesktopServices(): Promise<void> {
   await Promise.all([
+    telegramBridge.stop(),
     releaseConnectedAppsOnQuit().then(() => stopLocalGateway()),
     stopPaymentsPortal(),
   ]);
@@ -245,6 +249,8 @@ const piChatEngine = registerPiChatHandlers({
   ipcMain,
   sendToRenderer: (channel, payload) => {
     getMainWindow()?.webContents.send(channel, payload);
+    // Tee every chat event into the bus so the Telegram bridge can follow it.
+    emitChatEvent(channel, payload);
   },
   configPath: ACTIVE_CONFIG_PATH,
   appendSystemLog: (line) => {
@@ -278,6 +284,17 @@ const piChatEngine = registerPiChatHandlers({
     await telemetry?.recordDiscoveryFailed(input);
   },
 });
+
+// ── Telegram bridge ──
+const telegramBridge = createTelegramBridge({
+  engine: piChatEngine,
+  appendLog: (line) => { appendLog('gateway', 'system', line); },
+  onStatusChanged: (status) => {
+    getMainWindow()?.webContents.send('telegram:status-changed', status);
+  },
+});
+
+registerTelegramIpc({ telegramBridge });
 
 app.whenReady().then(async () => {
   if (IS_SAFE_STORAGE_EXPORT) return;
@@ -358,6 +375,12 @@ app.whenReady().then(async () => {
     .catch((err) => {
       appendLog('gateway', 'system', `Reconnecting apps failed: ${err instanceof Error ? err.message : String(err)}`);
     });
+
+  // Resume the Telegram bridge if a bot was connected in a previous session.
+  // Needs app-ready because the token store decrypts via safeStorage.
+  void telegramBridge.start().catch((err) => {
+    appendLog('gateway', 'system', `[telegram] Bridge resume failed: ${err instanceof Error ? err.message : String(err)}`);
+  });
 
   // Payments portal starts lazily on first open (via payments:open-portal IPC)
 

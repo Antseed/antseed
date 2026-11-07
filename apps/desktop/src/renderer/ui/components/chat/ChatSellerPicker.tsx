@@ -5,6 +5,7 @@ import type { ChatRouteCandidate, ChatRoutePreview } from '../../../types/bridge
 import { formatPriceRange, isFreeOffer } from '../../../modules/chat/models';
 import { splitPinnedModel } from '../../../../shared/pinned-model.js';
 import { usePrivateMode } from '../vpr/PrivacyToggle';
+import { useDropdownDismiss } from '../../hooks/useDropdownDismiss';
 import styles from './ChatModelDropdown.module.scss';
 
 type ChatSellerPickerProps = {
@@ -106,21 +107,7 @@ export function ChatSellerPicker({ modelId, disabled, onChange, onOpenChange, me
     load(changed);
   }, [load, privateMode]);
 
-  useEffect(() => {
-    if (!open) return undefined;
-    const handlePointerDown = (event: MouseEvent) => {
-      if (ref.current && !ref.current.contains(event.target as Node)) setOpen(false);
-    };
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(false);
-    };
-    document.addEventListener('mousedown', handlePointerDown);
-    document.addEventListener('keydown', handleKeyDown);
-    return () => {
-      document.removeEventListener('mousedown', handlePointerDown);
-      document.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [open]);
+  useDropdownDismiss(ref, open, setOpen);
 
   if (!listedId) return null;
 

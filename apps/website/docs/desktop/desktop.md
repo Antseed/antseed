@@ -65,6 +65,7 @@ Open **Agents & apps** and connect a detected tool. The app edits the tool's own
 - **Zed** keeps API keys in its keychain, so paste the key into Zed once.
 - **Claude Code** is not in this list: its model list only takes Claude-named models, so it can't offer the network's. If an earlier version connected it, the app restores its original settings. You can still add Antseed's skills to it under **Use it with your agent**.
 - **Codex** gets its model list from a catalog the app writes next to its config. A Codex inside WSL keeps its own list.
+- **Telegram Bot** lets you message the agent on your computer from your phone. Create a bot with [@BotFather](https://t.me/BotFather), paste its token in the **Telegram Bot** row, then open the pairing link; the bot answers only you. It uses `/new`, `/model` and `/stop`, asks you in Telegram before running a tool, and only answers while the app is open. Its chats are billed like any chat in the app and follow your Anonymous or Private choice.
 - **Claude Desktop** is no longer supported: its model picker only lists Claude's own model names, so it cannot offer the network's models. If an earlier version connected it, the app restores Claude Desktop's original configuration at launch.
 
 ### Use with any other tool
@@ -90,7 +91,7 @@ The first launch after the update:
 - re-points apps you had connected to the gateway, with the new key,
 - restores the operating system's proxy setting if an earlier version left it pointing at its system proxy (`127.0.0.1:8378`).
 
-The floating window and the thin window, the HTTPS interception and **Add custom app**, the Telegram bot, the **Internet-accessible endpoint** and **Agents**, staking, the **Models** and model pages, **Peers**, **Activity**, **Profile** and the power button were removed. Seller routing preferences (minimum trust, price, allow and block lists) are now the gateway's routing policy, set in the Gateway Console. Conversations no longer pin a model or seller; choose the model in each tool.
+The floating window and the thin window, the HTTPS interception and **Add custom app**, the **Internet-accessible endpoint** and **Agents**, staking, the **Models** and model pages, **Peers**, **Activity**, **Profile** and the power button were removed. Seller routing preferences (minimum trust, price, allow and block lists) are now the gateway's routing policy, set in the Gateway Console. Conversations no longer pin a model or seller; choose the model in each tool.
 
 ## Privacy
 

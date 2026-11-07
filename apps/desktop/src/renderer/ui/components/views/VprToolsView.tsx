@@ -15,6 +15,7 @@ import { BrandIcon, isThemeAwareAppBrand, Modal, resolveBrandKey } from '@antsee
 import type { ConnectedAppProfile, GatewayEndpointInfo, InstalledAppEntry } from '../../../types/bridge';
 import { appsResource, installedAppsResource } from '../../../modules/app/vpr-resources';
 import { useCachedResource } from '../../../modules/app/cached-resource';
+import { TelegramBotCard } from './TelegramBotCard';
 import { VprCard, VprPage, VprSearch } from '../vpr/VprKit';
 import { AgentSkillsPanel } from '../vpr/AgentSkillsPanel';
 import { appLogoUrl } from '../vpr/AppPills';
@@ -351,6 +352,7 @@ export function VprToolsView() {
           </div>
 
           <div className={styles.appList}>
+            <TelegramBotCard />
             {orderedProfiles.map((profile) => {
               const connected = profile.connected;
               const canRestart = connected && profile.canRestart === true;

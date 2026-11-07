@@ -49,6 +49,13 @@ function GatewaySection() {
       const result = await bridge.gatewayUpdateSettings(patch);
       if (!result.ok || !result.settings) {
         setMessage(result.error ?? 'Could not save the gateway settings');
+        // Refused settings are still saved, so show what the app now has:
+        // choosing "This computer" must then really switch back.
+        const saved = await bridge.gatewayGetSettings?.();
+        if (saved) {
+          setSettings(saved);
+          setMode(saved.mode);
+        }
         return;
       }
       setSettings(result.settings);

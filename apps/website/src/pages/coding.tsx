@@ -184,7 +184,7 @@ const CODING_FAQ = [
   },
   {
     q: 'Does Cursor work?',
-    a: "Yes, through a public endpoint. Some Cursor requests come from Cursor's own servers, which cannot reach your <code>localhost</code>, so publish an authenticated HTTPS endpoint from Antseed Desktop, then in Cursor's model settings paste the Antseed key as the OpenAI API key and the endpoint as the OpenAI base URL. <a href=\"/docs/tunnels#use-it-with-cursor\">Cursor setup →</a>",
+    a: "Yes, through a public endpoint. Some Cursor requests come from Cursor's own servers, which cannot reach your <code>localhost</code>, so publish an authenticated HTTPS endpoint with <code>antseed tunnel start</code>, then in Cursor's model settings paste the Antseed key as the OpenAI API key and the endpoint as the OpenAI base URL. <a href=\"/docs/tunnels#use-it-with-cursor\">Cursor setup →</a>",
   },
   {
     q: 'How do I pick which model my tool uses?',

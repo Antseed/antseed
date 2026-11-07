@@ -6,29 +6,12 @@
  * (the gateway refuses a pinned seller the policy excludes anyway).
  */
 import { splitPinnedModel } from '../../shared/pinned-model.js';
+import type { ChatRouteCandidate, ChatRoutePreview } from '../../shared/chat-gateway-types.js';
 import type { GatewayEndpoint } from './service.js';
 
-export type RouteCandidate = {
-  peerId: string;
-  name: string | null;
-  rank: number | null;
-  eligible: boolean;
-  reasons: string[];
-  inputUsdPerMillion: number | null;
-  outputUsdPerMillion: number | null;
-  trustScore: number | null;
-  successRate: number | null;
-  firstTokenMs: number | null;
-  tokensPerSecond: number | null;
-  failing: boolean;
-};
 
-export type RoutePreview = {
-  model: string;
-  modelAllowed: boolean;
-  sort: string | null;
-  candidates: RouteCandidate[];
-};
+export type RouteCandidate = ChatRouteCandidate;
+export type RoutePreview = ChatRoutePreview;
 
 const CONSOLE_CSRF_HEADER = 'x-antseed-console';
 const CACHE_TTL_MS = 30_000;
