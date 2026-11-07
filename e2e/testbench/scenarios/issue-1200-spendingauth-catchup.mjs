@@ -1,7 +1,7 @@
 export const meta = {
   description: 'Issue #1200: a buyer that lost a NeedAuth is under-signed, and the seller\'s budget-exhausted 402 asks it to catch up to the delivered spend. The buyer must sign exactly that target, not max(target, signed + minBudgetPerRequest), and settle-on-disconnect must charge exactly the delivered work.',
   targets: ['local', 'fork'],
-  requires: ['buyerControl', 'mockControl'],
+  requires: ['buyerControl', 'buyerFaults', 'mockControl'],
 };
 
 export const topology = {

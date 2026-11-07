@@ -17,10 +17,12 @@ export async function run(tb) {
   const plain = await tb.chat({ model, prompt: 'Say hello.' });
   tb.check('non-streaming chat answered by the testbench seller', plain.content.length > 0, plain.content);
   tb.check('non-streaming chat reports usage', plain.usage?.total_tokens > 0, plain.usage);
+  tb.metric('chatMs', plain.latencyMs);
 
   const streamed = await tb.chat({ model, prompt: 'Say hello again.', stream: true });
   tb.check('streaming chat answered by the testbench seller', streamed.content.length > 0, streamed.content);
   tb.check('streaming chat reports usage', streamed.usage?.total_tokens > 0, streamed.usage);
+  tb.metric('streamChatMs', streamed.latencyMs);
 
   if (tb.manifest.upstream === 'mock') {
     const upstream = (await tb.mockRequests(seller.id)).filter((entry) => entry.path === '/v1/chat/completions');
@@ -43,11 +45,10 @@ export async function run(tb) {
   if (tb.manifest.upstream === 'mock') {
     const delivered = tb.mockCostPerChat(seller.id, model) * 2n;
     tb.metric('deliveredWorkMicroUsdc', String(delivered));
-    tb.knownIssue(
+    tb.check(
       'settled amount equals the cost of delivered work',
       BigInt(settlement.totalPaidMicroUsdc) === delivered,
       { settled: settlement.totalPaidMicroUsdc, delivered: String(delivered), signedBeforeClose: open[0].cumulativeSigned },
-      'cooperative close settles one extra request cost (buyer-core close path)',
     );
   }
 }

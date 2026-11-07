@@ -140,15 +140,37 @@ const CHAIN_CONFIGS: Record<ChainId, ChainConfig> = {
     chainId: 'base-local',
     evmChainId: 31337,
     rpcUrl: 'http://127.0.0.1:8545',
-    // Nonce sequence: 0=USDC, 1=Registry, 2=ANTSToken, 3=AntseedRegistry, 4=Staking, 5=Deposits, 6=Channels, 7=Stats, 8=Emissions, 9=DepositRelay
+    // A fresh Anvil, deployed by anvil account 0. script/Deploy.s.sol, deployer nonces 0-9: 0=MockUSDC,
+    // 1=MockERC8004Registry, 2=ANTSToken, 3=AntseedRegistry, 4=Staking, 5=Deposits, 6=Channels, 7=Stats,
+    // 8=Emissions (V1), 9=DepositRelay. staking/emissions keep naming those legacy contracts.
     usdcContractAddress: '0x5FbDB2315678afecb367f032d93F642f64180aa3',
     identityRegistryAddress: '0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512',
-    registryContractAddress: '0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0',
+    registryContractAddress: '0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9',
     stakingContractAddress: '0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9',
     depositsContractAddress: '0x5FC8d32690cc91D4c39d9d3abcBD16989F875707',
     channelsContractAddress: '0x0165878A594ca255338adfa4d48449f69242Eb8F',
+    statsContractAddress: '0xa513E6E4b8f2a923D98304ec87F64353C4D5C853',
     emissionsContractAddress: '0x2279B7A0a67DB372996a5FaB50D91eAA73d2eBe6',
     depositRelayAddress: '0x8A791620dd6260079BF849Dc5567aDC3F2FdC318',
+    // The rest of the production stack, as the worktree testbench's `--chain local` lays it out by default
+    // (e2e/testbench/lib/local-deploy.mjs: script/DeployLocalFull.s.sol, M001 Cutover.s.sol, DeployFreeUsage.s.sol,
+    // M003 Deploy.s.sol). After the cutover the registry's staking/emissions are SellerRegistry/UsageAccounting.
+    // ANTS sits at Base's address because AntseedEmissionsGate hardcodes it. A chain with only Deploy.s.sol on it
+    // has no code at these addresses; the node then resolves the legacy stack (payments/contract-stack.ts).
+    antsTokenAddress: '0xa87EE81b2C0Bc659307ca2D9ffdC38514DD85263',
+    washTradingRegistryAddress: '0xc5a5C42992dECbae36851359345FE25997F5C42d',
+    emissionsGateAddress: '0x67d269191c92Caf3cD7723F116c85e6E9bf55933',
+    sellerPoolsAddress: '0xE6E340D132b5f46d1e472DebcD681B2aBc16e57E',
+    sellerRegistryAddress: '0xc3e53F4d16Ae77Db1c982e75a937B9f60FE63690',
+    positionInitAddress: '0xa82fF9aFd8f496c3d6ac40E2a0F282E47488CFc9',
+    usageAccountingAddress: '0x1613beB3B2C4f22Ee086B2b38C1476A3cE7f78E8',
+    pointsPolicyRegistryAddress: '0x851356ae760d987E095750cCeb3bC6014560891C',
+    sellerPoolsRewardsAddress: '0x70e0bA845a1A0F2DA3359C97E0285013525FFC49',
+    usageRewardsAddress: '0x4826533B4897376654Bb4d4AD88B7faFD0C98528',
+    legacyEmissionsEscrowAddress: '0x9d4454B023096f34B160D6B654540c56A1F81688',
+    freeUsageContractAddress: '0xFD471836031dc5108809D173A067e8486B9047A3',
+    verificationResultsAddress: '0x1429859428C0aBc9C2C47C8Ee9FBaf82cFA0F20f',
+    verificationContractAddress: '0xB0D4afd8879eD9F52b28595d31B441D079B2Ca07',
   },
 };
 

@@ -152,6 +152,92 @@ jobs:
             ${{ runner.temp }}/antseed-stress/runs/*/*.json
           retention-days: 7
 
+  testbench:
+    name: Testbench (local chain)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'pnpm'
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Build tiers 0-3 and the CLI
+        run: |
+          pnpm run build:tier0
+          pnpm run build:tier1
+          pnpm run build:tier2
+          pnpm run build:tier3
+          pnpm --filter=@antseed/cli run build
+
+      # Same command as the other jobs that deploy. It ignores the pin: forge-std moves to the latest
+      # tag and foundry.lock is rewritten, in this checkout only. Locally, restore both afterwards.
+      - name: Install Forge dependencies
+        run: cd packages/contracts && forge install foundry-rs/forge-std
+
+      # Shared with the other jobs that deploy: contracts compile once per change to them.
+      - name: Restore compiled contracts
+        uses: actions/cache@v4
+        with:
+          path: |
+            packages/contracts/out
+            packages/contracts/cache_forge
+          key: contracts-deploy-${{ hashFiles('packages/contracts/**/*.sol', 'packages/contracts/foundry.toml', 'packages/contracts/foundry.lock', 'pnpm-lock.yaml') }}
+
+      - name: Test the testbench
+        run: pnpm test:testbench
+
+      # One seed per commit, so a failure replays with the rerun line it prints. Set here because
+      # the runner context is not available in a job-level env.
+      - name: Choose the seed and state directory
+        run: |
+          echo "SEED=$((16#${GITHUB_SHA:0:8}))" >> "$GITHUB_ENV"
+          echo "ANTSEED_TESTBENCH_HOME=$RUNNER_TEMP/testbench" >> "$GITHUB_ENV"
+
+      - name: Run chat-basic
+        run: pnpm testbench run chat-basic --chain local --seed "$SEED"
+
+      - name: Run payment-flow
+        run: pnpm testbench run payment-flow --chain local --seed "$SEED"
+
+      - name: Run routing-smoke
+        run: pnpm testbench run routing-smoke --chain local --seed "$SEED"
+
+      - name: Run issue-1200-spendingauth-catchup
+        run: pnpm testbench run issue-1200-spendingauth-catchup --chain local --seed "$SEED"
+
+      - name: Run stress-smoke
+        run: pnpm testbench run stress-smoke --chain local --seed "$SEED"
+
+      - name: Upload testbench reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: testbench-reports
+          path: |
+            ${{ runner.temp }}/testbench/*/reports
+            ${{ runner.temp }}/testbench/*/logs
+          retention-days: 7
+
+      # desktop-chat is not in this job yet. It would need, after the build above:
+      #   - Electron's system libraries and xvfb (apt-get)
+      #   - pnpm --filter @antseed/desktop run build:main && pnpm --filter @antseed/desktop run build:renderer
+      #   - pnpm exec playwright install ffmpeg
+      #   - xvfb-run -a pnpm testbench run desktop-chat --chain local --seed "$SEED"
+
   installer-lint:
     name: Lint installer script
     runs-on: ubuntu-latest

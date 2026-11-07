@@ -3,10 +3,24 @@ import { sanitizeConfig } from './config.mjs';
 export const MAX_SELLERS = 8;
 const SELLER_ID = /^[a-z0-9][a-z0-9-]{0,23}$/;
 export const TARGET_CAPABILITIES = {
-  fork: new Set(['warpTime', 'sellerControl', 'mockControl', 'liveUpstream', 'desktop', 'buyerControl']),
-  local: new Set(['warpTime', 'sellerControl', 'mockControl', 'liveUpstream', 'desktop', 'buyerControl', 'sourceContracts']),
+  fork: new Set(['warpTime', 'sellerControl', 'mockControl', 'liveUpstream', 'desktop', 'buyerControl', 'buyerFaults']),
+  local: new Set(['warpTime', 'sellerControl', 'mockControl', 'liveUpstream', 'desktop', 'buyerControl', 'buyerFaults', 'sourceContracts']),
   mainnet: new Set(['desktop', 'realFunds']),
 };
+/** How nodes run: `sdk` builds them from the SDK (the buyer inside the supervisor), `cli` runs real `antseed` CLI processes. */
+export const TESTBENCH_MODES = new Set(['sdk', 'cli']);
+/** Capabilities a mode cannot offer whatever the target: fault hooks reach into an in-process buyer. */
+const MODE_LACKS = { sdk: new Set(), cli: new Set(['buyerFaults']) };
+
+export function assertMode(mode, label = 'mode') {
+  if (!TESTBENCH_MODES.has(mode)) throw new Error(`${label} must be one of ${[...TESTBENCH_MODES].join(', ')}`);
+  return mode;
+}
+
+/** The mode a run or `up` asks for: --mode, then the scenario topology, then sdk. */
+export function requestedMode(override, topology) {
+  return assertMode(override ?? topology?.mode ?? 'sdk');
+}
 
 function microsFromUsdc(value, label) {
   const text = String(value);
@@ -35,12 +49,26 @@ export function normalizeTopology(topology = {}, source, overrides = {}) {
     const providers = seller.providers
       ? sanitizeConfig({ seller: { providers: seller.providers } }).cleaned.seller.providers
       : structuredClone(source.seller.providers);
-    return { id, providers, mock: normalizeMock(seller.mock ?? {}, id) };
+    for (const [providerName, provider] of Object.entries(providers)) {
+      for (const [serviceId, service] of Object.entries(provider.services ?? {})) {
+        if (service.freeTier !== undefined) service.freeTier = normalizeFreeTier(service.freeTier, `seller ${id} ${providerName}.${serviceId}.freeTier`);
+      }
+    }
+    return {
+      id, providers, mock: normalizeMock(seller.mock ?? {}, id),
+      ...(seller.freeTier !== undefined ? { freeTier: normalizeFreeTier(seller.freeTier, `seller ${id} freeTier`) } : {}),
+      ...(seller.env ? { env: normalizeEnv(seller.env, `seller ${id}`) } : {}),
+    };
   });
   const buyerIn = topology.buyer ?? {};
+  const freeTierSellers = sellers.filter((seller) => seller.freeTier || Object.values(seller.providers).some((provider) => Object.values(provider.services ?? {}).some((service) => service.freeTier)));
+  if (freeTierSellers.length && requestedMode(overrides.mode, topology) !== 'cli') {
+    throw new Error(`Free-tier programs (seller ${freeTierSellers.map((seller) => seller.id).join(', ')}) need mode cli: \`antseed seller start\` reads them from the seller config`);
+  }
   const depositUsdc = overrides.depositUsdc ?? buyerIn.depositUsdc ?? '10';
   const chainIn = topology.chain ?? {};
   const block = overrides.block ?? chainIn.block;
+  const mode = requestedMode(overrides.mode, topology);
   const settlementIdleMs = topology.payments?.settlementIdleMs;
   // Sellers built on the SDK default to a 0.5 USDC minimum budget per request; `antseed seller start` uses 0.01.
   const minBudgetPerRequestUsdc = topology.payments?.minBudgetPerRequestUsdc;
@@ -51,6 +79,8 @@ export function normalizeTopology(topology = {}, source, overrides = {}) {
   // Base-like RPCs come with Base's 2 s blocks unless the topology says otherwise; direct RPCs keep Anvil's automine.
   const blockTimeSec = chainIn.blockTimeSec ?? (rpc === 'base' ? 2 : undefined);
   if (blockTimeSec !== undefined && !(Number.isInteger(blockTimeSec) && blockTimeSec >= 1 && blockTimeSec <= 30)) throw new Error('chain.blockTimeSec must be 1-30');
+  const contracts = overrides.contracts ?? chainIn.contracts ?? DEFAULT_CONTRACT_LAYOUT;
+  if (!CONTRACT_LAYOUTS.includes(contracts)) throw new Error(`chain.contracts must be one of ${CONTRACT_LAYOUTS.join(', ')}`);
   const topUpThresholdBps = chainIn.topUpThresholdBps;
   if (topUpThresholdBps !== undefined && !(Number.isInteger(topUpThresholdBps) && topUpThresholdBps >= 1 && topUpThresholdBps <= 10_000)) throw new Error('chain.topUpThresholdBps must be 1-10000');
   const caps = {};
@@ -58,16 +88,20 @@ export function normalizeTopology(topology = {}, source, overrides = {}) {
     if (buyerIn[key] !== undefined) caps[key.replace('Usdc', 'Micros')] = String(microsFromUsdc(buyerIn[key], `buyer.${key}`));
   }
   return {
+    mode,
     sellers,
     buyer: {
       depositMicros: String(microsFromUsdc(depositUsdc, 'depositUsdc')),
       routingPreferences: { ...(source.buyer.routingPreferences ?? {}), ...(buyerIn.routingPreferences ?? {}) },
       ...(buyerIn.maxPricing ?? source.buyer.maxPricing ? { maxPricing: structuredClone(buyerIn.maxPricing ?? source.buyer.maxPricing) } : {}),
       ...caps,
+      ...(buyerIn.env ? { env: normalizeEnv(buyerIn.env, 'buyer') } : {}),
     },
     chain: {
       ...(block !== undefined ? { block: Number(block) } : {}),
       rpc,
+      // The default layout is left out, so topologies (and their fingerprints) from before the knob read the same.
+      ...(contracts !== DEFAULT_CONTRACT_LAYOUT ? { contracts } : {}),
       ...(blockTimeSec !== undefined ? { blockTimeSec } : {}),
       ...(topUpThresholdBps !== undefined ? { topUpThresholdBps } : {}),
     },
@@ -84,6 +118,41 @@ export function normalizeTopology(topology = {}, source, overrides = {}) {
  * block behind and missing receipts right after a transaction; see e2e/stress/rpc-proxy.mjs).
  */
 export const RPC_PROFILES = new Set(['direct', 'base']);
+
+const FREE_TIER_KEYS = new Set(['maxRequestsPerAddress', 'maxRequestsPerIp', 'windowMs', 'stakeTiers', 'stakersOnly']);
+
+/**
+ * A seller free-tier program, as `seller.freeTier` or a service's `freeTier` in the CLI config
+ * (packages/node/src/payments/seller-free-tier-limiter.ts): request limits per buyer address and per IP over a
+ * window, staked tiers `{ minPower (ANTS x epochs), multiplier (number or 'unlimited') }` and stakersOnly.
+ */
+export function normalizeFreeTier(freeTier, label = 'freeTier') {
+  if (!freeTier || typeof freeTier !== 'object' || Array.isArray(freeTier)) throw new Error(`${label} must be an object`);
+  for (const key of Object.keys(freeTier)) if (!FREE_TIER_KEYS.has(key)) throw new Error(`${label}.${key} is not a free-tier setting (${[...FREE_TIER_KEYS].join(', ')})`);
+  for (const key of ['maxRequestsPerAddress', 'maxRequestsPerIp']) {
+    if (freeTier[key] !== undefined && !(Number.isInteger(freeTier[key]) && freeTier[key] >= 0)) throw new Error(`${label}.${key} must be a non-negative integer`);
+  }
+  if (freeTier.windowMs !== undefined && !(Number.isInteger(freeTier.windowMs) && freeTier.windowMs >= 1000)) throw new Error(`${label}.windowMs must be at least 1000`);
+  if (freeTier.stakersOnly !== undefined && typeof freeTier.stakersOnly !== 'boolean') throw new Error(`${label}.stakersOnly must be a boolean`);
+  if (freeTier.stakeTiers !== undefined) {
+    if (!Array.isArray(freeTier.stakeTiers)) throw new Error(`${label}.stakeTiers must be a list`);
+    for (const tier of freeTier.stakeTiers) {
+      if (!(Number.isInteger(tier?.minPower) && tier.minPower > 0) || !(tier.multiplier === 'unlimited' || (typeof tier.multiplier === 'number' && tier.multiplier > 1))) {
+        throw new Error(`${label}.stakeTiers entries need minPower (a positive integer) and multiplier (above 1, or 'unlimited')`);
+      }
+    }
+  }
+  return structuredClone(freeTier);
+}
+
+/**
+ * Contract layouts of the local chain (`chain.contracts`; a fork always has Base's). 'full' deploys the production
+ * stack (payments, recognized-usage emissions and seller pools, free usage, verification); 'payments' only
+ * script/Deploy.s.sol (registry, legacy staking and emissions, deposits, channels, stats, deposit relay).
+ * See lib/local-deploy.mjs.
+ */
+export const CONTRACT_LAYOUTS = ['full', 'payments'];
+export const DEFAULT_CONTRACT_LAYOUT = 'full';
 
 /** Mock upstream usage: `fixed` answers 10 in + 8 out tokens instantly (exact costs); `load` sizes usage like real traffic. */
 export const MOCK_USAGE_MODES = new Set(['fixed', 'load']);
@@ -119,6 +188,14 @@ export function normalizeMock(mock, id) {
   return normalized;
 }
 
+/** Extra environment for a node. AntSeed switches only: HOME and the identity stay the testbench's. */
+function normalizeEnv(env, label) {
+  for (const [key, value] of Object.entries(env)) {
+    if (!/^ANTSEED_[A-Z0-9_]+$/.test(key) || key === 'ANTSEED_IDENTITY_HEX' || typeof value !== 'string') throw new Error(`${label} env must map ANTSEED_* switches to strings (got ${key})`);
+  }
+  return { ...env };
+}
+
 /** Buyer routing preferences: config/topology values, but only our sellers and no trust floor. */
 export function buyerRoutingPreferences(normalized, sellerPeerIds) {
   return {
@@ -136,15 +213,19 @@ export function validateScenarioModule(mod, name) {
   const requires = meta.requires ?? [];
   if (!Array.isArray(targets) || targets.length === 0) throw new Error(`Scenario ${name} meta.targets must be a non-empty array`);
   if (!Array.isArray(requires)) throw new Error(`Scenario ${name} meta.requires must be an array`);
-  return { name, description: meta.description ?? '', targets, requires, topology: mod.topology, run: mod.run };
+  const budgets = mod.topology?.budgets ?? {};
+  for (const [key, max] of Object.entries(budgets)) if (!(Number.isFinite(max) && max > 0)) throw new Error(`Scenario ${name} topology.budgets.${key} must be a positive number`);
+  return { name, description: meta.description ?? '', targets, requires, topology: mod.topology, budgets, run: mod.run };
 }
 
-export function assertScenarioSupported(scenario, target) {
+export function assertScenarioSupported(scenario, target, mode = 'sdk') {
   if (!scenario.targets.includes(target)) throw new Error(`Scenario ${scenario.name} does not support target ${target} (supports ${scenario.targets.join(', ')})`);
   const capabilities = TARGET_CAPABILITIES[target];
   if (!capabilities) throw new Error(`Unknown target ${target}`);
   const missing = scenario.requires.filter((capability) => !capabilities.has(capability));
   if (missing.length) throw new Error(`Target ${target} lacks ${missing.join(', ')} required by ${scenario.name}`);
+  const unavailable = scenario.requires.filter((capability) => MODE_LACKS[assertMode(mode)].has(capability));
+  if (unavailable.length) throw new Error(`Mode ${mode} lacks ${unavailable.join(', ')} required by ${scenario.name}; run it with --mode sdk`);
 }
 
 /**
@@ -156,9 +237,21 @@ export function chooseTarget(scenario, { requested, running } = {}) {
   return requested ?? running ?? scenario.targets[0];
 }
 
+/**
+ * Mode for a run, like chooseTarget: an explicit --mode wins (and must match a running testbench), then the running
+ * testbench's mode, then the scenario topology's, then sdk.
+ */
+export function chooseMode(scenario, { requested, running } = {}) {
+  if (requested && running && requested !== running) throw new Error(`Testbench is running in ${running} mode, not ${requested}; run pnpm testbench down first or use --slot`);
+  return requestedMode(requested ?? running, scenario.topology);
+}
+
 /** Two topologies are compatible when they produce the same sellers/models; used before reusing a running testbench. */
 export function topologyFingerprint(normalized) {
   const sellers = normalized.sellers.map((seller) => `${seller.id}:${Object.entries(seller.providers).map(([name, p]) => `${name}=${Object.keys(p.services).sort().join('+')}`).sort().join(',')}${seller.mock?.usage === 'load' ? '~load' : ''}`).join('|');
   // The chain link is fixed at `up`; a scenario that needs Base-like RPCs cannot reuse a direct testbench.
-  return normalized.chain?.rpc === 'base' ? `${sellers}#rpc=base` : sellers;
+  const layout = normalized.chain?.contracts ?? DEFAULT_CONTRACT_LAYOUT;
+  const linked = `${normalized.chain?.rpc === 'base' ? `${sellers}#rpc=base` : sellers}${layout === DEFAULT_CONTRACT_LAYOUT ? '' : `#contracts=${layout}`}`;
+  // So is the mode: real CLI processes and SDK nodes do not stand in for each other.
+  return normalized.mode === 'cli' ? `${linked}#mode=cli` : linked;
 }

@@ -44,6 +44,9 @@ Settings resolve in this order: command-line flags, then environment variables, 
 | `payments.maxVideoRequestUsdc` | `5000000` ($5.00) | Most one video may cost, in USDC base units |
 | `payments.maxReserveAmountUsdc` | `1000000` ($1.00) | Most the buyer reserves for one payment channel, in USDC base units |
 | `network.bootstrapNodes` | `[]` | Extra DHT bootstrap nodes, added to the built-in ones |
+| `network.noOfficialBootstrap` | `false` | Use only `network.bootstrapNodes`, for an isolated test network |
+| `network.dhtPort` | OS-assigned | UDP port of the node's DHT socket |
+| `network.bindHost` | all interfaces | Local address the node's DHT socket binds to |
 
 Some buyer start flags override these for one run, for example `--port`, `--max-input-usd-per-million`, `--max-output-usd-per-million` and `--metadata-fetch-timeout-ms`. See [CLI commands](/docs/commands).
 

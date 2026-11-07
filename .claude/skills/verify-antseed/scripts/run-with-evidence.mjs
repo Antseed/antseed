@@ -2,14 +2,14 @@
 // Runs `node e2e/testbench/cli.mjs run <args>` (what `pnpm testbench run` runs) on a fresh testbench and files the
 // evidence into the run's report directory, which `pnpm testbench down` keeps:
 //   run-output.log  the full console transcript
-//   checks.log      only the PASS/FAIL/KNOWN lines, the error and the report path (paste into PR bodies)
+//   checks.log      only the PASS/FAIL/KNOWN lines, the error, the seed, the rerun line and the report path (paste into PR bodies)
 //   logs/*.log      the supervisor, seller, Anvil and forge log lines written during this run
-// A run that ends before the scenario starts has no report directory; its transcript goes to
+// A command line the CLI rejects leaves no report directory; its transcript goes to
 // <testbench>/logs/evidence-<timestamp>-<scenario>.log instead.
-// Usage: .claude/skills/verify-antseed/scripts/run-with-evidence.mjs <scenario> [--chain local] [--keep] [--strict] [--slot NAME] ...
+// Usage: .claude/skills/verify-antseed/scripts/run-with-evidence.mjs <scenario> [--chain local] [--seed N] [--run-timeout SECONDS] [--keep] [--strict] [--slot NAME] ...
 // Refuses when this worktree's testbench (or slot) is running or starting, so any testbench up after a
 // Ctrl+C or SIGTERM is the one this run started: the helper then stops it with `cli.mjs down`.
-// Exits with the run's exit code.
+// Exits with the run's exit code (0 passed, 1 failed, 2 blocked, 3 timeout, 4 error).
 import { spawn, spawnSync } from 'node:child_process';
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -57,7 +57,7 @@ if (interrupted) {
 }
 
 // The report directory the CLI printed, else the one it created for this run before it was killed.
-const printed = transcript.match(/\[testbench\] (?:PASSED|FAILED): (.+)\/report\.json/)?.[1];
+const printed = transcript.match(/\[testbench\] (?:PASSED|FAILED|BLOCKED|TIMEOUT|ERROR): (.+)\/report\.json/)?.[1];
 const created = existsSync(paths.reports)
   ? readdirSync(paths.reports).filter((name) => name.endsWith(`-${scenario}`) && name.slice(0, stamp.length) >= stamp).sort().at(-1)
   : undefined;
@@ -66,11 +66,11 @@ if (!reportDir) {
   mkdirSync(paths.logs, { recursive: true });
   const file = join(paths.logs, `evidence-${stamp}-${scenario}.log`);
   writeFileSync(file, transcript);
-  console.error(`[evidence] the run ended before the scenario started; transcript in ${file}`);
+  console.error(`[evidence] the CLI rejected the run before it made a report; transcript in ${file}`);
   process.exit(code);
 }
 writeFileSync(join(reportDir, 'run-output.log'), transcript);
-const checks = transcript.split('\n').filter((line) => /\[testbench\] (PASS|FAIL|KNOWN|Error:|FAILED:|PASSED:|HTML report:)/.test(line));
+const checks = transcript.split('\n').filter((line) => /\[testbench\] (PASS|FAIL|KNOWN|Error:|Teardown error:|Seed |BLOCKED:|TIMEOUT:|ERROR:|HTML report:|rerun:)/.test(line));
 writeFileSync(join(reportDir, 'checks.log'), `${checks.join('\n')}\n`);
 mkdirSync(join(reportDir, 'logs'), { recursive: true });
 for (const name of logFiles()) {

@@ -2,6 +2,7 @@ import { readFile, rename, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { assertLocalUrl, isLoopbackHost } from './env.mjs';
 import { isInside } from './paths.mjs';
+import { assertMode } from './topology.mjs';
 
 export const MANIFEST_VERSION = 1;
 /** Testbench targets and the EVM chain each runs: a Base mainnet fork or a plain local Anvil with source-deployed contracts. */
@@ -28,6 +29,14 @@ function assertProcess(entry, label) {
   }
 }
 
+/** What `list` shows. A held lock means a supervisor is alive: `stopped` must only ever mean its processes are gone. */
+export function lifecycleState({ lock, manifest, running }) {
+  if (running) return 'running';
+  if (lock.state === 'stale') return 'stale';
+  if (lock.state === 'held') return manifest?.stoppingAt ? 'stopping' : 'starting';
+  return 'stopped';
+}
+
 /** Validates a manifest before anything (desktop attach, down, status) trusts it. */
 export function validateManifest(manifest, { dir } = {}) {
   if (!manifest || manifest.version !== MANIFEST_VERSION) throw new Error('Unsupported or missing testbench manifest');
@@ -39,8 +48,11 @@ export function validateManifest(manifest, { dir } = {}) {
   assertLocalUrl(manifest.rpcUrl, 'rpcUrl');
   assertLocalUrl(manifest.proxyUrl, 'proxyUrl');
   if (manifest.controlUrl) assertLocalUrl(manifest.controlUrl, 'controlUrl');
+  assertMode(manifest.mode ?? 'sdk', 'Manifest mode');
   assertProcess(manifest.supervisor, 'supervisor');
   if (manifest.anvil) assertProcess(manifest.anvil, 'anvil');
+  if (manifest.starter) assertProcess(manifest.starter, 'starter');
+  for (const [who, entry] of Object.entries(manifest.nodeProcesses ?? {})) assertProcess(entry, who);
   if (!Array.isArray(manifest.sellers) || manifest.sellers.length === 0) throw new Error('Manifest must list sellers');
   for (const seller of manifest.sellers) {
     if (!/^[0-9a-f]{40}$/.test(seller.peerId)) throw new Error(`Invalid seller peerId ${seller.peerId}`);

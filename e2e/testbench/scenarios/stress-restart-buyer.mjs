@@ -7,7 +7,9 @@ export const meta = {
   requires: ['buyerControl', 'mockControl'],
 };
 
-export const topology = stressTopology();
+// Budgets: twice what one cli-mode `--chain local` run measured on a developer laptop (2026-11-07). Local-machine
+// numbers; the nightly job will set CI numbers. Checked only with --budgets.
+export const topology = stressTopology({ budgets: { p95Ms: 18566, loadMs: 178658, closeAllMs: 8452, restartDownMs: 110054, settleOnDisconnectMs: 20132 } });
 
 export async function run(tb) {
   await stressRun(tb, {

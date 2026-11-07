@@ -15,9 +15,9 @@ function tokenMatches(header, token) {
 
 /**
  * Loopback-only control API for the supervisor. Routes are "METHOD /path" keys; a ":id" segment
- * is passed to the handler as params.id. Every request needs the bearer token.
+ * is passed to the handler as params.id. Every request needs the bearer token; `onRequest` sees each one that has it.
  */
-export async function startControlServer({ token, routes, log = () => {} }) {
+export async function startControlServer({ token, routes, log = () => {}, onRequest = () => {} }) {
   const compiled = Object.entries(routes).map(([key, handler]) => {
     const [method, pattern] = key.split(' ');
     const regex = new RegExp(`^${pattern.replace(/:([a-z]+)/g, '(?<$1>[a-z0-9-]+)')}$`);
@@ -29,6 +29,7 @@ export async function startControlServer({ token, routes, log = () => {} }) {
       response.end(JSON.stringify(body, (key, value) => (typeof value === 'bigint' ? value.toString() : value)));
     };
     if (!tokenMatches(request.headers.authorization, token)) return send(401, { ok: false, error: 'unauthorized' });
+    onRequest();
     const path = (request.url ?? '/').split('?')[0];
     const route = compiled.find((entry) => entry.method === request.method && entry.regex.test(path));
     if (!route) return send(404, { ok: false, error: `No control route ${request.method} ${path}` });
@@ -86,6 +87,8 @@ export function controlClient({ url, token }) {
     loseNeedAuths: (count) => call('POST', '/faults/buyer/need-auth-loss', { count }),
     needAuthLoss: () => call('GET', '/faults/buyer/need-auth-loss'),
     shutdown: () => call('POST', '/shutdown', {}, 10_000),
+    heartbeat: (entry) => call('POST', '/heartbeat', entry, 5000),
+    releaseStarter: (entry) => call('POST', '/starter/release', entry, 10_000),
   };
 }
 

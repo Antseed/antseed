@@ -16,7 +16,7 @@ export const WORKSPACE_PLUGINS = {
 };
 
 const PROVIDER_KEYS = new Set(['plugin', 'baseUrl', 'apiKeyEnv', 'pathRewrite', 'defaults', 'services']);
-const SERVICE_KEYS = new Set(['upstreamModel', 'categories', 'pricing', 'capabilities', 'unitBillingModels']);
+const SERVICE_KEYS = new Set(['upstreamModel', 'categories', 'pricing', 'capabilities', 'unitBillingModels', 'freeTier']);
 const SECRET_KEY = /(^|[-_])?(api[-_]?key|secret|token|password|passphrase|private[-_]?key|mnemonic|seed[-_]?phrase|credential|authorization)$/i;
 const ENV_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;

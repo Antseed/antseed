@@ -45,8 +45,9 @@ prds/
 .napkin/
 NAPKIN.md
 
-# Per-worktree sandbox config (pnpm sandbox)
-.antseed-sandbox.json
+# Per-worktree testbench config (pnpm testbench)
 .antseed-testbench.json
-.antseed-sandbox.env
 .antseed-testbench.env
+# The names from when this was `pnpm sandbox`. Kept for one release so older worktrees don't commit them by accident.
+.antseed-sandbox.json
+.antseed-sandbox.env

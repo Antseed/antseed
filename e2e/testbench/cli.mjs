@@ -4,7 +4,7 @@ import { closeSync, existsSync, openSync, readFileSync, statSync } from 'node:fs
 import { mkdir, readdir, readFile, rm } from 'node:fs/promises';
 import { createConnection } from 'node:net';
 import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolveInstancePorts } from '../../apps/desktop/scripts/dev-instance-config.mjs';
@@ -13,17 +13,21 @@ import { loadSourceConfig, resolveConfigSource } from './lib/config.mjs';
 import { loadControlClient } from './lib/control.mjs';
 import { BUYER_KEY_ENV, FORBIDDEN_PORTS, isolatedEnv, parseEnvFile, resolveBuyerKey, resolveForkUrl, resolveLiveKeys, writeBuyerKey } from './lib/env.mjs';
 import { attachOnlyEnv, electronRootArgs, FFMPEG_INSTALL, playwrightFfmpeg } from './lib/desktop.mjs';
-import { inspectLock, isOwnedProcessAlive, killOwned } from './lib/lock.mjs';
-import { readJson, saveJson, validateManifest } from './lib/manifest.mjs';
+import { inspectLock, isOwnedProcessAlive, killOwned, ownProcessEntry } from './lib/lock.mjs';
+import { lifecycleState, readJson, saveJson, validateManifest } from './lib/manifest.mjs';
 import { HELP, parseArgs } from './lib/options.mjs';
 import { testbenchName, testbenchPaths, testbenchRoot, worktreeRoot } from './lib/paths.mjs';
+import { derive, randomSeed } from './lib/prng.mjs';
+import { classifyScenarioError, computeDrift, deliveryMetrics, driftLines, gitInfo, previousReport, recordTeardownFailure, rerunCommand, RESULT_EXIT_CODES, runWithTimeout } from './lib/report.mjs';
 import { createTestbenchApi } from './lib/tb.mjs';
 import { writeHtmlReport } from './lib/report-html.mjs';
 import { serveReports } from './lib/report-server.mjs';
 import { createMainnetApi, mainnetReader } from './lib/mainnet-run.mjs';
 import { MAINNET_PROFILE, prepareMainnetProfile, profileDesktopEnv, walletAddress } from './lib/mainnet.mjs';
 import { findNoVncDir, funnelEnabled, parseTailscaleStatus } from './lib/share.mjs';
-import { assertScenarioSupported, chooseTarget, normalizeTopology, topologyFingerprint, validateScenarioModule } from './lib/topology.mjs';
+import { cliEntry } from './lib/cli-node.mjs';
+import { reattachDecision, resolveIdleMinutes, startHeartbeat } from './lib/watchdog.mjs';
+import { assertScenarioSupported, chooseMode, chooseTarget, normalizeTopology, requestedMode, topologyFingerprint, validateScenarioModule } from './lib/topology.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, '../..');
@@ -42,6 +46,20 @@ async function runningState(paths) {
   return { lock, manifest, running: lock.state === 'held' && manifest?.running === true };
 }
 
+/** A testbench whose `run` died without `down` is not reused, whatever the watchdog has got to: returns the state after stopping it. */
+async function retireOrphan(ctx, state) {
+  const starter = state.manifest?.starter ?? null;
+  if (reattachDecision({ running: state.running, starter, starterAlive: isOwnedProcessAlive(starter) }) !== 'restart') return state;
+  say(`Testbench ${ctx.name} was started by a run that is gone (pid ${starter.pid}); stopping it and starting fresh`);
+  await down({}, ctx);
+  return runningState(ctx.paths);
+}
+
+/** From here on nobody drives the testbench: it stays up, under the idle budget. */
+async function releaseStarter(ctx) {
+  await (await loadControlClient(ctx.paths.control)).releaseStarter(ownProcessEntry());
+}
+
 function portOpen(port) {
   return new Promise((resolvePort) => {
     const socket = createConnection({ host: '127.0.0.1', port });
@@ -53,7 +71,8 @@ function portOpen(port) {
 
 /** Kills only processes recorded in our manifest whose start time still matches. */
 async function cleanupStale(paths, manifest) {
-  const entries = [manifest?.supervisor, manifest?.anvil, ...(manifest?.sellers ?? []).map((seller) => seller.process)].filter(Boolean);
+  const nodes = [...(manifest?.sellers ?? []).map((seller) => seller.process), ...Object.values(manifest?.nodeProcesses ?? {})].filter(Boolean);
+  const entries = [manifest?.supervisor, manifest?.anvil, ...new Map(nodes.map((entry) => [entry.pid, entry])).values()].filter(Boolean);
   const results = [];
   for (const entry of entries) results.push(`${entry.pid}:${await killOwned(entry, { graceMs: entry === manifest?.anvil ? 30_000 : 10_000 })}`);
   await rm(paths.lock, { force: true });
@@ -68,12 +87,12 @@ async function scenarioModule(name) {
   return validateScenarioModule(await import(pathToFileURL(file).href), name);
 }
 
-function checkBuilt(target = 'fork') {
+function checkBuilt(target = 'fork', mode = 'sdk') {
   const pinned = existsSync(join(repo, '.nvmrc')) ? readFileSync(join(repo, '.nvmrc'), 'utf8').trim().split('.')[0] : null;
   if (pinned && process.versions.node.split('.')[0] !== pinned) {
     throw new Error(`Node ${process.versions.node} does not match .nvmrc (${pinned}.x); native modules (better-sqlite3) would fail to load and disable buyer payments. Switch Node (volta/nvm) and retry`);
   }
-  const required = ['packages/node/dist/index.js', 'apps/cli/dist/proxy/buyer-proxy.js', 'plugins/provider-openai/dist/index.js'];
+  const required = ['packages/node/dist/index.js', 'apps/cli/dist/proxy/buyer-proxy.js', 'plugins/provider-openai/dist/index.js', ...(mode === 'cli' ? [cliEntry('.'), 'plugins/router-local/dist/index.js'] : [])];
   const missing = required.filter((file) => !existsSync(join(repo, file)));
   if (missing.length) throw new Error(`Build first (pnpm run build). Missing: ${missing.join(', ')}`);
   for (const command of target === 'local' ? ['anvil', 'forge'] : ['anvil']) {
@@ -84,15 +103,24 @@ function checkBuilt(target = 'fork') {
   }
 }
 
+/** A running testbench keeps the seed it started with; say so when the command line asked for another. */
+function warnSeedIgnored(options, manifest) {
+  if (options.seedGiven && manifest.seed !== options.seed) say(`Ignoring --seed ${options.seed}: this testbench started with seed ${manifest.seed ?? 'unknown'}; run pnpm testbench down first to use another`);
+}
+
 async function up(options, ctx, topologyOverride) {
   const { paths } = ctx;
   const target = options.chain ?? 'fork';
-  const current = await runningState(paths);
+  const current = await retireOrphan(ctx, await runningState(paths));
   if (current.running) {
     if (options.chain && (current.manifest.target ?? 'fork') !== options.chain) {
       throw new Error(`Testbench ${ctx.name} is running on chain ${current.manifest.target ?? 'fork'}; run pnpm testbench down first or use --slot`);
     }
+    if (options.mode && (current.manifest.mode ?? 'sdk') !== options.mode) {
+      throw new Error(`Testbench ${ctx.name} is running in ${current.manifest.mode ?? 'sdk'} mode; run pnpm testbench down first or use --slot`);
+    }
     say(`Testbench ${ctx.name} is already running; reattaching`);
+    warnSeedIgnored(options, current.manifest);
     return current.manifest;
   }
   if (current.lock.state === 'held') {
@@ -101,12 +129,13 @@ async function up(options, ctx, topologyOverride) {
   if (current.lock.state === 'stale' || current.manifest?.running || current.manifest?.starting) {
     say(`Cleaning up stale testbench state: ${(await cleanupStale(paths, current.manifest)).join(', ') || 'nothing running'}`);
   }
-  checkBuilt(target);
+  const scenario = options.scenario ? await scenarioModule(options.scenario) : null;
+  checkBuilt(target, requestedMode(options.mode, topologyOverride ?? scenario?.topology));
   if (target === 'local' && options.block !== undefined) throw new Error('--block only applies to --chain fork');
+  if (target !== 'local' && options.contracts !== undefined) throw new Error('--contracts only applies to --chain local');
   const source = resolveConfigSource({ explicit: options.config, worktree: ctx.worktree });
   const config = await loadSourceConfig(source);
-  const scenario = options.scenario ? await scenarioModule(options.scenario) : null;
-  const topology = normalizeTopology(topologyOverride ?? scenario?.topology ?? {}, config.cleaned, { depositUsdc: options.depositUsdc, block: options.block });
+  const topology = normalizeTopology(topologyOverride ?? scenario?.topology ?? {}, config.cleaned, { depositUsdc: options.depositUsdc, block: options.block, mode: options.mode, contracts: options.contracts });
   const upstream = options.live ? 'live' : 'mock';
   const liveKeys = [];
   let liveEnv = {};
@@ -148,11 +177,14 @@ async function up(options, ctx, topologyOverride) {
   } else {
     say('Local chain: plain Anvil + packages/contracts deployed from source (no fork, no RPC key)');
   }
+  // `share` starts a testbench too, without a --seed of its own.
+  const seed = options.seed ?? randomSeed();
+  const idleMinutes = resolveIdleMinutes();
   await saveJson(join(paths.config, 'plan.json'), {
-    worktree: ctx.worktree, target, topology, upstream, liveKeys: [...new Set(liveKeys)], verbose: Boolean(options.verbose),
+    worktree: ctx.worktree, target, mode: topology.mode, seed, starter: ownProcessEntry(), idleMinutes, topology, upstream, liveKeys: [...new Set(liveKeys)], verbose: Boolean(options.verbose),
     configHash: config.hash, configOrigin: config.origin, cacheHome: sharedCacheHome(process.env, ctx.root), legacyCacheHome: legacyCacheHome(),
   });
-  say(`Starting ${ctx.name} (chain: ${target}, config: ${config.origin}, upstream: ${upstream}, sellers: ${topology.sellers.map((seller) => seller.id).join(', ')})`);
+  say(`Starting ${ctx.name} (chain: ${target}, mode: ${topology.mode}, seed: ${seed}, config: ${config.origin}, upstream: ${upstream}, sellers: ${topology.sellers.map((seller) => seller.id).join(', ')})`);
   if (config.dropped.length) say(`Ignored config settings: ${config.dropped.join(', ')}`);
   const logPath = join(paths.logs, 'supervisor.log');
   const logOffset = existsSync(logPath) ? statSync(logPath).size : 0;
@@ -202,7 +234,8 @@ async function down(options, ctx) {
     say('Settling channels and stopping (Anvil stays up until channels close)...');
     const control = await loadControlClient(paths.control).catch(() => null);
     if (!control) throw new Error('Testbench is still starting; wait, or use pnpm testbench down --force');
-    await control.shutdown();
+    // The watchdog may have started the same shutdown and closed the control API already.
+    await control.shutdown().catch(async (error) => { if (!(await readJson(paths.manifest))?.stoppingAt) throw error; });
     const deadline = Date.now() + 300_000;
     while (Date.now() < deadline && isOwnedProcessAlive(state.lock.holder)) await new Promise((r) => setTimeout(r, 500));
     if (isOwnedProcessAlive(state.lock.holder)) throw new Error('Supervisor did not stop in 5 minutes; use pnpm testbench down --force');
@@ -241,8 +274,9 @@ async function status(options, ctx) {
   if (options.json) { console.log(JSON.stringify({ running: true, ...live }, null, 2)); return; }
   const m = live.manifest;
   const usdc = (micro) => `${(Number(micro) / 1e6).toFixed(6)} USDC`;
-  console.log(`Testbench   ${m.name}  (target ${m.target}, upstream ${m.upstream}, ${m.target === 'local' ? 'local chain 31337' : `fork block ${m.forkBlock}`}, chain block ${live.live.chainBlock})`);
+  console.log(`Testbench   ${m.name}  (target ${m.target}, mode ${m.mode ?? 'sdk'}, upstream ${m.upstream}, ${m.target === 'local' ? 'local chain 31337' : `fork block ${m.forkBlock}`}, chain block ${live.live.chainBlock})`);
   console.log(`State     ${ctx.paths.dir}`);
+  console.log(`Seed      ${m.seed ?? 'unknown'}`);
   console.log(`Proxy     ${m.proxyUrl}`);
   console.log(`RPC       ${m.rpcUrl}  (Anvil pid ${m.anvil.pid})`);
   console.log(`Bootstrap 127.0.0.1:${m.bootstrap.port}`);
@@ -251,17 +285,26 @@ async function status(options, ctx) {
     const info = m.sellers.find((entry) => entry.id === seller.id);
     console.log(`Seller    ${seller.id.padEnd(10)} ${seller.online ? 'online ' : 'offline'} ${seller.peerId}  ${seller.address}  signaling ${info.signalingPort}  usdc ${usdc(seller.usdcMicro)}  models ${info.models.join(',')}`);
   }
+  const { watchdog } = live.live;
+  const agoMin = (ms) => `${Math.floor(ms / 60_000)} min`;
+  console.log(`Watchdog  ${watchdog.starter ? `stops when starter ${watchdog.starter.pid} is gone` : `idle budget ${watchdog.idleMinutes} min, ${agoMin(watchdog.lastControlRequestAgoMs)} since the last control request`}`);
   console.log(`Peers     buyer sees ${live.live.peersSeenByBuyer.length}: ${live.live.peersSeenByBuyer.join(', ') || 'none'}`);
   console.log(`Channels  ${live.live.channels.length} active`);
   console.log(`\n${envExports(m)}`);
 }
 
-async function runScenario(options, ctx) {
+/** Starts or reuses the testbench for a scenario. Anything thrown here refused the run before the scenario started. */
+async function prepareRun(options, ctx, report) {
   const scenario = await scenarioModule(options.scenario);
-  if (options.chain === 'mainnet' || (!options.chain && scenario.targets[0] === 'mainnet')) return runMainnetScenario(options, ctx, scenario);
-  const before = await runningState(ctx.paths);
+  report.description = scenario.description;
+  report.target = options.chain ?? scenario.targets[0];
+  if (options.chain === 'mainnet' || (!options.chain && scenario.targets[0] === 'mainnet')) return { scenario, mainnet: await prepareMainnetRun(options, ctx, scenario) };
+  const before = await retireOrphan(ctx, await runningState(ctx.paths));
   const target = chooseTarget(scenario, { requested: options.chain, running: before.running ? (before.manifest.target ?? 'fork') : null });
-  assertScenarioSupported(scenario, target);
+  const mode = chooseMode(scenario, { requested: options.mode, running: before.running ? (before.manifest.mode ?? 'sdk') : null });
+  report.target = target;
+  report.mode = mode;
+  assertScenarioSupported(scenario, target, mode);
   if (scenario.requires.includes('desktop')) {
     // Fail before starting a chain: without Playwright's ffmpeg the desktop window never loads.
     const ffmpeg = playwrightFfmpeg();
@@ -271,51 +314,115 @@ async function runScenario(options, ctx) {
   if (scenario.requires.includes('liveUpstream') && !live) {
     throw new Error(`Scenario ${scenario.name} needs a real upstream; ${before.running ? 'restart the testbench with pnpm testbench up --live' : 'rerun with --live'}`);
   }
-  let manifest;
-  let startedHere = false;
-  if (before.running) {
-    manifest = before.manifest;
-    const source = await loadSourceConfig(resolveConfigSource({ explicit: options.config, worktree: ctx.worktree }));
-    const wanted = topologyFingerprint(normalizeTopology(scenario.topology ?? {}, source.cleaned, {}));
-    const running = topologyFingerprint(manifest.topology);
-    if (wanted !== running) throw new Error(`Running testbench topology (${running}) does not match scenario ${scenario.name} (${wanted}); run pnpm testbench down first or use --slot`);
-  } else {
-    manifest = await up({ ...options, chain: target, scenario: scenario.name }, ctx);
-    startedHere = true;
+  if (!before.running) {
+    const upStarted = Date.now();
+    const manifest = await up({ ...options, chain: target, mode, scenario: scenario.name }, ctx);
+    return { scenario, target, mode, manifest, startedHere: true, upMs: Date.now() - upStarted };
   }
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const reportDir = join(ctx.paths.reports, `${stamp}-${scenario.name}`);
-  await mkdir(reportDir, { recursive: true, mode: 0o700 });
-  const sdk = await import(join(repo, 'packages/node/dist/index.js'));
-  const chain = sdk.getChainConfig(target === 'local' ? 'base-local' : 'base-mainnet');
-  const control = await loadControlClient(ctx.paths.control);
-  const tb = createTestbenchApi({ manifest, control, eventsPath: join(reportDir, 'events.jsonl'), chain, strict: Boolean(options.strict), repo, reportDir, trace: Boolean(options.trace) });
-  const report = {
-    scenario: scenario.name, description: scenario.description, target, testbench: manifest.name, result: 'running',
-    startedAt: new Date().toISOString(), configHash: manifest.configHash, configOrigin: manifest.configOrigin, upstream: manifest.upstream,
-    forkBlock: manifest.forkBlock, forkCache: manifest.forkCache, topology: manifest.topology,
-    sellers: manifest.sellers.map(({ id, peerId, address }) => ({ id, peerId, address })), buyer: manifest.buyer,
-  };
-  say(`Running scenario ${scenario.name} against ${manifest.name}`);
+  const source = await loadSourceConfig(resolveConfigSource({ explicit: options.config, worktree: ctx.worktree }));
+  const wanted = topologyFingerprint(normalizeTopology(scenario.topology ?? {}, source.cleaned, { mode, contracts: options.contracts }));
+  const running = topologyFingerprint(before.manifest.topology);
+  if (wanted !== running) throw new Error(`Running testbench topology (${running}) does not match scenario ${scenario.name} (${wanted}); run pnpm testbench down first or use --slot`);
+  warnSeedIgnored(options, before.manifest);
+  return { scenario, target, mode, manifest: before.manifest, startedHere: false };
+}
+
+/** Runs the scenario under --run-timeout and files its verdict. Returns tb.summary(). */
+async function executeScenario(scenario, tb, report, options) {
   try {
-    await scenario.run(tb);
+    await runWithTimeout(() => scenario.run(tb), options.runTimeout);
     report.result = 'passed';
   } catch (error) {
-    report.result = 'failed';
-    report.error = error.message;
-    process.exitCode = 1;
-  } finally {
-    const summary = tb.summary();
-    Object.assign(report, { finishedAt: new Date().toISOString(), checks: summary.checks, knownIssues: summary.knownIssues, strict: Boolean(options.strict), metrics: summary.metrics });
-    await saveJson(join(reportDir, 'report.json'), report);
-    await saveJson(join(reportDir, 'metrics.json'), summary.metrics);
-    await tb.dispose();
-    await writeHtmlReport(reportDir, report).catch((error) => say(`HTML report failed: ${error.message}`));
+    Object.assign(report, { result: classifyScenarioError(error), phase: 'scenario', error: error.message });
   }
-  printReport(report, reportDir);
+  const summary = tb.summary();
+  Object.assign(report, { finishedAt: new Date().toISOString(), checks: summary.checks, knownIssues: summary.knownIssues, metrics: summary.metrics });
+  if (report.result === 'timeout') report.checks = [...report.checks, { name: 'run timeout', ok: false, detail: report.error }];
+  return summary;
+}
+
+async function saveReport(report, reportDir) {
+  report.finishedAt ??= new Date().toISOString();
+  report.durationMs = Date.parse(report.finishedAt) - Date.parse(report.startedAt);
+  await saveJson(join(reportDir, 'report.json'), report);
+}
+
+async function saveHtmlReport(report, reportDir) {
+  await writeHtmlReport(reportDir, report).catch((error) => say(`HTML report failed: ${error.message}`));
+}
+
+async function runScenario(options, ctx) {
+  const startedAt = new Date().toISOString();
+  const report = {
+    scenario: options.scenario, target: options.chain ?? null, testbench: ctx.name, result: 'running', startedAt, seed: options.seed, mode: 'sdk',
+    git: gitInfo(ctx.worktree), node: process.version, strict: Boolean(options.strict), budgets: Boolean(options.budgets), checks: [], knownIssues: [],
+  };
+  // First, so that a run refused before the scenario still leaves a report.
+  const reportDir = join(ctx.paths.reports, `${startedAt.replace(/[:.]/g, '-')}-${options.scenario}`);
+  await mkdir(reportDir, { recursive: true, mode: 0o700 });
+  let prepared;
+  try {
+    prepared = await prepareRun(options, ctx, report);
+  } catch (error) {
+    Object.assign(report, { result: 'blocked', phase: 'up', error: error.message });
+    await saveReport(report, reportDir);
+    await saveHtmlReport(report, reportDir);
+  }
+  if (prepared?.mainnet) await runMainnetScenario(options, ctx, prepared, report, reportDir);
+  else if (prepared) await runTestbenchScenario(options, ctx, prepared, report, reportDir);
+  printReport(report, reportDir, options);
+  process.exitCode = RESULT_EXIT_CODES[report.result];
+  // A timed-out scenario is still running and cannot be cancelled; its timers must not keep the process alive.
+  if (report.result === 'timeout') process.exit();
+}
+
+async function runTestbenchScenario(options, ctx, { scenario, target, manifest, startedHere, upMs }, report, reportDir) {
+  Object.assign(report, {
+    seed: manifest.seed ?? null, mode: manifest.mode ?? 'sdk', reusedTestbench: !startedHere, ...(upMs === undefined ? {} : { upMs }),
+    configHash: manifest.configHash, configOrigin: manifest.configOrigin, upstream: manifest.upstream, forkBlock: manifest.forkBlock, forkCache: manifest.forkCache,
+    topology: manifest.topology, sellers: manifest.sellers.map(({ id, peerId, address }) => ({ id, peerId, address })), buyer: manifest.buyer,
+  });
+  // A reused testbench's mocks remember earlier runs' tags, and the payment oracle skips tags it has seen, so a
+  // later run on it needs its own streams. Only a run that started its testbench replays from the seed alone.
+  const scenarioSeed = startedHere ? manifest.seed : derive(manifest.seed ?? 0, `reuse:${report.startedAt}`);
+  let tb;
+  let stopHeartbeat = () => {};
+  try {
+    const sdk = await import(join(repo, 'packages/node/dist/index.js'));
+    const chain = sdk.getChainConfig(target === 'local' ? 'base-local' : 'base-mainnet');
+    const control = await loadControlClient(ctx.paths.control);
+    const self = ownProcessEntry();
+    stopHeartbeat = startHeartbeat(() => control.heartbeat(self));
+    tb = createTestbenchApi({ manifest, control, eventsPath: join(reportDir, 'events.jsonl'), chain, strict: Boolean(options.strict), repo, reportDir, trace: Boolean(options.trace), seed: scenarioSeed, budgets: scenario.budgets, enforceBudgets: Boolean(options.budgets) });
+    say(`Running scenario ${scenario.name} against ${manifest.name} (seed ${report.seed})`);
+    const summary = await executeScenario(scenario, tb, report, options);
+    if (upMs !== undefined) report.metrics.upMs = upMs;
+    const previous = await previousReport(ctx.paths.reports, basename(reportDir), report);
+    report.metrics.drift = computeDrift(previous?.report.metrics, report.metrics);
+    report.metrics.driftFrom = previous?.dir ?? null;
+    await saveReport(report, reportDir);
+    const deliveries = await deliveryMetrics(manifest.sellers, control).catch((error) => ({ error: error.message }));
+    await saveJson(join(reportDir, 'metrics.json'), { ...summary.metrics, deliveries });
+  } catch (error) {
+    Object.assign(report, { result: 'error', phase: 'scenario', error: error.message, finishedAt: new Date().toISOString() });
+  }
+  stopHeartbeat();
+  try { await tb?.dispose(); } catch (error) { recordTeardownFailure(report, error); }
+  await saveReport(report, reportDir);
+  await saveHtmlReport(report, reportDir);
   if (startedHere && !options.keep) {
-    try { await down({}, ctx); } catch (error) { say(`Teardown failed: ${error.message}`); process.exitCode = 1; }
-  } else if (startedHere) say('Testbench kept running (--keep); stop it with pnpm testbench down');
+    try {
+      await down({}, ctx);
+    } catch (error) {
+      say(`Teardown failed: ${error.message}`);
+      recordTeardownFailure(report, error);
+      await saveReport(report, reportDir);
+      await saveHtmlReport(report, reportDir);
+    }
+  } else if (startedHere) {
+    await releaseStarter(ctx).catch((error) => say(`Could not release the testbench (${error.message}); the watchdog will stop it`));
+    say('Testbench kept running (--keep); stop it with pnpm testbench down');
+  }
 }
 
 async function localEnvValues(ctx) {
@@ -378,48 +485,50 @@ async function mainnet(options, ctx) {
   }
 }
 
-async function runMainnetScenario(options, ctx, scenario) {
+async function prepareMainnetRun(options, ctx, scenario) {
   assertScenarioSupported(scenario, 'mainnet');
   if (!options.realFunds) throw new Error(`Scenario ${scenario.name} spends real USDC; rerun with --real-funds`);
   const { values } = await localEnvValues(ctx);
   const rpcUrl = process.env.BASE_MAINNET_RPC_URL?.trim() || values.BASE_MAINNET_RPC_URL?.trim();
   if (!rpcUrl) throw new Error('Mainnet runs read the deposit through BASE_MAINNET_RPC_URL; put it in .env.local or export it');
-  const { profile, env, instance } = await mainnetProfile(options, ctx);
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const reportDir = join(ctx.paths.reports, `${stamp}-${scenario.name}`);
-  await mkdir(reportDir, { recursive: true, mode: 0o700 });
-  const sdk = await import(join(repo, 'packages/node/dist/index.js'));
-  const reader = mainnetReader(rpcUrl, sdk.getChainConfig('base-mainnet'));
-  const tb = createMainnetApi({ repo, env, instance, profile, reader, reportDir, eventsPath: join(reportDir, 'events.jsonl'), capMicros: profile.cap.micros, strict: Boolean(options.strict), trace: Boolean(options.trace) });
-  const report = { scenario: scenario.name, description: scenario.description, target: 'mainnet', testbench: ctx.name, result: 'running', startedAt: new Date().toISOString(), upstream: 'live network', wallet: profile.address, reserveCapUsdc: profile.cap.usdc };
-  say(`Running scenario ${scenario.name} on the real network`);
-  try {
-    await scenario.run(tb);
-    report.result = 'passed';
-  } catch (error) {
-    report.result = 'failed';
-    report.error = error.message;
-    process.exitCode = 1;
-  } finally {
-    const summary = tb.summary();
-    Object.assign(report, { finishedAt: new Date().toISOString(), checks: summary.checks, knownIssues: summary.knownIssues, strict: Boolean(options.strict), metrics: summary.metrics });
-    await tb.dispose();
-    await profile.release();
-    await saveJson(join(reportDir, 'report.json'), report);
-    await saveJson(join(reportDir, 'metrics.json'), summary.metrics);
-    await writeHtmlReport(reportDir, report).catch((error) => say(`HTML report failed: ${error.message}`));
-  }
-  printReport(report, reportDir);
+  return { rpcUrl, ...(await mainnetProfile(options, ctx)) };
 }
 
-function printReport(report, reportDir) {
+async function runMainnetScenario(options, ctx, { scenario, mainnet: { rpcUrl, profile, env, instance } }, report, reportDir) {
+  Object.assign(report, { target: 'mainnet', upstream: 'live network', wallet: profile.address, reserveCapUsdc: profile.cap.usdc });
+  let tb;
+  try {
+    const sdk = await import(join(repo, 'packages/node/dist/index.js'));
+    const reader = mainnetReader(rpcUrl, sdk.getChainConfig('base-mainnet'));
+    tb = createMainnetApi({ repo, env, instance, profile, reader, reportDir, eventsPath: join(reportDir, 'events.jsonl'), capMicros: profile.cap.micros, strict: Boolean(options.strict), trace: Boolean(options.trace) });
+    say(`Running scenario ${scenario.name} on the real network`);
+    const summary = await executeScenario(scenario, tb, report, options);
+    await saveReport(report, reportDir);
+    await saveJson(join(reportDir, 'metrics.json'), summary.metrics);
+  } catch (error) {
+    Object.assign(report, { result: 'error', phase: 'scenario', error: error.message, finishedAt: new Date().toISOString() });
+  }
+  try { await tb?.dispose(); } catch (error) { recordTeardownFailure(report, error); }
+  try { await profile.release(); } catch (error) { recordTeardownFailure(report, error); }
+  await saveReport(report, reportDir);
+  await saveHtmlReport(report, reportDir);
+}
+
+function printReport(report, reportDir, options) {
   for (const check of report.checks) say(`${check.ok ? 'PASS' : 'FAIL'} ${check.name}`);
   for (const issue of report.knownIssues ?? []) say(`${issue.ok ? 'PASS' : 'KNOWN'} ${issue.name}${issue.ok ? '' : ` (${issue.issue}; ${JSON.stringify(issue.detail)})`}`);
+  for (const [name, { value, max, unit, ok, enforced }] of Object.entries(report.metrics?.budgets ?? {})) {
+    if (!ok && !enforced) say(`over budget, not enforced: ${name} ${value ?? 'not measured'} > ${max} ${unit}`);
+  }
+  for (const line of driftLines(report.metrics?.drift)) say(line);
   if (report.error) say(`Error: ${report.error}`);
+  if (report.teardownError) say(`Teardown error: ${report.teardownError}`);
+  say(`Seed ${report.seed ?? 'unknown'}, git ${report.git.sha?.slice(0, 9) ?? 'unknown'}${report.git.dirty ? ' (dirty)' : ''}, ${report.durationMs} ms`);
   say(`${report.result.toUpperCase()}: ${join(reportDir, 'report.json')}`);
   say(`HTML report: ${join(reportDir, 'index.html')}  (pnpm testbench report --open | --serve)`);
   if (existsSync(join(reportDir, 'video', 'desktop.webm'))) say(`Video: ${join(reportDir, 'video', 'desktop.webm')}`);
   if (existsSync(join(reportDir, 'trace.zip'))) say(`Trace: npx playwright show-trace ${join(reportDir, 'trace.zip')}`);
+  if (report.result !== 'passed') say(`rerun: ${rerunCommand({ ...options, ...report, mode: options.mode, live: report.upstream === 'live' })}`);
 }
 
 async function chooseDesktopInstance(preferred) {
@@ -448,7 +557,12 @@ async function desktop(options, ctx) {
   say(`Attaching desktop instance ${instance} to ${manifest.proxyUrl} (attach-only, testbench wallet)`);
   const child = spawn('pnpm', ['dev:desktop:instance', instance], { cwd: repo, env, stdio: 'inherit' });
   for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => child.kill(signal));
+  // Chats go through the proxy, which the idle budget cannot see; an attached desktop counts as activity.
+  const control = await loadControlClient(ctx.paths.control);
+  const self = ownProcessEntry();
+  const stopHeartbeat = startHeartbeat(() => control.heartbeat(self));
   const code = await new Promise((resolveExit) => child.once('exit', (exitCode) => resolveExit(exitCode ?? 1)));
+  stopHeartbeat();
   process.exitCode = code;
 }
 
@@ -490,7 +604,7 @@ async function reportCommand(options, ctx) {
     await writeHtmlReport(dir, report);
   }
   const report = await readJson(join(dir, 'report.json'));
-  console.log(`${name}  ${report?.result ?? 'unknown'}`);
+  console.log(`${name}  ${report?.result ?? 'unknown'}${report?.seed === undefined ? '' : `  seed ${report.seed}`}`);
   console.log(`  html    ${index}`);
   console.log(`  json    ${join(dir, 'report.json')}`);
   if (existsSync(join(dir, 'video', 'desktop.webm'))) console.log(`  video   ${join(dir, 'video', 'desktop.webm')}`);
@@ -503,11 +617,6 @@ const SHARE_TOOLS = { Xvfb: 'xvfb', x11vnc: 'x11vnc' };
 
 function commandExists(command) {
   return spawnSync('sh', ['-c', `command -v ${command}`], { stdio: 'ignore' }).status === 0;
-}
-
-function gitBranch(worktree) {
-  const result = spawnSync('git', ['-C', worktree, 'rev-parse', '--abbrev-ref', 'HEAD'], { encoding: 'utf8' });
-  return result.status === 0 ? result.stdout.trim() : 'unknown';
 }
 
 /** Share preflight: Linux virtual display tools, noVNC, the built desktop and (unless --no-tailscale) a logged-in Tailscale without Funnel. */
@@ -564,13 +673,14 @@ async function share(options, ctx) {
   if (!state.running) {
     say(`Testbench ${ctx.name} is not running; starting it (${options.scenario ? `scenario ${options.scenario} topology` : 'default topology'})`);
     await up(options, ctx);
+    await releaseStarter(ctx);
     state = await runningState(ctx.paths);
   }
   validateManifest(state.manifest, { dir: ctx.paths.dir });
   const idleMinutes = Number(options.idle ?? 120);
   await saveJson(join(ctx.paths.dir, 'share.plan.json'), {
     noVncDir: checks.noVncDir, windowManager: checks.windowManager, dnsName: checks.dnsName, tailscale: !options.noTailscale, idleMinutes,
-    width: 1440, height: 900, fresh: Boolean(options.fresh), branch: gitBranch(ctx.worktree),
+    width: 1440, height: 900, fresh: Boolean(options.fresh), branch: gitInfo(ctx.worktree).branch ?? 'unknown',
   });
   const logPath = join(ctx.paths.logs, 'share.log');
   const out = openSync(logPath, 'a');
@@ -601,8 +711,26 @@ async function list(ctx) {
     const paths = testbenchPaths(ctx.root, entry);
     const state = await runningState(paths);
     const size = existsSync(paths.manifest) ? statSync(paths.manifest).mtime.toISOString() : '';
-    console.log(`${entry.padEnd(48)} ${state.running ? 'running' : state.lock.state === 'stale' ? 'stale  ' : 'stopped'}  ${state.manifest?.worktree ?? ''}  ${size}`);
+    console.log(`${entry.padEnd(48)} ${lifecycleState(state).padEnd(8)}  ${state.manifest?.worktree ?? ''}  ${size}`);
   }
+}
+
+/** Every scenario file with its targets and description. The gaps live in e2e/testbench/features/. */
+export async function listScenarios() {
+  const dir = join(here, 'scenarios');
+  const names = (await readdir(dir)).filter((file) => file.endsWith('.mjs')).map((file) => file.slice(0, -4)).sort();
+  const scenarios = [];
+  for (const name of names) scenarios.push(await scenarioModule(name));
+  return scenarios;
+}
+
+async function scenariosCommand(options) {
+  const scenarios = await listScenarios();
+  if (options.json) { console.log(JSON.stringify(scenarios.map(({ run, topology, ...rest }) => rest), null, 2)); return; }
+  for (const scenario of scenarios) console.log(`${scenario.name.padEnd(36)} ${scenario.targets.join(',').padEnd(12)} ${scenario.description}`);
+  const features = join(here, 'features');
+  const gaps = existsSync(features) ? (await readdir(features, { withFileTypes: true })).filter((entry) => entry.isDirectory()).length : 0;
+  console.log(`\n${scenarios.length} scenarios; features without a scenario are listed in e2e/testbench/features/README.md (${gaps} areas)`);
 }
 
 /** The tool was called `pnpm sandbox` before; say which old names are still set so nothing is silently ignored. */
@@ -630,6 +758,7 @@ async function main() {
   switch (options.command) {
     case 'up': {
       const manifest = await up(options, ctx);
+      await releaseStarter(ctx);
       say(`Ready: proxy ${manifest.proxyUrl}, rpc ${manifest.rpcUrl}`);
       console.log(`\n${envExports(manifest)}\n`);
       say('Next: pnpm testbench status | pnpm testbench run chat-basic | pnpm testbench desktop | pnpm testbench down');
@@ -637,10 +766,11 @@ async function main() {
     }
     case 'down': await down(options, ctx); break;
     case 'status': await status(options, ctx); break;
-    case 'run': await runScenario(options, ctx); break;
+    case 'run': await runScenario(options, ctx).catch((error) => { throw Object.assign(error, { exitCode: RESULT_EXIT_CODES.error }); }); break;
     case 'desktop': await desktop(options, ctx); break;
     case 'logs': await logs(options, ctx); break;
     case 'list': await list(ctx); break;
+    case 'scenarios': await scenariosCommand(options); break;
     case 'report': await reportCommand(options, ctx); break;
     case 'share': await share(options, ctx); break;
     case 'mainnet': await mainnet(options, ctx); break;
@@ -650,5 +780,5 @@ async function main() {
 
 main().catch((error) => {
   console.error(`[testbench] ${error.message}`);
-  process.exitCode = 1;
+  process.exitCode = error.exitCode ?? 1;
 });

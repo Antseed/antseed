@@ -5,7 +5,7 @@
 // Then it pays again on a fresh channel, and the payment oracle judges both phases.
 import { cp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { channelRows, cliActiveChannels, findNumber, GATES, STRESS_MODEL, stressTopology, warmUp } from '../lib/stress.mjs';
+import { channelRows, cliActiveChannels, clientSummary, findNumber, GATES, gateProblems, runAll, STRESS_MODEL, stressTopology, warmUp } from '../lib/stress.mjs';
 
 export const meta = {
   description: '#1050: after the seller closes a channel on disconnect, the restarted buyer retires it everywhere (store, buyer-usage, channels view, buyer status) and pays again on a fresh channel; the payment oracle balances both phases.',
@@ -32,12 +32,18 @@ async function proxyJson(tb, path) {
   }
 }
 
+/** Both loads count as one gated run of 48 requests, as in the stress harness. */
+export function combinedGate(results, gate = GATES['issue-1050']) {
+  const client = clientSummary(results);
+  return { client, gate, gateProblems: gateProblems(client, gate) };
+}
+
 export async function run(tb) {
   const buyerDir = tb.manifest.buyerDir;
   const activeIds = () => channelRows(buyerDir, 'buyer').filter((row) => row.status === 'active').map((row) => row.session_id);
   const before = await tb.paymentSnapshot();
   await warmUp(tb);
-  const first = await tb.load({ ...LOAD, gate: GATES['issue-1050'] });
+  const first = await tb.load(LOAD);
   await sleep(5000); // let post-response auths land
 
   const paid = activeIds();
@@ -59,7 +65,7 @@ export async function run(tb) {
   // its own CLI process and is gone by now. Clear the pid in the copy so it reads like that stopped buyer's dir.
   const stateFile = join(offline, 'buyer.state.json');
   await writeFile(stateFile, JSON.stringify({ ...JSON.parse(await readFile(stateFile, 'utf8')), pid: null }));
-  const cli = { home: tb.manifest.home, configPath: tb.manifest.buyerConfig };
+  const cli = { home: tb.manifest.home, configPath: tb.manifest.buyerConfig, run: tb.cli };
   const offlineFirst = await cliActiveChannels({ ...cli, dataDir: offline });
   await sleep(RPC_LAG_WINDOW_MS * 2);
   const offlineSecond = await cliActiveChannels({ ...cli, dataDir: offline });
@@ -88,6 +94,10 @@ export async function run(tb) {
   for (const [surface, read] of Object.entries(surfaces)) tb.check(`${surface} counts 0 active channels after the restart`, !read.error && read.count === 0, read);
 
   const second = await tb.load(LOAD);
-  await tb.assertDeliveredWorkPaid({ before, results: [...first.results, ...second.results], injected: {} });
-  await tb.assertNoCrashes();
+  const results = [...first.results, ...second.results];
+  await runAll([
+    () => tb.assertDeliveredWorkPaid({ before, results, injected: {} }),
+    () => tb.assertNoCrashes(),
+    () => tb.checkGate(combinedGate(results)),
+  ]);
 }

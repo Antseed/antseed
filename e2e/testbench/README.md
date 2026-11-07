@@ -1,5 +1,7 @@
 # Worktree testbench
 
+[docs/testing.md](../../docs/testing.md) maps every kind of test in this repo; this page covers the testbench.
+
 `pnpm testbench` tests the current worktree's changes end to end. It covers four cases. Find the one that matches your change and follow its section.
 
 | Case | What changed | Network | Command |
@@ -47,7 +49,7 @@ Which scenarios a change needs is decided in one place: the table in the `verify
 To keep the network up and poke at it yourself:
 
 ```bash
-pnpm testbench up [--chain fork|local] [--config FILE] [--live]
+pnpm testbench up [--chain fork|local] [--mode sdk|cli] [--contracts full|payments] [--config FILE] [--live]
 pnpm testbench run chat-basic --keep             # reuses the running testbench
 eval "$(pnpm -s testbench status --env)" && curl "$ANTSEED_PROXY_URL/v1/models"
 pnpm testbench down                              # settles and closes channels, then stops
@@ -124,15 +126,16 @@ Use this to run cases 1 and 2 on a Linux server and click through the desktop fr
 ## Commands
 
 ```bash
-pnpm testbench up [--chain fork|local] [--config FILE] [--live] [--deposit-usdc N] [--block N] [--scenario NAME]
+pnpm testbench up [--chain fork|local] [--mode sdk|cli] [--config FILE] [--live] [--deposit-usdc N] [--block N] [--scenario NAME]
 pnpm testbench status [--json] [--env]   # ports, wallets, balances, peers, URLs, env exports
-pnpm testbench run <scenario> [--chain fork|local|mainnet] [--keep] [--strict] [--trace] [--real-funds]
+pnpm testbench run <scenario> [--chain fork|local|mainnet] [--mode sdk|cli] [--contracts full|payments] [--seed N] [--run-timeout SECONDS] [--keep] [--strict] [--trace] [--real-funds]
 pnpm testbench desktop                  # attach-only desktop (dev mode) on the testbench buyer
 pnpm testbench:attach                   # start/reuse routing-smoke, then open the attached desktop
 pnpm testbench mainnet --real-funds [--dev] [--fresh]   # full desktop on the real network (case 3)
-pnpm testbench logs [supervisor|anvil|seller-<id>] [--follow]
+pnpm testbench logs [supervisor|anvil|seller-<id>|buyer] [--follow]   # buyer: cli mode only
 pnpm testbench down [--force]           # settle + close channels while Anvil is alive, then stop
 pnpm testbench list                     # every testbench on this machine
+pnpm testbench scenarios [--json]       # every scenario with its targets and description
 pnpm testbench report [run] [--open]    # latest (or named) run: index.html, video, trace paths
 pnpm testbench report --serve [--port N] [--host H]   # serve reports/ over HTTP (loopback by default)
 pnpm testbench share [--idle MIN] [--fresh] [--no-tailscale] [--stop]   # Linux server: desktop in your browser over Tailscale
@@ -145,12 +148,32 @@ pnpm testbench share [--idle MIN] [--fresh] [--no-tailscale] [--stop]   # Linux 
 | | `--chain fork` (default) | `--chain local` |
 | --- | --- | --- |
 | Chain | Anvil fork of Base mainnet, chain 8453 | empty Anvil, chain 31337 |
-| Contracts | deployed production stack (recognized-usage) | this worktree's `packages/contracts`, deployed by `script/Deploy.s.sol` at the `base-local` addresses |
-| Setup | fork-only USDC mint, ERC-8004 + SellerRegistry/ANTS pool stake, deposit | MockUSDC mint, MockERC8004 `register()`, 50 USDC `AntseedStaking.stake`, deposit |
+| Contracts | deployed production stack (recognized-usage) | this worktree's `packages/contracts` at the `base-local` addresses: the full production stack by default, see below |
+| Setup | fork-only USDC mint, ERC-8004 + SellerRegistry/ANTS pool stake, deposit | MockUSDC mint, MockERC8004 `register()`, then the stake (full: SellerRegistry binding + ANTS seller-pool stake, as on Base; payments: 50 USDC `AntseedStaking.stake`), deposit |
 | Needs | `BASE_MAINNET_RPC_URL` | `forge` + forge-std, no RPC key |
 | Use for | release checks against what is live | contract changes, payment-flow checks, offline work |
 
 `--chain mainnet` is not an Anvil chain: it is case 3 (`run` only, with `--real-funds`).
+
+### Local contract layouts
+
+`topology.chain.contracts` (or `--contracts` on `up` and `run`) picks what `--chain local` deploys. A fork always has Base's contracts.
+
+| Layout | Deploys | Registry staking / emissions | `up` (warm, this repo's Mac) |
+| --- | --- | --- | --- |
+| `full` (default) | `script/Deploy.s.sol`, then `script/DeployLocalFull.s.sol` (M001's deploy broadcast adapted to a fresh chain), a warp into the gate's effective epoch, `M001 Cutover.s.sol`, `DeployFreeUsage.s.sol` and `M003 Deploy.s.sol` unchanged, and M003's manual owner steps 1 and 3: payments, ANTS, the emissions gate, seller pools and registry, usage accounting and rewards, the legacy escrow, wash-trading registry (development verifier), points policies, free usage, KBF audits and verification results | `AntseedSellerRegistry` / `AntseedUsageAccounting` (recognized usage, as on Base) | about 17 s |
+| `payments` | `script/Deploy.s.sol` only: registry, MockUSDC, MockERC8004, ANTS, legacy staking and emissions, deposits, channels, stats, deposit relay | `AntseedStaking` / `AntseedEmissions` (legacy) | about 8 s |
+
+Every contract lands at a fixed deployer nonce (`e2e/testbench/lib/local-deploy.mjs`), and the addresses reach the code the way production ones do: through `getChainConfig('base-local')` in `packages/node` and the `payments.crypto` the testbench writes into each node's config. `up` checks that every layout address has code and that the registry points where the layout says. `base-local` keeps naming Deploy.s.sol's legacy contracts in `stakingContractAddress` and `emissionsContractAddress` (the stress harness and the e2e scripts deploy only Deploy.s.sol); on `full` the testbench writes them as Base does after the cutover, with the legacy ones in `legacyStakingContractAddress` and `legacyEmissionsContractAddress`.
+
+Notes on `full`:
+
+- `AntseedEmissionsGate` hardcodes Base's ANTS token and genesis, so the deploy copies Deploy.s.sol's ANTSToken (code and storage) to `0xa87EE81b2C0Bc659307ca2D9ffdC38514DD85263`, and epochs follow Base's clock.
+- Anvil starts four weeks in the past and is set to wall time once setup is done, so the warps setup needs (into the effective epoch, past the stake activation delay) leave the chain at wall time, not weeks ahead.
+- Sellers' ANTS come from the legacy emissions escrow, as on the fork. M002 (legacy seller claims) is not run: it needs the legacy V2 emissions and the seller rewards pool, which a fresh chain never had.
+- The team wallet and the verification bucket's first controller are anvil accounts 8 and 9 (the gate takes one minter per controller; the deployer, anvil account 0, is the protocol reserve). No KBF auditor is approved and verification rewards are off, as M003 leaves them.
+
+`manifest.chain.contracts` and `tb.contracts` name every address (`registry`, `deposits`, `channels`, `usdc`, `antsToken`, `staking`, `emissions`, `sellerPools`, `sellerRegistry`, `usageAccounting`, `emissionsGate`, `freeUsage`, `verification`, `verificationResults`, ..., plus `legacyAntsToken`, `washTradingVerifier`, `washTradingPointsPolicy` and `verificationPointsPolicy` on the local chain); `manifest.localDeploy.timingsMs` has the time of each deploy step.
 
 `run` picks the chain from `--chain`, else the running testbench's chain, else the scenario's first `targets` entry. A scenario lists the chains it supports in `meta.targets`.
 
@@ -161,7 +184,10 @@ pnpm testbench share [--idle MIN] [--fresh] [--no-tailscale] [--stop]   # Linux 
 - **One testbench per worktree (per slot).** The name is `wt-<basename>-<sha1(path)[:8]>[-slot]`. All state lives in `~/.antseed-testbench/<name>/`: `home/`, `anvil-home/`, `buyer/`, `sellers/<id>/`, `config/`, `logs/`, `reports/`, `manifest.json`, `testbench.lock`, `control.json`. Override the root with `ANTSEED_TESTBENCH_HOME` (never inside `~/.antseed`).
 - **Locks with PID-reuse protection.** Lock and manifest entries record each process's PID and its `ps` start time. `up` while running reattaches; a dead or reused PID is treated as stale and cleaned up on the next `up`.
 - **Only owned processes are stopped.** `down` and stale cleanup signal only PIDs from our manifest whose start time still matches.
-- **No defaults, no `~/.antseed`, no keychain.** Every testbench process gets a cleaned environment (AntSeed/provider variables, including `ANTSEED_IDENTITY_HEX`, stripped) with `HOME` set to the testbench's `home/`; starting one with your real home or anything inside `~/.antseed` as `HOME` fails. That includes the attach-only desktop, so it cannot read your wallets, tunnel or Telegram settings or plugins. It also uses a mock keychain (macOS) and a basic password store (Linux, Windows), so it never opens your login keychain or keyring. Its wallet is the testbench buyer's key, read from `buyer/`. Node options are checked before use: `dhtPort: 0`, `signalingPort: 0` (unset or 6881/6882 fail fast), `bindHost: 127.0.0.1`, `noOfficialBootstrap`, `natTraversal: false`, `allowPrivateIPs`, and one private loopback bootstrap node. Listeners take port 0 where possible; Anvil and the proxy retry on `EADDRINUSE`.
+- **A killed run does not orphan its testbench.** The supervisor runs detached, so a `pnpm testbench run` killed with SIGKILL (an agent's command timeout, for example) used to leave Anvil, the sellers and the supervisor up for good. Now `run` and `up` record themselves as the testbench's starter (`starter` in `plan.json` and `manifest.json`, with the same PID-reuse check as the locks), and `run` sends `POST /heartbeat` every 10 s. Every 15 s a watchdog in the supervisor checks the starter. Once the starter is gone and its last heartbeat is one interval old, the watchdog runs the normal settle-and-close shutdown and writes `stoppedBy: 'watchdog', reason: 'starter-died'` to `manifest.json` and a `Watchdog:` line to the supervisor log. A `run` that finds such a testbench says so, runs `down` and starts fresh. `up` and `run --keep` release the starter when they finish, so their testbench stays up. It then stops after `ANTSEED_TESTBENCH_IDLE_MINUTES` (default 120, 5 to 1440) without a control request, with `reason: 'idle'`. Any control request counts, including `status`, `desktop` and `share` (which send heartbeats while they run), but traffic to the proxy does not. `status` shows the budget and the time since the last control request. A run that reuses a testbench does not become its starter, so killing it leaves the testbench up. `pnpm testbench down` is still the way to stop a testbench.
+- **Children follow the supervisor.** The mocks, RPC links, fork RPC relay and bootstrap DHT run inside the supervisor and die with it. Anvil, forge, seller workers and CLI nodes are separate processes. The supervisor registers each one with a small reaper process (`lib/reaper.mjs`) that holds a pipe to it. If the supervisor dies by SIGKILL, the pipe closes and the reaper sends SIGTERM to every child still alive, then SIGKILL after 8 s. Separately, CLI nodes stop themselves when their parent changes (`lib/isolate-preload.mjs`), and the next `up`'s stale cleanup stops whatever the manifest still lists. `pnpm testbench list` shows `starting` or `stopping` while a supervisor is alive but not ready, and `stopped` only once it has exited.
+- **What runs.** Every mode runs the supervisor (private bootstrap DHT, mocks, RPC links, control API) and Anvil. In `sdk` mode it also forks one `seller-worker.mjs` per seller and runs the buyer node and proxy inside itself. In `cli` mode each seller and the buyer are their own `node apps/cli/dist/cli/index.js` process. The manifest records each one as soon as it is spawned (`nodeProcesses`), so `down --force` finds them even after a supervisor crash, and a CLI process stops itself when its supervisor dies.
+- **No defaults, no `~/.antseed`, no keychain.** Every testbench process gets a cleaned environment (AntSeed/provider variables, including `ANTSEED_IDENTITY_HEX`, stripped) with `HOME` set to the testbench's `home/`; starting one with your real home or anything inside `~/.antseed` as `HOME` fails. That includes the attach-only desktop, so it cannot read your wallets, tunnel or Telegram settings or plugins. It also uses a mock keychain (macOS) and a basic password store (Linux, Windows), so it never opens your login keychain or keyring. Its wallet is the testbench buyer's key, read from `buyer/`. Node options are checked before use: `dhtPort: 0`, `signalingPort: 0` (unset or 6881/6882 fail fast), `bindHost: 127.0.0.1`, `noOfficialBootstrap`, `natTraversal: false`, `allowPrivateIPs`, and one private loopback bootstrap node. The same check runs on the `config.json` written for each CLI process, which also refuses an unset or default proxy port and a non-local RPC; a CLI node that reports any other bootstrap count stops the testbench. Listeners take port 0 where possible; Anvil and the proxy retry on `EADDRINUSE`.
 - **Buyer routing stays inside the testbench.** `allowedPeerIds` is set to this testbench's seller peer IDs and `minTrustScore` is forced to 0 (fresh fork sellers have no trust). Other routing preferences come from the config.
 - **Fresh chain per `up`.** Channel, metering and payment databases are cleared on each `up` (they describe a chain that no longer exists); identity keys are kept, so peer IDs and wallet addresses stay stable across runs.
 
@@ -199,21 +225,27 @@ A scenario is a module in `e2e/testbench/scenarios/<name>.mjs`:
 export const meta = {
   description: 'What this proves',
   targets: ['fork', 'local'],   // chains it can run on; the first is the default
-  requires: ['mockControl'],    // capabilities: warpTime, sellerControl, buyerControl, mockControl, liveUpstream, desktop, sourceContracts (local only)
+  requires: ['mockControl'],    // capabilities: warpTime, sellerControl, buyerControl, buyerFaults (sdk mode only), mockControl, liveUpstream, desktop, sourceContracts (local only)
 };
 
 // Plain data. Sellers inherit the config's providers unless they bring their own.
 export const topology = {
+  mode: 'sdk',                  // optional: sdk (default) or cli, see "Modes"; --mode overrides it
   sellers: [{ id: 'fast', mock: { latencyMs: 20 } }, { id: 'slow', mock: { latencyMs: 400 } }],
   buyer: { depositUsdc: '10', routingPreferences: { preferLowLatency: true } },
-  chain: { block: 52223957 },   // optional fork pin
+  chain: { block: 52223957 },   // optional fork pin; on --chain local, contracts: 'payments' keeps the Deploy.s.sol-only layout
   payments: { settlementIdleMs: 5000, minBudgetPerRequestUsdc: '0.01' },  // optional: seller idle-settle timer (default 600000); seller minimum budget per request (SDK default 0.5; `antseed seller start` uses 0.01)
 };
+
+// Free tier (cli mode only: `antseed seller start` reads the programs from its config):
+//   seller: { freeTier: { maxRequestsPerAddress: 2, maxRequestsPerIp, windowMs: 3600000, stakeTiers: [{ minPower: 1000, multiplier: 3 }], stakersOnly } }
+//   service: providers.<name>.services.<model>.freeTier, the same keys: that service's own program (on a priced service, a free allowance)
 
 // Payment stress shapes (see "Payment stress" below) add, all optional:
 //   chain:  { rpc: 'base', blockTimeSec: 2, topUpThresholdBps: 6500 }
 //   seller: { mock: { usage: 'load', latencyRangeMs: [50, 3000], outTokens: [100, 4000], fault500Rate: 0.05, disconnectRate: 0.05 } }
 //   buyer:  { depositUsdc: '500', maxReserveUsdc: '0.25', maxPerRequestUsdc: '0.15' }
+//   seller or buyer: { env: { ANTSEED_DEBUG: '1' } }   (ANTSEED_* switches for that node; stressTopology() sets this one)
 
 export async function run(tb) {
   const reply = await tb.chat({ model: tb.sellers[0].models[0], sellerId: 'fast' });
@@ -228,18 +260,22 @@ The `tb` API:
 
 | Area | Calls |
 | --- | --- |
-| Client | `catalog()`, `peers()`, `chat({ model, prompt, stream, sellerId })` |
+| Client | `catalog()`, `peers()`, `chat({ model, prompt, stream, sellerId })`, `request(path, { method, body, headers, stream })` (any proxy route, such as `/v1/responses`, `/v1/messages`, `/v1/images/generations`, `/v1/models`; returns `{ status, headers, json, text, latencyMs }`, and with `stream` the raw SSE is in `text`) |
 | Payments | `channels({ all })`, `signedBySeller()`, `closeAll()`, `closeChannel(id)`, `assertSettlementMatchesSigned(expected?)`, `buyerBalance()` |
-| Chain | `buyerBalance()`, `usdcBalance(address)`, `settledEvents(sellerId)` (on-chain `ChannelSettled`), `channelState(channelId)`, `buyerRequestClose(channelId)` / `buyerWithdraw(channelId)` (the buyer's unilateral exit via Anvil impersonation; warp 15 min before withdraw) |
+| Chain | `contracts` (every address, see [Local contract layouts](#local-contract-layouts)), `chainState()` (block, epoch clock, the buyer's deposit, USDC and ANTS, each seller's USDC, ANTS, eligibility and pool stake, the fee recipient's USDC; amounts as strings), `buyerBalance()`, `usdcBalance(address)`, `mintUsdc(address, micros)` and `usdcTransfer(from, to, micros)` (Anvil impersonation: MockUSDC locally, the master minter on the fork), `epoch()`, `epochClock()` (`{ epoch, startsAt, endsAt, now }` in chain time) and `warpToNextEpoch()` (the emissions gate's clock, legacy emissions' on `payments`), `delegateFreeTier({ from, to, amount, sellerId, epochs, expiresInDays })` (a staker stakes `amount` ANTS in the seller's pool and signs a free-tier delegation to the buyer; returns `{ staker, delegation, code, power }`, the stake counts from the next epoch), `settledEvents(sellerId)` (on-chain `ChannelSettled`), `channelState(channelId)`, `buyerRequestClose(channelId)` / `buyerWithdraw(channelId)` (the buyer's unilateral exit via Anvil impersonation; warp 15 min before withdraw; `buyer-withdraw-and-exit` does it through the CLI) |
+| CLI | `cli(args, { dataDir, configPath, home, env, timeoutMs, input, clock })` runs this worktree's `antseed --data-dir <buyer dir> --config <buyer config> ...args` once, isolated like the nodes (private HOME, official bootstrap list emptied, no update check, no debug logs on stdout), and returns `{ code, signal, stdout, stderr, json, durationMs, timedOut }` (`json`: stdout parsed, else `null`; a failing command does not throw). `sellerCli(id, args, options)` runs on a seller's data dir and config. Each call is a `cli` event in `events.jsonl` and the HTML report, with the first 2000 characters of each stream. `clock: 'chain'` shifts the command's clock to the chain's, for commands that compare chain timestamps with `Date.now()` after a `warp()` |
 | Control | `stopSeller(id)`, `startSeller(id)`, `stopBuyer()` / `startBuyer()` (buyer node + proxy; sellers see a disconnect), `setMockLatency(id, ms)`, `mockRequests(id)`, `warp(seconds)`, `waitFor(fn, label, { timeoutMs })` |
-| Faults | `faults.loseNeedAuths(count)` (the buyer drops its next `count` seller NeedAuth frames, as if lost), `faults.lostNeedAuths()` (the dropped payloads). Use only to reach a state no public path produces |
+| Faults (sdk mode) | `faults.loseNeedAuths(count)` (the buyer drops its next `count` seller NeedAuth frames, as if lost), `faults.lostNeedAuths()` (the dropped payloads). Use only to reach a state no public path produces |
 | Desktop | `desktop()` → `ui.sendChat(prompt, { expect })`, `ui.openChat()`, `ui.text()`, `ui.screenshot(name)`, `ui.page` (Playwright), `ui.errors`, `ui.close()` |
-| Load and oracle | `load({ concurrency, requests, streamRatio, abortRatio, imageRatio, model, imageModel, sellerId, restart: { who, sellerId, atFraction }, gate })`, `paymentSnapshot()`, `assertDeliveredWorkPaid({ before, results, injected })`, `assertNoCrashes()`, `setMockFaults(id, { fault500Rate, disconnectRate })`, `deliveries(id)`, `health()`, `gates` |
-| Reporting | `check(name, ok, detail)`, `knownIssue(name, ok, detail, issue)`, `metric(name, value)`, `event(type, data)`, `mockCostPerChat(sellerId, model)` |
+| Load and oracle | `load({ concurrency, requests, streamRatio, abortRatio, imageRatio, model, imageModel, sellerId, restart: { who, sellerId, atFraction }, gate })`, `checkGate(run)`, `paymentSnapshot()`, `assertDeliveredWorkPaid({ before, results, injected })`, `assertNoCrashes()`, `assertIsolated()`, `setMockFaults(id, { fault500Rate, disconnectRate })`, `deliveries(id)`, `health()`, `gates` |
+| Budgets | `budget(name, value, { max, unit = 'ms' })` (a ceiling: records the metric and, with `--budgets`, the check `budget: <name> <= <max> <unit>`), `timings(measured)` (holds measured values to `topology.budgets`), `budgets` (the declared ones). See [Performance budgets and drift](#performance-budgets-and-drift) |
+| Reporting | `check(name, ok, detail)`, `knownIssue(name, ok, detail, issue)`, `metric(name, value)`, `event(type, data)`, `mockCostPerChat(sellerId, model)`, `prng(label)` (a seeded random stream) |
 
-Each run writes `reports/<timestamp>-<scenario>/index.html` (a self-contained page with checks, metrics, screenshots, video and events), `report.json` (result, checks, known issues, metrics, config hash, fork block, topology, sellers, buyer), `events.jsonl` and `metrics.json`. A failed check fails the run with a nonzero exit.
+Each run writes `reports/<timestamp>-<scenario>/index.html` (a self-contained page with checks, metrics, screenshots, video and events), `report.json` (result, phase, seed, mode, git, Node version, duration, checks, known issues, metrics, config hash, fork block, topology, sellers, buyer), `events.jsonl` and `metrics.json` (the metrics plus each seller mock's delivery ledger under `deliveries`). A run refused before the scenario starts still writes `report.json`.
 
-`knownIssue` records a check for a tracked defect outside the testbench without failing the run; `--strict` makes it fail. It currently tracks one issue: after a cooperative close, `chat-basic` sees one extra request's cost settled (two 18 micro-USDC chats settle 54, not 36). Settle-on-disconnect does not have it (`payment-flow` checks that path exactly). On-chain settlement still matches exactly what the buyer signed.
+`result` is `passed`, `failed`, `error`, `timeout` or `blocked`, and the exit code is 0, 1, 4, 3 or 2. Anything but `passed` prints a `rerun:` line with the run's seed. [docs/testing.md](../../docs/testing.md#seeds-and-reruns) defines the classes and what a seed replays. Use `tb.prng(label)` instead of `Math.random` when a scenario needs randomness, so its runs stay replayable.
+
+`knownIssue` records a check for a tracked defect outside the testbench without failing the run; `--strict` makes it fail.
 
 Shipped scenarios:
 
@@ -250,7 +286,34 @@ Shipped scenarios:
 - `routing-smoke`: two sellers with different mock latency; the buyer sees only testbench sellers, pinned and auto-routed chats stay inside the testbench, and per-seller settlement is exact.
 - `stress-smoke`, `stress-c32`, `stress-c64`, `stress-smallreserve`, `stress-images`, `stress-faults`, `stress-restart-buyer`, `stress-restart-seller`: the payment stress scenarios on the testbench (see [Payment stress](#payment-stress)).
 - `issue-1050-stale-channel`: #1050. The buyer pays, stops, and the seller closes the channel on disconnect. After a restart the buyer must retire the closed channel in its store, `/_antseed/buyer-usage`, `/_antseed/channels` and `antseed buyer status` (all count 0), then pay again on a fresh channel; the payment oracle judges both phases.
+- `cli-buyer-commands` (cli mode): after two paid chats, `antseed buyer status`, `balance`, `channels` (and `channels list`), `connection get`, `identity list --balances`, `metering`, `activity` and `emissions info` run next to the running buyer; each transcript must match `/_antseed/channels`, `/_antseed/buyer-usage` and the chain, exit 0 and print no stack trace, and `emissions info` must report the chain's stack and epoch on both sides of `warpToNextEpoch()`. Every one of these commands is safe next to a running CLI buyer: they read the stores and the chain, and the reconciling ones leave the current channel to the buyer whose pid is alive. Records the ignored `--json` of `buyer channels` subcommands as a known issue.
+- `buyer-withdraw-and-exit` (cli mode, local): `antseed buyer withdraw` takes the free deposit and cannot take the reserve; the seller stops with the channel open; `antseed buyer channels request-close`, a refused early withdraw, `warp(16 min)`, `antseed buyer channels withdraw` (with `clock: 'chain'`) times the channel out and returns the unsettled reserve. Each step is checked against `buyerBalance()` and `channelState()`, and the money adds up to the original deposit.
+- `free-tier` (cli mode, local): a priced service with its own free allowance serves 2 requests free (`x-antseed-free-tier: covered`) and charges the third, settled exactly; a zero-priced service serves 2 requests with no paid channel or reserve, then the seller answers 429 `rate_limit_error` with `retry-after` before the upstream sees the request; `tb.delegateFreeTier` stakes 1000 ANTS for a staker in the seller's pool, `antseed buyer free-tier add <code>` gives the running buyer the delegation, and once the stake is active the staked tier serves the multiplied allowance on the delegated position, then refuses with `limitedBy: 'stake'`.
 - `issue-1200-spendingauth-catchup`: #1200. A lost NeedAuth leaves the buyer under-signed, the seller's budget-exhausted 402 asks it to catch up, and the buyer must sign exactly the delivered spend, so settle-on-disconnect charges exactly the delivered work. Fails on a buyer that signs `max(target, signed + minBudgetPerRequest)`.
+
+### Modes
+
+`topology.mode`, or `--mode` on `up` and `run`, picks what runs as a node. The default is `sdk` for every topology.
+
+| Mode | Sellers | Buyer | Use it for |
+| --- | --- | --- | --- |
+| `sdk` | Forked workers built from `@antseed/node` | Node and proxy inside the supervisor | Quick runs, and scenarios that reach into the buyer |
+| `cli` | `antseed seller start --no-dashboard` processes | An `antseed buyer start --no-verifier` process | Anything that should prove the shipped binaries: argument parsing, the config loader, plugin loading, restart, crash and stop behavior |
+
+```bash
+pnpm testbench run stress-restart-buyer --chain local --mode cli
+pnpm testbench logs buyer
+```
+
+A seller that logs `Payments disabled` at startup fails `up` at once: on a priced topology that seller would serve every request for free and the buyer would never open a channel (the oracle caught exactly this; `main` fixed the slow-probe cause in `a962528cb`). In `cli` mode the supervisor writes each node's `config.json` and links the workspace plugins into `home/.antseed/plugins`. A stop is SIGTERM, then SIGKILL after 20 s, and a SIGKILL counts in `forcedStops`. Sellers and the buyer report exits in `unexpectedExits` (`who` is `seller:<id>` or `buyer`). A restarted seller keeps its DHT and signaling ports. Every node logs at `ANTSEED_DEBUG=1`, to `logs/seller-<id>.log` and `logs/buyer.log`. `tb` works the same in both modes, because it drives the buyer through the proxy's HTTP API.
+
+A seller's model health checks, gas checks and gas refuel are off in `cli` mode, as in the stress harness: their requests would land in the mock's ledger. A topology without `payments.minBudgetPerRequestUsdc` gets the CLI default of 0.01 USDC instead of the SDK's 0.5.
+
+The `buyerFaults` capability needs an in-process buyer, so only `sdk` mode has it. `issue-1200-spendingauth-catchup` requires it: `--mode cli` refuses that scenario before anything starts, and `POST /faults/buyer/need-auth-loss` answers `409` on a `cli` testbench. Like `--chain`, `run` takes the running testbench's mode when `--mode` is not given. An explicit `--mode` that differs is refused; run `pnpm testbench down` first or use `--slot`.
+
+### Features without a scenario
+
+`e2e/testbench/features/<area>/<feature>/README.md` is the coverage map: one folder per product feature the testbench does not cover yet, each README saying what to test, what the testbench lacks to drive it, and where the feature lives in the code. There is no code in those folders. `features/README.md` is the index. When a feature gets its scenario, the scenario goes to `scenarios/<name>.mjs` and the folder's README gets a `Scenario:` line. Most gaps are blocked by one of three enablers: a mock upstream that speaks more than chat and image generation, the real `antseed` processes (`mode: 'cli'`), or the full contract stack on `--chain local`.
 
 Mainnet scenarios (`targets: ['mainnet']`) get a smaller `tb`: `check`, `knownIssue`, `metric`, `event`, `waitFor`, `desktop()` (the full profile desktop), `waitForPeers({ min })`, `models()`, `channels({ all })`, `signedSnapshot()`, `spentSince(snapshot)`, `assertWithinCap(snapshot)`, `buyerBalance()` (on-chain deposit) and `capMicros`. There is no chain or seller control on the real network.
 
@@ -264,11 +327,14 @@ The payment stress harness (`e2e/stress`, run in CI by `node e2e/stress/ci.mjs`)
 | `mock-upstream.mjs` (load usage, 500s, disconnects, per-request delivery record) | the testbench mock with `usage: 'load'`, fault rates and its delivery ledger |
 | `harness.mjs` load generator | `tb.load(...)` (same tagged requests, stream and abort ratios, image share, mid-load restart) |
 | `analysis.mjs` payment invariants | `tb.assertDeliveredWorkPaid(...)` runs `analyzePayments` itself on the testbench's seller and buyer stores, chain and mock ledgers |
-| crash patterns, unexpected exits, SIGKILL stops | `tb.assertNoCrashes()` (peer logs since the run started, supervisor health) |
-| `ci.mjs` `GATES` | `tb.gates` / `GATES` in `lib/stress.mjs`, passed as `load({ gate })` |
+| crash patterns, unexpected exits, SIGKILL stops | `tb.assertNoCrashes()` (peer logs since the run started, supervisor health for every peer) |
+| isolation guard (no non-loopback IPv4 URL, 1 bootstrap node) | `tb.assertIsolated()`, called by `tb.assertNoCrashes()`, over `logs/seller-*.log`, `logs/buyer.log` and `logs/supervisor.log` |
+| `SELLER_PATTERNS`, `BUYER_PATTERNS` log counters | `metrics.logPatterns` (`seller` and `buyer` counts for the run, such as `rejectUnderfunded`, `behindSpendAccepted`, `topUpPermanentFail`), filled by `tb.assertNoCrashes()`. Counts only, no checks |
+| `x-antseed-estimated-cost-usd` per request | `costHeader` on each load result, summed as `estimatedCostUsd` in `metrics.load` (null when no response carried it) |
+| `ci.mjs` `GATES` | `tb.gates` / `GATES` in `lib/stress.mjs`: `load({ gate })` returns `gateProblems` without failing, `tb.checkGate(run)` records the check after the oracle |
 | owner-only chain setup (credit limit, 65% top-up threshold) | `buyer.depositUsdc` above 10 sets the Deposits credit limit override; `chain.topUpThresholdBps` sets the channels threshold (owner impersonated on Anvil, fork or local) |
 
-`lib/stress.mjs` exports `stressTopology()` (the stress network: a 3 / 15 USD per million token seller with a 0.04 USD image model, a 500 USDC deposit, a 1 USDC reserve cap, Base-like RPCs, 65% top-up, 15 s idle settle, the CLI seller's 0.01 USDC minimum budget per request) and `stressRun(tb, { load, faults, gate })` (snapshot, warm-up, faults on, gated load, faults off, oracle, crash checks). A new stress shape is a few lines:
+`lib/stress.mjs` exports `stressTopology()` (the stress network: a 3 / 15 USD per million token seller with a 0.04 USD image model, a 500 USDC deposit, a 1 USDC reserve cap, Base-like RPCs, 65% top-up, 15 s idle settle, the CLI seller's 0.01 USDC minimum budget per request) and `stressRun(tb, { load, faults, gate })` (snapshot, warm-up, faults on, load, faults off, oracle, crash and isolation checks, gate). A failed gate or check does not stop the next one: the report shows every verdict, then the run fails. Scenarios that judge a run themselves use `runAll([...])` from `lib/stress.mjs` for the same effect. A new stress shape is a few lines:
 
 ```js
 import { GATES, stressRun, stressTopology } from '../lib/stress.mjs';
@@ -279,7 +345,7 @@ export async function run(tb) {
 }
 ```
 
-The oracle fails a run on any of: delivered work not settled, settlement above what reached the wire, a response the client received in full that the mock never delivered, per-channel signed or accepted amounts that differ from what settled, a deposit decrease that differs from the sum settled or from seller plus fee income, reserve left locked, a channel left open, and (with no faults, aborts or restarts) seller spend that differs from the delivered cost. It judges only what happened after the `paymentSnapshot()`, so it also works on a testbench kept with `--keep`; it refuses to run while an earlier channel is still open.
+The oracle fails a run on any of: delivered work not settled, settlement above what reached the wire, a response the client received in full that the mock never delivered, per-channel signed or accepted amounts that differ from what settled, a deposit decrease that differs from the sum settled or from seller plus fee income, reserve left locked, a channel left open, and (with no faults, aborts or restarts) seller spend that differs from the delivered cost. It also compares settlement with the seller's own `Cost recorded` log lines. Those are debug lines, so the oracle needs `ANTSEED_DEBUG` on the seller: `stressTopology()` sets it on every node through `env` (sellers and buyer, `ANTSEED_*` switches only), and a run with paid requests and no cost lines fails with `seller cost lines missing (ANTSEED_DEBUG not set?)`. The bootstrap check and most `metrics.logPatterns` counters read debug lines too. It judges only what happened after the `paymentSnapshot()`, so it also works on a testbench kept with `--keep`; it refuses to run while an earlier channel is still open.
 
 ```bash
 pnpm testbench run stress-smoke --chain local        # quick: 6 requests, about a minute with setup
@@ -288,6 +354,27 @@ pnpm testbench run stress-restart-seller --chain local
 ```
 
 `e2e/stress` still runs in CI unchanged; the testbench imports its `rpc-proxy.mjs` and `analysis.mjs` rather than copying them, so both harnesses share one set of invariants.
+
+### Performance budgets and drift
+
+The stress set also guards speed. Every run records timings in `metrics.json` and the HTML report:
+
+- each load's `clientSummary` in `metrics.load`: `p50Ms`, `p95Ms`, `p99Ms` and `maxMs` over successful requests, split into `streamed` (with `ttfb`, the time to the first body byte) and `nonStreamed`, plus `okPerSecond`;
+- `stressRun` lifts them to top-level metrics: `p50Ms`, `p95Ms`, `p99Ms`, `maxMs`, `streamedP95Ms`, `nonStreamedP95Ms`, `ttfbP95Ms`, `okPerSecond` and `loadMs`, and for a restart `restartDownMs`;
+- a buyer restart's `settleOnDisconnectMs`: how long until the seller settled the channels the restart dropped. A seller restart leaves the buyer's channel open, so it has none. `payment-flow` records its own;
+- `closeAllMs` from `tb.closeAll()`, `chatMs` and `streamChatMs` in `chat-basic`, and `upMs` (from `up` to `READY`, also in `report.json`) when the run started its testbench.
+
+A scenario declares ceilings in `topology.budgets`, for example `stressTopology({ budgets: { p95Ms: 12000, closeAllMs: 16000 } })`. `stressRun` and `payment-flow` hold what they measured to every declared key with `tb.timings(...)`, after the oracle, crash, isolation and gate checks, so a slow run never hides a money verdict. Undeclared keys stay metrics. A declared key nothing measured counts as over budget, so a misspelled budget does not pass unnoticed. Budgets are scenario data: they are left out of the topology fingerprint, so a kept testbench runs scenarios with other budgets.
+
+Budgets are checked only with `pnpm testbench run <scenario> --budgets` (or `ANTSEED_TESTBENCH_BUDGETS=1`). `--strict` does not imply it. Without it, the values are recorded, the HTML report's Budgets table shows them against their budget in grey, and an over-budget value prints `over budget, not enforced: ...`. The shipped numbers are twice what one `--chain local` cli-mode run took on a developer laptop. CI runners and loaded laptops are slower, and the nightly job will set CI numbers.
+
+After every run, `metrics.drift` compares each top-level numeric metric with the latest earlier passed run of the same scenario, mode and chain (`metrics.driftFrom` names it) as `{ previous, current, ratio }`. Nested metrics (per-load summaries, log counters) stay out because they vary with the seed. A metric that moved past x1.5 or under x0.67 prints a line:
+
+```text
+[testbench] DRIFT p95Ms 1200 -> 2400 (x2.0)
+```
+
+Nothing fails on drift. It tells whoever reads the run what changed since last time. Mock latencies are drawn from the seed, so compare runs of one `--seed` when a drift line matters.
 
 ## Desktop automation
 

@@ -36,9 +36,11 @@ pnpm testbench run <scenario> --chain local --keep      # leaves it up afterward
 ```
 
 - Scenarios live in `e2e/testbench/scenarios/<name>.mjs`. The shipped ones: `chat-basic`, `payment-flow`, `routing-smoke`, `desktop-chat`, `mainnet-smoke` (real funds), and the `issue-*` scenarios.
-- Each run prints `PASS`, `FAIL` and `KNOWN` lines and the path of `report.json`. `--strict` turns `KNOWN` into failures.
+- Each run prints `PASS`, `FAIL` and `KNOWN` lines and the path of `report.json`. `--strict` turns `KNOWN` into failures. `--budgets` turns a scenario's `topology.budgets` into `budget: ...` checks (recorded in grey without it), and `DRIFT` lines name timings that moved against the previous passed run.
+- `report.json` has `result`: `passed`, `failed`, `error`, `timeout` (past `--run-timeout`, default 1800 seconds) or `blocked` (the environment refused the run). The exit codes are 0, 1, 4, 3 and 2; `pnpm -s` turns any of them into 1. Anything but `passed` prints a `rerun:` line with the run's `--seed`; see `docs/testing.md`.
 - If this worktree's testbench is already running with the same topology, `run` reuses it (same chain, same channels); with another topology it refuses. Run `pnpm testbench down` first, or add `--slot NAME` for a second testbench next to it.
 - Scenarios assume a fresh testbench: run `pnpm testbench down` between runs after `--keep` or `up`.
+- A `run` killed by a command timeout (SIGKILL) no longer orphans its testbench. The supervisor's watchdog settles and stops it within about 30 seconds, and the next `run` restarts one it finds that way. Still tear down with `pnpm testbench down`, and wait while `pnpm testbench list` says `starting` or `stopping`. A testbench left up by `up` or `--keep` stops after `ANTSEED_TESTBENCH_IDLE_MINUTES` (default 120) without a control request.
 - For evidence (checks.log, the run transcript, per-run logs) run scenarios through `.claude/skills/verify-antseed/scripts/run-with-evidence.mjs <scenario> --chain local`, as verify-antseed describes.
 - A first `--chain local` run in a worktree compiles the contracts (about 2.5 minutes); later runs are ready in seconds. Give such a run a long command timeout or run it in the background.
 

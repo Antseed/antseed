@@ -9,6 +9,7 @@ import { getGlobalOptions } from '../types.js'
 import pkg from '../../../../package.json' with { type: 'json' }
 import { watchForUpdates } from '../../../update/watch.js'
 import { loadConfig } from '../../../config/loader.js'
+import { networkNodeOptions } from '../../../config/network.js'
 import { AntseedNode, DepositRelayClient, DepositsClient, getInstance, peerRelaysSweeps, resolveChainConfig } from '@antseed/node'
 import type { Identity, NodePaymentsConfig } from '@antseed/node'
 import { OFFICIAL_BOOTSTRAP_NODES, parseBootstrapList, toBootstrapConfig } from '@antseed/node/discovery'
@@ -93,11 +94,12 @@ export function resolveBuyerRouterName(options: { router?: string }): string {
 export function buildBuyerBootstrapEntries(
   configuredBootstrapNodes: string[] | undefined,
   localSeederDhtPort?: number,
+  noOfficialBootstrap = false,
 ): string[] {
   const configured = Array.isArray(configuredBootstrapNodes)
     ? configuredBootstrapNodes.filter((entry) => typeof entry === 'string' && entry.trim().length > 0)
     : []
-  const baseEntries = configured.length > 0
+  const baseEntries = configured.length > 0 || noOfficialBootstrap
     ? configured
     : OFFICIAL_BOOTSTRAP_NODES.map((node) => `${node.host}:${node.port}`)
   const entries = [...baseEntries]
@@ -314,7 +316,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
       }
 
       const seederInfo = await getLocalSeederInfo(globalOpts.dataDir)
-      const allBootstrapEntries = buildBuyerBootstrapEntries(config.network?.bootstrapNodes, seederInfo?.dhtPort)
+      const allBootstrapEntries = buildBuyerBootstrapEntries(config.network?.bootstrapNodes, seederInfo?.dhtPort, config.network?.noOfficialBootstrap)
       const bootstrapNodes = toBootstrapConfig(parseBootstrapList(allBootstrapEntries))
 
       const nodeSpinner = ora('Connecting to P2P network...').start()
@@ -386,6 +388,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
           maxPerRequestUsdc: config.payments?.maxPerRequestUsdc ?? '300000',
           maxReserveAmountUsdc: config.payments?.maxReserveAmountUsdc ?? '1000000',
           ...(config.payments?.maxVideoRequestUsdc ? { maxVideoRequestUsdc: config.payments.maxVideoRequestUsdc } : {}),
+          ...(config.payments?.defaultAuthDurationSecs !== undefined ? { defaultAuthDurationSecs: config.payments.defaultAuthDurationSecs } : {}),
           disableMetadataV2Services: effectiveBuyerConfig.disableMetadataV2Services,
         }
       }
@@ -432,6 +435,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
         role: 'buyer',
         bootstrapNodes,
         allowPrivateIPs: true,
+        ...networkNodeOptions(config.network),
         dataDir: globalOpts.dataDir,
         configPath: globalOpts.config,
         metadataFetchTimeoutMs: effectiveBuyerConfig.metadataFetchTimeoutMs,

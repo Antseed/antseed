@@ -28,7 +28,7 @@ tests and typecheck stay the default checks. Use them only when the user asks
 (for example "verify it in the testbench", "run a scenario", `/verify-antseed`)
 or gives task-specific instructions to, and then follow the skills. Runs that
 spend money (`--live`, `--real-funds`, any mainnet run) still need an explicit
-yes for each run.
+yes for each run. `docs/testing.md` maps every kind of test in this repo.
 
 ## Changelog policy for PRs
 

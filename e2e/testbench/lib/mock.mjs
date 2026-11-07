@@ -2,6 +2,7 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createPrng, derive } from './prng.mjs';
 
 const FIXTURE_PNG = join(dirname(fileURLToPath(import.meta.url)), '..', 'fixtures', 'pixel.png');
 export const MOCK_USAGE = { prompt_tokens: 10, completion_tokens: 8, total_tokens: 18 };
@@ -43,13 +44,19 @@ export function usageCost(price = {}, { prompt = 0, completion = 0, images = 0 }
  * byte of the response reached the wire, how it ended (ok, 500, disconnect, client-gone) and what it cost at the
  * seller's price. That ledger is the independent judge of what the buyer owes. `fault500Rate` and
  * `disconnectRate` inject upstream errors and mid-response disconnects on tagged requests; change them with setFaults.
+ *
+ * `random` only seeds the mock: each request draws from its own stream keyed by tag and attempt, so what a request
+ * gets does not depend on the order concurrent requests arrive in. The ledger records the drawn `latencyMs`.
  */
 export async function startMock({ models, label = 'mock', latencyMs = 0, usage = 'fixed', latencyRangeMs = [50, 3000], outTokens = [100, 4000], fault500Rate = 0, disconnectRate = 0, pricing = {}, random = Math.random }) {
   const png = await readFile(FIXTURE_PNG);
   const state = { latencyMs, faults: { fault500Rate, disconnectRate }, requests: [], deliveries: new Map(), active: 0, maxActive: 0 };
   const known = new Set(models);
-  const between = ([min, max]) => min + random() * (max - min);
-  const betweenInt = ([min, max]) => Math.floor(min + random() * (max - min + 1));
+  const streamSeed = Math.floor(random() * 2 ** 32);
+  const between = (draw, [min, max]) => min + draw() * (max - min);
+  const betweenInt = (draw, [min, max]) => Math.floor(min + draw() * (max - min + 1));
+  const attemptOf = (tag) => { const previous = state.deliveries.get(tag); return previous ? (previous.attempts ?? 1) + 1 : 1; };
+  const requestRandom = (tag) => createPrng(derive(streamSeed, `${tag}#${attemptOf(tag)}`));
   // A tag seen again (an upstream retry) is judged by its latest attempt, as in e2e/stress/mock-upstream.mjs.
   const record = (tag, entry) => {
     const previous = state.deliveries.get(tag);
@@ -62,25 +69,26 @@ export async function startMock({ models, label = 'mock', latencyMs = 0, usage =
     const content = JSON.stringify(body.messages ?? '');
     const tagged = content.match(TAG);
     const tag = tagged ? tagged[1] : `untagged-${state.requests.length}`;
+    const draw = requestRandom(tag);
     const load = usage === 'load';
     const prompt = load ? Math.max(1, Math.ceil(content.length / 4)) : MOCK_USAGE.prompt_tokens;
-    const completion = load ? betweenInt(outTokens) : MOCK_USAGE.completion_tokens;
-    const totalMs = load ? between(latencyRangeMs) : state.latencyMs;
+    const completion = load ? betweenInt(draw, outTokens) : MOCK_USAGE.completion_tokens;
+    const totalMs = load ? between(draw, latencyRangeMs) : state.latencyMs;
     const stream = body.stream === true;
-    const entry = record(tag, { status: 'pending', started: false, stream, model: body.model, prompt, completion, cost: String(usageCost(pricing[body.model], { prompt, completion })) });
+    const entry = record(tag, { status: 'pending', started: false, stream, model: body.model, prompt, completion, latencyMs: totalMs, cost: String(usageCost(pricing[body.model], { prompt, completion })) });
     const usageBody = { prompt_tokens: prompt, completion_tokens: completion, total_tokens: prompt + completion };
     const text = load ? makeText(completion) : `Hello from ${label} (${body.model}).`;
     const id = `chatcmpl-${tag}`;
     const created = Math.floor(Date.now() / 1000);
 
-    if (tagged && random() < state.faults.fault500Rate) {
+    if (tagged && draw() < state.faults.fault500Rate) {
       await sleep(totalMs / 3);
       entry.status = '500';
       response.writeHead(500, { 'content-type': 'application/json' });
       response.end(JSON.stringify({ error: { message: 'mock upstream internal error', type: 'server_error' } }));
       return;
     }
-    const disconnect = tagged && random() < state.faults.disconnectRate;
+    const disconnect = tagged && draw() < state.faults.disconnectRate;
     if (!stream) {
       await sleep(totalMs);
       if (gone()) { entry.status = 'client-gone'; return; }
@@ -100,7 +108,7 @@ export async function startMock({ models, label = 'mock', latencyMs = 0, usage =
     const chunk = (choices, usageChunk = null) => `data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: body.model, choices, usage: usageChunk })}\n\n`;
     const pieces = load ? Math.max(2, Math.min(40, Math.ceil(text.length / 400))) : 1;
     const step = Math.ceil(text.length / pieces);
-    const cutAt = disconnect ? Math.max(1, betweenInt([1, Math.max(1, pieces - 1)])) : -1;
+    const cutAt = disconnect ? Math.max(1, betweenInt(draw, [1, Math.max(1, pieces - 1)])) : -1;
     response.write(chunk([{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }]));
     for (let index = 0; index < pieces; index += 1) {
       if (gone()) { entry.status = 'client-gone'; return; }
@@ -122,8 +130,9 @@ export async function startMock({ models, label = 'mock', latencyMs = 0, usage =
     const load = usage === 'load';
     const n = load ? Math.max(1, Number(body.n ?? 1)) : 1;
     const inputTokens = load ? Math.max(1, Math.ceil(prompt.length / 4)) : FIXED_IMAGE_INPUT_TOKENS;
-    if (load) await sleep(between(latencyRangeMs));
-    const entry = record(tag, { status: 'ok', started: true, image: true, n, model: body.model, prompt: inputTokens, cost: String(usageCost(pricing[body.model], { prompt: inputTokens, images: n })) });
+    const latency = load ? between(requestRandom(tag), latencyRangeMs) : 0;
+    if (load) await sleep(latency);
+    const entry = record(tag, { status: 'ok', started: true, image: true, n, model: body.model, prompt: inputTokens, latencyMs: latency, cost: String(usageCost(pricing[body.model], { prompt: inputTokens, images: n })) });
     response.writeHead(200, { 'content-type': 'application/json' });
     response.end(JSON.stringify({
       created: Math.floor(Date.now() / 1000),

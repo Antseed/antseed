@@ -109,6 +109,11 @@ test('buyer start bootstrap entries respect explicit configured nodes', () => {
   assert.deepEqual(entries.slice(1), ['10.0.0.2:6881']);
 });
 
+test('buyer start bootstrap entries leave the official nodes out when noOfficialBootstrap is set', () => {
+  assert.deepEqual(buildBuyerBootstrapEntries([], undefined, true), []);
+  assert.deepEqual(buildBuyerBootstrapEntries(['127.0.0.1:40000'], undefined, true), ['127.0.0.1:40000']);
+});
+
 test('buyer start defaults router name to local', () => {
   assert.equal(resolveBuyerRouterName({}), 'local');
   assert.equal(resolveBuyerRouterName({ router: 'claude-code' }), 'claude-code');

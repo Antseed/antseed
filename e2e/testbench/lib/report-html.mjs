@@ -11,13 +11,15 @@ export async function writeHtmlReport(reportDir, report) {
   const videos = existsSync(join(reportDir, 'video')) ? (await readdir(join(reportDir, 'video'))).filter((name) => name.endsWith('.webm')).sort((a, b) => (a === 'desktop.webm' ? -1 : b === 'desktop.webm' ? 1 : a.localeCompare(b))) : [];
   const trace = existsSync(join(reportDir, 'trace.zip'));
   const events = existsSync(join(reportDir, 'events.jsonl')) ? (await readFile(join(reportDir, 'events.jsonl'), 'utf8')).trim().split('\n').filter(Boolean) : [];
-  const passed = report.result === 'passed';
+  const badge = { passed: '#1a7f37', blocked: '#9a6700', timeout: '#bc4c00' }[report.result] ?? '#cf222e';
   const rows = (items, issue) => items.map((item) => `<tr class="${item.ok ? 'ok' : issue ? 'known' : 'bad'}"><td>${item.ok ? 'PASS' : issue ? 'KNOWN' : 'FAIL'}</td><td>${escape(item.name)}${item.issue ? `<div class="muted">${escape(item.issue)}</div>` : ''}</td><td><code>${detail(item.detail)}</code></td></tr>`).join('');
+  const budgets = Object.entries(report.metrics?.budgets ?? {});
+  const budgetRows = budgets.map(([name, budget]) => `<tr class="${budget.enforced ? (budget.ok ? 'ok' : 'bad') : 'muted'}"><td>${budget.ok ? 'within' : 'over'}</td><td>${escape(name)}</td><td><code>${escape(budget.value ?? 'not measured')} / ${escape(budget.max)} ${escape(budget.unit)}</code></td></tr>`).join('');
   const html = `<!doctype html>
 <html><head><meta charset="utf-8"><title>${escape(report.scenario)} — ${escape(report.result)}</title>
 <style>
 body{font:14px/1.45 -apple-system,system-ui,sans-serif;margin:24px auto;max-width:1100px;padding:0 16px;color:#1d1d1f}
-h1{margin:0 0 4px}.badge{display:inline-block;padding:2px 10px;border-radius:12px;color:#fff;background:${passed ? '#1a7f37' : '#cf222e'}}
+h1{margin:0 0 4px}.badge{display:inline-block;padding:2px 10px;border-radius:12px;color:#fff;background:${badge}}
 .muted{color:#6e7781;font-size:12px}table{border-collapse:collapse;width:100%;margin:8px 0 20px}td,th{border-bottom:1px solid #d0d7de;padding:6px 8px;text-align:left;vertical-align:top}
 tr.ok td:first-child{color:#1a7f37}tr.bad td:first-child{color:#cf222e;font-weight:600}tr.known td:first-child{color:#9a6700}
 code{font-size:12px;word-break:break-all}.shots{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px}
@@ -26,9 +28,12 @@ pre{background:#f6f8fa;padding:12px;border-radius:6px;overflow:auto;max-height:3
 </style></head><body>
 <h1>${escape(report.scenario)} <span class="badge">${escape(report.result.toUpperCase())}</span></h1>
 <div class="muted">${escape(report.description)}</div>
+<p class="muted">result ${escape(report.result)}${report.phase ? ` in ${escape(report.phase)}` : ''} · seed ${escape(report.seed)} · git ${escape(report.git?.sha?.slice(0, 12))}${report.git?.dirty ? ' (dirty)' : ''} · ${escape(report.mode)} mode · ${escape(report.durationMs)} ms</p>
 <p class="muted">testbench ${escape(report.testbench)} · upstream ${escape(report.upstream)} · fork block ${escape(report.forkBlock)} · ${escape(report.startedAt)} → ${escape(report.finishedAt)}</p>
 ${report.error ? `<pre>${escape(report.error)}</pre>` : ''}
+${report.teardownError ? `<pre>Teardown: ${escape(report.teardownError)}</pre>` : ''}
 <h2>Checks</h2><table>${rows(report.checks ?? [])}${rows(report.knownIssues ?? [], true)}</table>
+${budgets.length ? `<h2>Budgets</h2>${report.budgets ? '' : '<p class="muted">Recorded, not enforced: run with --budgets to check them.</p>'}<table>${budgetRows}</table>` : ''}
 <h2>Metrics</h2><table>${Object.entries(report.metrics ?? {}).map(([key, value]) => `<tr><td>${escape(key)}</td><td><code>${detail(value)}</code></td></tr>`).join('')}</table>
 ${videos.length ? `<h2>Video</h2>${videos.map((name) => `<video src="video/${escape(name)}" controls preload="metadata"></video><div class="muted">${escape(name)}</div>`).join('')}` : ''}
 ${shots.length ? `<h2>Screenshots</h2><div class="shots">${shots.map((name) => `<figure><a href="screenshots/${escape(name)}"><img src="screenshots/${escape(name)}" loading="lazy"></a><figcaption class="muted">${escape(name)}</figcaption></figure>`).join('')}</div>` : ''}

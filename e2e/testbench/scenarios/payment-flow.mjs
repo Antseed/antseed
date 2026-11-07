@@ -4,8 +4,11 @@ export const meta = {
   requires: ['buyerControl', 'mockControl'],
 };
 
+// Budget: twice what one `--chain local` run measured on a developer laptop (2026-11-07; sdk mode 1019 ms, cli mode
+// 526 ms). Local-machine numbers; the nightly job will set CI numbers. Checked only with --budgets.
 export const topology = {
   sellers: [{ id: 'seller' }],
+  budgets: { settleOnDisconnectMs: 2038 },
 };
 
 const sum = (values) => values.reduce((total, value) => total + value, 0n);
@@ -46,7 +49,8 @@ export async function run(tb) {
     const balance = await tb.buyerBalance();
     return events.length > 0 && balance.reserved === 0n ? { events, balance } : null;
   }, 'seller settle-on-disconnect and reserve release', { timeoutMs: 90_000 });
-  tb.metric('settleOnDisconnectMs', Date.now() - disconnectedAt);
+  const settleOnDisconnectMs = Date.now() - disconnectedAt;
+  tb.metric('settleOnDisconnectMs', settleOnDisconnectMs);
   const paidFirst = sum(settledFirst.events.map((event) => event.args.delta));
   const feesFirst = sum(settledFirst.events.map((event) => event.args.platformFee));
   tb.check('seller settled exactly what the buyer signed before disconnecting', paidFirst === signedFirst, { settled: String(paidFirst), signed: String(signedFirst) });
@@ -78,11 +82,13 @@ export async function run(tb) {
   if (tb.manifest.upstream === 'mock') {
     const delivered = tb.mockCostPerChat(seller.id, model);
     const secondChannel = BigInt(settlement.totalPaidMicroUsdc) - paidFirst;
-    tb.knownIssue(
+    tb.check(
       'cooperative close charges exactly the delivered work',
       secondChannel === delivered,
       { settled: String(secondChannel), delivered: String(delivered) },
-      'cooperative close settles one extra request cost (buyer-core close path)',
     );
   }
+
+  // Last, so that a budget failing under --budgets cannot hide a money check.
+  tb.timings({ settleOnDisconnectMs });
 }

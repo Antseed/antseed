@@ -9,11 +9,13 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { loadControlClient } from './lib/control.mjs';
 import { desktopEnv, electronRootArgs } from './lib/desktop.mjs';
 import { ownProcessEntry, processStartTime } from './lib/lock.mjs';
 import { readJson, saveJson, validateManifest } from './lib/manifest.mjs';
 import { isInside, testbenchPaths } from './lib/paths.mjs';
 import { startShareServer } from './lib/share.mjs';
+import { startHeartbeat } from './lib/watchdog.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, '../..');
@@ -182,6 +184,10 @@ async function main() {
     processes: children.map((entry) => ({ label: entry.label, ...entry.process })),
   });
 
+  // A share holds the testbench up for as long as it runs: its own idle rule ends it first.
+  const control = await loadControlClient(paths.control);
+  const self = ownProcessEntry();
+  startHeartbeat(() => control.heartbeat(self));
   const idleMs = plan.idleMinutes * 60_000;
   setInterval(() => {
     if (server.viewerCount() === 0 && Date.now() - lastActivity > idleMs) void stop(`idle for ${plan.idleMinutes} min`);

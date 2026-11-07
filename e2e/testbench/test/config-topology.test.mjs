@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
 import { assertNoInlineSecrets, bindUpstream, configHash, DEFAULT_SOURCE_CONFIG, listModels, loadSourceConfig, resolveConfigSource, sanitizeConfig } from '../lib/config.mjs';
-import { assertScenarioSupported, buyerRoutingPreferences, chooseTarget, MAX_SELLERS, normalizeTopology, topologyFingerprint, validateScenarioModule } from '../lib/topology.mjs';
+import { readdir } from 'node:fs/promises';
+import { assertScenarioSupported, buyerRoutingPreferences, chooseMode, chooseTarget, MAX_SELLERS, normalizeTopology, requestedMode, topologyFingerprint, validateScenarioModule } from '../lib/topology.mjs';
 
 const tmp = await mkdtemp(join(tmpdir(), 'testbench-config-'));
 after(() => rm(tmp, { recursive: true, force: true }));
@@ -179,6 +180,71 @@ describe('topology', () => {
   });
 });
 
+describe('topology mode', () => {
+  const source = sanitizeConfig(realConfig()).cleaned;
+
+  it('defaults to sdk, takes the topology value and lets the override win', () => {
+    assert.equal(normalizeTopology({}, source).mode, 'sdk');
+    assert.equal(normalizeTopology({ mode: 'cli' }, source).mode, 'cli');
+    assert.equal(normalizeTopology({ mode: 'cli' }, source, { mode: 'sdk' }).mode, 'sdk');
+    assert.equal(normalizeTopology({}, source, { mode: 'cli' }).mode, 'cli');
+    assert.equal(requestedMode(undefined, undefined), 'sdk');
+    assert.equal(requestedMode(undefined, { mode: 'cli' }), 'cli');
+    assert.equal(requestedMode('sdk', { mode: 'cli' }), 'sdk');
+  });
+
+  it('refuses an unknown mode', () => {
+    assert.throws(() => normalizeTopology({ mode: 'docker' }, source), /mode must be one of sdk, cli/);
+    assert.throws(() => normalizeTopology({}, source, { mode: 'docker' }), /mode must be one of sdk, cli/);
+  });
+
+  it('chooses the run mode from --mode, the running testbench, the topology, then sdk', () => {
+    const plain = validateScenarioModule({ run() {}, meta: {} }, 'x');
+    const declared = validateScenarioModule({ run() {}, topology: { mode: 'cli' }, meta: {} }, 'y');
+    assert.equal(chooseMode(plain), 'sdk');
+    assert.equal(chooseMode(declared), 'cli');
+    assert.equal(chooseMode(plain, { requested: 'cli' }), 'cli');
+    assert.equal(chooseMode(plain, { running: 'cli' }), 'cli', 'a run without --mode inherits the running testbench');
+    assert.equal(chooseMode(declared, { running: 'sdk' }), 'sdk', 'the running testbench wins over the topology, as for chains');
+    assert.equal(chooseMode(plain, { requested: 'cli', running: 'cli' }), 'cli');
+    assert.throws(() => chooseMode(plain, { requested: 'sdk', running: 'cli' }), /running in cli mode, not sdk/);
+    assert.throws(() => chooseMode(plain, { requested: 'cli', running: 'sdk' }), /running in sdk mode, not cli/);
+  });
+
+  it('inherited, the mode matches the running fingerprint', () => {
+    const running = topologyFingerprint(normalizeTopology({}, source, { mode: 'cli' }));
+    const scenario = validateScenarioModule({ run() {}, topology: {}, meta: {} }, 'x');
+    assert.equal(topologyFingerprint(normalizeTopology(scenario.topology, source, { mode: chooseMode(scenario, { running: 'cli' }) })), running);
+  });
+
+  it('puts the mode in the fingerprint, so a run cannot reuse a testbench of the other mode', () => {
+    const sdk = topologyFingerprint(normalizeTopology({}, source));
+    assert.equal(sdk, topologyFingerprint(normalizeTopology({ mode: 'sdk' }, source)));
+    assert.notEqual(sdk, topologyFingerprint(normalizeTopology({ mode: 'cli' }, source)));
+    assert.match(topologyFingerprint(normalizeTopology({ mode: 'cli', chain: { rpc: 'base' } }, source)), /#rpc=base#mode=cli$/);
+    assert.equal(topologyFingerprint(normalizeTopology({ chain: { rpc: 'direct' } }, source)), sdk, 'a manifest from before modes reads as sdk');
+  });
+
+  it('buyerFaults is an sdk-mode capability on fork and local', () => {
+    const scenario = validateScenarioModule({ run() {}, meta: { targets: ['local', 'fork', 'mainnet'], requires: ['buyerFaults'] } }, 'faulty');
+    assert.doesNotThrow(() => assertScenarioSupported(scenario, 'local'));
+    assert.doesNotThrow(() => assertScenarioSupported(scenario, 'fork', 'sdk'));
+    assert.throws(() => assertScenarioSupported(scenario, 'local', 'cli'), /Mode cli lacks buyerFaults required by faulty; run it with --mode sdk/);
+    assert.throws(() => assertScenarioSupported(scenario, 'mainnet'), /Target mainnet lacks buyerFaults/);
+    const plain = validateScenarioModule({ run() {}, meta: { targets: ['local'], requires: ['mockControl', 'buyerControl'] } }, 'plain');
+    assert.doesNotThrow(() => assertScenarioSupported(plain, 'local', 'cli'));
+  });
+
+  it('issue-1200 asks for buyerFaults; the scenarios cli mode must run do not', async () => {
+    const load = async (name) => validateScenarioModule(await import(`../scenarios/${name}.mjs`), name);
+    assert.ok((await load('issue-1200-spendingauth-catchup')).requires.includes('buyerFaults'));
+    for (const name of ['chat-basic', 'payment-flow', 'routing-smoke', 'stress-smoke', 'stress-restart-buyer', 'stress-restart-seller', 'issue-1050-stale-channel']) {
+      const scenario = await load(name);
+      assert.doesNotThrow(() => assertScenarioSupported(scenario, 'local', 'cli'), name);
+    }
+  });
+});
+
 describe('scenario modules', () => {
   it('validates exports and target capabilities', () => {
     assert.throws(() => validateScenarioModule({}, 'x'), /must export async function run/);
@@ -200,13 +266,31 @@ describe('scenario modules', () => {
     assert.throws(() => assertScenarioSupported(validateScenarioModule({ run() {}, meta: { requires: ['sourceContracts'] } }, 'z'), 'fork'), /lacks sourceContracts/);
   });
 
+  it('every scenario file is valid', async () => {
+    const files = (await readdir(new URL('../scenarios/', import.meta.url))).filter((file) => file.endsWith('.mjs')).sort();
+    assert.ok(files.length >= 15, `expected the shipped scenarios, found ${files.length}`);
+    const features = await readdir(new URL('../features/', import.meta.url), { withFileTypes: true });
+    assert.ok(features.some((entry) => entry.isDirectory()), 'feature folders document the gaps');
+    for (const file of files) {
+      const name = file.slice(0, -4);
+      const scenario = validateScenarioModule(await import(`../scenarios/${file}`), name);
+      for (const target of scenario.targets) assertScenarioSupported(scenario, target);
+      assert.ok(scenario.description, `${name} needs a description`);
+    }
+  });
+
   it('every shipped scenario is valid', async () => {
     const stress = ['stress-smoke', 'stress-c32', 'stress-c64', 'stress-smallreserve', 'stress-images', 'stress-faults', 'stress-restart-buyer', 'stress-restart-seller', 'issue-1050-stale-channel'];
-    for (const name of ['chat-basic', 'routing-smoke', 'desktop-chat', 'payment-flow', 'issue-1200-spendingauth-catchup', ...stress]) {
+    const cliScenarios = ['cli-buyer-commands', 'buyer-withdraw-and-exit', 'free-tier'];
+    for (const name of ['chat-basic', 'routing-smoke', 'desktop-chat', 'payment-flow', 'issue-1200-spendingauth-catchup', ...stress, ...cliScenarios]) {
       const scenario = validateScenarioModule(await import(`../scenarios/${name}.mjs`), name);
       for (const target of scenario.targets) assertScenarioSupported(scenario, target);
       assert.ok(scenario.description);
-      normalizeTopology(scenario.topology, sanitizeConfig(DEFAULT_SOURCE_CONFIG).cleaned);
+      const topology = normalizeTopology(scenario.topology, sanitizeConfig(DEFAULT_SOURCE_CONFIG).cleaned);
+      if (cliScenarios.includes(name)) {
+        assert.equal(topology.mode, 'cli', `${name} drives the CLI next to a CLI buyer`);
+        assert.equal(topology.chain.contracts, undefined, `${name} runs on the full local layout`);
+      }
     }
   });
 });

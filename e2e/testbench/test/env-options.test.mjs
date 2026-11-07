@@ -4,7 +4,7 @@ import { describe, it } from 'node:test';
 import { assertLocalUrl, assertNetworkOptions, FORBIDDEN_PORTS, freePort, isolatedEnv, listenWithRetry, parseEnvFile, redactingStream, resolveForkUrl, resolveLiveKeys } from '../lib/env.mjs';
 import { validateManifest, MANIFEST_VERSION } from '../lib/manifest.mjs';
 import { testbenchNodeOptions } from '../lib/node-options.mjs';
-import { parseArgs } from '../lib/options.mjs';
+import { DEFAULT_RUN_TIMEOUT_SECONDS, parseArgs } from '../lib/options.mjs';
 
 describe('isolatedEnv', () => {
   it('strips AntSeed/provider secrets and sets a private HOME', () => {
@@ -61,6 +61,21 @@ describe('network options', () => {
   });
 });
 
+describe('--budgets', () => {
+  it('is a run flag that --strict does not imply', () => {
+    assert.equal(parseArgs(['run', 'stress-smoke', '--budgets'], {}).budgets, true);
+    assert.equal(parseArgs(['run', 'stress-smoke'], {}).budgets, undefined);
+    assert.equal(parseArgs(['run', 'stress-smoke', '--strict'], {}).budgets, undefined);
+    assert.throws(() => parseArgs(['up', '--budgets'], {}), /only for pnpm testbench run/);
+  });
+
+  it('is also set by ANTSEED_TESTBENCH_BUDGETS=1, on run only', () => {
+    assert.equal(parseArgs(['run', 'stress-smoke'], { ANTSEED_TESTBENCH_BUDGETS: '1' }).budgets, true);
+    assert.equal(parseArgs(['run', 'stress-smoke'], { ANTSEED_TESTBENCH_BUDGETS: '0' }).budgets, undefined);
+    assert.equal(parseArgs(['up'], { ANTSEED_TESTBENCH_BUDGETS: '1' }).budgets, undefined);
+  });
+});
+
 describe('listenWithRetry', () => {
   it('retries when another process wins the port race', async () => {
     const squatter = createServer();
@@ -101,6 +116,7 @@ describe('manifest validation', () => {
   it('accepts a well-formed manifest', () => {
     assert.equal(validateManifest(good(), { dir }).name, 'wt-a-12345678');
     assert.equal(validateManifest({ ...good(), target: 'local', chainId: 31337 }, { dir }).target, 'local');
+    assert.equal(validateManifest({ ...good(), mode: 'cli', nodeProcesses: { buyer: { pid: 10, startedAt: 'x' } } }, { dir }).mode, 'cli');
   });
 
   it('rejects unsafe manifests', () => {
@@ -111,6 +127,9 @@ describe('manifest validation', () => {
       [(m) => { m.target = 'mainnet'; }, /Unknown testbench target/],
       [(m) => { m.proxyUrl = 'http://0.0.0.0:1'; }, /proxyUrl/],
       [(m) => { m.supervisor = { pid: 10 }; }, /supervisor/],
+      [(m) => { m.mode = 'docker'; }, /Manifest mode must be one of/],
+      [(m) => { m.nodeProcesses = { buyer: { pid: 10 } }; }, /Manifest buyer must record pid/],
+      [(m) => { m.starter = { pid: 10 }; }, /Manifest starter must record pid/],
       [(m) => { m.sellers[0].signalingPort = 6882; }, /default AntSeed port/],
       [(m) => { m.sellers[0].peerId = 'nope'; }, /peerId/],
       [(m) => { m.bootstrap.host = '1.2.3.4'; }, /loopback/],
@@ -127,6 +146,35 @@ describe('manifest validation', () => {
 });
 
 describe('parseArgs', () => {
+  it('takes --mode on up and run only', () => {
+    assert.equal(parseArgs(['up', '--mode', 'cli']).mode, 'cli');
+    assert.equal(parseArgs(['run', 'chat-basic', '--mode', 'sdk']).mode, 'sdk');
+    assert.equal(parseArgs(['up']).mode, undefined);
+    assert.throws(() => parseArgs(['up', '--mode', 'docker']), /--mode must be one of sdk, cli/);
+    assert.throws(() => parseArgs(['status', '--mode', 'cli']), /--mode is only for/);
+    assert.throws(() => parseArgs(['run', 'mainnet-smoke', '--chain', 'mainnet', '--real-funds', '--mode', 'cli']), /does not apply to --chain mainnet/);
+  });
+
+  it('takes a run seed and a run timeout, with a fresh random seed by default', () => {
+    const given = parseArgs(['run', 'chat-basic', '--seed', '7', '--run-timeout', '60']);
+    assert.deepEqual([given.seed, given.seedGiven, given.runTimeout], [7, true, 60]);
+    assert.equal(parseArgs(['up', '--seed', '0']).seed, 0);
+    assert.equal(parseArgs(['up', '--seed', '4294967295']).seed, 4294967295);
+    const defaults = parseArgs(['run', 'chat-basic']);
+    assert.ok(Number.isInteger(defaults.seed) && defaults.seed >= 0 && defaults.seed < 2 ** 32);
+    assert.equal(defaults.seedGiven, undefined);
+    assert.equal(defaults.runTimeout, DEFAULT_RUN_TIMEOUT_SECONDS);
+    assert.equal(DEFAULT_RUN_TIMEOUT_SECONDS, 1800);
+    assert.equal(parseArgs(['status']).seed, undefined);
+  });
+
+  it('rejects bad seeds and run timeouts', () => {
+    for (const seed of ['abc', '1.5', '-1', '4294967296']) assert.throws(() => parseArgs(['run', 'x', '--seed', seed]), /--seed must be an integer/);
+    assert.throws(() => parseArgs(['down', '--seed', '7']), /only for pnpm testbench run and up/);
+    for (const seconds of ['0', 'soon', '1.5']) assert.throws(() => parseArgs(['run', 'x', '--run-timeout', seconds]), /--run-timeout must be/);
+    assert.throws(() => parseArgs(['up', '--run-timeout', '5']), /only for pnpm testbench run/);
+  });
+
   it('parses commands and flags', () => {
     const options = parseArgs(['up', '--config', 'c.json', '--live', '--deposit-usdc', '2.5', '--block', '123', '--slot', 'b']);
     assert.deepEqual([options.command, options.config, options.live, options.depositUsdc, options.block, options.slot], ['up', 'c.json', true, '2.5', '123', 'b']);

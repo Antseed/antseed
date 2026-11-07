@@ -8,17 +8,22 @@ import { createWriteStream } from 'node:fs';
 import { chmod, copyFile, mkdir, readFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bindUpstream, listModels } from './lib/config.mjs';
+import { bindUpstream, listModels, WORKSPACE_PLUGINS } from './lib/config.mjs';
 import { blocksInUse, copyIn, pruneCache, resolveForkBlock, seedFromLegacy, writeBack } from './lib/cache.mjs';
-import { chainReader, LOCAL_DEPLOYER_KEY, prepareChain, prepareLocalChain } from './lib/chain.mjs';
+import { chainReader, prepareChain, prepareLocalChain } from './lib/chain.mjs';
+import { chainContracts, deployLocalStack, localGenesisTimestamp } from './lib/local-deploy.mjs';
 import { newToken, startControlServer } from './lib/control.mjs';
 import { startRpcRelay } from './lib/rpc-relay.mjs';
+import { DEFAULT_IDLE_MINUTES, watchdogDecision, WATCHDOG_INTERVAL_MS } from './lib/watchdog.mjs';
+import { assertSellerPaymentsOn, assertSingleBootstrap, buyerProxyListening, cliArgs, cliBuyerClient, cliNodeEnv, CLI_STOP_GRACE_MS, linkPlugins, sellerReady, spawnCliNode, stopWithGrace, waitForCliReady } from './lib/cli-node.mjs';
 import { anvilExitMessage, assertLocalUrl, isAddressInUse, isolatedEnv, listenWithRetry, redactingStream } from './lib/env.mjs';
-import { acquireLock, ownProcessEntry, processStartTime, releaseLock } from './lib/lock.mjs';
-import { saveJson, validateManifest, MANIFEST_VERSION, TESTBENCH_CHAIN_IDS } from './lib/manifest.mjs';
+import { acquireLock, isOwnedProcessAlive, ownProcessEntry, processStartTime, releaseLock } from './lib/lock.mjs';
+import { readJson, saveJson, validateManifest, MANIFEST_VERSION, TESTBENCH_CHAIN_IDS } from './lib/manifest.mjs';
 import { startMock } from './lib/mock.mjs';
-import { paymentsConfig, testbenchNodeOptions } from './lib/node-options.mjs';
+import { assertCliConfig, cliBuyerConfig, cliSellerConfig, paymentsConfig, testbenchNodeOptions } from './lib/node-options.mjs';
 import { resetRunState, testbenchPaths } from './lib/paths.mjs';
+import { logOffsets, peerLogs } from './lib/stress.mjs';
+import { createPrng, derive } from './lib/prng.mjs';
 import { buyerRoutingPreferences } from './lib/topology.mjs';
 import { startRpcProxy } from '../stress/rpc-proxy.mjs';
 
@@ -33,6 +38,7 @@ const forkUrl = process.env.ANTSEED_TESTBENCH_FORK_URL;
 const toolHome = process.env.ANTSEED_TESTBENCH_TOOL_HOME;
 const target = plan.target ?? 'fork';
 const local = target === 'local';
+const cliMode = plan.mode === 'cli';
 const liveEnv = Object.fromEntries((plan.liveKeys ?? []).map((key) => [key, process.env[key]]));
 const log = (message) => console.log(`[supervisor] ${new Date().toISOString()} ${message}`);
 const waitFor = async (check, label, timeoutMs = 60_000, intervalMs = 200) => {
@@ -56,25 +62,45 @@ const state = {
 let manifest = null;
 let lockEntry = null;
 let shuttingDown = null;
+// The `run` or `up` driving this testbench, its last heartbeat, and the last two control requests (the previous one
+// is what `status` reports: its own request is always the latest).
+const watch = { starter: plan.starter ?? null, idleMinutes: plan.idleMinutes ?? DEFAULT_IDLE_MINUTES, heartbeatAt: Date.now(), lastRequestAt: Date.now(), previousRequestAt: Date.now() };
+let reaper = null;
 
 async function writeManifest(patch) {
   manifest = { ...manifest, ...patch, updatedAt: new Date().toISOString() };
   await saveJson(paths.manifest, manifest);
 }
 
-/** Anvil on a free loopback port: a Base fork at `block` when forkUrl is set, otherwise an empty chain 31337. */
-async function startAnvil(forkUrl, block) {
+/** Starts lib/reaper.mjs; `reap(child)` hands it a child to stop if this process dies by SIGKILL. */
+function startReaper() {
+  reaper = spawn(process.execPath, [join(here, 'lib/reaper.mjs')], { stdio: ['pipe', 'inherit', 'inherit'] });
+  reaper.stdin.on('error', () => {});
+  reaper.stdin.unref();
+  reaper.unref();
+}
+
+function reap(child) {
+  reaper?.stdin.write(`${JSON.stringify({ pid: child.pid, startedAt: processStartTime(child.pid) })}\n`);
+}
+
+/**
+ * Anvil on a free loopback port: a Base fork at `block` when forkUrl is set, otherwise an empty chain 31337 (whose
+ * genesis is `timestamp` when given, see localGenesisTimestamp).
+ */
+async function startAnvil(forkUrl, block, { timestamp } = {}) {
   const logStream = createWriteStream(join(paths.logs, 'anvil.log'), { flags: 'a' });
   const expectedChainId = `0x${(forkUrl ? TESTBENCH_CHAIN_IDS.fork : TESTBENCH_CHAIN_IDS.local).toString(16)}`;
   const { port, value: child } = await listenWithRetry(async (candidate) => {
     const args = [
       ...(forkUrl
         ? ['--fork-url', forkUrl, '--fork-block-number', String(block), '--chain-id', String(TESTBENCH_CHAIN_IDS.fork), '--no-rate-limit', '--retries', '20', '--timeout', '120000']
-        : ['--chain-id', String(TESTBENCH_CHAIN_IDS.local)]),
+        : ['--chain-id', String(TESTBENCH_CHAIN_IDS.local), ...(timestamp ? ['--timestamp', String(timestamp)] : [])]),
       '--host', '127.0.0.1', '--port', String(candidate),
       '--disable-min-priority-fee', '--base-fee', '0', '--gas-price', '0',
     ];
     const spawned = spawn('anvil', args, { env: isolatedEnv(process.env, paths.anvilHome), stdio: ['ignore', 'pipe', 'pipe'] });
+    reap(spawned);
     spawned.stdout.pipe(redactingStream(forkUrl)).pipe(logStream, { end: false });
     spawned.stderr.pipe(redactingStream(forkUrl)).pipe(logStream, { end: false });
     // Kept only to classify an early exit; never printed (it can contain the fork URL).
@@ -106,23 +132,6 @@ async function startAnvil(forkUrl, block) {
   return { child, port, rpcUrl: `http://127.0.0.1:${port}` };
 }
 
-/** Deploys packages/contracts from source onto the local Anvil with the same script CI uses (script/Deploy.s.sol). */
-async function deployLocalContracts(rpcUrl) {
-  const logStream = createWriteStream(join(paths.logs, 'forge.log'), { flags: 'a' });
-  const contracts = join(repo, 'packages/contracts');
-  const env = { ...process.env, ...(toolHome ? { HOME: toolHome } : {}), DEPLOYER_PRIVATE_KEY: LOCAL_DEPLOYER_KEY, FOUNDRY_BROADCAST: join(paths.anvilHome, 'broadcast'), FOUNDRY_DISABLE_NIGHTLY_WARNING: '1' };
-  const forge = async (args, label) => {
-    const child = spawn('forge', args, { cwd: contracts, env, stdio: ['ignore', 'pipe', 'pipe'] });
-    child.stdout.pipe(logStream, { end: false });
-    child.stderr.pipe(logStream, { end: false });
-    const [code, signal] = await once(child, 'exit');
-    if (code !== 0) throw new Error(`${label} failed with ${code ?? signal} (see logs/forge.log)${signal === 'SIGKILL' || code === 137 ? '; solc was likely killed for memory (via_ir needs ~6 GB)' : ''}`);
-  };
-  // Compile only what Deploy.s.sol needs first: the full test suite under via_ir needs far more memory and time.
-  await forge(['build', '--skip', 'test', '--skip', '*.t.sol'], 'forge build');
-  await forge(['script', 'script/Deploy.s.sol', '--rpc-url', rpcUrl, '--broadcast', '--skip', 'test', '--skip', '*.t.sol'], 'forge script Deploy.s.sol');
-}
-
 /**
  * Per-model prices for a seller's mock, so its delivery ledger costs each response the way the seller bills it:
  * provider defaults merged with the service's pricing, plus the per-image price of an openai-images unit model.
@@ -145,6 +154,7 @@ function mockPricing(providers) {
 function spawnSeller(seller, env) {
   const logStream = createWriteStream(join(paths.logs, `seller-${seller.id}.log`), { flags: 'a' });
   const child = fork(join(here, 'seller-worker.mjs'), [], { env, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+  reap(child);
   child.stdout.pipe(logStream);
   child.stderr.pipe(logStream);
   return child;
@@ -163,32 +173,77 @@ async function startSellerWorker(seller) {
   });
   child.send({ type: 'start', id: seller.id, dataDir: seller.dataDir, configPath: seller.configPath, bootstrapNodes: seller.bootstrapNodes, payments: seller.payments });
   const info = await Promise.race([ready, new Promise((_, rejectTimeout) => setTimeout(() => rejectTimeout(new Error(`seller ${seller.id} start timeout`)), 120_000))]);
+  return trackSeller(seller.id, child, info);
+}
+
+function trackSeller(id, child, info) {
   const entry = { child, info, process: { pid: child.pid, startedAt: processStartTime(child.pid) }, stopping: false };
   child.on('exit', (code, signal) => {
-    log(`Seller worker ${seller.id} (${child.pid}) exited (${code ?? signal})`);
-    if (!entry.stopping && !shuttingDown) state.health.unexpectedExits.push({ who: `seller:${seller.id}`, code, signal, at: new Date().toISOString() });
-    if (state.workers.get(seller.id) === entry) state.workers.delete(seller.id);
+    log(`Seller ${cliMode ? 'process' : 'worker'} ${id} (${child.pid}) exited (${code ?? signal})`);
+    if (!entry.stopping && !shuttingDown) state.health.unexpectedExits.push({ who: `seller:${id}`, code, signal, at: new Date().toISOString() });
+    if (state.workers.get(id) === entry) state.workers.delete(id);
   });
-  state.workers.set(seller.id, entry);
+  state.workers.set(id, entry);
   return entry;
 }
+
+/** Records a CLI process as soon as it exists, so `down --force` finds it even if the supervisor dies during startup. */
+async function recordNodeProcess(who, child) {
+  await writeManifest({ nodeProcesses: { ...manifest.nodeProcesses, [who]: { pid: child.pid, startedAt: processStartTime(child.pid) } } });
+}
+
+/**
+ * Spawns a CLI process and waits until `ready` says it is up; one that fails to come up is killed, not left behind.
+ * Refuses a node that sees more than the private bootstrap node.
+ */
+async function launchCliNode(spec, ready) {
+  const node = spawnCliNode(spec);
+  reap(node.child);
+  await recordNodeProcess(spec.who, node.child);
+  try {
+    const value = await waitForCliReady(node, () => ready(node));
+    assertSingleBootstrap(node.output(), spec.who);
+    node.stopCapture();
+    return { node, value };
+  } catch (error) {
+    node.child.kill('SIGKILL');
+    throw error;
+  }
+}
+
+/** cli mode: `antseed seller start` on the seller's data dir. A restarted seller keeps its ports, like a real one. */
+async function startSellerProcess(seller) {
+  const ports = seller.ports ? ['--dht-port', String(seller.ports.dhtPort), '--signaling-port', String(seller.ports.signalingPort)] : [];
+  const statePath = join(seller.dataDir, 'daemon.state.json');
+  const { node, value: daemon } = await launchCliNode({
+    who: `seller:${seller.id}`,
+    args: cliArgs(repo, seller.dataDir, ['seller', 'start', '--no-dashboard', ...ports]),
+    env: cliNodeEnv(process.env, paths.home, seller.env),
+    logPath: join(paths.logs, `seller-${seller.id}.log`),
+  }, async (candidate) => sellerReady(candidate.output(), await readJson(statePath).catch(() => null), candidate.child.pid));
+  assertSellerPaymentsOn(node.output(), `seller:${seller.id}`);
+  seller.ports = { dhtPort: daemon.dhtPort, signalingPort: daemon.signalingPort };
+  log(`Seller process ${seller.id} (${node.child.pid}) peer=${daemon.peerId} dht=${daemon.dhtPort} signaling=${daemon.signalingPort}`);
+  return trackSeller(seller.id, node.child, { peerId: daemon.peerId, dhtPort: daemon.dhtPort, signalingPort: daemon.signalingPort });
+}
+
+const startSeller = (seller) => (cliMode ? startSellerProcess(seller) : startSellerWorker(seller));
 
 async function stopSellerWorker(id) {
   const worker = state.workers.get(id);
   if (!worker) return false;
   state.workers.delete(id);
   worker.stopping = true;
-  if (worker.child.exitCode === null && worker.child.signalCode === null) {
-    const exited = once(worker.child, 'exit');
-    const started = Date.now();
-    worker.child.send({ type: 'stop' });
-    const timer = setTimeout(() => {
-      state.health.forcedStops.push({ who: `seller:${id}`, afterMs: Date.now() - started, at: new Date().toISOString() });
-      log(`Seller ${id} did not stop within 15s; SIGKILL`);
-      worker.child.kill('SIGKILL');
-    }, 15_000);
-    try { await exited; } finally { clearTimeout(timer); }
-  }
+  const graceMs = cliMode ? CLI_STOP_GRACE_MS : 15_000;
+  await stopWithGrace(worker.child, {
+    graceMs,
+    // Only a forked worker has an IPC channel; a CLI process stops on SIGTERM.
+    requestStop: () => (cliMode ? worker.child.kill('SIGTERM') : worker.child.send({ type: 'stop' })),
+    onForced: (afterMs) => {
+      state.health.forcedStops.push({ who: `seller:${id}`, afterMs, at: new Date().toISOString() });
+      log(`Seller ${id} did not stop within ${graceMs / 1000}s; SIGKILL`);
+    },
+  });
   return true;
 }
 
@@ -215,8 +270,49 @@ function injectNeedAuthLoss(bpm) {
   };
 }
 
+/** cli mode: `antseed buyer start` (on `port`, or a free one the first time). state.buyer gets the node's API over the proxy. */
+async function startBuyerProcess(port) {
+  const { peerId, bootstrapNodes, payments, chain, routingPreferences } = buyerRuntime;
+  const launch = async (candidatePort) => {
+    await saveJson(manifest.buyerConfig, assertCliConfig(cliBuyerConfig({ proxyPort: candidatePort, routingPreferences, maxPricing: plan.topology.buyer.maxPricing, chain, bootstrapNodes, payments }), 'buyer'));
+    const url = `http://127.0.0.1:${candidatePort}`;
+    const { node } = await launchCliNode({
+      who: 'buyer',
+      args: cliArgs(repo, paths.buyer, ['buyer', 'start', '--port', String(candidatePort), '--no-verifier']),
+      env: cliNodeEnv(process.env, paths.home, plan.topology.buyer.env),
+      logPath: join(paths.logs, 'buyer.log'),
+    }, async (candidate) => {
+      if (!buyerProxyListening(candidate.output(), candidatePort)) return false;
+      return (await fetch(`${url}/_antseed/status`, { signal: AbortSignal.timeout(2000) }).then((response) => response.json()).catch(() => null))?.ok === true;
+    });
+    const entry = { ...cliBuyerClient(url), peerId, stopping: false };
+    entry.stop = async () => {
+      entry.stopping = true;
+      await stopWithGrace(node.child, {
+        onForced: (afterMs) => {
+          state.health.forcedStops.push({ who: 'buyer', afterMs, at: new Date().toISOString() });
+          log(`Buyer did not stop within ${CLI_STOP_GRACE_MS / 1000}s; SIGKILL`);
+        },
+      });
+    };
+    node.child.on('exit', (code, signal) => {
+      log(`Buyer process (${node.child.pid}) exited (${code ?? signal})`);
+      if (!entry.stopping && !shuttingDown) state.health.unexpectedExits.push({ who: 'buyer', code, signal, at: new Date().toISOString() });
+      if (state.buyer === entry) state.buyer = null;
+    });
+    return entry;
+  };
+  if (port) {
+    state.buyer = await launch(port);
+    return port;
+  }
+  const started = await listenWithRetry(launch);
+  state.buyer = started.value;
+  return started.port;
+}
+
 /** Starts the buyer node and its BuyerProxy (on `port`, or a free one the first time). */
-async function startBuyer(port) {
+async function startBuyerInProcess(port) {
   const { sdk, BuyerProxy, bootstrapNodes, payments, chain, routingPreferences } = buyerRuntime;
   const buyerChain = { ...chain, rpcUrl: payments.rpcUrl };
   state.buyer = new sdk.AntseedNode(testbenchNodeOptions({ role: 'buyer', dataDir: paths.buyer, bootstrapNodes, payments }));
@@ -244,6 +340,8 @@ async function startBuyer(port) {
   return started.port;
 }
 
+const startBuyer = (port) => (cliMode ? startBuyerProcess(port) : startBuyerInProcess(port));
+
 /** Stops the buyer proxy and node; sellers see the peer disconnect (settle-on-disconnect). */
 async function stopBuyer() {
   if (!state.buyer) return false;
@@ -257,7 +355,8 @@ async function stopBuyer() {
 async function discover(sellerIds) {
   if (!state.buyer) return;
   await waitFor(async () => {
-    for (const id of sellerIds) state.workers.get(id)?.child.send({ type: 'announce' });
+    // A worker announces on request; a CLI seller has no such channel and announces on its own when it starts.
+    if (!cliMode) for (const id of sellerIds) state.workers.get(id)?.child.send({ type: 'announce' });
     const peers = await state.buyer.discoverPeers();
     return sellerIds.every((id) => peers.some((peer) => peer.peerId === state.workers.get(id)?.info.peerId));
   }, 'buyer discovering testbench sellers', 90_000, 1000);
@@ -271,7 +370,7 @@ async function closeChannels(sellerIds) {
     const seller = manifest.sellers.find((entry) => entry.id === id);
     if (!seller) throw Object.assign(new Error(`Unknown seller ${id}`), { statusCode: 404 });
     if (!state.buyer) { results[id] = 'buyer-offline'; continue; }
-    const active = state.buyer.getActiveBuyerChannels().filter((channel) => channel.peerId === seller.peerId);
+    const active = (await state.buyer.getActiveBuyerChannels()).filter((channel) => channel.peerId === seller.peerId);
     if (active.length === 0) { results[id] = 'no-channel'; continue; }
     if (!state.workers.has(id)) { results[id] = 'seller-offline'; continue; }
     await waitFor(async () => {
@@ -305,10 +404,11 @@ async function liveStatus() {
       sellers,
       peersSeenByBuyer: peers,
       buyerOnline: Boolean(state.buyer),
-      channels: state.buyer?.getActiveBuyerChannels() ?? [],
+      channels: await Promise.resolve(state.buyer?.getActiveBuyerChannels() ?? []).catch(() => []),
       chainBlock: await state.reader.provider.getBlockNumber(),
       health: state.health,
       rpc: rpcStats(),
+      watchdog: watchdogStatus(),
     },
   };
 }
@@ -324,15 +424,44 @@ function rpcStats() {
  * link makes the buyer's reads lag too, as on a load-balanced public endpoint.
  */
 const chainClock = { lastTxAt: 0 };
-async function chainLink(who, seed) {
+async function chainLink(who) {
   if (plan.topology.chain?.rpc !== 'base') return state.anvil.rpcUrl;
   const existing = state.rpcLinks.get(who);
   if (existing) return existing.url;
-  const link = await startRpcProxy({ upstream: state.anvil.rpcUrl, seed, chain: chainClock });
+  const link = await startRpcProxy({ upstream: state.anvil.rpcUrl, seed: derive(plan.seed, `rpc:${who}`), chain: chainClock });
   assertLocalUrl(link.url, `${who} RPC link`);
   state.rpcLinks.set(who, link);
   log(`Base-like RPC link for ${who} on ${link.url}`);
   return link.url;
+}
+
+function watchdogStatus() {
+  const now = Date.now();
+  return { starter: watch.starter, idleMinutes: watch.idleMinutes, heartbeatAgoMs: now - watch.heartbeatAt, lastControlRequestAgoMs: now - watch.previousRequestAt };
+}
+
+const isStarter = (entry) => Boolean(watch.starter) && entry.pid === watch.starter.pid && entry.startedAt === watch.starter.startedAt;
+
+/** Runs only once startup is done: a shutdown racing main() could miss what main() spawns next. */
+function startWatchdog() {
+  watch.heartbeatAt = Date.now();
+  watch.lastRequestAt = Date.now();
+  watch.previousRequestAt = Date.now();
+  const timer = setInterval(() => {
+    if (shuttingDown) { clearInterval(timer); return; }
+    const now = Date.now();
+    const decision = watchdogDecision({
+      starter: !watch.starter ? 'none' : isOwnedProcessAlive(watch.starter) ? 'alive' : 'dead',
+      heartbeatAgeMs: now - watch.heartbeatAt,
+      lastControlAgeMs: now - watch.lastRequestAt,
+      idleMs: watch.idleMinutes * 60_000,
+    });
+    if (decision === 'keep') return;
+    clearInterval(timer);
+    const reason = decision.slice('stop:'.length);
+    log(`Watchdog: ${reason === 'idle' ? `no control request for ${watch.idleMinutes} min` : `starter ${watch.starter.pid} is gone`}; stopping (${reason})`);
+    void writeManifest({ stoppedBy: 'watchdog', reason }).finally(() => shutdown(reason));
+  }, WATCHDOG_INTERVAL_MS);
 }
 
 async function shutdown(reason) {
@@ -396,26 +525,29 @@ async function main() {
   for (const dir of [paths.home, join(paths.home, '.antseed'), paths.anvilHome, paths.buyer, paths.sellers, paths.logs, paths.reports]) {
     await mkdir(dir, { recursive: true, mode: 0o700 });
   }
+  startReaper();
   log(`Fresh ${target} run: cleared ${wiped.length} stale state entries (identities kept)`);
-  const clean = isolatedEnv(process.env, paths.home, plan.verbose ? { ANTSEED_DEBUG: '1' } : {});
+  const clean = isolatedEnv(process.env, paths.home, { ...plan.topology.buyer.env, ...(plan.verbose ? { ANTSEED_DEBUG: '1' } : {}) });
   for (const key of Object.keys(process.env)) if (!(key in clean)) delete process.env[key];
   Object.assign(process.env, clean);
 
   manifest = {
-    version: MANIFEST_VERSION, name, target, running: false, starting: true, dir: paths.dir, worktree: plan.worktree,
-    supervisor: ownProcessEntry(), home: paths.home, buyerDir: paths.buyer, buyerConfig: join(paths.buyer, 'config.json'),
+    version: MANIFEST_VERSION, name, target, mode: plan.mode, running: false, starting: true, dir: paths.dir, worktree: plan.worktree,
+    supervisor: ownProcessEntry(), starter: watch.starter, idleMinutes: watch.idleMinutes, home: paths.home, buyerDir: paths.buyer, buyerConfig: join(paths.buyer, 'config.json'),
     chainId: TESTBENCH_CHAIN_IDS[target], configHash: plan.configHash, configOrigin: plan.configOrigin, upstream: plan.upstream,
-    topology: plan.topology, startedAt: new Date().toISOString(),
+    topology: plan.topology, seed: plan.seed, startedAt: new Date().toISOString(), logStart: logOffsets(peerLogs(paths.logs).all),
     rpcUrl: 'http://127.0.0.1:1', proxyUrl: 'http://127.0.0.1:1', sellers: [],
   };
   await saveJson(paths.manifest, manifest);
 
   if (local) {
-    state.anvil = await startAnvil(null);
+    state.anvil = await startAnvil(null, undefined, { timestamp: localGenesisTimestamp(plan.topology.chain?.contracts ?? 'full') });
     await writeManifest({ rpcUrl: state.anvil.rpcUrl, anvil: { pid: state.anvil.child.pid, startedAt: processStartTime(state.anvil.child.pid), port: state.anvil.port } });
-    log(`Local Anvil (chain ${TESTBENCH_CHAIN_IDS.local}) on ${state.anvil.rpcUrl}; deploying packages/contracts from source`);
-    await deployLocalContracts(state.anvil.rpcUrl);
-    log('Contracts deployed with script/Deploy.s.sol');
+    const layout = plan.topology.chain?.contracts ?? 'full';
+    log(`Local Anvil (chain ${TESTBENCH_CHAIN_IDS.local}) on ${state.anvil.rpcUrl}; deploying packages/contracts from source (${layout} layout)`);
+    const deployed = await deployLocalStack({ repo, rpcUrl: state.anvil.rpcUrl, layout, logPath: join(paths.logs, 'forge.log'), broadcastDir: join(paths.anvilHome, 'broadcast'), toolHome, log, onSpawn: reap });
+    await writeManifest({ localDeploy: { layout, timingsMs: deployed.timings } });
+    log(`Contracts deployed (${layout}): ${Object.entries(deployed.timings).map(([step, ms]) => `${step} ${(ms / 1000).toFixed(1)}s`).join(', ')}`);
   } else {
     log(`Seeded shared fork cache: ${(await seedFromLegacy(plan.cacheHome, plan.legacyCacheHome)) ?? 'not needed'}`);
     const fork = await resolveForkBlock({ forkUrl: forkUrl, cacheHome: plan.cacheHome, explicitBlock: plan.topology.chain.block });
@@ -429,7 +561,7 @@ async function main() {
   }
 
   const sdk = await import(join(repo, 'packages/node/dist/index.js'));
-  const { BuyerProxy } = await import(join(repo, 'apps/cli/dist/proxy/buyer-proxy.js'));
+  const BuyerProxy = cliMode ? null : (await import(join(repo, 'apps/cli/dist/proxy/buyer-proxy.js'))).BuyerProxy;
   const buyerIdentity = await sdk.loadOrCreateIdentity(paths.buyer);
   const sellerIdentities = [];
   for (const seller of plan.topology.sellers) {
@@ -439,6 +571,7 @@ async function main() {
   const chainState = await (local ? prepareLocalChain : prepareChain)({
     rpcUrl: state.anvil.rpcUrl, sdk, sellers: sellerIdentities, buyer: buyerIdentity,
     depositMicros: BigInt(plan.topology.buyer.depositMicros), topUpThresholdBps: plan.topology.chain?.topUpThresholdBps, log,
+    ...(local ? { layout: plan.topology.chain?.contracts ?? 'full' } : {}),
   });
   state.reader = chainReader(state.anvil.rpcUrl, chainState.chain);
   const chainTimestamp = Number((await state.reader.provider.getBlock('latest')).timestamp);
@@ -454,20 +587,31 @@ async function main() {
   const bootstrapNodes = [{ host: '127.0.0.1', port: state.bootstrap.getPort() }];
   log(`Private bootstrap DHT on 127.0.0.1:${state.bootstrap.getPort()}`);
 
+  if (cliMode) {
+    const providerPlugins = plan.topology.sellers.flatMap((seller) => Object.values(seller.providers).map((provider) => WORKSPACE_PLUGINS[provider.plugin]));
+    await linkPlugins(paths.home, repo, ['router-local', ...providerPlugins]);
+  }
   const sellers = [];
   for (const seller of plan.topology.sellers) {
     let mockUrl;
     if (plan.upstream === 'mock') {
-      const mock = await startMock({ models: [...new Set(Object.values(seller.providers).flatMap((p) => Object.keys(p.services)))], label: `testbench seller ${seller.id}`, ...seller.mock, pricing: mockPricing(seller.providers) });
+      const mock = await startMock({ models: [...new Set(Object.values(seller.providers).flatMap((p) => Object.keys(p.services)))], label: `testbench seller ${seller.id}`, ...seller.mock, pricing: mockPricing(seller.providers), random: createPrng(derive(plan.seed, `mock:${seller.id}`)) });
       state.mocks.set(seller.id, mock);
       mockUrl = mock.url;
     }
     const { providers, sellerEnv } = bindUpstream({ seller: { providers: seller.providers } }, { mode: plan.upstream, mockUrl, env: liveEnv });
     const configPath = join(paths.seller(seller.id), 'config.json');
-    const sellerRpc = await chainLink(`seller:${seller.id}`, 11 + sellers.length);
-    await saveJson(configPath, { seller: { providers }, payments: { crypto: { ...chainState.chain, rpcUrl: sellerRpc, networkStatsUrl: '', explorerApiUrl: '' } }, network: { bootstrapNodes: bootstrapNodes.map((n) => `${n.host}:${n.port}`) }, relayer: { enabled: false } });
-    const spec = { id: seller.id, dataDir: paths.seller(seller.id), configPath, bootstrapNodes, payments: { ...paymentsConfig(chainState.chain, sellerRpc, paymentOptions), ...(plan.topology.payments?.minBudgetPerRequestMicros ? { minBudgetPerRequest: plan.topology.payments.minBudgetPerRequestMicros } : {}) }, env: sellerEnv };
-    const worker = await startSellerWorker(spec);
+    const sellerRpc = await chainLink(`seller:${seller.id}`);
+    const spec = { id: seller.id, dataDir: paths.seller(seller.id), configPath, bootstrapNodes, payments: { ...paymentsConfig(chainState.chain, sellerRpc, paymentOptions), ...(plan.topology.payments?.minBudgetPerRequestMicros ? { minBudgetPerRequest: plan.topology.payments.minBudgetPerRequestMicros } : {}) }, env: { ...seller.env, ...sellerEnv } };
+    if (cliMode) {
+      await saveJson(configPath, assertCliConfig(cliSellerConfig({ id: seller.id, providers, chain: chainState.chain, bootstrapNodes, payments: spec.payments, freeTier: seller.freeTier }), 'seller'));
+      // The CLI reads the idle-settle timer from this variable only.
+      if (paymentOptions.settlementIdleMs) spec.env = { ...spec.env, ANTSEED_SETTLEMENT_IDLE_MS: String(paymentOptions.settlementIdleMs) };
+    } else {
+      await saveJson(configPath, { seller: { providers }, payments: { crypto: { ...chainState.chain, rpcUrl: sellerRpc, networkStatsUrl: '', explorerApiUrl: '' } }, network: { bootstrapNodes: bootstrapNodes.map((n) => `${n.host}:${n.port}`) }, relayer: { enabled: false } });
+    }
+    const worker = await startSeller(spec);
+    assert.equal(worker.info.peerId, sellerIdentities.find((entry) => entry.id === seller.id).identity.peerId, `seller ${seller.id} started with another identity`);
     const chainSeller = chainState.sellers.find((entry) => entry.id === seller.id);
     sellers.push({ id: seller.id, peerId: worker.info.peerId, address: chainSeller.address, agentId: chainSeller.agentId, dhtPort: worker.info.dhtPort, signalingPort: worker.info.signalingPort, process: worker.process, mockUrl: mockUrl ?? null, models: listModels({ seller: { providers } }), spec });
     log(`Seller ${seller.id} peer ${worker.info.peerId}`);
@@ -475,8 +619,8 @@ async function main() {
 
   const routingPreferences = buyerRoutingPreferences(plan.topology, sellers.map((seller) => seller.peerId));
   const buyerCaps = { ...(plan.topology.buyer.maxReserveMicros ? { maxReserveAmountUsdc: plan.topology.buyer.maxReserveMicros } : {}), ...(plan.topology.buyer.maxPerRequestMicros ? { maxPerRequestUsdc: plan.topology.buyer.maxPerRequestMicros } : {}) };
-  const buyerPayments = { ...paymentsConfig(chainState.chain, await chainLink('buyer', 29), paymentOptions), ...buyerCaps };
-  buyerRuntime = { sdk, BuyerProxy, bootstrapNodes, payments: buyerPayments, chain: chainState.chain, routingPreferences };
+  const buyerPayments = { ...paymentsConfig(chainState.chain, await chainLink('buyer'), paymentOptions), ...buyerCaps };
+  buyerRuntime = { sdk, BuyerProxy, peerId: buyerIdentity.peerId, bootstrapNodes, payments: buyerPayments, chain: chainState.chain, routingPreferences };
   const proxyPort = await startBuyer();
   const proxyUrl = `http://127.0.0.1:${proxyPort}`;
   assertLocalUrl(proxyUrl, 'proxyUrl');
@@ -489,7 +633,8 @@ async function main() {
     buyer: { peerId: state.buyer.peerId, address: chainState.buyer, dhtPort: state.buyer.dhtPort },
     sellers: sellers.map(({ spec, ...rest }) => rest),
     bootstrap: { host: '127.0.0.1', port: state.bootstrap.getPort() },
-    chain: { deposits: chainState.chain.depositsContractAddress, channels: chainState.chain.channelsContractAddress, usdc: chainState.chain.usdcContractAddress },
+    chain: { deposits: chainState.chain.depositsContractAddress, channels: chainState.chain.channelsContractAddress, usdc: chainState.chain.usdcContractAddress, contracts: chainContracts(chainState.chain, local ? plan.topology.chain?.contracts ?? 'full' : null) },
+    stakeToken: chainState.stakeToken,
     chainStartBlock: chainState.startBlock, sellerUsdcBefore: chainState.sellerUsdcBefore, depositMicros: chainState.depositMicros, stake: chainState.stake,
     ownerSettings: chainState.ownerSettings, rpcProfile: plan.topology.chain?.rpc ?? 'direct',
     rpcLinks: Object.fromEntries([...state.rpcLinks].map(([who, link]) => [who, link.url])),
@@ -502,7 +647,21 @@ async function main() {
   const token = newToken();
   state.control = await startControlServer({
     token, log,
+    onRequest: () => { watch.previousRequestAt = watch.lastRequestAt; watch.lastRequestAt = Date.now(); },
     routes: {
+      // Any driver's beat counts as a control request; only the starter's holds off the watchdog's grace.
+      'POST /heartbeat': ({ body }) => {
+        if (isStarter(body)) watch.heartbeatAt = Date.now();
+        return watchdogStatus();
+      },
+      'POST /starter/release': async ({ body }) => {
+        if (isStarter(body)) {
+          log(`Starter ${watch.starter.pid} released the testbench; the idle budget applies now`);
+          watch.starter = null;
+          await writeManifest({ starter: null });
+        }
+        return watchdogStatus();
+      },
       'GET /status': () => liveStatus(),
       'POST /channels/close': ({ body }) => closeChannels(body.sellerId ? [body.sellerId] : manifest.sellers.map((seller) => seller.id)),
       'POST /chain/warp': async ({ body }) => {
@@ -521,7 +680,7 @@ async function main() {
         const spec = specs.get(params.id);
         if (!spec) throw Object.assign(new Error(`Unknown seller ${params.id}`), { statusCode: 404 });
         if (state.workers.has(params.id)) return { started: false };
-        const worker = await startSellerWorker(spec);
+        const worker = await startSeller(spec);
         await writeManifest({ sellers: manifest.sellers.map((seller) => (seller.id === params.id ? { ...seller, process: worker.process, online: true, dhtPort: worker.info.dhtPort, signalingPort: worker.info.signalingPort } : seller)) });
         await discover([params.id]);
         return { started: true };
@@ -543,6 +702,7 @@ async function main() {
       },
       'GET /faults/buyer/need-auth-loss': () => state.needAuthLoss,
       'POST /faults/buyer/need-auth-loss': ({ body }) => {
+        if (cliMode) throw Object.assign(new Error('The NeedAuth-loss fault hooks an in-process buyer; this testbench runs the CLI buyer (--mode cli), use --mode sdk'), { statusCode: 409 });
         if (!state.buyer?.buyerPaymentManager) throw Object.assign(new Error('The buyer has no payment manager'), { statusCode: 409 });
         const count = Number(body.count);
         if (!Number.isInteger(count) || count < 0 || count > 10) throw Object.assign(new Error('count must be 0..10'), { statusCode: 400 });
@@ -589,6 +749,7 @@ async function main() {
   await writeManifest({ controlUrl: state.control.url, running: true, starting: false, readyAt: new Date().toISOString() });
   validateManifest(manifest, { dir: paths.dir });
   log(`READY proxy=${proxyUrl} rpc=${state.anvil.rpcUrl} control=${state.control.url}`);
+  startWatchdog();
 
   state.anvil.child.on('exit', (code) => {
     if (!shuttingDown) void shutdown(`anvil exited (${code})`);

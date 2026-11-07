@@ -445,6 +445,8 @@ export function validateConfig(config: AntseedConfig): string[] {
     }
   }
 
+  validateNetworkConfig(config, errors);
+
   if (config.seller.publicAddress) {
     const raw = config.seller.publicAddress.trim();
     if (parsePublicAddress(raw) === null) {
@@ -580,6 +582,31 @@ export function assertValidConfig(config: AntseedConfig): void {
   if (errors.length === 0) return;
 
   throw new Error(`Invalid config:\n- ${errors.join('\n- ')}`);
+}
+
+function validateNetworkConfig(config: AntseedConfig, errors: string[]): void {
+  const network = config.network;
+  for (const key of ['dhtPort', 'signalingPort'] as const) {
+    const port = network[key];
+    if (port !== undefined && (!Number.isInteger(port) || port < 0 || port > 65535)) {
+      errors.push(`network.${key} must be an integer in range 0-65535`);
+    }
+  }
+  if (network.bindHost !== undefined && (typeof network.bindHost !== 'string' || network.bindHost.trim().length === 0)) {
+    errors.push('network.bindHost must be a non-empty string');
+  }
+  for (const key of ['natTraversal', 'noOfficialBootstrap', 'allowPrivateIPs'] as const) {
+    if (network[key] !== undefined && typeof network[key] !== 'boolean') {
+      errors.push(`network.${key} must be a boolean`);
+    }
+  }
+  if (network.dhtOperationTimeoutMs !== undefined && (!Number.isInteger(network.dhtOperationTimeoutMs) || network.dhtOperationTimeoutMs < 1)) {
+    errors.push('network.dhtOperationTimeoutMs must be an integer >= 1');
+  }
+  const authDuration = config.payments.defaultAuthDurationSecs;
+  if (authDuration !== undefined && (!Number.isInteger(authDuration) || authDuration < 1)) {
+    errors.push('payments.defaultAuthDurationSecs must be an integer >= 1');
+  }
 }
 
 function validateFreeTierDelegations(value: unknown, errors: string[]): void {
