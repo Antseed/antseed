@@ -25,7 +25,7 @@ import {
  * Env config (the seller offers each provider cap only when the evidence URL and its field are
  * set, all off the same route):
  *   ANTSEED_TEE_PEER_ID                    this node's peer id (EVM address, no 0x) — required
- *   ANTSEED_VERIFIER_NODE_TEE              seller-node-tee-genuine source: "configfs" (default), "dstack", or "http"
+ *   ANTSEED_VERIFIER_NODE_TEE              seller-node-tee-genuine source: "configfs" (default), "dstack", "confidential-space", or "http"
  *   ANTSEED_VERIFIER_DSTACK_SOCKET         override the dstack guest-agent socket path (default /var/run/dstack.sock)
  *   ANTSEED_VERIFIER_PROVIDER_ADAPTER      in-process provider adapter id (e.g. "chutes", "aci"); fetches provider evidence directly, no separate shim
  *   ANTSEED_VERIFIER_PROVIDER_EVIDENCE_URL provider evidence route ({nonce} hex placeholder); offers seller-provider-tee-genuine via http (alternative to an adapter)

@@ -818,6 +818,10 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       if (maxInboundConnections !== undefined) {
         console.log(chalk.dim(`  max inbound connections: ${maxInboundConnections}`))
       }
+      const maxInboundConnectionsPerIp = effectiveSellerConfig.maxInboundConnectionsPerIp
+      if (maxInboundConnectionsPerIp !== undefined) {
+        console.log(chalk.dim(`  max inbound connections per IP: ${maxInboundConnectionsPerIp}`))
+      }
       const inboundIdleTimeoutMs = parseOptionalNonNegativeIntegerEnv(process.env['ANTSEED_INBOUND_IDLE_TIMEOUT_MS'])
         ?? effectiveSellerConfig.inboundIdleTimeoutMs
       if (inboundIdleTimeoutMs !== undefined) {
@@ -888,6 +892,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         ...(signalingPort ? { signalingPort } : {}),
         ...(maxUploadBodyBytes !== undefined ? { maxUploadBodyBytes } : {}),
         ...(maxInboundConnections !== undefined ? { maxInboundConnections } : {}),
+        ...(maxInboundConnectionsPerIp !== undefined ? { maxInboundConnectionsPerIp } : {}),
         ...(inboundIdleTimeoutMs !== undefined ? { inboundIdleTimeoutMs } : {}),
         ...(sellerFreeTier ? { freeTier: sellerFreeTier } : {}),
         ...(effectiveSellerConfig.freeUsage ? { freeUsage: effectiveSellerConfig.freeUsage } : {}),
