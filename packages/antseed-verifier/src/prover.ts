@@ -7,10 +7,12 @@ import { GPU_CAP_ID, gpuConfigKey } from './caps/gpu-nvidia.js'
 import { claimsConfigKey } from './caps/provider-claims.js'
 import { loadAdapter } from './adapters/index.js'
 import {
+  CHANNEL_BINDING_HEADER,
   VERIFIER_ID,
   decodeAttestRequest,
   encodeAttestResponse,
   evidenceConfigKey,
+  normalizeChannelBinding,
   normalizePeerId,
 } from './shared.js'
 
@@ -159,7 +161,7 @@ const prover: Prover = {
   type: 'prover',
   name: VERIFIER_ID,
   displayName: 'TEE attestation prover (capability-based)',
-  version: '0.1.0',
+  version: '0.1.1',
   description: 'Produces per-capability seller attestation evidence (Intel TDX quote, seller-identity signature) for buyers to verify.',
 
   async prove(req: SellerRequest): Promise<SellerResponse> {
@@ -178,13 +180,25 @@ const prover: Prover = {
 
     let nonce: Uint8Array
     let caps: string[]
+    let bindChannel: boolean
     try {
-      ;({ nonce, caps } = decodeAttestRequest(req.body ?? new Uint8Array()))
+      ;({ nonce, caps, bindChannel } = decodeAttestRequest(req.body ?? new Uint8Array()))
     } catch (err) {
       return json(400, { error: { message: msg(err), type: 'invalid_request_error' } })
     }
 
     const config = baseConfig()
+    // A buyer that asks for it gets the node quote bound to its connection. The seller node sets
+    // the header from the connection the request arrived on; without it the node cap is omitted
+    // rather than minted unbound.
+    if (bindChannel) {
+      const header = Object.entries(req.headers ?? {}).find(([name]) => name.toLowerCase() === CHANNEL_BINDING_HEADER)?.[1]
+      try {
+        config[tdxConfigKey(NODE_TEE_CAP_ID, 'channelBinding')] = normalizeChannelBinding(header ?? '')
+      } catch {
+        config[tdxConfigKey(NODE_TEE_CAP_ID, 'source')] = 'unavailable'
+      }
+    }
     const sign = buildSigner(peerId)
 
     const evidence: Record<string, Uint8Array> = {}

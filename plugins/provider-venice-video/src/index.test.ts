@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Provider, ProviderStreamCallbacks, SerializedHttpRequest } from '@antseed/node';
-import plugin, { VENICE_MAX_BODY_BYTES, veniceAcceptsEndFrame, isVeniceEditModel, veniceEditCapabilities, veniceInputParameters, veniceReferenceImages, terminalRetrieveFailure } from './index.js';
+import plugin, { VENICE_MAX_BODY_BYTES, veniceAcceptsEndFrame, isVeniceEditModel, veniceEditCapabilities, veniceInputParameters, veniceReferenceImages, terminalRetrieveFailure, unannouncedVideoOption, withAnnouncedVideoOptions } from './index.js';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -174,6 +174,92 @@ it('relays queue bodies without the AntSeed service field, with seller auth and 
   expect(init.headers).toMatchObject({ authorization: 'Bearer seller-secret' });
   expect(Object.keys(init.headers).some(key => key.startsWith('x-antseed-'))).toBe(false);
   expect(JSON.parse(Buffer.from(init.body).toString())).toEqual(fields);
+});
+
+describe('announced aspect ratios and audio', () => {
+  // Venice prices Seedance by aspect ratio and Veo by audio, at the same resolution and duration.
+  const SEEDANCE = veniceModel('wan-2.5', { model_type: 'text-to-video', aspect_ratios: ['21:9', '16:9', '1:1'], resolutions: ['480p'], durations: ['4s'], audio_configurable: true });
+  const announced = (video: object) => ({
+    ...config,
+    ANTSEED_SERVICE_CAPABILITIES_JSON: JSON.stringify({ 'wan-2.5': { video } }),
+  });
+  const ready = async (video: object) => {
+    const fetchMock = vi.fn().mockImplementation(async (url: string) =>
+      String(url).endsWith('/api/v1/models?type=video') ? Response.json({ data: [SEEDANCE] }) : Response.json({ model: 'wan-2.5', queue_id: 'queue-1' }));
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = plugin.createProvider(announced(video)) as Provider;
+    await provider.init!();
+    return { provider, fetchMock };
+  };
+  const create = (body: object) => request('/api/v1/video/queue', { model: 'wan-2.5', prompt: 'cat', duration: '4s', ...body });
+  const sent = (fetchMock: ReturnType<typeof vi.fn>) => JSON.parse(Buffer.from(fetchMock.mock.calls.at(-1)![1].body).toString());
+
+  it('names the option a create asks for that the seller did not announce', () => {
+    const video = { aspectRatios: ['16:9', '9:16'], audio: true };
+    expect(unannouncedVideoOption(video, { aspect_ratio: '16:9', audio: true })).toBeNull();
+    expect(unannouncedVideoOption(video, {})).toBeNull();
+    expect(unannouncedVideoOption(video, { aspect_ratio: '21:9' })).toBe('aspect_ratio must be one of: 16:9, 9:16');
+    expect(unannouncedVideoOption(video, { aspect_ratio: 16 })).toBe('aspect_ratio must be one of: 16:9, 9:16');
+    // A service that makes audio may be asked for silence: its price can match `audio`.
+    expect(unannouncedVideoOption(video, { audio: false })).toBeNull();
+    expect(unannouncedVideoOption({ audio: false }, { audio: true })).toContain('silent');
+    expect(unannouncedVideoOption(undefined, { aspect_ratio: '21:9', audio: false })).toBeNull();
+  });
+
+  it('fills an omitted option with the announced one', () => {
+    expect(withAnnouncedVideoOptions({ aspectRatios: ['16:9', '9:16'] }, { prompt: 'cat' }, true)).toEqual({ prompt: 'cat', aspect_ratio: '16:9' });
+    expect(withAnnouncedVideoOptions({ aspectRatios: ['16:9'] }, { aspect_ratio: '16:9' }, true)).toBeNull();
+    expect(withAnnouncedVideoOptions({ audio: false }, { prompt: 'cat' }, true)).toEqual({ prompt: 'cat', audio: false });
+    // Venice rejects `audio` for a model whose audio can't be turned off.
+    expect(withAnnouncedVideoOptions({ audio: false }, { prompt: 'cat' }, false)).toBeNull();
+    expect(withAnnouncedVideoOptions({ audio: true }, { prompt: 'cat' }, true)).toBeNull();
+    expect(withAnnouncedVideoOptions(undefined, { prompt: 'cat' }, true)).toBeNull();
+  });
+
+  it('refuses an unannounced aspect ratio or audio setting before payment and before calling Venice', async () => {
+    const { provider, fetchMock } = await ready({ aspectRatios: ['16:9'], audio: false });
+    const calls = fetchMock.mock.calls.length;
+    expect(provider.checkRequest!(create({ aspect_ratio: '21:9' })))
+      .toEqual({ statusCode: 422, code: 'unsupported_video_option', message: 'aspect_ratio must be one of: 16:9' });
+    expect(provider.checkRequest!(create({ audio: true }))).toMatchObject({ statusCode: 422, code: 'unsupported_video_option' });
+    expect(provider.checkRequest!(create({ aspect_ratio: '16:9', audio: false }))).toBeNull();
+    const response = await provider.handleRequest(create({ aspect_ratio: '1:1' }));
+    expect(response.statusCode).toBe(422);
+    expect(JSON.parse(Buffer.from(response.body).toString()).error).toMatchObject({ code: 'unsupported_video_option' });
+    expect(fetchMock.mock.calls.length).toBe(calls);
+  });
+
+  it('sends Venice the announced aspect ratio and silence when the create omits them', async () => {
+    const { provider, fetchMock } = await ready({ aspectRatios: ['16:9', '9:16'], audio: false });
+    expect((await provider.handleRequest(create({}))).statusCode).toBe(200);
+    expect(sent(fetchMock)).toEqual({ model: 'wan-2.5', prompt: 'cat', duration: '4s', aspect_ratio: '16:9', audio: false });
+    expect((await provider.handleRequest(create({ aspect_ratio: '9:16', audio: false }))).statusCode).toBe(200);
+    expect(sent(fetchMock)).toEqual({ model: 'wan-2.5', prompt: 'cat', duration: '4s', aspect_ratio: '9:16', audio: false });
+  });
+
+  it('refuses an omitted audio on a silent service while Venice\'s model details are unknown', async () => {
+    expect(unannouncedVideoOption({ audio: false }, {})).toBe('This service generates silent video: send audio: false');
+    expect(unannouncedVideoOption({ audio: false }, {}, true)).toBeNull();
+    expect(unannouncedVideoOption({ audio: false }, {}, false)).toBeNull();
+    for (const models of [vi.fn().mockRejectedValue(new Error('offline')), vi.fn().mockResolvedValue(Response.json({ data: [] }))]) {
+      vi.stubGlobal('fetch', models);
+      const provider = plugin.createProvider(announced({ audio: false })) as Provider;
+      await provider.init!();
+      expect(provider.checkRequest!(create({}))).toMatchObject({ statusCode: 422, code: 'unsupported_video_option' });
+      const fetchMock = vi.fn().mockResolvedValue(Response.json({ model: 'wan-2.5', queue_id: 'queue-1' }));
+      vi.stubGlobal('fetch', fetchMock);
+      expect((await provider.handleRequest(create({}))).statusCode).toBe(422);
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect((await provider.handleRequest(create({ audio: false }))).statusCode).toBe(200);
+      expect(sent(fetchMock)).toMatchObject({ audio: false });
+    }
+  });
+
+  it('relays a create unchanged when the seller announced neither option', async () => {
+    const { provider, fetchMock } = await ready({ resolutions: ['480p'] });
+    expect((await provider.handleRequest(create({ aspect_ratio: '21:9', audio: false }))).statusCode).toBe(200);
+    expect(sent(fetchMock)).toEqual({ model: 'wan-2.5', prompt: 'cat', duration: '4s', aspect_ratio: '21:9', audio: false });
+  });
 });
 
 it('rejects unsupported endpoints, services, and non-streamed retrieves before calling Venice', async () => {
