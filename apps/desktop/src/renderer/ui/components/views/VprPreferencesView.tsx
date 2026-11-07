@@ -241,7 +241,7 @@ export function VprPreferencesView({ onSelectView }: Props) {
               title="Product telemetry"
               hint={telemetryStatus?.available === false
                 ? 'Telemetry is unavailable in this build or has been disabled by configuration.'
-                : 'Help improve AI VPN by sharing coarse feature usage and reliability information linked to your public on-chain address. Prompts, messages, files, and exact financial values are never collected.'}
+                : 'Help improve AI VPN by sharing coarse feature usage and reliability information, plus each request\'s token counts, timings, estimated cost and the seller that answered, linked to your public on-chain address. Prompts, messages, files, and your balance are never collected.'}
               control={(
                 <VprToggle
                   checked={telemetryStatus?.enabled ?? false}

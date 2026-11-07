@@ -51,6 +51,7 @@ export interface BuyerServiceUsageTotal {
   outputImages: string; // bigint as string
   videoGenerations: string; // bigint as string
   videoSeconds: string; // bigint as string
+  inputCharacters: string; // bigint as string
   requestCount: number;
 }
 
@@ -75,6 +76,7 @@ export class ChannelStore {
     getOneOffByRequest: Database.Statement;
     getActiveByPeerAndBuyer: Database.Statement;
     getLatestByPeer: Database.Statement;
+    getFirstCreatedByPeer: Database.Statement;
     getLatestByPeerAndBuyer: Database.Statement;
     updateStatusWithAmount: Database.Statement;
     updateStatus: Database.Statement;
@@ -120,6 +122,7 @@ export class ChannelStore {
           cumulativeOutputImages: total.cumulativeOutputImages ?? '0',
           cumulativeVideoGenerations: total.cumulativeVideoGenerations ?? '0',
           cumulativeVideoSeconds: total.cumulativeVideoSeconds ?? '0',
+          cumulativeInputCharacters: total.cumulativeInputCharacters ?? '0',
           updatedAt: total.updatedAt,
         });
       }
@@ -178,6 +181,9 @@ export class ChannelStore {
       ),
       getLatestByPeer: this._db.prepare(
         'SELECT * FROM payment_channels WHERE peer_id = ? AND role = ? AND channel_kind = ? ORDER BY created_at DESC LIMIT 1',
+      ),
+      getFirstCreatedByPeer: this._db.prepare(
+        'SELECT MIN(created_at) AS first FROM payment_channels WHERE peer_id = ? AND role = ?',
       ),
       getLatestByPeerAndBuyer: this._db.prepare(
         'SELECT * FROM payment_channels WHERE peer_id = ? AND role = ? AND buyer_evm_addr = ? AND channel_kind = ? ORDER BY created_at DESC LIMIT 1',
@@ -244,12 +250,14 @@ export class ChannelStore {
           session_id, service_id, cumulative_amount, cumulative_input_tokens,
           cumulative_cached_input_tokens, cumulative_output_tokens,
           cumulative_request_count, cumulative_output_images,
-          cumulative_video_generations, cumulative_video_seconds, updated_at
+          cumulative_video_generations, cumulative_video_seconds,
+          cumulative_input_characters, updated_at
         ) VALUES (
           @sessionId, @serviceId, @cumulativeAmount, @cumulativeInputTokens,
           @cumulativeCachedInputTokens, @cumulativeOutputTokens,
           @cumulativeRequestCount, @cumulativeOutputImages,
-          @cumulativeVideoGenerations, @cumulativeVideoSeconds, @updatedAt
+          @cumulativeVideoGenerations, @cumulativeVideoSeconds,
+          @cumulativeInputCharacters, @updatedAt
         )
       `),
       getServiceTotals: this._db.prepare(
@@ -329,6 +337,12 @@ export class ChannelStore {
     return row ? rowToChannel(row) : null;
   }
 
+  /** When the first channel with this peer in this role was created (ms), or null when there is none. */
+  getFirstChannelCreatedAt(peerId: string, role: ChannelRole): number | null {
+    const row = this._stmts.getFirstCreatedByPeer.get(peerId, role) as { first: number | null } | undefined;
+    return row?.first ?? null;
+  }
+
   getLatestChannelByPeerAndBuyer(peerId: string, role: ChannelRole, buyerEvmAddr: string, channelKind: ChannelKind = CHANNEL_KIND.PAID): StoredChannel | null {
     const row = this._stmts.getLatestByPeerAndBuyer.get(peerId, role, buyerEvmAddr, channelKind) as ChannelRow | undefined;
     return row ? rowToChannel(row) : null;
@@ -384,6 +398,28 @@ export class ChannelStore {
       'SELECT * FROM payment_channels WHERE role = ? AND buyer_evm_addr = ? AND channel_kind IN (?, ?) ORDER BY created_at DESC',
     ).all(CHANNEL_ROLE.BUYER, buyerEvmAddr, CHANNEL_KIND.PAID, CHANNEL_KIND.ONE_OFF) as ChannelRow[];
     return rows.map(rowToChannel);
+  }
+
+  /**
+   * Channel counts and amounts per status for every channel of a role and the
+   * given kinds, summed in SQLite (no history limit, nothing loaded).
+   */
+  getRoleTotalsByStatus(role: ChannelRole, channelKinds: readonly ChannelKind[] = [CHANNEL_KIND.PAID]): Array<{
+    status: string;
+    count: number;
+    tokensDelivered: bigint;
+    settledAmount: bigint;
+  }> {
+    if (channelKinds.length === 0) return [];
+    const rows = this._db.prepare(`
+      SELECT status, COUNT(*) AS count,
+        COALESCE(SUM(CAST(tokens_delivered AS INTEGER)), 0) AS delivered,
+        COALESCE(SUM(CAST(settled_amount AS INTEGER)), 0) AS settled
+      FROM payment_channels
+      WHERE role = ? AND channel_kind IN (${channelKinds.map(() => '?').join(', ')})
+      GROUP BY status
+    `).all(role, ...channelKinds) as Array<{ status: string; count: number; delivered: number; settled: number }>;
+    return rows.map((row) => ({ status: row.status, count: row.count, tokensDelivered: BigInt(row.delivered), settledAmount: BigInt(row.settled) }));
   }
 
   /** Aggregate totals across all channels for a given peer and role. */
@@ -552,7 +588,8 @@ export class ChannelStore {
         SELECT t.service_id, t.cumulative_amount, t.cumulative_input_tokens,
                t.cumulative_cached_input_tokens, t.cumulative_output_tokens,
                t.cumulative_request_count, t.cumulative_output_images,
-               t.cumulative_video_generations, t.cumulative_video_seconds
+               t.cumulative_video_generations, t.cumulative_video_seconds,
+               t.cumulative_input_characters
         FROM payment_channel_service_totals t
         JOIN payment_channels c ON c.session_id = t.session_id
         WHERE c.role = ? AND c.buyer_evm_addr = ?
@@ -567,6 +604,7 @@ export class ChannelStore {
         cumulative_output_images: string;
         cumulative_video_generations: string;
         cumulative_video_seconds: string;
+        cumulative_input_characters: string;
       }>;
 
     const byService = new Map<string, {
@@ -578,6 +616,7 @@ export class ChannelStore {
       images: bigint;
       videoGenerations: bigint;
       videoSeconds: bigint;
+      inputCharacters: bigint;
     }>();
     const toBigInt = (value: string): bigint => {
       try { return BigInt(value || '0'); } catch { return 0n; }
@@ -592,6 +631,7 @@ export class ChannelStore {
         images: 0n,
         videoGenerations: 0n,
         videoSeconds: 0n,
+        inputCharacters: 0n,
       };
       entry.amount += toBigInt(row.cumulative_amount);
       entry.input += toBigInt(row.cumulative_input_tokens);
@@ -601,6 +641,7 @@ export class ChannelStore {
       entry.images += toBigInt(row.cumulative_output_images);
       entry.videoGenerations += toBigInt(row.cumulative_video_generations);
       entry.videoSeconds += toBigInt(row.cumulative_video_seconds);
+      entry.inputCharacters += toBigInt(row.cumulative_input_characters);
       byService.set(row.service_id, entry);
     }
     return Array.from(byService.entries()).map(([serviceId, entry]) => ({
@@ -612,6 +653,7 @@ export class ChannelStore {
       outputImages: entry.images.toString(),
       videoGenerations: entry.videoGenerations.toString(),
       videoSeconds: entry.videoSeconds.toString(),
+      inputCharacters: entry.inputCharacters.toString(),
       requestCount: Number(entry.requests),
     }));
   }
@@ -627,6 +669,7 @@ export class ChannelStore {
       cumulativeOutputImages: BigInt(total.cumulativeOutputImages ?? '0'),
       cumulativeVideoGenerations: BigInt(total.cumulativeVideoGenerations ?? '0'),
       cumulativeVideoSeconds: BigInt(total.cumulativeVideoSeconds ?? '0'),
+      cumulativeInputCharacters: BigInt(total.cumulativeInputCharacters ?? '0'),
     }));
   }
 
@@ -640,6 +683,7 @@ export class ChannelStore {
       cumulativeOutputImages: services.reduce((sum, s) => sum + s.cumulativeOutputImages, 0n),
       cumulativeVideoGenerations: services.reduce((sum, s) => sum + (s.cumulativeVideoGenerations ?? 0n), 0n),
       cumulativeVideoSeconds: services.reduce((sum, s) => sum + (s.cumulativeVideoSeconds ?? 0n), 0n),
+      cumulativeInputCharacters: services.reduce((sum, s) => sum + (s.cumulativeInputCharacters ?? 0n), 0n),
       services,
     };
   }
@@ -657,6 +701,7 @@ export class ChannelStore {
       cumulativeOutputImages: (service.cumulativeOutputImages ?? 0n).toString(),
       cumulativeVideoGenerations: (service.cumulativeVideoGenerations ?? 0n).toString(),
       cumulativeVideoSeconds: (service.cumulativeVideoSeconds ?? 0n).toString(),
+      cumulativeInputCharacters: (service.cumulativeInputCharacters ?? 0n).toString(),
     }));
   }
 
@@ -718,6 +763,7 @@ interface ServiceTotalRow {
   cumulative_output_images: string;
   cumulative_video_generations: string;
   cumulative_video_seconds: string;
+  cumulative_input_characters: string;
   updated_at: number;
 }
 
@@ -775,6 +821,7 @@ function rowToServiceTotal(row: ServiceTotalRow): StoredChannelServiceTotal {
     cumulativeOutputImages: row.cumulative_output_images ?? '0',
     cumulativeVideoGenerations: row.cumulative_video_generations ?? '0',
     cumulativeVideoSeconds: row.cumulative_video_seconds ?? '0',
+    cumulativeInputCharacters: row.cumulative_input_characters ?? '0',
     updatedAt: row.updated_at,
   };
 }

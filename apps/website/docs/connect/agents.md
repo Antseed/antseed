@@ -11,17 +11,21 @@ Agents such as Hermes and OpenClaw connect to Antseed like any OpenAI- or Anthro
 | Where the agent runs | Endpoint |
 |---|---|
 | Anywhere, with its own key and budget | A [gateway API key](#gateway-api-key) (recommended) |
-| Another machine, reaching your desktop app or a CLI buyer | A [tunnel endpoint](#tunnel-endpoint) |
-| The same computer as the buyer | The [local buyer proxy](#local-buyer-proxy) |
+| Another machine, reaching your desktop app or a CLI buyer | A [tunnel endpoint](#tunnel-endpoint), which is a gateway on your computer |
+| The same computer as the buyer, without a gateway | The [local buyer proxy](#local-buyer-proxy) |
+
+The local buyer proxy listens only on `127.0.0.1`. An agent on another machine cannot reach it, and you should not publish port 8377: it checks no API key, so anyone who reaches it can spend your deposit.
 
 Maintained setup guides and skills:
 
 - [Hermes integration](/integrations/hermes) and the [Hermes skill](https://github.com/AntSeed/antseed/tree/main/skills/hermes-antseed)
 - [OpenClaw integration](/integrations/openclaw) and the [OpenClaw skill](https://github.com/AntSeed/antseed/tree/main/skills/openclaw-antseed)
+- The [model verification skill](https://github.com/AntSeed/antseed/tree/main/skills/antseed-verify-model), to check that an API endpoint serves the model it claims ([how it works](/docs/model-verification))
+- [Generate videos with an agent](/docs/videos) with the `antseed-videos` skill
 
 ## Gateway API key
 
-A gateway gives each agent its own key, with spend limits, allowed models and usage logs. Create a key in the Gateway Console under **Keys**, or with the CLI, then use:
+A gateway gives each agent its own key, with spend limits, allowed models and usage logs. For agents, run it on a small server: it stays on when your computer sleeps, and every agent on every machine uses the same HTTPS URL. [Run a gateway on a server](/docs/gateway/server) takes one command. A gateway on your own computer (`http://localhost:8379/v1`, see the [quickstart](/docs/quickstart)) works for agents on that computer, or for others through a [tunnel](#tunnel-endpoint). Create a key in the Gateway Console under **Keys**, or with the CLI, then use:
 
 ```bash
 export ANTSEED_BASE_URL="https://gateway.example.com/v1"   # or http://localhost:8379/v1
@@ -38,7 +42,7 @@ Use the base URL ending in `/v1` and the generated Antseed API key, sent as a be
 
 ## Local buyer proxy
 
-When the agent runs on the same computer as the buyer, point it at `http://127.0.0.1:8377/v1`. The local proxy does not check API keys, but many agents require one, so use any placeholder:
+When the agent runs on the same computer as the buyer and you don't use a gateway, point it at `http://127.0.0.1:8377/v1`. The local proxy does not check API keys, but many agents require one, so use any placeholder:
 
 ```bash
 export ANTSEED_BASE_URL="http://127.0.0.1:8377/v1"
@@ -46,11 +50,11 @@ export ANTSEED_API_KEY="antseed-p2p"
 curl "$ANTSEED_BASE_URL/models" -H "Authorization: Bearer $ANTSEED_API_KEY"
 ```
 
-The model `antseed` follows the model picked in the desktop app. See [Use the local buyer proxy](/docs/api).
+The model `antseed` follows the model picked in the desktop app. It works only here, on the local buyer proxy of a desktop app with a model picked; through a gateway, use concrete model ids. See [Use the local buyer proxy](/docs/api).
 
 ## Hermes
 
-Add Antseed under `providers:` in `~/.hermes/config.yaml`. This example uses the local buyer proxy:
+Add Antseed under `providers:` in `~/.hermes/config.yaml`. This example uses a gateway key:
 
 ```yaml
 model:
@@ -62,8 +66,8 @@ model:
 providers:
   antseed:
     name: Antseed
-    api: http://127.0.0.1:8377/v1
-    api_key: antseed-p2p
+    api: https://gateway.example.com/v1   # or http://localhost:8379/v1
+    api_key: <your gateway key>
     transport: chat_completions
     extra_headers:
       originator: hermes
@@ -74,6 +78,8 @@ providers:
       minimax-m2.7:
         context_length: 200000
 ```
+
+For the local buyer proxy on the same computer, use `api: http://127.0.0.1:8377/v1` and `api_key: antseed-p2p` instead.
 
 Use model ids returned by `GET /v1/models`. A bare id uses automatic routing; `<peerId>@kimi-k2.6` pins one seller. The [Hermes skill](https://github.com/AntSeed/antseed/tree/main/skills/hermes-antseed) covers funding, systemd and auxiliary models.
 
@@ -86,10 +92,10 @@ Add Antseed under `models.providers` in `~/.openclaw/openclaw.json`:
   "models": {
     "providers": {
       "antseed": {
-        "baseUrl": "http://127.0.0.1:8377/v1",
-        "apiKey": "antseed-p2p",
+        "baseUrl": "https://gateway.example.com/v1",
+        "apiKey": "<your gateway key>",
         "authHeader": true,
-        "api": "anthropic-messages",
+        "api": "openai-completions",
         "models": [
           {
             "id": "kimi-k2.6",
@@ -106,11 +112,11 @@ Add Antseed under `models.providers` in `~/.openclaw/openclaw.json`:
 }
 ```
 
-Then run `openclaw models set "antseed/kimi-k2.6"` and `openclaw gateway restart`. `authHeader: true` sends the key as `Authorization: Bearer <key>`, which gateway keys and tunnel endpoints require.
+Then run `openclaw models set "antseed/kimi-k2.6"` and `openclaw gateway restart`. `authHeader: true` sends the key as `Authorization: Bearer <key>`, which gateway keys and tunnel endpoints require. Antseed translates the chat-completions request when a seller speaks another API. For the local buyer proxy on the same computer, use `"baseUrl": "http://127.0.0.1:8377/v1"` and `"apiKey": "antseed-p2p"`.
 
-## Switch an agent to a gateway key or tunnel endpoint
+## Switch an agent between endpoints
 
-Replace the local values with the base URL ending in `/v1` and the key:
+To move an agent from the local buyer proxy to a gateway key or tunnel endpoint, or back, change the base URL (ending in `/v1`) and the key:
 
 | Agent | Base URL field | API key field |
 |---|---|---|

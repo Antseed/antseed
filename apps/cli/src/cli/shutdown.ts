@@ -2,6 +2,8 @@ type ShutdownCallback = () => Promise<void>;
 
 let shutdownCallbacks: ShutdownCallback[] = [];
 let isShuttingDown = false;
+let exitCode = 0;
+let runShutdown: (() => Promise<void>) | null = null;
 
 /**
  * Register a callback to be called on shutdown (SIGINT/SIGTERM).
@@ -29,10 +31,25 @@ export function setupShutdownHandler(callback: ShutdownCallback): void {
         }
       }
 
-      process.exit(0);
+      process.exit(exitCode);
     };
+    runShutdown = handler;
 
     process.on('SIGINT', handler);
     process.on('SIGTERM', handler);
   }
+}
+
+/** Exit code for a restart a supervisor should carry out (systemd `Restart=on-failure` restarts on it; Kubernetes on any exit). */
+export const RESTART_EXIT_CODE = 75;
+
+/** Whether the shutdown under way is a restart (state a restart reuses is kept). */
+export function isRestarting(): boolean {
+  return exitCode === RESTART_EXIT_CODE;
+}
+
+/** Shuts down like SIGTERM, then exits with `RESTART_EXIT_CODE` so the supervisor starts the process again. */
+export function shutdownForRestart(): void {
+  exitCode = RESTART_EXIT_CODE;
+  void runShutdown?.();
 }

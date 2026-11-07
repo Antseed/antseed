@@ -10,3 +10,13 @@ test('uploaded image id tags are hidden from projected user text', () => {
     'Use this as the start frame',
   );
 });
+
+test('uploaded video tags become their attachment cards again', () => {
+  assert.deepEqual(
+    convertPersistedAttachmentPromptToBlocks('Put me in this dance\n\n<uploaded-video id="att-3" name="dance.mp4" mime="video/mp4" size="1024">'),
+    [
+      { type: 'text', text: 'Put me in this dance' },
+      { type: 'file', fileName: 'dance.mp4', mimeType: 'video/mp4', size: 1024, status: 'ready', truncated: false, attachmentId: 'att-3' },
+    ],
+  );
+});

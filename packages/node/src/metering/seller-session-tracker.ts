@@ -1,12 +1,14 @@
 import { createHash, randomUUID } from 'node:crypto';
 
 import type { Identity } from '../p2p/identity.js';
+import type { ProviderTokenPricingUsdPerMillion } from '../interfaces/seller-provider.js';
 import type { SerializedHttpRequest } from '../types/http.js';
 import type { MeteringEvent, SessionMetrics, TokenCount } from '../types/metering.js';
 import type { MeteringStorage } from './storage.js';
 import type { ReceiptGenerator } from './receipt-generator.js';
 import { debugLog, debugWarn } from '../utils/debug.js';
 import { parseResponseUsage } from '../utils/response-usage.js';
+import { computeCostUsdc } from '../payments/pricing.js';
 
 export interface SellerSessionState {
   sessionId: string;
@@ -141,7 +143,7 @@ export class SellerSessionTracker {
   async recordMetering(input: {
     buyerPeerId: string;
     providerName: string;
-    pricing: { inputUsdPerMillion: number; outputUsdPerMillion: number };
+    pricing: ProviderTokenPricingUsdPerMillion;
     request: SerializedHttpRequest;
     statusCode: number;
     latencyMs: number;
@@ -149,7 +151,11 @@ export class SellerSessionTracker {
     outputBytes: number;
     responseBody: Uint8Array;
     /** Pre-computed usage from parseResponseUsage — avoids re-parsing the same body. */
-    providerUsage?: { inputTokens: number; outputTokens: number };
+    providerUsage?: { inputTokens: number; outputTokens: number; freshInputTokens?: number; cachedInputTokens?: number };
+    /** Service (model id) the buyer asked for, recorded for the seller's request log. */
+    service?: string;
+    /** Why the request failed, when the status code does not carry it (the provider call threw). */
+    error?: string;
   }): Promise<void> {
     const { buyerPeerId, providerName, pricing: providerPricingUsdPerMillion, request, statusCode, latencyMs, inputBytes, outputBytes, responseBody } = input;
     const sellerPeerId = this._identity.peerId;
@@ -200,7 +206,12 @@ export class SellerSessionTracker {
       latencyMs,
       statusCode,
       wasStreaming: isSSE,
+      ...(input.service ? { service: input.service } : {}),
+      ...(providerUsage.cachedInputTokens !== undefined ? { cachedInputTokens: providerUsage.cachedInputTokens } : {}),
+      ...(request.requestId ? { requestId: request.requestId } : {}),
     };
+    const error = input.error ?? (statusCode >= 400 ? summarizeErrorBody(responseBody) : null);
+    if (error) event.error = error;
 
     try {
       metering.insertEvent(event);
@@ -209,10 +220,13 @@ export class SellerSessionTracker {
     }
 
     if (this._receiptGenerator) {
+      // Price cached input at the cached rate, as the channel charge does.
+      const cachedInputTokens = tokens.method === 'provider-usage' ? providerUsage.cachedInputTokens ?? 0 : 0;
+      const freshInputTokens = tokens.method === 'provider-usage'
+        ? providerUsage.freshInputTokens ?? Math.max(0, tokens.inputTokens - cachedInputTokens)
+        : tokens.inputTokens;
       const estimatedCostUsd =
-        (tokens.inputTokens * providerPricingUsdPerMillion.inputUsdPerMillion +
-          tokens.outputTokens * providerPricingUsdPerMillion.outputUsdPerMillion) /
-        1_000_000;
+        Number(computeCostUsdc(freshInputTokens, tokens.outputTokens, providerPricingUsdPerMillion, cachedInputTokens)) / 1_000_000;
       const effectiveUsdPerThousandTokens =
         tokens.totalTokens > 0 ? (estimatedCostUsd / tokens.totalTokens) * 1000 : 0;
       const unitPriceCentsPerThousandTokens = Math.max(0, effectiveUsdPerThousandTokens * 100);
@@ -379,4 +393,26 @@ export class SellerSessionTracker {
       settling: Boolean(session.settling),
     });
   }
+}
+
+/** Upper bound on a stored request error; enough for an upstream message, never a whole body. */
+const MAX_EVENT_ERROR_CHARS = 300;
+
+/** The message of an error response (`error.message`, `error`, or `message`), else its text, shortened. */
+export function summarizeErrorBody(body: Uint8Array): string | null {
+  const text = new TextDecoder().decode(body.subarray(0, 4096)).trim();
+  if (!text) return null;
+  let message = text;
+  try {
+    const parsed = JSON.parse(text) as { error?: unknown; message?: unknown };
+    const error = parsed.error;
+    const candidate = typeof error === 'string' ? error
+      : error && typeof error === 'object' && typeof (error as { message?: unknown }).message === 'string' ? (error as { message: string }).message
+      : typeof parsed.message === 'string' ? parsed.message : null;
+    if (candidate) message = candidate;
+  } catch {
+    // Not JSON (or cut off): keep the text.
+  }
+  message = message.replace(/\s+/g, ' ').trim();
+  return message.length > MAX_EVENT_ERROR_CHARS ? `${message.slice(0, MAX_EVENT_ERROR_CHARS - 1)}…` : message;
 }

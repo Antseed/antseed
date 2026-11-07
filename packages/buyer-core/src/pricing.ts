@@ -27,6 +27,28 @@ export function estimateTokensFromBytes(bytes: Uint8Array): number {
   return estimateTokenCount(text);
 }
 
+/** Bodies up to this size are estimated in full; larger ones from evenly spaced samples. */
+const FULL_ESTIMATE_MAX_BYTES = 64 * 1024;
+const SAMPLE_COUNT = 8;
+const SAMPLE_BYTES = 8 * 1024;
+
+/**
+ * Estimate token count of a possibly large body with bounded CPU. Bodies over 64 KiB are estimated
+ * from evenly spaced 8 KiB samples scaled to the full size: tokenx walks every character, and a seller
+ * running it over multi-MB request bodies on the event loop spent about half its CPU there and stopped
+ * accepting connections. Meant for pre-request checks, not for billing.
+ */
+export function estimateTokensFromBytesSampled(bytes: Uint8Array): number {
+  if (bytes.length <= FULL_ESTIMATE_MAX_BYTES) return estimateTokensFromBytes(bytes);
+  const stride = Math.floor((bytes.length - SAMPLE_BYTES) / (SAMPLE_COUNT - 1));
+  let sampledTokens = 0;
+  for (let i = 0; i < SAMPLE_COUNT; i++) {
+    const start = i * stride;
+    sampledTokens += estimateTokensFromBytes(bytes.subarray(start, start + SAMPLE_BYTES));
+  }
+  return Math.ceil((sampledTokens * bytes.length) / (SAMPLE_COUNT * SAMPLE_BYTES));
+}
+
 /** Estimate token count from a string using tokenx. */
 export function estimateTokensFromText(text: string): number {
   return estimateTokenCount(text);

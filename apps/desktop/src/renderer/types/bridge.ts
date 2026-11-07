@@ -1,3 +1,4 @@
+import type { FreeTierStakeView } from '@antseed/node/free-tier-program';
 export type RuntimeMode = 'connect' | 'system-proxy' | 'tunnel';
 
 export type RuntimeProcessState = {
@@ -56,7 +57,6 @@ export type DesktopBuyerUsageTotals = {
   totalOutputTokens: string;
   totalSettlements: number;
   uniqueSellers: number;
-  activeChannels: number;
   services?: DesktopBuyerServiceUsage[];
 };
 
@@ -229,6 +229,20 @@ export type ChatAiStreamStopReason = {
   message: string;
   statusCode?: number;
   errorCode?: string;
+  /** Set when a seller's free tier ran out: its limit and staked tiers (only stake in that seller's pool counts). */
+  freeTier?: {
+    peerId: string | null;
+    /** `stake_required`: the model is free on that seller only for its stakers. */
+    limitedBy: 'address' | 'ip' | 'stake' | 'stake_required';
+    limit: number | null;
+    windowMs: number | null;
+    retryAfterSeconds: number | null;
+    stakeTiers: Array<{ minPower: number; multiplier: number | 'unlimited' }>;
+    stakePower: number;
+    /** Requests per window the tier multipliers apply to; null from sellers that don't send it. */
+    baseLimit: number | null;
+    stakersOnly: boolean;
+  };
 };
 
 export type RawChatAttachment = {
@@ -279,7 +293,7 @@ export type PreparedChatAttachment = {
   name: string;
   mimeType: string;
   size: number;
-  kind: 'image' | 'text' | 'archive' | 'error';
+  kind: 'image' | 'video' | 'text' | 'archive' | 'error';
   status: 'ready' | 'error';
   text?: string;
   image?: { type: 'image'; data: string; mimeType: string };
@@ -409,6 +423,7 @@ export type DesktopBridge = {
   setTelemetryEnabled?: (enabled: boolean) => Promise<import('../../shared/telemetry.js').TelemetryStatusUpdateResult>;
   telemetryRecordUserAction?: (payload: import('../../shared/telemetry.js').UserActionSignal) => Promise<{ ok: boolean }>;
   telemetryRecordFirstModelShown?: (payload: import('../../shared/telemetry.js').FirstModelShownSignal) => Promise<{ ok: boolean }>;
+  telemetryRecordDepositStep?: (payload: import('../../shared/telemetry.js').DepositStepSignal) => Promise<{ ok: boolean }>;
   onAppSetupStep?: (handler: (data: { step: string; label: string }) => void) => () => void;
   onAppSetupComplete?: (handler: () => void) => () => void;
   onUpdateStatus?: (handler: (data: UpdateStatus) => void) => () => void;
@@ -444,13 +459,21 @@ export type DesktopBridge = {
     error?: string;
   }>;
 
-  stakingOpen?: (options?: { page?: 'stake' | 'rewards' }) => Promise<{ ok: boolean; error?: string }>;
-  stakingCopyLink?: (options?: { page?: 'stake' | 'rewards' }) => Promise<{ ok: boolean; error?: string }>;
+  /** `pool` opens that seller's pool (agent id) on the stake page. */
+  stakingOpen?: (options?: { page?: 'stake' | 'rewards'; pool?: number }) => Promise<{ ok: boolean; error?: string }>;
+  stakingCopyLink?: (options?: { page?: 'stake' | 'rewards'; pool?: number }) => Promise<{ ok: boolean; error?: string }>;
+  freeTierList?: () => Promise<{ ok: boolean; data?: FreeTierSharing; error?: string }>;
+  freeTierAdd?: (code: string) => Promise<{ ok: boolean; data?: FreeTierSharing; error?: string }>;
+  freeTierRemove?: (staker: string) => Promise<{ ok: boolean; data?: FreeTierSharing; error?: string }>;
+  /** This buyer's counted seller-pool stake (its own plus shared), by pool. */
+  freeTierStake?: () => Promise<{ ok: boolean; data?: FreeTierStakeView & { buyer: string }; error?: string }>;
   paymentsOpenPayPage?: (opts: { kind?: 'deposit' | 'withdraw' | 'authorize' | 'claim' | 'close-channel'; amountUsdc?: string; channelId?: string }) => Promise<{ ok: boolean; url?: string; error?: string }>;
   paymentsCardProviders?: () => Promise<{ ok: boolean; data?: Array<{ id: string; label: string }>; error?: string }>;
   paymentsOpenCardProvider?: (opts?: { providerId?: string; amountUsdc?: string }) => Promise<{ ok: boolean; url?: string; error?: string }>;
   /** Closes any app-owned Fun checkout/sign-in popup windows (login-only flows produce no deposit, so the deposit watcher can't close them). */
   paymentsCloseCheckoutWindows?: () => Promise<{ ok: boolean }>;
+  /** The buyer proxy's metering stats for one seller; null when the proxy is unreachable. */
+  paymentsGetPeerMetering?: (peerId: string) => Promise<Record<string, unknown> | null>;
   paymentsGetBuyerUsage?: () => Promise<{ ok: boolean; data: DesktopBuyerUsageTotals | null; error: string | null; lastActivityAt?: number | null }>;
   paymentsGetBuyerSpendHistory?: () => Promise<{ ok: boolean; data: DesktopBuyerSpendHistory | null; error: string | null }>;
   paymentsGetChannels?: (opts?: { fresh?: boolean }) => Promise<{ ok: boolean; data: DesktopPaymentChannelSummary[]; error: string | null }>;
@@ -661,3 +684,9 @@ export type VprFloatAction =
   | { type: 'pin-chat-model'; conversationId: string; provider: string; serviceId: string }
   | { type: 'open-chat-app'; conversationId: string }
   | { type: 'set-compact'; compact: boolean };
+
+/** Stakers sharing their seller-pool stake with this buyer (staked free tier). */
+export interface FreeTierSharing {
+  buyer: string;
+  stakers: Array<{ staker: string; expiresAt: number; expired: boolean }>;
+}

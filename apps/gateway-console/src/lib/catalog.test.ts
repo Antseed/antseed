@@ -4,7 +4,7 @@ import { catalogEntries, catalogFacets, EMPTY_CATALOG_FILTER, favoriteEntries, f
 
 const model = (id: string, extra: Partial<NetworkModel> = {}): NetworkModel => ({
   id, name: id, aliases: [], type: 'text', tags: [], contextLength: null, capabilities: [], sellers: 1,
-  inputUsdPerMillion: { min: 1, max: 1 }, outputUsdPerMillion: { min: 2, max: 2 }, free: false, teeSellers: 0, fullTeeSellers: 0, verifiedSellers: 0, offers: [], ...extra,
+  inputUsdPerMillion: { min: 1, max: 1 }, outputUsdPerMillion: { min: 2, max: 2 }, free: false, freeForStakers: false, freeAllowance: false, teeSellers: 0, fullTeeSellers: 0, verifiedSellers: 0, offers: [], ...extra,
 })
 const router = (serviceId: string, extra: Partial<NetworkRouter> = {}): NetworkRouter => ({
   id: `${'d'.repeat(40)}@${serviceId}`, peerId: 'd'.repeat(40), serviceId, provider: 'fake-routing', name: 'Fake Router', sellerName: 'Fake Seller',

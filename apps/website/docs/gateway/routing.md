@@ -17,7 +17,7 @@ The policy editor groups its settings under **Sellers**, **Quality** (the minimu
 |---|---|
 | **Which sellers may serve** | **Any seller**, or **Only these**: chosen providers or seller lists |
 | **Never use**, **Never use these lists** | Providers that never serve |
-| **Minimum trust score** | 0 to 100, from the seller's settled service history, recognized usage, staking power and verified identity. The ⓘ next to it in the editor explains the parts. See [Trust score](/docs/reputation). |
+| **Minimum trust score** | 0 to 100, from the seller's staking power, recognized usage, verified identity and model checks. The ⓘ next to it in the editor explains the parts. It is judged per model: for a model with a live DIFF [model check](/docs/verify/overview), a seller counts at 10% of its score, and **Sort by trust** uses the same number. See [Trust score](/docs/reputation). |
 | **TEE sellers only** | Only providers that advertise running models in a trusted execution environment (TEE) |
 | **Verified sellers only** | Only providers whose responses pass a verifier, such as a TEE attestation check |
 | **Sort by** | **Balanced**, **Lowest price**, **Lowest latency** or **Highest trust**. **Balanced** keeps the buyer's automatic order: the cheapest provider that passes the trust minimum, with trust only breaking ties (see [Router plugin API](/docs/router-api)). **Lowest latency** ranks by time to first token, which the buyer measures per provider and model on streamed answers; providers it hasn't measured yet come after the measured ones. |
@@ -35,6 +35,8 @@ A seller list is a named group of providers that a policy allows or blocks in on
 **TEE sellers only** checks what providers advertise, so it works whether or not your buyer verifies responses. **Verified sellers only** requires your buyer to verify them. [Verify TEE providers](/docs/verify-tee) explains the difference and how to turn verification on.
 
 ## Policy levels
+
+![The Routing page: the rules that apply, from buyer config to gateway, organization and workspace policies](/img/docs/gateway/routing.webp)
 
 Policies apply in this order:
 
@@ -83,7 +85,7 @@ Among the providers a policy allows, the buyer ranks by what it has seen them do
 To see this for a model, open it on the **Models** page, or press the ⓘ button next to the model in **Chat**. **Providers** lists the providers **in range**, in the order automatic routing tries them. Switch to **All** (or press **Show them** under the list) to add the ones your routing settings filter out, dimmed, each with the reason. For each provider in range it shows:
 
 - the expected cost per good answer;
-- the success rate and how many recent requests it is based on (a provider new to this model borrows its record on other models at half weight, and one with no record is assumed to succeed 80% of the time);
+- the success rate and how many recent requests it is based on (a provider new to this model borrows its record on other models at half weight, and one with no record starts from the success rate the provider reports for its last hour of buyer traffic, capped at 95%, or from 80% when it reports fewer than 10 requests);
 - first token and speed;
 - its share of the traffic;
 - whether a payment channel is open;

@@ -40,6 +40,14 @@ Optional environment overrides:
 
 On success, the script prints a JSON summary with deployed contract addresses, peer IDs, session status, balances, and reputation.
 
+## Payment Stress
+
+`stress/` runs the real CLI seller and buyer under concurrent paid load, through Base-like RPCs, and fails when delivered work goes unpaid or overpaid. CI runs it as the "Payment stress" job. See [stress/README.md](stress/README.md).
+
+```bash
+npm run stress
+```
+
 ## Test Suites
 
 ### Discovery (`tests/discovery.test.ts`)

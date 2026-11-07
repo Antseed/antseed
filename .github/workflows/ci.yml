@@ -39,9 +39,15 @@ jobs:
       - name: Build tier 3 (payments, ants, gateway console)
         run: pnpm run build:tier3
 
-      # CLI test script builds itself; desktop has no tests — skip tier4
+      # CLI test script builds itself; desktop has no tests — skip tier4.
+      # e2e runs after everything else: it builds packages/node and apps/cli
+      # (e2e/global-setup.ts), and a rebuild while the CLI tests import those
+      # dist/ files fails them with "does not provide an export named …".
       - name: Test
-        run: pnpm -r run test
+        run: pnpm -r --filter '!@antseed/e2e' run test
+
+      - name: Test (e2e)
+        run: pnpm --filter '@antseed/e2e' run test
 
   e2e-payment:
     name: E2E Payment Flow
@@ -71,15 +77,80 @@ jobs:
       - name: Install Forge dependencies
         run: cd packages/contracts && forge install foundry-rs/forge-std
 
-      - name: Build contracts
-        run: cd packages/contracts && forge build
+      # Shared with the other job that deploys: contracts compile once per change to them.
+      - name: Restore compiled contracts
+        uses: actions/cache@v4
+        with:
+          path: |
+            packages/contracts/out
+            packages/contracts/cache_forge
+          key: contracts-deploy-${{ hashFiles('packages/contracts/**/*.sol', 'packages/contracts/foundry.toml', 'packages/contracts/foundry.lock', 'pnpm-lock.yaml') }}
 
+      # The deploy script compiles what it needs (without the contract tests).
       - name: Start Anvil
         run: anvil &
 
       - name: Run E2E payment flow
         run: node e2e/scripts/full-payment-flow.mjs
         timeout-minutes: 15
+
+  payment-stress:
+    name: Payment stress (Base-like RPC)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'pnpm'
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Install dependencies
+        run: pnpm install
+
+      # The real CLI seller and buyer run here, so build up to the CLI.
+      - name: Build tiers 0-3 and the CLI
+        run: |
+          pnpm run build:tier0
+          pnpm run build:tier1
+          pnpm run build:tier2
+          pnpm run build:tier3
+          pnpm --filter=@antseed/cli run build
+
+      - name: Install Forge dependencies
+        run: cd packages/contracts && forge install foundry-rs/forge-std
+
+      # Shared with the other job that deploys: contracts compile once per change to them.
+      - name: Restore compiled contracts
+        uses: actions/cache@v4
+        with:
+          path: |
+            packages/contracts/out
+            packages/contracts/cache_forge
+          key: contracts-deploy-${{ hashFiles('packages/contracts/**/*.sol', 'packages/contracts/foundry.toml', 'packages/contracts/foundry.lock', 'pnpm-lock.yaml') }}
+
+      - name: Run payment stress scenarios
+        run: node e2e/stress/ci.mjs --parallel 2 --out "$RUNNER_TEMP/antseed-stress"
+        timeout-minutes: 30
+
+      - name: Upload stress logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: payment-stress-logs
+          path: |
+            ${{ runner.temp }}/antseed-stress/logs
+            ${{ runner.temp }}/antseed-stress/runs/*/*.log
+            ${{ runner.temp }}/antseed-stress/runs/*/*.json
+          retention-days: 7
 
   installer-lint:
     name: Lint installer script

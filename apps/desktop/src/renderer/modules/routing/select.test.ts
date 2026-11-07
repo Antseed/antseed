@@ -121,7 +121,7 @@ test('a trust breakdown alone does not stand in for the displayed score', () => 
   const unscored = discoverRow({
     effectiveReputationScore: null,
     onChainReputationScore: null,
-    trust: { score: 100, history: { score: 50, channelCount: 100, totalVolumeUsdcMicros: 100_000_000 }, usage: { score: 20, shareBps: 10_000, epoch: 11 }, power: { score: 10, shareBps: 10_000, epoch: 11 }, identity: { score: 20, kind: 'github', claim: 'portfolio' }, washFlagged: false },
+    trust: { score: 100, history: { score: 0, channelCount: 100, totalVolumeUsdcMicros: 100_000_000 }, usage: { score: 20, shareBps: 10_000, epoch: 11 }, power: { score: 10, shareBps: 10_000, epoch: 11 }, identity: { score: 20, kind: 'github', claim: 'portfolio' }, washFlagged: false },
   });
 
   assert.equal(isRouteEligibleForAutoSelection(unscored, { ...preferences, minTrustScore: 60 }), false);

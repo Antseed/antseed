@@ -62,6 +62,7 @@ import { closeCheckoutWindows, openCheckoutPopup } from '../payments/checkout-wi
 import { antseedPayLinkAmount, resolveCardProviderUrl, signAntseedPayUrl } from '@antseed/payments/card-link';
 import { createPeerPayCheckout } from '../payments/peer-pay.js';
 import { getMainWindow } from '../ui/window.js';
+import { getTelemetryService } from '../telemetry/runtime.js';
 import {
   lookupPeer,
   refreshPeerCache,
@@ -91,6 +92,8 @@ export function registerPaymentsIpc(): void {
         return { ok: true };
       }
       await startPaymentsPortal();
+      if (kind === 'withdraw') void getTelemetryService()?.recordWithdrawStarted();
+      else getTelemetryService()?.clearPendingWithdraw();
       const token = getPaymentsPortalToken();
       const params = new URLSearchParams();
       if (token) params.set('token', token);
@@ -359,6 +362,11 @@ export function registerPaymentsIpc(): void {
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
+  });
+
+  ipcMain.handle('payments:get-peer-metering', async (_event, peerId: unknown): Promise<Record<string, unknown> | null> => {
+    if (typeof peerId !== 'string' || peerId.length === 0) return null;
+    return fetchBuyerProxyJson(`/_antseed/metering/${encodeURIComponent(peerId)}`);
   });
 
   ipcMain.handle('payments:get-buyer-usage', async (): Promise<{ ok: boolean; data: DesktopBuyerUsageTotals | null; error: string | null; lastActivityAt: number | null }> => {

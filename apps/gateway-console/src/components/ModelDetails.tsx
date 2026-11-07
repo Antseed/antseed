@@ -3,12 +3,16 @@ import { Button } from '@antseed/ui'
 import type { NetworkModel, NetworkModelOffer, PeerTeeScope, RoutePreview } from '../api/types'
 import { formatPriceRange, formatTokens, shortId } from '../lib/format'
 import { CAPABILITY_LABELS, MODEL_TYPE_LABELS, priceSummary } from '../lib/models'
+import { modelCheckTitle, offerTrustLabel } from '../lib/model-check'
 import { panelPath } from '../lib/nav'
 import { modelCallFormat, pinnedModelId } from '../lib/snippets'
 import { ApiCall } from './ApiCall'
 import { previewListsSellers } from '../lib/selection'
 import { SellerSelection, type SellerRowExtras } from './SellerSelection'
+import { ServiceHealthInfo, ServicePerformanceInfo } from './ServiceHealthInfo'
 import { PanelRow, PanelSection } from './SidePanel'
+import { FreeTierInfo } from './FreeTierInfo'
+import { ModelCheckInfo } from './ModelCheckInfo'
 import { TeeBadge } from './TeeBadge'
 import { Badge, CopyButton, DetailList, Mono, PageLink, SelectField } from './ui'
 import { VerificationLinks } from './VerificationLinks'
@@ -71,14 +75,19 @@ export function ModelDetails({ model, preview, previewLoading, pin }: {
     return {
       selected: offers.some((entry) => route === offerKey(entry)),
       meta: <>
-        <span>{priceSummary(offer)}</span>
-        <span>Trust {score(offer.trustScore)}</span>
+        {offer.free && offer.freeTier ? <FreeTierInfo program={offer.freeTier} agentId={offer.agentId} align="center" /> : <span>{priceSummary(offer)}</span>}
+        {!offer.free && offer.freeTier && <FreeTierInfo program={offer.freeTier} agentId={offer.agentId} priced align="center" />}
+        <span title={offer.modelCheck?.verdict === 'diff' ? modelCheckTitle(offer.modelCheck) : undefined}>{offerTrustLabel(offer.trustScore, offer.modelCheck)}</span>
         {offers.map((entry) => entry.serviceId !== model.id && <Mono key={entry.serviceId}>{entry.serviceId}</Mono>)}
+        <ModelCheckInfo check={offer.modelCheck} />
+        <ServicePerformanceInfo performance={offer.performance} />
       </>,
-      badges: (offer.verificationLinks?.length || offer.tee || offer.free) ? <>
+      badges: (offer.verificationLinks?.length || offer.tee || offer.free || offer.freeTier) ? <>
         <VerificationLinks links={offer.verificationLinks} />
         <TeeBadge tee={offer.tee} scope={offer.teeScope} />
-        {offer.free && <Badge tone="success">Free</Badge>}
+        {offer.freeTier?.base.stakersOnly
+          ? <Badge tone="success">Free for stakers</Badge>
+          : (offer.free || offer.freeTier) && <Badge tone="success">{offer.free ? 'Free' : 'Free allowance'}</Badge>}
       </> : undefined,
       actions: <>{offers.map((entry) => {
         const on = route === offerKey(entry)
@@ -127,7 +136,7 @@ export function ModelDetails({ model, preview, previewLoading, pin }: {
                   const extras = offerExtras([offer])
                   return <PanelRow key={offerKey(offer)} selected={extras.selected}
                     title={<PageLink to={panelPath('providers', offer.peerId)}>{offerName(offer)}</PageLink>}
-                    meta={extras.meta} badges={extras.badges} actions={extras.actions} />
+                    meta={<>{extras.meta}<ServiceHealthInfo health={offer.health} /></>} badges={extras.badges} actions={extras.actions} />
                 })}
               </ul>
             )}
@@ -144,7 +153,7 @@ export function ModelDetails({ model, preview, previewLoading, pin }: {
             ? <>Pinned to {offerName(pinnedOffer)} with <code>{shortId(callModel, 10, 12)}</code>.</>
             : <>The gateway picks the best provider for <code>{model.id}</code> under your routing policy.</>}
         </p>
-        <ApiCall id="gc-model-call" model={callModel} format={format}
+        <ApiCall id="gc-model-call" model={callModel} format={format} voice={(pinnedOffer ?? model).voices?.[0]}
           unsupported={`${MODEL_TYPE_LABELS[model.type]} models are not served through the gateway's /v1 API.`} />
       </PanelSection>
     </>

@@ -18,12 +18,19 @@
  *   2. Local-behind-registry — a local version older than the published
  *      one means version bumps from a previous release were never
  *      committed; publishing from this tree would ship stale code.
+ *   3. Unbumped dependency — a package being published pins a dependency
+ *      whose source changed since its last version bump. The dependent is
+ *      built against the new code, but npm installs resolve the old
+ *      published dependency (e.g. cli 0.1.221 imported an export that only
+ *      the unreleased @antseed/fingerprints had, and failed at startup).
+ *      Needs the full git history.
  *
  * Usage: node scripts/npm-publish-plan.mjs
  * Exits non-zero on invariant violations or registry errors.
  */
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -108,6 +115,39 @@ for (const dependent of packages) {
         `${depName} is being published, but ${dependent.name} pins it exactly (workspace dependency) ` +
         `and has no version bump — npm installs of ${dependent.name} would keep the old ${depName}. ` +
         `Bump ${dependent.name} too.`,
+      );
+    }
+  }
+}
+
+// Files changed since the commit that set the package's current version,
+// ignoring tests and docs (they never reach the published package).
+function unreleasedChanges(dir) {
+  const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
+  const bump = git('log', '-1', '--format=%H', '-G"version": ', '--', join(dir, 'package.json'));
+  if (!bump) return [];
+  return git('diff', '--name-only', bump, 'HEAD', '--', dir)
+    .split('\n')
+    .filter((file) => file && !/(^|\/)tests?\/|\.(test|spec)\.[cm]?[jt]sx?$|\.md$/.test(file));
+}
+
+if (execFileSync('git', ['rev-parse', '--is-shallow-repository'], { cwd: root, encoding: 'utf8' }).trim() === 'true') {
+  problems.push('the git checkout is shallow, so unbumped dependencies cannot be checked; fetch the full history.');
+} else {
+  const unreleased = new Map();
+  for (const dependent of packages) {
+    if (!toPublish.has(dependent.name)) continue;
+    for (const [depName, spec] of Object.entries(dependent.dependencies)) {
+      if (!String(spec).startsWith('workspace:')) continue;
+      const dep = byName.get(depName);
+      if (!dep || toPublish.has(depName)) continue;
+      if (!unreleased.has(depName)) unreleased.set(depName, unreleasedChanges(dep.dir));
+      const files = unreleased.get(depName);
+      if (files.length === 0) continue;
+      problems.push(
+        `${dependent.name} is being published and pins ${depName}, but ${depName} changed since its last ` +
+        `version bump (${files.slice(0, 3).join(', ')}${files.length > 3 ? `, +${files.length - 3} more` : ''}) ` +
+        `— npm installs of ${dependent.name} would get the old ${depName}. Bump ${depName} too.`,
       );
     }
   }

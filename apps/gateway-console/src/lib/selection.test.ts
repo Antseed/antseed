@@ -27,6 +27,15 @@ describe('seller selection explanations', () => {
     expect(recordSummary({ ...base, record: 'none', observations: 0 })).toMatch(/^No requests yet: assumed 80%/)
   })
 
+  it('starts from the seller-reported figures when the buyer has no record', () => {
+    const reported = { requests: 312, successRate: 0.99, firstTokenMsP50: 420, tokensPerSecondP50: 78 }
+    const fresh = { ...base, record: 'none' as const, observations: 0, successRate: 0.95, firstTokenMs: null, tokensPerSecond: null, reported }
+    expect(recordSummary(fresh)).toBe("No requests yet: the seller reports 99% success over its last hour's 312 requests, so routing starts from 95%.")
+    expect(selectionHeadline(fresh)).toMatch(/^seller reports 99% success \(312 last hour\) · 420 ms first token · 78\u00a0tok\/s/)
+    // Too few requests to start from: the default prior stands.
+    expect(recordSummary({ ...fresh, reported: { ...reported, requests: 3 } })).toMatch(/^No requests yet: assumed 80%/)
+  })
+
   it('lists the facts routing used, with the expected cost only when it ranks by it', () => {
     expect(selectionFacts(base)).toEqual([
       '$0.0021 expected per good answer', '96% success over 12 recent requests', '420 ms first token', '80 tok/s',

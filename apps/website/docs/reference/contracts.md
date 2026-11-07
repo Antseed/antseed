@@ -29,6 +29,9 @@ Settlement, fees, and channel mechanics are described in [Payments](/docs/paymen
 | AntseedPointsPolicyRegistry | `0x212D2C1058b84507de248a147aaFeB08fb19E3b6` | Ordered usage-point policies |
 | AntseedWashTradingPointsPolicy | `0x7a605aaa3c725aa25012dfDeD6B5dddcC561D6e5` | Zeroes points for proven wash traders |
 | AntseedWashTradingRegistry | `0xc02a111CB94332Cc31C08E079cbe781880b2121C` | Proven wash-trading verdicts |
+| AntseedVerificationPointsPolicy | `0xD58393a752b3b7bdBea6231E0e24C11403e9f32f` | Scales points by model-verification results |
+| AntseedVerificationResults | `0x139ab1722a62a23371f491220902c460E9fAeAb2` | Model-verification verdicts and verifier rewards |
+| AntseedKbfAudits | `0x86B92DC48EF7c5a12de6e44409E83C8EF36657Ff` | KBF audits: auditors, reports and credits |
 | AntseedEmissionsGate | `0xE60a31E6CD2F8455503cA0B3f6545Dd3DDF543BD` | ANTS emission schedule and allocations |
 | AntseedSellerPoolsRewards | `0x83cc5B9AA0c8cB8683F35462c385a5BAAa755EE5` | Staker rewards |
 | AntseedUsageRewards | `0x78330bF154172F1137219Bb559d4F3A270B3201F` | Buyer and seller usage rewards |

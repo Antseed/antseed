@@ -40,6 +40,8 @@ The data directory holds the wallet key (`identity.key`), buyer identities, gate
 | `--require-verifier` | Refuse to route unless a verifier verifies the seller. Default: verify but route anyway |
 | `--no-verifier` | Turn seller verification off |
 
+There is no `--host` flag: the buyer proxy always listens on `127.0.0.1`. To reach it from other machines, use a gateway; see [Reach it from other machines](/docs/api#reach-it-from-other-machines).
+
 Precedence for settings that have a flag, a variable and a config key: flag, then environment variable, then `config.json`, then the built-in default.
 
 Flags for every other command are listed on [CLI commands](/docs/commands) and in `antseed <command> --help`.
@@ -91,6 +93,8 @@ The CLI also reads `.env.local` and `.env` from the current directory, and the f
 | `ANTSEED_DEFAULT_DEPOSIT_USDC` | seller | Read by `seller start` but currently has no effect: the node does not use the value |
 | `ANTSEED_SETTLEMENT_IDLE_MS` | seller | Idle time before the seller settles a channel, in milliseconds (default 600000) |
 | `ANTSEED_MAX_UPLOAD_BODY_BYTES` | seller | Largest accepted request body; overrides `seller.maxUploadBodyBytes` |
+| `ANTSEED_MAX_INBOUND_CONNECTIONS` | seller | Buyer connections held open at once; overrides `seller.maxInboundConnections` |
+| `ANTSEED_INBOUND_IDLE_TIMEOUT_MS` | seller | Idle time before a buyer connection with no channel open is closed, in milliseconds; `0` keeps them. Overrides `seller.inboundIdleTimeoutMs` |
 | `ANTSEED_VERIFIER_SDKS` | seller | Comma-separated verifier SDK ids the seller supports, first is the default (same as `seller start --verifiers`) |
 | `ANTSEED_VERIFIER_*`, `ANTSEED_TEE_PEER_ID` | TEE seller | TEE attestation settings. See [TEE provider](/docs/provide/tee) and [Verify TEE](/docs/verify-tee) |
 | `ANTSEED_METRICS_ROLE`, `ANTSEED_METRICS_HOST`, `ANTSEED_METRICS_PORT`, `ANTSEED_METRICS_PATH`, `ANTSEED_METRICS_INSTANCE` | metrics | Defaults for the matching `antseed metrics serve` flags. See [Metrics](/docs/provide/metrics) |

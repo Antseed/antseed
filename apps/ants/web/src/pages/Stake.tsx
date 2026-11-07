@@ -1,6 +1,6 @@
 import { Alert, Button } from '../components/ui';
 import { Modal } from '@antseed/ui';
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { OverviewView, PoolView, PoolsView } from '../../../src/api-types';
 import { api } from '../api';
 import { useConfig } from '../app-context';
@@ -12,6 +12,10 @@ import { usePageData } from '../data';
 import { poolDataOptions } from '../pool-data';
 import { epochStartAt, formatAnts, formatDuration, formatInt, formatUsdcCompact, formatUtc, shortAddress } from '../format';
 import { useNow } from '../hooks';
+import { host } from '../host';
+import { parseRoute } from '../router';
+import { linkedPoolId, PoolSelection, poolToOpen } from '../pool-link';
+import type { PoolDetail } from '../api';
 
 export function StakePage() {
   const config = useConfig();
@@ -33,7 +37,9 @@ export function StakePage() {
   const stakeTrigger = useRef<HTMLElement | null>(null);
   const [openPoolId, setOpenPoolId] = useState<number | null>(null);
   const poolTrigger = useRef<HTMLElement | null>(null);
+  const selection = useRef(new PoolSelection());
   const closePool = () => {
+    selection.current.invalidate();
     setOpenPoolId(null);
     requestAnimationFrame(() => {
       if (poolTrigger.current?.isConnected) poolTrigger.current.focus({ preventScroll: true });
@@ -42,10 +48,47 @@ export function StakePage() {
   const sortedPools = useMemo(() => sortPools(pools.data?.pools ?? []), [pools.data]);
   // Keep the open sheet mounted while the pool list refetches; a reload must not flash the page behind it.
   const lastOpen = useRef<{ pool: PoolView; view: PoolsView } | null>(null);
-  const listedPool = openPoolId !== null ? sortedPools.find((p) => p.agentId === openPoolId) : undefined;
+  // A linked seller can be missing from the listing (no indexer, or not indexed yet): it is fetched on its own.
+  const [linkedPool, setLinkedPool] = useState<PoolDetail | null>(null);
+  const [linkError, setLinkError] = useState<string | null>(null);
+  const listedPool = openPoolId !== null
+    ? sortedPools.find((p) => p.agentId === openPoolId) ?? (linkedPool?.agentId === openPoolId ? linkedPool : undefined)
+    : undefined;
   if (listedPool && pools.data) lastOpen.current = { pool: listedPool, view: pools.data };
   const open = openPoolId !== null && lastOpen.current?.pool.agentId === openPoolId ? lastOpen.current : null;
+  // `stake?pool=<agentId>` (from a seller's free-tier limit in the desktop app or gateway) opens that seller's pool once.
+  // Read reactively: the page stays mounted when only the query changes.
+  const [linkedAgentId, setLinkedAgentId] = useState<number | null>(null);
+  useEffect(() => {
+    const read = () => setLinkedAgentId(linkedPoolId(parseRoute(host().currentPath()).query));
+    read();
+    return host().subscribe(read);
+  }, []);
+  const openedLink = useRef<number | null>(null);
+  useEffect(() => {
+    // Leaving the link drops its pending lookup, so the abandoned seller cannot open later.
+    if (linkedAgentId === null) selection.current.invalidate();
+    if (!pools.data) return;
+    const { open: agentId, lastOpened } = poolToOpen(linkedAgentId, openedLink.current);
+    openedLink.current = lastOpened;
+    if (agentId === null) return;
+    setLinkError(null);
+    const isCurrent = selection.current.begin();
+    if (sortedPools.some((p) => p.agentId === agentId)) {
+      setOpenPoolId(agentId);
+      return;
+    }
+    api.pool(agentId).then((pool) => {
+      if (!isCurrent()) return;
+      setLinkedPool(pool);
+      setOpenPoolId(agentId);
+    }, (err: unknown) => {
+      if (isCurrent()) setLinkError(`Could not open seller ${agentId}: ${err instanceof Error ? err.message : String(err)}`);
+    });
+  }, [linkedAgentId, pools.data, sortedPools]);
+  useEffect(() => () => selection.current.invalidate(), []);
   const openSeller = (pool: PoolView) => {
+    selection.current.invalidate();
     poolTrigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setOpenPoolId(pool.agentId);
   };
@@ -97,6 +140,7 @@ export function StakePage() {
         }
       >
         {pools.error && !pools.data ? <ErrorBox error={pools.error} onRetry={pools.refresh} /> : null}
+        {linkError ? <div className="status-line" role="alert">{linkError}</div> : null}
         {pools.loading ? <p className="hint" role="status">{pools.data ? 'Updating sellers… Showing previously loaded data.' : 'Loading sellers…'}</p> : null}
         {!pools.loading && pools.reconciling ? <p className="hint" role="status">Updating your stake… Waiting for Antscan to include your latest transaction.</p> : null}
         {!pools.loading && (pools.partial || (pools.error && pools.data)) ? (

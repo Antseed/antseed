@@ -11,6 +11,7 @@ import {
   rootUpdaterPaths,
   updateInFlight,
   type RootUpdaterPaths,
+  type RootUpdatePhase,
   type RootUpdateProgress,
 } from '../../update/root-updater.js'
 import { fetchLatestVersion, isNewer, writeUpdateCache } from '../../update/version.js'
@@ -53,10 +54,21 @@ function readProgress(paths: RootUpdaterPaths): RootUpdateProgress | null {
   return readRootUpdateProgress(paths, { staleAfterMs: ROOT_UPDATE_STALE_MS })
 }
 
+/** One line per step the server's updater reports (updaters from older installers report none). */
+const ROOT_UPDATE_PHASE_LINES: Record<RootUpdatePhase, string> = {
+  'downloading': 'Downloading the new version…',
+  'restarting-buyer': 'Restarting the buyer…',
+  'draining-gateway': 'Waiting for in-flight requests to finish before restarting the gateway…',
+  'starting-gateway': 'Starting the new gateway…',
+  'checking': 'Checking that the new gateway answers…',
+  'rolling-back': 'The new version did not start; going back to the previous one…',
+}
+
 /** Waits for the run that started at `since` or later to finish. */
 async function waitForRootUpdate(paths: RootUpdaterPaths, since: number, log: (line: string) => void): Promise<RootUpdateProgress | null> {
   const started = Date.now()
   let last: string | null = null
+  let lastPhase: RootUpdatePhase | null = null
   let warned = false
   for (;;) {
     const progress = readProgress(paths)
@@ -66,6 +78,12 @@ async function waitForRootUpdate(paths: RootUpdaterPaths, since: number, log: (l
       else if (state === 'running') log(`Installing @antseed/cli@latest (from ${progress?.from ?? 'unknown'})…`)
       last = state
     }
+    const phase = state === 'running' ? progress?.phase ?? null : null
+    if (phase && phase !== lastPhase) {
+      const bound = progress?.phaseMaxMs ? ` (up to ${Math.round(progress.phaseMaxMs / 1000)}s)` : ''
+      log(`  ${ROOT_UPDATE_PHASE_LINES[phase]}${bound}`)
+    }
+    lastPhase = phase
     if (progress && !updateInFlight(progress) && progress.startedAt >= since - 5_000) return progress
     if (!warned && state === 'requested' && Date.now() - started > ROOT_PICKUP_WARN_MS) {
       warned = true

@@ -114,6 +114,12 @@ async function fakeBuyer(options: { costUsdc?: number; spendFeed?: boolean; repo
         res.end(Buffer.concat([Buffer.from([0, 0, 0, 0x18]), Buffer.from('ftypisom'), randomBytes(4096)]))
         return
       }
+      if (req.url === '/v1/audio/speech') {
+        // Speech: the audio file comes back as it is, with no usage in it.
+        res.writeHead(200, { 'content-type': 'audio/mpeg', 'x-antseed-request-id': requestId, 'x-antseed-peer-id': 'seller' })
+        res.end(Buffer.from('ID3-speech-audio'))
+        return
+      }
       res.writeHead(200, { 'content-type': 'application/json', 'x-antseed-request-id': requestId })
       res.end(JSON.stringify(req.url?.endsWith('/video/queue') ? { queue_id: 'job-1' } : { ok: true }))
     })
@@ -239,6 +245,27 @@ test('gateway pays with the key\'s buyer identity and ignores the client\'s choi
 
     const info = JSON.parse((await request(gateway.port, '/v1/key', { key: team.secret })).body).data
     assert.equal(info.buyer_address, '0x00000000000000000000000000000000000000aa')
+  } finally {
+    await gateway.stop()
+    await buyer.close()
+    cleanup()
+  }
+})
+
+test('gateway never forwards the verifier\'s request-id or preimage-capture headers', async () => {
+  const { store, cleanup } = tempDataDir()
+  const buyer = await fakeBuyer()
+  const { secret } = store.createKey({ label: 'Team', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
+  const gateway = await startGateway(store, buyer.port)
+  try {
+    const headers = {
+      'x-antseed-request-id': '6b0c5a52-5b8f-4b44-9a43-1e4f4f6f2a11',
+      'x-antseed-capture-response-auth-preimages': '1',
+    }
+    assert.equal((await request(gateway.port, '/v1/responses', { method: 'POST', key: secret, body: '{}', headers })).status, 200)
+    assert.equal(buyer.captured.length, 1)
+    assert.equal(buyer.captured[0]!.headers['x-antseed-request-id'], undefined)
+    assert.equal(buyer.captured[0]!.headers['x-antseed-capture-response-auth-preimages'], undefined)
   } finally {
     await gateway.stop()
     await buyer.close()
@@ -403,6 +430,26 @@ test('gateway returns its journal tag and still forwards the buyer request id', 
     assert.equal(response.headers['x-antseed-request-id'], 'req-1')
     assert.equal(response.headers['x-antseed-gateway-tag'], buyer.captured[0]?.tag)
     assert.match(String(response.headers['x-antseed-gateway-tag']), /^gw_/)
+  } finally {
+    await gateway.stop()
+    await buyer.close()
+    cleanup()
+  }
+})
+
+test('gateway passes speech requests to the buyer, returns the audio as it is and books the spend', async () => {
+  const { store, cleanup } = tempDataDir()
+  const buyer = await fakeBuyer({ costUsdc: 62_500 })
+  const { key, secret } = store.createKey({ label: 'Speech', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
+  const gateway = await startGateway(store, buyer.port)
+  try {
+    const speech = await request(gateway.port, '/v1/audio/speech', { method: 'POST', key: secret, body: '{"model":"tts-kokoro","input":"Hello","voice":"af_sky"}' })
+    assert.equal(speech.status, 200)
+    assert.equal(speech.headers['content-type'], 'audio/mpeg')
+    assert.equal(speech.body, 'ID3-speech-audio')
+    assert.deepEqual(buyer.captured.map(({ url }) => url), ['/v1/audio/speech'])
+    await gateway.feed.pollOnce()
+    assert.equal(store.periodSpend(key.id).total, 62_500)
   } finally {
     await gateway.stop()
     await buyer.close()

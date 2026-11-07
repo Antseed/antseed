@@ -50,6 +50,8 @@ export interface AntsChainConfig {
   legacyEmissionsEscrowAddress?: string;
   washTradingRegistryAddress?: string;
   pointsPolicyRegistryAddress?: string;
+  /** AntseedVerificationPointsPolicy: scales points by the seller's model-verification verdicts. */
+  verificationPointsPolicyAddress?: string;
   recognizedUsage?: { status: 'deployed' | 'active'; effectiveEpoch: number; deploymentBlock?: number };
   /** Explorer REST base (Antscan) for seller profiles; optional. */
   explorerApiUrl?: string;
@@ -81,6 +83,11 @@ export interface AntsContextOptions {
   stackTtlMs?: number;
   /** Endpoint scorer used by `selectRpc` (lower is better, null = unusable); defaults to a short burst of `eth_call`s. */
   probeRpc?: (url: string) => Promise<number | null>;
+  /**
+   * A provider the host already shares (e.g. the CLI's batching, back-off
+   * ChainRpcProvider): every client reads through it and `selectRpc` is a no-op.
+   */
+  provider?: AbstractProvider;
 }
 
 function sameAddress(a?: string | null, b?: string | null): boolean {
@@ -115,6 +122,7 @@ export class AntsContext {
   private readonly probeRpc: (url: string) => Promise<number | null>;
   private rpcSelection: Promise<void> | null = null;
   private sharedProvider: RotatingJsonRpcProvider | null = null;
+  private readonly injectedProvider: AbstractProvider | null;
   private indexerClient: Indexer | null | undefined;
   private rpcOrder: string[] | null = null;
 
@@ -125,6 +133,7 @@ export class AntsContext {
     this.signer = options.signer;
     this.stackTtlMs = options.stackTtlMs ?? 60_000;
     this.probeRpc = options.probeRpc ?? probeRpcEndpoint;
+    this.injectedProvider = options.provider ?? null;
   }
 
   /**
@@ -136,6 +145,7 @@ export class AntsContext {
    * moves off an endpoint that throttles at run time.
    */
   selectRpc(): Promise<void> {
+    if (this.injectedProvider) return Promise.resolve();
     if (!this.rpcSelection) {
       this.rpcSelection = (async () => {
         const fallbacks = this.chain.fallbackRpcUrls ?? [];
@@ -195,7 +205,8 @@ export class AntsContext {
    * chose (configured order before that), replacing the ethers failover
    * provider each client would otherwise build.
    */
-  provider(): RotatingJsonRpcProvider {
+  provider(): AbstractProvider {
+    if (this.injectedProvider) return this.injectedProvider;
     if (!this.sharedProvider) {
       this.sharedProvider = new RotatingJsonRpcProvider(this.rpcOrder ?? [this.chain.rpcUrl, ...(this.chain.fallbackRpcUrls ?? [])], this.chain.evmChainId);
     }
@@ -291,6 +302,7 @@ export class AntsContext {
       ['usageRewards', this.chain.usageRewardsAddress],
       ['positionInit', this.chain.positionInitAddress],
       ['pointsPolicyRegistry', this.chain.pointsPolicyRegistryAddress],
+      ['verificationPointsPolicy', this.chain.verificationPointsPolicyAddress],
       ['washTradingRegistry', this.chain.washTradingRegistryAddress],
       ['legacyEmissionsEscrow', this.chain.legacyEmissionsEscrowAddress],
       ['emissions', this.chain.emissionsContractAddress],

@@ -15,7 +15,7 @@ export type RequestFilter = RequestQuery
 
 const PAGE_SIZE = 50
 
-function statusBadge(status: number | null) {
+export function statusBadge(status: number | null) {
   if (status === null) return <Badge tone="info">In flight</Badge>
   if (status < 400) return <Badge tone="success">{status}</Badge>
   if (status < 500) return <Badge tone="warning">{status}</Badge>

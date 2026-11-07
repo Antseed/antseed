@@ -21,7 +21,8 @@ import { FundingStatusNotice } from './FundingStatusNotice';
 import { formatUsd, shortfallBaseUnits, sweepAmountNeeded, usdcToBaseUnits } from './funding-status';
 import { useFundingStatus } from '../../hooks/useFundingStatus';
 import styles from './VprDepositView.module.scss';
-import { recordUserAction } from '../../../modules/telemetry/actions';
+import { recordDepositStep, recordUserAction } from '../../../modules/telemetry/actions';
+import type { TelemetryDepositMethod } from '../../../../shared/telemetry';
 
 const PEER_PAY_LOGO = new URL('../../../assets/peer-pay.webp', import.meta.url).href;
 const VENMO_LOGO = new URL('../../../assets/venmo.svg', import.meta.url).href;
@@ -30,6 +31,23 @@ const REVOLUT_LOGO = new URL('../../../assets/revolut.png', import.meta.url).hre
 const WISE_LOGO = new URL('../../../assets/wise.png', import.meta.url).href;
 
 const AMOUNT_PRESETS = ['5', '10', '25'];
+
+/**
+ * Funding method family per chooser option, for the deposit funnel. Meridian
+ * takes USDC from any chain, so it counts as a crypto wallet; Peer Pay is a
+ * payment app (Venmo, PayPal and similar).
+ */
+const PROVIDER_DEPOSIT_METHODS: Record<string, TelemetryDepositMethod> = {
+  'antseed-pay': 'card',
+  'antseed-pay-stripe': 'card',
+  meridian: 'crypto_wallet',
+  'peer-pay': 'payment_app',
+};
+
+function enteredAmountUsdc(amount: string): number | undefined {
+  const value = Number(amount);
+  return Number.isFinite(value) && value > 0 ? value : undefined;
+}
 
 type Props = { onSelectView?: (view: import('../../types').ViewName) => void };
 type Stage = 'choose' | 'crypto' | 'peer';
@@ -438,8 +456,37 @@ export function VprDepositView({ onSelectView }: Props) {
 
   const [payPageNotice, setPayPageNotice] = useState<string | null>(null);
 
+  // Deposit funnel: the chooser was shown, a checkout opened, and whether
+  // it was credited before the view went away.
+  const checkoutOpenedRef = useRef(false);
+  const creditedRef = useRef(false);
+  const lastMethodRef = useRef<TelemetryDepositMethod>('unknown');
+  useEffect(() => {
+    recordDepositStep({ step: 'method_shown' });
+    return () => {
+      if (checkoutOpenedRef.current && !creditedRef.current) {
+        recordDepositStep({ step: 'checkout_abandoned', method: lastMethodRef.current });
+      }
+    };
+  }, []);
+  useEffect(() => {
+    if (watchStatus?.phase === 'credited') creditedRef.current = true;
+  }, [watchStatus]);
+  const chooseMethod = useCallback((method: TelemetryDepositMethod) => {
+    lastMethodRef.current = method;
+    const amountUsdc = enteredAmountUsdc(amount);
+    recordDepositStep({ step: 'method_chosen', method, ...(amountUsdc !== undefined ? { amountUsdc } : {}) });
+  }, [amount]);
+  const noteCheckoutOpened = useCallback((method: TelemetryDepositMethod) => {
+    checkoutOpenedRef.current = true;
+    creditedRef.current = false;
+    const amountUsdc = enteredAmountUsdc(amount);
+    recordDepositStep({ step: 'checkout_opened', method, ...(amountUsdc !== undefined ? { amountUsdc } : {}) });
+  }, [amount]);
+
   const openBrowserWallet = useCallback(() => {
     recordUserAction('deposit_start', 'deposit');
+    chooseMethod('crypto_wallet');
     setPayPageNotice(null);
     const call = window.antseedDesktop?.paymentsOpenPayPage?.({ kind: 'deposit', amountUsdc: amount });
     if (!call) {
@@ -448,20 +495,26 @@ export function VprDepositView({ onSelectView }: Props) {
     }
     void call.then((result) => {
       if (!result.ok) setPayPageNotice(result.error ?? 'Could not open the payment window.');
+      else noteCheckoutOpened('crypto_wallet');
     }).catch((err: unknown) => {
       setPayPageNotice(err instanceof Error ? err.message : String(err));
     });
-  }, [amount]);
+  }, [amount, chooseMethod, noteCheckoutOpened]);
 
   const openCardProvider = useCallback((providerId: string) => {
     recordUserAction('deposit_start', 'deposit');
+    const method = PROVIDER_DEPOSIT_METHODS[providerId] ?? 'unknown';
+    // Peer Pay's method was chosen on the chooser; its own step only opens checkout.
+    if (providerId !== 'peer-pay') chooseMethod(method);
     setCardNotice(null);
     void window.antseedDesktop?.paymentsOpenCardProvider?.({ providerId, amountUsdc: amount }).then((result) => {
       if (!result.ok) {
         setCardNotice(result.error ?? 'Could not open the payment page.');
+      } else {
+        noteCheckoutOpened(method);
       }
     });
-  }, [amount]);
+  }, [amount, chooseMethod, noteCheckoutOpened]);
 
   const feeBaseUnits = usdcToBaseUnits(snap.depositFee);
   const firstDepositNeeds = usdcToBaseUnits(snap.minFirstDeposit) + feeBaseUnits;
@@ -609,6 +662,9 @@ export function VprDepositView({ onSelectView }: Props) {
                 className={styles.methodCta}
                 onClick={() => {
                   recordUserAction('deposit_start', 'deposit');
+                  chooseMethod('crypto_wallet');
+                  // The QR address is this method's checkout.
+                  noteCheckoutOpened('crypto_wallet');
                   goToStage('crypto');
                 }}
               >
@@ -637,6 +693,7 @@ export function VprDepositView({ onSelectView }: Props) {
                 className={styles.methodCta}
                 onClick={() => {
                   recordUserAction('deposit_start', 'deposit');
+                  chooseMethod('payment_app');
                   setCardNotice(null);
                   goToStage('peer');
                 }}

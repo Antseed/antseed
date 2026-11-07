@@ -127,6 +127,11 @@ export class SellerFreeUsageManager {
     });
   }
 
+  /** Whether this buyer has a free usage channel open on its current connection. */
+  hasSession(buyerPeerId: string): boolean {
+    return this._sessions.has(buyerPeerId);
+  }
+
   onPeerDisconnect(buyerPeerId: string): void {
     const session = this._sessions.get(buyerPeerId);
     if (session) {
@@ -230,7 +235,11 @@ export class SellerFreeUsageManager {
     // Check inside the buyer lock, immediately before spending gas. Opening
     // does not consume quota; the inference handler accounts for requests.
     // Storage errors propagate so admission fails closed without an open/ack.
-    const admission = this._freeTierLimiter?.check({ buyerPeerId, remoteIp });
+    // The open carries the buyer's delegations, so delegated stake counts
+    // before the first request; an older buyer's open falls back to those
+    // remembered from its requests.
+    const standing = (await this._freeTierLimiter?.resolveStanding(buyerPeerId, payload.freeTierDelegations)) ?? null;
+    const admission = this._freeTierLimiter?.check({ buyerPeerId, remoteIp, standing });
     if (admission && !admission.allowed) {
       throw new Error(
         `free_tier_exhausted: limitedBy=${admission.limitedBy} ` +

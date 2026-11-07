@@ -1,0 +1,54 @@
+/**
+ * The seam between the KBF audit and whatever serves the model under test.
+ * An endpoint turns one probe batch into completion text; it never scores.
+ */
+
+export interface ModelBatchRequest {
+  model: string
+  system: string
+  user: string
+  /** Left out when the endpoint refuses it (see `isKbfSamplingFieldRejection`). */
+  temperature?: number
+  maxTokens: number
+  /** Thinking-suppression fields from the reference (e.g. `reasoning: {effort: 'none'}`); dropped if refused. */
+  extraBody?: Record<string, unknown>
+  /** Assistant prefill from the reference (`prefill` strategy; OpenAI Chat Completions only). */
+  assistantPrefill?: string
+  /**
+   * Overrides the endpoint's own timeout for this request: thinking discovery and endpoints that
+   * think on every request (`bare-expanded`) get the reference code's 600 s.
+   */
+  timeoutMs?: number
+}
+
+export interface ModelCallSuccess {
+  ok: true
+  text: string
+  finishReason: string | null
+  usage?: { inputTokens: number; outputTokens: number }
+  /** Exact bytes exchanged, kept so a third party can re-parse the answer. */
+  raw: { request: Uint8Array; response: Uint8Array; status: number }
+  /** Transport-specific proof that the endpoint produced this response (e.g. a signed receipt). */
+  attestation?: unknown
+}
+
+export interface ModelCallFailure {
+  ok: false
+  status?: number
+  retryable: boolean
+  retryAfterMs?: number
+  message: string
+}
+
+export type ModelCallResult = ModelCallSuccess | ModelCallFailure
+
+export interface ModelEndpoint {
+  /** Human-readable target description for reports, e.g. the base URL. */
+  readonly label: string
+  /**
+   * Whether `assistantPrefill` reaches the model (OpenAI Chat Completions). Thinking discovery
+   * skips the `prefill` strategy when false, as the KBF reference code does. Default true.
+   */
+  readonly supportsPrefill?: boolean
+  call(request: ModelBatchRequest, signal?: AbortSignal): Promise<ModelCallResult>
+}

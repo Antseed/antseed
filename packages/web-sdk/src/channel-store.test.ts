@@ -41,6 +41,7 @@ describe('IndexedDbChannelStore', () => {
       cumulativeOutputImages: 2n,
       cumulativeVideoGenerations: 1n,
       cumulativeVideoSeconds: 8n,
+      cumulativeInputCharacters: 19n,
     }]);
     await first.close();
 
@@ -64,6 +65,7 @@ describe('IndexedDbChannelStore', () => {
     expect(restoredMetadata.cumulativeOutputImages).toBe(2n);
     expect(restoredMetadata.cumulativeVideoGenerations).toBe(1n);
     expect(restoredMetadata.cumulativeVideoSeconds).toBe(8n);
+    expect(restoredMetadata.cumulativeInputCharacters).toBe(19n);
     expect(restoredMetadata.services).toEqual([{
       serviceId: 'test-model',
       cumulativeAmount: 123n,
@@ -74,6 +76,7 @@ describe('IndexedDbChannelStore', () => {
       cumulativeOutputImages: 2n,
       cumulativeVideoGenerations: 1n,
       cumulativeVideoSeconds: 8n,
+      cumulativeInputCharacters: 19n,
     }]);
     await restored.close();
   });

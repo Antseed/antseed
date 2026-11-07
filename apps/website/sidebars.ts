@@ -55,7 +55,9 @@ const sidebars: SidebarsConfig = {
       items: [
         'connect/api',
         'connect/routing',
+        'connect/staked-free-tier',
         'connect/agents',
+        'connect/videos',
         'connect/tunnels',
         'connect/buyer-config',
       ],
@@ -85,7 +87,22 @@ const sidebars: SidebarsConfig = {
         'provide/tee',
         'provide/payments',
         'provide/staking',
+        'provide/monitoring',
         'provide/metrics',
+      ],
+    },
+    {
+      type: 'category',
+      label: 'Model Verification',
+      className: 'sidebar-icon sidebar-icon--verify',
+      collapsible: true,
+      collapsed: true,
+      items: [
+        'verify/overview',
+        'verify/buyers',
+        'verify/providers',
+        'verify/become-a-verifier',
+        'verify/audits',
       ],
     },
     {
@@ -115,6 +132,7 @@ const sidebars: SidebarsConfig = {
         'protocol/security',
         'protocol/recognized-usage',
         'protocol/reward-policies',
+        'protocol/model-verification',
       ],
     },
     {
