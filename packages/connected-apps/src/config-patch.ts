@@ -7,7 +7,6 @@ import path from 'node:path';
 import { Document, parseDocument } from 'yaml';
 import {
   WSL_TOOL_PROBES,
-  clearWslTargetsForTool,
   discoverWslToolTargets,
   readWslTargetsForTool,
   saveWslTargetsForTool,
@@ -786,7 +785,11 @@ function applyWithInstallProbe(opts: {
   if (opts.wslTargetsFile) saveWslTargetsForTool(opts.wslTargetsFile, opts.tool, wslTargets);
 }
 
-/** Unpatch the WSL targets remembered for `tool` and forget them. */
+/**
+ * Unpatch the WSL targets remembered for `tool` and forget them. One that can't
+ * be reached (a stopped distro, an unavailable share) is kept and reported: its
+ * config may hold a live gateway URL and key, so it still needs cleaning up.
+ */
 function removeWslInstalls(
   tool: WslTool,
   wslTargetsFile: string | undefined,
@@ -794,16 +797,18 @@ function removeWslInstalls(
 ): boolean {
   if (!wslTargetsFile) return false;
   let changed = false;
+  const failed: WslConfigTarget[] = [];
   for (const target of readWslTargetsForTool(wslTargetsFile, tool)) {
     try {
       if (removeFrom(target)) changed = true;
     } catch {
-      // Distro stopped or the UNC share is unavailable. The stale provider
-      // entry is inert (it points at a dead host/port) and the next connect
-      // rewrites it.
+      failed.push(target);
     }
   }
-  clearWslTargetsForTool(wslTargetsFile, tool);
+  saveWslTargetsForTool(wslTargetsFile, tool, failed);
+  if (failed.length > 0) {
+    throw new Error(`Could not reach WSL (${failed.map((target) => target.distro).join(', ')}) to remove Antseed from ${tool}. Start it and try again.`);
+  }
   return changed;
 }
 
@@ -1551,9 +1556,9 @@ function applyPiProviderToFiles(modelsPath: string, settingsPath: string, patch:
   writeJsonFile(settingsPath, settings);
 }
 
-/** pi and GooeyPi share these files, each with its own provider. */
+/** pi and GooeyPi share these files, each with its own provider. Any other name is the user's. */
 function isAntseedPiProvider(provider: unknown): boolean {
-  return typeof provider === 'string' && /^antseed(-|$)/.test(provider);
+  return provider === 'antseed' || provider === 'antseed-gooeypi';
 }
 
 function removePiConfigPatch(patch: PiConfigPatchDef, wslTargetsFile?: string): boolean {

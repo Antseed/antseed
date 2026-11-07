@@ -4,7 +4,7 @@
  */
 import { ipcMain } from 'electron';
 import { stopPaymentsPortal } from '../payments/portal.js';
-import { ensureLocalGateway, stopLocalGateway } from '../gateway/service.js';
+import { restartLocalGatewayForNewIdentity } from '../gateway/service.js';
 import {
   getAppSetupStatus,
 } from '../app-context.js';
@@ -191,8 +191,8 @@ export function registerAppIpc(): void {
         await stopPaymentsPortal();
         // Balances cached for the previous signer no longer apply.
         invalidateCreditsCache();
-        // The local gateway's buyer signs with the identity it was started with.
-        void stopLocalGateway().then(() => ensureLocalGateway()).catch(() => undefined);
+        const blocked = await restartLocalGatewayForNewIdentity();
+        if (blocked) return { ok: false, error: blocked };
       }
       return result;
     } catch (err) {

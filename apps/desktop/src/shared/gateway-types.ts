@@ -81,3 +81,9 @@ export type GatewayEndpointInfo = {
   mode?: GatewayMode;
   error?: string;
 };
+
+export type GatewayActionResult = { ok: boolean; error?: string };
+export type GatewaySettingsResult = GatewayActionResult & { settings?: GatewaySettingsView };
+export type GatewayPrivacyResult = GatewayActionResult & { privacy?: GatewayPrivacy };
+export type GatewayRewardsResult = GatewayActionResult & { rewards?: GatewayRewardsSummary };
+export type AgentSkillsResult = GatewayActionResult & { targets?: AgentSkillStatus[] };

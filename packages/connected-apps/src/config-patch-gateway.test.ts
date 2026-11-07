@@ -14,6 +14,7 @@ import {
   type ConfigPatchDef,
   type ConfigPatchTarget,
 } from './config-patch.js';
+import { readWslTargetsForTool, saveWslTargetsForTool } from './wsl.js';
 
 const KEY = 'antseed_test_0123456789';
 const MODELS = [
@@ -662,6 +663,49 @@ test('pi: a custom provider key does not save itself over the user\'s selection'
     const after = await readJson(settings);
     assert.equal(after['defaultProvider'], 'mine');
     assert.equal(after['defaultModel'], 'my-model');
+  });
+});
+
+test('pi: a provider of the user\'s own named antseed-something is left to them', async () => {
+  await withDir(async (dir) => {
+    const models = path.join(dir, 'models.json');
+    const settings = path.join(dir, 'settings.json');
+    const patch: ConfigPatchDef = { format: 'pi', configPath: models, settingsPath: settings, providerKey: 'antseed', baseURL: 'http://localhost:{buyerPort}/v1', api: 'openai-completions' };
+    await writeFile(models, JSON.stringify({ providers: { 'antseed-personal': { baseUrl: 'http://mine' } } }), 'utf8');
+    await writeFile(settings, JSON.stringify({ defaultProvider: 'antseed-personal', defaultModel: 'a' }), 'utf8');
+    writeConfigPatch(patch, LOCAL);
+    removeConfigPatch(patch);
+    const after = await readJson(settings);
+    assert.equal(after['defaultProvider'], 'antseed-personal');
+    assert.equal(after['defaultModel'], 'a');
+    assert.ok((await readJson(models))['providers']['antseed-personal']);
+  });
+});
+
+test('wsl: a distro that cannot be reached stays remembered and the disconnect says so', { skip: process.platform === 'win32' }, async () => {
+  await withDir(async (dir) => {
+    const native = path.join(dir, 'opencode.json');
+    await writeFile(native, '{}\n', 'utf8');
+    // A directory where the config should be: reading it fails, like an unavailable share.
+    const unreachable = path.join(dir, 'unreachable.json');
+    await mkdir(unreachable);
+    const reachable = path.join(dir, 'reachable.json');
+    await writeFile(reachable, JSON.stringify({ provider: { antseed: { name: 'Antseed' } } }), 'utf8');
+    const targetsFile = path.join(dir, 'wsl-targets.json');
+    const target = (distro: string, configPath: string) => ({ tool: 'opencode' as const, distro, configPath, host: '172.29.32.1', needsRelay: false });
+    saveWslTargetsForTool(targetsFile, 'opencode', [target('Ubuntu', unreachable), target('Debian', reachable)]);
+    const patch: ConfigPatchDef = { format: 'opencode', configPath: native, providerKey: 'antseed', providerName: 'Antseed', baseURL: 'http://localhost:{buyerPort}/v1', installProbe: 'opencode' } as ConfigPatchDef;
+
+    assert.throws(() => removeConfigPatch(patch, targetsFile), /Could not reach WSL \(Ubuntu\)/);
+    assert.deepEqual(readWslTargetsForTool(targetsFile, 'opencode').map((row) => row.distro), ['Ubuntu']);
+    assert.equal((await readJson(reachable))['provider']?.['antseed'], undefined);
+
+    // Reachable again: the retry finishes and forgets it.
+    await rm(unreachable, { recursive: true });
+    await writeFile(unreachable, JSON.stringify({ provider: { antseed: { name: 'Antseed' } } }), 'utf8');
+    removeConfigPatch(patch, targetsFile);
+    assert.deepEqual(readWslTargetsForTool(targetsFile, 'opencode'), []);
+    assert.equal((await readJson(unreachable))['provider']?.['antseed'], undefined);
   });
 });
 

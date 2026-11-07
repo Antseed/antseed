@@ -1,3 +1,4 @@
+import type * as GatewayTypes from '../shared/gateway-types.js';
 import { contextBridge, ipcRenderer } from 'electron';
 import type { RuntimeMode, RuntimeProcessState } from './runtime/process-manager.js';
 import type { ConnectedAppsState } from './connected-apps/patching/connection.js';
@@ -452,20 +453,20 @@ const api = {
   appsRestartApp(app: string): Promise<{ ok: boolean; error?: string }> {
     return ipcRenderer.invoke('apps:restart-app', { app }) as Promise<{ ok: boolean; error?: string }>;
   },
-  gatewayGetStatus: () => ipcRenderer.invoke('gateway:get-status'),
-  gatewayGetSettings: () => ipcRenderer.invoke('gateway:get-settings'),
-  gatewayUpdateSettings: (opts: import('../shared/gateway-types.js').GatewaySettingsPatch) => ipcRenderer.invoke('gateway:update-settings', opts),
-  gatewayRotateKeys: () => ipcRenderer.invoke('gateway:rotate-keys'),
-  gatewayGetEndpoint: (opts?: { app?: string }) => ipcRenderer.invoke('gateway:get-endpoint', opts),
-  gatewayGetKeyInfo: () => ipcRenderer.invoke('gateway:get-key-info'),
-  gatewayOpenConsole: (path?: string) => ipcRenderer.invoke('gateway:open-console', { path }),
-  gatewayGetPrivacy: () => ipcRenderer.invoke('gateway:get-privacy'),
-  gatewaySetPrivacy: (mode: 'anonymous' | 'private') => ipcRenderer.invoke('gateway:set-privacy', { mode }),
-  gatewayGetRewards: (opts?: { force?: boolean }) => ipcRenderer.invoke('gateway:get-rewards', opts),
-  agentSkillsList: () => ipcRenderer.invoke('agent-skills:list'),
-  agentSkillsInstall: (id: string) => ipcRenderer.invoke('agent-skills:install', { id }),
-  agentSkillsRemove: (id: string) => ipcRenderer.invoke('agent-skills:remove', { id }),
-  agentSkillsCopyPrompt: () => ipcRenderer.invoke('agent-skills:copy-prompt'),
+  gatewayGetStatus: (): Promise<GatewayTypes.GatewayStatus> => ipcRenderer.invoke('gateway:get-status'),
+  gatewayGetSettings: (): Promise<GatewayTypes.GatewaySettingsView> => ipcRenderer.invoke('gateway:get-settings'),
+  gatewayUpdateSettings: (opts: GatewayTypes.GatewaySettingsPatch): Promise<GatewayTypes.GatewaySettingsResult> => ipcRenderer.invoke('gateway:update-settings', opts),
+  gatewayRotateKeys: (): Promise<GatewayTypes.GatewayActionResult> => ipcRenderer.invoke('gateway:rotate-keys'),
+  gatewayGetEndpoint: (opts?: { app?: string }): Promise<GatewayTypes.GatewayEndpointInfo> => ipcRenderer.invoke('gateway:get-endpoint', opts),
+  gatewayGetKeyInfo: (): Promise<GatewayTypes.GatewayKeyInfo | null> => ipcRenderer.invoke('gateway:get-key-info'),
+  gatewayOpenConsole: (path?: string): Promise<GatewayTypes.GatewayActionResult> => ipcRenderer.invoke('gateway:open-console', { path }),
+  gatewayGetPrivacy: (): Promise<GatewayTypes.GatewayPrivacyResult> => ipcRenderer.invoke('gateway:get-privacy'),
+  gatewaySetPrivacy: (mode: GatewayTypes.GatewayPrivacyMode): Promise<GatewayTypes.GatewayPrivacyResult> => ipcRenderer.invoke('gateway:set-privacy', { mode }),
+  gatewayGetRewards: (opts?: { force?: boolean }): Promise<GatewayTypes.GatewayRewardsResult> => ipcRenderer.invoke('gateway:get-rewards', opts),
+  agentSkillsList: (): Promise<GatewayTypes.AgentSkillStatus[]> => ipcRenderer.invoke('agent-skills:list'),
+  agentSkillsInstall: (id: string): Promise<GatewayTypes.AgentSkillsResult> => ipcRenderer.invoke('agent-skills:install', { id }),
+  agentSkillsRemove: (id: string): Promise<GatewayTypes.AgentSkillsResult> => ipcRenderer.invoke('agent-skills:remove', { id }),
+  agentSkillsCopyPrompt: (): Promise<GatewayTypes.GatewayActionResult> => ipcRenderer.invoke('agent-skills:copy-prompt'),
   onGatewayChanged(handler: () => void): () => void {
     const listener = () => handler();
     ipcRenderer.on('gateway:changed', listener);

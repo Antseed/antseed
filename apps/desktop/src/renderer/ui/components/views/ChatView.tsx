@@ -759,8 +759,12 @@ export function ChatView({ onSelectView }: ChatViewProps) {
   }, [attachFiles]);
 
   const handleFileDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
-    if (imageMode) return;
+    // Always cancelled: left to Chromium, a dropped file replaces the app in the window.
     e.preventDefault();
+    if (imageMode) {
+      e.dataTransfer.dropEffect = 'none';
+      return;
+    }
     e.dataTransfer.dropEffect = 'copy';
     setIsDragOver(true);
   }, [imageMode]);
@@ -774,9 +778,9 @@ export function ChatView({ onSelectView }: ChatViewProps) {
   }, [imageMode]);
 
   const handleFileDrop = useCallback((e: React.DragEvent<HTMLDivElement>) => {
-    if (imageMode) return;
     e.preventDefault();
     setIsDragOver(false);
+    if (imageMode) return;
     if (e.dataTransfer.files.length > 0) void attachFiles(e.dataTransfer.files);
   }, [attachFiles, imageMode]);
 
