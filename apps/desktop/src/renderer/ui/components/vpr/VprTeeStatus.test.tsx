@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test, vi } from 'vitest';
 import type { ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { TEE_BADGE_MAX_AGE_MS, TEE_MAX_AGE_MS, TEE_PROVIDER_CLAIM, type TeeEvidence } from '@antseed/node/tee-status';
+import { TEE_BADGE_MAX_AGE_MS, TEE_MAX_AGE_MS, TEE_PROVIDER_CLAIM, TEE_UPSTREAMS_CLAIM, type TeeEvidence } from '@antseed/node/tee-status';
 import { VprTeeStatus } from './VprTeeStatus';
 import modelRowStyles from './VprModelRows.module.scss';
 import kitStyles from './VprKit.module.scss';
@@ -41,6 +41,12 @@ test('a seller whose upstream provider is not TEE-attested gets a distinct Parti
     assert.match(markup, /upstream model provider is not TEE-attested/);
     assert.doesNotMatch(markup, /Full TEE/);
   }
+});
+
+test('the tooltip names the upstream hosts the attested seller config sends prompts to', () => {
+  const claims = [{ claim: TEE_UPSTREAMS_CLAIM, ok: true, detail: 'https://api.example.com, https://backup.example' }];
+  assert.match(renderToStaticMarkup(<VprTeeStatus {...props} evidence={{ ...evidence, claims }} />), /Sends prompts to api\.example\.com, backup\.example\./);
+  assert.doesNotMatch(renderToStaticMarkup(<VprTeeStatus {...props} evidence={evidence} />), /Sends prompts to/);
 });
 
 test('absent, expired, failed, unavailable, and in-progress checks leave no badge or wrapper', () => {
