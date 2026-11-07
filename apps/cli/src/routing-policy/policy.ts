@@ -55,9 +55,9 @@ export interface RoutingPolicy {
   /** Only sellers whose responses pass a verifier (e.g. TEE attestation). */
   requireVerified?: boolean
   /**
-   * Only sellers advertising the TEE verifier capability. A capability check,
-   * not a verification result, so it works whether or not this buyer runs
-   * verification.
+   * Only sellers whose TEE attestation passes: an approved seller build in
+   * genuine Intel TDX hardware, bound to this buyer's connection. Sellers not
+   * advertising the TEE verifier are left out before any check.
    */
   requireTee?: boolean
   /** Price caps; a seller over any cap is not eligible. */

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { randomBytes } from 'node:crypto'
 import type { SellerRequest, SellerResponse, VerifyContext } from './antseed-node-types.js'
 import { runVerify } from './verifier.js'
@@ -15,11 +15,21 @@ import {
 import { encodeTeeTdxEvidence, type TdMeasurements, type VerifyQuoteFn } from './caps/tee-tdx.js'
 import { evmAddressFromPrivateKey, signerFromPrivateKey } from './caps/seller-bound.js'
 import { PROVIDER_CLAIMS_CAP_ID, claimsReportData } from './caps/provider-claims.js'
+import { appCompose, bootEvents, referenceCompose, testBuilds } from './dstack-build.fixture.js'
 
 // A seller key pair. seller-bound signatures must recover to this peer id.
 const PRIV = '03'.repeat(32)
 const PEER = evmAddressFromPrivateKey(PRIV)
 const sign = signerFromPrivateKey(PRIV)
+
+/** Session hash of the buyer's connection, as the buyer's node reports it on the response. */
+const BINDING = 'c'.repeat(64)
+
+// The stub DCAP's measurements (MRTD 07…, RTMR0-2 zero, RTMR3 measuring APP) are an approved seller build for these tests.
+const APP = appCompose(referenceCompose())
+const BOOT = bootEvents(APP)
+beforeAll(() => { process.env['ANTSEED_VERIFIER_NODE_BUILDS'] = JSON.stringify(testBuilds('07'.repeat(48))) })
+afterAll(() => { delete process.env['ANTSEED_VERIFIER_NODE_BUILDS'] })
 
 const NODE = claimId('seller-node-tee-genuine')
 const PROVIDER = claimId('seller-provider-tee-genuine')
@@ -32,7 +42,7 @@ function td(over: Partial<TdMeasurements> = {}): TdMeasurements {
     rtMr0: new Uint8Array(48),
     rtMr1: new Uint8Array(48),
     rtMr2: new Uint8Array(48),
-    rtMr3: new Uint8Array(48),
+    rtMr3: BOOT.rtmr3,
     reportData: new Uint8Array(64),
     debug: false,
     ...over,
@@ -50,8 +60,11 @@ const okVerify: VerifyQuoteFn = async (quote) => ({
   td: td({ reportData: quote.length === 64 ? new Uint8Array(quote) : new Uint8Array(64) }),
 })
 
-/** A node quote bound to (nonce, PEER). It satisfies the node binding check under okVerify. */
-const boundNodeQuote = (nonce: Uint8Array): Uint8Array => new Uint8Array(computeReportData(nonce, PEER))
+/** A node quote bound to (nonce, PEER, BINDING). It satisfies the node binding check under okVerify. */
+const boundNodeQuote = (nonce: Uint8Array): Uint8Array => new Uint8Array(computeReportData(nonce, PEER, BINDING))
+/** Node evidence from the approved dstack build, bound to (nonce, PEER, BINDING). */
+const nodeQuoteEvidence = (nonce: Uint8Array): Uint8Array =>
+  encodeTeeTdxEvidence(boundNodeQuote(nonce), undefined, undefined, { eventLog: BOOT.eventLog, appCompose: APP })
 /** A 64-byte provider report_data with a 32-byte commitment in [0:32]. */
 const rd64 = (commitment: Uint8Array): Uint8Array => {
   const out = new Uint8Array(64)
@@ -68,14 +81,14 @@ async function signBundle(nonce: Uint8Array, bundle: Record<string, Uint8Array>,
 
 /** Minimal required bundle: the node quote bound to nonce and peer, plus a seller-bound signature over it. */
 async function nodeEvidence(nonce: Uint8Array, signer = sign): Promise<Uint8Array> {
-  const bundle = { 'seller-node-tee-genuine': encodeTeeTdxEvidence(boundNodeQuote(nonce)) }
+  const bundle = { 'seller-node-tee-genuine': nodeQuoteEvidence(nonce) }
   return encodeAttestResponse({ ...bundle, 'seller-bound': await signBundle(nonce, bundle, signer) })
 }
 
 /** Full bundle: bound node quote, provider quote, and one seller-bound signature that covers both. */
 async function fullBundleEvidence(nonce: Uint8Array, signer = sign): Promise<Uint8Array> {
   const bundle = {
-    'seller-node-tee-genuine': encodeTeeTdxEvidence(boundNodeQuote(nonce)),
+    'seller-node-tee-genuine': nodeQuoteEvidence(nonce),
     'seller-provider-tee-genuine': encodeTeeTdxEvidence(randomBytes(64)),
   }
   return encodeAttestResponse({ ...bundle, 'seller-bound': await signBundle(nonce, bundle, signer) })
@@ -84,18 +97,19 @@ async function fullBundleEvidence(nonce: Uint8Array, signer = sign): Promise<Uin
 function makeCtx(
   responder: (nonce: Uint8Array, caps: string[]) => SellerResponse | Promise<SellerResponse>,
   peerId = PEER,
-): { ctx: VerifyContext; seen: { req?: SellerRequest; nonce?: Uint8Array; caps?: string[] } } {
-  const seen: { req?: SellerRequest; nonce?: Uint8Array; caps?: string[] } = {}
+): { ctx: VerifyContext; seen: { req?: SellerRequest; nonce?: Uint8Array; caps?: string[]; bindChannel?: boolean } } {
+  const seen: { req?: SellerRequest; nonce?: Uint8Array; caps?: string[]; bindChannel?: boolean } = {}
   const ctx: VerifyContext = {
     peerId,
     verifierId: VERIFIER_ID,
     attestPath: ATTEST_PATH,
     fetchFromSeller: async (req) => {
-      const { nonce, caps } = decodeAttestRequest(req.body ?? new Uint8Array())
+      const { nonce, caps, bindChannel } = decodeAttestRequest(req.body ?? new Uint8Array())
       seen.req = req
       seen.nonce = nonce
       seen.caps = caps
-      return responder(nonce, caps)
+      seen.bindChannel = bindChannel
+      return { channelBinding: BINDING, ...(await responder(nonce, caps)) }
     },
   }
   return { ctx, seen }
@@ -112,6 +126,7 @@ describe('runVerify — request shape', () => {
     expect(seen.req?.path).toBe(ATTEST_PATH)
     expect(seen.req?.headers?.['content-type']).toBe('application/json')
     expect(seen.nonce?.length).toBe(32)
+    expect(seen.bindChannel).toBe(true)
     expect(seen.caps).toEqual(
       expect.arrayContaining([
         'seller-node-tee-genuine',
@@ -155,7 +170,7 @@ describe('runVerify — provider claims (one ClaimResult per sub-claim)', () => 
     const { ctx } = makeCtx(async (nonce) => {
       // Provider quote commits to the claims doc in report_data[0:32] = claimsReportData(nonce, docBytes).
       const bundle = {
-        'seller-node-tee-genuine': encodeTeeTdxEvidence(boundNodeQuote(nonce)),
+        'seller-node-tee-genuine': nodeQuoteEvidence(nonce),
         'seller-provider-tee-genuine': encodeTeeTdxEvidence(rd64(claimsReportData(nonce, claimsDoc))),
         [PROVIDER_CLAIMS_CAP_ID]: claimsDoc,
       }
@@ -176,7 +191,7 @@ describe('runVerify — provider claims (one ClaimResult per sub-claim)', () => 
     const { ctx } = makeCtx(async (nonce) => {
       // No provider quote this round, so the tdx-quote-required claim has nothing to bind to.
       const bundle = {
-        'seller-node-tee-genuine': encodeTeeTdxEvidence(boundNodeQuote(nonce)),
+        'seller-node-tee-genuine': nodeQuoteEvidence(nonce),
         [PROVIDER_CLAIMS_CAP_ID]: claimsDoc,
       }
       return ok200(encodeAttestResponse({ ...bundle, 'seller-bound': await signBundle(nonce, bundle) }))

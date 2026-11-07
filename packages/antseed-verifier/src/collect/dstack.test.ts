@@ -17,10 +17,10 @@ interface Stub {
 
 /**
  * A dstack guest-agent stub over a unix socket, with no mocks. It answers POST /GetQuote by
- * a call to `respond(reportDataHex)`. Return null to emit HTTP 500. This is the exact wire
- * contract generateDstackQuote must speak.
+ * a call to `respond(reportDataHex)` (null emits HTTP 500) and POST /Info with `info` (404 when
+ * absent). This is the exact wire contract generateDstackQuote must speak.
  */
-async function startDstackStub(respond: (reportDataHex: string) => unknown): Promise<Stub> {
+async function startDstackStub(respond: (reportDataHex: string) => unknown, info?: unknown): Promise<Stub> {
   const socketPath = join(tmpdir(), `ds-${randomBytes(6).toString('hex')}.sock`)
   let lastHex: string | undefined
   const server = createServer((req, res) => {
@@ -28,8 +28,13 @@ async function startDstackStub(respond: (reportDataHex: string) => unknown): Pro
     req.on('data', (c) => chunks.push(c as Buffer))
     req.on('end', () => {
       const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { report_data?: string }
-      lastHex = parsed.report_data
+      if (req.method === 'POST' && req.url === '/Info' && info !== undefined) {
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify(info))
+        return
+      }
       if (req.method === 'POST' && req.url === '/GetQuote') {
+        lastHex = parsed.report_data
         const out = respond(parsed.report_data ?? '')
         if (out === null) { res.writeHead(500); res.end('boom'); return }
         res.writeHead(200, { 'content-type': 'application/json' })
@@ -101,5 +106,34 @@ describe('node-tee capability — dstack source', () => {
     const evidence = await nodeTeeCapability.collect!({ nonce, peerId, config })
     const { quote } = decodeTeeTdxEvidence(evidence)
     expect(Buffer.from(quote).equals(computeReportData(nonce, peerId))).toBe(true)
+  })
+
+  it('binds the connection and ships the app compose and only the RTMR3 events of the agent event log', async () => {
+    const rtmr3Event = { imr: 3, event_type: 0x08000001, digest: '00', event: 'compose-hash', event_payload: 'ab'.repeat(32) }
+    const eventLog = JSON.stringify([{ imr: 0, event_type: 1, digest: '00', event: '', event_payload: '' }, rtmr3Event])
+    const appCompose = '{"runner":"docker-compose"}'
+    stub = await startDstackStub((rdHex) => ({ quote: rdHex, event_log: eventLog }), { tcb_info: JSON.stringify({ app_compose: appCompose }) })
+    const nonce = new Uint8Array(randomBytes(32))
+    const peerId = 'a'.repeat(40)
+    const binding = 'c'.repeat(64)
+    const config = {
+      [tdxConfigKey(NODE_TEE_CAP_ID, 'source')]: 'dstack',
+      [tdxConfigKey(NODE_TEE_CAP_ID, 'dstack.socket')]: stub.socketPath,
+      [tdxConfigKey(NODE_TEE_CAP_ID, 'channelBinding')]: binding,
+    }
+    const decoded = decodeTeeTdxEvidence(await nodeTeeCapability.collect!({ nonce, peerId, config }))
+    expect(Buffer.from(decoded.quote).equals(computeReportData(nonce, peerId, binding))).toBe(true)
+    expect(decoded.eventLog).toEqual([rtmr3Event])
+    expect(decoded.appCompose).toBe(appCompose)
+  })
+
+  it('still returns the quote when the agent has no Info', async () => {
+    stub = await startDstackStub((rdHex) => ({ quote: rdHex }))
+    const config = {
+      [tdxConfigKey(NODE_TEE_CAP_ID, 'source')]: 'dstack',
+      [tdxConfigKey(NODE_TEE_CAP_ID, 'dstack.socket')]: stub.socketPath,
+    }
+    const decoded = decodeTeeTdxEvidence(await nodeTeeCapability.collect!({ nonce: new Uint8Array(32), peerId: 'a'.repeat(40), config }))
+    expect(decoded.appCompose).toBeUndefined()
   })
 })

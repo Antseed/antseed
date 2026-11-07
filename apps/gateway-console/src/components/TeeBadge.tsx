@@ -10,9 +10,11 @@ const UNVERIFIED = 'Advertises TEE attestation; the buyer has not verified it ye
  * A seller's TEE, like an SSL mode: Full when the attestation reaches its model provider,
  * Partial when only the seller node is attested, plain TEE while only advertised.
  */
-export function TeeBadge({ tee, scope }: { tee: boolean; scope: PeerTeeScope | null | undefined }) {
-  if (scope === 'end-to-end') return <Badge tone="info" title={FULL} aria-label={FULL}><Icon.teeFull size={12} />Full TEE</Badge>
-  if (scope === 'seller-node') return <Badge title={PARTIAL} aria-label={PARTIAL}><Icon.teePartial size={12} />Partial TEE</Badge>
+export function TeeBadge({ tee, scope, upstreams }: { tee: boolean; scope: PeerTeeScope | null | undefined; upstreams?: readonly string[] | undefined }) {
+  // The attested seller config names where prompts go.
+  const sends = upstreams?.length ? ` Sends prompts to ${upstreams.join(', ')}.` : ''
+  if (scope === 'end-to-end') return <Badge tone="info" title={FULL + sends} aria-label={FULL + sends}><Icon.teeFull size={12} />Full TEE</Badge>
+  if (scope === 'seller-node') return <Badge title={PARTIAL + sends} aria-label={PARTIAL + sends}><Icon.teePartial size={12} />Partial TEE</Badge>
   if (tee) return <Badge title={UNVERIFIED} aria-label={UNVERIFIED}>TEE</Badge>
   return null
 }

@@ -49,6 +49,7 @@ import { verifyPeerMetadataGithub } from "./discovery/github-verification.js";
 import {
   PeerLookup,
   DEFAULT_LOOKUP_CONFIG,
+  preferFreshestResultPerPeer,
   type LookupConfig,
   type LookupResult,
 } from "./discovery/peer-lookup.js";
@@ -749,6 +750,16 @@ export class AntseedNode extends EventEmitter {
   }
 
   /**
+   * Session hash of the encrypted TCP connection to a peer (see PeerConnection.channelBinding),
+   * for the default buyer identity or a named one, else null.
+   */
+  getChannelBinding(peerId: PeerId, buyerIdentity?: string): string | null {
+    const context = this._buyerContext(buyerIdentity);
+    if (context) return context.getChannelBinding(peerId);
+    return this._connectionManager?.getConnection(peerId)?.channelBinding ?? null;
+  }
+
+  /**
    * Active seller sessions currently tracked in-memory.
    * Includes open sessions before they are finalized/settled.
    */
@@ -1007,16 +1018,9 @@ export class AntseedNode extends EventEmitter {
   }
 
   private async _lookupResultsToPeerInfos(results: LookupResult[], service?: string): Promise<PeerInfo[]> {
-    // Deduplicate by peerId (DHT can return the same peer from multiple topic lookups)
-    const seen = new Set<string>();
-    const peers: PeerInfo[] = [];
-    for (const r of results) {
-      const p = this._lookupResultToPeerInfo(r);
-      if (!seen.has(p.peerId)) {
-        seen.add(p.peerId);
-        peers.push(p);
-      }
-    }
+    // Deduplicate by peerId (DHT can return the same peer from multiple topic
+    // lookups, and from old endpoints after it moved hosts)
+    const peers = preferFreshestResultPerPeer(results).map((r) => this._lookupResultToPeerInfo(r));
 
     const filtered = service ? peers.filter((p) => peerOffersService(p, service)) : peers;
     this._attachCachedExternalVerificationResults(filtered);
