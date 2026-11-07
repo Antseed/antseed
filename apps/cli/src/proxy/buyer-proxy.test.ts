@@ -3597,50 +3597,32 @@ test('pinned proxy request reports when the pinned peer is not discoverable', as
   assert.match(res.body, /It may be offline, not announcing, or temporarily unreachable/)
 })
 
-test('pinned proxy request looks the peer up on its own DHT topic when the refresh misses it', async () => {
-  const otherPeer = makePeer('b', ['openai'])
-  const pinnedPeer = makePeer('a', ['openai'])
-  pinnedPeer.publicAddress = '198.51.100.20:14532'
-  pinnedPeer.providerServiceApiProtocols = { openai: { services: { 'gpt-5': ['openai-chat-completions'] } } }
-  const proxy = makeBuyerProxyWithPeers([otherPeer], [otherPeer], permissiveRouter())
-  ;(proxy as any)._mergeStateFile = async () => {}
-  ;(proxy as any)._node.findPeer = async () => ({ ...pinnedPeer })
-  const attempts: string[] = []
-  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
-    attempts.push(peer.publicAddress ?? '')
-    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{}') }
-  }
+for (const hasOtherSeller of [true, false]) {
+  const scenario = hasOtherSeller ? 'the refresh misses it' : 'discovery finds no sellers'
 
-  const res = await invokeProxy(proxy, makeProxyRequest({
-    headers: { 'x-antseed-pin-peer': pinnedPeer.peerId },
-    body: { model: 'gpt-5', messages: [] },
-  }))
+  test(`pinned proxy request looks the peer up on its own DHT topic when ${scenario}`, async () => {
+    const discoveredPeers = hasOtherSeller ? [makePeer('b', ['openai'])] : []
+    const pinnedPeer = makePeer('a', ['openai'])
+    pinnedPeer.publicAddress = '198.51.100.20:14532'
+    pinnedPeer.providerServiceApiProtocols = { openai: { services: { 'gpt-5': ['openai-chat-completions'] } } }
+    const proxy = makeBuyerProxyWithPeers([...discoveredPeers], [...discoveredPeers], permissiveRouter())
+    ;(proxy as any)._mergeStateFile = async () => {}
+    ;(proxy as any)._node.findPeer = async () => ({ ...pinnedPeer })
+    const attempts: string[] = []
+    ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
+      attempts.push(peer.publicAddress ?? '')
+      return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{}') }
+    }
 
-  assert.equal(res.statusCode, 200)
-  assert.deepEqual(attempts, ['198.51.100.20:14532'])
-})
+    const res = await invokeProxy(proxy, makeProxyRequest({
+      headers: { 'x-antseed-pin-peer': pinnedPeer.peerId },
+      body: { model: 'gpt-5', messages: [] },
+    }))
 
-test('pinned proxy request looks the peer up on its own DHT topic when discovery finds no sellers', async () => {
-  const pinnedPeer = makePeer('a', ['openai'])
-  pinnedPeer.publicAddress = '198.51.100.20:14532'
-  pinnedPeer.providerServiceApiProtocols = { openai: { services: { 'gpt-5': ['openai-chat-completions'] } } }
-  const proxy = makeBuyerProxyWithPeers([], [], permissiveRouter())
-  ;(proxy as any)._mergeStateFile = async () => {}
-  ;(proxy as any)._node.findPeer = async () => ({ ...pinnedPeer })
-  const attempts: string[] = []
-  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
-    attempts.push(peer.publicAddress ?? '')
-    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{}') }
-  }
-
-  const res = await invokeProxy(proxy, makeProxyRequest({
-    headers: { 'x-antseed-pin-peer': pinnedPeer.peerId },
-    body: { model: 'gpt-5', messages: [] },
-  }))
-
-  assert.equal(res.statusCode, 200)
-  assert.deepEqual(attempts, ['198.51.100.20:14532'])
-})
+    assert.equal(res.statusCode, 200)
+    assert.deepEqual(attempts, ['198.51.100.20:14532'])
+  })
+}
 
 test('verifier preimage capture header stays local and enables exact capture', async () => {
   const peer = makePeer('a', ['openai'])
