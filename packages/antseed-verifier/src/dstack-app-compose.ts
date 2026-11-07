@@ -88,12 +88,12 @@ function parseJson(text: string, what: string): unknown {
   }
 }
 
-/** Every string anywhere in a value. */
-function strings(v: unknown): string[] {
-  if (typeof v === 'string') return [v]
-  if (Array.isArray(v)) return v.flatMap(strings)
-  if (isObj(v)) return Object.entries(v).flatMap(([k, x]) => [k, ...strings(x)])
-  return []
+/** Whether any key or string anywhere in a value contains "$". */
+function hasVariableReference(value: unknown): boolean {
+  if (typeof value === 'string') return value.includes('$')
+  if (Array.isArray(value)) return value.some(hasVariableReference)
+  if (isObj(value)) return Object.entries(value).some(([key, entry]) => key.includes('$') || hasVariableReference(entry))
+  return false
 }
 
 /** The secrets the environment hides, after checking every entry. */
@@ -191,7 +191,7 @@ function checkComposeFile(compose: unknown, images: readonly ApprovedSellerImage
   const secrets = checkEnvironment(service['environment'])
   // Compose substitutes ${...} in every value; only the environment entries checked above may use it.
   const { environment: _env, ...rest } = service
-  check(!strings({ ...compose, services: { s: rest } }).some((s) => s.includes('$')), 'compose file may not reference variables outside the environment')
+  check(!hasVariableReference({ ...compose, services: { s: rest } }), 'compose file may not reference variables outside the environment')
 
   check(service['ports'] === undefined || (Array.isArray(service['ports']) && service['ports'].every((p) => typeof p === 'string' && /^[0-9.:]+(?:\/(?:tcp|udp))?$/.test(p))), 'ports must be plain port mappings')
   const volumes = service['volumes'] ?? []
