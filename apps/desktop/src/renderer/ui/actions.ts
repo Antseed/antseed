@@ -7,6 +7,7 @@ export type AppActions = {
   clearLogs: () => Promise<void>;
   saveConfig: (formData: ConfigFormData) => Promise<void>;
   startNewChat: () => void;
+  startNewChatOnModel: (modelId: string) => void;
   openConversation: (id: string) => Promise<void>;
   sendMessage: (text: string, attachments?: RawChatAttachment[]) => void;
   sendMessageToConversation: (convId: string, text: string, attachments?: RawChatAttachment[]) => void;

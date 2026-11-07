@@ -17,7 +17,7 @@ it('drops the HTTP status and keeps every other message', () => {
 
 it('shows what a seller said instead of its raw response', () => {
   const raw = 'Oops, peer could not complete the request.\nAntseed is a peer-to-peer network. Try another peer or use Auto routing.\n\nOriginal Response: {"message":"The image is 32x32 pixels; images must be at least 64x64 pixels.: messages.3.content.1.image_url.url: Supplied image did not pass","status":400}';
-  expect(describeChatError(raw, () => undefined)).toBe('The provider refused this request: The image is 32x32 pixels; images must be at least 64x64 pixels. You can try another model.');
+  expect(describeChatError(raw, () => undefined)).toBe('The provider could not complete this request: The image is 32x32 pixels; images must be at least 64x64 pixels. You can try another model.');
 });
 
 it('keeps a seller response it cannot read', () => {

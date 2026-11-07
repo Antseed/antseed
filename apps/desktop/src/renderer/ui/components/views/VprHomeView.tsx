@@ -93,7 +93,7 @@ export function VprHomeView({ onSelectView }: Props) {
     // The model may still move once Private's list is in.
     if (!text || switching || (privateMode && snap.chatModelsLoading)) return;
     // Home always starts a new chat rather than continuing the open one.
-    if (snap.chatActiveConversation) actions.startNewChat();
+    if (snap.chatActiveConversation) actions.startNewChatOnModel(snap.chatSelectedModelId);
     if (snap.chatImageModelId) {
       actions.generateImage(text);
     } else {

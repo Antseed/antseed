@@ -6,6 +6,7 @@
  */
 
 import type { ChatModel, ChatServiceProtocol } from '../../shared/chat-gateway-types.js';
+import { compareDefaultModels } from '../../shared/chat-model-ranking.js';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { Model } from '@mariozechner/pi-ai';
@@ -112,7 +113,7 @@ function record(value: unknown): Record<string, unknown> {
 }
 
 /** The offer summary the picker shows, worked out like the gateway console's chat. */
-function entryOfferSummary(entry: GatewayModelEntry): Pick<ChatModel, 'sellers' | 'free' | 'freeSellerId' | 'freeForStakers' | 'tee' | 'toolUse' | 'reasoning' | 'inputUsdPerMillion' | 'outputUsdPerMillion'> {
+function entryOfferSummary(entry: GatewayModelEntry): Pick<ChatModel, 'sellers' | 'free' | 'minImageUsd' | 'freeSellerId' | 'freeForStakers' | 'tee' | 'toolUse' | 'reasoning' | 'inputUsdPerMillion' | 'outputUsdPerMillion'> {
   const peers = records(entry['peers']);
   const coverage = record(entry['capability_coverage']);
   const cheapest = (field: string): number | null => {
@@ -120,10 +121,13 @@ function entryOfferSummary(entry: GatewayModelEntry): Pick<ChatModel, 'sellers' 
     return values.length > 0 ? Math.min(...values) : null;
   };
   const stakersOnly = (peer: Record<string, unknown>): boolean => record(record(peer['freeTier'])['base'])['stakersOnly'] === true;
-  const freeSeller = peers.find((peer) => peer['inputUsdPerMillion'] === 0 && peer['outputUsdPerMillion'] === 0 && !stakersOnly(peer));
+  // An image model's token prices are $0 too: it charges per image.
+  const chargesPerImage = (peer: Record<string, unknown>): boolean => (finiteNumber(peer['minImageUsdPerImage']) ?? 0) > 0;
+  const freeSeller = peers.find((peer) => peer['inputUsdPerMillion'] === 0 && peer['outputUsdPerMillion'] === 0 && !stakersOnly(peer) && !chargesPerImage(peer));
   return {
     sellers: peers.length,
     free: freeSeller !== undefined,
+    minImageUsd: cheapest('minImageUsdPerImage'),
     freeSellerId: typeof freeSeller?.['peerId'] === 'string' ? freeSeller['peerId'] : null,
     freeForStakers: peers.some(stakersOnly),
     tee: peers.some((peer) => strings(peer['advertisedVerifierIds']).includes(TEE_VERIFIER_ID)),
@@ -176,9 +180,7 @@ export function toChatModels(entries: GatewayModelEntry[]): ChatModel[] {
 export function recommendAppModels(models: ChatModel[]): ChatModel[] {
   return models
     .filter((model) => model.type === 'text' && model.protocol !== null)
-    .sort((left, right) => Number(right.free) - Number(left.free)
-      || Number(right.toolUse) - Number(left.toolUse)
-      || right.sellers - left.sellers);
+    .sort(compareDefaultModels);
 }
 
 export type GatewayModelOptions = {

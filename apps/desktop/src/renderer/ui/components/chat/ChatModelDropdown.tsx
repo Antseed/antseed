@@ -102,9 +102,11 @@ export function ChatModelDropdown({
           <span className={styles.itemPrice}>
             {model.free
               ? <span className={`${styles.tag} ${styles.tagFree}`}>Free</span>
-              : model.inputUsdPerMillion !== null || model.outputUsdPerMillion !== null
-                ? `from ${formatPriceRange(model)}`
-                : null}
+              : model.minImageUsd
+                ? `from $${model.minImageUsd} per image`
+                : model.inputUsdPerMillion !== null || model.outputUsdPerMillion !== null
+                  ? `from ${formatPriceRange(model)}`
+                  : null}
           </span>
         </span>
         <span className={styles.itemTags}>

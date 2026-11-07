@@ -11,6 +11,22 @@ export async function copyText(value: string): Promise<boolean> {
   }
 }
 
+/** Copies `value` and says so for a moment, for a control of any shape. */
+export function useCopyFeedback(value: string, onCopied?: () => void): { copied: boolean; copy: () => Promise<void> } {
+  const [copied, setCopied] = useState(false);
+  const timer = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+  const copy = async () => {
+    if (await copyText(value)) {
+      setCopied(true);
+      onCopied?.();
+      window.clearTimeout(timer.current);
+      timer.current = window.setTimeout(() => setCopied(false), 1500);
+    }
+  };
+  return { copied, copy };
+}
+
 function CopyIcon() {
   return (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -42,17 +58,7 @@ export interface CopyButtonProps {
 }
 
 export function CopyButton({ value, label = 'Copy', copiedLabel = 'Copied', size = 'sm', variant = 'outline', className, iconOnly, onCopied }: CopyButtonProps) {
-  const [copied, setCopied] = useState(false);
-  const timer = useRef<number | undefined>(undefined);
-  useEffect(() => () => window.clearTimeout(timer.current), []);
-  const copy = async () => {
-    if (await copyText(value)) {
-      setCopied(true);
-      onCopied?.();
-      window.clearTimeout(timer.current);
-      timer.current = window.setTimeout(() => setCopied(false), 1500);
-    }
-  };
+  const { copied, copy } = useCopyFeedback(value, onCopied);
   if (iconOnly) {
     return (
       <IconButton label={copied ? copiedLabel : label} size="sm" className={className} onClick={() => void copy()}>

@@ -13,7 +13,7 @@ export function describeChatError(message: string, modelLabel: (id: string) => s
       const body = JSON.parse(original) as { message?: unknown; error?: { message?: unknown } };
       const said = typeof body.message === 'string' ? body.message : body.error?.message;
       if (typeof said === 'string' && said.trim()) {
-        return `The provider refused this request: ${said.split(/: messages\./)[0]!.trim()} You can try another model.`;
+        return `The provider could not complete this request: ${said.split(/: messages\./)[0]!.trim()} You can try another model.`;
       }
     } catch {
       // Not JSON after all: show it as it came.

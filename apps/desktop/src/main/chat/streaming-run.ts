@@ -245,7 +245,9 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     const supportsImages = chatModel?.supportsImages ?? false;
     const modelLabel = chatModel?.label ?? serviceId;
 
-    const persistedPermissionMode = await getModelPermissionMode(splitPinnedModel(serviceId).modelId);
+    // Permissions belong to the model, whichever seller serves it.
+    const permissionModel = splitPinnedModel(serviceId).modelId;
+    const persistedPermissionMode = await getModelPermissionMode(permissionModel);
     const permissionMode: ChatPermissionMode = persistedPermissionMode === 'full'
       ? 'full'
       : requestedPermissionMode ?? persistedPermissionMode;
@@ -293,11 +295,11 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
         const input = event.input && typeof event.input === 'object'
           ? event.input as Record<string, unknown>
           : {};
-        const description = describeToolApproval(event.toolName, input, serviceId);
+        const description = describeToolApproval(event.toolName, input, permissionModel);
         if (isToolPermissionAutoAllowed(description.permissionKey)) {
           return undefined;
         }
-        if (await isToolAllowedForModel(serviceId, description.permissionKey)) {
+        if (await isToolAllowedForModel(permissionModel, description.permissionKey)) {
           return undefined;
         }
 
@@ -315,7 +317,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
 
         if (decision === 'always_allow') {
           try {
-            await allowToolForModel(serviceId, description.permissionKey);
+            await allowToolForModel(permissionModel, description.permissionKey);
           } catch (error) {
             appendSystemLog(`Failed to save model-scoped tool approval rule: ${asErrorMessage(error)}`);
           }

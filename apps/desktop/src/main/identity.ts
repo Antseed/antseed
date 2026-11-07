@@ -244,5 +244,7 @@ export async function importIdentityPrivateKeyHex(rawKey: string): Promise<{
   const backupPath = await backupIdentityBeforeImport();
   await saveEncryptedIdentity(hex);
   secureIdentity = identity;
+  // The unreadable file is gone, so nothing blocks the gateway any more.
+  identityUnreadable = false;
   return { ok: true, address: identity.wallet.address, backupPath };
 }

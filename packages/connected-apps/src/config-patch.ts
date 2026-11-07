@@ -1369,6 +1369,7 @@ function applyCodexProviderToFile(filePath: string, patch: CodexConfigPatchDef, 
     : undefined;
   const selected = pickModel(t, ownedSelection);
   if (readTomlTopLevelString(lines, 'model_provider') !== patch.providerKey) {
+    const userCatalog = readTomlTopLevelString(lines, 'model_catalog_json');
     const contextWindow = lines.map((line) => /^model_context_window\s*=\s*(\d+)/.exec(line)?.[1]).find(Boolean);
     rememberSelection(filePath, {
       ...Object.fromEntries(['model', 'model_provider'].flatMap((key) => {
@@ -1376,6 +1377,7 @@ function applyCodexProviderToFile(filePath: string, patch: CodexConfigPatchDef, 
         return value === undefined ? [] : [[key, value]];
       })),
       ...(contextWindow ? { model_context_window: contextWindow } : {}),
+      ...(userCatalog !== undefined && userCatalog !== CODEX_MODEL_CATALOG_FILE ? { model_catalog_json: userCatalog } : {}),
     });
   }
   lines = removeCodexProviderTable(lines, patch.providerKey).lines;
@@ -1407,8 +1409,14 @@ function applyCodexProviderToFile(filePath: string, patch: CodexConfigPatchDef, 
   try {
     runCodexDebugModels(filePath);
   } catch {
-    // Also drops the reference an earlier patch left, or Codex can't start.
-    writeTextFile(filePath, `${removeTomlTopLevelKey(lines, 'model_catalog_json').join('\n')}\n`);
+    // Back to the user's own catalog if they had one. Otherwise no reference at
+    // all, since an earlier patch's would name the file deleted here.
+    const userCatalog = readSelection(filePath)['model_catalog_json'];
+    const withoutOurs = readTomlTopLevelString(lines, 'model_catalog_json') === CODEX_MODEL_CATALOG_FILE
+      ? removeTomlTopLevelKey(lines, 'model_catalog_json')
+      : lines;
+    const restored = typeof userCatalog === 'string' ? setTomlTopLevelString(withoutOurs, 'model_catalog_json', userCatalog) : withoutOurs;
+    writeTextFile(filePath, `${restored.join('\n')}\n`);
     removeCodexModelCatalog(filePath);
   }
 }
@@ -1427,12 +1435,13 @@ function removeCodexProviderFromFile(filePath: string, patch: CodexConfigPatchDe
   const removal = removeCodexProviderTable(raw.split('\n'), patch.providerKey);
   let lines = removal.lines;
   let changed = removal.changed;
+  const saved = takeSelection(filePath);
   if (readTomlTopLevelString(lines, 'model_catalog_json') === CODEX_MODEL_CATALOG_FILE) {
     lines = removeTomlTopLevelKey(lines, 'model_catalog_json');
+    if (typeof saved['model_catalog_json'] === 'string') lines = setTomlTopLevelString(lines, 'model_catalog_json', saved['model_catalog_json']);
     removeCodexModelCatalog(filePath);
     changed = true;
   }
-  const saved = takeSelection(filePath);
   if (readTomlTopLevelString(lines, 'model_provider') === patch.providerKey) {
     lines = removeTomlTopLevelKey(lines, 'model_provider');
     lines = removeTomlTopLevelKey(lines, 'model');

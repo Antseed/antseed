@@ -223,6 +223,7 @@ registerActions({
   clearLogs: actionClearLogs,
   saveConfig: (formData) => { recordUserAction('settings_save', 'config'); return saveConfig(formData); },
   startNewChat: () => { recordUserAction('chat_new', 'chat'); chatApi.startNewChat(); },
+  startNewChatOnModel: (modelId) => { recordUserAction('chat_new', 'chat'); chatApi.startNewChatOnModel(modelId); },
   openConversation: (id) => { recordUserAction('chat_open', 'chats'); return chatApi.openConversation(id); },
   sendMessage: (text, attachments) => {
     recordUserAction('chat_send', 'chat');

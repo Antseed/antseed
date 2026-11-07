@@ -15,6 +15,7 @@ import {
   type ConfigPatchDef,
 } from '@antseed/connected-apps/config-patch';
 import { connectedAppsWslTargetsPath } from './paths.js';
+import { removeEach } from './remove-all.js';
 
 export type DesktopSystemProxyProfile = {
   readonly name: string;
@@ -97,8 +98,10 @@ function readAppAction(value: unknown): DesktopSystemProxyProfile['appAction'] {
     : undefined;
 }
 
-export function removeAllConfigPatches(): void {
-  for (const profile of connectableProfiles()) {
-    removeConfigPatch(profile.configPatch!, connectedAppsWslTargetsPath());
-  }
+export function removeAllConfigPatches(log: (line: string) => void): void {
+  removeEach(
+    connectableProfiles(),
+    (profile) => { removeConfigPatch(profile.configPatch!, connectedAppsWslTargetsPath()); },
+    (profile, err) => { log(`${profile.label}: could not remove Antseed from its config: ${err instanceof Error ? err.message : String(err)}`); },
+  );
 }

@@ -94,8 +94,13 @@ function log(line: string): void {
   deps().appendLog('gateway', 'system', line);
 }
 
+/** Set at quit: nothing may patch an app's config after its patch came out. */
+let shuttingDown = false;
+const SHUTDOWN_WAIT_MS = 5_000;
+
 function serialized<T>(task: () => Promise<T>): Promise<T> {
-  const run = queue.then(task, task);
+  const guarded = (): Promise<T> => (shuttingDown ? Promise.reject(new Error('Antseed Desktop is closing')) : task());
+  const run = queue.then(guarded, guarded);
   queue = run.catch(() => undefined);
   return run;
 }
@@ -175,6 +180,8 @@ async function patchApp(name: string, models: AppModels): Promise<void> {
   const profile = findConnectableProfile(name);
   if (!profile?.configPatch) throw new Error(`Unknown app: ${name}`);
   const endpoint = await getGatewayEndpoint({ name, label: profile.label });
+  // The await above may have spanned the start of quit.
+  if (shuttingDown) throw new Error('Antseed Desktop is closing');
   try {
     writeConfigPatch(profile.configPatch, patchTarget(endpoint, models), connectedAppsWslTargetsPath());
   } catch (err) {
@@ -283,10 +290,19 @@ export function reconnectAllApps(options: { restart?: boolean } = {}): Promise<C
 
 /** Quit path. A local gateway stops with the desktop, so its patches come out; a remote one keeps them. */
 export async function releaseConnectedAppsOnQuit(): Promise<void> {
-  if (getGatewaySettings().mode === 'local' && !isMultiInstanceDevelopment()) {
-    removeAllConfigPatches();
+  shuttingDown = true;
+  // Work already running finishes first; shutting down stops it writing more.
+  await Promise.race([
+    queue.catch(() => undefined),
+    new Promise((resolve) => { setTimeout(resolve, SHUTDOWN_WAIT_MS).unref?.(); }),
+  ]);
+  try {
+    if (getGatewaySettings().mode === 'local' && !isMultiInstanceDevelopment()) {
+      removeAllConfigPatches(log);
+    }
+  } finally {
+    await stopWslRelays();
   }
-  await stopWslRelays();
 }
 
 /** Every built-in profile, for listing in the Apps view. */

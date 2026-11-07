@@ -69,6 +69,7 @@ export type ChatModuleApi = {
   refreshChatConversations: () => Promise<void>;
   chooseWorkspace: () => Promise<void>;
   startNewChat: () => void;
+  startNewChatOnModel: (modelId: string) => void;
   deleteConversation: (convId?: string) => Promise<void>;
   renameConversation: (convId: string, newTitle: string) => void;
   openConversation: (convId: string) => Promise<void>;
@@ -89,6 +90,8 @@ export type ChatModuleApi = {
 const MODEL_LIST_RETRY_MS = 15_000;
 /** Automatic retries after a failed model list; the dropdown's Retry and gateway changes reset them. */
 const MODEL_LIST_MAX_AUTO_RETRIES = 4;
+
+type ImageRequest = { prompt: string; model: string; sourceImageAttachmentId?: string };
 
 export function initChatModule({
   bridge,
@@ -752,7 +755,7 @@ export function initChatModule({
     }
   }
 
-  async function openConversation(convId: string): Promise<void> {
+  async function openConversation(convId: string, options: { keepImageModel?: boolean } = {}): Promise<void> {
     if (!bridge?.chatAiGetConversation) return;
     const workspacePathAtOpen = uiState.chatWorkspacePath;
     uiState.chatActiveConversation = convId;
@@ -778,7 +781,7 @@ export function initChatModule({
 
       const modelId = typeof conv.service === 'string' ? conv.service.trim() : '';
       if (modelId) uiState.chatSelectedModelId = modelId;
-      uiState.chatImageModelId = null;
+      if (!options.keepImageModel) uiState.chatImageModelId = null;
       setLocalConversationMessages(convId, nextMessages);
       uiState.chatOpeningConversationId = null;
       void refreshPermissionModeForModel(uiState.chatSelectedModelId);
@@ -792,6 +795,15 @@ export function initChatModule({
       uiState.chatOpeningConversationId = null;
       reportChatError(err, 'Failed to open conversation');
     }
+  }
+
+  /** Home shows one model while a chat is open; the new chat must use what's on screen. */
+  function startNewChatOnModel(modelId: string): void {
+    startNewChat();
+    if (!modelId || uiState.chatSelectedModelId === modelId) return;
+    uiState.chatSelectedModelId = modelId;
+    void refreshPermissionModeForModel(modelId);
+    notifyUiStateChanged();
   }
 
   function startNewChat(): void {
@@ -820,7 +832,7 @@ export function initChatModule({
 
   async function createConversationForModel(
     modelId: string,
-    options: { activate: boolean } = { activate: true },
+    options: { activate: boolean; keepImageModel?: boolean } = { activate: true },
   ): Promise<string | null> {
     if (!bridge?.chatAiCreateConversation) return null;
     if (!modelId) {
@@ -835,7 +847,7 @@ export function initChatModule({
         const conversationId = getConversationId(result.data);
         if (!conversationId) throw new Error('Conversation created but ID is missing');
         await refreshChatConversations();
-        if (options.activate) await openConversation(conversationId);
+        if (options.activate) await openConversation(conversationId, { keepImageModel: options.keepImageModel ?? false });
         uiState.chatError = null;
         notifyUiStateChanged();
         return conversationId;
@@ -1024,6 +1036,8 @@ export function initChatModule({
     const requestStartedAt = Date.now();
     streamCompletedAtByConversation.delete(convId);
     streamFailedAtByConversation.delete(convId);
+    // A newer text message supersedes an image request waiting on funds.
+    imageRetryByConversation.delete(convId);
     const routedModelId = modelIdForSend(uiState.chatModels, modelId, selectHasFunds(uiState));
     const send = () => bridge.chatAiSendStream!(convId, content || ' ', routedModelId, attachments, uiState.chatPermissionMode);
     try {
@@ -1040,6 +1054,9 @@ export function initChatModule({
     } catch (err) {
       reportChatError(err, 'Request failed');
     } finally {
+      // The free seller was for this request; the chat stays on Auto, so it
+      // can use any seller once the user has funds.
+      if (routedModelId !== modelId) void bridge.chatAiSetModel?.(convId, modelId);
       if (isConversationSending(convId) && !hasConversationStreamingMessage(convId)) {
         setConversationSending(convId, false);
       }
@@ -1070,6 +1087,14 @@ export function initChatModule({
   function retryAfterPayment(): void {
     const convId = uiState.chatActiveConversation;
     if (!convId || !fundsBlockedConversationIds.has(convId) || isConversationSending(convId)) return;
+    const imageRequest = imageRetryByConversation.get(convId);
+    if (imageRequest) {
+      imageRetryByConversation.delete(convId);
+      fundsBlockedConversationIds.delete(convId);
+      clearChatNotices();
+      void runImageRequest(convId, imageRequest);
+      return;
+    }
     const last = lastUserMessage(convId);
     if (!last) return;
     fundsBlockedConversationIds.delete(convId);
@@ -1094,6 +1119,46 @@ export function initChatModule({
   // Image generation (gateway /v1/images, the selected image model)
   // ---------------------------------------------------------------------------
 
+  /** An image request stopped for lack of funds; Try again replays it, not the text model. */
+  const imageRetryByConversation = new Map<string, ImageRequest>();
+
+  /** The prompt is already in the conversation, from the first attempt. */
+  async function runImageRequest(convId: string, request: ImageRequest): Promise<void> {
+    if (!bridge?.chatGenerateImage) return;
+    setConversationSending(convId, true);
+    uiState.chatThinkingPhase = request.sourceImageAttachmentId ? 'Editing image' : 'Generating image';
+    notifyUiStateChanged();
+    queueScrollChatToBottom();
+    try {
+      const result = await bridge.chatGenerateImage({ conversationId: convId, ...request });
+      if (!result.ok || !result.user || !result.assistant) {
+        throw new Error(result.error || 'Image generation failed.');
+      }
+      // The prompt was projected optimistically; append only the reply.
+      const current = getLocalConversationMessages(convId) ?? (convId === uiState.chatActiveConversation ? uiState.chatMessages as ChatMessage[] : []);
+      const messages = [...current, result.assistant as ChatMessage];
+      setLocalConversationMessages(convId, messages);
+      if (convId === uiState.chatActiveConversation) uiState.chatMessages = messages;
+      if (activeConversation?.id === convId) {
+        activeConversation.messages = messages;
+        activeConversation.updatedAt = Date.now();
+      }
+      scheduleChatConversationsRefresh();
+      notifyUiStateChanged();
+      queueScrollChatToBottom();
+    } catch (error) {
+      const message = toErrorMessage(error, 'Image generation failed');
+      if (message.startsWith('payment_required:')) {
+        imageRetryByConversation.set(convId, request);
+        showFundsNotice(convId, { message: message.slice('payment_required:'.length).trim(), canAddFunds: true });
+      } else if (message !== 'Request aborted') {
+        reportChatError(message, 'Image generation failed');
+      }
+    } finally {
+      setConversationSending(convId, false);
+    }
+  }
+
   function generateImage(prompt: string): void {
     const content = prompt.trim();
     if (!content || !bridge?.chatGenerateImage) return;
@@ -1112,7 +1177,8 @@ export function initChatModule({
           showChatError('Choose a text model before starting an image conversation.');
           return;
         }
-        convId = await createConversationForModel(textModelId, { activate: true });
+        // Follow-ups in this chat are image requests too.
+        convId = await createConversationForModel(textModelId, { activate: true, keepImageModel: true });
       }
       if (!convId) return;
       if (isConversationSending(convId)) {
@@ -1159,41 +1225,11 @@ export function initChatModule({
         activeConversation.updatedAt = optimisticUserMessage.createdAt;
       }
 
-      setConversationSending(convId, true);
-      uiState.chatThinkingPhase = editing ? 'Editing image' : 'Generating image';
-      notifyUiStateChanged();
-      queueScrollChatToBottom();
-      try {
-        const result = await bridge.chatGenerateImage!({
-          conversationId: convId,
-          prompt: requestPrompt,
-          model: imageModelId,
-          ...(editing ? { sourceImageAttachmentId } : {}),
-        });
-        if (!result.ok || !result.user || !result.assistant) {
-          throw new Error(result.error || 'Image generation failed.');
-        }
-        // The prompt was projected optimistically; append only the reply.
-        const messages = [...(getLocalConversationMessages(convId) ?? pendingMessages), result.assistant as ChatMessage];
-        setLocalConversationMessages(convId, messages);
-        if (convId === uiState.chatActiveConversation) uiState.chatMessages = messages;
-        if (activeConversation?.id === convId) {
-          activeConversation.messages = messages;
-          activeConversation.updatedAt = Date.now();
-        }
-        scheduleChatConversationsRefresh();
-        notifyUiStateChanged();
-        queueScrollChatToBottom();
-      } catch (error) {
-        const message = toErrorMessage(error, 'Image generation failed');
-        if (message.startsWith('payment_required:')) {
-          showFundsNotice(convId, { message: message.slice('payment_required:'.length).trim(), canAddFunds: true });
-        } else if (message !== 'Request aborted') {
-          reportChatError(message, 'Image generation failed');
-        }
-      } finally {
-        setConversationSending(convId, false);
-      }
+      await runImageRequest(convId, {
+        prompt: requestPrompt,
+        model: modelIdForSend(uiState.chatModels, imageModelId, selectHasFunds(uiState)),
+        ...(editing ? { sourceImageAttachmentId } : {}),
+      });
     })();
   }
 
@@ -1595,6 +1631,7 @@ export function initChatModule({
     refreshChatConversations,
     chooseWorkspace,
     startNewChat,
+    startNewChatOnModel,
     deleteConversation,
     renameConversation,
     openConversation,

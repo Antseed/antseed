@@ -9,6 +9,11 @@ import path from 'node:path';
 
 const ENCRYPTED_SETTINGS_PATH = path.join(homedir(), '.antseed', 'telegram.enc');
 
+/** For the rename migration: the whole file is one encrypted blob. */
+export function telegramSettingsPath(): string {
+  return ENCRYPTED_SETTINGS_PATH;
+}
+
 export type TelegramSettings = {
   botToken: string;
   botId: number;

@@ -18,6 +18,7 @@ import {
 import { registerPiChatHandlers } from './chat/engine.js';
 import { emitChatEvent } from './chat/event-bus.js';
 import { createTelegramBridge } from './telegram/bridge.js';
+import { telegramSettingsPath } from './telegram/store.js';
 import { encryptedIdentityPath, ensureSecureIdentity, getSecureIdentity, hasStoredIdentity } from './identity.js';
 import type { LogEvent } from './runtime/log-parser.js';
 import {
@@ -100,7 +101,7 @@ async function migrateStoresAfterRename(): Promise<void> {
   try {
     const oldUserData = path.join(app.getPath('appData'), LEGACY_INTERNAL_APP_NAME);
     const result = await migrateEncryptedStores({
-      stores: [wholeFileStore(encryptedIdentityPath()), gatewaySettingsStore(gatewaySettingsPath())],
+      stores: [wholeFileStore(encryptedIdentityPath()), wholeFileStore(telegramSettingsPath()), gatewaySettingsStore(gatewaySettingsPath())],
       markerDir: app.getPath('userData'),
       oldName: LEGACY_INTERNAL_APP_NAME,
       newName: INTERNAL_APP_NAME,
@@ -221,7 +222,10 @@ if (!IS_SAFE_STORAGE_EXPORT) {
 async function stopDesktopServices(): Promise<void> {
   await Promise.all([
     telegramBridge.stop(),
-    releaseConnectedAppsOnQuit().then(() => stopLocalGateway()),
+    // The gateway stops even if restoring the apps' configs failed.
+    releaseConnectedAppsOnQuit().catch((err: unknown) => {
+      appendLog('gateway', 'system', `Releasing connected apps failed: ${err instanceof Error ? err.message : String(err)}`);
+    }).then(() => stopLocalGateway()),
     stopPaymentsPortal(),
   ]);
 }

@@ -11,7 +11,7 @@ import {
   Settings02Icon,
   Tick02Icon,
 } from '@hugeicons/core-free-icons';
-import { BrandIcon, isThemeAwareAppBrand, Modal, resolveBrandKey } from '@antseed/ui';
+import { BrandIcon, isThemeAwareAppBrand, Modal, resolveBrandKey, useCopyFeedback } from '@antseed/ui';
 import type { ConnectedAppProfile, GatewayEndpointInfo, InstalledAppEntry } from '../../../types/bridge';
 import { appsResource, installedAppsResource } from '../../../modules/app/vpr-resources';
 import { useCachedResource } from '../../../modules/app/cached-resource';
@@ -83,17 +83,12 @@ function maskKey(key: string): string {
 }
 
 function CopyRow({ label, value, display }: { label: string; value: string; display?: string }) {
-  const [copied, setCopied] = useState(false);
+  const { copied, copy } = useCopyFeedback(value);
   return (
     <button
       type="button"
       className={styles.endpointValue}
-      onClick={() => {
-        void navigator.clipboard.writeText(value).then(() => {
-          setCopied(true);
-          window.setTimeout(() => setCopied(false), 1500);
-        }).catch(() => setCopied(false));
-      }}
+      onClick={() => void copy()}
       title={`Copy ${label}`}
     >
       <code>{display ?? value}</code>

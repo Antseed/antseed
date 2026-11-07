@@ -4,6 +4,7 @@
  * connected apps use, and builds links into the gateway console where usage,
  * keys, limits and funding are managed.
  */
+import { publishKeyWithPolicy } from './key-with-policy.js';
 import { resolveConnectDataDir, DEFAULT_LOCAL_GATEWAY_PORT, type ProcessManager, type RuntimeMode } from '../runtime/process-manager.js';
 import { ACTIVE_CONFIG_PATH } from '../runtime/active-config.js';
 import { encryptedIdentityPath, ensureSecureIdentity, isStoredIdentityUnreadable, secureIdentityEnv } from '../identity.js';
@@ -211,16 +212,21 @@ async function ensureLocalKey(scope: string, appLabel?: string): Promise<StoredG
     const existing = getLocalKey(scope);
     if (existing && !(await keyRejected(localGatewayOrigin(), existing.secret))) return existing;
     if (existing) deps().appendLog('gateway', 'system', `The gateway no longer accepts the "${existing.label}" key; creating a new one`);
-    const created = await createLocalKey(scopeLabel(scope, appLabel));
-    setLocalKey(scope, created);
     // A new desktop key (first run, replaced, or the gateway forgot the old
-    // one) starts with no policy: carry Private mode over to it.
-    if (scope === DESKTOP_KEY_SCOPE && created.id && getGatewaySettings().privacy === 'private') {
-      await applyPrivacyToKey(created.id, 'private').catch((err: unknown) => {
-        deps().appendLog('gateway', 'system', `Could not keep Private mode on the new key: ${err instanceof Error ? err.message : String(err)}`);
-      });
-    }
-    return created;
+    // one) starts with no policy. In Private it can't be used until it has one,
+    // or requests could reach any seller while the app says Private.
+    const carryPrivate = scope === DESKTOP_KEY_SCOPE && getGatewaySettings().privacy === 'private';
+    return publishKeyWithPolicy({
+      create: () => createLocalKey(scopeLabel(scope, appLabel)),
+      applyPolicy: carryPrivate
+        ? async (key) => {
+          if (!key.id) throw new Error('The new key has no id on the gateway');
+          await applyPrivacyToKey(key.id, 'private');
+        }
+        : null,
+      revoke: async (key) => { if (key.id) await revokeLocalKey(key.id); },
+      save: (key) => setLocalKey(scope, key),
+    });
   })().finally(() => keyPromises.delete(scope));
   keyPromises.set(scope, promise);
   return promise;

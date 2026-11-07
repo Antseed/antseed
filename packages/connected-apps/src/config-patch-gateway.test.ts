@@ -513,3 +513,32 @@ test('a refresh with no models keeps the way back to the user\'s own default', a
     assert.equal((await readJson(claude)).model, 'opus');
   });
 });
+
+test('codex: a custom model catalog comes back on disconnect and when ours is rejected', { skip: process.platform === 'win32' }, async () => {
+  await withDir(async (dir) => {
+    const bin = path.join(dir, 'bin');
+    await mkdir(bin);
+    const fake = (code: number) => writeFile(path.join(bin, 'codex'), `#!/bin/sh
+if [ "$3" = "--bundled" ]; then echo '{"models":[{"base_instructions":"be good","truncation_policy":{"mode":"tokens","limit":1}}]}'; exit 0; fi
+exit ${code}
+`, { mode: 0o755 });
+    const originalPath = process.env['PATH'];
+    process.env['PATH'] = `${bin}${path.delimiter}${originalPath}`;
+    try {
+      const configPath = path.join(dir, 'config.toml');
+      const patch = { format: 'codex', configPath, providerKey: 'antseed', providerName: 'Antseed', baseURL: 'http://localhost:{buyerPort}/v1' } as ConfigPatchDef;
+      await writeFile(configPath, 'model_catalog_json = "my-models.json"\n');
+      await fake(0);
+      writeConfigPatch(patch, LOCAL);
+      assert.ok((await readFile(configPath, 'utf8')).includes('model_catalog_json = "antseed-models.json"'));
+      removeConfigPatch(patch);
+      assert.ok((await readFile(configPath, 'utf8')).includes('model_catalog_json = "my-models.json"'));
+
+      await fake(1);
+      writeConfigPatch(patch, LOCAL);
+      assert.ok((await readFile(configPath, 'utf8')).includes('model_catalog_json = "my-models.json"'));
+    } finally {
+      process.env['PATH'] = originalPath;
+    }
+  });
+});

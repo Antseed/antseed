@@ -14,6 +14,7 @@ test('a plain OpenAI-compatible entry is a text model over chat completions', ()
     supportsImages: false,
     sellers: 0,
     free: false,
+    minImageUsd: null,
     freeSellerId: null,
     freeForStakers: false,
     tee: false,
@@ -120,4 +121,17 @@ test('apps default to free models first, then tool use, then the most sellers; n
     { id: 'free-image', type: 'image', peers: [{ peerId: '1', ...free }] },
   ]);
   assert.deepEqual(recommendAppModels(models).map((model) => model.id), ['free-tools', 'free-plain', 'paid-tools']);
+});
+
+test('an image model charging per image is not free, though its token prices are $0', () => {
+  const models = toChatModels([
+    { id: 'flux', type: 'image', peers: [{ peerId: 'a', inputUsdPerMillion: 0, outputUsdPerMillion: 0, minImageUsdPerImage: 0.005 }] },
+    { id: 'chroma', type: 'image', peers: [{ peerId: 'b', inputUsdPerMillion: 0, outputUsdPerMillion: 0 }] },
+  ]);
+  const paid = models.find((model) => model.id === 'flux');
+  const free = models.find((model) => model.id === 'chroma');
+  assert.equal(paid?.free, false);
+  assert.equal(paid?.freeSellerId, null);
+  assert.equal(paid?.minImageUsd, 0.005);
+  assert.equal(free?.free, true);
 });

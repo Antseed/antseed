@@ -2,6 +2,7 @@
  * Pure helpers behind the chat's model picker and gateway error notices.
  */
 import type { ChatModel } from '../../types/bridge';
+import { compareDefaultModels } from '../../../shared/chat-model-ranking.js';
 import { joinPinnedModel, splitPinnedModel } from '../../../shared/pinned-model.js';
 
 const LAST_MODEL_STORAGE_KEY = 'antseed:chat:lastModel';
@@ -39,10 +40,17 @@ export function chooseDefaultChatModel(models: ChatModel[], lastModelId: string 
   const last = findChatModel(models, lastModelId);
   if (last?.type === 'text') return last.id;
   const text = models.filter((model) => model.type === 'text');
-  const best = [...text].sort((left, right) => Number(right.free) - Number(left.free)
-    || Number(right.toolUse) - Number(left.toolUse)
-    || right.sellers - left.sellers)[0];
+  const best = [...text].sort(compareDefaultModels)[0];
   return best?.id ?? null;
+}
+
+/**
+ * Where a funds note can send the user. A remote gateway pays from its own
+ * wallet, so funding this device's signer wouldn't help it.
+ */
+export function fundsNoticeAction(canAddFunds: boolean, gatewayMode: 'local' | 'remote' | undefined): 'deposit' | 'console' | null {
+  if (!canAddFunds) return null;
+  return gatewayMode === 'remote' ? 'console' : 'deposit';
 }
 
 /**

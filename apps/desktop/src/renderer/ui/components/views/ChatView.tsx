@@ -15,7 +15,7 @@ import {
   SecurityWarningIcon,
   Shield01Icon
 } from '@hugeicons/core-free-icons';
-import { findChatModel } from '../../../modules/chat/models';
+import { findChatModel, fundsNoticeAction } from '../../../modules/chat/models';
 import { shallowEqual, useUiSelector } from '../../hooks/useUiSelector';
 import { useActions } from '../../hooks/useActions';
 import { useRetainedState } from '../../hooks/useRetainedState';
@@ -40,7 +40,8 @@ import type { ChatPermissionMode, RawChatAttachment } from '../../../types/bridg
 import { VprHeaderActions } from '../vpr/VprHeaderActions';
 import { cancelVoiceRecording, startVoiceRecording, stopVoiceRecording } from '../../lib/voice-recorder';
 import { modelsForPrivacy, usePrivateMode } from '../vpr/PrivacyToggle';
-import { usePrivacySwitch } from '../../../modules/app/vpr-resources';
+import { gatewayResource, usePrivacySwitch } from '../../../modules/app/vpr-resources';
+import { useCachedResource } from '../../../modules/app/cached-resource';
 import styles from './ChatView.module.scss';
 import bubbleStyles from '../chat/ChatBubble.module.scss';
 
@@ -214,6 +215,7 @@ export function ChatView({ onSelectView }: ChatViewProps) {
   const privateMode = usePrivateMode();
   // Nothing goes out until a mode change has reached the routing policy.
   const { switching: privacySwitching } = usePrivacySwitch();
+  const gatewayMode = useCachedResource(gatewayResource).data?.status.mode;
   // Blockers only (a deposit short of the minimum, credits all held in
   // sessions); dismissing hides this one until the situation changes.
   const funding = useFundingStatus();
@@ -479,6 +481,7 @@ export function ChatView({ onSelectView }: ChatViewProps) {
 
   const selectedTextModel = findChatModel(snap.chatModels, snap.chatSelectedModelId);
   const imageModel = findChatModel(snap.chatModels, snap.chatImageModelId);
+  const fundsAction = fundsNoticeAction(snap.chatFundsNotice?.canAddFunds ?? false, gatewayMode);
   // An image model picked in the dropdown makes Send generate an image until
   // the user picks a text model again; the conversation keeps its text model.
   const imageMode = imageModel?.type === 'image';
@@ -1103,8 +1106,11 @@ export function ChatView({ onSelectView }: ChatViewProps) {
             {snap.chatFundsNotice && (
               <ChatNote
                 actions={[
-                  ...(snap.chatFundsNotice.canAddFunds
+                  ...(fundsAction === 'deposit'
                     ? [{ label: 'Add funds', primary: true, onClick: () => onSelectView?.('deposit') }]
+                    : []),
+                  ...(fundsAction === 'console'
+                    ? [{ label: 'Open gateway console', primary: true, onClick: () => { void window.antseedDesktop?.gatewayOpenConsole?.('/'); } }]
                     : []),
                   { label: 'Try again', onClick: () => actions.retryAfterPayment() },
                   { label: 'Dismiss', onClick: () => actions.dismissFundsNotice() },

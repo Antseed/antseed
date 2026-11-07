@@ -6,6 +6,7 @@ import {
   chooseDefaultChatModel,
   chooseModelForPrivate,
   filterChatModels,
+  fundsNoticeAction,
   fundsNoticeFromStopReason,
   modelIdForSend,
 } from './models';
@@ -100,4 +101,11 @@ test('with funds the stand-in is never a model free only for stakers', () => {
   const stakers = { ...model('luna'), free: false, freeForStakers: true, toolUse: true, sellers: 2, inputUsdPerMillion: 0, outputUsdPerMillion: 0 };
   const paid = { ...model('flash'), free: false, freeForStakers: false, toolUse: true, sellers: 1, inputUsdPerMillion: 1, outputUsdPerMillion: 2 };
   assert.equal(chooseModelForPrivate([stakers, paid], 'not-listed', true), 'flash');
+});
+
+test('a funds note never sends a remote gateway\'s user to fund this device', () => {
+  assert.equal(fundsNoticeAction(true, 'local'), 'deposit');
+  assert.equal(fundsNoticeAction(true, 'remote'), 'console');
+  assert.equal(fundsNoticeAction(false, 'remote'), null);
+  assert.equal(fundsNoticeAction(false, 'local'), null);
 });
