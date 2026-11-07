@@ -262,6 +262,15 @@ export class PeerConnection extends EventEmitter {
     return this._crypto !== null || this._dataChannel !== null;
   }
 
+  /**
+   * Hex session hash of this encrypted TCP connection, the same on both ends. A TEE seller binds
+   * it into its attestation quote so the buyer knows this connection terminates in the TEE.
+   * Null on WebRTC and plaintext connections.
+   */
+  get channelBinding(): string | null {
+    return this._crypto ? this._crypto.channelBinding.toString("hex") : null;
+  }
+
   get transportDescription(): "webrtc" | "tcp-encrypted" | "tcp-plaintext" {
     if (this._dataChannel !== null) return "webrtc";
     if (this._crypto !== null) return "tcp-encrypted";

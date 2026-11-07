@@ -13,6 +13,7 @@ import {
 import { PROVIDER_CLAIMS_CAP_ID } from './caps/provider-claims.js'
 import { readFileSync } from 'node:fs'
 import type { MeasuredImagePolicy } from './caps/measured-image.js'
+import { readApprovedNodeMeasurements } from './approved-node-measurements.js'
 import {
   NONCE_BYTES,
   VERIFIER_ID,
@@ -115,7 +116,7 @@ export async function runVerify(
       method: 'POST',
       path: ctx.attestPath,
       headers: { 'content-type': 'application/json' },
-      body: encodeAttestRequest(nonce, requested),
+      body: encodeAttestRequest(nonce, requested, true),
     })
   } catch (err) {
     return failAll(`attestation request failed: ${msg(err)}`, requiredCaps)
@@ -143,6 +144,8 @@ export async function runVerify(
   // Verify the required caps, any cap the seller returned evidence for, and derived caps.
   const wanted = new Set([...requiredCaps, ...Object.keys(evidence), ...DERIVED_CAPS])
   const measuredImagePolicy = readMeasuredImagePolicy()
+  const approvedNodeBuilds = readApprovedNodeMeasurements()
+  const channelBinding = resp.channelBinding
   const claims: ClaimResult[] = []
   for (const capId of capabilityIds()) {
     if (!wanted.has(capId)) continue
@@ -150,9 +153,9 @@ export async function runVerify(
     if (!cap) continue
     const source = PARSE_SOURCE[capId]
     const parsed = source ? parsedByCap.get(source) : undefined
-    const policy = capId === MEASURED_IMAGE_ID ? measuredImagePolicy : undefined
+    const policy = capId === MEASURED_IMAGE_ID ? measuredImagePolicy : capId === NODE_TEE_CAP_ID ? approvedNodeBuilds : undefined
     try {
-      const out = await cap.verify({ nonce, peerId, evidence: evidence[capId], parsedQuote: parsed, evidenceBundle: evidence, policy })
+      const out = await cap.verify({ nonce, peerId, evidence: evidence[capId], parsedQuote: parsed, evidenceBundle: evidence, policy, channelBinding })
       claims.push(...(Array.isArray(out) ? out : [out]))
     } catch (err) {
       claims.push({ claim: claimId(capId), ok: false, detail: `verify threw: ${msg(err)}` })
@@ -167,9 +170,9 @@ const verifierPlugin: AntseedVerifierPlugin = {
   type: 'verifier',
   name: VERIFIER_ID,
   displayName: 'TEE attestation verifier (Intel TDX / DCAP)',
-  version: '0.1.0',
+  version: '0.1.1',
   description:
-    'Capability-based seller attestation: one claim per capability. Requires the seller node\'s genuine Intel TDX hardware (seller-node-tee-genuine) and a seller-identity binding over the whole bundle (seller-bound); also reports the provider TEE (seller-provider-tee-genuine), measured-image and gpu-cc when available.',
+    'Capability-based seller attestation: one claim per capability. Requires the seller node\'s genuine Intel TDX hardware running an approved seller build on the buyer\'s own connection (seller-node-tee-genuine) and a seller-identity binding over the whole bundle (seller-bound); also reports the provider TEE (seller-provider-tee-genuine), measured-image and gpu-cc when available.',
   verify: (ctx) => runVerify(ctx),
 }
 

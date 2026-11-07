@@ -17,8 +17,9 @@ export class TeeVerification {
 
   constructor(readonly policy: VerifierPolicy | undefined, private readonly now = Date.now) {}
 
-  async verify(peer: Peer, policy: VerifierPolicy, run: () => Promise<VerifyOutcome>, force = false): Promise<VerifyOutcome> {
-    return this.verifyCached(peer, policy, run, TEE_MAX_AGE_MS, force)
+  /** `buyerIdentity` keeps a verdict to the connection of the identity that checked it. */
+  async verify(peer: Peer, policy: VerifierPolicy, run: () => Promise<VerifyOutcome>, force = false, buyerIdentity?: string): Promise<VerifyOutcome> {
+    return this.verifyCached(peer, policy, run, TEE_MAX_AGE_MS, force, false, buyerIdentity)
   }
 
   async verifyForDisplay(peer: Peer, run: () => Promise<VerifyOutcome>): Promise<VerifyOutcome> {
@@ -31,11 +32,11 @@ export class TeeVerification {
       ? entry.checkedAt + maxAgeMs : entry.checkedAt + TEE_MAX_AGE_MS
   }
 
-  private async verifyCached(peer: Peer, policy: VerifierPolicy, run: () => Promise<VerifyOutcome>, maxAgeMs: number, force = false, requireSellerNode = false): Promise<VerifyOutcome> {
+  private async verifyCached(peer: Peer, policy: VerifierPolicy, run: () => Promise<VerifyOutcome>, maxAgeMs: number, force = false, requireSellerNode = false, buyerIdentity?: string): Promise<VerifyOutcome> {
     if (this.closed) return { ok: false, verified: false, reason: 'Buyer stopped', transient: true }
     const chosen = selectVerifier(policy, parseVerifierCapabilities(peer.capabilities))
     const fingerprint = verifierSupportFingerprint(peer.capabilities)
-    const queryKey = [peer.peerId, chosen ?? '', fingerprint] as const
+    const queryKey = buyerIdentity ? [peer.peerId, chosen ?? '', fingerprint, buyerIdentity] : [peer.peerId, chosen ?? '', fingerprint]
     const cache = this.queries.getQueryCache()
     for (const query of cache.findAll({ queryKey: [peer.peerId] })) {
       if (query.queryKey[2] !== fingerprint) cache.remove(query)

@@ -12,16 +12,25 @@ A seller running on Intel TDX hardware can prove it cryptographically to every b
 ## How it works
 
 - Your seller loads the SDK's **prover** at startup and advertises the capability `verifier.antseed-verifier` in its discovery metadata.
-- A buyer challenges you on the reserved route `/_antseed/attest/antseed-verifier` with a fresh nonce. The prover mints an Intel TDX quote **bound to that nonce and your peer ID**, signs the evidence bundle with your identity key, and returns it.
-- The buyer verifies the quote against Intel's DCAP certificate chain locally. Attestation runs before provider matching, payment and metering. It is free and unmetered, and limited to 10 attestations per buyer per minute.
+- A buyer challenges you on the reserved route `/_antseed/attest/antseed-verifier` with a fresh nonce. The prover mints an Intel TDX quote **bound to that nonce, your peer ID and the encrypted connection the buyer is on**, signs the evidence bundle with your identity key, and returns it.
+- The buyer verifies the quote against Intel's DCAP certificate chain locally, and checks that its measurements match an [approved TEE seller build](#approved-seller-builds). Attestation runs before provider matching, payment and metering. It is free and unmetered, and limited to 10 attestations per buyer per minute.
 
 If the prover fails to load at startup, the seller exits rather than advertising a capability it can't answer.
 
 ## Prerequisites
 
 - A genuine **Intel TDX** VM, for example a GCP `c3` confidential VM (Ubuntu 24.04) with TDX enabled. The prover mints quotes through `configfs-tsm` (`/sys/kernel/config/tsm/report`), which only exists on real TDX hardware and requires **root**.
-- A working seller (`antseed seller start` serving requests) on that VM.
+- A working seller (`antseed seller start` serving requests) on that VM, reachable by buyers over encrypted TCP (its signaling port). The connection binding is not available over WebRTC.
 - Node.js 20+.
+
+## Approved seller builds
+
+Buyers accept a seller node only when its measurements match an approved TEE seller build listed in the verifier SDK: MRTD and RTMR0–2 (firmware, VM shape, kernel and boot configuration), plus either RTMR3 or, on dstack (Phala) confidential VMs, the app compose hash that the buyer replays from the dstack event log. A build is approved when it is reproducible and, once reviewed, leaves its operator no way to read prompts:
+
+- no shell, SSH, `exec` or debug access, and no prompt logging;
+- upstream URLs, proxy settings and CA roots fixed in the measured image or compose file, with only secrets such as API keys supplied at runtime.
+
+The simplest route is the official TEE seller image on a dstack confidential VM: [`deploy/tee-seller`](https://github.com/AntSeed/antseed/tree/main/deploy/tee-seller) has the image, a reference compose file and the review checklist. To list a build, open a pull request adding its entry to `packages/antseed-verifier/src/approved-node-measurements.ts`. Buyers testing a build before it is listed can add it locally with `ANTSEED_VERIFIER_NODE_MEASUREMENTS` (a JSON array of `{ name, mrtd, rtmr0, rtmr1, rtmr2 }` entries, each with `rtmr3` or `composeHash`).
 
 ## 1. Install the verifier SDK
 

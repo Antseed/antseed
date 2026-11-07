@@ -2,14 +2,16 @@ import type { ClaimResult } from '../antseed-node-types.js'
 import type { Capability, CapabilityCollectInput, CapabilityVerifyInput } from '../capability.js'
 import { claimId, computeReportData } from '../shared.js'
 import { generateTdxQuote } from '../collect/configfs.js'
-import { generateDstackQuote } from '../collect/dstack.js'
+import { generateDstackAttestation } from '../collect/dstack.js'
+import { composeHashFromEventLog, rtmr3Events, type DstackEvent } from '../dstack-event-log.js'
 import { collectViaHttp, collectTdxAndPubkey } from '../collect/http.js'
 import { antseedRdV1, verifyReportData, type BindingIngredients } from '../report-data.js'
+import type { ApprovedNodeMeasurement } from '../approved-node-measurements.js'
 
 /** A provider quote's declared report_data binding: a frozen scheme id + its string ingredients. */
 export interface ReportDataBinding {
   scheme: string
-  ingredients: Pick<BindingIngredients, 'peerId' | 'e2ePubkey' | 'keysetDigest'>
+  ingredients: Pick<BindingIngredients, 'peerId' | 'e2ePubkey' | 'keysetDigest' | 'channelBinding'>
 }
 
 /**
@@ -88,27 +90,31 @@ export interface ParsedTdxQuote {
   td: TdMeasurements | null
   /** The provider-declared report_data binding, if the evidence carried one. */
   binding?: ReportDataBinding
+  /** dstack RTMR3 event log, if the evidence carried one. */
+  eventLog?: unknown
   /** Set when DCAP verification or evidence decoding threw. */
   error?: string
 }
 
-/** tee-tdx evidence blob: the raw quote (b64), optional DCAP collateral, optional binding. */
+/** tee-tdx evidence blob: the raw quote (b64), optional DCAP collateral, binding and dstack RTMR3 event log. */
 interface TeeTdxEvidence {
   quote: string
   collateral?: unknown
   binding?: ReportDataBinding
+  eventLog?: DstackEvent[]
 }
 
-export function encodeTeeTdxEvidence(quote: Uint8Array, collateral?: unknown, binding?: ReportDataBinding): Uint8Array {
+export function encodeTeeTdxEvidence(quote: Uint8Array, collateral?: unknown, binding?: ReportDataBinding, eventLog?: DstackEvent[]): Uint8Array {
   const blob: TeeTdxEvidence = {
     quote: Buffer.from(quote).toString('base64'),
     ...(collateral !== undefined ? { collateral } : {}),
     ...(binding !== undefined ? { binding } : {}),
+    ...(eventLog !== undefined ? { eventLog } : {}),
   }
   return new TextEncoder().encode(JSON.stringify(blob))
 }
 
-export function decodeTeeTdxEvidence(bytes: Uint8Array): { quote: Uint8Array; collateral?: unknown; binding?: ReportDataBinding } {
+export function decodeTeeTdxEvidence(bytes: Uint8Array): { quote: Uint8Array; collateral?: unknown; binding?: ReportDataBinding; eventLog?: unknown } {
   const parsed = JSON.parse(new TextDecoder().decode(bytes)) as Partial<TeeTdxEvidence>
   if (typeof parsed.quote !== 'string' || parsed.quote.length === 0) {
     throw new Error('tee-tdx evidence missing "quote"')
@@ -121,6 +127,7 @@ export function decodeTeeTdxEvidence(bytes: Uint8Array): { quote: Uint8Array; co
     quote,
     ...(parsed.collateral !== undefined ? { collateral: parsed.collateral } : {}),
     ...(parsed.binding !== undefined ? { binding: parsed.binding } : {}),
+    ...(parsed.eventLog !== undefined ? { eventLog: parsed.eventLog } : {}),
   }
 }
 
@@ -166,14 +173,15 @@ export async function verifyTdxEvidence(
   let quote: Uint8Array
   let collateral: unknown
   let binding: ReportDataBinding | undefined
+  let eventLog: unknown
   try {
-    ;({ quote, collateral, binding } = decodeTeeTdxEvidence(evidence))
+    ;({ quote, collateral, binding, eventLog } = decodeTeeTdxEvidence(evidence))
   } catch (err) {
     return { quoteEvidence: evidence, status: '', td: null, error: `malformed tee-tdx evidence: ${msg(err)}` }
   }
   try {
     const raw = await verifyQuote(quote, collateral, nowSecs)
-    return { quoteEvidence: evidence, status: raw.status, td: raw.td, ...(binding ? { binding } : {}) }
+    return { quoteEvidence: evidence, status: raw.status, td: raw.td, ...(binding ? { binding } : {}), ...(eventLog !== undefined ? { eventLog } : {}) }
   } catch (err) {
     return { quoteEvidence: evidence, status: '', td: null, ...(binding ? { binding } : {}), error: `quote verification failed: ${msg(err)}` }
   }
@@ -185,6 +193,31 @@ function msg(err: unknown): string {
 
 function hex(b: Uint8Array): string {
   return Buffer.from(b).toString('hex')
+}
+
+/**
+ * The approved build this quote runs, if any: MRTD and RTMR0-2 must equal the entry's, and the
+ * workload must match its RTMR3 or, for a dstack entry, the compose hash replayed from the event
+ * log. The second value says why a dstack event log could not be used, for the claim detail.
+ */
+function approvedBuild(
+  approved: readonly ApprovedNodeMeasurement[],
+  td: TdMeasurements,
+  eventLog: unknown,
+): { build?: ApprovedNodeMeasurement; eventLogError?: string } {
+  const base = [td.mrTd, td.rtMr0, td.rtMr1, td.rtMr2].map(hex)
+  const rtmr3 = hex(td.rtMr3)
+  let replay: ReturnType<typeof composeHashFromEventLog> | undefined
+  const composeHash = (): string | undefined => {
+    replay ??= eventLog === undefined ? { error: 'seller sent no dstack event log' } : composeHashFromEventLog(eventLog, td.rtMr3)
+    return 'composeHash' in replay ? replay.composeHash : undefined
+  }
+  const build = approved.find((m) => {
+    if (![m.mrtd, m.rtmr0, m.rtmr1, m.rtmr2].every((v, i) => v.toLowerCase() === base[i])) return false
+    if (m.rtmr3 !== undefined) return m.rtmr3.toLowerCase() === rtmr3
+    return m.composeHash !== undefined && m.composeHash.toLowerCase() === composeHash()
+  })
+  return { ...(build ? { build } : {}), ...(replay && 'error' in replay ? { eventLogError: replay.error } : {}) }
 }
 
 /**
@@ -201,7 +234,7 @@ function hex(b: Uint8Array): string {
 export function makeTdxCap(
   id: string,
   defaultSource: 'configfs' | 'http',
-  opts?: { bindNoncePeerId?: boolean },
+  opts?: { sellerNode?: boolean },
 ): Capability {
   return {
     id,
@@ -215,12 +248,28 @@ export function makeTdxCap(
       if (!isTcbAcceptable(p.status)) return { claim, ok: false, detail: `TCB status not acceptable: ${p.status || 'unknown'}` }
       if (!p.td) return { claim, ok: false, detail: 'quote is not an Intel TDX quote' }
       if (p.td.debug === true) return { claim, ok: false, detail: 'TDX debug mode is enabled' }
-      // Bind report_data to this round: the node cap to its {peerId} identity, a provider cap
-      // to whatever frozen scheme its evidence declares. Fail-closed — a borrowed, relayed, or
+      // The seller node must also run an approved build and answer on the buyer's own connection:
+      // the quote commits to that connection's session hash, so it was minted by the approved
+      // build terminating this connection, not relayed from another machine.
+      let build: ApprovedNodeMeasurement | undefined
+      const channelBinding = input.channelBinding
+      if (opts?.sellerNode) {
+        if (!channelBinding) {
+          return { claim, ok: false, detail: 'no connection binding: TEE attestation needs an encrypted TCP connection to the seller' }
+        }
+        const match = approvedBuild((input.policy as readonly ApprovedNodeMeasurement[] | undefined) ?? [], p.td, p.eventLog)
+        build = match.build
+        if (!build) {
+          const why = match.eventLogError ? ` (${match.eventLogError})` : ''
+          return { claim, ok: false, detail: `genuine Intel TDX hardware, but the seller build (MRTD ${hex(p.td.mrTd).slice(0, 16)}…) is not an approved TEE seller build${why}` }
+        }
+      }
+      // Bind report_data to this round: the node cap to its {peerId, channelBinding}, a provider
+      // cap to whatever frozen scheme its evidence declares. Fail-closed — a borrowed, relayed, or
       // stale quote cannot match a fresh-nonce commitment. A provider quote with no declared
       // scheme still passes on genuineness, but its detail must disclose that freshness was not proven.
-      const binding: ReportDataBinding | undefined = opts?.bindNoncePeerId
-        ? { scheme: antseedRdV1.id, ingredients: { peerId: input.peerId } }
+      const binding: ReportDataBinding | undefined = opts?.sellerNode
+        ? { scheme: antseedRdV1.id, ingredients: { peerId: input.peerId, ...(channelBinding ? { channelBinding } : {}) } }
         : p.binding
       if (binding) {
         const bad = verifyReportData(binding.scheme, p.td.reportData, input.nonce, binding.ingredients)
@@ -229,23 +278,26 @@ export function makeTdxCap(
       const freshness = binding
         ? `bound to this round (${binding.scheme})`
         : 'freshness/instance binding NOT verified (no report_data scheme declared)'
+      const scope = build ? `approved build ${build.name}, bound to this connection` : `MRTD ${hex(p.td.mrTd).slice(0, 16)}…`
       return {
         claim,
         ok: true,
-        detail: `genuine Intel TDX quote (TCB ${p.status}); MRTD ${hex(p.td.mrTd).slice(0, 16)}…; ${freshness}`,
+        detail: `genuine Intel TDX quote (TCB ${p.status}); ${scope}; ${freshness}`,
       }
     },
 
     async collect(input: CapabilityCollectInput): Promise<Uint8Array> {
       const source = input.config[tdxConfigKey(id, 'source')] ?? defaultSource
+      const channelBinding = input.config[tdxConfigKey(id, 'channelBinding')] || undefined
       if (source === 'configfs') {
-        const quote = generateTdxQuote(computeReportData(input.nonce, input.peerId))
+        const quote = generateTdxQuote(computeReportData(input.nonce, input.peerId, channelBinding))
         return encodeTeeTdxEvidence(quote)
       }
       if (source === 'dstack') {
         const socket = input.config[tdxConfigKey(id, 'dstack.socket')] || undefined
-        const quote = await generateDstackQuote(computeReportData(input.nonce, input.peerId), socket)
-        return encodeTeeTdxEvidence(quote)
+        const { quote, eventLog } = await generateDstackAttestation(computeReportData(input.nonce, input.peerId, channelBinding), socket)
+        // Only the RTMR3 events: the buyer replays them to the app's compose hash.
+        return encodeTeeTdxEvidence(quote, undefined, undefined, eventLog ? rtmr3Events(eventLog) : undefined)
       }
       if (source === 'http') {
         const url = input.config[tdxConfigKey(id, 'url')]
@@ -268,7 +320,10 @@ export function makeTdxCap(
   }
 }
 
-/** The AntSeed seller node's own TEE — mints its quote locally via configfs; report_data bound to nonce+peerId. */
-export const nodeTeeCapability = makeTdxCap(NODE_TEE_CAP_ID, 'configfs', { bindNoncePeerId: true })
+/**
+ * The AntSeed seller node's own TEE — mints its quote locally via configfs; report_data bound to
+ * nonce + peerId + the buyer's connection, and the TD measurement must be an approved build.
+ */
+export const nodeTeeCapability = makeTdxCap(NODE_TEE_CAP_ID, 'configfs', { sellerNode: true })
 /** The downstream inference provider's TEE — quote fetched from the provider's evidence route. */
 export const providerTeeCapability = makeTdxCap(PROVIDER_TEE_CAP_ID, 'http')

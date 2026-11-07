@@ -11,6 +11,7 @@ export type AntseedErrorCode =
   | 'buyer-deposits-insufficient'
   | 'buyer-reserve-topup-timeout'
   | 'buyer-transport-closed'
+  | 'buyer-tee-connection-changed'
   | 'invalid-spending-auth-header'
   | 'chain-rpc-unavailable'
   | 'peer-not-authorized'

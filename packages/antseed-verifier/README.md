@@ -22,7 +22,7 @@ no provider-specific hosts or schemas, and it is self-contained (no peer depende
 
 | Capability | Proves | Verdict |
 |---|---|---|
-| `seller-node-tee-genuine` | the seller **node** runs in a genuine Intel TDX enclave (DCAP: PCK chain to Intel's root, acceptable TCB, TD10, debug off). The quote binds to this nonce + peerId | **required** |
+| `seller-node-tee-genuine` | the seller **node** runs an approved seller build in a genuine Intel TDX enclave (DCAP: PCK chain to Intel's root, acceptable TCB, TD10, debug off; MRTD + RTMR0-2 and either RTMR3 or the dstack app compose hash replayed from the event log match an entry in `src/approved-node-measurements.ts`). The quote binds to this nonce + peerId + the buyer's encrypted connection | **required** |
 | `seller-bound` | the seller's identity key signs the whole evidence bundle for this fresh nonce (the signer recovers to peerId) | **required** |
 | `seller-provider-tee-genuine` | the downstream inference **provider's** TEE is genuine TDX. It is also round-bound when the seller declares a `report_data` scheme | informational |
 | `seller-provider-gpu-cc` | the provider's GPUs run NVIDIA Confidential Computing (NVIDIA NRAS verifies it, nonce-bound) | informational |
@@ -55,6 +55,7 @@ The **buyer** needs no special hardware. Optional policy knobs:
 | Variable | Purpose |
 |---|---|
 | `ANTSEED_VERIFIER_REQUIRED_CAPS` | comma-separated capabilities that gate the overall `ok` (default `seller-node-tee-genuine,seller-bound`). For example, a provenance buyer sets `seller-provider-tee-genuine,seller-bound` to require the downstream provider's TEE |
+| `ANTSEED_VERIFIER_NODE_MEASUREMENTS` | buyer: extra approved seller builds, a JSON array of `{ name, mrtd, rtmr0, rtmr1, rtmr2 }` entries, each with `rtmr3` or `composeHash` (inline or `@/path/to/file.json`), added to the built-in list |
 | `ANTSEED_VERIFIER_MEASURED_IMAGE_POLICY` | approved-measurement allow-list (inline JSON or `@/path.json`) for `measured-image` |
 | `ANTSEED_VERIFIER_STRICT_TCB` | `true` requires TCB exactly `UpToDate` (default also accepts `SWHardeningNeeded`) |
 | `ANTSEED_VERIFIER_NRAS_URL` / `_NRAS_JWKS_URL` | override NVIDIA NRAS endpoints for `gpu-cc` |
@@ -83,4 +84,4 @@ scheme unchanged. Full setup: [CHUTES.md](./CHUTES.md) · [REDPILL.md](./REDPILL
 
 ---
 
-`v0.1.0` · GPL-3.0
+`v0.1.1` · GPL-3.0

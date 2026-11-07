@@ -22,15 +22,21 @@ import {
 import type { Capability } from '../capability.js'
 import { claimId, computeReportData } from '../shared.js'
 import { noncePubkeySha256V1 } from '../report-data.js'
+import { DSTACK_RUNTIME_EVENT_TYPE, runtimeEventDigest, type DstackEvent } from '../dstack-event-log.js'
+import { createHash } from 'node:crypto'
 
 const NONCE = randomBytes(32)
 const PEER = 'f'.repeat(40)
+/** Session hash of the buyer's connection the round ran over. */
+const BINDING = 'c'.repeat(64)
+/** The approved build matching td()'s default measurements. */
+const APPROVED = [{ name: 'test-build', mrtd: 'aa'.repeat(48), rtmr0: '00'.repeat(48), rtmr1: '00'.repeat(48), rtmr2: '00'.repeat(48), rtmr3: '00'.repeat(48) }]
 
 afterEach(() => vi.unstubAllGlobals())
 
 /**
  * A TD10 measurement set. Override fields per test. report_data defaults to the node cap
- * antseed-rd-v1 {peerId} binding, so the node binding check passes unless a test overrides it.
+ * antseed-rd-v1 {peerId, channelBinding} binding, so the node binding check passes unless a test overrides it.
  */
 function td(over: Partial<TdMeasurements> = {}): TdMeasurements {
   return {
@@ -39,16 +45,29 @@ function td(over: Partial<TdMeasurements> = {}): TdMeasurements {
     rtMr1: new Uint8Array(48),
     rtMr2: new Uint8Array(48),
     rtMr3: new Uint8Array(48),
-    reportData: new Uint8Array(computeReportData(NONCE, PEER)),
+    reportData: new Uint8Array(computeReportData(NONCE, PEER, BINDING)),
     debug: false,
     ...over,
   }
 }
 
 /** Run verifyTdxEvidence with a stub DCAP, then the cap policy check, as the orchestrator does. */
-async function run(cap: Capability, stub: VerifyQuoteFn, evidence = encodeTeeTdxEvidence(randomBytes(64))) {
+async function run(
+  cap: Capability,
+  stub: VerifyQuoteFn,
+  evidence = encodeTeeTdxEvidence(randomBytes(64)),
+  opts: { channelBinding?: string; approved?: unknown } = {},
+) {
   const parsed = await verifyTdxEvidence(evidence, stub, Math.floor(Date.now() / 1000))
-  return cap.verify({ nonce: NONCE, peerId: PEER, evidence, parsedQuote: parsed })
+  const channelBinding = 'channelBinding' in opts ? opts.channelBinding : BINDING
+  return cap.verify({
+    nonce: NONCE,
+    peerId: PEER,
+    evidence,
+    parsedQuote: parsed,
+    policy: 'approved' in opts ? opts.approved : APPROVED,
+    ...(channelBinding ? { channelBinding } : {}),
+  })
 }
 
 // One factory builds the verify logic for both caps. Exercise it through the node cap.
@@ -59,6 +78,59 @@ describe('TDX cap verify (seller-node-tee-genuine)', () => {
     const r = await run(nodeTeeCapability, async () => ({ status: 'UpToDate', td: td() }))
     expect(r).toMatchObject({ claim: CLAIM, ok: true })
     expect(r.detail).toMatch(/genuine Intel TDX quote/)
+    expect(r.detail).toMatch(/approved build test-build, bound to this connection/)
+  })
+
+  it('rejects genuine hardware running a build that is not approved', async () => {
+    const r = await run(nodeTeeCapability, async () => ({ status: 'UpToDate', td: td({ rtMr3: new Uint8Array(48).fill(1) }) }))
+    expect(r.ok).toBe(false)
+    expect(r.detail).toMatch(/not an approved TEE seller build/)
+  })
+
+  it('rejects every build when no approved build is listed', async () => {
+    const r = await run(nodeTeeCapability, async () => ({ status: 'UpToDate', td: td() }), undefined, { approved: [] })
+    expect(r.ok).toBe(false)
+    expect(r.detail).toMatch(/not an approved TEE seller build/)
+  })
+
+  it('rejects when the buyer has no connection binding (e.g. WebRTC)', async () => {
+    const r = await run(nodeTeeCapability, async () => ({ status: 'UpToDate', td: td() }), undefined, { channelBinding: undefined })
+    expect(r.ok).toBe(false)
+    expect(r.detail).toMatch(/no connection binding/)
+  })
+
+  it('rejects a quote bound to a different connection (relayed from another session)', async () => {
+    const r = await run(nodeTeeCapability, async () => ({ status: 'UpToDate', td: td() }), undefined, { channelBinding: 'd'.repeat(64) })
+    expect(r.ok).toBe(false)
+    expect(r.detail).toMatch(/does not match scheme "antseed-rd-v1"/)
+  })
+
+  it('accepts a dstack CVM whose event log replays to an approved compose hash', async () => {
+    const compose = 'ab'.repeat(32)
+    const ev = (name: string, payload: string): DstackEvent => ({
+      imr: 3, event_type: DSTACK_RUNTIME_EVENT_TYPE, event: name, event_payload: payload,
+      digest: runtimeEventDigest(name, Buffer.from(payload, 'hex'), 1).toString('hex'),
+    })
+    const log = [ev('app-id', '11'.repeat(20)), ev('compose-hash', compose), ev('instance-id', '22'.repeat(20)), ev('boot-mr-done', '')]
+    const rtMr3 = log.reduce((mr, e) => createHash('sha384').update(Buffer.concat([mr, Buffer.from(e.digest, 'hex')])).digest(), Buffer.alloc(48))
+    const dstackBuild = [{ name: 'phala-build', mrtd: 'aa'.repeat(48), rtmr0: '00'.repeat(48), rtmr1: '00'.repeat(48), rtmr2: '00'.repeat(48), composeHash: compose }]
+    const evidence = encodeTeeTdxEvidence(randomBytes(64), undefined, undefined, log)
+    const stub: VerifyQuoteFn = async () => ({ status: 'UpToDate', td: td({ rtMr3: new Uint8Array(rtMr3) }) })
+
+    const ok = await run(nodeTeeCapability, stub, evidence, { approved: dstackBuild })
+    expect(ok).toMatchObject({ ok: true, detail: expect.stringMatching(/approved build phala-build/) })
+
+    const otherCompose = [{ ...dstackBuild[0]!, composeHash: 'cd'.repeat(32) }]
+    expect((await run(nodeTeeCapability, stub, evidence, { approved: otherCompose })).ok).toBe(false)
+
+    const noLog = await run(nodeTeeCapability, stub, encodeTeeTdxEvidence(randomBytes(64)), { approved: dstackBuild })
+    expect(noLog).toMatchObject({ ok: false, detail: expect.stringMatching(/seller sent no dstack event log/) })
+  })
+
+  it('rejects a quote bound only to nonce+peerId (a seller on the old prover)', async () => {
+    const r = await run(nodeTeeCapability, async () => ({ status: 'UpToDate', td: td({ reportData: new Uint8Array(computeReportData(NONCE, PEER)) }) }))
+    expect(r.ok).toBe(false)
+    expect(r.detail).toMatch(/does not match scheme "antseed-rd-v1"/)
   })
 
   it('accepts SWHardeningNeeded', async () => {
@@ -169,6 +241,12 @@ describe('seller-node-tee-genuine collect (configfs, stubbed)', () => {
     const { quote } = decodeTeeTdxEvidence(ev)
     // The stub echoes report_data as the quote. Assert the collector bound nonce and peer.
     expect(Buffer.from(quote).equals(computeReportData(NONCE, PEER))).toBe(true)
+  })
+
+  it('also binds the connection when the prover passes its session hash', async () => {
+    const config = { [tdxConfigKey(NODE_TEE_CAP_ID, 'channelBinding')]: BINDING }
+    const { quote } = decodeTeeTdxEvidence(await nodeTeeCapability.collect!({ nonce: NONCE, peerId: PEER, config }))
+    expect(Buffer.from(quote).equals(computeReportData(NONCE, PEER, BINDING))).toBe(true)
   })
 })
 

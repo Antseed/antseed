@@ -102,4 +102,21 @@ describe('node-tee capability — dstack source', () => {
     const { quote } = decodeTeeTdxEvidence(evidence)
     expect(Buffer.from(quote).equals(computeReportData(nonce, peerId))).toBe(true)
   })
+
+  it('binds the connection and ships only the RTMR3 events of the agent event log', async () => {
+    const rtmr3Event = { imr: 3, event_type: 0x08000001, digest: '00', event: 'compose-hash', event_payload: 'ab'.repeat(32) }
+    const eventLog = JSON.stringify([{ imr: 0, event_type: 1, digest: '00', event: '', event_payload: '' }, rtmr3Event])
+    stub = await startDstackStub((rdHex) => ({ quote: rdHex, event_log: eventLog }))
+    const nonce = new Uint8Array(randomBytes(32))
+    const peerId = 'a'.repeat(40)
+    const binding = 'c'.repeat(64)
+    const config = {
+      [tdxConfigKey(NODE_TEE_CAP_ID, 'source')]: 'dstack',
+      [tdxConfigKey(NODE_TEE_CAP_ID, 'dstack.socket')]: stub.socketPath,
+      [tdxConfigKey(NODE_TEE_CAP_ID, 'channelBinding')]: binding,
+    }
+    const decoded = decodeTeeTdxEvidence(await nodeTeeCapability.collect!({ nonce, peerId, config }))
+    expect(Buffer.from(decoded.quote).equals(computeReportData(nonce, peerId, binding))).toBe(true)
+    expect(decoded.eventLog).toEqual([rtmr3Event])
+  })
 })

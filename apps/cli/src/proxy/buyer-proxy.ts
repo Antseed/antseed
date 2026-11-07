@@ -1203,10 +1203,11 @@ export function parsePersistedPeers(
  */
 
 export function makeVerifierReach(
-  node: Pick<AntseedNode, 'sendRequest'>,
+  node: Pick<AntseedNode, 'sendRequest' | 'getChannelBinding'>,
   peer: PeerInfo,
   chosenId: string,
   signal: AbortSignal,
+  buyerIdentity?: string,
 ): SellerReach {
   const attestRoute = `${ANTSEED_ATTEST_PATH}/${encodeURIComponent(chosenId)}`
   return async (r) => {
@@ -1219,8 +1220,10 @@ export function makeVerifierReach(
       path: r.path,
       headers: r.headers ?? {},
       body: r.body ?? new Uint8Array(),
-    }, { signal, controlPlane: true })
-    return { statusCode: resp.statusCode, headers: resp.headers, body: resp.body }
+    }, { signal, controlPlane: true, ...(buyerIdentity ? { buyerIdentity } : {}) })
+    // Our own connection's session hash: a TEE seller's quote must commit to it.
+    const channelBinding = node.getChannelBinding(peer.peerId, buyerIdentity)
+    return { statusCode: resp.statusCode, headers: resp.headers, body: resp.body, ...(channelBinding ? { channelBinding } : {}) }
   }
 }
 
@@ -4302,6 +4305,17 @@ export class BuyerProxy {
       const client = this._modelRoutingClient
       if (!selection.service) throw new Error('Select an exact routing-service target')
       const peers = await this._getPeers()
+      // The router reads the whole conversation, so "TEE sellers only" holds it to a passing TEE check too.
+      let routerBinding: string | undefined
+      if (this._effectivePolicy(requestPolicy)?.requireTee === true) {
+        const routerPeer = peers.find((peer) => peer.peerId.toLowerCase() === selection.service!.peerId.toLowerCase())
+        if (!routerPeer) throw new Error('Selected routing service is not on the network')
+        const buyerIdentity = request.headers[BUYER_IDENTITY_HEADER]
+        const outcome = await this._verifyPeer(routerPeer,
+          (chosenId) => makeVerifierReach(this._node, routerPeer, chosenId, signal, buyerIdentity), signal, false, true, buyerIdentity)
+        if (!outcome.ok) throw new Error(`Routing service failed its TEE check (${outcome.reason ?? 'failed'})`)
+        routerBinding = outcome.boundTo
+      }
       // The router may only recommend destinations the buyer's own policies allow.
       const candidates = eligibleRouterCandidates(request, peers, requiredParameters, this._routingPreferences,
         (policyRequest, peer) => peerAllowedByPolicy(this._node.router as BuyerPolicyRouter | null, policyRequest, peer)
@@ -4311,6 +4325,7 @@ export class BuyerProxy {
         node: this._node, client, request, peers, candidates,
         conversationKey: routingConversationKey, selection, modelsCache: this._routingModels,
         ...(request.headers[BUYER_IDENTITY_HEADER] ? { buyerIdentity: request.headers[BUYER_IDENTITY_HEADER] } : {}),
+        ...(routerBinding ? { channelBinding: routerBinding } : {}),
         signal: AbortSignal.any([signal, AbortSignal.timeout(120_000)]),
         onRoutingRequest: requestId => {
           if (spendAttributionTag) this._spendAttribution.track(requestId, spendAttributionTag, 'routing')
@@ -4679,6 +4694,7 @@ export class BuyerProxy {
         affinityKey: routingConversationKey ?? promptCacheKey(serializedReq),
       })
       const requireVerified = effectivePolicy?.requireVerified === true
+      const requireTee = effectivePolicy?.requireTee === true
       if (candidates.length === 0) {
         // Every seller of the model was left out only for not offering the voice asked for.
         const voiceVerdicts = verdicts.filter((verdict) => verdict.reasons.includes(UNSUPPORTED_VOICE_REASON))
@@ -4806,10 +4822,14 @@ export class BuyerProxy {
           if (trace && selected.peerId.toLowerCase() === trace.previousSeller) trace.previousSkipped = 'needs_funds'
           continue
         }
-        if (this._verifier) {
+        // A passing TEE check on a required route pins the request to the attested connection.
+        let teeBinding: string | null = null
+        if (this._verifier || requireTee) {
+          const buyerIdentity = selected.request.headers[BUYER_IDENTITY_HEADER]
           const makeReach = (chosenId: string): SellerReach =>
-            makeVerifierReach(this._node, selected.peer, chosenId, signal)
-          const outcome = await this._verifyPeer(selected.peer, makeReach, signal, requireVerified)
+            makeVerifierReach(this._node, selected.peer, chosenId, signal, buyerIdentity)
+          const outcome = await this._verifyPeer(selected.peer, makeReach, signal, requireVerified, requireTee, buyerIdentity)
+          teeBinding = outcome.boundTo ?? null
           if (!outcome.ok) {
             lastVerificationError = `Peer ${selected.peer.peerId.slice(0, 12)}... failed required verification (${outcome.reason ?? 'failed'}).`
             log(`${lastVerificationError} Trying the next model peer.`)
@@ -4862,6 +4882,7 @@ export class BuyerProxy {
             index + 1 < candidates.length && !nativeVideo
               ? this._attemptTimeoutMs(selected === explored ? candidates[index + 1]! : selected, selected.request)
               : null,
+            teeBinding,
           )
           trace?.noteAttemptResult(result, res.statusCode, Date.now())
           if (result.done) {
@@ -5101,10 +5122,13 @@ export class BuyerProxy {
       )
     }
 
-    if (this._verifier) {
+    let teeBinding: string | null = null
+    if (this._verifier || pinnedPolicy?.requireTee === true) {
+      const buyerIdentity = pinnedRequest.headers[BUYER_IDENTITY_HEADER]
       const makeReach = (chosenId: string): SellerReach =>
-        makeVerifierReach(this._node, selectedPeer, chosenId, signal)
-      const outcome = await this._verifyPeer(selectedPeer, makeReach, signal, pinnedPolicy?.requireVerified === true)
+        makeVerifierReach(this._node, selectedPeer, chosenId, signal, buyerIdentity)
+      const outcome = await this._verifyPeer(selectedPeer, makeReach, signal, pinnedPolicy?.requireVerified === true, pinnedPolicy?.requireTee === true, buyerIdentity)
+      teeBinding = outcome.boundTo ?? null
       const short = selectedPeer.peerId.slice(0, 12)
       if (outcome.verified) {
         log(`Verified ${short}... via ${outcome.sdk}`)
@@ -5146,6 +5170,9 @@ export class BuyerProxy {
       signal,
       false,
       routingConversationKey,
+      false,
+      null,
+      teeBinding,
     )
     trace?.noteAttemptResult(result, res.statusCode, Date.now())
     if (trace && result.done && result.interrupted) trace.interrupted = result.interrupted
@@ -5170,19 +5197,37 @@ export class BuyerProxy {
     makeReach: (chosenId: string) => SellerReach,
     signal: AbortSignal,
     requireVerified = false,
-  ): Promise<VerifyOutcome> {
+    requireTee = false,
+    buyerIdentity?: string,
+  ): Promise<VerifyOutcome & { boundTo?: string }> {
     const configured = this._verifier
-    if (!configured) return { ok: true, verified: false }
-    // A routing policy's `requireVerified` makes the buyer's verifier mandatory for this request.
-    const policy = requireVerified && !configured.require ? { ...configured, require: true } : configured
+    if (!configured) {
+      return requireTee
+        ? { ok: false, verified: false, reason: 'TEE attestation needs verification, which is disabled on this buyer' }
+        : { ok: true, verified: false }
+    }
+    // A routing policy's `requireVerified` makes the buyer's verifier mandatory for this request;
+    // `requireTee` also makes it the TEE verifier, whose seller-node attestation must pass.
+    const policy = requireTee
+      ? { ...configured, prefer: [TEE_VERIFIER_ID], require: true }
+      : requireVerified && !configured.require ? { ...configured, require: true } : configured
     const fingerprint = verifierSupportFingerprint(peer.capabilities)
-    const outcome = await this._teeVerification.verify(peer, policy,
-      () => runVerifier(policy, peer.peerId, peer.capabilities, makeReach, signal))
+    const check = (force: boolean): Promise<VerifyOutcome> => this._teeVerification.verify(peer, policy,
+      () => runVerifier(policy, peer.peerId, peer.capabilities, makeReach, signal), force, buyerIdentity)
+    let outcome = await check(false)
+    // A cached TEE verdict covers only the connection it was bound to; after a reconnect, check again.
+    const live = (): string | null => this._node.getChannelBinding(peer.peerId, buyerIdentity)
+    if (policy.require && outcome.sellerNodeVerified && outcome.channelBinding !== live()) outcome = await check(true)
     const current = this._cachedPeers.find((candidate) => candidate.peerId === peer.peerId)
     if (current && verifierSupportFingerprint(current.capabilities) !== fingerprint) {
       return { ok: !policy.require, verified: false, transient: true, reason: 'Seller capabilities changed; retry verification' }
     }
     if (signal.aborted) return { ok: false, verified: false, transient: true, reason: 'Request aborted' }
+    if (requireTee && !outcome.sellerNodeVerified) {
+      return { ...outcome, ok: false, reason: outcome.reason ?? 'TEE attestation did not pass' }
+    }
+    // Required verification that rests on a TEE attestation sends only on the attested connection.
+    if (policy.require && outcome.sellerNodeVerified && outcome.channelBinding) return { ...outcome, boundTo: outcome.channelBinding }
     return outcome
   }
 
@@ -5285,6 +5330,8 @@ export class BuyerProxy {
     extraAttempt = false,
     /** Give up on this seller if it has not started answering by then, so the next one can be tried. */
     attemptTimeoutMs: number | null = null,
+    /** Send only on the connection with this session hash (a required TEE attestation's). */
+    teeBinding: string | null = null,
   ): Promise<PeerDispatchResult> {
     traceFor(res)?.noteAttempt(selectedPeer.peerId, Date.now())
     const gatewayAutoRoute = gatewayRouted && !pinned
@@ -5416,7 +5463,7 @@ export class BuyerProxy {
             return callbacks.onResponseChunk?.(chunk)
           },
         }, {
-          signal, pinned: true, ...(buyerIdentity ? { buyerIdentity } : {}),
+          signal, pinned: true, ...(buyerIdentity ? { buyerIdentity } : {}), ...(teeBinding ? { channelBinding: teeBinding } : {}),
         }), requestSignal, () => this._retireVideoJob(protocol, resourceId), (by) => {
           // On the trace, not in the result: telemetry only. The result feeds routing, which a video does not change.
           const trace = traceFor(res)
@@ -5494,6 +5541,7 @@ export class BuyerProxy {
           pinned,
           captureResponseAuthPreimages: captureResponseAuthPreimages === '1',
           ...(buyerIdentity ? { buyerIdentity } : {}),
+          ...(teeBinding ? { channelBinding: teeBinding } : {}),
         })
 
         recordRouterUsage(this._modelRoutingClient, routingConversationKey, requestForPeer, response, selectedPeer, requestSignal)
@@ -5641,6 +5689,7 @@ export class BuyerProxy {
           captureResponseAuthPreimages: captureResponseAuthPreimages === '1',
           ...(buyerIdentity ? { buyerIdentity } : {}),
           ...(maxVideoCostUsdc !== null ? { maxVideoCostUsdc } : {}),
+          ...(teeBinding ? { channelBinding: teeBinding } : {}),
         })
         if (upstreamResponse.statusCode >= 400 && !adaptResponse) {
           log(`Upstream raw error detail: ${summarizeErrorResponse(upstreamResponse)}`)
