@@ -17,6 +17,11 @@ export function joinPinnedModel(modelId: string, peerId: string | null | undefin
   return peerId ? `${peerId.toLowerCase().replace(/^0x/, '')}@${bare}` : bare;
 }
 
+/** How a request on `modelId` reaches a seller: the one it names, or whichever the gateway picks. */
+export function routeModeOf(modelId: string): 'pinned' | 'auto' {
+  return splitPinnedModel(modelId).peerId ? 'pinned' : 'auto';
+}
+
 /** Whether a chat on `modelId` can send images: any seller the gateway may pick takes them, or the pinned one does. */
 export function modelAcceptsImages(
   model: { supportsImages: boolean; imageInputSellerIds?: string[] },

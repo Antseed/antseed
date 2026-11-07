@@ -7,6 +7,7 @@
 import { parseGatewayKeyInfo } from './key-info.js';
 import type { GatewayKeyInfo, GatewayPrivacy, GatewayStatus } from '../../shared/gateway-types.js';
 import { publishKeyWithPolicy } from './key-with-policy.js';
+import { rotateKeys } from './rotate-keys.js';
 import { resolveConnectDataDir, DEFAULT_LOCAL_GATEWAY_PORT, type ProcessManager, type RuntimeMode } from '../runtime/process-manager.js';
 import { ACTIVE_CONFIG_PATH } from '../runtime/active-config.js';
 import { encryptedIdentityPath, ensureSecureIdentity, isStoredIdentityUnreadable, secureIdentityEnv } from '../identity.js';
@@ -259,12 +260,11 @@ export async function getGatewayEndpoint(app?: { name: string; label?: string })
 export async function rotateLocalKeys(scope?: string): Promise<void> {
   if (getGatewaySettings().mode !== 'local') throw new Error('Keys of a remote gateway are managed in its console');
   await ensureLocalGateway();
-  const scopes = scope ? [scope] : listLocalKeys().map((entry) => entry.scope);
-  for (const target of scopes) {
-    const existing = getLocalKey(target);
-    deleteLocalKey(target);
-    if (existing?.id) await revokeLocalKey(existing.id);
-  }
+  await rotateKeys(scope ? [scope] : listLocalKeys().map((entry) => entry.scope), {
+    get: getLocalKey,
+    revoke: (id) => runGatewayCli(['key', 'revoke', id]).then(() => undefined),
+    forget: deleteLocalKey,
+  });
 }
 
 /** Revokes per-app keys that are no longer used (after switching back to one shared key). */

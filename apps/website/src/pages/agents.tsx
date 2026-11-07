@@ -210,7 +210,7 @@ function WhatTheSkillDoes() {
 const AGENT_FAQ = [
   {
     q: 'Does my agent need an account or API key?',
-    a: 'No account, whether you run Antseed Desktop or the Antseed CLI. The local endpoint does not validate a key, but most agent SDKs want a non-empty value, so use a placeholder like <code>antseed</code>. Only a public endpoint you publish from the Agents view uses a real, generated key.',
+    a: 'No account, whether you run Antseed Desktop or the Antseed CLI. Antseed Desktop\'s gateway needs a real key: copy the base URL and key from <strong>Use with any other tool</strong> under Agents &amp; apps. The CLI\'s local endpoint does not validate a key, but most agent SDKs want a non-empty value, so use a placeholder like <code>antseed</code>. A public endpoint you publish with <code>antseed tunnel start</code> uses a real, generated key.',
   },
   {
     q: 'Which agents work with Antseed?',

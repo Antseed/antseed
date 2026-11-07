@@ -1049,6 +1049,8 @@ function applyDroidConfigPatch(patch: DroidConfigPatchDef, t: ResolvedTarget, ws
   });
 }
 
+type DroidModelEntry = JsonObject & { id: string; model: string };
+
 function applyDroidModelToFile(filePath: string, patch: DroidConfigPatchDef, baseURL: string, t: ResolvedTarget): void {
   const configExisted = existsSync(filePath);
   backupConfigFile(filePath);
@@ -1066,7 +1068,7 @@ function applyDroidModelToFile(filePath: string, patch: DroidConfigPatchDef, bas
     maxOutputTokens: ANTSEED_MODEL_MAX_OUTPUT_TOKENS,
     ...headerFields,
   };
-  const entries: JsonObject[] = t.legacy
+  const entries: DroidModelEntry[] = t.legacy
     ? [{
       model: patch.providerKey,
       id: DROID_ROUTED_MODEL_ID,
@@ -1080,7 +1082,7 @@ function applyDroidModelToFile(filePath: string, patch: DroidConfigPatchDef, bas
       ...commonFields,
       apiKey: t.apiKey,
     }));
-  const newIds = entries.map((entry) => entry['id'] as string);
+  const newIds = entries.map((entry) => entry.id);
 
   if (!state) {
     const conflict = customModels.find((model) => {
@@ -1138,7 +1140,7 @@ function applyDroidModelToFile(filePath: string, patch: DroidConfigPatchDef, bas
     selectedId = DROID_ROUTED_MODEL_ID;
   } else {
     const selectedModel = pickModel(t, previousModel);
-    selectedId = (entries.find((entry) => entry['model'] === selectedModel) ?? entries[0])?.['id'] as string | undefined;
+    selectedId = (entries.find((entry) => entry.model === selectedModel) ?? entries[0])?.id;
   }
 
   config['customModels'] = [

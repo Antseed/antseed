@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest';
-import { imageModelCanEdit, joinPinnedModel, modelAcceptsImages, splitPinnedModel } from '../../../shared/pinned-model.js';
+import { imageModelCanEdit, joinPinnedModel, modelAcceptsImages, routeModeOf, splitPinnedModel } from '../../../shared/pinned-model.js';
 
 const PEER = '1d90f467689d499dc435e5744b4613c3203eb0aa';
 
@@ -33,4 +33,9 @@ test('imageModelCanEdit: one capable seller is enough unless another seller is p
   expect(imageModelCanEdit(mixed, `${other}@qwen-image`)).toBe(false);
   expect(imageModelCanEdit({ supportsImages: false }, 'qwen-image')).toBe(false);
   expect(imageModelCanEdit({ supportsImages: true }, 'qwen-image')).toBe(true);
+});
+
+test('routeModeOf tells a pinned request from an automatic one', () => {
+  expect(routeModeOf(`${PEER}@deepseek-v4-flash`)).toBe('pinned');
+  expect(routeModeOf('deepseek-v4-flash')).toBe('auto');
 });

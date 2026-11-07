@@ -101,7 +101,7 @@ const HELP_TOPICS: HelpTopic[] = [
           },
           {
             heading: 'Zed',
-            body: 'Zed keeps API keys in its own keychain. After connecting, paste your gateway key into Zed’s Antseed provider once. Copy it from Agents & apps → Use with any other tool.',
+            body: 'Zed keeps API keys in its own keychain. After connecting, open Agents & apps → Zed’s settings, copy the API key, paste it into the Antseed provider in Zed, then choose I’ve pasted it.',
           },
         ],
       },

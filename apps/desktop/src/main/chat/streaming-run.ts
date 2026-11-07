@@ -67,7 +67,7 @@ import {
   resolveSystemPrompt,
   type ChatModel,
 } from './gateway-model.js';
-import { modelAcceptsImages, splitPinnedModel } from '../../shared/pinned-model.js';
+import { modelAcceptsImages, routeModeOf, splitPinnedModel } from '../../shared/pinned-model.js';
 import { sessionServiceId } from './legacy-seller-pin.js';
 import {
   convertAssistantMessageForUi,
@@ -454,9 +454,9 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
         outcome,
         failure_code: failure.failureCode,
         failure_stage: failure.failureStage,
-        public_model_id: publicModelId(serviceId, chatModel !== null),
-        service_category: classifyServiceCategory(serviceId),
-        route_mode: 'auto',
+        public_model_id: publicModelId(replyModel, chatModel !== null),
+        service_category: classifyServiceCategory(replyModel),
+        route_mode: routeModeOf(serviceId),
         offers_available_bucket: offersAvailableBucket(offers.length),
         http_status_bucket: httpStatusBucket(failure.statusCode ?? reason?.statusCode),
         retryable: failure.retryable,
@@ -723,9 +723,9 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
       try {
         void Promise.resolve(recordChatRequestStarted({
           request_id: requestId,
-          public_model_id: publicModelId(serviceId, chatModel !== null),
-          service_category: classifyServiceCategory(serviceId),
-          route_mode: 'auto',
+          public_model_id: publicModelId(replyModel, chatModel !== null),
+          service_category: classifyServiceCategory(replyModel),
+          route_mode: routeModeOf(serviceId),
           pricing_tier: pricing.pricingTier,
           has_free_eligible_offer: pricing.hasFreeEligibleOffer,
           offers_available_bucket: pricing.eligibleOfferCountBucket,

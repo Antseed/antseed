@@ -104,6 +104,7 @@ export function initChatModule({
 
   let activeConversation: ChatConversation | null = null;
   let workspaceSwitchToken = 0;
+  let conversationOpenToken = 0;
   let permissionRefreshToken = 0;
   let desiredWorkspacePath: string | null = uiState.chatWorkspacePath || null;
   let newChatDraftVersion = 0;
@@ -769,6 +770,9 @@ export function initChatModule({
   async function openConversation(convId: string, options: { keepImageModel?: boolean } = {}): Promise<void> {
     if (!bridge?.chatAiGetConversation) return;
     const workspacePathAtOpen = uiState.chatWorkspacePath;
+    const openToken = ++conversationOpenToken;
+    // A slower answer for a chat the user has since left must not replace the current one.
+    const isCurrentOpen = () => openToken === conversationOpenToken && uiState.chatActiveConversation === convId;
     uiState.chatActiveConversation = convId;
     uiState.chatOpeningConversationId = convId;
     clearChatNotices();
@@ -777,6 +781,7 @@ export function initChatModule({
 
     try {
       const result = await bridge.chatAiGetConversation(convId);
+      if (!isCurrentOpen()) return;
       if (!result.ok || !result.data) {
         uiState.chatOpeningConversationId = null;
         reportChatError(result.error, 'Failed to open conversation');
@@ -805,6 +810,7 @@ export function initChatModule({
         void restoreWorkspace(convWorkspacePath);
       }
     } catch (err) {
+      if (!isCurrentOpen()) return;
       uiState.chatOpeningConversationId = null;
       reportChatError(err, 'Failed to open conversation');
     }

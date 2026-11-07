@@ -100,9 +100,10 @@ export function registerGatewayIpc(deps: GatewayIpcDeps): void {
 
   ipcMain.handle('gateway:rotate-keys', async () => {
     try {
-      await rotateLocalKeys();
+      // Keys that were replaced before a failure still have to reach the apps.
+      const failure = await rotateLocalKeys().then(() => null, (err: unknown) => err);
       await endpointChanged(true);
-      return { ok: true };
+      return failure ? errorResult(failure) : { ok: true };
     } catch (err) {
       return errorResult(err);
     }

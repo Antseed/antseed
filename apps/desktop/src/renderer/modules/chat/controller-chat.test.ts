@@ -232,4 +232,40 @@ describe('chat controller', () => {
     await waitFor(() => chatGenerateImage.mock.calls.length === 1);
     expect(JSON.stringify(chatGenerateImage.mock.calls[0])).toContain('img-1');
   });
+
+  it('ignores a slow answer for a chat the user has already left', async () => {
+    const answers: Record<string, (value: unknown) => void> = {};
+    const conversations = [{ ...conv('conv-a', 'model-a', '/project-a'), messages: [{ role: 'user', content: 'from a', createdAt: 1 }] }, { ...conv('conv-b', 'model-b'), messages: [{ role: 'user', content: 'from b', createdAt: 1 }] }];
+    const setWorkspace: string[] = [];
+    const { api, uiState } = setup(conversations, {
+      chatAiGetConversation: (id: string) => new Promise((resolve) => { answers[id] = resolve; }),
+      chatAiSetWorkspace: async (path: string) => { setWorkspace.push(path); return { ok: true, data: { current: path, default: '/default' } }; },
+    });
+    await api.refreshChatConversations();
+    const first = api.openConversation('conv-a');
+    const second = api.openConversation('conv-b');
+    answers['conv-b']!({ ok: true, data: conversations[1] });
+    await second;
+    answers['conv-a']!({ ok: true, data: conversations[0] });
+    await first;
+    await tick();
+    expect(uiState.chatActiveConversation).toBe('conv-b');
+    expect(uiState.chatSelectedModelId).toBe('model-b');
+    expect(JSON.stringify(uiState.chatMessages)).toContain('from b');
+    expect(setWorkspace).toEqual([]);
+  });
+
+  it('shows no error for a chat the user has already left', async () => {
+    const answers: Record<string, (value: unknown) => void> = {};
+    const { api, uiState } = setup(undefined, { chatAiGetConversation: (id: string) => new Promise((resolve) => { answers[id] = resolve; }) });
+    await api.refreshChatConversations();
+    const first = api.openConversation('conv-a');
+    const second = api.openConversation('conv-b');
+    answers['conv-a']!({ ok: false, error: 'not found' });
+    await first;
+    expect(uiState.chatError).toBeNull();
+    expect(uiState.chatOpeningConversationId).toBe('conv-b');
+    answers['conv-b']!({ ok: true, data: conv('conv-b', 'model-b') });
+    await second;
+  });
 });

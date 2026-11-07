@@ -49,8 +49,8 @@ function GatewaySection() {
       const result = await bridge.gatewayUpdateSettings(patch);
       if (!result.ok || !result.settings) {
         setMessage(result.error ?? 'Could not save the gateway settings');
-        // Refused settings are still saved, so show what the app now has:
-        // choosing "This computer" must then really switch back.
+        // Validation failures leave settings unchanged, but starting the gateway
+        // or reconnecting apps can fail after saving. Read back the actual mode.
         const saved = await bridge.gatewayGetSettings?.();
         if (saved) {
           setSettings(saved);
@@ -63,7 +63,7 @@ function GatewaySection() {
       setRemoteKey('');
       setMessage('Saved. Connected apps now use the new settings.');
     } finally {
-      // Refused settings are still saved, so everything showing the gateway follows either way.
+      // Refresh consumers even on failure: settings may already have changed.
       void gatewayResource.refresh();
       void appsResource.refresh();
       clearPrivacySwitchError();
