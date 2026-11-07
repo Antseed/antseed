@@ -399,7 +399,9 @@ const RECOMMENDATION_FALLBACK_STATUS_CODES = new Set([401, 403, 429, 500, 502, 5
 /**
  * Gateway-policy requests on automatic routing also move on after a 402: the
  * buyer could not fund that seller (no deposits for its reserve), but a free
- * seller needs none. Other requests keep the 402, as they always have.
+ * seller needs none. Other automatic routing moves on only after the buyer's
+ * own 402 (see `shouldTryNextPeer`), so a raw seller 402 still reaches a
+ * client that pays for itself.
  */
 const GATEWAY_AUTO_ROUTE_RETRYABLE_STATUS_CODES = new Set([...RETRYABLE_STATUS_CODES, 402])
 
@@ -414,17 +416,30 @@ function retryableStatusCodesFor(gatewayAutoRoute: boolean): Set<number> {
  * `extraAttempt` also moves on after any other 4xx except 402: a client error
  * may be the seller's doing (it refuses a parameter other sellers of the
  * model accept) or the request's, and only another seller can
- * tell which. A pinned request keeps the pinned seller's answer.
+ * tell which. A 402 the buyer wrote itself (it cannot pay this seller, e.g.
+ * no deposits) also moves on: the routing loop then tries only sellers that
+ * need no deposits, and returns that 402 when none is left. A pinned request
+ * keeps the pinned seller's answer.
  */
 function shouldTryNextPeer(
   statusCode: number,
-  modelNotFound: boolean,
-  pinned: boolean,
-  gatewayAutoRoute: boolean,
-  extraAttempt = false,
+  {
+    modelNotFound,
+    pinned,
+    gatewayAutoRoute,
+    extraAttempt = false,
+    buyerFault = false,
+  }: {
+    modelNotFound: boolean
+    pinned: boolean
+    gatewayAutoRoute: boolean
+    extraAttempt?: boolean
+    buyerFault?: boolean
+  },
 ): boolean {
   return retryableStatusCodesFor(gatewayAutoRoute).has(statusCode)
     || (modelNotFound && !pinned)
+    || (statusCode === 402 && buyerFault && !pinned)
     || (extraAttempt && !pinned && statusCode >= 400 && statusCode < 500 && statusCode !== 402)
 }
 
@@ -1964,8 +1979,13 @@ export class BuyerProxy {
       : [...candidates].sort((a, b) => Number(adaptive.scores.get(a)!.unhealthy) - Number(adaptive.scores.get(b)!.unhealthy))
     const healthOf = (candidate: (typeof ranked)[number]): AdaptiveRouteScore => adaptive.scores.get(candidate)!
     let chainPosition: Map<string, number> | null = null
-    if (effectivePolicy) {
-      const ordering = orderByPolicy(candidates, effectivePolicy, requestedService, {
+    // Without a gateway policy the buyer's own `preferFreePeers` still puts
+    // free sellers first, as it does under one (where it is part of the
+    // merged policy).
+    const orderingPolicy: RoutingPolicy | null = effectivePolicy
+      ?? (routingPreferences?.preferFreePeers ? { preferFreePeers: true } : null)
+    if (orderingPolicy) {
+      const ordering = orderByPolicy(candidates, orderingPolicy, requestedService, {
         peerId: (candidate) => candidate.peerId,
         totalPrice: (candidate) => modelRouteTotalPrice(candidate),
         trustScore: (candidate) => this._modelTrust(candidate.peer, candidate.serviceId).trust,
@@ -4941,6 +4961,8 @@ export class BuyerProxy {
               log(`No deposits to pay peer ${selected.peer.peerId.slice(0, 12)}...; trying free sellers and free allowances only.`)
               break
             }
+            // No seller served the request: count what only the sellers before it could have caused.
+            countFailures(null)
             return result
           }
           const retrySamePeer = result.statusCode === 429
@@ -5699,7 +5721,13 @@ export class BuyerProxy {
         const answeredEmpty = !pinned && responseForClient.statusCode < 300
           && isEmptyAnswer(responseForClient.headers['content-type'], responseForClient.body)
         const emptyAnswer = extraAttempt && answeredEmpty
-        if (emptyAnswer || shouldTryNextPeer(responseForClient.statusCode, modelNotFound, pinned, gatewayAutoRoute, extraAttempt && responseFault !== 'buyer')) {
+        if (emptyAnswer || shouldTryNextPeer(responseForClient.statusCode, {
+          modelNotFound,
+          pinned,
+          gatewayAutoRoute,
+          extraAttempt: extraAttempt && responseFault !== 'buyer',
+          buyerFault: responseFault === 'buyer',
+        })) {
           return {
             done: false,
             statusCode: responseForClient.statusCode,
@@ -5815,7 +5843,13 @@ export class BuyerProxy {
         const answeredEmpty = !pinned && response.statusCode < 300 && !videoRoute
           && isEmptyAnswer(response.headers['content-type'], response.body)
         const emptyAnswer = extraAttempt && answeredEmpty
-        if (emptyAnswer || shouldTryNextPeer(response.statusCode, modelNotFound, pinned, gatewayAutoRoute, extraAttempt && responseFault !== 'buyer')) {
+        if (emptyAnswer || shouldTryNextPeer(response.statusCode, {
+          modelNotFound,
+          pinned,
+          gatewayAutoRoute,
+          extraAttempt: extraAttempt && responseFault !== 'buyer',
+          buyerFault: responseFault === 'buyer',
+        })) {
           return { done: false, statusCode: response.statusCode, responseBody: Buffer.from(response.body), responseHeaders, errorMessage: null, modelNotFound, emptyAnswer }
         }
 
