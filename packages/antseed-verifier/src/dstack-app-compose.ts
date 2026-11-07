@@ -73,7 +73,7 @@ const RESERVED_ENV = /^(?:ANTSEED_|POSTHOG_|CDP_)/
  * none loads code (seller.agentDir imports agent tool modules from disk, which no measurement
  * covers) or configures the buyer, verifier or relayer roles.
  */
-const CONFIG_KEYS: Readonly<Record<string, ReadonlySet<string>>> = {
+const CONFIG_KEYS = {
   config: new Set(['identity', 'seller', 'payments', 'network', 'telemetry']),
   seller: new Set([
     'reserveFloor', 'maxConcurrentBuyers', 'providers', 'publicAddress', 'verifications', 'maxUploadBodyBytes',
@@ -82,10 +82,10 @@ const CONFIG_KEYS: Readonly<Record<string, ReadonlySet<string>>> = {
   ]),
   provider: new Set(['plugin', 'baseUrl', 'apiKeyEnv', 'pathRewrite', 'fallbackUpstreams', 'defaults', 'services']),
   fallback: new Set(['baseUrl', 'apiKeyEnv', 'pathRewrite', 'services']),
-}
+} satisfies Readonly<Record<string, ReadonlySet<string>>>
 
 function checkKeys(value: Obj, section: keyof typeof CONFIG_KEYS, where: string): void {
-  const extra = Object.keys(value).filter((k) => !CONFIG_KEYS[section]!.has(k))
+  const extra = Object.keys(value).filter((k) => !CONFIG_KEYS[section].has(k))
   check(extra.length === 0, `${where}${extra[0]} is not allowed in a TEE seller config`)
 }
 
