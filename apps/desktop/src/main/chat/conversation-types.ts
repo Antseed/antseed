@@ -38,6 +38,9 @@ export type ContentBlock = TextBlock | FileBlock | ImageBlock | ThinkingBlock | 
 export type AiMessageMeta = {
   provider?: string;
   service?: string;
+  /** The seller that answered, as the gateway reported it. */
+  peerId?: string;
+  peerName?: string;
   requestId?: string;
   latencyMs?: number;
   inputTokens?: number;

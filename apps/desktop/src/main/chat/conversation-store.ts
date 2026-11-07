@@ -255,6 +255,7 @@ export class PiConversationStore {
     prompt: string,
     assistantContent: string,
     service: string,
+    seller?: { peerId: string; peerName?: string } | null,
   ): Promise<{ user: UserMessage; assistant: AssistantMessage }> {
     const manager = await this.openSessionManager(id);
     if (!manager) throw new Error('Conversation not found');
@@ -276,7 +277,8 @@ export class PiConversationStore {
       },
       stopReason: 'stop',
       timestamp: timestamp + 1,
-    };
+      ...(seller ? { meta: seller } : {}),
+    } as AssistantMessage;
     manager.appendMessage(user);
     manager.appendMessage(assistant);
     this.markPersistedIfAvailable(id);

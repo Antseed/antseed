@@ -313,6 +313,7 @@ export type DesktopBridge = {
   onChatAiDone?: (handler: (data: { conversationId: string; message: { role: string; content: unknown; createdAt?: number; meta?: Record<string, unknown> } }) => void) => () => void;
   onChatAiUserPersisted?: (handler: (data: { conversationId: string; message: { role: string; content: unknown; createdAt?: number } }) => void) => () => void;
   onChatConversationTitleUpdated?: (handler: (data: { conversationId: string; title: string }) => void) => () => void;
+  onChatAiReplyMeta?: (handler: (data: { conversationId: string; meta: Record<string, unknown> }) => void) => () => void;
   onChatAiStreamStart?: (handler: (data: { conversationId: string; turn: number }) => void) => () => void;
   onChatAiStreamDelta?: (handler: (data: { conversationId: string; index: number; blockType: string; text: string }) => void) => () => void;
   onChatAiStreamBlockStart?: (handler: (data: { conversationId: string; index: number; blockType: string; toolId?: string; toolName?: string }) => void) => () => void;

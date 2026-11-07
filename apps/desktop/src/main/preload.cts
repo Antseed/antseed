@@ -274,6 +274,11 @@ const api = {
     return () => ipcRenderer.off('chat:conversation-title-updated', listener);
   },
   // Streaming events
+  onChatAiReplyMeta(handler: (data: { conversationId: string; meta: Record<string, unknown> }) => void): () => void {
+    const listener = (_: unknown, data: { conversationId: string; meta: Record<string, unknown> }) => handler(data);
+    ipcRenderer.on('chat:ai-reply-meta', listener);
+    return () => ipcRenderer.off('chat:ai-reply-meta', listener);
+  },
   onChatAiStreamStart(handler: (data: { conversationId: string; turn: number }) => void): () => void {
     const listener = (_: unknown, data: { conversationId: string; turn: number }) => handler(data);
     ipcRenderer.on('chat:ai-stream-start', listener);

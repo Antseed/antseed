@@ -7,6 +7,8 @@
  * "Add funds" notice in the renderer). The context object below is the
  * complete set of engine state this run touches.
  */
+import { isReplyCutOff, REPLY_CUT_OFF_MESSAGE } from './stream-stop.js';
+import { trackServedPeer } from './served-peer.js';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import type { AgentSessionEvent, ExtensionAPI } from '@mariozechner/pi-coding-agent';
@@ -108,6 +110,8 @@ export type ResolvedChatModel = {
  * explicitly keeps the run honest about the engine state it mutates.
  */
 export type StreamingRunContext = {
+  /** A seller's display name, when the model list has it. */
+  sellerName: (peerId: string) => string | null;
   store: PiConversationStore;
   activeRunsByConversation: Map<string, ActiveRun>;
   configPath: string;
@@ -146,6 +150,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     recordFirstChatStarted,
     recordChatRequestStarted,
     recordChatRequestFinished,
+    sellerName,
   } = ctx;
 
   /** Classify a failure the way a gateway client should present it. */
@@ -356,6 +361,9 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     );
 
     let finalAssistantCreatedAt: number | undefined;
+    let replyCutOff = false;
+    let servedPeer: { peerId: string; peerName?: string } | null = null;
+    const replyModel = splitPinnedModel(serviceId).modelId;
     const toolArgsById = new Map<string, Record<string, unknown>>();
 
     let turnIndex = 0;
@@ -408,6 +416,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     const unsubscribe = session.subscribe((event: AgentSessionEvent) => {
       if (event.type === 'turn_start') {
         sendToRenderer('chat:ai-stream-start', { conversationId, turn: turnIndex });
+        sendToRenderer('chat:ai-reply-meta', { conversationId, meta: { service: replyModel, ...(servedPeer ?? {}) } });
         turnIndex += 1;
         return;
       }
@@ -565,6 +574,8 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
           return;
         }
         if (message.role === 'assistant') {
+          // Before it's saved, so a reply that was stopped still names its seller when reopened.
+          if (servedPeer) (message as AssistantMessage & { meta?: AiMessageMeta }).meta = { ...servedPeer };
           if (message.stopReason === 'error' || message.stopReason === 'aborted') {
             const errorMessage = typeof message.errorMessage === 'string' ? message.errorMessage : '';
             const rawContent = Array.isArray(message.content)
@@ -580,7 +591,8 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
 
           const assistantMessage = message as AssistantMessage & { meta?: AiMessageMeta };
           finalAssistantCreatedAt = assistantMessage.timestamp;
-          assistantMessage.meta = parseAssistantMetaFromSessionEvent(message, undefined);
+          replyCutOff = isReplyCutOff(assistantMessage);
+          assistantMessage.meta = { ...parseAssistantMetaFromSessionEvent(message, undefined), ...(servedPeer ?? {}) };
           pendingAssistantMessage = mergeAssistantMessagesForUi(
             pendingAssistantMessage,
             convertAssistantMessageForUi(assistantMessage),
@@ -648,7 +660,11 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
 
     try {
       const promptText = [trimmedMessage, attachmentPromptText].filter((part) => part.length > 0).join('\n\n');
-      await session.prompt(promptText || ' ', { images: effectiveAttachmentImages.length > 0 ? effectiveAttachmentImages : undefined });
+      await trackServedPeer((peerId) => {
+        const peerName = sellerName(peerId);
+        servedPeer = { peerId, ...(peerName ? { peerName } : {}) };
+        sendToRenderer('chat:ai-reply-meta', { conversationId, meta: { service: replyModel, ...servedPeer } });
+      }, () => session.prompt(promptText || ' ', { images: effectiveAttachmentImages.length > 0 ? effectiveAttachmentImages : undefined }));
 
       if (terminalStreamFailure !== null) {
         // Mutated inside the subscribe callback, which TypeScript can't see —
@@ -677,6 +693,14 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
       if (!streamDone) {
         streamDone = true;
         sendToRenderer('chat:ai-stream-done', { conversationId });
+      }
+      // After done, which clears notes.
+      if (replyCutOff) {
+        emitChatStreamError({
+          conversationId,
+          error: REPLY_CUT_OFF_MESSAGE,
+          stopReason: { kind: 'network_error', source: 'transport', retryable: true, message: REPLY_CUT_OFF_MESSAGE },
+        });
       }
       finishTelemetry('success');
 

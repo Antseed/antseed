@@ -267,6 +267,16 @@ export function registerPiChatHandlers({
     }
   });
 
+  const sellerName = (peerId: string): string | null => {
+    const wanted = peerId.toLowerCase();
+    for (const entry of lastEntries) {
+      const peers = Array.isArray(entry['peers']) ? entry['peers'] as Array<Record<string, unknown>> : [];
+      const peer = peers.find((candidate) => String(candidate['peerId'] ?? '').toLowerCase() === wanted);
+      if (typeof peer?.['displayName'] === 'string' && peer['displayName'].trim()) return peer['displayName'].trim();
+    }
+    return null;
+  };
+
   const runStreamingPrompt = createStreamingRunner({
     store,
     activeRunsByConversation,
@@ -279,6 +289,7 @@ export function registerPiChatHandlers({
     emitChatStreamError,
     clearActiveRun,
     abortAndClearActiveRun,
+    sellerName,
     ...(recordFirstChatStarted ? { recordFirstChatStarted } : {}),
     ...(recordChatRequestStarted ? { recordChatRequestStarted } : {}),
     ...(recordChatRequestFinished ? { recordChatRequestFinished } : {}),
@@ -432,7 +443,7 @@ export function registerPiChatHandlers({
         ...(moderation ? { moderation } : {}),
         service,
         ...(sourceImageAttachmentId ? { sourceImageAttachmentId } : {}),
-      }, { signal: controller.signal });
+      }, { signal: controller.signal, sellerName });
     } catch (error) {
       return { ok: false, error: asErrorMessage(error) };
     } finally {

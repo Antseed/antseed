@@ -108,3 +108,41 @@ export class GatewayBuyer {
     clearTimeout(timer)
   }
 }
+
+const ATTACHED_BUYER_CHECK_MS = 5_000
+const ATTACHED_BUYER_MISSED_CHECKS = 2
+
+/**
+ * Watches a buyer this gateway found already running and did not start, such
+ * as one left behind when an earlier gateway crashed: nothing restarts that
+ * one, so requests would wait on it forever. When it is gone, `takeOver` runs.
+ * Returns a function that stops watching.
+ */
+export function watchAttachedBuyer(options: {
+  isRunning: () => Promise<boolean>
+  takeOver: () => void
+  checkMs?: number
+}): () => void {
+  let missed = 0
+  let stopped = false
+  let timer: NodeJS.Timeout | null = null
+  const check = async (): Promise<void> => {
+    const running = await options.isRunning().catch(() => true)
+    if (stopped) return
+    missed = running ? 0 : missed + 1
+    if (missed >= ATTACHED_BUYER_MISSED_CHECKS) {
+      options.takeOver()
+      return
+    }
+    schedule()
+  }
+  const schedule = (): void => {
+    timer = setTimeout(() => { void check() }, options.checkMs ?? ATTACHED_BUYER_CHECK_MS)
+    timer.unref?.()
+  }
+  schedule()
+  return () => {
+    stopped = true
+    if (timer) clearTimeout(timer)
+  }
+}

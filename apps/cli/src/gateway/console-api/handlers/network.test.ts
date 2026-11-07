@@ -567,7 +567,7 @@ test('GET models lists the unfiltered network catalog to members and tokens', as
   const models = await call(router, 'GET', '/models', member) as NetworkModel[]
   assert.deepEqual(models.map((model) => model.id), ['open-model-a', 'open-image-model'])
   assert.equal(models[0]!.offers[0]!.latencyMsP50, 840)
-  const sent = lastRequest(buyer, (url) => url === '/v1/models')
+  const sent = lastRequest(buyer, (url) => url === '/v1/models?scope=network')
   assert.equal(sent?.headers[GATEWAY_CONTROL_HEADER], TEST_SECRET)
   assert.equal(sent?.headers[ROUTING_POLICY_HEADER], undefined, 'no routing policy, like /peers')
   assert.equal(router.match('GET', '/models')!.route.options.allow, router.match('GET', '/peers')!.route.options.allow)

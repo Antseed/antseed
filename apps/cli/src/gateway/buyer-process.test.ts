@@ -8,7 +8,7 @@ import { test } from 'node:test'
 import type { ChildProcess } from 'node:child_process'
 import { FileIdentityStore } from '@antseed/node'
 import { BUYER_RESTART_EXIT_CODE, BUYER_SHUTDOWN_DEADLINE_MS } from '../proxy/buyer-proxy.js'
-import { BUYER_STOP_TIMEOUT_MS, GatewayBuyer, spawnCliBuyer } from './buyer-process.js'
+import { BUYER_STOP_TIMEOUT_MS, GatewayBuyer, spawnCliBuyer, watchAttachedBuyer } from './buyer-process.js'
 
 class FakeChild extends EventEmitter {
   stdout = new PassThrough()
@@ -142,4 +142,26 @@ test('hands the wallet passphrase to the buyer on stdin, not in its environment'
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+test('watchAttachedBuyer takes over only once the buyer has stayed gone', async () => {
+  const answers = [true, false, true, false, false]
+  let tookOver = 0
+  await new Promise<void>((resolve) => {
+    watchAttachedBuyer({
+      isRunning: async () => answers.shift() ?? true,
+      takeOver: () => { tookOver += 1; resolve() },
+      checkMs: 1,
+    })
+  })
+  assert.equal(tookOver, 1)
+  assert.equal(answers.length, 0)
+})
+
+test('watchAttachedBuyer stops when asked', async () => {
+  let tookOver = false
+  const stop = watchAttachedBuyer({ isRunning: async () => false, takeOver: () => { tookOver = true }, checkMs: 1 })
+  stop()
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.equal(tookOver, false)
 })

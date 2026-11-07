@@ -560,6 +560,8 @@ export function initChatModule({
     if (Array.isArray(cloned.content)) {
       for (const block of cloned.content as ContentBlock[]) {
         delete block.renderKey;
+        // A stopped or cut-off reply never got its block-stop; it's over either way.
+        delete block.streaming;
         if (typeof block.id === 'string' && /^(text|thinking)-[\d-]+$/.test(block.id)) delete block.id;
         if (block.details && typeof block.details === 'object') {
           const details = block.details as Record<string, unknown>;
@@ -1227,6 +1229,13 @@ export function initChatModule({
       }
       return toolBlock;
     }
+
+    // What a reply came from, known before it finishes, so one that gets stopped or cut off still says.
+    bridge.onChatAiReplyMeta?.((data) => {
+      const streaming = getConversationStreamingMessage(data.conversationId);
+      if (!streaming) return;
+      setConversationStreamingMessage(data.conversationId, { ...streaming, meta: { ...(streaming.meta ?? {}), ...data.meta } });
+    });
 
     bridge.onChatAiStreamStart?.((data) => {
       if (data.conversationId === uiState.chatActiveConversation) {

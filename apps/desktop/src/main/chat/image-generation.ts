@@ -1,3 +1,4 @@
+import { servedPeerFromResponse } from './served-peer.js';
 import { randomUUID } from 'node:crypto';
 import { BlockList, isIP } from 'node:net';
 import { lookup } from 'node:dns/promises';
@@ -167,6 +168,7 @@ export type GenerateChatImageDependencies = {
   persistAttachment?: typeof saveAttachment;
   loadSourceAttachment?: (conversationId: string, attachmentId: string) => Promise<{ bytes: Buffer; fileName: string }>;
   signal?: AbortSignal;
+  sellerName?: (peerId: string) => string | null;
 };
 
 async function loadSourceAttachment(conversationId: string, attachmentId: string): Promise<{ bytes: Buffer; fileName: string }> {
@@ -230,6 +232,8 @@ export async function generateChatImage(
         ? AbortSignal.any([dependencies.signal, AbortSignal.timeout(IMAGE_REQUEST_TIMEOUT_MS)])
         : AbortSignal.timeout(IMAGE_REQUEST_TIMEOUT_MS),
     });
+    const peerId = servedPeerFromResponse(response);
+    const peerName = peerId ? dependencies.sellerName?.(peerId) : null;
     const payload = await response.json().catch(() => null) as ImageResponse | null;
     if (!response.ok) {
       const upstreamMessage = typeof payload?.error?.message === 'string' ? payload.error.message : '';
@@ -264,6 +268,7 @@ export async function generateChatImage(
       prompt,
       persistedMarker,
       routedService,
+      peerId ? { peerId, ...(peerName ? { peerName } : {}) } : null,
     );
     const user: AiChatMessage = { role: 'user', content: prompt, createdAt: persisted.user.timestamp };
     const assistant: AiChatMessage = {
@@ -283,6 +288,8 @@ export async function generateChatImage(
         service: routedService,
         tokenSource: 'unknown',
         outputImages: 1,
+        ...(peerId ? { peerId } : {}),
+        ...(peerName ? { peerName } : {}),
       },
     };
     return { ok: true, user, assistant };

@@ -58,7 +58,7 @@ import {
   reconnectAllApps,
   releaseConnectedAppsOnQuit,
 } from './connected-apps/patching/connection.js';
-import { ensureLocalGateway, initGatewayService, stopLocalGateway } from './gateway/service.js';
+import { ensureLocalGateway, holdLocalGatewayUntil, initGatewayService, stopLocalGateway } from './gateway/service.js';
 import { gatewaySettingsPath } from './gateway/settings.js';
 import { IS_SAFE_STORAGE_EXPORT } from './process-role.js';
 import { isMultiInstanceDevelopment } from './dev-instance.js';
@@ -244,6 +244,12 @@ registerRuntimeIpc({
   getCombinedProcessState,
 });
 
+// Created here, before any IPC handler can run, and settled in whenReady.
+let settlePluginInstall: (install: Promise<unknown>) => void = () => {};
+holdLocalGatewayUntil(new Promise<void>((resolve) => {
+  settlePluginInstall = (install) => { void install.then(() => resolve(), () => resolve()); };
+}));
+
 // ── AI Chat IPC Handlers ──
 const piChatEngine = registerPiChatHandlers({
   ipcMain,
@@ -366,6 +372,7 @@ app.whenReady().then(async () => {
 
   // The local gateway (and its buyer) comes up with the app; connected apps
   // are re-pointed at it once it serves. Nothing to start for a remote one.
+  settlePluginInstall(pluginReady);
   void pluginReady
     .then(() => ensureLocalGateway())
     .catch((err) => {

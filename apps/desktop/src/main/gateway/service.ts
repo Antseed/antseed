@@ -100,7 +100,21 @@ export async function getGatewayStatus(): Promise<GatewayStatus> {
 }
 
 /** Starts the local gateway (and through it the buyer) and waits until it answers. No-op in remote mode. */
+/** Settles once the router plugin install is done. */
+let startGate: Promise<void> = Promise.resolve();
+
+/**
+ * Holds every start of the local gateway until `gate` settles. Its buyer loads
+ * the router plugin and installs it if missing, so starting during the desktop's
+ * own install runs two npm installs in one folder, which can leave it corrupted.
+ * The renderer's first reads start the gateway too, so this can't be left to the launch order.
+ */
+export function holdLocalGatewayUntil(gate: Promise<void>): void {
+  startGate = gate;
+}
+
 export async function ensureLocalGateway(): Promise<void> {
+  await startGate;
   if (getGatewaySettings().mode !== 'local') return;
   if (isLocalRunning() && await probe(localGatewayOrigin())) return;
   startPromise ??= (async () => {
