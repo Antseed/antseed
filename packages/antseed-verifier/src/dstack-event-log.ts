@@ -36,6 +36,13 @@ export function runtimeEventDigest(name: string, payload: Buffer, version: numbe
   return createHash('sha384').update(Buffer.concat([type, Buffer.from(':'), Buffer.from(name, 'utf8'), Buffer.from(':'), payload])).digest()
 }
 
+/** Whether a decoded value has the shape of a dstack event log (field contents are checked on replay). */
+export function isDstackEventLog(value: unknown): value is DstackEvent[] {
+  return Array.isArray(value) && value.every((e) => !!e && typeof e === 'object'
+    && typeof (e as DstackEvent).event === 'string' && typeof (e as DstackEvent).event_payload === 'string'
+    && typeof (e as DstackEvent).event_type === 'number')
+}
+
 /** The RTMR3 events from a dstack event log (the JSON string or its parsed array). */
 export function rtmr3Events(eventLog: unknown): DstackEvent[] {
   const parsed: unknown = typeof eventLog === 'string' ? JSON.parse(eventLog) : eventLog
@@ -61,12 +68,11 @@ const EVENT_NAME = /^[a-z0-9][a-z0-9-]*$/
  *   - any init script ran: init scripts are measured outside the compose file, so an approved
  *     compose hash would not cover them.
  */
-export function composeHashFromEventLog(events: unknown, rtmr3: Uint8Array): { composeHash: string } | { error: string } {
-  if (!Array.isArray(events) || events.length > MAX_RTMR3_EVENTS) return { error: 'malformed dstack event log' }
+export function composeHashFromEventLog(events: readonly DstackEvent[], rtmr3: Uint8Array): { composeHash: string } | { error: string } {
+  if (events.length > MAX_RTMR3_EVENTS) return { error: 'malformed dstack event log' }
   let mr = Buffer.alloc(48)
-  for (const e of events as Partial<DstackEvent>[]) {
-    if (e.event_type !== DSTACK_RUNTIME_EVENT_TYPE || typeof e.event !== 'string' || !EVENT_NAME.test(e.event)
-      || typeof e.event_payload !== 'string' || !HEX.test(e.event_payload)) {
+  for (const e of events) {
+    if (e.event_type !== DSTACK_RUNTIME_EVENT_TYPE || !EVENT_NAME.test(e.event) || !HEX.test(e.event_payload)) {
       return { error: 'malformed dstack event log' }
     }
     if (e.version !== undefined && e.version !== 1 && e.version !== 2) return { error: `unknown dstack event log version ${String(e.version)}` }
@@ -75,7 +81,7 @@ export function composeHashFromEventLog(events: unknown, rtmr3: Uint8Array): { c
   }
   if (!mr.equals(Buffer.from(rtmr3))) return { error: 'dstack event log does not replay to the quote\'s RTMR3' }
 
-  const boot = events as DstackEvent[]
+  const boot = events
   const done = boot.findIndex((e) => e.event === 'boot-mr-done')
   if (done < 0) return { error: 'dstack boot did not complete (no boot-mr-done event)' }
   const measured = boot.slice(0, done)

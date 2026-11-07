@@ -22,9 +22,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 make g+
 WORKDIR /out/home/nonroot/.antseed/plugins
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force
-# The verifier must be the version this CLI pins; the CLI refuses any other.
+# The verifier must be the version this CLI pins (the CLI refuses any other), and must bind its quote
+# to the buyer's connection and send the dstack event log; buyers reject a prover that does neither.
 RUN node --input-type=module -e " \
-      import { readFileSync } from 'node:fs'; \
+      import { existsSync, readFileSync } from 'node:fs'; \
+      const verifier = 'node_modules/@antseed/antseed-verifier/dist/'; \
+      if (!(await import('./' + verifier + 'shared.js')).CHANNEL_BINDING_HEADER || !existsSync(verifier + 'dstack-event-log.js')) { \
+        console.error('The locked verifier cannot bind attestations to the buyer connection; run update-lock.mjs with a CLI release that pins one that can.'); process.exit(1) } \
       const { TRUSTED_VERIFIER_PLUGINS } = await import('./node_modules/@antseed/cli/dist/plugins/registry.js'); \
       const pinned = TRUSTED_VERIFIER_PLUGINS.find((p) => p.name === 'antseed-verifier').version; \
       const installed = JSON.parse(readFileSync('node_modules/@antseed/antseed-verifier/package.json', 'utf8')).version; \

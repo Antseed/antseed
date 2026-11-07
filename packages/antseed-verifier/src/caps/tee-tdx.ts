@@ -3,7 +3,7 @@ import type { Capability, CapabilityCollectInput, CapabilityVerifyInput } from '
 import { claimId, computeReportData } from '../shared.js'
 import { generateTdxQuote } from '../collect/configfs.js'
 import { generateDstackAttestation } from '../collect/dstack.js'
-import { composeHashFromEventLog, rtmr3Events, type DstackEvent } from '../dstack-event-log.js'
+import { composeHashFromEventLog, isDstackEventLog, rtmr3Events, type DstackEvent } from '../dstack-event-log.js'
 import { collectViaHttp, collectTdxAndPubkey } from '../collect/http.js'
 import { antseedRdV1, verifyReportData, type BindingIngredients } from '../report-data.js'
 import type { ApprovedNodeMeasurement } from '../approved-node-measurements.js'
@@ -91,7 +91,7 @@ export interface ParsedTdxQuote {
   /** The provider-declared report_data binding, if the evidence carried one. */
   binding?: ReportDataBinding
   /** dstack RTMR3 event log, if the evidence carried one. */
-  eventLog?: unknown
+  eventLog?: DstackEvent[]
   /** Set when DCAP verification or evidence decoding threw. */
   error?: string
 }
@@ -114,7 +114,7 @@ export function encodeTeeTdxEvidence(quote: Uint8Array, collateral?: unknown, bi
   return new TextEncoder().encode(JSON.stringify(blob))
 }
 
-export function decodeTeeTdxEvidence(bytes: Uint8Array): { quote: Uint8Array; collateral?: unknown; binding?: ReportDataBinding; eventLog?: unknown } {
+export function decodeTeeTdxEvidence(bytes: Uint8Array): { quote: Uint8Array; collateral?: unknown; binding?: ReportDataBinding; eventLog?: DstackEvent[] } {
   const parsed = JSON.parse(new TextDecoder().decode(bytes)) as Partial<TeeTdxEvidence>
   if (typeof parsed.quote !== 'string' || parsed.quote.length === 0) {
     throw new Error('tee-tdx evidence missing "quote"')
@@ -122,6 +122,9 @@ export function decodeTeeTdxEvidence(bytes: Uint8Array): { quote: Uint8Array; co
   const quote = new Uint8Array(Buffer.from(parsed.quote, 'base64'))
   if (quote.length === 0) {
     throw new Error('tee-tdx evidence "quote" is not valid base64')
+  }
+  if (parsed.eventLog !== undefined && !isDstackEventLog(parsed.eventLog)) {
+    throw new Error('tee-tdx evidence "eventLog" is not a dstack event log')
   }
   return {
     quote,
@@ -173,7 +176,7 @@ export async function verifyTdxEvidence(
   let quote: Uint8Array
   let collateral: unknown
   let binding: ReportDataBinding | undefined
-  let eventLog: unknown
+  let eventLog: DstackEvent[] | undefined
   try {
     ;({ quote, collateral, binding, eventLog } = decodeTeeTdxEvidence(evidence))
   } catch (err) {
@@ -203,7 +206,7 @@ function hex(b: Uint8Array): string {
 function approvedBuild(
   approved: readonly ApprovedNodeMeasurement[],
   td: TdMeasurements,
-  eventLog: unknown,
+  eventLog: DstackEvent[] | undefined,
 ): { build?: ApprovedNodeMeasurement; eventLogError?: string } {
   const base = [td.mrTd, td.rtMr0, td.rtMr1, td.rtMr2].map(hex)
   const rtmr3 = hex(td.rtMr3)

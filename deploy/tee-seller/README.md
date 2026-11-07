@@ -26,7 +26,9 @@ the code in the image: rebuild it from that commit to check a digest's contents.
 To release an image after a CLI release:
 
 1. `node deploy/tee-seller/update-lock.mjs <cli version>` pins that CLI, the current plugin
-   releases and the verifier version the CLI pins; open a PR with the regenerated files.
+   releases and the verifier version the CLI pins; open a PR with the regenerated files. The
+   build refuses a lock whose verifier can't bind attestations to the buyer's connection, so the
+   first image comes from the CLI release that ships `@antseed/antseed-verifier` 0.1.1.
 2. After it merges, run the **Publish TEE seller image** workflow
    ([`.github/workflows/tee-seller-image.yml`](../../.github/workflows/tee-seller-image.yml)). It
    pushes `ghcr.io/antseed/tee-seller:<cli version>` with an SBOM and a signed build provenance

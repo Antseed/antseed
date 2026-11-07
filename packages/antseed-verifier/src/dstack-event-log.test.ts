@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { createHash } from 'node:crypto'
-import { DSTACK_RUNTIME_EVENT_TYPE, composeHashFromEventLog, runtimeEventDigest, rtmr3Events, type DstackEvent } from './dstack-event-log.js'
+import { DSTACK_RUNTIME_EVENT_TYPE, composeHashFromEventLog, isDstackEventLog, runtimeEventDigest, rtmr3Events, type DstackEvent } from './dstack-event-log.js'
 
 const COMPOSE = 'ab'.repeat(32)
 
@@ -87,7 +87,9 @@ describe('composeHashFromEventLog', () => {
   })
 
   it('rejects malformed entries', () => {
-    expect(composeHashFromEventLog('nope', Buffer.alloc(48))).toEqual({ error: 'malformed dstack event log' })
+    expect(isDstackEventLog('nope')).toBe(false)
+    expect(isDstackEventLog([{ event: 'app-id' }])).toBe(false)
+    expect(isDstackEventLog(bootLog())).toBe(true)
     expect(composeHashFromEventLog([{ ...event('app-id', '00'), event_type: 1 }], Buffer.alloc(48))).toEqual({ error: 'malformed dstack event log' })
   })
 
