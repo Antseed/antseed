@@ -1900,6 +1900,25 @@ test('gateway rewrites the buyer\'s out-of-credits 402 with the live wallet, nev
   }
 })
 
+test('gateway passes a seller\'s own 402 through without looking up the wallet', async () => {
+  const { store, cleanup } = tempDataDir()
+  const body = JSON.stringify({ error: { code: 'payment_required', message: 'Seller wants payment' } })
+  const buyer = await fakeBuyer({ answer: { status: 402, headers: { 'content-type': 'application/json' }, body } })
+  const { secret } = store.createKey({ label: 'Team', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
+  let lookups = 0
+  const gateway = await startGateway(store, buyer.port, 300_000, null, 50, async () => { lookups += 1; return null })
+  try {
+    const chat = await request(gateway.port, '/v1/chat/completions', { method: 'POST', key: secret, body: '{"model":"kimi-k2.6"}' })
+    assert.equal(chat.status, 402)
+    assert.equal(chat.body, body)
+    assert.equal(lookups, 0)
+  } finally {
+    await gateway.stop()
+    await buyer.close()
+    cleanup()
+  }
+})
+
 test('gateway passes a large JSON 402 through unchanged instead of holding it all to check for out-of-credits', async () => {
   const { store, cleanup } = tempDataDir()
   // A seller's own 402, far larger than the buyer's out-of-credits answer.

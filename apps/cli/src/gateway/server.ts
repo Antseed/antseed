@@ -578,6 +578,9 @@ export class GatewayServer {
 
   /** The buyer's out-of-credits 402 rewritten for the key's workspace, or null to pass it on unchanged. */
   private async _workspaceOutOfCredits(key: ApiKeyRecord, body: Buffer): Promise<Buffer | null> {
+    // Any other 402 (a seller's own, say) passes through without a store read or an address lookup.
+    const parsed = parseBuyerOutOfCredits(body)
+    if (!parsed) return null
     try {
       const workspace = this._options.store.getWorkspace(key.workspaceId)
       if (!workspace) return null
@@ -588,7 +591,7 @@ export class GatewayServer {
       const walletAddress = key.buyerIdentity === workspace.buyerIdentity
         ? await this._liveIdentityAddress(key.buyerIdentity, OUT_OF_CREDITS_ADDRESS_TIMEOUT_MS)
         : null
-      return workspaceOutOfCreditsBody(body, { name: workspace.name, walletAddress })
+      return renderWorkspaceOutOfCredits(parsed, { name: workspace.name, walletAddress })
     } catch (error) {
       this._log(`gateway could not read workspace ${key.workspaceId}: ${errorMessage(error)}`)
       return null
@@ -1155,12 +1158,11 @@ export function workspaceOutOfCreditsMessage(workspace: { name: string; walletAd
     + 'Free sellers need no funds: pin one as <peerId>@<model>.'
 }
 
-/**
- * The buyer's 402 for a wallet with too few credits, with its message pointed at the workspace's
- * funding instead of the desktop app and the CLI. Only the message changes: the status, type, code
- * and param stay as the buyer sent them. Null for any other body.
- */
-export function workspaceOutOfCreditsBody(body: Buffer, workspace: { name: string; walletAddress: string | null }): Buffer | null {
+/** The buyer's out-of-credits 402, parsed: its JSON root, the error object and which API format it is in. */
+type BuyerOutOfCredits = { root: Record<string, unknown>; error: Record<string, unknown>; anthropic: boolean }
+
+/** Parses `body` as the buyer's 402 for a wallet with too few credits; null for any other body. */
+function parseBuyerOutOfCredits(body: Buffer): BuyerOutOfCredits | null {
   const root = parseJsonBody(body, undefined)
   const error = jsonObject(root?.['error'])
   const message = typeof error?.['message'] === 'string' ? error['message'] : null
@@ -1170,9 +1172,24 @@ export function workspaceOutOfCreditsBody(body: Buffer, workspace: { name: strin
   const openAi = error['code'] === ANTSEED_BUYER_FAULT_ERROR_CODE && error['param'] === 'insufficient_deposits'
   const anthropic = error['type'] === ANTSEED_BUYER_FAULT_ERROR_CODE && message.endsWith('(insufficient_deposits)')
   if (!openAi && !anthropic) return null
+  return { root, error, anthropic }
+}
+
+/**
+ * The parsed out-of-credits 402 with its message pointed at the workspace's funding instead of the
+ * desktop app and the CLI. Only the message changes: the status, type, code and param stay as the
+ * buyer sent them.
+ */
+function renderWorkspaceOutOfCredits(parsed: BuyerOutOfCredits, workspace: { name: string; walletAddress: string | null }): Buffer {
   const text = workspaceOutOfCreditsMessage(workspace)
-  error['message'] = anthropic ? `${text} (insufficient_deposits)` : text
-  return Buffer.from(JSON.stringify(root))
+  parsed.error['message'] = parsed.anthropic ? `${text} (insufficient_deposits)` : text
+  return Buffer.from(JSON.stringify(parsed.root))
+}
+
+/** The buyer's out-of-credits 402 rewritten for the workspace (see renderWorkspaceOutOfCredits). Null for any other body. */
+export function workspaceOutOfCreditsBody(body: Buffer, workspace: { name: string; walletAddress: string | null }): Buffer | null {
+  const parsed = parseBuyerOutOfCredits(body)
+  return parsed ? renderWorkspaceOutOfCredits(parsed, workspace) : null
 }
 
 function jsonObject(value: unknown): Record<string, unknown> | null {
