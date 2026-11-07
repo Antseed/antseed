@@ -4655,7 +4655,8 @@ export class BuyerProxy {
 
     // Discover peers
     const peers = await this._getPeers()
-    if (peers.length === 0) {
+    // A pinned seller is still looked up on its own DHT topic below, even when discovery found no one.
+    if (peers.length === 0 && !explicitPeerId) {
       log('No sellers available')
       return dispatchFailure(502, { 'content-type': 'text/plain' }, 'No sellers available on the network. Is a seeder running?')
     }
@@ -5019,6 +5020,17 @@ export class BuyerProxy {
     if (!pinnedDiscovered || routingPeers.length === 0 || cacheAgeMs > this._peerCacheTtlMs) {
       await refreshPeerSelection('pinned-peer routing preflight')
       pinnedDiscovered = isPinnedDiscovered()
+    }
+    if (!pinnedDiscovered && typeof this._node.findPeer === 'function') {
+      // The network refresh only walks a few DHT shards; ask the pinned peer's
+      // own topic, which also picks up a seller that moved to a new address.
+      const found = await this._node.findPeer(pinnedPeerId).catch(() => null)
+      if (found) {
+        this._replacePeers([found, ...this._cachedPeers.filter((peer) => peer.peerId !== found.peerId)])
+        discoveredPeers = [found, ...discoveredPeers.filter((peer) => peer.peerId !== found.peerId)]
+        ;({ candidatePeers: routingPeers, routePlanByPeerId: routingPlans } = selectPeers(discoveredPeers))
+        pinnedDiscovered = true
+      }
     }
 
     if (!pinnedDiscovered) {
