@@ -66,6 +66,7 @@ async function startHarness(t: TestContext, peers: PeerInfo[], extra: Partial<Bu
   }
   proxy = new BuyerProxy({ adaptiveRouting: { spreadTolerance: 0, explorationRate: 0 }, port: 0, dataDir, node: node as any, ...extra })
   ;(proxy as any)._getPeers = async () => peers
+  ;(proxy as any)._cachedPeers = peers
   ;(proxy as any)._cacheLastUpdatedAtMs = Date.now()
   ;(proxy as any)._mergeStateFile = async () => {}
   const server = (proxy as any)._server
@@ -635,7 +636,7 @@ test('no policy, or one that changes nothing, routes like main; unknown models g
 
 // Right after start the first discovery sweep is still finding sellers: a
 // model nobody serves yet is not "not found", only not found yet.
-// The harness's _getPeers() returns `peers`; the discovery wait reads the cache, so it gets the same list.
+// The harness's _getPeers() and its peer cache hold the same list, as on a running buyer.
 function startDiscovery(h: Harness, { startedAgoMs = 1_000, waitMs = 100, peers }: { startedAgoMs?: number; waitMs?: number; peers?: PeerInfo[] } = {}): void {
   if (peers) (h.proxy as any)._cachedPeers = peers
   ;(h.proxy as any)._startedAtMs = Date.now() - startedAgoMs
@@ -706,9 +707,9 @@ test('once the first discovery ends, or after two minutes, unknown models get mo
   assert.equal(((await res.json()) as any).error.code, 'model_not_found')
 })
 
-test('the discovery wait starts no lookup of its own and keeps to its budget with an empty cache', async (t) => {
-  // No _getPeers() override: the request's own first lookup is the node's
-  // discoverPeers(). It finds nothing; any later lookup would hang for 30 s.
+test('while the first discovery runs, a request starts no lookup and keeps to the wait budget with an empty cache', async (t) => {
+  // No _getPeers() override: a lookup would be the node's discoverPeers(),
+  // which hangs for 30 s. The request reads the sweep's cache instead.
   const dataDir = await mkdtemp(join(tmpdir(), 'antseed-discovery-'))
   let lookups = 0
   const node = {
@@ -716,7 +717,7 @@ test('the discovery wait starts no lookup of its own and keeps to its budget wit
     buyerIdentities: () => [],
     discoverPeers: async () => {
       lookups += 1
-      await new Promise((resolve) => setTimeout(resolve, lookups === 1 ? 200 : 30_000).unref())
+      await new Promise((resolve) => setTimeout(resolve, 30_000).unref())
       return []
     },
   }
@@ -741,9 +742,31 @@ test('the discovery wait starts no lookup of its own and keeps to its budget wit
   const elapsed = Date.now() - started
   assert.equal(res.status, 503)
   assert.equal(((await res.json()) as any).error.code, 'discovery_in_progress')
-  assert.equal(lookups, 1)
-  // The 200 ms lookup plus the 300 ms wait, with room for a slow machine; far below the 30 s lookup.
-  assert.ok(elapsed >= 450 && elapsed < 3_000, `took ${elapsed} ms`)
+  assert.equal(lookups, 0)
+  // The 300 ms wait, with room for a slow machine; far below the 30 s lookup.
+  assert.ok(elapsed >= 250 && elapsed < 3_000, `took ${elapsed} ms`)
+})
+
+test('while the first discovery runs, a seller the sweep finds releases the request even if a foreground lookup would hang', async (t) => {
+  // Sellers are cached, but none serves the model yet: after startup this forces a refresh.
+  const peers = [cheap]
+  const h = await startHarness(t, peers)
+  startDiscovery(h, { waitMs: 5_000, peers })
+  let refreshes = 0
+  const cachedPeers = (h.proxy as any)._getPeers.bind(h.proxy)
+  ;(h.proxy as any)._getPeers = async (options?: { forceRefresh?: boolean }) => {
+    if (!options?.forceRefresh) return cachedPeers(options)
+    refreshes += 1
+    return new Promise<PeerInfo[]>(() => {})
+  }
+  const late = { ...makePeer('g', { input: 1, output: 1, trust: 90 }), providerServiceApiProtocols: { openai: { services: { 'qwen3-coder': ['openai-chat-completions' as const] } } } }
+  setTimeout(() => peers.push(late), 300)
+  const started = Date.now()
+  const res = await chat(h, {}, 'qwen3-coder')
+  assert.equal(res.status, 200)
+  assert.equal(h.dispatched[0]?.peerId, late.peerId)
+  assert.equal(refreshes, 0)
+  assert.ok(Date.now() - started < 3_000)
 })
 
 test('the discovery wait ends as soon as the client goes away', async (t) => {

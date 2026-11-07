@@ -37,6 +37,9 @@ import {
 } from './x402.js'
 import type { ApiKeyRecord, GatewayStore, PresetRecord, RequestError, RequestRouter } from './store.js'
 
+/** Largest 402 body the gateway holds back to check for the buyer's out-of-credits answer (which is well under 1 KiB). */
+const OUT_OF_CREDITS_REWRITE_MAX_BYTES = 16 * 1024
+
 /**
  * The gateway's own components (the console chat agent) call `/v1` as a key
  * by its id, without its secret: this header plus the control secret, from
@@ -780,10 +783,27 @@ export class GatewayServer {
             return
           }
           // The buyer's out-of-credits answer names the desktop app and the CLI; here the funds are the workspace's.
+          // Only a small body can be that answer; a larger one streams through unchanged, with backpressure.
           if (status === 402 && contentType.startsWith('application/json')) {
             const chunks: Buffer[] = []
-            upstreamRes.on('data', (chunk: Buffer) => chunks.push(chunk))
+            let buffered = 0
+            let passThrough = false
+            const collect = (chunk: Buffer): void => {
+              chunks.push(chunk)
+              buffered += chunk.length
+              if (buffered <= OUT_OF_CREDITS_REWRITE_MAX_BYTES) return
+              passThrough = true
+              upstreamRes.off('data', collect)
+              res.writeHead(status, responseHeaders)
+              res.write(Buffer.concat(chunks))
+              upstreamRes.pipe(res)
+            }
+            upstreamRes.on('data', collect)
             upstreamRes.once('end', async () => {
+              if (passThrough) {
+                finish!(status, buyerRequestId)
+                return
+              }
               const original = Buffer.concat(chunks)
               const answer = await this._workspaceOutOfCredits(key, original) ?? original
               delete responseHeaders['transfer-encoding']

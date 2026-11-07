@@ -4735,7 +4735,10 @@ export class BuyerProxy {
     }
 
     // Discover peers
-    let peers = await this._getPeers()
+    // While the first discovery sweep runs, an unpinned request routes from the cache the sweep
+    // fills instead of starting a foreground lookup, which could outlast the discovery wait.
+    const awaitingInitialDiscovery = !explicitPeerId && this._initialDiscoveryRunning()
+    let peers = awaitingInitialDiscovery ? this._cachedPeers : await this._getPeers()
     // A pinned seller is still looked up on its own DHT topic below, even when discovery found no one.
     if (peers.length === 0 && !explicitPeerId && this._initialDiscoveryRunning()) {
       peers = await this._waitForInitialDiscovery((found) => found.length > 0, signal)
@@ -4773,7 +4776,7 @@ export class BuyerProxy {
       let discoveredPeers = peers
       let { candidatePeers: modelPeers, routePlanByPeerId: modelPlans } = selectModelPeers(discoveredPeers)
       const cacheAgeMs = Date.now() - this._cacheLastUpdatedAtMs
-      if (modelPeers.length === 0 || cacheAgeMs > this._peerCacheTtlMs) {
+      if ((modelPeers.length === 0 || cacheAgeMs > this._peerCacheTtlMs) && !this._initialDiscoveryRunning()) {
         discoveredPeers = await this._getPeers({ forceRefresh: true })
         ;({ candidatePeers: modelPeers, routePlanByPeerId: modelPlans } = selectModelPeers(discoveredPeers))
       }
