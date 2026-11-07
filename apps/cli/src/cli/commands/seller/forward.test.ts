@@ -1,0 +1,39 @@
+import assert from 'node:assert/strict'
+import net, { createServer } from 'node:net'
+import test from 'node:test'
+import { ANTSEED_WILDCARD_TOPIC, peerTopic, subnetOf, subnetTopic } from '@antseed/node/discovery'
+import { parseTlsTarget, sellerTopics, startTlsForwarder } from './forward.js'
+
+const PEER = 'ab'.repeat(20)
+
+test('announces the topics a seller announces itself', () => {
+  assert.deepEqual(sellerTopics(PEER), [subnetTopic(subnetOf(PEER)), ANTSEED_WILDCARD_TOPIC, peerTopic(PEER)])
+})
+
+test('parses the gateway address, defaulting to port 443', () => {
+  assert.deepEqual(parseTlsTarget('app-6882.dstack-prod5.phala.network'), { host: 'app-6882.dstack-prod5.phala.network', port: 443 })
+  assert.deepEqual(parseTlsTarget('gw.example:8443'), { host: 'gw.example', port: 8443 })
+  assert.throws(() => parseTlsTarget('https://gw.example'))
+  assert.throws(() => parseTlsTarget('gw.example:70000'))
+})
+
+test('carries each buyer connection to the target and back', async () => {
+  // Stands in for the gateway: echoes with a prefix, so both directions are checked.
+  const upstream = createServer((socket) => socket.on('data', (data) => socket.write(`seller:${data}`)))
+  await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve))
+  const upstreamPort = (upstream.address() as net.AddressInfo).port
+  const forwarder = startTlsForwarder(0, { host: '127.0.0.1', port: upstreamPort }, ({ host, port }) => net.connect({ host, port }))
+  await new Promise<void>((resolve) => forwarder.once('listening', resolve))
+  const port = (forwarder.address() as net.AddressInfo).port
+  try {
+    const reply = await new Promise<string>((resolve, reject) => {
+      const buyer = net.connect({ host: '127.0.0.1', port }, () => buyer.write('hello'))
+      buyer.once('data', (data) => { resolve(data.toString()); buyer.destroy() })
+      buyer.once('error', reject)
+    })
+    assert.equal(reply, 'seller:hello')
+  } finally {
+    forwarder.close()
+    upstream.close()
+  }
+})

@@ -91,8 +91,21 @@ Any change to the compose file (image, config, prices) changes the compose hash;
 re-check the new one against the same rules, so no approval is needed.
 
 Buyers reach a seller over raw TCP at its announced address and find it through the DHT (UDP).
-Phala Cloud exposes CVM ports only through its TLS gateway, without a public IP or UDP, so
-buyers can't reach a seller there yet; run dstack on a TDX host with a public IP.
+Phala Cloud exposes CVM ports only through its TLS gateway
+(`<app-id>-6882.<cluster>.phala.network:443`), without a public IP or UDP, so give the seller a
+public entry point with `antseed seller forward` on any small machine with a public IP:
+
+```bash
+antseed seller forward --to <app-id>-6882.<cluster>.phala.network --peer <peer id>
+```
+
+It carries buyers' TCP connections over TLS to the gateway and announces the seller on the DHT
+at its own address. It sees only ciphertext: buyers verify the seller's signed metadata and
+attestation and run their encrypted session end to end with the CVM. In the seller config, set
+`seller.publicAddress` to the forwarder's `<ip>:6882`, and raise
+`seller.maxInboundConnectionsPerIp` (default 64), since every buyer arrives from the gateway's
+address. For the same reason `seller.restrictedCountries` sees the gateway's location, not the
+buyer's.
 
 ## Run a TEE seller on Google Confidential Space
 
