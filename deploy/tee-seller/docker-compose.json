@@ -1,0 +1,25 @@
+{
+  "services": {
+    "seller": {
+      "image": "ghcr.io/antseed/tee-seller@sha256:<release digest>",
+      "restart": "always",
+      "ports": ["6882:6882", "6881:6881/udp"],
+      "environment": {
+        "ANTSEED_TEE_PEER_ID": "<seller peer id, 40 hex, no 0x>",
+        "ANTSEED_IDENTITY_HEX": "${ANTSEED_IDENTITY_HEX}",
+        "ANTSEED_VERIFIER_SIGNING_KEY": "${ANTSEED_IDENTITY_HEX}",
+        "OPENAI_API_KEY": "${OPENAI_API_KEY}"
+      },
+      "volumes": ["/var/run/dstack.sock:/var/run/dstack.sock", "seller-data:/var/lib/antseed"],
+      "configs": [{ "source": "seller-config", "target": "/etc/antseed/config.json" }]
+    }
+  },
+  "configs": {
+    "seller-config": {
+      "content": "{\"identity\":{\"displayName\":\"<seller name>\"},\"payments\":{\"preferredMethod\":\"crypto\",\"crypto\":{\"chainId\":\"base-mainnet\"}},\"seller\":{\"providers\":{\"inference\":{\"plugin\":\"openai\",\"baseUrl\":\"https://<upstream host>\",\"apiKeyEnv\":\"OPENAI_API_KEY\",\"defaults\":{\"inputUsdPerMillion\":0.5,\"outputUsdPerMillion\":2},\"services\":{\"<service-id>\":{\"upstreamModel\":\"<upstream-model-id>\",\"categories\":[\"chat\"]}}}}}}"
+    }
+  },
+  "volumes": {
+    "seller-data": {}
+  }
+}

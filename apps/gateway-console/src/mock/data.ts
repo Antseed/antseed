@@ -96,16 +96,16 @@ export function seed() {
       inputUsdPerMillion: Number(base.toFixed(2)), outputUsdPerMillion: Number((base * 3.5).toFixed(2)), cachedInputUsdPerMillion: m % 4 === 0 ? null : Number((base / 5).toFixed(3)),
     }
   })
-  // How each mock trust score adds up (history + usage + power + identity + free models); index 5 has no score.
+  // How each mock trust score adds up (usage + power + identity + free models, then model checks); index 5 has no score.
   const MOCK_TRUST_PARTS: Array<TrustBreakdownView | null> = [
-    { history: 42, usage: 15, power: 8, identity: { score: 20, kind: 'domain' }, freeModels: null },
-    { history: 40, usage: 14, power: 6, identity: { score: 18, kind: 'github' }, freeModels: null },
-    { history: 44, usage: 16, power: 10, identity: { score: 18, kind: 'github' }, freeModels: null },
-    { history: 22, usage: 8, power: 6, identity: null, freeModels: 5 },
-    { history: 38, usage: 14, power: 7, identity: { score: 6, kind: 'domain' }, freeModels: null, verification: { multiplierBps: 9600, diffCount: 1, penalty: 2.6 } },
+    { usage: 22, power: 52, identity: { score: 18, kind: 'github' }, freeModels: null },
+    { usage: 18, power: 42, identity: { score: 18, kind: 'github' }, freeModels: null },
+    { usage: 24, power: 46, identity: { score: 18, kind: 'github' }, freeModels: null },
+    { usage: 10, power: 26, identity: null, freeModels: 5 },
+    { usage: 17, power: 42, identity: { score: 6, kind: 'domain' }, freeModels: null, verification: { multiplierBps: 9600, sameCount: 0, diffCount: 1, change: -2.6 } },
     null,
-    { history: 33, usage: 12, power: 4, identity: { score: 6, kind: 'domain' }, freeModels: null },
-    { history: 43, usage: 16, power: 8, identity: { score: 16, kind: 'github' }, freeModels: null },
+    { usage: 15, power: 34, identity: { score: 6, kind: 'domain' }, freeModels: null },
+    { usage: 21, power: 46, identity: { score: 16, kind: 'github' }, freeModels: null },
   ]
   const names = ['Fake Seller Alpha', 'Fake Seller Beta', 'Fake TEE Gamma', 'Fake Free Delta', 'Fake Seller Epsilon', null, 'Fake Seller Eta', 'Fake Seller Theta']
   const peers: Peer[] = names.map((displayName, index) => ({
@@ -127,6 +127,7 @@ export function seed() {
     tee: index === 2 || index === 1 || index === 4,
     // Gamma is attested end to end, Beta at the seller node only, Epsilon not checked yet.
     teeScope: index === 2 ? 'end-to-end' as const : index === 1 ? 'seller-node' as const : null,
+    ...(index === 2 ? { teeUpstreams: ['inference.gamma.example'] } : index === 1 ? { teeUpstreams: ['api.beta.example'] } : {}),
     stakeAnts: index < 5 ? `${(index + 1) * 2500}.0` : null,
     agentId: 86_900 + index,
     // Delta's free models come with the default staked tiers.
@@ -270,6 +271,7 @@ export function seed() {
       overrides: ['network.metadataFetchTimeoutMs'],
     },
     observability: { otlpEndpoint: null, otlpHeaders: {}, logContent: false, retentionDays: 30 },
+    telemetry: { available: true, enabled: false, userDisabled: true },
     auth: { setupRequired: false, passkey: true, wallet: true, oidc: { label: 'Example SSO' }, cloudflareAccess: false, apiKeyLogin: true },
   }
   const chain: ChainInfo = {

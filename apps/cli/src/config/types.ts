@@ -286,6 +286,15 @@ export interface SellerCLIConfig {
   verifications?: VerificationConfig;
   /** Maximum upload body size (bytes) accepted from buyers per request. Default: 64 MiB. */
   maxUploadBodyBytes?: number;
+  /** Buyer connections held open at once; past it new buyers are refused. Metadata requests never count. Default: 2048. */
+  maxInboundConnections?: number;
+  /**
+   * Buyer connections accepted from one IP at once. Raise it when every buyer reaches this seller
+   * through one address, such as Phala Cloud's TLS gateway. Default: 64.
+   */
+  maxInboundConnectionsPerIp?: number;
+  /** Close a buyer's connection after this long with no traffic and no channel open on it; 0 keeps idle connections. Default: 30 minutes. */
+  inboundIdleTimeoutMs?: number;
   /**
    * Verifier SDK ids this seller advertises and runs provers for (first is the
    * default). Chosen in `antseed seller setup`; overridden at launch by
@@ -530,4 +539,10 @@ export interface AntseedConfig {
   network: NetworkCLIConfig;
   /** Installed plugins */
   plugins?: { name: string; package: string; installedAt: string }[];
+  /**
+   * Anonymous product telemetry (docs/telemetry.md). On unless `enabled` is
+   * false; `antseed telemetry disable` and the desktop and gateway privacy
+   * toggles write it, and a running buyer picks the change up live.
+   */
+  telemetry?: { enabled?: boolean };
 }

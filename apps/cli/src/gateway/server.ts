@@ -2,7 +2,7 @@ import { timingSafeEqual } from 'node:crypto'
 import * as http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { nativeVideoAcceptance, nativeVideoRoute, type NativeVideoRoute } from '@antseed/api-adapter'
-import { DEFAULT_BUYER_IDENTITY, VIDEO_JOB_RETIRED_HEADER, VIDEO_PRICE_HEADER } from '@antseed/node'
+import { ANTSEED_BUYER_FAULT_ERROR_CODE, DEFAULT_BUYER_IDENTITY, VIDEO_JOB_RETIRED_HEADER, VIDEO_PRICE_HEADER } from '@antseed/node'
 import { SPEND_ATTRIBUTION_HEADER } from '../proxy/spend-attribution.js'
 import { decodeServedSelection, ROUTE_SELECTION_HEADER, type ServedSelection } from '../proxy/route-selection.js'
 import { coveredByFreeAllowance, ROUTER_PEER_ID_HEADER, ROUTER_RANK_HEADER, ROUTER_SERVICE_HEADER } from '../proxy/telemetry.js'
@@ -37,12 +37,18 @@ import {
 } from './x402.js'
 import type { ApiKeyRecord, GatewayStore, PresetRecord, RequestError, RequestRouter } from './store.js'
 
+/** Largest 402 body the gateway holds back to check for the buyer's out-of-credits answer (which is well under 1 KiB). */
+const OUT_OF_CREDITS_REWRITE_MAX_BYTES = 16 * 1024
+
 /**
  * The gateway's own components (the console chat agent) call `/v1` as a key
  * by its id, without its secret: this header plus the control secret, from
  * loopback only. Stripped from everything forwarded to the buyer.
  */
 export const GATEWAY_INTERNAL_KEY_HEADER = 'x-antseed-gateway-key'
+
+/** How long an out-of-credits 402 waits for the buyer's live wallet address before leaving it out. */
+const OUT_OF_CREDITS_ADDRESS_TIMEOUT_MS = 1_000
 
 const HOP_BY_HOP = new Set([
   'connection',
@@ -570,6 +576,39 @@ export class GatewayServer {
     else if (outcome.delivered) accounting.videoDelivered(job)
   }
 
+  /** The buyer's out-of-credits 402 rewritten for the key's workspace, or null to pass it on unchanged. */
+  private async _workspaceOutOfCredits(key: ApiKeyRecord, body: Buffer): Promise<Buffer | null> {
+    // Any other 402 (a seller's own, say) passes through without a store read or an address lookup.
+    const parsed = parseBuyerOutOfCredits(body)
+    if (!parsed) return null
+    try {
+      const workspace = this._options.store.getWorkspace(key.workspaceId)
+      if (!workspace) return null
+      // Name a transfer address only when the key pays from the workspace's wallet, and only as the
+      // running buyer reports it: the address cached on the workspace is for display and can be stale
+      // (a replaced identity, or one the buyer was handed in its environment). No live answer in time,
+      // no address: the console instructions still apply.
+      const walletAddress = key.buyerIdentity === workspace.buyerIdentity
+        ? await this._liveIdentityAddress(key.buyerIdentity, OUT_OF_CREDITS_ADDRESS_TIMEOUT_MS)
+        : null
+      return renderWorkspaceOutOfCredits(parsed, { name: workspace.name, walletAddress })
+    } catch (error) {
+      this._log(`gateway could not read workspace ${key.workspaceId}: ${errorMessage(error)}`)
+      return null
+    }
+  }
+
+  /** The buyer's live address for an identity, or null when it fails or takes longer than `timeoutMs`. */
+  private async _liveIdentityAddress(buyerIdentity: string, timeoutMs: number): Promise<string | null> {
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const timeout = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), timeoutMs) })
+    try {
+      return await Promise.race([this._options.identityAddress(buyerIdentity).catch(() => null), timeout])
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
+  }
+
   /**
    * Sends an admitted request to the buyer and streams the answer back.
    * Every path must finish the request (and so release or start expiring
@@ -742,6 +781,37 @@ export class GatewayServer {
               const listing = filterModelList(Buffer.concat(chunks), modelListPolicy)
               res.writeHead(status, { ...responseHeaders, 'content-length': String(listing.length) })
               res.end(listing)
+              finish!(status, buyerRequestId)
+            })
+            return
+          }
+          // The buyer's out-of-credits answer names the desktop app and the CLI; here the funds are the workspace's.
+          // Only a small body can be that answer; a larger one streams through unchanged, with backpressure.
+          if (status === 402 && contentType.startsWith('application/json')) {
+            const chunks: Buffer[] = []
+            let buffered = 0
+            let passThrough = false
+            const collect = (chunk: Buffer): void => {
+              chunks.push(chunk)
+              buffered += chunk.length
+              if (buffered <= OUT_OF_CREDITS_REWRITE_MAX_BYTES) return
+              passThrough = true
+              upstreamRes.off('data', collect)
+              res.writeHead(status, responseHeaders)
+              res.write(Buffer.concat(chunks))
+              upstreamRes.pipe(res)
+            }
+            upstreamRes.on('data', collect)
+            upstreamRes.once('end', async () => {
+              if (passThrough) {
+                finish!(status, buyerRequestId)
+                return
+              }
+              const original = Buffer.concat(chunks)
+              const answer = await this._workspaceOutOfCredits(key, original) ?? original
+              delete responseHeaders['transfer-encoding']
+              res.writeHead(status, { ...responseHeaders, 'content-length': String(answer.length) })
+              res.end(answer)
               finish!(status, buyerRequestId)
             })
             return
@@ -1078,6 +1148,48 @@ function parseJsonBody(body: Buffer, contentType: string | undefined): Record<st
   } catch {
     return null
   }
+}
+
+/** What a gateway key holder is told when the workspace wallet cannot pay a seller. */
+export function workspaceOutOfCreditsMessage(workspace: { name: string; walletAddress: string | null }): string {
+  const send = workspace.walletAddress ? `, or send USDC on Base to the workspace wallet ${workspace.walletAddress}` : ''
+  return `This API key's workspace (${workspace.name}) is out of AntSeed credits for this request. `
+    + `A workspace admin can add funds in the gateway console under Wallet & Funding${send}, then retry. `
+    + 'Free sellers need no funds: pin one as <peerId>@<model>.'
+}
+
+/** The buyer's out-of-credits 402, parsed: its JSON root, the error object and which API format it is in. */
+type BuyerOutOfCredits = { root: Record<string, unknown>; error: Record<string, unknown>; anthropic: boolean }
+
+/** Parses `body` as the buyer's 402 for a wallet with too few credits; null for any other body. */
+function parseBuyerOutOfCredits(body: Buffer): BuyerOutOfCredits | null {
+  const root = parseJsonBody(body, undefined)
+  const error = jsonObject(root?.['error'])
+  const message = typeof error?.['message'] === 'string' ? error['message'] : null
+  if (!root || !error || message === null) return null
+  // OpenAI format: code antseed_buyer_fault, param insufficient_deposits.
+  // Anthropic format: type antseed_buyer_fault, the reason in brackets at the end of the message.
+  const openAi = error['code'] === ANTSEED_BUYER_FAULT_ERROR_CODE && error['param'] === 'insufficient_deposits'
+  const anthropic = error['type'] === ANTSEED_BUYER_FAULT_ERROR_CODE && message.endsWith('(insufficient_deposits)')
+  if (!openAi && !anthropic) return null
+  return { root, error, anthropic }
+}
+
+/**
+ * The parsed out-of-credits 402 with its message pointed at the workspace's funding instead of the
+ * desktop app and the CLI. Only the message changes: the status, type, code and param stay as the
+ * buyer sent them.
+ */
+function renderWorkspaceOutOfCredits(parsed: BuyerOutOfCredits, workspace: { name: string; walletAddress: string | null }): Buffer {
+  const text = workspaceOutOfCreditsMessage(workspace)
+  parsed.error['message'] = parsed.anthropic ? `${text} (insufficient_deposits)` : text
+  return Buffer.from(JSON.stringify(parsed.root))
+}
+
+/** The buyer's out-of-credits 402 rewritten for the workspace (see renderWorkspaceOutOfCredits). Null for any other body. */
+export function workspaceOutOfCreditsBody(body: Buffer, workspace: { name: string; walletAddress: string | null }): Buffer | null {
+  const parsed = parseBuyerOutOfCredits(body)
+  return parsed ? renderWorkspaceOutOfCredits(parsed, workspace) : null
 }
 
 function jsonObject(value: unknown): Record<string, unknown> | null {

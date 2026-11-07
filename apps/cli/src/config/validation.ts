@@ -427,6 +427,27 @@ export function validateConfig(config: AntseedConfig): string[] {
     errors.push('seller.maxUploadBodyBytes must be an integer >= 1048576');
   }
 
+  if (
+    config.seller.maxInboundConnections !== undefined &&
+    (!Number.isInteger(config.seller.maxInboundConnections) || config.seller.maxInboundConnections < 1)
+  ) {
+    errors.push('seller.maxInboundConnections must be an integer >= 1');
+  }
+
+  if (
+    config.seller.maxInboundConnectionsPerIp !== undefined &&
+    (!Number.isInteger(config.seller.maxInboundConnectionsPerIp) || config.seller.maxInboundConnectionsPerIp < 1)
+  ) {
+    errors.push('seller.maxInboundConnectionsPerIp must be an integer >= 1');
+  }
+
+  if (
+    config.seller.inboundIdleTimeoutMs !== undefined &&
+    (!Number.isInteger(config.seller.inboundIdleTimeoutMs) || config.seller.inboundIdleTimeoutMs < 0)
+  ) {
+    errors.push('seller.inboundIdleTimeoutMs must be an integer >= 0');
+  }
+
   if (config.seller.agentDir !== undefined) {
     if (typeof config.seller.agentDir === 'string') {
       if (config.seller.agentDir.trim().length === 0) {
@@ -568,6 +589,14 @@ export function validateConfig(config: AntseedConfig): string[] {
     }
     if (config.relayer.maxPerPeerPerMinute !== undefined && (!Number.isInteger(config.relayer.maxPerPeerPerMinute) || config.relayer.maxPerPeerPerMinute < 1)) {
       errors.push('relayer.maxPerPeerPerMinute must be an integer >= 1');
+    }
+  }
+
+  if (config.telemetry !== undefined) {
+    if (typeof config.telemetry !== 'object' || config.telemetry === null || Array.isArray(config.telemetry)) {
+      errors.push('telemetry must be an object');
+    } else if (config.telemetry.enabled !== undefined && typeof config.telemetry.enabled !== 'boolean') {
+      errors.push('telemetry.enabled must be a boolean');
     }
   }
 

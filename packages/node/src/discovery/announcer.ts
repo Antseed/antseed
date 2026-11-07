@@ -1,14 +1,7 @@
 import type { Identity } from "../p2p/identity.js";
 import { signData } from "../p2p/identity.js";
 import type { DHTNode } from "./dht-node.js";
-import {
-  ANTSEED_WILDCARD_TOPIC,
-  capabilityTopic,
-  peerTopic,
-  subnetOf,
-  subnetTopic,
-  topicToInfoHash,
-} from "./dht-node.js";
+import { capabilityTopic, sellerTopics, topicToInfoHash } from "./dht-node.js";
 import type { PeerOffering } from "../types/capability.js";
 import type { DomainVerificationClaim, DomainVerificationMethod, GithubVerificationClaim, PeerMetadata, PeerVerifications, ProviderAnnouncement, ServiceCapabilities, ServiceHealth, ServicePerformance } from "./peer-metadata.js";
 import { METADATA_VERSION } from "./peer-metadata.js";
@@ -443,23 +436,7 @@ export class PeerAnnouncer {
    * sequencing them just slows the reannounce cycle for no benefit.
    */
   private async _announceTopics(): Promise<number> {
-    const subnet = subnetOf(this.config.identity.peerId);
-    const topics = new Set<string>();
-
-    // Subnet topic: shards the peer set across SUBNET_COUNT infohashes so no
-    // single one carries every announcer at once. Buyers fan out parallel
-    // lookups across all subnets in `PeerLookup.findAll()`.
-    topics.add(subnetTopic(subnet));
-
-    // Wildcard remains during the transition: it lets older buyers (still on
-    // the single-infohash scan) keep finding this peer. Once subnet-aware
-    // buyers are universal it can be dropped — see SUBNET_COUNT comment in
-    // dht-node.ts.
-    topics.add(ANTSEED_WILDCARD_TOPIC);
-
-    // Per-peer topic: lets buyers do a deterministic lookup-by-peerId without
-    // scanning the wildcard or any subnet.
-    topics.add(peerTopic(this.config.identity.peerId));
+    const topics = new Set<string>(sellerTopics(this.config.identity.peerId));
 
     if (this.config.offerings) {
       for (const offering of this.config.offerings) {

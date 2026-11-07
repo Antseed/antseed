@@ -27,6 +27,8 @@ import { BuyerIdentityLoader } from '../../../buyer-identities/loader.js'
 import { curatedVerifierIds, resolveVerifierPolicy, type VerifierPolicy } from '../../../plugins/verifier.js'
 import { buyerSettingOverrides, resolveEffectiveBuyerConfig, type BuyerRuntimeOverrides } from '../../../config/effective.js'
 import type { BuyerCLIConfig } from '../../../config/types.js'
+import { BuyerTelemetry } from '../../../telemetry/buyer.js'
+import { formatToolHints, toolHintBaseUrl, type ToolHint } from '@antseed/router-core'
 
 const SHUTDOWN_DEADLINE_MS = BUYER_SHUTDOWN_DEADLINE_MS
 
@@ -84,6 +86,20 @@ export function ignoreBrokenPipes(streams: NodeJS.EventEmitter[] = [process.stdo
       if (err.code !== 'EPIPE') throw err
     })
   }
+}
+
+/**
+ * The "Configure your tools" lines printed once the proxy listens. OpenAI
+ * clients need the base URL with /v1; Anthropic clients use the root.
+ */
+export function buyerToolHintLines(proxyUrl: string, toolHints: ToolHint[]): string[] {
+  if (toolHints.length > 0) {
+    return formatToolHints(toolHints, proxyUrl).map((line) => `  ${line}`)
+  }
+  return [
+    `  export ANTHROPIC_BASE_URL=${toolHintBaseUrl('ANTHROPIC_BASE_URL', proxyUrl)}`,
+    `  export OPENAI_BASE_URL=${toolHintBaseUrl('OPENAI_BASE_URL', proxyUrl)}`,
+  ]
 }
 
 export function resolveBuyerRouterName(options: { router?: string }): string {
@@ -266,7 +282,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
       })
 
       let router
-      let toolHints: Array<{ name: string; envVar: string }> = []
+      let toolHints: ToolHint[] = []
       const routerName = resolveBuyerRouterName({ router: options.router as string | undefined })
 
       if (options.instance) {
@@ -576,7 +592,13 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
         return shutdownPromise
       }
 
+      // Anonymous request telemetry (docs/telemetry.md), following `telemetry.enabled` in the config live.
+      const buyerTelemetry = new BuyerTelemetry({
+        configPath: globalOpts.config,
+        getDistinctId: () => node.identity?.wallet.address ?? null,
+      })
       const proxy = new BuyerProxy({
+        telemetry: buyerTelemetry,
         buyerIdentities,
         port: proxyPort,
         node,
@@ -614,6 +636,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
         for (const watcher of identityWatchers) watcher.stop()
         depositWatchHub?.stop()
         if (ownsProxyListener) await proxy.stop()
+        await buyerTelemetry.close()
         await node.stop()
         nodeSpinner.succeed('Disconnected. All channels finalized.')
       }
@@ -638,6 +661,12 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
           process.exit(1)
         }
       }
+
+      buyerTelemetry.started({
+        paymentsEnabled: Boolean(paymentsConfig?.enabled),
+        verifierEnabled: Boolean(verifierPolicy),
+        ownsProxyPort: ownsProxyListener,
+      })
 
       // Hot-wallet deposit watcher (auto-sweep): incoming USDC is swept into
       // the deposits balance gaslessly via the relayer network. Skipped when
@@ -685,6 +714,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
           ...(shared && effectiveBuyerConfig.autoSweep === false ? { idleIntervalMs: null } : {}),
           onEvent: (event) => {
             if (event.phase !== 'credited') return
+            buyerTelemetry.depositCredited(identity.wallet.address, event)
             proxy.invalidateBalances(identity.wallet.address)
             // Kept for the gateway's deposit confirmations; the hash can arrive in a second 'credited' event.
             if (event.txHash && event.amountBaseUnits) {
@@ -726,16 +756,8 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
 
       const proxyUrl = `http://localhost:${proxyPort}`
       console.log('')
-      if (toolHints.length > 0) {
-        console.log(chalk.bold('Configure your tools:'))
-        for (const hint of toolHints) {
-          console.log(`  export ${hint.envVar}=${proxyUrl}   # ${hint.name}`)
-        }
-      } else {
-        console.log(chalk.bold('Configure your CLI tools:'))
-        console.log(`  export ANTHROPIC_BASE_URL=${proxyUrl}`)
-        console.log(`  export OPENAI_BASE_URL=${proxyUrl}`)
-      }
+      console.log(chalk.bold(toolHints.length > 0 ? 'Configure your tools:' : 'Configure your CLI tools:'))
+      for (const line of buyerToolHintLines(proxyUrl, toolHints)) console.log(line)
       console.log('')
       console.log(chalk.dim('Enable debug logs: export ANTSEED_DEBUG=1'))
       console.log(chalk.dim('Filter debug logs: antseed buyer start --log-filter ProxyMux'))

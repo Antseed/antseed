@@ -9,7 +9,7 @@ test('seller reputation explains the trust formula part by part', () => {
     onChainReputationScore: 65,
     trust: {
       score: 65,
-      history: { score: 30, channelCount: 100, totalVolumeUsdcMicros: 100_000_000 },
+      history: { score: 0, channelCount: 100, totalVolumeUsdcMicros: 100_000_000 },
       usage: { score: 10, shareBps: 1_000, epoch: 11 },
       power: { score: 5, shareBps: 1_000, epoch: 12 },
       identity: { score: 20, kind: 'github', claim: 'portfolio' },
@@ -18,7 +18,7 @@ test('seller reputation explains the trust formula part by part', () => {
   } as DiscoverRow;
   assert.equal(
     sellerReputationExplanation(route),
-    'Trust 6.5/10 = history 3.0 + usage 1.0 + power 0.5 + identity 2.0 GitHub. Not flagged for wash trading.',
+    'Trust 6.5/10 = power 0.5 + usage 1.0 + identity 2.0 GitHub. Not flagged for wash trading.',
   );
 });
 
@@ -30,7 +30,7 @@ test('seller reputation shows n/a, none and 0 for missing trust parts', () => {
   } as DiscoverRow;
   assert.equal(
     sellerReputationExplanation(route),
-    'Trust 0.0/10 = history n/a + usage n/a + power n/a + identity none. Wash-trading registry unavailable.',
+    'Trust 0.0/10 = power n/a + usage n/a + identity none. Wash-trading registry unavailable.',
   );
 });
 
@@ -40,7 +40,7 @@ test('seller reputation calls out proven wash traders', () => {
     onChainReputationScore: 0,
     trust: {
       score: 0,
-      history: { score: 50, channelCount: 100, totalVolumeUsdcMicros: 100_000_000 },
+      history: { score: 0, channelCount: 100, totalVolumeUsdcMicros: 100_000_000 },
       usage: { score: 38, shareBps: 7_000, epoch: 11 },
       power: { score: 5, shareBps: 20, epoch: 12 },
       identity: null,

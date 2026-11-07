@@ -17,8 +17,8 @@ The policy editor groups its settings under **Sellers**, **Quality** (the minimu
 |---|---|
 | **Which sellers may serve** | **Any seller**, or **Only these**: chosen providers or seller lists |
 | **Never use**, **Never use these lists** | Providers that never serve |
-| **Minimum trust score** | 0 to 100, from the seller's settled service history, recognized usage, staking power and verified identity. The ⓘ next to it in the editor explains the parts. It is judged per model: for a model with a live DIFF [model check](/docs/verify/overview), a seller counts at 10% of its score, and **Sort by trust** uses the same number. See [Trust score](/docs/reputation). |
-| **TEE sellers only** | Only providers that advertise running models in a trusted execution environment (TEE) |
+| **Minimum trust score** | 0 to 100, from the seller's staking power, recognized usage, verified identity and model checks. The ⓘ next to it in the editor explains the parts. It is judged per model: for a model with a live DIFF [model check](/docs/verify/overview), a seller counts at 10% of its score, and **Sort by trust** uses the same number. See [Trust score](/docs/reputation). |
+| **TEE sellers only** | Only providers whose trusted execution environment (TEE) attestation passes on your buyer |
 | **Verified sellers only** | Only providers whose responses pass a verifier, such as a TEE attestation check |
 | **Sort by** | **Balanced**, **Lowest price**, **Lowest latency** or **Highest trust**. **Balanced** keeps the buyer's automatic order: the cheapest provider that passes the trust minimum, with trust only breaking ties (see [Router plugin API](/docs/router-api)). **Lowest latency** ranks by time to first token, which the buyer measures per provider and model on streamed answers; providers it hasn't measured yet come after the measured ones. |
 | **Free sellers first** | Rank free providers ahead of paid ones |
@@ -32,7 +32,7 @@ The policy editor groups its settings under **Sellers**, **Quality** (the minimu
 
 A seller list is a named group of providers that a policy allows or blocks in one step: for example the sellers you run yourself, or ones you trust. Organization admins manage them under **Routing → Seller lists**, or from the policy editor: **Manage seller lists** opens them all, and clicking a list's name opens that list. Editing a list changes every policy that uses it. The CLI (`antseed gateway peer-list`) and the management API (`/peer-lists`) call them peer lists.
 
-**TEE sellers only** checks what providers advertise, so it works whether or not your buyer verifies responses. **Verified sellers only** requires your buyer to verify them. [Verify TEE providers](/docs/verify-tee) explains the difference and how to turn verification on.
+**TEE sellers only** has your buyer check each provider's TEE attestation before sending it a request, even when verification is otherwise optional. **Verified sellers only** requires a passing check from your buyer's verifier, whichever one the provider supports. [Verify TEE providers](/docs/verify-tee) explains the difference and how to turn verification on.
 
 ## Policy levels
 

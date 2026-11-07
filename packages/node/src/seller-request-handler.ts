@@ -4,7 +4,7 @@ import type {
   ProviderRequestRefusal,
   ProviderStreamCallbacks,
 } from './interfaces/seller-provider.js';
-import { ANTSEED_ATTEST_PATH, type Prover } from './interfaces/plugin.js';
+import { ANTSEED_ATTEST_PATH, ANTSEED_CHANNEL_BINDING_HEADER, type Prover } from './interfaces/plugin.js';
 import type { SellerSessionTracker } from './metering/seller-session-tracker.js';
 import type { PaymentMux } from './p2p/payment-mux.js';
 import type { Identity } from './p2p/identity.js';
@@ -32,7 +32,7 @@ import {
   computeCostUsdc,
   estimateTokensFromBytesSampled,
 } from './payments/pricing.js';
-import { debugLog, debugWarn } from './utils/debug.js';
+import { debugLog, debugWarn, isContentFreeLogging } from './utils/debug.js';
 import { buyerFacingResponseHeaders } from './proxy/buyer-response-headers.js';
 import {
   CONNECTION_CAPABILITY_RESPONSE_AUTH_V1,
@@ -346,10 +346,14 @@ export class SellerRequestHandler {
           return;
         }
         try {
+          // The binding names the connection this request arrived on; a buyer cannot supply it.
+          const headers = { ...request.headers };
+          takeHeader(headers, ANTSEED_CHANNEL_BINDING_HEADER);
+          if (conn.channelBinding) headers[ANTSEED_CHANNEL_BINDING_HEADER] = conn.channelBinding;
           const resp = await prover.prove({
             method: request.method,
             path: request.path,
-            headers: request.headers,
+            headers,
             body: request.body,
           });
           mux.sendProxyResponse({
@@ -1032,7 +1036,8 @@ export class SellerRequestHandler {
           }
         } catch (err) {
           const message = err instanceof Error ? err.message : "Internal error";
-          failureMessage = message;
+          // An exception can quote the upstream's answer; content-free mode keeps only that it failed.
+          failureMessage = isContentFreeLogging() ? 'provider call failed' : message;
           this._deps.emit('provider:failure', { provider, service: requestedModel, billable: videoRoute?.action !== 'retrieve' });
           debugWarn(`[SellerHandler] Provider exception: provider="${provider.name}" model="${requestedModel}" buyer=${buyerPeerId.slice(0, 12)}... (${Date.now() - startTime}ms) ${message}`);
           if (videoRoute?.action === 'create') this._closeOneOffBestEffort(oneOffChannelId, 'video create failed');
@@ -1557,6 +1562,7 @@ export class SellerRequestHandler {
       service,
       serviceApiProtocol: this._selectSellerProtocolForService(provider, service, request),
       request,
+      ...(provider.serviceCapabilities?.[service]?.video ? { videoOptions: provider.serviceCapabilities[service]!.video } : {}),
     });
   }
 

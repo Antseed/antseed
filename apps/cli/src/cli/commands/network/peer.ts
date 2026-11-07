@@ -114,7 +114,7 @@ function formatTimestampSec(sec: number | undefined): string {
 
 /**
  * One-line trust breakdown, e.g.
- * `65 = history 35 + usage 10 + power 5 + identity 15 github; not flagged`.
+ * `65 = usage 10 + power 40 + identity 15 github; not flagged`.
  * The node computes the score; this only renders `peer.trust`.
  */
 function formatTrustLine(peer: PeerInfo): string {
@@ -122,13 +122,13 @@ function formatTrustLine(peer: PeerInfo): string {
   const score = peer.onChainReputationScore;
   if (!trust) return typeof score === 'number' && Number.isFinite(score) ? String(Math.round(score)) : chalk.dim('—');
   if (trust.washFlagged) return `${chalk.red('0')}  ${chalk.red('⚠ proven wash trader (on-chain registry) — trust 0')}`;
-  const history = trust.history ? `history ${Math.round(trust.history.score)}` : chalk.dim('history —');
   const usage = trust.usage ? `usage ${Math.round(trust.usage.score)}` : chalk.dim('usage —');
   const power = trust.power ? `power ${Math.round(trust.power.score)}` : chalk.dim('power —');
   const identity = trust.identity ? `identity ${Math.round(trust.identity.score)} ${trust.identity.kind}` : chalk.dim('identity —');
   const free = trust.freeModels ? ` + free models ${Math.round(trust.freeModels.score)}` : '';
+  const checks = trust.verification ? ` ${trust.verification.change < 0 ? '−' : '+'} model checks ${Math.round(Math.abs(trust.verification.change))} (earns ${Math.round(trust.verification.multiplierBps / 100)}% of normal points)` : '';
   const flagged = trust.washFlagged === null ? chalk.dim('wash registry unavailable') : 'not flagged';
-  return `${chalk.bold(String(Math.round(trust.score)))} = ${history} + ${usage} + ${power} + ${identity}${free}; ${flagged}`;
+  return `${chalk.bold(String(Math.round(trust.score)))} = ${usage} + ${power} + ${identity}${free}${checks}; ${flagged}`;
 }
 
 /**

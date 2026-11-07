@@ -199,6 +199,11 @@ export class BuyerIdentityContext {
     return conn;
   }
 
+  /** Session hash of this identity's encrypted TCP connection to a seller, else null. */
+  getChannelBinding(peerId: PeerId): string | null {
+    return this._connectionManager.getConnection(peerId)?.channelBinding ?? null;
+  }
+
   /** The live connection to a seller, if this identity has one. */
   liveConnection(peerId: PeerId): PeerConnection | null {
     const conn = this._connectionManager.getConnection(peerId);
