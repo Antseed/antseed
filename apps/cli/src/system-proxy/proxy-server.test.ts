@@ -1006,7 +1006,7 @@ function respond402PaymentRequired(
     error: 'payment_required',
     code: 'insufficient_deposits',
     peerId: 'testPeer',
-    message: 'You are out of AntSeed credits for this request.',
+    message: 'You are out of Antseed credits for this request.',
   })
   res.writeHead(402, {
     'content-type': 'application/json',

@@ -63,7 +63,7 @@ async function request(port: number, path: string, options: { method?: string; k
   })
 }
 
-const BUYER_OUT_OF_CREDITS = 'You are out of AntSeed credits for this request. Add funds in the AntSeed app, or run "antseed buyer deposit" in the CLI to show your funding address, then retry. Free sellers need no funds: pin one as <peerId>@<model>.'
+const BUYER_OUT_OF_CREDITS = 'You are out of Antseed credits for this request. Add funds in Antseed Desktop or your gateway console, or run "antseed buyer deposit" in the CLI to show your funding address, then retry. Free sellers need no funds: pin one as <peerId>@<model>.'
 const OPENAI_OUT_OF_CREDITS = { error: { type: 'api_error', code: 'antseed_buyer_fault', message: BUYER_OUT_OF_CREDITS, param: 'insufficient_deposits' } }
 const ANTHROPIC_OUT_OF_CREDITS = { type: 'error', error: { type: 'antseed_buyer_fault', message: `${BUYER_OUT_OF_CREDITS} (insufficient_deposits)` } }
 
@@ -1864,7 +1864,7 @@ test('the buyer\'s out-of-credits 402 names the workspace and its funding, and k
   assert.equal(openAi.error.param, 'insufficient_deposits')
   assert.equal(
     openAi.error.message,
-    "This API key's workspace (Research) is out of AntSeed credits for this request. A workspace admin can add funds in the gateway console "
+    "This API key's workspace (Research) is out of Antseed credits for this request. A workspace admin can add funds in the gateway console "
       + 'under Wallet & Funding, or send USDC on Base to the workspace wallet 0x00000000000000000000000000000000000000aa, then retry. '
       + 'Free sellers need no funds: pin one as <peerId>@<model>.',
   )
@@ -1872,10 +1872,10 @@ test('the buyer\'s out-of-credits 402 names the workspace and its funding, and k
   const anthropic = JSON.parse(workspaceOutOfCreditsBody(Buffer.from(JSON.stringify(ANTHROPIC_OUT_OF_CREDITS)), { name: 'Default', walletAddress: null })!.toString())
   assert.equal(anthropic.type, 'error')
   assert.equal(anthropic.error.type, 'antseed_buyer_fault')
-  assert.match(anthropic.error.message, /^This API key's workspace \(Default\) is out of AntSeed credits/)
+  assert.match(anthropic.error.message, /^This API key's workspace \(Default\) is out of Antseed credits/)
   assert.match(anthropic.error.message, /under Wallet & Funding, then retry\./)
   assert.match(anthropic.error.message, /\(insufficient_deposits\)$/)
-  assert.doesNotMatch(anthropic.error.message, /antseed buyer deposit|AntSeed app/)
+  assert.doesNotMatch(anthropic.error.message, /antseed buyer deposit|Antseed Desktop/)
 
   // Any other 402 passes through unchanged.
   const other = { error: { type: 'insufficient_quota', code: 'spend_limit_reached', message: 'This API key reached its daily spend limit of $1.00.' } }
@@ -1901,7 +1901,7 @@ test('gateway rewrites the buyer\'s out-of-credits 402 with the live wallet, nev
     const error = JSON.parse(chat.body).error
     assert.equal(error.code, 'antseed_buyer_fault')
     assert.equal(error.param, 'insufficient_deposits')
-    assert.match(error.message, /^This API key's workspace \(Default\) is out of AntSeed credits/)
+    assert.match(error.message, /^This API key's workspace \(Default\) is out of Antseed credits/)
     assert.match(error.message, new RegExp(`Wallet & Funding, or send USDC on Base to the workspace wallet ${live}, then retry`))
     assert.doesNotMatch(error.message, new RegExp(cached))
 

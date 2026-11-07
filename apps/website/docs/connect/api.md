@@ -234,7 +234,7 @@ Streaming responses carry only the request id, seller identity and price headers
 The 402 comes back with the code `antseed_buyer_fault`, which marks a failure on the buyer's side, not the seller's. In OpenAI format the reason is in `error.param`:
 
 ```json
-{"error":{"type":"api_error","code":"antseed_buyer_fault","param":"insufficient_deposits","message":"You are out of AntSeed credits for this request. ..."}}
+{"error":{"type":"api_error","code":"antseed_buyer_fault","param":"insufficient_deposits","message":"You are out of Antseed credits for this request. ..."}}
 ```
 
 In Anthropic format (`/v1/messages`) `error.type` is `antseed_buyer_fault` and the message ends with the reason in brackets, for example `(insufficient_deposits)`.

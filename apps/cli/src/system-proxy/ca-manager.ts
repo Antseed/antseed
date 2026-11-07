@@ -308,7 +308,7 @@ export class CAManager {
           target: 'login-keychain',
           warning: [
             `The certificate is trusted for your user account, but system-wide trust was skipped because ${adminFailure.reason}.`,
-            'If a connected app can\'t reach AntSeed, connect it again and approve the administrator prompt.',
+            'If a connected app can\'t reach Antseed, connect it again and approve the administrator prompt.',
           ].join(' '),
           detail: adminFailure.detail,
         }

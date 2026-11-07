@@ -406,11 +406,11 @@ test('toGatewayStopReason uses the add-funds message for unexplained 402s and in
 });
 
 test('toGatewayStopReason turns the buyer\'s insufficient_deposits into the add-funds notice', () => {
-  const raw = '402 {"error":{"type":"insufficient_deposits","message":"You are out of AntSeed credits for this request. Add funds in the AntSeed app, or run \\"antseed buyer deposit <amount>\\" from the CLI, then retry."}}';
+  const raw = '402 {"error":{"type":"insufficient_deposits","message":"You are out of Antseed credits for this request. Add funds in Antseed Desktop or your gateway console, or run \\"antseed buyer deposit <amount>\\" from the CLI, then retry."}}';
   const reason = toGatewayStopReason(classifyChatStreamFailure({ message: raw, stopReason: 'error' }), raw);
   assert.equal(reason.kind, 'payment_required');
   assert.equal(reason.message, GATEWAY_FUNDS_MESSAGE);
-  const plain = 'You are out of AntSeed credits for this request. (insufficient_deposits)';
+  const plain = 'You are out of Antseed credits for this request. (insufficient_deposits)';
   assert.equal(toGatewayStopReason(classifyChatStreamFailure({ message: plain, stopReason: 'error' }), plain).kind, 'payment_required');
 });
 

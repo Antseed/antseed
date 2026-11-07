@@ -102,7 +102,7 @@ export class SystemProxyServer {
     this.innerTlsServer.on('tlsClientError', (err) => {
       log(`TLS client error: ${err.message}`)
       if (err.message.includes('certificate unknown')) {
-        log('TLS trust failure: restart the client with NODE_EXTRA_CA_CERTS pointing at the AntSeed CA, or install/trust the CA for that client.')
+        log('TLS trust failure: restart the client with NODE_EXTRA_CA_CERTS pointing at the Antseed CA, or install/trust the CA for that client.')
       }
     })
 
@@ -116,7 +116,7 @@ export class SystemProxyServer {
     this.innerPort = (this.innerNetServer!.address() as net.AddressInfo).port
 
     this.outerServer = http.createServer({ maxHeaderSize: 64 * 1024 }, (_req, res) => {
-      res.writeHead(400).end('AntSeed system-proxy: use HTTPS via CONNECT.')
+      res.writeHead(400).end('Antseed system-proxy: use HTTPS via CONNECT.')
     })
     this.outerServer.on('connect', (req, socket, head) => {
       this.handleConnect(req, socket as net.Socket, head)
