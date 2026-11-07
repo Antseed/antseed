@@ -9,6 +9,10 @@ import { pinnedUpstreamModel } from './pinned-upstream-model.js';
 export const DEFAULT_HTTP_TIMEOUT_MS = 5 * 60_000;
 
 export interface RelayConfig {
+  /**
+   * Upstream redirects. Default 'error': following one would resend the buyer's request, prompt
+   * and credentials included, to a destination the seller did not configure.
+   */
   redirect?: 'error' | 'follow' | 'manual';
   baseUrl: string;
   authHeaderName: string;
@@ -498,7 +502,7 @@ export class HttpRelay {
       };
       try {
         const response = await fetch(url, {
-          redirect: this._config.redirect,
+          redirect: this._config.redirect ?? 'error',
           method: swappedRequest.method,
           headers,
           body: swappedRequest.method !== 'GET' && swappedRequest.method !== 'HEAD'
