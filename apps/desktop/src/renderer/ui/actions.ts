@@ -18,6 +18,8 @@ export type AppActions = {
   selectChatModel: (modelId: string) => void;
   /** Reload the gateway's model list; `force` bypasses the one-minute cache. */
   refreshChatModels: (force?: boolean) => Promise<void>;
+  privacyModeChosen: (mode: 'anonymous' | 'private') => void;
+  privacySwitchLanded: (mode: 'anonymous' | 'private') => Promise<void>;
   setChatPermissionMode: (mode: ChatPermissionMode) => void;
   decideToolApproval: (decision: ToolApprovalDecision, requestId?: string) => void;
   /** Resend the last message of a chat that stopped for lack of funds. */

@@ -1,5 +1,6 @@
 import { describeChatError } from './chat-errors';
 import { splitPinnedModel } from '../../../shared/pinned-model.js';
+import { selectHasFunds } from '../../core/balance';
 import type { RendererUiState } from '../../core/state';
 import { notifyUiStateChanged, notifyUiStateChangedSync } from '../../core/store';
 import type {
@@ -22,6 +23,8 @@ import { recordFirstModelShown } from '../telemetry/actions';
 import {
   buildCumulativeImagePrompt,
   chooseDefaultChatModel,
+  chooseModelForPrivate,
+  modelIdForSend,
   findChatModel,
   fundsNoticeFromStopReason,
   loadLastChatModel,
@@ -61,6 +64,8 @@ type ChatModuleOptions = {
 export type ChatModuleApi = {
   /** Reload the gateway's model list (`force` skips main's one-minute cache). */
   refreshChatModels: (options?: { force?: boolean }) => Promise<void>;
+  privacyModeChosen: (mode: 'anonymous' | 'private') => void;
+  privacySwitchLanded: (mode: 'anonymous' | 'private') => Promise<void>;
   refreshChatConversations: () => Promise<void>;
   chooseWorkspace: () => Promise<void>;
   startNewChat: () => void;
@@ -180,6 +185,9 @@ export function initChatModule({
   let modelRetryCount = 0;
 
   /** The new-chat default: the last model used (if the gateway still lists it), else the first text model. */
+  /** The model Private moved away from, for going back. Survives leaving Home. */
+  let modelMovedForPrivate: { from: string; to: string } | null = null;
+
   function applyDefaultModel(): void {
     if (activeConversation) return;
     const current = uiState.chatSelectedModelId;
@@ -191,6 +199,8 @@ export function initChatModule({
     // it moves to a free one as soon as there is one.
     // A list that dropped the chosen model (Private lists fewer) moved us off it;
     // once it is listed again, go back to what the user chose.
+    // Private moved it for a reason; going back waits until Private ends.
+    if (modelMovedForPrivate && current === modelMovedForPrivate.to && listed) return;
     if (lastModel && current !== lastModel && findChatModel(uiState.chatModels, lastModel)?.type === 'text') {
       uiState.chatSelectedModelId = lastModel;
       void refreshPermissionModeForModel(lastModel);
@@ -207,7 +217,11 @@ export function initChatModule({
 
   async function refreshChatModels(options: { force?: boolean } = {}): Promise<void> {
     if (!bridge?.chatListModels) return;
-    if (modelRefreshInFlight) return modelRefreshInFlight;
+    if (modelRefreshInFlight) {
+      // A forced read wants the list as it is now, not one that began earlier.
+      if (!options.force) return modelRefreshInFlight;
+      await modelRefreshInFlight;
+    }
     if (modelRetryTimer) {
       clearTimeout(modelRetryTimer);
       modelRetryTimer = null;
@@ -245,6 +259,47 @@ export function initChatModule({
     return modelRefreshInFlight;
   }
 
+  /** Not saved as the last model: nobody chose it, and it shouldn't outlive Private. */
+  function moveModelForPrivate(next: string): void {
+    const current = uiState.chatSelectedModelId;
+    modelMovedForPrivate = { from: modelMovedForPrivate?.from ?? current, to: next };
+    if (activeConversation) startNewChat();
+    uiState.chatImageModelId = null;
+    uiState.chatSelectedModelId = next;
+    clearChatNotices();
+    void refreshPermissionModeForModel(next);
+    notifyUiStateChanged();
+  }
+
+  /** On the toggle, before the gateway has switched, so the model changes at once when it plainly must. */
+  function privacyModeChosen(mode: 'anonymous' | 'private'): void {
+    if (mode === 'private') {
+      const next = chooseModelForPrivate(uiState.chatModels.filter((model) => model.tee), uiState.chatSelectedModelId, selectHasFunds(uiState));
+      if (next) moveModelForPrivate(next);
+      return;
+    }
+    const previous = modelMovedForPrivate;
+    modelMovedForPrivate = null;
+    if (!previous || uiState.chatSelectedModelId !== previous.to) return;
+    if (activeConversation) startNewChat();
+    uiState.chatSelectedModelId = previous.from;
+    void refreshPermissionModeForModel(previous.from);
+    notifyUiStateChanged();
+  }
+
+  /** Once the gateway has switched: its list now says what each model costs under this mode. */
+  async function privacySwitchLanded(mode: 'anonymous' | 'private'): Promise<void> {
+    const before = uiState.chatSelectedModelId;
+    await refreshChatModels({ force: true });
+    if (mode !== 'private' || activeConversation) return;
+    // Judged from `before`: the refresh's own default for a model no longer listed prefers free.
+    const next = chooseModelForPrivate(uiState.chatModels, before, selectHasFunds(uiState));
+    if (next && next !== uiState.chatSelectedModelId) {
+      uiState.chatSelectedModelId = before;
+      moveModelForPrivate(next);
+    }
+  }
+
   function scheduleModelRetry(): void {
     if (modelRetryTimer || modelRetryCount >= MODEL_LIST_MAX_AUTO_RETRIES) return;
     modelRetryCount += 1;
@@ -267,6 +322,8 @@ export function initChatModule({
     }
     uiState.chatImageModelId = null;
     uiState.chatSelectedModelId = id;
+    // The user's own pick replaces whatever Private chose.
+    modelMovedForPrivate = null;
     clearChatNotices();
     saveLastChatModel(id);
     const convId = activeConversation?.id ?? null;
@@ -752,6 +809,10 @@ export function initChatModule({
     if (lastModel && (uiState.chatModels.length === 0 || findChatModel(uiState.chatModels, lastModel)?.type === 'text')) {
       uiState.chatSelectedModelId = lastModel;
     }
+    // A model Private chose stays for new chats while Private is on.
+    if (modelMovedForPrivate && findChatModel(uiState.chatModels, modelMovedForPrivate.to)) {
+      uiState.chatSelectedModelId = modelMovedForPrivate.to;
+    }
     applyDefaultModel();
     void refreshPermissionModeForModel(uiState.chatSelectedModelId);
     notifyUiStateChanged();
@@ -963,7 +1024,8 @@ export function initChatModule({
     const requestStartedAt = Date.now();
     streamCompletedAtByConversation.delete(convId);
     streamFailedAtByConversation.delete(convId);
-    const send = () => bridge.chatAiSendStream!(convId, content || ' ', modelId, attachments, uiState.chatPermissionMode);
+    const routedModelId = modelIdForSend(uiState.chatModels, modelId, selectHasFunds(uiState));
+    const send = () => bridge.chatAiSendStream!(convId, content || ' ', routedModelId, attachments, uiState.chatPermissionMode);
     try {
       let result = await send();
       if (!result.ok && String(result.error ?? '').toLowerCase().includes('already in progress') && bridge.chatAiAbort) {
@@ -1528,6 +1590,8 @@ export function initChatModule({
 
   return {
     refreshChatModels,
+    privacyModeChosen,
+    privacySwitchLanded,
     refreshChatConversations,
     chooseWorkspace,
     startNewChat,

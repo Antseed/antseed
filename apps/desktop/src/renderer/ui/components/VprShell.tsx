@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
 import { PencilEdit02Icon } from '@hugeicons/core-free-icons';
 import { Logo } from '@antseed/ui';
@@ -7,7 +7,7 @@ import { shallowEqual, useUiSelector } from '../hooks/useUiSelector';
 import { useActions } from '../hooks/useActions';
 import { selectHeadlineBalanceUsdc } from '../../core/balance';
 import { shouldNotifyAppsOnboarding } from '../../modules/app/apps-onboarding';
-import { gatewayResource } from '../../modules/app/vpr-resources';
+import { gatewayResource, privacyResource, usePrivacySwitch } from '../../modules/app/vpr-resources';
 import { useCachedResource } from '../../modules/app/cached-resource';
 import { navViews } from './viewRegistry';
 import { ChatListPanel } from './ChatListPanel';
@@ -59,6 +59,19 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
   const gateway = useCachedResource(gatewayResource);
   const gatewayStatus = gateway.data?.status;
   const privateMode = usePrivateMode();
+
+  // The gateway's model list follows the mode, wherever the user has gone by
+  // the time a switch lands.
+  const { switching: privacySwitching } = usePrivacySwitch();
+  const privacy = useCachedResource(privacyResource);
+  const landedMode = privacySwitching ? null : privacy.data?.mode ?? null;
+  const lastLandedMode = useRef(landedMode);
+  useEffect(() => {
+    if (!landedMode) return;
+    const changed = lastLandedMode.current !== null && lastLandedMode.current !== landedMode;
+    lastLandedMode.current = landedMode;
+    if (changed) void actions.privacySwitchLanded(landedMode);
+  }, [actions, landedMode]);
 
   // Private shows the night palette everywhere while it's on.
   useEffect(() => {

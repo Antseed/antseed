@@ -112,7 +112,7 @@ function record(value: unknown): Record<string, unknown> {
 }
 
 /** The offer summary the picker shows, worked out like the gateway console's chat. */
-function entryOfferSummary(entry: GatewayModelEntry): Pick<ChatModel, 'sellers' | 'free' | 'freeForStakers' | 'tee' | 'toolUse' | 'reasoning' | 'inputUsdPerMillion' | 'outputUsdPerMillion'> {
+function entryOfferSummary(entry: GatewayModelEntry): Pick<ChatModel, 'sellers' | 'free' | 'freeSellerId' | 'freeForStakers' | 'tee' | 'toolUse' | 'reasoning' | 'inputUsdPerMillion' | 'outputUsdPerMillion'> {
   const peers = records(entry['peers']);
   const coverage = record(entry['capability_coverage']);
   const cheapest = (field: string): number | null => {
@@ -120,9 +120,11 @@ function entryOfferSummary(entry: GatewayModelEntry): Pick<ChatModel, 'sellers' 
     return values.length > 0 ? Math.min(...values) : null;
   };
   const stakersOnly = (peer: Record<string, unknown>): boolean => record(record(peer['freeTier'])['base'])['stakersOnly'] === true;
+  const freeSeller = peers.find((peer) => peer['inputUsdPerMillion'] === 0 && peer['outputUsdPerMillion'] === 0 && !stakersOnly(peer));
   return {
     sellers: peers.length,
-    free: peers.some((peer) => peer['inputUsdPerMillion'] === 0 && peer['outputUsdPerMillion'] === 0 && !stakersOnly(peer)),
+    free: freeSeller !== undefined,
+    freeSellerId: typeof freeSeller?.['peerId'] === 'string' ? freeSeller['peerId'] : null,
     freeForStakers: peers.some(stakersOnly),
     tee: peers.some((peer) => strings(peer['advertisedVerifierIds']).includes(TEE_VERIFIER_ID)),
     toolUse: Number(coverage['tool_use'] ?? 0) > 0 || peers.some((peer) => record(peer['capabilities'])['toolUse'] === true),

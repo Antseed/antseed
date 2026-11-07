@@ -15,7 +15,6 @@ import { joinPinnedModel, splitPinnedModel } from '../../../../shared/pinned-mod
 import { AgentSkillsPanel } from '../vpr/AgentSkillsPanel';
 import { AppPillIcon, appPillStyles as pills } from '../vpr/AppPills';
 import { HomeField } from '../vpr/HomeField';
-import { chooseDefaultChatModel } from '../../../modules/chat/models';
 import { modelsForPrivacy, PrivacyNote, PrivacyToggle, usePrivacyControl } from '../vpr/PrivacyToggle';
 import { privacyResource, usePrivacySwitch } from '../../../modules/app/vpr-resources';
 import styles from './VprHomeView.module.scss';
@@ -23,9 +22,6 @@ import styles from './VprHomeView.module.scss';
 type Props = { onSelectView?: (view: ViewName) => void };
 
 const COMPOSER_MAX_HEIGHT = 200;
-
-/** Survives leaving Home and coming back while Private is on. */
-let modelMovedForPrivate: { from: string; to: string } | null = null;
 
 export function VprHomeView({ onSelectView }: Props) {
   const actions = useActions();
@@ -43,37 +39,7 @@ export function VprHomeView({ onSelectView }: Props) {
   const privacy = useCachedResource(privacyResource);
   const privateMode = privacy.data?.mode === 'private';
   const { switching } = usePrivacySwitch();
-  const privacyControl = usePrivacyControl((mode) => {
-    if (mode !== 'private') {
-      // Back from Private: return to the model Private moved away from, unless
-      // the user has since picked another one.
-      const previous = modelMovedForPrivate;
-      modelMovedForPrivate = null;
-      if (!previous || snap.chatSelectedModelId !== previous.to) return;
-      if (snap.chatActiveConversation) actions.startNewChat();
-      actions.selectChatModel(previous.from);
-      return;
-    }
-    // Private lists only models a TEE seller serves: move off one that isn't.
-    const { modelId: listedId } = splitPinnedModel(snap.chatSelectedModelId);
-    const selected = snap.chatModels.find((model) => model.id === listedId);
-    if (!selected || selected.tee) return;
-    const next = chooseDefaultChatModel(snap.chatModels.filter((model) => model.tee), null);
-    if (!next) return;
-    modelMovedForPrivate = { from: snap.chatSelectedModelId, to: next };
-    if (snap.chatActiveConversation) actions.startNewChat();
-    actions.selectChatModel(next);
-  });
-  // The gateway lists what the key's policy allows, so a seller's price and the
-  // Free badge change with the mode: re-read once the switch has landed.
-  const landedMode = switching ? null : privacy.data?.mode ?? null;
-  const previousMode = useRef(landedMode);
-  useEffect(() => {
-    if (!landedMode) return;
-    const changed = previousMode.current !== null && previousMode.current !== landedMode;
-    previousMode.current = landedMode;
-    if (changed) void actions.refreshChatModels(true);
-  }, [actions, landedMode]);
+  const privacyControl = usePrivacyControl((mode) => { actions.privacyModeChosen(mode); });
   const models = modelsForPrivacy(snap.chatModels, privateMode);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const appListRef = useRef<HTMLDivElement>(null);
@@ -124,7 +90,8 @@ export function VprHomeView({ onSelectView }: Props) {
 
   function submitDraft(): void {
     const text = draft.trim();
-    if (!text || switching) return;
+    // The model may still move once Private's list is in.
+    if (!text || switching || (privateMode && snap.chatModelsLoading)) return;
     // Home always starts a new chat rather than continuing the open one.
     if (snap.chatActiveConversation) actions.startNewChat();
     if (snap.chatImageModelId) {

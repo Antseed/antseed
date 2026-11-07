@@ -8,7 +8,7 @@
  * complete set of engine state this run touches.
  */
 import { isReplyCutOff, REPLY_CUT_OFF_MESSAGE } from './stream-stop.js';
-import { trackServedPeer } from './served-peer.js';
+import { trackChatRun } from './served-peer.js';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import type { AgentSessionEvent, ExtensionAPI } from '@mariozechner/pi-coding-agent';
@@ -660,11 +660,14 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
 
     try {
       const promptText = [trimmedMessage, attachmentPromptText].filter((part) => part.length > 0).join('\n\n');
-      await trackServedPeer((peerId) => {
+      const chatRun = trackChatRun((peerId) => {
         const peerName = sellerName(peerId);
         servedPeer = { peerId, ...(peerName ? { peerName } : {}) };
         sendToRenderer('chat:ai-reply-meta', { conversationId, meta: { service: replyModel, ...servedPeer } });
       }, () => session.prompt(promptText || ' ', { images: effectiveAttachmentImages.length > 0 ? effectiveAttachmentImages : undefined }));
+      await chatRun.result;
+      // No tokens counted is the sign, but some sellers never report them, so the stream decides.
+      if (replyCutOff) replyCutOff = !(await chatRun.lastStreamEnded());
 
       if (terminalStreamFailure !== null) {
         // Mutated inside the subscribe callback, which TypeScript can't see —

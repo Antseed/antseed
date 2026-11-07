@@ -542,11 +542,9 @@ export function toGatewayStopReason(reason: ChatStreamStopReason, rawMessage = '
 export const REPLY_CUT_OFF_MESSAGE = 'The connection dropped, so this reply may be incomplete. You can ask to continue.';
 
 /**
- * The agent library reports a stream that simply ended as a normal finish, so
- * a dropped connection would pass for a complete answer. Sellers report usage
- * in the stream's last chunk, so text with no output tokens counted means that
- * chunk never came. (An Anthropic stream counts tokens from its first event,
- * so this can't see one cut short.)
+ * Text with no output tokens counted: a stream's last chunk, which carries the
+ * usage, may never have come. Only a hint, since some sellers report no usage
+ * at all; the caller checks whether the stream reached its end.
  */
 export function isReplyCutOff(message: {
   stopReason: string;

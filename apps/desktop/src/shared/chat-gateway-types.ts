@@ -15,6 +15,8 @@ export type ChatModel = {
   sellers: number;
   /** Some seller serves it for $0 to everyone (not only to stakers). */
   free: boolean;
+  /** A seller serving it for $0 to everyone, for a user who can't pay any other. */
+  freeSellerId: string | null;
   /** Some seller's free tier is for its stakers only. */
   freeForStakers: boolean;
   /** Some seller runs it in a verified TEE. */

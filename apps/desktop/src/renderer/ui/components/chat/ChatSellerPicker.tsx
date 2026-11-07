@@ -6,6 +6,9 @@ import { formatPriceRange, isFreeOffer } from '../../../modules/chat/models';
 import { splitPinnedModel } from '../../../../shared/pinned-model.js';
 import { usePrivateMode } from '../vpr/PrivacyToggle';
 import { useDropdownDismiss } from '../../hooks/useDropdownDismiss';
+import { usePrivacySwitch } from '../../../modules/app/vpr-resources';
+import { selectHasFunds } from '../../../core/balance';
+import { useUiSelector } from '../../hooks/useUiSelector';
 import styles from './ChatModelDropdown.module.scss';
 
 type ChatSellerPickerProps = {
@@ -74,6 +77,9 @@ export function ChatSellerPicker({ modelId, disabled, onChange, onOpenChange, me
   const requestRef = useRef(0);
   // Anonymous / Private changes the key's routing policy, so which sellers pass it.
   const privateMode = usePrivateMode();
+  const freeSellerId = useUiSelector((state) => (selectHasFunds(state)
+    ? null
+    : state.chatModels.find((model) => model.id === listedId)?.freeSellerId ?? null));
 
   const load = useCallback((force = false) => {
     if (!listedId) return;
@@ -97,6 +103,14 @@ export function ChatSellerPicker({ modelId, disabled, onChange, onOpenChange, me
       });
   }, [listedId]);
 
+  // A preview read mid-switch shows the old policy's sellers.
+  const { switching: privacySwitching } = usePrivacySwitch();
+  const wasSwitching = useRef(privacySwitching);
+  useEffect(() => {
+    if (wasSwitching.current && !privacySwitching) load(true);
+    wasSwitching.current = privacySwitching;
+  }, [load, privacySwitching]);
+
   // The trigger names Auto's current pick, so the preview loads with the model.
   const firstPrivacy = useRef(privateMode);
   useEffect(() => {
@@ -114,7 +128,8 @@ export function ChatSellerPicker({ modelId, disabled, onChange, onOpenChange, me
   const candidates = preview?.candidates ?? [];
   const eligible = candidates.filter((candidate) => candidate.eligible);
   const excluded = candidates.filter((candidate) => !candidate.eligible);
-  const autoPick = eligible[0] ?? null;
+  // Without funds a request goes to the free seller, so that's who Auto is.
+  const autoPick = eligible.find((candidate) => candidate.peerId === freeSellerId) ?? eligible[0] ?? null;
   const pinned = pinnedPeerId ? candidates.find((candidate) => candidate.peerId === pinnedPeerId) ?? null : null;
   const pinnedExcluded = pinned !== null && !pinned.eligible;
   const sortLabel = preview?.sort ? SORT_LABELS[preview.sort] ?? preview.sort : null;

@@ -2,7 +2,7 @@
  * Pure helpers behind the chat's model picker and gateway error notices.
  */
 import type { ChatModel } from '../../types/bridge';
-import { splitPinnedModel } from '../../../shared/pinned-model.js';
+import { joinPinnedModel, splitPinnedModel } from '../../../shared/pinned-model.js';
 
 const LAST_MODEL_STORAGE_KEY = 'antseed:chat:lastModel';
 
@@ -43,6 +43,45 @@ export function chooseDefaultChatModel(models: ChatModel[], lastModelId: string 
     || Number(right.toolUse) - Number(left.toolUse)
     || right.sellers - left.sellers)[0];
   return best?.id ?? null;
+}
+
+/**
+ * What to send a request to. Auto ranks sellers by expected cost, so it can pick
+ * a paid seller of a model that also has a free one, and without funds that
+ * request fails. A pin the user chose is left alone.
+ */
+export function modelIdForSend(models: ChatModel[], modelId: string, hasFunds: boolean): string {
+  if (hasFunds || splitPinnedModel(modelId).peerId) return modelId;
+  const freeSellerId = findChatModel(models, modelId)?.freeSellerId;
+  return freeSellerId ? joinPinnedModel(modelId, freeSellerId) : modelId;
+}
+
+/**
+ * The model to use once Private has narrowed the list, or null to stay. A
+ * model's Free badge can come from a seller Private leaves out, so without
+ * funds only a model still free here will answer. With funds the user's model
+ * stays while it is listed, and a replacement isn't a free tier with a daily limit.
+ * A pin goes too: the seller it names may not be one Private allows.
+ */
+export function chooseModelForPrivate(privateModels: ChatModel[], selectedId: string, hasFunds: boolean): string | null {
+  const { modelId: listedId, peerId } = splitPinnedModel(selectedId);
+  const text = privateModels.filter((model) => model.type === 'text');
+  const selected = text.find((model) => model.id === listedId);
+  if (selected && (hasFunds || selected.free)) return peerId ? selected.id : null;
+  // A stand-in shouldn't cost much: the user didn't choose it.
+  const price = (model: ChatModel) => (model.inputUsdPerMillion ?? Infinity) + (model.outputUsdPerMillion ?? Infinity);
+  // Priced $0 for stakers only, a model looks cheapest and then refuses anyone else.
+  const payable = hasFunds ? text.filter((model) => !model.freeForStakers && price(model) > 0) : text;
+  const ranked = [...(payable.length > 0 ? payable : text)].sort((left, right) => (hasFunds
+    ? Number(left.free) - Number(right.free)
+    : Number(right.free) - Number(left.free))
+    || Number(right.toolUse) - Number(left.toolUse)
+    || (hasFunds ? price(left) - price(right) : 0)
+    || right.sellers - left.sellers);
+  const best = ranked[0];
+  // Nothing free to move to: the note about funds says more than a silent switch.
+  if (!best || (selected && !best.free)) return peerId && selected ? selected.id : null;
+  return best.id === selectedId ? null : best.id;
 }
 
 /** Text and image models for the dropdown, free first, filtered by a search query on id and label. */

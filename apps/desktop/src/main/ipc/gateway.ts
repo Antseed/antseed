@@ -128,8 +128,10 @@ export function registerGatewayIpc(deps: GatewayIpcDeps): void {
     try {
       const mode = opts?.mode === 'private' ? 'private' : 'anonymous';
       const privacy = await setGatewayPrivacy(mode);
-      // Route previews cached under the old policy would show the wrong sellers.
+      // Previews and the model list cached under the old policy would show the
+      // wrong sellers and prices.
       clearRoutePreviewCache();
+      clearGatewayModelCache();
       return { ok: true, privacy };
     } catch (err) {
       return errorResult(err);

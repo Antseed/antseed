@@ -4,8 +4,10 @@ import type { ChatModel } from '../../types/bridge';
 import {
   buildCumulativeImagePrompt,
   chooseDefaultChatModel,
+  chooseModelForPrivate,
   filterChatModels,
   fundsNoticeFromStopReason,
+  modelIdForSend,
 } from './models';
 
 function model(id: string, type = 'text', label = id): ChatModel {
@@ -51,4 +53,51 @@ test('cumulative image prompts number every follow-up', () => {
   const first = buildCumulativeImagePrompt(['an ant'], 'make it blue');
   assert.match(first, /Initial request: an ant\nFollow-up 1: make it blue/);
   assert.match(buildCumulativeImagePrompt([first], 'add a hat'), /Follow-up 2: add a hat/);
+});
+
+test('without funds Private moves to a model still free there, and keeps one that is', () => {
+  const paid = { ...model('glm-5.3-flash'), free: false, toolUse: true, sellers: 5 };
+  const free = { ...model('deepseek-flash'), free: true, toolUse: false, sellers: 1 };
+  assert.equal(chooseModelForPrivate([paid, free], 'glm-5.3-flash', false), 'deepseek-flash');
+  assert.equal(chooseModelForPrivate([paid, free], 'not-listed', false), 'deepseek-flash');
+  assert.equal(chooseModelForPrivate([paid, free], 'deepseek-flash', false), null);
+});
+
+test('without funds and nothing free, Private leaves the model for the funds note', () => {
+  assert.equal(chooseModelForPrivate([{ ...model('glm'), free: false, toolUse: true, sellers: 1 }], 'glm', false), null);
+});
+
+test('with funds Private keeps a listed model, and replaces a missing one with a paid one', () => {
+  const paid = { ...model('glm-5.2'), free: false, toolUse: true, sellers: 1 };
+  const free = { ...model('deepseek-flash'), free: true, toolUse: true, sellers: 9 };
+  assert.equal(chooseModelForPrivate([paid, free], 'glm-5.2', true), null);
+  assert.equal(chooseModelForPrivate([paid, free], 'deepseek-flash', true), null);
+  assert.equal(chooseModelForPrivate([paid, free], 'not-listed', true), 'glm-5.2');
+});
+
+test('a pin is dropped in Private, since its seller may not be allowed', () => {
+  const peer = '73b4c9335fa239f9c6df3d28d5bf5d3cdf4de736';
+  assert.equal(chooseModelForPrivate([{ ...model('glm-5.2'), free: false, toolUse: true, sellers: 1 }], `${peer}@glm-5.2`, true), 'glm-5.2');
+});
+
+test('without funds a request goes to the model\'s free seller, unless the user pinned one', () => {
+  const peer = '73b4c9335fa239f9c6df3d28d5bf5d3cdf4de736';
+  const other = '0c90fa28fa0cd002a6eb42167a929e7f3987f70e';
+  const models = [{ ...model('glm'), freeSellerId: peer }, { ...model('paid'), freeSellerId: null }];
+  assert.equal(modelIdForSend(models, 'glm', false), `${peer}@glm`);
+  assert.equal(modelIdForSend(models, 'glm', true), 'glm');
+  assert.equal(modelIdForSend(models, 'paid', false), 'paid');
+  assert.equal(modelIdForSend(models, `${other}@glm`, false), `${other}@glm`);
+});
+
+test('with funds the stand-in is the cheapest paid model with tools', () => {
+  const costly = { ...model('sol'), free: false, toolUse: true, sellers: 9, inputUsdPerMillion: 10, outputUsdPerMillion: 40 };
+  const cheap = { ...model('flash'), free: false, toolUse: true, sellers: 1, inputUsdPerMillion: 0.1, outputUsdPerMillion: 0.4 };
+  assert.equal(chooseModelForPrivate([costly, cheap], 'not-listed', true), 'flash');
+});
+
+test('with funds the stand-in is never a model free only for stakers', () => {
+  const stakers = { ...model('luna'), free: false, freeForStakers: true, toolUse: true, sellers: 2, inputUsdPerMillion: 0, outputUsdPerMillion: 0 };
+  const paid = { ...model('flash'), free: false, freeForStakers: false, toolUse: true, sellers: 1, inputUsdPerMillion: 1, outputUsdPerMillion: 2 };
+  assert.equal(chooseModelForPrivate([stakers, paid], 'not-listed', true), 'flash');
 });

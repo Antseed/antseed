@@ -239,6 +239,8 @@ registerActions({
   deleteConversation: (id) => { recordUserAction('conversation_delete', 'chats'); return chatApi.deleteConversation(id); },
   renameConversation: (id, title) => { recordUserAction('conversation_rename', 'chats'); chatApi.renameConversation(id, title); },
   selectChatModel: (modelId) => chatApi.selectChatModel(modelId),
+  privacyModeChosen: (mode) => { chatApi?.privacyModeChosen(mode); },
+  privacySwitchLanded: (mode) => chatApi?.privacySwitchLanded(mode) ?? Promise.resolve(),
   refreshChatModels: (force) => {
     if (!force) recordUserAction('model_picker_open', 'chat');
     return chatApi.refreshChatModels(force ? { force: true } : {});

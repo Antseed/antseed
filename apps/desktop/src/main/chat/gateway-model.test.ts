@@ -14,6 +14,7 @@ test('a plain OpenAI-compatible entry is a text model over chat completions', ()
     supportsImages: false,
     sellers: 0,
     free: false,
+    freeSellerId: null,
     freeForStakers: false,
     tee: false,
     toolUse: false,
