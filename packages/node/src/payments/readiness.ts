@@ -82,8 +82,8 @@ export async function checkBuyerReadiness(
     passed: balance.available > 0n,
     message: balance.available > 0n
       ? `Available: ${balance.available}`
-      : 'No USDC deposited. Run: antseed buyer deposit <amount>',
-    command: balance.available > 0n ? undefined : 'antseed buyer deposit 10',
+      : 'No USDC deposited. Run: antseed buyer deposit',
+    command: balance.available > 0n ? undefined : 'antseed buyer deposit',
   });
 
   return checks;
