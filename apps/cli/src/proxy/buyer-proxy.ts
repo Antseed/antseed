@@ -1195,6 +1195,19 @@ export function parsePersistedPeers(
 }
 
 /**
+ * The verifier policy for one request: a routing policy's `requireVerified` makes the buyer's
+ * verifier mandatory; `requireTee` also makes it the TEE verifier, whose seller-node attestation
+ * must pass.
+ */
+function attestationPolicy(
+  configured: VerifierPolicy,
+  { requireVerified, requireTee }: { requireVerified: boolean; requireTee: boolean },
+): VerifierPolicy {
+  if (requireTee) return { ...configured, prefer: [TEE_VERIFIER_ID], require: true }
+  return requireVerified && !configured.require ? { ...configured, require: true } : configured
+}
+
+/**
  * Local HTTP proxy that forwards requests to P2P sellers.
  *
  * Tools like Claude CLI set ANTHROPIC_BASE_URL=http://localhost:8377
@@ -3170,8 +3183,7 @@ export class BuyerProxy {
           if (!this._verifier) throw new Error('Verification is disabled by the buyer CLI')
           const signal = AbortSignal.timeout(31_000)
           const outcome = await this._teeVerification.verifyForDisplay(peer,
-            () => runVerifier({ require: false, prefer: [TEE_VERIFIER_ID] }, peer.peerId, peer.capabilities,
-              (chosen) => makeVerifierReach(this._node, peer, chosen, signal), signal))
+            () => this._runVerifier(peer, { require: false, prefer: [TEE_VERIFIER_ID] }, signal))
           if (outcome.code === 'busy') throw new Error(outcome.reason)
         }, this._isGatewayAuthenticated(req.headers))
       return
@@ -5202,23 +5214,16 @@ export class BuyerProxy {
       buyerIdentity?: string | undefined
     } = {},
   ): Promise<VerifyOutcome & { boundTo?: string }> {
-    // Attest over the same buyer identity's connection the request will use.
-    const makeReach = (chosenId: string): SellerReach =>
-      makeVerifierReach(this._node, peer, chosenId, signal, buyerIdentity)
     const configured = this._verifier
     if (!configured) {
       return requireTee
         ? { ok: false, verified: false, reason: 'TEE attestation needs verification, which is disabled on this buyer' }
         : { ok: true, verified: false }
     }
-    // A routing policy's `requireVerified` makes the buyer's verifier mandatory for this request;
-    // `requireTee` also makes it the TEE verifier, whose seller-node attestation must pass.
-    const policy = requireTee
-      ? { ...configured, prefer: [TEE_VERIFIER_ID], require: true }
-      : requireVerified && !configured.require ? { ...configured, require: true } : configured
+    const policy = attestationPolicy(configured, { requireVerified, requireTee })
     const fingerprint = verifierSupportFingerprint(peer.capabilities)
     const check = (force: boolean): Promise<VerifyOutcome> => this._teeVerification.verify(peer, policy,
-      () => runVerifier(policy, peer.peerId, peer.capabilities, makeReach, signal), force, buyerIdentity)
+      () => this._runVerifier(peer, policy, signal, buyerIdentity), force, buyerIdentity)
     let outcome = await check(false)
     // A cached TEE verdict covers only the connection it was bound to; after a reconnect, check again.
     const live = (): string | null => this._node.getChannelBinding(peer.peerId, buyerIdentity)
@@ -5234,6 +5239,12 @@ export class BuyerProxy {
     // Required verification that rests on a TEE attestation sends only on the attested connection.
     if (policy.require && outcome.sellerNodeVerified && outcome.channelBinding) return { ...outcome, boundTo: outcome.channelBinding }
     return outcome
+  }
+
+  /** Run the verifier against a seller over the same buyer identity's connection the request will use. */
+  private _runVerifier(peer: PeerInfo, policy: VerifierPolicy, signal: AbortSignal, buyerIdentity?: string): ReturnType<typeof runVerifier> {
+    return runVerifier(policy, peer.peerId, peer.capabilities,
+      (chosenId: string): SellerReach => makeVerifierReach(this._node, peer, chosenId, signal, buyerIdentity), signal)
   }
 
   private _parseMaxUploadBodyBytes(headers: Record<string, string>): number | null {

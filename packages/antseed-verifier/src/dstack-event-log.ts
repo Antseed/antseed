@@ -36,18 +36,25 @@ export function runtimeEventDigest(name: string, payload: Buffer, version: numbe
   return createHash('sha384').update(Buffer.concat([type, Buffer.from(':'), Buffer.from(name, 'utf8'), Buffer.from(':'), payload])).digest()
 }
 
-/** Whether a decoded value has the shape of a dstack event log (field contents are checked on replay). */
-export function isDstackEventLog(value: unknown): value is DstackEvent[] {
-  return Array.isArray(value) && value.every((e) => !!e && typeof e === 'object'
-    && typeof (e as DstackEvent).event === 'string' && typeof (e as DstackEvent).event_payload === 'string'
-    && typeof (e as DstackEvent).event_type === 'number')
+/**
+ * Parse a dstack event log (the JSON string or its decoded array) and check each entry's shape;
+ * replay checks the contents. Throws on anything else.
+ */
+export function parseDstackEventLog(eventLog: unknown): DstackEvent[] {
+  const parsed: unknown = typeof eventLog === 'string' ? JSON.parse(eventLog) : eventLog
+  if (!Array.isArray(parsed)) throw new Error('event log is not an array')
+  for (const e of parsed) {
+    if (!e || typeof e !== 'object' || typeof e.imr !== 'number' || typeof e.event_type !== 'number'
+      || typeof e.event !== 'string' || typeof e.event_payload !== 'string') {
+      throw new Error('event log entry is not a dstack event')
+    }
+  }
+  return parsed as DstackEvent[]
 }
 
 /** The RTMR3 events from a dstack event log (the JSON string or its parsed array). */
 export function rtmr3Events(eventLog: unknown): DstackEvent[] {
-  const parsed: unknown = typeof eventLog === 'string' ? JSON.parse(eventLog) : eventLog
-  if (!Array.isArray(parsed)) throw new Error('event log is not an array')
-  return parsed.filter((e): e is DstackEvent => !!e && typeof e === 'object' && (e as { imr?: unknown }).imr === 3)
+  return parseDstackEventLog(eventLog).filter((e) => e.imr === 3)
 }
 
 const HEX = /^(?:[0-9a-fA-F]{2})*$/

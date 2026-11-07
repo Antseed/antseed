@@ -48,7 +48,7 @@ const RESERVED_ENV = /^(?:ANTSEED_|POSTHOG_|CDP_)/
  * none loads code (seller.agentDir imports agent tool modules from disk, which no measurement
  * covers) or configures the buyer, verifier or relayer roles.
  */
-const CONFIG_KEYS: Readonly<Record<string, ReadonlySet<string>>> = {
+const CONFIG_KEYS = {
   config: new Set(['identity', 'seller', 'payments', 'network', 'telemetry']),
   seller: new Set([
     'reserveFloor', 'maxConcurrentBuyers', 'providers', 'publicAddress', 'verifications', 'maxUploadBodyBytes',
@@ -57,10 +57,10 @@ const CONFIG_KEYS: Readonly<Record<string, ReadonlySet<string>>> = {
   ]),
   provider: new Set(['plugin', 'baseUrl', 'apiKeyEnv', 'pathRewrite', 'fallbackUpstreams', 'defaults', 'services']),
   fallback: new Set(['baseUrl', 'apiKeyEnv', 'pathRewrite', 'services']),
-}
+} satisfies Readonly<Record<string, ReadonlySet<string>>>
 
 function checkKeys(value: Obj, section: keyof typeof CONFIG_KEYS, where: string): void {
-  const extra = Object.keys(value).filter((k) => !CONFIG_KEYS[section]!.has(k))
+  const extra = Object.keys(value).filter((k) => !CONFIG_KEYS[section].has(k))
   check(extra.length === 0, `${where}${extra[0]} is not allowed in a TEE seller config`)
 }
 
@@ -81,7 +81,8 @@ export function parseJson(text: string, what: string): unknown {
   }
 }
 
-function origin(url: unknown, where: string): string {
+/** A configured upstream URL, which must be https without credentials. */
+function upstreamUrl(url: unknown, where: string): URL {
   check(typeof url === 'string', `${where} must be a URL`)
   let u: URL
   try {
@@ -90,18 +91,17 @@ function origin(url: unknown, where: string): string {
     throw new RuleError(`${where} is not a URL`)
   }
   check(u.protocol === 'https:' && !u.username && !u.password, `${where} must be an https URL without credentials`)
-  return u.origin
+  return u
 }
 
 /** A path rewrite must keep requests on the upstream it belongs to. */
-function checkPathRewrite(rewrite: unknown, baseUrl: string, where: string): void {
+function checkPathRewrite(rewrite: unknown, baseUrl: URL, where: string): void {
   if (rewrite === undefined) return
   check(isObj(rewrite), `${where} pathRewrite must be a map`)
-  const base = baseUrl.replace(/\/+$/, '')
-  const baseOrigin = origin(baseUrl, `${where} baseUrl`)
+  const base = baseUrl.href.replace(/\/+$/, '')
   for (const [from, to] of Object.entries(rewrite)) {
     check(typeof to === 'string' && to.startsWith('/') && !to.startsWith('//'), `${where} pathRewrite for ${from} must be a path starting with one "/"`)
-    check(origin(base + to, `${where} pathRewrite for ${from}`) === baseOrigin, `${where} pathRewrite for ${from} leaves the upstream`)
+    check(upstreamUrl(base + to, `${where} pathRewrite for ${from}`).origin === baseUrl.origin, `${where} pathRewrite for ${from} leaves the upstream`)
   }
 }
 
@@ -126,9 +126,9 @@ export function checkSellerConfig(config: unknown): { upstreams: SellerUpstream[
     const spec = PLUGINS[plugin]
     check(spec, `provider ${provider} uses plugin "${cfg['plugin']}", which a TEE seller cannot use`)
     check(spec.baseUrl || cfg['baseUrl'] === undefined, `provider ${provider} sets a baseUrl its plugin ignores`)
-    const baseUrl = cfg['baseUrl'] ?? spec.defaultUrl
-    upstreams.push({ provider, plugin, origin: origin(baseUrl, `provider ${provider} baseUrl`) })
-    checkPathRewrite(cfg['pathRewrite'], baseUrl as string, `provider ${provider}`)
+    const baseUrl = upstreamUrl(cfg['baseUrl'] ?? spec.defaultUrl, `provider ${provider} baseUrl`)
+    upstreams.push({ provider, plugin, origin: baseUrl.origin })
+    checkPathRewrite(cfg['pathRewrite'], baseUrl, `provider ${provider}`)
     const fallbacks = cfg['fallbackUpstreams']
     if (fallbacks === undefined) continue
     check(spec.fallbacks && Array.isArray(fallbacks), `provider ${provider} fallbackUpstreams are not supported`)
@@ -137,9 +137,10 @@ export function checkSellerConfig(config: unknown): { upstreams: SellerUpstream[
       checkKeys(f, 'fallback', `provider ${provider} fallbackUpstreams[${i}] `)
       keyEnv(f['apiKeyEnv'])
       const where = `provider ${provider} fallbackUpstreams[${i}]`
-      upstreams.push({ provider, plugin, origin: origin(f['baseUrl'], `${where}.baseUrl`) })
+      const fallbackUrl = upstreamUrl(f['baseUrl'], `${where}.baseUrl`)
+      upstreams.push({ provider, plugin, origin: fallbackUrl.origin })
       // A fallback without its own rewrites uses the provider's, so check those against it too.
-      checkPathRewrite(f['pathRewrite'] ?? cfg['pathRewrite'], f['baseUrl'] as string, where)
+      checkPathRewrite(f['pathRewrite'] ?? cfg['pathRewrite'], fallbackUrl, where)
     })
   }
   return { upstreams, apiKeyEnvs }

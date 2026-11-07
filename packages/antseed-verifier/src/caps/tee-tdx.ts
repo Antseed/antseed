@@ -3,7 +3,7 @@ import type { Capability, CapabilityCollectInput, CapabilityVerifyInput } from '
 import { claimId, computeReportData } from '../shared.js'
 import { generateTdxQuote } from '../collect/configfs.js'
 import { generateDstackAttestation } from '../collect/dstack.js'
-import { composeHashFromEventLog, isDstackEventLog, rtmr3Events, type DstackEvent } from '../dstack-event-log.js'
+import { composeHashFromEventLog, parseDstackEventLog, rtmr3Events, type DstackEvent } from '../dstack-event-log.js'
 import { collectViaHttp, collectTdxAndPubkey } from '../collect/http.js'
 import { antseedRdV1, verifyReportData, type BindingIngredients } from '../report-data.js'
 import type { ApprovedDstackOs, ApprovedNodeBuilds } from '../approved-node-measurements.js'
@@ -165,8 +165,14 @@ export function decodeTeeTdxEvidence(bytes: Uint8Array): Omit<TeeTdxEvidence, 'q
   if (quote.length === 0) {
     throw new Error('tee-tdx evidence "quote" is not valid base64')
   }
-  if (parsed.eventLog !== undefined && !isDstackEventLog(parsed.eventLog)) {
-    throw new Error('tee-tdx evidence "eventLog" is not a dstack event log')
+  let eventLog: DstackEvent[] | undefined
+  if (parsed.eventLog !== undefined) {
+    try {
+      if (!Array.isArray(parsed.eventLog)) throw new Error('not an array')
+      eventLog = parseDstackEventLog(parsed.eventLog)
+    } catch {
+      throw new Error('tee-tdx evidence "eventLog" is not a dstack event log')
+    }
   }
   if (parsed.appCompose !== undefined && typeof parsed.appCompose !== 'string') {
     throw new Error('tee-tdx evidence "appCompose" is not a string')
@@ -175,7 +181,7 @@ export function decodeTeeTdxEvidence(bytes: Uint8Array): Omit<TeeTdxEvidence, 'q
     quote,
     ...(parsed.collateral !== undefined ? { collateral: parsed.collateral } : {}),
     ...(parsed.binding !== undefined ? { binding: parsed.binding } : {}),
-    ...(parsed.eventLog !== undefined ? { eventLog: parsed.eventLog } : {}),
+    ...(eventLog !== undefined ? { eventLog } : {}),
     ...(parsed.appCompose !== undefined ? { appCompose: parsed.appCompose } : {}),
   }
 }
