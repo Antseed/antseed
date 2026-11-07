@@ -364,6 +364,7 @@ async function runTarget(
     })
     if (result.status === 'SKIPPED') throw new Error(`unexpected skipped target: ${result.reason}`)
     const evidence = JSON.parse(await readFile(result.evidencePath, 'utf8')) as ProxyAuditEvidenceV1
+    assert.equal(evidence.buyerProxy.statePath, 'buyer.state.json', 'published evidence must not show the machine\'s file paths')
     const checkpoints = await readModelAuditCheckpoints(directory)
     return { result, evidence, checkpoints, requestCount, requests, finalBatchStartedAfterSlow }
   } catch (error) {
@@ -580,6 +581,7 @@ async function runSkippedTarget(response: Response): Promise<{
     })
     assert.equal(result.status, 'SKIPPED')
     const evidence = JSON.parse(await readFile(result.evidencePath!, 'utf8')) as ProxyAuditSkipEvidenceV1
+    assert.equal(evidence.buyerProxy.statePath, 'buyer.state.json', 'published evidence must not show the machine\'s file paths')
     return { result, evidence, requestCount }
   } finally {
     await rm(directory, { recursive: true, force: true })

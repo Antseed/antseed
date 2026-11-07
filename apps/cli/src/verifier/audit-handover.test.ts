@@ -3,9 +3,11 @@ import test from 'node:test'
 import { modelHash } from '@antseed/node/payments'
 import { VERIFIER_VERDICT, serviceHash, type ServiceAuditedEvent } from '@antseed/node/payments'
 import { auditorRotationForModel } from './audit-assignment.js'
-import { epochReports, pendingConfirmations } from './pending-confirmations.js'
+import { CONFIRMATION_WINDOW_SECONDS, epochReports, pendingConfirmations } from './pending-confirmations.js'
 import {
   auditHandovers,
+  countingModelAudits,
+  describeHandover,
   handoverModelsFor,
   handoverStage,
   loadEpochModelAudits,
@@ -26,6 +28,22 @@ const EPOCH = 30
 
 const rotationOf = (model: string) => auditorRotationForModel(model, { auditors: AUDITORS, epoch: EPOCH, availableModels: MODELS })
 const audit = (model: string, auditor: string) => ({ modelHash: modelHash(model), auditor })
+const modelEvent = (model: string, auditor: string, transactionHash = '0x1', epoch = BigInt(EPOCH)) => ({
+  modelHash: modelHash(model), auditor, epoch, evidenceHash: '0x', evidenceUri: '', resultCount: 1, blockNumber: 1, logIndex: 0, transactionHash,
+})
+const serviceEvent = (
+  model: string, auditor: string, agentId: number, verdict: ServiceAuditedEvent['verdict'], transactionHash = '0x1', blockNumber = 1,
+): ServiceAuditedEvent => ({
+  agentId: BigInt(agentId), serviceHash: serviceHash(model), auditor, modelHash: modelHash(model), verdict,
+  round: 0, reports: 1, required: 1, blockNumber, logIndex: agentId, transactionHash,
+})
+/** `real` sellers with a SAME and the rest UNDETERMINED, as one auditor's audit of one model. */
+const auditWith = (real: number, sellers: number, auditor = AUDITORS[0]!) => {
+  const results = Array.from({ length: sellers }, (_, index) => serviceEvent(
+    'model-a', auditor, index + 1, index < real ? VERIFIER_VERDICT.SAME : VERIFIER_VERDICT.UNDETERMINED,
+  ))
+  return countingModelAudits([modelEvent('model-a', auditor)], results)
+}
 const input = (overrides: Partial<HandoverInput>): HandoverInput => ({
   auditors: AUDITORS,
   epoch: EPOCH,
@@ -60,7 +78,7 @@ test('from halfway an unaudited model goes to the next active auditor in its rot
   const [assigned, next, after] = rotationOf('model-a') as [string, string, string]
   const audits = [audit('model-b', next), audit('model-c', after)]
   const handovers = auditHandovers(input({ audits, availableModels: ['model-a'], now: START + LENGTH / 2 }))
-  assert.deepEqual(handovers, [{ model: 'model-a', assignedAuditor: assigned, standIn: next, stage: 1 }])
+  assert.deepEqual(handovers, [{ model: 'model-a', assignedAuditor: assigned, standIn: next, stage: 1, revoked: false }])
   assert.deepEqual(handoverModelsFor(next, input({ audits, availableModels: ['model-a'] })).map((entry) => entry.model), ['model-a'])
   assert.deepEqual(handoverModelsFor(after, input({ audits, availableModels: ['model-a'] })), [])
   assert.deepEqual(handoverModelsFor(assigned, input({ audits, availableModels: ['model-a'] })), [])
@@ -117,15 +135,18 @@ test('loadEpochModelAudits reads from the epoch’s first block and keeps only t
       },
       queryModelAudits: async (filter, fromBlock, toBlock) => {
         calls.push(['query', filter, fromBlock, toBlock])
-        const base = { evidenceHash: '0x', evidenceUri: 'ipfs://x', resultCount: 1, blockNumber: 121, logIndex: 0, transactionHash: '0x' }
+        return [modelEvent('model-a', AUDITORS[0]!, '0xa', 30n), modelEvent('model-b', AUDITORS[1]!, '0xb', 29n)]
+      },
+      queryServiceAudits: async (_agent, _service, fromBlock, toBlock) => {
+        calls.push(['services', fromBlock, toBlock])
         return [
-          { ...base, modelHash: modelHash('model-a'), auditor: AUDITORS[0]!, epoch: 30n },
-          { ...base, modelHash: modelHash('model-b'), auditor: AUDITORS[1]!, epoch: 29n },
+          serviceEvent('model-a', AUDITORS[0]!, 1, VERIFIER_VERDICT.SAME, '0xa'),
+          serviceEvent('model-b', AUDITORS[1]!, 1, VERIFIER_VERDICT.SAME, '0xb'),
         ]
       },
     },
   })
-  assert.deepEqual(calls, [['first', START, 7], ['query', {}, 120, 'latest']])
+  assert.deepEqual(calls, [['first', START, 7], ['query', {}, 120, 'latest'], ['services', 120, 'latest']])
   assert.deepEqual(records, [{ modelHash: modelHash('model-a'), auditor: AUDITORS[0] }])
 })
 
@@ -147,7 +168,7 @@ test('with two auditors the active one stands in for every model of the absent o
   const audits = activeModels.map((model) => audit(model, active))
   for (const [now, stage] of [[START + LENGTH / 2, 1], [START + LENGTH * 0.75, 2]] as const) {
     assert.deepEqual(auditHandovers(input({ auditors: pair, audits, now })),
-      absentModels.map((model) => ({ model, assignedAuditor: absent, standIn: active, stage })))
+      absentModels.map((model) => ({ model, assignedAuditor: absent, standIn: active, stage, revoked: false })))
   }
 })
 
@@ -156,7 +177,7 @@ test('an active auditor that has not audited one of its own models yet still han
   const [assigned, next] = rotationOf('model-a') as [string, string]
   const audits = [audit('model-b', assigned), audit('model-c', next)]
   assert.deepEqual(auditHandovers(input({ audits, availableModels: ['model-a'] })),
-    [{ model: 'model-a', assignedAuditor: assigned, standIn: next, stage: 1 }])
+    [{ model: 'model-a', assignedAuditor: assigned, standIn: next, stage: 1, revoked: false }])
 })
 
 test('a model audited by an auditor approved after the epoch started is not handed over', () => {
@@ -172,13 +193,14 @@ test('a model audited by an auditor approved after the epoch started is not hand
 
 test('an audit from an earlier epoch does not count: the loader drops it, so the model is handed over', async () => {
   const [assigned, next] = rotationOf('model-a') as [string, string]
-  const event = (model: string, auditor: string, epoch: bigint) => ({
-    modelHash: modelHash(model), auditor, epoch, evidenceHash: '0x', evidenceUri: '', resultCount: 1, blockNumber: 1, logIndex: 0, transactionHash: '0x',
-  })
   const audits = await loadEpochModelAudits({
     reader: {
       firstBlockAtOrAfter: async () => 0,
-      queryModelAudits: async () => [event('model-a', assigned, BigInt(EPOCH - 1)), event('model-b', next, BigInt(EPOCH))] as never,
+      queryModelAudits: async () => [modelEvent('model-a', assigned, '0xa', BigInt(EPOCH - 1)), modelEvent('model-b', next, '0xb')],
+      queryServiceAudits: async () => [
+        serviceEvent('model-a', assigned, 1, VERIFIER_VERDICT.SAME, '0xa'),
+        serviceEvent('model-b', next, 1, VERIFIER_VERDICT.SAME, '0xb'),
+      ],
     },
     epoch: EPOCH,
     epochStartedAt: START,
@@ -203,6 +225,63 @@ test('every model gets a stand-in when several auditors are absent, and no stand
   assert.ok(handovers.every((entry) => entry.standIn === active && entry.assignedAuditor !== active))
 })
 
+test('an audit counts from 20% of its sellers with a SAME or DIFF, in whole numbers', () => {
+  assert.deepEqual(auditWith(0, 40), [], 'all UNDETERMINED: it learned nothing')
+  assert.deepEqual(auditWith(7, 40), [], '17.5%')
+  assert.equal(auditWith(8, 40).length, 1, 'exactly 20%')
+  assert.equal(auditWith(3, 15).length, 1, 'exactly 20%, where 15 * 0.2 is a little above 3 in floating point')
+  assert.deepEqual(auditWith(1, 6), [], '16.7%')
+  assert.equal(auditWith(1, 5).length, 1)
+  assert.equal(auditWith(1, 1).length, 1)
+})
+
+test('a DIFF is a real answer, and an auditor\'s latest report on a seller is the one that counts', () => {
+  const [auditor] = AUDITORS as [string]
+  const audits = [modelEvent('model-a', auditor, '0x1'), modelEvent('model-a', auditor, '0x2')]
+  assert.equal(countingModelAudits(audits, [serviceEvent('model-a', auditor, 1, VERIFIER_VERDICT.DIFF)]).length, 2)
+  assert.equal(countingModelAudits(audits, [
+    serviceEvent('model-a', auditor, 1, VERIFIER_VERDICT.UNDETERMINED, '0x1', 1),
+    serviceEvent('model-a', auditor, 1, VERIFIER_VERDICT.SAME, '0x2', 2),
+  ]).length, 2, 'a retry that got an answer rescues the audit')
+  assert.deepEqual(countingModelAudits(audits, [
+    serviceEvent('model-a', auditor, 1, VERIFIER_VERDICT.SAME, '0x1', 1),
+    serviceEvent('model-a', auditor, 1, VERIFIER_VERDICT.UNDETERMINED, '0x2', 2),
+  ]), [])
+})
+
+test('reports outside this epoch\'s model audits are ignored, and an audit of only unknown agents does not count', () => {
+  const [auditor] = AUDITORS as [string]
+  assert.deepEqual(countingModelAudits([modelEvent('model-a', auditor, '0x1')], [
+    serviceEvent('model-a', auditor, 1, VERIFIER_VERDICT.SAME, '0xlater'),
+  ]), [])
+})
+
+test('an audit that learned nothing does not end the model: the stand-in still takes it, and its auditor is not active', () => {
+  const [assigned, next] = rotationOf('model-a') as [string, string]
+  const audits = [...auditWith(0, 40, assigned), audit('model-b', next)]
+  assert.deepEqual(auditHandovers(input({ audits, availableModels: ['model-a', 'model-b'] })).map((entry) => [entry.model, entry.standIn]),
+    [['model-a', next]])
+  assert.deepEqual(auditHandovers(input({ audits: auditWith(0, 40, next), availableModels: ['model-a'] })), [], 'no active stand-in')
+})
+
+test('a revoked auditor\'s model moves at once, before halfway', () => {
+  const [assigned, next] = rotationOf('model-a') as [string, string]
+  const early = { now: START + 60, audits: [audit('model-b', next)], availableModels: ['model-a'] }
+  assert.deepEqual(auditHandovers(input(early)), [], 'not revoked: it waits for halfway')
+  const handovers = auditHandovers(input({ ...early, revoked: new Set([assigned]) }))
+  assert.deepEqual(handovers, [{ model: 'model-a', assignedAuditor: assigned, standIn: next, stage: 1, revoked: true }])
+  assert.match(describeHandover(handovers[0]!), /was revoked this epoch/)
+})
+
+test('a revoked auditor is never a stand-in, and its finished audits stand', () => {
+  const [assigned, next, third] = rotationOf('model-a') as [string, string, string]
+  const audits = [audit('model-b', next), audit('model-c', third)]
+  assert.deepEqual(auditHandovers(input({ audits, availableModels: ['model-a'], revoked: new Set([next]) })).map((entry) => entry.standIn), [third])
+  assert.deepEqual(auditHandovers(input({
+    now: START + 60, audits: [audit('model-a', assigned), audit('model-b', next)], availableModels: ['model-a'], revoked: new Set([assigned]),
+  })), [])
+})
+
 test('a stand-in\'s DIFF on a handed-over model is confirmed by the next auditor, without waiting for the absent one', () => {
   const [absent, standIn, third, fourth] = rotationOf('model-a') as [string, string, string, string]
   const now = START + LENGTH / 2
@@ -210,12 +289,13 @@ test('a stand-in\'s DIFF on a handed-over model is confirmed by the next auditor
     agentId: 1n, serviceHash: serviceHash('model-a'), auditor: standIn, modelHash: modelHash('model-a'),
     verdict: VERIFIER_VERDICT.DIFF, round: 0, reports: 1, required: 2, blockNumber: 1, logIndex: 0, transactionHash: '0x',
   }
-  const pendingFor = (auditor: string) => pendingConfirmations({
-    reports: epochReports([diff]), epoch: EPOCH, epochStartedAt: START, epochEndsAt: START + LENGTH, now,
+  const pendingFor = (auditor: string, at = now) => pendingConfirmations({
+    reports: epochReports([diff]), epoch: EPOCH, blockTimestamps: new Map([[1, now]]), now: at,
     auditor, auditors: AUDITORS, auditedModels: MODELS,
   })[0]!
   // The rotation names the absent auditor as the confirmer, since the stand-in is second in it.
   assert.equal(pendingFor(third).confirmer, absent)
-  // A handover only happens from halfway, when every auditor that has not reported may confirm.
-  assert.deepEqual([standIn, third, fourth].map((auditor) => pendingFor(auditor).mine), [false, true, true])
+  // Its turn runs out unanswered, and then the next auditor is asked, not every auditor.
+  const later = now + CONFIRMATION_WINDOW_SECONDS
+  assert.deepEqual([standIn, third, fourth].map((auditor) => pendingFor(auditor, later).mine), [false, true, false])
 })

@@ -717,9 +717,10 @@ sorted by address and models by name, and in epoch `e` model `i` goes to auditor
 `(i + e) mod auditors`. `antseed verifier assignment [--epoch <n>] [--epochs <count>]`
 shows every auditor's models; an epoch that has not started yet is a preview with the
 auditors approved so far. The split is off-chain only: halfway through the
-epoch, a model its auditor has not audited yet goes to the next auditor in its
-rotation that has submitted an audit this epoch (from three quarters on, to the
-one after that), who audits it like its own; `verifier assignment` shows these
+epoch, a model with no audit that counts yet (at least 20% of its sellers got a
+SAME or DIFF) goes to the next auditor in its rotation with such an audit this
+epoch (from three quarters on, to the one after that), who audits it like its
+own; a revoked auditor's models move straight away; `verifier assignment` shows these
 stand-ins and `verifier run` prints `Stand-in: …`. How far the epoch has come is
 read from the chain's latest block. `--auditor` cannot be
 combined with `<model>`, `--all`, or `--resume-run`.

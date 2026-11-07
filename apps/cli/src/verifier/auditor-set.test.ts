@@ -4,7 +4,14 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import type { AuditorSetEvent } from '@antseed/node/payments'
-import { AUDITOR_SET_CONFIRMATION_BLOCKS, approvedAuditorsAt, auditorSetCachePath, loadAuditorSetEvents, type AuditorSetEventSource } from './auditor-set.js'
+import {
+  AUDITOR_SET_CONFIRMATION_BLOCKS,
+  approvedAuditorsAt,
+  auditorSetCachePath,
+  loadAuditorSetEvents,
+  revokedSinceEpochStart,
+  type AuditorSetEventSource,
+} from './auditor-set.js'
 
 const A = '0x1111111111111111111111111111111111111111'
 const B = '0x2222222222222222222222222222222222222222'
@@ -13,6 +20,21 @@ const C = '0x3333333333333333333333333333333333333333'
 function event(auditor: string, approved: boolean, blockNumber: number, timestamp: number, logIndex = 0): AuditorSetEvent {
   return { auditor, approved, blockNumber, logIndex, timestamp, transactionHash: `0x${blockNumber.toString(16)}` }
 }
+
+test('revoked this epoch: approved at the epoch start and not any more', () => {
+  const events = [
+    event(A, true, 10, 100),
+    event(B, true, 11, 110),
+    event(C, true, 12, 120),
+    event(A, false, 20, 200), // revoked this epoch
+    event(B, false, 21, 210), // revoked and approved again
+    event(B, true, 22, 220),
+  ]
+  assert.deepEqual([...revokedSinceEpochStart(events, 150)], [A])
+  assert.deepEqual([...revokedSinceEpochStart(events, 250)], [], 'revoked before the epoch: already out of the rotation')
+  const joinedAndLeft = [event(A, true, 10, 100), event(B, true, 20, 200), event(B, false, 21, 210)]
+  assert.deepEqual([...revokedSinceEpochStart(joinedAndLeft, 150)], [], 'never in this epoch\'s rotation')
+})
 
 test('approved auditors are replayed up to the epoch start, sorted by address', () => {
   const events = [

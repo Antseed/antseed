@@ -1,6 +1,6 @@
 import { randomInt, randomUUID } from 'node:crypto'
 import { readFile, readdir } from 'node:fs/promises'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import {
   KBF_AUDIT_VERIFY_OPTIONS,
   KBF_LOW_COVERAGE_RETRIES,
@@ -688,7 +688,7 @@ export async function verifyModelTarget(input: {
       createdAt: new Date(completedAt).toISOString(),
       buyerProxy: {
         baseUrl: input.context.proxy.baseUrl,
-        statePath: input.context.proxy.statePath,
+        statePath: basename(input.context.proxy.statePath),
         pid: input.context.proxy.pid,
       },
       target: {
@@ -773,7 +773,7 @@ export async function verifyModelTarget(input: {
     createdAt: new Date(completedAt).toISOString(),
     buyerProxy: {
       baseUrl: input.context.proxy.baseUrl,
-      statePath: input.context.proxy.statePath,
+      statePath: basename(input.context.proxy.statePath),
       pid: input.context.proxy.pid,
     },
     target: {

@@ -24,7 +24,7 @@ import { modelHash, verifierVerdict } from '@antseed/node/payments'
 import pkg from '../../package.json' with { type: 'json' }
 import type { VerifierCLIConfig } from '../config/types.js'
 import { assignAuditModelsRoundRobin, confirmationAssignments } from './audit-assignment.js'
-import { auditHandovers } from './audit-handover.js'
+import { MINIMUM_REAL_RESULTS_PERCENT, auditHandovers } from './audit-handover.js'
 import { MIN_SECONDS_FOR_ANOTHER_ROUND } from './audit-window.js'
 import {
   AUDITOR_FAILURE_ATTEMPTS,
@@ -38,7 +38,7 @@ import { AUDITED_MODELS, type AuditedModel } from './audited-models.js'
 import { CLOSE_CALL_RULE_ID, closeCallRuleForExtensions, needsExtension, pooledCloseCallVerdict } from './close-call.js'
 import { CANONICAL_KBF_DOMAINS } from './canonical-kbf-domains.js'
 import { DEFAULT_LAYOUT_FILTER_PASSES, REFERENCE_BUILDER_VERSION, REFERENCE_SIZING_ALGORITHM_VERSION } from './model-reference.js'
-import { pendingConfirmations, type EpochReport } from './pending-confirmations.js'
+import { CONFIRMATION_WINDOW_SECONDS, pendingConfirmations, type EpochReport } from './pending-confirmations.js'
 import {
   DEFAULT_REFERENCE_MAXIMUM_PROBE_COUNT,
   DEFAULT_REFERENCE_MINIMUM_PROBE_COUNT,
@@ -136,6 +136,8 @@ export function verifierRulesFingerprint(input: { auditedModels?: Readonly<Recor
       agentId: 1n, serviceHash: `0x${'11'.repeat(32)}`, modelHash: modelHash(firstModel), round: 0,
       byAuditor: new Map([[assignment[0]!.auditor, verifierVerdict('DIFF')]]),
       required: new Map([[verifierVerdict('DIFF'), 2]]),
+      firstReportBlock: new Map([[verifierVerdict('DIFF'), 1]]),
+      opinions: new Map([[assignment[0]!.auditor, verifierVerdict('DIFF')]]),
     }]] : [])
     return {
       epoch,
@@ -145,8 +147,11 @@ export function verifierRulesFingerprint(input: { auditedModels?: Readonly<Recor
       handovers: [0.49, 0.5, 0.75].map((fraction) => auditHandovers({
         ...input, audits, epochStartedAt: startedAt, epochEndsAt: endsAt, now: startedAt + Math.round(EPOCH_SECONDS * fraction),
       })),
-      confirmers: [0.25, 0.5].map((fraction) => auditors.map((auditor) => pendingConfirmations({
-        reports, epoch, epochStartedAt: startedAt, epochEndsAt: endsAt, now: startedAt + Math.round(EPOCH_SECONDS * fraction),
+      revokedHandovers: auditHandovers({
+        ...input, audits, revoked: new Set(auditors.slice(0, 1)), epochStartedAt: startedAt, epochEndsAt: endsAt, now: startedAt,
+      }),
+      confirmers: [0, 1, 2].map((turn) => auditors.map((auditor) => pendingConfirmations({
+        reports, epoch, blockTimestamps: new Map([[1, startedAt]]), now: startedAt + turn * CONFIRMATION_WINDOW_SECONDS,
         auditor, auditors, auditedModels: keys,
       }).map((entry) => ({ model: entry.model, confirmer: entry.confirmer, mine: entry.mine })))),
     }
@@ -198,6 +203,8 @@ export function verifierRulesFingerprint(input: { auditedModels?: Readonly<Recor
       sellerRetrySpacingSeconds: SELLER_RETRY_SPACING_SECONDS,
       auditorFailureAttempts: AUDITOR_FAILURE_ATTEMPTS,
       confirmationAttempts: CONFIRMATION_ATTEMPTS,
+      confirmationWindowSeconds: CONFIRMATION_WINDOW_SECONDS,
+      minimumRealResultsPercent: MINIMUM_REAL_RESULTS_PERCENT,
       confirmationRecheckSpacingSeconds: CONFIRMATION_RECHECK_SPACING_SECONDS,
     },
     samples,

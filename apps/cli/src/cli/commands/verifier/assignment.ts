@@ -7,7 +7,7 @@ import { assignAuditModelsRoundRobin, auditModelListHash, confirmationAssignment
 import { resolveAuditEpochWindow, type AuditEpochWindow } from '../../../verifier/audit-epoch.js'
 import { configuredVerifierModels } from '../../../verifier/model-config.js'
 import { getGlobalOptions } from '../types.js'
-import { approvedAuditorsAt, loadAuditorSetEvents } from '../../../verifier/auditor-set.js'
+import { approvedAuditorsAt, loadAuditorSetEvents, revokedSinceEpochStart } from '../../../verifier/auditor-set.js'
 import { createVerifierClient } from '../../payment-utils.js'
 import { auditEpochReader } from './run.js'
 import { auditHandovers, loadEpochModelAudits, type AuditHandover } from '../../../verifier/audit-handover.js'
@@ -75,7 +75,14 @@ export function registerVerifierAssignmentCommand(verifier: Command): void {
         const handovers: AuditHandover[] = auditors.length === 0 || window.epoch !== resolved.window.epoch
           ? []
           : auditHandovers({
-            auditors, epoch: window.epoch, availableModels, audits, epochStartedAt: window.startedAt, epochEndsAt: window.endsAt, now,
+            auditors,
+            epoch: window.epoch,
+            availableModels,
+            audits,
+            revoked: revokedSinceEpochStart(events, window.startedAt),
+            epochStartedAt: window.startedAt,
+            epochEndsAt: window.endsAt,
+            now,
           })
         return {
           epoch: window.epoch,

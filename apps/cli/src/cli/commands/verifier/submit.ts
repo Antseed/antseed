@@ -34,7 +34,7 @@ import { resolveAuditorAddress, resolveAuditorSigner } from './auditor-identity.
 import { writeEpochOverview } from '../../../verifier/epoch-overview.js'
 import { loadEpochState, writeEpochSubmissionManifest } from '../../../verifier/epoch-plan.js'
 import { getGlobalOptions } from '../types.js'
-import { loadEpochAuditEvents, loadEpochReports, ownResultTallies } from '../../../verifier/pending-confirmations.js'
+import { loadDisputedSellers, loadEpochAuditEvents, loadEpochReports, ownResultTallies } from '../../../verifier/pending-confirmations.js'
 import { alreadyOnChainFilter, revocationPositions } from '../../../verifier/submission-delta.js'
 
 interface SubmitOptions {
@@ -235,7 +235,10 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
         if (audits.some((audit) => normalized(audit.model) === normalized(model))) continue
         console.log(chalk.dim(`${model}: nothing new to submit (${count} already on-chain)`))
       }
-      const overviewPath = await writeEpochOverview(evidenceDir, manifest.epoch)
+      const disputed = await loadDisputedSellers({
+        reader: verifierClient, epochStartedAt: window.startedAt, deploymentBlock: verifierClient.deploymentBlock,
+      })
+      const overviewPath = await writeEpochOverview(evidenceDir, manifest.epoch, undefined, disputed)
       if (overviewPath) console.log(chalk.cyan(`Epoch overview (all runs this epoch): ${overviewPath}`))
       for (const exclusion of excluded) {
         console.warn(chalk.yellow(

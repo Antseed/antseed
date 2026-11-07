@@ -44,6 +44,15 @@ export function approvedAuditorsAt(events: readonly AuditorSetEvent[], epochStar
 }
 
 /**
+ * Auditors approved when the epoch started and revoked since. They stay in the epoch's rotation, so
+ * the assignment doesn't move, but they can no longer submit, so no work is given to them.
+ */
+export function revokedSinceEpochStart(events: readonly AuditorSetEvent[], epochStartedAt: number): Set<string> {
+  const approvedNow = new Set(approvedAuditorsAt(events, Number.MAX_SAFE_INTEGER))
+  return new Set(approvedAuditorsAt(events, epochStartedAt).filter((auditor) => !approvedNow.has(auditor)))
+}
+
+/**
  * Every `AuditorSet` event of the KBF audits contract, reading only blocks the cache in
  * `<dataDir>/verifier/auditor-set.json` has not covered yet. The first call scans from the
  * contract's deployment block.

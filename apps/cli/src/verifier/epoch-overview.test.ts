@@ -4,7 +4,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { writeJsonAtomic } from './atomic-files.js'
-import { buildEpochOverview, epochOverviewPath, writeEpochOverview } from './epoch-overview.js'
+import { modelHash } from '@antseed/node/payments'
+import {
+  buildEpochOverview, epochOverviewPath, renderEpochOverview, writeEpochOverview, type EpochOverview, type OverviewCell,
+} from './epoch-overview.js'
+import { disputeKey } from './pending-confirmations.js'
 import { explainInconclusive, explainSkipReason } from './plain-reason.js'
 import { emptyAuditCostSummary } from './proxy-evidence.js'
 
@@ -99,4 +103,24 @@ test('plain reasons match the AntScan wording', () => {
     'The seller returned an error: “Invalid request parameters”.',
   )
   assert.equal(explainSkipReason('something new').headline, 'Not audited')
+})
+
+test('a disputed seller is marked on its model only', () => {
+  const cell = (model: string): OverviewCell => ({
+    state: 'same', model, service: model, runId: 'run-1', correctRate: 1, answered: 10, asked: 10, reason: null, audits: 1,
+  })
+  const overview: EpochOverview = {
+    epoch: '7',
+    runIds: ['run-1'],
+    models: ['model-a', 'model-b'],
+    sellers: [{
+      key: 'agent:1', label: 'Seller', agentId: '1', peerId: 'peer',
+      cells: new Map([['model-a', cell('model-a')], ['model-b', cell('model-b')]]),
+    }],
+  }
+  const marker = '<sup class="disputed">'
+  assert.equal(renderEpochOverview(overview).includes(marker), false)
+  const html = renderEpochOverview(overview, new Set([disputeKey('1', modelHash('model-a'))]))
+  assert.equal(html.split(marker).length - 1, 1)
+  assert.match(html, /Disputed: two auditors disagree/)
 })

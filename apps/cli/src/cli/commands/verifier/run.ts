@@ -32,7 +32,7 @@ import {
 } from '../../../verifier/audit-artifacts.js'
 import { resolveAuditEpochWindow, type AuditEpochWindow, type OnchainEpochReader } from '../../../verifier/audit-epoch.js'
 import { auditModelListHash, confirmationAssignments, roundRobinAssignmentFor, type AuditAssignment } from '../../../verifier/audit-assignment.js'
-import { approvedAuditorsAt, loadAuditorSetEvents } from '../../../verifier/auditor-set.js'
+import { approvedAuditorsAt, loadAuditorSetEvents, revokedSinceEpochStart } from '../../../verifier/auditor-set.js'
 import { chainNow } from '../../../verifier/chain-clock.js'
 import {
   describeHandover, handoverModelsFor, loadEpochModelAudits, type AuditHandover,
@@ -128,11 +128,14 @@ import {
   describeTallies,
   dropSettledConfirmations,
   epochReports,
+  loadBlockTimestamps,
+  loadDisputedSellers,
   loadEpochAuditEvents,
   localResultAnswersConfirmation,
   ownLatestReports,
   pendingConfirmations,
   reportKey,
+  waitingReportBlocks,
   type ConfirmationTarget,
 } from '../../../verifier/pending-confirmations.js'
 import { loadPendingExtensions, pendingExtensionKey } from '../../../verifier/pending-extensions.js'
@@ -309,6 +312,7 @@ export function chainClock(config: AntseedConfig): () => Promise<number> {
  */
 export async function loadRunHandovers(input: {
   config: AntseedConfig
+  dataDir: string
   auditor: string
   epochWindow: AuditEpochWindow
   approvedAuditors: readonly string[]
@@ -322,17 +326,21 @@ export async function loadRunHandovers(input: {
     return []
   }
   try {
-    const audits = await loadEpochModelAudits({
-      reader: client,
-      epoch: input.epochWindow.epoch,
-      epochStartedAt: input.epochWindow.startedAt,
-      deploymentBlock: client.deploymentBlock,
-    })
+    const [audits, revoked] = await Promise.all([
+      loadEpochModelAudits({
+        reader: client,
+        epoch: input.epochWindow.epoch,
+        epochStartedAt: input.epochWindow.startedAt,
+        deploymentBlock: client.deploymentBlock,
+      }),
+      loadRevokedAuditors(input.config, input.dataDir, input.epochWindow),
+    ])
     return handoverModelsFor(input.auditor, {
       auditors: input.approvedAuditors,
       epoch: input.epochWindow.epoch,
       availableModels: configuredVerifierModels(input.config.verifier),
       audits,
+      revoked,
       epochStartedAt: input.epochWindow.startedAt,
       epochEndsAt: input.epochWindow.endsAt,
       now: input.now,
@@ -349,12 +357,27 @@ export async function loadApprovedAuditors(config: AntseedConfig, dataDir: strin
   return approvedAuditorsAt(events, epoch.startedAt)
 }
 
+/** Auditors revoked since the epoch started, from the same events. */
+async function loadRevokedAuditors(config: AntseedConfig, dataDir: string, epoch: AuditEpochWindow): Promise<Set<string>> {
+  return revokedSinceEpochStart(await loadAuditorSetEvents(createVerifierClient(config), dataDir), epoch.startedAt)
+}
+
+/** This epoch's disputed sellers for the overview; none when the epoch is not on-chain or no KBF audits contract is configured. */
+async function epochDisputes(config: AntseedConfig, epochWindow: AuditEpochWindow): Promise<Set<string>> {
+  if (epochWindow.source !== 'onchain') return new Set()
+  try {
+    const client = createVerifierClient(config)
+    return await loadDisputedSellers({ reader: client, epochStartedAt: epochWindow.startedAt, deploymentBlock: client.deploymentBlock })
+  } catch {
+    return new Set()
+  }
+}
+
 /**
  * Reports other auditors made this epoch that wait for a confirmation this auditor is to give, as
  * the sellers to audit per model. Confirmations rotate like the assignment
- * (`auditorRotationForModel`): the first auditor in a model's rotation that has not reported on the
- * seller confirms it, and from halfway through the epoch any auditor that has not may. Nothing when
- * the epoch is not on-chain or no KBF audits contract is configured; a failed read is a warning,
+ * (`auditorRotationForModel`): one auditor at a time, for at most two opinions on a seller per model
+ * and epoch (see `pendingConfirmations`). Nothing when the epoch is not on-chain or no KBF audits contract is configured; a failed read is a warning,
  * not a stop.
  */
 /** A confirmation assigned to this auditor that this run does not audit, and why. */
@@ -423,17 +446,21 @@ export async function loadRunConfirmations(input: {
       loadEpochAuditEvents({ reader: client, epochStartedAt: input.epochWindow.startedAt, deploymentBlock: client.deploymentBlock }),
       client.requiredReports(),
     ])
+    const revoked = await loadRevokedAuditors(input.config, input.dataDir, input.epochWindow)
     const reports = epochReports(events)
     if (required.DIFF > auditors.length) {
       console.warn(chalk.yellow(
         `A DIFF needs ${required.DIFF} auditors but only ${auditors.length} ${auditors.length === 1 ? 'is' : 'are'} approved; no DIFF can be recorded.`,
       ))
     }
+    const blockTimestamps = await loadBlockTimestamps(
+      { getBlock: (block) => client.provider.getBlock(block) }, waitingReportBlocks(reports),
+    )
     const pending = await dropSettledConfirmations(pendingConfirmations({
       reports,
       epoch: input.epochWindow.epoch,
-      epochStartedAt: input.epochWindow.startedAt,
-      epochEndsAt: input.epochWindow.endsAt,
+      blockTimestamps,
+      revoked,
       now: input.now ?? Math.floor(Date.now() / 1_000),
       auditor: auditor.address,
       auditors,
@@ -444,7 +471,9 @@ export async function loadRunConfirmations(input: {
       const mine = pending.filter((entry) => entry.mine).length
       console.log(chalk.cyan(`Reports waiting for a confirmation this epoch: ${pending.length}, ${mine} for this auditor`))
       for (const entry of pending) {
-        const who = entry.mine ? 'for this auditor' : entry.confirmer ? `confirmer ${entry.confirmer}` : 'every approved auditor has reported'
+        const who = entry.mine ? 'for this auditor'
+          : entry.disputed ? 'two auditors disagree, nobody else is asked'
+            : entry.confirmer ? `confirmer ${entry.confirmer}` : 'every approved auditor has reported'
         console.log(chalk.cyan(`  ${entry.model}: agent ${entry.agentId} ${describeTallies(entry.waiting)} (${who})`))
       }
     }
@@ -465,7 +494,7 @@ export async function loadRunConfirmations(input: {
     // result only answers the confirmation if it is newer than that report.
     const ownReports = ownLatestReports(events, auditor.address)
     // Results submitted together share a block, so each block is read once.
-    const timestamps = new Map<number, number>()
+    const timestamps = new Map(blockTimestamps)
     for (const [model, agents] of targets) {
       for (const target of agents.values()) {
         const block = ownReports.get(reportKey(target.agentId, serviceHash(target.service), modelHash(model)))?.blockNumber
@@ -714,7 +743,7 @@ export async function runVerifierRound(
         })
         // Liveness: models whose auditor is absent this epoch are audited by a stand-in from halfway on.
         const handovers = await loadRunHandovers({
-          config, auditor: auditor.address, epochWindow, approvedAuditors, now: await clock(),
+          config, dataDir: globalOptions.dataDir, auditor: auditor.address, epochWindow, approvedAuditors, now: await clock(),
         })
         for (const entry of handovers) console.log(chalk.cyan(`Stand-in: ${describeHandover(entry)}`))
         const own = new Set(assignment.models.map((model) => model.toLowerCase()))
@@ -1823,7 +1852,7 @@ export async function runVerifierRound(
           failureCount: status.failures,
         })
         const reportPaths = await writeModelAuditReports(evidenceDir, epoch, epochSummary)
-        const overviewPath = await writeEpochOverview(evidenceDir, epoch)
+        const overviewPath = await writeEpochOverview(evidenceDir, epoch, undefined, await epochDisputes(config, epochWindow))
         status.state = status.failures > 0 ? 'failed' : 'completed'
         status.completedAt = completedAt
         status.currentModel = null

@@ -16,7 +16,9 @@ import {
   writeSignedAuditRun,
   type FixtureAudit,
 } from './model-audit-fixtures.test-support.js'
-import { loadEpochReports, pendingConfirmations } from './pending-confirmations.js'
+import {
+  CONFIRMATION_WINDOW_SECONDS, loadBlockTimestamps, loadEpochReports, pendingConfirmations, waitingReportBlocks,
+} from './pending-confirmations.js'
 import { roundRobinAssignmentFor, auditorRotationForModel } from './audit-assignment.js'
 import { handoverModelsFor, loadEpochModelAudits } from './audit-handover.js'
 import { chainNow } from './chain-clock.js'
@@ -272,8 +274,6 @@ test('two auditors confirm each other\'s DIFFs: one SAME is recorded at once, a 
     const pendingFor = async (auditor: string) => pendingConfirmations({
       reports: await loadEpochReports({ reader: client, epochStartedAt, deploymentBlock: 0 }),
       epoch: AUDIT_EPOCH,
-      epochStartedAt,
-      epochEndsAt: epochStartedAt + EPOCH_DURATION,
       now: epochStartedAt + 60,
       auditor,
       auditors: [auditorA.address, auditorB.address],
@@ -558,7 +558,7 @@ test('a model whose auditor is absent is handed to the next active auditor from 
     const after = await chainNow(provider)
     assert.ok(after >= epochStartedAt + EPOCH_DURATION / 2, `chain time ${after} is past halfway`)
     assert.ok(after < epochStartedAt + EPOCH_DURATION * 0.75, `chain time ${after} is before three quarters`)
-    const expected = [{ model: lazyModel, assignedAuditor: wallets.lazy.address, standIn: standIn.address, stage: 1 }]
+    const expected = [{ model: lazyModel, assignedAuditor: wallets.lazy.address, standIn: standIn.address, stage: 1, revoked: false }]
     assert.deepEqual(await handoversFor(standIn.address), expected)
     assert.deepEqual(await handoversFor(other.address), [])
     assert.deepEqual(handoversShown('standIn'), expected, 'verifier assignment shows the stand-in')
@@ -619,20 +619,24 @@ test('a DIFF whose confirmer never reports is confirmed by another auditor from 
     ])
     const client = new VerifierClient({ rpcUrl, contractAddress: chain.verificationAddress, evmChainId: 31_337, deploymentBlock: 0 })
     // What `verifier run` works out for each auditor, on the chain's clock.
-    const pendingFor = async (auditor: Wallet) => pendingConfirmations({
-      reports: await loadEpochReports({ reader: client, epochStartedAt, deploymentBlock: 0 }),
-      epoch: AUDIT_EPOCH,
-      epochStartedAt,
-      epochEndsAt: epochStartedAt + EPOCH_DURATION,
-      now: await chainNow(client.provider),
-      auditor: auditor.address,
-      auditors: rotation.auditors,
-      auditedModels: models,
-    }).map((entry) => ({
-      model: entry.model, agentId: entry.agentId, waiting: entry.waiting, confirmer: entry.confirmer, mine: entry.mine,
-    }))
-    const waiting = (mine: boolean) => [{
-      model, agentId: 1n, waiting: [{ verdict: 'DIFF', reports: 1, required: 2 }], confirmer: absent.address, mine,
+    const pendingFor = async (auditor: Wallet) => {
+      const reports = await loadEpochReports({ reader: client, epochStartedAt, deploymentBlock: 0 })
+      return pendingConfirmations({
+        reports,
+        epoch: AUDIT_EPOCH,
+        blockTimestamps: await loadBlockTimestamps(
+          { getBlock: (block) => client.provider.getBlock(block) }, waitingReportBlocks(reports),
+        ),
+        now: await chainNow(client.provider),
+        auditor: auditor.address,
+        auditors: rotation.auditors,
+        auditedModels: models,
+      }).map((entry) => ({
+        model: entry.model, agentId: entry.agentId, waiting: entry.waiting, confirmer: entry.confirmer, mine: entry.mine,
+      }))
+    }
+    const waiting = (mine: boolean, confirmer: Wallet = absent) => [{
+      model, agentId: 1n, waiting: [{ verdict: 'DIFF', reports: 1, required: 2 }], confirmer: confirmer.address, mine,
     }]
 
     // Early in the epoch one auditor reports a DIFF. Its confirmer is the absent auditor.
@@ -644,15 +648,15 @@ test('a DIFF whose confirmer never reports is confirmed by another auditor from 
     assert.ok(reported.output.includes(`${model}: 0 recorded, 1 waiting for another auditor`), reported.output)
     assert.deepEqual(await client.agentStatus(1n), { verifiedCount: 0, diffCount: 0 }, 'one DIFF is only a report')
     assert.deepEqual(await pendingFor(absent), waiting(true))
-    assert.deepEqual(await pendingFor(fallback), waiting(false), 'before halfway the third auditor leaves it to the confirmer')
+    assert.deepEqual(await pendingFor(fallback), waiting(false), 'during the confirmer\'s turn the third auditor leaves it alone')
     assert.deepEqual(await pendingFor(reporter), waiting(false))
 
-    // Halfway through the epoch the confirmer still has not reported: the third auditor takes it.
-    await rpc(rpcUrl, 'evm_increaseTime', [EPOCH_DURATION / 2])
+    // The confirmer's 12 hours pass without an answer: the third auditor takes it.
+    await rpc(rpcUrl, 'evm_increaseTime', [CONFIRMATION_WINDOW_SECONDS])
     await rpc(rpcUrl, 'evm_mine', [])
-    assert.ok(await chainNow(client.provider) >= epochStartedAt + EPOCH_DURATION / 2)
-    assert.deepEqual(await pendingFor(fallback), waiting(true))
-    assert.deepEqual(await pendingFor(reporter), waiting(false), 'the reporter never confirms its own DIFF')
+    assert.deepEqual(await pendingFor(fallback), waiting(true, fallback))
+    assert.deepEqual(await pendingFor(absent), waiting(false, fallback), 'the absent auditor\'s turn is over')
+    assert.deepEqual(await pendingFor(reporter), waiting(false, fallback), 'the reporter never confirms its own DIFF')
 
     // It audits the seller itself, also finds DIFF, and the contract records the DIFF.
     await dirs.fallback.writeRun('fallback-confirm', [diff])
@@ -742,7 +746,7 @@ test('a model nobody took by three quarters goes to the second stand-in, and its
     // Halfway: the late auditor's model goes to the first stand-in, who does not take it.
     await rpc(rpcUrl, 'evm_increaseTime', [EPOCH_DURATION / 2])
     await rpc(rpcUrl, 'evm_mine', [])
-    const stageOne = [{ model: lateModel, assignedAuditor: late.address, standIn: first.address, stage: 1 }]
+    const stageOne = [{ model: lateModel, assignedAuditor: late.address, standIn: first.address, stage: 1, revoked: false }]
     assert.deepEqual(handoversShown(), [stageOne, stageOne, stageOne])
     assert.deepEqual(await handoversFor(second), [], 'the second stand-in waits')
 
@@ -751,7 +755,7 @@ test('a model nobody took by three quarters goes to the second stand-in, and its
     await rpc(rpcUrl, 'evm_mine', [])
     const now = await chainNow(client.provider)
     assert.ok(now >= epochStartedAt + EPOCH_DURATION * 0.75 && now < epochStartedAt + EPOCH_DURATION, `chain time ${now} is in the last quarter`)
-    const stageTwo = [{ model: lateModel, assignedAuditor: late.address, standIn: second.address, stage: 2 }]
+    const stageTwo = [{ model: lateModel, assignedAuditor: late.address, standIn: second.address, stage: 2, revoked: false }]
     assert.deepEqual(handoversShown(), [stageTwo, stageTwo, stageTwo])
     assert.deepEqual(await handoversFor(first), [], 'the first stand-in is no longer asked')
     assert.deepEqual(await handoversFor(second), stageTwo)
@@ -772,6 +776,88 @@ test('a model nobody took by three quarters goes to the second stand-in, and its
     assert.deepEqual(events.map((event) => event.auditor), [second.address, late.address])
     assert.deepEqual(handoversShown(), [[], [], []])
     assert.equal(await client.isVerified(1n), true)
+  } finally {
+    await stopProcess(anvil)
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('an all-UNDETERMINED audit does not end a model, and a revoked auditor is skipped at once', {
+  skip: !RUN_ANVIL_E2E,
+  timeout: 300_000,
+}, async () => {
+  requireCommand('anvil')
+  requireCommand('cast')
+  requireCommand('forge')
+
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-verifier-counting-audit-e2e-'))
+  const port = await availablePort()
+  const rpcUrl = `http://127.0.0.1:${port}`
+  const epochStartedAt = GENESIS + AUDIT_EPOCH * EPOCH_DURATION
+  const anvil = startAnvil(port, { timestamp: epochStartedAt - 120 })
+  try {
+    await waitForRpcReady(rpcUrl, anvil)
+    const wallets = [AUDITOR_PRIVATE_KEY, SECOND_AUDITOR_PRIVATE_KEY, UNAPPROVED_PRIVATE_KEY].map((key) => new Wallet(`0x${key}`))
+    const [working, throttled, revoked] = wallets as [Wallet, Wallet, Wallet]
+    const chain = deployAuditChain(rpcUrl, wallets, 1)
+    const models = ['claude-opus-5.5', 'gemini-4-argon', 'glm-5.3']
+    const rotation = { auditors: wallets.map((wallet) => wallet.address), epoch: AUDIT_EPOCH, availableModels: models }
+    const modelOf = (auditor: Wallet) => roundRobinAssignmentFor(auditor.address, rotation).models[0]!
+    const seller = randomWallet()
+    const audit = (model: string, verdict: FixtureAudit['verdict']): FixtureAudit => ({
+      agentId: '1', seller, model, service: model, verdict, reference: referenceFixture(model),
+    })
+    const dirs = {
+      working: await auditorDataDir(directory, 'working', working, chain.crypto, models),
+      throttled: await auditorDataDir(directory, 'throttled', throttled, chain.crypto, models),
+    }
+    const submit = (who: keyof typeof dirs, runId: string) => runCli(dirs[who].dataDir, dirs[who].configPath, rpcUrl, [
+      'submit', '--run-id', runId, '--no-publish-ipfs', '--yes', '--skip-version-check',
+    ])
+    interface AssignmentJson {
+      epochs: Array<{ handovers: Array<{ model: string; assignedAuditor: string; standIn: string; stage: number; revoked: boolean }> }>
+    }
+    const handoversShown = (who: keyof typeof dirs) => {
+      const result = runCli(dirs[who].dataDir, dirs[who].configPath, null, ['assignment', '--json'])
+      assert.equal(result.status, 0, result.output)
+      return (JSON.parse(result.stdout) as AssignmentJson).epochs[0]!.handovers
+    }
+    const byModel = (left: { model: string }, right: { model: string }) => left.model.localeCompare(right.model)
+    const client = new VerifierClient({ rpcUrl, contractAddress: chain.verificationAddress, evmChainId: 31_337, deploymentBlock: 0 })
+
+    // One auditor gets real answers. Another is throttled and learns nothing, which the contract still takes.
+    await rpc(rpcUrl, 'evm_increaseTime', [180])
+    await rpc(rpcUrl, 'evm_mine', [])
+    await dirs.working.writeRun('working-own', [audit(modelOf(working), 'SAME')])
+    await dirs.throttled.writeRun('throttled-own', [audit(modelOf(throttled), 'UNDETERMINED')])
+    assert.equal(submit('working', 'working-own').status, 0)
+    assert.equal(submit('throttled', 'throttled-own').status, 0)
+    const onChain = await client.queryModelAudits({ model: modelHash(modelOf(throttled)) }, 0)
+    assert.equal(onChain.length, 1, 'the all-UNDETERMINED audit is on-chain')
+    assert.deepEqual(handoversShown('working'), [], 'nothing moves before halfway while nobody is revoked')
+
+    // The third auditor is revoked before it audits: its model moves at once, to the only auditor with real answers.
+    castSend(rpcUrl, chain.verificationAddress, 'setAuditor(address,bool)', [revoked.address, 'false'])
+    await rpc(rpcUrl, 'evm_mine', [])
+    const atOnce = [{ model: modelOf(revoked), assignedAuditor: revoked.address, standIn: working.address, stage: 1, revoked: true }]
+    assert.ok(await chainNow(client.provider) < epochStartedAt + EPOCH_DURATION / 2)
+    assert.deepEqual(handoversShown('working'), atOnce)
+    assert.deepEqual(handoversShown('throttled'), atOnce, 'every auditor works out the same stand-in')
+
+    // Halfway: the model audited with nothing learned is handed over too, as if nobody had audited it.
+    await rpc(rpcUrl, 'evm_increaseTime', [EPOCH_DURATION / 2])
+    await rpc(rpcUrl, 'evm_mine', [])
+    const both = [
+      ...atOnce,
+      { model: modelOf(throttled), assignedAuditor: throttled.address, standIn: working.address, stage: 1, revoked: false },
+    ].sort(byModel)
+    assert.deepEqual(handoversShown('working'), both)
+    assert.deepEqual(handoversShown('throttled'), both)
+
+    // A real audit of that model ends its hand-over.
+    await dirs.working.writeRun('working-stand-in', [audit(modelOf(throttled), 'SAME')])
+    assert.equal(submit('working', 'working-stand-in').status, 0)
+    assert.deepEqual(handoversShown('working'), atOnce)
   } finally {
     await stopProcess(anvil)
     await rm(directory, { recursive: true, force: true })

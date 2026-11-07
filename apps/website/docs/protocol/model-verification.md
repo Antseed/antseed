@@ -103,11 +103,13 @@ recorded by the contract. Four things make that hold:
   reports stop counting. Every audit's evidence is on IPFS, so anyone can check what an
   auditor asked and what the seller answered.
 - **Nobody is waited for.** The contract takes any approved auditor's audit of any model,
-  so the assignment can't block anything. Halfway through the epoch, a DIFF whose
-  confirmer has not reported can be confirmed by any auditor who hasn't reported on it,
-  and a model whose auditor has not audited it goes to the next auditor in its rotation
-  that is active this epoch (from three quarters on, to the one after that). The stand-in
-  earns the audit's credit. Every auditor reads the time from the chain, so they all
+  so the assignment can't block anything. A seller gets at most two opinions per model
+  and epoch: if a DIFF's confirmer has not answered after 12 hours, the next auditor in
+  the rotation is asked instead, one at a time, and if two auditors disagree nobody else
+  is asked and the SAME stands. Halfway through the epoch, a model with no audit that
+  counts, meaning at least 20% of its sellers got a SAME or DIFF, goes to the next auditor in its rotation
+  that is active this epoch (from three quarters on, to the one after that). A revoked auditor is skipped at
+  once, for confirmations and stand-ins. The stand-in earns the audit's credit. Every auditor reads the time from the chain, so they all
   switch at the same moment. See [If an auditor goes missing](/docs/verify/audits#if-an-auditor-goes-missing).
 - **Nothing lasts without being rechecked.** A verdict counts for the epoch it was given in
   and the next one, so a seller stays verified only while auditors keep finding it so, and
