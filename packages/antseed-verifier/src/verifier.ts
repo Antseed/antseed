@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto'
 import type { AntseedVerifierPlugin, ClaimResult, VerifyContext, VerifyResult } from './antseed-node-types.js'
 import './caps/index.js' // side-effect: register the capability menu
 import { capabilityIds, getCapability } from './capability.js'
+import type { VerifyConfidentialSpaceTokenFn } from './confidential-space.js'
 import {
   NODE_TEE_CAP_ID,
   PROVIDER_TEE_CAP_ID,
@@ -97,6 +98,7 @@ function failAll(detail: string, requiredCaps: string[]): VerifyResult {
 export async function runVerify(
   ctx: VerifyContext,
   verifyQuote: VerifyQuoteFn = defaultVerifyQuote,
+  verifyConfidentialSpaceToken?: VerifyConfidentialSpaceTokenFn,
 ): Promise<VerifyResult> {
   const requiredCaps = readRequiredCaps()
   let peerId: string
@@ -138,7 +140,7 @@ export async function runVerify(
   const parsedByCap = new Map<string, ParsedTdxQuote>()
   for (const id of TDX_CAP_IDS) {
     const ev = evidence[id]
-    if (ev) parsedByCap.set(id, await verifyTdxEvidence(ev, verifyQuote, now))
+    if (ev) parsedByCap.set(id, await verifyTdxEvidence(ev, verifyQuote, now, verifyConfidentialSpaceToken))
   }
 
   // Verify the required caps, any cap the seller returned evidence for, and derived caps.

@@ -5,6 +5,7 @@ export {
   ANTSEED_WILDCARD_TOPIC,
   capabilityTopic,
   peerTopic,
+  sellerTopics,
   subnetTopic,
   subnetOf,
   SUBNET_COUNT,
