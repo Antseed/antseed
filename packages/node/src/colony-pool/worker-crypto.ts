@@ -295,16 +295,24 @@ function responseAad(seq: number, end: boolean): string {
   return `${INFO}|resp|${seq}${end ? '|end' : ''}`;
 }
 
+/** How long a buyer's signed request stays valid; workers serve each one at most once within it. */
+export const WORKER_REQUEST_TTL_SECONDS = 600;
+
 /**
- * Hash the buyer signs to bind a request to its channel and the ordered set
- * of workers it is encrypted for:
- * keccak256(INFO ‖ worker₁ ‖ … ‖ workerₙ ‖ channel ‖ keccak256(ct)).
+ * Hash the buyer signs to bind a request to its channel, its expiry and the
+ * ordered set of workers it is encrypted for:
+ * keccak256(INFO ‖ worker₁ ‖ … ‖ workerₙ ‖ channel ‖ uint64 exp ‖ keccak256(ct)).
  */
-export function requestBindingHash(workers: string | readonly string[], channel: string, ciphertext: Uint8Array): string {
+export function requestBindingHash(
+  workers: string | readonly string[],
+  channel: string,
+  expires: number,
+  ciphertext: Uint8Array,
+): string {
   const list = typeof workers === 'string' ? [workers] : workers;
   return keccak256(solidityPacked(
-    ['string', ...list.map(() => 'address'), 'bytes32', 'bytes32'],
-    [INFO, ...list, channel, keccak256(ciphertext)],
+    ['string', ...list.map(() => 'address'), 'bytes32', 'uint64', 'bytes32'],
+    [INFO, ...list, channel, expires, keccak256(ciphertext)],
   ));
 }
 
@@ -325,6 +333,8 @@ export interface RequestEnvelope {
   ct: string;
   buyer?: string;
   channel?: string;
+  /** Unix seconds after which workers refuse the request. */
+  exp?: number;
   sig?: string;
 }
 
@@ -347,6 +357,8 @@ export interface UsageLike {
 export interface BuyerBinding {
   address: string;
   channel?: string;
+  /** Unix seconds; defaults to WORKER_REQUEST_TTL_SECONDS from now. */
+  expires?: number;
   signMessage(message: Uint8Array): string | Promise<string>;
 }
 
@@ -413,9 +425,11 @@ export async function sealRequest(opts: SealRequestOptions): Promise<SealedReque
   const envelope: RequestEnvelope = { v: WORKER_E2E_VERSION, recipients, ct: ct.toString('base64') };
   if (opts.buyer) {
     const channel = opts.buyer.channel ?? ZERO_CHANNEL;
+    const expires = opts.buyer.expires ?? Math.floor(Date.now() / 1000) + WORKER_REQUEST_TTL_SECONDS;
     envelope.buyer = getAddress(opts.buyer.address);
     envelope.channel = channel;
-    envelope.sig = await opts.buyer.signMessage(getBytes(requestBindingHash(workers, channel, ct)));
+    envelope.exp = expires;
+    envelope.sig = await opts.buyer.signMessage(getBytes(requestBindingHash(workers, channel, expires, ct)));
   }
   const outer: Record<string, unknown> = { model };
   if (typeof parsed['stream'] === 'boolean') outer['stream'] = parsed['stream'];
@@ -439,6 +453,9 @@ export interface OpenedRequest {
   /** Set when the buyer signed the binding and the signature recovers to it. */
   buyer: string | null;
   channel: string | null;
+  /** The signed expiry (unix seconds) and binding hash, set with `buyer`. */
+  expires: number | null;
+  binding: string | null;
   sealer: ResponseSealer;
 }
 
@@ -485,12 +502,17 @@ export function openRequest(body: Uint8Array, workerAddress: string, workerKey: 
 
   let buyer: string | null = null;
   let channel: string | null = null;
-  if (envelope.buyer && envelope.sig && envelope.channel) {
+  let expires: number | null = null;
+  let binding: string | null = null;
+  if (envelope.buyer && envelope.sig && envelope.channel && Number.isSafeInteger(envelope.exp) && envelope.exp! >= 0) {
     try {
-      const recovered = verifyMessage(getBytes(requestBindingHash(workers, envelope.channel, ct)), envelope.sig);
+      const hash = requestBindingHash(workers, envelope.channel, envelope.exp!, ct);
+      const recovered = verifyMessage(getBytes(hash), envelope.sig);
       if (recovered.toLowerCase() === envelope.buyer.toLowerCase()) {
         buyer = getAddress(envelope.buyer);
         channel = envelope.channel;
+        expires = envelope.exp!;
+        binding = hash;
       }
     } catch {
       // Unsigned or forged binding: treated as an unbound (health check) request.
@@ -502,6 +524,8 @@ export function openRequest(body: Uint8Array, workerAddress: string, workerKey: 
     recipients: workers.map((w) => getAddress(w)),
     buyer,
     channel,
+    expires,
+    binding,
     sealer: new ResponseSealer(keys.responseKey, getAddress(workerAddress)),
   };
 }

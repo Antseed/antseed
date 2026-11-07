@@ -63,6 +63,9 @@ enum WorkerE2E {
         /// Set when the buyer signed the binding and it verifies.
         let buyer: String?
         let channel: String?
+        /// The signed expiry (unix seconds) and binding hash, set with `buyer`.
+        let expires: UInt64?
+        let binding: Data?
         let sealer: ResponseSealer
     }
 
@@ -122,10 +125,13 @@ enum WorkerE2E {
 
         var buyer: String?
         var channel: String?
+        var expires: UInt64?
+        var signedBinding: Data?
         if let claimed = envelope["buyer"] as? String, let channelHex = envelope["channel"] as? String,
            let sigHex = envelope["sig"] as? String, let sig = try? Data(hexString: sigHex),
-           let channelBytes = try? Data(hexString: channelHex) {
-            // keccak256(info ‖ worker₁ ‖ … ‖ workerₙ ‖ channel ‖ keccak256(ct))
+           let channelBytes = try? Data(hexString: channelHex),
+           let exp = envelope["exp"] as? Int, exp >= 0 {
+            // keccak256(info ‖ worker₁ ‖ … ‖ workerₙ ‖ channel ‖ uint64 exp ‖ keccak256(ct))
             var preimage = Array(info.utf8)
             var addressesOK = true
             for worker in workers {
@@ -133,16 +139,19 @@ enum WorkerE2E {
                 preimage += Array(bytes)
             }
             if addressesOK {
-                let binding = keccak256(preimage + Array(channelBytes) + keccak256(ct))
+                let expBytes = (0..<8).reversed().map { UInt8(truncatingIfNeeded: UInt64(exp) >> ($0 * 8)) }
+                let binding = keccak256(preimage + Array(channelBytes) + expBytes + keccak256(ct))
                 if let recovered = try? recoverAddress(digest: personalMessageDigest(binding), signature: sig),
                    recovered.lowercased() == claimed.lowercased() {
                     buyer = claimed
                     channel = channelHex
+                    expires = UInt64(exp)
+                    signedBinding = Data(binding)
                 }
             }
         }
         return OpenedRequest(body: plaintext, model: model, recipients: workers, buyer: buyer, channel: channel,
-                             sealer: ResponseSealer(key: responseKey, worker: workerAddress))
+                             expires: expires, binding: signedBinding, sealer: ResponseSealer(key: responseKey, worker: workerAddress))
     }
 }
 

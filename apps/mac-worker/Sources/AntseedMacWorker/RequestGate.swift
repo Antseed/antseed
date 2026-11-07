@@ -31,11 +31,15 @@ final class RequestGate {
     static let checkPromptTokens = 2048
     static let checkMaxTokens = 16
     static let checksPerHour = 240
+    /// A buyer request's signed expiry may be at most this far ahead (the buyer's 600 s, plus clock skew).
+    static let maxRequestLifetime: TimeInterval = 660
 
     let maxConcurrency: Int
     let checksPerHour: Int
     private(set) var active: Set<String> = []
     private var checkTimes: [Date] = []
+    /// Served buyer requests: binding hash → signed expiry, kept until then so a replay is refused.
+    private var served: [Data: Date] = [:]
 
     init(maxConcurrency: Int = RequestGate.maxConcurrency, checksPerHour: Int = RequestGate.checksPerHour) {
         self.maxConcurrency = maxConcurrency
@@ -53,6 +57,17 @@ final class RequestGate {
 
     func release(_ id: String) {
         active.remove(id)
+    }
+
+    /// Admit a buyer's signed request once, before its expiry, so the pool can't
+    /// replay it under another request ID. nil when admitted, else why not.
+    func claimOnce(binding: Data, expires: Date, now: Date = Date()) -> String? {
+        guard expires >= now else { return "Request has expired" }
+        guard expires.timeIntervalSince(now) <= Self.maxRequestLifetime else { return "Request expiry is too far ahead" }
+        guard served[binding] == nil else { return "Request was already served" }
+        served = served.filter { $0.value >= now }
+        served[binding] = expires
+        return nil
     }
 
     /// Decide what a decrypted request may do. `buyer`/`channel` are its signed

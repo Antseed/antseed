@@ -27,20 +27,24 @@ final class InteropTests: XCTestCase {
     }
 
     func testOpensARequestSealedByTheBuyerAndVerifiesItsBinding() throws {
-        let body = #"{"model":"qwen2.5-0.5b","stream":true,"antseed_e2e":{"v":2,"recipients":[{"worker":"0x70997970C51812dc3A010C7d01b50e0d17dc79C8","epk":"BEJ6FfiCTUbQ1tNZayY9qLI2oOypahN5p+gbWn3PY0FwLL5lvc6IMJP8DIDY8cFVr4h4tCLwpNsBnI4QWXVzx/4=","wk":"LC4x1AdUvXAwLWeM1QMcZ6iu6TBZrlTKRY2XaHg8THDijg0ogMcp8/xMLkek8c+t"}],"ct":"YGHsula2cpuACCaWH6diX6OgUw+VNntKc8GiJZOqfoB5t2oMWXUiVPmzBKwMMiP/6RYfcVWx8M2dDncr9MWX4N6qshrRvETvpWOd9NpNHl12yonRpjH4vaWSc5icQnFcs3EW8lT77CsKNdg/","buyer":"0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC","channel":"0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd","sig":"0xa20cc8774678595dd1ef6e9253cf08347fd43236cccc173796a4e02964c3e52d01c8e27aa0a476b81c5f11912ee6e3de66400911c43940dd41f9b6a8c1737a151b"}}"#
+        let body = #"{"model":"qwen2.5-0.5b","stream":true,"antseed_e2e":{"v":2,"recipients":[{"worker":"0x70997970C51812dc3A010C7d01b50e0d17dc79C8","epk":"BAjVyDkO+qJaxnFq8NrU9fzcrwBBghT0B+xUnO2k8/6AlQntkf9juqLuER6WTbYdaF1r4mhrEkjsnEh//tIkTw4=","wk":"aSQvlJxD3As1Kihan5e1jIsCui6Y+jht4CNljFzEhUTuEmMga8TB6AGrBTx9E/NB"}],"ct":"Fp+XkPpBMxyZGCDFAfz6c/yp0koRM1ggtfrx6i0ln6VC1Zp+faN3SiCztEUQfnl8juVcbk6zmF33rNUxlnI4Bv+mHm6GqzGTPZq+hnTGOacD6VGVcR4nyyzO7kpPigV7WqLWLiNpJuXrljkn","buyer":"0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC","channel":"0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd","exp":2000000000,"sig":"0xa9532a7fc6c26d595a96b0af4ab7bb43074697f81e1fd4144f7c3c7cac612de60c9b697792c438f13ec43e6391f33b3067881aaaf90b5cc513178cee997ead5d1c"}}"#
         let worker = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
         let key = try P256.KeyAgreement.PrivateKey(rawRepresentation: try Data(hexString: "c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721"))
         let opened = try WorkerE2E.openRequest(Data(body.utf8), workerAddress: worker, key: key)
         XCTAssertEqual(opened.model, "qwen2.5-0.5b")
         XCTAssertTrue(String(decoding: opened.body, as: UTF8.self).contains("hi from node"))
         XCTAssertEqual(opened.buyer?.lowercased(), "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc")
+        XCTAssertEqual(opened.expires, 2_000_000_000)
+        // The signature covers the expiry: a changed one leaves the request unbound.
+        let extended = body.replacingOccurrences(of: #""exp":2000000000"#, with: #""exp":2000000001"#)
+        XCTAssertNil(try WorkerE2E.openRequest(Data(extended.utf8), workerAddress: worker, key: key).buyer)
         XCTAssertThrowsError(try WorkerE2E.openRequest(Data(body.utf8), workerAddress: "0x0000000000000000000000000000000000000001", key: key))
         XCTAssertThrowsError(try WorkerE2E.openRequest(Data(body.utf8), workerAddress: worker, key: P256.KeyAgreement.PrivateKey()))
     }
 
     func testEachRecipientOpensARequestSealedForTwoWorkers() throws {
         // sealRequest({ recipients: [w1, w2], buyer }) in @antseed/node/worker-e2e.
-        let body = Data(#"{"model":"qwen2.5-0.5b","stream":true,"antseed_e2e":{"v":2,"recipients":[{"worker":"0x70997970C51812dc3A010C7d01b50e0d17dc79C8","epk":"BBHw6KisVYhQZr+Rcvfj2WOz6RQUZTxLIROfhsngn0KUCWkDlGIGb1YZqZhePkDJ0p1DQMR0x+Ac7gJLaXWWbQY=","wk":"Ltx3DttS1XStQIvtw7JJSIc2EImCifVV19epdD/OycesFHKcaoKpIkLhyFMai1fk"},{"worker":"0x90F79bf6EB2c4f870365E785982E1f101E93b906","epk":"BDk4pUTVcbiTY/QT1z0pNuHH2HTC5OPdJNwTtwZFvgyeYBZ8CwBwfUcLNIZ5zLlC1vx6QU0lPYlZr/m2XZsdJWY=","wk":"H7znnVjHwxSPpxqSyiOyBF/J0NwkRL368HLztubBVh3ydl+BUYyN+2zj4sm3Byzo"}],"ct":"gzhs4+nkyaG7DyM/ROpptc8859wJqQPAkbwwhGMzEmNe0z2V55rCvC6BEfKfL4lYobF4FlJoEDUMaeiJwLNe/J2mmSJVDCee2v1Itsfz0ZLv1Fmwhwn4NrtN3L8dWPN6uOnNNyYZ3PzyLLmM","buyer":"0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC","channel":"0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd","sig":"0xb59c375127adbcf05018e1aad5f606128cba11f0947594bf70f4b5a7cccb81595c0ba5b8d5a23ec2b18fc1e73391ca3dbeb18ed36c28449ddf032a1f7e5257821b"}}"#.utf8)
+        let body = Data(#"{"model":"qwen2.5-0.5b","stream":true,"antseed_e2e":{"v":2,"recipients":[{"worker":"0x70997970C51812dc3A010C7d01b50e0d17dc79C8","epk":"BPKSzhiPbWneXPKRQczUNF513h5WtZxEIZ9zoSMwjbzcKpdo2hZnMEVEbtXelJCumsKZ23QJV3L3fO9fhf7KR6o=","wk":"zer10Fm6CtUH+6LqyXp49321jex5esI0+g4at4VH2+uQfZXcjjIdrFZaqu8GZJxW"},{"worker":"0x90F79bf6EB2c4f870365E785982E1f101E93b906","epk":"BL8SXqnX9HuRKo2n50vqLfUCfh0q+r4tZp3VVkXudlShoeHd77CEhlzlTwBtGqJ2NOa2e6CN5naySwK3VN9F7uQ=","wk":"D0d6pilMutSPbPsGObfnP9Ui1c0T/vay8QFmrA4EFmmNUsnHo5aXkvwxyRpy2P1j"}],"ct":"UUdfO2v/5ZvI4b+p8ZtnC9Jfs4uwRi4Gk446hfLUTVs3uIVWlxILHVO7pZ1Ous7YmxXFPVSJbho4BLPu4/sutA6c/NWAmlmJ4DlORncgcKp2f9j4H2bw7SQt6s/9UGKOoSR1Gd6vtrR8PEQd","buyer":"0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC","channel":"0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd","exp":2000000000,"sig":"0xda2bc80102a16b71751eefab271c249f20f8ab283080729eb237eb83a354fb5304c75391e40bd24b76efad30ffb4a8448fa003b9a1a0d1267d0989b660aa7b921b"}}"#.utf8)
         let w1 = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
         let w2 = "0x90F79bf6EB2c4f870365E785982E1f101E93b906"
         let k1 = try P256.KeyAgreement.PrivateKey(rawRepresentation: try Data(hexString: "c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721"))

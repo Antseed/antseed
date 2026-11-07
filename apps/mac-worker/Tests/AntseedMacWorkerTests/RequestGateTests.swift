@@ -87,6 +87,16 @@ final class RequestGateTests: XCTestCase {
         XCTAssertEqual(huge, .check(maxTokens: RequestGate.checkMaxTokens))
     }
 
+    func testServesABuyerRequestOnceBeforeItExpires() {
+        let gate = RequestGate()
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let binding = Data(repeating: 0xab, count: 32)
+        XCTAssertNil(gate.claimOnce(binding: binding, expires: now.addingTimeInterval(600), now: now))
+        XCTAssertEqual(gate.claimOnce(binding: binding, expires: now.addingTimeInterval(600), now: now), "Request was already served")
+        XCTAssertEqual(gate.claimOnce(binding: Data(repeating: 1, count: 32), expires: now.addingTimeInterval(-1), now: now), "Request has expired")
+        XCTAssertEqual(gate.claimOnce(binding: Data(repeating: 2, count: 32), expires: now.addingTimeInterval(86_400), now: now), "Request expiry is too far ahead")
+    }
+
     func testPoolSilenceTriggersReconnect() {
         let start = Date(timeIntervalSince1970: 1_000)
         var liveness = PoolLiveness(now: start)

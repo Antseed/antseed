@@ -376,6 +376,10 @@ final class WorkerController: ObservableObject {
         let requestedMax = requested?["max_tokens"] as? Int ?? requested?["max_completion_tokens"] as? Int ?? 512
         switch await gate.admit(buyer: opened.buyer, channel: opened.channel, bodyBytes: size, requestedMaxTokens: requestedMax, check: check) {
         case .full:
+            if let binding = opened.binding, let expires = opened.expires,
+               let refused = gate.claimOnce(binding: binding, expires: Date(timeIntervalSince1970: TimeInterval(expires))) {
+                return fail(id, refused)
+            }
             maxTokens = max(1, requestedMax)
         case .check(let limit):
             maxTokens = limit
@@ -484,10 +488,11 @@ final class WorkerController: ObservableObject {
     func refreshPayout() {
         guard let rpc = config.rpcURL, let pool = poolSeller else { return }
         Task {
-            guard let word = try? await Chain(rpcURL: rpc, timeout: 10).ethCall(to: pool, data: Chain.selector("payoutOf(address)") + Data(repeating: 0, count: 12) + (try Data(hexString: address))),
-                  word.count == 32 else { return }
-            let recorded = word.suffix(20)
-            payout = recorded.allSatisfy({ $0 == 0 }) ? nil : Data(recorded).prefixedHex
+            do {
+                payout = try await Chain(rpcURL: rpc, timeout: 10).payoutOf(worker: address, pool: pool)
+            } catch {
+                return
+            }
             if let link = pendingLink,
                link.payout.lowercased() == payout?.lowercased() || link.deadline <= UInt64(Date().timeIntervalSince1970) {
                 setPendingLink(nil)
@@ -530,8 +535,7 @@ final class WorkerController: ObservableObject {
         do {
             let chain = Chain(rpcURL: rpc, timeout: 10)
             let chainId = try await chain.chainId()
-            let nonceWord = try await chain.ethCall(to: pool, data: Chain.selector("payoutNonce(address)") + Data(repeating: 0, count: 12) + (try Data(hexString: address)))
-            let nonce = nonceWord.suffix(8).reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
+            let nonce = try await chain.payoutNonce(worker: address, pool: pool)
             let deadline = UInt64(Date().timeIntervalSince1970) + 7 * 24 * 3600
             let digest = PayoutAuthorization.digest(chainId: chainId, pool: pool, worker: address, payout: wallet, nonce: nonce, deadline: deadline)
             let signature = try keys.ethereum.sign(digest: personalMessageDigest(digest))

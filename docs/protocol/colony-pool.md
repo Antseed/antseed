@@ -110,6 +110,7 @@ replaces the request body with:
     "ct": "<base64 ChaCha20-Poly1305 ciphertext of the original JSON body>",
     "buyer": "0x…",
     "channel": "0x…",
+    "exp": <unix seconds>,
     "sig": "0x…"
   }
 }
@@ -142,8 +143,9 @@ and opens `ct`. It rejects the request unless it is named in `recipients`
 adding a recipient makes the request fail to open).
 
 `sig` is the buyer's EIP-191 signature over
-`keccak256("antseed-worker-e2e/v2" ‖ worker₁ ‖ … ‖ workerₙ ‖ channel ‖ keccak256(ct))`
-(addresses as 20 bytes in envelope order, `channel` as 32 bytes). It proves the
+`keccak256("antseed-worker-e2e/v2" ‖ worker₁ ‖ … ‖ workerₙ ‖ channel ‖ exp ‖ keccak256(ct))`
+(addresses as 20 bytes in envelope order, `channel` as 32 bytes, `exp` as a
+big-endian uint64; buyers set it 10 minutes ahead). It proves the
 request came from a buyer of this pool, for exactly this set of workers, so an
 operator cannot feed a worker requests of its own and relay the results to a
 buyer under a different key. A worker that checks the chain verifies that
@@ -213,6 +215,10 @@ seal under its response key.
   treated as the pool's own check: its decrypted body is limited to 8 KiB (and
   2,048 prompt tokens in the Mac app), `max_tokens` is capped at 16 and checks
   are rate limited per hour, so a pool cannot buy real work with them.
+- A worker serves each signed buyer request once: it remembers the binding
+  hash until `exp` and refuses a repeat ("Request was already served"), so a
+  pool cannot replay a buyer's request under another dispatch ID. It refuses an
+  expired request, and one whose `exp` is more than 11 minutes ahead.
 - A worker runs at most the `maxConcurrency` it announces, counting requests
   still waiting on a channel check, and refuses extras ("Worker is at
   capacity"). A request cancelled or disconnected while it waits never starts.

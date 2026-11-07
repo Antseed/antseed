@@ -181,6 +181,31 @@ describe('worker lifecycle', () => {
     expect(upstream.bodies).toHaveLength(1);
   });
 
+  it('serves a buyer\'s signed request once, whatever dispatch ID the pool sends it under, and never after it expires', async () => {
+    upstream = await startUpstream((_body, res) => answer(res));
+    start();
+    await waitFor(() => fakePool.frames.some((f) => f['t'] === 'hello'));
+    const body = enc({ model: SERVICE, messages: [{ role: 'user', content: 'hi' }] });
+    const target = { worker: worker!.address, workerKey: workerKeyHex(key.publicKey) };
+    const seal = (expires?: number) => sealRequest({ body, ...target, buyer: { address: buyer.address, channel: CHANNEL, expires, signMessage: (m) => buyer.signMessage(m) } });
+    const send = (id: string, sealed: { body: Uint8Array }) => fakePool.send({ t: 'request', id, method: 'POST', path: '/v1/chat/completions', headers: {}, body: encodeBody(sealed.body) });
+    const once = await seal();
+    send('r1', once);
+    await waitFor(() => fakePool.ended('r1'));
+    send('r2', once);
+    await waitFor(() => fakePool.errorFor('r2') !== undefined);
+    expect(fakePool.errorFor('r2')).toMatch(/already served/);
+    const now = Math.floor(Date.now() / 1000);
+    send('r3', await seal(now - 1));
+    await waitFor(() => fakePool.errorFor('r3') !== undefined);
+    expect(fakePool.errorFor('r3')).toMatch(/expired/);
+    // An expiry far ahead would make the worker remember it for that long.
+    send('r4', await seal(now + 24 * 60 * 60));
+    await waitFor(() => fakePool.errorFor('r4') !== undefined);
+    expect(fakePool.errorFor('r4')).toMatch(/too far ahead/);
+    expect(upstream.bodies).toHaveLength(1);
+  });
+
   it('drops a request cancelled while its channel check is pending, before it reaches the model', async () => {
     upstream = await startUpstream((_body, res) => answer(res));
     let settle: (verdict: boolean) => void = () => {};

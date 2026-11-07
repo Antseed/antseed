@@ -227,7 +227,11 @@ export class BuyerRequestHandler {
     // routed to, not by whether this client can encrypt: an ordinary provider
     // may offer the same model, but a pool must never see a prompt in the clear.
     const workerService = !options?.controlPlane ? routedService : undefined;
-    const needsWorkerE2E = Boolean(workerService) && peerServiceUsesWorkerE2E(peer, { explicitProvider, routedProvider: billingRoute?.provider });
+    // A route that fell back to a provider not offering the service is no proof plaintext is safe.
+    const offeringProvider = billingRoute && providerOffersService(peer, billingRoute.provider, billingRoute.service)
+      ? billingRoute.provider
+      : null;
+    const needsWorkerE2E = Boolean(workerService) && peerServiceUsesWorkerE2E(peer, { explicitProvider, routedProvider: offeringProvider });
     if (needsWorkerE2E && !this._deps.workerE2E) {
       throw buyerFault(
         `Service "${workerService}" on ${peer.peerId.slice(0, 12)}... is served by a colony pool, which needs worker encryption this client does not support`,

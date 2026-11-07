@@ -165,7 +165,12 @@ const plugin: AntseedProviderPlugin = {
       provider.setWorkerShareBps(bps);
     };
     // Pool (and with it the MDM webhook) before the ledger it writes to.
-    const stop = (): Promise<void> => (stopped ??= (clearInterval(shareTimer), pool.stop().finally(() => ledger.close())));
+    const stop = (): Promise<void> => {
+      if (stopped) return stopped;
+      clearInterval(shareTimer);
+      stopped = pool.stop().finally(() => ledger.close());
+      return stopped;
+    };
     return Object.assign(provider, {
       async init(): Promise<void> {
         try {

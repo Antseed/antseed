@@ -3,6 +3,7 @@ import WebSocket from 'ws';
 import {
   isSealedRequest,
   openRequest,
+  WORKER_REQUEST_TTL_SECONDS,
   workerKeyCertificateMessage,
   workerKeyHex,
   type WorkerAttestation,
@@ -38,6 +39,8 @@ const DEFAULT_POOL_SILENCE_MS = 45_000;
 const VERIFIED_CHANNEL_TTL_MS = 60_000;
 /** AntseedChannels.ChannelStatus.Active. */
 const CHANNEL_ACTIVE = 1;
+/** Clock skew allowed on a buyer request's signed expiry. */
+const EXPIRY_SKEW_S = 60;
 /** A pool check's decrypted body may be at most this big, so it cannot buy prompt processing either. */
 const MAX_CHECK_BODY_BYTES = 8 * 1024;
 /** Sealed bytes per response-chunk frame: base64 keeps it well under the pool's 16 MiB WebSocket frame limit. */
@@ -152,6 +155,8 @@ export class PoolWorker {
   private readonly refusedChannels = new Set<string>();
   /** Pending: one lookup per `channel|buyer`, shared by the requests waiting on it. */
   private readonly verifying = new Map<string, Promise<boolean | null>>();
+  /** Served buyer requests: binding hash → its signed expiry, kept until then so a replay is refused. */
+  private readonly served = new Map<string, number>();
 
   constructor(opts: PoolWorkerOptions) {
     this.opts = opts;
@@ -352,6 +357,16 @@ export class PoolWorker {
     }
   }
 
+  /** Admit a buyer's signed request once, before its expiry; the pool can't replay it under another dispatch ID. */
+  private claimOnce(binding: string, expires: number): void {
+    const now = Math.floor(Date.now() / 1000);
+    if (expires < now) throw new Error('Request has expired');
+    if (expires > now + WORKER_REQUEST_TTL_SECONDS + EXPIRY_SKEW_S) throw new Error('Request expiry is too far ahead');
+    if (this.served.has(binding)) throw new Error('Request was already served');
+    for (const [key, until] of this.served) if (until < now) this.served.delete(key);
+    this.served.set(binding, expires);
+  }
+
   /**
    * Serve one request on the connection it arrived on. Its slot is taken
    * before any waiting (channel check, model), so the pool can never run
@@ -399,6 +414,7 @@ export class PoolWorker {
       if (verdict === UNVERIFIABLE) throw new Error('This worker has no channel verifier, so it refuses buyer requests; start it with an RPC endpoint');
       if (verdict === false) throw new Error('Request channel does not belong to a buyer of this pool');
       if (verdict === null) throw new Error('Request channel is not on-chain yet; retry shortly');
+      this.claimOnce(opened.binding!, opened.expires!);
     } else {
       // No buyer binding: a pool check. Keep it small so it cannot buy real work, prompt processing included.
       if (opened.body.length > MAX_CHECK_BODY_BYTES) throw new Error(`Check requests are limited to ${MAX_CHECK_BODY_BYTES} bytes`);

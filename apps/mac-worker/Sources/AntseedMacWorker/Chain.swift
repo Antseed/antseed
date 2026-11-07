@@ -1,7 +1,8 @@
 import Foundation
 
 /// Minimal JSON-RPC reads: checking that a request's channel belongs to a
-/// buyer of this pool, and the chain id the payout authorization is bound to.
+/// buyer of this pool, the chain id the payout authorization is bound to, and
+/// the pool's payout records.
 struct Chain {
     let rpcURL: URL
     /// Per-request deadline; nil keeps URLSession's default.
@@ -50,6 +51,24 @@ struct Chain {
     func channelBelongs(channel: String, buyer: String, pool: String, channels: String) async throws -> Bool? {
         let result = try await ethCall(to: channels, data: Self.selector("channels(bytes32)") + (try Data(hexString: channel)))
         return Self.channelVerdict(result, buyer: buyer, pool: pool)
+    }
+
+    /// The payout wallet the pool records for `worker`; nil when none. Throws on a malformed answer.
+    func payoutOf(worker: String, pool: String) async throws -> String? {
+        let word = try await ethCall(to: pool, data: Self.selector("payoutOf(address)") + Self.addressWord(worker))
+        guard word.count == 32 else { throw Failure.rpc("Malformed payoutOf answer") }
+        let address = word.suffix(20)
+        return address.allSatisfy { $0 == 0 } ? nil : Data(address).prefixedHex
+    }
+
+    /// The nonce the next payout authorization for `worker` must carry.
+    func payoutNonce(worker: String, pool: String) async throws -> UInt64 {
+        let word = try await ethCall(to: pool, data: Self.selector("payoutNonce(address)") + Self.addressWord(worker))
+        return word.suffix(8).reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
+    }
+
+    private static func addressWord(_ address: String) throws -> Data {
+        Data(repeating: 0, count: 12) + (try Data(hexString: address))
     }
 
     /// AntseedChannels.ChannelStatus.Active.

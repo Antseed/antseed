@@ -459,7 +459,14 @@ describe('buyer requests to colony pools', () => {
     const noHook = fakePool({ noHook: true });
     await expect(noHook.handler.sendRequest(mixedPeer, naming('y3', 'openai', 'qwen'))).rejects.toThrow(/needs worker encryption/);
     await expect(noHook.handler.sendRequest(mixedPeer, naming('y4', 'unknown', 'llama'))).rejects.toThrow(/needs worker encryption/);
+    // Unnamed, a model no provider announces falls back to the ordinary provider listed first, which is no proof it is safe.
+    await expect(noHook.handler.sendRequest(mixedPeer, chatRequest('y6', false, 'unlisted'))).rejects.toThrow(/needs worker encryption/);
     expect(noHook.wire).toHaveLength(0);
+    const unlisted = fakePool();
+    await unlisted.handler.sendRequest(mixedPeer, chatRequest('y7', false, 'unlisted'));
+    expect(unlisted.wire.some((req) => dec(req.body).includes(PROMPT))).toBe(false);
+    expect(unlisted.wire[0]!.path).toBe(WORKER_ASSIGN_PATH);
+    expect(unlisted.wire[0]!.headers['x-antseed-provider']).toBeUndefined();
 
     // A padded ordinary model name is resolved trimmed, as the seller does, and stays plaintext.
     const padded = fakePool({ noHook: true });
