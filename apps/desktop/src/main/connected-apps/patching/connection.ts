@@ -20,6 +20,7 @@ import { isMultiInstanceDevelopment } from '../../dev-instance.js';
 import type { RuntimeMode } from '../../runtime/process-manager.js';
 import { DEFAULT_LOCAL_GATEWAY_PORT } from '../../runtime/process-manager.js';
 import { getGatewayEndpoint, type GatewayEndpoint } from '../../gateway/service.js';
+import { oncePerGatewayKey } from './once-per-key.js';
 import { fetchGatewayModelEntries, toGatewayModel, type GatewayModel } from '../../gateway/models.js';
 import { recommendAppModels, toChatModels, type ChatModel } from '../../chat/gateway-model.js';
 import { getGatewaySettings } from '../../gateway/settings.js';
@@ -176,11 +177,13 @@ async function restartApps(profileNames: string[]): Promise<void> {
 }
 
 /** Patches one app; throws on failure. */
-async function patchApp(name: string, models: AppModels): Promise<void> {
+async function patchApp(name: string, modelsFor: (endpoint: GatewayEndpoint) => Promise<AppModels>): Promise<void> {
   const profile = findConnectableProfile(name);
   if (!profile?.configPatch) throw new Error(`Unknown app: ${name}`);
   const endpoint = await getGatewayEndpoint({ name, label: profile.label });
-  // The await above may have spanned the start of quit.
+  // Per-app keys can have their own policy, so the list must be the one this key sees.
+  const models = await modelsFor(endpoint);
+  // The awaits above may have spanned the start of quit.
   if (shuttingDown) throw new Error('Antseed Desktop is closing');
   try {
     writeConfigPatch(profile.configPatch, patchTarget(endpoint, models), connectedAppsWslTargetsPath());
@@ -204,9 +207,9 @@ async function syncRelays(): Promise<void> {
   await syncWslRelays(targets.map((target) => target.host), DEFAULT_LOCAL_GATEWAY_PORT, log);
 }
 
-async function textModels(): Promise<AppModels> {
+async function textModels(endpoint: GatewayEndpoint): Promise<AppModels> {
   try {
-    const entries = await fetchGatewayModelEntries(await getGatewayEndpoint());
+    const entries = await fetchGatewayModelEntries(endpoint);
     const models = entries.map(toGatewayModel).filter((model) => model.type === null || model.type === 'text');
     return { models, recommended: recommendAppModels(toChatModels(entries)) };
   } catch (err) {
@@ -221,11 +224,11 @@ async function textModels(): Promise<AppModels> {
  * wired, so the click that asked for it sees the error.
  */
 async function applyPatches(names: string[], adding: string[] = []): Promise<void> {
-  const models = await textModels();
+  const modelsFor = oncePerGatewayKey(textModels);
   let addError: Error | null = null;
   for (const name of names) {
     try {
-      await patchApp(name, models);
+      await patchApp(name, modelsFor);
       delete errors[name];
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

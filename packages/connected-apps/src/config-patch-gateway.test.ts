@@ -534,6 +534,26 @@ test('a model the user picks elsewhere while connected is not overwritten on dis
   });
 });
 
+test('pi and GooeyPi: reconnecting the one left after the other disconnects keeps the saved selection', async () => {
+  await withDir(async (dir) => {
+    const models = path.join(dir, 'models.json');
+    const settings = path.join(dir, 'settings.json');
+    const pi: ConfigPatchDef = { format: 'pi', configPath: models, settingsPath: settings, providerKey: 'antseed', baseURL: 'http://localhost:{buyerPort}/v1', api: 'openai-completions' };
+    const gooeypi: ConfigPatchDef = { ...pi, providerKey: 'antseed-gooeypi' };
+    await writeFile(settings, JSON.stringify({ defaultProvider: 'mine', defaultModel: 'my-model' }), 'utf8');
+
+    writeConfigPatch(pi, LOCAL);
+    writeConfigPatch(gooeypi, LOCAL);
+    removeConfigPatch(gooeypi);
+    writeConfigPatch(pi, LOCAL);
+    removeConfigPatch(pi);
+
+    const after = await readJson(settings);
+    assert.equal(after['defaultProvider'], 'mine');
+    assert.equal(after['defaultModel'], 'my-model');
+  });
+});
+
 test('pi and GooeyPi share the selection: it returns once both are gone, in either order', async () => {
   for (const order of [['pi', 'gooeypi'], ['gooeypi', 'pi']]) {
     await withDir(async (dir) => {

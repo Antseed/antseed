@@ -1,0 +1,221 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createInitialUiState } from '../../core/state';
+import { initChatModule } from './controller';
+
+type Handler = (data: never) => void;
+type Conv = { id: string; title: string; service: string; messages: unknown[]; createdAt: number; updatedAt: number; usage: { inputTokens: number; outputTokens: number }; workspacePath?: string };
+
+const tick = (ms = 5) => new Promise((resolve) => setTimeout(resolve, ms));
+async function waitFor(predicate: () => boolean): Promise<void> {
+  for (let i = 0; i < 200 && !predicate(); i++) await tick(2);
+  expect(predicate()).toBe(true);
+}
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => { resolve = res; });
+  return { promise, resolve };
+}
+const model = (id: string) => ({ id, label: id, type: 'text', protocol: 'openai-chat-completions', supportsImages: false, sellers: 1, free: false, minImageUsd: null, freeSellerId: null, freeForStakers: false, tee: false, toolUse: true, reasoning: false, inputUsdPerMillion: null, outputUsdPerMillion: null });
+const conv = (id: string, service: string, workspacePath?: string): Conv => ({ id, title: id, service, messages: [], createdAt: 1, updatedAt: 1, usage: { inputTokens: 0, outputTokens: 0 }, ...(workspacePath ? { workspacePath } : {}) });
+
+function setup(conversations: Conv[] = [conv('conv-a', 'model-a'), conv('conv-b', 'model-b')], overrides: Record<string, unknown> = {}) {
+  const uiState = createInitialUiState();
+  uiState.chatModels = [model('model-a'), model('model-b')] as never;
+  uiState.chatSelectedModelId = 'model-a';
+  const sends: Array<{ convId: string; content: string; modelId: string }> = [];
+  const handlers: Record<string, Handler[]> = {};
+  const on = (name: string) => (handler: Handler) => { (handlers[name] ??= []).push(handler); return () => undefined; };
+  const bridge = {
+    chatAiListConversations: async () => ({ ok: true, data: [...conversations] }),
+    chatAiGetConversation: async (id: string) => {
+      const found = conversations.find((candidate) => candidate.id === id);
+      return found ? { ok: true, data: { ...found, messages: [...found.messages] } } : { ok: false, error: 'not found' };
+    },
+    chatAiCreateConversation: async (service: string) => {
+      const created = conv(`conv-${conversations.length + 1}`, service);
+      conversations.push(created);
+      return { ok: true, data: created };
+    },
+    chatAiSetModel: async () => ({ ok: true }),
+    chatPrepareAttachments: async () => ({ ok: true, data: [] }),
+    chatAiSendStream: async (convId: string, content: string, modelId: string) => {
+      sends.push({ convId, content, modelId });
+      return { ok: true };
+    },
+    onChatAiStreamStart: on('start'),
+    onChatAiStreamBlockStart: on('blockStart'),
+    onChatAiStreamDelta: on('delta'),
+    onChatAiStreamDone: on('done'),
+    onChatAiStreamError: on('error'),
+    ...overrides,
+  };
+  const api = initChatModule({ bridge: bridge as never, uiState, appendSystemLog: () => undefined });
+  const emit = (name: string, data: unknown) => { for (const handler of handlers[name] ?? []) handler(data as never); };
+  return { api, uiState, sends, emit };
+}
+
+describe('chat controller', () => {
+  beforeEach(() => {
+    vi.stubGlobal('window', { localStorage: { getItem: () => null, setItem: () => undefined }, setInterval: globalThis.setInterval, clearInterval: globalThis.clearInterval });
+    vi.stubGlobal('document', { querySelector: () => null });
+    vi.stubGlobal('requestAnimationFrame', (callback: () => void) => setTimeout(callback, 0));
+  });
+
+  it('removes a deleted conversation from the list before the deletion settles', async () => {
+    const deletion = deferred<{ ok: boolean }>();
+    const { api, uiState } = setup(undefined, { chatAiDeleteConversation: () => deletion.promise });
+    await api.refreshChatConversations();
+    const deleting = api.deleteConversation('conv-b');
+    expect((uiState.chatConversations as Conv[]).map((c) => c.id)).toEqual(['conv-a']);
+    deletion.resolve({ ok: true });
+    await deleting;
+  });
+
+  it('clears the sending state of an aborted chat before the abort settles', async () => {
+    const abort = deferred<void>();
+    const { api, uiState } = setup(undefined, { chatAiAbort: () => abort.promise });
+    await api.refreshChatConversations();
+    await api.openConversation('conv-a');
+    api.sendMessage('hello');
+    await waitFor(() => uiState.chatSending);
+    const aborting = api.abortChat();
+    expect(uiState.chatSending).toBe(false);
+    expect(uiState.chatSendingConversationIds).toEqual([]);
+    expect(uiState.chatAbortVisible).toBe(false);
+    abort.resolve();
+    await aborting;
+  });
+
+  it('sends a queued message to the chat it was written in, on that chat\'s model', async () => {
+    // The send only answers once its stream has ended.
+    const streamEnded = deferred<{ ok: boolean }>();
+    const sends: Array<{ convId: string; content: string; modelId: string }> = [];
+    const { api, uiState, emit } = setup(undefined, {
+      chatAiSendStream: (convId: string, content: string, modelId: string) => {
+        sends.push({ convId, content, modelId });
+        return streamEnded.promise;
+      },
+    });
+    await api.refreshChatConversations();
+    await api.openConversation('conv-b');
+    api.sendMessageToConversation('conv-a', 'queued for a');
+    await waitFor(() => sends.length === 1);
+    expect(sends[0]).toEqual({ convId: 'conv-a', content: 'queued for a', modelId: 'model-a' });
+    expect(uiState.chatActiveConversation).toBe('conv-b');
+    expect(uiState.chatSendingConversationIds).toEqual(['conv-a']);
+    emit('done', { conversationId: 'conv-a' });
+    streamEnded.resolve({ ok: true });
+    await waitFor(() => uiState.chatSendingConversationIds.length === 0);
+  });
+
+  it('creates a draft on the model it was written with, and stays on a new chat started meanwhile', async () => {
+    const created = conv('conv-new', 'model-a');
+    const conversations = [conv('conv-a', 'model-a'), conv('conv-b', 'model-b')];
+    const creation = deferred<{ ok: boolean; data: Conv }>();
+    const { api, uiState, sends } = setup(conversations, {
+      chatAiCreateConversation: async () => {
+        const answer = await creation.promise;
+        conversations.push(created);
+        return answer;
+      },
+    });
+    await api.refreshChatConversations();
+    api.sendMessage('first message');
+    await tick();
+    api.startNewChat();
+    uiState.chatSelectedModelId = 'model-b';
+    creation.resolve({ ok: true, data: created });
+    await waitFor(() => sends.length === 1);
+    expect(sends[0]).toEqual({ convId: 'conv-new', content: 'first message', modelId: 'model-a' });
+    expect(uiState.chatActiveConversation).toBeNull();
+  });
+
+  it('waits for a model change to be saved, then sends on the new model', async () => {
+    const saved = deferred<{ ok: boolean }>();
+    const { api, sends } = setup(undefined, { chatAiSetModel: () => saved.promise });
+    await api.refreshChatConversations();
+    await api.openConversation('conv-a');
+    api.selectChatModel('model-b');
+    api.sendMessage('on the new model');
+    await tick(20);
+    expect(sends).toEqual([]);
+    saved.resolve({ ok: true });
+    await waitFor(() => sends.length === 1);
+    expect(sends[0]).toEqual({ convId: 'conv-a', content: 'on the new model', modelId: 'model-b' });
+  });
+
+  it('keeps what already streamed when the stream fails, shows the error and does not resend', async () => {
+    const { api, uiState, sends, emit } = setup();
+    await api.refreshChatConversations();
+    await api.openConversation('conv-a');
+    api.sendMessage('hello');
+    await waitFor(() => sends.length === 1);
+    emit('start', { conversationId: 'conv-a', turn: 0 });
+    emit('blockStart', { conversationId: 'conv-a', index: 0, blockType: 'text' });
+    emit('delta', { conversationId: 'conv-a', index: 0, blockType: 'text', text: 'Partial answer' });
+    emit('error', { conversationId: 'conv-a', error: 'Connection lost', stopReason: { kind: 'network_error', message: 'Connection lost' } });
+    await tick();
+    expect(uiState.chatError).toBe('Connection lost');
+    expect(JSON.stringify(uiState.chatMessages[uiState.chatMessages.length - 1])).toContain('Partial answer');
+    expect(uiState.chatSending).toBe(false);
+    expect(sends).toHaveLength(1);
+  });
+
+  it('shows no error for an aborted stream', async () => {
+    const { api, uiState, sends, emit } = setup();
+    await api.refreshChatConversations();
+    await api.openConversation('conv-a');
+    api.sendMessage('hello');
+    await waitFor(() => sends.length === 1);
+    emit('error', { conversationId: 'conv-a', error: 'Request aborted', stopReason: { kind: 'aborted', message: 'Request aborted' } });
+    expect(uiState.chatError).toBeNull();
+    expect(uiState.chatSending).toBe(false);
+  });
+
+  it('clears a stream error when switching chats, and it does not come back', async () => {
+    const { api, uiState, emit } = setup();
+    await api.refreshChatConversations();
+    await api.openConversation('conv-a');
+    emit('error', { conversationId: 'conv-a', error: 'Upstream refused', stopReason: { kind: 'http_error', message: 'Upstream refused', statusCode: 500 } });
+    expect(uiState.chatError).toBe('Upstream refused');
+    await api.openConversation('conv-b');
+    expect(uiState.chatError).toBeNull();
+    await api.openConversation('conv-a');
+    expect(uiState.chatError).toBeNull();
+  });
+
+  it('restores each chat\'s workspace, and leaves it alone when it already matches', async () => {
+    const setWorkspace: string[] = [];
+    const { api, uiState } = setup([conv('conv-a', 'model-a', '/project-a'), conv('conv-b', 'model-b', '/project-b')], {
+      chatAiSetWorkspace: async (path: string) => { setWorkspace.push(path); return { ok: true, data: { current: path, default: '/default' } }; },
+    });
+    await api.refreshChatConversations();
+    await api.openConversation('conv-a');
+    await waitFor(() => uiState.chatWorkspacePath === '/project-a');
+    await api.openConversation('conv-b');
+    await waitFor(() => uiState.chatWorkspacePath === '/project-b');
+    setWorkspace.length = 0;
+    await api.openConversation('conv-b');
+    await tick(20);
+    expect(setWorkspace).toEqual([]);
+  });
+
+  it('ends on the latest chat\'s workspace after rapid switches', async () => {
+    const answers: Array<() => void> = [];
+    const { api, uiState } = setup([conv('conv-a', 'model-a', '/project-a'), conv('conv-b', 'model-b', '/project-b')], {
+      chatAiSetWorkspace: (path: string) => new Promise((resolve) => {
+        answers.push(() => resolve({ ok: true, data: { current: path, default: '/default' } }));
+      }),
+    });
+    await api.refreshChatConversations();
+    await api.openConversation('conv-a');
+    await waitFor(() => answers.length === 1);
+    await api.openConversation('conv-b');
+    await waitFor(() => answers.length === 2);
+    answers[1]!();
+    await tick();
+    answers[0]!();
+    await tick(20);
+    expect(uiState.chatWorkspacePath).toBe('/project-b');
+  });
+});

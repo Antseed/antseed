@@ -615,12 +615,9 @@ function removeFromStringArray(config: JsonObject, key: string, value: string): 
 }
 
 /**
- * Point the tool's config at the buyer proxy. The config exposes a single
- * model — the ROUTED_MODEL_ALIAS — which the buyer resolves per request to
- * the route currently selected in Antseed Desktop. Concrete
- * `<peerId>@<service>` entries are no longer written: the only place to pick
- * a model is the desktop route selector, so route changes reach running tool
- * sessions without a config rewrite.
+ * Validates the peer ID, then delegates to `writeConfigPatch`.
+ *
+ * See `writeConfigPatch` for gateway-target and legacy buyer-port behavior.
  */
 export function applyConfigPatch(patch: ConfigPatchDef, peerId: string, target: ConfigPatchTarget | number, wslTargetsFile?: string): void {
   if (!isBuyerProxyRoutablePeerId(peerId)) {
@@ -1519,7 +1516,10 @@ function applyPiProviderToFiles(modelsPath: string, settingsPath: string, patch:
   const selected = pickModel(t, settings['defaultProvider'] === patch.providerKey ? settings['defaultModel'] : undefined);
   if (selected) {
     if (!isAntseedPiProvider(settings['defaultProvider'])) {
-      rememberSelection(settingsPath, pickKeys(settings, ['defaultProvider', 'defaultModel']));
+      // Nothing selected means the other Antseed app just disconnected and left
+      // the selection saved for the last one to restore.
+      const selection = pickKeys(settings, ['defaultProvider', 'defaultModel']);
+      if (Object.keys(selection).length > 0) rememberSelection(settingsPath, selection);
     }
     settings['defaultProvider'] = patch.providerKey;
     settings['defaultModel'] = selected;

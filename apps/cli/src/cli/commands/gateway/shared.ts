@@ -11,7 +11,7 @@ import { loadConfig } from '../../../config/loader.js'
 import { portInUse } from '../../../gateway/bundle.js'
 import { loadOrCreateControlSecret, runningGatewayBuyerPort } from '../../../gateway/buyer-control.js'
 import { probeBuyerPolicySupport } from '../../../gateway/buyer-policy-probe.js'
-import { GatewayBuyer, watchAttachedBuyer } from '../../../gateway/buyer-process.js'
+import { GatewayBuyer, superviseAttachedBuyer } from '../../../gateway/buyer-process.js'
 import { defaultBuyerClient, type BuyerClient } from '../../../gateway/console-api/handlers/network-buyer.js'
 import { ConsoleError } from '../../../gateway/console-api/router.js'
 import { CLI_ACTOR, PolicyProblemError, type Actor, type ServiceContext } from '../../../gateway/services/context.js'
@@ -297,7 +297,7 @@ export async function startGatewayBuyer(
   globalOptions: { dataDir: string; config: string; verbose: boolean },
   log: (message: string) => void,
 ): Promise<GatewayBuyer | null> {
-  const superviseBuyer = (): GatewayBuyer => {
+  const startBuyer = (): GatewayBuyer => {
     const buyer = new GatewayBuyer({
       buyerPort,
       dataDir: globalOptions.dataDir,
@@ -306,24 +306,25 @@ export async function startGatewayBuyer(
       onLog: log,
     })
     buyer.start()
-    // Shutdown runs last-registered first, so the gateway stops before its buyer.
-    setupShutdownHandler(() => buyer.stop())
     return buyer
   }
   if (await portInUse(buyerPort)) {
     log(`using the buyer already running on port ${buyerPort}`)
-    const stopWatching = watchAttachedBuyer({
+    // Shutdown runs last-registered first, and the gateway registers after this
+    // returns, so it stops before any buyer started here.
+    setupShutdownHandler(superviseAttachedBuyer({
       isRunning: () => portInUse(buyerPort),
-      takeOver: () => {
+      start: () => {
         log(`the buyer on port ${buyerPort} is gone; starting one`)
-        superviseBuyer()
+        return startBuyer()
       },
-    })
-    setupShutdownHandler(async () => { stopWatching() })
+    }))
     return null
   }
   log(`starting a buyer on port ${buyerPort} (run your own with --no-buyer)`)
-  const buyer = superviseBuyer()
+  const buyer = startBuyer()
+  // Shutdown runs last-registered first, so the gateway stops before its buyer.
+  setupShutdownHandler(() => buyer.stop())
   // Serve once the buyer answers the gateway, so the first requests do not
   // fail; a slow start (a long peer lookup) only delays the gateway so long.
   const probe = { buyerPort, secret: loadOrCreateControlSecret(globalOptions.dataDir) }

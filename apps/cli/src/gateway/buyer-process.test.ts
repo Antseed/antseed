@@ -8,7 +8,7 @@ import { test } from 'node:test'
 import type { ChildProcess } from 'node:child_process'
 import { FileIdentityStore } from '@antseed/node'
 import { BUYER_RESTART_EXIT_CODE, BUYER_SHUTDOWN_DEADLINE_MS } from '../proxy/buyer-proxy.js'
-import { BUYER_STOP_TIMEOUT_MS, GatewayBuyer, spawnCliBuyer, watchAttachedBuyer } from './buyer-process.js'
+import { BUYER_STOP_TIMEOUT_MS, GatewayBuyer, spawnCliBuyer, superviseAttachedBuyer, watchAttachedBuyer } from './buyer-process.js'
 
 class FakeChild extends EventEmitter {
   stdout = new PassThrough()
@@ -164,4 +164,34 @@ test('watchAttachedBuyer stops when asked', async () => {
   stop()
   await new Promise((resolve) => setTimeout(resolve, 20))
   assert.equal(tookOver, false)
+})
+
+test('superviseAttachedBuyer stops the buyer it took over with', async () => {
+  let stops = 0
+  let started: () => void = () => undefined
+  const running = new Promise<void>((resolve) => { started = resolve })
+  const stop = superviseAttachedBuyer({
+    isRunning: async () => false,
+    start: () => { started(); return { stop: async () => { stops += 1 } } },
+    checkMs: 1,
+  })
+  await running
+  await stop()
+  assert.equal(stops, 1)
+})
+
+test('superviseAttachedBuyer starts nothing once shutdown has begun', async () => {
+  let starts = 0
+  let answer: (running: boolean) => void = () => undefined
+  const stop = superviseAttachedBuyer({
+    // Still waiting on the check when shutdown begins.
+    isRunning: () => new Promise((resolve) => { answer = resolve }),
+    start: () => { starts += 1; return { stop: async () => undefined } },
+    checkMs: 1,
+  })
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  await stop()
+  answer(false)
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.equal(starts, 0)
 })

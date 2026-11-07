@@ -148,3 +148,30 @@ export function watchAttachedBuyer(options: {
     if (timer) clearTimeout(timer)
   }
 }
+
+/**
+ * Uses a buyer that is already running, starting one if it goes away. The
+ * returned callback ends the watch and stops whichever buyer was started, so a
+ * single shutdown callback covers a takeover at any point, including during
+ * shutdown itself.
+ */
+export function superviseAttachedBuyer(options: {
+  isRunning: () => Promise<boolean>
+  start: () => { stop: () => Promise<void> }
+  checkMs?: number
+}): () => Promise<void> {
+  let buyer: { stop: () => Promise<void> } | null = null
+  let stopped = false
+  const stopWatching = watchAttachedBuyer({
+    isRunning: options.isRunning,
+    takeOver: () => {
+      if (!stopped) buyer = options.start()
+    },
+    ...(options.checkMs !== undefined ? { checkMs: options.checkMs } : {}),
+  })
+  return async () => {
+    stopped = true
+    stopWatching()
+    await buyer?.stop()
+  }
+}
