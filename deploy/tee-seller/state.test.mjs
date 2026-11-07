@@ -4,7 +4,7 @@ import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it, beforeEach, afterEach } from 'node:test'
-import { STATE_FILES, StateConflictError, StateFileSync, gcsObject, seal, snapshot, stateKey, stateSyncs, unseal } from './state.mjs'
+import { STATE_FILES, StateConflictError, StateFileSync, StateLease, gcsObject, seal, snapshot, stateKey, stateSyncs, unseal } from './state.mjs'
 
 const Database = createRequire(new URL('../../packages/node/package.json', import.meta.url))('better-sqlite3')
 const LOCATION = 'gs://seller-state/tee/payments/sessions.db'
@@ -30,17 +30,31 @@ function sellerDataDir() {
   return { dir, sessions, metering }
 }
 
-/** An in-memory Cloud Storage object with generation preconditions. */
+/**
+ * An in-memory Cloud Storage object with generation preconditions (0 while it doesn't exist).
+ * `lostAnswers` makes that many writes land but fail as if their answer was lost.
+ */
 function memoryStore() {
-  const store = { object: null, generation: 0, writes: 0 }
+  let latest = 0
+  const store = { object: null, generation: 0, writes: 0, lostAnswers: 0 }
   return Object.assign(store, {
     async read() { return store.object ? { data: store.object, generation: String(store.generation) } : null },
     async write(data, ifGenerationMatch) {
-      if (String(store.generation) !== ifGenerationMatch) throw new StateConflictError('written by another seller instance')
+      if (String(store.generation) !== ifGenerationMatch) throw new StateConflictError('changed since this seller last wrote it')
       store.object = data
-      store.generation += 1
+      latest = Math.max(latest, store.generation) + 1
+      store.generation = latest
       store.writes += 1
+      if (store.lostAnswers > 0) {
+        store.lostAnswers -= 1
+        throw new Error('connection reset')
+      }
       return String(store.generation)
+    },
+    async remove(ifGenerationMatch) {
+      if (String(store.generation) !== ifGenerationMatch) return
+      store.object = null
+      store.generation = 0
     },
   })
 }
@@ -158,6 +172,19 @@ describe('seller state snapshots', () => {
     assert.equal(calls, 1)
   })
 
+  it('carries on after a save that landed with its answer lost', async () => {
+    const store = memoryStore()
+    const sync = new StateFileSync({ file: PAYMENTS, store, key: KEY, location: LOCATION, dataDir: seller.dir, Database })
+    await sync.restore()
+    store.lostAnswers = 1
+    await assert.rejects(sync.save(), /connection reset/)
+    seller.sessions.exec("UPDATE payment_channels SET latest_buyer_sig = '0xlater'")
+    // The next save finds its own earlier snapshot there, not another instance's, and saves over it.
+    assert.equal(await sync.save(), true)
+    assert.equal(store.writes, 2)
+    assert.equal(sync.generation, String(store.generation))
+  })
+
   it('keeps each database in its own object under the prefix', () => {
     const syncs = stateSyncs({ bucket: 'seller-state', prefix: 'tee' }, async () => 'tok', '11'.repeat(32), seller.dir, Database)
     assert.deepEqual(syncs.map((s) => s.location), ['gs://seller-state/tee/payments/sessions.db', 'gs://seller-state/tee/metering.db'])
@@ -198,5 +225,52 @@ describe('gcsObject', () => {
     const fetchImpl = async () => new Response('The specified bucket does not exist.', { status: 404 })
     const object = gcsObject({ bucket: 'mistyped', object: 'tee/metering.db' }, async () => 'tok', fetchImpl)
     await assert.rejects(object.read(), /bucket listing answered HTTP 404/)
+  })
+})
+
+describe('state lease', () => {
+  const clock = () => {
+    let time = 1_000_000
+    return { now: () => time, sleep: async (ms) => { time += ms } }
+  }
+
+  it('lets one instance in at a time: the next waits for a release or for expiry', async () => {
+    const store = memoryStore()
+    const time = clock()
+    const first = new StateLease({ store, holder: 'vm-a', ttlMs: 120_000, ...time })
+    await first.acquire()
+    const second = new StateLease({ store, holder: 'vm-b', ttlMs: 120_000, ...time })
+    const waits = []
+    const started = time.now()
+    await second.acquire({ onWait: (lease) => waits.push(lease.holder) })
+    // vm-a never renewed, so vm-b got in only once its lease expired.
+    assert.ok(time.now() - started >= 120_000)
+    assert.equal(waits[0], 'vm-a')
+    await assert.rejects(first.renew(), StateConflictError)
+    await second.release()
+    const third = new StateLease({ store, holder: 'vm-c', ...time })
+    const before = time.now()
+    await third.acquire()
+    assert.equal(time.now(), before)
+  })
+
+  it('takes its own lease back at once after a restart on the same VM', async () => {
+    const store = memoryStore()
+    const time = clock()
+    await new StateLease({ store, holder: 'vm-a', ...time }).acquire()
+    const restarted = new StateLease({ store, holder: 'vm-a', ...time })
+    const before = time.now()
+    await restarted.acquire()
+    assert.equal(time.now(), before)
+  })
+
+  it('keeps its lease after a renewal that landed with its answer lost', async () => {
+    const store = memoryStore()
+    const lease = new StateLease({ store, holder: 'vm-a', ...clock() })
+    await lease.acquire()
+    store.lostAnswers = 1
+    await assert.rejects(lease.renew(), /connection reset/)
+    await lease.renew()
+    assert.equal(lease.generation, String(store.generation))
   })
 })

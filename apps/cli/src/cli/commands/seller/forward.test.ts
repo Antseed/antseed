@@ -1,14 +1,7 @@
 import assert from 'node:assert/strict'
 import net, { createServer } from 'node:net'
 import test from 'node:test'
-import { ANTSEED_WILDCARD_TOPIC, peerTopic, subnetOf, subnetTopic } from '@antseed/node/discovery'
-import { parseTlsTarget, sellerTopics, startTlsForwarder } from './forward.js'
-
-const PEER = 'ab'.repeat(20)
-
-test('announces the topics a seller announces itself', () => {
-  assert.deepEqual(sellerTopics(PEER), [subnetTopic(subnetOf(PEER)), ANTSEED_WILDCARD_TOPIC, peerTopic(PEER)])
-})
+import { parseTlsTarget, startTlsForwarder } from './forward.js'
 
 test('parses the gateway address, defaulting to port 443', () => {
   assert.deepEqual(parseTlsTarget('app-6882.dstack-prod5.phala.network'), { host: 'app-6882.dstack-prod5.phala.network', port: 443 })

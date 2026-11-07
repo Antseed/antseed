@@ -6,7 +6,7 @@
 //
 // Only payment and metering state leaves the TEE. The seller runs in content-free mode, so these
 // databases hold no prompts or answers, nor upstream error text about a request (e2e/tests/seller-content-leak.test.ts).
-import { createCipheriv, createDecipheriv, createHash, hkdfSync, randomBytes } from 'node:crypto'
+import { createCipheriv, createDecipheriv, createHash, hkdfSync, randomBytes, randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -127,11 +127,96 @@ export function gcsObject({ bucket, object }, accessToken, fetchImpl = fetch) {
         body: data,
         redirect: 'error',
       })
-      if (res.status === 412) throw new StateConflictError(`gs://${bucket}/${object} was written by another seller instance`)
+      if (res.status === 412) throw new StateConflictError(`gs://${bucket}/${object} changed since this seller last wrote it`)
       if (!res.ok) throw new Error(`writing gs://${bucket}/${object}: HTTP ${res.status} ${(await res.text()).slice(0, 300)}`)
       return String((await res.json()).generation)
     },
+    async remove(ifGenerationMatch) {
+      const res = await fetchImpl(`https://storage.googleapis.com/storage/v1/b/${bucket}/o/${name}?ifGenerationMatch=${ifGenerationMatch}`, {
+        method: 'DELETE',
+        headers: { authorization: `Bearer ${await accessToken()}` },
+        redirect: 'error',
+      })
+      if (!res.ok && res.status !== 404 && res.status !== 412) throw new Error(`removing gs://${bucket}/${object}: HTTP ${res.status}`)
+    },
   }
+}
+
+const sha256 = (data) => createHash('sha256').update(data).digest('hex')
+
+/**
+ * One seller instance at a time. An instance holds the lease (`<prefix>/lease`) before it restores
+ * state or serves, renews it while it runs and releases it when it stops. Another instance with
+ * this identity (a replacement VM, a duplicate deployment) waits until the lease is released or
+ * expires, so two instances never take payments against the same restored state. The holder stops
+ * serving if it can't renew well before expiry (see launch.mjs).
+ */
+export class StateLease {
+  constructor({ store, holder, ttlMs = 120_000, now = Date.now, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) }) {
+    Object.assign(this, { store, holder, ttlMs, now, sleep })
+    this.generation = '0'
+  }
+
+  async _read() {
+    const found = await this.store.read()
+    if (!found) return { generation: '0', lease: null }
+    try {
+      const lease = JSON.parse(found.data.toString('utf8'))
+      return { generation: found.generation, lease: typeof lease?.holder === 'string' && Number.isFinite(lease?.expiresAt) ? lease : null }
+    } catch {
+      return { generation: found.generation, lease: null }
+    }
+  }
+
+  async _write(ifGenerationMatch) {
+    const body = Buffer.from(JSON.stringify({ holder: this.holder, expiresAt: this.now() + this.ttlMs }))
+    this.generation = await this.store.write(body, ifGenerationMatch)
+  }
+
+  /** Wait until the lease is free, expired or already this holder's, then take it. `onWait(lease)` reports each wait. */
+  async acquire({ onWait } = {}) {
+    for (;;) {
+      const { generation, lease } = await this._read()
+      if (!lease || lease.holder === this.holder || lease.expiresAt <= this.now()) {
+        try {
+          return await this._write(generation)
+        } catch (err) {
+          if (!(err instanceof StateConflictError)) throw err
+          continue // another instance took it first: look again
+        }
+      }
+      onWait?.(lease)
+      await this.sleep(Math.min(Math.max(lease.expiresAt - this.now(), 1000), 10_000))
+    }
+  }
+
+  /** Extend the lease. Throws StateConflictError if another instance holds it now. */
+  async renew() {
+    try {
+      await this._write(this.generation)
+    } catch (err) {
+      if (!(err instanceof StateConflictError)) throw err
+      // A renewal whose answer was lost may have landed: still this holder's lease, carry on from it.
+      const { generation, lease } = await this._read()
+      if (lease?.holder !== this.holder) throw err
+      await this._write(generation)
+    }
+  }
+
+  /** Let the next instance in at once instead of after expiry. */
+  async release() {
+    await this.store.remove(this.generation)
+  }
+}
+
+/** This data dir's lease holder id, kept so a container restarted on the same VM takes its lease back at once. */
+export function leaseHolder(dataDir) {
+  const path = join(dataDir, 'state-lease-holder')
+  if (existsSync(path)) return readFileSync(path, 'utf8').trim()
+  const holder = randomUUID()
+  mkdirSync(dataDir, { recursive: true })
+  writeFileSync(path, holder)
+  return holder
 }
 
 /** Restores one state database on boot, then saves it whenever it changed. */
@@ -140,6 +225,8 @@ export class StateFileSync {
     Object.assign(this, { file, store, key, location, dataDir, Database })
     this.generation = '0'
     this.savedHash = ''
+    // Hashes of snapshots sent since the last confirmed write: one may have landed with its answer lost.
+    this.unconfirmed = new Set()
     this.saving = null
   }
 
@@ -195,13 +282,46 @@ export class StateFileSync {
   async _save() {
     const data = await snapshot(this.dataDir, this.file, this.Database)
     if (!data) return false
-    const hash = createHash('sha256').update(data).digest('hex')
+    const hash = sha256(data)
     if (hash === this.savedHash) return false
-    this.generation = await this.store.write(seal(this.key, data, this.location), this.generation)
-    writeFileSync(this.generationPath, this.generation)
-    this.savedHash = hash
+    try {
+      await this._write(data, hash)
+    } catch (err) {
+      // If the object holds a snapshot this seller sent but never heard back about, carry on from it
+      // rather than taking it for another instance's write.
+      if (!(err instanceof StateConflictError) || !(await this._adoptOwnWrite())) throw err
+      await this._write(data, hash)
+    }
     return true
   }
+
+  async _write(data, hash) {
+    this.unconfirmed.add(hash)
+    this.generation = await this.store.write(seal(this.key, data, this.location), this.generation)
+    this.unconfirmed.clear()
+    writeFileSync(this.generationPath, this.generation)
+    this.savedHash = hash
+  }
+
+  async _adoptOwnWrite() {
+    const found = await this.store.read()
+    if (!found) return false
+    let data
+    try {
+      data = unseal(this.key, found.data, this.location)
+    } catch {
+      return false
+    }
+    if (!this.unconfirmed.has(sha256(data))) return false
+    this.generation = found.generation
+    writeFileSync(this.generationPath, found.generation)
+    return true
+  }
+}
+
+/** The lease on a seller's state, at `<prefix>/lease`. */
+export function stateLease({ bucket, prefix }, accessToken, holder, fetchImpl = fetch) {
+  return new StateLease({ store: gcsObject({ bucket, object: `${prefix}/lease` }, accessToken, fetchImpl), holder })
 }
 
 /** A sync per state file, each stored at `<prefix>/<file name>` in the operator's bucket. */

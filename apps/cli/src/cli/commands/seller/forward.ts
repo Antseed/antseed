@@ -3,15 +3,7 @@ import chalk from 'chalk'
 import net from 'node:net'
 import tls from 'node:tls'
 import { toPeerId } from '@antseed/node'
-import {
-  ANTSEED_WILDCARD_TOPIC,
-  DEFAULT_DHT_CONFIG,
-  DHTNode,
-  peerTopic,
-  subnetOf,
-  subnetTopic,
-  topicToInfoHash,
-} from '@antseed/node/discovery'
+import { DEFAULT_DHT_CONFIG, DHTNode, sellerTopics, topicToInfoHash } from '@antseed/node/discovery'
 
 /**
  * A public entry point for a seller that has no reachable IP of its own, such as a TEE seller on
@@ -24,11 +16,6 @@ import {
  * (bound by the seller's TEE attestation) end to end through it, so it only sees ciphertext.
  * The seller sets `seller.publicAddress` to this forwarder's address.
  */
-
-/** The DHT topics a seller announces (see PeerAnnouncer): its subnet, the wildcard and its peer topic. */
-export function sellerTopics(peerId: string): string[] {
-  return [subnetTopic(subnetOf(peerId)), ANTSEED_WILDCARD_TOPIC, peerTopic(peerId)]
-}
 
 export interface TlsTarget {
   host: string

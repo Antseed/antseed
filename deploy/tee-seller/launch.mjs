@@ -16,7 +16,7 @@ import { spawn } from 'node:child_process'
 import { existsSync, writeFileSync } from 'node:fs'
 import { request } from 'node:http'
 import { createRequire } from 'node:module'
-import { StateConflictError, stateSyncs } from './state.mjs'
+import { StateConflictError, leaseHolder, stateLease, stateSyncs } from './state.mjs'
 
 const PLUGINS = '/home/nonroot/.antseed/plugins/node_modules'
 const CLI = `${PLUGINS}/@antseed/cli/dist/cli/index.js`
@@ -82,8 +82,14 @@ async function loadSecrets(secrets, accessToken) {
   }
 }
 
+// The lease is renewed this often, and a seller that has gone this long without renewing it stops
+// serving, well before its 2 minute expiry lets another instance in.
+const LEASE_RENEW_MS = 20_000
+const LEASE_FENCE_MS = 60_000
+
 let configPath = '/etc/antseed/config.json'
 let state = []
+let lease = null
 try {
   if (existsSync(CS_SOCKET)) {
     process.env.ANTSEED_VERIFIER_NODE_TEE = 'confidential-space'
@@ -101,6 +107,11 @@ try {
     if (!location) fail('set ANTSEED_GCP_STATE to the gs://<bucket>/<prefix> that keeps the seller\'s state across restarts')
     if (!accessToken) fail('ANTSEED_GCP_STATE needs the workload identity provider in ANTSEED_GCP_SECRETS "audience"')
     if (!process.env.ANTSEED_IDENTITY_HEX) fail('ANTSEED_GCP_STATE needs the seller identity (ANTSEED_IDENTITY_HEX) from Secret Manager')
+    // Only one instance with this identity restores and serves at a time.
+    lease = stateLease(location, accessToken, leaseHolder(DATA_DIR))
+    await lease.acquire({
+      onWait: (held) => console.log(`[tee-seller] another seller instance holds ${process.env.ANTSEED_GCP_STATE}/lease until ${new Date(held.expiresAt).toISOString()}; waiting`),
+    })
     const Database = createRequire(`${PLUGINS}/@antseed/node/package.json`)('better-sqlite3')
     state = stateSyncs(location, accessToken, process.env.ANTSEED_IDENTITY_HEX, DATA_DIR, Database)
     for (const sync of state) {
@@ -122,21 +133,39 @@ if (process.env.ANTSEED_IDENTITY_HEX && !process.env.ANTSEED_VERIFIER_SIGNING_KE
 const seller = spawn(process.execPath, [CLI, '--config', configPath, '--data-dir', DATA_DIR, ...process.argv.slice(2)], { stdio: 'inherit' })
 for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => seller.kill(signal))
 
+/** Stop serving without saving: another instance owns the state now. */
+function fence(reason) {
+  console.error(`[tee-seller] ${reason}; stopping this seller`)
+  process.exitCode = 1
+  seller.kill('SIGTERM')
+}
+
 async function saveState(sync) {
   try {
     await sync.save()
   } catch (err) {
     if (err instanceof StateConflictError) {
-      // Another instance with this identity owns the state: stop rather than overwrite its payments.
-      console.error(`[tee-seller] ${err.message}; stopping this seller`)
-      seller.kill('SIGTERM')
-      process.exitCode = 1
+      fence(err.message)
     } else {
       console.error(`[tee-seller] saving ${sync.file.name} failed, retrying: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
 }
 const timers = state.map((sync) => setInterval(() => void saveState(sync), sync.file.everyMs))
+if (lease) {
+  let renewedAt = Date.now()
+  timers.push(setInterval(async () => {
+    try {
+      await lease.renew()
+      renewedAt = Date.now()
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      if (err instanceof StateConflictError) fence(`lost the state lease: ${message}`)
+      else if (Date.now() - renewedAt > LEASE_FENCE_MS) fence(`could not renew the state lease for ${LEASE_FENCE_MS / 1000} s: ${message}`)
+      else console.error(`[tee-seller] renewing the state lease failed, retrying: ${message}`)
+    }
+  }, LEASE_RENEW_MS))
+}
 
 seller.on('exit', async (code, signal) => {
   for (const timer of timers) clearInterval(timer)
@@ -149,6 +178,11 @@ seller.on('exit', async (code, signal) => {
         process.exitCode = 1
       }
     })
+    // Saved: the next instance may start at once. Unsaved, the lease stays until it expires, so a
+    // restart on this VM (same holder) takes it back with its newer local databases first.
+    if (process.exitCode !== 1) {
+      await lease?.release().catch((err) => console.error(`[tee-seller] releasing the state lease failed: ${err instanceof Error ? err.message : String(err)}`))
+    }
   }
   process.exit(process.exitCode ?? code ?? (signal ? 1 : 0))
 })

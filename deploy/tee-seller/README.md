@@ -178,9 +178,12 @@ encrypted with a key derived from the seller identity and, like the seller's log
 or responses (see [Logs and data](#logs-and-data)). Metering keeps free-tier usage, pending
 resource charges and the last 7 days of request log. An abrupt VM loss can drop the last 30
 seconds of payment updates; the last save, after the seller stops, is retried with backoff.
-Each save is written only over the version the seller last saw, so if
-a second VM with the same identity writes the state, the older one stops instead of overwriting
-it.
+
+One VM serves at a time: a seller holds a lease (`<prefix>/lease`) before it restores its state,
+renews it every 20 seconds and releases it after its last save. A replacement VM waits until the
+old one releases it, or for up to 2 minutes if the old one died; a seller that can't renew for a
+minute stops serving. Each save is also written only over the version the seller last saw, so a
+second writer is caught even then.
 
 ## Logs and data
 
