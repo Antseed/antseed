@@ -4629,7 +4629,8 @@ export class BuyerProxy {
 
     // Discover peers
     const peers = await this._getPeers()
-    if (peers.length === 0) {
+    // A pinned seller is still looked up on its own DHT topic below, even when discovery found no one.
+    if (peers.length === 0 && !explicitPeerId) {
       log('No sellers available')
       return dispatchFailure(502, { 'content-type': 'text/plain' }, 'No sellers available on the network. Is a seeder running?')
     }
