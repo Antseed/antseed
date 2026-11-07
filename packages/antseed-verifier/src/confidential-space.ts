@@ -13,9 +13,11 @@ import { LITERAL_ENV, RuleError, check, checkHiddenSecrets, checkSellerConfig, i
  *
  * A conforming workload runs an approved Antseed TEE seller image on a production (non-debug)
  * Confidential Space image on Intel TDX. Its only overrides are the settings LITERAL_ENV allows,
- * the seller config (ANTSEED_SELLER_CONFIG_JSON, checked by the seller config rules) and where
- * its secrets come from (ANTSEED_GCP_SECRETS). Secrets themselves are fetched from Secret Manager
- * inside the attested container, since the token would show any env value to every buyer.
+ * the seller config (ANTSEED_SELLER_CONFIG_JSON, checked by the seller config rules), where
+ * its secrets come from (ANTSEED_GCP_SECRETS) and where it keeps its state across restarts
+ * (ANTSEED_GCP_STATE). Secrets themselves are fetched from Secret Manager inside the attested
+ * container, since the token would show any env value to every buyer. The state the image keeps
+ * there is its payment and metering databases, encrypted, without prompts or responses.
  */
 
 export const CS_ISSUER = 'https://confidentialcomputing.googleapis.com'
@@ -27,6 +29,16 @@ export const CS_JWKS_URL = 'https://www.googleapis.com/service_accounts/v1/metad
 export const CS_SELLER_CONFIG_ENV = 'ANTSEED_SELLER_CONFIG_JSON'
 /** `{ "audience": <workload identity provider>, "secrets": { NAME: <Secret Manager version> } }` */
 export const CS_SECRETS_ENV = 'ANTSEED_GCP_SECRETS'
+/** `gs://<bucket>/<prefix>`: where in Cloud Storage the seller keeps its encrypted state snapshots. */
+export const CS_STATE_ENV = 'ANTSEED_GCP_STATE'
+
+const STATE_LOCATION = /^gs:\/\/([a-z0-9][a-z0-9._-]{1,61}[a-z0-9])\/((?!.*\/\/)(?!.*\.\.)[A-Za-z0-9._-][A-Za-z0-9._/-]{0,1023})$/
+
+/** The bucket and prefix of a CS_STATE_ENV value, or null if it isn't a `gs://<bucket>/<prefix>` URL. */
+export function parseStateLocation(value: string): { bucket: string; prefix: string } | null {
+  const match = STATE_LOCATION.exec(value)
+  return match && !match[2]!.endsWith('/') ? { bucket: match[1]!, prefix: match[2]! } : null
+}
 
 /** Verify a Confidential Space token's signature, issuer, audience and expiry; returns its claims. */
 export type VerifyConfidentialSpaceTokenFn = (token: string) => Promise<JWTPayload>
@@ -81,8 +93,10 @@ export function checkConfidentialSpaceClaims(
     check(isObj(env), 'container env_override must be a map')
     for (const [key, value] of Object.entries(env)) {
       check(typeof value === 'string', `environment ${key} must be a string`)
-      check(LITERAL_ENV.test(key) || key === CS_SELLER_CONFIG_ENV || key === CS_SECRETS_ENV, `environment ${key} is not allowed`)
+      check(LITERAL_ENV.test(key) || key === CS_SELLER_CONFIG_ENV || key === CS_SECRETS_ENV || key === CS_STATE_ENV, `environment ${key} is not allowed`)
     }
+    const state = env[CS_STATE_ENV]
+    check(state === undefined || parseStateLocation(state as string), `${CS_STATE_ENV} must be a gs://<bucket>/<prefix> URL`)
     const config = env[CS_SELLER_CONFIG_ENV]
     check(typeof config === 'string', `the seller config must be set in ${CS_SELLER_CONFIG_ENV}`)
     const { upstreams, apiKeyEnvs } = checkSellerConfig(parseJson(config, 'seller config'))

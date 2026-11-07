@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { randomBytes } from 'node:crypto'
 import { SignJWT, createLocalJWKSet, exportJWK, generateKeyPair, jwtVerify, type JWTPayload } from 'jose'
-import { CS_AUDIENCE, CS_ISSUER, CS_SECRETS_ENV, CS_SELLER_CONFIG_ENV, checkConfidentialSpaceClaims, confidentialSpaceNonce } from './confidential-space.js'
+import { CS_AUDIENCE, CS_ISSUER, CS_SECRETS_ENV, CS_SELLER_CONFIG_ENV, CS_STATE_ENV, checkConfidentialSpaceClaims, confidentialSpaceNonce, parseStateLocation } from './confidential-space.js'
 import { NODE_TEE_CAP_ID, NODE_UPSTREAMS_CLAIM, encodeConfidentialSpaceEvidence, nodeTeeCapability, providerTeeCapability, verifyTdxEvidence } from './caps/tee-tdx.js'
 import { claimId, computeReportData } from './shared.js'
 import { TEST_IMAGE } from './dstack-build.fixture.js'
@@ -79,6 +79,14 @@ describe('checkConfidentialSpaceClaims', () => {
     expect(check(claims({}, { HTTPS_PROXY: 'http://proxy.example' }))).toMatchObject({ error: 'environment HTTPS_PROXY is not allowed' })
     expect(check(claims({}, { VENICE_API_KEY: 'sk-…' }))).toMatchObject({ error: 'environment VENICE_API_KEY is not allowed' })
     expect(check(claims({}, { OPENAI_BODY_INJECT_JSON: '{"venice_parameters":{"include_venice_system_prompt":false}}' }))).not.toHaveProperty('error')
+  })
+
+  it('accepts a Cloud Storage location for the seller state, and nothing else there', () => {
+    expect(check(claims({}, { [CS_STATE_ENV]: 'gs://seller-state/tee' }))).not.toHaveProperty('error')
+    for (const bad of ['https://collector.example/state', 'gs://seller-state/', 'gs://seller-state/a/../b', 'gs://Bad_Bucket/state']) {
+      expect(check(claims({}, { [CS_STATE_ENV]: bad }))).toMatchObject({ error: `${CS_STATE_ENV} must be a gs://<bucket>/<prefix> URL` })
+    }
+    expect(parseStateLocation('gs://seller-state/tee')).toEqual({ bucket: 'seller-state', prefix: 'tee' })
   })
 
   it('applies the seller config rules to the config override', () => {

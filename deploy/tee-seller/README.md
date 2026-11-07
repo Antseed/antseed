@@ -133,6 +133,16 @@ image.
      --member="principalSet://iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/antseed-tee/*"
    ```
 
+   Confidential Space keeps no data across a VM restart (its only mounts are memory-backed), so
+   give the seller a private bucket for its payment channels and metering, which it needs to
+   settle with buyers after a restart:
+
+   ```bash
+   gcloud storage buckets create gs://<bucket> --location=<region> --uniform-bucket-level-access
+   gcloud storage buckets add-iam-policy-binding gs://<bucket> --role=roles/storage.objectUser \
+     --member="principalSet://iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/antseed-tee/*"
+   ```
+
 3. Start a TDX VM on the Confidential Space production image (its service account needs
    `roles/confidentialcomputing.workloadUser`), and open the signaling (TCP) and DHT (UDP) ports:
 
@@ -142,13 +152,19 @@ image.
      --shielded-secure-boot --image-project=confidential-space-images --image-family=confidential-space \
      --service-account=<service account> --scopes=cloud-platform \
      --metadata-from-file=tee-env-ANTSEED_SELLER_CONFIG_JSON=config.json \
-     --metadata=^~^tee-image-reference=ghcr.io/antseed/tee-seller@sha256:<digest>~tee-restart-policy=Always~tee-env-ANTSEED_TEE_PEER_ID=<peer id>~tee-env-ANTSEED_GCP_SECRETS={"audience":"//iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/antseed-tee/providers/attestation","secrets":{"ANTSEED_IDENTITY_HEX":"projects/<project>/secrets/<identity>/versions/latest","<NAME>_API_KEY":"projects/<project>/secrets/<key>/versions/latest"}}
+     --metadata=^~^tee-image-reference=ghcr.io/antseed/tee-seller@sha256:<digest>~tee-restart-policy=Always~tee-env-ANTSEED_TEE_PEER_ID=<peer id>~tee-env-ANTSEED_GCP_STATE=gs://<bucket>/<seller name>~tee-env-ANTSEED_GCP_SECRETS={"audience":"//iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/antseed-tee/providers/attestation","secrets":{"ANTSEED_IDENTITY_HEX":"projects/<project>/secrets/<identity>/versions/latest","<NAME>_API_KEY":"projects/<project>/secrets/<key>/versions/latest"}}
    gcloud compute firewall-rules create antseed-tee-seller --allow=tcp:6882,udp:6881
    ```
 
-Confidential Space keeps no data across a VM restart (its only mounts are memory-backed), so the
-seller's channel and metering database starts empty after one. Before a planned restart, stop
-taking new buyers and let open channels settle.
+With `ANTSEED_GCP_STATE` set, the image restores the seller's payment and metering databases
+from objects under that prefix on boot, and saves them while they change: payment channels every
+30 seconds, metering every 5 minutes, and both once more after the seller stops. Snapshots are
+encrypted with a key derived from the seller identity and hold no prompts or responses: upstream
+error text and response hashes are removed first. Metering keeps free-tier usage, pending
+resource charges and the last 7 days of request log. An abrupt VM loss can drop the last 30
+seconds of payment updates. Each save is written only over the version the seller last saw, so if
+a second VM with the same identity writes the state, the older one stops instead of overwriting
+it.
 
 ## Approving a dstack OS release
 

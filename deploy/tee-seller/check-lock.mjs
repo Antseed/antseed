@@ -11,10 +11,11 @@ const modules = 'node_modules'
 
 // The verifier must be the version this CLI pins (the CLI refuses any other), and must bind its
 // quote to the buyer's connection, send the dstack event log and app compose, and attest on Google
-// Confidential Space (launch.mjs also loads its seller config rules).
+// Confidential Space (launch.mjs also loads its seller config rules and state location check).
 const verifier = join(modules, '@antseed/antseed-verifier')
 const verifierFiles = ['dist/dstack-app-compose.js', 'dist/confidential-space.js', 'dist/seller-config-rules.js']
-if (!(await import(`./${verifier}/dist/shared.js`)).CHANNEL_BINDING_HEADER || !verifierFiles.every((f) => existsSync(join(verifier, f)))) {
+if (!(await import(`./${verifier}/dist/shared.js`)).CHANNEL_BINDING_HEADER || !verifierFiles.every((f) => existsSync(join(verifier, f)))
+  || !(await import(`./${verifier}/dist/confidential-space.js`)).parseStateLocation) {
   fail('The locked verifier cannot bind attestations to the buyer connection; run update-lock.mjs with a CLI release that pins one that can.')
 }
 const { TRUSTED_VERIFIER_PLUGINS } = await import(`./${modules}/@antseed/cli/dist/plugins/registry.js`)
