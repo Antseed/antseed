@@ -27,7 +27,7 @@ function isConnError(err: unknown): boolean {
 }
 
 /** POST JSON to a unix-socket HTTP server and read the whole response body. */
-function postUnix(socketPath: string, path: string, body: string): Promise<{ status: number; body: string }> {
+export function postUnix(socketPath: string, path: string, body: string): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
     const req = request(
       {

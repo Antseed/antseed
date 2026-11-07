@@ -19,7 +19,7 @@ If the prover fails to load at startup, the seller exits rather than advertising
 
 ## Prerequisites
 
-- A dstack confidential VM host with Intel TDX, such as Phala Cloud, where you can deploy an app with KMS and encrypted environment variables.
+- A dstack confidential VM host with Intel TDX where you can deploy an app with KMS and encrypted environment variables, and that gives the app a public IP. Phala Cloud exposes app ports only through its TLS gateway, without UDP, so buyers can't reach a seller there yet. To run on Google Cloud instead, see [Google Confidential Space](#google-confidential-space).
 - Your seller's identity key and peer ID, and API keys for its upstreams.
 - The signaling (TCP) and DHT (UDP) ports reachable from the internet at the same port numbers as in the container. Buyers attest over encrypted TCP; the connection binding is not available over WebRTC.
 - Node.js 20+ and a checkout of the [Antseed repository](https://github.com/AntSeed/antseed) on your own machine, to generate the compose file.
@@ -120,6 +120,12 @@ If attestation fails under `--require-verifier`, the request is refused with a 5
 | `seller-node-tee-genuine` fails with "no connection binding" | The buyer reached the seller over WebRTC; make the signaling TCP port reachable |
 | `seller-bound` missing from verdicts | `ANTSEED_VERIFIER_SIGNING_KEY` unset, or its address doesn't match `ANTSEED_TEE_PEER_ID` |
 | Buyer reports TCB failures | Host platform needs microcode/TCB updates; buyers running `ANTSEED_VERIFIER_STRICT_TCB=true` accept only `UpToDate` |
+
+## Google Confidential Space
+
+The same image also runs on Google Confidential Space: a Google-built OS that runs one container on an Intel TDX VM with no operator access. There the seller sends Google's signed attestation token instead of a quote, and buyers check that it shows Intel TDX, a production image with debugging off, an approved image digest and this round's binding. The operator's settings appear in the token, so buyers check the seller config and its upstreams against the same rules; secrets come from Secret Manager, released only to the attested image. Buyers rely on Google's attestation service here, where on dstack they check the Intel quote themselves.
+
+Confidential Space keeps no data across a VM restart, so the seller's channel database starts empty after one. The setup steps are in [`deploy/tee-seller`](https://github.com/AntSeed/antseed/tree/main/deploy/tee-seller#run-a-tee-seller-on-google-confidential-space).
 
 ## Developing the prover outside dstack
 

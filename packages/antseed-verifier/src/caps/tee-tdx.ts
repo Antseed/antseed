@@ -8,6 +8,14 @@ import { collectViaHttp, collectTdxAndPubkey } from '../collect/http.js'
 import { antseedRdV1, verifyReportData, type BindingIngredients } from '../report-data.js'
 import type { ApprovedDstackOs, ApprovedNodeBuilds } from '../approved-node-measurements.js'
 import { checkAppCompose, type CheckedAppCompose } from '../dstack-app-compose.js'
+import type { JWTPayload } from 'jose'
+import {
+  checkConfidentialSpaceClaims,
+  confidentialSpaceNonce,
+  defaultVerifyConfidentialSpaceToken,
+  type VerifyConfidentialSpaceTokenFn,
+} from '../confidential-space.js'
+import { generateConfidentialSpaceToken } from '../collect/confidential-space.js'
 
 /** A provider quote's declared report_data binding: a frozen scheme id + its string ingredients. */
 export interface ReportDataBinding {
@@ -100,8 +108,24 @@ export interface ParsedTdxQuote {
   eventLog?: DstackEvent[]
   /** dstack app-compose.json, if the evidence carried one. */
   appCompose?: string
-  /** Set when DCAP verification or evidence decoding threw. */
+  /** Claims of a verified Google Confidential Space token, when the evidence was one instead of a quote. */
+  confidentialSpace?: JWTPayload
+  /** Set when DCAP or token verification, or evidence decoding, threw. */
   error?: string
+}
+
+/** Node evidence from Google Confidential Space: Google's signed attestation token in place of a quote. */
+export function encodeConfidentialSpaceEvidence(token: string): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify({ confidentialSpaceToken: token }))
+}
+
+function confidentialSpaceToken(evidence: Uint8Array): string | undefined {
+  try {
+    const parsed = JSON.parse(new TextDecoder().decode(evidence)) as { confidentialSpaceToken?: unknown }
+    return typeof parsed.confidentialSpaceToken === 'string' ? parsed.confidentialSpaceToken : undefined
+  } catch {
+    return undefined
+  }
 }
 
 /**
@@ -194,7 +218,16 @@ export async function verifyTdxEvidence(
   evidence: Uint8Array,
   verifyQuote: VerifyQuoteFn,
   nowSecs: number,
+  verifyConfidentialSpaceToken: VerifyConfidentialSpaceTokenFn = defaultVerifyConfidentialSpaceToken,
 ): Promise<ParsedTdxQuote> {
+  const token = confidentialSpaceToken(evidence)
+  if (token !== undefined) {
+    try {
+      return { quoteEvidence: evidence, status: '', td: null, confidentialSpace: await verifyConfidentialSpaceToken(token) }
+    } catch (err) {
+      return { quoteEvidence: evidence, status: '', td: null, error: `Confidential Space token verification failed: ${msg(err)}` }
+    }
+  }
   let quote: Uint8Array
   let collateral: unknown
   let binding: ReportDataBinding | undefined
@@ -246,6 +279,26 @@ function approvedBuild(
   return 'error' in app ? app : { os, ...app }
 }
 
+/** The node claim (and its upstreams) for Google Confidential Space evidence: a verified token, checked for this round. */
+function verifyConfidentialSpaceNode(claim: string, input: CapabilityVerifyInput, claims: JWTPayload): ClaimResult | ClaimResult[] {
+  const channelBinding = input.channelBinding
+  if (!channelBinding) {
+    return { claim, ok: false, detail: 'no connection binding: TEE attestation needs an encrypted TCP connection to the seller' }
+  }
+  // The token's nonce commits to this round's antseed-rd-v1 report data, connection included.
+  const nonce = confidentialSpaceNonce(computeReportData(input.nonce, input.peerId, channelBinding))
+  const images = (input.policy as ApprovedNodeBuilds | undefined)?.images ?? []
+  const checked = checkConfidentialSpaceClaims(claims, nonce, images)
+  if ('error' in checked) {
+    return { claim, ok: false, detail: `Google Confidential Space attestation, but not an approved TEE seller build: ${checked.error}` }
+  }
+  const origins = [...new Set(checked.upstreams.map((u) => u.origin))].sort()
+  return [
+    { claim, ok: true, detail: `Intel TDX on Google Confidential Space (attested by Google); Antseed TEE seller image ${checked.image.version}, bound to this connection; bound to this round (${antseedRdV1.id})` },
+    { claim: claimId(NODE_UPSTREAMS_CLAIM), ok: true, detail: origins.join(', ') },
+  ]
+}
+
 /**
  * Mint one TDX capability. `id` names the target (node or provider); `defaultSource`
  * is the collector used when config supplies no `<id>.source` override:
@@ -272,6 +325,10 @@ export function makeTdxCap(
       const p = input.parsedQuote as ParsedTdxQuote | undefined
       if (!p) return { claim, ok: false, detail: 'TDX quote was not verified' }
       if (p.error) return { claim, ok: false, detail: p.error }
+      if (p.confidentialSpace) {
+        if (!opts?.sellerNode) return { claim, ok: false, detail: 'a Confidential Space token is only accepted for the seller node' }
+        return verifyConfidentialSpaceNode(claim, input, p.confidentialSpace)
+      }
       if (!isTcbAcceptable(p.status)) return { claim, ok: false, detail: `TCB status not acceptable: ${p.status || 'unknown'}` }
       if (!p.td) return { claim, ok: false, detail: 'quote is not an Intel TDX quote' }
       if (p.td.debug === true) return { claim, ok: false, detail: 'TDX debug mode is enabled' }
@@ -320,6 +377,11 @@ export function makeTdxCap(
         const quote = generateTdxQuote(computeReportData(input.nonce, input.peerId, channelBinding))
         return encodeTeeTdxEvidence(quote)
       }
+      if (source === 'confidential-space') {
+        const socket = input.config[tdxConfigKey(id, 'confidentialSpace.socket')] || undefined
+        const nonce = confidentialSpaceNonce(computeReportData(input.nonce, input.peerId, channelBinding))
+        return encodeConfidentialSpaceEvidence(await generateConfidentialSpaceToken(nonce, socket))
+      }
       if (source === 'dstack') {
         const socket = input.config[tdxConfigKey(id, 'dstack.socket')] || undefined
         const { quote, eventLog, appCompose } = await generateDstackAttestation(computeReportData(input.nonce, input.peerId, channelBinding), socket)
@@ -345,7 +407,7 @@ export function makeTdxCap(
         const ingredients = pubkey ? { e2ePubkey: pubkey } : {}
         return encodeTeeTdxEvidence(quote, undefined, { scheme, ingredients })
       }
-      throw new Error(`unknown ${id} source "${source}" (expected "configfs", "dstack", or "http")`)
+      throw new Error(`unknown ${id} source "${source}" (expected "configfs", "dstack", "confidential-space", or "http")`)
     },
   }
 }

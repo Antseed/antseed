@@ -1,13 +1,13 @@
 # Antseed TEE seller image
 
-The official image for running an Antseed seller in a dstack (Phala) confidential VM so that
-buyers' TEE check passes: the seller node proves to every buyer, before payment, that it runs an
+The official image for running an Antseed seller in a dstack (Phala) confidential VM or on Google
+Confidential Space so that buyers' TEE check passes: the seller node proves to every buyer, before payment, that it runs an
 approved Antseed image whose operator cannot read prompts, and which upstreams it sends them to.
 
 ## What a buyer checks
 
-The `seller-node-tee-genuine` claim of `@antseed/antseed-verifier` passes only when the seller's
-Intel TDX quote:
+The `seller-node-tee-genuine` claim of `@antseed/antseed-verifier` passes, on dstack, only when the
+seller's Intel TDX quote:
 
 - is genuine (Intel DCAP, acceptable TCB, debug off);
 - is bound to the buyer's nonce, the seller's peer ID and the buyer's own encrypted connection;
@@ -20,6 +20,22 @@ Intel TDX quote:
 
 The seller sends its `app-compose.json` with the quote, so the buyer reads the seller config
 itself and reports the upstreams it sends prompts to (`seller-node-upstreams`).
+
+On Google Confidential Space the seller sends Google's signed attestation token instead of a
+quote. It passes only when the token ([`confidential-space.ts`](../../packages/antseed-verifier/src/confidential-space.ts)):
+
+- is signed by Google's Confidential Space attestation service, for the `antseed-verifier`
+  audience, and carries the nonce bound to the buyer's round, the seller's peer ID and the buyer's
+  connection;
+- shows Intel TDX, a supported production Confidential Space image with debugging off since boot,
+  and Secure Boot;
+- names an approved image digest, and env overrides limited to the seller config
+  (`ANTSEED_SELLER_CONFIG_JSON`), where its secrets live (`ANTSEED_GCP_SECRETS`) and the open
+  settings dstack allows, all checked against the same rules
+  ([`seller-config-rules.ts`](../../packages/antseed-verifier/src/seller-config-rules.ts)).
+
+Here buyers rely on Google's attestation service and Google's Confidential Space OS, where on
+dstack they check the Intel quote and the OS measurements themselves.
 
 ## The image
 
@@ -72,6 +88,53 @@ To release an image after a CLI release:
 
 Any change to the compose file (image, config, prices) changes the compose hash; buyers
 re-check the new one against the same rules, so no approval is needed.
+
+Buyers reach a seller over raw TCP at its announced address and find it through the DHT (UDP).
+Phala Cloud exposes CVM ports only through its TLS gateway, without a public IP or UDP, so
+buyers can't reach a seller there yet; run dstack on a TDX host with a public IP.
+
+## Run a TEE seller on Google Confidential Space
+
+The image's launcher (`launch.mjs`) detects Confidential Space, writes the seller config from
+`ANTSEED_SELLER_CONFIG_JSON`, and fetches the secrets named in `ANTSEED_GCP_SECRETS` from Secret
+Manager with the workload's own attestation. Google's token shows every env override to buyers,
+so secret values never go in env overrides. The image's launch policy lets the operator set only
+its listed env variables, and never replace its command or stream its logs from a production
+image.
+
+1. Write the seller config as for dstack (same rules), and store each secret in Secret Manager:
+   `ANTSEED_IDENTITY_HEX`, the API keys the config names, and optionally `ANTSEED_BASE_RPC_URL`.
+2. Release the secrets only to the attested image, through a workload identity pool that trusts
+   Google's attestation:
+
+   ```bash
+   gcloud iam workload-identity-pools create antseed-tee --location=global
+   gcloud iam workload-identity-pools providers create-oidc attestation --location=global \
+     --workload-identity-pool=antseed-tee \
+     --issuer-uri=https://confidentialcomputing.googleapis.com/ \
+     --allowed-audiences=https://sts.googleapis.com \
+     --attribute-mapping="google.subject='assertion.sub'" \
+     --attribute-condition="assertion.swname == 'CONFIDENTIAL_SPACE' && 'STABLE' in assertion.submods.confidential_space.support_attributes && assertion.submods.container.image_digest == 'sha256:<digest>'"
+   gcloud secrets add-iam-policy-binding <secret> --role=roles/secretmanager.secretAccessor \
+     --member="principalSet://iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/antseed-tee/*"
+   ```
+
+3. Start a TDX VM on the Confidential Space production image (its service account needs
+   `roles/confidentialcomputing.workloadUser`), and open the signaling (TCP) and DHT (UDP) ports:
+
+   ```bash
+   gcloud compute instances create antseed-tee-seller --zone=<zone> \
+     --machine-type=c3-standard-4 --confidential-compute-type=TDX --maintenance-policy=TERMINATE \
+     --shielded-secure-boot --image-project=confidential-space-images --image-family=confidential-space \
+     --service-account=<service account> --scopes=cloud-platform \
+     --metadata-from-file=tee-env-ANTSEED_SELLER_CONFIG_JSON=config.json \
+     --metadata=^~^tee-image-reference=ghcr.io/antseed/tee-seller@sha256:<digest>~tee-restart-policy=Always~tee-env-ANTSEED_TEE_PEER_ID=<peer id>~tee-env-ANTSEED_GCP_SECRETS={"audience":"//iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/antseed-tee/providers/attestation","secrets":{"ANTSEED_IDENTITY_HEX":"projects/<project>/secrets/<identity>/versions/latest","<NAME>_API_KEY":"projects/<project>/secrets/<key>/versions/latest"}}
+   gcloud compute firewall-rules create antseed-tee-seller --allow=tcp:6882,udp:6881
+   ```
+
+Confidential Space keeps no data across a VM restart (its only mounts are memory-backed), so the
+seller's channel and metering database starts empty after one. Before a planned restart, stop
+taking new buyers and let open channels settle.
 
 ## Approving a dstack OS release
 

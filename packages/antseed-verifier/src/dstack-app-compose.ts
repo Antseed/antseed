@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto'
 import type { ApprovedSellerImage } from './approved-seller-images.js'
-import teeProviderPlugins from './tee-provider-plugins.json' with { type: 'json' }
+import { LITERAL_ENV, SECRET_ENV, check, checkHiddenSecrets, checkSellerConfig, isObj, parseJson, RuleError, type SellerUpstream } from './seller-config-rules.js'
+
+export type { SellerUpstream } from './seller-config-rules.js'
 
 /**
  * A dstack app is measured as the SHA-256 of its app-compose.json, which embeds the docker
@@ -16,39 +18,17 @@ import teeProviderPlugins from './tee-provider-plugins.json' with { type: 'json'
  *   - compose file: written as JSON; one service; image pinned by an approved digest; no command,
  *     entrypoint, user or other service options; the only volumes are the seller data volume and
  *     the dstack socket; the seller config is one inline config at /etc/antseed/config.json.
- *   - environment: ANTSEED_TEE_PEER_ID and ANTSEED_VERIFIER_PROVIDER_* as literals; secrets
- *     only as `NAME: ${NAME}` for ANTSEED_IDENTITY_HEX, ANTSEED_BASE_RPC_URL and the *_API_KEY
- *     names the seller config gives as apiKeyEnv (never one the CLI reads for itself), plus
- *     `ANTSEED_VERIFIER_SIGNING_KEY: ${ANTSEED_IDENTITY_HEX}`. No `$` anywhere else, because
- *     compose substitutes variables in every value, the inline config included.
- *   - seller config: each provider uses a plugin listed below, every upstream is https, and
- *     every path rewrite is a path on that upstream (the relay appends it to the base URL, so a
- *     value like "@other.example/v1" would move the request to another host). The approved
- *     images' relay refuses upstream redirects, so requests stay on these origins.
+ *   - environment: the literal settings LITERAL_ENV allows; secrets only as `NAME: ${NAME}` for
+ *     the names checkHiddenSecrets allows, plus `ANTSEED_VERIFIER_SIGNING_KEY: ${ANTSEED_IDENTITY_HEX}`.
+ *     No `$` anywhere else, because compose substitutes variables in every value, the inline
+ *     config included.
+ *   - seller config: the rules in seller-config-rules.ts.
  */
-
-/** One place a seller node forwards prompts to, read from its measured config. */
-export interface SellerUpstream {
-  /** The provider's name in the seller config. */
-  provider: string
-  plugin: string
-  /** https origin, e.g. "https://api.openai.com". */
-  origin: string
-}
 
 export interface CheckedAppCompose {
   image: ApprovedSellerImage
   upstreams: SellerUpstream[]
 }
-
-/**
- * The provider plugins a TEE seller may use (tee-provider-plugins.json, which also decides the
- * image's plugins): each one's default upstream, and whether the config's baseUrl (and
- * fallbackUpstreams) changes it. Each sends buyer content only to that upstream. fal-video is
- * left out: it uploads buyer media to a storage host the storage service names at runtime, which
- * the config cannot show.
- */
-const PLUGINS: Readonly<Record<string, { defaultUrl: string; baseUrl: boolean; fallbacks?: boolean }>> = teeProviderPlugins
 
 const APP_COMPOSE_KEYS = new Set([
   'manifest_version', 'name', 'features', 'runner', 'docker_compose_file', 'docker_config',
@@ -60,29 +40,7 @@ const SERVICE_KEYS = new Set(['image', 'restart', 'ports', 'environment', 'volum
 const CONFIG_PATH = '/etc/antseed/config.json'
 const DATA_DIR = '/var/lib/antseed'
 const DSTACK_SOCKET = '/var/run/dstack.sock'
-const LITERAL_ENV = /^(?:ANTSEED_TEE_PEER_ID|ANTSEED_VERIFIER_PROVIDER_[A-Z0-9_]+)$/
-const SECRET_ENV = /^(?:ANTSEED_IDENTITY_HEX|ANTSEED_BASE_RPC_URL|[A-Z][A-Z0-9_]*_API_KEY)$/
-/** Secrets the CLI reads itself; any other hidden variable must be a provider API key the config names. */
-const NODE_SECRETS = new Set(['ANTSEED_IDENTITY_HEX', 'ANTSEED_BASE_RPC_URL'])
-/** Prefixes of variables the CLI reads for its own settings (telemetry, payments, tunnels), never API keys. */
-const RESERVED_ENV = /^(?:ANTSEED_|POSTHOG_|CDP_)/
 const IMAGE = /^[a-z0-9][a-z0-9._/:-]*@(sha256:[0-9a-f]{64})$/
-
-type Obj = Record<string, unknown>
-const isObj = (v: unknown): v is Obj => !!v && typeof v === 'object' && !Array.isArray(v)
-
-class Reject extends Error {}
-function check(ok: unknown, why: string): asserts ok {
-  if (!ok) throw new Reject(why)
-}
-
-function parseJson(text: string, what: string): unknown {
-  try {
-    return JSON.parse(text)
-  } catch {
-    throw new Reject(`${what} is not JSON`)
-  }
-}
 
 /** Whether any key or string anywhere in a value contains "$". */
 function hasVariableReference(value: unknown): boolean {
@@ -109,65 +67,6 @@ function checkEnvironment(env: unknown): Set<string> {
     }
   }
   return secrets
-}
-
-function origin(url: unknown, where: string): string {
-  check(typeof url === 'string', `${where} must be a URL`)
-  let u: URL
-  try {
-    u = new URL(url)
-  } catch {
-    throw new Reject(`${where} is not a URL`)
-  }
-  check(u.protocol === 'https:' && !u.username && !u.password, `${where} must be an https URL without credentials`)
-  return u.origin
-}
-
-/** A path rewrite must keep requests on the upstream it belongs to. */
-function checkPathRewrite(rewrite: unknown, baseUrl: string, where: string): void {
-  if (rewrite === undefined) return
-  check(isObj(rewrite), `${where} pathRewrite must be a map`)
-  const base = baseUrl.replace(/\/+$/, '')
-  const baseOrigin = origin(baseUrl, `${where} baseUrl`)
-  for (const [from, to] of Object.entries(rewrite)) {
-    check(typeof to === 'string' && to.startsWith('/') && !to.startsWith('//'), `${where} pathRewrite for ${from} must be a path starting with one "/"`)
-    check(origin(base + to, `${where} pathRewrite for ${from}`) === baseOrigin, `${where} pathRewrite for ${from} leaves the upstream`)
-  }
-}
-
-/** The seller config's upstreams and the API key variables it reads (apiKeyEnv). */
-function sellerUpstreams(config: unknown): { upstreams: SellerUpstream[]; apiKeyEnvs: Set<string> } {
-  check(isObj(config), 'seller config must be an object')
-  const providers = isObj(config['seller']) ? config['seller']['providers'] : undefined
-  check(isObj(providers) && Object.keys(providers).length > 0, 'seller config has no providers')
-  const upstreams: SellerUpstream[] = []
-  const apiKeyEnvs = new Set<string>()
-  const keyEnv = (v: unknown): void => {
-    if (typeof v === 'string') apiKeyEnvs.add(v)
-  }
-  for (const [provider, cfg] of Object.entries(providers)) {
-    check(isObj(cfg) && typeof cfg['plugin'] === 'string', `provider ${provider} has no plugin`)
-    keyEnv(cfg['apiKeyEnv'])
-    const plugin = cfg['plugin'].replace(/^@antseed\/provider-/, '')
-    const spec = PLUGINS[plugin]
-    check(spec, `provider ${provider} uses plugin "${cfg['plugin']}", which a TEE seller cannot use`)
-    check(spec.baseUrl || cfg['baseUrl'] === undefined, `provider ${provider} sets a baseUrl its plugin ignores`)
-    const baseUrl = cfg['baseUrl'] ?? spec.defaultUrl
-    upstreams.push({ provider, plugin, origin: origin(baseUrl, `provider ${provider} baseUrl`) })
-    checkPathRewrite(cfg['pathRewrite'], baseUrl as string, `provider ${provider}`)
-    const fallbacks = cfg['fallbackUpstreams']
-    if (fallbacks === undefined) continue
-    check(spec.fallbacks && Array.isArray(fallbacks), `provider ${provider} fallbackUpstreams are not supported`)
-    fallbacks.forEach((f, i) => {
-      check(isObj(f), `provider ${provider} fallbackUpstreams[${i}] must be an object`)
-      keyEnv(f['apiKeyEnv'])
-      const where = `provider ${provider} fallbackUpstreams[${i}]`
-      upstreams.push({ provider, plugin, origin: origin(f['baseUrl'], `${where}.baseUrl`) })
-      // A fallback without its own rewrites uses the provider's, so check those against it too.
-      checkPathRewrite(f['pathRewrite'] ?? cfg['pathRewrite'], f['baseUrl'] as string, where)
-    })
-  }
-  return { upstreams, apiKeyEnvs }
 }
 
 function checkComposeFile(compose: unknown, images: readonly ApprovedSellerImage[]): CheckedAppCompose & { secrets: Set<string> } {
@@ -213,10 +112,8 @@ function checkComposeFile(compose: unknown, images: readonly ApprovedSellerImage
   check(isObj(top) && Object.keys(top).length === 1 && typeof ref['source'] === 'string', 'the seller config must be one inline config')
   const content = top[ref['source']]
   check(isObj(content) && Object.keys(content).length === 1 && typeof content['content'] === 'string', 'the seller config must be inline content')
-  const { upstreams, apiKeyEnvs } = sellerUpstreams(parseJson(content['content'], 'seller config'))
-  for (const name of secrets) {
-    check(NODE_SECRETS.has(name) || (apiKeyEnvs.has(name) && !RESERVED_ENV.test(name)), `environment ${name} is hidden but is not an API key the seller config names`)
-  }
+  const { upstreams, apiKeyEnvs } = checkSellerConfig(parseJson(content['content'], 'seller config'))
+  checkHiddenSecrets(secrets, apiKeyEnvs)
   return { image, upstreams, secrets }
 }
 
@@ -245,7 +142,7 @@ export function checkAppCompose(
     check(Array.isArray(allowed) && allowed.every((n) => typeof n === 'string' && secrets.has(n)), 'app may only accept the encrypted variables its compose file uses as secrets')
     return { image, upstreams }
   } catch (err) {
-    if (err instanceof Reject) return { error: err.message }
+    if (err instanceof RuleError) return { error: err.message }
     throw err
   }
 }
