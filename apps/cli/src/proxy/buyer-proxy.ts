@@ -319,6 +319,9 @@ export interface BuyerBalances {
 
 /** Exit code `POST /_antseed/restart` ends the process with, so a supervisor restarts it. */
 export const BUYER_RESTART_EXIT_CODE = 75
+/** The ways a chat request can arrive, whichever the seller speaks natively. */
+const CHAT_REQUEST_PROTOCOLS: readonly ServiceApiProtocol[] = ['openai-chat-completions', 'openai-responses', 'anthropic-messages']
+
 const MIN_RESTART_INTERVAL_MS = 30_000
 const BALANCE_CACHE_TTL_MS = 15_000
 /** A balance up to this much past its TTL is answered at once while it refreshes. */
@@ -4034,12 +4037,20 @@ export class BuyerProxy {
    */
   /** Which of these sellers a chat request for this model could be routed to right now. */
   private _routableChatSellers(peers: PeerInfo[], serviceId: string, requestPolicy: RoutingPolicy): Set<string> {
-    const plan = this._planChatModelRoutes(peers, serviceId, requestPolicy)
-    return new Set(plan.verdicts.filter((verdict) => verdict.eligible).map((verdict) => verdict.peer.peerId))
+    // Any way in counts, and each resolves to the provider a real request of that
+    // kind would use: the cheapest compatible one, not the first one advertised.
+    const routable = new Set<string>()
+    for (const protocol of CHAT_REQUEST_PROTOCOLS) {
+      for (const verdict of this._planChatModelRoutes(peers, serviceId, requestPolicy, protocol).verdicts) {
+        if (verdict.eligible) routable.add(verdict.peer.peerId)
+      }
+      if (routable.size === peers.length) break
+    }
+    return routable
   }
 
   /** The route plan for a model-only chat request: what model listing and route preview mean by routable. */
-  private _planChatModelRoutes(peers: PeerInfo[], model: string, requestPolicy: RoutingPolicy | null) {
+  private _planChatModelRoutes(peers: PeerInfo[], model: string, requestPolicy: RoutingPolicy | null, requestProtocol: ServiceApiProtocol = 'openai-chat-completions') {
     const request: SerializedHttpRequest = {
       requestId: randomUUID(),
       method: 'POST',
@@ -4047,12 +4058,12 @@ export class BuyerProxy {
       headers: { 'content-type': 'application/json' },
       body: new TextEncoder().encode(JSON.stringify({ model })),
     }
-    const { candidatePeers, routePlanByPeerId } = selectCandidatePeersForRouting(peers, null, model, null, 'strict')
+    const { candidatePeers, routePlanByPeerId } = selectCandidatePeersForRouting(peers, requestProtocol, model, null, 'strict')
     return this._planModelRoutes({
       modelPeers: candidatePeers,
       modelPlans: routePlanByPeerId,
       request,
-      requestProtocol: null,
+      requestProtocol,
       requestedService: model,
       explicitProvider: null,
       requiredParameters: [],

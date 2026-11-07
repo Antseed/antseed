@@ -20,10 +20,4 @@ export function asNumber(value: unknown, fallback: number): number {
   }
   return fallback;
 }
-export function asErrorMessage(error: unknown): string {
-  if (error instanceof Error && error.message.trim().length > 0) {
-    return error.message;
-  }
-  const text = String(error ?? '').trim();
-  return text.length > 0 ? text : 'Unexpected error';
-}
+export { asErrorMessage } from '../shared/error-message.js';

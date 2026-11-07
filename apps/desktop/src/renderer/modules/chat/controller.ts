@@ -1,3 +1,4 @@
+import { asErrorMessage } from '../../../shared/error-message.js';
 import { getPrivacySwitchState } from '../app/vpr-resources';
 import { describeChatError } from './chat-errors';
 import { imageModelCanEdit, modelAcceptsImages, splitPinnedModel } from '../../../shared/pinned-model.js';
@@ -126,17 +127,9 @@ export function initChatModule({
   // Small helpers
   // ---------------------------------------------------------------------------
 
-  function toErrorMessage(err: unknown, fallback = 'Unexpected error'): string {
-    if (typeof err === 'string' && err.trim().length > 0) return err;
-    if (err && typeof err === 'object' && 'message' in err && typeof err.message === 'string' && err.message.trim().length > 0) {
-      return err.message;
-    }
-    return fallback;
-  }
-
   function showChatError(message: unknown): void {
     uiState.chatError = describeChatError(
-      toErrorMessage(message, 'Unexpected chat error'),
+      asErrorMessage(message, 'Unexpected chat error'),
       (id) => uiState.chatModels.find((model) => model.id === id)?.label,
     );
     notifyUiStateChanged();
@@ -148,7 +141,7 @@ export function initChatModule({
   }
 
   function reportChatError(err: unknown, fallback: string): string {
-    const message = toErrorMessage(err, fallback);
+    const message = asErrorMessage(err, fallback);
     showChatError(message);
     appendSystemLog(`Chat error: ${message}`);
     return message;
@@ -260,7 +253,7 @@ export function initChatModule({
           scheduleModelRetry();
         }
       } catch (error) {
-        uiState.chatModelsError = toErrorMessage(error, 'The gateway did not return a model list.');
+        uiState.chatModelsError = asErrorMessage(error, 'The gateway did not return a model list.');
         scheduleModelRetry();
       } finally {
         uiState.chatModelsLoading = false;
@@ -353,7 +346,7 @@ export function initChatModule({
     }
     if (bridge?.chatAiSetModel) {
       const update = bridge.chatAiSetModel(convId, id)
-        .catch((error: unknown) => ({ ok: false, error: toErrorMessage(error) }));
+        .catch((error: unknown) => ({ ok: false, error: asErrorMessage(error) }));
       if (convId) pendingModelUpdates.set(convId, update);
     }
     void refreshPermissionModeForModel(id);
@@ -1167,7 +1160,7 @@ export function initChatModule({
       notifyUiStateChanged();
       queueScrollChatToBottom();
     } catch (error) {
-      const message = toErrorMessage(error, 'Image generation failed');
+      const message = asErrorMessage(error, 'Image generation failed');
       if (message !== 'Request aborted') {
         reportChatError(message, 'Image generation failed');
       }

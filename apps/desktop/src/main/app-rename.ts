@@ -70,8 +70,14 @@ export function wholeFileStore(file: string): EncryptedStore {
   return {
     file,
     read: (contents) => [contents.toString('base64')],
-    write: (_contents, values) => Buffer.from(values[0]!, 'base64'),
+    write: (_contents, values) => Buffer.from(requiredValue(values, 0, file), 'base64'),
   };
+}
+
+function requiredValue(values: readonly string[], index: number, file: string): string {
+  const value = values[index];
+  if (typeof value !== 'string') throw new Error(`Missing encrypted value in ${file}`);
+  return value;
 }
 
 /** `desktop-gateway.json`: `localKeys.*.secretEnc` and `remoteKeyEnc`, base64. */
@@ -95,7 +101,7 @@ export function gatewaySettingsStore(file: string): EncryptedStore {
     read: (contents) => slots(parse(contents)).map((slot) => slot.get()),
     write: (contents, values) => {
       const settings = parse(contents);
-      slots(settings).forEach((slot, index) => slot.set(values[index]!));
+      slots(settings).forEach((slot, index) => slot.set(requiredValue(values, index, file)));
       return Buffer.from(JSON.stringify(settings, null, 2));
     },
   };

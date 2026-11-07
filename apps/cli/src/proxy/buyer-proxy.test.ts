@@ -4307,6 +4307,39 @@ test('GET /v1/models is answered locally with the network-wide model list', asyn
   assert.equal(forwarded, 0)
 })
 
+test('GET /v1/models keeps a model whose cheaper provider fits the price cap, as a real request would use it', async () => {
+  const twin = makePeer('a', ['pricey', 'cheap'])
+  twin.providerPricing = {
+    pricey: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, services: { 'twin-model': { inputUsdPerMillion: 50, outputUsdPerMillion: 60 } } },
+    cheap: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, services: { 'twin-model': { inputUsdPerMillion: 2, outputUsdPerMillion: 3 } } },
+  }
+  twin.providerServiceApiProtocols = {
+    pricey: { services: { 'twin-model': ['openai-chat-completions'] } },
+    cheap: { services: { 'twin-model': ['openai-chat-completions'] } },
+  }
+  const overCap = makePeer('b', ['pricey'])
+  overCap.providerPricing = {
+    pricey: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, services: { 'only-pricey': { inputUsdPerMillion: 50, outputUsdPerMillion: 60 } } },
+  }
+  overCap.providerServiceApiProtocols = { pricey: { services: { 'only-pricey': ['openai-chat-completions'] } } }
+  // As the local router does: a request naming its provider is priced through that provider.
+  const router = {
+    allowsPeerForPolicy: (request: SerializedHttpRequest, peer: PeerInfo) => {
+      const provider = request.headers['x-antseed-provider'] ?? peer.providers[0]!
+      const services = peer.providerPricing![provider]!.services!
+      return Object.values(services).every((price) => price.inputUsdPerMillion <= 8)
+    },
+    onResult: () => undefined,
+  }
+  const proxy = makeBuyerProxyWithPeers([twin, overCap], [twin, overCap], router)
+
+  const res = await invokeProxy(proxy, makeProxyRequest({ method: 'GET', path: '/v1/models' }))
+  assert.equal(res.statusCode, 200, res.body)
+  const ids = JSON.parse(res.body).data.map((model: { id: string }) => model.id)
+  assert.ok(ids.includes('twin-model'), `listed: ${ids.join(', ')}`)
+  assert.ok(!ids.includes('only-pricey'), `listed: ${ids.join(', ')}`)
+})
+
 test('GET /v1/models?type= filters by model type and rejects unknown types', async () => {
   const proxy = makeBuyerProxyWithPeers(makeNetworkModelPeers())
 
