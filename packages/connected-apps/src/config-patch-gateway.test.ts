@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -294,6 +294,25 @@ test('goose: a local endpoint of the user\'s own survives connect and disconnect
 
     assert.equal(removeConfigPatch(patch), true);
     assert.deepEqual(parse(await readFile(configPath, 'utf8')), original);
+  });
+});
+
+test('files holding the gateway key are readable only by their owner', { skip: process.platform === 'win32' }, async () => {
+  await withDir(async (dir) => {
+    const mode = async (file: string) => (await stat(file)).mode & 0o777;
+    const goose = path.join(dir, 'config.yaml');
+    const goosePatch: ConfigPatchDef = { format: 'goose', configPath: goose, providerKey: 'openai', baseURL: 'http://localhost:{buyerPort}' };
+    writeConfigPatch(goosePatch, LOCAL);
+    assert.equal(await mode(path.join(dir, 'custom_providers', 'custom_antseed.json')), 0o600);
+
+    // A file that was already readable by others is tightened, along with its backup.
+    const models = path.join(dir, 'models.json');
+    const settings = path.join(dir, 'settings.json');
+    await writeFile(models, '{}\n', { mode: 0o644 });
+    await chmod(models, 0o644);
+    writeConfigPatch({ format: 'pi', configPath: models, settingsPath: settings, providerKey: 'antseed', baseURL: 'http://localhost:{buyerPort}/v1', api: 'openai-completions' }, LOCAL);
+    assert.equal(await mode(models), 0o600);
+    assert.equal(await mode(`${models}.antseed.bak`), 0o600);
   });
 });
 

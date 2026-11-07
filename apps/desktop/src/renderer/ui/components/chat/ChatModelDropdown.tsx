@@ -37,6 +37,13 @@ type ChatModelDropdownProps = {
  * model id. Text models drive the conversation; image models switch Send to
  * image generation.
  */
+function renderModelPrice(model: ChatModel) {
+  if (model.free) return <span className={`${styles.tag} ${styles.tagFree}`}>Free</span>;
+  if (model.minImageUsd) return `from $${model.minImageUsd} per image`;
+  if (model.inputUsdPerMillion !== null || model.outputUsdPerMillion !== null) return `from ${formatPriceRange(model)}`;
+  return null;
+}
+
 export function ChatModelDropdown({
   models,
   selectedModelId,
@@ -99,15 +106,7 @@ export function ChatModelDropdown({
           <span className={styles.itemNameGroup}>
             <span className={styles.itemName}>{model.label}</span>
           </span>
-          <span className={styles.itemPrice}>
-            {model.free
-              ? <span className={`${styles.tag} ${styles.tagFree}`}>Free</span>
-              : model.minImageUsd
-                ? `from $${model.minImageUsd} per image`
-                : model.inputUsdPerMillion !== null || model.outputUsdPerMillion !== null
-                  ? `from ${formatPriceRange(model)}`
-                  : null}
-          </span>
+          <span className={styles.itemPrice}>{renderModelPrice(model)}</span>
         </span>
         <span className={styles.itemTags}>
           {model.type === 'image' && <span className={`${styles.tag} ${styles.tagBrand}`}>Image</span>}

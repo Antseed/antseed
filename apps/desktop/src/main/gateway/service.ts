@@ -7,7 +7,7 @@
 import { parseGatewayKeyInfo } from './key-info.js';
 import type { GatewayKeyInfo, GatewayPrivacy, GatewayStatus } from '../../shared/gateway-types.js';
 import { publishKeyWithPolicy } from './key-with-policy.js';
-import { rotateKeys } from './rotate-keys.js';
+import { assertKeyMayBeRecreated, keyIsUsable, rotateKeys, type KeyRecord } from './rotate-keys.js';
 import { resolveConnectDataDir, DEFAULT_LOCAL_GATEWAY_PORT, type ProcessManager, type RuntimeMode } from '../runtime/process-manager.js';
 import { ACTIVE_CONFIG_PATH } from '../runtime/active-config.js';
 import { encryptedIdentityPath, ensureSecureIdentity, isStoredIdentityUnreadable, secureIdentityEnv } from '../identity.js';
@@ -45,7 +45,6 @@ type Deps = {
 
 let injected: Deps | null = null;
 let lastError: string | null = null;
-let lastReachable = false;
 let startPromise: Promise<void> | null = null;
 const keyPromises = new Map<string, Promise<StoredGatewayKey>>();
 
@@ -100,9 +99,9 @@ export async function getGatewayStatus(): Promise<GatewayStatus> {
   const settings = getGatewaySettings();
   const origin = currentOrigin();
   const running = settings.mode === 'remote' ? true : isLocalRunning();
-  lastReachable = origin ? await probe(origin) : false;
+  const reachable = origin ? await probe(origin) : false;
   const hasKey = settings.mode === 'remote' ? getRemoteKey() !== null : getLocalKey(DESKTOP_KEY_SCOPE) !== null;
-  return { mode: settings.mode, origin, keyMode: settings.keyMode, running, reachable: lastReachable, hasKey, lastError };
+  return { mode: settings.mode, origin, keyMode: settings.keyMode, running, reachable, hasKey, lastError };
 }
 
 /** Starts the local gateway (and through it the buyer) and waits until it answers. No-op in remote mode. */
@@ -191,7 +190,11 @@ async function revokeLocalKey(id: string): Promise<void> {
   });
 }
 
-/** True when the gateway rejects this key (revoked, or the gateway's database was reset). */
+async function readKeyRecord(id: string): Promise<KeyRecord> {
+  return JSON.parse(await runGatewayCli(['key', 'show', id, '--json'])) as KeyRecord;
+}
+
+/** True when the gateway rejects this key (revoked, expired, replaced, or the gateway's database was reset). */
 async function keyRejected(origin: string, secret: string): Promise<boolean> {
   try {
     const response = await fetch(`${origin}/v1/key`, {
@@ -209,13 +212,14 @@ function scopeLabel(scope: string, appLabel?: string): string {
   return scope === DESKTOP_KEY_SCOPE ? 'Desktop' : `Desktop · ${appLabel ?? scope}`;
 }
 
-/** The local key for `scope`, created on first use and re-created when the gateway no longer accepts it. */
+/** The local key for `scope`, created on first use and re-created only if the gateway has lost it. */
 async function ensureLocalKey(scope: string, appLabel?: string): Promise<StoredGatewayKey> {
   const pending = keyPromises.get(scope);
   if (pending) return pending;
   const promise = (async () => {
     const existing = getLocalKey(scope);
     if (existing && !(await keyRejected(localGatewayOrigin(), existing.secret))) return existing;
+    if (existing) await assertKeyMayBeRecreated(existing, readKeyRecord);
     if (existing) deps().appendLog('gateway', 'system', `The gateway no longer accepts the "${existing.label}" key; creating a new one`);
     // A new desktop key (first run, replaced, or the gateway forgot the old
     // one) starts with no policy. In Private it can't be used until it has one,
@@ -256,13 +260,26 @@ export async function getGatewayEndpoint(app?: { name: string; label?: string })
   return { mode: 'local', origin: localGatewayOrigin(), apiKey: key.secret };
 }
 
-/** Revokes and replaces local keys: one scope, or all of them. Callers re-patch apps afterwards. */
+/** Issues new secrets for local keys: one scope, or all of them. Callers re-patch apps afterwards. */
 export async function rotateLocalKeys(scope?: string): Promise<void> {
   if (getGatewaySettings().mode !== 'local') throw new Error('Keys of a remote gateway are managed in its console');
   await ensureLocalGateway();
   await rotateKeys(scope ? [scope] : listLocalKeys().map((entry) => entry.scope), {
     get: getLocalKey,
-    revoke: (id) => runGatewayCli(['key', 'revoke', id]).then(() => undefined),
+    rotate: async (id) => {
+      // The user asked for a working key, so here a revoked or expired one gives way to a new one.
+      if (!keyIsUsable(await readKeyRecord(id))) {
+        await revokeLocalKey(id);
+        return null;
+      }
+      const parsed = JSON.parse(await runGatewayCli(['key', 'rotate', id, '--json'])) as { apiKey?: unknown };
+      if (typeof parsed.apiKey !== 'string' || !parsed.apiKey) throw new Error('The gateway did not return an API key');
+      return parsed.apiKey;
+    },
+    save: (target, secret) => {
+      const existing = getLocalKey(target);
+      if (existing) setLocalKey(target, { ...existing, secret });
+    },
     forget: deleteLocalKey,
   });
 }

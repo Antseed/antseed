@@ -1,7 +1,7 @@
 import { ANTSEED_MODEL_CONTEXT_WINDOW, ANTSEED_MODEL_MAX_OUTPUT_TOKENS } from '@antseed/protocol/service-api';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { Document, parseDocument } from 'yaml';
@@ -561,7 +561,24 @@ function writeJsonFile(filePath: string, data: JsonObject): void {
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
   }
-  writeFileSync(filePath, JSON.stringify(data, null, 2) + '\n', 'utf8');
+  writePrivateFile(filePath, JSON.stringify(data, null, 2) + '\n');
+}
+
+function restrictToOwner(filePath: string): void {
+  try {
+    chmodSync(filePath, 0o600);
+  } catch {
+    // Some filesystems (a WSL share, say) have no such permissions to set.
+  }
+}
+
+/**
+ * These files hold a real gateway key, so only their owner may read them. The
+ * mode only applies to a new file, so one that already exists is tightened too.
+ */
+function writePrivateFile(filePath: string, content: string): void {
+  writeFileSync(filePath, content, { encoding: 'utf8', mode: 0o600 });
+  restrictToOwner(filePath);
 }
 
 function backupConfigFile(filePath: string): void {
@@ -569,6 +586,7 @@ function backupConfigFile(filePath: string): void {
   const backupPath = `${filePath}.antseed.bak`;
   if (existsSync(backupPath)) return;
   copyFileSync(filePath, backupPath);
+  restrictToOwner(backupPath);
 }
 
 /**
@@ -910,7 +928,7 @@ function writeTextFile(filePath: string, content: string): void {
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
   }
-  writeFileSync(filePath, content, 'utf8');
+  writePrivateFile(filePath, content);
 }
 
 // --- Droid CLI + Factory Desktop (`~/.factory/settings.json`) ---
@@ -1988,7 +2006,7 @@ function readHermesConfigDocument(filePath: string): Document.Parsed {
 function writeHermesConfigDocument(filePath: string, document: Document.Parsed): void {
   const dir = path.dirname(filePath);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeFileSync(filePath, document.toString(), 'utf8');
+  writePrivateFile(filePath, document.toString());
 }
 
 function applyHermesConfigPatch(patch: HermesConfigPatchDef, t: ResolvedTarget): void {
