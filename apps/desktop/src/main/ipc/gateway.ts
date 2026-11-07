@@ -23,12 +23,10 @@ import {
   hasRemoteKey,
   remoteGatewayFor,
   updateGatewaySettings,
-  type GatewayKeyMode,
-  type GatewayMode,
 } from '../gateway/settings.js';
 import { reconnectAllApps } from '../connected-apps/patching/connection.js';
 import { findConnectableProfile } from '../connected-apps/patching/profiles.js';
-import type { GatewayEndpointInfo } from '../../shared/gateway-types.js';
+import type { GatewayEndpointInfo, GatewaySettingsPatch } from '../../shared/gateway-types.js';
 import { readGatewayRewards } from '../gateway/rewards.js';
 import { ensureSecureIdentity, getSecureIdentity } from '../identity.js';
 import {
@@ -70,12 +68,7 @@ export function registerGatewayIpc(deps: GatewayIpcDeps): void {
 
   ipcMain.handle('gateway:get-settings', () => ({ ...getGatewaySettings(), hasRemoteKey: hasRemoteKey() }));
 
-  ipcMain.handle('gateway:update-settings', async (_event, opts: {
-    mode?: GatewayMode;
-    remoteUrl?: string | null;
-    remoteApiKey?: string | null;
-    keyMode?: GatewayKeyMode;
-  }) => {
+  ipcMain.handle('gateway:update-settings', async (_event, opts: GatewaySettingsPatch) => {
     try {
       const patch = {
         ...(opts?.mode === 'local' || opts?.mode === 'remote' ? { mode: opts.mode } : {}),

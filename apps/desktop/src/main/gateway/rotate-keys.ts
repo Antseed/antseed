@@ -48,7 +48,11 @@ export async function rotateKeys(
 export type KeyRecord = { status?: unknown; expiresAt?: unknown };
 
 export function keyIsUsable(record: KeyRecord, now = Date.now()): boolean {
-  return record.status === 'active' && !(typeof record.expiresAt === 'number' && record.expiresAt <= now);
+  if (record.status !== 'active') return false;
+  // `key show --json` gives an ISO date. One that can't be read counts as expired.
+  if (record.expiresAt === null || record.expiresAt === undefined) return true;
+  const expiresAt = typeof record.expiresAt === 'string' ? Date.parse(record.expiresAt) : Number(record.expiresAt);
+  return Number.isFinite(expiresAt) && expiresAt > now;
 }
 
 /**

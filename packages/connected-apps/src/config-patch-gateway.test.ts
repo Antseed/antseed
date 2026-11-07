@@ -631,6 +631,20 @@ test('pi and GooeyPi: reconnecting the one left after the other disconnects keep
   });
 });
 
+test('pi: a custom provider key does not save itself over the user\'s selection', async () => {
+  await withDir(async (dir) => {
+    const settings = path.join(dir, 'settings.json');
+    const patch: ConfigPatchDef = { format: 'pi', configPath: path.join(dir, 'models.json'), settingsPath: settings, providerKey: 'my-gateway', baseURL: 'http://localhost:{buyerPort}/v1', api: 'openai-completions' };
+    await writeFile(settings, JSON.stringify({ defaultProvider: 'mine', defaultModel: 'my-model' }), 'utf8');
+    writeConfigPatch(patch, LOCAL);
+    writeConfigPatch(patch, LOCAL);
+    removeConfigPatch(patch);
+    const after = await readJson(settings);
+    assert.equal(after['defaultProvider'], 'mine');
+    assert.equal(after['defaultModel'], 'my-model');
+  });
+});
+
 test('pi and GooeyPi share the selection: it returns once both are gone, in either order', async () => {
   for (const order of [['pi', 'gooeypi'], ['gooeypi', 'pi']]) {
     await withDir(async (dir) => {

@@ -42,16 +42,22 @@ export function AgentSkillsPanel({ className, page = false }: {
       } else if (!agent.installed) {
         setNote({ text: `Added to ${agent.label}. Start a new session and ask, for example, “using Antseed, generate an image of…”`, error: false });
       }
+    } catch (error) {
+      setNote({ text: error instanceof Error ? error.message : 'Could not update the skills', error: true });
     } finally {
       setBusy(null);
     }
   }
 
   async function copySetup(): Promise<void> {
-    const result = await window.antseedDesktop?.agentSkillsCopyPrompt?.();
-    setNote(result?.ok
-      ? { text: 'Copied. Paste it into your agent; it includes your gateway URL and API key.', error: false }
-      : { text: result?.error ?? 'Could not copy', error: true });
+    try {
+      const result = await window.antseedDesktop?.agentSkillsCopyPrompt?.();
+      setNote(result?.ok
+        ? { text: 'Copied. Paste it into your agent; it includes your gateway URL and API key.', error: false }
+        : { text: result?.error ?? 'Could not copy', error: true });
+    } catch (error) {
+      setNote({ text: error instanceof Error ? error.message : 'Could not copy', error: true });
+    }
   }
 
   // Agents found on this computer first; the rest can still take the skills.

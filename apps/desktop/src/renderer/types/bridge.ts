@@ -8,6 +8,7 @@ import type {
   GatewayPrivacy,
   GatewayPrivacyMode,
   GatewayRewardsSummary,
+  GatewaySettingsPatch,
   GatewaySettingsView as GatewaySettings,
   GatewayStatus,
 } from '../../shared/gateway-types.js';
@@ -62,6 +63,7 @@ export type ConnectedAppsState = {
 };
 
 export type {
+  GatewaySettingsPatch,
   GatewayEndpointInfo,
   GatewayKeyInfo,
   GatewayKeyMode,
@@ -343,7 +345,7 @@ export type DesktopBridge = {
 
   gatewayGetStatus?: () => Promise<GatewayStatus>;
   gatewayGetSettings?: () => Promise<GatewaySettings>;
-  gatewayUpdateSettings?: (opts: { mode?: GatewayMode; remoteUrl?: string | null; remoteApiKey?: string | null; keyMode?: GatewayKeyMode }) => Promise<{ ok: boolean; settings?: GatewaySettings; error?: string }>;
+  gatewayUpdateSettings?: (opts: GatewaySettingsPatch) => Promise<{ ok: boolean; settings?: GatewaySettings; error?: string }>;
   gatewayRotateKeys?: () => Promise<{ ok: boolean; error?: string }>;
   /** Base URL (with /v1) + the desktop key, for pasting into any OpenAI- or Anthropic-compatible tool. */
   gatewayGetEndpoint?: (opts?: { app?: string }) => Promise<GatewayEndpointInfo>;

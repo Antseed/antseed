@@ -97,6 +97,27 @@ export function clearPrivacySwitchError(): void {
   if (privacySwitchState.error) publishPrivacySwitch({ ...privacySwitchState, error: null });
 }
 
+/**
+ * The gateway changed, so whatever the screen shows may not be true of the new
+ * one, and a read started against the old one must not settle it. Sending waits
+ * until the new gateway has said.
+ */
+export async function reloadPrivacyForNewGateway(): Promise<void> {
+  privacyGeneration += 1;
+  privacyUnconfirmedError = null;
+  if (!requestedPrivacyMode) publishPrivacySwitch({ switching: true, error: null });
+  const read = await privacyResource.reload();
+  if (requestedPrivacyMode) return;
+  if (read) {
+    publishPrivacySwitch({ switching: false, error: null });
+    return;
+  }
+  const error = 'Could not read this gateway\'s privacy mode';
+  privacyUnconfirmedError = error;
+  publishPrivacySwitch({ switching: true, error });
+  window.setTimeout(() => { void privacyResource.refresh(); }, PRIVACY_RECHECK_MS);
+}
+
 export function getPrivacySwitchState(): PrivacySwitchState {
   return privacySwitchState;
 }

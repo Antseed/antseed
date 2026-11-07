@@ -64,11 +64,11 @@ import { asErrorMessage } from '../utils.js';
 import {
   GATEWAY_PROVIDER_ID,
   makeGatewayModel,
-  resolveSystemPrompt,
   type ChatModel,
 } from './gateway-model.js';
 import { modelAcceptsImages, routeModeOf, splitPinnedModel } from '../../shared/pinned-model.js';
 import { createGatewayBashTool } from './gateway-bash-tool.js';
+import { resolveSystemPrompt } from './system-prompt.js';
 import { sessionServiceId } from './legacy-seller-pin.js';
 import {
   convertAssistantMessageForUi,

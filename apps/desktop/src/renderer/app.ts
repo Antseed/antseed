@@ -1,3 +1,4 @@
+import { reloadPrivacyForNewGateway } from './modules/app/vpr-resources';
 import '@antseed/ui/styles';
 import { initChatModule } from './modules/chat/controller';
 import { initSettingsModule } from './modules/app/settings';
@@ -254,7 +255,10 @@ registerActions({
   chooseWorkspace: () => { recordUserAction('workspace_change', 'chat'); return chatApi.chooseWorkspace(); },
 });
 
-bridge?.onGatewayChanged?.(() => { void refreshAll(); });
+bridge?.onGatewayChanged?.(() => {
+  void refreshAll();
+  void reloadPrivacyForNewGateway();
+});
 
 /* ------------------------------------------------------------------ */
 /*  Mount React (store + actions both ready)                           */

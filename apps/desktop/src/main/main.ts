@@ -60,7 +60,7 @@ import {
   reconnectAllApps,
   releaseConnectedAppsOnQuit,
 } from './connected-apps/patching/connection.js';
-import { ensureLocalGateway, holdLocalGatewayUntil, initGatewayService, stopLocalGateway } from './gateway/service.js';
+import { closeLocalGateway, ensureLocalGateway, holdLocalGatewayUntil, initGatewayService } from './gateway/service.js';
 import { gatewaySettingsPath } from './gateway/settings.js';
 import { IS_SAFE_STORAGE_EXPORT } from './process-role.js';
 import { isMultiInstanceDevelopment } from './dev-instance.js';
@@ -225,7 +225,7 @@ async function stopDesktopServices(): Promise<void> {
     // The gateway stops even if restoring the apps' configs failed.
     releaseConnectedAppsOnQuit().catch((err: unknown) => {
       appendLog('gateway', 'system', `Releasing connected apps failed: ${err instanceof Error ? err.message : String(err)}`);
-    }).then(() => stopLocalGateway()),
+    }).then(() => closeLocalGateway()),
     stopPaymentsPortal(),
   ]);
 }

@@ -28,7 +28,7 @@ test('a plain OpenAI-compatible entry is a text model over chat completions', ()
 test('the offer summary has the cheapest prices, free and stakers-only offers, TEE and capabilities', () => {
   const model = toChatModel({
     id: 'deepseek-v4-flash',
-    capability_coverage: { tool_use: 2 },
+    capabilities: { tool_use: true },
     peers: [
       { peerId: 'a', inputUsdPerMillion: 0.3, outputUsdPerMillion: 0.9, advertisedVerifierIds: ['antseed-verifier'] },
       { peerId: 'b', inputUsdPerMillion: 0.1, outputUsdPerMillion: 1.2, capabilities: { reasoning: true } },
@@ -91,7 +91,7 @@ test('the picker lists each model id once: tool-capable first, then most sellers
     { id: 'a', name: 'alpha' },
     { id: 'b', name: 'Duplicate' },
     { id: 'c', name: 'Crowded', peers: [{ peerId: '1' }, { peerId: '2' }] },
-    { id: 'd', name: 'Delta', capability_coverage: { tool_use: 1 } },
+    { id: 'd', name: 'Delta', capabilities: { tool_use: true } },
   ]);
   assert.deepEqual(models.map((model) => model.label), ['Delta', 'Crowded', 'alpha', 'Beta']);
 });
@@ -115,9 +115,9 @@ test('apps default to free models first, then tool use, then the most sellers; n
   const free = { inputUsdPerMillion: 0, outputUsdPerMillion: 0 };
   const paid = { inputUsdPerMillion: 1, outputUsdPerMillion: 2 };
   const models = toChatModels([
-    { id: 'paid-tools', capability_coverage: { tool_use: 1 }, peers: [{ peerId: '1', ...paid }, { peerId: '2', ...paid }, { peerId: '3', ...paid }] },
+    { id: 'paid-tools', capabilities: { tool_use: true }, peers: [{ peerId: '1', ...paid }, { peerId: '2', ...paid }, { peerId: '3', ...paid }] },
     { id: 'free-plain', peers: [{ peerId: '1', ...free }, { peerId: '2', ...free }] },
-    { id: 'free-tools', capability_coverage: { tool_use: 1 }, peers: [{ peerId: '1', ...free }] },
+    { id: 'free-tools', capabilities: { tool_use: true }, peers: [{ peerId: '1', ...free }] },
     { id: 'free-image', type: 'image', peers: [{ peerId: '1', ...free }] },
   ]);
   assert.deepEqual(recommendAppModels(models).map((model) => model.id), ['free-tools', 'free-plain', 'paid-tools']);
@@ -146,4 +146,24 @@ test('sellers that take images are listed, for a chat pinned to one when not all
   } as never);
   assert.equal(model.supportsImages, false);
   assert.deepEqual(model.imageInputSellerIds, ['a'.repeat(40)]);
+});
+
+test('a seller reporting a capability as false does not count as having it', () => {
+  const model = toChatModel({
+    id: 'plain',
+    capability_coverage: { tool_use: 1, reasoning: 1 },
+    capabilities: { tool_use: false, reasoning: false },
+    peers: [{ peerId: 'a', capabilities: { toolUse: false, reasoning: false } }],
+  });
+  assert.equal(model.toolUse, false);
+  assert.equal(model.reasoning, false);
+});
+
+test('one seller declaring a capability is enough, even if another does not', () => {
+  const model = toChatModel({
+    id: 'mixed',
+    capabilities: { tool_use: false },
+    peers: [{ peerId: 'a', capabilities: { toolUse: true } }, { peerId: 'b', capabilities: { toolUse: false } }],
+  });
+  assert.equal(model.toolUse, true);
 });

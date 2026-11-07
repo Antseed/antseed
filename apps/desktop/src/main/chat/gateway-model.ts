@@ -7,8 +7,6 @@
 
 import type { ChatModel, ChatServiceProtocol } from '../../shared/chat-gateway-types.js';
 import { compareDefaultModels } from '../../shared/chat-model-ranking.js';
-import { readFile } from 'node:fs/promises';
-import path from 'node:path';
 import type { Model } from '@mariozechner/pi-ai';
 import { ANTSEED_MODEL_CONTEXT_WINDOW, ANTSEED_MODEL_MAX_OUTPUT_TOKENS } from '@antseed/node/types';
 import { TEE_VERIFIER_ID } from '@antseed/node/tee-status';
@@ -23,8 +21,6 @@ export type { ChatServiceProtocol };
 /** One row of the chat model picker: a gateway model id, not a peer offer. */
 export type { ChatModel };
 
-export const CHAT_SYSTEM_PROMPT_ENV = 'ANTSEED_CHAT_SYSTEM_PROMPT';
-export const CHAT_SYSTEM_PROMPT_FILE_ENV = 'ANTSEED_CHAT_SYSTEM_PROMPT_FILE';
 
 /** Preference order when a model is served over several protocols. */
 const PROTOCOL_PREFERENCE: ChatServiceProtocol[] = ['anthropic-messages', 'openai-responses', 'openai-chat-completions'];
@@ -123,7 +119,9 @@ function record(value: unknown): Record<string, unknown> {
 /** The offer summary the picker shows, worked out like the gateway console's chat. */
 function entryOfferSummary(entry: GatewayModelEntry): Pick<ChatModel, 'sellers' | 'free' | 'minImageUsd' | 'freeSellerId' | 'freeForStakers' | 'tee' | 'toolUse' | 'reasoning' | 'inputUsdPerMillion' | 'outputUsdPerMillion'> {
   const peers = records(entry['peers']);
-  const coverage = record(entry['capability_coverage']);
+  const declared = record(entry['capabilities']);
+  // Coverage only counts sellers that reported at all, including those reporting false.
+  const anyPeerDeclares = (capability: 'toolUse' | 'reasoning'): boolean => peers.some((peer) => record(peer['capabilities'])[capability] === true);
   const cheapest = (field: string): number | null => {
     const values = peers.map((peer) => finiteNumber(peer[field])).filter((value): value is number => value !== null && value >= 0);
     return values.length > 0 ? Math.min(...values) : null;
@@ -139,8 +137,8 @@ function entryOfferSummary(entry: GatewayModelEntry): Pick<ChatModel, 'sellers' 
     freeSellerId: typeof freeSeller?.['peerId'] === 'string' ? freeSeller['peerId'] : null,
     freeForStakers: peers.some(stakersOnly),
     tee: peers.some((peer) => strings(peer['advertisedVerifierIds']).includes(TEE_VERIFIER_ID)),
-    toolUse: Number(coverage['tool_use'] ?? 0) > 0 || peers.some((peer) => record(peer['capabilities'])['toolUse'] === true),
-    reasoning: Number(coverage['reasoning'] ?? 0) > 0 || peers.some((peer) => record(peer['capabilities'])['reasoning'] === true),
+    toolUse: declared['tool_use'] === true || anyPeerDeclares('toolUse'),
+    reasoning: declared['reasoning'] === true || anyPeerDeclares('reasoning'),
     inputUsdPerMillion: cheapest('inputUsdPerMillion'),
     outputUsdPerMillion: cheapest('outputUsdPerMillion'),
   };
@@ -247,33 +245,4 @@ export function makeGatewayModel({ modelId, endpoint, protocol, supportsImages, 
     return { ...base, api: 'openai-responses' as const };
   }
   return { ...base, api: 'anthropic-messages' as const };
-}
-
-export function normalizePromptText(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : undefined;
-}
-
-/** User system-prompt override: env text, env file, then `buyer.chatSystemPrompt` in the config. */
-export async function resolveSystemPrompt(configPath: string): Promise<string | undefined> {
-  const fromEnv = normalizePromptText(process.env[CHAT_SYSTEM_PROMPT_ENV]);
-  if (fromEnv) return fromEnv;
-
-  const promptPath = normalizePromptText(process.env[CHAT_SYSTEM_PROMPT_FILE_ENV]);
-  if (promptPath) {
-    try {
-      const normalized = normalizePromptText(await readFile(path.resolve(promptPath), 'utf8'));
-      if (normalized) return normalized;
-    } catch {
-      // Ignore invalid prompt files and continue to the config fallback.
-    }
-  }
-
-  try {
-    const parsed = JSON.parse(await readFile(configPath, 'utf8')) as { buyer?: { chatSystemPrompt?: unknown } };
-    return normalizePromptText(parsed.buyer?.chatSystemPrompt);
-  } catch {
-    return undefined;
-  }
 }

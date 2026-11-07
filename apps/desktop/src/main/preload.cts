@@ -454,7 +454,7 @@ const api = {
   },
   gatewayGetStatus: () => ipcRenderer.invoke('gateway:get-status'),
   gatewayGetSettings: () => ipcRenderer.invoke('gateway:get-settings'),
-  gatewayUpdateSettings: (opts: { mode?: 'local' | 'remote'; remoteUrl?: string | null; remoteApiKey?: string | null; keyMode?: 'shared' | 'per-app' }) => ipcRenderer.invoke('gateway:update-settings', opts),
+  gatewayUpdateSettings: (opts: import('../shared/gateway-types.js').GatewaySettingsPatch) => ipcRenderer.invoke('gateway:update-settings', opts),
   gatewayRotateKeys: () => ipcRenderer.invoke('gateway:rotate-keys'),
   gatewayGetEndpoint: (opts?: { app?: string }) => ipcRenderer.invoke('gateway:get-endpoint', opts),
   gatewayGetKeyInfo: () => ipcRenderer.invoke('gateway:get-key-info'),

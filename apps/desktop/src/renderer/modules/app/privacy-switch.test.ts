@@ -133,4 +133,29 @@ describe('requestPrivacyMode', () => {
     calls[0].settle({ ok: true, privacy: privacy('private') });
     await done;
   });
+
+  it('a read from the old gateway cannot settle the new one, and sending waits for the new one', async () => {
+    const { reloadPrivacyForNewGateway, getPrivacySwitchState, privacyResource, shownMode } = await setup();
+    const answers: Array<(value: { ok: boolean; privacy: GatewayPrivacy }) => void> = [];
+    (window as unknown as { antseedDesktop: { gatewayGetPrivacy: unknown } }).antseedDesktop.gatewayGetPrivacy = () => new Promise((resolve) => answers.push(resolve));
+    void privacyResource.refresh();
+    const reloading = reloadPrivacyForNewGateway();
+    expect(getPrivacySwitchState().switching).toBe(true);
+    answers[1]!({ ok: true, privacy: privacy('anonymous') });
+    await reloading;
+    expect(getPrivacySwitchState()).toEqual({ switching: false, error: null });
+    answers[0]!({ ok: true, privacy: privacy('private') });
+    await tick();
+    expect(shownMode()).toBe('anonymous');
+  });
+
+  it('keeps sending held when the new gateway cannot be read', async () => {
+    const { reloadPrivacyForNewGateway, getPrivacySwitchState } = await setup();
+    const stubbed = window as unknown as { antseedDesktop: { gatewayGetPrivacy: unknown }; setTimeout: unknown };
+    stubbed.antseedDesktop.gatewayGetPrivacy = async () => ({ ok: false, error: 'down' });
+    stubbed.setTimeout = () => 0;
+    await reloadPrivacyForNewGateway();
+    expect(getPrivacySwitchState().switching).toBe(true);
+    expect(getPrivacySwitchState().error).toMatch(/privacy mode/);
+  });
 });

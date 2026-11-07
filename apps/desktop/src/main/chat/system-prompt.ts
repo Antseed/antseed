@@ -11,6 +11,9 @@
  * without the pi documentation section. Tool list and guidelines are hardcoded
  * to match the runtime tool set (pi built-in + our custom tools).
  */
+
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
 export const VPR_SYSTEM_PROMPT = `\
 You are an AI assistant running within Antseed Desktop, the desktop app for the Antseed peer-to-peer AI services network. You help users with coding, research, and general tasks.
 
@@ -77,4 +80,36 @@ Workspace model:
 - When starting a new chat, it uses whatever workspace is currently selected.
 - The workspace indicator in the UI shows the current workspace for the active chat.${workspaceLine}${permissionLine}
 `.trim();
+}
+
+export const CHAT_SYSTEM_PROMPT_ENV = 'ANTSEED_CHAT_SYSTEM_PROMPT';
+export const CHAT_SYSTEM_PROMPT_FILE_ENV = 'ANTSEED_CHAT_SYSTEM_PROMPT_FILE';
+
+export function normalizePromptText(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+/** User system-prompt override: env text, env file, then `buyer.chatSystemPrompt` in the config. */
+export async function resolveSystemPrompt(configPath: string): Promise<string | undefined> {
+  const fromEnv = normalizePromptText(process.env[CHAT_SYSTEM_PROMPT_ENV]);
+  if (fromEnv) return fromEnv;
+
+  const promptPath = normalizePromptText(process.env[CHAT_SYSTEM_PROMPT_FILE_ENV]);
+  if (promptPath) {
+    try {
+      const normalized = normalizePromptText(await readFile(path.resolve(promptPath), 'utf8'));
+      if (normalized) return normalized;
+    } catch {
+      // Ignore invalid prompt files and continue to the config fallback.
+    }
+  }
+
+  try {
+    const parsed = JSON.parse(await readFile(configPath, 'utf8')) as { buyer?: { chatSystemPrompt?: unknown } };
+    return normalizePromptText(parsed.buyer?.chatSystemPrompt);
+  } catch {
+    return undefined;
+  }
 }

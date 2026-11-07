@@ -11,7 +11,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { resolveConnectDataDir } from '../runtime/process-manager.js';
 import { normalizeGatewayUrl } from './remote-url.js';
-import type { GatewayKeyMode, GatewayMode, GatewayPrivacyMode, GatewaySettings } from '../../shared/gateway-types.js';
+import type { GatewayKeyMode, GatewayMode, GatewayPrivacyMode, GatewaySettings, GatewaySettingsPatch } from '../../shared/gateway-types.js';
 
 export type { GatewayKeyMode, GatewayMode, GatewayPrivacyMode, GatewaySettings };
 
@@ -99,11 +99,7 @@ export function hasRemoteKey(): boolean {
   return load().remoteKeyEnc !== null;
 }
 
-type GatewaySettingsPatch = {
-  mode?: GatewayMode;
-  remoteUrl?: string | null;
-  remoteApiKey?: string | null;
-  keyMode?: GatewayKeyMode;
+type StoredSettingsPatch = GatewaySettingsPatch & {
   privacy?: GatewayPrivacyMode;
 };
 
@@ -125,7 +121,7 @@ export function remoteGatewayFor(patch: GatewaySettingsPatch): { origin: string;
   return { origin, apiKey };
 }
 
-export function updateGatewaySettings(patch: GatewaySettingsPatch): GatewaySettings {
+export function updateGatewaySettings(patch: StoredSettingsPatch): GatewaySettings {
   const current = load();
   const next: StoredFile = { ...current, localKeys: { ...current.localKeys } };
   if (patch.mode) next.mode = patch.mode;

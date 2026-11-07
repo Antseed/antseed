@@ -8,6 +8,7 @@ import { parseGatewayKeyInfo } from './key-info.js';
 import type { GatewayKeyInfo, GatewayPrivacy, GatewayStatus } from '../../shared/gateway-types.js';
 import { publishKeyWithPolicy } from './key-with-policy.js';
 import { assertKeyMayBeRecreated, keyIsUsable, rotateKeys, type KeyRecord } from './rotate-keys.js';
+import { startUnlessClosing } from './start-guard.js';
 import { resolveConnectDataDir, DEFAULT_LOCAL_GATEWAY_PORT, type ProcessManager, type RuntimeMode } from '../runtime/process-manager.js';
 import { ACTIVE_CONFIG_PATH } from '../runtime/active-config.js';
 import { encryptedIdentityPath, ensureSecureIdentity, isStoredIdentityUnreadable, secureIdentityEnv } from '../identity.js';
@@ -46,6 +47,7 @@ type Deps = {
 let injected: Deps | null = null;
 let lastError: string | null = null;
 let startPromise: Promise<void> | null = null;
+let closing = false;
 const keyPromises = new Map<string, Promise<StoredGatewayKey>>();
 
 export function initGatewayService(deps: Deps): void {
@@ -120,6 +122,7 @@ export function holdLocalGatewayUntil(gate: Promise<void>): void {
 
 export async function ensureLocalGateway(): Promise<void> {
   await startGate;
+  if (closing) throw new Error('Antseed Desktop is closing');
   if (getGatewaySettings().mode !== 'local') return;
   if (isLocalRunning() && await probe(localGatewayOrigin())) return;
   startPromise ??= (async () => {
@@ -131,7 +134,7 @@ export async function ensureLocalGateway(): Promise<void> {
         if (isStoredIdentityUnreadable()) {
           throw new Error(`Your signer key (${encryptedIdentityPath()}) can't be read by this version of the app, so the gateway won't start with a different wallet. A backup was saved next to it. Reopen the app, or reinstall the previous version to read it.`);
         }
-        await deps().processManager.start({
+        await startUnlessClosing(() => closing, () => deps().processManager.start({
           mode: 'gateway',
           configPath: ACTIVE_CONFIG_PATH,
           ...(isDesktopDebugEnabled() ? { verbose: true } : {}),
@@ -141,11 +144,12 @@ export async function ensureLocalGateway(): Promise<void> {
           },
         }).catch((err: unknown) => {
           if (!(err instanceof Error && err.message.includes('already running'))) throw err;
-        });
+        }), () => deps().processManager.stop('gateway'));
       }
       // The gateway waits for its buyer (up to a minute) before it serves.
       const deadline = Date.now() + 90_000;
       while (Date.now() < deadline) {
+        if (closing) throw new Error('Antseed Desktop is closing');
         if (await probe(localGatewayOrigin(), 1_500)) {
           lastError = null;
           return;
@@ -166,6 +170,14 @@ export async function ensureLocalGateway(): Promise<void> {
 
 export async function stopLocalGateway(): Promise<void> {
   await deps().processManager.stop('gateway');
+}
+
+/** For quitting: no gateway starts after this, and one that was starting is waited for and stopped. */
+export async function closeLocalGateway(): Promise<void> {
+  closing = true;
+  await stopLocalGateway();
+  await startPromise?.catch(() => undefined);
+  await stopLocalGateway();
 }
 
 async function runGatewayCli(args: string[]): Promise<string> {

@@ -31,6 +31,11 @@ export type GatewaySettings = {
   privacy: GatewayPrivacyMode;
 };
 
+/** What the renderer may change. */
+export type GatewaySettingsPatch = Partial<Pick<GatewaySettings, 'mode' | 'remoteUrl' | 'keyMode'>> & {
+  remoteApiKey?: string | null;
+};
+
 /** The settings as the renderer gets them: the remote key itself never leaves the main process. */
 export type GatewaySettingsView = GatewaySettings & { hasRemoteKey: boolean };
 

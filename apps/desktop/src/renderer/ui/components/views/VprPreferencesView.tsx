@@ -4,8 +4,8 @@ import { ArrowUpRight01Icon, Moon02Icon, Sun02Icon } from '@hugeicons/core-free-
 import { Button, Segmented, TextField } from '@antseed/ui';
 import { activeThemeMode, applyThemeMode, type ThemeMode } from '../../lib/theme';
 import type { TelemetryStatus } from '../../../../shared/telemetry';
-import type { GatewayKeyMode, GatewayMode, GatewaySettings } from '../../../types/bridge';
-import { appsResource, clearPrivacySwitchError, gatewayResource, privacyResource } from '../../../modules/app/vpr-resources';
+import type { GatewayKeyMode, GatewayMode, GatewaySettings, GatewaySettingsPatch } from '../../../types/bridge';
+import { appsResource, reloadPrivacyForNewGateway, gatewayResource } from '../../../modules/app/vpr-resources';
 import { useCachedResource } from '../../../modules/app/cached-resource';
 import { VprCard, VprPage, VprSettingRow, VprToggle } from '../vpr/VprKit';
 import { ExportSignerKeyDialog, ImportSignerKeyDialog } from './SignerKeyDialogs';
@@ -13,8 +13,6 @@ import { VprFreeTierCard } from './VprFreeTierCard';
 import styles from './VprPreferencesView.module.scss';
 
 type Props = { onSelectView?: (view: import('../../types').ViewName) => void };
-
-type GatewaySettingsPatch = { mode?: GatewayMode; remoteUrl?: string | null; remoteApiKey?: string | null; keyMode?: GatewayKeyMode };
 
 const TELEMETRY_DOC_URL = 'https://github.com/AntSeed/antseed/blob/main/docs/telemetry.md';
 
@@ -66,8 +64,7 @@ function GatewaySection() {
       // Refresh consumers even on failure: settings may already have changed.
       void gatewayResource.refresh();
       void appsResource.refresh();
-      clearPrivacySwitchError();
-      void privacyResource.refresh();
+      void reloadPrivacyForNewGateway();
       setBusy(null);
     }
   };

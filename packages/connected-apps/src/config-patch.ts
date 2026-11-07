@@ -1535,7 +1535,7 @@ function applyPiProviderToFiles(modelsPath: string, settingsPath: string, patch:
   const settings = readConfigPatchFile(settingsPath);
   const selected = pickModel(t, settings['defaultProvider'] === patch.providerKey ? settings['defaultModel'] : undefined);
   if (selected) {
-    if (!isAntseedPiProvider(settings['defaultProvider'])) {
+    if (settings['defaultProvider'] !== patch.providerKey && !isAntseedPiProvider(settings['defaultProvider'])) {
       // Nothing selected means the other Antseed app just disconnected and left
       // the selection saved for the last one to restore.
       const selection = pickKeys(settings, ['defaultProvider', 'defaultModel']);

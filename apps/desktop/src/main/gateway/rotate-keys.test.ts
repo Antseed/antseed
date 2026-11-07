@@ -45,6 +45,10 @@ test('keyIsUsable: active and not expired', () => {
   assert.equal(keyIsUsable({ status: 'active', expiresAt: 2_000 }, 1_000), true);
   assert.equal(keyIsUsable({ status: 'active', expiresAt: 1_000 }, 1_000), false);
   assert.equal(keyIsUsable({ status: 'revoked', expiresAt: null }), false);
+  // The shape `key show --json` really prints.
+  assert.equal(keyIsUsable({ status: 'active', expiresAt: '2020-01-01T00:00:00.000Z' }), false);
+  assert.equal(keyIsUsable({ status: 'active', expiresAt: '2999-01-01T00:00:00.000Z' }), true);
+  assert.equal(keyIsUsable({ status: 'active', expiresAt: 'garbage' }), false);
 });
 
 test('a rejected key the gateway has a record of is not quietly recreated', async () => {
