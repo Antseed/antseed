@@ -63,7 +63,7 @@ It writes a compose file (JSON, which compose also reads) with the image pinned 
 Deploy `docker-compose.json` as a dstack app with KMS enabled:
 
 - set the printed variables as encrypted environment variables: `ANTSEED_IDENTITY_HEX` (your identity key, hex) and your API keys, and allow exactly those;
-- add no pre-launch script. Public logs may be on: the image runs the seller in content-free mode, so its logs and databases hold no prompts, answers or upstream error text, only metadata such as status codes, token counts and buyer peer IDs.
+- add no pre-launch script. Public logs may be on: the image runs the seller in content-free mode, so its logs and databases hold no prompts or answers, nor upstream error text about a request, only metadata such as status codes, token counts and buyer peer IDs.
 
 The image starts `antseed seller start` with the verifier's prover, which mints its quotes through the dstack guest agent. Any change to the compose file (image, config, prices) gives a new compose hash, which buyers check against the same rules, so redeploying needs no approval.
 

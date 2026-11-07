@@ -3,7 +3,7 @@ import { serviceHealthOf } from '../discovery/peer-metadata.js';
 import type { Provider, ServiceHealthStatus, UpstreamAccountStatus } from '../interfaces/seller-provider.js';
 import type { SerializedHttpRequest } from '../types/http.js';
 import { isAudioSpeechProtocol, isNativeVideoProtocol, isRoutingProtocol, type ServiceApiProtocol } from '../types/service-api.js';
-import { debugLog, debugWarn, isContentFreeLogging, upstreamErrorCode } from '../utils/debug.js';
+import { debugLog, debugWarn } from '../utils/debug.js';
 import { isLiveResponseOutOfCredit, isUpstreamOutOfCredit } from './upstream-credit.js';
 
 /** Default sweep interval. Each sweep sends one 1-token probe per service without recent buyer traffic. */
@@ -541,9 +541,8 @@ export class ModelHealthChecker {
     const target = this._findTarget(provider);
     if (!target || this._stopped) return;
     if (statusCode >= 400 && isLiveResponseOutOfCredit(statusCode, body)) {
-      // A buyer's request, so content-free mode keeps only the error code of the upstream's answer.
-      const said = isContentFreeLogging() ? upstreamErrorCode(body) ?? 'out of credit' : summarizeBody(new TextEncoder().encode(body));
-      this._setAccount(target.provider, 'out', `HTTP ${statusCode}: ${said}`, null);
+      // The upstream's billing message, about the account rather than the request, so it is kept even in content-free mode.
+      this._setAccount(target.provider, 'out', `HTTP ${statusCode}: ${summarizeBody(new TextEncoder().encode(body))}`, null);
     } else if (statusCode < 400 && billable && this._accounts.get(target.provider) === 'out') {
       this._setAccount(target.provider, 'ok', `HTTP ${statusCode} on a request`, null);
     }

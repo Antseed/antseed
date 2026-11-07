@@ -5,7 +5,7 @@
 // restores them.
 //
 // Only payment and metering state leaves the TEE. The seller runs in content-free mode, so these
-// databases hold no prompts, answers or upstream error text (e2e/tests/seller-content-leak.test.ts).
+// databases hold no prompts or answers, nor upstream error text about a request (e2e/tests/seller-content-leak.test.ts).
 import { createCipheriv, createDecipheriv, createHash, hkdfSync, randomBytes } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'

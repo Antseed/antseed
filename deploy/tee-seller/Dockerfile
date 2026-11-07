@@ -36,7 +36,7 @@ LABEL org.opencontainers.image.title="antseed-tee-seller" \
 # Google Confidential Space launch policy: the operator may set only these env variables (the
 # token shows them to buyers, who check them against the same rules) and can't replace the
 # command. The operator may send the container's output to Cloud Logging: the seller runs in
-# content-free mode (launch.mjs), so its logs hold no prompts, answers or upstream error text.
+# content-free mode (launch.mjs), so its logs hold no prompts or answers, nor upstream error text about a request.
 LABEL "tee.launch_policy.allow_env_override"="ANTSEED_TEE_PEER_ID,ANTSEED_BASE_RPC_URL,ANTSEED_SELLER_CONFIG_JSON,ANTSEED_GCP_SECRETS,ANTSEED_GCP_STATE,OPENAI_BODY_INJECT_JSON,ANTSEED_VERIFIER_PROVIDER_ADAPTER,ANTSEED_VERIFIER_PROVIDER_EVIDENCE_URL,ANTSEED_VERIFIER_PROVIDER_TEE_FIELD,ANTSEED_VERIFIER_PROVIDER_GPU_FIELD,ANTSEED_VERIFIER_PROVIDER_CLAIMS_FIELD,ANTSEED_VERIFIER_PROVIDER_BINDING_SCHEME,ANTSEED_VERIFIER_PROVIDER_BINDING_PUBKEY_FIELD" \
       "tee.launch_policy.allow_cmd_override"="false" \
       "tee.launch_policy.log_redirect"="always"

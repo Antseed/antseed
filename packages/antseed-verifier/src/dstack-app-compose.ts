@@ -15,7 +15,7 @@ export type { SellerUpstream } from './seller-config-rules.js'
  * The rules (anything not listed is rejected):
  *   - app-compose: runner docker-compose; no pre-launch or bash script; the allowed encrypted
  *     variables are only the secrets the compose file uses. Logs may be public: the image runs
- *     the seller in content-free mode, so they hold no prompts, answers or upstream error text.
+ *     the seller in content-free mode, so they hold no prompts or answers, nor upstream error text about a request.
  *   - compose file: written as JSON; one service; image pinned by an approved digest; no command,
  *     entrypoint, user or other service options; the only volumes are the seller data volume and
  *     the dstack socket; the seller config is one inline config at /etc/antseed/config.json.
