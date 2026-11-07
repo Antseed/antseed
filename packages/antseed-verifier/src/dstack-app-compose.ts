@@ -41,14 +41,15 @@ export interface CheckedAppCompose {
 
 /**
  * The provider plugins a TEE seller may use: each one's default upstream, and whether the
- * config's baseUrl (and fallbackUpstreams) changes it.
+ * config's baseUrl (and fallbackUpstreams) changes it. Each sends buyer content only to that
+ * upstream. fal-video is left out: it uploads buyer media to a storage host the storage service
+ * names at runtime, which the config cannot show.
  */
 const PLUGINS: Readonly<Record<string, { defaultUrl: string; baseUrl: boolean; fallbacks?: boolean }>> = {
   openai: { defaultUrl: 'https://api.openai.com', baseUrl: true, fallbacks: true },
   anthropic: { defaultUrl: 'https://api.anthropic.com', baseUrl: false },
   typesafe: { defaultUrl: 'https://api.typesafe.ai', baseUrl: true },
   'venice-video': { defaultUrl: 'https://api.venice.ai', baseUrl: true },
-  'fal-video': { defaultUrl: 'https://queue.fal.run', baseUrl: true },
   'alibaba-video': { defaultUrl: 'https://dashscope-intl.aliyuncs.com', baseUrl: true },
 }
 

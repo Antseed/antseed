@@ -38,7 +38,7 @@ Any seller deploying an approved image this way passes, with no per-seller appro
 
 Write the seller config as for any seller (see [Seller configuration](/docs/provide/config)), with these limits so buyers accept it:
 
-- providers use the `openai`, `anthropic`, `typesafe`, `venice-video`, `fal-video` or `alibaba-video` plugin;
+- providers use the `openai`, `anthropic`, `typesafe`, `venice-video` or `alibaba-video` plugin;
 - every `baseUrl` is HTTPS, and every `pathRewrite` value is a path on that upstream (starting with `/`);
 - each provider sets `apiKeyEnv` to a variable name ending in `_API_KEY` (not starting with `ANTSEED_`, `POSTHOG_` or `CDP_`).
 

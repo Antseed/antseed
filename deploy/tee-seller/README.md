@@ -53,7 +53,7 @@ To release an image after a CLI release:
 1. Write your seller config (`config.json`). Each provider sets `apiKeyEnv` to a variable name
    ending in `_API_KEY` (not starting with `ANTSEED_`, `POSTHOG_` or `CDP_`), and every
    `baseUrl` is HTTPS. Don't put a key in a URL: buyers read the
-   whole config. Allowed plugins: `openai`, `anthropic`, `typesafe`, `venice-video`, `fal-video`,
+   whole config. Allowed plugins: `openai`, `anthropic`, `typesafe`, `venice-video`,
    `alibaba-video`.
 2. Generate the compose file (JSON, which is valid compose YAML and what buyers parse):
 

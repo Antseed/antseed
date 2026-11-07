@@ -129,7 +129,9 @@ describe('checkAppCompose', () => {
     expect(checkCompose(withProviders({ o: { plugin: 'openai', baseUrl: 'https://user:pw@upstream.example', services: {} } }))).toMatchObject({ error: expect.stringMatching(/without credentials/) })
     expect(checkCompose(withProviders({ a: { plugin: 'anthropic', baseUrl: 'https://elsewhere.example', services: {} } }))).toMatchObject({ error: expect.stringMatching(/baseUrl its plugin ignores/) })
     expect(checkCompose(withProviders({ l: { plugin: 'local-llm', services: {} } }))).toMatchObject({ error: expect.stringMatching(/cannot use/) })
-    expect(checkCompose(withProviders({ v: { plugin: 'fal-video', services: {}, fallbackUpstreams: [] } }))).toMatchObject({ error: expect.stringMatching(/fallbackUpstreams are not supported/) })
+    expect(checkCompose(withProviders({ v: { plugin: 'venice-video', services: {}, fallbackUpstreams: [] } }))).toMatchObject({ error: expect.stringMatching(/fallbackUpstreams are not supported/) })
+    // fal-video uploads buyer media to a storage host named at runtime, which no config shows.
+    expect(checkCompose(withProviders({ v: { plugin: 'fal-video', baseUrl: 'https://queue.example', services: {} } }))).toMatchObject({ error: expect.stringMatching(/cannot use/) })
   })
 
   it('accepts path rewrites only when they stay on the reported upstream', () => {

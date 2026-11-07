@@ -8,7 +8,6 @@
     "@antseed/provider-alibaba-video": "0.1.2",
     "@antseed/provider-anthropic": "0.1.57",
     "@antseed/provider-core": "0.2.63",
-    "@antseed/provider-fal-video": "0.1.14",
     "@antseed/provider-openai": "0.2.55",
     "@antseed/provider-typesafe": "0.1.9",
     "@antseed/provider-venice-video": "0.1.15"

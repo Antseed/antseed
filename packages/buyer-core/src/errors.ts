@@ -1,15 +1,15 @@
 export type FaultAttribution = 'buyer' | 'peer' | 'unknown';
 
 /** Every error code; the exported type and the runtime check both come from it. */
-const ANTSEED_ERROR_CODE_MAP = {
-  'node-not-started': true, 'node-stopped': true, 'invalid-request': true, 'buyer-stream-limit': true,
-  'buyer-budget-too-low': true, 'buyer-reserve-misconfigured': true, 'buyer-session-state': true,
-  'buyer-deposits-insufficient': true, 'buyer-reserve-topup-timeout': true, 'buyer-transport-closed': true,
-  'buyer-tee-connection-changed': true, 'invalid-spending-auth-header': true,
-  'chain-rpc-unavailable': true, 'peer-not-authorized': true, 'peer-protocol-violation': true,
-} as const;
+const ERROR_CODES = [
+  'node-not-started', 'node-stopped', 'invalid-request', 'buyer-stream-limit',
+  'buyer-budget-too-low', 'buyer-reserve-misconfigured', 'buyer-session-state',
+  'buyer-deposits-insufficient', 'buyer-reserve-topup-timeout', 'buyer-transport-closed',
+  'buyer-tee-connection-changed', 'invalid-spending-auth-header',
+  'chain-rpc-unavailable', 'peer-not-authorized', 'peer-protocol-violation',
+] as const;
 
-export type AntseedErrorCode = keyof typeof ANTSEED_ERROR_CODE_MAP;
+export type AntseedErrorCode = (typeof ERROR_CODES)[number];
 
 export interface AntseedRequestErrorOptions {
   cause?: unknown;
@@ -72,4 +72,4 @@ export function faultCodeOf(err: unknown, depth = 0): AntseedErrorCode | null {
   return null;
 }
 
-const ANTSEED_ERROR_CODES: ReadonlySet<AntseedErrorCode> = new Set(Object.keys(ANTSEED_ERROR_CODE_MAP) as AntseedErrorCode[]);
+const ANTSEED_ERROR_CODES: ReadonlySet<AntseedErrorCode> = new Set(ERROR_CODES);

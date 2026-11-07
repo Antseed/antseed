@@ -22,8 +22,7 @@ if (!/^\d+\.\d+\.\d+$/.test(cliVersion ?? '')) {
 // packages/antseed-verifier/src/dstack-app-compose.ts), and their shared core.
 const PLUGINS = [
   '@antseed/provider-anthropic', '@antseed/provider-openai', '@antseed/provider-typesafe',
-  '@antseed/provider-venice-video', '@antseed/provider-fal-video', '@antseed/provider-alibaba-video',
-  '@antseed/provider-core',
+  '@antseed/provider-venice-video', '@antseed/provider-alibaba-video', '@antseed/provider-core',
 ]
 
 const npm = (args, cwd = here) => execFileSync('npm', args, { cwd, encoding: 'utf8' }).trim()

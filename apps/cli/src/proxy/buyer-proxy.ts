@@ -4311,7 +4311,7 @@ export class BuyerProxy {
         const routerPeer = peers.find((peer) => peer.peerId.toLowerCase() === selection.service!.peerId.toLowerCase())
         if (!routerPeer) throw new Error('Selected routing service is not on the network')
         const buyerIdentity = request.headers[BUYER_IDENTITY_HEADER]
-        const outcome = await this._verifyPeer(routerPeer, signal, false, true, buyerIdentity)
+        const outcome = await this._verifyPeer(routerPeer, signal, { requireTee: true, buyerIdentity })
         if (!outcome.ok) throw new Error(`Routing service failed its TEE check (${outcome.reason ?? 'failed'})`)
         routerBinding = outcome.boundTo
       }
@@ -4825,7 +4825,7 @@ export class BuyerProxy {
         let teeBinding: string | null = null
         if (this._verifier || requireTee) {
           const buyerIdentity = selected.request.headers[BUYER_IDENTITY_HEADER]
-          const outcome = await this._verifyPeer(selected.peer, signal, requireVerified, requireTee, buyerIdentity)
+          const outcome = await this._verifyPeer(selected.peer, signal, { requireVerified, requireTee, buyerIdentity })
           teeBinding = outcome.boundTo ?? null
           if (!outcome.ok) {
             lastVerificationError = `Peer ${selected.peer.peerId.slice(0, 12)}... failed required verification (${outcome.reason ?? 'failed'}).`
@@ -5124,7 +5124,11 @@ export class BuyerProxy {
     let teeBinding: string | null = null
     if (this._verifier || pinnedPolicy?.requireTee === true) {
       const buyerIdentity = pinnedRequest.headers[BUYER_IDENTITY_HEADER]
-      const outcome = await this._verifyPeer(selectedPeer, signal, pinnedPolicy?.requireVerified === true, pinnedPolicy?.requireTee === true, buyerIdentity)
+      const outcome = await this._verifyPeer(selectedPeer, signal, {
+        requireVerified: pinnedPolicy?.requireVerified === true,
+        requireTee: pinnedPolicy?.requireTee === true,
+        buyerIdentity,
+      })
       teeBinding = outcome.boundTo ?? null
       const short = selectedPeer.peerId.slice(0, 12)
       if (outcome.verified) {
@@ -5188,9 +5192,15 @@ export class BuyerProxy {
   private async _verifyPeer(
     peer: PeerInfo,
     signal: AbortSignal,
-    requireVerified = false,
-    requireTee = false,
-    buyerIdentity?: string,
+    {
+      requireVerified = false,
+      requireTee = false,
+      buyerIdentity,
+    }: {
+      requireVerified?: boolean
+      requireTee?: boolean
+      buyerIdentity?: string | undefined
+    } = {},
   ): Promise<VerifyOutcome & { boundTo?: string }> {
     // Attest over the same buyer identity's connection the request will use.
     const makeReach = (chosenId: string): SellerReach =>
