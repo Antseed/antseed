@@ -15,6 +15,7 @@ import {
   defaultVerifyConfidentialSpaceToken,
   type VerifyConfidentialSpaceTokenFn,
 } from '../confidential-space.js'
+import { isTcbAcceptable } from '../tcb-policy.js'
 import { generateConfidentialSpaceToken } from '../collect/confidential-space.js'
 
 /** A provider quote's declared report_data binding: a frozen scheme id + its string ingredients. */
@@ -55,17 +56,7 @@ export function tdxConfigKey(id: string, key: string): string {
   return `${id}.${key}`
 }
 
-/**
- * TCB acceptance. UpToDate is always genuine hardware. SWHardeningNeeded flags guest-side
- * software mitigations only — not a hardware compromise — and is accepted by default (real
- * GCP TDX quotes often report it). Set ANTSEED_VERIFIER_STRICT_TCB=true to require UpToDate
- * exactly. Anything else (OutOfDate, Revoked, Unknown, ...) is rejected.
- */
-export function isTcbAcceptable(status: string): boolean {
-  if (status === 'UpToDate') return true
-  if (status === 'SWHardeningNeeded') return process.env['ANTSEED_VERIFIER_STRICT_TCB'] !== 'true'
-  return false
-}
+export { isTcbAcceptable } from '../tcb-policy.js'
 
 /** Authenticated TD10 measurements, extracted from a verified quote. */
 export interface TdMeasurements {

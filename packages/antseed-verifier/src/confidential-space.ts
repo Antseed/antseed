@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { JWTPayload, JWTVerifyGetKey } from 'jose'
 import type { ApprovedSellerImage } from './approved-seller-images.js'
-import { isTcbAcceptable } from './caps/tee-tdx.js'
+import { isTcbAcceptable } from './tcb-policy.js'
 import { LITERAL_ENV, RuleError, check, checkHiddenSecrets, checkSellerConfig, isObj, parseJson, type SellerUpstream } from './seller-config-rules.js'
 
 /**

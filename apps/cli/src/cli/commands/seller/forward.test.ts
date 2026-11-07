@@ -22,7 +22,7 @@ test('carries each buyer connection to the target and back', async () => {
   const upstream = createServer((socket) => socket.on('data', (data) => socket.write(`seller:${data}`)))
   await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve))
   const upstreamPort = (upstream.address() as net.AddressInfo).port
-  const forwarder = startTlsForwarder(0, { host: '127.0.0.1', port: upstreamPort }, ({ host, port }) => net.connect({ host, port }))
+  const forwarder = startTlsForwarder(0, { host: '127.0.0.1', port: upstreamPort }, { connect: ({ host, port }) => net.connect({ host, port }) })
   await new Promise<void>((resolve) => forwarder.once('listening', resolve))
   const port = (forwarder.address() as net.AddressInfo).port
   try {
@@ -32,6 +32,35 @@ test('carries each buyer connection to the target and back', async () => {
       buyer.once('error', reject)
     })
     assert.equal(reply, 'seller:hello')
+  } finally {
+    forwarder.close()
+    upstream.close()
+  }
+})
+
+test('closes idle connections and refuses connections over the cap', async () => {
+  const upstream = createServer(() => {})
+  await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve))
+  const upstreamPort = (upstream.address() as net.AddressInfo).port
+  const forwarder = startTlsForwarder(0, { host: '127.0.0.1', port: upstreamPort }, {
+    connect: ({ host, port }) => net.connect({ host, port }),
+    maxConnections: 1,
+    idleTimeoutMs: 100,
+  })
+  await new Promise<void>((resolve) => forwarder.once('listening', resolve))
+  const port = (forwarder.address() as net.AddressInfo).port
+  const closed = (socket: net.Socket) => new Promise<void>((resolve) => socket.once('close', () => resolve()))
+  try {
+    const first = net.connect({ host: '127.0.0.1', port })
+    first.on('error', () => {})
+    await new Promise<void>((resolve) => first.once('connect', () => resolve()))
+    const second = net.connect({ host: '127.0.0.1', port })
+    second.on('error', () => {})
+    // The second is over the cap and closed at once; the first closes once idle.
+    await closed(second)
+    const started = Date.now()
+    await closed(first)
+    assert.ok(Date.now() - started < 2_000)
   } finally {
     forwarder.close()
     upstream.close()

@@ -143,17 +143,29 @@ export class StateFileSync {
     this.saving = null
   }
 
-  /** Restore the latest snapshot unless the data dir already holds the database (a container restart on the same VM). */
+  /** Where the generation of the snapshot the local database matches is kept. */
+  get generationPath() {
+    return join(this.dataDir, `${this.file.name}.generation`)
+  }
+
+  /**
+   * Restore the latest snapshot. A database already in the data dir (a container restart on the
+   * same VM) is kept only if it matches that snapshot's generation: otherwise another instance
+   * with this identity saved since, and its state replaces this one's older copy.
+   */
   async restore() {
     const found = await this.store.read()
-    if (found) this.generation = found.generation
     const path = join(this.dataDir, this.file.name)
-    if (!found || existsSync(path)) return false
+    if (!found) return false
+    this.generation = found.generation
+    const local = existsSync(path) && existsSync(this.generationPath) ? readFileSync(this.generationPath, 'utf8').trim() : null
+    if (local === found.generation) return false
     const data = unseal(this.key, found.data, this.location)
     mkdirSync(dirname(path), { recursive: true })
     rmSync(`${path}-wal`, { force: true })
     rmSync(`${path}-shm`, { force: true })
     writeFileSync(path, data, { mode: 0o600 })
+    writeFileSync(this.generationPath, found.generation)
     return true
   }
 
@@ -169,6 +181,7 @@ export class StateFileSync {
     const hash = createHash('sha256').update(data).digest('hex')
     if (hash === this.savedHash) return false
     this.generation = await this.store.write(seal(this.key, data, this.location), this.generation)
+    writeFileSync(this.generationPath, this.generation)
     this.savedHash = hash
     return true
   }

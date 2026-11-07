@@ -146,7 +146,19 @@ its listed env variables and never replace its command. Its logs may go to Cloud
      --member="principalSet://iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/antseed-tee/*"
    ```
 
-3. Start a TDX VM on the Confidential Space production image (its service account needs
+3. Write where the secrets live to `secrets.json`:
+
+   ```json
+   {
+     "audience": "//iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/antseed-tee/providers/attestation",
+     "secrets": {
+       "ANTSEED_IDENTITY_HEX": "projects/<project>/secrets/<identity>/versions/latest",
+       "<NAME>_API_KEY": "projects/<project>/secrets/<key>/versions/latest"
+     }
+   }
+   ```
+
+4. Start a TDX VM on the Confidential Space production image (its service account needs
    `roles/confidentialcomputing.workloadUser`), and open the signaling (TCP) and DHT (UDP) ports:
 
    ```bash
@@ -154,8 +166,8 @@ its listed env variables and never replace its command. Its logs may go to Cloud
      --machine-type=c3-standard-4 --confidential-compute-type=TDX --maintenance-policy=TERMINATE \
      --shielded-secure-boot --image-project=confidential-space-images --image-family=confidential-space \
      --service-account=<service account> --scopes=cloud-platform \
-     --metadata-from-file=tee-env-ANTSEED_SELLER_CONFIG_JSON=config.json \
-     --metadata=^~^tee-image-reference=ghcr.io/antseed/tee-seller@sha256:<digest>~tee-restart-policy=Always~tee-env-ANTSEED_TEE_PEER_ID=<peer id>~tee-env-ANTSEED_GCP_STATE=gs://<bucket>/<seller name>~tee-env-ANTSEED_GCP_SECRETS={"audience":"//iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/antseed-tee/providers/attestation","secrets":{"ANTSEED_IDENTITY_HEX":"projects/<project>/secrets/<identity>/versions/latest","<NAME>_API_KEY":"projects/<project>/secrets/<key>/versions/latest"}}
+     --metadata-from-file=tee-env-ANTSEED_SELLER_CONFIG_JSON=config.json,tee-env-ANTSEED_GCP_SECRETS=secrets.json \
+     --metadata='tee-image-reference=ghcr.io/antseed/tee-seller@sha256:<digest>,tee-restart-policy=Always,tee-env-ANTSEED_TEE_PEER_ID=<peer id>,tee-env-ANTSEED_GCP_STATE=gs://<bucket>/<seller name>'
    gcloud compute firewall-rules create antseed-tee-seller --allow=tcp:6882,udp:6881
    ```
 

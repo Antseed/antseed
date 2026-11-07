@@ -42,24 +42,38 @@ export function parseTlsTarget(value: string): TlsTarget {
   return { host: match[1]!, port }
 }
 
+export interface TlsForwarderOptions {
+  connect?: (target: TlsTarget) => net.Socket
+  /** Buyer connections open at once; more are refused (Node's `server.maxConnections`). */
+  maxConnections?: number
+  /** A connection with no bytes either way for this long is closed. Buyers ping every 15 s. */
+  idleTimeoutMs?: number
+}
+
+export const DEFAULT_FORWARDER_MAX_CONNECTIONS = 4096
+export const DEFAULT_FORWARDER_IDLE_TIMEOUT_MS = 120_000
+
 /** Forward every TCP connection on `listenPort` to `target` over TLS (verified against `target.host`). */
-export function startTlsForwarder(
-  listenPort: number,
-  target: TlsTarget,
-  connect: (target: TlsTarget) => net.Socket = ({ host, port }) => tls.connect({ host, port, servername: host }),
-): net.Server {
+export function startTlsForwarder(listenPort: number, target: TlsTarget, {
+  connect = ({ host, port }) => tls.connect({ host, port, servername: host }),
+  maxConnections = DEFAULT_FORWARDER_MAX_CONNECTIONS,
+  idleTimeoutMs = DEFAULT_FORWARDER_IDLE_TIMEOUT_MS,
+}: TlsForwarderOptions = {}): net.Server {
   const server = net.createServer((client) => {
     const upstream = connect(target)
-    client.setKeepAlive(true, 30_000)
-    upstream.setKeepAlive(true, 30_000)
     const close = (): void => {
       client.destroy()
       upstream.destroy()
     }
-    client.on('error', close).on('close', close)
-    upstream.on('error', close).on('close', close)
+    for (const socket of [client, upstream]) {
+      socket.setKeepAlive(true, 30_000)
+      // Also bounds a gateway that never answers the TLS handshake.
+      socket.setTimeout(idleTimeoutMs, close)
+      socket.on('error', close).on('close', close)
+    }
     client.pipe(upstream).pipe(client)
   })
+  server.maxConnections = maxConnections
   server.listen(listenPort)
   return server
 }
@@ -72,13 +86,16 @@ export function registerSellerForwardCommand(sellerCmd: Command): void {
     .requiredOption('--peer <peerId>', "the seller's peer ID (40 hex)")
     .option('--port <port>', 'TCP port buyers connect to; set seller.publicAddress to <this host>:<port>', '6882')
     .option('--dht-port <port>', 'UDP port for the DHT', '6881')
-    .action(async (options: { to: string; peer: string; port: string; dhtPort: string }) => {
+    .option('--max-connections <n>', 'buyer connections open at once', String(DEFAULT_FORWARDER_MAX_CONNECTIONS))
+    .action(async (options: { to: string; peer: string; port: string; dhtPort: string; maxConnections: string }) => {
       const peerId = options.peer.trim().toLowerCase().replace(/^0x/, '')
       if (!/^[0-9a-f]{40}$/.test(peerId)) throw new Error('--peer must be a 40-hex peer ID')
       const target = parseTlsTarget(options.to)
       const port = Number(options.port)
       const dhtPort = Number(options.dhtPort)
-      const server = startTlsForwarder(port, target)
+      const maxConnections = Number(options.maxConnections)
+      if (!Number.isInteger(maxConnections) || maxConnections < 1) throw new Error('--max-connections must be a positive integer')
+      const server = startTlsForwarder(port, target, { maxConnections })
       const dht = new DHTNode({ ...DEFAULT_DHT_CONFIG, peerId: toPeerId(peerId), port: dhtPort })
       await dht.start()
       const announce = async (): Promise<void> => {

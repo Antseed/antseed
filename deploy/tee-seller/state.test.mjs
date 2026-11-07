@@ -92,13 +92,40 @@ describe('seller state snapshots', () => {
     await assert.rejects(sync.save(), StateConflictError)
   })
 
-  it('keeps local state after a container restart on the same VM', async () => {
+  it('keeps local state after a container restart on the same VM, if it is the version saved last', async () => {
     const store = memoryStore()
-    store.object = seal(KEY, Buffer.from('older'), LOCATION)
-    store.generation = 4
     const sync = new StateFileSync({ file: PAYMENTS, store, key: KEY, location: LOCATION, dataDir: seller.dir, Database })
-    assert.equal(await sync.restore(), false)
-    assert.equal(sync.generation, '4')
+    await sync.restore()
+    await sync.save()
+    seller.sessions.exec("UPDATE payment_channels SET latest_buyer_sig = '0xunsaved'")
+    const restarted = new StateFileSync({ file: PAYMENTS, store, key: KEY, location: LOCATION, dataDir: seller.dir, Database })
+    assert.equal(await restarted.restore(), false)
+    assert.equal(restarted.generation, '1')
+    assert.equal(seller.sessions.prepare('SELECT latest_buyer_sig FROM payment_channels').get().latest_buyer_sig, '0xunsaved')
+  })
+
+  it('replaces a local copy that another instance has saved over since', async () => {
+    const store = memoryStore()
+    const loser = new StateFileSync({ file: PAYMENTS, store, key: KEY, location: LOCATION, dataDir: seller.dir, Database })
+    await loser.restore()
+    await loser.save()
+    // Another instance with this identity saves newer payments; this one loses its next save.
+    const winnerDir = mkdtempSync(join(tmpdir(), 'winner-'))
+    const winner = new StateFileSync({ file: PAYMENTS, store, key: KEY, location: LOCATION, dataDir: winnerDir, Database })
+    assert.equal(await winner.restore(), true)
+    const winnerDb = new Database(join(winnerDir, 'payments/sessions.db'))
+    winnerDb.exec("UPDATE payment_channels SET latest_buyer_sig = '0xwinner'")
+    winnerDb.close()
+    await winner.save()
+    seller.sessions.exec("UPDATE payment_channels SET latest_buyer_sig = '0xstale'")
+    await assert.rejects(loser.save(), StateConflictError)
+    // The loser restarts on the same VM: the winner's payments replace its stale copy.
+    seller.sessions.close()
+    const restarted = new StateFileSync({ file: PAYMENTS, store, key: KEY, location: LOCATION, dataDir: seller.dir, Database })
+    assert.equal(await restarted.restore(), true)
+    assert.deepEqual(rows(join(seller.dir, 'payments/sessions.db'), 'SELECT latest_buyer_sig FROM payment_channels'), [{ latest_buyer_sig: '0xwinner' }])
+    seller.sessions = new Database(join(seller.dir, 'payments/sessions.db'))
+    rmSync(winnerDir, { recursive: true, force: true })
   })
 
   it('keeps each database in its own object under the prefix', () => {
