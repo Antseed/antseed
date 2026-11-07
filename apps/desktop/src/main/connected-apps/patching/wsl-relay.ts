@@ -9,7 +9,7 @@
  */
 import net from 'node:net';
 
-const relays = new Map<string, net.Server>();
+const relays = new Map<string, { server: net.Server; upstreamHost: string }>();
 
 function relayKey(host: string, port: number): string {
   return `${host}:${port}`;
@@ -40,7 +40,7 @@ function closeRelay(server: net.Server): Promise<void> {
 
 /**
  * Reconcile running relays with the wanted host list: one relay per host on
- * `buyerPort`, forwarding to 127.0.0.1:`buyerPort`; anything else is closed.
+ * `buyerPort`, forwarding to `upstreamHost`:`buyerPort`; anything else is closed.
  * A failed listen is reported and skipped — the other hosts still connect.
  */
 export async function syncWslRelays(
@@ -50,16 +50,17 @@ export async function syncWslRelays(
   upstreamHost = '127.0.0.1',
 ): Promise<void> {
   const wanted = new Set(hosts.map((host) => relayKey(host, buyerPort)));
-  for (const [key, server] of [...relays]) {
-    if (wanted.has(key)) continue;
+  for (const [key, relay] of [...relays]) {
+    // A relay forwards to the host it was started with, so a new one replaces it.
+    if (wanted.has(key) && relay.upstreamHost === upstreamHost) continue;
     relays.delete(key);
-    await closeRelay(server);
+    await closeRelay(relay.server);
   }
   for (const host of new Set(hosts)) {
     const key = relayKey(host, buyerPort);
     if (relays.has(key)) continue;
     try {
-      relays.set(key, await startRelay(host, buyerPort, upstreamHost));
+      relays.set(key, { server: await startRelay(host, buyerPort, upstreamHost), upstreamHost });
       logLine?.(`WSL relay listening on ${key} → ${upstreamHost}:${buyerPort}`);
     } catch (err) {
       logLine?.(

@@ -116,6 +116,23 @@ test('codex: a context window set only inside a profile does not become a global
   });
 });
 
+test('codex: settings in other valid TOML forms come back as they were', async () => {
+  await withDir(async (dir) => {
+    const configPath = path.join(dir, 'config.toml');
+    await writeFile(configPath, "model = 'mine'\nmodel_provider = 'theirs'\nmodel_context_window = 128_000 # roomy\nmodel_catalog_json = 'my-models.json'\n", 'utf8');
+    const patch: ConfigPatchDef = { format: 'codex', configPath, providerKey: 'antseed', providerName: 'Antseed', baseURL: 'http://localhost:{buyerPort}/v1' };
+    writeConfigPatch(patch, LOCAL);
+    const connected = await readFile(configPath, 'utf8');
+    assert.match(connected, /model_provider = "antseed"/);
+    assert.equal(removeConfigPatch(patch), true);
+    const after = await readFile(configPath, 'utf8');
+    assert.match(after, /^model_context_window = 128_000$/m);
+    assert.match(after, /^model = "mine"$/m);
+    assert.match(after, /^model_provider = "theirs"$/m);
+    assert.match(after, /^model_catalog_json = "my-models\.json"$/m);
+  });
+});
+
 test('codex: bearer token in the provider table and selection rules', async () => {
   await withDir(async (dir) => {
     const configPath = path.join(dir, 'config.toml');

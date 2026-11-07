@@ -233,7 +233,7 @@ export function cloneContentBlock(block: ContentBlock): ContentBlock {
   };
 }
 
-function cloneChatMessage(message: ChatMessage): ChatMessage {
+export function cloneChatMessage(message: ChatMessage): ChatMessage {
   return {
     ...message,
     meta: message.meta ? { ...message.meta } : undefined,

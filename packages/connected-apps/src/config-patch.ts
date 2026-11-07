@@ -1299,7 +1299,10 @@ function setTomlTopLevelString(lines: readonly string[], key: string, value: str
 function readTomlTopLevelString(lines: readonly string[], key: string): string | undefined {
   const index = tomlTopLevelKeyIndex(lines, key);
   if (index === -1) return undefined;
-  const match = lines[index]!.match(/=\s*"((?:[^"\\]|\\.)*)"\s*(#.*)?$/);
+  const line = lines[index]!;
+  const literal = line.match(/=\s*'([^']*)'\s*(#.*)?$/);
+  if (literal) return literal[1]!;
+  const match = line.match(/=\s*"((?:[^"\\]|\\.)*)"\s*(#.*)?$/);
   return match ? match[1]!.replace(/\\(.)/g, '$1') : undefined;
 }
 
@@ -1396,7 +1399,8 @@ function applyCodexProviderToFile(filePath: string, patch: CodexConfigPatchDef, 
   const selected = pickModel(t, ownedSelection);
   if (readTomlTopLevelString(lines, 'model_provider') !== patch.providerKey) {
     const userCatalog = readTomlTopLevelString(lines, 'model_catalog_json');
-    const contextWindow = /^\s*model_context_window\s*=\s*(\d+)/.exec(lines[tomlTopLevelKeyIndex(lines, 'model_context_window')] ?? '')?.[1];
+    // The value as written: TOML also allows forms like 128_000.
+    const contextWindow = /=\s*([^\s#]+)/.exec(lines[tomlTopLevelKeyIndex(lines, 'model_context_window')] ?? '')?.[1];
     rememberSelection(filePath, {
       ...Object.fromEntries(['model', 'model_provider'].flatMap((key) => {
         const value = readTomlTopLevelString(lines, key);

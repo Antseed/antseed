@@ -14,7 +14,7 @@ import type {
 } from '../../types/bridge';
 import type { ChatMessage, ContentBlock } from '../../ui/components/chat/chat-shared';
 import {
-  cloneContentBlock,
+  cloneChatMessage,
   isImageRequestPhase,
   normalizeAssistantMeta,
   paymentLogToThinkingPhase,
@@ -477,27 +477,17 @@ export function initChatModule({
     setTimeout(callback, 16);
   }
 
-  function cloneStreamingMessage(message: ChatMessage): ChatMessage {
-    return {
-      ...message,
-      meta: message.meta ? { ...message.meta } : undefined,
-      content: Array.isArray(message.content)
-        ? (message.content as ContentBlock[]).map(cloneContentBlock)
-        : message.content,
-    };
-  }
-
   function setLocalConversationMessages(convId: string, messages: ChatMessage[]): void {
-    localConversationMessages.set(convId, messages.map(cloneStreamingMessage));
+    localConversationMessages.set(convId, messages.map(cloneChatMessage));
   }
 
   function getLocalConversationMessages(convId: string): ChatMessage[] | null {
     const cached = localConversationMessages.get(convId);
-    return cached ? cached.map(cloneStreamingMessage) : null;
+    return cached ? cached.map(cloneChatMessage) : null;
   }
 
   function setStreamingMessage(message: ChatMessage | null): void {
-    uiState.chatStreamingMessage = message ? cloneStreamingMessage(message) : null;
+    uiState.chatStreamingMessage = message ? cloneChatMessage(message) : null;
     notifyUiStateChangedSync();
     if (message) queueScrollChatToBottom();
   }
@@ -505,7 +495,7 @@ export function initChatModule({
   function flushStreamingMessage(): void {
     const activeConvId = uiState.chatActiveConversation;
     const message = activeConvId ? streamingMessagesByConversation.get(activeConvId) ?? null : null;
-    uiState.chatStreamingMessage = message ? cloneStreamingMessage(message) : null;
+    uiState.chatStreamingMessage = message ? cloneChatMessage(message) : null;
     notifyUiStateChanged();
     if (uiState.chatStreamingMessage) queueScrollChatToBottom();
   }
@@ -522,7 +512,7 @@ export function initChatModule({
 
   function getConversationStreamingMessage(convId: string): ChatMessage | null {
     const message = streamingMessagesByConversation.get(convId);
-    return message ? cloneStreamingMessage(message) : null;
+    return message ? cloneChatMessage(message) : null;
   }
 
   function hasConversationStreamingMessage(convId: string): boolean {
@@ -530,7 +520,7 @@ export function initChatModule({
   }
 
   function setConversationStreamingMessage(convId: string, message: ChatMessage | null): void {
-    if (message) streamingMessagesByConversation.set(convId, cloneStreamingMessage(message));
+    if (message) streamingMessagesByConversation.set(convId, cloneChatMessage(message));
     else streamingMessagesByConversation.delete(convId);
     pendingStreamingUiFlushes.delete(convId);
     if (uiState.chatActiveConversation === convId) setStreamingMessage(message);
@@ -626,7 +616,7 @@ export function initChatModule({
 
   function materializeStreamingMessage(message: ChatMessage | null): ChatMessage | null {
     if (!message) return null;
-    const cloned = cloneStreamingMessage(message);
+    const cloned = cloneChatMessage(message);
     // Strip synthetic renderKeys/IDs so merged turns fall back to positional
     // keys, and drop streaming-only inline-think bookkeeping.
     if (Array.isArray(cloned.content)) {
