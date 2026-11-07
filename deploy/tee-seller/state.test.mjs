@@ -4,7 +4,7 @@ import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it, beforeEach, afterEach } from 'node:test'
-import { STATE_FILES, StateConflictError, StateFileSync, StateLease, gcsObject, seal, snapshot, stateKey, stateSyncs, unseal } from './state.mjs'
+import { STATE_FILES, StateConflictError, StateFileSync, StateLease, gcsObject, keepLease, seal, snapshot, stateKey, stateSyncs, unseal } from './state.mjs'
 
 const Database = createRequire(new URL('../../packages/node/package.json', import.meta.url))('better-sqlite3')
 const LOCATION = 'gs://seller-state/tee/payments/sessions.db'
@@ -272,5 +272,63 @@ describe('state lease', () => {
     await assert.rejects(lease.renew(), /connection reset/)
     await lease.renew()
     assert.equal(lease.generation, String(store.generation))
+  })
+})
+
+describe('keepLease', () => {
+  /** Manual timers on a fake clock: `advance(ms)` runs every interval due in that time. */
+  function timers() {
+    let time = 1_000_000
+    const intervals = new Set()
+    return {
+      now: () => time,
+      every: (fn, ms) => { const timer = { fn, ms, next: time + ms }; intervals.add(timer); return timer },
+      cancel: (timer) => intervals.delete(timer),
+      async advance(ms) {
+        const end = time + ms
+        for (;;) {
+          const due = [...intervals].filter((t) => t.next <= end).sort((a, b) => a.next - b.next)[0]
+          if (!due) break
+          time = due.next
+          due.next += due.ms
+          void due.fn()
+          // Let a renewal that does answer settle; one that hangs stays pending, as a stalled request would.
+          await new Promise((resolve) => setImmediate(resolve))
+        }
+        time = end
+      },
+    }
+  }
+
+  it('fences the holder when renewals hang, without waiting for them', async () => {
+    const clock = timers()
+    const lease = new StateLease({ store: memoryStore(), holder: 'vm-a', now: clock.now })
+    await lease.acquire()
+    lease.renew = () => new Promise(() => {}) // the network stalls
+    const lost = []
+    const keeper = keepLease(lease, { onLost: (reason) => lost.push(reason), ...clock })
+    await clock.advance(55_000)
+    assert.deepEqual(lost, [])
+    assert.equal(keeper.valid(), true)
+    await clock.advance(10_000)
+    assert.deepEqual(lost, ['could not renew the state lease for 60 s'])
+    assert.equal(keeper.valid(), false)
+  })
+
+  it('keeps the lease through a long restore, and fences at once when another instance holds it', async () => {
+    const clock = timers()
+    const store = memoryStore()
+    const lease = new StateLease({ store, holder: 'vm-a', now: clock.now })
+    await lease.acquire()
+    const lost = []
+    const keeper = keepLease(lease, { onLost: (reason) => lost.push(reason), ...clock })
+    await clock.advance(10 * 60_000)
+    assert.equal(keeper.valid(), true)
+    assert.deepEqual(lost, [])
+    // Another instance, whose clock is past this lease's expiry, takes it.
+    await new StateLease({ store, holder: 'vm-b', now: () => clock.now() + 200_000 }).acquire()
+    await clock.advance(20_000)
+    assert.match(lost[0], /lost the state lease/)
+    keeper.stop()
   })
 })

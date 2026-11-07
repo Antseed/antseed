@@ -16,7 +16,7 @@ import { spawn } from 'node:child_process'
 import { existsSync, writeFileSync } from 'node:fs'
 import { request } from 'node:http'
 import { createRequire } from 'node:module'
-import { StateConflictError, leaseHolder, stateLease, stateSyncs } from './state.mjs'
+import { StateConflictError, keepLease, leaseHolder, stateLease, stateSyncs } from './state.mjs'
 
 const PLUGINS = '/home/nonroot/.antseed/plugins/node_modules'
 const CLI = `${PLUGINS}/@antseed/cli/dist/cli/index.js`
@@ -40,13 +40,14 @@ function launcherToken(audience) {
       res.on('data', (c) => chunks.push(c))
       res.on('end', () => (res.statusCode === 200 ? resolve(Buffer.concat(chunks).toString('utf8').trim()) : reject(new Error(`launcher token HTTP ${res.statusCode}`))))
     })
+    req.setTimeout(REQUEST_TIMEOUT_MS, () => req.destroy(new Error('launcher token request timed out')))
     req.on('error', reject)
     req.end(body)
   })
 }
 
 async function json(url, init) {
-  const res = await fetch(url, { ...init, redirect: 'error' })
+  const res = await fetch(url, { ...init, redirect: 'error', signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) })
   if (!res.ok) throw new Error(`${new URL(url).host} answered HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`)
   return res.json()
 }
@@ -82,14 +83,16 @@ async function loadSecrets(secrets, accessToken) {
   }
 }
 
-// The lease is renewed this often, and a seller that has gone this long without renewing it stops
-// serving, well before its 2 minute expiry lets another instance in.
-const LEASE_RENEW_MS = 20_000
-const LEASE_FENCE_MS = 60_000
+// Google requests give up after this long, so a stalled one can't hold up startup or saving.
+const REQUEST_TIMEOUT_MS = 30_000
+// A fenced seller that hasn't stopped after this long is killed: its lease may expire soon after.
+const FENCE_KILL_MS = 30_000
 
 let configPath = '/etc/antseed/config.json'
 let state = []
 let lease = null
+let keeper = null
+let seller = null
 try {
   if (existsSync(CS_SOCKET)) {
     process.env.ANTSEED_VERIFIER_NODE_TEE = 'confidential-space'
@@ -112,6 +115,11 @@ try {
     await lease.acquire({
       onWait: (held) => console.log(`[tee-seller] another seller instance holds ${process.env.ANTSEED_GCP_STATE}/lease until ${new Date(held.expiresAt).toISOString()}; waiting`),
     })
+    // Kept from now on, so a slow restore can't outlast it; losing it stops this seller.
+    keeper = keepLease(lease, {
+      onLost: (reason) => (seller ? fence(reason) : fail(reason)),
+      onRetry: (err) => console.error(`[tee-seller] renewing the state lease failed, retrying: ${err instanceof Error ? err.message : String(err)}`),
+    })
     const Database = createRequire(`${PLUGINS}/@antseed/node/package.json`)('better-sqlite3')
     state = stateSyncs(location, accessToken, process.env.ANTSEED_IDENTITY_HEX, DATA_DIR, Database)
     for (const sync of state) {
@@ -129,8 +137,9 @@ try {
 process.env.ANTSEED_CONTENT_FREE_LOGS = '1'
 if (process.env.ANTSEED_IDENTITY_HEX && !process.env.ANTSEED_VERIFIER_SIGNING_KEY) process.env.ANTSEED_VERIFIER_SIGNING_KEY = process.env.ANTSEED_IDENTITY_HEX
 
+if (keeper && !keeper.valid()) fail('the state lease lapsed before the seller started')
 // The seller runs as a child so its state can be saved once more after it has shut down cleanly.
-const seller = spawn(process.execPath, [CLI, '--config', configPath, '--data-dir', DATA_DIR, ...process.argv.slice(2)], { stdio: 'inherit' })
+seller = spawn(process.execPath, [CLI, '--config', configPath, '--data-dir', DATA_DIR, ...process.argv.slice(2)], { stdio: 'inherit' })
 for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => seller.kill(signal))
 
 /** Stop serving without saving: another instance owns the state now. */
@@ -138,6 +147,7 @@ function fence(reason) {
   console.error(`[tee-seller] ${reason}; stopping this seller`)
   process.exitCode = 1
   seller.kill('SIGTERM')
+  setTimeout(() => seller.kill('SIGKILL'), FENCE_KILL_MS).unref()
 }
 
 async function saveState(sync) {
@@ -152,23 +162,10 @@ async function saveState(sync) {
   }
 }
 const timers = state.map((sync) => setInterval(() => void saveState(sync), sync.file.everyMs))
-if (lease) {
-  let renewedAt = Date.now()
-  timers.push(setInterval(async () => {
-    try {
-      await lease.renew()
-      renewedAt = Date.now()
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      if (err instanceof StateConflictError) fence(`lost the state lease: ${message}`)
-      else if (Date.now() - renewedAt > LEASE_FENCE_MS) fence(`could not renew the state lease for ${LEASE_FENCE_MS / 1000} s: ${message}`)
-      else console.error(`[tee-seller] renewing the state lease failed, retrying: ${message}`)
-    }
-  }, LEASE_RENEW_MS))
-}
 
 seller.on('exit', async (code, signal) => {
   for (const timer of timers) clearInterval(timer)
+  // Still renewed through the last save, then released.
   if (process.exitCode !== 1) {
     // The seller has closed its databases: save each once more, retrying, as nothing saves them later.
     const results = await Promise.allSettled(state.map((sync) => sync.saveFinal()))
@@ -180,6 +177,7 @@ seller.on('exit', async (code, signal) => {
     })
     // Saved: the next instance may start at once. Unsaved, the lease stays until it expires, so a
     // restart on this VM (same holder) takes it back with its newer local databases first.
+    keeper?.stop()
     if (process.exitCode !== 1) {
       await lease?.release().catch((err) => console.error(`[tee-seller] releasing the state lease failed: ${err instanceof Error ? err.message : String(err)}`))
     }

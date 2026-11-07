@@ -99,18 +99,19 @@ export async function snapshot(dataDir, file, Database, now = Date.now()) {
   }
 }
 
-/** One Cloud Storage object, written only over the generation this seller last saw. */
-export function gcsObject({ bucket, object }, accessToken, fetchImpl = fetch) {
+/** One Cloud Storage object, written only over the generation this seller last saw. Each request gives up after `timeoutMs`. */
+export function gcsObject({ bucket, object }, accessToken, fetchImpl = fetch, { timeoutMs = 300_000 } = {}) {
   const name = encodeURIComponent(object)
+  const request = (url, init) => fetchImpl(url, { ...init, signal: AbortSignal.timeout(timeoutMs) })
   return {
     async read() {
-      const res = await fetchImpl(`https://storage.googleapis.com/storage/v1/b/${bucket}/o/${name}?alt=media`, {
+      const res = await request(`https://storage.googleapis.com/storage/v1/b/${bucket}/o/${name}?alt=media`, {
         headers: { authorization: `Bearer ${await accessToken()}` },
         redirect: 'error',
       })
       if (res.status === 404) {
         // No snapshot yet, unless the bucket itself is missing: then a mistyped location would start the seller empty.
-        const list = await fetchImpl(`https://storage.googleapis.com/storage/v1/b/${bucket}/o?maxResults=1&prefix=${name}`, {
+        const list = await request(`https://storage.googleapis.com/storage/v1/b/${bucket}/o?maxResults=1&prefix=${name}`, {
           headers: { authorization: `Bearer ${await accessToken()}` },
           redirect: 'error',
         })
@@ -121,7 +122,7 @@ export function gcsObject({ bucket, object }, accessToken, fetchImpl = fetch) {
       return { data: Buffer.from(await res.arrayBuffer()), generation: res.headers.get('x-goog-generation') ?? '0' }
     },
     async write(data, ifGenerationMatch) {
-      const res = await fetchImpl(`https://storage.googleapis.com/upload/storage/v1/b/${bucket}/o?uploadType=media&name=${name}&ifGenerationMatch=${ifGenerationMatch}`, {
+      const res = await request(`https://storage.googleapis.com/upload/storage/v1/b/${bucket}/o?uploadType=media&name=${name}&ifGenerationMatch=${ifGenerationMatch}`, {
         method: 'POST',
         headers: { authorization: `Bearer ${await accessToken()}`, 'content-type': 'application/octet-stream' },
         body: data,
@@ -132,7 +133,7 @@ export function gcsObject({ bucket, object }, accessToken, fetchImpl = fetch) {
       return String((await res.json()).generation)
     },
     async remove(ifGenerationMatch) {
-      const res = await fetchImpl(`https://storage.googleapis.com/storage/v1/b/${bucket}/o/${name}?ifGenerationMatch=${ifGenerationMatch}`, {
+      const res = await request(`https://storage.googleapis.com/storage/v1/b/${bucket}/o/${name}?ifGenerationMatch=${ifGenerationMatch}`, {
         method: 'DELETE',
         headers: { authorization: `Bearer ${await accessToken()}` },
         redirect: 'error',
@@ -169,8 +170,11 @@ export class StateLease {
   }
 
   async _write(ifGenerationMatch) {
-    const body = Buffer.from(JSON.stringify({ holder: this.holder, expiresAt: this.now() + this.ttlMs }))
+    // The lease runs from when this write was sent, so `confirmedAt` never overstates it.
+    const sentAt = this.now()
+    const body = Buffer.from(JSON.stringify({ holder: this.holder, expiresAt: sentAt + this.ttlMs }))
     this.generation = await this.store.write(body, ifGenerationMatch)
+    this.confirmedAt = sentAt
   }
 
   /** Wait until the lease is free, expired or already this holder's, then take it. `onWait(lease)` reports each wait. */
@@ -207,6 +211,41 @@ export class StateLease {
   async release() {
     await this.store.remove(this.generation)
   }
+}
+
+/**
+ * Keeps a held lease and fences its holder. Renewals run one at a time; a watchdog, independent of
+ * them, calls `onLost` once the last confirmed renewal is `fenceMs` old (or a renewal finds another
+ * holder), so a stalled network can't leave this holder serving after its lease could expire.
+ * `fenceMs` is well under the lease's lifetime, leaving the holder time to stop.
+ */
+export function keepLease(lease, { renewMs = 20_000, fenceMs = 60_000, checkMs = 5_000, onLost, onRetry, now = Date.now, every = setInterval, cancel = clearInterval }) {
+  let lost = false
+  let renewing = false
+  const timers = []
+  const stop = () => { for (const timer of timers) cancel(timer) }
+  const lose = (reason) => {
+    if (lost) return
+    lost = true
+    stop()
+    onLost(reason)
+  }
+  timers.push(every(async () => {
+    if (renewing || lost) return
+    renewing = true
+    try {
+      await lease.renew()
+    } catch (err) {
+      if (err instanceof StateConflictError) lose(`lost the state lease: ${err.message}`)
+      else onRetry?.(err)
+    } finally {
+      renewing = false
+    }
+  }, renewMs))
+  timers.push(every(() => {
+    if (now() - lease.confirmedAt > fenceMs) lose(`could not renew the state lease for ${fenceMs / 1000} s`)
+  }, checkMs))
+  return { valid: () => !lost && now() - lease.confirmedAt <= fenceMs, stop }
 }
 
 /** This data dir's lease holder id, kept so a container restarted on the same VM takes its lease back at once. */
@@ -321,7 +360,7 @@ export class StateFileSync {
 
 /** The lease on a seller's state, at `<prefix>/lease`. */
 export function stateLease({ bucket, prefix }, accessToken, holder, fetchImpl = fetch) {
-  return new StateLease({ store: gcsObject({ bucket, object: `${prefix}/lease` }, accessToken, fetchImpl), holder })
+  return new StateLease({ store: gcsObject({ bucket, object: `${prefix}/lease` }, accessToken, fetchImpl, { timeoutMs: 15_000 }), holder })
 }
 
 /** A sync per state file, each stored at `<prefix>/<file name>` in the operator's bucket. */
