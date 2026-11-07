@@ -17,14 +17,20 @@ Intel TDX quote:
 
 ## The image
 
-[`Dockerfile`](Dockerfile) packages an npm-published `@antseed/cli` with every provider plugin
-and the verifier prover, on a distroless runtime: no shell, no package manager, no runtime
-plugin installs or updates. The seller dashboard is off, so settings can't change at runtime.
+[`Dockerfile`](Dockerfile) installs the npm-published `@antseed/cli`, every provider plugin and
+the verifier prover exactly as locked in [`package-lock.json`](package-lock.json) (`npm ci`), on a
+distroless runtime: no shell, no package manager, no runtime plugin installs or updates. The
+seller dashboard is off, so settings can't change at runtime. A commit therefore determines all
+the code in the image: rebuild it from that commit to check a digest's contents.
 
-Releases are built by the **Publish TEE seller image** workflow
-([`.github/workflows/tee-seller-image.yml`](../../.github/workflows/tee-seller-image.yml)) and pushed
-to `ghcr.io/antseed/tee-seller:<cli version>` with a signed build provenance attestation, so
-anyone can check which commit and workflow produced a digest:
+To release an image after a CLI release:
+
+1. `node deploy/tee-seller/update-lock.mjs <cli version>` pins that CLI, the current plugin
+   releases and the verifier version the CLI pins; open a PR with the regenerated files.
+2. After it merges, run the **Publish TEE seller image** workflow
+   ([`.github/workflows/tee-seller-image.yml`](../../.github/workflows/tee-seller-image.yml)). It
+   pushes `ghcr.io/antseed/tee-seller:<cli version>` with an SBOM and a signed build provenance
+   attestation, so anyone can check which commit and workflow produced a digest:
 
 ```bash
 gh attestation verify oci://ghcr.io/antseed/tee-seller@sha256:<digest> --repo AntSeed/antseed

@@ -44,6 +44,13 @@ export function rtmr3Events(eventLog: unknown): DstackEvent[] {
 }
 
 const HEX = /^(?:[0-9a-fA-F]{2})*$/
+/**
+ * dstack event names are kebab-case. The v1 digest preimage is `type ‖ ":" ‖ name ‖ ":" ‖ payload`
+ * with no lengths, so a name holding ":" could move bytes between name and payload without
+ * changing the digest (e.g. "init-script-hash:" with the payload's leading ":" removed). Only
+ * names without delimiters are accepted, which makes every preimage split one way.
+ */
+const EVENT_NAME = /^[a-z0-9][a-z0-9-]*$/
 
 /**
  * Replay a dstack RTMR3 event log against the quote's (DCAP-verified) RTMR3 and return the app's
@@ -58,7 +65,8 @@ export function composeHashFromEventLog(events: unknown, rtmr3: Uint8Array): { c
   if (!Array.isArray(events) || events.length > MAX_RTMR3_EVENTS) return { error: 'malformed dstack event log' }
   let mr = Buffer.alloc(48)
   for (const e of events as Partial<DstackEvent>[]) {
-    if (e.event_type !== DSTACK_RUNTIME_EVENT_TYPE || typeof e.event !== 'string' || typeof e.event_payload !== 'string' || !HEX.test(e.event_payload)) {
+    if (e.event_type !== DSTACK_RUNTIME_EVENT_TYPE || typeof e.event !== 'string' || !EVENT_NAME.test(e.event)
+      || typeof e.event_payload !== 'string' || !HEX.test(e.event_payload)) {
       return { error: 'malformed dstack event log' }
     }
     if (e.version !== undefined && e.version !== 1 && e.version !== 2) return { error: `unknown dstack event log version ${String(e.version)}` }

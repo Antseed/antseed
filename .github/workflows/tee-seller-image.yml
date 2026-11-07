@@ -1,17 +1,14 @@
 name: Publish TEE seller image
 
-# Builds deploy/tee-seller/Dockerfile from an npm-published @antseed/cli version and pushes it to
-# ghcr.io/antseed/tee-seller:<version>, with a signed build provenance attestation tying the
-# digest to this repository, commit and workflow. Run it after "Publish npm packages" released
-# the CLI; the summary prints the digest to pin in a TEE seller's compose file.
+# Builds deploy/tee-seller/Dockerfile from the CLI, plugins and verifier locked in
+# deploy/tee-seller/package-lock.json and pushes it to ghcr.io/antseed/tee-seller:<cli version>,
+# with a signed build provenance attestation tying the digest to this repository, commit and
+# workflow. After an npm release, refresh the lock (node deploy/tee-seller/update-lock.mjs
+# <version>) in a PR, merge it, then run this; the summary prints the digest to pin in a TEE
+# seller's compose file.
 
 on:
   workflow_dispatch:
-    inputs:
-      version:
-        description: '@antseed/cli version to package (default: apps/cli/package.json on the selected ref)'
-        type: string
-        required: false
 
 permissions:
   contents: read
@@ -35,17 +32,12 @@ jobs:
         with:
           node-version-file: '.nvmrc'
 
-      - name: Resolve CLI version
+      - name: Read the locked CLI version
         id: version
-        env:
-          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          version="${INPUT_VERSION:-$(node -p "require('./apps/cli/package.json').version")}"
+          version="$(node -p "require('./deploy/tee-seller/package.json').dependencies['@antseed/cli']")"
           if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Invalid version '$version'"; exit 1
-          fi
-          if [ "$(npm view "@antseed/cli@$version" version 2>/dev/null)" != "$version" ]; then
-            echo "::error::@antseed/cli@$version is not on npm yet; publish it first"; exit 1
+            echo "::error::deploy/tee-seller/package.json pins no exact @antseed/cli version ('$version')"; exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           # Fixed timestamps, so a rebuild of the same commit and version yields the same layers.

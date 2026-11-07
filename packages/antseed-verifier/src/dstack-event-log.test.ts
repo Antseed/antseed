@@ -64,6 +64,18 @@ describe('composeHashFromEventLog', () => {
     expect(composeHashFromEventLog(log, replay(log))).toEqual({ error: 'the CVM ran init scripts outside the approved compose file' })
   })
 
+  it('rejects an init script disguised by moving a ":" between name and payload (same v1 digest)', () => {
+    const scriptHash = '3a' + '44'.repeat(31)
+    const real = bootLog(undefined, [event('init-script-hash', scriptHash)])
+    const rtmr3 = replay(real)
+    // "init-script-hash" + ":" + "3a44…" and "init-script-hash:" + ":" + "44…" hash identically.
+    const disguised = real.map((e) => (e.event === 'init-script-hash' ? { ...e, event: 'init-script-hash:', event_payload: scriptHash.slice(2) } : e))
+    expect(runtimeEventDigest('init-script-hash:', Buffer.from(scriptHash.slice(2), 'hex'), 1)
+      .equals(runtimeEventDigest('init-script-hash', Buffer.from(scriptHash, 'hex'), 1))).toBe(true)
+    expect(composeHashFromEventLog(disguised, rtmr3)).toEqual({ error: 'malformed dstack event log' })
+    expect(composeHashFromEventLog(real, rtmr3)).toEqual({ error: 'the CVM ran init scripts outside the approved compose file' })
+  })
+
   it('ignores a compose-hash event emitted after boot (only boot measurements count)', () => {
     const log = [...bootLog(), event('compose-hash', 'cd'.repeat(32))]
     expect(composeHashFromEventLog(log, replay(log))).toEqual({ composeHash: COMPOSE })

@@ -64,7 +64,11 @@ export function normalizeChannelBinding(binding: string): string {
   return b
 }
 
-/** Request header carrying the seller-side connection session hash (set by the seller node, never by the buyer). */
+/**
+ * Request header carrying the seller-side connection session hash (set by the seller node, never
+ * by the buyer). Must equal @antseed/node's ANTSEED_CHANNEL_BINDING_HEADER; like ATTEST_PATH it is
+ * mirrored rather than imported so this package stays free of an @antseed/node dependency.
+ */
 export const CHANNEL_BINDING_HEADER = 'x-antseed-channel-binding'
 
 /** The dependent capability whose own evidence is excluded from the bundle it signs over. */
