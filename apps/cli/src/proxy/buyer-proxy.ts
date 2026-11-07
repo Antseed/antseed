@@ -399,7 +399,9 @@ const RECOMMENDATION_FALLBACK_STATUS_CODES = new Set([401, 403, 429, 500, 502, 5
 /**
  * Gateway-policy requests on automatic routing also move on after a 402: the
  * buyer could not fund that seller (no deposits for its reserve), but a free
- * seller needs none. Other requests keep the 402, as they always have.
+ * seller needs none. Other automatic routing moves on only after the buyer's
+ * own 402 (see `shouldTryNextPeer`), so a raw seller 402 still reaches a
+ * client that pays for itself.
  */
 const GATEWAY_AUTO_ROUTE_RETRYABLE_STATUS_CODES = new Set([...RETRYABLE_STATUS_CODES, 402])
 
@@ -414,17 +416,30 @@ function retryableStatusCodesFor(gatewayAutoRoute: boolean): Set<number> {
  * `extraAttempt` also moves on after any other 4xx except 402: a client error
  * may be the seller's doing (it refuses a parameter other sellers of the
  * model accept) or the request's, and only another seller can
- * tell which. A pinned request keeps the pinned seller's answer.
+ * tell which. A 402 the buyer wrote itself (it cannot pay this seller, e.g.
+ * no deposits) also moves on: the routing loop then tries only sellers that
+ * need no deposits, and returns that 402 when none is left. A pinned request
+ * keeps the pinned seller's answer.
  */
 function shouldTryNextPeer(
   statusCode: number,
-  modelNotFound: boolean,
-  pinned: boolean,
-  gatewayAutoRoute: boolean,
-  extraAttempt = false,
+  {
+    modelNotFound,
+    pinned,
+    gatewayAutoRoute,
+    extraAttempt = false,
+    buyerFault = false,
+  }: {
+    modelNotFound: boolean
+    pinned: boolean
+    gatewayAutoRoute: boolean
+    extraAttempt?: boolean
+    buyerFault?: boolean
+  },
 ): boolean {
   return retryableStatusCodesFor(gatewayAutoRoute).has(statusCode)
     || (modelNotFound && !pinned)
+    || (statusCode === 402 && buyerFault && !pinned)
     || (extraAttempt && !pinned && statusCode >= 400 && statusCode < 500 && statusCode !== 402)
 }
 
@@ -702,6 +717,18 @@ const UNSUPPORTED_VOICE_REASON = 'does not offer the requested voice'
 
 /** Min gap between background peer refreshes triggered by model_not_found responses. */
 const MODEL_NOT_FOUND_REFRESH_THROTTLE_MS = 30_000
+
+/**
+ * Right after start the first discovery sweep is still finding sellers, so a
+ * model nobody serves yet may simply not have been found. Until the sweep ends
+ * (at most this long after start) such a request waits a little for it, then
+ * gets a retryable 503 `discovery_in_progress` instead of 502 `model_not_found`.
+ */
+const INITIAL_DISCOVERY_MAX_MS = 120_000
+const INITIAL_DISCOVERY_REQUEST_WAIT_MS = 10_000
+const INITIAL_DISCOVERY_POLL_MS = 500
+const INITIAL_DISCOVERY_RETRY_AFTER_SECONDS = 5
+export const DISCOVERY_IN_PROGRESS_CODE = 'discovery_in_progress'
 
 /**
  * Statuses that prove the peer is alive and serving. Any response short of a
@@ -1379,6 +1406,9 @@ export class BuyerProxy {
   private _peerRefreshPromise: Promise<PeerInfo[]> | null = null
   private _lastStaleCacheLogAtMs = 0
   private _startedAtMs = 0
+  /** The first discovery sweep after start is still running (see INITIAL_DISCOVERY_MAX_MS). */
+  private _initialDiscoveryPending = false
+  private _initialDiscoveryWaitMs = INITIAL_DISCOVERY_REQUEST_WAIT_MS
   /** After a network switch the DHT routing table can stay populated with stale
       nodes, so repeated empty sweeps are the reachability signal — not node count. */
   private _consecutiveEmptyDiscoveries = 0
@@ -1964,8 +1994,13 @@ export class BuyerProxy {
       : [...candidates].sort((a, b) => Number(adaptive.scores.get(a)!.unhealthy) - Number(adaptive.scores.get(b)!.unhealthy))
     const healthOf = (candidate: (typeof ranked)[number]): AdaptiveRouteScore => adaptive.scores.get(candidate)!
     let chainPosition: Map<string, number> | null = null
-    if (effectivePolicy) {
-      const ordering = orderByPolicy(candidates, effectivePolicy, requestedService, {
+    // Without a gateway policy the buyer's own `preferFreePeers` still puts
+    // free sellers first, as it does under one (where it is part of the
+    // merged policy).
+    const orderingPolicy: RoutingPolicy | null = effectivePolicy
+      ?? (routingPreferences?.preferFreePeers ? { preferFreePeers: true } : null)
+    if (orderingPolicy) {
+      const ordering = orderByPolicy(candidates, orderingPolicy, requestedService, {
         peerId: (candidate) => candidate.peerId,
         totalPrice: (candidate) => modelRouteTotalPrice(candidate),
         trustScore: (candidate) => this._modelTrust(candidate.peer, candidate.serviceId).trust,
@@ -2389,6 +2424,7 @@ export class BuyerProxy {
 
   async start(): Promise<void> {
     this._startedAtMs = Date.now()
+    this._initialDiscoveryPending = true
     // Clean up temp files orphaned by state writes whose rename failed in a
     // previous run — each carries a full discovered-peers snapshot, so left
     // alone they accumulate into real disk usage.
@@ -2434,6 +2470,13 @@ export class BuyerProxy {
     // emits each accepted metadata document as it arrives, so buyer.state.json
     // gets useful rows while slower endpoints continue timing out.
     this._startIncrementalDiscoverySweep()
+    const sweep = this._node.peerDiscoverySweep
+    if (sweep) {
+      const done = (): void => { this._initialDiscoveryPending = false }
+      sweep.then(done, done)
+    } else {
+      this._initialDiscoveryPending = false
+    }
     await this._writeStateFile('connected')
     this._watchStateFile()
     this._watchConfigFile()
@@ -3117,6 +3160,43 @@ export class BuyerProxy {
     return this._peerRefreshPromise
   }
 
+  /** The first discovery sweep after start is still running, and started less than INITIAL_DISCOVERY_MAX_MS ago. */
+  private _initialDiscoveryRunning(): boolean {
+    return this._initialDiscoveryPending && Date.now() - this._startedAtMs < INITIAL_DISCOVERY_MAX_MS
+  }
+
+  /**
+   * Waits at most `_initialDiscoveryWaitMs` while the first discovery sweep
+   * runs, until `found` accepts the peers it has added to the cache. It only
+   * reads the cache the sweep fills (never starts a lookup of its own, which
+   * could outlast the budget) and stops as soon as the client goes away.
+   */
+  private async _waitForInitialDiscovery(found: (peers: PeerInfo[]) => boolean, signal: AbortSignal): Promise<PeerInfo[]> {
+    const deadline = Date.now() + this._initialDiscoveryWaitMs
+    while (!found(this._cachedPeers) && this._initialDiscoveryRunning()) {
+      const remainingMs = deadline - Date.now()
+      if (remainingMs <= 0) break
+      if (!await waitForRetry(Math.min(INITIAL_DISCOVERY_POLL_MS, remainingMs), signal)) break
+    }
+    return this._cachedPeers
+  }
+
+  private _discoveryInProgressFailure(requestedService: string | null): DispatchFailure {
+    const seconds = Math.max(1, Math.round((Date.now() - this._startedAtMs) / 1000))
+    const what = requestedService ? `no usable seller of "${requestedService}" found yet` : 'no sellers found yet'
+    return dispatchFailure(503, {
+      'content-type': 'application/json',
+      'retry-after': String(INITIAL_DISCOVERY_RETRY_AFTER_SECONDS),
+    }, JSON.stringify({
+      error: {
+        type: 'api_error',
+        code: DISCOVERY_IN_PROGRESS_CODE,
+        message: `The buyer started ${seconds} s ago and is still discovering sellers (${what}). Retry in a few seconds.`,
+        ...(requestedService ? { param: 'model' } : {}),
+      },
+    }))
+  }
+
   private async _getPeers(options?: { forceRefresh?: boolean }): Promise<PeerInfo[]> {
     const forceRefresh = options?.forceRefresh === true
     const cacheAgeMs = Date.now() - this._cacheLastUpdatedAtMs
@@ -3211,6 +3291,7 @@ export class BuyerProxy {
         peersUpdatedAt: this._cacheLastUpdatedAtMs > 0 ? this._cacheLastUpdatedAtMs : null,
         startedAt: this._startedAtMs,
         uptimeMs: this._startedAtMs > 0 ? Date.now() - this._startedAtMs : 0,
+        discovering: this._initialDiscoveryRunning(),
       }))
       return
     }
@@ -4654,9 +4735,19 @@ export class BuyerProxy {
     }
 
     // Discover peers
-    const peers = await this._getPeers()
+    // While the first discovery sweep runs, an unpinned request routes from the cache the sweep
+    // fills instead of starting a foreground lookup, which could outlast the discovery wait.
+    const awaitingInitialDiscovery = !explicitPeerId && this._initialDiscoveryRunning()
+    let peers = awaitingInitialDiscovery ? this._cachedPeers : await this._getPeers()
     // A pinned seller is still looked up on its own DHT topic below, even when discovery found no one.
+    if (peers.length === 0 && !explicitPeerId && this._initialDiscoveryRunning()) {
+      peers = await this._waitForInitialDiscovery((found) => found.length > 0, signal)
+    }
     if (peers.length === 0 && !explicitPeerId) {
+      if (this._initialDiscoveryRunning()) {
+        log('No sellers found yet; discovery still running')
+        return this._discoveryInProgressFailure(null)
+      }
       log('No sellers available')
       return dispatchFailure(502, { 'content-type': 'text/plain' }, 'No sellers available on the network. Is a seeder running?')
     }
@@ -4685,15 +4776,17 @@ export class BuyerProxy {
       let discoveredPeers = peers
       let { candidatePeers: modelPeers, routePlanByPeerId: modelPlans } = selectModelPeers(discoveredPeers)
       const cacheAgeMs = Date.now() - this._cacheLastUpdatedAtMs
-      if (modelPeers.length === 0 || cacheAgeMs > this._peerCacheTtlMs) {
+      if ((modelPeers.length === 0 || cacheAgeMs > this._peerCacheTtlMs) && !this._initialDiscoveryRunning()) {
         discoveredPeers = await this._getPeers({ forceRefresh: true })
         ;({ candidatePeers: modelPeers, routePlanByPeerId: modelPlans } = selectModelPeers(discoveredPeers))
       }
-
       const router = this._node.router
-      const { candidates, verdicts, effectivePolicy, explored, selections, firstPick } = this._planModelRoutes({
-        modelPeers,
-        modelPlans,
+      // Conversations the client identifies (session id, prompt-cache key)
+      // stay on one seller so its prompt cache keeps paying off.
+      const affinityKey = routingConversationKey ?? promptCacheKey(serializedReq)
+      const planRoutes = (selection: CandidatePeerRouteSelection, deterministic = false) => this._planModelRoutes({
+        modelPeers: selection.candidatePeers,
+        modelPlans: selection.routePlanByPeerId,
         request: serializedReq,
         requestProtocol,
         requestedService,
@@ -4701,10 +4794,21 @@ export class BuyerProxy {
         requiredParameters: routeRequiredParameters,
         requestPolicy,
         preferredPeerId: preferredConversationPeerId,
-        // Conversations the client identifies (session id, prompt-cache key)
-        // stay on one seller so its prompt cache keeps paying off.
-        affinityKey: routingConversationKey ?? promptCacheKey(serializedReq),
+        affinityKey,
+        ...(deterministic ? { deterministic } : {}),
       })
+      let plan = planRoutes({ candidatePeers: modelPeers, routePlanByPeerId: modelPlans })
+      if (plan.candidates.length === 0 && this._initialDiscoveryRunning()) {
+        // Just started: the first discovery sweep may not have reached a seller
+        // of this model yet, or the trust data that lets the routing policy take one.
+        discoveredPeers = await this._waitForInitialDiscovery((found) => {
+          const selection = selectModelPeers(found)
+          return selection.candidatePeers.length > 0 && planRoutes(selection, true).candidates.length > 0
+        }, signal)
+        ;({ candidatePeers: modelPeers, routePlanByPeerId: modelPlans } = selectModelPeers(discoveredPeers))
+        plan = planRoutes({ candidatePeers: modelPeers, routePlanByPeerId: modelPlans })
+      }
+      const { candidates, verdicts, effectivePolicy, explored, selections, firstPick } = plan
       const requireVerified = effectivePolicy?.requireVerified === true
       const requireTee = effectivePolicy?.requireTee === true
       if (candidates.length === 0) {
@@ -4774,6 +4878,10 @@ export class BuyerProxy {
               supported_protocols: advertisedProtocols,
             },
           }))
+        }
+        if (this._initialDiscoveryRunning()) {
+          log(`Request rejected: no seller of ${requestedService} usable yet; discovery still running`)
+          return this._discoveryInProgressFailure(requestedService)
         }
         return dispatchFailure(capabilityRequired ? 422 : 502, { 'content-type': 'application/json' }, JSON.stringify({
           error: capabilityRequired
@@ -4941,6 +5049,8 @@ export class BuyerProxy {
               log(`No deposits to pay peer ${selected.peer.peerId.slice(0, 12)}...; trying free sellers and free allowances only.`)
               break
             }
+            // No seller served the request: count what only the sellers before it could have caused.
+            countFailures(null)
             return result
           }
           const retrySamePeer = result.statusCode === 429
@@ -5699,7 +5809,13 @@ export class BuyerProxy {
         const answeredEmpty = !pinned && responseForClient.statusCode < 300
           && isEmptyAnswer(responseForClient.headers['content-type'], responseForClient.body)
         const emptyAnswer = extraAttempt && answeredEmpty
-        if (emptyAnswer || shouldTryNextPeer(responseForClient.statusCode, modelNotFound, pinned, gatewayAutoRoute, extraAttempt && responseFault !== 'buyer')) {
+        if (emptyAnswer || shouldTryNextPeer(responseForClient.statusCode, {
+          modelNotFound,
+          pinned,
+          gatewayAutoRoute,
+          extraAttempt: extraAttempt && responseFault !== 'buyer',
+          buyerFault: responseFault === 'buyer',
+        })) {
           return {
             done: false,
             statusCode: responseForClient.statusCode,
@@ -5815,7 +5931,13 @@ export class BuyerProxy {
         const answeredEmpty = !pinned && response.statusCode < 300 && !videoRoute
           && isEmptyAnswer(response.headers['content-type'], response.body)
         const emptyAnswer = extraAttempt && answeredEmpty
-        if (emptyAnswer || shouldTryNextPeer(response.statusCode, modelNotFound, pinned, gatewayAutoRoute, extraAttempt && responseFault !== 'buyer')) {
+        if (emptyAnswer || shouldTryNextPeer(response.statusCode, {
+          modelNotFound,
+          pinned,
+          gatewayAutoRoute,
+          extraAttempt: extraAttempt && responseFault !== 'buyer',
+          buyerFault: responseFault === 'buyer',
+        })) {
           return { done: false, statusCode: response.statusCode, responseBody: Buffer.from(response.body), responseHeaders, errorMessage: null, modelNotFound, emptyAnswer }
         }
 
