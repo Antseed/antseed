@@ -518,7 +518,13 @@ export interface ResponseAuthEvent {
 /** `capabilities` without repeats and without any already in `present`, in first-seen order. */
 function uniqueCapabilities(capabilities: readonly string[], present: readonly string[] = []): string[] {
   const seen = new Set(present);
-  return capabilities.filter((capability) => !seen.has(capability) && (seen.add(capability), true));
+  const result: string[] = [];
+  for (const capability of capabilities) {
+    if (seen.has(capability)) continue;
+    seen.add(capability);
+    result.push(capability);
+  }
+  return result;
 }
 
 export class AntseedNode extends EventEmitter {

@@ -4,6 +4,7 @@ import {
   isSealedRequest,
   openRequest,
   WORKER_REQUEST_TTL_SECONDS,
+  type OpenedRequest,
   workerKeyCertificateMessage,
   workerKeyHex,
   type WorkerAttestation,
@@ -440,7 +441,17 @@ export class PoolWorker {
     this.log(opened.buyer
       ? `serving ${opened.model} for buyer ${opened.buyer} on channel ${opened.channel?.slice(0, 18)}…`
       : `serving a pool check for ${opened.model}`);
+    await this.forwardUpstream(frame, body, opened.sealer, signal, send);
+  }
 
+  /** Run the request on the local model and send its answer back sealed, in chunks. */
+  private async forwardUpstream(
+    frame: RequestFrame,
+    body: Record<string, unknown>,
+    sealer: OpenedRequest['sealer'],
+    signal: AbortSignal,
+    send: (out: WorkerFrame) => void,
+  ): Promise<void> {
     // The local model gets its own deadlines: one to answer, then one per chunk.
     const upstreamAbort = new AbortController();
     const onAbort = (): void => upstreamAbort.abort();
@@ -471,12 +482,12 @@ export class PoolWorker {
         arm(idleMs);
         for await (const chunk of upstream.body) {
           arm(idleMs);
-          const sealed = opened.sealer.pushStream(chunk as Uint8Array);
+          const sealed = sealer.pushStream(chunk as Uint8Array);
           sendChunks(sealed);
         }
-        sendChunks(opened.sealer.finishStream());
+        sendChunks(sealer.finishStream());
       } else {
-        const sealed = opened.sealer.sealBody(new Uint8Array(await upstream.arrayBuffer()));
+        const sealed = sealer.sealBody(new Uint8Array(await upstream.arrayBuffer()));
         send({ t: 'response-start', id: frame.id, status: upstream.status, headers: { 'content-type': 'application/json' } });
         sendChunks(sealed);
       }

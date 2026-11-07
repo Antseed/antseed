@@ -38,7 +38,7 @@ describe('worker share', () => {
 
   it('cannot also be configured when it is read from the pool contract', () => {
     expect(() => plugin.createProvider({
-      ANTSEED_ALLOWED_SERVICES: 'm', COLONY_POOL_SELLER_ADDRESS: POOL,
+      ANTSEED_ALLOWED_SERVICES: 'm', ANTSEED_OUTPUT_USD_PER_MILLION: '1', COLONY_POOL_SELLER_ADDRESS: POOL,
       COLONY_POOL_RPC_URL: 'http://127.0.0.1:1', COLONY_POOL_WORKER_SHARE_BPS: '8000',
     })).toThrow(/read from the pool contract/);
   });

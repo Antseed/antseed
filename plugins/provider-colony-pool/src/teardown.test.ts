@@ -42,6 +42,8 @@ function config(port: number, extra: Record<string, string> = {}): Record<string
   dirs.push(dataDir);
   return {
     ANTSEED_ALLOWED_SERVICES: 'qwen',
+    ANTSEED_INPUT_USD_PER_MILLION: '1',
+    ANTSEED_OUTPUT_USD_PER_MILLION: '2',
     ANTSEED_DATA_DIR: dataDir,
     COLONY_POOL_SELLER_ADDRESS: `0x${'aa'.repeat(20)}`,
     COLONY_POOL_PORT: String(port),

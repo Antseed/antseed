@@ -18,6 +18,8 @@ function finishedEpochs(currentEpoch: number): number[] {
 
 /** The per-epoch views read in bulk; claims and single reads go through ColonyPoolClient. */
 const EPOCH_READS = new Interface(COLONY_POOL_ABI);
+/** The emissions contract's per-epoch view of what a pull would bring the pool. */
+const EMISSIONS_READS = new Interface(['function pendingEmissions(address account, uint256[] epochs) view returns (uint256 seller, uint256 buyer)']);
 
 /**
  * One view per argument list, batched through Multicall3 (one `eth_call` per
@@ -74,9 +76,23 @@ async function readColonyPool(ctx: AntsContext, address: string, epochs: number[
   ]);
   const perEpoch = weighted.map((epoch, index) => ({ epoch, owed: owedEach[index]!, unfunded: fundedEach[index] === 0n }));
   const antsEpochs = perEpoch.filter((entry) => entry.owed > 0n).map((entry) => entry.epoch);
-  const unfundedEpochs = perEpoch.filter((entry) => entry.unfunded).map((entry) => entry.epoch);
+  const unfundedEpochs = await withUpstreamReward(ctx, address, perEpoch.filter((entry) => entry.unfunded).map((entry) => entry.epoch));
   const antsOwed = perEpoch.reduce((sum, entry) => sum + entry.owed, 0n);
   return { address, usdcOwed: usdcOwed.toString(), antsOwed: antsOwed.toString(), antsEpochs, unfundedEpochs, forgettable: ctx.isLinkedColonyPool(address) };
+}
+
+/**
+ * The unfunded epochs a pull could fund: an epoch the emissions contract shows
+ * no seller reward for would only spend gas. One whose reward can't be read
+ * (or is locked) is kept, so the pull can say why.
+ */
+async function withUpstreamReward(ctx: AntsContext, pool: string, epochs: number[]): Promise<number[]> {
+  if (epochs.length === 0) return epochs;
+  const { registryPointers } = await ctx.stack();
+  const pending = await multicallRead(ctx.provider(), epochs.map((epoch) => ({
+    target: registryPointers.emissions, iface: EMISSIONS_READS, method: 'pendingEmissions', args: [pool, [epoch]],
+  })));
+  return epochs.filter((_, index) => pending[index]?.[0] !== 0n);
 }
 
 export async function claimColonyPool(ctx: AntsContext, request: ColonyPoolClaimRequest, report: StepReporter): Promise<{ hashes: string[] }> {

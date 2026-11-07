@@ -26,7 +26,8 @@ function linkCode(overrides: Record<string, unknown> = {}): string {
   return `antseed-link:${Buffer.from(JSON.stringify(payload)).toString('base64url')}`;
 }
 
-function fixture(pools: string[] = [pool], unfunded: number[] = []) {
+/** `unfunded`: epochs the wallet earned in that the pool has not pulled; `empty`: those of them with no upstream reward. */
+function fixture(pools: string[] = [pool], unfunded: number[] = [], empty: number[] = []) {
   let pulled = false;
   const client = {
     usdcBalance: vi.fn(async () => 2_500n),
@@ -34,6 +35,8 @@ function fixture(pools: string[] = [pool], unfunded: number[] = []) {
     epochWeight: vi.fn(async (epoch: number) => (epoch === 4 || unfunded.includes(epoch) ? 10n : 0n)),
     epochAnts: vi.fn(async (epoch: number) => (epoch === 4 || (pulled && unfunded.includes(epoch)) ? 100n : 0n)),
     claimEpochEmissions: vi.fn(async () => { pulled = true; return 'pull-hash'; }),
+    // The emissions contract: the seller reward a pull would bring the pool.
+    pendingEmissions: vi.fn(async (_account: string, epochs: number[]) => (empty.includes(epochs[0]!) ? 0n : 5n)),
     claimUsdc: vi.fn(async () => 'usdc-hash'),
     claimAnts: vi.fn(async () => 'ants-hash'),
     payout: '0x0000000000000000000000000000000000000000',
@@ -48,7 +51,7 @@ function fixture(pools: string[] = [pool], unfunded: number[] = []) {
   const ctx = {
     address: wallet.address,
     chain,
-    stack: async () => ({ currentEpoch: 6 }),
+    stack: async () => ({ currentEpoch: 6, registryPointers: { emissions: '0x00000000000000000000000000000000000000ee', staking: '0x' } }),
     colonyPoolAddresses: () => (chain.colonyPoolAddresses ?? []).map((a) => a.toLowerCase()),
     rememberColonyPool: async (address: string) => { chain.colonyPoolAddresses = [...chain.colonyPoolAddresses, address]; },
     isLinkedColonyPool: (address: string) => chain.colonyPoolAddresses.some((a) => a.toLowerCase() === address.toLowerCase()) && !configured.has(address.toLowerCase()),
@@ -85,6 +88,14 @@ describe('colony pool rewards', () => {
     await expect(claimColonyPool(ctx, { pool, usdc: false, ants: true }, report)).resolves.toEqual({ hashes: ['pull-hash', 'ants-hash'] });
     expect(client.claimEpochEmissions).toHaveBeenCalledWith(wallet, [5]);
     expect(client.claimAnts).toHaveBeenCalledWith(wallet, [4, 5]);
+  });
+
+  it('never offers to pull an epoch the emissions contract has no reward for', async () => {
+    const { ctx, client } = fixture([pool], [2, 5], [2]);
+    expect((await colonyPools(ctx)).pools[0]!.unfundedEpochs).toEqual([5]);
+    await claimColonyPool(ctx, { pool, usdc: false, ants: true }, report);
+    expect(client.claimEpochEmissions).toHaveBeenCalledTimes(1);
+    expect(client.claimEpochEmissions).toHaveBeenCalledWith(wallet, [5]);
   });
 
   it('still claims funded epochs when pulling emissions fails', async () => {

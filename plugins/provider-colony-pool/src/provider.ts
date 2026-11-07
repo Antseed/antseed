@@ -92,7 +92,11 @@ export class ColonyPoolProvider implements Provider {
     this.pricing = opts.pricing;
     this.maxConcurrency = opts.maxConcurrency;
     this.workerShareBps = BigInt(opts.workerShareBps);
-    this.protocolFeeBps = BigInt(opts.protocolFeeBps ?? 200);
+    const protocolFeeBps = opts.protocolFeeBps ?? 200;
+    if (!Number.isInteger(protocolFeeBps) || protocolFeeBps < 0 || protocolFeeBps > 10_000) {
+      throw new Error('protocolFeeBps must be a whole number from 0 to 10000');
+    }
+    this.protocolFeeBps = BigInt(protocolFeeBps);
     if (opts.serviceApiProtocols) this.serviceApiProtocols = opts.serviceApiProtocols;
     if (opts.serviceCapabilities) this.serviceCapabilities = opts.serviceCapabilities;
     this.syncServices();

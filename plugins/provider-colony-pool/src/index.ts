@@ -60,8 +60,8 @@ const plugin: AntseedProviderPlugin = {
     { key: 'COLONY_POOL_REQUIRE_DEVICE_ATTESTATION', label: 'Require Apple Attestation', type: 'boolean', required: false, default: false, description: 'Only route to Macs Apple attests through your MDM (SIP on, serial matches)' },
     { key: 'COLONY_POOL_VERIFY_ON_JOIN', label: 'Verify On Join', type: 'boolean', required: false, default: true, description: 'Send each newly offered model a short test completion before routing buyers to it' },
     { key: 'COLONY_POOL_LEDGER_PATH', label: 'Ledger Path', type: 'string', required: false, description: 'SQLite file for worker earnings (defaults to <data dir>/colony-pool.db)' },
-    { key: 'ANTSEED_INPUT_USD_PER_MILLION', label: 'Input Price', type: 'number', required: false, default: 0, description: 'Input price in USD per 1M tokens' },
-    { key: 'ANTSEED_OUTPUT_USD_PER_MILLION', label: 'Output Price', type: 'number', required: false, default: 0, description: 'Output price in USD per 1M tokens' },
+    { key: 'ANTSEED_INPUT_USD_PER_MILLION', label: 'Input Price', type: 'number', required: false, default: 0, description: 'Input price in USD per 1M tokens (a pool cannot sell a service for free)' },
+    { key: 'ANTSEED_OUTPUT_USD_PER_MILLION', label: 'Output Price', type: 'number', required: false, default: 0, description: 'Output price in USD per 1M tokens (a pool cannot sell a service for free)' },
     { key: 'ANTSEED_CACHED_INPUT_USD_PER_MILLION', label: 'Cached Input Price', type: 'number', required: false, description: 'Cached input price in USD per 1M tokens (defaults to input price)' },
     { key: 'ANTSEED_MAX_CONCURRENCY', label: 'Max Concurrency', type: 'number', required: false, default: 64, description: 'Cap on concurrent requests across all workers' },
     { key: 'ANTSEED_ALLOWED_SERVICES', label: 'Services', type: 'string[]', required: true, description: 'Services this pool sells; workers offering others are ignored' },
@@ -82,6 +82,14 @@ const plugin: AntseedProviderPlugin = {
       },
       ...(servicePricing ? { services: servicePricing } : {}),
     };
+    // Workers are paid from what buyers pay, and a free request reaches them without a paid channel to bind.
+    const free = catalog.filter((service) => {
+      const price = pricing.services?.[service] ?? pricing.defaults;
+      return !price.inputUsdPerMillion && !price.outputUsdPerMillion && !price.cachedInputUsdPerMillion;
+    });
+    if (free.length > 0) {
+      throw new Error(`A colony pool can't sell ${free.join(', ')} for free: set ANTSEED_INPUT_USD_PER_MILLION and ANTSEED_OUTPUT_USD_PER_MILLION, or ANTSEED_SERVICE_PRICING_JSON`);
+    }
 
     const rpcUrl = config['COLONY_POOL_RPC_URL'] || undefined;
     if (rpcUrl && config['COLONY_POOL_WORKER_SHARE_BPS']) {
@@ -90,6 +98,10 @@ const plugin: AntseedProviderPlugin = {
     const workerShareBps = parseNonNegativeNumber(config['COLONY_POOL_WORKER_SHARE_BPS'], 'COLONY_POOL_WORKER_SHARE_BPS', 9000);
     if (!Number.isInteger(workerShareBps) || workerShareBps > 10_000) {
       throw new Error('COLONY_POOL_WORKER_SHARE_BPS must be a whole number from 0 to 10000');
+    }
+    const protocolFeeBps = parseNonNegativeNumber(config['COLONY_POOL_PROTOCOL_FEE_BPS'], 'COLONY_POOL_PROTOCOL_FEE_BPS', 200);
+    if (!Number.isInteger(protocolFeeBps) || protocolFeeBps > 10_000) {
+      throw new Error('COLONY_POOL_PROTOCOL_FEE_BPS must be a whole number from 0 to 10000');
     }
     const maxConcurrency = parseNonNegativeNumber(config['ANTSEED_MAX_CONCURRENCY'], 'ANTSEED_MAX_CONCURRENCY', 64);
     const port = parseNonNegativeNumber(config['COLONY_POOL_PORT'], 'COLONY_POOL_PORT', 8790);
@@ -153,7 +165,7 @@ const plugin: AntseedProviderPlugin = {
       ledger,
       pricing,
       workerShareBps,
-      protocolFeeBps: parseNonNegativeNumber(config['COLONY_POOL_PROTOCOL_FEE_BPS'], 'COLONY_POOL_PROTOCOL_FEE_BPS', 200),
+      protocolFeeBps,
       maxConcurrency,
       serviceApiProtocols,
       ...(serviceCapabilities ? { serviceCapabilities } : {}),
