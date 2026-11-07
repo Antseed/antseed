@@ -121,6 +121,11 @@ export interface ConnectionManagerOptions {
    * requests never count against it. Default DEFAULT_MAX_INBOUND_CONNECTIONS.
    */
   maxInboundConnections?: number;
+  /**
+   * Inbound sockets accepted from one IP at once. Default DEFAULT_MAX_INBOUND_CONNECTIONS_PER_IP;
+   * raise it for a seller every buyer reaches through one address (a TLS gateway or forwarder).
+   */
+  maxInboundConnectionsPerIp?: number;
 }
 type InitialWireMessage =
   | {
@@ -487,7 +492,7 @@ function normalizeCapabilities(value: unknown): string[] {
  * connection per buyer identity per seller, so a gateway with many identities
  * opens many connections from the same address.
  */
-const MAX_INBOUND_CONNECTIONS_PER_IP = 64;
+export const DEFAULT_MAX_INBOUND_CONNECTIONS_PER_IP = 64;
 /**
  * Inbound peer connections a listener holds at once by default. A buyer keeps
  * its connection open between requests, so a busy seller holds one per active buyer.
@@ -515,6 +520,7 @@ export class ConnectionManager extends EventEmitter {
   private _acceptInboundAddress: ((remoteAddress: string) => boolean) | null;
   private _ipConnectionCounts = new Map<string, number>();
   private readonly _maxInboundConnections: number;
+  private readonly _maxInboundConnectionsPerIp: number;
   private _pendingInboundSockets = new Set<Socket>();
   private _inboundPeerSockets = new Set<Socket>();
   private readonly _introReplayGuard = new NonceReplayGuard();
@@ -528,6 +534,7 @@ export class ConnectionManager extends EventEmitter {
     this._requireSecureTransport = options?.requireSecureTransport ?? false;
     this._acceptInboundAddress = options?.acceptInboundAddress ?? null;
     this._maxInboundConnections = options?.maxInboundConnections ?? DEFAULT_MAX_INBOUND_CONNECTIONS;
+    this._maxInboundConnectionsPerIp = options?.maxInboundConnectionsPerIp ?? DEFAULT_MAX_INBOUND_CONNECTIONS_PER_IP;
   }
 
   static async init(iceConfig?: IceConfig, options?: ConnectionManagerOptions): Promise<ConnectionManager> {
@@ -606,7 +613,7 @@ export class ConnectionManager extends EventEmitter {
       const ip = socket.remoteAddress ?? 'unknown';
       const refused = Boolean(this._acceptInboundAddress && socket.remoteAddress && !this._acceptInboundAddress(socket.remoteAddress));
       const current = this._ipConnectionCounts.get(ip) ?? 0;
-      if (current >= MAX_INBOUND_CONNECTIONS_PER_IP) {
+      if (current >= this._maxInboundConnectionsPerIp) {
         socket.destroy();
         return;
       }
