@@ -287,6 +287,11 @@ export class GatewayServer {
     const method = req.method ?? 'GET'
     const path = req.url ?? '/'
     const pathname = path.split('?')[0]!
+    // Keyless, so a liveness check doesn't read as a failed sign-in in the log.
+    if (method === 'GET' && pathname === '/healthz') {
+      sendJson(res, 200, { status: 'ok' })
+      return
+    }
     if (this._options.console && (pathname === '/console' || pathname.startsWith('/console/'))) {
       if (await this._options.console.handle(req, res)) return
     }

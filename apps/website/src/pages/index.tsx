@@ -17,8 +17,8 @@ import {faqJsonLd} from '../lib/faqJsonLd';
    ============================================================ */
 const FAQ_ITEMS = [
   {
-    q: 'What is the difference between the gateway and the AI VPN?',
-    a: 'Use the gateway to manage shared access: run your own endpoint on a server and give each agent, app, or teammate their own API key, with budgets and the models and providers you choose. Use the AI VPN to connect the tools on your computer, without deploying a server. Both reach the same market. <a href="/docs/gateway/">Read the gateway docs →</a>',
+    q: 'What is the difference between the gateway and Antseed Desktop?',
+    a: 'Use the gateway to manage shared access: run your own endpoint on a server and give each agent, app, or teammate their own API key, with budgets and the models and providers you choose. Use Antseed Desktop to connect the tools on your computer, without deploying a server. Both reach the same market. <a href="/docs/gateway/">Read the gateway docs →</a>',
   },
   ...HOME_FAQ,
 ];

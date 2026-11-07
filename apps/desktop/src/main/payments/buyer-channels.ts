@@ -3,7 +3,7 @@
  * the on-chain enrichment the Credits view needs (channel status, and spend
  * authorized but not yet settled).
  */
-import { ChannelsClient, type ChannelInfo, type CloseChannelResultPayload } from '@antseed/node';
+import { ChannelsClient, type ChannelInfo } from '@antseed/node';
 import type { AbstractProvider } from 'ethers';
 import { createHash } from 'node:crypto';
 import { LOCALHOST_URL } from '../constants.js';
@@ -15,7 +15,6 @@ import { CHANNELS_FRESH_MS, cachedRead, readKeys, refreshFresh } from './read-ca
 import {
   applyChannelOnChainSnapshot,
   normalizePaymentChannelSummary,
-  requestCooperativeChannelCloseAtPort,
   readChannelsBatched,
   runInBatches,
 } from './buyer-channel-control.js';
@@ -24,29 +23,6 @@ export {
   normalizePaymentChannelSummary,
   requestCooperativeChannelCloseAtPort,
 } from './buyer-channel-control.js';
-
-/** Per-service usage from the buyer daemon. `serviceIdHash` is
-    keccak256(serviceName); `serviceName` is resolved by the main process from
-    the buyer's peer cache (null when the name is no longer advertised). */
-export type DesktopBuyerServiceUsage = {
-  serviceIdHash: string;
-  serviceName: string | null;
-  amountUsdc: string;
-  inputTokens: string;
-  cachedInputTokens: string;
-  outputTokens: string;
-  requestCount: number;
-};
-
-export type DesktopBuyerUsageTotals = {
-  totalRequests: number;
-  totalInputTokens: string;
-  totalOutputTokens: string;
-  totalSettlements: number;
-  uniqueSellers: number;
-  services: DesktopBuyerServiceUsage[];
-};
-
 export type DesktopPaymentChannelSummary = {
   channelId: string;
   peerId: string;
@@ -70,87 +46,6 @@ export type DesktopPaymentChannelSummary = {
   outputTokens: string;
   cooperativeCloseSupported: boolean;
 };
-
-export type DesktopRewardsSummary = {
-  available: boolean;
-  pendingAnts: string;
-  currentEpoch: number | null;
-  transfersEnabled: boolean;
-  error: string | null;
-};
-
-export const MAX_SPENDING_AUTH_BASE_UNITS = 5_000_000n;
-export const BYTES32_RE = /^0x[0-9a-fA-F]{64}$/;
-
-const EMPTY_BUYER_USAGE_TOTALS: DesktopBuyerUsageTotals = {
-  totalRequests: 0,
-  totalInputTokens: '0',
-  totalOutputTokens: '0',
-  totalSettlements: 0,
-  uniqueSellers: 0,
-  services: [],
-};
-
-export const EMPTY_REWARDS_SUMMARY: DesktopRewardsSummary = {
-  available: false,
-  pendingAnts: '0',
-  currentEpoch: null,
-  transfersEnabled: false,
-  error: null,
-};
-
-function readNumberField(raw: Record<string, unknown>, key: string): number {
-  const value = raw[key];
-  const numeric = typeof value === 'number' ? value : Number(value);
-  return Number.isFinite(numeric) && numeric >= 0 ? numeric : 0;
-}
-
-function readStringField(raw: Record<string, unknown>, key: string): string {
-  const value = raw[key];
-  if (typeof value === 'string') return value;
-  if (typeof value === 'number' || typeof value === 'bigint') return String(value);
-  return '';
-}
-
-function normalizeBuyerServiceUsage(value: unknown): DesktopBuyerServiceUsage | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  const raw = value as Record<string, unknown>;
-  const serviceIdHash = readStringField(raw, 'serviceIdHash');
-  if (!serviceIdHash) return null;
-  return {
-    serviceIdHash,
-    serviceName: null,
-    amountUsdc: readStringField(raw, 'amountUsdc') || '0',
-    inputTokens: readStringField(raw, 'inputTokens') || '0',
-    cachedInputTokens: readStringField(raw, 'cachedInputTokens') || '0',
-    outputTokens: readStringField(raw, 'outputTokens') || '0',
-    requestCount: readNumberField(raw, 'requestCount'),
-  };
-}
-
-export function normalizeBuyerUsageTotals(value: unknown): DesktopBuyerUsageTotals {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return EMPTY_BUYER_USAGE_TOTALS;
-  }
-  const raw = value as Record<string, unknown>;
-  const services = Array.isArray(raw.services)
-    ? raw.services.map(normalizeBuyerServiceUsage).filter((s): s is DesktopBuyerServiceUsage => s !== null)
-    : [];
-  return {
-    totalRequests: readNumberField(raw, 'totalRequests'),
-    totalInputTokens: readStringField(raw, 'totalInputTokens') || '0',
-    totalOutputTokens: readStringField(raw, 'totalOutputTokens') || '0',
-    totalSettlements: readNumberField(raw, 'totalSettlements'),
-    uniqueSellers: readNumberField(raw, 'uniqueSellers'),
-    services,
-  };
-}
-
-export async function requestCooperativeChannelClose(peerId: string, channelId?: string): Promise<CloseChannelResultPayload> {
-  const port = await resolveBuyerProxyPort();
-  return requestCooperativeChannelCloseAtPort(port, peerId, channelId ? { channelId } : {});
-}
-
 const BUYER_PROXY_TIMEOUT_MS = 10_000;
 
 export async function fetchBuyerProxyJson(pathname: string): Promise<Record<string, unknown> | null> {
@@ -165,16 +60,6 @@ export async function fetchBuyerProxyJson(pathname: string): Promise<Record<stri
     return null;
   }
 }
-
-export function formatAnts(value: bigint): string {
-  const whole = value / 1_000_000_000_000_000_000n;
-  const fraction = value % 1_000_000_000_000_000_000n;
-  if (fraction === 0n) return whole.toString();
-  const padded = fraction.toString().padStart(18, '0').replace(/0+$/, '');
-  return `${whole.toString()}.${padded.slice(0, 6)}`;
-}
-
-
 // Bound concurrent on-chain reads without skipping older active-looking rows.
 const CHANNEL_ENRICH_CONCURRENCY = 12;
 

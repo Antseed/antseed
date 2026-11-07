@@ -1,7 +1,7 @@
 ---
 slug: /verify-tee
 title: Verify a seller's TEE
-description: How your buyer checks that a seller runs in a genuine Intel TDX enclave, and how to require it in the CLI, the Gateway Console and the desktop app.
+description: How your buyer checks that a seller runs in a genuine Intel TDX enclave, and how to require it in the CLI and the Gateway Console, which the desktop app also uses.
 hide_title: true
 ---
 
@@ -99,24 +99,13 @@ The gateway's buyer uses the same verifier settings.
 
 ## Desktop app
 
-The desktop app has no verification setting of its own. Its buyer uses the default best-effort policy unless you set `buyer.verifier` in the config.
-
-- In **Models**, the **TEE advertised** seller filter shows only sellers that advertise support for `antseed-verifier`. It is a browsing filter and does not change routing, pins or policy. **Show all sellers** clears it.
-- On a model's seller list, a **TEE** badge appears when the verifier passed both required claims for that seller. Its tooltip reads "We use TEEs to enhance user privacy." No badge means the check is missing, expired, failed, unavailable or in progress, not that the seller has no TEE.
-
-### How the desktop checks sellers
-
-- After discovery, the app checks advertising sellers in the background, one at a time, while its window is visible. There is no check button.
-- A passing result shows the badge for up to 24 hours from the check. Viewing it does not extend that time. A newer failed or unavailable check removes the badge.
-- Unavailable checks retry with backoff from 30 seconds up to five minutes.
-- Results are kept in memory and are cleared when the buyer restarts.
-- The app reads results from the buyer through loopback-only endpoints protected by a per-buyer credential file in the buyer data directory, `buyer-verification-<port>.json`. If you attach the app to a buyer started with a custom `--data-dir`, set `ANTSEED_DESKTOP_CONNECT_DATA_DIR` to that directory before launching the app. A missing credential hides the badge; it does not mean the seller failed.
+The desktop app runs a gateway, so it has no verification setting of its own: open its console with **Manage API keys** and use the Gateway Console settings above. With a remote gateway, use that gateway's console. Its buyer uses the default best-effort policy unless `buyer.verifier` is set.
 
 ## What happens at request time
 
 1. After a seller is selected and before any payment negotiation, the buyer challenges it on the reserved route `/_antseed/attest/<verifier-id>` over the existing encrypted connection. Attestation is never metered or charged.
 2. The check has a 30-second timeout.
-3. Routing reuses a seller's evidence for at most five minutes. The desktop's 24-hour badge never extends this. Failures are not cached as routing verdicts.
+3. Routing reuses a seller's evidence for at most five minutes. Failures are not cached as routing verdicts.
 4. On failure, best-effort mode routes anyway and logs `did not pass ... (optional — routing anyway)`. Required mode fails the request with `502` and the failed claims.
 
 ## The trust boundary

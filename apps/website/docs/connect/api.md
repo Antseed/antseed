@@ -15,7 +15,7 @@ Use the gateway instead. It puts API keys, spend limits, routing policies and lo
 
 ## Start the buyer
 
-The desktop app runs the buyer for you while its router is on. Without the desktop app:
+The desktop app runs a local gateway, which runs the buyer on this port while the app is open. Without the desktop app:
 
 ```bash
 npm install -g @antseed/cli
@@ -164,7 +164,7 @@ The `model` field controls routing:
 | `<peerId>@deepseek-v4-flash` | Pins this request to one seller. No failover. |
 | `deepseek-v4-flash` | Automatic routing: the buyer picks the cheapest seller of that model that passes your minimum trust score, and fails over after retryable errors. See [Routing and catalog](/docs/api/routing). |
 | `<routerPeerId>@<routerServiceId>` | A routing service picks the model and seller for each request. See [Use a routing service](/docs/api/routing#use-a-routing-service). |
-| `antseed` | Follows the model, seller or router picked in the desktop app. Returns `no_default_route` when the app has no selection. |
+| `antseed` | Follows the default route saved in the buyer (see [Saved router settings](/docs/api/routing#saved-router-settings)). Returns `no_default_route` when none is saved. |
 
 The peer id is 40 hex characters, with or without `0x`. The prefix is stripped before the request reaches the seller.
 
@@ -186,7 +186,7 @@ curl -s http://localhost:8377/v1/models | jq '.data[].id'
 
 ## Tools
 
-- **Desktop app**: connect Claude Code, Codex, OpenCode and others from **Connected apps**. See [Desktop app](/docs/desktop).
+- **Desktop app**: connect Codex, OpenCode and others from **Agents & apps**. The app points them at its local gateway with an API key, not at this proxy. See [Desktop app](/docs/desktop).
 - **CLI wrappers**: `antseed claude`, `antseed codex` and `antseed opencode` launch the tool against the running buyer and pass your other flags through:
 
   ```bash
@@ -223,7 +223,7 @@ Streaming responses carry only the request id, seller identity and price headers
 | Status | Code | Meaning |
 |---|---|---|
 | 400 | `missing_routing_target` | The request has no model and no pin. |
-| 400 | `no_default_route` | `model: "antseed"` was sent but the desktop app has no model selected. |
+| 400 | `no_default_route` | `model: "antseed"` was sent but the buyer has no default route saved. |
 | 400 | `invalid_routing` | A routing service serves the request and the body's `routing` object is malformed or has a setting the router's protocol does not accept (for `irp-suggest`: `cost_quality_tradeoff`, an integer from 0 to 10). On other requests a `routing` object is removed and ignored. |
 | 422 | `no_eligible_candidates` | A routing service was named, but no allowed model is left for it to rank. Nothing was charged. |
 | 402 | `insufficient_deposits` | Not enough USDC deposited. Run `antseed buyer deposit`. |
@@ -232,7 +232,7 @@ Streaming responses carry only the request id, seller identity and price headers
 
 ## Diagnostics
 
-The proxy serves a local control plane under `/_antseed/` that the desktop app uses:
+The proxy serves a local control plane under `/_antseed/`:
 
 ```bash
 curl -s http://localhost:8377/_antseed/status     # DHT node count, peer count, uptime

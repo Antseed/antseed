@@ -1,20 +1,13 @@
-import type { ConfigFormData, VprPeerListing, VprRoutingPreferences } from '../core/state';
-import type { RouterOptions, RoutingServiceTarget, RouterAllowedModel } from '../../shared/routing-selection';
+import type { ConfigFormData } from '../core/state';
 import type { ChatPermissionMode, RawChatAttachment, ToolApprovalDecision } from '../types/bridge';
 
 export type AppActions = {
-  startConnect: () => Promise<void>;
-  stopConnect: () => Promise<void>;
-  /** Stop + start the buyer; connected apps stay connected across it. */
+  /** Restart the local gateway (and its buyer); connected apps stay connected across it. */
   restartConnect: () => Promise<void>;
-  startAll: () => Promise<void>;
-  stopAll: () => Promise<void>;
-  refreshAll: () => Promise<void>;
   clearLogs: () => Promise<void>;
-  scanDht: () => Promise<void>;
   saveConfig: (formData: ConfigFormData) => Promise<void>;
-  createNewConversation: () => Promise<void>;
   startNewChat: () => void;
+  startNewChatOnModel: (modelId: string) => void;
   openConversation: (id: string) => Promise<void>;
   sendMessage: (text: string, attachments?: RawChatAttachment[]) => void;
   sendMessageToConversation: (convId: string, text: string, attachments?: RawChatAttachment[]) => void;
@@ -22,40 +15,19 @@ export type AppActions = {
   abortChat: () => Promise<void>;
   deleteConversation: (convId?: string) => Promise<void>;
   renameConversation: (convId: string, newTitle: string) => void;
-  handleServiceChange: (value: string, explicitPeerId?: string) => void;
-  handleServiceFocus: () => void;
-  handleServiceBlur: () => void;
-  clearPinnedPeer: () => void;
-  selectVprModel: (provider: string, serviceId: string, peerId?: string | null) => void;
-  selectVprRouter: (service: RoutingServiceTarget, options?: RouterOptions, forConversation?: boolean, allowedModels?: RouterAllowedModel[]) => void;
-  updateVprRouterSettings: (service: RoutingServiceTarget, options: RouterOptions | undefined, allowedModels?: RouterAllowedModel[]) => void;
-  clearVprPinnedPeer: () => void;
-  /**
-   * Remember (or forget, with null) a seller pin for a model without applying
-   * the model — used while browsing a model page that isn't the active route.
-   * selectVprModel picks the remembered pin up when the model is applied.
-   */
-  setVprModelSellerPin: (provider: string, serviceId: string, peerId: string | null) => void;
-  updateVprRoutingPreferences: (patch: Partial<VprRoutingPreferences>) => void;
-  setVprPeerListing: (peerId: string, listing: VprPeerListing) => void;
+  /** Pick a gateway model in the chat dropdown (text: the chat's model; image: Send generates images). */
+  selectChatModel: (modelId: string) => void;
+  /** Reload the gateway's model list; `force` bypasses the one-minute cache. */
+  refreshChatModels: (force?: boolean) => Promise<void>;
+  privacyModeChosen: (mode: 'anonymous' | 'private') => void;
+  privacySwitchLanded: (mode: 'anonymous' | 'private') => Promise<void>;
   setChatPermissionMode: (mode: ChatPermissionMode) => void;
   decideToolApproval: (decision: ToolApprovalDecision, requestId?: string) => void;
-  acceptReminderHome: () => void;
-  dismissReminderHome: () => void;
-  rejectPaymentSession: () => void;
+  /** Resend the last message of a chat that stopped for lack of funds. */
   retryAfterPayment: () => void;
+  dismissFundsNotice: () => void;
   refreshCredits: () => Promise<void>;
-  refreshPaymentSummary: (force?: boolean) => Promise<void>;
-  refreshWorkspace: () => Promise<void>;
   chooseWorkspace: () => Promise<void>;
-  refreshPlugins: () => Promise<void>;
-  installPlugin: () => Promise<void>;
-  /** Open the floating pill (always lands with the chat dropdown expanded). */
-  openVprFloat?: (profileName?: string) => Promise<void>;
-  closeVprFloat?: () => Promise<void>;
-  setVprFloatAutoOpen?: (enabled: boolean) => void;
-  /** Debug aid: name the routed seller next to the model on the pill's chat rows. */
-  setVprFloatShowRoutedPeer?: (enabled: boolean) => void;
 };
 
 let _actions: AppActions | null = null;

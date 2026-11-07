@@ -9,7 +9,7 @@ Act as the user's video director. Do not rush to generate: shape the idea, pick 
 
 ## Prerequisites
 
-- Antseed Desktop or `antseed buyer start` is running. Buyer URL: `$ANTSEED_PROXY_URL` when set, otherwise `http://127.0.0.1:8377`.
+- Antseed Desktop or `antseed buyer start` is running. Buyer URL: `$ANTSEED_PROXY_URL` when set (Antseed Desktop points it at its gateway and sets `$ANTSEED_API_KEY`), otherwise `http://127.0.0.1:8377`.
 - The buyer has deposited USDC. Deposits can be funded by card where available, an exchange withdrawal, or another wallet. The buyer refuses any single video above $5.00.
 - `curl` and `jq`. Frames are made with the `antseed-images` skill. Video edits also need `ffprobe` (part of `ffmpeg`).
 

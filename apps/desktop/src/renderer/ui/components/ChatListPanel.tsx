@@ -4,17 +4,12 @@ import {
   useRef,
   useEffect,
   useCallback,
+  type MouseEvent,
   type RefObject,
 } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
-import { MoreVerticalIcon, Add01Icon, Search01Icon } from '@hugeicons/core-free-icons';
-import {
-  formatCompactTokens,
-  getPeerDisplayName,
-  getPeerGradient,
-  preferredPeerDisplayName,
-} from '../../core/peer-utils';
-import { displayModelLabel } from '../../modules/catalog/model-identity';
+import { MoreVerticalIcon, Search01Icon } from '@hugeicons/core-free-icons';
+import { formatCompactTokens } from '../../core/peer-utils';
 import { formatUsdcAmount } from '../../core/format';
 import { shallowEqual, useUiSelector } from '../hooks/useUiSelector';
 import { useActions } from '../hooks/useActions';
@@ -37,10 +32,10 @@ function formatChatTime(timestamp: unknown): string {
   return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
 }
 
-function shortServiceName(service: unknown): string {
-  const raw = String(service || '').trim();
-  if (!raw) return '';
-  return displayModelLabel(raw.replace(/-20\d{6,}/, ''));
+/** The conversation's model as the gateway names it, else its raw id. */
+function modelName(service: unknown, modelLabelById: ReadonlyMap<string, string>): string {
+  const id = String(service || '').trim();
+  return id ? modelLabelById.get(id) ?? id : '';
 }
 
 function getConversationId(conv: ConvRecord): string {
@@ -73,23 +68,9 @@ function isRecentConversation(conv: ConvRecord, now: number): boolean {
   return updatedAt > 0 && now - updatedAt <= RECENT_SESSION_WINDOW_MS;
 }
 
-function getConversationPeerName(
-  conv: ConvRecord,
-  peerDisplayNameById: ReadonlyMap<string, string>,
-): string {
-  // Image generation can deliberately use a different seller from the text
-  // route retained by the conversation. Prefer the seller that produced the
-  // latest response so the conversation row describes what actually ran.
-  const peerId = String(conv.lastResponsePeerId || conv.peerId || '').trim();
-  if (!peerId) return 'Other';
-  return peerDisplayNameById.get(peerId)
-    || getPeerDisplayName(String(conv.peerLabel || ''))
-    || `${peerId.slice(0, 12)}...`;
-}
-
 function conversationMatchesSearch(
   conv: ConvRecord,
-  peerName: string,
+  modelLabel: string,
   query: string,
 ): boolean {
   const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
@@ -98,26 +79,30 @@ function conversationMatchesSearch(
   const haystack = [
     conv.title,
     conv.service,
-    conv.provider,
-    conv.peerLabel,
-    conv.peerId,
-    conv.lastResponsePeerId,
     conv.workspacePath,
-    peerName,
+    modelLabel,
   ].map((value) => String(value || '').toLowerCase()).join(' ');
 
   return terms.every((term) => haystack.includes(term));
+}
+
+/** The menu sits inside its row, whose click opens the chat. Without this,
+ *  Delete would re-open the conversation it just removed. */
+function stopRowClick(event: MouseEvent<HTMLDivElement>) {
+  event.stopPropagation();
 }
 
 function ConvContextMenu({
   convId,
   convTitle,
   anchorRef,
+  onDelete,
   onClose,
 }: {
   convId: string;
   convTitle: string;
   anchorRef: RefObject<HTMLButtonElement | null>;
+  onDelete: (id: string) => void;
   onClose: () => void;
 }) {
   const menuRef = useRef<HTMLDivElement>(null);
@@ -128,7 +113,7 @@ function ConvContextMenu({
   const actions = useActions();
 
   useEffect(() => {
-    function handleClick(e: MouseEvent) {
+    function handleClick(e: globalThis.MouseEvent) {
       if (
         menuRef.current && !menuRef.current.contains(e.target as Node) &&
         anchorRef.current && !anchorRef.current.contains(e.target as Node)
@@ -159,7 +144,7 @@ function ConvContextMenu({
 
   if (renaming) {
     return (
-      <div className={styles.contextMenu} ref={menuRef}>
+      <div className={styles.contextMenu} ref={menuRef} onClick={stopRowClick}>
         <input
           ref={renameInputRef}
           className={styles.renameInput}
@@ -180,14 +165,14 @@ function ConvContextMenu({
   }
 
   return (
-    <div className={styles.contextMenu} ref={menuRef}>
+    <div className={styles.contextMenu} ref={menuRef} onClick={stopRowClick}>
       <button className={styles.contextItem} onClick={() => setRenaming(true)}>
         Rename
       </button>
       <button
         className={`${styles.contextItem} ${styles.contextItemDanger}`}
         onClick={() => {
-          void actions.deleteConversation(convId);
+          onDelete(convId);
           onClose();
         }}
       >
@@ -202,12 +187,9 @@ function ConversationRow({
   activeConvId,
   sendingConvIds,
   approvalConvIds,
-  chatActiveChannels,
-  showRoutedPeer,
-  peerDisplayNameById,
-  peerIconUrlById,
+  modelLabelById,
   onSelectConv,
-  onCloseChannel,
+  onDeleteConv,
   menuOpenId,
   setMenuOpenId,
   menuBtnRefs,
@@ -216,12 +198,9 @@ function ConversationRow({
   activeConvId: string | null;
   sendingConvIds: ReadonlySet<string>;
   approvalConvIds: ReadonlySet<string>;
-  chatActiveChannels: Map<string, { reservedUsdc: string; peerName: string }>;
-  showRoutedPeer: boolean;
-  peerDisplayNameById: ReadonlyMap<string, string>;
-  peerIconUrlById: ReadonlyMap<string, string>;
+  modelLabelById: ReadonlyMap<string, string>;
   onSelectConv: (id: string) => void;
-  onCloseChannel: () => void;
+  onDeleteConv: (id: string) => void;
   menuOpenId: string | null;
   setMenuOpenId: (id: string | null) => void;
   menuBtnRefs: RefObject<Map<string, HTMLButtonElement | null>>;
@@ -236,23 +215,14 @@ function ConversationRow({
   const costLabel = totalTokens > 0
     ? `$${formatUsdcAmount(totalCost)}/${formatCompactTokens(totalTokens)}`
     : '';
-  const convPeerId = String(conv.lastResponsePeerId || conv.peerId || '').trim();
-  const peerName = getConversationPeerName(conv, peerDisplayNameById);
-  const session = convPeerId ? chatActiveChannels.get(convPeerId) : undefined;
-  const usedUsdc = Number(conv.totalEstimatedCostUsd) || 0;
+  const modelLabel = modelName(conv.service, modelLabelById);
   const timeLabel = formatChatTime(getConversationUpdatedAt(conv));
-  const avatarLetter = (peerName || '?').charAt(0).toUpperCase();
-  const avatarGradient = convPeerId
-    ? getPeerGradient(convPeerId)
-    : 'linear-gradient(180deg, #9a9a96, #6b6b68)';
-  const avatarIconUrl = convPeerId ? peerIconUrlById.get(convPeerId) ?? null : null;
-  const [avatarIconFailed, setAvatarIconFailed] = useState(false);
-  const showAvatarIcon = Boolean(avatarIconUrl) && !avatarIconFailed;
 
   return (
     <div
       className={`${styles.convItem}${isActive ? ` ${styles.active}` : ''}`}
       onClick={() => onSelectConv(id)}
+      title={[title, modelLabel, costLabel, timeLabel].filter(Boolean).join(' · ')}
     >
       <div className={styles.convTop}>
         <div className={styles.convTitle}>{title}</div>
@@ -277,51 +247,12 @@ function ConversationRow({
           </button>
         </div>
       </div>
-      <div className={styles.meta}>
-        {showRoutedPeer && (
-          <>
-            <span
-              className={`${styles.avatar}${showAvatarIcon ? ` ${styles.avatarIcon}` : ''}`}
-              style={showAvatarIcon ? undefined : { background: avatarGradient }}
-            >
-              {showAvatarIcon ? (
-                <img
-                  className={styles.avatarImage}
-                  src={avatarIconUrl ?? undefined}
-                  alt=""
-                  loading="lazy"
-                  referrerPolicy="no-referrer"
-                  onError={() => setAvatarIconFailed(true)}
-                />
-              ) : avatarLetter}
-            </span>
-            <span className={styles.peerName}>{peerName}</span>
-          </>
-        )}
-        {costLabel && <span className={styles.cost}>{costLabel}</span>}
-        <span className={styles.time}>{timeLabel}</span>
-      </div>
-      {session && (
-        <div className={styles.sessionStrip}>
-          <span className={styles.sessionInfo}>
-            Reserved ${formatUsdcAmount(Number(session.reservedUsdc) || 0)} · Used ${formatUsdcAmount(usedUsdc)}
-          </span>
-          <button
-            className={styles.sessionCloseBtn}
-            onClick={(e) => {
-              e.stopPropagation();
-              onCloseChannel();
-            }}
-          >
-            Close
-          </button>
-        </div>
-      )}
       {menuOpenId === id && (
         <ConvContextMenu
           convId={id}
           convTitle={title}
           anchorRef={{ current: menuBtnRefs.current?.get(id) ?? null }}
+          onDelete={onDeleteConv}
           onClose={() => setMenuOpenId(null)}
         />
       )}
@@ -333,16 +264,14 @@ function ChatSearchModal({
   conversations,
   activeConvId,
   sendingConvIds,
-  showRoutedPeer,
-  peerDisplayNameById,
+  modelLabelById,
   onSelectConv,
   onClose,
 }: {
   conversations: ConvRecord[];
   activeConvId: string | null;
   sendingConvIds: ReadonlySet<string>;
-  showRoutedPeer: boolean;
-  peerDisplayNameById: ReadonlyMap<string, string>;
+  modelLabelById: ReadonlyMap<string, string>;
   onSelectConv: (id: string) => void;
   onClose: () => void;
 }) {
@@ -363,13 +292,9 @@ function ChatSearchModal({
 
   const results = useMemo(() => {
     return conversations
-      .filter((conv) => conversationMatchesSearch(
-        conv,
-        getConversationPeerName(conv, peerDisplayNameById),
-        query,
-      ))
+      .filter((conv) => conversationMatchesSearch(conv, modelName(conv.service, modelLabelById), query))
       .sort(compareConversationsByActivity);
-  }, [conversations, peerDisplayNameById, query]);
+  }, [conversations, modelLabelById, query]);
 
   return (
     <div
@@ -388,7 +313,7 @@ function ChatSearchModal({
         <header className={styles.searchHeader}>
           <div>
             <h2 id="chat-search-title">Conversations</h2>
-            <p>Search across every peer, session title, service, and workspace.</p>
+            <p>Search across every chat title, model and workspace.</p>
           </div>
           <button className={styles.searchClose} onClick={onClose} aria-label="Close chat search">
             ×
@@ -400,7 +325,7 @@ function ChatSearchModal({
           className={styles.searchInput}
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search conversations, peers, services..."
+          placeholder="Search conversations and models..."
         />
 
         <div className={styles.searchSummary}>
@@ -414,8 +339,7 @@ function ChatSearchModal({
             results.map((conv) => {
               const id = getConversationId(conv);
               const title = String(conv.title || 'Untitled chat');
-              const peerName = getConversationPeerName(conv, peerDisplayNameById);
-              const serviceLabel = shortServiceName(conv.service);
+              const serviceLabel = modelName(conv.service, modelLabelById);
               const totalCost = Number(conv.totalEstimatedCostUsd) || 0;
               const totalTokens = Number(conv.totalTokens) || 0;
               const costLabel = totalTokens > 0
@@ -446,7 +370,6 @@ function ChatSearchModal({
                     )}
                   </span>
                   <span className={styles.searchResultMeta}>
-                    {showRoutedPeer && <span>{peerName}</span>}
                     {serviceLabel && <span>{serviceLabel}</span>}
                     {costLabel && <span>{costLabel}</span>}
                     <span>{timeLabel}</span>
@@ -461,30 +384,26 @@ function ChatSearchModal({
   );
 }
 
-export function ChatListPanel({ onSelectView }: { onSelectView?: (view: import('../types').ViewName) => void } = {}) {
+/** The sidebar's Recent section: every conversation, with search, rename and delete. */
+export function ChatListPanel({ onOpenConversation, onOpenConversationDeleted, highlightActive }: {
+  onOpenConversation: () => void;
+  /** The chat on screen was deleted, so there is nothing left to show. */
+  onOpenConversationDeleted: () => void;
+  /** Only the chat screen is "in" a conversation; Home starts a new one. */
+  highlightActive: boolean;
+}) {
   const {
     chatConversations,
     chatActiveConversation,
     chatSendingConversationIds,
     chatToolApprovalRequests,
-    chatActiveChannels,
-    discoverRows,
-    chatServiceOptions,
-    chatSelectedServiceValue,
-    chatSelectedPeerId,
-    vprFloatShowRoutedPeer,
+    chatModels,
   } = useUiSelector((state) => ({
     chatConversations: state.chatConversations,
     chatActiveConversation: state.chatActiveConversation,
     chatSendingConversationIds: state.chatSendingConversationIds,
     chatToolApprovalRequests: state.chatToolApprovalRequests,
-    chatActiveChannels: state.chatActiveChannels,
-    chatActiveChannelCount: state.chatActiveChannels.size,
-    discoverRows: state.discoverRows,
-    chatServiceOptions: state.chatServiceOptions,
-    chatSelectedServiceValue: state.chatSelectedServiceValue,
-    chatSelectedPeerId: state.chatSelectedPeerId,
-    vprFloatShowRoutedPeer: state.vprFloatShowRoutedPeer,
+    chatModels: state.chatModels,
   }), shallowEqual);
   const actions = useActions();
   const conversations = Array.isArray(chatConversations) ? chatConversations : EMPTY_CONVERSATIONS;
@@ -511,37 +430,10 @@ export function ChatListPanel({ onSelectView }: { onSelectView?: (view: import('
     return () => window.clearInterval(timer);
   }, []);
 
-  const peerDisplayNameById = useMemo(() => {
-    const map = new Map<string, string>();
-    const rows = Array.isArray(discoverRows) ? discoverRows : [];
-
-    for (const row of rows) {
-      const peerId = String(row.peerId || '').trim();
-      if (!peerId || map.has(peerId)) continue;
-      const name = preferredPeerDisplayName(row.peerDisplayName, row.peerLabel);
-      if (name) map.set(peerId, name);
-    }
-
-    for (const conv of allConversations) {
-      const peerId = String(conv.lastResponsePeerId || conv.peerId || '').trim();
-      if (!peerId || map.has(peerId)) continue;
-      const name = getPeerDisplayName(String(conv.peerLabel || ''));
-      if (name) map.set(peerId, name);
-    }
-
-    return map;
-  }, [allConversations, discoverRows]);
-
-  const peerIconUrlById = useMemo(() => {
-    const map = new Map<string, string>();
-    const rows = Array.isArray(discoverRows) ? discoverRows : [];
-    for (const row of rows) {
-      const peerId = String(row.peerId || '').trim();
-      if (!peerId || map.has(peerId) || !row.peerIconUrl) continue;
-      map.set(peerId, row.peerIconUrl);
-    }
-    return map;
-  }, [discoverRows]);
+  const modelLabelById = useMemo(
+    () => new Map(chatModels.map((model) => [model.id, model.label])),
+    [chatModels],
+  );
 
   // Activity sort with "recent" (touched in the last 24 h) floated to the
   // top so the active workstream stays one glance away; older chats sort
@@ -557,86 +449,28 @@ export function ChatListPanel({ onSelectView }: { onSelectView?: (view: import('
 
   const handleSelectConv = useCallback((id: string) => {
     void actions.openConversation(id);
-  }, [actions]);
+    onOpenConversation();
+  }, [actions, onOpenConversation]);
 
-  const activeConversation = useMemo(
-    () => allConversations.find((conv) => getConversationId(conv) === chatActiveConversation) ?? null,
-    [allConversations, chatActiveConversation],
-  );
-
-  const newChatTarget = useMemo(() => {
-    if (!activeConversation) return null;
-
-    const peerId = String(activeConversation.peerId || chatSelectedPeerId || '').trim();
-    if (!peerId) return null;
-
-    const serviceId = String(activeConversation.service || '').trim();
-    const provider = String(activeConversation.provider || '').trim();
-    const selectedForPeer = chatServiceOptions.find(
-      (option) => option.peerId === peerId && option.value === chatSelectedServiceValue,
-    );
-    const matchingOption = selectedForPeer ?? chatServiceOptions.find((option) => (
-      option.peerId === peerId
-      && (!serviceId || option.id === serviceId)
-      && (!provider || option.provider === provider)
-    )) ?? chatServiceOptions.find((option) => option.peerId === peerId && (!serviceId || option.id === serviceId));
-
-    if (matchingOption?.value) return { peerId, serviceValue: matchingOption.value };
-
-    const matchingRow = discoverRows.find((row) => (
-      row.peerId === peerId
-      && (!serviceId || row.serviceId === serviceId)
-      && (!provider || row.provider === provider)
-    )) ?? discoverRows.find((row) => row.peerId === peerId && (!serviceId || row.serviceId === serviceId));
-
-    return matchingRow?.selectionValue ? { peerId, serviceValue: matchingRow.selectionValue } : null;
-  }, [activeConversation, chatSelectedPeerId, chatServiceOptions, chatSelectedServiceValue, discoverRows]);
-
-  const handleCloseChannel = useCallback(() => {
-    // Channel management moved in-app: the activity view lists channels and
-    // opens the secure checkout page for the close signature.
-    onSelectView?.('activity');
-  }, [onSelectView]);
-
-  const handleStartNewChat = useCallback(() => {
-    actions.startNewChat();
-    if (newChatTarget) {
-      actions.handleServiceChange(newChatTarget.serviceValue, newChatTarget.peerId);
-    }
-  }, [actions, newChatTarget]);
+  const handleDeleteConv = useCallback((id: string) => {
+    const wasOnScreen = highlightActive && id === chatActiveConversation;
+    void actions.deleteConversation(id);
+    if (wasOnScreen) onOpenConversationDeleted();
+  }, [actions, chatActiveConversation, highlightActive, onOpenConversationDeleted]);
 
   return (
     <aside className={styles.panel} aria-labelledby="chat-list-label">
-      <div className={styles.header} id="chat-list-label">
-        <span className={styles.headerText}>
-          <span>Conversations</span>
-          {allConversations.length > 0 && (
-            <span className={styles.count} aria-label={`${allConversations.length} total conversations`}>
-              {allConversations.length}
-            </span>
-          )}
-        </span>
-        <span className={styles.headerActions}>
-          <button
-            type="button"
-            className={styles.iconBtn}
-            onClick={handleStartNewChat}
-            disabled={!newChatTarget}
-            aria-label="Start a new chat with the current peer and service"
-            title="Start a new chat with the current peer and service"
-          >
-            <HugeiconsIcon icon={Add01Icon} size={13} strokeWidth={1.9} />
-          </button>
-          <button
-            type="button"
-            className={styles.iconBtn}
-            onClick={() => setChatSearchOpen(true)}
-            aria-label="Search conversations"
-            title="Search conversations"
-          >
-            <HugeiconsIcon icon={Search01Icon} size={13} strokeWidth={1.8} />
-          </button>
-        </span>
+      <div className={styles.header}>
+        <span id="chat-list-label">Recent</span>
+        <button
+          type="button"
+          className={styles.iconBtn}
+          onClick={() => setChatSearchOpen(true)}
+          aria-label="Search conversations"
+          title="Search conversations"
+        >
+          <HugeiconsIcon icon={Search01Icon} size={13} strokeWidth={1.8} />
+        </button>
       </div>
       <div className={styles.list}>
         {sortedConversations.length === 0 ? (
@@ -646,15 +480,12 @@ export function ChatListPanel({ onSelectView }: { onSelectView?: (view: import('
             <ConversationRow
               key={getConversationId(conv)}
               conv={conv}
-              activeConvId={chatActiveConversation}
+              activeConvId={highlightActive ? chatActiveConversation : null}
               sendingConvIds={sendingConvIds}
               approvalConvIds={approvalConvIds}
-              chatActiveChannels={chatActiveChannels}
-              showRoutedPeer={vprFloatShowRoutedPeer}
-              peerDisplayNameById={peerDisplayNameById}
-              peerIconUrlById={peerIconUrlById}
+              modelLabelById={modelLabelById}
               onSelectConv={handleSelectConv}
-              onCloseChannel={handleCloseChannel}
+              onDeleteConv={handleDeleteConv}
               menuOpenId={menuOpenId}
               setMenuOpenId={setMenuOpenId}
               menuBtnRefs={menuBtnRefs}
@@ -667,8 +498,7 @@ export function ChatListPanel({ onSelectView }: { onSelectView?: (view: import('
           conversations={allConversations}
           activeConvId={chatActiveConversation}
           sendingConvIds={sendingConvIds}
-          showRoutedPeer={vprFloatShowRoutedPeer}
-          peerDisplayNameById={peerDisplayNameById}
+          modelLabelById={modelLabelById}
           onSelectConv={handleSelectConv}
           onClose={() => setChatSearchOpen(false)}
         />

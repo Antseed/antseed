@@ -17,19 +17,8 @@ const NODE_BUILTINS = new Set([
 
 export const DEFAULT_PLUGINS_DIR = path.join(homedir(), '.antseed', 'plugins');
 const DEFAULT_PLUGINS_PACKAGE_JSON = path.join(DEFAULT_PLUGINS_DIR, 'package.json');
-export const SAFE_PLUGIN_PACKAGE_PATTERN = /^(@?[a-z0-9][a-z0-9._-]*)(\/[a-z0-9][a-z0-9._-]*)?$/i;
-export const PLUGIN_PACKAGE_ALIAS_MAP: Record<string, string> = {
-  'local': '@antseed/router-local',
-  'router-local': '@antseed/router-local',
-  'antseed-router-local': '@antseed/router-local',
-};
-export const SCOPED_TO_LEGACY_PLUGIN_PACKAGE_MAP: Record<string, string> = {
+const SCOPED_TO_LEGACY_PLUGIN_PACKAGE_MAP: Record<string, string> = {
   '@antseed/router-local': 'antseed-router-local',
-};
-
-export type InstalledPlugin = {
-  package: string;
-  version: string;
 };
 
 export interface EnsureDefaultPluginContext {
@@ -41,34 +30,6 @@ export interface EnsureDefaultPluginContext {
   onAppSetupCompleted?: () => void;
   getMainWindow: () => BrowserWindow | null;
   appendLog: AppendLogFn;
-}
-
-export function isSafePluginPackageName(value: string): boolean {
-  return SAFE_PLUGIN_PACKAGE_PATTERN.test(value);
-}
-
-export function normalizePluginPackageName(value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) return '';
-
-  const lower = trimmed.toLowerCase();
-  if (PLUGIN_PACKAGE_ALIAS_MAP[lower]) {
-    return PLUGIN_PACKAGE_ALIAS_MAP[lower]!;
-  }
-
-  if (trimmed.startsWith('@')) {
-    return trimmed;
-  }
-
-  if (lower.startsWith('provider-') || lower.startsWith('router-')) {
-    return `@antseed/${lower}`;
-  }
-
-  return trimmed;
-}
-
-export function resolveLegacyPluginPackage(packageName: string): string | null {
-  return SCOPED_TO_LEGACY_PLUGIN_PACKAGE_MAP[packageName] ?? null;
 }
 
 export function resolveLocalPackageNameAliases(packageName: string): Set<string> {
@@ -86,10 +47,6 @@ export function resolveLocalPackageNameAliases(packageName: string): Set<string>
 export function toFileInstallSpec(packageName: string, localPath: string): string {
   const normalizedPath = localPath.startsWith('file:') ? localPath.slice(5) : localPath;
   return `${packageName}@file:${normalizedPath}`;
-}
-
-export function toNpmAliasInstallSpec(packageName: string, legacyPackageName: string): string {
-  return `${packageName}@npm:${legacyPackageName}`;
 }
 
 function packageNodeModulesPath(root: string, packageName: string): string {
@@ -178,21 +135,6 @@ export async function ensurePluginsDirectory(): Promise<void> {
   }
 }
 
-export async function listInstalledPlugins(): Promise<InstalledPlugin[]> {
-  await ensurePluginsDirectory();
-
-  try {
-    const raw = await readFile(DEFAULT_PLUGINS_PACKAGE_JSON, 'utf-8');
-    const parsed = JSON.parse(raw) as { dependencies?: Record<string, string> };
-    const deps = parsed.dependencies ?? {};
-    return Object.entries(deps)
-      .map(([pkg, version]) => ({ package: pkg, version }))
-      .sort((left, right) => left.package.localeCompare(right.package));
-  } catch {
-    return [];
-  }
-}
-
 interface NpmInvocation { bin: string; leadingArgs: string[] }
 
 export function resolveNpmInvocation(): NpmInvocation {
@@ -239,7 +181,7 @@ export async function installPluginDependency(packageSpec: string): Promise<void
 export async function installPluginDependencies(packageSpecs: string[]): Promise<void> {
   await ensurePluginsDirectory();
   const npm = resolveNpmInvocation();
-  _appendLog('connect', 'system', `Installing ${packageSpecs.map((spec) => `"${spec}"`).join(', ')} via ${npm.bin}...`);
+  _appendLog('gateway', 'system', `Installing ${packageSpecs.map((spec) => `"${spec}"`).join(', ')} via ${npm.bin}...`);
 
   await execFileAsync(npm.bin, [...npm.leadingArgs, 'install', '--ignore-scripts', ...packageSpecs], {
     cwd: DEFAULT_PLUGINS_DIR,
@@ -324,7 +266,7 @@ async function copyBundledPackage(src: string, dest: string, label: string): Pro
   await mkdir(path.dirname(dest), { recursive: true });
   await rm(dest, { recursive: true, force: true });
   await cp(src, dest, { recursive: true, force: true });
-  _appendLog('connect', 'system', `Copied bundled package ${label}.`);
+  _appendLog('gateway', 'system', `Copied bundled package ${label}.`);
 }
 
 export function isPluginInstalled(packageName: string): boolean {
@@ -446,7 +388,7 @@ export async function ensureDefaultPlugin(
   if (!installed) ctx.onAppSetupStarted?.();
   ctx.getMainWindow()?.webContents.send('app:setup-step', { step: 'installing', label: 'Installing router plugin' });
   ctx.appendLog(
-    'connect',
+    'gateway',
     'system',
     incompleteInstall
       ? `Plugin "${packageName}" is incomplete. Repairing bundled dependencies.`
@@ -459,22 +401,22 @@ export async function ensureDefaultPlugin(
     //    offline, no Node/npm required on the user machine).
     let installedFromBundle = false;
     try {
-      ctx.appendLog('connect', 'system', 'Resetting bundled router plugin install.');
+      ctx.appendLog('gateway', 'system', 'Resetting bundled router plugin install.');
       installedFromBundle = await installPluginFromBundle(packageName);
     } catch (bundleErr) {
       const message = bundleErr instanceof Error ? bundleErr.message : String(bundleErr);
-      ctx.appendLog('connect', 'system', `Bundled plugin repair failed: ${message}`);
+      ctx.appendLog('gateway', 'system', `Bundled plugin repair failed: ${message}`);
       await removeDefaultRouterRuntimePackages();
     }
 
     if (installedFromBundle) {
-      ctx.appendLog('connect', 'system', `Installed plugin "${packageName}" from app bundle.`);
+      ctx.appendLog('gateway', 'system', `Installed plugin "${packageName}" from app bundle.`);
     } else {
       if (installed) await removeDefaultRouterRuntimePackages();
 
       // 2. Try local monorepo source (dev builds)
       const localSource = await resolveLocalPluginSource(packageName);
-      ctx.appendLog('connect', 'system', localSource ? `Using local source: ${localSource}` : `Using npm registry (${resolveNpmInvocation().bin})...`);
+      ctx.appendLog('gateway', 'system', localSource ? `Using local source: ${localSource}` : `Using npm registry (${resolveNpmInvocation().bin})...`);
       if (localSource) {
         await installPluginDependency(toFileInstallSpec(packageName, localSource));
       } else {
@@ -483,7 +425,7 @@ export async function ensureDefaultPlugin(
         await installPluginDependencies([`${packageName}@latest`, '@antseed/node@latest']);
       }
     }
-    ctx.appendLog('connect', 'system', `Installed plugin "${packageName}".`);
+    ctx.appendLog('gateway', 'system', `Installed plugin "${packageName}".`);
     ctx.setAppSetupComplete(true);
     // Completion is always forwarded so a retry can finish a persisted
     // first-run measurement. The telemetry service ignores completion unless
@@ -493,7 +435,7 @@ export async function ensureDefaultPlugin(
     ctx.getMainWindow()?.webContents.send('app:setup-complete');
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    ctx.appendLog('connect', 'system', `Failed to auto-install plugin "${packageName}": ${message}`);
+    ctx.appendLog('gateway', 'system', `Failed to auto-install plugin "${packageName}": ${message}`);
     ctx.getMainWindow()?.webContents.send('app:setup-step', { step: 'error', label: 'Failed to install router plugin' });
     // Do NOT emit app:setup-complete on failure — the onAppSetupComplete handler
     // would unconditionally start the connect process even though the plugin is

@@ -1,34 +1,36 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
-import type { BadgeTone } from '../../core/state';
+import { PencilEdit02Icon } from '@hugeicons/core-free-icons';
+import { Logo } from '@antseed/ui';
 import type { ViewName } from '../types';
 import { shallowEqual, useUiSelector } from '../hooks/useUiSelector';
-import { useTeeBackgroundVerification } from '../hooks/useTeeVerification';
+import { useActions } from '../hooks/useActions';
 import { selectHeadlineBalanceUsdc } from '../../core/balance';
 import { shouldNotifyAppsOnboarding } from '../../modules/app/apps-onboarding';
+import { gatewayResource, privacyResource, usePrivacySwitch } from '../../modules/app/vpr-resources';
+import { useCachedResource } from '../../modules/app/cached-resource';
 import { navViews } from './viewRegistry';
 import { ChatListPanel } from './ChatListPanel';
 import { DepositProgressBanner } from './DepositProgressBanner';
 import { NetworkAlertBanner } from './NetworkAlertBanner';
 import { UpdateBanner } from './UpdateBanner';
-import { PublicEndpointModalProvider } from './tunnels/PublicEndpointModal';
+import { SidebarBalance } from './vpr/SidebarBalance';
 import { VprNavContext } from './vpr/VprNavContext';
 import { VprHeaderActions } from './vpr/VprHeaderActions';
+import { usePrivateMode } from './vpr/PrivacyToggle';
+import { setPrivateNight } from '../lib/theme';
 import styles from './VprShell.module.scss';
 
-/* Views built on VprPage carry the credits pill inside their pinned header,
-   so the shell's floating pill would duplicate it. */
-const VIEWS_WITH_HEADER_CREDITS: ReadonlySet<ViewName> = new Set([
+/* Views built on VprPage carry Help and API keys inside their pinned header,
+   so the shell's floating toolbar would duplicate them. */
+const VIEWS_WITH_HEADER_ACTIONS: ReadonlySet<ViewName> = new Set<ViewName>([
   'chat',
-  'explore',
-  'model',
   'tools',
-  'tunnels',
-  'chats',
-  'credits',
-  'deposit',
-  'activity',
   'rewards',
+  'deposit',
+  'desktop',
+  'connection',
+  'config',
   'preferences',
   'help',
 ]);
@@ -45,31 +47,40 @@ type VprShellProps = {
 const mainNavEntries = navViews('main');
 const bottomNavEntries = navViews('bottom');
 
-function statusClassName(tone: BadgeTone): string {
-  if (tone === 'bad') return `${styles.statusItem} ${styles.statusBad}`;
-  if (tone === 'warn') return `${styles.statusItem} ${styles.statusWarn}`;
-  return styles.statusItem;
-}
-
-function networkStatusClassName(networkHealth: string): string {
-  if (networkHealth === 'Down') return `${styles.statusItem} ${styles.statusBad}`;
-  if (networkHealth === 'Limited') return `${styles.statusItem} ${styles.statusWarn}`;
-  return styles.statusItem;
+function gatewayStatusText(status: { mode: 'local' | 'remote'; reachable: boolean; origin: string | null } | undefined): string {
+  if (!status) return 'Gateway starting';
+  const where = status.mode === 'local' ? 'Local gateway' : (status.origin?.replace(/^https?:\/\//, '') ?? 'Remote gateway');
+  return `${where} · ${status.reachable ? 'ready' : 'unreachable'}`;
 }
 
 export function VprShell({ activeView, onSelectView, onNavigateBack, children }: VprShellProps) {
-  useTeeBackgroundVerification();
+  const actions = useActions();
   const snap = useUiSelector((state) => ({
     headlineBalanceUsdc: selectHeadlineBalanceUsdc(state),
-    connectBadgeLabel: state.connectBadge.label,
-    connectBadgeTone: state.connectBadge.tone,
-    networkHealth: state.ovDhtHealth,
-    proxyPort: state.ovProxyPort,
-    peers: state.ovPeers,
-    serviceCount: state.ovServiceCount,
-    chatNeedsAttention: state.chatPaymentApprovalVisible || state.chatSendingConversationIds.length > 0,
-    chatPanelExpanded: state.chatPanelExpanded,
+    chatNeedsAttention: state.chatSendingConversationIds.length > 0,
   }), shallowEqual);
+  const gateway = useCachedResource(gatewayResource);
+  const gatewayStatus = gateway.data?.status;
+  const privateMode = usePrivateMode();
+
+  // The gateway's model list follows the mode, wherever the user has gone by
+  // the time a switch lands.
+  const { switching: privacySwitching } = usePrivacySwitch();
+  const privacy = useCachedResource(privacyResource);
+  const landedMode = privacySwitching ? null : privacy.data?.mode ?? null;
+  const lastLandedMode = useRef(landedMode);
+  useEffect(() => {
+    if (!landedMode) return;
+    const changed = lastLandedMode.current !== null && lastLandedMode.current !== landedMode;
+    lastLandedMode.current = landedMode;
+    if (changed) void actions.privacySwitchLanded(landedMode);
+  }, [actions, landedMode]);
+
+  // Private shows the night palette everywhere while it's on.
+  useEffect(() => {
+    setPrivateNight(privateMode);
+    return () => setPrivateNight(false);
+  }, [privateMode]);
 
   const [appVersion, setAppVersion] = useState<string>(
     typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '',
@@ -78,26 +89,48 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
     window.antseedDesktop?.getAppVersion?.().then(setAppVersion).catch(() => {});
   }, []);
 
-  // Chat opens thin — the conversation-list panel (and the wide window
-  // preset, see AppShell) only appear once the user expands the chat view.
-  const chatPanelVisible = activeView === 'chat' && snap.chatPanelExpanded;
-
   const navValue = useMemo(
     () => ({ navigate: onSelectView, back: onNavigateBack }),
     [onSelectView, onNavigateBack],
   );
 
+  const startNewChat = useCallback(() => {
+    actions.startNewChat();
+    onSelectView('home');
+  }, [actions, onSelectView]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'n') {
+        event.preventDefault();
+        startNewChat();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [startNewChat]);
+
+  const openConversation = useCallback(() => onSelectView('chat'), [onSelectView]);
+  const goHome = useCallback(() => onSelectView('home'), [onSelectView]);
+  const isMac = globalThis.window?.antseedDesktop?.platform === 'darwin';
+
   return (
-    <PublicEndpointModalProvider>
-      <div className={`${styles.shell}${chatPanelVisible ? ` ${styles.shellWithPanel}` : ''}`}>
+    <div className={styles.shell}>
       {/* Window-drag handle: the hidden-inset title bar has no native drag
           region, so this strip provides one. pointer-events: none keeps web
           clicks working; interactive elements overlapping it opt out with
           -webkit-app-region: no-drag. */}
       <div className={styles.dragStrip} aria-hidden="true" />
-      <nav className={styles.sidebar} aria-label="AI VPN navigation">
+      <nav className={styles.sidebar} aria-label="Main navigation">
+        <Logo height={24} className={styles.logo} />
+        <button type="button" className={styles.newChat} onClick={startNewChat}>
+          <HugeiconsIcon icon={PencilEdit02Icon} size={18} strokeWidth={1.7} />
+          <span className={styles.newChatLabel}>New chat</span>
+          <kbd className={styles.shortcut}>{isMac ? '⌘N' : 'Ctrl+N'}</kbd>
+        </button>
         <div className={styles.navGroup}>
           {mainNavEntries.map(({ view, nav }) => {
+            // Home stays lit while a conversation is open: that is where chats start.
             const active = activeView === view;
             return (
               <button
@@ -107,9 +140,9 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
                 aria-current={active ? 'page' : undefined}
                 onClick={() => onSelectView(view)}
               >
-                <HugeiconsIcon icon={nav.icon} size={24} strokeWidth={1.8} />
+                <HugeiconsIcon icon={nav.icon} size={18} strokeWidth={1.7} />
                 <span className={styles.navLabel}>{nav.label}</span>
-                {view === 'chat' && snap.chatNeedsAttention && activeView !== 'chat' && (
+                {view === 'home' && snap.chatNeedsAttention && activeView !== 'chat' && (
                   <span className={styles.navDot} aria-label="Chat activity" />
                 )}
                 {/* One-shot onboarding nudge: the user hasn't opened Apps
@@ -122,64 +155,47 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
             );
           })}
         </div>
-        <div className={styles.navBottom}>
-          {bottomNavEntries.map(({ view, nav }) => (
-            <button
-              key={view}
-              type="button"
-              className={`${styles.navButton}${activeView === view ? ` ${styles.navButtonActive}` : ''}`}
-              aria-current={activeView === view ? 'page' : undefined}
-              onClick={() => onSelectView(view)}
-            >
-              <HugeiconsIcon icon={nav.icon} size={24} strokeWidth={1.8} />
-              <span className={styles.navLabel}>{nav.label}</span>
-            </button>
-          ))}
-        </div>
+        <ChatListPanel onOpenConversation={openConversation} onOpenConversationDeleted={goHome} highlightActive={activeView === 'chat'} />
+        <SidebarBalance credits={snap.headlineBalanceUsdc} onAddFunds={() => onSelectView('deposit')} />
+        {bottomNavEntries.map(({ view, nav }) => (
+          <button
+            key={view}
+            type="button"
+            className={`${styles.navButton}${activeView === view ? ` ${styles.navButtonActive}` : ''}`}
+            aria-current={activeView === view ? 'page' : undefined}
+            onClick={() => onSelectView(view)}
+          >
+            <HugeiconsIcon icon={nav.icon} size={18} strokeWidth={1.7} />
+            <span className={styles.navLabel}>{nav.label}</span>
+          </button>
+        ))}
+        <p className={styles.status}>
+          <span className={gatewayStatus && !gatewayStatus.reachable ? `${styles.statusItem} ${styles.statusWarn}` : styles.statusItem}>
+            {gatewayStatusText(gatewayStatus)}
+          </span>
+          <span className={styles.statusVersion}>v{appVersion}</span>
+        </p>
       </nav>
-      {chatPanelVisible && <ChatListPanel onSelectView={onSelectView} />}
       <main className={styles.mainPane}>
         <div className={styles.content}>
           <VprNavContext.Provider value={navValue}>{children}</VprNavContext.Provider>
         </div>
-        {/* The no-drag carve-out lives on this static wrapper: the pill
+        {/* The no-drag carve-out lives on this static wrapper: the toolbar
             itself runs a compositor scroll-timeline animation, and animated
             elements don't reliably register app-region rects. The slot must
             also come AFTER the view content in the DOM — app-region rects
             are collected in document order and later drag regions (e.g. the
-            home view's hero banner) would otherwise paint over the pill's
+            home view's hero banner) would otherwise paint over the toolbar's
             no-drag hole and swallow its clicks. */}
-        {!VIEWS_WITH_HEADER_CREDITS.has(activeView) && (
+        {!VIEWS_WITH_HEADER_ACTIONS.has(activeView) && (
           <div className={styles.creditsPillSlot}>
-            <VprHeaderActions
-              className={styles.creditsPill}
-              credits={snap.headlineBalanceUsdc}
-              onSelectView={onSelectView}
-            />
+            <VprHeaderActions className={styles.creditsPill} onSelectView={onSelectView} />
           </div>
         )}
         <NetworkAlertBanner />
         <UpdateBanner />
         <DepositProgressBanner onAddFunds={() => onSelectView('deposit')} onDepositView={activeView === 'deposit'} />
       </main>
-      <footer className={styles.statusStrip}>
-        <span className={networkStatusClassName(snap.networkHealth)}>
-          {snap.networkHealth}
-        </span>
-        <span className={styles.statusSep} aria-hidden="true">|</span>
-        <span className={statusClassName(snap.connectBadgeTone)}>
-          {snap.connectBadgeLabel}
-        </span>
-        <span className={styles.statusSep} aria-hidden="true">|</span>
-        <span className={styles.statusItem}>Port: {snap.proxyPort}</span>
-        <span className={styles.statusSep} aria-hidden="true">|</span>
-        <span className={styles.statusItem}>{snap.peers} Peers</span>
-        <span className={styles.statusSep} aria-hidden="true">|</span>
-        <span className={styles.statusItem}>{snap.serviceCount} Services</span>
-        <span className={styles.statusSep} aria-hidden="true">|</span>
-        <span className={styles.statusItem}>v{appVersion}</span>
-      </footer>
-      </div>
-    </PublicEndpointModalProvider>
+    </div>
   );
 }

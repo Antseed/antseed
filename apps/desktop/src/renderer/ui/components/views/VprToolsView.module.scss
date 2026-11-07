@@ -6,25 +6,13 @@
 }
 
 .stack {
-  height: 100%;
-  min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 34px;
   width: 100%;
-  max-width: 392px;
+  max-width: 1000px;
   margin: 0 auto;
   min-width: 0;
-}
-
-.pageTitle {
-  min-height: 24px;
-  display: flex;
-  align-items: center;
-  color: var(--text-secondary);
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 16px;
 }
 
 .note {
@@ -34,19 +22,6 @@
   color: var(--text-secondary);
   font-size: 12px;
   line-height: 16px;
-}
-
-.empty {
-  min-height: 96px;
-  display: grid;
-  place-items: center;
-  padding: 16px;
-  border-radius: 16px;
-  background: var(--bg-card);
-  box-shadow: var(--shadow-sm);
-  color: var(--text-muted);
-  font-size: 13px;
-  text-align: center;
 }
 
 /* ---------- App rows (Figma "apps connect") ---------- */
@@ -321,26 +296,6 @@
   font-size: 10px;
 }
 
-/* Inline hint text that opens an external link (e.g. @BotFather). */
-.settingHintLink {
-  padding: 0;
-  border: none;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  cursor: pointer;
-}
-
-.settingHintLink code {
-  text-decoration: underline;
-  text-underline-offset: 2px;
-  transition: color 0.12s ease;
-}
-
-.settingHintLink:hover code {
-  color: var(--text-primary);
-}
-
 /* Current-value row (selected application) — click slides to the picker.
    Transparent fill: a surface tint here reads as a disabled control. */
 .settingValueRow {
@@ -416,16 +371,6 @@
   gap: 6px;
 }
 
-/* Required / Optional marker next to a section title. */
-.settingTag {
-  flex: 0 0 auto;
-  color: var(--text-muted);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
 /* Primary connection action (Connect / Disconnect) parks bottom-centered. */
 .settingFooter {
   display: flex;
@@ -438,82 +383,6 @@
 /* ---------- Add-app wizard (Add → Trust → Connect) ---------- */
 
 /* Wizard footers right-align: secondary action sits left of the primary. */
-.wizardFooter {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  padding-top: 4px;
-}
-
-.wizardSteps {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-}
-
-.wizardStep {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  color: var(--text-muted);
-  font-size: 11px;
-  font-weight: 500;
-  line-height: 16px;
-}
-
-/* Connector dash between steps. */
-.wizardStep + .wizardStep::before {
-  content: '';
-  width: 14px;
-  height: 1px;
-  margin-right: 5px;
-  background: var(--border-strong);
-}
-
-.wizardStepNum {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 16px;
-  border: 1px solid var(--border-strong);
-  border-radius: 999px;
-  font-size: 10px;
-  font-weight: 600;
-}
-
-.wizardStepActive {
-  color: var(--text-primary);
-  font-weight: 600;
-}
-
-.wizardStepActive .wizardStepNum {
-  border-color: var(--accent-green);
-  background: var(--accent-green);
-  color: #ffffff;
-}
-
-.wizardStepDone {
-  color: var(--text-secondary);
-}
-
-.wizardStepDone .wizardStepNum {
-  border-color: var(--accent-green);
-  color: var(--accent-green);
-}
-
-/* Non-interactive summary of the newly added app on the connect step. */
-.wizardApp {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 36px;
-  padding: 6px 10px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-}
 
 /* ---------- Modal pane slide (main settings <-> application list) ----------
    Same motion language as the app's screen changes: forward slides in from
@@ -598,7 +467,7 @@
   border: none;
   border-radius: 8px;
   background: var(--brand);
-  color: #ffffff;
+  color: var(--accent-contrast);
   font-size: 12px;
   font-weight: 500;
   line-height: 20px;
@@ -751,12 +620,37 @@
   border: none;
   border-radius: 8px;
   background: var(--brand);
-  color: #ffffff;
+  color: var(--accent-contrast);
   font-size: 12px;
   font-weight: 500;
   line-height: 20px;
   cursor: pointer;
   transition: filter 0.12s ease;
+}
+
+.appMetaMuted {
+  color: var(--text-muted);
+}
+
+.downloadAction {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 20px;
+  cursor: pointer;
+}
+
+.downloadAction:hover {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
 }
 
 .connectAction:hover:not(:disabled) {
@@ -796,11 +690,6 @@
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
 }
 
-.connectedToggleOff {
-  justify-content: flex-start;
-  background: var(--border-strong);
-}
-
 .connectedToggle:hover:not(:disabled) {
   filter: brightness(1.06);
 }
@@ -813,14 +702,6 @@
 .connectedToggle:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px rgba(var(--brand-rgb), 0.4);
-}
-
-/* ---------- Expanded body ---------- */
-
-.appBody {
-  display: grid;
-  gap: 10px;
-  padding: 4px 0 0;
 }
 
 .actions {
@@ -850,10 +731,6 @@
   cursor: default;
 }
 
-.dangerAction {
-  color: var(--danger) !important;
-}
-
 .appIcon {
   flex: 0 0 auto;
   width: 24px;
@@ -862,35 +739,21 @@
   object-fit: contain;
 }
 
-/* ---------- Add custom app ---------- */
-
-.addAppButton {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  min-height: 36px;
-  padding: 6px 12px;
-  border: 1px dashed var(--border-strong);
-  border-radius: 12px;
-  background: transparent;
-  color: var(--text-secondary);
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: border-color 0.12s ease, color 0.12s ease;
-}
-
-.addAppButton:hover:not(:disabled) {
-  border-color: rgba(var(--brand-rgb), 0.5);
-  color: var(--text-primary);
+/* Brand logo: the mark already sits on its own white tile. */
+.appLogo {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: #ffffff;
 }
 
 /* Recent chats card moved to the shared VprRecentChats component. */
 
 /* ---------- Certificate transparency ---------- */
 
-.caCard {
+.endpointCard {
   display: grid;
   gap: 8px;
   padding: 14px;
@@ -900,7 +763,7 @@
 }
 
 /* Collapsible header — the whole row toggles the card open. */
-.caHead {
+.endpointHead {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -914,21 +777,21 @@
   cursor: pointer;
 }
 
-.caChevron {
+.endpointChevron {
   flex: 0 0 auto;
   color: var(--text-muted);
   transition: transform 0.15s ease, color 0.12s ease;
 }
 
-.caChevronOpen {
+.endpointChevronOpen {
   transform: rotate(180deg);
 }
 
-.caHead:hover .caChevron {
+.endpointHead:hover .endpointChevron {
   color: var(--text-primary);
 }
 
-.caTitle {
+.endpointTitle {
   flex: 1 1 auto;
   color: var(--text-primary);
   font-size: 13px;
@@ -936,13 +799,13 @@
   line-height: 18px;
 }
 
-.caHint {
+.endpointHint {
   color: var(--text-muted);
   font-size: 11px;
   line-height: 15px;
 }
 
-.caPath {
+.endpointValue {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -957,11 +820,11 @@
   transition: border-color 0.12s ease;
 }
 
-.caPath:hover {
+.endpointValue:hover {
   border-color: var(--border-strong);
 }
 
-.caPath code {
+.endpointValue code {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
@@ -973,7 +836,7 @@
   text-align: left;
 }
 
-.caPath span {
+.endpointValue span {
   flex: 0 0 auto;
   font-size: 11px;
   font-weight: 600;
@@ -997,4 +860,257 @@
 
 .learnMore:hover {
   color: var(--text-primary);
+}
+
+.endpointRows {
+  display: grid;
+  gap: 6px;
+}
+
+/* ---------- Agent skills + the app list's heading ---------- */
+
+.agentCard {
+  flex: 0 0 auto;
+  padding: 16px 18px 18px;
+}
+
+.listHeader {
+  flex: 0 0 auto;
+  display: grid;
+  gap: 2px;
+  margin-top: 4px;
+}
+
+.listTitle {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 18px;
+}
+
+.listCaption {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.settingHintLink {
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.settingHintLink code {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.settingHintLink:hover code {
+  color: var(--text-primary);
+}
+
+/* ---------- Agents & apps (v4 design) ---------- */
+
+.agentCard {
+  display: grid;
+  padding: 20px;
+}
+
+.appGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+.appCard {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+  min-height: 122px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg-card);
+}
+
+.appTile {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: #ffffff;
+}
+
+.appTileImage {
+  width: 34px;
+  height: 34px;
+  object-fit: contain;
+}
+
+.appCardCorner {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: inline-flex;
+  gap: 2px;
+}
+
+.appCornerButton {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.appCornerButton:hover {
+  background: var(--surface-chip);
+  color: var(--text-primary);
+}
+
+.appCardName {
+  max-width: 100%;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 550;
+  line-height: 20px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+button.appCardName {
+  cursor: pointer;
+}
+
+button.appCardName:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.appCardFoot {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 28px;
+  max-width: 100%;
+  margin-top: auto;
+}
+
+.appChip {
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--surface-chip);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.appChip:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.appGet {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.appGet:hover {
+  color: var(--text-primary);
+}
+
+.appMuted {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.appStatus,
+.appStatusWarn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.appStatus {
+  color: var(--leaf-ink);
+}
+
+.appStatusWarn {
+  color: var(--accent-yellow);
+}
+
+/* Disconnect takes over from the status while the card is hovered or focused. */
+.appConnectedRow {
+  display: grid;
+  min-width: 0;
+}
+
+.appConnectedRow > * {
+  grid-area: 1 / 1;
+}
+
+.appDisconnect {
+  visibility: hidden;
+  justify-self: start;
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--surface-chip);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.appCard:hover .appDisconnect,
+.appCard:focus-within .appDisconnect {
+  visibility: visible;
+}
+
+.appCard:hover .appConnectedRow > span,
+.appCard:focus-within .appConnectedRow > span {
+  visibility: hidden;
 }

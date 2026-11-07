@@ -541,8 +541,8 @@ test('applyConfigPatch writes only the routed-model alias across formats', async
     const models = JSON.parse(await readFile(modelsPath, 'utf8')) as {
       providers: Record<string, { models?: Array<{ id: string }> }>;
     };
-    // Model selection lives in the desktop route selector (floating pill /
-    // AI VPN); tool configs expose only the alias the buyer resolves per request.
+    // Model selection lives in the Antseed Desktop route selector; tool
+    // configs expose only the alias the buyer resolves per request.
     assert.deepEqual(models.providers.antseed?.models?.map((entry) => entry.id), ['antseed']);
   });
 });
@@ -681,7 +681,7 @@ test('removeConfigPatch (goose) keeps a provider selection it does not own', asy
 
 // --- Claude Code ---
 
-test('Claude Code patch routes through the AI VPN alias and restores managed settings', async () => {
+test('Claude Code patch routes through the Antseed alias and restores managed settings', async () => {
   await withTempConfig(async (dir) => {
     const configPath = path.join(dir, 'settings.json');
     await writeFile(configPath, JSON.stringify({

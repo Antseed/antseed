@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
-import { VprMark } from './VprLogo';
-import { BrandIcon, type BrandKey } from '@antseed/ui';
-import { SetupAppPreview } from './SetupAppPreview';
+import { BrandIcon, Logo, type BrandKey } from '@antseed/ui';
+import { HomeField } from './vpr/HomeField';
 import { canonicalModelKey } from '../../modules/catalog/model-identity';
 import { shallowEqual, useUiSelector } from '../hooks/useUiSelector';
 import styles from './SetupScreen.module.scss';
@@ -81,23 +80,21 @@ export function SetupScreen() {
       // Catalog reference for the preview's Models scene (rows derived below).
       appSetupComplete: state.appSetupComplete,
       appSetupStep: state.appSetupStep,
-      chatServiceCount: state.chatServiceOptions.length,
+      chatServiceCount: state.chatModels.length,
       networkAlert: state.networkAlert,
       dhtNodeCount: state.dhtNodeCount,
       peerCount: state.lastPeers.length,
       metadataPeerCount,
       modelCount: models.size,
       freeModelCount: freeModels.size,
-      routeModelLabel: state.vprRouteSelection.model?.label ?? null,
-      defaultProvisional: state.vprDefaultModelProvisional,
+      routeModelLabel: state.chatModels.find((model) => model.id === state.chatSelectedModelId)?.label ?? null,
     };
   }, shallowEqual);
 
   const hasServices = snap.chatServiceCount > 0;
-  // The whole point of first-run setup: a model the user can chat with for
-  // free, confirmed by routing (a trusted free seller backs the default —
-  // the provisional flag has cleared). Only then does the screen call it done.
-  const freeReady = hasServices && snap.routeModelLabel !== null && !snap.defaultProvisional;
+  // The whole point of first-run setup: the gateway lists a model the user
+  // can chat with. Only then does the screen call it done.
+  const freeReady = hasServices && snap.routeModelLabel !== null;
 
   // The long tail of first-run setup: discovery counts are all real, but the
   // catalog is still loading and/or no free route has cleared the on-chain
@@ -141,15 +138,14 @@ export function SetupScreen() {
 
   return (
     <>
-      {/* Frameless window: keep the top strip draggable but visually empty —
-          the setup screen carries its branding in the body. */}
+      {/* Frameless window: an invisible top strip keeps it draggable. */}
       <div className={styles.dragStrip} />
       <div className={styles.container}>
-        <div className={styles.content}>
-          <div className={styles.brand}>
-            <VprMark size={64} color="var(--accent-green)" />
-          </div>
-          <SetupAppPreview />
+        <HomeField night={false} />
+        <div className={styles.card}>
+          <Logo height={24} className={styles.logo} />
+          <h1 className={styles.heading}>Ask anything, on any model</h1>
+          <p className={styles.tagline}>At the best available prices, with the privacy you want.</p>
 
           {/* Logo marquee: the families of models on the network, drifting by
               while discovery runs — the wait has something alive to look at. */}
@@ -163,21 +159,6 @@ export function SetupScreen() {
             </div>
           </div>
 
-          {/* The app itself as the loader: a miniature AI VPN window cycling
-              Home → Models → Chat, filling in with real discovered models. */}
-
-          {/* networkAlert carries a startup grace period, so this only appears
-              once the network — not slow bootstrap — is the problem. */}
-          {!hasServices && snap.networkAlert !== 'none' && (
-            <p className={styles.networkHint} role="alert">
-              {snap.networkAlert === 'no-internet'
-                ? 'No internet connection detected. Connect to the internet to finish setup.'
-                : 'Having trouble reaching the peer-to-peer network. A firewall or VPN on this network may be blocking it - try disconnecting the VPN or switching networks.'}
-            </p>
-          )}
-        </div>
-
-        <div className={styles.footer}>
           {freeReady ? (
             <div className={styles.ready}>
               <span className={styles.readyDot} />
@@ -210,6 +191,19 @@ export function SetupScreen() {
           <p className={styles.firstRunNote}>
             Setting up — only on first run, takes 2 minutes max.
           </p>
+
+          {/* networkAlert carries a startup grace period, so this only appears
+              once the network — not slow bootstrap — is the problem. */}
+          {!hasServices && snap.networkAlert !== 'none' && (
+            <p className={styles.networkHint} role="alert">
+              <span className={styles.networkDot} aria-hidden="true" />
+              <span>
+                {snap.networkAlert === 'no-internet'
+                  ? 'No internet connection detected. Connect to the internet to finish setup.'
+                  : 'Having trouble reaching the peer-to-peer network. A firewall or VPN on this network may be blocking it - try disconnecting the VPN or switching networks.'}
+              </span>
+            </p>
+          )}
         </div>
       </div>
     </>

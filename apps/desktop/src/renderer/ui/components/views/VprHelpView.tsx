@@ -12,7 +12,6 @@ import { getUiStateRef } from '../../../core/store';
 import { shallowEqual, useUiSelector } from '../../hooks/useUiSelector';
 import { useActions } from '../../hooks/useActions';
 import { VprCard, VprPage, VprSettingRow, VprToggle } from '../vpr/VprKit';
-import { usePublicEndpointModal } from '../tunnels/PublicEndpointModal';
 import styles from './VprHelpView.module.scss';
 
 declare const __APP_VERSION__: string;
@@ -22,8 +21,8 @@ type Props = { onSelectView?: (view: import('../../types').ViewName) => void };
 const TELEGRAM_URL = 'https://t.me/antseed';
 const X_URL = 'https://x.com/antseed';
 const DOCS_BASE_URL = 'https://antseed.com/docs';
-const VPR_GUIDE_URL = `${DOCS_BASE_URL}/guides/vpr`;
-const INTEGRATIONS_URL = 'https://antseed.com/integrations';
+const GATEWAY_DOCS_URL = `${DOCS_BASE_URL}/gateway`;
+const DESKTOP_DOCS_URL = `${DOCS_BASE_URL}/desktop`;
 const GITHUB_ISSUES_URL = 'https://github.com/AntSeed/antseed/issues/new';
 
 type HelpLink = { label: string; url: string };
@@ -44,378 +43,152 @@ const HELP_TOPICS: HelpTopic[] = [
     articles: [
       {
         key: 'what-is',
-        label: 'What the AI VPN does',
-        intro: 'The AI VPN is like a VPN for AI: it routes AI requests from the tools you already use through the Antseed network.',
+        label: 'What this app does',
+        intro: 'Antseed runs an AI gateway for you and connects your tools to it. Requests are served by the Antseed peer-to-peer network and paid from your balance.',
         sections: [
           {
-            heading: 'Keep using your normal tools',
-            body: 'Connect apps such as coding assistants and AI clients, then keep working in their familiar interfaces while the AI VPN handles routing in the background.',
+            heading: 'Your gateway',
+            body: 'The app runs a gateway on this computer (or uses one someone runs for you). It has an OpenAI- and Anthropic-compatible API and an API key, like any AI provider.',
           },
           {
-            heading: 'Choose how requests route',
-            body: 'The AI VPN discovers sellers, applies your model, price, and trust preferences, and handles pay-per-request settlement from your credits.',
+            heading: 'Connected apps',
+            body: 'Connect coding agents and AI clients from Agents & apps. Each app is pointed at your gateway with its key and lists the gateway’s models in its own model picker.',
+          },
+          {
+            heading: 'Usage, keys and limits',
+            body: 'Spend, request history, API keys and limits live in your gateway’s console. Use API keys at the top of the window to open it.',
           },
         ],
         links: [
-          { label: 'Read the complete AI VPN guide', url: VPR_GUIDE_URL },
-          { label: 'Understand the Antseed protocol', url: `${DOCS_BASE_URL}/overview` },
+          { label: 'Gateway and console', url: GATEWAY_DOCS_URL },
+          { label: 'Desktop app guide', url: DESKTOP_DOCS_URL },
         ],
       },
       {
-        key: 'router',
-        label: 'Start the router',
-        intro: 'Use the power button on Home to start or stop the local router. The status area shows network health, the proxy port, and visible peers and services.',
+        key: 'console',
+        label: 'Sign in to your gateway',
+        intro: 'The first time you open your gateway’s console, you claim it: add a passkey or connect a wallet once, and sign in with it from then on.',
         sections: [
           {
-            heading: 'Discovery takes a moment',
-            body: 'Peer and model announcements can take a few seconds after startup. If Models stays empty, open it and use Refresh models.',
+            heading: 'First sign-in',
+            body: 'Manage API keys opens a one-time setup link while the console has no owner. Finish the setup in your browser; the app does not keep a password.',
           },
           {
-            heading: 'Stopping the router',
-            body: 'Stopping the router prevents connected apps from sending new requests through Antseed. It does not remove their saved connection settings.',
+            heading: 'After that',
+            body: 'The same buttons open the console, where you sign in with the passkey or wallet you added.',
           },
         ],
-        links: [{ label: 'Start and use the AI VPN', url: `${VPR_GUIDE_URL}#start-the-router` }],
-      },
-      {
-        key: 'chat',
-        label: 'Chat inside the AI VPN',
-        intro: 'Use the built-in chat when you want to talk to a network model without opening another tool. Start from the Home prompt or open Chat directly.',
-        sections: [
-          {
-            heading: 'Change the conversation model',
-            body: 'Use the model picker in the chat header. For an existing thread, choose whether to continue it on the new model or start a new chat.',
-          },
-          {
-            heading: 'Manage chat history',
-            body: 'View chats opens your conversation list. You can return to previous chats, start a clean chat with the current model, and search messages in the active conversation.',
-          },
-        ],
-        links: [{ label: 'Use the built-in AI VPN chat', url: `${VPR_GUIDE_URL}#chat-inside-the-vpr` }],
-      },
-      {
-        key: 'apps',
-        label: 'Connect your apps',
-        intro: 'Open Connected apps and select a detected tool. The AI VPN updates a supported config file or routes the app through its local proxy.',
-        sections: [
-          {
-            heading: 'Restart when prompted',
-            body: 'Config-file integrations must be restarted before they read the new endpoint. Use the Restart action shown on the app row.',
-          },
-          {
-            heading: 'Manual integrations',
-            body: 'For apps not detected automatically, use Add custom app or follow the tool-specific endpoint instructions.',
-          },
-        ],
-        links: [
-          { label: 'Connect apps with the AI VPN', url: `${VPR_GUIDE_URL}#connect-an-ai-app` },
-          { label: 'Open tool-specific integration guides', url: INTEGRATIONS_URL },
-        ],
-      },
-      {
-        key: 'conversations',
-        label: 'Manage connected-tool conversations',
-        intro: 'Connected-tool sessions appear under Recent chats after they send traffic. Each conversation can keep its own model and seller route.',
-        sections: [
-          {
-            heading: 'Set one chat’s model',
-            body: 'Open Recent chats, select a conversation, and choose its model. Other conversations and the default model for new sessions are unchanged.',
-          },
-          {
-            heading: 'Set one chat’s seller',
-            body: 'Open the model row’s settings to use automatic selection or pin an exact seller for only that conversation.',
-          },
-          {
-            heading: 'Other controls',
-            body: 'Rename the conversation, open its connected app, or delete the stored chat entry from the conversation detail page.',
-          },
-        ],
-        links: [
-          { label: 'Manage connected-tool conversations', url: `${VPR_GUIDE_URL}#manage-connected-tool-conversations` },
-        ],
-      },
-      {
-        key: 'float',
-        label: 'The floating window',
-        intro: 'The floating window stays above your apps and shows the active model plus current token and cost activity.',
-        sections: [
-          {
-            heading: 'Models and conversations',
-            body: 'Change the default model for new sessions, assign a model to one recent conversation, or open the connected app that owns it.',
-          },
-          {
-            heading: 'Floating preferences',
-            body: 'Show on traffic opens it automatically when a connected app sends requests. Show routed peer displays the seller that actually served each chat.',
-          },
-          {
-            heading: 'Closing it is safe',
-            body: 'Closing the floating window does not stop the router, disconnect apps, or end conversations.',
-          },
-        ],
-        links: [{ label: 'Use the floating window', url: `${VPR_GUIDE_URL}#use-the-floating-window` }],
-      },
-      {
-        key: 'api',
-        label: 'Use the local API',
-        intro: 'While the router is running, the AI VPN exposes an OpenAI- and Anthropic-compatible API at http://localhost:8377 for tools, SDKs, scripts, and curl.',
-        sections: [
-          {
-            heading: 'Browse available models',
-            body: 'GET /v1/models returns the network-wide model catalog from the local proxy. Use /v1/models?type=images to list image services only.',
-          },
-          {
-            heading: 'Send requests',
-            body: 'Use /v1/chat/completions, /v1/responses, or /v1/messages for text requests. Image clients can use /v1/images/generations and /v1/images/edits.',
-          },
-          {
-            heading: 'Choose the route',
-            body: 'Use model "antseed" to follow the model selected in AI VPN, a catalog model id for automatic seller selection, or <peerId>@<model> to pin one seller.',
-          },
-        ],
-        links: [
-          { label: 'Use the AI VPN local API', url: `${VPR_GUIDE_URL}#use-the-local-api` },
-          { label: 'Open the complete API guide', url: `${DOCS_BASE_URL}/guides/using-the-api` },
-        ],
+        links: [{ label: 'Console sign-in', url: `${GATEWAY_DOCS_URL}/sign-in` }],
       },
     ],
   },
   {
-    key: 'routing',
-    label: 'Models & routing',
+    key: 'apps',
+    label: 'Connected apps',
     articles: [
       {
-        key: 'models',
-        label: 'Choose a model and seller',
-        intro: 'Open Models to browse currently advertised services, prices, seller availability, and expected savings where a retail comparison exists.',
+        key: 'connect',
+        label: 'Connect an app',
+        intro: 'Open Agents & apps and click Connect. The app’s own config file gets your gateway’s address and API key; Disconnect restores the original (a backup is kept next to it).',
         sections: [
           {
-            heading: 'Automatic selection',
-            body: 'Auto select ranks eligible sellers using trust, price, free-route preference, compatibility, and recent failures. Retryable failures can move an automatic route to another seller.',
+            heading: 'Choose models in the app',
+            body: 'Connected apps list your gateway’s models. Pick and switch models inside each app, the way you normally would.',
           },
           {
-            heading: 'Seller pins',
-            body: 'A pinned seller is a hard route and does not fail over. Remove the pin before troubleshooting that seller’s availability or performance.',
+            heading: 'Restart after connecting',
+            body: 'A running app keeps the settings it read at launch. Restart it, or start a new session, so it uses the gateway.',
           },
-        ],
-        links: [
-          { label: 'Choose models and sellers', url: `${VPR_GUIDE_URL}#choose-a-model-and-seller` },
-          { label: 'How seller reputation works', url: `${DOCS_BASE_URL}/reputation` },
+          {
+            heading: 'Zed',
+            body: 'Zed keeps API keys in its own keychain. After connecting, paste your gateway key into Zed’s Antseed provider once. Copy it from Agents & apps → Use with any other tool.',
+          },
         ],
       },
       {
-        key: 'preferences',
-        label: 'Routing preferences',
-        intro: 'Preferences apply to every model using automatic seller selection.',
+        key: 'other-tools',
+        label: 'Use any other tool',
+        intro: 'Any tool that accepts an OpenAI- or Anthropic-compatible base URL and API key works with your gateway.',
         sections: [
           {
-            heading: 'Trust and price',
-            body: 'Minimum trust is an eligibility gate. Price preference changes ranking, while maximum pricing is the hard spending cap when configured.',
+            heading: 'URL and key',
+            body: 'Agents & apps → Use with any other tool shows the base URL and key to paste into the tool’s settings. Send the key as a Bearer token (Authorization header).',
           },
           {
-            heading: 'Free routes',
-            body: 'Prefer free peers gives zero-cost eligible offers a strong ranking advantage; it does not bypass trust or compatibility rules.',
+            heading: 'Cursor',
+            body: 'Cursor calls models from its own servers, so it cannot reach a gateway on this computer. It works with a gateway that has a public URL: set one in Settings → Gateway.',
           },
         ],
-        links: [{ label: 'Configure routing preferences', url: `${VPR_GUIDE_URL}#set-routing-preferences` }],
-      },
-      {
-        key: 'failover',
-        label: 'Automatic failover and pins',
-        intro: 'Automatic routes normally keep a soft affinity to the seller that served a conversation successfully, but they can switch after retryable failures.',
-        sections: [
-          {
-            heading: 'When routes switch',
-            body: 'A route may change when the seller is unavailable, cooling down, no longer eligible, or fails in a retryable way.',
-          },
-          {
-            heading: 'When routes stay fixed',
-            body: 'Explicit seller pins never switch automatically. Model-only selection allows the router to choose another eligible seller.',
-          },
-        ],
-        links: [
-          { label: 'Read the routing guide', url: `${VPR_GUIDE_URL}#automatic-seller-selection` },
-          { label: 'API routing and explicit pins', url: `${DOCS_BASE_URL}/guides/using-the-api#automatic-routing-and-explicit-pins` },
-        ],
+        links: [{ label: 'Gateway API', url: `${GATEWAY_DOCS_URL}/api` }],
       },
     ],
   },
   {
-    key: 'privacy',
-    label: 'Privacy & security',
+    key: 'gateway',
+    label: 'Gateway and keys',
     articles: [
       {
-        key: 'prompt-visibility',
-        label: 'Who can see my requests?',
-        intro: 'Antseed is anonymous by default: sellers receive a pseudonymous peer or wallet identity, not Antseed account, name, email, or personal profile.',
+        key: 'local-remote',
+        label: 'Local or remote gateway',
+        intro: 'By default the gateway runs on this computer and starts with the app. Settings → Gateway can point the app at a gateway someone else runs instead.',
         sections: [
           {
-            heading: 'Identity and content are separate',
-            body: 'A standard seller can process the prompt it serves, but Antseed does not tell the seller who you are. Verified TEE routes can add stronger content confidentiality.',
+            heading: 'This computer',
+            body: 'The local gateway pays from this app’s balance and stops when you quit. Connected apps are disconnected while it is stopped and reconnected at launch.',
           },
           {
-            heading: 'What stays local',
-            body: 'AI VPN configuration, connected-app setup, routing state, and local activity data remain on your device unless a feature explicitly sends them elsewhere.',
+            heading: 'Remote',
+            body: 'Enter the gateway’s URL and an API key it issued. Chat and connected apps use it directly, and keep working while this app is closed. Funding and keys are managed in that gateway’s console.',
           },
-        ],
-        links: [
-          { label: 'Privacy and seller visibility', url: `${VPR_GUIDE_URL}#privacy-transport-and-seller-trust` },
-          { label: 'Review Antseed security boundaries', url: `${DOCS_BASE_URL}/security` },
         ],
       },
       {
-        key: 'transport',
-        label: 'How peer traffic is encrypted',
-        intro: 'The preferred node-to-node transport is a mutually authenticated encrypted TCP channel using wallet-signed ephemeral keys.',
+        key: 'keys',
+        label: 'API keys',
+        intro: 'The app creates an API key on your local gateway and gives it to the chat and your connected apps.',
         sections: [
           {
-            heading: 'WebRTC is the fallback',
-            body: 'WebRTC DataChannels are used when a peer advertises WebRTC but cannot use direct encrypted TCP. WebRTC is not the primary AI VPN transport.',
+            heading: 'One key or a key per app',
+            body: 'By default every app shares one key. Turn on A key per app in Settings to give each connected app its own key, so the console shows usage and limits per app.',
           },
           {
-            heading: 'App connection is separate',
-            body: 'Your local app may connect through a config-file endpoint or local HTTPS interception; that local connection is separate from the encrypted peer transport.',
+            heading: 'Replace keys',
+            body: 'Replace keys revokes the current keys, creates new ones and updates every connected app. Running apps restart to pick up the new key.',
           },
         ],
-        links: [
-          { label: 'Read the transport specification', url: `${DOCS_BASE_URL}/transport` },
-          { label: 'Learn about WebRTC data channels', url: 'https://developer.mozilla.org/en-US/docs/Web/API/WebRTC_API/Using_data_channels' },
-        ],
-      },
-      {
-        key: 'certificate',
-        label: 'Trust the local certificate',
-        intro: 'Apps connected through local HTTPS interception must trust the certificate authority the AI VPN generates on your computer.',
-        sections: [
-          {
-            heading: 'When it is needed',
-            body: 'Only intercepted HTTPS apps need the certificate. Apps configured to call the local AI VPN API directly do not.',
-          },
-          {
-            heading: 'Certificate errors',
-            body: 'Open Connected apps, expand HTTPS certificate, trust the current certificate, and restart the affected app.',
-          },
-        ],
-        links: [{ label: 'Understand the local certificate', url: `${VPR_GUIDE_URL}#trust-the-local-https-certificate` }],
-      },
-      {
-        key: 'tee',
-        label: 'TEE-verified sellers',
-        intro: 'A Trusted Execution Environment can add hardware-backed confidentiality when a seller offers a verifiable TEE route.',
-        sections: [
-          {
-            heading: 'Verify the evidence',
-            body: 'Treat a TEE label as a claim to verify. Attestation must bind the hardware evidence to the workload, seller identity, and expected configuration.',
-          },
-          {
-            heading: 'Availability varies',
-            body: 'Not every seller or model runs in a TEE. Standard routes should be assumed visible to the seller unless stated and verified otherwise.',
-          },
-        ],
-        links: [
-          { label: 'Verify a seller’s TEE', url: `${DOCS_BASE_URL}/guides/verify-tee` },
-          { label: 'Read the TEE privacy guidance', url: `${VPR_GUIDE_URL}#tee-verified-sellers` },
-        ],
+        links: [{ label: 'Budgets and limits', url: `${GATEWAY_DOCS_URL}/budgets` }],
       },
     ],
   },
   {
     key: 'payments',
-    label: 'Credits & payments',
+    label: 'Funding',
     articles: [
       {
-        key: 'balance',
-        label: 'Add and understand credits',
-        intro: 'Credits are USDC on Base deposited for your AI VPN signing identity. Paid requests consume credits through bounded seller payment channels.',
+        key: 'funds',
+        label: 'Add funds',
+        intro: 'Add funds by card or USDC on Base. Sellers are paid from this balance as you use them.',
         sections: [
           {
-            heading: 'Available and reserved',
-            body: 'Available credits can open new channels or be withdrawn. Reserved credits are assigned to active channels but remain yours until authorized spending is settled.',
+            heading: 'In the app',
+            body: 'Home → Add funds opens the card checkout or a USDC deposit address. Deposits land in your balance automatically.',
           },
           {
-            heading: 'Funding methods',
-            body: 'The Add credits screen can offer card or USDC funding methods depending on location and currently enabled providers.',
+            heading: 'In your gateway',
+            body: 'Balance, spend and limits are shown in your gateway’s console, which can also add funds.',
           },
         ],
-        links: [
-          { label: 'Manage AI VPN credits', url: `${VPR_GUIDE_URL}#credits-and-payments` },
-          { label: 'Read the complete payments guide', url: `${DOCS_BASE_URL}/guides/payments` },
-          { label: 'Verify official USDC addresses', url: 'https://developers.circle.com/stablecoins/usdc-contract-addresses' },
-        ],
+        links: [{ label: 'Funding', url: `${GATEWAY_DOCS_URL}/funding` }],
       },
       {
-        key: 'channels',
-        label: 'Payment channels and activity',
-        intro: 'A paid session reserves a capped amount for one seller. Each request advances a cumulative authorization, so the seller can settle only up to the latest amount signed.',
+        key: 'signer',
+        label: 'Your signer key',
+        intro: 'The signer key authorizes payments to sellers for requests from this computer. Back it up from Settings → Wallet, or import one you already use.',
         sections: [
           {
-            heading: 'Channel switchovers',
-            body: 'When a channel budget is exhausted, the AI VPN normally settles it and opens another automatically. One retry may be enough during the switchover.',
+            heading: 'Keep a backup',
+            body: 'Anyone with the signer key can spend its balance. Store the backup somewhere safe and never share it.',
           },
-          {
-            heading: 'Inspect or close channels',
-            body: 'Open Activity to view locked amounts, settlement state, spending history, and cooperative or on-chain close actions.',
-          },
-        ],
-        links: [
-          { label: 'Understand payment channels', url: `${VPR_GUIDE_URL}#payment-channels-and-reserved-funds` },
-          { label: 'Protocol payment flow', url: `${DOCS_BASE_URL}/payments` },
-        ],
-      },
-      {
-        key: 'withdraw',
-        label: 'Withdraw unused credits',
-        intro: 'Open Credits and choose Withdraw unused credits. Only available balance can be withdrawn immediately.',
-        sections: [
-          {
-            heading: 'Reserved funds',
-            body: 'Credits reserved by active channels must be released through settlement or channel closure before they become withdrawable.',
-          },
-          {
-            heading: 'Unresponsive seller',
-            body: 'Use Activity to request an on-chain close, then follow the displayed grace-period instructions before withdrawing the released balance.',
-          },
-        ],
-        links: [{ label: 'Withdraw and release credits', url: `${VPR_GUIDE_URL}#withdraw-unused-credits` }],
-      },
-      {
-        key: 'identity',
-        label: 'Signer and funding wallet',
-        intro: 'The AI VPN signing identity authorizes protocol messages and bounded channel spending. It is separate from the wallet used to fund credits.',
-        sections: [
-          {
-            heading: 'Desktop key storage',
-            body: 'The desktop signing key is encrypted at rest using the operating system keychain. It does not need to hold normal wallet funds.',
-          },
-          {
-            heading: 'Bounded exposure',
-            body: 'A funding wallet can deposit for the signer without giving the AI VPN control of that wallet. Signed channel authorizations are seller-specific, capped, and time-limited.',
-          },
-        ],
-        links: [{ label: 'Signer security boundaries', url: `${DOCS_BASE_URL}/security#signing-identity-vs-funding-wallet` }],
-      },
-    ],
-  },
-  {
-    key: 'rewards',
-    label: 'Rewards',
-    articles: [
-      {
-        key: 'ants',
-        label: 'ANTS rewards and claims',
-        intro: 'Rewards shows ANTS attributed to eligible network usage on the selected chain. Availability and transferability depend on the deployed contracts and current network phase.',
-        sections: [
-          {
-            heading: 'Claiming',
-            body: 'When claims are available, the AI VPN opens a secure browser flow for the authorized wallet signature.',
-          },
-          {
-            heading: 'No guarantees',
-            body: 'A pending amount is not a promise of token value, future emissions, permanent eligibility, or immediate transferability.',
-          },
-        ],
-        links: [
-          { label: 'Understand AI VPN rewards', url: `${VPR_GUIDE_URL}#rewards` },
-          { label: 'Read the ANTS token overview', url: 'https://antseed.com/ants-token' },
         ],
       },
     ],
@@ -425,133 +198,34 @@ const HELP_TOPICS: HelpTopic[] = [
     label: 'Troubleshooting',
     articles: [
       {
-        key: 'no-peers',
-        label: 'No peers or models listed',
-        intro: 'Confirm the router is running and the Home status area is healthy, then allow a few seconds for peer discovery.',
+        key: 'no-response',
+        label: 'An app gets no response',
+        intro: 'Check Home: it says whether your gateway is running and reachable.',
         sections: [
           {
-            heading: 'Refresh and inspect',
-            body: 'Use Refresh models. If the catalog stays empty, enable Developer mode and open Available peers to inspect discovery directly.',
+            heading: 'Gateway not running',
+            body: 'The local gateway starts with the app and can take a minute while it finds peers. If it stays stopped, open Developer mode → Live logs from this page.',
           },
           {
-            heading: 'Check network controls',
-            body: 'Security software may be blocking peer connections. Antseed prefers encrypted TCP and uses WebRTC DataChannels as a fallback; WebRTC is not its only transport.',
+            heading: 'App still uses its old settings',
+            body: 'Restart the app or start a new session. Agents & apps shows Restart required next to apps that started before they were connected.',
+          },
+          {
+            heading: 'Out of funds',
+            body: 'Paid requests fail when the balance runs out. Add funds from Home, or check the key’s limits in your gateway.',
           },
         ],
-        links: [{ label: 'Troubleshoot missing peers and models', url: `${VPR_GUIDE_URL}#no-peers-or-models-are-listed` }],
+        links: [{ label: 'Gateway troubleshooting', url: `${GATEWAY_DOCS_URL}/troubleshooting` }],
       },
       {
-        key: 'app-connect',
-        label: "An app won't connect",
-        intro: 'Disconnect and reconnect the app from Connected apps, then restart it if the row requests a restart.',
+        key: 'report',
+        label: 'Report a problem',
+        intro: 'Bugs and questions are welcome on GitHub and in the community chat.',
         sections: [
           {
-            heading: 'Check overrides',
-            body: 'Confirm the app is not overriding the base URL or API settings written by the AI VPN.',
+            heading: 'What to include',
+            body: 'Include the app version, operating system, affected app, expected result, actual result, and redacted diagnostics.',
           },
-          {
-            heading: 'Check compatibility',
-            body: 'Confirm the selected model supports the API format used by the app, or follow its integration-specific setup guide.',
-          },
-        ],
-        links: [
-          { label: 'Troubleshoot a connected app', url: `${VPR_GUIDE_URL}#a-connected-app-does-not-send-requests` },
-          { label: 'Open integration-specific guides', url: INTEGRATIONS_URL },
-        ],
-      },
-      {
-        key: 'tls',
-        label: 'Certificate or SSL errors',
-        intro: 'An intercepted HTTPS app must trust the current certificate generated by the AI VPN.',
-        sections: [
-          {
-            heading: 'Trust and restart',
-            body: 'Open Connected apps, expand HTTPS certificate, trust the current certificate, and restart the affected app.',
-          },
-          {
-            heading: 'Old certificate',
-            body: 'If an older Antseed certificate is still trusted, trusting the current certificate replaces it for future intercepted connections.',
-          },
-        ],
-        links: [{ label: 'Fix certificate errors', url: `${VPR_GUIDE_URL}#an-app-reports-a-certificate-or-ssl-error` }],
-      },
-      {
-        key: 'payments',
-        label: 'Requests fail with payment errors',
-        intro: 'Open Credits and compare available balance with reserved balance. A paid channel cannot open without enough available credits for its capped authorization.',
-        sections: [
-          {
-            heading: 'Channel switchovers',
-            body: 'When a channel is exhausted, the AI VPN normally settles it and opens another automatically. Retry the request once before changing configuration.',
-          },
-          {
-            heading: 'Inspect Activity',
-            body: 'Use Activity to find channels that remain open, are settling, or are waiting for an on-chain close.',
-          },
-        ],
-        links: [{ label: 'Troubleshoot payment errors', url: `${VPR_GUIDE_URL}#requests-fail-with-payment-errors` }],
-      },
-      {
-        key: 'model-not-served',
-        label: '"Model is not served by this peer"',
-        intro: 'The app requested a model that the selected seller does not currently advertise.',
-        sections: [
-          {
-            heading: 'Refresh the route',
-            body: 'Re-select the model in the AI VPN. If the error persists, disconnect and reconnect the app to refresh its model and endpoint state.',
-          },
-          {
-            heading: 'Check the pin',
-            body: 'If the route is pinned, confirm that seller still offers the exact model or remove the pin to allow another eligible seller.',
-          },
-        ],
-        links: [{ label: 'Fix a model and seller mismatch', url: `${VPR_GUIDE_URL}#model-is-not-served-by-this-peer` }],
-      },
-      {
-        key: 'slow',
-        label: 'Responses are slow or time out',
-        intro: 'Seller performance and network paths vary. Try another eligible seller, or remove a hard seller pin so automatic routing can fail over.',
-        sections: [
-          {
-            heading: 'Automatic routes',
-            body: 'Retryable failures can cool down the current seller and move a model-only route to another eligible seller.',
-          },
-          {
-            heading: 'Large requests',
-            body: 'Large prompts and attachments take longer to upload. The floating activity pulse helps distinguish active transfer from a stalled request.',
-          },
-        ],
-        links: [{ label: 'Troubleshoot slow responses', url: `${VPR_GUIDE_URL}#responses-are-slow-or-time-out` }],
-      },
-      {
-        key: 'reserved',
-        label: 'Reserved credits stay unavailable',
-        intro: 'Reserved credits are assigned to an active payment channel and cannot be withdrawn until that channel settles or closes.',
-        sections: [
-          {
-            heading: 'Close the channel',
-            body: 'Open Activity and request a cooperative close when the seller is reachable. Otherwise request an on-chain close and follow the grace-period instructions.',
-          },
-        ],
-        links: [{ label: 'Release reserved credits', url: `${VPR_GUIDE_URL}#reserved-credits-remain-unavailable` }],
-      },
-      {
-        key: 'diagnostics',
-        label: 'Collect diagnostics and report a bug',
-        intro: 'Enable Developer mode from Help to reveal logs, peer discovery, connection details, configuration, and the diagnostic report action.',
-        sections: [
-          {
-            heading: 'Before sharing',
-            body: 'Review copied diagnostics for secrets or sensitive prompt content before posting them publicly.',
-          },
-          {
-            heading: 'Useful bug details',
-            body: 'Include the AI VPN version, operating system, affected app, expected result, actual result, and redacted diagnostics.',
-          },
-        ],
-        links: [
-          { label: 'Collect AI VPN diagnostics', url: `${VPR_GUIDE_URL}#collect-diagnostics` },
-          { label: 'Open a GitHub issue', url: GITHUB_ISSUES_URL },
         ],
       },
     ],
@@ -572,7 +246,6 @@ function nextArticle(topicKey: string, articleKey: string): { topicKey: string; 
 
 /** Diagnostic screens surfaced from Help — the only entry point for them. */
 const DIAGNOSTIC_ROUTES: Array<{ view: import('../../types').ViewName; label: string }> = [
-  { view: 'peers', label: 'Available peers' },
   { view: 'connection', label: 'Connection details' },
   { view: 'config', label: 'Configuration' },
 ];
@@ -601,14 +274,11 @@ function pageKey(page: HelpPage): string {
 const helpScrollByPage = new Map<string, number>();
 
 export function VprHelpView({ onSelectView }: Props) {
-  const { status: tunnelStatus, openPublicEndpointModal } = usePublicEndpointModal();
   const snap = useUiSelector((state) => ({
     connectBadgeLabel: state.connectBadge.label,
     networkHealth: state.ovDhtHealth,
-    proxyPort: state.ovProxyPort,
     peers: state.ovPeers,
     serviceCount: state.ovServiceCount,
-    modelLabel: state.vprRouteSelection.model?.label ?? null,
     devMode: state.devMode,
     configFormData: state.configFormData,
     configSaving: state.configSaving,
@@ -684,10 +354,9 @@ export function VprHelpView({ onSelectView }: Props) {
       .map((event) => `[${event.mode}] ${event.line}`)
       .join('\n');
     const report = [
-      `Antseed AI VPN v${appVersion}`,
-      `Status: ${snap.networkHealth} | ${snap.connectBadgeLabel} | Port ${snap.proxyPort}`,
+      `Antseed desktop v${appVersion}`,
+      `Status: ${snap.networkHealth} | Gateway ${snap.connectBadgeLabel}`,
       `Network: ${snap.peers} peers, ${snap.serviceCount} services`,
-      `Model: ${snap.modelLabel ?? 'none selected'}`,
       '',
       '--- Recent logs ---',
       recentLogs,
@@ -702,9 +371,8 @@ export function VprHelpView({ onSelectView }: Props) {
   function renderArticlePage(topic: HelpTopic, article: HelpArticle) {
     const next = nextArticle(topic.key, article.key);
     return (
-      <VprPage title={topic.label} onBack={() => goTo({ topicKey: topic.key, articleKey: null })}>
-      <div className={styles.stack}>
-        <h2 className={styles.title}>{article.label}</h2>
+      <VprPage title={article.label} large onBack={() => goTo({ topicKey: topic.key, articleKey: null })}>
+      <div className={`${styles.stack} ${styles.reading}`}>
         <VprCard className={styles.articleCard}>
           <p className={styles.paragraph}>{article.intro}</p>
           {article.sections.map((section) => (
@@ -760,9 +428,8 @@ export function VprHelpView({ onSelectView }: Props) {
 
   function renderTopicPage(topic: HelpTopic) {
     return (
-      <VprPage title="Help & Support" onBack={() => goTo({ topicKey: null, articleKey: null })}>
-      <div className={styles.stack}>
-        <h2 className={styles.title}>{topic.label}</h2>
+      <VprPage title={topic.label} large onBack={() => goTo({ topicKey: null, articleKey: null })}>
+      <div className={`${styles.stack} ${styles.reading}`}>
         <VprCard>
           {topic.articles.map((entry) => (
             <button
@@ -783,8 +450,8 @@ export function VprHelpView({ onSelectView }: Props) {
 
   function renderRootPage() {
     return (
-      <VprPage title="Help & Support" backFallback="credits">
-      <div className={styles.stack}>
+      <VprPage title="Help & Support" backFallback="preferences" subtitle="Ask the community, report a bug, or read the guides.">
+      <div className={`${styles.stack} ${styles.columns}`}>
 
         <div className={styles.section}>
           <p className={styles.sectionLabel}>Community</p>
@@ -814,7 +481,7 @@ export function VprHelpView({ onSelectView }: Props) {
         </div>
 
         <div className={styles.section}>
-          <p className={styles.sectionLabel}>AI VPN</p>
+          <p className={styles.sectionLabel}>Guides</p>
           <VprCard>
             {HELP_TOPICS.map((entry) => (
               <button
@@ -827,19 +494,12 @@ export function VprHelpView({ onSelectView }: Props) {
                 <HugeiconsIcon icon={ArrowRight01Icon} size={16} strokeWidth={2} className={styles.rowGlyph} />
               </button>
             ))}
-            <button type="button" className={styles.row} onClick={() => openExternal(VPR_GUIDE_URL)}>
+            <button type="button" className={styles.row} onClick={() => openExternal(DESKTOP_DOCS_URL)}>
               <span className={styles.rowText}>
-                <span className={styles.rowLabel}>Complete AI VPN guide</span>
-                <span className={styles.rowHint}>Full setup, security, payments and troubleshooting</span>
+                <span className={styles.rowLabel}>Desktop app guide</span>
+                <span className={styles.rowHint}>Setup, connected apps, funding and troubleshooting</span>
               </span>
               <HugeiconsIcon icon={ArrowUpRight01Icon} size={16} strokeWidth={2} className={styles.rowGlyph} />
-            </button>
-            <button type="button" className={styles.row} onClick={openPublicEndpointModal}>
-              <span className={styles.rowText}>
-                <span className={styles.rowLabel}>Internet-accessible endpoint</span>
-                <span className={styles.rowHint}>{tunnelStatus?.running ? 'Running — view URL, API key, or provider settings' : 'Set up ngrok or Cloudflare for Cursor and remote agents'}</span>
-              </span>
-              <HugeiconsIcon icon={ArrowRight01Icon} size={16} strokeWidth={2} className={styles.rowGlyph} />
             </button>
           </VprCard>
         </div>

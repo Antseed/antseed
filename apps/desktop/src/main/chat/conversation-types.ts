@@ -6,8 +6,6 @@
  * message format.
  */
 
-import type { ChatRouteMode } from './peer-selection.js';
-
 export type TextBlock = { type: 'text'; text: string };
 export type FileBlock = {
   type: 'file';
@@ -38,27 +36,17 @@ export type ToolResultBlock = {
 export type ContentBlock = TextBlock | FileBlock | ImageBlock | ThinkingBlock | ToolUseBlock | ToolResultBlock;
 
 export type AiMessageMeta = {
-  peerId?: string;
-  peerAddress?: string;
-  peerProviders?: string[];
-  peerReputation?: number;
-  peerCurrentLoad?: number;
-  peerMaxConcurrency?: number;
   provider?: string;
   service?: string;
-  /** Display name of the seller that served the reply, when known. */
+  /** The seller that answered, as the gateway reported it. */
+  peerId?: string;
   peerName?: string;
-  /** Routing service (`<peerId>@<serviceId>`) that chose the model; absent when the user chose it. */
-  router?: string;
   requestId?: string;
-  routeRequestId?: string;
   latencyMs?: number;
   inputTokens?: number;
   outputTokens?: number;
   totalTokens?: number;
   tokenSource?: 'usage' | 'estimated' | 'unknown';
-  inputUsdPerMillion?: number;
-  outputUsdPerMillion?: number;
   estimatedCostUsd?: number;
   outputImages?: number;
 };
@@ -79,13 +67,6 @@ export type AiConversation = {
   id: string;
   title: string;
   service: string;
-  provider?: string;
-  peerId?: string;
-  peerLabel?: string;
-  routeMode?: ChatRouteMode;
-  /** Seller that produced the latest assistant response. This is display-only;
-   * `peerId` remains the conversation's text route. */
-  lastResponsePeerId?: string;
   messages: AiChatMessage[];
   createdAt: number;
   updatedAt: number;
@@ -97,13 +78,6 @@ export type AiConversationSummary = {
   id: string;
   title: string;
   service: string;
-  provider?: string;
-  peerId?: string;
-  peerLabel?: string;
-  routeMode?: ChatRouteMode;
-  /** Seller that produced the latest assistant response. This is display-only;
-   * `peerId` remains the conversation's text route. */
-  lastResponsePeerId?: string;
   messageCount: number;
   createdAt: number;
   updatedAt: number;

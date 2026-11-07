@@ -227,6 +227,24 @@ test('store keeps keys hashed, syncs the tunnel env key, and records ledger entr
   }
 })
 
+test('gateway answers /healthz without a key and without logging a rejected sign-in', async () => {
+  const { store, cleanup } = tempDataDir()
+  const buyer = await fakeBuyer({ costUsdc: 0 })
+  const gateway = await startGateway(store, buyer.port)
+  try {
+    const health = await request(gateway.port, '/healthz')
+    assert.equal(health.status, 200)
+    assert.deepEqual(JSON.parse(health.body), { status: 'ok' })
+    assert.equal(gateway.logs.some((line) => line.includes('rejected')), false)
+    assert.equal((await request(gateway.port, '/v1/models')).status, 401)
+    assert.equal(gateway.logs.some((line) => line.includes('rejected authentication')), true)
+  } finally {
+    await gateway.stop()
+    await buyer.close()
+    cleanup()
+  }
+})
+
 test('gateway pays with the key\'s buyer identity and ignores the client\'s choice', async () => {
   const { store, cleanup } = tempDataDir()
   const buyer = await fakeBuyer({ costUsdc: 100_000 })

@@ -52,6 +52,7 @@ import {
   type AdaptiveRouteScore,
   type RouteRequestShape,
   type PeerInfo,
+  buildNetworkServiceOffers,
   type NetworkServiceOffer,
   type PeerMetadata,
   type ModelRoutingPreferences,
@@ -3826,11 +3827,42 @@ export class BuyerProxy {
     const responseHeaders = { 'content-type': 'application/json', 'x-antseed-request-id': randomUUID() }
     const peers = await this._getPeers()
     const peerById = new Map<string, PeerInfo>(peers.map((peer) => [peer.peerId, peer]))
+    // Lists what a request could be routed to. `?scope=network` is the console
+    // browsing everything on the network, usable or not.
+    const listPolicy = requestPolicy ?? (url.searchParams.get('scope') === 'network' ? null : {})
+    // Each model is planned once, among only the sellers offering it: a list
+    // holds hundreds of models, so planning across all peers takes over a second.
+    const sellersByModel = new Map<string, PeerInfo[]>()
+    if (listPolicy) {
+      for (const offer of buildNetworkServiceOffers(peers)) {
+        const peer = peerById.get(offer.peerId)
+        if (!peer) continue
+        const key = canonicalModelKey(offer.serviceId)
+        const sellers = sellersByModel.get(key)
+        if (!sellers) sellersByModel.set(key, [peer])
+        else if (!sellers.includes(peer)) sellers.push(peer)
+      }
+    }
+    const routable = new Map<string, Set<string>>()
+    const routableSellers = (serviceId: string, policy: RoutingPolicy): Set<string> => {
+      const key = canonicalModelKey(serviceId)
+      let sellers = routable.get(key)
+      if (!sellers) {
+        sellers = this._routableChatSellers(sellersByModel.get(key) ?? [], serviceId, policy)
+        routable.set(key, sellers)
+      }
+      return sellers
+    }
     const models = buildNetworkModels(peers, this._now(), {
       routingPreferences: this._routingPreferences,
       peerHealth: this._peerHealth,
-      ...(requestPolicy
-        ? { offerFilter: (offer: NetworkServiceOffer) => this._policyAllowsOffer(requestPolicy, peerById.get(offer.peerId), offer) }
+      ...(listPolicy
+        ? {
+            offerFilter: (offer: NetworkServiceOffer) => this._policyAllowsOffer(listPolicy, peerById.get(offer.peerId), offer)
+              // Routing's own answer for chat models, so limits only it applies
+              // (the price cap, a trust cut per model) can't list a model that fails.
+              && ((offer.type ?? 'text') !== 'text' || routableSellers(offer.serviceId, listPolicy).has(offer.peerId)),
+          }
         : {}),
     })
 
@@ -3933,11 +3965,37 @@ export class BuyerProxy {
    * the checks that judge a pinned `peer@model`: the model allow list, the
    * seller-level policy, a strict model route and the buyer's hard limits.
    */
+  /** Which of these sellers a chat request for this model could be routed to right now. */
+  private _routableChatSellers(peers: PeerInfo[], serviceId: string, requestPolicy: RoutingPolicy): Set<string> {
+    const { candidatePeers, routePlanByPeerId } = selectCandidatePeersForRouting(peers, null, serviceId, null, 'strict')
+    const plan = this._planModelRoutes({
+      modelPeers: candidatePeers,
+      modelPlans: routePlanByPeerId,
+      request: {
+        requestId: randomUUID(),
+        method: 'POST',
+        path: '/v1/chat/completions',
+        headers: { 'content-type': 'application/json' },
+        body: new TextEncoder().encode(JSON.stringify({ model: serviceId })),
+      },
+      requestProtocol: null,
+      requestedService: serviceId,
+      explicitProvider: null,
+      requiredParameters: [],
+      requestPolicy,
+      preferredPeerId: null,
+      deterministic: true,
+    })
+    return new Set(plan.verdicts.filter((verdict) => verdict.eligible).map((verdict) => verdict.peer.peerId))
+  }
+
   private _policyAllowsOffer(requestPolicy: RoutingPolicy, peer: PeerInfo | undefined, offer: NetworkServiceOffer): boolean {
     if (!peer || !policyAllowsModel(this._effectivePolicy(requestPolicy), offer.serviceId)) return false
     const facts = this._policyFacts(peer, offer)
     return pinnedPeerExclusionReasons(requestPolicy, facts, offer.serviceId).length === 0
-      && policyExclusionReasons(this._buyerHardPolicy(), facts).length === 0
+      // The whole buyer level, as routing applies it: a seller below the buyer's
+      // minimum trust can't be routed to, so listing it offers a model that fails.
+      && policyExclusionReasons(this._buyerPolicy(), facts).length === 0
   }
 
   private async _handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -4483,7 +4541,7 @@ export class BuyerProxy {
         error: {
           type: 'no_default_route',
           code: 'no_default_route',
-          message: `Model "${ROUTED_MODEL_ALIAS}" routes to the model selected in the AI VPN, but no route is set. `
+          message: `Model "${ROUTED_MODEL_ALIAS}" routes to the model selected in Antseed Desktop, but no route is set. `
             + 'Pick a model in the desktop app, or request "<peerId>@<model>" explicitly.',
           param: 'model',
         },

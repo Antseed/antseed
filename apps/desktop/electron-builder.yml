@@ -1,9 +1,11 @@
 appId: com.antseed.desktop
-productName: Antseed AI VPN
-# Keep the installed bundle/executable path stable across the visible rename.
-# The running old version performs the first update, so changing this in the
-# same release could strand macOS relaunches or move the Windows install path.
-executableName: AntSeed VPR
+productName: Antseed Desktop
+# Squirrel.Mac replaces the whole bundle in place and NSIS reuses the install
+# location it registered, so renaming the executable moves no install path.
+# The previous version's update watchdog (main.ts) waits for a process with its
+# own executable name; after this rename it won't find one and falls back to
+# kickstarting ShipIt only if Squirrel's state file is still there.
+executableName: Antseed Desktop
 copyright: Copyright © 2025-2026 Antseed
 electronVersion: 31.7.7
 npmRebuild: false
@@ -65,8 +67,6 @@ asarUnpack:
   - "node_modules/keytar/**"
 
 extraResources:
-  - from: build/system-proxy-profiles.json
-    to: system-proxy-profiles.json
   # NOTE: whisper binaries are shipped per-platform (see the mac/win/linux
   # extraResources blocks below). The tiny model is no longer bundled — the app
   # downloads it into userData on first transcription (voice-transcription.ts),
@@ -75,6 +75,8 @@ extraResources:
     to: skills/antseed-images
   - from: ../../skills/antseed-videos
     to: skills/antseed-videos
+  - from: ../../skills/antseed-ask
+    to: skills/antseed-ask
   - from: cli-dist/
     to: cli-dist/
     filter:
@@ -139,7 +141,7 @@ mac:
   category: public.app-category.developer-tools
   icon: assets/antseed-dock-icon.png
   extendInfo:
-    NSMicrophoneUsageDescription: AntStation uses your microphone to record voice messages for local transcription.
+    NSMicrophoneUsageDescription: Antseed Desktop uses your microphone to record voice messages for local transcription.
   identity: "Shahaf Antwarg (H3M5BXXQR2)"
   hardenedRuntime: true
   gatekeeperAssess: false
@@ -197,8 +199,9 @@ linux:
   icon: assets/antseed-dock-icon.png
   category: Development
   # Deterministic names (default deb naming uses the package name + amd64):
-  # Antseed-AI VPN-<version>-<x64|arm64>.<AppImage|deb>. The website download
-  # matcher and the alpha mirror both rely on this shape.
+  # Antseed-Desktop-<version>-<x64|arm64>.<AppImage|deb> (electron-builder.linux.cjs
+  # sets it). The website download matcher and the download proxy match by
+  # extension and arch only, so earlier names (Antseed-AI-VPN-…) still resolve.
   artifactName: "${productName}-${version}-${arch}.${ext}"
   # NOTE: arch is intentionally NOT pinned here (same reasoning as mac above).
   # CI builds each arch on a matching native runner (ubuntu-latest /

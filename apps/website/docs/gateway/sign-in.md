@@ -20,7 +20,7 @@ Console: http://localhost:8379/console
 The console has no owner yet. Get a one-time setup link with `antseed gateway console-link`.
 ```
 
-The desktop app's **Internet-accessible endpoint** publishes a console too. While the tunnel runs, its window shows **Gateway console** under **Connection details**: click **Claim console** to open a one-time setup link in your browser. Once claimed, the row shows **Open console** instead. `antseed gateway console-link` on the same computer works as well.
+The [desktop app](/docs/desktop) runs a local gateway too. The first time, its **Manage API keys** button opens that gateway's one-time setup link in your browser; after that it opens the console. `antseed gateway console-link` on the same computer works as well.
 
 The setup link itself is never printed at start-up, because service output ends up in logs other people may read. Get it on the gateway machine (with `sudo` on a server made by the [installer](/docs/gateway/server)):
 

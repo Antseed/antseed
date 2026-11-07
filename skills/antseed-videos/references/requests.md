@@ -4,7 +4,7 @@ Every command uses `curl` and `jq` against the local buyer proxy. Build JSON wit
 
 ```bash
 proxy_url="${proxy_url:-${ANTSEED_PROXY_URL:-http://127.0.0.1:8377}}"
-auth='authorization: Bearer antseed-desktop'
+auth="authorization: Bearer ${ANTSEED_API_KEY:-antseed-desktop}"
 ```
 
 ## Catalog

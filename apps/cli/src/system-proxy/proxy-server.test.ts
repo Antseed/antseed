@@ -1044,7 +1044,7 @@ test('Proxy: rewrites a 402 body into a plain-text out-of-credits notice', { tim
       assert.ok(result.headers['content-type']?.includes('text/plain'), 'body is plain text, not JSON')
       const text = result.body.toString('utf8')
       assert.ok(text.includes('out of credits'), 'notice tells the user what happened')
-      assert.ok(text.includes('AntSeed app'), 'notice tells the user where to fix it')
+      assert.ok(text.includes('Antseed Desktop'), 'notice tells the user where to fix it')
       assert.ok(!text.includes('payment_required'), 'raw error JSON never reaches the client')
       assert.ok(!text.includes('{'), 'no JSON syntax leaks into the notice')
     } finally {

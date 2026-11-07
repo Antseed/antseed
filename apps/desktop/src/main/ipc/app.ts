@@ -1,20 +1,16 @@
 /**
  * IPC surface for app-level queries: version and locale, first-run setup
- * state, the signing identity, voice transcription, and price references.
+ * state, the signing identity, and voice transcription.
  */
 import { ipcMain } from 'electron';
 import { stopPaymentsPortal } from '../payments/portal.js';
-import { stakingSessions } from '../staking/portal.js';
+import { ensureLocalGateway, stopLocalGateway } from '../gateway/service.js';
 import {
   getAppSetupStatus,
 } from '../app-context.js';
 import {
-  getOpenRouterReferencePrices,
-} from '../billing/openrouter-catalog.js';
-import {
   ensureSecureIdentity,
   exportIdentityPrivateKeyHex,
-  getSecureIdentity,
   importIdentityPrivateKeyHex,
 } from '../identity.js';
 import {
@@ -158,25 +154,6 @@ export function registerAppIpc(): void {
     return { ok: true };
   });
 
-  ipcMain.handle('openrouter:reference-prices', () => getOpenRouterReferencePrices());
-
-  ipcMain.handle('identity:get', async () => {
-    try {
-      await ensureSecureIdentity();
-      const identity = getSecureIdentity();
-      if (!identity) {
-        return { ok: false, data: null, error: 'Identity not available (safeStorage may not be ready)' };
-      }
-      return {
-        ok: true,
-        data: { peerId: identity.peerId },
-        error: null,
-      };
-    } catch (err) {
-      return { ok: false, data: null, error: err instanceof Error ? err.message : String(err) };
-    }
-  });
-
   ipcMain.handle('identity:export-key', async () => {
     try {
       await ensureSecureIdentity();
@@ -209,14 +186,13 @@ export function registerAppIpc(): void {
         return { ok: false, error: 'Private key must be a string' };
       }
       await ensureSecureIdentity();
-      const result = await stakingSessions.reset(async () => {
-        const imported = await importIdentityPrivateKeyHex(rawKey);
-        if (imported.ok) await stopPaymentsPortal();
-        return imported;
-      });
+      const result = await importIdentityPrivateKeyHex(rawKey);
       if (result.ok) {
+        await stopPaymentsPortal();
         // Balances cached for the previous signer no longer apply.
         invalidateCreditsCache();
+        // The local gateway's buyer signs with the identity it was started with.
+        void stopLocalGateway().then(() => ensureLocalGateway()).catch(() => undefined);
       }
       return result;
     } catch (err) {

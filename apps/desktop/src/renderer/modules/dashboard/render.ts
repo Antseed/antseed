@@ -6,7 +6,6 @@ import {
   formatInt,
   formatPercent,
   formatLatency,
-  formatEndpoint,
 } from '../../core/format';
 import { normalizeReputationScore } from '../../core/peer-utils';
 
@@ -186,19 +185,13 @@ export function initDashboardRenderModule({
   populateSettingsForm,
 }: DashboardRenderModuleOptions) {
   function renderOfflineState(message: string): void {
-    uiState.peersMessage = message;
     uiState.configMessage = { text: message, type: 'info' };
     uiState.networkAlert = 'none';
     uiState.dhtNodeCount = 0;
 
-    uiState.ovNodeState = 'offline';
     uiState.ovPeers = '0';
     uiState.ovDhtHealth = 'Down';
-    uiState.ovProxyPort = '-';
     uiState.ovServiceCount = '0';
-    uiState.ovLastScan = 'n/a';
-    uiState.ovPeersCount = '0';
-    uiState.overviewPeers = [];
     uiState.lastPeers = [];
 
     uiState.connectionStatus = message;
@@ -206,7 +199,6 @@ export function initDashboardRenderModule({
     uiState.connectionSources = message;
     uiState.connectionNotes = message;
 
-    uiState.overviewBadge = { tone: 'idle', label: 'Idle' };
     uiState.connectionMeta = { tone: 'idle', label: 'offline' };
 
     notifyUiStateChanged();
@@ -237,7 +229,7 @@ export function initDashboardRenderModule({
     const daemonChannelDetails = safeArray(daemonStateRoot?.activeChannelDetails);
     const daemonDetailsCount = daemonChannelDetails.length;
 
-    const buyerRuntimeState = isModeRunning('connect') ? 'connected' : 'offline';
+    const buyerRuntimeState = isModeRunning('gateway') ? 'connected' : 'offline';
     const dht = networkHealth(stats, peers.length);
     // Network stats are owned by the main process and keep the last DHT
     // snapshot after the buyer runtime stops, so the footer would keep saying
@@ -258,27 +250,11 @@ export function initDashboardRenderModule({
     uiState.dhtNodeCount = safeNumber(stats.dhtNodeCount, 0);
 
     // Overview stats
-    uiState.ovNodeState = buyerRuntimeState;
     uiState.ovPeers = formatInt(peers.length);
     uiState.ovDhtHealth = ovDhtHealth;
-    uiState.ovProxyPort = proxyPort > 0 ? String(proxyPort) : '-';
     uiState.ovServiceCount = formatInt(serviceCount);
-    uiState.ovLastScan = formatRelativeTime(stats.lastScanAt);
-    uiState.ovPeersCount = formatInt(peers.length);
-    uiState.overviewBadge = {
-      tone: buyerRuntimeState === 'offline' ? 'idle' : dht.tone,
-      label: `${buyerRuntimeState.toUpperCase()} • DHT ${dht.label}`,
-    };
-    uiState.overviewPeers = peers.slice(0, 6);
-
     // Peers
     uiState.lastPeers = peers;
-    if (networkOk) {
-      uiState.peersMessage = `Peer visibility merged from daemon and DHT. Last scan: ${formatRelativeTime(stats.lastScanAt)}`;
-    } else {
-      const msg = results.network.error ?? results.peers.error ?? 'network unavailable';
-      uiState.peersMessage = `Unable to load peers: ${msg}`;
-    }
 
     // Connection
     if (results.status.ok) {
@@ -342,8 +318,6 @@ export function initDashboardRenderModule({
     if (results.config.ok) {
       const config = (configPayload as Record<string, unknown> | null)?.config ?? configPayload;
       populateSettingsForm(config);
-
-      const pluginCount = safeArray((config as Record<string, unknown> | null)?.plugins).length;
       uiState.configMessage = { text: 'Config loaded from config.json', type: 'info' };
     } else {
       uiState.configMessage = { text: `Unable to load config: ${results.config.error ?? 'unknown error'}`, type: 'error' };

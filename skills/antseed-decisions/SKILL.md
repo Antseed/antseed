@@ -25,7 +25,7 @@ Ask several questions in one call; they are evaluated in parallel against the sa
 
 - Antseed Desktop or `antseed buyer start` must be running on CLI 0.1.161 or later.
 - The buyer must have enough deposited USDC for an eligible seller serving the model.
-- Buyer endpoint: use `$ANTSEED_PROXY_URL` when it is set (Antseed Desktop and `pnpm sandbox` set it to the active buyer proxy); otherwise `http://127.0.0.1:8377`. Never hard-code a port in commands; always go through `$proxy_url`.
+- Buyer endpoint: use `$ANTSEED_PROXY_URL` when it is set (Antseed Desktop sets it to its gateway, with the key in `$ANTSEED_API_KEY`; `pnpm sandbox` sets it to the active buyer proxy); otherwise `http://127.0.0.1:8377`. Never hard-code a port in commands; always go through `$proxy_url`.
 
 ## Parameters
 
@@ -49,7 +49,7 @@ Always fetch the current decision catalog before sending:
 ```bash
 proxy_url="${proxy_url:-${ANTSEED_PROXY_URL:-http://127.0.0.1:8377}}"
 curl --fail-with-body \
-  -H 'authorization: Bearer antseed-desktop' \
+  -H "authorization: Bearer ${ANTSEED_API_KEY:-antseed-desktop}" \
   "$proxy_url/v1/models?type=decisions"
 ```
 
@@ -68,7 +68,7 @@ trap 'rm -f "$response_file"' EXIT
 
 curl --fail-with-body "$proxy_url/v1/systemone" \
   -H 'content-type: application/json' \
-  -H 'authorization: Bearer antseed-desktop' \
+  -H "authorization: Bearer ${ANTSEED_API_KEY:-antseed-desktop}" \
   --data-binary "$(jq -n \
     --arg model "$model" \
     --arg state "$state" \
@@ -123,7 +123,7 @@ The official TypeSafe Python and JavaScript clients work unchanged against the b
 
 ```bash
 export TYPESAFE_BASE_URL="${ANTSEED_PROXY_URL:-http://127.0.0.1:8377}"
-export TYPESAFE_API_KEY=antseed-desktop
+export TYPESAFE_API_KEY="${ANTSEED_API_KEY:-antseed-desktop}"
 ```
 
 ## Safety and Output Rules

@@ -210,7 +210,7 @@ function WhatTheSkillDoes() {
 const AGENT_FAQ = [
   {
     q: 'Does my agent need an account or API key?',
-    a: 'No account, whether you run the AI VPN or the Antseed CLI. The local endpoint does not validate a key, but most agent SDKs want a non-empty value, so use a placeholder like <code>antseed</code>. Only a public endpoint you publish from the Agents view uses a real, generated key.',
+    a: 'No account, whether you run Antseed Desktop or the Antseed CLI. The local endpoint does not validate a key, but most agent SDKs want a non-empty value, so use a placeholder like <code>antseed</code>. Only a public endpoint you publish from the Agents view uses a real, generated key.',
   },
   {
     q: 'Which agents work with Antseed?',
@@ -218,7 +218,7 @@ const AGENT_FAQ = [
   },
   {
     q: 'My agent runs on a server. Can it still use Antseed?',
-    a: "Yes. The simplest way is to install the CLI on that server and start the endpoint next to the agent, so it talks to <code>localhost:8377</code> as usual. If the agent must reach an endpoint on a different machine, publish an authenticated endpoint from the AI VPN's Agents view, using ngrok or Cloudflare, and swap in the URL and key it shows. <a href=\"/docs/tunnels\">Public HTTPS tunnels guide →</a> <a href=\"/docs/faq\">More questions in the FAQ →</a>",
+    a: "Yes. The simplest way is to install the CLI on that server and start the endpoint next to the agent, so it talks to <code>localhost:8377</code> as usual. If the agent must reach an endpoint on a different machine, publish an authenticated endpoint with <code>antseed tunnel start</code>, using ngrok or Cloudflare, and swap in the URL and key it shows. <a href=\"/docs/tunnels\">Public HTTPS tunnels guide →</a> <a href=\"/docs/faq\">More questions in the FAQ →</a>",
   },
 ];
 
@@ -273,7 +273,7 @@ export default function AgentsPage(): JSX.Element {
       <WhatTheSkillDoes />
       <AgentPrivacy />
       <AgentFaq />
-      <FinalCta title="Run your agents on your terms." sub="Give your agent the skill, or download the AI VPN and connect it yourself.">
+      <FinalCta title="Run your agents on your terms." sub="Give your agent the skill, or download Antseed Desktop and connect it yourself.">
         <DownloadButton variant="white" />
         <SkillChip dark />
       </FinalCta>
