@@ -6,7 +6,7 @@ import { parseArgs } from 'node:util';
 import { Wallet } from 'ethers';
 import { CHAIN_CONFIGS, ChannelsClient } from '@antseed/node';
 import { generateWorkerEncryptionKey, type WorkerEncryptionKey } from '@antseed/node/worker-e2e';
-import { PoolWorker, trustedChannelVerifier, type ChannelVerifier } from './worker.js';
+import { PoolWorker, queryWorkerStats, trustedChannelVerifier, type ChannelVerifier } from './worker.js';
 
 const USAGE = `Usage: antseed-pool-worker --pool <wss://url> --services <service[=localModel],...> [options]
 
@@ -87,13 +87,21 @@ async function main(): Promise<void> {
     process.stdout.write(USAGE);
     process.exit(values.help ? 0 : 1);
   }
+  if (values.stats) {
+    const stats = await queryWorkerStats(values.pool, loadOrCreateKey(values['key-file']!));
+    const usdc = (units: string): string => (Number(units) / 1e6).toFixed(6);
+    console.log(`worker address (payouts go here): ${stats.address}`);
+    console.log(`earned today ${usdc(stats.earnedToday)} · 7 days ${usdc(stats.earnedLast7Days)} · total ${usdc(stats.earnedTotal)} USDC`);
+    console.log(`paid ${usdc(stats.paidTotal)} · pending ${usdc(stats.pending)} USDC · ${stats.requestsTotal} requests`);
+    return;
+  }
   const concurrency = Number.parseInt(values.concurrency!, 10);
   if (!Number.isInteger(concurrency) || concurrency < 1) throw new Error('--concurrency must be a positive whole number');
 
   const worker = new PoolWorker({
     poolUrl: values.pool,
     baseUrl: values['base-url']!,
-    services: values.services ? parseServices(values.services) : {},
+    services: parseServices(values.services!),
     privateKey: loadOrCreateKey(values['key-file']!),
     encryptionKey: loadOrCreateEncryptionKey(`${values['key-file']!}.p256`),
     channelVerifier: channelVerifier(values['chain-id']!, values['rpc-url'], values['channels-address']),
@@ -102,16 +110,6 @@ async function main(): Promise<void> {
   });
   console.log(`worker address (payouts go here): ${worker.address}`);
   worker.start();
-
-  if (values.stats) {
-    await new Promise((resolve) => setTimeout(resolve, 1_500));
-    const stats = await worker.requestStats();
-    const usdc = (units: string): string => (Number(units) / 1e6).toFixed(6);
-    console.log(`earned today ${usdc(stats.earnedToday)} · 7 days ${usdc(stats.earnedLast7Days)} · total ${usdc(stats.earnedTotal)} USDC`);
-    console.log(`paid ${usdc(stats.paidTotal)} · pending ${usdc(stats.pending)} USDC · ${stats.requestsTotal} requests`);
-    worker.stop();
-    return;
-  }
 
   const shutdown = (): void => {
     worker.stop();

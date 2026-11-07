@@ -16,10 +16,11 @@ const MAX_FORGOTTEN_WORKER_REQUESTS = 16_384;
  */
 const MAX_COMPLETED_WORKER_REQUESTS = 16_384;
 /**
- * Worker requests per seller that verified and were counted but are not yet
- * fully signed (a NeedAuth or post-response signing capped at the reserve
- * ceiling). They are never evicted: the remainder is still owed to their
- * worker. Past this many the buyer stops sending that seller worker requests.
+ * Worker requests per seller that verified but are not yet fully signed: not
+ * counted yet, or counted with a remainder (a NeedAuth or post-response
+ * signing capped at the reserve ceiling). They are never evicted: their cost
+ * is still owed to their worker. Past this many the buyer stops sending that
+ * seller worker requests.
  */
 const MAX_OWED_WORKER_REQUESTS = 4_096;
 /** Per pool seller: its other (non-worker) requests a NeedAuth may name, oldest dropped first. */
@@ -37,6 +38,8 @@ export interface WorkerDelivery {
   /** The recipient whose sealed answer verified: its signed amount is attributed to it. */
   worker?: string;
   state: 'pending' | 'verified' | 'failed';
+  /** Sent as a free request: a verified answer owes nothing. */
+  free?: boolean;
   usage?: WorkerUsage;
   waiters: Array<() => void>;
 }
@@ -63,16 +66,17 @@ export class WorkerDeliveryTracker {
   private readonly _poolSellerRequests = new Map<string, Set<string>>();
 
   /**
-   * `owes(requestId)` tells whether a counted request still has part of its
-   * cost unsigned (the payment manager's accounting). Such a verified record
-   * stays until it is paid in full: evicting it as completed would refuse
-   * the remainder and lose its worker's attribution.
+   * `owes(requestId)` tells whether a request's cost is not yet fully signed:
+   * not counted yet, or counted with a remainder (the payment manager's
+   * accounting). Such a verified record stays until it is paid in full:
+   * evicting it as completed would refuse its cost and lose its worker's
+   * attribution.
    */
   constructor(private readonly _owes: (requestId: string) => boolean = () => false) {}
 
-  /** A verified answer whose counted cost is not yet fully signed. */
+  /** A verified paid answer whose cost is not yet fully signed. */
   private _owed(requestId: string, delivery: WorkerDelivery): boolean {
-    return delivery.state === 'verified' && this._owes(requestId);
+    return delivery.state === 'verified' && !delivery.free && this._owes(requestId);
   }
 
   get(requestId: string): WorkerDelivery | undefined {
@@ -86,7 +90,7 @@ export class WorkerDeliveryTracker {
   }
 
   /** A request was encrypted for these pool workers; it is pending until recordDelivery. */
-  recordAttribution(sellerPeerId: string, requestId: string, workers: string | readonly string[]): void {
+  recordAttribution(sellerPeerId: string, requestId: string, workers: string | readonly string[], free = false): void {
     this._workerSellers.add(sellerPeerId);
     this._poolSellerRequests.get(sellerPeerId)?.delete(requestId);
     const recipients = (typeof workers === 'string' ? [workers] : [...workers]).map((w) => w.toLowerCase());
@@ -94,6 +98,7 @@ export class WorkerDeliveryTracker {
     const delivery = this._deliveries.get(requestId);
     if (delivery && delivery.sellerPeerId === sellerPeerId) {
       delivery.recipients = recipients;
+      delivery.free = free;
       delete delivery.worker;
       delivery.state = 'pending';
       delete delivery.usage;
@@ -125,13 +130,13 @@ export class WorkerDeliveryTracker {
     // The buyer is sending this id again: the new record gates its payment from here on.
     this._forgotten.get(sellerPeerId)?.delete(requestId);
     this._completed.get(sellerPeerId)?.delete(requestId);
-    this._deliveries.set(requestId, { sellerPeerId, recipients, state: 'pending', waiters: [] });
+    this._deliveries.set(requestId, { sellerPeerId, recipients, state: 'pending', free, waiters: [] });
   }
 
   /**
-   * Make room by retiring the oldest verified record that owes nothing, else
-   * the oldest failed one, else the oldest pending one. A verified record
-   * whose counted cost is not fully signed is never evicted. Retiring never
+   * Make room by retiring the oldest verified record that owes nothing (paid
+   * in full, or free), else the oldest failed one, else the oldest pending
+   * one. A verified record whose cost is not fully signed is never evicted. Retiring never
    * forgets it was a worker request (see retire).
    */
   private _evict(): void {

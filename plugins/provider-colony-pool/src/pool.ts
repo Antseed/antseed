@@ -583,9 +583,7 @@ export class ColonyPool {
     const cancel = (error: Error, failure?: { reason: string; bench: boolean }): void => {
       if (table.get(dispatchId) !== entry) return;
       this.sendFrame(worker.ws, { t: 'cancel', id: dispatchId });
-      this.finish(table, dispatchId);
-      if (failure) this.recordDispatch(worker, entry, false, failure);
-      handlers.onError(error);
+      this.failDispatch(worker, dispatchId, entry, error, failure);
     };
     const onAbort = (): void => cancel(new Error('Request aborted'));
     const arm = (ms: number, message: string, failure: { reason: string; bench: boolean }): void => {
@@ -627,6 +625,13 @@ export class ColonyPool {
     return dispatchId;
   }
 
+  /** End a failed dispatch: clear it, count it against the worker when `failure` says so, and tell the caller. */
+  private failDispatch(worker: ConnectedWorker, dispatchId: string, entry: InFlight, error: Error, failure?: { reason: string; bench: boolean }): void {
+    this.finish(worker.inflight, dispatchId);
+    if (failure) this.recordDispatch(worker, entry, false, failure);
+    entry.handlers.onError(error);
+  }
+
   private finish(table: Map<string, InFlight>, dispatchId: string): void {
     const entry = table.get(dispatchId);
     if (entry?.timer) clearTimeout(entry.timer);
@@ -651,6 +656,14 @@ export class ColonyPool {
         return;
       }
       if (!worker) {
+        if (frame.t === 'stats-hello') {
+          clearTimeout(helloTimer);
+          const address = this.signer(ws, nonce, frame);
+          if (!address) return;
+          this.sendFrame(ws, { t: 'stats', id: 'stats', stats: this.opts.ledger.stats(address) });
+          ws.close(1000, 'stats sent');
+          return;
+        }
         if (frame.t !== 'hello') return;
         clearTimeout(helloTimer);
         worker = this.authenticate(ws, nonce, frame);
@@ -665,7 +678,8 @@ export class ColonyPool {
     ws.on('error', () => ws.terminate());
   }
 
-  private authenticate(ws: WebSocket, nonce: string, hello: Extract<WorkerFrame, { t: 'hello' }>): ConnectedWorker | null {
+  /** The allowed worker address that signed the challenge, or null once the connection is rejected. */
+  private signer(ws: WebSocket, nonce: string, hello: { address: string; signature: string }): string | null {
     let address: string;
     try {
       address = verifyMessage(workerAuthMessage(this.opts.poolId, nonce), hello.signature).toLowerCase();
@@ -680,6 +694,12 @@ export class ColonyPool {
       this.reject(ws, 'worker is not on this pool\'s allow-list');
       return null;
     }
+    return address;
+  }
+
+  private authenticate(ws: WebSocket, nonce: string, hello: Extract<WorkerFrame, { t: 'hello' }>): ConnectedWorker | null {
+    const address = this.signer(ws, nonce, hello);
+    if (!address) return null;
     const certificate: WorkerKeyCertificate = {
       worker: address,
       key: hello.encryption.key.toLowerCase(),
@@ -953,9 +973,7 @@ export class ColonyPool {
         entry.bytes += data.length;
         if (entry.bytes > entry.maxBytes) {
           this.sendFrame(worker.ws, { t: 'cancel', id: frame.id });
-          this.finish(worker.inflight, frame.id);
-          this.recordDispatch(worker, entry, false, { reason: 'oversize', bench: false });
-          entry.handlers.onError(new Error(`Worker ${worker.address} sent more than ${entry.maxBytes} bytes`));
+          this.failDispatch(worker, frame.id, entry, new Error(`Worker ${worker.address} sent more than ${entry.maxBytes} bytes`), { reason: 'oversize', bench: false });
           return;
         }
         entry.touch();
@@ -977,13 +995,12 @@ export class ColonyPool {
       case 'response-error': {
         const entry = worker.inflight.get(frame.id);
         if (!entry) return;
-        this.finish(worker.inflight, frame.id);
         // Workers refuse a request (its channel, its binding, their capacity) before
         // `accepted`, and fail one they took (the model threw or timed out) after it.
         // Only the second is the worker's fault: a refusal the buyer caused never
         // counts against it, or anyone could sink a Mac's rank with bad requests.
-        if (entry.accepted) this.recordDispatch(worker, entry, false, { reason: 'worker-error', bench: !entry.started });
-        entry.handlers.onError(new Error(`Worker ${worker.address}: ${frame.message}`));
+        const failure = entry.accepted ? { reason: 'worker-error', bench: !entry.started } : undefined;
+        this.failDispatch(worker, frame.id, entry, new Error(`Worker ${worker.address}: ${frame.message}`), failure);
         return;
       }
       case 'attestation':
@@ -1001,10 +1018,8 @@ export class ColonyPool {
     if (this.workers.get(worker.address) === worker) this.workers.delete(worker.address);
     this.opts.ledger.recordDisconnect(worker.connectionId);
     for (const [dispatchId, entry] of [...worker.inflight]) {
-      this.finish(worker.inflight, dispatchId);
       // Dropping a request before answering it benches the worker; mid-response it only counts against it.
-      this.recordDispatch(worker, entry, false, { reason: 'disconnect', bench: !entry.started });
-      entry.handlers.onError(new Error(`Worker ${worker.address} disconnected`));
+      this.failDispatch(worker, dispatchId, entry, new Error(`Worker ${worker.address} disconnected`), { reason: 'disconnect', bench: !entry.started });
     }
     this.log(`worker ${worker.address} left`);
     this.emitChangeIfNeeded();

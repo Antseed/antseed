@@ -141,6 +141,13 @@ export interface StatsRequestFrame {
   id: string;
 }
 
+/** Answers the challenge instead of `hello`: a read-only stats query that never joins or replaces the serving connection. */
+export interface StatsHelloFrame {
+  t: 'stats-hello';
+  address: string;
+  signature: string;
+}
+
 export type PoolFrame = ChallengeFrame | WelcomeFrame | RequestFrame | CancelFrame | StatsFrame | ErrorFrame | AttestFrame;
 export type WorkerFrame =
   | HelloFrame
@@ -151,6 +158,7 @@ export type WorkerFrame =
   | ResponseEndFrame
   | ResponseErrorFrame
   | StatsRequestFrame
+  | StatsHelloFrame
   | AttestationFrame;
 
 /** A worker's earnings as the pool's ledger records them. Amounts are USDC base units (6 decimals) as strings. */
@@ -228,6 +236,8 @@ export function parseWorkerFrame(raw: string): WorkerFrame | null {
       return typeof id === 'string' && typeof value['message'] === 'string' ? value as unknown as ResponseErrorFrame : null;
     case 'stats-request':
       return typeof id === 'string' ? value as unknown as StatsRequestFrame : null;
+    case 'stats-hello':
+      return typeof value['address'] === 'string' && typeof value['signature'] === 'string' ? value as unknown as StatsHelloFrame : null;
     case 'attestation':
       return isWorkerAttestation(value['attestation']) ? value as unknown as AttestationFrame : null;
     default:

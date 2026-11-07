@@ -136,12 +136,43 @@ export function checkRequestBody(body: Record<string, unknown>): Record<string, 
  * encrypted requests from a local OpenAI-compatible model server. The pool
  * never sees prompts or answers.
  */
+/**
+ * Ask a pool for a worker's earnings on a connection of its own, which never
+ * joins the pool, so a worker serving under the same key keeps its connection.
+ */
+export function queryWorkerStats(poolUrl: string, privateKey: string, timeoutMs = 10_000): Promise<WorkerStats> {
+  const wallet = new Wallet(privateKey);
+  const ws = new WebSocket(poolUrl);
+  return new Promise<WorkerStats>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('Pool did not answer the stats request')), timeoutMs);
+    const done = (err: Error | null, stats?: WorkerStats): void => {
+      clearTimeout(timer);
+      if (err) reject(err);
+      else resolve(stats!);
+    };
+    ws.on('message', (data, isBinary) => {
+      const frame = isBinary ? null : parsePoolFrame(data.toString());
+      if (frame?.t === 'challenge') {
+        wallet.signMessage(workerAuthMessage(frame.pool, frame.nonce)).then(
+          (signature) => ws.send(JSON.stringify({ t: 'stats-hello', address: wallet.address, signature })),
+          (err: unknown) => done(err as Error),
+        );
+      } else if (frame?.t === 'stats') {
+        done(null, frame.stats);
+      } else if (frame?.t === 'error') {
+        done(new Error(frame.message));
+      }
+    });
+    ws.on('error', (err) => done(err));
+    ws.on('close', () => done(new Error('Pool closed the connection before sending stats')));
+  }).finally(() => ws.close());
+}
+
 export class PoolWorker {
   private readonly opts: PoolWorkerOptions;
   private readonly wallet: Wallet;
   private ws: WebSocket | null = null;
   private readonly active = new Map<string, AbortController>();
-  private readonly statsWaiters = new Map<string, (stats: WorkerStats) => void>();
   private stopped = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private backoffMs = 1_000;
@@ -188,26 +219,6 @@ export class PoolWorker {
   setPaused(paused: boolean): void {
     this.paused = paused;
     this.send({ t: 'services', services: paused ? [] : Object.keys(this.opts.services) });
-  }
-
-  /** Ask the pool for this worker's earnings. */
-  requestStats(timeoutMs = 10_000): Promise<WorkerStats> {
-    const id = Math.random().toString(36).slice(2);
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.statsWaiters.delete(id);
-        reject(new Error('Pool did not answer the stats request'));
-      }, timeoutMs);
-      this.statsWaiters.set(id, (stats) => {
-        clearTimeout(timer);
-        resolve(stats);
-      });
-      if (!this.send({ t: 'stats-request', id })) {
-        clearTimeout(timer);
-        this.statsWaiters.delete(id);
-        reject(new Error('Not connected to the pool'));
-      }
-    });
   }
 
   private connect(): void {
@@ -281,10 +292,6 @@ export class PoolWorker {
         return;
       case 'cancel':
         this.active.get(frame.id)?.abort();
-        return;
-      case 'stats':
-        this.statsWaiters.get(frame.id)?.(frame.stats);
-        this.statsWaiters.delete(frame.id);
         return;
       case 'error':
         this.log(`pool error: ${frame.message}`);

@@ -923,6 +923,17 @@ describe('BuyerPaymentManager', () => {
       expect(mux.sentSpendingAuths).toHaveLength(0);
     });
 
+    it('still pays a verified answer whose NeedAuth comes after later requests filled the cache', async () => {
+      const { needAuth, sellerPeerId } = await setup('seller-pool-deferred');
+      manager.recordWorkerDelivery('req-pool', usage);
+      // 600 later worker requests would push a record out; a verified answer not yet paid is kept.
+      for (let i = 0; i < 600; i++) manager.recordWorkerAttribution(sellerPeerId, `req-later-${i}`, worker);
+      await needAuth();
+      expect(mux.sentSpendingAuths).toHaveLength(1);
+      const sent = mux.sentSpendingAuths[0] as { metadata: string };
+      expect(decodeWorkerTail(sent.metadata)).toEqual([{ worker, cumulativeAmount: 9000n }]);
+    });
+
     it('refuses a NeedAuth from another seller naming a worker request', async () => {
       await setup('seller-pool-owner');
       manager.recordWorkerDelivery('req-pool', usage);
@@ -1061,7 +1072,7 @@ describe('BuyerPaymentManager', () => {
       const sellerPeerId = fakePeerId('seller-pool-healthy');
       // Free (verified, never billed) answers, far past the 16,384 unpaid limit.
       for (let i = 0; i < 17_000; i++) {
-        manager.recordWorkerAttribution(sellerPeerId, `req-free-${i}`, worker);
+        manager.recordWorkerAttribution(sellerPeerId, `req-free-${i}`, worker, true);
         manager.recordWorkerDelivery(`req-free-${i}`, usage);
       }
       expect(() => manager.recordWorkerAttribution(sellerPeerId, 'req-next', worker)).not.toThrow();

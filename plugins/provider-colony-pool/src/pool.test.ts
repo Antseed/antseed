@@ -26,7 +26,7 @@ import { WorkerLedger } from './ledger.js';
 import { ColonyPool } from './pool.js';
 import { parsePoolFrame, workerAuthMessage } from './protocol.js';
 import { ColonyPoolProvider } from './provider.js';
-import { PoolWorker, type ChannelVerifier, type WorkerAttester } from './worker.js';
+import { PoolWorker, queryWorkerStats, type ChannelVerifier, type WorkerAttester } from './worker.js';
 
 /** A software stand-in for the Mac app's Secure Enclave attester. */
 const appleCa = createTestAppleCa();
@@ -271,7 +271,8 @@ describe('colony pool', () => {
 
   it('streams an encrypted request end to end; the pool never sees the prompt or the answer', async () => {
     await setup();
-    const worker = startWorker();
+    const key = Wallet.createRandom().privateKey;
+    const worker = startWorker({ key });
     await waitFor(() => provider.services.includes(SERVICE));
     const { certificate, sealed, request } = await buyerSeal('req-1', true);
     expect(certificate.worker.toLowerCase()).toBe(worker.address.toLowerCase());
@@ -279,10 +280,13 @@ describe('colony pool', () => {
 
     const wire: SerializedHttpResponseChunk[] = [];
     let startHeaders: Record<string, string> = {};
-    const response = await provider.handleRequestStream(request, {
+    const streaming = provider.handleRequestStream(request, {
       onResponseStart: (start) => { startHeaders = start.headers; },
       onResponseChunk: (chunk) => { wire.push(chunk); },
     });
+    // A stats query under the serving worker's own key leaves its connection, and the request on it, alone.
+    await expect(queryWorkerStats(poolUrl, key)).resolves.toMatchObject({ requestsTotal: 0 });
+    const response = await streaming;
 
     expect(response.statusCode).toBe(200);
     expect(startHeaders['x-antseed-streaming']).toBe('1');
@@ -305,7 +309,9 @@ describe('colony pool', () => {
     });
     // 3000 − 2% protocol fee = 2940, then the worker's 90% = 2646.
     expect(ledger.stats(worker.address).earnedTotal).toBe('2646');
-    await expect(worker.requestStats()).resolves.toMatchObject({ earnedTotal: '2646', requestsTotal: 1 });
+    await expect(queryWorkerStats(poolUrl, key)).resolves.toMatchObject({ earnedTotal: '2646', requestsTotal: 1 });
+    const next = await buyerSeal('req-2', false);
+    expect((await provider.handleRequest(next.request)).statusCode).toBe(200);
   });
 
   it('credits workers the share the pool contract pays now, once it changes', async () => {

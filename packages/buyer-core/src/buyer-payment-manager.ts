@@ -346,9 +346,9 @@ export class BuyerPaymentManager {
    *  without trusting the seller's claim of which service was used. */
   private readonly _requestService = new RequestServiceTracker();
   /** Colony-pool requests and their worker deliveries, for the node's lifetime (see WorkerDeliveryTracker). */
-  // A verified worker request is kept until its counted cost is fully signed (not evicted as completed).
+  // A verified worker request is kept until its cost is counted and fully signed (not evicted as completed).
   private readonly _workerDeliveries: WorkerDeliveryTracker = new WorkerDeliveryTracker(
-    (requestId: string): boolean => this._serviceTokensCounted.has(requestId) && this._serviceTokensCounted.unpaid(requestId) > 0n,
+    (requestId: string): boolean => !this._serviceTokensCounted.has(requestId) || this._serviceTokensCounted.unpaid(requestId) > 0n,
   );
   /**
    * requestId -> trusted buyer-owned billing identity, request facts, and mode.
@@ -596,8 +596,8 @@ export class BuyerPaymentManager {
    * attributed to the one whose sealed answer verifies (recordWorkerDelivery):
    * only a recipient can decrypt it, and each answers under its own key.
    */
-  recordWorkerAttribution(sellerPeerId: string, requestId: string, workers: string | readonly string[]): void {
-    this._workerDeliveries.recordAttribution(sellerPeerId, requestId, workers);
+  recordWorkerAttribution(sellerPeerId: string, requestId: string, workers: string | readonly string[], free = false): void {
+    this._workerDeliveries.recordAttribution(sellerPeerId, requestId, workers, free);
   }
 
   /** Retire a verified worker request once it has been counted and nothing of its cost is left unsigned. */
