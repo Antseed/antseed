@@ -104,7 +104,7 @@ To change a price later, use `seller settings set --price`. It handles service i
 antseed seller settings set --price kimi-k2.6=0.7/2.2/0.07
 ```
 
-The format is `[provider/]model=input/output[/cached]`. Name the provider when two providers offer the same model. Don't set prices with `antseed config seller set ...` on a service id that contains a dot. The dot is read as a path separator: the command can report success while writing a stray entry (`kimi-k2` with a key `6`) and leaving the real price unchanged.
+The format is `[provider/]model=input/output[/cached]`. Name the provider when two providers offer the same model. On `@antseed/cli` 0.1.234 and earlier, don't set prices with `antseed config seller set ...` on a service id that contains a dot. Those versions read the dot as a path separator: the command can report success while writing a stray entry (`kimi-k2` with a key `6`) and leaving the real price unchanged. Later versions keep an existing service id whole and refuse a key that doesn't resolve.
 
 ## Step 5: Set how many buyers to serve at once
 
