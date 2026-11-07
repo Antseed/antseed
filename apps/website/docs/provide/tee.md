@@ -19,7 +19,7 @@ If the prover fails to load at startup, the seller exits rather than advertising
 
 ## Prerequisites
 
-- A dstack confidential VM host with Intel TDX, such as Phala Cloud, where you can deploy an app with KMS and encrypted environment variables.
+- A dstack confidential VM host with Intel TDX where you can deploy an app with KMS and encrypted environment variables, such as Phala Cloud. Phala Cloud exposes app ports only through its TLS gateway, without a public IP or UDP, so the seller also needs a public entry point: run `antseed seller forward --to <app-id>-6882.<cluster>.phala.network --peer <peerId>` on any small machine with a public IP, set `seller.publicAddress` to its `<ip>:6882`, and raise `seller.maxInboundConnectionsPerIp`, since every buyer then arrives from the gateway's address. The forwarder sees only ciphertext. To run on Google Cloud instead, see [Google Confidential Space](#google-confidential-space).
 - Your seller's identity key and peer ID, and API keys for its upstreams.
 - The signaling (TCP) and DHT (UDP) ports reachable from the internet at the same port numbers as in the container. Buyers attest over encrypted TCP; the connection binding is not available over WebRTC.
 - Node.js 20+ and a checkout of the [Antseed repository](https://github.com/AntSeed/antseed) on your own machine, to generate the compose file.
@@ -30,7 +30,7 @@ Buyers accept a seller node that runs Antseed's official TEE seller image as a d
 
 - MRTD and RTMR0–2 (firmware, VM shape, kernel and boot configuration) are a released dstack production OS listed in the verifier SDK;
 - the app compose, which the buyer authenticates against the compose hash replayed from the dstack event log, runs an approved image: one that the **Publish TEE seller image** workflow built from this repository and added to the verifier SDK;
-- the compose follows the TEE seller rules: one service, no command or entrypoint override, only the seller data volume and the dstack socket mounted, public logs off, no pre-launch or init scripts, and the seller config inline. Only secrets (the identity key, API keys and the RPC URL) come in as encrypted variables, so every setting that decides where prompts go is readable, and every upstream is HTTPS, with path rewrites that stay on it.
+- the compose follows the TEE seller rules: one service, no command or entrypoint override, only the seller data volume and the dstack socket mounted, no pre-launch or init scripts, and the seller config inline. Only secrets (the identity key, API keys and optionally the RPC URL) come in as encrypted variables, so every setting that decides where prompts go is readable, and every upstream is HTTPS, with path rewrites that stay on it.
 
 Any seller deploying an approved image this way passes, with no per-seller approval. Buyers also see the upstream hosts the seller config sends prompts to. [`deploy/tee-seller`](https://github.com/AntSeed/antseed/tree/main/deploy/tee-seller) has the image, a compose generator and the deployment steps. Buyers can accept extra OS releases or images locally with `ANTSEED_VERIFIER_NODE_BUILDS` (JSON `{ "os": [{ name, mrtd, rtmr0, rtmr1, rtmr2 }], "images": [{ version, digest }] }`).
 
@@ -63,7 +63,7 @@ It writes a compose file (JSON, which compose also reads) with the image pinned 
 Deploy `docker-compose.json` as a dstack app with KMS enabled:
 
 - set the printed variables as encrypted environment variables: `ANTSEED_IDENTITY_HEX` (your identity key, hex) and your API keys, and allow exactly those;
-- keep public logs off and add no pre-launch script.
+- add no pre-launch script. Public logs may be on: the image runs the seller in content-free mode, so its logs and databases hold no prompts or answers, nor upstream error text about a request, only metadata such as status codes, token counts and buyer peer IDs.
 
 The image starts `antseed seller start` with the verifier's prover, which mints its quotes through the dstack guest agent. Any change to the compose file (image, config, prices) gives a new compose hash, which buyers check against the same rules, so redeploying needs no approval.
 
@@ -121,6 +121,12 @@ If attestation fails under `--require-verifier`, the request is refused with a 5
 | `seller-node-tee-genuine` fails with "no connection binding" | The buyer reached the seller over WebRTC; make the signaling TCP port reachable |
 | `seller-bound` missing from verdicts | `ANTSEED_VERIFIER_SIGNING_KEY` unset, or its address doesn't match `ANTSEED_TEE_PEER_ID` |
 | Buyer reports TCB failures | Host platform needs microcode/TCB updates; buyers running `ANTSEED_VERIFIER_STRICT_TCB=true` accept only `UpToDate` |
+
+## Google Confidential Space
+
+The same image also runs on Google Confidential Space: a Google-built OS that runs one container on an Intel TDX VM with no operator access. There the seller sends Google's signed attestation token instead of a quote, and buyers check that it shows Intel TDX, a production image with debugging off, an approved image digest and this round's binding. The operator's settings appear in the token, so buyers check the seller config and its upstreams against the same rules; secrets come from Secret Manager, released only to the attested image. Buyers rely on Google's attestation service here, where on dstack they check the Intel quote themselves.
+
+Confidential Space keeps no data across a VM restart, so the image keeps the seller's payment channels and metering in Cloud Storage under a location you must name (`ANTSEED_GCP_STATE`): restored on boot, saved while they change (payments every 30 seconds, metering every 5 minutes) and once more when the seller stops, encrypted with a key derived from the seller identity. Like its logs, which may go to Cloud Logging, they hold no prompts or responses. The setup steps are in [`deploy/tee-seller`](https://github.com/AntSeed/antseed/tree/main/deploy/tee-seller#run-a-tee-seller-on-google-confidential-space).
 
 ## Developing the prover outside dstack
 

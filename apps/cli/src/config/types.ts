@@ -288,6 +288,11 @@ export interface SellerCLIConfig {
   maxUploadBodyBytes?: number;
   /** Buyer connections held open at once; past it new buyers are refused. Metadata requests never count. Default: 2048. */
   maxInboundConnections?: number;
+  /**
+   * Buyer connections accepted from one IP at once. Raise it when every buyer reaches this seller
+   * through one address, such as Phala Cloud's TLS gateway. Default: 64.
+   */
+  maxInboundConnectionsPerIp?: number;
   /** Close a buyer's connection after this long with no traffic and no channel open on it; 0 keeps idle connections. Default: 30 minutes. */
   inboundIdleTimeoutMs?: number;
   /**

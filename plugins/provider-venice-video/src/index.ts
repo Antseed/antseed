@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AntseedProviderPlugin, Provider, ProviderRequestRefusal, SerializedHttpRequest, ServiceCapabilities, ServiceHealthStatus, UpstreamAccountStatus, VideoInputKind, VideoOptions } from '@antseed/node';
-import { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION, validateServiceCapabilityFields } from '@antseed/node';
+import { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION, isContentFreeLogging, validateServiceCapabilityFields } from '@antseed/node';
 import { nativeVideoRoute, parseJsonObject, requestService, videoSourceLengthProblem } from '@antseed/api-adapter';
 import {
   BaseProvider,
@@ -579,7 +579,8 @@ const plugin: AntseedProviderPlugin = {
           }
           const failed = terminalRetrieveFailure(upstream.status, body);
           if (failed) {
-            console.warn(`[venice-video] job ${videoRoute.resourceId} failed: ${failed}`);
+            // A refusal reason can describe the buyer's prompt or media.
+            console.warn(`[venice-video] job ${videoRoute.resourceId} failed${isContentFreeLogging() ? '' : `: ${failed}`}`);
             return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' }, body: Buffer.from(JSON.stringify({ status: 'FAILED', error: failed })) };
           }
           return { requestId: request.requestId, statusCode: upstream.status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' }, body };

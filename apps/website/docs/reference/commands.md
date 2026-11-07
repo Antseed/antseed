@@ -241,6 +241,7 @@ Offer AI services on the network. Guides: [Become a provider](/docs/provide), [P
 | `antseed seller status` | Show node status and readiness | `--json` |
 | `antseed seller register` | Register your peer identity on-chain (ERC-8004) | `--agent-id <id>`, `--metadata <uri>` |
 | `antseed seller doctor` | Diagnose the announced seller endpoint | `--timeout-ms` (3000), `--json` |
+| `antseed seller forward` | Public entry point for a seller without a reachable IP (e.g. a TEE seller on Phala Cloud): carries buyers' TCP over TLS to its gateway and announces it on the DHT | `--to <host[:port]>`, `--peer <peerId>`, `--port` (6882), `--dht-port` (6881), `--max-connections` (4096); closes a connection idle for 2 minutes |
 | `antseed seller dashboard` | Open the local seller dashboard: the running seller's, or one served by this command | `--port` (3120), `--host` (127.0.0.1), `--no-open` |
 | `antseed seller events` | Recent seller events: starts and stops, models failing or recovered, gas, alerts | `--limit` (25), `--json` |
 | `antseed seller usage` | Requests, tokens and revenue per UTC day | `--days` (14, up to 30), `--json` |

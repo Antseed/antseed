@@ -350,6 +350,8 @@ export interface NodeConfig {
   acceptInboundAddress?: (remoteAddress: string) => boolean;
   /** Seller only: inbound buyer connections held at once; past it new buyers are refused. Metadata requests never count. Default 2048. */
   maxInboundConnections?: number;
+  /** Seller only: inbound sockets from one IP at once (raise it behind a TLS gateway or forwarder). Default 64. */
+  maxInboundConnectionsPerIp?: number;
   /**
    * Seller only: close a buyer's connection after this long with no traffic,
    * unless the buyer has a paid channel or a free usage session open. 0 keeps
@@ -2178,6 +2180,7 @@ export class AntseedNode extends EventEmitter {
       requireSecureTransport: this._config.requireSecureTransport,
       ...(this._config.acceptInboundAddress ? { acceptInboundAddress: this._config.acceptInboundAddress } : {}),
       ...(this._config.maxInboundConnections !== undefined ? { maxInboundConnections: this._config.maxInboundConnections } : {}),
+      ...(this._config.maxInboundConnectionsPerIp !== undefined ? { maxInboundConnectionsPerIp: this._config.maxInboundConnectionsPerIp } : {}),
     });
     const inboundIdleTimeoutMs = this._config.inboundIdleTimeoutMs ?? DEFAULT_INBOUND_IDLE_TIMEOUT_MS;
     if (inboundIdleTimeoutMs > 0) {
