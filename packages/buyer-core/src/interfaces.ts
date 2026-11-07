@@ -30,6 +30,8 @@ export interface FrameSender {
 /** Connection surface used by the buyer request/payment machinery. */
 export interface BuyerConnection extends FrameSender {
   readonly state: ConnectionState;
+  /** Session hash of an encrypted TCP connection (see RequestExecutionOptions.channelBinding). */
+  readonly channelBinding?: string | null;
   on(event: 'stateChange', listener: (state: ConnectionState) => void): unknown;
   off(event: 'stateChange', listener: (state: ConnectionState) => void): unknown;
 }

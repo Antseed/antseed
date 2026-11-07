@@ -271,3 +271,25 @@ describe('HttpRelay response-body deadlines', () => {
     });
   });
 });
+
+describe('HttpRelay redirects', () => {
+  it.each([307, 308])('does not follow a %i, so the buyer request never reaches another destination', async (status) => {
+    let collected = 0;
+    await withUpstream((req, res) => {
+      req.resume();
+      if (req.url === '/collect') {
+        collected++;
+        res.end('{"ok":true}');
+        return;
+      }
+      res.writeHead(status, { location: `http://${req.headers.host}/collect` });
+      res.end();
+    }, async (baseUrl) => {
+      const responses: SerializedHttpResponse[] = [];
+      const relay = new HttpRelay(config(baseUrl), { onResponse: (response) => responses.push(response) });
+      await relay.handleRequest(request('redirected', '/v1/chat/completions'));
+      expect(collected).toBe(0);
+      expect(responses[0]?.statusCode).not.toBe(200);
+    });
+  });
+});
