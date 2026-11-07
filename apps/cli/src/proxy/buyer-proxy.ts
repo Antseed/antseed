@@ -4784,9 +4784,9 @@ export class BuyerProxy {
       // Conversations the client identifies (session id, prompt-cache key)
       // stay on one seller so its prompt cache keeps paying off.
       const affinityKey = routingConversationKey ?? promptCacheKey(serializedReq)
-      const planRoutes = (deterministic = false) => this._planModelRoutes({
-        modelPeers,
-        modelPlans,
+      const planRoutes = (selection: CandidatePeerRouteSelection, deterministic = false) => this._planModelRoutes({
+        modelPeers: selection.candidatePeers,
+        modelPlans: selection.routePlanByPeerId,
         request: serializedReq,
         requestProtocol,
         requestedService,
@@ -4797,16 +4797,16 @@ export class BuyerProxy {
         affinityKey,
         ...(deterministic ? { deterministic } : {}),
       })
-      let plan = planRoutes()
+      let plan = planRoutes({ candidatePeers: modelPeers, routePlanByPeerId: modelPlans })
       if (plan.candidates.length === 0 && this._initialDiscoveryRunning()) {
         // Just started: the first discovery sweep may not have reached a seller
         // of this model yet, or the trust data that lets the routing policy take one.
         discoveredPeers = await this._waitForInitialDiscovery((found) => {
-          ;({ candidatePeers: modelPeers, routePlanByPeerId: modelPlans } = selectModelPeers(found))
-          return modelPeers.length > 0 && planRoutes(true).candidates.length > 0
+          const selection = selectModelPeers(found)
+          return selection.candidatePeers.length > 0 && planRoutes(selection, true).candidates.length > 0
         }, signal)
         ;({ candidatePeers: modelPeers, routePlanByPeerId: modelPlans } = selectModelPeers(discoveredPeers))
-        plan = planRoutes()
+        plan = planRoutes({ candidatePeers: modelPeers, routePlanByPeerId: modelPlans })
       }
       const { candidates, verdicts, effectivePolicy, explored, selections, firstPick } = plan
       const requireVerified = effectivePolicy?.requireVerified === true
