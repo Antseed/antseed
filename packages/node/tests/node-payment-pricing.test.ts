@@ -728,7 +728,7 @@ describe('native video job ownership', () => {
   });
 });
 
-function makeAttestHarness() {
+function makeAttestHarness(channelBinding: string | null = null) {
   const provider = makeProvider(1, 1, { name: 'openai', services: ['gpt-5.5'] });
   provider.handleRequest = vi.fn(provider.handleRequest);
   const prove = vi.fn(async (req: SellerRequest) => ({
@@ -756,7 +756,7 @@ function makeAttestHarness() {
   });
   const sentFrames: Uint8Array[] = [];
   const { mux } = handler.handleConnection(
-    makeConn(sentFrames),
+    { ...makeConn(sentFrames), channelBinding },
     'b'.repeat(40),
     { sendNeedAuth: vi.fn(), sendPaymentRequired } as any,
   );
@@ -873,6 +873,22 @@ describe('SellerRequestHandler payment pricing selection', () => {
     await sendAttest(0, new Uint8Array([1]), { 'X-Antseed-Free-Tier-Delegations': 'delegations' });
     const headers = prove.mock.calls[0]![0].headers;
     expect(Object.keys(headers).map((key) => key.toLowerCase())).not.toContain('x-antseed-free-tier-delegations');
+  });
+
+  it('hands the prover the session hash of the connection the request arrived on, never a buyer-sent one', async () => {
+    const binding = 'c'.repeat(64);
+    const { prove, sendAttest } = makeAttestHarness(binding);
+    await sendAttest(0, new Uint8Array([1]), { 'X-Antseed-Channel-Binding': 'd'.repeat(64) });
+    const headers: Record<string, string> = prove.mock.calls[0]![0].headers;
+    const sent = Object.entries(headers).filter(([key]) => key.toLowerCase() === 'x-antseed-channel-binding');
+    expect(sent).toEqual([['x-antseed-channel-binding', binding]]);
+  });
+
+  it('drops a buyer-sent session hash on a connection without one', async () => {
+    const { prove, sendAttest } = makeAttestHarness();
+    await sendAttest(0, new Uint8Array([1]), { 'x-antseed-channel-binding': 'd'.repeat(64) });
+    const headers: Record<string, string> = prove.mock.calls[0]![0].headers;
+    expect(Object.keys(headers).map((key) => key.toLowerCase())).not.toContain('x-antseed-channel-binding');
   });
 
   it('rate-limits the free attestation route per buyer', async () => {

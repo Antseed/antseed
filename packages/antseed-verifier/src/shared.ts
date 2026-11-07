@@ -50,9 +50,26 @@ export function normalizePeerId(peerId: string): string {
  * `antseed-rd-v1` (see report-data.ts). The configfs collector mints exactly this, so the
  * buyer's node cap recomputes and enforces the same bytes.
  */
-export function computeReportData(nonce: Uint8Array, peerId: string): Buffer {
-  return Buffer.from(antseedRdV1.build(nonce, { peerId: normalizePeerId(peerId) }))
+export function computeReportData(nonce: Uint8Array, peerId: string, channelBinding?: string): Buffer {
+  return Buffer.from(antseedRdV1.build(nonce, {
+    peerId: normalizePeerId(peerId),
+    ...(channelBinding ? { channelBinding: normalizeChannelBinding(channelBinding) } : {}),
+  }))
 }
+
+/** A connection's session hash: 64 lowercase hex chars (SHA-256). */
+export function normalizeChannelBinding(binding: string): string {
+  const b = binding.trim().toLowerCase()
+  if (!/^[0-9a-f]{64}$/.test(b)) throw new Error('invalid channel binding: expected 64 hex chars')
+  return b
+}
+
+/**
+ * Request header carrying the seller-side connection session hash (set by the seller node, never
+ * by the buyer). Must equal @antseed/node's ANTSEED_CHANNEL_BINDING_HEADER; like ATTEST_PATH it is
+ * mirrored rather than imported so this package stays free of an @antseed/node dependency.
+ */
+export const CHANNEL_BINDING_HEADER = 'x-antseed-channel-binding'
 
 /** The dependent capability whose own evidence is excluded from the bundle it signs over. */
 const SELLER_BOUND_CAP_ID = 'seller-bound'
@@ -122,6 +139,11 @@ export interface AttestRequestBody {
   nonce: string
   /** capability ids the buyer is asking the seller to attest. */
   caps: string[]
+  /**
+   * Bind the node quote to the connection this request travels on. Older buyers omit it and
+   * get the {peerId}-only binding they verify.
+   */
+  bindChannel?: boolean
 }
 
 /** Body the seller's prover returns: per-capability evidence (a cap may have none). */
@@ -130,8 +152,8 @@ export interface AttestResponseBody {
   evidence: Record<string, string>
 }
 
-export function encodeAttestRequest(nonce: Uint8Array, caps: string[]): Uint8Array {
-  const body: AttestRequestBody = { nonce: Buffer.from(nonce).toString('base64'), caps }
+export function encodeAttestRequest(nonce: Uint8Array, caps: string[], bindChannel = false): Uint8Array {
+  const body: AttestRequestBody = { nonce: Buffer.from(nonce).toString('base64'), caps, ...(bindChannel ? { bindChannel } : {}) }
   return new TextEncoder().encode(JSON.stringify(body))
 }
 
@@ -148,7 +170,7 @@ function assertBodySize(body: Uint8Array, what: string): void {
   }
 }
 
-export function decodeAttestRequest(body: Uint8Array): { nonce: Uint8Array; caps: string[] } {
+export function decodeAttestRequest(body: Uint8Array): { nonce: Uint8Array; caps: string[]; bindChannel: boolean } {
   assertBodySize(body, 'attestation request')
   const parsed = JSON.parse(new TextDecoder().decode(body)) as Partial<AttestRequestBody>
   if (typeof parsed.nonce !== 'string' || parsed.nonce.length === 0) {
@@ -161,7 +183,7 @@ export function decodeAttestRequest(body: Uint8Array): { nonce: Uint8Array; caps
   if (!Array.isArray(parsed.caps) || !parsed.caps.every((c) => typeof c === 'string')) {
     throw new Error('attestation request missing "caps" (string[])')
   }
-  return { nonce, caps: parsed.caps }
+  return { nonce, caps: parsed.caps, bindChannel: parsed.bindChannel === true }
 }
 
 export function encodeAttestResponse(evidence: Record<string, Uint8Array>): Uint8Array {

@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto'
  * hardware stack. The SDK verifies against a closed, version-pinned registry:
  *
  *   - antseed-rd-v1           the canonical, compositional scheme. The nonce is always bound;
- *                             optional fields (peerId, e2ePubkey) are included only when their
+ *                             optional fields (peerId, e2ePubkey, channelBinding) are included only when their
  *                             ingredient is present, in canonical tag order, each tagged and
  *                             length-prefixed. One rule covers every combination — the node
  *                             cap is the {peerId} case. A new field takes a new tag and version bump.
@@ -27,6 +27,8 @@ export interface BindingIngredients {
   e2ePubkey?: string
   /** ACI workload keyset digest, "sha256:<64 hex>" — the ACI ingredient. */
   keysetDigest?: string
+  /** 64-hex session hash of the buyer↔seller connection the attestation ran over (node cap). */
+  channelBinding?: string
 }
 
 export interface ReportDataScheme {
@@ -56,6 +58,7 @@ function lenPrefixed(b: Buffer): Buffer {
 const FIELDS: { tag: number; get: (i: BindingIngredients) => Buffer | null }[] = [
   { tag: 0x01, get: (i) => (i.peerId ? Buffer.from(i.peerId.toLowerCase(), 'hex') : null) },
   { tag: 0x02, get: (i) => (i.e2ePubkey ? Buffer.from(i.e2ePubkey, 'base64') : null) },
+  { tag: 0x03, get: (i) => (i.channelBinding ? Buffer.from(i.channelBinding.toLowerCase(), 'hex') : null) },
 ]
 
 export const antseedRdV1: ReportDataScheme = {
