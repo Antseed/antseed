@@ -211,6 +211,7 @@ export function mapPeers(input: {
     const stat = stats.get(key)
     // TEE-capable is what a policy's `requireTee` filters on: the seller advertises the TEE verifier.
     const tee = parseVerifierCapabilities(row['capabilities']).supported.includes(TEE_VERIFIER_ID)
+    const attestation = tee ? teeVerified?.get(key) : undefined
     // Verified: every ownership claim (domain, GitHub) checked out, or a current TEE attestation
     // when the buyer shares its verification snapshot.
     const verified = asRecord(row['verificationResults'])['verified'] === true || (teeVerified?.has(key) ?? false)
@@ -235,8 +236,8 @@ export function mapPeers(input: {
       verified,
       verificationLinks: collectPeerVerificationLinks(row),
       tee,
-      teeScope: tee ? teeVerified?.get(key)?.scope ?? null : null,
-      ...(tee && teeVerified?.get(key)?.upstreams.length ? { teeUpstreams: teeVerified.get(key)!.upstreams } : {}),
+      teeScope: attestation?.scope ?? null,
+      ...(attestation?.upstreams.length ? { teeUpstreams: attestation.upstreams } : {}),
       stakeAnts: stake === null ? null : String(stake),
       agentId: agentId !== null && agentId > 0 ? agentId : null,
       freeTier: parseFreeTierProgram(strings(row['capabilities'])),

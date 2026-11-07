@@ -20,19 +20,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 make g+
 # The CLI loads plugins from ~/.antseed/plugins of the runtime user (HOME=/home/nonroot), so the
 # whole locked tree, CLI included, is installed there.
 WORKDIR /out/home/nonroot/.antseed/plugins
-COPY package.json package-lock.json ./
+COPY package.json package-lock.json check-lock.mjs ./
 RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force
-# The verifier must be the version this CLI pins (the CLI refuses any other), and must bind its quote
-# to the buyer's connection and send the dstack event log and app compose; buyers reject a prover that does not.
-RUN node --input-type=module -e " \
-      import { existsSync, readFileSync } from 'node:fs'; \
-      const verifier = 'node_modules/@antseed/antseed-verifier/dist/'; \
-      if (!(await import('./' + verifier + 'shared.js')).CHANNEL_BINDING_HEADER || !existsSync(verifier + 'dstack-app-compose.js')) { \
-        console.error('The locked verifier cannot bind attestations to the buyer connection; run update-lock.mjs with a CLI release that pins one that can.'); process.exit(1) } \
-      const { TRUSTED_VERIFIER_PLUGINS } = await import('./node_modules/@antseed/cli/dist/plugins/registry.js'); \
-      const pinned = TRUSTED_VERIFIER_PLUGINS.find((p) => p.name === 'antseed-verifier').version; \
-      const installed = JSON.parse(readFileSync('node_modules/@antseed/antseed-verifier/package.json', 'utf8')).version; \
-      if (pinned !== installed) { console.error('verifier ' + installed + ' installed, CLI pins ' + pinned); process.exit(1) }" \
+# Refuse a lock whose code buyers would reject or that weakens their checks (see check-lock.mjs).
+RUN node check-lock.mjs && rm check-lock.mjs \
     && mkdir -p /out/var/lib/antseed \
     && chown -R 65532:65532 /out/home/nonroot /out/var/lib/antseed
 

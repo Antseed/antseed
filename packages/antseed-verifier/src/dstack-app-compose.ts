@@ -22,7 +22,8 @@ import type { ApprovedSellerImage } from './approved-seller-images.js'
  *     compose substitutes variables in every value, the inline config included.
  *   - seller config: each provider uses a plugin listed below, every upstream is https, and
  *     every path rewrite is a path on that upstream (the relay appends it to the base URL, so a
- *     value like "@other.example/v1" would move the request to another host).
+ *     value like "@other.example/v1" would move the request to another host). The approved
+ *     images' relay refuses upstream redirects, so requests stay on these origins.
  */
 
 /** One place a seller node forwards prompts to, read from its measured config. */

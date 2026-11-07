@@ -6,10 +6,10 @@
 //
 //   node deploy/tee-seller/update-lock.mjs <cli version>
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const cliVersion = process.argv[2]
@@ -32,9 +32,10 @@ const tmp = mkdtempSync(join(tmpdir(), 'tee-seller-lock-'))
 let verifierVersion
 try {
   const tarball = npm(['pack', `@antseed/cli@${cliVersion}`, '--pack-destination', tmp, '--silent'], tmp)
-  execFileSync('tar', ['-xzf', join(tmp, tarball), '-C', tmp, 'package/dist/plugins/registry.js'])
-  const registry = readFileSync(join(tmp, 'package/dist/plugins/registry.js'), 'utf8')
-  verifierVersion = registry.match(/package:\s*'@antseed\/antseed-verifier',\s*version:\s*'([^']+)'/)?.[1]
+  // package.json too, so Node loads the registry as ESM.
+  execFileSync('tar', ['-xzf', join(tmp, tarball), '-C', tmp, 'package/package.json', 'package/dist/plugins/registry.js'])
+  const { TRUSTED_VERIFIER_PLUGINS } = await import(pathToFileURL(join(tmp, 'package/dist/plugins/registry.js')).href)
+  verifierVersion = TRUSTED_VERIFIER_PLUGINS.find((plugin) => plugin.package === '@antseed/antseed-verifier')?.version
 } finally {
   rmSync(tmp, { recursive: true, force: true })
 }
