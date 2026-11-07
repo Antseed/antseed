@@ -7,7 +7,7 @@ export function ServiceHealthInfo({ health }: { health: ServiceHealthView | unde
   if (!health) return null
   const title = health.checkedAt ? `Checked ${formatDateTime(health.checkedAt)}` : undefined
   if (health.status !== 'failing') return <span title={title}>{serviceHealthSummary(health)}</span>
-  return <span className="gc-health-failing" title={title}><span className="gc-attention" aria-hidden="true" />{serviceHealthSummary(health)}</span>
+  return <span className="gc-status-line gc-status-line--attention" title={title}><span className="gc-attention" aria-hidden="true" />{serviceHealthSummary(health)}</span>
 }
 
 /** How the seller says a model served all its buyers in the last hour. Nothing when not announced. */

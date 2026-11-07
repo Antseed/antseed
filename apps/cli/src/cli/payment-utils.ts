@@ -159,6 +159,7 @@ type ResolvedCryptoConfig = NonNullable<AntseedConfig['payments']['crypto']> & {
   legacyEmissionsEscrowAddress?: string;
   washTradingRegistryAddress?: string;
   pointsPolicyRegistryAddress?: string;
+  verificationPointsPolicyAddress?: string;
   depositRelayAddress?: string;
   explorerApiUrl?: string;
   evmChainId: number;
@@ -222,6 +223,7 @@ export function requireCryptoConfig(
     legacyEmissionsEscrowAddress: crypto.legacyEmissionsEscrowAddress || resolved.legacyEmissionsEscrowAddress,
     washTradingRegistryAddress: crypto.washTradingRegistryAddress || resolved.washTradingRegistryAddress,
     pointsPolicyRegistryAddress: crypto.pointsPolicyRegistryAddress || resolved.pointsPolicyRegistryAddress,
+    verificationPointsPolicyAddress: crypto.verificationPointsPolicyAddress || resolved.verificationPointsPolicyAddress,
     identityRegistryAddress: crypto.identityRegistryAddress || resolved.identityRegistryAddress,
     verificationContractAddress: crypto.verificationContractAddress || resolved.verificationContractAddress,
     // The results address belongs to the KBF contract it was deployed with: a custom KBF address

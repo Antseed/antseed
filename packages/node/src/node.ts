@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { IDENTITY_HISTORY_TTL_MS, IdentityHistoryCollector } from './reputation/identity-history.js';
 import { computeTrustScore } from './reputation/trust-score.js';
 import { TrustSignalsClient, type TrustSignals } from './payments/evm/trust-signals-client.js';
-import { VerificationSignalsClient } from './payments/evm/verification-signals-client.js';
+import { VerificationSignalsClient, type ServiceVerdicts } from './payments/evm/verification-signals-client.js';
 import { VERIFICATION_STATUS_STALE_MAX_MS, verificationServiceKey } from './reputation/model-reputation.js';
 
 import type { Identity, IdentityStore } from "./p2p/identity.js";
@@ -72,6 +72,7 @@ import { VerificationSampler } from "./verification/samples.js";
 import type { ResponseAuthSink } from "@antseed/buyer-core";
 import { FrameDecoder, encodeFrame } from "./p2p/message-protocol.js";
 import { KeepaliveManager, buildPongPayload } from "./p2p/keepalive.js";
+import { DEFAULT_INBOUND_IDLE_TIMEOUT_MS, InboundIdleTracker } from "./p2p/inbound-idle-tracker.js";
 import { MessageType } from "./types/protocol.js";
 import type {
   Provider,
@@ -93,6 +94,8 @@ import {
   SellerFreeUsageManager,
   SellerFreeTierLimiter,
   type SellerFreeTierConfig,
+  SellerBuyerLimiter,
+  type SellerBuyerLimitsConfig,
   StakingClient,
   ChannelStore,
   CHANNEL_KIND,
@@ -283,6 +286,8 @@ export interface NodePaymentsConfig {
   verificationContractAddress?: string;
   /** AntseedVerificationResults address; discovered from the KBF contract when absent. */
   verificationResultsAddress?: string;
+  /** AntseedVerificationPointsPolicy address (buyer trust: a seller's points multiplier below 100% cuts its trust). */
+  verificationPointsPolicyAddress?: string;
   /** Chain ID for EIP-712 domain. Default: 8453 (Base) */
   chainId?: number;
   /** Default maximum USDC per spending auth. Default: 500000 ($0.50) */
@@ -343,6 +348,14 @@ export interface NodeConfig {
   requireSecureTransport?: boolean;
   /** Seller only: inbound sockets whose remote address this returns false for are closed on accept. */
   acceptInboundAddress?: (remoteAddress: string) => boolean;
+  /** Seller only: inbound buyer connections held at once; past it new buyers are refused. Metadata requests never count. Default 2048. */
+  maxInboundConnections?: number;
+  /**
+   * Seller only: close a buyer's connection after this long with no traffic,
+   * unless the buyer has a paid channel or a free usage session open. 0 keeps
+   * idle connections. Default 30 minutes.
+   */
+  inboundIdleTimeoutMs?: number;
   dataDir?: string;           // Default: ~/.antseed
   dhtPort?: number;           // Default: 6881 for seller, 0 for buyer
   signalingPort?: number;     // Default: 6882 for seller
@@ -385,6 +398,8 @@ export interface NodeConfig {
   autoReconcileBuyerChannels?: boolean;
   /** Optional per-address request limit for zero-priced seller services. */
   freeTier?: SellerFreeTierConfig;
+  /** Optional per-buyer token limits per provider, tighter for buyers new to this seller. */
+  buyerLimits?: SellerBuyerLimitsConfig;
   /**
    * Buyer side: stakers' signed consent to count their stake toward this
    * node's buyer identities on sellers' staked free tiers. Each identity sends
@@ -521,6 +536,9 @@ export class AntseedNode extends EventEmitter {
   private _muxes = new Map<PeerId, ProxyMux>();
   private _decoders = new Map<PeerId, FrameDecoder>();
   private _keepalives = new Map<PeerId, KeepaliveManager>();
+  /** Seller side: closes buyer connections left idle with nothing open on them. */
+  private _inboundIdle: InboundIdleTracker | null = null;
+  private _inboundIdleSweep: ReturnType<typeof setInterval> | null = null;
   private _nat: NatTraversal | null = null;
   private _metering: MeteringStorage | null = null;
   private _resourceOwnership: ResourceOwnershipStore | null = null;
@@ -540,7 +558,7 @@ export class AntseedNode extends EventEmitter {
   /** Batched reader for live DIFF verdicts on `AntseedVerificationResults`. */
   private _verificationSignalsClient: VerificationSignalsClient | null = null;
   /** Last good verification read per agent id, keyed by the services it covered. */
-  private _verificationStatusCache = new Map<number, { servicesKey: string; diffServices: string[]; fetchedAt: number }>();
+  private _verificationStatusCache = new Map<number, { services: string[]; diffServices: string[]; sameServices: string[]; agent?: ServiceVerdicts['agent']; fetchedAt: number }>();
   private _sellerAddressResolver: SellerAddressResolver | null = null;
   private _identityClient: IdentityClient | null = null;
   private _paymentMuxes = new Map<PeerId, PaymentMux>();
@@ -942,6 +960,12 @@ export class AntseedNode extends EventEmitter {
       this._timeoutCheckerInterval = null;
     }
 
+    if (this._inboundIdleSweep) {
+      clearInterval(this._inboundIdleSweep);
+      this._inboundIdleSweep = null;
+    }
+    this._inboundIdle = null;
+
     if (this._channelStore) {
       try {
         this._channelStore.close();
@@ -1308,24 +1332,31 @@ export class AntseedNode extends EventEmitter {
     const client = this._verificationSignalsClient;
     if (!client || peers.length === 0) return;
     const nowMs = Date.now();
-    const targets: Array<{ peer: PeerInfo; agentId: number; services: string[]; servicesKey: string }> = [];
+    const targets: Array<{ peer: PeerInfo; agentId: number; services: string[] }> = [];
     for (const peer of peers) {
       const agentId = peer.onChainAgentId;
       if (typeof agentId !== 'number' || !Number.isSafeInteger(agentId) || agentId <= 0) continue;
       const services = advertisedVerificationKeys(peer);
       if (services.length === 0) continue;
-      targets.push({ peer, agentId, services, servicesKey: services.join('\u0000') });
+      targets.push({ peer, agentId, services });
     }
     if (targets.length === 0) return;
-    const apply = (peer: PeerInfo, entry: { diffServices: string[]; fetchedAt: number }): void => {
-      peer.onChainDiffServices = [...entry.diffServices];
+    const apply = (peer: PeerInfo, services: readonly string[], entry: { diffServices: string[]; sameServices: string[]; agent?: ServiceVerdicts['agent']; fetchedAt: number }): void => {
+      peer.onChainDiffServices = entry.diffServices.filter((service) => services.includes(service));
+      peer.onChainSameServices = entry.sameServices.filter((service) => services.includes(service));
+      if (entry.agent) peer.onChainVerificationStatus = { ...entry.agent };
+      else delete peer.onChainVerificationStatus;
       peer.onChainVerificationFetchedAt = entry.fetchedAt;
+      // The trust score carries the verification multiplier: recompute it from its parts.
+      applyTrust(peer);
     };
     const stale = new Map<number, string[]>();
     for (const target of targets) {
       const cached = this._verificationStatusCache.get(target.agentId);
-      if (cached && cached.servicesKey === target.servicesKey && nowMs - cached.fetchedAt < VERIFICATION_STATUS_TTL_MS) {
-        apply(target.peer, cached);
+      // Peers sharing an agent id can advertise different services; a read that covered all of
+      // this peer's services answers it too.
+      if (cached && target.services.every((service) => cached.services.includes(service)) && nowMs - cached.fetchedAt < VERIFICATION_STATUS_TTL_MS) {
+        apply(target.peer, target.services, cached);
         continue;
       }
       const services = stale.get(target.agentId) ?? [];
@@ -1333,9 +1364,16 @@ export class AntseedNode extends EventEmitter {
       stale.set(target.agentId, services);
     }
     if (stale.size === 0) return;
-    let read: Map<number, string[]> = new Map();
+    // A refresh replaces the agent's cache entry, so it must cover every service any peer of
+    // that agent needs, including peers just answered from the old entry.
+    for (const target of targets) {
+      const services = stale.get(target.agentId);
+      if (!services) continue;
+      for (const service of target.services) if (!services.includes(service)) services.push(service);
+    }
+    let read: Map<number, ServiceVerdicts> = new Map();
     try {
-      read = await client.readDiffServices([...stale].map(([agentId, services]) => ({ agentId, services })));
+      read = await client.readServiceVerdicts([...stale].map(([agentId, services]) => ({ agentId, services })));
     } catch (err) {
       debugWarn(`[Node] On-chain verification read failed: ${err instanceof Error ? err.message : err}`);
     }
@@ -1346,9 +1384,9 @@ export class AntseedNode extends EventEmitter {
       }
     }
     for (const [agentId, services] of stale) {
-      const diffServices = read.get(agentId);
-      if (diffServices) {
-        this._verificationStatusCache.set(agentId, { servicesKey: [...services].sort().join('\u0000'), diffServices, fetchedAt });
+      const verdicts = read.get(agentId);
+      if (verdicts) {
+        this._verificationStatusCache.set(agentId, { services: [...services], diffServices: verdicts.diff, sameServices: verdicts.same, agent: verdicts.agent, fetchedAt });
       }
     }
     // The cache now holds this read where it succeeded and the last good read
@@ -1358,10 +1396,13 @@ export class AntseedNode extends EventEmitter {
       const entry = this._verificationStatusCache.get(target.agentId);
       if (!entry || fetchedAt - entry.fetchedAt >= VERIFICATION_STATUS_STALE_MAX_MS) {
         delete target.peer.onChainDiffServices;
+        delete target.peer.onChainSameServices;
+        delete target.peer.onChainVerificationStatus;
         delete target.peer.onChainVerificationFetchedAt;
+        applyTrust(target.peer);
         continue;
       }
-      apply(target.peer, { diffServices: entry.diffServices.filter((service) => target.services.includes(service)), fetchedAt: entry.fetchedAt });
+      apply(target.peer, target.services, entry);
     }
   }
 
@@ -1996,6 +2037,7 @@ export class AntseedNode extends EventEmitter {
           this._keepalives.get(peerId)?.handlePong(frame.payload);
           continue;
         }
+        this._inboundIdle?.touch(peerId);
         if (paymentMux && PaymentMux.isPaymentMessage(frame.type)) {
           paymentMux.handleFrame(frame).catch((err) => {
             const message = err instanceof Error ? err.message : String(err);
@@ -2017,11 +2059,13 @@ export class AntseedNode extends EventEmitter {
             debugWarn(`[Node] Failed to handle sweep frame from ${peerId.slice(0, 12)}...: ${message}`);
           });
         } else if (proxyMux) {
+          // A request stays in flight until its response is sent, however long the provider takes.
+          const finished = this._inboundIdle?.begin(peerId);
           proxyMux.handleFrame(frame).catch((err) => {
             const message = err instanceof Error ? err.message : String(err);
             debugWarn(`[Node] Failed to handle frame from ${peerId.slice(0, 12)}...: ${message}`);
             conn.fail(err instanceof Error ? err : new Error(message));
-          });
+          }).finally(() => finished?.());
         }
       }
     });
@@ -2030,6 +2074,7 @@ export class AntseedNode extends EventEmitter {
 
     conn.on("stateChange", (state: ConnectionState) => {
       if (state === ConnectionState.Closed || state === ConnectionState.Failed) {
+        this._inboundIdle?.untrack(peerId, conn);
         // Guard against stale close events: if a reconnect arrived before this
         // connection finished closing, a new decoder will have been registered.
         // Wiping the maps would evict the live session, so bail out early.
@@ -2161,7 +2206,21 @@ export class AntseedNode extends EventEmitter {
     this._connectionManager = await ConnectionManager.init(undefined, {
       requireSecureTransport: this._config.requireSecureTransport,
       ...(this._config.acceptInboundAddress ? { acceptInboundAddress: this._config.acceptInboundAddress } : {}),
+      ...(this._config.maxInboundConnections !== undefined ? { maxInboundConnections: this._config.maxInboundConnections } : {}),
     });
+    const inboundIdleTimeoutMs = this._config.inboundIdleTimeoutMs ?? DEFAULT_INBOUND_IDLE_TIMEOUT_MS;
+    if (inboundIdleTimeoutMs > 0) {
+      this._inboundIdle = new InboundIdleTracker({
+        idleTimeoutMs: inboundIdleTimeoutMs,
+        holdsSession: (buyerPeerId) => Boolean(this._channelStore?.getActiveChannelByPeer(buyerPeerId, CHANNEL_ROLE.SELLER))
+          || (this._sellerFreeUsageManager?.hasSession(buyerPeerId) ?? false),
+      });
+      this._inboundIdleSweep = setInterval(() => {
+        const closed = this._inboundIdle?.sweep() ?? [];
+        if (closed.length > 0) debugLog(`[Node] Closed ${closed.length} idle buyer connection(s) with no channel open`);
+      }, Math.min(60_000, inboundIdleTimeoutMs));
+      this._inboundIdleSweep.unref?.();
+    }
     this._connectionManager.setLocalIdentity(identity);
     this._connectionManager.on("error", (err: Error) => {
       debugWarn(`[ConnectionManager] ${err.message}`);
@@ -2271,6 +2330,10 @@ export class AntseedNode extends EventEmitter {
         debugWarn('[Node] Seller free-tier limits are using in-memory accounting because metering storage is unavailable; counters reset on restart.');
       }
     }
+    const sellerBuyerLimiter = this._config.buyerLimits
+      ? new SellerBuyerLimiter(this._config.buyerLimits, (buyerPeerId) => this._channelStore?.getFirstChannelCreatedAt(buyerPeerId, CHANNEL_ROLE.SELLER) ?? null)
+      : null;
+    if (sellerBuyerLimiter) debugLog(`[Node] Seller buyer limits enabled: ${sellerBuyerLimiter.describe()}`);
 
     // Create seller request handler
     this._sellerHandler = new SellerRequestHandler({
@@ -2280,6 +2343,7 @@ export class AntseedNode extends EventEmitter {
       sellerPaymentManager: this._sellerPaymentManager,
       sellerFreeUsageManager: this._sellerFreeUsageManager,
       sellerFreeTierLimiter,
+      sellerBuyerLimiter,
       sessionTracker: this._sessionTracker,
       channelsClient: this._channelsClient,
       announcer: this._announcer,
@@ -2522,6 +2586,7 @@ export class AntseedNode extends EventEmitter {
 
     this._muxes.set(buyerPeerId, mux);
     this._wireConnection(conn, buyerPeerId);
+    this._inboundIdle?.track(buyerPeerId, conn);
     this.emit("connection", conn);
   }
 
@@ -2665,6 +2730,7 @@ export class AntseedNode extends EventEmitter {
         payments.readProvider ?? this._channelsClient.provider,
         payments.verificationContractAddress,
         payments.verificationResultsAddress,
+        payments.verificationPointsPolicyAddress,
       );
       debugLog(`[Node] VerificationSignalsClient initialized (contract=${payments.verificationContractAddress.slice(0, 10)}...)`);
     }

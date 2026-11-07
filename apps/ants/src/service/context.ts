@@ -51,6 +51,8 @@ export interface AntsChainConfig {
   legacyEmissionsEscrowAddress?: string;
   washTradingRegistryAddress?: string;
   pointsPolicyRegistryAddress?: string;
+  /** AntseedVerificationPointsPolicy: scales points by the seller's model-verification verdicts. */
+  verificationPointsPolicyAddress?: string;
   recognizedUsage?: { status: 'deployed' | 'active'; effectiveEpoch: number; deploymentBlock?: number };
   /** Explorer REST base (Antscan) for seller profiles; optional. */
   explorerApiUrl?: string;
@@ -334,6 +336,7 @@ export class AntsContext {
       ['usageRewards', this.chain.usageRewardsAddress],
       ['positionInit', this.chain.positionInitAddress],
       ['pointsPolicyRegistry', this.chain.pointsPolicyRegistryAddress],
+      ['verificationPointsPolicy', this.chain.verificationPointsPolicyAddress],
       ['washTradingRegistry', this.chain.washTradingRegistryAddress],
       ['legacyEmissionsEscrow', this.chain.legacyEmissionsEscrowAddress],
       ['emissions', this.chain.emissionsContractAddress],

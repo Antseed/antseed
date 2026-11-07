@@ -310,7 +310,13 @@ export function registerSellerMonitorCommands(sellerCmd: Command): void {
       else {
         console.log(`${chalk.bold('Trust score')} ${trust.washFlagged ? 0 : trust.score.toFixed(1)} / 100${reputation.rank ? chalk.dim(`  (#${reputation.rank.position} of ${reputation.rank.of})`) : ''}`);
         const part = (label: string, value: { score: number; max: number } | null) => console.log(`  ${label.padEnd(18)} ${value ? `${value.score.toFixed(1)} / ${value.max}` : '—'}`);
-        part('Service history', trust.history); part('Recognized usage', trust.usage); part('Staking power', trust.power); part('Verified identity', trust.identity); part('Free model bonus', trust.freeModels);
+        part('Staking power', trust.power); part('Recognized usage', trust.usage); part('Verified identity', trust.identity); part('Free model bonus', trust.freeModels);
+        if (trust.verification) {
+          const { change, sameCount, diffCount, multiplierBps } = trust.verification;
+          const counts = [sameCount > 0 ? `${sameCount} verified` : null, diffCount > 0 ? `${diffCount} DIFF` : null].filter(Boolean).join(', ');
+          console.log(`  ${'Model checks'.padEnd(18)} ${change < 0 ? '−' : '+'}${Math.abs(change).toFixed(1)} (${counts}: earns ${Math.round(multiplierBps / 100)}% of normal points)`);
+        }
+        if (trust.history) console.log(chalk.dim(`  ${'Service history'.padEnd(18)} ${trust.history.channelCount} settled channels, $${trust.history.volumeUsdc.toFixed(2)} (shown only, not scored)`));
       }
       if (reputation.steps.length) console.log(`\n${chalk.bold('How to raise it')}\n${reputation.steps.map((step, index) => `  ${index + 1}. ${step.text}`).join('\n')}`);
       const standing = reputation.standing;

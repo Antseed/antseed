@@ -12,6 +12,7 @@ import type { ChannelsClient } from './payments/evm/channels-client.js';
 import type { SellerPaymentManager } from './payments/seller-payment-manager.js';
 import type { SellerFreeUsageManager } from './payments/seller-free-usage-manager.js';
 import type { FreeTierDecision, SellerFreeTierLimiter } from './payments/seller-free-tier-limiter.js';
+import type { BuyerUsageReservation, SellerBuyerLimiter } from './payments/seller-buyer-limiter.js';
 import { FREE_TIER_SERVED_COVERED, FREE_TIER_SERVED_HEADER, powerToAntsEpochs } from './payments/free-tier-program.js';
 import { FREE_TIER_DELEGATIONS_HEADER } from './payments/free-tier-delegation.js';
 
@@ -29,9 +30,10 @@ import type {
 } from './types/http.js';
 import {
   computeCostUsdc,
-  estimateTokensFromBytes,
+  estimateTokensFromBytesSampled,
 } from './payments/pricing.js';
 import { debugLog, debugWarn } from './utils/debug.js';
+import { buyerFacingResponseHeaders } from './proxy/buyer-response-headers.js';
 import {
   CONNECTION_CAPABILITY_RESPONSE_AUTH_V1,
   DEFAULT_FIRST_SIGN_CAP,
@@ -60,7 +62,7 @@ import {
 } from '@antseed/api-adapter';
 import { parseResponseUsage } from './utils/response-usage.js';
 import { requestBodyService } from './requested-service.js';
-import { buildSelfHealthErrorResponse, buildUpstreamUnavailableResponse, isUpstreamAccountError, isUpstreamFailureStatus } from './health/self-health-error.js';
+import { buildSelfHealthErrorResponse, buildUpstreamRateLimitedResponse, buildUpstreamUnavailableResponse, isUpstreamAccountError, isUpstreamFailureStatus } from './health/self-health-error.js';
 import type { ServicePerformanceTracker } from './health/service-performance.js';
 import { StreamOutcome } from './health/stream-outcome.js';
 import { routingProtocolForPath, routingProtocolOf, routingRequestOf, routingWireProtocol, ROUTING_PROTOCOLS, type RoutingProtocol } from '@antseed/protocol/routing';
@@ -147,6 +149,9 @@ function isZeroTokenPricing(pricing: ProviderTokenPricing): boolean {
  * Set a header the seller controls. Header names are case-insensitive, so any
  * buyer-sent copy (in any letter case) is removed first and only ours remains.
  */
+/** What a buyer is told when the provider throws; the exception itself stays in the seller's log. */
+const PROVIDER_FAILURE_MESSAGE = 'The seller could not complete the request upstream';
+
 function setTrustedHeader(headers: Record<string, string>, name: string, value: string): void {
   for (const key of Object.keys(headers)) {
     if (key.toLowerCase() === name) delete headers[key];
@@ -182,6 +187,8 @@ export interface SellerRequestHandlerDeps {
   sellerPaymentManager: SellerPaymentManager | null;
   sellerFreeUsageManager?: SellerFreeUsageManager | null;
   sellerFreeTierLimiter?: SellerFreeTierLimiter | null;
+  /** Per-buyer token limits; requests over them are answered 429 before any payment step. */
+  sellerBuyerLimiter?: SellerBuyerLimiter | null;
   sessionTracker: SellerSessionTracker | null;
   channelsClient: ChannelsClient | null;
   announcer: PeerAnnouncer | null;
@@ -208,6 +215,15 @@ const DEFAULT_CATCH_UP_WAIT_MS = 5_000;
 const CLOSING_CHANNEL_WAIT_MS = 15_000;
 /** How long a request at the reserve ceiling waits for a running top-up before a retryable answer. */
 const TOP_UP_WAIT_MS = 15_000;
+/** A request's buyer-limit reservation, its estimated size, and the tokens it is finished with. */
+interface BuyerUsageHold {
+  reservation: BuyerUsageReservation | null;
+  estimate: number;
+  tokens: number;
+}
+
+/** Output reserved against buyer limits for a running request that sets no output maximum. */
+const DEFAULT_OUTPUT_RESERVATION_TOKENS = 8_192;
 /** Per-buyer rate limit for the free attestation route. */
 const ATTEST_RATE_WINDOW_MS = 60_000;
 const ATTEST_RATE_MAX_PER_WINDOW = 10;
@@ -299,7 +315,8 @@ export class SellerRequestHandler {
       maxUploadBodyBytes: this._deps.maxUploadBodyBytes,
     });
 
-    mux.onProxyRequest(async (request: SerializedHttpRequest) => {
+    /** A request's buyer-limit reservation, finished with the tokens it used however the request ends. */
+    const handleProxyRequest = async (request: SerializedHttpRequest, usageHold: BuyerUsageHold): Promise<void> => {
       debugLog(`[SellerHandler] Received request: ${request.method} ${request.path} (reqId=${request.requestId.slice(0, 8)})`);
       // Response auth signs the request as the buyer sent it, so keep its headers before removing seller-only ones.
       const wireHeaders = { ...request.headers };
@@ -435,6 +452,7 @@ export class SellerRequestHandler {
         return;
       }
 
+
       const requestPricing = this.resolveProviderPricing(provider, request);
       let requestBilling: SellerBillingContext | null;
       let unitBillingModel: UnitBillingModelV1 | undefined;
@@ -476,8 +494,21 @@ export class SellerRequestHandler {
         return;
       }
       const estimatedRequestCost = requestCostEstimate?.cost ?? 0n;
+      const requestedService = this._extractRequestedService(request);
+      // Buyer limits: a request is admitted, with its estimated size held against them until it ends, before any payment step.
+      // They count tokens, so requests billed by other units (video, speech, images) are outside them.
+      if (this._deps.sellerBuyerLimiter && !videoRoute && !unitBillingModel) {
+        const estimatedUsage = this._estimateUsageTokens(request, requestCostEstimate);
+        const admission = this._deps.sellerBuyerLimiter.admit(buyerPeerId, provider.name, estimatedUsage, requestedService ?? undefined);
+        if (!admission.admitted) {
+          this._sendBuyerUsageLimited(mux, request.requestId, buyerPeerId, provider.name, admission.retryAfterSeconds);
+          return;
+        }
+        usageHold.reservation = admission.reservation;
+        usageHold.estimate = estimatedUsage;
+      }
 
-      const freeTierService = this._extractRequestedService(request) ?? 'unknown';
+      const freeTierService = requestedService ?? 'unknown';
       const freeTierLimiter = this._deps.sellerFreeTierLimiter;
       // A priced service with its own program serves the requests that program
       // covers for free; the rest are paid as usual, never refused. Videos are
@@ -997,6 +1028,8 @@ export class SellerRequestHandler {
             debugWarn(`[SellerHandler] Upstream account error: status=${statusCode} provider="${provider.name}" model="${requestedModel}" body=${upstreamError.slice(0, 200)}`);
             response = buildUpstreamUnavailableResponse(request.requestId, requestedModel);
             statusCode = response.statusCode;
+          } else if (!streamedResponseStarted && statusCode === 429) {
+            response = buildUpstreamRateLimitedResponse(request.requestId, requestedModel, takeHeader({ ...response.headers }, 'retry-after'));
           }
           const health = serviceHealthOf(provider.serviceHealth, requestedModel);
           if (!streamedResponseStarted && isServiceHealthFailing(health) && isUpstreamFailureStatus(statusCode)) {
@@ -1042,13 +1075,14 @@ export class SellerRequestHandler {
           this._deps.emit('provider:failure', { provider, service: requestedModel, billable: videoRoute?.action !== 'retrieve' });
           debugWarn(`[SellerHandler] Provider exception: provider="${provider.name}" model="${requestedModel}" buyer=${buyerPeerId.slice(0, 12)}... (${Date.now() - startTime}ms) ${message}`);
           if (videoRoute?.action === 'create') this._closeOneOffBestEffort(oneOffChannelId, 'video create failed');
-          responseBody = new TextEncoder().encode(message);
+          // The exception can quote the upstream (its account, its answer): the buyer only learns the request failed.
+          responseBody = new TextEncoder().encode(PROVIDER_FAILURE_MESSAGE);
           if (streamedResponseStarted && isDownload) {
             statusCode = 502;
             responseForAuth = null;
             mux.sendProxyError(request.requestId);
           } else if (streamedResponseStarted) {
-            const errorFrame = new TextEncoder().encode(`event: error\ndata: ${message}\n\n`);
+            const errorFrame = new TextEncoder().encode(`event: error\ndata: ${PROVIDER_FAILURE_MESSAGE}\n\n`);
             responseBody = errorFrame;
             mux.sendProxyChunk({
               requestId: request.requestId,
@@ -1210,6 +1244,17 @@ export class SellerRequestHandler {
       } finally {
         this.adjustProviderLoad(provider.name, -1);
         if (isBillable) spm!.endBillableRequest(buyerPeerId);
+        const reportedUsage = responseUsage.freshInputTokens + responseUsage.outputTokens;
+        // A served answer without a usage report (a buyer can turn streaming usage off) counts as its estimate.
+        usageHold.tokens = statusCode < 400 && reportedUsage + responseUsage.cachedInputTokens === 0 ? usageHold.estimate : reportedUsage;
+      }
+    };
+    mux.onProxyRequest(async (request: SerializedHttpRequest) => {
+      const usageHold: BuyerUsageHold = { reservation: null, estimate: 0, tokens: 0 };
+      try {
+        await handleProxyRequest(request, usageHold);
+      } finally {
+        usageHold.reservation?.finish(usageHold.tokens);
       }
     });
 
@@ -1368,17 +1413,23 @@ export class SellerRequestHandler {
     });
   }
 
+  private _sendBuyerUsageLimited(mux: ProxyMux, requestId: string, buyerPeerId: string, provider: string, retryAfterSeconds: number): void {
+    debugWarn(`[SellerHandler] Buyer ${buyerPeerId.slice(0, 12)}... over its usage limit on provider "${provider}", retry in ${retryAfterSeconds}s`);
+    this._sendJsonError(mux, requestId, 429, 'buyer_usage_limited', 'This buyer has reached its usage limit with this seller; retry later', { 'retry-after': String(retryAfterSeconds) });
+  }
+
   private _sendJsonError(
     mux: ProxyMux,
     requestId: string,
     statusCode: number,
     code: string,
     message: string,
+    extraHeaders: Record<string, string> = {},
   ): void {
     mux.sendProxyResponse({
       requestId,
       statusCode,
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...extraHeaders },
       body: new TextEncoder().encode(JSON.stringify({ error: { code, message } })),
     });
   }
@@ -1402,7 +1453,7 @@ export class SellerRequestHandler {
     setTrustedHeader(request.headers, 'x-antseed-buyer-peer-id', buyerPeerId);
     try {
       const response = await provider.handleRequest(request);
-      return { ...response, requestId: request.requestId };
+      return { ...response, requestId: request.requestId, headers: buyerFacingResponseHeaders(response.headers) };
     } catch (error) {
       return failure(503, 'unavailable', `Routing catalog failed: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -1559,6 +1610,7 @@ export class SellerRequestHandler {
       service,
       serviceApiProtocol: this._selectSellerProtocolForService(provider, service, request),
       request,
+      ...(provider.serviceCapabilities?.[service]?.video ? { videoOptions: provider.serviceCapabilities[service]!.video } : {}),
     });
   }
 
@@ -1649,13 +1701,30 @@ export class SellerRequestHandler {
       return null;
     }
 
-    const inputTokens = estimateTokensFromBytes(request.body);
+    const inputTokens = estimateTokensFromBytesSampled(request.body);
     const maxOutputTokens = this._extractMaxOutputTokens(body);
     return {
       cost: computeCostUsdc(inputTokens, maxOutputTokens, pricing),
       inputTokens,
       maxOutputTokens,
     };
+  }
+
+  /**
+   * Tokens a request may use, reserved against buyer limits while it runs: its
+   * input plus the output it asks for at most, or DEFAULT_OUTPUT_RESERVATION_TOKENS
+   * when it sets no maximum. Estimated whatever the price, so a burst on a free
+   * model is held to the limits too.
+   */
+  private _estimateUsageTokens(
+    request: SerializedHttpRequest,
+    costEstimate: { inputTokens: number; maxOutputTokens: number } | null,
+  ): number {
+    if (costEstimate && costEstimate.inputTokens > 0) {
+      return costEstimate.inputTokens + (costEstimate.maxOutputTokens || DEFAULT_OUTPUT_RESERVATION_TOKENS);
+    }
+    const body = this._isJsonRequest(request) ? tryParseJsonObject(request.body) : null;
+    return estimateTokensFromBytesSampled(request.body) + ((body && this._extractMaxOutputTokens(body)) || DEFAULT_OUTPUT_RESERVATION_TOKENS);
   }
 
   private _extractMaxOutputTokens(body: Record<string, unknown>): number {
@@ -1694,10 +1763,25 @@ export class SellerRequestHandler {
     request: SerializedHttpRequest,
     streamCallbacks?: ProviderStreamCallbacks,
   ): Promise<SerializedHttpResponse> {
+    // Buyers only ever see the headers buyerFacingResponseHeaders lets through.
     if (streamCallbacks && provider.handleRequestStream) {
-      return provider.handleRequestStream(request, streamCallbacks);
+      // A streamed 429 is held back like a buffered one, so its upstream body can be replaced before the buyer sees it.
+      let heldRateLimit = false;
+      const response = await provider.handleRequestStream(request, {
+        ...streamCallbacks,
+        onResponseStart: (start) => {
+          if (start.statusCode === 429) {
+            heldRateLimit = true;
+            return;
+          }
+          streamCallbacks.onResponseStart({ ...start, headers: buyerFacingResponseHeaders(start.headers) });
+        },
+        onResponseChunk: (chunk) => (heldRateLimit ? undefined : streamCallbacks.onResponseChunk(chunk)),
+      });
+      return { ...response, headers: buyerFacingResponseHeaders(response.headers) };
     }
-    return provider.handleRequest(request);
+    const response = await provider.handleRequest(request);
+    return { ...response, headers: buyerFacingResponseHeaders(response.headers) };
   }
 
   private _sendNeedAuthBestEffort(

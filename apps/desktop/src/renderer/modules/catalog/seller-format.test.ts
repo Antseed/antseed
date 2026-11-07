@@ -9,7 +9,7 @@ test('seller reputation explains the trust formula part by part', () => {
     onChainReputationScore: 65,
     trust: {
       score: 65,
-      history: { score: 30, channelCount: 100, totalVolumeUsdcMicros: 100_000_000 },
+      history: { score: 0, channelCount: 100, totalVolumeUsdcMicros: 100_000_000 },
       usage: { score: 10, shareBps: 1_000, epoch: 11 },
       power: { score: 5, shareBps: 1_000, epoch: 12 },
       identity: { score: 20, kind: 'github', claim: 'portfolio' },
@@ -18,7 +18,7 @@ test('seller reputation explains the trust formula part by part', () => {
   } as DiscoverRow;
   assert.equal(
     sellerReputationExplanation(route),
-    'Trust 6.5/10 = history 3.0 + usage 1.0 + power 0.5 + identity 2.0 GitHub. Not flagged for wash trading.',
+    'Trust 6.5/10 = power 0.5 + usage 1.0 + identity 2.0 GitHub. Not flagged for wash trading.',
   );
 });
 
@@ -30,7 +30,7 @@ test('seller reputation shows n/a, none and 0 for missing trust parts', () => {
   } as DiscoverRow;
   assert.equal(
     sellerReputationExplanation(route),
-    'Trust 0.0/10 = history n/a + usage n/a + power n/a + identity none. Wash-trading registry unavailable.',
+    'Trust 0.0/10 = power n/a + usage n/a + identity none. Wash-trading registry unavailable.',
   );
 });
 
@@ -40,7 +40,7 @@ test('seller reputation calls out proven wash traders', () => {
     onChainReputationScore: 0,
     trust: {
       score: 0,
-      history: { score: 50, channelCount: 100, totalVolumeUsdcMicros: 100_000_000 },
+      history: { score: 0, channelCount: 100, totalVolumeUsdcMicros: 100_000_000 },
       usage: { score: 38, shareBps: 7_000, epoch: 11 },
       power: { score: 5, shareBps: 20, epoch: 12 },
       identity: null,
@@ -62,12 +62,25 @@ test('seller reputation appends the DIFF verification penalty to the trust expla
   const route = {
     effectiveReputationScore: 7,
     onChainReputationScore: 70,
-    verificationDiff: true,
+    verification: 'diff',
     trust: null,
   } as DiscoverRow;
   assert.equal(
     sellerReputationExplanation(route),
     'Trust: 0.7/10. Model verification: DIFF. An on-chain audit suspects this service is not the model it claims, so its reputation is cut to 10% (0.7/10).',
+  );
+});
+
+test('seller reputation adds the SAME verification sentence to the trust explanation', () => {
+  const route = {
+    effectiveReputationScore: 70,
+    onChainReputationScore: 70,
+    verification: 'same',
+    trust: null,
+  } as DiscoverRow;
+  assert.equal(
+    sellerReputationExplanation(route),
+    'Trust: 7.0/10. Model verification: SAME. An on-chain audit found this service answers like the genuine model.',
   );
 });
 

@@ -34,7 +34,7 @@ A unit billing model maps a protocol key to a list of priced components:
 }
 ```
 
-A component can carry a `match` object to price tiers. Match keys are `model`, `size`, `quality` and `resolution`, compared with the request's values. Every billed unit must match a component: a request that matches none is refused, not served for free.
+A component can carry a `match` object to price tiers. Match keys are `model`, `size`, `quality`, `resolution`, and for video `aspect_ratio` and `audio` (`"true"` or `"false"`), compared with the request's values. Components that match add up. A model holds up to 64 components (8 for buyers on metadata before v16; services using `aspect_ratio`, `audio` or more than 8 components need v16). Every billed unit must match a component: a request that matches none is refused, not served for free.
 
 Image, video and speech services are not health-probed, because a probe would generate a paid result. The Venice and fal video plugins instead check for free on each health sweep: Venice reads the key's balance and its public model list, and fal reads its model list, plus the balance when `FAL_VIDEO_API_KEY` has fal's `billing:usage:read` permission. Without that permission the fal seller logs at startup that its balance check is off, and keeps selling. A model that fails these checks is announced as failing, so buyers skip it, and as healthy again once they pass.
 
@@ -206,6 +206,18 @@ antseed config seller add-service video seedance-2-5-reference-to-video-basic \
 ```
 
 Don't confuse it with `audio`, a `true`/`false` request field that turns on generated sound for models that make their own.
+
+### Prices by aspect ratio and audio
+
+Some upstreams charge differently for the same resolution and length depending on the aspect ratio or on generated sound (on Venice, Seedance at 480p for 4 s costs $0.51 at 16:9 and $0.67 at 21:9, and Veo costs less without audio). Match `aspect_ratio` and `audio` next to `resolution` to charge each its own price:
+
+```json
+{"venice-video":{"version":1,"components":[
+  {"unit":"video_seconds","priceUsd":0.0701,"match":{"resolution":"480p","aspect_ratio":"16:9","audio":"true"}},
+  {"unit":"video_seconds","priceUsd":0.0921,"match":{"resolution":"480p","aspect_ratio":"21:9","audio":"true"}}]}}
+```
+
+A create that leaves out `aspect_ratio` is priced at the first entry of `capabilities.video.aspectRatios`, and one that leaves out `audio` at `capabilities.video.audio`. The `venice-video` plugin sends Venice those same values, and refuses an aspect ratio you don't list (`422 unsupported_video_option`, before payment), so every create it serves has a price. On `fal-video` nothing is filled in: a create is priced by the options it names, so one that leaves out an option your components require is refused. A request no component matches is refused, not served for free.
 
 ### fal.ai models
 

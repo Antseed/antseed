@@ -57,18 +57,18 @@ contract DeployStandaloneVerificationSplitTest is Test {
         assertEq(d.results.owner(), owner);
         assertEq(d.kbf.owner(), owner);
         assertEq(d.policy.owner(), owner);
-        assertEq(address(d.results.registry()), address(registry));
+        assertEq(address(d.kbf.identityRegistry()), address(identity));
         assertEq(address(d.kbf.sellerPools()), address(sellerPools));
         assertEq(address(d.results.emissionsGate()), address(emissions));
         assertEq(d.results.rewardsStartEpoch(address(d.kbf)), type(uint64).max);
-        assertTrue(d.results.isSource(address(d.kbf)));
-        assertEq(d.results.sourceShareBps(address(d.kbf)), 10_000);
+        assertTrue(d.results.isAudit(address(d.kbf)));
+        assertEq(d.results.auditShareBps(address(d.kbf)), 10_000);
         assertEq(address(d.kbf.results()), address(d.results));
         assertEq(address(d.policy.results()), address(d.results));
         assertTrue(d.kbf.approvedAuditors(auditor));
         assertEq(registry.emissions(), originalEmissions);
         assertEq(registry.identityRegistry(), originalIdentity);
-        // 3 deployments + setSource + setSourceShareBps + one setAuditor per auditor.
+        // 3 deployments + setAudit + setAuditShareBps + one setAuditor per auditor.
         assertEq(vm.getNonce(owner), originalOwnerNonce + 5 + _config().auditors.length);
     }
 

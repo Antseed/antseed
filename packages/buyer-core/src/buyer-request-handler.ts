@@ -876,12 +876,14 @@ export function selectBillingRoute(
   const serviceApiProtocol = selectProtocolForService(peer, provider, service, request);
   const unitModel = peer.providerServiceUnitBillingModels?.[provider]?.services[service]?.[serviceApiProtocol];
   const tokenPricing = selectTokenPricing(peer, provider, service);
+  const videoOptions = peer.providerServiceCapabilities?.[provider]?.services[service]?.video;
   return {
     sellerPeerId: peer.peerId,
     provider,
     service,
     serviceApiProtocol,
     ...(unitModel ? { unitModel } : {}),
+    ...(videoOptions ? { videoOptions } : {}),
     ...(tokenPricing ? { tokenPricing } : {}),
   };
 }

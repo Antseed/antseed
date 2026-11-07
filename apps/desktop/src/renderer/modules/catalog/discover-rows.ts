@@ -1,65 +1,16 @@
-import type { ChatServiceOptionEntry, DiscoverRow, ServiceCapabilitiesView, TrustBreakdown, VideoOptionsView } from '../../core/state';
+import type { ChatServiceOptionEntry, DiscoverRow, ServiceCapabilitiesView, VideoOptionsView } from '../../core/state';
 import type { DiscoverVerificationLink } from '../../core/state';
 import { isTextCapableRow } from './model-capabilities';
 import { normalizeAdvertisedVerifierIds } from '@antseed/node/verifier-capabilities';
 import { normalizeFreeTierProgram } from '@antseed/node/free-tier-program';
+import { normalizeTrustBreakdown } from '../../../shared/trust-breakdown';
+
+export { normalizeTrustBreakdown as normalizeTrust };
 
 const CHAT_SERVICE_SELECTION_SEPARATOR = '\u0001';
 
-function boundedScore(input: unknown): number | null {
-  return typeof input === 'number' && Number.isFinite(input) && input >= 0 && input <= 100 ? input : null;
-}
-
 function nonNegative(input: unknown): number | null {
   return typeof input === 'number' && Number.isFinite(input) && input >= 0 ? input : null;
-}
-
-function asObject(input: unknown): Record<string, unknown> | null {
-  return input && typeof input === 'object' && !Array.isArray(input) ? input as Record<string, unknown> : null;
-}
-
-/** Validate the buyer's `TrustBreakdown`; each part is nullable, the final score must be 0-100. */
-export function normalizeTrust(raw: unknown): TrustBreakdown | null {
-  const value = asObject(raw);
-  if (!value) return null;
-  const score = boundedScore(value.score);
-  if (score === null) return null;
-  return {
-    score,
-    history: normalizeHistoryPart(asObject(value.history)),
-    usage: normalizeSharePart(asObject(value.usage)),
-    power: normalizeSharePart(asObject(value.power)),
-    identity: normalizeIdentityPart(asObject(value.identity)),
-    washFlagged: typeof value.washFlagged === 'boolean' ? value.washFlagged : null,
-  };
-}
-
-function normalizeHistoryPart(raw: Record<string, unknown> | null): TrustBreakdown['history'] {
-  if (!raw) return null;
-  const score = boundedScore(raw.score);
-  const channelCount = nonNegative(raw.channelCount);
-  const totalVolumeUsdcMicros = nonNegative(raw.totalVolumeUsdcMicros);
-  if (score === null || channelCount === null || totalVolumeUsdcMicros === null) return null;
-  return { score, channelCount, totalVolumeUsdcMicros };
-}
-
-/** A usage or power part: weighted score plus the share and epoch it came from. */
-function normalizeSharePart(raw: Record<string, unknown> | null): TrustBreakdown['usage'] {
-  if (!raw) return null;
-  const score = boundedScore(raw.score);
-  const shareBps = nonNegative(raw.shareBps);
-  const epoch = nonNegative(raw.epoch);
-  if (score === null || shareBps === null || epoch === null) return null;
-  return { score, shareBps, epoch };
-}
-
-function normalizeIdentityPart(raw: Record<string, unknown> | null): TrustBreakdown['identity'] {
-  if (!raw) return null;
-  const score = boundedScore(raw.score);
-  if (score === null) return null;
-  if (raw.kind !== 'github' && raw.kind !== 'domain') return null;
-  const claim = typeof raw.claim === 'string' ? raw.claim : '';
-  return { score, kind: raw.kind, claim };
 }
 
 function toNullableBigintString(v: unknown): string | null {
@@ -221,9 +172,10 @@ export function normalizeDiscoverRow(raw: unknown): DiscoverRow | null {
     onChainReputationScore: typeof r.onChainReputationScore === 'number' && Number.isFinite(r.onChainReputationScore)
       ? r.onChainReputationScore
       : null,
-    trust: normalizeTrust(r.trust),
+    trust: normalizeTrustBreakdown(r.trust),
     washFlagged: typeof r.washFlagged === 'boolean' ? r.washFlagged : null,
-    verificationDiff: r.verificationDiff === true,
+    verification: r.verification === 'diff' || r.verification === 'same' ? r.verification : null,
+    verificationUrl: normalizeHttpsUrl(r.verificationUrl),
     effectiveReputationScore: typeof r.effectiveReputationScore === 'number' && Number.isFinite(r.effectiveReputationScore)
       ? r.effectiveReputationScore
       : null,

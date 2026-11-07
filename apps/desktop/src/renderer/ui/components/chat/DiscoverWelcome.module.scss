@@ -877,3 +877,13 @@
   }
 
 }
+
+/* A passed on-chain model check: the proxy-badge shape, in green. */
+.proxy-badge.model-verified-badge {
+  color: var(--accent-green, #10b981);
+
+  &:hover,
+  &:focus-visible {
+    color: var(--accent-green, #10b981);
+  }
+}

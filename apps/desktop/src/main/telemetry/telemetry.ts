@@ -9,8 +9,9 @@
  *   property passes through ./sanitize.ts's allowlist — unknown properties
  *   are dropped, strings truncated, numbers bounded.
  * - Disabled in development builds, when the TELEMETRY_ENABLED kill switch
- *   is falsy, when PostHog config is missing, or when the user opts out in
- *   Settings.
+ *   is falsy, under the opt-outs every AntSeed product honors
+ *   (`DO_NOT_TRACK=1`, `ANTSEED_TELEMETRY=0`), when PostHog config is
+ *   missing, and until the user turns it on in Settings.
  * - Routine captures are fire-and-forget; clean shutdown uses a bounded flush.
  * - First-open and first-chat events fire exactly once per installation.
  */
@@ -20,7 +21,13 @@ import {
   countBucket,
   daysSinceFirstOpenBucket,
   depositAmountBucket,
+  depositStepAmountBucket,
   durationBucket,
+  secsSinceConnectBucket,
+  stepGapBucket,
+  type DepositMethod,
+  type DepositStep,
+  type StartupFailureStage,
   sessionDurationBucket,
   type FirstChatDepositSnapshot,
   type TelemetryEventName,
@@ -37,12 +44,26 @@ import {
   BAKED_POSTHOG_HOST,
   BAKED_POSTHOG_PROJECT_API_KEY,
 } from '../generated/baked-defaults.js';
-import type { UserActionSignal } from '../../shared/telemetry.js';
+import type { TelemetryAppName, UserActionSignal } from '../../shared/telemetry.js';
 
 export const TELEMETRY_ENABLED_ENV = 'TELEMETRY_ENABLED';
+/** The opt-outs every AntSeed product honors (see packages/telemetry's consent rule). */
+export const ANTSEED_TELEMETRY_ENV = 'ANTSEED_TELEMETRY';
+export const DO_NOT_TRACK_ENV = 'DO_NOT_TRACK';
 export const POSTHOG_HOST_ENV = 'POSTHOG_HOST';
 export const POSTHOG_PROJECT_API_KEY_ENV = 'POSTHOG_PROJECT_API_KEY';
 export const INSTALL_SOURCE_ENV = 'INSTALL_SOURCE';
+
+/** Startup that has not shown a model by then is reported as failed. */
+export const DEFAULT_STARTUP_TIMEOUT_MS = 3 * 60_000;
+
+/** How long a connected app has to send its first request before `no_request`. */
+export const CONNECTED_APP_FIRST_REQUEST_WINDOW_MS = 30 * 60_000;
+/**
+ * How long past the window `no_request` waits, so the watcher's last check
+ * at the deadline (a proxy fetch with a 3s timeout) can still report the request.
+ */
+export const CONNECTED_APP_FINAL_CHECK_GRACE_MS = 10_000;
 
 const USDC_BASE_UNITS = 1_000_000n;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -70,7 +91,13 @@ export function uuidV7(timestampMs: number): string {
 function isFalsyEnv(value: string | undefined): boolean {
   if (!value) return false;
   const normalized = value.trim().toLowerCase();
-  return normalized === 'false' || normalized === '0' || normalized === 'no';
+  return normalized === 'false' || normalized === '0' || normalized === 'no' || normalized === 'off';
+}
+
+function isTruthyEnv(value: string | undefined): boolean {
+  if (!value) return false;
+  const normalized = value.trim().toLowerCase();
+  return normalized === 'true' || normalized === '1' || normalized === 'yes' || normalized === 'on';
 }
 
 function configValue(env: NodeJS.ProcessEnv, key: string, baked: string | null): string {
@@ -115,6 +142,8 @@ export type TelemetryContext = {
 export type TelemetryService = {
   readonly available: boolean;
   readonly enabled: boolean;
+  /** This launch's session, passed to the buyer so its events join it. */
+  readonly sessionId: string;
   context: () => TelemetryContext;
   /** Emits app_first_opened (once) and app_started; handles crash recovery. */
   recordAppStarted: (nowMs?: number) => Promise<void>;
@@ -131,6 +160,32 @@ export type TelemetryService = {
   recordSetupCompleted: (nowMs?: number) => Promise<void>;
   /** Deposit observed credited; amount never leaves the device, only a bucket. */
   recordDepositCredited: (amountBaseUnits: string, nowMs?: number) => Promise<void>;
+  /** One step of the deposit funnel; `amountUsdc` is bucketed before sending. */
+  recordDepositStep: (input: {
+    step: DepositStep;
+    method?: DepositMethod;
+    amountUsdc?: number;
+  }, nowMs?: number) => Promise<void>;
+  /** Once per launch: the first visible model ends startup as a success. */
+  /** Sends what had to wait for the user's consent. Call once their choice is saved everywhere. */
+  recordTelemetryTurnedOn: (nowMs?: number) => Promise<void>;
+  recordStartupFinished: (input: {
+    outcome: 'success' | 'failed';
+    failureStage: StartupFailureStage;
+  }, nowMs?: number) => Promise<void>;
+  /** A connected app was connected; its first request (or none) is reported later. */
+  recordConnectedAppConnected: (app: TelemetryAppName, nowMs?: number) => Promise<void>;
+  /** The local proxy saw a request from a connected app. */
+  recordConnectedAppRequest: (app: TelemetryAppName, nowMs?: number) => Promise<void>;
+  recordPremiumBlocked: (
+    input: TelemetryEventProperties['premium_blocked'],
+    nowMs?: number,
+  ) => Promise<void>;
+  recordWithdrawStarted: (nowMs?: number) => Promise<void>;
+  recordWithdrawCompleted: (nowMs?: number) => Promise<void>;
+  /** A pay page for something other than a withdraw opened (deposit, channel close). */
+  clearPendingWithdraw: () => void;
+  recordRuntimeStoppedOnWindowClose: (runtimeWasRunning: boolean, nowMs?: number) => Promise<void>;
   recordDepositFailed: (input: {
     failureCode: TelemetryEventProperties['deposit_failed']['failure_code'];
     failureStage: TelemetryEventProperties['deposit_failed']['failure_stage'];
@@ -177,6 +232,8 @@ export type CreateTelemetryServiceOptions = {
   transport?: PostHogTransport;
   heartbeatIntervalMs?: number | null;
   shutdownFlushTimeoutMs?: number;
+  /** null disables the startup-failure timer (tests drive it explicitly). */
+  startupTimeoutMs?: number | null;
 };
 
 export async function createTelemetryService(
@@ -185,7 +242,9 @@ export async function createTelemetryService(
   const env = options.env ?? process.env;
   const now = options.nowMs ?? (() => Date.now());
 
-  const envDisabled = isFalsyEnv(env[TELEMETRY_ENABLED_ENV]);
+  const envDisabled = isFalsyEnv(env[TELEMETRY_ENABLED_ENV])
+    || isFalsyEnv(env[ANTSEED_TELEMETRY_ENV])
+    || isTruthyEnv(env[DO_NOT_TRACK_ENV]);
   const host = configValue(env, POSTHOG_HOST_ENV, BAKED_POSTHOG_HOST);
   const apiKey = configValue(env, POSTHOG_PROJECT_API_KEY_ENV, BAKED_POSTHOG_PROJECT_API_KEY);
   const configMissing = host.length === 0 || apiKey.length === 0 || !isValidHttpsUrl(host);
@@ -231,6 +290,22 @@ export async function createTelemetryService(
   let hasEmittedFirstUserAction = false;
   let lastModelSelectionKey: string | null = null;
   let firstChatClaimed = false;
+  let hasEmittedStartupFinished = false;
+  // Lifecycle stages reached this launch, independent of delivery.
+  let runtimeReached = false;
+  let dhtReached = false;
+  let peersReached = false;
+  let startupTimer: NodeJS.Timeout | null = null;
+  // Deposit funnel: the method chosen last in this launch, and the last step.
+  let lastDepositMethod: DepositMethod = 'unknown';
+  let lastDepositStepAtMs: number | null = null;
+  let checkoutOpenedCount = 0;
+  let withdrawPending = false;
+  // premium_blocked follow-up: armed once, resolved by the next deposit,
+  // a free-model selection, or the end of the launch.
+  let premiumBlockedPending = false;
+  // Connected apps awaiting their first request, keyed by app.
+  const pendingConnectedApps = new Map<TelemetryAppName, { connectedAtMs: number; timer: NodeJS.Timeout | null }>();
 
   type PendingUserAction = {
     input: UserActionSignal;
@@ -242,7 +317,7 @@ export async function createTelemetryService(
   const available = !staticDisabled;
   const isEnabled = () => (
     available
-    && !state.telemetryDisabled
+    && state.telemetryEnabled
     && normalizeDistinctId(options.getDistinctId()) !== null
   );
 
@@ -263,6 +338,7 @@ export async function createTelemetryService(
         $geoip_disable: true,
         $process_person_profile: false,
         schema_version: TELEMETRY_SCHEMA_VERSION,
+        product: 'desktop',
         event_ts_ms: eventTsMs,
         session_id: captureSessionId,
         $session_id: captureSessionId,
@@ -365,6 +441,64 @@ export async function createTelemetryService(
     heartbeatTimer = null;
   };
 
+  const startupFailureStage = (): StartupFailureStage => {
+    if (!runtimeReached) return 'runtime';
+    if (!dhtReached) return 'dht';
+    if (!peersReached) return 'peer_search';
+    return 'models';
+  };
+
+  /** An explicit `failureStage` wins over the derived one. */
+  const finishStartup = (
+    outcome: 'success' | 'failed',
+    nowMs: number,
+    failureStage: StartupFailureStage = 'none',
+  ): void => {
+    if (hasEmittedStartupFinished) return;
+    if (startupTimer) {
+      clearTimeout(startupTimer);
+      startupTimer = null;
+    }
+    hasEmittedStartupFinished = track('startup_finished', {
+      outcome,
+      failure_stage: outcome === 'success'
+        ? 'none'
+        : failureStage === 'none' ? startupFailureStage() : failureStage,
+      duration_bucket: durationBucket(durationSinceSessionStart(nowMs)),
+    }, nowMs);
+  };
+
+  // The first launch runs before anyone can turn telemetry on, so reporting it
+  // waits: `hasEmittedFirstOpen` is set only once the event was really sent.
+  const reportFirstOpen = (nowMs: number): void => {
+    if (state.hasEmittedFirstOpen || !state.firstOpenDate) return;
+    state.hasEmittedFirstOpen = track('app_first_opened', { first_open_date: state.firstOpenDate }, nowMs);
+  };
+
+  const resolvePremiumBlocked = (nextAction: TelemetryEventProperties['premium_blocked_followup']['next_action'], nowMs: number): Promise<void> | null => {
+    if (!premiumBlockedPending) return null;
+    premiumBlockedPending = false;
+    return capture('premium_blocked_followup', { next_action: nextAction }, nowMs);
+  };
+
+  const finishConnectedApp = (
+    app: TelemetryAppName,
+    outcome: TelemetryEventProperties['connected_app_first_request']['outcome'],
+    nowMs: number,
+  ): Promise<void> | null => {
+    const pending = pendingConnectedApps.get(app);
+    if (!pending) return null;
+    pendingConnectedApps.delete(app);
+    if (pending.timer) clearTimeout(pending.timer);
+    return capture('connected_app_first_request', {
+      app,
+      outcome,
+      secs_since_connect: outcome === 'request_seen'
+        ? secsSinceConnectBucket(Math.max(0, nowMs - pending.connectedAtMs))
+        : 'none',
+    }, nowMs);
+  };
+
   return {
     get available() {
       return available;
@@ -373,6 +507,8 @@ export async function createTelemetryService(
     get enabled() {
       return isEnabled();
     },
+
+    sessionId,
 
     context: () => ({ ...context }),
 
@@ -394,13 +530,12 @@ export async function createTelemetryService(
         }, recoveredAtMs, previousSessionId ?? sessionId);
       }
 
-      const isFirstLaunch = !state.hasEmittedFirstOpen;
+      const isFirstLaunch = !state.hasEmittedFirstOpen && state.firstOpenedAtMs === null;
       if (isFirstLaunch) {
-        state.hasEmittedFirstOpen = true;
         state.firstOpenedAtMs = nowMs;
         state.firstOpenDate = new Date(nowMs).toISOString().slice(0, 10);
-        track('app_first_opened', { first_open_date: state.firstOpenDate }, nowMs);
       }
+      reportFirstOpen(nowMs);
 
       state.sessionActive = true;
       state.lastSessionId = sessionId;
@@ -409,9 +544,20 @@ export async function createTelemetryService(
       track('app_started', { is_first_launch: isFirstLaunch }, nowMs);
       await save();
       startHeartbeat();
+      const startupTimeoutMs = options.startupTimeoutMs === undefined
+        ? DEFAULT_STARTUP_TIMEOUT_MS
+        : options.startupTimeoutMs;
+      if (startupTimeoutMs !== null && startupTimeoutMs > 0 && !startupTimer && !hasEmittedStartupFinished) {
+        startupTimer = setTimeout(() => {
+          startupTimer = null;
+          finishStartup('failed', now());
+        }, startupTimeoutMs);
+        startupTimer.unref?.();
+      }
     },
 
     async recordNetworkRuntimeStarted(nowMs = now()) {
+      runtimeReached = true;
       if (hasEmittedNetworkRuntimeStarted) return;
       hasEmittedNetworkRuntimeStarted = track('network_runtime_started', {
         duration_bucket: durationBucket(durationSinceSessionStart(nowMs)),
@@ -419,6 +565,7 @@ export async function createTelemetryService(
     },
 
     async recordDhtStarted(routingNodeCount, nowMs = now()) {
+      if (routingNodeCount > 0) dhtReached = true;
       if (hasEmittedDhtStarted || routingNodeCount <= 0) return;
       hasEmittedDhtStarted = track('dht_started', {
         duration_bucket: durationBucket(durationSinceSessionStart(nowMs)),
@@ -427,6 +574,7 @@ export async function createTelemetryService(
     },
 
     async recordPeersDiscovered(peerCount, serviceCount, nowMs = now()) {
+      if (peerCount > 0) peersReached = true;
       if (hasEmittedPeersDiscovered || peerCount <= 0) return;
       hasEmittedPeersDiscovered = track('peers_discovered', {
         duration_bucket: durationBucket(durationSinceSessionStart(nowMs)),
@@ -441,6 +589,7 @@ export async function createTelemetryService(
         ...input,
         duration_bucket: durationBucket(durationSinceSessionStart(nowMs)),
       }, nowMs);
+      finishStartup('success', nowMs);
     },
 
     async recordUserAction(input, nowMs = now()) {
@@ -476,11 +625,86 @@ export async function createTelemetryService(
       state.hasCompletedDeposit = true;
       track('deposit_completed', {
         method_category: 'usdc',
+        method: lastDepositMethod,
         amount_bucket: bucket,
         is_first_deposit: isFirstDeposit,
         days_since_first_open: daysSinceFirstOpenBucket(daysSinceFirstOpen(nowMs)),
       }, nowMs);
+      const stepBucket = depositStepAmountBucket(amountUsdc);
+      track('deposit_step', {
+        step: 'credited',
+        method: lastDepositMethod,
+        ...(stepBucket ? { amount_bucket: stepBucket } : {}),
+        secs_since_prev_step: stepGapBucket(lastDepositStepAtMs === null ? null : nowMs - lastDepositStepAtMs),
+      }, nowMs);
+      lastDepositStepAtMs = nowMs;
+      void resolvePremiumBlocked('deposited', nowMs);
       await save();
+    },
+
+    async recordDepositStep(input, nowMs = now()) {
+      if (input.method) lastDepositMethod = input.method;
+      if (input.step === 'checkout_opened') {
+        checkoutOpenedCount += 1;
+      }
+      const step: DepositStep = input.step === 'checkout_opened' && checkoutOpenedCount > 1
+        ? 'checkout_reopened'
+        : input.step;
+      const amountBucket = input.amountUsdc !== undefined ? depositStepAmountBucket(input.amountUsdc) : null;
+      track('deposit_step', {
+        step,
+        method: input.method ?? lastDepositMethod,
+        ...(amountBucket ? { amount_bucket: amountBucket } : {}),
+        secs_since_prev_step: stepGapBucket(lastDepositStepAtMs === null ? null : nowMs - lastDepositStepAtMs),
+      }, nowMs);
+      lastDepositStepAtMs = nowMs;
+    },
+
+    async recordStartupFinished(input, nowMs = now()) {
+      finishStartup(input.outcome, nowMs, input.failureStage);
+    },
+
+    async recordConnectedAppConnected(app, nowMs = now()) {
+      if (!isEnabled()) return;
+      const existing = pendingConnectedApps.get(app);
+      if (existing?.timer) clearTimeout(existing.timer);
+      const timer = setTimeout(() => {
+        void finishConnectedApp(app, 'no_request', now());
+      }, CONNECTED_APP_FIRST_REQUEST_WINDOW_MS + CONNECTED_APP_FINAL_CHECK_GRACE_MS);
+      timer.unref?.();
+      pendingConnectedApps.set(app, { connectedAtMs: nowMs, timer });
+    },
+
+    async recordConnectedAppRequest(app, nowMs = now()) {
+      void finishConnectedApp(app, 'request_seen', nowMs);
+    },
+
+    async recordPremiumBlocked(input, nowMs = now()) {
+      if (track('premium_blocked', input, nowMs)) premiumBlockedPending = true;
+    },
+
+    async recordWithdrawStarted(nowMs = now()) {
+      if (track('withdraw_started', {}, nowMs)) withdrawPending = true;
+    },
+
+    async recordWithdrawCompleted(nowMs = now()) {
+      // The pay page reports completion for every action; only a withdraw
+      // this launch started counts.
+      if (!withdrawPending) return;
+      withdrawPending = false;
+      track('withdraw_completed', {}, nowMs);
+    },
+
+    clearPendingWithdraw() {
+      // The pay page only says "a payment completed", not which one. Once a
+      // different pay page opens, a later completion belongs to that one,
+      // so a withdraw opened earlier and abandoned is not counted.
+      withdrawPending = false;
+    },
+
+    async recordRuntimeStoppedOnWindowClose(runtimeWasRunning, nowMs = now()) {
+      const delivery = capture('runtime_stopped_on_window_close', { runtime_was_running: runtimeWasRunning }, nowMs);
+      await awaitShutdownDelivery(delivery);
     },
 
     async recordDepositFailed(input, nowMs = now()) {
@@ -514,6 +738,9 @@ export async function createTelemetryService(
 
     async recordModelSelected(input, selectionKey, nowMs = now()) {
       if (selectionKey === lastModelSelectionKey) return;
+      if (input.pricing_tier === 'free' || input.has_free_eligible_offer) {
+        void resolvePremiumBlocked('switched_free_model', nowMs);
+      }
       if (track('model_selected', input, nowMs)) {
         lastModelSelectionKey = selectionKey;
       }
@@ -534,6 +761,12 @@ export async function createTelemetryService(
     async recordCleanShutdown(nowMs = now()) {
       if (!state.sessionActive) return;
       stopHeartbeat();
+      if (startupTimer) {
+        clearTimeout(startupTimer);
+        startupTimer = null;
+      }
+      const followup = resolvePremiumBlocked('left', nowMs);
+      const appDeliveries = [...pendingConnectedApps.keys()].map((app) => finishConnectedApp(app, 'no_request', nowMs));
       const delivery = capture('app_closed', {
         was_crash: false,
         session_duration_bucket: sessionDurationBucket(
@@ -544,14 +777,25 @@ export async function createTelemetryService(
       state.lastSessionId = null;
       state.lastSessionStartedAtMs = null;
       state.lastSessionHeartbeatAtMs = null;
-      await Promise.all([save(), awaitShutdownDelivery(delivery)]);
+      await Promise.all([
+        save(),
+        awaitShutdownDelivery(delivery),
+        awaitShutdownDelivery(followup),
+        ...appDeliveries.map((pending) => awaitShutdownDelivery(pending)),
+      ]);
     },
 
-    isUserOptedOut: () => state.telemetryDisabled,
+    // Off until turned on: "opted out" is every state but an explicit yes.
+    isUserOptedOut: () => !state.telemetryEnabled,
 
     async setUserOptedOut(disabled: boolean) {
-      state.telemetryDisabled = Boolean(disabled);
-      if (state.telemetryDisabled) pendingUserActions.length = 0;
+      state.telemetryEnabled = !disabled;
+      if (!state.telemetryEnabled) pendingUserActions.length = 0;
+      await save();
+    },
+
+    async recordTelemetryTurnedOn(nowMs = now()) {
+      reportFirstOpen(nowMs);
       await save();
     },
   };

@@ -10,4 +10,5 @@ export {
   SERVED_METADATA_VERSIONS,
   type MetadataVersionCodec,
   type MetadataVocabulary,
+  type MetadataVocabularyNameKind,
 } from "./metadata/index.js";

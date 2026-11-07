@@ -1315,3 +1315,21 @@ test('seller.alerts survives a load and save, and a malformed one is refused', a
   assert.throws(() => configFromObject({ seller: { alerts: { telegram: { chatId: true }, idleMinutes: '5', minSeverity: 'loud' } } }),
     /seller\.alerts\.telegram\.chatId[\s\S]*seller\.alerts\.idleMinutes[\s\S]*seller\.alerts\.minSeverity/);
 });
+
+test('loadConfig reads seller buyerLimits and rejects non-positive ones', async () => {
+  const buyerLimits = { windowMinutes: 60, maxTokensPerBuyer: 40_000_000, newBuyers: { forHours: 72, maxTokensPerBuyer: 2_000_000, maxTokensTotal: 10_000_000 }, serviceWeights: { 'heavy-model': 10 } };
+  await withTempConfig(JSON.stringify({ seller: { buyerLimits } }), async (configPath) => {
+    assert.deepEqual((await loadConfig(configPath)).seller.buyerLimits, buyerLimits);
+  });
+  await withTempConfig(JSON.stringify({ seller: { buyerLimits: { maxTokensPerBuyer: 0, newBuyers: { maxTokensTotal: '5' }, serviceWeights: { 'heavy-model': -1 } } } }), async (configPath) => {
+    await assert.rejects(
+      () => loadConfig(configPath),
+      (err: Error) => {
+        assert.match(err.message, /seller\.buyerLimits\.maxTokensPerBuyer must be a positive number/);
+        assert.match(err.message, /seller\.buyerLimits\.newBuyers\.maxTokensTotal must be a positive number/);
+        assert.match(err.message, /seller\.buyerLimits\.serviceWeights\.heavy-model must be a positive number/);
+        return true;
+      },
+    );
+  });
+});
