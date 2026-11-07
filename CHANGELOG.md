@@ -267,6 +267,8 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- Docs: `/llms.txt` is rewritten as an agent entry point. It starts with "If you are an agent, start here: /skill.md", gives the gateway and buyer proxy base URLs and the headless `antseed gateway key create --json` key, and lists every docs page, integration page and `llms-connect.txt` with a one-line summary. It no longer links the missing `/docs/providers` or calls the `/docs/pricing` redirect stub the full docs, and it describes `/stats` and `antseed network browse --json` as the different shapes they are, with a working `jq` query for each. `/docs/pricing` now gets a server-side 301 to **Routing and catalog** through `static/_redirects`, so fetchers that don't run JavaScript land on the page.
+
 - CLI buyer and node: a seller that moves to a new public address is picked up again without restarting the buyer.
   - When the same seller is listed at several endpoints (its old address can stay in the DHT for a while after a move), discovery keeps its newest signed announcement instead of whichever endpoint happened to answer first.
   - A request pinned to a seller the last network refresh missed now looks that seller up on its own DHT topic before answering that it is not reachable.
