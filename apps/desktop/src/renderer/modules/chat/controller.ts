@@ -24,7 +24,6 @@ import {
   buildCumulativeImagePrompt,
   chooseDefaultChatModel,
   chooseModelForPrivate,
-  modelIdForSend,
   findChatModel,
   fundsNoticeFromStopReason,
   loadLastChatModel,
@@ -1038,8 +1037,7 @@ export function initChatModule({
     streamFailedAtByConversation.delete(convId);
     // A newer text message supersedes an image request waiting on funds.
     imageRetryByConversation.delete(convId);
-    const routedModelId = modelIdForSend(uiState.chatModels, modelId, selectHasFunds(uiState));
-    const send = () => bridge.chatAiSendStream!(convId, content || ' ', routedModelId, attachments, uiState.chatPermissionMode);
+    const send = () => bridge.chatAiSendStream!(convId, content || ' ', modelId, attachments, uiState.chatPermissionMode);
     try {
       let result = await send();
       if (!result.ok && String(result.error ?? '').toLowerCase().includes('already in progress') && bridge.chatAiAbort) {
@@ -1054,9 +1052,6 @@ export function initChatModule({
     } catch (err) {
       reportChatError(err, 'Request failed');
     } finally {
-      // The free seller was for this request; the chat stays on Auto, so it
-      // can use any seller once the user has funds.
-      if (routedModelId !== modelId) void bridge.chatAiSetModel?.(convId, modelId);
       if (isConversationSending(convId) && !hasConversationStreamingMessage(convId)) {
         setConversationSending(convId, false);
       }
@@ -1227,7 +1222,7 @@ export function initChatModule({
 
       await runImageRequest(convId, {
         prompt: requestPrompt,
-        model: modelIdForSend(uiState.chatModels, imageModelId, selectHasFunds(uiState)),
+        model: imageModelId,
         ...(editing ? { sourceImageAttachmentId } : {}),
       });
     })();

@@ -191,13 +191,18 @@ export type GatewayModelOptions = {
   contextWindow?: number;
 };
 
+type GatewayChatModel =
+  | Model<'openai-completions'>
+  | Model<'openai-responses'>
+  | Model<'anthropic-messages'>;
+
 /**
  * pi-ai model definition aimed at the gateway. The key goes in as the runtime
  * API key (`authStorage.setRuntimeApiKey(GATEWAY_PROVIDER_ID, …)`) and as an
  * explicit bearer header: the Anthropic SDK otherwise only sends `x-api-key`,
  * which the gateway does not accept.
  */
-export function makeGatewayModel({ modelId, endpoint, protocol, supportsImages, contextWindow }: GatewayModelOptions): Model<any> {
+export function makeGatewayModel({ modelId, endpoint, protocol, supportsImages, contextWindow }: GatewayModelOptions): GatewayChatModel {
   // The OpenAI SDK appends /responses or /chat/completions to the base URL;
   // the Anthropic SDK appends /v1/messages itself.
   const baseUrl = protocol === 'anthropic-messages' ? endpoint.origin : `${endpoint.origin}/v1`;

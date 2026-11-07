@@ -91,6 +91,20 @@ async function probe(origin: string, timeoutMs = 2_000): Promise<boolean> {
   }
 }
 
+/** Throws unless this URL and key work together. Redirects are refused, so the key only goes to `origin`. */
+export async function checkRemoteGateway({ origin, apiKey }: { origin: string; apiKey: string }): Promise<void> {
+  const response = await fetch(`${origin}/v1/models`, {
+    headers: { authorization: `Bearer ${apiKey}` },
+    redirect: 'error',
+    signal: AbortSignal.timeout(10_000),
+  }).catch((err: unknown) => {
+    throw new Error(`Could not reach ${origin}: ${err instanceof Error ? err.message : String(err)}`);
+  });
+  await response.body?.cancel().catch(() => undefined);
+  if (response.status === 401 || response.status === 403) throw new Error('The gateway rejected this API key');
+  if (!response.ok) throw new Error(`${origin} doesn't look like a working gateway (HTTP ${response.status})`);
+}
+
 export async function getGatewayStatus(): Promise<GatewayStatus> {
   const settings = getGatewaySettings();
   const origin = currentOrigin();

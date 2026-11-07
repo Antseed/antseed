@@ -3,7 +3,7 @@
  */
 import type { ChatModel } from '../../types/bridge';
 import { compareDefaultModels } from '../../../shared/chat-model-ranking.js';
-import { joinPinnedModel, splitPinnedModel } from '../../../shared/pinned-model.js';
+import { splitPinnedModel } from '../../../shared/pinned-model.js';
 
 const LAST_MODEL_STORAGE_KEY = 'antseed:chat:lastModel';
 
@@ -51,17 +51,6 @@ export function chooseDefaultChatModel(models: ChatModel[], lastModelId: string 
 export function fundsNoticeAction(canAddFunds: boolean, gatewayMode: 'local' | 'remote' | undefined): 'deposit' | 'console' | null {
   if (!canAddFunds) return null;
   return gatewayMode === 'remote' ? 'console' : 'deposit';
-}
-
-/**
- * What to send a request to. Auto ranks sellers by expected cost, so it can pick
- * a paid seller of a model that also has a free one, and without funds that
- * request fails. A pin the user chose is left alone.
- */
-export function modelIdForSend(models: ChatModel[], modelId: string, hasFunds: boolean): string {
-  if (hasFunds || splitPinnedModel(modelId).peerId) return modelId;
-  const freeSellerId = findChatModel(models, modelId)?.freeSellerId;
-  return freeSellerId ? joinPinnedModel(modelId, freeSellerId) : modelId;
 }
 
 /**

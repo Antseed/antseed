@@ -6,7 +6,7 @@
  * sits in a private file they read, so a replaced key or a new gateway only
  * needs `syncAgentSkills()`.
  */
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { chmod, cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
@@ -186,18 +186,6 @@ export async function removeAgentSkills(id: string, options: Options = {}): Prom
 export async function syncAgentSkills(endpoint: AgentSkillsEndpoint, options: Options = {}): Promise<void> {
   for (const target of listAgentSkillTargets(options)) {
     if (target.installed) await installInto(target.skillsDir, endpoint, options);
-  }
-}
-
-/** Whether installed copies point at `origin` and the key file holds `apiKey`. */
-export function agentSkillsCurrent(endpoint: AgentSkillsEndpoint, options: Options = {}): boolean {
-  const installed = listAgentSkillTargets(options).filter((target) => target.installed);
-  if (installed.length === 0) return true;
-  try {
-    if (readFileSync(agentSkillsKeyFile(options), 'utf8').trim() !== endpoint.apiKey) return false;
-    return installed.every((target) => readFileSync(path.join(target.skillsDir, AGENT_SKILL_NAMES[0], 'SKILL.md'), 'utf8').includes(`\`${endpoint.origin}\``));
-  } catch {
-    return false;
   }
 }
 

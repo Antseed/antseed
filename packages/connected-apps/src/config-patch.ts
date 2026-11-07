@@ -1096,8 +1096,15 @@ function applyDroidModelToFile(filePath: string, patch: DroidConfigPatchDef, bas
   }
   const managedIds = state?.managedModelIds ?? [];
   // Model discovery failed for now: the selection still names our entries, so
-  // keep them rather than lose the way back to the user's own default.
-  if (state && !t.legacy && newIds.length === 0 && managedIds.length > 0) return;
+  // keep them rather than lose the way back to the user's own default. They
+  // still move to the current gateway and key.
+  if (state && !t.legacy && newIds.length === 0 && managedIds.length > 0) {
+    config['customModels'] = customModels.map((model) => (isManagedDroidModel(model, patch, managedIds)
+      ? { ...(model as JsonObject), baseUrl: baseURL, apiKey: t.apiKey, ...headerFields }
+      : model));
+    writeJsonFile(filePath, config);
+    return;
+  }
   const managedModelIds = t.legacy ? [] : newIds;
   if (!state) {
     const modelPresent = Object.prototype.hasOwnProperty.call(config, 'model');
@@ -1775,6 +1782,11 @@ function removeGooseCustomProvider(filePath: string): boolean {
   }
 }
 
+function savedGooseCustomModels(filePath: string): unknown[] {
+  const models = tryReadConfigPatchFile(gooseCustomProviderPath(filePath))?.['models'];
+  return Array.isArray(models) ? models : [];
+}
+
 function rememberGooseSelection(filePath: string, lines: readonly string[]): void {
   const selection: JsonObject = {};
   for (const key of ['GOOSE_PROVIDER', 'GOOSE_MODEL']) {
@@ -1789,9 +1801,20 @@ function applyGooseCustomProviderToFile(filePath: string, patch: GooseConfigPatc
   const previous = existsSync(filePath) ? readFileSync(filePath, 'utf8').split('\n') : [];
   const provider = readYamlTopLevelString(previous, 'GOOSE_PROVIDER');
   // A pick from an earlier patch (which pointed goose's openai provider at the
-  // gateway) is still the user's.
-  const owned = provider === GOOSE_CUSTOM_PROVIDER || (provider === patch.providerKey && readGoosePatchState(filePath) !== null);
-  const selected = pickModel(t, owned ? readYamlTopLevelString(previous, 'GOOSE_MODEL') : undefined);
+  // gateway) is still the user's. A legacy buyer-proxy patch is ours too, though
+  // its alias isn't a pick: the user's own selection was saved when it was written.
+  const previousModel = readYamlTopLevelString(previous, 'GOOSE_MODEL');
+  const legacyPatch = provider === patch.providerKey && (
+    readYamlTopLevelString(previous, 'OPENAI_API_KEY') === 'antseed'
+    || previousModel === ROUTED_MODEL_ALIAS
+    || (previousModel?.includes('@') ?? false)
+  );
+  const owned = provider === GOOSE_CUSTOM_PROVIDER || legacyPatch || (provider === patch.providerKey && readGoosePatchState(filePath) !== null);
+  // Model discovery failed for now: the pick and the list stay until it's back.
+  const selected = pickModel(t, owned ? previousModel : undefined) ?? (owned && !legacyPatch ? previousModel : undefined);
+  const models = t.models.length > 0
+    ? t.models.map((model) => ({ name: model.id, context_limit: ANTSEED_MODEL_CONTEXT_WINDOW }))
+    : savedGooseCustomModels(filePath);
   if (!owned) rememberGooseSelection(filePath, previous);
   removeGooseProviderFromFile(filePath, patch, [], { keepSelection: true });
   let lines = existsSync(filePath) ? readFileSync(filePath, 'utf8').split('\n') : [];
@@ -1806,7 +1829,7 @@ function applyGooseCustomProviderToFile(filePath: string, patch: GooseConfigPatc
     description: 'Models on your Antseed gateway',
     api_key_env: '',
     base_url: `${baseURL}/v1/chat/completions`,
-    models: t.models.map((model) => ({ name: model.id, context_limit: ANTSEED_MODEL_CONTEXT_WINDOW })),
+    models,
     headers: { Authorization: `Bearer ${t.apiKey}` },
     supports_streaming: true,
     requires_auth: false,

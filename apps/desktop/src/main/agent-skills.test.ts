@@ -5,7 +5,6 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
   agentSetupPrompt,
-  agentSkillsCurrent,
   agentSkillsKeyFile,
   AGENT_SKILL_NAMES,
   installAgentSkills,
@@ -54,8 +53,6 @@ test('installs the skills for one agent, pointed at the gateway, with a private 
   assert.equal(readFileSync(keyFile, 'utf8').trim(), endpoint.apiKey);
   assert.equal(statSync(keyFile).mode & 0o777, 0o600);
   assert.equal(listAgentSkillTargets(options).find((target) => target.id === 'claude-code')?.installed, true);
-  assert.equal(agentSkillsCurrent(endpoint, options), true);
-  assert.equal(agentSkillsCurrent({ ...endpoint, apiKey: 'sk-new' }, options), false);
 });
 
 test('sync re-points installed copies; remove deletes them and the key file', async () => {
@@ -63,7 +60,8 @@ test('sync re-points installed copies; remove deletes them and the key file', as
   await installAgentSkills('claude-code', endpoint, options);
   const next = { origin: 'https://gw.example', apiKey: 'sk-new' };
   await syncAgentSkills(next, options);
-  assert.equal(agentSkillsCurrent(next, options), true);
+  assert.equal(readFileSync(agentSkillsKeyFile(options), 'utf8').trim(), next.apiKey);
+  assert.ok(readFileSync(path.join(options.home, '.claude', 'skills', 'antseed-ask', 'SKILL.md'), 'utf8').includes(`\`${next.origin}\``));
 
   await removeAgentSkills('claude-code', options);
   assert.ok(!existsSync(path.join(options.home, '.claude', 'skills', 'antseed-ask')));

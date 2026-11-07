@@ -4,6 +4,7 @@
  */
 import { clipboard, ipcMain, shell } from 'electron';
 import {
+  checkRemoteGateway,
   getGatewayEndpoint,
   getGatewayKeyInfo,
   getGatewayPrivacy,
@@ -20,6 +21,7 @@ import { clearRoutePreviewCache } from '../gateway/route-preview.js';
 import {
   getGatewaySettings,
   hasRemoteKey,
+  remoteGatewayFor,
   updateGatewaySettings,
   type GatewayKeyMode,
   type GatewayMode,
@@ -67,26 +69,19 @@ export function registerGatewayIpc(deps: GatewayIpcDeps): void {
     keyMode?: GatewayKeyMode;
   }) => {
     try {
-      const before = getGatewaySettings();
-      const after = updateGatewaySettings({
+      const patch = {
         ...(opts?.mode === 'local' || opts?.mode === 'remote' ? { mode: opts.mode } : {}),
         ...(opts?.remoteUrl !== undefined ? { remoteUrl: opts.remoteUrl } : {}),
         ...(opts?.remoteApiKey !== undefined ? { remoteApiKey: opts.remoteApiKey } : {}),
         ...(opts?.keyMode === 'shared' || opts?.keyMode === 'per-app' ? { keyMode: opts.keyMode } : {}),
-      });
+      };
+      // Checked before anything changes: a failed switch keeps the gateway that works.
+      const remote = remoteGatewayFor(patch);
+      if (remote) await checkRemoteGateway(remote);
+      const before = getGatewaySettings();
+      const after = updateGatewaySettings(patch);
       if (before.mode === 'local' && after.mode === 'remote') await stopLocalGateway();
       if (after.mode === 'local') await ensureLocalGateway();
-      if (after.mode === 'remote') {
-        // Fail loudly now rather than on the first chat: the URL and key must work together.
-        const endpoint = await getGatewayEndpoint();
-        const response = await fetch(`${endpoint.origin}/v1/models`, {
-          headers: { authorization: `Bearer ${endpoint.apiKey}` },
-          signal: AbortSignal.timeout(10_000),
-        }).catch((err: unknown) => {
-          throw new Error(`Could not reach ${endpoint.origin}: ${err instanceof Error ? err.message : String(err)}`);
-        });
-        if (response.status === 401 || response.status === 403) throw new Error('The gateway rejected this API key');
-      }
       await revokeUnusedAppKeys();
       await endpointChanged(true);
       return { ok: true, settings: { ...getGatewaySettings(), hasRemoteKey: hasRemoteKey() } };

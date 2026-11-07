@@ -251,6 +251,56 @@ test('goose: legacy patch still removes after the upgrade', async () => {
   });
 });
 
+test('goose: moving off the legacy proxy keeps the user\'s selection, not our alias', async () => {
+  await withDir(async (dir) => {
+    const configPath = path.join(dir, 'config.yaml');
+    const patch: ConfigPatchDef = { format: 'goose', configPath, providerKey: 'openai', baseURL: 'http://localhost:{buyerPort}' };
+    await writeFile(configPath, 'GOOSE_PROVIDER: mine\nGOOSE_MODEL: a\n');
+    writeConfigPatch(patch, 8377);
+    writeConfigPatch(patch, LOCAL);
+    assert.equal(parse(await readFile(configPath, 'utf8')).GOOSE_MODEL, 'deepseek-v3.2');
+    removeConfigPatch(patch);
+    assert.deepEqual(parse(await readFile(configPath, 'utf8')), { GOOSE_PROVIDER: 'mine', GOOSE_MODEL: 'a' });
+  });
+});
+
+test('goose: an unread model list keeps the pick and the list, and takes the new gateway and key', async () => {
+  await withDir(async (dir) => {
+    const configPath = path.join(dir, 'config.yaml');
+    const provider = path.join(dir, 'custom_providers', 'custom_antseed.json');
+    const patch: ConfigPatchDef = { format: 'goose', configPath, providerKey: 'openai', baseURL: 'http://localhost:{buyerPort}' };
+    writeConfigPatch(patch, LOCAL);
+    await writeFile(configPath, 'GOOSE_PROVIDER: custom_antseed\nGOOSE_MODEL: kimi-k2\n');
+    writeConfigPatch(patch, { origin: 'https://gw.example.com', apiKey: 'new-key', models: [] });
+    assert.equal(parse(await readFile(configPath, 'utf8')).GOOSE_MODEL, 'kimi-k2');
+    const written = await readJson(provider);
+    assert.equal(written.models.length, MODELS.length);
+    assert.equal(written.base_url, 'https://gw.example.com/v1/chat/completions');
+    assert.equal(written.headers.Authorization, 'Bearer new-key');
+  });
+});
+
+test('droid: an unread model list keeps our entries and points them at the new gateway and key', async () => {
+  await withDir(async (dir) => {
+    const droid = path.join(dir, 'droid.json');
+    const patch = { format: 'droid', configPath: droid, modelDisplayName: 'Antseed', baseURL: 'http://localhost:{buyerPort}/v1', provider: 'generic-chat-completion-api' } as unknown as ConfigPatchDef;
+    const mine = { model: 'mine', id: 'custom:mine', baseUrl: 'https://mine.example', apiKey: 'mine-key' };
+    await writeFile(droid, JSON.stringify({ customModels: [mine] }));
+    writeConfigPatch(patch, LOCAL);
+    const selected = (await readJson(droid)).sessionDefaultSettings.model;
+    writeConfigPatch(patch, { origin: 'https://gw.example.com', apiKey: 'new-key', models: [] });
+    const config = await readJson(droid);
+    assert.equal(config.sessionDefaultSettings.model, selected);
+    assert.deepEqual(config.customModels.find((entry: any) => entry.id === 'custom:mine'), mine);
+    const ours = config.customModels.filter((entry: any) => entry.id !== 'custom:mine');
+    assert.equal(ours.length, MODELS.length);
+    for (const entry of ours) {
+      assert.equal(entry.baseUrl, 'https://gw.example.com/v1');
+      assert.equal(entry.apiKey, 'new-key');
+    }
+  });
+});
+
 test('claude-code: bearer key, model pick preserved, removal restores (and legacy → gateway migration)', async () => {
   await withDir(async (dir) => {
     const configPath = path.join(dir, 'settings.json');

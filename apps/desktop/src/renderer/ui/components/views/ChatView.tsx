@@ -1178,7 +1178,8 @@ export function ChatView({ onSelectView }: ChatViewProps) {
 
           <div className={styles.chatInputArea}>
             {attachmentWarning && <div className={styles.chatWarning}>{attachmentWarning}</div>}
-            {dismissedFundingKey !== fundingKey ? (
+            {/* This device's wallet doesn't pay for a remote gateway. */}
+            {gatewayMode !== 'remote' && dismissedFundingKey !== fundingKey ? (
               <FundingStatusNotice
                 variant="strip"
                 status={funding}

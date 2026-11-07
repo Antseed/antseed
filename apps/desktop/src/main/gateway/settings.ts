@@ -10,6 +10,7 @@ import { safeStorage } from 'electron';
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { resolveConnectDataDir } from '../runtime/process-manager.js';
+import { normalizeGatewayUrl } from './remote-url.js';
 
 export type GatewayMode = 'local' | 'remote';
 /** `shared`: one key for the chat and every app. `per-app`: a key per app, so the gateway shows usage per app. */
@@ -113,22 +114,33 @@ export function hasRemoteKey(): boolean {
   return load().remoteKeyEnc !== null;
 }
 
-/** Normalizes a pasted gateway URL to its origin (`https://host[:port]`); throws when it is not one. */
-export function normalizeGatewayUrl(raw: string): string {
-  const trimmed = raw.trim();
-  const withScheme = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
-  const url = new URL(withScheme);
-  if (url.protocol !== 'https:' && url.protocol !== 'http:') throw new Error('Gateway URL must use http or https');
-  return url.origin;
-}
-
-export function updateGatewaySettings(patch: {
+type GatewaySettingsPatch = {
   mode?: GatewayMode;
   remoteUrl?: string | null;
   remoteApiKey?: string | null;
   keyMode?: GatewayKeyMode;
   privacy?: GatewayPrivacyMode;
-}): GatewaySettings {
+};
+
+/**
+ * The remote gateway these settings would use, or null when they aren't remote.
+ * Changes nothing, so the switch can be checked before anything is saved or
+ * stopped. A saved key was issued by the saved gateway: it never goes to another.
+ */
+export function remoteGatewayFor(patch: GatewaySettingsPatch): { origin: string; apiKey: string } | null {
+  const current = load();
+  if ((patch.mode ?? current.mode) !== 'remote') return null;
+  const origin = patch.remoteUrl !== undefined
+    ? (patch.remoteUrl ? normalizeGatewayUrl(patch.remoteUrl) : null)
+    : current.remoteUrl;
+  if (!origin) throw new Error('Enter the gateway URL');
+  const newKey = patch.remoteApiKey?.trim();
+  const apiKey = newKey || (patch.remoteApiKey === undefined && origin === current.remoteUrl ? getRemoteKey() : null);
+  if (!apiKey) throw new Error('Enter the API key for this gateway');
+  return { origin, apiKey };
+}
+
+export function updateGatewaySettings(patch: GatewaySettingsPatch): GatewaySettings {
   const current = load();
   const next: StoredFile = { ...current, localKeys: { ...current.localKeys } };
   if (patch.mode) next.mode = patch.mode;

@@ -128,7 +128,7 @@ export function ChatSellerPicker({ modelId, disabled, onChange, onOpenChange, me
   const candidates = preview?.candidates ?? [];
   const eligible = candidates.filter((candidate) => candidate.eligible);
   const excluded = candidates.filter((candidate) => !candidate.eligible);
-  // Without funds a request goes to the free seller, so that's who Auto is.
+  // Without funds the buyer falls through to the free sellers, so show one as Auto.
   const autoPick = eligible.find((candidate) => candidate.peerId === freeSellerId) ?? eligible[0] ?? null;
   const pinned = pinnedPeerId ? candidates.find((candidate) => candidate.peerId === pinnedPeerId) ?? null : null;
   const pinnedExcluded = pinned !== null && !pinned.eligible;

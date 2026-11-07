@@ -8,7 +8,6 @@ import {
   filterChatModels,
   fundsNoticeAction,
   fundsNoticeFromStopReason,
-  modelIdForSend,
 } from './models';
 
 function model(id: string, type = 'text', label = id): ChatModel {
@@ -79,16 +78,6 @@ test('with funds Private keeps a listed model, and replaces a missing one with a
 test('a pin is dropped in Private, since its seller may not be allowed', () => {
   const peer = '73b4c9335fa239f9c6df3d28d5bf5d3cdf4de736';
   assert.equal(chooseModelForPrivate([{ ...model('glm-5.2'), free: false, toolUse: true, sellers: 1 }], `${peer}@glm-5.2`, true), 'glm-5.2');
-});
-
-test('without funds a request goes to the model\'s free seller, unless the user pinned one', () => {
-  const peer = '73b4c9335fa239f9c6df3d28d5bf5d3cdf4de736';
-  const other = '0c90fa28fa0cd002a6eb42167a929e7f3987f70e';
-  const models = [{ ...model('glm'), freeSellerId: peer }, { ...model('paid'), freeSellerId: null }];
-  assert.equal(modelIdForSend(models, 'glm', false), `${peer}@glm`);
-  assert.equal(modelIdForSend(models, 'glm', true), 'glm');
-  assert.equal(modelIdForSend(models, 'paid', false), 'paid');
-  assert.equal(modelIdForSend(models, `${other}@glm`, false), `${other}@glm`);
 });
 
 test('with funds the stand-in is the cheapest paid model with tools', () => {
