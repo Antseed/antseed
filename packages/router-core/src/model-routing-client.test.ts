@@ -62,7 +62,7 @@ describe('ModelRoutingClient', () => {
     await expect(client.listModels(target, [peer], { signal: new AbortController().signal, sendRequest })).rejects.toThrow('temporarily unavailable: Try later.')
   })
 
-  it('sends a plain IRP rank request with no AntSeed headers', async () => {
+  it('sends a plain IRP rank request with no Antseed headers', async () => {
     const state = setup()
     expect(await state.client.selectRoute(request(), [peer], state.context)).toEqual([{ serviceId: 'model-a', peerId: inferenceId, provider: 'openai' }])
     const [, serviceRequest, options] = state.sendRequest.mock.calls[0]!

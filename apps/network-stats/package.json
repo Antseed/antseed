@@ -1,7 +1,7 @@
 {
   "name": "@antseed/network-stats",
   "version": "0.1.11",
-  "description": "Standalone service that polls the AntSeed network and exposes peer/model stats via HTTP",
+  "description": "Standalone service that polls the Antseed network and exposes peer/model stats via HTTP",
   "type": "module",
   "engines": {
     "node": ">=20.0.0"

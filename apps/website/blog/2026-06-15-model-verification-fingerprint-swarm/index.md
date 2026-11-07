@@ -175,6 +175,6 @@ A normal API response is just text.
 
 An Antseed response can become attributable audit evidence.
 
-[Read the model-verification spec](https://github.com/AntSeed/antseed/blob/main/docs/protocol/spec/07-model-verification.md)
+[Read the model-verification spec](https://github.com/Antseed/antseed/blob/main/docs/protocol/spec/07-model-verification.md)
 
-[Read the fingerprint-swarm spec](https://github.com/AntSeed/antseed/blob/main/docs/protocol/spec/08-fingerprint-swarm.md)
+[Read the fingerprint-swarm spec](https://github.com/Antseed/antseed/blob/main/docs/protocol/spec/08-fingerprint-swarm.md)

@@ -1,7 +1,7 @@
 import { type AbstractSigner, type TypedDataDomain, AbiCoder, hexlify, id, keccak256, randomBytes } from 'ethers';
 
 // =========================================================================
-// EIP-712 Types — AntSeed SpendingAuth (cumulative payment authorization)
+// EIP-712 Types — Antseed SpendingAuth (cumulative payment authorization)
 // =========================================================================
 
 export const SPENDING_AUTH_TYPES = {

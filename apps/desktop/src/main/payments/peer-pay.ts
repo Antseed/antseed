@@ -31,7 +31,7 @@ export function buildCheckoutAuthorizationMessage(
   authorization: CheckoutAuthorization,
 ): string {
   return [
-    'AntSeed Peer Pay Checkout',
+    'Antseed Peer Pay Checkout',
     'version: 1',
     'audience: antseed-checkout.pay.zkp2p.xyz',
     'method: POST',

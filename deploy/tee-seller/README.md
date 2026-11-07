@@ -58,7 +58,7 @@ To release an image after a CLI release:
    (`approve-image.mjs`). Anyone can check which commit and workflow produced a digest:
 
    ```bash
-   gh attestation verify oci://ghcr.io/antseed/tee-seller@sha256:<digest> --repo AntSeed/antseed
+   gh attestation verify oci://ghcr.io/antseed/tee-seller@sha256:<digest> --repo Antseed/antseed
    ```
 
 3. Merge that pull request. Buyers accept sellers running the image from the verifier release

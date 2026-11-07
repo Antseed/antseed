@@ -55,7 +55,7 @@ const ORG_LD = {
   description:
     'Antseed is a decentralized peer-to-peer marketplace for AI inference. Providers compete on price to run any AI model, with no central account.',
   sameAs: [
-    'https://github.com/AntSeed/antseed',
+    'https://github.com/Antseed/antseed',
     'https://x.com/antseed',
     'https://t.me/antseed',
   ],
