@@ -6,7 +6,7 @@ import { ConsoleRouter, type Principal } from '../router.js'
 import type { BuyerLimits, NetworkModel, NetworkRouter, Peer, RoutePreview } from '../types.js'
 import { registerNetworkRoutes, type NetworkRouteOverrides } from './network.js'
 import { encodeFreeTierCapabilities } from '@antseed/node/free-tier-program'
-import { enrichCandidates, mapNetworkModels, mapNetworkRouters, mapPeers, modelCheckField, peerServices, teeScopes, teeVerifiedPeers } from './network-mapping.js'
+import { enrichCandidates, mapNetworkModels, mapNetworkRouters, mapPeers, modelCheckField, peerServices, teeAttestations, teeScopes, teeVerifiedPeers } from './network-mapping.js'
 import {
   call,
   fakeCanSeeWorkspace,
@@ -388,6 +388,16 @@ test('TEE snapshot: full only when the provider TEE claim passes too', () => {
     ],
   }, NOW)
   assert.deepEqual([...scopes], [[PEER_A, 'end-to-end'], [PEER_B, 'seller-node']])
+})
+
+test('TEE snapshot: a verified seller node reports the upstream hosts of its attested config', () => {
+  const node = [{ claim: 'antseed-verifier:seller-node-tee-genuine', ok: true }, { claim: 'antseed-verifier:seller-bound', ok: true }]
+  const attested = teeAttestations({
+    evidence: [{ peerId: PEER_A, verifierId: 'antseed-verifier', sellerNodeVerified: true, expiresAt: NOW + 1, claims: [
+      ...node, { claim: 'antseed-verifier:seller-node-upstreams', ok: true, detail: 'https://api.example.com, https://backup.example' },
+    ] }],
+  }, NOW)
+  assert.deepEqual(attested.get(PEER_A), { scope: 'seller-node', upstreams: ['api.example.com', 'backup.example'] })
 })
 
 test('GET peers merges buyer peers, health and gateway stats', async () => {

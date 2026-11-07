@@ -1,0 +1,114 @@
+name: Publish TEE seller image
+
+# Builds deploy/tee-seller/Dockerfile from the CLI, plugins and verifier locked in
+# deploy/tee-seller/package-lock.json and pushes it to ghcr.io/antseed/tee-seller:<cli version>,
+# with a signed build provenance attestation tying the digest to this repository, commit and
+# workflow. After an npm release, refresh the lock (node deploy/tee-seller/update-lock.mjs
+# <version>) in a PR, merge it, then run this. It opens the pull request that adds the image to
+# the verifier's approved images (deploy/tee-seller/approve-image.mjs); buyers accept sellers
+# running it from the verifier release that includes that change.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  packages: write
+  id-token: write
+  attestations: write
+
+env:
+  IMAGE: ghcr.io/antseed/tee-seller
+
+jobs:
+  image:
+    name: Build, push & attest
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+
+      - name: Read the locked CLI version
+        id: version
+        run: |
+          if [ ! -f deploy/tee-seller/package-lock.json ]; then
+            echo "::error::no deploy/tee-seller lock; run update-lock.mjs for a released CLI and merge it first"; exit 1
+          fi
+          version="$(node -p "require('./deploy/tee-seller/package.json').dependencies['@antseed/cli']")"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::deploy/tee-seller/package.json pins no exact @antseed/cli version ('$version')"; exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          # Fixed timestamps, so a rebuild of the same commit and version yields the same layers.
+          echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: deploy/tee-seller
+          platforms: linux/amd64
+          build-args: ANTSEED_VERSION=${{ steps.version.outputs.version }}
+          tags: ${{ env.IMAGE }}:${{ steps.version.outputs.version }}
+          provenance: mode=max
+          sbom: true
+          outputs: type=image,push=true,rewrite-timestamp=true
+
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Open the approval pull request
+        id: approve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          node deploy/tee-seller/approve-image.mjs "$VERSION" "$DIGEST"
+          if git diff --quiet; then echo "url=" >> "$GITHUB_OUTPUT"; exit 0; fi
+          branch="feat/approve-tee-seller-image-$VERSION"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch -c "$branch"
+          git commit -am "chore(verifier): Approve TEE seller image $VERSION"
+          git push origin "$branch"
+          url="$(gh pr create --base main --head "$branch" \
+            --title "chore(verifier): Approve TEE seller image $VERSION" \
+            --body "Adds \`$IMAGE@$DIGEST\`, built by [this run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID) from $GITHUB_SHA, to the verifier's approved TEE seller images. Check it with \`gh attestation verify oci://$IMAGE@$DIGEST --repo $GITHUB_REPOSITORY\`. Buyers accept sellers running it from the next verifier release.")"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      - name: Summary
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          APPROVAL: ${{ steps.approve.outputs.url }}
+        run: |
+          {
+            echo "### TEE seller image $VERSION"
+            echo
+            echo "Pin it in the compose file (\`node deploy/tee-seller/compose.mjs --image $IMAGE@$DIGEST ...\`):"
+            echo
+            echo '```'
+            echo "$IMAGE@$DIGEST"
+            echo '```'
+            echo
+            echo "Verify: \`gh attestation verify oci://$IMAGE@$DIGEST --repo $GITHUB_REPOSITORY\`"
+            if [ -n "$APPROVAL" ]; then echo; echo "Approval pull request: $APPROVAL"; fi
+          } >> "$GITHUB_STEP_SUMMARY"
