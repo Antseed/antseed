@@ -467,7 +467,7 @@ const api = {
   agentSkillsInstall: (id: string): Promise<GatewayTypes.AgentSkillsResult> => ipcRenderer.invoke('agent-skills:install', { id }),
   agentSkillsRemove: (id: string): Promise<GatewayTypes.AgentSkillsResult> => ipcRenderer.invoke('agent-skills:remove', { id }),
   agentSkillsCopyPrompt: (): Promise<GatewayTypes.GatewayActionResult> => ipcRenderer.invoke('agent-skills:copy-prompt'),
-  agentSkillsOpen: (id: string): Promise<{ ok: boolean; via?: 'app' | 'terminal'; error?: string }> => ipcRenderer.invoke('agent-skills:open', { id }),
+  agentSkillsOpen: (id: string): Promise<GatewayTypes.OpenAgentResult> => ipcRenderer.invoke('agent-skills:open', { id }),
   onGatewayChanged(handler: () => void): () => void {
     const listener = () => handler();
     ipcRenderer.on('gateway:changed', listener);

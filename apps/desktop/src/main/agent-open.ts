@@ -4,6 +4,9 @@
  */
 import { execFile } from 'node:child_process';
 import type { AppLaunchTarget } from './connected-apps/launch-settings.js';
+import type { OpenAgentResult } from '../shared/gateway-types.js';
+
+export type { OpenAgentResult };
 
 /** Fixed commands only: nothing from the renderer reaches the shell. */
 const AGENT_COMMANDS: Readonly<Record<string, string>> = {
@@ -14,8 +17,6 @@ const AGENT_COMMANDS: Readonly<Record<string, string>> = {
   pi: 'pi',
   droid: 'droid',
 };
-
-export type OpenAgentResult = { ok: boolean; via?: 'app' | 'terminal'; error?: string };
 
 export type OpenAgentDeps = {
   platform: NodeJS.Platform;

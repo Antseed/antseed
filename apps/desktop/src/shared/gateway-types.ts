@@ -82,3 +82,5 @@ export type GatewaySettingsResult = GatewayActionResult & { settings?: GatewaySe
 export type GatewayPrivacyResult = GatewayActionResult & { privacy?: GatewayPrivacy };
 export type GatewayRewardsResult = GatewayActionResult & { rewards?: GatewayRewardsSummary };
 export type AgentSkillsResult = GatewayActionResult & { targets?: AgentSkillStatus[] };
+/** Opening an agent: its desktop app, or a terminal running its CLI. */
+export type OpenAgentResult = GatewayActionResult & { via?: 'app' | 'terminal' };
