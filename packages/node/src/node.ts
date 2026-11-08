@@ -339,7 +339,7 @@ export interface NodeVerificationConfig {
 export interface NodeConfig {
   role: 'seller' | 'buyer';
   displayName?: string;
-  /** Publicly reachable seller address override ("host:port") announced in metadata. */
+  /** Seller address ("host:port") announced in metadata; its port is announced alongside the listening port in the DHT. */
   publicAddress?: string;
   /** External ownership claims announced in signed peer metadata. */
   verifications?: PeerVerifications;
@@ -2292,7 +2292,9 @@ export class AntseedNode extends EventEmitter {
           ]),
         ),
         reannounceIntervalMs: DEFAULT_DHT_CONFIG.reannounceIntervalMs,
+        // Keep the listening endpoint discoverable when publicAddress names another host.
         signalingPort: actualSignalingPort,
+        publicSignalingPort: parsePublicAddress(this._config.publicAddress ?? "")?.port,
         ...(this._channelsClient ? { channelsClient: this._channelsClient } : {}),
         ...(this._stakingClient ? { stakingClient: this._stakingClient, paymentsEnabled: true } : {}),
         ...(this._config.sellerContract ? { sellerContract: this._config.sellerContract } : {}),
