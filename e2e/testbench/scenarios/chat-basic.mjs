@@ -29,8 +29,8 @@ export async function run(tb) {
     tb.check('upstream saw exactly the two chats', upstream.length === 2, upstream.length);
   }
 
-  const channels = await tb.channels();
-  const open = channels[seller.id] ?? [];
+  // Both SpendingAuths stored (in mock mode: exactly the delivered cost) before the channel is judged.
+  const open = await tb.waitForPaidChannels(seller.id, { requests: 2, signed: tb.manifest.upstream === 'mock' ? tb.mockCostPerChat(seller.id, model) * 2n : 1n });
   tb.check('buyer holds one open channel with the seller', open.length === 1, open.length);
   tb.check('receipts cover both requests', open[0].requestCount === 2, open[0].requestCount);
   tb.check('buyer signed a nonzero cumulative amount', BigInt(open[0].cumulativeSigned) > 0n, open[0].cumulativeSigned);

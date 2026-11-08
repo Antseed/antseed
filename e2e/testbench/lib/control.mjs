@@ -76,6 +76,7 @@ export function controlClient({ url, token }) {
     closeChannels: (sellerId) => call('POST', '/channels/close', sellerId ? { sellerId } : {}, 300_000),
     warp: (seconds) => call('POST', '/chain/warp', { seconds }),
     stopSeller: (id) => call('POST', `/sellers/${id}/stop`),
+    crashSeller: (id) => call('POST', `/sellers/${id}/crash`),
     startSeller: (id) => call('POST', `/sellers/${id}/start`, {}, 180_000),
     stopBuyer: () => call('POST', '/buyer/stop'),
     startBuyer: () => call('POST', '/buyer/start', {}, 180_000),

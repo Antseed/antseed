@@ -249,6 +249,49 @@ describe('stress load and gates', () => {
     assert.deepEqual([...merged.perRequest.keys()].sort(), ['a', 'b', 'c']);
   });
 
+  it('waitForPaidChannels waits for the last stored SpendingAuth, and on timeout returns the state instead of throwing', async () => {
+    // The proxy's channel view lags the reply: two receipts first, the third (and its signed amount) a few reads later.
+    const peerId = 'a'.repeat(40);
+    let reads = 0;
+    const server = createServer((request, response) => {
+      reads += 1;
+      const third = reads >= 3;
+      response.setHeader('content-type', 'application/json');
+      response.end(JSON.stringify({ channels: [{ channelId: 'c1', peerId, requestCount: third ? 3 : 2, cumulativeSigned: third ? '300' : '200' }] }));
+    });
+    await new Promise((listening) => server.listen(0, '127.0.0.1', listening));
+    try {
+      await withTb({ proxyUrl: `http://127.0.0.1:${server.address().port}` }, async (tb, { dir }) => {
+        const [channel] = await tb.waitForPaidChannels('seller', { requests: 3, signed: 300n, intervalMs: 10 });
+        assert.deepEqual([channel.requestCount, channel.cumulativeSigned], [3, '300']);
+        assert.ok(reads >= 3);
+        const stuck = await tb.waitForPaidChannels('seller', { requests: 4, signed: 400n, timeoutMs: 50, intervalMs: 10 });
+        assert.equal(stuck[0].requestCount, 3, 'the last read, for the scenario\'s own checks to judge');
+        assert.match(readFileSync(join(dir, 'events.jsonl'), 'utf8'), /payment-wait-timeout/);
+        const other = await tb.waitForPaidChannels('seller', { requests: 1, exclude: ['c1'], timeoutMs: 50, intervalMs: 10 });
+        assert.equal(other.length, 1, 'an excluded channel does not count, but is still returned');
+      });
+    } finally {
+      await new Promise((closed) => server.close(closed));
+    }
+  });
+
+  it('a long restart with more waiting workers than requests left sends exactly the planned requests', async () => {
+    // 12 requests, 8 workers, restart after 3: when it ends, more workers wait at the pause than requests remain.
+    const mock = await startMock({ models: ['m'], pricing: { m: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 } } });
+    try {
+      const run = await runLoad({
+        proxyUrl: mock.url, model: 'm',
+        load: { concurrency: 8, requests: 12, streamRatio: 0, minInTokens: 1, maxInTokens: 2, restart: { atFraction: 0.25, run: () => new Promise((r) => setTimeout(r, 200)) } },
+      });
+      assert.equal(run.results.length, 12);
+      assert.deepEqual(run.results.map((record) => record.i).sort((a, b) => a - b), Array.from({ length: 12 }, (_, i) => i), 'each planned index once, none past the end');
+      assert.equal(run.client.ok, 12);
+    } finally {
+      await mock.stop();
+    }
+  });
+
   it('runs tagged load against an OpenAI-compatible endpoint and restarts once mid-load', async () => {
     const mock = await startMock({ models: ['m'], pricing: { m: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 } } });
     try {

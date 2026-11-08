@@ -6,7 +6,7 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
-import { assertSellerPaymentsOn, assertSingleBootstrap, buyerProxyListening, cliArgs, cliBuyerClient, cliNodeEnv, linkPlugins, sellerReady, spawnCliNode, stopWithGrace, waitForCliReady } from '../lib/cli-node.mjs';
+import { assertSellerPaymentsOn, assertSingleBootstrap, buyerProxyListening, cliArgs, cliBuyerClient, cliNodeEnv, crashChild, linkPlugins, sellerReady, spawnCliNode, stopWithGrace, waitForCliReady } from '../lib/cli-node.mjs';
 import { assertCliConfig, cliBuyerConfig, cliSellerConfig, paymentsConfig } from '../lib/node-options.mjs';
 
 const chain = { chainId: 'base-local', evmChainId: 31337, rpcUrl: 'http://127.0.0.1:8545', depositsContractAddress: '0x01', channelsContractAddress: '0x02', stakingContractAddress: '0x03', usdcContractAddress: '0x04', identityRegistryAddress: '0x05' };
@@ -137,6 +137,22 @@ describe('CLI launcher', () => {
     assert.doesNotThrow(() => assertSingleBootstrap('[Node] Starting as seller with 1 bootstrap node(s)', 's'));
     assert.throws(() => assertSingleBootstrap('[Node] Starting as buyer with 3 bootstrap node(s)', 'buyer'), /ISOLATION: buyer started with 3/);
     assert.throws(() => assertSingleBootstrap('nothing', 'buyer'), /ISOLATION/);
+  });
+
+  it('crashChild kills at once without running shutdown handlers, and waits for the exit', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tb-crash-'));
+    try {
+      const marker = join(dir, 'graceful');
+      // A seller-like child: on SIGTERM it would "settle" (write the marker) before exiting.
+      const child = spawn(process.execPath, ['-e', `process.on('SIGTERM', () => { require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'x'); process.exit(0); }); setInterval(() => {}, 1000); console.log('up')`], { stdio: ['ignore', 'pipe', 'ignore'] });
+      await once(child.stdout, 'data');
+      assert.equal(await crashChild(child), true);
+      assert.equal(child.signalCode, 'SIGKILL', 'exited by SIGKILL, before crashChild returned');
+      assert.equal(existsSync(marker), false, 'no shutdown handler ran');
+      assert.equal(await crashChild(child), false, 'an exited child is left alone');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('stops on SIGTERM without forcing, and forces a process that ignores it', async () => {

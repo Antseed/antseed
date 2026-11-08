@@ -110,6 +110,17 @@ export function electronRootArgs({ platform = process.platform, uid = process.ge
   return platform === 'linux' && uid === 0 ? ['--no-sandbox'] : [];
 }
 
+/**
+ * Playwright's launch options for the desktop, with the same root arguments the interactive desktop and the share host
+ * use (Electron refuses to start as Linux root without --no-sandbox).
+ */
+export function electronLaunchOptions({ executablePath, desktopDir, env, videoDir, platform = process.platform, uid = process.getuid?.() }) {
+  return {
+    executablePath, args: ['.', ...electronRootArgs({ platform, uid })], cwd: desktopDir, env, timeout: 60_000,
+    recordVideo: { dir: videoDir, size: { width: 1280, height: 800 } },
+  };
+}
+
 /** Closes the app, and kills its process if Electron does not exit in time (it can hang on shutdown). */
 export async function closeApp(app, { timeoutMs = 15_000 } = {}) {
   let child = null;
@@ -143,10 +154,7 @@ async function launchElectron({ desktopDir, env, reportDir, event, trace, instan
   const ffmpeg = playwrightFfmpeg();
   if (!ffmpeg.installed) throw new Error(`${ffmpeg.reason}. Desktop scenarios record video with it; run once: ${FFMPEG_INSTALL}`);
   const executablePath = createRequire(join(desktopDir, 'package.json'))('electron');
-  const app = await electron.launch({
-    executablePath, args: ['.'], cwd: desktopDir, env, timeout: 60_000,
-    recordVideo: { dir: videoDir, size: { width: 1280, height: 800 } },
-  });
+  const app = await electron.launch(electronLaunchOptions({ executablePath, desktopDir, env, videoDir }));
   if (trace) await app.context().tracing.start({ screenshots: true, snapshots: true, title });
   const mainLog = createWriteStream(join(reportDir, 'desktop-main.log'), { flags: 'a' });
   app.process().stdout?.pipe(mainLog, { end: false });

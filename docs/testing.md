@@ -1,6 +1,6 @@
 # Testing
 
-This is the map of AntSeed's tests: what each kind proves, where it lives and when it runs. Which test a given change needs is decided by the `verify-antseed` skill (`.claude/skills/verify-antseed/SKILL.md`).
+This is the map of Antseed's tests: what each kind proves, where it lives and when it runs. Which test a given change needs is decided by the `verify-antseed` skill (`.claude/skills/verify-antseed/SKILL.md`).
 
 | Kind | Where it lives | What it proves | When it runs | Typical time |
 | --- | --- | --- | --- | --- |

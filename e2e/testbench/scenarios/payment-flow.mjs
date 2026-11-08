@@ -32,7 +32,9 @@ export async function run(tb) {
     const upstream = (await tb.mockRequests(seller.id)).filter(chatPath);
     tb.check('upstream saw exactly the three chats', upstream.length === 3, upstream.length);
   }
-  const [first] = (await tb.channels())[seller.id] ?? [];
+  // Wait for the third SpendingAuth to be stored (in mock mode: exactly the delivered cost) before judging the channel.
+  const mock = tb.manifest.upstream === 'mock';
+  const [first] = await tb.waitForPaidChannels(seller.id, { requests: 3, signed: mock ? tb.mockCostPerChat(seller.id, model) * 3n : 1n });
   tb.check('buyer holds one open channel with the seller', Boolean(first), first);
   tb.check('channel receipts cover all three requests', first.requestCount === 3, first.requestCount);
   const signedFirst = BigInt(first.cumulativeSigned);
@@ -67,7 +69,7 @@ export async function run(tb) {
   await tb.startBuyer();
   const again = await tb.chat({ model, prompt: 'paid request after reconnect' });
   tb.check('chat after reconnect answered', again.content.length > 0, again.content);
-  const reopened = (await tb.channels())[seller.id] ?? [];
+  const reopened = await tb.waitForPaidChannels(seller.id, { requests: 1, signed: mock ? tb.mockCostPerChat(seller.id, model) : 1n, exclude: [first.channelId] });
   tb.check('reconnect opened a new channel', reopened.length === 1 && reopened[0].channelId !== first.channelId, reopened.map((channel) => channel.channelId));
   tb.check('new channel starts its own receipts', reopened[0].requestCount === 1, reopened[0].requestCount);
 

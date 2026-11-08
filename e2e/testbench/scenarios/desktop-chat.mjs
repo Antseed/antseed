@@ -26,7 +26,8 @@ export async function run(tb) {
   tb.check('the desktop chat reached the testbench seller upstream', upstream.length >= 1, upstream.length);
   tb.metric('upstreamChatRequests', upstream.length);
 
-  const channel = ((await tb.channels())[seller.id] ?? [])[0];
+  // The desktop chat's SpendingAuth is stored after the reply reaches the UI; wait for it before judging the channel.
+  const channel = (await tb.waitForPaidChannels(seller.id, { requests: 1 }))[0];
   tb.check('buyer opened a channel for the desktop chat', Boolean(channel), channel ?? 'no channel');
   tb.check('desktop chat signed a nonzero cumulative amount', BigInt(channel.cumulativeSigned) > 0n, channel.cumulativeSigned);
   tb.metric('signedMicroUsdc', channel.cumulativeSigned);

@@ -74,10 +74,11 @@ export async function run(tb) {
   const afterOverdraw = await tb.buyerBalance();
   tb.check('buyer withdraw cannot take the reserved part', overdraw.code !== 0 && afterOverdraw.available === 0n && afterOverdraw.reserved === start.reserved && (await tb.usdcBalance(buyer)) === walletAfter, { code: overdraw.code, stderr: overdraw.stderr.slice(-300), balance: amounts(afterOverdraw) });
 
-  // 2. The seller goes away without closing the channel; the buyer exits on its own.
-  await tb.stopSeller(sellerId);
+  // 2. The seller crashes without closing the channel; the buyer exits on its own. A graceful stop would settle and
+  // close it on the way down, so this needs the crash.
+  await tb.crashSeller(sellerId);
   const orphaned = await tb.channelState(channelId);
-  tb.check('the stopped seller left the channel open on-chain', orphaned.status === 1 && orphaned.closeRequestedAt === 0, orphaned);
+  tb.check('the crashed seller left the channel open on-chain', orphaned.status === 1 && orphaned.closeRequestedAt === 0, orphaned);
   const requested = await tb.cli(['buyer', 'channels', 'request-close', channelId, '--json']);
   const requestedResult = channelCommandResult(requested);
   const closing = await tb.channelState(channelId);

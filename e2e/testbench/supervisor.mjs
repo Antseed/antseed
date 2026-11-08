@@ -8,6 +8,7 @@ import { createWriteStream } from 'node:fs';
 import { chmod, copyFile, mkdir, readFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createBuyerRouter } from './lib/buyer-router.mjs';
 import { bindUpstream, listModels, WORKSPACE_PLUGINS } from './lib/config.mjs';
 import { blocksInUse, copyIn, pruneCache, resolveForkBlock, seedFromLegacy, writeBack } from './lib/cache.mjs';
 import { ANVIL_FEE_ARGS, chainReader, prepareChain, prepareLocalChain } from './lib/chain.mjs';
@@ -15,7 +16,7 @@ import { chainContracts, deployLocalStack, localGenesisTimestamp } from './lib/l
 import { newToken, startControlServer } from './lib/control.mjs';
 import { startRpcRelay } from './lib/rpc-relay.mjs';
 import { DEFAULT_IDLE_MINUTES, watchdogDecision, WATCHDOG_INTERVAL_MS } from './lib/watchdog.mjs';
-import { assertSellerPaymentsOn, assertSingleBootstrap, buyerProxyListening, cliArgs, cliBuyerClient, cliNodeEnv, CLI_STOP_GRACE_MS, linkPlugins, sellerReady, spawnCliNode, stopWithGrace, waitForCliReady } from './lib/cli-node.mjs';
+import { assertSellerPaymentsOn, assertSingleBootstrap, buyerProxyListening, cliArgs, cliBuyerClient, cliNodeEnv, CLI_STOP_GRACE_MS, crashChild, linkPlugins, sellerReady, spawnCliNode, stopWithGrace, waitForCliReady } from './lib/cli-node.mjs';
 import { anvilExitMessage, assertLocalUrl, isAddressInUse, isolatedEnv, listenWithRetry, redactingStream, supervisorEnvs } from './lib/env.mjs';
 import { acquireLock, isOwnedProcessAlive, ownProcessEntry, processStartTime, releaseLock } from './lib/lock.mjs';
 import { readJson, saveJson, validateManifest, MANIFEST_VERSION, TESTBENCH_CHAIN_IDS } from './lib/manifest.mjs';
@@ -250,6 +251,21 @@ async function stopSellerWorker(id) {
   return true;
 }
 
+/**
+ * Crashes a seller (control request): SIGKILL, no graceful shutdown, so it neither settles nor closes its channels,
+ * the way a seller that loses power leaves them. Deliberate, so it is not an unexpected exit; the seller stays offline
+ * until POST /sellers/:id/start. Graceful stops go through stopSellerWorker.
+ */
+async function crashSellerWorker(id) {
+  const worker = state.workers.get(id);
+  if (!worker) return false;
+  state.workers.delete(id);
+  worker.stopping = true;
+  await crashChild(worker.child);
+  log(`Seller ${id} crashed (SIGKILL, control request)`);
+  return true;
+}
+
 let buyerRuntime = null;
 
 /**
@@ -330,6 +346,8 @@ async function startBuyerInProcess(port) {
     });
     const { loadConfig } = await import(join(repo, 'apps/cli/dist/config/loader.js'));
     const loaded = await loadConfig(manifest.buyerConfig);
+    // As `antseed buyer start` does, so maxPricing and the reputation floor apply here too; set before the proxy serves.
+    state.buyer.setRouter(await createBuyerRouter(repo, loaded));
     const candidate = new BuyerProxy({ node: state.buyer, port: candidatePort, dataDir: paths.buyer, configPath: manifest.buyerConfig, routingPreferences: loaded.buyer.routingPreferences, backgroundRefreshIntervalMs: 60_000 });
     await candidate.start();
     return candidate;
@@ -683,6 +701,12 @@ async function main() {
         const stopped = await stopSellerWorker(params.id);
         await writeManifest({ sellers: manifest.sellers.map((seller) => (seller.id === params.id ? { ...seller, process: undefined, online: false } : seller)) });
         return { stopped };
+      },
+      'POST /sellers/:id/crash': async ({ params }) => {
+        if (!specs.has(params.id)) throw Object.assign(new Error(`Unknown seller ${params.id}`), { statusCode: 404 });
+        const crashed = await crashSellerWorker(params.id);
+        await writeManifest({ sellers: manifest.sellers.map((seller) => (seller.id === params.id ? { ...seller, process: undefined, online: false } : seller)) });
+        return { crashed };
       },
       'POST /sellers/:id/start': async ({ params }) => {
         const spec = specs.get(params.id);

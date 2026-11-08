@@ -4,7 +4,7 @@ import { describe, it } from 'node:test';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { assertAttachOnlyPlatform, attachOnlyEnv, closeApp, desktopEnv, electronRootArgs, playwrightFfmpeg } from '../lib/desktop.mjs';
+import { assertAttachOnlyPlatform, attachOnlyEnv, closeApp, desktopEnv, electronLaunchOptions, electronRootArgs, playwrightFfmpeg } from '../lib/desktop.mjs';
 
 function fakeApp({ closeHangs }) {
   const child = Object.assign(new EventEmitter(), {
@@ -58,6 +58,13 @@ describe('desktop launch prerequisites', () => {
     assert.deepEqual(electronRootArgs({ platform: 'linux', uid: 0 }), ['--no-sandbox']);
     assert.deepEqual(electronRootArgs({ platform: 'linux', uid: 1000 }), []);
     assert.deepEqual(electronRootArgs({ platform: 'darwin', uid: 0 }), []);
+    // The automated (Playwright) launch gets them too, not only the interactive desktop and the share host.
+    const launch = (platform, uid) => electronLaunchOptions({ executablePath: '/e', desktopDir: '/d', env: {}, videoDir: '/v', platform, uid });
+    assert.deepEqual(launch('linux', 0).args, ['.', '--no-sandbox']);
+    assert.deepEqual(launch('linux', 1000).args, ['.']);
+    assert.deepEqual(launch('darwin', 0).args, ['.']);
+    assert.equal(launch('linux', 0).cwd, '/d');
+    assert.deepEqual(launch('linux', 0).recordVideo, { dir: '/v', size: { width: 1280, height: 800 } });
   });
 
   it("finds Playwright's ffmpeg where Playwright expects it", async () => {

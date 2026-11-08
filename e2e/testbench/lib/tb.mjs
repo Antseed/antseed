@@ -239,6 +239,30 @@ export function createTestbenchApi({ manifest, control, eventsPath, chain, stric
       }
       return bySeller;
     },
+    /**
+     * The seller's open channels once the buyer has stored the payment for the answered requests: the proxy answers
+     * before the buyer has signed and saved that request's SpendingAuth, so a read right after a chat can miss it.
+     * Waits until the channels (other than `exclude`d ids) hold at least `requests` receipts and `signed` micro-USDC
+     * (default: anything), then returns all of the seller's open channels. On timeout it returns the last read and
+     * records an event instead of throwing, so the scenario's own checks judge that state.
+     */
+    async waitForPaidChannels(sellerId, { requests, signed = 1n, exclude = [], timeoutMs = 30_000, intervalMs = 200 }) {
+      const read = async () => (await tb.channels())[sellerId] ?? [];
+      const ready = (list) => {
+        const counted = list.filter((channel) => !exclude.includes(channel.channelId));
+        return counted.length > 0
+          && counted.reduce((total, channel) => total + (channel.requestCount ?? 0), 0) >= requests
+          && counted.reduce((total, channel) => total + BigInt(channel.cumulativeSigned ?? '0'), 0n) >= BigInt(signed);
+      };
+      const deadline = Date.now() + timeoutMs;
+      let list = await read();
+      while (!ready(list) && Date.now() < deadline) {
+        await new Promise((resolveWait) => setTimeout(resolveWait, intervalMs));
+        list = await read();
+      }
+      if (!ready(list)) await event('payment-wait-timeout', { sellerId, requests, signed: String(signed), channels: list.map(({ channelId, requestCount, cumulativeSigned }) => ({ channelId, requestCount, cumulativeSigned })) });
+      return list;
+    },
     /** Total signed (cumulative SpendingAuth) micro-USDC per seller id across its channels. */
     async signedBySeller() {
       const bySeller = await tb.channels({ all: true });
@@ -266,6 +290,8 @@ export function createTestbenchApi({ manifest, control, eventsPath, chain, stric
     },
     warp: async (seconds) => { await event('warp', { seconds }); return control.warp(seconds); },
     stopSeller: async (id) => { await event('seller-stop', { id }); return control.stopSeller(id); },
+    /** SIGKILL, no graceful shutdown: the seller leaves its channels open, unsettled. stopSeller is the graceful stop. */
+    crashSeller: async (id) => { await event('seller-crash', { id }); return control.crashSeller(id); },
     startSeller: async (id) => { await event('seller-start', { id }); return control.startSeller(id); },
     /** Stops the buyer node and proxy, like a user quitting: sellers see the disconnect and settle on their own. */
     stopBuyer: async () => { await event('buyer-stop'); return control.stopBuyer(); },

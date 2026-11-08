@@ -193,7 +193,8 @@ export async function runLoad({ proxyUrl, model, imageModel, load: shape = {}, r
   let done = 0;
   const worker = async () => {
     while (next < load.requests) {
-      if (paused) await paused;
+      // Back to the limit check after a pause: the workers that waited may outnumber the requests left.
+      if (paused) { await paused; continue; }
       const index = next;
       next += 1;
       const plan = plans[index];

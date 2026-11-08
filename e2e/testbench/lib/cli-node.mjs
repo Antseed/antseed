@@ -117,6 +117,23 @@ export function buyerProxyListening(output, port) {
   return new RegExp(`Proxy listening on http://localhost:${port}\\b`).test(output);
 }
 
+/**
+ * Crashes a child: SIGKILL at once, so none of its shutdown handlers run (a seller does not settle or close its
+ * channels), then waits until it has exited. Returns false when it had already exited.
+ */
+export async function crashChild(child, { timeoutMs = 10_000 } = {}) {
+  if (child.exitCode !== null || child.signalCode !== null) return false;
+  const exited = once(child, 'exit');
+  child.kill('SIGKILL');
+  let timer;
+  try {
+    await Promise.race([exited, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`pid ${child.pid} did not exit within ${timeoutMs} ms of SIGKILL`)), timeoutMs); })]);
+  } finally {
+    clearTimeout(timer);
+  }
+  return true;
+}
+
 /** Asks a child to stop and waits; after `graceMs` it is SIGKILLed and `onForced` gets how long it was given. */
 export async function stopWithGrace(child, { requestStop = () => child.kill('SIGTERM'), graceMs = CLI_STOP_GRACE_MS, onForced }) {
   if (child.exitCode !== null || child.signalCode !== null) return;

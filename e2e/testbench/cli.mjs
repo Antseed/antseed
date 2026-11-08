@@ -82,7 +82,8 @@ function checkBuilt(target = 'fork', mode = 'sdk') {
   if (pinned && process.versions.node.split('.')[0] !== pinned) {
     throw new Error(`Node ${process.versions.node} does not match .nvmrc (${pinned}.x); native modules (better-sqlite3) would fail to load and disable buyer payments. Switch Node (volta/nvm) and retry`);
   }
-  const required = ['packages/node/dist/index.js', 'apps/cli/dist/proxy/buyer-proxy.js', 'plugins/provider-openai/dist/index.js', ...(mode === 'cli' ? [cliEntry('.'), 'plugins/router-local/dist/index.js'] : [])];
+  // Both modes install router-local: the CLI buyer through its own plugin loader, the sdk buyer through lib/buyer-router.mjs.
+  const required = ['packages/node/dist/index.js', 'apps/cli/dist/proxy/buyer-proxy.js', 'plugins/provider-openai/dist/index.js', 'plugins/router-local/dist/index.js', ...(mode === 'cli' ? [cliEntry('.')] : [])];
   const missing = required.filter((file) => !existsSync(join(repo, file)));
   if (missing.length) throw new Error(`Build first (pnpm run build). Missing: ${missing.join(', ')}`);
   for (const command of target === 'local' ? ['anvil', 'forge'] : ['anvil']) {
