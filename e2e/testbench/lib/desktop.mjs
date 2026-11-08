@@ -176,6 +176,25 @@ async function launchElectron({ desktopDir, env, reportDir, event, trace, instan
 
   let shot = 0;
   let closed = false;
+  // The header picker's accessible name is whichever model it shows, so it is found by what it opens. The other
+  // listbox buttons (the detail panel's "All sellers" filter) carry an aria-label; the picker does not.
+  const modelPicker = () => page.locator('button[aria-haspopup="listbox"]:not([aria-label])').first();
+  /** The chat's error banner (red, above the composer; CSS module class `chat-error`), or '' when none shows. */
+  const chatBanner = async () => (await page.locator('[class*="chat-error"]').allInnerTexts()).map((text) => text.trim()).find(Boolean) ?? '';
+  /** The titles of the rows once the (deferred) search has settled on `term`; empty when it found none in time. */
+  const waitForRows = async (rows, titles, term, timeoutMs) => {
+    const deadline = Date.now() + timeoutMs;
+    let last = [];
+    let stableSince = Date.now();
+    while (Date.now() < deadline) {
+      const now = await titles();
+      if (JSON.stringify(now) !== JSON.stringify(last)) { last = now; stableSince = Date.now(); }
+      if (last.length && Date.now() - stableSince >= 750) return last;
+      await page.waitForTimeout(100);
+    }
+    await event('desktop-model-search-empty', { term, rows: last.length });
+    return last;
+  };
   const ui = {
     app,
     page,
@@ -192,10 +211,59 @@ async function launchElectron({ desktopDir, env, reportDir, event, trace, instan
       await page.getByRole('button', { name: 'Chat', exact: true }).click();
       await page.locator('textarea').first().waitFor({ timeout: 30_000 });
     },
-    /** Types a prompt into the composer, sends it, and waits for a reply matching `expect` after it. */
+    /** What the chat header's model picker shows now. */
+    modelPickerLabel: () => modelPicker().innerText().then((text) => text.trim()),
+    /**
+     * Selects a model as a user does when it is not in the picker's short list: the chat header's model picker, its
+     * "All models" link, the search box, the model's row, then "Start chat". `search` lists terms to try in order (the
+     * display name, then ids); `label` is the row title to take when a search finds several. Throws when no row can be
+     * told apart or the row is free. Returns the row's title, the row's text and the header label after the switch.
+     */
+    async selectModel({ search, label, timeoutMs = 60_000 }) {
+      await ui.openChat();
+      await modelPicker().click({ timeout: timeoutMs });
+      await page.getByRole('listbox').getByRole('button', { name: 'All models' }).click({ timeout: timeoutMs });
+      const box = page.getByPlaceholder('Search models or routers');
+      await box.waitFor({ timeout: timeoutMs });
+      // Priced rows end in "/m tok", which filter pills and the back button do not.
+      const rows = page.getByRole('button').filter({ hasText: '/m tok' });
+      const titles = () => rows.evaluateAll((elements) => elements.map((element) => element.innerText.split('\n')[0].trim()));
+      let found = [];
+      for (const term of search) {
+        await box.fill(term);
+        found = await waitForRows(rows, titles, term, timeoutMs / search.length);
+        if (found.length) break;
+      }
+      if (!found.length) throw new Error(`no row on the Models page for ${search.join(' or ')}`);
+      const exact = found.indexOf(label);
+      if (exact < 0 && found.length > 1) throw new Error(`searching ${search.join(' or ')} found ${found.join(', ')}, none titled "${label}"`);
+      const row = rows.nth(exact < 0 ? 0 : exact);
+      const rowTitle = found[exact < 0 ? 0 : exact];
+      const rowText = (await row.innerText()).replace(/\s+/g, ' ').trim();
+      if (/\bfree\b/i.test(rowText)) throw new Error(`the row for ${rowTitle} is free: ${rowText}`);
+      await row.click();
+      await page.getByRole('button', { name: 'Start chat', exact: true }).click({ timeout: timeoutMs });
+      await page.locator('textarea').first().waitFor({ timeout: timeoutMs });
+      // Waits for the header to take the new model: it still shows the old one for a moment after the switch.
+      await page.waitForFunction((title) => [...document.querySelectorAll('button[aria-haspopup="listbox"]')].some((button) => button.innerText.trim() === title), rowTitle, { timeout: timeoutMs }).catch(() => {});
+      // A live model's detail panel adds an "All sellers" listbox button before the header's, so match by title.
+      const labels = (await page.locator('button[aria-haspopup="listbox"]').allInnerTexts()).map((text) => text.trim());
+      const headerLabel = labels.includes(rowTitle) ? rowTitle : labels.join(' | ');
+      const result = { rowTitle, rowText, headerLabel };
+      await event('desktop-model-selected', result);
+      return result;
+    },
+    /**
+     * Types a prompt into the composer, sends it, and waits for a reply matching `expect` after it. An error banner for
+     * this chat throws at once with its text as `error.banner`, instead of waiting out the timeout.
+     */
     async sendChat(prompt, { expect = MOCK_REPLY, acceptLowReputation = true, timeoutMs = 60_000 } = {}) {
       await ui.openChat();
       const started = Date.now();
+      // A banner already up belongs to an earlier chat; sending clears it, as soon as the prompt shows.
+      const bannerBefore = await chatBanner();
+      let banner = '';
+      let bannerSince = 0;
       await page.locator('textarea').first().fill(prompt);
       await page.getByRole('button', { name: 'Send message' }).click();
       const proceed = page.getByRole('button', { name: 'Continue anyway' });
@@ -213,6 +281,16 @@ async function launchElectron({ desktopDir, env, reportDir, event, trace, instan
           await event('desktop-chat', result);
           return result;
         }
+        // Held for a second, so a banner the app replaces while it retries is not taken for the outcome.
+        const current = await chatBanner();
+        if (current && (at >= 0 || current !== bannerBefore)) {
+          if (current !== banner) { banner = current; bannerSince = Date.now(); }
+          else if (Date.now() - bannerSince >= 1000) {
+            await ui.screenshot('chat-error').catch(() => {});
+            await event('desktop-chat-error', { prompt, banner });
+            throw Object.assign(new Error(`The chat shows an error after "${prompt}": ${banner}`), { banner });
+          }
+        } else banner = '';
         await page.waitForTimeout(250);
       }
       const shotPath = await ui.screenshot('chat-timeout').catch(() => null);

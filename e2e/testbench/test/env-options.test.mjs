@@ -10,15 +10,19 @@ describe('isolatedEnv', () => {
   it('strips AntSeed/provider secrets and sets a private HOME', () => {
     const env = isolatedEnv({
       PATH: '/bin', HOME: '/Users/me', ANTSEED_DATA_DIR: '/Users/me/.antseed', OPENAI_API_KEY: 'sk', ANTHROPIC_API_KEY: 'a',
-      VENICE_API_KEY: 'v', BASE_MAINNET_RPC_URL: 'https://secret', TESTBENCH_KEY_CHAT: 'k', LANG: 'C',
+      VENICE_API_KEY: 'v', BASE_MAINNET_RPC_URL: 'https://secret', TESTBENCH_KEY_CHAT: 'k', PINATA_API_KEY: 'p', PINATA_JWT: 'j', LANG: 'C',
     }, '/tb/home', { EXTRA: '1' });
     assert.equal(env.HOME, '/tb/home');
     assert.equal(env.PATH, '/bin');
     assert.equal(env.LANG, 'C');
     assert.equal(env.EXTRA, '1');
-    for (const key of ['ANTSEED_DATA_DIR', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'VENICE_API_KEY', 'BASE_MAINNET_RPC_URL', 'TESTBENCH_KEY_CHAT']) {
+    for (const key of ['ANTSEED_DATA_DIR', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'VENICE_API_KEY', 'BASE_MAINNET_RPC_URL', 'TESTBENCH_KEY_CHAT', 'PINATA_API_KEY', 'PINATA_JWT']) {
       assert.equal(env[key], undefined, key);
     }
+  });
+  it('strips Foundry wallet settings, which change what forge script requires and carry keystore passwords', () => {
+    const env = isolatedEnv({ PATH: '/bin', ETH_PASSWORD: '/root/pw', ETH_KEYSTORE: '/root/ks', ETH_KEYSTORE_ACCOUNT: 'a', ETH_FROM: '0x1', ETH_RPC_URL: 'https://secret' }, '/tb/home');
+    for (const key of ['ETH_PASSWORD', 'ETH_KEYSTORE', 'ETH_KEYSTORE_ACCOUNT', 'ETH_FROM', 'ETH_RPC_URL']) assert.equal(env[key], undefined, key);
   });
 });
 

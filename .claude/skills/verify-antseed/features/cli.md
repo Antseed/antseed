@@ -32,4 +32,3 @@ Preconditions:
 - No `--data-dir` means `~/.antseed`, the operator's real identity and wallet. The session's deny rules block it; never work around them.
 - A long-running command (`buyer start`) needs a background run and an explicit stop.
 - Only the buyer commands have scenarios. A change to another command needs a unit test plus a transcript (by hand, or from a scenario with `tb.cli()`).
-- `buyer channels <subcommand> --json` prints text: `channels` declares `--json` itself and commander hands it the flag. The scenarios record it as a known issue and read the text transcript; `buyer channels --json` (no subcommand) prints JSON.

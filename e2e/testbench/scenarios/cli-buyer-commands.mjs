@@ -88,7 +88,8 @@ export async function run(tb) {
   const list = await cli(['buyer', 'channels', 'list']);
   tb.check('buyer channels list: names the active channel and its request count', list.stdout.includes(channel.channelId.slice(0, 16)) && new RegExp(`Requests: ${channel.requestCount}\\b`).test(list.stdout) && /\bactive\b/.test(list.stdout), list.stdout.slice(0, 600));
   const listJson = await tb.cli(['buyer', 'channels', 'list', '--json'], { timeoutMs: 90_000 });
-  tb.knownIssue('buyer channels list --json prints JSON', listJson.code === 0 && Array.isArray(listJson.json), { code: listJson.code, stdout: listJson.stdout.slice(0, 200) }, 'not filed yet: `buyer channels` and its `list` subcommand both declare --json, and commander gives the flag to `channels`, so `list --json` prints text (apps/cli/src/cli/commands/buyer/channels.ts)');
+  const listed = Array.isArray(listJson.json) ? listJson.json.filter((row) => row.status === 'active') : [];
+  tb.check('buyer channels list --json: the same active channel as the proxy, with its signed total and request count', listJson.code === 0 && listed.length === 1 && listed[0].sessionId === channel.channelId && BigInt(listed[0].authMax) === signed && listed[0].requestCount === channel.requestCount && listed[0].peerId === channel.peerId, { code: listJson.code, cli: listed.map(({ sessionId, authMax, requestCount, peerId }) => ({ sessionId, authMax, requestCount, peerId })), proxy: { channelId: channel.channelId, cumulativeSigned: channel.cumulativeSigned, requestCount: channel.requestCount }, stdout: listJson.stdout.slice(0, 200) });
 
   const connection = await cli(['buyer', 'connection', 'get']);
   tb.check('buyer connection get: connected on the proxy port, no pinned peer', /State:\s+connected/.test(connection.stdout) && new RegExp(`Port:\\s+${tb.manifest.proxyPort}\\b`).test(connection.stdout) && /Pinned peer:\s+none/.test(connection.stdout), connection.stdout);

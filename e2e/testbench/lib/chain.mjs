@@ -29,6 +29,20 @@ export class AnvilSigner extends JsonRpcSigner {
   }
 }
 
+/**
+ * A transaction's receipt, by polling for it. ethers' wait() wakes on new blocks, so on automine a transaction mined
+ * just after wait() subscribes is never seen: no later block arrives and wait() hangs with no timeout.
+ */
+export async function minedReceipt(transaction, provider, { timeoutMs = 60_000, intervalMs = 50 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const receipt = await provider.getTransactionReceipt(transaction.hash);
+    if (receipt) return receipt;
+    if (Date.now() > deadline) throw new Error(`Transaction ${transaction.hash} was not mined within ${timeoutMs / 1000}s`);
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, intervalMs));
+  }
+}
+
 const ETH_BALANCE = '0x56BC75E2D63100000';
 const WEEK = 604_800;
 const USDC_ADMIN = ['function masterMinter() view returns(address)', 'function configureMinter(address,uint256) returns(bool)', 'function mint(address,uint256)', 'function transfer(address,uint256) returns(bool)'];
@@ -48,7 +62,7 @@ export async function applyOwnerSettings(provider, chain, { buyer, depositMicros
     await provider.send('anvil_setBalance', [owner, ETH_BALANCE]);
     await provider.send('anvil_impersonateAccount', [owner]);
     try {
-      const receipt = await (await action(new Contract(address, abi, new AnvilSigner(provider, owner)))).wait();
+      const receipt = await minedReceipt(await action(new Contract(address, abi, new AnvilSigner(provider, owner))), provider);
       assert.equal(receipt.status, 1);
     } finally {
       await provider.send('anvil_stopImpersonatingAccount', [owner]);
@@ -153,7 +167,7 @@ export async function prepareChain({ rpcUrl, sdk, sellers, buyer: buyerIdentity,
     return instance;
   };
   const transact = async (transaction) => {
-    const receipt = await (await transaction).wait();
+    const receipt = await minedReceipt(await transaction, provider);
     assert.equal(receipt.status, 1);
     return receipt;
   };
@@ -240,7 +254,7 @@ export async function prepareLocalChain({ rpcUrl, sdk, sellers, buyer: buyerIden
     const chain = { ...localChainConfig(sdk.getChainConfig('base-local'), layout), rpcUrl, fallbackRpcUrls: [] };
     await verifyLocalLayout(provider, layout);
     const transact = async (transaction) => {
-      const receipt = await (await transaction).wait();
+      const receipt = await minedReceipt(await transaction, provider);
       assert.equal(receipt.status, 1);
       return receipt;
     };
@@ -354,7 +368,7 @@ export function chainReader(rpcUrl, chain) {
     try {
       const data = iface.encodeFunctionData(method, args);
       const hash = await provider.send('eth_sendTransaction', [{ from, to, data, ...ANVIL_SIGNED_RPC_FEES }]);
-      const receipt = await provider.waitForTransaction(hash, 1, 30_000);
+      const receipt = await minedReceipt({ hash }, provider, { timeoutMs: 30_000 });
       if (!receipt || receipt.status !== 1) throw new Error(`${method}(${args.join(', ')}) reverted`);
       return receipt;
     } finally {

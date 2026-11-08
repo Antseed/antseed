@@ -4,7 +4,7 @@ import { userInfo } from 'node:os';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { Transform } from 'node:stream';
 
-const STRIPPED = /^(ANTSEED_|OPENAI_|ANTHROPIC_|VENICE_|FLOW_|FORK_|TESTBENCH_KEY_|BASE_MAINNET_RPC_URL$|LOCAL_LLM_|TYPESAFE_)/;
+const STRIPPED = /^(ANTSEED_|OPENAI_|ANTHROPIC_|VENICE_|FLOW_|FORK_|TESTBENCH_KEY_|ETH_|BASE_MAINNET_RPC_URL$|LOCAL_LLM_|TYPESAFE_|PINATA_)/;
 export const FORBIDDEN_PORTS = new Set([6881, 6882, 8377, 3117]);
 
 /** The account's real home from the password database, independent of $HOME (which testbench processes override). */

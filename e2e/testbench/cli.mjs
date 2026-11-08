@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from 'node:child_process';
 import { closeSync, existsSync, openSync, readFileSync, statSync } from 'node:fs';
-import { mkdir, readdir, readFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm } from 'node:fs/promises';
 import { createConnection } from 'node:net';
 import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -16,6 +16,7 @@ import { assertAttachOnlyPlatform, attachOnlyEnv, electronRootArgs, FFMPEG_INSTA
 import { inspectLock, isOwnedProcessAlive, killOwned, ownProcessEntry } from './lib/lock.mjs';
 import { scenarioFile, scenarioFiles, SCENARIOS_DIR } from './lib/scenarios.mjs';
 import { cleanupStale, settleSlot } from './lib/stale.mjs';
+import { forgetAttachedDesktop, recordAttachedDesktop, stopAttachedDesktop, stopAttachedDesktops } from './lib/attached-desktop.mjs';
 import { lifecycleState, readJson, saveJson, shutdownProblems, validateManifest } from './lib/manifest.mjs';
 import { HELP, parseArgs } from './lib/options.mjs';
 import { testbenchName, testbenchPaths, testbenchRoot, worktreeRoot } from './lib/paths.mjs';
@@ -105,7 +106,10 @@ async function up(options, ctx, topologyOverride) {
   const settled = await settleSlot({
     state: await retireOrphan(ctx, await runningState(paths)),
     readState: () => runningState(paths),
-    cleanup: (manifest) => cleanupStale(paths, manifest),
+    cleanup: async (manifest) => {
+      for (const problem of await stopAttachedDesktops(paths.dir, { say })) say(`Warning: ${problem}`);
+      return cleanupStale(paths, manifest);
+    },
     say,
   });
   const current = settled.state;
@@ -220,10 +224,12 @@ async function up(options, ctx, topologyOverride) {
 async function down(options, ctx) {
   const { paths } = ctx;
   await stopShare(ctx, { quiet: true });
+  // First, so a desktop whose launcher died is not left running against a stopped testbench.
+  const desktopProblems = await stopAttachedDesktops(paths.dir, { say });
   const state = await runningState(paths);
   if (state.lock.state === 'free' && !state.manifest?.running) {
     // Its shutdown may already have run (the watchdog, an earlier down) and failed; that still fails `down`.
-    const problems = shutdownProblems(state.manifest);
+    const problems = [...shutdownProblems(state.manifest), ...desktopProblems];
     if (problems.length) throw new Error(`Testbench ${ctx.name} is not running, but its last shutdown had problems: ${problems.join('; ')} (see ${join(paths.logs, 'supervisor.log')}; the next pnpm testbench up starts fresh)`);
     say(`Testbench ${ctx.name} is not running`);
     return;
@@ -248,7 +254,7 @@ async function down(options, ctx) {
   if (manifest?.finalBalances) say(`Buyer deposit after close: available=${manifest.finalBalances.availableMicroUsdc} reserved=${manifest.finalBalances.reservedMicroUsdc}`);
   if (open.length) say(`Warning: ports still accepting connections: ${open.join(', ')} (another process may have taken them)`);
   // Cleanup above is best effort; a stop that left errors or locked reserve fails `down`, and with it a run.
-  const problems = shutdownProblems(manifest);
+  const problems = [...shutdownProblems(manifest), ...desktopProblems];
   if (problems.length) throw new Error(`Testbench ${ctx.name} stopped with problems: ${problems.join('; ')} (see ${join(paths.logs, 'supervisor.log')})`);
   say(`Testbench ${ctx.name} stopped`);
 }
@@ -557,14 +563,20 @@ async function desktop(options, ctx) {
   const instance = await chooseDesktopInstance(manifest.desktopInstance ?? manifest.name);
   const env = attachOnlyEnv({ manifest });
   say(`Attaching desktop instance ${instance} to ${manifest.proxyUrl} (attach-only, testbench wallet)`);
-  const child = spawn('pnpm', ['dev:desktop:instance', instance], { cwd: repo, env, stdio: 'inherit' });
-  for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => child.kill(signal));
+  // Its own process group, recorded, so `down` can stop the whole tree even if this launcher dies first.
+  const child = spawn('pnpm', ['dev:desktop:instance', instance], { cwd: repo, env, stdio: 'inherit', detached: true });
+  const record = await recordAttachedDesktop(ctx.paths.dir, { pid: child.pid, home: manifest.home, instance });
+  for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => { try { process.kill(-child.pid, signal); } catch { /* already gone */ } });
   // Chats go through the proxy, which the idle budget cannot see; an attached desktop counts as activity.
   const control = await loadControlClient(ctx.paths.control);
   const self = ownProcessEntry();
   const stopHeartbeat = startHeartbeat(() => control.heartbeat(self));
   const code = await new Promise((resolveExit) => child.once('exit', (exitCode) => resolveExit(exitCode ?? 1)));
   stopHeartbeat();
+  // The launcher can exit before the rest of its tree does.
+  const { problems } = await stopAttachedDesktop(record);
+  for (const problem of problems) say(`Warning: ${problem}`);
+  if (!problems.length) await forgetAttachedDesktop(ctx.paths.dir, record);
   process.exitCode = code;
 }
 
@@ -655,6 +667,8 @@ async function stopShare(ctx, { quiet = false } = {}) {
   const cleaned = await cleanupShare(state, {
     isOwnedProcessAlive, killOwned, say,
     tailscaleOff: (path) => spawnSync('tailscale', ['serve', '--https=443', `--set-path=${path}`, 'off'], { stdio: 'ignore' }),
+    read: () => readJson(join(ctx.paths.dir, 'share.json')),
+    removeFiles: () => Promise.all(['share-xauthority', 'share-vnc.sock'].map((file) => rm(join(ctx.paths.dir, file), { force: true }))),
     save: (next) => saveJson(join(ctx.paths.dir, 'share.json'), next),
   });
   if (!cleaned && !quiet) say(`No share running for ${ctx.name}`);

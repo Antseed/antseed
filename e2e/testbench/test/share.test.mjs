@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
 import WebSocket from 'ws';
 import { EventEmitter } from 'node:events';
-import { cleanupShare, createStateWriter, displayEnv, scheduleForcedExit, findNoVncDir, funnelEnabled, landingPage, originAllowed, parseTailscaleStatus, startShareServer, startXvfb, stripPrefix, XAUTH_PROTOCOL, xauthorityEntry, xvfbArgs } from '../lib/share.mjs';
+import { cleanupShare, createStateWriter, displayEnv, scheduleForcedExit, findNoVncDir, funnelEnabled, landingPage, originAllowed, parseTailscaleStatus, startShareServer, startXvfb, stripPrefix, XAUTH_PROTOCOL, xauthorityEntry, x11vncArgs, xvfbArgs } from '../lib/share.mjs';
 
 const tmp = await mkdtemp(join(tmpdir(), 'testbench-share-'));
 after(() => rm(tmp, { recursive: true, force: true }));
@@ -33,6 +33,17 @@ describe('share X display authorization', () => {
     assert.equal(args.includes('-ac'), false);
     assert.throws(() => xvfbArgs({ width: 1, height: 1 }), /-auth file/);
     assert.deepEqual(displayEnv({ PATH: '/bin', DISPLAY: ':0', XAUTHORITY: '/home/u/.Xauthority' }, { display: ':7', authFile: '/tb/share-xauthority' }), { PATH: '/bin', DISPLAY: ':7', XAUTHORITY: '/tb/share-xauthority' });
+  });
+});
+
+describe('x11vnc arguments', () => {
+  it('serves only the unix socket: both TCP listeners are off, IPv6 included', () => {
+    const args = x11vncArgs({ display: ':7', authFile: '/tb/share-xauthority', socketPath: '/tb/share-vnc.sock' });
+    assert.equal(args[args.indexOf('-rfbport') + 1], '0');
+    // -rfbport 0 only stops the IPv4 listener: without this flag x11vnc keeps [::]:5900 open with no password.
+    assert.equal(args[args.indexOf('-rfbportv6') + 1], '-1');
+    assert.equal(args[args.indexOf('-unixsock') + 1], '/tb/share-vnc.sock');
+    assert.equal(args[args.indexOf('-auth') + 1], '/tb/share-xauthority');
   });
 });
 
@@ -162,6 +173,26 @@ describe('share cleanup', () => {
     assert.deepEqual(calls, ['say:Stopping share (desktop, display, VNC, tailscale serve)', 'kill:10', 'kill:11', 'kill:12', 'save:false:true']);
   });
 
+  it('removes the private files after a dead host, and keeps the stop time and reason a live host wrote as it stopped', async () => {
+    const dead = recorder(new Set([11, 12]));
+    const removed = [];
+    await cleanupShare({ running: true, host, processes }, { ...dead.deps, removeFiles: async () => removed.push('files') });
+    assert.deepEqual(removed, ['files']);
+    // The state read before the host was signalled has no stop time; the host saved one while it stopped.
+    const before = { running: true, starting: false, url: 'u', host, processes };
+    const onDisk = { ...before, running: false, stoppedAt: 'host-stopped', stopReason: 'SIGTERM' };
+    const saved = [];
+    const live = recorder(new Set([10]));
+    await cleanupShare(before, { ...live.deps, read: async () => onDisk, save: async (state) => saved.push(state) });
+    assert.equal(saved.length, 1);
+    assert.deepEqual([saved[0].stoppedAt, saved[0].stopReason, saved[0].running], ['host-stopped', 'SIGTERM', false]);
+    assert.equal(typeof saved[0].cleanedAt, 'string');
+    const gone = recorder(new Set());
+    const missing = [];
+    await cleanupShare(before, { ...gone.deps, read: async () => null, save: async (state) => missing.push(state) });
+    assert.equal(missing[0].url, 'u', 'without a file it falls back to the state it was given');
+  });
+
   it('returns early only without state, or once it was cleaned up', async () => {
     const { calls, deps } = recorder(new Set());
     assert.equal(await cleanupShare(null, deps), false);
@@ -244,6 +275,16 @@ describe('share server', () => {
       assert.deepEqual(messages, ['RFB 003.008\n', 'echo:hi']);
       assert.equal(server.viewerCount(), 1);
       ws.close();
+
+      // noVNC 1.5+ resolves the landing page's path= against vnc.html, so the stream arrives under /desktop/.
+      for (const path of ['/desktop/websockify', '/wt-a/desktop/wt-a/websockify']) {
+        const relative = new WebSocket(`ws://127.0.0.1:${server.port}${path}`, ['binary'], { origin: 'https://box.tail1.ts.net' });
+        const banner = await new Promise((resolve, reject) => { relative.once('message', (data) => resolve(data.toString())); relative.once('error', reject); relative.once('unexpected-response', (_req, res) => reject(new Error(`${path} answered ${res.statusCode}`))); });
+        assert.equal(banner, 'RFB 003.008\n', path);
+        relative.close();
+      }
+      const other = new WebSocket(`ws://127.0.0.1:${server.port}/reports/websockify`, ['binary'], { origin: 'https://box.tail1.ts.net' });
+      assert.equal(await new Promise((resolve) => { other.on('unexpected-response', (_req, res) => resolve(res.statusCode)); other.on('error', () => resolve('error')); }), 404);
 
       const blocked = new WebSocket(`ws://127.0.0.1:${server.port}/websockify`, ['binary'], { origin: 'https://evil.example' });
       const status = await new Promise((resolve) => { blocked.on('unexpected-response', (_req, res) => resolve(res.statusCode)); blocked.on('error', () => resolve('error')); });

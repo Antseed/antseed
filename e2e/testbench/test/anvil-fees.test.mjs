@@ -5,7 +5,7 @@ import { createRequire } from 'node:module';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { after, before, describe, it } from 'node:test';
-import { ANVIL_FEE_ARGS, ANVIL_SIGNED_FEES, ANVIL_SIGNED_RPC_FEES, AnvilSigner } from '../lib/chain.mjs';
+import { ANVIL_FEE_ARGS, ANVIL_SIGNED_FEES, ANVIL_SIGNED_RPC_FEES, AnvilSigner, minedReceipt } from '../lib/chain.mjs';
 import { freePort } from '../lib/env.mjs';
 import { scenarioFiles } from '../lib/scenarios.mjs';
 
@@ -53,7 +53,7 @@ describe('transactions Anvil signs (impersonated accounts)', { skip: !hasAnvil &
 
   it('a raw eth_sendTransaction with ANVIL_SIGNED_RPC_FEES is mined (sendContractAs)', async () => {
     const hash = await provider.send('eth_sendTransaction', [{ from: IMPERSONATED, to: TO, value: '0x1', ...ANVIL_SIGNED_RPC_FEES }]);
-    assert.equal((await provider.waitForTransaction(hash, 1, 10_000)).status, 1);
+    assert.equal((await minedReceipt({ hash }, provider, { timeoutMs: 10_000 })).status, 1);
   });
 });
 

@@ -15,7 +15,7 @@ import { desktopEnv, electronRootArgs } from './lib/desktop.mjs';
 import { ownProcessEntry, processStartTime } from './lib/lock.mjs';
 import { readJson, saveJson, validateManifest } from './lib/manifest.mjs';
 import { isInside, testbenchPaths } from './lib/paths.mjs';
-import { createStateWriter, displayEnv, scheduleForcedExit, startShareServer, startXvfb, xauthorityEntry, xvfbArgs } from './lib/share.mjs';
+import { createStateWriter, displayEnv, scheduleForcedExit, startShareServer, startXvfb, x11vncArgs, xauthorityEntry, xvfbArgs } from './lib/share.mjs';
 import { startHeartbeat } from './lib/watchdog.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -68,7 +68,7 @@ async function startDisplay() {
 /** x11vnc on a unix socket inside the 0700 testbench dir: no TCP port, so other local users cannot attach. */
 async function startVnc(display, socketPath) {
   await rm(socketPath, { force: true });
-  const child = spawn('x11vnc', ['-display', display, '-auth', authFile, '-rfbport', '0', '-unixsock', socketPath, '-forever', '-shared', '-nopw', '-noxdamage', '-quiet'], { env: displayEnv(process.env, { display, authFile }), stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn('x11vnc', x11vncArgs({ display, authFile, socketPath }), { env: displayEnv(process.env, { display, authFile }), stdio: ['ignore', 'pipe', 'pipe'] });
   track('x11vnc', child, 'share-vnc');
   const deadline = Date.now() + 15_000;
   while (!existsSync(socketPath)) {

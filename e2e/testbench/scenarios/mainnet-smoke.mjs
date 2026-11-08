@@ -1,8 +1,23 @@
+import { MAX_PAID_CANDIDATES, tryPaidCandidates } from '../lib/mainnet-run.mjs';
+
 export const meta = {
   description: 'Real network, real funds: the full desktop (its own buyer from this worktree) discovers live sellers, sends one chat, gets a reply, signs a nonzero amount within the per-run cap, and the on-chain deposit stays consistent.',
   targets: ['mainnet'],
   requires: ['realFunds', 'desktop'],
 };
+
+/** One try at one paid model, in a new chat through the desktop UI. A routing error on screen throws (see tryPaidCandidates). */
+export async function chatOnPaidModel(tb, ui, { model }) {
+  const search = [...new Set([model.name, model.id, ...model.peers.map((peer) => peer.serviceId)])];
+  const selected = await ui.selectModel({ search, label: model.name }).catch((error) => ({ error: error.message }));
+  await ui.screenshot(`selected-${model.id}`);
+  tb.check(`the desktop selected the paid model ${model.id}`, !selected.error && selected.headerLabel === selected.rowTitle && !/\bfree\b/i.test(selected.headerLabel), selected);
+  const chat = await ui.sendChat(`mainnet-smoke ${Date.now()}: reply with only the word PONG.`, { expect: /PONG/i, timeoutMs: 120_000 });
+  // The desktop falls back to another model when the selected one has no route: the reply must be the selected model's.
+  const after = await ui.modelPickerLabel();
+  tb.check(`the chat ran on the selected model ${model.id}`, after === selected.rowTitle, { selected: selected.rowTitle, header: after });
+  return chat;
+}
 
 export async function run(tb) {
   const before = await tb.buyerBalance();
@@ -19,9 +34,19 @@ export async function run(tb) {
   tb.metric('networkModels', models.length);
   tb.check('the network catalog lists models', models.length >= 1, models.length);
 
+  // A fresh profile defaults to a free model, whose chat signs nothing: the paid path needs a paid model picked here.
+  const { candidates, reason } = await tb.paidChatModels();
+  tb.check('the live catalog has a paid chat model the buyer can route to', candidates.length > 0, candidates.length ? candidates.slice(0, MAX_PAID_CANDIDATES).map(({ model }) => model.id) : reason);
+
   const snapshot = await tb.signedSnapshot();
-  const prompt = `mainnet-smoke ${Date.now()}: reply with only the word PONG.`;
-  const chat = await ui.sendChat(prompt, { expect: /PONG/i, timeoutMs: 120_000 });
+  const outcome = await tryPaidCandidates(candidates, (candidate) => chatOnPaidModel(tb, ui, candidate), { onAttempt: (entry) => tb.event('paid-model-attempt', entry) });
+  tb.metric('paidModelAttempts', outcome.attempts);
+  tb.check('a paid model answered the chat', Boolean(outcome.candidate), outcome.attempts);
+  tb.metric('paidModel', outcome.candidate.model.id);
+  tb.metric('paidModelInputUsdPerMillion', outcome.candidate.inputUsdPerMillion);
+  tb.metric('paidModelOutputUsdPerMillion', outcome.candidate.outputUsdPerMillion);
+  tb.metric('paidModelSellers', outcome.candidate.sellers);
+  const chat = outcome.result;
   await ui.screenshot('reply');
   tb.check('the desktop shows a reply from a live seller', chat.reply.length > 0, chat.reply.slice(0, 200));
   tb.metric('desktopChatLatencyMs', chat.latencyMs);

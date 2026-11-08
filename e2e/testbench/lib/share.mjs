@@ -36,6 +36,14 @@ export function xvfbArgs({ width, height, authFile }) {
 }
 
 /**
+ * x11vnc on a unix socket only. -rfbport 0 stops the IPv4 listener; IPv6 is separate and defaults to 5900 on every
+ * interface, and -noipv6 does not stop it, so -rfbportv6 -1 is what keeps this passwordless server off the network.
+ */
+export function x11vncArgs({ display, authFile, socketPath }) {
+  return ['-display', display, '-auth', authFile, '-rfbport', '0', '-rfbportv6', '-1', '-unixsock', socketPath, '-forever', '-shared', '-nopw', '-noxdamage', '-quiet'];
+}
+
+/**
  * Share state that is saved in call order. `write(patch)` applies the patch at once and queues a save of that snapshot
  * behind every earlier save, so an older snapshot can never land after a newer one. Its promise rejects on a failed
  * save; `flush()` waits for every queued save and throws the first error since the last flush, so fire-and-forget
@@ -108,9 +116,11 @@ export function displayEnv(baseEnv, { display, authFile }) {
 /**
  * Stops whatever a recorded share left: the host if it is still alive, then every recorded child and the tailscale
  * route, each only if it is still the process (or route) the share recorded. Runs when the host died too, since its
- * children outlive it. Returns false only when there is no share state, or it was already cleaned up.
+ * children outlive it. Afterwards it removes the share's private files (`removeFiles`) and saves the state as cleaned
+ * on top of what `read` returns now, since a host that was still alive wrote its own stop time and reason as it stopped.
+ * Returns false only when there is no share state, or it was already cleaned up.
  */
-export async function cleanupShare(state, { isOwnedProcessAlive, killOwned, tailscaleOff, save, say = () => {} }) {
+export async function cleanupShare(state, { isOwnedProcessAlive, killOwned, tailscaleOff, save, read = async () => state, removeFiles = async () => {}, say = () => {} }) {
   if (!state || state.cleanedAt) return false;
   const hostAlive = Boolean(state.host && isOwnedProcessAlive(state.host));
   // A host that stopped itself has cleaned up already; the checks below then find nothing, so it needs no message.
@@ -119,7 +129,8 @@ export async function cleanupShare(state, { isOwnedProcessAlive, killOwned, tail
   if (hostAlive) await killOwned(state.host, { graceMs: 20_000 });
   for (const entry of state.processes ?? []) await killOwned(entry, { graceMs: 5_000 });
   if (state.tailscale?.path) tailscaleOff(state.tailscale.path);
-  await save({ ...state, running: false, starting: false, cleanedAt: new Date().toISOString() });
+  await removeFiles();
+  await save({ ...((await read()) ?? state), running: false, starting: false, cleanedAt: new Date().toISOString() });
   return true;
 }
 
@@ -196,6 +207,9 @@ function serveStatic(root, urlPath, request, response) {
   createReadStream(target).pipe(response);
 }
 
+/** The desktop stream: /websockify, or under /desktop/ where noVNC 1.5+ resolves the landing page's relative path. */
+const isStreamPath = (pathname) => pathname === '/websockify' || (pathname.startsWith('/desktop/') && pathname.endsWith('/websockify'));
+
 /**
  * HTTP server for one shared testbench: landing page, noVNC client (/desktop/), the desktop stream
  * (/websockify, a WebSocket-to-VNC bridge to the VNC unix socket), reports (/reports/) and status.
@@ -230,7 +244,7 @@ export async function startShareServer({ prefix, noVncDir, vncSocket, vncPort, r
     onActivity();
     const pathname = stripPrefix(request.url ?? '/', prefix).split('?')[0];
     const allowed = originAllowed(request.headers.origin, { host: request.headers.host, forwardedHost: request.headers['x-forwarded-host'], dnsName, port: boundPort });
-    if (pathname !== '/websockify' || !allowed) {
+    if (!isStreamPath(pathname) || !allowed) {
       socket.end(`HTTP/1.1 ${allowed ? 404 : 403} ${allowed ? 'Not Found' : 'Forbidden'}\r\n\r\n`);
       return;
     }

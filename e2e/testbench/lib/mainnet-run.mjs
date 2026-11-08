@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { appendFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
+import { join } from 'node:path';
 import { launchProfileDesktop } from './desktop.mjs';
 
 const require = createRequire(import.meta.url);
@@ -17,6 +18,87 @@ export function mainnetReader(rpcUrl, chain) {
     },
     close() { provider.destroy(); },
   };
+}
+
+const MEDIA_MODEL = /\b(audio|speech|tts|whisper|transcri\w*|image|video|embed\w*)\b/i;
+const positive = (value) => typeof value === 'number' && Number.isFinite(value) && value > 0;
+
+/** A chat model by what it is: text in the catalog, text out, not a media model by name. */
+function isChatModel(model) {
+  if (model.type !== 'text') return false;
+  const outputs = model.architecture?.output_modalities;
+  if (outputs && (!outputs.includes('text') || outputs.length > 1)) return false;
+  return !MEDIA_MODEL.test(`${model.id ?? ''} ${model.name ?? ''}`.replace(/[-_/.]+/g, ' '));
+}
+
+/** Billed per token at nonzero prices, with no free allowance that would serve the first requests without a payment. */
+const paidOffer = (offer) => positive(offer.inputUsdPerMillion) && positive(offer.outputUsdPerMillion) && !offer.freeTier && !offer.unitBillingModels;
+
+/** Spend stays small: offers above this many USD per million tokens, input or output, are not tried. */
+export const MAX_PAID_USD_PER_MILLION = 5;
+/** How many paid models one run tries before it fails. */
+export const MAX_PAID_CANDIDATES = 3;
+
+/**
+ * The paid chat models of the live `/v1/models` catalog (`peers` are the live offers) worth trying, best first: more
+ * than one usable seller, then lowest input + output price of a usable offer, then id.
+ * Every offer must be paid: the desktop picks the seller, so one free offer or free allowance can serve the chat with
+ * no SpendingAuth. A usable offer is one the buyer will actually route to: `isRoutable` (the buyer's own
+ * isModelRouteEligible: trust floor and allow/block lists), within its `maxPricing` caps and at most
+ * `maxUsdPerMillion`. Returns { candidates: [{ model, inputUsdPerMillion, outputUsdPerMillion, sellers }], reason }, with
+ * `reason` naming what was skipped when there are none.
+ */
+export function rankPaidChatModels(models, { maxPricing, isRoutable = () => true, maxUsdPerMillion = MAX_PAID_USD_PER_MILLION } = {}) {
+  const caps = maxPricing?.defaults ?? {};
+  const withinCaps = (offer) => offer.inputUsdPerMillion <= (caps.inputUsdPerMillion ?? Infinity) && offer.outputUsdPerMillion <= (caps.outputUsdPerMillion ?? Infinity);
+  const withinLimit = (offer) => offer.inputUsdPerMillion <= maxUsdPerMillion && offer.outputUsdPerMillion <= maxUsdPerMillion;
+  const total = (entry) => entry.inputUsdPerMillion + entry.outputUsdPerMillion;
+  const skipped = { notChat: 0, noLiveOffer: 0, freeOrUnpriced: 0, noRoutableSeller: 0, overBuyerCaps: 0, overPriceLimit: 0 };
+  const candidates = [];
+  for (const model of models) {
+    if (!isChatModel(model)) { skipped.notChat += 1; continue; }
+    const offers = model.peers ?? [];
+    if (offers.length === 0) { skipped.noLiveOffer += 1; continue; }
+    if (!offers.every(paidOffer)) { skipped.freeOrUnpriced += 1; continue; }
+    const routable = offers.filter(isRoutable);
+    if (routable.length === 0) { skipped.noRoutableSeller += 1; continue; }
+    const capped = routable.filter(withinCaps);
+    if (capped.length === 0) { skipped.overBuyerCaps += 1; continue; }
+    const usable = capped.filter(withinLimit);
+    if (usable.length === 0) { skipped.overPriceLimit += 1; continue; }
+    const [cheapest] = usable.sort((a, b) => total(a) - total(b));
+    candidates.push({ model, inputUsdPerMillion: cheapest.inputUsdPerMillion, outputUsdPerMillion: cheapest.outputUsdPerMillion, sellers: new Set(usable.map((offer) => offer.peerId)).size });
+  }
+  candidates.sort((a, b) => Number(b.sellers > 1) - Number(a.sellers > 1) || total(a) - total(b) || a.model.id.localeCompare(b.model.id));
+  return { candidates, reason: candidates.length ? null : `no routable paid chat model among ${models.length} catalog entries (skipped: ${Object.entries(skipped).map(([why, count]) => `${count} ${why}`).join(', ')})` };
+}
+
+const ROUTE_UNAVAILABLE = /model_not_found|No policy-allowed peer|\b50[23]\b/;
+
+/** True for the on-screen error (ui.sendChat throws it with `banner`) of a model nobody can serve right now. */
+export function isRouteUnavailableError(error) {
+  return typeof error?.banner === 'string' && ROUTE_UNAVAILABLE.test(error.banner);
+}
+
+/**
+ * Runs `attempt(candidate)` on up to `max` candidates until one succeeds. Only a routing or availability error moves on
+ * to the next; anything else is the run's own failure and is rethrown. Returns { candidate, result, attempts }, with
+ * `candidate` null when all failed; `attempts` lists each model and its error, and `onAttempt` hears each one.
+ */
+export async function tryPaidCandidates(candidates, attempt, { max = MAX_PAID_CANDIDATES, onAttempt = async () => {} } = {}) {
+  const attempts = [];
+  const record = async (entry) => { attempts.push(entry); await onAttempt(entry); };
+  for (const candidate of candidates.slice(0, max)) {
+    try {
+      const result = await attempt(candidate);
+      await record({ model: candidate.model.id, ok: true });
+      return { candidate, result, attempts };
+    } catch (error) {
+      if (!isRouteUnavailableError(error)) throw error;
+      await record({ model: candidate.model.id, ok: false, error: error.banner });
+    }
+  }
+  return { candidate: null, result: null, attempts };
 }
 
 /**
@@ -80,6 +162,23 @@ export function createMainnetApi({ repo, env, instance, profile, reader, reportD
     async models() {
       const body = await (await proxy('/v1/models')).json();
       return body.data ?? [];
+    },
+    /** The buyer's limits on routes, read from its config the way `antseed buyer start` loads them. */
+    async buyerRoutingLimits() {
+      const { loadConfig } = await import(join(repo, 'apps/cli/dist/config/loader.js'));
+      const { isModelRouteEligible } = await import(join(repo, 'packages/node/dist/index.js'));
+      const { buyer } = await loadConfig(profile.paths.config);
+      return { maxPricing: buyer.maxPricing, isRoutable: (offer) => isModelRouteEligible(offer, buyer.routingPreferences) };
+    },
+    /** rankPaidChatModels over the live catalog, polled until it has enough to try: seller metadata keeps arriving. */
+    async paidChatModels({ timeoutMs = 60_000, intervalMs = 2000 } = {}) {
+      const limits = await tb.buyerRoutingLimits();
+      const deadline = Date.now() + timeoutMs;
+      for (;;) {
+        const ranked = rankPaidChatModels(await tb.models(), limits);
+        if (ranked.candidates.length >= MAX_PAID_CANDIDATES || Date.now() >= deadline) return ranked;
+        await new Promise((resolveWait) => setTimeout(resolveWait, intervalMs));
+      }
     },
     async channels({ all = false } = {}) {
       const body = await (await proxy(`/_antseed/channels${all ? '?all=1' : ''}`)).json();

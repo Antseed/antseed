@@ -17,7 +17,7 @@ import { cliSellerConfig } from '../lib/node-options.mjs';
 import { createTestbenchApi } from '../lib/tb.mjs';
 import { DEFAULT_SOURCE_CONFIG, sanitizeConfig } from '../lib/config.mjs';
 import { micros, stderrProblems } from '../scenarios/cli-buyer-commands.mjs';
-import { channelCommandResult, usdcArg } from '../scenarios/buyer-withdraw-and-exit.mjs';
+import { usdcArg } from '../scenarios/buyer-withdraw-and-exit.mjs';
 import { freeTierRefusal } from '../scenarios/free-tier.mjs';
 
 const require = createRequire(import.meta.url);
@@ -276,13 +276,6 @@ describe('CLI scenario helpers', () => {
     assert.equal(usdcArg(9_000_000n), '9');
     assert.equal(usdcArg(8_999_964n), '8.999964');
     assert.equal(usdcArg('36'), '0.000036');
-  });
-
-  it('reads request-close and withdraw results from JSON or from their text transcript', () => {
-    const hash = `0x${'ab'.repeat(32)}`;
-    assert.deepEqual(channelCommandResult({ json: { transaction: hash, estimatedRefund: '1000000' }, stdout: '' }), { transaction: hash, estimatedRefundMicros: 1_000_000n, json: true });
-    assert.deepEqual(channelCommandResult({ json: null, stdout: `Transaction: ${hash}\nEstimated released reserve: 1.0 USDC\n` }), { transaction: hash, estimatedRefundMicros: 1_000_000n, json: false });
-    assert.deepEqual(channelCommandResult({ json: null, stdout: 'nothing' }), { transaction: null, estimatedRefundMicros: null, json: false });
   });
 });
 
