@@ -264,7 +264,7 @@ export class SellerMonitor {
     const myRow = peerId ? rows.find((row) => peerKey(String(row['peerId'] ?? '')) === peerKey(peerId)) : undefined
     this._explorer ??= (this._options.explorerUrl ?? defaultExplorerUrl)(configPath).catch(() => null)
     return readSellerPromote({ configPath, dataDir, peerId, services: services ?? [], trustScore: trustOfRow(myRow)?.score ?? null, explorerUrl: await this._explorer, checks: this._checks, startChecks: options.startChecks ?? true, networkLoading: meta?.refreshing === true && meta.refreshedAt === null,
-      announcedProtocols: (provider, service) => announcedProtocols(myRow, provider, service) })
+      announcedProtocols: (_provider, service) => announcedProtocols(myRow, service) })
   }
 
   /** Runs the verification checks now (the same ones buyers run). */
@@ -301,12 +301,8 @@ async function defaultExplorerUrl(configPath: string): Promise<string | null> {
   return chain.explorerApiUrl ?? null
 }
 
-/**
- * The APIs a seller's network row announces for one of its services, across its
- * providers: the row names each provider by its announced ID, not the
- * configured plugin name, so `_provider` cannot pick one.
- */
-function announcedProtocols(row: PeerRow | undefined, _provider: string, service: string): string[] {
+/** The APIs announced for a service across all providers in the seller's network row. */
+function announcedProtocols(row: PeerRow | undefined, service: string): string[] {
   const byProvider = row?.['providerServiceApiProtocols'] as Record<string, { services?: Record<string, unknown> }> | undefined
   const apis = Object.values(byProvider ?? {}).flatMap((entry) => {
     const announced = entry?.services?.[service]
