@@ -991,7 +991,7 @@ describe('SellerRequestHandler payment pricing selection', () => {
     const venice = makeProvider(0, 0, { name: 'venice', services: ['m'] });
     const other = makeProvider(0, 0, { name: 'other', services: ['m'] });
     const updateLoad = vi.fn();
-    const handler = makeSellerRequestHandler({ providers: [venice, other], sellerPaymentManager: null, sessionTracker: null, channelsClient: null, announcer: { updateLoad } as any, emit: () => false });
+    const handler = makeSellerRequestHandler({ providers: [venice, other], sellerPaymentManager: null, sessionTracker: null, channelsClient: null, announcer: { updateLoad } as any, announceProviderIds: true, emit: () => false });
     const otherId = handler.announcedProviderId('other');
     expect(otherId).toMatch(/^[0-9a-f]{12}$/);
     expect(otherId).not.toBe(handler.announcedProviderId('venice'));
@@ -1001,6 +1001,14 @@ describe('SellerRequestHandler payment pricing selection', () => {
     expect(handler.matchProvider(request)).toBe(other);
     handler.adjustProviderLoad('other', 1);
     expect(updateLoad).toHaveBeenCalledWith(otherId, 1);
+  });
+
+  it('announces and reports load under the provider name unless provider IDs are on', () => {
+    const updateLoad = vi.fn();
+    const handler = makeSellerRequestHandler({ providers: [makeProvider(0, 0, { name: 'venice', services: ['m'] })], sellerPaymentManager: null, sessionTracker: null, channelsClient: null, announcer: { updateLoad } as any, emit: () => false });
+    expect(handler.announcedProviderName('venice')).toBe('venice');
+    handler.adjustProviderLoad('venice', 1);
+    expect(updateLoad).toHaveBeenCalledWith('venice', 1);
   });
 
   it('does not touch payment state for free responses even when a paid session exists', async () => {

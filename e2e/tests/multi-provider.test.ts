@@ -119,6 +119,7 @@ describe('Multi-provider: single node with two provider plugins', () => {
       bootstrapNodes: bootstrap.bootstrapConfig,
       allowPrivateIPs: true,
       noOfficialBootstrap: true,
+      announceProviderIds: true,
     });
     sellerNode.registerProvider(providerA);
     sellerNode.registerProvider(providerB);
@@ -166,7 +167,7 @@ describe('Multi-provider: single node with two provider plugins', () => {
   it('seller announces all providers and pricing from both providers', async () => {
     const { seller } = await setupMultiProviderNetwork();
 
-    // The peer advertises both providers by ID, never by plugin name
+    // With announceProviderIds the peer advertises both providers by ID, never by plugin name
     expect(seller.providers.length).toBe(2);
     for (const provider of seller.providers) expect(provider).toMatch(/^[0-9a-f]{12}$/);
     expect(new Set(seller.providers).size).toBe(2);

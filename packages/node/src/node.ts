@@ -354,6 +354,13 @@ export interface NodeConfig {
   /** Seller only: inbound sockets from one IP at once (raise it behind a TLS gateway or forwarder). Default 64. */
   maxInboundConnectionsPerIp?: number;
   /**
+   * Seller only: announce each provider by an ID (see announcedProviderId)
+   * instead of its plugin name, so buyers do not learn the plugin. Off by
+   * default while buyers that predate it are in use: they refuse a pinned
+   * request naming a provider the peer does not announce.
+   */
+  announceProviderIds?: boolean;
+  /**
    * Seller only: close a buyer's connection after this long with no traffic,
    * unless the buyer has a paid channel or a free usage session open. 0 keeps
    * idle connections. Default 30 minutes.
@@ -626,6 +633,11 @@ export class AntseedNode extends EventEmitter {
 
   get identity(): Identity | null {
     return this._identity;
+  }
+
+  /** The name buyers see for a provider: its ID with `announceProviderIds`, else its plugin name. */
+  private _announcedProviderName(identity: Identity, providerName: string): string {
+    return this._config.announceProviderIds ? announcedProviderId(identity.privateKey, providerName) : providerName;
   }
 
   registerProvider(provider: Provider): void {
@@ -2242,10 +2254,12 @@ export class AntseedNode extends EventEmitter {
         identity,
         dht: this._dht,
         providers: this._providers.map((p) => {
-          // Buyers see an ID, not the provider's plugin name, and get the protocols they used to infer from it.
-          const serviceApiProtocols = withDefaultServiceApiProtocols(p.name, p.services, p.serviceApiProtocols);
+          // With provider IDs, buyers get the protocols they used to infer from the provider's name.
+          const serviceApiProtocols = this._config.announceProviderIds
+            ? withDefaultServiceApiProtocols(p.name, p.services, p.serviceApiProtocols)
+            : p.serviceApiProtocols;
           return {
-          provider: announcedProviderId(identity.privateKey, p.name),
+          provider: this._announcedProviderName(identity, p.name),
           services: p.services,
           ...(p.serviceCategories ? { serviceCategories: { ...p.serviceCategories } } : {}),
           ...(serviceApiProtocols ? { serviceApiProtocols: { ...serviceApiProtocols } } : {}),
@@ -2272,7 +2286,7 @@ export class AntseedNode extends EventEmitter {
         region: "unknown",
         pricing: new Map(
           this._providers.map((p) => [
-            announcedProviderId(identity.privateKey, p.name),
+            this._announcedProviderName(identity, p.name),
             {
               defaults: {
                 inputUsdPerMillion: p.pricing.defaults.inputUsdPerMillion,
@@ -2322,6 +2336,7 @@ export class AntseedNode extends EventEmitter {
       sessionTracker: this._sessionTracker,
       channelsClient: this._channelsClient,
       announcer: this._announcer,
+      ...(this._config.announceProviderIds ? { announceProviderIds: true } : {}),
       maxUploadBodyBytes: this._config.maxUploadBodyBytes,
       resourceOwnershipStore: this._resourceOwnership,
       servicePerformance: this._servicePerformance,

@@ -193,6 +193,8 @@ export interface SellerRequestHandlerDeps {
   sessionTracker: SellerSessionTracker | null;
   channelsClient: ChannelsClient | null;
   announcer: PeerAnnouncer | null;
+  /** Providers are announced by ID, not plugin name (NodeConfig.announceProviderIds). */
+  announceProviderIds?: boolean;
   maxUploadBodyBytes?: number;
   reserveEstimateOverdraftUsdc?: bigint;
   /** Persistent buyer ownership and pending charges for stateful video jobs. Video follow-ups fail closed without it. */
@@ -239,7 +241,7 @@ const ATTEST_RATE_MAX_TRACKED_PEERS = 1024;
 export class SellerRequestHandler {
   private readonly _deps: SellerRequestHandlerDeps;
   private readonly _providerLoadCounts = new Map<string, number>();
-  /** Provider name → the ID buyers see for it (see announcedProviderId). */
+  /** Provider name → its ID (see announcedProviderId). */
   private readonly _providerIds = new Map<string, string>();
   /** Per channel: the highest spend a catch-up NeedAuth was already sent for, so parked requests ask once. */
   private readonly _catchUpPrompted = new Map<string, bigint>();
@@ -1188,7 +1190,7 @@ export class SellerRequestHandler {
             responseForAuth,
             {
               buyerPeerId,
-              providerName: this.announcedProviderId(provider.name),
+              providerName: this.announcedProviderName(provider.name),
               advertisedService: requestedModel,
               responseStartedAt,
               responseCompletedAt: Date.now(),
@@ -1480,7 +1482,7 @@ export class SellerRequestHandler {
     const serving = providers.filter(matchesService);
     let provider: Provider | undefined;
     if (requestedProvider) {
-      // Buyers name the announced ID; the provider's own name still works for clients that send it.
+      // Buyers name the provider's ID (with announceProviderIds) or its own name; both are accepted.
       provider = pick(serving.filter((candidate) =>
         candidate.name.toLowerCase() === requestedProvider || this.announcedProviderId(candidate.name) === requestedProvider));
     }
@@ -1511,7 +1513,12 @@ export class SellerRequestHandler {
     return provider.serviceUnitBillingModels?.[context.service]?.[context.serviceApiProtocol];
   }
 
-  /** The ID this seller announces for a provider in place of its name. */
+  /** The name buyers see for a provider: its ID with `announceProviderIds`, else the provider's own name. */
+  announcedProviderName(providerName: string): string {
+    return this._deps.announceProviderIds ? this.announcedProviderId(providerName) : providerName;
+  }
+
+  /** The ID this seller announces for a provider with `announceProviderIds`. */
   announcedProviderId(providerName: string): string {
     let id = this._providerIds.get(providerName);
     if (!id) {
@@ -1529,7 +1536,7 @@ export class SellerRequestHandler {
 
     const announcer = this._deps.announcer;
     if (!announcer) return;
-    announcer.updateLoad(this.announcedProviderId(providerName), nextLoad);
+    announcer.updateLoad(this.announcedProviderName(providerName), nextLoad);
     this._scheduleMetadataRefresh();
   }
 
