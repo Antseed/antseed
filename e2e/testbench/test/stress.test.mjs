@@ -10,7 +10,7 @@ import { startMock, summarizeDeliveries, usageCost } from '../lib/mock.mjs';
 import { createTestbenchApi, parseSse } from '../lib/tb.mjs';
 import { classifyScenarioError } from '../lib/report.mjs';
 import { bootstrapCounts, BUYER_PATTERNS, classifyError, clientSummary, costLinesCheck, countPatterns, CRASH_PATTERN, externalHosts, GATES, gateProblems, latencyPercentiles, loadTimings, mergeDeliveries, peerLogs, runAll, runLoad, SELLER_PATTERNS, stressRun, stressTopology } from '../lib/stress.mjs';
-import { combinedGate } from '../scenarios/issue-1050-stale-channel.mjs';
+import { combinedGate } from '../scenarios/issues/issue-1050-stale-channel.mjs';
 import { normalizeTopology, topologyDifferences, topologyFingerprint, topologySummary, validateScenarioModule } from '../lib/topology.mjs';
 
 const source = sanitizeConfig(DEFAULT_SOURCE_CONFIG).cleaned;

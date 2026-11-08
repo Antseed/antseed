@@ -2,11 +2,12 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { readdirSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { after, before, describe, it } from 'node:test';
 import { ANVIL_FEE_ARGS, ANVIL_SIGNED_FEES, ANVIL_SIGNED_RPC_FEES, AnvilSigner } from '../lib/chain.mjs';
 import { freePort } from '../lib/env.mjs';
+import { scenarioFiles } from '../lib/scenarios.mjs';
 
 const { JsonRpcProvider } = createRequire(import.meta.url)('ethers');
 const hasAnvil = spawnSync('anvil', ['--version'], { stdio: 'ignore' }).status === 0;
@@ -59,7 +60,7 @@ describe('transactions Anvil signs (impersonated accounts)', { skip: !hasAnvil &
 describe('testbench sources', () => {
   it('send Anvil-signed transactions only through AnvilSigner or with explicit fees', () => {
     const root = dirname(fileURLToPath(new URL('../cli.mjs', import.meta.url)));
-    const files = ['cli.mjs', 'supervisor.mjs', 'share-host.mjs', 'seller-worker.mjs', ...readdirSync(join(root, 'lib')).filter((f) => f.endsWith('.mjs')).map((f) => `lib/${f}`), ...readdirSync(join(root, 'scenarios')).map((f) => `scenarios/${f}`)];
+    const files = ['cli.mjs', 'supervisor.mjs', 'share-host.mjs', 'seller-worker.mjs', ...readdirSync(join(root, 'lib')).filter((f) => f.endsWith('.mjs')).map((f) => `lib/${f}`), ...scenarioFiles().map(({ file }) => relative(root, file))];
     for (const file of files) {
       const text = readFileSync(join(root, file), 'utf8');
       assert.doesNotMatch(text, /\.getSigner\(/, `${file}: use AnvilSigner (lib/chain.mjs), Anvil 1.9 rejects its own fee fill`);

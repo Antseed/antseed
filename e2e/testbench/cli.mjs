@@ -14,6 +14,7 @@ import { loadControlClient } from './lib/control.mjs';
 import { BUYER_KEY_ENV, FORBIDDEN_PORTS, isolatedEnv, parseEnvFile, resolveBuyerKey, resolveForkUrl, resolveLiveKeys, writeBuyerKey } from './lib/env.mjs';
 import { assertAttachOnlyPlatform, attachOnlyEnv, electronRootArgs, FFMPEG_INSTALL, playwrightFfmpeg } from './lib/desktop.mjs';
 import { inspectLock, isOwnedProcessAlive, killOwned, ownProcessEntry } from './lib/lock.mjs';
+import { scenarioFile, scenarioFiles, SCENARIOS_DIR } from './lib/scenarios.mjs';
 import { cleanupStale, settleSlot } from './lib/stale.mjs';
 import { lifecycleState, readJson, saveJson, shutdownProblems, validateManifest } from './lib/manifest.mjs';
 import { HELP, parseArgs } from './lib/options.mjs';
@@ -71,8 +72,8 @@ function portOpen(port) {
 }
 
 async function scenarioModule(name) {
-  const file = join(here, 'scenarios', `${name}.mjs`);
-  if (!existsSync(file)) throw new Error(`No scenario ${name} (looked for ${file})`);
+  const file = scenarioFile(name);
+  if (!file) throw new Error(`No scenario ${name} (looked in ${SCENARIOS_DIR} and its group folders); pnpm testbench scenarios lists them`);
   return validateScenarioModule(await import(pathToFileURL(file).href), name);
 }
 
@@ -722,22 +723,22 @@ async function list(ctx) {
   }
 }
 
-/** Every scenario file with its targets and description. The gaps live in e2e/testbench/features/. */
+/** Every scenario with its targets, description and group (null for top-level, else stress or issues). */
 export async function listScenarios() {
-  const dir = join(here, 'scenarios');
-  const names = (await readdir(dir)).filter((file) => file.endsWith('.mjs')).map((file) => file.slice(0, -4)).sort();
   const scenarios = [];
-  for (const name of names) scenarios.push(await scenarioModule(name));
+  for (const { name, group } of scenarioFiles()) scenarios.push({ ...(await scenarioModule(name)), group });
   return scenarios;
 }
 
 async function scenariosCommand(options) {
   const scenarios = await listScenarios();
   if (options.json) { console.log(JSON.stringify(scenarios.map(({ run, topology, ...rest }) => rest), null, 2)); return; }
-  for (const scenario of scenarios) console.log(`${scenario.name.padEnd(36)} ${scenario.targets.join(',').padEnd(12)} ${scenario.description}`);
-  const features = join(here, 'features');
-  const gaps = existsSync(features) ? (await readdir(features, { withFileTypes: true })).filter((entry) => entry.isDirectory()).length : 0;
-  console.log(`\n${scenarios.length} scenarios; features without a scenario are listed in e2e/testbench/features/README.md (${gaps} areas)`);
+  const groups = [...new Set(scenarios.map((scenario) => scenario.group))].sort((a, b) => (a === null ? -1 : b === null ? 1 : a.localeCompare(b)));
+  for (const group of groups) {
+    console.log(group === null ? 'scenarios/' : `\nscenarios/${group}/`);
+    for (const scenario of scenarios.filter((entry) => entry.group === group)) console.log(`  ${scenario.name.padEnd(34)} ${scenario.targets.join(',').padEnd(12)} ${scenario.description}`);
+  }
+  console.log(`\n${scenarios.length} scenarios`);
 }
 
 /** The tool was called `pnpm sandbox` before; say which old names are still set so nothing is silently ignored. */

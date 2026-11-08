@@ -113,7 +113,7 @@ export const HELP = `pnpm testbench <command> [options]
             --real-funds (required)  --dev (Vite hot reload)  --fresh (reset the profile)
   logs      [component] [--follow]  (supervisor, anvil, seller-<id>, buyer in cli mode)
   list      All testbenches on this machine
-  scenarios Every scenario with its targets and description  [--json]; the gaps are in e2e/testbench/features/
+  scenarios Every scenario with its targets, description and group (scenarios/, stress/, issues/)  [--json]
   report    [run] Print the latest (or named) run's index.html, report.json, video and trace paths
             --open   open the HTML report in the default browser
             --serve  serve this testbench's reports/ over HTTP  [--port N] [--host 127.0.0.1]

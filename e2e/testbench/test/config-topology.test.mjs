@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
 import { assertNoInlineSecrets, bindUpstream, configHash, DEFAULT_SOURCE_CONFIG, listModels, loadSourceConfig, resolveConfigSource, sanitizeConfig } from '../lib/config.mjs';
-import { readdir } from 'node:fs/promises';
+import { pathToFileURL } from 'node:url';
+import { scenarioFile, scenarioFiles } from '../lib/scenarios.mjs';
 import { assertScenarioSupported, assertUpstreamReusable, buyerRoutingPreferences, chooseMode, chooseTarget, MAX_SELLERS, normalizeTopology, requestedMode, requestedUpstream, topologyDifferences, topologyFingerprint, topologySummary, validateScenarioModule } from '../lib/topology.mjs';
 
 const tmp = await mkdtemp(join(tmpdir(), 'testbench-config-'));
@@ -266,7 +267,7 @@ describe('topology mode', () => {
   });
 
   it('issue-1200 asks for buyerFaults; the scenarios cli mode must run do not', async () => {
-    const load = async (name) => validateScenarioModule(await import(`../scenarios/${name}.mjs`), name);
+    const load = async (name) => validateScenarioModule(await import(pathToFileURL(scenarioFile(name)).href), name);
     assert.ok((await load('issue-1200-spendingauth-catchup')).requires.includes('buyerFaults'));
     for (const name of ['chat-basic', 'payment-flow', 'routing-smoke', 'stress-smoke', 'stress-restart-buyer', 'stress-restart-seller', 'issue-1050-stale-channel']) {
       const scenario = await load(name);
@@ -297,13 +298,13 @@ describe('scenario modules', () => {
   });
 
   it('every scenario file is valid', async () => {
-    const files = (await readdir(new URL('../scenarios/', import.meta.url))).filter((file) => file.endsWith('.mjs')).sort();
+    const files = scenarioFiles();
     assert.ok(files.length >= 15, `expected the shipped scenarios, found ${files.length}`);
-    const features = await readdir(new URL('../features/', import.meta.url), { withFileTypes: true });
-    assert.ok(features.some((entry) => entry.isDirectory()), 'feature folders document the gaps');
-    for (const file of files) {
-      const name = file.slice(0, -4);
-      const scenario = validateScenarioModule(await import(`../scenarios/${file}`), name);
+    for (const { name, group, file } of files) {
+      if (name.startsWith('stress-')) assert.equal(group, 'stress', `${name} belongs in scenarios/stress/`);
+      if (name.startsWith('issue-')) assert.equal(group, 'issues', `${name} belongs in scenarios/issues/`);
+      if (group !== null) assert.ok(['stress', 'issues'].includes(group), `${name}: unknown scenario group ${group}`);
+      const scenario = validateScenarioModule(await import(pathToFileURL(file).href), name);
       for (const target of scenario.targets) assertScenarioSupported(scenario, target);
       assert.ok(scenario.description, `${name} needs a description`);
     }
@@ -313,7 +314,7 @@ describe('scenario modules', () => {
     const stress = ['stress-smoke', 'stress-c32', 'stress-c64', 'stress-smallreserve', 'stress-images', 'stress-faults', 'stress-restart-buyer', 'stress-restart-seller', 'issue-1050-stale-channel'];
     const cliScenarios = ['cli-buyer-commands', 'buyer-withdraw-and-exit', 'free-tier'];
     for (const name of ['chat-basic', 'routing-smoke', 'desktop-chat', 'payment-flow', 'issue-1200-spendingauth-catchup', ...stress, ...cliScenarios]) {
-      const scenario = validateScenarioModule(await import(`../scenarios/${name}.mjs`), name);
+      const scenario = validateScenarioModule(await import(pathToFileURL(scenarioFile(name)).href), name);
       for (const target of scenario.targets) assertScenarioSupported(scenario, target);
       assert.ok(scenario.description);
       const topology = normalizeTopology(scenario.topology, sanitizeConfig(DEFAULT_SOURCE_CONFIG).cleaned);

@@ -17,7 +17,7 @@ usage() { echo "usage: prove.sh <commit> fail|pass \"<test command>\" [red signa
 case "$expect" in fail) [ -n "$signature" ] || { echo "PROVE MISMATCH fail mode needs the red signature"; exit 2; } ;; pass) ;; *) usage ;; esac
 repo="$(git rev-parse --show-toplevel)"
 sha="$(git -C "$repo" rev-parse --verify "$commit^{commit}")" || exit 2
-TESTS='(\.test\.[cm]?[jt]sx?$|\.spec\.[cm]?[jt]sx?$|/__tests__/|(^|/)tests?/|\.t\.sol$|^e2e/testbench/scenarios/issue-[^/]+\.mjs$)'
+TESTS='(\.test\.[cm]?[jt]sx?$|\.spec\.[cm]?[jt]sx?$|/__tests__/|(^|/)tests?/|\.t\.sol$|^e2e/testbench/scenarios/issues/issue-[^/]+\.mjs$)'
 if [ "$expect" = fail ]; then
   base="$(git -C "$repo" rev-parse --verify "${PROVE_BASE:-origin/main}^{commit}")" || exit 2
   parent="$(git -C "$repo" rev-parse "$sha^")"

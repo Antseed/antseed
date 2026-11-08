@@ -219,7 +219,7 @@ pnpm testbench up --live --config path/to/config.json --env-file ~/.my-keys.env
 
 ## Scenarios
 
-A scenario is a module in `e2e/testbench/scenarios/<name>.mjs`:
+A scenario is a module in `e2e/testbench/scenarios/`. Stress shapes live in `scenarios/stress/`, issue regressions in `scenarios/issues/`, and everything else at the top level. A scenario is always run by its bare name (`pnpm testbench run stress-smoke`), so names are unique across folders, and `pnpm testbench scenarios` lists them by group:
 
 ```js
 export const meta = {
@@ -312,10 +312,6 @@ A seller that logs `Payments disabled` at startup fails `up` at once: on a price
 A seller's model health checks, gas checks and gas refuel are off in `cli` mode, as in the stress harness: their requests would land in the mock's ledger. A topology without `payments.minBudgetPerRequestUsdc` gets the CLI default of 0.01 USDC instead of the SDK's 0.5.
 
 The `buyerFaults` capability needs an in-process buyer, so only `sdk` mode has it. `issue-1200-spendingauth-catchup` requires it: `--mode cli` refuses that scenario before anything starts, and `POST /faults/buyer/need-auth-loss` answers `409` on a `cli` testbench. Like `--chain`, `run` takes the running testbench's mode when `--mode` is not given. An explicit `--mode` that differs is refused; run `pnpm testbench down` first or use `--slot`.
-
-### Features without a scenario
-
-`e2e/testbench/features/<area>/<feature>/README.md` is the coverage map: one folder per product feature the testbench does not cover yet, each README saying what to test, what the testbench lacks to drive it, and where the feature lives in the code. There is no code in those folders. `features/README.md` is the index. When a feature gets its scenario, the scenario goes to `scenarios/<name>.mjs` and the folder's README gets a `Scenario:` line. Most gaps are blocked by one of three enablers: a mock upstream that speaks more than chat and image generation, the real `antseed` processes (`mode: 'cli'`), or the full contract stack on `--chain local`.
 
 Mainnet scenarios (`targets: ['mainnet']`) get a smaller `tb`: `check`, `knownIssue`, `metric`, `event`, `waitFor`, `desktop()` (the full profile desktop), `waitForPeers({ min })`, `models()`, `channels({ all })`, `signedSnapshot()`, `spentSince(snapshot)`, `assertWithinCap(snapshot)`, `buyerBalance()` (on-chain deposit) and `capMicros`. There is no chain or seller control on the real network.
 

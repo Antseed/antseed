@@ -9,7 +9,7 @@ A buyer's chats are paid on-chain in testbench USDC: a reserve locks deposit for
 - `pay-settle-disconnect` charges exactly the delivered work and releases the reserve.
 - `pay-reconnect` opens a fresh channel after reconnect.
 - `pay-onchain` settles on-chain exactly what the buyer signed.
-- `pay-issue-*` keeps each fixed payment bug fixed (`e2e/testbench/scenarios/issue-*.mjs`).
+- `pay-issue-*` keeps each fixed payment bug fixed (`e2e/testbench/scenarios/issues/issue-*.mjs`).
 
 ## How to get to it (user POV)
 
