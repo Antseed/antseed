@@ -2251,6 +2251,8 @@ type ClaudeCodePatchState = {
   /** What the last gateway patch wrote, so removal recognizes a real key,
       a remote base URL, and real model ids. Absent for legacy patches. */
   readonly written?: ClaudeCodeWritten;
+  /** What the patch wrote before a refresh still being written: either may be on disk until it lands. */
+  readonly previousWritten?: ClaudeCodeWritten;
 };
 
 type ClaudeCodeWritten = {
@@ -2302,6 +2304,7 @@ function readClaudeCodePatchState(filePath: string): ClaudeCodePatchState | null
     readSavedValue((env as JsonObject)[key], statePath, key),
   ])) as Record<ClaudeCodeManagedEnvKey, ClaudeCodeSavedValue>;
   const written = readClaudeCodeWritten(state['written']);
+  const previousWritten = readClaudeCodeWritten(state['previousWritten']);
   return {
     version: 1,
     configExisted: state['configExisted'],
@@ -2309,6 +2312,7 @@ function readClaudeCodePatchState(filePath: string): ClaudeCodePatchState | null
     env: savedEnv,
     model: readSavedValue(state['model'], statePath, 'model'),
     ...(written ? { written } : {}),
+    ...(previousWritten ? { previousWritten } : {}),
   };
 }
 
@@ -2380,14 +2384,22 @@ function applyClaudeCodeSettingsToFile(filePath: string, patch: ClaudeCodeConfig
   config['env'] = env;
   const selected = pickModel(t, config['model']);
   if (selected) config['model'] = selected;
-  writeJsonFile(filePath, config);
-  if (!t.legacy) {
-    writeClaudeCodePatchState(filePath, {
-      ...state,
-      // A refresh with no models left the selection alone, so it stays ours.
-      written: { baseUrl: baseURL, authTokenSha256: sha256Hex(authToken), models: t.modelIds.length > 0 ? [...t.modelIds] : [...(state.written?.models ?? [])] },
-    });
+  if (t.legacy) {
+    writeJsonFile(filePath, config);
+    return;
   }
+  const { previousWritten: _unconfirmed, ...base } = state;
+  const written: ClaudeCodeWritten = {
+    baseUrl: baseURL,
+    authTokenSha256: sha256Hex(authToken),
+    // A refresh with no models left the selection alone, so it stays ours.
+    models: t.modelIds.length > 0 ? [...t.modelIds] : [...(state.written?.models ?? [])],
+  };
+  // Recorded before the config changes, old and new together, so disconnect
+  // recognizes whichever is on disk if the write (or this record) fails.
+  writeClaudeCodePatchState(filePath, { ...base, written, ...(state.written ? { previousWritten: state.written } : {}) });
+  writeJsonFile(filePath, config);
+  writeClaudeCodePatchState(filePath, { ...base, written });
 }
 
 function removeClaudeCodeConfigPatch(patch: ClaudeCodeConfigPatchDef, wslTargetsFile?: string): boolean {
@@ -2428,15 +2440,15 @@ function removeClaudeCodeSettingsFromFile(
       ANTHROPIC_API_KEY: '',
       ANTHROPIC_CUSTOM_HEADERS: CLAUDE_CODE_SOURCE_HEADER,
     };
-    const written = state.written;
+    const writtenSets = [state.written, state.previousWritten].filter((entry): entry is ClaudeCodeWritten => entry !== undefined);
     for (const key of CLAUDE_CODE_MANAGED_ENV_KEYS) {
       const value = env[key];
       let managed: boolean;
       if (key === 'ANTHROPIC_BASE_URL') {
-        managed = typeof value === 'string' && (isLoopbackHost(value, extraHosts) || value === written?.baseUrl);
+        managed = typeof value === 'string' && (isLoopbackHost(value, extraHosts) || writtenSets.some((entry) => entry.baseUrl === value));
       } else if (key === 'ANTHROPIC_AUTH_TOKEN') {
         managed = value === managedValues[key]
-          || (written !== undefined && typeof value === 'string' && sha256Hex(value) === written.authTokenSha256);
+          || (typeof value === 'string' && writtenSets.some((entry) => entry.authTokenSha256 === sha256Hex(value)));
       } else {
         managed = value === managedValues[key];
       }
@@ -2447,7 +2459,9 @@ function removeClaudeCodeSettingsFromFile(
     if (!state.envPresent && Object.keys(env).length === 0) delete config['env'];
   }
   const model = config['model'];
-  if (model === ROUTED_MODEL_ALIAS || (typeof model === 'string' && (state.written?.models.includes(model) ?? false))) {
+  const ourModel = typeof model === 'string'
+    && [state.written, state.previousWritten].some((entry) => entry?.models.includes(model) ?? false);
+  if (model === ROUTED_MODEL_ALIAS || ourModel) {
     restoreSavedValue(config, 'model', state.model);
     changed = true;
   }

@@ -139,7 +139,13 @@ async function writeKeyFile(apiKey: string, options: Options): Promise<string> {
   return keyFile;
 }
 
-async function installInto(skillsDir: string, endpoint: AgentSkillsEndpoint, options: Options, writeKey = true): Promise<void> {
+type StagedInstall = { swap: () => Promise<void>; discard: () => Promise<void> };
+
+/**
+ * Builds a target's copies beside its final folders, pointed at `endpoint`, so
+ * a conflict or failed copy changes nothing. `swap` puts them in place, as renames.
+ */
+async function stageInstall(skillsDir: string, endpoint: AgentSkillsEndpoint, options: Options): Promise<StagedInstall> {
   const sourceRoot = bundledSkillsRoot(options);
   if (!sourceRoot) throw new Error('The Antseed skills are missing from this install.');
   // Never overwrite a skill of that name the user put there themselves.
@@ -151,9 +157,8 @@ async function installInto(skillsDir: string, endpoint: AgentSkillsEndpoint, opt
   }
   const keyFile = agentSkillsKeyFile(options);
   await mkdir(skillsDir, { recursive: true });
-  // Built beside the final folders, so a failed copy changes nothing and the
-  // swap below is a rename. The key and the installed skills only change after this.
   const staging = await mkdtemp(path.join(skillsDir, '.antseed-install-'));
+  const discard = () => rm(staging, { recursive: true, force: true });
   try {
     for (const name of AGENT_SKILL_NAMES) {
       const dest = path.join(staging, name);
@@ -165,14 +170,29 @@ async function installInto(skillsDir: string, endpoint: AgentSkillsEndpoint, opt
       }
       await writeFile(path.join(dest, MARKER_FILE), 'Installed by Antseed Desktop. Removing the skill from the app deletes this folder.\n', 'utf8');
     }
-    if (writeKey) await writeKeyFile(endpoint.apiKey, options);
-    for (const name of AGENT_SKILL_NAMES) {
-      const dest = path.join(skillsDir, name);
-      await rm(dest, { recursive: true, force: true });
-      await rename(path.join(staging, name), dest);
-    }
+  } catch (err) {
+    await discard();
+    throw err;
+  }
+  return {
+    swap: async () => {
+      for (const name of AGENT_SKILL_NAMES) {
+        const dest = path.join(skillsDir, name);
+        await rm(dest, { recursive: true, force: true });
+        await rename(path.join(staging, name), dest);
+      }
+    },
+    discard,
+  };
+}
+
+async function installInto(skillsDir: string, endpoint: AgentSkillsEndpoint, options: Options): Promise<void> {
+  const staged = await stageInstall(skillsDir, endpoint, options);
+  try {
+    await writeKeyFile(endpoint.apiKey, options);
+    await staged.swap();
   } finally {
-    await rm(staging, { recursive: true, force: true });
+    await staged.discard();
   }
 }
 
@@ -196,8 +216,16 @@ export async function removeAgentSkills(id: string, options: Options = {}): Prom
 export async function syncAgentSkills(endpoint: AgentSkillsEndpoint, options: Options = {}): Promise<void> {
   const installed = listAgentSkillTargets(options).filter((target) => target.installed);
   if (installed.length === 0) return;
-  await writeKeyFile(endpoint.apiKey, options);
-  for (const target of installed) await installInto(target.skillsDir, endpoint, options, false);
+  // Every copy is built before anything changes, and the key goes last: a
+  // failure on any agent leaves all of them working with the old gateway and key.
+  const staged: StagedInstall[] = [];
+  try {
+    for (const target of installed) staged.push(await stageInstall(target.skillsDir, endpoint, options));
+    for (const copy of staged) await copy.swap();
+    await writeKeyFile(endpoint.apiKey, options);
+  } finally {
+    for (const copy of staged) await copy.discard();
+  }
 }
 
 /** For any other agent: what to paste so it can call the gateway. Holds the key, so it is only built on request. */

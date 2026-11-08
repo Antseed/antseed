@@ -418,6 +418,24 @@ test('droid: an unread model list keeps our entries and points them at the new g
   });
 });
 
+test('claude-code: a refresh whose ownership record or config write fails is still undone by disconnect', async () => {
+  await withDir(async (dir) => {
+    const configPath = path.join(dir, 'settings.json');
+    const original = { model: 'opus', env: { FOO: 'bar' } };
+    const patch: ConfigPatchDef = { format: 'claude-code', configPath, providerKey: 'antseed', baseURL: 'http://localhost:{buyerPort}' };
+    const moved: ConfigPatchTarget = { origin: 'https://other.example.com', apiKey: 'antseed_other_key', models: [{ id: 'glm-5' }] };
+    for (const failing of [`${configPath}.antseed.state.json`, configPath]) {
+      await writeFile(configPath, JSON.stringify(original), 'utf8');
+      writeConfigPatch(patch, LOCAL);
+      await chmod(failing, 0o444);
+      assert.throws(() => writeConfigPatch(patch, moved), /EACCES|permission/i);
+      await chmod(failing, 0o600);
+      removeConfigPatch(patch);
+      assert.deepEqual(await readJson(configPath), original, `restored after ${path.basename(failing)} failed`);
+    }
+  });
+});
+
 test('claude-code: bearer key, model pick preserved, removal restores (and legacy → gateway migration)', async () => {
   await withDir(async (dir) => {
     const configPath = path.join(dir, 'settings.json');

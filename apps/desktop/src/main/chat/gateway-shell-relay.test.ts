@@ -80,6 +80,9 @@ test('a path that only starts with /v1 before dot segments are resolved is refus
     assert.equal(await raw('/v1/%2e%2e/console/api/status'), 403);
     assert.equal(await raw('//elsewhere.example/v1/models'), 403);
     assert.equal(seen.length, 0);
+    // A target the URL parser rejects is answered, and the relay keeps working.
+    assert.equal(await raw('//[/'), 400);
+    assert.equal(await raw('/v1/models'), 201);
     grant.revoke();
   });
 });

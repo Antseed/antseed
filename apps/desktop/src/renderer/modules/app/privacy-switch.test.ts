@@ -149,6 +149,18 @@ describe('requestPrivacyMode', () => {
     expect(shownMode()).toBe('anonymous');
   });
 
+  it('a write still on its way to the old gateway cannot settle the new one', async () => {
+    const { requestPrivacyMode, reloadPrivacyForNewGateway, getPrivacySwitchState, calls, shownMode } = await setup();
+    const writing = requestPrivacyMode('private');
+    await reloadPrivacyForNewGateway();
+    expect(shownMode()).toBe('anonymous');
+    expect(getPrivacySwitchState()).toEqual({ switching: false, error: null });
+    calls[0].settle({ ok: true, privacy: privacy('private') });
+    await writing;
+    expect(shownMode()).toBe('anonymous');
+    expect(getPrivacySwitchState()).toEqual({ switching: false, error: null });
+  });
+
   it('keeps sending held when the new gateway cannot be read', async () => {
     const { reloadPrivacyForNewGateway, getPrivacySwitchState } = await setup();
     const stubbed = window as unknown as { antseedDesktop: { gatewayGetPrivacy: unknown }; setTimeout: unknown };

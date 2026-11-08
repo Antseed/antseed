@@ -39,7 +39,14 @@ function forward(req: http.IncomingMessage, res: http.ServerResponse): void {
     return;
   }
   // Checked once normalized: `/v1/../console` passes as raw text but lands on the console, with the real key.
-  const target = new URL(req.url ?? '/', gateway.origin);
+  let target: URL;
+  try {
+    target = new URL(req.url ?? '/', gateway.origin);
+  } catch {
+    // A raw target like `//[/` throws here, in the main process: answer it instead.
+    refuse(res, 400, 'This request path is not valid.');
+    return;
+  }
   if (target.origin !== new URL(gateway.origin).origin || !FORWARDED_PATH.test(target.pathname + target.search)) {
     refuse(res, 403, 'This path is not available from the chat\'s shell.');
     return;

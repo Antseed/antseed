@@ -68,6 +68,18 @@ test('sync re-points installed copies; remove deletes them and the key file', as
   assert.ok(!existsSync(agentSkillsKeyFile(options)));
 });
 
+test('a sync that fails for any agent changes neither the key nor any installed copy', async () => {
+  const options = fixture();
+  await installAgentSkills('claude-code', endpoint, options);
+  await installAgentSkills('codex', endpoint, options);
+  const skill = path.join(options.home, '.claude', 'skills', 'antseed-ask', 'SKILL.md');
+  const before = readFileSync(skill, 'utf8');
+  rmSync(options.sourceRoot, { recursive: true });
+  await assert.rejects(syncAgentSkills({ origin: 'https://gw.example', apiKey: 'sk-new' }, options));
+  assert.equal(readFileSync(agentSkillsKeyFile(options), 'utf8').trim(), endpoint.apiKey);
+  assert.equal(readFileSync(skill, 'utf8'), before);
+});
+
 test('never overwrites a skill folder the user made', async () => {
   const options = fixture();
   mkdirSync(path.join(options.home, '.claude', 'skills', 'antseed-images'), { recursive: true });

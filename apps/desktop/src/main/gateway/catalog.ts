@@ -109,9 +109,10 @@ function entryOfferSummary(entry: GatewayModelEntry, peers: Array<Record<string,
   const anyPeerDeclares = (capability: 'toolUse' | 'reasoning'): boolean => peers.some((peer) => record(peer['capabilities'])[capability] === true);
   const stakersOnly = (peer: Record<string, unknown>): boolean => record(record(peer['freeTier'])['base'])['stakersOnly'] === true;
   const zeroPriced = (peer: Record<string, unknown>): boolean => peer['inputUsdPerMillion'] === 0 && peer['outputUsdPerMillion'] === 0;
-  const stakersOnlyFree = peers.filter((peer) => stakersOnly(peer) && zeroPriced(peer));
+  const isStakersOnlyFree = (peer: Record<string, unknown>): boolean => stakersOnly(peer) && zeroPriced(peer);
+  const stakersOnlyFree = peers.filter(isStakersOnlyFree);
   // What anyone can pay: a stakers-only $0 offer would show a paid model as free.
-  const openPeers = peers.filter((peer) => !stakersOnlyFree.includes(peer));
+  const openPeers = peers.filter((peer) => !isStakersOnlyFree(peer));
   const pricedPeers = openPeers.length > 0 ? openPeers : peers;
   const cheapest = (field: string, from = peers): number | null => {
     const values = from.map((peer) => finiteNumber(peer[field])).filter((value): value is number => value !== null && value >= 0);

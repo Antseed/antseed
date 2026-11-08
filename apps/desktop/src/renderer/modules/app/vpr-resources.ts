@@ -50,6 +50,9 @@ let requestedPrivacyMode: GatewayPrivacyMode | null = null;
 /** Bumped whenever a switch starts or settles, so a read that spans one can be told apart. */
 let privacyGeneration = 0;
 
+/** Bumped when the gateway changes: a privacy write started against the old one must not settle the new one. */
+let privacyGatewayEpoch = 0;
+
 /** A write failed and the read after it did too: the gateway's mode is unknown. Sending stays held. */
 let privacyUnconfirmedError: string | null = null;
 
@@ -104,8 +107,11 @@ export function clearPrivacySwitchError(): void {
  */
 export async function reloadPrivacyForNewGateway(): Promise<void> {
   const thisReload = ++privacyGeneration;
+  privacyGatewayEpoch += 1;
+  // A choice still on its way was for the old gateway.
+  requestedPrivacyMode = null;
   privacyUnconfirmedError = null;
-  if (!requestedPrivacyMode) publishPrivacySwitch({ switching: true, error: null });
+  publishPrivacySwitch({ switching: true, error: null });
   const read = await privacyResource.reload();
   // A newer reload or switch now decides whether sending may go ahead.
   if (thisReload !== privacyGeneration) return;
@@ -149,6 +155,7 @@ export async function requestPrivacyMode(mode: GatewayPrivacyMode): Promise<void
   let confirmed: GatewayPrivacy | null = null;
   let error: string | null = null;
   let target: GatewayPrivacyMode;
+  const epoch = privacyGatewayEpoch;
   do {
     target = requestedPrivacyMode;
     try {
@@ -161,6 +168,8 @@ export async function requestPrivacyMode(mode: GatewayPrivacyMode): Promise<void
       const actual = await window.antseedDesktop?.gatewayGetPrivacy?.()?.catch(() => null);
       confirmed = actual?.ok && actual.privacy ? actual.privacy : null;
     }
+    // The gateway changed meanwhile: its reload decides what is shown and when sending goes.
+    if (epoch !== privacyGatewayEpoch) return;
     // A choice made meanwhile still applies, even if the write before it failed.
   } while (requestedPrivacyMode !== target);
   requestedPrivacyMode = null;
