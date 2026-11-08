@@ -269,7 +269,7 @@ export function falAppId(endpointId: string): string {
   return endpointId.split('/').slice(0, 2).join('/');
 }
 
-type FalAccount =
+export type FalAccount =
   | { status: 'ok'; balanceUsd: number }
   | { status: 'rejected'; reason: string }
   | { status: 'no_permission' }
@@ -291,7 +291,7 @@ export const FAL_BALANCE_CHECK_OFF =
  * a rate limit). The seller's key is sent because fal rate-limits anonymous
  * lookups.
  */
-async function readFalModelStatuses(platformUrl: string, authorization: string, services: string[]): Promise<Map<string, string> | null> {
+export async function readFalModelStatuses(platformUrl: string, authorization: string, services: string[]): Promise<Map<string, string> | null> {
   const statuses = new Map<string, string>();
   const lookup = async (ids: string[]): Promise<boolean> => {
     const query = new URLSearchParams(ids.map((id): [string, string] => ['endpoint_id', id]));
@@ -335,7 +335,7 @@ async function readFalModelStatuses(platformUrl: string, authorization: string, 
  * an invalid key and 403 for a valid key without the `billing:usage:read`
  * permission.
  */
-async function readFalAccount(platformUrl: string, authorization: string): Promise<FalAccount> {
+export async function readFalAccount(platformUrl: string, authorization: string): Promise<FalAccount> {
   try {
     const response = await fetch(`${platformUrl}/v1/account/billing?expand=credits`, {
       headers: { authorization },

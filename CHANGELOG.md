@@ -6,6 +6,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Added
+
+- fal images (`@antseed/provider-fal-image`, new; CLI): sell fal.ai image models (such as `openai/gpt-image-2`, `fal-ai/nano-banana-pro`, `fal-ai/flux-2-pro`) through the OpenAI Images API. Buyers send `POST /v1/images/generations` and, for services with a fal edit endpoint (`imageEditModel`), multipart `POST /v1/images/edits`; the seller turns `n` and `size` into fal's `num_images` and `image_size`, sends edit images as data URLs, and answers in OpenAI form (`b64_json`, or fal's URL with `response_format: "url"`). Requests are billed per output image (`openai-images` unit pricing). fal's own `image_size`, `num_images` and similar fields are refused, so a request can't get a larger or extra image than the one it pays for. Docs: plugin README.
+
 ### Changed
 
 - Website, docs, CLI, gateway and payment pages: the brand is spelled Antseed in the text you read, and GitHub links use the `Antseed` organization. Wallet connection names and out-of-credits messages changed with it; signed text such as the Peer Pay checkout authorization keeps its old casing, since a signature covers it; anything matching those messages should ignore case.
