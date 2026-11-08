@@ -63,7 +63,16 @@ It writes a compose file (JSON, which compose also reads) with the image pinned 
 Deploy `docker-compose.json` as a dstack app with KMS enabled, on the dstack 0.6.1 OS image and a CPU instance type (`tdx.small` to `tdx.8xlarge` on Phala Cloud), the OS releases and VM shapes buyers accept:
 
 - set the printed variables as encrypted environment variables: `ANTSEED_IDENTITY_HEX` (your identity key, hex) and your API keys, and allow exactly those;
-- add no pre-launch script. Public logs may be on: the image runs the seller in content-free mode, so its logs and databases hold no prompts or answers, nor upstream error text about a request, only metadata such as status codes, token counts and buyer peer IDs.
+- add no pre-launch or init script. Public logs may be on: the image runs the seller in content-free mode, so its logs and databases hold no prompts or answers, nor upstream error text about a request, only metadata such as status codes, token counts and buyer peer IDs.
+
+With Phala Cloud's `phala` CLI:
+
+```bash
+phala deploy --compose docker-compose.json --kms phala --image dstack-0.6.1 \
+  --instance-type tdx.small --no-pre-launch-script --env <each printed secret>
+```
+
+The CLI always writes an empty `init_script` into the app compose. Buyers on verifier 0.1.5 or later accept it while it stays empty; earlier ones reject any `init_script` and report `app compose option init_script is not allowed`.
 
 The image starts `antseed seller start` with the verifier's prover, which mints its quotes through the dstack guest agent. Any change to the compose file (image, config, prices) gives a new compose hash, which buyers check against the same rules, so redeploying needs no approval.
 

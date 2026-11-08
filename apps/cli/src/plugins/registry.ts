@@ -83,7 +83,7 @@ export const TRUSTED_VERIFIER_PLUGINS: TrustedPlugin[] = [
     type: 'verifier',
     description: 'TEE attestation verifier + prover (Intel TDX, DCAP)',
     package: '@antseed/antseed-verifier',
-    version: '0.1.4',
+    version: '0.1.5',
   },
 ]
 
