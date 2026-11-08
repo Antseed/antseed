@@ -163,7 +163,7 @@ export function scoreModelRoute<T extends ModelRouteCandidate>(
   return { route, score, reasons };
 }
 
-function compareScoredModelRoutes<T extends ModelRouteCandidate>(
+function compareModelRouteRank<T extends ModelRouteCandidate>(
   a: ScoredModelRoute<T>,
   b: ScoredModelRoute<T>,
   preferences: ModelRoutingPreferences,
@@ -188,44 +188,82 @@ function compareScoredModelRoutes<T extends ModelRouteCandidate>(
   // preference bonuses) only breaks price ties. Reputation ordering above
   // the eligibility threshold would re-apply the trust filter as a soft
   // rank and let a well-rated seller beat a free one on 2 display points.
-  return (aPrice ?? Number.POSITIVE_INFINITY) - (bPrice ?? Number.POSITIVE_INFINITY)
-    || b.score - a.score
-    || normalizedPeerId(a.route.peerId).localeCompare(normalizedPeerId(b.route.peerId));
+  if (aPrice !== bPrice) {
+    return (aPrice ?? Number.POSITIVE_INFINITY) - (bPrice ?? Number.POSITIVE_INFINITY);
+  }
+  return b.score - a.score;
 }
 
-// Peer id keeps the sort stable. Without a later rotation every buyer would
-// try that same first seller, so a process-local counter walks the head group.
-let equalHeadRotation = 0;
-
-function sameEqualHead<T extends ModelRouteCandidate>(
+function compareScoredModelRoutes<T extends ModelRouteCandidate>(
   a: ScoredModelRoute<T>,
   b: ScoredModelRoute<T>,
   preferences: ModelRoutingPreferences,
   now: number,
-): boolean {
-  if (isModelRouteEligible(a.route, preferences) !== isModelRouteEligible(b.route, preferences)) return false;
-  if (isModelRouteCoolingDown(a.route, now) !== isModelRouteCoolingDown(b.route, now)) return false;
-  const aPrice = modelRouteTotalPrice(a.route);
-  const bPrice = modelRouteTotalPrice(b.route);
-  if ((aPrice === null) !== (bPrice === null)) return false;
-  return aPrice === bPrice && a.score === b.score;
+): number {
+  return compareModelRouteRank(a, b, preferences, now)
+    || normalizedPeerId(a.route.peerId).localeCompare(normalizedPeerId(b.route.peerId));
+}
+
+// One counter per model or seller pool. A single process-wide counter
+// phase-locks when the catalog ranks model A and then model B: each model
+// keeps the same parity and the same seller stays first.
+const MAX_ROTATION_POOLS = 4096;
+const equalHeadRotation = new Map<string, number>();
+
+function rememberRotation(key: string, step: number): void {
+  if (equalHeadRotation.has(key)) equalHeadRotation.delete(key);
+  equalHeadRotation.set(key, step);
+  while (equalHeadRotation.size > MAX_ROTATION_POOLS) {
+    const oldest = equalHeadRotation.keys().next().value;
+    if (oldest === undefined) break;
+    equalHeadRotation.delete(oldest);
+  }
+}
+
+function nextRotationOffset(key: string, group: number): number {
+  const step = ((equalHeadRotation.get(key) ?? 0) + 1) >>> 0;
+  rememberRotation(key, step);
+  return step % group;
+}
+
+function rotationPoolKey<T extends ModelRouteCandidate>(
+  ranked: ScoredModelRoute<T>[],
+  group: number,
+  rotationKey: string | undefined,
+): string {
+  if (rotationKey && rotationKey.length > 0) return `key:${rotationKey}`;
+  const ids: string[] = [];
+  for (let index = 0; index < group; index += 1) {
+    const peerId = ranked[index]?.route.peerId;
+    if (peerId) ids.push(normalizedPeerId(peerId));
+  }
+  ids.sort();
+  return `peers:${ids.join('\n')}`;
 }
 
 function rotateEqualHead<T extends ModelRouteCandidate>(
   ranked: ScoredModelRoute<T>[],
   preferences: ModelRoutingPreferences,
   now: number,
+  rotationKey: string | undefined,
 ): ScoredModelRoute<T>[] {
   if (ranked.length < 2) return ranked;
   let group = 1;
-  const first = ranked[0]!;
-  while (group < ranked.length && sameEqualHead(first, ranked[group]!, preferences, now)) group += 1;
+  const first = ranked[0];
+  if (!first) return ranked;
+  while (group < ranked.length) {
+    const next = ranked[group];
+    if (!next || compareModelRouteRank(first, next, preferences, now) !== 0) break;
+    group += 1;
+  }
   if (group < 2) return ranked;
-  equalHeadRotation = (equalHeadRotation + 1) >>> 0;
-  const offset = equalHeadRotation % group;
+  const offset = nextRotationOffset(rotationPoolKey(ranked, group, rotationKey), group);
   if (offset === 0) return ranked;
   const head = ranked.slice(0, group);
-  for (let i = 0; i < group; i += 1) ranked[i] = head[(i + offset) % group]!;
+  for (let index = 0; index < group; index += 1) {
+    const next = head[(index + offset) % group];
+    if (next) ranked[index] = next;
+  }
   return ranked;
 }
 
@@ -233,18 +271,20 @@ export function rankModelRoutes<T extends ModelRouteCandidate>(
   routes: T[],
   preferences: ModelRoutingPreferences,
   now: number = Date.now(),
+  rotationKey?: string,
 ): T[] {
   const ranked = routes
     .map((route) => scoreModelRoute(route, preferences, now))
     .sort((a, b) => compareScoredModelRoutes(a, b, preferences, now));
-  return rotateEqualHead(ranked, preferences, now).map(({ route }) => route);
+  return rotateEqualHead(ranked, preferences, now, rotationKey).map(({ route }) => route);
 }
 
 export function chooseBestModelRoute<T extends ModelRouteCandidate>(
   routes: T[],
   preferences: ModelRoutingPreferences,
   now: number = Date.now(),
+  rotationKey?: string,
 ): T | null {
-  return rankModelRoutes(routes, preferences, now)
+  return rankModelRoutes(routes, preferences, now, rotationKey)
     .find((route) => isModelRouteEligible(route, preferences)) ?? null;
 }

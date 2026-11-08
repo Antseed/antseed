@@ -1944,11 +1944,11 @@ export class BuyerProxy {
         return false
       })
       candidates = routingPreferences
-        ? rankModelRoutes(allowed, rankingPreferences(routingPreferences, effectivePolicy), now)
+        ? rankModelRoutes(allowed, rankingPreferences(routingPreferences, effectivePolicy), now, requestedService)
         : this._readyFirst(allowed, verdicts, now)
     } else if (routingPreferences) {
       candidates = []
-      for (const candidate of rankModelRoutes(ranked, routingPreferences, now)) {
+      for (const candidate of rankModelRoutes(ranked, routingPreferences, now, requestedService)) {
         if (isModelRouteEligible(candidate, routingPreferences)) {
           candidates.push(candidate)
         } else {

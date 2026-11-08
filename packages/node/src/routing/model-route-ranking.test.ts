@@ -136,6 +136,38 @@ describe('model route ranking', () => {
     expect(rankModelRoutes([], preferences)).toEqual([]);
   });
 
+  it('rotates each tied pool on its own when rankings alternate', () => {
+    const alpha = route({ peerId: 'a'.repeat(40) });
+    const beta = route({ peerId: 'b'.repeat(40) });
+    const gamma = route({ peerId: 'c'.repeat(40) });
+    const delta = route({ peerId: 'd'.repeat(40) });
+    const firstPool: string[] = [];
+    const secondPool: string[] = [];
+    for (let i = 0; i < 4; i += 1) {
+      firstPool.push(chooseBestModelRoute([alpha, beta], preferences)?.peerId ?? '');
+      secondPool.push(chooseBestModelRoute([gamma, delta], preferences)?.peerId ?? '');
+    }
+    expect(new Set(firstPool)).toEqual(new Set([alpha.peerId, beta.peerId]));
+    expect(new Set(secondPool)).toEqual(new Set([gamma.peerId, delta.peerId]));
+    for (let i = 1; i < firstPool.length; i += 1) {
+      expect(firstPool[i]).not.toBe(firstPool[i - 1]);
+      expect(secondPool[i]).not.toBe(secondPool[i - 1]);
+    }
+  });
+
+  it('keeps two models that share sellers on separate rotations', () => {
+    const alpha = route({ peerId: 'a'.repeat(40) });
+    const beta = route({ peerId: 'b'.repeat(40) });
+    const modelA: string[] = [];
+    const modelB: string[] = [];
+    for (let i = 0; i < 4; i += 1) {
+      modelA.push(rankModelRoutes([alpha, beta], preferences, 1, 'model-a')[0]?.peerId ?? '');
+      modelB.push(rankModelRoutes([beta, alpha], preferences, 1, 'model-b')[0]?.peerId ?? '');
+    }
+    expect(new Set(modelA)).toEqual(new Set([alpha.peerId, beta.peerId]));
+    expect(new Set(modelB)).toEqual(new Set([alpha.peerId, beta.peerId]));
+  });
+
   it('does not rotate a cooling seller ahead of a ready one at the same price', () => {
     const now = 1_700_000_000_000;
     const ready = route({ peerId: 'a'.repeat(40) });
