@@ -190,5 +190,38 @@ export function scoreCandidates(
     return b.score - a.score
   })
 
+  return rotateEqualScoreHead(scored, candidates)
+}
+
+// Peer id keeps an equal score stable. Rotate that head so callers that take
+// scored[0] do not all land on the same seller.
+let equalScoreRotation = 0
+
+function candidateLatency(candidates: CandidateInput[], peerId: string): number {
+  const match = candidates.find((candidate) => candidate.peer.peerId === peerId)
+  return match?.metrics.latencyEma ?? Number.POSITIVE_INFINITY
+}
+
+function rotateEqualScoreHead(scored: ScoredCandidate[], candidates: CandidateInput[]): ScoredCandidate[] {
+  if (scored.length < 2) return scored
+  const best = scored[0]
+  if (!best) return scored
+  const bestLatency = candidateLatency(candidates, best.peer.peerId)
+  let group = 1
+  while (group < scored.length) {
+    const next = scored[group]
+    if (!next || Math.abs(next.score - best.score) >= 1e-9) break
+    if (candidateLatency(candidates, next.peer.peerId) !== bestLatency) break
+    group += 1
+  }
+  if (group < 2) return scored
+  equalScoreRotation = (equalScoreRotation + 1) >>> 0
+  const offset = equalScoreRotation % group
+  if (offset === 0) return scored
+  const head = scored.slice(0, group)
+  for (let index = 0; index < group; index += 1) {
+    const next = head[(index + offset) % group]
+    if (next) scored[index] = next
+  }
   return scored
 }

@@ -153,9 +153,16 @@ describe('scoreCandidates', () => {
     )
 
     expect(result).toHaveLength(2)
-    // Both have identical inputs so scores should be equal; tie-break by peerId ascending
-    expect(result[0]!.peer.peerId).toBe(peerA.peerId)
-    expect(result[1]!.peer.peerId).toBe(peerB.peerId)
+    const again = scoreCandidates(
+      [
+        { peer: peerB, provider: 'anthropic', providerRank: 0, offer: defaultOffer, metrics: defaultMetrics },
+        { peer: peerA, provider: 'anthropic', providerRank: 0, offer: defaultOffer, metrics: defaultMetrics },
+      ],
+      defaultContext,
+    )
+    // Identical scores take turns. A single call no longer pins the lower peer id.
+    expect(new Set([result[0]!.peer.peerId, again[0]!.peer.peerId])).toEqual(new Set([peerA.peerId, peerB.peerId]))
+    expect(result.map((row) => row.peer.peerId).sort()).toEqual([peerA.peerId, peerB.peerId].sort())
   })
 
   it('returns empty array for empty candidates', () => {

@@ -6,6 +6,7 @@ export {
   MISSING_CACHED_INPUT_PRICE_REPUTATION_MULTIPLIER,
   VERIFICATION_STATUS_STALE_MAX_MS,
   compareEffectiveModelReputation,
+  rotateEqualReputationHead,
   effectiveModelReputationScore,
   hasLiveDiffVerdict,
   hasLiveSameVerdict,

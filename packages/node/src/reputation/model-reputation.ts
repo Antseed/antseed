@@ -125,3 +125,31 @@ export function compareEffectiveModelReputation(
   return (b.effectiveReputationScore ?? -1) - (a.effectiveReputationScore ?? -1)
     || a.peerId.localeCompare(b.peerId);
 }
+
+let reputationHeadRotation = 0;
+
+function reputationSortKey(score: number | null | undefined): number {
+  return typeof score === 'number' && Number.isFinite(score) ? score : -1;
+}
+
+/** Rotate the leading run of equal reputation. Peer id order underneath stays put. */
+export function rotateEqualReputationHead<T extends { effectiveReputationScore?: number | null }>(
+  ordered: T[],
+): T[] {
+  if (ordered.length < 2) return ordered;
+  const firstKey = reputationSortKey(ordered[0]?.effectiveReputationScore);
+  let group = 1;
+  while (group < ordered.length && reputationSortKey(ordered[group]?.effectiveReputationScore) === firstKey) {
+    group += 1;
+  }
+  if (group < 2) return ordered;
+  reputationHeadRotation = (reputationHeadRotation + 1) >>> 0;
+  const offset = reputationHeadRotation % group;
+  if (offset === 0) return ordered;
+  const head = ordered.slice(0, group);
+  for (let index = 0; index < group; index += 1) {
+    const next = head[(index + offset) % group];
+    if (next) ordered[index] = next;
+  }
+  return ordered;
+}

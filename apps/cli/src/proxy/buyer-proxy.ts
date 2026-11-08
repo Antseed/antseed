@@ -37,6 +37,7 @@ import {
   isRoutingSelection,
   DEFAULT_BUYER_IDENTITY,
   rankModelRoutes,
+  rotateEqualReputationHead,
   SellerHealthBook,
   orderAdaptiveRoutes,
   reportedSuccessPrior,
@@ -2152,9 +2153,9 @@ export class BuyerProxy {
       if (isCoolingDown(this._peerHealth.get(candidate.peer.peerId), now)) cooling.push(candidate)
       else ready.push(candidate)
     }
-    if (ready.length === 0) return ranked
+    if (ready.length === 0) return rotateEqualReputationHead(ranked)
     for (const candidate of cooling) verdicts.get(candidate.peerId)?.reasons.push('cooling down')
-    return ready
+    return rotateEqualReputationHead(ready)
   }
 
   /** `GET /_antseed/route-preview`: what routing would do for a model-only request, ineligible sellers included. */

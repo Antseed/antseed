@@ -6,6 +6,7 @@ import {
   effectiveModelReputationScore,
   hasLiveDiffVerdict,
   normalizedModelReputationScore,
+  rotateEqualReputationHead,
   verificationServiceKey,
 } from '../src/reputation/model-reputation.js';
 
@@ -74,5 +75,24 @@ describe('model reputation', () => {
     ];
     expect(offers.sort(compareEffectiveModelReputation).map((offer) => offer.peerId))
       .toEqual(['venice', 'apex', 'flash']);
+  });
+
+  it('rotates a reputation tie and leaves a higher score in front', () => {
+    const alpha = { peerId: 'a', effectiveReputationScore: 80 };
+    const beta = { peerId: 'b', effectiveReputationScore: 80 };
+    const tied = [alpha, beta].sort(compareEffectiveModelReputation);
+    const first = rotateEqualReputationHead([...tied]).map((offer) => offer.peerId);
+    const second = rotateEqualReputationHead([...tied]).map((offer) => offer.peerId);
+    expect(new Set([first[0], second[0]])).toEqual(new Set(['a', 'b']));
+    expect(first[1]).not.toBe(first[0]);
+
+    const ahead = { peerId: 'a', effectiveReputationScore: 90 };
+    const ordered = [beta, ahead].sort(compareEffectiveModelReputation);
+    const picks = Array.from({ length: 4 }, () => rotateEqualReputationHead([...ordered])[0]?.peerId);
+    expect(picks).toEqual(['a', 'a', 'a', 'a']);
+  });
+
+  it('returns an empty reputation list unchanged', () => {
+    expect(rotateEqualReputationHead([])).toEqual([]);
   });
 });
