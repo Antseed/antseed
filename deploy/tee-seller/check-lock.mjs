@@ -18,6 +18,10 @@ if (!(await import(`./${verifier}/dist/shared.js`)).CHANNEL_BINDING_HEADER || !v
   || !(await import(`./${verifier}/dist/confidential-space.js`)).parseStateLocation) {
   fail('The locked verifier cannot bind attestations to the buyer connection; run update-lock.mjs with a CLI release that pins one that can.')
 }
+// Buyers approve the image by its build record, which the prover must send (image-provenance.ts).
+if (!existsSync(join(verifier, 'dist/image-provenance.js'))) {
+  fail('The locked verifier does not send the image build record buyers approve the image by; run update-lock.mjs with a CLI release that pins one that does.')
+}
 const { TRUSTED_VERIFIER_PLUGINS } = await import(`./${modules}/@antseed/cli/dist/plugins/registry.js`)
 const pinned = TRUSTED_VERIFIER_PLUGINS.find((p) => p.name === 'antseed-verifier')?.version
 const installed = JSON.parse(readFileSync(join(verifier, 'package.json'), 'utf8')).version
