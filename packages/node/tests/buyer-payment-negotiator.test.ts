@@ -53,6 +53,7 @@ function createMockBpm(): BuyerPaymentManager & Record<string, unknown> {
     getSellerAcceptedCumulative: vi.fn().mockReturnValue(0n),
     resendCurrentSpendingAuth: vi.fn().mockResolvedValue(undefined),
     resendReserveAuth: vi.fn().mockResolvedValue(undefined),
+    replayReserveAmount: vi.fn().mockReturnValue(100_000n),
     resendPendingReserveAuth: vi.fn().mockResolvedValue(undefined),
     isLockConfirmed: vi.fn().mockReturnValue(false),
     isLockRejected: vi.fn().mockReturnValue(false),
@@ -895,6 +896,62 @@ describe('BuyerPaymentNegotiator', () => {
         { defaults: { inputUsdPerMillion: 3, outputUsdPerMillion: 15 }, services: {} },
         undefined,
       );
+    });
+
+    describe('a channel that never locked on-chain', () => {
+      const ZERO = '0x' + '00'.repeat(20);
+
+      function neverLocked(balance: bigint) {
+        depositsClient = createMockDepositsClient(balance);
+        negotiator = new BuyerPaymentNegotiator(identity, bpm as unknown as BuyerPaymentManager, depositsClient, channelsClient, channelStore, config, emitter);
+        bufferPaymentRequired(negotiator, peer.peerId, conn);
+        (bpm.getActiveSession as ReturnType<typeof vi.fn>).mockReturnValue(makeActiveSession(peer.peerId));
+        (bpm.retireSession as ReturnType<typeof vi.fn>).mockImplementation(() => {
+          (bpm.getActiveSession as ReturnType<typeof vi.fn>).mockReturnValue(null);
+        });
+        (bpm.canReplayReserveAuth as ReturnType<typeof vi.fn>).mockReturnValue(true);
+        (channelsClient.getSession as ReturnType<typeof vi.fn>).mockResolvedValue({
+          buyer: ZERO, seller: ZERO, deposit: 0n, settled: 0n, metadataHash: '0x' + '00'.repeat(32),
+          deadline: 0n, settledAt: 0n, closeRequestedAt: 0n, status: 0,
+        });
+      }
+
+      it('answers 402 at once when the deposits cannot fund its reserve, instead of waiting out the lock', async () => {
+        neverLocked(0n);
+        const result = await negotiator.handle402(make402Response(), peer, conn, makeRequest());
+
+        expect(bpm.resendReserveAuth).not.toHaveBeenCalled();
+        expect(bpm.retireSession).toHaveBeenCalledWith(peer.peerId, CHANNEL_STATUS.GHOST);
+        expect(result.action).toBe('return');
+        const res = (result as { action: 'return'; response: SerializedHttpResponse }).response;
+        expect(JSON.parse(new TextDecoder().decode(res.body)).code).toBe('insufficient_deposits');
+      });
+
+      it('leaves a replacement made during the balance read alone', async () => {
+        neverLocked(0n);
+        const replacement = { ...makeActiveSession(peer.peerId), sessionId: '0x' + 'cd'.repeat(32) };
+        (depositsClient.getBuyerBalance as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+          (bpm.getActiveSession as ReturnType<typeof vi.fn>).mockReturnValue(replacement);
+          return { available: 0n, reserved: 0n, lastActivityAt: 0n };
+        });
+        const result = await negotiator.handle402(make402Response(), peer, conn, makeRequest());
+
+        expect(bpm.retireSession).not.toHaveBeenCalled();
+        expect(bpm.resendReserveAuth).not.toHaveBeenCalled();
+        expect(result.action).toBe('retry');
+      });
+
+      it('still replays its reserve when the deposits cover it', async () => {
+        neverLocked(1_000_000n);
+        (bpm.resendReserveAuth as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+          (bpm.isLockConfirmed as ReturnType<typeof vi.fn>).mockReturnValue(true);
+        });
+        const result = await negotiator.handle402(make402Response(), peer, conn, makeRequest());
+
+        expect(bpm.resendReserveAuth).toHaveBeenCalled();
+        expect(bpm.retireSession).not.toHaveBeenCalled();
+        expect(result.action).toBe('retry');
+      });
     });
 
     it('enriches 402 body with PaymentRequired data when credits are insufficient', async () => {
