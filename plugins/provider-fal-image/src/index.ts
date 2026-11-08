@@ -58,7 +58,7 @@ export function falImageSchema(schema: Record<string, unknown> | null, endpointI
   const properties = falEndpointInput(schema, endpointId)?.properties;
   if (!properties) return null;
   const imageSize = properties.image_size;
-  const presets = [imageSize?.enum, ...(Array.isArray(imageSize?.anyOf) ? imageSize.anyOf.map((option: any) => option?.enum) : [])]
+  const presets = [imageSize?.enum, ...(Array.isArray(imageSize?.anyOf) ? imageSize.anyOf.map(option => option?.enum) : [])]
     .flatMap(values => Array.isArray(values) ? values.filter((value: unknown): value is string => typeof value === 'string') : []);
   return { fields: new Set(Object.keys(properties)), sizePresets: presets };
 }

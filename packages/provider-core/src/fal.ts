@@ -4,10 +4,22 @@ import { readVideoJson as readJson } from './video-download.js';
 export const FAL_PLATFORM_URL = 'https://api.fal.ai';
 export const FAL_SCHEMA_URL = 'https://fal.ai/api/openapi/queue/openapi.json';
 
+/** The parts of an input field's fal OpenAPI schema the fal providers read. */
+export interface FalSchemaProperty {
+  enum?: unknown;
+  anyOf?: FalSchemaProperty[];
+  'x-fal'?: { min_duration?: unknown; max_duration?: unknown };
+}
+
 /** An endpoint's input schema in fal's OpenAPI document: its `properties` (non-empty) and `required` list. */
 export interface FalEndpointInput {
-  properties: Record<string, any>;
+  properties: Record<string, FalSchemaProperty | undefined>;
   required: string[];
+}
+
+interface FalOpenApiDocument {
+  paths?: Record<string, { post?: { requestBody?: { content?: Record<string, { schema?: { $ref?: unknown } }> } } } | undefined>;
+  components?: { schemas?: Record<string, { properties?: unknown; required?: unknown } | undefined> };
 }
 
 /**
@@ -16,14 +28,14 @@ export interface FalEndpointInput {
  * no properties.
  */
 export function falEndpointInput(schema: Record<string, unknown> | null, endpointId: string): FalEndpointInput | null {
-  const paths = schema?.paths as Record<string, any> | undefined;
-  const ref = paths?.[`/${endpointId}`]?.post?.requestBody?.content?.['application/json']?.schema?.$ref;
+  const document = schema as FalOpenApiDocument | null;
+  const ref = document?.paths?.[`/${endpointId}`]?.post?.requestBody?.content?.['application/json']?.schema?.$ref;
   if (typeof ref !== 'string') return null;
-  const input = (schema?.components as Record<string, any> | undefined)?.schemas?.[ref.split('/').pop()!];
+  const input = document?.components?.schemas?.[ref.split('/').pop()!];
   const properties = input?.properties;
   if (!properties || typeof properties !== 'object' || Object.keys(properties).length === 0) return null;
   const required = Array.isArray(input.required) ? input.required.filter((field: unknown): field is string => typeof field === 'string') : [];
-  return { properties, required };
+  return { properties: properties as FalEndpointInput['properties'], required };
 }
 
 /** fal endpoint IDs: `owner/alias[/path...]`. */
