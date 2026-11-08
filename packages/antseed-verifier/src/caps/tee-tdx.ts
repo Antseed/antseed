@@ -1,5 +1,5 @@
 import type { ClaimResult } from '../antseed-node-types.js'
-import type { Capability, CapabilityCollectInput, CapabilityVerifyInput } from '../capability.js'
+import type { Capability, CapabilityCollectInput, CapabilityVerifyInput, VerifyRound } from '../capability.js'
 import { claimId, computeReportData } from '../shared.js'
 import { generateTdxQuote } from '../collect/configfs.js'
 import { generateDstackAttestation } from '../collect/dstack.js'
@@ -18,6 +18,7 @@ import {
 import { isTcbAcceptable } from '../tcb-policy.js'
 import { generateConfidentialSpaceToken } from '../collect/confidential-space.js'
 import { REVOKED_SELLER_IMAGES, type ApprovedSellerImage } from '../approved-seller-images.js'
+import type { SellerUpstream } from '../seller-config-rules.js'
 import { composeImageDigest, imageBuildRecord, tokenImageDigest, verifyImageBuild } from '../image-provenance.js'
 
 /** A provider quote's declared report_data binding: a frozen scheme id + its string ingredients. */
@@ -107,6 +108,8 @@ export interface ParsedTdxQuote {
   builtImages?: ApprovedSellerImage[]
   /** Why the evidence's build record approves no image, when it carried one. */
   imageBuildError?: string
+  /** Provider evidence: the https origin the seller fetched it from (TeeTdxEvidence.origin). */
+  origin?: string
   /** Set when DCAP or token verification, or evidence decoding, threw. */
   error?: string
 }
@@ -130,21 +133,28 @@ interface TeeTdxEvidence {
   eventLog?: DstackEvent[]
   appCompose?: string
   imageBuild?: unknown
+  /**
+   * Provider evidence: the https origin the seller's prover fetched it from, without following
+   * redirects. Only the prover writes it, so a buyer relies on it only when the seller node is
+   * attested on the same connection. Provers before verifier 0.1.6 leave it out.
+   */
+  origin?: string
 }
 
 export function encodeTeeTdxEvidence(
   quote: Uint8Array,
   collateral?: unknown,
   binding?: ReportDataBinding,
-  dstack?: { eventLog?: DstackEvent[]; appCompose?: string; imageBuild?: unknown },
+  extra?: { eventLog?: DstackEvent[]; appCompose?: string; imageBuild?: unknown; origin?: string },
 ): Uint8Array {
   const blob: TeeTdxEvidence = {
     quote: Buffer.from(quote).toString('base64'),
     ...(collateral !== undefined ? { collateral } : {}),
     ...(binding !== undefined ? { binding } : {}),
-    ...(dstack?.eventLog !== undefined ? { eventLog: dstack.eventLog } : {}),
-    ...(dstack?.appCompose !== undefined ? { appCompose: dstack.appCompose } : {}),
-    ...(dstack?.imageBuild !== undefined ? { imageBuild: dstack.imageBuild } : {}),
+    ...(extra?.eventLog !== undefined ? { eventLog: extra.eventLog } : {}),
+    ...(extra?.appCompose !== undefined ? { appCompose: extra.appCompose } : {}),
+    ...(extra?.imageBuild !== undefined ? { imageBuild: extra.imageBuild } : {}),
+    ...(extra?.origin !== undefined ? { origin: extra.origin } : {}),
   }
   return new TextEncoder().encode(JSON.stringify(blob))
 }
@@ -176,6 +186,9 @@ function decodeTeeTdxEnvelope(envelope: unknown): Omit<TeeTdxEvidence, 'quote'> 
   if (parsed.appCompose !== undefined && typeof parsed.appCompose !== 'string') {
     throw new Error('tee-tdx evidence "appCompose" is not a string')
   }
+  if (parsed.origin !== undefined && typeof parsed.origin !== 'string') {
+    throw new Error('tee-tdx evidence "origin" is not a string')
+  }
   return {
     quote,
     ...(parsed.collateral !== undefined ? { collateral: parsed.collateral } : {}),
@@ -183,6 +196,7 @@ function decodeTeeTdxEnvelope(envelope: unknown): Omit<TeeTdxEvidence, 'quote'> 
     ...(eventLog !== undefined ? { eventLog } : {}),
     ...(parsed.appCompose !== undefined ? { appCompose: parsed.appCompose } : {}),
     ...(parsed.imageBuild !== undefined ? { imageBuild: parsed.imageBuild } : {}),
+    ...(parsed.origin !== undefined ? { origin: parsed.origin } : {}),
   }
 }
 
@@ -255,8 +269,9 @@ export async function verifyTdxEvidence(
   let eventLog: DstackEvent[] | undefined
   let appCompose: string | undefined
   let imageBuild: unknown
+  let origin: string | undefined
   try {
-    ;({ quote, collateral, binding, eventLog, appCompose, imageBuild } = decodeTeeTdxEnvelope(envelope))
+    ;({ quote, collateral, binding, eventLog, appCompose, imageBuild, origin } = decodeTeeTdxEnvelope(envelope))
   } catch (err) {
     return { quoteEvidence: evidence, status: '', td: null, error: `malformed tee-tdx evidence: ${msg(err)}` }
   }
@@ -265,7 +280,7 @@ export async function verifyTdxEvidence(
     return {
       quoteEvidence: evidence, status: raw.status, td: raw.td,
       ...(binding ? { binding } : {}), ...(eventLog !== undefined ? { eventLog } : {}), ...(appCompose !== undefined ? { appCompose } : {}),
-      ...(await verifiedImageBuild(imageBuild)),
+      ...(origin !== undefined ? { origin } : {}), ...(await verifiedImageBuild(imageBuild)),
     }
   } catch (err) {
     return { quoteEvidence: evidence, status: '', td: null, ...(binding ? { binding } : {}), error: `quote verification failed: ${msg(err)}` }
@@ -316,6 +331,28 @@ function approvedBuild(
   return 'error' in app ? app : { os, ...app }
 }
 
+/** Record a verified seller node for the caps verified after it; returns its upstream origins. */
+function recordSellerNode(input: CapabilityVerifyInput, checked: { upstreams: SellerUpstream[] }): string[] {
+  const upstreams = [...new Set(checked.upstreams.map((u) => u.origin))].sort()
+  if (input.round) input.round.sellerNode = { upstreams }
+  return upstreams
+}
+
+/**
+ * A provider quote counts for a verified seller node only when that provider is where the node
+ * sends prompts: its config names one upstream origin, and the node's prover fetched the quote
+ * from that origin (the evidence's origin, which only the attested image writes). Otherwise the
+ * quote attests some other machine, and the buyer's prompts may reach an upstream no quote
+ * covers. Returns why the quote doesn't count, if it doesn't.
+ */
+function unattestedUpstreams(node: VerifyRound['sellerNode'], origin: string | undefined): string | undefined {
+  if (!node) return undefined
+  const [upstream, ...more] = node.upstreams
+  if (upstream && more.length === 0 && origin === upstream) return undefined
+  const from = origin ? `fetched from ${origin}` : 'its origin not reported; the seller image predates verifier 0.1.6'
+  return `this seller sends prompts to ${node.upstreams.join(', ')}, not only to the attested provider (evidence ${from})`
+}
+
 /** The node claim (and its upstreams) for Google Confidential Space evidence: a verified token, checked for this round. */
 function verifyConfidentialSpaceNode(claim: string, input: CapabilityVerifyInput, p: ParsedTdxQuote, claims: JWTPayload): ClaimResult | ClaimResult[] {
   const channelBinding = input.channelBinding
@@ -328,7 +365,7 @@ function verifyConfidentialSpaceNode(claim: string, input: CapabilityVerifyInput
   if ('error' in checked) {
     return { claim, ok: false, detail: `Google Confidential Space attestation, but not an approved TEE seller build: ${withBuildRecord(checked.error, p)}` }
   }
-  const origins = [...new Set(checked.upstreams.map((u) => u.origin))].sort()
+  const origins = recordSellerNode(input, checked)
   return [
     { claim, ok: true, detail: `Intel TDX on Google Confidential Space (attested by Google); Antseed TEE seller image ${checked.image.version}, bound to this connection; bound to this round (${antseedRdV1.id})` },
     { claim: claimId(NODE_UPSTREAMS_CLAIM), ok: true, detail: origins.join(', ') },
@@ -402,8 +439,11 @@ export function makeTdxCap(
         ? `Antseed TEE seller image ${build.image.version} on ${build.os.name}, bound to this connection`
         : `MRTD ${hex(p.td.mrTd).slice(0, 16)}…`
       const result: ClaimResult = { claim, ok: true, detail: `genuine Intel TDX quote (TCB ${p.status}); ${scope}; ${freshness}` }
-      if (!build) return result
-      const origins = [...new Set(build.upstreams.map((u) => u.origin))].sort()
+      if (!build) {
+        const notUpstream = opts?.sellerNode ? undefined : unattestedUpstreams(input.round?.sellerNode, p.origin)
+        return notUpstream ? { claim, ok: false, detail: `genuine Intel TDX quote (TCB ${p.status}), but ${notUpstream}` } : result
+      }
+      const origins = recordSellerNode(input, build)
       return [result, { claim: claimId(NODE_UPSTREAMS_CLAIM), ok: true, detail: origins.join(', ') }]
     },
 
@@ -436,8 +476,10 @@ export function makeTdxCap(
         if (!url) throw new Error(`${id} http source requires an evidence url; not offered`)
         const field = input.config[tdxConfigKey(id, 'field')] ?? 'quote'
         const scheme = input.config[tdxConfigKey(id, 'binding.scheme')]
+        // The fetch refuses redirects, so the evidence comes from the configured URL's origin.
+        const origin = new URL(url).origin
         if (!scheme) {
-          return encodeTeeTdxEvidence(await collectViaHttp(url, input.nonce, field))
+          return encodeTeeTdxEvidence(await collectViaHttp(url, input.nonce, field), undefined, undefined, { origin })
         }
         // Declare the provider's frozen report_data scheme and its ingredients (e.g. the E2E
         // pubkey) so the buyer can verify the quote is bound to this round. Both come from one
@@ -445,7 +487,7 @@ export function makeTdxCap(
         const pubkeyField = input.config[tdxConfigKey(id, 'binding.pubkeyField')]
         const { quote, pubkey } = await collectTdxAndPubkey(url, input.nonce, field, pubkeyField)
         const ingredients = pubkey ? { e2ePubkey: pubkey } : {}
-        return encodeTeeTdxEvidence(quote, undefined, { scheme, ingredients })
+        return encodeTeeTdxEvidence(quote, undefined, { scheme, ingredients }, { origin })
       }
       throw new Error(`unknown ${id} source "${source}" (expected "configfs", "dstack", "confidential-space", or "http")`)
     },
