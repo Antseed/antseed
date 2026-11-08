@@ -65,6 +65,25 @@ test('only the API paths the skills use are forwarded', async () => {
   });
 });
 
+test('a path that only starts with /v1 before dot segments are resolved is refused', async () => {
+  await withGateway(async (origin, seen) => {
+    const grant = await grantShellGateway({ origin, apiKey: 'real-key' });
+    const { port } = new URL(grant.url);
+    // A raw request target: fetch would resolve the dots before sending.
+    const raw = (path: string) => new Promise<number>((resolve, reject) => {
+      http.request({ host: '127.0.0.1', port, path, headers: { authorization: `Bearer ${grant.token}` } }, (res) => {
+        res.resume();
+        resolve(res.statusCode ?? 0);
+      }).on('error', reject).end();
+    });
+    assert.equal(await raw('/v1/../console/api/status'), 403);
+    assert.equal(await raw('/v1/%2e%2e/console/api/status'), 403);
+    assert.equal(await raw('//elsewhere.example/v1/models'), 403);
+    assert.equal(seen.length, 0);
+    grant.revoke();
+  });
+});
+
 test('each run reaches its own gateway', async () => {
   await withGateway(async (firstOrigin, first) => {
     await withGateway(async (secondOrigin, second) => {

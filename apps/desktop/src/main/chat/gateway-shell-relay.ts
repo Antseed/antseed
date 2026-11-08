@@ -38,11 +38,12 @@ function forward(req: http.IncomingMessage, res: http.ServerResponse): void {
     refuse(res, 401, 'This token is not valid, or its chat run has ended.');
     return;
   }
-  if (!FORWARDED_PATH.test(req.url ?? '')) {
+  // Checked once normalized: `/v1/../console` passes as raw text but lands on the console, with the real key.
+  const target = new URL(req.url ?? '/', gateway.origin);
+  if (target.origin !== new URL(gateway.origin).origin || !FORWARDED_PATH.test(target.pathname + target.search)) {
     refuse(res, 403, 'This path is not available from the chat\'s shell.');
     return;
   }
-  const target = new URL(req.url!, gateway.origin);
   const headers: http.OutgoingHttpHeaders = { ...req.headers, authorization: `Bearer ${gateway.apiKey}` };
   delete headers.host;
   delete headers.connection;

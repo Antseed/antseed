@@ -1150,6 +1150,7 @@ function applyDroidModelToFile(filePath: string, patch: DroidConfigPatchDef, bas
     return;
   }
   const managedModelIds = t.legacy ? [] : newIds;
+  let narrowStateAfterWrite = false;
   if (!state) {
     const modelPresent = Object.prototype.hasOwnProperty.call(config, 'model');
     const sessionDefaultSettingsPresent = existingSessionDefaultSettings !== undefined;
@@ -1169,7 +1170,10 @@ function applyDroidModelToFile(filePath: string, patch: DroidConfigPatchDef, bas
       managedModelIds,
     });
   } else if (managedIds.join('\n') !== managedModelIds.join('\n')) {
-    writeDroidPatchState(filePath, { ...state, managedModelIds });
+    // Both sets until the config is written: a failed write leaves the old
+    // entries in place, and disconnect has to recognize them.
+    writeDroidPatchState(filePath, { ...state, managedModelIds: [...new Set([...managedIds, ...managedModelIds])] });
+    narrowStateAfterWrite = true;
   }
 
   // The selection is an entry id; map it back to the model it named so a
@@ -1200,6 +1204,7 @@ function applyDroidModelToFile(filePath: string, patch: DroidConfigPatchDef, bas
     config['sessionDefaultSettings'] = sessionDefaultSettings;
   }
   writeJsonFile(filePath, config);
+  if (narrowStateAfterWrite && state) writeDroidPatchState(filePath, { ...state, managedModelIds });
 }
 
 function removeDroidConfigPatch(patch: DroidConfigPatchDef, wslTargetsFile?: string): boolean {

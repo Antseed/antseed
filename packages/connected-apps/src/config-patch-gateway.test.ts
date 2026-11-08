@@ -466,6 +466,23 @@ test('t3code: remote instance is owned via the source header and removable', asy
   });
 });
 
+test('droid: a refresh to new models whose config write fails still leaves the old entries to disconnect', async () => {
+  await withDir(async (dir) => {
+    const droid = path.join(dir, 'droid.json');
+    const patch = { format: 'droid', configPath: droid, modelDisplayName: 'Antseed', baseURL: 'http://localhost:{buyerPort}/v1', provider: 'generic-chat-completion-api' } as unknown as ConfigPatchDef;
+    const mine = { model: 'mine', id: 'custom:mine', baseUrl: 'https://mine.example', apiKey: 'mine-key' };
+    await writeFile(droid, JSON.stringify({ customModels: [mine], sessionDefaultSettings: { model: 'custom:mine' } }));
+    writeConfigPatch(patch, LOCAL);
+    await chmod(droid, 0o444);
+    assert.throws(() => writeConfigPatch(patch, { ...LOCAL, models: [{ id: 'brand-new' }] }), /EACCES|permission/i);
+    await chmod(droid, 0o600);
+    removeConfigPatch(patch);
+    const config = await readJson(droid);
+    assert.deepEqual(config.customModels, [mine]);
+    assert.equal(config.sessionDefaultSettings.model, 'custom:mine');
+  });
+});
+
 test('droid: moving off the legacy proxy while the model list is unreadable keeps the selection working', async () => {
   await withDir(async (dir) => {
     const configPath = path.join(dir, 'settings.json');
