@@ -101,4 +101,46 @@ describe('model route ranking', () => {
 
     expect(chooseBestModelRoute([cheaper, allowed], restricted)?.peerId).toBe(allowed.peerId);
   });
+
+  it('rotates equally priced, equally scored sellers instead of pinning the first peer id', () => {
+    const alpha = route({ peerId: 'a'.repeat(40) });
+    const beta = route({ peerId: 'b'.repeat(40) });
+    const selected = Array.from({ length: 8 }, () => chooseBestModelRoute([beta, alpha], preferences)?.peerId);
+    const tally = new Map<string, number>();
+    for (const peerId of selected) tally.set(peerId ?? '', (tally.get(peerId ?? '') ?? 0) + 1);
+
+    expect(tally.get(alpha.peerId)).toBe(4);
+    expect(tally.get(beta.peerId)).toBe(4);
+    for (let i = 1; i < selected.length; i += 1) expect(selected[i]).not.toBe(selected[i - 1]);
+  });
+
+  it('follows a new ranking when one tied seller pulls ahead', () => {
+    const alpha = route({ peerId: 'c'.repeat(40) });
+    const beta = route({ peerId: 'd'.repeat(40) });
+    const whileTied = Array.from({ length: 4 }, () => chooseBestModelRoute([alpha, beta], preferences)?.peerId);
+    expect(new Set(whileTied)).toEqual(new Set([alpha.peerId, beta.peerId]));
+
+    const ahead = route({ peerId: alpha.peerId, effectiveReputationScore: 100 });
+    const after = Array.from({ length: 6 }, () => chooseBestModelRoute([beta, ahead], preferences)?.peerId);
+    expect(after).toEqual(Array(6).fill(ahead.peerId));
+  });
+
+  it('keeps selecting the only seller', () => {
+    const only = route({ peerId: 'e'.repeat(40) });
+    const selected = Array.from({ length: 5 }, () => chooseBestModelRoute([only], preferences)?.peerId);
+    expect(selected).toEqual(Array(5).fill(only.peerId));
+  });
+
+  it('returns no seller for an empty list', () => {
+    expect(chooseBestModelRoute([], preferences)).toBeNull();
+    expect(rankModelRoutes([], preferences)).toEqual([]);
+  });
+
+  it('does not rotate a cooling seller ahead of a ready one at the same price', () => {
+    const now = 1_700_000_000_000;
+    const ready = route({ peerId: 'a'.repeat(40) });
+    const cooling = route({ peerId: 'b'.repeat(40), peerCooldownUntil: now + 30_000 });
+    const selected = Array.from({ length: 4 }, () => chooseBestModelRoute([cooling, ready], preferences, now)?.peerId);
+    expect(selected).toEqual(Array(4).fill(ready.peerId));
+  });
 });
