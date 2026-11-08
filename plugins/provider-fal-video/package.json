@@ -1,7 +1,7 @@
 {
   "name": "@antseed/provider-fal-video",
-  "version": "0.1.15",
-  "description": "fal.ai video queue relay for AntSeed",
+  "version": "0.1.17",
+  "description": "fal.ai video queue relay for Antseed",
   "type": "module",
   "files": [
     "dist"

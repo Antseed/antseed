@@ -68,12 +68,17 @@ jobs:
           node-version-file: '.nvmrc'
           cache: 'pnpm'
 
-      # Pinned, here and in the other two Foundry jobs: a new `stable` (1.9.0 changed how Anvil fills fees for
-      # fee-less eth_sendTransaction) must not change these jobs unannounced. Bump all three together, deliberately.
+      # Foundry v1.9.0, checked against its release digest. Downloaded through the API: the
+      # installer and github.com release downloads for Foundry can time out (504) for hours.
       - name: Install Foundry
-        uses: foundry-rs/foundry-toolchain@v1
-        with:
-          version: v1.9.0
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl -fsSL --retry 5 -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" \
+            -o "$RUNNER_TEMP/foundry.tgz" https://api.github.com/repos/foundry-rs/foundry/releases/assets/703110190
+          echo "8d17599b42e3139f1a9c171be3798c4ed8e743ae17b84cc3435e57bf2a51ae99  $RUNNER_TEMP/foundry.tgz" | sha256sum -c -
+          mkdir -p "$HOME/.foundry/bin" && tar xzf "$RUNNER_TEMP/foundry.tgz" -C "$HOME/.foundry/bin"
+          echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
 
       - name: Install dependencies
         run: pnpm install
@@ -117,12 +122,17 @@ jobs:
           node-version-file: '.nvmrc'
           cache: 'pnpm'
 
-      # Pinned, here and in the other two Foundry jobs: a new `stable` (1.9.0 changed how Anvil fills fees for
-      # fee-less eth_sendTransaction) must not change these jobs unannounced. Bump all three together, deliberately.
+      # Foundry v1.9.0, checked against its release digest. Downloaded through the API: the
+      # installer and github.com release downloads for Foundry can time out (504) for hours.
       - name: Install Foundry
-        uses: foundry-rs/foundry-toolchain@v1
-        with:
-          version: v1.9.0
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl -fsSL --retry 5 -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" \
+            -o "$RUNNER_TEMP/foundry.tgz" https://api.github.com/repos/foundry-rs/foundry/releases/assets/703110190
+          echo "8d17599b42e3139f1a9c171be3798c4ed8e743ae17b84cc3435e57bf2a51ae99  $RUNNER_TEMP/foundry.tgz" | sha256sum -c -
+          mkdir -p "$HOME/.foundry/bin" && tar xzf "$RUNNER_TEMP/foundry.tgz" -C "$HOME/.foundry/bin"
+          echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
 
       - name: Install dependencies
         run: pnpm install
@@ -180,12 +190,17 @@ jobs:
           node-version-file: '.nvmrc'
           cache: 'pnpm'
 
-      # Pinned, here and in the other two Foundry jobs: a new `stable` (1.9.0 changed how Anvil fills fees for
-      # fee-less eth_sendTransaction) must not change these jobs unannounced. Bump all three together, deliberately.
+      # Foundry v1.9.0, checked against its release digest. Downloaded through the API: the
+      # installer and github.com release downloads for Foundry can time out (504) for hours.
       - name: Install Foundry
-        uses: foundry-rs/foundry-toolchain@v1
-        with:
-          version: v1.9.0
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl -fsSL --retry 5 -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" \
+            -o "$RUNNER_TEMP/foundry.tgz" https://api.github.com/repos/foundry-rs/foundry/releases/assets/703110190
+          echo "8d17599b42e3139f1a9c171be3798c4ed8e743ae17b84cc3435e57bf2a51ae99  $RUNNER_TEMP/foundry.tgz" | sha256sum -c -
+          mkdir -p "$HOME/.foundry/bin" && tar xzf "$RUNNER_TEMP/foundry.tgz" -C "$HOME/.foundry/bin"
+          echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
 
       - name: Install dependencies
         run: pnpm install

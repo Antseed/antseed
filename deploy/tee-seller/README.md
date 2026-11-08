@@ -13,9 +13,9 @@ seller's Intel TDX quote:
 - is bound to the buyer's nonce, the seller's peer ID and the buyer's own encrypted connection;
 - shows a released dstack production OS (MRTD and RTMR0-2) listed in
   [`approved-node-measurements.ts`](../../packages/antseed-verifier/src/approved-node-measurements.ts);
-- measured (RTMR3, replayed from the dstack event log) an app compose that runs an image listed in
-  [`approved-seller-images.ts`](../../packages/antseed-verifier/src/approved-seller-images.ts)
-  and follows the rules in [`dstack-app-compose.ts`](../../packages/antseed-verifier/src/dstack-app-compose.ts).
+- measured (RTMR3, replayed from the dstack event log) an app compose that runs an approved image
+  (see [Approved images](#approved-images)) and follows the rules in
+  [`dstack-app-compose.ts`](../../packages/antseed-verifier/src/dstack-app-compose.ts).
   A CVM that ran init scripts outside the compose file does not pass.
 
 The seller sends its `app-compose.json` with the quote, so the buyer reads the seller config
@@ -52,17 +52,36 @@ To release an image after a CLI release:
    whose verifier can't bind attestations to the buyer's connection, whose provider relay follows
    upstream redirects or that lacks content-free logging.
 2. After it merges, run the **Publish TEE seller image** workflow
-   ([`.github/workflows/tee-seller-image.yml`](../../.github/workflows/tee-seller-image.yml)). It
-   pushes `ghcr.io/antseed/tee-seller:<cli version>` with an SBOM and a signed build provenance
-   attestation, and opens a pull request adding the image's digest to the approved images
-   (`approve-image.mjs`). Anyone can check which commit and workflow produced a digest:
+   ([`.github/workflows/tee-seller-image.yml`](../../.github/workflows/tee-seller-image.yml)) on
+   main. It pushes `ghcr.io/antseed/tee-seller:<cli version>` with an SBOM and a signed build
+   provenance attestation. Anyone can check which commit and workflow produced a digest:
 
    ```bash
-   gh attestation verify oci://ghcr.io/antseed/tee-seller@sha256:<digest> --repo AntSeed/antseed
+   gh attestation verify oci://ghcr.io/antseed/tee-seller@sha256:<digest> --repo Antseed/antseed
    ```
 
-3. Merge that pull request. Buyers accept sellers running the image from the verifier release
-   that includes it.
+   Buyers accept the image as soon as it is built (see [Approved images](#approved-images)); no
+   approval or release follows.
+
+### Approved images
+
+An image is approved when its build record shows this workflow built it from main
+([`image-provenance.ts`](../../packages/antseed-verifier/src/image-provenance.ts)). The workflow pushes the
+record to GHCR next to the image; the seller fetches it from there anonymously, like the image
+(falling back to GitHub's attestations API, which allows 60 unauthenticated calls an hour per IP),
+and sends it with each attestation; the
+buyer checks it offline against Sigstore's public trust root: the signature and certificate chain,
+the transparency log entry, that the certificate names `tee-seller-image.yml` on
+`refs/heads/main`, and that the record names the image's digest. Builds are not reproducible, so
+this record, not a rebuild, is what ties a digest to the code on main. The workflow's actions are
+pinned by commit.
+
+Buyers also accept the digests in
+[`approved-seller-images.ts`](../../packages/antseed-verifier/src/approved-seller-images.ts) (images
+approved before build records, for buyers on verifier 0.1.2 and earlier) and any they add with
+`ANTSEED_VERIFIER_NODE_BUILDS`. To withdraw an image, add its digest to `REVOKED_SELLER_IMAGES`; to
+retire every image built before a date, raise `IMAGES_BUILT_AFTER` in `image-provenance.ts`. Both
+take effect from the verifier release that includes them.
 
 ## Run a TEE seller on Phala
 
@@ -84,15 +103,27 @@ To release an image after a CLI release:
    `--env ANTSEED_VERIFIER_PROVIDER_...=<value>` for provider attestation settings. It prints the
    encrypted variables to allow. [`docker-compose.json`](docker-compose.json) is an example.
 3. Deploy it as a dstack app with KMS enabled. Pass the printed secrets as encrypted environment
-   variables, allow exactly those, and add no pre-launch script. Public logs may be on (see
-   [Logs and data](#logs-and-data)).
+   variables, allow exactly those, and add no pre-launch or init script. Public logs may be on
+   (see [Logs and data](#logs-and-data)). With Phala Cloud's `phala` CLI:
+
+   ```bash
+   phala deploy --compose docker-compose.json --kms phala --image dstack-0.6.1 \
+     --instance-type tdx.small --no-pre-launch-script --env <each printed secret>
+   ```
+
+   The CLI always writes an empty `init_script` into the app compose, which buyers on verifier
+   0.1.5 or later accept; earlier ones reject any `init_script`.
 
 Any change to the compose file (image, config, prices) changes the compose hash; buyers
 re-check the new one against the same rules, so no approval is needed.
 
 Buyers reach a seller over raw TCP at its announced address and find it through the DHT (UDP).
-Phala Cloud exposes CVM ports only through its TLS gateway
-(`<app-id>-6882.<cluster>.phala.network:443`), without a public IP or UDP, so give the seller a
+For public TCP `14532` → container `6882`, configure host forwarding and set `seller.publicAddress`
+to `<public-ip>:14532`. The seller announces both TCP ports in the DHT, keeping metadata
+discoverable when the public address names a different host.
+
+If your Phala Cloud deployment exposes CVM ports only through its TLS gateway
+(`<app-id>-6882.<cluster>.phala.network:443`), without a public IP or UDP, give the seller a
 public entry point with `antseed seller forward` on any small machine with a public IP:
 
 ```bash

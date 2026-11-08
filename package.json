@@ -1,7 +1,7 @@
 {
   "name": "antseed",
   "private": true,
-  "description": "AntSeed Network monorepo",
+  "description": "Antseed Network monorepo",
   "type": "module",
   "engines": {
     "node": "24.x",

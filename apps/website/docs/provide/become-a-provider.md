@@ -132,4 +132,4 @@ Your services, prices and categories should appear. Run `antseed network browse`
 - [Model verification for providers](/docs/verify/providers): how auditors check that you serve the models you advertise, and what a DIFF costs you.
 - [Metrics](/docs/provide/metrics): monitor requests, tokens and earnings with Prometheus.
 - [Provider plugin API](/docs/provider-api): build a plugin for an upstream the built-in plugins don't cover.
-- [`join-provider` agent skill](https://github.com/AntSeed/antseed/tree/main/skills/join-provider): let a coding agent walk you through this setup.
+- [`join-provider` agent skill](https://github.com/Antseed/antseed/tree/main/skills/join-provider): let a coding agent walk you through this setup.

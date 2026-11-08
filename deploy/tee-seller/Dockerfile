@@ -31,7 +31,7 @@ FROM ${RUNTIME_IMAGE}
 ARG ANTSEED_VERSION
 LABEL org.opencontainers.image.title="antseed-tee-seller" \
       org.opencontainers.image.description="Antseed seller for dstack confidential VMs" \
-      org.opencontainers.image.source="https://github.com/AntSeed/antseed" \
+      org.opencontainers.image.source="https://github.com/Antseed/antseed" \
       org.opencontainers.image.version="${ANTSEED_VERSION}"
 # Google Confidential Space launch policy: the operator may set only these env variables (the
 # token shows them to buyers, who check them against the same rules) and can't replace the
@@ -48,6 +48,9 @@ ENV HOME=/home/nonroot \
     ANTSEED_VERIFIER_SDKS=antseed-verifier
 USER 65532:65532
 VOLUME ["/var/lib/antseed"]
+# Signaling (TCP) and DHT (UDP). Google Confidential Space blocks every inbound port the image
+# doesn't expose, so without these buyers can't reach the seller there.
+EXPOSE 6882/tcp 6881/udp
 # launch.mjs picks the TEE (dstack or Google Confidential Space) and its seller config; the
 # dashboard, which can change settings at runtime, stays off.
 ENTRYPOINT ["/nodejs/bin/node", "/home/nonroot/launch.mjs"]

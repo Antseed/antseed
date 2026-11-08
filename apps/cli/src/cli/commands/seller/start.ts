@@ -357,6 +357,7 @@ const PROVIDER_ENV_PREFIXES: Readonly<Record<string, string>> = {
   '@antseed/provider-typesafe': 'TYPESAFE',
   '@antseed/provider-venice-video': 'VENICE_VIDEO',
   '@antseed/provider-fal-video': 'FAL_VIDEO',
+  '@antseed/provider-fal-image': 'FAL_IMAGE',
   '@antseed/provider-alibaba-video': 'ALIBABA_VIDEO',
   '@antseed/provider-irp-router': 'IRP_ROUTER',
 }
@@ -402,6 +403,7 @@ export function buildSellerPluginRuntimeEnv(
   const serviceImageEditModelMap: Record<string, string> = {}
   const serviceCapabilities: Record<string, unknown> = {}
   const serviceUnitBillingModels: Record<string, unknown> = {}
+  const serviceExtraProtocols: Record<string, unknown> = {}
   for (const [serviceId, serviceCfg] of Object.entries(providerCfg.services)) {
     if (serviceCfg.pricing) {
       servicePricing[serviceId] = serviceCfg.pricing
@@ -418,6 +420,9 @@ export function buildSellerPluginRuntimeEnv(
     if (serviceCfg.unitBillingModels) {
       serviceUnitBillingModels[serviceId] = serviceCfg.unitBillingModels
     }
+    if (serviceCfg.extraProtocols !== undefined) {
+      serviceExtraProtocols[serviceId] = serviceCfg.extraProtocols
+    }
   }
   if (Object.keys(servicePricing).length > 0) {
     runtimeEnv['ANTSEED_SERVICE_PRICING_JSON'] = JSON.stringify(servicePricing)
@@ -433,6 +438,9 @@ export function buildSellerPluginRuntimeEnv(
   }
   if (Object.keys(serviceUnitBillingModels).length > 0) {
     runtimeEnv['ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON'] = JSON.stringify(serviceUnitBillingModels)
+  }
+  if (Object.keys(serviceExtraProtocols).length > 0) {
+    runtimeEnv['ANTSEED_SERVICE_EXTRA_PROTOCOLS_JSON'] = JSON.stringify(serviceExtraProtocols)
   }
   const pluginPackage = resolvePluginPackage(providerCfg.plugin)
   const envPrefix = PROVIDER_ENV_PREFIXES[pluginPackage] ?? 'OPENAI'
@@ -888,6 +896,10 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       if (maxInboundConnectionsPerIp !== undefined) {
         console.log(chalk.dim(`  max inbound connections per IP: ${maxInboundConnectionsPerIp}`))
       }
+      const announceProviderIds = effectiveSellerConfig.announceProviderIds === true
+      if (announceProviderIds) {
+        console.log(chalk.dim('  providers announced by ID'))
+      }
       const inboundIdleTimeoutMs = parseOptionalNonNegativeIntegerEnv(process.env['ANTSEED_INBOUND_IDLE_TIMEOUT_MS'])
         ?? effectiveSellerConfig.inboundIdleTimeoutMs
       if (inboundIdleTimeoutMs !== undefined) {
@@ -958,6 +970,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         ...(maxUploadBodyBytes !== undefined ? { maxUploadBodyBytes } : {}),
         ...(maxInboundConnections !== undefined ? { maxInboundConnections } : {}),
         ...(maxInboundConnectionsPerIp !== undefined ? { maxInboundConnectionsPerIp } : {}),
+        ...(announceProviderIds ? { announceProviderIds } : {}),
         ...(inboundIdleTimeoutMs !== undefined ? { inboundIdleTimeoutMs } : {}),
         ...(sellerFreeTier ? { freeTier: sellerFreeTier } : {}),
         ...(effectiveSellerConfig.freeUsage ? { freeUsage: effectiveSellerConfig.freeUsage } : {}),

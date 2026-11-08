@@ -1,8 +1,8 @@
 # @antseed/provider-openai
 
-Provide OpenAI-compatible API capacity on the AntSeed P2P network (OpenAI, Together, OpenRouter, Venice, and similar).
+Provide OpenAI-compatible API capacity on the Antseed P2P network (OpenAI, Together, OpenRouter, Venice, and similar).
 
-> **Important:** Simply reselling raw API access without adding value may violate your API provider's terms of service. AntSeed is designed for providers who build differentiated services on top of API access — for example, running inference inside a Trusted Execution Environment (TEE), packaging domain-specific skills or agents, fine-tuned models, or offering a managed product experience. Always review your API provider's usage policies before offering capacity on the network.
+> **Important:** Simply reselling raw API access without adding value may violate your API provider's terms of service. Antseed is designed for providers who build differentiated services on top of API access — for example, running inference inside a Trusted Execution Environment (TEE), packaging domain-specific skills or agents, fine-tuned models, or offering a managed product experience. Always review your API provider's usage policies before offering capacity on the network.
 
 ## Installation
 
@@ -62,7 +62,13 @@ antseed config seller add-service together kimi-k2.5 \
   --categories math,coding
 ```
 
-The CLI reads `seller.providers.<name>.services[id]` and turns it into the flat env keys (`ANTSEED_SERVICE_ALIAS_MAP_JSON`, `ANTSEED_SERVICE_IMAGE_EDIT_MODEL_MAP_JSON`, `ANTSEED_SERVICE_PRICING_JSON`, `ANTSEED_ALLOWED_SERVICES`) that this plugin's `configSchema` consumes internally. Categories are written directly onto `provider.serviceCategories` by the seller start path, not via env var. You should not set those env keys directly.
+The CLI reads `seller.providers.<name>.services[id]` and turns it into the flat env keys (`ANTSEED_SERVICE_ALIAS_MAP_JSON`, `ANTSEED_SERVICE_IMAGE_EDIT_MODEL_MAP_JSON`, `ANTSEED_SERVICE_EXTRA_PROTOCOLS_JSON`, `ANTSEED_SERVICE_PRICING_JSON`, `ANTSEED_ALLOWED_SERVICES`) that this plugin's `configSchema` consumes internally. Categories are written directly onto `provider.serviceCategories` by the seller start path, not via env var. You should not set those env keys directly.
+
+### Extra text protocols
+
+Set `seller.providers.<name>.services[id].extraProtocols` to add `openai-responses` or `anthropic-messages` to a text service's default Chat Completions announcement.
+For example: `{"extraProtocols": ["openai-responses", "anthropic-messages"]}`.
+The upstream and all fallbacks must already support those APIs, including streaming; the relay does not translate protocols.
 
 ### Venice image editing
 
@@ -101,4 +107,4 @@ On Venice the provider reads each speech model's voices from `GET /api/v1/models
 
 ## How It Works
 
-Uses `BaseProvider` and `StaticTokenProvider` from `@antseed/provider-core` to relay requests to OpenAI-compatible APIs with `Authorization: Bearer` authentication. Venice image edits use a provider-local native endpoint adapter while preserving the same AntSeed request, routing, metering, and payment flow.
+Uses `BaseProvider` and `StaticTokenProvider` from `@antseed/provider-core` to relay requests to OpenAI-compatible APIs with `Authorization: Bearer` authentication. Venice image edits use a provider-local native endpoint adapter while preserving the same Antseed request, routing, metering, and payment flow.

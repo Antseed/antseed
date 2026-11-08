@@ -155,12 +155,13 @@ test('set still accepts whole provider and service objects and free-form capabil
   await set(path, 'seller.providers.inference.services.kimi-k2.6.capabilities.contextWindow', '262144');
   await set(path, 'seller.providers.inference.services.new-model', '{"upstreamModel":"vendor/new-model"}');
   await set(path, 'seller.providers.inference.services.new-model.enabled', 'false');
+  await set(path, 'seller.providers.inference.services.new-model.extraProtocols', '["openai-responses","anthropic-messages"]');
   await set(path, 'seller.providers.inference.defaults', '{"inputUsdPerMillion":1,"outputUsdPerMillion":2}');
   await set(path, 'seller.providers.inference.defaults.inputUsdPerMillion', '1.5');
   await set(path, 'seller.providers.other', '{"plugin":"openai","services":{}}');
   const services = readServices(path);
   assert.deepEqual(services['kimi-k2.6']!['capabilities'], { contextWindow: 262144 });
-  assert.deepEqual(services['new-model'], { upstreamModel: 'vendor/new-model', enabled: false });
+  assert.deepEqual(services['new-model'], { upstreamModel: 'vendor/new-model', enabled: false, extraProtocols: ['openai-responses', 'anthropic-messages'] });
   const providers = JSON.parse(readFileSync(path, 'utf-8')).seller.providers;
   assert.deepEqual(providers.inference.defaults, { inputUsdPerMillion: 1.5, outputUsdPerMillion: 2 });
   assert.equal(providers.other.plugin, 'openai');

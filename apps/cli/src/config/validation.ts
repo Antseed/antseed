@@ -117,6 +117,8 @@ function validateFallbackUpstreams(
 }
 
 const OPENAI_PLUGINS = new Set(['openai', '@antseed/provider-openai']);
+/** The fal image plugin maps each service to its fal edit endpoint. */
+const FAL_IMAGE_PLUGINS = new Set(['fal-image', '@antseed/provider-fal-image']);
 
 /** Venice image edits need the openai plugin pointed at Venice, which it detects from the base URL. */
 function isVeniceOpenAiProvider(providerCfg: SellerProviderConfig): boolean {
@@ -158,8 +160,11 @@ function validateSellerProviders(
       }
       if (serviceCfg.imageEditModel !== undefined && serviceCfg.imageEditModel.trim().length === 0) {
         errors.push(`${servicePath}.imageEditModel must be a non-empty string when provided`);
-      } else if (serviceCfg.imageEditModel !== undefined && !isVeniceOpenAiProvider(providerCfg)) {
-        errors.push(`${servicePath}.imageEditModel requires the openai plugin with a Venice baseUrl (https://api.venice.ai/api)`);
+      } else if (serviceCfg.imageEditModel !== undefined && !isVeniceOpenAiProvider(providerCfg) && !FAL_IMAGE_PLUGINS.has(providerCfg.plugin?.trim())) {
+        errors.push(`${servicePath}.imageEditModel requires the fal-image plugin or the openai plugin with a Venice baseUrl (https://api.venice.ai/api)`);
+      }
+      if (serviceCfg.extraProtocols !== undefined && !OPENAI_PLUGINS.has(providerCfg.plugin?.trim())) {
+        errors.push(`${servicePath}.extraProtocols requires the openai plugin`);
       }
       if (serviceCfg.pricing) {
         validatePricingLeaf(`${servicePath}.pricing`, serviceCfg.pricing, errors);
@@ -439,6 +444,10 @@ export function validateConfig(config: AntseedConfig): string[] {
     (!Number.isInteger(config.seller.maxInboundConnectionsPerIp) || config.seller.maxInboundConnectionsPerIp < 1)
   ) {
     errors.push('seller.maxInboundConnectionsPerIp must be an integer >= 1');
+  }
+
+  if (config.seller.announceProviderIds !== undefined && typeof config.seller.announceProviderIds !== 'boolean') {
+    errors.push('seller.announceProviderIds must be a boolean');
   }
 
   if (

@@ -157,7 +157,7 @@ export function FlowDiagram() {
           <g className="flow-node-inference-g">
             <rect x="420" y="90" width="260" height="110" rx="16" fill="var(--flow-node-dark)" stroke="var(--green)" strokeWidth="2" />
             <text x="550" y="128" textAnchor="middle" fontFamily="'Oxanium', system-ui, sans-serif" fontSize="17" fontWeight={700} fill="var(--flow-inference-text)">Providing Inference</text>
-            <text x="550" y="150" textAnchor="middle" fontFamily="'Oxanium', system-ui, sans-serif" fontSize="14" fontWeight={500} fill="var(--flow-inference-muted)">on AntSeed</text>
+            <text x="550" y="150" textAnchor="middle" fontFamily="'Oxanium', system-ui, sans-serif" fontSize="14" fontWeight={500} fill="var(--flow-inference-muted)">on Antseed</text>
             <text x="550" y="178" textAnchor="middle" fontFamily="'Share Tech Mono', monospace" fontSize="10" fontWeight={700} fill="var(--green)" letterSpacing="1.4">◆ SEE PRICING →</text>
             <text x="434" y="108" fontFamily="'Share Tech Mono', monospace" fontSize="9" fontWeight={700} fill="var(--green)" opacity="0.9" letterSpacing="1">02</text>
           </g>
@@ -266,7 +266,7 @@ function FlowMobile() {
         <div className="flow-mobile-source-ic"><UsdcLogo size={28} /></div>
         <div className="flow-mobile-source-txt">
           <h4>USDC · per request</h4>
-          <span className="flow-mobile-source-sub">inference on AntSeed · <strong>SEE PRICING →</strong></span>
+          <span className="flow-mobile-source-sub">inference on Antseed · <strong>SEE PRICING →</strong></span>
         </div>
       </a>
 

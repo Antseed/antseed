@@ -120,6 +120,7 @@ import { SellerPaymentManager, type SellerPaymentConfig } from "./payments/selle
 import { IdentityClient } from "./payments/evm/identity-client.js";
 import { SellerRequestHandler, assertSameNameUpstreamsAgree, assertSingleRoutingService } from "./seller-request-handler.js";
 import { ServicePerformanceTracker } from "./health/service-performance.js";
+import { announcedProviderName, withDefaultServiceApiProtocols } from "./discovery/provider-id.js";
 import {
   BuyerRequestHandler,
   type RequestStreamCallbacks,
@@ -338,7 +339,7 @@ export interface NodeVerificationConfig {
 export interface NodeConfig {
   role: 'seller' | 'buyer';
   displayName?: string;
-  /** Publicly reachable seller address override ("host:port") announced in metadata. */
+  /** Seller address ("host:port") announced in metadata; its port is announced alongside the listening port in the DHT. */
   publicAddress?: string;
   /** External ownership claims announced in signed peer metadata. */
   verifications?: PeerVerifications;
@@ -352,6 +353,13 @@ export interface NodeConfig {
   maxInboundConnections?: number;
   /** Seller only: inbound sockets from one IP at once (raise it behind a TLS gateway or forwarder). Default 64. */
   maxInboundConnectionsPerIp?: number;
+  /**
+   * Seller only: announce each provider by an ID (see announcedProviderId)
+   * instead of its plugin name, so buyers do not learn the plugin. Off by
+   * default while buyers that predate it are in use: they refuse a pinned
+   * request naming a provider the peer does not announce.
+   */
+  announceProviderIds?: boolean;
   /**
    * Seller only: close a buyer's connection after this long with no traffic,
    * unless the buyer has a paid channel or a free usage session open. 0 keeps
@@ -2247,11 +2255,16 @@ export class AntseedNode extends EventEmitter {
       const announcerConfig: AnnouncerConfig = {
         identity,
         dht: this._dht,
-        providers: this._providers.map((p) => ({
-          provider: p.name,
+        providers: this._providers.map((p) => {
+          // With provider IDs, buyers get the protocols they used to infer from the provider's name.
+          const serviceApiProtocols = this._config.announceProviderIds
+            ? withDefaultServiceApiProtocols(p.name, p.services, p.serviceApiProtocols)
+            : p.serviceApiProtocols;
+          return {
+          provider: announcedProviderName(identity.privateKey, p.name, this._config.announceProviderIds === true),
           services: p.services,
           ...(p.serviceCategories ? { serviceCategories: { ...p.serviceCategories } } : {}),
-          ...(p.serviceApiProtocols ? { serviceApiProtocols: { ...p.serviceApiProtocols } } : {}),
+          ...(serviceApiProtocols ? { serviceApiProtocols: { ...serviceApiProtocols } } : {}),
           ...(p.serviceUnitBillingModels ? { serviceUnitBillingModels: { ...p.serviceUnitBillingModels } } : {}),
           ...(p.serviceCapabilities ? { serviceCapabilities: { ...p.serviceCapabilities } } : {}),
           // Read live: the model health checker updates it between refreshes.
@@ -2266,7 +2279,8 @@ export class AntseedNode extends EventEmitter {
             },
             ...(p.pricing.services ? { services: { ...p.pricing.services } } : {}),
           },
-        })),
+          };
+        }),
         ...(this._config.displayName ? { displayName: this._config.displayName } : {}),
         ...(this._config.publicAddress ? { publicAddress: this._config.publicAddress } : {}),
         ...(this._config.verifications ? { verifications: this._config.verifications } : {}),
@@ -2274,7 +2288,7 @@ export class AntseedNode extends EventEmitter {
         region: "unknown",
         pricing: new Map(
           this._providers.map((p) => [
-            p.name,
+            announcedProviderName(identity.privateKey, p.name, this._config.announceProviderIds === true),
             {
               defaults: {
                 inputUsdPerMillion: p.pricing.defaults.inputUsdPerMillion,
@@ -2285,7 +2299,9 @@ export class AntseedNode extends EventEmitter {
           ]),
         ),
         reannounceIntervalMs: DEFAULT_DHT_CONFIG.reannounceIntervalMs,
+        // Keep the listening endpoint discoverable when publicAddress names another host.
         signalingPort: actualSignalingPort,
+        publicSignalingPort: parsePublicAddress(this._config.publicAddress ?? "")?.port,
         ...(this._channelsClient ? { channelsClient: this._channelsClient } : {}),
         ...(this._stakingClient ? { stakingClient: this._stakingClient, paymentsEnabled: true } : {}),
         ...(this._config.sellerContract ? { sellerContract: this._config.sellerContract } : {}),
@@ -2324,6 +2340,7 @@ export class AntseedNode extends EventEmitter {
       sessionTracker: this._sessionTracker,
       channelsClient: this._channelsClient,
       announcer: this._announcer,
+      ...(this._config.announceProviderIds ? { announceProviderIds: true } : {}),
       maxUploadBodyBytes: this._config.maxUploadBodyBytes,
       resourceOwnershipStore: this._resourceOwnership,
       servicePerformance: this._servicePerformance,

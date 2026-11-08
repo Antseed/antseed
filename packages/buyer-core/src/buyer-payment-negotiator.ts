@@ -95,7 +95,7 @@ const MAX_STALE_SESSION_CHECKS = 5;
  * the workspace and its funding path.
  */
 export const OUT_OF_CREDITS_MESSAGE =
-  'You are out of AntSeed credits for this request. Add funds in the AntSeed app, or run "antseed buyer deposit" ' +
+  'You are out of Antseed credits for this request. Add funds in the Antseed app, or run "antseed buyer deposit" ' +
   'in the CLI to show your funding address, then retry. Free sellers need no funds: pin one as <peerId>@<model>.';
 /** Emitter interface — subset of EventEmitter used by the negotiator. */
 export interface NegotiationEmitter {
@@ -1712,6 +1712,17 @@ export class BuyerPaymentNegotiator {
 
     if (!onChain.exists) {
       if (this._bpm.canReplayReserveAuth(peer.peerId)) {
+        // The seller's reserve() locks the replayed ceiling from the buyer's
+        // deposits. Without enough there it reverts, no AuthAck comes, and the
+        // request would wait out the lock timeout instead of answering 402.
+        // The channel never locked anything on-chain, so it can simply go.
+        const cannotCover = await this._depositsCannotCover(this._bpm.replayReserveAmount(peer.peerId));
+        // A parallel request may have replaced the channel during the read.
+        this._assertLiveChannel(peer.peerId, session.sessionId);
+        if (cannotCover) {
+          this._bpm.retireSession(peer.peerId, CHANNEL_STATUS.GHOST);
+          return false;
+        }
         const pmux = this.getOrCreatePaymentMux(peer.peerId, conn);
         await this._bpm.resendReserveAuth(peer.peerId, pmux);
         await this._waitForLockConfirmation(peer.peerId, {
@@ -1849,6 +1860,23 @@ export class BuyerPaymentNegotiator {
     });
     this._lockedPeers.add(peer.peerId);
     return true;
+  }
+
+  /**
+   * Whether the buyer's available deposits are known to be below `amount`.
+   * Best-effort like the pre-negotiation balance check: an unreachable chain
+   * or a failed read answers false, leaving the seller to decide.
+   */
+  private async _depositsCannotCover(amount: bigint): Promise<boolean> {
+    if (!this._depositsClient || (this._isChainReachable && !this._isChainReachable())) return false;
+    try {
+      const balance = await this._depositsClient.getBuyerBalance(this._identity.wallet.address);
+      return balance.available <= 0n || balance.available < amount;
+    } catch (err) {
+      debugWarn(`[BuyerNegotiator] Failed to check buyer balance before replaying a reserve: ${err instanceof Error ? err.message : err}`);
+      this._onChainReadFailure?.();
+      return false;
+    }
   }
 
   /**

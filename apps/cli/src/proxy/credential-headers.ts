@@ -19,7 +19,7 @@ export const CLIENT_CREDENTIAL_HEADERS: ReadonlySet<string> = new Set([
   'x-api-key',
   'x-goog-api-key',
   // Azure OpenAI's key header. Matched by exact name only: pattern matching
-  // (anything containing "auth"/"key"/"token") would also strip AntSeed's own
+  // (anything containing "auth"/"key"/"token") would also strip Antseed's own
   // `x-antseed-spending-auth`, which buyer-core reads after the proxy.
   'api-key',
 ])

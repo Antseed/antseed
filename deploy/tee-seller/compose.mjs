@@ -51,7 +51,7 @@ const compose = {
     seller: {
       image: values.image,
       restart: 'always',
-      // The announced address is the container port, so the public port must be the same.
+      // DHT announces the listening port and any different TCP port in seller.publicAddress.
       ports: ['6882:6882', '6881:6881/udp'],
       environment,
       volumes: ['/var/run/dstack.sock:/var/run/dstack.sock', 'seller-data:/var/lib/antseed'],

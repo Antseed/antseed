@@ -3905,7 +3905,7 @@ export class BuyerProxy {
    * GET /v1/models[?type=text|images] and GET /v1/models/:id — answered
    * locally from the discovered-peer cache, aggregated across the network. The
    * `x-antseed-request-id` response header keeps the port-reuse probe in
-   * `buyer start` recognizing this as an AntSeed proxy.
+   * `buyer start` recognizing this as an Antseed proxy.
    */
   private async _handleNetworkModels(res: ServerResponse, rawPath: string, requestPolicy: RoutingPolicy | null): Promise<void> {
     const url = new URL(rawPath, 'http://localhost')
@@ -4616,7 +4616,7 @@ export class BuyerProxy {
       const titleTurn = isTitleGenerationRequest(conversationBody)
       const snippet = known?.snippet ? null : extractFirstUserSnippet(conversationBody)
       // Some tools (T3/Claude) fire title-only requests when a new chat opens.
-      // Route them normally, but do not create a blank AntSeed conversation row
+      // Route them normally, but do not create a blank Antseed conversation row
       // until the first genuine user turn arrives.
       if (known || !titleTurn) {
         const tracked = this._conversations.touch({
@@ -5170,27 +5170,10 @@ export class BuyerProxy {
     }
 
     if (routingPeers.length === 0) {
-      const pinnedPeer = discoveredPeers.find((peer) => peer.peerId.toLowerCase() === pinnedPeerId) ?? null
       const protocolLabel = requestProtocol ? `protocol=${requestProtocol}` : 'protocol=unknown'
       const providerLabel = explicitProvider ? `provider=${explicitProvider}` : 'provider=auto'
       const serviceLabel = requestedService ? `service=${requestedService}` : 'service=none'
       const diagnostics = this._formatPeerSelectionDiagnostics(discoveredPeers)
-
-      if (explicitProvider && pinnedPeer) {
-        const providers = pinnedPeer.providers
-          .map((provider) => provider.trim().toLowerCase())
-          .filter((provider) => provider.length > 0)
-        if (!providers.includes(explicitProvider)) {
-          const providerList = providers.length > 0 ? providers.join(', ') : 'none'
-          log(`Pinned peer ${pinnedPeerId.slice(0, 12)}... does not offer explicit provider=${explicitProvider}`)
-          return dispatchFailure(502, { 'content-type': 'text/plain' },
-            `Pinned peer ${pinnedPeerId.slice(0, 12)}... does not offer provider=${explicitProvider}. `
-            + `Available providers: ${providerList}. `
-            + 'Remove or change the x-antseed-provider header, or pick a different peer. '
-            + diagnostics,
-          )
-        }
-      }
 
       log(`Pinned peer ${pinnedPeerId.slice(0, 12)}... filtered out by protocol/service match`)
       return dispatchFailure(502, { 'content-type': 'text/plain' },

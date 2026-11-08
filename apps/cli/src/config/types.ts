@@ -49,6 +49,8 @@ export interface SellerServiceConfig {
   upstreamModel?: string;
   /** Native image-edit model paired with this advertised generation service. */
   imageEditModel?: string;
+  /** Additional text API protocols served unchanged by the openai plugin's upstream. */
+  extraProtocols?: Array<Extract<ServiceApiProtocol, 'openai-responses' | 'anthropic-messages'>>;
   /** Normie-friendly tags announced in peer metadata (e.g. "chat", "coding"). */
   categories?: string[];
   /**
@@ -293,6 +295,12 @@ export interface SellerCLIConfig {
    * through one address, such as Phala Cloud's TLS gateway. Default: 64.
    */
   maxInboundConnectionsPerIp?: number;
+  /**
+   * Announce each provider by an ID instead of its plugin name, so buyers don't see which
+   * plugin (and upstream) serves a model. Default: false while older buyers, which refuse a
+   * pinned request naming a provider the peer doesn't announce, are still in use.
+   */
+  announceProviderIds?: boolean;
   /** Close a buyer's connection after this long with no traffic and no channel open on it; 0 keeps idle connections. Default: 30 minutes. */
   inboundIdleTimeoutMs?: number;
   /**
