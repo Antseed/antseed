@@ -146,7 +146,7 @@ Buyers accept an image as soon as the workflow builds it, through its build reco
 
 | Symptom | Cause |
 |---|---|
-| `seller-node-tee-genuine` fails with "not an approved TEE seller build" | The detail names the reason: an OS the verifier doesn't list (a new dstack release needs adding to the verifier), an image without a build record from the workflow on main (use one it built; the seller must reach `api.github.com` to fetch the record), or a compose rule the file breaks (regenerate it with `compose.mjs`) |
+| `seller-node-tee-genuine` fails with "not an approved TEE seller build" | The detail names the reason: an OS the verifier doesn't list (a new dstack release needs adding to the verifier), an image without a build record from the workflow on main (use one it built; the seller fetches the record from `ghcr.io`, like the image), or a compose rule the file breaks (regenerate it with `compose.mjs`) |
 | `seller-node-tee-genuine` fails with "no connection binding" | The buyer reached the seller over WebRTC; make the signaling TCP port reachable |
 | `seller-bound` missing from verdicts | `ANTSEED_VERIFIER_SIGNING_KEY` unset, or its address doesn't match `ANTSEED_TEE_PEER_ID` |
 | Buyer reports TCB failures | Host platform needs microcode/TCB updates; buyers running `ANTSEED_VERIFIER_STRICT_TCB=true` accept only `UpToDate` |

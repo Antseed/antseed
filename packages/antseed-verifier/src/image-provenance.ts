@@ -1,4 +1,4 @@
-import { X509Certificate } from 'node:crypto'
+import { X509Certificate, createHash } from 'node:crypto'
 import type { ApprovedSellerImage } from './approved-seller-images.js'
 import { isObj } from './seller-config-rules.js'
 import trustedRoot from './sigstore-trusted-root.json' with { type: 'json' }
@@ -6,8 +6,8 @@ import trustedRoot from './sigstore-trusted-root.json' with { type: 'json' }
 /**
  * Approval of a TEE seller image by its build record instead of a release: an image counts as
  * approved when its signed SLSA provenance shows the "Publish TEE seller image" workflow built it
- * from this repository's main branch. The seller sends the record (a Sigstore bundle, as GitHub's
- * attestations API serves it) with its attestation; the buyer checks it offline against
+ * from this repository's main branch. The seller sends the record (a Sigstore bundle, which the
+ * workflow pushes to the registry next to the image) with its attestation; the buyer checks it offline against
  * Sigstore's public-good trust root (sigstore-trusted-root.json): the signing certificate's chain
  * to Fulcio, its certificate transparency proof, the Rekor log entry, the workflow identity in the
  * certificate, and that the record names the image digest.
@@ -119,11 +119,51 @@ export function tokenImageDigest(token: string): string | undefined {
 
 const FETCH_TIMEOUT_MS = 10_000
 const MAX_RECORD_BYTES = 256 * 1024
-/** How long a failed lookup is remembered before the next round tries again (GitHub limits unauthenticated calls per IP). */
+/** How long a failed lookup is remembered before the next round tries again. */
 const RETRY_AFTER_MS = 10 * 60_000
+const SIGSTORE_BUNDLE = 'application/vnd.dev.sigstore.bundle.v0.3+json'
 
-/** The image's build record from GitHub's attestations API, or undefined when there is none. */
-async function fetchImageBuild(digest: string, fetchImpl: typeof fetch): Promise<unknown> {
+/** A response body as text, refusing an error status or an oversized body. */
+async function bodyText(res: Response): Promise<string> {
+  if (!res.ok) throw new Error(`${new URL(res.url || 'https://unknown').host} answered HTTP ${res.status}`)
+  const text = await res.text()
+  if (text.length > MAX_RECORD_BYTES) throw new Error(`build record too large (${text.length} bytes)`)
+  return text
+}
+
+/**
+ * The image's build record from the registry it is pulled from: the publish workflow pushes it
+ * next to the image (the OCI referrers tag "sha256-<hex>"), and the registry serves it
+ * anonymously, like the image.
+ */
+async function registryImageBuild(digest: string, fetchImpl: typeof fetch): Promise<unknown> {
+  const [host, ...path] = IMAGE_BUILD.image.split('/')
+  const repository = path.join('/')
+  const signal = AbortSignal.timeout(FETCH_TIMEOUT_MS)
+  const get = (url: string, headers: Record<string, string>, redirect: 'error' | 'follow' = 'error') => fetchImpl(url, { headers, redirect, signal })
+  const tokenBody: unknown = JSON.parse(await bodyText(await get(`https://${host}/token?scope=repository:${repository}:pull`, {})))
+  const token = isObj(tokenBody) && typeof tokenBody['token'] === 'string' ? tokenBody['token'] : ''
+  const auth = { authorization: `Bearer ${token}` }
+  const base = `https://${host}/v2/${repository}`
+  const indexRes = await get(`${base}/manifests/${digest.replace(':', '-')}`, { ...auth, accept: 'application/vnd.oci.image.index.v1+json' })
+  if (indexRes.status === 404) return undefined
+  const index: unknown = JSON.parse(await bodyText(indexRes))
+  const entries = isObj(index) && Array.isArray(index['manifests']) ? index['manifests'] : []
+  const entry = entries.find((m): m is { digest: string } => isObj(m) && m['artifactType'] === SIGSTORE_BUNDLE && typeof m['digest'] === 'string'
+    && isObj(m['annotations']) && m['annotations']['dev.sigstore.bundle.predicateType'] === SLSA_PROVENANCE_V1)
+  if (!entry) return undefined
+  const manifest: unknown = JSON.parse(await bodyText(await get(`${base}/manifests/${entry.digest}`, { ...auth, accept: 'application/vnd.oci.image.manifest.v1+json' })))
+  const layers = isObj(manifest) && Array.isArray(manifest['layers']) ? manifest['layers'] : []
+  const layer = layers.find((l): l is { digest: string } => isObj(l) && l['mediaType'] === SIGSTORE_BUNDLE && typeof l['digest'] === 'string')
+  if (!layer) return undefined
+  // The registry redirects blob downloads to its storage; the blob is checked against its digest.
+  const blob = await bodyText(await get(`${base}/blobs/${layer.digest}`, auth, 'follow'))
+  if (`sha256:${createHash('sha256').update(blob).digest('hex')}` !== layer.digest) throw new Error('build record does not match its registry digest')
+  return JSON.parse(blob)
+}
+
+/** The image's build record from GitHub's attestations API, which limits unauthenticated calls per IP. */
+async function githubImageBuild(digest: string, fetchImpl: typeof fetch): Promise<unknown> {
   const url = `https://api.github.com/repos/${IMAGE_BUILD.repository}/attestations/${digest}?predicate_type=${encodeURIComponent(SLSA_PROVENANCE_V1)}`
   const res = await fetchImpl(url, {
     headers: { accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28' },
@@ -131,12 +171,14 @@ async function fetchImageBuild(digest: string, fetchImpl: typeof fetch): Promise
     signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   })
   if (res.status === 404) return undefined
-  if (!res.ok) throw new Error(`GitHub attestations API answered HTTP ${res.status}`)
-  const text = await res.text()
-  if (text.length > MAX_RECORD_BYTES) throw new Error(`build record too large (${text.length} bytes)`)
-  const body: unknown = JSON.parse(text)
+  const body: unknown = JSON.parse(await bodyText(res))
   const attestations = isObj(body) && Array.isArray(body['attestations']) ? body['attestations'] : []
   return attestations.map((a) => (isObj(a) ? a['bundle'] : undefined)).find(isObj)
+}
+
+/** The image's build record from its registry, else from GitHub; undefined when neither has it. */
+async function fetchImageBuild(digest: string, fetchImpl: typeof fetch): Promise<unknown> {
+  return (await registryImageBuild(digest, fetchImpl).catch(() => undefined)) ?? githubImageBuild(digest, fetchImpl)
 }
 
 const cache = new Map<string, { at: number; record: Promise<unknown> }>()

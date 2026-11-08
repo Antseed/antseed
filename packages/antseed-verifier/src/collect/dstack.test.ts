@@ -127,13 +127,17 @@ describe('node-tee capability — dstack source', () => {
     expect(decoded.appCompose).toBe(appCompose)
   })
 
-  it("ships the image's build record from GitHub for the digest its compose runs", async () => {
+  it("ships the image's build record for the digest its compose runs", async () => {
     const digest = `sha256:${'3'.repeat(64)}`
     const appCompose = JSON.stringify({ docker_compose_file: JSON.stringify({ services: { seller: { image: `ghcr.io/antseed/tee-seller@${digest}` } } }) })
     stub = await startDstackStub((rdHex) => ({ quote: rdHex }), { tcb_info: JSON.stringify({ app_compose: appCompose }) })
     const record = { mediaType: 'application/vnd.dev.sigstore.bundle.v0.3+json' }
     const urls: string[] = []
-    vi.stubGlobal('fetch', async (url: string) => { urls.push(url); return new Response(JSON.stringify({ attestations: [{ bundle: record }] })) })
+    // The registry has no record for it, so it comes from GitHub's attestations API.
+    vi.stubGlobal('fetch', async (url: string) => {
+      urls.push(url)
+      return url.startsWith('https://api.github.com/') ? new Response(JSON.stringify({ attestations: [{ bundle: record }] })) : new Response('{}', { status: 404 })
+    })
     try {
       const config = {
         [tdxConfigKey(NODE_TEE_CAP_ID, 'source')]: 'dstack',
@@ -141,7 +145,8 @@ describe('node-tee capability — dstack source', () => {
       }
       const decoded = decodeTeeTdxEvidence(await nodeTeeCapability.collect!({ nonce: new Uint8Array(32), peerId: 'a'.repeat(40), config }))
       expect(decoded.imageBuild).toEqual(record)
-      expect(urls).toEqual([expect.stringContaining(`/repos/Antseed/antseed/attestations/${digest}?`)])
+      expect(urls[0]).toMatch(/^https:\/\/ghcr\.io\/token\?scope=repository:antseed\/tee-seller:pull$/)
+      expect(urls.at(-1)).toContain(`/repos/Antseed/antseed/attestations/${digest}?`)
     } finally {
       vi.unstubAllGlobals()
     }
