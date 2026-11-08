@@ -101,7 +101,7 @@ describe('aci adapter', () => {
   let server: Server | undefined
   afterEach(() => server?.close())
 
-  it('fetches the nonce-bound report, hex-decodes the quote, binds aci-keyset-v1', async () => {
+  it.each(['ANTSEED_VERIFIER_PROVIDER_ACI_URL', 'ACI_ATTESTATION_URL'])('fetches the nonce-bound report using %s, hex-decodes the quote, binds aci-keyset-v1', async (urlEnv) => {
     const quoteBytes = randomBytes(32)
     const digest = 'c'.repeat(64)
     const stub = await startStub((url) => {
@@ -114,7 +114,7 @@ describe('aci adapter', () => {
     })
     server = stub.server
     const adapter = await loadAdapter('aci')
-    const ev = await adapter.fetchEvidence(NONCE, { ACI_ATTESTATION_URL: `${stub.base}/v1/aci/attestation` })
+    const ev = await adapter.fetchEvidence(NONCE, { [urlEnv]: `${stub.base}/v1/aci/attestation` })
     expect(Buffer.from(ev.quote).equals(quoteBytes)).toBe(true)
     expect(ev.bindingScheme).toBe('aci-keyset-v1')
     expect(ev.ingredients?.keysetDigest).toBe(`sha256:${digest}`)
@@ -135,8 +135,28 @@ describe('aci adapter', () => {
     await expect(adapter.fetchEvidence(NONCE, { ACI_ATTESTATION_URL: `${base}/v1/aci/attestation` })).rejects.toThrow(/fetch failed/)
   })
 
-  it('throws when ACI_ATTESTATION_URL is missing', async () => {
+  it('prefers ANTSEED_VERIFIER_PROVIDER_ACI_URL and preserves query parameters and bearer auth', async () => {
+    let sawAuth: string | undefined
+    const stub = await startStub((url, auth) => {
+      sawAuth = auth
+      if (url.pathname !== '/v1/aci/attestation' || url.searchParams.get('nonce') !== nonceHex || url.searchParams.get('format') !== 'json') return null
+      return { status: 200, body: {
+        workload_keyset_digest: `sha256:${'c'.repeat(64)}`,
+        attestation: { evidence: { quote: 'abcd' } },
+      } }
+    })
+    server = stub.server
     const adapter = await loadAdapter('aci')
-    await expect(adapter.fetchEvidence(NONCE, {})).rejects.toThrow(/ACI_ATTESTATION_URL is required/)
+    await adapter.fetchEvidence(NONCE, {
+      ANTSEED_VERIFIER_PROVIDER_ACI_URL: `${stub.base}/v1/aci/attestation?format=json`,
+      ACI_ATTESTATION_URL: `${stub.base}/legacy`,
+      ACI_API_KEY: 'k',
+    })
+    expect(sawAuth).toBe('Bearer k')
+  })
+
+  it('throws when neither ACI URL variable is set', async () => {
+    const adapter = await loadAdapter('aci')
+    await expect(adapter.fetchEvidence(NONCE, {})).rejects.toThrow(/ANTSEED_VERIFIER_PROVIDER_ACI_URL is required/)
   })
 })

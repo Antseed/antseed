@@ -37,6 +37,14 @@ describe('checkAppCompose', () => {
     expect(checkAppCompose(app, composeHash(app + ' '), [TEST_IMAGE])).toEqual({ error: 'app compose does not match the measured compose hash' })
   })
 
+  it('accepts the ACI adapter with its attestation URL as a literal provider setting', () => {
+    const compose = withService((s) => {
+      s['environment']['ANTSEED_VERIFIER_PROVIDER_ADAPTER'] = 'aci'
+      s['environment']['ANTSEED_VERIFIER_PROVIDER_ACI_URL'] = 'https://provider.example/v1/aci/attestation'
+    })
+    expect(checkCompose(compose)).not.toHaveProperty('error')
+  })
+
   it('rejects an image that is not an approved Antseed image', () => {
     expect(checkAppCompose(appCompose(referenceCompose()), composeHash(appCompose(referenceCompose())), [])).toMatchObject({ error: expect.stringMatching(/not an approved Antseed TEE seller image/) })
     expect(checkCompose(withService((s) => { s['image'] = 'ghcr.io/antseed/tee-seller:latest' }))).toMatchObject({ error: 'service image must be pinned by digest' })
