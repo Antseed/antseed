@@ -12,7 +12,7 @@ import styles from './network.module.css';
  * emission caps) lives in /docs and is linked, not repeated.
  */
 
-const SOURCE = 'https://github.com/AntSeed/antseed/tree/main';
+const SOURCE = 'https://github.com/Antseed/antseed/tree/main';
 
 const STAGES = [
   {name: 'Find', label: '01 / FIND', title: 'Your device finds providers itself.', detail: 'It asks Mainline DHT, the same network BitTorrent uses, for provider addresses, then reads each provider’s signed listing: which models, at what price.'},

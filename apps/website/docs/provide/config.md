@@ -423,7 +423,7 @@ An ant agent wraps your service with a persona, guardrails, on-demand knowledge 
 }
 ```
 
-Relative paths resolve from the config file's directory. See [Provider plugin API](/docs/provider-api#ant-agent) and the [`@antseed/ant-agent` README](https://github.com/AntSeed/antseed/tree/main/packages/ant-agent) for the manifest format.
+Relative paths resolve from the config file's directory. See [Provider plugin API](/docs/provider-api#ant-agent) and the [`@antseed/ant-agent` README](https://github.com/Antseed/antseed/tree/main/packages/ant-agent) for the manifest format.
 
 ## Payment settings
 

@@ -6316,7 +6316,7 @@ test('buyer proxy does not forward client credential headers to the seller (buff
   // Non-credential client headers still pass through.
   assert.equal(seen!['anthropic-version'], '2023-06-01')
   assert.equal(seen!['content-type'], 'application/json')
-  // AntSeed's own payment-auth header is not a client credential.
+  // Antseed's own payment-auth header is not a client credential.
   assert.equal(seen!['x-antseed-spending-auth'], 'signed-auth-payload')
 })
 

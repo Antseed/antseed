@@ -33,7 +33,7 @@ The service ID is the fal endpoint ID; aliases are not supported.
 
 Buyers send fal's model input as JSON, with the endpoint ID as `model`:
 
-| AntSeed path | fal call |
+| Antseed path | fal call |
 | --- | --- |
 | `POST /fal/v1/video/queue` | `POST {base}/{model}` with the body minus `model`/`service`; returns `{model, request_id, status}` |
 | `POST /fal/v1/video/retrieve` with `{model, request_id}` | `GET {base}/{owner}/{alias}/requests/{id}/status`, then the result's `video.url` |
@@ -66,4 +66,4 @@ Otherwise the seller does not check the source; fal does, and reports a refused 
 
 `video_seconds` pricing uses the request's `duration` (`5`, `"5"` or `"5s"`); use `video_generations` for models without a numeric duration.
 
-Check that fal's terms allow your offering. AntSeed sellers must add value rather than resell raw API access.
+Check that fal's terms allow your offering. Antseed sellers must add value rather than resell raw API access.

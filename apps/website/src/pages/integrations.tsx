@@ -245,7 +245,7 @@ export default function ConnectHub(): JSX.Element {
               it - see the <Link to="/integrations/curl">raw HTTP page</Link> for the contract. Want
               it added here? Open a PR on{' '}
               <a
-                href="https://github.com/AntSeed/antseed/blob/main/apps/website/src/integrations/integrations.ts"
+                href="https://github.com/Antseed/antseed/blob/main/apps/website/src/integrations/integrations.ts"
                 target="_blank"
                 rel="noopener noreferrer">
                 integrations.ts

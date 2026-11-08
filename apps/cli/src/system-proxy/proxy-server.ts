@@ -41,7 +41,7 @@ export interface BuyerForwardRequest {
   response?: SystemProxyResponseTransform
   conversation?: ConversationForwardContext
   /** True when the proxy assigned the body's `model` from its configured
-      route (vs forwarding a client-chosen AntSeed route untouched). Marked
+      route (vs forwarding a client-chosen Antseed route untouched). Marked
       on the forward so the buyer can let a per-chat pin override it. */
   modelRouted?: boolean
 }

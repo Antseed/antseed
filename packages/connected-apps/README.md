@@ -1,6 +1,6 @@
 # @antseed/connected-apps
 
-Connects local AI tools to the AntSeed buyer proxy by editing each tool's own
+Connects local AI tools to the Antseed buyer proxy by editing each tool's own
 config file. One copy is shared by the CLI (`antseed apps …`) and the desktop
 app's Connected apps screen.
 
@@ -14,7 +14,7 @@ app's Connected apps screen.
 
 Behaviour guarantees (unchanged from the desktop implementation it was moved
 from): the original config is copied to `<file>.antseed.bak` once before the
-first edit; disconnect removes only what AntSeed added; formats that replace
+first edit; disconnect removes only what Antseed added; formats that replace
 user values (Droid, Claude Code) record them in a `<file>.antseed.state.json`
 sidecar and restore them on disconnect; WSL installs on Windows are patched
 and unpatched too; configs patched by older desktop versions disconnect

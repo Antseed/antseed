@@ -1,6 +1,6 @@
 # Native video API integration
 
-AntSeed relays native video requests to seller-operated APIs in two formats: the Venice video API (`venice-video`) and fal.ai's queue API (`fal-video`). Other vendors' native APIs are not supported. Sellers own execution, storage, and refund policy. AntSeed does not cache artifacts.
+Antseed relays native video requests to seller-operated APIs in two formats: the Venice video API (`venice-video`) and fal.ai's queue API (`fal-video`). Other vendors' native APIs are not supported. Sellers own execution, storage, and refund policy. Antseed does not cache artifacts.
 
 Finished videos are streamed through the original seller; its API key never leaves the seller. Other providers and seller-hosted result URLs remain unchanged and must be accessible to buyers without seller credentials.
 
@@ -17,7 +17,7 @@ Venice uses the body `model` as the service. Retrieve carries `queue_id` in the 
 
 ### fal
 
-fal's own API puts the endpoint ID in the URL (`queue.fal.run/{endpoint}`), which AntSeed cannot route on. AntSeed therefore uses fixed paths and carries the fal endpoint ID (for example `fal-ai/kling-video/v2.1/standard/text-to-video`) in the body `model`, which is also the service ID. The create body is fal's model input plus `model`; the seller removes `model` and `service` and submits the rest to `POST {base}/{model}`. The job ID is fal's `request_id`. Retrieve sends `{model, request_id}`; the seller polls `GET {base}/{owner}/{alias}/requests/{request_id}/status` and, once `COMPLETED`, fetches the result and streams the `https` `video.url` (or first `videos[].url`) to the buyer without the seller key. fal's `status_url` and `response_url` are not returned to buyers. A `COMPLETED` status with an `error` is returned as `{"status":"FAILED"}`. Durations are numbers or strings such as `"5"` and `"5s"`. Cancel and webhooks are not relayed.
+fal's own API puts the endpoint ID in the URL (`queue.fal.run/{endpoint}`), which Antseed cannot route on. Antseed therefore uses fixed paths and carries the fal endpoint ID (for example `fal-ai/kling-video/v2.1/standard/text-to-video`) in the body `model`, which is also the service ID. The create body is fal's model input plus `model`; the seller removes `model` and `service` and submits the rest to `POST {base}/{model}`. The job ID is fal's `request_id`. Retrieve sends `{model, request_id}`; the seller polls `GET {base}/{owner}/{alias}/requests/{request_id}/status` and, once `COMPLETED`, fetches the result and streams the `https` `video.url` (or first `videos[].url`) to the buyer without the seller key. fal's `status_url` and `response_url` are not returned to buyers. A `COMPLETED` status with an `error` is returned as `{"status":"FAILED"}`. Durations are numbers or strings such as `"5"` and `"5s"`. Cancel and webhooks are not relayed.
 
 ### Alibaba Cloud Model Studio
 
@@ -25,7 +25,7 @@ The `alibaba-video` plugin serves the `fal-video` paths and translates them to M
 
 ## Image-to-video and video inputs
 
-The create endpoints are not text-only. AntSeed forwards the native JSON fields, including images, reference frames and video inputs; it does not convert these requests into image-generation or chat requests. No separate image-to-video endpoint or AntSeed upload service is needed.
+The create endpoints are not text-only. Antseed forwards the native JSON fields, including images, reference frames and video inputs; it does not convert these requests into image-generation or chat requests. No separate image-to-video endpoint or Antseed upload service is needed.
 
 Choose an upstream model that supports the requested input and advertise that exact model in the seller's allowed services and pricing. Upstream model-specific media constraints still apply. A text-only Venice model does not become image-capable just because `image_url` is present.
 
@@ -47,7 +47,7 @@ Send this body to `POST /api/v1/video/queue`, replacing the model with an image-
 
 ### Media access and verification
 
-- URLs must be reachable by the upstream provider. A buyer's local file path, `localhost` URL, or private AntSeed download URL is not an upstream-accessible input. Use inline media or an upstream-accessible URL; AntSeed does not fetch arbitrary input URLs or upload local files for you.
+- URLs must be reachable by the upstream provider. A buyer's local file path, `localhost` URL, or private Antseed download URL is not an upstream-accessible input. Use inline media or an upstream-accessible URL; Antseed does not fetch arbitrary input URLs or upload local files for you.
 - Requests containing inline images automatically use chunked P2P uploads when needed. The seller's default upload-body limit is 64 MiB, counting the whole JSON body and base64 overhead; this is separate from the output-video download limit.
 - Existing seller-account-scoped media references are not automatically resolved or routed to their original seller. Download the media and supply an eligible inline input or accessible URL instead, subject to upstream restrictions.
 - Image-to-video has mocked buyer → seller → upstream → result-download tests for Venice, including large inline PNGs, WebRTC uploads, unchanged media fields, and free follow-ups. These tests do not validate a real upstream model's image quality or acceptance. Video edits have mocked tests for both fal and Venice (inline sources over TCP and WebRTC, and one charge for the source length); they do not validate a real upstream model's output.

@@ -97,7 +97,7 @@ The balance updates by itself once funds arrive. **Never send funds yourself and
 
 ### Free models only
 
-Some sellers serve some models for free. Without funds, a request that routes to a paid seller fails with `402 … insufficient_deposits` ("You are out of AntSeed credits"). Automatic routing is not limited to free sellers, so for a user without funds, cap the gateway's prices at zero on the gateway host. Save the current gateway policy first, then add the caps with `--merge`, which keeps any sellers, models, TEE or other rules already set:
+Some sellers serve some models for free. Without funds, a request that routes to a paid seller fails with `402 … insufficient_deposits` ("You are out of Antseed credits"). Automatic routing is not limited to free sellers, so for a user without funds, cap the gateway's prices at zero on the gateway host. Save the current gateway policy first, then add the caps with `--merge`, which keeps any sellers, models, TEE or other rules already set:
 
 ```bash
 antseed gateway routing show --json > ~/routing-before-free.json
@@ -253,7 +253,7 @@ The wrappers `antseed claude | codex | opencode` work against it unchanged. Full
 ## Troubleshooting
 
 - **`401 invalid_api_key` / `key_revoked` / `key_expired`**: wrong, revoked or expired key, or the wrong base URL. Check the `Authorization: Bearer` header; create a new key on **Keys**.
-- **`402 antseed_buyer_fault` / `insufficient_deposits`** ("You are out of AntSeed credits"): the request went to a paid seller and the wallet has no funds. Have the user add funds (Step 3), or set the free-only cap in Step 3 and use a model with a free seller.
+- **`402 antseed_buyer_fault` / `insufficient_deposits`** ("You are out of Antseed credits"): the request went to a paid seller and the wallet has no funds. Have the user add funds (Step 3), or set the free-only cap in Step 3 and use a model with a free seller.
 - **`502 model_not_found`** ("No policy-allowed peer currently serves model …"): no seller that your routing policy allows serves the model. With the free-only cap, the model has no free seller; pick one from the free list in Step 5. Right after `antseed gateway start` the buyer is still discovering sellers; wait a minute and retry.
 - **`429 free_tier_exhausted`**: a free seller's rate limit, or a model that is free only to stakers. Wait, or use another free model.
 - **`402 spend_limit_reached`**: a key, member or workspace budget ran out; `error.limit` says which and `resets_at`. Wait, or have an admin raise it.

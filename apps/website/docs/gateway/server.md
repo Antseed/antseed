@@ -23,7 +23,7 @@ The short form does the same: on Linux with systemd, `install.sh` downloads `ins
 curl -fsSL https://antseed.com/install.sh | bash -s -- --domain gateway.example.com
 ```
 
-[Read the script](https://antseed.com/install-gateway.sh) before running it. Its source is [`apps/website/static/install-gateway.sh`](https://github.com/AntSeed/antseed/blob/main/apps/website/static/install-gateway.sh) in the Antseed repository. It validates every option before it changes anything, then:
+[Read the script](https://antseed.com/install-gateway.sh) before running it. Its source is [`apps/website/static/install-gateway.sh`](https://github.com/Antseed/antseed/blob/main/apps/website/static/install-gateway.sh) in the Antseed repository. It validates every option before it changes anything, then:
 
 1. Installs Node.js 24 and the Antseed CLI under `/opt/antseed`, without touching any Node.js already on the server.
 2. Creates an `antseed` system user whose home, `/var/lib/antseed`, holds the wallets and the gateway database.

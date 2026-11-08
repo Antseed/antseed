@@ -23,7 +23,7 @@ const X_URL = 'https://x.com/antseed';
 const DOCS_BASE_URL = 'https://antseed.com/docs';
 const GATEWAY_DOCS_URL = `${DOCS_BASE_URL}/gateway`;
 const DESKTOP_DOCS_URL = `${DOCS_BASE_URL}/desktop`;
-const GITHUB_ISSUES_URL = 'https://github.com/AntSeed/antseed/issues/new';
+const GITHUB_ISSUES_URL = 'https://github.com/Antseed/antseed/issues/new';
 
 type HelpLink = { label: string; url: string };
 type HelpSection = { heading: string; body: string; link?: HelpLink };
@@ -573,7 +573,7 @@ export function VprHelpView({ onSelectView }: Props) {
         <div className={styles.section}>
           <p className={styles.sectionLabel}>App details</p>
           <VprCard>
-            <button type="button" className={styles.row} onClick={() => openExternal('https://github.com/AntSeed/antseed/blob/main/CHANGELOG.md')}>
+            <button type="button" className={styles.row} onClick={() => openExternal('https://github.com/Antseed/antseed/blob/main/CHANGELOG.md')}>
               <span className={styles.rowLabel}>Changelog</span>
               <HugeiconsIcon icon={ArrowUpRight01Icon} size={16} strokeWidth={2} className={styles.rowGlyph} />
             </button>

@@ -60,7 +60,7 @@ Next: [Quickstart](/docs/quickstart).
 
 ## Desktop app
 
-Antseed Desktop bundles a local gateway, a chat, and identity storage in the operating system keychain. Download it from [antseed.com](https://antseed.com) or the [latest release page](https://github.com/AntSeed/antseed/releases/latest).
+Antseed Desktop bundles a local gateway, a chat, and identity storage in the operating system keychain. Download it from [antseed.com](https://antseed.com) or the [latest release page](https://github.com/Antseed/antseed/releases/latest).
 
 - **macOS**: `.dmg` for Apple Silicon and Intel, signed and notarized.
 - **Windows**: `.exe` installer for x64, code-signed.

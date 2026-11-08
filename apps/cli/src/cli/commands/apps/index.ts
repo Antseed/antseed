@@ -40,7 +40,7 @@ export type AppsActionReport = {
   displayName?: string
   /** connect only: buyer proxy port written into the config. */
   buyerPort?: number
-  /** disconnect only: false when the config carried nothing AntSeed added. */
+  /** disconnect only: false when the config carried nothing Antseed added. */
   changed?: boolean
   connected?: boolean
   configPath?: string

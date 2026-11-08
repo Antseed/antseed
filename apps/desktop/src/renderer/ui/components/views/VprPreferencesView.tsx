@@ -14,7 +14,7 @@ import styles from './VprPreferencesView.module.scss';
 
 type Props = { onSelectView?: (view: import('../../types').ViewName) => void };
 
-const TELEMETRY_DOC_URL = 'https://github.com/AntSeed/antseed/blob/main/docs/telemetry.md';
+const TELEMETRY_DOC_URL = 'https://github.com/Antseed/antseed/blob/main/docs/telemetry.md';
 
 /**
  * Which gateway the desktop uses and how its keys are split. Switching

@@ -124,7 +124,7 @@ test('buyer start recognizes legacy proxies that only return no_peer_pinned', as
   });
 });
 
-test('buyer start recognizes current proxies by AntSeed response header', async () => {
+test('buyer start recognizes current proxies by Antseed response header', async () => {
   await withProbeServer((_req, res) => {
     res.writeHead(200, { 'content-type': 'application/json', 'x-antseed-request-id': 'test' });
     res.end(JSON.stringify({ object: 'list', data: [] }));

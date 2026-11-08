@@ -160,7 +160,7 @@ it('starts without queue fields when the Venice model list is unavailable or lac
   expect(missing.serviceCapabilities?.['wan-2.5']).toEqual({ outputs: ['video'] });
 });
 
-it('relays queue bodies without the AntSeed service field, with seller auth and without AntSeed headers', async () => {
+it('relays queue bodies without the Antseed service field, with seller auth and without Antseed headers', async () => {
   const fetchMock = vi.fn().mockResolvedValue(Response.json({ model: 'wan-2.5', queue_id: 'queue-1' }));
   vi.stubGlobal('fetch', fetchMock);
   const fields = { model: 'wan-2.5', prompt: 'cat', image_url: 'data:image/png;base64,aW1hZ2U=' };

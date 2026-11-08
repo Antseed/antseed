@@ -116,4 +116,4 @@ Open **API keys**. Usage, history, per-key limits and routing policy are in the 
 
 ## Get support
 
-Ask in the [Antseed Telegram community](https://t.me/antseed). For bugs, [open a GitHub issue](https://github.com/AntSeed/antseed/issues/new) with the app version, operating system, affected tool, what you expected and what happened.
+Ask in the [Antseed Telegram community](https://t.me/antseed). For bugs, [open a GitHub issue](https://github.com/Antseed/antseed/issues/new) with the app version, operating system, affected tool, what you expected, what happened, and a redacted diagnostic report.

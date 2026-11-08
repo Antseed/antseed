@@ -230,7 +230,7 @@ function ProductPreview({project}: {project: EcosystemProject}) {
     return (
       <div className={`${styles.preview} ${styles.previewSeed}`}>
         <div className={styles.previewTop}><span>SeedStore</span><i>Any model</i></div>
-        <div className={styles.seedAsk}>Use the flight model on AntSeed to find New York to London for two</div>
+        <div className={styles.seedAsk}>Use the flight model on Antseed to find New York to London for two</div>
         <div className={styles.seedSteps}>
           <span><b>✓</b>Finds sippar-flight-search</span>
           <span><b>✓</b>Pays for the answer</span>

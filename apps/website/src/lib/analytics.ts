@@ -40,7 +40,7 @@ export function track(event: string, params: Record<string, unknown> = {}): void
 export function isDownloadUrl(href: string): boolean {
   return (
     /^https?:\/\/download\.antseed\.com(\/|$)/i.test(href) ||
-    /^https?:\/\/(www\.)?github\.com\/AntSeed\/antseed\/releases\/(latest|download)(\/|$)/i.test(href)
+    /^https?:\/\/(www\.)?github\.com\/Antseed\/antseed\/releases\/(latest|download)(\/|$)/i.test(href)
   );
 }
 
