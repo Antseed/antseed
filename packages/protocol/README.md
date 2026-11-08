@@ -1,6 +1,6 @@
 # @antseed/protocol
 
-The AntSeed wire protocol as a standalone, dependency-light package (ethers
+The Antseed wire protocol as a standalone, dependency-light package (ethers
 only, no Node-specific APIs). Extracted from `@antseed/node`, which re-exports
 everything from its original paths, so existing consumers are unaffected.
 

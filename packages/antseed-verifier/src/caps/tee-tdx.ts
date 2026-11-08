@@ -33,11 +33,11 @@ export interface ReportDataBinding {
  * untrusted bytes.
  *
  * The one factory below (makeTdxCap) mints two instances. They differ only by id, collector
- * source, and evidence key: the AntSeed seller node's own TEE (configfs), and the downstream
+ * source, and evidence key: the Antseed seller node's own TEE (configfs), and the downstream
  * inference provider's TEE (http). Same verify logic; independent evidence.
  */
 
-/** The AntSeed seller node's own TEE (mints its quote locally via configfs). */
+/** The Antseed seller node's own TEE (mints its quote locally via configfs). */
 export const NODE_TEE_CAP_ID = 'seller-node-tee-genuine'
 /** The downstream inference provider's TEE (quote fetched from the provider's evidence route). */
 export const PROVIDER_TEE_CAP_ID = 'seller-provider-tee-genuine'
@@ -413,7 +413,7 @@ export function makeTdxCap(
 }
 
 /**
- * The AntSeed seller node's own TEE — mints its quote locally via configfs; report_data bound to
+ * The Antseed seller node's own TEE — mints its quote locally via configfs; report_data bound to
  * nonce + peerId + the buyer's connection, and the TD measurement must be an approved build.
  */
 export const nodeTeeCapability = makeTdxCap(NODE_TEE_CAP_ID, 'configfs', { sellerNode: true })

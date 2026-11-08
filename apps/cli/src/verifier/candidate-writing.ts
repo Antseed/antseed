@@ -1,5 +1,5 @@
 /**
- * Fallback for writing candidate questions, an AntSeed addition to the KBF reference code.
+ * Fallback for writing candidate questions, an Antseed addition to the KBF reference code.
  *
  * Questions are written ("Generate exactly 20 facts ...") with the same thinking setting the
  * bank records for asking them. Some models answer short questions cleanly with thinking turned

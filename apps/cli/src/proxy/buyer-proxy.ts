@@ -3905,7 +3905,7 @@ export class BuyerProxy {
    * GET /v1/models[?type=text|images] and GET /v1/models/:id — answered
    * locally from the discovered-peer cache, aggregated across the network. The
    * `x-antseed-request-id` response header keeps the port-reuse probe in
-   * `buyer start` recognizing this as an AntSeed proxy.
+   * `buyer start` recognizing this as an Antseed proxy.
    */
   private async _handleNetworkModels(res: ServerResponse, rawPath: string, requestPolicy: RoutingPolicy | null): Promise<void> {
     const url = new URL(rawPath, 'http://localhost')
@@ -4616,7 +4616,7 @@ export class BuyerProxy {
       const titleTurn = isTitleGenerationRequest(conversationBody)
       const snippet = known?.snippet ? null : extractFirstUserSnippet(conversationBody)
       // Some tools (T3/Claude) fire title-only requests when a new chat opens.
-      // Route them normally, but do not create a blank AntSeed conversation row
+      // Route them normally, but do not create a blank Antseed conversation row
       // until the first genuine user turn arrives.
       if (known || !titleTurn) {
         const tracked = this._conversations.touch({

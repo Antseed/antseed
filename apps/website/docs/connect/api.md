@@ -63,7 +63,7 @@ Do not publish port 8377 itself, for example with a router port forward, `socat`
 | `POST /v1/images/generations` | OpenAI image generation |
 | `POST /v1/images/edits` | OpenAI image editing (multipart) |
 | `POST /v1/audio/speech` | OpenAI text to speech; the audio file comes back as it is |
-| `POST /v1/systemone` | Typed questions to decision models; see the [decisions skill](https://github.com/AntSeed/antseed/tree/main/skills/antseed-decisions) |
+| `POST /v1/systemone` | Typed questions to decision models; see the [decisions skill](https://github.com/Antseed/antseed/tree/main/skills/antseed-decisions) |
 | `POST /api/v1/video/queue`, `POST /api/v1/video/retrieve` | Venice-format video jobs |
 | `POST /fal/v1/video/queue`, `POST /fal/v1/video/retrieve` | fal-format video jobs, with the fal endpoint id as `model` |
 | `GET /v1/models`, `GET /v1/models/<id>` | Network-wide model catalog, answered locally and free. Filter with `?type=text`, `images`, `videos`, `speech` or `decisions`. Routing services are listed only under `?type=router` |
@@ -237,7 +237,7 @@ Streaming responses carry only the request id, seller identity, price and route-
 The 402 comes back with the code `antseed_buyer_fault`, which marks a failure on the buyer's side, not the seller's. In OpenAI format the reason is in `error.param`:
 
 ```json
-{"error":{"type":"api_error","code":"antseed_buyer_fault","param":"insufficient_deposits","message":"You are out of AntSeed credits for this request. ..."}}
+{"error":{"type":"api_error","code":"antseed_buyer_fault","param":"insufficient_deposits","message":"You are out of Antseed credits for this request. ..."}}
 ```
 
 In Anthropic format (`/v1/messages`) `error.type` is `antseed_buyer_fault` and the message ends with the reason in brackets, for example `(insufficient_deposits)`.

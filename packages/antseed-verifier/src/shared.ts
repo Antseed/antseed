@@ -33,7 +33,7 @@ export const ATTEST_PATH = `/_antseed/attest/${VERIFIER_ID}`
 export const NONCE_BYTES = 32
 
 /**
- * A PeerId is the canonical AntSeed identifier: 40 lowercase hex chars (the peer's
+ * A PeerId is the canonical Antseed identifier: 40 lowercase hex chars (the peer's
  * EVM address, no 0x prefix). Lowercase and validate it, so bindings are symmetric on
  * both sides regardless of input casing.
  */
@@ -98,7 +98,7 @@ export function bundleDigest(evidence: Record<string, Uint8Array>): Uint8Array {
 }
 
 /**
- * seller-bound preimage — the 32-byte digest the seller signs with its AntSeed
+ * seller-bound preimage — the 32-byte digest the seller signs with its Antseed
  * identity key:
  *
  *   keccak256( nonce(32) || bundleDigest(32) || utf8(peerId) )

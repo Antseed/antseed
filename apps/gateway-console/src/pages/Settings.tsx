@@ -100,7 +100,7 @@ function Observability({ settings }: { settings: SettingsData }) {
   )
 }
 
-const TELEMETRY_DOC_URL = 'https://github.com/AntSeed/antseed/blob/main/docs/telemetry.md'
+const TELEMETRY_DOC_URL = 'https://github.com/Antseed/antseed/blob/main/docs/telemetry.md'
 
 /** The desktop's Preferences → Privacy switch, for this gateway and the buyer it runs. */
 function Privacy({ settings }: { settings: SettingsData }) {

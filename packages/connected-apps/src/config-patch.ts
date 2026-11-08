@@ -1993,7 +1993,7 @@ function removeClaudeDesktopTarget(target: ClaudeDesktopPatchTarget): boolean {
 //
 // Mirrors the ownership checks the remove paths use, without writing
 // anything: "connected" means the config currently carries the entry
-// AntSeed would remove on disconnect.
+// Antseed would remove on disconnect.
 
 /** Absolute (tilde-expanded) native config paths a patch touches. */
 export function configPatchPaths(patch: ConfigPatchDef): string[] {
@@ -2025,14 +2025,14 @@ export function isConfigPatchInstalled(patch: ConfigPatchDef, wslTargetsFile?: s
   return configPatchPaths(patch).some((filePath) => existsSync(path.dirname(filePath)));
 }
 
-/** Whether the tool's config currently carries AntSeed's managed entry. */
+/** Whether the tool's config currently carries Antseed's managed entry. */
 export function isConfigPatchConnected(patch: ConfigPatchDef, wslTargetsFile?: string): boolean {
   const probe = patchInstallProbe(patch);
   if (probe && wslTargetsFile && readWslTargetsForTool(wslTargetsFile, probe).length > 0) return true;
   try {
     return nativeConfigPatchConnected(patch);
   } catch {
-    // An unparseable config cannot be carrying a working AntSeed entry.
+    // An unparseable config cannot be carrying a working Antseed entry.
     return false;
   }
 }

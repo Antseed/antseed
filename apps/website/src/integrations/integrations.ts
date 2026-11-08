@@ -306,7 +306,7 @@ export const integrations: Integration[] = [
     links: [
       { label: 'Claude Code docs', href: 'https://docs.anthropic.com/en/docs/claude-code' },
       { label: 'Antseed gateway API', href: '/docs/gateway/api' },
-      { label: 'Antseed skill: join-buyer', href: 'https://github.com/AntSeed/antseed/tree/main/skills/join-buyer' },
+      { label: 'Antseed skill: join-buyer', href: 'https://github.com/Antseed/antseed/tree/main/skills/join-buyer' },
     ],
     agentSummary:
       'Gateway (recommended, works from any machine): set ANTHROPIC_BASE_URL=<gateway root, no /v1> and ANTHROPIC_AUTH_TOKEN=<gateway key> (Bearer; not ANTHROPIC_API_KEY), then run `claude --model <model-id>`. Same computer as a buyer, no gateway: `antseed claude --model <model-id>` (sets ANTHROPIC_BASE_URL=http://localhost:8377 and a placeholder ANTHROPIC_API_KEY).',
@@ -558,7 +558,7 @@ Deposits reserved:           0 USDC → 1 USDC`,
     oneLiner: 'Open-source terminal coding agent with a first-class Antseed extension.',
     description: [
       '<strong>What Pi is.</strong> Pi (<code>@earendil-works/pi-coding-agent</code>, formerly <code>@mariozechner/pi-coding-agent</code>) is a minimal, hackable terminal coding agent by Mario Zechner - the same lineage as <a href="https://github.com/badlogic/pi-mono">pi-mono</a>. It ships with four default tools (<code>read</code>, <code>write</code>, <code>edit</code>, <code>bash</code>) and lets you extend everything else - commands, providers, themes, even the editor UI - through TypeScript <em>extensions</em>, <em>skills</em>, and <em>prompt templates</em>. No fork required.',
-      '<strong>What the Antseed extension does.</strong> <a href="https://github.com/AntSeed/pi-antseed"><code>pi-antseed</code></a> registers your Antseed endpoint as a Pi provider named <code>antseed</code>. It reads <code>GET /v1/models</code> when Pi loads and adds one model per seller and service, as <code>antseed/&lt;service-id&gt;@&lt;peer-prefix&gt;-&lt;seller-name&gt;</code>, ordered by seller reputation. Pick one with Ctrl+L or <code>/model</code>.',
+      '<strong>What the Antseed extension does.</strong> <a href="https://github.com/Antseed/pi-antseed"><code>pi-antseed</code></a> registers your Antseed endpoint as a Pi provider named <code>antseed</code>. It reads <code>GET /v1/models</code> when Pi loads and adds one model per seller and service, as <code>antseed/&lt;service-id&gt;@&lt;peer-prefix&gt;-&lt;seller-name&gt;</code>, ordered by seller reputation. Pick one with Ctrl+L or <code>/model</code>.',
       '<strong>Which endpoint.</strong> The recommended endpoint is a gateway: set <code>ANTSEED_BASE_URL</code> and <code>ANTSEED_API_KEY</code>, and Pi works from any machine with its own budget and usage log. Without them the extension uses the local buyer proxy on <code>http://localhost:8377</code>, which only works on the same computer as the buyer.',
       '<strong>How requests are sent.</strong> Each request goes out in the protocol the chosen seller advertises (OpenAI Responses, Anthropic Messages or OpenAI Chat Completions), with an <code>x-antseed-pin-peer</code> header for that seller, so Pi handles streaming, retries and tool calls natively.',
     ],
@@ -571,9 +571,9 @@ Deposits reserved:           0 USDC → 1 USDC`,
       },
       {
         label: 'Install the Antseed extension into Pi',
-        command: 'pi install git:github.com/AntSeed/pi-antseed',
+        command: 'pi install git:github.com/Antseed/pi-antseed',
         note:
-          'Pi extensions install from a git URL or a local path. `pi -e git:github.com/AntSeed/pi-antseed` runs the extension once without installing; `pi install ./pi-antseed` works from a local clone.',
+          'Pi extensions install from a git URL or a local path. `pi -e git:github.com/Antseed/pi-antseed` runs the extension once without installing; `pi install ./pi-antseed` works from a local clone.',
       },
     ],
     configure: [
@@ -642,12 +642,12 @@ Deposits reserved:           0 USDC → 1 USDC`,
     links: [
       { label: 'Pi coding agent (npm)', href: 'https://www.npmjs.com/package/@earendil-works/pi-coding-agent' },
       { label: 'Pi source (badlogic/pi-mono)', href: 'https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent' },
-      { label: 'pi-antseed extension', href: 'https://github.com/AntSeed/pi-antseed' },
+      { label: 'pi-antseed extension', href: 'https://github.com/Antseed/pi-antseed' },
       { label: 'Antseed gateway API', href: '/docs/gateway/api' },
       { label: 'Antseed tunnels', href: '/docs/tunnels' },
     ],
     agentSummary:
-      'Install Pi: `npm install -g @earendil-works/pi-coding-agent` (or Pi\'s standalone binary). Install the extension: `pi install git:github.com/AntSeed/pi-antseed`. Gateway (recommended, works from any machine): export ANTSEED_BASE_URL=<gateway URL ending in /v1> and ANTSEED_API_KEY=<gateway key> before launching `pi`. Same computer as a buyer, no gateway: leave both unset (defaults to http://localhost:8377). The extension discovers sellers from GET /v1/models; pick `antseed/<service-id>@<peer-prefix>-<seller-name>` with `/model`; `/reload` refreshes the list.',
+      'Install Pi: `npm install -g @earendil-works/pi-coding-agent` (or Pi\'s standalone binary). Install the extension: `pi install git:github.com/Antseed/pi-antseed`. Gateway (recommended, works from any machine): export ANTSEED_BASE_URL=<gateway URL ending in /v1> and ANTSEED_API_KEY=<gateway key> before launching `pi`. Same computer as a buyer, no gateway: leave both unset (defaults to http://localhost:8377). The extension discovers sellers from GET /v1/models; pick `antseed/<service-id>@<peer-prefix>-<seller-name>` with `/model`; `/reload` refreshes the list.',
   },
 
   /* ---------------- Autonomous agents ---------------- */
@@ -810,7 +810,7 @@ openclaw gateway restart`,
       { label: 'OpenClaw model-provider docs', href: 'https://docs.openclaw.ai/concepts/model-providers' },
       {
         label: 'Antseed skill: openclaw-antseed (full walkthrough)',
-        href: 'https://github.com/AntSeed/antseed/tree/main/skills/openclaw-antseed',
+        href: 'https://github.com/Antseed/antseed/tree/main/skills/openclaw-antseed',
       },
       { label: 'Antseed Agents guide', href: '/docs/agents' },
       { label: 'Antseed gateway API', href: '/docs/gateway/api' },
@@ -842,7 +842,7 @@ openclaw gateway restart`,
     install: [
       {
         label: 'Option A: install the skill and let Hermes set itself up',
-        command: 'hermes skills install AntSeed/antseed/skills/hermes-antseed',
+        command: 'hermes skills install Antseed/antseed/skills/hermes-antseed',
         note:
           'Then message your agent: "Set yourself up to run on Antseed using the hermes-antseed skill." It stops to ask you if the buyer is not running or not funded, and finishes by asking you to send `/restart`. Skip the rest of this page.',
       },
@@ -984,13 +984,13 @@ hermes -z "Reply with exactly: restored-ok"`,
       { label: 'Hermes AI-provider docs', href: 'https://hermes-agent.nousresearch.com/docs/integrations/providers' },
       {
         label: 'Antseed skill: hermes-antseed (the steps above, written for your Hermes agent to follow)',
-        href: 'https://github.com/AntSeed/antseed/tree/main/skills/hermes-antseed',
+        href: 'https://github.com/Antseed/antseed/tree/main/skills/hermes-antseed',
       },
       { label: 'Antseed Agents guide', href: '/docs/agents' },
       { label: 'Antseed gateway API', href: '/docs/gateway/api' },
       { label: 'Antseed tunnels', href: '/docs/tunnels' },
     ],
-    agentSkill: 'hermes skills install AntSeed/antseed/skills/hermes-antseed',
+    agentSkill: 'hermes skills install Antseed/antseed/skills/hermes-antseed',
     agentSummary:
       'Install the hermes-antseed skill and follow it. In short: `hermes backup --quick`; get the endpoint: a gateway (recommended: base URL ending in /v1 + gateway key) or, on the same computer, the local buyer at http://127.0.0.1:8377/v1 with placeholder key antseed-p2p (check `antseed buyer balance` shows Available > 0); export ANTSEED_BASE_URL and ANTSEED_API_KEY; test models with a real non-streaming chat completion; add the provider with `hermes config set providers.antseed.{name,base_url,key_env,api_mode,default_model}` plus `hermes config set ANTSEED_API_KEY "$ANTSEED_API_KEY"`; verify with `hermes -z ... --provider antseed -m <model>`; only then set `model.provider antseed` and `model.default <model>`; never paste YAML, never use model id `antseed` through a gateway or on a CLI-only buyer, never restart your own Hermes gateway: ask the user to send /restart.',
   },

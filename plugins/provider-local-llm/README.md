@@ -1,6 +1,6 @@
 # @antseed/provider-local-llm
 
-Provide local LLM capacity on the AntSeed P2P network. Works with Ollama, llama.cpp, and any OpenAI-compatible local server.
+Provide local LLM capacity on the Antseed P2P network. Works with Ollama, llama.cpp, and any OpenAI-compatible local server.
 
 ## Installation
 
