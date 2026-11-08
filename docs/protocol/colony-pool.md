@@ -241,9 +241,13 @@ seal under its response key.
 - The Mac app serves OpenAI chat completions with tools: `tools`,
   `tool_choice`, `parallel_tool_calls`, assistant `tool_calls` and `tool`
   messages reach the engine, and tool-call deltas and the engine's
-  `finish_reason` come back. Input it can't read (image, audio or file parts,
-  other roles) gets a sealed `400` before inference, so the buyer is never
-  billed for an answer to a different prompt.
+  `finish_reason` come back. `stop`, `response_format` (`text`, `json_object`
+  or `json_schema`) and the sampling fields (`seed`, `top_p`, `top_k`,
+  `min_p`, `presence_penalty`, `frequency_penalty`) reach the engine too.
+  Input it can't read (image, audio or file parts, other roles) and options it
+  can't honor (`logit_bias`, `logprobs`, `n` above 1, audio output, guided
+  decoding fields) get a sealed `400` before inference, so the buyer is never
+  billed for an answer to a different request than the one they sent.
 - A worker runs at most the `maxConcurrency` it announces, counting requests
   still waiting on a channel check, and refuses extras ("Worker is at
   capacity"). A request cancelled or disconnected while it waits never starts.
@@ -317,8 +321,10 @@ or is benched), the pool sends the same envelope to the next recipient, with
 no round trip to the buyer. It never sends it to a worker outside the set the
 buyer signed, and never to two workers at once; each attempt counts toward its
 own worker's rank. Once every recipient has failed, the pool answers
-`421 worker_unavailable` and the buyer takes new workers once, re-encrypting
-the request for them. A failed attempt is never paid for.
+`421 worker_unavailable`. With 2 or 3 recipients the buyer then takes new
+workers once, re-encrypting the request for them; with the default of 1 it
+drops the assignment and returns the `421` without retrying that request. A
+failed attempt is never paid for.
 
 Every worker sends `{"t":"accepted","id":…}` once it has admitted a request
 and its channel check passed, before inference, and must do so within

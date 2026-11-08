@@ -207,82 +207,59 @@ function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((v) => typeof v === 'string');
 }
 
-/** Parse and validate a frame sent by a worker. Returns null for anything malformed. */
-export function parseWorkerFrame(raw: string): WorkerFrame | null {
+type FieldCheck = (value: unknown) => boolean;
+const isString: FieldCheck = (value) => typeof value === 'string';
+const isNumber: FieldCheck = (value) => typeof value === 'number';
+const optional = (check: FieldCheck): FieldCheck => (value) => value === undefined || check(value);
+
+/** Each frame's fields and the check each must pass; a frame is its `t` plus these. */
+type FrameShapes<F extends { t: string }> = Record<F['t'], Record<string, FieldCheck>>;
+
+const WORKER_FRAMES: FrameShapes<WorkerFrame> = {
+  hello: {
+    address: isString, signature: isString, services: isStringArray, maxConcurrency: isNumber, encryption: isEncryption,
+    attestation: optional(isWorkerAttestation), agent: optional(isString), models: optional(isStringRecord),
+  },
+  services: { services: isStringArray, models: optional(isStringRecord) },
+  accepted: { id: isString },
+  'response-start': { id: isString, status: isNumber, headers: isStringRecord },
+  'response-chunk': { id: isString, data: isString },
+  'response-end': { id: isString },
+  'response-error': { id: isString, message: isString },
+  'stats-request': { id: isString },
+  'stats-hello': { address: isString, signature: isString },
+  attestation: { attestation: isWorkerAttestation },
+};
+
+const POOL_FRAMES: FrameShapes<PoolFrame> = {
+  challenge: { version: isNumber, pool: isString, nonce: isString, seller: isString },
+  welcome: { workerId: isString, accepted: isStringArray, rejected: isStringArray, workerShareBps: isNumber },
+  request: { id: isString, method: isString, path: isString, headers: isStringRecord, body: isString },
+  cancel: { id: isString },
+  stats: { id: isString, stats: isRecord },
+  error: { message: isString },
+  attest: { nonce: isString },
+};
+
+function parseFrame<F extends { t: string }>(raw: string, shapes: FrameShapes<F>): F | null {
   let value: unknown;
   try {
     value = JSON.parse(raw);
   } catch {
     return null;
   }
-  if (!isRecord(value) || typeof value['t'] !== 'string') return null;
-  const id = value['id'];
-  switch (value['t']) {
-    case 'hello':
-      return typeof value['address'] === 'string' && typeof value['signature'] === 'string'
-        && isStringArray(value['services']) && typeof value['maxConcurrency'] === 'number'
-        && isEncryption(value['encryption'])
-        && (value['attestation'] === undefined || isWorkerAttestation(value['attestation']))
-        && (value['agent'] === undefined || typeof value['agent'] === 'string')
-        && (value['models'] === undefined || isStringRecord(value['models']))
-        ? value as unknown as HelloFrame : null;
-    case 'services':
-      return isStringArray(value['services']) && (value['models'] === undefined || isStringRecord(value['models']))
-        ? value as unknown as ServicesFrame : null;
-    case 'accepted':
-      return typeof id === 'string' ? value as unknown as AcceptedFrame : null;
-    case 'response-start':
-      return typeof id === 'string' && typeof value['status'] === 'number' && isStringRecord(value['headers'])
-        ? value as unknown as ResponseStartFrame : null;
-    case 'response-chunk':
-      return typeof id === 'string' && typeof value['data'] === 'string' ? value as unknown as ResponseChunkFrame : null;
-    case 'response-end':
-      return typeof id === 'string' ? value as unknown as ResponseEndFrame : null;
-    case 'response-error':
-      return typeof id === 'string' && typeof value['message'] === 'string' ? value as unknown as ResponseErrorFrame : null;
-    case 'stats-request':
-      return typeof id === 'string' ? value as unknown as StatsRequestFrame : null;
-    case 'stats-hello':
-      return typeof value['address'] === 'string' && typeof value['signature'] === 'string' ? value as unknown as StatsHelloFrame : null;
-    case 'attestation':
-      return isWorkerAttestation(value['attestation']) ? value as unknown as AttestationFrame : null;
-    default:
-      return null;
-  }
+  if (!isRecord(value) || typeof value['t'] !== 'string' || !Object.hasOwn(shapes, value['t'])) return null;
+  const frame = value;
+  const shape: Record<string, FieldCheck> = shapes[frame['t'] as F['t']];
+  return Object.entries(shape).every(([name, check]) => check(frame[name])) ? frame as unknown as F : null;
+}
+
+/** Parse and validate a frame sent by a worker. Returns null for anything malformed. */
+export function parseWorkerFrame(raw: string): WorkerFrame | null {
+  return parseFrame(raw, WORKER_FRAMES);
 }
 
 /** Parse and validate a frame sent by the pool. Returns null for anything malformed. */
 export function parsePoolFrame(raw: string): PoolFrame | null {
-  let value: unknown;
-  try {
-    value = JSON.parse(raw);
-  } catch {
-    return null;
-  }
-  if (!isRecord(value) || typeof value['t'] !== 'string') return null;
-  const id = value['id'];
-  switch (value['t']) {
-    case 'challenge':
-      return typeof value['version'] === 'number' && typeof value['pool'] === 'string' && typeof value['nonce'] === 'string'
-        && typeof value['seller'] === 'string'
-        ? value as unknown as ChallengeFrame : null;
-    case 'welcome':
-      return typeof value['workerId'] === 'string' && isStringArray(value['accepted']) && isStringArray(value['rejected'])
-        && typeof value['workerShareBps'] === 'number'
-        ? value as unknown as WelcomeFrame : null;
-    case 'request':
-      return typeof id === 'string' && typeof value['method'] === 'string' && typeof value['path'] === 'string'
-        && isStringRecord(value['headers']) && typeof value['body'] === 'string'
-        ? value as unknown as RequestFrame : null;
-    case 'cancel':
-      return typeof id === 'string' ? value as unknown as CancelFrame : null;
-    case 'stats':
-      return typeof id === 'string' && isRecord(value['stats']) ? value as unknown as StatsFrame : null;
-    case 'error':
-      return typeof value['message'] === 'string' ? value as unknown as ErrorFrame : null;
-    case 'attest':
-      return typeof value['nonce'] === 'string' ? value as unknown as AttestFrame : null;
-    default:
-      return null;
-  }
+  return parseFrame(raw, POOL_FRAMES);
 }

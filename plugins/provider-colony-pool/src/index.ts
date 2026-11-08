@@ -11,6 +11,7 @@ import {
 } from '@antseed/provider-core';
 import { WorkerLedger } from './ledger.js';
 import { NanoMdmAttestor } from './mdm.js';
+import { parseModelPins } from './model-pins.js';
 
 import { ColonyPool } from './pool.js';
 import { ColonyPoolProvider } from './provider.js';
@@ -34,19 +35,7 @@ function parseList(raw: string | undefined): string[] {
 
 /** Parse COLONY_POOL_MODELS: `service=repo@revision,…`, each for a service the pool sells. */
 export function parseModels(raw: string | undefined, catalog: readonly string[]): Map<string, string> {
-  const models = new Map<string, string>();
-  for (const entry of parseList(raw)) {
-    const at = entry.indexOf('=');
-    const service = at > 0 ? entry.slice(0, at).trim() : '';
-    const model = at > 0 ? entry.slice(at + 1).trim() : '';
-    if (!service || !/^[^@\s]+@[^@\s]+$/.test(model)) {
-      throw new Error(`COLONY_POOL_MODELS: "${entry}" is not service=repo@revision`);
-    }
-    if (!catalog.includes(service)) throw new Error(`COLONY_POOL_MODELS: ${service} is not one of ANTSEED_ALLOWED_SERVICES`);
-    if (models.has(service)) throw new Error(`COLONY_POOL_MODELS: ${service} is listed twice`);
-    models.set(service, model);
-  }
-  return models;
+  return parseModelPins(raw, catalog, 'COLONY_POOL_MODELS', 'ANTSEED_ALLOWED_SERVICES');
 }
 
 const plugin: AntseedProviderPlugin = {

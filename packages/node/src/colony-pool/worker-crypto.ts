@@ -56,10 +56,11 @@ const b64url = (bytes: Uint8Array) => Buffer.from(bytes).toString('base64url');
 
 export function generateWorkerEncryptionKey(): WorkerEncryptionKey {
   const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
-  const jwk = privateKey.export({ format: 'jwk' });
+  const { x, y, d } = privateKey.export({ format: 'jwk' });
+  if (!x || !y || !d) throw new Error('P-256 key export did not contain x, y and d');
   return {
-    publicKey: new Uint8Array(Buffer.concat([Buffer.from([4]), Buffer.from(jwk.x!, 'base64url'), Buffer.from(jwk.y!, 'base64url')])),
-    privateKey: new Uint8Array(Buffer.from(jwk.d!, 'base64url')),
+    publicKey: new Uint8Array(Buffer.concat([Buffer.from([4]), Buffer.from(x, 'base64url'), Buffer.from(y, 'base64url')])),
+    privateKey: new Uint8Array(Buffer.from(d, 'base64url')),
   };
 }
 

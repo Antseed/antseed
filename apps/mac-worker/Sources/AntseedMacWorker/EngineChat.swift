@@ -11,8 +11,19 @@ enum EngineChat {
         var errorDescription: String? { reason }
     }
 
-    /// The request fields that shape the prompt (`messages`, `tools`,
-    /// `tool_choice`, `parallel_tool_calls`), checked and in the engine's form.
+    /// Sampling fields the engine applies as sent, once each is a number.
+    static let samplingFields = ["seed", "top_p", "top_k", "min_p", "presence_penalty", "frequency_penalty"]
+
+    /// Fields that would change the answer and that this worker can't honor.
+    static let refusedFields = [
+        "logit_bias", "top_logprobs", "audio", "modalities", "prediction", "web_search_options",
+        "guided_json", "guided_regex", "guided_choice", "guided_grammar", "structured_outputs",
+    ]
+
+    /// The request fields that shape the answer, checked and in the engine's
+    /// form: the prompt (`messages`, `tools`, `tool_choice`,
+    /// `parallel_tool_calls`), `stop`, `response_format` and the sampling
+    /// fields. The token budget and temperature are read by the caller.
     static func fields(of request: [String: Any]) throws -> [String: Any] {
         guard let list = request["messages"] as? [[String: Any]], !list.isEmpty else {
             throw Unsupported(reason: "The request has no messages")
@@ -37,7 +48,64 @@ enum EngineChat {
             guard let parallel = raw as? Bool else { throw Unsupported(reason: "`parallel_tool_calls` must be true or false") }
             fields["parallel_tool_calls"] = parallel
         }
+        if let stop = present(request["stop"]) {
+            let stops = (stop as? String).map { [$0] } ?? stop as? [String]
+            guard let stops, !stops.contains(where: \.isEmpty) else {
+                throw Unsupported(reason: "`stop` must be a nonempty string or a list of nonempty strings")
+            }
+            if !stops.isEmpty { fields["stop"] = stops }
+        }
+        if let format = present(request["response_format"]) {
+            fields["response_format"] = try responseFormat(format)
+        }
+        for name in samplingFields {
+            guard let value = present(request[name]) else { continue }
+            guard isNumber(value) else { throw Unsupported(reason: "`\(name)` must be a number") }
+            fields[name] = value
+        }
+        for name in refusedFields where present(request[name]) != nil {
+            throw Unsupported(reason: "`\(name)` is not supported by this worker")
+        }
+        if let logprobs = present(request["logprobs"]), logprobs as? Bool != false || !isBool(logprobs) {
+            throw Unsupported(reason: "`logprobs` is not supported by this worker")
+        }
+        if let n = present(request["n"]), !isNumber(n) || (n as? Int) != 1 {
+            throw Unsupported(reason: "`n` must be 1; this worker returns one choice")
+        }
         return fields
+    }
+
+    /// `{type: "text"}`, `{type: "json_object"}` or `{type: "json_schema", json_schema: {schema, ...}}`.
+    private static func responseFormat(_ format: Any) throws -> [String: Any] {
+        guard let object = format as? [String: Any], let type = object["type"] as? String else {
+            throw Unsupported(reason: "`response_format` must be an object such as {\"type\": \"json_object\"}")
+        }
+        switch type {
+        case "text", "json_object": return ["type": type]
+        case "json_schema":
+            guard let spec = object["json_schema"] as? [String: Any], spec["schema"] is [String: Any] else {
+                throw Unsupported(reason: "`response_format` json_schema needs json_schema.schema (a JSON schema object)")
+            }
+            return ["type": type, "json_schema": spec]
+        default:
+            throw Unsupported(reason: "`response_format` type must be text, json_object or json_schema")
+        }
+    }
+
+    /// A field the request set, `null` counting as unset.
+    private static func present(_ value: Any?) -> Any? {
+        guard let value, !(value is NSNull) else { return nil }
+        return value
+    }
+
+    /// JSON booleans decode as `NSNumber` too; these tell them apart.
+    private static func isBool(_ value: Any) -> Bool {
+        guard let number = value as? NSNumber else { return false }
+        return CFGetTypeID(number) == CFBooleanGetTypeID()
+    }
+
+    private static func isNumber(_ value: Any) -> Bool {
+        value is NSNumber && !isBool(value)
     }
 
     private static func message(_ message: [String: Any]) throws -> [String: Any] {

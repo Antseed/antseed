@@ -1037,6 +1037,29 @@ describe('BuyerPaymentManager', () => {
       expect(tokens.outputTokens).toBe(400n);
     });
 
+    it('pays a worker\'s authenticated price, not a larger claim within the estimate tolerance', async () => {
+      const sellerPeerId = fakePeerId('seller-pool-per-request-cap');
+      await setup('seller-pool-per-request-cap');
+      manager.recordWorkerDelivery('req-pool', usage);
+      const before = manager.getCumulativeAmount(sellerPeerId);
+      // 1000 in and 400 out price at 9000; 12,000 is within the 1.4x tolerance.
+      await manager.signPerRequestAuth(sellerPeerId, {
+        inputBytes: SAMPLE_INPUT, outputBytes: SAMPLE_OUTPUT, sellerClaimedCost: 12_000n, requestId: 'req-pool', service: 'qwen',
+      });
+      expect(manager.getCumulativeAmount(sellerPeerId) - before).toBe(9000n);
+    });
+
+    it('pays nothing for a worker\'s answer that authenticated no usage, instead of estimating from bytes', async () => {
+      const sellerPeerId = fakePeerId('seller-pool-per-request-zero');
+      await setup('seller-pool-per-request-zero');
+      manager.recordWorkerDelivery('req-pool', { inputTokens: 0n, cachedInputTokens: 0n, outputTokens: 0n });
+      const before = manager.getCumulativeAmount(sellerPeerId);
+      await manager.signPerRequestAuth(sellerPeerId, {
+        inputBytes: SAMPLE_INPUT, outputBytes: SAMPLE_OUTPUT, requestId: 'req-pool', service: 'qwen',
+      });
+      expect(manager.getCumulativeAmount(sellerPeerId)).toBe(before);
+    });
+
     it('a zero-cost NeedAuth cannot clear a failed delivery for a later paid claim', async () => {
       const { needAuth, sellerPeerId } = await setup('seller-pool-zero-cost');
       const before = manager.getCumulativeAmount(sellerPeerId);

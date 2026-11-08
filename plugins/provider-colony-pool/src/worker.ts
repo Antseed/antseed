@@ -23,6 +23,7 @@ import {
   type WorkerFrame,
   type WorkerStats,
 } from './protocol.js';
+import { parseModelPins } from './model-pins.js';
 
 /** The only upstream route a pool may reach on the worker's machine. */
 const ALLOWED_PATHS = new Set(['/v1/chat/completions']);
@@ -137,16 +138,7 @@ export function checkRequestBody(body: Record<string, unknown>): Record<string, 
 
 /** Parse `--models`: `service=repo@revision,…`, each for a service the worker serves. */
 export function parseWorkerModels(raw: string | undefined, services: readonly string[]): Record<string, string> {
-  const models: Record<string, string> = {};
-  for (const entry of (raw ?? '').split(',').map((part) => part.trim()).filter(Boolean)) {
-    const at = entry.indexOf('=');
-    const service = at > 0 ? entry.slice(0, at).trim() : '';
-    const model = at > 0 ? entry.slice(at + 1).trim() : '';
-    if (!service || !/^[^@\s]+@[^@\s]+$/.test(model)) throw new Error(`--models: "${entry}" is not service=repo@revision`);
-    if (!services.includes(service)) throw new Error(`--models: ${service} is not one of --services`);
-    models[service] = model;
-  }
-  return models;
+  return Object.fromEntries(parseModelPins(raw, services, '--models', '--services'));
 }
 
 /**

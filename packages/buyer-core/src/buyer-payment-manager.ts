@@ -1707,7 +1707,9 @@ export class BuyerPaymentManager {
     // Prefer reported token counts (from seller headers or buyer's parsed response usage)
     // over byte-based estimation. Byte estimation inflates tokens due to JSON/SSE overhead.
     // Also treat seller-claimed cost of 0 as authoritative — don't fall back to byte estimation.
-    const hasReportedTokens = (responseStats.reportedInputTokens != null && responseStats.reportedInputTokens > 0n) ||
+    // A worker's authenticated usage is the count, even when it is zero.
+    const workerUsage = workerDelivery?.usage;
+    const hasReportedTokens = workerUsage != null || (responseStats.reportedInputTokens != null && responseStats.reportedInputTokens > 0n) ||
       (responseStats.reportedOutputTokens != null && responseStats.reportedOutputTokens > 0n) ||
       (responseStats.sellerClaimedCost != null && responseStats.sellerClaimedCost === 0n);
 
@@ -1717,6 +1719,8 @@ export class BuyerPaymentManager {
     let byteEstimatedTokens = false;
     let buyerEstimatedRequestCost: bigint;
     let verifiedCostDelta = 0n;
+    // Set when the cost is the price of a worker's authenticated usage: then it is exact.
+    let workerPricedCost = false;
 
     const requestBilling = responseStats.requestId != null
       ? this.getRequestBilling(responseStats.requestId)
@@ -1753,11 +1757,14 @@ export class BuyerPaymentManager {
         ? BigInt(Math.max(0, Number(estimatedInputTokens) - Number(cachedInputTokens)))
         : estimatedInputTokens;
       // Compute cost from reported tokens using service-specific pricing
-      const pricing = this.getSessionPricing(sellerPeerId, responseStats.service);
+      // (a worker's at the request's own pricing, as NeedAuth checks it).
+      const pricing = (workerUsage ? requestBilling?.tokenPricing : undefined)
+        ?? this.getSessionPricing(sellerPeerId, responseStats.service);
       if (pricing) {
         const cost = computeCostUsdc(Number(freshInputTokens), Number(estimatedOutputTokens), pricing, Number(cachedInputTokens));
         buyerEstimatedRequestCost = cost;
         verifiedCostDelta += cost;
+        workerPricedCost = workerUsage != null;
       } else if (responseStats.sellerClaimedCost != null && responseStats.sellerClaimedCost > 0n) {
         // No local pricing available (e.g. after buyer restart before session pricing is restored).
         // Use seller's claimed cost for verifiedCost accumulation so _maxSignable can grow.
@@ -1810,7 +1817,17 @@ export class BuyerPaymentManager {
     // buyer doesn't underpay due to minor parsing differences. Only cap when the seller's
     // claim exceeds the tolerance threshold.
     let acceptedCost: bigint;
-    if (responseStats.sellerClaimedCost != null && responseStats.sellerClaimedCost > 0n) {
+    if (workerPricedCost) {
+      // A worker's answer costs at most what its authenticated usage prices at,
+      // without the tolerance an estimate gets, as on the NeedAuth path.
+      const claimed = responseStats.sellerClaimedCost;
+      if (claimed != null && claimed > buyerEstimatedRequestCost) {
+        debugWarn(
+          `[BuyerPayment] Seller claimed ${claimed} for colony-pool request ${responseStats.requestId} — paying ${buyerEstimatedRequestCost} for the worker's authenticated usage`,
+        );
+      }
+      acceptedCost = claimed != null && claimed < buyerEstimatedRequestCost ? claimed : buyerEstimatedRequestCost;
+    } else if (responseStats.sellerClaimedCost != null && responseStats.sellerClaimedCost > 0n) {
       if (buyerEstimatedRequestCost > 0n) {
         const maxAcceptable = BigInt(Math.ceil(Number(buyerEstimatedRequestCost) * this._costToleranceFor(requestBilling)));
         if (responseStats.sellerClaimedCost > maxAcceptable) {

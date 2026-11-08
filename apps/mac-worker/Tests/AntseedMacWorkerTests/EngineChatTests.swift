@@ -44,6 +44,56 @@ final class EngineChatTests: XCTestCase {
         XCTAssertEqual(((fields["tool_choice"] as? [String: Any])?["function"] as? [String: Any])?["name"] as? String, "weather")
     }
 
+    func testForwardsStopResponseFormatAndSampling() throws {
+        let schema: [String: Any] = ["name": "city", "schema": ["type": "object", "properties": ["city": ["type": "string"]]]]
+        let fields = try EngineChat.fields(of: [
+            "messages": [["role": "user", "content": "hi"]],
+            "stop": "\n\n",
+            "response_format": ["type": "json_schema", "json_schema": schema],
+            "seed": 7, "top_p": 0.9, "top_k": 20, "min_p": 0.05, "presence_penalty": 0.5, "frequency_penalty": NSNull(),
+            "logprobs": false, "n": 1, "user": "buyer-1",
+        ])
+        XCTAssertEqual(fields["stop"] as? [String], ["\n\n"])
+        let format = try XCTUnwrap(fields["response_format"] as? [String: Any])
+        XCTAssertEqual(format["type"] as? String, "json_schema")
+        XCTAssertEqual((format["json_schema"] as? [String: Any])?["name"] as? String, "city")
+        XCTAssertEqual(fields["seed"] as? Int, 7)
+        XCTAssertEqual(fields["top_p"] as? Double, 0.9)
+        XCTAssertEqual(fields["top_k"] as? Int, 20)
+        XCTAssertEqual(fields["presence_penalty"] as? Double, 0.5)
+        XCTAssertNil(fields["frequency_penalty"], "null is unset")
+        XCTAssertNil(fields["logprobs"])
+        XCTAssertNil(fields["n"])
+
+        let stops = try EngineChat.fields(of: ["messages": [["role": "user", "content": "hi"]], "stop": ["END", "###"], "response_format": ["type": "json_object"]])
+        XCTAssertEqual(stops["stop"] as? [String], ["END", "###"])
+        XCTAssertEqual((stops["response_format"] as? [String: Any])?["type"] as? String, "json_object")
+    }
+
+    func testRefusesOutputOptionsItCannotHonor() {
+        func refused(_ extra: [String: Any]) -> String? {
+            var request: [String: Any] = ["messages": [["role": "user", "content": "hi"]]]
+            request.merge(extra) { $1 }
+            do {
+                _ = try EngineChat.fields(of: request)
+                return nil
+            } catch {
+                return error.localizedDescription
+            }
+        }
+        XCTAssertEqual(refused(["stop": ""]), "`stop` must be a nonempty string or a list of nonempty strings")
+        XCTAssertEqual(refused(["stop": ["a", 1] as [Any]]), "`stop` must be a nonempty string or a list of nonempty strings")
+        XCTAssertEqual(refused(["response_format": ["type": "xml"]]), "`response_format` type must be text, json_object or json_schema")
+        XCTAssertEqual(refused(["response_format": ["type": "json_schema"]]), "`response_format` json_schema needs json_schema.schema (a JSON schema object)")
+        XCTAssertEqual(refused(["response_format": "json"]), #"`response_format` must be an object such as {"type": "json_object"}"#)
+        XCTAssertEqual(refused(["top_p": "0.9"]), "`top_p` must be a number")
+        XCTAssertEqual(refused(["seed": true]), "`seed` must be a number")
+        XCTAssertEqual(refused(["logit_bias": ["50256": -100]]), "`logit_bias` is not supported by this worker")
+        XCTAssertEqual(refused(["logprobs": true]), "`logprobs` is not supported by this worker")
+        XCTAssertEqual(refused(["n": 2]), "`n` must be 1; this worker returns one choice")
+        XCTAssertNil(refused(["stop": NSNull(), "logprobs": NSNull(), "n": NSNull()]))
+    }
+
     func testRefusesInputItCannotRead() {
         func refused(_ request: [String: Any]) -> String? {
             do {

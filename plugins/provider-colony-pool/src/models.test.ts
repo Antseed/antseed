@@ -36,5 +36,6 @@ describe('model pins', () => {
     expect(parseWorkerModels(undefined, ['qwen'])).toEqual({});
     expect(() => parseWorkerModels('qwen=org/model', ['qwen'])).toThrow(/not service=repo@revision/);
     expect(() => parseWorkerModels('llama=org/l@1', ['qwen'])).toThrow(/not one of --services/);
+    expect(() => parseWorkerModels('qwen=a/b@1,qwen=a/b@2', ['qwen'])).toThrow(/--models: qwen is listed twice/);
   });
 });
