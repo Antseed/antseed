@@ -305,7 +305,7 @@ export function substituteRoutedModelAlias(
  * Marker header the system proxy stamps on requests whose `model` field IT
  * rewrote from the connect-time route — intercepted tools (Claude Code
  * talking to api.anthropic.com through the MITM proxy) send upstream model
- * names, not an AntSeed route, so the model on such requests is AntSeed
+ * names, not an Antseed route, so the model on such requests is Antseed
  * plumbing rather than a client choice. The buyer treats those models like
  * the routed-model alias for per-chat routing: a chat's pinned model
  * overrides the proxy-resolved route. Internal — stripped before dispatch.

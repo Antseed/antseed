@@ -14,14 +14,14 @@ const AGENTS = [
     brand: 'hermes',
     description: 'Connect Hermes to the AI VPN with the OpenAI-compatible endpoint.',
     integrationUrl: 'https://antseed.com/integrations/hermes/',
-    skillUrl: 'https://github.com/AntSeed/antseed/tree/main/skills/hermes-antseed',
+    skillUrl: 'https://github.com/Antseed/antseed/tree/main/skills/hermes-antseed',
   },
   {
     name: 'OpenClaw',
     icon: OPENCLAW_ICON,
     description: 'Register Antseed as an Anthropic Messages provider for OpenClaw.',
     integrationUrl: 'https://antseed.com/integrations/openclaw/',
-    skillUrl: 'https://github.com/AntSeed/antseed/tree/main/skills/openclaw-antseed',
+    skillUrl: 'https://github.com/Antseed/antseed/tree/main/skills/openclaw-antseed',
   },
 ] as const;
 

@@ -494,6 +494,7 @@ function mergeSellerConfig(
       ...(typeof defaults.maxUploadBodyBytes === 'number' ? { maxUploadBodyBytes: defaults.maxUploadBodyBytes } : {}),
       ...(typeof defaults.maxInboundConnections === 'number' ? { maxInboundConnections: defaults.maxInboundConnections } : {}),
       ...(typeof defaults.maxInboundConnectionsPerIp === 'number' ? { maxInboundConnectionsPerIp: defaults.maxInboundConnectionsPerIp } : {}),
+      ...(typeof defaults.announceProviderIds === 'boolean' ? { announceProviderIds: defaults.announceProviderIds } : {}),
       ...(typeof defaults.inboundIdleTimeoutMs === 'number' ? { inboundIdleTimeoutMs: defaults.inboundIdleTimeoutMs } : {}),
       ...(defaults.agentDir ? { agentDir: defaults.agentDir } : {}),
       ...(normalizeVerifications(undefined, defaults.verifications)),
@@ -531,6 +532,11 @@ function mergeSellerConfig(
       ? { maxInboundConnectionsPerIp: value['maxInboundConnectionsPerIp'] }
       : typeof defaults.maxInboundConnectionsPerIp === 'number'
         ? { maxInboundConnectionsPerIp: defaults.maxInboundConnectionsPerIp }
+        : {}),
+    ...(typeof value['announceProviderIds'] === 'boolean'
+      ? { announceProviderIds: value['announceProviderIds'] }
+      : typeof defaults.announceProviderIds === 'boolean'
+        ? { announceProviderIds: defaults.announceProviderIds }
         : {}),
     ...(typeof value['inboundIdleTimeoutMs'] === 'number'
       ? { inboundIdleTimeoutMs: value['inboundIdleTimeoutMs'] }

@@ -26,5 +26,7 @@ export {
   type StripRelayRequestHeadersOptions,
 } from './http-headers.js';
 export { createVideoResponseStreamer, readVideoJson, streamVideoResponse, videoDownloadSignal, videoDownloadError, videoJsonResponse, videoSubmitTimeoutMs } from './video-download.js';
+export { FAL_PLATFORM_URL, FAL_SCHEMA_URL, falEndpointInput, falErrorReason, falUpstreamAccountStatus, isFalEndpointId, readFalAccount, readFalModelStatuses, type FalAccount, type FalEndpointInput, type FalSchemaProperty } from './fal.js';
+export { openAiError } from './openai-error.js';
 export { rankScores, type RankCandidate } from './worker-ranking.js';
 export { COLONY_POOL_LEDGER_FILE, COLONY_POOL_LEDGER_POINTER_FILE } from './colony-pool-ledger.js';

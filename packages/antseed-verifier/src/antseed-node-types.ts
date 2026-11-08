@@ -1,7 +1,7 @@
 /**
- * The AntSeed plugin contract this SDK implements, vendored so the published package is
+ * The Antseed plugin contract this SDK implements, vendored so the published package is
  * self-contained (no external type dependency, no peer dependency to build). These interfaces
- * mirror the AntSeed runtime's plugin surface, which loads this SDK's default and `prover` exports
+ * mirror the Antseed runtime's plugin surface, which loads this SDK's default and `prover` exports
  * structurally. Keep them in sync if that contract changes.
  */
 

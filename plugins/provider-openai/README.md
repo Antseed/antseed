@@ -1,8 +1,8 @@
 # @antseed/provider-openai
 
-Provide OpenAI-compatible API capacity on the AntSeed P2P network (OpenAI, Together, OpenRouter, Venice, and similar).
+Provide OpenAI-compatible API capacity on the Antseed P2P network (OpenAI, Together, OpenRouter, Venice, and similar).
 
-> **Important:** Simply reselling raw API access without adding value may violate your API provider's terms of service. AntSeed is designed for providers who build differentiated services on top of API access — for example, running inference inside a Trusted Execution Environment (TEE), packaging domain-specific skills or agents, fine-tuned models, or offering a managed product experience. Always review your API provider's usage policies before offering capacity on the network.
+> **Important:** Simply reselling raw API access without adding value may violate your API provider's terms of service. Antseed is designed for providers who build differentiated services on top of API access — for example, running inference inside a Trusted Execution Environment (TEE), packaging domain-specific skills or agents, fine-tuned models, or offering a managed product experience. Always review your API provider's usage policies before offering capacity on the network.
 
 ## Installation
 
@@ -101,4 +101,4 @@ On Venice the provider reads each speech model's voices from `GET /api/v1/models
 
 ## How It Works
 
-Uses `BaseProvider` and `StaticTokenProvider` from `@antseed/provider-core` to relay requests to OpenAI-compatible APIs with `Authorization: Bearer` authentication. Venice image edits use a provider-local native endpoint adapter while preserving the same AntSeed request, routing, metering, and payment flow.
+Uses `BaseProvider` and `StaticTokenProvider` from `@antseed/provider-core` to relay requests to OpenAI-compatible APIs with `Authorization: Bearer` authentication. Venice image edits use a provider-local native endpoint adapter while preserving the same Antseed request, routing, metering, and payment flow.

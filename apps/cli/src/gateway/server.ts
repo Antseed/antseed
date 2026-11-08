@@ -1153,7 +1153,7 @@ function parseJsonBody(body: Buffer, contentType: string | undefined): Record<st
 /** What a gateway key holder is told when the workspace wallet cannot pay a seller. */
 export function workspaceOutOfCreditsMessage(workspace: { name: string; walletAddress: string | null }): string {
   const send = workspace.walletAddress ? `, or send USDC on Base to the workspace wallet ${workspace.walletAddress}` : ''
-  return `This API key's workspace (${workspace.name}) is out of AntSeed credits for this request. `
+  return `This API key's workspace (${workspace.name}) is out of Antseed credits for this request. `
     + `A workspace admin can add funds in the gateway console under Wallet & Funding${send}, then retry. `
     + 'Free sellers need no funds: pin one as <peerId>@<model>.'
 }

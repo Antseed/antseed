@@ -18,9 +18,9 @@ The local buyer proxy listens only on `127.0.0.1`. An agent on another machine c
 
 Maintained setup guides and skills:
 
-- [Hermes integration](/integrations/hermes) and the [Hermes skill](https://github.com/AntSeed/antseed/tree/main/skills/hermes-antseed)
-- [OpenClaw integration](/integrations/openclaw) and the [OpenClaw skill](https://github.com/AntSeed/antseed/tree/main/skills/openclaw-antseed)
-- The [model verification skill](https://github.com/AntSeed/antseed/tree/main/skills/antseed-verify-model), to check that an API endpoint serves the model it claims ([how it works](/docs/model-verification))
+- [Hermes integration](/integrations/hermes) and the [Hermes skill](https://github.com/Antseed/antseed/tree/main/skills/hermes-antseed)
+- [OpenClaw integration](/integrations/openclaw) and the [OpenClaw skill](https://github.com/Antseed/antseed/tree/main/skills/openclaw-antseed)
+- The [model verification skill](https://github.com/Antseed/antseed/tree/main/skills/antseed-verify-model), to check that an API endpoint serves the model it claims ([how it works](/docs/model-verification))
 - [Generate videos with an agent](/docs/videos) with the `antseed-videos` skill
 
 ## Gateway API key
@@ -81,7 +81,7 @@ providers:
 
 For the local buyer proxy on the same computer, use `api: http://127.0.0.1:8377/v1` and `api_key: antseed-p2p` instead.
 
-Use model ids returned by `GET /v1/models`. A bare id uses automatic routing; `<peerId>@kimi-k2.6` pins one seller. The [Hermes skill](https://github.com/AntSeed/antseed/tree/main/skills/hermes-antseed) covers funding, systemd and auxiliary models.
+Use model ids returned by `GET /v1/models`. A bare id uses automatic routing; `<peerId>@kimi-k2.6` pins one seller. The [Hermes skill](https://github.com/Antseed/antseed/tree/main/skills/hermes-antseed) covers funding, systemd and auxiliary models.
 
 ## OpenClaw
 

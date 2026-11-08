@@ -118,7 +118,7 @@ export class PeerLookup {
    *
    *   1. Wildcard topic, alone. Its broad reach pulls many peers and warms
    *      the local DHT routing table with nodes that already know about
-   *      AntSeed traffic.
+   *      Antseed traffic.
    *   2. Each subnet topic, one at a time, against that hot routing table.
    *      Each subnet only holds ~total/SUBNET_COUNT announcers, which keeps
    *      us well under the K-closest saturation limit that made the single

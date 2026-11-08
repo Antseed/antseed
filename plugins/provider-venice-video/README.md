@@ -58,4 +58,4 @@ The buyer pays for `duration`. Venice bills an edit listing only `Auto` duration
 
 The plugin relays `POST /api/v1/video/queue` unchanged, apart from the announced options above, and handles `POST /api/v1/video/retrieve` by returning Venice JSON status or streaming the finished MP4 through the seller. For private models, Venice returns a short-lived `download_url` on queue; the plugin removes it from the buyer's response, keeps it for 24 hours, and streams the file from it once retrieve reports `COMPLETED`. Kept URLs are saved in the seller's data directory (`venice-video-download-urls.json`, set through `ANTSEED_DATA_DIR`, which `antseed seller start` passes automatically), so they survive a seller restart. Other Venice model metadata is not enforced. `POST /api/v1/video/complete` is not relayed.
 
-Check that Venice's terms allow your offering. AntSeed sellers must add value rather than resell raw API access.
+Check that Venice's terms allow your offering. Antseed sellers must add value rather than resell raw API access.

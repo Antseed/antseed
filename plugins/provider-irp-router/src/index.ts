@@ -29,7 +29,7 @@ function problem(requestId: string, statusCode: number, type: string, title: str
 }
 
 /**
- * Serves an upstream IRP suggest-only router on AntSeed. It forwards the two IRP endpoints
+ * Serves an upstream IRP suggest-only router on Antseed. It forwards the two IRP endpoints
  * unchanged, so any router that implements the spec can be offered as an `irp-suggest`
  * routing service. Rank requests are validated before they leave the seller, so malformed
  * ones are answered locally and never billed.
@@ -87,7 +87,7 @@ export class IrpRouterProxy {
 }
 
 /**
- * Offer an IRP router on AntSeed. One of possibly many routing provider plugins: it is the
+ * Offer an IRP router on Antseed. One of possibly many routing provider plugins: it is the
  * one for routers that speak Inference Routing Protocol suggest-only mode.
  */
 const plugin: AntseedProviderPlugin = {

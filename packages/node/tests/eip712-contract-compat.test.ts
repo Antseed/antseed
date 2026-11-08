@@ -37,7 +37,7 @@ describe('EIP-712 Contract Compatibility', () => {
     expect(fields[2]).toEqual({ name: 'metadataHash', type: 'bytes32' });
   });
 
-  it('AntSeed domain version is "1" matching contract constructor', () => {
+  it('Antseed domain version is "1" matching contract constructor', () => {
     const domain = makeChannelsDomain(31337, '0x5FC8d32690cc91D4c39d9d3abcBD16989F875707');
     expect(domain.name).toBe('AntseedChannels');
     expect(domain.version).toBe('1');

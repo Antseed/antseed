@@ -60,7 +60,7 @@ function homePath(ws: Workspace, tildePath: string): string {
  * A pre-existing user config per app, so disconnect must restore it exactly.
  * Droid and Claude Code replace user values and restore them from their
  * `.antseed.state.json` sidecar, so their originals collide with managed keys
- * on purpose. The other formats remove only what AntSeed added — a value they
+ * on purpose. The other formats remove only what Antseed added — a value they
  * overwrite (e.g. a top-level codex `model`) is not put back except via the
  * `.antseed.bak` backup, and JSONC comments are not preserved — so their
  * originals avoid managed keys. That is the desktop's existing behaviour.
@@ -197,7 +197,7 @@ test('apps connect defaults the port from buyer config, then 8377', async () => 
   }
 })
 
-test('apps connect creates a missing config and disconnect leaves no AntSeed entry', async () => {
+test('apps connect creates a missing config and disconnect leaves no Antseed entry', async () => {
   const ws = await createWorkspace()
   try {
     // Claude Code with no settings.json yet: the .claude dir is the install signal.

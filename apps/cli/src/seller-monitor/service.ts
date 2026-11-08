@@ -272,7 +272,7 @@ export class SellerMonitor {
     const myRow = peerId ? rows.find((row) => peerKey(String(row['peerId'] ?? '')) === peerKey(peerId)) : undefined
     this._explorer ??= (this._options.explorerUrl ?? defaultExplorerUrl)(configPath).catch(() => null)
     return readSellerPromote({ configPath, dataDir, peerId, services: services ?? [], trustScore: trustOfRow(myRow)?.score ?? null, explorerUrl: await this._explorer, checks: this._checks, startChecks: options.startChecks ?? true, networkLoading: meta?.refreshing === true && meta.refreshedAt === null,
-      announcedProtocols: (provider, service) => announcedProtocols(myRow, provider, service) })
+      announcedProtocols: (_provider, service) => announcedProtocols(myRow, service) })
   }
 
   /** Runs the verification checks now (the same ones buyers run). */
@@ -309,9 +309,12 @@ async function defaultExplorerUrl(configPath: string): Promise<string | null> {
   return chain.explorerApiUrl ?? null
 }
 
-/** The APIs a seller's network row announces for one of its services. */
-function announcedProtocols(row: PeerRow | undefined, provider: string, service: string): string[] {
+/** The APIs announced for a service across all providers in the seller's network row. */
+function announcedProtocols(row: PeerRow | undefined, service: string): string[] {
   const byProvider = row?.['providerServiceApiProtocols'] as Record<string, { services?: Record<string, unknown> }> | undefined
-  const apis = byProvider?.[provider]?.services?.[service]
-  return Array.isArray(apis) ? apis.filter((api): api is string => typeof api === 'string') : []
+  const apis = Object.values(byProvider ?? {}).flatMap((entry) => {
+    const announced = entry?.services?.[service]
+    return Array.isArray(announced) ? announced.filter((api): api is string => typeof api === 'string') : []
+  })
+  return [...new Set(apis)]
 }

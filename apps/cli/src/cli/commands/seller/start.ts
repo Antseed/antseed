@@ -356,6 +356,7 @@ const PROVIDER_ENV_PREFIXES: Readonly<Record<string, string>> = {
   '@antseed/provider-typesafe': 'TYPESAFE',
   '@antseed/provider-venice-video': 'VENICE_VIDEO',
   '@antseed/provider-fal-video': 'FAL_VIDEO',
+  '@antseed/provider-fal-image': 'FAL_IMAGE',
   '@antseed/provider-alibaba-video': 'ALIBABA_VIDEO',
   '@antseed/provider-irp-router': 'IRP_ROUTER',
   '@antseed/provider-colony-pool': 'COLONY_POOL',
@@ -888,6 +889,10 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       if (maxInboundConnectionsPerIp !== undefined) {
         console.log(chalk.dim(`  max inbound connections per IP: ${maxInboundConnectionsPerIp}`))
       }
+      const announceProviderIds = effectiveSellerConfig.announceProviderIds === true
+      if (announceProviderIds) {
+        console.log(chalk.dim('  providers announced by ID'))
+      }
       const inboundIdleTimeoutMs = parseOptionalNonNegativeIntegerEnv(process.env['ANTSEED_INBOUND_IDLE_TIMEOUT_MS'])
         ?? effectiveSellerConfig.inboundIdleTimeoutMs
       if (inboundIdleTimeoutMs !== undefined) {
@@ -959,6 +964,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         ...(maxUploadBodyBytes !== undefined ? { maxUploadBodyBytes } : {}),
         ...(maxInboundConnections !== undefined ? { maxInboundConnections } : {}),
         ...(maxInboundConnectionsPerIp !== undefined ? { maxInboundConnectionsPerIp } : {}),
+        ...(announceProviderIds ? { announceProviderIds } : {}),
         ...(inboundIdleTimeoutMs !== undefined ? { inboundIdleTimeoutMs } : {}),
         ...(sellerFreeTier ? { freeTier: sellerFreeTier } : {}),
         ...(effectiveSellerConfig.freeUsage ? { freeUsage: effectiveSellerConfig.freeUsage } : {}),
