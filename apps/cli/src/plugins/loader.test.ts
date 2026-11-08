@@ -20,7 +20,7 @@ function withPluginVersion(pkgName: string, version: string, fn: (dir: string) =
 }
 
 test('assertPinnedPluginVersion handles pinned and unpinned installs', () => {
-  withPluginVersion(TEE_PACKAGE, '0.1.5', (dir) => {
+  withPluginVersion(TEE_PACKAGE, '0.1.6', (dir) => {
     assert.doesNotThrow(() => assertPinnedPluginVersion(TEE_PACKAGE, dir))
   })
   withPluginVersion(TEE_PACKAGE, '0.1.0', (dir) => {

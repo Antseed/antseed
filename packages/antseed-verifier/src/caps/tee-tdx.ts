@@ -1,5 +1,5 @@
 import type { ClaimResult } from '../antseed-node-types.js'
-import type { Capability, CapabilityCollectInput, CapabilityVerifyInput } from '../capability.js'
+import type { Capability, CapabilityCollectInput, CapabilityVerifyInput, VerifyRound } from '../capability.js'
 import { claimId, computeReportData } from '../shared.js'
 import { generateTdxQuote } from '../collect/configfs.js'
 import { generateDstackAttestation } from '../collect/dstack.js'
@@ -18,6 +18,7 @@ import {
 import { isTcbAcceptable } from '../tcb-policy.js'
 import { generateConfidentialSpaceToken } from '../collect/confidential-space.js'
 import { REVOKED_SELLER_IMAGES, type ApprovedSellerImage } from '../approved-seller-images.js'
+import type { SellerUpstream } from '../seller-config-rules.js'
 import { composeImageDigest, imageBuildRecord, tokenImageDigest, verifyImageBuild } from '../image-provenance.js'
 
 /** A provider quote's declared report_data binding: a frozen scheme id + its string ingredients. */
@@ -316,6 +317,27 @@ function approvedBuild(
   return 'error' in app ? app : { os, ...app }
 }
 
+/** Record a verified seller node for the caps verified after it; returns its upstream origins. */
+function recordSellerNode(input: CapabilityVerifyInput, checked: { upstreams: SellerUpstream[]; providerAttestation: string[] }): string[] {
+  const upstreams = [...new Set(checked.upstreams.map((u) => u.origin))].sort()
+  if (input.round) input.round.sellerNode = { upstreams, providerAttestation: checked.providerAttestation }
+  return upstreams
+}
+
+/**
+ * A provider quote counts for a verified seller node only when that provider is where the node
+ * sends prompts: its config names one upstream origin, and the prover fetches the provider's
+ * evidence from that origin. Otherwise the quote attests some other machine, and the buyer's
+ * prompts may reach an upstream no quote covers. Returns why the quote doesn't count, if it doesn't.
+ */
+function unattestedUpstreams(node: VerifyRound['sellerNode']): string | undefined {
+  if (!node) return undefined
+  const [upstream, ...more] = node.upstreams
+  const attested = node.providerAttestation
+  if (upstream && more.length === 0 && attested.length > 0 && attested.every((o) => o === upstream)) return undefined
+  return `this seller sends prompts to ${node.upstreams.join(', ')}, not only to the attested provider (evidence from ${attested.join(', ') || 'no configured URL'})`
+}
+
 /** The node claim (and its upstreams) for Google Confidential Space evidence: a verified token, checked for this round. */
 function verifyConfidentialSpaceNode(claim: string, input: CapabilityVerifyInput, p: ParsedTdxQuote, claims: JWTPayload): ClaimResult | ClaimResult[] {
   const channelBinding = input.channelBinding
@@ -328,7 +350,7 @@ function verifyConfidentialSpaceNode(claim: string, input: CapabilityVerifyInput
   if ('error' in checked) {
     return { claim, ok: false, detail: `Google Confidential Space attestation, but not an approved TEE seller build: ${withBuildRecord(checked.error, p)}` }
   }
-  const origins = [...new Set(checked.upstreams.map((u) => u.origin))].sort()
+  const origins = recordSellerNode(input, checked)
   return [
     { claim, ok: true, detail: `Intel TDX on Google Confidential Space (attested by Google); Antseed TEE seller image ${checked.image.version}, bound to this connection; bound to this round (${antseedRdV1.id})` },
     { claim: claimId(NODE_UPSTREAMS_CLAIM), ok: true, detail: origins.join(', ') },
@@ -402,8 +424,11 @@ export function makeTdxCap(
         ? `Antseed TEE seller image ${build.image.version} on ${build.os.name}, bound to this connection`
         : `MRTD ${hex(p.td.mrTd).slice(0, 16)}…`
       const result: ClaimResult = { claim, ok: true, detail: `genuine Intel TDX quote (TCB ${p.status}); ${scope}; ${freshness}` }
-      if (!build) return result
-      const origins = [...new Set(build.upstreams.map((u) => u.origin))].sort()
+      if (!build) {
+        const notUpstream = opts?.sellerNode ? undefined : unattestedUpstreams(input.round?.sellerNode)
+        return notUpstream ? { claim, ok: false, detail: `genuine Intel TDX quote (TCB ${p.status}), but ${notUpstream}` } : result
+      }
+      const origins = recordSellerNode(input, build)
       return [result, { claim: claimId(NODE_UPSTREAMS_CLAIM), ok: true, detail: origins.join(', ') }]
     },
 

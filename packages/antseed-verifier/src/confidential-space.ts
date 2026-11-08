@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import type { JWTPayload, JWTVerifyGetKey } from 'jose'
 import type { ApprovedSellerImage } from './approved-seller-images.js'
 import { isTcbAcceptable } from './tcb-policy.js'
-import { LITERAL_ENV, RuleError, check, checkHiddenSecrets, checkSellerConfig, isObj, parseJson, type SellerUpstream } from './seller-config-rules.js'
+import { LITERAL_ENV, RuleError, check, checkHiddenSecrets, checkSellerConfig, isObj, parseJson, providerAttestationOrigins, type SellerUpstream } from './seller-config-rules.js'
 
 /**
  * Google Confidential Space runs one container on a TDX VM under a Google-built OS with no
@@ -61,6 +61,8 @@ export function confidentialSpaceNonce(reportData: Uint8Array): string {
 export interface CheckedConfidentialSpace {
   image: ApprovedSellerImage
   upstreams: SellerUpstream[]
+  /** Where the prover fetches its provider's TEE evidence (providerAttestationOrigins). */
+  providerAttestation: string[]
 }
 
 /** Check a verified token's claims for this round's nonce. Returns the image and upstreams, or why it fails. */
@@ -107,7 +109,7 @@ export function checkConfidentialSpaceClaims(
       check(typeof version === 'string' && SECRET_VERSION.test(version), `${CS_SECRETS_ENV} ${name} must be a Secret Manager version`)
     }
     checkHiddenSecrets(Object.keys(secrets['secrets']), apiKeyEnvs)
-    return { image, upstreams }
+    return { image, upstreams, providerAttestation: providerAttestationOrigins(env) }
   } catch (err) {
     if (err instanceof RuleError) return { error: err.message }
     throw err

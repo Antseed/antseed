@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { ApprovedSellerImage } from './approved-seller-images.js'
-import { LITERAL_ENV, SECRET_ENV, check, checkHiddenSecrets, checkSellerConfig, isObj, parseJson, RuleError, type SellerUpstream } from './seller-config-rules.js'
+import { LITERAL_ENV, SECRET_ENV, check, checkHiddenSecrets, checkSellerConfig, isObj, parseJson, providerAttestationOrigins, RuleError, type Obj, type SellerUpstream } from './seller-config-rules.js'
 
 export type { SellerUpstream } from './seller-config-rules.js'
 
@@ -32,6 +32,8 @@ export type { SellerUpstream } from './seller-config-rules.js'
 export interface CheckedAppCompose {
   image: ApprovedSellerImage
   upstreams: SellerUpstream[]
+  /** Where the prover fetches its provider's TEE evidence (providerAttestationOrigins). */
+  providerAttestation: string[]
 }
 
 const APP_COMPOSE_KEYS = new Set([
@@ -118,7 +120,7 @@ function checkComposeFile(compose: unknown, images: readonly ApprovedSellerImage
   check(isObj(content) && Object.keys(content).length === 1 && typeof content['content'] === 'string', 'the seller config must be inline content')
   const { upstreams, apiKeyEnvs } = checkSellerConfig(parseJson(content['content'], 'seller config'))
   checkHiddenSecrets(secrets, apiKeyEnvs)
-  return { image, upstreams, secrets }
+  return { image, upstreams, providerAttestation: providerAttestationOrigins((service['environment'] ?? {}) as Obj), secrets }
 }
 
 /**
@@ -142,10 +144,10 @@ export function checkAppCompose(
     check(!app['pre_launch_script'], 'app may not run a pre-launch script')
     const initScript = app['init_script']
     check(!initScript || (Array.isArray(initScript) && initScript.length === 0), 'app may not run an init script')
-    const { image, upstreams, secrets } = checkComposeFile(parseJson(app['docker_compose_file'], 'compose file (write it as JSON)'), images)
+    const { secrets, ...checked } = checkComposeFile(parseJson(app['docker_compose_file'], 'compose file (write it as JSON)'), images)
     const allowed = app['allowed_envs'] ?? []
     check(Array.isArray(allowed) && allowed.every((n) => typeof n === 'string' && secrets.has(n)), 'app may only accept the encrypted variables its compose file uses as secrets')
-    return { image, upstreams }
+    return checked
   } catch (err) {
     if (err instanceof RuleError) return { error: err.message }
     throw err

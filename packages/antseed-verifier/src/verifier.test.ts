@@ -26,7 +26,13 @@ const sign = signerFromPrivateKey(PRIV)
 const BINDING = 'c'.repeat(64)
 
 // The stub DCAP's measurements (MRTD 07…, RTMR0-2 zero, RTMR3 measuring APP) are an approved seller build for these tests.
-const APP = appCompose(referenceCompose())
+/** The reference compose, with the prover fetching provider evidence from its one upstream. */
+function composeWithProviderEvidence(url: string) {
+  const compose = referenceCompose()
+  compose['services']['seller']['environment']['ANTSEED_VERIFIER_PROVIDER_EVIDENCE_URL'] = url
+  return appCompose(compose)
+}
+const APP = composeWithProviderEvidence('https://upstream.example/attest?nonce={nonce}')
 const BOOT = bootEvents(APP)
 beforeAll(() => { process.env['ANTSEED_VERIFIER_NODE_BUILDS'] = JSON.stringify(testBuilds('07'.repeat(48))) })
 afterAll(() => { delete process.env['ANTSEED_VERIFIER_NODE_BUILDS'] })
@@ -60,11 +66,17 @@ const okVerify: VerifyQuoteFn = async (quote) => ({
   td: td({ reportData: quote.length === 64 ? new Uint8Array(quote) : new Uint8Array(64) }),
 })
 
+/** Stub DCAP for a seller whose measured compose is `app` instead of APP. */
+const okVerifyFor = (app: string): VerifyQuoteFn => async (quote) => ({
+  status: 'UpToDate',
+  td: td({ rtMr3: bootEvents(app).rtmr3, reportData: quote.length === 64 ? new Uint8Array(quote) : new Uint8Array(64) }),
+})
+
 /** A node quote bound to (nonce, PEER, BINDING). It satisfies the node binding check under okVerify. */
 const boundNodeQuote = (nonce: Uint8Array): Uint8Array => new Uint8Array(computeReportData(nonce, PEER, BINDING))
 /** Node evidence from the approved dstack build, bound to (nonce, PEER, BINDING). */
-const nodeQuoteEvidence = (nonce: Uint8Array): Uint8Array =>
-  encodeTeeTdxEvidence(boundNodeQuote(nonce), undefined, undefined, { eventLog: BOOT.eventLog, appCompose: APP })
+const nodeQuoteEvidence = (nonce: Uint8Array, app = APP): Uint8Array =>
+  encodeTeeTdxEvidence(boundNodeQuote(nonce), undefined, undefined, { eventLog: bootEvents(app).eventLog, appCompose: app })
 /** A 64-byte provider report_data with a 32-byte commitment in [0:32]. */
 const rd64 = (commitment: Uint8Array): Uint8Array => {
   const out = new Uint8Array(64)
@@ -86,9 +98,9 @@ async function nodeEvidence(nonce: Uint8Array, signer = sign): Promise<Uint8Arra
 }
 
 /** Full bundle: bound node quote, provider quote, and one seller-bound signature that covers both. */
-async function fullBundleEvidence(nonce: Uint8Array, signer = sign): Promise<Uint8Array> {
+async function fullBundleEvidence(nonce: Uint8Array, signer = sign, app = APP): Promise<Uint8Array> {
   const bundle = {
-    'seller-node-tee-genuine': nodeQuoteEvidence(nonce),
+    'seller-node-tee-genuine': nodeQuoteEvidence(nonce, app),
     'seller-provider-tee-genuine': encodeTeeTdxEvidence(randomBytes(64)),
   }
   return encodeAttestResponse({ ...bundle, 'seller-bound': await signBundle(nonce, bundle, signer) })
@@ -152,6 +164,20 @@ describe('runVerify — happy path (one claim per capability)', () => {
     // measured-image derives from the provider quote but never passes without a policy.
     expect(findClaim(r, MEASURED)?.ok).toBe(false)
     expect(findClaim(r, MEASURED)?.detail).toMatch(/no approved measurement set configured/)
+  })
+
+  it('fails the provider tee when the attested provider is not where the seller sends prompts', async () => {
+    for (const app of [
+      composeWithProviderEvidence('https://other.example/attest?nonce={nonce}'),
+      appCompose(referenceCompose()),
+    ]) {
+      const { ctx } = makeCtx(async (nonce) => ok200(await fullBundleEvidence(nonce, sign, app)))
+      const r = await runVerify(ctx, okVerifyFor(app))
+      // The node still passes: what the seller can see is unchanged. Only the provider claim fails.
+      expect(r.ok).toBe(true)
+      expect(findClaim(r, NODE)?.ok).toBe(true)
+      expect(findClaim(r, PROVIDER)).toMatchObject({ ok: false, detail: expect.stringMatching(/sends prompts to https:\/\/upstream\.example, not only to the attested provider/) })
+    }
   })
 })
 

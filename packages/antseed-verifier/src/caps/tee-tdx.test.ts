@@ -241,6 +241,22 @@ describe('provider cap — declared report_data scheme binding', () => {
   })
 })
 
+describe('seller-provider-tee-genuine for a verified seller node', () => {
+  const verifyFor = async (sellerNode: { upstreams: string[]; providerAttestation: string[] }) => {
+    const parsedQuote = await verifyTdxEvidence(encodeTeeTdxEvidence(randomBytes(64)), async () => ({ status: 'UpToDate', td: td() }), 0)
+    const out = await providerTeeCapability.verify({ nonce: randomBytes(32), peerId: PEER, evidence: new Uint8Array(1), parsedQuote, round: { sellerNode } })
+    return Array.isArray(out) ? out[0]! : out
+  }
+
+  it('passes only when the attested provider is the one upstream the node sends prompts to', async () => {
+    expect(await verifyFor({ upstreams: ['https://p.example'], providerAttestation: ['https://p.example'] })).toMatchObject({ ok: true })
+    // A second upstream (e.g. a non-TEE fallback) may receive prompts no provider quote covers.
+    expect(await verifyFor({ upstreams: ['https://other.example', 'https://p.example'], providerAttestation: ['https://p.example'] })).toMatchObject({ ok: false, detail: expect.stringMatching(/not only to the attested provider/) })
+    expect(await verifyFor({ upstreams: ['https://p.example'], providerAttestation: ['https://p.example', 'https://q.example'] })).toMatchObject({ ok: false })
+    expect(await verifyFor({ upstreams: ['https://p.example'], providerAttestation: [] })).toMatchObject({ ok: false, detail: expect.stringMatching(/no configured URL/) })
+  })
+})
+
 // Both caps come from the same factory but carry distinct ids and independent evidence.
 describe('two TDX caps from one factory', () => {
   it('the provider cap verifies to its own distinct claim id', async () => {

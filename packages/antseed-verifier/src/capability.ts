@@ -33,6 +33,17 @@ export interface CapabilityVerifyInput {
    * own entry) to verify one seller signature covers the entire bundle.
    */
   evidenceBundle?: Record<string, Uint8Array>
+  /** Shared by the caps of one round, in registration order: what an earlier cap verified. */
+  round?: VerifyRound
+}
+
+/** What the caps of one round learn for the caps verified after them. */
+export interface VerifyRound {
+  /**
+   * Set by a passing seller node cap: the https origins its measured config sends prompts to, and
+   * where its prover fetches the provider's TEE evidence.
+   */
+  sellerNode?: { upstreams: string[]; providerAttestation: string[] }
 }
 
 /** Input to a capability's seller-side evidence collection. */
