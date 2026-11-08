@@ -349,6 +349,7 @@ const PRICING_SHAPE = {
 const SERVICE_SHAPE = {
   upstreamModel: true,
   imageEditModel: true,
+  extraProtocols: true,
   categories: true,
   enabled: true,
   pricing: PRICING_SHAPE,

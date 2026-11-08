@@ -49,6 +49,8 @@ export interface SellerServiceConfig {
   upstreamModel?: string;
   /** Native image-edit model paired with this advertised generation service. */
   imageEditModel?: string;
+  /** Additional text API protocols served unchanged by the openai plugin's upstream. */
+  extraProtocols?: Array<Extract<ServiceApiProtocol, 'openai-responses' | 'anthropic-messages'>>;
   /** Normie-friendly tags announced in peer metadata (e.g. "chat", "coding"). */
   categories?: string[];
   /**

@@ -163,6 +163,9 @@ function validateSellerProviders(
       } else if (serviceCfg.imageEditModel !== undefined && !isVeniceOpenAiProvider(providerCfg) && !FAL_IMAGE_PLUGINS.has(providerCfg.plugin?.trim())) {
         errors.push(`${servicePath}.imageEditModel requires the fal-image plugin or the openai plugin with a Venice baseUrl (https://api.venice.ai/api)`);
       }
+      if (serviceCfg.extraProtocols !== undefined && !OPENAI_PLUGINS.has(providerCfg.plugin?.trim())) {
+        errors.push(`${servicePath}.extraProtocols requires the openai plugin`);
+      }
       if (serviceCfg.pricing) {
         validatePricingLeaf(`${servicePath}.pricing`, serviceCfg.pricing, errors);
       }

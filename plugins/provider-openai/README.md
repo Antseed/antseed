@@ -62,7 +62,13 @@ antseed config seller add-service together kimi-k2.5 \
   --categories math,coding
 ```
 
-The CLI reads `seller.providers.<name>.services[id]` and turns it into the flat env keys (`ANTSEED_SERVICE_ALIAS_MAP_JSON`, `ANTSEED_SERVICE_IMAGE_EDIT_MODEL_MAP_JSON`, `ANTSEED_SERVICE_PRICING_JSON`, `ANTSEED_ALLOWED_SERVICES`) that this plugin's `configSchema` consumes internally. Categories are written directly onto `provider.serviceCategories` by the seller start path, not via env var. You should not set those env keys directly.
+The CLI reads `seller.providers.<name>.services[id]` and turns it into the flat env keys (`ANTSEED_SERVICE_ALIAS_MAP_JSON`, `ANTSEED_SERVICE_IMAGE_EDIT_MODEL_MAP_JSON`, `ANTSEED_SERVICE_EXTRA_PROTOCOLS_JSON`, `ANTSEED_SERVICE_PRICING_JSON`, `ANTSEED_ALLOWED_SERVICES`) that this plugin's `configSchema` consumes internally. Categories are written directly onto `provider.serviceCategories` by the seller start path, not via env var. You should not set those env keys directly.
+
+### Extra text protocols
+
+Set `seller.providers.<name>.services[id].extraProtocols` to add `openai-responses` or `anthropic-messages` to a text service's default Chat Completions announcement.
+For example: `{"extraProtocols": ["openai-responses", "anthropic-messages"]}`.
+The upstream and all fallbacks must already support those APIs, including streaming; the relay does not translate protocols.
 
 ### Venice image editing
 
