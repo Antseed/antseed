@@ -68,8 +68,12 @@ jobs:
           node-version-file: '.nvmrc'
           cache: 'pnpm'
 
+      # Pinned, here and in the other two Foundry jobs: a new `stable` (1.9.0 changed how Anvil fills fees for
+      # fee-less eth_sendTransaction) must not change these jobs unannounced. Bump all three together, deliberately.
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.9.0
 
       - name: Install dependencies
         run: pnpm install
@@ -113,8 +117,12 @@ jobs:
           node-version-file: '.nvmrc'
           cache: 'pnpm'
 
+      # Pinned, here and in the other two Foundry jobs: a new `stable` (1.9.0 changed how Anvil fills fees for
+      # fee-less eth_sendTransaction) must not change these jobs unannounced. Bump all three together, deliberately.
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.9.0
 
       - name: Install dependencies
         run: pnpm install
@@ -172,8 +180,12 @@ jobs:
           node-version-file: '.nvmrc'
           cache: 'pnpm'
 
+      # Pinned, here and in the other two Foundry jobs: a new `stable` (1.9.0 changed how Anvil fills fees for
+      # fee-less eth_sendTransaction) must not change these jobs unannounced. Bump all three together, deliberately.
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.9.0
 
       - name: Install dependencies
         run: pnpm install

@@ -10,7 +10,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bindUpstream, listModels, WORKSPACE_PLUGINS } from './lib/config.mjs';
 import { blocksInUse, copyIn, pruneCache, resolveForkBlock, seedFromLegacy, writeBack } from './lib/cache.mjs';
-import { chainReader, prepareChain, prepareLocalChain } from './lib/chain.mjs';
+import { ANVIL_FEE_ARGS, chainReader, prepareChain, prepareLocalChain } from './lib/chain.mjs';
 import { chainContracts, deployLocalStack, localGenesisTimestamp } from './lib/local-deploy.mjs';
 import { newToken, startControlServer } from './lib/control.mjs';
 import { startRpcRelay } from './lib/rpc-relay.mjs';
@@ -100,7 +100,7 @@ async function startAnvil(forkUrl, block, { timestamp } = {}) {
         ? ['--fork-url', forkUrl, '--fork-block-number', String(block), '--chain-id', String(TESTBENCH_CHAIN_IDS.fork), '--no-rate-limit', '--retries', '20', '--timeout', '120000']
         : ['--chain-id', String(TESTBENCH_CHAIN_IDS.local), ...(timestamp ? ['--timestamp', String(timestamp)] : [])]),
       '--host', '127.0.0.1', '--port', String(candidate),
-      '--disable-min-priority-fee', '--base-fee', '0', '--gas-price', '0',
+      ...ANVIL_FEE_ARGS,
     ];
     const spawned = spawn('anvil', args, { env: isolatedEnv(baseEnv, paths.anvilHome), stdio: ['ignore', 'pipe', 'pipe'] });
     reap(spawned);

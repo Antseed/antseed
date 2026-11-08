@@ -4,7 +4,30 @@ import { assertLocalUrl } from './env.mjs';
 import { alignChainClock, DEFAULT_CONTRACT_LAYOUT, LOCAL_CHAIN_ID, LOCAL_DEPLOYER, LOCAL_DEPLOYER_KEY, localChainConfig, verifyLocalLayout } from './local-deploy.mjs';
 
 const require = createRequire(import.meta.url);
-const { Contract, Interface, JsonRpcProvider, Wallet } = require('ethers');
+const { Contract, Interface, JsonRpcProvider, JsonRpcSigner, Wallet } = require('ethers');
+
+/**
+ * Fees for transactions Anvil signs itself (impersonated accounts). The testbench chain charges no gas (Anvil runs with
+ * --base-fee 0 --gas-price 0). Anvil 1.9 fills a fee-less eth_sendTransaction there with its 1 gwei suggested tip over a
+ * 0 max fee and then rejects it ("max priority fee per gas higher than max fee per gas"); 1.3 filled it consistently.
+ * So every send Anvil signs states its fees. Transactions our own wallets sign (sellers, buyer, the product code) get
+ * fees from ethers' fee data and are unaffected.
+ */
+export const ANVIL_SIGNED_FEES = Object.freeze({ maxFeePerGas: 0n, maxPriorityFeePerGas: 0n });
+
+/** Anvil's fee flags for every testbench chain (fork and local): no base fee, no gas price, no minimum tip. */
+export const ANVIL_FEE_ARGS = Object.freeze(['--disable-min-priority-fee', '--base-fee', '0', '--gas-price', '0']);
+
+/** The same fees as JSON-RPC quantities, for a raw eth_sendTransaction. */
+export const ANVIL_SIGNED_RPC_FEES = Object.freeze({ maxFeePerGas: '0x0', maxPriorityFeePerGas: '0x0' });
+
+/** A signer for an account Anvil signs for (impersonated): its sends carry ANVIL_SIGNED_FEES unless they set fees. */
+export class AnvilSigner extends JsonRpcSigner {
+  async sendUncheckedTransaction(tx) {
+    const hasFees = tx.gasPrice != null || tx.maxFeePerGas != null || tx.maxPriorityFeePerGas != null;
+    return super.sendUncheckedTransaction(hasFees ? tx : { ...tx, ...ANVIL_SIGNED_FEES });
+  }
+}
 
 const ETH_BALANCE = '0x56BC75E2D63100000';
 const WEEK = 604_800;
@@ -25,7 +48,7 @@ export async function applyOwnerSettings(provider, chain, { buyer, depositMicros
     await provider.send('anvil_setBalance', [owner, ETH_BALANCE]);
     await provider.send('anvil_impersonateAccount', [owner]);
     try {
-      const receipt = await (await action(new Contract(address, abi, await provider.getSigner(owner)))).wait();
+      const receipt = await (await action(new Contract(address, abi, new AnvilSigner(provider, owner)))).wait();
       assert.equal(receipt.status, 1);
     } finally {
       await provider.send('anvil_stopImpersonatingAccount', [owner]);
@@ -138,7 +161,7 @@ export async function prepareChain({ rpcUrl, sdk, sellers, buyer: buyerIdentity,
     await provider.send('anvil_setBalance', [address, ETH_BALANCE]);
     await provider.send('anvil_impersonateAccount', [address]);
     try {
-      return await action(await provider.getSigner(address));
+      return await action(new AnvilSigner(provider, address));
     } finally {
       await provider.send('anvil_stopImpersonatingAccount', [address]);
     }
@@ -225,7 +248,7 @@ export async function prepareLocalChain({ rpcUrl, sdk, sellers, buyer: buyerIden
       await provider.send('anvil_setBalance', [address, ETH_BALANCE]);
       await provider.send('anvil_impersonateAccount', [address]);
       try {
-        return await action(await provider.getSigner(address));
+        return await action(new AnvilSigner(provider, address));
       } finally {
         await provider.send('anvil_stopImpersonatingAccount', [address]);
       }
@@ -330,7 +353,7 @@ export function chainReader(rpcUrl, chain) {
     await provider.send('anvil_impersonateAccount', [from]);
     try {
       const data = iface.encodeFunctionData(method, args);
-      const hash = await provider.send('eth_sendTransaction', [{ from, to, data }]);
+      const hash = await provider.send('eth_sendTransaction', [{ from, to, data, ...ANVIL_SIGNED_RPC_FEES }]);
       const receipt = await provider.waitForTransaction(hash, 1, 30_000);
       if (!receipt || receipt.status !== 1) throw new Error(`${method}(${args.join(', ')}) reverted`);
       return receipt;
