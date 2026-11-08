@@ -6,6 +6,7 @@ import {
   FAL_SCHEMA_URL,
   falEndpointInput,
   falErrorReason,
+  isFalEndpointId,
   parseCsv,
   parseServiceCapabilitiesJson,
   parseServiceUnitBillingModelsJson,
@@ -25,8 +26,6 @@ export const FAL_STORAGE_URL = 'https://rest.fal.ai/storage/upload/initiate?stor
 
 const PROTOCOL = 'fal-video';
 const MAX_ACTIVE_DOWNLOADS = 2;
-/** fal endpoint IDs: `owner/alias[/path...]`, at most 64 characters (the discovery service-name limit). */
-const ENDPOINT_ID = /^[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-][A-Za-z0-9._-]*)+$/;
 
 /** What an endpoint's fal input schema says about its fields. */
 export interface FalInputSchema {
@@ -281,7 +280,7 @@ const plugin: AntseedProviderPlugin = {
 
     const services = parseCsv(config['ANTSEED_ALLOWED_SERVICES']);
     if (services.length === 0) throw new Error('ANTSEED_ALLOWED_SERVICES is required');
-    const invalid = services.find(service => service.length > 64 || !ENDPOINT_ID.test(service));
+    const invalid = services.find(service => !isFalEndpointId(service));
     if (invalid) throw new Error(`Invalid fal endpoint ID: ${invalid}`);
     const serviceUnitBillingModels = parseServiceUnitBillingModelsJson(config['ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON']);
     const missingPricing = services.find(service => !serviceUnitBillingModels?.[service]?.[PROTOCOL]);

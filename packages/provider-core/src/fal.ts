@@ -25,6 +25,14 @@ export function falEndpointInput(schema: Record<string, unknown> | null, endpoin
   return { properties, required };
 }
 
+/** fal endpoint IDs: `owner/alias[/path...]`. */
+const ENDPOINT_ID = /^[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-][A-Za-z0-9._-]*)+$/;
+
+/** Whether `id` is a fal endpoint ID of at most 64 characters (the discovery service-name limit). */
+export function isFalEndpointId(id: string): boolean {
+  return id.length <= 64 && ENDPOINT_ID.test(id);
+}
+
 const HEALTH_CHECK_TIMEOUT_MS = 15_000;
 /** Endpoint IDs per fal model-list request. */
 const MODEL_LOOKUP_BATCH = 50;

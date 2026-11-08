@@ -7,6 +7,8 @@ import {
   falEndpointInput,
   falErrorReason,
   getHeader,
+  isFalEndpointId,
+  openAiError,
   parseCsv,
   parseServiceCapabilitiesJson,
   parseServiceUnitBillingModelsJson,
@@ -24,8 +26,6 @@ const REQUEST_TIMEOUT_MS = 5 * 60_000;
 const SCHEMA_TIMEOUT_MS = 10_000;
 const MAX_RESULT_BYTES = 64 * 1024 * 1024;
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
-/** fal endpoint IDs: `owner/alias[/path...]`, at most 64 characters (the discovery service-name limit). */
-const ENDPOINT_ID = /^[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-][A-Za-z0-9._-]*)+$/;
 const SIZE = /^(\d{2,5})x(\d{2,5})$/;
 
 /**
@@ -66,17 +66,6 @@ class RequestError extends Error {
   constructor(readonly statusCode: number, message: string, readonly param?: string) {
     super(message);
   }
-}
-
-function openAiError(requestId: string, statusCode: number, message: string, param?: string): SerializedHttpResponse {
-  return {
-    requestId,
-    statusCode,
-    headers: { 'content-type': 'application/json' },
-    body: Buffer.from(JSON.stringify({
-      error: { message, type: statusCode >= 500 ? 'upstream_error' : 'invalid_request_error', ...(param ? { param } : {}) },
-    })),
-  };
 }
 
 /**
@@ -285,8 +274,7 @@ const plugin: AntseedProviderPlugin = {
 
     const services = parseCsv(config['ANTSEED_ALLOWED_SERVICES']);
     if (services.length === 0) throw new Error('ANTSEED_ALLOWED_SERVICES is required');
-    const isEndpoint = (id: string) => id.length <= 64 && ENDPOINT_ID.test(id);
-    const invalid = services.find(service => !isEndpoint(service));
+    const invalid = services.find(service => !isFalEndpointId(service));
     if (invalid) throw new Error(`Invalid fal endpoint ID: ${invalid}`);
     const serviceUnitBillingModels = parseServiceUnitBillingModelsJson(config['ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON']);
     const missingPricing = services.find(service => !serviceUnitBillingModels?.[service]?.[PROTOCOL]);
@@ -299,7 +287,7 @@ const plugin: AntseedProviderPlugin = {
       // Matched case-insensitively, as buyer routing matches services.
       const advertised = services.find(candidate => candidate.toLowerCase() === service.toLowerCase());
       if (!advertised) throw new Error(`fal edit endpoint configured for unknown service "${service}"`);
-      if (typeof endpoint !== 'string' || !isEndpoint(endpoint)) throw new Error(`Invalid fal edit endpoint ID for ${service}`);
+      if (typeof endpoint !== 'string' || !isFalEndpointId(endpoint)) throw new Error(`Invalid fal edit endpoint ID for ${service}`);
       editEndpoints.set(advertised, endpoint);
     }
 
