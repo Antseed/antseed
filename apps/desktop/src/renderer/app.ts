@@ -240,6 +240,7 @@ registerActions({
   abortChat: () => { recordUserAction('chat_stop', 'chat'); return chatApi.abortChat(); },
   deleteConversation: (id) => { recordUserAction('conversation_delete', 'chats'); return chatApi.deleteConversation(id); },
   renameConversation: (id, title) => { recordUserAction('conversation_rename', 'chats'); chatApi.renameConversation(id, title); },
+  setConversationFlags: (id, flags) => chatApi.setConversationFlags(id, flags),
   selectChatModel: (modelId) => chatApi.selectChatModel(modelId),
   privacyModeChosen: (mode) => { chatApi?.privacyModeChosen(mode); },
   privacySwitchLanded: (mode) => chatApi?.privacySwitchLanded(mode) ?? Promise.resolve(),

@@ -203,6 +203,12 @@ const api = {
   chatAiRenameConversation(id: string, title: string): Promise<{ ok: boolean; error?: string }> {
     return ipcRenderer.invoke('chat:ai-rename-conversation', id, title);
   },
+  chatAiSetConversationFlags(
+    id: string,
+    flags: { pinned?: boolean; archived?: boolean },
+  ): Promise<{ ok: boolean; data?: { pinnedAt?: number; archivedAt?: number }; error?: string }> {
+    return ipcRenderer.invoke('chat:ai-set-conversation-flags', id, flags);
+  },
   chatPrepareAttachments(conversationId: string, attachments: RawChatAttachment[]): Promise<{ ok: boolean; data?: PreparedChatAttachment[]; error?: string }> {
     return ipcRenderer.invoke('chat:prepare-attachments', conversationId, attachments);
   },

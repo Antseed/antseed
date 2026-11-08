@@ -4,6 +4,7 @@
  * the desktop's key, and persists conversations as pi sessions.
  */
 import { randomUUID } from 'node:crypto';
+import path from 'node:path';
 import {
   prepareChatAttachments,
   type PreparedChatAttachment,
@@ -16,10 +17,13 @@ import {
   sweepOrphanAttachments,
 } from './attachments/store.js';
 import {
+  CHAT_DATA_DIR,
   CHAT_WORKSPACE_DIR,
   loadChatWorkspaceDir,
   persistChatWorkspaceDir,
 } from './workspace.js';
+import { ChatOrganizationStore, flagsFor, type ConversationFlags } from './chat-organization.js';
+import { GitBranchCache } from './git-branch.js';
 import {
   getModelPermissionMode,
   normalizePermissionMode,
@@ -95,6 +99,8 @@ export function registerPiChatHandlers({
 }: RegisterPiChatHandlersOptions): PiChatEngine {
   void loadChatWorkspaceDir().catch(() => {});
   const store = new PiConversationStore();
+  const organization = new ChatOrganizationStore(path.join(CHAT_DATA_DIR, 'organization.json'));
+  const gitBranches = new GitBranchCache();
   const activeRunsByConversation = new Map<string, ActiveRun>();
   const activeImageRunsByConversation = new Map<string, AbortController>();
   const pendingToolApprovals = new Map<string, { conversationId: string; resolve: (decision: ToolApprovalDecision) => void }>();
@@ -302,7 +308,25 @@ export function registerPiChatHandlers({
   // ── Conversations ──
 
   ipcMain.handle('chat:ai-list-conversations', async () => {
-    return { ok: true, data: await store.list() };
+    const [summaries, flags] = await Promise.all([store.list(), organization.read()]);
+    const data = await Promise.all(summaries.map(async (summary) => {
+      const gitBranch = summary.workspacePath ? await gitBranches.get(summary.workspacePath) : null;
+      return { ...summary, ...flagsFor(flags, summary.id), ...(gitBranch ? { gitBranch } : {}) };
+    }));
+    return { ok: true, data };
+  });
+
+  ipcMain.handle('chat:ai-set-conversation-flags', async (_event, id: string, flags: ConversationFlags) => {
+    try {
+      const conversationId = typeof id === 'string' ? id.trim() : '';
+      if (!conversationId) return { ok: false, error: 'Conversation not found' };
+      const patch: ConversationFlags = {};
+      if (typeof flags?.pinned === 'boolean') patch.pinned = flags.pinned;
+      if (typeof flags?.archived === 'boolean') patch.archived = flags.archived;
+      return { ok: true, data: await organization.setFlags(conversationId, patch) };
+    } catch (error) {
+      return { ok: false, error: asErrorMessage(error) };
+    }
   });
 
   ipcMain.handle('chat:ai-get-conversation', async (_event, id: string) => {
@@ -338,6 +362,11 @@ export function registerPiChatHandlers({
 
   ipcMain.handle('chat:ai-delete-conversation', async (_event, id: string) => {
     await store.delete(id);
+    try {
+      await organization.forget(id);
+    } catch (err) {
+      appendSystemLog(`Failed to clear pin/archive for conversation ${id}: ${asErrorMessage(err)}`);
+    }
     // Best effort: wipe any raw attachment bytes we persisted for this
     // conversation. Failures are swallowed so a stuck directory doesn't
     // block the primary delete from returning ok.
