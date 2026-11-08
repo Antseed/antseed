@@ -5,13 +5,13 @@ description: Prove an AntSeed change works end to end on this worktree's isolate
 
 # Verify AntSeed
 
-This skill says what to prove, when a scenario is required, how to run it, and what evidence to keep. It is the only map from a changed path to what must run. `features/` is the user-facing feature map (pstack's create-verification-skill shape): one recipe per feature, from the user's point of view, and the table below links each row to it. `e2e/testbench/README.md` is the reference for every command, chain, option and the `tb` API; `docs/testing.md` maps every kind of test and the result classes.
+This skill says what to prove, when a scenario is required, how to run it, and what evidence to keep. It is the only map from a changed path to what must run. `e2e/testbench/README.md` is the reference for every command, chain, option and the `tb` API; `docs/testing.md` maps every kind of test and the result classes.
 
 ## When to use it
 
 This skill is opt-in (see `CLAUDE.md`). Use it only when the user asks for testbench verification or their instructions for the task say to. Otherwise verify with builds, unit tests and typecheck, and at most mention which scenario would cover the change.
 
-Once the user has opted in, verify without asking again for each step (pstack's never-block-on-the-human). That covers builds, unit tests, new scenarios, `pnpm testbench run <scenario> --chain local`, `--chain fork` when doctor reports a fork RPC, and desktop QA runs (`tb.desktop()`, `xvfb-run`).
+Once the user has opted in, verify without asking again for each step. That covers builds, unit tests, new scenarios, `pnpm testbench run <scenario> --chain local`, `--chain fork` when doctor reports a fork RPC, and desktop QA runs (`tb.desktop()`, `xvfb-run`).
 
 Get an explicit yes for each run of:
 
@@ -22,36 +22,33 @@ These rules hold in every run:
 
 - Never touch `~/.antseed`, the OS keychain, port 8377, or processes the testbench did not start.
 - Tear down only with `pnpm testbench down`. Use `--force` only with the user's approval.
-- Report a `KNOWN` result as known. Never turn a `knownIssue` into a pass, and never weaken a check to make a run pass (pstack: never relax the predicate).
+- Report a `KNOWN` result as known. Never turn a `knownIssue` into a pass, and never weaken a check to make a run pass.
 - Commit and push only as `CLAUDE.md` allows.
 
 ## Decide what to prove
 
-When the user has opted in: add a testbench scenario only when a unit test can't reproduce the bug, and run the row the change matches. For any other path, the owning package's unit tests are the proof (`pnpm --filter <pkg> test`). A change to CLI output also gets the transcript from [CLI](features/cli.md). `packages/contracts/**` also needs `cd packages/contracts && forge test` and `pnpm testbench run payment-flow --chain local`. `e2e/testbench/**` needs `pnpm test:testbench` and a run of each changed scenario. Run the stress and issue scenarios with `--mode cli`, so they prove the shipped CLI, except `issue-1200-spendingauth-catchup`, which needs `--mode sdk` for its buyer fault. Provider plugins other than `plugins/provider-openai` have no mock upstream, so their unit tests are the proof unless the user approves `--live`. For buyer, buyer-proxy or routing changes, propose the real-network check (`pnpm testbench run mainnet-smoke --chain mainnet --real-funds`, case 3 in `e2e/testbench/README.md`) as a separate step after these runs pass: it spends real USDC and needs an explicit yes.
+When the user has opted in: add a testbench scenario only when a unit test can't reproduce the bug, and run the row the change matches. For any other path, the owning package's unit tests are the proof (`pnpm --filter <pkg> test`). A change to CLI output also gets a transcript (see [Drive](#drive)). `packages/contracts/**` also needs `cd packages/contracts && forge test` and `pnpm testbench run payment-flow --chain local`. `e2e/testbench/**` needs `pnpm test:testbench` and a run of each changed scenario. Run the stress and issue scenarios with `--mode cli`, so they prove the shipped CLI, except `issue-1200-spendingauth-catchup`, which needs `--mode sdk` for its buyer fault. Provider plugins other than `plugins/provider-openai` have no mock upstream, so their unit tests are the proof unless the user approves `--live`. For buyer, buyer-proxy or routing changes, propose the real-network check (`pnpm testbench run mainnet-smoke --chain mainnet --real-funds`, case 3 in `e2e/testbench/README.md`) as a separate step after these runs pass: it spends real USDC and needs an explicit yes.
 
 | If you change… | Run | It's proven when |
 | --- | --- | --- |
-| buyer payments or SpendingAuth: `packages/buyer-core/**`, `packages/node/src/payments/**`, `packages/node/src/seller-request-handler.ts` | [payments](features/payments.md): `pnpm --filter @antseed/buyer-core test` (`buyer-payment-negotiator.test.ts`, `channel-usage-accounting.test.ts`, `pricing.test.ts`), `pnpm --filter @antseed/node test tests/buyer-payment-manager.test.ts tests/buyer-payment-negotiator.test.ts tests/payment-flow-integration.test.ts`, then `pnpm testbench run payment-flow --chain local`, `pnpm testbench run stress-smoke --chain local` and every `e2e/testbench/scenarios/issues/issue-*.mjs`; for top-up, reserve, channel rotation, concurrency or restart changes also `stress-c32`, `stress-smallreserve`, `stress-faults`, `stress-restart-buyer` and `stress-restart-seller` (`--chain local`) | The tests pass and `payment-flow` prints `PASSED`. Each `stress-*` run prints `PASS payment oracle: delivered work paid exactly ...` and its load gate. Optional evidence for a change that could slow payments: the same runs with `--budgets` print `PASS budget: ...` lines, and any run prints `DRIFT` lines for timings that moved against the previous passed run. That means: three paid chats on one channel with a growing cumulative SpendingAuth, a reserve locked on-chain, settle-on-disconnect that charges exactly the delivered work and releases the reserve, a fresh channel after reconnect, and on-chain settlement equal to what the buyer signed. |
-| the buyer proxy or routing: `apps/cli/src/proxy/**`, `packages/node/src/discovery/**`, `packages/router-core/**`, `plugins/router-local/**` | [proxy chat](features/proxy-chat.md) and [routing](features/routing.md): `pnpm testbench run chat-basic --chain local`. For pinned or multi-seller routing, also `pnpm testbench run routing-smoke --chain local` | `chat-basic` prints `PASSED`: the catalog lists the seller's models, a non-streaming and a streaming chat through the proxy answer with usage, the upstream saw exactly two chats, one channel holds both receipts, and settlement is exact. `chat-basic` sends model-only requests to one seller and does not pin. `routing-smoke` pins `<peerId>@<model>` to each of two sellers, auto-routes six more chats, and checks that the buyer sees only testbench sellers. |
-| the desktop chat UI: `apps/desktop/**` | [desktop chat](features/desktop-chat.md): `pnpm --filter @antseed/desktop run build:main && pnpm --filter @antseed/desktop run build:renderer`, then `pnpm testbench run desktop-chat --chain local`. On a headless Linux server or VPS: `xvfb-run -a pnpm testbench run desktop-chat --chain local` | `desktop-chat` prints `PASSED`: the desktop shows `Port: <proxy port>`, a chat sent from the composer shows the testbench seller's reply, the upstream saw it, the channel signed a nonzero amount, the renderer logged no errors, and settlement is exact. Open `screenshots/` and `video/desktop.webm` in the report and say what they show. |
-| the buyer CLI commands: `apps/cli/src/cli/commands/buyer/**` | [CLI](features/cli.md): `pnpm --filter @antseed/cli test` for the command's test file, then `pnpm testbench run cli-buyer-commands --chain local`; for `withdraw` or `channels request-close`/`withdraw` also `pnpm testbench run buyer-withdraw-and-exit --chain local` | `cli-buyer-commands` prints `PASSED`: `buyer status`, `balance`, `channels`, `connection get`, `identity list`, `metering`, `activity` and `emissions info` exit 0 next to the running CLI buyer, print no stack trace, and match `/_antseed/channels`, `/_antseed/buyer-usage` and the chain. `buyer-withdraw-and-exit` prints `PASSED`: the free deposit is withdrawn, the reserve is not, and request-close, the grace and `channels withdraw` return the unsettled reserve. Its `KNOWN` lines are the ignored `--json` of `buyer channels` subcommands. |
-| the free tier: `packages/node/src/payments/seller-free-tier-limiter.ts`, `free-tier-*.ts`, `apps/cli/src/cli/commands/buyer/free-tier.ts` | `pnpm --filter @antseed/node test` for the limiter and delegation tests, then `pnpm testbench run free-tier --chain local` | `free-tier` prints `PASSED`: the allowance and the free limit are served without charge, the 429 carries `rate_limit_error` and `retry-after`, and a delegated stake raises the allowance by its tier multiplier. |
-| keys, signing or spend caps: `packages/node/src/p2p/identity.ts`, `packages/protocol/src/signatures.ts`, `apps/desktop/src/main/identity.ts`, `maxPerRequestUsdc`, `maxReserveAmountUsdc` | `pnpm --filter @antseed/node test tests/identity.test.ts tests/evm-keypair.test.ts tests/eip712-contract-compat.test.ts tests/buyer-payment-manager.test.ts` and `pnpm --filter @antseed/protocol test src/signatures.test.ts` | All pass. These cover identity persistence, the derived EVM wallet, SpendingAuth and ReserveAuth EIP-712 signatures against the contract's typehash and golden vectors, and the overdraft (`verifiedCost + maxPerRequestUsdc`) and reserve-ceiling caps. No testbench scenario covers keys or caps. There is no dedicated always-run security suite: CI runs every package's tests (`pnpm -r run test`). `apps/desktop/src/main/identity.ts` has no test. |
+| buyer payments or SpendingAuth: `packages/buyer-core/**`, `packages/node/src/payments/**`, `packages/node/src/seller-request-handler.ts` | `pnpm --filter @antseed/buyer-core test` (`buyer-payment-negotiator.test.ts`, `channel-usage-accounting.test.ts`, `pricing.test.ts`), `pnpm --filter @antseed/node test tests/buyer-payment-manager.test.ts tests/buyer-payment-negotiator.test.ts tests/payment-flow-integration.test.ts`, then `pnpm testbench run payment-flow --chain local`, `pnpm testbench run stress-smoke --chain local` and every `e2e/testbench/scenarios/issues/issue-*.mjs`; for top-up, reserve, channel rotation, concurrency or restart changes also `stress-c32`, `stress-smallreserve`, `stress-faults`, `stress-restart-buyer` and `stress-restart-seller` (`--chain local`) | All pass and each scenario prints `PASSED`. A `stress-*` run also prints `PASS payment oracle: delivered work paid exactly ...`. For a change that could slow payments, add `--budgets` and read any `DRIFT` lines. |
+| the buyer proxy or routing: `apps/cli/src/proxy/**`, `packages/node/src/discovery/**`, `packages/router-core/**`, `plugins/router-local/**` | `pnpm testbench run chat-basic --chain local`. For pinned or multi-seller routing, also `pnpm testbench run routing-smoke --chain local` | Each prints `PASSED`. `chat-basic` sends model-only requests and does not pin; `routing-smoke` pins each of two sellers and auto-routes. |
+| the desktop chat UI: `apps/desktop/**` | `pnpm --filter @antseed/desktop run build:main && pnpm --filter @antseed/desktop run build:renderer`, then `pnpm testbench run desktop-chat --chain local`. On a headless Linux server or VPS: `xvfb-run -a pnpm testbench run desktop-chat --chain local` | It prints `PASSED`. Open `screenshots/` and `video/desktop.webm` in the report and say what they show. |
+| the buyer CLI commands: `apps/cli/src/cli/commands/buyer/**` | `pnpm --filter @antseed/cli test` for the command's test file, then `pnpm testbench run cli-buyer-commands --chain local`; for `withdraw` or `channels request-close`/`withdraw` also `pnpm testbench run buyer-withdraw-and-exit --chain local` | Each prints `PASSED`: the commands exit 0 and match the proxy and the chain. |
+| the free tier: `packages/node/src/payments/seller-free-tier-limiter.ts`, `free-tier-*.ts`, `apps/cli/src/cli/commands/buyer/free-tier.ts` | `pnpm --filter @antseed/node test` for the limiter and delegation tests, then `pnpm testbench run free-tier --chain local` | It prints `PASSED`. |
+| keys, signing or spend caps: `packages/node/src/p2p/identity.ts`, `packages/protocol/src/signatures.ts`, `apps/desktop/src/main/identity.ts`, `maxPerRequestUsdc`, `maxReserveAmountUsdc` | `pnpm --filter @antseed/node test tests/identity.test.ts tests/evm-keypair.test.ts tests/eip712-contract-compat.test.ts tests/buyer-payment-manager.test.ts` and `pnpm --filter @antseed/protocol test src/signatures.test.ts` | All pass. No testbench scenario covers keys or caps, and `apps/desktop/src/main/identity.ts` has no test. |
+
+When a scenario, a test file or a command named here changes, update its row.
 
 ### Gotchas
 
-- `issue-1200-spendingauth-catchup` needs the lose-NeedAuth fault (`tb.faults.loseNeedAuths`). Without it, the seller's cost-free NeedAuth wins the race against the buyer's 402 negotiator, and the scenario passes on buggy code. Arm the fault right before the chat it targets, and wait for `tb.faults.lostNeedAuths()` to return the dropped frame before you read `cumulativeSigned`. Arming clears that list, and every buyer start disarms the fault.
-- The roughly 5-second delay on a 402 catch-up chat is the seller waiting for a catch-up SpendingAuth (`DEFAULT_CATCH_UP_WAIT_MS` in `packages/node/src/seller-request-handler.ts`). It is not a buyer timeout.
-- Pricing is a topology knob (`topology.sellers[].providers.<name>.services.<model>.pricing`, read by `tb.mockCostPerChat()`), and so is `topology.payments.minBudgetPerRequestUsdc` (for every seller at once). Without it SDK sellers use 0.5 USDC, the amount the #1200 bug over-signs (500018 signed for 54 delivered); `stressTopology()` sets the CLI seller's 0.01.
-- When doctor flags a stale `dist/`, run `pnpm run build`, or the changed package's build plus its dependents. The testbench loads `dist/`, so an unbuilt fix looks like a fix that does not work.
-- The `BuyerPaymentManager` tests live in `packages/node/tests/`, not in `packages/buyer-core`. The class moved to buyer-core, and `packages/node/src/payments/buyer-payment-manager.ts` re-exports it.
-- On this base, `payment:spend` events do not report the negotiator's catch-up. Read `cumulativeSigned` from `tb.channels()` instead. It is a decimal string of micro-USDC, so compare it as `BigInt`.
-- Inside an agent's Bash sandbox (macOS Seatbelt), the desktop test `Linux afterPack sets the sandbox helper mode before archiving` fails with `actual: 493, expected: 2541`: the sandbox refuses the setuid bit. That is the environment, not the change. Run `pnpm --filter @antseed/desktop test` outside the sandbox (the operator's shell or CI) for that one result, and never skip or loosen the test.
-- `--chain fork` runs the production contracts. A contract change shows up only on `--chain local`.
-- `withdraw()` after `tb.buyerRequestClose()` needs `tb.warp(15 * 60 + 60)` first. Waiting in wall-clock time does not move Anvil's clock. `antseed buyer channels withdraw` also checks the grace against `Date.now()`, so after the warp run it with `tb.cli(args, { clock: 'chain' })`.
-- A seller caches the current epoch for 10 minutes of wall time when it resolves free-tier stake. After `tb.warpToNextEpoch()` restart it (`tb.stopSeller`, `tb.startSeller`) before it must see a stake that activates in the new epoch, as `free-tier` does. `antseed buyer free-tier list` projects stake with `Date.now()`: after a warp, run it with `clock: 'chain'`.
-- `--chain local` deploys the full contract stack by default (recognized usage, seller pools, free usage, verification). `topology.chain.contracts: 'payments'` or `--contracts payments` keeps the old `Deploy.s.sol`-only layout.
-- A desktop chat that times out saves `screenshots/chat-timeout.png` and puts the visible screen text in the error. Read those and the video before you change the scenario.
+- `issue-1200-spendingauth-catchup` needs `tb.faults.loseNeedAuths`, armed right before the chat it targets. Without it the scenario passes on buggy code. A delay of about 5 s on a 402 catch-up is the seller waiting (`DEFAULT_CATCH_UP_WAIT_MS`), not a timeout.
+- Read `cumulativeSigned` from `tb.channels()` as `BigInt`: `payment:spend` events do not report the negotiator's catch-up.
+- Without `topology.payments.minBudgetPerRequestUsdc`, SDK sellers use 0.5 USDC, the amount the #1200 bug over-signs. `stressTopology()` sets the CLI seller's 0.01.
+- Waiting does not move Anvil's clock: use `tb.warp`, for example 15 min + 60 s before `withdraw()` after `tb.buyerRequestClose()`. CLI commands that check the time need `tb.cli(args, { clock: 'chain' })`.
+- A seller caches the epoch for 10 minutes. After `tb.warpToNextEpoch()`, restart it before it must see a stake that activates in the new epoch.
+- `BuyerPaymentManager`'s tests live in `packages/node/tests/`, though the class is in buyer-core.
+- Inside an agent's macOS sandbox, the desktop test `Linux afterPack sets the sandbox helper mode` fails with `actual: 493, expected: 2541`. That is the environment: run it outside the sandbox, and never skip or loosen it.
 
 ## Launch
 
@@ -63,14 +60,13 @@ When the user has opted in: add a testbench scenario only when a unit test can't
    - After an edit: rebuild the changed package and its dependents (`pnpm --filter @antseed/buyer-core run build && pnpm --filter @antseed/node run build`), or `pnpm run build`.
    - Desktop scenarios: `pnpm --filter @antseed/desktop run build:main && pnpm --filter @antseed/desktop run build:renderer`, plus Playwright's ffmpeg once per machine (`pnpm exec playwright install ffmpeg`; `run` refuses a desktop scenario without it). On a headless Linux server, wrap the run in `xvfb-run -a`.
 3. Run `scripts/doctor.mjs` (below) and fix every `FAIL`.
-4. Start a run: `pnpm testbench run <scenario> --chain local`. With no testbench running, it starts one with the scenario's topology, runs the scenario, writes a report, and stops the testbench. If this worktree's testbench is already running with the same topology, `run` reuses it: same chain, same channels, and it stays up afterwards. Scenarios assume a fresh testbench, so run `pnpm testbench down` before the next run after `--keep` or `up`. The evidence helper refuses to run on a running testbench.
-   - Give the Bash tool a timeout of at least 10 minutes for a run, or run it in the background. The default 2-minute timeout kills a first run mid-compile. The watchdog then stops the orphaned testbench on its own, but the run is lost.
-   - Ready means the supervisor printed `READY proxy=http://127.0.0.1:<port> rpc=... control=...`. The buyer has discovered every seller by then.
-   - The first `--chain local` run in a worktree compiles `packages/contracts` (about 2.5 minutes). Later runs reach `READY` in about 5 seconds. `chat-basic` takes about 10 seconds end to end and `payment-flow` about a minute.
+4. Start a run: `pnpm testbench run <scenario> --chain local`. It starts a testbench, runs the scenario, writes a report and stops. Scenarios assume a fresh testbench, so run `pnpm testbench down` before the next run after `--keep` or `up`.
+   - Give the command a timeout of at least 10 minutes, or run it in the background: the first `--chain local` run in a worktree compiles the contracts (about 2.5 minutes).
+   - Ready means the supervisor printed `READY proxy=http://127.0.0.1:<port> rpc=... control=...`.
    - To poke at a running network: `pnpm testbench up --chain local`, then `eval "$(pnpm -s testbench status --env)" && curl "$ANTSEED_PROXY_URL/v1/models"`.
 5. Teardown is `pnpm testbench down` (see [Cleanup](#cleanup)).
 
-Chains: `--chain local` is an empty Anvil with this worktree's `packages/contracts` deployed from source (needs `forge` and forge-std, no RPC key; use it for contracts, payments and offline work). `--chain fork` forks Base mainnet with the production contracts and needs `BASE_MAINNET_RPC_URL` in the gitignored `.env.local`; never fall back to a public RPC. Without `--chain`, a scenario runs on the first entry of its `targets`, so pass it explicitly. The other commands you need:
+Use `--chain local` for contracts, payments and offline work. `--chain fork` runs the production contracts and needs `BASE_MAINNET_RPC_URL` in the gitignored `.env.local`; never fall back to a public RPC. Pass `--chain` explicitly. The other commands you need:
 
 ```bash
 pnpm -s testbench scenarios                     # every scenario by group, with targets
@@ -84,7 +80,7 @@ pnpm testbench share [--stop]                   # Linux server: the desktop in t
 
 A run's `result` is `passed`, `failed`, `error`, `timeout` or `blocked` (exit 0, 1, 4, 3, 2; `docs/testing.md`), `--strict` fails a `KNOWN` result (CI uses it), and anything but `passed` prints a `rerun:` line with the run's seed.
 
-Each worktree gets its own testbench (`wt-<basename>-<hash>`, state in `~/.antseed-testbench/<name>/`). If a testbench with another topology is running, `run` refuses: run `pnpm testbench down` first or add `--slot NAME`. Never drive a testbench another worktree started.
+A testbench with a different topology or upstream is refused: run `pnpm testbench down` first or add `--slot NAME`. Never drive a testbench another worktree started.
 
 ## Doctor
 
@@ -103,64 +99,56 @@ A change has a high blast radius when it touches one of these paths, or adds or 
 - signing and payments: `packages/protocol/src/signatures.ts`, `packages/node/src/payments/**`, `packages/node/src/seller-request-handler.ts`, `packages/buyer-core/**`, `apps/desktop/src/main/payments/**`, `apps/cli/src/gateway/services/operator.ts`, `apps/cli/src/gateway/console-api/handlers/wallet*.ts`
 - contracts: `packages/contracts/**`
 
-Such a change always runs the keys, signing or spend caps row, on top of its own row. Its PR body names the paths it touches in pstack's `## Blast Radius` section.
+Such a change always runs the keys, signing or spend caps row, on top of its own row. Its PR body lists the paths it touches under a `## Blast Radius` heading.
 
 ## What counts as proof
 
-pstack's playbooks say what proof each kind of change needs (Bug fix steps 1, 4 and 5, Refactoring, Feature step 5, the tdd skill) and who gives the verdict (Shipping step 1). This section adds only AntSeed's surfaces and commands. Show each command, its exit code and the lines that matter.
+Show each command, its exit code and the lines that matter. Someone other than the author of the change gives the verdict: a reviewer or an independent agent.
 
-- **Bug fix.** The surface the report names is the proxy, the desktop or the chain, driven through its feature recipe. When a cheap unit test reproduces the bug, a test-only first commit fails on `main` with the bug's own words (the red signature) and the head passes, per Bug fix step 5. When reproducing it needs a seller, the buyer proxy and an on-chain settlement, the red is an `issue-*` testbench scenario per [Fix a bug red to green](#fix-a-bug-red-to-green). Check both with `scripts/prove.sh`. It uses a fresh worktree so local leftovers cannot fake a result, and it rejects a red caused by a setup error such as `Cannot find module`.
+- **Bug fix.** The surface the report names is the proxy, the desktop or the chain, driven the way a user reaches it. When a cheap unit test reproduces the bug, a test-only first commit fails on `main` with the bug's own words (the red signature) and the head passes. When reproducing it needs a seller, the buyer proxy and an on-chain settlement, the red is an `issue-*` testbench scenario per [Fix a bug red to green](#fix-a-bug-red-to-green). Check both with `scripts/prove.sh`. It uses a fresh worktree so local leftovers cannot fake a result, and it rejects a red caused by a setup error such as `Cannot find module`.
   `scripts/prove.sh <first commit> fail "<test command>" "<red signature>" <owning package>`, then `scripts/prove.sh HEAD pass "<test command>" "" <owning package>`.
-- **Refactor.** Pin today's behavior first (Refactoring), then check it with `prove.sh <first commit> pass ...` and `prove.sh HEAD pass ...`.
-- **User-visible change.** A change to what a user sees in the desktop or the CLI also gets review evidence for the operator. For the desktop, that is the run's screenshots and video, with a screenshot at each changed state (`ui.screenshot(name)` in the scenario, recipe in [desktop chat](features/desktop-chat.md)). For the CLI, it is the transcript. Name the evidence in the PR's Verification.
+- **Refactor.** Pin today's behavior with a test first, then check it with `prove.sh <first commit> pass ...` and `prove.sh HEAD pass ...`.
+- **User-visible change.** A change to what a user sees in the desktop or the CLI also gets review evidence for the operator. For the desktop, that is the run's screenshots and video, with a screenshot at each changed state (`ui.screenshot(name)` in the scenario). For the CLI, it is the transcript. Name the evidence in the PR's Verification.
 - **Every kind.** The matching row of [Decide what to prove](#decide-what-to-prove) passes, and so do the owning packages' checks named in their `CLAUDE.md`.
-- **Testbench rows.** Run each required scenario once without the change and once with it, in the scratch worktree, doctor first. A scenario that fails the same way without the change is pre-existing: report it, do not block on it, and say whether the change could be involved. A scenario that fails only with the change fails the verification.
-- **Blocked.** A doctor `FAIL`, a broken build or a run with `result: 'blocked'` (exit code 2) means the environment, not the change. Report it as blocked (`verifier-blocked`), not as failed.
+- **Testbench rows.** Run each required scenario once without the change (a worktree at the base commit) and once with it, doctor first. A scenario that fails the same way without the change is pre-existing: report it, do not block on it, and say whether the change could be involved. A scenario that fails only with the change fails the verification.
+- **Blocked.** A doctor `FAIL`, a broken build or a run with `result: 'blocked'` (exit code 2) means the environment, not the change. Report it as blocked, not as failed.
 
 ## Drive
 
-- A scenario is `e2e/testbench/scenarios/<name>.mjs` (stress shapes in `scenarios/stress/`, issue regressions in `scenarios/issues/`) with `meta`, `topology` and `run(tb)`. Drive the buyer like a client: `tb.chat()` goes through the buyer proxy, `tb.desktop()` through the desktop UI. Read state with `tb.channels()`, `tb.buyerBalance()`, `tb.settledEvents(id)` and `tb.mockRequests(id)`. Control the network with `tb.stopBuyer()`, `tb.stopSeller(id)` and `tb.warp(seconds)`.
+- A scenario is a file in `e2e/testbench/scenarios/features/`, `stress/`, `issues/` or `mainnet/` (the real-funds run) with `meta`, `topology` and `run(tb)`. Drive the buyer like a client: `tb.chat()` goes through the buyer proxy, `tb.desktop()` through the desktop UI. Read state with `tb.channels()`, `tb.buyerBalance()`, `tb.settledEvents(id)` and `tb.mockRequests(id)`. Control the network with `tb.stopBuyer()`, `tb.stopSeller(id)` and `tb.warp(seconds)`.
 - Assert with `tb.check(name, ok, detail)`. Put the observed and expected values in `detail`: the failing line in the output is the evidence.
 - `tb.faults.loseNeedAuths(count)` makes the buyer drop its next `count` seller NeedAuth frames, and `tb.faults.lostNeedAuths()` returns what it dropped since that call. Arming clears the list, and every buyer start disarms the fault. Use a fault only to reach a state that no public path produces, and say why in a comment.
-- Desktop: `const ui = await tb.desktop()`, then `ui.sendChat(prompt)`, `ui.screenshot(name)` and `ui.page` (Playwright). Prefer `getByRole` and `getByLabel`. On a headless Linux server, run `xvfb-run -a pnpm testbench run desktop-chat --chain local`. Without `--chain`, `desktop-chat`, `chat-basic` and `routing-smoke` run on their first target, the fork.
+- HTTP: `tb.chat()` drives only `/v1/chat/completions`; use `tb.request()` for other proxy endpoints. Pin a seller with the model `<peerId>@<model>`.
+- CLI: in a scenario, `tb.cli(args)` (or `tb.sellerCli(id, args)`) returns `{ code, stdout, stderr, json }` and records the transcript. By hand, for a command with no scenario: `node apps/cli/dist/cli/index.js --data-dir <run>/cli <command> > <run>/cli/<name>.out 2>&1; echo "exit $?" >> <run>/cli/<name>.out`. Always pass `--data-dir`: without it the CLI uses the real `~/.antseed`. For a changed output, show the before and after transcripts.
+- Desktop: `const ui = await tb.desktop()`, then `ui.sendChat(prompt)`, `ui.screenshot(name)` and `ui.page` (Playwright). Prefer `getByRole` and `getByLabel`. On a headless Linux server, run `xvfb-run -a pnpm testbench run desktop-chat --chain local`.
+- A new desktop scenario goes in `e2e/testbench/scenarios/features/desktop-<name>.mjs` with `requires: ['desktop']`, a `ui.screenshot(name)` at each state and `tb.check('no renderer errors', ui.errors.length === 0, ui.errors)`. If an element has no accessible name, add an `aria-label`. Never launch a desktop outside the testbench commands: it would start its own buyer on the operator's state.
+- If you cannot reach an entry point, report the command you tried and the unmet precondition. Do not report it as verified another way.
 
 ## Fix a bug red to green
 
 Try a failing unit test in the owning package first. If it reproduces the bug, that test is the red and the green, the fix PR is the failing test plus the fix (steps 5 and 8), and the regressions are the matching row of [Decide what to prove](#decide-what-to-prove). Follow steps 1 to 9 only when a unit test can't reproduce the bug: when it shows only across a seller, the buyer proxy and an on-chain settlement. `issue-1200-spendingauth-catchup.mjs` is the worked example. It proves on-chain what #1200's unit test proves for one method: the seller settles the over-signed amount.
 
-The testbench lives on a testbench branch, not on `main`. The fix lives on a branch from `origin/main`. A scratch worktree combines both for the testbench runs and is never pushed.
+The fix and its issue scenario ship in one PR from `origin/main`, so the regression stays covered from then on.
 
-1. **Make the scratch worktree.** Branch it from the testbench branch. If the testbench branch is behind `origin/main`, merge `origin/main` into the scratch branch, so red and green run on the code the fix PR targets:
-
-   ```bash
-   git worktree add -b scratch/<N> ../<repo>-<N>-scratch <testbench-branch>
-   cd ../<repo>-<N>-scratch
-   git fetch origin
-   git merge-base --is-ancestor origin/main HEAD || git merge origin/main
-   git submodule update --init packages/contracts/lib/forge-std && pnpm install && pnpm run build
-   ```
-
-   Resolve merge conflicts minimally and record each resolution. `CHANGELOG.md` conflicts most often.
-2. **Write the scenario first.** In the scratch worktree, create `e2e/testbench/scenarios/issues/issue-<N>-<slug>.mjs`. Encode the bug as plain `tb.check`s, never `knownIssue`. Start with a fresh-testbench check, as `issue-1200-spendingauth-catchup.mjs` does. Add the name to the scenario list in `e2e/testbench/test/config-topology.test.mjs`.
-3. **Prove it fails.** Run `.claude/skills/verify-antseed/scripts/run-with-evidence.mjs issue-<N>-<slug> --chain local` on the unfixed code. It must fail on the check that states the issue, with the issue's numbers in `detail`. Keep the report directory. Its `checks.log` is the red evidence. If the scenario will not fail, stop and report why before you change product code.
-4. **Find the root cause** (pstack's Bug fix and fix-root-causes). The runtime evidence here: `pnpm testbench logs supervisor`, `pnpm testbench logs seller-<id>`, the report's `events.jsonl` and `logs/`, and a `--keep` run inspected with `pnpm testbench status`.
-5. **Fix it in a worktree from `origin/main`.** Make the smallest fix the evidence justifies. Add a unit test only where one can pin the mechanism the scenario found (pstack's tdd: no test beats a bad test):
+1. **Make a worktree from `origin/main`:**
 
    ```bash
    git fetch origin
    git worktree add -b fix/<N>-<slug> ../<repo>-fix-<N> origin/main
+   cd ../<repo>-fix-<N>
+   git submodule update --init packages/contracts/lib/forge-std && pnpm install && pnpm run build
    ```
 
-   Never create the fix branch inside the scratch worktree: the untracked scenario would follow it. Commit only if the user asked for a fix PR (`CLAUDE.md`). With a unit test, the PR has two commits, the failing test and then the fix. Without that request, leave the fix uncommitted.
-6. **Prove it passes.** Bring the fix into the scratch worktree, rebuild, and rerun the scenario. It must pass.
-   - Committed fix: `git cherry-pick <test-sha> <fix-sha>`.
-   - Uncommitted fix: `git -C ../<repo>-fix-<N> add -N . && git -C ../<repo>-fix-<N> diff --binary HEAD | git apply`. Plain `git diff` leaves out new files (the new unit test) and staged changes. Check that `git status --short` in the scratch lists every file the fix changed.
-   - Rebuild the changed packages (doctor names them), then run `run-with-evidence.mjs issue-<N>-<slug> --chain local`.
-7. **Run the regressions** in the scratch worktree: the matching row of [Decide what to prove](#decide-what-to-prove), plus `chat-basic --chain local` for a payment bug.
-8. **Run the owning package's checks** in the fix worktree, as its `CLAUDE.md` names them under Prove it.
+2. **Write the scenario first.** Create `e2e/testbench/scenarios/issues/issue-<N>-<slug>.mjs`. Encode the bug as plain `tb.check`s, never `knownIssue`. Start with a fresh-testbench check, as `issue-1200-spendingauth-catchup.mjs` does.
+3. **Prove it fails.** Run `.claude/skills/verify-antseed/scripts/run-with-evidence.mjs issue-<N>-<slug> --chain local` on the unfixed code. It must fail on the check that states the issue, with the issue's numbers in `detail`. Keep the report directory. Its `checks.log` is the red evidence. If the scenario will not fail, stop and report why before you change product code.
+4. **Find the root cause**, not just the symptom. The runtime evidence here: `pnpm testbench logs supervisor`, `pnpm testbench logs seller-<id>`, the report's `events.jsonl` and `logs/`, and a `--keep` run inspected with `pnpm testbench status`.
+5. **Fix it.** Make the smallest fix the evidence justifies. Add a unit test only where one can pin the mechanism the scenario found (no test beats a bad test). Commit only if the user asked for a fix PR (`CLAUDE.md`): first the failing scenario and any failing unit test, then the fix.
+6. **Prove it passes.** Rebuild the changed packages (doctor names them) and run `run-with-evidence.mjs issue-<N>-<slug> --chain local` again. It must pass.
+7. **Run the regressions:** the matching row of [Decide what to prove](#decide-what-to-prove), plus `chat-basic --chain local` for a payment bug.
+8. **Run the owning package's checks**, as its `CLAUDE.md` names them under Prove it.
 9. **Tear down:** `pnpm testbench down` in every worktree that ran a testbench.
 
-Testbench files never go into the fix PR. The issue scenario lands on the testbench branch in its own commit, when the user asks for one. Paste the red and green `checks.log` lines verbatim into the PR body (see [Evidence](#evidence)).
+Paste the red and green `checks.log` lines verbatim into the PR body (see [Evidence](#evidence)). If the bug is sensitive and not fixed yet, keep the scenario and its details out of public branches until the fix ships.
 
 ## Evidence
 
@@ -170,11 +158,11 @@ Run scenarios through the evidence helper:
 .claude/skills/verify-antseed/scripts/run-with-evidence.mjs <scenario> --chain local [--seed N] [--run-timeout SECONDS] [--keep] [--strict] [--slot NAME]
 ```
 
-It runs `node e2e/testbench/cli.mjs run` (what `pnpm testbench run` runs) with the same flags, including `--seed N` and `--run-timeout SECONDS`, shows the output, and exits with the run's code (`docs/testing.md` lists the result classes). Every run has a seed, chosen at random unless you pass one and recorded in `report.json`. To replay a failure, run its `rerun:` line on a fresh testbench. It refuses to start while this worktree's testbench is running or starting. On Ctrl+C, SIGTERM or SIGHUP it stops the run, then runs `node e2e/testbench/cli.mjs down` itself, because the killed run never reaches its own teardown and the supervisor runs detached. It still files the transcript: into the report directory, which every run creates first, even one that ends `blocked`. Only a command line the CLI rejects has none; that transcript goes to `~/.antseed-testbench/<name>/logs/evidence-<timestamp>-<scenario>.log`. It adds three things to the report directory `~/.antseed-testbench/<name>/reports/<timestamp>-<scenario>/`:
+It runs the scenario with those flags and exits with the run's code. It refuses to start while this worktree's testbench is running, and it stops the testbench itself on Ctrl+C. To replay a failure, run its `rerun:` line on a fresh testbench. It adds to the report directory `~/.antseed-testbench/<name>/reports/<timestamp>-<scenario>/`:
 
 - `checks.log`: the `PASS`, `FAIL` and `KNOWN` lines, the error, the run's seed, the report path, and on any result but `passed` the `rerun:` line. Paste these lines into PR bodies.
 - `run-output.log`: the whole console transcript.
-- `logs/`: the supervisor, seller, Anvil and forge log lines written during the run. The testbench appends to its logs across runs, so these are the only per-run copy.
+- `logs/`: the log lines written during this run.
 
 The testbench itself writes `index.html`, `report.json`, `events.jsonl` and `metrics.json` there, plus `screenshots/`, `video/desktop.webm` and `desktop-main.log` for desktop runs. `pnpm testbench down` keeps the whole directory.
 
@@ -185,14 +173,16 @@ Proof standards:
 - Mocks stand only at the upstream boundary (the seller's provider API).
 - For a desktop run, open the screenshots and the video and say what they show.
 
-To show a report from a server, start `pnpm testbench report --serve --port 8799` there (it binds to loopback). The reader runs `ssh -L 8799:127.0.0.1:8799 <host>` and opens `http://127.0.0.1:8799/`. Never bind to `0.0.0.0`: reports contain wallet addresses and logs. A fix PR body gets the verbatim red and green lines, the regression results, and the report directory name, not the files.
+To show a report from a server: `pnpm testbench report --serve --port 8799` there (it binds to loopback), then `ssh -L 8799:127.0.0.1:8799 <host>`. Never bind to `0.0.0.0`: reports contain wallet addresses and logs. A fix PR body gets the verbatim red and green lines, the regression results and the report directory name.
+
+Report back per scenario: passed or failed, the failing checks with their `detail`, `KNOWN` results as known, `DRIFT` lines, the report path, and whether the testbench is still running.
 
 ## Cleanup
 
 - Run `pnpm testbench down` in each worktree (and with each `--slot`) that ran a testbench. `run` without `--keep` stops its own testbench, and `down` on a stopped testbench is harmless.
 - Confirm with `pnpm testbench list`: every testbench you started shows `stopped`. `stopping` means channels are still settling: wait for it. `down` is still the teardown, even though a killed run's testbench now stops on its own.
 - Never kill by process name, and never stop a testbench another worktree owns.
-- Remove a scratch worktree only after its PR merges, with `git worktree remove <path>`. Reports live in `~/.antseed-testbench/`, outside the worktree, so they survive the removal.
+- Remove a fix worktree only after its PR merges, with `git worktree remove <path>`. Reports live in `~/.antseed-testbench/`, outside the worktree, so they survive the removal.
 - Cleanup never deletes `reports/`. After teardown, `ls <report dir>` must still show `checks.log` and `index.html`.
 
 ## Helpers
@@ -211,22 +201,11 @@ The testbench cannot do these yet. Treat each as a known limit, not as a reason 
 
 When a change touches a feature no scenario covers, say so in the PR: the unit tests are the proof. Close a gap with a scenario that has real checks; never add a scenario without them.
 
-- **Seller payment knobs per seller.** `topology.payments.minBudgetPerRequestUsdc` sets the minimum budget per request for every seller at once (`stressTopology()` sets 0.01 USDC; without it SDK sellers use 0.5 USDC and `antseed seller start` 0.01), not for one seller. Per-model pricing is settable: `topology.sellers[].providers.<name>.services.<model>.pricing`, which `tb.mockCostPerChat()` reads.
-- **RPC faults on demand.** `chain.rpc: 'base'` puts a Base-like proxy between each node and Anvil (latency with a slow tail, 429s above a rate limit, reads a block behind, missing receipts right after a transaction). It is fixed at `up`: nothing changes it during a run or fails one chosen call.
-- **Transport faults.** The only fault is NeedAuth loss, and it wraps the buyer payment manager's public `handleNeedAuth`. No public setting leaves a buyer under-signed: the buyer's `costToleranceMultiplier` is not in the node's payment config, and `maxPerRequestUsdc` only caps what the buyer signs (the testbench default is 5 USDC; `topology.buyer.maxPerRequestUsdc` lowers it). A frame-level fault on the payment channel between buyer and seller would be cleaner.
-- **High blast radius tests.** There is no dedicated always-run suite for keys, signing and spend caps. CI runs every package's tests, and the desktop's `apps/desktop/src/main/identity.ts` has no test.
-- **Checkout and wallet flows.** No harness drives the card checkout, deposits or withdrawals in the desktop.
-- **Gateway.** No scenario covers `apps/cli/src/gateway/**` or its console. Its unit tests and typecheck are the proof, and the PR says no scenario proves it.
-- **CLI driver.** `tb.cli()` and `tb.sellerCli()` run one-shot CLI commands and record their transcripts; `cli-buyer-commands` and `buyer-withdraw-and-exit` use them. Seller, network, gateway and `ants` commands have no scenario yet; [CLI](features/cli.md) captures those transcripts by hand.
-- **Routing beyond the buyer's own routing.** `routing-smoke` covers model-only and pinned routing between testbench sellers. Scenarios for routing services and other routing behavior live elsewhere.
-- **`mainnet-smoke` has never run funded.** Case 3 is untested with a real wallet.
-- **`pnpm testbench share` is untested on a real server with Tailscale.**
-- **Network simulation and failpoints** are separate branches, not in this testbench.
-
-## Report back
-
-Per scenario: passed or failed, the failing checks with their `detail`, `KNOWN` results as known, timings that moved (`DRIFT` lines), the report path (and the screenshots and video for desktop runs), and whether the testbench is still running and how to stop it.
-
-## Keep this skill honest
-
-When a scenario, a test file or a command named in [Decide what to prove](#decide-what-to-prove) changes, update its row. pstack's maintain-verification-skill audits `features/` against the code: run it with this skill's path (`.claude/skills/verify-antseed`). When a feature changes, update its file, and add a file for a new user-facing feature.
+- RPC faults are fixed at `up` (`chain.rpc: 'base'`): nothing changes them during a run or fails one chosen call. The only transport fault is NeedAuth loss.
+- `topology.payments.minBudgetPerRequestUsdc` applies to every seller at once, not to one.
+- There is no dedicated always-run suite for keys, signing and spend caps.
+- No scenario drives card checkout, deposits or withdrawals in the desktop.
+- No scenario covers the gateway and its console, or the seller, network and `ants` CLI commands. Capture those transcripts by hand (see [Drive](#drive)).
+- Routing services and other routing beyond the buyer's own are not covered.
+- `pnpm testbench share` has run on a Linux server, but not through a real Tailscale route.
+- Network simulation and failpoints are not part of the testbench yet.

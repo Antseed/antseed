@@ -1,4 +1,4 @@
-import { MAX_PAID_CANDIDATES, tryPaidCandidates } from '../lib/mainnet-run.mjs';
+import { MAX_PAID_CANDIDATES, tryPaidCandidates } from '../../lib/mainnet-run.mjs';
 
 export const meta = {
   description: 'Real network, real funds: the full desktop (its own buyer from this worktree) discovers live sellers, sends one chat, gets a reply, signs a nonzero amount within the per-run cap, and the on-chain deposit stays consistent.',

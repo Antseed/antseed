@@ -6,7 +6,7 @@ import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { assertProfilePlatform, assertProfileSecretStore, linkWorktreePlugins, MAINNET_RESERVE_CAP_ENV, MAINNET_WALLET_ENV, prepareMainnetProfile, profileDesktopEnv, profilePaths, profileSecretStore, resolveMainnetWallet, resolveReserveCap, seedProfile, walletAddress } from '../lib/mainnet.mjs';
 import { createMainnetApi, isRouteUnavailableError, rankPaidChatModels, tryPaidCandidates } from '../lib/mainnet-run.mjs';
-import { chatOnPaidModel } from '../scenarios/mainnet-smoke.mjs';
+import { chatOnPaidModel } from '../scenarios/mainnet/mainnet-smoke.mjs';
 import { parseArgs } from '../lib/options.mjs';
 
 const KEY = 'ab'.repeat(32);

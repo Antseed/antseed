@@ -5,9 +5,9 @@ import { fileURLToPath } from 'node:url';
 export const SCENARIOS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'scenarios');
 
 /**
- * Every scenario file: top-level `scenarios/<name>.mjs`, plus one folder per group (`scenarios/stress/`,
- * `scenarios/issues/`). A scenario is still run by its bare name, so names must be unique across groups.
- * Returns `[{ name, group, file }]` sorted by name; `group` is null for top-level scenarios.
+ * Every scenario file, one folder per group: `scenarios/features/`, `stress/`, `issues/`, `mainnet/`. A scenario is run
+ * by its bare name, so names must be unique across groups. Returns `[{ name, group, file }]` sorted by name; `group` is
+ * null for a file directly in `scenarios/`, which a test rejects.
  */
 export function scenarioFiles(dir = SCENARIOS_DIR) {
   const found = [];

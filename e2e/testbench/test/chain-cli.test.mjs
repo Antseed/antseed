@@ -16,9 +16,9 @@ import { normalizeFreeTier, normalizeTopology, topologyFingerprint, topologySumm
 import { cliSellerConfig } from '../lib/node-options.mjs';
 import { createTestbenchApi } from '../lib/tb.mjs';
 import { DEFAULT_SOURCE_CONFIG, sanitizeConfig } from '../lib/config.mjs';
-import { micros, stderrProblems } from '../scenarios/cli-buyer-commands.mjs';
-import { usdcArg } from '../scenarios/buyer-withdraw-and-exit.mjs';
-import { freeTierRefusal } from '../scenarios/free-tier.mjs';
+import { micros, stderrProblems } from '../scenarios/features/cli-buyer-commands.mjs';
+import { usdcArg } from '../scenarios/features/buyer-withdraw-and-exit.mjs';
+import { freeTierRefusal } from '../scenarios/features/free-tier.mjs';
 
 const require = createRequire(import.meta.url);
 const { getCreateAddress } = require('ethers');

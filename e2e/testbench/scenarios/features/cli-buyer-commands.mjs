@@ -14,7 +14,7 @@ export const meta = {
   requires: ['mockControl'],
   covers: [
     'buyer CLI commands (apps/cli/src/cli/commands/buyer)',
-    'the CLI feature recipe (.claude/skills/verify-antseed/features/cli.md) as a scripted check',
+    'the CLI transcript recipe (.claude/skills/verify-antseed/SKILL.md, Drive) as a scripted check',
   ],
 };
 

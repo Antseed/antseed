@@ -311,9 +311,10 @@ describe('scenario modules', () => {
     const files = scenarioFiles();
     assert.ok(files.length >= 15, `expected the shipped scenarios, found ${files.length}`);
     for (const { name, group, file } of files) {
+      assert.ok(['features', 'stress', 'issues', 'mainnet'].includes(group), `${name}: must be in scenarios/features, stress, issues or mainnet, not ${group}`);
       if (name.startsWith('stress-')) assert.equal(group, 'stress', `${name} belongs in scenarios/stress/`);
       if (name.startsWith('issue-')) assert.equal(group, 'issues', `${name} belongs in scenarios/issues/`);
-      if (group !== null) assert.ok(['stress', 'issues'].includes(group), `${name}: unknown scenario group ${group}`);
+      if (name.startsWith('mainnet-')) assert.equal(group, 'mainnet', `${name} belongs in scenarios/mainnet/`);
       const scenario = validateScenarioModule(await import(pathToFileURL(file).href), name);
       for (const target of scenario.targets) assertScenarioSupported(scenario, target);
       assert.ok(scenario.description, `${name} needs a description`);

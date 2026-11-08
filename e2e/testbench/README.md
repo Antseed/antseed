@@ -220,7 +220,7 @@ pnpm testbench up --live --config path/to/config.json --env-file ~/.my-keys.env
 
 ## Scenarios
 
-A scenario is a module in `e2e/testbench/scenarios/`. Stress shapes live in `scenarios/stress/`, issue regressions in `scenarios/issues/`, and everything else at the top level. A scenario is always run by its bare name (`pnpm testbench run stress-smoke`), so names are unique across folders, and `pnpm testbench scenarios` lists them by group:
+A scenario is a module in `e2e/testbench/scenarios/`. Feature tests live in `scenarios/features/`, stress shapes in `scenarios/stress/`, issue regressions in `scenarios/issues/`, and the real-funds run in `scenarios/mainnet/`. A scenario is always run by its bare name (`pnpm testbench run stress-smoke`), so names are unique across folders, and `pnpm testbench scenarios` lists them by group:
 
 ```js
 export const meta = {
