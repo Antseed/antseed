@@ -33,7 +33,8 @@ async function fetchEvidence(nonce: Uint8Array, env: Record<string, string | und
   const key = env['ACI_API_KEY']
   if (key) headers['authorization'] = `Bearer ${key}`
 
-  const resp = await fetch(full, { headers, signal: AbortSignal.timeout(TIMEOUT_MS) })
+  // No redirects: buyers count the evidence only for the configured URL's origin (the seller's upstream).
+  const resp = await fetch(full, { headers, redirect: 'error', signal: AbortSignal.timeout(TIMEOUT_MS) })
   if (!resp.ok) throw new Error(`aci attestation HTTP ${resp.status}`)
 
   const report = (await resp.json()) as AciReport

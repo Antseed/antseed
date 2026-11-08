@@ -297,6 +297,8 @@ describe('seller-provider-tee-genuine collect (http, stubbed fetch)', () => {
     const ev = await providerTeeCapability.collect!({ nonce: NONCE, peerId: PEER, config })
     expect(seenUrl).toBe(`https://provider.example/evidence/${Buffer.from(NONCE).toString('hex')}`)
     expect(Buffer.from(decodeTeeTdxEvidence(ev).quote).equals(quoteBytes)).toBe(true)
+    // Buyers count the evidence for the configured origin only, so the fetch never follows a redirect.
+    expect(vi.mocked(fetch).mock.calls[0]?.[1]).toMatchObject({ redirect: 'error' })
   })
 
   it('is not offered (throws) when no provider evidence url is configured', async () => {
