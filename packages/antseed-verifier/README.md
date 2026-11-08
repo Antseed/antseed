@@ -43,6 +43,7 @@ The **prover** (seller) reads its config from the environment, never from buyer-
 | `ANTSEED_VERIFIER_NODE_TEE` | node quote source: `configfs` (default, bare-metal/GCP TDX), `dstack` (Phala and other dstack CVMs), `confidential-space` (a Google Confidential Space attestation token instead of a quote), or `http` |
 | `ANTSEED_VERIFIER_DSTACK_SOCKET` | override the dstack guest-agent socket path (default `/var/run/dstack.sock`) |
 | `ANTSEED_VERIFIER_PROVIDER_ADAPTER` | in-process provider adapter id (`chutes`, `aci`). It fetches provider evidence directly, no shim. See [CHUTES.md](./CHUTES.md) or [REDPILL.md](./REDPILL.md) |
+| `ANTSEED_VERIFIER_PROVIDER_ACI_URL` | ACI adapter attestation URL, allowed as a literal TEE seller setting. Falls back to the legacy `ACI_ATTESTATION_URL` |
 | `ANTSEED_VERIFIER_PROVIDER_EVIDENCE_URL` | generic provider evidence route (`{nonce}` → hex nonce). The manual alternative to an adapter |
 | `ANTSEED_VERIFIER_PROVIDER_TEE_FIELD` | JSON field with the base64 provider quote (default `quote`) |
 | `ANTSEED_VERIFIER_PROVIDER_GPU_FIELD` | JSON field with per-GPU NVIDIA CC evidence → enables `seller-provider-gpu-cc` |
@@ -75,7 +76,7 @@ module that loads lazily. Two adapters are available:
 
 ```bash
 export ANTSEED_VERIFIER_PROVIDER_ADAPTER=chutes   # + CHUTES_API_KEY, CHUTES_CHUTE
-export ANTSEED_VERIFIER_PROVIDER_ADAPTER=aci      # + ACI_ATTESTATION_URL (RedPill / dstack ACI)
+export ANTSEED_VERIFIER_PROVIDER_ADAPTER=aci      # + ANTSEED_VERIFIER_PROVIDER_ACI_URL (RedPill / dstack ACI)
 ```
 
 The adapter fetches the provider's fresh, nonce-bound quote. It declares its frozen `report_data`

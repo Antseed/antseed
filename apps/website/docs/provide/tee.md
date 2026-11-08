@@ -110,6 +110,17 @@ node deploy/tee-seller/compose.mjs --image ghcr.io/antseed/tee-seller@sha256:<di
 
 The SDK is provider-agnostic: no vendor hosts or schemas are built in, so pointing it at a different confidential-inference backend is configuration only. For a worked example against a live third-party TDX provider, see the [SDK's end-to-end guide](https://github.com/Antseed/antseed/blob/main/packages/antseed-verifier/docs/e2e-report-data-schemes.md).
 
+For an ACI-compatible provider, use the [`aci` adapter](https://github.com/Antseed/antseed/blob/main/packages/antseed-verifier/REDPILL.md):
+
+```bash
+node deploy/tee-seller/compose.mjs --image ghcr.io/antseed/tee-seller@sha256:<digest> \
+  --peer <peerId> --config config.json \
+  --env ANTSEED_VERIFIER_PROVIDER_ADAPTER=aci \
+  --env ANTSEED_VERIFIER_PROVIDER_ACI_URL=https://provider.example/v1/aci/attestation > docker-compose.json
+```
+
+`ANTSEED_VERIFIER_PROVIDER_ACI_URL` is allowed as a literal compose setting; the legacy fallback `ACI_ATTESTATION_URL` is not. Use a keyless endpoint: a separate hidden `ACI_API_KEY` is rejected unless the seller config names it as a provider's `apiKeyEnv`.
+
 ## 6. Test the full loop as a buyer
 
 From a second machine (no special hardware needed):
