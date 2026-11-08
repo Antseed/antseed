@@ -86,7 +86,9 @@ describe('Discovery: seller announces, buyer discovers via DHT', () => {
     const sellerPeer = peers.find((p) => p.peerId === sellerPeerId);
     expect(sellerPeer).toBeDefined();
     expect(sellerPeer!.providerPricing).toBeDefined();
-    const anthropicPricing = sellerPeer!.providerPricing?.['anthropic'];
+    // Providers are announced by ID, not plugin name.
+    expect(sellerPeer!.providers).toEqual([expect.stringMatching(/^[0-9a-f]{12}$/)]);
+    const anthropicPricing = sellerPeer!.providerPricing?.[sellerPeer!.providers[0]!];
     expect(anthropicPricing).toBeDefined();
     expect(anthropicPricing?.defaults.inputUsdPerMillion).toBeGreaterThanOrEqual(0);
     expect(anthropicPricing?.defaults.outputUsdPerMillion).toBeGreaterThanOrEqual(0);

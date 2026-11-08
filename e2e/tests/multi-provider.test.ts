@@ -166,16 +166,14 @@ describe('Multi-provider: single node with two provider plugins', () => {
   it('seller announces all providers and pricing from both providers', async () => {
     const { seller } = await setupMultiProviderNetwork();
 
-    // The peer should advertise both provider names
-    expect(seller.providers).toEqual(
-      expect.arrayContaining(['anthropic', 'openai']),
-    );
+    // The peer advertises both providers by ID, never by plugin name
     expect(seller.providers.length).toBe(2);
+    for (const provider of seller.providers) expect(provider).toMatch(/^[0-9a-f]{12}$/);
+    expect(new Set(seller.providers).size).toBe(2);
 
     // Both providers should have pricing entries
     expect(seller.providerPricing).toBeDefined();
-    expect(seller.providerPricing!['anthropic']).toBeDefined();
-    expect(seller.providerPricing!['openai']).toBeDefined();
+    for (const provider of seller.providers) expect(seller.providerPricing![provider]).toBeDefined();
   });
 
   it('handles concurrent requests to different providers', async () => {

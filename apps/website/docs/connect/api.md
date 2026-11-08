@@ -208,7 +208,7 @@ Non-streaming responses carry telemetry headers:
 |---|---|
 | `x-antseed-request-id` | Request id |
 | `x-antseed-peer-id` | Seller that served the request |
-| `x-antseed-provider`, `x-antseed-service` | Seller's provider plugin and service id |
+| `x-antseed-provider`, `x-antseed-service` | The provider ID the seller announces (not its plugin name) and the service id |
 | `x-antseed-input-tokens`, `x-antseed-cached-input-tokens`, `x-antseed-output-tokens`, `x-antseed-total-tokens` | Token counts |
 | `x-antseed-token-source` | Where the counts came from |
 | `x-antseed-estimated-cost-usd` | Estimated cost |

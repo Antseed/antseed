@@ -120,6 +120,7 @@ import { SellerPaymentManager, type SellerPaymentConfig } from "./payments/selle
 import { IdentityClient } from "./payments/evm/identity-client.js";
 import { SellerRequestHandler, assertSameNameUpstreamsAgree, assertSingleRoutingService } from "./seller-request-handler.js";
 import { ServicePerformanceTracker } from "./health/service-performance.js";
+import { announcedProviderId, withDefaultServiceApiProtocols } from "./discovery/provider-id.js";
 import {
   BuyerRequestHandler,
   type RequestStreamCallbacks,
@@ -2240,11 +2241,14 @@ export class AntseedNode extends EventEmitter {
       const announcerConfig: AnnouncerConfig = {
         identity,
         dht: this._dht,
-        providers: this._providers.map((p) => ({
-          provider: p.name,
+        providers: this._providers.map((p) => {
+          // Buyers see an ID, not the provider's plugin name, and get the protocols they used to infer from it.
+          const serviceApiProtocols = withDefaultServiceApiProtocols(p.name, p.services, p.serviceApiProtocols);
+          return {
+          provider: announcedProviderId(identity.privateKey, p.name),
           services: p.services,
           ...(p.serviceCategories ? { serviceCategories: { ...p.serviceCategories } } : {}),
-          ...(p.serviceApiProtocols ? { serviceApiProtocols: { ...p.serviceApiProtocols } } : {}),
+          ...(serviceApiProtocols ? { serviceApiProtocols: { ...serviceApiProtocols } } : {}),
           ...(p.serviceUnitBillingModels ? { serviceUnitBillingModels: { ...p.serviceUnitBillingModels } } : {}),
           ...(p.serviceCapabilities ? { serviceCapabilities: { ...p.serviceCapabilities } } : {}),
           // Read live: the model health checker updates it between refreshes.
@@ -2259,7 +2263,8 @@ export class AntseedNode extends EventEmitter {
             },
             ...(p.pricing.services ? { services: { ...p.pricing.services } } : {}),
           },
-        })),
+          };
+        }),
         ...(this._config.displayName ? { displayName: this._config.displayName } : {}),
         ...(this._config.publicAddress ? { publicAddress: this._config.publicAddress } : {}),
         ...(this._config.verifications ? { verifications: this._config.verifications } : {}),
@@ -2267,7 +2272,7 @@ export class AntseedNode extends EventEmitter {
         region: "unknown",
         pricing: new Map(
           this._providers.map((p) => [
-            p.name,
+            announcedProviderId(identity.privateKey, p.name),
             {
               defaults: {
                 inputUsdPerMillion: p.pricing.defaults.inputUsdPerMillion,

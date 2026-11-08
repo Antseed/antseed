@@ -3808,22 +3808,12 @@ test('pinned proxy request dispatches when stale metadata misses the requested m
   assert.equal(selectedBody?.['model'], 'new-helper-model')
 })
 
-test('pinned proxy request reports explicit provider mismatch separately', async () => {
+test('a pinned request naming a provider its peer does not announce uses the peer\'s own provider', () => {
   const pinnedPeer = makePeer('a', ['local-llm'])
-  const proxy = makeBuyerProxyWithPeers([pinnedPeer])
-  const req = makeProxyRequest({
-    headers: {
-      'x-antseed-pin-peer': pinnedPeer.peerId,
-      'x-antseed-provider': 'openai',
-    },
-  })
-
-  const res = await invokeProxy(proxy, req)
-
-  assert.equal(res.statusCode, 502)
-  assert.match(res.body, /does not offer provider=openai/)
-  assert.match(res.body, /Available providers: local-llm/)
-  assert.match(res.body, /x-antseed-provider header/)
+  pinnedPeer.providerServiceApiProtocols = { 'local-llm': { services: { llama: ['openai-chat-completions'] } } }
+  const plan = resolvePeerRoutePlan(pinnedPeer, 'openai-chat-completions', 'llama', 'openai', 'lenient')
+  assert.equal(plan?.provider, 'local-llm')
+  assert.equal(resolvePeerRoutePlan(pinnedPeer, 'openai-chat-completions', 'llama', 'openai', 'strict'), null)
 })
 
 test('pinned proxy request reports protocol or service mismatch when provider is available', async () => {

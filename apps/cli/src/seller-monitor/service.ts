@@ -301,9 +301,16 @@ async function defaultExplorerUrl(configPath: string): Promise<string | null> {
   return chain.explorerApiUrl ?? null
 }
 
-/** The APIs a seller's network row announces for one of its services. */
-function announcedProtocols(row: PeerRow | undefined, provider: string, service: string): string[] {
+/**
+ * The APIs a seller's network row announces for one of its services, across its
+ * providers: the row names each provider by its announced ID, not the
+ * configured plugin name, so `_provider` cannot pick one.
+ */
+function announcedProtocols(row: PeerRow | undefined, _provider: string, service: string): string[] {
   const byProvider = row?.['providerServiceApiProtocols'] as Record<string, { services?: Record<string, unknown> }> | undefined
-  const apis = byProvider?.[provider]?.services?.[service]
-  return Array.isArray(apis) ? apis.filter((api): api is string => typeof api === 'string') : []
+  const apis = Object.values(byProvider ?? {}).flatMap((entry) => {
+    const announced = entry?.services?.[service]
+    return Array.isArray(announced) ? announced.filter((api): api is string => typeof api === 'string') : []
+  })
+  return [...new Set(apis)]
 }

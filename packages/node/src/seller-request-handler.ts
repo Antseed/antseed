@@ -54,6 +54,7 @@ import { captureUnitBillingContext, computeFinalUnitBilling, estimateUnitRequest
 import { nativeVideoAcceptance, nativeVideoDelivered, nativeVideoRoute, requestService, type NativeVideoRoute } from '@antseed/api-adapter';
 import type { PendingResourceCharge, ResourceOwnershipStore } from './resources/resource-ownership-store.js';
 import type { ServiceApiProtocol } from './types/service-api.js';
+import { announcedProviderId } from './discovery/provider-id.js';
 import { isNativeVideoProtocol } from '@antseed/protocol/service-api';
 import { speechVoiceProblem } from '@antseed/protocol/peer-metadata';
 import {
@@ -238,6 +239,8 @@ const ATTEST_RATE_MAX_TRACKED_PEERS = 1024;
 export class SellerRequestHandler {
   private readonly _deps: SellerRequestHandlerDeps;
   private readonly _providerLoadCounts = new Map<string, number>();
+  /** Provider name → the ID buyers see for it (see announcedProviderId). */
+  private readonly _providerIds = new Map<string, string>();
   /** Per channel: the highest spend a catch-up NeedAuth was already sent for, so parked requests ask once. */
   private readonly _catchUpPrompted = new Map<string, bigint>();
   private readonly _attestRateWindows = new Map<string, { start: number; count: number }>();
@@ -1185,7 +1188,7 @@ export class SellerRequestHandler {
             responseForAuth,
             {
               buyerPeerId,
-              providerName: provider.name,
+              providerName: this.announcedProviderId(provider.name),
               advertisedService: requestedModel,
               responseStartedAt,
               responseCompletedAt: Date.now(),
@@ -1477,7 +1480,9 @@ export class SellerRequestHandler {
     const serving = providers.filter(matchesService);
     let provider: Provider | undefined;
     if (requestedProvider) {
-      provider = pick(serving.filter((candidate) => candidate.name.toLowerCase() === requestedProvider));
+      // Buyers name the announced ID; the provider's own name still works for clients that send it.
+      provider = pick(serving.filter((candidate) =>
+        candidate.name.toLowerCase() === requestedProvider || this.announcedProviderId(candidate.name) === requestedProvider));
     }
     if (!provider && !(videoRoute && requestedProvider)) {
       provider = pick(serving);
@@ -1506,6 +1511,16 @@ export class SellerRequestHandler {
     return provider.serviceUnitBillingModels?.[context.service]?.[context.serviceApiProtocol];
   }
 
+  /** The ID this seller announces for a provider in place of its name. */
+  announcedProviderId(providerName: string): string {
+    let id = this._providerIds.get(providerName);
+    if (!id) {
+      id = announcedProviderId(this._deps.identity.privateKey, providerName);
+      this._providerIds.set(providerName, id);
+    }
+    return id;
+  }
+
   // -- Load tracking --
 
   adjustProviderLoad(providerName: string, delta: number): void {
@@ -1514,7 +1529,7 @@ export class SellerRequestHandler {
 
     const announcer = this._deps.announcer;
     if (!announcer) return;
-    announcer.updateLoad(providerName, nextLoad);
+    announcer.updateLoad(this.announcedProviderId(providerName), nextLoad);
     this._scheduleMetadataRefresh();
   }
 
