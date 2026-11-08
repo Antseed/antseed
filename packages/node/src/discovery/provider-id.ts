@@ -16,6 +16,11 @@ export function announcedProviderId(privateKey: Uint8Array, providerName: string
     .slice(0, 12);
 }
 
+/** The name buyers see for a provider: its ID when `useIds`, else its own name. */
+export function announcedProviderName(privateKey: Uint8Array, providerName: string, useIds: boolean): string {
+  return useIds ? announcedProviderId(privateKey, providerName) : providerName;
+}
+
 /**
  * A provider's service protocols with the ones buyers used to infer from its
  * name filled in, for services that announce none: with the name replaced by

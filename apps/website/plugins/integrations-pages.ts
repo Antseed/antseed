@@ -512,8 +512,8 @@ function renderSkillMarkdown(): string {
   out.push('');
   out.push('Other optional headers:');
   out.push('');
-  out.push('- `x-antseed-provider: <providerId>` — when a peer exposes the same service');
-  out.push('  through more than one provider (rare), force a specific one, by the provider ID');
+  out.push('- `x-antseed-provider: <provider>` — when a peer exposes the same service');
+  out.push('  through more than one provider (rare), force a specific one, by the name or ID');
   out.push('  the peer announces (`antseed network peer <peerId>`). Most tools never need this.');
   out.push('');
 

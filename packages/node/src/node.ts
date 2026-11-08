@@ -120,7 +120,7 @@ import { SellerPaymentManager, type SellerPaymentConfig } from "./payments/selle
 import { IdentityClient } from "./payments/evm/identity-client.js";
 import { SellerRequestHandler, assertSameNameUpstreamsAgree, assertSingleRoutingService } from "./seller-request-handler.js";
 import { ServicePerformanceTracker } from "./health/service-performance.js";
-import { announcedProviderId, withDefaultServiceApiProtocols } from "./discovery/provider-id.js";
+import { announcedProviderName, withDefaultServiceApiProtocols } from "./discovery/provider-id.js";
 import {
   BuyerRequestHandler,
   type RequestStreamCallbacks,
@@ -633,11 +633,6 @@ export class AntseedNode extends EventEmitter {
 
   get identity(): Identity | null {
     return this._identity;
-  }
-
-  /** The name buyers see for a provider: its ID with `announceProviderIds`, else its plugin name. */
-  private _announcedProviderName(identity: Identity, providerName: string): string {
-    return this._config.announceProviderIds ? announcedProviderId(identity.privateKey, providerName) : providerName;
   }
 
   registerProvider(provider: Provider): void {
@@ -2259,7 +2254,7 @@ export class AntseedNode extends EventEmitter {
             ? withDefaultServiceApiProtocols(p.name, p.services, p.serviceApiProtocols)
             : p.serviceApiProtocols;
           return {
-          provider: this._announcedProviderName(identity, p.name),
+          provider: announcedProviderName(identity.privateKey, p.name, this._config.announceProviderIds === true),
           services: p.services,
           ...(p.serviceCategories ? { serviceCategories: { ...p.serviceCategories } } : {}),
           ...(serviceApiProtocols ? { serviceApiProtocols: { ...serviceApiProtocols } } : {}),
@@ -2286,7 +2281,7 @@ export class AntseedNode extends EventEmitter {
         region: "unknown",
         pricing: new Map(
           this._providers.map((p) => [
-            this._announcedProviderName(identity, p.name),
+            announcedProviderName(identity.privateKey, p.name, this._config.announceProviderIds === true),
             {
               defaults: {
                 inputUsdPerMillion: p.pricing.defaults.inputUsdPerMillion,
