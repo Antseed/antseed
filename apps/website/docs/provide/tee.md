@@ -108,6 +108,8 @@ node deploy/tee-seller/compose.mjs --image ghcr.io/antseed/tee-seller@sha256:<di
   --env ANTSEED_VERIFIER_PROVIDER_BINDING_PUBKEY_FIELD=e2e_pubkey > docker-compose.json
 ```
 
+Buyers count the provider's quote (and show **Full TEE**) only when the provider is where your node sends prompts: your config has one upstream origin, and your node fetched the quote from that same origin. The fetch doesn't follow redirects, and the node reports the origin it used (images with verifier 0.1.6 or later). A second upstream, such as a fallback to a non-TEE API, evidence from another host, or an older image fails `seller-provider-tee-genuine` with the reason. Your node's own attestation is unaffected.
+
 The SDK is provider-agnostic: no vendor hosts or schemas are built in, so pointing it at a different confidential-inference backend is configuration only. For a worked example against a live third-party TDX provider, see the [SDK's end-to-end guide](https://github.com/Antseed/antseed/blob/main/packages/antseed-verifier/docs/e2e-report-data-schemes.md).
 
 For an ACI-compatible provider, use the [`aci` adapter](https://github.com/Antseed/antseed/blob/main/packages/antseed-verifier/REDPILL.md):

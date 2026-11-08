@@ -86,10 +86,11 @@ async function nodeEvidence(nonce: Uint8Array, signer = sign): Promise<Uint8Arra
 }
 
 /** Full bundle: bound node quote, provider quote, and one seller-bound signature that covers both. */
-async function fullBundleEvidence(nonce: Uint8Array, signer = sign): Promise<Uint8Array> {
+async function fullBundleEvidence(nonce: Uint8Array, signer = sign, providerOrigin: string | null = 'https://upstream.example'): Promise<Uint8Array> {
   const bundle = {
     'seller-node-tee-genuine': nodeQuoteEvidence(nonce),
-    'seller-provider-tee-genuine': encodeTeeTdxEvidence(randomBytes(64)),
+    // The reference compose's one upstream is https://upstream.example.
+    'seller-provider-tee-genuine': encodeTeeTdxEvidence(randomBytes(64), undefined, undefined, providerOrigin ? { origin: providerOrigin } : undefined),
   }
   return encodeAttestResponse({ ...bundle, 'seller-bound': await signBundle(nonce, bundle, signer) })
 }
@@ -152,6 +153,18 @@ describe('runVerify — happy path (one claim per capability)', () => {
     // measured-image derives from the provider quote but never passes without a policy.
     expect(findClaim(r, MEASURED)?.ok).toBe(false)
     expect(findClaim(r, MEASURED)?.detail).toMatch(/no approved measurement set configured/)
+  })
+
+  it('fails the provider tee when the attested provider is not where the seller sends prompts', async () => {
+    // Fetched from another host, or by an older prover that doesn't report where.
+    for (const origin of ['https://other.example', null]) {
+      const { ctx } = makeCtx(async (nonce) => ok200(await fullBundleEvidence(nonce, sign, origin)))
+      const r = await runVerify(ctx, okVerify)
+      // The node still passes: what the seller can see is unchanged. Only the provider claim fails.
+      expect(r.ok).toBe(true)
+      expect(findClaim(r, NODE)?.ok).toBe(true)
+      expect(findClaim(r, PROVIDER)).toMatchObject({ ok: false, detail: expect.stringMatching(/sends prompts to https:\/\/upstream\.example, not only to the attested provider/) })
+    }
   })
 })
 

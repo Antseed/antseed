@@ -118,6 +118,21 @@ describe('aci adapter', () => {
     expect(Buffer.from(ev.quote).equals(quoteBytes)).toBe(true)
     expect(ev.bindingScheme).toBe('aci-keyset-v1')
     expect(ev.ingredients?.keysetDigest).toBe(`sha256:${digest}`)
+    expect(ev.origin).toBe(stub.base)
+  })
+
+  it('refuses a redirect, so the evidence comes from the configured origin', async () => {
+    // The redirect target serves valid evidence, so only refusing the redirect makes this fail.
+    const evidence = JSON.stringify({ workload_keyset_digest: `sha256:${'c'.repeat(64)}`, attestation: { evidence: { quote: 'abcd' } } })
+    server = createServer((req, res) => {
+      if (req.url?.startsWith('/elsewhere')) { res.writeHead(200, { 'content-type': 'application/json' }); res.end(evidence); return }
+      res.writeHead(302, { location: `/elsewhere${req.url?.slice(req.url.indexOf('?')) ?? ''}` })
+      res.end()
+    })
+    await new Promise<void>((resolve) => server!.listen(0, '127.0.0.1', () => resolve()))
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+    const adapter = await loadAdapter('aci')
+    await expect(adapter.fetchEvidence(NONCE, { ACI_ATTESTATION_URL: `${base}/v1/aci/attestation` })).rejects.toThrow(/fetch failed/)
   })
 
   it('prefers ANTSEED_VERIFIER_PROVIDER_ACI_URL and preserves query parameters and bearer auth', async () => {
