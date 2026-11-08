@@ -54,7 +54,7 @@ import { captureUnitBillingContext, computeFinalUnitBilling, estimateUnitRequest
 import { nativeVideoAcceptance, nativeVideoDelivered, nativeVideoRoute, requestService, type NativeVideoRoute } from '@antseed/api-adapter';
 import type { PendingResourceCharge, ResourceOwnershipStore } from './resources/resource-ownership-store.js';
 import type { ServiceApiProtocol } from './types/service-api.js';
-import { announcedProviderId, announcedProviderName } from './discovery/provider-id.js';
+import { announcedProviderId } from './discovery/provider-id.js';
 import { isNativeVideoProtocol } from '@antseed/protocol/service-api';
 import { speechVoiceProblem } from '@antseed/protocol/peer-metadata';
 import {
@@ -1515,7 +1515,7 @@ export class SellerRequestHandler {
 
   /** The name buyers see for a provider: its ID with `announceProviderIds`, else the provider's own name. */
   announcedProviderName(providerName: string): string {
-    return announcedProviderName(this._deps.identity.privateKey, providerName, this._deps.announceProviderIds === true);
+    return this._deps.announceProviderIds === true ? this.announcedProviderId(providerName) : providerName;
   }
 
   /** The ID this seller announces for a provider with `announceProviderIds`. */
