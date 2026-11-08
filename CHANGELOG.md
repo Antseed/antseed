@@ -12,6 +12,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- Sellers (`@antseed/node`): also announce the port in `seller.publicAddress` when it differs from the listening port. This supports public TCP forwarding (for example, `14532` → `6882`) while keeping the listening endpoint discoverable when the public address names a different host. TEE deployment docs describe the mapping.
 - TEE sellers on Phala Cloud (`@antseed/antseed-verifier` 0.1.5, CLI): buyers accept an app compose with an empty `init_script`, which Phala Cloud's `phala` CLI always writes (even with `--clear-init-scripts`), so a seller deployed with `phala deploy --compose` passes `seller-node-tee-genuine`. Before, any `init_script` key failed it with "app compose option init_script is not allowed". An init script that runs anything is still rejected, like a pre-launch script. The TEE docs show the `phala deploy` command.
 - Buyer (`@antseed/buyer-core`, CLI, gateway, desktop): a paid request to a seller whose earlier channel never locked on-chain answers **402 out of credits** at once when your deposits can't fund its reserve. Before, the buyer replayed that channel's reserve, the seller's lock failed, and the request waited 30 seconds for `Lock confirmation timed out`.
 - TEE seller image (`deploy/tee-seller`): the image exposes the signaling (6882/tcp) and DHT (6881/udp) ports. Google Confidential Space blocks every inbound port an image doesn't expose, so buyers couldn't reach a seller running there.
