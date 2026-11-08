@@ -6,6 +6,13 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import { Document, parseDocument } from 'yaml';
 import {
+  buildCodexModelCatalog,
+  CODEX_MODEL_CATALOG_FILE,
+  removeCodexModelCatalog,
+  validateCodexModelCatalog,
+  writeCodexModelCatalog,
+} from './codex-model-catalog.js';
+import {
   WSL_TOOL_PROBES,
   discoverWslToolTargets,
   readWslTargetsForTool,
@@ -1279,8 +1286,13 @@ function removeDroidModelFromFile(filePath: string, patch: DroidConfigPatchDef):
 // table header (TOML requires top-level keys there). Everything the user
 // wrote is left untouched.
 
+/**
+ * A TOML basic string. JSON's escapes are TOML's too, and cover every control
+ * character a gateway's model id could carry (a raw newline breaks the file);
+ * DEL is the one TOML also forbids that JSON leaves as is.
+ */
 function tomlBasicString(value: string): string {
-  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+  return JSON.stringify(value).replace(/\x7f/g, '\\u007f');
 }
 
 function firstTomlTableIndex(lines: readonly string[]): number {
@@ -1333,7 +1345,13 @@ function readTomlTopLevelString(lines: readonly string[], key: string): string |
   const literal = line.match(/=\s*'([^']*)'\s*(#.*)?$/);
   if (literal) return literal[1]!;
   const match = line.match(/=\s*"((?:[^"\\]|\\.)*)"\s*(#.*)?$/);
-  return match ? match[1]!.replace(/\\(.)/g, '$1') : undefined;
+  if (!match) return undefined;
+  try {
+    return JSON.parse(`"${match[1]!}"`) as string;
+  } catch {
+    // TOML-only escapes (\e, \UXXXXXXXX): keep the escaped character.
+    return match[1]!.replace(/\\(.)/g, '$1');
+  }
 }
 
 function removeTomlTopLevelKey(lines: readonly string[], key: string): string[] {
@@ -1358,63 +1376,6 @@ function applyCodexConfigPatch(patch: CodexConfigPatchDef, t: ResolvedTarget, ws
     wslTargetsFile,
     write: (paths, url) => applyCodexProviderToFile(paths.configPath, patch, url, t),
   });
-}
-
-const CODEX_MODEL_CATALOG_FILE = 'antseed-models.json';
-
-function runCodexDebugModels(filePath: string, args: readonly string[] = []): string {
-  return execFileSync('codex', ['debug', 'models', ...args], {
-    env: { ...process.env, CODEX_HOME: path.dirname(filePath) },
-    encoding: 'utf8',
-    maxBuffer: 128 * 1024 * 1024,
-    stdio: ['ignore', 'pipe', 'ignore'],
-    timeout: 15_000,
-    windowsHide: true,
-    shell: process.platform === 'win32',
-  });
-}
-
-/**
- * Codex lists only its own catalog, so the gateway's models go in a catalog of
- * our own. Entries take their instructions and limits from the installed
- * Codex, so they match its version. Null when Codex can't be asked.
- */
-function codexModelCatalog(filePath: string, t: ResolvedTarget): string | null {
-  try {
-    const bundled = JSON.parse(runCodexDebugModels(filePath, ['--bundled'])) as { models?: JsonObject[] };
-    const base = bundled.models?.[0];
-    if (!base) return null;
-    return JSON.stringify({
-      models: t.models.map((model, priority) => ({
-        slug: model.id,
-        display_name: modelLabel(model),
-        description: '',
-        default_reasoning_level: 'medium',
-        supported_reasoning_levels: [{ effort: 'medium', description: 'Default' }],
-        // The bundled GPT entries use tools other models can't call.
-        shell_type: 'shell_command',
-        apply_patch_tool_type: 'freeform',
-        experimental_supported_tools: [],
-        visibility: 'list',
-        supported_in_api: true,
-        priority,
-        support_verbosity: false,
-        context_window: ANTSEED_MODEL_CONTEXT_WINDOW,
-        truncation_policy: base['truncation_policy'],
-        base_instructions: base['base_instructions'],
-      })),
-    });
-  } catch {
-    return null;
-  }
-}
-
-function removeCodexModelCatalog(filePath: string): void {
-  try {
-    unlinkSync(path.join(path.dirname(filePath), CODEX_MODEL_CATALOG_FILE));
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
-  }
 }
 
 function applyCodexProviderToFile(filePath: string, patch: CodexConfigPatchDef, baseURL: string, t: ResolvedTarget): void {
@@ -1460,14 +1421,13 @@ function applyCodexProviderToFile(filePath: string, patch: CodexConfigPatchDef, 
   writeTextFile(filePath, `${lines.join('\n')}\n`);
   // A catalog can only be built by the Codex on this machine, not one inside WSL.
   if (t.legacy || t.models.length === 0 || filePath.startsWith('\\\\')) return;
-  const catalog = codexModelCatalog(filePath, t);
+  const catalog = buildCodexModelCatalog(filePath, t.models);
   if (!catalog) return;
-  mkdirSync(path.dirname(filePath), { recursive: true });
-  writeFileSync(path.join(path.dirname(filePath), CODEX_MODEL_CATALOG_FILE), catalog, 'utf8');
+  writeCodexModelCatalog(filePath, catalog);
   writeTextFile(filePath, `${setTomlTopLevelString(lines, 'model_catalog_json', CODEX_MODEL_CATALOG_FILE).join('\n')}\n`);
   // Codex refuses to start on a catalog it can't parse, so never leave one behind.
   try {
-    runCodexDebugModels(filePath);
+    validateCodexModelCatalog(filePath);
   } catch {
     // Back to the user's own catalog if they had one. Otherwise no reference at
     // all, since an earlier patch's would name the file deleted here.

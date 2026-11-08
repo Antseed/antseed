@@ -256,8 +256,13 @@ registerRuntimeIpc({
 
 // Created here, before any IPC handler can run, and settled in whenReady.
 let settlePluginInstall: (install: Promise<unknown>) => void = () => {};
-holdLocalGatewayUntil(new Promise<void>((resolve) => {
-  settlePluginInstall = (install) => { void install.then(() => resolve(), () => resolve()); };
+holdLocalGatewayUntil(new Promise<void>((resolve, reject) => {
+  // Without the router plugin the buyer exits or runs without routing: no start at all.
+  settlePluginInstall = (install) => {
+    void install.then(() => resolve(), (err: unknown) => reject(new Error(
+      `The router plugin could not be installed, so the local gateway can't start (${err instanceof Error ? err.message : String(err)}). Restart Antseed Desktop to try again.`,
+    )));
+  };
 }));
 
 // ── AI Chat IPC Handlers ──
@@ -387,8 +392,8 @@ app.whenReady().then(async () => {
   void releaseLegacySystemProxy();
 
   // The buyer loads the router plugin, and installing it replaces the plugins
-  // folder, so the gateway only starts once the install has settled. Failure is
-  // already logged inside ensureDefaultPlugin; the gateway then reports its own.
+  // folder, so the gateway only starts once the install has succeeded. Failure
+  // is logged inside ensureDefaultPlugin, and every gateway start then says so.
   const pluginReady = ensureDefaultPlugin('@antseed/router-local', {
     getAppSetupNeeded: () => getAppSetupStatus().needed,
     setAppSetupNeeded: (v) => { setAppSetupStatus({ needed: v }); },
@@ -398,27 +403,28 @@ app.whenReady().then(async () => {
     onAppSetupCompleted: () => { void telemetryReady.then((telemetry) => telemetry?.recordSetupCompleted()); },
     getMainWindow,
     appendLog,
-  }).catch(() => {
-    // Failure is already logged via appendLog inside ensureDefaultPlugin.
   });
 
   // The local gateway (and its buyer) comes up with the app; connected apps
   // are re-pointed at it once it serves. Nothing to start for a remote one.
   settlePluginInstall(pluginReady);
+  // Apps and skills follow only a gateway that started (or a remote one).
   void pluginReady
     .then(() => ensureLocalGateway())
-    .catch((err) => {
-      appendLog('gateway', 'system', `Gateway start failed: ${err instanceof Error ? err.message : String(err)}`);
-    })
-    .then(() => reconnectAllApps())
-    .catch((err) => {
-      appendLog('gateway', 'system', `Reconnecting apps failed: ${err instanceof Error ? err.message : String(err)}`);
-    })
-    // The gateway may have replaced a key it no longer accepts while starting.
-    .then(() => syncInstalledAgentSkills())
-    .catch((err) => {
-      appendLog('gateway', 'system', `Updating agent skills failed: ${err instanceof Error ? err.message : String(err)}`);
-    });
+    .then(
+      async () => {
+        await reconnectAllApps().catch((err) => {
+          appendLog('gateway', 'system', `Reconnecting apps failed: ${err instanceof Error ? err.message : String(err)}`);
+        });
+        // The gateway may have replaced a key it no longer accepts while starting.
+        await syncInstalledAgentSkills().catch((err) => {
+          appendLog('gateway', 'system', `Updating agent skills failed: ${err instanceof Error ? err.message : String(err)}`);
+        });
+      },
+      (err) => {
+        appendLog('gateway', 'system', `Gateway start failed: ${err instanceof Error ? err.message : String(err)}`);
+      },
+    );
 
   // Resume the Telegram bridge if a bot was connected in a previous session.
   // Needs app-ready because the token store decrypts via safeStorage.

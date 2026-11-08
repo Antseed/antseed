@@ -7,8 +7,32 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 
 const SERVED_PEER_HEADER = 'x-antseed-peer-id';
-/** How each chat protocol ends a stream. */
-const STREAM_END = /\[DONE\]|"finish_reason":\s*"[a-z_]+"|response\.completed|message_stop/;
+/** The event names that end a Responses or Anthropic Messages stream. */
+const END_EVENTS: ReadonlySet<string> = new Set(['response.completed', 'message_stop']);
+
+/**
+ * Whether one SSE line is a stream's end record: `[DONE]`, a choice with a
+ * finish reason, or an end event. Read from the record's own fields, never
+ * from text: a reply can quote any of these words.
+ */
+export function isStreamEndLine(line: string): boolean {
+  const event = /^event:\s*(.*)$/.exec(line);
+  if (event) return END_EVENTS.has(event[1]!.trim());
+  const data = /^data:\s*(.*)$/.exec(line);
+  if (!data) return false;
+  const payload = data[1]!.trim();
+  if (payload === '[DONE]') return true;
+  let record: unknown;
+  try {
+    record = JSON.parse(payload);
+  } catch {
+    return false;
+  }
+  if (!record || typeof record !== 'object') return false;
+  const { type, choices } = record as { type?: unknown; choices?: unknown };
+  if (typeof type === 'string' && END_EVENTS.has(type)) return true;
+  return Array.isArray(choices) && choices.some((choice) => typeof (choice as { finish_reason?: unknown } | null)?.finish_reason === 'string');
+}
 
 type ChatRun = {
   onPeer: (peerId: string) => void;
@@ -23,16 +47,16 @@ async function reachedStreamEnd(response: Response): Promise<boolean> {
   const reader = response.body?.getReader();
   if (!reader) return true;
   const decoder = new TextDecoder();
-  let tail = '';
+  // The line still being received: a record split across chunks is read whole.
+  let partial = '';
   let ended = false;
   try {
     for (;;) {
       const { done, value } = await reader.read();
+      const lines = (partial + (done ? decoder.decode() : decoder.decode(value, { stream: true }))).split(/\r?\n/);
+      partial = done ? '' : lines.pop()!;
+      ended = ended || lines.some(isStreamEndLine);
       if (done) return ended;
-      // Keeps a marker split across two chunks findable.
-      const text = tail + decoder.decode(value, { stream: true });
-      ended = ended || STREAM_END.test(text);
-      tail = text.slice(-40);
     }
   } catch {
     return false;

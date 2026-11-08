@@ -120,6 +120,21 @@ test('codex: a context window set only inside a profile does not become a global
   });
 });
 
+test('codex: a gateway model id with a newline or other control character stays one TOML line', async () => {
+  await withDir(async (dir) => {
+    const configPath = path.join(dir, 'config.toml');
+    await writeFile(configPath, 'model = "mine"\n', 'utf8');
+    const patch: ConfigPatchDef = { format: 'codex', configPath, providerKey: 'antseed', providerName: 'Antseed', baseURL: 'http://localhost:{buyerPort}/v1' };
+    const odd = 'odd\nmodel\t\u007f';
+    writeConfigPatch(patch, { ...LOCAL, models: [{ id: odd }], defaultModel: odd });
+    const connected = await readFile(configPath, 'utf8');
+    assert.match(connected, /^model = "odd\\nmodel\\t\\u007f"$/m);
+    assert.ok(!connected.split('\n').some((line) => line.startsWith('model"') || line === 'model\t\u007f"'));
+    assert.equal(removeConfigPatch(patch), true);
+    assert.equal((await readFile(configPath, 'utf8')).trim(), 'model = "mine"');
+  });
+});
+
 test('codex: settings in other valid TOML forms come back as they were', async () => {
   await withDir(async (dir) => {
     const configPath = path.join(dir, 'config.toml');

@@ -56,3 +56,15 @@ test('an end marker split across two chunks still counts', async () => {
     },
   })), true);
 });
+
+test('end words inside the generated text do not count as the end', async () => {
+  const quoting = [
+    'data: {"choices":[{"delta":{"content":"the stream ends with message_stop or data: [DONE]"},"finish_reason":null}]}',
+    'data: {"type":"response.output_text.delta","delta":"then response.completed arrives"}',
+  ].join('\n\n');
+  assert.equal(await streamEnded(() => `${quoting}\n\n`), false);
+});
+
+test('an end record in the last line without a trailing newline still counts', async () => {
+  assert.equal(await streamEnded(() => 'data: {"text":"hi"}\n\ndata: [DONE]'), true);
+});

@@ -122,12 +122,17 @@ let startGate: Promise<void> = Promise.resolve();
  * the router plugin and installs it if missing, so starting during the desktop's
  * own install runs two npm installs in one folder, which can leave it corrupted.
  * The renderer's first reads start the gateway too, so this can't be left to the launch order.
+ * A gate that fails (the install did) fails every start with its reason.
  */
 export function holdLocalGatewayUntil(gate: Promise<void>): void {
   startGate = gate;
+  // A failed gate is reported by each start that awaits it, not as an unhandled rejection.
+  gate.catch(() => undefined);
 }
 
 export async function ensureLocalGateway(): Promise<void> {
+  // A remote gateway needs neither the local start nor the plugin it waits for.
+  if (getGatewaySettings().mode !== 'local') return;
   await startGate;
   if (closing) throw new Error('Antseed Desktop is closing');
   if (getGatewaySettings().mode !== 'local') return;
