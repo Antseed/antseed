@@ -2016,7 +2016,9 @@ function removeGooseProviderFromFile(
     changed = true;
   }
   if (!keepSelection) {
-    changed = restoreGooseUserProvider(filePath) || changed;
+    // The user's own provider comes back only after the write below, so a failed write can be retried.
+    const restoresProvider = existsSync(savedGooseUserProviderPath(filePath)) && !readGooseCustomProvider(filePath).exists;
+    changed = restoresProvider || changed;
     const saved = readSelection(filePath);
     if (changed && readYamlTopLevelString(lines, 'GOOSE_PROVIDER') === undefined) {
       for (const key of ['GOOSE_PROVIDER', 'GOOSE_MODEL']) {
@@ -2030,6 +2032,7 @@ function removeGooseProviderFromFile(
     writeTextFile(filePath, lines.length > 0 ? `${lines.join('\n')}\n` : '');
   }
   // Only after the write, so a failed one can be retried with them.
+  if (!keepSelection) restoreGooseUserProvider(filePath);
   if (state) deleteGoosePatchState(filePath);
   if (!keepSelection) forgetSelection(filePath);
   return changed || state !== null;

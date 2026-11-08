@@ -257,7 +257,7 @@ export function ChatSellerPicker({ modelId, disabled, onChange, onOpenChange, me
                   <span className={styles.sellerDot} style={{ background: sellerColor(candidate.peerId) }} aria-hidden="true" />
                   <span className={styles.itemName}>{sellerName(candidate)}</span>
                 </span>
-                <span className={styles.itemPrice}>{formatPriceRange(candidate)}</span>
+                <span className={styles.itemPrice}>{priceTag(candidate)}</span>
               </span>
               <span className={styles.itemMeta}>{candidate.reasons[0] ?? 'Excluded by your routing policy'}</span>
             </div>

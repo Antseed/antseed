@@ -294,6 +294,10 @@ test('goose: a custom_antseed provider the user already had comes back on discon
     writeConfigPatch(patch, REMOTE);
     assert.equal(isConfigPatchConnected(patch), true);
 
+    // A failed config write leaves the user's provider saved, so the retry still restores both.
+    await chmod(configPath, 0o444);
+    assert.throws(() => removeConfigPatch(patch), /EACCES|permission/i);
+    await chmod(configPath, 0o600);
     assert.equal(removeConfigPatch(patch), true);
     assert.equal(await readFile(providerPath, 'utf8'), mine);
     assert.deepEqual(parse(await readFile(configPath, 'utf8')), { GOOSE_PROVIDER: 'custom_antseed', GOOSE_MODEL: 'my-model' });

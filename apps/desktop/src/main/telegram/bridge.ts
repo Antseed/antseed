@@ -375,8 +375,9 @@ export function createTelegramBridge({ engine, appendLog, onStatusChanged }: Tel
   // ── Inbound Telegram updates ────────────────────────────────────────
 
   /** The bot's own pick while it can still be routed to, else the best model that works without funds. */
-  const resolveModel = async (): Promise<string | null> => {
-    const models = await engine.listModels();
+  /** Pass `models` when the caller has just loaded them, so the catalog isn't fetched twice. */
+  const resolveModel = async (models?: Awaited<ReturnType<PiChatEngine['listModels']>>): Promise<string | null> => {
+    models ??= await engine.listModels();
     const saved = settings?.model;
     if (saved && models.some((model) => model.id === saved)) return saved;
     return models[0]?.id ?? null;
@@ -394,7 +395,7 @@ export function createTelegramBridge({ engine, appendLog, onStatusChanged }: Tel
       void sendToOwner(telegramModelPickerText(false));
       return;
     }
-    const current = await resolveModel().catch(() => null);
+    const current = await resolveModel(models).catch(() => null);
     modelPickGen += 1;
     const gen = modelPickGen;
     const keyboard: TgReplyMarkup = {
@@ -439,7 +440,7 @@ export function createTelegramBridge({ engine, appendLog, onStatusChanged }: Tel
     const models = await engine.listModels();
     const { modelId } = splitPinnedModel(current);
     if (models.length === 0 || models.some((model) => model.id === modelId)) return;
-    const next = await resolveModel();
+    const next = await resolveModel(models);
     if (!next) return;
     await engine.setConversationModel(conversationId, next);
     const label = models.find((model) => model.id === next)?.label || next;

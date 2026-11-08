@@ -24,6 +24,7 @@ import {
   deleteLocalKey,
   getGatewaySettings,
   getLocalKey,
+  getLocalKeyEntry,
   getRemoteKey,
   listLocalKeys,
   setLocalKey,
@@ -108,7 +109,7 @@ export async function getGatewayStatus(): Promise<GatewayStatus> {
   const origin = currentOrigin();
   const running = settings.mode === 'remote' ? true : isLocalRunning();
   const reachable = origin ? await probe(origin) : false;
-  const hasKey = settings.mode === 'remote' ? getRemoteKey() !== null : getLocalKey(DESKTOP_KEY_SCOPE) !== null;
+  const hasKey = settings.mode === 'remote' ? getRemoteKey() !== null : getLocalKeyEntry(DESKTOP_KEY_SCOPE) !== null;
   return { mode: settings.mode, origin, keyMode: settings.keyMode, running, reachable, hasKey, lastError };
 }
 
@@ -316,7 +317,7 @@ export async function rotateLocalKeys(scope?: string): Promise<void> {
   const usedScopes = scope ? [scope] : listLocalKeys().map((entry) => entry.scope)
     .filter((target) => getGatewaySettings().keyMode === 'per-app' || target === DESKTOP_KEY_SCOPE);
   await rotateKeys(usedScopes, {
-    get: getLocalKey,
+    get: getLocalKeyEntry,
     rotate: async (id) => {
       // The user asked for a working key, so here a revoked or expired one gives way to a new one.
       if (!keyIsUsable(await readKeyRecord(id))) {
@@ -328,7 +329,7 @@ export async function rotateLocalKeys(scope?: string): Promise<void> {
       return parsed.apiKey;
     },
     save: (target, secret) => {
-      const existing = getLocalKey(target);
+      const existing = getLocalKeyEntry(target);
       if (existing) setLocalKey(target, { ...existing, secret });
     },
     forget: deleteLocalKey,
@@ -344,7 +345,7 @@ export async function rotateLocalKeys(scope?: string): Promise<void> {
 export async function revokeUnusedAppKeys(): Promise<void> {
   const unused = unusedAppKeyScopes(getGatewaySettings(), listLocalKeys().map((entry) => entry.scope), DESKTOP_KEY_SCOPE);
   await rotateKeys(unused, {
-    get: getLocalKey,
+    get: getLocalKeyEntry,
     rotate: async (id) => {
       await runGatewayCli(['key', 'revoke', id]);
       return null;

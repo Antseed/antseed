@@ -11,6 +11,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { resolveConnectDataDir } from '../runtime/process-manager.js';
 import { normalizeGatewayUrl } from './remote-url.js';
+import { readStoredKey } from './rotate-keys.js';
 import type { GatewayKeyMode, GatewayMode, GatewayPrivacyMode, GatewaySettings, GatewaySettingsPatch } from '../../shared/gateway-types.js';
 
 export type { GatewayKeyMode, GatewayMode, GatewayPrivacyMode, GatewaySettings };
@@ -142,11 +143,15 @@ export function getRemoteKey(): string | null {
   return enc ? decrypt(enc) : null;
 }
 
+/** Throws for a saved key whose secret can't be decrypted (see `readStoredKey`). */
 export function getLocalKey(scope: string): StoredGatewayKey | null {
+  return readStoredKey(load().localKeys[scope], decrypt);
+}
+
+/** A saved key's id and label, readable even when its secret is not. */
+export function getLocalKeyEntry(scope: string): { id: string | null; label: string } | null {
   const entry = load().localKeys[scope];
-  if (!entry) return null;
-  const secret = decrypt(entry.secretEnc);
-  return secret ? { id: entry.id, label: entry.label, secret } : null;
+  return entry ? { id: entry.id, label: entry.label } : null;
 }
 
 export function listLocalKeys(): Array<{ scope: string; id: string | null; label: string }> {

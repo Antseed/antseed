@@ -1,4 +1,22 @@
-type RotatableKey = { id: string | null; secret: string };
+import type { StoredGatewayKey } from './settings.js';
+
+type RotatableKey = { id: string | null };
+
+type SavedKeyEntry = { id: string | null; label: string; secretEnc: string };
+
+/**
+ * A saved local key, or null when none is saved. One whose secret can't be
+ * decrypted is an error, not a missing key: a new key in its place would lose
+ * its limits and policy while the old one still works on the gateway.
+ */
+export function readStoredKey(entry: SavedKeyEntry | undefined, decrypt: (enc: string) => string | null): StoredGatewayKey | null {
+  if (!entry) return null;
+  const secret = decrypt(entry.secretEnc);
+  if (!secret) {
+    throw new Error(`The saved "${entry.label}" key can't be read on this computer. Use Replace keys in Settings: it gets a new secret and keeps its limits and policy.`);
+  }
+  return { id: entry.id, label: entry.label, secret };
+}
 
 /** The gateway no longer knows the key (its database was reset, say), so nothing can use it. */
 export function isKeyGone(err: unknown): boolean {

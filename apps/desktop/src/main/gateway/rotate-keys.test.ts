@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { assertKeyMayBeRecreated, keyIsUsable, rotateKeys, unusedAppKeyScopes } from './rotate-keys.js';
+import { assertKeyMayBeRecreated, keyIsUsable, readStoredKey, rotateKeys, unusedAppKeyScopes } from './rotate-keys.js';
 
 function store(keys: Record<string, { id: string | null; secret: string }>) {
   return {
@@ -82,4 +82,11 @@ test('per-app keys are revoked only on a local gateway in shared key mode', () =
   assert.deepEqual(unusedAppKeyScopes({ mode: 'local', keyMode: 'per-app' }, scopes, 'desktop'), []);
   // After a switch to a remote gateway the local one is stopped: its keys wait for the next local switch.
   assert.deepEqual(unusedAppKeyScopes({ mode: 'remote', keyMode: 'shared' }, scopes, 'desktop'), []);
+});
+
+test('a saved key that cannot be decrypted is an error, not a missing key to replace', () => {
+  const entry = { id: 'key_1', label: 'Antseed Desktop', secretEnc: 'enc' };
+  assert.equal(readStoredKey(undefined, () => 'secret'), null);
+  assert.deepEqual(readStoredKey(entry, () => 'secret'), { id: 'key_1', label: 'Antseed Desktop', secret: 'secret' });
+  assert.throws(() => readStoredKey(entry, () => null), /can't be read.*Replace keys/);
 });
