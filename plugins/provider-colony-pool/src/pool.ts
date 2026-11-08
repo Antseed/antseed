@@ -158,8 +158,6 @@ interface InFlight {
   firstByteAt: number | null;
   /** The answer is an SSE stream, so its delivery time is its generation time. */
   streamed: boolean;
-  /** The caller's request ID; worker frames use a pool-owned dispatch ID, since buyers' IDs can collide. */
-  requestId: string;
 }
 
 export interface RequestTiming {
@@ -608,7 +606,6 @@ export class ColonyPool {
       startedAt: Date.now(),
       firstByteAt: null,
       streamed: false,
-      requestId: req.requestId,
     };
     // The worker must pick the request up quickly, then start answering in time.
     arm(acceptTimeoutMs, `Worker ${worker.address} did not take the request within ${acceptTimeoutMs}ms`, noAnswer);

@@ -76,6 +76,8 @@ final class WorkerController: ObservableObject {
     private var socket: URLSessionWebSocketTask?
     private var backoff: UInt64 = 1
     private var active: [String: Task<Void, Never>] = [:]
+    /// Streamed answers that have sent response-start.
+    private var startedStreams = Set<String>()
     private let gate = RequestGate()
     /// The Channels contract channels are checked on, once the RPC's chain id is known.
     private var trustedChannels: String?
@@ -403,12 +405,11 @@ final class WorkerController: ObservableObject {
         let service = config.service
         let sealer = opened.sealer
 
+        defer { startedStreams.remove(id) }
         do {
-            if stream {
-                send(["t": "response-start", "id": id, "status": 200, "headers": ["content-type": "text/event-stream"]])
-            }
             let result = try await model.generate(messages: messages, maxTokens: maxTokens, maxPromptTokens: promptLimit, temperature: temperature) { [weak self] piece in
                 guard stream else { return }
+                await self?.startStream(id)
                 let chunk: [String: Any] = [
                     "id": completionId, "object": "chat.completion.chunk", "created": created, "model": service,
                     "choices": [["index": 0, "delta": ["content": piece]]],
@@ -422,6 +423,7 @@ final class WorkerController: ObservableObject {
                 "total_tokens": result.promptTokens + result.completionTokens,
             ]
             if stream {
+                startStream(id)
                 var tail = try sealer.sealEvent("data: " + jsonString([
                     "id": completionId, "object": "chat.completion.chunk", "created": created, "model": service,
                     "choices": [["index": 0, "delta": [String: Any](), "finish_reason": "stop"]],
@@ -446,6 +448,13 @@ final class WorkerController: ObservableObject {
         } catch {
             fail(id, Task.isCancelled ? "cancelled" : error.localizedDescription)
         }
+    }
+
+    /// Starts a streamed answer once, at its first generated text: the pool keeps its first-byte deadline
+    /// until response-start, so model startup and prefill get that allowance rather than the idle one.
+    private func startStream(_ id: String) {
+        guard startedStreams.insert(id).inserted else { return }
+        send(["t": "response-start", "id": id, "status": 200, "headers": ["content-type": "text/event-stream"]])
     }
 
     // MARK: earnings
