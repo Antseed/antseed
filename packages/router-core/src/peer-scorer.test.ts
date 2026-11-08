@@ -165,6 +165,30 @@ describe('scoreCandidates', () => {
     expect(result.map((row) => row.peer.peerId).sort()).toEqual([peerA.peerId, peerB.peerId].sort())
   })
 
+  it('rotates each tied score pool on its own', () => {
+    const score = (seed: string) => ({
+      peer: makePeer({ peerId: makePeerId(seed) }),
+      provider: 'anthropic' as const,
+      providerRank: 0,
+      offer: defaultOffer,
+      metrics: defaultMetrics,
+    })
+    const first = [score('a'), score('b')]
+    const second = [score('c'), score('d')]
+    const firstPicks: string[] = []
+    const secondPicks: string[] = []
+    for (let i = 0; i < 4; i += 1) {
+      firstPicks.push(scoreCandidates(first, defaultContext)[0]!.peer.peerId)
+      secondPicks.push(scoreCandidates(second, defaultContext)[0]!.peer.peerId)
+    }
+    expect(new Set(firstPicks).size).toBe(2)
+    expect(new Set(secondPicks).size).toBe(2)
+    for (let i = 1; i < firstPicks.length; i += 1) {
+      expect(firstPicks[i]).not.toBe(firstPicks[i - 1])
+      expect(secondPicks[i]).not.toBe(secondPicks[i - 1])
+    }
+  })
+
   it('returns empty array for empty candidates', () => {
     const result = scoreCandidates([], defaultContext)
     expect(result).toHaveLength(0)

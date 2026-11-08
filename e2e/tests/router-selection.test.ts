@@ -69,13 +69,15 @@ describe('LocalRouter peer selection hardening', () => {
     expect(router.selectPeer(dummyReq, [peer])?.peerId).toBe(peer.peerId);
   });
 
-  it('uses deterministic tie-breaking for equal-scored peers', () => {
+  it('rotates equal-scored peers instead of pinning the lowest peer id', () => {
     const router = new LocalRouter();
     const lowIdPeer = makePeer({ peerId: '1'.repeat(40) as any, lastSeen: 1_000_000 });
     const highIdPeer = makePeer({ peerId: 'f'.repeat(40) as any, lastSeen: 1_000_000 });
 
-    const selected = router.selectPeer(dummyReq, [highIdPeer, lowIdPeer]);
-    expect(selected?.peerId).toBe(lowIdPeer.peerId);
+    const first = router.selectPeer(dummyReq, [highIdPeer, lowIdPeer]);
+    const second = router.selectPeer(dummyReq, [highIdPeer, lowIdPeer]);
+    expect(new Set([first?.peerId, second?.peerId])).toEqual(new Set([lowIdPeer.peerId, highIdPeer.peerId]));
+    expect(first?.peerId).not.toBe(second?.peerId);
   });
 
   it('falls back to provider defaults for unknown service instead of rejecting peer', () => {

@@ -95,4 +95,34 @@ describe('model reputation', () => {
   it('returns an empty reputation list unchanged', () => {
     expect(rotateEqualReputationHead([])).toEqual([]);
   });
+
+  it('peeks the next seller without spending that turn', () => {
+    const alpha = { peerId: 'p', effectiveReputationScore: 80 };
+    const beta = { peerId: 'q', effectiveReputationScore: 80 };
+    const tied = [alpha, beta].sort(compareEffectiveModelReputation);
+    const preview = rotateEqualReputationHead([...tied], { advance: false, key: 'preview-model' })[0]?.peerId;
+    const live = rotateEqualReputationHead([...tied], { key: 'preview-model' })[0]?.peerId;
+    const nextLive = rotateEqualReputationHead([...tied], { key: 'preview-model' })[0]?.peerId;
+    expect(preview).toBe(live);
+    expect(nextLive).not.toBe(live);
+    expect(new Set([live, nextLive])).toEqual(new Set(['p', 'q']));
+  });
+
+  it('rotates two models that share sellers on their own', () => {
+    const alpha = { peerId: 'a', effectiveReputationScore: 50 };
+    const beta = { peerId: 'b', effectiveReputationScore: 50 };
+    const tied = [alpha, beta].sort(compareEffectiveModelReputation);
+    const modelA: string[] = [];
+    const modelB: string[] = [];
+    for (let i = 0; i < 4; i += 1) {
+      modelA.push(rotateEqualReputationHead([...tied], { key: 'model-a' })[0]?.peerId ?? '');
+      modelB.push(rotateEqualReputationHead([...tied], { key: 'model-b' })[0]?.peerId ?? '');
+    }
+    expect(new Set(modelA)).toEqual(new Set(['a', 'b']));
+    expect(new Set(modelB)).toEqual(new Set(['a', 'b']));
+    for (let i = 1; i < modelA.length; i += 1) {
+      expect(modelA[i]).not.toBe(modelA[i - 1]);
+      expect(modelB[i]).not.toBe(modelB[i - 1]);
+    }
+  });
 });

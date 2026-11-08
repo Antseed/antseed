@@ -303,6 +303,19 @@ test('selected routing service failure never silently uses an inference seller',
   assert.match(response.body, /Routing service unavailable/)
 })
 
+function isRotatedPrefix(actual: string[], cycle: string[]): boolean {
+  if (actual.length === 0 || actual.length > cycle.length) return false
+  for (let shift = 0; shift < cycle.length; shift += 1) {
+    const rotated = cycle.slice(shift).concat(cycle.slice(0, shift))
+    if (actual.every((peerId, index) => peerId === rotated[index])) return true
+  }
+  return false
+}
+
+function routedAttempts(requests: Array<{ peer: PeerInfo; request: SerializedHttpRequest }>): Array<[string, string]> {
+  return requests.map(entry => [entry.peer.peerId, JSON.parse(Buffer.from(entry.request.body).toString()).model])
+}
+
 function makeRankedRoutingFixture(statuses: number[] = [503, 200], recommendations?: RouteRecommendation[]) {
   const peers = ['a', 'b', 'c'].map(seed => {
     const peer = makePeer(seed, ['openai'])
@@ -1131,9 +1144,11 @@ test('ranked routing expands a model-only entry without widening an exact entry'
   ])
   const response = await invokeProxy(proxy, makeProxyRequest({ body: { model: 'antseed', messages: [] } }))
   assert.equal(response.statusCode, 200)
-  assert.deepEqual(calls.requests.map(entry => [entry.peer.peerId, JSON.parse(Buffer.from(entry.request.body).toString()).model]), [
-    ['b'.repeat(40), 'model-a'], ['a'.repeat(40), 'model-b'], ['b'.repeat(40), 'model-b'],
-  ])
+  const attempts = routedAttempts(calls.requests)
+  assert.deepEqual(attempts[0], ['b'.repeat(40), 'model-a'])
+  assert.deepEqual(attempts.filter(([, model]) => model === 'model-a'), [['b'.repeat(40), 'model-a']])
+  const modelB = attempts.filter(([, model]) => model === 'model-b').map(([peerId]) => peerId)
+  assert.ok(isRotatedPrefix(modelB, ['a', 'b', 'c'].map(seed => seed.repeat(40))), modelB.join(','))
 })
 
 test('model-only routing exhausts its allowed sellers before trying the next recommendation', async () => {
@@ -1144,9 +1159,11 @@ test('model-only routing exhausts its allowed sellers before trying the next rec
   const response = await invokeProxy(proxy, makeProxyRequest({ body: { model: 'antseed', messages: [] } }))
   assert.equal(response.statusCode, 200)
   assert.equal(calls.routing, 1)
-  assert.deepEqual(calls.requests.map(entry => [entry.peer.peerId, JSON.parse(Buffer.from(entry.request.body).toString()).model]), [
-    ['a'.repeat(40), 'model-a'], ['b'.repeat(40), 'model-a'], ['c'.repeat(40), 'model-a'], ['b'.repeat(40), 'model-b'],
-  ])
+  const attempts = routedAttempts(calls.requests)
+  const modelA = attempts.filter(([, model]) => model === 'model-a').map(([peerId]) => peerId)
+  assert.equal(attempts.findIndex(([, model]) => model === 'model-b'), modelA.length)
+  assert.ok(isRotatedPrefix(modelA, ['a', 'b', 'c'].map(seed => seed.repeat(40))) && modelA.length === 3, modelA.join(','))
+  assert.deepEqual(attempts.filter(([, model]) => model === 'model-b'), [['b'.repeat(40), 'model-b']])
   // Sellers of one model share the recommendation's billing ID, as in normal model routing; each recommendation gets its own.
   assert.equal(new Set(calls.requests.map(entry => entry.request.requestId)).size, 2)
 })
@@ -1192,7 +1209,9 @@ for (const failure of ['transport', 'timeout'] as const) {
     }
     const response = await invokeProxy(proxy, makeProxyRequest({ body: { model: 'antseed', messages: [] } }))
     assert.equal(response.statusCode, failure === 'transport' ? 502 : 504)
-    assert.deepEqual(calls.requests.map(entry => entry.peer.peerId), peers.map(peer => peer.peerId))
+    const attempts = routedAttempts(calls.requests)
+    assert.deepEqual(attempts.map(([, model]) => model), ['model-a', 'model-a', 'model-a'])
+    assert.ok(isRotatedPrefix(attempts.map(([peerId]) => peerId), peers.map(peer => peer.peerId)))
     assert.equal(calls.routing, 1)
   })
 }
@@ -2784,6 +2803,36 @@ test('BuyerProxy does not forward the Expect header to the seller', async () => 
   }))
   assert.ok(forwardedHeaders)
   assert.equal(forwardedHeaders['expect'], undefined)
+})
+
+test('a route preview does not use up the next live seller when reputation ties', async () => {
+  const alpha = makePeer('a', ['openai'])
+  alpha.reputationScore = 80
+  alpha.providerServiceApiProtocols = { openai: { services: { 'tie-model': ['openai-chat-completions'] } } }
+  const beta = makePeer('b', ['openai'])
+  beta.reputationScore = 80
+  beta.providerServiceApiProtocols = { openai: { services: { 'tie-model': ['openai-chat-completions'] } } }
+  const proxy = makeBuyerProxyWithPeers([alpha, beta], [alpha, beta], permissiveRouter())
+  const attempts: string[] = []
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
+    attempts.push(peer.peerId)
+    return {
+      requestId: request.requestId,
+      statusCode: 200,
+      headers: { 'content-type': 'application/json' },
+      body: Buffer.from('{}'),
+    }
+  }
+  const body = { model: 'tie-model', messages: [] }
+  await invokeProxy(proxy, makeProxyRequest({ body }))
+  await (proxy as any)._routePreview('tie-model', null)
+  await invokeProxy(proxy, makeProxyRequest({ body }))
+  await (proxy as any)._routePreview('tie-model', null)
+  await invokeProxy(proxy, makeProxyRequest({ body }))
+  assert.equal(attempts.length, 3)
+  assert.notEqual(attempts[0], attempts[1])
+  assert.notEqual(attempts[1], attempts[2])
+  assert.equal(new Set(attempts).size, 2)
 })
 
 test('model-only request applies a cached-input pricing reputation penalty', async () => {
