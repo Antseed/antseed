@@ -37,6 +37,9 @@ export interface ImageBuildPolicy {
 
 const DEFAULT_POLICY: ImageBuildPolicy = { ...IMAGE_BUILD, builtAfter: IMAGES_BUILT_AFTER }
 
+/** The bundled trust root, converted once (the type import does not load Sigstore). */
+let trustMaterial: ReturnType<typeof import('@sigstore/verify').toTrustMaterial> | undefined
+
 /**
  * Verify a TEE seller image's build record. Returns the images it approves (each digest it names
  * for the image, labelled with its build date and commit), or why it approves none.
@@ -53,7 +56,8 @@ export async function verifyImageBuild(
     ])
     const parsed = bundleFromJSON(bundle)
     if (parsed.content.$case !== 'dsseEnvelope') return { error: 'build record is not a signed attestation' }
-    const verifier = new Verifier(toTrustMaterial(TrustedRoot.fromJSON(trustedRoot)), { tlogThreshold: 1, ctlogThreshold: 1 })
+    trustMaterial ??= toTrustMaterial(TrustedRoot.fromJSON(trustedRoot))
+    const verifier = new Verifier(trustMaterial, { tlogThreshold: 1, ctlogThreshold: 1 })
     verifier.verify(toSignedEntity(parsed), { subjectAlternativeName: policy.workflow, extensions: { issuer: policy.issuer } })
 
     const envelope = parsed.content.dsseEnvelope
