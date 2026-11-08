@@ -7,7 +7,11 @@
   min-height: 0;
   background: var(--bg-secondary);
   color: var(--text-primary);
-  transition: background-color 0.15s ease;
+  transition: background-color 0.15s ease, grid-template-columns 0.18s ease;
+}
+
+.shellCollapsed {
+  grid-template-columns: var(--sidebar-collapsed-width, 80px) minmax(0, 1fr);
 }
 
 .dragStrip {
@@ -37,10 +41,109 @@
   -webkit-app-region: drag;
 }
 
+.brandRow {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 12px 6px;
+  min-width: 0;
+}
+
 .logo {
   flex: 0 0 auto;
-  margin: 0 6px 12px;
   color: var(--text-primary);
+}
+
+.sidebarToggle {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.sidebarToggle:hover,
+.sidebarToggle:focus-visible {
+  background: var(--bg-sidebar-active);
+  color: var(--text-primary);
+  outline: none;
+}
+
+.railSpacer {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* Collapsed rail: the mark, icon-only buttons, a compact balance. */
+.shellCollapsed .sidebar {
+  padding-left: 10px;
+  padding-right: 10px;
+  align-items: center;
+}
+
+.shellCollapsed .brandRow {
+  flex-direction: column;
+  gap: 10px;
+  margin: 0 0 8px;
+}
+
+.shellCollapsed .newChat {
+  width: 40px;
+  padding: 0;
+  justify-content: center;
+}
+
+.shellCollapsed .newChatLabel,
+.shellCollapsed .shortcut,
+.shellCollapsed .navLabel,
+.shellCollapsed .statusItem,
+.shellCollapsed .statusVersion {
+  display: none;
+}
+
+.shellCollapsed .navGroup {
+  width: 100%;
+  justify-items: center;
+}
+
+.shellCollapsed .navButton {
+  width: 40px;
+  padding: 0;
+  justify-content: center;
+}
+
+.shellCollapsed .navDot {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  margin: 0;
+}
+
+/* The gateway line shrinks to a status dot; its text is in the tooltip. */
+.shellCollapsed .status {
+  justify-content: center;
+  margin: 2px 0 0;
+}
+
+.shellCollapsed .status::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent-green, #10b981);
+}
+
+.shellCollapsed .status:has(.statusWarn)::before {
+  background: var(--accent-yellow);
 }
 
 .newChat {

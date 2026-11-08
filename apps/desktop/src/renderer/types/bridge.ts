@@ -366,6 +366,8 @@ export type DesktopBridge = {
   agentSkillsRemove?: (id: string) => Promise<AgentSkillsResult>;
   /** Copies setup instructions (gateway URL + key) for any other agent to the clipboard. */
   agentSkillsCopyPrompt?: () => Promise<{ ok: boolean; error?: string }>;
+  /** Opens the agent: its desktop app if it has one, else a terminal running its CLI. */
+  agentSkillsOpen?: (id: string) => Promise<{ ok: boolean; via?: 'app' | 'terminal'; error?: string }>;
   /** The gateway, its key or the key mode changed. */
   onGatewayChanged?: (handler: () => void) => () => void;
 };

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
-import { Copy01Icon } from '@hugeicons/core-free-icons';
+import { ArrowUpRight01Icon, Copy01Icon } from '@hugeicons/core-free-icons';
 import type { AgentSkillTarget } from '../../../types/bridge';
 import { AppPillIcon, appPillStyles as pills } from './AppPills';
 import styles from './AgentSkillsPanel.module.scss';
@@ -17,7 +17,8 @@ export function AgentSkillsPanel({ className, page = false }: {
 }) {
   const [agents, setAgents] = useState<AgentSkillTarget[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
-  const [note, setNote] = useState<{ text: string; error: boolean } | null>(null);
+  const [note, setNote] = useState<{ text: string; error: boolean; open?: AgentSkillTarget } | null>(null);
+  const [opening, setOpening] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -40,12 +41,33 @@ export function AgentSkillsPanel({ className, page = false }: {
       if (!result?.ok) {
         setNote({ text: result?.error ?? 'Could not update the skills', error: true });
       } else if (!agent.installed) {
-        setNote({ text: `Added to ${agent.label}. Start a new session and ask, for example, “using Antseed, generate an image of…”`, error: false });
+        const canOpen = agent.detected && Boolean(bridge?.agentSkillsOpen);
+        setNote({
+          // Short enough to share one line with the Open button.
+          text: canOpen
+            ? `Added to ${agent.label}. In a new session, try “using Antseed, generate an image of…”`
+            : `Added to ${agent.label}. Start a new session and ask, for example, “using Antseed, generate an image of…”`,
+          error: false,
+          ...(canOpen ? { open: agent } : {}),
+        });
       }
     } catch (error) {
       setNote({ text: error instanceof Error ? error.message : 'Could not update the skills', error: true });
     } finally {
       setBusy(null);
+    }
+  }
+
+  async function openAgent(agent: AgentSkillTarget): Promise<void> {
+    if (opening) return;
+    setOpening(true);
+    try {
+      const result = await window.antseedDesktop?.agentSkillsOpen?.(agent.id);
+      if (!result?.ok) setNote({ text: result?.error ?? `Could not open ${agent.label}`, error: true });
+    } catch (error) {
+      setNote({ text: error instanceof Error ? error.message : `Could not open ${agent.label}`, error: true });
+    } finally {
+      setOpening(false);
     }
   }
 
@@ -109,9 +131,22 @@ export function AgentSkillsPanel({ className, page = false }: {
         ))}
       </div>
       {note && (
-        <p className={note.error ? `${styles.note} ${styles.noteError}` : styles.note} role={note.error ? 'alert' : 'status'}>
-          {note.text}
-        </p>
+        <div className={styles.noteRow}>
+          <p className={note.error ? `${styles.note} ${styles.noteError}` : styles.note} role={note.error ? 'alert' : 'status'}>
+            {note.text}
+          </p>
+          {note.open && (
+            <button
+              type="button"
+              className={styles.openAgent}
+              disabled={opening}
+              onClick={() => { if (note.open) void openAgent(note.open); }}
+            >
+              {opening ? 'Opening…' : `Open ${note.open.label}`}
+              <HugeiconsIcon icon={ArrowUpRight01Icon} size={14} strokeWidth={1.8} />
+            </button>
+          )}
+        </div>
       )}
     </div>
   );

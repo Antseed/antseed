@@ -26,6 +26,7 @@ import {
 } from '../gateway/settings.js';
 import { reconnectAllApps } from '../connected-apps/patching/connection.js';
 import { findConnectableProfile } from '../connected-apps/patching/profiles.js';
+import { openAgent } from '../agent-open.js';
 import type { GatewayEndpointInfo, GatewaySettingsPatch } from '../../shared/gateway-types.js';
 import { readGatewayRewards } from '../gateway/rewards.js';
 import { ensureSecureIdentity, getSecureIdentity } from '../identity.js';
@@ -173,6 +174,14 @@ export function registerGatewayIpc(deps: GatewayIpcDeps): void {
     try {
       await removeAgentSkills(String(opts?.id ?? ''));
       return { ok: true, targets: listAgentSkillTargets() };
+    } catch (err) {
+      return errorResult(err);
+    }
+  });
+
+  ipcMain.handle('agent-skills:open', async (_event, opts: { id?: string }) => {
+    try {
+      return await openAgent(String(opts?.id ?? ''));
     } catch (err) {
       return errorResult(err);
     }

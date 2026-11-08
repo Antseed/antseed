@@ -40,6 +40,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Added
 
+- Desktop: **Hide sidebar** (the button next to the logo) shrinks the sidebar to a rail with the Antseed mark, icon-only New chat, Home, Agents & apps, Rewards and Settings, your balance under a wallet icon (it opens Add funds), and a dot for the gateway status; labels and the gateway line are in tooltips. The app remembers the choice. After you add the Antseed skills to an agent found on this computer, **Open <agent>** starts it: its desktop app when it has one (Codex opens ChatGPT, or the app you picked under **Open with**), otherwise on macOS a Terminal window running its command (`claude`, `codex`, `opencode`, `hermes`, `pi` or `droid`).
 - Desktop: a new user starts on a free model, and the model dropdown lists free models first with a Free filter beside search.
 - Buyer and gateway: `/v1/models` keeps a model when any of a seller's providers fits your limits, as a real request would use the cheapest one; it was judged by the first provider advertised.
 - Buyer and gateway: `/v1/models` lists only models a request could be routed to, so models from sellers below your minimum trust or over your price cap no longer appear and then fail. The gateway console still shows the whole network (`/v1/models?scope=network`).
