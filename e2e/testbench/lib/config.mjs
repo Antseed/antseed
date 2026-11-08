@@ -147,6 +147,8 @@ export function bindUpstream(cleaned, { mode, mockUrl, env = process.env }) {
       provider.apiKeyEnv = `TESTBENCH_KEY_${name.toUpperCase().replace(/-/g, '_')}`;
       sellerEnv[provider.apiKeyEnv] = 'mock-only';
       delete provider.pathRewrite;
+      // The mock's catalogue holds service ids; an alias would be rewritten into a model it does not know.
+      for (const service of Object.values(provider.services ?? {})) delete service.upstreamModel;
     } else if (mode === 'live') {
       const keyName = provider.apiKeyEnv;
       if (!keyName) throw new Error(`Provider "${name}" needs apiKeyEnv for --live`);

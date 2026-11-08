@@ -43,6 +43,21 @@ export async function minedReceipt(transaction, provider, { timeoutMs = 60_000, 
   }
 }
 
+/** The channel status the contract holds while a channel is open. */
+const CHANNEL_ACTIVE = 1;
+
+/**
+ * Whether a close of only some channels is done: every `selected` channel is closed on-chain, and the buyer's reserve
+ * is down to what its `others` that are still open can hold. Other channels may stay open, so a zero reserve is not asked for.
+ */
+export async function selectedReservesReleased({ reader, buyer, selected, others }) {
+  const closing = await Promise.all(selected.map((id) => reader.channelState(id)));
+  if (closing.some((channel) => channel.status === CHANNEL_ACTIVE)) return false;
+  const remaining = await Promise.all(others.map((id) => reader.channelState(id)));
+  const held = remaining.filter((channel) => channel.status === CHANNEL_ACTIVE).reduce((total, channel) => total + BigInt(channel.deposit), 0n);
+  return (await reader.buyerBalance(buyer)).reserved <= held;
+}
+
 const ETH_BALANCE = '0x56BC75E2D63100000';
 const WEEK = 604_800;
 const USDC_ADMIN = ['function masterMinter() view returns(address)', 'function configureMinter(address,uint256) returns(bool)', 'function mint(address,uint256)', 'function transfer(address,uint256) returns(bool)'];

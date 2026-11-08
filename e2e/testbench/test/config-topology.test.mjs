@@ -100,6 +100,16 @@ describe('sanitizeConfig', () => {
 describe('bindUpstream', () => {
   const cleaned = () => sanitizeConfig(realConfig()).cleaned;
 
+  it('drops upstreamModel aliases in mock mode, whose catalogue holds service ids, and keeps them live', () => {
+    const aliased = () => ({ seller: { providers: { chat: { plugin: 'openai', apiKeyEnv: 'OPENAI_API_KEY', baseUrl: 'https://api.example', defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 }, services: { 'service-id': { upstreamModel: 'upstream-name', categories: ['chat'] }, plain: { categories: ['chat'] } } } } } });
+    const input = aliased();
+    const mock = bindUpstream(input, { mode: 'mock', mockUrl: 'http://127.0.0.1:5000' }).providers.chat.services;
+    assert.deepEqual(mock, { 'service-id': { categories: ['chat'] }, plain: { categories: ['chat'] } });
+    assert.equal(input.seller.providers.chat.services['service-id'].upstreamModel, 'upstream-name', 'the source config is left alone');
+    const live = bindUpstream(aliased(), { mode: 'live', env: { OPENAI_API_KEY: 'k' } }).providers.chat.services;
+    assert.equal(live['service-id'].upstreamModel, 'upstream-name');
+  });
+
   it('mock mode points every provider at the mock with a throwaway key', () => {
     const { providers, sellerEnv } = bindUpstream(cleaned(), { mode: 'mock', mockUrl: 'http://127.0.0.1:5000', env: { VENICE_API_KEY: 'real' } });
     assert.equal(providers.venice.baseUrl, 'http://127.0.0.1:5000');

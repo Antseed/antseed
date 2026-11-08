@@ -33,6 +33,21 @@ export async function run(tb) {
   tb.check('every request was served by a testbench seller', total === autoRequests + tb.sellers.length, counts);
   for (const seller of tb.sellers) tb.metric(`share.${seller.id}`, (counts[seller.id] - 1) / autoRequests);
 
+  // Closing one seller's channel must not wait for, or disturb, the other seller's.
+  const [closing, staying] = tb.sellers;
+  const open = await tb.channels();
+  tb.check('both sellers hold an open channel', open[closing.id]?.length === 1 && open[staying.id]?.length === 1, open);
+  const [closingChannel] = open[closing.id];
+  const [stayingChannel] = open[staying.id];
+  const closed = await tb.closeChannel(closing.id);
+  tb.check(`closing ${closing.id}'s channel reports it closed`, closed.results[closing.id] === 'closed', closed.results);
+  const after = await tb.channels();
+  tb.check(`${closing.id}'s channel is gone and ${staying.id}'s stays open`, !after[closing.id]?.length && after[staying.id]?.[0]?.channelId === stayingChannel.channelId, after);
+  const closedOnChain = await tb.channelState(closingChannel.channelId);
+  const stayingOnChain = await tb.channelState(stayingChannel.channelId);
+  const { reserved } = await tb.buyerBalance();
+  tb.check(`${closing.id}'s reserve is released and only ${staying.id}'s is still locked`, closedOnChain.status !== 1 && stayingOnChain.status === 1 && reserved > 0n && reserved <= BigInt(stayingOnChain.deposit), { closed: closedOnChain.status, staying: stayingOnChain, reserved: String(reserved) });
+
   await tb.closeAll();
   const settlement = await tb.assertSettlementMatchesSigned(await tb.signedBySeller());
   tb.metric('settledMicroUsdc', settlement.totalPaidMicroUsdc);

@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { createBuyerRouter } from './lib/buyer-router.mjs';
 import { bindUpstream, listModels, WORKSPACE_PLUGINS } from './lib/config.mjs';
 import { blocksInUse, copyIn, pruneCache, resolveForkBlock, seedFromLegacy, writeBack } from './lib/cache.mjs';
-import { ANVIL_FEE_ARGS, chainReader, prepareChain, prepareLocalChain } from './lib/chain.mjs';
+import { ANVIL_FEE_ARGS, chainReader, prepareChain, prepareLocalChain, selectedReservesReleased } from './lib/chain.mjs';
 import { chainContracts, deployLocalStack, localGenesisTimestamp } from './lib/local-deploy.mjs';
 import { newToken, startControlServer } from './lib/control.mjs';
 import { startRpcRelay } from './lib/rpc-relay.mjs';
@@ -385,8 +385,10 @@ async function discover(sellerIds) {
   assert(response.ok, 'proxy peer refresh failed');
 }
 
-async function closeChannels(sellerIds) {
+/** Closes the sellers' channels. `scoped`: only those are waited for; otherwise (close-all, shutdown) the whole reserve must reach zero. */
+async function closeChannels(sellerIds, { scoped = false } = {}) {
   const results = {};
+  const selected = [];
   for (const id of sellerIds) {
     const seller = manifest.sellers.find((entry) => entry.id === id);
     if (!seller) throw Object.assign(new Error(`Unknown seller ${id}`), { statusCode: 404 });
@@ -401,8 +403,16 @@ async function closeChannels(sellerIds) {
       return closed.code === 'no_channel';
     }, `channel close for ${id}`, 180_000, 2000);
     results[id] = 'closed';
+    selected.push(...active.map((channel) => channel.channelId));
   }
-  await waitFor(async () => (await state.reader.buyerBalance(manifest.buyer.address)).reserved === 0n || Object.values(results).some((result) => result.endsWith('-offline')), 'reserves released', 120_000, 500);
+  if (!scoped) {
+    await waitFor(async () => (await state.reader.buyerBalance(manifest.buyer.address)).reserved === 0n || Object.values(results).some((result) => result.endsWith('-offline')), 'reserves released', 120_000, 500);
+  } else if (selected.length) {
+    await waitFor(async () => {
+      const others = (await state.buyer.getActiveBuyerChannels()).map((channel) => channel.channelId).filter((id) => !selected.includes(id));
+      return selectedReservesReleased({ reader: state.reader, buyer: manifest.buyer.address, selected, others });
+    }, 'the selected channels to close and release their reserves', 120_000, 500);
+  }
   const balance = await state.reader.buyerBalance(manifest.buyer.address);
   return { results, buyer: { availableMicroUsdc: String(balance.available), reservedMicroUsdc: String(balance.reserved) } };
 }
@@ -689,7 +699,7 @@ async function main() {
         return watchdogStatus();
       },
       'GET /status': () => liveStatus(),
-      'POST /channels/close': ({ body }) => closeChannels(body.sellerId ? [body.sellerId] : manifest.sellers.map((seller) => seller.id)),
+      'POST /channels/close': ({ body }) => (body.sellerId ? closeChannels([body.sellerId], { scoped: true }) : closeChannels(manifest.sellers.map((seller) => seller.id))),
       'POST /chain/warp': async ({ body }) => {
         const seconds = Number(body.seconds);
         if (!Number.isInteger(seconds) || seconds <= 0 || seconds > 365 * 86_400) throw Object.assign(new Error('seconds must be 1..31536000'), { statusCode: 400 });
