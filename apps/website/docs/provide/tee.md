@@ -19,9 +19,9 @@ If the prover fails to load at startup, the seller exits rather than advertising
 
 ## Prerequisites
 
-- A dstack confidential VM host with Intel TDX where you can deploy an app with KMS and encrypted environment variables, such as Phala Cloud. Phala Cloud exposes app ports only through its TLS gateway, without a public IP or UDP, so the seller also needs a public entry point: run `antseed seller forward --to <app-id>-6882.<cluster>.phala.network --peer <peerId>` on any small machine with a public IP, set `seller.publicAddress` to its `<ip>:6882`, and raise `seller.maxInboundConnectionsPerIp`, since every buyer then arrives from the gateway's address. The forwarder sees only ciphertext. To run on Google Cloud instead, see [Google Confidential Space](#google-confidential-space).
+- A dstack confidential VM host with Intel TDX where you can deploy an app with KMS and encrypted environment variables, such as Phala Cloud. If your deployment exposes app ports only through its TLS gateway, without a public IP or UDP, the seller also needs a public entry point: run `antseed seller forward --to <app-id>-6882.<cluster>.phala.network --peer <peerId>` on any small machine with a public IP, set `seller.publicAddress` to its `<ip>:6882`, and raise `seller.maxInboundConnectionsPerIp`, since every buyer then arrives from the gateway's address. The forwarder sees only ciphertext. To run on Google Cloud instead, see [Google Confidential Space](#google-confidential-space).
 - Your seller's identity key and peer ID, and API keys for its upstreams.
-- The signaling (TCP) and DHT (UDP) ports reachable from the internet at the same port numbers as in the container. Buyers attest over encrypted TCP; the connection binding is not available over WebRTC.
+- The signaling (TCP) and DHT (UDP) ports reachable from the internet. For public TCP `14532` → container `6882`, configure host forwarding and set `seller.publicAddress` to `<public-ip>:14532`; the seller announces both TCP ports in the DHT so metadata stays discoverable when the public address names a different host. Buyers attest over encrypted TCP; the connection binding is not available over WebRTC.
 - Node.js 20+ and a checkout of the [Antseed repository](https://github.com/Antseed/antseed) on your own machine, to generate the compose file.
 
 ## Approved seller builds

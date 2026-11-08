@@ -118,8 +118,12 @@ Any change to the compose file (image, config, prices) changes the compose hash;
 re-check the new one against the same rules, so no approval is needed.
 
 Buyers reach a seller over raw TCP at its announced address and find it through the DHT (UDP).
-Phala Cloud exposes CVM ports only through its TLS gateway
-(`<app-id>-6882.<cluster>.phala.network:443`), without a public IP or UDP, so give the seller a
+For public TCP `14532` → container `6882`, configure host forwarding and set `seller.publicAddress`
+to `<public-ip>:14532`. The seller announces both TCP ports in the DHT, keeping metadata
+discoverable when the public address names a different host.
+
+If your Phala Cloud deployment exposes CVM ports only through its TLS gateway
+(`<app-id>-6882.<cluster>.phala.network:443`), without a public IP or UDP, give the seller a
 public entry point with `antseed seller forward` on any small machine with a public IP:
 
 ```bash
