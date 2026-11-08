@@ -109,6 +109,18 @@ test('a helper that fails migrates nothing', async () => {
   assert.deepEqual(readFileSync(env.identity), before);
 });
 
+test('launches where the helper could not run never give up on the stores', async () => {
+  const env = setup();
+  for (let launch = 1; launch <= MAX_MIGRATION_ATTEMPTS + 2; launch += 1) {
+    await migrateEncryptedStores({ ...names, stores: env.stores, markerDir: env.markerDir, safeStorage: newKey, decryptWithOldName: async () => { throw new Error('timed out'); } });
+    const marker = JSON.parse(readFileSync(path.join(env.markerDir, MIGRATION_MARKER), 'utf8'));
+    assert.equal(marker.complete, false);
+    assert.equal(marker.attempts, 0);
+  }
+  const recovered = await migrateEncryptedStores({ ...names, stores: env.stores, markerDir: env.markerDir, safeStorage: newKey, decryptWithOldName: viaOldName });
+  assert.deepEqual(recovered.migrated.sort(), env.stores.map((store) => store.file).filter((file) => existsSync(file)).sort());
+});
+
 test('moveUserDataDir moves the old folder once and never merges into an existing one', () => {
   const appData = mkdtempSync(path.join(tmpdir(), 'app-data-'));
   mkdirSync(path.join(appData, 'AntStation Desktop'));

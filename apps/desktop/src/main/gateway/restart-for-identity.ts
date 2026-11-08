@@ -1,4 +1,6 @@
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
+import path from 'node:path';
 
 /** A buyer the app doesn't run signs with its own key, so a new signer can't reach it. */
 export function foreignBuyerMessage(port: number): string {
@@ -36,4 +38,29 @@ export function portInUse(port: number): Promise<boolean> {
     socket.once('timeout', () => { socket.destroy(); resolve(false); });
     socket.once('error', () => { resolve(false); });
   });
+}
+
+/**
+ * The port of a buyer found on the old wallet after a signer import. Kept on
+ * disk: quitting and reopening must not let the app attach to that buyer again.
+ * Cleared once the port is free.
+ */
+export function createForeignBuyerGuard(file: string) {
+  return {
+    get(): number | null {
+      try {
+        const port = (JSON.parse(readFileSync(file, 'utf8')) as { port?: unknown }).port;
+        return typeof port === 'number' ? port : null;
+      } catch {
+        return null;
+      }
+    },
+    set(port: number): void {
+      mkdirSync(path.dirname(file), { recursive: true });
+      writeFileSync(file, `${JSON.stringify({ port })}\n`, 'utf8');
+    },
+    clear(): void {
+      rmSync(file, { force: true });
+    },
+  };
 }

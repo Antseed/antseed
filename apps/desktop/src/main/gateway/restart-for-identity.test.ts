@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import net from 'node:net';
 import type { AddressInfo } from 'node:net';
 import test from 'node:test';
-import { portInUse, restartForNewIdentity } from './restart-for-identity.js';
+import { createForeignBuyerGuard, portInUse, restartForNewIdentity } from './restart-for-identity.js';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 
 function ops(inUse: boolean) {
   const calls: string[] = [];
@@ -42,4 +45,14 @@ test('portInUse sees a listener and an empty port', async () => {
   assert.equal(await portInUse(port), true);
   await new Promise((resolve) => server.close(resolve));
   assert.equal(await portInUse(port), false);
+});
+
+test('the block on an old-wallet buyer survives a restart of the app until cleared', () => {
+  const file = path.join(mkdtempSync(path.join(tmpdir(), 'signer-guard-')), 'pending.json');
+  assert.equal(createForeignBuyerGuard(file).get(), null);
+  createForeignBuyerGuard(file).set(8377);
+  // A new instance reads the file, as the next launch would.
+  assert.equal(createForeignBuyerGuard(file).get(), 8377);
+  createForeignBuyerGuard(file).clear();
+  assert.equal(createForeignBuyerGuard(file).get(), null);
 });

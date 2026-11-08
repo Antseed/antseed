@@ -782,7 +782,13 @@ function applyWithInstallProbe(opts: {
       wslBaseUrl(opts.baseURL, target.host, opts.rewriteWslHost),
     );
   }
-  if (opts.wslTargetsFile) saveWslTargetsForTool(opts.wslTargetsFile, opts.tool, wslTargets);
+  if (opts.wslTargetsFile) {
+    // A distro that didn't answer this time keeps its row: its config may still
+    // hold the gateway URL and key, and disconnect has to find it.
+    const rediscovered = new Set(wslTargets.map((target) => target.distro));
+    const notSeen = readWslTargetsForTool(opts.wslTargetsFile, opts.tool).filter((target) => !rediscovered.has(target.distro));
+    saveWslTargetsForTool(opts.wslTargetsFile, opts.tool, [...notSeen, ...wslTargets]);
+  }
 }
 
 /** The distro's share (`\\\\wsl$\\Ubuntu\\`), or the config's folder for any other path. */
@@ -1875,6 +1881,11 @@ function rememberGooseSelection(filePath: string, lines: readonly string[]): voi
   rememberSelection(filePath, selection);
 }
 
+/** What the old buyer-proxy patch wrote: a dummy key, or our alias or a pinned model. */
+function hasLegacyGooseSignature(apiKey: string | undefined, model: string | undefined): boolean {
+  return apiKey === 'antseed' || model === ROUTED_MODEL_ALIAS || (model?.includes('@') ?? false);
+}
+
 function applyGooseCustomProviderToFile(filePath: string, patch: GooseConfigPatchDef, baseURL: string, t: ResolvedTarget): void {
   backupConfigFile(filePath);
   const previous = existsSync(filePath) ? readFileSync(filePath, 'utf8').split('\n') : [];
@@ -1883,11 +1894,8 @@ function applyGooseCustomProviderToFile(filePath: string, patch: GooseConfigPatc
   // gateway) is still the user's. A legacy buyer-proxy patch is ours too, though
   // its alias isn't a pick: the user's own selection was saved when it was written.
   const previousModel = readYamlTopLevelString(previous, 'GOOSE_MODEL');
-  const legacyPatch = provider === patch.providerKey && (
-    readYamlTopLevelString(previous, 'OPENAI_API_KEY') === 'antseed'
-    || previousModel === ROUTED_MODEL_ALIAS
-    || (previousModel?.includes('@') ?? false)
-  );
+  const legacyPatch = provider === patch.providerKey
+    && hasLegacyGooseSignature(readYamlTopLevelString(previous, 'OPENAI_API_KEY'), previousModel);
   const existingProvider = readGooseCustomProvider(filePath);
   const userProvider = existingProvider.exists && !existingProvider.ours;
   const owned = (provider === GOOSE_CUSTOM_PROVIDER && !userProvider) || legacyPatch || (provider === patch.providerKey && readGoosePatchState(filePath) !== null);
@@ -1977,7 +1985,7 @@ function removeGooseProviderFromFile(
   const legacyModel = readYamlTopLevelString(lines, 'GOOSE_MODEL');
   // The buyer-proxy patch wrote a loopback host with a dummy key and an alias
   // model. A loopback host without those is the user's own local server.
-  const legacyProxyPatch = apiKey === 'antseed' || legacyModel === ROUTED_MODEL_ALIAS || (legacyModel?.includes('@') ?? false);
+  const legacyProxyPatch = hasLegacyGooseSignature(apiKey, legacyModel);
   if ((isLoopbackHost(host, extraHosts) && legacyProxyPatch) || ownsGatewayHost) {
     lines = removeYamlTopLevelKey(lines, 'OPENAI_HOST');
     changed = true;

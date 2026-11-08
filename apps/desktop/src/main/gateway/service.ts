@@ -9,7 +9,7 @@ import { readConfig } from '../runtime/config-io.js';
 import type { GatewayKeyInfo, GatewayPrivacy, GatewayStatus } from '../../shared/gateway-types.js';
 import { publishKeyWithPolicy } from './key-with-policy.js';
 import { assertKeyMayBeRecreated, keyIsUsable, rotateKeys, type KeyRecord } from './rotate-keys.js';
-import { foreignBuyerMessage, portInUse, restartForNewIdentity } from './restart-for-identity.js';
+import { createForeignBuyerGuard, foreignBuyerMessage, portInUse, restartForNewIdentity } from './restart-for-identity.js';
 import { createSerialQueue } from './serial-queue.js';
 import { startUnlessClosing } from './start-guard.js';
 import { resolveConnectDataDir, DEFAULT_LOCAL_GATEWAY_PORT, type ProcessManager, type RuntimeMode } from '../runtime/process-manager.js';
@@ -52,7 +52,7 @@ let lastError: string | null = null;
 let startPromise: Promise<void> | null = null;
 let closing = false;
 /** A buyer the app doesn't run, found on the port after a new signer was imported. */
-let foreignBuyerPort: number | null = null;
+const foreignBuyerGuard = () => createForeignBuyerGuard(path.join(resolveConnectDataDir(), 'signer-change-pending.json'));
 const DEFAULT_BUYER_PORT = 8377;
 const keyPromises = new Map<string, Promise<StoredGatewayKey>>();
 
@@ -130,10 +130,11 @@ export async function ensureLocalGateway(): Promise<void> {
   await startGate;
   if (closing) throw new Error('Antseed Desktop is closing');
   if (getGatewaySettings().mode !== 'local') return;
+  const foreignBuyerPort = foreignBuyerGuard().get();
   if (foreignBuyerPort !== null) {
     // Attaching would keep paying from the wallet the user just replaced.
     if (await portInUse(foreignBuyerPort)) throw new Error(foreignBuyerMessage(foreignBuyerPort));
-    foreignBuyerPort = null;
+    foreignBuyerGuard().clear();
   }
   if (isLocalRunning() && await probe(localGatewayOrigin())) return;
   startPromise ??= (async () => {
@@ -199,7 +200,7 @@ export async function restartLocalGatewayForNewIdentity(): Promise<string | null
     start: ensureLocalGateway,
     buyerPort: localBuyerPort,
     portInUse,
-    onForeignBuyer: (port) => { foreignBuyerPort = port; },
+    onForeignBuyer: (port) => { foreignBuyerGuard().set(port); },
   });
 }
 

@@ -73,14 +73,9 @@ export type GatewayKeyInfo = {
   limits: Record<string, { limitUsd: string | null; spentUsd: string | null }>;
 };
 
-export type GatewayEndpointInfo = {
-  ok: boolean;
-  baseUrl?: string;
-  origin?: string;
-  apiKey?: string;
-  mode?: GatewayMode;
-  error?: string;
-};
+export type GatewayEndpointInfo =
+  | { ok: true; baseUrl: string; origin: string; apiKey: string; mode: GatewayMode; error?: never }
+  | { ok: false; error: string };
 
 export type GatewayActionResult = { ok: boolean; error?: string };
 export type GatewaySettingsResult = GatewayActionResult & { settings?: GatewaySettingsView };

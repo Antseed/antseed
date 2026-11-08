@@ -683,6 +683,19 @@ test('pi: a provider of the user\'s own named antseed-something is left to them'
   });
 });
 
+test('wsl: a reconnect that cannot see a distro keeps its row for disconnect', { skip: process.platform === 'win32' }, async () => {
+  await withDir(async (dir) => {
+    const native = path.join(dir, 'opencode.json');
+    await writeFile(native, '{}\n', 'utf8');
+    const targetsFile = path.join(dir, 'wsl-targets.json');
+    saveWslTargetsForTool(targetsFile, 'opencode', [{ tool: 'opencode', distro: 'Ubuntu', configPath: path.join(dir, 'gone', 'opencode.json'), host: '172.29.32.1', needsRelay: false }]);
+    const patch = { format: 'opencode', configPath: native, providerKey: 'antseed', providerName: 'Antseed', baseURL: 'http://localhost:{buyerPort}/v1', installProbe: 'opencode' } as ConfigPatchDef;
+    // This machine finds no distros, as when the share is down.
+    writeConfigPatch(patch, REMOTE, targetsFile);
+    assert.deepEqual(readWslTargetsForTool(targetsFile, 'opencode').map((row) => row.distro), ['Ubuntu']);
+  });
+});
+
 test('wsl: a share that does not answer is not taken as cleaned up', { skip: process.platform === 'win32' }, async () => {
   await withDir(async (dir) => {
     const native = path.join(dir, 'opencode.json');

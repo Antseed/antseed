@@ -149,6 +149,7 @@ export async function migrateEncryptedStores(options: MigrateOptions): Promise<M
   const marker = path.join(options.markerDir, MIGRATION_MARKER);
   const result: MigrateResult = { migrated: [], failed: [], backups: [], skipped: false };
   let attempts = 0;
+  let helperUnavailable = false;
   try {
     const previous = JSON.parse(readFileSync(marker, 'utf8')) as { complete?: unknown; attempts?: unknown };
     if (previous.complete !== false) return { ...result, skipped: true };
@@ -184,6 +185,9 @@ export async function migrateEncryptedStores(options: MigrateOptions): Promise<M
       log(`could not read the stores under "${options.oldName}": ${err instanceof Error ? err.message : String(err)}`);
       exported = { available: false, plain: blobs.map(() => null) };
     }
+    // The helper couldn't run (a timeout, a keychain that was locked): that says
+    // nothing about the stores, so this launch doesn't count toward giving up.
+    if (exported.available === false) helperUnavailable = true;
     const stamp = new Date(options.now?.() ?? Date.now()).toISOString().replace(/[:.]/g, '-');
     let cursor = 0;
     for (const entry of pending) {
@@ -214,7 +218,7 @@ export async function migrateEncryptedStores(options: MigrateOptions): Promise<M
     }
   }
 
-  attempts += 1;
+  if (!helperUnavailable) attempts += 1;
   const complete = result.failed.length === 0 || attempts >= MAX_MIGRATION_ATTEMPTS;
   if (!complete) log(`${result.failed.length} store(s) not migrated yet; trying again at the next launch`);
   mkdirSync(options.markerDir, { recursive: true });
