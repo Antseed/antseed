@@ -135,7 +135,7 @@ describe('Peer Pay checkout', () => {
   });
 });
 
-test('the signed checkout message is byte for byte the version-1 format the checkout service checks', () => {
+it('the signed checkout message is byte for byte the version-1 format the checkout service checks', () => {
   assert.equal(buildCheckoutAuthorizationMessage({
     address: '0xABCDEF0000000000000000000000000000000001',
     amount: '25',
