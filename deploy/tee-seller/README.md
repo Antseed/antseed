@@ -57,7 +57,7 @@ To release an image after a CLI release:
    provenance attestation. Anyone can check which commit and workflow produced a digest:
 
    ```bash
-   gh attestation verify oci://ghcr.io/antseed/tee-seller@sha256:<digest> --repo AntSeed/antseed
+   gh attestation verify oci://ghcr.io/antseed/tee-seller@sha256:<digest> --repo Antseed/antseed
    ```
 
    Buyers accept the image as soon as it is built (see [Approved images](#approved-images)); no

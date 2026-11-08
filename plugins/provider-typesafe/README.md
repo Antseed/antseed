@@ -1,6 +1,6 @@
 # @antseed/provider-typesafe
 
-Provide System One decision-model capacity on the AntSeed P2P network. Works with TypeSafe's API and any upstream that serves the same `POST /v1/systemone` contract.
+Provide System One decision-model capacity on the Antseed P2P network. Works with TypeSafe's API and any upstream that serves the same `POST /v1/systemone` contract.
 
 System One models (TypeSafe Jev) are not chat models. A request carries a `state` and typed `questions` (`choice`, `score`, `noul`); the response carries typed `answers` with probabilities and confidence. Every service under this plugin is advertised with the `typesafe-systemone` API protocol, so buyers route decision requests only to sellers that speak it.
 
@@ -21,7 +21,7 @@ antseed config seller add-service typesafe jev-latest \
 antseed seller start
 ```
 
-Buyers point the TypeSafe SDKs at their local AntSeed proxy:
+Buyers point the TypeSafe SDKs at their local Antseed proxy:
 
 ```bash
 export TYPESAFE_BASE_URL=http://127.0.0.1:8377

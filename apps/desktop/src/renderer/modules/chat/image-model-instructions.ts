@@ -1,6 +1,6 @@
 import type { VprModelCatalogEntry } from '../../core/state';
 
-export const ANTSEED_IMAGES_SKILL_URL = 'https://github.com/AntSeed/antseed/blob/main/skills/antseed-images/README.md';
+export const ANTSEED_IMAGES_SKILL_URL = 'https://github.com/Antseed/antseed/blob/main/skills/antseed-images/README.md';
 
 /**
  * Short handoff for a normal text agent. The reusable workflow and safety

@@ -1,6 +1,6 @@
 # @antseed/antseed-verifier
 
-Verifier SDK for AntSeed's pluggable verifier system (AIP-3). One package has two halves. A
+Verifier SDK for Antseed's pluggable verifier system (AIP-3). One package has two halves. A
 **buyer verifier** (default export) challenges a seller. It checks the seller's Intel TDX
 attestation before it routes paid requests. An embedded **seller prover** (`prover` export,
 loaded with `--verifiers antseed-verifier`) answers those challenges before provider

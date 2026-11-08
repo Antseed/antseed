@@ -31,7 +31,7 @@ FROM ${RUNTIME_IMAGE}
 ARG ANTSEED_VERSION
 LABEL org.opencontainers.image.title="antseed-tee-seller" \
       org.opencontainers.image.description="Antseed seller for dstack confidential VMs" \
-      org.opencontainers.image.source="https://github.com/AntSeed/antseed" \
+      org.opencontainers.image.source="https://github.com/Antseed/antseed" \
       org.opencontainers.image.version="${ANTSEED_VERSION}"
 # Google Confidential Space launch policy: the operator may set only these env variables (the
 # token shows them to buyers, who check them against the same rules) and can't replace the

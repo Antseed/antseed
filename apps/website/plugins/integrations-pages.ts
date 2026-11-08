@@ -613,7 +613,7 @@ function renderSkillMarkdown(): string {
   out.push('## Adding a new integration');
   out.push('');
   out.push('Edit `apps/website/src/integrations/integrations.ts` in');
-  out.push('https://github.com/AntSeed/antseed and open a PR. The hub at /integrations, the');
+  out.push('https://github.com/Antseed/antseed and open a PR. The hub at /integrations, the');
   out.push('per-tool page, and this file are all generated from that single file. The');
   out.push('onboarding skill an agent reads first (install, start, fund, use) is served');
   out.push('at /skill.md.');

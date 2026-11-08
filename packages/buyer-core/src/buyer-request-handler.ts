@@ -520,7 +520,7 @@ export class BuyerRequestHandler {
     }
 
     // Provider video APIs may use HTTP 402 for their own errors; only start
-    // AntSeed payment negotiation when the response is our payment contract.
+    // Antseed payment negotiation when the response is our payment contract.
     if (
       response.statusCode === 402
       && negotiator

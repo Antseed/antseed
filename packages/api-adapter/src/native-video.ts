@@ -19,7 +19,7 @@ const VENICE_QUEUE_ID = /^[A-Za-z0-9_-]{1,256}$/;
 const VENICE_AUTO_DURATIONS = new Set(['auto', 'Auto', '-1', '1 gen']);
 
 /**
- * fal's own API puts the model in the URL. AntSeed routes on the body `model`,
+ * fal's own API puts the model in the URL. Antseed routes on the body `model`,
  * so fal video uses fixed paths with the fal endpoint ID as `model`; the
  * seller rebuilds fal's queue URLs from it.
  */
