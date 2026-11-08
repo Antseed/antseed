@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { announcedProviderId } from '../src/discovery/provider-id.js';
 import { SellerRequestHandler } from '../src/seller-request-handler.js';
 import type { Provider } from '../src/interfaces/seller-provider.js';
 import type { SerializedHttpRequest } from '../src/types/http.js';
@@ -27,8 +28,12 @@ function assignRequest(provider?: string): SerializedHttpRequest {
   };
 }
 
+const identity = { privateKey: new Uint8Array(32).fill(7) };
+
 describe('provider control routes', () => {
   const handler = new SellerRequestHandler({
+    identity,
+    announceProviderIds: true,
     providers: [controlProvider('pool-a'), controlProvider('pool-b')],
     sellerPaymentManager: null,
     sessionTracker: null,
@@ -44,6 +49,10 @@ describe('provider control routes', () => {
   it('go to the provider the buyer routes the service to', async () => {
     expect(await pool(assignRequest('pool-b'))).toBe('pool-b');
     expect(await pool(assignRequest('POOL-A'))).toBe('pool-a');
+  });
+
+  it('go to the provider named by the ID the seller announces for it', async () => {
+    expect(await pool(assignRequest(announcedProviderId(identity.privateKey, 'pool-b')))).toBe('pool-b');
   });
 
   it('go to the first provider offering the service when none is named', async () => {

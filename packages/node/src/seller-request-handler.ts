@@ -292,7 +292,7 @@ export class SellerRequestHandler {
     const requestedProvider = this._extractRequestedProvider(request);
     const provider = service
       ? this._deps.providers.find((p) => p.handleControlRequest && p.services.includes(service)
-        && (!requestedProvider || p.name.toLowerCase() === requestedProvider))
+        && (!requestedProvider || p.name.toLowerCase() === requestedProvider || this.announcedProviderId(p.name) === requestedProvider))
       : undefined;
     if (!provider?.handleControlRequest) return problem(404, `No provider offers control routes for ${service ?? 'this request'}.`, 'control_route_not_found');
     if (!this._allowRate(this._controlRateWindows, buyerPeerId, CONTROL_RATE_MAX_PER_WINDOW)) {

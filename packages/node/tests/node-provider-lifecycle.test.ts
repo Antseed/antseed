@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AntseedNode } from '../src/node.js';
 import type { PeerAnnouncer } from '../src/discovery/announcer.js';
 import type { Provider } from '../src/interfaces/seller-provider.js';
+import { peerServiceUsesWorkerE2E, WORKER_E2E_CAPABILITY, workerE2EProviderCapability } from '@antseed/buyer-core/worker-e2e';
 
 // No UPnP on the test machine's router.
 vi.mock('../src/p2p/nat-traversal.js', () => ({
@@ -34,10 +35,10 @@ function provider(name: string, extra: Partial<Provider> = {}): Provider {
   } as Provider;
 }
 
-async function startSeller(providers: Provider[]): Promise<AntseedNode> {
+async function startSeller(providers: Provider[], announceProviderIds = false): Promise<AntseedNode> {
   const dataDir = mkdtempSync(join(tmpdir(), 'antseed-provider-lifecycle-'));
   dirs.push(dataDir);
-  const node = new AntseedNode({ role: 'seller', dataDir, bootstrapNodes: [], noOfficialBootstrap: true, dhtPort: 0, signalingPort: 0 });
+  const node = new AntseedNode({ role: 'seller', dataDir, bootstrapNodes: [], noOfficialBootstrap: true, dhtPort: 0, signalingPort: 0, announceProviderIds });
   nodes.push(node);
   for (const p of providers) node.registerProvider(p);
   await node.start();
@@ -57,6 +58,24 @@ describe('seller providers', () => {
     expect(capabilities.filter((c) => c === 'colony-pool-e2e.v2')).toHaveLength(1);
     expect(capabilities).toEqual(expect.arrayContaining(['colony-pool-e2e.v2.pool-a', 'colony-pool-e2e.v2.pool-b']));
     expect(new Set(capabilities).size).toBe(capabilities.length);
+  });
+
+  it('name a colony pool by its announced ID in its encryption capability, so buyers still encrypt to its workers', async () => {
+    const node = await startSeller([
+      provider('openai'),
+      provider('colony-pool', { peerCapabilities: [WORKER_E2E_CAPABILITY, workerE2EProviderCapability('colony-pool')] }),
+    ], true);
+    const announcer = (node as unknown as { _announcer: PeerAnnouncer })._announcer;
+    await announcer.refreshMetadata();
+    const metadata = announcer.getLatestMetadata()!;
+    const [openai, pool] = metadata.providers.map((p) => p.provider);
+    expect(pool).not.toBe('colony-pool');
+    expect(metadata.capabilities).toContain(workerE2EProviderCapability(pool!));
+    expect(metadata.capabilities).not.toContain(workerE2EProviderCapability('colony-pool'));
+    // A buyer that resolves the pool's model to the announced ID encrypts it; the ordinary provider stays plaintext.
+    const peer = { capabilities: metadata.capabilities } as Parameters<typeof peerServiceUsesWorkerE2E>[0];
+    expect(peerServiceUsesWorkerE2E(peer, { routedProvider: pool })).toBe(true);
+    expect(peerServiceUsesWorkerE2E(peer, { routedProvider: openai })).toBe(false);
   });
 
   it('are stopped when the node stops, and a failing stop does not block the others', async () => {

@@ -106,6 +106,7 @@ import {
 } from "./payments/index.js";
 import { debugLog, debugWarn } from "./utils/debug.js";
 import { NodeWorkerE2EClient, type NodeWorkerE2EClientOptions } from "./colony-pool/client.js";
+import { workerE2EProviderCapability } from "./colony-pool/worker-crypto.js";
 import { parsePublicAddress } from "./discovery/public-address.js";
 import { MAX_PEER_CAPABILITIES } from "./discovery/metadata-validator.js";
 import { sanitizePeerDisplayName } from "./discovery/display-name.js";
@@ -538,6 +539,17 @@ function uniqueCapabilities(capabilities: readonly string[], present: readonly s
     result.push(capability);
   }
   return result;
+}
+
+/**
+ * A provider's peer capabilities, with its colony-pool capability naming it
+ * as buyers see it (its ID under announceProviderIds), so buyers that resolve
+ * a pool's service to that ID still encrypt to its workers.
+ */
+export function providerPeerCapabilities(provider: Provider, announcedName: string): string[] {
+  const own = workerE2EProviderCapability(provider.name);
+  return (provider.peerCapabilities ?? []).map((capability) =>
+    capability === own ? workerE2EProviderCapability(announcedName) : capability);
 }
 
 export class AntseedNode extends EventEmitter {
@@ -2283,10 +2295,12 @@ export class AntseedNode extends EventEmitter {
       // One set: providers (two colony pools, say) can contribute the same
       // capability, and metadata with a duplicate fails validation.
       const builtin = builtinPeerCapabilities(this._depositRelayer !== null);
+      const announcedName = (providerName: string): string =>
+        announcedProviderName(identity.privateKey, providerName, this._config.announceProviderIds === true);
       const baseCapabilities = uniqueCapabilities([
         ...(this._connectionManager.supportsWebRtc ? [CONNECTION_CAPABILITY_WEBRTC_V1] : []),
         ...(this._config.capabilities ?? []),
-        ...this._providers.flatMap((provider) => provider.peerCapabilities ?? []),
+        ...this._providers.flatMap((provider) => providerPeerCapabilities(provider, announcedName(provider.name))),
       ], builtin);
       const usedCapabilities = builtin.length + baseCapabilities.length;
       const extraCapabilities = uniqueCapabilities([...baseCapabilities, ...this._freeTierCapabilities(usedCapabilities)], builtin);
@@ -2299,7 +2313,7 @@ export class AntseedNode extends EventEmitter {
             ? withDefaultServiceApiProtocols(p.name, p.services, p.serviceApiProtocols)
             : p.serviceApiProtocols;
           return {
-          provider: announcedProviderName(identity.privateKey, p.name, this._config.announceProviderIds === true),
+          provider: announcedName(p.name),
           services: p.services,
           ...(p.serviceCategories ? { serviceCategories: { ...p.serviceCategories } } : {}),
           ...(serviceApiProtocols ? { serviceApiProtocols: { ...serviceApiProtocols } } : {}),
@@ -2326,7 +2340,7 @@ export class AntseedNode extends EventEmitter {
         region: "unknown",
         pricing: new Map(
           this._providers.map((p) => [
-            announcedProviderName(identity.privateKey, p.name, this._config.announceProviderIds === true),
+            announcedName(p.name),
             {
               defaults: {
                 inputUsdPerMillion: p.pricing.defaults.inputUsdPerMillion,

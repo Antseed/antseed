@@ -47,7 +47,10 @@ attestation-key:<attestation public key, or empty>
 ## Assignment
 
 Pools advertise the peer capability `colony-pool-e2e.v2`, and
-`colony-pool-e2e.v2.<provider>` for the provider that serves through workers.
+`colony-pool-e2e.v2.<provider>` for the provider that serves through workers,
+named as buyers see it: its provider ID when the seller announces providers by
+ID (`announceProviderIds`). Control routes such as the assignment accept the
+provider's ID or its own name, as requests do.
 Whether a request is encrypted to a worker follows the provider it names
 first: a request naming a colony-pool provider is always encrypted, even when
 the buyer's view of the pool's models is out of date. A request naming an

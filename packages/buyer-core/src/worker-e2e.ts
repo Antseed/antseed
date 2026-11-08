@@ -81,12 +81,7 @@ export function peerAnnouncesWorkerE2E(peer: BuyerPeerView): boolean {
 
 /** True when the peer announces `provider` as a colony-pool provider. */
 export function isWorkerE2EProvider(peer: BuyerPeerView, provider: string): boolean {
-  return workerProviders(peer)(provider);
-}
-
-function workerProviders(peer: BuyerPeerView): (provider: string) => boolean {
-  const capabilities = new Set(peer.capabilities ?? []);
-  return (provider) => capabilities.has(workerE2EProviderCapability(provider));
+  return (peer.capabilities ?? []).includes(workerE2EProviderCapability(provider));
 }
 
 /** Where a request to a peer is routed, as the buyer resolved it. */
@@ -112,13 +107,12 @@ export interface WorkerE2ERoute {
  */
 export function peerServiceUsesWorkerE2E(peer: BuyerPeerView, route: WorkerE2ERoute = {}): boolean {
   if (!peerAnnouncesWorkerE2E(peer)) return false;
-  const isWorkerProvider = workerProviders(peer);
   const explicit = route.explicitProvider?.trim().toLowerCase() || null;
   const routed = route.routedProvider ?? null;
-  if (explicit && isWorkerProvider(explicit)) return true;
+  if (explicit && isWorkerE2EProvider(peer, explicit)) return true;
   if (!routed) return true;
   if (explicit && routed.toLowerCase() !== explicit) return true;
-  return isWorkerProvider(routed);
+  return isWorkerE2EProvider(peer, routed);
 }
 
 export function isWorkerUnavailable(response: SerializedHttpResponse): boolean {

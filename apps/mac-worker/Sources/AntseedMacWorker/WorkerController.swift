@@ -471,8 +471,7 @@ final class WorkerController: ObservableObject {
                     "usage": usage,
                 ]
                 let sealed = try sealer.sealBody(Data(try jsonString(completion).utf8), usage: usage)
-                send(["t": "response-start", "id": id, "status": 200, "headers": ["content-type": "application/json"]])
-                send(["t": "response-chunk", "id": id, "data": sealed.base64EncodedString()])
+                sendBufferedBody(sealed, id: id, status: 200)
             }
             send(["t": "response-end", "id": id])
             let calls = result.toolCalls.isEmpty ? "" : " · \(result.toolCalls.count) tool call(s)"
@@ -491,9 +490,14 @@ final class WorkerController: ObservableObject {
             return fail(id, message)
         }
         log("refused a request: \(message)")
+        sendBufferedBody(sealed, id: id, status: status)
+        send(["t": "response-end", "id": id])
+    }
+
+    /// A whole (not streamed) sealed JSON answer: its response-start and its one chunk.
+    private func sendBufferedBody(_ sealed: Data, id: String, status: Int) {
         send(["t": "response-start", "id": id, "status": status, "headers": ["content-type": "application/json"]])
         send(["t": "response-chunk", "id": id, "data": sealed.base64EncodedString()])
-        send(["t": "response-end", "id": id])
     }
 
     /// Starts a streamed answer once, at its first generated output: the pool keeps its first-byte deadline
