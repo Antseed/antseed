@@ -9,6 +9,7 @@ This project uses selective package publishing. Each release entry lists the pub
 ### Fixed
 
 - Buyer (`@antseed/buyer-core`, CLI, gateway, desktop): a paid request to a seller whose earlier channel never locked on-chain answers **402 out of credits** at once when your deposits can't fund its reserve. Before, the buyer replayed that channel's reserve, the seller's lock failed, and the request waited 30 seconds for `Lock confirmation timed out`.
+- TEE seller image (`deploy/tee-seller`): the image exposes the signaling (6882/tcp) and DHT (6881/udp) ports. Google Confidential Space blocks every inbound port an image doesn't expose, so buyers couldn't reach a seller running there.
 - TEE sellers (`@antseed/antseed-verifier` 0.1.4, CLI): the seller fetches its image's build record from GHCR, where the publish workflow pushes it next to the image, instead of GitHub's attestations API, which allows 60 unauthenticated calls an hour per IP. On a cloud IP that other tenants share, that limit could keep the seller from sending the record, and buyers then rejected an image that isn't in the approved list. The attestations API is still tried when the registry has no record. Buyers check the record as before.
 
 ### Changed
