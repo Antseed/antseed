@@ -8,6 +8,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Added
 
+- OpenAI-compatible sellers (`@antseed/provider-openai`, CLI): text services can advertise Responses and Messages alongside Chat Completions with `seller.providers.<name>.services[id].extraProtocols`, provided their upstreams already support those APIs.
 - fal images (`@antseed/provider-fal-image`, new; CLI): sell fal.ai image models (such as `openai/gpt-image-2`, `fal-ai/nano-banana-pro`, `fal-ai/flux-2-pro`) through the OpenAI Images API. Buyers send `POST /v1/images/generations` and, for services with a fal edit endpoint (`imageEditModel`), multipart `POST /v1/images/edits`; the seller turns `n` and `size` into fal's `num_images` and `image_size`, sends edit images as data URLs, and answers in OpenAI form (`b64_json`, or fal's URL with `response_format: "url"`). Requests are billed per output image (`openai-images` unit pricing). fal's own `image_size`, `num_images` and similar fields are refused, so a request can't get a larger or extra image than the one it pays for. Docs: plugin README.
 
 ### Fixed

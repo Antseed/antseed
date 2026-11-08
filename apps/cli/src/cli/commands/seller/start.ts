@@ -402,6 +402,7 @@ export function buildSellerPluginRuntimeEnv(
   const serviceImageEditModelMap: Record<string, string> = {}
   const serviceCapabilities: Record<string, unknown> = {}
   const serviceUnitBillingModels: Record<string, unknown> = {}
+  const serviceExtraProtocols: Record<string, unknown> = {}
   for (const [serviceId, serviceCfg] of Object.entries(providerCfg.services)) {
     if (serviceCfg.pricing) {
       servicePricing[serviceId] = serviceCfg.pricing
@@ -418,6 +419,9 @@ export function buildSellerPluginRuntimeEnv(
     if (serviceCfg.unitBillingModels) {
       serviceUnitBillingModels[serviceId] = serviceCfg.unitBillingModels
     }
+    if (serviceCfg.extraProtocols !== undefined) {
+      serviceExtraProtocols[serviceId] = serviceCfg.extraProtocols
+    }
   }
   if (Object.keys(servicePricing).length > 0) {
     runtimeEnv['ANTSEED_SERVICE_PRICING_JSON'] = JSON.stringify(servicePricing)
@@ -433,6 +437,9 @@ export function buildSellerPluginRuntimeEnv(
   }
   if (Object.keys(serviceUnitBillingModels).length > 0) {
     runtimeEnv['ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON'] = JSON.stringify(serviceUnitBillingModels)
+  }
+  if (Object.keys(serviceExtraProtocols).length > 0) {
+    runtimeEnv['ANTSEED_SERVICE_EXTRA_PROTOCOLS_JSON'] = JSON.stringify(serviceExtraProtocols)
   }
   const pluginPackage = resolvePluginPackage(providerCfg.plugin)
   const envPrefix = PROVIDER_ENV_PREFIXES[pluginPackage] ?? 'OPENAI'

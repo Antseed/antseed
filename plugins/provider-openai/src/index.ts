@@ -113,6 +113,37 @@ function buildOpenAiServiceApiProtocols(
   return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 }
 
+function withExtraServiceApiProtocols(
+  serviceApiProtocols: Record<string, ServiceApiProtocol[]> | undefined,
+  raw: string | undefined,
+): Record<string, ServiceApiProtocol[]> | undefined {
+  const key = 'ANTSEED_SERVICE_EXTRA_PROTOCOLS_JSON';
+  const configured = parseJsonObject(raw, key);
+  if (!configured || Object.keys(configured).length === 0) return serviceApiProtocols;
+
+  const merged = { ...serviceApiProtocols };
+  for (const [service, extraProtocols] of Object.entries(configured)) {
+    if (!Object.hasOwn(merged, service)) {
+      throw new Error(`${key} has unknown or unsupported service "${service}"`);
+    }
+    const protocols = merged[service];
+    if (!protocols?.includes('openai-chat-completions')) {
+      throw new Error(`${key}.${service} is supported only for text services`);
+    }
+    if (!Array.isArray(extraProtocols)) {
+      throw new Error(`${key}.${service} must be an array`);
+    }
+    const validated = extraProtocols.map((protocol: unknown): ServiceApiProtocol => {
+      if (protocol !== 'openai-responses' && protocol !== 'anthropic-messages') {
+        throw new Error(`${key}.${service} supports only openai-responses and anthropic-messages`);
+      }
+      return protocol;
+    });
+    merged[service] = [...new Set([...protocols, ...validated])];
+  }
+  return merged;
+}
+
 /**
  * Image services always produce images, so advertise `outputs: ["image"]`
  * without requiring seller config. Venice input modalities are derived from
@@ -200,6 +231,7 @@ const plugin: AntseedProviderPlugin = {
     { key: 'ANTSEED_SERVICE_PRICING_JSON', label: 'Service Pricing JSON', type: 'string', required: false, description: 'Per-service pricing JSON' },
     { key: 'ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON', label: 'Service Unit Billing Models JSON', type: 'string', required: false, description: 'Per-service/protocol unit billing model JSON' },
     { key: 'ANTSEED_SERVICE_CAPABILITIES_JSON', label: 'Service Capabilities JSON', type: 'string', required: false, description: 'Per-service model capability JSON (contextWindow, maxOutputTokens, inputs, outputs, reasoning, toolUse, structuredOutput, supportedParameters)' },
+    { key: 'ANTSEED_SERVICE_EXTRA_PROTOCOLS_JSON', label: 'Service Extra Protocols JSON', type: 'string', required: false, description: 'Per-text-service extra protocols: openai-responses and anthropic-messages (in addition to openai-chat-completions)' },
     { key: 'ANTSEED_MAX_CONCURRENCY', label: 'Max Concurrency', type: 'number', required: false, default: 10, description: 'Max concurrent requests' },
     { key: 'ANTSEED_ALLOWED_SERVICES', label: 'Allowed Services', type: 'string[]', required: false, description: 'Service allow-list' },
     { key: 'ANTSEED_SERVICE_ALIAS_MAP_JSON', label: 'Service Alias Map', type: 'string', required: false, description: 'JSON map of announced service → upstream model name (generic, works across all providers)' },
@@ -248,7 +280,10 @@ const plugin: AntseedProviderPlugin = {
 
     const tokenProvider = new StaticTokenProvider(apiKey);
     const serviceRewriteMap = parseServiceAliasMap(config['ANTSEED_SERVICE_ALIAS_MAP_JSON']);
-    const serviceApiProtocols = buildOpenAiServiceApiProtocols(allowedServices, flavor, serviceRewriteMap);
+    const serviceApiProtocols = withExtraServiceApiProtocols(
+      buildOpenAiServiceApiProtocols(allowedServices, flavor, serviceRewriteMap),
+      config['ANTSEED_SERVICE_EXTRA_PROTOCOLS_JSON'],
+    );
     const imageEditModelMap = parseImageEditModelMap(config['ANTSEED_SERVICE_IMAGE_EDIT_MODEL_MAP_JSON']);
     validateVeniceEditModelMap(flavor, allowedServices, serviceApiProtocols, imageEditModelMap);
     const serviceUnitBillingModels = parseServiceUnitBillingModelsJson(config['ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON']);

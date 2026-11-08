@@ -114,6 +114,7 @@ After an upstream fails for a service, the seller tries it last for that service
 |---|---|
 | `upstreamModel` | Model ID sent upstream. Defaults to the service ID. |
 | `imageEditModel` | Venice image services only: the native edit model that serves `/v1/images/edits` for this service. See [Venice image edits](/docs/provide/media#venice-image-edits). |
+| `extraProtocols` | `openai` text services only: add `openai-responses` and/or `anthropic-messages` alongside Chat Completions. The upstream and fallbacks must already support those APIs; no protocol translation is performed. |
 | `pricing` | `inputUsdPerMillion`, `outputUsdPerMillion` and optional `cachedInputUsdPerMillion`, in USD per million tokens. Overrides the provider's `defaults`. |
 | `categories` | Tags announced in discovery. Lowercase letters, digits and hyphens. Buyers can filter on any tag; `privacy`, `legal`, `uncensored`, `coding`, `finance` and `tee` are the well-known ones shown in `antseed network browse --tag`. |
 | `capabilities` | Hints about the model. See below. |

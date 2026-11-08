@@ -41,6 +41,22 @@ import {
   selectSellerProviderNames,
 } from './start.js';
 
+test('seller runtime passes extraProtocols per service without changing the default', () => {
+  const config = createDefaultConfig();
+  config.seller.providers = {
+    inference: { plugin: 'openai', services: {
+      model: { upstreamModel: 'upstream-model', extraProtocols: ['openai-responses', 'anthropic-messages'] },
+      'chat-only': {},
+    } },
+  };
+  const env = buildSellerPluginRuntimeEnv(config.seller, 'inference');
+  assert.deepEqual(JSON.parse(env['ANTSEED_SERVICE_EXTRA_PROTOCOLS_JSON'] ?? '{}'), {
+    model: ['openai-responses', 'anthropic-messages'],
+  });
+  delete config.seller.providers.inference?.services.model?.extraProtocols;
+  assert.equal(buildSellerPluginRuntimeEnv(config.seller, 'inference')['ANTSEED_SERVICE_EXTRA_PROTOCOLS_JSON'], undefined);
+});
+
 test('seller start runtime overrides are runtime-only and win over env/config', () => {
   const config = createDefaultConfig();
   config.seller.reserveFloor = 11;
