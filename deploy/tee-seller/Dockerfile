@@ -48,6 +48,9 @@ ENV HOME=/home/nonroot \
     ANTSEED_VERIFIER_SDKS=antseed-verifier
 USER 65532:65532
 VOLUME ["/var/lib/antseed"]
+# Signaling (TCP) and DHT (UDP). Google Confidential Space blocks every inbound port the image
+# doesn't expose, so without these buyers can't reach the seller there.
+EXPOSE 6882/tcp 6881/udp
 # launch.mjs picks the TEE (dstack or Google Confidential Space) and its seller config; the
 # dashboard, which can change settings at runtime, stays off.
 ENTRYPOINT ["/nodejs/bin/node", "/home/nonroot/launch.mjs"]
