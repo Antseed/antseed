@@ -4,6 +4,7 @@ import { audioSourceLengthProblem, nativeVideoRoute, parseJsonObject, requestSer
 import {
   FAL_PLATFORM_URL,
   FAL_SCHEMA_URL,
+  falEndpointInput,
   falErrorReason,
   parseCsv,
   parseServiceCapabilitiesJson,
@@ -43,16 +44,12 @@ export interface FalInputSchema {
 
 /** Reads an endpoint's input fields, required fields, source length range and resolutions from its fal OpenAPI schema. */
 export function falInputSchema(schema: Record<string, unknown> | null, endpointId: string): FalInputSchema | null {
-  const paths = schema?.paths as Record<string, any> | undefined;
-  const ref = paths?.[`/${endpointId}`]?.post?.requestBody?.content?.['application/json']?.schema?.$ref;
-  if (typeof ref !== 'string') return null;
-  const input = (schema?.components as Record<string, any> | undefined)?.schemas?.[ref.split('/').pop()!];
-  const properties = input?.properties;
-  if (!properties || typeof properties !== 'object') return null;
+  const input = falEndpointInput(schema, endpointId);
+  if (!input) return null;
+  const { properties } = input;
   const fields = Object.keys(properties).sort();
-  if (fields.length === 0) return null;
   const parameters = validateServiceCapabilityFields({ supportedParameters: fields }).length === 0 ? fields : null;
-  const required = Array.isArray(input.required) ? input.required.filter((field: unknown): field is string => typeof field === 'string' && fields.includes(field)) : [];
+  const required = input.required.filter(field => fields.includes(field));
   const limits = properties.video_url?.['x-fal'];
   const number = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined;
   const min = number(limits?.min_duration);

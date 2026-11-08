@@ -4,6 +4,7 @@ import { parseJsonObject } from '@antseed/api-adapter';
 import {
   FAL_PLATFORM_URL,
   FAL_SCHEMA_URL,
+  falEndpointInput,
   falErrorReason,
   getHeader,
   parseCsv,
@@ -53,11 +54,8 @@ export interface FalImageSchema {
 
 /** Reads an endpoint's input fields and `image_size` presets from its fal OpenAPI schema. */
 export function falImageSchema(schema: Record<string, unknown> | null, endpointId: string): FalImageSchema | null {
-  const paths = schema?.paths as Record<string, any> | undefined;
-  const ref = paths?.[`/${endpointId}`]?.post?.requestBody?.content?.['application/json']?.schema?.$ref;
-  if (typeof ref !== 'string') return null;
-  const properties = (schema?.components as Record<string, any> | undefined)?.schemas?.[ref.split('/').pop()!]?.properties;
-  if (!properties || typeof properties !== 'object' || Object.keys(properties).length === 0) return null;
+  const properties = falEndpointInput(schema, endpointId)?.properties;
+  if (!properties) return null;
   const imageSize = properties.image_size;
   const presets = [imageSize?.enum, ...(Array.isArray(imageSize?.anyOf) ? imageSize.anyOf.map((option: any) => option?.enum) : [])]
     .flatMap(values => Array.isArray(values) ? values.filter((value: unknown): value is string => typeof value === 'string') : []);
@@ -148,14 +146,33 @@ function resultImages(result: Record<string, unknown> | null): Array<{ url: stri
   return images.filter((image): image is { url: string; content_type?: string } => typeof (image as { url?: unknown })?.url === 'string');
 }
 
-async function readBounded(response: Response, maxBytes: number): Promise<Buffer | null> {
+/**
+ * A response's body, or null once it passes `maxBytes`: the body is read in
+ * chunks and the read cancelled at the limit, whatever Content-Length says.
+ */
+export async function readBounded(response: Response, maxBytes: number): Promise<Buffer | null> {
   const length = Number(response.headers.get('content-length'));
-  if (Number.isFinite(length) && length > maxBytes) {
+  if (!response.body || (Number.isFinite(length) && length > maxBytes)) {
     await response.body?.cancel();
-    return null;
+    return response.body ? null : Buffer.alloc(0);
   }
-  const body = Buffer.from(await response.arrayBuffer());
-  return body.length > maxBytes ? null : body;
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return Buffer.concat(chunks, total);
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel();
+        return null;
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
 }
 
 /**

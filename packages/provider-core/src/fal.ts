@@ -3,6 +3,28 @@ import { readVideoJson as readJson } from './video-download.js';
 export const FAL_PLATFORM_URL = 'https://api.fal.ai';
 export const FAL_SCHEMA_URL = 'https://fal.ai/api/openapi/queue/openapi.json';
 
+/** An endpoint's input schema in fal's OpenAPI document: its `properties` (non-empty) and `required` list. */
+export interface FalEndpointInput {
+  properties: Record<string, any>;
+  required: string[];
+}
+
+/**
+ * Resolves an endpoint's input schema in fal's OpenAPI document (the request
+ * body's `$ref` into `components.schemas`), or null when it is missing or has
+ * no properties.
+ */
+export function falEndpointInput(schema: Record<string, unknown> | null, endpointId: string): FalEndpointInput | null {
+  const paths = schema?.paths as Record<string, any> | undefined;
+  const ref = paths?.[`/${endpointId}`]?.post?.requestBody?.content?.['application/json']?.schema?.$ref;
+  if (typeof ref !== 'string') return null;
+  const input = (schema?.components as Record<string, any> | undefined)?.schemas?.[ref.split('/').pop()!];
+  const properties = input?.properties;
+  if (!properties || typeof properties !== 'object' || Object.keys(properties).length === 0) return null;
+  const required = Array.isArray(input.required) ? input.required.filter((field: unknown): field is string => typeof field === 'string') : [];
+  return { properties, required };
+}
+
 const HEALTH_CHECK_TIMEOUT_MS = 15_000;
 /** Endpoint IDs per fal model-list request. */
 const MODEL_LOOKUP_BATCH = 50;

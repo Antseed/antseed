@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Provider, SerializedHttpRequest } from '@antseed/node';
-import plugin, { falImageInput, falImageSchema, isFalMediaUrl } from './index.js';
+import plugin, { falImageInput, falImageSchema, isFalMediaUrl, readBounded } from './index.js';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -192,4 +192,29 @@ it('marks a service unavailable when fal drops its edit endpoint', async () => {
         : Response.json({ error: { message: 'Endpoint(s) not found' } }, { status: 404 }))
     : new Response(''));
   expect(await created.checkServiceHealth!([MODEL])).toEqual({ [MODEL]: { status: 'unavailable', reason: `fal no longer offers ${EDIT}` } });
+});
+
+describe('readBounded', () => {
+  const stream = (chunks: number[], onCancel: () => void) => new Response(new ReadableStream<Uint8Array>({
+    pull(controller) {
+      const size = chunks.shift();
+      if (size === undefined) controller.close();
+      else controller.enqueue(new Uint8Array(size));
+    },
+    cancel: onCancel,
+  }));
+
+  it('stops reading a body without Content-Length once it passes the limit', async () => {
+    let cancelled = false;
+    const chunks = [400, 400, 400, 400];
+    expect(await readBounded(stream(chunks, () => { cancelled = true; }), 1000)).toBeNull();
+    expect(cancelled).toBe(true);
+    expect(chunks.length).toBeGreaterThan(0);
+  });
+
+  it('refuses a body larger than its Content-Length allows, and reads one within the limit', async () => {
+    const declared = new Response(new Uint8Array(10), { headers: { 'content-length': '2000' } });
+    expect(await readBounded(declared, 1000)).toBeNull();
+    expect((await readBounded(stream([300, 300], () => {}), 1000))?.length).toBe(600);
+  });
 });
