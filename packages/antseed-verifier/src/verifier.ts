@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto'
 import type { AntseedVerifierPlugin, ClaimResult, VerifyContext, VerifyResult } from './antseed-node-types.js'
 import './caps/index.js' // side-effect: register the capability menu
-import { capabilityIds, getCapability } from './capability.js'
+import { capabilityIds, getCapability, type VerifyRound } from './capability.js'
 import type { VerifyConfidentialSpaceTokenFn } from './confidential-space.js'
 import {
   NODE_TEE_CAP_ID,
@@ -149,6 +149,7 @@ export async function runVerify(
   const approvedNodeBuilds = readApprovedNodeBuilds()
   const channelBinding = resp.channelBinding
   const claims: ClaimResult[] = []
+  const round: VerifyRound = {}
   for (const capId of capabilityIds()) {
     if (!wanted.has(capId)) continue
     const cap = getCapability(capId)
@@ -157,7 +158,7 @@ export async function runVerify(
     const parsed = source ? parsedByCap.get(source) : undefined
     const policy = capId === MEASURED_IMAGE_ID ? measuredImagePolicy : capId === NODE_TEE_CAP_ID ? approvedNodeBuilds : undefined
     try {
-      const out = await cap.verify({ nonce, peerId, evidence: evidence[capId], parsedQuote: parsed, evidenceBundle: evidence, policy, channelBinding })
+      const out = await cap.verify({ nonce, peerId, evidence: evidence[capId], parsedQuote: parsed, evidenceBundle: evidence, policy, channelBinding, round })
       claims.push(...(Array.isArray(out) ? out : [out]))
     } catch (err) {
       claims.push({ claim: claimId(capId), ok: false, detail: `verify threw: ${msg(err)}` })
@@ -172,7 +173,7 @@ const verifierPlugin: AntseedVerifierPlugin = {
   type: 'verifier',
   name: VERIFIER_ID,
   displayName: 'TEE attestation verifier (Intel TDX / DCAP)',
-  version: '0.1.5',
+  version: '0.1.6',
   description:
     'Capability-based seller attestation: one claim per capability. Requires the seller node\'s genuine Intel TDX hardware running an approved seller build on the buyer\'s own connection (seller-node-tee-genuine) and a seller-identity binding over the whole bundle (seller-bound); also reports the provider TEE (seller-provider-tee-genuine), measured-image and gpu-cc when available.',
   verify: (ctx) => runVerify(ctx),
