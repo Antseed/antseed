@@ -49,6 +49,12 @@ test('another auditor\'s waiting DIFF: only the planner\'s confirmation is sent'
   assert.match(thirdOpinionReason(opinions.get(key), { confirmsDiff: false }) ?? '', /waits for its confirmer/)
 })
 
+test('the rotation\'s current confirmer may send a result the run did not flag (an owner whose stand-in reported first)', () => {
+  const opinions = otherOpinions([event({ auditor: A, verdict: VERIFIER_VERDICT.DIFF, reports: 1, required: 2 })], ME)
+  assert.equal(thirdOpinionReason(opinions.get(key), { confirmsDiff: false }, true), null)
+  assert.notEqual(thirdOpinionReason(opinions.get(key), { confirmsDiff: false }, false), null)
+})
+
 test('another auditor\'s SAME: no second opinion on a verified seller', () => {
   const opinions = otherOpinions([event({ auditor: A, verdict: VERIFIER_VERDICT.SAME, reports: 1, required: 1 })], ME)
   assert.match(thirdOpinionReason(opinions.get(key), { confirmsDiff: true }) ?? '', /already judged/)
@@ -103,6 +109,16 @@ test('the submit filter answers per candidate and ignores other sellers and mode
   assert.equal(reasons[1], null)
   const otherModel = await filter(modelHash('model-b'), [{ agentId: 7n, serviceHash: serviceHash(SERVICE), verdict: VERIFIER_VERDICT.SAME, auditedAt: 1 }])
   assert.equal(otherModel[0], null)
+})
+
+test('the submit filter lets the rotation\'s confirmer answer a waiting DIFF without the run flag', async () => {
+  const events = [event({ auditor: A, verdict: VERIFIER_VERDICT.DIFF, reports: 1, required: 2, agentId: 7n })]
+  const mine = new Set([opinionKey(7n, serviceHash(SERVICE), modelHash(MODEL))])
+  const withMine = thirdOpinionFilter({ events, auditor: ME, myConfirmations: mine })
+  const without = thirdOpinionFilter({ events, auditor: ME })
+  const candidate = { agentId: 7n, serviceHash: serviceHash(SERVICE), verdict: VERIFIER_VERDICT.DIFF, auditedAt: 1 }
+  assert.equal((await withMine(modelHash(MODEL), [candidate]))[0], null)
+  assert.notEqual((await without(modelHash(MODEL), [candidate]))[0], null)
 })
 
 test('the planner asks per seller with every service name the model is audited under', () => {

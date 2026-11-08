@@ -74,6 +74,8 @@ export function otherOpinions(events: readonly ServiceAuditedEvent[], auditor: s
 export function thirdOpinionReason(
   opinions: ReadonlyMap<string, OtherOpinion> | undefined,
   candidate: Pick<SubmissionCandidate, 'confirmsDiff'>,
+  /** True when this auditor is the rotation's current confirmer for the seller's waiting DIFF (`pendingConfirmations().mine`). */
+  myConfirmation = false,
 ): string | null {
   if (!opinions || opinions.size === 0) return null
   const list = [...opinions.values()]
@@ -81,7 +83,9 @@ export function thirdOpinionReason(
   if (list.length === 1) {
     const [other] = list as [OtherOpinion]
     if (other.verdict === VERIFIER_VERDICT.DIFF && other.reports < other.required) {
-      if (candidate.confirmsDiff) return null
+      // The run flagged the result as this auditor's confirmation, or the rotation makes this auditor the
+      // confirmer now (e.g. an owner whose stand-in reported first, its own window audited before that).
+      if (candidate.confirmsDiff || myConfirmation) return null
       return `another auditor's DIFF waits for its confirmer (${describe(other)}); this result is not that confirmation, so it is not sent`
     }
     return `already judged this epoch (${describe(other)}); a seller gets one audit and, for a DIFF, one confirmation, never a second opinion on a SAME`
@@ -96,11 +100,14 @@ export function thirdOpinionReason(
 export function thirdOpinionFilter(input: {
   events: readonly ServiceAuditedEvent[]
   auditor: string
+  /** `opinionKey`s of the waiting DIFFs whose current confirmer is this auditor (`pendingConfirmations().mine`). */
+  myConfirmations?: ReadonlySet<string>
 }): (modelHashValue: string, candidates: readonly SubmissionCandidate[]) => Promise<Array<string | null>> {
   const opinions = otherOpinions(input.events, input.auditor)
-  return async (modelHashValue, candidates) => candidates.map((candidate) => (
-    thirdOpinionReason(opinions.get(opinionKey(candidate.agentId, candidate.serviceHash, modelHashValue)), candidate)
-  ))
+  return async (modelHashValue, candidates) => candidates.map((candidate) => {
+    const key = opinionKey(candidate.agentId, candidate.serviceHash, modelHashValue)
+    return thirdOpinionReason(opinions.get(key), candidate, input.myConfirmations?.has(key) ?? false)
+  })
 }
 
 /**

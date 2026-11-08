@@ -34,9 +34,13 @@ import { resolveAuditorAddress, resolveAuditorSigner } from './auditor-identity.
 import { writeEpochOverview } from '../../../verifier/epoch-overview.js'
 import { loadEpochState, writeEpochSubmissionManifest } from '../../../verifier/epoch-plan.js'
 import { getGlobalOptions } from '../types.js'
-import { loadDisputedSellers, loadEpochAuditEvents, loadEpochReports, ownResultTallies } from '../../../verifier/pending-confirmations.js'
+import {
+  epochReports, loadBlockTimestamps, loadDisputedSellers, loadEpochAuditEvents, loadEpochReports, ownResultTallies, pendingConfirmations, waitingReportBlocks,
+} from '../../../verifier/pending-confirmations.js'
 import { alreadyOnChainFilter, revocationPositions } from '../../../verifier/submission-delta.js'
-import { thirdOpinionFilter } from '../../../verifier/third-opinion.js'
+import { opinionKey, thirdOpinionFilter } from '../../../verifier/third-opinion.js'
+import { approvedAuditorsAt, loadAuditorSetEvents, revokedSinceEpochStart } from '../../../verifier/auditor-set.js'
+import { configuredVerifierModels } from '../../../verifier/model-config.js'
 
 interface SubmitOptions {
   runId?: string
@@ -173,6 +177,27 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
       const epochEvents = await loadEpochAuditEvents({
         reader: verifierClient, epochStartedAt: window.startedAt, deploymentBlock: verifierClient.deploymentBlock,
       })
+      // The waiting DIFFs whose confirmer this auditor is right now, by the rotation (as `verifier run` plans
+      // them), so a result that answers one is sent even when the run that made it was not planned as a
+      // confirmation (an owner whose stand-in reported first). Read from the same cache `run` uses.
+      const myConfirmations = new Set<string>()
+      try {
+        const setEvents = await loadAuditorSetEvents(verifierClient, globalOptions.dataDir, (message) => console.log(chalk.dim(message)))
+        const reports = epochReports(epochEvents)
+        const blockTimestamps = await loadBlockTimestamps({ getBlock: (block) => verifierClient.provider.getBlock(block) }, waitingReportBlocks(reports))
+        for (const entry of pendingConfirmations({
+          reports,
+          epoch: window.epoch,
+          blockTimestamps,
+          revoked: revokedSinceEpochStart(setEvents, window.startedAt),
+          now: await chainNow(verifierClient.provider),
+          auditor: address,
+          auditors: approvedAuditorsAt(setEvents, window.startedAt),
+          auditedModels: configuredVerifierModels(config.verifier),
+        })) if (entry.mine) myConfirmations.add(opinionKey(entry.agentId, entry.serviceHash, entry.modelHash))
+      } catch (error) {
+        console.warn(chalk.yellow(`Could not work out this auditor's confirmations: ${asError(error).message}; only results the run flagged as confirmations are sent as second opinions`))
+      }
       const { audits: prepared, excluded, alreadyOnChain } = await prepareModelAudits({
         evidenceDir,
         banksDir,
@@ -197,8 +222,8 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
           auditorSetEvents,
         }),
         // Never a third opinion: a seller judged by another auditor this epoch is not reported on again,
-        // except to confirm a DIFF the planner gave this auditor (third-opinion.ts).
-        thirdOpinion: thirdOpinionFilter({ events: epochEvents, auditor: address }),
+        // except to confirm a DIFF this auditor is the confirmer of (third-opinion.ts).
+        thirdOpinion: thirdOpinionFilter({ events: epochEvents, auditor: address, myConfirmations }),
       })
       const audits = await reuseLedgerEvidence(
         prepared.map((audit) => withLedgerKey(audit, ledger, evidenceDir, manifest.runId)), ledger,
