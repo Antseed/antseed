@@ -40,6 +40,14 @@ final class InteropTests: XCTestCase {
         XCTAssertNil(try WorkerE2E.openRequest(Data(extended.utf8), workerAddress: worker, key: key).buyer)
         XCTAssertThrowsError(try WorkerE2E.openRequest(Data(body.utf8), workerAddress: "0x0000000000000000000000000000000000000001", key: key))
         XCTAssertThrowsError(try WorkerE2E.openRequest(Data(body.utf8), workerAddress: worker, key: P256.KeyAgreement.PrivateKey()))
+        // The binding is read and verified before anything is decrypted: no key needed.
+        let sealed = try WorkerE2E.inspectRequest(Data(body.utf8), workerAddress: worker)
+        XCTAssertEqual(sealed.buyer?.lowercased(), "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc")
+        XCTAssertEqual(sealed.channel?.lowercased(), "0x" + String(repeating: "cd", count: 32))
+        XCTAssertEqual(sealed.expires, 2_000_000_000)
+        XCTAssertEqual(sealed.binding, opened.binding)
+        XCTAssertEqual(sealed.bodyBytes, opened.body.count)
+        XCTAssertEqual(try WorkerE2E.decrypt(sealed, key: key).body, opened.body)
     }
 
     func testEachRecipientOpensARequestSealedForTwoWorkers() throws {

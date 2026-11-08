@@ -73,18 +73,21 @@ POST /_antseed/provider/colony-pool/assign
 ] }
 ```
 
-`recipients` is the node option `colonyPoolRecipients`: 1 to 3, default 2.
+`recipients` is the node option `colonyPoolRecipients`: 1 to 3, default 1.
 The pool returns up to that many distinct workers, best-ranked first (see
 [Routing and failover](#routing-and-failover)). For each one the buyer checks
 that the certificate recovers to `worker`, that `pool` is the seller it is
 paying, and that it has not expired. When an attestation is present it must
-verify (see [Hardened Macs](#hardened-macs)); a buyer configured with
-`requireAttestedWorkers` or `requireAppleVerifiedWorkers` also applies that
-policy. A worker that fails any check is left out of the set, and the buyer
-refuses the assignment only when no worker is left. It keeps the set per
-(seller, provider, service) until the first of its certificates or
+verify (see [Hardened Macs](#hardened-macs)), but its hardening is never a
+requirement: the worker signs it with a key it chose. A buyer configured with
+`requireAppleVerifiedWorkers` also requires Apple's attestation of the
+worker's Mac. A worker that fails any check is left out of the set, and the
+buyer refuses the assignment only when no worker is left. It keeps the set
+per (seller, provider, service) until the first of its certificates or
 attestations stops being usable, or the pool answers `421` with
-`{"error":{"code":"worker_unavailable"}}`, then reassigns and retries once.
+`{"error":{"code":"worker_unavailable"}}`. Then it drops the set; with 2 or 3
+recipients it reassigns and retries once, and with 1 it returns the `421`,
+so a request is never shown to a second Mac.
 Paths under `/_antseed/provider/` are free control routes: the seller hands
 them to the provider serving the body's `model` (`Provider.handleControlRequest`)
 without payment or metering, rate limited per buyer. A pool refuses plaintext
@@ -154,8 +157,9 @@ buyer under a different key. A worker that checks the chain verifies that
 **Privacy with several recipients.** Any of the N recipient Macs could
 decrypt the request if the pool forwards it to them. The pool forwards to one
 at a time, in rank order, and only within the set the buyer signed (see
-[Routing and failover](#routing-and-failover)); set `colonyPoolRecipients` to
-1 so only one Mac can ever read a request.
+[Routing and failover](#routing-and-failover)). With the default of 1, only
+one Mac can ever read a request, and the buyer never re-encrypts it for
+another; 2 or 3 trade that for availability.
 
 ## Response envelope
 
@@ -219,6 +223,27 @@ seal under its response key.
   hash until `exp` and refuses a repeat ("Request was already served"), so a
   pool cannot replay a buyer's request under another dispatch ID. It refuses an
   expired request, and one whose `exp` is more than 11 minutes ahead.
+- A worker admits a buyer's request on its clear binding before decrypting
+  it: the buyer's signature over the recipients, channel, expiry and
+  ciphertext hash, the on-chain channel check and the replay check. So a
+  request it refuses is never read.
+- The pool checks each service a worker offers by sending "Reply with the
+  single word: ready" and routes it only if the reply's `message.content` is
+  "ready" (ignoring case, surrounding quotes, emphasis, punctuation and a
+  `<think>` block).
+- Workers may report the model each service runs (`models` in `hello` and
+  `services`, `service → repo@revision`; `antseed-pool-worker --models`). With
+  `COLONY_POOL_MODELS=service=repo@revision,…` the pool routes a pinned
+  service only from workers reporting exactly that model. The report is the
+  worker's own, so this catches misconfiguration and upstream drift, not a
+  modified worker. The Mac app serves only a pinned model
+  (`org/repo@<commit>`) and reports it.
+- The Mac app serves OpenAI chat completions with tools: `tools`,
+  `tool_choice`, `parallel_tool_calls`, assistant `tool_calls` and `tool`
+  messages reach the engine, and tool-call deltas and the engine's
+  `finish_reason` come back. Input it can't read (image, audio or file parts,
+  other roles) gets a sealed `400` before inference, so the buyer is never
+  billed for an answer to a different prompt.
 - A worker runs at most the `maxConcurrency` it announces, counting requests
   still waiting on a channel check, and refuses extras ("Worker is at
   capacity"). A request cancelled or disconnected while it waits never starts.
@@ -350,8 +375,7 @@ The Antseed Mac app runs models on the bundled TensorFold engine, a separate
 process it reaches over loopback. The decrypted prompt therefore leaves the app:
 the Mac's owner can read loopback traffic, and the app's protections below
 don't cover the engine. **Every current build attests `debuggerDenied: false`,
-so it is not hardened**, and pools and buyers that require attestation refuse
-it. The rest of this section describes what the app enforces and what a build
+so it is not hardened** and never gets the hardened label. The rest of this section describes what the app enforces and what a build
 that keeps inference inside the app would attest.
 
 With inference in the app, the decrypted prompt exists only in its memory. The
@@ -408,15 +432,25 @@ An attestation is **valid** when it verifies under the certificate's
 `attestationKey` and is fresh. It is **hardened** when it is also signed by a
 team (`teamId` set) and every flag is 1. The pool re-challenges attested
 workers every 5 minutes with an `attest` frame (`{"t":"attest","nonce":…}`,
-answered by `{"t":"attestation","attestation":…}` within 30 s) and disconnects
-a worker that does not answer, sends an invalid attestation, or stops
-reporting hardened. It hands buyers the latest attestation with each
-assignment. Buyers check it themselves, accepting one up to 15 minutes old.
+answered by `{"t":"attestation","attestation":…}` within 30 s, dated at most
+300 s from the pool's clock either way). A missed or failed answer disconnects
+the worker only when the pool requires Apple's attestation; otherwise the
+worker keeps serving without its label and is asked again next round, so one
+systematic fault (the pool's clock, a worker release) can't empty the pool.
+The pool logs a warning when workers with a valid attestation fall by half or
+more (from at least two) within one round. It hands buyers the latest
+attestation with each assignment. Buyers check it themselves, accepting one
+up to 15 minutes old.
 Because the attestation key is certified by the worker's identity, the pool
 cannot forge an attestation or move one to another worker.
 
-Pool settings: `COLONY_POOL_REQUIRE_ATTESTATION` admits only hardened workers,
-and `COLONY_POOL_ATTESTED_TEAMS` limits which Apple Developer teams count.
+The attestation key is one the worker certifies itself, so hardening is the
+worker's own report: pools and buyers show it as a label and never require
+it. `COLONY_POOL_ATTESTED_TEAMS` limits which Apple Developer teams earn the
+label, and a pool started with `COLONY_POOL_REQUIRE_ATTESTATION` refuses to
+start. The enforceable check is Apple's attestation through the operator's MDM
+(`COLONY_POOL_MDM_URL` with `COLONY_POOL_REQUIRE_DEVICE_ATTESTATION`; buyers:
+`requireAppleVerifiedWorkers`).
 
 **Limits.** This is a hardened Mac, not a TEE. Memory is not encrypted, so a
 kernel exploit, or a gap in macOS's enforcement, exposes prompts. The

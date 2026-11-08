@@ -1,8 +1,10 @@
-import { Wallet } from 'ethers';
+import { getBytes, verifyMessage, Wallet } from 'ethers';
 import WebSocket from 'ws';
 import {
   isSealedRequest,
   openRequest,
+  requestBindingHash,
+  type RequestEnvelope,
   WORKER_REQUEST_TTL_SECONDS,
   type OpenedRequest,
   workerKeyCertificateMessage,
@@ -88,6 +90,11 @@ export interface PoolWorkerOptions {
   privateKey: string;
   /** Key buyers encrypt requests to. */
   encryptionKey: WorkerEncryptionKey;
+  /**
+   * Service → the model it runs, `repo@revision` with a pinned revision, reported to the pool (a pool
+   * that pins a service's model refuses it from a worker reporting another).
+   */
+  models?: Record<string, string>;
   /** Attests hello and every `attest` frame; without it the worker joins unattested. */
   attester?: WorkerAttester;
   /**
@@ -128,11 +135,20 @@ export function checkRequestBody(body: Record<string, unknown>): Record<string, 
   };
 }
 
-/**
- * Reference worker: keeps a connection to a pool open and serves its
- * encrypted requests from a local OpenAI-compatible model server. The pool
- * never sees prompts or answers.
- */
+/** Parse `--models`: `service=repo@revision,…`, each for a service the worker serves. */
+export function parseWorkerModels(raw: string | undefined, services: readonly string[]): Record<string, string> {
+  const models: Record<string, string> = {};
+  for (const entry of (raw ?? '').split(',').map((part) => part.trim()).filter(Boolean)) {
+    const at = entry.indexOf('=');
+    const service = at > 0 ? entry.slice(0, at).trim() : '';
+    const model = at > 0 ? entry.slice(at + 1).trim() : '';
+    if (!service || !/^[^@\s]+@[^@\s]+$/.test(model)) throw new Error(`--models: "${entry}" is not service=repo@revision`);
+    if (!services.includes(service)) throw new Error(`--models: ${service} is not one of --services`);
+    models[service] = model;
+  }
+  return models;
+}
+
 /**
  * Ask a pool for a worker's earnings on a connection of its own, which never
  * joins the pool, so a worker serving under the same key keeps its connection.
@@ -165,6 +181,11 @@ export function queryWorkerStats(poolUrl: string, privateKey: string, timeoutMs 
   }).finally(() => ws.close());
 }
 
+/**
+ * Reference worker: keeps a connection to a pool open and serves its
+ * encrypted requests from a local OpenAI-compatible model server. The pool
+ * never sees prompts or answers.
+ */
 export class PoolWorker {
   private readonly opts: PoolWorkerOptions;
   private readonly wallet: Wallet;
@@ -215,7 +236,7 @@ export class PoolWorker {
   /** Stop taking new requests (owner is using the machine) without leaving the pool. */
   setPaused(paused: boolean): void {
     this.paused = paused;
-    this.send({ t: 'services', services: paused ? [] : Object.keys(this.opts.services) });
+    this.send({ t: 'services', services: paused ? [] : Object.keys(this.opts.services), ...this.modelsField() });
   }
 
   private connect(): void {
@@ -276,6 +297,7 @@ export class PoolWorker {
           encryption: { key, expires, certificate, ...(attester ? { attestationKey: attester.publicKey } : {}) },
           ...(attestation ? { attestation } : {}),
           agent: this.opts.agent ?? 'antseed-pool-worker/0.1.0',
+          ...this.modelsField(),
         });
         return;
       }
@@ -300,6 +322,10 @@ export class PoolWorker {
         }
         return;
     }
+  }
+
+  private modelsField(): { models?: Record<string, string> } {
+    return this.opts.models && Object.keys(this.opts.models).length > 0 ? { models: this.opts.models } : {};
   }
 
   /** Room for one more pool check this hour. */
@@ -404,6 +430,16 @@ export class PoolWorker {
     if (frame.method !== 'POST' || !ALLOWED_PATHS.has(frame.path)) throw new Error(`Unsupported route ${frame.method} ${frame.path}`);
     const sealedBody = decodeBody(frame.body);
     if (!isSealedRequest(sealedBody)) throw new Error('Refusing an unencrypted request');
+    // A buyer's request is admitted on its clear binding before it is decrypted, so a refused one is never read.
+    const bound = clearBinding(sealedBody, this.wallet.address);
+    if (bound) {
+      if (!this.opts.services[bound.model] || this.paused) throw new Error(`Not serving ${bound.model}`);
+      const verdict = await abortable(this.channelVerdict(bound.channel.toLowerCase(), bound.buyer), signal);
+      if (verdict === UNVERIFIABLE) throw new Error('This worker has no channel verifier, so it refuses buyer requests; start it with an RPC endpoint');
+      if (verdict === false) throw new Error('Request channel does not belong to a buyer of this pool');
+      if (verdict === null) throw new Error('Request channel is not on-chain yet; retry shortly');
+      this.claimOnce(bound.hash, bound.expires);
+    }
     let opened: ReturnType<typeof openRequest>;
     let body: Record<string, unknown>;
     try {
@@ -415,12 +451,9 @@ export class PoolWorker {
     const localModel = this.opts.services[opened.model];
     if (!localModel || this.paused) throw new Error(`Not serving ${opened.model}`);
 
-    if (opened.buyer && opened.channel && !/^0x0+$/.test(opened.channel)) {
-      const verdict = await abortable(this.channelVerdict(opened.channel.toLowerCase(), opened.buyer), signal);
-      if (verdict === UNVERIFIABLE) throw new Error('This worker has no channel verifier, so it refuses buyer requests; start it with an RPC endpoint');
-      if (verdict === false) throw new Error('Request channel does not belong to a buyer of this pool');
-      if (verdict === null) throw new Error('Request channel is not on-chain yet; retry shortly');
-      this.claimOnce(opened.binding!, opened.expires!);
+    if (bound) {
+      // The same envelope, so the same binding; checked anyway, since serving it in full rests on it.
+      if (opened.binding !== bound.hash) throw new Error('Request binding changed while opening it');
     } else {
       // No buyer binding: a pool check. Keep it small so it cannot buy real work, prompt processing included.
       if (opened.body.length > MAX_CHECK_BODY_BYTES) throw new Error(`Check requests are limited to ${MAX_CHECK_BODY_BYTES} bytes`);
@@ -436,8 +469,8 @@ export class PoolWorker {
     if (body['stream'] === true) {
       body['stream_options'] = { ...(body['stream_options'] as object | undefined), include_usage: true };
     }
-    this.log(opened.buyer
-      ? `serving ${opened.model} for buyer ${opened.buyer} on channel ${opened.channel?.slice(0, 18)}…`
+    this.log(bound
+      ? `serving ${opened.model} for buyer ${bound.buyer} on channel ${bound.channel.slice(0, 18)}…`
       : `serving a pool check for ${opened.model}`);
     await this.forwardUpstream(frame, body, opened.sealer, signal, send);
   }
@@ -511,6 +544,29 @@ export class PoolWorker {
 
   private log(line: string): void {
     this.opts.log?.(`[worker] ${line}`);
+  }
+}
+
+/**
+ * A request's buyer binding, read and verified from the envelope's clear
+ * fields (the binding signs the ciphertext's hash, so nothing needs
+ * decrypting): null for a request without a valid one (a pool check), or
+ * one not addressed to `worker`.
+ */
+export function clearBinding(body: Uint8Array, worker: string): { buyer: string; channel: string; expires: number; hash: string; model: string } | null {
+  try {
+    const outer = JSON.parse(Buffer.from(body).toString('utf-8')) as { model?: unknown; antseed_e2e?: RequestEnvelope };
+    const envelope = outer.antseed_e2e;
+    if (!envelope || typeof outer.model !== 'string' || typeof envelope.ct !== 'string' || !Array.isArray(envelope.recipients)) return null;
+    const { buyer, channel, exp, sig } = envelope;
+    if (!buyer || !sig || !channel || /^0x0+$/.test(channel) || !Number.isSafeInteger(exp) || exp! < 0) return null;
+    const workers = envelope.recipients.map((r) => r.worker);
+    if (!workers.some((w) => typeof w === 'string' && w.toLowerCase() === worker.toLowerCase())) return null;
+    const hash = requestBindingHash(workers, channel, exp!, Buffer.from(envelope.ct, 'base64'));
+    if (verifyMessage(getBytes(hash), sig).toLowerCase() !== buyer.toLowerCase()) return null;
+    return { buyer, channel, expires: exp!, hash, model: outer.model };
+  } catch {
+    return null;
   }
 }
 

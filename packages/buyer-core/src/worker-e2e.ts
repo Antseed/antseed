@@ -57,6 +57,12 @@ export interface WorkerE2EClient {
   ): Promise<SealedWorkerRequest>;
   /** Drop a cached assignment (the pool said none of its workers could take the request). */
   forget(peerId: string, service: string): void;
+  /**
+   * Whether a request none of its workers could take is encrypted again for
+   * new workers. Off when each request is meant for a single worker: a worker
+   * that failed may already have read it, so it is not shown to another.
+   */
+  readonly failover: boolean;
 }
 
 /**

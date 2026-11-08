@@ -6,7 +6,7 @@ import { parseArgs } from 'node:util';
 import { Wallet } from 'ethers';
 import { CHAIN_CONFIGS, ChannelsClient } from '@antseed/node';
 import { generateWorkerEncryptionKey, type WorkerEncryptionKey } from '@antseed/node/worker-e2e';
-import { PoolWorker, queryWorkerStats, trustedChannelVerifier, type ChannelVerifier } from './worker.js';
+import { parseWorkerModels, PoolWorker, queryWorkerStats, trustedChannelVerifier, type ChannelVerifier } from './worker.js';
 
 const USAGE = `Usage: antseed-pool-worker --pool <wss://url> --services <service[=localModel],...> [options]
 
@@ -16,6 +16,8 @@ OpenAI-compatible model server (mlx_lm.server, Ollama, llama.cpp).
 Options:
   --pool <url>          Pool WebSocket URL
   --services <list>     Services to serve, each optionally mapped to a local model name
+  --models <list>       The model each service runs, as service=repo@revision with a
+                        pinned revision; reported to the pool, which may require it
   --base-url <url>      Local model server (default http://127.0.0.1:8080)
   --concurrency <n>     Requests to run at once (default 1)
   --key-file <path>     Worker key; created on first run (default ~/.antseed-worker/key).
@@ -73,6 +75,7 @@ async function main(): Promise<void> {
     options: {
       pool: { type: 'string' },
       services: { type: 'string' },
+      models: { type: 'string' },
       'base-url': { type: 'string', default: 'http://127.0.0.1:8080' },
       concurrency: { type: 'string', default: '1' },
       'key-file': { type: 'string', default: join(homedir(), '.antseed-worker', 'key') },
@@ -98,10 +101,13 @@ async function main(): Promise<void> {
   const concurrency = Number.parseInt(values.concurrency!, 10);
   if (!Number.isInteger(concurrency) || concurrency < 1) throw new Error('--concurrency must be a positive whole number');
 
+  const services = parseServices(values.services!);
+  const models = parseWorkerModels(values.models, Object.keys(services));
   const worker = new PoolWorker({
     poolUrl: values.pool,
     baseUrl: values['base-url']!,
-    services: parseServices(values.services!),
+    services,
+    ...(Object.keys(models).length > 0 ? { models } : {}),
     privateKey: loadOrCreateKey(values['key-file']!),
     encryptionKey: loadOrCreateEncryptionKey(`${values['key-file']!}.p256`),
     channelVerifier: channelVerifier(values['chain-id']!, values['rpc-url'], values['channels-address']),

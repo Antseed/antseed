@@ -146,15 +146,16 @@ final class LocalModelParsingTests: XCTestCase {
     }
 
     func testParseEventReadsContentRateAndUsage() throws {
-        let chunk = try XCTUnwrap(LocalModel.parseEvent(#"data: {"choices":[{"index":0,"delta":{"content":"Hi"}}]}"#))
+        let chunk = try XCTUnwrap(EngineChat.parseEvent(#"data: {"choices":[{"index":0,"delta":{"content":"Hi"}}]}"#))
         XCTAssertEqual(chunk.content, "Hi")
-        let finish = try XCTUnwrap(LocalModel.parseEvent(#"data: {"choices":[{"delta":{},"finish_reason":"stop"}],"tensorfold":{"tokens_per_second":140.5}}"#))
+        let finish = try XCTUnwrap(EngineChat.parseEvent(#"data: {"choices":[{"delta":{},"finish_reason":"stop"}],"tensorfold":{"tokens_per_second":140.5}}"#))
         XCTAssertEqual(finish.tokensPerSecond, 140.5)
-        let usage = try XCTUnwrap(LocalModel.parseEvent(#"data: {"choices":[],"usage":{"prompt_tokens":26,"completion_tokens":10}}"#)?.usage)
+        XCTAssertEqual(finish.finishReason, "stop")
+        let usage = try XCTUnwrap(EngineChat.parseEvent(#"data: {"choices":[],"usage":{"prompt_tokens":26,"completion_tokens":10}}"#)?.usage)
         XCTAssertEqual(usage.prompt, 26)
         XCTAssertEqual(usage.completion, 10)
-        XCTAssertNil(LocalModel.parseEvent("data: [DONE]"))
-        XCTAssertNil(LocalModel.parseEvent(""))
+        XCTAssertNil(EngineChat.parseEvent("data: [DONE]"))
+        XCTAssertNil(EngineChat.parseEvent(""))
     }
 }
 

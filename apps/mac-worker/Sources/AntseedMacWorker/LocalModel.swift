@@ -9,7 +9,7 @@ actor LocalModel {
     static let contextTokens = 8192
     private static let servedName = "local-model"
 
-    /// `repo` or `repo@revision`.
+    /// `repo@revision`, pinned (`WorkerConfig.isPinned`).
     let modelId: String
     let engine: URL
     let directory: URL
@@ -20,9 +20,20 @@ actor LocalModel {
 
     struct Result {
         let text: String
+        /// Whole tool calls, as `message.tool_calls` (empty when the reply called none).
+        let toolCalls: [[String: Any]]
+        /// The engine's: "stop", "length", "tool_calls", …
+        let finishReason: String
         let promptTokens: Int
         let completionTokens: Int
         let tokensPerSecond: Double
+    }
+
+    /// What the engine generated next.
+    enum Output {
+        case text(String)
+        /// `delta.tool_calls` as the engine streamed them.
+        case toolCalls([[String: Any]])
     }
 
     enum EngineError: Error, LocalizedError {
@@ -59,24 +70,16 @@ actor LocalModel {
         try await startServer()
     }
 
-    /// Run a chat completion, calling `onChunk` for each piece of generated text.
+    /// Run a chat completion on `chat` (from `EngineChat.fields`), calling
+    /// `onOutput` for each piece of generated text or tool-call delta.
     func generate(
-        messages: [[String: Any]],
+        chat: [String: Any],
         maxTokens: Int,
         maxPromptTokens: Int? = nil,
         temperature: Float,
-        onChunk: @escaping @Sendable (String) async -> Void
+        onOutput: @escaping @Sendable (Output) async -> Void
     ) async throws -> Result {
         if server?.isRunning != true { try await startServer() }
-        let chat: [[String: String]] = messages.compactMap { message in
-            let content = Self.text(of: message["content"])
-            switch message["role"] as? String {
-            case "system", "developer": return ["role": "system", "content": content]
-            case "assistant": return ["role": "assistant", "content": content]
-            case "user": return ["role": "user", "content": content]
-            default: return nil
-            }
-        }
 
         // Checked after tokenizing and before prefill, the costly part.
         let promptTokens = try await countTokens(chat)
@@ -87,33 +90,41 @@ actor LocalModel {
         guard room > 0 else { throw EngineError.failed("Prompt too long (\(promptTokens) tokens, at most \(Self.contextTokens - 1))") }
         try Task.checkCancellation()
 
-        let (bytes, response) = try await session.bytes(for: try request("/v1/chat/completions", body: [
-            "model": Self.servedName,
-            "messages": chat,
-            "max_tokens": min(maxTokens, room),
-            "temperature": temperature,
-            "stream": true,
-            "stream_options": ["include_usage": true],
-        ]))
+        var body = chat
+        body["model"] = Self.servedName
+        body["max_tokens"] = min(maxTokens, room)
+        body["temperature"] = temperature
+        body["stream"] = true
+        body["stream_options"] = ["include_usage": true]
+        let (bytes, response) = try await session.bytes(for: try request("/v1/chat/completions", body: body))
         try Self.requireOK(response)
 
         var text = ""
+        var toolCalls = EngineChat.ToolCalls()
+        var finishReason: String?
         var usage: (prompt: Int, completion: Int)?
         var tokensPerSecond = 0.0
         // Disconnecting (a cancelled task ends this loop) cancels the request in the engine.
         for try await line in bytes.lines {
             try Task.checkCancellation()
-            guard let event = Self.parseEvent(line) else { continue }
+            guard let event = EngineChat.parseEvent(line) else { continue }
             if let piece = event.content, !piece.isEmpty {
                 text += piece
-                await onChunk(piece)
+                await onOutput(.text(piece))
             }
+            if let deltas = event.toolCalls {
+                toolCalls.add(deltas)
+                await onOutput(.toolCalls(deltas))
+            }
+            if let reason = event.finishReason { finishReason = reason }
             if let rate = event.tokensPerSecond { tokensPerSecond = rate }
             if let reported = event.usage { usage = reported }
         }
         // The buyer pays on these numbers: a stream that ends without them failed.
         guard let usage else { throw EngineError.failed("The engine ended the reply early") }
-        return Result(text: text, promptTokens: usage.prompt, completionTokens: usage.completion, tokensPerSecond: tokensPerSecond)
+        let calls = toolCalls.message
+        return Result(text: text, toolCalls: calls, finishReason: finishReason ?? (calls.isEmpty ? "stop" : "tool_calls"),
+                      promptTokens: usage.prompt, completionTokens: usage.completion, tokensPerSecond: tokensPerSecond)
     }
 
     /// Stop the engine process (server or model download) this data directory
@@ -136,21 +147,6 @@ actor LocalModel {
         guard words.count >= 4, words[1] == "of", words[3].hasPrefix("GiB"),
               let done = Double(words[0]), let total = Double(words[2]), total > 0 else { return nil }
         return min(done / total, 1)
-    }
-
-    /// One server-sent event of the engine's chat stream.
-    static func parseEvent(_ line: String) -> (content: String?, tokensPerSecond: Double?, usage: (prompt: Int, completion: Int)?)? {
-        guard line.hasPrefix("data:") else { return nil }
-        let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
-        guard payload != "[DONE]", let object = try? JSONSerialization.jsonObject(with: Data(payload.utf8)) as? [String: Any] else { return nil }
-        let delta = (object["choices"] as? [[String: Any]])?.first?["delta"] as? [String: Any]
-        let runtime = object["tensorfold"] as? [String: Any]
-        var usage: (prompt: Int, completion: Int)?
-        if let reported = object["usage"] as? [String: Any],
-           let prompt = reported["prompt_tokens"] as? Int, let completion = reported["completion_tokens"] as? Int {
-            usage = (prompt, completion)
-        }
-        return (delta?["content"] as? String, runtime?["tokens_per_second"] as? Double, usage)
     }
 
     // MARK: engine process
@@ -231,8 +227,11 @@ actor LocalModel {
         throw EngineError.failed("The engine did not start (see \(logFile.path))")
     }
 
-    private func countTokens(_ chat: [[String: String]]) async throws -> Int {
-        let (data, response) = try await session.data(for: try request("/v1/tokenize", body: ["model": Self.servedName, "messages": chat]))
+    private func countTokens(_ chat: [String: Any]) async throws -> Int {
+        // The tools render into the prompt too.
+        var body: [String: Any] = ["model": Self.servedName, "messages": chat["messages"] ?? [Any]()]
+        if let tools = chat["tools"] { body["tools"] = tools }
+        let (data, response) = try await session.data(for: try request("/v1/tokenize", body: body))
         try Self.requireOK(response)
         guard let count = (try JSONSerialization.jsonObject(with: data) as? [String: Any])?["count"] as? Int else {
             throw EngineError.failed("The engine did not count the prompt")
@@ -281,14 +280,5 @@ actor LocalModel {
             throw EngineError.failed("Could not generate the engine key")
         }
         return bytes.map { String(format: "%02x", $0) }.joined()
-    }
-
-    /// OpenAI message content: a string, or an array of `{type: "text", text}` parts.
-    private static func text(of content: Any?) -> String {
-        if let string = content as? String { return string }
-        if let parts = content as? [[String: Any]] {
-            return parts.compactMap { $0["text"] as? String }.joined(separator: "\n")
-        }
-        return ""
     }
 }

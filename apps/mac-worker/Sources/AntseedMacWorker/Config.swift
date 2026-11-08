@@ -30,6 +30,14 @@ struct WorkerConfig {
     /// screen); the code is also written to the log.
     var linkPayoutTo: String?
 
+    /// Whether `modelId` is `repo@revision` with a full commit hash: an
+    /// unpinned model could change under the service name the pool sells.
+    static func isPinned(_ modelId: String) -> Bool {
+        let parts = modelId.split(separator: "@", maxSplits: 1, omittingEmptySubsequences: false)
+        guard parts.count == 2, parts[0].split(separator: "/").count == 2 else { return false }
+        return parts[1].count == 40 && parts[1].allSatisfy(\.isHexDigit)
+    }
+
     /// The model's short name, for display.
     var modelName: String {
         let repository = modelId.split(separator: "@", maxSplits: 1).first.map(String.init) ?? modelId

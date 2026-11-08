@@ -134,6 +134,16 @@ export class WorkerDeliveryTracker {
   }
 
   /**
+   * The seller covered `requestId` from a free allowance: its verified answer
+   * owes nothing, so it no longer counts toward the owed limit and can be
+   * retired (as completed, so a later NeedAuth naming it is still refused).
+   */
+  markFree(sellerPeerId: string, requestId: string): void {
+    const delivery = this._deliveries.get(requestId);
+    if (delivery?.sellerPeerId === sellerPeerId) delivery.free = true;
+  }
+
+  /**
    * Make room by retiring the oldest verified record that owes nothing (paid
    * in full, or free), else the oldest failed one, else the oldest pending
    * one. A verified record whose cost is not fully signed is never evicted. Retiring never

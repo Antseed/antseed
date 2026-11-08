@@ -20,4 +20,9 @@ describe('colony pool configuration', () => {
         .toThrow(/COLONY_POOL_PROTOCOL_FEE_BPS must be a whole number from 0 to 10000/);
     }
   });
+
+  it('refuses COLONY_POOL_REQUIRE_ATTESTATION, which a worker\'s self-signed report can satisfy, and points to Apple\'s attestation', () => {
+    expect(() => plugin.createProvider({ ...base, ANTSEED_OUTPUT_USD_PER_MILLION: '1', COLONY_POOL_REQUIRE_ATTESTATION: 'true' }))
+      .toThrow(/COLONY_POOL_REQUIRE_ATTESTATION is no longer supported.*COLONY_POOL_REQUIRE_DEVICE_ATTESTATION/);
+  });
 });

@@ -934,6 +934,23 @@ describe('BuyerPaymentManager', () => {
       expect(decodeWorkerTail(sent.metadata)).toEqual([{ worker, cumulativeAmount: 9000n }]);
     });
 
+    it('retires worker answers a free allowance covered, so they never fill the owed limit', async () => {
+      const { needAuth, sellerPeerId } = await setup('seller-pool-allowance');
+      // More covered answers on a priced service than the owed limit (4,096) allows.
+      for (let i = 0; i < 4_200; i++) {
+        const id = `req-covered-${i}`;
+        manager.recordWorkerAttribution(sellerPeerId, id, worker);
+        manager.recordWorkerDelivery(id, usage);
+        manager.markRequestCovered(sellerPeerId, id);
+      }
+      expect(() => manager.recordWorkerAttribution(sellerPeerId, 'req-after', worker)).not.toThrow();
+      // A covered answer is still never paid for.
+      manager.recordWorkerDelivery('req-pool', usage);
+      manager.markRequestCovered(sellerPeerId, 'req-pool');
+      await needAuth();
+      expect(mux.sentSpendingAuths).toHaveLength(0);
+    });
+
     it('refuses a NeedAuth from another seller naming a worker request', async () => {
       await setup('seller-pool-owner');
       manager.recordWorkerDelivery('req-pool', usage);

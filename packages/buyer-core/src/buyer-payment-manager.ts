@@ -3004,6 +3004,8 @@ export class BuyerPaymentManager {
    */
   markRequestCovered(sellerPeerId: string, requestId: string): void {
     this.clearRequestBilling(requestId);
+    // A covered worker answer is never signed for: it must not stay owed.
+    this._workerDeliveries.markFree(sellerPeerId, requestId);
     const key = coveredRequestKey(sellerPeerId, requestId);
     const now = Date.now();
     for (const [id, markedAt] of this._coveredRequests) {

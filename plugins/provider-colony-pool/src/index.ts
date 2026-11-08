@@ -3,6 +3,8 @@ import { join, resolve } from 'node:path';
 import type { AntseedProviderPlugin, Provider } from '@antseed/node';
 import {
   buildServiceApiProtocols,
+  COLONY_POOL_LEDGER_FILE,
+  COLONY_POOL_LEDGER_POINTER_FILE,
   parseNonNegativeNumber as parseSharedNonNegativeNumber,
   parseServiceCapabilitiesJson,
   parseServicePricingJson,
@@ -10,9 +12,6 @@ import {
 import { WorkerLedger } from './ledger.js';
 import { NanoMdmAttestor } from './mdm.js';
 
-/** The ledger's default file in the data dir, and the file naming it when COLONY_POOL_LEDGER_PATH moves it. */
-const LEDGER_FILE = 'colony-pool.db';
-const LEDGER_POINTER_FILE = 'colony-pool.ledger-path';
 import { ColonyPool } from './pool.js';
 import { ColonyPoolProvider } from './provider.js';
 import { parseWorkerPriority } from './ranking.js';
@@ -33,6 +32,23 @@ function parseList(raw: string | undefined): string[] {
   return raw ? raw.split(',').map((s) => s.trim()).filter(Boolean) : [];
 }
 
+/** Parse COLONY_POOL_MODELS: `service=repo@revision,…`, each for a service the pool sells. */
+export function parseModels(raw: string | undefined, catalog: readonly string[]): Map<string, string> {
+  const models = new Map<string, string>();
+  for (const entry of parseList(raw)) {
+    const at = entry.indexOf('=');
+    const service = at > 0 ? entry.slice(0, at).trim() : '';
+    const model = at > 0 ? entry.slice(at + 1).trim() : '';
+    if (!service || !/^[^@\s]+@[^@\s]+$/.test(model)) {
+      throw new Error(`COLONY_POOL_MODELS: "${entry}" is not service=repo@revision`);
+    }
+    if (!catalog.includes(service)) throw new Error(`COLONY_POOL_MODELS: ${service} is not one of ANTSEED_ALLOWED_SERVICES`);
+    if (models.has(service)) throw new Error(`COLONY_POOL_MODELS: ${service} is listed twice`);
+    models.set(service, model);
+  }
+  return models;
+}
+
 const plugin: AntseedProviderPlugin = {
   name: 'colony-pool',
   displayName: 'Colony Pool',
@@ -51,8 +67,8 @@ const plugin: AntseedProviderPlugin = {
     { key: 'COLONY_POOL_PROTOCOL_FEE_BPS', label: 'Protocol Fee', type: 'number', required: false, default: 200, description: 'AntseedChannels protocol fee in basis points, for the local earnings estimate workers see' },
     { key: 'COLONY_POOL_ALLOWED_WORKERS', label: 'Allowed Workers', type: 'string[]', required: false, description: 'Worker addresses allowed to join (empty = anyone)' },
     { key: 'COLONY_POOL_WORKER_PRIORITY', label: 'Worker Priority', type: 'string[]', required: false, description: 'Weights for ranking workers, as address=weight (default 1; 2 doubles its score; 0 never routes to it)' },
-    { key: 'COLONY_POOL_REQUIRE_ATTESTATION', label: 'Require Attestation', type: 'boolean', required: false, default: false, description: 'Only admit workers attesting a hardened Mac: Developer ID signed app with the hardened runtime, SIP on, and a Secure Enclave key only that app can use' },
-    { key: 'COLONY_POOL_ATTESTED_TEAMS', label: 'Attested Teams', type: 'string[]', required: false, description: 'Apple Developer team IDs whose signed worker apps count as hardened (empty = any team)' },
+    { key: 'COLONY_POOL_ATTESTED_TEAMS', label: 'Attested Teams', type: 'string[]', required: false, description: 'Apple Developer team IDs whose signed worker apps are labelled hardened (empty = any team). The label is the worker\'s own report, shown but not enforced; COLONY_POOL_REQUIRE_DEVICE_ATTESTATION is the enforced check' },
+    { key: 'COLONY_POOL_MODELS', label: 'Models', type: 'string[]', required: false, description: 'The model each service must run, as service=repo@revision (a pinned Hugging Face revision). Workers reporting another model for that service are not routed it' },
     { key: 'COLONY_POOL_MDM_URL', label: 'MDM URL', type: 'string', required: false, description: 'Your NanoMDM server, for Apple-signed attestations of enrolled Macs (optional; you run it, Macs enroll in it)' },
     { key: 'COLONY_POOL_MDM_API_KEY', label: 'MDM API Key', type: 'secret', required: false, description: 'NanoMDM API key' },
     { key: 'COLONY_POOL_MDM_WEBHOOK_PORT', label: 'MDM Webhook Port', type: 'number', required: false, default: 8791, description: 'Port NanoMDM posts command results to (nanomdm -webhook-url http://<pool>:<port>/<secret path>)' },
@@ -109,7 +125,11 @@ const plugin: AntseedProviderPlugin = {
     const keyPath = config['COLONY_POOL_TLS_KEY'];
     if (Boolean(certPath) !== Boolean(keyPath)) throw new Error('Set both COLONY_POOL_TLS_CERT and COLONY_POOL_TLS_KEY, or neither');
     const allowedWorkers = parseList(config['COLONY_POOL_ALLOWED_WORKERS']).map((address) => address.toLowerCase());
+    if (config['COLONY_POOL_REQUIRE_ATTESTATION'] === 'true') {
+      throw new Error('COLONY_POOL_REQUIRE_ATTESTATION is no longer supported: a worker\'s hardening report is signed with a key the worker chooses, so a pool can\'t enforce it. Require Apple\'s attestation through your MDM instead (COLONY_POOL_MDM_URL and COLONY_POOL_REQUIRE_DEVICE_ATTESTATION)');
+    }
     const attestedTeams = parseList(config['COLONY_POOL_ATTESTED_TEAMS']);
+    const models = parseModels(config['COLONY_POOL_MODELS'], catalog);
     const workerPriority = parseWorkerPriority(config['COLONY_POOL_WORKER_PRIORITY']);
     const mdmUrl = config['COLONY_POOL_MDM_URL'];
     const webhookPath = config['COLONY_POOL_MDM_WEBHOOK_PATH'];
@@ -134,11 +154,11 @@ const plugin: AntseedProviderPlugin = {
       throw new Error('COLONY_POOL_SELLER_ADDRESS must be the address buyers pay (the AntseedColonyPool contract)');
     }
 
-    const ledgerPath = resolve(config['COLONY_POOL_LEDGER_PATH'] || join(dataDir, LEDGER_FILE));
+    const ledgerPath = resolve(config['COLONY_POOL_LEDGER_PATH'] || join(dataDir, COLONY_POOL_LEDGER_FILE));
     const ledger = new WorkerLedger(ledgerPath);
     // The seller dashboard finds a moved ledger through this pointer (apps/cli seller-monitor).
-    const pointer = join(dataDir, LEDGER_POINTER_FILE);
-    if (ledgerPath === resolve(join(dataDir, LEDGER_FILE))) rmSync(pointer, { force: true });
+    const pointer = join(dataDir, COLONY_POOL_LEDGER_POINTER_FILE);
+    if (ledgerPath === resolve(join(dataDir, COLONY_POOL_LEDGER_FILE))) rmSync(pointer, { force: true });
     else writeFileSync(pointer, `${ledgerPath}\n`);
     const pool = new ColonyPool({
       poolId: config['COLONY_POOL_ID'] || 'antseed-pool',
@@ -152,7 +172,7 @@ const plugin: AntseedProviderPlugin = {
       ...(allowedWorkers.length > 0 ? { allowedWorkers: new Set(allowedWorkers) } : {}),
       ...(workerPriority.size > 0 ? { workerPriority } : {}),
       verifyOnJoin: config['COLONY_POOL_VERIFY_ON_JOIN'] !== 'false',
-      requireAttestation: config['COLONY_POOL_REQUIRE_ATTESTATION'] === 'true',
+      ...(models.size > 0 ? { models } : {}),
       ...(attestedTeams.length > 0 ? { attestedTeams: new Set(attestedTeams) } : {}),
       ...(deviceAttestor ? { deviceAttestor, requireDeviceAttestation: config['COLONY_POOL_REQUIRE_DEVICE_ATTESTATION'] === 'true' } : {}),
       log: (line) => console.log(line),

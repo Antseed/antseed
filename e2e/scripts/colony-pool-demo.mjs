@@ -278,8 +278,7 @@ async function main() {
   const colonyPool = new ColonyPool({
     poolId: 'demo-pool', seller: poolAddress.toLowerCase(), catalog: [SERVICE], workerShareBps: 9000, ledger,
     port: POOL_PORT, host: BIND, verifyOnJoin: true, log: (line) => logTo('pool', line),
-    // DEMO_REQUIRE_ATTESTATION=1 admits only attested hardened Macs; DEMO_ATTEST_INTERVAL_MS shortens re-attestation.
-    requireAttestation: process.env.DEMO_REQUIRE_ATTESTATION === '1',
+    // DEMO_ATTEST_INTERVAL_MS shortens re-attestation.
     ...(process.env.DEMO_ATTEST_INTERVAL_MS ? { attestationIntervalMs: Number(process.env.DEMO_ATTEST_INTERVAL_MS) } : {}),
   });
   const poolProvider = new ColonyPoolProvider({

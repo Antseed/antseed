@@ -1,17 +1,14 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
-import { rankScores } from '@antseed/provider-core'
+import { COLONY_POOL_LEDGER_FILE, COLONY_POOL_LEDGER_POINTER_FILE, rankScores } from '@antseed/provider-core'
 import type { SellerWorkers } from '../gateway/console-api/types.js'
 import { SELLER_STALE_MS } from './reader.js'
 import { median } from './statistics.js'
 
 const DAY_MS = 86_400_000
 const MICRO_USDC = 1_000_000
-/** Where the colony-pool provider keeps its ledger unless COLONY_POOL_LEDGER_PATH moves it. */
-export const COLONY_POOL_LEDGER_FILE = 'colony-pool.db'
-/** Written by the provider when COLONY_POOL_LEDGER_PATH moves the ledger: the ledger's path. */
-export const COLONY_POOL_LEDGER_POINTER_FILE = 'colony-pool.ledger-path'
+export { COLONY_POOL_LEDGER_FILE, COLONY_POOL_LEDGER_POINTER_FILE }
 
 /** Recent first-byte samples per worker the median is taken over. */
 const FIRST_BYTE_SAMPLES = 500

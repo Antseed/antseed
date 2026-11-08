@@ -81,7 +81,7 @@ function cachingMdm(issuedAgoMs: number, opts: { reissue?: boolean } = {}): Devi
   };
 }
 
-function fakeAttester(report: { sip?: boolean; teamId?: string | null; device?: { serial: string; udid: string } } = {}): WorkerAttester & { calls: number } {
+function fakeAttester(report: { sip?: boolean; teamId?: string | null; device?: { serial: string; udid: string }; staleAfter?: number } = {}): WorkerAttester & { calls: number } {
   const { publicKey, privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
   const jwk = publicKey.export({ format: 'jwk' });
   return {
@@ -93,7 +93,8 @@ function fakeAttester(report: { sip?: boolean; teamId?: string | null; device?: 
         v: 1 as const, teamId: report.teamId === undefined ? 'H3M5BXXQR2' : report.teamId, signingId: 'com.antseed.macworker',
         cdhash: 'ab'.repeat(20), sip: report.sip ?? true, hardenedRuntime: true, debuggerDenied: true, keyAppBound: true,
         os: 'macOS 26.2', serial: report.device?.serial ?? 'C02TEST0MD6T', udid: report.device?.udid ?? '00000000-0000-1000-8000-0123456789AB',
-        issued: Math.floor(Date.now() / 1000), nonce,
+        // From call `staleAfter` on, an hour old: as from a Mac whose clock is off.
+        issued: Math.floor(Date.now() / 1000) - (report.staleAfter !== undefined && this.calls > report.staleAfter ? 3600 : 0), nonce,
       };
       const signature = sign('sha256', Buffer.from(workerAttestationMessage(worker, key, statement)), { key: privateKey, dsaEncoding: 'der' });
       return { ...statement, signature: signature.toString('base64') };
@@ -109,6 +110,10 @@ const PROMPT = 'my private prompt';
 const ANSWER = 'my private answer';
 /** What the fake upstream answers a non-streamed request with; a test may make it large. */
 let jsonAnswer = ANSWER;
+/** What it answers the pool's join check with. */
+let checkAnswer = 'Ready.';
+/** Stream a tool call instead of text. */
+let toolDelta = false;
 const enc = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
 const dec = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
 
@@ -130,14 +135,21 @@ async function startUpstream(): Promise<FakeUpstream> {
       const usage = { prompt_tokens: 1000, completion_tokens: 500, total_tokens: 1500 };
       if (body['stream'] === true) {
         res.writeHead(200, { 'content-type': 'text/event-stream' });
+        if (toolDelta) {
+          res.write(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_2', type: 'function', function: { name: 'get_weather', arguments: '{"city":"Lyon"}' } }] }, finish_reason: 'tool_calls' }] })}\n\n`);
+          res.write(`data: ${JSON.stringify({ choices: [], usage })}\n\n`);
+          res.end('data: [DONE]\n\n');
+          return;
+        }
         res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: ANSWER.slice(0, 5) } }] })}\n\n`);
         res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: ANSWER.slice(5) } }] })}\n\n`);
         res.write(`data: ${JSON.stringify({ choices: [], usage })}\n\n`);
         res.end('data: [DONE]\n\n');
         return;
       }
+      const check = JSON.stringify(body['messages']).includes('Reply with the single word: ready');
       res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: jsonAnswer } }], usage }));
+      res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: check ? checkAnswer : jsonAnswer } }], usage }));
     });
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -173,7 +185,9 @@ describe('colony pool', () => {
   const workers: PoolWorker[] = [];
   const buyer = Wallet.createRandom();
 
-  async function setup(opts: { verifyOnJoin?: boolean; allowedWorkers?: Set<string>; requireAttestation?: boolean; attestationIntervalMs?: number; deviceAttestor?: DeviceAttestor; requireDeviceAttestation?: boolean; deviceAttestationIntervalMs?: number } = {}): Promise<void> {
+  const logs: string[] = [];
+
+  async function setup(opts: { verifyOnJoin?: boolean; allowedWorkers?: Set<string>; attestedTeams?: Set<string>; attestationIntervalMs?: number; deviceAttestor?: DeviceAttestor; requireDeviceAttestation?: boolean; deviceAttestationIntervalMs?: number; models?: Map<string, string> } = {}): Promise<void> {
     pool = new ColonyPool({
       poolId: 'test-pool',
       seller: SELLER,
@@ -184,7 +198,9 @@ describe('colony pool', () => {
       host: '127.0.0.1',
       verifyOnJoin: opts.verifyOnJoin ?? true,
       ...(opts.allowedWorkers ? { allowedWorkers: opts.allowedWorkers } : {}),
-      ...(opts.requireAttestation ? { requireAttestation: true } : {}),
+      ...(opts.attestedTeams ? { attestedTeams: opts.attestedTeams } : {}),
+      ...(opts.models ? { models: opts.models } : {}),
+      log: (line) => logs.push(line),
       ...(opts.attestationIntervalMs ? { attestationIntervalMs: opts.attestationIntervalMs } : {}),
       ...(opts.deviceAttestor ? { deviceAttestor: opts.deviceAttestor, deviceAttestationRoots: [appleCa.rootPem] } : {}),
       ...(opts.requireDeviceAttestation ? { requireDeviceAttestation: true } : {}),
@@ -201,7 +217,7 @@ describe('colony pool', () => {
     poolUrl = `ws://127.0.0.1:${port}`;
   }
 
-  function startWorker(opts: { key?: string; channelVerifier?: ChannelVerifier; channelWaitMs?: number; attester?: WorkerAttester } = {}): PoolWorker {
+  function startWorker(opts: { key?: string; channelVerifier?: ChannelVerifier; channelWaitMs?: number; attester?: WorkerAttester; models?: Record<string, string> } = {}): PoolWorker {
     const worker = new PoolWorker({
       poolUrl,
       baseUrl: upstream.url,
@@ -213,6 +229,7 @@ describe('colony pool', () => {
       channelVerifier: opts.channelVerifier ?? (async () => true),
       ...(opts.channelWaitMs !== undefined ? { channelWaitMs: opts.channelWaitMs } : {}),
       ...(opts.attester ? { attester: opts.attester } : {}),
+      ...(opts.models ? { models: opts.models } : {}),
     });
     workers.push(worker);
     worker.start();
@@ -248,6 +265,10 @@ describe('colony pool', () => {
 
   afterEach(async () => {
     vi.useRealTimers();
+    logs.length = 0;
+    jsonAnswer = ANSWER;
+    checkAnswer = 'Ready.';
+    toolDelta = false;
     for (const worker of workers.splice(0)) worker.stop();
     await pool.stop();
     await new Promise<void>((resolve) => upstream.server.close(() => resolve()));
@@ -267,6 +288,54 @@ describe('colony pool', () => {
     expect(changes).toBe(1);
     // The check reached the worker's local model, capped as a check.
     expect(upstream.requests[0]).toMatchObject({ path: '/v1/chat/completions', body: { model: LOCAL_MODEL, max_tokens: 16 } });
+  });
+
+  it('does not route a service whose join check answers something other than "ready"', async () => {
+    await setup();
+    checkAnswer = 'I am a different model and say hello';
+    startWorker();
+    await waitFor(() => logs.some((line) => line.includes(`failed the check for ${SERVICE}`)));
+    expect(provider.services).toEqual([]);
+  });
+
+  it('routes a pinned service only from workers reporting its model', async () => {
+    const pinned = 'mlx-community/Qwen3-30B-A3B-4bit@0123456789abcdef';
+    await setup({ verifyOnJoin: false, models: new Map([[SERVICE, pinned]]) });
+    const unpinned = startWorker();
+    const wrong = startWorker({ models: { [SERVICE]: 'mlx-community/Qwen3-30B-A3B-4bit@fedcba9876543210' } });
+    await waitFor(() => pool.workerSummaries().length === 2);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(provider.services).toEqual([]);
+    expect(logs.some((line) => line.includes(unpinned.address.toLowerCase()) && line.includes('an unnamed model'))).toBe(true);
+    expect(logs.some((line) => line.includes(wrong.address.toLowerCase()) && line.includes(`not ${pinned}`))).toBe(true);
+    const right = startWorker({ models: { [SERVICE]: pinned } });
+    await waitFor(() => provider.services.includes(SERVICE));
+    expect((await assign()).worker).toBe(right.address.toLowerCase());
+  });
+
+  it('passes tool calls through unchanged: tools, tool messages and streamed tool-call deltas', async () => {
+    await setup();
+    startWorker();
+    await waitFor(() => provider.services.includes(SERVICE));
+    const tools = [{ type: 'function', function: { name: 'get_weather', parameters: { type: 'object', properties: { city: { type: 'string' } } } } }];
+    const messages = [
+      { role: 'user', content: 'Weather in Paris?' },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'get_weather', arguments: '{"city":"Paris"}' } }] },
+      { role: 'tool', tool_call_id: 'call_1', content: '{"temp":21}' },
+    ];
+    const certificate = await assign();
+    const body = enc({ model: SERVICE, stream: true, messages, tools, tool_choice: 'auto' });
+    const sealed = await sealRequest({
+      body, worker: certificate.worker, workerKey: certificate.key,
+      buyer: { address: buyer.address, channel: CHANNEL, signMessage: (m) => buyer.signMessage(m) },
+    });
+    toolDelta = true;
+    const response = await provider.handleRequest({ ...plainRequest('tools', true), body: sealed.body });
+    expect(response.statusCode).toBe(200);
+    expect(upstream.requests.at(-1)!.body).toMatchObject({ messages, tools, tool_choice: 'auto' });
+    const plain = dec(sealed.opener.pushStream(response.body));
+    expect(plain).toContain('"tool_calls":[{"index":0,"id":"call_2"');
+    expect(sealed.opener.verified).toBe(true);
   });
 
   it('streams an encrypted request end to end; the pool never sees the prompt or the answer', async () => {
@@ -572,19 +641,52 @@ describe('colony pool', () => {
     expect(pool.capacity()).toEqual({ current: 0, max: 4 });
   });
 
-  it('admits only attested hardened Macs when required, and hands buyers the attestation', async () => {
-    await setup({ verifyOnJoin: false, requireAttestation: true });
-    startWorker();
-    startWorker({ attester: fakeAttester({ sip: false }) });
-    const hardened = fakeAttester();
-    const accepted = startWorker({ attester: hardened });
-    await waitFor(() => provider.services.includes(SERVICE));
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    expect(pool.workerSummaries().map((w) => [w.address, w.attested])).toEqual([[accepted.address.toLowerCase(), true]]);
-
+  it('labels a worker reporting a hardened Mac without gating on it, and hands buyers the attestation', async () => {
+    // A software key can sign any report, an allowed team included: the label is shown, never enforced.
+    await setup({ verifyOnJoin: false, attestedTeams: new Set(['H3M5BXXQR2']) });
+    const plain = startWorker();
+    const sipOff = startWorker({ attester: fakeAttester({ sip: false }) });
+    const forged = startWorker({ attester: fakeAttester() });
+    const otherTeam = startWorker({ attester: fakeAttester({ teamId: 'OTHERTEAM1' }) });
+    await waitFor(() => pool.workerSummaries().length === 4);
+    const attested = new Map(pool.workerSummaries().map((w) => [w.address, w.attested]));
+    expect(attested).toEqual(new Map([
+      [plain.address.toLowerCase(), false],
+      [sipOff.address.toLowerCase(), false],
+      [forged.address.toLowerCase(), true],
+      [otherTeam.address.toLowerCase(), false],
+    ]));
+    // All four are routed: the label doesn't decide who gets buyers.
+    expect(pool.workerSummaries().every((w) => w.services.includes(SERVICE))).toBe(true);
+    for (const worker of [plain, sipOff, otherTeam]) worker.stop();
+    await waitFor(() => pool.workerSummaries().length === 1);
     const assignment = await assign() as WorkerKeyCertificate & { attestation?: Parameters<typeof verifyWorkerAttestation>[0] };
-    expect(assignment.attestation).toBeDefined();
     expect(verifyWorkerAttestation(assignment.attestation!, assignment, { maxAgeS: 60 })).toEqual({ valid: true, hardened: true });
+  });
+
+  it('keeps serving a worker whose re-attestation fails, without its label, and warns when half the attested workers drop at once', async () => {
+    await setup({ verifyOnJoin: false, attestationIntervalMs: 50 });
+    const a = fakeAttester({ staleAfter: 1 });
+    const b = fakeAttester({ staleAfter: 1 });
+    startWorker({ attester: a });
+    startWorker({ attester: b });
+    await waitFor(() => pool.workerSummaries().filter((w) => w.attested).length === 2);
+    await waitFor(() => a.calls >= 2 && b.calls >= 2);
+    await waitFor(() => pool.workerSummaries().every((w) => !w.attested));
+    // Still connected and routed.
+    expect(pool.workerSummaries()).toHaveLength(2);
+    expect(provider.services).toContain(SERVICE);
+    expect(logs.some((line) => /attested workers fell from 2 to (0|1)/.test(line))).toBe(true);
+    expect(logs.filter((line) => line.includes('keeps serving without its attestation label')).length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('disconnects a worker whose re-attestation fails when Apple\'s attestation is required', async () => {
+    const mdm = cachingMdm(DAY_MS);
+    await setup({ verifyOnJoin: false, attestationIntervalMs: 50, deviceAttestor: mdm, requireDeviceAttestation: true });
+    const attester = fakeAttester({ staleAfter: 1 });
+    startWorker({ attester });
+    await waitFor(() => pool.workerSummaries()[0]?.appleVerified === true);
+    await waitFor(() => logs.some((line) => line.includes('failed re-attestation') && line.includes('disconnecting it')));
   });
 
   it('re-attests on a timer and admits unattested workers when not required', async () => {

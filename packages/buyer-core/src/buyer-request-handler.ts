@@ -634,8 +634,10 @@ export class BuyerRequestHandler {
       try {
         const response = await attempt();
         if (!sealed || !isWorkerUnavailable(response)) return response;
-        // None of the assigned workers could take it (the pool already tried each): take new ones, once.
+        // None of the assigned workers could take it (the pool already tried each).
         workerE2E!.forget(peer.peerId, workerService!);
+        // Take new ones, once, only if the buyer already lets several workers read a request.
+        if (!workerE2E!.failover) return response;
         return await attempt();
       } finally {
         bpm?.endPaidRequest(peer.peerId);

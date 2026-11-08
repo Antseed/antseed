@@ -74,15 +74,36 @@ enum WorkerE2E {
         return object["antseed_e2e"] is [String: Any]
     }
 
-    /// Opens a request one of whose recipients is this worker: unwraps the
-    /// content key with this worker's own ECDH secret, then the body. The
-    /// AADs and the buyer's signature bind the ordered recipient list.
-    static func openRequest(_ body: Data, workerAddress: String, key: DecryptionKey) throws -> OpenedRequest {
+    /// A request as it arrived, before decryption: everything in the clear
+    /// (the model, the recipients, the buyer's signed binding), so a worker can
+    /// refuse it without ever reading the prompt.
+    struct SealedRequest {
+        let model: String
+        /// Every worker the request is encrypted for, in order.
+        let recipients: [String]
+        /// Set when the buyer signed the binding and the signature recovers to it.
+        let buyer: String?
+        let channel: String?
+        /// The signed expiry (unix seconds) and binding hash, set with `buyer`.
+        let expires: UInt64?
+        let binding: Data?
+        /// The decrypted body's size (the ciphertext less its tag).
+        let bodyBytes: Int
+        fileprivate let worker: String
+        fileprivate let epk: Data
+        fileprivate let wrapped: Data
+        fileprivate let ct: Data
+    }
+
+    /// Reads a request one of whose recipients is this worker, and verifies the
+    /// buyer's binding, without decrypting anything. The binding covers
+    /// keccak256(ct), so it holds for the ciphertext that is later opened.
+    static func inspectRequest(_ body: Data, workerAddress: String) throws -> SealedRequest {
         guard let outer = try JSONSerialization.jsonObject(with: body) as? [String: Any],
               let envelope = outer["antseed_e2e"] as? [String: Any] else { throw Failure.notEncrypted }
         guard let model = outer["model"] as? String,
               let entries = envelope["recipients"] as? [[String: Any]], (1...maxRecipients).contains(entries.count),
-              let ctB64 = envelope["ct"] as? String, let ct = Data(base64Encoded: ctB64),
+              let ctB64 = envelope["ct"] as? String, let ct = Data(base64Encoded: ctB64), ct.count >= 16,
               (envelope["v"] as? Int) == version else { throw Failure.malformed }
         let workers = try entries.map { entry -> String in
             guard let worker = entry["worker"] as? String else { throw Failure.malformed }
@@ -92,36 +113,8 @@ enum WorkerE2E {
         guard let mine = entries.first(where: { ($0["worker"] as? String)?.lowercased() == workerAddress.lowercased() }) else {
             throw Failure.wrongWorker
         }
-        guard let epkB64 = mine["epk"] as? String, let epkData = Data(base64Encoded: epkB64),
+        guard let epkB64 = mine["epk"] as? String, let epk = Data(base64Encoded: epkB64),
               let wkB64 = mine["wk"] as? String, let wrapped = Data(base64Encoded: wkB64) else { throw Failure.malformed }
-
-        let epk: P256.KeyAgreement.PublicKey
-        do {
-            epk = try P256.KeyAgreement.PublicKey(x963Representation: epkData)
-        } catch {
-            throw Failure.malformed
-        }
-        let shared = try key.sharedSecretFromKeyAgreement(with: epk)
-        let okm = shared.hkdfDerivedSymmetricKey(
-            using: SHA256.self,
-            salt: epkData + key.publicKey.x963Representation,
-            sharedInfo: Data(info.utf8),
-            outputByteCount: 64
-        )
-        let bytes = okm.withUnsafeBytes { Data($0) }
-        let wrapKey = SymmetricKey(data: bytes.prefix(32))
-        let responseKey = SymmetricKey(data: bytes.suffix(32))
-        let list = workers.map { $0.lowercased() }.joined(separator: ",")
-
-        let plaintext: Data
-        do {
-            let contentKey = SymmetricKey(data: try open(wrapKey, seq: 0, aad: "\(info)|wrap|\(list)|\(model)", wrapped))
-            plaintext = try open(contentKey, seq: 0, aad: "\(info)|req|\(list)|\(model)", ct)
-        } catch {
-            throw Failure.malformed
-        }
-        guard let inner = try JSONSerialization.jsonObject(with: plaintext) as? [String: Any],
-              inner["model"] as? String == model else { throw Failure.modelMismatch }
 
         var buyer: String?
         var channel: String?
@@ -150,8 +143,49 @@ enum WorkerE2E {
                 }
             }
         }
-        return OpenedRequest(body: plaintext, model: model, recipients: workers, buyer: buyer, channel: channel,
-                             expires: expires, binding: signedBinding, sealer: ResponseSealer(key: responseKey, worker: workerAddress))
+        return SealedRequest(model: model, recipients: workers, buyer: buyer, channel: channel, expires: expires,
+                             binding: signedBinding, bodyBytes: ct.count - 16, worker: workerAddress, epk: epk, wrapped: wrapped, ct: ct)
+    }
+
+    /// Decrypts an inspected request: unwraps the content key with this
+    /// worker's own ECDH secret, then the body. The AADs bind the ordered
+    /// recipient list and the model.
+    static func decrypt(_ request: SealedRequest, key: DecryptionKey) throws -> OpenedRequest {
+        let epk: P256.KeyAgreement.PublicKey
+        do {
+            epk = try P256.KeyAgreement.PublicKey(x963Representation: request.epk)
+        } catch {
+            throw Failure.malformed
+        }
+        let shared = try key.sharedSecretFromKeyAgreement(with: epk)
+        let okm = shared.hkdfDerivedSymmetricKey(
+            using: SHA256.self,
+            salt: request.epk + key.publicKey.x963Representation,
+            sharedInfo: Data(info.utf8),
+            outputByteCount: 64
+        )
+        let bytes = okm.withUnsafeBytes { Data($0) }
+        let wrapKey = SymmetricKey(data: bytes.prefix(32))
+        let responseKey = SymmetricKey(data: bytes.suffix(32))
+        let list = request.recipients.map { $0.lowercased() }.joined(separator: ",")
+        let model = request.model
+
+        let plaintext: Data
+        do {
+            let contentKey = SymmetricKey(data: try open(wrapKey, seq: 0, aad: "\(info)|wrap|\(list)|\(model)", request.wrapped))
+            plaintext = try open(contentKey, seq: 0, aad: "\(info)|req|\(list)|\(model)", request.ct)
+        } catch {
+            throw Failure.malformed
+        }
+        guard let inner = try JSONSerialization.jsonObject(with: plaintext) as? [String: Any],
+              inner["model"] as? String == model else { throw Failure.modelMismatch }
+        return OpenedRequest(body: plaintext, model: model, recipients: request.recipients, buyer: request.buyer, channel: request.channel,
+                             expires: request.expires, binding: request.binding, sealer: ResponseSealer(key: responseKey, worker: request.worker))
+    }
+
+    /// `inspectRequest`, then `decrypt`.
+    static func openRequest(_ body: Data, workerAddress: String, key: DecryptionKey) throws -> OpenedRequest {
+        try decrypt(try inspectRequest(body, workerAddress: workerAddress), key: key)
     }
 }
 

@@ -2,10 +2,10 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Wallet } from 'ethers';
+import { getBytes, Wallet } from 'ethers';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { WebSocketServer, type WebSocket } from 'ws';
-import { generateWorkerEncryptionKey, sealRequest, workerKeyHex, type WorkerEncryptionKey } from '@antseed/node/worker-e2e';
+import { generateWorkerEncryptionKey, requestBindingHash, sealRequest, workerKeyHex, type WorkerEncryptionKey } from '@antseed/node/worker-e2e';
 import { WorkerLedger } from './ledger.js';
 import { ColonyPool } from './pool.js';
 import { COLONY_POOL_PROTOCOL_VERSION, encodeBody } from './protocol.js';
@@ -322,6 +322,29 @@ describe('worker lifecycle', () => {
     await waitFor(() => fakePool.frames.filter((f) => f['t'] === 'hello').length === 1);
     // The fake pool never pings; after the silence the worker drops the connection and joins again.
     await waitFor(() => fakePool.frames.filter((f) => f['t'] === 'hello').length >= 2, 4_000);
+  });
+
+  it('refuses a buyer request on its clear binding before decrypting it', async () => {
+    upstream = await startUpstream((_body, res) => answer(res));
+    let lookups = 0;
+    start({ channelVerifier: async () => { lookups++; return false; } });
+    await waitFor(() => fakePool.frames.some((f) => f['t'] === 'hello'));
+    // A validly bound request whose ciphertext no key opens: refused on its channel, never decrypted.
+    const target = { worker: worker!.address, workerKey: workerKeyHex(key.publicKey) };
+    const sealed = await sealRequest({ body: enc({ model: SERVICE, messages: [{ role: 'user', content: 'hi' }] }), ...target });
+    const outer = JSON.parse(new TextDecoder().decode(sealed.body)) as { antseed_e2e: { recipients: Array<{ worker: string }>; ct: string } & Record<string, unknown> };
+    const envelope = outer.antseed_e2e;
+    const ct = Buffer.from(envelope.ct, 'base64');
+    ct[0] ^= 0xff;
+    envelope.ct = ct.toString('base64');
+    const exp = Math.floor(Date.now() / 1000) + 300;
+    const hash = requestBindingHash(envelope.recipients.map((r) => r.worker), CHANNEL, exp, ct);
+    Object.assign(envelope, { buyer: buyer.address, channel: CHANNEL, exp, sig: await buyer.signMessage(getBytes(hash)) });
+    fakePool.send({ t: 'request', id: 'garbled', method: 'POST', path: '/v1/chat/completions', headers: {}, body: encodeBody(enc(outer)) });
+    await waitFor(() => fakePool.errorFor('garbled') !== undefined);
+    expect(fakePool.errorFor('garbled')).toBe('Request channel does not belong to a buyer of this pool');
+    expect(lookups).toBe(1);
+    expect(upstream.bodies).toHaveLength(0);
   });
 
   it('refuses a channel closed before its first lookup', async () => {

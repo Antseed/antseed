@@ -19,19 +19,21 @@ const MAX_CACHED_ASSIGNMENTS = 1024;
 const ATTESTATION_MAX_AGE_S = 900;
 
 /** Workers a request is encrypted for unless the buyer says otherwise. */
-export const DEFAULT_WORKER_RECIPIENTS = 2;
+export const DEFAULT_WORKER_RECIPIENTS = 1;
 
 export interface NodeWorkerE2EClientOptions {
   /**
    * How many of the pool's top-ranked workers each request is encrypted for
-   * (1 to 3, default 2). The pool fails over between them without a round
-   * trip; any of them could read the request if the pool forwarded it, so 1
-   * keeps every request readable by a single Mac.
+   * (1 to 3, default 1). With 1, every request is readable by a single Mac and
+   * is never sent to another (see `failover`). With more, the pool fails over
+   * between them without a round trip, and any of them could read the request.
    */
   recipients?: number;
-  /** Only encrypt to workers whose attestation reports a hardened Mac. */
-  requireAttestedWorkers?: boolean;
-  /** Only encrypt to workers on a Mac Apple attests (through the pool operator's MDM), as well as hardened. */
+  /**
+   * Only encrypt to workers on a Mac Apple attests (through the pool
+   * operator's MDM). A worker's hardening report is signed by a key the worker
+   * chose, so it is never a requirement.
+   */
   requireAppleVerifiedWorkers?: boolean;
   /** Trust anchors for device attestations; Apple's root unless a test overrides it. */
   deviceAttestationRoots?: string[];
@@ -145,6 +147,11 @@ export class NodeWorkerE2EClient implements WorkerE2EClient {
     };
   }
 
+  /** A request none of its workers could take is sent again to new workers only when it was already readable by more than one. */
+  get failover(): boolean {
+    return this.recipients > 1;
+  }
+
   forget(peerId: string, service: string): void {
     const peer = `${peerId.toLowerCase()}|`;
     for (const key of this.assignments.keys()) {
@@ -202,9 +209,6 @@ export class NodeWorkerE2EClient implements WorkerE2EClient {
     if (check && !check.valid) throw new Error(`Colony pool returned an invalid worker attestation: ${check.reason}`);
     let usableUntil = certificate.expires - WORKER_CERTIFICATE_USABILITY_MARGIN_S;
     if (certificate.attestation) usableUntil = Math.min(usableUntil, certificate.attestation.issued + ATTESTATION_MAX_AGE_S);
-    if ((this.options.requireAttestedWorkers || this.options.requireAppleVerifiedWorkers) && !check?.hardened) {
-      throw new Error('Colony pool assigned a worker that is not an attested hardened Mac');
-    }
     // Apple's attestation must name the Mac the worker attests it runs on, and this worker's key.
     if (certificate.deviceAttestation) {
       const device = verifyDeviceAttestation(certificate.deviceAttestation, {

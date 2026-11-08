@@ -31,6 +31,8 @@ export const WORKER_E2E_VERSION = 2;
 const INFO = 'antseed-worker-e2e/v2';
 /** Most workers one request is encrypted for (the pool fails over within them). */
 export const MAX_WORKER_RECIPIENTS = 3;
+/** How far ahead of the reader's clock an attestation may be dated (clock skew between a Mac and the pool or buyer). */
+const ATTESTATION_CLOCK_SKEW_S = 300;
 /** A worker's key certificate stops taking new buyers this long before it expires (buyers reassign, pools stop routing). */
 export const WORKER_CERTIFICATE_USABILITY_MARGIN_S = 300;
 const TAG_BYTES = 16;
@@ -213,7 +215,7 @@ export function verifyWorkerAttestation(
   const fail = (reason: string) => ({ valid: false, hardened: false, reason });
   if (!cert.attestationKey) return fail('worker has no attestation key');
   if (policy.nonce !== undefined && attestation.nonce !== policy.nonce) return fail('attestation answers another challenge');
-  if (attestation.issued < now - policy.maxAgeS || attestation.issued > now + 60) return fail('attestation is stale');
+  if (attestation.issued < now - policy.maxAgeS || attestation.issued > now + ATTESTATION_CLOCK_SKEW_S) return fail('attestation is stale');
   const { signature, ...statement } = attestation;
   let signed = false;
   try {

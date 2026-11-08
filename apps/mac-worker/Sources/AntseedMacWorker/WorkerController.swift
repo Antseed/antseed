@@ -141,6 +141,10 @@ final class WorkerController: ObservableObject {
 
     func start() {
         log(protection.summary)
+        guard WorkerConfig.isPinned(config.modelId) else {
+            status = .failed("--model must pin a revision: repo@<40-character commit>")
+            return
+        }
         guard refreshProtection() else { return }
         let config = self.config
         NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: nil) { _ in
@@ -270,6 +274,8 @@ final class WorkerController: ObservableObject {
                     "signature": try keys.ethereum.personalSign("antseed-colony-pool/v1\npool:\(pool)\nnonce:\(nonce)"),
                     "services": sharing ? [config.service] : [],
                     "maxConcurrency": RequestGate.maxConcurrency,
+                    // The pinned checkpoint behind each service, so a pool can refuse one it didn't expect.
+                    "models": [config.service: config.modelId],
                     "encryption": [
                         "key": keyHex,
                         "expires": expires,
@@ -354,37 +360,35 @@ final class WorkerController: ObservableObject {
             return fail(id, "Unsupported route")
         }
         guard WorkerE2E.isSealed(body) else { return fail(id, WorkerE2E.Failure.notEncrypted.localizedDescription) }
-        let opened: WorkerE2E.OpenedRequest
+        // Everything up to admission reads only what is in the clear: a request this
+        // worker refuses (its channel, its binding, a replay) is never decrypted.
+        let sealed: WorkerE2E.SealedRequest
         do {
-            opened = try WorkerE2E.openRequest(body, workerAddress: address, key: keys.encryption)
+            sealed = try WorkerE2E.inspectRequest(body, workerAddress: address)
         } catch {
             return fail(id, error.localizedDescription)
         }
-        guard opened.model == config.service, sharing else { return fail(id, "Not serving \(opened.model)") }
-        log(opened.buyer.map { "decrypted request from buyer \($0.prefix(10))… (pool saw only ciphertext)" } ?? "pool check request")
+        guard sealed.model == config.service, sharing else { return fail(id, "Not serving \(sealed.model)") }
 
         let check: ChannelCheck
-        if let buyer = opened.buyer, let channel = opened.channel, !channel.allSatisfy({ $0 == "0" || $0 == "x" }) {
+        if let buyer = sealed.buyer, let channel = sealed.channel, !channel.allSatisfy({ $0 == "0" || $0 == "x" }) {
             check = await channelCheck(channel: channel, buyer: buyer)
         } else {
             check = .unavailable("No buyer binding") // never consulted: an unbound request is a pool check
         }
-        // Pool checks are bounded by size here, before the body is even parsed.
-        let size = opened.body.count
-        var maxTokens = 512
+        // Pool checks are bounded by size here, before the body is even decrypted.
+        var full = false
+        var checkLimit = RequestGate.checkMaxTokens
         var promptLimit: Int?
-        let requested: [String: Any]? = size <= RequestGate.checkBodyBytes || opened.buyer != nil
-            ? (try? JSONSerialization.jsonObject(with: opened.body) as? [String: Any]) : nil
-        let requestedMax = requested?["max_tokens"] as? Int ?? requested?["max_completion_tokens"] as? Int ?? 512
-        switch await gate.admit(buyer: opened.buyer, channel: opened.channel, bodyBytes: size, requestedMaxTokens: requestedMax, check: check) {
+        switch await gate.admit(buyer: sealed.buyer, channel: sealed.channel, bodyBytes: sealed.bodyBytes, requestedMaxTokens: RequestGate.checkMaxTokens, check: check) {
         case .full:
-            if let binding = opened.binding, let expires = opened.expires,
+            if let binding = sealed.binding, let expires = sealed.expires,
                let refused = gate.claimOnce(binding: binding, expires: Date(timeIntervalSince1970: TimeInterval(expires))) {
                 return fail(id, refused)
             }
-            maxTokens = max(1, requestedMax)
+            full = true
         case .check(let limit):
-            maxTokens = limit
+            checkLimit = limit
             promptLimit = RequestGate.checkPromptTokens
         case .refused(let reason):
             return fail(id, reason)
@@ -393,12 +397,30 @@ final class WorkerController: ObservableObject {
         }
         // Cancelled, or the pool connection changed, while the channel was checked: don't start.
         guard !Task.isCancelled, socket === connection else { return }
-        guard let request = requested else { return fail(id, "Request body is not JSON") }
+
+        let opened: WorkerE2E.OpenedRequest
+        do {
+            opened = try WorkerE2E.decrypt(sealed, key: keys.encryption)
+        } catch {
+            return fail(id, error.localizedDescription)
+        }
+        log(opened.buyer.map { "decrypted request from buyer \($0.prefix(10))… (pool saw only ciphertext)" } ?? "pool check request")
+        guard let request = try? JSONSerialization.jsonObject(with: opened.body) as? [String: Any] else {
+            return fail(id, "Request body is not JSON")
+        }
+        let requestedMax = request["max_tokens"] as? Int ?? request["max_completion_tokens"] as? Int ?? 512
+        let maxTokens = full ? max(1, requestedMax) : max(1, min(requestedMax, checkLimit))
+        let chat: [String: Any]
+        do {
+            chat = try EngineChat.fields(of: request)
+        } catch {
+            // The buyer's request, not this worker, is at fault: answered, never billed, never failed over.
+            return refuse(id, status: 400, error.localizedDescription, sealer: opened.sealer)
+        }
         // Taken: the pool now gives it the full first-byte deadline instead of failing over.
         send(["t": "accepted", "id": id])
 
         let stream = request["stream"] as? Bool ?? false
-        let messages = request["messages"] as? [[String: Any]] ?? []
         let temperature = Float(request["temperature"] as? Double ?? 0.7)
         let created = Int(Date().timeIntervalSince1970)
         let completionId = "chatcmpl-\(UUID().uuidString.prefix(12).lowercased())"
@@ -407,12 +429,17 @@ final class WorkerController: ObservableObject {
 
         defer { startedStreams.remove(id) }
         do {
-            let result = try await model.generate(messages: messages, maxTokens: maxTokens, maxPromptTokens: promptLimit, temperature: temperature) { [weak self] piece in
+            let result = try await model.generate(chat: chat, maxTokens: maxTokens, maxPromptTokens: promptLimit, temperature: temperature) { [weak self] output in
                 guard stream else { return }
                 await self?.startStream(id)
+                let delta: [String: Any]
+                switch output {
+                case .text(let piece): delta = ["content": piece]
+                case .toolCalls(let calls): delta = ["tool_calls": calls]
+                }
                 let chunk: [String: Any] = [
                     "id": completionId, "object": "chat.completion.chunk", "created": created, "model": service,
-                    "choices": [["index": 0, "delta": ["content": piece]]],
+                    "choices": [["index": 0, "delta": delta]],
                 ]
                 guard let event = try? "data: " + jsonString(chunk), let sealed = try? sealer.sealEvent(event) else { return }
                 await self?.send(["t": "response-chunk", "id": id, "data": sealed.base64EncodedString()])
@@ -426,16 +453,21 @@ final class WorkerController: ObservableObject {
                 startStream(id)
                 var tail = try sealer.sealEvent("data: " + jsonString([
                     "id": completionId, "object": "chat.completion.chunk", "created": created, "model": service,
-                    "choices": [["index": 0, "delta": [String: Any](), "finish_reason": "stop"]],
+                    "choices": [["index": 0, "delta": [String: Any](), "finish_reason": result.finishReason]],
                 ]))
                 tail += try sealer.sealEvent("data: " + jsonString(["choices": [Any](), "usage": usage]), usage: usage)
                 tail += try sealer.sealEvent("data: [DONE]")
                 tail += try sealer.finish()
                 send(["t": "response-chunk", "id": id, "data": tail.base64EncodedString()])
             } else {
+                var message: [String: Any] = ["role": "assistant", "content": result.text]
+                if !result.toolCalls.isEmpty {
+                    message["tool_calls"] = result.toolCalls
+                    if result.text.isEmpty { message["content"] = NSNull() }
+                }
                 let completion: [String: Any] = [
                     "id": completionId, "object": "chat.completion", "created": created, "model": service,
-                    "choices": [["index": 0, "message": ["role": "assistant", "content": result.text], "finish_reason": "stop"]],
+                    "choices": [["index": 0, "message": message, "finish_reason": result.finishReason]],
                     "usage": usage,
                 ]
                 let sealed = try sealer.sealBody(Data(try jsonString(completion).utf8), usage: usage)
@@ -443,14 +475,28 @@ final class WorkerController: ObservableObject {
                 send(["t": "response-chunk", "id": id, "data": sealed.base64EncodedString()])
             }
             send(["t": "response-end", "id": id])
-            log("answered with TensorFold: \(result.promptTokens) in / \(result.completionTokens) out · \(Int(result.tokensPerSecond)) tok/s · sealed for the buyer")
+            let calls = result.toolCalls.isEmpty ? "" : " · \(result.toolCalls.count) tool call(s)"
+            log("answered with TensorFold: \(result.promptTokens) in / \(result.completionTokens) out\(calls) · \(Int(result.tokensPerSecond)) tok/s · sealed for the buyer")
             requestStats()
         } catch {
             fail(id, Task.isCancelled ? "cancelled" : error.localizedDescription)
         }
     }
 
-    /// Starts a streamed answer once, at its first generated text: the pool keeps its first-byte deadline
+    /// Answers a request the worker can't serve as asked (a part or role the model
+    /// can't read) with a sealed OpenAI error, before any inference.
+    private func refuse(_ id: String, status: Int, _ message: String, sealer: ResponseSealer) {
+        let error: [String: Any] = ["error": ["message": message, "type": "invalid_request_error"]]
+        guard let body = try? jsonString(error), let sealed = try? sealer.sealBody(Data(body.utf8), usage: nil) else {
+            return fail(id, message)
+        }
+        log("refused a request: \(message)")
+        send(["t": "response-start", "id": id, "status": status, "headers": ["content-type": "application/json"]])
+        send(["t": "response-chunk", "id": id, "data": sealed.base64EncodedString()])
+        send(["t": "response-end", "id": id])
+    }
+
+    /// Starts a streamed answer once, at its first generated output: the pool keeps its first-byte deadline
     /// until response-start, so model startup and prefill get that allowance rather than the idle one.
     private func startStream(_ id: String) {
         guard startedStreams.insert(id).inserted else { return }

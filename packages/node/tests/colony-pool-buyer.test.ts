@@ -113,7 +113,7 @@ function deviceAttestation(kind: Device, worker: string, attestationKey: string,
   };
 }
 
-function fakePool(opts: { payments?: boolean; now?: () => number; appleCa?: ReturnType<typeof createTestAppleCa>; deviceNotBefore?: Date; workers?: number; recipients?: number; certSeller?: string; unavailableOnce?: boolean; tamper?: 'ciphertext' | 'usage'; attest?: Attest | Attest[]; requireAttested?: boolean; device?: Device; requireApple?: boolean; streamTamper?: 'no-end' | 'usage' | 'not-sse' | 'padding'; maxStreamBufferBytes?: number; failover?: boolean; forgeAnswer?: boolean; noHook?: boolean; assignFails?: boolean } = {}) {
+function fakePool(opts: { payments?: boolean; now?: () => number; appleCa?: ReturnType<typeof createTestAppleCa>; deviceNotBefore?: Date; workers?: number; recipients?: number; certSeller?: string; unavailableOnce?: boolean; tamper?: 'ciphertext' | 'usage'; attest?: Attest | Attest[]; device?: Device; requireApple?: boolean; streamTamper?: 'no-end' | 'usage' | 'not-sse' | 'padding'; maxStreamBufferBytes?: number; failover?: boolean; forgeAnswer?: boolean; noHook?: boolean; assignFails?: boolean } = {}) {
   const workers = Array.from({ length: opts.workers ?? 1 }, () => ({ wallet: Wallet.createRandom(), key: generateWorkerEncryptionKey() }));
   let next = 0;
   let unavailable = opts.unavailableOnce === true;
@@ -225,7 +225,6 @@ function fakePool(opts: { payments?: boolean; now?: () => number; appleCa?: Retu
     registerPaymentMux: vi.fn(),
     workerE2E: opts.noHook ? undefined : new NodeWorkerE2EClient(buyer, {
       ...(opts.recipients ? { recipients: opts.recipients } : {}),
-      requireAttestedWorkers: opts.requireAttested === true,
       requireAppleVerifiedWorkers: opts.requireApple === true,
       deviceAttestationRoots: [(opts.appleCa ?? appleCa).rootPem],
       ...(opts.now ? { now: opts.now } : {}),
@@ -266,11 +265,18 @@ describe('buyer requests to colony pools', () => {
     expect(dec(response.body)).toContain('[DONE]');
   });
 
-  it('takes another worker once when the pool says the assigned one is unavailable', async () => {
-    const pool = fakePool({ workers: 2, unavailableOnce: true });
+  it('with several recipients, takes other workers once when the pool says the assigned ones are unavailable', async () => {
+    const pool = fakePool({ workers: 2, recipients: 2, unavailableOnce: true });
     const response = await pool.handler.sendRequest(peer, chatRequest('u1'));
     expect(response.statusCode).toBe(200);
     expect(pool.assigned).toHaveLength(2);
+  });
+
+  it('with one recipient (the default), never sends a request another worker could read', async () => {
+    const pool = fakePool({ workers: 2, unavailableOnce: true });
+    const response = await pool.handler.sendRequest(peer, chatRequest('u2'));
+    expect(response.statusCode).toBe(421);
+    expect(pool.assigned).toHaveLength(1);
   });
 
   it('refuses a worker key certified for a different seller', async () => {
@@ -279,12 +285,10 @@ describe('buyer requests to colony pools', () => {
     expect(pool.wire.filter((req) => req.path !== WORKER_ASSIGN_PATH)).toHaveLength(0);
   });
 
-  it('checks a forwarded attestation before encrypting, and can require a hardened Mac', async () => {
-    expect((await fakePool({ attest: 'hardened', requireAttested: true }).handler.sendRequest(peer, chatRequest('a1'))).statusCode).toBe(200);
-    // Valid but SIP off: fine by default, refused when the buyer requires hardened workers.
+  it('checks a forwarded attestation before encrypting, but never requires its self-reported hardening', async () => {
+    expect((await fakePool({ attest: 'hardened' }).handler.sendRequest(peer, chatRequest('a1'))).statusCode).toBe(200);
+    // Valid but SIP off: the worker signs its own report, so it is shown, never a requirement.
     expect((await fakePool({ attest: 'sip-off' }).handler.sendRequest(peer, chatRequest('a2'))).statusCode).toBe(200);
-    await expect(fakePool({ attest: 'sip-off', requireAttested: true }).handler.sendRequest(peer, chatRequest('a3'))).rejects.toThrow(/not an attested hardened Mac/);
-    await expect(fakePool({ requireAttested: true }).handler.sendRequest(peer, chatRequest('a4'))).rejects.toThrow(/not an attested hardened Mac/);
     // Signed by a key the worker never certified (the pool forging one).
     const forged = fakePool({ attest: 'forged' });
     await expect(forged.handler.sendRequest(peer, chatRequest('a5'))).rejects.toThrow(/invalid worker attestation/);
@@ -551,23 +555,23 @@ describe('buyer requests to colony pools', () => {
     expect(truncated.deliveries()).toEqual(['assigned', 'failed']);
 
     // The first worker was unavailable: its attempt fails, the second worker's verifies.
-    const retried = fakePool({ payments: true, workers: 2, unavailableOnce: true });
+    const retried = fakePool({ payments: true, workers: 2, recipients: 2, unavailableOnce: true });
     await retried.handler.sendRequest(peer, chatRequest('v5'));
     expect(retried.deliveries()).toEqual(['assigned', 'failed', 'assigned', { inputTokens: 10n, cachedInputTokens: 0n, outputTokens: 5n }]);
   });
 
-  it('encrypts each request for the pool\'s top two workers by default, and for one when the buyer asks', async () => {
-    const pool = fakePool({ workers: 3 });
-    await pool.handler.sendRequest(peer, chatRequest('n1'));
-    expect(pool.encryptedFor[0]).toEqual([pool.workers[0]!.wallet.address, pool.workers[1]!.wallet.address]);
-    const single = fakePool({ workers: 3, recipients: 1 });
-    await single.handler.sendRequest(peer, chatRequest('n2'));
+  it('encrypts each request for the pool\'s top worker by default, and for the top two when the buyer asks', async () => {
+    const single = fakePool({ workers: 3 });
+    await single.handler.sendRequest(peer, chatRequest('n1'));
     expect(single.encryptedFor[0]).toEqual([single.workers[0]!.wallet.address]);
+    const pool = fakePool({ workers: 3, recipients: 2 });
+    await pool.handler.sendRequest(peer, chatRequest('n2'));
+    expect(pool.encryptedFor[0]).toEqual([pool.workers[0]!.wallet.address, pool.workers[1]!.wallet.address]);
     expect(() => new NodeWorkerE2EClient(Wallet.createRandom(), { recipients: 4 })).toThrow(/1 to 3/);
   });
 
   it('takes the answer of the recipient the pool failed over to, without a new assignment, and credits only it', async () => {
-    const pool = fakePool({ workers: 2, failover: true, payments: true });
+    const pool = fakePool({ workers: 2, recipients: 2, failover: true, payments: true });
     const response = await pool.handler.sendRequest(peer, chatRequest('f1'));
     expect(JSON.parse(dec(response.body)).choices[0].message.content).toBe(ANSWER);
     expect(pool.wire.filter((req) => req.path === WORKER_ASSIGN_PATH)).toHaveLength(1);
@@ -579,16 +583,16 @@ describe('buyer requests to colony pools', () => {
   });
 
   it('fails an answer one recipient seals but labels as another\'s', async () => {
-    const pool = fakePool({ workers: 2, forgeAnswer: true, payments: true });
+    const pool = fakePool({ workers: 2, recipients: 2, forgeAnswer: true, payments: true });
     await expect(pool.handler.sendRequest(peer, chatRequest('g1'))).rejects.toThrow(/failed verification/);
     expect(pool.deliveries()).toEqual(['assigned', 'failed']);
   });
 
   it('applies the buyer\'s trust policy to every recipient, leaving out those that fail it', async () => {
-    const mixed = fakePool({ workers: 2, attest: ['sip-off', 'hardened'], requireAttested: true });
+    const mixed = fakePool({ workers: 2, recipients: 2, attest: ['forged', 'sip-off'] });
     expect((await mixed.handler.sendRequest(peer, chatRequest('p1'))).statusCode).toBe(200);
     expect(mixed.encryptedFor[0]).toEqual([mixed.workers[1]!.wallet.address]);
-    const none = fakePool({ workers: 2, attest: ['sip-off', 'forged'], requireAttested: true });
+    const none = fakePool({ workers: 2, recipients: 2, attest: ['forged', 'forged'] });
     await expect(none.handler.sendRequest(peer, chatRequest('p2'))).rejects.toThrow();
     expect(none.wire.filter((req) => req.path !== WORKER_ASSIGN_PATH)).toHaveLength(0);
   });

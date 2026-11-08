@@ -59,8 +59,8 @@ const ASSIGNMENT_WEIGHT_MS = 10 * 60_000;
 /** Attested workers re-attest this often, and have this long to answer. */
 const ATTESTATION_INTERVAL_MS = 5 * 60_000;
 const ATTESTATION_REPLY_MS = 30_000;
-/** An attestation answering a challenge must be this fresh. */
-const ATTESTATION_MAX_AGE_S = 120;
+/** An attestation answering a challenge must be this fresh: the nonce already proves it is new, so this only bounds clock skew. */
+const ATTESTATION_MAX_AGE_S = 300;
 /** How often the pool asks again while Apple still returns an attestation older than its reissue interval. */
 const DEVICE_ATTESTATION_INTERVAL_MS = 24 * 60 * 60_000;
 
@@ -89,15 +89,19 @@ export interface ColonyPoolOptions {
   responseIdleTimeoutMs?: number;
   /** How often workers are pinged; one that misses two pings in a row is disconnected (default 15 s). */
   heartbeatIntervalMs?: number;
-  /** Only admit workers whose attestation reports a hardened Mac (signed app, SIP on, app-bound key). */
-  requireAttestation?: boolean;
-  /** If set, only apps signed by these Apple Developer teams count as hardened. */
+  /**
+   * If set, only apps signed by these Apple Developer teams are labelled hardened. The label is the
+   * worker's own report, signed with a key it chose, so it is shown, never enforced: only Apple's
+   * attestation through the operator's MDM (`requireDeviceAttestation`) gates routing.
+   */
   attestedTeams?: Set<string>;
   attestationIntervalMs?: number;
   /** The operator's MDM, for Apple-signed attestations of enrolled Macs (optional). */
   deviceAttestor?: DeviceAttestor;
   /** Only route to Macs Apple attests through the operator's MDM (SIP on, serial matches). */
   requireDeviceAttestation?: boolean;
+  /** Service → the model (`repo@revision`) workers must report for it; services not listed take any. */
+  models?: Map<string, string>;
   /** How often to ask again while Apple still returns an attestation past its 7-day reissue interval (default daily). */
   deviceAttestationIntervalMs?: number;
   /** Trust anchors for device attestations; Apple's root unless a test overrides it. */
@@ -177,9 +181,11 @@ interface ConnectedWorker {
   agent: string;
   ws: WebSocket;
   certificate: WorkerKeyCertificate;
-  /** Latest attestation that verified, and whether it reports a hardened Mac. */
+  /** Latest attestation that verified, and whether it reports a hardened Mac (a label, not a gate). */
   attestation: WorkerAttestation | null;
   hardened: boolean;
+  /** Service → the model (`repo@revision`) the worker says it runs for it. */
+  models: Record<string, string>;
   attestTimer: NodeJS.Timeout | null;
   /** Nonce of the outstanding `attest` frame, while one is unanswered. */
   attestNonce: string | null;
@@ -218,7 +224,7 @@ export interface WorkerSummary {
   inflight: number;
   maxConcurrency: number;
   tokensPerSecond: number;
-  /** The worker's latest attestation reports a hardened Mac. */
+  /** The worker's latest attestation reports a hardened Mac (self-reported; shown, not enforced). */
   attested: boolean;
   /** Apple attests this Mac (SIP on) through the operator's MDM. */
   appleVerified: boolean;
@@ -250,6 +256,9 @@ export class ColonyPool {
   private wss: WebSocketServer | null = null;
   private pingTimer: NodeJS.Timeout | null = null;
   private lastServices = '';
+  /** Recent counts of workers with a valid attestation, for noteAttested. */
+  private attestedCounts: Array<{ at: number; count: number }> = [];
+  private attestedDropWarnedAt = 0;
 
   /** The share workers are told when they join, when it changes on-chain (see share.ts). */
   setWorkerShareBps(bps: number): void {
@@ -711,17 +720,19 @@ export class ColonyPool {
       return null;
     }
     let hardened = false;
+    let attestation: WorkerAttestation | null = null;
     if (hello.attestation) {
       const check = verifyWorkerAttestation(hello.attestation, certificate, this.attestationPolicy(nonce));
-      if (!check.valid) {
+      if (check.valid) {
+        attestation = hello.attestation;
+        hardened = check.hardened;
+      } else if (this.opts.requireDeviceAttestation) {
+        // Apple's attestation is looked up for the Mac the worker's attestation names.
         this.reject(ws, `attestation rejected: ${check.reason}`);
         return null;
+      } else {
+        this.log(`worker ${address}'s attestation did not verify (${check.reason}); admitting it unattested`);
       }
-      hardened = check.hardened;
-    }
-    if (this.opts.requireAttestation && !hardened) {
-      this.reject(ws, 'this pool only admits attested hardened Macs (signed app, SIP on, app-bound key)');
-      return null;
     }
     // One connection per worker: a reconnect replaces the stale socket.
     this.workers.get(address)?.ws.close(4002, 'replaced by a new connection');
@@ -738,8 +749,9 @@ export class ColonyPool {
       agent: hello.agent ?? 'unknown',
       ws,
       certificate,
-      attestation: hello.attestation ?? null,
+      attestation,
       hardened,
+      models: hello.models ?? {},
       attestTimer: null,
       attestNonce: null,
       deviceAttestation: null,
@@ -762,8 +774,9 @@ export class ColonyPool {
     this.workers.set(address, worker);
     const { accepted, rejected } = this.setOffered(worker, hello.services);
     this.sendFrame(ws, { t: 'welcome', workerId: address, accepted, rejected, workerShareBps: this.opts.workerShareBps });
-    this.log(`worker ${address} joined (${worker.agent}${hardened ? ', attested' : ''}) offering ${accepted.join(', ') || 'nothing'}`);
-    if (worker.attestation) this.scheduleAttestation(worker);
+    this.log(`worker ${address} joined (${worker.agent}${hardened ? ', reports a hardened Mac' : ''}) offering ${accepted.join(', ') || 'nothing'}`);
+    this.noteAttested();
+    if (hello.attestation) this.scheduleAttestation(worker);
     if (this.opts.deviceAttestor) void this.attestDevice(worker);
     const renewInMs = (certificate.expires - CERTIFICATE_RENEW_MARGIN_S) * 1000 - Date.now();
     worker.renewTimer = setTimeout(() => {
@@ -848,33 +861,55 @@ export class ColonyPool {
     return { nonce, maxAgeS: ATTESTATION_MAX_AGE_S, ...(this.opts.attestedTeams ? { teams: this.opts.attestedTeams } : {}) };
   }
 
-  /** Re-challenge an attested worker; one that stops attesting, or stops reporting hardened, is dropped. */
+  /**
+   * Re-challenge a worker that attests. A missed or failed answer disconnects
+   * it only when the pool requires Apple's attestation (which is looked up
+   * for the Mac the worker's attestation names); otherwise the worker keeps
+   * serving without its attestation label and is asked again next round, so
+   * one systematic fault (clock skew, a bad release) can't empty the pool.
+   */
   private scheduleAttestation(worker: ConnectedWorker): void {
     worker.attestTimer = setTimeout(() => {
       const nonce = randomBytes(32).toString('hex');
       worker.attestNonce = nonce;
       this.sendFrame(worker.ws, { t: 'attest', nonce });
-      worker.attestTimer = setTimeout(() => {
-        this.log(`worker ${worker.address} did not re-attest in time; disconnecting it`);
-        worker.ws.close(4004, 'attestation timed out');
-      }, ATTESTATION_REPLY_MS);
+      worker.attestTimer = setTimeout(() => this.attestationFailed(worker, 'did not re-attest in time'), ATTESTATION_REPLY_MS);
       worker.attestTimer.unref();
     }, this.opts.attestationIntervalMs ?? ATTESTATION_INTERVAL_MS);
     worker.attestTimer.unref();
   }
 
-  private reattested(worker: ConnectedWorker, attestation: WorkerAttestation): void {
-    if (!worker.attestNonce || this.workers.get(worker.address) !== worker) return;
-    const check = verifyWorkerAttestation(attestation, worker.certificate, this.attestationPolicy(worker.attestNonce));
-    if (!check.valid || (worker.hardened && !check.hardened)) {
-      this.log(`worker ${worker.address} failed re-attestation (${check.reason ?? 'no longer hardened'}); disconnecting it`);
+  private attestationFailed(worker: ConnectedWorker, reason: string): void {
+    if (this.workers.get(worker.address) !== worker) return;
+    worker.attestNonce = null;
+    if (this.opts.requireDeviceAttestation) {
+      this.log(`worker ${worker.address} ${reason}; disconnecting it`);
       worker.ws.close(4004, 'attestation failed');
       return;
     }
+    this.log(`worker ${worker.address} ${reason}; it keeps serving without its attestation label`);
+    worker.attestation = null;
+    worker.hardened = false;
+    this.noteAttested();
+    this.scheduleAttestation(worker);
+  }
+
+  private reattested(worker: ConnectedWorker, attestation: WorkerAttestation): void {
+    if (!worker.attestNonce || this.workers.get(worker.address) !== worker) return;
     if (worker.attestTimer) clearTimeout(worker.attestTimer);
+    const check = verifyWorkerAttestation(attestation, worker.certificate, this.attestationPolicy(worker.attestNonce));
+    if (!check.valid) {
+      this.attestationFailed(worker, `failed re-attestation (${check.reason})`);
+      return;
+    }
     const deviceChanged = attestation.serial !== worker.attestation?.serial || attestation.udid !== worker.attestation?.udid;
     worker.attestNonce = null;
     worker.attestation = attestation;
+    if (worker.hardened !== check.hardened) {
+      this.log(`worker ${worker.address} ${check.hardened ? 'now reports' : 'no longer reports'} a hardened Mac`);
+      worker.hardened = check.hardened;
+      this.noteAttested();
+    }
     this.scheduleAttestation(worker);
     // A worker that now names a different Mac loses Apple's word for the old one until its MDM attests the new one.
     if (deviceChanged && this.opts.deviceAttestor) {
@@ -893,8 +928,19 @@ export class ColonyPool {
   }
 
   private setOffered(worker: ConnectedWorker, services: string[]): { accepted: string[]; rejected: string[] } {
-    const accepted = [...new Set(services)].filter((service) => this.catalog.has(service));
-    const rejected = [...new Set(services)].filter((service) => !this.catalog.has(service));
+    const accepted: string[] = [];
+    const rejected: string[] = [];
+    for (const service of new Set(services)) {
+      const expected = this.opts.models?.get(service);
+      if (!this.catalog.has(service)) {
+        rejected.push(service);
+      } else if (expected !== undefined && worker.models[service] !== expected) {
+        this.log(`worker ${worker.address} runs ${worker.models[service] ?? 'an unnamed model'} for ${service}, not ${expected}; not routing it`);
+        rejected.push(service);
+      } else {
+        accepted.push(service);
+      }
+    }
     worker.offered = new Set(accepted);
     for (const service of [...worker.verified]) {
       if (!worker.offered.has(service)) worker.verified.delete(service);
@@ -928,7 +974,7 @@ export class ColonyPool {
       stream: false,
     }));
     const passed = await this.sealedRoundTrip(worker, body, `canary-${randomUUID()}`, '/v1/chat/completions', CANARY_TIMEOUT_MS)
-      .then((response) => response.status === 200 && isChatCompletion(Buffer.from(response.body)))
+      .then((response) => response.status === 200 && saysReady(Buffer.from(response.body)))
       .catch(() => false);
     if (this.workers.get(worker.address) !== worker || !worker.offered.has(service)) return;
     if (passed) {
@@ -942,6 +988,7 @@ export class ColonyPool {
   private handleFrame(worker: ConnectedWorker, frame: WorkerFrame): void {
     switch (frame.t) {
       case 'services':
+        if (frame.models) worker.models = frame.models;
         this.setOffered(worker, frame.services);
         return;
       case 'stats-request':
@@ -1020,7 +1067,27 @@ export class ColonyPool {
       this.failDispatch(worker, dispatchId, entry, new Error(`Worker ${worker.address} disconnected`), { reason: 'disconnect', bench: !entry.started });
     }
     this.log(`worker ${worker.address} left`);
+    this.noteAttested();
     this.emitChangeIfNeeded();
+  }
+
+  /**
+   * Warn when the workers with a valid attestation fall by half or more within
+   * one re-attestation round (from at least two): one systematic fault, such
+   * as the pool's clock, a worker release or the operator's MDM, is the likely
+   * cause, and with `requireDeviceAttestation` it takes them out of routing.
+   */
+  private noteAttested(): void {
+    const now = Date.now();
+    const count = [...this.workers.values()].filter((worker) => worker.attestation !== null).length;
+    const windowMs = (this.opts.attestationIntervalMs ?? ATTESTATION_INTERVAL_MS) + ATTESTATION_REPLY_MS;
+    this.attestedCounts = this.attestedCounts.filter((entry) => now - entry.at <= windowMs);
+    const peak = Math.max(count, ...this.attestedCounts.map((entry) => entry.count));
+    this.attestedCounts.push({ at: now, count });
+    if (peak >= 2 && count * 2 <= peak && now - this.attestedDropWarnedAt > windowMs) {
+      this.attestedDropWarnedAt = now;
+      this.log(`WARNING: attested workers fell from ${peak} to ${count} within ${Math.round(windowMs / 1000)}s; check the pool's clock, the latest worker release${this.opts.deviceAttestor ? ' and the MDM' : ''}`);
+    }
   }
 
   private emitChangeIfNeeded(): void {
@@ -1039,10 +1106,14 @@ export class ColonyPool {
   }
 }
 
-function isChatCompletion(body: Buffer): boolean {
+/** Whether a join check's completion answers "ready", give or take case, quotes, punctuation and a reasoning block. */
+export function saysReady(body: Buffer): boolean {
   try {
-    const parsed = JSON.parse(body.toString()) as { choices?: unknown };
-    return Array.isArray(parsed.choices) && parsed.choices.length > 0;
+    const parsed = JSON.parse(body.toString()) as { choices?: Array<{ message?: { content?: unknown } }> };
+    const content = parsed.choices?.[0]?.message?.content;
+    if (typeof content !== 'string') return false;
+    const reply = content.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+    return /^[\s"'`*_.!:]*ready[\s"'`*_.!:]*$/i.test(reply);
   } catch {
     return false;
   }

@@ -372,15 +372,18 @@ export interface NodeConfig {
   maxUploadBodyBytes?: number;
   /** Maximum wall time allowed for a streaming response. Default: 30 minutes. */
   maxStreamDurationMs?: number;
-  /** Only send colony pools requests for workers attesting a hardened Mac (docs/protocol/colony-pool.md). */
-  requireAttestedWorkers?: boolean;
-  /** Also require Apple's attestation of the worker's Mac, from the pool operator's MDM. */
+  /**
+   * Only send colony pools requests for workers whose Mac Apple attests, from
+   * the pool operator's MDM (docs/protocol/colony-pool.md). A worker's own
+   * hardening report is self-signed, so it is shown but never enforced.
+   */
   requireAppleVerifiedWorkers?: boolean;
   /**
    * How many of a colony pool's top-ranked workers each request is encrypted
-   * for (1 to 3, default 2), so the pool can fail over without a round trip.
-   * Any of them could read the request if the pool forwarded it; 1 keeps each
-   * request readable by a single worker.
+   * for (1 to 3, default 1). With 1, each request is readable by a single
+   * worker and is never sent to another. With 2 or 3, the pool can fail over
+   * between them without a round trip, and a request none of them could take
+   * is encrypted again for new workers once: any of them could read it.
    */
   colonyPoolRecipients?: number;
   /** Allow private/loopback IPs in DHT lookups. Default: false. Set true for local testing. */
@@ -1906,7 +1909,6 @@ export class AntseedNode extends EventEmitter {
   /** Colony pool trust policy, the same for every buyer identity. */
   private _workerPolicy(): NodeWorkerE2EClientOptions {
     return {
-      requireAttestedWorkers: this._config.requireAttestedWorkers === true,
       requireAppleVerifiedWorkers: this._config.requireAppleVerifiedWorkers === true,
       ...(this._config.colonyPoolRecipients !== undefined ? { recipients: this._config.colonyPoolRecipients } : {}),
     };

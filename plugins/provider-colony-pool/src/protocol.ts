@@ -84,6 +84,8 @@ export interface HelloFrame {
   attestation?: WorkerAttestation;
   /** Free-form client name and version, e.g. `antseed-mac/0.1.0`. */
   agent?: string;
+  /** Service → the model it runs, `repo@revision` (self-reported; a pool with COLONY_POOL_MODELS refuses a mismatch). */
+  models?: Record<string, string>;
 }
 
 /** The worker's certificate as it sends it: the pool already knows the worker and itself. */
@@ -99,6 +101,8 @@ export interface AttestationFrame {
 export interface ServicesFrame {
   t: 'services';
   services: string[];
+  /** As in `hello`; replaces the models the worker reported, when present. */
+  models?: Record<string, string>;
 }
 
 /**
@@ -220,9 +224,11 @@ export function parseWorkerFrame(raw: string): WorkerFrame | null {
         && isEncryption(value['encryption'])
         && (value['attestation'] === undefined || isWorkerAttestation(value['attestation']))
         && (value['agent'] === undefined || typeof value['agent'] === 'string')
+        && (value['models'] === undefined || isStringRecord(value['models']))
         ? value as unknown as HelloFrame : null;
     case 'services':
-      return isStringArray(value['services']) ? value as unknown as ServicesFrame : null;
+      return isStringArray(value['services']) && (value['models'] === undefined || isStringRecord(value['models']))
+        ? value as unknown as ServicesFrame : null;
     case 'accepted':
       return typeof id === 'string' ? value as unknown as AcceptedFrame : null;
     case 'response-start':
