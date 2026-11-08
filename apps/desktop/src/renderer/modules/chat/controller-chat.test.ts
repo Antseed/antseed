@@ -144,6 +144,29 @@ describe('chat controller', () => {
     expect(sends[0]).toEqual({ convId: 'conv-a', content: 'on the new model', modelId: 'model-b' });
   });
 
+  it('an old conversation list landing while a model change is saved does not send on the old model', async () => {
+    const saved = deferred<{ ok: boolean }>();
+    const staleList = deferred<{ ok: boolean; data: Conv[] }>();
+    let listCalls = 0;
+    const { api, uiState, sends } = setup(undefined, {
+      chatAiSetModel: () => saved.promise,
+      chatAiListConversations: async () => (++listCalls === 1
+        ? { ok: true, data: [conv('conv-a', 'model-a'), conv('conv-b', 'model-b')] }
+        : staleList.promise),
+    });
+    await api.refreshChatConversations();
+    await api.openConversation('conv-a');
+    const refreshing = api.refreshChatConversations();
+    api.selectChatModel('model-b');
+    api.sendMessage('on the new model');
+    staleList.resolve({ ok: true, data: [conv('conv-a', 'model-a'), conv('conv-b', 'model-b')] });
+    await refreshing;
+    expect((uiState.chatConversations as Conv[]).find((c) => c.id === 'conv-a')?.service).toBe('model-b');
+    saved.resolve({ ok: true });
+    await waitFor(() => sends.length === 1);
+    expect(sends[0]!.modelId).toBe('model-b');
+  });
+
   it('keeps what already streamed when the stream fails, shows the error and does not resend', async () => {
     const { api, uiState, sends, emit } = setup();
     await api.refreshChatConversations();

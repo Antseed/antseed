@@ -119,7 +119,8 @@ export function initChatModule({
   const streamingMessagesByConversation = new Map<string, ChatMessage>();
   const pendingStreamingUiFlushes = new Set<string>();
   /** In-flight model rebinds, awaited before the conversation's next send. */
-  const pendingModelUpdates = new Map<string, Promise<{ ok: boolean; error?: string }>>();
+  /** A chat's model change still being saved: what was picked, and when it is stored. */
+  const pendingModelUpdates = new Map<string, { modelId: string; done: Promise<void> }>();
   /** Conversations whose last send stopped for lack of funds, with the notice to show when reopened. */
   const fundsNoticeByConversation = new Map<string, { message: string; canAddFunds: boolean }>();
 
@@ -347,7 +348,16 @@ export function initChatModule({
     if (bridge?.chatAiSetModel) {
       const update = bridge.chatAiSetModel(convId, id)
         .catch((error: unknown) => ({ ok: false, error: asErrorMessage(error) }));
-      if (convId) pendingModelUpdates.set(convId, update);
+      if (convId) {
+        const entry = {
+          modelId: id,
+          done: update.then((result) => {
+            if (pendingModelUpdates.get(convId) === entry) pendingModelUpdates.delete(convId);
+            if (!result.ok) appendSystemLog(`Could not save the chat's model: ${result.error ?? 'unknown error'}`);
+          }),
+        };
+        pendingModelUpdates.set(convId, entry);
+      }
     }
     void refreshPermissionModeForModel(id);
     notifyUiStateChanged();
@@ -660,7 +670,12 @@ export function initChatModule({
     try {
       const result = await bridge.chatAiListConversations();
       if (result.ok) {
-        const conversations = Array.isArray(result.data) ? (result.data as ChatConversationSummary[]) : [];
+        // A list read before a model change was saved still names the old model.
+        const conversations = (Array.isArray(result.data) ? (result.data as ChatConversationSummary[]) : [])
+          .map((summary) => {
+            const pending = pendingModelUpdates.get(summary.id);
+            return pending ? { ...summary, service: pending.modelId } : summary;
+          });
         uiState.chatConversations = conversations;
         const activeId = uiState.chatActiveConversation;
         const activeSummary = activeId ? conversations.find((c) => c.id === activeId) : undefined;
@@ -1027,13 +1042,10 @@ export function initChatModule({
       setConversationSending(convId, false);
       return;
     }
+    // The model picked before Send, not whatever the summary says once its save lands.
     const modelUpdate = pendingModelUpdates.get(convId);
-    if (modelUpdate) {
-      const update = await modelUpdate;
-      if (pendingModelUpdates.get(convId) === modelUpdate) pendingModelUpdates.delete(convId);
-      if (!update.ok) appendSystemLog(`Could not save the chat's model: ${update.error ?? 'unknown error'}`);
-    }
-    const modelId = findConversationSummary(convId)?.service || uiState.chatSelectedModelId;
+    if (modelUpdate) await modelUpdate.done;
+    const modelId = modelUpdate?.modelId || findConversationSummary(convId)?.service || uiState.chatSelectedModelId;
     if (!modelId) {
       reportChatError('Choose a model for this chat.', 'Request failed');
       setConversationSending(convId, false);

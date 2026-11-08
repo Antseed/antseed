@@ -46,14 +46,20 @@ export function retiredDesktopProfiles(): DesktopSystemProxyProfile[] {
   return SYSTEM_PROXY_PROFILES.filter((profile) => NOT_CONNECTED_BY_DESKTOP.has(profile.name));
 }
 
+/** A profile the desktop connects by patching the app's own config. */
+export type ConnectableProfile = DesktopSystemProxyProfile & {
+  readonly kind: 'config-patch';
+  readonly configPatch: ConfigPatchDef;
+};
+
 /** Profiles that can be connected: those that patch the app's own config. */
-export function connectableProfiles(): DesktopSystemProxyProfile[] {
-  return SYSTEM_PROXY_PROFILES.filter((profile) => (
-    profile.kind === 'config-patch' && profile.configPatch && !NOT_CONNECTED_BY_DESKTOP.has(profile.name)
+export function connectableProfiles(): ConnectableProfile[] {
+  return SYSTEM_PROXY_PROFILES.filter((profile): profile is ConnectableProfile => (
+    profile.kind === 'config-patch' && Boolean(profile.configPatch) && !NOT_CONNECTED_BY_DESKTOP.has(profile.name)
   ));
 }
 
-export function findConnectableProfile(name: string): DesktopSystemProxyProfile | undefined {
+export function findConnectableProfile(name: string): ConnectableProfile | undefined {
   return connectableProfiles().find((profile) => profile.name === name);
 }
 
@@ -101,7 +107,7 @@ function readAppAction(value: unknown): DesktopSystemProxyProfile['appAction'] {
 export function removeAllConfigPatches(log: (line: string) => void): void {
   removeEach(
     connectableProfiles(),
-    (profile) => { removeConfigPatch(profile.configPatch!, connectedAppsWslTargetsPath()); },
+    (profile) => { removeConfigPatch(profile.configPatch, connectedAppsWslTargetsPath()); },
     (profile, err) => { log(`${profile.label}: could not remove Antseed from its config: ${err instanceof Error ? err.message : String(err)}`); },
   );
 }

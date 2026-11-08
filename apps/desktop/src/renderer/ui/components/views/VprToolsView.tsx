@@ -154,6 +154,85 @@ function shortError(error: string): string {
   return first.length > 90 ? `${first.slice(0, 87)}…` : first;
 }
 
+type AppCardFooterProps = {
+  profile: ConnectedAppProfile;
+  /** The app being connected or disconnected, if any. */
+  busy: string | null;
+  notInstalled: boolean;
+  needsKey: boolean;
+  needsAttention: boolean;
+  onConnect: () => void;
+  onDisconnect: () => void;
+  onGet: (url: string) => void;
+};
+
+/** An app card's status and action. An error shows before the connected state. */
+function AppCardFooter({ profile, busy, notInstalled, needsKey, needsAttention, onConnect, onDisconnect, onGet }: AppCardFooterProps) {
+  const { connected } = profile;
+  if (busy === profile.name) {
+    return <span className={styles.appBusy} role="status" aria-label={`${connected ? 'Disconnecting' : 'Connecting'} ${profile.displayName}`} />;
+  }
+  if (profile.error) {
+    return (
+      <>
+        <span className={styles.appStatusWarn} title={profile.error}>
+          <span className={styles.restartDot} aria-hidden="true" />
+          {shortError(profile.error)}
+        </span>
+        {!connected && <button type="button" className={styles.appChip} disabled={busy !== null} onClick={onConnect}>Connect</button>}
+      </>
+    );
+  }
+  if (connected) {
+    return (
+      <span className={styles.appConnectedRow}>
+        <span className={needsAttention ? styles.appStatusWarn : styles.appStatus} title={needsKey ? 'Open Zed’s settings here to copy the key' : undefined}>
+          <span className={needsAttention ? styles.restartDot : styles.connectedDot} aria-hidden="true" />
+          {needsKey ? 'Paste key in Zed' : profile.needsRestart ? 'Restart required' : 'Connected'}
+        </span>
+        <button
+          type="button"
+          className={styles.appDisconnect}
+          disabled={busy !== null}
+          onClick={onDisconnect}
+          aria-label={`Disconnect ${profile.displayName}`}
+        >
+          Disconnect
+        </button>
+      </span>
+    );
+  }
+  if (!notInstalled) {
+    return (
+      <button type="button" className={styles.appChip} disabled={busy !== null} onClick={onConnect}>
+        Connect
+      </button>
+    );
+  }
+  if (offersConnectAnyway(window.antseedDesktop?.platform)) {
+    return (
+      <span className={styles.appConnectedRow}>
+        <button type="button" className={styles.appChip} disabled={busy !== null} onClick={onConnect} title={`Connect ${profile.displayName} if it is installed in WSL`}>
+          Connect
+        </button>
+      </span>
+    );
+  }
+  if (!profile.downloadUrl) return <span className={styles.appMuted}>Not installed</span>;
+  const downloadUrl = profile.downloadUrl;
+  return (
+    <button
+      type="button"
+      className={styles.appGet}
+      onClick={() => onGet(downloadUrl)}
+      title={`Get ${profile.displayName}, then connect it here`}
+    >
+      Get
+      <HugeiconsIcon icon={ArrowUpRight01Icon} size={13} strokeWidth={2} />
+    </button>
+  );
+}
+
 export function VprToolsView() {
   const appsSnapshot = useCachedResource(appsResource);
   const profiles = appsSnapshot.data ?? [];
@@ -423,55 +502,16 @@ export function VprToolsView() {
                     <span className={styles.appCardName}>{profile.displayName}</span>
                   )}
                   <span className={styles.appCardFoot}>
-                    {busy === profile.name ? (
-                      <span className={styles.appBusy} role="status" aria-label={`${connected ? 'Disconnecting' : 'Connecting'} ${profile.displayName}`} />
-                    ) : profile.error ? (
-                      <>
-                        <span className={styles.appStatusWarn} title={profile.error}>
-                          <span className={styles.restartDot} aria-hidden="true" />
-                          {shortError(profile.error)}
-                        </span>
-                        {!connected && <button type="button" className={styles.appChip} disabled={busy !== null} onClick={() => { void connectProfile(profile); }}>Connect</button>}
-                      </>
-                    ) : connected ? (
-                      <span className={styles.appConnectedRow}>
-                        <span className={needsAttention ? styles.appStatusWarn : styles.appStatus} title={needsKey ? 'Open Zed’s settings here to copy the key' : undefined}>
-                          <span className={needsAttention ? styles.restartDot : styles.connectedDot} aria-hidden="true" />
-                          {needsKey ? 'Paste key in Zed' : profile.needsRestart ? 'Restart required' : 'Connected'}
-                        </span>
-                        <button
-                          type="button"
-                          className={styles.appDisconnect}
-                          disabled={busy !== null}
-                          onClick={() => { void disconnectProfile(profile); }}
-                          aria-label={`Disconnect ${profile.displayName}`}
-                        >
-                          Disconnect
-                        </button>
-                      </span>
-                    ) : notInstalled && offersConnectAnyway(window.antseedDesktop?.platform) ? (
-                      <span className={styles.appConnectedRow}>
-                        <button type="button" className={styles.appChip} disabled={busy !== null} onClick={() => { void connectProfile(profile); }} title={`Connect ${profile.displayName} if it is installed in WSL`}>
-                          Connect
-                        </button>
-                      </span>
-                    ) : notInstalled ? (
-                      profile.downloadUrl ? (
-                        <button
-                          type="button"
-                          className={styles.appGet}
-                          onClick={() => { void openUrl(profile.downloadUrl!); }}
-                          title={`Get ${profile.displayName}, then connect it here`}
-                        >
-                          Get
-                          <HugeiconsIcon icon={ArrowUpRight01Icon} size={13} strokeWidth={2} />
-                        </button>
-                      ) : <span className={styles.appMuted}>Not installed</span>
-                    ) : (
-                      <button type="button" className={styles.appChip} disabled={busy !== null} onClick={() => { void connectProfile(profile); }}>
-                        Connect
-                      </button>
-                    )}
+                    <AppCardFooter
+                      profile={profile}
+                      busy={busy}
+                      notInstalled={notInstalled}
+                      needsKey={needsKey}
+                      needsAttention={Boolean(needsAttention)}
+                      onConnect={() => { void connectProfile(profile); }}
+                      onDisconnect={() => { void disconnectProfile(profile); }}
+                      onGet={(url) => { void openUrl(url); }}
+                    />
                   </span>
                 </div>
               );

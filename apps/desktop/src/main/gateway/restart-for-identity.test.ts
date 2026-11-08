@@ -17,6 +17,7 @@ function ops(inUse: boolean) {
       buyerPort: async () => 8377,
       portInUse: async () => inUse,
       onForeignBuyer: (port: number) => { calls.push(`foreign ${port}`); },
+      local: true,
     },
   };
 }
@@ -31,6 +32,15 @@ test('a buyer still on the port is someone else\'s: no restart, and the user is 
   const { calls, ops: o } = ops(true);
   assert.match((await restartForNewIdentity(o))!, /still running on port 8377 with the old wallet/);
   assert.deepEqual(calls, ['stop', 'foreign 8377']);
+});
+
+test('with a remote gateway, nothing restarts but an old-wallet buyer is still recorded for a later local switch', async () => {
+  const busy = ops(true);
+  assert.equal(await restartForNewIdentity({ ...busy.ops, local: false }), null);
+  assert.deepEqual(busy.calls, ['foreign 8377']);
+  const free = ops(false);
+  assert.equal(await restartForNewIdentity({ ...free.ops, local: false }), null);
+  assert.deepEqual(free.calls, []);
 });
 
 test('a start that fails is reported', async () => {

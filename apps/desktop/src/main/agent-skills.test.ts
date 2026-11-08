@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
@@ -78,6 +78,20 @@ test('a sync that fails for any agent changes neither the key nor any installed 
   await assert.rejects(syncAgentSkills({ origin: 'https://gw.example', apiKey: 'sk-new' }, options));
   assert.equal(readFileSync(agentSkillsKeyFile(options), 'utf8').trim(), endpoint.apiKey);
   assert.equal(readFileSync(skill, 'utf8'), before);
+});
+
+test('a key that cannot be written puts every swapped copy back', async () => {
+  const options = fixture();
+  await installAgentSkills('claude-code', endpoint, options);
+  await installAgentSkills('codex', endpoint, options);
+  const skills = [path.join(options.home, '.claude', 'skills', 'antseed-ask', 'SKILL.md'), path.join(options.home, '.agents', 'skills', 'antseed-ask', 'SKILL.md')];
+  const before = skills.map((file) => readFileSync(file, 'utf8'));
+  chmodSync(agentSkillsKeyFile(options), 0o400);
+  await assert.rejects(syncAgentSkills({ origin: 'https://gw.example', apiKey: 'sk-new' }, options));
+  chmodSync(agentSkillsKeyFile(options), 0o600);
+  assert.deepEqual(skills.map((file) => readFileSync(file, 'utf8')), before);
+  assert.equal(readFileSync(agentSkillsKeyFile(options), 'utf8').trim(), endpoint.apiKey);
+  assert.deepEqual(readdirSync(path.join(options.home, '.claude', 'skills')).filter((name) => name.startsWith('.antseed-install-')), []);
 });
 
 test('never overwrites a skill folder the user made', async () => {

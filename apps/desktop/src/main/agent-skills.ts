@@ -139,7 +139,7 @@ async function writeKeyFile(apiKey: string, options: Options): Promise<string> {
   return keyFile;
 }
 
-type StagedInstall = { swap: () => Promise<void>; discard: () => Promise<void> };
+type StagedInstall = { swap: () => Promise<void>; rollback: () => Promise<void>; discard: () => Promise<void> };
 
 /**
  * Builds a target's copies beside its final folders, pointed at `endpoint`, so
@@ -174,23 +174,52 @@ async function stageInstall(skillsDir: string, endpoint: AgentSkillsEndpoint, op
     await discard();
     throw err;
   }
+  // What `swap` replaced, kept in the staging folder until the whole update has landed.
+  const swapped: Array<{ dest: string; backup: string | null }> = [];
   return {
     swap: async () => {
       for (const name of AGENT_SKILL_NAMES) {
         const dest = path.join(skillsDir, name);
-        await rm(dest, { recursive: true, force: true });
+        const backup = existsSync(dest) ? path.join(staging, `${name}.previous`) : null;
+        if (backup) await rename(dest, backup);
+        swapped.push({ dest, backup });
         await rename(path.join(staging, name), dest);
       }
+    },
+    rollback: async () => {
+      for (const { dest, backup } of swapped.reverse()) {
+        if (backup && !existsSync(backup)) continue;
+        await rm(dest, { recursive: true, force: true });
+        if (backup) await rename(backup, dest);
+      }
+      swapped.length = 0;
     },
     discard,
   };
 }
 
+/**
+ * Puts every staged copy in place and then the key, as one change: if any
+ * step fails, the copies already swapped and the previous key come back.
+ */
+async function commitInstalls(staged: readonly StagedInstall[], apiKey: string, options: Options): Promise<void> {
+  const keyFile = agentSkillsKeyFile(options);
+  const previousKey = await readFile(keyFile, 'utf8').catch(() => null);
+  try {
+    for (const copy of staged) await copy.swap();
+    await writeKeyFile(apiKey, options);
+  } catch (err) {
+    for (const copy of [...staged].reverse()) await copy.rollback().catch(() => undefined);
+    if (previousKey === null) await rm(keyFile, { force: true }).catch(() => undefined);
+    else await writeKeyFile(previousKey.trim(), options).catch(() => undefined);
+    throw err;
+  }
+}
+
 async function installInto(skillsDir: string, endpoint: AgentSkillsEndpoint, options: Options): Promise<void> {
   const staged = await stageInstall(skillsDir, endpoint, options);
   try {
-    await writeKeyFile(endpoint.apiKey, options);
-    await staged.swap();
+    await commitInstalls([staged], endpoint.apiKey, options);
   } finally {
     await staged.discard();
   }
@@ -216,13 +245,12 @@ export async function removeAgentSkills(id: string, options: Options = {}): Prom
 export async function syncAgentSkills(endpoint: AgentSkillsEndpoint, options: Options = {}): Promise<void> {
   const installed = listAgentSkillTargets(options).filter((target) => target.installed);
   if (installed.length === 0) return;
-  // Every copy is built before anything changes, and the key goes last: a
-  // failure on any agent leaves all of them working with the old gateway and key.
+  // Every copy is built before anything changes, then all of them and the key
+  // land together: a failure on any agent leaves all of them on the old gateway and key.
   const staged: StagedInstall[] = [];
   try {
     for (const target of installed) staged.push(await stageInstall(target.skillsDir, endpoint, options));
-    for (const copy of staged) await copy.swap();
-    await writeKeyFile(endpoint.apiKey, options);
+    await commitInstalls(staged, endpoint.apiKey, options);
   } finally {
     for (const copy of staged) await copy.discard();
   }

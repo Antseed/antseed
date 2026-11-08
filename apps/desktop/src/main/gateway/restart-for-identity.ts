@@ -14,19 +14,22 @@ export function foreignBuyerMessage(port: number): string {
  * from the old wallet. Answers why it can't go ahead, or null once it has.
  */
 export async function restartForNewIdentity(ops: {
+  /** False while a remote gateway is in use: nothing local to restart, but the check still applies. */
+  local: boolean;
   stop: () => Promise<void>;
   start: () => Promise<void>;
   buyerPort: () => Promise<number>;
   portInUse: (port: number) => Promise<boolean>;
   onForeignBuyer: (port: number) => void;
 }): Promise<string | null> {
-  await ops.stop();
+  if (ops.local) await ops.stop();
   const port = await ops.buyerPort();
   if (await ops.portInUse(port)) {
+    // Recorded in remote mode too, so a later switch to this computer can't attach to it.
     ops.onForeignBuyer(port);
-    return foreignBuyerMessage(port);
+    return ops.local ? foreignBuyerMessage(port) : null;
   }
-  await ops.start();
+  if (ops.local) await ops.start();
   return null;
 }
 

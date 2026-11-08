@@ -195,8 +195,8 @@ export async function stopLocalGateway(): Promise<void> {
 
 /** After importing a signer. Answers why the gateway can't use it yet, or null once it does. */
 export async function restartLocalGatewayForNewIdentity(): Promise<string | null> {
-  if (getGatewaySettings().mode !== 'local') return null;
   return restartForNewIdentity({
+    local: getGatewaySettings().mode === 'local',
     stop: stopLocalGateway,
     start: ensureLocalGateway,
     buyerPort: localBuyerPort,

@@ -2251,8 +2251,8 @@ type ClaudeCodePatchState = {
   /** What the last gateway patch wrote, so removal recognizes a real key,
       a remote base URL, and real model ids. Absent for legacy patches. */
   readonly written?: ClaudeCodeWritten;
-  /** What the patch wrote before a refresh still being written: either may be on disk until it lands. */
-  readonly previousWritten?: ClaudeCodeWritten;
+  /** What refreshes not yet confirmed may have left on disk: any of these, until a write lands. */
+  readonly previousWritten?: readonly ClaudeCodeWritten[];
 };
 
 type ClaudeCodeWritten = {
@@ -2304,7 +2304,9 @@ function readClaudeCodePatchState(filePath: string): ClaudeCodePatchState | null
     readSavedValue((env as JsonObject)[key], statePath, key),
   ])) as Record<ClaudeCodeManagedEnvKey, ClaudeCodeSavedValue>;
   const written = readClaudeCodeWritten(state['written']);
-  const previousWritten = readClaudeCodeWritten(state['previousWritten']);
+  const previousWritten = (Array.isArray(state['previousWritten']) ? state['previousWritten'] : [])
+    .map(readClaudeCodeWritten)
+    .filter((entry): entry is ClaudeCodeWritten => entry !== undefined);
   return {
     version: 1,
     configExisted: state['configExisted'],
@@ -2312,7 +2314,7 @@ function readClaudeCodePatchState(filePath: string): ClaudeCodePatchState | null
     env: savedEnv,
     model: readSavedValue(state['model'], statePath, 'model'),
     ...(written ? { written } : {}),
-    ...(previousWritten ? { previousWritten } : {}),
+    ...(previousWritten.length > 0 ? { previousWritten } : {}),
   };
 }
 
@@ -2388,7 +2390,7 @@ function applyClaudeCodeSettingsToFile(filePath: string, patch: ClaudeCodeConfig
     writeJsonFile(filePath, config);
     return;
   }
-  const { previousWritten: _unconfirmed, ...base } = state;
+  const { previousWritten: unconfirmed = [], ...base } = state;
   const written: ClaudeCodeWritten = {
     baseUrl: baseURL,
     authTokenSha256: sha256Hex(authToken),
@@ -2397,7 +2399,9 @@ function applyClaudeCodeSettingsToFile(filePath: string, patch: ClaudeCodeConfig
   };
   // Recorded before the config changes, old and new together, so disconnect
   // recognizes whichever is on disk if the write (or this record) fails.
-  writeClaudeCodePatchState(filePath, { ...base, written, ...(state.written ? { previousWritten: state.written } : {}) });
+  // Earlier failed refreshes stay listed: the config on disk may still be any of them.
+  const previousWritten = [...unconfirmed, ...(state.written ? [state.written] : [])];
+  writeClaudeCodePatchState(filePath, { ...base, written, ...(previousWritten.length > 0 ? { previousWritten } : {}) });
   writeJsonFile(filePath, config);
   writeClaudeCodePatchState(filePath, { ...base, written });
 }
@@ -2440,7 +2444,7 @@ function removeClaudeCodeSettingsFromFile(
       ANTHROPIC_API_KEY: '',
       ANTHROPIC_CUSTOM_HEADERS: CLAUDE_CODE_SOURCE_HEADER,
     };
-    const writtenSets = [state.written, state.previousWritten].filter((entry): entry is ClaudeCodeWritten => entry !== undefined);
+    const writtenSets = [...(state.written ? [state.written] : []), ...(state.previousWritten ?? [])];
     for (const key of CLAUDE_CODE_MANAGED_ENV_KEYS) {
       const value = env[key];
       let managed: boolean;
@@ -2460,7 +2464,7 @@ function removeClaudeCodeSettingsFromFile(
   }
   const model = config['model'];
   const ourModel = typeof model === 'string'
-    && [state.written, state.previousWritten].some((entry) => entry?.models.includes(model) ?? false);
+    && [...(state.written ? [state.written] : []), ...(state.previousWritten ?? [])].some((entry) => entry.models.includes(model));
   if (model === ROUTED_MODEL_ALIAS || ourModel) {
     restoreSavedValue(config, 'model', state.model);
     changed = true;

@@ -436,6 +436,23 @@ test('claude-code: a refresh whose ownership record or config write fails is sti
   });
 });
 
+test('claude-code: several failed refreshes in a row still leave the settings on disk recognizable', async () => {
+  await withDir(async (dir) => {
+    const configPath = path.join(dir, 'settings.json');
+    const original = { model: 'opus', env: { FOO: 'bar' } };
+    await writeFile(configPath, JSON.stringify(original), 'utf8');
+    const patch: ConfigPatchDef = { format: 'claude-code', configPath, providerKey: 'antseed', baseURL: 'http://localhost:{buyerPort}' };
+    writeConfigPatch(patch, { origin: 'https://a.example.com', apiKey: 'antseed_key_a', models: [{ id: 'model-a' }] });
+    await chmod(configPath, 0o444);
+    for (const name of ['b', 'c']) {
+      assert.throws(() => writeConfigPatch(patch, { origin: `https://${name}.example.com`, apiKey: `antseed_key_${name}`, models: [{ id: `model-${name}` }] }), /EACCES|permission/i);
+    }
+    await chmod(configPath, 0o600);
+    removeConfigPatch(patch);
+    assert.deepEqual(await readJson(configPath), original);
+  });
+});
+
 test('claude-code: bearer key, model pick preserved, removal restores (and legacy → gateway migration)', async () => {
   await withDir(async (dir) => {
     const configPath = path.join(dir, 'settings.json');
