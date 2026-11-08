@@ -36,6 +36,7 @@ import { loadEpochState, writeEpochSubmissionManifest } from '../../../verifier/
 import { getGlobalOptions } from '../types.js'
 import { loadDisputedSellers, loadEpochAuditEvents, loadEpochReports, ownResultTallies } from '../../../verifier/pending-confirmations.js'
 import { alreadyOnChainFilter, revocationPositions } from '../../../verifier/submission-delta.js'
+import { thirdOpinionFilter } from '../../../verifier/third-opinion.js'
 
 interface SubmitOptions {
   runId?: string
@@ -195,6 +196,9 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
           },
           auditorSetEvents,
         }),
+        // Never a third opinion: a seller judged by another auditor this epoch is not reported on again,
+        // except to confirm a DIFF the planner gave this auditor (third-opinion.ts).
+        thirdOpinion: thirdOpinionFilter({ events: epochEvents, auditor: address }),
       })
       const audits = await reuseLedgerEvidence(
         prepared.map((audit) => withLedgerKey(audit, ledger, evidenceDir, manifest.runId)), ledger,

@@ -259,6 +259,11 @@ export async function prepareModelAudits(input: {
    */
   alreadyOnChain?: (modelHash: string, candidates: readonly SubmissionCandidate[]) => Promise<boolean[]>
   /**
+   * Never a third opinion (`third-opinion.ts`): one reason or null per candidate; a result with a
+   * reason is left out of the submission and listed among the excluded sellers with that reason.
+   */
+  thirdOpinion?: (modelHash: string, candidates: readonly SubmissionCandidate[]) => Promise<Array<string | null>>
+  /**
    * The model's audit window this epoch (`audit-window.ts`), or null when it has none (confirmations).
    * An open window's results are not submitted yet; in a closed one, a close call still waiting for
    * its extra questions is submitted as UNDETERMINED, and a seller outside the window (one that came
@@ -400,17 +405,30 @@ export async function prepareModelAudits(input: {
     if (accepted.length === 0 || referenceModel === null) continue
     // After keepOneSamePerSeller, so the SAME kept per seller is the same one whether or not it is
     // already on-chain (another of its services is never sent in its place).
+    const candidatesOf = (): SubmissionCandidate[] => accepted.map((entry) => ({
+      agentId: entry.agentId,
+      serviceHash: serviceHash(entry.result.service),
+      verdict: verifierVerdict(entry.result.status),
+      auditedAt: auditedAt(entry),
+      confirmsDiff: entry.result.confirmsDiff === true,
+    }))
     if (input.alreadyOnChain) {
-      const onChain = await input.alreadyOnChain(modelHash(referenceModel), accepted.map((entry) => ({
-        agentId: entry.agentId,
-        serviceHash: serviceHash(entry.result.service),
-        verdict: verifierVerdict(entry.result.status),
-        auditedAt: auditedAt(entry),
-      })))
+      const onChain = await input.alreadyOnChain(modelHash(referenceModel), candidatesOf())
       const count = onChain.filter(Boolean).length
       if (count > 0) {
         alreadyOnChain.push({ model, count })
         for (let index = accepted.length - 1; index >= 0; index -= 1) if (onChain[index]) accepted.splice(index, 1)
+      }
+      if (accepted.length === 0) continue
+    }
+    if (input.thirdOpinion) {
+      const reasons = await input.thirdOpinion(modelHash(referenceModel), candidatesOf())
+      for (let index = accepted.length - 1; index >= 0; index -= 1) {
+        const reason = reasons[index]
+        if (!reason) continue
+        const { result } = accepted[index]!
+        allExcluded.push({ model, peerId: result.peerId, agentId: result.agentId, service: result.service, auditId: result.auditId, reason })
+        accepted.splice(index, 1)
       }
       if (accepted.length === 0) continue
     }

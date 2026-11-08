@@ -56,6 +56,7 @@ import { acquirePidFileLock } from '../../../verifier/atomic-files.js'
 import { findAdvertisedService } from '../../../verifier/service-discovery.js'
 import { configuredVerifierModels, resolveVerifierCommandModels, verifierModelServices } from '../../../verifier/model-config.js'
 import { describeAuditorSource, resolveAuditorAddress } from './auditor-identity.js'
+import { alreadyJudgedByOther, otherOpinions, type OtherOpinion } from '../../../verifier/third-opinion.js'
 import { asError, normalized } from '../../../verifier/utils.js'
 import {
   classifyVerificationTargetServices,
@@ -756,6 +757,29 @@ export async function runVerifierRound(
         ? await readVerifierRunManifest(evidenceDir, options.resumeRun)
         : null
       const requestedModels = assignedModels ?? resolveRunModels(config.verifier, modelValue, options.all === true, requestedResumeManifest)
+      if (assignedModels) {
+        // A stand-in keeps a model while its audit window is open, also after the 75 % stage names the
+        // next stand-in: its sellers' retries finish and the window is submitted instead of stranded.
+        for (const window of await listAuditWindows(evidenceDir, epochWindow.epoch)) {
+          if (window.state !== 'open' || requestedModels.some((model) => model.toLowerCase() === window.model.toLowerCase())) continue
+          requestedModels.push(window.model)
+          console.log(chalk.cyan(`Keeping ${window.model}: its audit window from an earlier hand-over is still open`))
+        }
+      }
+      // Never a third opinion (third-opinion.ts): a seller another auditor has already judged this epoch
+      // is not audited again, unless the planner makes it a confirmation. Read once per run.
+      let othersOpinions: ReadonlyMap<string, ReadonlyMap<string, OtherOpinion>> = new Map()
+      if (epochWindow.source === 'onchain' && !requestedResumeManifest) {
+        try {
+          const client = createVerifierClient(config)
+          const me = (await resolveAuditorAddress({ config: config.verifier, dataDir: globalOptions.dataDir, flag: options.auditor })).address
+          const events = await loadEpochAuditEvents({ reader: client, epochStartedAt: epochWindow.startedAt, deploymentBlock: client.deploymentBlock })
+          othersOpinions = otherOpinions(events, me)
+        } catch (error) {
+          console.warn(chalk.yellow(`Could not read other auditors' reports this epoch: ${asError(error).message}`))
+        }
+      }
+      const judgedByOthers = new Map<string, number>()
       // Verdicts other auditors reported this epoch that still need more auditors: their sellers
       // are audited here too, as the same model, on this auditor's own probes.
       const confirmations = requestedResumeManifest || options.confirm === false
@@ -1024,6 +1048,14 @@ export async function runVerifierRound(
             }
             const resumeCandidate = resumeCandidates.get(resumeKey(model, peer.peerId))
             const pendingExtension = pendingExtensions.get(pendingExtensionKey(model, peer.peerId))
+            if (!confirmationKey && peer.onChainAgentId != null) {
+              const judged = alreadyJudgedByOther(othersOpinions, peer.onChainAgentId, targetServicesFor(model, peer, resumeCandidate?.service), model)
+              if (judged) {
+                doneCount += 1
+                judgedByOthers.set(model, (judgedByOthers.get(model) ?? 0) + 1)
+                return []
+              }
+            }
             if (resumeOnly && !resumeCandidate && !pendingExtension) return []
             const recheckDueAt = confirmationRecheckDueAt(model, peer)
             if (recheckDueAt !== null && recheckDueAt > Date.now() / 1_000) {
@@ -1273,6 +1305,9 @@ export async function runVerifierRound(
           runProgress!.activate(model)
           if (!runProgress!.interactive) {
             console.log(chalk.dim(`${model}: ${targets.length} eligible target(s), ${skipped.length} skipped`))
+            if (judgedByOthers.get(model)) {
+              console.log(chalk.yellow(`${model}: ${judgedByOthers.get(model)} seller(s) already judged by another auditor this epoch; not audited again (one audit and one confirmation per seller, never a third opinion)`))
+            }
           }
 
           // Every seller is asked this epoch's question set; a resumed audit may still use an older reference.

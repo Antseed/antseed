@@ -68,7 +68,7 @@ Each model also has a **confirmer** each epoch: the next auditor in the same rot
 The assignment is not enforced on-chain: the contract records any approved auditor's audit of any model. Two things follow:
 
 - If an auditor doesn't run, its models are handed to another auditor halfway through the epoch (see [If an auditor goes missing](#if-an-auditor-goes-missing)). Until then, earlier verdicts still count: a verdict lasts the epoch it was given in and the next one.
-- Auditing models outside your share adds your report to the other auditors' for the same seller.
+- Each seller gets one audit per model and epoch and, when that audit is a `DIFF`, one confirmation. `verifier run` does not audit a seller another auditor has already judged this epoch, and `verifier submit` leaves such a result out (it says why), unless the result is the confirmation the planner gave you. So a manual `verifier run <model>` on a model outside your share audits nothing that is already judged, a returning auditor whose model a stand-in already audited sends nothing for it, and no third opinion ever reaches the contract (the contract itself would accept one, and a single later `SAME` would clear a confirmed `DIFF`).
 
 ### If an auditor goes missing
 
