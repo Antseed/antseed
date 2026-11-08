@@ -25,6 +25,12 @@ curl -fsSL https://antseed.com/install.sh | bash
 
 It needs Node.js 20 or later (on macOS with Homebrew it installs Node.js for you) and installs the CLI with npm, without sudo. When it finishes it prints the setup link, the console URL, the API base URL `http://localhost:8379/v1`, the log file (`~/.antseed/gateway.log`) and how to stop the gateway. Continue with [Claim the console](#claim-the-console).
 
+On Linux with systemd, this is what you get from a desktop session or WSL. Run anywhere else on Linux with systemd, for example over SSH, it does the [server install](#on-a-server) instead, and says so. Add `--local` to install for your user either way:
+
+```bash
+curl -fsSL https://antseed.com/install.sh | bash -s -- --local
+```
+
 ### Or step by step
 
 1. Install the Antseed CLI. See [Install](/docs/install) for requirements.
@@ -67,7 +73,7 @@ Run the installer on a Linux server with systemd. With `--domain`, it serves the
 curl -fsSL https://antseed.com/install.sh | bash -s -- --domain gateway.example.com
 ```
 
-On a Linux server with systemd, `install.sh` downloads and runs the server installer, [`install-gateway.sh`](https://antseed.com/install-gateway.sh), as root (through `sudo`, which may ask for your password), passing every option through. You can also run the server installer directly:
+On Linux with systemd, `install.sh` downloads and runs the server installer, [`install-gateway.sh`](https://antseed.com/install-gateway.sh), as root (through `sudo`, which may ask for your password), passing every option through. It does this when you pass an option such as `--domain`, or with no options when there is no desktop session (over SSH, or from cloud-init). Add `--server` to force it from a desktop session. You can also run the server installer directly:
 
 ```bash
 curl -fsSL --proto '=https' --tlsv1.2 https://antseed.com/install-gateway.sh | sudo bash -s -- --domain gateway.example.com
@@ -100,6 +106,20 @@ Without `--domain`, the gateway only listens on the server. Forward its port fro
 ssh -N -L 8379:127.0.0.1:8379 <user>@<server>
 ```
 
+## Without a browser {#without-a-browser}
+
+Claiming the console needs a person with a browser. An agent or script on the gateway machine can create an API key without it, before anyone claims the console:
+
+```bash
+export ANTSEED_API_KEY=$(antseed gateway key create --label "my-agent" --json | jq -r .apiKey)
+```
+
+Without `--json`, the command prints `API key: antseed_…`. The secret is shown once. The key belongs to the Default workspace and pays from its wallet. Continue with [Send your first request](#send-your-first-request).
+
+Until the wallet has funds, only providers marked **Free** answer, and a request routed to a paid provider fails with `402`. Without the console, `antseed buyer deposit --no-watch` prints the Default workspace's address for USDC on Base. Card checkout is only in the console.
+
+Have a person claim the console later with a link from `antseed gateway console-link`. Keys created before that keep working. Don't claim it yourself as an agent: the owner controls the workspace wallets. For more without a browser, such as management tokens for the console API, see [Sign-in and access](/docs/gateway/sign-in#without-a-browser).
+
 ## Claim the console
 
 1. Open the setup link in your browser. The page says **Set up your Antseed console**.
@@ -127,6 +147,8 @@ The balance updates by itself once the funds arrive. [Funding](/docs/gateway/fun
 2. Enter a **Name**, for example `My laptop`. Budgets and an expiry date are optional; see [Budgets and spend limits](/docs/gateway/budgets).
 3. Click **Create key**.
 4. Copy the secret (`antseed_…`). It is shown once.
+
+On the gateway machine, `antseed gateway key create --label "My laptop"` does the same. See [Without a browser](#without-a-browser).
 
 Store it in an environment variable:
 

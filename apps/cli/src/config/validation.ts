@@ -435,6 +435,13 @@ export function validateConfig(config: AntseedConfig): string[] {
   }
 
   if (
+    config.seller.maxInboundConnectionsPerIp !== undefined &&
+    (!Number.isInteger(config.seller.maxInboundConnectionsPerIp) || config.seller.maxInboundConnectionsPerIp < 1)
+  ) {
+    errors.push('seller.maxInboundConnectionsPerIp must be an integer >= 1');
+  }
+
+  if (
     config.seller.inboundIdleTimeoutMs !== undefined &&
     (!Number.isInteger(config.seller.inboundIdleTimeoutMs) || config.seller.inboundIdleTimeoutMs < 0)
   ) {

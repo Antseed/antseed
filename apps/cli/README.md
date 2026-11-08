@@ -58,12 +58,11 @@ Command-line interface and web dashboard for the AntSeed Network — a P2P netwo
 | `antseed buyer status` | Show buyer status |
 | `antseed config` | Manage configuration |
 | `antseed profile` | Manage your peer profile |
-| `antseed peer <peerId>` | Show a peer's profile (lightweight) |
+| `antseed peer <peerId>` | Not implemented yet; use `antseed network peer <peerId>` |
 | `antseed network peer <peerId>` | Show full peer details (providers, services, on-chain stats) |
 | `antseed dashboard` | Start the web dashboard |
 | `antseed metrics serve` | Serve Prometheus metrics for buyers and sellers |
 | `antseed buyer channels` | List payment channels |
-| `antseed dev` | Run seller + buyer locally for testing |
 | `antseed network bootstrap` | Run a dedicated DHT bootstrap node |
 
 ## Configuration Workflow

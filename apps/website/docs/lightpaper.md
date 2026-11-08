@@ -39,7 +39,7 @@ The protocol does not care what happens between request and response. It is a ne
 
 All three expose a standard API. What runs behind it is entirely the provider's business.
 
-**Raw inference.** Serve a model, a fine-tune, a local GPU, an open-weight model on a Mac Mini, or proxy an existing API with added value. Set the price per token. Buyers route to the cheapest seller that clears their on-chain reputation bar. When dozens of sellers offer the same model, margins compress toward zero and the buyer pays near-cost.
+**Raw inference.** Serve a model, a fine-tune, a local GPU, an open-weight model on a Mac Mini, or proxy an existing API with added value. Set the price per token. Buyers route to the best-value seller, weighing price against speed and reliability, among those that clear their on-chain reputation bar. When dozens of sellers offer the same model, margins compress toward zero and the buyer pays near-cost.
 
 **Routing service.** Build specialized routing logic and offer it on the network. Latency-optimized, cost-minimizing, TEE-only, jurisdiction-aware. Earn on every request routed without running a single model. No model infrastructure required.
 

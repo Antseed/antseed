@@ -1,7 +1,7 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { MeteringStorage } from '../src/metering/storage.js';
 import { summarizeErrorBody } from '../src/metering/seller-session-tracker.js';
 
@@ -116,5 +116,18 @@ describe('metering request log page', () => {
     expect(summarizeErrorBody(encode('upstream   timed out\n'))).toBe('upstream timed out');
     expect(summarizeErrorBody(encode(''))).toBeNull();
     expect(summarizeErrorBody(encode('x'.repeat(1000)))!.length).toBe(300);
+  });
+
+  it('keeps only the error code of an upstream error in content-free mode', () => {
+    const encode = (text: string) => new TextEncoder().encode(text);
+    vi.stubEnv('ANTSEED_CONTENT_FREE_LOGS', '1');
+    try {
+      expect(summarizeErrorBody(encode('{"error":{"message":"Invalid content: tell me a secret","type":"invalid_request_error","code":"bad_input"}}'))).toBe('bad_input');
+      expect(summarizeErrorBody(encode('{"error":{"message":"Invalid content: tell me a secret","type":"invalid_request_error"}}'))).toBe('invalid_request_error');
+      expect(summarizeErrorBody(encode('{"error":"Invalid content: tell me a secret"}'))).toBeNull();
+      expect(summarizeErrorBody(encode('internal error while handling tell me a secret'))).toBeNull();
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });

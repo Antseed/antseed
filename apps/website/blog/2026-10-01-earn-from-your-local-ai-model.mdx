@@ -7,6 +7,8 @@ description: "If you run an AI model on your own hardware with Ollama, llama.cpp
 keywords: [earn from local llm, sell local ai model, monetize ollama, llama.cpp provider, local llm plugin, antseed provider, openai compatible local server]
 image: /img/blog/earn-from-your-local-ai-model/header.jpg
 date: 2026-10-01
+last_update:
+  date: 2026-11-06
 ---
 
 import {useEffect} from 'react';
@@ -30,6 +32,8 @@ export function Tweet({url, label}) {
 }
 
 ![Earn from your local AI model with Antseed](/img/blog/earn-from-your-local-ai-model/header.webp)
+
+*Updated November 6, 2026: corrected the setup commands and the concurrency default.*
 
 If you run an AI model on your own hardware using Ollama, llama.cpp, or another server with an OpenAI-compatible API, you can connect it to Antseed and offer access to other people.
 
@@ -61,7 +65,7 @@ That's the opportunity we see: developers making the models and configurations t
 
 The local LLM plugin lets you select the models you expose, configure input and output token prices, and set different prices for different services.
 
-You can also limit concurrent requests to match what your hardware can handle. The default is one request at a time.
+You can also limit concurrent requests to match what your hardware can handle. A seller accepts up to 50 concurrent buyers by default, so on a single machine you will usually want to lower it.
 
 Pricing starts at zero, so you can begin with a free service while testing your setup. If you want to charge, you need to configure paid pricing.
 
@@ -69,14 +73,16 @@ What you earn will depend on demand, pricing, and the cost of keeping your servi
 
 ## Get started
 
-With your local model server running and the [Antseed CLI installed](/docs/install), add the provider plugin:
+With your local model server running and the [Antseed CLI installed](/docs/install), add a provider that uses the local LLM plugin, then the model you want to offer and its price:
 
 ```bash
-antseed plugin add @antseed/provider-local-llm
+antseed config seller add-provider ollama --plugin local-llm
+antseed config seller add-service ollama <model-name> --input 0 --output 0
+antseed seller settings set --max-buyers 1
 ```
 
-Then configure the models you want to offer, choose your pricing, and start your provider.
+The first command installs the plugin. Use the model name your server knows the model by, and set `--input` and `--output` (USD per million tokens) when you want to charge. The last command limits your seller to one buyer at a time.
 
-The [local LLM setup guide](https://github.com/Antseed/antseed/tree/main/plugins/provider-local-llm) includes configuration examples for Ollama and custom endpoints.
+Then register and start your provider as described in [Become a provider](/docs/provide). The [local LLM plugin README](https://github.com/Antseed/antseed/tree/main/plugins/provider-local-llm) includes configuration examples for Ollama and custom endpoints.
 
 If you already run a local model and are interested in offering it, we'd love to hear from you!

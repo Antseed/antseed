@@ -134,7 +134,7 @@ curl http://localhost:8377/v1/images/edits \
   -H 'x-antseed-pin-peer: <peerId>' \
   -F model=qwen-image-3-pro \
   -F prompt='Put the cat from the second image on the sofa' \
-  -F 'image[]=@sofa.png' -F 'image[]=@cat.png' \
+  -F 'image[]=@./sofa.png' -F 'image[]=@./cat.png' \
   | jq -r '.data[0].b64_json' | base64 --decode > edited.png
 ```
 
@@ -162,7 +162,7 @@ The `model` field controls routing:
 | Value | Routing |
 |---|---|
 | `<peerId>@deepseek-v4-flash` | Pins this request to one seller. No failover. |
-| `deepseek-v4-flash` | Automatic routing: the buyer picks the cheapest seller of that model that passes your minimum trust score, and fails over after retryable errors. See [Routing and catalog](/docs/api/routing). |
+| `deepseek-v4-flash` | Automatic routing: among the sellers of that model that pass your minimum trust score, the buyer weighs price against speed and recent success for this request, and fails over after retryable errors. See [Routing and catalog](/docs/api/routing). |
 | `<routerPeerId>@<routerServiceId>` | A routing service picks the model and seller for each request. See [Use a routing service](/docs/api/routing#use-a-routing-service). |
 | `antseed` | Follows the model, seller or router picked in the desktop app. Returns `no_default_route` when the app has no selection. |
 
@@ -214,9 +214,12 @@ Non-streaming responses carry telemetry headers:
 | `x-antseed-estimated-cost-usd` | Estimated cost |
 | `x-antseed-input-usd-per-million`, `x-antseed-output-usd-per-million`, `x-antseed-cached-input-usd-per-million` | Seller's advertised prices |
 | `x-antseed-latency-ms` | Latency |
-| `x-antseed-peer-reputation` | Seller's reputation score |
+| `x-antseed-peer-address`, `x-antseed-peer-providers` | Seller's network address and provider plugins |
+| `x-antseed-peer-current-load`, `x-antseed-peer-max-concurrency` | Seller's announced load and request limit |
+| `x-antseed-unit-priced` | `1` when the seller charges for this service per unit (an image, a second of video, a speech character), so zero token prices don't make it free; else `0` |
+| `x-antseed-route-selection` | On model-routed requests: why this seller served it, as base64url JSON. See [Which seller served a request](/docs/api/routing#which-seller-served-a-request). |
 
-Streaming responses carry only the request id, seller identity and price headers, because token counts are not known when headers are sent. For authoritative per-channel totals, run `antseed buyer metering`.
+Streaming responses carry only the request id, seller identity, price and route-selection headers, plus `x-antseed-first-token-ms`, because token counts are not known when headers are sent. For authoritative per-channel totals, run `antseed buyer metering`.
 
 ## Errors
 
@@ -226,9 +229,18 @@ Streaming responses carry only the request id, seller identity and price headers
 | 400 | `no_default_route` | `model: "antseed"` was sent but the desktop app has no model selected. |
 | 400 | `invalid_routing` | A routing service serves the request and the body's `routing` object is malformed or has a setting the router's protocol does not accept (for `irp-suggest`: `cost_quality_tradeoff`, an integer from 0 to 10). On other requests a `routing` object is removed and ignored. |
 | 422 | `no_eligible_candidates` | A routing service was named, but no allowed model is left for it to rank. Nothing was charged. |
-| 402 | `insufficient_deposits` | Not enough USDC deposited. Run `antseed buyer deposit`. |
+| 402 | `antseed_buyer_fault` with `insufficient_deposits` | The wallet has too few credits for a paid seller. Run `antseed buyer deposit` to show your funding address, or add funds in the desktop app. Free sellers need no funds: pin one as `<peerId>@<model>`. |
 | 413 | `upload_body_too_large` | The request is larger than the seller's upload limit. |
 | 502 | `model_not_found` | No seller your routing preferences allow offers this model. |
+| 503 | `discovery_in_progress` | The buyer started less than two minutes ago and is still discovering sellers. It has not found a seller it can use for this model yet. Retry after the `Retry-After` seconds. |
+
+The 402 comes back with the code `antseed_buyer_fault`, which marks a failure on the buyer's side, not the seller's. In OpenAI format the reason is in `error.param`:
+
+```json
+{"error":{"type":"api_error","code":"antseed_buyer_fault","param":"insufficient_deposits","message":"You are out of AntSeed credits for this request. ..."}}
+```
+
+In Anthropic format (`/v1/messages`) `error.type` is `antseed_buyer_fault` and the message ends with the reason in brackets, for example `(insufficient_deposits)`.
 
 ## Diagnostics
 

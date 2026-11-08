@@ -299,6 +299,7 @@ export {
 export { signData, verifySignature, signUtf8, verifyUtf8 } from './p2p/identity.js';
 export {
   getDebugFilters,
+  isContentFreeLogging,
   shouldEmitDebugLine,
 } from './utils/debug.js';
 export { withFileLock, type FileLockOptions } from './utils/file-lock.js';
