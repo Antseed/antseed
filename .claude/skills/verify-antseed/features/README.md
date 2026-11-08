@@ -11,14 +11,14 @@ This directory is the maintained source for verifying what an AntSeed user sees:
 ## Driving conventions
 
 - Scripted proof uses the testbench harness (`tb`, scenarios in `e2e/testbench/scenarios/`). Run it through `../scripts/run-with-evidence.mjs`.
-- Interactive UI review uses agent-browser over CDP on a testbench desktop (see [desktop-chat.md](./desktop-chat.md)). The harness proves. agent-browser shows a reviewer what changed.
-- Prefer ARIA roles and accessible names (`getByRole`, `getByLabel`, agent-browser `find role`). Add an `aria-label` when an element has none.
+- UI proof is the Playwright harness (`tb.desktop()`): its checks, screenshots and video. For a hands-on look, `pnpm testbench desktop` attaches a dev desktop to the running testbench (see [desktop-chat.md](./desktop-chat.md)).
+- Prefer ARIA roles and accessible names (`getByRole`, `getByLabel`). Add an `aria-label` when an element has none.
 - Never run the CLI without `--data-dir` inside the testbench or the run directory.
 
 ## Proof and skip reporting
 
 - Capture the action and the resulting state: what the buyer signed (`tb.channels()`), what settled (`tb.settledEvents()`), what the upstream served (`tb.mockRequests()`). An HTTP 200 alone proves nothing about payments.
-- UI proof: the report's `screenshots/` and `video/desktop.webm`, or agent-browser screenshots and a recording, with the testbench port visible.
+- UI proof: the report's `screenshots/` and `video/desktop.webm`, with the testbench port visible.
 - CLI proof: the command, stdout, stderr and exit code.
 - Report an unreachable entry point with the command tried and the unmet precondition. Do not report it as verified through another path.
 

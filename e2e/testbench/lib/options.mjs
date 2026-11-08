@@ -6,7 +6,7 @@ export const CHAIN_TARGETS = new Set(['fork', 'local', 'mainnet']);
 /** `--run-timeout` default: a backstop against a scenario that hangs. */
 export const DEFAULT_RUN_TIMEOUT_SECONDS = 1800;
 export const COMMANDS = new Set(['up', 'down', 'status', 'desktop', 'run', 'logs', 'list', 'scenarios', 'report', 'share', 'mainnet', 'help']);
-const VALUE_FLAGS = { '--config': 'config', '--deposit-usdc': 'depositUsdc', '--block': 'block', '--slot': 'slot', '--scenario': 'scenario', '--timeout': 'timeout', '--env-file': 'envFile', '--port': 'port', '--host': 'host', '--chain': 'chain', '--mode': 'mode', '--idle': 'idle', '--cdp-port': 'cdpPort', '--seed': 'seed', '--run-timeout': 'runTimeout', '--contracts': 'contracts' };
+const VALUE_FLAGS = { '--config': 'config', '--deposit-usdc': 'depositUsdc', '--block': 'block', '--slot': 'slot', '--scenario': 'scenario', '--timeout': 'timeout', '--env-file': 'envFile', '--port': 'port', '--host': 'host', '--chain': 'chain', '--mode': 'mode', '--idle': 'idle', '--seed': 'seed', '--run-timeout': 'runTimeout', '--contracts': 'contracts' };
 const BOOL_FLAGS = { '--live': 'live', '--verbose': 'verbose', '--json': 'json', '--env': 'env', '--follow': 'follow', '--keep': 'keep', '--force': 'force', '--strict': 'strict', '--serve': 'serve', '--trace': 'trace', '--open': 'open', '--stop': 'stop', '--fresh': 'fresh', '--no-tailscale': 'noTailscale', '--real-funds': 'realFunds', '--dev': 'dev', '--budgets': 'budgets', '--help': 'help', '-h': 'help' };
 
 export function parseArgs(argv, env = process.env) {
@@ -71,10 +71,6 @@ export function parseArgs(argv, env = process.env) {
   }
   if (options.chain === 'mainnet' && !['run', 'mainnet'].includes(command)) throw new Error('--chain mainnet is only for pnpm testbench run (use pnpm testbench mainnet for an interactive desktop)');
   if (options.port !== undefined && !/^\d+$/.test(options.port)) throw new Error('--port must be a port number');
-  if (options.cdpPort !== undefined) {
-    if (command !== 'desktop') throw new Error('--cdp-port is only for pnpm testbench desktop');
-    if (!(/^\d+$/.test(options.cdpPort) && Number(options.cdpPort) >= 1024 && Number(options.cdpPort) <= 65535)) throw new Error('--cdp-port must be a port number 1024-65535');
-  }
   if (options.host !== undefined && !/^[0-9a-zA-Z.:-]+$/.test(options.host)) throw new Error('--host must be a hostname or IP');
   if (command === 'report' && options.positional.length > 1) throw new Error('Usage: pnpm testbench report [run-dir-name] [--open] [--serve]');
   if (command === 'logs' && options.positional.length > 1) throw new Error('Usage: pnpm testbench logs [component]');
@@ -107,7 +103,6 @@ export const HELP = `pnpm testbench <command> [options]
             --seed N  the run seed (0-4294967295, default random); a running testbench keeps the seed it started with
             --run-timeout SECONDS  fail the run as a timeout after this long (default 1800)
   desktop   Attach-only Electron desktop to this testbench's buyer
-            --cdp-port N  also open Chrome DevTools Protocol on 127.0.0.1:N (agent-browser connect N)
   mainnet   Full desktop with its own buyer from this worktree on the REAL network, paying from the test
             wallet (ANTSEED_TESTBENCH_MAINNET_IDENTITY_HEX); isolated profile, mock keychain, no OS proxy
             --real-funds (required)  --dev (Vite hot reload)  --fresh (reset the profile)

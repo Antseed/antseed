@@ -78,7 +78,7 @@ pnpm -s testbench list | status [--env]         # testbenches on this machine / 
 pnpm testbench logs supervisor|anvil|seller-<id> [--follow]
 pnpm testbench report --open | --serve --port 8799   # latest report; --serve binds to loopback
 pnpm testbench run <scenario> --trace           # adds a Playwright trace.zip to a desktop run
-pnpm testbench desktop [--cdp-port N]           # hands-on attach-only desktop on a running testbench
+pnpm testbench desktop                          # hands-on attach-only desktop on a running testbench
 pnpm testbench share [--stop]                   # Linux server: the desktop in the user's browser (README, Case 4)
 ```
 
@@ -112,7 +112,7 @@ pstack's playbooks say what proof each kind of change needs (Bug fix steps 1, 4 
 - **Bug fix.** The surface the report names is the proxy, the desktop or the chain, driven through its feature recipe. When a cheap unit test reproduces the bug, a test-only first commit fails on `main` with the bug's own words (the red signature) and the head passes, per Bug fix step 5. When reproducing it needs a seller, the buyer proxy and an on-chain settlement, the red is an `issue-*` testbench scenario per [Fix a bug red to green](#fix-a-bug-red-to-green). Check both with `scripts/prove.sh`. It uses a fresh worktree so local leftovers cannot fake a result, and it rejects a red caused by a setup error such as `Cannot find module`.
   `scripts/prove.sh <first commit> fail "<test command>" "<red signature>" <owning package>`, then `scripts/prove.sh HEAD pass "<test command>" "" <owning package>`.
 - **Refactor.** Pin today's behavior first (Refactoring), then check it with `prove.sh <first commit> pass ...` and `prove.sh HEAD pass ...`.
-- **User-visible change.** A change to what a user sees in the desktop or the CLI also gets review evidence for the operator. For the desktop, that is the run's screenshots and video plus an agent-browser walk through the changed screens (`pnpm testbench desktop --cdp-port N`, recipe in [desktop chat](features/desktop-chat.md)). For the CLI, it is the transcript. Name the evidence in the PR's Verification.
+- **User-visible change.** A change to what a user sees in the desktop or the CLI also gets review evidence for the operator. For the desktop, that is the run's screenshots and video, with a screenshot at each changed state (`ui.screenshot(name)` in the scenario, recipe in [desktop chat](features/desktop-chat.md)). For the CLI, it is the transcript. Name the evidence in the PR's Verification.
 - **Every kind.** The matching row of [Decide what to prove](#decide-what-to-prove) passes, and so do the owning packages' checks named in their `CLAUDE.md`.
 - **Testbench rows.** Run each required scenario once without the change and once with it, in the scratch worktree, doctor first. A scenario that fails the same way without the change is pre-existing: report it, do not block on it, and say whether the change could be involved. A scenario that fails only with the change fails the verification.
 - **Blocked.** A doctor `FAIL`, a broken build or a run with `result: 'blocked'` (exit code 2) means the environment, not the change. Report it as blocked (`verifier-blocked`), not as failed.

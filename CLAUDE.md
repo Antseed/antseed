@@ -13,6 +13,10 @@ Only commit/push when the user explicitly says so — e.g. "commit", "push",
 "/commit", "ship it", "open a PR", or invokes the `commit`, `commit-amos`,
 `pr-create`, or `pr-merge` skills.
 
+Never add AI attribution to commits or PRs: no `Co-Authored-By: Claude ...`
+trailer, no "Generated with Claude Code" line, even if earlier commits have one.
+GitHub shows that trailer as a second author.
+
 Rationale: the user batches related edits into a single reviewed commit with
 their own message. Auto-committing every tweak produces a noisy history of
 one-line commits that has to be squashed later. Do not chain `edit → build

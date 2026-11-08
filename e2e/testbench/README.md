@@ -77,7 +77,7 @@ pnpm testbench desktop             # dev mode: Vite hot reload for the renderer,
 pnpm testbench:attach              # one step: starts or reuses routing-smoke, then opens the desktop
 ```
 
-`pnpm testbench desktop` is the interactive loop. Renderer edits show up immediately; main-process edits recompile on save and load when you quit and rerun the command. It runs next to your normal desktop with its own ports and data: `HOME` is the testbench's `home/`, and Electron's data lives in `$TMPDIR/antseed-desktop/<instance>/` (the dev launcher's location), not in the testbench directory. Add `--cdp-port N` to also open Chrome DevTools Protocol on `127.0.0.1:N`, so an agent can drive it with `agent-browser connect N`.
+`pnpm testbench desktop` is the interactive loop. Renderer edits show up immediately; main-process edits recompile on save and load when you quit and rerun the command. It runs next to your normal desktop with its own ports and data: `HOME` is the testbench's `home/`, and Electron's data lives in `$TMPDIR/antseed-desktop/<instance>/` (the dev launcher's location), not in the testbench directory.
 
 For an agent-run check with evidence, use `pnpm testbench run desktop-chat` (built desktop under Playwright: screenshots, video, renderer errors). Rebuild first: `pnpm --filter @antseed/desktop run build`. Write a scenario with `tb.desktop()` for a new desktop feature (see [Desktop automation](#desktop-automation)).
 
