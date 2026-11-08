@@ -39,7 +39,7 @@ export FAL_IMAGE_API_KEY=<seller-fal-key>
 }
 ```
 
-Each health sweep checks fal's model list for every service and its edit endpoint; one fal no longer lists, or no longer reports as `active`, stops the service being advertised.
+Each health sweep checks fal's model list for every service and its edit endpoint; one fal no longer lists, or reports with a status other than `active` or `deprecated`, stops the service being advertised.
 
 ## Requests
 
@@ -51,7 +51,7 @@ Each health sweep checks fal's model list for every service and its edit endpoin
 OpenAI fields are mapped to fal's:
 
 - `n` → `num_images` (a model without it takes `n: 1` only)
-- `size` → `image_size`: `WxH` as `{width, height}`, or one of the model's preset names (`square_hd`, `landscape_16_9`, …). `auto` or no size leaves fal's default size.
+- `size` → `image_size`: `WxH` as `{width, height}`, or one of the model's preset names (`square_hd`, `landscape_16_9`, …). No size leaves fal's default size; `auto` is sent when the model's schema lists it as a preset, and otherwise also leaves the default.
 - `quality`, `resolution` → the same fields, when the model takes them
 - `moderation: "low"` → `enable_safety_checker: false`
 - `response_format`: `b64_json` (default; fal answers with the images inline) or `url` (fal's public media URL)

@@ -6,6 +6,7 @@ import {
   FAL_SCHEMA_URL,
   falEndpointInput,
   falErrorReason,
+  falUpstreamAccountStatus,
   isFalEndpointId,
   parseCsv,
   parseServiceCapabilitiesJson,
@@ -466,12 +467,7 @@ const plugin: AntseedProviderPlugin = {
           warnOnce(FAL_BALANCE_CHECK_OFF);
           return { status: 'unknown', reason: 'fal balance check is off (key lacks billing:usage:read)' };
         }
-        if (account.status === 'rejected') return { status: 'unavailable', reason: account.reason };
-        if (account.status === 'unknown') return account;
-        if (account.balanceUsd <= minBalanceUsd) {
-          return { status: 'unavailable', reason: `fal balance $${account.balanceUsd.toFixed(2)} is at or below the $${minBalanceUsd} minimum`, outOfCredit: true };
-        }
-        return { status: 'available', balanceUsd: account.balanceUsd };
+        return falUpstreamAccountStatus(account, minBalanceUsd);
       },
       async handleRequestStream(request, callbacks) {
         const { videoRoute, service } = route(request);

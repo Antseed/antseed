@@ -1,3 +1,4 @@
+import type { UpstreamAccountStatus } from '@antseed/node';
 import { readVideoJson as readJson } from './video-download.js';
 
 export const FAL_PLATFORM_URL = 'https://api.fal.ai';
@@ -138,4 +139,18 @@ export async function readFalAccount(platformUrl: string, authorization: string)
   } catch (cause) {
     return { status: 'unknown', reason: `fal billing check failed: ${cause instanceof Error ? cause.message : String(cause)}` };
   }
+}
+
+/**
+ * The upstream account status for a fal account read with billing permission:
+ * unavailable when fal rejects the key or the balance is at or below
+ * `minBalanceUsd` (out of credit), else available with the balance.
+ */
+export function falUpstreamAccountStatus(account: Exclude<FalAccount, { status: 'no_permission' }>, minBalanceUsd: number): UpstreamAccountStatus {
+  if (account.status === 'rejected') return { status: 'unavailable', reason: account.reason };
+  if (account.status === 'unknown') return account;
+  if (account.balanceUsd <= minBalanceUsd) {
+    return { status: 'unavailable', reason: `fal balance $${account.balanceUsd.toFixed(2)} is at or below the $${minBalanceUsd} minimum`, outOfCredit: true };
+  }
+  return { status: 'available', balanceUsd: account.balanceUsd };
 }

@@ -26,5 +26,5 @@ export {
   type StripRelayRequestHeadersOptions,
 } from './http-headers.js';
 export { createVideoResponseStreamer, readVideoJson, streamVideoResponse, videoDownloadSignal, videoDownloadError, videoJsonResponse, videoSubmitTimeoutMs } from './video-download.js';
-export { FAL_PLATFORM_URL, FAL_SCHEMA_URL, falEndpointInput, falErrorReason, isFalEndpointId, readFalAccount, readFalModelStatuses, type FalAccount, type FalEndpointInput } from './fal.js';
+export { FAL_PLATFORM_URL, FAL_SCHEMA_URL, falEndpointInput, falErrorReason, falUpstreamAccountStatus, isFalEndpointId, readFalAccount, readFalModelStatuses, type FalAccount, type FalEndpointInput } from './fal.js';
 export { openAiError } from './openai-error.js';
