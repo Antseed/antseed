@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { describe, it, expect } from 'vitest'
 import record from './image-build.fixture.json' with { type: 'json' }
 import { IMAGE_BUILD, IMAGES_BUILT_AFTER, composeImageDigest, imageBuildRecord, tokenImageDigest, verifyImageBuild } from './image-provenance.js'
@@ -53,21 +54,54 @@ describe('the seller image digest', () => {
 })
 
 describe('imageBuildRecord', () => {
-  const answer = (status: number, body: unknown) => new Response(JSON.stringify(body), { status })
-
-  it('fetches the record from GitHub once per digest', async () => {
+  const answer = (status: number, body: unknown) => new Response(typeof body === 'string' ? body : JSON.stringify(body), { status })
+  const blob = JSON.stringify(record)
+  const blobDigest = `sha256:${createHash('sha256').update(blob).digest('hex')}`
+  const registry = 'https://ghcr.io/v2/antseed/tee-seller'
+  /** GHCR serving the record the way the publish workflow pushes it, and GitHub's API answering `github`. */
+  const routes = (digest: string, github: () => Response, { bundle = blob, hasRecord = true } = {}) => {
     const urls: string[] = []
-    const fetchImpl = (async (url: string) => { urls.push(url); return answer(200, { attestations: [{ bundle: record }] }) }) as unknown as typeof fetch
+    const fetchImpl = (async (url: string) => {
+      urls.push(url)
+      if (url.startsWith('https://ghcr.io/token')) return answer(200, { token: 't' })
+      if (url === `${registry}/manifests/${digest.replace(':', '-')}`) {
+        if (!hasRecord) return answer(404, {})
+        return answer(200, { manifests: [
+          { digest: 'sha256:sbom', artifactType: 'application/spdx+json' },
+          { digest: 'sha256:prov', artifactType: 'application/vnd.dev.sigstore.bundle.v0.3+json', annotations: { 'dev.sigstore.bundle.predicateType': 'https://slsa.dev/provenance/v1' } },
+        ] })
+      }
+      if (url === `${registry}/manifests/sha256:prov`) return answer(200, { layers: [{ mediaType: 'application/vnd.dev.sigstore.bundle.v0.3+json', digest: blobDigest }] })
+      if (url === `${registry}/blobs/${blobDigest}`) return answer(200, bundle)
+      if (url.startsWith('https://api.github.com/')) return github()
+      return answer(404, {})
+    }) as unknown as typeof fetch
+    return { urls, fetchImpl }
+  }
+  const githubRecord = () => answer(200, { attestations: [{ bundle: { from: 'github' } }] })
+
+  it('fetches the record from the image registry once per digest', async () => {
     const digest = `sha256:${'1'.repeat(64)}`
+    const { urls, fetchImpl } = routes(digest, githubRecord)
     expect(await imageBuildRecord(digest, fetchImpl, 0)).toEqual(record)
     expect(await imageBuildRecord(digest, fetchImpl, 3_600_000)).toEqual(record)
-    expect(urls).toEqual([`https://api.github.com/repos/Antseed/antseed/attestations/${digest}?predicate_type=https%3A%2F%2Fslsa.dev%2Fprovenance%2Fv1`])
+    expect(urls.filter((u) => u.startsWith('https://api.github.com/'))).toEqual([])
+    expect(urls.filter((u) => u.includes('/blobs/'))).toHaveLength(1)
+  })
+
+  it("falls back to GitHub's attestations API when the registry has no record or a corrupted one", async () => {
+    const missing = `sha256:${'4'.repeat(64)}`
+    expect(await imageBuildRecord(missing, routes(missing, githubRecord, { hasRecord: false }).fetchImpl, 0)).toEqual({ from: 'github' })
+    const corrupted = `sha256:${'5'.repeat(64)}`
+    const { urls, fetchImpl } = routes(corrupted, githubRecord, { bundle: blob.replace('dsseEnvelope', 'dsseEnvelopX') })
+    expect(await imageBuildRecord(corrupted, fetchImpl, 0)).toEqual({ from: 'github' })
+    expect(urls.at(-1)).toBe(`https://api.github.com/repos/Antseed/antseed/attestations/${corrupted}?predicate_type=https%3A%2F%2Fslsa.dev%2Fprovenance%2Fv1`)
   })
 
   it('answers undefined without a record, and tries again after a while', async () => {
     let calls = 0
-    const fetchImpl = (async () => { calls++; return calls === 1 ? answer(500, {}) : answer(404, {}) }) as unknown as typeof fetch
     const digest = `sha256:${'2'.repeat(64)}`
+    const { fetchImpl } = routes(digest, () => { calls++; return calls === 1 ? answer(500, {}) : answer(404, {}) }, { hasRecord: false })
     expect(await imageBuildRecord(digest, fetchImpl, 0)).toBeUndefined()
     expect(await imageBuildRecord(digest, fetchImpl, 60_000)).toBeUndefined()
     expect(calls).toBe(1)

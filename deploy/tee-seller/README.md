@@ -66,8 +66,10 @@ To release an image after a CLI release:
 ### Approved images
 
 An image is approved when its build record shows this workflow built it from main
-([`image-provenance.ts`](../../packages/antseed-verifier/src/image-provenance.ts)). The seller fetches
-its image's record from GitHub's attestations API at startup and sends it with each attestation; the
+([`image-provenance.ts`](../../packages/antseed-verifier/src/image-provenance.ts)). The workflow pushes the
+record to GHCR next to the image; the seller fetches it from there anonymously, like the image
+(falling back to GitHub's attestations API, which allows 60 unauthenticated calls an hour per IP),
+and sends it with each attestation; the
 buyer checks it offline against Sigstore's public trust root: the signature and certificate chain,
 the transparency log entry, that the certificate names `tee-seller-image.yml` on
 `refs/heads/main`, and that the record names the image's digest. Builds are not reproducible, so

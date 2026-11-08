@@ -6,6 +6,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Fixed
+
+- TEE sellers (`@antseed/antseed-verifier` 0.1.4, CLI): the seller fetches its image's build record from GHCR, where the publish workflow pushes it next to the image, instead of GitHub's attestations API, which allows 60 unauthenticated calls an hour per IP. On a cloud IP that other tenants share, that limit could keep the seller from sending the record, and buyers then rejected an image that isn't in the approved list. The attestations API is still tried when the registry has no record. Buyers check the record as before.
+
 ### Changed
 
 - TEE seller images are approved by their build record (`@antseed/antseed-verifier` 0.1.3, CLI, `deploy/tee-seller`): buyers accept an image as soon as the **Publish TEE seller image** workflow builds it from main, with no approval pull request or release. The seller fetches the image's signed build provenance from GitHub's attestations API and sends it with its attestation, and the buyer verifies it offline against Sigstore's public trust root: the signing certificate must name that workflow on `refs/heads/main` and the record must name the image's digest. Digests in the approved list are still accepted; `REVOKED_SELLER_IMAGES` and `IMAGES_BUILT_AFTER` withdraw images. The workflow's actions are pinned by commit, it runs only on main, and it no longer opens an approval pull request.
