@@ -443,6 +443,10 @@ export function validateConfig(config: AntseedConfig): string[] {
     errors.push('seller.maxInboundConnectionsPerIp must be an integer >= 1');
   }
 
+  if (config.seller.announceProviderIds !== undefined && typeof config.seller.announceProviderIds !== 'boolean') {
+    errors.push('seller.announceProviderIds must be a boolean');
+  }
+
   if (
     config.seller.inboundIdleTimeoutMs !== undefined &&
     (!Number.isInteger(config.seller.inboundIdleTimeoutMs) || config.seller.inboundIdleTimeoutMs < 0)

@@ -5170,27 +5170,10 @@ export class BuyerProxy {
     }
 
     if (routingPeers.length === 0) {
-      const pinnedPeer = discoveredPeers.find((peer) => peer.peerId.toLowerCase() === pinnedPeerId) ?? null
       const protocolLabel = requestProtocol ? `protocol=${requestProtocol}` : 'protocol=unknown'
       const providerLabel = explicitProvider ? `provider=${explicitProvider}` : 'provider=auto'
       const serviceLabel = requestedService ? `service=${requestedService}` : 'service=none'
       const diagnostics = this._formatPeerSelectionDiagnostics(discoveredPeers)
-
-      if (explicitProvider && pinnedPeer) {
-        const providers = pinnedPeer.providers
-          .map((provider) => provider.trim().toLowerCase())
-          .filter((provider) => provider.length > 0)
-        if (!providers.includes(explicitProvider)) {
-          const providerList = providers.length > 0 ? providers.join(', ') : 'none'
-          log(`Pinned peer ${pinnedPeerId.slice(0, 12)}... does not offer explicit provider=${explicitProvider}`)
-          return dispatchFailure(502, { 'content-type': 'text/plain' },
-            `Pinned peer ${pinnedPeerId.slice(0, 12)}... does not offer provider=${explicitProvider}. `
-            + `Available providers: ${providerList}. `
-            + 'Remove or change the x-antseed-provider header, or pick a different peer. '
-            + diagnostics,
-          )
-        }
-      }
 
       log(`Pinned peer ${pinnedPeerId.slice(0, 12)}... filtered out by protocol/service match`)
       return dispatchFailure(502, { 'content-type': 'text/plain' },

@@ -512,9 +512,9 @@ function renderSkillMarkdown(): string {
   out.push('');
   out.push('Other optional headers:');
   out.push('');
-  out.push('- `x-antseed-provider: <providerName>` — when a peer exposes the same service');
-  out.push('  through more than one seller-plugin (rare), force a specific one. Most tools');
-  out.push('  never need this.');
+  out.push('- `x-antseed-provider: <provider>` — when a peer exposes the same service');
+  out.push('  through more than one provider (rare), force a specific one, by the name or ID');
+  out.push('  the peer announces (`antseed network peer <peerId>`). Most tools never need this.');
   out.push('');
 
   out.push('## Files the CLI creates in `~/.antseed/`');

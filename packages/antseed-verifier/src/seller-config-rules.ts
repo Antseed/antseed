@@ -53,7 +53,7 @@ const CONFIG_KEYS = {
   config: new Set(['identity', 'seller', 'payments', 'network', 'telemetry']),
   seller: new Set([
     'reserveFloor', 'maxConcurrentBuyers', 'providers', 'publicAddress', 'verifications', 'maxUploadBodyBytes',
-    'maxInboundConnections', 'maxInboundConnectionsPerIp', 'inboundIdleTimeoutMs', 'verifiers', 'healthCheck', 'gasCheck', 'gasRefuel', 'freeTier',
+    'maxInboundConnections', 'maxInboundConnectionsPerIp', 'announceProviderIds', 'inboundIdleTimeoutMs', 'verifiers', 'healthCheck', 'gasCheck', 'gasRefuel', 'freeTier',
     'alerts', 'restrictedCountries', 'freeUsage', 'buyerLimits',
   ]),
   provider: new Set(['plugin', 'baseUrl', 'apiKeyEnv', 'pathRewrite', 'fallbackUpstreams', 'defaults', 'services']),
