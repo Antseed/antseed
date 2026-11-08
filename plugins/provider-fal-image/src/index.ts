@@ -1,8 +1,17 @@
 import type { AntseedProviderPlugin, Provider, SerializedHttpRequest, SerializedHttpResponse, ServiceCapabilities, ServiceHealthStatus, UpstreamAccountStatus } from '@antseed/node';
 import { requestBodyFields, validateServiceCapabilityFields } from '@antseed/node';
 import { parseJsonObject } from '@antseed/api-adapter';
-import { getHeader, parseCsv, parseServiceCapabilitiesJson, parseServiceUnitBillingModelsJson } from '@antseed/provider-core';
-import { FAL_PLATFORM_URL, FAL_SCHEMA_URL, falErrorReason, readFalAccount, readFalModelStatuses } from '@antseed/provider-fal-video';
+import {
+  FAL_PLATFORM_URL,
+  FAL_SCHEMA_URL,
+  falErrorReason,
+  getHeader,
+  parseCsv,
+  parseServiceCapabilitiesJson,
+  parseServiceUnitBillingModelsJson,
+  readFalAccount,
+  readFalModelStatuses,
+} from '@antseed/provider-core';
 
 export const FAL_IMAGE_DEFAULT_BASE_URL = 'https://fal.run';
 
@@ -149,6 +158,23 @@ async function readBounded(response: Response, maxBytes: number): Promise<Buffer
   return body.length > maxBytes ? null : body;
 }
 
+/**
+ * Whether a URL is on fal's media CDN (`fal.media` and its subdomains, such as
+ * `v3.fal.media`), the only place the seller downloads a result image from: a
+ * result naming any other host is not fetched, so it can't point the seller at
+ * its own network or another service.
+ */
+export function isFalMediaUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    const host = url.hostname.toLowerCase();
+    return url.protocol === 'https:' && !url.username && !url.password && (url.port === '' || url.port === '443')
+      && (host === 'fal.media' || host.endsWith('.fal.media'));
+  } catch {
+    return false;
+  }
+}
+
 /** An OpenAI image entry for a fal image: `b64_json` (fetching a URL fal returned), or the URL itself. */
 async function openAiImage(image: { url: string }, responseFormat: 'b64_json' | 'url', signal: AbortSignal): Promise<{ b64_json: string } | { url: string }> {
   const inline = /^data:[^,]*;base64,/i.exec(image.url.slice(0, 256));
@@ -157,7 +183,7 @@ async function openAiImage(image: { url: string }, responseFormat: 'b64_json' | 
     return { url: image.url };
   }
   if (inline) return { b64_json: image.url.slice(inline[0].length) };
-  if (!image.url.startsWith('https://')) throw new Error('fal returned an image without an https URL');
+  if (!isFalMediaUrl(image.url)) throw new Error('fal returned an image outside its media CDN');
   // fal media URLs are public; never send the seller key to them.
   const file = await fetch(image.url, { redirect: 'error', signal });
   const bytes = file.ok ? await readBounded(file, MAX_IMAGE_BYTES) : null;

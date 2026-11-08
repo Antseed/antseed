@@ -1115,9 +1115,6 @@ importers:
       '@antseed/provider-core':
         specifier: workspace:*
         version: link:../../packages/provider-core
-      '@antseed/provider-fal-video':
-        specifier: workspace:*
-        version: link:../provider-fal-video
     devDependencies:
       '@antseed/node':
         specifier: workspace:*

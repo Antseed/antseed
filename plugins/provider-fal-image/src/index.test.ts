@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Provider, SerializedHttpRequest } from '@antseed/node';
-import plugin, { falImageInput, falImageSchema } from './index.js';
+import plugin, { falImageInput, falImageSchema, isFalMediaUrl } from './index.js';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -121,6 +121,18 @@ describe('requests', () => {
     expect(download[1]?.headers).toBeUndefined();
     const linked = await created.handleRequest(generation({ model: MODEL, prompt: 'cat', response_format: 'url' }));
     expect(parse(linked.body).data).toEqual([{ url: 'https://v3.fal.media/out.png' }]);
+  });
+
+  it('downloads result images only from fal media hosts', async () => {
+    for (const url of ['https://127.0.0.1/out.png', 'https://10.0.0.5/out.png', 'https://example.com/out.png', 'https://fal.media.example.com/x.png', 'http://v3.fal.media/x.png', 'https://v3.fal.media:8443/x.png']) {
+      expect(isFalMediaUrl(url)).toBe(false);
+      const { provider: created, fetchMock } = await provider({}, () => Response.json({ images: [{ url }] }));
+      const response = await created.handleRequest(generation({ model: MODEL, prompt: 'cat' }));
+      expect(response.statusCode).toBe(502);
+      expect(fetchMock.mock.calls.some(([target]) => target === url)).toBe(false);
+    }
+    expect(isFalMediaUrl('https://fal.media/files/a.png')).toBe(true);
+    expect(isFalMediaUrl('https://v3b.fal.media/files/a.png')).toBe(true);
   });
 
   it('passes on fal rejections and refuses mismatched or unknown models', async () => {

@@ -16,8 +16,7 @@
   },
   "dependencies": {
     "@antseed/api-adapter": "workspace:*",
-    "@antseed/provider-core": "workspace:*",
-    "@antseed/provider-fal-video": "workspace:*"
+    "@antseed/provider-core": "workspace:*"
   },
   "peerDependencies": {
     "@antseed/node": ">=0.1.0"
