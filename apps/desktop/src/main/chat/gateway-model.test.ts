@@ -38,10 +38,16 @@ test('the offer summary has the cheapest prices, free and stakers-only offers, T
   });
   assert.deepEqual(
     [model.sellers, model.free, model.freeForStakers, model.tee, model.toolUse, model.reasoning, model.inputUsdPerMillion, model.outputUsdPerMillion],
-    [3, false, true, true, true, true, 0, 0],
+    // The stakers-only $0 seller is not the price anyone else pays.
+    [3, false, true, true, true, true, 0.1, 0.9],
   );
+  assert.deepEqual(model.stakersOnlyFreeSellerIds, ['c']);
   const open = toChatModel({ id: 'm', peers: [{ peerId: 'd', inputUsdPerMillion: 0, outputUsdPerMillion: 0 }] });
   assert.equal(open.free, true);
+  assert.equal(open.stakersOnlyFreeSellerIds, undefined);
+  // Only stakers-only $0 sellers: the $0 price stays, and the picker says it is for stakers.
+  const stakersOnly = toChatModel({ id: 's', peers: [{ peerId: '0xAB', inputUsdPerMillion: 0, outputUsdPerMillion: 0, freeTier: { base: { stakersOnly: true } } }] });
+  assert.deepEqual([stakersOnly.free, stakersOnly.inputUsdPerMillion, stakersOnly.stakersOnlyFreeSellerIds], [false, 0, ['ab']]);
 });
 
 test('protocol preference: anthropic-messages, then responses, then chat completions', () => {

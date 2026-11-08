@@ -613,10 +613,12 @@ function rememberSelection(filePath: string, selection: JsonObject): void {
   }
 }
 
-function takeSelection(filePath: string): JsonObject {
-  const selection = readSelection(filePath);
+/**
+ * Drops the saved selection once the restored config is written. A disconnect
+ * reads it first and forgets it last, so a failed write keeps it for a retry.
+ */
+function forgetSelection(filePath: string): void {
   rmSync(selectionPath(filePath), { force: true });
-  return selection;
 }
 
 function pickKeys(source: JsonObject, keys: readonly string[]): JsonObject {
@@ -935,15 +937,15 @@ function removeOpencodeProviderFromFile(filePath: string, patch: OpencodeConfigP
     delete (providers as JsonObject)[patch.providerKey];
     changed = true;
   }
-  const saved = takeSelection(filePath);
+  const saved = readSelection(filePath);
   if (typeof config['model'] === 'string' && config['model'].startsWith(`${patch.providerKey}/`)) {
     delete config['model'];
     Object.assign(config, pickKeys(saved, ['model']));
     changed = true;
   }
-  if (!changed) return false;
-  writeJsonFile(filePath, config);
-  return true;
+  if (changed) writeJsonFile(filePath, config);
+  forgetSelection(filePath);
+  return changed;
 }
 
 function writeTextFile(filePath: string, content: string): void {
@@ -1488,11 +1490,12 @@ function removeCodexProviderFromFile(filePath: string, patch: CodexConfigPatchDe
   const removal = removeCodexProviderTable(raw.split('\n'), patch.providerKey);
   let lines = removal.lines;
   let changed = removal.changed;
-  const saved = takeSelection(filePath);
+  const saved = readSelection(filePath);
+  let removeCatalog = false;
   if (readTomlTopLevelString(lines, 'model_catalog_json') === CODEX_MODEL_CATALOG_FILE) {
     lines = removeTomlTopLevelKey(lines, 'model_catalog_json');
     if (typeof saved['model_catalog_json'] === 'string') lines = setTomlTopLevelString(lines, 'model_catalog_json', saved['model_catalog_json']);
-    removeCodexModelCatalog(filePath);
+    removeCatalog = true;
     changed = true;
   }
   if (readTomlTopLevelString(lines, 'model_provider') === patch.providerKey) {
@@ -1504,11 +1507,15 @@ function removeCodexProviderFromFile(filePath: string, patch: CodexConfigPatchDe
     if (typeof saved['model_context_window'] === 'string') lines = setTomlTopLevelValue(lines, 'model_context_window', saved['model_context_window']);
     changed = true;
   }
-  if (!changed) return false;
-  backupConfigFile(filePath);
-  while (lines.length > 0 && lines[lines.length - 1]!.trim() === '') lines.pop();
-  writeTextFile(filePath, lines.length > 0 ? `${lines.join('\n')}\n` : '');
-  return true;
+  if (changed) {
+    backupConfigFile(filePath);
+    while (lines.length > 0 && lines[lines.length - 1]!.trim() === '') lines.pop();
+    writeTextFile(filePath, lines.length > 0 ? `${lines.join('\n')}\n` : '');
+  }
+  // Only once the config no longer points at them, so a failed write can retry.
+  if (removeCatalog) removeCodexModelCatalog(filePath);
+  forgetSelection(filePath);
+  return changed;
 }
 
 // --- pi (`~/.pi/agent/models.json` + `~/.pi/agent/settings.json`) ---
@@ -1609,12 +1616,13 @@ function removePiProviderFromFiles(modelsPath: string, settingsPath: string, pat
   // The selection goes back once neither pi nor GooeyPi is connected.
   const otherConnected = Object.keys(asObject(config?.['providers'])).some(isAntseedPiProvider);
   if (settingsPath && !otherConnected) {
-    const saved = takeSelection(settingsPath);
+    const saved = readSelection(settingsPath);
     if (settings && settings['defaultProvider'] === undefined && Object.keys(saved).length > 0) {
       Object.assign(settings, pickKeys(saved, ['defaultProvider', 'defaultModel']));
       writeJsonFile(settingsPath, settings);
       changed = true;
     }
+    forgetSelection(settingsPath);
   }
   return changed;
 }
@@ -1701,7 +1709,7 @@ function removeCrushProviderFromFile(filePath: string, patch: CrushConfigPatchDe
     changed = true;
   }
   const models = config['models'];
-  const saved = takeSelection(filePath);
+  const saved = readSelection(filePath);
   if (models && typeof models === 'object' && !Array.isArray(models)) {
     for (const size of ['large', 'small']) {
       const entry = (models as JsonObject)[size];
@@ -1713,9 +1721,13 @@ function removeCrushProviderFromFile(filePath: string, patch: CrushConfigPatchDe
     }
     if (Object.keys(models as JsonObject).length === 0) delete config['models'];
   }
-  if (!changed) return false;
+  if (!changed) {
+    forgetSelection(filePath);
+    return false;
+  }
   backupConfigFile(filePath);
   writeJsonFile(filePath, config);
+  forgetSelection(filePath);
   return true;
 }
 
@@ -2005,19 +2017,22 @@ function removeGooseProviderFromFile(
   }
   if (!keepSelection) {
     changed = restoreGooseUserProvider(filePath) || changed;
-    const saved = takeSelection(filePath);
+    const saved = readSelection(filePath);
     if (changed && readYamlTopLevelString(lines, 'GOOSE_PROVIDER') === undefined) {
       for (const key of ['GOOSE_PROVIDER', 'GOOSE_MODEL']) {
         if (typeof saved[key] === 'string') lines = setYamlTopLevelString(lines, key, saved[key]);
       }
     }
   }
+  if (changed) {
+    backupConfigFile(filePath);
+    while (lines.length > 0 && lines[lines.length - 1]!.trim() === '') lines.pop();
+    writeTextFile(filePath, lines.length > 0 ? `${lines.join('\n')}\n` : '');
+  }
+  // Only after the write, so a failed one can be retried with them.
   if (state) deleteGoosePatchState(filePath);
-  if (!changed) return state !== null;
-  backupConfigFile(filePath);
-  while (lines.length > 0 && lines[lines.length - 1]!.trim() === '') lines.pop();
-  writeTextFile(filePath, lines.length > 0 ? `${lines.join('\n')}\n` : '');
-  return true;
+  if (!keepSelection) forgetSelection(filePath);
+  return changed || state !== null;
 }
 
 // --- Hermes Agent (`~/.hermes/config.yaml`) ---
@@ -2099,7 +2114,7 @@ function removeHermesConfigPatch(patch: HermesConfigPatchDef): boolean {
   if (!ownsHermesProvider(document, patch)) return false;
 
   let changed = document.deleteIn(['providers', patch.providerKey]);
-  const saved = takeSelection(filePath);
+  const saved = readSelection(filePath);
   if (document.getIn(['model', 'provider']) === patch.providerKey) {
     for (const key of HERMES_SELECTION_KEYS) {
       changed = document.deleteIn(['model', key]) || changed;
@@ -2114,10 +2129,12 @@ function removeHermesConfigPatch(patch: HermesConfigPatchDef): boolean {
     }
   }
   if (Object.keys(asObject(document.toJS()?.['providers'])).length === 0) document.delete('providers');
-  if (!changed) return false;
-  backupConfigFile(filePath);
-  writeHermesConfigDocument(filePath, document);
-  return true;
+  if (changed) {
+    backupConfigFile(filePath);
+    writeHermesConfigDocument(filePath, document);
+  }
+  forgetSelection(filePath);
+  return changed;
 }
 
 // --- Zed (`~/.config/zed/settings.json`) ---
@@ -2177,7 +2194,7 @@ function removeZedConfigPatch(patch: ZedConfigPatchDef): boolean {
     changed = true;
   }
   const agent = config['agent'];
-  const saved = takeSelection(filePath);
+  const saved = readSelection(filePath);
   if (agent && typeof agent === 'object' && !Array.isArray(agent)) {
     const defaultModel = (agent as JsonObject)['default_model'];
     if (defaultModel && typeof defaultModel === 'object' && (defaultModel as JsonObject)['provider'] === patch.providerName) {
@@ -2187,10 +2204,12 @@ function removeZedConfigPatch(patch: ZedConfigPatchDef): boolean {
       changed = true;
     }
   }
-  if (!changed) return false;
-  backupConfigFile(filePath);
-  writeJsonFile(filePath, config);
-  return true;
+  if (changed) {
+    backupConfigFile(filePath);
+    writeJsonFile(filePath, config);
+  }
+  forgetSelection(filePath);
+  return changed;
 }
 
 // --- Claude Code CLI (`~/.claude/settings.json`) ---

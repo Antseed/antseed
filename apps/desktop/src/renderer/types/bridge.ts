@@ -1,14 +1,17 @@
 import type { FreeTierStakeView } from '@antseed/node/free-tier-program';
 import type {
   AgentSkillStatus as AgentSkillTarget,
+  AgentSkillsResult,
   GatewayEndpointInfo,
   GatewayKeyInfo,
   GatewayKeyMode,
   GatewayMode,
   GatewayPrivacy,
   GatewayPrivacyMode,
+  GatewayPrivacyResult,
   GatewayRewardsSummary,
   GatewaySettingsPatch,
+  GatewaySettingsResult,
   GatewaySettingsView as GatewaySettings,
   GatewayStatus,
 } from '../../shared/gateway-types.js';
@@ -345,7 +348,7 @@ export type DesktopBridge = {
 
   gatewayGetStatus?: () => Promise<GatewayStatus>;
   gatewayGetSettings?: () => Promise<GatewaySettings>;
-  gatewayUpdateSettings?: (opts: GatewaySettingsPatch) => Promise<{ ok: boolean; settings?: GatewaySettings; error?: string }>;
+  gatewayUpdateSettings?: (opts: GatewaySettingsPatch) => Promise<GatewaySettingsResult>;
   gatewayRotateKeys?: () => Promise<{ ok: boolean; error?: string }>;
   /** Base URL (with /v1) + the desktop key, for pasting into any OpenAI- or Anthropic-compatible tool. */
   gatewayGetEndpoint?: (opts?: { app?: string }) => Promise<GatewayEndpointInfo>;
@@ -353,14 +356,14 @@ export type DesktopBridge = {
   /** Opens the gateway console in the browser at `path` (e.g. `/keys`, `/wallet?fund=1`). */
   gatewayOpenConsole?: (path?: string) => Promise<{ ok: boolean; error?: string }>;
   /** Anonymous (any allowed seller) or Private (TEE sellers only), from the desktop key's routing policy. */
-  gatewayGetPrivacy?: () => Promise<{ ok: boolean; privacy?: GatewayPrivacy; error?: string }>;
-  gatewaySetPrivacy?: (mode: GatewayPrivacyMode) => Promise<{ ok: boolean; privacy?: GatewayPrivacy; error?: string }>;
+  gatewayGetPrivacy?: () => Promise<GatewayPrivacyResult>;
+  gatewaySetPrivacy?: (mode: GatewayPrivacyMode) => Promise<GatewayPrivacyResult>;
   /** $ANTS the gateway's wallet earned from usage, read from the chain. */
   gatewayGetRewards?: (opts?: { force?: boolean }) => Promise<{ ok: boolean; data?: GatewayRewardsSummary; error?: string }>;
   /** Agents that can take the Antseed skills, and where they stand. */
   agentSkillsList?: () => Promise<AgentSkillTarget[]>;
-  agentSkillsInstall?: (id: string) => Promise<{ ok: boolean; targets?: AgentSkillTarget[]; error?: string }>;
-  agentSkillsRemove?: (id: string) => Promise<{ ok: boolean; targets?: AgentSkillTarget[]; error?: string }>;
+  agentSkillsInstall?: (id: string) => Promise<AgentSkillsResult>;
+  agentSkillsRemove?: (id: string) => Promise<AgentSkillsResult>;
   /** Copies setup instructions (gateway URL + key) for any other agent to the clipboard. */
   agentSkillsCopyPrompt?: () => Promise<{ ok: boolean; error?: string }>;
   /** The gateway, its key or the key mode changed. */

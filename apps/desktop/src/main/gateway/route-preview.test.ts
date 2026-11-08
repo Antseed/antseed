@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseRoutePreview } from './route-preview.js';
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { clearRoutePreviewCache, fetchRoutePreview, parseRoutePreview } from './route-preview.js';
+import type { GatewayEndpoint } from './service.js';
 
 const A = 'a'.repeat(40);
 const B = 'b'.repeat(40);
@@ -43,4 +46,28 @@ test('parseRoutePreview lists allowed sellers in Auto order, then the excluded o
 test('parseRoutePreview reads a disallowed model and tolerates a malformed body', () => {
   assert.equal(parseRoutePreview({ model: 'x', modelAllowed: false, candidates: [] }).modelAllowed, false);
   assert.deepEqual(parseRoutePreview(null), { model: '', modelAllowed: true, sort: null, candidates: [] });
+});
+
+test('console sign-in does not follow a redirect with the key', async () => {
+  const listen = (server: Server) => new Promise<string>((resolve) => server.listen(0, '127.0.0.1', () => {
+    resolve(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
+  }));
+  const seenElsewhere: string[] = [];
+  const elsewhere = createServer((req, res) => { seenElsewhere.push(req.url ?? ''); res.end('{}'); });
+  const target = await listen(elsewhere);
+  const gateway = createServer((_req, res) => {
+    res.writeHead(307, { location: `${target}/steal` });
+    res.end();
+  });
+  const origin = await listen(gateway);
+  try {
+    clearRoutePreviewCache();
+    const endpoint: GatewayEndpoint = { mode: 'remote', origin, apiKey: 'antseed_secret' };
+    await assert.rejects(fetchRoutePreview(endpoint, 'some-model'));
+    assert.deepEqual(seenElsewhere, []);
+  } finally {
+    clearRoutePreviewCache();
+    gateway.close();
+    elsewhere.close();
+  }
 });

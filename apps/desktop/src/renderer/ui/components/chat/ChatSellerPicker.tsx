@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
 import { ArrowDown01Icon, ShuffleIcon } from '@hugeicons/core-free-icons';
 import type { ChatRouteCandidate, ChatRoutePreview } from '../../../types/bridge';
-import { formatPriceRange, isFreeOffer } from '../../../modules/chat/models';
+import { offerPriceLabel } from '../../../modules/chat/models';
 import { splitPinnedModel } from '../../../../shared/pinned-model.js';
 import { usePrivateMode } from '../vpr/PrivacyToggle';
 import { useDropdownDismiss } from '../../hooks/useDropdownDismiss';
@@ -80,6 +80,13 @@ export function ChatSellerPicker({ modelId, disabled, onChange, onOpenChange, me
   const freeSellerId = useUiSelector((state) => (selectHasFunds(state)
     ? null
     : state.chatModels.find((model) => model.id === listedId)?.freeSellerId ?? null));
+
+  const stakersOnlyFreeIds = useUiSelector((state) => state.chatModels.find((model) => model.id === listedId)?.stakersOnlyFreeSellerIds);
+  const priceTag = (offer: ChatRouteCandidate) => {
+    const label = offerPriceLabel(offer, stakersOnlyFreeIds?.includes(offer.peerId) ?? false);
+    if (label === 'Free') return <span className={`${styles.tag} ${styles.tagFree}`}>Free</span>;
+    return label === 'Free for stakers' ? <span className={styles.tag}>{label}</span> : label;
+  };
 
   const load = useCallback((force = false) => {
     if (!listedId) return;
@@ -199,7 +206,7 @@ export function ChatSellerPicker({ modelId, disabled, onChange, onOpenChange, me
                 </span>
                 {autoPick && (
                   <span className={styles.itemPrice}>
-                    {isFreeOffer(autoPick) ? <span className={`${styles.tag} ${styles.tagFree}`}>Free</span> : formatPriceRange(autoPick)}
+                    {priceTag(autoPick)}
                   </span>
                 )}
               </span>
@@ -231,7 +238,7 @@ export function ChatSellerPicker({ modelId, disabled, onChange, onOpenChange, me
                     {candidate.failing && <span className={styles.tag}>Failing</span>}
                   </span>
                   <span className={styles.itemPrice}>
-                    {isFreeOffer(candidate) ? <span className={`${styles.tag} ${styles.tagFree}`}>Free</span> : formatPriceRange(candidate)}
+                    {priceTag(candidate)}
                   </span>
                 </span>
                 <span className={styles.itemMeta}>

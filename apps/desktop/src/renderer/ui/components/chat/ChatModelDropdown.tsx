@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
 import { ArrowDown01Icon } from '@hugeicons/core-free-icons';
 import type { ChatModel } from '../../../types/bridge';
-import { filterChatModels, findChatModel, formatPriceRange } from '../../../modules/chat/models';
+import { filterChatModels, findChatModel, formatPriceRange, isFreeOffer } from '../../../modules/chat/models';
 import { splitPinnedModel } from '../../../../shared/pinned-model.js';
 import { useDropdownDismiss } from '../../hooks/useDropdownDismiss';
 import styles from './ChatModelDropdown.module.scss';
@@ -40,6 +40,8 @@ type ChatModelDropdownProps = {
 function renderModelPrice(model: ChatModel) {
   if (model.free) return <span className={`${styles.tag} ${styles.tagFree}`}>Free</span>;
   if (model.minImageUsd) return `from $${model.minImageUsd} per image`;
+  // Not free to everyone, so a $0 price here is a stakers-only offer (the only sellers it has).
+  if (isFreeOffer(model)) return model.stakersOnlyFreeSellerIds?.length ? <span className={styles.tag}>Free for stakers</span> : null;
   if (model.inputUsdPerMillion !== null || model.outputUsdPerMillion !== null) return `from ${formatPriceRange(model)}`;
   return null;
 }

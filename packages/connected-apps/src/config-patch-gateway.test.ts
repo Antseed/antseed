@@ -616,6 +616,19 @@ test('disconnecting gives the user their own model selection back', async () => 
       assert.deepEqual(read(await readFile(filePath, 'utf8')), expected, `${patch.format} restored`);
       assert.equal(existsSync(`${filePath}.antseed.selection.json`), false);
     }
+    // A disconnect whose restoring write fails keeps the saved selection, so a retry still gives it back.
+    for (const { patch, file, seed, read, expected } of cases) {
+      const filePath = path.join(dir, file);
+      await writeFile(filePath, seed);
+      writeConfigPatch(patch, LOCAL);
+      await chmod(filePath, 0o444);
+      assert.throws(() => removeConfigPatch(patch), /EACCES|permission/i, `${patch.format} write fails`);
+      assert.ok(existsSync(`${filePath}.antseed.selection.json`), `${patch.format} keeps its selection`);
+      await chmod(filePath, 0o600);
+      removeConfigPatch(patch);
+      assert.deepEqual(read(await readFile(filePath, 'utf8')), expected, `${patch.format} restored on retry`);
+      assert.equal(existsSync(`${filePath}.antseed.selection.json`), false);
+    }
   });
 });
 

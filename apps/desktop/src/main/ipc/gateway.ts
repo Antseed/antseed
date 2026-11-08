@@ -84,7 +84,10 @@ export function registerGatewayIpc(deps: GatewayIpcDeps): void {
       if (before.mode === 'local' && after.mode === 'remote') await stopLocalGateway();
       if (after.mode === 'local') await ensureLocalGateway();
       // The apps still have to follow the new settings if an old key couldn't be revoked.
-      const cleanupFailure = await revokeUnusedAppKeys().then(() => null, (err: unknown) => err);
+      // Only a local gateway holds the per-app keys; a remote switch leaves them for the next local one.
+      const cleanupFailure = after.mode === 'local'
+        ? await revokeUnusedAppKeys().then(() => null, (err: unknown) => err)
+        : null;
       await endpointChanged(true);
       if (cleanupFailure) return errorResult(cleanupFailure);
       return { ok: true, settings: { ...getGatewaySettings(), hasRemoteKey: hasRemoteKey() } };

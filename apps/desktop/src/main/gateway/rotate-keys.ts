@@ -44,6 +44,20 @@ export async function rotateKeys(
   }
 }
 
+/**
+ * The per-app keys to revoke after switching back to one shared key. Only a
+ * local gateway holds them: after a switch to a remote gateway they stay until
+ * the app is local again, because the local gateway they belong to is stopped.
+ */
+export function unusedAppKeyScopes(
+  settings: { mode: string; keyMode: string },
+  scopes: readonly string[],
+  sharedScope: string,
+): string[] {
+  if (settings.mode !== 'local' || settings.keyMode === 'per-app') return [];
+  return scopes.filter((scope) => scope !== sharedScope);
+}
+
 /** A gateway record of a key the app holds. */
 export type KeyRecord = { status?: unknown; expiresAt?: unknown };
 

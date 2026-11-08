@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { assertKeyMayBeRecreated, keyIsUsable, rotateKeys } from './rotate-keys.js';
+import { assertKeyMayBeRecreated, keyIsUsable, rotateKeys, unusedAppKeyScopes } from './rotate-keys.js';
 
 function store(keys: Record<string, { id: string | null; secret: string }>) {
   return {
@@ -74,4 +74,12 @@ test('failing to read the record stops rather than creating a key', async () => 
     assertKeyMayBeRecreated({ id: 'a', label: 'Desktop' }, async () => { throw new Error('database is locked'); }),
     /database is locked/,
   );
+});
+
+test('per-app keys are revoked only on a local gateway in shared key mode', () => {
+  const scopes = ['desktop', 'codex', 'pi'];
+  assert.deepEqual(unusedAppKeyScopes({ mode: 'local', keyMode: 'shared' }, scopes, 'desktop'), ['codex', 'pi']);
+  assert.deepEqual(unusedAppKeyScopes({ mode: 'local', keyMode: 'per-app' }, scopes, 'desktop'), []);
+  // After a switch to a remote gateway the local one is stopped: its keys wait for the next local switch.
+  assert.deepEqual(unusedAppKeyScopes({ mode: 'remote', keyMode: 'shared' }, scopes, 'desktop'), []);
 });

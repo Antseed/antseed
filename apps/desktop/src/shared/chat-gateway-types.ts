@@ -23,11 +23,16 @@ export type ChatModel = {
   freeSellerId: string | null;
   /** Some seller's free tier is for its stakers only. */
   freeForStakers: boolean;
+  /** Sellers (lowercase, no 0x) whose $0 offer is for their stakers only: not free to anyone else. */
+  stakersOnlyFreeSellerIds?: string[];
   /** Some seller runs it in a verified TEE. */
   tee: boolean;
   toolUse: boolean;
   reasoning: boolean;
-  /** Cheapest advertised prices across sellers, USD per million tokens; null when none advertised. */
+  /**
+   * Cheapest advertised prices across sellers, USD per million tokens; null when none advertised.
+   * A stakers-only $0 offer counts only when no other seller has one.
+   */
   inputUsdPerMillion: number | null;
   outputUsdPerMillion: number | null;
 };

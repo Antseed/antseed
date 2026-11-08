@@ -103,29 +103,38 @@ function record(value: unknown): Record<string, unknown> {
 }
 
 /** The offer summary the picker shows, worked out like the gateway console's chat. */
-function entryOfferSummary(entry: GatewayModelEntry, peers: Array<Record<string, unknown>>): Pick<ChatModel, 'sellers' | 'free' | 'minImageUsd' | 'freeSellerId' | 'freeForStakers' | 'tee' | 'toolUse' | 'reasoning' | 'inputUsdPerMillion' | 'outputUsdPerMillion'> {
+function entryOfferSummary(entry: GatewayModelEntry, peers: Array<Record<string, unknown>>): Pick<ChatModel, 'sellers' | 'free' | 'minImageUsd' | 'freeSellerId' | 'freeForStakers' | 'stakersOnlyFreeSellerIds' | 'tee' | 'toolUse' | 'reasoning' | 'inputUsdPerMillion' | 'outputUsdPerMillion'> {
   const declared = record(entry['capabilities']);
   // Coverage only counts sellers that reported at all, including those reporting false.
   const anyPeerDeclares = (capability: 'toolUse' | 'reasoning'): boolean => peers.some((peer) => record(peer['capabilities'])[capability] === true);
-  const cheapest = (field: string): number | null => {
-    const values = peers.map((peer) => finiteNumber(peer[field])).filter((value): value is number => value !== null && value >= 0);
+  const stakersOnly = (peer: Record<string, unknown>): boolean => record(record(peer['freeTier'])['base'])['stakersOnly'] === true;
+  const zeroPriced = (peer: Record<string, unknown>): boolean => peer['inputUsdPerMillion'] === 0 && peer['outputUsdPerMillion'] === 0;
+  const stakersOnlyFree = peers.filter((peer) => stakersOnly(peer) && zeroPriced(peer));
+  // What anyone can pay: a stakers-only $0 offer would show a paid model as free.
+  const openPeers = peers.filter((peer) => !stakersOnlyFree.includes(peer));
+  const pricedPeers = openPeers.length > 0 ? openPeers : peers;
+  const cheapest = (field: string, from = peers): number | null => {
+    const values = from.map((peer) => finiteNumber(peer[field])).filter((value): value is number => value !== null && value >= 0);
     return values.length > 0 ? Math.min(...values) : null;
   };
-  const stakersOnly = (peer: Record<string, unknown>): boolean => record(record(peer['freeTier'])['base'])['stakersOnly'] === true;
   // An image model's token prices are $0 too: it charges per image.
   const chargesPerImage = (peer: Record<string, unknown>): boolean => (finiteNumber(peer['minImageUsdPerImage']) ?? 0) > 0;
-  const freeSeller = peers.find((peer) => peer['inputUsdPerMillion'] === 0 && peer['outputUsdPerMillion'] === 0 && !stakersOnly(peer) && !chargesPerImage(peer));
+  const freeSeller = peers.find((peer) => zeroPriced(peer) && !stakersOnly(peer) && !chargesPerImage(peer));
+  const stakersOnlyFreeSellerIds = stakersOnlyFree.flatMap((peer) => typeof peer['peerId'] === 'string'
+    ? [peer['peerId'].toLowerCase().replace(/^0x/, '')]
+    : []);
   return {
     sellers: peers.length,
     free: freeSeller !== undefined,
     minImageUsd: cheapest('minImageUsdPerImage'),
     freeSellerId: typeof freeSeller?.['peerId'] === 'string' ? freeSeller['peerId'] : null,
     freeForStakers: peers.some(stakersOnly),
+    ...(stakersOnlyFreeSellerIds.length > 0 ? { stakersOnlyFreeSellerIds } : {}),
     tee: peers.some((peer) => strings(peer['advertisedVerifierIds']).includes(TEE_VERIFIER_ID)),
     toolUse: declared['tool_use'] === true || anyPeerDeclares('toolUse'),
     reasoning: declared['reasoning'] === true || anyPeerDeclares('reasoning'),
-    inputUsdPerMillion: cheapest('inputUsdPerMillion'),
-    outputUsdPerMillion: cheapest('outputUsdPerMillion'),
+    inputUsdPerMillion: cheapest('inputUsdPerMillion', pricedPeers),
+    outputUsdPerMillion: cheapest('outputUsdPerMillion', pricedPeers),
   };
 }
 

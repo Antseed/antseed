@@ -150,6 +150,15 @@ export function formatPriceRange(offer: { inputUsdPerMillion: number | null; out
   return `${formatUsdPerMillion(offer.inputUsdPerMillion)} / ${formatUsdPerMillion(offer.outputUsdPerMillion)} per M`;
 }
 
+/** "Free", "Free for stakers" for a $0 offer only a seller's stakers get, or the price range. */
+export function offerPriceLabel(
+  offer: { inputUsdPerMillion: number | null; outputUsdPerMillion: number | null },
+  stakersOnly: boolean,
+): string {
+  if (isFreeOffer(offer) && stakersOnly) return 'Free for stakers';
+  return formatPriceRange(offer);
+}
+
 export function isFreeOffer(offer: { inputUsdPerMillion: number | null; outputUsdPerMillion: number | null }): boolean {
   return offer.inputUsdPerMillion === 0 && offer.outputUsdPerMillion === 0;
 }

@@ -40,6 +40,8 @@ async function signIn(endpoint: GatewayEndpoint): Promise<string> {
     method: 'POST',
     headers: { 'content-type': 'application/json', [CONSOLE_CSRF_HEADER]: '1' },
     body: JSON.stringify({ key: endpoint.apiKey }),
+    // A followed 307/308 would resend the key in this body to wherever it points.
+    redirect: 'error',
     signal: AbortSignal.timeout(15_000),
   });
   if (!response.ok) throw new Error(`The gateway refused the key's console sign-in (HTTP ${response.status})`);
@@ -103,7 +105,11 @@ export async function fetchRoutePreview(endpoint: GatewayEndpoint, model: string
 
   const request = async (renew: boolean): Promise<Response> => fetch(
     `${endpoint.origin}/console/api/route-preview?model=${encodeURIComponent(modelId)}`,
-    { headers: { cookie: await sessionCookie(endpoint, renew), accept: 'application/json' }, signal: AbortSignal.timeout(20_000) },
+    {
+      headers: { cookie: await sessionCookie(endpoint, renew), accept: 'application/json' },
+      redirect: 'error',
+      signal: AbortSignal.timeout(20_000),
+    },
   );
   let response = await request(false);
   // An expired or revoked session: sign in again once.

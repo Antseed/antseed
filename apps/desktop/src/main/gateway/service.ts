@@ -8,7 +8,7 @@ import { parseGatewayKeyInfo } from './key-info.js';
 import { readConfig } from '../runtime/config-io.js';
 import type { GatewayKeyInfo, GatewayPrivacy, GatewayStatus } from '../../shared/gateway-types.js';
 import { publishKeyWithPolicy } from './key-with-policy.js';
-import { assertKeyMayBeRecreated, keyIsUsable, rotateKeys, type KeyRecord } from './rotate-keys.js';
+import { assertKeyMayBeRecreated, keyIsUsable, rotateKeys, unusedAppKeyScopes, type KeyRecord } from './rotate-keys.js';
 import { createForeignBuyerGuard, foreignBuyerMessage, portInUse, restartForNewIdentity } from './restart-for-identity.js';
 import { createSerialQueue } from './serial-queue.js';
 import { startUnlessClosing } from './start-guard.js';
@@ -338,12 +338,11 @@ export async function rotateLocalKeys(scope?: string): Promise<void> {
 
 /**
  * Revokes per-app keys that are no longer used (after switching back to one
- * shared key). One that can't be revoked stays saved for the next try, and the
+ * shared key on the local gateway). One that can't be revoked stays saved for the next try, and the
  * failure is reported: it still works.
  */
 export async function revokeUnusedAppKeys(): Promise<void> {
-  if (getGatewaySettings().keyMode === 'per-app') return;
-  const unused = listLocalKeys().map((entry) => entry.scope).filter((scope) => scope !== DESKTOP_KEY_SCOPE);
+  const unused = unusedAppKeyScopes(getGatewaySettings(), listLocalKeys().map((entry) => entry.scope), DESKTOP_KEY_SCOPE);
   await rotateKeys(unused, {
     get: getLocalKey,
     rotate: async (id) => {

@@ -8,6 +8,7 @@ import {
   filterChatModels,
   fundsNoticeAction,
   fundsNoticeFromStopReason,
+  offerPriceLabel,
 } from './models';
 
 function model(id: string, type = 'text', label = id): ChatModel {
@@ -97,4 +98,11 @@ test('a funds note never sends a remote gateway\'s user to fund this device', ()
   assert.equal(fundsNoticeAction(true, 'remote'), 'console');
   assert.equal(fundsNoticeAction(false, 'remote'), null);
   assert.equal(fundsNoticeAction(false, 'local'), null);
+});
+
+test('a $0 offer only stakers get is labeled for stakers, not Free', () => {
+  const zero = { inputUsdPerMillion: 0, outputUsdPerMillion: 0 };
+  assert.equal(offerPriceLabel(zero, false), 'Free');
+  assert.equal(offerPriceLabel(zero, true), 'Free for stakers');
+  assert.equal(offerPriceLabel({ inputUsdPerMillion: 0.1, outputUsdPerMillion: 0.9 }, true), '$0.10 / $0.90 per M');
 });
