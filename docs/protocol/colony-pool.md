@@ -311,7 +311,10 @@ goes silent midway, or exceeds its byte limit, lowers its reliability without
 benching it. A worker's error counts against it only after it sent
 `accepted` (its model failed or timed out); refusals before that (channel,
 binding, capacity, check limits) never do, so buyers can't lower a Mac's rank
-with bad requests. Ranks, including each worker's smoothed decode speed (learned only
+with bad requests. A complete answer counts by its HTTP status: a `5xx` or
+`429` is the worker's failure and benches it (its headers already reached the
+buyer, so it is not failed over), any other `4xx` is the buyer's request at
+fault and counts for no one. Ranks, including each worker's smoothed decode speed (learned only
 from streamed answers: a buffered answer arrives in one burst after
 generation, so it adds no speed sample), survive reconnects and pool restarts (the ledger keeps them
 in `worker_rank`, and each outcome in `dispatches` for 30 days), so a flaky

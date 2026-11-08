@@ -490,12 +490,39 @@ export function isSealedRequest(body: Uint8Array): boolean {
   }
 }
 
+/** A buyer's signed binding of a request to its channel, expiry and workers. */
+export interface RequestBinding {
+  /** The buyer who signed it (checksummed). */
+  buyer: string;
+  channel: string;
+  /** The signed expiry, unix seconds. */
+  expires: number;
+  hash: string;
+}
+
 /**
- * Worker side: decrypt a request one of whose recipients is this worker.
- * Throws when it is not, the envelope fails authentication, or the inner
- * model differs from the outer one.
+ * An encrypted request read from its clear fields and addressed to this
+ * worker, its buyer binding verified, not yet decrypted: enough to admit or
+ * refuse it without reading it.
  */
-export function openRequest(body: Uint8Array, workerAddress: string, workerKey: WorkerEncryptionKey): OpenedRequest {
+export interface InspectedRequest {
+  model: string;
+  /** Every worker the request is encrypted for, in order, as the envelope names them. */
+  workers: string[];
+  /** The worker it was inspected for. */
+  worker: string;
+  /** This worker's wrapped key. */
+  recipient: { epk: string; wk: string };
+  ciphertext: Buffer;
+  /** Null without a valid buyer signature: an unbound (health check) request. */
+  binding: RequestBinding | null;
+}
+
+/**
+ * Worker side: check a request's envelope and its buyer binding before
+ * decrypting it. Throws when it is not an encrypted request for this worker.
+ */
+export function inspectRequest(body: Uint8Array, workerAddress: string): InspectedRequest {
   const outer = JSON.parse(Buffer.from(body).toString('utf-8')) as Record<string, unknown>;
   const envelope = outer['antseed_e2e'] as RequestEnvelope | undefined;
   const model = outer['model'];
@@ -512,42 +539,52 @@ export function openRequest(body: Uint8Array, workerAddress: string, workerKey: 
   if (new Set(workers.map((w) => w.toLowerCase())).size !== workers.length) throw new Error('Envelope names a worker twice');
   const mine = envelope.recipients.find((r) => r.worker.toLowerCase() === workerAddress.toLowerCase());
   if (!mine) throw new Error('Envelope is addressed to other workers');
-  const epk = new Uint8Array(Buffer.from(mine.epk, 'base64'));
-  const ct = Buffer.from(envelope.ct, 'base64');
-  const shared = diffieHellman({ privateKey: privateKeyObject(workerKey), publicKey: publicKeyObject(epk) });
-  const keys = deriveKeys(shared, epk, workerKey.publicKey);
-  const contentKey = open(keys.wrapKey, 0, wrapAad(workers, model), Buffer.from(mine.wk, 'base64'));
-  const plaintext = open(contentKey, 0, requestAad(workers, model), ct);
-  const inner = JSON.parse(plaintext.toString('utf-8')) as Record<string, unknown>;
-  if (inner['model'] !== model) throw new Error('Inner and outer model differ');
+  const ciphertext = Buffer.from(envelope.ct, 'base64');
 
-  let buyer: string | null = null;
-  let channel: string | null = null;
-  let expires: number | null = null;
-  let binding: string | null = null;
+  let binding: RequestBinding | null = null;
   if (envelope.buyer && envelope.sig && envelope.channel && Number.isSafeInteger(envelope.exp) && envelope.exp! >= 0) {
     try {
-      const hash = verifiedRequestBindingHash(workers, envelope.channel, envelope.exp!, ct, envelope.sig, envelope.buyer);
-      if (hash) {
-        buyer = getAddress(envelope.buyer);
-        channel = envelope.channel;
-        expires = envelope.exp!;
-        binding = hash;
-      }
+      const hash = verifiedRequestBindingHash(workers, envelope.channel, envelope.exp!, ciphertext, envelope.sig, envelope.buyer);
+      if (hash) binding = { buyer: getAddress(envelope.buyer), channel: envelope.channel, expires: envelope.exp!, hash };
     } catch {
       // Unsigned or forged binding: treated as an unbound (health check) request.
     }
   }
+  return { model, workers, worker: workerAddress, recipient: { epk: mine.epk, wk: mine.wk }, ciphertext, binding };
+}
+
+/**
+ * Worker side: decrypt an inspected request. Throws when the envelope fails
+ * authentication or the inner model differs from the outer one.
+ */
+export function decryptRequest(request: InspectedRequest, workerKey: WorkerEncryptionKey): OpenedRequest {
+  const { model, workers, binding } = request;
+  const epk = new Uint8Array(Buffer.from(request.recipient.epk, 'base64'));
+  const shared = diffieHellman({ privateKey: privateKeyObject(workerKey), publicKey: publicKeyObject(epk) });
+  const keys = deriveKeys(shared, epk, workerKey.publicKey);
+  const contentKey = open(keys.wrapKey, 0, wrapAad(workers, model), Buffer.from(request.recipient.wk, 'base64'));
+  const plaintext = open(contentKey, 0, requestAad(workers, model), request.ciphertext);
+  const inner = JSON.parse(plaintext.toString('utf-8')) as Record<string, unknown>;
+  if (inner['model'] !== model) throw new Error('Inner and outer model differ');
   return {
     body: new Uint8Array(plaintext),
     model,
     recipients: workers.map((w) => getAddress(w)),
-    buyer,
-    channel,
-    expires,
-    binding,
-    sealer: new ResponseSealer(keys.responseKey, getAddress(workerAddress)),
+    buyer: binding?.buyer ?? null,
+    channel: binding?.channel ?? null,
+    expires: binding?.expires ?? null,
+    binding: binding?.hash ?? null,
+    sealer: new ResponseSealer(keys.responseKey, getAddress(request.worker)),
   };
+}
+
+/**
+ * Worker side: decrypt a request one of whose recipients is this worker.
+ * Throws when it is not, the envelope fails authentication, or the inner
+ * model differs from the outer one.
+ */
+export function openRequest(body: Uint8Array, workerAddress: string, workerKey: WorkerEncryptionKey): OpenedRequest {
+  return decryptRequest(inspectRequest(body, workerAddress), workerKey);
 }
 
 // ── responses ──

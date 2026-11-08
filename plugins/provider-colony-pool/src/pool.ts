@@ -163,6 +163,8 @@ interface InFlight {
   firstByteAt: number | null;
   /** The answer is an SSE stream, so its delivery time is its generation time. */
   streamed: boolean;
+  /** The HTTP status the worker answered with, once it started. */
+  status: number | null;
 }
 
 export interface RequestTiming {
@@ -570,6 +572,18 @@ export class ColonyPool {
     }
   }
 
+  /**
+   * Rank a completed answer by its status. A server error or a 429 is the
+   * worker's failure (benched like any other; its headers already reached the
+   * buyer, so it is not failed over). Any other 4xx is the buyer's request at
+   * fault and never counts against the worker.
+   */
+  private recordAnswer(worker: ConnectedWorker, entry: InFlight): void {
+    const status = entry.status ?? 200;
+    if (status < 400) this.recordDispatch(worker, entry, true);
+    else if (status >= 500 || status === 429) this.recordDispatch(worker, entry, false, { reason: `http-${status}`, bench: true });
+  }
+
   /** Returns the dispatch ID (empty when `signal` had already aborted). */
   private send(
     worker: ConnectedWorker,
@@ -616,6 +630,7 @@ export class ColonyPool {
       startedAt: Date.now(),
       firstByteAt: null,
       streamed: false,
+      status: null,
     };
     // The worker must pick the request up quickly, then start answering in time.
     arm(acceptTimeoutMs, `Worker ${worker.address} did not take the request within ${acceptTimeoutMs}ms`, noAnswer);
@@ -1005,6 +1020,7 @@ export class ColonyPool {
         entry.started = true;
         entry.accepted = true;
         entry.firstByteAt = Date.now();
+        entry.status = frame.status;
         entry.streamed = Object.entries(frame.headers ?? {})
           .some(([name, value]) => name.toLowerCase() === 'content-type' && String(value).includes('text/event-stream'));
         entry.touch();
@@ -1029,7 +1045,7 @@ export class ColonyPool {
         const entry = worker.inflight.get(frame.id);
         if (!entry?.started) return;
         this.finish(worker.inflight, frame.id);
-        this.recordDispatch(worker, entry, true);
+        this.recordAnswer(worker, entry);
         // Paid requests are charged right after they end; free ones never read this.
         const timing = { startedAt: entry.startedAt, firstByteAt: entry.firstByteAt, endedAt: Date.now(), streamed: entry.streamed };
         worker.finished.set(frame.id, timing);

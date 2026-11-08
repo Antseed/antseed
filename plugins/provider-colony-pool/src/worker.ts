@@ -1,10 +1,10 @@
 import { Wallet } from 'ethers';
 import WebSocket from 'ws';
 import {
+  decryptRequest,
+  inspectRequest,
+  type InspectedRequest,
   isSealedRequest,
-  openRequest,
-  verifiedRequestBindingHash,
-  type RequestEnvelope,
   WORKER_REQUEST_TTL_SECONDS,
   type OpenedRequest,
   workerKeyCertificateMessage,
@@ -422,20 +422,27 @@ export class PoolWorker {
     if (frame.method !== 'POST' || !ALLOWED_PATHS.has(frame.path)) throw new Error(`Unsupported route ${frame.method} ${frame.path}`);
     const sealedBody = decodeBody(frame.body);
     if (!isSealedRequest(sealedBody)) throw new Error('Refusing an unencrypted request');
+    let inspected: InspectedRequest;
+    try {
+      inspected = inspectRequest(sealedBody, this.wallet.address);
+    } catch {
+      throw new Error('Request could not be decrypted for this worker');
+    }
     // A buyer's request is admitted on its clear binding before it is decrypted, so a refused one is never read.
-    const bound = clearBinding(sealedBody, this.wallet.address);
+    // A binding to no channel is a pool check.
+    const bound = inspected.binding && !/^0x0+$/.test(inspected.binding.channel) ? inspected.binding : null;
     if (bound) {
-      if (!this.opts.services[bound.model] || this.paused) throw new Error(`Not serving ${bound.model}`);
+      if (!this.opts.services[inspected.model] || this.paused) throw new Error(`Not serving ${inspected.model}`);
       const verdict = await abortable(this.channelVerdict(bound.channel.toLowerCase(), bound.buyer), signal);
       if (verdict === UNVERIFIABLE) throw new Error('This worker has no channel verifier, so it refuses buyer requests; start it with an RPC endpoint');
       if (verdict === false) throw new Error('Request channel does not belong to a buyer of this pool');
       if (verdict === null) throw new Error('Request channel is not on-chain yet; retry shortly');
       this.claimOnce(bound.hash, bound.expires);
     }
-    let opened: ReturnType<typeof openRequest>;
+    let opened: OpenedRequest;
     let body: Record<string, unknown>;
     try {
-      opened = openRequest(sealedBody, this.wallet.address, this.opts.encryptionKey);
+      opened = decryptRequest(inspected, this.opts.encryptionKey);
       body = JSON.parse(new TextDecoder().decode(opened.body)) as Record<string, unknown>;
     } catch {
       throw new Error('Request could not be decrypted for this worker');
@@ -443,10 +450,7 @@ export class PoolWorker {
     const localModel = this.opts.services[opened.model];
     if (!localModel || this.paused) throw new Error(`Not serving ${opened.model}`);
 
-    if (bound) {
-      // The same envelope, so the same binding; checked anyway, since serving it in full rests on it.
-      if (opened.binding !== bound.hash) throw new Error('Request binding changed while opening it');
-    } else {
+    if (!bound) {
       // No buyer binding: a pool check. Keep it small so it cannot buy real work, prompt processing included.
       if (opened.body.length > MAX_CHECK_BODY_BYTES) throw new Error(`Check requests are limited to ${MAX_CHECK_BODY_BYTES} bytes`);
       if (!this.allowCheck()) throw new Error('Check rate limit exceeded');
@@ -536,29 +540,6 @@ export class PoolWorker {
 
   private log(line: string): void {
     this.opts.log?.(`[worker] ${line}`);
-  }
-}
-
-/**
- * A request's buyer binding, read and verified from the envelope's clear
- * fields (the binding signs the ciphertext's hash, so nothing needs
- * decrypting): null for a request without a valid one (a pool check), or
- * one not addressed to `worker`.
- */
-export function clearBinding(body: Uint8Array, worker: string): { buyer: string; channel: string; expires: number; hash: string; model: string } | null {
-  try {
-    const outer = JSON.parse(Buffer.from(body).toString('utf-8')) as { model?: unknown; antseed_e2e?: RequestEnvelope };
-    const envelope = outer.antseed_e2e;
-    if (!envelope || typeof outer.model !== 'string' || typeof envelope.ct !== 'string' || !Array.isArray(envelope.recipients)) return null;
-    const { buyer, channel, exp, sig } = envelope;
-    if (!buyer || !sig || !channel || /^0x0+$/.test(channel) || !Number.isSafeInteger(exp) || exp! < 0) return null;
-    const workers = envelope.recipients.map((r) => r.worker);
-    if (!workers.some((w) => typeof w === 'string' && w.toLowerCase() === worker.toLowerCase())) return null;
-    const hash = verifiedRequestBindingHash(workers, channel, exp!, Buffer.from(envelope.ct, 'base64'), sig, buyer);
-    if (!hash) return null;
-    return { buyer, channel, expires: exp!, hash, model: outer.model };
-  } catch {
-    return null;
   }
 }
 

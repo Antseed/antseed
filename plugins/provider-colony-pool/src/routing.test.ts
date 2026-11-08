@@ -99,6 +99,8 @@ describe('worker ranking', () => {
 type Behavior =
   | 'answer' | 'hang' | 'accept-then-hang' | 'refuse' | 'accept-then-fail'
   | { acceptThenAnswerAfterMs: number }
+  /** Takes the request and answers it in full with this HTTP status. */
+  | { answerStatus: number }
   /** Streams `chunks` SSE events `gapMs` apart. */
   | { streamChunks: number; gapMs: number };
 
@@ -166,6 +168,12 @@ class ScriptedWorker {
     }
     if (behavior === 'accept-then-hang') return;
     if (behavior === 'accept-then-fail') return send({ t: 'response-error', id, message: 'Local model timed out' });
+    if ('answerStatus' in behavior) {
+      send({ t: 'response-start', id, status: behavior.answerStatus, headers: { 'content-type': 'application/json' } });
+      send({ t: 'response-chunk', id, data: encodeBody(enc({ error: { message: `status ${behavior.answerStatus}` } })) });
+      send({ t: 'response-end', id });
+      return;
+    }
     await sleep(behavior.acceptThenAnswerAfterMs);
     answer();
   }
@@ -300,6 +308,26 @@ describe('routing, failover and ranking in the pool', () => {
     const history = new (await import('better-sqlite3')).default(join(dir, 'ledger.db'), { readonly: true });
     try {
       expect(history.prepare('SELECT worker, ok, reason FROM dispatches').all()).toEqual([{ worker: failing.address, ok: 0, reason: 'worker-error' }]);
+    } finally {
+      history.close();
+    }
+  });
+
+  it('counts a completed 500 or 429 answer as the worker\'s failure, and a 400 as no one\'s', async () => {
+    await setup();
+    for (const status of [500, 429]) {
+      const worker = await connect({ answerStatus: status });
+      expect((await provider.handleRequest(await requestFor(worker, `s-${status}`))).statusCode).toBe(status);
+      expect(summary(worker).reliability).toBeLessThan(1);
+      expect(summary(worker).benchedUntil).toBeGreaterThan(Date.now());
+      await worker.close();
+    }
+    const strict = await connect({ answerStatus: 400 });
+    expect((await provider.handleRequest(await requestFor(strict, 's-400'))).statusCode).toBe(400);
+    expect(summary(strict)).toMatchObject({ reliability: null, benchedUntil: null });
+    const history = new (await import('better-sqlite3')).default(join(dir, 'ledger.db'), { readonly: true });
+    try {
+      expect(history.prepare('SELECT ok, reason FROM dispatches').all()).toEqual([{ ok: 0, reason: 'http-500' }, { ok: 0, reason: 'http-429' }]);
     } finally {
       history.close();
     }
