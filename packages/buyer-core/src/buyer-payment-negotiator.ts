@@ -1716,7 +1716,10 @@ export class BuyerPaymentNegotiator {
         // deposits. Without enough there it reverts, no AuthAck comes, and the
         // request would wait out the lock timeout instead of answering 402.
         // The channel never locked anything on-chain, so it can simply go.
-        if (await this._depositsCannotCover(this._bpm.replayReserveAmount(peer.peerId))) {
+        const cannotCover = await this._depositsCannotCover(this._bpm.replayReserveAmount(peer.peerId));
+        // A parallel request may have replaced the channel during the read.
+        this._assertLiveChannel(peer.peerId, session.sessionId);
+        if (cannotCover) {
           this._bpm.retireSession(peer.peerId, CHANNEL_STATUS.GHOST);
           return false;
         }

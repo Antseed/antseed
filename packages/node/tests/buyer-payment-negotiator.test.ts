@@ -927,6 +927,20 @@ describe('BuyerPaymentNegotiator', () => {
         expect(JSON.parse(new TextDecoder().decode(res.body)).code).toBe('insufficient_deposits');
       });
 
+      it('leaves a replacement made during the balance read alone', async () => {
+        neverLocked(0n);
+        const replacement = { ...makeActiveSession(peer.peerId), sessionId: '0x' + 'cd'.repeat(32) };
+        (depositsClient.getBuyerBalance as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+          (bpm.getActiveSession as ReturnType<typeof vi.fn>).mockReturnValue(replacement);
+          return { available: 0n, reserved: 0n, lastActivityAt: 0n };
+        });
+        const result = await negotiator.handle402(make402Response(), peer, conn, makeRequest());
+
+        expect(bpm.retireSession).not.toHaveBeenCalled();
+        expect(bpm.resendReserveAuth).not.toHaveBeenCalled();
+        expect(result.action).toBe('retry');
+      });
+
       it('still replays its reserve when the deposits cover it', async () => {
         neverLocked(1_000_000n);
         (bpm.resendReserveAuth as ReturnType<typeof vi.fn>).mockImplementation(async () => {
