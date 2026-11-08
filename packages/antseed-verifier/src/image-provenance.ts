@@ -75,15 +75,15 @@ export async function verifyImageBuild(
     const predicate = isObj(statement['predicate']) ? statement['predicate'] : {}
     const definition = isObj(predicate['buildDefinition']) ? predicate['buildDefinition'] : {}
     const dependencies = Array.isArray(definition['resolvedDependencies']) ? definition['resolvedDependencies'] : []
-    const source = dependencies.find((d): d is Record<string, unknown> => isObj(d) && isObj(d['digest']) && typeof d['digest']['gitCommit'] === 'string')
-    const commit = source ? String((source['digest'] as Record<string, unknown>)['gitCommit']).slice(0, 7) : 'unknown commit'
+    const source = dependencies.find((d): d is { digest: { gitCommit: string } } => isObj(d) && isObj(d['digest']) && typeof d['digest']['gitCommit'] === 'string')
+    const commit = source ? source.digest.gitCommit.slice(0, 7) : 'unknown commit'
 
     const subjects = Array.isArray(statement['subject']) ? statement['subject'] : []
     const images = subjects
-      .filter((s): s is Record<string, unknown> => isObj(s) && s['name'] === policy.image && isObj(s['digest']) && typeof s['digest']['sha256'] === 'string')
+      .filter((s): s is { digest: { sha256: string } } => isObj(s) && s['name'] === policy.image && isObj(s['digest']) && typeof s['digest']['sha256'] === 'string')
       .map((s) => ({
         version: `built ${new Date(builtAt).toISOString().slice(0, 10)} from ${commit}`,
-        digest: `sha256:${String((s['digest'] as Record<string, unknown>)['sha256'])}`,
+        digest: `sha256:${s.digest.sha256}`,
       }))
     if (images.length === 0) return { error: `build record names no ${policy.image} image` }
     return { images }
