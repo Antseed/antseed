@@ -147,28 +147,6 @@ export function checkSellerConfig(config: unknown): { upstreams: SellerUpstream[
   return { upstreams, apiKeyEnvs }
 }
 
-/**
- * Where the seller's prover fetches its provider's TEE evidence, from the literal settings the buyer
- * reads: the aci adapter's URL, and the generic evidence URL (the prover falls back to it when an
- * adapter fails). Another adapter reads settings the rules keep hidden, so it is named instead of
- * an origin and never matches an upstream.
- */
-export function providerAttestationOrigins(env: Readonly<Record<string, unknown>>): string[] {
-  const origin = (url: unknown): string => {
-    try {
-      return new URL(String(url)).origin
-    } catch {
-      return `invalid URL ${String(url)}`
-    }
-  }
-  const origins = new Set<string>()
-  const adapter = env['ANTSEED_VERIFIER_PROVIDER_ADAPTER']
-  if (adapter === 'aci' && env['ANTSEED_VERIFIER_PROVIDER_ACI_URL'] !== undefined) origins.add(origin(env['ANTSEED_VERIFIER_PROVIDER_ACI_URL']))
-  else if (adapter !== undefined && adapter !== 'aci') origins.add(`the ${String(adapter)} adapter`)
-  if (env['ANTSEED_VERIFIER_PROVIDER_EVIDENCE_URL'] !== undefined) origins.add(origin(env['ANTSEED_VERIFIER_PROVIDER_EVIDENCE_URL']))
-  return [...origins].sort()
-}
-
 /** Hidden secrets may only be the node's own secrets and the API keys the seller config names. */
 export function checkHiddenSecrets(secrets: Iterable<string>, apiKeyEnvs: ReadonlySet<string>): void {
   for (const name of secrets) {

@@ -39,11 +39,8 @@ export interface CapabilityVerifyInput {
 
 /** What the caps of one round learn for the caps verified after them. */
 export interface VerifyRound {
-  /**
-   * Set by a passing seller node cap: the https origins its measured config sends prompts to, and
-   * where its prover fetches the provider's TEE evidence.
-   */
-  sellerNode?: { upstreams: string[]; providerAttestation: string[] }
+  /** Set by a passing seller node cap: the https origins its measured config sends prompts to. */
+  sellerNode?: { upstreams: string[] }
 }
 
 /** Input to a capability's seller-side evidence collection. */

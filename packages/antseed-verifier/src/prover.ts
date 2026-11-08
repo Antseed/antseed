@@ -77,7 +77,7 @@ async function collectViaAdapter(
     const ev = await adapter.fetchEvidence(nonce, process.env)
     if (caps.includes(PROVIDER_TEE_CAP_ID)) {
       const binding = ev.bindingScheme ? { scheme: ev.bindingScheme, ingredients: ev.ingredients ?? {} } : undefined
-      put(PROVIDER_TEE_CAP_ID, encodeTeeTdxEvidence(ev.quote, undefined, binding))
+      put(PROVIDER_TEE_CAP_ID, encodeTeeTdxEvidence(ev.quote, undefined, binding, ev.origin ? { origin: ev.origin } : undefined))
     }
     if (ev.gpuEvidence && caps.includes(GPU_CAP_ID)) {
       put(GPU_CAP_ID, new TextEncoder().encode(JSON.stringify(ev.gpuEvidence)))

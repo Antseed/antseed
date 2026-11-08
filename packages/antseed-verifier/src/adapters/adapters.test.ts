@@ -118,6 +118,7 @@ describe('aci adapter', () => {
     expect(Buffer.from(ev.quote).equals(quoteBytes)).toBe(true)
     expect(ev.bindingScheme).toBe('aci-keyset-v1')
     expect(ev.ingredients?.keysetDigest).toBe(`sha256:${digest}`)
+    expect(ev.origin).toBe(stub.base)
   })
 
   it('refuses a redirect, so the evidence comes from the configured origin', async () => {

@@ -242,18 +242,26 @@ describe('provider cap — declared report_data scheme binding', () => {
 })
 
 describe('seller-provider-tee-genuine for a verified seller node', () => {
-  const verifyFor = async (sellerNode: { upstreams: string[]; providerAttestation: string[] }) => {
-    const parsedQuote = await verifyTdxEvidence(encodeTeeTdxEvidence(randomBytes(64)), async () => ({ status: 'UpToDate', td: td() }), 0)
-    const out = await providerTeeCapability.verify({ nonce: randomBytes(32), peerId: PEER, evidence: new Uint8Array(1), parsedQuote, round: { sellerNode } })
+  const verifyFor = async (upstreams: string[], origin?: string) => {
+    const evidence = encodeTeeTdxEvidence(randomBytes(64), undefined, undefined, origin ? { origin } : undefined)
+    const parsedQuote = await verifyTdxEvidence(evidence, async () => ({ status: 'UpToDate', td: td() }), 0)
+    const out = await providerTeeCapability.verify({ nonce: randomBytes(32), peerId: PEER, evidence, parsedQuote, round: { sellerNode: { upstreams } } })
     return Array.isArray(out) ? out[0]! : out
   }
 
-  it('passes only when the attested provider is the one upstream the node sends prompts to', async () => {
-    expect(await verifyFor({ upstreams: ['https://p.example'], providerAttestation: ['https://p.example'] })).toMatchObject({ ok: true })
+  it('passes only when the seller fetched the quote from the one upstream it sends prompts to', async () => {
+    expect(await verifyFor(['https://p.example'], 'https://p.example')).toMatchObject({ ok: true })
+    expect(await verifyFor(['https://p.example'], 'https://q.example')).toMatchObject({ ok: false, detail: expect.stringMatching(/not only to the attested provider \(evidence fetched from https:\/\/q\.example\)/) })
     // A second upstream (e.g. a non-TEE fallback) may receive prompts no provider quote covers.
-    expect(await verifyFor({ upstreams: ['https://other.example', 'https://p.example'], providerAttestation: ['https://p.example'] })).toMatchObject({ ok: false, detail: expect.stringMatching(/not only to the attested provider/) })
-    expect(await verifyFor({ upstreams: ['https://p.example'], providerAttestation: ['https://p.example', 'https://q.example'] })).toMatchObject({ ok: false })
-    expect(await verifyFor({ upstreams: ['https://p.example'], providerAttestation: [] })).toMatchObject({ ok: false, detail: expect.stringMatching(/no configured URL/) })
+    expect(await verifyFor(['https://other.example', 'https://p.example'], 'https://p.example')).toMatchObject({ ok: false })
+    // An image whose prover doesn't report the origin may have followed a redirect elsewhere.
+    expect(await verifyFor(['https://p.example'])).toMatchObject({ ok: false, detail: expect.stringMatching(/predates verifier 0\.1\.6/) })
+  })
+
+  it('without a verified seller node, judges the quote alone', async () => {
+    const evidence = encodeTeeTdxEvidence(randomBytes(64))
+    const parsedQuote = await verifyTdxEvidence(evidence, async () => ({ status: 'UpToDate', td: td() }), 0)
+    expect(await providerTeeCapability.verify({ nonce: randomBytes(32), peerId: PEER, evidence, parsedQuote, round: {} })).toMatchObject({ ok: true })
   })
 })
 
@@ -297,8 +305,9 @@ describe('seller-provider-tee-genuine collect (http, stubbed fetch)', () => {
     const ev = await providerTeeCapability.collect!({ nonce: NONCE, peerId: PEER, config })
     expect(seenUrl).toBe(`https://provider.example/evidence/${Buffer.from(NONCE).toString('hex')}`)
     expect(Buffer.from(decodeTeeTdxEvidence(ev).quote).equals(quoteBytes)).toBe(true)
-    // Buyers count the evidence for the configured origin only, so the fetch never follows a redirect.
+    // The fetch never follows a redirect, so the evidence reports the configured URL's origin.
     expect(vi.mocked(fetch).mock.calls[0]?.[1]).toMatchObject({ redirect: 'error' })
+    expect(decodeTeeTdxEvidence(ev).origin).toBe('https://provider.example')
   })
 
   it('is not offered (throws) when no provider evidence url is configured', async () => {

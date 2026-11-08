@@ -26,13 +26,7 @@ const sign = signerFromPrivateKey(PRIV)
 const BINDING = 'c'.repeat(64)
 
 // The stub DCAP's measurements (MRTD 07…, RTMR0-2 zero, RTMR3 measuring APP) are an approved seller build for these tests.
-/** The reference compose, with the prover fetching provider evidence from its one upstream. */
-function composeWithProviderEvidence(url: string) {
-  const compose = referenceCompose()
-  compose['services']['seller']['environment']['ANTSEED_VERIFIER_PROVIDER_EVIDENCE_URL'] = url
-  return appCompose(compose)
-}
-const APP = composeWithProviderEvidence('https://upstream.example/attest?nonce={nonce}')
+const APP = appCompose(referenceCompose())
 const BOOT = bootEvents(APP)
 beforeAll(() => { process.env['ANTSEED_VERIFIER_NODE_BUILDS'] = JSON.stringify(testBuilds('07'.repeat(48))) })
 afterAll(() => { delete process.env['ANTSEED_VERIFIER_NODE_BUILDS'] })
@@ -66,17 +60,11 @@ const okVerify: VerifyQuoteFn = async (quote) => ({
   td: td({ reportData: quote.length === 64 ? new Uint8Array(quote) : new Uint8Array(64) }),
 })
 
-/** Stub DCAP for a seller whose measured compose is `app` instead of APP. */
-const okVerifyFor = (app: string): VerifyQuoteFn => async (quote) => ({
-  status: 'UpToDate',
-  td: td({ rtMr3: bootEvents(app).rtmr3, reportData: quote.length === 64 ? new Uint8Array(quote) : new Uint8Array(64) }),
-})
-
 /** A node quote bound to (nonce, PEER, BINDING). It satisfies the node binding check under okVerify. */
 const boundNodeQuote = (nonce: Uint8Array): Uint8Array => new Uint8Array(computeReportData(nonce, PEER, BINDING))
 /** Node evidence from the approved dstack build, bound to (nonce, PEER, BINDING). */
-const nodeQuoteEvidence = (nonce: Uint8Array, app = APP): Uint8Array =>
-  encodeTeeTdxEvidence(boundNodeQuote(nonce), undefined, undefined, { eventLog: bootEvents(app).eventLog, appCompose: app })
+const nodeQuoteEvidence = (nonce: Uint8Array): Uint8Array =>
+  encodeTeeTdxEvidence(boundNodeQuote(nonce), undefined, undefined, { eventLog: BOOT.eventLog, appCompose: APP })
 /** A 64-byte provider report_data with a 32-byte commitment in [0:32]. */
 const rd64 = (commitment: Uint8Array): Uint8Array => {
   const out = new Uint8Array(64)
@@ -98,10 +86,11 @@ async function nodeEvidence(nonce: Uint8Array, signer = sign): Promise<Uint8Arra
 }
 
 /** Full bundle: bound node quote, provider quote, and one seller-bound signature that covers both. */
-async function fullBundleEvidence(nonce: Uint8Array, signer = sign, app = APP): Promise<Uint8Array> {
+async function fullBundleEvidence(nonce: Uint8Array, signer = sign, providerOrigin: string | null = 'https://upstream.example'): Promise<Uint8Array> {
   const bundle = {
-    'seller-node-tee-genuine': nodeQuoteEvidence(nonce, app),
-    'seller-provider-tee-genuine': encodeTeeTdxEvidence(randomBytes(64)),
+    'seller-node-tee-genuine': nodeQuoteEvidence(nonce),
+    // The reference compose's one upstream is https://upstream.example.
+    'seller-provider-tee-genuine': encodeTeeTdxEvidence(randomBytes(64), undefined, undefined, providerOrigin ? { origin: providerOrigin } : undefined),
   }
   return encodeAttestResponse({ ...bundle, 'seller-bound': await signBundle(nonce, bundle, signer) })
 }
@@ -167,12 +156,10 @@ describe('runVerify — happy path (one claim per capability)', () => {
   })
 
   it('fails the provider tee when the attested provider is not where the seller sends prompts', async () => {
-    for (const app of [
-      composeWithProviderEvidence('https://other.example/attest?nonce={nonce}'),
-      appCompose(referenceCompose()),
-    ]) {
-      const { ctx } = makeCtx(async (nonce) => ok200(await fullBundleEvidence(nonce, sign, app)))
-      const r = await runVerify(ctx, okVerifyFor(app))
+    // Fetched from another host, or by an older prover that doesn't report where.
+    for (const origin of ['https://other.example', null]) {
+      const { ctx } = makeCtx(async (nonce) => ok200(await fullBundleEvidence(nonce, sign, origin)))
+      const r = await runVerify(ctx, okVerify)
       // The node still passes: what the seller can see is unchanged. Only the provider claim fails.
       expect(r.ok).toBe(true)
       expect(findClaim(r, NODE)?.ok).toBe(true)

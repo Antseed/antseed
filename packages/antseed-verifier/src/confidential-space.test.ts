@@ -48,11 +48,7 @@ const check = (c: JWTPayload) => checkConfidentialSpaceClaims(c, ROUND_NONCE, [T
 
 describe('checkConfidentialSpaceClaims', () => {
   it('accepts a production Confidential Space workload running an approved image, and reports its upstreams', () => {
-    expect(check(claims())).toEqual({ image: TEST_IMAGE, upstreams: [{ provider: 'venice', plugin: 'openai', origin: 'https://api.venice.ai' }], providerAttestation: [] })
-  })
-
-  it('reports where the prover fetches provider evidence', () => {
-    expect(check(claims({}, { ANTSEED_VERIFIER_PROVIDER_EVIDENCE_URL: 'https://api.venice.ai/attest?nonce={nonce}' }))).toMatchObject({ providerAttestation: ['https://api.venice.ai'] })
+    expect(check(claims())).toEqual({ image: TEST_IMAGE, upstreams: [{ provider: 'venice', plugin: 'openai', origin: 'https://api.venice.ai' }] })
   })
 
   it('requires the round and connection nonce', () => {

@@ -29,26 +29,7 @@ describe('checkAppCompose', () => {
     expect(checkCompose(referenceCompose())).toEqual({
       image: TEST_IMAGE,
       upstreams: [{ provider: 'inference', plugin: 'openai', origin: 'https://upstream.example' }],
-      providerAttestation: [],
     })
-  })
-
-  it('reports where the prover fetches provider evidence', () => {
-    const attestation = (env: Obj) => {
-      const checked = checkCompose(withService((s) => { Object.assign(s['environment'], env) }))
-      return 'error' in checked ? checked : checked.providerAttestation
-    }
-    expect(attestation({ ANTSEED_VERIFIER_PROVIDER_ADAPTER: 'aci', ANTSEED_VERIFIER_PROVIDER_ACI_URL: 'https://provider.example/v1/aci/attestation' })).toEqual(['https://provider.example'])
-    expect(attestation({ ANTSEED_VERIFIER_PROVIDER_EVIDENCE_URL: 'https://provider.example/attest?nonce={nonce}' })).toEqual(['https://provider.example'])
-    // The prover falls back to the evidence URL when the adapter fails, so both count.
-    expect(attestation({
-      ANTSEED_VERIFIER_PROVIDER_ADAPTER: 'aci',
-      ANTSEED_VERIFIER_PROVIDER_ACI_URL: 'https://provider.example/v1/aci/attestation',
-      ANTSEED_VERIFIER_PROVIDER_EVIDENCE_URL: 'https://other.example/attest',
-    })).toEqual(['https://other.example', 'https://provider.example'])
-    // Another adapter reads hidden settings, so no origin can be read for it.
-    expect(attestation({ ANTSEED_VERIFIER_PROVIDER_ADAPTER: 'chutes' })).toEqual(['the chutes adapter'])
-    expect(attestation({ ANTSEED_VERIFIER_PROVIDER_EVIDENCE_URL: 'not a url' })).toEqual(['invalid URL not a url'])
   })
 
   it('rejects a document that is not the measured one', () => {
