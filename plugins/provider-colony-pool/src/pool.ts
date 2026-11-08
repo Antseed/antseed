@@ -17,6 +17,7 @@ import {
   type WorkerAssignment,
   type WorkerAttestation,
   type WorkerKeyCertificate,
+  WORKER_CERTIFICATE_USABILITY_MARGIN_S,
 } from '@antseed/node/worker-e2e';
 import type { SerializedHttpRequest } from '@antseed/node';
 import type { WorkerLedger } from './ledger.js';
@@ -775,7 +776,7 @@ export class ColonyPool {
 
   /** With `requireDeviceAttestation`, only Macs Apple attests get buyers. */
   private routable(worker: ConnectedWorker): boolean {
-    if (worker.certificate.expires <= Math.floor(Date.now() / 1000) + 300) return false;
+    if (worker.certificate.expires <= Math.floor(Date.now() / 1000) + WORKER_CERTIFICATE_USABILITY_MARGIN_S) return false;
     return !this.opts.requireDeviceAttestation || this.appleVerified(worker);
   }
 

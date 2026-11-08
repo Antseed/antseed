@@ -11,10 +11,9 @@ import {
   verifyWorkerAttestation,
   verifyWorkerKeyCertificate,
   type WorkerAssignment,
+  WORKER_CERTIFICATE_USABILITY_MARGIN_S,
 } from './worker-crypto.js';
 
-/** Reassign this long before a worker's key certificate expires. */
-const CERTIFICATE_RENEW_MARGIN_S = 300;
 const MAX_CACHED_ASSIGNMENTS = 1024;
 /** Pools re-attest workers every 5 minutes; an older attestation means the pool stopped checking. */
 const ATTESTATION_MAX_AGE_S = 900;
@@ -201,7 +200,7 @@ export class NodeWorkerE2EClient implements WorkerE2EClient {
       ? verifyWorkerAttestation(certificate.attestation, certificate, { maxAgeS: ATTESTATION_MAX_AGE_S, now })
       : null;
     if (check && !check.valid) throw new Error(`Colony pool returned an invalid worker attestation: ${check.reason}`);
-    let usableUntil = certificate.expires - CERTIFICATE_RENEW_MARGIN_S;
+    let usableUntil = certificate.expires - WORKER_CERTIFICATE_USABILITY_MARGIN_S;
     if (certificate.attestation) usableUntil = Math.min(usableUntil, certificate.attestation.issued + ATTESTATION_MAX_AGE_S);
     if ((this.options.requireAttestedWorkers || this.options.requireAppleVerifiedWorkers) && !check?.hardened) {
       throw new Error('Colony pool assigned a worker that is not an attested hardened Mac');

@@ -420,18 +420,18 @@ describe('colony pool', () => {
     expect(upstream.requests.filter((r) => r.body['max_tokens'] !== 16)).toHaveLength(0);
   });
 
-  it('serves a verified channel only to its buyer, without looking it up again', async () => {
+  it('serves a verified channel only to its buyer, reading it for each of its requests', async () => {
     await setup({ verifyOnJoin: false });
     const lookups: string[] = [];
     startWorker({ channelVerifier: async (_channel, from) => { lookups.push(from); return from === buyer.address.toLowerCase(); } });
     await waitFor(() => provider.services.includes(SERVICE));
     expect((await provider.handleRequest((await buyerSeal('v1', false)).request)).statusCode).toBe(200);
     expect((await provider.handleRequest((await buyerSeal('v2', false)).request)).statusCode).toBe(200);
-    // Another signer naming the same channel (the pool itself, say) is refused from the cache.
+    // Another signer naming the same channel (the pool itself, say) is refused without a read.
     const refused = await provider.handleRequest((await buyerSeal('v3', false, Wallet.createRandom())).request);
     expect(refused.statusCode).toBe(WORKER_UNAVAILABLE);
     expect(dec(refused.body)).toContain('does not belong');
-    expect(lookups).toHaveLength(1);
+    expect(lookups).toEqual([buyer.address.toLowerCase(), buyer.address.toLowerCase()]);
   });
 
   it('does not let another signer\'s refused check refuse the channel\'s buyer', async () => {

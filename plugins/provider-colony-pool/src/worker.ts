@@ -36,8 +36,6 @@ const CHANNEL_POLL_MS = 1_000;
 const MAX_CACHED_CHANNELS = 10_000;
 /** The pool pings every 15 s; a connection silent for three of them is dead (sleep, a dropped path). */
 const DEFAULT_POOL_SILENCE_MS = 45_000;
-/** A verified channel is looked up again after this, so a channel closed since then stops serving. */
-const VERIFIED_CHANNEL_TTL_MS = 60_000;
 /** AntseedChannels.ChannelStatus.Active. */
 const CHANNEL_ACTIVE = 1;
 /** Clock skew allowed on a buyer request's signed expiry. */
@@ -100,8 +98,6 @@ export interface PoolWorkerOptions {
   channelVerifier?: ChannelVerifier;
   /** How long a request waits for its channel to be verified before it is refused (default 5 s). */
   channelWaitMs?: number;
-  /** How long a verified channel is trusted before it is looked up again (default 60 s). */
-  verifiedChannelTtlMs?: number;
   /** How long the pool may send nothing (not even a ping) before the worker reconnects (default 45 s). */
   poolSilenceMs?: number;
   /** How long the local model has to start answering (default 5 min), and then to send each next chunk (default 60 s). */
@@ -181,8 +177,8 @@ export class PoolWorker {
   private welcome: WelcomeFrame | null = null;
   private seller: string | null = null;
   private checkTimes: number[] = [];
-  /** Verified: `seller|channel` → the buyer the chain says owns it, and when it was last seen active. */
-  private readonly channelOwners = new Map<string, { buyer: string; verifiedAt: number }>();
+  /** Verified: `seller|channel` → the buyer the chain says owns it (a channel's buyer never changes). */
+  private readonly channelOwners = new Map<string, string>();
   /** Refused: `channel|buyer` pairs the chain shows are not that buyer's channel with this pool. */
   private readonly refusedChannels = new Set<string>();
   /** Pending: one lookup per `channel|buyer`, shared by the requests waiting on it. */
@@ -320,9 +316,12 @@ export class PoolWorker {
    * false (refused) or null (not on-chain within the wait). Only a verified
    * channel gets full requests, so a pool cannot buy real work by signing
    * bindings to channels that do not exist. Lookups are shared by concurrent
-   * requests. A refusal is cached; a verified channel is looked up again after
-   * a minute, so one closed since stops serving; an unknown one is looked up
-   * again by the next request.
+   * requests. Every request reads the channel again, so one closed since its
+   * last request gets no more work; to keep that to one RPC read a request,
+   * requests that arrive while a lookup runs share it, a refusal is cached (a
+   * closed channel never reopens), and a channel proven to be another buyer's
+   * refuses that buyer without a read. An unknown channel is looked up again
+   * by the next request.
    */
   private channelVerdict(channel: string, buyer: string): Promise<boolean | null> | boolean | null | typeof UNVERIFIABLE {
     const verifier = this.opts.channelVerifier;
@@ -334,8 +333,7 @@ export class PoolWorker {
     if (this.refusedChannels.has(key)) return false;
     // A channel's buyer never changes: one proven to be another buyer's never serves this one.
     const owner = this.channelOwners.get(`${seller}|${channel}`);
-    if (owner !== undefined && owner.buyer !== buyer) return false;
-    if (owner !== undefined && Date.now() - owner.verifiedAt < (this.opts.verifiedChannelTtlMs ?? VERIFIED_CHANNEL_TTL_MS)) return true;
+    if (owner !== undefined && owner !== buyer) return false;
     let pending = this.verifying.get(key);
     if (!pending) {
       pending = this.lookUpChannel(verifier, channel, buyer, seller).finally(() => this.verifying.delete(key));
@@ -351,7 +349,7 @@ export class PoolWorker {
       const result = await withTimeout(verifier(channel, buyer, seller), Math.max(remaining, 1)).catch(() => null);
       if (result === true) {
         if (this.channelOwners.size >= MAX_CACHED_CHANNELS) this.channelOwners.clear();
-        this.channelOwners.set(`${seller}|${channel}`, { buyer, verifiedAt: Date.now() });
+        this.channelOwners.set(`${seller}|${channel}`, buyer);
         return true;
       }
       if (result === false) {

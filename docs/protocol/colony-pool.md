@@ -245,12 +245,13 @@ seal under its response key.
   verified channel: an **Active** channel (status 1 in AntseedChannels
   `channels(bytes32)`; a settled or timed-out channel keeps its buyer and
   seller but is refused) that the chain shows belongs to the signing buyer and
-  to the pool seller. A verification lasts 60 seconds
-  (`verifiedChannelTtlMs`), then the channel is checked again, so one closed
-  since stops getting full requests; refusals are final, and verdicts are kept
-  per pool seller. A channel that belongs to someone else is refused (cached
-  for that buyer), and once a channel is verified for one buyer every other
-  signer naming it is refused without another lookup. A channel not on-chain
+  to the pool seller. Every full request reads the channel again, so one
+  closed since its last request gets no more work. That is one RPC read a
+  request at most: requests that arrive while a read runs share it, refusals
+  are final, and verdicts are kept per pool seller. A channel that belongs to
+  someone else is refused (cached for that buyer), and once a channel is
+  verified for one buyer every other signer naming it is refused without a
+  read. A channel not on-chain
   yet is looked up every second for up to 5 seconds (a fresh reserve can lag
   the RPC; requests waiting on it share one lookup, each read with a short
   deadline), then refused with a retryable error. So a pool cannot buy real
@@ -502,8 +503,13 @@ entry    = address worker (20 bytes) ‖ uint128 cumulativeAmount (16 bytes, big
 WORKER_TAIL_MAGIC = keccak256("antseed:worker-attribution:v1")
 ```
 
-- At most 8 entries (`MAX_WORKERS_PER_CHANNEL`); the pool keeps a buyer on the
-  same worker, which also helps prompt caching.
+- At most 8 entries (`MAX_WORKERS_PER_CHANNEL`). A buyer keeps using the
+  workers it was assigned until a certificate or attestation nears expiry
+  or a request fails over, which also helps prompt caching, but nothing stops a channel
+  reaching more than 8 workers. Once it has 8 entries, a worker new to the
+  channel gets no entry: what the buyer pays for its answers is credited to
+  the pool's `remainderRecipient`, not to that worker. Existing entries are
+  never dropped, since each must only grow.
 - Entries are sorted by worker address, with no duplicates or zero addresses.
 - `cumulativeAmount` is the USDC (6 decimals) the buyer has paid on this
   channel for requests that worker served. Each entry only grows, and the sum

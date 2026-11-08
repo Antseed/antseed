@@ -55,42 +55,49 @@ final class ChannelVerdictsTests: XCTestCase {
         XCTAssertEqual(lookups, 2)
     }
 
-    func testChannelClosedAfterVerificationIsRefusedOnceTheVerificationExpires() async {
-        var clock = Date(timeIntervalSince1970: 1_000_000)
+    func testEveryRequestRereadsAVerifiedChannelAndAClosedOneStopsAtOnce() async {
         var active = true
         var lookups = 0
-        let verdicts = ChannelVerdicts(verifiedFor: 60, now: { clock }) { _, _ in lookups += 1; return active }
+        let verdicts = ChannelVerdicts { _, _ in lookups += 1; return active }
         let first = await verdicts.verdict(channel: channel, buyer: buyer)
-        XCTAssertEqual(first, true)
-        active = false // the buyer closes the channel
-        clock.addTimeInterval(30)
-        let cached = await verdicts.verdict(channel: channel, buyer: buyer)
-        XCTAssertEqual(cached, true)
-        XCTAssertEqual(lookups, 1)
-        clock.addTimeInterval(31)
-        let expired = await verdicts.verdict(channel: channel, buyer: buyer)
-        XCTAssertEqual(expired, false)
+        let second = await verdicts.verdict(channel: channel, buyer: buyer)
+        XCTAssertEqual([first, second], [true, true])
         XCTAssertEqual(lookups, 2)
-        // Closed for good: refused from the cache from now on.
-        clock.addTimeInterval(600)
+        active = false // the buyer closes the channel
+        let closed = await verdicts.verdict(channel: channel, buyer: buyer)
+        XCTAssertEqual(closed, false)
+        XCTAssertEqual(lookups, 3)
+        // Closed for good: refused without another read.
         let later = await verdicts.verdict(channel: channel, buyer: buyer)
         XCTAssertEqual(later, false)
-        XCTAssertEqual(lookups, 2)
+        XCTAssertEqual(lookups, 3)
     }
 
-    func testStillActiveChannelIsReverifiedAfterExpiry() async {
-        var clock = Date(timeIntervalSince1970: 1_000_000)
+    func testConcurrentRequestsShareOneRead() async {
         var lookups = 0
-        let verdicts = ChannelVerdicts(verifiedFor: 60, now: { clock }) { _, _ in lookups += 1; return true }
-        _ = await verdicts.verdict(channel: channel, buyer: buyer)
-        clock.addTimeInterval(61)
-        let again = await verdicts.verdict(channel: channel, buyer: buyer)
-        XCTAssertEqual(again, true)
-        XCTAssertEqual(lookups, 2)
-        // Another buyer is still refused without a lookup.
+        let verdicts = ChannelVerdicts { _, _ in
+            lookups += 1
+            try await Task.sleep(nanoseconds: 50_000_000)
+            return true
+        }
+        async let a = verdicts.verdict(channel: channel, buyer: buyer)
+        async let b = verdicts.verdict(channel: channel, buyer: buyer)
+        async let c = verdicts.verdict(channel: channel, buyer: buyer)
+        let results = await [a, b, c]
+        XCTAssertEqual(results, [true, true, true])
+        XCTAssertEqual(lookups, 1)
+        // Another buyer is refused without a read.
         let other = await verdicts.verdict(channel: channel, buyer: intruder)
         XCTAssertEqual(other, false)
-        XCTAssertEqual(lookups, 2)
+        XCTAssertEqual(lookups, 1)
+    }
+
+    func testVerificationIsReportedOnce() async {
+        var reports = 0
+        let verdicts = ChannelVerdicts { _, _ in true }
+        verdicts.onVerdict = { _, _, _ in reports += 1 }
+        for _ in 0..<3 { _ = await verdicts.verdict(channel: channel, buyer: buyer) }
+        XCTAssertEqual(reports, 1)
     }
 }
 

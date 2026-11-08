@@ -99,7 +99,7 @@ describe('worker lifecycle', () => {
   let key: WorkerEncryptionKey;
   const buyer = Wallet.createRandom();
 
-  function start(opts: { channelVerifier?: ChannelVerifier; maxConcurrency?: number; upstreamIdleMs?: number; upstreamTimeoutMs?: number; verifiedChannelTtlMs?: number; channelWaitMs?: number; poolSilenceMs?: number } = {}): PoolWorker {
+  function start(opts: { channelVerifier?: ChannelVerifier; maxConcurrency?: number; upstreamIdleMs?: number; upstreamTimeoutMs?: number; channelWaitMs?: number; poolSilenceMs?: number } = {}): PoolWorker {
     key = generateWorkerEncryptionKey();
     worker = new PoolWorker({
       poolUrl: fakePool.url,
@@ -237,7 +237,8 @@ describe('worker lifecycle', () => {
   it('refuses requests beyond its own concurrency, counting ones waiting on a channel check', async () => {
     upstream = await startUpstream((_body, res) => answer(res));
     let settle: (verdict: boolean) => void = () => {};
-    start({ maxConcurrency: 1, channelVerifier: () => new Promise((resolve) => { settle = resolve; }) });
+    const verdict = new Promise<boolean>((resolve) => { settle = resolve; });
+    start({ maxConcurrency: 1, channelVerifier: () => verdict });
     await waitFor(() => fakePool.frames.some((f) => f['t'] === 'hello'));
     await request('k1');
     await request('k2');
@@ -332,26 +333,43 @@ describe('worker lifecycle', () => {
     expect(upstream.bodies).toHaveLength(0);
   });
 
-  it('looks a verified channel up again after its lifetime and stops serving it once closed', async () => {
+  it('reads the channel again for every request and stops serving it once closed', async () => {
     upstream = await startUpstream((_body, res) => answer(res));
     let status = 1;
     let reads = 0;
-    start({
-      verifiedChannelTtlMs: 300,
-      channelVerifier: trustedChannelVerifier(async () => { reads++; return { buyer: buyer.address, seller: SELLER, status }; }),
-    });
+    start({ channelVerifier: trustedChannelVerifier(async () => { reads++; return { buyer: buyer.address, seller: SELLER, status }; }) });
     await waitFor(() => fakePool.frames.some((f) => f['t'] === 'hello'));
     await request('v1');
     await waitFor(() => fakePool.ended('v1'));
-    await request('v2'); // within the lifetime: served from the cache
+    await request('v2');
     await waitFor(() => fakePool.ended('v2'));
-    expect(reads).toBe(1);
+    expect(reads).toBe(2);
     status = 2; // the buyer closes the channel
-    await sleep(400);
     await request('v3');
     await waitFor(() => fakePool.errorFor('v3') !== undefined);
-    expect(reads).toBe(2);
+    expect(reads).toBe(3);
+    // Closed for good: refused without another read.
+    await request('v4');
+    await waitFor(() => fakePool.errorFor('v4') !== undefined);
+    expect(reads).toBe(3);
     expect(upstream.bodies).toHaveLength(2);
+  });
+
+  it('shares one read between requests that arrive while it runs', async () => {
+    upstream = await startUpstream((_body, res) => answer(res));
+    let reads = 0;
+    start({
+      maxConcurrency: 3,
+      channelVerifier: trustedChannelVerifier(async () => {
+        reads++;
+        await sleep(100);
+        return { buyer: buyer.address, seller: SELLER, status: 1 };
+      }),
+    });
+    await waitFor(() => fakePool.frames.some((f) => f['t'] === 'hello'));
+    await Promise.all([request('s1'), request('s2'), request('s3')]);
+    await waitFor(() => ['s1', 's2', 's3'].every((id) => fakePool.ended(id)));
+    expect(reads).toBe(1);
   });
 });
 

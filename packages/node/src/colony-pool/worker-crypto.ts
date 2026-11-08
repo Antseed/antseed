@@ -31,6 +31,8 @@ export const WORKER_E2E_VERSION = 2;
 const INFO = 'antseed-worker-e2e/v2';
 /** Most workers one request is encrypted for (the pool fails over within them). */
 export const MAX_WORKER_RECIPIENTS = 3;
+/** A worker's key certificate stops taking new buyers this long before it expires (buyers reassign, pools stop routing). */
+export const WORKER_CERTIFICATE_USABILITY_MARGIN_S = 300;
 const TAG_BYTES = 16;
 const P256_PUBLIC_HEX = /^04[0-9a-f]{128}$/;
 const ZERO_CHANNEL = `0x${'00'.repeat(32)}`;
