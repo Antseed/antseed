@@ -11,6 +11,7 @@ import {
   readAttachOnlyIdentityHex,
   resolveBuyerStateDir,
   secretStoreSwitches,
+  usesPlainTextSecretStore,
 } from './attach-only.js';
 
 const ATTACH = { ANTSEED_DESKTOP_ATTACH_ONLY: '1' };
@@ -93,7 +94,16 @@ test('testbench desktops never use the real keychain or keyring', () => {
   assert.deepEqual(secretStoreSwitches(ATTACH, 'linux'), [['use-mock-keychain'], ['password-store', 'basic']]);
   assert.deepEqual(secretStoreSwitches(ATTACH, 'win32'), [['use-mock-keychain'], ['password-store', 'basic']]);
   assert.deepEqual(secretStoreSwitches(profile, 'darwin'), [['use-mock-keychain']]);
-  assert.deepEqual(secretStoreSwitches(profile, 'linux'), [['use-mock-keychain']]);
+  assert.deepEqual(secretStoreSwitches(profile, 'linux'), [['use-mock-keychain'], ['password-store', 'basic']]);
+});
+
+test('only the isolated profile on Linux allows plain-text encryption for its basic store', () => {
+  const profile = { ANTSEED_DESKTOP_ISOLATED_PROFILE: '1' };
+  assert.equal(usesPlainTextSecretStore(profile, 'linux'), true);
+  assert.equal(usesPlainTextSecretStore(profile, 'darwin'), false);
+  assert.equal(usesPlainTextSecretStore(profile, 'win32'), false);
+  assert.equal(usesPlainTextSecretStore(ATTACH, 'linux'), false);
+  assert.equal(usesPlainTextSecretStore({}, 'linux'), false);
 });
 
 test('a routing sync keeps the testbench peer allowlist and blocklist', () => {

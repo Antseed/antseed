@@ -35,10 +35,10 @@ pnpm testbench run <scenario> --chain local             # starts a testbench, ru
 pnpm testbench run <scenario> --chain local --keep      # leaves it up afterwards
 ```
 
-- Scenarios live in `e2e/testbench/scenarios/<name>.mjs`. The shipped ones: `chat-basic`, `payment-flow`, `routing-smoke`, `desktop-chat`, `mainnet-smoke` (real funds), and the `issue-*` scenarios.
-- Each run prints `PASS`, `FAIL` and `KNOWN` lines and the path of `report.json`. `--strict` turns `KNOWN` into failures. `--budgets` turns a scenario's `topology.budgets` into `budget: ...` checks (recorded in grey without it), and `DRIFT` lines name timings that moved against the previous passed run.
+- Scenarios live in `e2e/testbench/scenarios/<name>.mjs`; `pnpm -s testbench scenarios` lists them with their targets. The shipped ones: `chat-basic`, `payment-flow`, `routing-smoke`, `desktop-chat`, `cli-buyer-commands`, `buyer-withdraw-and-exit`, `free-tier`, the `stress-*` scenarios (`stress-smoke`, `stress-c32`, `stress-c64`, `stress-faults`, `stress-images`, `stress-restart-buyer`, `stress-restart-seller`, `stress-smallreserve`), the `issue-*` scenarios, and `mainnet-smoke` (real funds).
+- Each run prints `PASS`, `FAIL` and `KNOWN` lines and the path of `report.json`. `--strict` turns `KNOWN` into failures (CI runs with it). A run with any `FAIL` line is `failed`, even if the scenario caught the failure itself. `--budgets` turns a scenario's `topology.budgets` into `budget: ...` checks (recorded in grey without it), and `DRIFT` lines name timings that moved against the previous passed run.
 - `report.json` has `result`: `passed`, `failed`, `error`, `timeout` (past `--run-timeout`, default 1800 seconds) or `blocked` (the environment refused the run). The exit codes are 0, 1, 4, 3 and 2; `pnpm -s` turns any of them into 1. Anything but `passed` prints a `rerun:` line with the run's `--seed`; see `docs/testing.md`.
-- If this worktree's testbench is already running with the same topology, `run` reuses it (same chain, same channels); with another topology it refuses. Run `pnpm testbench down` first, or add `--slot NAME` for a second testbench next to it.
+- If this worktree's testbench is already running with the same topology and the same upstream, `run` reuses it (same chain, same channels). Same topology means every setting that changes behavior: sellers, providers and prices, each mock's latency, usage and fault rates, node env, buyer deposit, caps and routing, payment and chain knobs, mode (budgets do not count). Otherwise it refuses and names the settings that differ. A run without `--live` never reuses a testbench started with `--live`, and `up` refuses to reattach across `--live` the same way. Run `pnpm testbench down` first, or add `--slot NAME` for a second testbench next to it.
 - Scenarios assume a fresh testbench: run `pnpm testbench down` between runs after `--keep` or `up`.
 - A `run` killed by a command timeout (SIGKILL) no longer orphans its testbench. The supervisor's watchdog settles and stops it within about 30 seconds, and the next `run` restarts one it finds that way. Still tear down with `pnpm testbench down`, and wait while `pnpm testbench list` says `starting` or `stopping`. A testbench left up by `up` or `--keep` stops after `ANTSEED_TESTBENCH_IDLE_MINUTES` (default 120) without a control request.
 - For evidence (checks.log, the run transcript, per-run logs) run scenarios through `.claude/skills/verify-antseed/scripts/run-with-evidence.mjs <scenario> --chain local`, as verify-antseed describes.
@@ -52,7 +52,7 @@ pnpm testbench run <scenario> --chain local --keep      # leaves it up afterward
 | Needs | `forge` + forge-std, no RPC key | `BASE_MAINNET_RPC_URL` |
 | Use for | contract changes, payment checks, offline work | release checks against what is live |
 
-A scenario's default chain is the first entry in its `targets`: `payment-flow` and `issue-1200-spendingauth-catchup` default to local, the others to fork. Pass `--chain` explicitly. A contract change shows up only on `--chain local`.
+A scenario's default chain is the first entry in its `targets`: `chat-basic`, `routing-smoke` and `desktop-chat` default to fork, `mainnet-smoke` runs only on mainnet, and every other scenario (`payment-flow`, `cli-buyer-commands`, `buyer-withdraw-and-exit`, `free-tier`, the `issue-*` and `stress-*` scenarios) defaults to local. Pass `--chain` explicitly. A contract change shows up only on `--chain local`.
 
 ## 4. Keep a network up and poke at it
 
@@ -62,6 +62,8 @@ eval "$(pnpm -s testbench status --env)" && curl "$ANTSEED_PROXY_URL/v1/models"
 pnpm testbench logs supervisor            # also: anvil, seller-<id>; --follow to tail
 pnpm testbench down                       # settles and closes channels, then stops
 ```
+
+`down` exits non-zero when the testbench's last shutdown reported errors or left buyer reserve locked, also when that shutdown already finished (the watchdog, an earlier `down`); the message names an offline seller whose channel stayed open. A `run` whose own teardown fails that way turns a pass into `error`.
 
 ## 5. Reports
 
@@ -87,7 +89,7 @@ Every run writes `~/.antseed-testbench/<name>/reports/<timestamp>-<scenario>/`: 
 
 ## 8. Real network (only with an explicit yes)
 
-`pnpm testbench run mainnet-smoke --chain mainnet --real-funds` runs this worktree's buyer against live sellers with real USDC from the test wallet (capped at `ANTSEED_TESTBENCH_MAINNET_MAX_RESERVE_USDC`, default 0.50). It needs `ANTSEED_TESTBENCH_MAINNET_IDENTITY_HEX` and `BASE_MAINNET_RPC_URL`. Propose it as a separate step; never start it without a yes for that run. Its failures are read from the report's `desktop-main.log`, screenshots, video and `metrics.json`.
+`pnpm testbench run mainnet-smoke --chain mainnet --real-funds` runs this worktree's buyer against live sellers with real USDC from the test wallet. `ANTSEED_TESTBENCH_MAINNET_MAX_RESERVE_USDC` (default 0.50) caps each reserve step and request overdraft, not the total: the buyer tops reserves up by that step on its own, so only the test wallet's deposit bounds what a session spends, and `mainnet-smoke` fails the run after the fact if it signed more than the cap. It needs `ANTSEED_TESTBENCH_MAINNET_IDENTITY_HEX` and `BASE_MAINNET_RPC_URL`. Propose it as a separate step; never start it without a yes for that run. Its failures are read from the report's `desktop-main.log`, screenshots, video and `metrics.json`.
 
 ## 9. Report back
 

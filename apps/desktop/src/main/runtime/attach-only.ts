@@ -29,12 +29,13 @@ export function machineWideChangesDisabled(env: NodeJS.ProcessEnv = process.env)
 
 /**
  * Chromium switches that keep a testbench desktop's secret storage away from the
- * developer's real keychain. Both testbench kinds use the mock keychain on macOS.
- * Attach-only desktops also use the basic password store on Linux and Windows,
- * so they never reach the real keyring (GNOME Keyring or KWallet via D-Bus does
- * not follow HOME). Attach-only never encrypts a wallet: it reads the testbench
- * buyer's key from its data dir. The isolated profile keeps the OS store on Linux
- * because its existing identity.enc was encrypted with it.
+ * developer's real keychain. Both testbench kinds use the mock keychain on macOS
+ * and the basic password store on Linux and Windows, so they never reach the
+ * real keyring (GNOME Keyring or KWallet via D-Bus does not follow HOME).
+ * Attach-only never encrypts a wallet: it reads the testbench buyer's key from
+ * its data dir. The isolated profile encrypts its own wallet with that basic
+ * store (see usesPlainTextSecretStore); the testbench stops before launching a
+ * profile whose identity.enc an older version encrypted with the keyring.
  */
 export function secretStoreSwitches(
   env: NodeJS.ProcessEnv = process.env,
@@ -42,8 +43,20 @@ export function secretStoreSwitches(
 ): Array<[string] | [string, string]> {
   if (!machineWideChangesDisabled(env)) return [];
   const switches: Array<[string] | [string, string]> = [['use-mock-keychain']];
-  if (isAttachOnly(env) && platform !== 'darwin') switches.push(['password-store', 'basic']);
+  if (platform !== 'darwin') switches.push(['password-store', 'basic']);
   return switches;
+}
+
+/**
+ * Electron reports encryption as unavailable on Linux's basic store unless plain-text
+ * encryption is allowed. The isolated profile encrypts its throwaway test wallet there,
+ * so it allows it; a normal desktop and attach-only keep Electron's default.
+ */
+export function usesPlainTextSecretStore(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  return platform === 'linux' && isIsolatedProfile(env) && !isAttachOnly(env);
 }
 
 export function resolveBuyerStateDir(env: NodeJS.ProcessEnv = process.env, home: string = homedir()): string {

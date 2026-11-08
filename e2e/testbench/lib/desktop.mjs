@@ -14,7 +14,8 @@ export const MOCK_REPLY = /Hello from testbench seller/;
  * desktop can read your ~/.antseed (wallets, tunnel and Telegram settings, plugins) or reach your login keychain:
  * the app uses a mock keychain in attach-only mode. The wallet is the testbench buyer's, read from its data dir.
  */
-export function attachOnlyEnv({ manifest, baseEnv = process.env, extra = {} }) {
+export function attachOnlyEnv({ manifest, baseEnv = process.env, extra = {}, platform = process.platform }) {
+  assertAttachOnlyPlatform(platform);
   return isolatedEnv(baseEnv, manifest.home, {
     ...toolchainEnv(baseEnv),
     ANTSEED_DESKTOP_ATTACH_ONLY: '1',
@@ -24,6 +25,16 @@ export function attachOnlyEnv({ manifest, baseEnv = process.env, extra = {} }) {
     ANTSEED_BASE_RPC_URL: manifest.rpcUrl,
     ...extra,
   });
+}
+
+/**
+ * The attach-only desktop is isolated through HOME. Windows resolves the home directory from USERPROFILE and APPDATA
+ * instead, so there the desktop would read the real ~/.antseed. Same reason the full isolated profile is refused.
+ */
+export function assertAttachOnlyPlatform(platform = process.platform) {
+  if (platform === 'win32') {
+    throw new Error('The attach-only desktop (pnpm testbench desktop, desktop scenarios, share) is not supported on Windows: it is isolated through HOME, but Windows reads the home directory from USERPROFILE and APPDATA, so the desktop would read your real ~/.antseed (wallet, tunnel and Telegram settings). Run it on macOS or Linux');
+  }
 }
 
 /** Environment for an attach-only desktop on the testbench buyer; all desktop state stays in the testbench dir. */

@@ -8,7 +8,10 @@ import { saveJson } from './manifest.mjs';
 
 /** Test wallet for the real network: a 64-hex private key, shell first, then the worktree's gitignored .env.local. */
 export const MAINNET_WALLET_ENV = 'ANTSEED_TESTBENCH_MAINNET_IDENTITY_HEX';
-/** Hard cap on what one buyer channel may reserve, in USDC (applied as payments.maxReserveAmountUsdc). */
+/**
+ * Cap on each reserve step and each request's overdraft, in USDC (payments.maxReserveAmountUsdc and maxPerRequestUsdc).
+ * Not a total: buyer-core's topUpReserve raises a channel's ceiling by a step each time, so only the deposit bounds spend.
+ */
 export const MAINNET_RESERVE_CAP_ENV = 'ANTSEED_TESTBENCH_MAINNET_MAX_RESERVE_USDC';
 export const DEFAULT_RESERVE_CAP_USDC = '0.50';
 export const MAINNET_PROFILE = 'mainnet';
@@ -139,8 +142,39 @@ export function walletAddress(hex) {
   return new Wallet(`0x${hex}`).address;
 }
 
+/**
+ * The full desktop profile is isolated through HOME. Windows resolves the home directory (and with it the wallet,
+ * config and buyer data) from USERPROFILE and APPDATA instead, so there the desktop would use the real ~/.antseed.
+ */
+export function assertProfilePlatform(platform = process.platform) {
+  if (platform === 'win32') {
+    throw new Error('The full desktop on an isolated profile (pnpm testbench mainnet, mainnet scenarios) is not supported on Windows: it is isolated through HOME, but Windows reads the home directory, wallet and config from USERPROFILE and APPDATA, so the desktop would use your real ~/.antseed. Run it on macOS or Linux');
+  }
+}
+
+/** How the profile's desktop encrypts its wallet: Chromium's basic store on Linux (never the session keyring), a mock keychain elsewhere. */
+export function profileSecretStore(platform = process.platform) {
+  return platform === 'linux' ? 'basic' : 'mock-keychain';
+}
+
+/**
+ * The profile's identity.enc can only be read with the secret store that wrote it. Profiles from before Linux used the
+ * basic store were encrypted with the session keyring (profile.json has no secretStore): stop before launching, delete
+ * nothing, and say how to re-seed the profile from the wallet's source. Returns the store to record.
+ */
+export function assertProfileSecretStore({ paths, previous, platform = process.platform, walletSource = '.env.local' }) {
+  const store = profileSecretStore(platform);
+  const encrypted = join(paths.antseed, 'identity.enc');
+  if (!existsSync(encrypted)) return store;
+  const recorded = previous?.secretStore ?? (platform === 'linux' ? 'keyring' : 'mock-keychain');
+  if (recorded === store) return store;
+  const writer = recorded === 'keyring' ? 'your desktop keyring (GNOME Keyring or KWallet) by an earlier testbench version' : `the ${recorded} secret store`;
+  throw new Error(`The mainnet profile's wallet ${encrypted} was encrypted with ${writer}; the profile now uses the ${store} store and cannot read it. Nothing was deleted. The wallet key comes from ${MAINNET_WALLET_ENV} (${walletSource}): move the file aside (mv ${encrypted} ${encrypted}.${recorded}-backup) and rerun to re-seed the profile from it, or rerun with --fresh to reset the whole profile`);
+}
+
 /** Environment for the full desktop on a profile: real network, its own buyer, nothing machine-wide. */
-export function profileDesktopEnv({ baseEnv = process.env, paths, ports, instance }) {
+export function profileDesktopEnv({ baseEnv = process.env, paths, ports, instance, platform = process.platform }) {
+  assertProfilePlatform(platform);
   const env = isolatedEnv(baseEnv, paths.home, {
     ...toolchainEnv(baseEnv),
     ANTSEED_DESKTOP_ISOLATED_PROFILE: '1',
@@ -162,7 +196,8 @@ export function profileDesktopEnv({ baseEnv = process.env, paths, ports, instanc
  * Prepares (or reuses) the mainnet profile: wallet from the env, a lock so two worktrees never drive the same
  * wallet at once, worktree plugins, and the capped config. Returns everything a launcher needs.
  */
-export async function prepareMainnetProfile({ testbenchDir, root, repo, env = process.env, fileValues = {}, envFile, fresh = false, buyerProxyPort }) {
+export async function prepareMainnetProfile({ testbenchDir, root, repo, env = process.env, fileValues = {}, envFile, fresh = false, buyerProxyPort, platform = process.platform }) {
+  assertProfilePlatform(platform);
   const wallet = resolveMainnetWallet({ env, fileValues, envFile });
   const cap = resolveReserveCap({ env, fileValues });
   const address = walletAddress(wallet.hex);
@@ -176,10 +211,11 @@ export async function prepareMainnetProfile({ testbenchDir, root, repo, env = pr
     if (previous?.address && previous.address !== address) {
       throw new Error(`The mainnet profile holds wallet ${previous.address}, not ${address}; rerun with --fresh to reset it`);
     }
+    const secretStore = assertProfileSecretStore({ paths, previous, platform, walletSource: wallet.source });
     for (const dir of [paths.home, paths.antseed, paths.pluginsDir, paths.electron, paths.systemProxy, paths.logs]) await mkdir(dir, { recursive: true, mode: 0o700 });
     await linkWorktreePlugins(paths.pluginsDir, repo);
     await seedProfile(paths, { walletHex: wallet.hex, buyerProxyPort, reserveCapMicros: cap.micros });
-    await writeFile(paths.state, `${JSON.stringify({ address, walletSource: wallet.source, reserveCapUsdc: cap.usdc, buyerProxyPort, updatedAt: new Date().toISOString() }, null, 2)}\n`, { mode: 0o600 });
+    await writeFile(paths.state, `${JSON.stringify({ address, walletSource: wallet.source, secretStore, reserveCapUsdc: cap.usdc, buyerProxyPort, updatedAt: new Date().toISOString() }, null, 2)}\n`, { mode: 0o600 });
   } catch (error) {
     await releaseLock(lockPath, lock.entry);
     throw error;

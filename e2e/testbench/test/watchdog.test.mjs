@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { fileURLToPath } from 'node:url';
+import { readdirSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, it } from 'node:test';
 import { controlClient, startControlServer } from '../lib/control.mjs';
 import { isOwnedProcessAlive, ownProcessEntry, processStartTime } from '../lib/lock.mjs';
@@ -139,14 +141,19 @@ describe('control API activity', () => {
 
 describe('reaper', () => {
   const reaperPath = fileURLToPath(new URL('../lib/reaper.mjs', import.meta.url));
-  /** A stand-in supervisor: spawns the reaper and a child that ignores nothing, hands it over, prints the child's pid. */
+  const lockUrl = pathToFileURL(fileURLToPath(new URL('../lib/lock.mjs', import.meta.url))).href;
+  /**
+   * A stand-in supervisor: spawns the reaper and a child, hands it over exactly as supervisor.mjs reap() does (start
+   * time from processStartTime, which is /proc boot ticks on Linux and ps lstart elsewhere), prints the child's entry.
+   */
   const standIn = (childScript) => `
-    const { spawn, execFileSync } = require('node:child_process');
+    import { spawn } from 'node:child_process';
+    import { processStartTime } from ${JSON.stringify(lockUrl)};
     const reaper = spawn(process.execPath, [${JSON.stringify(reaperPath)}], { stdio: ['pipe', 'inherit', 'inherit'] });
     const child = spawn(process.execPath, ['-e', ${JSON.stringify(childScript)}], { stdio: 'ignore' });
-    const startedAt = execFileSync('ps', ['-o', 'lstart=', '-p', String(child.pid)], { env: { ...process.env, LC_ALL: 'C' } }).toString().trim();
-    reaper.stdin.write(JSON.stringify({ pid: child.pid, startedAt }) + '\\n');
-    console.log(child.pid, startedAt);
+    const entry = { pid: child.pid, startedAt: processStartTime(child.pid) };
+    reaper.stdin.write(JSON.stringify(entry) + '\\n');
+    console.log(JSON.stringify(entry));
     setInterval(() => {}, 1000);`;
   const waitGone = async (entry, timeoutMs) => {
     const deadline = Date.now() + timeoutMs;
@@ -154,11 +161,13 @@ describe('reaper', () => {
     return !isOwnedProcessAlive(entry);
   };
   const launch = async (childScript) => {
-    const parent = spawn(process.execPath, ['-e', standIn(childScript)], { stdio: ['ignore', 'pipe', 'inherit'] });
+    const parent = spawn(process.execPath, ['--input-type=module', '-e', standIn(childScript)], { stdio: ['ignore', 'pipe', 'inherit'] });
     const [chunk] = await once(parent.stdout, 'data');
-    const line = chunk.toString().trim();
-    const pid = Number(line.split(' ')[0]);
-    return { parent, entry: { pid, startedAt: processStartTime(pid) } };
+    const registered = JSON.parse(chunk.toString().trim());
+    const entry = { pid: registered.pid, startedAt: processStartTime(registered.pid) };
+    // What the reaper was handed must be what it checks; a mismatch is the bug that made these tests fail on Linux.
+    assert.equal(registered.startedAt, entry.startedAt, 'the registered start time is the one isOwnedProcessAlive compares');
+    return { parent, entry };
   };
 
   it('stops a registered child when its parent dies by SIGKILL', { skip: process.platform === 'win32' }, async () => {
@@ -167,14 +176,44 @@ describe('reaper', () => {
     await new Promise((r) => setTimeout(r, 200));
     assert.ok(isOwnedProcessAlive(entry), 'the child runs while its parent lives');
     parent.kill('SIGKILL');
-    assert.ok(await waitGone(entry, 3000));
+    // SIGTERM reaches the child as soon as the reaper sees its pipe close; the bound is room for a slow runner.
+    assert.ok(await waitGone(entry, 10_000), 'the reaper stopped the child');
   });
 
-  it('kills a child that ignores SIGTERM', { skip: process.platform === 'win32', timeout: 15_000 }, async () => {
+  it('kills a child that ignores SIGTERM', { skip: process.platform === 'win32', timeout: 40_000 }, async () => {
     const { parent, entry } = await launch(`process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)`);
     await new Promise((r) => setTimeout(r, 200));
+    const killedAt = Date.now();
     parent.kill('SIGKILL');
-    assert.ok(await waitGone(entry, 12_000));
+    // The reaper sends SIGKILL after its 8 s grace; 30 s leaves a slow runner room.
+    assert.ok(await waitGone(entry, 30_000), 'the reaper killed the child');
+    assert.ok(Date.now() - killedAt >= 7_000, 'only after the SIGTERM grace, so the SIGTERM was ignored and SIGKILL did it');
+  });
+
+  it('a registration records the start time format isOwnedProcessAlive uses on this OS', async () => {
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+    try {
+      const entry = { pid: child.pid, startedAt: processStartTime(child.pid) };
+      assert.ok(isOwnedProcessAlive(entry));
+      if (process.platform === 'linux') assert.match(entry.startedAt, /^boot\+\d+$/, 'Linux: /proc boot-relative ticks, not ps lstart');
+      else assert.doesNotMatch(entry.startedAt, /^boot\+/);
+      assert.deepEqual(ownProcessEntry(child.pid), entry);
+    } finally {
+      child.kill('SIGKILL');
+    }
+  });
+
+  it('every process registration in the testbench uses processStartTime, never ps lstart', () => {
+    // Registrations (reaper feed, manifest entries, share children) must match what isOwnedProcessAlive checks.
+    const root = dirname(fileURLToPath(new URL('../cli.mjs', import.meta.url)));
+    const files = ['cli.mjs', 'supervisor.mjs', 'share-host.mjs', 'seller-worker.mjs', ...readdirSync(join(root, 'lib')).filter((f) => f.endsWith('.mjs')).map((f) => `lib/${f}`)];
+    for (const file of files) {
+      const text = readFileSync(join(root, file), 'utf8');
+      if (file !== 'lib/lock.mjs') assert.doesNotMatch(text, /lstart/, `${file} reads ps lstart directly`);
+      for (const line of text.split('\n').filter((l) => /pid: [\w.]+\.pid\b/.test(l) && /startedAt:/.test(l))) {
+        assert.match(line, /startedAt: processStartTime\(/, `${file}: ${line.trim()}`);
+      }
+    }
   });
 
   it('does not signal a pid that now belongs to another process', async () => {

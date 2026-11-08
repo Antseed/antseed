@@ -31,6 +31,23 @@ export function isolatedEnv(env, home, extra = {}) {
   return { ...clean, HOME: home, ANTSEED_SKIP_PLUGIN_UPDATE_CHECK: '1', ...extra };
 }
 
+/**
+ * The supervisor's environments, from its inherited `env`: `base` for every child (cleaned, without the live provider
+ * keys, with --verbose's ANTSEED_DEBUG), `own` for the supervisor itself (plus the buyer's switches in sdk mode, whose
+ * buyer runs inside it) and `sdkSeller(sellerEnv)` for a forked SDK seller. Buyer switches never reach a seller.
+ */
+export function supervisorEnvs(env, home, { verbose = false, buyerEnv = {}, liveKeys = [], cliMode = false } = {}) {
+  const debug = verbose ? { ANTSEED_DEBUG: '1' } : {};
+  const base = isolatedEnv(env, home, debug);
+  for (const key of liveKeys) delete base[key];
+  return {
+    base,
+    own: cliMode ? base : { ...base, ...buyerEnv },
+    // isolatedEnv strips inherited ANTSEED_* switches, so --verbose goes on again over the seller's own env.
+    sdkSeller: (sellerEnv = {}) => isolatedEnv(base, home, { ...sellerEnv, ...debug }),
+  };
+}
+
 export function isLoopbackHost(host) {
   return host === '127.0.0.1';
 }

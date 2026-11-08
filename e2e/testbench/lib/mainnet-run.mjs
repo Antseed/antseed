@@ -21,8 +21,8 @@ export function mainnetReader(rpcUrl, chain) {
 
 /**
  * Scenario API for the full desktop on the real network. Same shape as the testbench `tb` where it makes sense
- * (check, knownIssue, metric, event, waitFor, desktop), plus real-network helpers. Every chat is guarded by
- * the per-run spend cap: signed spend above `capMicros` fails the run.
+ * (check, knownIssue, metric, event, waitFor, desktop), plus real-network helpers. Signed spend is checked against
+ * the per-run cap after the chat: spend above `capMicros` fails the run, but nothing stops the signature itself.
  */
 export function createMainnetApi({ repo, env, instance, profile, reader, reportDir, eventsPath, capMicros, strict = false, trace = false }) {
   const checks = [];

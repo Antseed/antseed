@@ -12,6 +12,117 @@ const STATIC_TYPES = {
   '.ogg': 'audio/ogg', '.mp3': 'audio/mpeg', '.oga': 'audio/ogg',
 };
 
+/** X family that matches any host; an entry without a display number matches every display (libXau). */
+const FAMILY_WILD = 0xffff;
+export const XAUTH_PROTOCOL = 'MIT-MAGIC-COOKIE-1';
+
+/**
+ * One Xauthority entry for `cookie` (16 random bytes): wildcard host and no display number, so it is valid for the
+ * display Xvfb picks itself (-displayfd) and the X server, x11vnc, the window manager and Electron all read the same
+ * file. Format per field: 16-bit big-endian length, then the bytes; the family is a bare 16-bit value.
+ */
+export function xauthorityEntry(cookie) {
+  if (!Buffer.isBuffer(cookie) || cookie.length !== 16) throw new Error('An MIT-MAGIC-COOKIE-1 is 16 bytes');
+  const field = (bytes) => { const length = Buffer.alloc(2); length.writeUInt16BE(bytes.length); return Buffer.concat([length, bytes]); };
+  const family = Buffer.alloc(2);
+  family.writeUInt16BE(FAMILY_WILD);
+  return Buffer.concat([family, field(Buffer.alloc(0)), field(Buffer.alloc(0)), field(Buffer.from(XAUTH_PROTOCOL)), field(cookie)]);
+}
+
+/** Xvfb on a display it picks, no TCP, and only clients holding the cookie in `authFile` (never -ac). */
+export function xvfbArgs({ width, height, authFile }) {
+  if (!authFile) throw new Error('Xvfb needs an -auth file');
+  return ['-displayfd', '3', '-screen', '0', `${width}x${height}x24`, '-nolisten', 'tcp', '-auth', authFile];
+}
+
+/**
+ * Share state that is saved in call order. `write(patch)` applies the patch at once and queues a save of that snapshot
+ * behind every earlier save, so an older snapshot can never land after a newer one. Its promise rejects on a failed
+ * save; `flush()` waits for every queued save and throws the first error since the last flush, so fire-and-forget
+ * writes (a child being recorded) still surface at the next checkpoint.
+ */
+export function createStateWriter(save, initial = null) {
+  let state = initial;
+  let queue = Promise.resolve();
+  let failure = null;
+  return {
+    get state() { return state; },
+    write(patch) {
+      state = { ...state, ...patch, updatedAt: new Date().toISOString() };
+      const snapshot = state;
+      const saved = queue.then(() => save(snapshot));
+      queue = saved.catch((error) => { failure ??= error; });
+      return saved;
+    },
+    async flush() {
+      await queue;
+      if (failure) {
+        const error = failure;
+        failure = null;
+        throw error;
+      }
+    },
+  };
+}
+
+/**
+ * Starts Xvfb and waits for the display it picked (-displayfd 3). The child is handed to `track` right after spawn,
+ * before the wait, so cleanup knows it even if the host dies here. A display that never reports, a spawn error or an
+ * early exit stops the child before this rejects.
+ */
+export async function startXvfb({ spawnXvfb, track, timeoutMs = 15_000, setTimer = setTimeout, clearTimer = clearTimeout }) {
+  const child = spawnXvfb();
+  track(child);
+  try {
+    return await new Promise((resolveDisplay, reject) => {
+      let text = '';
+      const timer = setTimer(() => reject(new Error(`Xvfb did not report a display within ${timeoutMs / 1000}s`)), timeoutMs);
+      child.stdio[3].on('data', (chunk) => {
+        text += chunk.toString();
+        if (text.includes('\n')) { clearTimer(timer); resolveDisplay(`:${text.trim()}`); }
+      });
+      child.once('error', (error) => { clearTimer(timer); reject(error); });
+      child.once('exit', (code) => { clearTimer(timer); reject(new Error(`Xvfb exited with ${code}`)); });
+    });
+  } catch (error) {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
+    throw error;
+  }
+}
+
+/**
+ * The host's last resort once it has stopped: exit after `delayMs` even if something keeps the event loop alive, with
+ * the exit code a failure already recorded (a share.json that could not be saved), never a forced 0 over it.
+ */
+export function scheduleForcedExit({ proc = process, delayMs = 100, setTimer = setTimeout } = {}) {
+  const timer = setTimer(() => proc.exit(proc.exitCode ?? 0), delayMs);
+  timer?.unref?.();
+  return timer;
+}
+
+/** Environment for an X client on the share display: the display and the cookie file. */
+export function displayEnv(baseEnv, { display, authFile }) {
+  return { ...baseEnv, DISPLAY: display, XAUTHORITY: authFile };
+}
+
+/**
+ * Stops whatever a recorded share left: the host if it is still alive, then every recorded child and the tailscale
+ * route, each only if it is still the process (or route) the share recorded. Runs when the host died too, since its
+ * children outlive it. Returns false only when there is no share state, or it was already cleaned up.
+ */
+export async function cleanupShare(state, { isOwnedProcessAlive, killOwned, tailscaleOff, save, say = () => {} }) {
+  if (!state || state.cleanedAt) return false;
+  const hostAlive = Boolean(state.host && isOwnedProcessAlive(state.host));
+  // A host that stopped itself has cleaned up already; the checks below then find nothing, so it needs no message.
+  if (hostAlive) say('Stopping share (desktop, display, VNC, tailscale serve)');
+  else if (!state.stoppedAt) say('Cleaning up after a share whose host is gone (desktop, display, VNC, tailscale serve)');
+  if (hostAlive) await killOwned(state.host, { graceMs: 20_000 });
+  for (const entry of state.processes ?? []) await killOwned(entry, { graceMs: 5_000 });
+  if (state.tailscale?.path) tailscaleOff(state.tailscale.path);
+  await save({ ...state, running: false, starting: false, cleanedAt: new Date().toISOString() });
+  return true;
+}
+
 /** noVNC's web client: an explicit dir (ANTSEED_TESTBENCH_NOVNC_DIR) or a distro install location. */
 export function findNoVncDir(explicit, candidates = NOVNC_DIRS) {
   for (const dir of explicit ? [explicit] : candidates) {

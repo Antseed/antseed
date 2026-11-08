@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
-import { lstat, mkdtemp, readFile, readlink, stat, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readdir, readFile, readlink, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import { linkWorktreePlugins, MAINNET_RESERVE_CAP_ENV, MAINNET_WALLET_ENV, profileDesktopEnv, profilePaths, resolveMainnetWallet, resolveReserveCap, seedProfile, walletAddress } from '../lib/mainnet.mjs';
+import { assertProfilePlatform, assertProfileSecretStore, linkWorktreePlugins, MAINNET_RESERVE_CAP_ENV, MAINNET_WALLET_ENV, prepareMainnetProfile, profileDesktopEnv, profilePaths, profileSecretStore, resolveMainnetWallet, resolveReserveCap, seedProfile, walletAddress } from '../lib/mainnet.mjs';
 import { parseArgs } from '../lib/options.mjs';
 
 const KEY = 'ab'.repeat(32);
@@ -59,6 +59,36 @@ describe('mainnet profile', () => {
     assert.equal(env.COREPACK_HOME, '/Users/me/.cache/node/corepack');
     assert.equal(env.COREPACK_ENABLE_DOWNLOAD_PROMPT, '0');
     for (const key of ['OPENAI_API_KEY', 'BASE_MAINNET_RPC_URL', MAINNET_WALLET_ENV, 'ANTSEED_SKIP_PLUGIN_UPDATE_CHECK', 'VITE_DEV_SERVER_URL']) assert.equal(env[key], undefined, key);
+  });
+
+  it('refuses the full isolated profile on Windows before preparing anything', async () => {
+    assert.throws(() => assertProfilePlatform('win32'), /not supported on Windows: .*USERPROFILE and APPDATA/);
+    assert.doesNotThrow(() => assertProfilePlatform('darwin'));
+    assert.doesNotThrow(() => assertProfilePlatform('linux'));
+    assert.throws(() => profileDesktopEnv({ baseEnv: {}, paths: profilePaths('/tb'), ports: {}, instance: 'x', platform: 'win32' }), /not supported on Windows/);
+    const dir = await mkdtemp(join(tmpdir(), 'tb-win-'));
+    await assert.rejects(prepareMainnetProfile({ testbenchDir: dir, root: dir, repo: dir, env: { [MAINNET_WALLET_ENV]: KEY }, platform: 'win32' }), /not supported on Windows/);
+    assert.deepEqual(await readdir(dir), [], 'no lock, profile or wallet file was written');
+  });
+
+  it('keeps an identity.enc from another secret store and says how to re-seed it', async () => {
+    assert.equal(profileSecretStore('linux'), 'basic');
+    assert.equal(profileSecretStore('darwin'), 'mock-keychain');
+    const paths = profilePaths(await mkdtemp(join(tmpdir(), 'tb-store-')));
+    assert.equal(assertProfileSecretStore({ paths, previous: null, platform: 'linux' }), 'basic', 'no wallet yet: seeded under the basic store');
+    await mkdir(paths.antseed, { recursive: true });
+    const encrypted = join(paths.antseed, 'identity.enc');
+    await writeFile(encrypted, 'keyring-ciphertext');
+    // A Linux profile from before the basic store has no secretStore in profile.json: its wallet is in the keyring.
+    assert.throws(() => assertProfileSecretStore({ paths, previous: { address: '0x1' }, platform: 'linux', walletSource: '.env.local' }), (error) => {
+      assert.match(error.message, /encrypted with your desktop keyring .*cannot read it\. Nothing was deleted\./);
+      assert.match(error.message, new RegExp(`${MAINNET_WALLET_ENV} \\(\\.env\\.local\\)`));
+      assert.match(error.message, /mv .*identity\.enc .*identity\.enc\.keyring-backup.* or rerun with --fresh/);
+      return true;
+    });
+    assert.equal(await readFile(encrypted, 'utf8'), 'keyring-ciphertext', 'the old identity is untouched');
+    assert.equal(assertProfileSecretStore({ paths, previous: { secretStore: 'basic' }, platform: 'linux' }), 'basic');
+    assert.equal(assertProfileSecretStore({ paths, previous: { address: '0x1' }, platform: 'darwin' }), 'mock-keychain', 'macOS profiles always used the mock keychain');
   });
 });
 

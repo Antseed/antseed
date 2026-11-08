@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
@@ -95,10 +96,131 @@ describe('locks', () => {
     assert.equal(isOwnedProcessAlive({ pid: 111 }, deps({})), false, 'no start time => never owned');
   });
 
-  it('recovers a corrupt lock file', async () => {
+  it('recovers a corrupt lock file once it is older than the grace period', async () => {
     const path = join(tmp, 'corrupt.lock');
     await writeFile(path, '{not json');
+    const old = new Date(Date.now() - 60_000);
+    await utimes(path, old, old);
     assert.equal((await acquireLock(path, {}, deps({ pid: 111, startedAt: starts[111] }))).state, 'acquired');
+  });
+
+  // Contenders 1000-1039 are all alive, so a lock one of them published is never stale to the others.
+  const contenders = Array.from({ length: 40 }, (_, index) => ({ pid: 1000 + index, startedAt: `start-${1000 + index}` }));
+  const isContender = (pid) => pid >= 1000 && pid < 1040;
+  const liveDeps = (entry, extra = {}) => ({
+    entry, isPidAlive: isContender, processStartTime: (pid) => (isContender(pid) ? `start-${pid}` : null), ...extra,
+  });
+  const race = (path, extra, count = 20) => Promise.all(contenders.slice(0, count).map((entry) => acquireLock(path, {}, liveDeps(entry, extra))));
+  const assertOneOwner = async (path, results) => {
+    const winners = results.filter((result) => result.state === 'acquired');
+    assert.equal(winners.length, 1, `exactly one contender owns the lock (got ${winners.length})`);
+    const holder = JSON.parse(await readFile(path, 'utf8'));
+    assert.equal(holder.pid, winners[0].entry.pid, 'the lock on disk is the winner\'s');
+    for (const result of results.filter((entry) => entry.state === 'held')) assert.equal(result.holder.pid, holder.pid);
+  };
+
+  it('grants a free lock to exactly one of many concurrent contenders and leaves no draft files', async () => {
+    for (let round = 0; round < 10; round += 1) {
+      const dir = join(tmp, `free-race-${round}`);
+      const path = join(dir, 'x.lock');
+      await assertOneOwner(path, await race(path));
+      assert.deepEqual(await readdir(dir), ['x.lock']);
+    }
+  });
+
+  it('lets only one of many contenders reclaim the same stale lock', async () => {
+    for (let round = 0; round < 50; round += 1) {
+      const dir = join(tmp, `stale-race-${round}`);
+      await mkdir(dir, { recursive: true });
+      const path = join(dir, 'x.lock');
+      await writeFile(path, JSON.stringify({ pid: 999, startedAt: 'dead' }));
+      await assertOneOwner(path, await race(path, {}, 40));
+      assert.deepEqual(await readdir(dir), ['x.lock'], 'no stale, mutex or draft files left behind');
+    }
+  });
+
+  // A promise the test resolves by hand, and a hook that parks one contender at a reclaim step until then.
+  const barrier = () => { let open; const opened = new Promise((r) => { open = r; }); return { open, opened }; };
+  const parkAt = (step, gate, reached) => async (current) => { if (current === step) { reached.open(); await gate.opened; } };
+  const staleLock = async (name, holder = { pid: 999, startedAt: 'dead' }) => {
+    const dir = join(tmp, name);
+    await mkdir(dir, { recursive: true });
+    const path = join(dir, 'x.lock');
+    const text = JSON.stringify(holder);
+    await writeFile(path, text);
+    return { dir, path, text };
+  };
+
+  it('a contender that judged a lock stale and stalled never removes the lock another reclaimed meanwhile', async () => {
+    // The schedule that broke the rename-based reclaim: A judges S stale and pauses; B reclaims S and acquires;
+    // C and D contend; then A resumes. Exactly one may own the lock.
+    for (let round = 0; round < 20; round += 1) {
+      const { dir, path } = await staleLock(`schedule-a-${round}`);
+      const gate = barrier();
+      const reached = barrier();
+      const a = acquireLock(path, {}, liveDeps(contenders[0], { onReclaimStep: parkAt('judged-stale', gate, reached) }));
+      await reached.opened;
+      const b = await acquireLock(path, {}, liveDeps(contenders[1]));
+      assert.equal(b.state, 'acquired');
+      const others = Promise.all([contenders[2], contenders[3]].map((entry) => acquireLock(path, {}, liveDeps(entry))));
+      gate.open();
+      await assertOneOwner(path, [await a, b, ...(await others)]);
+      assert.equal(JSON.parse(await readFile(path, 'utf8')).pid, contenders[1].pid, 'B still owns it');
+      assert.deepEqual(await readdir(dir), ['x.lock']);
+    }
+  });
+
+  it('nobody acquires while a live reclaimer holds the reclaim mutex, and exactly one does after', async () => {
+    for (let round = 0; round < 20; round += 1) {
+      const { dir, path } = await staleLock(`schedule-b-${round}`);
+      const gate = barrier();
+      const reached = barrier();
+      const a = acquireLock(path, {}, liveDeps(contenders[0], { onReclaimStep: parkAt('mutex-held', gate, reached) }));
+      await reached.opened;
+      const settled = [];
+      const others = contenders.slice(1, 4).map((entry) => acquireLock(path, {}, liveDeps(entry)).then((result) => { settled.push(result); return result; }));
+      await new Promise((r) => setTimeout(r, 50));
+      assert.deepEqual(settled, [], 'the others wait: the stale lock is still in place and the mutex owner is alive');
+      gate.open();
+      await assertOneOwner(path, await Promise.all([a, ...others]));
+      assert.deepEqual(await readdir(dir), ['x.lock']);
+    }
+  });
+
+  it('a dead reclaimer does not block recovery, and its mutex is cleaned up', async () => {
+    const { dir, path, text } = await staleLock('dead-reclaimer');
+    const key = createHash('sha256').update(text).digest('hex').slice(0, 16);
+    await writeFile(`${path}.reclaim-${key}-0`, JSON.stringify({ pid: 998, startedAt: 'dead too' }));
+    await assertOneOwner(path, await race(path, {}, 20));
+    assert.deepEqual(await readdir(dir), ['x.lock']);
+  });
+
+  it('says a filesystem without hard links cannot hold the lock, and leaves no draft behind', async () => {
+    const dir = join(tmp, 'nolink');
+    for (const code of ['EPERM', 'ENOTSUP', 'EXDEV']) {
+      const link = async () => { throw Object.assign(new Error(code), { code }); };
+      await assert.rejects(acquireLock(join(dir, 'x.lock'), {}, liveDeps(contenders[0], { link })), new RegExp(`needs a filesystem with hard links \\(link\\(\\) failed with ${code}\\)`));
+    }
+    assert.deepEqual(await readdir(dir), []);
+  });
+
+  it('a reader never sees a partially written lock from this module', async () => {
+    const path = join(tmp, 'reader.lock');
+    const seen = [];
+    const reads = (async () => {
+      for (let i = 0; i < 200; i += 1) {
+        const text = await readFile(path, 'utf8').catch(() => null);
+        if (text !== null) seen.push(text);
+        await new Promise((r) => setImmediate(r));
+      }
+    })();
+    for (let i = 0; i < 20; i += 1) {
+      const result = await acquireLock(path, { padding: 'x'.repeat(64 * 1024) }, liveDeps(contenders[i % 20]));
+      assert.equal(result.state, 'acquired');
+      await releaseLock(path, result.entry);
+    }
+    await reads;
+    for (const text of seen) assert.doesNotThrow(() => JSON.parse(text));
   });
 
   it('withLock serializes and always releases', async () => {

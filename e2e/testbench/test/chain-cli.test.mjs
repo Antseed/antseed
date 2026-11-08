@@ -12,7 +12,7 @@ import {
 } from '../lib/local-deploy.mjs';
 import { parseArgs } from '../lib/options.mjs';
 import { cliActiveChannels } from '../lib/stress.mjs';
-import { normalizeFreeTier, normalizeTopology, topologyFingerprint } from '../lib/topology.mjs';
+import { normalizeFreeTier, normalizeTopology, topologyFingerprint, topologySummary } from '../lib/topology.mjs';
 import { cliSellerConfig } from '../lib/node-options.mjs';
 import { createTestbenchApi } from '../lib/tb.mjs';
 import { DEFAULT_SOURCE_CONFIG, sanitizeConfig } from '../lib/config.mjs';
@@ -141,7 +141,8 @@ describe('topology chain.contracts and --contracts', () => {
     assert.equal(normalizeTopology({ chain: { contracts: 'full' } }, source, { contracts: 'payments' }).chain.contracts, 'payments');
     assert.throws(() => normalizeTopology({ chain: { contracts: 'all' } }, source), /chain.contracts must be one of full, payments/);
     assert.equal(topologyFingerprint(full), topologyFingerprint(normalizeTopology({ chain: { contracts: 'full' } }, source)));
-    assert.match(topologyFingerprint(payments), /#contracts=payments$/);
+    assert.notEqual(topologyFingerprint(payments), topologyFingerprint(full));
+    assert.match(topologySummary(payments), /#contracts=payments$/);
   });
 
   it('takes --contracts on up and run of the local chain only', () => {

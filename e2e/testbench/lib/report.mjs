@@ -39,6 +39,19 @@ export function classifyScenarioError(error) {
 }
 
 /**
+ * A run whose scenario resolved is only `passed` when its report agrees: a failed check (one a scenario caught and
+ * swallowed), or under --strict a failed known issue, makes it `failed` with that check as the error.
+ */
+export function applyCheckVerdict(report, { strict = false } = {}) {
+  if (report.result !== 'passed') return report;
+  const check = (report.checks ?? []).find((entry) => !entry.ok);
+  const issue = strict ? (report.knownIssues ?? []).find((entry) => !entry.ok) : undefined;
+  if (check) Object.assign(report, { result: 'failed', phase: 'scenario', error: `check failed: ${check.name}` });
+  else if (issue) Object.assign(report, { result: 'failed', phase: 'scenario', error: `known issue failed under --strict: ${issue.name}` });
+  return report;
+}
+
+/**
  * A failure after the scenario finished (closing the desktop, `down`): turns a pass into `error`, and is kept
  * next to the verdict otherwise, because the scenario's own result is the more useful one.
  */

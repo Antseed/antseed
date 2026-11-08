@@ -5,6 +5,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { createWriteStream, existsSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
@@ -14,7 +15,7 @@ import { desktopEnv, electronRootArgs } from './lib/desktop.mjs';
 import { ownProcessEntry, processStartTime } from './lib/lock.mjs';
 import { readJson, saveJson, validateManifest } from './lib/manifest.mjs';
 import { isInside, testbenchPaths } from './lib/paths.mjs';
-import { startShareServer } from './lib/share.mjs';
+import { createStateWriter, displayEnv, scheduleForcedExit, startShareServer, startXvfb, xauthorityEntry, xvfbArgs } from './lib/share.mjs';
 import { startHeartbeat } from './lib/watchdog.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -23,18 +24,17 @@ const [root, name] = process.argv.slice(2);
 const paths = testbenchPaths(root, name);
 const plan = JSON.parse(await readFile(join(paths.dir, 'share.plan.json'), 'utf8'));
 const sharePath = join(paths.dir, 'share.json');
+// The display's cookie, inside the 0700 testbench dir: only this account's processes can reach the display.
+const authFile = join(paths.dir, 'share-xauthority');
 const log = (message) => console.log(`[share] ${new Date().toISOString()} ${message}`);
 const children = [];
 let server = null;
-let shareState = null;
+// Every share.json save goes through this queue, in call order (see createStateWriter).
+const shareWriter = createStateWriter((state) => saveJson(sharePath, state));
+const writeState = (patch) => shareWriter.write(patch);
 let stopping = null;
 let lastActivity = Date.now();
 let desktopStatus = 'starting';
-
-const writeState = async (patch) => {
-  shareState = { ...shareState, ...patch, updatedAt: new Date().toISOString() };
-  await saveJson(sharePath, shareState);
-};
 
 function track(label, child, logName) {
   const out = createWriteStream(join(paths.logs, `${logName}.log`), { flags: 'a' });
@@ -42,6 +42,9 @@ function track(label, child, logName) {
   child.stderr?.pipe(out, { end: false });
   const entry = { label, child, process: { pid: child.pid, startedAt: processStartTime(child.pid) } };
   children.push(entry);
+  // Recorded as soon as it exists, so a host that dies mid-startup still leaves `share --stop` a list to clean up.
+  // Not awaited here; a failed save surfaces at the next flush (ready or stop).
+  writeState({ processes: children.map((tracked) => ({ label: tracked.label, ...tracked.process })) }).catch(() => {});
   child.once('exit', (code, signal) => {
     log(`${label} exited (${code ?? signal})`);
     if (!stopping) void stop(`${label} exited`);
@@ -49,26 +52,23 @@ function track(label, child, logName) {
   return entry;
 }
 
-/** Xvfb picks a free display itself (-displayfd) so concurrent shares never collide. */
+/**
+ * Xvfb picks a free display itself (-displayfd) so concurrent shares never collide. A fresh random cookie per share,
+ * in a 0600 file, so other local accounts cannot connect to the display (the VNC socket is private as well).
+ */
 async function startDisplay() {
-  const child = spawn('Xvfb', ['-displayfd', '3', '-screen', '0', `${plan.width}x${plan.height}x24`, '-nolisten', 'tcp', '-ac'], { stdio: ['ignore', 'pipe', 'pipe', 'pipe'] });
-  let text = '';
-  const display = await new Promise((resolveDisplay, reject) => {
-    const timer = setTimeout(() => reject(new Error('Xvfb did not report a display within 15s')), 15_000);
-    child.stdio[3].on('data', (chunk) => {
-      text += chunk.toString();
-      if (text.includes('\n')) { clearTimeout(timer); resolveDisplay(`:${text.trim()}`); }
-    });
-    child.once('exit', (code) => { clearTimeout(timer); reject(new Error(`Xvfb exited with ${code}`)); });
+  await rm(authFile, { force: true });
+  await writeFile(authFile, xauthorityEntry(randomBytes(16)), { mode: 0o600, flag: 'wx' });
+  return startXvfb({
+    spawnXvfb: () => spawn('Xvfb', xvfbArgs({ width: plan.width, height: plan.height, authFile }), { stdio: ['ignore', 'pipe', 'pipe', 'pipe'] }),
+    track: (child) => track('Xvfb', child, 'share-xvfb'),
   });
-  track('Xvfb', child, 'share-xvfb');
-  return display;
 }
 
 /** x11vnc on a unix socket inside the 0700 testbench dir: no TCP port, so other local users cannot attach. */
 async function startVnc(display, socketPath) {
   await rm(socketPath, { force: true });
-  const child = spawn('x11vnc', ['-display', display, '-rfbport', '0', '-unixsock', socketPath, '-forever', '-shared', '-nopw', '-noxdamage', '-quiet'], { stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn('x11vnc', ['-display', display, '-auth', authFile, '-rfbport', '0', '-unixsock', socketPath, '-forever', '-shared', '-nopw', '-noxdamage', '-quiet'], { env: displayEnv(process.env, { display, authFile }), stdio: ['ignore', 'pipe', 'pipe'] });
   track('x11vnc', child, 'share-vnc');
   const deadline = Date.now() + 15_000;
   while (!existsSync(socketPath)) {
@@ -96,7 +96,7 @@ async function startWindowManager(display) {
     await writeFile(configPath, OPENBOX_CONFIG);
     args.push('--config-file', configPath);
   }
-  const child = spawn(manager, args, { env: { ...process.env, DISPLAY: display }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(manager, args, { env: displayEnv(process.env, { display, authFile }), stdio: ['ignore', 'pipe', 'pipe'] });
   track(manager, child, 'share-wm');
   return manager;
 }
@@ -109,7 +109,7 @@ async function startDesktop(display, manifest) {
   if (!isInside(stateDir, manifest.dir)) throw new Error(`Refusing to reset ${stateDir}`);
   if (plan.fresh) await rm(stateDir, { recursive: true, force: true });
   await mkdir(stateDir, { recursive: true, mode: 0o700 });
-  const env = { ...desktopEnv({ manifest, instance, ports: resolveInstancePorts(instance), stateDir: 'desktop-share' }), DISPLAY: display };
+  const env = displayEnv(desktopEnv({ manifest, instance, ports: resolveInstancePorts(instance), stateDir: 'desktop-share' }), { display, authFile });
   delete env.WAYLAND_DISPLAY;
   const electron = createRequire(join(desktopDir, 'package.json'))('electron');
   const args = ['.', ...electronRootArgs(), ...(process.env.ANTSEED_TESTBENCH_SHARE_DEBUG_PORT ? [`--remote-debugging-port=${process.env.ANTSEED_TESTBENCH_SHARE_DEBUG_PORT}`, '--remote-debugging-address=127.0.0.1'] : [])];
@@ -129,8 +129,9 @@ async function stop(reason) {
   if (stopping) return stopping;
   stopping = (async () => {
     log(`Stopping share (${reason})`);
-    if (shareState?.tailscale?.path) {
-      try { tailscale(['serve', '--https=443', `--set-path=${shareState.tailscale.path}`, 'off']); log(`Removed tailscale serve ${shareState.tailscale.path}`); } catch (error) { log(error.message); }
+    const route = shareWriter.state?.tailscale?.path;
+    if (route) {
+      try { tailscale(['serve', '--https=443', `--set-path=${route}`, 'off']); log(`Removed tailscale serve ${route}`); } catch (error) { log(error.message); }
     }
     await server?.stop().catch(() => {});
     for (const entry of [...children].reverse()) {
@@ -142,9 +143,13 @@ async function stop(reason) {
       }
     }
     await rm(join(paths.dir, 'share-vnc.sock'), { force: true });
-    if (shareState) await writeState({ running: false, stoppedAt: new Date().toISOString(), stopReason: reason });
+    await rm(authFile, { force: true });
+    if (shareWriter.state) {
+      writeState({ running: false, stoppedAt: new Date().toISOString(), stopReason: reason }).catch(() => {});
+      try { await shareWriter.flush(); } catch (error) { log(`Could not save share.json: ${error.message}`); process.exitCode = 1; }
+    }
     log('Share stopped');
-    setTimeout(() => process.exit(0), 100).unref();
+    scheduleForcedExit();
   })();
   return stopping;
 }
@@ -154,8 +159,7 @@ process.on('SIGINT', () => void stop('SIGINT'));
 
 async function main() {
   const manifest = validateManifest(await readJson(paths.manifest), { dir: paths.dir });
-  shareState = { running: false, starting: true, host: ownProcessEntry(), name, startedAt: new Date().toISOString(), idleMinutes: plan.idleMinutes };
-  await saveJson(sharePath, shareState);
+  await writeState({ running: false, starting: true, host: ownProcessEntry(), name, startedAt: new Date().toISOString(), idleMinutes: plan.idleMinutes });
   const display = await startDisplay();
   log(`Virtual display ${display} (${plan.width}x${plan.height})`);
   const manager = await startWindowManager(display);
@@ -169,11 +173,13 @@ async function main() {
   server = await startShareServer({
     prefix, noVncDir: plan.noVncDir, vncSocket: socketPath, reportsDir: paths.reports, dnsName: plan.dnsName,
     onActivity: () => { lastActivity = Date.now(); },
-    info: () => ({ name, branch: plan.branch, target: manifest.target ?? 'fork', upstream: manifest.upstream, desktop: desktopStatus, startedAt: shareState.startedAt, idleMinutes: plan.idleMinutes }),
+    info: () => ({ name, branch: plan.branch, target: manifest.target ?? 'fork', upstream: manifest.upstream, desktop: desktopStatus, startedAt: shareWriter.state.startedAt, idleMinutes: plan.idleMinutes }),
   });
   log(`Share server on ${server.url}`);
   let url = server.url;
   if (plan.tailscale) {
+    // Recorded before it exists, so a host that dies right after still leaves the route to remove.
+    await writeState({ tailscale: { path: prefix, dnsName: plan.dnsName } });
     tailscale(['serve', '--bg', '--yes', '--https=443', `--set-path=${prefix}`, `http://127.0.0.1:${server.port}`]);
     url = `https://${plan.dnsName}${prefix}/`;
     log(`Published on the tailnet: ${url}`);
@@ -183,6 +189,8 @@ async function main() {
     tailscale: plan.tailscale ? { path: prefix, dnsName: plan.dnsName } : null,
     processes: children.map((entry) => ({ label: entry.label, ...entry.process })),
   });
+  // Every earlier save (each recorded child) has landed before `share` reads the ready state; a failed one fails startup.
+  await shareWriter.flush();
 
   // A share holds the testbench up for as long as it runs: its own idle rule ends it first.
   const control = await loadControlClient(paths.control);
@@ -202,6 +210,6 @@ try {
   await main();
 } catch (error) {
   log(`FAILED: ${error.stack ?? error.message}`);
-  if (shareState) await writeState({ startError: error.message }).catch(() => {});
+  if (shareWriter.state) await writeState({ startError: error.message }).catch(() => {});
   await stop('startup failure');
 }

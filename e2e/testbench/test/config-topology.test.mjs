@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
 import { assertNoInlineSecrets, bindUpstream, configHash, DEFAULT_SOURCE_CONFIG, listModels, loadSourceConfig, resolveConfigSource, sanitizeConfig } from '../lib/config.mjs';
 import { readdir } from 'node:fs/promises';
-import { assertScenarioSupported, buyerRoutingPreferences, chooseMode, chooseTarget, MAX_SELLERS, normalizeTopology, requestedMode, topologyFingerprint, validateScenarioModule } from '../lib/topology.mjs';
+import { assertScenarioSupported, assertUpstreamReusable, buyerRoutingPreferences, chooseMode, chooseTarget, MAX_SELLERS, normalizeTopology, requestedMode, requestedUpstream, topologyDifferences, topologyFingerprint, topologySummary, validateScenarioModule } from '../lib/topology.mjs';
 
 const tmp = await mkdtemp(join(tmpdir(), 'testbench-config-'));
 after(() => rm(tmp, { recursive: true, force: true }));
@@ -173,10 +173,40 @@ describe('topology', () => {
     assert.equal(prefs.preferLowLatency, true);
   });
 
-  it('fingerprints sellers and models for reuse checks', () => {
+  it('fingerprints every behavior-affecting setting for reuse checks', () => {
     const one = topologyFingerprint(normalizeTopology({}, source));
-    assert.equal(one, topologyFingerprint(normalizeTopology({ buyer: { depositUsdc: '3' } }, source)));
+    assert.equal(one, topologyFingerprint(normalizeTopology({}, source)), 'identical topologies still match');
+    assert.equal(one, topologyFingerprint(JSON.parse(JSON.stringify(normalizeTopology({}, source)))), 'a manifest round trip still matches');
     assert.notEqual(one, topologyFingerprint(normalizeTopology({ sellers: [{ id: 'a' }, { id: 'b' }] }, source)));
+    const variants = {
+      'buyer.depositMicros': { buyer: { depositUsdc: '3' } },
+      'buyer.maxReserveMicros': { buyer: { maxReserveUsdc: '0.25' } },
+      'buyer.maxPricing': { buyer: { maxPricing: { defaults: { inputUsdPerMillion: 1 } } } },
+      'buyer.env': { buyer: { env: { ANTSEED_DEBUG: '1' } } },
+      'payments.settlementIdleMs': { payments: { settlementIdleMs: 5000 } },
+      'payments.minBudgetPerRequestMicros': { payments: { minBudgetPerRequestUsdc: '0.01' } },
+      'chain.topUpThresholdBps': { chain: { topUpThresholdBps: 5000 } },
+      'chain.blockTimeSec': { chain: { blockTimeSec: 3 } },
+      'sellers.0.mock.latencyMs': { sellers: [{ id: 'seller', mock: { latencyMs: 250 } }] },
+      'sellers.0.mock.fault500Rate': { sellers: [{ id: 'seller', mock: { fault500Rate: 0.1 } }] },
+      'sellers.0.env': { sellers: [{ id: 'seller', env: { ANTSEED_DEBUG: '1' } }] },
+    };
+    for (const [path, topology] of Object.entries(variants)) {
+      const other = normalizeTopology(topology, source);
+      assert.notEqual(topologyFingerprint(other), one, `${path} changes the fingerprint`);
+      assert.ok(topologyDifferences(normalizeTopology({}, source), other).some((entry) => entry.startsWith(path)), `${path} is named: ${topologyDifferences(normalizeTopology({}, source), other)}`);
+    }
+    assert.equal(topologySummary(normalizeTopology({ buyer: { depositUsdc: '3' } }, source)), topologySummary(normalizeTopology({}, source)), 'the summary stays short');
+  });
+
+  it('reuses a running testbench only with the upstream the command asked for', () => {
+    assert.equal(requestedUpstream(undefined), 'mock');
+    assert.equal(requestedUpstream(true), 'live');
+    assert.doesNotThrow(() => assertUpstreamReusable('mock', 'mock'));
+    assert.doesNotThrow(() => assertUpstreamReusable(undefined, 'mock'), 'a manifest without upstream is a mock one');
+    assert.doesNotThrow(() => assertUpstreamReusable('live', 'live'));
+    assert.throws(() => assertUpstreamReusable('live', 'mock', 'Testbench wt-x'), /Testbench wt-x is running with a live upstream, not mock \(this command has no --live\); run pnpm testbench down first or use --slot/);
+    assert.throws(() => assertUpstreamReusable('mock', 'live'), /running with a mock upstream, not live; run pnpm testbench down first or use --slot/);
   });
 });
 
@@ -221,7 +251,7 @@ describe('topology mode', () => {
     const sdk = topologyFingerprint(normalizeTopology({}, source));
     assert.equal(sdk, topologyFingerprint(normalizeTopology({ mode: 'sdk' }, source)));
     assert.notEqual(sdk, topologyFingerprint(normalizeTopology({ mode: 'cli' }, source)));
-    assert.match(topologyFingerprint(normalizeTopology({ mode: 'cli', chain: { rpc: 'base' } }, source)), /#rpc=base#mode=cli$/);
+    assert.match(topologySummary(normalizeTopology({ mode: 'cli', chain: { rpc: 'base' } }, source)), /#rpc=base#mode=cli$/);
     assert.equal(topologyFingerprint(normalizeTopology({ chain: { rpc: 'direct' } }, source)), sdk, 'a manifest from before modes reads as sdk');
   });
 

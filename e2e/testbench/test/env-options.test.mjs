@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:net';
 import { describe, it } from 'node:test';
-import { assertLocalUrl, assertNetworkOptions, FORBIDDEN_PORTS, freePort, isolatedEnv, listenWithRetry, parseEnvFile, redactingStream, resolveForkUrl, resolveLiveKeys } from '../lib/env.mjs';
+import { assertLocalUrl, assertNetworkOptions, FORBIDDEN_PORTS, freePort, isolatedEnv, listenWithRetry, parseEnvFile, redactingStream, resolveForkUrl, resolveLiveKeys, supervisorEnvs } from '../lib/env.mjs';
 import { validateManifest, MANIFEST_VERSION } from '../lib/manifest.mjs';
 import { testbenchNodeOptions } from '../lib/node-options.mjs';
 import { DEFAULT_RUN_TIMEOUT_SECONDS, parseArgs } from '../lib/options.mjs';
@@ -19,6 +19,38 @@ describe('isolatedEnv', () => {
     for (const key of ['ANTSEED_DATA_DIR', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'VENICE_API_KEY', 'BASE_MAINNET_RPC_URL', 'TESTBENCH_KEY_CHAT']) {
       assert.equal(env[key], undefined, key);
     }
+  });
+});
+
+describe('supervisor environments', () => {
+  const home = '/tmp/tb-env-home';
+  const inherited = { PATH: '/bin', HOME: '/Users/me', ANTSEED_TESTBENCH_FORK_URL: 'https://rpc/key', ANTSEED_DEBUG: '1', OPENROUTER_API_KEY: 'sk-live' };
+  const buyerEnv = { ANTSEED_SETTLEMENT_IDLE_MS: '5000' };
+
+  it('--verbose reaches SDK sellers, and buyer switches never do', () => {
+    const envs = supervisorEnvs(inherited, home, { verbose: true, buyerEnv, liveKeys: ['OPENROUTER_API_KEY'] });
+    const seller = envs.sdkSeller({ TESTBENCH_KEY_OPENAI: 'mock-only', ANTSEED_LOG_LEVEL: 'x' });
+    assert.equal(seller.ANTSEED_DEBUG, '1', 'verbose survives the seller env cleaning');
+    assert.equal(seller.ANTSEED_LOG_LEVEL, 'x');
+    assert.equal(seller.TESTBENCH_KEY_OPENAI, 'mock-only');
+    assert.equal(seller.HOME, home);
+    for (const env of [envs.base, seller]) {
+      assert.equal(env.ANTSEED_SETTLEMENT_IDLE_MS, undefined, 'buyer-only switch');
+      assert.equal(env.ANTSEED_TESTBENCH_FORK_URL, undefined, 'fork URL');
+      assert.equal(env.OPENROUTER_API_KEY, undefined, 'live key');
+    }
+    assert.equal(envs.base.ANTSEED_DEBUG, '1');
+    assert.equal(envs.own.ANTSEED_SETTLEMENT_IDLE_MS, '5000', 'the in-process sdk buyer gets its switches');
+  });
+
+  it('without --verbose nobody gets the inherited ANTSEED_DEBUG, and in cli mode the supervisor keeps no buyer switches', () => {
+    const sdk = supervisorEnvs(inherited, home, { buyerEnv });
+    assert.equal(sdk.base.ANTSEED_DEBUG, undefined);
+    assert.equal(sdk.sdkSeller().ANTSEED_DEBUG, undefined);
+    assert.equal(sdk.sdkSeller({ ANTSEED_DEBUG: '1' }).ANTSEED_DEBUG, '1', 'a seller topology env still applies');
+    const cli = supervisorEnvs(inherited, home, { buyerEnv, cliMode: true });
+    assert.equal(cli.own.ANTSEED_SETTLEMENT_IDLE_MS, undefined);
+    assert.equal(cli.own, cli.base);
   });
 });
 

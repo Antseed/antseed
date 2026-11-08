@@ -153,11 +153,13 @@ for (const file of SENSITIVE) {
 }
 if (after.digest === before.antseed.digest) say('~/.antseed unchanged');
 else {
-  // Other AntSeed processes on this machine (a real node, a verifier) may write ~/.antseed concurrently.
-  // Testbench processes were checked above never to hold files there; name the writers instead of failing.
+  // Sampling open handles cannot prove the testbench never wrote and closed a file there, so a change fails by default.
+  // On a machine where a real node or verifier writes ~/.antseed, ANTSEED_TESTBENCH_E2E_ALLOW_HOME_WRITES=1 turns this
+  // into a note; the writers are listed either way, and identity.key/config.json changing always fails (above).
   const writers = [...openersOf(realAntseed)].map(([pid, command]) => `${pid}:${command}`);
-  say(`note: ~/.antseed changed (${before.antseed.count} -> ${after.count} entries) while foreign processes held it open: ${writers.join(', ') || 'none now'}; identity.key/config.json unchanged and no testbench process touched it`);
-  if (process.env.ANTSEED_TESTBENCH_E2E_STRICT_HOME === '1') { failures += 1; say('FAILED: strict home check'); }
+  const detail = `~/.antseed changed (${before.antseed.count} -> ${after.count} entries); processes holding it open now: ${writers.join(', ') || 'none'}`;
+  if (process.env.ANTSEED_TESTBENCH_E2E_ALLOW_HOME_WRITES === '1') say(`note: ${detail} (allowed by ANTSEED_TESTBENCH_E2E_ALLOW_HOME_WRITES=1)`);
+  else { failures += 1; say(`FAILED: ${detail}; if another AntSeed process on this machine writes there, rerun with ANTSEED_TESTBENCH_E2E_ALLOW_HOME_WRITES=1`); }
 }
 const survivors = otherAnvils();
 const killed = [...before.anvils].filter((pid) => !survivors.has(pid));

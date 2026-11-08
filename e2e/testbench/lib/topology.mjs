@@ -1,4 +1,5 @@
-import { sanitizeConfig } from './config.mjs';
+import { createHash } from 'node:crypto';
+import { sanitizeConfig, stableStringify } from './config.mjs';
 
 export const MAX_SELLERS = 8;
 const SELLER_ID = /^[a-z0-9][a-z0-9-]{0,23}$/;
@@ -246,12 +247,60 @@ export function chooseMode(scenario, { requested, running } = {}) {
   return requestedMode(requested ?? running, scenario.topology);
 }
 
-/** Two topologies are compatible when they produce the same sellers/models; used before reusing a running testbench. */
-export function topologyFingerprint(normalized) {
+/** Short, human-readable form of a topology for messages: sellers and models, chain link, contract layout and mode. */
+export function topologySummary(normalized) {
   const sellers = normalized.sellers.map((seller) => `${seller.id}:${Object.entries(seller.providers).map(([name, p]) => `${name}=${Object.keys(p.services).sort().join('+')}`).sort().join(',')}${seller.mock?.usage === 'load' ? '~load' : ''}`).join('|');
-  // The chain link is fixed at `up`; a scenario that needs Base-like RPCs cannot reuse a direct testbench.
   const layout = normalized.chain?.contracts ?? DEFAULT_CONTRACT_LAYOUT;
   const linked = `${normalized.chain?.rpc === 'base' ? `${sellers}#rpc=base` : sellers}${layout === DEFAULT_CONTRACT_LAYOUT ? '' : `#contracts=${layout}`}`;
-  // So is the mode: real CLI processes and SDK nodes do not stand in for each other.
   return normalized.mode === 'cli' ? `${linked}#mode=cli` : linked;
+}
+
+/**
+ * Every setting of a normalized topology that changes what a testbench does (sellers, providers and pricing, mocks,
+ * env, buyer deposit, caps and routing, chain and payment knobs, mode), as plain JSON. Budgets are scenario data that
+ * only judge a run, so they are left out. A manifest from before modes reads as sdk.
+ */
+function reuseKey(normalized) {
+  const { budgets, ...rest } = JSON.parse(JSON.stringify(normalized));
+  return { ...rest, mode: rest.mode ?? 'sdk' };
+}
+
+/**
+ * Two topologies are compatible only when every behavior-affecting setting matches; checked before reusing a running
+ * testbench. The summary in front keeps it readable; the hash covers the rest.
+ */
+export function topologyFingerprint(normalized) {
+  return `${topologySummary(normalized)}@${createHash('sha256').update(stableStringify(reuseKey(normalized))).digest('hex').slice(0, 16)}`;
+}
+
+/** Dotted paths of the settings that differ between two normalized topologies, for the reuse refusal (at most `limit`). */
+export function topologyDifferences(a, b, limit = 6) {
+  const out = [];
+  const walk = (x, y, path) => {
+    if (out.length >= limit) return;
+    const objects = x && y && typeof x === 'object' && typeof y === 'object' && Array.isArray(x) === Array.isArray(y);
+    if (!objects) {
+      if (stableStringify(x) !== stableStringify(y)) out.push(path || '(topology)');
+      return;
+    }
+    for (const key of [...new Set([...Object.keys(x), ...Object.keys(y)])].sort()) walk(x[key], y[key], path ? `${path}.${key}` : key);
+  };
+  walk(reuseKey(a), reuseKey(b), '');
+  return out;
+}
+
+/** The upstream a command asks for: a real provider only with --live. */
+export function requestedUpstream(live) {
+  return live ? 'live' : 'mock';
+}
+
+/**
+ * A running testbench is reused only with the upstream this command asked for, like chain and mode: a command without
+ * --live never sends traffic to a real provider, and --live never silently gets mocks.
+ */
+export function assertUpstreamReusable(running, requested, name = 'Testbench') {
+  const current = running ?? 'mock';
+  if (current === requested) return;
+  const why = requested === 'mock' ? ' (this command has no --live)' : '';
+  throw new Error(`${name} is running with a ${current} upstream, not ${requested}${why}; run pnpm testbench down first or use --slot`);
 }

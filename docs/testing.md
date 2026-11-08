@@ -6,9 +6,9 @@ This is the map of AntSeed's tests: what each kind proves, where it lives and wh
 | --- | --- | --- | --- | --- |
 | Unit | each package's tests (`pnpm -r run test`), contracts in `packages/contracts` (`forge test`) | one package's behavior, contract logic | every PR | seconds to minutes per package |
 | In-process e2e | `e2e/tests/*.test.ts` | protocol behavior between node pairs over a private DHT | every PR | about 10 minutes |
-| Testbench functional, `sdk` mode | `e2e/testbench/scenarios/`: `chat-basic`, `routing-smoke`, `payment-flow`, `issue-1200-spendingauth-catchup` | money and routing paths, using internal hooks into the buyer and seller | every PR, in the CI `testbench` job | 10 s to 1 min per scenario |
-| Testbench functional, `cli` mode | the same scenarios through the real `antseed` processes | the same paths, with process lifecycle and plugin loading included | every PR for `payment-flow`. Landing with the cluster-mode change | not measured yet |
-| Testbench stress, `cli` mode | `e2e/testbench/scenarios/stress-*.mjs` | exact payment under load, faults and restarts, with seeds; also speed: latency percentiles, throughput and settle times against `topology.budgets` with `--budgets`, and drift against the previous run | `stress-smoke` per PR, the full set nightly. Landing with the cluster-mode change: today `stress-*` runs in `sdk` mode, and no nightly job exists yet | `stress-smoke` about 35 s, `stress-faults` about 1 min |
+| Testbench functional, `sdk` mode | `e2e/testbench/scenarios/`: `chat-basic`, `routing-smoke`, `payment-flow`, `issue-1200-spendingauth-catchup` (their topologies default to `sdk`) | money and routing paths, using internal hooks into the buyer and seller | every PR, in the CI `testbench` job (with `--strict`) | 10 s to 1 min per scenario |
+| Testbench functional, `cli` mode | `cli-buyer-commands`, `buyer-withdraw-and-exit`, `free-tier` and `issue-1050-stale-channel` (cli by default); the `sdk` scenarios above with `--mode cli`, except `issue-1200-spendingauth-catchup` | the same paths through the real `antseed` processes, with process lifecycle and plugin loading included | by hand; no CI job runs a functional scenario in `cli` mode yet | not measured yet |
+| Testbench stress, `cli` mode | `e2e/testbench/scenarios/stress-*.mjs` | exact payment under load, faults and restarts, with seeds; also speed: latency percentiles, throughput and settle times against `topology.budgets` with `--budgets`, and drift against the previous run | `stress-smoke` on every PR in the `testbench` job (`cli` mode, with `--strict`); the rest by hand until a nightly job exists | `stress-smoke` about 35 s, `stress-faults` about 1 min |
 | Issue regressions | `e2e/testbench/scenarios/issue-*.mjs` | a fixed bug stays fixed, red to green | every PR for `issue-1200-spendingauth-catchup`, in the `testbench` job. `issue-1050-stale-channel` runs by hand until a nightly job exists | 1 to 2 min per scenario |
 | Desktop | `e2e/testbench/scenarios/desktop-*.mjs` under Playwright | the UI against a real buyer | on demand; on Linux under `xvfb-run`. Not in CI yet (the `testbench` job lists what it needs) | about 20 s |
 | Mixed version | planned | this buyer against the last release's seller, and the reverse | planned weekly | not built yet |
@@ -23,7 +23,7 @@ The first `--chain local` run in a worktree also compiles `packages/contracts` (
 - It needs a hook into the buyer or seller object: use `sdk` mode.
 - Everything else defaults to `cli` mode.
 
-`cli` mode is landing with the cluster-mode change. Until then every testbench scenario runs in `sdk` mode, and `report.json` says which mode a run used.
+A scenario's topology picks its mode: `stressTopology()` and the CLI scenarios use `cli`, the others `sdk`. `--mode` overrides it, and `report.json` says which mode a run used.
 
 A testbench whose `pnpm testbench run` was killed stops on its own within about 30 seconds (the supervisor's watchdog, `e2e/testbench/README.md` Isolation). One left up with `up` or `--keep` stops after `ANTSEED_TESTBENCH_IDLE_MINUTES` (default 120) without a control request.
 
@@ -63,10 +63,10 @@ CI derives its seed from the commit: the first 8 hex digits of `github.sha` as a
 | `result` | Exit | Meaning | What to do |
 | --- | --- | --- | --- |
 | `passed` | 0 | Every check held. | Nothing. |
-| `failed` | 1 | A check failed (`tb.check`, an assertion, a known issue under `--strict`). | The change or the code under test is wrong. Read the check's `detail`. |
+| `failed` | 1 | A check failed (`tb.check`, an assertion, a known issue under `--strict`), including a failed check the scenario caught itself. | The change or the code under test is wrong. Read the check's `detail`. |
 | `blocked` | 2 | `up` or a precondition refused before the scenario started: Node major, build, Foundry, ffmpeg, an unknown scenario or a scenario that does not support the chain, a missing RPC. | Fix the environment. It says nothing about the code. |
 | `timeout` | 3 | The scenario ran past `--run-timeout` (default 1800 seconds). The report has a failed check named `run timeout`. | Look for a hang. |
-| `error` | 4 | The scenario threw something else (a failed chat, a wait that ran out, the control API), or teardown failed after a pass. | The run broke before it reached a verdict. Read `error` and the logs. |
+| `error` | 4 | The scenario threw something else (a failed chat, a wait that ran out, the control API), or teardown failed after a pass (including a `down` that reported shutdown errors or left buyer reserve locked). | The run broke before it reached a verdict. Read `error` and the logs. |
 
 Every result writes `report.json`, with `seed`, `mode`, `git: { sha, branch, dirty }`, `node` and `durationMs`. Any result but `passed` also has `phase` (`up`, `scenario` or `teardown`). A teardown failure after a failed scenario keeps the scenario's result and adds `teardownError`.
 

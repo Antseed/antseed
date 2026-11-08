@@ -153,7 +153,8 @@ describe('CLI launcher', () => {
     await stopWithGrace(stubborn, { graceMs: 100, onForced: (ms) => forced.push(ms) });
     assert.equal(stubborn.signalCode, 'SIGKILL');
     assert.equal(forced.length, 1);
-    assert.ok(forced[0] >= 100);
+    // Node timers can fire a millisecond early as Date.now() measures it; the force still came after the grace.
+    assert.ok(forced[0] >= 98, `forced after ${forced[0]} ms`);
   });
 
   it('keeps a CLI process from outliving its parent (preload)', async () => {

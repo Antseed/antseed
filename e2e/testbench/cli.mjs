@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from 'node:child_process';
 import { closeSync, existsSync, openSync, readFileSync, statSync } from 'node:fs';
-import { mkdir, readdir, readFile, rm } from 'node:fs/promises';
+import { mkdir, readdir, readFile } from 'node:fs/promises';
 import { createConnection } from 'node:net';
 import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -12,22 +12,23 @@ import { legacyCacheHome, sharedCacheHome } from './lib/cache.mjs';
 import { loadSourceConfig, resolveConfigSource } from './lib/config.mjs';
 import { loadControlClient } from './lib/control.mjs';
 import { BUYER_KEY_ENV, FORBIDDEN_PORTS, isolatedEnv, parseEnvFile, resolveBuyerKey, resolveForkUrl, resolveLiveKeys, writeBuyerKey } from './lib/env.mjs';
-import { attachOnlyEnv, electronRootArgs, FFMPEG_INSTALL, playwrightFfmpeg } from './lib/desktop.mjs';
+import { assertAttachOnlyPlatform, attachOnlyEnv, electronRootArgs, FFMPEG_INSTALL, playwrightFfmpeg } from './lib/desktop.mjs';
 import { inspectLock, isOwnedProcessAlive, killOwned, ownProcessEntry } from './lib/lock.mjs';
-import { lifecycleState, readJson, saveJson, validateManifest } from './lib/manifest.mjs';
+import { cleanupStale, settleSlot } from './lib/stale.mjs';
+import { lifecycleState, readJson, saveJson, shutdownProblems, validateManifest } from './lib/manifest.mjs';
 import { HELP, parseArgs } from './lib/options.mjs';
 import { testbenchName, testbenchPaths, testbenchRoot, worktreeRoot } from './lib/paths.mjs';
 import { derive, randomSeed } from './lib/prng.mjs';
-import { classifyScenarioError, computeDrift, deliveryMetrics, driftLines, gitInfo, previousReport, recordTeardownFailure, rerunCommand, RESULT_EXIT_CODES, runWithTimeout } from './lib/report.mjs';
+import { applyCheckVerdict, classifyScenarioError, computeDrift, deliveryMetrics, driftLines, gitInfo, previousReport, recordTeardownFailure, rerunCommand, RESULT_EXIT_CODES, runWithTimeout } from './lib/report.mjs';
 import { createTestbenchApi } from './lib/tb.mjs';
 import { writeHtmlReport } from './lib/report-html.mjs';
 import { serveReports } from './lib/report-server.mjs';
 import { createMainnetApi, mainnetReader } from './lib/mainnet-run.mjs';
-import { MAINNET_PROFILE, prepareMainnetProfile, profileDesktopEnv, walletAddress } from './lib/mainnet.mjs';
-import { findNoVncDir, funnelEnabled, parseTailscaleStatus } from './lib/share.mjs';
+import { assertProfilePlatform, MAINNET_PROFILE, prepareMainnetProfile, profileDesktopEnv, walletAddress } from './lib/mainnet.mjs';
+import { cleanupShare, findNoVncDir, funnelEnabled, parseTailscaleStatus } from './lib/share.mjs';
 import { cliEntry } from './lib/cli-node.mjs';
 import { reattachDecision, resolveIdleMinutes, startHeartbeat } from './lib/watchdog.mjs';
-import { assertScenarioSupported, chooseMode, chooseTarget, normalizeTopology, requestedMode, topologyFingerprint, validateScenarioModule } from './lib/topology.mjs';
+import { assertScenarioSupported, assertUpstreamReusable, chooseMode, chooseTarget, normalizeTopology, requestedMode, requestedUpstream, topologyDifferences, topologyFingerprint, topologySummary, validateScenarioModule } from './lib/topology.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, '../..');
@@ -69,18 +70,6 @@ function portOpen(port) {
   });
 }
 
-/** Kills only processes recorded in our manifest whose start time still matches. */
-async function cleanupStale(paths, manifest) {
-  const nodes = [...(manifest?.sellers ?? []).map((seller) => seller.process), ...Object.values(manifest?.nodeProcesses ?? {})].filter(Boolean);
-  const entries = [manifest?.supervisor, manifest?.anvil, ...new Map(nodes.map((entry) => [entry.pid, entry])).values()].filter(Boolean);
-  const results = [];
-  for (const entry of entries) results.push(`${entry.pid}:${await killOwned(entry, { graceMs: entry === manifest?.anvil ? 30_000 : 10_000 })}`);
-  await rm(paths.lock, { force: true });
-  await saveJson(paths.control, {}).catch(() => {});
-  if (manifest) await saveJson(paths.manifest, { ...manifest, running: false, staleCleanedAt: new Date().toISOString() });
-  return results;
-}
-
 async function scenarioModule(name) {
   const file = join(here, 'scenarios', `${name}.mjs`);
   if (!existsSync(file)) throw new Error(`No scenario ${name} (looked for ${file})`);
@@ -111,23 +100,27 @@ function warnSeedIgnored(options, manifest) {
 async function up(options, ctx, topologyOverride) {
   const { paths } = ctx;
   const target = options.chain ?? 'fork';
-  const current = await retireOrphan(ctx, await runningState(paths));
-  if (current.running) {
+  const settled = await settleSlot({
+    state: await retireOrphan(ctx, await runningState(paths)),
+    readState: () => runningState(paths),
+    cleanup: (manifest) => cleanupStale(paths, manifest),
+    say,
+  });
+  const current = settled.state;
+  if (settled.action === 'reattach') {
     if (options.chain && (current.manifest.target ?? 'fork') !== options.chain) {
       throw new Error(`Testbench ${ctx.name} is running on chain ${current.manifest.target ?? 'fork'}; run pnpm testbench down first or use --slot`);
     }
     if (options.mode && (current.manifest.mode ?? 'sdk') !== options.mode) {
       throw new Error(`Testbench ${ctx.name} is running in ${current.manifest.mode ?? 'sdk'} mode; run pnpm testbench down first or use --slot`);
     }
+    assertUpstreamReusable(current.manifest.upstream, requestedUpstream(options.live), `Testbench ${ctx.name}`);
     say(`Testbench ${ctx.name} is already running; reattaching`);
     warnSeedIgnored(options, current.manifest);
     return current.manifest;
   }
-  if (current.lock.state === 'held') {
-    throw new Error(`Testbench ${ctx.name} is starting or stopping (pid ${current.lock.holder.pid}); wait, or run pnpm testbench down --force`);
-  }
-  if (current.lock.state === 'stale' || current.manifest?.running || current.manifest?.starting) {
-    say(`Cleaning up stale testbench state: ${(await cleanupStale(paths, current.manifest)).join(', ') || 'nothing running'}`);
+  if (settled.action === 'wait') {
+    throw new Error(`Testbench ${ctx.name} is starting or stopping (${settled.reason ?? `pid ${current.lock.holder?.pid ?? 'unknown'}`}); wait, or run pnpm testbench down --force`);
   }
   const scenario = options.scenario ? await scenarioModule(options.scenario) : null;
   checkBuilt(target, requestedMode(options.mode, topologyOverride ?? scenario?.topology));
@@ -136,7 +129,7 @@ async function up(options, ctx, topologyOverride) {
   const source = resolveConfigSource({ explicit: options.config, worktree: ctx.worktree });
   const config = await loadSourceConfig(source);
   const topology = normalizeTopology(topologyOverride ?? scenario?.topology ?? {}, config.cleaned, { depositUsdc: options.depositUsdc, block: options.block, mode: options.mode, contracts: options.contracts });
-  const upstream = options.live ? 'live' : 'mock';
+  const upstream = requestedUpstream(options.live);
   const liveKeys = [];
   let liveEnv = {};
   if (upstream === 'live') {
@@ -227,6 +220,9 @@ async function down(options, ctx) {
   await stopShare(ctx, { quiet: true });
   const state = await runningState(paths);
   if (state.lock.state === 'free' && !state.manifest?.running) {
+    // Its shutdown may already have run (the watchdog, an earlier down) and failed; that still fails `down`.
+    const problems = shutdownProblems(state.manifest);
+    if (problems.length) throw new Error(`Testbench ${ctx.name} is not running, but its last shutdown had problems: ${problems.join('; ')} (see ${join(paths.logs, 'supervisor.log')}; the next pnpm testbench up starts fresh)`);
     say(`Testbench ${ctx.name} is not running`);
     return;
   }
@@ -240,7 +236,7 @@ async function down(options, ctx) {
     while (Date.now() < deadline && isOwnedProcessAlive(state.lock.holder)) await new Promise((r) => setTimeout(r, 500));
     if (isOwnedProcessAlive(state.lock.holder)) throw new Error('Supervisor did not stop in 5 minutes; use pnpm testbench down --force');
   } else {
-    say(`Force-stopping owned processes: ${(await cleanupStale(paths, state.manifest)).join(', ') || 'none alive'}`);
+    say(`Force-stopping owned processes: ${(await cleanupStale(paths, state.manifest)).results.join(', ') || 'none alive'}`);
   }
   const manifest = await readJson(paths.manifest);
   const ports = [manifest?.anvil?.port, manifest?.proxyPort, manifest?.bootstrap?.port, ...(manifest?.sellers ?? []).map((seller) => seller.signalingPort)].filter(Boolean);
@@ -249,6 +245,9 @@ async function down(options, ctx) {
   if (manifest?.shutdownErrors?.length) say(`Shutdown reported: ${manifest.shutdownErrors.join('; ')}`);
   if (manifest?.finalBalances) say(`Buyer deposit after close: available=${manifest.finalBalances.availableMicroUsdc} reserved=${manifest.finalBalances.reservedMicroUsdc}`);
   if (open.length) say(`Warning: ports still accepting connections: ${open.join(', ')} (another process may have taken them)`);
+  // Cleanup above is best effort; a stop that left errors or locked reserve fails `down`, and with it a run.
+  const problems = shutdownProblems(manifest);
+  if (problems.length) throw new Error(`Testbench ${ctx.name} stopped with problems: ${problems.join('; ')} (see ${join(paths.logs, 'supervisor.log')})`);
   say(`Testbench ${ctx.name} stopped`);
 }
 
@@ -306,23 +305,27 @@ async function prepareRun(options, ctx, report) {
   report.mode = mode;
   assertScenarioSupported(scenario, target, mode);
   if (scenario.requires.includes('desktop')) {
-    // Fail before starting a chain: without Playwright's ffmpeg the desktop window never loads.
+    // Fail before starting a chain: Windows cannot isolate the desktop, and without Playwright's ffmpeg the window never loads.
+    assertAttachOnlyPlatform();
     const ffmpeg = playwrightFfmpeg();
     if (!ffmpeg.installed) throw new Error(`Scenario ${scenario.name} drives the desktop, but ${ffmpeg.reason}. Run once: ${FFMPEG_INSTALL}`);
   }
-  const live = before.running ? before.manifest.upstream === 'live' : Boolean(options.live);
-  if (scenario.requires.includes('liveUpstream') && !live) {
-    throw new Error(`Scenario ${scenario.name} needs a real upstream; ${before.running ? 'restart the testbench with pnpm testbench up --live' : 'rerun with --live'}`);
-  }
+  // Only --live on this command line reaches a real upstream; a running testbench must have been started the same way.
+  const upstream = requestedUpstream(options.live);
+  if (scenario.requires.includes('liveUpstream') && upstream !== 'live') throw new Error(`Scenario ${scenario.name} needs a real upstream; rerun with --live`);
+  if (before.running) assertUpstreamReusable(before.manifest.upstream, upstream, `Testbench ${ctx.name}`);
   if (!before.running) {
     const upStarted = Date.now();
     const manifest = await up({ ...options, chain: target, mode, scenario: scenario.name }, ctx);
     return { scenario, target, mode, manifest, startedHere: true, upMs: Date.now() - upStarted };
   }
   const source = await loadSourceConfig(resolveConfigSource({ explicit: options.config, worktree: ctx.worktree }));
-  const wanted = topologyFingerprint(normalizeTopology(scenario.topology ?? {}, source.cleaned, { mode, contracts: options.contracts }));
-  const running = topologyFingerprint(before.manifest.topology);
-  if (wanted !== running) throw new Error(`Running testbench topology (${running}) does not match scenario ${scenario.name} (${wanted}); run pnpm testbench down first or use --slot`);
+  // Same overrides as `up`; a fork block the run does not pin is whatever the running testbench forked at.
+  const block = options.block ?? scenario.topology?.chain?.block ?? before.manifest.topology.chain?.block;
+  const wanted = normalizeTopology(scenario.topology ?? {}, source.cleaned, { mode, contracts: options.contracts, depositUsdc: options.depositUsdc, block });
+  if (topologyFingerprint(wanted) !== topologyFingerprint(before.manifest.topology)) {
+    throw new Error(`Running testbench topology (${topologySummary(before.manifest.topology)}) does not match scenario ${scenario.name} (${topologySummary(wanted)}); differs in ${topologyDifferences(wanted, before.manifest.topology).join(', ')}; run pnpm testbench down first or use --slot`);
+  }
   warnSeedIgnored(options, before.manifest);
   return { scenario, target, mode, manifest: before.manifest, startedHere: false };
 }
@@ -337,6 +340,7 @@ async function executeScenario(scenario, tb, report, options) {
   }
   const summary = tb.summary();
   Object.assign(report, { finishedAt: new Date().toISOString(), checks: summary.checks, knownIssues: summary.knownIssues, metrics: summary.metrics });
+  applyCheckVerdict(report, { strict: Boolean(options.strict) });
   if (report.result === 'timeout') report.checks = [...report.checks, { name: 'run timeout', ok: false, detail: report.error }];
   return summary;
 }
@@ -449,11 +453,12 @@ async function profileInstance(ctx) {
 }
 
 async function mainnetProfile(options, ctx) {
+  assertProfilePlatform();
   checkDesktopBuilt();
   const { file, values } = await localEnvValues(ctx);
   const { instance, ports, buyerProxyPort } = await profileInstance(ctx);
   const profile = await prepareMainnetProfile({ testbenchDir: ctx.paths.dir, root: ctx.root, repo, fileValues: values, envFile: file, fresh: Boolean(options.fresh), buyerProxyPort });
-  say(`REAL NETWORK, REAL FUNDS: test wallet ${profile.address} (from ${profile.walletSource}), channel reserve cap ${profile.cap.usdc} USDC`);
+  say(`REAL NETWORK, REAL FUNDS: test wallet ${profile.address} (from ${profile.walletSource}), reserve step and per-request cap ${profile.cap.usdc} USDC; top-ups can reserve more over a session, so the wallet's deposit is the only hard limit`);
   say(`Profile ${profile.paths.dir} (own HOME, mock keychain, no OS proxy changes); buyer proxy 127.0.0.1:${buyerProxyPort}`);
   const env = profileDesktopEnv({ paths: profile.paths, ports, instance });
   return { profile: { ...profile, buyerProxyPort }, env, instance };
@@ -541,6 +546,7 @@ async function chooseDesktopInstance(preferred) {
 }
 
 async function desktop(options, ctx) {
+  assertAttachOnlyPlatform();
   const state = await runningState(ctx.paths);
   if (!state.running) throw new Error(`Testbench ${ctx.name} is not running; start it with pnpm testbench up`);
   const manifest = validateManifest(state.manifest, { dir: ctx.paths.dir });
@@ -647,17 +653,16 @@ async function shareState(ctx) {
   return { state, alive: Boolean(state?.host && isOwnedProcessAlive(state.host)) };
 }
 
+/** Cleans up the recorded share, also when its host died (its desktop, display and VNC outlive it). */
 async function stopShare(ctx, { quiet = false } = {}) {
-  const { state, alive } = await shareState(ctx);
-  if (!alive) {
-    if (!quiet) say(`No share running for ${ctx.name}`);
-    return false;
-  }
-  say('Stopping share (desktop, display, VNC, tailscale serve)');
-  await killOwned(state.host, { graceMs: 20_000 });
-  for (const entry of state.processes ?? []) await killOwned(entry, { graceMs: 5_000 });
-  if (state.tailscale?.path) spawnSync('tailscale', ['serve', '--https=443', `--set-path=${state.tailscale.path}`, 'off'], { stdio: 'ignore' });
-  return true;
+  const { state } = await shareState(ctx);
+  const cleaned = await cleanupShare(state, {
+    isOwnedProcessAlive, killOwned, say,
+    tailscaleOff: (path) => spawnSync('tailscale', ['serve', '--https=443', `--set-path=${path}`, 'off'], { stdio: 'ignore' }),
+    save: (next) => saveJson(join(ctx.paths.dir, 'share.json'), next),
+  });
+  if (!cleaned && !quiet) say(`No share running for ${ctx.name}`);
+  return cleaned;
 }
 
 async function share(options, ctx) {
@@ -669,6 +674,8 @@ async function share(options, ctx) {
     return;
   }
   const checks = shareChecks(options);
+  // A share whose host died leaves its children and route behind; clean them up before share.json is replaced.
+  await stopShare(ctx, { quiet: true });
   let state = await runningState(ctx.paths);
   if (!state.running) {
     say(`Testbench ${ctx.name} is not running; starting it (${options.scenario ? `scenario ${options.scenario} topology` : 'default topology'})`);

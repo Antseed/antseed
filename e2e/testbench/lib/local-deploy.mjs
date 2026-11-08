@@ -179,12 +179,12 @@ const SKIP_TESTS = ['--skip', 'test', '--skip', '*.t.sol'];
  * Deploys packages/contracts onto a fresh local Anvil. `toolHome` is the real HOME forge needs for its solc cache;
  * `broadcastDir` keeps forge's broadcast files out of the worktree. Returns the per-step timings (ms) and addresses.
  */
-export async function deployLocalStack({ repo, rpcUrl, layout = DEFAULT_CONTRACT_LAYOUT, logPath, broadcastDir, toolHome, log = () => {}, onSpawn = () => {} }) {
+export async function deployLocalStack({ repo, rpcUrl, env = process.env, layout = DEFAULT_CONTRACT_LAYOUT, logPath, broadcastDir, toolHome, log = () => {}, onSpawn = () => {} }) {
   assertContractLayout(layout);
   const logStream = createWriteStream(logPath, { flags: 'a' });
   const cwd = join(repo, CONTRACTS_DIR);
   const baseEnv = {
-    ...process.env, ...(toolHome ? { HOME: toolHome } : {}), DEPLOYER_PRIVATE_KEY: LOCAL_DEPLOYER_KEY,
+    ...env, ...(toolHome ? { HOME: toolHome } : {}), DEPLOYER_PRIVATE_KEY: LOCAL_DEPLOYER_KEY,
     FOUNDRY_BROADCAST: broadcastDir, FOUNDRY_DISABLE_NIGHTLY_WARNING: '1',
   };
   const timings = {};

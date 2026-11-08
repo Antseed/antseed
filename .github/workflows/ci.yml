@@ -211,19 +211,19 @@ jobs:
           echo "ANTSEED_TESTBENCH_HOME=$RUNNER_TEMP/testbench" >> "$GITHUB_ENV"
 
       - name: Run chat-basic
-        run: pnpm testbench run chat-basic --chain local --seed "$SEED"
+        run: pnpm testbench run chat-basic --chain local --strict --seed "$SEED"
 
       - name: Run payment-flow
-        run: pnpm testbench run payment-flow --chain local --seed "$SEED"
+        run: pnpm testbench run payment-flow --chain local --strict --seed "$SEED"
 
       - name: Run routing-smoke
-        run: pnpm testbench run routing-smoke --chain local --seed "$SEED"
+        run: pnpm testbench run routing-smoke --chain local --strict --seed "$SEED"
 
       - name: Run issue-1200-spendingauth-catchup
-        run: pnpm testbench run issue-1200-spendingauth-catchup --chain local --seed "$SEED"
+        run: pnpm testbench run issue-1200-spendingauth-catchup --chain local --strict --seed "$SEED"
 
       - name: Run stress-smoke
-        run: pnpm testbench run stress-smoke --chain local --seed "$SEED"
+        run: pnpm testbench run stress-smoke --chain local --strict --seed "$SEED"
 
       - name: Upload testbench reports
         if: failure()
@@ -239,7 +239,7 @@ jobs:
       #   - Electron's system libraries and xvfb (apt-get)
       #   - pnpm --filter @antseed/desktop run build:main && pnpm --filter @antseed/desktop run build:renderer
       #   - pnpm exec playwright install ffmpeg
-      #   - xvfb-run -a pnpm testbench run desktop-chat --chain local --seed "$SEED"
+      #   - xvfb-run -a pnpm testbench run desktop-chat --chain local --strict --seed "$SEED"
 
   installer-lint:
     name: Lint installer script

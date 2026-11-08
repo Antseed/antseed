@@ -4,7 +4,7 @@ import { describe, it } from 'node:test';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { closeApp, electronRootArgs, playwrightFfmpeg } from '../lib/desktop.mjs';
+import { assertAttachOnlyPlatform, attachOnlyEnv, closeApp, desktopEnv, electronRootArgs, playwrightFfmpeg } from '../lib/desktop.mjs';
 
 function fakeApp({ closeHangs }) {
   const child = Object.assign(new EventEmitter(), {
@@ -19,6 +19,20 @@ function fakeApp({ closeHangs }) {
     close: () => (closeHangs ? new Promise(() => {}) : Promise.resolve().then(() => { child.exitCode = 0; child.emit('exit', 0, null); })),
   };
 }
+
+describe('attach-only desktop platform', () => {
+  const manifest = { home: '/tmp/tb/home', buyerConfig: '/tmp/tb/buyer/config.json', buyerDir: '/tmp/tb/buyer', proxyUrl: 'http://127.0.0.1:1', rpcUrl: 'http://127.0.0.1:2', dir: '/tmp/tb' };
+
+  it('is refused on Windows before any environment is built, like the isolated profile', () => {
+    assert.throws(() => assertAttachOnlyPlatform('win32'), /not supported on Windows: .*USERPROFILE and APPDATA/);
+    assert.throws(() => attachOnlyEnv({ manifest, baseEnv: { PATH: '/bin' }, platform: 'win32' }), /not supported on Windows/);
+    for (const platform of ['darwin', 'linux']) {
+      assert.doesNotThrow(() => assertAttachOnlyPlatform(platform));
+      assert.equal(attachOnlyEnv({ manifest, baseEnv: { PATH: '/bin' }, platform }).HOME, manifest.home);
+    }
+    assert.equal(desktopEnv({ manifest, instance: 'x', ports: { payments: 1, systemProxy: 2 }, baseEnv: { PATH: '/bin' } }).ANTSEED_DESKTOP_ATTACH_ONLY, '1');
+  });
+});
 
 describe('closeApp', () => {
   it('is a no-op for an app Playwright has already dropped', async () => {

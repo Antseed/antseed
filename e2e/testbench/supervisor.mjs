@@ -16,7 +16,7 @@ import { newToken, startControlServer } from './lib/control.mjs';
 import { startRpcRelay } from './lib/rpc-relay.mjs';
 import { DEFAULT_IDLE_MINUTES, watchdogDecision, WATCHDOG_INTERVAL_MS } from './lib/watchdog.mjs';
 import { assertSellerPaymentsOn, assertSingleBootstrap, buyerProxyListening, cliArgs, cliBuyerClient, cliNodeEnv, CLI_STOP_GRACE_MS, linkPlugins, sellerReady, spawnCliNode, stopWithGrace, waitForCliReady } from './lib/cli-node.mjs';
-import { anvilExitMessage, assertLocalUrl, isAddressInUse, isolatedEnv, listenWithRetry, redactingStream } from './lib/env.mjs';
+import { anvilExitMessage, assertLocalUrl, isAddressInUse, isolatedEnv, listenWithRetry, redactingStream, supervisorEnvs } from './lib/env.mjs';
 import { acquireLock, isOwnedProcessAlive, ownProcessEntry, processStartTime, releaseLock } from './lib/lock.mjs';
 import { readJson, saveJson, validateManifest, MANIFEST_VERSION, TESTBENCH_CHAIN_IDS } from './lib/manifest.mjs';
 import { startMock } from './lib/mock.mjs';
@@ -66,6 +66,9 @@ let shuttingDown = null;
 // is what `status` reports: its own request is always the latest).
 const watch = { starter: plan.starter ?? null, idleMinutes: plan.idleMinutes ?? DEFAULT_IDLE_MINUTES, heartbeatAt: Date.now(), lastRequestAt: Date.now(), previousRequestAt: Date.now() };
 let reaper = null;
+// The cleaned environment every child starts from (set in main): no fork URL, no live keys, no buyer-only switches.
+let baseEnv = null;
+let envs = null;
 
 async function writeManifest(patch) {
   manifest = { ...manifest, ...patch, updatedAt: new Date().toISOString() };
@@ -74,7 +77,7 @@ async function writeManifest(patch) {
 
 /** Starts lib/reaper.mjs; `reap(child)` hands it a child to stop if this process dies by SIGKILL. */
 function startReaper() {
-  reaper = spawn(process.execPath, [join(here, 'lib/reaper.mjs')], { stdio: ['pipe', 'inherit', 'inherit'] });
+  reaper = spawn(process.execPath, [join(here, 'lib/reaper.mjs')], { env: baseEnv, stdio: ['pipe', 'inherit', 'inherit'] });
   reaper.stdin.on('error', () => {});
   reaper.stdin.unref();
   reaper.unref();
@@ -99,7 +102,7 @@ async function startAnvil(forkUrl, block, { timestamp } = {}) {
       '--host', '127.0.0.1', '--port', String(candidate),
       '--disable-min-priority-fee', '--base-fee', '0', '--gas-price', '0',
     ];
-    const spawned = spawn('anvil', args, { env: isolatedEnv(process.env, paths.anvilHome), stdio: ['ignore', 'pipe', 'pipe'] });
+    const spawned = spawn('anvil', args, { env: isolatedEnv(baseEnv, paths.anvilHome), stdio: ['ignore', 'pipe', 'pipe'] });
     reap(spawned);
     spawned.stdout.pipe(redactingStream(forkUrl)).pipe(logStream, { end: false });
     spawned.stderr.pipe(redactingStream(forkUrl)).pipe(logStream, { end: false });
@@ -161,7 +164,7 @@ function spawnSeller(seller, env) {
 }
 
 async function startSellerWorker(seller) {
-  const env = isolatedEnv(process.env, paths.home, { ...seller.env, ...(plan.verbose ? { ANTSEED_DEBUG: '1' } : {}) });
+  const env = envs.sdkSeller(seller.env);
   const child = spawnSeller(seller, env);
   const ready = new Promise((resolveReady, rejectReady) => {
     const onMessage = (message) => {
@@ -218,7 +221,7 @@ async function startSellerProcess(seller) {
   const { node, value: daemon } = await launchCliNode({
     who: `seller:${seller.id}`,
     args: cliArgs(repo, seller.dataDir, ['seller', 'start', '--no-dashboard', ...ports]),
-    env: cliNodeEnv(process.env, paths.home, seller.env),
+    env: cliNodeEnv(baseEnv, paths.home, seller.env),
     logPath: join(paths.logs, `seller-${seller.id}.log`),
   }, async (candidate) => sellerReady(candidate.output(), await readJson(statePath).catch(() => null), candidate.child.pid));
   assertSellerPaymentsOn(node.output(), `seller:${seller.id}`);
@@ -279,7 +282,7 @@ async function startBuyerProcess(port) {
     const { node } = await launchCliNode({
       who: 'buyer',
       args: cliArgs(repo, paths.buyer, ['buyer', 'start', '--port', String(candidatePort), '--no-verifier']),
-      env: cliNodeEnv(process.env, paths.home, plan.topology.buyer.env),
+      env: cliNodeEnv(baseEnv, paths.home, plan.topology.buyer.env),
       logPath: join(paths.logs, 'buyer.log'),
     }, async (candidate) => {
       if (!buyerProxyListening(candidate.output(), candidatePort)) return false;
@@ -475,9 +478,10 @@ async function shutdown(reason) {
     if (manifest?.running) await writeManifest({ running: false, stoppingAt: new Date().toISOString() });
     if (state.buyer && state.reader && manifest?.sellers) {
       await step('settle and close channels', async () => {
-        const summary = await closeChannels(manifest.sellers.map((seller) => seller.id).filter((id) => state.workers.has(id)));
+        // Every seller, so a stopped one with an open channel is named (seller-offline) instead of timing out the wait.
+        const summary = await closeChannels(manifest.sellers.map((seller) => seller.id));
         log(`Channels: ${JSON.stringify(summary.results)} reserved=${summary.buyer.reservedMicroUsdc}`);
-        await writeManifest({ finalBalances: summary.buyer });
+        await writeManifest({ finalBalances: summary.buyer, closeResults: summary.results });
       });
     }
     await step('control', async () => state.control?.stop());
@@ -525,11 +529,15 @@ async function main() {
   for (const dir of [paths.home, join(paths.home, '.antseed'), paths.anvilHome, paths.buyer, paths.sellers, paths.logs, paths.reports]) {
     await mkdir(dir, { recursive: true, mode: 0o700 });
   }
-  startReaper();
   log(`Fresh ${target} run: cleared ${wiped.length} stale state entries (identities kept)`);
-  const clean = isolatedEnv(process.env, paths.home, { ...plan.topology.buyer.env, ...(plan.verbose ? { ANTSEED_DEBUG: '1' } : {}) });
-  for (const key of Object.keys(process.env)) if (!(key in clean)) delete process.env[key];
-  Object.assign(process.env, clean);
+  // Secrets (fork URL, live keys) were read above; sellers get their keys from bindUpstream, nobody else needs them.
+  envs = supervisorEnvs(process.env, paths.home, { verbose: Boolean(plan.verbose), buyerEnv: plan.topology.buyer.env, liveKeys: plan.liveKeys, cliMode });
+  baseEnv = envs.base;
+  // This process hosts the sdk-mode buyer, so its own env carries the buyer's switches; children start from baseEnv.
+  const ownEnv = envs.own;
+  for (const key of Object.keys(process.env)) if (!(key in ownEnv)) delete process.env[key];
+  Object.assign(process.env, ownEnv);
+  startReaper();
 
   manifest = {
     version: MANIFEST_VERSION, name, target, mode: plan.mode, running: false, starting: true, dir: paths.dir, worktree: plan.worktree,
@@ -545,7 +553,7 @@ async function main() {
     await writeManifest({ rpcUrl: state.anvil.rpcUrl, anvil: { pid: state.anvil.child.pid, startedAt: processStartTime(state.anvil.child.pid), port: state.anvil.port } });
     const layout = plan.topology.chain?.contracts ?? 'full';
     log(`Local Anvil (chain ${TESTBENCH_CHAIN_IDS.local}) on ${state.anvil.rpcUrl}; deploying packages/contracts from source (${layout} layout)`);
-    const deployed = await deployLocalStack({ repo, rpcUrl: state.anvil.rpcUrl, layout, logPath: join(paths.logs, 'forge.log'), broadcastDir: join(paths.anvilHome, 'broadcast'), toolHome, log, onSpawn: reap });
+    const deployed = await deployLocalStack({ repo, rpcUrl: state.anvil.rpcUrl, env: baseEnv, layout, logPath: join(paths.logs, 'forge.log'), broadcastDir: join(paths.anvilHome, 'broadcast'), toolHome, log, onSpawn: reap });
     await writeManifest({ localDeploy: { layout, timingsMs: deployed.timings } });
     log(`Contracts deployed (${layout}): ${Object.entries(deployed.timings).map(([step, ms]) => `${step} ${(ms / 1000).toFixed(1)}s`).join(', ')}`);
   } else {
