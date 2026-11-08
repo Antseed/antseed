@@ -465,7 +465,7 @@ Deferred (not needed for the four cases):
 - a pool of test wallets with rotation and automatic top-ups for case 3
 - a canary seller of ours on mainnet, so case 3 can also test seller changes against real buyers
 - multiple sellers from different configs in one testbench
-- a CI job: the e2e scenarios plus `stress-smoke` on every PR, the full stress set nightly with repeats; then retire `e2e/stress`'s own chain, mock, bootstrap and config writers once the testbench scenarios match its results
+- a nightly CI job running the full `scenarios/stress/` set across several seeds (the per-PR `testbench` job already runs five scenarios, `stress-smoke` among them); then retire `e2e/stress`'s own chain, mock, bootstrap and config writers once the testbench scenarios match its results (`docs/testing.md`)
 - a `--runs N` repeat mode for stress scenarios (the stress harness's `--runs`)
 - fail points in `packages/node` at payment boundaries (before a settle is sent, after a NeedAuth arrives, before a close), generalizing `faults.loseNeedAuths`
 - retiring `e2e/scripts/full-payment-flow.mjs` once local runs prove stable in CI

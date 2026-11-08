@@ -1,11 +1,11 @@
 ---
 name: verify-antseed
-description: Prove an AntSeed change works end to end on this worktree's isolated testbench (testbench sellers with mock upstreams, the buyer proxy, an Anvil chain, the attach-only desktop under Playwright). Says which scenario a changed path requires, runs the red-to-green bug protocol with an issue scenario, and files evidence for PR bodies. Opt-in only: use it when the user asks to "verify it in the testbench", "prove it works end to end", "reproduce it in the testbench" or invokes /verify-antseed, or when their instructions for the task say to. Do not use it on your own after a code change; unit tests and typecheck are the default. Layers on testbench, which owns run mechanics.
+description: Prove an AntSeed change works end to end on this worktree's isolated testbench (pnpm testbench: testbench sellers with mock upstreams, the buyer proxy, an Anvil chain, the attach-only desktop under Playwright). Says which scenario a changed path requires, how to launch, drive and tear down the testbench, runs the red-to-green bug protocol with an issue scenario, and files evidence for PR bodies. Opt-in only: use it when the user asks to "verify it in the testbench", "prove it works end to end", "reproduce it in the testbench", "run the testbench", "run a scenario", "open the report", "share the desktop", or invokes /verify-antseed, or when their instructions for the task say to. Do not use it on your own after a code change; unit tests and typecheck are the default.
 ---
 
 # Verify AntSeed
 
-This skill says what to prove, when a scenario is required, and what evidence to keep. It is the only map from a changed path to what must run. `features/` is the user-facing feature map (pstack's create-verification-skill shape): one recipe per feature, from the user's point of view, and the table below links each row to it. The **testbench** skill (`.claude/skills/testbench/SKILL.md`) is the how-to for running it: prerequisites, commands, chains, reports, desktop under `xvfb-run`, share. `e2e/testbench/README.md` is the reference for every command and the `tb` API.
+This skill says what to prove, when a scenario is required, how to run it, and what evidence to keep. It is the only map from a changed path to what must run. `features/` is the user-facing feature map (pstack's create-verification-skill shape): one recipe per feature, from the user's point of view, and the table below links each row to it. `e2e/testbench/README.md` is the reference for every command, chain, option and the `tb` API; `docs/testing.md` maps every kind of test and the result classes.
 
 ## When to use it
 
@@ -42,11 +42,11 @@ When the user has opted in: add a testbench scenario only when a unit test can't
 
 - `issue-1200-spendingauth-catchup` needs the lose-NeedAuth fault (`tb.faults.loseNeedAuths`). Without it, the seller's cost-free NeedAuth wins the race against the buyer's 402 negotiator, and the scenario passes on buggy code. Arm the fault right before the chat it targets, and wait for `tb.faults.lostNeedAuths()` to return the dropped frame before you read `cumulativeSigned`. Arming clears that list, and every buyer start disarms the fault.
 - The roughly 5-second delay on a 402 catch-up chat is the seller waiting for a catch-up SpendingAuth (`DEFAULT_CATCH_UP_WAIT_MS` in `packages/node/src/seller-request-handler.ts`). It is not a buyer timeout.
-- Pricing is a topology knob (`topology.sellers[].providers.<name>.services.<model>.pricing`, read by `tb.mockCostPerChat()`). A seller's `minBudgetPerRequest` is not. Scenarios get the default of 0.5 USDC, which is the amount the #1200 bug over-signs (500018 signed for 54 delivered).
+- Pricing is a topology knob (`topology.sellers[].providers.<name>.services.<model>.pricing`, read by `tb.mockCostPerChat()`), and so is `topology.payments.minBudgetPerRequestUsdc` (for every seller at once). Without it SDK sellers use 0.5 USDC, the amount the #1200 bug over-signs (500018 signed for 54 delivered); `stressTopology()` sets the CLI seller's 0.01.
 - When doctor flags a stale `dist/`, run `pnpm run build`, or the changed package's build plus its dependents. The testbench loads `dist/`, so an unbuilt fix looks like a fix that does not work.
 - The `BuyerPaymentManager` tests live in `packages/node/tests/`, not in `packages/buyer-core`. The class moved to buyer-core, and `packages/node/src/payments/buyer-payment-manager.ts` re-exports it.
 - On this base, `payment:spend` events do not report the negotiator's catch-up. Read `cumulativeSigned` from `tb.channels()` instead. It is a decimal string of micro-USDC, so compare it as `BigInt`.
-- Inside an agent's Bash sandbox (macOS Seatbelt), the desktop test `Linux afterPack sets the sandbox helper mode before archiving` fails with `actual: 493, expected: 2541`: the testbench refuses the setuid bit. That is the environment, not the change. Run `pnpm --filter @antseed/desktop test` outside the testbench (the operator's shell or CI) for that one result, and never skip or loosen the test.
+- Inside an agent's Bash sandbox (macOS Seatbelt), the desktop test `Linux afterPack sets the sandbox helper mode before archiving` fails with `actual: 493, expected: 2541`: the sandbox refuses the setuid bit. That is the environment, not the change. Run `pnpm --filter @antseed/desktop test` outside the sandbox (the operator's shell or CI) for that one result, and never skip or loosen the test.
 - `--chain fork` runs the production contracts. A contract change shows up only on `--chain local`.
 - `withdraw()` after `tb.buyerRequestClose()` needs `tb.warp(15 * 60 + 60)` first. Waiting in wall-clock time does not move Anvil's clock. `antseed buyer channels withdraw` also checks the grace against `Date.now()`, so after the warp run it with `tb.cli(args, { clock: 'chain' })`.
 - A seller caches the current epoch for 10 minutes of wall time when it resolves free-tier stake. After `tb.warpToNextEpoch()` restart it (`tb.stopSeller`, `tb.startSeller`) before it must see a stake that activates in the new epoch, as `free-tier` does. `antseed buyer free-tier list` projects stake with `Date.now()`: after a warp, run it with `clock: 'chain'`.
@@ -61,7 +61,7 @@ When the user has opted in: add a testbench scenario only when a unit test can't
 2. Build what the testbench loads. It imports `dist/`, not `src/`.
    - Fresh worktree: `git submodule update --init packages/contracts/lib/forge-std && pnpm install && pnpm run build`.
    - After an edit: rebuild the changed package and its dependents (`pnpm --filter @antseed/buyer-core run build && pnpm --filter @antseed/node run build`), or `pnpm run build`.
-   - Desktop scenarios: `pnpm --filter @antseed/desktop run build:main && pnpm --filter @antseed/desktop run build:renderer`.
+   - Desktop scenarios: `pnpm --filter @antseed/desktop run build:main && pnpm --filter @antseed/desktop run build:renderer`, plus Playwright's ffmpeg once per machine (`pnpm exec playwright install ffmpeg`; `run` refuses a desktop scenario without it). On a headless Linux server, wrap the run in `xvfb-run -a`.
 3. Run `scripts/doctor.mjs` (below) and fix every `FAIL`.
 4. Start a run: `pnpm testbench run <scenario> --chain local`. With no testbench running, it starts one with the scenario's topology, runs the scenario, writes a report, and stops the testbench. If this worktree's testbench is already running with the same topology, `run` reuses it: same chain, same channels, and it stays up afterwards. Scenarios assume a fresh testbench, so run `pnpm testbench down` before the next run after `--keep` or `up`. The evidence helper refuses to run on a running testbench.
    - Give the Bash tool a timeout of at least 10 minutes for a run, or run it in the background. The default 2-minute timeout kills a first run mid-compile. The watchdog then stops the orphaned testbench on its own, but the run is lost.
@@ -69,6 +69,20 @@ When the user has opted in: add a testbench scenario only when a unit test can't
    - The first `--chain local` run in a worktree compiles `packages/contracts` (about 2.5 minutes). Later runs reach `READY` in about 5 seconds. `chat-basic` takes about 10 seconds end to end and `payment-flow` about a minute.
    - To poke at a running network: `pnpm testbench up --chain local`, then `eval "$(pnpm -s testbench status --env)" && curl "$ANTSEED_PROXY_URL/v1/models"`.
 5. Teardown is `pnpm testbench down` (see [Cleanup](#cleanup)).
+
+Chains: `--chain local` is an empty Anvil with this worktree's `packages/contracts` deployed from source (needs `forge` and forge-std, no RPC key; use it for contracts, payments and offline work). `--chain fork` forks Base mainnet with the production contracts and needs `BASE_MAINNET_RPC_URL` in the gitignored `.env.local`; never fall back to a public RPC. Without `--chain`, a scenario runs on the first entry of its `targets`, so pass it explicitly. The other commands you need:
+
+```bash
+pnpm -s testbench scenarios                     # every scenario by group, with targets
+pnpm -s testbench list | status [--env]         # testbenches on this machine / this worktree's
+pnpm testbench logs supervisor|anvil|seller-<id> [--follow]
+pnpm testbench report --open | --serve --port 8799   # latest report; --serve binds to loopback
+pnpm testbench run <scenario> --trace           # adds a Playwright trace.zip to a desktop run
+pnpm testbench desktop [--cdp-port N]           # hands-on attach-only desktop on a running testbench
+pnpm testbench share [--stop]                   # Linux server: the desktop in the user's browser (README, Case 4)
+```
+
+A run's `result` is `passed`, `failed`, `error`, `timeout` or `blocked` (exit 0, 1, 4, 3, 2; `docs/testing.md`), `--strict` fails a `KNOWN` result (CI uses it), and anything but `passed` prints a `rerun:` line with the run's seed.
 
 Each worktree gets its own testbench (`wt-<basename>-<hash>`, state in `~/.antseed-testbench/<name>/`). If a testbench with another topology is running, `run` refuses: run `pnpm testbench down` first or add `--slot NAME`. Never drive a testbench another worktree started.
 
@@ -208,7 +222,10 @@ When a change touches a feature no scenario covers, say so in the PR: the unit t
 - **`mainnet-smoke` has never run funded.** Case 3 is untested with a real wallet.
 - **`pnpm testbench share` is untested on a real server with Tailscale.**
 - **Network simulation and failpoints** are separate branches, not in this testbench.
-- **Desktop on headless Linux.** Desktop scenarios need Playwright's ffmpeg (`pnpm exec playwright install ffmpeg`); without it the recorded window never loaded and runs timed out at `page.waitForLoadState`. `run` now refuses a desktop scenario up front when it is missing, and a launch that still fails closes the app instead of hanging. `desktop-chat` passes on a Debian VPS under `xvfb-run -a` as root.
+
+## Report back
+
+Per scenario: passed or failed, the failing checks with their `detail`, `KNOWN` results as known, timings that moved (`DRIFT` lines), the report path (and the screenshots and video for desktop runs), and whether the testbench is still running and how to stop it.
 
 ## Keep this skill honest
 

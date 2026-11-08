@@ -21,9 +21,9 @@ one-line commits that has to be squashed later. Do not chain `edit → build
 ## Testbench (opt-in)
 
 This repo has a per-worktree end-to-end testbench (`pnpm testbench`, see
-`e2e/testbench/README.md`) and two skills for it: `verify-antseed` (which
-scenario a change needs) and `testbench` (how to run it). It is opt-in. Do
-not run the testbench or those skills by default after a change; builds, unit
+`e2e/testbench/README.md`) and one skill for it, `verify-antseed` (which
+scenario a change needs and how to run it). It is opt-in. Do
+not run the testbench or that skill by default after a change; builds, unit
 tests and typecheck stay the default checks. Use them only when the user asks
 (for example "verify it in the testbench", "run a scenario", `/verify-antseed`)
 or gives task-specific instructions to, and then follow the skills. Runs that
