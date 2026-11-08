@@ -34,7 +34,11 @@ rm -rf "$APP"
 ENGINE="$APP/Contents/Helpers/tensorfold"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/tensorfold-licenses" "$ENGINE"
 cp "$PRODUCTS/AntseedMacWorker" "$APP/Contents/MacOS/"
-cp -R "$PRODUCTS"/*.bundle "$APP/Contents/Resources/"
+# Dependencies' resource bundles (CryptoSwift's privacy manifest), when the build made any.
+shopt -s nullglob
+BUNDLES=("$PRODUCTS"/*.bundle)
+shopt -u nullglob
+if ((${#BUNDLES[@]})); then cp -R "${BUNDLES[@]}" "$APP/Contents/Resources/"; fi
 cp -R "build/$TENSORFOLD/bin" "build/$TENSORFOLD/lib" "$ENGINE/"
 cp -R "build/$TENSORFOLD/LICENSE" "build/$TENSORFOLD/NOTICE" "build/$TENSORFOLD/THIRD_PARTY_NOTICES.md" "build/$TENSORFOLD/LICENSES" "$APP/Contents/Resources/tensorfold-licenses/"
 cat > "$APP/Contents/Info.plist" <<PLIST

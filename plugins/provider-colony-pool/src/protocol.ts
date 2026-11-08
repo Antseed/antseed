@@ -212,8 +212,10 @@ const isString: FieldCheck = (value) => typeof value === 'string';
 const isNumber: FieldCheck = (value) => typeof value === 'number';
 const optional = (check: FieldCheck): FieldCheck => (value) => value === undefined || check(value);
 
-/** Each frame's fields and the check each must pass; a frame is its `t` plus these. */
-type FrameShapes<F extends { t: string }> = Record<F['t'], Record<string, FieldCheck>>;
+/** Each frame's fields (every field of its interface but `t`) and the check each must pass. */
+type FrameShapes<F extends { t: string }> = {
+  [T in F['t']]: { [K in Exclude<keyof Extract<F, { t: T }>, 't'>]-?: FieldCheck };
+};
 
 const WORKER_FRAMES: FrameShapes<WorkerFrame> = {
   hello: {

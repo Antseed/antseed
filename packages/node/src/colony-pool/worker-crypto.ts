@@ -321,6 +321,22 @@ export function requestBindingHash(
   ));
 }
 
+/**
+ * The binding hash when `signature` over it is `buyer`'s, else null. Throws on
+ * a malformed signature or field, which callers treat as no binding.
+ */
+export function verifiedRequestBindingHash(
+  workers: readonly string[],
+  channel: string,
+  expires: number,
+  ciphertext: Uint8Array,
+  signature: string,
+  buyer: string,
+): string | null {
+  const hash = requestBindingHash(workers, channel, expires, ciphertext);
+  return verifyMessage(getBytes(hash), signature).toLowerCase() === buyer.toLowerCase() ? hash : null;
+}
+
 // ── envelopes ──
 
 /** One worker a request is encrypted for: its ephemeral key and its wrapped copy of the content key. */
@@ -511,9 +527,8 @@ export function openRequest(body: Uint8Array, workerAddress: string, workerKey: 
   let binding: string | null = null;
   if (envelope.buyer && envelope.sig && envelope.channel && Number.isSafeInteger(envelope.exp) && envelope.exp! >= 0) {
     try {
-      const hash = requestBindingHash(workers, envelope.channel, envelope.exp!, ct);
-      const recovered = verifyMessage(getBytes(hash), envelope.sig);
-      if (recovered.toLowerCase() === envelope.buyer.toLowerCase()) {
+      const hash = verifiedRequestBindingHash(workers, envelope.channel, envelope.exp!, ct, envelope.sig, envelope.buyer);
+      if (hash) {
         buyer = getAddress(envelope.buyer);
         channel = envelope.channel;
         expires = envelope.exp!;

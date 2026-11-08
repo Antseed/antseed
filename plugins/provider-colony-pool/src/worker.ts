@@ -1,9 +1,9 @@
-import { getBytes, verifyMessage, Wallet } from 'ethers';
+import { Wallet } from 'ethers';
 import WebSocket from 'ws';
 import {
   isSealedRequest,
   openRequest,
-  requestBindingHash,
+  verifiedRequestBindingHash,
   type RequestEnvelope,
   WORKER_REQUEST_TTL_SECONDS,
   type OpenedRequest,
@@ -554,8 +554,8 @@ export function clearBinding(body: Uint8Array, worker: string): { buyer: string;
     if (!buyer || !sig || !channel || /^0x0+$/.test(channel) || !Number.isSafeInteger(exp) || exp! < 0) return null;
     const workers = envelope.recipients.map((r) => r.worker);
     if (!workers.some((w) => typeof w === 'string' && w.toLowerCase() === worker.toLowerCase())) return null;
-    const hash = requestBindingHash(workers, channel, exp!, Buffer.from(envelope.ct, 'base64'));
-    if (verifyMessage(getBytes(hash), sig).toLowerCase() !== buyer.toLowerCase()) return null;
+    const hash = verifiedRequestBindingHash(workers, channel, exp!, Buffer.from(envelope.ct, 'base64'), sig, buyer);
+    if (!hash) return null;
     return { buyer, channel, expires: exp!, hash, model: outer.model };
   } catch {
     return null;
