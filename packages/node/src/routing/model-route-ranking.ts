@@ -193,15 +193,51 @@ function compareScoredModelRoutes<T extends ModelRouteCandidate>(
     || normalizedPeerId(a.route.peerId).localeCompare(normalizedPeerId(b.route.peerId));
 }
 
+// Peer id keeps the sort stable. Without a later rotation every buyer would
+// try that same first seller, so a process-local counter walks the head group.
+let equalHeadRotation = 0;
+
+function sameEqualHead<T extends ModelRouteCandidate>(
+  a: ScoredModelRoute<T>,
+  b: ScoredModelRoute<T>,
+  preferences: ModelRoutingPreferences,
+  now: number,
+): boolean {
+  if (isModelRouteEligible(a.route, preferences) !== isModelRouteEligible(b.route, preferences)) return false;
+  if (isModelRouteCoolingDown(a.route, now) !== isModelRouteCoolingDown(b.route, now)) return false;
+  const aPrice = modelRouteTotalPrice(a.route);
+  const bPrice = modelRouteTotalPrice(b.route);
+  if ((aPrice === null) !== (bPrice === null)) return false;
+  return aPrice === bPrice && a.score === b.score;
+}
+
+function rotateEqualHead<T extends ModelRouteCandidate>(
+  ranked: ScoredModelRoute<T>[],
+  preferences: ModelRoutingPreferences,
+  now: number,
+): ScoredModelRoute<T>[] {
+  if (ranked.length < 2) return ranked;
+  let group = 1;
+  const first = ranked[0]!;
+  while (group < ranked.length && sameEqualHead(first, ranked[group]!, preferences, now)) group += 1;
+  if (group < 2) return ranked;
+  equalHeadRotation = (equalHeadRotation + 1) >>> 0;
+  const offset = equalHeadRotation % group;
+  if (offset === 0) return ranked;
+  const head = ranked.slice(0, group);
+  for (let i = 0; i < group; i += 1) ranked[i] = head[(i + offset) % group]!;
+  return ranked;
+}
+
 export function rankModelRoutes<T extends ModelRouteCandidate>(
   routes: T[],
   preferences: ModelRoutingPreferences,
   now: number = Date.now(),
 ): T[] {
-  return routes
+  const ranked = routes
     .map((route) => scoreModelRoute(route, preferences, now))
-    .sort((a, b) => compareScoredModelRoutes(a, b, preferences, now))
-    .map(({ route }) => route);
+    .sort((a, b) => compareScoredModelRoutes(a, b, preferences, now));
+  return rotateEqualHead(ranked, preferences, now).map(({ route }) => route);
 }
 
 export function chooseBestModelRoute<T extends ModelRouteCandidate>(
