@@ -3,6 +3,8 @@
  * the renderer (renderer/types/bridge.ts re-exports it).
  */
 
+import type { CreatedInviteView, InviteAllowanceView } from '@antseed/ants/service';
+
 /** This wallet as a referee: who invited it, or the invite it carries until bound. */
 export type ReferralStatus = {
   /** False when referrals are not deployed on this network (UI hides referral pieces). */
@@ -16,7 +18,7 @@ export type InviteCheckResult =
   | { ok: true; referrer: string; invite: string }
   | { ok: false; reason: string };
 
-export type InviteAllowance = { epoch: number; quota: number; used: number; left: number };
+export type InviteAllowance = InviteAllowanceView;
 
 /** This wallet as a referrer, for the rewards view. ANTS are decimal strings. */
 export type ReferralInvites = {
@@ -38,7 +40,7 @@ export type ReferralInvites = {
 
 export type CreateInviteResult =
   /** `epoch`: the on-chain week the invite was issued in (it can be ahead of Antscan's allowance). */
-  | { ok: true; invite: string; link: string; epoch: number; left: number; quota: number; expiresEpoch: number }
+  | ({ ok: true } & Omit<CreatedInviteView, 'index'>)
   | { ok: false; reason: string; noQuota: boolean };
 
 /** The two-sided bonus this wallet earns as a referee (from Antscan). Payable is a decimal ANTS string. */
