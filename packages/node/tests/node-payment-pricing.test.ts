@@ -2490,6 +2490,37 @@ describe('data service seller payments', () => {
     expect(harness.provider.handleRequestStream).not.toHaveBeenCalled();
   });
 
+  it('decodes stacked encodings, and passes an encoding it cannot undo on with its header', async () => {
+    const { gzipSync, brotliCompressSync } = await import('node:zlib');
+    const json = '{"flights":[]}';
+    const harness = setup();
+    vi.mocked(harness.provider.handleRequest).mockImplementationOnce(async request => ({
+      requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json', 'content-encoding': 'gzip, br' },
+      body: new Uint8Array(brotliCompressSync(gzipSync(Buffer.from(json)))),
+    }));
+    const stacked = await harness.send('stacked');
+    expect(new TextDecoder().decode(stacked.body)).toBe(json);
+    expect(stacked.headers['content-encoding']).toBeUndefined();
+
+    vi.mocked(harness.provider.handleRequest).mockImplementationOnce(async request => ({
+      requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json', 'content-encoding': 'zstd' },
+      body: new Uint8Array([1, 2, 3]),
+    }));
+    const unknown = await harness.send('zstd');
+    expect(unknown.headers['content-encoding']).toBe('zstd');
+    expect([...unknown.body]).toEqual([1, 2, 3]);
+  });
+
+  it('checks a data call against the reserve by its price, never by its body read as tokens', async () => {
+    const harness = setup({ getReserveMax: () => 8_000n }, { reserveEstimateOverdraftUsdc: 0n });
+    harness.provider.serviceApiProtocols = { flights: ['openai-chat-completions', 'openapi-data'] };
+    harness.provider.pricing = { defaults: { inputUsdPerMillion: 10, outputUsdPerMillion: 10 }, services: { flights: { inputUsdPerMillion: 10, outputUsdPerMillion: 10 } } };
+    const body = new TextEncoder().encode(JSON.stringify({ from: 'TLV', max_tokens: 1_000_000, notes: 'x'.repeat(20_000) }));
+    const response = await harness.send('big', { body });
+    expect(response.statusCode).toBe(200);
+    expect(harness.spm.recordSpend).toHaveBeenCalledWith('session-1', 5000n);
+  });
+
   it('decodes a compressed data answer, since the encoding header is not forwarded', async () => {
     const harness = setup();
     const { gzipSync } = await import('node:zlib');

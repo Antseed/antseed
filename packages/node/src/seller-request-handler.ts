@@ -1694,7 +1694,8 @@ export class SellerRequestHandler {
     pricing: ProviderTokenPricing,
     unitModel: UnitBillingModelV1 | undefined,
   ): { cost: bigint; inputTokens: number; maxOutputTokens: number } | null {
-    const tokenEstimate = this._estimateMaxTokenRequestCostUsdc(request, pricing);
+    // A data operation's body is the seller's own API input: never read as tokens or output limits.
+    const tokenEstimate = dataServiceRoute(request) ? null : this._estimateMaxTokenRequestCostUsdc(request, pricing);
     const unitEstimate = unitModel
       ? this._estimateUnitRequestCostUsdc(requestBilling, unitModel)
       : null;

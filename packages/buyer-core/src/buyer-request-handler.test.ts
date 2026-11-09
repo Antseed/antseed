@@ -191,6 +191,26 @@ describe('BuyerRequestHandler data service 402', () => {
     expect(selectBillingRoute(peer, chat, 'flights')?.provider).toBe('chat-only');
   });
 
+  it("ends a payment catch-up at a data provider's own answer, without negotiating it again", async () => {
+    const sellerCatchUp = response(402, {
+      error: 'payment_required', minBudgetPerRequest: '10000', suggestedAmount: '1000000',
+      requiredCumulativeAmount: '500000', currentAcceptedCumulative: '100000', reserveMaxAmount: '1000000',
+    });
+    const providerAnswer = response(402, {
+      error: 'payment_required', minBudgetPerRequest: '10000', suggestedAmount: '1000000',
+      requiredCumulativeAmount: '500000', currentAcceptedCumulative: '400000', reserveMaxAmount: '1000000',
+    });
+    providerAnswer.headers = { ...providerAnswer.headers, 'x-antseed-data-response': 'provider' };
+    const { handler, handle402, sendProxyRequest } = makeHandler([sellerCatchUp, providerAnswer, ACCEPTED]);
+
+    const result = await handler.sendRequest(makeDataPeer(), makeDataRequest());
+
+    expect(result.statusCode).toBe(402);
+    expect(JSON.parse(Buffer.from(result.body).toString()).currentAcceptedCumulative).toBe('400000');
+    expect(handle402).toHaveBeenCalledOnce();
+    expect(sendProxyRequest).toHaveBeenCalledTimes(2);
+  });
+
   it('still negotiates the seller payment contract on a data call', async () => {
     const { handler, handle402, sendProxyRequest } = makeHandler([PAYMENT_REQUIRED, ACCEPTED]);
 

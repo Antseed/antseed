@@ -151,12 +151,14 @@ export function peerServices(row: Row): Peer['services'] {
       const voices = speechVoices(asRecord(asRecord(serviceCapabilities[provider])['services'])[service])
       const perMillionCharacters = speechUsdPerMillionCharacters(billing, service)
       const perRequest = dataUsdPerRequest(billing)
+      // A service on data alone is priced per request; provider token defaults do not apply to it.
+      const dataOnly = Array.isArray(apis) && apis.length > 0 && apis.every((api) => api === 'openapi-data')
       services.push({
         provider,
         service,
-        inputUsdPerMillion: num(price['inputUsdPerMillion']),
-        outputUsdPerMillion: num(price['outputUsdPerMillion']),
-        cachedInputUsdPerMillion: num(price['cachedInputUsdPerMillion']),
+        inputUsdPerMillion: dataOnly ? null : num(price['inputUsdPerMillion']),
+        outputUsdPerMillion: dataOnly ? null : num(price['outputUsdPerMillion']),
+        cachedInputUsdPerMillion: dataOnly ? null : num(price['cachedInputUsdPerMillion']),
         categories: Array.isArray(tags) ? tags.filter((tag): tag is string => typeof tag === 'string') : [],
         ...(Array.isArray(apis) ? { apiProtocols: apis.filter((api): api is string => typeof api === 'string') } : {}),
         paid,

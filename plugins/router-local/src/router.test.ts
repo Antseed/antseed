@@ -130,6 +130,26 @@ describe('LocalRouter', () => {
     expect(router.allowsPeerForPolicy(makeRequest('dear-chat'), peer)).toBe(false);
   });
 
+  it('prices a data request through the provider that serves it on openapi-data', () => {
+    const router = new LocalRouter({ maxPricing: { defaults: { inputUsdPerMillion: 5, outputUsdPerMillion: 5 } } });
+    const peer = makePeer({
+      providers: ['chat', 'openapi'],
+      providerPricing: {
+        chat: { defaults: { inputUsdPerMillion: 50, outputUsdPerMillion: 50 }, services: { flights: { inputUsdPerMillion: 50, outputUsdPerMillion: 50 } } },
+        openapi: { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 }, services: { flights: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } } },
+      },
+      providerServiceApiProtocols: {
+        chat: { services: { flights: ['openai-chat-completions'] } },
+        openapi: { services: { flights: ['openapi-data'] } },
+      },
+    });
+    const dataRequest: SerializedHttpRequest = { ...makeRequest('flights'), path: '/v1/data/flights/search' };
+    expect(router.allowsPeerForPolicy(dataRequest, peer)).toBe(true);
+    expect(router.selectPeer(dataRequest, [peer])?.peerId).toBe(peer.peerId);
+    // A chat request for the same name is still priced through the chat provider.
+    expect(router.allowsPeerForPolicy(makeRequest('flights'), peer)).toBe(false);
+  });
+
   it('selects cheapest peer regardless of provider name', () => {
     const router = new LocalRouter({
       maxPricing: {

@@ -35,6 +35,12 @@ export interface LocalRouterConfig {
   now?: () => number;
 }
 
+/** Video and data requests are priced through a provider serving their own protocol. */
+function routeProtocolOf(req: SerializedHttpRequest): NonNullable<ReturnType<typeof detectRequestServiceApiProtocol>> | undefined {
+  const requestProtocol = detectRequestServiceApiProtocol(req);
+  return requestProtocol && (isNativeVideoProtocol(requestProtocol) || requestProtocol === 'openapi-data') ? requestProtocol : undefined;
+}
+
 export class LocalRouter implements Router {
   private readonly _minReputation: number;
   private readonly _maxPricing: BuyerMaxPricingConfig;
@@ -71,8 +77,7 @@ export class LocalRouter implements Router {
     const now = this._now();
     const requestedService = this._extractRequestedService(req);
     // A native video request reaches only upstreams serving its protocol, so that route's health counts.
-    const requestProtocol = detectRequestServiceApiProtocol(req);
-    const routeProtocol = requestProtocol && isNativeVideoProtocol(requestProtocol) ? requestProtocol : undefined;
+    const routeProtocol = routeProtocolOf(req);
 
     const candidates: {
       peer: PeerInfo;
@@ -171,7 +176,10 @@ export class LocalRouter implements Router {
   private _pricingRejection(req: SerializedHttpRequest, peer: PeerInfo): string | null {
     const requestedService = this._extractRequestedService(req);
     // A request naming its provider is priced through that provider.
-    const provider = this._namedProvider(req, peer) ?? this._selectProviderForPeer(peer, requestedService);
+    const protocol = routeProtocolOf(req);
+    const provider = this._namedProvider(req, peer) ?? (protocol
+      ? this._selectProviderForPeer(peer, requestedService, { protocol })
+      : this._selectProviderForPeer(peer, requestedService));
     if (!provider) return 'no provider for this model';
     const offer = this._resolvePeerOfferPrice(peer, provider, requestedService);
     if (!offer) return 'no valid price advertised';

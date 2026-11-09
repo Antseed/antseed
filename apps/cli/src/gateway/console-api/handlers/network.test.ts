@@ -213,6 +213,20 @@ test('peer services price each service from its own entry or the provider defaul
   ])
 })
 
+test('a service on data alone is priced per request, not by its provider token defaults', () => {
+  const services = peerServices({
+    peerId: PEER_A,
+    providers: ['openapi'],
+    providerPricing: { openapi: { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 }, services: { flights: {} } } },
+    providerServiceApiProtocols: { openapi: { services: { flights: ['openapi-data'] } } },
+    providerServiceUnitBillingModels: { openapi: { services: { flights: { 'openapi-data': { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.005 }] } } } } },
+  } as Record<string, unknown>)
+  const flights = services.find((entry) => entry.service === 'flights')!
+  assert.equal(flights.inputUsdPerMillion, null)
+  assert.equal(flights.outputUsdPerMillion, null)
+  assert.ok(Math.abs(flights.usdPerRequest! - 0.005) < 1e-12)
+})
+
 test('peer services and model offers carry a service’s own free-tier program', () => {
   const row = {
     ...PEERS_BODY.peers[0],

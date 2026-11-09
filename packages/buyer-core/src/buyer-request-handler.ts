@@ -546,6 +546,9 @@ export class BuyerRequestHandler {
         }
         startTime = Date.now();
         retriedResponse = await executeCountedRequest();
+        // A data provider's own answer, as the seller marked it, is the operation's result:
+        // never another payment step.
+        if (dataRoute && isDataProviderResponse(retriedResponse)) break;
         const previous = catchUpState(paymentResponse);
         const current = catchUpState(retriedResponse);
         if (current == null || previous == null) break;
