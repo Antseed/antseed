@@ -235,6 +235,14 @@ describe('free-tier codes', () => {
     expect(acceptFreeTierDelegationCode(code, buyer, 31337)).toMatchObject({ staker: staker.address, expiresAt });
   });
 
+  it('refuses to create an invite in a browser wallet session, which cannot hold the buyer key', async () => {
+    const { Wallet } = await import('ethers');
+    const response = await withSigner(Wallet.createRandom(), true).inject({ method: 'POST', url: '/api/referrals/invite' });
+    expect(response.statusCode).toBe(403);
+    expect(response.json().error).toContain('antseed referral invite');
+    expect(service.createInvite).not.toHaveBeenCalled();
+  });
+
   it('accepts a browser wallet signature only from the connected staker', async () => {
     const { Wallet } = await import('ethers');
     const { FREE_TIER_DELEGATION_TYPES, freeTierDelegationMessage, makeFreeTierDelegationDomain } = await import('@antseed/node');

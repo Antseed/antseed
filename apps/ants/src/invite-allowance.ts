@@ -1,5 +1,8 @@
 export const NO_INVITE_QUOTA_MESSAGE = 'Invites unlock after at least 1 USDC of usage or sales in the previous week.';
 
+/** Invites are signed by the buyer account's local key, which a browser wallet session never holds. */
+export const BROWSER_WALLET_INVITE_MESSAGE = 'Invites are signed by the local Antseed wallet. Run `antseed referral invite` instead.';
+
 export type InviteAllowanceSnapshot = { epoch: number; quota: number; left: number };
 
 /**

@@ -25,6 +25,7 @@ import type {
   ClaimRequest, RestakeRequest, StakeUsageRequest, SubmitProofRequest, CompoundRequest, BuilderClaimRequest,
 } from './api-types.js';
 import { MAX_BUILDER_AGENTS } from './api-types.js';
+import { BROWSER_WALLET_INVITE_MESSAGE } from './invite-allowance.js';
 
 export interface RouteContext {
   ctx: AntsContext;
@@ -119,6 +120,7 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext): voi
   // Signing an invite is off-chain and instant, so it answers directly instead of starting a job.
   app.post('/api/referrals/invite', async (_request, reply) => {
     if (!ctx.signer) return reply.status(403).send({ ok: false, error: 'The dashboard is running in read-only mode (no wallet available).' });
+    if (context.browserSigning) return reply.status(403).send({ ok: false, error: BROWSER_WALLET_INVITE_MESSAGE });
     return respond(reply, async () => {
       const created = await createInvite(ctx, context.dataDir);
       views.invalidate(); // the card's "left this week" count changed

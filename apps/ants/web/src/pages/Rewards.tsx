@@ -2,7 +2,7 @@ import { Button, Card } from '../components/ui';
 import { useContext, useEffect, useState } from 'react';
 import type { ClaimRequest, CreatedInviteView, InviteAllowanceView, PoolView, ReferralView, ReferredBuyerView, RestakeRequest, RewardBucket, RewardsView, StakeUsageRequest } from '../../../src/api-types';
 import { copyText } from '@antseed/ui';
-import { inviteAllowance, NO_INVITE_QUOTA_MESSAGE } from '../../../src/invite-allowance';
+import { BROWSER_WALLET_INVITE_MESSAGE, inviteAllowance, NO_INVITE_QUOTA_MESSAGE } from '../../../src/invite-allowance';
 import { request, api } from '../api';
 import { BuyerWalletAction } from '../wallet';
 import { useConfig, useEpochInfo } from '../app-context';
@@ -104,7 +104,7 @@ function ReferralRewardsCard({ operator }: { operator: string | null }) {
  */
 export function inviteRowState(session: { readOnly?: boolean; browserWallet?: boolean }, quota: number | null, left: number | null): { blocked: string | null; exhausted: string | null } {
   const blocked = session.readOnly ? 'Connect a wallet with a signer to create invites.'
-    : session.browserWallet ? 'Invites are signed by the local Antseed wallet. Run `antseed referral invite` instead.' : null;
+    : session.browserWallet ? BROWSER_WALLET_INVITE_MESSAGE : null;
   const exhausted = quota === 0 ? NO_INVITE_QUOTA_MESSAGE
     : left === 0 ? 'All invites for this week are taken. More unlock next week.' : null;
   return { blocked, exhausted: blocked ? null : exhausted };
