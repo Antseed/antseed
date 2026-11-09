@@ -54,6 +54,8 @@ interface ScoringContext {
   maxPeerStalenessMs: number
   maxFailures: number
   weights?: Partial<ScoringWeights>
+  /** Keeps one model's rotation from moving another's when they share sellers. */
+  rotationKey?: string
 }
 
 function normalizedInverted(value: number, min: number, range: number): number {
@@ -190,7 +192,7 @@ export function scoreCandidates(
     return b.score - a.score
   })
 
-  return rotateEqualScoreHead(scored, latencies)
+  return rotateEqualScoreHead(scored, latencies, context.rotationKey)
 }
 
 function latencyByPeer(candidates: CandidateInput[]): Map<string, number | undefined> {
@@ -224,6 +226,7 @@ function rememberScoreRotation(key: string, step: number): void {
 function rotateEqualScoreHead(
   scored: ScoredCandidate[],
   latencies: Map<string, number | undefined>,
+  rotationKey?: string,
 ): ScoredCandidate[] {
   if (scored.length < 2) return scored
   const best = scored[0]
@@ -243,8 +246,10 @@ function rotateEqualScoreHead(
     if (peerId) ids.push(peerId)
   }
   ids.sort()
-  const step = ((equalScoreRotation.get(ids.join('\n')) ?? 0) + 1) >>> 0
-  rememberScoreRotation(ids.join('\n'), step)
+  const sellers = ids.join('\n')
+  const pool = rotationKey && rotationKey.length > 0 ? `key:${rotationKey}\n${sellers}` : `peers:${sellers}`
+  const step = ((equalScoreRotation.get(pool) ?? 0) + 1) >>> 0
+  rememberScoreRotation(pool, step)
   const offset = step % group
   if (offset === 0) return scored
   const head = scored.slice(0, group)

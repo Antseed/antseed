@@ -189,6 +189,28 @@ describe('scoreCandidates', () => {
     }
   })
 
+  it('rotates two models that share sellers on their own', () => {
+    const shared = ['a', 'b'].map((seed) => ({
+      peer: makePeer({ peerId: makePeerId(seed) }),
+      provider: 'anthropic' as const,
+      providerRank: 0,
+      offer: defaultOffer,
+      metrics: defaultMetrics,
+    }))
+    const modelA: string[] = []
+    const modelB: string[] = []
+    for (let i = 0; i < 4; i += 1) {
+      modelA.push(scoreCandidates(shared, { ...defaultContext, rotationKey: 'model-a' })[0]!.peer.peerId)
+      modelB.push(scoreCandidates(shared, { ...defaultContext, rotationKey: 'model-b' })[0]!.peer.peerId)
+    }
+    expect(new Set(modelA).size).toBe(2)
+    expect(new Set(modelB).size).toBe(2)
+    for (let i = 1; i < modelA.length; i += 1) {
+      expect(modelA[i]).not.toBe(modelA[i - 1])
+      expect(modelB[i]).not.toBe(modelB[i - 1])
+    }
+  })
+
   it('returns empty array for empty candidates', () => {
     const result = scoreCandidates([], defaultContext)
     expect(result).toHaveLength(0)
