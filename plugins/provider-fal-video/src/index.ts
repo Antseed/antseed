@@ -417,8 +417,8 @@ const plugin: AntseedProviderPlugin = {
     };
 
     /** Why a create's reference videos are not covered by the service's price, or null. */
-    const referencePriceProblem = (request: SerializedHttpRequest, service: string) =>
-      referenceVideoPriceProblem(request, service, serviceUnitBillingModels?.[service]?.[PROTOCOL]?.components);
+    const referencePriceProblem = (request: SerializedHttpRequest, service: string, body: Record<string, unknown>) =>
+      referenceVideoPriceProblem(request, service, serviceUnitBillingModels?.[service]?.[PROTOCOL]?.components, undefined, body);
 
     // Run before any payment, so a refused create costs the buyer nothing.
     const checkRequest = (request: SerializedHttpRequest): ProviderRequestRefusal | null => {
@@ -426,7 +426,7 @@ const plugin: AntseedProviderPlugin = {
       if (videoRoute?.action !== 'create' || !service) return null;
       const body = parseJsonObject(request.body);
       if (!body) return null;
-      const unpriced = referencePriceProblem(request, service);
+      const unpriced = referencePriceProblem(request, service, body);
       if (unpriced) return { statusCode: 400, code: 'unsupported_video_input', message: unpriced };
       const renamed = renameFalReferenceAliases({ ...body }, schemaFields.get(service));
       if (renamed) return { statusCode: 400, code: 'invalid_video_request', message: renamed };
@@ -447,7 +447,7 @@ const plugin: AntseedProviderPlugin = {
         // fal reads the model from the URL; the body is the model input only.
         const { model: _model, service: _service, ...input } = body;
         // The seller checks these before payment too (checkRequest).
-        const unpriced = referencePriceProblem(request, service);
+        const unpriced = referencePriceProblem(request, service, body);
         if (unpriced) return error(request, 400, 'unsupported_video_input', unpriced);
         const refused = lengthProblem(service, input);
         if (refused) return error(request, 422, 'invalid_video_duration', refused);

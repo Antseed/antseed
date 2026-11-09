@@ -411,7 +411,7 @@ const plugin: AntseedProviderPlugin = {
 
     /** Why a create can't be served at the seller's price, or null. */
     const createRefusal = (request: SerializedHttpRequest, service: string, input: Record<string, unknown> | null): ProviderRequestRefusal | null => {
-      const unpriced = referenceVideoPriceProblem(request, service, serviceUnitBillingModels?.[service]?.[PROTOCOL]?.components, serviceCapabilities[service]?.video);
+      const unpriced = referenceVideoPriceProblem(request, service, serviceUnitBillingModels?.[service]?.[PROTOCOL]?.components, serviceCapabilities[service]?.video, input);
       if (unpriced) return { statusCode: 400, code: 'unsupported_video_input', message: unpriced };
       const length = lengthProblem(service, input);
       if (length) return { statusCode: 422, code: 'invalid_video_duration', message: length };

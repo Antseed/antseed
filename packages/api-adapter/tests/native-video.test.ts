@@ -26,7 +26,7 @@ describe('native video API contracts', () => {
     const req = request('/api/v1/video/queue', { model: 'video', image_url: 'https://media.example/image.png', duration: '8s' });
     expect(nativeVideoRoute(req)).toEqual({ protocol: 'venice-video', action: 'create' });
     expect(detectRequestServiceApiProtocol(req)).toBe('venice-video');
-    expect(nativeVideoFacts(req)).toEqual({ protocol: 'venice-video', action: 'create', duration: 8 });
+    expect(nativeVideoFacts(req)).toEqual({ protocol: 'venice-video', action: 'create', duration: 8, referenceVideo: false });
   });
 
   it('recognizes native paths without translating them into chat', () => {
@@ -74,7 +74,7 @@ describe('native video API contracts', () => {
     expect(nativeVideoRoute(create)).toEqual({ protocol: 'fal-video', action: 'create' });
     expect(detectRequestServiceApiProtocol(create)).toBe('fal-video');
     expect(requestService(create)).toBe(model);
-    expect(nativeVideoFacts(create)).toEqual({ protocol: 'fal-video', action: 'create', duration: 5 });
+    expect(nativeVideoFacts(create)).toEqual({ protocol: 'fal-video', action: 'create', duration: 5, referenceVideo: false });
     expect(nativeVideoFacts(request('/fal/v1/video/queue', { model, duration: 8 }))?.duration).toBe(8);
     expect(nativeVideoFacts(request('/fal/v1/video/queue', { model, duration: '6s' }))?.duration).toBe(6);
     expect(() => nativeVideoFacts(request('/fal/v1/video/queue', { model, duration: 'auto' }))).toThrow(/duration/);
@@ -104,9 +104,9 @@ describe('reference videos in a video create', () => {
   });
   it('marks a create that sends reference videos', () => {
     expect(nativeVideoFacts(create('/api/v1/video/queue', { model: 'm', duration: '5s', reference_video_urls: ['v'] }))?.referenceVideo).toBe(true);
-    expect(nativeVideoFacts(create('/api/v1/video/queue', { model: 'm', duration: '5s', reference_video_urls: [] }))).not.toHaveProperty('referenceVideo');
+    expect(nativeVideoFacts(create('/api/v1/video/queue', { model: 'm', duration: '5s', reference_video_urls: [] }))?.referenceVideo).toBe(false);
     expect(nativeVideoFacts(create('/fal/v1/video/queue', { model: 'm', duration: '5', video_urls: ['v'] }))?.referenceVideo).toBe(true);
-    expect(nativeVideoFacts(create('/api/v1/video/queue', { model: 'm', duration: '5s', video_urls: ['v'] }))).not.toHaveProperty('referenceVideo');
+    expect(nativeVideoFacts(create('/api/v1/video/queue', { model: 'm', duration: '5s', video_urls: ['v'] }))?.referenceVideo).toBe(false);
   });
 
   it('refuses reference videos unless a reference_video component matches the whole create', () => {

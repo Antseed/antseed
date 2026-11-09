@@ -106,8 +106,8 @@ export interface NativeVideoFacts {
   aspectRatio?: string;
   /** Whether the create asks for audio: `audio`, or fal's `generate_audio`. */
   audio?: boolean;
-  /** True when the create sends reference videos (`reference_video_urls`, or fal's `video_urls`). */
-  referenceVideo?: true;
+  /** Whether the create sends reference videos (`reference_video_urls`, or fal's `video_urls`), for a create. */
+  referenceVideo?: boolean;
 }
 
 /** Create fields that carry reference videos, by protocol. fal's own name is `video_urls`. */
@@ -128,7 +128,7 @@ export interface NativeVideoPricedOptions {
  * leaves out audio at the announced `video.audio`. Only Venice: its plugin sends
  * those values upstream, so the price is the clip's. Other protocols price what
  * the create names, so one leaving out a priced option matches no component.
- * `reference_video` is `"true"` when the create sends reference videos.
+ * `reference_video` is `"true"` or `"false"`: whether the create sends reference videos.
  */
 export function nativeVideoAttributes(
   service: string,
@@ -143,7 +143,7 @@ export function nativeVideoAttributes(
     ...(video.resolution ? { resolution: video.resolution } : {}),
     ...(aspectRatio ? { aspect_ratio: aspectRatio } : {}),
     ...(audio !== undefined ? { audio: String(audio) } : {}),
-    ...(video.referenceVideo ? { reference_video: 'true' } : {}),
+    ...(video.referenceVideo !== undefined ? { reference_video: String(video.referenceVideo) } : {}),
   };
 }
 
@@ -159,10 +159,11 @@ export function referenceVideoPriceProblem(
   service: string,
   components: readonly Pick<UnitBillingComponentV1, 'match'>[] | undefined,
   options?: NativeVideoPricedOptions,
+  parsedBody?: Record<string, unknown> | null,
 ): string | null {
   let video: NativeVideoFacts | undefined;
   try {
-    video = nativeVideoFacts(request);
+    video = nativeVideoFacts(request, parsedBody);
   } catch {
     return null;
   }
@@ -181,11 +182,16 @@ export function sendsReferenceVideo(protocol: NativeVideoProtocol, body: Record<
   });
 }
 
-export function nativeVideoFacts(request: SerializedHttpRequest): NativeVideoFacts | undefined {
+/**
+ * The facts a video request is priced by. `parsedBody` is the request's body
+ * when the caller already parsed it (null when it is not a JSON object), so a
+ * large inline-media body is not parsed twice.
+ */
+export function nativeVideoFacts(request: SerializedHttpRequest, parsedBody?: Record<string, unknown> | null): NativeVideoFacts | undefined {
   const route = nativeVideoRoute(request);
   if (!route) return undefined;
   if (route.action === 'retrieve') return { protocol: route.protocol, action: route.action };
-  const body = parseJsonObject(request.body);
+  const body = parsedBody === undefined ? parseJsonObject(request.body) : parsedBody;
   if (!body) throw new Error('Video submission requires a JSON object');
   const duration = route.protocol === 'fal-video' ? falDuration(body.duration) : veniceDuration(body.duration);
   if (duration === null) throw new Error('Video duration must be a positive integer');
@@ -196,7 +202,7 @@ export function nativeVideoFacts(request: SerializedHttpRequest): NativeVideoFac
     ...(typeof body.resolution === 'string' ? { resolution: body.resolution } : {}),
     ...(typeof body.aspect_ratio === 'string' ? { aspectRatio: body.aspect_ratio } : {}),
     ...(typeof audio === 'boolean' ? { audio } : {}),
-    ...(sendsReferenceVideo(route.protocol, body) ? { referenceVideo: true } : {}),
+    referenceVideo: sendsReferenceVideo(route.protocol, body),
   };
 }
 

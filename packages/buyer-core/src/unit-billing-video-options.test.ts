@@ -37,20 +37,20 @@ describe('video prices by aspect ratio and audio', () => {
     expect(price({ aspect_ratio: '16:9', audio: true }).cost()).toBe(280_000n);
     expect(price({ aspect_ratio: '21:9', audio: true }).cost()).toBe(360_000n);
     expect(price({ aspect_ratio: '16:9', audio: false }).cost()).toBe(200_000n);
-    expect(price({ aspect_ratio: '21:9', audio: false }).attributes).toEqual({ model: 'seedance', resolution: '480p', aspect_ratio: '21:9', audio: 'false' });
+    expect(price({ aspect_ratio: '21:9', audio: false }).attributes).toEqual({ model: 'seedance', resolution: '480p', aspect_ratio: '21:9', audio: 'false', reference_video: 'false' });
     // No component prices 21:9 without audio: refused before submission, never served free.
     expect(() => price({ aspect_ratio: '21:9', audio: false }).cost()).toThrow(/No billing component/);
   });
 
   it('prices omitted options as the service announces them', () => {
-    expect(price({}).attributes).toEqual({ model: 'seedance', resolution: '480p', aspect_ratio: '16:9', audio: 'true' });
+    expect(price({}).attributes).toEqual({ model: 'seedance', resolution: '480p', aspect_ratio: '16:9', audio: 'true', reference_video: 'false' });
     expect(price({}).cost()).toBe(280_000n);
     expect(price({ audio: false }).cost()).toBe(200_000n);
     expect(price({}, { aspectRatios: ['21:9'], audio: true }).cost()).toBe(360_000n);
   });
 
   it('leaves an option out when neither the create nor the service names it', () => {
-    expect(price({}, null).attributes).toEqual({ model: 'seedance', resolution: '480p' });
+    expect(price({}, null).attributes).toEqual({ model: 'seedance', resolution: '480p', reference_video: 'false' });
     expect(() => price({}, null).cost()).toThrow(/No billing component/);
   });
 
@@ -60,7 +60,7 @@ describe('video prices by aspect ratio and audio', () => {
   });
 
   it('does not assume announced options on a fal create, whose plugin does not send them', () => {
-    expect(price({}, options, 'fal-video').attributes).toEqual({ model: 'seedance', resolution: '480p' });
+    expect(price({}, options, 'fal-video').attributes).toEqual({ model: 'seedance', resolution: '480p', reference_video: 'false' });
     expect(() => price({}, options, 'fal-video').cost()).toThrow(/No billing component/);
     expect(price({ aspect_ratio: '16:9', generate_audio: true }, options, 'fal-video').cost()).toBe(280_000n);
   });
@@ -103,7 +103,7 @@ describe('video prices for reference videos', () => {
 
   it('adds the reference-video charge only when the create sends one', () => {
     expect(cost({}).usd).toBe(400_000n);
-    expect(cost({}).attributes).not.toHaveProperty('reference_video');
+    expect(cost({}).attributes).toMatchObject({ reference_video: 'false' });
     expect(cost({ reference_video_urls: [] }).usd).toBe(400_000n);
     expect(cost({ reference_video_urls: ['https://x/v.mp4'] }).usd).toBe(2_400_000n);
     expect(cost({ reference_video_urls: ['https://x/v.mp4'] }).attributes).toMatchObject({ reference_video: 'true' });
@@ -114,5 +114,34 @@ describe('video prices for reference videos', () => {
     expect(cost({ reference_video_urls: ['https://x/v.mp4'] }, 'fal-video').usd).toBe(2_400_000n);
     // Venice has no `video_urls` field.
     expect(cost({ video_urls: ['https://x/v.mp4'] }).usd).toBe(400_000n);
+  });
+
+  it('prices creates with and without reference videos by their own components', () => {
+    const split: UnitBillingModelV1 = {
+      version: 1,
+      components: [
+        { unit: 'video_seconds', priceUsd: 0.1 },
+        { unit: 'video_generations', priceUsd: 0.5, match: { reference_video: 'false' } },
+        { unit: 'video_generations', priceUsd: 3, match: { reference_video: 'true' } },
+      ],
+    };
+    const priceOf = (body: object, protocol: 'venice-video' | 'fal-video') => {
+      const captured = captureUnitBillingContext({
+        sellerPeerId: 'a'.repeat(40), provider: 'video', service: 'r2v', serviceApiProtocol: protocol,
+        request: {
+          requestId: 'request', method: 'POST',
+          path: protocol === 'fal-video' ? '/fal/v1/video/queue' : '/api/v1/video/queue',
+          headers: { 'content-type': 'application/json' },
+          body: new TextEncoder().encode(JSON.stringify({ model: 'r2v', duration: '4s', ...body })),
+        },
+      });
+      return estimateUnitRequestCost(split, captured.context, captured.requestUsage);
+    };
+    for (const protocol of ['venice-video', 'fal-video'] as const) {
+      const field = protocol === 'fal-video' ? 'video_urls' : 'reference_video_urls';
+      expect(priceOf({}, protocol)).toBe(900_000n);
+      expect(priceOf({ [field]: [] }, protocol)).toBe(900_000n);
+      expect(priceOf({ [field]: ['https://x/v.mp4'] }, protocol)).toBe(3_400_000n);
+    }
   });
 });
