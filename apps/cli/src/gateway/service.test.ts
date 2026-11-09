@@ -26,7 +26,8 @@ const spec: ServiceSpec = {
   logFile: '/home/a b/.antseed/logs/gateway.log',
 }
 
-function fakeDeps(platform: ServicePlatform, answers: boolean[]): ServiceDeps & { calls: string[] } {
+/** Probe answers queued per port; a port with nothing queued does not answer. */
+function fakeDeps(platform: ServicePlatform, answers: Partial<Record<number, boolean[]>>): ServiceDeps & { calls: string[] } {
   const calls: string[] = []
   return {
     platform,
@@ -39,7 +40,7 @@ function fakeDeps(platform: ServicePlatform, answers: boolean[]): ServiceDeps & 
       if (file === 'launchctl' && args[0] === 'print') throw new Error('Could not find service')
       return file === 'loginctl' ? 'no\n' : ''
     },
-    probe: async () => answers.shift() ?? false,
+    probe: async (port) => answers[port]?.shift() ?? false,
     sleep: async () => undefined,
   }
 }
@@ -76,7 +77,7 @@ test('systemd Environment= keeps a literal $ (only ExecStart expands variables)'
 })
 
 test('linux install writes the unit, enables and restarts it, waits for the port, reports lingering', async () => {
-  const deps = fakeDeps('linux', [false, false, true, true])
+  const deps = fakeDeps('linux', { [spec.port]: [false, false, true], [spec.buyerPort]: [true] })
   const result = await installService(spec, deps, { waitMs: 10_000 })
   assert.equal(readFileSync(result.file, 'utf8'), systemdUnit(spec))
   assert.deepEqual(deps.calls.slice(0, 3), [
@@ -90,7 +91,7 @@ test('linux install writes the unit, enables and restarts it, waits for the port
 })
 
 test('macOS install bootstraps the agent, and unloads an earlier install first', async () => {
-  const deps = fakeDeps('darwin', [false, true, true, true, true])
+  const deps = fakeDeps('darwin', { [spec.port]: [false, true, true], [spec.buyerPort]: [true, true] })
   const logFile = join(deps.home, 'logs', 'gateway.log')
   await installService({ ...spec, logFile }, deps, { waitMs: 5_000 })
   const file = serviceFilePath('darwin', deps.home)
@@ -107,26 +108,26 @@ test('macOS install bootstraps the agent, and unloads an earlier install first',
 })
 
 test('install refuses when something else already answers on the port', async () => {
-  const deps = fakeDeps('linux', [true])
+  const deps = fakeDeps('linux', { [spec.port]: [true] })
   await assert.rejects(installService(spec, deps, { waitMs: 0 }), /already answers on port 8379/)
   assert.equal(existsSync(serviceFilePath('linux', deps.home)), false)
   assert.deepEqual(deps.calls, [])
 })
 
 test('install reports not ready when the port never answers', async () => {
-  const deps = fakeDeps('linux', [])
+  const deps = fakeDeps('linux', {})
   assert.equal((await installService(spec, deps, { waitMs: 3_000 })).ready, false)
 })
 
 test('install is not ready while the gateway answers but its buyer does not', async () => {
-  const deps = fakeDeps('linux', [false, true, false, false, false])
+  const deps = fakeDeps('linux', { [spec.port]: [false, true] })
   const result = await installService(spec, deps, { waitMs: 3_000 })
   assert.equal(result.ready, false)
   assert.equal(result.gatewayAnswered, true)
 })
 
 test('linux uninstall keeps the unit file when stopping it fails', async () => {
-  const deps = fakeDeps('linux', [false])
+  const deps = fakeDeps('linux', { [spec.port]: [false] })
   await installService(spec, deps, { waitMs: 0 })
   const exec = deps.exec
   deps.exec = (file, args) => {
@@ -138,7 +139,7 @@ test('linux uninstall keeps the unit file when stopping it fails', async () => {
 })
 
 test('macOS uninstall keeps the plist when launchd fails to unload a loaded agent', async () => {
-  const deps = fakeDeps('darwin', [false])
+  const deps = fakeDeps('darwin', { [spec.port]: [false] })
   await installService({ ...spec, logFile: join(deps.home, 'logs', 'gateway.log') }, deps, { waitMs: 0 })
   deps.exec = (file, args) => {
     if (file === 'launchctl' && args[0] === 'bootout') throw new Error('Boot-out failed: 5: Input/output error')
@@ -149,7 +150,7 @@ test('macOS uninstall keeps the plist when launchd fails to unload a loaded agen
 })
 
 test('macOS uninstall removes the plist when the agent was not loaded', async () => {
-  const deps = fakeDeps('darwin', [false])
+  const deps = fakeDeps('darwin', { [spec.port]: [false] })
   await installService({ ...spec, logFile: join(deps.home, 'logs', 'gateway.log') }, deps, { waitMs: 0 })
   deps.exec = (file, args) => {
     if (file === 'launchctl') throw new Error(args[0] === 'bootout' ? 'Boot-out failed: 3: No such process' : 'Could not find service')
@@ -160,7 +161,7 @@ test('macOS uninstall removes the plist when the agent was not loaded', async ()
 })
 
 test('uninstall disables the unit and removes the file; false when not installed', async () => {
-  const deps = fakeDeps('linux', [false])
+  const deps = fakeDeps('linux', { [spec.port]: [false] })
   assert.equal(await uninstallService(deps), false)
   await installService(spec, deps, { waitMs: 0 })
   deps.calls.length = 0
