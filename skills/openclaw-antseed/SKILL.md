@@ -1,177 +1,116 @@
 ---
 name: openclaw-antseed
-description: "Connect OpenClaw to the Antseed P2P AI network through a gateway API key (recommended) or a local buyer proxy on the same machine. Use when: user asks to connect OpenClaw to Antseed, route OpenClaw through Antseed, set up Antseed as a service provider for OpenClaw, or use P2P AI services in OpenClaw."
+description: "Connect OpenClaw to the Antseed P2P AI network through a gateway API key: the user's own gateway, or one set up on this computer as a background service. Use when: user asks to connect OpenClaw to Antseed, route OpenClaw through Antseed, set up Antseed as a service provider for OpenClaw, or use P2P AI services in OpenClaw."
 user-invocable: true
 metadata: { "openclaw": { "emoji": "\ud83c\udf31", "requires": { "bins": ["npm", "openclaw"] } } }
 ---
 
 # Connect OpenClaw to Antseed P2P Network
 
-Set up Antseed as a service provider for OpenClaw. The recommended endpoint is an Antseed **gateway**: it gives OpenClaw its own API key with budgets and a usage log, and works wherever OpenClaw runs. A **local buyer proxy** works only when OpenClaw runs on the same computer as the buyer.
+Set up Antseed as a service provider for OpenClaw through an Antseed **gateway**: it gives OpenClaw its own API key with budgets and a usage log, and works wherever OpenClaw runs. If the user has none, Step 2 sets one up on this computer.
 
 ## Architecture
 
 ```
 OpenClaw -> Antseed gateway (API key) -> buyer -> Antseed P2P -> Provider node -> Upstream API
-OpenClaw -> local buyer proxy (same computer only) -> Antseed P2P -> Provider node -> Upstream API
 ```
 
 The buyer discovers providers via DHT, negotiates payment channels automatically, and pays sellers in USDC. The gateway sits in front of a buyer and checks an API key on every request.
 
-## Step 1: Get a gateway base URL and API key (recommended)
+## Step 1: Get a gateway base URL and API key
 
-OpenClaw needs two values:
+OpenClaw needs two values: the gateway's base URL, ending in `/v1`, and an API key (`antseed_…`) sent as
+`Authorization: Bearer`. Keep them in files so later commands can read them without the key ever appearing on a
+command line or in output.
 
-```bash
-export ANTSEED_BASE_URL="https://gateway.example.com/v1"   # or http://localhost:8379/v1 for a gateway on this computer
-export ANTSEED_API_KEY="antseed_…"                          # a gateway key, sent as Authorization: Bearer
-```
-
-If the user already has a gateway, ask them for its base URL (shown in the Gateway Console's top bar) and a key created under **Keys**. Otherwise, one of:
-
-- **This computer or a server:** follow the quickstart (`https://antseed.com/docs/quickstart`). On a computer, `curl -fsSL https://antseed.com/install.sh | bash` installs the CLI and starts a gateway at `http://localhost:8379/v1`. On a Linux server, the installer with `--domain` serves it over HTTPS (`https://antseed.com/docs/gateway/server`).
-- **The user's computer, published over HTTPS:** `antseed tunnel start`, or the desktop app's **Agents → Internet-accessible endpoint**. Both publish a gateway and its console, so claim the console straight away: **Claim console** in the desktop app, or `antseed gateway console-link` on the same computer (`https://antseed.com/docs/tunnels`).
-
-Funding lives on the gateway: add funds to the workspace wallet in the console's **Wallet & Funding** page (card or USDC on Base). Then skip to Step 6.
-
-## Step 2: Or run a local buyer on this computer
-
-Only if OpenClaw and the buyer run on the same computer and the user doesn't want a gateway. Install the CLI:
+**The user already has a gateway** (on a server, or their computer published through `antseed tunnel start` or the
+desktop app's **Agents → Internet-accessible endpoint**): ask for its base URL (shown in the Gateway Console's top
+bar) and a key created under **Keys**, then save them (replace both placeholders):
 
 ```bash
-npm install -g @antseed/cli
+mkdir -p "$HOME/.antseed/openclaw" && chmod 700 "$HOME/.antseed/openclaw"
+printf '%s\n' 'https://gateway.example.com/v1' > "$HOME/.antseed/openclaw/base-url"
+( umask 077 && printf '%s\n' 'PASTE-THE-KEY-HERE' > "$HOME/.antseed/openclaw/api-key" )
 ```
 
-Verify: `antseed --version` (requires Node.js 20+).
+Its funding lives in its console (**Wallet & Funding**). Skip to Step 3.
 
-OpenClaw has its own, newer Node.js support policy. If `openclaw --version` rejects the runtime, install a Node version supported by the current OpenClaw release before continuing.
+**No gateway yet:** set one up on this computer (Step 2).
 
-## Step 3: Set the identity (local buyer)
+## Step 2: Set up a gateway on this computer
+
+Needs Node.js 20 or newer. OpenClaw has its own, newer Node.js support policy; if `openclaw --version` rejects the
+runtime, install a Node version the current OpenClaw release supports first.
+
+Install the CLI, or upgrade one too old for `gateway service`. `--allow-scripts` lets npm build the CLI's database
+and networking modules; recent npm versions skip them otherwise and the CLI can't start:
 
 ```bash
-export ANTSEED_IDENTITY_HEX=<64-char-hex-private-key>
+antseed gateway --help 2>/dev/null | grep '^  service ' >/dev/null || npm install -g @antseed/cli@latest --allow-scripts=@antseed/node,better-sqlite3,node-datachannel
 ```
 
-The key can optionally include a `0x` prefix. This key is your EVM wallet — deposits and payments are tied to it. Without it, the first `antseed buyer start` creates `identity.key` in the data directory.
+Run the gateway as a background service: a launchd agent on macOS or a systemd user service on Linux, without
+`sudo`. It starts at login, restarts if it stops, starts the buyer too (or uses one already running here), and
+waits until both answer:
 
-## Step 4: Configure chain and fund the account (local buyer)
+```bash
+antseed gateway service status || antseed gateway service install
+```
 
-Custom `config.json` is optional. `antseed buyer start` works without one.
+On a Linux server, user services stop at logout unless lingering is on; the install prints the one-time
+`loginctl enable-linger` command for the user to run (it needs `sudo`).
 
-Create `~/.antseed/config.json` only if you want advanced behavior such as a non-default chain:
+Create a key for OpenClaw and save it without showing it:
 
-```json
-{
-  "payments": {
-    "preferredMethod": "crypto",
-    "crypto": {
-      "chainId": "base-mainnet"
-    }
-  }
+```bash
+mkdir -p "$HOME/.antseed/openclaw" && chmod 700 "$HOME/.antseed/openclaw"
+printf '%s\n' 'http://localhost:8379/v1' > "$HOME/.antseed/openclaw/base-url"
+( umask 077 && antseed gateway key create --label openclaw | sed -n 's/^API key: //p' > "$HOME/.antseed/openclaw/api-key" )
+test -s "$HOME/.antseed/openclaw/api-key" && echo KEY-SAVED || echo KEY-FAILED
+```
+
+Fund it: `antseed buyer balance` shows the Available balance. To add funds, `antseed buyer deposit --no-watch`
+prints an address for USDC on Base, or pay by card in the console (`antseed gateway console-link` opens it; then
+**Wallet & Funding**). Nobody needs ETH for gas.
+
+`scripts/setup.sh` runs Steps 2 and 3 in one go.
+
+## Step 3: Configure OpenClaw service provider
+
+```bash
+python3 - "$HOME/.antseed/openclaw" "${OPENCLAW_CONFIG_PATH:-$HOME/.openclaw/openclaw.json}" SERVICE_ID_HERE <<'PY'
+import json, os, sys
+secrets_dir, config_path, model = sys.argv[1:4]
+base_url = open(os.path.join(secrets_dir, "base-url")).read().strip()
+api_key = open(os.path.join(secrets_dir, "api-key")).read().strip()
+with open(config_path) as f:
+    cfg = json.load(f)
+cfg.setdefault("models", {}).setdefault("providers", {})["antseed"] = {
+    "baseUrl": base_url,
+    "apiKey": api_key,
+    "authHeader": True,
+    "api": "openai-completions",
+    "models": [{"id": model, "name": f"{model} via Antseed", "reasoning": False,
+                "input": ["text"], "contextWindow": 131072, "maxTokens": 8192}],
 }
+tmp = config_path + ".tmp"
+with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
+    json.dump(cfg, f, indent=2)
+os.replace(tmp, config_path)
+print(f"antseed provider set: {base_url}, model {model}")
+PY
 ```
 
-Fund the buyer wallet with USDC on Base, then deposit into the escrow:
+`openai-completions` with `authHeader: True` sends the key as `Authorization: Bearer <API_KEY>`, which a gateway requires, to the gateway's `/chat/completions`. Antseed translates the request when a seller speaks another API, so this works for every text model.
+
+Replace `SERVICE_ID_HERE` with a model from the network catalog. Ids are case-sensitive; copy them from the list.
+`antseed_curl` sends the key to curl through stdin, so it never shows on a command line:
 
 ```bash
-antseed buyer deposit 10
-```
-
-Verify with `antseed buyer balance`.
-
-## Step 5: Start the buyer proxy (local buyer)
-
-Run in a terminal or set up as a persistent service:
-
-```bash
-antseed buyer start
-```
-
-For an isolated OpenClaw buyer, use a dedicated data directory. This is where Antseed writes `buyer.state.json`, SQLite databases, payment-channel state, and the fallback `identity.key`:
-
-```bash
-export BUYDIR="$HOME/.antseed-buyer-openclaw"
-mkdir -p "$BUYDIR"
-ANTSEED_DATA_DIR="$BUYDIR" antseed --data-dir "$BUYDIR" buyer start
-```
-
-Advanced: if you intentionally want a non-default port:
-
-```bash
-antseed --data-dir "$BUYDIR" buyer start --port 5005
-```
-
-### Persistent service (systemd)
-
-```bash
-sudo tee /etc/systemd/system/antseed-buyer.service > /dev/null <<'EOF'
-[Unit]
-Description=Antseed Buyer Proxy
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=$USER
-Environment=ANTSEED_IDENTITY_HEX=<private-key-hex-no-0x>
-Environment=ANTSEED_DATA_DIR=%h/.antseed-buyer-openclaw
-ExecStart=/usr/bin/env antseed --data-dir %h/.antseed-buyer-openclaw buyer start
-Restart=on-failure
-RestartSec=10
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=antseed-buyer
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-sudo systemctl daemon-reload
-sudo systemctl enable --now antseed-buyer
-```
-
-Then point OpenClaw at the local proxy:
-
-```bash
-export ANTSEED_BASE_URL="http://127.0.0.1:8377/v1"
-export ANTSEED_API_KEY="antseed-p2p"
-```
-
-The local buyer proxy checks no key, so any non-empty placeholder works. It listens on `127.0.0.1` only. Never expose port 8377 (a router port forward, `socat`, a reverse proxy): anyone who reaches it can spend the buyer's deposit. For OpenClaw on another machine, use a gateway (Step 1).
-
-## Step 6: Configure OpenClaw service provider
-
-```bash
-cat ~/.openclaw/openclaw.json | python3 -c "
-import sys, json
-cfg = json.load(sys.stdin)
-providers = cfg.setdefault('models', {}).setdefault('providers', {})
-providers['antseed'] = {
-    'baseUrl': '${ANTSEED_BASE_URL}',
-    'apiKey': '${ANTSEED_API_KEY}',
-    'authHeader': True,
-    'api': 'openai-completions',
-    'models': [{
-        'id': 'SERVICE_ID_HERE',
-        'name': 'SERVICE_DISPLAY_NAME',
-        'reasoning': False,
-        'input': ['text'],
-        'contextWindow': 131072,
-        'maxTokens': 8192
-    }]
-}
-json.dump(cfg, sys.stdout, indent=2)
-" > /tmp/oc_antseed.json && mv /tmp/oc_antseed.json ~/.openclaw/openclaw.json
-```
-
-`openai-completions` with `authHeader: True` sends the key as `Authorization: Bearer <API_KEY>`, which a gateway requires, to `$ANTSEED_BASE_URL/chat/completions`. Antseed translates the request when a seller speaks another API, so this works for every text model.
-
-Replace `SERVICE_ID_HERE` with a model from the network catalog:
-
-```bash
-curl -s "$ANTSEED_BASE_URL/models" -H "Authorization: Bearer $ANTSEED_API_KEY" | jq '.data[].id'
-curl -s "$ANTSEED_BASE_URL/models?type=text" -H "Authorization: Bearer $ANTSEED_API_KEY"
-curl -s "$ANTSEED_BASE_URL/models/<model-id>" -H "Authorization: Bearer $ANTSEED_API_KEY"
+ANTSEED_BASE_URL="$(cat "$HOME/.antseed/openclaw/base-url")"
+antseed_curl() { printf 'header = "Authorization: Bearer %s"\n' "$(cat "$HOME/.antseed/openclaw/api-key")" | curl -s -K - "$@"; }
+antseed_curl "$ANTSEED_BASE_URL/models?type=text" | jq -r '.data[].id'
+antseed_curl "$ANTSEED_BASE_URL/models/<model-id>"
 ```
 
 `antseed network browse` remains useful for a peer-oriented table of services and pricing.
@@ -185,8 +124,6 @@ antseed gateway preset create --slug openclaw-pinned --name "OpenClaw pinned" \
 
 On an unfunded gateway, use a preset that prefers free sellers instead of a plain model id (`--model deepseek-v4-flash --prefer-free`, or add `--max-input-price 0 --max-output-price 0` to never pay). A plain id can land on a paid seller, and after a `402` OpenClaw disables the `antseed` key for about 10 minutes for every model; `openclaw models status` shows it under **Unavailable auth profiles**.
 
-Presets resolve only in a gateway. Through the local buyer proxy (funded or not), use a concrete model id. An unfunded local buyer works with a model that has a free seller: newer CLIs retry a free seller after a paid one answers `402`, and zero token price caps (`antseed buyer start --max-input-usd-per-million 0 --max-output-usd-per-million 0`) keep paid text sellers out entirely. A model with no free seller, such as `kimi-k2.6`, needs a funded buyer. CLI 0.1.234 and earlier pass the `402` on even when a free seller exists (check with `antseed --version`); there, fund the buyer or run `antseed gateway start` and point OpenClaw at `http://127.0.0.1:8379/v1` with a key from `antseed gateway key create --label openclaw`.
-
 Set as default with OpenClaw's current model command:
 
 ```bash
@@ -194,27 +131,28 @@ openclaw models set "antseed/SERVICE_ID_HERE"
 openclaw gateway restart
 ```
 
-## Step 7: Verify
+## Step 4: Verify
 
 ```bash
-curl -s "$ANTSEED_BASE_URL/models" \
-  -H "Authorization: Bearer $ANTSEED_API_KEY"
+ANTSEED_BASE_URL="$(cat "$HOME/.antseed/openclaw/base-url")"
+antseed_curl() { printf 'header = "Authorization: Bearer %s"\n' "$(cat "$HOME/.antseed/openclaw/api-key")" | curl -s -K - "$@"; }
+antseed_curl -o /dev/null -w '%{http_code}\n' "$ANTSEED_BASE_URL/models"
 ```
 
-If it returns models from across the network, the connection is working (a gateway key limited to certain models lists only those). The list is independent of any pinned peer; each model's `peers` array is ordered by the buyer's current routing preferences.
+`200` means the key and base URL work. `antseed_curl "$ANTSEED_BASE_URL/models"` lists models from across the network (a gateway key limited to certain models lists only those); each model's `peers` array is ordered by the buyer's current routing preferences.
 
-Then send one real request through OpenClaw. With a gateway, it shows under **Logs** in the Gateway Console; with a local buyer, `antseed buyer metering` shows the channel.
+Then send one real request through OpenClaw. It shows under **Logs** in the Gateway Console.
 
 ## Notes
 
-- A gateway requires its `antseed_...` key as `Authorization: Bearer`; the local buyer proxy accepts any non-empty placeholder
-- Keep `authHeader: true` so OpenClaw sends `Authorization: Bearer <API_KEY>`
-- The model id `antseed` (follow the model picked in the desktop app) works only against the local buyer proxy of a desktop app with a model picked. Through a gateway, use concrete model ids
+- A gateway requires its `antseed_...` key as `Authorization: Bearer`; keep `authHeader: true` so OpenClaw sends it
+- Use concrete model ids; the id `antseed` (follow the model picked in the desktop app) fails through a gateway
+- `antseed gateway service status` checks a gateway set up on this computer; `antseed gateway service uninstall` removes the background service (keys, wallet and settings stay)
+- Never expose the buyer port 8377 (a router port forward, `socat`, a reverse proxy): it checks no key, so anyone who reaches it can spend the deposit. Reach a gateway from another machine through a tunnel or the server installer's HTTPS setup
 - Streaming is supported (SSE)
 - Payment channels are negotiated automatically on first request
-- With a gateway, funds come from the key's workspace wallet (console → **Wallet & Funding**). A local buyer needs USDC deposited with `antseed buyer deposit`. Neither needs ETH, because sellers submit the on-chain transactions
+- Funds come from the key's workspace wallet (console → **Wallet & Funding**, or `antseed buyer deposit` for a gateway on this computer). No ETH is needed, because sellers submit the on-chain transactions
 - `402 insufficient_deposits` means the wallet is empty; `402 spend_limit_reached` and `403 model_not_allowed` come from the gateway key's budgets and routing policy (`https://antseed.com/docs/gateway/troubleshooting`)
-- Extra buyer config is optional; for a local buyer the only required pieces are identity plus whatever payment/deposit setup the user needs
 
 ## References
 

@@ -3,6 +3,7 @@ import { ResourceRoutes } from './resource-routes.js'
 import { prepareVideoRequest, recordVideoAcceptance } from './native-video-proxy.js'
 import { downloadVideo } from './video-download.js'
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http'
+import { BUYER_SHUTDOWN_DRAIN_MS } from '../shutdown-timeouts.js'
 import { randomUUID } from 'node:crypto'
 import { buildRoutingServices, findPinnedRoutingService } from './routing-services.js'
 import { readFileSync, watchFile, unwatchFile } from 'node:fs'
@@ -205,11 +206,7 @@ import {
 export { selectCandidatePeersForRouting, type CandidatePeerRouteSelection } from './routing.js'
 export { parsePeerPinnedService, rewritePeerPinnedServiceInBody, substituteRoutedModelAlias, ROUTED_MODEL_ALIAS } from './request-utils.js'
 
-/** On shutdown, requests in flight get this long to finish before their connections are closed. */
-export const BUYER_SHUTDOWN_DRAIN_MS = 60_000
-
-/** How long a graceful buyer shutdown may take before the process exits anyway: the proxy's drain, then the node. */
-export const BUYER_SHUTDOWN_DEADLINE_MS = BUYER_SHUTDOWN_DRAIN_MS + 15_000
+export { BUYER_SHUTDOWN_DRAIN_MS, BUYER_SHUTDOWN_DEADLINE_MS } from '../shutdown-timeouts.js'
 
 /**
  * Why this daemon runs no hot-wallet deposit watcher — surfaced on

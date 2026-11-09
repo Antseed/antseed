@@ -20,12 +20,13 @@ import { metadataV13 } from "./versions/v13.js";
 import { metadataV14 } from "./versions/v14.js";
 import { metadataV15 } from "./versions/v15.js";
 import { metadataV16 } from "./versions/v16.js";
+import { metadataV17 } from "./versions/v17.js";
 
 export type { MetadataVersionCodec } from "./define-version.js";
 export type { MetadataVocabulary, MetadataVocabularyNameKind } from "./vocabulary.js";
 
 const CODECS = new Map<number, MetadataVersionCodec>(
-  [metadataV10, metadataV11, metadataV12, metadataV13, metadataV14, metadataV15, metadataV16].map((codec) => [codec.version, codec]),
+  [metadataV10, metadataV11, metadataV12, metadataV13, metadataV14, metadataV15, metadataV16, metadataV17].map((codec) => [codec.version, codec]),
 );
 
 if (!CODECS.has(METADATA_VERSION)) {
