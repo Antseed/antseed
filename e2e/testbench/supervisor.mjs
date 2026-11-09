@@ -542,7 +542,7 @@ async function shutdown(reason) {
         if (removed.length) log(`Pruned fork cache blocks ${removed.join(', ')}`);
       });
     }
-    if (manifest) await writeManifest({ running: false, stoppedAt: new Date().toISOString(), shutdownErrors: errors });
+    if (manifest) await writeManifest({ running: false, starting: false, stoppedAt: new Date().toISOString(), shutdownErrors: errors });
     // Only the supervisor that holds the lock owns control.json; a loser of a start race must not wipe the winner's.
     if (lockEntry) await saveJson(paths.control, {}).catch(() => {});
     if (lockEntry) await releaseLock(paths.lock, lockEntry);

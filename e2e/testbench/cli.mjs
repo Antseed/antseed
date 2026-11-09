@@ -242,7 +242,7 @@ async function down(options, ctx) {
     // Its shutdown may already have run (the watchdog, an earlier down) and failed; that still fails `down`.
     const problems = [...shutdownProblems(state.manifest), ...desktopProblems];
     if (problems.length) throw new Error(`Testbench ${ctx.name} is not running, but its last shutdown had problems: ${problems.join('; ')} (see ${join(paths.logs, 'supervisor.log')}; the next pnpm testbench up starts fresh)`);
-    say(`Testbench ${ctx.name} is not running`);
+    say(`Testbench ${ctx.name} is not running${state.manifest?.startError ? ` (its last start failed: ${state.manifest.startError})` : ''}`);
     return;
   }
   if (state.lock.state === 'held' && !options.force) {

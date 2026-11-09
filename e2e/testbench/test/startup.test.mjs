@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path';
 import { after, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { loadSourceConfig, resolveConfigSource } from '../lib/config.mjs';
+import { parkedTransactions, watchForParkedPool } from '../lib/local-deploy.mjs';
 import { inspectLock, isPidAlive, ownProcessEntry } from '../lib/lock.mjs';
 import { testbenchName, testbenchPaths, worktreeRoot } from '../lib/paths.mjs';
 import { normalizeTopology } from '../lib/topology.mjs';
@@ -96,5 +97,55 @@ describe('a start that cannot finish fails by itself', () => {
     assert.match(down.stdout, /is not running \(its last start failed: Deploy\.s\.sol stalled/);
     const status = cliRun(run.home, 'status', '--json');
     assert.deepEqual(JSON.parse(status.stdout), { name, running: false, lock: 'free' });
+  });
+});
+
+describe("watching Anvil's pool while forge broadcasts", () => {
+  it('counts transactions as parked only when none is ready', () => {
+    assert.equal(parkedTransactions({ pending: '0x0', queued: '0x14' }), 20);
+    assert.equal(parkedTransactions({ pending: '0x1', queued: '0x13' }), 0, 'a ready transaction ahead of them will be mined');
+    assert.equal(parkedTransactions({ pending: '0x0', queued: '0x0' }), 0);
+    assert.equal(parkedTransactions(undefined), 0);
+  });
+
+  /** A provider whose pool answers come from `looks`, one per poll (the last one repeats). */
+  const poolOf = (looks) => {
+    let poll = 0;
+    let current = looks[0];
+    return {
+      send: async (method) => {
+        assert.equal(method, 'txpool_status');
+        current = looks[Math.min(poll, looks.length - 1)];
+        poll += 1;
+        if (current.error) throw new Error(current.error);
+        return { pending: `0x${(current.pending ?? 0).toString(16)}`, queued: `0x${(current.queued ?? 0).toString(16)}` };
+      },
+      getTransactionCount: async () => current.nonce,
+      getBlockNumber: async () => current.block ?? 0,
+      polls: () => poll,
+    };
+  };
+  const watch = (provider, polls = 3) => new Promise((resolveStall) => {
+    const stop = watchForParkedPool(provider, { intervalMs: 5, polls, onStall: (stall) => resolveStall({ stall, stop }) });
+    setTimeout(() => { stop(); resolveStall({ stall: null, stop }); }, 400);
+  });
+
+  it('reports a stall once the same parked pool was seen three times in a row', async () => {
+    const provider = poolOf([{ pending: 2, queued: 3, nonce: 2 }, { queued: 20, nonce: 4, block: 4 }]);
+    const { stall } = await watch(provider);
+    assert.deepEqual(stall, { parked: 20, nonce: 4, block: 4 });
+    const polls = provider.polls();
+    await sleep(30);
+    assert.equal(provider.polls(), polls, 'it stops looking once it reported');
+  });
+
+  it('does not report a pool that keeps moving, or one it cannot read', async () => {
+    // Parked behind a nonce that advances: the predecessor was mined in between, so Anvil is still working.
+    const moving = poolOf(Array.from({ length: 200 }, (_, index) => ({ queued: 5, nonce: index })));
+    assert.equal((await watch(moving)).stall, null);
+    const healthy = poolOf([{ pending: 1, queued: 19, nonce: 4 }]);
+    assert.equal((await watch(healthy)).stall, null);
+    const unreachable = poolOf([{ error: 'connect ECONNREFUSED' }]);
+    assert.equal((await watch(unreachable)).stall, null);
   });
 });
