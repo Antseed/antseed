@@ -230,7 +230,7 @@ Reference-to-video models (Seedance 2.5 R2V on Venice and fal) take reference im
   {"unit":"video_generations","priceUsd":2.21,"match":{"resolution":"720p","reference_video":"true"}}]}}
 ```
 
-The `venice-video` and `fal-video` plugins refuse a create that sends reference videos when the service has no `reference_video: "true"` component (`400 unsupported_video_input`, before payment), so they are never served below cost. Services that price `reference_video` need metadata v17; buyers on older releases don't see them. A buyer refuses a video above its `payments.maxVideoRequestUsdc` ($5 by default), so a reference-video charge priced for 30 s may need buyers to raise it.
+The `venice-video` and `fal-video` plugins refuse a create that sends reference videos when no `reference_video: "true"` component matches it, for example a 480p create when only 720p has one (`400 unsupported_video_input`, before payment), so they are never served below cost. Services that price `reference_video` need metadata v17; buyers on older releases don't see them. A buyer refuses a video above its `payments.maxVideoRequestUsdc` ($5 by default), so a reference-video charge priced for 30 s may need buyers to raise it.
 
 ### fal.ai models
 

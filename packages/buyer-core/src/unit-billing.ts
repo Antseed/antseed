@@ -14,6 +14,7 @@ import {
   nativeVideoFacts,
   nativeVideoAcceptance,
   type NativeVideoFacts,
+  nativeVideoAttributes,
 } from '@antseed/api-adapter';
 import type { SerializedHttpRequest, SerializedHttpResponse } from '@antseed/protocol/http';
 import type { VideoOptions } from '@antseed/protocol/peer-metadata';
@@ -353,29 +354,13 @@ function imageUnitUsage(facts: ImageRequestFacts): UnitBillingUsage {
   };
 }
 
-/**
- * The attributes a video create is priced by. A create that leaves out its
- * aspect ratio is priced at the service's first announced one, and one that
- * leaves out audio at the announced `video.audio`. Only Venice: its plugin sends
- * those values upstream, so the price is the clip's. Other protocols price what
- * the create names, so one leaving out a priced option matches no component.
- * `reference_video` is `"true"` when the create sends reference videos.
- */
+/** The attributes a video create is priced by (see `nativeVideoAttributes`). */
 export function videoAttributes(
   service: string,
   video: NativeVideoFacts,
   options: VideoOptions | undefined,
 ): Partial<Record<UnitBillingMatchKeyV1, string>> {
-  const defaults = video.protocol === 'venice-video' ? options : undefined;
-  const aspectRatio = video.aspectRatio ?? defaults?.aspectRatios?.[0];
-  const audio = video.audio ?? defaults?.audio;
-  return {
-    model: service,
-    ...(video.resolution ? { resolution: video.resolution } : {}),
-    ...(aspectRatio ? { aspect_ratio: aspectRatio } : {}),
-    ...(audio !== undefined ? { audio: String(audio) } : {}),
-    ...(video.referenceVideo ? { reference_video: 'true' } : {}),
-  };
+  return nativeVideoAttributes(service, video, options) as Partial<Record<UnitBillingMatchKeyV1, string>>;
 }
 
 function imageAttributes(

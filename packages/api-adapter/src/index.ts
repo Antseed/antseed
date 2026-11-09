@@ -1,6 +1,6 @@
 export { createMp4Inspector, type Mp4Facts } from './mp4.js';
 export { isSpeechAudio, inlineAudioSeconds } from './speech-audio.js';
-export { detectNativeVideoProtocol, nativeVideoRoute, nativeVideoAcceptance, nativeVideoDelivered, nativeVideoFacts, videoSourceLengthProblem, audioSourceLengthProblem, VIDEO_MIN_DURATION_RATIO, sendsReferenceVideo, referenceVideoPriceProblem, REFERENCE_VIDEO_FIELDS, requestService, type NativeVideoRoute, type NativeVideoFacts } from './native-video.js';
+export { detectNativeVideoProtocol, nativeVideoRoute, nativeVideoAcceptance, nativeVideoDelivered, nativeVideoFacts, videoSourceLengthProblem, audioSourceLengthProblem, VIDEO_MIN_DURATION_RATIO, sendsReferenceVideo, referenceVideoPriceProblem, nativeVideoAttributes, REFERENCE_VIDEO_FIELDS, type NativeVideoPricedOptions, requestService, type NativeVideoRoute, type NativeVideoFacts } from './native-video.js';
 
 export {
   renderRequestBodyAsOpenAIChat,

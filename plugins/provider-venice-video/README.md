@@ -59,7 +59,7 @@ Venice bills `reference_video_urls` by their length on top of the clip (Seedance
 { "unit": "video_generations", "priceUsd": 2.21, "match": { "resolution": "720p", "reference_video": "true" } }
 ```
 
-Without such a component, a create that sends `reference_video_urls` is answered `400 unsupported_video_input` before payment and without calling Venice. Reference images and audio don't change Venice's price.
+Without such a component matching the create (resolution, aspect ratio and audio included), a create that sends `reference_video_urls` is answered `400 unsupported_video_input` before payment and without calling Venice. Reference images and audio don't change Venice's price.
 
 ### Video edits
 

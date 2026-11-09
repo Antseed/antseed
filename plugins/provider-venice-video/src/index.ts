@@ -410,8 +410,8 @@ const plugin: AntseedProviderPlugin = {
       input?.video_url !== undefined && (editModels?.has(service) ?? true) ? videoSourceLengthProblem(input.video_url, input.duration) : null;
 
     /** Why a create can't be served at the seller's price, or null. */
-    const createRefusal = (service: string, input: Record<string, unknown> | null): ProviderRequestRefusal | null => {
-      const unpriced = input && referenceVideoPriceProblem(PROTOCOL, input, serviceUnitBillingModels?.[service]?.[PROTOCOL]?.components);
+    const createRefusal = (request: SerializedHttpRequest, service: string, input: Record<string, unknown> | null): ProviderRequestRefusal | null => {
+      const unpriced = referenceVideoPriceProblem(request, service, serviceUnitBillingModels?.[service]?.[PROTOCOL]?.components, serviceCapabilities[service]?.video);
       if (unpriced) return { statusCode: 400, code: 'unsupported_video_input', message: unpriced };
       const length = lengthProblem(service, input);
       if (length) return { statusCode: 422, code: 'invalid_video_duration', message: length };
@@ -423,7 +423,7 @@ const plugin: AntseedProviderPlugin = {
     const checkRequest = (request: SerializedHttpRequest): ProviderRequestRefusal | null => {
       const { videoRoute, service } = route(request);
       if (videoRoute?.action !== 'create' || !service) return null;
-      return createRefusal(service, parseJsonObject(request.body));
+      return createRefusal(request, service, parseJsonObject(request.body));
     };
 
     // Announces the queue fields each model takes, so buyers send only those.
@@ -499,7 +499,7 @@ const plugin: AntseedProviderPlugin = {
       if (videoRoute?.action !== 'create' || !service) return error(request, 400, 'unsupported_video_request', 'Unsupported video endpoint or service');
       // The seller checks this before payment too (checkRequest).
       const input = parseJsonObject(request.body);
-      const refused = createRefusal(service, input);
+      const refused = createRefusal(request, service, input);
       if (refused) return error(request, refused.statusCode, refused.code, refused.message);
       const priced = input ? withAnnouncedVideoOptions(serviceCapabilities[service]?.video, input, audioConfigurable.get(service) === true) : null;
       const response = await relay.handleRequest({

@@ -115,19 +115,61 @@ export const REFERENCE_VIDEO_FIELDS: Record<NativeVideoProtocol, readonly string
   'fal-video': ['reference_video_urls', 'video_urls'],
 };
 
+/** The announced video options a create's price depends on (a subset of `VideoOptions`). */
+export interface NativeVideoPricedOptions {
+  aspectRatios?: readonly string[];
+  audio?: boolean;
+}
+
+/**
+ * The attributes a video create is priced by. A create that leaves out its
+ * aspect ratio is priced at the service's first announced one, and one that
+ * leaves out audio at the announced `video.audio`. Only Venice: its plugin sends
+ * those values upstream, so the price is the clip's. Other protocols price what
+ * the create names, so one leaving out a priced option matches no component.
+ * `reference_video` is `"true"` when the create sends reference videos.
+ */
+export function nativeVideoAttributes(
+  service: string,
+  video: NativeVideoFacts,
+  options: NativeVideoPricedOptions | undefined,
+): Record<string, string> {
+  const defaults = video.protocol === 'venice-video' ? options : undefined;
+  const aspectRatio = video.aspectRatio ?? defaults?.aspectRatios?.[0];
+  const audio = video.audio ?? defaults?.audio;
+  return {
+    model: service,
+    ...(video.resolution ? { resolution: video.resolution } : {}),
+    ...(aspectRatio ? { aspect_ratio: aspectRatio } : {}),
+    ...(audio !== undefined ? { audio: String(audio) } : {}),
+    ...(video.referenceVideo ? { reference_video: 'true' } : {}),
+  };
+}
+
 /**
  * Why a create's reference videos can't be served at the service's price, or
  * null. Upstreams bill reference videos on top of the output, so a create that
- * sends one needs a price component matching `reference_video: "true"`.
+ * sends one needs a `reference_video: "true"` component whose every match
+ * applies to it (a surcharge for 720p does not cover a 480p create). An
+ * unreadable create is left to the other checks.
  */
 export function referenceVideoPriceProblem(
-  protocol: NativeVideoProtocol,
-  body: Record<string, unknown>,
+  request: SerializedHttpRequest,
+  service: string,
   components: readonly { match?: Readonly<Record<string, string | undefined>> }[] | undefined,
+  options?: NativeVideoPricedOptions,
 ): string | null {
-  if (!sendsReferenceVideo(protocol, body)) return null;
-  if (components?.some((component) => component.match?.reference_video === 'true')) return null;
-  return 'This service does not take reference videos';
+  let video: NativeVideoFacts | undefined;
+  try {
+    video = nativeVideoFacts(request);
+  } catch {
+    return null;
+  }
+  if (!video?.referenceVideo) return null;
+  const attributes = nativeVideoAttributes(service, video, options);
+  const priced = components?.some((component) => component.match?.reference_video === 'true'
+    && Object.entries(component.match).every(([key, value]) => attributes[key] === value));
+  return priced ? null : 'This service does not take reference videos at these options';
 }
 
 /** Whether a create body sends at least one reference video. */

@@ -659,7 +659,7 @@ describe('reference media', () => {
   it('refuses reference videos before payment unless the service prices them', async () => {
     const { provider, fetchMock } = await r2vProvider([perSecond]);
     for (const input of [{ video_urls: ['https://x/v.mp4'] }, { reference_video_urls: ['https://x/v.mp4'] }]) {
-      expect(provider.checkRequest!(create(input))).toEqual({ statusCode: 400, code: 'unsupported_video_input', message: 'This service does not take reference videos' });
+      expect(provider.checkRequest!(create(input))).toEqual({ statusCode: 400, code: 'unsupported_video_input', message: 'This service does not take reference videos at these options' });
       expect((await provider.handleRequest(create(input))).statusCode).toBe(400);
     }
     expect(provider.checkRequest!(create({ video_urls: [] }))).toBeNull();
@@ -672,6 +672,19 @@ describe('reference media', () => {
     expect(provider.checkRequest!(create({ reference_video_urls: ['https://x/v.mp4'] }))).toBeNull();
     expect((await provider.handleRequest(create({ reference_video_urls: ['https://x/v.mp4'] }))).statusCode).toBe(200);
     expect(parse(fetchMock.mock.calls[2]![1].body).video_urls).toEqual(['https://x/v.mp4']);
+  });
+
+  it('refuses reference videos at a resolution the surcharge does not cover', async () => {
+    const { provider, fetchMock } = await r2vProvider([
+      { unit: 'video_seconds', priceUsd: 0.3, match: { resolution: '480p' } },
+      { unit: 'video_seconds', priceUsd: 0.6, match: { resolution: '720p' } },
+      { unit: 'video_generations', priceUsd: 0 },
+      { unit: 'video_generations', priceUsd: 11, match: { resolution: '720p', reference_video: 'true' } },
+    ]);
+    expect(provider.checkRequest!(create({ resolution: '720p', video_urls: ['https://x/v.mp4'] }))).toBeNull();
+    expect(provider.checkRequest!(create({ resolution: '480p', video_urls: ['https://x/v.mp4'] }))?.code).toBe('unsupported_video_input');
+    expect((await provider.handleRequest(create({ resolution: '480p', video_urls: ['https://x/v.mp4'] }))).statusCode).toBe(400);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('announces reference_video in the inputs of an endpoint that takes video_urls', () => {

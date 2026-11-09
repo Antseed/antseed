@@ -109,11 +109,24 @@ describe('reference videos in a video create', () => {
     expect(nativeVideoFacts(create('/api/v1/video/queue', { model: 'm', duration: '5s', video_urls: ['v'] }))).not.toHaveProperty('referenceVideo');
   });
 
-  it('refuses reference videos a service has no price for', () => {
-    const priced = [{ match: { reference_video: 'true' } }];
-    expect(referenceVideoPriceProblem('venice-video', { reference_video_urls: ['v'] }, [{}])).toBe('This service does not take reference videos');
-    expect(referenceVideoPriceProblem('venice-video', { reference_video_urls: ['v'] }, undefined)).toBe('This service does not take reference videos');
-    expect(referenceVideoPriceProblem('venice-video', { reference_video_urls: ['v'] }, priced)).toBeNull();
-    expect(referenceVideoPriceProblem('fal-video', { reference_image_urls: ['i'] }, [{}])).toBeNull();
+  it('refuses reference videos unless a reference_video component matches the whole create', () => {
+    const venice = (body: object) => create('/api/v1/video/queue', { model: 'm', duration: '5s', ...body });
+    const surcharge720 = [
+      { match: { resolution: '480p' } },
+      { match: { resolution: '720p' } },
+      {},
+      { match: { resolution: '720p', reference_video: 'true' } },
+    ];
+    const refused = 'This service does not take reference videos at these options';
+    expect(referenceVideoPriceProblem(venice({ resolution: '720p', reference_video_urls: ['v'] }), 'm', surcharge720)).toBeNull();
+    // A 720p surcharge does not cover a 480p create.
+    expect(referenceVideoPriceProblem(venice({ resolution: '480p', reference_video_urls: ['v'] }), 'm', surcharge720)).toBe(refused);
+    expect(referenceVideoPriceProblem(venice({ resolution: '480p', reference_video_urls: ['v'] }), 'm', undefined)).toBe(refused);
+    expect(referenceVideoPriceProblem(venice({ resolution: '480p' }), 'm', [{}])).toBeNull();
+    // Venice creates are matched with the announced defaults the buyer prices them by.
+    const byAspect = [{ match: { aspect_ratio: '16:9', reference_video: 'true' } }];
+    expect(referenceVideoPriceProblem(venice({ reference_video_urls: ['v'] }), 'm', byAspect, { aspectRatios: ['16:9'] })).toBeNull();
+    expect(referenceVideoPriceProblem(venice({ reference_video_urls: ['v'] }), 'm', byAspect, { aspectRatios: ['21:9'] })).toBe(refused);
+    expect(referenceVideoPriceProblem(create('/fal/v1/video/queue', { model: 'm', duration: '5', image_urls: ['i'] }), 'm', [{}])).toBeNull();
   });
 });

@@ -348,9 +348,7 @@ const plugin: AntseedProviderPlugin = {
     const editRules = new Map<string, FalEditRule>();
     // Endpoints whose video is as long as their audio: `duration` must be the audio length, and is removed.
     const audioServices = new Set<string>();
-    // Endpoints whose fal schema was read.
-    const schemaRead = new Set<string>();
-    // Each read endpoint's input fields, for renaming the common reference names.
+    // Each endpoint whose fal schema was read, with its input fields.
     const schemaFields = new Map<string, readonly string[]>();
 
     // Announces each endpoint's own input field names, so buyers can call fal's API unchanged.
@@ -363,10 +361,7 @@ const plugin: AntseedProviderPlugin = {
           if (input?.parameters && !capabilities.supportedParameters) {
             capabilities.supportedParameters = [...input.parameters, ...falReferenceAliases(input.fields)].sort();
           }
-          if (input) {
-            schemaRead.add(service);
-            schemaFields.set(service, input.fields);
-          }
+          if (input) schemaFields.set(service, input.fields);
           const rule = falEditRule(input);
           if (rule) {
             editRules.set(service, rule);
@@ -403,7 +398,7 @@ const plugin: AntseedProviderPlugin = {
      * service's configured fields include one that sets the length.
      */
     const followsAudio = (service: string, input: Record<string, unknown>) => audioServices.has(service)
-      || (!schemaRead.has(service) && input.audio_url !== undefined && input.video_url === undefined
+      || (!schemaFields.has(service) && input.audio_url !== undefined && input.video_url === undefined
         && !LENGTH_FIELDS.some(field => serviceCapabilities[service]!.supportedParameters?.includes(field)));
 
     /**
@@ -422,8 +417,8 @@ const plugin: AntseedProviderPlugin = {
     };
 
     /** Why a create's reference videos are not covered by the service's price, or null. */
-    const referencePriceProblem = (service: string, input: Record<string, unknown>) =>
-      referenceVideoPriceProblem(PROTOCOL, input, serviceUnitBillingModels?.[service]?.[PROTOCOL]?.components);
+    const referencePriceProblem = (request: SerializedHttpRequest, service: string) =>
+      referenceVideoPriceProblem(request, service, serviceUnitBillingModels?.[service]?.[PROTOCOL]?.components);
 
     // Run before any payment, so a refused create costs the buyer nothing.
     const checkRequest = (request: SerializedHttpRequest): ProviderRequestRefusal | null => {
@@ -431,7 +426,7 @@ const plugin: AntseedProviderPlugin = {
       if (videoRoute?.action !== 'create' || !service) return null;
       const body = parseJsonObject(request.body);
       if (!body) return null;
-      const unpriced = referencePriceProblem(service, body);
+      const unpriced = referencePriceProblem(request, service);
       if (unpriced) return { statusCode: 400, code: 'unsupported_video_input', message: unpriced };
       const renamed = renameFalReferenceAliases({ ...body }, schemaFields.get(service));
       if (renamed) return { statusCode: 400, code: 'invalid_video_request', message: renamed };
@@ -452,7 +447,7 @@ const plugin: AntseedProviderPlugin = {
         // fal reads the model from the URL; the body is the model input only.
         const { model: _model, service: _service, ...input } = body;
         // The seller checks these before payment too (checkRequest).
-        const unpriced = referencePriceProblem(service, input);
+        const unpriced = referencePriceProblem(request, service);
         if (unpriced) return error(request, 400, 'unsupported_video_input', unpriced);
         const refused = lengthProblem(service, input);
         if (refused) return error(request, 422, 'invalid_video_duration', refused);

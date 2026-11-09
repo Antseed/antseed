@@ -561,7 +561,7 @@ it('refuses reference videos before payment unless the service prices them', asy
   const create = (body: object) => request('/api/v1/video/queue', { model: 'wan-2.5', prompt: 'dance', duration: '5s', reference_image_urls: ['https://x/i.png'], ...body });
   const unpriced = plugin.createProvider(config) as Provider;
   expect(unpriced.checkRequest!(create({ reference_video_urls: ['https://x/v.mp4'] })))
-    .toEqual({ statusCode: 400, code: 'unsupported_video_input', message: 'This service does not take reference videos' });
+    .toEqual({ statusCode: 400, code: 'unsupported_video_input', message: 'This service does not take reference videos at these options' });
   expect((await unpriced.handleRequest(create({ reference_video_urls: ['https://x/v.mp4'] }))).statusCode).toBe(400);
   expect(unpriced.checkRequest!(create({ reference_audio_urls: ['https://x/a.mp3'] }))).toBeNull();
   expect(fetchMock).not.toHaveBeenCalled();
