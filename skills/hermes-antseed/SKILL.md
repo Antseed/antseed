@@ -77,7 +77,8 @@ printf 'header = "Authorization: Bearer %s"\n' "$ANTSEED_API_KEY" | curl -s -K -
 ```
 
 Every request that carries the key pipes it into `curl -K -` (curl's config, read from stdin) instead of putting
-it on the command line, so it never shows up in the process list or a command log. Keep that pattern.
+it on the command line, so it never appears in a process's arguments. Keep that pattern. Shell tracing
+(`set -x`) or a terminal tool that records commands as run can still capture it.
 
 `200`: go on to step 1. `401`: wrong key or base URL (🙋 ask again). Anything else, or no answer: the gateway isn't reachable
 from here; tell the user and stop.

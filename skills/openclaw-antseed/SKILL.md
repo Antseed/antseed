@@ -146,12 +146,12 @@ The local buyer proxy checks no key, so any non-empty placeholder works. It list
 
 ```bash
 cat ~/.openclaw/openclaw.json | python3 -c "
-import sys, json
+import os, sys, json
 cfg = json.load(sys.stdin)
 providers = cfg.setdefault('models', {}).setdefault('providers', {})
 providers['antseed'] = {
     'baseUrl': '${ANTSEED_BASE_URL}',
-    'apiKey': '${ANTSEED_API_KEY}',
+    'apiKey': os.environ.get('ANTSEED_API_KEY'),
     'authHeader': True,
     'api': 'openai-completions',
     'models': [{
@@ -177,8 +177,9 @@ printf 'header = "Authorization: Bearer %s"\n' "$ANTSEED_API_KEY" | curl -s -K -
 printf 'header = "Authorization: Bearer %s"\n' "$ANTSEED_API_KEY" | curl -s -K - "$ANTSEED_BASE_URL/models/<model-id>"
 ```
 
-The key goes to `curl -K -` (curl's config, read from stdin) rather than onto the command line, so it never shows
-up in the process list or a command log.
+The key goes to `curl -K -` (curl's config, read from stdin) rather than onto the command line, and Step 6 reads
+it from the environment, so it never appears in a process's arguments. Shell tracing (`set -x`) or a terminal tool
+that records commands as run can still capture it.
 
 `antseed network browse` remains useful for a peer-oriented table of services and pricing.
 
@@ -203,8 +204,7 @@ openclaw gateway restart
 ## Step 7: Verify
 
 ```bash
-curl -s "$ANTSEED_BASE_URL/models" \
-  -H "Authorization: Bearer $ANTSEED_API_KEY"
+printf 'header = "Authorization: Bearer %s"\n' "$ANTSEED_API_KEY" | curl -s -K - "$ANTSEED_BASE_URL/models"
 ```
 
 If it returns models from across the network, the connection is working (a gateway key limited to certain models lists only those). The list is independent of any pinned peer; each model's `peers` array is ordered by the buyer's current routing preferences.

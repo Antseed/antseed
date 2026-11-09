@@ -106,8 +106,8 @@ if [ ! -f "$OPENCLAW_CONFIG" ]; then
   exit 1
 fi
 
-python3 -c "
-import json, sys
+ANTSEED_API_KEY="$API_KEY" python3 -c "
+import json, os, sys
 
 cfg = json.load(open('${OPENCLAW_CONFIG}'))
 
@@ -115,7 +115,7 @@ cfg = json.load(open('${OPENCLAW_CONFIG}'))
 providers = cfg.setdefault('models', {}).setdefault('providers', {})
 providers['antseed'] = {
     'baseUrl': '${BASE_URL}',
-    'apiKey': '${API_KEY}',
+    'apiKey': os.environ.get('ANTSEED_API_KEY'),
     'authHeader': True,
     'api': 'openai-completions',
     'models': [{
