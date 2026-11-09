@@ -45,6 +45,12 @@ function counted(answer: () => Promise<string | null | undefined>) {
 }
 
 describe('referral state', () => {
+  it('creates a data dir that does not exist yet on the first write', async () => {
+    const dir = join(await dataDir(), 'fresh', 'nested');
+    await saveReferralInvite(dir, SCOPE, ENCODED, REFERRER.toLowerCase());
+    expect(pendingInvite(await readReferralState(dir, SCOPE))).toEqual(INVITE);
+  });
+
   it('saves a redeemed invite as pending and carries it until bound', async () => {
     const dir = await dataDir();
     expect(await readReferralState(dir, SCOPE)).toBeNull();

@@ -1,3 +1,5 @@
+import { mkdir } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import Database from 'better-sqlite3';
 
 export interface FileLockOptions {
@@ -35,6 +37,8 @@ export async function withFileLock<T>(path: string, task: () => Promise<T>, opti
 async function holdingLockFile<T>(path: string, task: () => Promise<T>, options: FileLockOptions): Promise<T> {
   const lockPath = `${path}.lock`;
   const deadline = Date.now() + (options.timeoutMs ?? 10_000);
+  // SQLite cannot create missing folders, and a fresh data dir may not exist yet.
+  await mkdir(dirname(lockPath), { recursive: true, mode: 0o700 });
   const db = new Database(lockPath, { timeout: 0 });
   try {
     for (;;) {
