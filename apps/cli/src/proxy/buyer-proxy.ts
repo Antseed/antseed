@@ -5729,7 +5729,7 @@ export class BuyerProxy {
         }
         responseForClient = adaptOpenAICompatibleErrorResponse(responseForClient, requestProtocol)
         if (!dataCall) responseForClient = this._withFriendlyUploadLimitError(responseForClient, requestForPeer.body.length, requestedService)
-        if (responseForClient.statusCode === 402) {
+        if (responseForClient.statusCode === 402 && !isDataProviderResponse(responseForClient)) {
           responseForClient = inject402PeerId(responseForClient, selectedPeer.peerId)
         }
 
@@ -5897,7 +5897,7 @@ export class BuyerProxy {
         }
         response = adaptOpenAICompatibleErrorResponse(response, requestProtocol)
         if (!dataCall) response = this._withFriendlyUploadLimitError(response, requestForPeer.body.length, requestedService)
-        if (response.statusCode === 402) {
+        if (response.statusCode === 402 && !isDataProviderResponse(response)) {
           response = inject402PeerId(response, selectedPeer.peerId)
         }
         const latencyMs = Date.now() - startTime

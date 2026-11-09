@@ -2476,6 +2476,35 @@ describe('data service seller payments', () => {
     expect(refused.headers['x-antseed-data-response']).toBeUndefined();
   });
 
+  it('runs a data call buffered even on a provider that can stream, and marks its answer', async () => {
+    const harness = setup();
+    const contract = '{"error":"payment_required","minBudgetPerRequest":"10000"}';
+    harness.provider.handleRequestStream = vi.fn(async () => { throw new Error('a data call must not stream'); });
+    vi.mocked(harness.provider.handleRequest).mockImplementation(async request => ({
+      requestId: request.requestId, statusCode: 402, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(contract),
+    }));
+    const response = await harness.send('streamable', { headers: { 'content-type': 'application/json', accept: 'text/event-stream' } });
+    expect(response.statusCode).toBe(402);
+    expect(response.headers['x-antseed-data-response']).toBe('provider');
+    expect(new TextDecoder().decode(response.body)).toBe(contract);
+    expect(harness.provider.handleRequestStream).not.toHaveBeenCalled();
+  });
+
+  it('decodes a compressed data answer, since the encoding header is not forwarded', async () => {
+    const harness = setup();
+    const { gzipSync } = await import('node:zlib');
+    vi.mocked(harness.provider.handleRequest).mockImplementation(async request => ({
+      requestId: request.requestId, statusCode: 200,
+      headers: { 'content-type': 'application/json', 'content-encoding': 'gzip', 'content-length': '999' },
+      body: new Uint8Array(gzipSync(Buffer.from('{"flights":[{"id":"LY1"}]}'))),
+    }));
+    const response = await harness.send('gzip');
+    expect(response.statusCode).toBe(200);
+    expect(new TextDecoder().decode(response.body)).toBe('{"flights":[{"id":"LY1"}]}');
+    expect(response.headers['content-encoding']).toBeUndefined();
+    expect(response.headers['content-length']).toBeUndefined();
+  });
+
   it('sends a chat request that names no provider to the chat provider, never to a data-only one', async () => {
     const harness = setup();
     const chat = makeProvider(0, 0, { name: 'chat-provider', services: ['flights'] });

@@ -3620,6 +3620,22 @@ test('a data GET whose answer looks like an empty chat answer is a delivered ans
   assert.deepEqual(attempts, [first.peerId])
 })
 
+test("a data provider's own payment_required 402 comes back byte for byte", async () => {
+  const data = makeDataPeer('b')
+  const proxy = makeBuyerProxyWithPeers([data], [data], permissiveRouter())
+  const body = '{"error":"payment_required","code":"their_card_declined"}'
+  ;(proxy as any)._node.sendRequest = async (_peer: PeerInfo, request: { requestId: string }) => ({
+    requestId: request.requestId, statusCode: 402,
+    headers: { 'content-type': 'application/json', 'content-length': String(body.length), 'x-antseed-data-response': 'provider' },
+    body: Buffer.from(body),
+  })
+
+  const res = await invokeProxy(proxy, makeProxyRequest({ path: '/v1/data/flights/book', body: { flight: 'LY1' } }))
+
+  assert.equal(res.statusCode, 402)
+  assert.equal(res.body, body)
+})
+
 test("a data provider's own 413 comes back byte for byte", async () => {
   const data = makeDataPeer('b')
   const proxy = makeBuyerProxyWithPeers([data], [data], permissiveRouter())

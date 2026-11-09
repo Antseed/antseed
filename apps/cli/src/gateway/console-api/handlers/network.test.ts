@@ -293,6 +293,23 @@ test('peer services, model offers and models carry the voices speech services ac
   assert.deepEqual(model!.offers[0]!.voices, ['af_sky', 'am_adam'])
 })
 
+test('data offers keep their per-request price and are free only when it is zero', () => {
+  const dataOffer = (peerId: string, components: Array<{ unit: string; priceUsd: number }>) => ({
+    peerId, provider: 'openapi', serviceId: 'flights', protocol: 'openapi-data',
+    unitBillingModels: { 'openapi-data': { version: 1, components } },
+  })
+  const [model] = mapNetworkModels({ data: [{ id: 'flights', type: 'data', peers: [
+    dataOffer(PEER_A, [{ unit: 'completed_requests', priceUsd: 0.005 }]),
+    dataOffer('b'.repeat(40), []),
+  ] }] }, [])
+  const [paid, free] = model!.offers
+  assert.ok(Math.abs(paid!.usdPerRequest! - 0.005) < 1e-12)
+  assert.equal(paid!.free, false)
+  assert.equal(free!.usdPerRequest, 0)
+  assert.equal(free!.free, true)
+  assert.equal(model!.free, true)
+})
+
 test('speech offers keep their per-character price and are free only when it is zero', () => {
   const speechOffer = (peerId: string, priceUsd: number) => ({
     peerId, provider: 'openai', serviceId: 'tts-model', protocol: 'openai-audio-speech',

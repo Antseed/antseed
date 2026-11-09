@@ -775,19 +775,6 @@ function selectProviderForService(
   request: SerializedHttpRequest,
 ): string | null {
   const providers = peer.providers ?? [];
-  const named = requestedProvider
-    ? providers.find((candidate) => candidate.toLowerCase() === requestedProvider)
-    : undefined;
-  if (named) {
-    return providerOffersService(peer, named, service) ? named : null;
-  }
-  // No provider named, or one the peer does not announce (a pin from before
-  // sellers announced provider IDs, or a plugin name): choose one.
-
-  // Mirrors the seller's matchProvider: a native video request needs a
-  // provider serving its protocol, and takes the first one, so a job's
-  // retrieves reach the provider that accepted it whatever its health is now.
-  // Other requests prefer a provider whose self health check is not failing.
   const videoRoute = nativeVideoRoute(request);
   // Video and data requests need a provider that serves the service on their protocol.
   const routeProtocol = videoRoute?.protocol ?? dataServiceRoute(request)?.protocol;
@@ -797,10 +784,25 @@ function selectProviderForService(
     const protocols = protocolsOf(provider);
     return Boolean(protocols?.length) && protocols!.every((protocol) => protocol === 'openapi-data');
   };
-  const eligible = providers.filter((provider) =>
-    providerOffersService(peer, provider, service)
-    && (routeProtocol ? Boolean(protocolsOf(provider)?.includes(routeProtocol)) : !dataOnly(provider)),
-  );
+  const isEligible = (provider: string): boolean => providerOffersService(peer, provider, service)
+    && (routeProtocol ? Boolean(protocolsOf(provider)?.includes(routeProtocol)) : !dataOnly(provider));
+  const named = requestedProvider
+    ? providers.find((candidate) => candidate.toLowerCase() === requestedProvider)
+    : undefined;
+  if (named) {
+    if (isEligible(named)) return named;
+    // A named provider that cannot serve this request: the seller's matchProvider falls back to
+    // another eligible provider, except for video, whose jobs live with the named one.
+    if (videoRoute) return providerOffersService(peer, named, service) ? named : null;
+  }
+  // No provider named, or one the peer does not announce (a pin from before
+  // sellers announced provider IDs, or a plugin name): choose one.
+
+  // Mirrors the seller's matchProvider: a native video request needs a
+  // provider serving its protocol, and takes the first one, so a job's
+  // retrieves reach the provider that accepted it whatever its health is now.
+  // Other requests prefer a provider whose self health check is not failing.
+  const eligible = providers.filter(isEligible);
   const healthy = videoRoute ? undefined : eligible.find((provider) =>
     !isServiceHealthFailing(providerServiceHealthFor(peer.providerServiceHealth, provider, service)),
   );

@@ -22,6 +22,7 @@ export function priceSummary(price: {
   outputUsdPerMillion: number | null
   usdPerImage?: { min: number; max: number } | null
   usdPerMillionCharacters?: number
+  usdPerRequest?: number
   free?: boolean
 }): string {
   if (price.usdPerImage) return price.usdPerImage.max === 0 ? 'Free' : `${formatPriceRange(price.usdPerImage)} per image`
@@ -29,6 +30,9 @@ export function priceSummary(price: {
     return price.usdPerMillionCharacters === 0 ? 'Free' : `${formatPricePerMillion(price.usdPerMillionCharacters)} /M characters`
   }
   const { inputUsdPerMillion: input, outputUsdPerMillion: output } = price
+  if (input === null && output === null && price.usdPerRequest !== undefined) {
+    return price.usdPerRequest === 0 ? 'Free' : `${formatPriceRange({ min: price.usdPerRequest, max: price.usdPerRequest })} per request`
+  }
   if (input === null && output === null) return price.free ? 'Free' : 'No price advertised'
   if ((input ?? 0) === 0 && (output ?? 0) === 0) return 'Free'
   return `${formatPricePerMillion(input)} in · ${formatPricePerMillion(output)} out /M`

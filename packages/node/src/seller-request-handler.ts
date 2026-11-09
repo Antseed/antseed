@@ -33,7 +33,7 @@ import {
   estimateTokensFromBytesSampled,
 } from './payments/pricing.js';
 import { debugLog, debugWarn, isContentFreeLogging } from './utils/debug.js';
-import { buyerFacingResponseHeaders } from './proxy/buyer-response-headers.js';
+import { buyerFacingDataResponse, buyerFacingResponseHeaders } from './proxy/buyer-response-headers.js';
 import {
   CONNECTION_CAPABILITY_RESPONSE_AUTH_V1,
   DEFAULT_FIRST_SIGN_CAP,
@@ -1447,8 +1447,8 @@ export class SellerRequestHandler {
     if (!provider) return failure(404, 'model_not_found', `Data service "${route.service}" is not served by this peer.`);
     setTrustedHeader(request.headers, 'x-antseed-buyer-peer-id', buyerPeerId);
     try {
-      const response = await provider.handleRequest(request);
-      return { ...response, requestId: request.requestId, headers: markDataProviderResponse(buyerFacingResponseHeaders(response.headers)) };
+      const response = buyerFacingDataResponse(await provider.handleRequest(request));
+      return { ...response, requestId: request.requestId, headers: markDataProviderResponse(response.headers) };
     } catch (error) {
       return failure(503, 'data_description_unavailable', `Data service description failed: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -1786,6 +1786,9 @@ export class SellerRequestHandler {
     request: SerializedHttpRequest,
     streamCallbacks?: ProviderStreamCallbacks,
   ): Promise<SerializedHttpResponse> {
+    // A data call is one buffered request and response, whatever the provider can stream, so the
+    // seller marks and checks the whole answer before the buyer sees any of it.
+    if (dataServiceRoute(request)) return buyerFacingDataResponse(await provider.handleRequest(request));
     // Buyers only ever see the headers buyerFacingResponseHeaders lets through.
     if (streamCallbacks && provider.handleRequestStream) {
       // A streamed 429 is held back like a buffered one, so its upstream body can be replaced before the buyer sees it.

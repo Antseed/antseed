@@ -158,6 +158,21 @@ describe('BuyerRequestHandler data service 402', () => {
     expect(selectBillingRoute(peer, makeDataRequest(), 'flights')?.provider).toBe('openapi');
   });
 
+  it('bills a data call naming a chat-only provider under the data provider the seller will use', () => {
+    const peer: BuyerPeerView = {
+      peerId: toPeerId('5'.repeat(40)),
+      providers: ['chat-only', 'openapi'],
+      providerPricing: { 'chat-only': { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 }, services: { flights: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } } } },
+      providerServiceApiProtocols: {
+        'chat-only': { services: { flights: ['openai-chat-completions'] } },
+        openapi: { services: { flights: ['openapi-data'] } },
+      },
+      providerServiceUnitBillingModels: makeDataPeer().providerServiceUnitBillingModels,
+    };
+    const named = { ...makeDataRequest(), headers: { 'content-type': 'application/json', 'x-antseed-provider': 'chat-only' } };
+    expect(selectBillingRoute(peer, named, 'flights')?.provider).toBe('openapi');
+  });
+
   it('bills a chat call under the chat provider, never a data-only one of the same name', () => {
     const peer: BuyerPeerView = {
       peerId: toPeerId('5'.repeat(40)),
