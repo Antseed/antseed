@@ -3566,6 +3566,54 @@ for (const failure of ['502', 'transport'] as const) {
   })
 }
 
+test('a data POST answered 429 by the provider is returned, not sent again to any seller', async () => {
+  const first = makeDataPeer('a', 95)
+  const second = makeDataPeer('b', 80)
+  const proxy = makeBuyerProxyWithPeers([first, second], [first, second], permissiveRouter())
+  const attempts: string[] = []
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
+    attempts.push(peer.peerId)
+    return { requestId: request.requestId, statusCode: 429, headers: { 'content-type': 'application/json', 'retry-after': '0' }, body: Buffer.from('{"error":"quota"}') }
+  }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({ path: '/v1/data/flights/book', body: { flight: 'LY1' } }))
+
+  assert.equal(res.statusCode, 429)
+  assert.deepEqual(attempts, [first.peerId])
+})
+
+test('a data GET whose answer looks like an empty chat answer is a delivered answer, sent once', async () => {
+  const first = makeDataPeer('a', 95)
+  const second = makeDataPeer('b', 80)
+  const proxy = makeBuyerProxyWithPeers([first, second], [first, second], permissiveRouter())
+  const attempts: string[] = []
+  const body = '{"type":"message","content":[]}'
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
+    attempts.push(peer.peerId)
+    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from(body) }
+  }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({ method: 'GET', path: '/v1/data/flights/messages', rawBody: '' }))
+
+  assert.equal(res.statusCode, 200)
+  assert.equal(res.body, body)
+  assert.deepEqual(attempts, [first.peerId])
+})
+
+test("a data provider's own 413 comes back byte for byte", async () => {
+  const data = makeDataPeer('b')
+  const proxy = makeBuyerProxyWithPeers([data], [data], permissiveRouter())
+  const body = '{"error":{"code":"payload_too_large","max_rows":1000}}'
+  ;(proxy as any)._node.sendRequest = async (_peer: PeerInfo, request: { requestId: string }) => (
+    { requestId: request.requestId, statusCode: 413, headers: { 'content-type': 'application/json' }, body: Buffer.from(body) }
+  )
+
+  const res = await invokeProxy(proxy, makeProxyRequest({ path: '/v1/data/flights/import', body: { rows: [] } }))
+
+  assert.equal(res.statusCode, 413)
+  assert.equal(res.body, body)
+})
+
 test('a data GET fails over to another seller like any read', async () => {
   const first = makeDataPeer('a', 95)
   const second = makeDataPeer('b', 80)

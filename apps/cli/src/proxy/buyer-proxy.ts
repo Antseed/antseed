@@ -5064,10 +5064,11 @@ export class BuyerProxy {
           // Never retry a video on another seller: a create may already have
           // started (and been charged), and follow-ups only exist on one seller.
           if (nativeVideo) return result
-          // A data operation that may have run is not sent again: only a seller that
-          // does not serve it, a payment the buyer could not make, or a rate limit
-          // (all before the operation runs) lets another seller take it.
-          if (dataCallMayRepeat && !result.modelNotFound && !isBuyerFault(result) && result.statusCode !== 429) return result
+          // A data operation that may have run is not sent again, to this seller or
+          // another: only a seller that does not serve it, or a payment the buyer could
+          // not make (both before the operation runs), lets another seller take it. A 429
+          // may come from the seller's API after a partial run, so it is returned too.
+          if (dataCallMayRepeat && !result.modelNotFound && !isBuyerFault(result)) return result
           lastRetry = result
           if (!isBuyerFault(result) && !result.modelNotFound && result.statusCode !== 402) {
             const failure = classifyFailedAttempt(result)
@@ -5612,7 +5613,9 @@ export class BuyerProxy {
     // Video responses are JSON job objects or a streamed MP4, never SSE.
     // A data call is one request and one buffered response: its body may carry
     // a `stream` field of its own, which is the operation's and not a transport choice.
-    const wantsStreaming = clientWantsStreaming && !videoRoute && !dataServiceRoute(requestForPeer)
+    // A data call's answer is the seller's own API: judged by its status, never by inference answer shapes.
+    const dataCall = dataServiceRoute(requestForPeer) !== null
+    const wantsStreaming = clientWantsStreaming && !videoRoute && !dataCall
     if (videoRoute?.action === 'retrieve') {
       // The seller hands a job only to the buyer that created it: retrieve with the same wallet.
       const { protocol, resourceId } = videoRoute
@@ -5725,7 +5728,7 @@ export class BuyerProxy {
           responseForClient = adaptResponse(responseForClient)
         }
         responseForClient = adaptOpenAICompatibleErrorResponse(responseForClient, requestProtocol)
-        responseForClient = this._withFriendlyUploadLimitError(responseForClient, requestForPeer.body.length, requestedService)
+        if (!dataCall) responseForClient = this._withFriendlyUploadLimitError(responseForClient, requestForPeer.body.length, requestedService)
         if (responseForClient.statusCode === 402) {
           responseForClient = inject402PeerId(responseForClient, selectedPeer.peerId)
         }
@@ -5827,7 +5830,7 @@ export class BuyerProxy {
           requestForPeer.requestId,
           latencyMs,
         )
-        const answeredEmpty = !pinned && responseForClient.statusCode < 300
+        const answeredEmpty = !pinned && responseForClient.statusCode < 300 && !dataCall
           && isEmptyAnswer(responseForClient.headers['content-type'], responseForClient.body)
         const emptyAnswer = extraAttempt && answeredEmpty
         if (emptyAnswer || shouldTryNextPeer(responseForClient.statusCode, {
@@ -5892,7 +5895,7 @@ export class BuyerProxy {
           response = adaptResponse(response)
         }
         response = adaptOpenAICompatibleErrorResponse(response, requestProtocol)
-        response = this._withFriendlyUploadLimitError(response, requestForPeer.body.length, requestedService)
+        if (!dataCall) response = this._withFriendlyUploadLimitError(response, requestForPeer.body.length, requestedService)
         if (response.statusCode === 402) {
           response = inject402PeerId(response, selectedPeer.peerId)
         }
@@ -5949,7 +5952,7 @@ export class BuyerProxy {
         }
 
         // Check if retryable
-        const answeredEmpty = !pinned && response.statusCode < 300 && !videoRoute
+        const answeredEmpty = !pinned && response.statusCode < 300 && !videoRoute && !dataCall
           && isEmptyAnswer(response.headers['content-type'], response.body)
         const emptyAnswer = extraAttempt && answeredEmpty
         if (emptyAnswer || shouldTryNextPeer(response.statusCode, {

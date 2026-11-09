@@ -133,6 +133,8 @@ describe('data services in peer metadata', () => {
     }]);
     expect(offers).toHaveLength(1);
     expect(offers[0]).toMatchObject({ serviceId: 'both', type: 'text', protocol: 'openai-chat-completions', inputUsdPerMillion: 1 });
+    // It keeps its data price beside its token prices.
+    expect(dataOfferUsdPerRequest(offers[0]!)).toBe(0.005);
   });
 
   it('does not probe data services: an operation is the seller\'s own and may cost it per call', () => {

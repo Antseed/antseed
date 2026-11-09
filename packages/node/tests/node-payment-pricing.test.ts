@@ -2445,6 +2445,36 @@ describe('data service seller payments', () => {
     expect(harness.spm.recordSpend).toHaveBeenCalledTimes(1);
   });
 
+  it("passes a data API's own 401, 402, 403 and 429 answers on unchanged", async () => {
+    for (const statusCode of [401, 402, 403, 429]) {
+      const harness = setup();
+      const body = JSON.stringify({ error: { code: `flights_${statusCode}`, detail: 'from the flights API' } });
+      vi.mocked(harness.provider.handleRequest).mockImplementation(async request => ({
+        requestId: request.requestId, statusCode, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(body),
+      }));
+      const response = await harness.send(`s${statusCode}`);
+      expect(response.statusCode).toBe(statusCode);
+      expect(new TextDecoder().decode(response.body)).toBe(body);
+    }
+  });
+
+  it('serves the description and the operation from the provider the buyer names', async () => {
+    const harness = setup();
+    const second = makeProvider(10, 10, { name: 'openapi-b', services: ['flights'] });
+    second.serviceApiProtocols = { flights: ['openapi-data'] };
+    second.serviceUnitBillingModels = harness.provider.serviceUnitBillingModels;
+    second.pricing = harness.provider.pricing;
+    second.handleRequest = vi.fn(async request => ({ requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode('{"from":"b"}') }));
+    delete (second as Partial<Provider>).handleRequestStream;
+    const named = setup({}, { providers: [harness.provider, second] });
+    const headers = { 'content-type': 'application/json', 'x-antseed-provider': 'openapi-b' };
+    expect((await named.send('describe-b', { method: 'GET', path: '/v1/data/flights/openapi.json', headers, body: new Uint8Array() })).statusCode).toBe(200);
+    expect((await named.send('call-b', { headers })).statusCode).toBe(200);
+    expect(vi.mocked(second.handleRequest).mock.calls.map(call => call[0].path)).toEqual(['/v1/data/flights/openapi.json', '/v1/data/flights/search?limit=5']);
+    // The first provider of the same service answered neither.
+    expect(harness.provider.handleRequest).not.toHaveBeenCalled();
+  });
+
   it('refuses a request for a data service this seller does not offer before any payment step', async () => {
     const harness = setup();
     const response = await harness.send('other', { path: '/v1/data/hotels/search' });

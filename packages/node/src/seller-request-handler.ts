@@ -999,17 +999,20 @@ export class SellerRequestHandler {
           // The upstream's answer for its account and model health (an out-of-credit error is seen here first).
           // Polling or downloading a video already paid for says nothing about the account's credit.
           const upstreamBody = response.body ?? new Uint8Array(0);
+          // A data operation's errors are the seller's own API answering: never rewritten as an
+          // inference account, rate-limit or health error.
+          const dataCall = dataServiceRoute(request) !== null;
           const upstreamError = statusCode >= 400 ? new TextDecoder().decode(upstreamBody.slice(0, 2_000)) : '';
           this._deps.emit('provider:response', { provider, service: requestedModel, statusCode, body: upstreamError, billable: videoRoute?.action !== 'retrieve' });
-          if (!streamedResponseStarted && isUpstreamAccountError(statusCode, upstreamError)) {
+          if (!streamedResponseStarted && !dataCall && isUpstreamAccountError(statusCode, upstreamError)) {
             debugWarn(`[SellerHandler] Upstream account error: status=${statusCode} provider="${provider.name}" model="${requestedModel}" body=${upstreamError.slice(0, 200)}`);
             response = buildUpstreamUnavailableResponse(request.requestId, requestedModel);
             statusCode = response.statusCode;
-          } else if (!streamedResponseStarted && statusCode === 429) {
+          } else if (!streamedResponseStarted && !dataCall && statusCode === 429) {
             response = buildUpstreamRateLimitedResponse(request.requestId, requestedModel, takeHeader({ ...response.headers }, 'retry-after'));
           }
           const health = serviceHealthOf(provider.serviceHealth, requestedModel);
-          if (!streamedResponseStarted && isServiceHealthFailing(health) && isUpstreamFailureStatus(statusCode)) {
+          if (!streamedResponseStarted && !dataCall && isServiceHealthFailing(health) && isUpstreamFailureStatus(statusCode)) {
             response = buildSelfHealthErrorResponse(request.requestId, requestedModel, health, response);
             statusCode = response.statusCode;
           }
@@ -1434,8 +1437,8 @@ export class SellerRequestHandler {
       headers: { 'content-type': 'application/json' },
       body: new TextEncoder().encode(JSON.stringify({ error: { message, type: 'invalid_request_error', code } })),
     });
-    const provider = this._deps.providers.find((candidate) =>
-      candidate.services.includes(route.service) && Boolean(candidate.serviceApiProtocols?.[route.service]?.includes(route.protocol)));
+    // The same provider choice as the operations, so the description matches the API that serves them.
+    const provider = this.matchProvider(request);
     if (!provider) return failure(404, 'model_not_found', `Data service "${route.service}" is not served by this peer.`);
     setTrustedHeader(request.headers, 'x-antseed-buyer-peer-id', buyerPeerId);
     try {
@@ -1497,9 +1500,11 @@ export class SellerRequestHandler {
     }
     const requestedProvider = this._extractRequestedProvider(request);
     const videoRoute = nativeVideoRoute(request);
+    const dataRoute = dataServiceRoute(request);
+    const routeProtocol = videoRoute?.protocol ?? dataRoute?.protocol;
     const providers = this._deps.providers;
     const matchesService = (provider: Provider): boolean =>
-      provider.services.includes(requestedService) && (!videoRoute || Boolean(provider.serviceApiProtocols?.[requestedService]?.includes(videoRoute.protocol)));
+      provider.services.includes(requestedService) && (!routeProtocol || Boolean(provider.serviceApiProtocols?.[requestedService]?.includes(routeProtocol)));
 
     // Several upstreams can share a provider name (with the same terms, see
     // assertSameNameUpstreamsAgree); buyers merge their announcements with the

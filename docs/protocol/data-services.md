@@ -31,12 +31,14 @@ streaming.
 
 A call other than a `GET`, `HEAD` or `OPTIONS` goes to one seller. If its answer fails or does
 not arrive, the proxy does not send it to another seller, since the operation may already have
-run. It moves on only after a refusal that comes before the operation runs: a seller that does
-not serve the service, a payment the buyer could not make, or a `429`. Reads fail over like any
-other request.
+run, and it is not sent again to the same seller either. It moves on only after a refusal that
+comes before the operation runs: a seller that does not serve the service, or a payment the buyer
+could not make. Reads fail over like any other request.
 
-A provider's own answers, errors included, come back as sent. A `402` from the provider is its
-own error; only the seller's `payment_required` answer starts a payment step.
+A provider's own answers, errors included, come back as sent: the seller and the proxy do not
+rewrite a data API's `401`, `403`, `413` or `429`, and do not judge a `2xx` by the shape of its
+body. A `402` from the provider is its own error; only the seller's `payment_required` answer
+starts a payment step.
 
 ## Billing
 

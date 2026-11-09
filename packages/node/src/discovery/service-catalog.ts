@@ -249,7 +249,8 @@ export function buildNetworkServiceOffers(
           ...(!unitPriced && pricing.inputUsdPerMillion !== undefined ? { inputUsdPerMillion: pricing.inputUsdPerMillion } : {}),
           ...(!unitPriced && pricing.outputUsdPerMillion !== undefined ? { outputUsdPerMillion: pricing.outputUsdPerMillion } : {}),
           ...(!unitPriced && pricing.cachedInputUsdPerMillion !== undefined ? { cachedInputUsdPerMillion: pricing.cachedInputUsdPerMillion } : {}),
-          ...(unitPriced ? { unitBillingModels: peer.providerServiceUnitBillingModels?.[provider]?.services[serviceId] } : {}),
+          // A service that answers on chat and on data keeps its token prices and its data price.
+          ...(unitPriced || protocols.some(isDataServiceProtocol) ? { unitBillingModels: peer.providerServiceUnitBillingModels?.[provider]?.services[serviceId] } : {}),
           ...resolveImagePriceRange(peer, provider, serviceId),
           ...(health ? { health } : {}),
           ...(performance ? { performance } : {}),
