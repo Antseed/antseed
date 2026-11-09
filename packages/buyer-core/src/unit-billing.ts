@@ -360,7 +360,7 @@ export function videoAttributes(
   video: NativeVideoFacts,
   options: VideoOptions | undefined,
 ): Partial<Record<UnitBillingMatchKeyV1, string>> {
-  return nativeVideoAttributes(service, video, options) as Partial<Record<UnitBillingMatchKeyV1, string>>;
+  return nativeVideoAttributes(service, video, options);
 }
 
 function imageAttributes(

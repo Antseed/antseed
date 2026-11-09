@@ -52,11 +52,11 @@ A service with `video.audio: true` accepts `audio: false`; give it its own price
 
 ### Reference videos
 
-Venice bills `reference_video_urls` by their length on top of the clip (Seedance 2.5 R2V, 10 s at 720p: $2.89 alone, $4.32 with 15 s of reference video; `POST /api/v1/video/quote` takes `reference_video_total_duration`). A create that sends reference videos is priced with `reference_video: "true"` (metadata v17): add a flat `video_generations` charge for the most reference video Venice takes (30 s in total; $6.91 for that clip), plus a $0 `video_generations` component so creates without one still match:
+Venice bills `reference_video_urls` by their length on top of the clip (Seedance 2.5 R2V, 10 s at 720p: $2.89 alone, $4.32 with 15 s of reference video; `POST /api/v1/video/quote` takes `reference_video_total_duration`). A create that sends reference videos is priced with `reference_video: "true"` (metadata v17): add a flat `video_generations` charge for the most reference video Venice takes (30 s in total), set at the shortest clip, where it adds the most (720p 16:9: +$4.72 at 4 s, +$1.70 at 30 s), plus a $0 `video_generations` component so creates without one still match:
 
 ```json
 { "unit": "video_generations", "priceUsd": 0 },
-{ "unit": "video_generations", "priceUsd": 2.21, "match": { "resolution": "720p", "reference_video": "true" } }
+{ "unit": "video_generations", "priceUsd": 4.72, "match": { "resolution": "720p", "reference_video": "true" } }
 ```
 
 Without such a component matching the create (resolution, aspect ratio and audio included), a create that sends `reference_video_urls` is answered `400 unsupported_video_input` before payment and without calling Venice. Reference images and audio don't change Venice's price.

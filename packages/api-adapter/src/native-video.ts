@@ -1,3 +1,4 @@
+import { componentMatchesAttributes, type UnitBillingComponentV1, type UnitBillingMatchKeyV1 } from '@antseed/protocol/billing';
 import type { NativeVideoProtocol, SerializedHttpRequest, SerializedHttpResponse } from './types.js';
 import { extractRequestBodyFields, headerValue, parseJsonObject } from './utils.js';
 import { inlineVideoSeconds } from './mp4.js';
@@ -133,7 +134,7 @@ export function nativeVideoAttributes(
   service: string,
   video: NativeVideoFacts,
   options: NativeVideoPricedOptions | undefined,
-): Record<string, string> {
+): Partial<Record<UnitBillingMatchKeyV1, string>> {
   const defaults = video.protocol === 'venice-video' ? options : undefined;
   const aspectRatio = video.aspectRatio ?? defaults?.aspectRatios?.[0];
   const audio = video.audio ?? defaults?.audio;
@@ -156,7 +157,7 @@ export function nativeVideoAttributes(
 export function referenceVideoPriceProblem(
   request: SerializedHttpRequest,
   service: string,
-  components: readonly { match?: Readonly<Record<string, string | undefined>> }[] | undefined,
+  components: readonly Pick<UnitBillingComponentV1, 'match'>[] | undefined,
   options?: NativeVideoPricedOptions,
 ): string | null {
   let video: NativeVideoFacts | undefined;
@@ -168,7 +169,7 @@ export function referenceVideoPriceProblem(
   if (!video?.referenceVideo) return null;
   const attributes = nativeVideoAttributes(service, video, options);
   const priced = components?.some((component) => component.match?.reference_video === 'true'
-    && Object.entries(component.match).every(([key, value]) => attributes[key] === value));
+    && componentMatchesAttributes(component, attributes));
   return priced ? null : 'This service does not take reference videos at these options';
 }
 

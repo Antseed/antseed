@@ -777,6 +777,9 @@ importers:
 
   packages/api-adapter:
     dependencies:
+      '@antseed/protocol':
+        specifier: workspace:*
+        version: link:../protocol
       tokenx:
         specifier: ^1.3.0
         version: 1.3.0
