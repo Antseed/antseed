@@ -13,10 +13,26 @@ Only commit/push when the user explicitly says so — e.g. "commit", "push",
 "/commit", "ship it", "open a PR", or invokes the `commit`, `commit-amos`,
 `pr-create`, or `pr-merge` skills.
 
+Never add AI attribution to commits or PRs: no `Co-Authored-By: Claude ...`
+trailer, no "Generated with Claude Code" line, even if earlier commits have one.
+GitHub shows that trailer as a second author.
+
 Rationale: the user batches related edits into a single reviewed commit with
 their own message. Auto-committing every tweak produces a noisy history of
 one-line commits that has to be squashed later. Do not chain `edit → build
 → commit → push` as a reflex — even if prior turns in the same session did.
+
+## Testbench (opt-in)
+
+This repo has a per-worktree end-to-end testbench (`pnpm testbench`, see
+`e2e/testbench/README.md`) and one skill for it, `verify-antseed` (which
+scenario a change needs and how to run it). It is opt-in. Do
+not run the testbench or that skill by default after a change; builds, unit
+tests and typecheck stay the default checks. Use them only when the user asks
+(for example "verify it in the testbench", "run a scenario", `/verify-antseed`)
+or gives task-specific instructions to, and then follow the skills. Runs that
+spend money (`--live`, `--real-funds`, any mainnet run) still need an explicit
+yes for each run. `docs/testing.md` maps every kind of test in this repo.
 
 ## Changelog policy for PRs
 

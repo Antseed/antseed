@@ -147,3 +147,17 @@ test('attached runtimes can be stopped locally without owning the shared process
   assert.equal(processManager.isAttached('connect'), false);
   assert.deepEqual(logs, ['Attached to existing connect runtime']);
 });
+
+test('an attach-only desktop never spawns a runtime of its own', async () => {
+  const previous = process.env['ANTSEED_DESKTOP_ATTACH_ONLY'];
+  process.env['ANTSEED_DESKTOP_ATTACH_ONLY'] = '1';
+  try {
+    const manager = new ProcessManager(() => {});
+    for (const mode of ['connect', 'seed'] as const) {
+      await assert.rejects(manager.start({ mode, router: 'local' } as never), /starting another runtime is disabled/);
+    }
+  } finally {
+    if (previous === undefined) delete process.env['ANTSEED_DESKTOP_ATTACH_ONLY'];
+    else process.env['ANTSEED_DESKTOP_ATTACH_ONLY'] = previous;
+  }
+});
