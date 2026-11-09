@@ -3,6 +3,8 @@ import { existsSync } from 'node:fs'
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import http from 'node:http'
 import { dirname, join } from 'node:path'
+import { BUYER_STOP_TIMEOUT_MS } from './buyer-process.js'
+import { SHUTDOWN_DRAIN_MS } from './server.js'
 
 /**
  * `antseed gateway service`: runs `antseed gateway start` (which also runs the
@@ -17,6 +19,13 @@ export const LAUNCHD_LABEL = 'com.antseed.gateway'
 export const SYSTEMD_UNIT = 'antseed-gateway.service'
 
 export type ServicePlatform = 'darwin' | 'linux'
+
+/**
+ * How long the service manager waits after asking the gateway to stop before
+ * killing it: the gateway drains requests in flight, then stops its buyer
+ * (which drains its own), so both budgets run one after the other, plus slack.
+ */
+export const SERVICE_STOP_TIMEOUT_S = Math.ceil((SHUTDOWN_DRAIN_MS + BUYER_STOP_TIMEOUT_MS) / 1_000) + 30
 
 export interface ServiceSpec {
   /** Absolute path of the node binary to run. */
@@ -85,6 +94,7 @@ ${env}
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>10</integer>
+  <key>ExitTimeOut</key><integer>${SERVICE_STOP_TIMEOUT_S}</integer>
   <key>StandardOutPath</key><string>${xml(spec.logFile)}</string>
   <key>StandardErrorPath</key><string>${xml(spec.logFile)}</string>
 </dict>
@@ -92,25 +102,32 @@ ${env}
 `
 }
 
-/** One systemd word: quoted, with specifiers (%) and variables ($) escaped. */
-function systemdWord(value: string): string {
-  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/%/g, '%%').replace(/\$/g, '$$$$')}"`
+/** A quoted systemd value, with specifiers (%) escaped. Environment= takes it as is. */
+function systemdQuoted(value: string): string {
+  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/%/g, '%%')}"`
+}
+
+/** One ExecStart word: also escapes $, which ExecStart (unlike Environment=) expands. */
+function systemdExecWord(value: string): string {
+  return systemdQuoted(value.replace(/\$/g, '$$$$'))
 }
 
 export function systemdUnit(spec: ServiceSpec): string {
-  const env = serviceEnv(spec).map(([k, v]) => `Environment=${systemdWord(`${k}=${v}`)}`).join('\n')
+  const env = serviceEnv(spec).map(([k, v]) => `Environment=${systemdQuoted(`${k}=${v}`)}`).join('\n')
   return `[Unit]
 Description=Antseed API-key gateway and buyer
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=${serviceCommand(spec).map(systemdWord).join(' ')}
+ExecStart=${serviceCommand(spec).map(systemdExecWord).join(' ')}
 ${env}
 Restart=always
 RestartSec=10
-# Stopping lets requests in flight finish before exiting.
-TimeoutStopSec=90
+# Stop signals the gateway alone: it drains requests in flight, then stops its
+# buyer. Anything still running when the timeout ends is killed.
+KillMode=mixed
+TimeoutStopSec=${SERVICE_STOP_TIMEOUT_S}
 
 [Install]
 WantedBy=default.target
@@ -237,16 +254,17 @@ export async function uninstallService(deps: ServiceDeps): Promise<boolean> {
 /**
  * `launchctl bootout` returns before the agent is gone (its process may still
  * be draining requests), and bootstrapping the label again until then fails
- * with "Input/output error". Waits up to two minutes for it to unload.
+ * with "Input/output error". Waits for it to unload, as long as launchd
+ * itself lets the gateway take to stop (ExitTimeOut), plus a little.
  */
 async function unloadLaunchdAgent(deps: ServiceDeps): Promise<void> {
   const service = `${launchdTarget(deps)}/${LAUNCHD_LABEL}`
   if (!tryExec(deps, 'launchctl', ['bootout', service])) return
-  for (let waited = 0; waited < 120_000; waited += 500) {
+  for (let waited = 0; waited < (SERVICE_STOP_TIMEOUT_S + 15) * 1_000; waited += 500) {
     if (!tryExec(deps, 'launchctl', ['print', service])) return
     await deps.sleep(500)
   }
-  throw new Error(`launchd did not unload ${LAUNCHD_LABEL} within two minutes; try again, or run: launchctl bootout ${service}`)
+  throw new Error(`launchd did not unload ${LAUNCHD_LABEL} within ${SERVICE_STOP_TIMEOUT_S + 15}s; try again, or run: launchctl bootout ${service}`)
 }
 
 /** Linux: whether user services keep running after logout. Null when unknown. */

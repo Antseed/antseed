@@ -81,7 +81,7 @@ const MAX_LOGGED_CONTENT_BYTES = 64 * 1024
 const BUYER_RESTART_HOLD_MS = 120_000
 const BUYER_RETRY_INTERVAL_MS = 500
 /** On shutdown, requests in flight get this long to finish before they are closed. */
-const SHUTDOWN_DRAIN_MS = 60_000
+export const SHUTDOWN_DRAIN_MS = 60_000
 const RETENTION_SWEEP_MS = 60 * 60 * 1000
 const DAY_MS = 24 * 60 * 60 * 1000
 /** Why a key with caps cannot be served while its buyer's spend feed is not reporting. */

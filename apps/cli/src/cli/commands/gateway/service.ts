@@ -122,8 +122,7 @@ export function registerGatewayServiceCommands(gateway: Command): void {
       const installed = isServiceInstalled(deps)
       const active = installed && isServiceActive(deps)
       const buyerPort = (await loadConfig(globals.config)).buyer.proxyPort
-      const answering = await deps.probe(options.port)
-      const buyerAnswering = await deps.probe(buyerPort)
+      const [answering, buyerAnswering] = await Promise.all([deps.probe(options.port), deps.probe(buyerPort)])
       const yesNo = (value: boolean): string => (value ? chalk.green('yes') : chalk.yellow('no'))
       console.log(`Service (${deps.platform === 'darwin' ? LAUNCHD_LABEL : SYSTEMD_UNIT}) installed: ${yesNo(installed)}`)
       console.log(`Running: ${yesNo(active)}`)

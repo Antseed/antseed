@@ -6,6 +6,7 @@ import { test } from 'node:test'
 import {
   installService,
   launchdPlist,
+  SERVICE_STOP_TIMEOUT_S,
   serviceFilePath,
   systemdUnit,
   uninstallService,
@@ -50,6 +51,12 @@ test('launchd plist runs gateway start with absolute paths and escapes XML', () 
   assert.ok(plist.includes('<string>gateway</string>\n    <string>start</string>\n    <string>--port</string>\n    <string>8379</string>'))
   assert.ok(plist.includes('<key>ANTSEED_PASSPHRASE_FILE</key><string>/k/p&amp;q</string>'))
   assert.ok(plist.includes('<key>KeepAlive</key><true/>'))
+  assert.ok(plist.includes(`<key>ExitTimeOut</key><integer>${SERVICE_STOP_TIMEOUT_S}</integer>`))
+})
+
+test('the stop timeout covers the gateway drain followed by the buyer stop', () => {
+  // 60 s gateway drain + 90 s buyer stop deadline, plus slack.
+  assert.equal(SERVICE_STOP_TIMEOUT_S, 180)
 })
 
 test('systemd unit quotes paths with spaces and escapes % and $', () => {
@@ -58,6 +65,14 @@ test('systemd unit quotes paths with spaces and escapes % and $', () => {
   assert.ok(unit.includes(`Environment="PATH=${spec.pathEnv}"`))
   assert.ok(!unit.includes('ANTSEED_PASSPHRASE_FILE'))
   assert.ok(unit.includes('WantedBy=default.target'))
+  assert.ok(unit.includes('KillMode=mixed'))
+  assert.ok(unit.includes(`TimeoutStopSec=${SERVICE_STOP_TIMEOUT_S}`))
+})
+
+test('systemd Environment= keeps a literal $ (only ExecStart expands variables)', () => {
+  const unit = systemdUnit({ ...spec, dataDir: '/d/$x', passphraseFile: '/k/pa$$word%1' })
+  assert.ok(unit.includes('Environment="ANTSEED_PASSPHRASE_FILE=/k/pa$$word%%1"'), unit)
+  assert.ok(unit.includes('"--data-dir" "/d/$$x"'), unit)
 })
 
 test('linux install writes the unit, enables and restarts it, waits for the port, reports lingering', async () => {
