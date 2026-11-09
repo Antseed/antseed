@@ -887,8 +887,9 @@ try_model() {
     -d "{\"model\":\"$1\",\"stream\":false,\"max_tokens\":64,\"messages\":[{\"role\":\"user\",\"content\":\"Reply with: ok\"}]}" \
   | grep -q '"choices"' && echo "OK   $1" || echo "FAIL $1"
 }
-# Replace with ids from the list above, strongest first:
-for m in kimi-k3 kimi-k2.6 glm-5.1 minimax-m2.7 deepseek-v4-flash; do try_model "$m"; done`,
+# Candidates, strongest first. Replace with ids from the list above:
+models="kimi-k3 kimi-k2.6 glm-5.1 minimax-m2.7 deepseek-v4-flash"
+for m in $models; do try_model "$m"; done`,
         note:
           'Take ids from the list, not from memory: they change over time. `max_tokens` is 64 so reasoning models have room to answer. Pick models that actually answer right now. Listed in `/v1/models` is not the same as servable: a model can be listed while no seller your routing policy allows serves it. A `402` / `insufficient_deposits` means the wallet needs funds: the workspace wallet in the gateway console (Wallet & Funding), or `antseed buyer deposit` for a local buyer. The test is non-streaming on purpose, because Hermes\' helper calls (titles, compression) are non-streaming. Use the first OK as your main model and a cheap OK one (`minimax-m2.7`, `deepseek-v4-flash`) as the helper. Each test costs a fraction of a cent.',
       },
