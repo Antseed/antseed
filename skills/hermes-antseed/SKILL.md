@@ -45,8 +45,8 @@ reply. So:
 "Send me your Antseed gateway's base URL (ending in `/v1`) and an API key for me, from **Keys** in the Gateway
 Console." If they have no gateway yet, point them to one of these, then wait for the two values:
 
-- On their computer or a server: the [quickstart](https://antseed.com/docs/quickstart)
-  (`curl -fsSL https://antseed.com/install.sh | bash`). A gateway on a computer other than the one Hermes runs on
+- On their computer or a server: the [quickstart](https://antseed.com/docs/quickstart), which has the one-line
+  installer for them to run. A gateway on a computer other than the one Hermes runs on
   is reachable only through a tunnel or the server installer's HTTPS setup.
 - Their computer, published over HTTPS: `antseed tunnel start`, or the desktop app's **Agents → Internet-accessible
   endpoint**. Both publish a gateway and its console, so tell them to claim the console straight away
@@ -73,8 +73,11 @@ With a gateway, check it answers now. Then do step 1 (the snapshot is what undo 
 buyer, its wallet and funding live on the gateway) and continue with step 5:
 
 ```bash
-curl -s -o /dev/null -w '%{http_code}\n' -m 15 "$ANTSEED_BASE_URL/models" -H "Authorization: Bearer $ANTSEED_API_KEY"
+printf 'header = "Authorization: Bearer %s"\n' "$ANTSEED_API_KEY" | curl -s -K - -o /dev/null -w '%{http_code}\n' -m 15 "$ANTSEED_BASE_URL/models"
 ```
+
+Every request that carries the key pipes it into `curl -K -` (curl's config, read from stdin) instead of putting
+it on the command line, so it never shows up in the process list or a command log. Keep that pattern.
 
 `200`: go on to step 1. `401`: wrong key or base URL (🙋 ask again). Anything else, or no answer: the gateway isn't reachable
 from here; tell the user and stop.
@@ -193,8 +196,8 @@ stream.
 
 ```bash
 try_model() {
-  curl -s -m 90 "$ANTSEED_BASE_URL/chat/completions" \
-    -H 'Content-Type: application/json' -H "Authorization: Bearer $ANTSEED_API_KEY" \
+  printf 'header = "Authorization: Bearer %s"\n' "$ANTSEED_API_KEY" | curl -s -K - -m 90 "$ANTSEED_BASE_URL/chat/completions" \
+    -H 'Content-Type: application/json' \
     -d "{\"model\":\"$1\",\"stream\":false,\"max_tokens\":8,\"messages\":[{\"role\":\"user\",\"content\":\"Reply with: ok\"}]}" \
   | grep -q '"choices"' && echo "OK   $1" || echo "FAIL $1"
 }
@@ -202,7 +205,7 @@ for m in kimi-k3 kimi-k2.6 glm-5.1 deepseek-v4-pro minimax-m2.7 deepseek-v4-flas
 ```
 
 If the user named a model, test that one first. More ids:
-`curl -s "$ANTSEED_BASE_URL/models" -H "Authorization: Bearer $ANTSEED_API_KEY"` (each entry's `peers` list shows
+`printf 'header = "Authorization: Bearer %s"\n' "$ANTSEED_API_KEY" | curl -s -K - "$ANTSEED_BASE_URL/models"` (each entry's `peers` list shows
 sellers and prices; a gateway key limited to certain models lists only those). Each test costs a fraction of a cent.
 
 - **MAIN** = the user's choice if it says OK, otherwise the first OK in the list above (strongest first).
@@ -284,7 +287,7 @@ It must print `restored-ok`; then report the error to the user. If even that fai
 
 With a local buyer, run `antseed buyer metering` (a channel should show your test requests) and
 `antseed buyer balance`. With a gateway, the test requests show under **Logs** in the Gateway Console, and
-`curl -s "$ANTSEED_BASE_URL/key" -H "Authorization: Bearer $ANTSEED_API_KEY"` shows the key's spend and limits.
+`printf 'header = "Authorization: Bearer %s"\n' "$ANTSEED_API_KEY" | curl -s -K - "$ANTSEED_BASE_URL/key"` shows the key's spend and limits.
 Then send the user, briefly:
 
 - the model you're now on (MAIN) and the helper model (HELPER)
