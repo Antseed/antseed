@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BuildersView, CreatedInviteView, JobView, PoolView, RefereeView, ReferralView, ReferredBuyersView, RewardsView } from '../../src/api-types';
 import { AppContext, type AppValue } from './app-context';
 import type { ActionButtonProps } from './components/Confirm';
-import { BUILDER_LIMIT_HINT, missingBuilderIds, takeRegisteredAgents } from './pages/BuildersCard';
+import { BUILDER_LIMIT_HINT, builderClaimBlocked, missingBuilderIds, takeRegisteredAgents } from './pages/BuildersCard';
 import { inviteAllowance } from '../../src/invite-allowance';
 import { RewardsPage, inviteErrorFor, inviteRowState } from './pages/Rewards';
 
@@ -676,5 +676,17 @@ describe('client agents registered from the builders card', () => {
     vi.stubGlobal('window', { localStorage: { getItem: () => { throw new Error('denied'); }, setItem: () => { throw new Error('denied'); } } });
     expect(takeRegisteredAgents([job('register-3', 33)], [])).toEqual({ ids: [33], untracked: [] });
     expect(takeRegisteredAgents([job('register-3', 33)], [])).toBeNull();
+  });
+});
+
+describe('builder claim', () => {
+  const agent = { agentId: 7, owner: '0x00000000000000000000000000000000000000aa', owned: true, firstParty: null, payable: '5', claimableEpochs: [3] };
+
+  it('says why Claim is off, in priority order', () => {
+    expect(builderClaimBlocked(false, agent)).toBeNull();
+    expect(builderClaimBlocked(true, { ...agent, owner: null })).toBe('Connect a wallet with a signer to claim.');
+    expect(builderClaimBlocked(false, { ...agent, owner: null, owned: false })).toBe('This agent id is not registered.');
+    expect(builderClaimBlocked(false, { ...agent, owned: false })).toBe('Only the agent owner can claim.');
+    expect(builderClaimBlocked(false, { ...agent, payable: '0' })).toBe('Nothing to claim yet.');
   });
 });

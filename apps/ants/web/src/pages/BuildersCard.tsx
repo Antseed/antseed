@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { MAX_BUILDER_AGENTS } from '../../../src/api-types';
-import type { BuildersView, JobView } from '../../../src/api-types';
+import type { BuilderAgentView, BuildersView, JobView } from '../../../src/api-types';
 import { api } from '../api';
 import { useConfig } from '../app-context';
 import { AddressLink } from '../components/AddressLink';
@@ -101,6 +101,15 @@ export function missingBuilderIds(ids: number[], view: BuildersView): number[] {
  * the user adds ids here (remembered per chain); the server adds the chain's
  * first-party client ids this wallet owns.
  */
+/** Why Claim is off for `agent`, in priority order, or null when its owner can claim now. */
+export function builderClaimBlocked(readOnly: boolean | undefined, agent: BuilderAgentView): string | null {
+  if (readOnly) return 'Connect a wallet with a signer to claim.';
+  if (!agent.owner) return 'This agent id is not registered.';
+  if (!agent.owned) return 'Only the agent owner can claim.';
+  if (isZero(agent.payable)) return 'Nothing to claim yet.';
+  return null;
+}
+
 export function BuildersCard() {
   const dashboard = useConfig();
   const jobs = useJobList();
@@ -143,6 +152,7 @@ export function BuildersCard() {
         <div className="buckets">
           {view.agents.map((agent) => {
             const epochs = agent.claimableEpochs.length;
+            const blocked = builderClaimBlocked(dashboard.readOnly, agent);
             const name = agent.firstParty ? `${FIRST_PARTY_NAMES[agent.firstParty]} · agent #${agent.agentId}` : `Agent #${agent.agentId}`;
             return (
               <BucketRow key={agent.agentId} visible name={name} amount={agent.payable}
@@ -152,8 +162,7 @@ export function BuildersCard() {
                   : 'Not a registered ERC-8004 agent on this chain.'}
                 actions={<>
                   <ActionButton label="Claim" title={`Claim builder rewards · agent #${agent.agentId}`} path="/api/builders/claim" body={{ agentId: agent.agentId }}
-                    disabled={dashboard.readOnly || !agent.owner || !agent.owned || isZero(agent.payable)}
-                    disabledReason={dashboard.readOnly ? 'Connect a wallet with a signer to claim.' : !agent.owner ? 'This agent id is not registered.' : !agent.owned ? 'Only the agent owner can claim.' : 'Nothing to claim yet.'}
+                    disabled={!!blocked} disabledReason={blocked ?? undefined}
                     summary={[['Payable now', `${formatAnts(agent.payable, 4)} ANTS`], ['Weeks', String(epochs)]]} />
                   {ids.includes(agent.agentId) ? <Button variant="outline" size="sm" onClick={() => remove(agent.agentId)}>Remove</Button> : null}
                 </>} />
