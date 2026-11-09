@@ -2800,17 +2800,7 @@ export class SellerPaymentManager {
       this._notifyAcceptedUpdate(channelId, buyerAuth.cumulativeAmount);
     }
 
-    const stored = this._channelStore.getChannel(channelId);
-    if (stored) {
-      stored.authMax = (
-        buyerAuth.cumulativeAmount > BigInt(stored.authMax || '0') ? buyerAuth.cumulativeAmount : BigInt(stored.authMax)
-      ).toString();
-      stored.latestBuyerSig = buyerAuth.spendingAuthSig;
-      stored.latestSpendingAuthSig = buyerAuth.spendingAuthSig;
-      stored.latestMetadata = buyerAuth.metadata;
-      stored.updatedAt = Date.now();
-      this._channelStore.upsertChannel(stored);
-    }
+    this._persistLatestAuth(channelId, buyerAuth, { raiseAuthMax: true });
 
     debugLog(
       `[SellerPayment] Adopted buyer-supplied close auth for ${channelId.slice(0, 18)}... ` +
@@ -2830,15 +2820,24 @@ export class SellerPaymentManager {
     if (current.metadataHash.toLowerCase() === auth.metadataHash.toLowerCase()) return;
 
     this._latestAuth.set(channelId, auth);
-    const stored = this._channelStore.getChannel(channelId);
-    if (stored) {
-      stored.latestBuyerSig = auth.spendingAuthSig;
-      stored.latestSpendingAuthSig = auth.spendingAuthSig;
-      stored.latestMetadata = auth.metadata;
-      stored.updatedAt = Date.now();
-      this._channelStore.upsertChannel(stored);
-    }
+    this._persistLatestAuth(channelId, auth);
     debugLog(`[SellerPayment] Adopted re-signed metadata at cumulative=${auth.cumulativeAmount} for ${channelId.slice(0, 18)}...`);
+  }
+
+  /** Store `auth` as the channel's latest signature and metadata, raising `authMax` to it when asked. */
+  private _persistLatestAuth(channelId: string, auth: LatestAuth, options: { raiseAuthMax?: boolean } = {}): void {
+    const stored = this._channelStore.getChannel(channelId);
+    if (!stored) return;
+    if (options.raiseAuthMax) {
+      stored.authMax = (
+        auth.cumulativeAmount > BigInt(stored.authMax || '0') ? auth.cumulativeAmount : BigInt(stored.authMax)
+      ).toString();
+    }
+    stored.latestBuyerSig = auth.spendingAuthSig;
+    stored.latestSpendingAuthSig = auth.spendingAuthSig;
+    stored.latestMetadata = auth.metadata;
+    stored.updatedAt = Date.now();
+    this._channelStore.upsertChannel(stored);
   }
 
   // ── CloseRequested handling ───────────────────────────────────
