@@ -99,6 +99,48 @@ final class InteropTests: XCTestCase {
         XCTAssertEqual(key.withUnsafeBytes { Data($0) }.hex, "2d11af63a7112054fe4acaeb5d08f935522baff5d227392ccf160ac7f08c0986")
     }
 
+    func testAttestedModelsSignAsInNode() {
+        let statement: [String: Any] = [
+            "v": 1, "teamId": "H3M5BXXQR2", "signingId": "com.antseed.macworker", "cdhash": String(repeating: "ab", count: 20),
+            "sip": true, "hardenedRuntime": true, "debuggerDenied": false, "keyAppBound": true, "os": "macOS 26.2",
+            "serial": "C02TEST0MD6T", "udid": "00000000-0000-1000-8000-0123456789AB", "issued": 1767225600, "nonce": "n0",
+            "models": [
+                "qwen3.5-2b": ["model": "mlx-community/Qwen3.5-2B-MLX-4bit@93760be4f1f69842a46bc13dbdc0f19e291392a3", "sha256": String(repeating: "12", count: 32)],
+                "a-svc": ["model": "org/a@" + String(repeating: "0", count: 40), "sha256": String(repeating: "34", count: 32)],
+            ],
+        ]
+        // workerAttestationMessage in @antseed/node/worker-e2e for the same statement.
+        XCTAssertEqual(
+            Protection.attestationMessage(worker: "0x70997970C51812dc3A010C7d01b50e0d17dc79C8", keyHex: "04ab", statement: statement),
+            "antseed-worker-attestation/v1\nworker:0x70997970c51812dc3a010c7d01b50e0d17dc79c8\nkey:04ab\nteam:H3M5BXXQR2\nsigning-id:com.antseed.macworker\ncdhash:abababababababababababababababababababab\nsip:1\nhardened-runtime:1\ndebugger-denied:0\nkey-app-bound:1\nos:macOS 26.2\nserial:C02TEST0MD6T\nudid:00000000-0000-1000-8000-0123456789AB\nmodels:a-svc=org/a@0000000000000000000000000000000000000000#3434343434343434343434343434343434343434343434343434343434343434,qwen3.5-2b=mlx-community/Qwen3.5-2B-MLX-4bit@93760be4f1f69842a46bc13dbdc0f19e291392a3#1212121212121212121212121212121212121212121212121212121212121212\nissued:1767225600\nnonce:n0"
+        )
+    }
+
+    func testFilesDigestMatchesShasumAndNode() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let snapshot = root.appendingPathComponent("snapshots/abc")
+        try FileManager.default.createDirectory(at: snapshot.appendingPathComponent("sub"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("blobs"), withIntermediateDirectories: true)
+        try Data("a\n".utf8).write(to: root.appendingPathComponent("blobs/x"))
+        try FileManager.default.createSymbolicLink(atPath: snapshot.appendingPathComponent("model.safetensors").path, withDestinationPath: "../../blobs/x")
+        for (path, text) in [("config.json", "{}\n"), ("sub/tok.json", "t\n"), ("sub-a.json", "z\n"), (".gitattributes", "g\n")] {
+            try Data(text.utf8).write(to: snapshot.appendingPathComponent(path))
+        }
+        // cd snapshot && find -L . -type f -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256 | shasum -a 256
+        XCTAssertEqual(try LocalModel.filesDigest(of: snapshot), "8abebad2c580890a7a7cb2319ac8416f6b03f2346e008911323cd50a3eb56991")
+    }
+
+    func testServesThePinnedSnapshotFromTheEnginesCache() {
+        let model = "mlx-community/Qwen3.5-2B-MLX-4bit@93760BE4F1F69842A46BC13DBDC0F19E291392A3"
+        XCTAssertEqual(
+            LocalModel.snapshotDirectory(model, hub: LocalModel.hubCache(["HF_HOME": "/h", "HF_HUB_CACHE": "/c"])).path,
+            "/c/models--mlx-community--Qwen3.5-2B-MLX-4bit/snapshots/93760be4f1f69842a46bc13dbdc0f19e291392a3"
+        )
+        XCTAssertEqual(LocalModel.hubCache(["HF_HOME": "/h"]).path, "/h/hub")
+        XCTAssertTrue(LocalModel.hubCache([:]).path.hasSuffix("/.cache/huggingface/hub"))
+    }
+
     func testAttestationMessageAndSignatureMatchNode() throws {
         let keyHex = "0460fed4ba255a9d31c961eb74c6356d68c049b8923b61fa6ce669622e60f29fb67903fe1008b8bc99a41ae9e95628bc64f2f1b20c2d7e9f5177a3c294d4462299"
         let statement: [String: Any] = [

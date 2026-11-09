@@ -115,7 +115,12 @@ enum Protection {
     static func attestationMessage(worker: String, keyHex: String, statement: [String: Any]) -> String {
         func flag(_ key: String) -> String { (statement[key] as? Bool ?? false) ? "1" : "0" }
         func text(_ key: String) -> String { statement[key] as? String ?? "" }
-        return [
+        // Service → checkpoint, sorted bytewise; absent and empty sign the same (no line).
+        let models = statement["models"] as? [String: [String: String]] ?? [:]
+        let modelsLine = models.keys.sorted { $0.utf8.lexicographicallyPrecedes($1.utf8) }
+            .map { "\($0)=\(models[$0]?["model"] ?? "")#\(models[$0]?["sha256"] ?? "")" }
+            .joined(separator: ",")
+        var lines = [
             "antseed-worker-attestation/v1",
             "worker:\(worker.lowercased())",
             "key:\(keyHex.lowercased())",
@@ -129,13 +134,18 @@ enum Protection {
             "os:\(text("os"))",
             "serial:\(text("serial"))",
             "udid:\(text("udid"))",
+        ]
+        if !models.isEmpty { lines.append("models:\(modelsLine)") }
+        lines += [
             "issued:\(statement["issued"] as? Int ?? 0)",
             "nonce:\(text("nonce"))",
-        ].joined(separator: "\n")
+        ]
+        return lines.joined(separator: "\n")
     }
 
     /// A signed attestation answering the pool's `nonce` (WorkerAttestation in @antseed/node/worker-e2e).
-    static func attest(_ report: Report, nonce: String, worker: String, keyHex: String, signer: AttestationKey, issued: Int = Int(Date().timeIntervalSince1970)) throws -> [String: Any] {
+    /// `models` names the checkpoint behind each service and the digest of its files (`LocalModel.filesDigest`).
+    static func attest(_ report: Report, nonce: String, worker: String, keyHex: String, signer: AttestationKey, models: [String: LocalModel.Checkpoint] = [:], issued: Int = Int(Date().timeIntervalSince1970)) throws -> [String: Any] {
         var statement: [String: Any] = [
             "v": 1,
             "teamId": report.identity.teamId ?? NSNull(),
@@ -150,6 +160,7 @@ enum Protection {
             "os": osVersion,
             "serial": device.serial ?? NSNull(),
             "udid": device.udid ?? NSNull(),
+            "models": models.mapValues { ["model": $0.model, "sha256": $0.sha256] },
             "issued": issued,
             "nonce": nonce,
         ]

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { parseModels } from './index.js';
 import { saysReady } from './pool.js';
+import { splitModelPin } from './model-pins.js';
 import { parseWorkerModels } from './worker.js';
 
 const reply = (content: unknown) => Buffer.from(JSON.stringify({ choices: [{ message: { role: 'assistant', content } }] }));
@@ -29,6 +30,16 @@ describe('model pins', () => {
     expect(() => parseModels('qwen=org/model@', ['qwen'])).toThrow(/not service=repo@revision/);
     expect(() => parseModels('other=org/m@1', ['qwen'])).toThrow(/not one of ANTSEED_ALLOWED_SERVICES/);
     expect(() => parseModels('qwen=a/b@1,qwen=a/b@2', ['qwen'])).toThrow(/listed twice/);
+  });
+
+  it('takes a files digest on a pool pin, but not on a worker\'s', () => {
+    const pin = `org/model@abc123#${'ab'.repeat(32)}`;
+    expect(parseModels(`qwen=${pin}`, ['qwen'])).toEqual(new Map([['qwen', pin]]));
+    expect(splitModelPin(pin)).toEqual({ model: 'org/model@abc123', sha256: 'ab'.repeat(32) });
+    expect(splitModelPin('org/model@abc123')).toEqual({ model: 'org/model@abc123' });
+    expect(() => parseModels(`qwen=org/model@abc123#${'AB'.repeat(32)}`, ['qwen'])).toThrow(/not service=repo@revision or service=repo@revision#sha256/);
+    expect(() => parseModels('qwen=org/model@abc123#abc', ['qwen'])).toThrow(/not service=repo@revision/);
+    expect(() => parseWorkerModels(`qwen=${pin}`, ['qwen'])).toThrow(/not service=repo@revision/);
   });
 
   it('parses a worker\'s --models for services it serves', () => {

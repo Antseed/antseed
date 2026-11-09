@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 import {
   generateWorkerEncryptionKey,
   isSealedRequest,
+  isWorkerAttestation,
+  modelFilesDigest,
   openRequest,
   ResponseOpener,
   sealRequest,
@@ -14,7 +16,7 @@ import {
   type WorkerAttestation,
   type WorkerKeyCertificate,
 } from './e2e.js';
-import { generateKeyPairSync, sign } from 'node:crypto';
+import { createHash, generateKeyPairSync, sign } from 'node:crypto';
 
 const enc = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
 const dec = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
@@ -245,6 +247,32 @@ describe('worker attestations', () => {
     expect(verifyWorkerAttestation(attestation, attestedWorker().cert, { maxAgeS: 60 }).valid).toBe(false);
     // A certificate whose attestation key was swapped no longer verifies.
     expect(verifyWorkerKeyCertificate({ ...cert, attestationKey: attestedWorker().cert.attestationKey }, POOL)).toBe(false);
+  });
+
+  it('signs the models it attests, sorted by service, and leaves the message unchanged without them', () => {
+    const models = { zeta: { model: 'org/z@1', sha256: 'cd'.repeat(32) }, alpha: { model: 'org/a@2', sha256: 'ab'.repeat(32) } };
+    const { cert, attestation } = attestedWorker({ models });
+    expect(isWorkerAttestation(attestation)).toBe(true);
+    expect(verifyWorkerAttestation(attestation, cert, { maxAgeS: 60 }).valid).toBe(true);
+    const message = workerAttestationMessage(cert.worker, cert.key, attestation);
+    expect(message).toContain(`\nmodels:alpha=org/a@2#${'ab'.repeat(32)},zeta=org/z@1#${'cd'.repeat(32)}\nissued:`);
+    // Other files, or dropping the models, breaks the signature.
+    expect(verifyWorkerAttestation({ ...attestation, models: { ...models, alpha: { model: 'org/a@2', sha256: 'ef'.repeat(32) } } }, cert, { maxAgeS: 60 }).valid).toBe(false);
+    expect(verifyWorkerAttestation({ ...attestation, models: undefined }, cert, { maxAgeS: 60 }).valid).toBe(false);
+    const { models: _models, ...without } = attestation;
+    expect(workerAttestationMessage(cert.worker, cert.key, { ...without, models: {} })).toBe(workerAttestationMessage(cert.worker, cert.key, without));
+    expect(workerAttestationMessage(cert.worker, cert.key, without)).not.toContain('models:');
+    for (const bad of [{ a: { model: 'org/a', sha256: 'ab'.repeat(32) } }, { a: { model: 'org/a@1', sha256: 'AB'.repeat(32) } }, { 'a,b': { model: 'org/a@1', sha256: 'ab'.repeat(32) } }, { a: 'org/a@1' }]) {
+      expect(isWorkerAttestation({ ...attestation, models: bad })).toBe(false);
+    }
+  });
+
+  it('digests a checkpoint\'s files as shasum lists them, sorted bytewise by path', () => {
+    const files = [{ path: './model.safetensors', sha256: '11'.repeat(32) }, { path: './Config.json', sha256: '22'.repeat(32) }, { path: './config.json', sha256: '33'.repeat(32) }];
+    // printf '%s  ./Config.json\n%s  ./config.json\n%s  ./model.safetensors\n' 22… 33… 11… | shasum -a 256
+    const listing = `${'22'.repeat(32)}  ./Config.json\n${'33'.repeat(32)}  ./config.json\n${'11'.repeat(32)}  ./model.safetensors\n`;
+    expect(modelFilesDigest(files)).toBe(createHash('sha256').update(listing).digest('hex'));
+    expect(modelFilesDigest([...files].reverse())).toBe(modelFilesDigest(files));
   });
 
 });

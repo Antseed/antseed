@@ -72,6 +72,8 @@ final class WorkerController: ObservableObject {
     private let identity: Protection.CodeIdentity
     private let debuggerDenied: Bool
     private let model: LocalModel
+    /// The checkpoint behind `config.service` and the digest of its files, attested to the pool once loaded.
+    private var checkpoint: LocalModel.Checkpoint?
     private let terminationSignal = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
     private var socket: URLSessionWebSocketTask?
     private var backoff: UInt64 = 1
@@ -159,16 +161,21 @@ final class WorkerController: ObservableObject {
                 status = .loadingModel(0)
                 log("Antseed Mac app \(config.name) · payout address \(address)")
                 log("loading \(config.modelId) with TensorFold…")
-                try await model.load { progress in
+                checkpoint = try await model.load { progress in
                     Task { @MainActor in self.status = .loadingModel(progress) }
                 }
-                log("model ready on TensorFold (Apple GPU)")
+                log("model ready on TensorFold (Apple GPU) · files sha256 \(checkpoint?.sha256 ?? "")")
                 connect()
                 startPolling()
             } catch {
                 status = .failed("Model failed to load: \(error.localizedDescription)")
             }
         }
+    }
+
+    /// The checkpoint each service runs, for the attestation: a pool that pins its files' digest routes only on it.
+    private var attestedModels: [String: LocalModel.Checkpoint] {
+        checkpoint.map { [config.service: $0] } ?? [:]
     }
 
     // MARK: pool connection
@@ -282,7 +289,7 @@ final class WorkerController: ObservableObject {
                         "certificate": try keys.ethereum.personalSign(WorkerE2E.keyCertificateMessage(pool: seller, keyHex: keyHex, expires: expires, attestationKeyHex: keys.attestationKeyHex)),
                         "attestationKey": keys.attestationKeyHex,
                     ],
-                    "attestation": try Protection.attest(protection, nonce: nonce, worker: address, keyHex: keyHex, signer: keys.attestation),
+                    "attestation": try Protection.attest(protection, nonce: nonce, worker: address, keyHex: keyHex, signer: keys.attestation, models: attestedModels),
                     "agent": "antseed-mac/0.1.0 (\(config.name))",
                 ])
             } catch {
@@ -311,7 +318,7 @@ final class WorkerController: ObservableObject {
         case "attest":
             guard let nonce = frame["nonce"] as? String else { return }
             guard refreshProtection() else { socket?.cancel(with: .goingAway, reason: nil); return }
-            if let attestation = try? Protection.attest(protection, nonce: nonce, worker: address, keyHex: keys.encryptionKeyHex, signer: keys.attestation) {
+            if let attestation = try? Protection.attest(protection, nonce: nonce, worker: address, keyHex: keys.encryptionKeyHex, signer: keys.attestation, models: attestedModels) {
                 send(["t": "attestation", "attestation": attestation])
             }
         case "cancel":

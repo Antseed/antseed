@@ -18,6 +18,7 @@ import {
   workerAttestationMessage,
   workerKeyCertificateMessage,
   workerKeyHex,
+  type AttestedModel,
   type WorkerKeyCertificate,
 } from '@antseed/node/worker-e2e';
 import { createTestAppleCa } from '@antseed/node/worker-e2e/testing';
@@ -81,7 +82,7 @@ function cachingMdm(issuedAgoMs: number, opts: { reissue?: boolean } = {}): Devi
   };
 }
 
-function fakeAttester(report: { sip?: boolean; teamId?: string | null; device?: { serial: string; udid: string }; staleAfter?: number } = {}): WorkerAttester & { calls: number } {
+function fakeAttester(report: { sip?: boolean; teamId?: string | null; device?: { serial: string; udid: string }; staleAfter?: number; models?: () => Record<string, AttestedModel> } = {}): WorkerAttester & { calls: number } {
   const { publicKey, privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
   const jwk = publicKey.export({ format: 'jwk' });
   return {
@@ -93,6 +94,7 @@ function fakeAttester(report: { sip?: boolean; teamId?: string | null; device?: 
         v: 1 as const, teamId: report.teamId === undefined ? 'H3M5BXXQR2' : report.teamId, signingId: 'com.antseed.macworker',
         cdhash: 'ab'.repeat(20), sip: report.sip ?? true, hardenedRuntime: true, debuggerDenied: true, keyAppBound: true,
         os: 'macOS 26.2', serial: report.device?.serial ?? 'C02TEST0MD6T', udid: report.device?.udid ?? '00000000-0000-1000-8000-0123456789AB',
+        ...(report.models ? { models: report.models() } : {}),
         // From call `staleAfter` on, an hour old: as from a Mac whose clock is off.
         issued: Math.floor(Date.now() / 1000) - (report.staleAfter !== undefined && this.calls > report.staleAfter ? 3600 : 0), nonce,
       };
@@ -311,6 +313,26 @@ describe('colony pool', () => {
     const right = startWorker({ models: { [SERVICE]: pinned } });
     await waitFor(() => provider.services.includes(SERVICE));
     expect((await assign()).worker).toBe(right.address.toLowerCase());
+  });
+
+  it('routes a service pinned with a files digest only from workers attesting that checkpoint, and stops when one no longer does', async () => {
+    const model = 'mlx-community/Qwen3-30B-A3B-4bit@0123456789abcdef';
+    const digest = 'ab'.repeat(32);
+    await setup({ verifyOnJoin: false, attestationIntervalMs: 50, models: new Map([[SERVICE, `${model}#${digest}`]]) });
+    // Reports the model but attests nothing, then other files: neither is routed.
+    startWorker({ models: { [SERVICE]: model } });
+    startWorker({ models: { [SERVICE]: model }, attester: fakeAttester({ models: () => ({ [SERVICE]: { model, sha256: 'cd'.repeat(32) } }) }) });
+    await waitFor(() => pool.workerSummaries().length === 2);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(provider.services).toEqual([]);
+    expect(logs.some((line) => line.includes(`files sha256 ${'cd'.repeat(32)}`))).toBe(true);
+    let files = digest;
+    const right = startWorker({ models: { [SERVICE]: model }, attester: fakeAttester({ models: () => ({ [SERVICE]: { model, sha256: files } }) }) });
+    await waitFor(() => provider.services.includes(SERVICE));
+    expect((await assign()).worker).toBe(right.address.toLowerCase());
+    // Its next attestation names other files: the pool stops routing the service to it.
+    files = 'ef'.repeat(32);
+    await waitFor(() => provider.services.length === 0);
   });
 
   it('passes tool calls through unchanged: tools, tool messages and streamed tool-call deltas', async () => {

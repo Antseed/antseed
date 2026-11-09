@@ -237,10 +237,29 @@ seal under its response key.
 - Workers may report the model each service runs (`models` in `hello` and
   `services`, `service → repo@revision`; `antseed-pool-worker --models`). With
   `COLONY_POOL_MODELS=service=repo@revision,…` the pool routes a pinned
-  service only from workers reporting exactly that model. The report is the
-  worker's own, so this catches misconfiguration and upstream drift, not a
-  modified worker. The Mac app serves only a pinned model
-  (`org/repo@<commit>`) and reports it.
+  service only from workers reporting exactly that model.
+- A pin may add the digest of the checkpoint's files,
+  `service=repo@revision#<sha256>`. The pool then routes that service only
+  from workers whose latest valid attestation names that checkpoint with that
+  digest (`models` in the attestation), so a worker that stops attesting it,
+  or attests other files, stops getting the service at its next attestation.
+  The digest is SHA-256 over the lines `shasum -a 256` prints for every file
+  in the snapshot directory, sorted bytewise (`modelFilesDigest`):
+
+  ```sh
+  cd ~/.cache/huggingface/hub/models--ORG--REPO/snapshots/REVISION
+  find -L . -type f -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256 | shasum -a 256
+  ```
+
+  The pool also logs each digest a worker attests, so an operator can pin the
+  one a known-good Mac reports.
+- Both the report and the attestation are the worker's own, so they catch
+  misconfiguration, a wrong revision and upstream drift, not a modified
+  worker; only a test whose answers depend on the weights catches that. The
+  Mac app serves only a pinned model (`org/repo@<commit>`): it starts the
+  engine on that revision's snapshot directory, not the cache's current
+  revision, hashes the snapshot's files at every launch, and attests the
+  digest.
 - The Mac app serves OpenAI chat completions with tools: `tools`,
   `tool_choice`, `parallel_tool_calls`, assistant `tool_calls` and `tool`
   messages reach the engine, and tool-call deltas and the engine's
@@ -415,6 +434,7 @@ Attestations travel in `hello` and answer the pool's challenge nonce:
   "v": 1, "teamId": "H3M5BXXQR2", "signingId": "com.antseed.macworker", "cdhash": "<hex>",
   "sip": true, "hardenedRuntime": true, "debuggerDenied": true, "keyAppBound": true,
   "os": "macOS 26.2", "serial": "<serial number>", "udid": "<hardware UUID>",
+  "models": { "<service>": { "model": "<repo@revision>", "sha256": "<files digest>" } },
   "issued": <unix>, "nonce": "<challenge nonce>",
   "signature": "<base64 DER ECDSA-P256-SHA256 by the attestation key>"
 }
@@ -436,6 +456,7 @@ key-app-bound:<1|0>
 os:<os>
 serial:<serial or empty>
 udid:<udid or empty>
+models:<service>=<repo@revision>#<sha256>,…   (only when it attests models; sorted bytewise by service)
 issued:<unix>
 nonce:<nonce>
 ```

@@ -1,5 +1,6 @@
 import {
   createCipheriv,
+  createHash,
   createDecipheriv,
   createPrivateKey,
   createPublicKey,
@@ -151,12 +152,56 @@ export interface WorkerAttestation {
   /** The Mac's serial number and hardware UUID, which the pool's MDM (if any) attests through Apple. */
   serial: string | null;
   udid: string | null;
+  /** Service → the checkpoint the worker loaded for it and the SHA-256 of its files (`modelFilesDigest`). */
+  models?: Record<string, AttestedModel>;
   /** Unix seconds. */
   issued: number;
   /** The pool's challenge nonce this answers. */
   nonce: string;
   /** Base64 DER ECDSA-P256-SHA256 signature by the certificate's attestationKey over workerAttestationMessage. */
   signature: string;
+}
+
+/** A checkpoint a worker attests it loaded: `repo@revision` and the SHA-256 of its files. */
+export interface AttestedModel {
+  model: string;
+  sha256: string;
+}
+
+const ATTESTED_SERVICE = /^[!-~]{1,128}$/;
+const ATTESTED_MODEL = /^[^\s@,=#]+@[^\s@,=#]+$/;
+const MAX_ATTESTED_MODELS = 32;
+
+/**
+ * The digest of a checkpoint's files that workers attest: SHA-256 over the
+ * lines `shasum -a 256` prints for every regular file in the snapshot
+ * directory (symlinks followed), as `./path`, sorted bytewise. An operator
+ * gets the same value with
+ * `cd SNAPSHOT && find -L . -type f -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256 | shasum -a 256`.
+ */
+export function modelFilesDigest(files: readonly { path: string; sha256: string }[]): string {
+  const lines = [...files]
+    .sort((a, b) => Buffer.compare(Buffer.from(a.path), Buffer.from(b.path)))
+    .map((file) => `${file.sha256}  ${file.path}\n`)
+    .join('');
+  return createHash('sha256').update(lines).digest('hex');
+}
+
+function attestedModelsLine(models: Record<string, AttestedModel> | undefined): string[] {
+  const services = Object.keys(models ?? {}).sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
+  // Absent and empty sign the same: no line, so attestations without models keep their message.
+  if (services.length === 0) return [];
+  return [`models:${services.map((service) => `${service}=${models![service]!.model}#${models![service]!.sha256}`).join(',')}`];
+}
+
+function isAttestedModels(value: unknown): value is Record<string, AttestedModel> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const entries = Object.entries(value);
+  return entries.length <= MAX_ATTESTED_MODELS && entries.every(([service, entry]) => {
+    if (!ATTESTED_SERVICE.test(service) || /[,=#]/.test(service) || typeof entry !== 'object' || entry === null) return false;
+    const { model, sha256 } = entry as Record<string, unknown>;
+    return typeof model === 'string' && ATTESTED_MODEL.test(model) && typeof sha256 === 'string' && /^[0-9a-f]{64}$/.test(sha256);
+  });
 }
 
 export function workerAttestationMessage(worker: string, keyHex: string, a: Omit<WorkerAttestation, 'signature'>): string {
@@ -175,6 +220,7 @@ export function workerAttestationMessage(worker: string, keyHex: string, a: Omit
     `os:${a.os}`,
     `serial:${a.serial ?? ''}`,
     `udid:${a.udid ?? ''}`,
+    ...attestedModelsLine(a.models),
     `issued:${a.issued}`,
     `nonce:${a.nonce}`,
   ].join('\n');
@@ -187,7 +233,7 @@ export function isWorkerAttestation(value: unknown): value is WorkerAttestation 
   return a['v'] === 1 && nullableString(a['teamId']) && nullableString(a['signingId']) && nullableString(a['cdhash'])
     && typeof a['sip'] === 'boolean' && typeof a['hardenedRuntime'] === 'boolean' && typeof a['debuggerDenied'] === 'boolean'
     && typeof a['keyAppBound'] === 'boolean' && typeof a['os'] === 'string' && nullableString(a['serial'])
-    && nullableString(a['udid']) && typeof a['issued'] === 'number'
+    && nullableString(a['udid']) && (a['models'] === undefined || isAttestedModels(a['models'])) && typeof a['issued'] === 'number'
     && typeof a['nonce'] === 'string' && typeof a['signature'] === 'string';
 }
 

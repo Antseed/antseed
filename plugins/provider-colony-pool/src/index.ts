@@ -33,9 +33,9 @@ function parseList(raw: string | undefined): string[] {
   return raw ? raw.split(',').map((s) => s.trim()).filter(Boolean) : [];
 }
 
-/** Parse COLONY_POOL_MODELS: `service=repo@revision,…`, each for a service the pool sells. */
+/** Parse COLONY_POOL_MODELS: `service=repo@revision[#sha256],…`, each for a service the pool sells. */
 export function parseModels(raw: string | undefined, catalog: readonly string[]): Map<string, string> {
-  return parseModelPins(raw, catalog, 'COLONY_POOL_MODELS', 'ANTSEED_ALLOWED_SERVICES');
+  return parseModelPins(raw, catalog, 'COLONY_POOL_MODELS', 'ANTSEED_ALLOWED_SERVICES', true);
 }
 
 const plugin: AntseedProviderPlugin = {
@@ -57,7 +57,7 @@ const plugin: AntseedProviderPlugin = {
     { key: 'COLONY_POOL_ALLOWED_WORKERS', label: 'Allowed Workers', type: 'string[]', required: false, description: 'Worker addresses allowed to join (empty = anyone)' },
     { key: 'COLONY_POOL_WORKER_PRIORITY', label: 'Worker Priority', type: 'string[]', required: false, description: 'Weights for ranking workers, as address=weight (default 1; 2 doubles its score; 0 never routes to it)' },
     { key: 'COLONY_POOL_ATTESTED_TEAMS', label: 'Attested Teams', type: 'string[]', required: false, description: 'Apple Developer team IDs whose signed worker apps are labelled hardened (empty = any team). The label is the worker\'s own report, shown but not enforced; COLONY_POOL_REQUIRE_DEVICE_ATTESTATION is the enforced check' },
-    { key: 'COLONY_POOL_MODELS', label: 'Models', type: 'string[]', required: false, description: 'The model each service must run, as service=repo@revision (a pinned Hugging Face revision). Workers reporting another model for that service are not routed it' },
+    { key: 'COLONY_POOL_MODELS', label: 'Models', type: 'string[]', required: false, description: 'The model each service must run, as service=repo@revision (a pinned Hugging Face revision), optionally with #sha256 (the digest of its files, which workers must attest). Workers reporting another model for that service, or not attesting those files, are not routed it' },
     { key: 'COLONY_POOL_MDM_URL', label: 'MDM URL', type: 'string', required: false, description: 'Your NanoMDM server, for Apple-signed attestations of enrolled Macs (optional; you run it, Macs enroll in it)' },
     { key: 'COLONY_POOL_MDM_API_KEY', label: 'MDM API Key', type: 'secret', required: false, description: 'NanoMDM API key' },
     { key: 'COLONY_POOL_MDM_WEBHOOK_PORT', label: 'MDM Webhook Port', type: 'number', required: false, default: 8791, description: 'Port NanoMDM posts command results to (nanomdm -webhook-url http://<pool>:<port>/<secret path>)' },

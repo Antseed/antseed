@@ -22,6 +22,7 @@ import {
 import type { SerializedHttpRequest } from '@antseed/node';
 import type { WorkerLedger } from './ledger.js';
 import type { DeviceAttestor } from './mdm.js';
+import { splitModelPin } from './model-pins.js';
 import { newRank, rankScores, recordOutcome, recordSpeed, type WorkerRank } from './ranking.js';
 import {
   COLONY_POOL_PROTOCOL_VERSION,
@@ -100,7 +101,11 @@ export interface ColonyPoolOptions {
   deviceAttestor?: DeviceAttestor;
   /** Only route to Macs Apple attests through the operator's MDM (SIP on, serial matches). */
   requireDeviceAttestation?: boolean;
-  /** Service → the model (`repo@revision`) workers must report for it; services not listed take any. */
+  /**
+   * Service → the model workers must report for it (`repo@revision`); services not listed take any.
+   * A pin with `#<sha256>` also routes the service only from workers whose latest valid attestation
+   * names that checkpoint with that digest of its files (self-reported, like the attestation).
+   */
   models?: Map<string, string>;
   /** How often to ask again while Apple still returns an attestation past its 7-day reissue interval (default daily). */
   deviceAttestationIntervalMs?: number;
@@ -336,7 +341,7 @@ export class ColonyPool {
     const services = new Set<string>();
     for (const worker of this.workers.values()) {
       if (!this.routable(worker) || this.priority(worker.address) === 0) continue;
-      for (const service of worker.verified) services.add(service);
+      for (const service of worker.verified) if (!this.unattestedModel(worker, service)) services.add(service);
     }
     return this.opts.catalog.filter((service) => services.has(service));
   }
@@ -457,6 +462,8 @@ export class ColonyPool {
   private unavailableReason(worker: ConnectedWorker | undefined, service: string, now: number): string | null {
     if (!worker) return 'not connected';
     if (!worker.verified.has(service) || !this.routable(worker)) return `not serving ${service}`;
+    const unattested = this.unattestedModel(worker, service);
+    if (unattested) return unattested;
     if (this.priority(worker.address) === 0) return 'the operator routes nothing to it';
     if (now < worker.rank.benchedUntil) return 'benched after failing to answer';
     if (worker.inflight.size >= worker.maxConcurrency) return 'at capacity';
@@ -790,6 +797,7 @@ export class ColonyPool {
     const { accepted, rejected } = this.setOffered(worker, hello.services);
     this.sendFrame(ws, { t: 'welcome', workerId: address, accepted, rejected, workerShareBps: this.opts.workerShareBps });
     this.log(`worker ${address} joined (${worker.agent}${hardened ? ', reports a hardened Mac' : ''}) offering ${accepted.join(', ') || 'nothing'}`);
+    this.noteAttestedModels(worker, null);
     this.noteAttested();
     if (hello.attestation) this.scheduleAttestation(worker);
     if (this.opts.deviceAttestor) void this.attestDevice(worker);
@@ -806,6 +814,26 @@ export class ColonyPool {
   private routable(worker: ConnectedWorker): boolean {
     if (worker.certificate.expires <= Math.floor(Date.now() / 1000) + WORKER_CERTIFICATE_USABILITY_MARGIN_S) return false;
     return !this.opts.requireDeviceAttestation || this.appleVerified(worker);
+  }
+
+  /** Why a service pinned with a files digest can't route to `worker`: its latest valid attestation doesn't name that checkpoint. */
+  private unattestedModel(worker: ConnectedWorker, service: string): string | null {
+    const pin = this.opts.models?.get(service);
+    const expected = pin === undefined ? undefined : splitModelPin(pin);
+    if (!expected?.sha256) return null;
+    const attested = worker.attestation?.models?.[service];
+    if (attested?.model === expected.model && attested.sha256 === expected.sha256) return null;
+    return `does not attest ${expected.model} with the pinned files for ${service}`;
+  }
+
+  /** Log the checkpoints a worker attests when they change, so an operator can pin their digests. */
+  private noteAttestedModels(worker: ConnectedWorker, previous: WorkerAttestation | null): void {
+    for (const [service, attested] of Object.entries(worker.attestation?.models ?? {})) {
+      const before = previous?.models?.[service];
+      if (before?.model === attested.model && before.sha256 === attested.sha256) continue;
+      this.log(`worker ${worker.address} attests ${attested.model} for ${service}, files sha256 ${attested.sha256}`);
+    }
+    this.emitChangeIfNeeded();
   }
 
   private appleVerified(worker: ConnectedWorker): boolean {
@@ -906,6 +934,7 @@ export class ColonyPool {
     worker.attestation = null;
     worker.hardened = false;
     this.noteAttested();
+    this.emitChangeIfNeeded();
     this.scheduleAttestation(worker);
   }
 
@@ -919,7 +948,9 @@ export class ColonyPool {
     }
     const deviceChanged = attestation.serial !== worker.attestation?.serial || attestation.udid !== worker.attestation?.udid;
     worker.attestNonce = null;
+    const previous = worker.attestation;
     worker.attestation = attestation;
+    this.noteAttestedModels(worker, previous);
     if (worker.hardened !== check.hardened) {
       this.log(`worker ${worker.address} ${check.hardened ? 'now reports' : 'no longer reports'} a hardened Mac`);
       worker.hardened = check.hardened;
@@ -946,7 +977,8 @@ export class ColonyPool {
     const accepted: string[] = [];
     const rejected: string[] = [];
     for (const service of new Set(services)) {
-      const expected = this.opts.models?.get(service);
+      const pin = this.opts.models?.get(service);
+      const expected = pin === undefined ? undefined : splitModelPin(pin).model;
       if (!this.catalog.has(service)) {
         rejected.push(service);
       } else if (expected !== undefined && worker.models[service] !== expected) {

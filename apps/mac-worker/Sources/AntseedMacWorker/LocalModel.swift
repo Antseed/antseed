@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import Foundation
 import Security
@@ -11,6 +12,8 @@ actor LocalModel {
 
     /// `repo@revision`, pinned (`WorkerConfig.isPinned`).
     let modelId: String
+    /// The pinned snapshot the engine serves, once loaded.
+    private var snapshot: URL?
     let engine: URL
     let directory: URL
     private var server: Process?
@@ -59,15 +62,70 @@ actor LocalModel {
         session = URLSession(configuration: configuration)
     }
 
-    /// Download (first run) and start the engine.
-    func load(progress: @escaping @Sendable (Double) -> Void) async throws {
+    /// The checkpoint a worker attests it serves: `repo@revision` and the digest of its files.
+    struct Checkpoint: Sendable {
+        let model: String
+        let sha256: String
+    }
+
+    /// Download (first run), hash the pinned snapshot's files and start the engine on that snapshot.
+    func load(progress: @escaping @Sendable (Double) -> Void) async throws -> Checkpoint {
         guard FileManager.default.isExecutableFile(atPath: engine.path) else { throw EngineError.missing(engine) }
         Self.stopEngine(in: directory, engine: engine)
-        if (try? String(contentsOf: pulledMarker, encoding: .utf8)) != modelId {
+        let snapshot = Self.snapshotDirectory(modelId)
+        if (try? String(contentsOf: pulledMarker, encoding: .utf8)) != modelId || !FileManager.default.fileExists(atPath: snapshot.path) {
             try await pull(progress: progress)
             try modelId.write(to: pulledMarker, atomically: true, encoding: .utf8)
         }
+        guard FileManager.default.fileExists(atPath: snapshot.appendingPathComponent("config.json").path) else {
+            throw EngineError.failed("The pinned revision is not in the model cache (\(snapshot.path))")
+        }
+        let digest = try Self.filesDigest(of: snapshot)
+        self.snapshot = snapshot
         try await startServer()
+        return Checkpoint(model: modelId, sha256: digest)
+    }
+
+    /// The Hugging Face cache directory the engine pulls into: HF_HUB_CACHE, else HF_HOME/hub, else ~/.cache/huggingface/hub.
+    static func hubCache(_ environment: [String: String] = ProcessInfo.processInfo.environment) -> URL {
+        if let cache = environment["HF_HUB_CACHE"], !cache.isEmpty { return URL(fileURLWithPath: cache) }
+        if let home = environment["HF_HOME"], !home.isEmpty { return URL(fileURLWithPath: home).appendingPathComponent("hub") }
+        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".cache/huggingface/hub")
+    }
+
+    /// The cache's snapshot of `repo@revision`: served by path, so the engine loads that revision
+    /// even if the cache's `refs/main` later names another.
+    static func snapshotDirectory(_ modelId: String, hub: URL = hubCache()) -> URL {
+        let parts = modelId.split(separator: "@", maxSplits: 1).map(String.init)
+        let repository = "models--" + parts[0].replacingOccurrences(of: "/", with: "--")
+        return hub.appendingPathComponent(repository).appendingPathComponent("snapshots").appendingPathComponent(parts.count == 2 ? parts[1].lowercased() : "")
+    }
+
+    /// SHA-256 over the lines `shasum -a 256` prints for every file in `directory`
+    /// (symlinks followed), as `./path`, sorted bytewise: `modelFilesDigest` in
+    /// @antseed/node/worker-e2e, so an operator can compute the value to pin.
+    static func filesDigest(of directory: URL) throws -> String {
+        let root = directory.resolvingSymlinksInPath()
+        guard let walker = FileManager.default.enumerator(atPath: root.path) else { throw EngineError.failed("Could not read \(root.path)") }
+        var paths: [String] = []
+        while let relative = walker.nextObject() as? String {
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: root.appendingPathComponent(relative).path, isDirectory: &isDirectory), !isDirectory.boolValue else { continue }
+            paths.append(relative)
+        }
+        var listing = ""
+        for relative in paths.sorted(by: { $0.utf8.lexicographicallyPrecedes($1.utf8) }) {
+            listing += "\(try fileSHA256(root.appendingPathComponent(relative)))  ./\(relative)\n"
+        }
+        return SHA256.hash(data: Data(listing.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func fileSHA256(_ url: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while let chunk = try handle.read(upToCount: 8 << 20), !chunk.isEmpty { hasher.update(data: chunk) }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     /// Run a chat completion on `chat` (from `EngineChat.fields`), calling
@@ -154,7 +212,6 @@ actor LocalModel {
     private static let pidFile = "engine.pid"
     private var pulledMarker: URL { directory.appendingPathComponent("engine-model") }
     private var logFile: URL { directory.appendingPathComponent("engine.log") }
-    private var repository: String { modelId.split(separator: "@", maxSplits: 1).first.map(String.init) ?? modelId }
 
     private func pull(progress: @escaping @Sendable (Double) -> Void) async throws {
         let process = Process()
@@ -181,6 +238,7 @@ actor LocalModel {
     }
 
     private func startServer() async throws {
+        guard let snapshot else { throw EngineError.failed("Model not loaded") }
         server?.terminate()
         Self.stopEngine(in: directory, engine: engine)
         let port = try Self.freeLoopbackPort()
@@ -197,7 +255,7 @@ actor LocalModel {
         process.executableURL = engine
         process.currentDirectoryURL = directory
         process.arguments = [
-            "serve", repository,
+            "serve", snapshot.path,
             "--host", "127.0.0.1",
             "--port", String(port),
             "--api-key-file", keyFile.path,
