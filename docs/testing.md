@@ -25,7 +25,7 @@ The first `--chain local` run in a worktree also compiles `packages/contracts` (
 
 A scenario's topology picks its mode: `stressTopology()` and the CLI scenarios use `cli`, the others `sdk`. `--mode` overrides it, and `report.json` says which mode a run used.
 
-A testbench whose `pnpm testbench run` was killed stops on its own within about 30 seconds (the supervisor's watchdog, `e2e/testbench/README.md` Isolation). One left up with `up` or `--keep` stops after `ANTSEED_TESTBENCH_IDLE_MINUTES` (default 120) without a control request.
+A testbench whose `pnpm testbench run` was killed stops on its own within about 30 seconds (the supervisor's watchdog, `e2e/testbench/README.md` Isolation); one that was still starting stops within about 10 seconds. One left up with `up` or `--keep` stops after `ANTSEED_TESTBENCH_IDLE_MINUTES` (default 120) without a control request. A start that is not ready after `--timeout` seconds (default 600) fails by itself and frees its slot.
 
 ## Seeds and reruns
 
@@ -64,7 +64,7 @@ CI derives its seed from the commit: the first 8 hex digits of `github.sha` as a
 | --- | --- | --- | --- |
 | `passed` | 0 | Every check held. | Nothing. |
 | `failed` | 1 | A check failed (`tb.check`, an assertion, a known issue under `--strict`), including a failed check the scenario caught itself. | The change or the code under test is wrong. Read the check's `detail`. |
-| `blocked` | 2 | `up` or a precondition refused before the scenario started: Node major, build, Foundry, ffmpeg, an unknown scenario or a scenario that does not support the chain, a missing RPC. | Fix the environment. It says nothing about the code. |
+| `blocked` | 2 | `up` or a precondition refused before the scenario started: Node major, build, Foundry, ffmpeg, an unknown scenario or a scenario that does not support the chain, a missing RPC, or a start that failed or ran into its `--timeout` (the error names the step). | Fix the environment. It says nothing about the code. |
 | `timeout` | 3 | The scenario ran past `--run-timeout` (default 1800 seconds). The report has a failed check named `run timeout`. | Look for a hang. |
 | `error` | 4 | The scenario threw something else (a failed chat, a wait that ran out, the control API), or teardown failed after a pass (including a `down` that reported shutdown errors or left buyer reserve locked). | The run broke before it reached a verdict. Read `error` and the logs. |
 
