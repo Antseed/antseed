@@ -1,0 +1,12 @@
+name: probe-concurrency
+on:
+  push:
+    branches: [ci-optimization-1289-probe]
+concurrency:
+  group: probe-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  c:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ok

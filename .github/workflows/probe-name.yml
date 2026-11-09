@@ -1,0 +1,14 @@
+name: probe-name
+on:
+  push:
+    branches: [ci-optimization-1289-probe]
+jobs:
+  m:
+    name: Shard (${{ matrix.shard }}/${{ strategy.job-total }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    steps:
+      - run: echo "${{ matrix.shard }}/${{ strategy.job-total }}"

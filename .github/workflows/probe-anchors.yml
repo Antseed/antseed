@@ -1,0 +1,20 @@
+name: probe-anchors
+on:
+  push:
+    branches: [ci-optimization-1289-probe]
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    steps:
+      - &checkout
+        uses: actions/checkout@v4
+      - &hello
+        name: Hello
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: echo hello
+  b:
+    runs-on: ubuntu-latest
+    steps:
+      - *checkout
+      - *hello
