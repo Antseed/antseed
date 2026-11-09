@@ -341,8 +341,14 @@ export function referralClaimBatches(pairs: ClaimPair[], maxPairs = MAX_REFERRAL
   const buyers = [...new Set(pairs.map(({ buyer }) => buyer))];
   if (pairs.length === 0) return [];
   if (buyers.length * epochs.length <= maxPairs) return [{ buyers, epochs }];
+  const buyersByEpoch = new Map<number, Set<string>>();
+  for (const { buyer, epoch } of pairs) {
+    const group = buyersByEpoch.get(epoch) ?? new Set<string>();
+    group.add(buyer);
+    buyersByEpoch.set(epoch, group);
+  }
   return epochs.flatMap((epoch) => {
-    const epochBuyers = [...new Set(pairs.filter((pair) => pair.epoch === epoch).map(({ buyer }) => buyer))];
+    const epochBuyers = [...(buyersByEpoch.get(epoch) ?? [])];
     return Array.from({ length: Math.ceil(epochBuyers.length / maxPairs) }, (_, i) => ({
       buyers: epochBuyers.slice(i * maxPairs, (i + 1) * maxPairs),
       epochs: [epoch],
