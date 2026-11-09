@@ -231,9 +231,11 @@ export function watchForParkedPool(provider, { onStall, account = LOCAL_DEPLOYER
 
 /**
  * Deploys packages/contracts onto a fresh local Anvil. `toolHome` is the real HOME forge needs for its solc cache;
- * `broadcastDir` keeps forge's broadcast files out of the worktree. Returns the per-step timings (ms) and addresses.
+ * `broadcastDir` keeps forge's broadcast files out of the worktree. `onStep(label)` runs before each forge step and
+ * may throw to stop the deploy there; `onSpawn(child)` gets every forge process. Returns the per-step timings (ms) and
+ * addresses.
  */
-export async function deployLocalStack({ repo, rpcUrl, env = process.env, layout = DEFAULT_CONTRACT_LAYOUT, logPath, broadcastDir, toolHome, log = () => {}, onSpawn = () => {} }) {
+export async function deployLocalStack({ repo, rpcUrl, env = process.env, layout = DEFAULT_CONTRACT_LAYOUT, logPath, broadcastDir, toolHome, log = () => {}, onSpawn = () => {}, onStep = () => {} }) {
   assertContractLayout(layout);
   const logStream = createWriteStream(logPath, { flags: 'a' });
   const cwd = join(repo, CONTRACTS_DIR);
@@ -243,10 +245,11 @@ export async function deployLocalStack({ repo, rpcUrl, env = process.env, layout
   };
   const timings = {};
   const forge = async (label, args, env = {}, { watchPool = false } = {}) => {
+    onStep(label);
     const started = Date.now();
     logStream.write(`\n===== [testbench] ${label} =====\n`);
     const child = spawn('forge', args, { cwd, env: { ...baseEnv, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
-    onSpawn(child); // the supervisor's reaper stops forge too if the supervisor dies
+    onSpawn(child); // the supervisor stops forge too: when the start is aborted, and through its reaper if it dies
     child.stdout.pipe(logStream, { end: false });
     child.stderr.pipe(logStream, { end: false });
     const exited = once(child, 'exit');

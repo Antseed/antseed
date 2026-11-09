@@ -89,6 +89,8 @@ export const HELP = `pnpm testbench <command> [options]
   up        Start this worktree's testbench (reattaches if it is already running)
             --config FILE  --live  --env-file FILE  --deposit-usdc N  --block N  --scenario NAME  --verbose
             --seed N  the run seed (0-4294967295, default random); same seed, same mock and load draws
+            --timeout SECONDS  fail the start, and stop what it started, if it is not ready by then (default 600;
+                                also for run when it starts the testbench)
             --chain fork|local  fork: Base mainnet fork (needs BASE_MAINNET_RPC_URL, default)
                                 local: plain Anvil + repo contracts deployed from source (needs forge, no RPC key)
             --mode sdk|cli      sdk: nodes built from the SDK, the buyer inside the supervisor (default)

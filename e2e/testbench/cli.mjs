@@ -30,7 +30,7 @@ import { createMainnetApi, mainnetReader } from './lib/mainnet-run.mjs';
 import { assertProfilePlatform, MAINNET_PROFILE, prepareMainnetProfile, profileDesktopEnv, walletAddress } from './lib/mainnet.mjs';
 import { cleanupShare, findNoVncDir, funnelEnabled, parseTailscaleStatus } from './lib/share.mjs';
 import { cliEntry } from './lib/cli-node.mjs';
-import { reattachDecision, resolveIdleMinutes, startHeartbeat } from './lib/watchdog.mjs';
+import { DEFAULT_START_TIMEOUT_SECONDS, reattachDecision, resolveIdleMinutes, startHeartbeat } from './lib/watchdog.mjs';
 import { assertScenarioSupported, assertUpstreamReusable, chooseMode, chooseTarget, normalizeTopology, requestedMode, requestedUpstream, topologyDifferences, topologyFingerprint, topologySummary, validateScenarioModule } from './lib/topology.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -49,6 +49,11 @@ async function runningState(paths) {
   const manifest = await readJson(paths.manifest);
   return { lock, manifest, running: lock.state === 'held' && manifest?.running === true };
 }
+
+/** How long `up` waits past the start timeout for the supervisor to report its own failure. */
+const START_REPORT_GRACE_MS = 30_000;
+/** How long a supervisor gets to stop what a failed or abandoned start had started, before the command stops waiting. */
+const STARTING_STOP_GRACE_MS = 120_000;
 
 /** A testbench whose `run` died without `down` is not reused, whatever the watchdog has got to: returns the state after stopping it. */
 async function retireOrphan(ctx, state) {
@@ -189,8 +194,9 @@ async function up(options, ctx, topologyOverride) {
   // `share` starts a testbench too, without a --seed of its own.
   const seed = options.seed ?? randomSeed();
   const idleMinutes = resolveIdleMinutes();
+  const startTimeoutSeconds = Number(options.timeout ?? DEFAULT_START_TIMEOUT_SECONDS);
   await saveJson(join(paths.config, 'plan.json'), {
-    worktree: ctx.worktree, trees, target, mode: topology.mode, seed, starter: ownProcessEntry(), idleMinutes, topology, upstream, liveKeys: [...new Set(liveKeys)], verbose: Boolean(options.verbose),
+    worktree: ctx.worktree, trees, target, mode: topology.mode, seed, starter: ownProcessEntry(), idleMinutes, startTimeoutSeconds, topology, upstream, liveKeys: [...new Set(liveKeys)], verbose: Boolean(options.verbose),
     configHash: config.hash, configOrigin: config.origin, cacheHome: sharedCacheHome(process.env, ctx.root), legacyCacheHome: legacyCacheHome(),
   });
   say(`Starting ${ctx.name} (chain: ${target}, mode: ${topology.mode}, seed: ${seed}, config: ${config.origin}, upstream: ${upstream}, sellers: ${topology.sellers.map((seller) => seller.id).join(', ')})`);
@@ -206,7 +212,8 @@ async function up(options, ctx, topologyOverride) {
   const child = spawn(process.execPath, [join(here, 'supervisor.mjs'), ctx.root, ctx.name], { cwd: repo, env, detached: true, stdio: ['ignore', out, out] });
   closeSync(out);
   child.unref();
-  const deadline = Date.now() + Number(options.timeout ?? 600) * 1000;
+  // The supervisor fails its own start at the timeout and says where it was stuck; this waits a little longer for that.
+  const deadline = Date.now() + startTimeoutSeconds * 1000 + START_REPORT_GRACE_MS;
   let offset = logOffset;
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 1000));
@@ -225,11 +232,16 @@ async function up(options, ctx, topologyOverride) {
       return manifest;
     }
     if (child.exitCode !== null || (manifest?.startError && manifest.supervisor?.pid === child.pid)) {
+      // The failed supervisor stops what it started and frees the slot; report once it has, so the next command can start.
+      const stopBy = Date.now() + STARTING_STOP_GRACE_MS;
+      while (child.exitCode === null && child.signalCode === null && Date.now() < stopBy) await new Promise((r) => setTimeout(r, 200));
       throw new Error(`Testbench failed to start: ${manifest?.startError ?? 'supervisor exited'} (see ${logPath})`);
     }
     try { process.kill(child.pid, 0); } catch { throw new Error(`Testbench supervisor exited during startup (see ${logPath})`); }
   }
-  throw new Error(`Timed out waiting for the testbench to start (see ${logPath}); run pnpm testbench down to clean up`);
+  // The supervisor did not even report its own timeout. It is this command's child, so stop it rather than leave it starting.
+  child.kill('SIGTERM');
+  throw new Error(`Timed out waiting for the testbench to start (see ${logPath}); told its supervisor (pid ${child.pid}) to stop, pnpm testbench down waits for it`);
 }
 
 async function down(options, ctx) {

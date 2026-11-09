@@ -105,6 +105,36 @@ describe('a start that cannot finish fails by itself', () => {
     const script = run.foundry.started('forge').find((entry) => entry.args[0] === 'script');
     assert.ok(script.args.includes('--broadcast') && script.args.includes('--slow'), script.args.join(' '));
   });
+
+  it('a step that outlives the start timeout fails the start and names the step', async () => {
+    const run = await startSupervisor({ forge: 'hang-build', plan: { startTimeoutSeconds: 2 } });
+    assert.equal(await run.exit(60_000), 1, run.log());
+    const manifest = await assertFreed(run);
+    assert.match(manifest.startError, /Start-up did not finish within 2 s \(it was deploying the contracts: forge build\)/);
+    assert.equal(manifest.stoppedBy, 'watchdog');
+    assert.equal(manifest.reason, 'start-timeout');
+    assert.match(run.log(), /Watchdog: Start-up did not finish within 2 s/);
+  });
+
+  it('a start whose starter is gone stops instead of starting for nobody', async () => {
+    const gone = spawn(process.execPath, ['-e', ''], { stdio: 'ignore' });
+    await once(gone, 'exit');
+    const run = await startSupervisor({ forge: 'hang-build', plan: { starter: { pid: gone.pid, startedAt: 'gone' } } });
+    assert.equal(await run.exit(60_000), 1, run.log());
+    const manifest = await assertFreed(run);
+    assert.match(manifest.startError, new RegExp(`The command that started this testbench \\(pid ${gone.pid}\\) is gone`));
+    assert.equal(manifest.stoppedBy, 'watchdog');
+    assert.equal(manifest.reason, 'starter-died');
+  });
+
+  it('SIGTERM during the start ends it the same way: forge and Anvil stopped, slot free', async () => {
+    const run = await startSupervisor({ forge: 'hang-build' });
+    await run.forgeStarted();
+    run.child.kill('SIGTERM');
+    assert.equal(await run.exit(60_000), 1, run.log());
+    const manifest = await assertFreed(run);
+    assert.match(manifest.startError, /The start was stopped by SIGTERM \(it was deploying the contracts: forge build\)/);
+  });
 });
 
 describe("watching Anvil's pool while forge broadcasts", () => {

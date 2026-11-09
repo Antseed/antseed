@@ -24,6 +24,21 @@ export function watchdogDecision({ starter, heartbeatAgeMs, lastControlAgeMs, id
   return lastControlAgeMs >= idleMs ? 'stop:idle' : 'keep';
 }
 
+/** `--timeout` default: how long a start may take, in seconds, before the supervisor fails it. */
+export const DEFAULT_START_TIMEOUT_SECONDS = 600;
+/** How often a starting supervisor checks its deadline and its starter. */
+export const STARTUP_WATCH_INTERVAL_MS = 5000;
+
+/**
+ * Whether a supervisor that is still starting gives up. No step of the start may wait forever: past `timeoutMs` the
+ * start fails, whatever it is waiting for. A start nobody waits for any more (`starter` 'dead') stops too, without a
+ * grace interval: there is no heartbeat before READY, and nothing is settled or lost by stopping.
+ */
+export function startupDecision({ starter, elapsedMs, timeoutMs }) {
+  if (elapsedMs >= timeoutMs) return 'stop:start-timeout';
+  return starter === 'dead' ? 'stop:starter-died' : 'keep';
+}
+
 /** What `run` or `up` does with this worktree's testbench: start one, reuse it, or restart one whose `run` died without `down`. */
 export function reattachDecision({ running, starter, starterAlive }) {
   if (!running) return 'start';
