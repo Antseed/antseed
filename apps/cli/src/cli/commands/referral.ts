@@ -126,10 +126,16 @@ export async function referralStatus(context: ReferralCommandContext): Promise<R
   const { ctx, chain, dataDir } = context
   const scope = referralScope(chain, ctx.address)
   const configured = !!scope
+  // One Antscan read serves both the referee card and the binding hint.
+  const refereeRead = configured ? refereeBonusFromExplorer(chain.explorerApiUrl, ctx.address) : Promise.resolve(null)
   const lookups = referralLookups({ explorerApiUrl: chain.explorerApiUrl, client: ctx.referrals() })
+  if (lookups.explorer) lookups.explorer = async () => {
+    const view = await refereeRead
+    return view?.available ? view.referrer : undefined
+  }
   const [state, referee, invites] = await Promise.all([
     scope ? syncReferralState(dataDir, scope, lookups).catch(() => readReferralState(dataDir, scope)) : null,
-    configured ? refereeBonusFromExplorer(chain.explorerApiUrl, ctx.address) : null,
+    refereeRead,
     configured ? referral(ctx, dataDir).catch(() => null) : null,
   ])
   return {

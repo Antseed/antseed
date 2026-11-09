@@ -226,6 +226,14 @@ contract AntseedChannelsMiddleware is IAntseedRegistry {
 
     // ─── Internal ────────────────────────────────────────────────────
 
+    /// @dev Words before the services-array offset in each known metadata version's ABI head.
+    function _metadataStaticWords(uint256 version) private pure returns (uint256) {
+        if (version == METADATA_V5) return V5_STATIC_WORDS;
+        if (version == METADATA_V4) return V4_STATIC_WORDS;
+        if (version == METADATA_V3) return V3_STATIC_WORDS;
+        return LEGACY_STATIC_WORDS;
+    }
+
     /**
      * @dev The attribution tail grows the ABI head by exactly TAIL_WORDS
      *      words, so its presence is detected from the services-array offset:
@@ -239,11 +247,7 @@ contract AntseedChannelsMiddleware is IAntseedRegistry {
         uint256 version = uint256(bytes32(metadata[0:32]));
         // A future version has an unknown head, so a tail cannot be located in it.
         if (version > METADATA_V5) return a;
-        uint256 staticWords = version == METADATA_V5
-            ? V5_STATIC_WORDS
-            : version == METADATA_V4
-                ? V4_STATIC_WORDS
-                : version == METADATA_V3 ? V3_STATIC_WORDS : LEGACY_STATIC_WORDS;
+        uint256 staticWords = _metadataStaticWords(version);
         uint256 offsetWord = staticWords * 32;
         // Head (with tail) plus the services length word.
         if (metadata.length < offsetWord + (TAIL_WORDS + 2) * 32) return a;

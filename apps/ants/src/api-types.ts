@@ -531,3 +531,12 @@ export interface StakeUsageRequest { side: 'seller' | 'buyer'; epochs: number; s
 export interface CompoundRequest { includeBuyer?: boolean; epochs: number; targetAgentId?: number; stakeAgentId?: number; }
 export interface SubmitProofRequest { artifact: unknown; }
 export interface BuilderClaimRequest { agentId: number; }
+
+/**
+ * A referral claim without Antscan: the referred buyers and epochs to claim,
+ * checked on-chain before sending. Omit both to take them from Antscan.
+ */
+export interface ReferralClaimRequest { buyers?: string[]; epochs?: number[]; }
+
+/** Buyer × epoch pairs one explicit referral claim may check (one view call each). */
+export const MAX_REFERRAL_CLAIM_PAIRS = 200;

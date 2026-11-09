@@ -53,6 +53,7 @@ function fixture(options: { operator?: string | null; referrals?: boolean; explo
   const client = {
     currentEpoch: vi.fn(async () => 24),
     pendingRefereeReward: vi.fn(async (_buyer: string, epoch: number) => (epoch === 20 || epoch === 22 ? 5n : 0n)),
+    pendingReward: vi.fn(async (_buyer: string, epoch: number) => (epoch === 3 || epoch === 5 ? 7n : 0n)),
     claim: vi.fn(async () => '0xhash'),
     claimReferee: vi.fn(async () => '0xreferee'),
   };
@@ -364,6 +365,27 @@ describe('referral claim', () => {
     const { ctx, client, indexer } = fixture();
     indexer.referrer.mockRejectedValueOnce(new Error('Antscan unavailable'));
     await expect(claimReferralRewards(ctx)).rejects.toThrow('needs Antscan');
+    expect(client.claim).not.toHaveBeenCalled();
+  });
+
+  it('claims the buyers and epochs the caller passes without Antscan, keeping only payable pairs', async () => {
+    const { ctx, client, indexer } = fixture({ explorer: false });
+    const other = '0x00000000000000000000000000000000000000c3';
+    client.pendingReward.mockImplementation(async (who: string, epoch: number) => (who === buyer && epoch === 5 ? 7n : 0n));
+    expect(await claimReferralRewards(ctx, undefined, { buyers: [buyer, other, buyer.toLowerCase()], epochs: [4, 5] })).toEqual({ hash: '0xhash', epochs: [5] });
+    expect(client.pendingReward).toHaveBeenCalledTimes(4);
+    expect(client.claim).toHaveBeenCalledWith(operatorSigner, buyer, [getAddress(buyer)], [5]);
+    expect(indexer.referrer).not.toHaveBeenCalled();
+  });
+
+  it('checks an explicit claim before sending anything', async () => {
+    const { ctx, client } = fixture({ explorer: false });
+    await expect(claimReferralRewards(ctx, undefined, { buyers: ['nope'], epochs: [3] })).rejects.toThrow('Not a buyer address');
+    await expect(claimReferralRewards(ctx, undefined, { buyers: [buyer], epochs: [1.5] })).rejects.toThrow('whole numbers');
+    await expect(claimReferralRewards(ctx, undefined, { buyers: [buyer] })).rejects.toThrow('at least one buyer and one epoch');
+    const many = Array.from({ length: 201 }, (_, i) => i);
+    await expect(claimReferralRewards(ctx, undefined, { buyers: [buyer], epochs: many })).rejects.toThrow('at most 200');
+    await expect(claimReferralRewards(ctx, undefined, { buyers: [buyer], epochs: [4] })).rejects.toThrow('No referral rewards');
     expect(client.claim).not.toHaveBeenCalled();
   });
 

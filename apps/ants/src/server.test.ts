@@ -119,8 +119,10 @@ describe('selected account browser sessions', () => {
     expect((await action('/api/referrals/claim')).status).toBe('done');
     expect(claimReferral).toHaveBeenCalledOnce();
     await connect(selected.address);
-    expect((await action('/api/referrals/claim')).status).toBe('done');
+    const explicit = { buyers: [operator.address], epochs: [3] };
+    expect((await action('/api/referrals/claim', explicit)).status).toBe('done');
     expect(claimReferral).toHaveBeenCalledTimes(2);
+    expect(claimReferral.mock.calls[1]![2]).toEqual(explicit); // passed through for a claim without Antscan
   });
 
   it('rejects a referral claim from a wallet that is neither the selected account nor its operator', async () => {

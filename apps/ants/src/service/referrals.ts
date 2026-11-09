@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import { getAddress } from 'ethers';
+import { getAddress, isAddress } from 'ethers';
 import type { AbstractSigner } from 'ethers';
 import {
   INVITE_VALIDITY_EPOCHS,
@@ -13,7 +13,7 @@ import {
   withFileLock,
   type ReferralsClient,
 } from '@antseed/node';
-import type { CreatedInviteView, InviteAllowanceView, RefereeView, ReferralView, ReferredBuyersView } from '../api-types.js';
+import { MAX_REFERRAL_CLAIM_PAIRS, type CreatedInviteView, type InviteAllowanceView, type RefereeView, type ReferralClaimRequest, type ReferralView, type ReferredBuyersView } from '../api-types.js';
 import type { AntsContext } from './context.js';
 import { createIndexer, type IndexedReferralBinding, type IndexedReferrer, type Indexer } from './indexer.js';
 import { NO_INVITE_QUOTA_MESSAGE } from '../invite-allowance.js';
@@ -255,25 +255,60 @@ async function requireOperatorSigner(ctx: AntsContext): Promise<AbstractSigner> 
 /**
  * Claim every payable referral reward for the dashboard wallet. Rewards are
  * per referred buyer, and only Antscan lists a referrer's buyers (never an RPC
- * scan), so this needs it. `claim` skips pairs with nothing to pay. Only the
- * buyer account's Deposits operator can send it.
+ * scan), so by default this takes them from Antscan. Without it, the caller
+ * can pass the buyers and epochs itself: each pair is checked with
+ * `pendingReferrerReward` and only the payable ones are sent. `claim` skips
+ * pairs with nothing to pay. Only the buyer account's Deposits operator can
+ * send it.
  */
 export async function claimReferralRewards(
   ctx: AntsContext,
   report: StepReporter = silentReporter,
+  request: ReferralClaimRequest = {},
 ): Promise<{ hash: string; epochs: number[] }> {
   const client = ctx.referrals();
   if (!client) throw new Error('Referrals are not configured for this chain.');
   // The buyer account is the referrer (see `referral`).
   const signer = await requireOperatorSigner(ctx);
-  const indexed = await indexedReferrer(ctx.indexer(), ctx.buyerAddress).catch(() => null);
-  if (!indexed) throw new Error('Claiming referral rewards needs Antscan, which lists your referred buyers. Try again later.');
-  const epochs = indexed.claimableEpochs;
+  const explicit = request.buyers !== undefined || request.epochs !== undefined;
+  const { buyers, epochs } = explicit ? await payableClaimPairs(client, request) : await indexedClaim(ctx);
   if (epochs.length === 0) throw new Error('No referral rewards are payable yet.');
   await report(`Claiming referral rewards for ${epochs.length} ${epochs.length === 1 ? 'epoch' : 'epochs'}`);
-  const hash = await client.claim(signer, ctx.buyerAddress, indexed.buyers.map(({ buyer }) => buyer), epochs);
+  const hash = await client.claim(signer, ctx.buyerAddress, buyers, epochs);
   await report('Referral rewards claimed', hash);
   return { hash, epochs };
+}
+
+async function indexedClaim(ctx: AntsContext): Promise<{ buyers: string[]; epochs: number[] }> {
+  const indexed = await indexedReferrer(ctx.indexer(), ctx.buyerAddress).catch(() => null);
+  if (!indexed) {
+    throw new Error('Claiming referral rewards needs Antscan, which lists your referred buyers. Try again later, or pass the buyers and epochs to claim.');
+  }
+  return { buyers: indexed.buyers.map(({ buyer }) => buyer), epochs: indexed.claimableEpochs };
+}
+
+/** The caller's buyers and epochs that pay something now, checked on-chain pair by pair. */
+async function payableClaimPairs(
+  client: Pick<ReferralsClient, 'pendingReward'>,
+  request: ReferralClaimRequest,
+): Promise<{ buyers: string[]; epochs: number[] }> {
+  const buyers = [...new Set((request.buyers ?? []).map((buyer) => {
+    if (typeof buyer !== 'string' || !isAddress(buyer)) throw new Error(`Not a buyer address: ${String(buyer)}`);
+    return getAddress(buyer);
+  }))];
+  const epochs = [...new Set(request.epochs ?? [])];
+  if (epochs.some((epoch) => !Number.isSafeInteger(epoch) || epoch < 0)) throw new Error('Epochs must be whole numbers.');
+  if (buyers.length === 0 || epochs.length === 0) throw new Error('Pass at least one buyer and one epoch to claim.');
+  if (buyers.length * epochs.length > MAX_REFERRAL_CLAIM_PAIRS) {
+    throw new Error(`Claim at most ${MAX_REFERRAL_CLAIM_PAIRS} buyer and epoch pairs at a time.`);
+  }
+  const pairs = buyers.flatMap((buyer) => epochs.map((epoch) => ({ buyer, epoch })));
+  const pending = await Promise.all(pairs.map(({ buyer, epoch }) => client.pendingReward(buyer, epoch)));
+  const payable = pairs.filter((_, i) => pending[i]! > 0n);
+  return {
+    buyers: [...new Set(payable.map(({ buyer }) => buyer))],
+    epochs: [...new Set(payable.map(({ epoch }) => epoch))].sort((x, y) => x - y),
+  };
 }
 
 /**

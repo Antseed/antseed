@@ -22,7 +22,7 @@ import {
 } from './service/index.js';
 import type {
   StakeRequest, MoveRequest, SplitRequest, MergeRequest, ExtendRequest, MaxLockRequest, WithdrawRequest,
-  ClaimRequest, RestakeRequest, StakeUsageRequest, SubmitProofRequest, CompoundRequest, BuilderClaimRequest,
+  ClaimRequest, RestakeRequest, StakeUsageRequest, SubmitProofRequest, CompoundRequest, BuilderClaimRequest, ReferralClaimRequest,
 } from './api-types.js';
 import { BROWSER_WALLET_INVITE_MESSAGE } from './invite-allowance.js';
 
@@ -196,7 +196,7 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext): voi
   action<SubmitProofRequest>('/api/verification/submit', 'verify-submit', (body, report) => submitProof(ctx, body.artifact, report));
   action<{ agentId?: number }>('/api/seller/register', 'seller-register', (body, report) => registerBinding(ctx, body?.agentId, report));
   action<Record<string, never>>('/api/seller/claim-starter', 'claim-starter', (_body, report) => claimStarter(ctx, report));
-  action<Record<string, never>>('/api/referrals/claim', 'referral-claim', (_body, report) => claimReferralRewards(ctx, report));
+  action<ReferralClaimRequest>('/api/referrals/claim', 'referral-claim', (body, report) => claimReferralRewards(ctx, report, body ?? {}));
   action<Record<string, never>>('/api/referrals/referee/claim', 'referee-claim', (_body, report) => claimRefereeRewards(ctx, report));
   action<BuilderClaimRequest>('/api/builders/claim', 'builder-claim', (body, report) => claimBuilderRewards(ctx, body?.agentId, report));
   action<Record<string, never>>('/api/builders/register', 'builder-register', (_body, report) => registerClientAgent(ctx, report));
