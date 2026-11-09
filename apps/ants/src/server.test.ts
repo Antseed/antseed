@@ -338,14 +338,15 @@ it('keeps the originating buyer as the referrer for inviter reads and claims whi
   const server = await createAntsServer({ port: 0, dataDir, signer: buyer, address: buyer.address,
     chain: { chainId: 'base-local', evmChainId: 31337, rpcUrl: 'http://127.0.0.1:8545', fallbackRpcUrls: [], explorerApiUrl: 'https://scan', referralsAddress: '0x1111111111111111111111111111111111111111' } });
   servers.push(server);
+  const referred = '0x00000000000000000000000000000000000000b7';
   vi.spyOn(server.context, 'deposits').mockReturnValue({ getOperator: async () => operator.address } as never);
   const referrer = vi.fn(async (address: string) => ({
     available: true, currentEpoch: 30, referredCount: 1, payable: address === buyer.address ? '700' : '0',
-    claimableEpochs: address === buyer.address ? [3] : [], invites: null, buyers: [],
+    claimableEpochs: address === buyer.address ? [3] : [], invites: null, buyers: address === buyer.address ? [{ buyer: referred, boundEpoch: 2, points: '1', ants: '1', pendingPoints: '0' }] : [],
   }));
   vi.spyOn(server.context, 'indexer').mockReturnValue({ referrer } as never);
   const claim = vi.fn(async () => '0xreferral');
-  vi.spyOn(server.context, 'referrals').mockReturnValue({ claim } as never);
+  vi.spyOn(server.context, 'referrals').mockReturnValue({ claim, pendingReward: async () => 1n } as never);
   const headers = { authorization: `Bearer ${server.token}` };
   expect((await server.app.inject({ method: 'POST', url: '/api/wallet', headers, payload: { address: operator.address, chainId: 31337 } })).statusCode).toBe(200);
   expect(server.context.address).toBe(operator.address);
@@ -357,7 +358,7 @@ it('keeps the originating buyer as the referrer for inviter reads and claims whi
   await vi.waitFor(() => expect(server.busy).toBe(false));
   const job = (await server.app.inject({ url: `/api/jobs/${started.json().data.id}`, headers })).json().data;
   expect(job.status).toBe('done');
-  expect(claim).toHaveBeenCalledWith(expect.anything(), buyer.address, [], [3]);
+  expect(claim).toHaveBeenCalledWith(expect.anything(), buyer.address, [referred], [3]);
   expect(referrer.mock.calls.every(([address]) => address === buyer.address)).toBe(true);
 });
 

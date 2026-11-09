@@ -2,7 +2,8 @@ import { useCallback, useState } from 'react';
 import { Button } from '@antseed/ui';
 import { shortAddress } from '../../core/format';
 import type { ReferralStatus } from '../../types/bridge';
-import { InviteCodeField, useIncomingInvite } from './InviteCodeField';
+import { InviteCodeField } from './InviteCodeField';
+import { useIncomingInvite } from '../hooks/useIncomingInvite';
 import { VprBadge, VprSettingRow } from './vpr/VprKit';
 import styles from './ReferralStatusRow.module.scss';
 

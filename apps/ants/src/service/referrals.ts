@@ -256,10 +256,11 @@ async function requireOperatorSigner(ctx: AntsContext): Promise<AbstractSigner> 
  * Claim every payable referral reward for the dashboard wallet. Rewards are
  * per referred buyer, and only Antscan lists a referrer's buyers (never an RPC
  * scan), so by default this takes them from Antscan. Without it, the caller
- * can pass the buyers and epochs itself: each pair is checked with
- * `pendingReferrerReward` and only the payable ones are sent. `claim` skips
- * pairs with nothing to pay. Only the buyer account's Deposits operator can
- * send it.
+ * can pass the buyers and epochs itself. Either way each buyer and epoch pair
+ * is checked with `pendingReferrerReward`, and only payable pairs are sent, in
+ * transactions of at most MAX_REFERRAL_CLAIM_PAIRS pairs each (the contract
+ * loops over buyers × epochs). Only the buyer account's Deposits operator can
+ * send them.
  */
 export async function claimReferralRewards(
   ctx: AntsContext,
@@ -271,13 +272,28 @@ export async function claimReferralRewards(
   // The buyer account is the referrer (see `referral`).
   const signer = await requireOperatorSigner(ctx);
   const explicit = request.buyers !== undefined || request.epochs !== undefined;
-  const { buyers, epochs } = explicit ? await payableClaimPairs(client, request) : await indexedClaim(ctx);
-  if (epochs.length === 0) throw new Error('No referral rewards are payable yet.');
-  await report(`Claiming referral rewards for ${epochs.length} ${epochs.length === 1 ? 'epoch' : 'epochs'}`);
-  const hash = await client.claim(signer, ctx.buyerAddress, buyers, epochs);
-  await report('Referral rewards claimed', hash);
-  return { hash, epochs };
+  const { buyers, epochs } = explicit ? explicitClaim(request) : await indexedClaim(ctx);
+  const batches = referralClaimBatches(await payablePairs(client, buyers, epochs));
+  if (batches.length === 0) throw new Error('No referral rewards are payable yet.');
+  const claimed = new Set<number>();
+  let hash = '';
+  for (const [i, batch] of batches.entries()) {
+    const part = batches.length > 1 ? ` (transaction ${i + 1} of ${batches.length})` : '';
+    await report(`Claiming referral rewards for ${batch.epochs.length} ${batch.epochs.length === 1 ? 'epoch' : 'epochs'}${part}`);
+    try {
+      hash = await client.claim(signer, ctx.buyerAddress, batch.buyers, batch.epochs);
+    } catch (error) {
+      if (i === 0) throw error;
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(`${i} of ${batches.length} referral claim transactions went through; the rest failed (${reason}). Claim again for the rest.`);
+    }
+    await report('Referral rewards claimed', hash);
+    for (const epoch of batch.epochs) claimed.add(epoch);
+  }
+  return { hash, epochs: [...claimed].sort((x, y) => x - y) };
 }
+
+type ClaimPair = { buyer: string; epoch: number };
 
 async function indexedClaim(ctx: AntsContext): Promise<{ buyers: string[]; epochs: number[] }> {
   const indexed = await indexedReferrer(ctx.indexer(), ctx.buyerAddress).catch(() => null);
@@ -287,11 +303,8 @@ async function indexedClaim(ctx: AntsContext): Promise<{ buyers: string[]; epoch
   return { buyers: indexed.buyers.map(({ buyer }) => buyer), epochs: indexed.claimableEpochs };
 }
 
-/** The caller's buyers and epochs that pay something now, checked on-chain pair by pair. */
-async function payableClaimPairs(
-  client: Pick<ReferralsClient, 'pendingReward'>,
-  request: ReferralClaimRequest,
-): Promise<{ buyers: string[]; epochs: number[] }> {
+/** The caller's buyers and epochs, validated. */
+function explicitClaim(request: ReferralClaimRequest): { buyers: string[]; epochs: number[] } {
   const buyers = [...new Set((request.buyers ?? []).map((buyer) => {
     if (typeof buyer !== 'string' || !isAddress(buyer)) throw new Error(`Not a buyer address: ${String(buyer)}`);
     return getAddress(buyer);
@@ -302,13 +315,39 @@ async function payableClaimPairs(
   if (buyers.length * epochs.length > MAX_REFERRAL_CLAIM_PAIRS) {
     throw new Error(`Claim at most ${MAX_REFERRAL_CLAIM_PAIRS} buyer and epoch pairs at a time.`);
   }
+  return { buyers, epochs };
+}
+
+/** Pairs paying something now, read `PAIR_READS_AT_ONCE` at a time. */
+async function payablePairs(client: Pick<ReferralsClient, 'pendingReward'>, buyers: string[], epochs: number[]): Promise<ClaimPair[]> {
   const pairs = buyers.flatMap((buyer) => epochs.map((epoch) => ({ buyer, epoch })));
-  const pending = await Promise.all(pairs.map(({ buyer, epoch }) => client.pendingReward(buyer, epoch)));
-  const payable = pairs.filter((_, i) => pending[i]! > 0n);
-  return {
-    buyers: [...new Set(payable.map(({ buyer }) => buyer))],
-    epochs: [...new Set(payable.map(({ epoch }) => epoch))].sort((x, y) => x - y),
-  };
+  const payable: ClaimPair[] = [];
+  for (let i = 0; i < pairs.length; i += PAIR_READS_AT_ONCE) {
+    const chunk = pairs.slice(i, i + PAIR_READS_AT_ONCE);
+    const pending = await Promise.all(chunk.map(({ buyer, epoch }) => client.pendingReward(buyer, epoch)));
+    chunk.forEach((pair, j) => { if (pending[j]! > 0n) payable.push(pair); });
+  }
+  return payable;
+}
+
+const PAIR_READS_AT_ONCE = 25;
+
+/**
+ * Payable pairs as claim transactions of at most `maxPairs` buyers × epochs:
+ * one transaction when they fit, else one or more per epoch.
+ */
+export function referralClaimBatches(pairs: ClaimPair[], maxPairs = MAX_REFERRAL_CLAIM_PAIRS): Array<{ buyers: string[]; epochs: number[] }> {
+  const epochs = [...new Set(pairs.map(({ epoch }) => epoch))].sort((x, y) => x - y);
+  const buyers = [...new Set(pairs.map(({ buyer }) => buyer))];
+  if (pairs.length === 0) return [];
+  if (buyers.length * epochs.length <= maxPairs) return [{ buyers, epochs }];
+  return epochs.flatMap((epoch) => {
+    const epochBuyers = [...new Set(pairs.filter((pair) => pair.epoch === epoch).map(({ buyer }) => buyer))];
+    return Array.from({ length: Math.ceil(epochBuyers.length / maxPairs) }, (_, i) => ({
+      buyers: epochBuyers.slice(i * maxPairs, (i + 1) * maxPairs),
+      epochs: [epoch],
+    }));
+  });
 }
 
 /**

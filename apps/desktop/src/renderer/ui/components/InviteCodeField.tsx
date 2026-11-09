@@ -3,37 +3,9 @@ import { Button, TextField } from '@antseed/ui';
 import { shortAddress } from '../../core/format';
 import type { InviteCheckResult } from '../../types/bridge';
 import styles from './InviteCodeField.module.scss';
+import { peekIncomingInvite, takeIncomingInvite, useIncomingInvite } from '../hooks/useIncomingInvite';
 
 export const INVITE_PROMPT = 'Have an invite? Get 12 weeks of bonus $ANTS';
-
-/* The invite from the last antseed://invite link, waiting for a field to take it. */
-let incomingInvite: string | null = null;
-const listeners = new Set<(invite: string) => void>();
-
-/** Hand an antseed://invite link's invite to the invite fields (prefill). */
-export function receiveInviteLink(invite: string): void {
-  incomingInvite = invite;
-  for (const listener of listeners) listener(invite);
-}
-
-/**
- * The waiting link's invite, cleared so it fills only one field: one the user
- * then edits, cancels or leaves never comes back in a later invite field.
- */
-export function takeIncomingInvite(): string | null {
-  const invite = incomingInvite;
-  incomingInvite = null;
-  return invite;
-}
-
-/** Calls `onInvite` with a link's invite (without taking it): the one already waiting, then each new one. */
-export function useIncomingInvite(onInvite: (invite: string) => void): void {
-  useEffect(() => {
-    if (incomingInvite) onInvite(incomingInvite);
-    listeners.add(onInvite);
-    return () => { listeners.delete(onInvite); };
-  }, [onInvite]);
-}
 
 type Props = {
   /** Called after an invite was saved as pending. */
@@ -50,7 +22,7 @@ type Props = {
 export function InviteCodeField({ onRedeemed, onCancel }: Props) {
   // Start from a link that arrived before this field mounted (navigating to it);
   // the field takes it once mounted.
-  const [value, setValue] = useState(() => incomingInvite ?? '');
+  const [value, setValue] = useState(() => peekIncomingInvite() ?? '');
   const [check, setCheck] = useState<InviteCheckResult | null>(null);
   const [checking, setChecking] = useState(false);
   const [saving, setSaving] = useState(false);

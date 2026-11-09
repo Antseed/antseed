@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { expect, it, vi } from 'vitest';
-import { receiveInviteLink, takeIncomingInvite } from '../InviteCodeField';
+import { receiveInviteLink, takeIncomingInvite } from '../../hooks/useIncomingInvite';
 import {
   VprRefereeBonusCard,
   VprReferralCard,

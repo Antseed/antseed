@@ -17,6 +17,7 @@ import {
   referral,
   referralBindingFromExplorer,
   referredBuyers,
+  referralClaimBatches,
   referrerOverview,
 } from './referrals.js';
 
@@ -387,6 +388,29 @@ describe('referral claim', () => {
     await expect(claimReferralRewards(ctx, undefined, { buyers: [buyer], epochs: many })).rejects.toThrow('at most 200');
     await expect(claimReferralRewards(ctx, undefined, { buyers: [buyer], epochs: [4] })).rejects.toThrow('No referral rewards');
     expect(client.claim).not.toHaveBeenCalled();
+  });
+
+  it('splits a large claim into transactions of at most 200 buyer and epoch pairs', async () => {
+    const many = Array.from({ length: 250 }, (_, i) => ({ buyer: `0x${(i + 1).toString(16).padStart(40, '0')}`, boundEpoch: 1, points: '1', ants: '1', pendingPoints: '0' }));
+    const { ctx, client } = fixture({ indexed: { buyers: many } });
+    const result = await claimReferralRewards(ctx);
+    const sent = client.claim.mock.calls.map((call) => (call[2] as string[]).length * (call[3] as number[]).length);
+    expect(sent).toEqual([200, 50, 200, 50]);
+    expect(result.epochs).toEqual([3, 5]);
+  });
+
+  it('says how far a batched claim got when a later transaction fails', async () => {
+    const many = Array.from({ length: 250 }, (_, i) => ({ buyer: `0x${(i + 1).toString(16).padStart(40, '0')}`, boundEpoch: 1, points: '1', ants: '1', pendingPoints: '0' }));
+    const { ctx, client } = fixture({ indexed: { buyers: many } });
+    client.claim.mockResolvedValueOnce('0xfirst').mockRejectedValueOnce(new Error('out of gas'));
+    await expect(claimReferralRewards(ctx)).rejects.toThrow('1 of 4 referral claim transactions went through');
+  });
+
+  it('sends one transaction when the payable pairs fit, skipping epochs with nothing to pay', () => {
+    const pairs = [{ buyer: 'a', epoch: 5 }, { buyer: 'b', epoch: 3 }, { buyer: 'a', epoch: 3 }];
+    expect(referralClaimBatches(pairs)).toEqual([{ buyers: ['a', 'b'], epochs: [3, 5] }]);
+    expect(referralClaimBatches(pairs, 3)).toEqual([{ buyers: ['b', 'a'], epochs: [3] }, { buyers: ['a'], epochs: [5] }]);
+    expect(referralClaimBatches([])).toEqual([]);
   });
 
   it('refuses when nothing is payable', async () => {

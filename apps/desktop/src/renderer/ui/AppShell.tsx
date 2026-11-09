@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ViewHost } from './components/ViewHost';
 import { SetupScreen } from './components/SetupScreen';
-import { receiveInviteLink } from './components/InviteCodeField';
+import { receiveInviteLink } from './hooks/useIncomingInvite';
 import { preloadViews, viewsForPreload } from './components/viewRegistry';
 import { shallowEqual, useUiSelector } from './hooks/useUiSelector';
 import { VIEW_NAMES, type ViewName } from './types';
