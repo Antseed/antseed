@@ -93,7 +93,7 @@ Skip this step if the user gave you a gateway in step 0.
 Node.js 20+ (nodejs.org) and tell you when it's done. Then:
 
 ```bash
-antseed gateway service --help >/dev/null 2>&1 && echo READY || echo INSTALL
+antseed gateway --help 2>/dev/null | grep '^  service ' >/dev/null && echo READY || echo INSTALL
 ```
 
 `INSTALL` (no CLI, or one too old for `gateway service`): install or upgrade it. It can take a few minutes, so use a

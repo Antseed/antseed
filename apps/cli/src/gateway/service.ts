@@ -3,8 +3,7 @@ import { existsSync } from 'node:fs'
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import http from 'node:http'
 import { dirname, join } from 'node:path'
-import { BUYER_STOP_TIMEOUT_MS } from './buyer-process.js'
-import { SHUTDOWN_DRAIN_MS } from './server.js'
+import { BUYER_STOP_TIMEOUT_MS, GATEWAY_SHUTDOWN_DRAIN_MS } from '../shutdown-timeouts.js'
 
 /**
  * `antseed gateway service`: runs `antseed gateway start` (which also runs the
@@ -25,7 +24,7 @@ export type ServicePlatform = 'darwin' | 'linux'
  * killing it: the gateway drains requests in flight, then stops its buyer
  * (which drains its own), so both budgets run one after the other, plus slack.
  */
-export const SERVICE_STOP_TIMEOUT_S = Math.ceil((SHUTDOWN_DRAIN_MS + BUYER_STOP_TIMEOUT_MS) / 1_000) + 30
+export const SERVICE_STOP_TIMEOUT_S = Math.ceil((GATEWAY_SHUTDOWN_DRAIN_MS + BUYER_STOP_TIMEOUT_MS) / 1_000) + 30
 
 export interface ServiceSpec {
   /** Absolute path of the node binary to run. */

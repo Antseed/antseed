@@ -72,7 +72,7 @@ if [ -n "${ANTSEED_BASE_URL:-}" ] && [ -n "${ANTSEED_API_KEY:-}" ]; then
   (umask 077 && printf '%s\n' "$ANTSEED_API_KEY" > "$SECRETS_DIR/api-key")
 else
   echo "==> Setting up a gateway on this computer"
-  if ! antseed gateway service --help >/dev/null 2>&1; then
+  if ! antseed gateway --help 2>/dev/null | grep '^  service ' >/dev/null; then
     echo "  Installing the Antseed CLI (this can take a few minutes)..."
     npm install -g @antseed/cli@latest --allow-scripts=@antseed/node,better-sqlite3,node-datachannel
   fi

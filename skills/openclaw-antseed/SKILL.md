@@ -46,7 +46,7 @@ Install the CLI, or upgrade one too old for `gateway service`. `--allow-scripts`
 and networking modules; recent npm versions skip them otherwise and the CLI can't start:
 
 ```bash
-antseed gateway service --help >/dev/null 2>&1 || npm install -g @antseed/cli@latest --allow-scripts=@antseed/node,better-sqlite3,node-datachannel
+antseed gateway --help 2>/dev/null | grep '^  service ' >/dev/null || npm install -g @antseed/cli@latest --allow-scripts=@antseed/node,better-sqlite3,node-datachannel
 ```
 
 Run the gateway as a background service: a launchd agent on macOS or a systemd user service on Linux, without
