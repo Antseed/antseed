@@ -1,14 +1,14 @@
-name: v1-full
+name: w3-literal-cancel
 
 on:
-  push:
-    branches: [ci-optimization-1289-probe]
+  pull_request:
+    branches: [main]
 
 # A newer push to a pull request replaces the run for the older push. Runs on main are never
 # cancelled: each has its own group.
 concurrency:
-  group: v1-full-${{ github.event.pull_request.number || github.sha }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: w3-literal-cancel-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
 
 # Steps that several jobs share are written once, where they first appear (`&name`), and reused
 # with `*name`. Every job runs on its own runner, so jobs wait for nothing but their own steps:

@@ -1,13 +1,13 @@
-name: v2-no-stress
+name: w4-group-ref
 
 on:
-  push:
-    branches: [ci-optimization-1289-probe]
+  pull_request:
+    branches: [main]
 
 # A newer push to a pull request replaces the run for the older push. Runs on main are never
 # cancelled: each has its own group.
 concurrency:
-  group: v2-no-stress-${{ github.event.pull_request.number || github.sha }}
+  group: w4-group-ref-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Steps that several jobs share are written once, where they first appear (`&name`), and reused
@@ -154,6 +154,49 @@ jobs:
       - name: Run E2E payment flow
         run: node e2e/scripts/full-payment-flow.mjs
         timeout-minutes: 15
+
+  # The scenarios are split over the shards, two at a time on each runner as before. Every
+  # scenario runs in exactly one shard (see --shard in e2e/stress/ci.mjs); to add a shard, add a
+  # number to the list.
+  payment-stress:
+    name: Payment stress (Base-like RPC, ${{ matrix.shard }}/${{ strategy.job-total }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+
+    steps:
+      - *checkout
+      - *setup-pnpm
+      - *setup-node
+      - *install-foundry
+      - *install
+
+      # The real CLI seller and buyer run here, so build up to the CLI.
+      - *build-tier0
+      - *build-tier1
+      - *build-tier2
+      - *build-tier3
+      - *build-cli
+
+      - *forge-deps
+      - *contracts-cache
+
+      - name: Run payment stress scenarios
+        run: node e2e/stress/ci.mjs --parallel 2 --shard "${{ matrix.shard }}/${{ strategy.job-total }}" --out "$RUNNER_TEMP/antseed-stress"
+        timeout-minutes: 30
+
+      - name: Upload stress logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: payment-stress-logs-${{ matrix.shard }}
+          path: |
+            ${{ runner.temp }}/antseed-stress/logs
+            ${{ runner.temp }}/antseed-stress/runs/*/*.log
+            ${{ runner.temp }}/antseed-stress/runs/*/*.json
+          retention-days: 7
 
   testbench:
     name: Testbench (local chain)

@@ -1,13 +1,13 @@
-name: v4-stress-static-name
+name: w1-full
 
 on:
-  push:
-    branches: [ci-optimization-1289-probe]
+  pull_request:
+    branches: [main]
 
 # A newer push to a pull request replaces the run for the older push. Runs on main are never
 # cancelled: each has its own group.
 concurrency:
-  group: v4-stress-static-name-${{ github.event.pull_request.number || github.sha }}
+  group: w1-full-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Steps that several jobs share are written once, where they first appear (`&name`), and reused
@@ -159,7 +159,7 @@ jobs:
   # scenario runs in exactly one shard (see --shard in e2e/stress/ci.mjs); to add a shard, add a
   # number to the list.
   payment-stress:
-    name: Payment stress static
+    name: Payment stress (Base-like RPC, ${{ matrix.shard }}/${{ strategy.job-total }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
