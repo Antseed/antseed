@@ -184,6 +184,11 @@ const SKIP_TESTS = ['--skip', 'test', '--skip', '*.t.sol'];
  */
 const FORGE_BROADCAST_ARGS = ['--broadcast', '--slow'];
 
+/** Signals a forge process and everything it spawned (its process group, see deployLocalStack); nothing if it is gone. */
+export function killForge(child, signal) {
+  try { process.kill(-child.pid, signal); } catch { /* already gone */ }
+}
+
 /** How often a broadcasting script's Anvil pool is looked at, and how many looks in a row must find it stuck. */
 export const POOL_WATCH_INTERVAL_MS = 1000;
 export const POOL_STALL_POLLS = 3;
@@ -248,14 +253,15 @@ export async function deployLocalStack({ repo, rpcUrl, env = process.env, layout
     onStep(label);
     const started = Date.now();
     logStream.write(`\n===== [testbench] ${label} =====\n`);
-    const child = spawn('forge', args, { cwd, env: { ...baseEnv, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
+    // Its own process group, so stopping forge also stops the solc processes it is running (via_ir, minutes of CPU each).
+    const child = spawn('forge', args, { cwd, env: { ...baseEnv, ...env }, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
     onSpawn(child); // the supervisor stops forge too: when the start is aborted, and through its reaper if it dies
     child.stdout.pipe(logStream, { end: false });
     child.stderr.pipe(logStream, { end: false });
     const exited = once(child, 'exit');
     let stall = null;
     // A script whose transactions Anvil will never mine would wait for their receipts forever: stop it and say why.
-    const stopWatching = watchPool ? watchForParkedPool(provider, { onStall: (found) => { stall = found; child.kill('SIGKILL'); } }) : () => {};
+    const stopWatching = watchPool ? watchForParkedPool(provider, { onStall: (found) => { stall = found; killForge(child, 'SIGKILL'); } }) : () => {};
     let code;
     let signal;
     try { [code, signal] = await exited; } finally { stopWatching(); }

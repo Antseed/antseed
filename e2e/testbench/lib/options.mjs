@@ -50,7 +50,7 @@ export function parseArgs(argv, env = process.env) {
     if (!['up', 'run'].includes(command)) throw new Error('--contracts is only for pnpm testbench up and run');
     if (options.chain && options.chain !== 'local') throw new Error('--contracts only applies to --chain local');
   }
-  if (options.timeout !== undefined && !/^\d+$/.test(options.timeout)) throw new Error('--timeout must be seconds');
+  if (options.timeout !== undefined && !(/^\d+$/.test(options.timeout) && Number(options.timeout) > 0)) throw new Error('--timeout must be a positive number of seconds');
   if (options.seed !== undefined) {
     if (!['run', 'up'].includes(command)) throw new Error('--seed is only for pnpm testbench run and up');
     if (!(/^\d+$/.test(options.seed) && Number(options.seed) < 2 ** 32)) throw new Error('--seed must be an integer from 0 to 4294967295');

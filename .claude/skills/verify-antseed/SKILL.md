@@ -61,7 +61,7 @@ When a scenario, a test file or a command named here changes, update its row.
    - Desktop scenarios: `pnpm --filter @antseed/desktop run build:main && pnpm --filter @antseed/desktop run build:renderer`, plus Playwright's ffmpeg once per machine (`pnpm exec playwright install ffmpeg`; `run` refuses a desktop scenario without it). On a headless Linux server, wrap the run in `xvfb-run -a`.
 3. Run `scripts/doctor.mjs` (below) and fix every `FAIL`.
 4. Start a run: `pnpm testbench run <scenario> --chain local`. It starts a testbench, runs the scenario, writes a report and stops. Scenarios assume a fresh testbench, so run `pnpm testbench down` before the next run after `--keep` or `up`.
-   - Give the command a timeout of at least 12 minutes, or run it in the background: the first `--chain local` run in a worktree compiles the contracts (about 2.5 minutes), and a start that cannot finish fails by itself after 600 s (`--timeout SECONDS` changes that).
+   - Give the command a timeout of at least 13 minutes, or run it in the background: the first `--chain local` run in a worktree compiles the contracts (about 2.5 minutes), and a start that cannot finish fails by itself after 600 s (`--timeout SECONDS` changes that).
    - A start that fails, stalls or runs out of time ends as `blocked` with the step in the error, and has already stopped what it started. Run the next command as usual; `pnpm testbench down` is not needed first and `--force` is not the way out.
    - Ready means the supervisor printed `READY proxy=http://127.0.0.1:<port> rpc=... control=...`.
    - To poke at a running network: `pnpm testbench up --chain local`, then `eval "$(pnpm -s testbench status --env)" && curl "$ANTSEED_PROXY_URL/v1/models"`.

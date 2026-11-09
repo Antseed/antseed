@@ -25,7 +25,7 @@ The first `--chain local` run in a worktree also compiles `packages/contracts` (
 
 A scenario's topology picks its mode: `stressTopology()` and the CLI scenarios use `cli`, the others `sdk`. `--mode` overrides it, and `report.json` says which mode a run used.
 
-A testbench whose `pnpm testbench run` was killed stops on its own within about 30 seconds (the supervisor's watchdog, `e2e/testbench/README.md` Isolation); one that was still starting stops within about 10 seconds. One left up with `up` or `--keep` stops after `ANTSEED_TESTBENCH_IDLE_MINUTES` (default 120) without a control request. A start that is not ready after `--timeout` seconds (default 600) fails by itself and frees its slot.
+A testbench whose `pnpm testbench run` was killed stops on its own within about 30 seconds (the supervisor's watchdog, `e2e/testbench/README.md` Isolation); one that was still starting stops within seconds (at most about a minute and a half). One left up with `up` or `--keep` stops after `ANTSEED_TESTBENCH_IDLE_MINUTES` (default 120) without a control request. A start that is not ready after `--timeout` seconds (default 600) fails by itself and frees its slot.
 
 ## Seeds and reruns
 

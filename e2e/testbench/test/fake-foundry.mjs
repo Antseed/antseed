@@ -15,6 +15,8 @@ const args = process.argv.slice(2);
 if (args.includes('--version')) { console.log('anvil Version: 0.0.0-fake'); process.exit(0); }
 appendFileSync(join(process.env.TB_FAKE_FOUNDRY_DIR, 'anvil.jsonl'), JSON.stringify({ pid: process.pid, args }) + '\\n');
 setTimeout(() => process.exit(0), 120_000).unref();
+// 'slow': an Anvil that takes 30 s to come up (a cold fork), so a start can be aborted while it waits for the RPC.
+const listenAfterMs = process.env.TB_FAKE_ANVIL === 'slow' ? 30_000 : 0;
 const state = { nonce: 0, block: 0, pending: 0, queued: 0 };
 const hex = (value) => '0x' + value.toString(16);
 const methods = {
@@ -26,7 +28,7 @@ const methods = {
   // What the stand-in forge calls to put the chain into the stalled state.
   fake_setState: ([next]) => { Object.assign(state, next); return true; },
 };
-createServer((request, response) => {
+const server = createServer((request, response) => {
   const chunks = [];
   request.on('data', (chunk) => chunks.push(chunk));
   request.on('end', () => {
@@ -35,7 +37,8 @@ createServer((request, response) => {
     response.writeHead(200, { 'content-type': 'application/json' });
     response.end(JSON.stringify(body));
   });
-}).listen(Number(args[args.indexOf('--port') + 1]), '127.0.0.1', () => console.log('Listening (fake anvil)'));
+});
+setTimeout(() => server.listen(Number(args[args.indexOf('--port') + 1]), '127.0.0.1', () => console.log('Listening (fake anvil)')), listenAfterMs);
 `;
 
 const FORGE = `#!/usr/bin/env node
@@ -66,9 +69,9 @@ const hang = () => setInterval(() => {}, 1000);
 `;
 
 /**
- * Writes the stand-ins into a fresh directory. `env(mode)` is the environment for a supervisor that should find them
- * (`mode`: 'park' parks the deploy's transactions, 'hang-build' never finishes `forge build`); `started(tool)` lists
- * the `{ pid, args }` of every stand-in process that ran.
+ * Writes the stand-ins into a fresh directory. `env(mode, anvil)` is the environment for a supervisor that should find
+ * them (`mode`: 'park' parks the deploy's transactions, 'hang-build' never finishes `forge build`; `anvil`: 'slow' takes
+ * 30 s to come up); `started(tool)` lists the `{ pid, args }` of every stand-in process that ran.
  */
 export function fakeFoundry() {
   const dir = mkdtempSync(join(tmpdir(), 'tb-foundry-'));
@@ -78,7 +81,7 @@ export function fakeFoundry() {
   }
   return {
     dir,
-    env: (mode) => ({ ...process.env, PATH: [dir, dirname(process.execPath), process.env.PATH].join(delimiter), TB_FAKE_FOUNDRY_DIR: dir, TB_FAKE_FORGE: mode }),
+    env: (mode, anvil = 'fast') => ({ ...process.env, PATH: [dir, dirname(process.execPath), process.env.PATH].join(delimiter), TB_FAKE_FOUNDRY_DIR: dir, TB_FAKE_FORGE: mode, TB_FAKE_ANVIL: anvil }),
     started: (tool) => (existsSync(join(dir, `${tool}.jsonl`)) ? readFileSync(join(dir, `${tool}.jsonl`), 'utf8').trim().split('\n').map((line) => JSON.parse(line)) : []),
   };
 }

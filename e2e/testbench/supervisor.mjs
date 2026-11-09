@@ -12,7 +12,7 @@ import { createBuyerRouter } from './lib/buyer-router.mjs';
 import { bindUpstream, listModels, WORKSPACE_PLUGINS } from './lib/config.mjs';
 import { blocksInUse, copyIn, pruneCache, resolveForkBlock, seedFromLegacy, writeBack } from './lib/cache.mjs';
 import { ANVIL_FEE_ARGS, chainReader, prepareChain, prepareLocalChain, selectedReservesReleased } from './lib/chain.mjs';
-import { chainContracts, deployLocalStack, localGenesisTimestamp } from './lib/local-deploy.mjs';
+import { chainContracts, deployLocalStack, killForge, localGenesisTimestamp } from './lib/local-deploy.mjs';
 import { newToken, startControlServer } from './lib/control.mjs';
 import { startRpcRelay } from './lib/rpc-relay.mjs';
 import { DEFAULT_IDLE_MINUTES, DEFAULT_START_TIMEOUT_SECONDS, startupDecision, STARTUP_WATCH_INTERVAL_MS, watchdogDecision, WATCHDOG_INTERVAL_MS } from './lib/watchdog.mjs';
@@ -44,15 +44,23 @@ const local = target === 'local';
 const cliMode = plan.mode === 'cli';
 const liveEnv = Object.fromEntries((plan.liveKeys ?? []).map((key) => [key, process.env[key]]));
 const log = (message) => console.log(`[supervisor] ${new Date().toISOString()} ${message}`);
-const waitFor = async (check, label, timeoutMs = 60_000, intervalMs = 200) => {
+/** Polls `check`; `signal` (the start-up abort, for waits during the start) ends the wait at once. */
+const waitFor = async (check, label, timeoutMs = 60_000, intervalMs = 200, signal = null) => {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
+    signal?.throwIfAborted();
     const value = await check();
     if (value) return value;
     await new Promise((r) => setTimeout(r, intervalMs));
   }
   throw new Error(`Timed out waiting for ${label}`);
 };
+
+/** Rejects with the start-up abort reason as soon as the start is aborted; for racing the start's longer waits. */
+const untilAborted = (signal) => new Promise((_, reject) => {
+  if (signal.aborted) reject(signal.reason);
+  else signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+});
 
 const state = {
   anvil: null, rpcRelay: null, bootstrap: null, mocks: new Map(), workers: new Map(), buyer: null, proxy: null, control: null, reader: null,
@@ -66,8 +74,11 @@ const state = {
 };
 /** How long the shutdown after a failed start may take before the supervisor exits regardless. */
 const FAILED_START_SHUTDOWN_MS = 90_000;
-/** How long an aborted start gets to leave the step it was in before the shutdown begins. */
-const ABORTED_START_SETTLE_MS = 5000;
+/**
+ * How long an aborted start gets to end before the shutdown begins. Its waits end on the abort, so this is normally
+ * instant; a step without an abort check (a node starting, the chain setup) may run on until its own bound.
+ */
+const ABORTED_START_SETTLE_MS = 60_000;
 let manifest = null;
 let lockEntry = null;
 let shuttingDown = null;
@@ -121,7 +132,10 @@ let reaper = null;
 let baseEnv = null;
 let envs = null;
 
+let manifestFinal = false;
+/** Updates manifest.json; nothing after the shutdown's final write, which a step of an aborted start could still attempt. */
 async function writeManifest(patch) {
+  if (manifestFinal) return;
   manifest = { ...manifest, ...patch, updatedAt: new Date().toISOString() };
   await saveJson(paths.manifest, manifest);
 }
@@ -134,8 +148,8 @@ function startReaper() {
   reaper.unref();
 }
 
-function reap(child) {
-  reaper?.stdin.write(`${JSON.stringify({ pid: child.pid, startedAt: processStartTime(child.pid) })}\n`);
+function reap(child, { group = false } = {}) {
+  reaper?.stdin.write(`${JSON.stringify({ pid: child.pid, startedAt: processStartTime(child.pid), ...(group ? { group: true } : {}) })}\n`);
 }
 
 /**
@@ -176,7 +190,7 @@ async function startAnvil(forkUrl, block, { timestamp } = {}) {
         } catch {
           return false;
         }
-      }, 'Anvil RPC', 60_000);
+      }, 'Anvil RPC', 60_000, 200, startup.abort.signal);
     } catch (error) {
       spawned.kill('SIGKILL');
       throw error;
@@ -226,7 +240,7 @@ async function startSellerWorker(seller) {
     child.once('exit', (code) => rejectReady(new Error(`seller ${seller.id} exited with ${code} (see logs/seller-${seller.id}.log)`)));
   });
   child.send({ type: 'start', id: seller.id, dataDir: seller.dataDir, configPath: seller.configPath, bootstrapNodes: seller.bootstrapNodes, payments: seller.payments });
-  const info = await Promise.race([ready, new Promise((_, rejectTimeout) => setTimeout(() => rejectTimeout(new Error(`seller ${seller.id} start timeout`)), 120_000))]);
+  const info = await Promise.race([ready, untilAborted(startup.abort.signal), new Promise((_, rejectTimeout) => setTimeout(() => rejectTimeout(new Error(`seller ${seller.id} start timeout`)), 120_000))]);
   return trackSeller(seller.id, child, info);
 }
 
@@ -255,7 +269,7 @@ async function launchCliNode(spec, ready) {
   reap(node.child);
   await recordNodeProcess(spec.who, node.child);
   try {
-    const value = await waitForCliReady(node, () => ready(node));
+    const value = await waitForCliReady(node, () => ready(node), { signal: startup.abort.signal });
     assertSingleBootstrap(node.output(), spec.who);
     node.stopCapture();
     return { node, value };
@@ -432,7 +446,7 @@ async function discover(sellerIds) {
     if (!cliMode) for (const id of sellerIds) state.workers.get(id)?.child.send({ type: 'announce' });
     const peers = await state.buyer.discoverPeers();
     return sellerIds.every((id) => peers.some((peer) => peer.peerId === state.workers.get(id)?.info.peerId));
-  }, 'buyer discovering testbench sellers', 90_000, 1000);
+  }, 'buyer discovering testbench sellers', 90_000, 1000, startup.active ? startup.abort.signal : null);
   const response = await fetch(`${manifest.proxyUrl}/_antseed/peers/refresh`, { method: 'POST', signal: AbortSignal.timeout(60_000) });
   assert(response.ok, 'proxy peer refresh failed');
 }
@@ -547,9 +561,14 @@ function startWatchdog() {
   }, WATCHDOG_INTERVAL_MS);
 }
 
-/** Stops forge when a start is aborted during the local deploy: it is compiling, broadcasting or waiting for receipts. */
+/**
+ * Stops forge when a start is aborted during the local deploy: it is compiling, broadcasting or waiting for receipts.
+ * Signals its whole process group, so the solc processes a compile is running go with it.
+ */
 async function stopTools() {
-  for (const tool of [...state.tools]) await stopWithGrace(tool, { graceMs: 5000 });
+  for (const tool of [...state.tools]) {
+    await stopWithGrace(tool, { graceMs: 5000, requestStop: () => killForge(tool, 'SIGTERM'), onForced: () => killForge(tool, 'SIGKILL') });
+  }
 }
 
 async function shutdown(reason) {
@@ -597,6 +616,7 @@ async function shutdown(reason) {
       });
     }
     if (manifest) await writeManifest({ running: false, starting: false, stoppedAt: new Date().toISOString(), shutdownErrors: errors });
+    manifestFinal = true;
     // Only the supervisor that holds the lock owns control.json; a loser of a start race must not wipe the winner's.
     if (lockEntry) await saveJson(paths.control, {}).catch(() => {});
     if (lockEntry) await releaseLock(paths.lock, lockEntry);
@@ -644,7 +664,7 @@ async function main() {
       repo, rpcUrl: state.anvil.rpcUrl, env: baseEnv, layout, logPath: join(paths.logs, 'forge.log'), broadcastDir: join(paths.anvilHome, 'broadcast'), toolHome, log,
       onStep: (label) => step(`deploying the contracts: ${label}`),
       onSpawn: (child) => {
-        reap(child);
+        reap(child, { group: true });
         state.tools.add(child);
         child.once('exit', () => state.tools.delete(child));
       },
@@ -903,9 +923,11 @@ try {
   // and the next up or down cleans up the stale lock.
   setTimeout(() => { log(`Shutdown after the failed start did not finish in ${FAILED_START_SHUTDOWN_MS / 1000} s; exiting`); process.exit(1); }, FAILED_START_SHUTDOWN_MS);
   if (startup.abort.signal.aborted) {
-    // main() may be waiting for forge, which nothing will finish now; then give it a moment to reach its next step().
-    await stopTools();
-    await Promise.race([starting.catch(() => {}), new Promise((resolveWait) => setTimeout(resolveWait, ABORTED_START_SETTLE_MS))]);
+    // main() may be waiting for forge, which nothing will finish now; then let it end before anything is stopped, so the
+    // shutdown sees everything it started. What it may still spawn after the settle is registered with the reaper.
+    await stopTools().catch((stopError) => log(`forge did not stop: ${stopError.message}`));
+    const settled = await Promise.race([starting.then(() => true, () => true), new Promise((resolveWait) => setTimeout(() => resolveWait(false), ABORTED_START_SETTLE_MS))]);
+    if (!settled) log(`The aborted start did not end within ${ABORTED_START_SETTLE_MS / 1000} s (it was ${startup.step}); stopping what it has started so far`);
   }
   await shutdown('startup failure');
   process.exitCode = 1;

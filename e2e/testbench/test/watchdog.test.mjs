@@ -69,6 +69,7 @@ describe('startingDecision', () => {
   it('waits for a supervisor that is already on its way out', () => {
     assert.equal(startingDecision({ manifest: { ...starting, startError: 'Deploy.s.sol stalled' }, holder, starterAlive: true }), 'wait');
     assert.equal(startingDecision({ manifest: { supervisor: holder, running: false, stoppingAt: 't', starter: null }, holder, starterAlive: false }), 'wait');
+    assert.equal(startingDecision({ manifest: { ...starting, stoppedAt: 't' }, holder, starterAlive: false }), 'wait', 'stopped, lock not yet released');
   });
 
   it('never acts on a manifest another supervisor wrote, or on a start without a recorded starter', () => {
@@ -122,6 +123,7 @@ describe('lifecycleState', () => {
     assert.equal(lifecycleState({ lock: held, manifest: { running: true }, running: true }), 'running');
     assert.equal(lifecycleState({ lock: held, manifest: { running: false, stoppingAt: 't' }, running: false }), 'stopping');
     assert.equal(lifecycleState({ lock: held, manifest: { starting: true }, running: false }), 'starting');
+    assert.equal(lifecycleState({ lock: held, manifest: { starting: true, startError: 'stalled' }, running: false }), 'stopping', 'a failed start is on its way out');
     assert.equal(lifecycleState({ lock: { state: 'stale' }, manifest: { running: true }, running: false }), 'stale');
     assert.equal(lifecycleState({ lock: { state: 'free' }, manifest: { running: false, stoppingAt: 't' }, running: false }), 'stopped');
     assert.equal(lifecycleState({ lock: { state: 'free' }, manifest: null, running: false }), 'stopped');

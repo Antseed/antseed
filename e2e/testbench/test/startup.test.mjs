@@ -27,7 +27,7 @@ const cleanups = [];
 after(async () => { for (const cleanup of cleanups) await cleanup(); });
 
 /** Starts the supervisor on a fresh state directory. `forge` is the stand-in forge's behaviour; `plan` overrides plan.json. */
-async function startSupervisor({ forge, plan = {} }) {
+async function startSupervisor({ forge, anvil = 'fast', plan = {} }) {
   const home = await mkdtemp(join(tmpdir(), 'tb-startup-'));
   const foundry = fakeFoundry();
   const paths = testbenchPaths(home, name);
@@ -37,7 +37,7 @@ async function startSupervisor({ forge, plan = {} }) {
     topology: normalizeTopology({}, source, { contracts: 'payments' }), upstream: 'mock', liveKeys: [], verbose: false, configHash: 'test', configOrigin: 'test', cacheHome: join(home, '.cache'),
     ...plan,
   }));
-  const child = spawn(process.execPath, [supervisor, home, name], { env: foundry.env(forge), stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, [supervisor, home, name], { env: foundry.env(forge, anvil), stdio: ['ignore', 'pipe', 'pipe'] });
   let log = '';
   for (const stream of [child.stdout, child.stderr]) stream.on('data', (chunk) => { log += chunk.toString('utf8'); });
   const exited = once(child, 'exit');
@@ -135,6 +135,24 @@ describe('a start that cannot finish fails by itself', () => {
     assert.match(manifest.startError, new RegExp(`The command that started this testbench \\(pid ${gone.pid}\\) is gone`));
     assert.equal(manifest.stoppedBy, 'watchdog');
     assert.equal(manifest.reason, 'starter-died');
+  });
+
+  it('an abort while the start waits for Anvil ends that wait at once and stops the Anvil it was waiting for', async () => {
+    const gone = spawn(process.execPath, ['-e', ''], { stdio: 'ignore' });
+    await once(gone, 'exit');
+    const run = await startSupervisor({ forge: 'hang-build', anvil: 'slow', plan: { starter: { pid: gone.pid, startedAt: 'gone' } } });
+    const started = Date.now();
+    assert.equal(await run.exit(60_000), 1, run.log());
+    // The 5 s starter check plus the shutdown: well under the 30 s the stand-in Anvil needs and the 60 s settle.
+    assert.ok(Date.now() - started < 25_000, `took ${Date.now() - started} ms`);
+    const [anvil] = run.foundry.started('anvil');
+    assert.ok(anvil, 'Anvil was started');
+    assert.equal(isPidAlive(anvil.pid), false, 'the Anvil the start was waiting for is stopped');
+    assert.deepEqual(run.foundry.started('forge'), [], 'forge never started');
+    const manifest = await run.manifest();
+    assert.match(manifest.startError, /is gone, so the start was stopped \(it was starting Anvil\)/);
+    assert.equal((await inspectLock(run.paths.lock)).state, 'free');
+    assert.equal(manifest.starting, false);
   });
 
   it('SIGTERM during the start ends it the same way: forge and Anvil stopped, slot free', async () => {

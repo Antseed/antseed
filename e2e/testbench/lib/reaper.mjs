@@ -11,7 +11,8 @@ const children = [];
 const lines = createInterface({ input: process.stdin });
 lines.on('line', (line) => children.push(JSON.parse(line)));
 lines.on('close', async () => {
-  const results = await Promise.all(children.map(async (entry) => `${entry.pid}:${await killOwned(entry, { graceMs: STOP_GRACE_MS })}`));
+  // A `group` entry (forge) is signalled as a process group, so what it spawned (solc) stops with it.
+  const results = await Promise.all(children.map(async (entry) => `${entry.pid}:${await killOwned(entry, { graceMs: STOP_GRACE_MS, deps: entry.group ? { kill: (pid, signal) => process.kill(-pid, signal) } : {} })}`));
   const stopped = results.filter((result) => !result.endsWith(':not-running'));
   if (stopped.length) console.log(`[reaper] ${new Date().toISOString()} supervisor gone; stopped ${stopped.join(', ')}`);
   process.exit(0);

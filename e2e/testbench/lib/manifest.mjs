@@ -40,7 +40,7 @@ function assertProcess(entry, label) {
 export function lifecycleState({ lock, manifest, running }) {
   if (running) return 'running';
   if (lock.state === 'stale') return 'stale';
-  if (lock.state === 'held') return manifest?.stoppingAt ? 'stopping' : 'starting';
+  if (lock.state === 'held') return manifest?.stoppingAt || manifest?.startError ? 'stopping' : 'starting';
   return 'stopped';
 }
 
