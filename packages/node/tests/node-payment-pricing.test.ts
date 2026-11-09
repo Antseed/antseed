@@ -2458,6 +2458,24 @@ describe('data service seller payments', () => {
     }
   });
 
+  it("marks a data provider's answers as its own and keeps a data API's 4xx out of the seller's health", async () => {
+    const events: Array<{ statusCode: number }> = [];
+    const emit = vi.fn((event: string, payload: { statusCode: number }) => { if (event === 'provider:response') events.push(payload); return true; });
+    const harness = setup({}, { emit });
+    vi.mocked(harness.provider.handleRequest).mockImplementation(async request => ({
+      requestId: request.requestId, statusCode: 401, headers: { 'content-type': 'application/json', 'x-antseed-data-response': 'forged' }, body: new TextEncoder().encode('{"error":"bad key"}'),
+    }));
+    for (const id of ['a', 'b', 'c']) {
+      const response = await harness.send(id);
+      expect(response.statusCode).toBe(401);
+      expect(response.headers['x-antseed-data-response']).toBe('provider');
+    }
+    expect(events).toEqual([]);
+    // A seller refusal before the operation runs carries no mark.
+    const refused = await harness.send('other', { path: '/v1/data/hotels/search' });
+    expect(refused.headers['x-antseed-data-response']).toBeUndefined();
+  });
+
   it('serves the description and the operation from the provider the buyer names', async () => {
     const harness = setup();
     const second = makeProvider(10, 10, { name: 'openapi-b', services: ['flights'] });

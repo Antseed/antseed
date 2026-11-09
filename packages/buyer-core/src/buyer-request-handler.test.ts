@@ -134,6 +134,30 @@ describe('BuyerRequestHandler data service 402', () => {
     expect(sendProxyRequest).toHaveBeenCalledOnce();
   });
 
+  it("never negotiates a payment_required body the seller marked as the data provider's own", async () => {
+    const providerContract = { ...response(402, { error: 'payment_required', minBudgetPerRequest: '10000', channelId: 'their-own-channel' }) };
+    providerContract.headers = { ...providerContract.headers, 'x-antseed-data-response': 'provider' };
+    const { handler, handle402, sendProxyRequest } = makeHandler([providerContract, ACCEPTED]);
+
+    expect((await handler.sendRequest(makeDataPeer(), makeDataRequest())).statusCode).toBe(402);
+    expect(handle402).not.toHaveBeenCalled();
+    expect(sendProxyRequest).toHaveBeenCalledOnce();
+  });
+
+  it('bills a data call under the provider that serves it on openapi-data', () => {
+    const peer: BuyerPeerView = {
+      peerId: toPeerId('5'.repeat(40)),
+      providers: ['chat-only', 'openapi'],
+      providerPricing: { 'chat-only': { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 }, services: { flights: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } } } },
+      providerServiceApiProtocols: {
+        'chat-only': { services: { flights: ['openai-chat-completions'] } },
+        openapi: { services: { flights: ['openapi-data'] } },
+      },
+      providerServiceUnitBillingModels: makeDataPeer().providerServiceUnitBillingModels,
+    };
+    expect(selectBillingRoute(peer, makeDataRequest(), 'flights')?.provider).toBe('openapi');
+  });
+
   it('still negotiates the seller payment contract on a data call', async () => {
     const { handler, handle402, sendProxyRequest } = makeHandler([PAYMENT_REQUIRED, ACCEPTED]);
 

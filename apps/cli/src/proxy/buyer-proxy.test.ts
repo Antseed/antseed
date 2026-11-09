@@ -3566,6 +3566,26 @@ for (const failure of ['502', 'transport'] as const) {
   })
 }
 
+test("a data POST whose provider answers model_not_found is not sent to another seller", async () => {
+  const first = makeDataPeer('a', 95)
+  const second = makeDataPeer('b', 80)
+  const proxy = makeBuyerProxyWithPeers([first, second], [first, second], permissiveRouter())
+  const attempts: string[] = []
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
+    attempts.push(peer.peerId)
+    return {
+      requestId: request.requestId, statusCode: 404,
+      headers: { 'content-type': 'application/json', 'x-antseed-data-response': 'provider' },
+      body: Buffer.from('{"error":{"code":"model_not_found","message":"no such fare model"}}'),
+    }
+  }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({ path: '/v1/data/flights/book', body: { flight: 'LY1' } }))
+
+  assert.equal(res.statusCode, 404)
+  assert.deepEqual(attempts, [first.peerId])
+})
+
 test('a data POST answered 429 by the provider is returned, not sent again to any seller', async () => {
   const first = makeDataPeer('a', 95)
   const second = makeDataPeer('b', 80)

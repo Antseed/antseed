@@ -1,4 +1,4 @@
-import { dataServiceRoute, nativeVideoDelivered, nativeVideoRoute, requestService } from '@antseed/api-adapter';
+import { dataServiceRoute, isDataProviderResponse, nativeVideoDelivered, nativeVideoRoute, requestService } from '@antseed/api-adapter';
 import {
   ANTSEED_FAULT_ATTRIBUTION_HEADER,
   ANTSEED_STREAMING_RESPONSE_HEADER,
@@ -515,6 +515,7 @@ export class BuyerRequestHandler {
       && !options?.controlPlane
       && !externalSpendingAuth
       && isPaymentRequired402(response)
+      && !isDataProviderResponse(response)
     ) {
       debugWarn(
         `[BuyerRequest] Seller ${peer.peerId.slice(0, 12)}... requires payment but payments are not running on this buyer — returning buyer-fault error`,
@@ -524,10 +525,12 @@ export class BuyerRequestHandler {
 
     // Provider video and data APIs may use HTTP 402 for their own errors; only
     // start Antseed payment negotiation when the response is our payment contract.
+    // A data provider's own answer, as the seller marked it, never is.
     if (
       response.statusCode === 402
       && negotiator
       && !externalSpendingAuth
+      && !(dataRoute && isDataProviderResponse(response))
       && ((!videoRoute && !dataRoute) || isPaymentRequired402(response))
     ) {
       // Parallel requests can leave the seller's spend several requests ahead
@@ -786,9 +789,11 @@ function selectProviderForService(
   // retrieves reach the provider that accepted it whatever its health is now.
   // Other requests prefer a provider whose self health check is not failing.
   const videoRoute = nativeVideoRoute(request);
+  // Video and data requests need a provider that serves the service on their protocol.
+  const routeProtocol = videoRoute?.protocol ?? dataServiceRoute(request)?.protocol;
   const eligible = providers.filter((provider) =>
     providerOffersService(peer, provider, service)
-    && (!videoRoute || Boolean(peer.providerServiceApiProtocols?.[provider]?.services[service]?.includes(videoRoute.protocol))),
+    && (!routeProtocol || Boolean(peer.providerServiceApiProtocols?.[provider]?.services[service]?.includes(routeProtocol))),
   );
   const healthy = videoRoute ? undefined : eligible.find((provider) =>
     !isServiceHealthFailing(providerServiceHealthFor(peer.providerServiceHealth, provider, service)),

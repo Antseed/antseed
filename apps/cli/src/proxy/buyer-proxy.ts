@@ -1,4 +1,4 @@
-import { DATA_SERVICE_PATH_PREFIX, dataServiceRoute, nativeVideoRoute, withDataService, type NativeVideoProtocol } from '@antseed/api-adapter'
+import { DATA_SERVICE_PATH_PREFIX, dataServiceRoute, isDataProviderResponse, nativeVideoRoute, withDataService, type NativeVideoProtocol } from '@antseed/api-adapter'
 import { ResourceRoutes } from './resource-routes.js'
 import { prepareVideoRequest, recordVideoAcceptance } from './native-video-proxy.js'
 import { downloadVideo } from './video-download.js'
@@ -5777,6 +5777,7 @@ export class BuyerProxy {
         const modelNotFound = !streamed
           && !isControlPlaneServicesPath(requestForPeer.path)
           && isModelNotFoundResponse(responseForClient)
+          && !isDataProviderResponse(responseForClient)
         if (modelNotFound) {
           this._onModelNotFound(selectedPeer.peerId, requestedService)
         }
@@ -5932,6 +5933,8 @@ export class BuyerProxy {
         const responseFault = responseFaultAttribution(response)
         const modelNotFound = !isControlPlaneServicesPath(requestForPeer.path)
           && isModelNotFoundResponse(response)
+          // A data provider's own model_not_found is its API's answer, not the seller refusing the service.
+          && !isDataProviderResponse(response)
         if (modelNotFound) {
           this._onModelNotFound(selectedPeer.peerId, requestedService)
         }

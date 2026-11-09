@@ -13,6 +13,25 @@ import type { DataServiceProtocol, SerializedHttpRequest, SerializedHttpResponse
 
 export const DATA_SERVICE_PATH_PREFIX = '/v1/data/';
 
+/**
+ * Set by the seller node on every answer a data provider gave (any value the provider sent under
+ * this name is replaced). A data API controls its own bodies, so a buyer reads Antseed control
+ * answers (a payment step, model_not_found) only from responses without it.
+ */
+export const DATA_PROVIDER_RESPONSE_HEADER = 'x-antseed-data-response';
+
+/** Whether a response is a data provider's own answer, as the seller node marked it. */
+export function isDataProviderResponse(response: { headers: Record<string, string> }): boolean {
+  return Object.entries(response.headers).some(([name, value]) =>
+    name.toLowerCase() === DATA_PROVIDER_RESPONSE_HEADER && value === 'provider');
+}
+
+/** `headers` marked as a data provider's own answer, replacing any value the provider sent. */
+export function markDataProviderResponse(headers: Record<string, string>): Record<string, string> {
+  const out = Object.fromEntries(Object.entries(headers).filter(([name]) => name.toLowerCase() !== DATA_PROVIDER_RESPONSE_HEADER));
+  return { ...out, [DATA_PROVIDER_RESPONSE_HEADER]: 'provider' };
+}
+
 /** Where a data service's description lives, relative to the service. */
 export const DATA_SERVICE_DOCUMENT_PATH = '/openapi.json';
 

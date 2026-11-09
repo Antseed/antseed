@@ -71,6 +71,9 @@ export {
 export {
   DATA_SERVICE_PATH_PREFIX,
   DATA_SERVICE_DOCUMENT_PATH,
+  DATA_PROVIDER_RESPONSE_HEADER,
+  isDataProviderResponse,
+  markDataProviderResponse,
   dataServiceRoute,
   dataServiceDelivered,
   withDataService,

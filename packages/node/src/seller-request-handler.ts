@@ -51,7 +51,7 @@ import { isServiceHealthFailing, preferHealthyUpstream, serviceHealthOf } from '
 import { hasJsonContentType, tryParseJsonObject } from './utils/json-codec.js';
 import type { UnitBillingContext, UnitBillingModelV1, UnitBillingUsage, UnitBillingUsageReportV1 } from './types/billing.js';
 import { captureUnitBillingContext, computeFinalUnitBilling, estimateUnitRequestCost, isFreeUnitBillingModel, type BillingRequestFacts } from './billing/unit.js';
-import { dataServiceRoute, nativeVideoAcceptance, nativeVideoDelivered, nativeVideoRoute, requestService, type DataServiceRoute, type NativeVideoRoute } from '@antseed/api-adapter';
+import { dataServiceRoute, markDataProviderResponse, nativeVideoAcceptance, nativeVideoDelivered, nativeVideoRoute, requestService, type DataServiceRoute, type NativeVideoRoute } from '@antseed/api-adapter';
 import type { PendingResourceCharge, ResourceOwnershipStore } from './resources/resource-ownership-store.js';
 import type { ServiceApiProtocol } from './types/service-api.js';
 import { announcedProviderId } from './discovery/provider-id.js';
@@ -1000,10 +1000,15 @@ export class SellerRequestHandler {
           // Polling or downloading a video already paid for says nothing about the account's credit.
           const upstreamBody = response.body ?? new Uint8Array(0);
           // A data operation's errors are the seller's own API answering: never rewritten as an
-          // inference account, rate-limit or health error.
+          // inference account, rate-limit or health error, and marked as the provider's so the
+          // buyer never reads them as an Antseed payment step or service refusal.
           const dataCall = dataServiceRoute(request) !== null;
+          if (dataCall) response = { ...response, headers: markDataProviderResponse(response.headers) };
           const upstreamError = statusCode >= 400 ? new TextDecoder().decode(upstreamBody.slice(0, 2_000)) : '';
-          this._deps.emit('provider:response', { provider, service: requestedModel, statusCode, body: upstreamError, billable: videoRoute?.action !== 'retrieve' });
+          // A data API refusing a client (4xx) says nothing about the seller's account or health.
+          if (!(dataCall && statusCode >= 400 && statusCode < 500)) {
+            this._deps.emit('provider:response', { provider, service: requestedModel, statusCode, body: upstreamError, billable: videoRoute?.action !== 'retrieve' });
+          }
           if (!streamedResponseStarted && !dataCall && isUpstreamAccountError(statusCode, upstreamError)) {
             debugWarn(`[SellerHandler] Upstream account error: status=${statusCode} provider="${provider.name}" model="${requestedModel}" body=${upstreamError.slice(0, 200)}`);
             response = buildUpstreamUnavailableResponse(request.requestId, requestedModel);
@@ -1443,7 +1448,7 @@ export class SellerRequestHandler {
     setTrustedHeader(request.headers, 'x-antseed-buyer-peer-id', buyerPeerId);
     try {
       const response = await provider.handleRequest(request);
-      return { ...response, requestId: request.requestId, headers: buyerFacingResponseHeaders(response.headers) };
+      return { ...response, requestId: request.requestId, headers: markDataProviderResponse(buyerFacingResponseHeaders(response.headers)) };
     } catch (error) {
       return failure(503, 'data_description_unavailable', `Data service description failed: ${error instanceof Error ? error.message : String(error)}`);
     }
