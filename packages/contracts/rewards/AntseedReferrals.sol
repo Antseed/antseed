@@ -135,6 +135,8 @@ contract AntseedReferrals is Ownable2Step, Pausable, ReentrancyGuard, EIP712 {
     IAntseedEmissionsGate public immutable emissionsGate;
     IAntseedUsageAccounting public immutable usageAccounting;
     IAntseedReferralDeposits public immutable deposits;
+    /// @notice The accounting records earlier settlements under this epoch, so bindings and the new-buyer rule do too.
+    uint256 public immutable firstAccountingEpoch;
     IAntseedSellerPools public sellerPools;
 
     /// @notice Contract allowed to submit bindings (AntseedChannelsMiddleware).
@@ -225,6 +227,7 @@ contract AntseedReferrals is Ownable2Step, Pausable, ReentrancyGuard, EIP712 {
         }
         emissionsGate = IAntseedEmissionsGate(_emissionsGate);
         usageAccounting = IAntseedUsageAccounting(_usageAccounting);
+        firstAccountingEpoch = IAntseedUsageAccounting(_usageAccounting).firstRewardedEpoch();
         deposits = IAntseedReferralDeposits(_deposits);
         binder = _binder;
     }
@@ -288,7 +291,7 @@ contract AntseedReferrals is Ownable2Step, Pausable, ReentrancyGuard, EIP712 {
             }
         }
 
-        uint256 epoch = usageAccounting.currentEpoch();
+        uint256 epoch = _accountingEpoch();
         _usedInvites[referrer][issuedEpoch] |= uint256(1) << index;
         referrerOf[buyer] = referrer;
         boundAtEpoch[buyer] = epoch;
@@ -305,7 +308,7 @@ contract AntseedReferrals is Ownable2Step, Pausable, ReentrancyGuard, EIP712 {
 
     /// @notice Whether a binding for `buyer` would pass the new-buyer rule now.
     function isNewBuyer(address buyer) external view returns (bool) {
-        return _isNewBuyer(buyer, usageAccounting.currentEpoch());
+        return _isNewBuyer(buyer, _accountingEpoch());
     }
 
     // ─── Rewards ─────────────────────────────────────────────────────
@@ -454,7 +457,7 @@ contract AntseedReferrals is Ownable2Step, Pausable, ReentrancyGuard, EIP712 {
         }
         if (index >= inviteQuota(referrer, issuedEpoch)) return (referrer, InviteOverQuota.selector);
         if (inviteUsed(referrer, issuedEpoch, index)) return (referrer, InviteAlreadyUsed.selector);
-        if (!_isNewBuyer(buyer, current)) return (referrer, NotNewBuyer.selector);
+        if (!_isNewBuyer(buyer, _accountingEpoch())) return (referrer, NotNewBuyer.selector);
     }
 
     /// @dev The buyer itself, the buyer's operator, a wallet the buyer operates,
@@ -564,6 +567,12 @@ contract AntseedReferrals is Ownable2Step, Pausable, ReentrancyGuard, EIP712 {
     function _rewardRecipient(address wallet) internal view returns (address recipient) {
         recipient = deposits.getOperator(wallet);
         if (recipient == address(0)) revert RewardRecipientUnavailable();
+    }
+
+    /// @dev The epoch a settlement lands in now: the accounting files
+    ///      settlements before its first rewarded epoch under that epoch.
+    function _accountingEpoch() internal view returns (uint256) {
+        return Math.max(usageAccounting.currentEpoch(), firstAccountingEpoch);
     }
 
     function _isNewBuyer(address buyer, uint256 currentEpoch) internal view returns (bool) {

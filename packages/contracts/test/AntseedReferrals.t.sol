@@ -10,6 +10,7 @@ import { SellerPoolsStakeMock } from "./mocks/SellerPoolsStakeMock.sol";
 
 contract ReferralUsageAccountingMock {
     uint256 public currentEpoch = 10;
+    uint256 public firstRewardedEpoch;
     mapping(uint256 => mapping(address => uint256)) public buyerPointsByEpoch;
     mapping(uint256 => mapping(address => uint256)) public sellerPointsByEpoch;
     mapping(uint256 => mapping(address => uint256)) public weightedBuyerPointsByEpoch;
@@ -31,6 +32,10 @@ contract ReferralUsageAccountingMock {
 
     function setCurrentEpoch(uint256 epoch) external {
         currentEpoch = epoch;
+    }
+
+    function setFirstRewardedEpoch(uint256 epoch) external {
+        firstRewardedEpoch = epoch;
     }
 
     function setBuyerPoints(uint256 epoch, address buyer, uint256 points) external {
@@ -251,6 +256,20 @@ contract AntseedReferralsTest is Test {
         _expectBindRevert(lapsedBuyer, REFERRER_KEY, 10, 1, AntseedReferrals.NotNewBuyer.selector);
 
         assertTrue(referrals.isNewBuyer(stranger)); // no usage at all
+    }
+
+    function test_cutoverUsageFiledUnderTheFirstRewardedEpochStillCountsAsNew() public {
+        // Before the first rewarded epoch, the accounting files settlements under it.
+        accounting.setFirstRewardedEpoch(11);
+        referrals = new AntseedReferrals(address(gate), address(accounting), address(deposits), binder);
+        accounting.setWeighted(11, buyer, 5, 5);
+        accounting.setLifetimeWeighted(buyer, 5);
+        assertTrue(referrals.isNewBuyer(buyer));
+
+        _bind(buyer, REFERRER_KEY, 10, 0); // the invite still follows the real epoch
+        (, uint256 boundEpoch) = referrals.referralOf(buyer);
+        assertEq(boundEpoch, 11);
+        assertEq(referrals.pointsBeforeBinding(buyer), 5); // usage before the binding earns nothing
     }
 
     function test_onlyBinderCanBind() public {

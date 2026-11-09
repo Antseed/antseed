@@ -132,13 +132,17 @@ function InviteRow({ view, onCreated }: { view: ReferralView; onCreated: () => v
   const recheck = exhausted
     ? <> <button className="link-button" disabled={creating} onClick={() => void create()}>{creating ? 'Checking…' : 'Check again'}</button></>
     : null;
+  // In priority order: an error, the invite just created, the exhausted allowance, why it is blocked.
+  const note = () => {
+    if (error) return <><span role="alert">{error}</span>{recheck}</>;
+    if (created) return <><span className="mono" title={created.link}>{shortInviteLink(created.link)}</span>{recheck}</>;
+    if (exhausted) return <>{exhausted}{recheck}</>;
+    return blocked ?? 'Each invite works once, for a new buyer, within 4 weeks.';
+  };
   return (
     <BucketRow visible name="Invites" amount={String(left ?? 0)} amountKind="count"
       amountDetail={quota !== null ? `of ${quota} left this week` : undefined}
-      note={error ? <><span role="alert">{error}</span>{recheck}</>
-        : created ? <><span className="mono" title={created.link}>{shortInviteLink(created.link)}</span>{recheck}</>
-          : exhausted ? <>{exhausted}{recheck}</>
-            : blocked ?? 'Each invite works once, for a new buyer, within 4 weeks.'}
+      note={note()}
       actions={<>
         {created ? <Button variant="outline" size="sm" onClick={() => { void copyText(created.link); }}>Copy</Button> : null}
         <span className="btn-wrap" title={blocked ?? exhausted ?? undefined}>
