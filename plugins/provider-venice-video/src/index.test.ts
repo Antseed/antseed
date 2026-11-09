@@ -70,7 +70,11 @@ it('announces audio_url for models that take an audio input, following the annou
   expect(veniceInputParameters(lipSync)).toEqual(['aspect_ratio', 'audio', 'audio_url', 'duration', 'image_url', 'prompt', 'resolution']);
   // Announced inputs are the complete list: audio only when listed.
   expect(veniceInputParameters(lipSync, ['first_frame', 'reference_image', 'audio']))
-    .toEqual(['aspect_ratio', 'audio', 'audio_url', 'duration', 'image_url', 'prompt', 'reference_image_urls', 'resolution']);
+    .toEqual(['aspect_ratio', 'audio', 'audio_url', 'duration', 'image_url', 'prompt', 'reference_audio_urls', 'reference_image_urls', 'resolution']);
+  // Reference audio only next to reference images or videos; a reference video input adds reference_video_urls.
+  expect(veniceInputParameters(lipSync, ['reference_video', 'audio']))
+    .toEqual(['aspect_ratio', 'audio', 'audio_url', 'duration', 'prompt', 'reference_audio_urls', 'reference_video_urls', 'resolution']);
+  expect(veniceInputParameters(lipSync, ['first_frame', 'audio'])).toEqual(['aspect_ratio', 'audio', 'audio_url', 'duration', 'image_url', 'prompt', 'resolution']);
   expect(veniceInputParameters(lipSync, ['first_frame'])).toEqual(['aspect_ratio', 'audio', 'duration', 'image_url', 'prompt', 'resolution']);
   const silent = veniceModel('kling', { model_type: 'image-to-video', resolutions: ['720p'], aspect_ratios: [], audio_input: false });
   expect(veniceInputParameters(silent)).toEqual(['duration', 'image_url', 'prompt', 'resolution']);
@@ -549,4 +553,25 @@ describe('video-to-video models', () => {
     expect(terminalRetrieveFailure(500, Buffer.from(JSON.stringify({ message: 'oops' })))).toBeNull();
     expect(terminalRetrieveFailure(400, Buffer.from('<html>'))).toBeNull();
   });
+});
+
+it('refuses reference videos before payment unless the service prices them', async () => {
+  const fetchMock = vi.fn().mockResolvedValue(Response.json({ model: 'wan-2.5', queue_id: 'queue-1' }));
+  vi.stubGlobal('fetch', fetchMock);
+  const create = (body: object) => request('/api/v1/video/queue', { model: 'wan-2.5', prompt: 'dance', duration: '5s', reference_image_urls: ['https://x/i.png'], ...body });
+  const unpriced = plugin.createProvider(config) as Provider;
+  expect(unpriced.checkRequest!(create({ reference_video_urls: ['https://x/v.mp4'] })))
+    .toEqual({ statusCode: 400, code: 'unsupported_video_input', message: 'This service does not take reference videos' });
+  expect((await unpriced.handleRequest(create({ reference_video_urls: ['https://x/v.mp4'] }))).statusCode).toBe(400);
+  expect(unpriced.checkRequest!(create({ reference_audio_urls: ['https://x/a.mp3'] }))).toBeNull();
+  expect(fetchMock).not.toHaveBeenCalled();
+  const priced = plugin.createProvider({
+    ...config,
+    ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON: JSON.stringify({ 'wan-2.5': { 'venice-video': { version: 1, components: [
+      { unit: 'video_generations', priceUsd: 0.1 },
+      { unit: 'video_generations', priceUsd: 0.8, match: { reference_video: 'true' } },
+    ] } } }),
+  }) as Provider;
+  expect(priced.checkRequest!(create({ reference_video_urls: ['https://x/v.mp4'] }))).toBeNull();
+  expect((await priced.handleRequest(create({ reference_video_urls: ['https://x/v.mp4'] }))).statusCode).toBe(200);
 });

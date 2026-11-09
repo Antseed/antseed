@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Provider, ProviderStreamCallbacks, SerializedHttpRequest } from '@antseed/node';
-import plugin, { FAL_BALANCE_CHECK_OFF, FAL_STORAGE_URL, falAppId, falEditRule, falErrorReason, falFollowsAudio, falSubmitTimeoutMs, falInputParameters, falInputSchema, withAudioInputs, withEditInputs, withFrameInputs } from './index.js';
+import plugin, { FAL_BALANCE_CHECK_OFF, FAL_STORAGE_URL, falAppId, falReferenceAliases, renameFalReferenceAliases, falEditRule, falErrorReason, falFollowsAudio, falSubmitTimeoutMs, falInputParameters, falInputSchema, withAudioInputs, withEditInputs, withFrameInputs } from './index.js';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -604,5 +604,77 @@ describe('endpoints whose video follows their audio', () => {
   it('leaves other endpoints\' audio alone', async () => {
     const { provider } = await ready(INFINITALK);
     expect(provider.checkRequest!(create(INFINITALK, { image_url: face, audio_url: 'https://example.com/voice.mp3', prompt: 'hi', duration: 5 }))).toBeNull();
+  });
+});
+
+describe('reference media', () => {
+  const R2V = 'bytedance/seedance-2.5/reference-to-video';
+  const r2vSchema = schema(R2V, { prompt: {}, duration: {}, resolution: {}, image_urls: {}, audio_urls: {}, video_urls: {} });
+  const r2vConfig = (components: object[]) => ({
+    ...config,
+    ANTSEED_ALLOWED_SERVICES: R2V,
+    ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON: JSON.stringify({ [R2V]: { 'fal-video': { version: 1, components } } }),
+  });
+  const perSecond = { unit: 'video_seconds', priceUsd: 0.6 };
+  const withReferenceVideo = { unit: 'video_generations', priceUsd: 5.5, match: { reference_video: 'true' } };
+  const r2vProvider = async (components: object[]) => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(Response.json(r2vSchema))
+      .mockResolvedValueOnce(Response.json({ credits: { current_balance: 5 } }))
+      .mockResolvedValue(Response.json({ request_id: 'req-1' }));
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = plugin.createProvider(r2vConfig(components)) as Provider;
+    await provider.init!();
+    return { provider, fetchMock };
+  };
+  const create = (input: object) => request('/fal/v1/video/queue', { model: R2V, prompt: 'dance', duration: '5', ...input });
+
+  it('names the common reference fields an endpoint takes under fal names', () => {
+    expect(falReferenceAliases(['prompt', 'image_urls', 'audio_urls', 'video_urls'])).toEqual(['reference_image_urls', 'reference_audio_urls', 'reference_video_urls']);
+    expect(falReferenceAliases(['prompt', 'image_urls', 'reference_image_urls'])).toEqual([]);
+    expect(falReferenceAliases(['prompt', 'image_url'])).toEqual([]);
+  });
+
+  it('renames the common names to fal fields, and refuses both names at once', () => {
+    const input: Record<string, unknown> = { reference_audio_urls: ['a.mp3'], reference_image_urls: ['i.png'] };
+    expect(renameFalReferenceAliases(input, ['image_urls', 'audio_urls'])).toBeNull();
+    expect(input).toEqual({ audio_urls: ['a.mp3'], image_urls: ['i.png'] });
+    // An endpoint whose own field has the common name keeps it.
+    const own: Record<string, unknown> = { reference_image_urls: ['i.png'] };
+    expect(renameFalReferenceAliases(own, ['reference_image_urls'])).toBeNull();
+    expect(own).toEqual({ reference_image_urls: ['i.png'] });
+    expect(renameFalReferenceAliases({ reference_audio_urls: ['a'], audio_urls: ['b'] }, undefined)).toBe('Send reference_audio_urls or audio_urls, not both');
+  });
+
+  it('announces the common names next to fal\'s and sends fal\'s names upstream', async () => {
+    const { provider, fetchMock } = await r2vProvider([perSecond]);
+    expect(provider.serviceCapabilities?.[R2V]?.supportedParameters).toEqual([
+      'audio_urls', 'duration', 'image_urls', 'prompt', 'reference_audio_urls', 'reference_image_urls', 'reference_video_urls', 'resolution', 'video_urls',
+    ]);
+    const response = await provider.handleRequest(create({ reference_image_urls: ['https://x/i.png'], reference_audio_urls: ['https://x/a.mp3'] }));
+    expect(response.statusCode).toBe(200);
+    expect(parse(fetchMock.mock.calls[2]![1].body)).toEqual({ prompt: 'dance', duration: '5', image_urls: ['https://x/i.png'], audio_urls: ['https://x/a.mp3'] });
+  });
+
+  it('refuses reference videos before payment unless the service prices them', async () => {
+    const { provider, fetchMock } = await r2vProvider([perSecond]);
+    for (const input of [{ video_urls: ['https://x/v.mp4'] }, { reference_video_urls: ['https://x/v.mp4'] }]) {
+      expect(provider.checkRequest!(create(input))).toEqual({ statusCode: 400, code: 'unsupported_video_input', message: 'This service does not take reference videos' });
+      expect((await provider.handleRequest(create(input))).statusCode).toBe(400);
+    }
+    expect(provider.checkRequest!(create({ video_urls: [] }))).toBeNull();
+    expect(provider.checkRequest!(create({ reference_audio_urls: ['a'], audio_urls: ['b'] }))?.code).toBe('invalid_video_request');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('serves reference videos when the service prices them', async () => {
+    const { provider, fetchMock } = await r2vProvider([perSecond, { unit: 'video_generations', priceUsd: 0 }, withReferenceVideo]);
+    expect(provider.checkRequest!(create({ reference_video_urls: ['https://x/v.mp4'] }))).toBeNull();
+    expect((await provider.handleRequest(create({ reference_video_urls: ['https://x/v.mp4'] }))).statusCode).toBe(200);
+    expect(parse(fetchMock.mock.calls[2]![1].body).video_urls).toEqual(['https://x/v.mp4']);
+  });
+
+  it('announces reference_video in the inputs of an endpoint that takes video_urls', () => {
+    expect(withFrameInputs({ supportedParameters: ['prompt', 'video_urls'], video: { inputs: ['reference_image'] } }).video?.inputs).toEqual(['reference_image', 'reference_video']);
   });
 });

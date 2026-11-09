@@ -359,6 +359,7 @@ function imageUnitUsage(facts: ImageRequestFacts): UnitBillingUsage {
  * leaves out audio at the announced `video.audio`. Only Venice: its plugin sends
  * those values upstream, so the price is the clip's. Other protocols price what
  * the create names, so one leaving out a priced option matches no component.
+ * `reference_video` is `"true"` when the create sends reference videos.
  */
 export function videoAttributes(
   service: string,
@@ -373,6 +374,7 @@ export function videoAttributes(
     ...(video.resolution ? { resolution: video.resolution } : {}),
     ...(aspectRatio ? { aspect_ratio: aspectRatio } : {}),
     ...(audio !== undefined ? { audio: String(audio) } : {}),
+    ...(video.referenceVideo ? { reference_video: 'true' } : {}),
   };
 }
 

@@ -72,3 +72,47 @@ describe('video prices by aspect ratio and audio', () => {
     expect(videoAttributes('seedance', facts, { audio: false })).toEqual({ model: 'seedance', audio: 'false' });
   });
 });
+
+describe('video prices for reference videos', () => {
+  // A per-second price, plus a flat charge when the create sends reference videos (upstreams bill their length too).
+  // Every create counts one video generation, so a $0 one prices a create without reference videos.
+  const r2v: UnitBillingModelV1 = {
+    version: 1,
+    components: [
+      { unit: 'video_seconds', priceUsd: 0.1, match: { resolution: '480p' } },
+      { unit: 'video_generations', priceUsd: 0 },
+      { unit: 'video_generations', priceUsd: 2, match: { resolution: '480p', reference_video: 'true' } },
+    ],
+  };
+  function cost(body: object, protocol: 'venice-video' | 'fal-video' = 'venice-video') {
+    const captured = captureUnitBillingContext({
+      sellerPeerId: 'a'.repeat(40),
+      provider: 'video',
+      service: 'r2v',
+      serviceApiProtocol: protocol,
+      request: {
+        requestId: 'request',
+        method: 'POST',
+        path: protocol === 'fal-video' ? '/fal/v1/video/queue' : '/api/v1/video/queue',
+        headers: { 'content-type': 'application/json' },
+        body: new TextEncoder().encode(JSON.stringify({ model: 'r2v', duration: '4s', resolution: '480p', ...body })),
+      },
+    });
+    return { attributes: captured.context.attributes, usd: estimateUnitRequestCost(r2v, captured.context, captured.requestUsage) };
+  }
+
+  it('adds the reference-video charge only when the create sends one', () => {
+    expect(cost({}).usd).toBe(400_000n);
+    expect(cost({}).attributes).not.toHaveProperty('reference_video');
+    expect(cost({ reference_video_urls: [] }).usd).toBe(400_000n);
+    expect(cost({ reference_video_urls: ['https://x/v.mp4'] }).usd).toBe(2_400_000n);
+    expect(cost({ reference_video_urls: ['https://x/v.mp4'] }).attributes).toMatchObject({ reference_video: 'true' });
+  });
+
+  it('reads fal\'s video_urls and the common name on a fal create', () => {
+    expect(cost({ video_urls: ['https://x/v.mp4'] }, 'fal-video').usd).toBe(2_400_000n);
+    expect(cost({ reference_video_urls: ['https://x/v.mp4'] }, 'fal-video').usd).toBe(2_400_000n);
+    // Venice has no `video_urls` field.
+    expect(cost({ video_urls: ['https://x/v.mp4'] }).usd).toBe(400_000n);
+  });
+});

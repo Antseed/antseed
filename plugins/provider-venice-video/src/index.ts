@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AntseedProviderPlugin, Provider, ProviderRequestRefusal, SerializedHttpRequest, ServiceCapabilities, ServiceHealthStatus, UpstreamAccountStatus, VideoInputKind, VideoOptions } from '@antseed/node';
 import { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION, isContentFreeLogging, validateServiceCapabilityFields } from '@antseed/node';
-import { nativeVideoRoute, parseJsonObject, requestService, videoSourceLengthProblem } from '@antseed/api-adapter';
+import { nativeVideoRoute, parseJsonObject, referenceVideoPriceProblem, requestService, videoSourceLengthProblem } from '@antseed/api-adapter';
 import {
   BaseProvider,
   parseCsv,
@@ -64,9 +64,11 @@ function saveDownloadUrls(dataDir: string | undefined, urls: DownloadUrls): void
   }
 }
 
-const FRAME_FIELDS = { first_frame: 'image_url', last_frame: 'end_image_url', reference_image: 'reference_image_urls' } as const;
+const FRAME_FIELDS = { first_frame: 'image_url', last_frame: 'end_image_url', reference_image: 'reference_image_urls', reference_video: 'reference_video_urls' } as const;
 /** Venice's queue field for an audio input (video input kind `audio`). */
 const AUDIO_INPUT_FIELD = 'audio_url';
+/** Reference audio (voice, narration, sound), which Venice takes only alongside a reference image or video. */
+const REFERENCE_AUDIO_FIELD = 'reference_audio_urls';
 
 /**
  * Largest create body Venice accepts. Measured on 2026-10-23: 32.5 MB passed
@@ -155,6 +157,8 @@ export async function veniceReferenceImages(baseUrl: string, apiKey: string, mod
  * `reference_image_urls` when `referenceImages` is true. Audio input
  * (`audio_url`, e.g. narration to lip-sync to) follows `audio` in the
  * announced inputs, or Venice's `audio_input` when inputs were not announced.
+ * A model announced with audio and reference images or videos also takes
+ * `reference_audio_urls`, which Venice accepts only next to those.
  */
 export function veniceInputParameters(model: unknown, inputs?: readonly string[], endFrame = false, referenceImages = inputs?.includes('reference_image') === true): string[] | null {
   const constraints = veniceConstraints(model);
@@ -175,6 +179,7 @@ export function veniceInputParameters(model: unknown, inputs?: readonly string[]
     'duration',
     ...(edit ? ['video_url'] : []),
     ...(audioInput ? [AUDIO_INPUT_FIELD] : []),
+    ...(audioInput && !edit && inputs?.some(input => input === 'reference_image' || input === 'reference_video') ? [REFERENCE_AUDIO_FIELD] : []),
     ...(Array.isArray(constraints.resolutions) && constraints.resolutions.length > 0 ? ['resolution'] : []),
     ...(Array.isArray(constraints.aspect_ratios) && constraints.aspect_ratios.length > 0 ? ['aspect_ratio'] : []),
     ...(constraints.audio_configurable === true ? ['audio'] : []),
@@ -406,6 +411,8 @@ const plugin: AntseedProviderPlugin = {
 
     /** Why a create can't be served at the seller's price, or null. */
     const createRefusal = (service: string, input: Record<string, unknown> | null): ProviderRequestRefusal | null => {
+      const unpriced = input && referenceVideoPriceProblem(PROTOCOL, input, serviceUnitBillingModels?.[service]?.[PROTOCOL]?.components);
+      if (unpriced) return { statusCode: 400, code: 'unsupported_video_input', message: unpriced };
       const length = lengthProblem(service, input);
       if (length) return { statusCode: 422, code: 'invalid_video_duration', message: length };
       const option = input ? unannouncedVideoOption(serviceCapabilities[service]?.video, input, audioConfigurable.get(service)) : null;

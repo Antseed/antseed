@@ -3,6 +3,7 @@ import {
   nativeVideoRoute,
   nativeVideoAcceptance,
   nativeVideoFacts,
+  referenceVideoPriceProblem,
   requestService,
   detectRequestServiceApiProtocol,
   selectTargetProtocolForRequest,
@@ -95,4 +96,24 @@ describe('native video API contracts', () => {
     expect(inferProviderDefaultServiceApiProtocols('venice')).toEqual([]);
   });
 
+});
+
+describe('reference videos in a video create', () => {
+  const create = (path: string, body: object) => ({
+    requestId: 'r', method: 'POST', path, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify(body)),
+  });
+  it('marks a create that sends reference videos', () => {
+    expect(nativeVideoFacts(create('/api/v1/video/queue', { model: 'm', duration: '5s', reference_video_urls: ['v'] }))?.referenceVideo).toBe(true);
+    expect(nativeVideoFacts(create('/api/v1/video/queue', { model: 'm', duration: '5s', reference_video_urls: [] }))).not.toHaveProperty('referenceVideo');
+    expect(nativeVideoFacts(create('/fal/v1/video/queue', { model: 'm', duration: '5', video_urls: ['v'] }))?.referenceVideo).toBe(true);
+    expect(nativeVideoFacts(create('/api/v1/video/queue', { model: 'm', duration: '5s', video_urls: ['v'] }))).not.toHaveProperty('referenceVideo');
+  });
+
+  it('refuses reference videos a service has no price for', () => {
+    const priced = [{ match: { reference_video: 'true' } }];
+    expect(referenceVideoPriceProblem('venice-video', { reference_video_urls: ['v'] }, [{}])).toBe('This service does not take reference videos');
+    expect(referenceVideoPriceProblem('venice-video', { reference_video_urls: ['v'] }, undefined)).toBe('This service does not take reference videos');
+    expect(referenceVideoPriceProblem('venice-video', { reference_video_urls: ['v'] }, priced)).toBeNull();
+    expect(referenceVideoPriceProblem('fal-video', { reference_image_urls: ['i'] }, [{}])).toBeNull();
+  });
 });

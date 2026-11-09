@@ -105,6 +105,37 @@ export interface NativeVideoFacts {
   aspectRatio?: string;
   /** Whether the create asks for audio: `audio`, or fal's `generate_audio`. */
   audio?: boolean;
+  /** True when the create sends reference videos (`reference_video_urls`, or fal's `video_urls`). */
+  referenceVideo?: true;
+}
+
+/** Create fields that carry reference videos, by protocol. fal's own name is `video_urls`. */
+export const REFERENCE_VIDEO_FIELDS: Record<NativeVideoProtocol, readonly string[]> = {
+  'venice-video': ['reference_video_urls'],
+  'fal-video': ['reference_video_urls', 'video_urls'],
+};
+
+/**
+ * Why a create's reference videos can't be served at the service's price, or
+ * null. Upstreams bill reference videos on top of the output, so a create that
+ * sends one needs a price component matching `reference_video: "true"`.
+ */
+export function referenceVideoPriceProblem(
+  protocol: NativeVideoProtocol,
+  body: Record<string, unknown>,
+  components: readonly { match?: Readonly<Record<string, string | undefined>> }[] | undefined,
+): string | null {
+  if (!sendsReferenceVideo(protocol, body)) return null;
+  if (components?.some((component) => component.match?.reference_video === 'true')) return null;
+  return 'This service does not take reference videos';
+}
+
+/** Whether a create body sends at least one reference video. */
+export function sendsReferenceVideo(protocol: NativeVideoProtocol, body: Record<string, unknown>): boolean {
+  return REFERENCE_VIDEO_FIELDS[protocol].some((field) => {
+    const value = body[field];
+    return Array.isArray(value) ? value.length > 0 : value !== undefined && value !== null && value !== '';
+  });
 }
 
 export function nativeVideoFacts(request: SerializedHttpRequest): NativeVideoFacts | undefined {
@@ -122,6 +153,7 @@ export function nativeVideoFacts(request: SerializedHttpRequest): NativeVideoFac
     ...(typeof body.resolution === 'string' ? { resolution: body.resolution } : {}),
     ...(typeof body.aspect_ratio === 'string' ? { aspectRatio: body.aspect_ratio } : {}),
     ...(typeof audio === 'boolean' ? { audio } : {}),
+    ...(sendsReferenceVideo(route.protocol, body) ? { referenceVideo: true } : {}),
   };
 }
 

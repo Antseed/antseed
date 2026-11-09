@@ -1,6 +1,6 @@
 import type { AntseedProviderPlugin, Provider, ProviderRequestRefusal, SerializedHttpRequest, ServiceCapabilities, ServiceHealthStatus, UpstreamAccountStatus, VideoInputKind } from '@antseed/node';
 import { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION, validateServiceCapabilityFields } from '@antseed/node';
-import { audioSourceLengthProblem, nativeVideoRoute, parseJsonObject, requestService, videoSourceLengthProblem } from '@antseed/api-adapter';
+import { audioSourceLengthProblem, nativeVideoRoute, parseJsonObject, referenceVideoPriceProblem, requestService, videoSourceLengthProblem } from '@antseed/api-adapter';
 import {
   FAL_PLATFORM_URL,
   FAL_SCHEMA_URL,
@@ -146,7 +146,45 @@ function withSchemaInputs(capabilities: ServiceCapabilities, input: FalInputSche
 const FRAME_INPUT_FIELDS = {
   first_frame: ['image_url', 'start_image_url', 'first_frame_url', 'first_image_url'],
   last_frame: ['end_image_url', 'tail_image_url', 'last_frame_url', 'last_image_url'],
+  reference_video: ['video_urls', 'reference_video_urls'],
 } as const;
+
+/**
+ * The common reference-media names (Venice's, and other sellers') and the fal
+ * field each one is. fal's Seedance reference-to-video takes `image_urls`,
+ * `audio_urls` and `video_urls`; the seller announces the common names too and
+ * renames them before the request goes to fal, so one request works on either.
+ */
+export const FAL_REFERENCE_ALIASES = {
+  reference_image_urls: 'image_urls',
+  reference_audio_urls: 'audio_urls',
+  reference_video_urls: 'video_urls',
+} as const;
+
+type FalReferenceAlias = keyof typeof FAL_REFERENCE_ALIASES;
+
+/** The common names an endpoint takes: those whose fal field it has and whose own name it lacks. */
+export function falReferenceAliases(fields: readonly string[]): FalReferenceAlias[] {
+  return (Object.keys(FAL_REFERENCE_ALIASES) as FalReferenceAlias[])
+    .filter(alias => fields.includes(FAL_REFERENCE_ALIASES[alias]) && !fields.includes(alias));
+}
+
+/**
+ * Renames the common reference names in a create to the endpoint's fal fields,
+ * in place. `fields` is the endpoint's schema, or undefined when it was not
+ * read (then every common name is renamed). Returns why the create can't be
+ * renamed (both names sent), or null.
+ */
+export function renameFalReferenceAliases(input: Record<string, unknown>, fields: readonly string[] | undefined): string | null {
+  for (const alias of Object.keys(FAL_REFERENCE_ALIASES) as FalReferenceAlias[]) {
+    const field = FAL_REFERENCE_ALIASES[alias];
+    if (input[alias] === undefined || fields?.includes(alias)) continue;
+    if (input[field] !== undefined) return `Send ${alias} or ${field}, not both`;
+    input[field] = input[alias];
+    delete input[alias];
+  }
+  return null;
+}
 
 /**
  * Adds the frame inputs an endpoint's fields take (for example Kling's
@@ -312,6 +350,8 @@ const plugin: AntseedProviderPlugin = {
     const audioServices = new Set<string>();
     // Endpoints whose fal schema was read.
     const schemaRead = new Set<string>();
+    // Each read endpoint's input fields, for renaming the common reference names.
+    const schemaFields = new Map<string, readonly string[]>();
 
     // Announces each endpoint's own input field names, so buyers can call fal's API unchanged.
     const init = async () => {
@@ -320,8 +360,13 @@ const plugin: AntseedProviderPlugin = {
           const response = await fetch(`${FAL_SCHEMA_URL}?endpoint_id=${encodeURIComponent(service)}`, { redirect: 'error', signal: AbortSignal.timeout(10_000) });
           const input = response.ok ? falInputSchema(await readJson(response), service) : null;
           const capabilities = serviceCapabilities[service]!;
-          if (input?.parameters && !capabilities.supportedParameters) capabilities.supportedParameters = input.parameters;
-          if (input) schemaRead.add(service);
+          if (input?.parameters && !capabilities.supportedParameters) {
+            capabilities.supportedParameters = [...input.parameters, ...falReferenceAliases(input.fields)].sort();
+          }
+          if (input) {
+            schemaRead.add(service);
+            schemaFields.set(service, input.fields);
+          }
           const rule = falEditRule(input);
           if (rule) {
             editRules.set(service, rule);
@@ -376,12 +421,21 @@ const plugin: AntseedProviderPlugin = {
       return null;
     };
 
+    /** Why a create's reference videos are not covered by the service's price, or null. */
+    const referencePriceProblem = (service: string, input: Record<string, unknown>) =>
+      referenceVideoPriceProblem(PROTOCOL, input, serviceUnitBillingModels?.[service]?.[PROTOCOL]?.components);
+
     // Run before any payment, so a refused create costs the buyer nothing.
     const checkRequest = (request: SerializedHttpRequest): ProviderRequestRefusal | null => {
       const { videoRoute, service } = route(request);
       if (videoRoute?.action !== 'create' || !service) return null;
       const body = parseJsonObject(request.body);
-      const refused = body && lengthProblem(service, body);
+      if (!body) return null;
+      const unpriced = referencePriceProblem(service, body);
+      if (unpriced) return { statusCode: 400, code: 'unsupported_video_input', message: unpriced };
+      const renamed = renameFalReferenceAliases({ ...body }, schemaFields.get(service));
+      if (renamed) return { statusCode: 400, code: 'invalid_video_request', message: renamed };
+      const refused = lengthProblem(service, body);
       return refused ? { statusCode: 422, code: 'invalid_video_duration', message: refused } : null;
     };
 
@@ -397,9 +451,13 @@ const plugin: AntseedProviderPlugin = {
       try {
         // fal reads the model from the URL; the body is the model input only.
         const { model: _model, service: _service, ...input } = body;
-        // The seller checks this before payment too (checkRequest).
+        // The seller checks these before payment too (checkRequest).
+        const unpriced = referencePriceProblem(service, input);
+        if (unpriced) return error(request, 400, 'unsupported_video_input', unpriced);
         const refused = lengthProblem(service, input);
         if (refused) return error(request, 422, 'invalid_video_duration', refused);
+        const renamed = renameFalReferenceAliases(input, schemaFields.get(service));
+        if (renamed) return error(request, 400, 'invalid_video_request', renamed);
         const followsAudioLength = followsAudio(service, input);
         // An endpoint that takes no `duration` gets none: its output follows the source or the audio.
         if (editRules.get(service)?.outputFollowsSource || audioServices.has(service)) delete input.duration;
