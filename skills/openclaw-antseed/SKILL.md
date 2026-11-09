@@ -29,7 +29,7 @@ export ANTSEED_API_KEY="antseed_…"                          # a gateway key, s
 
 If the user already has a gateway, ask them for its base URL (shown in the Gateway Console's top bar) and a key created under **Keys**. Otherwise, one of:
 
-- **This computer or a server:** follow the quickstart (`https://antseed.com/docs/quickstart`). On a computer, `curl -fsSL https://antseed.com/install.sh | bash` installs the CLI and starts a gateway at `http://localhost:8379/v1`. On a Linux server, the installer with `--domain` serves it over HTTPS (`https://antseed.com/docs/gateway/server`).
+- **This computer or a server:** follow the quickstart (`https://antseed.com/docs/quickstart`). On a computer, its one-line installer (for the user to run) installs the CLI and starts a gateway at `http://localhost:8379/v1`. On a Linux server, the installer with `--domain` serves it over HTTPS (`https://antseed.com/docs/gateway/server`).
 - **The user's computer, published over HTTPS:** `antseed tunnel start`, or the desktop app's **Agents → Internet-accessible endpoint**. Both publish a gateway and its console, so claim the console straight away: **Claim console** in the desktop app, or `antseed gateway console-link` on the same computer (`https://antseed.com/docs/tunnels`).
 
 Funding lives on the gateway: add funds to the workspace wallet in the console's **Wallet & Funding** page (card or USDC on Base). Then skip to Step 6.
@@ -101,10 +101,11 @@ Advanced: if you intentionally want a non-default port:
 antseed --data-dir "$BUYDIR" buyer start --port 5005
 ```
 
-### Persistent service (systemd)
+### Persistent service (systemd user service, no sudo)
 
 ```bash
-sudo tee /etc/systemd/system/antseed-buyer.service > /dev/null <<'EOF'
+mkdir -p "$HOME/.config/systemd/user"
+cat > "$HOME/.config/systemd/user/antseed-buyer.service" <<'EOF'
 [Unit]
 Description=Antseed Buyer Proxy
 After=network-online.target
@@ -112,7 +113,6 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=$USER
 Environment=ANTSEED_IDENTITY_HEX=<private-key-hex-no-0x>
 Environment=ANTSEED_DATA_DIR=%h/.antseed-buyer-openclaw
 ExecStart=/usr/bin/env antseed --data-dir %h/.antseed-buyer-openclaw buyer start
@@ -123,12 +123,15 @@ StandardError=journal
 SyslogIdentifier=antseed-buyer
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target
 EOF
 
-sudo systemctl daemon-reload
-sudo systemctl enable --now antseed-buyer
+systemctl --user daemon-reload
+systemctl --user enable --now antseed-buyer
 ```
+
+On a server, keeping the service up after the user logs out needs a one-time `loginctl enable-linger` that the
+user runs themselves with admin rights.
 
 Then point OpenClaw at the local proxy:
 
@@ -169,10 +172,13 @@ json.dump(cfg, sys.stdout, indent=2)
 Replace `SERVICE_ID_HERE` with a model from the network catalog:
 
 ```bash
-curl -s "$ANTSEED_BASE_URL/models" -H "Authorization: Bearer $ANTSEED_API_KEY" | jq '.data[].id'
-curl -s "$ANTSEED_BASE_URL/models?type=text" -H "Authorization: Bearer $ANTSEED_API_KEY"
-curl -s "$ANTSEED_BASE_URL/models/<model-id>" -H "Authorization: Bearer $ANTSEED_API_KEY"
+printf 'header = "Authorization: Bearer %s"\n' "$ANTSEED_API_KEY" | curl -s -K - "$ANTSEED_BASE_URL/models" | jq '.data[].id'
+printf 'header = "Authorization: Bearer %s"\n' "$ANTSEED_API_KEY" | curl -s -K - "$ANTSEED_BASE_URL/models?type=text"
+printf 'header = "Authorization: Bearer %s"\n' "$ANTSEED_API_KEY" | curl -s -K - "$ANTSEED_BASE_URL/models/<model-id>"
 ```
+
+The key goes to `curl -K -` (curl's config, read from stdin) rather than onto the command line, so it never shows
+up in the process list or a command log.
 
 `antseed network browse` remains useful for a peer-oriented table of services and pricing.
 

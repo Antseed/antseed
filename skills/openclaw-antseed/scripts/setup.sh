@@ -32,7 +32,7 @@ Options:
   --bootstrap <host:port>   Bootstrap node address (e.g., 108.128.178.49:6882)
   --context-window <n>      Service context window size (default: 131072)
   --max-tokens <n>          Service max output tokens (default: 8192)
-  --service-flag            Install as systemd service
+  --service-flag            Install as a systemd user service (per-user, no root)
   -h, --help                Show this help
 EOF
   exit 1
@@ -138,9 +138,10 @@ print('  Default service set: antseed/${SERVICE}')
 "
 
 if [ "$INSTALL_SERVICE" = true ]; then
-  echo "==> Installing systemd service..."
+  echo "==> Installing systemd user service..."
   ANTSEED_BIN=$(command -v antseed)
-  sudo tee /etc/systemd/system/antseed-buyer.service > /dev/null <<SERVICE
+  mkdir -p "$HOME/.config/systemd/user"
+  cat > "$HOME/.config/systemd/user/antseed-buyer.service" <<SERVICE
 [Unit]
 Description=Antseed Buyer Proxy
 After=network-online.target
@@ -148,7 +149,6 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=$(whoami)
 ExecStart=${ANTSEED_BIN} buyer start --router local --port ${PORT}
 Restart=on-failure
 RestartSec=10
@@ -157,11 +157,12 @@ StandardError=journal
 SyslogIdentifier=antseed-buyer
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target
 SERVICE
-  sudo systemctl daemon-reload
-  sudo systemctl enable --now antseed-buyer
+  systemctl --user daemon-reload
+  systemctl --user enable --now antseed-buyer
   echo "  Service installed and started"
+  echo "  On a server, keep it running after logout with a one-time: loginctl enable-linger (needs admin rights)"
 else
   echo ""
   echo "==> To start the buyer proxy:"
