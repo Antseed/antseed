@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import { readdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { describeTree } from './trees.mjs';
 
 const escape = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
 const detail = (value) => (value === undefined ? '' : escape(typeof value === 'string' ? value : JSON.stringify(value)));
@@ -30,6 +31,7 @@ pre{background:#f6f8fa;padding:12px;border-radius:6px;overflow:auto;max-height:3
 <div class="muted">${escape(report.description)}</div>
 <p class="muted">result ${escape(report.result)}${report.phase ? ` in ${escape(report.phase)}` : ''} · seed ${escape(report.seed)} · git ${escape(report.git?.sha?.slice(0, 12))}${report.git?.dirty ? ' (dirty)' : ''} · ${escape(report.mode)} mode · ${escape(report.durationMs)} ms</p>
 <p class="muted">testbench ${escape(report.testbench)} · upstream ${escape(report.upstream)} · fork block ${escape(report.forkBlock)} · ${escape(report.startedAt)} → ${escape(report.finishedAt)}</p>
+${report.trees ? `<p class="muted">seller tree <code>${escape(describeTree(report.trees.seller))}</code> · buyer tree <code>${escape(describeTree(report.trees.buyer))}</code></p>` : ''}
 ${report.error ? `<pre>${escape(report.error)}</pre>` : ''}
 ${report.teardownError ? `<pre>Teardown: ${escape(report.teardownError)}</pre>` : ''}
 <h2>Checks</h2><table>${rows(report.checks ?? [])}${rows(report.knownIssues ?? [], true)}</table>

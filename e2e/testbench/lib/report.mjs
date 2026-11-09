@@ -61,12 +61,14 @@ export function recordTeardownFailure(report, error) {
 }
 
 /** The command that replays a run. Flags that change what runs are kept; --real-funds and --live still need a yes per run. */
-export function rerunCommand({ scenario, target, mode, seed, strict, budgets, slot, live }) {
+export function rerunCommand({ scenario, target, mode, seed, strict, budgets, slot, live, sellerTree, buyerTree }) {
   const parts = ['pnpm testbench run', scenario];
   if (target) parts.push('--chain', target);
   // Only a mode the user asked for is repeated; a topology's default mode replays by itself.
   if (mode && target !== 'mainnet') parts.push('--mode', mode);
   if (seed !== undefined && seed !== null) parts.push('--seed', seed);
+  if (sellerTree) parts.push('--seller-tree', JSON.stringify(sellerTree));
+  if (buyerTree) parts.push('--buyer-tree', JSON.stringify(buyerTree));
   if (strict) parts.push('--strict');
   if (budgets) parts.push('--budgets');
   if (slot && slot !== 'default') parts.push('--slot', slot);
@@ -103,17 +105,17 @@ export function driftLines(drift = {}) {
 }
 
 /**
- * The latest passed report.json before `currentDir` of the same scenario, mode and chain, as { dir, report }, or
+ * The latest passed report.json before `currentDir` of the same scenario, mode, chain and other trees, as { dir, report }, or
  * null. Run directories start with their timestamp, so names sort by time. Only a passed run is a baseline: a
  * failed one can be fast because it skipped the work (a run whose requests went unpaid closed nothing). A chain
  * other than this run's is passed over too: a fork's RPC would swamp the comparison.
  */
-export async function previousReport(reportsDir, currentDir, { scenario, mode, target }) {
+export async function previousReport(reportsDir, currentDir, { scenario, mode, target, topology }) {
   const names = await readdir(reportsDir).catch(() => []);
   const earlier = names.filter((name) => name.endsWith(`-${scenario}`) && name < currentDir).sort().reverse();
   for (const dir of earlier) {
     const report = await readFile(join(reportsDir, dir, 'report.json'), 'utf8').then(JSON.parse).catch(() => null);
-    if (report?.scenario === scenario && report.mode === mode && report.target === target && report.result === 'passed') return { dir, report };
+    if (report?.scenario === scenario && report.mode === mode && report.target === target && report.result === 'passed' && JSON.stringify(report.topology?.trees) === JSON.stringify(topology?.trees)) return { dir, report };
   }
   return null;
 }

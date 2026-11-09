@@ -41,6 +41,14 @@ describe('html report provenance', () => {
     assert.match(html, /result blocked in up/);
     assert.match(html, /seed 7/);
     assert.match(html, /git abcdef123456 \(dirty\)/);
+    assert.doesNotMatch(html, /seller tree/);
+  });
+
+  it('says which trees talked', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'tb-report-'));
+    const html = await readFile(await writeHtmlReport(dir, { ...report, trees: { seller: { path: '/other/main', head: 'abcdef1234567890' }, buyer: { path: '/this', head: '1234567890abcdef' } } }), 'utf8');
+    assert.match(html, /seller tree <code>\/other\/main @ abcdef123456<\/code>/);
+    assert.match(html, /buyer tree <code>\/this @ 1234567890ab<\/code>/);
   });
 
   it('renders a blocked report that has no checks, and an old report without provenance', async () => {
@@ -124,6 +132,12 @@ describe('drift against the previous run', () => {
     assert.deepEqual([found.dir, found.report.metrics.p95Ms], ['2026-01-02T00-00-00-000Z-stress-smoke', 2]);
     assert.equal(await previousReport(reports, '2026-01-01T00-00-00-000Z-stress-smoke', run), null);
     assert.equal(await previousReport(join(reports, 'missing'), 'x', run), null);
+    // A run against another version is no baseline for this version, nor the other way round.
+    const crossTree = { ...run, topology: { trees: { seller: { path: '/other', head: 'a' } } } };
+    await save('2026-01-08T12-00-00-000Z-stress-smoke', { ...crossTree, metrics: { p95Ms: 88 } });
+    assert.equal((await previousReport(reports, '2026-01-09T00-00-00-000Z-stress-smoke', run)).report.metrics.p95Ms, 8);
+    assert.equal((await previousReport(reports, '2026-01-10T00-00-00-000Z-stress-smoke', crossTree)).report.metrics.p95Ms, 88);
+    assert.equal(await previousReport(reports, '2026-01-08T00-00-00-000Z-stress-smoke', crossTree), null);
   });
 });
 
@@ -168,6 +182,7 @@ describe('run outcome', () => {
     assert.equal(rerunCommand({ scenario: 'stress-c64', target: 'local', mode: 'sdk', seed: 7 }), 'pnpm testbench run stress-c64 --chain local --mode sdk --seed 7');
     assert.equal(rerunCommand({ scenario: 'mainnet-smoke', target: 'mainnet', mode: 'sdk', seed: 1 }), 'pnpm testbench run mainnet-smoke --chain mainnet --seed 1 --real-funds');
     assert.equal(rerunCommand({ scenario: 'stress-smoke', target: 'local', seed: 1, strict: true, budgets: true }), 'pnpm testbench run stress-smoke --chain local --seed 1 --strict --budgets');
+    assert.equal(rerunCommand({ scenario: 'chat-basic', target: 'local', seed: 1, sellerTree: '../a b', buyerTree: '../c' }), 'pnpm testbench run chat-basic --chain local --seed 1 --seller-tree "../a b" --buyer-tree "../c"');
   });
 
   it('reads git provenance, and null fields outside a repository', async () => {

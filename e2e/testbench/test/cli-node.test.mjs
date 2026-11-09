@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
-import { existsSync, mkdtempSync, readFileSync, readlinkSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync } from 'node:fs';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { assertSellerPaymentsOn, assertSingleBootstrap, buyerProxyListening, cliArgs, cliBuyerClient, cliNodeEnv, crashChild, linkPlugins, sellerReady, spawnCliNode, stopWithGrace, waitForCliReady } from '../lib/cli-node.mjs';
 import { assertCliConfig, cliBuyerConfig, cliSellerConfig, paymentsConfig } from '../lib/node-options.mjs';
 
@@ -86,6 +88,37 @@ describe('CLI launcher', () => {
     assert.equal(env.OPENAI_API_KEY, undefined);
     assert.equal(env.ANTSEED_SETTLEMENT_IDLE_MS, undefined);
     assert.match(env.NODE_OPTIONS, /--unhandled-rejections=warn --import file:.*isolate-preload\.mjs$/);
+    assert.equal(env.ANTSEED_TESTBENCH_NODE_DIST, undefined);
+    assert.equal(cliNodeEnv({ PATH: '/bin', ANTSEED_TESTBENCH_NODE_DIST: '/stale' }, join(dir, 'home')).ANTSEED_TESTBENCH_NODE_DIST, undefined);
+    assert.equal(cliNodeEnv({ PATH: '/bin' }, join(dir, 'home'), {}, '/tree').ANTSEED_TESTBENCH_NODE_DIST, '/tree/packages/node/dist');
+  });
+
+  it('the preload empties the bootstrap list of the tree the process runs from and keeps another tree off the real network', async () => {
+    const dist = join(dir, 'other-tree', 'packages', 'node', 'dist');
+    await mkdir(join(dist, 'discovery'), { recursive: true });
+    await writeFile(join(dist, 'package.json'), '{"type":"module"}');
+    await writeFile(join(dist, 'discovery', 'bootstrap.js'), "export const OFFICIAL_BOOTSTRAP_NODES = [{ host: 'real.example', port: 6881 }];");
+    await mkdir(join(dist, 'p2p'));
+    await writeFile(join(dist, 'p2p', 'nat-traversal.js'), "export class NatTraversal { async mapPorts() { throw new Error('mapped the real router'); } async cleanup() { throw new Error('touched the real router'); } }");
+    const preload = pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), '..', 'lib', 'isolate-preload.mjs')).href;
+    const url = (file) => JSON.stringify(pathToFileURL(join(realpathSync(dist), file)).href);
+    const script = `
+      import net from 'node:net'; import dgram from 'node:dgram'; import { once } from 'node:events';
+      const { OFFICIAL_BOOTSTRAP_NODES: nodes } = await import(${url('discovery/bootstrap.js')});
+      const { NatTraversal } = await import(${url('p2p/nat-traversal.js')});
+      const nat = new NatTraversal();
+      const mapped = await nat.mapPorts([{ port: 6881, protocol: 'UDP' }]); await nat.cleanup();
+      const listened = async (...args) => { const server = net.createServer(); server.listen(...args); await once(server, 'listening'); const host = server.address().address; server.close(); return host; };
+      const bound = async (...args) => { const socket = dgram.createSocket('udp4'); socket.bind(...args); await once(socket, 'listening'); const host = socket.address().address; socket.close(); return host; };
+      console.log(JSON.stringify({ nodes: nodes.length, mapped, tcp: [await listened(0, '0.0.0.0'), await listened(0), await listened({ port: 0, host: '0.0.0.0' })], udp: [await bound(0), await bound(0, '0.0.0.0'), await bound({ port: 0 })] }));
+      process.exit(0);`;
+    const result = spawnSync(process.execPath, ['--import', preload, '--input-type=module', '-e', script], { encoding: 'utf8', env: { PATH: process.env.PATH, ANTSEED_TESTBENCH_NODE_DIST: dist } });
+    assert.equal(result.status, 0, result.stderr);
+    const seen = JSON.parse(result.stdout);
+    assert.equal(seen.nodes, 0);
+    assert.deepEqual(seen.mapped, { success: false, externalIp: null, mappings: [] }, 'no NAT mapping on the real router');
+    assert.deepEqual(seen.tcp, ['127.0.0.1', '127.0.0.1', '127.0.0.1']);
+    assert.deepEqual(seen.udp, ['127.0.0.1', '127.0.0.1', '127.0.0.1']);
   });
 
   it('links workspace plugins where the CLI loader looks, once', async () => {

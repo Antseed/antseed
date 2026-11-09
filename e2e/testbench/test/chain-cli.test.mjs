@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
@@ -215,6 +215,26 @@ else setInterval(() => {}, 1000);
     assert.equal(data.stdoutLength, 5000);
     assert.deepEqual(data.args, ['buyer', '1']);
     assert.equal(data.json, false);
+  });
+
+  it('each side runs its own tree: its CLI, its HOME and its bootstrap list', async () => {
+    const tree = async (name) => {
+      const root = join(dir, name);
+      const dist = join(root, 'packages/node/dist');
+      await mkdir(join(root, 'apps/cli/dist/cli'), { recursive: true });
+      await mkdir(join(dist, 'discovery'), { recursive: true });
+      await writeFile(join(dist, 'package.json'), '{"type":"module"}');
+      await writeFile(join(dist, 'discovery/bootstrap.js'), 'export const OFFICIAL_BOOTSTRAP_NODES = [];');
+      await mkdir(join(dist, 'p2p'));
+      await writeFile(join(dist, 'p2p/nat-traversal.js'), 'export class NatTraversal {}');
+      await writeFile(join(root, 'apps/cli/dist/cli/index.js'), `console.log(JSON.stringify({ tree: ${JSON.stringify(name)}, home: process.env.HOME, dist: process.env.ANTSEED_TESTBENCH_NODE_DIST }));`);
+      return root;
+    };
+    const trees = { seller: { path: await tree('tree-seller') }, buyer: { path: await tree('tree-buyer') } };
+    const sellerHome = join(dir, 'home-seller');
+    const runner = createCliRunner({ repo: dir, manifest: { ...manifest, sellerHome, trees }, baseEnv: { PATH: process.env.PATH } });
+    assert.deepEqual((await runner.cli(['x'])).json, { tree: 'tree-buyer', home: manifest.home, dist: join(trees.buyer.path, 'packages/node/dist') });
+    assert.deepEqual((await runner.sellerCli('a', ['x'])).json, { tree: 'tree-seller', home: sellerHome, dist: join(trees.seller.path, 'packages/node/dist') });
   });
 
   it('tb.cli runs on the buyer dir, tb.sellerCli on the seller\'s, and both record events', async () => {

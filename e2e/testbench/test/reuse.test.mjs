@@ -12,6 +12,7 @@ import { testbenchName, testbenchPaths, worktreeRoot } from '../lib/paths.mjs';
 import { applyCheckVerdict } from '../lib/report.mjs';
 import { stressTopology } from '../lib/stress.mjs';
 import { normalizeTopology } from '../lib/topology.mjs';
+import { fakeTree } from './fake-tree.mjs';
 
 // A "running" testbench here is only a manifest and a lock held by this test process: the CLI sees it as running,
 // and nothing is started. A refusal must come before the CLI ever talks to it.
@@ -64,6 +65,35 @@ describe('reusing a running testbench', () => {
     const upLive = cliRun(mock.home, 'up', '--chain', 'local', '--live');
     assert.equal(upLive.status, 1, upLive.stdout + upLive.stderr);
     assert.match(upLive.stderr, /running with a mock upstream, not live/);
+  });
+
+  it('a testbench running from other trees is refused by up and run without them', async () => {
+    const trees = { seller: { path: '/other/main', head: 'a'.repeat(40) } };
+    const { home, paths } = await fakeTestbench({ mode: 'cli', topology: normalizeTopology({}, source, { mode: 'cli', trees }), trees: { ...trees, buyer: { path: worktree, head: 'b'.repeat(40) } } });
+    const up = cliRun(home, 'up', '--chain', 'local');
+    assert.equal(up.status, 1, up.stdout + up.stderr);
+    assert.match(up.stderr, /running from other trees \(Trees: seller \/other\/main @ a{12}; buyer .*run pnpm testbench down first or use --slot/);
+    const run = cliRun(home, 'run', 'chat-basic', '--chain', 'local');
+    assert.equal(run.status, 2, run.stdout + run.stderr);
+    assert.match((await lastReport(paths)).error, /differs in trees; run pnpm testbench down first or use --slot/);
+  });
+
+  it('a named tree is refused by a testbench running from this worktree, and in sdk mode before anything else', async () => {
+    const { dir } = await fakeTree();
+    homes.push(dir);
+    const cliMode = await fakeTestbench({ mode: 'cli', topology: normalizeTopology({}, source, { mode: 'cli' }) });
+    const up = cliRun(cliMode.home, 'up', '--chain', 'local', '--buyer-tree', dir);
+    assert.equal(up.status, 1, up.stdout + up.stderr);
+    assert.match(up.stderr, /running from other trees \(this worktree\)/);
+    const run = cliRun(cliMode.home, 'run', 'chat-basic', '--chain', 'local', '--buyer-tree', dir);
+    assert.equal(run.status, 2, run.stdout + run.stderr);
+    assert.match((await lastReport(cliMode.paths)).error, /differs in trees/);
+    const sdk = await fakeTestbench({ mode: 'sdk' });
+    const sdkUp = cliRun(sdk.home, 'up', '--chain', 'local', '--seller-tree', dir);
+    assert.equal(sdkUp.status, 1, sdkUp.stdout + sdkUp.stderr);
+    assert.match(sdkUp.stderr, /--seller-tree runs real CLI processes, but this testbench is in sdk mode/);
+    const reattached = cliRun(cliMode.home, 'up', '--chain', 'local', '--buyer-tree', worktree);
+    assert.doesNotMatch(reattached.stderr, /other trees/, 'this worktree by name is the default');
   });
 
   it('a run whose topology differs in payment settings refuses, naming them', async () => {

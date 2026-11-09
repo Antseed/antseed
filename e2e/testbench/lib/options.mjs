@@ -6,7 +6,7 @@ export const CHAIN_TARGETS = new Set(['fork', 'local', 'mainnet']);
 /** `--run-timeout` default: a backstop against a scenario that hangs. */
 export const DEFAULT_RUN_TIMEOUT_SECONDS = 1800;
 export const COMMANDS = new Set(['up', 'down', 'status', 'desktop', 'run', 'logs', 'list', 'scenarios', 'report', 'share', 'mainnet', 'help']);
-const VALUE_FLAGS = { '--config': 'config', '--deposit-usdc': 'depositUsdc', '--block': 'block', '--slot': 'slot', '--scenario': 'scenario', '--timeout': 'timeout', '--env-file': 'envFile', '--port': 'port', '--host': 'host', '--chain': 'chain', '--mode': 'mode', '--idle': 'idle', '--seed': 'seed', '--run-timeout': 'runTimeout', '--contracts': 'contracts' };
+const VALUE_FLAGS = { '--seller-tree': 'sellerTree', '--buyer-tree': 'buyerTree', '--config': 'config', '--deposit-usdc': 'depositUsdc', '--block': 'block', '--slot': 'slot', '--scenario': 'scenario', '--timeout': 'timeout', '--env-file': 'envFile', '--port': 'port', '--host': 'host', '--chain': 'chain', '--mode': 'mode', '--idle': 'idle', '--seed': 'seed', '--run-timeout': 'runTimeout', '--contracts': 'contracts' };
 const BOOL_FLAGS = { '--live': 'live', '--verbose': 'verbose', '--json': 'json', '--env': 'env', '--follow': 'follow', '--keep': 'keep', '--force': 'force', '--strict': 'strict', '--serve': 'serve', '--trace': 'trace', '--open': 'open', '--stop': 'stop', '--fresh': 'fresh', '--no-tailscale': 'noTailscale', '--real-funds': 'realFunds', '--dev': 'dev', '--budgets': 'budgets', '--help': 'help', '-h': 'help' };
 
 export function parseArgs(argv, env = process.env) {
@@ -37,6 +37,13 @@ export function parseArgs(argv, env = process.env) {
     assertMode(options.mode, '--mode');
     if (!['up', 'run'].includes(command)) throw new Error('--mode is only for pnpm testbench up and run');
     if (options.chain === 'mainnet') throw new Error('--mode does not apply to --chain mainnet');
+  }
+  for (const [flag, key] of [['--seller-tree', 'sellerTree'], ['--buyer-tree', 'buyerTree']]) {
+    if (options[key] === undefined) continue;
+    if (!['up', 'run'].includes(command)) throw new Error(`${flag} is only for pnpm testbench up and run`);
+    if (!options[key].trim()) throw new Error(`${flag} needs a directory`);
+    if (options.mode === 'sdk') throw new Error(`${flag} runs real CLI processes; it does not work with --mode sdk`);
+    if (options.chain === 'mainnet') throw new Error(`${flag} does not apply to --chain mainnet`);
   }
   if (options.contracts !== undefined) {
     if (!CONTRACT_LAYOUTS.includes(options.contracts)) throw new Error(`--contracts must be one of ${CONTRACT_LAYOUTS.join(', ')}`);
@@ -88,6 +95,8 @@ export const HELP = `pnpm testbench <command> [options]
                                 cli: real antseed CLI processes for every seller and the buyer
             --contracts full|payments  local chain only: full: the production stack (default); payments:
                                 script/Deploy.s.sol only (overrides the scenario's chain.contracts)
+            --seller-tree DIR  --buyer-tree DIR  cli mode: run that side from another built checkout of this
+                                repo, to test one version against another (default: this worktree)
   down      Settle and close channels, then stop only this testbench's processes  [--force]
   status    Ports, wallets, balances, peers, URLs  [--json] [--env]
   run NAME  Run e2e/testbench/scenarios/NAME.mjs and write report.json
@@ -97,6 +106,7 @@ export const HELP = `pnpm testbench <command> [options]
                      mainnet runs need --real-funds and only run scenarios that target it
             --mode sdk|cli  (default: the running testbench's mode, else the scenario topology's, else sdk)
             --contracts full|payments  (local chain; default: the scenario topology's chain.contracts, else full)
+            --seller-tree DIR  --buyer-tree DIR  cli mode: run that side from another built checkout (default: this worktree)
             --strict  also fail on known issues (recorded in report.json either way)
             --budgets also fail on topology.budgets (recorded either way; ANTSEED_TESTBENCH_BUDGETS=1 sets it)
             --trace   also record a Playwright trace of desktop scenarios (large; npx playwright show-trace)

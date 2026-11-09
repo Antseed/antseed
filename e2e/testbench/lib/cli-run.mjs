@@ -1,4 +1,4 @@
-// One-shot `antseed` CLI commands from a scenario (tb.cli, tb.sellerCli): this worktree's built CLI on a testbench
+// One-shot `antseed` CLI commands from a scenario (tb.cli, tb.sellerCli): the built CLI of that side's tree on a testbench
 // node's data dir and config, in the testbench's isolated environment. Long-running nodes are lib/cli-node.mjs's.
 import { spawn } from 'node:child_process';
 import { dirname, join } from 'node:path';
@@ -23,8 +23,8 @@ export function parseCliJson(stdout) {
  * bootstrap list emptied by the preload, no update check) without the node debug logs, which would mix into stdout
  * and break --json output. `extra` wins; pass ANTSEED_DEBUG: '1' to get them back.
  */
-export function cliCommandEnv(env, home, extra = {}, { clockOffsetMs = 0 } = {}) {
-  const result = cliNodeEnv(env, home);
+export function cliCommandEnv(env, home, extra = {}, { clockOffsetMs = 0, tree } = {}) {
+  const result = cliNodeEnv(env, home, {}, tree);
   delete result.ANTSEED_DEBUG;
   if (clockOffsetMs) {
     result.NODE_OPTIONS = `${result.NODE_OPTIONS} --import ${CLOCK_PRELOAD}`;
@@ -78,17 +78,18 @@ export function cliEventData(who, args, result) {
  * environment the isolated one is derived from (the scenario runner's). `chainNow()` returns the chain's time in unix
  * seconds, for `clock: 'chain'`.
  */
-export function createCliRunner({ repo, manifest, event = async () => {}, baseEnv = process.env, entry = cliEntry(repo), chainNow }) {
+export function createCliRunner({ repo, manifest, event = async () => {}, baseEnv = process.env, entry, chainNow }) {
   const sellerDir = (id) => {
     if (!manifest.sellers.some((seller) => seller.id === id)) throw new Error(`Unknown seller ${id}`);
     return join(manifest.dir, 'sellers', id);
   };
-  const run = async (who, args, { dataDir, configPath, home = manifest.home, env = {}, timeoutMs = CLI_DEFAULT_TIMEOUT_MS, input, clock = 'wall' } = {}) => {
+  const run = async (who, args, { side = 'buyer', dataDir, configPath, home = manifest.home, env = {}, timeoutMs = CLI_DEFAULT_TIMEOUT_MS, input, clock = 'wall' } = {}) => {
     if (!Array.isArray(args)) throw new Error('cli args must be an array');
     if (!['wall', 'chain'].includes(clock)) throw new Error("cli clock must be 'wall' or 'chain'");
     if (clock === 'chain' && !chainNow) throw new Error("cli clock 'chain' needs the chain's time");
     const clockOffsetMs = clock === 'chain' ? (await chainNow()) * 1000 - Date.now() : 0;
-    const result = await runCli({ entry, dataDir, configPath, args, env: cliCommandEnv(baseEnv, home, env, { clockOffsetMs }), timeoutMs, input });
+    const tree = manifest.trees?.[side]?.path;
+    const result = await runCli({ entry: entry ?? cliEntry(tree ?? repo), dataDir, configPath, args, env: cliCommandEnv(baseEnv, home, env, { clockOffsetMs, tree }), timeoutMs, input });
     await event('cli', { ...cliEventData(who, args, result), ...(clock === 'chain' ? { clockOffsetMs: Math.round(clockOffsetMs) } : {}) });
     return result;
   };
@@ -98,7 +99,7 @@ export function createCliRunner({ repo, manifest, event = async () => {}, baseEn
     /** `antseed ...args` on a seller's data dir and its config.json. */
     sellerCli: (id, args, options = {}) => {
       const dataDir = sellerDir(id);
-      return run(`seller:${id}`, args, { dataDir, configPath: join(dataDir, 'config.json'), ...options });
+      return run(`seller:${id}`, args, { side: 'seller', home: manifest.sellerHome ?? manifest.home, dataDir, configPath: join(dataDir, 'config.json'), ...options });
     },
   };
 }

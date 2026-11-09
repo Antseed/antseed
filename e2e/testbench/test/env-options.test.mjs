@@ -1,10 +1,18 @@
 import assert from 'node:assert/strict';
+import { realpathSync } from 'node:fs';
+import { mkdtemp, rm, symlink } from 'node:fs/promises';
 import { createServer } from 'node:net';
-import { describe, it } from 'node:test';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { after, describe, it } from 'node:test';
 import { assertLocalUrl, assertNetworkOptions, FORBIDDEN_PORTS, freePort, isolatedEnv, listenWithRetry, parseEnvFile, redactingStream, resolveForkUrl, resolveLiveKeys, supervisorEnvs } from '../lib/env.mjs';
 import { validateManifest, MANIFEST_VERSION } from '../lib/manifest.mjs';
 import { testbenchNodeOptions } from '../lib/node-options.mjs';
-import { DEFAULT_RUN_TIMEOUT_SECONDS, parseArgs } from '../lib/options.mjs';
+import { DEFAULT_RUN_TIMEOUT_SECONDS, HELP, parseArgs } from '../lib/options.mjs';
+import { worktreeRoot } from '../lib/paths.mjs';
+import { gitInfo } from '../lib/report.mjs';
+import { otherTrees, resolveTrees, treesLine } from '../lib/trees.mjs';
+import { fakeTree } from './fake-tree.mjs';
 
 describe('isolatedEnv', () => {
   it('strips AntSeed/provider secrets and sets a private HOME', () => {
@@ -153,6 +161,8 @@ describe('manifest validation', () => {
     assert.equal(validateManifest(good(), { dir }).name, 'wt-a-12345678');
     assert.equal(validateManifest({ ...good(), target: 'local', chainId: 31337 }, { dir }).target, 'local');
     assert.equal(validateManifest({ ...good(), mode: 'cli', nodeProcesses: { buyer: { pid: 10, startedAt: 'x' } } }, { dir }).mode, 'cli');
+    const trees = { seller: { path: '/other', head: 'a' }, buyer: { path: '/this', head: 'b' } };
+    assert.deepEqual(validateManifest({ ...good(), trees, sellerHome: `${dir}/home-seller` }, { dir }).trees, trees);
   });
 
   it('rejects unsafe manifests', () => {
@@ -172,6 +182,8 @@ describe('manifest validation', () => {
       [(m) => { m.home = '/Users/me'; }, /Unsafe manifest home/],
       [(m) => { m.buyerDir = dir; }, /Unsafe manifest buyerDir/],
       [(m) => { m.buyerConfig = '/Users/me/.antseed/config.json'; }, /Unsafe manifest buyerConfig/],
+      [(m) => { m.sellerHome = '/Users/me'; }, /Unsafe manifest sellerHome/],
+      [(m) => { m.trees = { seller: { path: 'relative' }, buyer: { path: '/b' } }; }, /trees\.seller must record an absolute path/],
     ];
     for (const [mutate, error] of cases) {
       const manifest = good();
@@ -182,6 +194,18 @@ describe('manifest validation', () => {
 });
 
 describe('parseArgs', () => {
+  it('takes --seller-tree and --buyer-tree on up and run, in cli mode only', () => {
+    const run = parseArgs(['run', 'chat-basic', '--seller-tree', '../a', '--buyer-tree', '../b']);
+    assert.deepEqual([run.sellerTree, run.buyerTree], ['../a', '../b']);
+    assert.equal(parseArgs(['up', '--buyer-tree', '../b', '--mode', 'cli']).buyerTree, '../b');
+    assert.throws(() => parseArgs(['status', '--seller-tree', '../a']), /--seller-tree is only for pnpm testbench up and run/);
+    assert.throws(() => parseArgs(['run', 'chat-basic', '--buyer-tree', '../a', '--mode', 'sdk']), /--buyer-tree runs real CLI processes/);
+    assert.throws(() => parseArgs(['run', 'mainnet-smoke', '--chain', 'mainnet', '--real-funds', '--seller-tree', '../a']), /--seller-tree does not apply to --chain mainnet/);
+    assert.throws(() => parseArgs(['up', '--seller-tree', ' ']), /--seller-tree needs a directory/);
+    assert.throws(() => parseArgs(['up', '--seller-tree']), /--seller-tree needs a value/);
+    assert.match(HELP, /--seller-tree DIR {2}--buyer-tree DIR/);
+  });
+
   it('takes --mode on up and run only', () => {
     assert.equal(parseArgs(['up', '--mode', 'cli']).mode, 'cli');
     assert.equal(parseArgs(['run', 'chat-basic', '--mode', 'sdk']).mode, 'sdk');
@@ -233,6 +257,46 @@ describe('parseArgs', () => {
     assert.throws(() => parseArgs(['run', '../evil']), /Invalid scenario/);
     assert.throws(() => parseArgs(['up', '--slot', 'A B']), /Invalid testbench slot/);
     assert.throws(() => parseArgs(['desktop', '--cdp-port', '9333']), /Unknown option/);
+  });
+});
+
+describe('source trees', () => {
+  const dirs = [];
+  after(() => Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true }))));
+  const fake = async (options) => { const { dir, head } = await fakeTree(options); dirs.push(dir); return { dir, head }; };
+
+  it('runs a side without a flag from this worktree, and resolves a named one to its path and HEAD', async () => {
+    const { dir, head } = await fake();
+    const worktree = worktreeRoot();
+    const ownHead = gitInfo(worktree).sha;
+    const trees = resolveTrees({ sellerTree: dir }, worktree, 'cli', '/nobody');
+    assert.deepEqual(trees, { seller: { path: realpathSync(dir), head }, buyer: { path: worktree, head: ownHead } });
+    assert.deepEqual(otherTrees(trees, worktree), { seller: trees.seller });
+    assert.equal(otherTrees(resolveTrees({}, worktree, 'sdk', '/nobody'), worktree), undefined);
+    assert.equal(otherTrees(resolveTrees({ buyerTree: worktree }, worktree, 'cli', '/nobody'), worktree), undefined, 'this worktree by name is the default');
+    assert.equal(treesLine(trees), `Trees: seller ${realpathSync(dir)} @ ${head.slice(0, 12)}; buyer ${worktree} @ ${ownHead.slice(0, 12)}`);
+  });
+
+  it('refuses sdk mode, an unbuilt tree, the real ~/.antseed and anything that is not a repo checkout', async () => {
+    const { dir } = await fake();
+    assert.throws(() => resolveTrees({ buyerTree: dir }, '/w', 'sdk', '/nobody'), /--buyer-tree runs real CLI processes, but this testbench is in sdk mode; add --mode cli/);
+    const unbuilt = await fake({ built: false });
+    assert.throws(() => resolveTrees({ sellerTree: unbuilt.dir }, '/w', 'cli', '/nobody'), /--seller-tree: .* is not built \(missing apps\/cli\/dist\/cli\/index\.js.*run pnpm run build there/);
+    const other = await fake({ cliName: 'something-else' });
+    assert.throws(() => resolveTrees({ sellerTree: other.dir }, '/w', 'cli', '/nobody'), /--seller-tree: .* is not a checkout of this repo/);
+    assert.throws(() => resolveTrees({ sellerTree: join(dir, 'apps') }, '/w', 'cli', '/nobody'), /not a checkout of this repo/, 'a subfolder of a checkout');
+    const plain = await mkdtemp(join(tmpdir(), 'tb-tree-plain-'));
+    dirs.push(plain);
+    assert.throws(() => resolveTrees({ buyerTree: plain }, '/w', 'cli', '/nobody'), /not a checkout of this repo/);
+    assert.throws(() => resolveTrees({ buyerTree: join(plain, 'missing') }, '/w', 'cli', '/nobody'), /does not exist/);
+    // A home whose ~/.antseed is a built checkout: only the location can refuse it.
+    const home = await mkdtemp(join(tmpdir(), 'tb-tree-home-'));
+    dirs.push(home);
+    const inside = await fake({ at: join(home, '.antseed') });
+    assert.throws(() => resolveTrees({ sellerTree: inside.dir }, '/w', 'cli', home), /refusing .* your real ~\/\.antseed/);
+    const link = join(plain, 'link');
+    await symlink(inside.dir, link);
+    assert.throws(() => resolveTrees({ sellerTree: link }, '/w', 'cli', home), /refusing/, 'through a symlink');
   });
 });
 

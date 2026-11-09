@@ -51,6 +51,8 @@ export function testbenchPaths(root, name) {
     name,
     dir,
     home: join(dir, 'home'),
+    // Only used when the sellers run from another tree than the buyer: the CLI finds its plugins under HOME.
+    sellerHome: join(dir, 'home-seller'),
     anvilHome: join(dir, 'anvil-home'),
     buyer: join(dir, 'buyer'),
     sellers: join(dir, 'sellers'),
@@ -91,5 +93,6 @@ export async function resetRunState(paths) {
   try { sellers = await readdir(paths.sellers); } catch (error) { if (error.code !== 'ENOENT') throw error; }
   for (const id of sellers) await clear(join(paths.sellers, id));
   await rm(paths.home, { recursive: true, force: true });
+  await rm(paths.sellerHome, { recursive: true, force: true });
   return removed;
 }

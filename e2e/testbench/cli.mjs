@@ -19,6 +19,7 @@ import { cleanupStale, settleSlot } from './lib/stale.mjs';
 import { forgetAttachedDesktop, recordAttachedDesktop, stopAttachedDesktop, stopAttachedDesktops } from './lib/attached-desktop.mjs';
 import { lifecycleState, readJson, saveJson, shutdownProblems, validateManifest } from './lib/manifest.mjs';
 import { HELP, parseArgs } from './lib/options.mjs';
+import { otherTrees, resolveTrees, treesLine } from './lib/trees.mjs';
 import { testbenchName, testbenchPaths, testbenchRoot, worktreeRoot } from './lib/paths.mjs';
 import { derive, randomSeed } from './lib/prng.mjs';
 import { applyCheckVerdict, classifyScenarioError, computeDrift, deliveryMetrics, driftLines, gitInfo, previousReport, recordTeardownFailure, rerunCommand, RESULT_EXIT_CODES, runWithTimeout } from './lib/report.mjs';
@@ -121,6 +122,13 @@ async function up(options, ctx, topologyOverride) {
       throw new Error(`Testbench ${ctx.name} is running in ${current.manifest.mode ?? 'sdk'} mode; run pnpm testbench down first or use --slot`);
     }
     assertUpstreamReusable(current.manifest.upstream, requestedUpstream(options.live), `Testbench ${ctx.name}`);
+    // `share` has no tree flags and only adds a desktop to whatever is running.
+    if (options.command !== 'share') {
+      const wanted = otherTrees(resolveTrees(options, ctx.worktree, current.manifest.mode ?? 'sdk'), ctx.worktree);
+      if (JSON.stringify(wanted) !== JSON.stringify(current.manifest.topology?.trees)) {
+        throw new Error(`Testbench ${ctx.name} is running from other trees (${current.manifest.trees ? treesLine(current.manifest.trees) : 'this worktree'}); run pnpm testbench down first or use --slot`);
+      }
+    }
     say(`Testbench ${ctx.name} is already running; reattaching`);
     warnSeedIgnored(options, current.manifest);
     return current.manifest;
@@ -129,12 +137,14 @@ async function up(options, ctx, topologyOverride) {
     throw new Error(`Testbench ${ctx.name} is starting or stopping (${settled.reason ?? `pid ${current.lock.holder?.pid ?? 'unknown'}`}); wait, or run pnpm testbench down --force`);
   }
   const scenario = options.scenario ? await scenarioModule(options.scenario) : null;
-  checkBuilt(target, requestedMode(options.mode, topologyOverride ?? scenario?.topology));
+  const startMode = requestedMode(options.mode, topologyOverride ?? scenario?.topology);
+  checkBuilt(target, startMode);
+  const trees = resolveTrees(options, ctx.worktree, startMode);
   if (target === 'local' && options.block !== undefined) throw new Error('--block only applies to --chain fork');
   if (target !== 'local' && options.contracts !== undefined) throw new Error('--contracts only applies to --chain local');
   const source = resolveConfigSource({ explicit: options.config, worktree: ctx.worktree });
   const config = await loadSourceConfig(source);
-  const topology = normalizeTopology(topologyOverride ?? scenario?.topology ?? {}, config.cleaned, { depositUsdc: options.depositUsdc, block: options.block, mode: options.mode, contracts: options.contracts });
+  const topology = normalizeTopology(topologyOverride ?? scenario?.topology ?? {}, config.cleaned, { depositUsdc: options.depositUsdc, block: options.block, mode: options.mode, contracts: options.contracts, trees: otherTrees(trees, ctx.worktree) });
   const upstream = requestedUpstream(options.live);
   const liveKeys = [];
   let liveEnv = {};
@@ -180,10 +190,11 @@ async function up(options, ctx, topologyOverride) {
   const seed = options.seed ?? randomSeed();
   const idleMinutes = resolveIdleMinutes();
   await saveJson(join(paths.config, 'plan.json'), {
-    worktree: ctx.worktree, target, mode: topology.mode, seed, starter: ownProcessEntry(), idleMinutes, topology, upstream, liveKeys: [...new Set(liveKeys)], verbose: Boolean(options.verbose),
+    worktree: ctx.worktree, trees, target, mode: topology.mode, seed, starter: ownProcessEntry(), idleMinutes, topology, upstream, liveKeys: [...new Set(liveKeys)], verbose: Boolean(options.verbose),
     configHash: config.hash, configOrigin: config.origin, cacheHome: sharedCacheHome(process.env, ctx.root), legacyCacheHome: legacyCacheHome(),
   });
   say(`Starting ${ctx.name} (chain: ${target}, mode: ${topology.mode}, seed: ${seed}, config: ${config.origin}, upstream: ${upstream}, sellers: ${topology.sellers.map((seller) => seller.id).join(', ')})`);
+  if (topology.trees) say(treesLine(trees));
   if (config.dropped.length) say(`Ignored config settings: ${config.dropped.join(', ')}`);
   const logPath = join(paths.logs, 'supervisor.log');
   const logOffset = existsSync(logPath) ? statSync(logPath).size : 0;
@@ -312,6 +323,7 @@ async function prepareRun(options, ctx, report) {
   report.target = target;
   report.mode = mode;
   assertScenarioSupported(scenario, target, mode);
+  const trees = resolveTrees(options, ctx.worktree, mode);
   if (scenario.requires.includes('desktop')) {
     // Fail before starting a chain: Windows cannot isolate the desktop, and without Playwright's ffmpeg the window never loads.
     assertAttachOnlyPlatform();
@@ -330,7 +342,7 @@ async function prepareRun(options, ctx, report) {
   const source = await loadSourceConfig(resolveConfigSource({ explicit: options.config, worktree: ctx.worktree }));
   // Same overrides as `up`; a fork block the run does not pin is whatever the running testbench forked at.
   const block = options.block ?? scenario.topology?.chain?.block ?? before.manifest.topology.chain?.block;
-  const wanted = normalizeTopology(scenario.topology ?? {}, source.cleaned, { mode, contracts: options.contracts, depositUsdc: options.depositUsdc, block });
+  const wanted = normalizeTopology(scenario.topology ?? {}, source.cleaned, { mode, contracts: options.contracts, depositUsdc: options.depositUsdc, block, trees: otherTrees(trees, ctx.worktree) });
   if (topologyFingerprint(wanted) !== topologyFingerprint(before.manifest.topology)) {
     throw new Error(`Running testbench topology (${topologySummary(before.manifest.topology)}) does not match scenario ${scenario.name} (${topologySummary(wanted)}); differs in ${topologyDifferences(wanted, before.manifest.topology).join(', ')}; run pnpm testbench down first or use --slot`);
   }
@@ -390,7 +402,7 @@ async function runScenario(options, ctx) {
 
 async function runTestbenchScenario(options, ctx, { scenario, target, manifest, startedHere, upMs }, report, reportDir) {
   Object.assign(report, {
-    seed: manifest.seed ?? null, mode: manifest.mode ?? 'sdk', reusedTestbench: !startedHere, ...(upMs === undefined ? {} : { upMs }),
+    seed: manifest.seed ?? null, mode: manifest.mode ?? 'sdk', trees: manifest.trees ?? null, reusedTestbench: !startedHere, ...(upMs === undefined ? {} : { upMs }),
     configHash: manifest.configHash, configOrigin: manifest.configOrigin, upstream: manifest.upstream, forkBlock: manifest.forkBlock, forkCache: manifest.forkCache,
     topology: manifest.topology, sellers: manifest.sellers.map(({ id, peerId, address }) => ({ id, peerId, address })), buyer: manifest.buyer,
   });
@@ -407,6 +419,7 @@ async function runTestbenchScenario(options, ctx, { scenario, target, manifest, 
     stopHeartbeat = startHeartbeat(() => control.heartbeat(self));
     tb = createTestbenchApi({ manifest, control, eventsPath: join(reportDir, 'events.jsonl'), chain, strict: Boolean(options.strict), repo, reportDir, trace: Boolean(options.trace), seed: scenarioSeed, budgets: scenario.budgets, enforceBudgets: Boolean(options.budgets) });
     say(`Running scenario ${scenario.name} against ${manifest.name} (seed ${report.seed})`);
+    if (manifest.trees) say(treesLine(manifest.trees));
     const summary = await executeScenario(scenario, tb, report, options);
     if (upMs !== undefined) report.metrics.upMs = upMs;
     const previous = await previousReport(ctx.paths.reports, basename(reportDir), report);

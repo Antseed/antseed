@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { readFile, rename, rm, writeFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { isAbsolute, resolve } from 'node:path';
 import { assertLocalUrl, isLoopbackHost } from './env.mjs';
 import { isInside } from './paths.mjs';
 import { assertMode } from './topology.mjs';
@@ -92,8 +92,11 @@ export function validateManifest(manifest, { dir } = {}) {
     }
   }
   if (manifest.bootstrap && !isLoopbackHost(manifest.bootstrap.host)) throw new Error('Bootstrap must be loopback');
+  for (const side of ['seller', 'buyer']) {
+    if (manifest.trees && !isAbsolute(manifest.trees[side]?.path ?? '')) throw new Error(`Manifest trees.${side} must record an absolute path`);
+  }
   const base = dir ?? manifest.dir;
-  for (const key of ['home', 'buyerDir', 'buyerConfig']) {
+  for (const key of ['home', 'buyerDir', 'buyerConfig', ...(manifest.sellerHome === undefined ? [] : ['sellerHome'])]) {
     if (!manifest[key] || !isInside(resolve(manifest[key]), base) || resolve(manifest[key]) === resolve(base)) throw new Error(`Unsafe manifest ${key}`);
   }
   return manifest;

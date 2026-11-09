@@ -90,6 +90,7 @@ export function normalizeTopology(topology = {}, source, overrides = {}) {
   }
   return {
     mode,
+    ...(overrides.trees ? { trees: overrides.trees } : {}),
     sellers,
     buyer: {
       depositMicros: String(microsFromUsdc(depositUsdc, 'depositUsdc')),

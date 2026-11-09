@@ -143,6 +143,20 @@ pnpm testbench share [--idle MIN] [--fresh] [--no-tailscale] [--stop]   # Linux 
 
 `--slot NAME` on any command runs an additional testbench for the same worktree (for example two scenarios with different topologies side by side).
 
+### Testing against another version
+
+`--seller-tree DIR` and `--buyer-tree DIR` (`up` and `run`, cli mode only) run that side from another built checkout of this repo: its `antseed` CLI, `packages/node` and plugins. The default for each side is this worktree. The testbench's own code, mocks, chain setup and payment oracle keep running from this worktree, so the contracts and the oracle are this branch's.
+
+```bash
+git worktree add ../antseed-main-tree origin/main
+(cd ../antseed-main-tree && pnpm install && pnpm run build)
+pnpm testbench run payment-flow --chain local --mode cli --seller-tree ../antseed-main-tree   # main's seller, this branch's buyer
+pnpm testbench run chat-basic --chain local --mode cli --buyer-tree ../antseed-main-tree      # main's buyer, this branch's seller
+git worktree remove ../antseed-main-tree
+```
+
+Use it for scenarios that exercise the two sides talking: the `stress-*` set, `payment-flow`, `chat-basic`, `routing-smoke` and `issue-*`. A tree must be the root of a built checkout, never inside `~/.antseed`. A build from another tree may ignore the testbench's `network` config, so its sellers get free ports through `--dht-port` and `--signaling-port`, and the CLI preload forces its sockets onto loopback and turns off its UPnP/NAT-PMP mapping. A run started with other trees is not reused by a command without them: `pnpm testbench down` first, or use `--slot`. The manifest, `report.json`, the run header and the HTML report record each tree's path and `git rev-parse HEAD`, and an earlier run only counts as the drift baseline when it used the same other trees.
+
 ## Chains
 
 | | `--chain fork` (default) | `--chain local` |
@@ -287,7 +301,7 @@ Shipped scenarios:
 - `payment-flow`: the CI payment flow and more (default chain: local). Deposit, reserve locked on-chain, three paid chats on one channel with cumulative SpendingAuth, buyer disconnect, seller settles and closes on its own, exact settled amount, fee split and reserve release, buyer reconnects on a fresh channel, cooperative close, exact totals across both channels.
 - `mainnet-smoke`: case 3 on the real network (needs `--chain mainnet --real-funds`). Live discovery, one paid desktop chat, spend within the cap, consistent on-chain reserve.
 - `routing-smoke`: two sellers with different mock latency; the buyer sees only testbench sellers, pinned and auto-routed chats stay inside the testbench, and per-seller settlement is exact.
-- `stress-smoke`, `stress-c32`, `stress-c64`, `stress-smallreserve`, `stress-images`, `stress-faults`, `stress-restart-buyer`, `stress-restart-seller`: the payment stress scenarios on the testbench (see [Payment stress](#payment-stress)).
+- `stress-smoke`, `stress-seq`, `stress-c8`, `stress-c32`, `stress-c64`, `stress-smallreserve`, `stress-images`, `stress-faults`, `stress-restart-buyer`, `stress-restart-seller`: the payment stress scenarios on the testbench (see [Payment stress](#payment-stress)).
 - `issue-1050-stale-channel`: #1050. The buyer pays, stops, and the seller closes the channel on disconnect. After a restart the buyer must retire the closed channel in its store, `/_antseed/buyer-usage`, `/_antseed/channels` and `antseed buyer status` (all count 0), then pay again on a fresh channel; the payment oracle judges both phases.
 - `cli-buyer-commands` (cli mode): after two paid chats, `antseed buyer status`, `balance`, `channels` (and `channels list`), `connection get`, `identity list --balances`, `metering`, `activity` and `emissions info` run next to the running buyer; each transcript must match `/_antseed/channels`, `/_antseed/buyer-usage` and the chain, exit 0 and print no stack trace, and `emissions info` must report the chain's stack and epoch on both sides of `warpToNextEpoch()`. Every one of these commands is safe next to a running CLI buyer: they read the stores and the chain, and the reconciling ones leave the current channel to the buyer whose pid is alive. Records the ignored `--json` of `buyer channels` subcommands as a known issue.
 - `buyer-withdraw-and-exit` (cli mode, local): `antseed buyer withdraw` takes the free deposit and cannot take the reserve; the seller crashes with the channel open; `antseed buyer channels request-close`, a refused early withdraw, `warp(16 min)`, `antseed buyer channels withdraw` (with `clock: 'chain'`) times the channel out and returns the unsettled reserve. Each step is checked against `buyerBalance()` and `channelState()`, and the money adds up to the original deposit.
@@ -467,7 +481,8 @@ Deferred (not needed for the four cases):
 - a canary seller of ours on mainnet, so case 3 can also test seller changes against real buyers
 - multiple sellers from different configs in one testbench
 - a nightly CI job running the full `scenarios/stress/` set across several seeds (the per-PR `testbench` job already runs five scenarios, `stress-smoke` among them); then retire `e2e/stress`'s own chain, mock, bootstrap and config writers once the testbench scenarios match its results (`docs/testing.md`)
-- a `--runs N` repeat mode for stress scenarios (the stress harness's `--runs`)
+- a `testbench-compat` CI job, modelled on Sui's split-cluster check (`scripts/compatibility/split-cluster-check.sh`, run by `.github/workflows/split-cluster-pr.yml` on every PR): a separate job that checks out and builds the last published release tag next to the PR, then runs `payment-flow` and `stress-smoke` in cli mode twice each, new buyer against the release seller (`--seller-tree`) and release buyer against the new seller (`--buyer-tree`), both with `--strict`. It is a smoke test of "do old and new peers still work together", not the full scenario set, which keeps running on one version. Follow-ups: `--seller-version <tag>` to fetch a published CLI instead of a checkout, and a bisect variant that finds the commit that broke compatibility
+- seed search: one scenario across many seeds (Sui's `seed-search.py`)
 - fail points in `packages/node` at payment boundaries (before a settle is sent, after a NeedAuth arrives, before a close), generalizing `faults.loseNeedAuths`
 - retiring `e2e/scripts/full-payment-flow.mjs` once local runs prove stable in CI
 - streaming the real-funds profile desktop with `share`

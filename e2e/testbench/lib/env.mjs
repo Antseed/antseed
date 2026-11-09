@@ -8,7 +8,7 @@ const STRIPPED = /^(ANTSEED_|OPENAI_|ANTHROPIC_|VENICE_|FLOW_|FORK_|TESTBENCH_KE
 export const FORBIDDEN_PORTS = new Set([6881, 6882, 8377, 3117]);
 
 /** The account's real home from the password database, independent of $HOME (which testbench processes override). */
-function realHome() {
+export function realHome() {
   try { return resolve(userInfo().homedir); } catch { return null; }
 }
 

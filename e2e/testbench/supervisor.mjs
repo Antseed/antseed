@@ -17,7 +17,7 @@ import { newToken, startControlServer } from './lib/control.mjs';
 import { startRpcRelay } from './lib/rpc-relay.mjs';
 import { DEFAULT_IDLE_MINUTES, watchdogDecision, WATCHDOG_INTERVAL_MS } from './lib/watchdog.mjs';
 import { assertSellerPaymentsOn, assertSingleBootstrap, buyerProxyListening, cliArgs, cliBuyerClient, cliNodeEnv, CLI_STOP_GRACE_MS, crashChild, linkPlugins, sellerReady, spawnCliNode, stopWithGrace, waitForCliReady } from './lib/cli-node.mjs';
-import { anvilExitMessage, assertLocalUrl, isAddressInUse, isolatedEnv, listenWithRetry, redactingStream, supervisorEnvs } from './lib/env.mjs';
+import { anvilExitMessage, assertLocalUrl, freePort, isAddressInUse, isolatedEnv, listenWithRetry, redactingStream, supervisorEnvs } from './lib/env.mjs';
 import { acquireLock, isOwnedProcessAlive, ownProcessEntry, processStartTime, releaseLock } from './lib/lock.mjs';
 import { readJson, saveJson, validateManifest, MANIFEST_VERSION, TESTBENCH_CHAIN_IDS } from './lib/manifest.mjs';
 import { startMock } from './lib/mock.mjs';
@@ -33,6 +33,8 @@ const repo = resolve(here, '../..');
 const [root, name] = process.argv.slice(2);
 const paths = testbenchPaths(root, name);
 const plan = JSON.parse(await readFile(join(paths.config, 'plan.json'), 'utf8'));
+// The CLI finds its plugins under HOME, so sellers from another tree than the buyer need a HOME of their own.
+const sellerHome = plan.trees.seller.path === plan.trees.buyer.path ? paths.home : paths.sellerHome;
 // Secrets never go into plan.json: the fork RPC URL and live API keys arrive via env and are read before it is cleaned.
 const forkUrl = process.env.ANTSEED_TESTBENCH_FORK_URL;
 // forge needs the real HOME for its solc cache (~/.svm, ~/.foundry); every AntSeed process keeps the private one.
@@ -217,12 +219,14 @@ async function launchCliNode(spec, ready) {
 
 /** cli mode: `antseed seller start` on the seller's data dir. A restarted seller keeps its ports, like a real one. */
 async function startSellerProcess(seller) {
+  // A build from another tree may ignore the config's port 0 and take the default ports; every version honours the flags.
+  if (!seller.ports && plan.topology.trees?.seller) seller.ports = { dhtPort: await freePort(), signalingPort: await freePort() };
   const ports = seller.ports ? ['--dht-port', String(seller.ports.dhtPort), '--signaling-port', String(seller.ports.signalingPort)] : [];
   const statePath = join(seller.dataDir, 'daemon.state.json');
   const { node, value: daemon } = await launchCliNode({
     who: `seller:${seller.id}`,
-    args: cliArgs(repo, seller.dataDir, ['seller', 'start', '--no-dashboard', ...ports]),
-    env: cliNodeEnv(baseEnv, paths.home, seller.env),
+    args: cliArgs(plan.trees.seller.path, seller.dataDir, ['seller', 'start', '--no-dashboard', ...ports]),
+    env: cliNodeEnv(baseEnv, sellerHome, seller.env, plan.trees.seller.path),
     logPath: join(paths.logs, `seller-${seller.id}.log`),
   }, async (candidate) => sellerReady(candidate.output(), await readJson(statePath).catch(() => null), candidate.child.pid));
   assertSellerPaymentsOn(node.output(), `seller:${seller.id}`);
@@ -297,8 +301,8 @@ async function startBuyerProcess(port) {
     const url = `http://127.0.0.1:${candidatePort}`;
     const { node } = await launchCliNode({
       who: 'buyer',
-      args: cliArgs(repo, paths.buyer, ['buyer', 'start', '--port', String(candidatePort), '--no-verifier']),
-      env: cliNodeEnv(baseEnv, paths.home, plan.topology.buyer.env),
+      args: cliArgs(plan.trees.buyer.path, paths.buyer, ['buyer', 'start', '--port', String(candidatePort), '--no-verifier']),
+      env: cliNodeEnv(baseEnv, paths.home, plan.topology.buyer.env, plan.trees.buyer.path),
       logPath: join(paths.logs, 'buyer.log'),
     }, async (candidate) => {
       if (!buyerProxyListening(candidate.output(), candidatePort)) return false;
@@ -554,7 +558,7 @@ async function main() {
   if (lock.state !== 'acquired') throw new Error(`Testbench ${name} is already running (pid ${lock.holder.pid})`);
   lockEntry = lock.entry;
   const wiped = await resetRunState(paths);
-  for (const dir of [paths.home, join(paths.home, '.antseed'), paths.anvilHome, paths.buyer, paths.sellers, paths.logs, paths.reports]) {
+  for (const dir of [paths.home, join(paths.home, '.antseed'), sellerHome, join(sellerHome, '.antseed'), paths.anvilHome, paths.buyer, paths.sellers, paths.logs, paths.reports]) {
     await mkdir(dir, { recursive: true, mode: 0o700 });
   }
   log(`Fresh ${target} run: cleared ${wiped.length} stale state entries (identities kept)`);
@@ -568,8 +572,8 @@ async function main() {
   startReaper();
 
   manifest = {
-    version: MANIFEST_VERSION, name, target, mode: plan.mode, running: false, starting: true, dir: paths.dir, worktree: plan.worktree,
-    supervisor: ownProcessEntry(), starter: watch.starter, idleMinutes: watch.idleMinutes, home: paths.home, buyerDir: paths.buyer, buyerConfig: join(paths.buyer, 'config.json'),
+    version: MANIFEST_VERSION, name, target, mode: plan.mode, running: false, starting: true, dir: paths.dir, worktree: plan.worktree, trees: plan.trees,
+    supervisor: ownProcessEntry(), starter: watch.starter, idleMinutes: watch.idleMinutes, home: paths.home, ...(sellerHome === paths.home ? {} : { sellerHome }), buyerDir: paths.buyer, buyerConfig: join(paths.buyer, 'config.json'),
     chainId: TESTBENCH_CHAIN_IDS[target], configHash: plan.configHash, configOrigin: plan.configOrigin, upstream: plan.upstream,
     topology: plan.topology, seed: plan.seed, startedAt: new Date().toISOString(), logStart: logOffsets(peerLogs(paths.logs).all),
     rpcUrl: 'http://127.0.0.1:1', proxyUrl: 'http://127.0.0.1:1', sellers: [],
@@ -625,7 +629,8 @@ async function main() {
 
   if (cliMode) {
     const providerPlugins = plan.topology.sellers.flatMap((seller) => Object.values(seller.providers).map((provider) => WORKSPACE_PLUGINS[provider.plugin]));
-    await linkPlugins(paths.home, repo, ['router-local', ...providerPlugins]);
+    await linkPlugins(paths.home, plan.trees.buyer.path, ['router-local', ...providerPlugins]);
+    if (sellerHome !== paths.home) await linkPlugins(sellerHome, plan.trees.seller.path, ['router-local', ...providerPlugins]);
   }
   const sellers = [];
   for (const seller of plan.topology.sellers) {

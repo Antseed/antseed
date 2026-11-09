@@ -25,11 +25,11 @@ export function cliArgs(repo, dataDir, command) {
 /**
  * Environment of a CLI node: isolated like every testbench process, with the debug logs the payment oracle reads
  * (`Cost recorded`), and unhandled rejections logged rather than fatal, as under the stress harness: the crash scan
- * finds them in the log.
+ * finds them in the log. `tree` is the checkout the process runs from, whose bootstrap list the preload empties.
  */
-export function cliNodeEnv(env, home, extra = {}) {
+export function cliNodeEnv(env, home, extra = {}, tree) {
   const preload = pathToFileURL(join(here, 'isolate-preload.mjs')).href;
-  return isolatedEnv(env, home, { ANTSEED_DEBUG: '1', ANTSEED_NO_UPDATE_CHECK: '1', NODE_OPTIONS: `--unhandled-rejections=warn --import ${preload}`, ...extra });
+  return isolatedEnv(env, home, { ANTSEED_DEBUG: '1', ANTSEED_NO_UPDATE_CHECK: '1', NODE_OPTIONS: `--unhandled-rejections=warn --import ${preload}`, ...(tree ? { ANTSEED_TESTBENCH_NODE_DIST: join(tree, 'packages/node/dist') } : {}), ...extra });
 }
 
 /** Symlinks workspace plugins into <home>/.antseed/plugins, where the CLI's plugin loader looks for them. */
