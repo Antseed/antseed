@@ -117,6 +117,12 @@ take effect from the verifier release that includes them.
 Any change to the compose file (image, config, prices) changes the compose hash; buyers
 re-check the new one against the same rules, so no approval is needed.
 
+`compose.mjs` names the inline config after its content (`seller-config-<sha256 prefix>`). Docker
+compose recreates the seller only when the service definition changes, and an inline config's
+content is not part of it, so with a fixed name a config-only update would restart the old
+container with the old config. Regenerate the compose with `compose.mjs` after each config change
+rather than editing the content in place. Don't add `labels` to force a recreate: buyers reject them.
+
 Buyers reach a seller over raw TCP at its announced address and find it through the DHT (UDP).
 For public TCP `14532` → container `6882`, configure host forwarding and set `seller.publicAddress`
 to `<public-ip>:14532`. The seller announces both TCP ports in the DHT, keeping metadata
