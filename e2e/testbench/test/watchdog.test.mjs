@@ -8,7 +8,7 @@ import { describe, it } from 'node:test';
 import { controlClient, startControlServer } from '../lib/control.mjs';
 import { isOwnedProcessAlive, ownProcessEntry, processStartTime } from '../lib/lock.mjs';
 import { lifecycleState } from '../lib/manifest.mjs';
-import { DEFAULT_IDLE_MINUTES, DEFAULT_START_TIMEOUT_SECONDS, IDLE_MINUTES_ENV, reattachDecision, resolveIdleMinutes, startHeartbeat, startupDecision, watchdogDecision, WATCHDOG_INTERVAL_MS } from '../lib/watchdog.mjs';
+import { DEFAULT_IDLE_MINUTES, DEFAULT_START_TIMEOUT_SECONDS, IDLE_MINUTES_ENV, reattachDecision, resolveIdleMinutes, startHeartbeat, startingDecision, startupDecision, watchdogDecision, WATCHDOG_INTERVAL_MS } from '../lib/watchdog.mjs';
 
 const MINUTE = 60_000;
 const base = { heartbeatAgeMs: 0, lastControlAgeMs: 0, idleMs: 120 * MINUTE };
@@ -53,6 +53,30 @@ describe('startupDecision', () => {
 
   it('stops a start whose starter is gone at once: nothing runs yet that a grace interval would protect', () => {
     assert.equal(startupDecision({ starter: 'dead', elapsedMs: 0, timeoutMs }), 'stop:starter-died');
+  });
+});
+
+describe('startingDecision', () => {
+  const holder = { pid: 10, startedAt: 'a' };
+  const starter = { pid: 20, startedAt: 'b' };
+  const starting = { supervisor: holder, starting: true, starter };
+
+  it('stops a start nobody waits for, and refuses one whose starter is alive', () => {
+    assert.equal(startingDecision({ manifest: starting, holder, starterAlive: false }), 'stop');
+    assert.equal(startingDecision({ manifest: starting, holder, starterAlive: true }), 'refuse');
+  });
+
+  it('waits for a supervisor that is already on its way out', () => {
+    assert.equal(startingDecision({ manifest: { ...starting, startError: 'Deploy.s.sol stalled' }, holder, starterAlive: true }), 'wait');
+    assert.equal(startingDecision({ manifest: { supervisor: holder, running: false, stoppingAt: 't', starter: null }, holder, starterAlive: false }), 'wait');
+  });
+
+  it('never acts on a manifest another supervisor wrote, or on a start without a recorded starter', () => {
+    const earlier = { ...starting, supervisor: { pid: 10, startedAt: 'earlier' } };
+    assert.equal(startingDecision({ manifest: earlier, holder, starterAlive: false }), 'refuse', 'same pid, another process');
+    assert.equal(startingDecision({ manifest: null, holder, starterAlive: false }), 'refuse');
+    assert.equal(startingDecision({ manifest: { ...starting, starter: null }, holder, starterAlive: false }), 'refuse');
+    assert.equal(startingDecision({ manifest: starting, holder: null, starterAlive: false }), 'refuse');
   });
 });
 

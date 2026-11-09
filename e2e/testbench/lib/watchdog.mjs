@@ -39,6 +39,19 @@ export function startupDecision({ starter, elapsedMs, timeoutMs }) {
   return starter === 'dead' ? 'stop:starter-died' : 'keep';
 }
 
+/**
+ * What `down` does with a testbench whose supervisor holds the lock but serves no control API. `manifest` counts only
+ * when that supervisor wrote it. 'wait': its shutdown is already under way (a failed start, or a stop that just closed
+ * the control API). 'stop': it is still starting and the `run` or `up` that started it is gone, so nobody waits for it.
+ * 'refuse': it is still starting for a starter that is alive, or has not said yet who started it.
+ */
+export function startingDecision({ manifest, holder, starterAlive }) {
+  const own = Boolean(manifest?.supervisor) && manifest.supervisor.pid === holder?.pid && manifest.supervisor.startedAt === holder?.startedAt;
+  if (!own) return 'refuse';
+  if (manifest.stoppingAt || manifest.startError) return 'wait';
+  return manifest.starting && manifest.starter && !starterAlive ? 'stop' : 'refuse';
+}
+
 /** What `run` or `up` does with this worktree's testbench: start one, reuse it, or restart one whose `run` died without `down`. */
 export function reattachDecision({ running, starter, starterAlive }) {
   if (!running) return 'start';

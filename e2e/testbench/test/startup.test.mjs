@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { loadSourceConfig, resolveConfigSource } from '../lib/config.mjs';
 import { parkedTransactions, watchForParkedPool } from '../lib/local-deploy.mjs';
 import { inspectLock, isPidAlive, ownProcessEntry } from '../lib/lock.mjs';
+import { MANIFEST_VERSION } from '../lib/manifest.mjs';
 import { testbenchName, testbenchPaths, worktreeRoot } from '../lib/paths.mjs';
 import { normalizeTopology } from '../lib/topology.mjs';
 import { fakeFoundry } from './fake-foundry.mjs';
@@ -67,6 +68,15 @@ async function startSupervisor({ forge, plan = {} }) {
 
 function cliRun(home, ...args) {
   return spawnSync(process.execPath, [cli, ...args], { encoding: 'utf8', env: { ...process.env, ANTSEED_TESTBENCH_HOME: home }, timeout: 120_000 });
+}
+
+/** The CLI without blocking this process, which must stay free to reap a stand-in supervisor the command stops. */
+async function cliRunAsync(home, ...args) {
+  const child = spawn(process.execPath, [cli, ...args], { env: { ...process.env, ANTSEED_TESTBENCH_HOME: home }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const output = { stdout: '', stderr: '' };
+  for (const stream of ['stdout', 'stderr']) child[stream].on('data', (chunk) => { output[stream] += chunk.toString('utf8'); });
+  const [status] = await once(child, 'exit');
+  return { status, ...output };
 }
 
 /** A failed start left nothing behind: every stand-in it started is gone, the slot is free, and the manifest says stopped. */
@@ -134,6 +144,47 @@ describe('a start that cannot finish fails by itself', () => {
     assert.equal(await run.exit(60_000), 1, run.log());
     const manifest = await assertFreed(run);
     assert.match(manifest.startError, /The start was stopped by SIGTERM \(it was deploying the contracts: forge build\)/);
+  });
+});
+
+describe('down on a testbench that is still starting', () => {
+  /** A stand-in supervisor: a process that holds the slot lock and wrote a manifest, and exits on SIGTERM. */
+  async function startingSlot(manifest) {
+    const home = await mkdtemp(join(tmpdir(), 'tb-starting-'));
+    const paths = testbenchPaths(home, name);
+    await mkdir(paths.dir, { recursive: true });
+    const holder = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+    cleanups.push(async () => { holder.kill('SIGKILL'); await rm(home, { recursive: true, force: true }); });
+    const entry = ownProcessEntry(holder.pid);
+    await writeFile(paths.lock, JSON.stringify(entry));
+    await writeFile(paths.manifest, JSON.stringify({ version: MANIFEST_VERSION, name, target: 'local', running: false, starting: true, supervisor: entry, dir: paths.dir, sellers: [], ...manifest }));
+    return { home, paths, holder };
+  }
+
+  it('stops it without --force when the run that started it is gone', async () => {
+    const { home, paths, holder } = await startingSlot({ starter: { pid: 2 ** 22 + 1, startedAt: 'gone' } });
+    const down = await cliRunAsync(home, 'down');
+    assert.equal(down.status, 0, down.stdout + down.stderr);
+    assert.match(down.stdout, /is still starting and the run that started it \(pid \d+\) is gone; stopping it/);
+    assert.equal(isPidAlive(holder.pid), false);
+    assert.notEqual((await inspectLock(paths.lock)).state, 'held');
+  });
+
+  it('refuses while the command that started it is alive, and leaves it alone', async () => {
+    const { home, holder } = await startingSlot({ starter: ownProcessEntry() });
+    const down = cliRun(home, 'down');
+    assert.equal(down.status, 1, down.stdout + down.stderr);
+    assert.match(down.stderr, /is still starting; wait \(the start fails by itself after its --timeout/);
+    assert.equal(isPidAlive(holder.pid), true);
+  });
+
+  it('waits for a failed start that is already shutting down', async () => {
+    const { home, holder } = await startingSlot({ starter: ownProcessEntry(), startError: 'Deploy.s.sol stalled' });
+    setTimeout(() => holder.kill('SIGTERM'), 1500);
+    const down = await cliRunAsync(home, 'down');
+    assert.match(down.stdout, /is already stopping \(its start failed: Deploy\.s\.sol stalled\); waiting for it/);
+    assert.equal(down.status, 0, down.stdout + down.stderr);
+    assert.equal(isPidAlive(holder.pid), false);
   });
 });
 
