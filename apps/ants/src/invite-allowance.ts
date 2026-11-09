@@ -21,3 +21,9 @@ export function inviteAllowance(
   if (!allowance || created.epoch > allowance.epoch) return { quota: created.quota, left: created.left };
   return { quota: allowance.quota, left: Math.min(allowance.left, created.left) };
 }
+
+/** `https://antseed.com/invite/<91 chars>` → `antseed.com/invite/AbCdEf…wXyZ`; copying still uses the full link. */
+export function shortInviteLink(link: string): string {
+  const match = /^https?:\/\/(.*\/invite\/)([A-Za-z0-9_-]+)$/.exec(link);
+  return match && match[2]!.length > 14 ? `${match[1]}${match[2]!.slice(0, 6)}…${match[2]!.slice(-4)}` : link;
+}

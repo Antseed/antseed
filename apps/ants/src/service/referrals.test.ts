@@ -17,6 +17,7 @@ import {
   referral,
   referralBindingFromExplorer,
   referredBuyers,
+  referrerOverview,
 } from './referrals.js';
 
 const wallet = '0x0000000000000000000000000000000000000001';
@@ -124,6 +125,14 @@ describe('referred buyers', () => {
     const { ctx, indexer } = fixture();
     expect(await referredBuyers(ctx)).toEqual({ available: true, buyers: indexedReferrer.buyers });
     expect(indexer.referrer).toHaveBeenCalledWith(buyer);
+  });
+
+  it('builds the card and the buyer list from one Antscan request', async () => {
+    const { ctx, indexer } = fixture();
+    const dir = await tempDir();
+    const overview = await referrerOverview(ctx, dir);
+    expect(overview).toEqual({ referral: await referral(fixture().ctx, dir), buyers: { available: true, buyers: indexedReferrer.buyers } });
+    expect(indexer.referrer).toHaveBeenCalledOnce();
   });
 
   it('hides the list rather than scanning RPC when no explorer is configured', async () => {

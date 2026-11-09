@@ -26,9 +26,8 @@ import {
   formatAntsExact,
   issueInvite,
   refereeBonusFromExplorer,
-  referral,
   referralBindingFromExplorer,
-  referredBuyers,
+  referrerOverview,
   type AntsChainConfig,
 } from '@antseed/ants/service';
 import { ensureSecureIdentity, getSecureIdentity } from './identity.js';
@@ -150,7 +149,7 @@ export async function getReferralInvites(): Promise<ReferralInvites> {
   if (!context) return NO_INVITES;
   try {
     const ctx = new AntsContext({ chain: context.chain, address: context.wallet.address });
-    const [card, view] = await Promise.all([referral(ctx, resolveConnectDataDir()), referredBuyers(ctx)]);
+    const { referral: card, buyers: view } = await referrerOverview(ctx, resolveConnectDataDir());
     if (!view.available) return { ...NO_INVITES, available: true };
     const sum = (key: 'points' | 'ants' | 'pendingPoints') => view.buyers.reduce((total, row) => total + BigInt(row[key]), 0n).toString();
     return {

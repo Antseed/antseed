@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { inviteAllowance, NO_INVITE_QUOTA_MESSAGE } from '@antseed/ants/invite-allowance';
+import { inviteAllowance, NO_INVITE_QUOTA_MESSAGE, shortInviteLink } from '@antseed/ants/invite-allowance';
 import { Button, CopyButton } from '@antseed/ui';
 import { formatCredits, formatInt, shortAddress } from '../../../core/format';
 import type { CreateInviteResult, ReferralInvites } from '../../../types/bridge';
@@ -7,12 +7,6 @@ import { StakingButton } from '../StakingButton';
 import { VprCard, VprSettingRow } from '../vpr/VprKit';
 import breakdown from './BalanceBreakdown.module.scss';
 import styles from './VprRewardsView.module.scss';
-
-/** `https://antseed.com/invite/AbC…xyz` → `antseed.com/invite/AbCdEf…wxyz`. */
-function shortInviteLink(link: string): string {
-  const match = /^https?:\/\/(.*\/invite\/)([A-Za-z0-9_-]+)$/.exec(link);
-  return match && match[2]!.length > 14 ? `${match[1]}${match[2]!.slice(0, 6)}…${match[2]!.slice(-4)}` : link;
-}
 
 /** "12,500 pts" plus "· 250 pts pending" when part of it is in weeks not claimable yet. */
 function invitePoints(points: string, pendingPoints: string): string {

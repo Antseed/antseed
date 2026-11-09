@@ -34,7 +34,25 @@ const HIDDEN_REFEREE: RefereeView = {
  * is hidden.
  */
 export async function referral(ctx: AntsContext, dataDir: string): Promise<ReferralView> {
-  const indexed = ctx.chain.referralsAddress ? await indexedReferrer(ctx.indexer(), ctx.buyerAddress) : null;
+  return referralFromIndexed(ctx, dataDir, await referrerFromExplorer(ctx));
+}
+
+/** Buyers the buyer account referred, with the points and ANTS each brought in (from Antscan). */
+export async function referredBuyers(ctx: AntsContext): Promise<ReferredBuyersView> {
+  return referredBuyersFromIndexed(await referrerFromExplorer(ctx));
+}
+
+/** `referral` and `referredBuyers` from one Antscan request. */
+export async function referrerOverview(ctx: AntsContext, dataDir: string): Promise<{ referral: ReferralView; buyers: ReferredBuyersView }> {
+  const indexed = await referrerFromExplorer(ctx);
+  return { referral: await referralFromIndexed(ctx, dataDir, indexed), buyers: referredBuyersFromIndexed(indexed) };
+}
+
+function referrerFromExplorer(ctx: AntsContext): Promise<IndexedReferrer | null> {
+  return ctx.chain.referralsAddress ? indexedReferrer(ctx.indexer(), ctx.buyerAddress) : Promise.resolve(null);
+}
+
+async function referralFromIndexed(ctx: AntsContext, dataDir: string, indexed: IndexedReferrer | null): Promise<ReferralView> {
   if (!indexed) return HIDDEN_REFERRAL;
   return {
     available: true,
@@ -47,11 +65,8 @@ export async function referral(ctx: AntsContext, dataDir: string): Promise<Refer
   };
 }
 
-/** Buyers the buyer account referred, with the points and ANTS each brought in (from Antscan). */
-export async function referredBuyers(ctx: AntsContext): Promise<ReferredBuyersView> {
-  const indexed = ctx.chain.referralsAddress ? await indexedReferrer(ctx.indexer(), ctx.buyerAddress) : null;
-  if (!indexed) return { available: false, buyers: [] };
-  return { available: true, buyers: indexed.buyers };
+function referredBuyersFromIndexed(indexed: IndexedReferrer | null): ReferredBuyersView {
+  return indexed ? { available: true, buyers: indexed.buyers } : { available: false, buyers: [] };
 }
 
 async function indexedReferrer(indexer: Indexer | null, address: string): Promise<IndexedReferrer | null> {

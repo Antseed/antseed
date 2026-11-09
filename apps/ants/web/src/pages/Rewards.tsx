@@ -2,7 +2,7 @@ import { Button, Card } from '../components/ui';
 import { useContext, useEffect, useState } from 'react';
 import type { ClaimRequest, CreatedInviteView, InviteAllowanceView, PoolView, ReferralView, ReferredBuyerView, RestakeRequest, RewardBucket, RewardsView, StakeUsageRequest } from '../../../src/api-types';
 import { copyText } from '@antseed/ui';
-import { BROWSER_WALLET_INVITE_MESSAGE, inviteAllowance, NO_INVITE_QUOTA_MESSAGE } from '../../../src/invite-allowance';
+import { BROWSER_WALLET_INVITE_MESSAGE, inviteAllowance, NO_INVITE_QUOTA_MESSAGE, shortInviteLink } from '../../../src/invite-allowance';
 import { request, api } from '../api';
 import { BuyerWalletAction } from '../wallet';
 import { useConfig, useEpochInfo } from '../app-context';
@@ -45,12 +45,6 @@ export function RewardsPage() {
       </RewardRefreshContext.Provider> : null}
     </>
   );
-}
-
-/** `https://antseed.com/invite/<91 chars>` → `antseed.com/invite/AbCdEf…wXyZ`; Copy still copies the full link. */
-function shortInviteLink(link: string): string {
-  const match = /^https?:\/\/(.*\/invite\/)([A-Za-z0-9_-]+)$/.exec(link);
-  return match ? `${match[1]}${match[2]!.slice(0, 6)}…${match[2]!.slice(-4)}` : link;
 }
 
 /** Whether this session can act for the buyer account: the contract accepts only its operator. */

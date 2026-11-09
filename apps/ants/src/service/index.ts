@@ -13,7 +13,7 @@ export { verification, proofStatus, submitProof } from './verification.js';
 export type { SubmitProofResult } from './verification.js';
 export { seller, registerBinding, claimStarter } from './seller.js';
 export {
-  referral, referredBuyers, referralBindingFromExplorer, refereeBonus, refereeBonusFromExplorer, issueInvite, createInvite,
+  referral, referredBuyers, referrerOverview, referralBindingFromExplorer, refereeBonus, refereeBonusFromExplorer, issueInvite, createInvite,
   claimReferralRewards, claimRefereeRewards, InviteQuotaError, NO_INVITE_QUOTA_MESSAGE,
 } from './referrals.js';
 export { builders, claimBuilderRewards, registerClientAgent } from './builders.js';
