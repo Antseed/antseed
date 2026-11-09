@@ -47,6 +47,9 @@ Serve the buyer API to many users with API keys, spend limits, routing policies 
 | Command | Purpose | Key flags |
 |---|---|---|
 | `antseed gateway start` | Run the gateway and its console locally; also starts a buyer | `--port` (8379), `--host` (127.0.0.1), `--public-url <url>`, `--no-buyer`, `--buyer-port`, `--no-console`, `--x402-facilitator <url\|cdp\|payai>`, `--topup-min-usd` (2), `--topup-max-usd` (500) |
+| `antseed gateway service install` | Run `gateway start` as a background service that starts at login and restarts if it exits: a launchd agent on macOS, a systemd user service on Linux; no root. Run it again to update the service | `--port` (8379), `--wait <seconds>` (120; 0 to not wait) |
+| `antseed gateway service status` | Whether the service is installed, running and answering; exits 1 when it isn't answering | `--port` (8379) |
+| `antseed gateway service uninstall` | Stop the service and remove it; keys, wallets and settings stay | |
 | `antseed gateway console-link` | Print the one-time owner setup link, or the console URL once it has an owner | `--recover`, `--member <id\|email>`, `--public-url`, `--port` |
 | `antseed gateway peers` | Sellers the running buyer knows, with trust, TEE, prices and this gateway's 24 h stats | `--model <id>`, `--tee` |
 | `antseed gateway settings show` | Show buyer and observability settings | `--reveal` |
