@@ -169,7 +169,7 @@ export function resolvePeerForModel(
   const routes = routesForSelectedModel(rows, model);
   const pinned = vprModelPinFor(pins, model.provider, model.serviceId);
   if (pinned && routes.some((route) => route.peerId === pinned)) return pinned;
-  return chooseBestVprRoute(routes, preferences)?.peerId ?? null;
+  return chooseBestVprRoute(routes, preferences, Date.now(), model.serviceId)?.peerId ?? null;
 }
 
 /** The seller a model is pinned to, so model lists can say which peer serves

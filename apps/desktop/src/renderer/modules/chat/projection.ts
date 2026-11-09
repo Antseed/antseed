@@ -72,7 +72,7 @@ export function resolveVprChatOption(
   // The option is looked up by the chosen ROW's provider/serviceId (not the
   // selection's): the entry may aggregate serviceId variants, and the request
   // must carry the id the routed peer actually advertises.
-  const bestRoute = chooseBestVprRoute(usable, preferences, opts?.now ?? Date.now());
+  const bestRoute = chooseBestVprRoute(usable, preferences, opts?.now ?? Date.now(), selection.model.serviceId);
   if (bestRoute) {
     const bestOption = options.find((option) => (
       option.provider === bestRoute.provider &&

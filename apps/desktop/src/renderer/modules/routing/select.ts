@@ -80,6 +80,7 @@ export function chooseBestVprRoute(
   rows: DiscoverRow[],
   preferences: VprRoutingPreferences,
   now: number = Date.now(),
+  rotationKey?: string,
 ): DiscoverRow | null {
-  return chooseBestModelRoute(rows, preferences, now);
+  return chooseBestModelRoute(rows, preferences, now, rotationKey);
 }

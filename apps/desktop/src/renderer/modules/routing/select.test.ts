@@ -378,3 +378,34 @@ test('bestFreeVprRouteReputation returns the highest trust score among eligible 
 
   assert.equal(bestFreeVprRouteReputation([lowRep, highRep], preferences), 92);
 });
+
+test('models that share tied sellers keep separate rotations', () => {
+  const sellers = (serviceId: string): DiscoverRow[] => [
+    discoverRow({
+      peerId: 'a'.repeat(40),
+      serviceId,
+      inputUsdPerMillion: 1,
+      outputUsdPerMillion: 2,
+      effectiveReputationScore: 80,
+    }),
+    discoverRow({
+      peerId: 'b'.repeat(40),
+      serviceId,
+      inputUsdPerMillion: 1,
+      outputUsdPerMillion: 2,
+      effectiveReputationScore: 80,
+    }),
+  ];
+  const modelA: Array<string | undefined> = [];
+  const modelB: Array<string | undefined> = [];
+  for (let i = 0; i < 4; i += 1) {
+    modelA.push(chooseBestVprRoute(sellers('model-a'), preferences, 1, 'model-a')?.peerId);
+    modelB.push(chooseBestVprRoute(sellers('model-b'), preferences, 1, 'model-b')?.peerId);
+  }
+  assert.equal(new Set(modelA).size, 2);
+  assert.equal(new Set(modelB).size, 2);
+  for (let i = 1; i < modelA.length; i += 1) {
+    assert.notEqual(modelA[i], modelA[i - 1]);
+    assert.notEqual(modelB[i], modelB[i - 1]);
+  }
+});

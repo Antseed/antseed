@@ -46,7 +46,7 @@ function resolveRouteTarget(uiState: RendererUiState): VprRouteTarget | null {
   const routes = selection.mode === 'pinned-peer' ? modelRoutes : unrestrictedRoutes;
   const route = selection.mode === 'pinned-peer' && selection.peerId
     ? routes.find((candidate) => candidate.peerId === selection.peerId) ?? null
-    : chooseBestVprRoute(routes, uiState.vprRoutingPreferences);
+    : chooseBestVprRoute(routes, uiState.vprRoutingPreferences, Date.now(), selection.model.serviceId);
   const peerId = (selection.mode === 'pinned-peer' && selection.peerId) || route?.peerId || null;
   if (!peerId) return null;
 

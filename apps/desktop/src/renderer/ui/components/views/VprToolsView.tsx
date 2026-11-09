@@ -173,7 +173,10 @@ export function VprToolsView() {
     [snap.lastPeers, snap.discoverRows, snap.preferences],
   );
   const modelRoutes = useMemo(() => routesForSelectedModel(snap.discoverRows, snap.selection.model), [snap.discoverRows, snap.selection.model]);
-  const bestRoute = useMemo(() => chooseBestVprRoute(modelRoutes, snap.preferences), [modelRoutes, snap.preferences]);
+  const bestRoute = useMemo(
+    () => chooseBestVprRoute(modelRoutes, snap.preferences, Date.now(), snap.selection.model?.serviceId),
+    [modelRoutes, snap.preferences, snap.selection.model?.serviceId],
+  );
   const defaultPeerId = snap.selection.peerId || bestRoute?.peerId || peerOptions[0]?.peerId || '';
   const defaultModel = snap.selection.model?.serviceId || peerOptions.find((peer) => peer.peerId === defaultPeerId)?.services[0] || '';
   const activeProfiles = useMemo(() => activeProfilesFromRuntimeState(proxyState), [proxyState]);

@@ -2511,7 +2511,7 @@ export function initChatModule({
     // the buyer proxy can fail with its explicit required-capability error.
     const routingPool = moderationRoutes.length > 0 ? moderationRoutes : eligibleRoutes;
     const preferredRoute = routingPool.find((row) => row.peerId === preferredPeerId);
-    const route = preferredRoute ?? chooseBestVprRoute(routingPool, uiState.vprRoutingPreferences);
+    const route = preferredRoute ?? chooseBestVprRoute(routingPool, uiState.vprRoutingPreferences, Date.now(), model.serviceId);
     if (!route) return null;
     if (requiresImageInput) {
       return { service: route.serviceId, peerId: route.peerId, moderation: 'low' };

@@ -101,7 +101,10 @@ function VprModelDetails({ onSelectView }: Props) {
     const list = routesForSelectedModel(snap.discoverRows, model);
     return [...list].sort(compareModelRoutesByReputation);
   }, [model, snap.discoverRows]);
-  const bestRoute = useMemo(() => chooseBestVprRoute(routes, snap.preferences), [routes, snap.preferences]);
+  const bestRoute = useMemo(
+    () => chooseBestVprRoute(routes, snap.preferences, Date.now(), model?.serviceId),
+    [model?.serviceId, routes, snap.preferences],
+  );
   const displayedRoutes = useMemo(() => filterTeeBrowseRows(routes, teeFilter), [routes, teeFilter]);
   useTeeVisibleSellers(displayedRoutes);
   const displayCatalog = useMemo(() => projectTeeBrowseCatalog(

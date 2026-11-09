@@ -45,7 +45,7 @@ export function initModelPickerSync({ bridge, uiState }: {
       const pinnedRoute = routes.find((row) => row.peerId === pinned);
       if (pinnedRoute) return pinnedRoute;
     }
-    return chooseBestVprRoute(routes, uiState.vprRoutingPreferences);
+    return chooseBestVprRoute(routes, uiState.vprRoutingPreferences, Date.now(), serviceId);
   };
 
   const buildSnapshot = (): ModelPickerSnapshot => {
