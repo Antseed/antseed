@@ -9,7 +9,7 @@ on:
 # A newer push to a pull request replaces the run for the older push. Runs on main are never
 # cancelled: each has its own group.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.sha }}
+  group: ci-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Steps that several jobs share are written once, where they first appear (`&name`), and reused
@@ -158,9 +158,11 @@ jobs:
         timeout-minutes: 15
 
   # The scenarios are split over the shards, two at a time on each runner as before. Every
-  # scenario runs in exactly one shard (see --shard in e2e/stress/ci.mjs); to add a shard, add a
-  # number to the list. Keep the strategy context out of the job name: with it there, GitHub
-  # creates one of the matrix jobs and ends the run with "Internal server error".
+  # scenario runs in exactly one shard (see --shard in e2e/stress/ci.mjs). `shards` is the number
+  # of entries in `shard`: to add a shard, add a number to the list and raise `shards` to match,
+  # or some scenarios run in no shard and every job still passes. Keep the strategy context out
+  # of the job name: with it there, GitHub creates one of the matrix jobs and ends the run with
+  # "Internal server error".
   payment-stress:
     name: Payment stress (Base-like RPC, shard ${{ matrix.shard }})
     runs-on: ubuntu-latest
@@ -168,6 +170,7 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2]
+        shards: [2]
 
     steps:
       - *checkout
@@ -187,7 +190,7 @@ jobs:
       - *contracts-cache
 
       - name: Run payment stress scenarios
-        run: node e2e/stress/ci.mjs --parallel 2 --shard "${{ matrix.shard }}/${{ strategy.job-total }}" --out "$RUNNER_TEMP/antseed-stress"
+        run: node e2e/stress/ci.mjs --parallel 2 --shard "${{ matrix.shard }}/${{ matrix.shards }}" --out "$RUNNER_TEMP/antseed-stress"
         timeout-minutes: 30
 
       - name: Upload stress logs
