@@ -97,7 +97,7 @@ export class LocalRouter implements Router {
       }
 
       // Provider availability filter (automatic selection skips failing services)
-      const provider = this._selectProviderForPeer(peer, requestedService, { protocol: routeProtocol });
+      const provider = this._selectProviderForPeer(peer, requestedService, { protocol: routeProtocol, automatic: true });
       if (!provider) {
         continue;
       }
@@ -176,10 +176,8 @@ export class LocalRouter implements Router {
   private _pricingRejection(req: SerializedHttpRequest, peer: PeerInfo): string | null {
     const requestedService = this._extractRequestedService(req);
     // A request naming its provider is priced through that provider.
-    const protocol = routeProtocolOf(req);
-    const provider = this._namedProvider(req, peer) ?? (protocol
-      ? this._selectProviderForPeer(peer, requestedService, { protocol })
-      : this._selectProviderForPeer(peer, requestedService));
+    const provider = this._namedProvider(req, peer)
+      ?? this._selectProviderForPeer(peer, requestedService, { protocol: routeProtocolOf(req) });
     if (!provider) return 'no provider for this model';
     const offer = this._resolvePeerOfferPrice(peer, provider, requestedService);
     if (!offer) return 'no valid price advertised';
@@ -229,7 +227,7 @@ export class LocalRouter implements Router {
   private _selectProviderForPeer(
     peer: PeerInfo,
     requestedService: string | null,
-    automatic?: { protocol?: ServiceApiProtocol },
+    options?: { protocol?: ServiceApiProtocol; automatic?: boolean },
   ): string | null {
     const availableProviders = peer.providers
       .map((provider) => provider.trim())
@@ -251,13 +249,16 @@ export class LocalRouter implements Router {
       ...availableProviders.filter((provider) => !pricesService(provider) && listsService(provider)),
     ];
     const listed = ordered.length > 0 ? ordered : availableProviders;
-    // A native video request can only go through a provider serving its protocol.
-    const servesProtocol = (provider: string): boolean => automatic?.protocol !== undefined && requestedService !== null
-      && Boolean(peer.providerServiceApiProtocols?.[provider]?.services?.[requestedService]?.includes(automatic.protocol));
+    // A native video or data request can only go through a provider serving its protocol.
+    const protocol = options?.protocol;
+    const servesProtocol = (provider: string): boolean => protocol !== undefined && requestedService !== null
+      && Boolean(peer.providerServiceApiProtocols?.[provider]?.services?.[requestedService]?.includes(protocol));
     const candidates = listed.some(servesProtocol) ? listed.filter(servesProtocol) : listed;
     const healthy = candidates.find((provider) => !isFailing(provider));
     if (healthy) return healthy;
-    return automatic ? null : candidates[0] ?? null;
+    // Automatic routing skips a service every matching provider reports failing; a pinned request
+    // (a policy check) still goes to its seller.
+    return options?.automatic ? null : candidates[0] ?? null;
   }
 
   private _resolvePeerOfferPrice(

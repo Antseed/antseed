@@ -116,6 +116,28 @@ describe('LocalRouter', () => {
     expect(router.selectPeer(makeRequest('video-x'), [peer])?.peerId).toBe(peer.peerId);
   });
 
+  it('still lets a pinned video or data request reach its seller when every matching provider reports failing', () => {
+    const router = new LocalRouter({ maxPricing: { defaults: { inputUsdPerMillion: 1_000, outputUsdPerMillion: 1_000 } } });
+    const price = { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 }, services: { 'video-x': { inputUsdPerMillion: 1, outputUsdPerMillion: 1 }, flights: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 } } };
+    const peer = makePeer({
+      providers: ['fal', 'openapi'],
+      providerPricing: { fal: price, openapi: price },
+      providerServiceApiProtocols: { fal: { services: { 'video-x': ['fal-video'] } }, openapi: { services: { flights: ['openapi-data'] } } },
+      providerServiceHealth: {
+        fal: { services: { 'video-x': { status: 'failing', reason: 'timeout' } } },
+        openapi: { services: { flights: { status: 'failing', reason: 'timeout' } } },
+      },
+    });
+    const videoRequest: SerializedHttpRequest = { ...makeRequest('video-x'), path: '/fal/v1/video/queue' };
+    const dataRequest: SerializedHttpRequest = { ...makeRequest('flights'), path: '/v1/data/flights/search' };
+    // Automatic routing skips the failing service.
+    expect(router.selectPeer(videoRequest, [peer])).toBeNull();
+    expect(router.selectPeer(dataRequest, [peer])).toBeNull();
+    // A pinned request is checked against policy only, so it still reaches its seller.
+    expect(router.allowsPeerForPolicy(videoRequest, peer)).toBe(true);
+    expect(router.allowsPeerForPolicy(dataRequest, peer)).toBe(true);
+  });
+
   it('judges a data request by the service in its path, not by a `model` field in its body', () => {
     const router = new LocalRouter({ maxPricing: { defaults: { inputUsdPerMillion: 5, outputUsdPerMillion: 5 } } });
     const free = { inputUsdPerMillion: 0, outputUsdPerMillion: 0 };
