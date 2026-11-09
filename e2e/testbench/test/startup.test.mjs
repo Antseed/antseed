@@ -98,6 +98,13 @@ describe('a start that cannot finish fails by itself', () => {
     const status = cliRun(run.home, 'status', '--json');
     assert.deepEqual(JSON.parse(status.stdout), { name, running: false, lock: 'free' });
   });
+
+  it('broadcasts one transaction at a time, so Anvil cannot park a later nonce', async () => {
+    const run = await startSupervisor({ forge: 'park' });
+    await run.exit(60_000);
+    const script = run.foundry.started('forge').find((entry) => entry.args[0] === 'script');
+    assert.ok(script.args.includes('--broadcast') && script.args.includes('--slow'), script.args.join(' '));
+  });
 });
 
 describe("watching Anvil's pool while forge broadcasts", () => {

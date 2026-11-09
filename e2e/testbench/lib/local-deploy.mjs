@@ -174,6 +174,16 @@ export function expectedRegistryPointers(layout) {
 
 const CONTRACTS_DIR = 'packages/contracts';
 const SKIP_TESTS = ['--skip', 'test', '--skip', '*.t.sol'];
+/**
+ * One transaction at a time: forge sends the next only once the previous one has its receipt. Without it forge sends
+ * a script's transactions in one burst, and Anvil 1.3.5 can park one of them for good: it reads the sender's nonce,
+ * and when the block with the previous nonce is mined and pruned from the pool before the new transaction is added,
+ * that transaction waits for a predecessor nobody will provide again. Every later nonce queues behind it, automine
+ * has nothing ready, and forge polls for receipts forever. A transaction sent after its predecessor's receipt never
+ * names a predecessor, so it cannot park. Anvil 1.9.0 holds its mining lock across that read and insert.
+ */
+const FORGE_BROADCAST_ARGS = ['--broadcast', '--slow'];
+
 /** How often a broadcasting script's Anvil pool is looked at, and how many looks in a row must find it stuck. */
 export const POOL_WATCH_INTERVAL_MS = 1000;
 export const POOL_STALL_POLLS = 3;
@@ -253,7 +263,7 @@ export async function deployLocalStack({ repo, rpcUrl, env = process.env, layout
     if (code !== 0) throw new Error(`${label} failed with ${code ?? signal} (see logs/forge.log)${signal === 'SIGKILL' || code === 137 ? '; solc was likely killed for memory (via_ir needs ~6 GB)' : ''}`);
     timings[label] = Date.now() - started;
   };
-  const script = (label, path, env, extra = []) => forge(label, ['script', path, '--rpc-url', rpcUrl, '--broadcast', '--private-key', LOCAL_DEPLOYER_KEY, ...SKIP_TESTS, ...extra], env, { watchPool: true });
+  const script = (label, path, env, extra = []) => forge(label, ['script', path, '--rpc-url', rpcUrl, ...FORGE_BROADCAST_ARGS, '--private-key', LOCAL_DEPLOYER_KEY, ...SKIP_TESTS, ...extra], env, { watchPool: true });
   const provider = new JsonRpcProvider(rpcUrl, LOCAL_CHAIN_ID, { cacheTimeout: -1, batchMaxCount: 1, staticNetwork: true });
   provider.pollingInterval = 100;
   const nonce = () => provider.getTransactionCount(LOCAL_DEPLOYER, 'latest');
