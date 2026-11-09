@@ -125,6 +125,40 @@ test('install is not ready while the gateway answers but its buyer does not', as
   assert.equal(result.gatewayAnswered, true)
 })
 
+test('linux uninstall keeps the unit file when stopping it fails', async () => {
+  const deps = fakeDeps('linux', [false])
+  await installService(spec, deps, { waitMs: 0 })
+  const exec = deps.exec
+  deps.exec = (file, args) => {
+    if (file === 'systemctl' && args.includes('disable')) throw Object.assign(new Error('exit 1'), { stderr: 'Failed to connect to bus' })
+    return exec(file, args)
+  }
+  await assert.rejects(uninstallService(deps), /Could not stop antseed-gateway\.service; it was not removed\. Failed to connect to bus/)
+  assert.equal(existsSync(serviceFilePath('linux', deps.home)), true)
+})
+
+test('macOS uninstall keeps the plist when launchd fails to unload a loaded agent', async () => {
+  const deps = fakeDeps('darwin', [false])
+  await installService({ ...spec, logFile: join(deps.home, 'logs', 'gateway.log') }, deps, { waitMs: 0 })
+  deps.exec = (file, args) => {
+    if (file === 'launchctl' && args[0] === 'bootout') throw new Error('Boot-out failed: 5: Input/output error')
+    return '' // print succeeds: still loaded
+  }
+  await assert.rejects(uninstallService(deps), /could not unload com\.antseed\.gateway; it was not removed/)
+  assert.equal(existsSync(serviceFilePath('darwin', deps.home)), true)
+})
+
+test('macOS uninstall removes the plist when the agent was not loaded', async () => {
+  const deps = fakeDeps('darwin', [false])
+  await installService({ ...spec, logFile: join(deps.home, 'logs', 'gateway.log') }, deps, { waitMs: 0 })
+  deps.exec = (file, args) => {
+    if (file === 'launchctl') throw new Error(args[0] === 'bootout' ? 'Boot-out failed: 3: No such process' : 'Could not find service')
+    return ''
+  }
+  assert.equal(await uninstallService(deps), true)
+  assert.equal(existsSync(serviceFilePath('darwin', deps.home)), false)
+})
+
 test('uninstall disables the unit and removes the file; false when not installed', async () => {
   const deps = fakeDeps('linux', [false])
   assert.equal(await uninstallService(deps), false)

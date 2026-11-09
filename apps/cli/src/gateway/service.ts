@@ -243,11 +243,23 @@ export async function uninstallService(deps: ServiceDeps): Promise<boolean> {
     await unloadLaunchdAgent(deps)
     await rm(file, { force: true })
   } else {
-    tryExec(deps, 'systemctl', ['--user', 'disable', '--now', SYSTEMD_UNIT])
+    // A failed stop keeps the unit file, so the service can still be managed and removed once the cause is fixed.
+    try {
+      deps.exec('systemctl', ['--user', 'disable', '--now', SYSTEMD_UNIT])
+    } catch (error) {
+      throw new Error(`Could not stop ${SYSTEMD_UNIT}; it was not removed. ${commandError(error)}`)
+    }
     await rm(file, { force: true })
     tryExec(deps, 'systemctl', ['--user', 'daemon-reload'])
   }
   return true
+}
+
+/** The useful part of a failed command: its stderr, else its message. */
+function commandError(error: unknown): string {
+  const stderr = (error as { stderr?: unknown })?.stderr
+  const text = typeof stderr === 'string' && stderr.trim() ? stderr : error instanceof Error ? error.message : String(error)
+  return text.trim()
 }
 
 /**
@@ -258,7 +270,11 @@ export async function uninstallService(deps: ServiceDeps): Promise<boolean> {
  */
 async function unloadLaunchdAgent(deps: ServiceDeps): Promise<void> {
   const service = `${launchdTarget(deps)}/${LAUNCHD_LABEL}`
-  if (!tryExec(deps, 'launchctl', ['bootout', service])) return
+  if (!tryExec(deps, 'launchctl', ['bootout', service])) {
+    // bootout also fails when the agent isn't loaded, which is fine; still loaded means it really failed.
+    if (!tryExec(deps, 'launchctl', ['print', service])) return
+    throw new Error(`launchd could not unload ${LAUNCHD_LABEL}; it was not removed. Try: launchctl bootout ${service}`)
+  }
   for (let waited = 0; waited < (SERVICE_STOP_TIMEOUT_S + 15) * 1_000; waited += 500) {
     if (!tryExec(deps, 'launchctl', ['print', service])) return
     await deps.sleep(500)
