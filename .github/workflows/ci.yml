@@ -159,9 +159,10 @@ jobs:
 
   # The scenarios are split over the shards, two at a time on each runner as before. Every
   # scenario runs in exactly one shard (see --shard in e2e/stress/ci.mjs); to add a shard, add a
-  # number to the list.
+  # number to the list. Keep the strategy context out of the job name: with it there, GitHub
+  # creates one of the matrix jobs and ends the run with "Internal server error".
   payment-stress:
-    name: Payment stress (Base-like RPC, ${{ matrix.shard }}/${{ strategy.job-total }})
+    name: Payment stress (Base-like RPC, shard ${{ matrix.shard }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
