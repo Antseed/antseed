@@ -220,6 +220,7 @@ export class BuyerRequestHandler {
     // Decide free vs paid from the resolved route (provider + protocol), mirroring
     // the seller's per-request gate so both sides classify the request the same way.
     const videoRoute = nativeVideoRoute(req);
+    const dataRoute = dataServiceRoute(req);
     if (videoRoute && !billingRoute?.unitModel) throw new Error('Video requests require advertised unit pricing');
     const isFreeService = videoRoute?.action === 'retrieve' || (requestedService
       ? (billingRoute ? isBillingRouteFree(billingRoute) : isPeerServiceFree(peer, requestedService))
@@ -521,13 +522,13 @@ export class BuyerRequestHandler {
       return buyerPaymentsInactiveResponse(response, peer.peerId);
     }
 
-    // Provider video APIs may use HTTP 402 for their own errors; only start
-    // Antseed payment negotiation when the response is our payment contract.
+    // Provider video and data APIs may use HTTP 402 for their own errors; only
+    // start Antseed payment negotiation when the response is our payment contract.
     if (
       response.statusCode === 402
       && negotiator
       && !externalSpendingAuth
-      && (!videoRoute || isPaymentRequired402(response))
+      && ((!videoRoute && !dataRoute) || isPaymentRequired402(response))
     ) {
       // Parallel requests can leave the seller's spend several requests ahead
       // of the signed cumulative. Keep catching up while the gap shrinks or

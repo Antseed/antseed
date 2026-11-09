@@ -283,12 +283,13 @@ export function speechOfferUsdPerCharacter(offer: NetworkServiceOffer): number |
 }
 
 /**
- * USD per completed request a data offer bills. 0 for a billing model with no
- * components (free); null when the offer is not data or publishes no request price.
+ * USD per completed request an offer bills on `openapi-data`, also when the service
+ * answers on chat too. 0 for a billing model with no components (free); null when the
+ * offer publishes no data price.
  */
 export function dataOfferUsdPerRequest(offer: NetworkServiceOffer): number | null {
-  if (offer.type !== 'data') return null;
-  const model = offer.protocol ? offer.unitBillingModels?.[offer.protocol] : undefined;
+  const model = offer.unitBillingModels?.['openapi-data'];
+  if (!model) return null;
   if (model && model.components.length === 0) return 0;
   const applicable = (model?.components ?? []).filter((component) =>
     component.unit === 'completed_requests' && Number.isFinite(component.priceUsd) && component.priceUsd >= 0);

@@ -29,6 +29,15 @@ A data call is one request and one buffered response. A `stream` field in the bo
 `Accept: text/event-stream` header is the operation's own and does not switch the proxy to
 streaming.
 
+A call other than a `GET`, `HEAD` or `OPTIONS` goes to one seller. If its answer fails or does
+not arrive, the proxy does not send it to another seller, since the operation may already have
+run. It moves on only after a refusal that comes before the operation runs: a seller that does
+not serve the service, a payment the buyer could not make, or a `429`. Reads fail over like any
+other request.
+
+A provider's own answers, errors included, come back as sent. A `402` from the provider is its
+own error; only the seller's `payment_required` answer starts a payment step.
+
 ## Billing
 
 Data services bill `completed_requests`, the unit model routing uses (see

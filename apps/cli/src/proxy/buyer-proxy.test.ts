@@ -17,6 +17,7 @@ import {
   adaptPeerFaultErrorResponse,
   buyerFault,
   computeTrustScore,
+  modelRouteTotalPrice,
   type ModelRoutingPreferences,
   type RouteSelectionContext,
   type RouteRecommendation,
@@ -3537,6 +3538,95 @@ test('a chat request to a data service is told the protocol it is served on', as
   const body = JSON.parse(res.body) as { error: { code: string; supported_protocols?: string[] } }
   assert.equal(body.error.code, 'unsupported_protocol')
   assert.deepEqual(body.error.supported_protocols, ['openapi-data'])
+})
+
+/** A seller of the free `flights` data service. */
+function makeFreeDataPeer(seed: string, reputation = 80): PeerInfo {
+  const peer = makeDataPeer(seed, reputation)
+  peer.providerServiceUnitBillingModels = { openapi: { services: { flights: { 'openapi-data': { version: 1, components: [] } } } } }
+  return peer
+}
+
+for (const failure of ['502', 'transport'] as const) {
+  test(`a data POST is not sent to another seller after a ${failure} failure, since it may already have run`, async () => {
+    const first = makeDataPeer('a', 95)
+    const second = makeDataPeer('b', 80)
+    const proxy = makeBuyerProxyWithPeers([first, second], [first, second], permissiveRouter())
+    const attempts: string[] = []
+    ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
+      attempts.push(peer.peerId)
+      if (failure === 'transport') throw new Error('Connection closed after dispatch')
+      return { requestId: request.requestId, statusCode: 502, headers: { 'content-type': 'application/json' }, body: Buffer.from('{"error":"upstream"}') }
+    }
+
+    const res = await invokeProxy(proxy, makeProxyRequest({ path: '/v1/data/flights/book', body: { flight: 'LY1' } }))
+
+    assert.notEqual(res.statusCode, 200)
+    assert.deepEqual(attempts, [first.peerId])
+  })
+}
+
+test('a data GET fails over to another seller like any read', async () => {
+  const first = makeDataPeer('a', 95)
+  const second = makeDataPeer('b', 80)
+  const proxy = makeBuyerProxyWithPeers([first, second], [first, second], permissiveRouter())
+  const attempts: string[] = []
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
+    attempts.push(peer.peerId)
+    const statusCode = peer.peerId === first.peerId ? 502 : 200
+    return { requestId: request.requestId, statusCode, headers: { 'content-type': 'application/json' }, body: Buffer.from('{"flights":[]}') }
+  }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({ method: 'GET', path: '/v1/data/flights/search?from=TLV', rawBody: '' }))
+
+  assert.equal(res.statusCode, 200)
+  assert.deepEqual(attempts, [first.peerId, second.peerId])
+})
+
+test('a data POST moves on to a free data seller when a paid one cannot be funded', async () => {
+  const paid = makeDataPeer('a', 95)
+  const free = makeFreeDataPeer('e', 70)
+  const proxy = makeBuyerProxyWithPeers([paid, free], [paid, free], permissiveRouter())
+  const attempts: string[] = []
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
+    attempts.push(peer.peerId)
+    if (peer.peerId === free.peerId) {
+      return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{"flights":[]}') }
+    }
+    return {
+      requestId: request.requestId, statusCode: 402,
+      headers: { 'content-type': 'application/json', [ANTSEED_FAULT_ATTRIBUTION_HEADER]: 'buyer' },
+      body: Buffer.from('{"error":"payment_required","code":"insufficient_deposits"}'),
+    }
+  }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({ path: '/v1/data/flights/search', body: { from: 'TLV' } }))
+
+  assert.equal(res.statusCode, 200)
+  assert.deepEqual(attempts, [paid.peerId, free.peerId])
+})
+
+test('a data route candidate carries its per-request price, and a free data seller is priced 0', () => {
+  const paid = makeDataPeer('a', 95)
+  const free = makeFreeDataPeer('e', 70)
+  const proxy = makeBuyerProxyWithPeers([paid, free], [paid, free], permissiveRouter())
+  const serialized = { requestId: 'r', method: 'POST', path: '/v1/data/flights/search', headers: { 'content-type': 'application/json' }, body: Buffer.from('{"from":"TLV"}') }
+  const selection = selectCandidatePeersForRouting([paid, free], 'openapi-data', 'flights', null, 'strict')
+  const plan = (proxy as any)._planModelRoutes({
+    modelPeers: selection.candidatePeers,
+    modelPlans: selection.routePlanByPeerId,
+    request: serialized,
+    requestProtocol: 'openapi-data',
+    requestedService: 'flights',
+    explicitProvider: null,
+    requiredParameters: [],
+    requestPolicy: null,
+    preferredPeerId: null,
+    affinityKey: null,
+  })
+  const prices = Object.fromEntries(plan.candidates.map((candidate: { peerId: string }) => [candidate.peerId, modelRouteTotalPrice(candidate as never)]))
+  assert.equal(prices[paid.peerId], 0.005)
+  assert.equal(prices[free.peerId], 0)
 })
 
 test('a model whose every seller reports it failing gets a self health error, not model_not_found', async () => {

@@ -100,6 +100,49 @@ describe('BuyerRequestHandler TEE connection binding', () => {
   });
 });
 
+function makeDataPeer(): BuyerPeerView {
+  return {
+    peerId: toPeerId('5'.repeat(40)),
+    providers: ['openapi'],
+    providerServiceApiProtocols: { openapi: { services: { flights: ['openapi-data'] } } },
+    providerServiceUnitBillingModels: { openapi: { services: { flights: { 'openapi-data': {
+      version: 1 as const, components: [{ unit: 'completed_requests' as const, priceUsd: 0.005 }],
+    } } } } },
+  };
+}
+
+function makeDataRequest(): SerializedHttpRequest {
+  return {
+    requestId: 'video-request',
+    method: 'POST',
+    path: '/v1/data/flights/book',
+    headers: { 'content-type': 'application/json' },
+    body: Buffer.from(JSON.stringify({ flight: 'LY1' })),
+  };
+}
+
+describe('BuyerRequestHandler data service 402', () => {
+  it("returns a data provider's own 402 unchanged, without negotiation or a second call", async () => {
+    const providerRefusal = response(402, { error: { message: 'card declined', code: 'payment_declined' } });
+    const { handler, handle402, sendProxyRequest } = makeHandler([providerRefusal, ACCEPTED]);
+
+    const result = await handler.sendRequest(makeDataPeer(), makeDataRequest());
+
+    expect(result.statusCode).toBe(402);
+    expect(JSON.parse(Buffer.from(result.body).toString())).toEqual({ error: { message: 'card declined', code: 'payment_declined' } });
+    expect(handle402).not.toHaveBeenCalled();
+    expect(sendProxyRequest).toHaveBeenCalledOnce();
+  });
+
+  it('still negotiates the seller payment contract on a data call', async () => {
+    const { handler, handle402, sendProxyRequest } = makeHandler([PAYMENT_REQUIRED, ACCEPTED]);
+
+    expect((await handler.sendRequest(makeDataPeer(), makeDataRequest())).statusCode).toBe(200);
+    expect(handle402).toHaveBeenCalledOnce();
+    expect(sendProxyRequest).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('BuyerRequestHandler payment negotiation', () => {
   it.each([400, 409, 500, 503])('returns a non-payment response without negotiation (%s)', async (statusCode) => {
     const { handler, handle402, sendProxyRequest } = makeHandler([response(statusCode, { error: 'rejected' })]);

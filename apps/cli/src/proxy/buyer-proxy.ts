@@ -44,6 +44,7 @@ import {
   adaptiveFirstTokenTimeoutMs,
   sanitizePeerDisplayName,
   speechOfferUsdPerCharacter,
+  dataOfferUsdPerRequest,
   speechVoiceProblem,
   type AntseedNode,
   type FaultAttribution,
@@ -816,6 +817,9 @@ function writeDispatchFailure(res: ServerResponse, result: DispatchFailure): voi
   res.writeHead(result.statusCode, withoutRouterHeaders(result.responseHeaders))
   res.end(result.responseBody)
 }
+
+/** Data operations that read and change nothing, so another seller may safely repeat them. */
+const SAFE_DATA_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
 
 function isBuyerFault(result: DispatchFailure): boolean {
   return result.responseHeaders[ANTSEED_FAULT_ATTRIBUTION_HEADER]?.toLowerCase() === 'buyer'
@@ -1903,6 +1907,7 @@ export class BuyerProxy {
         outputUsdPerMillion: offer.outputUsdPerMillion ?? null,
         minImageUsdPerImage: offer.minImageUsdPerImage ?? null,
         speechUsdPerCharacter: speechOfferUsdPerCharacter(offer),
+        dataUsdPerRequest: requestProtocol === 'openapi-data' ? dataOfferUsdPerRequest(offer) : null,
       })
     }
     const now = this._now()
@@ -1971,9 +1976,11 @@ export class BuyerProxy {
       serviceId: this._healthServiceKey(candidate.serviceId),
       inputUsdPerMillion: candidate.inputUsdPerMillion,
       outputUsdPerMillion: candidate.outputUsdPerMillion,
-      requestUsd: candidate.speechUsdPerCharacter != null && speechCharacters !== null
-        ? candidate.speechUsdPerCharacter * speechCharacters
-        : candidate.minImageUsdPerImage,
+      requestUsd: candidate.dataUsdPerRequest != null
+        ? candidate.dataUsdPerRequest
+        : candidate.speechUsdPerCharacter != null && speechCharacters !== null
+          ? candidate.speechUsdPerCharacter * speechCharacters
+          : candidate.minImageUsdPerImage,
       coolingDown: isCooling(candidate),
       ...(openChannels ? { channelOpen: modelRouteTotalPrice(candidate) === 0 || openChannels.has(candidate.peerId.toLowerCase()) } : {}),
       saturated: typeof candidate.peer.maxConcurrency === 'number' && candidate.peer.maxConcurrency > 0
@@ -4676,6 +4683,11 @@ export class BuyerProxy {
       : null
 
     const nativeVideo = nativeVideoRoute(request)
+    // A data operation other than a read may already have run upstream when its answer
+    // fails to arrive, and another seller cannot tell. It moves to another seller only
+    // after a refusal that comes before the operation runs.
+    const dataCall = dataServiceRoute(request)
+    const dataCallMayRepeat = dataCall?.action === 'call' && !SAFE_DATA_METHODS.has(request.method.toUpperCase())
     let serializedReq = request
     const { requiredParameters, requestPolicy, signal, effectivePinnedPeer,
       preferredConversationPeerId, routingConversationKey } = context
@@ -5018,7 +5030,7 @@ export class BuyerProxy {
               // this one usually takes; the last seller gets the full timeout. A
               // probe of a seller with no recent data waits no longer than the
               // seller it stands in for would.
-              attemptTimeoutMs: index + 1 < candidates.length && !nativeVideo
+              attemptTimeoutMs: index + 1 < candidates.length && !nativeVideo && !dataCallMayRepeat
                 ? this._attemptTimeoutMs(selected === explored ? candidates[index + 1]! : selected, selected.request)
                 : null,
               teeBinding,
@@ -5052,6 +5064,10 @@ export class BuyerProxy {
           // Never retry a video on another seller: a create may already have
           // started (and been charged), and follow-ups only exist on one seller.
           if (nativeVideo) return result
+          // A data operation that may have run is not sent again: only a seller that
+          // does not serve it, a payment the buyer could not make, or a rate limit
+          // (all before the operation runs) lets another seller take it.
+          if (dataCallMayRepeat && !result.modelNotFound && !isBuyerFault(result) && result.statusCode !== 429) return result
           lastRetry = result
           if (!isBuyerFault(result) && !result.modelNotFound && result.statusCode !== 402) {
             const failure = classifyFailedAttempt(result)
