@@ -1,6 +1,6 @@
 {
   "name": "@antseed/provider-alibaba-video",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Alibaba Cloud Model Studio video relay for Antseed",
   "type": "module",
   "files": [
