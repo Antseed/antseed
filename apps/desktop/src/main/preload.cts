@@ -463,6 +463,7 @@ const api = {
   gatewayGetPrivacy: (): Promise<GatewayTypes.GatewayPrivacyResult> => ipcRenderer.invoke('gateway:get-privacy'),
   gatewaySetPrivacy: (mode: GatewayTypes.GatewayPrivacyMode): Promise<GatewayTypes.GatewayPrivacyResult> => ipcRenderer.invoke('gateway:set-privacy', { mode }),
   gatewayGetRewards: (opts?: { force?: boolean }): Promise<GatewayTypes.GatewayRewardsResult> => ipcRenderer.invoke('gateway:get-rewards', opts),
+  gatewayGetSavings: (): Promise<GatewayTypes.GatewaySavings | null> => ipcRenderer.invoke('gateway:get-savings'),
   agentSkillsList: (): Promise<GatewayTypes.AgentSkillStatus[]> => ipcRenderer.invoke('agent-skills:list'),
   agentSkillsInstall: (id: string): Promise<GatewayTypes.AgentSkillsResult> => ipcRenderer.invoke('agent-skills:install', { id }),
   agentSkillsRemove: (id: string): Promise<GatewayTypes.AgentSkillsResult> => ipcRenderer.invoke('agent-skills:remove', { id }),

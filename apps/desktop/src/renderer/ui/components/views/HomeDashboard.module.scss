@@ -1,0 +1,523 @@
+/* Home after the first prompt: usage, setup steps and one banner. */
+
+.page {
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  padding-bottom: 24px;
+}
+
+.header {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: clamp(0px, 5vh - 30px, 32px) 2px 4px;
+}
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid var(--surface-glass-border);
+  background: var(--surface-glass);
+  backdrop-filter: blur(16px);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.statusDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent-green);
+}
+
+.statusWarn .statusDot {
+  background: var(--accent-amber, #d98b2b);
+}
+
+.heading {
+  margin: 4px 0 0;
+  color: var(--text-primary);
+  font-size: clamp(28px, 4.6vh, 40px);
+  font-weight: 470;
+  line-height: 1.05;
+  letter-spacing: -.02em;
+}
+
+.subline {
+  margin: 0;
+  color: var(--text-primary);
+  opacity: .86;
+  font-size: 15px;
+  line-height: 1.45;
+}
+
+.action {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  min-width: 0;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 9px;
+  background: var(--btn-bg);
+  color: var(--btn-ink);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.action:hover:not(:disabled) {
+  opacity: .88;
+}
+
+.action:disabled {
+  cursor: default;
+  opacity: .5;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  padding: 16px 18px;
+  border-radius: 18px;
+  border: 1px solid var(--surface-glass-border);
+  background: var(--surface-glass);
+  backdrop-filter: blur(20px) saturate(1.3);
+  box-shadow: var(--shadow);
+}
+
+.cardHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.cardTitle {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.count {
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.progress {
+  height: 4px;
+  margin-top: -4px;
+  border-radius: 999px;
+  background: var(--bg-hover);
+  overflow: hidden;
+}
+
+.progress > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent-green);
+  transition: width .3s ease;
+}
+
+.steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+}
+
+.step {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 0;
+  min-width: 0;
+}
+
+.step + .step {
+  border-top: 1px solid var(--surface-glass-border);
+}
+
+.stepMark {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.stepDone .stepMark {
+  border-color: transparent;
+  background: var(--accent-green);
+  color: #fff;
+}
+
+.stepBody {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.stepTitle {
+  margin: 3px 0 0;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 20px;
+}
+
+.stepDone .stepTitle {
+  color: var(--text-secondary);
+}
+
+.stepText {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  line-height: 18px;
+}
+
+.stepActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  margin-top: 2px;
+}
+
+.agentIcons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.agent {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--surface-glass-border);
+  border-radius: 9px;
+  background: var(--surface-glass);
+  cursor: pointer;
+  transition: border-color .12s ease, background .12s ease;
+}
+
+.agent:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  background: var(--bg-hover);
+}
+
+.agent:disabled {
+  cursor: default;
+  opacity: .6;
+}
+
+.agentMuted {
+  opacity: .6;
+}
+
+.link,
+.tileLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.link:hover:not(:disabled),
+.tileLink:hover {
+  color: var(--text-primary);
+  text-decoration: underline;
+}
+
+.link:disabled {
+  cursor: default;
+  opacity: .5;
+}
+
+.inlineLink {
+  display: inline;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.note {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.saved {
+  display: grid;
+  gap: 2px;
+  margin-top: -2px;
+}
+
+.savedValue {
+  color: var(--accent-green);
+  font-size: 30px;
+  font-weight: 560;
+  line-height: 1.15;
+  letter-spacing: -.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+.savedText {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.tile {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: var(--bg-hover);
+}
+
+.tileLabel {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.tileValue {
+  color: var(--text-primary);
+  font-size: 22px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -.01em;
+}
+
+.tileUnit {
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.tileLink {
+  align-self: flex-start;
+  font-size: 12px;
+}
+
+.promo {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.promoBody {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.promoEyebrow {
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.promoTitle {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.promoText {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.promo .action {
+  flex: 0 0 auto;
+}
+
+@media (max-width: 760px) {
+  .tiles {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .promo {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
+
+.pageInline {
+  max-width: none;
+  margin: 0;
+}
+
+.cardTools {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: -4px -6px -4px 0;
+}
+
+.cardTools .count {
+  margin-right: 4px;
+}
+
+.iconButton {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.iconButton:hover,
+.iconButton:focus-visible {
+  border-color: var(--border);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  outline: none;
+}
+
+.setupMini {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 10px 10px 18px;
+}
+
+.setupMiniOpen {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.setupMiniOpen .cardTitle,
+.setupMiniOpen .count {
+  flex: 0 0 auto;
+}
+
+.miniBar {
+  flex: 0 0 88px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--bg-hover);
+  overflow: hidden;
+}
+
+.miniBar > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent-green);
+}
+
+.miniNext {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.miniChevron {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--text-muted);
+}
+
+.setupMiniOpen:hover .miniChevron,
+.setupMiniOpen:focus-visible .miniChevron {
+  color: var(--text-primary);
+}
+
+.setupReopen {
+  align-self: center;
+  padding: 4px 8px;
+}
+
+.promo {
+  position: relative;
+  padding-right: 46px;
+}
+
+.promoClose {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+}

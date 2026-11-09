@@ -30,6 +30,8 @@ type ChatModelDropdownProps = {
    * message box) instead of hanging off the trigger.
    */
   menuAnchor?: 'trigger' | 'container';
+  /** `above`: the menu opens upward, for a picker below the message box. */
+  menuPlacement?: 'below' | 'above';
 };
 
 /**
@@ -58,6 +60,7 @@ export function ChatModelDropdown({
   onRetry,
   menuMaxHeight,
   menuAnchor = 'trigger',
+  menuPlacement = 'below',
 }: ChatModelDropdownProps) {
   const [open, setOpen] = useState(false);
   useEffect(() => onOpenChange?.(open), [open, onOpenChange]);
@@ -146,7 +149,7 @@ export function ChatModelDropdown({
       </button>
       {open && (
         <div
-          className={`${styles.modelDropdownMenu}${menuAnchor === 'container' ? ` ${styles.menuFullWidth}` : ''}`}
+          className={`${styles.modelDropdownMenu}${menuAnchor === 'container' ? ` ${styles.menuFullWidth}` : ''}${menuPlacement === 'above' ? ` ${styles.menuAbove}` : ''}`}
           role="listbox"
           style={menuMaxHeight ? { maxHeight: menuMaxHeight } : undefined}
         >

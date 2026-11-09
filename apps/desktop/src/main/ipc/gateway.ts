@@ -28,6 +28,10 @@ import { reconnectAllApps } from '../connected-apps/patching/connection.js';
 import { findConnectableProfile } from '../connected-apps/patching/profiles.js';
 import type { GatewayEndpointInfo, GatewaySettingsPatch } from '../../shared/gateway-types.js';
 import { readGatewayRewards } from '../gateway/rewards.js';
+import { createSavingsReader } from '../gateway/savings.js';
+import { fetchBuyerProxyJson } from '../payments/buyer-channels.js';
+import { resolveServiceIdHashes } from '../payments/service-hash-resolver.js';
+import { BAKED_COMPARABLE_PRICES_URL } from '../generated/baked-defaults.js';
 import { ensureSecureIdentity, getSecureIdentity } from '../identity.js';
 import {
   agentSetupPrompt,
@@ -36,6 +40,25 @@ import {
   removeAgentSkills,
   syncAgentSkills,
 } from '../agent-skills.js';
+
+const COMPARABLE_PRICES_TIMEOUT_MS = 8_000;
+
+/** Retail prices come from ANTSEED_COMPARABLE_PRICES_URL (empty turns them off) or the release build's baked default. */
+function comparablePricesUrl(): string | null {
+  const env = process.env.ANTSEED_COMPARABLE_PRICES_URL;
+  return env !== undefined ? env.trim() || null : BAKED_COMPARABLE_PRICES_URL;
+}
+
+const readGatewaySavings = createSavingsReader({
+  pricesUrl: comparablePricesUrl,
+  fetchJson: async (url) => {
+    const response = await fetch(url, { signal: AbortSignal.timeout(COMPARABLE_PRICES_TIMEOUT_MS) });
+    if (!response.ok) throw new Error(`Retail prices answered ${response.status}`);
+    return response.json();
+  },
+  readUsage: () => fetchBuyerProxyJson('/_antseed/buyer-usage'),
+  resolveNames: resolveServiceIdHashes,
+});
 
 /** Agent skills get their own key in per-app key mode. */
 const AGENT_SKILLS_APP = { name: 'agent-skills', label: 'Agent skills' };
@@ -156,6 +179,13 @@ export function registerGatewayIpc(deps: GatewayIpcDeps): void {
     } catch (err) {
       return errorResult(err);
     }
+  });
+
+  // Usage is read from this app's buyer, so a remote gateway (paying from its
+  // own wallet) has nothing here to compare.
+  ipcMain.handle('gateway:get-savings', async () => {
+    if (getGatewaySettings().mode !== 'local') return null;
+    return readGatewaySavings().catch(() => null);
   });
 
   ipcMain.handle('agent-skills:list', () => listAgentSkillTargets());

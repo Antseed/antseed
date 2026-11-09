@@ -19,8 +19,6 @@ import { appsResource, installedAppsResource } from '../../../modules/app/vpr-re
 import { useCachedResource } from '../../../modules/app/cached-resource';
 import { TelegramBotCard } from './TelegramBotCard';
 import { VprCard, VprPage, VprSearch, VprSection } from '../vpr/VprKit';
-import { PrivacyToggle, usePrivacyControl } from '../vpr/PrivacyToggle';
-import { useActions } from '../../hooks/useActions';
 import { AgentSkillsPanel } from '../vpr/AgentSkillsPanel';
 import { appLogoUrl } from '../vpr/AppPills';
 import { AppsBanner } from '../vpr/AppsBanner';
@@ -261,8 +259,6 @@ export function VprToolsView() {
   const installedApps = installedAppsResourceSnapshot.data;
   const installedAppsError = installedAppsResourceSnapshot.error;
 
-  const actions = useActions();
-  const privacyControl = usePrivacyControl((mode) => { actions.privacyModeChosen(mode); });
   const connectedCount = (appsSnapshot.data ?? []).filter((profile) => profile.connected).length;
   const openConsole = useCallback((path: string) => {
     void window.antseedDesktop?.gatewayOpenConsole?.(path)?.then((result) => {
@@ -418,7 +414,7 @@ export function VprToolsView() {
 
   return (
     <section className={`view view-vpr-tools view-pinned-header ${styles.view}`} role="tabpanel">
-      <VprPage title="Agents &amp; apps" titleInBody center={<PrivacyToggle control={privacyControl} />}>
+      <VprPage title="Agents &amp; apps" titleInBody>
       <div className={styles.stack}>
         {message ? <p className={styles.note} role="status">{message}</p> : null}
 
@@ -429,7 +425,7 @@ export function VprToolsView() {
           caption="Your agent keeps its own model and calls Antseed when you ask, for an image or a second opinion."
         >
           <VprCard className={styles.agentCard}>
-            <AgentSkillsPanel page />
+            <AgentSkillsPanel />
           </VprCard>
         </VprSection>
 

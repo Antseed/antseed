@@ -26,6 +26,8 @@ type ChatSellerPickerProps = {
    * message box) instead of hanging off the trigger.
    */
   menuAnchor?: 'trigger' | 'container';
+  /** `above`: the menu opens upward, for a picker below the message box. */
+  menuPlacement?: 'below' | 'above';
 };
 
 function shortId(peerId: string): string {
@@ -66,7 +68,7 @@ const SORT_LABELS: Record<string, string> = {
  * key's policy allows can be pinned — the route preview says which, and the
  * gateway refuses any other pin.
  */
-export function ChatSellerPicker({ modelId, disabled, onChange, onOpenChange, menuMaxHeight, compact = false, menuAnchor = 'trigger' }: ChatSellerPickerProps) {
+export function ChatSellerPicker({ modelId, disabled, onChange, onOpenChange, menuMaxHeight, compact = false, menuAnchor = 'trigger', menuPlacement = 'below' }: ChatSellerPickerProps) {
   const { modelId: listedId, peerId: pinnedPeerId } = splitPinnedModel(modelId);
   const [open, setOpen] = useState(false);
   useEffect(() => onOpenChange?.(open), [open, onOpenChange]);
@@ -175,7 +177,7 @@ export function ChatSellerPicker({ modelId, disabled, onChange, onOpenChange, me
       </button>
       {open && (
         <div
-          className={`${styles.modelDropdownMenu} ${styles.sellerMenu}${menuAnchor === 'container' ? ` ${styles.menuFullWidth}` : ''}`}
+          className={`${styles.modelDropdownMenu} ${styles.sellerMenu}${menuAnchor === 'container' ? ` ${styles.menuFullWidth}` : ''}${menuPlacement === 'above' ? ` ${styles.menuAbove}` : ''}`}
           role="listbox"
           style={menuMaxHeight ? { maxHeight: menuMaxHeight } : undefined}
         >

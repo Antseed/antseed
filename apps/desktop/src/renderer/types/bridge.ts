@@ -10,6 +10,7 @@ import type {
   GatewayPrivacyMode,
   GatewayPrivacyResult,
   GatewayRewardsSummary,
+  GatewaySavings,
   GatewaySettingsPatch,
   GatewaySettingsResult,
   GatewaySettingsView as GatewaySettings,
@@ -74,6 +75,7 @@ export type {
   GatewayPrivacy,
   GatewayPrivacyMode,
   GatewayRewardsSummary,
+  GatewaySavings,
   GatewayStatus,
 } from '../../shared/gateway-types.js';
 export type { AgentSkillStatus as AgentSkillTarget, GatewaySettingsView as GatewaySettings } from '../../shared/gateway-types.js';
@@ -360,6 +362,8 @@ export type DesktopBridge = {
   gatewaySetPrivacy?: (mode: GatewayPrivacyMode) => Promise<GatewayPrivacyResult>;
   /** $ANTS the gateway's wallet earned from usage, read from the chain. */
   gatewayGetRewards?: (opts?: { force?: boolean }) => Promise<{ ok: boolean; data?: GatewayRewardsSummary; error?: string }>;
+  /** Retail vs paid on this app's buyer; null with no retail baseline, no matched usage, or a remote gateway. */
+  gatewayGetSavings?: () => Promise<GatewaySavings | null>;
   /** Agents that can take the Antseed skills, and where they stand. */
   agentSkillsList?: () => Promise<AgentSkillTarget[]>;
   agentSkillsInstall?: (id: string) => Promise<AgentSkillsResult>;

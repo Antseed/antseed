@@ -11,6 +11,27 @@
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.06);
 }
 
+.segmentSmall {
+  height: 34px;
+  padding: 2px;
+  box-shadow: none;
+  backdrop-filter: none;
+  background: var(--bg-hover);
+  border-color: transparent;
+
+  .option {
+    height: 28px;
+    padding: 0 10px 0 8px;
+    gap: 6px;
+    font-size: 13px;
+  }
+
+  .icon {
+    width: 15px;
+    height: 15px;
+  }
+}
+
 .option {
   display: inline-flex;
   align-items: center;
@@ -106,4 +127,44 @@
     color: var(--text-primary);
     font-weight: 600;
   }
+}
+
+.noteDismiss {
+  flex: none;
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 11px;
+  border: 1px solid var(--surface-glass-border);
+  border-radius: 999px;
+  background: var(--surface-glass);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease;
+
+  &:hover {
+    color: var(--text-primary);
+    border-color: var(--border-strong);
+  }
+}
+
+/* A dismissed note that flashes back after a switch, then fades. */
+.noteReminder {
+  animation: noteReminder 6s ease forwards;
+}
+
+@keyframes noteReminder {
+  0% { opacity: 0; transform: translateY(-4px); }
+  6% { opacity: 1; transform: none; }
+  85% { opacity: 1; }
+  to { opacity: 0; }
+}
+
+.notePlain {
+  padding-left: 16px;
 }

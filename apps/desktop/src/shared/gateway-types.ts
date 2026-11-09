@@ -56,6 +56,17 @@ export type GatewayRewardsSummary = {
   transfersEnabled: boolean;
 };
 
+/** Retail vs paid over the models with a retail price to compare against. */
+export type GatewaySavings = {
+  /** The same tokens at retail reference prices. */
+  retailUsd: number;
+  paidUsd: number;
+  /** retailUsd − paidUsd, never below zero. */
+  savedUsd: number;
+  /** Requests on models with a retail match. */
+  matchedRequests: number;
+};
+
 export type AgentSkillStatus = {
   id: string;
   label: string;

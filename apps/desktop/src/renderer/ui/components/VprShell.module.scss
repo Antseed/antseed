@@ -43,36 +43,50 @@
   color: var(--text-primary);
 }
 
-.newChat {
+/* Chat's row carries a new-chat button at its right edge. */
+.navRow {
   flex: 0 0 auto;
-  display: flex;
+  position: relative;
+}
+
+.navButtonWithAction {
+  padding-right: 40px;
+}
+
+.navAction {
+  position: absolute;
+  top: 50%;
+  right: 5px;
+  width: 28px;
+  height: 28px;
+  transform: translateY(-50%);
+  display: inline-flex;
   align-items: center;
-  gap: 10px;
-  height: 40px;
-  padding: 0 12px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--bg-card);
-  color: var(--text-primary);
-  font: inherit;
-  font-size: 14px;
-  font-weight: 500;
-  text-align: left;
-  cursor: pointer;
-}
-
-.newChat:hover {
-  border-color: var(--border-strong);
-}
-
-.newChatLabel {
-  flex: 1 1 auto;
-}
-
-.shortcut {
+  justify-content: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
   color: var(--text-muted);
-  font-family: var(--font-mono);
-  font-size: 11px;
+  cursor: pointer;
+
+  svg {
+    flex: 0 0 auto;
+  }
+
+  &:hover,
+  &:focus-visible {
+    border-color: var(--border);
+    background: var(--bg-card);
+    color: var(--text-primary);
+    outline: none;
+  }
+}
+
+.navExternal {
+  margin-left: auto;
+  flex: 0 0 auto;
+  color: var(--text-muted);
 }
 
 .navGroup {

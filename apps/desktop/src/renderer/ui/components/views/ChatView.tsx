@@ -40,7 +40,8 @@ import { buildDisplayMessages } from '../chat/chat-shared';
 import type { ChatPermissionMode, RawChatAttachment } from '../../../types/bridge';
 import { VprHeaderActions } from '../vpr/VprHeaderActions';
 import { cancelVoiceRecording, startVoiceRecording, stopVoiceRecording } from '../../lib/voice-recorder';
-import { modelsForPrivacy, usePrivateMode } from '../vpr/PrivacyToggle';
+import { modelsForPrivacy, PrivacyNote, PrivacyToggle, usePrivacyControl, usePrivateMode } from '../vpr/PrivacyToggle';
+import { homeProgress, useHomeProgress } from '../../../modules/app/home-progress';
 import { gatewayResource, usePrivacySwitch } from '../../../modules/app/vpr-resources';
 import { useCachedResource } from '../../../modules/app/cached-resource';
 import styles from './ChatView.module.scss';
@@ -216,6 +217,13 @@ export function ChatView({ onSelectView }: ChatViewProps) {
   const privateMode = usePrivateMode();
   // Nothing goes out until a mode change has reached the routing policy.
   const { switching: privacySwitching } = usePrivacySwitch();
+  const progress = useHomeProgress();
+  // Counts the user's switches, so a dismissed privacy note can flash back.
+  const [privacySwitches, setPrivacySwitches] = useState(0);
+  const privacyControl = usePrivacyControl((mode) => {
+    actions.privacyModeChosen(mode);
+    setPrivacySwitches((count) => count + 1);
+  });
   const gatewayMode = useCachedResource(gatewayResource).data?.status.mode;
   // Blockers only (a deposit short of the minimum, credits all held in
   // sessions); dismissing hides this one until the situation changes.
@@ -576,16 +584,6 @@ export function ChatView({ onSelectView }: ChatViewProps) {
     };
   }, [permissionMenuOpen]);
 
-  // Start a fresh conversation on the model this one uses.
-  const handleNewChatWithCurrentModel = useCallback(() => {
-    const { chatSelectedModelId: modelId, chatImageModelId: imageModelId } = snap;
-    actions.startNewChat();
-    if (modelId) actions.selectChatModel(modelId);
-    // Choosing a text model leaves image mode, so the image model goes back on last.
-    if (imageModelId) actions.selectChatModel(imageModelId);
-    inputRef.current?.focus();
-  }, [actions, snap.chatSelectedModelId, snap.chatImageModelId]);
-
   // Toggle between the thin chat panel and the expanded layout. The store
   // flag drives both the conversation-list panel (VprShell) and the window
   // size preset (AppShell).
@@ -925,42 +923,10 @@ export function ChatView({ onSelectView }: ChatViewProps) {
     <section className={`view view-chat`} role="tabpanel">
       <div className={styles.pageHeader} data-glide-fade>
         <div className={styles.pageHeaderLeft}>
-          <div className={styles.serviceSwitcherAnchor}>
-            <ChatModelDropdown
-              onOpenChange={setModelMenuOpen}
-              models={modelsForPrivacy(snap.chatModels, privateMode)}
-              selectedModelId={imageMode ? snap.chatImageModelId ?? '' : snap.chatSelectedModelId}
-              loading={snap.chatModelsLoading}
-              error={snap.chatModelsError}
-              disabled={(snap.chatInputDisabled || snap.chatSending) && !imageRequestInProgress}
-              onSelect={(modelId) => actions.selectChatModel(modelId)}
-              onOpen={() => void actions.refreshChatModels()}
-              onRetry={() => void actions.refreshChatModels(true)}
-            />
-            {!imageMode && snap.chatSelectedModelId ? (
-              <ChatSellerPicker
-                onOpenChange={setSellerMenuOpen}
-                modelId={snap.chatSelectedModelId}
-                disabled={snap.chatInputDisabled || snap.chatSending}
-                onChange={(peerId) => actions.selectChatModel(joinPinnedModel(snap.chatSelectedModelId, peerId))}
-              />
-            ) : null}
-          </div>
+          {showWelcome ? null : <PrivacyToggle control={privacyControl} size="small" />}
         </div>
           <div className={`${styles.pageHeaderRight}${messageSearchOpen ? ` ${styles.pageHeaderRightSearching}` : ''}`}>
             {snap.chatActiveConversation && <>
-            {snap.chatSelectedModelId && (
-              <button
-                type="button"
-                className={styles.headerActionButton}
-                onClick={handleNewChatWithCurrentModel}
-                title="Start a new chat with the same model"
-                aria-label="Start a new chat with the same model"
-              >
-                <HugeiconsIcon icon={Add01Icon} size={12} strokeWidth={2} />
-                <span>New chat</span>
-              </button>
-            )}
             {messageSearchOpen ? (
               <div className={styles.messageSearchBar} role="search">
                 <HugeiconsIcon icon={Search01Icon} size={14} strokeWidth={1.8} className={styles.messageSearchIcon} />
@@ -1035,6 +1001,13 @@ export function ChatView({ onSelectView }: ChatViewProps) {
           </div>
       </div>
 
+      {progress.firstPromptAt !== null && !progress.chatNoteSeen && (
+        <div className={styles.chatHandoff} role="status">
+          <span>Your chats live here now. Home keeps your setup, usage and balance.</span>
+          <button type="button" className={styles.chatHandoffDismiss} onClick={homeProgress.markChatNoteSeen}>Got it</button>
+        </div>
+      )}
+
       {showWelcome && (
         <button
           className={styles.chatExternalHint}
@@ -1047,7 +1020,7 @@ export function ChatView({ onSelectView }: ChatViewProps) {
 
       <div className={styles.chatContainer} ref={containerRef}>
         <div
-          className={styles.chatMain}
+          className={`${styles.chatMain}${showWelcome ? ` ${styles.chatMainArt}` : ''}`}
           style={chatStyle}
           onDragOver={handleFileDragOver}
           onDragLeave={handleFileDragLeave}
@@ -1070,6 +1043,10 @@ export function ChatView({ onSelectView }: ChatViewProps) {
                   {snap.chatModelsError && !snap.chatSelectedModelId
                     ? snap.chatModelsError
                     : 'Pick a model and start typing.'}
+                </div>
+                <div className={styles.chatWelcomeMode}>
+                  <PrivacyToggle control={privacyControl} />
+                  <PrivacyNote control={privacyControl} switches={privacySwitches} className={styles.chatWelcomeNote} plain />
                 </div>
               </div>
             ) : (
@@ -1337,56 +1314,81 @@ export function ChatView({ onSelectView }: ChatViewProps) {
               </div>
             </div>
             <div className={styles.chatInputMeta}>
-              <div className={styles.permissionModePicker} ref={permissionMenuRef}>
-                <button
-                  type="button"
-                  className={`${styles.permissionModeButton} ${selectedPermissionMode.tone === 'risk' ? styles.permissionModeButtonRisk : styles.permissionModeButtonSafe}`}
-                  onClick={() => {
-                    if (permissionModeLocked) return;
-                    setPermissionMenuOpen((open) => !open);
-                  }}
-                  disabled={permissionModeLocked}
-                  title={permissionModeLocked ? 'Agent access can be changed after the current response finishes.' : undefined}
-                  aria-haspopup="menu"
-                  aria-expanded={permissionMenuOpen}
-                >
-                  <HugeiconsIcon
-                    icon={snap.chatPermissionMode === 'full' ? SecurityWarningIcon : Shield01Icon}
-                    size={14}
-                    strokeWidth={1.7}
+              <div className={styles.chatInputMetaLeft}>
+                <div className={styles.permissionModePicker} ref={permissionMenuRef}>
+                  <button
+                    type="button"
+                    className={`${styles.permissionModeButton} ${selectedPermissionMode.tone === 'risk' ? styles.permissionModeButtonRisk : styles.permissionModeButtonSafe}`}
+                    onClick={() => {
+                      if (permissionModeLocked) return;
+                      setPermissionMenuOpen((open) => !open);
+                    }}
+                    disabled={permissionModeLocked}
+                    title={permissionModeLocked ? 'Agent access can be changed after the current response finishes.' : undefined}
+                    aria-haspopup="menu"
+                    aria-expanded={permissionMenuOpen}
+                  >
+                    <HugeiconsIcon
+                      icon={snap.chatPermissionMode === 'full' ? SecurityWarningIcon : Shield01Icon}
+                      size={14}
+                      strokeWidth={1.7}
+                    />
+                    <span>{selectedPermissionMode.label}</span>
+                    <span className={styles.permissionModeChevron} aria-hidden="true" />
+                  </button>
+                  {permissionMenuOpen && !permissionModeLocked ? (
+                    <div className={styles.permissionModeMenu} role="menu">
+                      {PERMISSION_MODES.map((mode) => {
+                        const selected = mode.value === snap.chatPermissionMode;
+                        return (
+                          <button
+                            key={mode.value}
+                            type="button"
+                            className={`${styles.permissionModeOption} ${selected ? styles.permissionModeOptionSelected : ''}`}
+                            role="menuitemradio"
+                            aria-checked={selected}
+                            onClick={() => {
+                              actions.setChatPermissionMode(mode.value);
+                              setPermissionMenuOpen(false);
+                            }}
+                          >
+                            <HugeiconsIcon
+                              icon={mode.value === 'full' ? SecurityWarningIcon : Shield01Icon}
+                              size={14}
+                              strokeWidth={1.7}
+                              className={mode.value === 'full' ? styles.permissionModeOptionIconRisk : styles.permissionModeOptionIconSafe}
+                            />
+                            <span className={styles.permissionModeOptionLabel}>{mode.label}</span>
+                            {selected ? <span className={styles.permissionModeOptionCheck}>✓</span> : null}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+                </div>
+                <div className={styles.serviceSwitcherAnchor}>
+                  <ChatModelDropdown
+                    onOpenChange={setModelMenuOpen}
+                    models={modelsForPrivacy(snap.chatModels, privateMode)}
+                    selectedModelId={imageMode ? snap.chatImageModelId ?? '' : snap.chatSelectedModelId}
+                    loading={snap.chatModelsLoading}
+                    error={snap.chatModelsError}
+                    disabled={(snap.chatInputDisabled || snap.chatSending) && !imageRequestInProgress}
+                    onSelect={(modelId) => actions.selectChatModel(modelId)}
+                    onOpen={() => void actions.refreshChatModels()}
+                    onRetry={() => void actions.refreshChatModels(true)}
+                    menuPlacement="above"
                   />
-                  <span>{selectedPermissionMode.label}</span>
-                  <span className={styles.permissionModeChevron} aria-hidden="true" />
-                </button>
-                {permissionMenuOpen && !permissionModeLocked ? (
-                  <div className={styles.permissionModeMenu} role="menu">
-                    {PERMISSION_MODES.map((mode) => {
-                      const selected = mode.value === snap.chatPermissionMode;
-                      return (
-                        <button
-                          key={mode.value}
-                          type="button"
-                          className={`${styles.permissionModeOption} ${selected ? styles.permissionModeOptionSelected : ''}`}
-                          role="menuitemradio"
-                          aria-checked={selected}
-                          onClick={() => {
-                            actions.setChatPermissionMode(mode.value);
-                            setPermissionMenuOpen(false);
-                          }}
-                        >
-                          <HugeiconsIcon
-                            icon={mode.value === 'full' ? SecurityWarningIcon : Shield01Icon}
-                            size={14}
-                            strokeWidth={1.7}
-                            className={mode.value === 'full' ? styles.permissionModeOptionIconRisk : styles.permissionModeOptionIconSafe}
-                          />
-                          <span className={styles.permissionModeOptionLabel}>{mode.label}</span>
-                          {selected ? <span className={styles.permissionModeOptionCheck}>✓</span> : null}
-                        </button>
-                      );
-                    })}
-                  </div>
-                ) : null}
+                  {!imageMode && snap.chatSelectedModelId ? (
+                    <ChatSellerPicker
+                      onOpenChange={setSellerMenuOpen}
+                      modelId={snap.chatSelectedModelId}
+                      disabled={snap.chatInputDisabled || snap.chatSending}
+                      onChange={(peerId) => actions.selectChatModel(joinPinnedModel(snap.chatSelectedModelId, peerId))}
+                      menuPlacement="above"
+                    />
+                  ) : null}
+                </div>
               </div>
               <button
                 type="button"

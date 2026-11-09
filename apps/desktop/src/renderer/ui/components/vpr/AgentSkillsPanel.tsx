@@ -8,13 +8,10 @@ import styles from './AgentSkillsPanel.module.scss';
 /**
  * "Use it with your agent": adds Antseed's skills to an agent the user
  * already runs, so it keeps its own model and calls Antseed when asked.
- * Shown on Home and on Agents & apps.
+ * Shown on Agents & apps, whose section gives the heading; the setup prompt
+ * is the card's main action.
  */
-export function AgentSkillsPanel({ className, page = false }: {
-  className?: string;
-  /** On the Agents & apps page its section gives the heading; the setup prompt is the card's main action. */
-  page?: boolean;
-}) {
+export function AgentSkillsPanel() {
   const [agents, setAgents] = useState<AgentSkillTarget[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [note, setNote] = useState<{ text: string; error: boolean } | null>(null);
@@ -64,29 +61,14 @@ export function AgentSkillsPanel({ className, page = false }: {
   const shown = [...agents].sort((left, right) => Number(right.detected) - Number(left.detected));
 
   return (
-    <div className={`${styles.panel}${className ? ` ${className}` : ''}`}>
-      {page ? (
-        <div className={styles.pageHeader}>
-          <p className={styles.pageText}>Paste this setup prompt into any agent so it can reach Antseed through this app.</p>
-          <button type="button" className={styles.copyPrompt} onClick={() => { void copySetup(); }}>
-            <HugeiconsIcon icon={Copy01Icon} size={18} strokeWidth={1.7} />
-            Copy setup prompt
-          </button>
-        </div>
-      ) : (
-        <>
-          <div className={styles.header}>
-            <p className={styles.title}>Use it with your agent</p>
-            <button type="button" className={styles.link} onClick={() => { void copySetup(); }}>
-              Copy for any agent
-            </button>
-          </div>
-          <p className={styles.caption}>
-            Your agent keeps its own model and calls Antseed when you ask: “using Antseed, generate an image”,
-            make a video, or ask another model for a second opinion.
-          </p>
-        </>
-      )}
+    <div className={styles.panel}>
+      <div className={styles.pageHeader}>
+        <p className={styles.pageText}>Paste this setup prompt into any agent so it can reach Antseed through this app.</p>
+        <button type="button" className={styles.copyPrompt} onClick={() => { void copySetup(); }}>
+          <HugeiconsIcon icon={Copy01Icon} size={18} strokeWidth={1.7} />
+          Copy setup prompt
+        </button>
+      </div>
       <div className={pills.pillList}>
         {shown.map((agent) => (
           <button

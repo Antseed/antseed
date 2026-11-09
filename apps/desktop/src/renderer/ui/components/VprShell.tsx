@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
-import { PencilEdit02Icon } from '@hugeicons/core-free-icons';
+import { BubbleChatIcon, DashboardSquare01Icon, LinkSquare02Icon, PencilEdit02Icon } from '@hugeicons/core-free-icons';
 import { Logo } from '@antseed/ui';
 import type { ViewName } from '../types';
 import { shallowEqual, useUiSelector } from '../hooks/useUiSelector';
 import { useActions } from '../hooks/useActions';
 import { selectHeadlineBalanceUsdc } from '../../core/balance';
 import { shouldNotifyAppsOnboarding } from '../../modules/app/apps-onboarding';
+import { homeProgress } from '../../modules/app/home-progress';
 import { gatewayResource, privacyResource, usePrivacySwitch } from '../../modules/app/vpr-resources';
 import { useCachedResource } from '../../modules/app/cached-resource';
 import { navViews } from './viewRegistry';
@@ -45,6 +46,9 @@ type VprShellProps = {
 };
 
 const mainNavEntries = navViews('main');
+// Home leads the rail, then Chat with its new-chat button, then the rest.
+const homeNavEntry = mainNavEntries.find(({ view }) => view === 'home') ?? null;
+const otherNavEntries = mainNavEntries.filter(({ view }) => view !== 'home');
 const bottomNavEntries = navViews('bottom');
 
 function gatewayStatusText(status: { mode: 'local' | 'remote'; reachable: boolean; origin: string | null } | undefined): string {
@@ -94,9 +98,10 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
     [onSelectView, onNavigateBack],
   );
 
+  // Until the first prompt, new chats start from Home's big chat box.
   const startNewChat = useCallback(() => {
     actions.startNewChat();
-    onSelectView('home');
+    onSelectView(homeProgress.get().firstPromptAt === null ? 'home' : 'chat');
   }, [actions, onSelectView]);
 
   useEffect(() => {
@@ -112,6 +117,10 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
 
   const openConversation = useCallback(() => onSelectView('chat'), [onSelectView]);
   const goHome = useCallback(() => onSelectView('home'), [onSelectView]);
+  const openDashboard = useCallback(() => {
+    void window.antseedDesktop?.gatewayOpenConsole?.('/');
+  }, []);
+  const chatActive = activeView === 'chat';
   const isMac = globalThis.window?.antseedDesktop?.platform === 'darwin';
 
   return (
@@ -123,14 +132,40 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
       <div className={styles.dragStrip} aria-hidden="true" />
       <nav className={styles.sidebar} aria-label="Main navigation">
         <Logo height={24} className={styles.logo} />
-        <button type="button" className={styles.newChat} onClick={startNewChat}>
-          <HugeiconsIcon icon={PencilEdit02Icon} size={18} strokeWidth={1.7} />
-          <span className={styles.newChatLabel}>New chat</span>
-          <kbd className={styles.shortcut}>{isMac ? '⌘N' : 'Ctrl+N'}</kbd>
-        </button>
+        {homeNavEntry ? (
+          <button
+            type="button"
+            className={`${styles.navButton}${activeView === 'home' ? ` ${styles.navButtonActive}` : ''}`}
+            aria-current={activeView === 'home' ? 'page' : undefined}
+            onClick={goHome}
+          >
+            <HugeiconsIcon icon={homeNavEntry.nav.icon} size={18} strokeWidth={1.7} />
+            <span className={styles.navLabel}>{homeNavEntry.nav.label}</span>
+          </button>
+        ) : null}
+        <div className={styles.navRow}>
+          <button
+            type="button"
+            className={`${styles.navButton} ${styles.navButtonWithAction}${chatActive ? ` ${styles.navButtonActive}` : ''}`}
+            aria-current={chatActive ? 'page' : undefined}
+            onClick={openConversation}
+          >
+            <HugeiconsIcon icon={BubbleChatIcon} size={18} strokeWidth={1.7} />
+            <span className={styles.navLabel}>Chat</span>
+            {snap.chatNeedsAttention && !chatActive && <span className={styles.navDot} aria-label="Chat activity" />}
+          </button>
+          <button
+            type="button"
+            className={styles.navAction}
+            onClick={startNewChat}
+            aria-label="New chat"
+            title={`New chat (${isMac ? '⌘N' : 'Ctrl+N'})`}
+          >
+            <HugeiconsIcon icon={PencilEdit02Icon} size={16} strokeWidth={1.7} />
+          </button>
+        </div>
         <div className={styles.navGroup}>
-          {mainNavEntries.map(({ view, nav }) => {
-            // Home stays lit while a conversation is open: that is where chats start.
+          {otherNavEntries.map(({ view, nav }) => {
             const active = activeView === view;
             return (
               <button
@@ -142,9 +177,6 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
               >
                 <HugeiconsIcon icon={nav.icon} size={18} strokeWidth={1.7} />
                 <span className={styles.navLabel}>{nav.label}</span>
-                {view === 'home' && snap.chatNeedsAttention && activeView !== 'chat' && (
-                  <span className={styles.navDot} aria-label="Chat activity" />
-                )}
                 {/* One-shot onboarding nudge: the user hasn't opened Apps
                     yet — opening it plays the connect-your-tools walkthrough
                     and clears the dot for good. */}
@@ -157,6 +189,11 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
         </div>
         <ChatListPanel onOpenConversation={openConversation} onOpenConversationDeleted={goHome} highlightActive={activeView === 'chat'} />
         <SidebarBalance credits={snap.headlineBalanceUsdc} onAddFunds={() => onSelectView('deposit')} />
+        <button type="button" className={styles.navButton} onClick={openDashboard} title="Open your gateway dashboard in the browser">
+          <HugeiconsIcon icon={DashboardSquare01Icon} size={18} strokeWidth={1.7} />
+          <span className={styles.navLabel}>Dashboard</span>
+          <HugeiconsIcon icon={LinkSquare02Icon} size={14} strokeWidth={1.8} className={styles.navExternal} />
+        </button>
         {bottomNavEntries.map(({ view, nav }) => (
           <button
             key={view}
