@@ -36,6 +36,7 @@ import {
   type X402Facilitator,
 } from './x402.js'
 import type { ApiKeyRecord, GatewayStore, PresetRecord, RequestError, RequestRouter } from './store.js'
+import { GATEWAY_SHUTDOWN_DRAIN_MS } from '../shutdown-timeouts.js'
 
 /** Largest 402 body the gateway holds back to check for the buyer's out-of-credits answer (which is well under 1 KiB). */
 const OUT_OF_CREDITS_REWRITE_MAX_BYTES = 16 * 1024
@@ -81,7 +82,7 @@ const MAX_LOGGED_CONTENT_BYTES = 64 * 1024
 const BUYER_RESTART_HOLD_MS = 120_000
 const BUYER_RETRY_INTERVAL_MS = 500
 /** On shutdown, requests in flight get this long to finish before they are closed. */
-const SHUTDOWN_DRAIN_MS = 60_000
+const SHUTDOWN_DRAIN_MS = GATEWAY_SHUTDOWN_DRAIN_MS
 const RETENTION_SWEEP_MS = 60 * 60 * 1000
 const DAY_MS = 24 * 60 * 60 * 1000
 /** Why a key with caps cannot be served while its buyer's spend feed is not reporting. */

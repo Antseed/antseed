@@ -214,7 +214,7 @@ Per provider (repeated providerCount times):
     [service][protocolId:1][modelVersion:1][componentCount:1][components...]
     Components encode unit id, float32 USD price, and optional match key/value pairs.
     Unit ids are positions in UNIT_BILLING_UNITS_V1: output_images=0, completed_requests=1, video_generations=2, video_seconds=3, input_characters=4 (v15+).
-    Match key ids are positions in UNIT_BILLING_MATCH_KEYS_V1: model=0, size=1, quality=2, resolution=3, aspect_ratio=4 and audio=5 (v16+).
+    Match key ids are positions in UNIT_BILLING_MATCH_KEYS_V1: model=0, size=1, quality=2, resolution=3, aspect_ratio=4 and audio=5 (v16+), reference_video=6 (v17+).
     A model carries at most 8 components through v15 and 64 in v16+. A seller serving an older version leaves out services that use a newer unit or match key or more components than it allows.
     protocolId is the protocol's index in the append-only WELL_KNOWN_SERVICE_API_PROTOCOLS list.
   [serviceCapabilityEntryCount : 2 bytes uint16 ]    // v12+
