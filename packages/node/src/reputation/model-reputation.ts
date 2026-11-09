@@ -143,11 +143,15 @@ function rememberReputationRotation(key: string, step: number): void {
   }
 }
 
-function reputationPoolKey<T>(ordered: T[], group: number, key: string | undefined): string {
+function reputationPoolKey<T extends { peerId: string }>(
+  ordered: T[],
+  group: number,
+  key: string | undefined,
+): string {
   if (key && key.length > 0) return `key:${key}`;
   const ids: string[] = [];
   for (let index = 0; index < group; index += 1) {
-    const peerId = (ordered[index] as { peerId?: string } | undefined)?.peerId;
+    const peerId = ordered[index]?.peerId;
     if (peerId) ids.push(peerId);
   }
   ids.sort();
@@ -160,7 +164,9 @@ function reputationPoolKey<T>(ordered: T[], group: number, key: string | undefin
  * not spend the turn a live request should take. `key` keeps one model's
  * rotation from moving another's when they share the same sellers.
  */
-export function rotateEqualReputationHead<T extends { effectiveReputationScore?: number | null }>(
+export function rotateEqualReputationHead<
+  T extends { peerId: string; effectiveReputationScore?: number | null },
+>(
   ordered: T[],
   options?: { advance?: boolean; key?: string },
 ): T[] {
