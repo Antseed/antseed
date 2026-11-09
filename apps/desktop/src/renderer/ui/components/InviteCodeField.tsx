@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Button, TextField } from '@antseed/ui';
 import { shortAddress } from '../../core/format';
 import type { InviteCheckResult } from '../../types/bridge';
@@ -6,7 +6,7 @@ import styles from './InviteCodeField.module.scss';
 
 export const INVITE_PROMPT = 'Have an invite? Get 12 weeks of bonus $ANTS';
 
-/* The invite from the last antseed://invite link, waiting for a field to show it. */
+/* The invite from the last antseed://invite link, waiting for a field to take it. */
 let incomingInvite: string | null = null;
 const listeners = new Set<(invite: string) => void>();
 
@@ -16,7 +16,17 @@ export function receiveInviteLink(invite: string): void {
   for (const listener of listeners) listener(invite);
 }
 
-/** Calls `onInvite` with a link's invite: the one already waiting, then each new one. */
+/**
+ * The waiting link's invite, cleared so it fills only one field: one the user
+ * then edits, cancels or leaves never comes back in a later invite field.
+ */
+export function takeIncomingInvite(): string | null {
+  const invite = incomingInvite;
+  incomingInvite = null;
+  return invite;
+}
+
+/** Calls `onInvite` with a link's invite (without taking it): the one already waiting, then each new one. */
 export function useIncomingInvite(onInvite: (invite: string) => void): void {
   useEffect(() => {
     if (incomingInvite) onInvite(incomingInvite);
@@ -38,14 +48,18 @@ type Props = {
  * carries it until the first settlement binds it.
  */
 export function InviteCodeField({ onRedeemed, onCancel }: Props) {
-  // Start from a link that arrived before this field mounted (navigating to it).
+  // Start from a link that arrived before this field mounted (navigating to it);
+  // the field takes it once mounted.
   const [value, setValue] = useState(() => incomingInvite ?? '');
   const [check, setCheck] = useState<InviteCheckResult | null>(null);
   const [checking, setChecking] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState<string | null>(null);
 
-  useIncomingInvite(setValue);
+  useIncomingInvite(useCallback((invite: string) => {
+    takeIncomingInvite();
+    setValue(invite);
+  }, []));
 
   useEffect(() => {
     const trimmed = value.trim();
@@ -71,7 +85,6 @@ export function InviteCodeField({ onRedeemed, onCancel }: Props) {
     try {
       const result = await redeemInvite(value.trim());
       if (result.ok) {
-        incomingInvite = null;
         setSaved(result.referrer);
         onRedeemed?.(result);
       } else {

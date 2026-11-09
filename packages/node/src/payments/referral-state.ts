@@ -320,31 +320,9 @@ export async function syncReferralState(
   const now = options.now ?? Date.now;
   const state = await readReferralState(dataDir, scope);
   const recheckKey = `${dataDir}\0${scopeKey(scope)}`;
-  if (state?.state === 'bound') chainRechecks.delete(recheckKey);
-  if (state?.state !== 'bound') {
-    const hint = await ask(lookups.explorer, scope.wallet);
-    if (!lookups.chain) return state;
-    let recheck = chainRechecks.get(recheckKey);
-    if (!recheck || recheck.invite !== (state?.invite ?? '')) {
-      recheck = { invite: state?.invite ?? '', nextAt: 0, delayMs: REFERRAL_CHAIN_RECHECK_MIN_MS, hinted: false };
-      chainRechecks.set(recheckKey, recheck);
-    }
-    const due = now() >= recheck.nextAt;
-    if (!due && !(hint && !recheck.hinted)) return state;
-    // Book the read before awaiting it, so concurrent syncs do not repeat it.
-    if (due) {
-      recheck.nextAt = now() + recheck.delayMs;
-      recheck.delayMs = Math.min(recheck.delayMs * 2, REFERRAL_CHAIN_RECHECK_MAX_MS);
-    }
-    recheck.hinted = !!hint;
-    const bound = await ask(lookups.chain, scope.wallet);
-    if (!bound) return state;
+  if (state?.state === 'bound') {
     chainRechecks.delete(recheckKey);
-    // A confirmed binding is final, whatever was saved during the lookups.
-    const boundState: ReferralState = { state: 'bound', referrer: bound };
-    return writeReferralState(dataDir, scope, boundState).catch(() => boundState);
-  }
-  if (state?.state === 'bound' && state.unverified) {
+    if (!state.unverified) return state;
     const bound = await ask(lookups.chain, scope.wallet);
     if (bound === undefined) return state;
     const verified: ReferralState = bound ? { state: 'bound', referrer: bound } : { state: 'none' };
@@ -352,5 +330,26 @@ export async function syncReferralState(
     // invite redeemed for this scope during the lookup.
     return updateRefereeState(dataDir, scope, (current) => (bound || current?.unverified ? verified : null)).catch(() => verified);
   }
-  return state;
+
+  const hint = await ask(lookups.explorer, scope.wallet);
+  if (!lookups.chain) return state;
+  let recheck = chainRechecks.get(recheckKey);
+  if (!recheck || recheck.invite !== (state?.invite ?? '')) {
+    recheck = { invite: state?.invite ?? '', nextAt: 0, delayMs: REFERRAL_CHAIN_RECHECK_MIN_MS, hinted: false };
+    chainRechecks.set(recheckKey, recheck);
+  }
+  const due = now() >= recheck.nextAt;
+  if (!due && !(hint && !recheck.hinted)) return state;
+  // Book the read before awaiting it, so concurrent syncs do not repeat it.
+  if (due) {
+    recheck.nextAt = now() + recheck.delayMs;
+    recheck.delayMs = Math.min(recheck.delayMs * 2, REFERRAL_CHAIN_RECHECK_MAX_MS);
+  }
+  recheck.hinted = !!hint;
+  const bound = await ask(lookups.chain, scope.wallet);
+  if (!bound) return state;
+  chainRechecks.delete(recheckKey);
+  // A confirmed binding is final, whatever was saved during the lookups.
+  const boundState: ReferralState = { state: 'bound', referrer: bound };
+  return writeReferralState(dataDir, scope, boundState).catch(() => boundState);
 }

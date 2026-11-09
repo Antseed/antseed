@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { expect, it, vi } from 'vitest';
-import { receiveInviteLink } from '../InviteCodeField';
+import { receiveInviteLink, takeIncomingInvite } from '../InviteCodeField';
 import {
   VprRefereeBonusCard,
   VprReferralCard,
@@ -71,6 +71,15 @@ it('prefills the Rewards invite field from an antseed://invite link', () => {
   receiveInviteLink('AbCdEf_invite');
   const html = renderToStaticMarkup(<VprReferralCard status={{ ...REFERRAL, state: 'none' }} />);
   expect(html).toContain('value="AbCdEf_invite"');
+  takeIncomingInvite(); // what the mounted field does
+});
+
+it('fills only one invite field with a link: an abandoned one never comes back', () => {
+  receiveInviteLink('AbCdEf_invite');
+  expect(takeIncomingInvite()).toBe('AbCdEf_invite');
+  expect(takeIncomingInvite()).toBeNull();
+  const html = renderToStaticMarkup(<VprReferralCard status={{ ...REFERRAL, state: 'none' }} />);
+  expect(html).not.toContain('AbCdEf_invite');
 });
 
 function deferred<T>() {
