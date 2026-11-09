@@ -2476,6 +2476,22 @@ describe('data service seller payments', () => {
     expect(refused.headers['x-antseed-data-response']).toBeUndefined();
   });
 
+  it('sends a chat request that names no provider to the chat provider, never to a data-only one', async () => {
+    const harness = setup();
+    const chat = makeProvider(0, 0, { name: 'chat-provider', services: ['flights'] });
+    chat.serviceApiProtocols = { flights: ['openai-chat-completions'] };
+    chat.handleRequest = vi.fn(async request => ({ requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode('{"choices":[]}') }));
+    delete (chat as Partial<Provider>).handleRequestStream;
+    const mixed = setup({}, { providers: [harness.provider, chat] });
+    const response = await mixed.send('chat', {
+      path: '/v1/chat/completions',
+      body: new TextEncoder().encode(JSON.stringify({ model: 'flights', messages: [{ role: 'user', content: 'TLV to LIS' }] })),
+    });
+    expect(response.statusCode).toBe(200);
+    expect(chat.handleRequest).toHaveBeenCalledOnce();
+    expect(harness.provider.handleRequest).not.toHaveBeenCalled();
+  });
+
   it('serves the description and the operation from the provider the buyer names', async () => {
     const harness = setup();
     const second = makeProvider(10, 10, { name: 'openapi-b', services: ['flights'] });

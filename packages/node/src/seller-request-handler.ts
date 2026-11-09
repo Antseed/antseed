@@ -55,7 +55,7 @@ import { dataServiceRoute, markDataProviderResponse, nativeVideoAcceptance, nati
 import type { PendingResourceCharge, ResourceOwnershipStore } from './resources/resource-ownership-store.js';
 import type { ServiceApiProtocol } from './types/service-api.js';
 import { announcedProviderId } from './discovery/provider-id.js';
-import { isNativeVideoProtocol } from '@antseed/protocol/service-api';
+import { isDataServiceProtocol, isNativeVideoProtocol } from '@antseed/protocol/service-api';
 import { speechVoiceProblem } from '@antseed/protocol/peer-metadata';
 import {
   detectRequestServiceApiProtocol,
@@ -1508,8 +1508,14 @@ export class SellerRequestHandler {
     const dataRoute = dataServiceRoute(request);
     const routeProtocol = videoRoute?.protocol ?? dataRoute?.protocol;
     const providers = this._deps.providers;
+    // Any other request never goes to a provider that serves the service on data alone.
+    const dataOnly = (provider: Provider): boolean => {
+      const protocols = provider.serviceApiProtocols?.[requestedService];
+      return Boolean(protocols?.length) && protocols!.every(isDataServiceProtocol);
+    };
     const matchesService = (provider: Provider): boolean =>
-      provider.services.includes(requestedService) && (!routeProtocol || Boolean(provider.serviceApiProtocols?.[requestedService]?.includes(routeProtocol)));
+      provider.services.includes(requestedService)
+      && (routeProtocol ? Boolean(provider.serviceApiProtocols?.[requestedService]?.includes(routeProtocol)) : !dataOnly(provider));
 
     // Several upstreams can share a provider name (with the same terms, see
     // assertSameNameUpstreamsAgree); buyers merge their announcements with the

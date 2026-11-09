@@ -791,9 +791,15 @@ function selectProviderForService(
   const videoRoute = nativeVideoRoute(request);
   // Video and data requests need a provider that serves the service on their protocol.
   const routeProtocol = videoRoute?.protocol ?? dataServiceRoute(request)?.protocol;
+  const protocolsOf = (provider: string) => peer.providerServiceApiProtocols?.[provider]?.services[service];
+  // Any other request never goes to a provider that serves the service on data alone.
+  const dataOnly = (provider: string): boolean => {
+    const protocols = protocolsOf(provider);
+    return Boolean(protocols?.length) && protocols!.every((protocol) => protocol === 'openapi-data');
+  };
   const eligible = providers.filter((provider) =>
     providerOffersService(peer, provider, service)
-    && (!routeProtocol || Boolean(peer.providerServiceApiProtocols?.[provider]?.services[service]?.includes(routeProtocol))),
+    && (routeProtocol ? Boolean(protocolsOf(provider)?.includes(routeProtocol)) : !dataOnly(provider)),
   );
   const healthy = videoRoute ? undefined : eligible.find((provider) =>
     !isServiceHealthFailing(providerServiceHealthFor(peer.providerServiceHealth, provider, service)),
