@@ -2534,9 +2534,13 @@ export class SellerPaymentManager {
    */
   private _suggestedReserveAmount(minBudgetPerRequest: string): bigint {
     const cap = SellerPaymentManager.DEFAULT_SUGGESTED_AMOUNT;
-    const configured = this._config.suggestedReserveAmount;
-    if (configured === undefined || !/^[0-9]+$/.test(configured.trim())) return cap;
-    const amount = BigInt(configured.trim());
+    // Config files are JSON: accept the documented string and an unquoted whole number.
+    const configured: unknown = this._config.suggestedReserveAmount;
+    const text = typeof configured === 'string'
+      ? configured.trim()
+      : typeof configured === 'number' && Number.isSafeInteger(configured) ? String(configured) : '';
+    if (!/^[0-9]+$/.test(text)) return cap;
+    const amount = BigInt(text);
     const floor = /^[0-9]+$/.test(minBudgetPerRequest) ? BigInt(minBudgetPerRequest) : 0n;
     if (amount <= 0n || amount > cap) return cap;
     // The request minimum lifts a low value; the cap still wins when the minimum is above it.
