@@ -6,9 +6,9 @@ description: Install the antseed-videos skill so a coding agent or Antseed Deskt
 
 # Generate videos with an agent
 
-The [`antseed-videos` skill](https://github.com/AntSeed/antseed/tree/main/skills/antseed-videos) turns an agent into a video director. Ask for a video in plain words, and the agent shapes the idea, picks a model from the network, makes and shows you the first and last frames, and tells you the price before it creates anything. Nothing is paid for until you approve it.
+The [`antseed-videos` skill](https://github.com/Antseed/antseed/tree/main/skills/antseed-videos) turns an agent into a video director. Ask for a video in plain words, and the agent shapes the idea, picks a model from the network, makes and shows you the first and last frames, and tells you the price before it creates anything. Nothing is paid for until you approve it.
 
-It works with any video model sellers offer on the network, through both `venice-video` and `fal-video` sellers. Frames are made with its companion skill, [`antseed-images`](https://github.com/AntSeed/antseed/tree/main/skills/antseed-images).
+It works with any video model sellers offer on the network, through both `venice-video` and `fal-video` sellers. Frames are made with its companion skill, [`antseed-images`](https://github.com/Antseed/antseed/tree/main/skills/antseed-images).
 
 ## Before you start
 
@@ -28,7 +28,7 @@ Copy and paste this to your agent, such as Codex or Claude Code:
 
 ```text
 Install this skill, help me set up Antseed, and generate my first video:
-https://github.com/AntSeed/antseed/tree/main/skills/antseed-videos
+https://github.com/Antseed/antseed/tree/main/skills/antseed-videos
 ```
 
 ### Self installation
@@ -40,7 +40,7 @@ gh skill install Antseed/antseed antseed-videos
 gh skill install Antseed/antseed antseed-images
 ```
 
-Add `--scope user` to install a skill for every project your agent supports, or `--agent <agent>` to target one agent. You can also point an agent directly at the skill's [`SKILL.md`](https://github.com/AntSeed/antseed/blob/main/skills/antseed-videos/SKILL.md).
+Add `--scope user` to install a skill for every project your agent supports, or `--agent <agent>` to target one agent. You can also point an agent directly at the skill's [`SKILL.md`](https://github.com/Antseed/antseed/blob/main/skills/antseed-videos/SKILL.md).
 
 ## Ask for a video
 
@@ -116,13 +116,13 @@ For a video longer than the model's longest clip, the agent plans it as several 
 |---|---|
 | Connection refused | Start Antseed Desktop or `antseed buyer start`. |
 | `402` | The buyer needs more deposited USDC or payment-channel capacity. See [Payments](/docs/payments). |
-| `402 one_off_channel_required` | Update the buyer; versions before `@antseed/cli@0.1.171` hit this. |
+| `402 one_off_channel_required` | Update the buyer; CLI versions before 0.1.171 hit this. |
 | Price above $5.00, or "above the configured limit" | Choose a shorter duration or a lower resolution. |
 | `400` on create | The seller rejected a field, named in the error. Nothing started; the agent fixes the field and asks before trying again. Above $1.00, the opening fee is kept. |
 | `422 invalid_video_duration` | An edit's `duration` must be the source's length in whole seconds, rounded down. The agent corrects it and asks before trying again. |
 | `video_not_delivered` | The seller says the job finished but sent no video. Nothing was charged; the agent offers the next seller. |
 
-The skill's [request reference](https://github.com/AntSeed/antseed/blob/main/skills/antseed-videos/references/requests.md#errors) lists every error and what the agent does about it.
+The skill's [request reference](https://github.com/Antseed/antseed/blob/main/skills/antseed-videos/references/requests.md#errors) lists every error and what the agent does about it.
 
 ## Without the skill
 

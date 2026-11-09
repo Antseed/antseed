@@ -36,7 +36,9 @@ function makePeer(seed: string, opts: { input: number; output: number; trust: nu
 interface Harness {
   proxy: BuyerProxy
   url: string
-  dispatched: Array<{ peerId: string; headers: Record<string, string>; buyerIdentity?: string }>
+  dispatched: Array<{ peerId: string; headers: Record<string, string>; buyerIdentity?: string; channelBinding?: string }>
+  /** The session hash the buyer's node reports for its connection to any seller. */
+  binding: { current: string | null }
 }
 
 async function startHarness(t: TestContext, peers: PeerInfo[], extra: Partial<BuyerProxyConfig> = {}, withSecret = true): Promise<Harness> {
@@ -52,23 +54,26 @@ async function startHarness(t: TestContext, peers: PeerInfo[], extra: Partial<Bu
     await writeFile(join(dataDir, GATEWAY_CONTROL_SECRET_FILE), `${SECRET}\n`, { mode: 0o600 })
   }
   const dispatched: Harness['dispatched'] = []
+  const binding: Harness['binding'] = { current: 'c'.repeat(64) }
   const node = {
+    getChannelBinding: () => binding.current,
     router: { allowsPeerForPolicy: () => true, onResult: () => {} },
     buyerIdentities: () => [{ name: 'default', address: '0x' + '1'.repeat(40) }],
-    sendRequest: async (peer: PeerInfo, request: SerializedHttpRequest, options?: { buyerIdentity?: string }) => {
-      dispatched.push({ peerId: peer.peerId, headers: request.headers, buyerIdentity: options?.buyerIdentity })
+    sendRequest: async (peer: PeerInfo, request: SerializedHttpRequest, options?: { buyerIdentity?: string; channelBinding?: string }) => {
+      dispatched.push({ peerId: peer.peerId, headers: request.headers, buyerIdentity: options?.buyerIdentity, ...(options?.channelBinding ? { channelBinding: options.channelBinding } : {}) })
       return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{}') }
     },
   }
   proxy = new BuyerProxy({ adaptiveRouting: { spreadTolerance: 0, explorationRate: 0 }, port: 0, dataDir, node: node as any, ...extra })
   ;(proxy as any)._getPeers = async () => peers
+  ;(proxy as any)._cachedPeers = peers
   ;(proxy as any)._cacheLastUpdatedAtMs = Date.now()
   ;(proxy as any)._mergeStateFile = async () => {}
   const server = (proxy as any)._server
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   t.after(() => new Promise<void>((resolve) => server.close(() => resolve())))
   const { port } = server.address() as AddressInfo
-  return { proxy, url: `http://127.0.0.1:${port}`, dispatched }
+  return { proxy, url: `http://127.0.0.1:${port}`, dispatched, binding }
 }
 
 function chat(h: Harness, headers: Record<string, string> = {}, model = 'gpt-5'): Promise<Response> {
@@ -383,9 +388,30 @@ test('a malformed or oversized route-selection header decodes to null', () => {
   assert.equal(decodeServedSelection('a'.repeat(4096)), null)
 })
 
+/**
+ * Stub the buyer's TEE check: only the peers in `attested` pass the seller-node attestation, bound
+ * to the connection hash current when checked. A cached verdict keeps its old hash unless forced.
+ */
+function stubTeeAttestation(h: Harness, attested: string[]): string[] {
+  const checked: string[] = []
+  const cached = new Map<string, string | null>()
+  ;(h.proxy as any)._teeVerification.verify = async (peer: PeerInfo, policy: { require: boolean }, _run: unknown, force = false) => {
+    checked.push(peer.peerId)
+    const pass = attested.includes(peer.peerId)
+    if (force || !cached.has(peer.peerId)) cached.set(peer.peerId, h.binding.current)
+    const channelBinding = cached.get(peer.peerId)
+    return {
+      ok: !policy.require || pass, verified: pass, sdk: 'antseed-verifier', sellerNodeVerified: pass,
+      ...(pass && channelBinding ? { channelBinding } : {}), ...(pass ? {} : { reason: 'not an approved TEE seller build' }),
+    }
+  }
+  return checked
+}
+
 test('requireTee only admits sellers advertising the TEE verifier, on automatic, pinned and preview paths', async (t) => {
   const tee = makePeer('c', { input: 5, output: 5, trust: 50, capabilities: ['verifier.antseed-verifier'] })
-  const h = await startHarness(t, [cheap, pricey, tee])
+  const h = await startHarness(t, [cheap, pricey, tee], { verifier: { require: false } })
+  const checked = stubTeeAttestation(h, [tee.peerId])
   const policy = withPolicy({ requireTee: true })
 
   assert.equal((await chat(h, policy)).status, 200)
@@ -400,6 +426,49 @@ test('requireTee only admits sellers advertising the TEE verifier, on automatic,
   const byId = new Map(body.candidates.map((candidate) => [candidate.peerId, candidate]))
   assert.equal(byId.get(tee.peerId)?.eligible, true)
   assert.deepEqual(byId.get(cheap.peerId)?.reasons, ['no TEE'])
+  assert.deepEqual(checked, [tee.peerId])
+  // The request goes out only on the connection the attestation was bound to.
+  assert.equal(h.dispatched[0]?.channelBinding, 'c'.repeat(64))
+})
+
+test('requireTee checks a seller again after a reconnect instead of reusing the verdict for the old connection', async (t) => {
+  const tee = makePeer('c', { input: 5, output: 5, trust: 50, capabilities: ['verifier.antseed-verifier'] })
+  const h = await startHarness(t, [tee], { verifier: { require: false } })
+  const checked = stubTeeAttestation(h, [tee.peerId])
+  const policy = withPolicy({ requireTee: true })
+
+  assert.equal((await chat(h, policy)).status, 200)
+  h.binding.current = 'd'.repeat(64)
+  assert.equal((await chat(h, policy)).status, 200)
+
+  assert.deepEqual(checked, [tee.peerId, tee.peerId, tee.peerId])
+  assert.deepEqual(h.dispatched.map((entry) => entry.channelBinding), ['c'.repeat(64), 'd'.repeat(64)])
+})
+
+test('requireTee refuses a seller that advertises TEE but whose attestation does not pass', async (t) => {
+  const tee = makePeer('c', { input: 5, output: 5, trust: 50, capabilities: ['verifier.antseed-verifier'] })
+  const h = await startHarness(t, [cheap, tee], { verifier: { require: false } })
+  stubTeeAttestation(h, [])
+  const policy = withPolicy({ requireTee: true })
+
+  const automatic = await chat(h, policy)
+  assert.notEqual(automatic.status, 200)
+  const pinned = await chat(h, { ...policy, 'x-antseed-pin-peer': tee.peerId })
+  assert.equal(pinned.status, 502)
+  assert.match(await pinned.text(), /not an approved TEE seller build/)
+  assert.deepEqual(h.dispatched, [])
+
+  // Without requireTee the same seller still serves; the check is optional by default.
+  assert.equal((await chat(h, { 'x-antseed-pin-peer': tee.peerId })).status, 200)
+})
+
+test('requireTee refuses every seller when this buyer has verification turned off', async (t) => {
+  const tee = makePeer('c', { input: 5, output: 5, trust: 50, capabilities: ['verifier.antseed-verifier'] })
+  const h = await startHarness(t, [tee])
+  const pinned = await chat(h, { ...withPolicy({ requireTee: true }), 'x-antseed-pin-peer': tee.peerId })
+  assert.equal(pinned.status, 502)
+  assert.match(await pinned.text(), /verification, which is disabled on this buyer/)
+  assert.deepEqual(h.dispatched, [])
 })
 
 test('restart is refused with restart_unsupported when the buyer is not supervised', async (t) => {
@@ -563,6 +632,191 @@ test('no policy, or one that changes nothing, routes like main; unknown models g
   }
   // Both requests ranked the same way (balanced: higher trust first).
   assert.deepEqual(h.dispatched.map((entry) => entry.peerId), [pricey.peerId, pricey.peerId])
+})
+
+// Right after start the first discovery sweep is still finding sellers: a
+// model nobody serves yet is not "not found", only not found yet.
+// The harness's _getPeers() and its peer cache hold the same list, as on a running buyer.
+function startDiscovery(h: Harness, { startedAgoMs = 1_000, waitMs = 100, peers }: { startedAgoMs?: number; waitMs?: number; peers?: PeerInfo[] } = {}): void {
+  if (peers) (h.proxy as any)._cachedPeers = peers
+  ;(h.proxy as any)._startedAtMs = Date.now() - startedAgoMs
+  ;(h.proxy as any)._initialDiscoveryPending = true
+  ;(h.proxy as any)._initialDiscoveryWaitMs = waitMs
+}
+
+test('while the first discovery runs, a model nobody serves yet gets a retryable 503, not model_not_found', async (t) => {
+  const h = await startHarness(t, [cheap, pricey])
+  startDiscovery(h)
+  const res = await chat(h, {}, 'qwen3-coder')
+  assert.equal(res.status, 503)
+  assert.equal(res.headers.get('retry-after'), '5')
+  const error = ((await res.json()) as any).error
+  assert.equal(error.code, 'discovery_in_progress')
+  assert.equal(error.param, 'model')
+  assert.match(error.message, /still discovering sellers \(no usable seller of "qwen3-coder" found yet\)\. Retry in a few seconds\./)
+  // The same through a gateway policy.
+  assert.equal((await chat(h, withPolicy({ sort: 'price' }), 'qwen3-coder')).status, 503)
+  // Models already found route as usual.
+  assert.equal((await chat(h)).status, 200)
+  const status = await (await fetch(`${h.url}/_antseed/status`)).json() as any
+  assert.equal(status.discovering, true)
+})
+
+test('while the first discovery runs, a request waits for a seller of its model to be found', async (t) => {
+  const peers = [cheap]
+  const h = await startHarness(t, peers)
+  startDiscovery(h, { waitMs: 5_000, peers })
+  const late = { ...makePeer('e', { input: 1, output: 1, trust: 90 }), providerServiceApiProtocols: { openai: { services: { 'qwen3-coder': ['openai-chat-completions' as const] } } } }
+  setTimeout(() => peers.push(late), 300)
+  const res = await chat(h, {}, 'qwen3-coder')
+  assert.equal(res.status, 200)
+  assert.equal(h.dispatched[0]?.peerId, late.peerId)
+})
+
+test('while the first discovery runs, a seller the routing policy cannot take yet is waited for, then 503', async (t) => {
+  // Found, but below the buyer's minimum trust (its on-chain stats have not arrived yet).
+  const lowTrust = { ...makePeer('f', { input: 1, output: 1, trust: 58 }) }
+  const prefs = { preferFreePeers: false, maxInputUsdPerMillion: 25, minTrustScore: 60, allowedPeerIds: [], blockedPeerIds: [] }
+  const h = await startHarness(t, [lowTrust], { routingPreferences: prefs })
+  startDiscovery(h)
+  const res = await chat(h)
+  assert.equal(res.status, 503)
+  assert.equal(((await res.json()) as any).error.code, 'discovery_in_progress')
+  startDiscovery(h, { waitMs: 5_000, peers: [lowTrust] })
+  setTimeout(() => { lowTrust.onChainReputationScore = 90 }, 300)
+  assert.equal((await chat(h)).status, 200)
+  assert.equal(h.dispatched[0]?.peerId, lowTrust.peerId)
+})
+
+test('while the first discovery runs with no sellers found at all, requests get the same 503', async (t) => {
+  const h = await startHarness(t, [])
+  startDiscovery(h)
+  const res = await chat(h)
+  assert.equal(res.status, 503)
+  assert.equal(((await res.json()) as any).error.code, 'discovery_in_progress')
+})
+
+test('once the first discovery ends, or after two minutes, unknown models get model_not_found again', async (t) => {
+  const h = await startHarness(t, [cheap])
+  startDiscovery(h)
+  ;(h.proxy as any)._initialDiscoveryPending = false
+  assert.equal((await chat(h, {}, 'qwen3-coder')).status, 502)
+  startDiscovery(h, { startedAgoMs: 121_000 })
+  const res = await chat(h, {}, 'qwen3-coder')
+  assert.equal(res.status, 502)
+  assert.equal(((await res.json()) as any).error.code, 'model_not_found')
+})
+
+test('while the first discovery runs, a request starts no lookup and keeps to the wait budget with an empty cache', async (t) => {
+  // No _getPeers() override: a lookup would be the node's discoverPeers(),
+  // which hangs for 30 s. The request reads the sweep's cache instead.
+  const dataDir = await mkdtemp(join(tmpdir(), 'antseed-discovery-'))
+  let lookups = 0
+  const node = {
+    router: { allowsPeerForPolicy: () => true, onResult: () => {} },
+    buyerIdentities: () => [],
+    discoverPeers: async () => {
+      lookups += 1
+      await new Promise((resolve) => setTimeout(resolve, 30_000).unref())
+      return []
+    },
+  }
+  const proxy = new BuyerProxy({ port: 0, dataDir, node: node as any })
+  ;(proxy as any)._mergeStateFile = async () => {}
+  const server = (proxy as any)._server
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  t.after(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+    await rm(dataDir, { recursive: true, force: true })
+  })
+  const { port } = server.address() as AddressInfo
+  ;(proxy as any)._startedAtMs = Date.now()
+  ;(proxy as any)._initialDiscoveryPending = true
+  ;(proxy as any)._initialDiscoveryWaitMs = 300
+  const started = Date.now()
+  const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'gpt-5', messages: [] }),
+  })
+  const elapsed = Date.now() - started
+  assert.equal(res.status, 503)
+  assert.equal(((await res.json()) as any).error.code, 'discovery_in_progress')
+  assert.equal(lookups, 0)
+  // The 300 ms wait, with room for a slow machine; far below the 30 s lookup.
+  assert.ok(elapsed >= 250 && elapsed < 3_000, `took ${elapsed} ms`)
+})
+
+test('while the first discovery runs, a seller the sweep finds releases the request even if a foreground lookup would hang', async (t) => {
+  // Sellers are cached, but none serves the model yet: after startup this forces a refresh.
+  const peers = [cheap]
+  const h = await startHarness(t, peers)
+  startDiscovery(h, { waitMs: 5_000, peers })
+  let refreshes = 0
+  const cachedPeers = (h.proxy as any)._getPeers.bind(h.proxy)
+  ;(h.proxy as any)._getPeers = async (options?: { forceRefresh?: boolean }) => {
+    if (!options?.forceRefresh) return cachedPeers(options)
+    refreshes += 1
+    return new Promise<PeerInfo[]>(() => {})
+  }
+  const late = { ...makePeer('g', { input: 1, output: 1, trust: 90 }), providerServiceApiProtocols: { openai: { services: { 'qwen3-coder': ['openai-chat-completions' as const] } } } }
+  setTimeout(() => peers.push(late), 300)
+  const started = Date.now()
+  const res = await chat(h, {}, 'qwen3-coder')
+  assert.equal(res.status, 200)
+  assert.equal(h.dispatched[0]?.peerId, late.peerId)
+  assert.equal(refreshes, 0)
+  assert.ok(Date.now() - started < 3_000)
+})
+
+test('while the first discovery runs, finding an unrelated seller does not restart the wait budget', async (t) => {
+  // The cache starts empty, and late in the budget the sweep finds a seller of a different model.
+  const peers: PeerInfo[] = []
+  const h = await startHarness(t, peers)
+  startDiscovery(h, { waitMs: 1_000, peers })
+  setTimeout(() => peers.push(cheap), 800)
+  const started = Date.now()
+  const res = await chat(h, {}, 'qwen3-coder')
+  const elapsed = Date.now() - started
+  assert.equal(res.status, 503)
+  assert.equal(((await res.json()) as any).error.code, 'discovery_in_progress')
+  // One 1 s budget for both waits, not 0.8 s and then a fresh 1 s.
+  assert.ok(elapsed >= 900 && elapsed < 1_600, `took ${elapsed} ms`)
+})
+
+test('the discovery wait ends as soon as the client goes away', async (t) => {
+  const h = await startHarness(t, [])
+  startDiscovery(h, { waitMs: 10_000, peers: [] })
+  const controller = new AbortController()
+  setTimeout(() => controller.abort(), 100)
+  const started = Date.now()
+  await (h.proxy as any)._waitForInitialDiscovery(() => false, controller.signal)
+  assert.ok(Date.now() - started < 1_000)
+})
+
+test('start() reports discovery until the node\'s first sweep ends', async (t) => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'antseed-discovery-'))
+  let finishSweep!: () => void
+  const sweep = new Promise<PeerInfo[]>((resolve) => { finishSweep = () => resolve([]) })
+  const node = {
+    router: null,
+    buyerIdentities: () => [],
+    startBackgroundPeerDiscoverySweep: () => {},
+    get peerDiscoverySweep() { return sweep },
+  }
+  const proxy = new BuyerProxy({ port: 0, dataDir, node: node as any, backgroundRefreshIntervalMs: 60_000 })
+  t.after(async () => {
+    await proxy.stop()
+    await rm(dataDir, { recursive: true, force: true })
+  })
+  await proxy.start()
+  const { port } = (proxy as any)._server.address() as AddressInfo
+  const status = async () => ((await (await fetch(`http://127.0.0.1:${port}/_antseed/status`)).json()) as any).discovering
+  assert.equal(await status(), true)
+  finishSweep()
+  await sweep
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(await status(), false)
 })
 
 test('the buyer\'s own limits are judged once, by its router, not again by a gateway policy', async (t) => {
@@ -776,21 +1030,109 @@ test('gateway-policy automatic routing without deposits also tries a paid seller
   assert.deepEqual(h.dispatched.map((entry) => entry.peerId), [paid.peerId, allowance.peerId])
 })
 
-test('without a gateway policy a 402 reaches the client from the first seller, as before', async (t) => {
+// The buyer's own 402: it holds no deposits to pay this seller.
+const unfunded402 = (request: SerializedHttpRequest) => ({
+  requestId: request.requestId, statusCode: 402,
+  headers: { 'content-type': 'application/json', 'x-antseed-fault-attribution': 'buyer' },
+  body: Buffer.from('{"error":"payment_required","code":"insufficient_deposits"}'),
+})
+
+/** A buyer with no deposits: paid sellers refuse with the buyer's 402, free ones answer. */
+function unfundedNode(h: Harness, free: Set<string>): void {
+  const answer = async (peer: PeerInfo, request: SerializedHttpRequest) => {
+    h.dispatched.push({ peerId: peer.peerId, headers: request.headers })
+    if (!free.has(peer.peerId)) return unfunded402(request)
+    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{"choices":[{"message":{"role":"assistant","content":"ok"}}]}') }
+  }
+  ;(h.proxy as any)._node.sendRequest = answer
+  // A 402 or a whole answer arrives without streaming frames, as it does from a seller.
+  ;(h.proxy as any)._node.sendRequestStream = answer
+}
+
+/** The free seller has been slow lately and the paid one fast, so expected cost ranks the paid seller first for a long answer. */
+function makeSlow(h: Harness, slow: PeerInfo, fast: PeerInfo): void {
+  for (let i = 0; i < 3; i += 1) {
+    ;(h.proxy as any)._recordSellerSuccess(slow.peerId, 'gpt-5', { firstTokenMs: 20_000, streamMs: 200_000, outputTokens: 1_000, streamed: true })
+    ;(h.proxy as any)._recordSellerSuccess(fast.peerId, 'gpt-5', { firstTokenMs: 500, streamMs: 5_000, outputTokens: 1_000, streamed: true })
+  }
+}
+
+function longChat(h: Harness, extra: Record<string, unknown> = {}, headers: Record<string, string> = {}, model = 'gpt-5'): Promise<Response> {
+  return fetch(`${h.url}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...headers },
+    body: JSON.stringify({ model, max_tokens: 8192, messages: [{ role: 'user', content: 'hi' }], ...extra }),
+  })
+}
+
+test('without a gateway policy, automatic routing without deposits falls back to a free seller after a paid one refuses', async (t) => {
   const paid = makePeer('a', { input: 1, output: 1, trust: 95 })
   const free = makePeer('e', { input: 0, output: 0, trust: 70 })
-  const h = await startHarness(t, [paid, free])
-  ;(h.proxy as any)._node.sendRequest = async (peer: PeerInfo, request: SerializedHttpRequest) => {
-    h.dispatched.push({ peerId: peer.peerId, headers: request.headers })
-    return {
-      requestId: request.requestId, statusCode: 402,
-      headers: { 'content-type': 'application/json', 'x-antseed-fault-attribution': 'buyer' },
-      body: Buffer.from('{"error":"payment_required","code":"insufficient_deposits"}'),
-    }
+  const other = makePeer('b', { input: 2, output: 2, trust: 90 })
+  for (const stream of [false, true]) {
+    const h = await startHarness(t, [paid, other, free], { routingPreferences: prefs60 })
+    makeSlow(h, free, paid)
+    unfundedNode(h, new Set([free.peerId]))
+    const res = await longChat(h, { stream }, { 'x-antseed-chat-session-id': `thread-${stream}` })
+    assert.equal(res.status, 200, `stream=${stream}`)
+    await res.text()
+    // The paid seller ranked first and refused; the other paid one is skipped; the free one answered.
+    assert.deepEqual(h.dispatched.map((entry) => entry.peerId), [paid.peerId, free.peerId], `stream=${stream}`)
+    const served = decodeServedSelection(res.headers.get(ROUTE_SELECTION_HEADER) ?? undefined)
+    assert.equal(served?.channel, 'free')
+    assert.equal(served?.pick, 'failover')
+    const conversation = (h.proxy as any)._conversations.get(`antseed-chat:thread-${stream}`)
+    assert.match(conversation?.pinnedModel ?? '', new RegExp(`^${free.peerId}@`))
   }
-  const res = await chat(h)
-  assert.equal(res.status, 402)
-  assert.equal(h.dispatched.length, 1)
+})
+
+test('without deposits and with only paid sellers, the first seller\'s 402 reaches the client as before', async (t) => {
+  const paid = makePeer('a', { input: 1, output: 1, trust: 95 })
+  const other = makePeer('b', { input: 2, output: 2, trust: 90 })
+  for (const routingPreferences of [undefined, prefs60]) {
+    const h = await startHarness(t, [paid, other], routingPreferences ? { routingPreferences } : {})
+    unfundedNode(h, new Set())
+    const res = await longChat(h)
+    assert.equal(res.status, 402)
+    const body = await res.json() as { error: { code: string } }
+    assert.equal(body.error.code, 'antseed_buyer_fault')
+    assert.equal(res.headers.get('x-antseed-peer-id'), paid.peerId)
+    assert.equal(h.dispatched.length, 1)
+  }
+})
+
+test('a funded buyer keeps the expected-cost order: the faster paid seller serves, the slow free one is not tried', async (t) => {
+  const paid = makePeer('a', { input: 1, output: 1, trust: 95 })
+  const free = makePeer('e', { input: 0, output: 0, trust: 70 })
+  const h = await startHarness(t, [paid, free], { routingPreferences: prefs60 })
+  makeSlow(h, free, paid)
+  // Funded: every seller answers.
+  unfundedNode(h, new Set([paid.peerId, free.peerId]))
+  const res = await longChat(h)
+  assert.equal(res.status, 200)
+  assert.deepEqual(h.dispatched.map((entry) => entry.peerId), [paid.peerId])
+})
+
+test('a pinned paid seller keeps its 402 without deposits, even with a free seller available', async (t) => {
+  const paid = makePeer('a', { input: 1, output: 1, trust: 95 })
+  const free = makePeer('e', { input: 0, output: 0, trust: 70 })
+  const h = await startHarness(t, [paid, free], { routingPreferences: prefs60 })
+  unfundedNode(h, new Set([free.peerId]))
+  const byModel = await longChat(h, {}, {}, `${paid.peerId}@gpt-5`)
+  assert.equal(byModel.status, 402)
+  const byHeader = await longChat(h, {}, { 'x-antseed-pin-peer': paid.peerId })
+  assert.equal(byHeader.status, 402)
+  assert.deepEqual(h.dispatched.map((entry) => entry.peerId), [paid.peerId, paid.peerId])
+})
+
+test('without a gateway policy the buyer\'s preferFreePeers puts free sellers first', async (t) => {
+  const paid = makePeer('a', { input: 1, output: 1, trust: 95 })
+  const free = makePeer('e', { input: 0, output: 0, trust: 70 })
+  const h = await startHarness(t, [paid, free], { routingPreferences: { ...prefs60, preferFreePeers: true } })
+  makeSlow(h, free, paid)
+  unfundedNode(h, new Set([paid.peerId, free.peerId]))
+  assert.equal((await longChat(h)).status, 200)
+  assert.deepEqual(h.dispatched.map((entry) => entry.peerId), [free.peerId])
 })
 
 test('model_not_found moves to the next seller with or without a gateway policy', async (t) => {
@@ -882,6 +1224,25 @@ test('a pinned routing service ranks only the sellers the key policy allows and 
   assert.equal(contexts[0]!.options?.cost_quality_tradeoff, 8)
   assert.deepEqual(contexts[0]!.candidates.map((candidate) => candidate.peerId), [cheap.peerId])
   assert.deepEqual(h.dispatched.map((entry) => [entry.peerId, entry.buyerIdentity]), [[router.peerId, 'team-a'], [cheap.peerId, 'team-a']])
+})
+
+test('under requireTee a routing service gets the conversation only after its own TEE check passes, on the attested connection', async (t) => {
+  const router = { ...makeRoutingPeer('d'), capabilities: ['verifier.antseed-verifier'] }
+  const tee = makePeer('c', { input: 5, output: 5, trust: 50, capabilities: ['verifier.antseed-verifier'] })
+  const contexts: Array<{ options?: Record<string, unknown>; candidates: Array<{ peerId?: string }> }> = []
+  const h = await startHarness(t, [tee, router], { modelRoutingClient: routerClient(tee, contexts) as any, verifier: { require: false } })
+  const policy = withPolicy({ requireTee: true })
+
+  stubTeeAttestation(h, [tee.peerId])
+  const refused = await chat(h, policy, `${router.peerId}@alpha-route`)
+  assert.equal(refused.status, 502)
+  assert.match(await refused.text(), /Routing service failed its TEE check/)
+  assert.equal(contexts.length, 0)
+  assert.equal(h.dispatched.length, 0)
+
+  stubTeeAttestation(h, [tee.peerId, router.peerId])
+  assert.equal((await chat(h, policy, `${router.peerId}@alpha-route`)).status, 200)
+  assert.deepEqual(h.dispatched.map((entry) => [entry.peerId, entry.channelBinding]), [[router.peerId, 'c'.repeat(64)], [tee.peerId, 'c'.repeat(64)]])
 })
 
 test('a pinned routing service the key policy blocks is refused before any ranking is bought', async (t) => {

@@ -11,7 +11,7 @@ import {
 } from 'ethers';
 
 // =========================================================================
-// EIP-712 Types — AntSeed SpendingAuth (cumulative payment authorization)
+// EIP-712 Types — Antseed SpendingAuth (cumulative payment authorization)
 // =========================================================================
 
 export const SPENDING_AUTH_TYPES = {

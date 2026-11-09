@@ -512,9 +512,9 @@ function renderSkillMarkdown(): string {
   out.push('');
   out.push('Other optional headers:');
   out.push('');
-  out.push('- `x-antseed-provider: <providerName>` — when a peer exposes the same service');
-  out.push('  through more than one seller-plugin (rare), force a specific one. Most tools');
-  out.push('  never need this.');
+  out.push('- `x-antseed-provider: <provider>` — when a peer exposes the same service');
+  out.push('  through more than one provider (rare), force a specific one, by the name or ID');
+  out.push('  the peer announces (`antseed network peer <peerId>`). Most tools never need this.');
   out.push('');
 
   out.push('## Files the CLI creates in `~/.antseed/`');
@@ -613,7 +613,7 @@ function renderSkillMarkdown(): string {
   out.push('## Adding a new integration');
   out.push('');
   out.push('Edit `apps/website/src/integrations/integrations.ts` in');
-  out.push('https://github.com/AntSeed/antseed and open a PR. The hub at /integrations, the');
+  out.push('https://github.com/Antseed/antseed and open a PR. The hub at /integrations, the');
   out.push('per-tool page, and this file are all generated from that single file. The');
   out.push('onboarding skill an agent reads first (install, start, fund, use) is served');
   out.push('at /skill.md.');

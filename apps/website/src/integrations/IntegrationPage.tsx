@@ -191,7 +191,7 @@ function RunFirstBanner() {
               <code>/v1/responses</code> (OpenAI Responses), and{' '}
               <code>/v1/completions</code> (legacy) - and translates between them via{' '}
               <a
-                href="https://github.com/AntSeed/antseed/tree/main/packages/api-adapter"
+                href="https://github.com/Antseed/antseed/tree/main/packages/api-adapter"
                 target="_blank"
                 rel="noreferrer">
                 <code>@antseed/api-adapter</code>
@@ -485,7 +485,7 @@ function RunFirstBanner() {
                 snippet={`"deepseek-v4-flash"
 "gpt-oss-120b"
 "gemma-3-27b"
-"qwen3-coder-480b"
+"glm-5.2"
 "kimi-k2.6"
 "minimax-m2.7"`}
               />
@@ -659,7 +659,7 @@ function WireFormatPanel({i}: {i: Integration}) {
         <li>
           <strong>What happens when protocols don't match:</strong> Antseed's{' '}
           <a
-            href="https://github.com/AntSeed/antseed/tree/main/packages/api-adapter"
+            href="https://github.com/Antseed/antseed/tree/main/packages/api-adapter"
             target="_blank"
             rel="noreferrer">
             <code>@antseed/api-adapter</code>

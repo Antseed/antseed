@@ -83,6 +83,11 @@ export interface RequestExecutionOptions {
   captureResponseAuthPreimages?: boolean;
   /** Refuse a video create priced above this many USDC base units (the caller's remaining budget). */
   maxVideoCostUsdc?: bigint;
+  /**
+   * Send only on the connection with this session hash: the one a seller's TEE attestation was
+   * bound to. A request that would go out on any other connection is refused before sending.
+   */
+  channelBinding?: string;
 }
 
 export interface BuyerRequestHandlerConfig {
@@ -154,6 +159,12 @@ export class BuyerRequestHandler {
 
     const conn = await this._deps.getConnection(peer);
     debugLog(`[BuyerRequest] Connection to ${peer.peerId.slice(0, 12)}... state=${conn.state}`);
+    if (options?.channelBinding !== undefined && conn.channelBinding !== options.channelBinding) {
+      throw buyerFault(
+        `Connection to ${peer.peerId.slice(0, 12)}... is not the one its TEE attestation covered; verify the seller again`,
+        'buyer-tee-connection-changed',
+      );
+    }
     const mux = this._deps.getMux(peer.peerId, conn);
     const verificationMux = this._deps.getVerificationMux(peer.peerId, conn);
     const negotiator = options?.controlPlane ? null : this._deps.negotiator;
@@ -200,9 +211,11 @@ export class BuyerRequestHandler {
     };
     const billingRoute = requestedService ? selectBillingRoute(peer, req, requestedService) : null;
     // Name the provider the request is billed under, so the seller serves it
-    // through the same upstream instead of choosing one by itself.
-    if (billingRoute && !extractRequestedProvider(req)) {
-      req = { ...req, headers: { ...req.headers, "x-antseed-provider": billingRoute.provider } };
+    // through the same upstream instead of choosing one by itself. This also
+    // replaces a provider the peer does not announce (see selectProviderForService).
+    if (billingRoute && extractRequestedProvider(req) !== billingRoute.provider.toLowerCase()) {
+      const headers = Object.fromEntries(Object.entries(req.headers).filter(([name]) => name.toLowerCase() !== "x-antseed-provider"));
+      req = { ...req, headers: { ...headers, "x-antseed-provider": billingRoute.provider } };
     }
     // Decide free vs paid from the resolved route (provider + protocol), mirroring
     // the seller's per-request gate so both sides classify the request the same way.
@@ -509,7 +522,7 @@ export class BuyerRequestHandler {
     }
 
     // Provider video APIs may use HTTP 402 for their own errors; only start
-    // AntSeed payment negotiation when the response is our payment contract.
+    // Antseed payment negotiation when the response is our payment contract.
     if (
       response.statusCode === 402
       && negotiator
@@ -737,12 +750,14 @@ export function selectBillingRoute(
   const serviceApiProtocol = selectProtocolForService(peer, provider, service, request);
   const unitModel = peer.providerServiceUnitBillingModels?.[provider]?.services[service]?.[serviceApiProtocol];
   const tokenPricing = selectTokenPricing(peer, provider, service);
+  const videoOptions = peer.providerServiceCapabilities?.[provider]?.services[service]?.video;
   return {
     sellerPeerId: peer.peerId,
     provider,
     service,
     serviceApiProtocol,
     ...(unitModel ? { unitModel } : {}),
+    ...(videoOptions ? { videoOptions } : {}),
     ...(tokenPricing ? { tokenPricing } : {}),
   };
 }
@@ -754,15 +769,14 @@ function selectProviderForService(
   request: SerializedHttpRequest,
 ): string | null {
   const providers = peer.providers ?? [];
-  if (requestedProvider) {
-    const provider = providers.find(
-      (candidate) => candidate.toLowerCase() === requestedProvider,
-    );
-    if (provider && providerOffersService(peer, provider, service)) {
-      return provider;
-    }
-    return null;
+  const named = requestedProvider
+    ? providers.find((candidate) => candidate.toLowerCase() === requestedProvider)
+    : undefined;
+  if (named) {
+    return providerOffersService(peer, named, service) ? named : null;
   }
+  // No provider named, or one the peer does not announce (a pin from before
+  // sellers announced provider IDs, or a plugin name): choose one.
 
   // Mirrors the seller's matchProvider: a native video request needs a
   // provider serving its protocol, and takes the first one, so a job's

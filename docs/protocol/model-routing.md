@@ -46,7 +46,7 @@ The rest of this page specifies `irp-suggest`.
 ## `irp-suggest`: IRP suggest-only mode
 
 The wire format is IRP **suggest-only mode**: plain IRP paths and bodies, with no
-AntSeed headers. The one AntSeed addition is the optional `max_pricing` member on
+Antseed headers. The one Antseed addition is the optional `max_pricing` member on
 model-list entries (see [Models](#models)); IRP clients ignore unknown members, so
 the wire format stays compatible. Seller identity stays on the buyer.
 
@@ -84,7 +84,7 @@ seconds and ignore members they do not recognise. Sellers and routers often spel
 the same model differently (`claude-opus-5` and `anthropic/claude-opus-5`), so a
 seller's service ID matches a listed model exactly or, failing that, by its
 canonical model key, the same matching the savings baselines use. If several listed
-models share a key, the first one listed wins. AntSeed routers run in
+models share a key, the first one listed wins. Antseed routers run in
 suggest-only mode, so entries carry no `candidates`.
 
 A router that scores whatever it is sent lists the wildcard `*`:

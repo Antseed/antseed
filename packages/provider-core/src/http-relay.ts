@@ -9,6 +9,10 @@ import { pinnedUpstreamModel } from './pinned-upstream-model.js';
 export const DEFAULT_HTTP_TIMEOUT_MS = 5 * 60_000;
 
 export interface RelayConfig {
+  /**
+   * Upstream redirects. Default 'error': following one would resend the buyer's request, prompt
+   * and credentials included, to a destination the seller did not configure.
+   */
   redirect?: 'error' | 'follow' | 'manual';
   baseUrl: string;
   authHeaderName: string;
@@ -498,7 +502,7 @@ export class HttpRelay {
       };
       try {
         const response = await fetch(url, {
-          redirect: this._config.redirect,
+          redirect: this._config.redirect ?? 'error',
           method: swappedRequest.method,
           headers,
           body: swappedRequest.method !== 'GET' && swappedRequest.method !== 'HEAD'
@@ -601,14 +605,12 @@ export class HttpRelay {
 
       const reader = fetchResponse.body.getReader();
       let totalStreamBytes = 0;
-      const debugChunks: Uint8Array[] = [];
       try {
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
           attempt.refreshTimeout();
           totalStreamBytes += value.byteLength;
-          if (totalStreamBytes <= 500) debugChunks.push(value);
           this._callbacks.onResponseChunk?.({
             requestId: request.requestId,
             data: value,
@@ -626,12 +628,10 @@ export class HttpRelay {
         });
       }
       if (totalStreamBytes < 300) {
-        const body = new TextDecoder().decode(
-          debugChunks.reduce((a, b) => { const r = new Uint8Array(a.byteLength + b.byteLength); r.set(a); r.set(b, a.byteLength); return r; }, new Uint8Array(0))
-        );
+        // Never the stream itself: a seller's logs hold no part of an answer.
         let model = 'unknown';
         try { model = JSON.parse(new TextDecoder().decode(request.body))?.model ?? 'unknown'; } catch {}
-        console.warn(`[http-relay] Short stream (${totalStreamBytes}b) model="${model}" url=${url}: ${JSON.stringify(body)}`);
+        console.warn(`[http-relay] Short stream (${totalStreamBytes}b) model="${model}" url=${url.split('?')[0]}`);
       }
 
       this._callbacks.onResponseChunk?.({

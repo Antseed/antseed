@@ -1,6 +1,6 @@
 # @antseed/web-sdk
 
-Browser buyer SDK for AntSeed. Connects to unmodified sellers over WebRTC
+Browser buyer SDK for Antseed. Connects to unmodified sellers over WebRTC
 DataChannels (signaled through an [@antseed/relay](../../apps/relay)) and pays
 per request with in-browser EIP-712 signatures. No native modules; the only
 runtime dependency is ethers.

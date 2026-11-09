@@ -813,6 +813,16 @@ export class BuyerPaymentManager {
     };
   }
 
+  /** The reserve ceiling `resendReserveAuth` would sign for this seller: what the seller's reserve() then locks. */
+  replayReserveAmount(sellerPeerId: string): bigint {
+    const replayAmount = this._initialReserveAmount.get(sellerPeerId)
+      ?? this._currentReserveCeiling.get(sellerPeerId)
+      ?? this._config.maxReserveAmountUsdc;
+    return replayAmount > this._config.maxReserveAmountUsdc
+      ? this._config.maxReserveAmountUsdc
+      : replayAmount;
+  }
+
   async resendReserveAuth(
     sellerPeerId: string,
     paymentMux: PaymentMux,
@@ -826,12 +836,7 @@ export class BuyerPaymentManager {
     // Force a fresh AuthAck after replaying the reserve path.
     this._confirmedPeers.delete(sellerPeerId);
 
-    const replayAmount = this._initialReserveAmount.get(sellerPeerId)
-      ?? this._currentReserveCeiling.get(sellerPeerId)
-      ?? this._config.maxReserveAmountUsdc;
-    const maxAmount = replayAmount > this._config.maxReserveAmountUsdc
-      ? this._config.maxReserveAmountUsdc
-      : replayAmount;
+    const maxAmount = this.replayReserveAmount(sellerPeerId);
     const deadline = this._authDeadline();
     const reserveAuthSig = await this._signReserveAuth(session.sessionId, maxAmount, deadline);
 

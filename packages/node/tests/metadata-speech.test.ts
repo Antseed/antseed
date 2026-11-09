@@ -44,7 +44,7 @@ function speechMetadata(): PeerMetadata {
 
 describe('speech services in peer metadata', () => {
   it('is v15, served to buyers that ask for it', () => {
-    expect(METADATA_VERSION).toBe(15);
+    expect(METADATA_VERSION).toBeGreaterThanOrEqual(15);
     expect(SPEECH_METADATA_VERSION).toBe(15);
     expect(SERVED_METADATA_VERSIONS).toContain(15);
     expect(negotiateMetadataVersion(15)).toBe(15);
@@ -55,7 +55,7 @@ describe('speech services in peer metadata', () => {
     const original = speechMetadata();
     expect(validateMetadata(original)).toEqual([]);
     const decoded = decodeMetadata(encodeMetadata(original));
-    expect(decoded.version).toBe(15);
+    expect(decoded.version).toBe(METADATA_VERSION);
     expect(decoded.providers[0]!.serviceCapabilities).toEqual(original.providers[0]!.serviceCapabilities);
     // Prices travel as f32: a per-character price keeps ~7 significant digits.
     const decodedPrice = decoded.providers[0]!.serviceUnitBillingModels!['tts-kokoro']!['openai-audio-speech']!.components[0]!;

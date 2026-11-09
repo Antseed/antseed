@@ -136,4 +136,4 @@ Select **Help**, enable **Developer mode**, and use **Live logs**, **Available p
 
 ## Get support
 
-Ask in the [Antseed Telegram community](https://t.me/antseed). For bugs, [open a GitHub issue](https://github.com/AntSeed/antseed/issues/new) with the app version, operating system, affected tool, what you expected, what happened, and a redacted diagnostic report.
+Ask in the [Antseed Telegram community](https://t.me/antseed). For bugs, [open a GitHub issue](https://github.com/Antseed/antseed/issues/new) with the app version, operating system, affected tool, what you expected, what happened, and a redacted diagnostic report.

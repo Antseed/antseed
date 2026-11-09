@@ -106,6 +106,9 @@ function normalizeSellerService(value: unknown): SellerServiceConfig | null {
   if (typeof value['imageEditModel'] === 'string' && value['imageEditModel'].trim().length > 0) {
     out.imageEditModel = value['imageEditModel'].trim();
   }
+  if (value['extraProtocols'] !== undefined) {
+    out.extraProtocols = value['extraProtocols'] as SellerServiceConfig['extraProtocols'];
+  }
   const categories = normalizeCategories(value['categories']);
   if (categories) {
     out.categories = categories;
@@ -492,6 +495,10 @@ function mergeSellerConfig(
       providers: mergeSellerProviders(defaults.providers, undefined),
       publicAddress: defaults.publicAddress,
       ...(typeof defaults.maxUploadBodyBytes === 'number' ? { maxUploadBodyBytes: defaults.maxUploadBodyBytes } : {}),
+      ...(typeof defaults.maxInboundConnections === 'number' ? { maxInboundConnections: defaults.maxInboundConnections } : {}),
+      ...(typeof defaults.maxInboundConnectionsPerIp === 'number' ? { maxInboundConnectionsPerIp: defaults.maxInboundConnectionsPerIp } : {}),
+      ...(typeof defaults.announceProviderIds === 'boolean' ? { announceProviderIds: defaults.announceProviderIds } : {}),
+      ...(typeof defaults.inboundIdleTimeoutMs === 'number' ? { inboundIdleTimeoutMs: defaults.inboundIdleTimeoutMs } : {}),
       ...(defaults.agentDir ? { agentDir: defaults.agentDir } : {}),
       ...(normalizeVerifications(undefined, defaults.verifications)),
       ...(normalizeSellerHealthCheck(undefined, defaults.healthCheck)),
@@ -518,6 +525,26 @@ function mergeSellerConfig(
       ? { maxUploadBodyBytes: value['maxUploadBodyBytes'] }
       : typeof defaults.maxUploadBodyBytes === 'number'
         ? { maxUploadBodyBytes: defaults.maxUploadBodyBytes }
+        : {}),
+    ...(typeof value['maxInboundConnections'] === 'number'
+      ? { maxInboundConnections: value['maxInboundConnections'] }
+      : typeof defaults.maxInboundConnections === 'number'
+        ? { maxInboundConnections: defaults.maxInboundConnections }
+        : {}),
+    ...(typeof value['maxInboundConnectionsPerIp'] === 'number'
+      ? { maxInboundConnectionsPerIp: value['maxInboundConnectionsPerIp'] }
+      : typeof defaults.maxInboundConnectionsPerIp === 'number'
+        ? { maxInboundConnectionsPerIp: defaults.maxInboundConnectionsPerIp }
+        : {}),
+    ...(typeof value['announceProviderIds'] === 'boolean'
+      ? { announceProviderIds: value['announceProviderIds'] }
+      : typeof defaults.announceProviderIds === 'boolean'
+        ? { announceProviderIds: defaults.announceProviderIds }
+        : {}),
+    ...(typeof value['inboundIdleTimeoutMs'] === 'number'
+      ? { inboundIdleTimeoutMs: value['inboundIdleTimeoutMs'] }
+      : typeof defaults.inboundIdleTimeoutMs === 'number'
+        ? { inboundIdleTimeoutMs: defaults.inboundIdleTimeoutMs }
         : {}),
     ...(normalizeAgentDir(value['agentDir'], defaults.agentDir)),
     ...(normalizeSellerHealthCheck(value['healthCheck'], defaults.healthCheck)),

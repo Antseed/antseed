@@ -1,6 +1,6 @@
 # @antseed/antseed-verifier
 
-Verifier SDK for AntSeed's pluggable verifier system (AIP-3). One package has two halves. A
+Verifier SDK for Antseed's pluggable verifier system (AIP-3). One package has two halves. A
 **buyer verifier** (default export) challenges a seller. It checks the seller's Intel TDX
 attestation before it routes paid requests. An embedded **seller prover** (`prover` export,
 loaded with `--verifiers antseed-verifier`) answers those challenges before provider
@@ -22,9 +22,9 @@ no provider-specific hosts or schemas, and it is self-contained (no peer depende
 
 | Capability | Proves | Verdict |
 |---|---|---|
-| `seller-node-tee-genuine` | the seller **node** runs in a genuine Intel TDX enclave (DCAP: PCK chain to Intel's root, acceptable TCB, TD10, debug off). The quote binds to this nonce + peerId | **required** |
+| `seller-node-tee-genuine` | the seller **node** runs an approved seller build in a genuine Intel TDX enclave (DCAP: PCK chain to Intel's root, acceptable TCB, TD10, debug off; MRTD + RTMR0-2 are an approved dstack OS, and the app compose, authenticated by the compose hash replayed from the event log, runs an approved Antseed TEE seller image under the rules in `src/dstack-app-compose.ts`). The quote binds to this nonce + peerId + the buyer's encrypted connection. A passing node also reports `seller-node-upstreams`: the https origins its config sends prompts to. | **required** |
 | `seller-bound` | the seller's identity key signs the whole evidence bundle for this fresh nonce (the signer recovers to peerId) | **required** |
-| `seller-provider-tee-genuine` | the downstream inference **provider's** TEE is genuine TDX. It is also round-bound when the seller declares a `report_data` scheme | informational |
+| `seller-provider-tee-genuine` | the downstream inference **provider's** TEE is genuine TDX. It is also round-bound when the seller declares a `report_data` scheme. With a passing seller node, it also requires that provider to be where the node sends prompts: the measured config names one upstream origin, and the node's prover (0.1.6 or later) reports fetching the quote from it, without following redirects | informational |
 | `seller-provider-gpu-cc` | the provider's GPUs run NVIDIA Confidential Computing (NVIDIA NRAS verifies it, nonce-bound) | informational |
 | `seller-provider-measured-image` | the provider quote's MRTD/RTMR match a buyer allow-list | informational |
 | `seller-provider-claims` | named provider claims against a frozen SDK menu. Each claim is `asserted` (self-vouched) or `tdx-quote` (TEE-attested) | informational |
@@ -40,9 +40,10 @@ The **prover** (seller) reads its config from the environment, never from buyer-
 |---|---|
 | `ANTSEED_TEE_PEER_ID` | the seller's peer id (EVM address, no `0x`) |
 | `ANTSEED_VERIFIER_SIGNING_KEY` | seller identity key (hex) for `seller-bound`. Disabled if its address ≠ peerId |
-| `ANTSEED_VERIFIER_NODE_TEE` | node quote source: `configfs` (default, bare-metal/GCP TDX), `dstack` (Phala and other dstack CVMs), or `http` |
+| `ANTSEED_VERIFIER_NODE_TEE` | node quote source: `configfs` (default, bare-metal/GCP TDX), `dstack` (Phala and other dstack CVMs), `confidential-space` (a Google Confidential Space attestation token instead of a quote), or `http` |
 | `ANTSEED_VERIFIER_DSTACK_SOCKET` | override the dstack guest-agent socket path (default `/var/run/dstack.sock`) |
 | `ANTSEED_VERIFIER_PROVIDER_ADAPTER` | in-process provider adapter id (`chutes`, `aci`). It fetches provider evidence directly, no shim. See [CHUTES.md](./CHUTES.md) or [REDPILL.md](./REDPILL.md) |
+| `ANTSEED_VERIFIER_PROVIDER_ACI_URL` | ACI adapter attestation URL, allowed as a literal TEE seller setting. Falls back to the legacy `ACI_ATTESTATION_URL` |
 | `ANTSEED_VERIFIER_PROVIDER_EVIDENCE_URL` | generic provider evidence route (`{nonce}` → hex nonce). The manual alternative to an adapter |
 | `ANTSEED_VERIFIER_PROVIDER_TEE_FIELD` | JSON field with the base64 provider quote (default `quote`) |
 | `ANTSEED_VERIFIER_PROVIDER_GPU_FIELD` | JSON field with per-GPU NVIDIA CC evidence → enables `seller-provider-gpu-cc` |
@@ -55,6 +56,8 @@ The **buyer** needs no special hardware. Optional policy knobs:
 | Variable | Purpose |
 |---|---|
 | `ANTSEED_VERIFIER_REQUIRED_CAPS` | comma-separated capabilities that gate the overall `ok` (default `seller-node-tee-genuine,seller-bound`). For example, a provenance buyer sets `seller-provider-tee-genuine,seller-bound` to require the downstream provider's TEE |
+| `ANTSEED_VERIFIER_CS_JWKS_URL` | buyer: override Google's Confidential Space token signing keys URL |
+| `ANTSEED_VERIFIER_NODE_BUILDS` | buyer: extra approved dstack OS releases and seller images, JSON `{ "os": [{ name, mrtd, rtmr0, rtmr1, rtmr2 }], "images": [{ version, digest }] }` (inline or `@/path/to/file.json`), added to the built-in lists |
 | `ANTSEED_VERIFIER_MEASURED_IMAGE_POLICY` | approved-measurement allow-list (inline JSON or `@/path.json`) for `measured-image` |
 | `ANTSEED_VERIFIER_STRICT_TCB` | `true` requires TCB exactly `UpToDate` (default also accepts `SWHardeningNeeded`) |
 | `ANTSEED_VERIFIER_NRAS_URL` / `_NRAS_JWKS_URL` | override NVIDIA NRAS endpoints for `gpu-cc` |
@@ -73,7 +76,7 @@ module that loads lazily. Two adapters are available:
 
 ```bash
 export ANTSEED_VERIFIER_PROVIDER_ADAPTER=chutes   # + CHUTES_API_KEY, CHUTES_CHUTE
-export ANTSEED_VERIFIER_PROVIDER_ADAPTER=aci      # + ACI_ATTESTATION_URL (RedPill / dstack ACI)
+export ANTSEED_VERIFIER_PROVIDER_ADAPTER=aci      # + ANTSEED_VERIFIER_PROVIDER_ACI_URL (RedPill / dstack ACI)
 ```
 
 The adapter fetches the provider's fresh, nonce-bound quote. It declares its frozen `report_data`
@@ -83,4 +86,4 @@ scheme unchanged. Full setup: [CHUTES.md](./CHUTES.md) · [REDPILL.md](./REDPILL
 
 ---
 
-`v0.1.0` · GPL-3.0
+`v0.1.1` · GPL-3.0

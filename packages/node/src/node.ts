@@ -12,7 +12,7 @@ import { loadOrCreateIdentity } from "./p2p/identity.js";
 import type { PeerId } from "./types/peer.js";
 import type { PeerInfo, PeerVerificationResults } from "./types/peer.js";
 import { peerIdToAddress } from "./types/peer.js";
-import { isFreeUnitBillingModel } from "./billing/unit.js";
+import { isPricedProviderService } from "./billing/priced-service.js";
 import type {
   SerializedHttpRequest,
   SerializedHttpResponse,
@@ -49,6 +49,7 @@ import { verifyPeerMetadataGithub } from "./discovery/github-verification.js";
 import {
   PeerLookup,
   DEFAULT_LOOKUP_CONFIG,
+  preferFreshestResultPerPeer,
   type LookupConfig,
   type LookupResult,
 } from "./discovery/peer-lookup.js";
@@ -73,6 +74,7 @@ import { VerificationSampler } from "./verification/samples.js";
 import type { ResponseAuthSink } from "@antseed/buyer-core";
 import { FrameDecoder, encodeFrame } from "./p2p/message-protocol.js";
 import { KeepaliveManager, buildPongPayload } from "./p2p/keepalive.js";
+import { DEFAULT_INBOUND_IDLE_TIMEOUT_MS, InboundIdleTracker } from "./p2p/inbound-idle-tracker.js";
 import { MessageType } from "./types/protocol.js";
 import type {
   Provider,
@@ -119,6 +121,7 @@ import { SellerPaymentManager, type SellerPaymentConfig } from "./payments/selle
 import { IdentityClient } from "./payments/evm/identity-client.js";
 import { SellerRequestHandler, assertSameNameUpstreamsAgree, assertSingleRoutingService } from "./seller-request-handler.js";
 import { ServicePerformanceTracker } from "./health/service-performance.js";
+import { announcedProviderName, withDefaultServiceApiProtocols } from "./discovery/provider-id.js";
 import {
   BuyerRequestHandler,
   type RequestStreamCallbacks,
@@ -346,7 +349,7 @@ export interface NodeVerificationConfig {
 export interface NodeConfig {
   role: 'seller' | 'buyer';
   displayName?: string;
-  /** Publicly reachable seller address override ("host:port") announced in metadata. */
+  /** Seller address ("host:port") announced in metadata; its port is announced alongside the listening port in the DHT. */
   publicAddress?: string;
   /** External ownership claims announced in signed peer metadata. */
   verifications?: PeerVerifications;
@@ -356,6 +359,23 @@ export interface NodeConfig {
   requireSecureTransport?: boolean;
   /** Seller only: inbound sockets whose remote address this returns false for are closed on accept. */
   acceptInboundAddress?: (remoteAddress: string) => boolean;
+  /** Seller only: inbound buyer connections held at once; past it new buyers are refused. Metadata requests never count. Default 2048. */
+  maxInboundConnections?: number;
+  /** Seller only: inbound sockets from one IP at once (raise it behind a TLS gateway or forwarder). Default 64. */
+  maxInboundConnectionsPerIp?: number;
+  /**
+   * Seller only: announce each provider by an ID (see announcedProviderId)
+   * instead of its plugin name, so buyers do not learn the plugin. Off by
+   * default while buyers that predate it are in use: they refuse a pinned
+   * request naming a provider the peer does not announce.
+   */
+  announceProviderIds?: boolean;
+  /**
+   * Seller only: close a buyer's connection after this long with no traffic,
+   * unless the buyer has a paid channel or a free usage session open. 0 keeps
+   * idle connections. Default 30 minutes.
+   */
+  inboundIdleTimeoutMs?: number;
   dataDir?: string;           // Default: ~/.antseed
   dhtPort?: number;           // Default: 6881 for seller, 0 for buyer
   signalingPort?: number;     // Default: 6882 for seller
@@ -519,6 +539,9 @@ export class AntseedNode extends EventEmitter {
   private _muxes = new Map<PeerId, ProxyMux>();
   private _decoders = new Map<PeerId, FrameDecoder>();
   private _keepalives = new Map<PeerId, KeepaliveManager>();
+  /** Seller side: closes buyer connections left idle with nothing open on them. */
+  private _inboundIdle: InboundIdleTracker | null = null;
+  private _inboundIdleSweep: ReturnType<typeof setInterval> | null = null;
   private _nat: NatTraversal | null = null;
   private _metering: MeteringStorage | null = null;
   private _resourceOwnership: ResourceOwnershipStore | null = null;
@@ -750,6 +773,16 @@ export class AntseedNode extends EventEmitter {
   }
 
   /**
+   * Session hash of the encrypted TCP connection to a peer (see PeerConnection.channelBinding),
+   * for the default buyer identity or a named one, else null.
+   */
+  getChannelBinding(peerId: PeerId, buyerIdentity?: string): string | null {
+    const context = this._buyerContext(buyerIdentity);
+    if (context) return context.getChannelBinding(peerId);
+    return this._connectionManager?.getConnection(peerId)?.channelBinding ?? null;
+  }
+
+  /**
    * Active seller sessions currently tracked in-memory.
    * Includes open sessions before they are finalized/settled.
    */
@@ -938,6 +971,12 @@ export class AntseedNode extends EventEmitter {
       this._timeoutCheckerInterval = null;
     }
 
+    if (this._inboundIdleSweep) {
+      clearInterval(this._inboundIdleSweep);
+      this._inboundIdleSweep = null;
+    }
+    this._inboundIdle = null;
+
     if (this._channelStore) {
       try {
         this._channelStore.close();
@@ -1002,16 +1041,9 @@ export class AntseedNode extends EventEmitter {
   }
 
   private async _lookupResultsToPeerInfos(results: LookupResult[], service?: string): Promise<PeerInfo[]> {
-    // Deduplicate by peerId (DHT can return the same peer from multiple topic lookups)
-    const seen = new Set<string>();
-    const peers: PeerInfo[] = [];
-    for (const r of results) {
-      const p = this._lookupResultToPeerInfo(r);
-      if (!seen.has(p.peerId)) {
-        seen.add(p.peerId);
-        peers.push(p);
-      }
-    }
+    // Deduplicate by peerId (DHT can return the same peer from multiple topic
+    // lookups, and from old endpoints after it moved hosts)
+    const peers = preferFreshestResultPerPeer(results).map((r) => this._lookupResultToPeerInfo(r));
 
     const filtered = service ? peers.filter((p) => peerOffersService(p, service)) : peers;
     this._attachCachedExternalVerificationResults(filtered);
@@ -1029,6 +1061,11 @@ export class AntseedNode extends EventEmitter {
 
   startBackgroundPeerDiscoverySweep(): void {
     this._startBackgroundPeerDiscoverySweep();
+  }
+
+  /** The exhaustive discovery sweep in progress (it resolves when the sweep ends), or null when none is running. */
+  get peerDiscoverySweep(): Promise<PeerInfo[]> | null {
+    return this._backgroundPeerDiscoveryPromise;
   }
 
   private _startBackgroundPeerDiscoverySweep(): void {
@@ -2006,6 +2043,7 @@ export class AntseedNode extends EventEmitter {
           this._keepalives.get(peerId)?.handlePong(frame.payload);
           continue;
         }
+        this._inboundIdle?.touch(peerId);
         if (paymentMux && PaymentMux.isPaymentMessage(frame.type)) {
           paymentMux.handleFrame(frame).catch((err) => {
             const message = err instanceof Error ? err.message : String(err);
@@ -2027,11 +2065,13 @@ export class AntseedNode extends EventEmitter {
             debugWarn(`[Node] Failed to handle sweep frame from ${peerId.slice(0, 12)}...: ${message}`);
           });
         } else if (proxyMux) {
+          // A request stays in flight until its response is sent, however long the provider takes.
+          const finished = this._inboundIdle?.begin(peerId);
           proxyMux.handleFrame(frame).catch((err) => {
             const message = err instanceof Error ? err.message : String(err);
             debugWarn(`[Node] Failed to handle frame from ${peerId.slice(0, 12)}...: ${message}`);
             conn.fail(err instanceof Error ? err : new Error(message));
-          });
+          }).finally(() => finished?.());
         }
       }
     });
@@ -2040,6 +2080,7 @@ export class AntseedNode extends EventEmitter {
 
     conn.on("stateChange", (state: ConnectionState) => {
       if (state === ConnectionState.Closed || state === ConnectionState.Failed) {
+        this._inboundIdle?.untrack(peerId, conn);
         // Guard against stale close events: if a reconnect arrived before this
         // connection finished closing, a new decoder will have been registered.
         // Wiping the maps would evict the live session, so bail out early.
@@ -2171,7 +2212,22 @@ export class AntseedNode extends EventEmitter {
     this._connectionManager = await ConnectionManager.init(undefined, {
       requireSecureTransport: this._config.requireSecureTransport,
       ...(this._config.acceptInboundAddress ? { acceptInboundAddress: this._config.acceptInboundAddress } : {}),
+      ...(this._config.maxInboundConnections !== undefined ? { maxInboundConnections: this._config.maxInboundConnections } : {}),
+      ...(this._config.maxInboundConnectionsPerIp !== undefined ? { maxInboundConnectionsPerIp: this._config.maxInboundConnectionsPerIp } : {}),
     });
+    const inboundIdleTimeoutMs = this._config.inboundIdleTimeoutMs ?? DEFAULT_INBOUND_IDLE_TIMEOUT_MS;
+    if (inboundIdleTimeoutMs > 0) {
+      this._inboundIdle = new InboundIdleTracker({
+        idleTimeoutMs: inboundIdleTimeoutMs,
+        holdsSession: (buyerPeerId) => Boolean(this._channelStore?.getActiveChannelByPeer(buyerPeerId, CHANNEL_ROLE.SELLER))
+          || (this._sellerFreeUsageManager?.hasSession(buyerPeerId) ?? false),
+      });
+      this._inboundIdleSweep = setInterval(() => {
+        const closed = this._inboundIdle?.sweep() ?? [];
+        if (closed.length > 0) debugLog(`[Node] Closed ${closed.length} idle buyer connection(s) with no channel open`);
+      }, Math.min(60_000, inboundIdleTimeoutMs));
+      this._inboundIdleSweep.unref?.();
+    }
     this._connectionManager.setLocalIdentity(identity);
     this._connectionManager.on("error", (err: Error) => {
       debugWarn(`[ConnectionManager] ${err.message}`);
@@ -2212,11 +2268,16 @@ export class AntseedNode extends EventEmitter {
       const announcerConfig: AnnouncerConfig = {
         identity,
         dht: this._dht,
-        providers: this._providers.map((p) => ({
-          provider: p.name,
+        providers: this._providers.map((p) => {
+          // With provider IDs, buyers get the protocols they used to infer from the provider's name.
+          const serviceApiProtocols = this._config.announceProviderIds
+            ? withDefaultServiceApiProtocols(p.name, p.services, p.serviceApiProtocols)
+            : p.serviceApiProtocols;
+          return {
+          provider: announcedProviderName(identity.privateKey, p.name, this._config.announceProviderIds === true),
           services: p.services,
           ...(p.serviceCategories ? { serviceCategories: { ...p.serviceCategories } } : {}),
-          ...(p.serviceApiProtocols ? { serviceApiProtocols: { ...p.serviceApiProtocols } } : {}),
+          ...(serviceApiProtocols ? { serviceApiProtocols: { ...serviceApiProtocols } } : {}),
           ...(p.serviceUnitBillingModels ? { serviceUnitBillingModels: { ...p.serviceUnitBillingModels } } : {}),
           ...(p.serviceCapabilities ? { serviceCapabilities: { ...p.serviceCapabilities } } : {}),
           // Read live: the model health checker updates it between refreshes.
@@ -2231,7 +2292,8 @@ export class AntseedNode extends EventEmitter {
             },
             ...(p.pricing.services ? { services: { ...p.pricing.services } } : {}),
           },
-        })),
+          };
+        }),
         ...(this._config.displayName ? { displayName: this._config.displayName } : {}),
         ...(this._config.publicAddress ? { publicAddress: this._config.publicAddress } : {}),
         ...(this._config.verifications ? { verifications: this._config.verifications } : {}),
@@ -2239,7 +2301,7 @@ export class AntseedNode extends EventEmitter {
         region: "unknown",
         pricing: new Map(
           this._providers.map((p) => [
-            p.name,
+            announcedProviderName(identity.privateKey, p.name, this._config.announceProviderIds === true),
             {
               defaults: {
                 inputUsdPerMillion: p.pricing.defaults.inputUsdPerMillion,
@@ -2250,7 +2312,9 @@ export class AntseedNode extends EventEmitter {
           ]),
         ),
         reannounceIntervalMs: DEFAULT_DHT_CONFIG.reannounceIntervalMs,
+        // Keep the listening endpoint discoverable when publicAddress names another host.
         signalingPort: actualSignalingPort,
+        publicSignalingPort: parsePublicAddress(this._config.publicAddress ?? "")?.port,
         ...(this._channelsClient ? { channelsClient: this._channelsClient } : {}),
         ...(this._stakingClient ? { stakingClient: this._stakingClient, paymentsEnabled: true } : {}),
         ...(this._config.sellerContract ? { sellerContract: this._config.sellerContract } : {}),
@@ -2289,6 +2353,7 @@ export class AntseedNode extends EventEmitter {
       sessionTracker: this._sessionTracker,
       channelsClient: this._channelsClient,
       announcer: this._announcer,
+      ...(this._config.announceProviderIds ? { announceProviderIds: true } : {}),
       maxUploadBodyBytes: this._config.maxUploadBodyBytes,
       resourceOwnershipStore: this._resourceOwnership,
       servicePerformance: this._servicePerformance,
@@ -2527,6 +2592,7 @@ export class AntseedNode extends EventEmitter {
 
     this._muxes.set(buyerPeerId, mux);
     this._wireConnection(conn, buyerPeerId);
+    this._inboundIdle?.track(buyerPeerId, conn);
     this.emit("connection", conn);
   }
 
@@ -3109,11 +3175,7 @@ export class AntseedNode extends EventEmitter {
     for (const provider of this._providers) {
       for (const service of provider.services) {
         offered.add(service);
-        const pricing = provider.pricing.services?.[service] ?? provider.pricing.defaults;
-        const tokenPriced = pricing.inputUsdPerMillion > 0 || pricing.outputUsdPerMillion > 0 || (pricing.cachedInputUsdPerMillion ?? 0) > 0;
-        const unitPriced = Object.values(provider.serviceUnitBillingModels?.[service] ?? {})
-          .some((model) => model !== undefined && !isFreeUnitBillingModel(model));
-        if (tokenPriced || unitPriced) paid.add(service);
+        if (isPricedProviderService(provider, service)) paid.add(service);
       }
     }
     return { paid: [...paid], free: [...offered].filter((service) => !paid.has(service)) };

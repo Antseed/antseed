@@ -4,7 +4,7 @@ import type {
   ProviderRequestRefusal,
   ProviderStreamCallbacks,
 } from './interfaces/seller-provider.js';
-import { ANTSEED_ATTEST_PATH, type Prover } from './interfaces/plugin.js';
+import { ANTSEED_ATTEST_PATH, ANTSEED_CHANNEL_BINDING_HEADER, type Prover } from './interfaces/plugin.js';
 import type { SellerSessionTracker } from './metering/seller-session-tracker.js';
 import type { PaymentMux } from './p2p/payment-mux.js';
 import type { Identity } from './p2p/identity.js';
@@ -32,7 +32,7 @@ import {
   computeCostUsdc,
   estimateTokensFromBytesSampled,
 } from './payments/pricing.js';
-import { debugLog, debugWarn } from './utils/debug.js';
+import { debugLog, debugWarn, isContentFreeLogging } from './utils/debug.js';
 import { buyerFacingResponseHeaders } from './proxy/buyer-response-headers.js';
 import {
   CONNECTION_CAPABILITY_RESPONSE_AUTH_V1,
@@ -54,6 +54,7 @@ import { captureUnitBillingContext, computeFinalUnitBilling, estimateUnitRequest
 import { nativeVideoAcceptance, nativeVideoDelivered, nativeVideoRoute, requestService, type NativeVideoRoute } from '@antseed/api-adapter';
 import type { PendingResourceCharge, ResourceOwnershipStore } from './resources/resource-ownership-store.js';
 import type { ServiceApiProtocol } from './types/service-api.js';
+import { announcedProviderId } from './discovery/provider-id.js';
 import { isNativeVideoProtocol } from '@antseed/protocol/service-api';
 import { speechVoiceProblem } from '@antseed/protocol/peer-metadata';
 import {
@@ -192,6 +193,8 @@ export interface SellerRequestHandlerDeps {
   sessionTracker: SellerSessionTracker | null;
   channelsClient: ChannelsClient | null;
   announcer: PeerAnnouncer | null;
+  /** Providers are announced by ID, not plugin name (NodeConfig.announceProviderIds). */
+  announceProviderIds?: boolean;
   maxUploadBodyBytes?: number;
   reserveEstimateOverdraftUsdc?: bigint;
   /** Persistent buyer ownership and pending charges for stateful video jobs. Video follow-ups fail closed without it. */
@@ -238,6 +241,8 @@ const ATTEST_RATE_MAX_TRACKED_PEERS = 1024;
 export class SellerRequestHandler {
   private readonly _deps: SellerRequestHandlerDeps;
   private readonly _providerLoadCounts = new Map<string, number>();
+  /** Provider name → its ID (see announcedProviderId). */
+  private readonly _providerIds = new Map<string, string>();
   /** Per channel: the highest spend a catch-up NeedAuth was already sent for, so parked requests ask once. */
   private readonly _catchUpPrompted = new Map<string, bigint>();
   private readonly _attestRateWindows = new Map<string, { start: number; count: number }>();
@@ -346,10 +351,14 @@ export class SellerRequestHandler {
           return;
         }
         try {
+          // The binding names the connection this request arrived on; a buyer cannot supply it.
+          const headers = { ...request.headers };
+          takeHeader(headers, ANTSEED_CHANNEL_BINDING_HEADER);
+          if (conn.channelBinding) headers[ANTSEED_CHANNEL_BINDING_HEADER] = conn.channelBinding;
           const resp = await prover.prove({
             method: request.method,
             path: request.path,
-            headers: request.headers,
+            headers,
             body: request.body,
           });
           mux.sendProxyResponse({
@@ -1032,7 +1041,8 @@ export class SellerRequestHandler {
           }
         } catch (err) {
           const message = err instanceof Error ? err.message : "Internal error";
-          failureMessage = message;
+          // An exception can quote the upstream's answer; content-free mode keeps only that it failed.
+          failureMessage = isContentFreeLogging() ? 'provider call failed' : message;
           this._deps.emit('provider:failure', { provider, service: requestedModel, billable: videoRoute?.action !== 'retrieve' });
           debugWarn(`[SellerHandler] Provider exception: provider="${provider.name}" model="${requestedModel}" buyer=${buyerPeerId.slice(0, 12)}... (${Date.now() - startTime}ms) ${message}`);
           if (videoRoute?.action === 'create') this._closeOneOffBestEffort(oneOffChannelId, 'video create failed');
@@ -1180,7 +1190,7 @@ export class SellerRequestHandler {
             responseForAuth,
             {
               buyerPeerId,
-              providerName: provider.name,
+              providerName: this.announcedProviderName(provider.name),
               advertisedService: requestedModel,
               responseStartedAt,
               responseCompletedAt: Date.now(),
@@ -1472,7 +1482,9 @@ export class SellerRequestHandler {
     const serving = providers.filter(matchesService);
     let provider: Provider | undefined;
     if (requestedProvider) {
-      provider = pick(serving.filter((candidate) => candidate.name.toLowerCase() === requestedProvider));
+      // Buyers name the provider's ID (with announceProviderIds) or its own name; both are accepted.
+      provider = pick(serving.filter((candidate) =>
+        candidate.name.toLowerCase() === requestedProvider || this.announcedProviderId(candidate.name) === requestedProvider));
     }
     if (!provider && !(videoRoute && requestedProvider)) {
       provider = pick(serving);
@@ -1501,6 +1513,21 @@ export class SellerRequestHandler {
     return provider.serviceUnitBillingModels?.[context.service]?.[context.serviceApiProtocol];
   }
 
+  /** The name buyers see for a provider: its ID with `announceProviderIds`, else the provider's own name. */
+  announcedProviderName(providerName: string): string {
+    return this._deps.announceProviderIds === true ? this.announcedProviderId(providerName) : providerName;
+  }
+
+  /** The ID this seller announces for a provider with `announceProviderIds`. */
+  announcedProviderId(providerName: string): string {
+    let id = this._providerIds.get(providerName);
+    if (!id) {
+      id = announcedProviderId(this._deps.identity.privateKey, providerName);
+      this._providerIds.set(providerName, id);
+    }
+    return id;
+  }
+
   // -- Load tracking --
 
   adjustProviderLoad(providerName: string, delta: number): void {
@@ -1509,7 +1536,7 @@ export class SellerRequestHandler {
 
     const announcer = this._deps.announcer;
     if (!announcer) return;
-    announcer.updateLoad(providerName, nextLoad);
+    announcer.updateLoad(this.announcedProviderName(providerName), nextLoad);
     this._scheduleMetadataRefresh();
   }
 
@@ -1557,6 +1584,7 @@ export class SellerRequestHandler {
       service,
       serviceApiProtocol: this._selectSellerProtocolForService(provider, service, request),
       request,
+      ...(provider.serviceCapabilities?.[service]?.video ? { videoOptions: provider.serviceCapabilities[service]!.video } : {}),
     });
   }
 
