@@ -18,7 +18,7 @@ To set one up from scratch, follow the [quickstart](/docs/quickstart). Installat
 
 | Where | Start it with | Good for | Limits |
 |---|---|---|---|
-| Your own computer | `antseed gateway start` | Trying it out, personal use | Keys only work while the computer is on. Other machines can't reach it, unless you listen on your network with `--host 0.0.0.0` (plain HTTP). |
+| Your own computer | `antseed gateway start`, or `antseed gateway service install` to keep it running in the background | Trying it out, personal use | Keys only work while the computer is on. Other machines can't reach it, unless you listen on your network with `--host 0.0.0.0` (plain HTTP). |
 | A Linux server (recommended) | The [server installer](/docs/gateway/server) | Teams, agents, CI, hosted tools, and tools on other machines: anything that should always work | Needs a small server with systemd and, for HTTPS, a domain name. |
 | Your computer, behind a tunnel | `antseed tunnel start`, or **Agents → Internet-accessible endpoint** in the desktop app | A public HTTPS address without moving anything | Keys still stop working when the computer sleeps or goes offline. See [Public tunnels](/docs/tunnels). |
 

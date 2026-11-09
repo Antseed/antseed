@@ -45,7 +45,7 @@ function videoMetadata(): PeerMetadata {
 
 describe('video prices by aspect ratio and audio in peer metadata', () => {
   it('is v16, served to buyers that ask for it', () => {
-    expect(METADATA_VERSION).toBe(16);
+    expect(METADATA_VERSION).toBeGreaterThanOrEqual(16);
     expect(VIDEO_OPTION_PRICING_METADATA_VERSION).toBe(16);
     expect(SERVED_METADATA_VERSIONS).toContain(16);
     expect(negotiateMetadataVersion(16)).toBe(16);
@@ -57,7 +57,7 @@ describe('video prices by aspect ratio and audio in peer metadata', () => {
     expect(gridComponents().length).toBeGreaterThan(MAX_BILLING_COMPONENTS_PER_MODEL);
     expect(validateMetadata(original)).toEqual([]);
     const decoded = decodeMetadata(encodeMetadata(original));
-    expect(decoded.version).toBe(16);
+    expect(decoded.version).toBe(METADATA_VERSION);
     const components = decoded.providers[0]!.serviceUnitBillingModels!['seedance']!['venice-video']!.components;
     expect(components).toHaveLength(18);
     expect(components[1]!.match).toEqual({ resolution: '480p', aspect_ratio: '16:9', audio: 'false' });

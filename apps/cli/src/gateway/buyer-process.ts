@@ -3,17 +3,14 @@ import { createInterface } from 'node:readline'
 import { identityPassphraseEnv, PASSPHRASE_ENV } from '@antseed/node'
 import { TELEMETRY_HOST_ENV } from '@antseed/telemetry'
 import { PASSPHRASE_STDIN_ENV } from '../cli/wallet-passphrase.js'
-import { BUYER_RESTART_EXIT_CODE, BUYER_SHUTDOWN_DEADLINE_MS } from '../proxy/buyer-proxy.js'
+import { BUYER_RESTART_EXIT_CODE } from '../proxy/buyer-proxy.js'
+import { BUYER_STOP_TIMEOUT_MS } from '../shutdown-timeouts.js'
 
 /** A buyer that exits sooner than this after starting counts as failing to start. */
 const QUICK_EXIT_MS = 30_000
 const MAX_QUICK_EXITS = 3
 const RESTART_DELAY_MS = 1_000
-/**
- * The buyer drains requests in flight and closes its payment channels on the
- * way out; only kill it once its own shutdown deadline has passed.
- */
-export const BUYER_STOP_TIMEOUT_MS = BUYER_SHUTDOWN_DEADLINE_MS + 15_000
+export { BUYER_STOP_TIMEOUT_MS } from '../shutdown-timeouts.js'
 
 export interface GatewayBuyerOptions {
   buyerPort: number
