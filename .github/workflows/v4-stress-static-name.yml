@@ -1,0 +1,314 @@
+name: v4-stress-static-name
+
+on:
+  push:
+    branches: [ci-optimization-1289-probe]
+
+# A newer push to a pull request replaces the run for the older push. Runs on main are never
+# cancelled: each has its own group.
+concurrency:
+  group: v4-stress-static-name-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Steps that several jobs share are written once, where they first appear (`&name`), and reused
+# with `*name`. Every job runs on its own runner, so jobs wait for nothing but their own steps:
+# the slowest job sets the time a run takes. Keep slow suites in separate jobs, not in one.
+jobs:
+  test:
+    name: Test (packages)
+    runs-on: ubuntu-latest
+
+    steps:
+      - &checkout
+        uses: actions/checkout@v4
+
+      - &setup-pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+
+      - &setup-node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'pnpm'
+
+      - &install
+        name: Install dependencies
+        run: pnpm install
+
+      # Build in dependency order so each tier's tests can resolve imports
+      - &build-tier0
+        name: Build tier 0 (node)
+        run: pnpm run build:tier0
+
+      - &build-tier1
+        name: Build tier 1 (provider-core, router-core)
+        run: pnpm run build:tier1
+
+      - &build-tier2
+        name: Build tier 2 (plugins)
+        run: pnpm run build:tier2
+
+      - &build-tier3
+        name: Build tier 3 (payments, ants, gateway console)
+        run: pnpm run build:tier3
+
+      # Every workspace package except the two with their own job below, the CLI and e2e. A new
+      # package is tested here without any change to this file.
+      - name: Test
+        run: pnpm -r --filter '!@antseed/e2e' --filter '!@antseed/cli' run test
+
+      - name: Test (TEE seller image launcher)
+        run: node --test deploy/tee-seller/*.test.mjs
+
+  test-cli:
+    name: Test (CLI)
+    runs-on: ubuntu-latest
+
+    steps:
+      - *checkout
+      - *setup-pnpm
+      - *setup-node
+      - *install
+      - *build-tier0
+      - *build-tier1
+      - *build-tier2
+      - *build-tier3
+
+      # The CLI test script builds the CLI itself.
+      - name: Test
+        run: pnpm --filter '@antseed/cli' run test
+
+  test-e2e:
+    name: Test (e2e)
+    runs-on: ubuntu-latest
+
+    steps:
+      - *checkout
+      - *setup-pnpm
+      - *setup-node
+      - *install
+      - *build-tier0
+      - *build-tier1
+      - *build-tier2
+      - *build-tier3
+
+      - &build-cli
+        name: Build the CLI
+        run: pnpm --filter=@antseed/cli run build
+
+      # e2e/global-setup.ts would build @antseed/node and the CLI again; both are built above.
+      # Nothing else may write those dist/ directories while the tests run: a rebuild under a
+      # running test fails it with "does not provide an export named …".
+      - name: Test
+        run: pnpm --filter '@antseed/e2e' run test
+        env:
+          ANTSEED_E2E_SKIP_BUILD: '1'
+
+  e2e-payment:
+    name: E2E Payment Flow
+    runs-on: ubuntu-latest
+
+    steps:
+      - *checkout
+      - *setup-pnpm
+      - *setup-node
+
+      # Foundry v1.9.0, checked against its release digest. Downloaded through the API: the
+      # installer and github.com release downloads for Foundry can time out (504) for hours.
+      - &install-foundry
+        name: Install Foundry
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl -fsSL --retry 5 -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" \
+            -o "$RUNNER_TEMP/foundry.tgz" https://api.github.com/repos/foundry-rs/foundry/releases/assets/703110190
+          echo "8d17599b42e3139f1a9c171be3798c4ed8e743ae17b84cc3435e57bf2a51ae99  $RUNNER_TEMP/foundry.tgz" | sha256sum -c -
+          mkdir -p "$HOME/.foundry/bin" && tar xzf "$RUNNER_TEMP/foundry.tgz" -C "$HOME/.foundry/bin"
+          echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
+
+      - *install
+      - *build-tier0
+
+      # It ignores the pin: forge-std moves to the latest tag and foundry.lock is rewritten, in
+      # this checkout only. Locally, restore both afterwards.
+      - &forge-deps
+        name: Install Forge dependencies
+        run: cd packages/contracts && forge install foundry-rs/forge-std
+
+      # Shared by every job that deploys: contracts compile once per change to them.
+      - &contracts-cache
+        name: Restore compiled contracts
+        uses: actions/cache@v4
+        with:
+          path: |
+            packages/contracts/out
+            packages/contracts/cache_forge
+          key: contracts-deploy-${{ hashFiles('packages/contracts/**/*.sol', 'packages/contracts/foundry.toml', 'packages/contracts/foundry.lock', 'pnpm-lock.yaml') }}
+
+      # The deploy script compiles what it needs (without the contract tests).
+      - name: Start Anvil
+        run: anvil &
+
+      - name: Run E2E payment flow
+        run: node e2e/scripts/full-payment-flow.mjs
+        timeout-minutes: 15
+
+  # The scenarios are split over the shards, two at a time on each runner as before. Every
+  # scenario runs in exactly one shard (see --shard in e2e/stress/ci.mjs); to add a shard, add a
+  # number to the list.
+  payment-stress:
+    name: Payment stress static
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+
+    steps:
+      - *checkout
+      - *setup-pnpm
+      - *setup-node
+      - *install-foundry
+      - *install
+
+      # The real CLI seller and buyer run here, so build up to the CLI.
+      - *build-tier0
+      - *build-tier1
+      - *build-tier2
+      - *build-tier3
+      - *build-cli
+
+      - *forge-deps
+      - *contracts-cache
+
+      - name: Run payment stress scenarios
+        run: node e2e/stress/ci.mjs --parallel 2 --shard "${{ matrix.shard }}/${{ strategy.job-total }}" --out "$RUNNER_TEMP/antseed-stress"
+        timeout-minutes: 30
+
+      - name: Upload stress logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: payment-stress-logs-${{ matrix.shard }}
+          path: |
+            ${{ runner.temp }}/antseed-stress/logs
+            ${{ runner.temp }}/antseed-stress/runs/*/*.log
+            ${{ runner.temp }}/antseed-stress/runs/*/*.json
+          retention-days: 7
+
+  testbench:
+    name: Testbench (local chain)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - *checkout
+      - *setup-pnpm
+      - *setup-node
+      - *install-foundry
+      - *install
+      - *build-tier0
+      - *build-tier1
+      - *build-tier2
+      - *build-tier3
+      - *build-cli
+      - *forge-deps
+      - *contracts-cache
+
+      - name: Test the testbench
+        run: pnpm test:testbench
+
+      # One seed per commit, so a failure replays with the rerun line it prints. Set here because
+      # the runner context is not available in a job-level env.
+      - name: Choose the seed and state directory
+        run: |
+          echo "SEED=$((16#${GITHUB_SHA:0:8}))" >> "$GITHUB_ENV"
+          echo "ANTSEED_TESTBENCH_HOME=$RUNNER_TEMP/testbench" >> "$GITHUB_ENV"
+
+      - name: Run chat-basic
+        run: pnpm testbench run chat-basic --chain local --strict --seed "$SEED"
+
+      - name: Run payment-flow
+        run: pnpm testbench run payment-flow --chain local --strict --seed "$SEED"
+
+      - name: Run routing-smoke
+        run: pnpm testbench run routing-smoke --chain local --strict --seed "$SEED"
+
+      - name: Run issue-1200-spendingauth-catchup
+        run: pnpm testbench run issue-1200-spendingauth-catchup --chain local --strict --seed "$SEED"
+
+      - name: Run stress-smoke
+        run: pnpm testbench run stress-smoke --chain local --strict --seed "$SEED"
+
+      - name: Upload testbench reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: testbench-reports
+          path: |
+            ${{ runner.temp }}/testbench/*/reports
+            ${{ runner.temp }}/testbench/*/logs
+          retention-days: 7
+
+      # desktop-chat is not in this job yet. It would need, after the build above:
+      #   - Electron's system libraries and xvfb (apt-get)
+      #   - pnpm --filter @antseed/desktop run build:main && pnpm --filter @antseed/desktop run build:renderer
+      #   - pnpm exec playwright install ffmpeg
+      #   - xvfb-run -a pnpm testbench run desktop-chat --chain local --strict --seed "$SEED"
+
+  installer-lint:
+    name: Lint installer script
+    runs-on: ubuntu-latest
+
+    steps:
+      - *checkout
+
+      - name: shellcheck install-gateway.sh
+        run: |
+          bash -n apps/website/static/install-gateway.sh
+          shellcheck apps/website/static/install-gateway.sh
+
+  typecheck:
+    name: Typecheck
+    runs-on: ubuntu-latest
+
+    steps:
+      - *checkout
+      - *setup-pnpm
+      - *setup-node
+      - *install
+      - *build-tier0
+      - *build-tier1
+      - *build-tier2
+      - *build-tier3
+
+      - name: Typecheck
+        run: pnpm run typecheck
+
+  nix-build:
+    name: Nix build (antseed CLI)
+    runs-on: ubuntu-latest
+
+    steps:
+      - *checkout
+
+      # Pinned SHA — DeterminateSystems/nix-installer-action @main as of 2026-08-31
+      - uses: DeterminateSystems/nix-installer-action@33c9ab3ef95cd57c164d9d6eb1f9a46338538d41
+
+      # First build fetches each dependency tarball individually; keep the
+      # store between runs so lockfile churn only fetches what changed.
+      # Pinned SHA — DeterminateSystems/magic-nix-cache-action @main as of 2026-08-31
+      - uses: DeterminateSystems/magic-nix-cache-action@55718cd9ebf1737a061487d5ada21abf31e99a98
+
+      # Fails when the pnpmDeps fixed-output hash in flake.nix is stale —
+      # after touching pnpm-lock.yaml, regenerate with
+      # ./scripts/update-nix-hash.sh (see NIX-PNPM-HASH in flake.nix).
+      - name: Build antseed CLI
+        run: nix build .#
+
+      - name: Smoke test
+        run: |
+          ./result/bin/antseed --version
+          ./result/bin/antseed --help > /dev/null
