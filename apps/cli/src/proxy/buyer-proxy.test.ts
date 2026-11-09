@@ -1844,9 +1844,11 @@ test('existing required CLI verification rejects a failed pin without payment/in
   ;(proxy as any)._teeVerification = verification
   ;(proxy as any)._cachedPeers = peers
   await verification.verify(rejected, policy, async () => ({ ok: false, verified: false, reason: 'Seller binding failed' }))
-  await verification.verify(accepted, policy, async () => ({ ok: true, verified: true, sellerNodeVerified: true }))
+  await verification.verify(accepted, policy, async () => ({ ok: true, verified: true, sellerNodeVerified: true, channelBinding: 'c'.repeat(64) }))
+  ;(proxy as any)._node.getChannelBinding = () => 'c'.repeat(64)
   const dispatches: string[] = []
-  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }, options?: { channelBinding?: string }) => {
+    assert.equal(options?.channelBinding, 'c'.repeat(64))
     dispatches.push(peer.peerId)
     return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{}') }
   }
@@ -3597,6 +3599,33 @@ test('pinned proxy request reports when the pinned peer is not discoverable', as
   assert.match(res.body, /It may be offline, not announcing, or temporarily unreachable/)
 })
 
+for (const hasOtherSeller of [true, false]) {
+  const scenario = hasOtherSeller ? 'the refresh misses it' : 'discovery finds no sellers'
+
+  test(`pinned proxy request looks the peer up on its own DHT topic when ${scenario}`, async () => {
+    const discoveredPeers = hasOtherSeller ? [makePeer('b', ['openai'])] : []
+    const pinnedPeer = makePeer('a', ['openai'])
+    pinnedPeer.publicAddress = '198.51.100.20:14532'
+    pinnedPeer.providerServiceApiProtocols = { openai: { services: { 'gpt-5': ['openai-chat-completions'] } } }
+    const proxy = makeBuyerProxyWithPeers([...discoveredPeers], [...discoveredPeers], permissiveRouter())
+    ;(proxy as any)._mergeStateFile = async () => {}
+    ;(proxy as any)._node.findPeer = async () => ({ ...pinnedPeer })
+    const attempts: string[] = []
+    ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
+      attempts.push(peer.publicAddress ?? '')
+      return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{}') }
+    }
+
+    const res = await invokeProxy(proxy, makeProxyRequest({
+      headers: { 'x-antseed-pin-peer': pinnedPeer.peerId },
+      body: { model: 'gpt-5', messages: [] },
+    }))
+
+    assert.equal(res.statusCode, 200)
+    assert.deepEqual(attempts, ['198.51.100.20:14532'])
+  })
+}
+
 test('verifier preimage capture header stays local and enables exact capture', async () => {
   const peer = makePeer('a', ['openai'])
   const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
@@ -3779,22 +3808,12 @@ test('pinned proxy request dispatches when stale metadata misses the requested m
   assert.equal(selectedBody?.['model'], 'new-helper-model')
 })
 
-test('pinned proxy request reports explicit provider mismatch separately', async () => {
+test('a pinned request naming a provider its peer does not announce uses the peer\'s own provider', () => {
   const pinnedPeer = makePeer('a', ['local-llm'])
-  const proxy = makeBuyerProxyWithPeers([pinnedPeer])
-  const req = makeProxyRequest({
-    headers: {
-      'x-antseed-pin-peer': pinnedPeer.peerId,
-      'x-antseed-provider': 'openai',
-    },
-  })
-
-  const res = await invokeProxy(proxy, req)
-
-  assert.equal(res.statusCode, 502)
-  assert.match(res.body, /does not offer provider=openai/)
-  assert.match(res.body, /Available providers: local-llm/)
-  assert.match(res.body, /x-antseed-provider header/)
+  pinnedPeer.providerServiceApiProtocols = { 'local-llm': { services: { llama: ['openai-chat-completions'] } } }
+  const plan = resolvePeerRoutePlan(pinnedPeer, 'openai-chat-completions', 'llama', 'openai', 'lenient')
+  assert.equal(plan?.provider, 'local-llm')
+  assert.equal(resolvePeerRoutePlan(pinnedPeer, 'openai-chat-completions', 'llama', 'openai', 'strict'), null)
 })
 
 test('pinned proxy request reports protocol or service mismatch when provider is available', async () => {
@@ -4981,9 +5000,9 @@ test('parsePersistedPeers re-derives the trust score from persisted on-chain sig
   assert.ok(!('onChainTrustScore' in peer))
   assert.deepEqual(peer.trust, computeTrustScore(peer, NOW))
   assert.equal(peer.onChainReputationScore, peer.trust?.score)
-  // Twenty settled sessions and 100 USDC of volume contribute about 45 history
-  // points; 10% usage and power shares add about 17 more.
-  assert.equal(Math.round(peer.onChainReputationScore ?? 0), 62)
+  // 10% usage and power shares each reach 0.77 of the curve, on weights summing to 100.
+  // Twenty settled sessions and 100 USDC of volume are kept for display and add nothing.
+  assert.equal(Math.round(peer.onChainReputationScore ?? 0), 77)
   assert.equal(peer.trust?.history?.channelCount, 20)
   assert.equal(peer.trust?.history?.totalVolumeUsdcMicros, 100_000_000)
   assert.equal(peer.trust?.usage?.epoch, 21)
@@ -5116,7 +5135,7 @@ test('parsePersistedPeers restores GitHub identity history but never trusts pers
   const stored = { discoveredPeers: [{ peerId: validPeerId, providers: ['openai'], lastSeen: NOW - 1_000,
     verifications: { github: [{ username: 'portfolio', repository: 'proof' }] },
     onChainReputationScore: 100,
-    trust: { score: 100, history: { score: 50, channelCount: 100, totalVolumeUsdcMicros: 100_000_000 }, usage: { score: 20, shareBps: 10_000, epoch: 1 }, power: { score: 10, shareBps: 10_000, epoch: 1 }, identity: { score: 20, kind: 'github', claim: 'portfolio' }, washFlagged: false },
+    trust: { score: 100, history: { score: 0, channelCount: 100, totalVolumeUsdcMicros: 100_000_000 }, usage: { score: 20, shareBps: 10_000, epoch: 1 }, power: { score: 10, shareBps: 10_000, epoch: 1 }, identity: { score: 20, kind: 'github', claim: 'portfolio' }, washFlagged: false },
     verificationResults: { verified: true, checkedAtMs: NOW - 500, domains: [],
       github: [{ username: 'portfolio', repository: 'proof', peerId: validPeerId, verified: true, checkedAtMs: NOW - 500 }],
       identityHistory: { version: 1, identities: [{ kind: 'github', claim: 'portfolio', identityId: 'github:42', status: 'available',
@@ -5817,11 +5836,11 @@ Input: one user message from the start of a session.`,
   }
 })
 
-test('makeVerifierReach: rejects non-attest paths, sends the attest route as a payment-free control-plane request', async () => {
+test('makeVerifierReach: rejects non-attest paths, sends the attest route as a payment-free control-plane request with the connection binding', async () => {
   const peer = makePeer('a', ['openai'])
   const signal = new AbortController().signal
 
-  const rejectNode = { sendRequest: async () => ({ statusCode: 200, headers: {}, body: new Uint8Array() }) }
+  const rejectNode = { sendRequest: async () => ({ statusCode: 200, headers: {}, body: new Uint8Array() }), getChannelBinding: () => null }
   await assert.rejects(
     makeVerifierReach(rejectNode as never, peer, 'antseed-verifier', signal)({ method: 'POST', path: '/v1/chat/completions' }),
     /may only call its attestation route/,
@@ -5833,6 +5852,7 @@ test('makeVerifierReach: rejects non-attest paths, sends the attest route as a p
       opts = o
       return { statusCode: 200, headers: {}, body: new Uint8Array() }
     },
+    getChannelBinding: (peerId: string) => (peerId === peer.peerId ? 'c'.repeat(64) : null),
   }
   const resp = await makeVerifierReach(captureNode as never, peer, 'antseed-verifier', signal)(
     { method: 'POST', path: '/_antseed/attest/antseed-verifier', body: new Uint8Array([1]) },
@@ -5840,6 +5860,8 @@ test('makeVerifierReach: rejects non-attest paths, sends the attest route as a p
   assert.equal(resp.statusCode, 200)
   assert.equal(opts!.controlPlane, true)
   assert.equal(opts!.signal, signal)
+  // The buyer's own session hash for the connection to this seller, for the quote binding check.
+  assert.equal(resp.channelBinding, 'c'.repeat(64))
 })
 
 test('isModelNotFoundResponse: detects seller and upstream model_not_found rejections', () => {
@@ -6241,7 +6263,7 @@ test('buyer proxy does not forward client credential headers to the seller (buff
   // Non-credential client headers still pass through.
   assert.equal(seen!['anthropic-version'], '2023-06-01')
   assert.equal(seen!['content-type'], 'application/json')
-  // AntSeed's own payment-auth header is not a client credential.
+  // Antseed's own payment-auth header is not a client credential.
   assert.equal(seen!['x-antseed-spending-auth'], 'signed-auth-payload')
 })
 

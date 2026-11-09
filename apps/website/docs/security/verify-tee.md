@@ -20,11 +20,11 @@ To refuse sellers that do not pass, turn on required verification in the [CLI](#
 
 ## What a passing check proves
 
-With the [`antseed-verifier`](https://github.com/AntSeed/antseed/tree/main/packages/antseed-verifier) SDK, a seller passes only when both of these hold:
+With the [`antseed-verifier`](https://github.com/Antseed/antseed/tree/main/packages/antseed-verifier) SDK, a seller passes only when both of these hold:
 
 | Claim | Proves |
 |---|---|
-| `seller-node-tee-genuine` | The seller node runs in a genuine Intel TDX enclave: the quote checks out against Intel's DCAP certificate chain with an acceptable TCB and debug off, and it was created for your nonce and bound to the seller's peer id. Replayed quotes and non-TDX machines fail. |
+| `seller-node-tee-genuine` | The seller node runs an approved TEE seller build in a genuine Intel TDX enclave, on your own connection: the quote checks out against Intel's DCAP certificate chain with an acceptable TCB and debug off, its measurements show an approved TEE seller image on a released dstack OS, under rules that keep the seller's upstreams readable, and it was created for your nonce and bound to the seller's peer id and to the encrypted connection your buyer holds with the seller. Replayed or relayed quotes, unapproved builds and non-TDX machines fail. |
 | `seller-bound` | The seller's identity key signed the whole evidence bundle, so the enclave belongs to the peer you are paying. |
 
 Four more claims are reported for your own policy but do not decide the verdict:
@@ -132,5 +132,5 @@ Your node only runs verifier code from a built-in, version-pinned set that maps 
 ## See also
 
 - [Run a TEE seller](/docs/provide/tee)
-- [AIP-3: Pluggable verifier SDKs](https://github.com/AntSeed/AIPs/blob/main/AIPS/aip-3.md)
+- [AIP-3: Pluggable verifier SDKs](https://github.com/Antseed/AIPs/blob/main/AIPS/aip-3.md)
 - [Security](/docs/security)

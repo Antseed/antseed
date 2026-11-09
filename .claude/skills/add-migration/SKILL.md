@@ -1,12 +1,12 @@
 ---
 name: add-migration
-description: Add a new SQLite migration to the AntSeed node package. Use when adding tables, columns, or indexes to channel-store or metering databases.
+description: Add a new SQLite migration to the Antseed node package. Use when adding tables, columns, or indexes to channel-store or metering databases.
 ---
 
 # Add Migration
 
 ## Purpose
-Create a new numbered SQLite migration file for the AntSeed node package.
+Create a new numbered SQLite migration file for the Antseed node package.
 Migrations live in `packages/node/src/storage/migrations/{domain}/` where domain
 is `channels` (payment_channels, receipts) or `metering` (events, sessions, etc.).
 

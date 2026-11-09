@@ -1,4 +1,5 @@
 import type { DesktopRouterSelection, RoutingServiceEntry } from '../../shared/routing-selection';
+import type { TrustBreakdown as NodeTrustBreakdown } from '@antseed/node';
 import type { FreeTierProgram } from '@antseed/node/free-tier-program';
 import type {
   DaemonStateSnapshot,
@@ -185,32 +186,9 @@ export type VprModelCatalogEntry = {
   baselineOutputUsdPerMillion?: number | null;
 };
 
-/**
- * Renderer-side mirror of `TrustBreakdown` from `@antseed/node`
- * (`packages/node/src/reputation/trust-score.ts`). The renderer only imports
- * `@antseed/node` subpath modules, so the shape is restated here.
- *
- *   trust = washFlagged ? 0 : history + usage + power + identity
- *   (weights 50 / 20 / 10 / 20)
- */
-export type TrustBreakdown = {
-  /** Final trust score, 0-100. */
-  score: number;
-  /** Settled service history; `null` when channel stats are unavailable. */
-  history: { score: number; channelCount: number; totalVolumeUsdcMicros: number } | null;
-  /** Last epoch's share of all pools' usage points; `null` when usage accounting data is unavailable. */
-  usage: { score: number; shareBps: number; epoch: number } | null;
-  /** Current epoch's share of all pools' staking power; `null` when pool data is unavailable. */
-  power: { score: number; shareBps: number; epoch: number } | null;
-  /** Verified-identity part; `null` when no verified identity has usable history. */
-  identity: { score: number; kind: 'github' | 'domain'; claim: string } | null;
-  /** Wash-trading registry verdict; `null` when the registry is unavailable. */
-  washFlagged: boolean | null;
-  /** Free-model bonus; `null` when the seller announces no free model. */
-  freeModels?: { score: number; service: string } | null;
-  /** Model-verification penalty: the points multiplier below 100% and what it took off; `null` without one. */
-  verification?: { multiplierBps: number; sameCount: number; diffCount: number; penalty: number } | null;
-};
+/** The buyer's `TrustBreakdown`; the renderer also accepts a row without `freeModels`. */
+export type TrustBreakdown =
+  Omit<NodeTrustBreakdown, 'freeModels'> & Partial<Pick<NodeTrustBreakdown, 'freeModels'>>;
 
 export type DiscoverVerificationLink = {
   kind: 'domain' | 'github';

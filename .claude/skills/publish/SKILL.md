@@ -1,6 +1,6 @@
 ---
 name: publish
-description: Prepare an npm release — decide which @antseed/* packages need version bumps, apply them, validate the set, and open the bump PR. Publishing itself happens in CI.
+description: Prepare an npm release — decide which @antseed/* packages need version bumps, apply them, validate the set, and open the bump PR. Publishing itself happens in CI. After a CLI release, also pin and publish the TEE seller image.
 ---
 
 # Prepare an npm Release (version bumps only)
@@ -38,7 +38,7 @@ pnpm resolves `workspace:*` **regular dependencies** to exact versions at publis
 2. Add every public dependent that declares one of them as a regular `workspace:` dependency, recursively.
 3. Peer dependencies with ranges (e.g. provider-core/router-core/ant-agent declare `@antseed/node >=0.1.0`) do NOT cascade.
 
-Known chains: cli + payments + ants pin node; node pins protocol/buyer-core/api-adapter; web-sdk pins buyer-core/protocol; all provider plugins pin provider-core; router-local pins router-core; cli also pins ants, gateway-console, payments, api-adapter, ant-agent, provider-core, connected-apps; connected-apps pins protocol.
+Known chains: cli + payments + ants pin node; node pins protocol/buyer-core/api-adapter; web-sdk pins buyer-core/protocol; all provider plugins pin provider-core; router-local pins router-core; cli also pins ants, gateway-console, payments, api-adapter, ant-agent, provider-core, connected-apps, telemetry; connected-apps pins protocol.
 
 **Build-time bundles (not visible to the plan script):** `@antseed/gateway-console` compiles the ants web UI into its own bundle (`apps/gateway-console/vite.config.ts` aliases `@antseed/ants-web` → `apps/ants/web/src`). Any release-worthy change under `apps/ants/web/` therefore also requires a `@antseed/gateway-console` bump (which then cascades to cli), or the gateway's Staking page keeps the old UI. Before bumping, check for other such aliases: `grep -n "path.resolve(__dirname, '../" apps/*/vite.config.ts`.
 
@@ -91,7 +91,7 @@ PR body: list the bumped packages grouped as "changed directly" (with a one-line
 
 After the PR merges, the **user** triggers the release from GitHub: Actions → `Publish npm packages` → Run workflow on `main` (optionally with `dry_run` first to see the plan in the logs). The workflow installs, re-validates the plan, bakes `ANTSEED_COMPARABLE_PRICES_URL` into the release artifacts, builds, runs the full test suite, and publishes with `pnpm publish`.
 
-Do not run `pnpm publish`, `npm publish`, or the workflow yourself.
+Do not run `pnpm publish`, `npm publish`, or the npm publish workflow yourself. (The TEE seller image workflow in step 8 is different: run it once the lock PR merges.)
 
 ### 7. Verify after the workflow succeeds (read-only)
 
@@ -102,6 +102,28 @@ tmpdir=$(mktemp -d) && cd "$tmpdir" && npm install @antseed/cli@latest --ignore-
 ```
 
 Confirm exactly ONE `@antseed/node` version appears (the 0.1.139 incident check), no `workspace:` specs in published manifests, and — if the cli was released — that `node_modules/@antseed/cli/dist/generated/baked-defaults.js` contains the comparable-prices URL.
+
+### 8. Release the TEE seller image (when `@antseed/cli` was released)
+
+The TEE seller image (`deploy/tee-seller`) installs an exact CLI from a committed lockfile and never updates itself, so TEE sellers get a release only through a new image. After every release that includes a new `@antseed/cli`:
+
+1. Wait until the new CLI installs from the registry: a fresh `npm install @antseed/cli@<version> --prefer-online` must succeed (the registry can serve the manifest minutes before every tarball).
+2. Pin the lock to it and check it:
+
+   ```bash
+   git checkout -b feat/tee-seller-lock-<version> origin/main
+   node deploy/tee-seller/update-lock.mjs <version>   # pins the CLI and the verifier it pins
+   tmp=$(mktemp -d) && cp deploy/tee-seller/{package.json,package-lock.json,check-lock.mjs} "$tmp" \
+     && (cd "$tmp" && npm ci --ignore-scripts && node check-lock.mjs) && rm -rf "$tmp"
+   ```
+
+3. Commit `deploy/tee-seller/package.json` and `package-lock.json`, open the PR and merge it right away, like the bump PR: it only pins published versions, and `check-lock.mjs` gates the image build.
+4. Run the **Publish TEE seller image** workflow on main: `gh workflow run tee-seller-image.yml --ref main`. It builds, pushes and signs the image; its run summary shows the digest.
+5. Verify the image before announcing it:
+   - its build record verifies with the verifier the CLI pins: `imageBuildRecord(<digest>)` then `verifyImageBuild(record)` from `@antseed/antseed-verifier/dist/image-provenance.js` must return the digest (or `gh attestation verify oci://ghcr.io/antseed/tee-seller@<digest> --repo Antseed/antseed`);
+   - it pulls without logging in (GHCR answers the manifest anonymously);
+   - its config still exposes `6882/tcp` and `6881/udp` (Google Confidential Space opens only exposed ports).
+6. Report the digest so TEE sellers can move to it (docs: "Upgrade to a new image"). No approval PR is needed: buyers accept images the workflow builds from main by their build record.
 
 ## Important notes
 
@@ -118,7 +140,7 @@ packages/*   @antseed/node, @antseed/protocol, @antseed/buyer-core,
 plugins/*    provider-anthropic, provider-claude-code, provider-claude-oauth,
              provider-openai, provider-openai-responses, provider-local-llm,
              provider-typesafe, provider-venice-video, provider-fal-video,
-             provider-alibaba-video, router-local
+             provider-fal-image, provider-alibaba-video, router-local
 apps/*       @antseed/cli, @antseed/network-stats, @antseed/payments
              @antseed/ants, @antseed/relay, @antseed/gateway-console
 ```

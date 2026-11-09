@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { passedSellerNodeClaims, isFreshSellerNodeEvidence, teeScope, TEE_PROVIDER_CLAIM, TEE_REQUIRED_CLAIMS, type TeeEvidence } from './tee-status.js';
+import { passedSellerNodeClaims, isFreshSellerNodeEvidence, teeScope, teeUpstreams, TEE_PROVIDER_CLAIM, TEE_REQUIRED_CLAIMS, TEE_UPSTREAMS_CLAIM, type TeeEvidence } from './tee-status.js';
 
 describe('seller-node TEE evidence', () => {
   const claims = TEE_REQUIRED_CLAIMS.map((claim) => ({ claim, ok: true }));
@@ -25,5 +25,11 @@ describe('seller-node TEE evidence', () => {
     expect(teeScope({ claims: [...claims, { claim: TEE_PROVIDER_CLAIM, ok: true }] })).toBe('end-to-end');
     expect(teeScope({ claims: [...claims, { claim: TEE_PROVIDER_CLAIM, ok: false }] })).toBe('seller-node');
     expect(teeScope({ claims: [...claims, { claim: TEE_PROVIDER_CLAIM, ok: true }, { claim: TEE_PROVIDER_CLAIM, ok: false }] })).toBe('seller-node');
+  });
+  it('reads the attested upstream hosts of a passing seller node', () => {
+    const upstreams = { claim: TEE_UPSTREAMS_CLAIM, ok: true, detail: 'https://api.example.com, https://backup.example:8443, nonsense' };
+    expect(teeUpstreams({ claims: [...claims, upstreams] })).toEqual(['api.example.com', 'backup.example:8443']);
+    expect(teeUpstreams({ claims })).toEqual([]);
+    expect(teeUpstreams({ claims: [...claims, { ...upstreams, ok: false }] })).toEqual([]);
   });
 });

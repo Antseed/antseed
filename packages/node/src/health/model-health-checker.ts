@@ -3,7 +3,7 @@ import { serviceHealthOf } from '../discovery/peer-metadata.js';
 import type { Provider, ServiceHealthStatus, UpstreamAccountStatus } from '../interfaces/seller-provider.js';
 import type { SerializedHttpRequest } from '../types/http.js';
 import { isAudioSpeechProtocol, isNativeVideoProtocol, isRoutingProtocol, type ServiceApiProtocol } from '../types/service-api.js';
-import { debugLog, debugWarn } from '../utils/debug.js';
+import { debugLog, debugWarn, isContentFreeLogging, upstreamErrorCode } from '../utils/debug.js';
 import { isLiveResponseOutOfCredit, isUpstreamOutOfCredit } from './upstream-credit.js';
 
 /** Default sweep interval. Each sweep sends one 1-token probe per service without recent buyer traffic. */
@@ -541,7 +541,7 @@ export class ModelHealthChecker {
     const target = this._findTarget(provider);
     if (!target || this._stopped) return;
     if (statusCode >= 400 && isLiveResponseOutOfCredit(statusCode, body)) {
-      this._setAccount(target.provider, 'out', `HTTP ${statusCode}: ${summarizeBody(new TextEncoder().encode(body))}`, null);
+      this._setAccount(target.provider, 'out', `HTTP ${statusCode}: ${liveOutOfCreditDetail(body)}`, null);
     } else if (statusCode < 400 && billable && this._accounts.get(target.provider) === 'out') {
       this._setAccount(target.provider, 'ok', `HTTP ${statusCode} on a request`, null);
     }
@@ -917,6 +917,25 @@ function decodeBody(body: Uint8Array, maxBytes: number): string {
   } catch {
     return '';
   }
+}
+
+/**
+ * What a buyer request's out-of-credit answer says, for the seller's notices and alerts. In
+ * content-free mode only the upstream's billing message itself is kept (its error message, when
+ * that names the account's credit), else its error code, never the rest of the body.
+ */
+function liveOutOfCreditDetail(body: string): string {
+  if (!isContentFreeLogging()) return summarizeBody(new TextEncoder().encode(body));
+  let message: unknown;
+  try {
+    const parsed = JSON.parse(body) as { error?: unknown; message?: unknown };
+    const error = parsed.error;
+    message = error && typeof error === 'object' ? (error as { message?: unknown }).message : error ?? parsed.message;
+  } catch {
+    message = undefined;
+  }
+  if (typeof message === 'string' && message.length <= 200 && isUpstreamOutOfCredit(null, message)) return message.replace(/\s+/g, ' ').trim();
+  return upstreamErrorCode(body) ?? 'out of credit';
 }
 
 function summarizeBody(body: Uint8Array): string {

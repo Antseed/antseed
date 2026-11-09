@@ -17,7 +17,7 @@ Antseed is for differentiated services: TEE-secured inference, agents and skills
 
 A plugin is an ES module npm package. You can name it anything; you don't need an `@antseed` scope. The CLI loads `dist/index.js` from the installed package and uses the export (default or named) that has `type: 'provider'` and a `createProvider()` function. Exactly one such export is allowed.
 
-A starting template with a `npm run verify` check lives in [`docs/protocol/templates/provider-plugin`](https://github.com/AntSeed/antseed/tree/main/docs/protocol/templates/provider-plugin).
+A starting template with a `npm run verify` check lives in [`docs/protocol/templates/provider-plugin`](https://github.com/Antseed/antseed/tree/main/docs/protocol/templates/provider-plugin).
 
 ```json title="package.json"
 {
@@ -215,7 +215,7 @@ const plugin: AntseedProviderPlugin = {
 export default plugin
 ```
 
-The built-in [`local-llm` plugin](https://github.com/AntSeed/antseed/tree/main/plugins/provider-local-llm) is a complete example of this pattern. To produce responses yourself instead of relaying, implement `Provider` directly: return a `SerializedHttpResponse` with the request's `requestId`, a status code, headers and a body in the format the buyer's API expects, including a `usage` object.
+The built-in [`local-llm` plugin](https://github.com/Antseed/antseed/tree/main/plugins/provider-local-llm) is a complete example of this pattern. To produce responses yourself instead of relaying, implement `Provider` directly: return a `SerializedHttpResponse` with the request's `requestId`, a status code, headers and a body in the format the buyer's API expects, including a `usage` object.
 
 ## Install the plugin into a seller
 
@@ -252,4 +252,4 @@ You can differentiate a service without writing a plugin by wrapping it in an an
 }
 ```
 
-The model decides when to load knowledge or call tools, and buyers see only the final response. See [Seller configuration](/docs/provide/config#ant-agent) for per-service agents and the [`@antseed/ant-agent` README](https://github.com/AntSeed/antseed/tree/main/packages/ant-agent) for the full manifest, including custom tools.
+The model decides when to load knowledge or call tools, and buyers see only the final response. See [Seller configuration](/docs/provide/config#ant-agent) for per-service agents and the [`@antseed/ant-agent` README](https://github.com/Antseed/antseed/tree/main/packages/ant-agent) for the full manifest, including custom tools.

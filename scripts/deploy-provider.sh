@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Deploy an AntSeed provider to a remote server via npm packages
+# Deploy an Antseed provider to a remote server via npm packages
 #
 # Examples:
 #   ./scripts/deploy-provider.sh --host 1.2.3.4 \
@@ -155,7 +155,7 @@ else
 
   $SSH_CMD "sudo tee /etc/systemd/system/${SERVICE}.service > /dev/null" <<SERVICE_FILE
 [Unit]
-Description=AntSeed Provider (${PROVIDER})
+Description=Antseed Provider (${PROVIDER})
 After=network-online.target
 Wants=network-online.target
 

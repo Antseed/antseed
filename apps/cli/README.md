@@ -1,8 +1,8 @@
 # Antseed CLI + Dashboard
 
-Command-line interface and web dashboard for the AntSeed Network — a P2P network for AI services.
+Command-line interface and web dashboard for the Antseed Network — a P2P network for AI services.
 
-> **Important:** AntSeed is designed for providers who build differentiated services on top of AI APIs — such as TEE-secured inference, domain-specific skills and agents, fine-tuned models, or managed product experiences. Simply reselling raw API access or subscription credentials is not the intended use and may violate your upstream provider's terms of service. Subscription-based plugins (`provider-claude-code`, `provider-claude-oauth`) are for testing and development only.
+> **Important:** Antseed is designed for providers who build differentiated services on top of AI APIs — such as TEE-secured inference, domain-specific skills and agents, fine-tuned models, or managed product experiences. Simply reselling raw API access or subscription credentials is not the intended use and may violate your upstream provider's terms of service. Subscription-based plugins (`provider-claude-code`, `provider-claude-oauth`) are for testing and development only.
 
 ## Commands
 
@@ -48,7 +48,7 @@ Command-line interface and web dashboard for the AntSeed Network — a P2P netwo
 | `antseed network browse` | Browse peers, models, and pricing (same catalog as `/v1/models`) |
 | `antseed apps [--json]` / `antseed apps status [--json]` | List every supported connected app (OpenCode, Codex, Claude Code, Claude Desktop, Hermes, Droid, T3 Code, pi, GooeyPi, Crush, Goose, Zed) with installed / connected / config path. `--json` output carries `"schemaVersion": 1` |
 | `antseed apps connect <app> [--port <buyerPort>]` | Point the app's own config at the buyer proxy (default port: running buyer, then `buyer.proxyPort`, then 8377). Backs up the original to `<file>.antseed.bak`; also patches WSL installs on Windows. The app requests the `antseed` model, which needs a default route on the buyer (desktop model picker or `POST /_antseed/route`); connect warns when none is set |
-| `antseed apps disconnect <app>` | Remove only what AntSeed added, restoring replaced values. The desktop app's Connected apps screen reflects CLI connects and disconnects |
+| `antseed apps disconnect <app>` | Remove only what Antseed added, restoring replaced values. The desktop app's Connected apps screen reflects CLI connects and disconnects |
 | **Session** | |
 | `antseed buyer connection get` | Show current session state (pinned service, peer) |
 | `antseed buyer connection set` | Update service/peer overrides on a running proxy |
@@ -58,12 +58,11 @@ Command-line interface and web dashboard for the AntSeed Network — a P2P netwo
 | `antseed buyer status` | Show buyer status |
 | `antseed config` | Manage configuration |
 | `antseed profile` | Manage your peer profile |
-| `antseed peer <peerId>` | Show a peer's profile (lightweight) |
+| `antseed peer <peerId>` | Not implemented yet; use `antseed network peer <peerId>` |
 | `antseed network peer <peerId>` | Show full peer details (providers, services, on-chain stats) |
 | `antseed dashboard` | Start the web dashboard |
 | `antseed metrics serve` | Serve Prometheus metrics for buyers and sellers |
 | `antseed buyer channels` | List payment channels |
-| `antseed dev` | Run seller + buyer locally for testing |
 | `antseed network bootstrap` | Run a dedicated DHT bootstrap node |
 
 ## Configuration Workflow
@@ -932,6 +931,10 @@ The service limits actual checks to eight and cached entries to 512, evicting
 settled entries rather than pending checks. Timer-based garbage collection is
 disabled; the entry bound and buyer lifecycle own cleanup instead. There is no
 disk persistence and no per-inference-response proof in this cache.
+
+## fal image services
+
+Use `@antseed/provider-fal-image` to sell fal.ai image models through the OpenAI Images API (`/v1/images/generations` and `/v1/images/edits`), billed per output image. See the [plugin README](../../plugins/provider-fal-image/README.md).
 
 ## Native video services
 

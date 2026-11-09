@@ -182,7 +182,7 @@ Model:     <peerId>@deepseek-v4-flash
 ```bash
 export ANTHROPIC_BASE_URL="https://gateway.example.com"
 export ANTHROPIC_AUTH_TOKEN="$ANTSEED_API_KEY"
-export ANTHROPIC_MODEL="<peerId>@qwen3-coder-480b"
+export ANTHROPIC_MODEL="<peerId>@deepseek-v4-flash"
 claude
 ```
 

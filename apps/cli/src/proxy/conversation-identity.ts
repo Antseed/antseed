@@ -229,6 +229,16 @@ function syntheticSessionKeyFromBody(body: Record<string, unknown> | null): stri
 }
 
 /**
+ * The client tool's slug, from the same headers conversation identity reads,
+ * even when the request carries no session to key on.
+ */
+export function requestClientTool(headers: Record<string, string>): string {
+  const source = systemProxySource(headers)
+  const detectedTool = toolSessionHeader(headers)?.tool || detectTool(headers)
+  return source === 'public-tunnel' && detectedTool === 'cursor' ? 'cursor' : source || detectedTool
+}
+
+/**
  * Extract the conversation identity from a completion request, or null when
  * the tool sent nothing to key on. `parsedBody` is the request body as a JSON
  * object when available (callers usually have it parsed already).

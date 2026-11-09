@@ -19,7 +19,7 @@ const VENICE_QUEUE_ID = /^[A-Za-z0-9_-]{1,256}$/;
 const VENICE_AUTO_DURATIONS = new Set(['auto', 'Auto', '-1', '1 gen']);
 
 /**
- * fal's own API puts the model in the URL. AntSeed routes on the body `model`,
+ * fal's own API puts the model in the URL. Antseed routes on the body `model`,
  * so fal video uses fixed paths with the fal endpoint ID as `model`; the
  * seller rebuilds fal's queue URLs from it.
  */
@@ -102,6 +102,9 @@ export interface NativeVideoFacts {
   action: NativeVideoRoute['action'];
   duration?: number;
   resolution?: string;
+  aspectRatio?: string;
+  /** Whether the create asks for audio: `audio`, or fal's `generate_audio`. */
+  audio?: boolean;
 }
 
 export function nativeVideoFacts(request: SerializedHttpRequest): NativeVideoFacts | undefined {
@@ -112,10 +115,13 @@ export function nativeVideoFacts(request: SerializedHttpRequest): NativeVideoFac
   if (!body) throw new Error('Video submission requires a JSON object');
   const duration = route.protocol === 'fal-video' ? falDuration(body.duration) : veniceDuration(body.duration);
   if (duration === null) throw new Error('Video duration must be a positive integer');
+  const audio = route.protocol === 'fal-video' ? body.generate_audio ?? body.audio : body.audio;
   return {
     protocol: route.protocol, action: route.action,
     ...(duration === undefined ? {} : { duration }),
     ...(typeof body.resolution === 'string' ? { resolution: body.resolution } : {}),
+    ...(typeof body.aspect_ratio === 'string' ? { aspectRatio: body.aspect_ratio } : {}),
+    ...(typeof audio === 'boolean' ? { audio } : {}),
   };
 }
 

@@ -6,6 +6,8 @@ import { createServer, type Server, type IncomingMessage, type ServerResponse } 
 import { randomUUID } from 'node:crypto'
 import { buildRoutingServices, findPinnedRoutingService } from './routing-services.js'
 import { readFileSync, watchFile, unwatchFile } from 'node:fs'
+import { telemetryClientTool, telemetryProtocol, traceFor, type BuyerTelemetry, type ConversationKeySource, type SwitchReason } from '../telemetry/buyer.js'
+import { finishReasonFromBody } from '../telemetry/finish-reason.js'
 import { readFile, writeFile, rename, mkdir, readdir, stat, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
@@ -131,6 +133,7 @@ import {
 import { DEFAULT_BUYER_PEER_REFRESH_INTERVAL_MS } from '../config/defaults.js'
 import {
   extractConversationIdentity,
+  requestClientTool,
   extractFirstUserSnippet,
   isCompletionRequestPath,
   isTitleGenerationRequest,
@@ -286,6 +289,8 @@ export interface BuyerProxyConfig {
    * the gateway so its settings page can say a config edit will not apply.
    */
   settingOverrides?: string[]
+  /** Anonymous request telemetry (docs/telemetry.md); absent sends nothing. */
+  telemetry?: BuyerTelemetry
 }
 
 /** The DepositsClient reads `GET /_antseed/balances` needs. */
@@ -369,6 +374,13 @@ type RequestPolicyResult =
   /** The control header was sent but does not match: fail closed, never route. */
   | { kind: 'auth_invalid' }
 
+/** Image generation, image edits and decision models (SystemOne): model requests outside a chat, reported like any other. */
+function isImageOrDecisionRequest(method: string, request: Pick<SerializedHttpRequest, 'path' | 'headers'>): boolean {
+  if (method !== 'POST') return false
+  const protocol = detectRequestServiceApiProtocol(request)
+  return protocol === 'openai-images' || protocol === 'typesafe-systemone'
+}
+
 function isLoopbackAddress(address: string | undefined): boolean {
   // A destroyed socket has no address: never treat it as local.
   if (address === undefined) return false
@@ -387,7 +399,9 @@ const RECOMMENDATION_FALLBACK_STATUS_CODES = new Set([401, 403, 429, 500, 502, 5
 /**
  * Gateway-policy requests on automatic routing also move on after a 402: the
  * buyer could not fund that seller (no deposits for its reserve), but a free
- * seller needs none. Other requests keep the 402, as they always have.
+ * seller needs none. Other automatic routing moves on only after the buyer's
+ * own 402 (see `shouldTryNextPeer`), so a raw seller 402 still reaches a
+ * client that pays for itself.
  */
 const GATEWAY_AUTO_ROUTE_RETRYABLE_STATUS_CODES = new Set([...RETRYABLE_STATUS_CODES, 402])
 
@@ -402,17 +416,30 @@ function retryableStatusCodesFor(gatewayAutoRoute: boolean): Set<number> {
  * `extraAttempt` also moves on after any other 4xx except 402: a client error
  * may be the seller's doing (it refuses a parameter other sellers of the
  * model accept) or the request's, and only another seller can
- * tell which. A pinned request keeps the pinned seller's answer.
+ * tell which. A 402 the buyer wrote itself (it cannot pay this seller, e.g.
+ * no deposits) also moves on: the routing loop then tries only sellers that
+ * need no deposits, and returns that 402 when none is left. A pinned request
+ * keeps the pinned seller's answer.
  */
 function shouldTryNextPeer(
   statusCode: number,
-  modelNotFound: boolean,
-  pinned: boolean,
-  gatewayAutoRoute: boolean,
-  extraAttempt = false,
+  {
+    modelNotFound,
+    pinned,
+    gatewayAutoRoute,
+    extraAttempt = false,
+    buyerFault = false,
+  }: {
+    modelNotFound: boolean
+    pinned: boolean
+    gatewayAutoRoute: boolean
+    extraAttempt?: boolean
+    buyerFault?: boolean
+  },
 ): boolean {
   return retryableStatusCodesFor(gatewayAutoRoute).has(statusCode)
     || (modelNotFound && !pinned)
+    || (statusCode === 402 && buyerFault && !pinned)
     || (extraAttempt && !pinned && statusCode >= 400 && statusCode < 500 && statusCode !== 402)
 }
 
@@ -475,6 +502,23 @@ export function classifyFailedAttempt(result: DispatchFailure): FailedAttempt {
 function promptCacheKey(request: SerializedHttpRequest): string | null {
   const value = extractRequestBodyFields(request.headers, request.body)?.['prompt_cache_key']
   return typeof value === 'string' && value.trim() ? `cache:${value.trim().slice(0, 256)}` : null
+}
+
+/**
+ * For telemetry: what the conversation's key came from. A tool's own session
+ * id (in a header or its metadata), the client's `prompt_cache_key` alone, or
+ * a hash of the conversation's opening, for a client that sends neither.
+ */
+function conversationKeySource(
+  identity: ConversationIdentity,
+  headers: Record<string, string>,
+  body: Record<string, unknown> | null,
+): ConversationKeySource {
+  if (identity.sessionKey.startsWith('synthetic-')) return 'prompt_prefix'
+  const sessionHeader = Object.entries(headers).some(([name, value]) => typeof value === 'string' && value.trim() === identity.sessionKey
+    && /^(?:x-.+-session-id|thread-id|session-id|x-session-id|x-session-affinity)$/i.test(name))
+  const cacheKey = body?.['prompt_cache_key']
+  return !sessionHeader && typeof cacheKey === 'string' && cacheKey.trim() === identity.sessionKey ? 'prompt_cache_key' : 'tool_session'
 }
 
 /**
@@ -675,6 +719,18 @@ const UNSUPPORTED_VOICE_REASON = 'does not offer the requested voice'
 const MODEL_NOT_FOUND_REFRESH_THROTTLE_MS = 30_000
 
 /**
+ * Right after start the first discovery sweep is still finding sellers, so a
+ * model nobody serves yet may simply not have been found. Until the sweep ends
+ * (at most this long after start) such a request waits a little for it, then
+ * gets a retryable 503 `discovery_in_progress` instead of 502 `model_not_found`.
+ */
+const INITIAL_DISCOVERY_MAX_MS = 120_000
+const INITIAL_DISCOVERY_REQUEST_WAIT_MS = 10_000
+const INITIAL_DISCOVERY_POLL_MS = 500
+const INITIAL_DISCOVERY_RETRY_AFTER_SECONDS = 5
+export const DISCOVERY_IN_PROGRESS_CODE = 'discovery_in_progress'
+
+/**
  * Statuses that prove the peer is alive and serving. Any response short of a
  * server error counts: a peer that answers 400 or 404 is reachable, and
  * treating only 2xx as proof would leave a stale cooldown on a healthy peer
@@ -755,6 +811,7 @@ function dispatchFailure(statusCode: number, responseHeaders: Record<string, str
 
 function writeDispatchFailure(res: ServerResponse, result: DispatchFailure): void {
   if (res.headersSent || res.writableEnded) return
+  traceFor(res)?.noteFailure(result)
   // A refusal can carry the seller's own headers: never let it name a router.
   res.writeHead(result.statusCode, withoutRouterHeaders(result.responseHeaders))
   res.end(result.responseBody)
@@ -1165,6 +1222,19 @@ export function parsePersistedPeers(
 }
 
 /**
+ * The verifier policy for one request: a routing policy's `requireVerified` makes the buyer's
+ * verifier mandatory; `requireTee` also makes it the TEE verifier, whose seller-node attestation
+ * must pass.
+ */
+function attestationPolicy(
+  configured: VerifierPolicy,
+  { requireVerified, requireTee }: { requireVerified: boolean; requireTee: boolean },
+): VerifierPolicy {
+  if (requireTee) return { ...configured, prefer: [TEE_VERIFIER_ID], require: true }
+  return requireVerified && !configured.require ? { ...configured, require: true } : configured
+}
+
+/**
  * Local HTTP proxy that forwards requests to P2P sellers.
  *
  * Tools like Claude CLI set ANTHROPIC_BASE_URL=http://localhost:8377
@@ -1173,10 +1243,11 @@ export function parsePersistedPeers(
  */
 
 export function makeVerifierReach(
-  node: Pick<AntseedNode, 'sendRequest'>,
+  node: Pick<AntseedNode, 'sendRequest' | 'getChannelBinding'>,
   peer: PeerInfo,
   chosenId: string,
   signal: AbortSignal,
+  buyerIdentity?: string,
 ): SellerReach {
   const attestRoute = `${ANTSEED_ATTEST_PATH}/${encodeURIComponent(chosenId)}`
   return async (r) => {
@@ -1189,8 +1260,10 @@ export function makeVerifierReach(
       path: r.path,
       headers: r.headers ?? {},
       body: r.body ?? new Uint8Array(),
-    }, { signal, controlPlane: true })
-    return { statusCode: resp.statusCode, headers: resp.headers, body: resp.body }
+    }, { signal, controlPlane: true, ...(buyerIdentity ? { buyerIdentity } : {}) })
+    // Our own connection's session hash: a TEE seller's quote must commit to it.
+    const channelBinding = node.getChannelBinding(peer.peerId, buyerIdentity)
+    return { statusCode: resp.statusCode, headers: resp.headers, body: resp.body, ...(channelBinding ? { channelBinding } : {}) }
   }
 }
 
@@ -1333,6 +1406,9 @@ export class BuyerProxy {
   private _peerRefreshPromise: Promise<PeerInfo[]> | null = null
   private _lastStaleCacheLogAtMs = 0
   private _startedAtMs = 0
+  /** The first discovery sweep after start is still running (see INITIAL_DISCOVERY_MAX_MS). */
+  private _initialDiscoveryPending = false
+  private _initialDiscoveryWaitMs = INITIAL_DISCOVERY_REQUEST_WAIT_MS
   /** After a network switch the DHT routing table can stay populated with stale
       nodes, so repeated empty sweeps are the reachability signal — not node count. */
   private _consecutiveEmptyDiscoveries = 0
@@ -1394,6 +1470,7 @@ export class BuyerProxy {
   private readonly _balanceCache = new ChainReadCache()
   private readonly _restartHandler: (() => void | Promise<void>) | null
   private readonly _settingOverrides: string[]
+  private readonly _telemetry: BuyerTelemetry | null
   private _restartRequested = false
   /** A restarted buyer is a new process, so its start is the last accepted restart. */
   private readonly _restartAllowedAt: number
@@ -1406,6 +1483,7 @@ export class BuyerProxy {
     this._restartHandler = config.onRestartRequested ?? null
     this._restartAllowedAt = Date.now() + (config.minRestartIntervalMs ?? MIN_RESTART_INTERVAL_MS)
     this._settingOverrides = [...(config.settingOverrides ?? [])]
+    this._telemetry = config.telemetry ?? null
     this._node = config.node
     this._modelRoutingClient = config.modelRoutingClient ?? new ModelRoutingClient()
     this._verifier = config.verifier
@@ -1916,8 +1994,13 @@ export class BuyerProxy {
       : [...candidates].sort((a, b) => Number(adaptive.scores.get(a)!.unhealthy) - Number(adaptive.scores.get(b)!.unhealthy))
     const healthOf = (candidate: (typeof ranked)[number]): AdaptiveRouteScore => adaptive.scores.get(candidate)!
     let chainPosition: Map<string, number> | null = null
-    if (effectivePolicy) {
-      const ordering = orderByPolicy(candidates, effectivePolicy, requestedService, {
+    // Without a gateway policy the buyer's own `preferFreePeers` still puts
+    // free sellers first, as it does under one (where it is part of the
+    // merged policy).
+    const orderingPolicy: RoutingPolicy | null = effectivePolicy
+      ?? (routingPreferences?.preferFreePeers ? { preferFreePeers: true } : null)
+    if (orderingPolicy) {
+      const ordering = orderByPolicy(candidates, orderingPolicy, requestedService, {
         peerId: (candidate) => candidate.peerId,
         totalPrice: (candidate) => modelRouteTotalPrice(candidate),
         trustScore: (candidate) => this._modelTrust(candidate.peer, candidate.serviceId).trust,
@@ -2027,6 +2110,28 @@ export class BuyerProxy {
       else if (first === adaptive.ordered[0] && pool.includes(first)) firstPick = pool.length > 1 ? 'spread' : 'best'
     }
     return { candidates, verdicts: [...verdicts.values()], effectivePolicy, explored: adaptive.explored, selections, firstPick }
+  }
+
+  /**
+   * For telemetry: why a conversation's previous seller is not first in this
+   * turn's order. Null when it is first (or there is none); if it then fails,
+   * the trace says so itself.
+   */
+  private _previousSellerSkipped(
+    previousSeller: string | null,
+    ordered: readonly { peerId: string }[],
+    verdicts: readonly ModelRouteVerdict[],
+  ): SwitchReason | null {
+    if (!previousSeller) return null
+    const verdict = verdicts.find((entry) => entry.peer.peerId.toLowerCase() === previousSeller)
+    if (!verdict) return 'previous_unavailable'
+    if (!verdict.eligible) return 'previous_excluded'
+    if (ordered[0]?.peerId.toLowerCase() === previousSeller) return null
+    if (verdict.selection?.coolingDown) return 'previous_cooling_down'
+    if (verdict.selection?.failing) return 'previous_unhealthy'
+    const first = verdicts.find((entry) => entry.peer.peerId.toLowerCase() === ordered[0]?.peerId.toLowerCase())
+    if (first?.selection?.routeChainPosition != null) return 'policy_route'
+    return 'other'
   }
 
   /**
@@ -2319,6 +2424,7 @@ export class BuyerProxy {
 
   async start(): Promise<void> {
     this._startedAtMs = Date.now()
+    this._initialDiscoveryPending = true
     // Clean up temp files orphaned by state writes whose rename failed in a
     // previous run — each carries a full discovered-peers snapshot, so left
     // alone they accumulate into real disk usage.
@@ -2364,6 +2470,13 @@ export class BuyerProxy {
     // emits each accepted metadata document as it arrives, so buyer.state.json
     // gets useful rows while slower endpoints continue timing out.
     this._startIncrementalDiscoverySweep()
+    const sweep = this._node.peerDiscoverySweep
+    if (sweep) {
+      const done = (): void => { this._initialDiscoveryPending = false }
+      sweep.then(done, done)
+    } else {
+      this._initialDiscoveryPending = false
+    }
     await this._writeStateFile('connected')
     this._watchStateFile()
     this._watchConfigFile()
@@ -2549,6 +2662,8 @@ export class BuyerProxy {
 
   private async _reloadRoutingPreferences(): Promise<void> {
     if (!this._configPath) return
+    // `telemetry.enabled` is read on its own, so a bad routing field cannot keep an opt-out from applying.
+    this._telemetry?.reloadConsent()
     try {
       const config = await loadConfig(this._configPath)
       // Read straight from the file: no CLI flag or env var overrides routing
@@ -3045,6 +3160,48 @@ export class BuyerProxy {
     return this._peerRefreshPromise
   }
 
+  /** The first discovery sweep after start is still running, and started less than INITIAL_DISCOVERY_MAX_MS ago. */
+  private _initialDiscoveryRunning(): boolean {
+    return this._initialDiscoveryPending && Date.now() - this._startedAtMs < INITIAL_DISCOVERY_MAX_MS
+  }
+
+  /**
+   * Waits until `deadline` (by default `_initialDiscoveryWaitMs` from now) while
+   * the first discovery sweep runs, until `found` accepts the peers it has added
+   * to the cache. A request that waits more than once passes the same deadline,
+   * so its waits share one budget. It only
+   * reads the cache the sweep fills (never starts a lookup of its own, which
+   * could outlast the budget) and stops as soon as the client goes away.
+   */
+  private async _waitForInitialDiscovery(
+    found: (peers: PeerInfo[]) => boolean,
+    signal: AbortSignal,
+    deadline = Date.now() + this._initialDiscoveryWaitMs,
+  ): Promise<PeerInfo[]> {
+    while (!found(this._cachedPeers) && this._initialDiscoveryRunning()) {
+      const remainingMs = deadline - Date.now()
+      if (remainingMs <= 0) break
+      if (!await waitForRetry(Math.min(INITIAL_DISCOVERY_POLL_MS, remainingMs), signal)) break
+    }
+    return this._cachedPeers
+  }
+
+  private _discoveryInProgressFailure(requestedService: string | null): DispatchFailure {
+    const seconds = Math.max(1, Math.round((Date.now() - this._startedAtMs) / 1000))
+    const what = requestedService ? `no usable seller of "${requestedService}" found yet` : 'no sellers found yet'
+    return dispatchFailure(503, {
+      'content-type': 'application/json',
+      'retry-after': String(INITIAL_DISCOVERY_RETRY_AFTER_SECONDS),
+    }, JSON.stringify({
+      error: {
+        type: 'api_error',
+        code: DISCOVERY_IN_PROGRESS_CODE,
+        message: `The buyer started ${seconds} s ago and is still discovering sellers (${what}). Retry in a few seconds.`,
+        ...(requestedService ? { param: 'model' } : {}),
+      },
+    }))
+  }
+
   private async _getPeers(options?: { forceRefresh?: boolean }): Promise<PeerInfo[]> {
     const forceRefresh = options?.forceRefresh === true
     const cacheAgeMs = Date.now() - this._cacheLastUpdatedAtMs
@@ -3111,8 +3268,7 @@ export class BuyerProxy {
           if (!this._verifier) throw new Error('Verification is disabled by the buyer CLI')
           const signal = AbortSignal.timeout(31_000)
           const outcome = await this._teeVerification.verifyForDisplay(peer,
-            () => runVerifier({ require: false, prefer: [TEE_VERIFIER_ID] }, peer.peerId, peer.capabilities,
-              (chosen) => makeVerifierReach(this._node, peer, chosen, signal), signal))
+            () => this._runVerifier(peer, { require: false, prefer: [TEE_VERIFIER_ID] }, signal))
           if (outcome.code === 'busy') throw new Error(outcome.reason)
         }, this._isGatewayAuthenticated(req.headers))
       return
@@ -3140,6 +3296,7 @@ export class BuyerProxy {
         peersUpdatedAt: this._cacheLastUpdatedAtMs > 0 ? this._cacheLastUpdatedAtMs : null,
         startedAt: this._startedAtMs,
         uptimeMs: this._startedAtMs > 0 ? Date.now() - this._startedAtMs : 0,
+        discovering: this._initialDiscoveryRunning(),
       }))
       return
     }
@@ -3748,7 +3905,7 @@ export class BuyerProxy {
    * GET /v1/models[?type=text|images] and GET /v1/models/:id — answered
    * locally from the discovered-peer cache, aggregated across the network. The
    * `x-antseed-request-id` response header keeps the port-reuse probe in
-   * `buyer start` recognizing this as an AntSeed proxy.
+   * `buyer start` recognizing this as an Antseed proxy.
    */
   private async _handleNetworkModels(res: ServerResponse, rawPath: string, requestPolicy: RoutingPolicy | null): Promise<void> {
     const url = new URL(rawPath, 'http://localhost')
@@ -4092,6 +4249,13 @@ export class BuyerProxy {
       ? extractConversationIdentity(serializedReq.headers, conversationBody)
       : null
     const routingConversationKey = conversationIdentity ? `${conversationIdentity.tool}:${conversationIdentity.sessionKey}` : null
+    if (isConversationRequest || nativeVideo || isImageOrDecisionRequest(method, serializedReq)) {
+      const trace = this._telemetry?.beginRequest(res, this._cachedPeers.length > 0)
+      if (trace) {
+        trace.clientTool = telemetryClientTool(conversationIdentity?.tool ?? requestClientTool(serializedReq.headers))
+        this._telemetry?.noteRequestBody(trace, method, path, serializedReq.body, conversationBody, `${buyerIdentity ?? ''}\0${routingConversationKey ?? ''}`)
+      }
+    }
     // The seller's upstream may route prompt caching by `session_id`; pass the
     // conversation's key under that name whatever the client called it.
     if (conversationIdentity) {
@@ -4118,6 +4282,17 @@ export class BuyerProxy {
       : storedAutoRoute?.service ?? storedConversation?.pinnedModel ?? null
     const preferredPeerHeader = normalizePeerId(serializedReq.headers['x-antseed-prefer-peer'] ?? '')
     const preferredConversationPeerId = preferredPeerHeader ?? storedAutoRoute?.peerId ?? null
+    const requestTrace = traceFor(res)
+    if (requestTrace) {
+      // The key that groups a conversation's requests (it never leaves the
+      // process), and the seller that answered its last turn before a restart.
+      const cacheKey = conversationIdentity ? null : promptCacheKey(serializedReq)
+      const telemetryKey = conversationIdentity && trackedConversationKey
+        ? { value: `${conversationIdentity.tool}:${trackedConversationKey}`, source: conversationKeySource(conversationIdentity, serializedReq.headers, conversationBody) }
+        : cacheKey ? { value: cacheKey, source: 'prompt_cache_key' as const } : null
+      const storedSeller = storedConversation?.lastModel ? parsePeerPinnedService(storedConversation.lastModel)?.peerId ?? null : null
+      this._telemetry?.noteConversation(requestTrace, telemetryKey, storedSeller ? normalizePeerId(storedSeller) : null)
+    }
     const effectiveRoutedModel = chatPinnedModel ?? this._defaultRoutedModel
     // Where a router pin can come from besides the request's own model: the
     // `antseed` alias resolves to the chat's explicit pin or, when the chat
@@ -4186,6 +4361,8 @@ export class BuyerProxy {
       spendAttributionTag,
     }
 
+    const trace = traceFor(res)
+    if (trace && activeSelection && useModelRouter) trace.routeMode = 'router'
     // Both paths return an inference answer; only the router path buys a recommendation first.
     if (activeSelection && useModelRouter) {
       if (invalidRouting) {
@@ -4226,6 +4403,16 @@ export class BuyerProxy {
       const client = this._modelRoutingClient
       if (!selection.service) throw new Error('Select an exact routing-service target')
       const peers = await this._getPeers()
+      // The router reads the whole conversation, so "TEE sellers only" holds it to a passing TEE check too.
+      let routerBinding: string | undefined
+      if (this._effectivePolicy(requestPolicy)?.requireTee === true) {
+        const routerPeer = peers.find((peer) => peer.peerId.toLowerCase() === selection.service!.peerId.toLowerCase())
+        if (!routerPeer) throw new Error('Selected routing service is not on the network')
+        const buyerIdentity = request.headers[BUYER_IDENTITY_HEADER]
+        const outcome = await this._verifyPeer(routerPeer, signal, { requireTee: true, buyerIdentity })
+        if (!outcome.ok) throw new Error(`Routing service failed its TEE check (${outcome.reason ?? 'failed'})`)
+        routerBinding = outcome.boundTo
+      }
       // The router may only recommend destinations the buyer's own policies allow.
       const candidates = eligibleRouterCandidates(request, peers, requiredParameters, this._routingPreferences,
         (policyRequest, peer) => peerAllowedByPolicy(this._node.router as BuyerPolicyRouter | null, policyRequest, peer)
@@ -4235,6 +4422,7 @@ export class BuyerProxy {
         node: this._node, client, request, peers, candidates,
         conversationKey: routingConversationKey, selection, modelsCache: this._routingModels,
         ...(request.headers[BUYER_IDENTITY_HEADER] ? { buyerIdentity: request.headers[BUYER_IDENTITY_HEADER] } : {}),
+        ...(routerBinding ? { channelBinding: routerBinding } : {}),
         signal: AbortSignal.any([signal, AbortSignal.timeout(120_000)]),
         onRoutingRequest: requestId => {
           if (spendAttributionTag) this._spendAttribution.track(requestId, spendAttributionTag, 'routing')
@@ -4428,7 +4616,7 @@ export class BuyerProxy {
       const titleTurn = isTitleGenerationRequest(conversationBody)
       const snippet = known?.snippet ? null : extractFirstUserSnippet(conversationBody)
       // Some tools (T3/Claude) fire title-only requests when a new chat opens.
-      // Route them normally, but do not create a blank AntSeed conversation row
+      // Route them normally, but do not create a blank Antseed conversation row
       // until the first genuine user turn arrives.
       if (known || !titleTurn) {
         const tracked = this._conversations.touch({
@@ -4507,6 +4695,13 @@ export class BuyerProxy {
     const explicitProvider = getExplicitProviderOverride(serializedReq)
     const explicitPeerId = getExplicitPeerIdOverride(serializedReq, effectivePinnedPeer ?? undefined, bodyPinnedPeer)
     log(`Routing hints: provider=${explicitProvider ?? 'auto'} pin-peer=${explicitPeerId ?? 'none'}`)
+    const trace = traceFor(res)
+    if (trace) {
+      trace.protocol = telemetryProtocol(requestProtocol, nativeVideo !== null)
+      trace.videoAction = nativeVideo?.action ?? null
+      trace.model = requestedService
+      if (trace.routeMode !== 'router') trace.routeMode = explicitPeerId ? 'pinned' : 'auto'
+    }
 
     if (!explicitPeerId && !requestedService) {
       log('Request rejected: no peer pinned and no model requested')
@@ -4545,8 +4740,21 @@ export class BuyerProxy {
     }
 
     // Discover peers
-    const peers = await this._getPeers()
-    if (peers.length === 0) {
+    // While the first discovery sweep runs, an unpinned request routes from the cache the sweep
+    // fills instead of starting a foreground lookup, which could outlast the discovery wait.
+    const awaitingInitialDiscovery = !explicitPeerId && this._initialDiscoveryRunning()
+    // Both discovery waits below share this one budget.
+    const discoveryDeadline = Date.now() + this._initialDiscoveryWaitMs
+    let peers = awaitingInitialDiscovery ? this._cachedPeers : await this._getPeers()
+    // A pinned seller is still looked up on its own DHT topic below, even when discovery found no one.
+    if (peers.length === 0 && !explicitPeerId && this._initialDiscoveryRunning()) {
+      peers = await this._waitForInitialDiscovery((found) => found.length > 0, signal, discoveryDeadline)
+    }
+    if (peers.length === 0 && !explicitPeerId) {
+      if (this._initialDiscoveryRunning()) {
+        log('No sellers found yet; discovery still running')
+        return this._discoveryInProgressFailure(null)
+      }
       log('No sellers available')
       return dispatchFailure(502, { 'content-type': 'text/plain' }, 'No sellers available on the network. Is a seeder running?')
     }
@@ -4573,17 +4781,19 @@ export class BuyerProxy {
       const selectModelPeers = (candidateSources: PeerInfo[]): CandidatePeerRouteSelection =>
         selectCandidatePeersForRouting(candidateSources, requestProtocol, requestedService, explicitProvider, 'strict', requestedVoice)
       let discoveredPeers = peers
-      let { candidatePeers: modelPeers, routePlanByPeerId: modelPlans } = selectModelPeers(discoveredPeers)
+      let selection = selectModelPeers(discoveredPeers)
       const cacheAgeMs = Date.now() - this._cacheLastUpdatedAtMs
-      if (modelPeers.length === 0 || cacheAgeMs > this._peerCacheTtlMs) {
+      if ((selection.candidatePeers.length === 0 || cacheAgeMs > this._peerCacheTtlMs) && !this._initialDiscoveryRunning()) {
         discoveredPeers = await this._getPeers({ forceRefresh: true })
-        ;({ candidatePeers: modelPeers, routePlanByPeerId: modelPlans } = selectModelPeers(discoveredPeers))
+        selection = selectModelPeers(discoveredPeers)
       }
-
       const router = this._node.router
-      const { candidates, verdicts, effectivePolicy, explored, selections, firstPick } = this._planModelRoutes({
-        modelPeers,
-        modelPlans,
+      // Conversations the client identifies (session id, prompt-cache key)
+      // stay on one seller so its prompt cache keeps paying off.
+      const affinityKey = routingConversationKey ?? promptCacheKey(serializedReq)
+      const planRoutes = (selection: CandidatePeerRouteSelection, deterministic = false) => this._planModelRoutes({
+        modelPeers: selection.candidatePeers,
+        modelPlans: selection.routePlanByPeerId,
         request: serializedReq,
         requestProtocol,
         requestedService,
@@ -4591,11 +4801,24 @@ export class BuyerProxy {
         requiredParameters: routeRequiredParameters,
         requestPolicy,
         preferredPeerId: preferredConversationPeerId,
-        // Conversations the client identifies (session id, prompt-cache key)
-        // stay on one seller so its prompt cache keeps paying off.
-        affinityKey: routingConversationKey ?? promptCacheKey(serializedReq),
+        affinityKey,
+        ...(deterministic ? { deterministic } : {}),
       })
+      let plan = planRoutes(selection)
+      if (plan.candidates.length === 0 && this._initialDiscoveryRunning()) {
+        // Just started: the first discovery sweep may not have reached a seller
+        // of this model yet, or the trust data that lets the routing policy take one.
+        discoveredPeers = await this._waitForInitialDiscovery((found) => {
+          const available = selectModelPeers(found)
+          return available.candidatePeers.length > 0 && planRoutes(available, true).candidates.length > 0
+        }, signal, discoveryDeadline)
+        selection = selectModelPeers(discoveredPeers)
+        plan = planRoutes(selection)
+      }
+      const { candidatePeers: modelPeers, routePlanByPeerId: modelPlans } = selection
+      const { candidates, verdicts, effectivePolicy, explored, selections, firstPick } = plan
       const requireVerified = effectivePolicy?.requireVerified === true
+      const requireTee = effectivePolicy?.requireTee === true
       if (candidates.length === 0) {
         // Every seller of the model was left out only for not offering the voice asked for.
         const voiceVerdicts = verdicts.filter((verdict) => verdict.reasons.includes(UNSUPPORTED_VOICE_REASON))
@@ -4664,6 +4887,10 @@ export class BuyerProxy {
             },
           }))
         }
+        if (this._initialDiscoveryRunning()) {
+          log(`Request rejected: no seller of ${requestedService} usable yet; discovery still running`)
+          return this._discoveryInProgressFailure(requestedService)
+        }
         return dispatchFailure(capabilityRequired ? 422 : 502, { 'content-type': 'application/json' }, JSON.stringify({
           error: capabilityRequired
             ? {
@@ -4714,12 +4941,21 @@ export class BuyerProxy {
       const servesUnfunded = (candidate: (typeof candidates)[number]): boolean =>
         modelRouteTotalPrice(candidate) === 0
         || parseServiceFreeTierProgram(candidate.peer.capabilities, candidate.serviceId) !== null
+      if (trace) {
+        trace.freeSellersKnown = candidates.filter((candidate) => modelRouteTotalPrice(candidate) === 0).length
+        trace.previousSkipped = this._previousSellerSkipped(trace.previousSeller, candidates, verdicts)
+      }
       for (const [index, selected] of candidates.entries()) {
-        if (unfunded && !servesUnfunded(selected)) continue
-        if (this._verifier) {
-          const makeReach = (chosenId: string): SellerReach =>
-            makeVerifierReach(this._node, selected.peer, chosenId, signal)
-          const outcome = await this._verifyPeer(selected.peer, makeReach, signal, requireVerified)
+        if (unfunded && !servesUnfunded(selected)) {
+          if (trace && selected.peerId.toLowerCase() === trace.previousSeller) trace.previousSkipped = 'needs_funds'
+          continue
+        }
+        // A passing TEE check on a required route pins the request to the attested connection.
+        let teeBinding: string | null = null
+        if (this._verifier || requireTee) {
+          const buyerIdentity = selected.request.headers[BUYER_IDENTITY_HEADER]
+          const outcome = await this._verifyPeer(selected.peer, signal, { requireVerified, requireTee, buyerIdentity })
+          teeBinding = outcome.boundTo ?? null
           if (!outcome.ok) {
             lastVerificationError = `Peer ${selected.peer.peerId.slice(0, 12)}... failed required verification (${outcome.reason ?? 'failed'}).`
             log(`${lastVerificationError} Trying the next model peer.`)
@@ -4746,6 +4982,11 @@ export class BuyerProxy {
             + `effective=${selected.effectiveReputationScore ?? 'unknown'} peer=${index + 1}/${candidates.length} `
             + `attempt=${peerAttempt + 1}/${MODEL_RATE_LIMIT_MAX_ATTEMPTS_PER_PEER}`,
           )
+          if (trace) {
+            trace.sellerTier = modelRouteTotalPrice(selected) === 0 ? 'free' : 'paid'
+            trace.candidates = candidates.length
+            trace.rank = index + 1
+          }
           const result = await this._dispatchToPeer(
             res,
             selected.request,
@@ -4757,18 +4998,23 @@ export class BuyerProxy {
             router,
             false,
             signal,
-            requestPolicy !== null,
-            routingConversationKey,
-            !comparisonUsed && index + 1 < candidates.length,
-            // With another seller to fall back on, don't wait far longer than
-            // this one usually takes; the last seller gets the full timeout. A
-            // probe of a seller with no recent data waits no longer than the
-            // seller it stands in for would.
-            index + 1 < candidates.length && !nativeVideo
-              ? this._attemptTimeoutMs(selected === explored ? candidates[index + 1]! : selected, selected.request)
-              : null,
+            {
+              gatewayRouted: requestPolicy !== null,
+              routingConversationKey,
+              extraAttempt: !comparisonUsed && index + 1 < candidates.length,
+              // With another seller to fall back on, don't wait far longer than
+              // this one usually takes; the last seller gets the full timeout. A
+              // probe of a seller with no recent data waits no longer than the
+              // seller it stands in for would.
+              attemptTimeoutMs: index + 1 < candidates.length && !nativeVideo
+                ? this._attemptTimeoutMs(selected === explored ? candidates[index + 1]! : selected, selected.request)
+                : null,
+              teeBinding,
+            },
           )
+          trace?.noteAttemptResult(result, res.statusCode, Date.now())
           if (result.done) {
+            if (trace && result.interrupted) trace.interrupted = result.interrupted
             // A stream that broke after its headers proves nothing for the
             // sellers before it, and counts against this one like any other
             // transport failure.
@@ -4811,6 +5057,8 @@ export class BuyerProxy {
               log(`No deposits to pay peer ${selected.peer.peerId.slice(0, 12)}...; trying free sellers and free allowances only.`)
               break
             }
+            // No seller served the request: count what only the sellers before it could have caused.
+            countFailures(null)
             return result
           }
           const retrySamePeer = result.statusCode === 429
@@ -4891,6 +5139,17 @@ export class BuyerProxy {
       await refreshPeerSelection('pinned-peer routing preflight')
       pinnedDiscovered = isPinnedDiscovered()
     }
+    if (!pinnedDiscovered && typeof this._node.findPeer === 'function') {
+      // The network refresh only walks a few DHT shards; ask the pinned peer's
+      // own topic, which also picks up a seller that moved to a new address.
+      const found = await this._node.findPeer(pinnedPeerId).catch(() => null)
+      if (found) {
+        this._replacePeers([found, ...this._cachedPeers.filter((peer) => peer.peerId !== found.peerId)])
+        discoveredPeers = [found, ...discoveredPeers.filter((peer) => peer.peerId !== found.peerId)]
+        ;({ candidatePeers: routingPeers, routePlanByPeerId: routingPlans } = selectPeers(discoveredPeers))
+        pinnedDiscovered = true
+      }
+    }
 
     if (!pinnedDiscovered) {
       const logSource = serializedReq.headers['x-antseed-pin-peer']
@@ -4911,27 +5170,10 @@ export class BuyerProxy {
     }
 
     if (routingPeers.length === 0) {
-      const pinnedPeer = discoveredPeers.find((peer) => peer.peerId.toLowerCase() === pinnedPeerId) ?? null
       const protocolLabel = requestProtocol ? `protocol=${requestProtocol}` : 'protocol=unknown'
       const providerLabel = explicitProvider ? `provider=${explicitProvider}` : 'provider=auto'
       const serviceLabel = requestedService ? `service=${requestedService}` : 'service=none'
       const diagnostics = this._formatPeerSelectionDiagnostics(discoveredPeers)
-
-      if (explicitProvider && pinnedPeer) {
-        const providers = pinnedPeer.providers
-          .map((provider) => provider.trim().toLowerCase())
-          .filter((provider) => provider.length > 0)
-        if (!providers.includes(explicitProvider)) {
-          const providerList = providers.length > 0 ? providers.join(', ') : 'none'
-          log(`Pinned peer ${pinnedPeerId.slice(0, 12)}... does not offer explicit provider=${explicitProvider}`)
-          return dispatchFailure(502, { 'content-type': 'text/plain' },
-            `Pinned peer ${pinnedPeerId.slice(0, 12)}... does not offer provider=${explicitProvider}. `
-            + `Available providers: ${providerList}. `
-            + 'Remove or change the x-antseed-provider header, or pick a different peer. '
-            + diagnostics,
-          )
-        }
-      }
 
       log(`Pinned peer ${pinnedPeerId.slice(0, 12)}... filtered out by protocol/service match`)
       return dispatchFailure(502, { 'content-type': 'text/plain' },
@@ -5004,10 +5246,15 @@ export class BuyerProxy {
       )
     }
 
-    if (this._verifier) {
-      const makeReach = (chosenId: string): SellerReach =>
-        makeVerifierReach(this._node, selectedPeer, chosenId, signal)
-      const outcome = await this._verifyPeer(selectedPeer, makeReach, signal, pinnedPolicy?.requireVerified === true)
+    let teeBinding: string | null = null
+    if (this._verifier || pinnedPolicy?.requireTee === true) {
+      const buyerIdentity = pinnedRequest.headers[BUYER_IDENTITY_HEADER]
+      const outcome = await this._verifyPeer(selectedPeer, signal, {
+        requireVerified: pinnedPolicy?.requireVerified === true,
+        requireTee: pinnedPolicy?.requireTee === true,
+        buyerIdentity,
+      })
+      teeBinding = outcome.boundTo ?? null
       const short = selectedPeer.peerId.slice(0, 12)
       if (outcome.verified) {
         log(`Verified ${short}... via ${outcome.sdk}`)
@@ -5023,6 +5270,19 @@ export class BuyerProxy {
     }
 
     log(`Using pinned peer ${selectedPeer.peerId.slice(0, 12)}...`)
+    if (trace) {
+      trace.candidates = 1
+      trace.rank = 1
+      // Free or paid from the price the pinned seller advertises for this service, as for an automatic pick.
+      const pinnedOffer = selectedPlan && pinnedServiceId
+        ? findAdvertisedServiceOffer(selectedPeer, selectedPlan.provider, pinnedServiceId)
+        : null
+      const pinnedPrice = pinnedOffer ? modelRouteTotalPrice(pinnedOffer) : null
+      trace.sellerTier = pinnedPrice === null ? 'unknown' : pinnedPrice === 0 ? 'free' : 'paid'
+      if (trace.previousSeller && trace.previousSeller !== selectedPeer.peerId.toLowerCase()) {
+        trace.previousSkipped = trace.routeMode === 'router' ? 'router_choice' : 'pinned_elsewhere'
+      }
+    }
     const result = await this._dispatchToPeer(
       res,
       pinnedRequest,
@@ -5034,9 +5294,10 @@ export class BuyerProxy {
       router,
       true,
       signal,
-      false,
-      routingConversationKey,
+      { routingConversationKey, teeBinding },
     )
+    trace?.noteAttemptResult(result, res.statusCode, Date.now())
+    if (trace && result.done && result.interrupted) trace.interrupted = result.interrupted
     if (result.done && trackedConversationId && pinnedServiceId) {
       this._conversations.recordRoutedModel(
         trackedConversationId,
@@ -5055,23 +5316,48 @@ export class BuyerProxy {
 
   private async _verifyPeer(
     peer: PeerInfo,
-    makeReach: (chosenId: string) => SellerReach,
     signal: AbortSignal,
-    requireVerified = false,
-  ): Promise<VerifyOutcome> {
+    {
+      requireVerified = false,
+      requireTee = false,
+      buyerIdentity,
+    }: {
+      requireVerified?: boolean
+      requireTee?: boolean
+      buyerIdentity?: string | undefined
+    } = {},
+  ): Promise<VerifyOutcome & { boundTo?: string }> {
     const configured = this._verifier
-    if (!configured) return { ok: true, verified: false }
-    // A routing policy's `requireVerified` makes the buyer's verifier mandatory for this request.
-    const policy = requireVerified && !configured.require ? { ...configured, require: true } : configured
+    if (!configured) {
+      return requireTee
+        ? { ok: false, verified: false, reason: 'TEE attestation needs verification, which is disabled on this buyer' }
+        : { ok: true, verified: false }
+    }
+    const policy = attestationPolicy(configured, { requireVerified, requireTee })
     const fingerprint = verifierSupportFingerprint(peer.capabilities)
-    const outcome = await this._teeVerification.verify(peer, policy,
-      () => runVerifier(policy, peer.peerId, peer.capabilities, makeReach, signal))
+    const check = (force: boolean): Promise<VerifyOutcome> => this._teeVerification.verify(peer, policy,
+      () => this._runVerifier(peer, policy, signal, buyerIdentity), force, buyerIdentity)
+    let outcome = await check(false)
+    // A cached TEE verdict covers only the connection it was bound to; after a reconnect, check again.
+    const live = (): string | null => this._node.getChannelBinding(peer.peerId, buyerIdentity)
+    if (policy.require && outcome.sellerNodeVerified && outcome.channelBinding !== live()) outcome = await check(true)
     const current = this._cachedPeers.find((candidate) => candidate.peerId === peer.peerId)
     if (current && verifierSupportFingerprint(current.capabilities) !== fingerprint) {
       return { ok: !policy.require, verified: false, transient: true, reason: 'Seller capabilities changed; retry verification' }
     }
     if (signal.aborted) return { ok: false, verified: false, transient: true, reason: 'Request aborted' }
+    if (requireTee && !outcome.sellerNodeVerified) {
+      return { ...outcome, ok: false, reason: outcome.reason ?? 'TEE attestation did not pass' }
+    }
+    // Required verification that rests on a TEE attestation sends only on the attested connection.
+    if (policy.require && outcome.sellerNodeVerified && outcome.channelBinding) return { ...outcome, boundTo: outcome.channelBinding }
     return outcome
+  }
+
+  /** Run the verifier against a seller over the same buyer identity's connection the request will use. */
+  private _runVerifier(peer: PeerInfo, policy: VerifierPolicy, signal: AbortSignal, buyerIdentity?: string): ReturnType<typeof runVerifier> {
+    return runVerifier(policy, peer.peerId, peer.capabilities,
+      (chosenId: string): SellerReach => makeVerifierReach(this._node, peer, chosenId, signal, buyerIdentity), signal)
   }
 
   private _parseMaxUploadBodyBytes(headers: Record<string, string>): number | null {
@@ -5168,12 +5454,23 @@ export class BuyerProxy {
     router: Router | null,
     pinned: boolean,
     requestSignal: AbortSignal,
-    gatewayRouted = false,
-    routingConversationKey: string | null = null,
-    extraAttempt = false,
-    /** Give up on this seller if it has not started answering by then, so the next one can be tried. */
-    attemptTimeoutMs: number | null = null,
+    {
+      gatewayRouted = false,
+      routingConversationKey = null,
+      extraAttempt = false,
+      attemptTimeoutMs = null,
+      teeBinding = null,
+    }: {
+      gatewayRouted?: boolean
+      routingConversationKey?: string | null
+      extraAttempt?: boolean
+      /** Give up on this seller if it has not started answering by then, so the next one can be tried. */
+      attemptTimeoutMs?: number | null
+      /** Send only on the connection with this session hash (a required TEE attestation's). */
+      teeBinding?: string | null
+    } = {},
   ): Promise<PeerDispatchResult> {
+    traceFor(res)?.noteAttempt(selectedPeer.peerId, Date.now())
     const gatewayAutoRoute = gatewayRouted && !pinned
     const selectedRoutePlan = routePlanByPeerId.get(selectedPeer.peerId)
       ?? resolvePeerRoutePlan(selectedPeer, requestProtocol, requestedService, explicitProvider, 'lenient')
@@ -5296,9 +5593,19 @@ export class BuyerProxy {
           res.end(JSON.stringify({ error: { code: 'video_route_not_found', message: 'Unknown video job' } }))
           return
         }
-        await downloadVideo(requestForPeer, res, (request, callbacks, signal) => this._node.sendRequestStream(selectedPeer, request, callbacks, {
-          signal, pinned: true, ...(buyerIdentity ? { buyerIdentity } : {}),
-        }), requestSignal, () => this._retireVideoJob(protocol, resourceId))
+        await downloadVideo(requestForPeer, res, (request, callbacks, signal) => this._node.sendRequestStream(selectedPeer, request, {
+          ...callbacks,
+          onResponseChunk: (chunk) => {
+            if (chunk.data.length) traceFor(res)?.noteFirstByte(Date.now())
+            return callbacks.onResponseChunk?.(chunk)
+          },
+        }, {
+          signal, pinned: true, ...(buyerIdentity ? { buyerIdentity } : {}), ...(teeBinding ? { channelBinding: teeBinding } : {}),
+        }), requestSignal, () => this._retireVideoJob(protocol, resourceId), (by) => {
+          // On the trace, not in the result: telemetry only. The result feeds routing, which a video does not change.
+          const trace = traceFor(res)
+          if (trace) trace.interrupted = by
+        })
       })
       return { done: true }
     }
@@ -5332,6 +5639,7 @@ export class BuyerProxy {
             if (attemptTimer) clearTimeout(attemptTimer)
             streamed = true
             firstFrameAt = Date.now()
+            traceFor(res)?.noteFirstByte(firstFrameAt)
             streamStartBody = startResponse.body
             const adaptedStartResponse = streamResponseAdapter
               ? streamResponseAdapter.adaptStart(startResponse)
@@ -5370,6 +5678,7 @@ export class BuyerProxy {
           pinned,
           captureResponseAuthPreimages: captureResponseAuthPreimages === '1',
           ...(buyerIdentity ? { buyerIdentity } : {}),
+          ...(teeBinding ? { channelBinding: teeBinding } : {}),
         })
 
         recordRouterUsage(this._modelRoutingClient, routingConversationKey, requestForPeer, response, selectedPeer, requestSignal)
@@ -5392,6 +5701,12 @@ export class BuyerProxy {
         }
 
         const finishedAt = Date.now()
+        if (!streamed) {
+          traceFor(res)?.noteAnswered(finishedAt, response.statusCode, freeTierRefusal !== null, {
+            body: responseForClient.body,
+            buyerFault: responseFaultAttribution(responseForClient) === 'buyer',
+          })
+        }
         const latencyMs = finishedAt - startTime
         log(`Response: ${responseForClient.statusCode} (${latencyMs}ms, ${responseForClient.body.length} bytes)`)
         if (responseForClient.statusCode >= 400) {
@@ -5405,6 +5720,22 @@ export class BuyerProxy {
           responseForClient.body,
           selectedPeer,
         )
+        const usageTrace = responseForClient.statusCode < 400 ? traceFor(res) : undefined
+        if (usageTrace) {
+          // A stream's first frame (Anthropic's message_start) can carry the
+          // input and cache counts, so the trace reads the whole stream.
+          const fullBody = streamed && streamStartBody.length > 0
+            ? Buffer.concat([streamStartBody, responseForClient.body])
+            : responseForClient.body
+          const fullTelemetry = fullBody === responseForClient.body
+            ? telemetry
+            : computeResponseTelemetry(requestForPeer, responseForClient.headers, fullBody, selectedPeer)
+          usageTrace.noteUsage(fullTelemetry.usage)
+          usageTrace.noteAnswerDetails({
+            finishReason: finishReasonFromBody(responseForClient.headers['content-type'], fullBody),
+            estimatedCostUsd: fullTelemetry.estimatedCostUsd,
+          })
+        }
         let streamTiming: { firstTokenMs: number; streamMs: number; outputTokens: number; streamed: true } | null = null
         if (streamed && responseForClient.statusCode < 400) {
           streamTiming = { firstTokenMs: firstFrameAt - startTime, streamMs: finishedAt - firstFrameAt, outputTokens: telemetry.usage.outputTokens, streamed: true }
@@ -5469,7 +5800,13 @@ export class BuyerProxy {
         const answeredEmpty = !pinned && responseForClient.statusCode < 300
           && isEmptyAnswer(responseForClient.headers['content-type'], responseForClient.body)
         const emptyAnswer = extraAttempt && answeredEmpty
-        if (emptyAnswer || shouldTryNextPeer(responseForClient.statusCode, modelNotFound, pinned, gatewayAutoRoute, extraAttempt && responseFault !== 'buyer')) {
+        if (emptyAnswer || shouldTryNextPeer(responseForClient.statusCode, {
+          modelNotFound,
+          pinned,
+          gatewayAutoRoute,
+          extraAttempt: extraAttempt && responseFault !== 'buyer',
+          buyerFault: responseFault === 'buyer',
+        })) {
           return {
             done: false,
             statusCode: responseForClient.statusCode,
@@ -5495,6 +5832,7 @@ export class BuyerProxy {
           captureResponseAuthPreimages: captureResponseAuthPreimages === '1',
           ...(buyerIdentity ? { buyerIdentity } : {}),
           ...(maxVideoCostUsdc !== null ? { maxVideoCostUsdc } : {}),
+          ...(teeBinding ? { channelBinding: teeBinding } : {}),
         })
         if (upstreamResponse.statusCode >= 400 && !adaptResponse) {
           log(`Upstream raw error detail: ${summarizeErrorResponse(upstreamResponse)}`)
@@ -5530,6 +5868,10 @@ export class BuyerProxy {
         }
         const latencyMs = Date.now() - startTime
         this._markModelActivity()
+        traceFor(res)?.noteAnswered(Date.now(), response.statusCode, freeTierRefusal !== null, {
+          body: response.body,
+          buyerFault: responseFaultAttribution(response) === 'buyer',
+        })
 
         log(`Response: ${response.statusCode} (${latencyMs}ms, ${response.body.length} bytes)`)
         if (response.statusCode >= 400) {
@@ -5538,6 +5880,14 @@ export class BuyerProxy {
         }
 
         const telemetry = computeResponseTelemetry(requestForPeer, response.headers, response.body, selectedPeer)
+        const answerTrace = response.statusCode < 400 ? traceFor(res) : undefined
+        if (answerTrace) {
+          answerTrace.noteUsage(telemetry.usage)
+          answerTrace.noteAnswerDetails({
+            finishReason: finishReasonFromBody(response.headers['content-type'], response.body),
+            estimatedCostUsd: telemetry.estimatedCostUsd,
+          })
+        }
         const responseHeaders = attachAntseedTelemetryHeaders(
           response.headers,
           selectedPeer,
@@ -5572,7 +5922,13 @@ export class BuyerProxy {
         const answeredEmpty = !pinned && response.statusCode < 300 && !videoRoute
           && isEmptyAnswer(response.headers['content-type'], response.body)
         const emptyAnswer = extraAttempt && answeredEmpty
-        if (emptyAnswer || shouldTryNextPeer(response.statusCode, modelNotFound, pinned, gatewayAutoRoute, extraAttempt && responseFault !== 'buyer')) {
+        if (emptyAnswer || shouldTryNextPeer(response.statusCode, {
+          modelNotFound,
+          pinned,
+          gatewayAutoRoute,
+          extraAttempt: extraAttempt && responseFault !== 'buyer',
+          buyerFault: responseFault === 'buyer',
+        })) {
           return { done: false, statusCode: response.statusCode, responseBody: Buffer.from(response.body), responseHeaders, errorMessage: null, modelNotFound, emptyAnswer }
         }
 

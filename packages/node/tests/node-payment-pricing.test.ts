@@ -304,7 +304,7 @@ function makeSellerRequestHandler(
   deps: Omit<ConstructorParameters<typeof SellerRequestHandler>[0], 'identity'>,
 ): SellerRequestHandler {
   return new SellerRequestHandler({
-    identity: { peerId: 's'.repeat(40) } as any,
+    identity: { peerId: 's'.repeat(40), privateKey: new Uint8Array(32).fill(7) } as any,
     ...deps,
   });
 }
@@ -728,7 +728,7 @@ describe('native video job ownership', () => {
   });
 });
 
-function makeAttestHarness() {
+function makeAttestHarness(channelBinding: string | null = null) {
   const provider = makeProvider(1, 1, { name: 'openai', services: ['gpt-5.5'] });
   provider.handleRequest = vi.fn(provider.handleRequest);
   const prove = vi.fn(async (req: SellerRequest) => ({
@@ -756,7 +756,7 @@ function makeAttestHarness() {
   });
   const sentFrames: Uint8Array[] = [];
   const { mux } = handler.handleConnection(
-    makeConn(sentFrames),
+    { ...makeConn(sentFrames), channelBinding },
     'b'.repeat(40),
     { sendNeedAuth: vi.fn(), sendPaymentRequired } as any,
   );
@@ -875,6 +875,22 @@ describe('SellerRequestHandler payment pricing selection', () => {
     expect(Object.keys(headers).map((key) => key.toLowerCase())).not.toContain('x-antseed-free-tier-delegations');
   });
 
+  it('hands the prover the session hash of the connection the request arrived on, never a buyer-sent one', async () => {
+    const binding = 'c'.repeat(64);
+    const { prove, sendAttest } = makeAttestHarness(binding);
+    await sendAttest(0, new Uint8Array([1]), { 'X-Antseed-Channel-Binding': 'd'.repeat(64) });
+    const headers: Record<string, string> = prove.mock.calls[0]![0].headers;
+    const sent = Object.entries(headers).filter(([key]) => key.toLowerCase() === 'x-antseed-channel-binding');
+    expect(sent).toEqual([['x-antseed-channel-binding', binding]]);
+  });
+
+  it('drops a buyer-sent session hash on a connection without one', async () => {
+    const { prove, sendAttest } = makeAttestHarness();
+    await sendAttest(0, new Uint8Array([1]), { 'x-antseed-channel-binding': 'd'.repeat(64) });
+    const headers: Record<string, string> = prove.mock.calls[0]![0].headers;
+    expect(Object.keys(headers).map((key) => key.toLowerCase())).not.toContain('x-antseed-channel-binding');
+  });
+
   it('rate-limits the free attestation route per buyer', async () => {
     const { prove, sendAttest, responses } = makeAttestHarness();
 
@@ -969,6 +985,30 @@ describe('SellerRequestHandler payment pricing selection', () => {
     request.headers['x-antseed-provider'] = 'missing';
     request.body = Buffer.from('{"model":"video-model"}');
     expect(handler.matchProvider(request)).toBe(recorded);
+  });
+
+  it('routes by the provider ID it announces, keeps the provider name working, and reports load under the ID', () => {
+    const venice = makeProvider(0, 0, { name: 'venice', services: ['m'] });
+    const other = makeProvider(0, 0, { name: 'other', services: ['m'] });
+    const updateLoad = vi.fn();
+    const handler = makeSellerRequestHandler({ providers: [venice, other], sellerPaymentManager: null, sessionTracker: null, channelsClient: null, announcer: { updateLoad } as any, announceProviderIds: true, emit: () => false });
+    const otherId = handler.announcedProviderId('other');
+    expect(otherId).toMatch(/^[0-9a-f]{12}$/);
+    expect(otherId).not.toBe(handler.announcedProviderId('venice'));
+    const request: SerializedHttpRequest = { requestId: 'r', method: 'POST', path: '/v1/chat/completions', headers: { 'content-type': 'application/json', 'x-antseed-provider': otherId }, body: Buffer.from('{"model":"m"}') };
+    expect(handler.matchProvider(request)).toBe(other);
+    request.headers['x-antseed-provider'] = 'OTHER';
+    expect(handler.matchProvider(request)).toBe(other);
+    handler.adjustProviderLoad('other', 1);
+    expect(updateLoad).toHaveBeenCalledWith(otherId, 1);
+  });
+
+  it('announces and reports load under the provider name unless provider IDs are on', () => {
+    const updateLoad = vi.fn();
+    const handler = makeSellerRequestHandler({ providers: [makeProvider(0, 0, { name: 'venice', services: ['m'] })], sellerPaymentManager: null, sessionTracker: null, channelsClient: null, announcer: { updateLoad } as any, emit: () => false });
+    expect(handler.announcedProviderName('venice')).toBe('venice');
+    handler.adjustProviderLoad('venice', 1);
+    expect(updateLoad).toHaveBeenCalledWith('venice', 1);
   });
 
   it('does not touch payment state for free responses even when a paid session exists', async () => {
