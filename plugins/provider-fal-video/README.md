@@ -44,7 +44,7 @@ The body is passed to fal unchanged apart from the reference names below, so fie
 
 Reference-to-video endpoints such as Seedance 2.5 name their reference media `image_urls`, `audio_urls` and `video_urls`. The seller also announces the common names other sellers use (`reference_image_urls`, `reference_audio_urls`, `reference_video_urls`) for each one the schema has, and renames them to fal's before the request goes to fal, so one request works on Venice and fal sellers alike. A create that sends both names for the same media is answered `400 invalid_video_request`.
 
-fal bills reference videos by their length on top of the output (Seedance 2.5: tokens = width × height × (input + output seconds) × 24 / 1024, × 0.6 when videos are sent). A create that sends `video_urls` or `reference_video_urls` is priced with `reference_video: "true"` (metadata v17); without a component that matches it, the create is answered `400 unsupported_video_input` before payment. See **Reference videos** in the media selling docs for the pricing pattern.
+fal bills reference videos by their length on top of the output (Seedance 2.5: tokens = width × height × (input + output seconds) × 24 / 1024, × 0.6 when videos are sent; up to 30.2 s of reference video in total). A create that sends `video_urls` or `reference_video_urls` is priced with `reference_video: "true"` (metadata v17); without a component that matches it, the create is answered `400 unsupported_video_input` before payment. See **Reference videos** in the media selling docs for the pricing pattern.
 
 ### Video edits
 

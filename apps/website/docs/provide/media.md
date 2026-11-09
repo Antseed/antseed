@@ -221,16 +221,16 @@ A create that leaves out `aspect_ratio` is priced at the first entry of `capabil
 
 ### Reference videos
 
-Reference-to-video models (Seedance 2.5 R2V on Venice and fal) take reference images, audio and videos. Upstreams don't charge for reference images or audio, but they do bill reference videos by their length, on top of the output: on Venice a 10 s 720p Seedance clip quotes $2.89 alone and $4.32 with 15 s of reference video, and fal bills the input video's seconds with the output's. A create that sends reference videos (`reference_video_urls`, or fal's `video_urls`) is priced with `reference_video: "true"`. Price that as a flat charge per video for the most reference video the upstream takes (15 s in total for Seedance), next to a $0 charge that prices creates without one, because every create counts one video generation and must match a component:
+Reference-to-video models (Seedance 2.5 R2V on Venice and fal) take reference images, audio and videos. Upstreams don't charge for reference images or audio, but they do bill reference videos by their length, on top of the output: on Venice a 10 s 720p Seedance clip quotes $2.89 alone and $4.32 with 15 s of reference video, and fal bills the input video's seconds with the output's. A create that sends reference videos (`reference_video_urls`, or fal's `video_urls`) is priced with `reference_video: "true"`. Price that as a flat charge per video for the most reference video the upstream takes (30 s in total for Seedance 2.5 on both Venice and fal; Venice's 10 s 720p clip quotes $6.91 with 30 s), next to a $0 charge that prices creates without one, because every create counts one video generation and must match a component:
 
 ```json
 {"venice-video":{"version":1,"components":[
   {"unit":"video_seconds","priceUsd":0.159,"match":{"resolution":"720p"}},
   {"unit":"video_generations","priceUsd":0},
-  {"unit":"video_generations","priceUsd":0.79,"match":{"resolution":"720p","reference_video":"true"}}]}}
+  {"unit":"video_generations","priceUsd":2.21,"match":{"resolution":"720p","reference_video":"true"}}]}}
 ```
 
-The `venice-video` and `fal-video` plugins refuse a create that sends reference videos when the service has no `reference_video: "true"` component (`400 unsupported_video_input`, before payment), so they are never served below cost. Services that price `reference_video` need metadata v17; buyers on older releases don't see them.
+The `venice-video` and `fal-video` plugins refuse a create that sends reference videos when the service has no `reference_video: "true"` component (`400 unsupported_video_input`, before payment), so they are never served below cost. Services that price `reference_video` need metadata v17; buyers on older releases don't see them. A buyer refuses a video above its `payments.maxVideoRequestUsdc` ($5 by default), so a reference-video charge priced for 30 s may need buyers to raise it.
 
 ### fal.ai models
 
