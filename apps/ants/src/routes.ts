@@ -18,13 +18,12 @@ import {
   overview, positions, stake, move, split, merge, extend, maxLock, previewWithdraw, withdraw,
   rewards, claim, restake, stakeUsageRewards, compound, poolsView, singlePool, usage, emissions,
   verification, proofStatus, submitProof, seller, registerBinding, claimStarter,
-  referral, referredBuyers, refereeBonus, createInvite, claimReferralRewards, claimRefereeRewards, builders, claimBuilderRewards, registerClientAgent,
+  referral, referredBuyers, refereeBonus, createInvite, claimReferralRewards, claimRefereeRewards, builders, claimBuilderRewards, normalizeBuilderAgentIds, registerClientAgent,
 } from './service/index.js';
 import type {
   StakeRequest, MoveRequest, SplitRequest, MergeRequest, ExtendRequest, MaxLockRequest, WithdrawRequest,
   ClaimRequest, RestakeRequest, StakeUsageRequest, SubmitProofRequest, CompoundRequest, BuilderClaimRequest,
 } from './api-types.js';
-import { MAX_BUILDER_AGENTS } from './api-types.js';
 import { BROWSER_WALLET_INVITE_MESSAGE } from './invite-allowance.js';
 
 export interface RouteContext {
@@ -130,8 +129,7 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext): voi
   app.get('/api/referrals/buyers', (_request, reply) => respond(reply, () => cached('referrals:buyers', () => referredBuyers(ctx))));
   app.get<{ Querystring: { agentIds?: string } }>('/api/builders', (request, reply) => {
     // Cap in requested order before sorting for the cache key, so a later id never displaces an earlier one.
-    const agentIds = [...new Set((request.query.agentIds ?? '').split(',').map(Number).filter((id) => Number.isSafeInteger(id) && id > 0))]
-      .slice(0, MAX_BUILDER_AGENTS).sort((a, b) => a - b);
+    const agentIds = normalizeBuilderAgentIds((request.query.agentIds ?? '').split(',').map(Number)).sort((a, b) => a - b);
     return respond(reply, () => cached(`builders:${agentIds.join(',')}`, () => builders(ctx, agentIds)));
   });
   app.post<{ Body: { positionIds: number[] } }>('/api/positions/withdraw/preview', (request, reply) => respond(reply, () => previewWithdraw(ctx, request.body?.positionIds ?? [])));

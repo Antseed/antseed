@@ -41,10 +41,15 @@ async function agentOwners(ctx: AntsContext, agentIds: number[]): Promise<Array<
  * does not index) is read over RPC. Hidden without an explorer that indexes
  * the builders program.
  */
+/** Valid agent ids, first occurrence kept, capped at `MAX_BUILDER_AGENTS` in requested order. */
+export function normalizeBuilderAgentIds(ids: number[]): number[] {
+  return [...new Set(ids.filter((id) => Number.isSafeInteger(id) && id > 0))].slice(0, MAX_BUILDER_AGENTS);
+}
+
 export async function builders(ctx: AntsContext, agentIds: number[]): Promise<BuildersView> {
   const indexer = ctx.indexer();
   if (!ctx.chain.clientRewardsAddress || !indexer?.builders) return { available: false, agents: [] };
-  const requested = [...new Set(agentIds.filter((id) => Number.isSafeInteger(id) && id > 0))].slice(0, MAX_BUILDER_AGENTS);
+  const requested = normalizeBuilderAgentIds(agentIds);
   const firstParty = new Map<number, 'cli' | 'desktop'>();
   for (const kind of ['cli', 'desktop'] as const) {
     const id = ctx.chain.clientAgentIds?.[kind];
