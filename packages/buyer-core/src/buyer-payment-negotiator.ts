@@ -1872,14 +1872,20 @@ export class BuyerPaymentNegotiator {
       }
       this._resentForTarget.set(peer.peerId, { target: targetCumulative, at: Date.now() });
       await this._bpm.resendCurrentSpendingAuth(peer.peerId, pmux);
-    } else if (!requireFreshAck && minBudgetPerRequest != null && minBudgetPerRequest > 0n) {
+    } else if (
+      !requireFreshAck && targetCumulative != null && targetCumulative > 0n
+      && minBudgetPerRequest != null && minBudgetPerRequest > 0n
+    ) {
+      // Catch up only to spend the seller says it delivered. Without one (a
+      // target of 0) the current authorization is resent below unchanged:
+      // signing past it would pay for work the seller does not claim.
       this._resentForTarget.delete(peer.peerId);
       const cumulativeBefore = signedCumulative;
       const extend = (): Promise<string> => this._bpm.extendCurrentSpendingAuth(
         peer.peerId,
         minBudgetPerRequest,
         pmux,
-        targetCumulative != null && targetCumulative > 0n ? targetCumulative : undefined,
+        targetCumulative,
         requestId,
         inFlightRequests,
       );
