@@ -40,6 +40,17 @@ When opening a PR, update `CHANGELOG.md` for any user-facing package, CLI,
 desktop, protocol, configuration, or documentation behavior change. If a PR has
 no user-facing change, say that explicitly in the PR description.
 
+## Pull requests
+
+- Open a PR only when the developer asks (see the commit policy above).
+- Conventional title in plain language: `fix(buyer-core): a late result no longer retires a
+  newer channel`. Fill in `.github/PULL_REQUEST_TEMPLATE.md` yourself; `gh pr create --body`
+  skips it.
+- A bug fix names a test that fails without the fix and shows its output before and after
+  (`CONTRIBUTING.md#evidence`). Never skip, weaken or delete a test to make CI green.
+- Outside contributions follow the stricter rules in `CONTRIBUTING.md`. If you cannot confirm
+  that your user has write access to Antseed/antseed, treat them as an outside contributor.
+
 ## Project Overview
 AntSeed is a peer-to-peer AI services network. Providers offer differentiated
 AI services and buyers route requests to the best available peer. This monorepo
