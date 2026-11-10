@@ -22,7 +22,7 @@ no provider-specific hosts or schemas, and it is self-contained (no peer depende
 
 | Capability | Proves | Verdict |
 |---|---|---|
-| `seller-node-tee-genuine` | the seller **node** runs an approved seller build in a genuine Intel TDX enclave (DCAP: PCK chain to Intel's root, acceptable TCB, TD10, debug off; MRTD + RTMR0-2 are an approved dstack OS, and the app compose, authenticated by the compose hash replayed from the event log, runs an approved Antseed TEE seller image under the rules in `src/dstack-app-compose.ts`). The quote binds to this nonce + peerId + the buyer's encrypted connection. A passing node also reports `seller-node-upstreams`: the https origins its config sends prompts to. | **required** |
+| `seller-node-tee-genuine` | the seller **node** runs an approved seller build in a genuine Intel TDX enclave (DCAP: PCK chain to Intel's root, acceptable TCB, TD10, debug off; MRTD + RTMR0-2 are an approved dstack OS, or a local lite check of the seller's `vmConfig` and `rawEventLog` returns an approved OS image hash; and the app compose, authenticated by the compose hash replayed from the event log, runs an approved Antseed TEE seller image under the rules in `src/dstack-app-compose.ts`). The quote binds to this nonce + peerId + the buyer's encrypted connection. A passing node also reports `seller-node-upstreams`: the https origins its config sends prompts to. | **required** |
 | `seller-bound` | the seller's identity key signs the whole evidence bundle for this fresh nonce (the signer recovers to peerId) | **required** |
 | `seller-provider-tee-genuine` | the downstream inference **provider's** TEE is genuine TDX. It is also round-bound when the seller declares a `report_data` scheme. With a passing seller node, it also requires that provider to be where the node sends prompts: the measured config names one upstream origin, and the node's prover (0.1.6 or later) reports fetching the quote from it, without following redirects | informational |
 | `seller-provider-gpu-cc` | the provider's GPUs run NVIDIA Confidential Computing (NVIDIA NRAS verifies it, nonce-bound) | informational |
@@ -57,7 +57,7 @@ The **buyer** needs no special hardware. Optional policy knobs:
 |---|---|
 | `ANTSEED_VERIFIER_REQUIRED_CAPS` | comma-separated capabilities that gate the overall `ok` (default `seller-node-tee-genuine,seller-bound`). For example, a provenance buyer sets `seller-provider-tee-genuine,seller-bound` to require the downstream provider's TEE |
 | `ANTSEED_VERIFIER_CS_JWKS_URL` | buyer: override Google's Confidential Space token signing keys URL |
-| `ANTSEED_VERIFIER_NODE_BUILDS` | buyer: extra approved dstack OS releases and seller images, JSON `{ "os": [{ name, mrtd, rtmr0, rtmr1, rtmr2 }], "images": [{ version, digest }] }` (inline or `@/path/to/file.json`), added to the built-in lists |
+| `ANTSEED_VERIFIER_NODE_BUILDS` | buyer: extra approved dstack OS releases, OS image hashes and seller images, JSON `{ "os": [{ name, mrtd, rtmr0, rtmr1, rtmr2 }], "osImages": [{ name, hash }], "images": [{ version, digest }] }` (inline or `@/path/to/file.json`), added to the built-in lists. `osImages` hashes are 64 lowercase hex |
 | `ANTSEED_VERIFIER_MEASURED_IMAGE_POLICY` | approved-measurement allow-list (inline JSON or `@/path.json`) for `measured-image` |
 | `ANTSEED_VERIFIER_STRICT_TCB` | `true` requires TCB exactly `UpToDate` (default also accepts `SWHardeningNeeded`) |
 | `ANTSEED_VERIFIER_NRAS_URL` / `_NRAS_JWKS_URL` | override NVIDIA NRAS endpoints for `gpu-cc` |
@@ -65,7 +65,14 @@ The **buyer** needs no special hardware. Optional policy knobs:
 `seller-node-tee-genuine` runs only on a real Intel TDX VM. `configfs` mints via
 `/sys/kernel/config/tsm/report` (needs root). `dstack` mints via the guest-agent socket
 (Phala and other dstack CVMs, where configfs-tsm is absent). Both bind the same `antseed-rd-v1`
-report_data, so the buyer verifies them identically.
+report_data, so the buyer verifies them identically. The OS check is local: the measurement table
+(`APPROVED_DSTACK_OS` / `os`) still matches MRTD and RTMR0–2 exactly, so existing sellers keep
+passing with no extra service. When the table misses, the buyer runs a local lite check of the
+seller's GetQuote `vmConfig` and `rawEventLog` against the quote's already-verified measurements
+and accepts the returned `osImageHash` if it is in `APPROVED_OS_IMAGES` / `osImages`. `eventLog`
+stays the RTMR3 events so older buyers are unaffected. The lite path needs an updated seller image
+that sends those fields; the lite verifier is not packaged yet, so that path reports unavailable
+until it is wired.
 
 ## Appendix: provider adapters
 
