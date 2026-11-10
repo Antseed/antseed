@@ -9,6 +9,7 @@ import { GATEWAY_PROVIDER_ID } from './gateway-model.js';
 import { resolveAttachmentPath, saveAttachment } from './attachments/store.js';
 import type { AiChatMessage } from './conversation-types.js';
 import type { PiConversationStore } from './conversation-store.js';
+import { gatewayRequestHeaders } from '../gateway/request-headers.js';
 
 // High-quality image models can legitimately take several minutes. Keep a
 // finite ceiling, but do not abort healthy generations at the two-minute mark.
@@ -198,7 +199,7 @@ export async function generateChatImage(
     let apiPath = '/v1/images/generations';
     let body: string | FormData;
     const headers: Record<string, string> = {
-      authorization: `Bearer ${endpoint.apiKey}`,
+      ...gatewayRequestHeaders(endpoint),
       // The buyer routes only to sellers that take this option; it doesn't read it from the body.
       ...(request.moderation ? { 'x-antseed-required-parameters': 'moderation' } : {}),
     };

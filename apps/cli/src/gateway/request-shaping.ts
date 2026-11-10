@@ -3,7 +3,20 @@ import type { PresetRecord } from './store.js'
 
 export const PRESET_MODEL_PREFIX = '@preset/'
 export const END_USER_HEADER = 'x-antseed-end-user'
+/**
+ * Any value but empty or "0": this request goes only to TEE sellers, on top of
+ * the key's policy. It can only narrow, so any key holder may send it. A client
+ * that must not lose its TEE requirement to a policy change mid-run (the
+ * desktop's Private chat) sends it with every request of the run.
+ */
+export const REQUIRE_TEE_HEADER = 'x-antseed-require-tee'
 const MAX_END_USER_LENGTH = 256
+
+/** The policy the request itself adds on top of its key's, or null. */
+export function requestedPolicy(header: string | undefined): { requireTee: true } | null {
+  const value = header?.trim().toLowerCase()
+  return value && value !== '0' && value !== 'false' ? { requireTee: true } : null
+}
 
 export function presetSlug(model: string | null): string | null {
   return model?.startsWith(PRESET_MODEL_PREFIX) ? model.slice(PRESET_MODEL_PREFIX.length) : null

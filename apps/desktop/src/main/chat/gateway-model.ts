@@ -9,6 +9,7 @@ import type { ChatModel, ChatServiceProtocol } from '../../shared/chat-gateway-t
 import type { Model } from '@mariozechner/pi-ai';
 import { ANTSEED_MODEL_CONTEXT_WINDOW, ANTSEED_MODEL_MAX_OUTPUT_TOKENS } from '@antseed/node/types';
 import type { GatewayEndpoint } from '../gateway/service.js';
+import { gatewayRequestHeaders } from '../gateway/request-headers.js';
 
 /** pi-ai provider id for gateway models; never sent on the wire. */
 export const GATEWAY_PROVIDER_ID = 'antseed-gateway';
@@ -52,7 +53,7 @@ export function makeGatewayModel({ modelId, endpoint, protocol, supportsImages, 
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: contextWindow ?? ANTSEED_MODEL_CONTEXT_WINDOW,
     maxTokens: ANTSEED_MODEL_MAX_OUTPUT_TOKENS,
-    headers: { authorization: `Bearer ${endpoint.apiKey}` },
+    headers: gatewayRequestHeaders(endpoint),
   };
 
   if (protocol === 'openai-chat-completions') {

@@ -6,6 +6,7 @@
 import type { Message } from '@mariozechner/pi-ai';
 import type { GatewayEndpoint } from '../gateway/service.js';
 import type { ChatServiceProtocol } from './gateway-model.js';
+import { gatewayRequestHeaders } from '../gateway/request-headers.js';
 
 export function sanitizeGeneratedConversationTitle(value: unknown): string | null {
   const cleaned = String(value ?? '')
@@ -165,7 +166,7 @@ export async function generateConversationTitleWithModel({
   ].join('\n');
   const headers: Record<string, string> = {
     'content-type': 'application/json',
-    authorization: `Bearer ${endpoint.apiKey}`,
+    ...gatewayRequestHeaders(endpoint),
   };
 
   let url = `${endpoint.origin}/v1/messages`;

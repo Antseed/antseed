@@ -475,7 +475,8 @@ export function registerPiChatHandlers({
       // An image goes out under whichever policy the switch settles on, like a text send.
       const refused = await passPrivacyGate(privacyGate, request.requirePrivate === true);
       if (refused) return { ok: false, error: refused };
-      const endpoint = await getGatewayEndpoint();
+      const requireTee = request.requirePrivate === true || currentPrivacyMode() === 'private';
+      const endpoint = { ...await getGatewayEndpoint(), ...(requireTee ? { requireTee } : {}) };
       return await generateChatImage(store, endpoint, {
         conversationId,
         prompt,

@@ -2,6 +2,7 @@ import { asErrorMessage } from '../../../shared/error-message.js';
 import { getPrivacySwitchState, privacyResource, whenPrivacySwitchSettled } from '../app/vpr-resources';
 import { defaultStorage } from '../app/local-storage-flag';
 import { describeChatError } from './chat-errors';
+import { hasPrivateHistory } from './private-history';
 import { imageModelCanEdit, modelAcceptsImages, splitPinnedModel } from '../../../shared/pinned-model.js';
 import { selectHasFunds } from '../../core/balance';
 import type { RendererUiState } from '../../core/state';
@@ -232,7 +233,9 @@ export function initChatModule({
 
   /** The new-chat default: the last model used (if the gateway still lists it), else the first text model. */
   /** The model Private moved away from, for going back. Survives leaving Home. */
-  let modelMovedForPrivate: { from: string; to: string; conversationId: string | null } | null = null;
+  let modelMovedForPrivate: { from: string; to: string } | null = null;
+  /** Chats on the model Private chose: moved to it, or started on it. Only these go back. */
+  const chatsOnPrivateModel = new Set<string>();
   /** Chats the user chose to carry from Private into Anonymous. */
   const privateHistoryAllowed = new Set<string>();
   /** Stop presses per conversation: a request checks its count is unchanged after every wait. */
@@ -328,9 +331,8 @@ export function initChatModule({
   /** Not saved as the last model: nobody chose it, and it shouldn't outlive Private. */
   function moveModelForPrivate(next: string): void {
     const current = uiState.chatSelectedModelId;
-    const conversationId = activeConversation?.id ?? null;
-    const sameChat = modelMovedForPrivate?.conversationId === conversationId;
-    modelMovedForPrivate = { from: (sameChat ? modelMovedForPrivate?.from : null) ?? current, to: next, conversationId };
+    modelMovedForPrivate = { from: modelMovedForPrivate?.from ?? current, to: next };
+    if (activeConversation) chatsOnPrivateModel.add(activeConversation.id);
     uiState.chatImageModelId = null;
     uiState.chatSelectedModelId = next;
     // The open chat carries on with the model Private can use.
@@ -354,11 +356,13 @@ export function initChatModule({
       return;
     }
     const previous = modelMovedForPrivate;
+    const movedChats = new Set(chatsOnPrivateModel);
     modelMovedForPrivate = null;
+    chatsOnPrivateModel.clear();
     if (!previous || uiState.chatSelectedModelId !== previous.to) return;
-    // Only the chat Private moved goes back; another one on that model chose it.
+    // Only a chat Private put on this model goes back; another one chose it.
     // A new chat isn't saved yet, so it can always go back.
-    if (activeConversation && activeConversation.id !== previous.conversationId) return;
+    if (activeConversation && !movedChats.has(activeConversation.id)) return;
     uiState.chatSelectedModelId = previous.from;
     if (activeConversation) saveOpenChatModel(previous.from);
     void refreshPermissionModeForModel(previous.from);
@@ -408,6 +412,7 @@ export function initChatModule({
     uiState.chatSelectedModelId = id;
     // The user's own pick replaces whatever Private chose.
     modelMovedForPrivate = null;
+    chatsOnPrivateModel.clear();
     draftModel = null;
     clearChatNotices();
     saveLastChatModel(id);
@@ -778,6 +783,9 @@ export function initChatModule({
     uiState.chatFundsNotice = fundsNoticeByConversation.get(convId) ?? null;
     notifyUiStateChanged();
 
+    // A model choice still being saved, or saved while this read was out, is
+    // newer than what the read may return.
+    const modelSaving = pendingModelUpdates.get(convId);
     try {
       const result = await bridge.chatAiGetConversation(convId);
       if (!isCurrentOpen()) return;
@@ -786,7 +794,8 @@ export function initChatModule({
         reportChatError(result.error, 'Failed to open conversation');
         return;
       }
-      const conv = result.data as ChatConversation;
+      const chosen = pendingModelUpdates.get(convId) ?? modelSaving;
+      const conv = { ...(result.data as ChatConversation), ...(chosen ? { service: chosen.modelId } : {}) };
       const serverMessages = normalizeInlineThinkInMessages(Array.isArray(conv.messages) ? conv.messages : []);
       // A prompt waiting on funds may not be in the session yet; Try again needs it on screen.
       const preferLocal = hasConversationStreamingMessage(convId) || isConversationSending(convId) || fundsNoticeByConversation.has(convId);
@@ -867,6 +876,7 @@ export function initChatModule({
       if (result.ok && result.data) {
         const conversationId = getConversationId(result.data);
         if (!conversationId) throw new Error('Conversation created but ID is missing');
+        if (modelMovedForPrivate && modelId === modelMovedForPrivate.to) chatsOnPrivateModel.add(conversationId);
         await refreshChatConversations();
         if (options.activate) await openConversation(conversationId, { keepImageModel: options.keepImageModel ?? false });
         uiState.chatError = null;
@@ -1215,8 +1225,7 @@ export function initChatModule({
   function conversationHasPrivateHistory(convId: string): boolean {
     const messages = getLocalConversationMessages(convId)
       ?? (convId === uiState.chatActiveConversation ? (uiState.chatMessages as ChatMessage[]) : []);
-    return uiState.chatPrivateConversationIds.includes(convId)
-      || messages.some((message) => (message.meta as { privacy?: unknown } | undefined)?.privacy === 'private');
+    return hasPrivateHistory(convId, uiState.chatPrivateConversationIds, messages);
   }
 
   function lastUserMessage(convId: string): { content: string; attachments: PreparedChatAttachment[] } | null {

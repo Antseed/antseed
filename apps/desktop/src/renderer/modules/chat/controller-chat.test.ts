@@ -344,4 +344,20 @@ describe('chat controller', () => {
       vi.useRealTimers();
     }
   });
+
+  it('reopening a chat while its new model is saving keeps the new model for the next send', async () => {
+    const saved = deferred<{ ok: boolean }>();
+    const { api, uiState, sends } = setup(undefined, { chatAiSetModel: () => saved.promise });
+    await api.refreshChatConversations();
+    await api.openConversation('conv-a');
+    api.selectChatModel('model-b');
+    await api.openConversation('conv-b');
+    const reopening = api.openConversation('conv-a');
+    saved.resolve({ ok: true });
+    await reopening;
+    expect(uiState.chatSelectedModelId).toBe('model-b');
+    api.sendMessage('hello');
+    await waitFor(() => sends.length === 1);
+    expect(sends[0]!.modelId).toBe('model-b');
+  });
 });

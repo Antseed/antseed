@@ -195,4 +195,22 @@ describe('a model Private chose', () => {
     expect(uiState.chatSelectedModelId).toBe('model-y');
     expect(chatAiSetModel).not.toHaveBeenCalled();
   });
+
+  it('goes back in a chat started on it while Private was on', async () => {
+    const { api, uiState, chatAiSetModel } = setup({
+      models: [model('model-x', 'text', false), model('model-y')],
+      conversations: [],
+    });
+    privacyResource.setData(privacy('anonymous'));
+    uiState.chatSelectedModelId = 'model-x';
+    api.privacyModeChosen('private');
+    privacyResource.setData(privacy('private'));
+    api.sendMessage('hello');
+    await tick(20);
+    expect(uiState.chatActiveConversation).toBe('conv-1');
+    api.privacyModeChosen('anonymous', { keepPrivateHistory: true });
+    await tick();
+    expect(uiState.chatSelectedModelId).toBe('model-x');
+    expect(chatAiSetModel).toHaveBeenCalledWith('conv-1', 'model-x');
+  });
 });

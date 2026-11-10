@@ -8,6 +8,7 @@ import { defaultStorage } from '../../../modules/app/local-storage-flag';
 import { appsResource, privacyResource, requestPrivacyMode, usePrivacySwitch } from '../../../modules/app/vpr-resources';
 import { useCachedResource } from '../../../modules/app/cached-resource';
 import { useUiSelector } from '../../hooks/useUiSelector';
+import { hasPrivateHistory } from '../../../modules/chat/private-history';
 import styles from './PrivacyToggle.module.scss';
 
 /** Private mode routes to TEE sellers only, so pickers list only models with one. */
@@ -99,8 +100,7 @@ function markSwitchExplained(): void {
 /** A prompt in the open chat went out under Private (whether or not it got an answer). */
 function useOpenChatHasPrivateHistory(): boolean {
   return useUiSelector((state) => state.chatActiveConversation !== null
-    && (state.chatPrivateConversationIds.includes(state.chatActiveConversation)
-      || (state.chatMessages as Array<{ meta?: { privacy?: unknown } }>).some((message) => message.meta?.privacy === 'private')));
+    && hasPrivateHistory(state.chatActiveConversation, state.chatPrivateConversationIds, state.chatMessages as Array<{ meta?: { privacy?: unknown } }>));
 }
 
 /**

@@ -7,7 +7,7 @@ import { SPEND_ATTRIBUTION_HEADER } from '../proxy/spend-attribution.js'
 import { decodeServedSelection, ROUTE_SELECTION_HEADER, type ServedSelection } from '../proxy/route-selection.js'
 import { coveredByFreeAllowance, ROUTER_PEER_ID_HEADER, ROUTER_RANK_HEADER, ROUTER_SERVICE_HEADER } from '../proxy/telemetry.js'
 import { BUYER_IDENTITY_HEADER, MAX_VIDEO_COST_HEADER } from '../proxy/request-utils.js'
-import { GATEWAY_CONTROL_HEADER, ROUTING_POLICY_HEADER, encodePolicyHeader, meaningfulPolicy, policyAllowsModel, type RoutingPolicy } from '../routing-policy/policy.js'
+import { GATEWAY_CONTROL_HEADER, ROUTING_POLICY_HEADER, encodePolicyHeader, meaningfulPolicy, narrowPolicy, policyAllowsModel, type RoutingPolicy } from '../routing-policy/policy.js'
 import { effectiveKeyLimits, newRequestTag, videoJobKey, type AdmitOptions, type GatewayAccounting, type KeyContext } from './accounting.js'
 import { errorMessage } from './errors.js'
 import { isClientCredentialHeader } from '../proxy/credential-headers.js'
@@ -17,7 +17,7 @@ import { BUDGET_PERIODS, type LimitBreach } from './limits.js'
 import { formatUsdc, optionalUsdcToDecimalString, parseUsdToUsdc, usdcToDecimalString } from './money.js'
 import { OtlpExporter, observabilitySettings } from './observability.js'
 import { isEmptyPolicy, resolvePolicy } from './policy-resolver.js'
-import { END_USER_HEADER, applyPreset, effectiveRequestModel, extractEndUser, presetSlug } from './request-shaping.js'
+import { END_USER_HEADER, REQUIRE_TEE_HEADER, applyPreset, effectiveRequestModel, extractEndUser, presetSlug, requestedPolicy } from './request-shaping.js'
 import { ResponseUsageReader } from './response-usage.js'
 import { SPEND_FEED_UNAUTHORIZED_HINT, type SpendFeedState } from './spend-feed.js'
 import {
@@ -353,7 +353,7 @@ export class GatewayServer {
       model = preset.model
     }
 
-    const policy = this._routingPolicy(res, route, key, context, preset, model)
+    const policy = this._routingPolicy(res, route, key, context, preset, model, requestedPolicy(firstHeader(req.headers[REQUIRE_TEE_HEADER]) || undefined))
     if (!policy.allowed) return
     const video = nativeVideoRoute({ method, path: route.prefix, body })
     const videoJob = video?.action === 'retrieve' && video.resourceId ? videoJobKey(video.protocol, video.resourceId) : undefined
@@ -489,8 +489,11 @@ export class GatewayServer {
     context: KeyContext,
     preset: PresetRecord | null,
     model: string | null,
+    requested: RoutingPolicy | null = null,
   ): { allowed: false } | { allowed: true; headers: Record<string, string>; policy: RoutingPolicy } {
-    const { policy } = resolvePolicy(this._options.store, { key, preset, member: context.member, workspace: context.workspace })
+    const resolved = resolvePolicy(this._options.store, { key, preset, member: context.member, workspace: context.workspace }).policy
+    // The request's own requirements only narrow its key's.
+    const policy = requested ? narrowPolicy(resolved, requested) : resolved
     if ((route.paid || model) && !policyAllowsModel(policy, model)) {
       sendError(res, 403, 'permission_error', 'model_not_allowed', model
         ? `Model "${model}" is not allowed for this API key`
@@ -1309,6 +1312,7 @@ const STRIPPED_HEADERS = new Set([
   GATEWAY_CONTROL_HEADER,
   GATEWAY_INTERNAL_KEY_HEADER,
   END_USER_HEADER,
+  REQUIRE_TEE_HEADER,
   // Proxy-internal hooks for the local verifier; a key holder must not choose them.
   'x-antseed-request-id',
   'x-antseed-capture-response-auth-preimages',

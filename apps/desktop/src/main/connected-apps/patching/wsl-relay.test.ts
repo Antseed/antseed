@@ -44,3 +44,23 @@ test('a relay follows the gateway when only its upstream host changes', { skip: 
     second.close();
   }
 });
+
+test('stopping the relays drops open connections instead of waiting on them', async () => {
+  // An upstream that never hangs up, like a gateway holding a keep-alive or a stream.
+  const upstream = net.createServer(() => undefined);
+  await new Promise<void>((resolve) => upstream.listen(0, '::1', resolve));
+  const port = (upstream.address() as net.AddressInfo).port;
+  try {
+    await syncWslRelays(['127.0.0.1'], port, undefined, '::1');
+    const client = net.connect(port, '127.0.0.1');
+    await new Promise<void>((resolve, reject) => { client.once('connect', resolve); client.once('error', reject); });
+    const closed = new Promise<void>((resolve) => client.once('close', () => resolve()));
+    await Promise.race([
+      stopWslRelays(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('relay shutdown waited on an open connection')), 2_000)),
+    ]);
+    await closed;
+  } finally {
+    upstream.close();
+  }
+});

@@ -12,9 +12,11 @@ export type RetailPriceMap = Map<string, RetailPrice>;
 export function parseRetailPrices(body: unknown): RetailPriceMap | null {
   const data = body && typeof body === 'object' ? (body as Record<string, unknown>).data : null;
   if (!Array.isArray(data)) return null;
+  // Absent stays null; an explicit 0 (free cache reads) is a price.
   const perMillion = (perToken: unknown): number | null => {
+    if (perToken === null || perToken === undefined || (typeof perToken === 'string' && !perToken.trim())) return null;
     const numeric = Number(perToken);
-    return Number.isFinite(numeric) && numeric > 0 ? numeric * 1_000_000 : null;
+    return Number.isFinite(numeric) && numeric >= 0 ? numeric * 1_000_000 : null;
   };
   const prices: RetailPriceMap = new Map();
   for (const model of data) {
@@ -25,7 +27,8 @@ export function parseRetailPrices(body: unknown): RetailPriceMap | null {
       output: perMillion(pricing?.completion),
       cachedInput: perMillion(pricing?.input_cache_read),
     };
-    if (price.input === null && price.output === null) continue;
+    // A model free at retail has nothing to compare against.
+    if (!(price.input ?? 0) && !(price.output ?? 0)) continue;
     for (const label of [id, name]) {
       if (typeof label !== 'string' || !label.trim()) continue;
       const key = canonicalModelKey(label);

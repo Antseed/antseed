@@ -218,9 +218,12 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
 
     // Starts the local gateway on demand; a remote gateway without a URL or
     // key throws a readable error the renderer shows as-is.
+    // A Private run asks for TEE sellers with each of its requests (follow-ups
+    // and the title too), so a switch to Anonymous mid-run can't widen it.
+    const protect = options.requirePrivate === true || ctx.privacy?.mode() === 'private';
     let endpoint: GatewayEndpoint;
     try {
-      endpoint = await getEndpoint();
+      endpoint = { ...await getEndpoint(), ...(protect ? { requireTee: true } : {}) };
     } catch (error) {
       const message = asErrorMessage(error);
       appendSystemLog(`Chat could not reach the gateway: ${message}`);

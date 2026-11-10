@@ -160,6 +160,24 @@ test('the effective policy goes to the buyer with the control secret; client cop
   }
 })
 
+test('a request can require TEE sellers on top of its key\'s policy, never loosen it', async () => {
+  const ctx = await setup()
+  try {
+    const { secret } = ctx.store.createKey({ label: 'k', limits: NO_LIMITS, expiresAt: null, routingPolicy: { minTrustScore: 40 } })
+    await ctx.send(secret, '/v1/chat/completions', { model: 'm' }, { 'x-antseed-require-tee': '1' })
+    const headers = ctx.buyer.captured[0]!.headers
+    assert.deepEqual(decodePolicyHeader(headers[ROUTING_POLICY_HEADER] as string), { minTrustScore: 40, requireTee: true })
+    assert.equal(headers['x-antseed-require-tee'], undefined)
+
+    // "0" adds nothing, and a key that requires TEE keeps requiring it.
+    const tee = ctx.store.createKey({ label: 'tee', limits: NO_LIMITS, expiresAt: null, routingPolicy: { requireTee: true } })
+    await ctx.send(tee.secret, '/v1/chat/completions', { model: 'm' }, { 'x-antseed-require-tee': '0' })
+    assert.deepEqual(decodePolicyHeader(ctx.buyer.captured[1]!.headers[ROUTING_POLICY_HEADER] as string), { requireTee: true })
+  } finally {
+    await ctx.close()
+  }
+})
+
 test('a seller-restricting policy without a control secret is refused, not routed unrestricted', async () => {
   const ctx = await setup({ controlSecret: null })
   try {

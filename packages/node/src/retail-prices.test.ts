@@ -11,6 +11,13 @@ describe('parseRetailPrices', () => {
     expect(prices?.size).toBe(1);
   });
 
+  it('keeps an explicit free cache-read price, so cached tokens cost nothing', () => {
+    const prices = parseRetailPrices({ data: [{ id: 'm', pricing: { prompt: '0.00001', completion: '0.00003', input_cache_read: '0' } }] });
+    const price = prices?.get('m');
+    expect(price).toEqual({ input: 10, output: 30, cachedInput: 0 });
+    expect(retailTokenCostUsd(1_000_000, 1_000_000, 0, price!)).toBe(0);
+  });
+
   it('is null for a malformed or unpriced list', () => {
     expect(parseRetailPrices({ data: 'x' })).toBeNull();
     expect(parseRetailPrices({ data: [{ id: 'a', pricing: null }] })).toBeNull();

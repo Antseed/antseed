@@ -42,6 +42,8 @@ export type GatewayEndpoint = {
   /** Origin without `/v1`. */
   origin: string;
   apiKey: string;
+  /** Every request made with this endpoint asks for TEE sellers only (a Private run). */
+  requireTee?: boolean;
 };
 
 type Deps = {
@@ -488,8 +490,15 @@ export function currentPrivacyMode(): GatewayPrivacyMode | null {
   return settings.mode === 'remote' ? null : settings.privacy;
 }
 
-/** Anonymous or Private, as the desktop key's routing policy has it. */
-export async function getGatewayPrivacy(): Promise<GatewayPrivacy> {
+/**
+ * Anonymous or Private, as the desktop key's routing policy has it. Read in
+ * turn with switches, so a read never lands in the middle of one.
+ */
+export function getGatewayPrivacy(): Promise<GatewayPrivacy> {
+  return privacySwitches.run(readGatewayPrivacy);
+}
+
+async function readGatewayPrivacy(): Promise<GatewayPrivacy> {
   const settings = getGatewaySettings();
   if (settings.mode === 'remote') return { mode: 'anonymous', editable: false, requiredAbove: false };
   await ensureLocalGateway();
@@ -500,7 +509,9 @@ export async function getGatewayPrivacy(): Promise<GatewayPrivacy> {
   const requiredAbove = effectiveTee && ownerRoutingPolicy?.['requireTee'] !== true;
   const mode: GatewayPrivacyMode = effectiveTee ? 'private' : 'anonymous';
   // The console may have changed it; the key's policy is what routing follows.
-  if (!requiredAbove && mode !== settings.privacy) updateGatewaySettings({ privacy: mode });
+  // Private covers every app, so their keys follow before it is saved or shown.
+  // (A requirement set above the owner is the admins' for this key alone.)
+  if (!requiredAbove && mode !== settings.privacy) await applyPrivacyToAllKeys(mode, key.id);
   return { mode, editable: true, requiredAbove };
 }
 
@@ -521,13 +532,17 @@ async function applyGatewayPrivacy(mode: GatewayPrivacyMode): Promise<GatewayPri
   await ensureLocalGateway();
   const key = await ensureLocalKey(DESKTOP_KEY_SCOPE);
   if (!key.id) throw new Error('The desktop key has no id on the gateway');
-  // Every app's own key too: Private is promised for the whole gateway.
-  await applyPrivacyToKeys(
+  await applyPrivacyToAllKeys(mode, key.id);
+  return readGatewayPrivacy();
+}
+
+/** The desktop key and every app's own key: Private is promised for the whole gateway. Then saved. */
+function applyPrivacyToAllKeys(mode: GatewayPrivacyMode, desktopKeyId: string): Promise<void> {
+  return applyPrivacyToKeys(
     mode,
-    key.id,
+    desktopKeyId,
     () => listLocalKeys().flatMap((entry) => (entry.id ? [entry.id] : [])),
     (id) => applyPrivacyToKey(id, mode),
     () => updateGatewaySettings({ privacy: mode }),
   );
-  return getGatewayPrivacy();
 }

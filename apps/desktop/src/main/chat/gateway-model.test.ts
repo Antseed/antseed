@@ -109,6 +109,9 @@ test('gateway models use the origin for Anthropic and /v1 for OpenAI, with a bea
   assert.equal(anthropic.api, 'anthropic-messages');
   assert.deepEqual(anthropic.headers, { authorization: 'Bearer antseed_key' });
   assert.deepEqual(anthropic.input, ['text']);
+  // A Private run's every turn asks for TEE sellers itself.
+  const sealed = makeGatewayModel({ modelId: 'm', endpoint: { ...ENDPOINT, requireTee: true }, protocol: 'anthropic-messages', supportsImages: false });
+  assert.deepEqual(sealed.headers, { authorization: 'Bearer antseed_key', 'x-antseed-require-tee': '1' });
 
   const openai = makeGatewayModel({ modelId: 'm', endpoint: ENDPOINT, protocol: 'openai-chat-completions', supportsImages: true, contextWindow: 1000 });
   assert.equal(openai.baseUrl, 'http://127.0.0.1:8379/v1');
