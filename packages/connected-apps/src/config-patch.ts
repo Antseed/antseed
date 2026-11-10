@@ -1949,9 +1949,11 @@ function removeGooseProviderFromFile(
   let lines = readFileSync(filePath, 'utf8').split('\n');
   const state = readGoosePatchState(filePath);
   const provider = readGooseCustomProvider(filePath);
-  let changed = removeGooseCustomProvider(filePath);
+  // A refresh keeps our provider and its selection: the replacement overwrites
+  // them, and a failed write in between must leave goose working.
+  let changed = keepSelection ? false : removeGooseCustomProvider(filePath);
   // Selecting a provider of the user's own under that name isn't our patch.
-  if (readYamlTopLevelString(lines, 'GOOSE_PROVIDER') === GOOSE_CUSTOM_PROVIDER && (provider.ours || !provider.exists)) {
+  if (!keepSelection && readYamlTopLevelString(lines, 'GOOSE_PROVIDER') === GOOSE_CUSTOM_PROVIDER && (provider.ours || !provider.exists)) {
     lines = removeYamlTopLevelKey(lines, 'GOOSE_PROVIDER');
     lines = removeYamlTopLevelKey(lines, 'GOOSE_MODEL');
     changed = true;

@@ -239,6 +239,28 @@ test('goose: gateway patch is a custom provider with the key and every model', a
   });
 });
 
+test('goose: a refresh whose config write fails leaves the working provider in place', async () => {
+  await withDir(async (dir) => {
+    const configPath = path.join(dir, 'config.yaml');
+    const providerPath = path.join(dir, 'custom_providers', 'custom_antseed.json');
+    await writeFile(configPath, 'keep_me: true\n', 'utf8');
+    const patch: ConfigPatchDef = { format: 'goose', configPath, providerKey: 'openai', baseURL: 'http://localhost:{buyerPort}' };
+    writeConfigPatch(patch, REMOTE);
+    await chmod(configPath, 0o444);
+    assert.throws(() => writeConfigPatch(patch, { origin: 'https://other.example.com', apiKey: 'antseed_other_key', models: [{ id: 'glm-5' }] }), /EACCES|permission/i);
+    await chmod(configPath, 0o600);
+    const config = parse(await readFile(configPath, 'utf8')) as Record<string, unknown>;
+    assert.equal(config['GOOSE_PROVIDER'], 'custom_antseed');
+    assert.equal(config['GOOSE_MODEL'], 'kimi-k2');
+    const provider = JSON.parse(await readFile(providerPath, 'utf8'));
+    assert.equal(provider.base_url, 'https://gw.example.com/v1/chat/completions');
+    assert.equal(provider.headers.Authorization, `Bearer ${KEY}`);
+    assert.equal(removeConfigPatch(patch), true);
+    assert.deepEqual(parse(await readFile(configPath, 'utf8')), { keep_me: true });
+    assert.equal(existsSync(providerPath), false);
+  });
+});
+
 test('goose: the earlier gateway patch moves to the custom provider, keeping the pick', async () => {
   await withDir(async (dir) => {
     const configPath = path.join(dir, 'config.yaml');
