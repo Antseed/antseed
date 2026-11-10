@@ -129,7 +129,7 @@ describe('BuyerPaymentManager: NeedAuth from a seller that served nothing', () =
   });
 
   it('signs a cost claim for a request the buyer sent, and refuses a second claim for the same request', async () => {
-    manager.trackRequestService('sent-once', 'some-model');
+    manager.recordDeliveredResponse(sellerPeerId, 'sent-once', { costUsdc: 100_000n });
     const claim = { requestId: 'sent-once', lastRequestCost: '100000', inputTokens: '100000', outputTokens: '0' };
 
     await sellerSends({ ...claim, requiredCumulativeAmount: '100000' });
@@ -137,5 +137,90 @@ describe('BuyerPaymentManager: NeedAuth from a seller that served nothing', () =
 
     await sellerSends({ ...claim, requiredCumulativeAmount: '200000' });
     expect(signed(), 'signed twice for one request').toBe(100_000n);
+
+    // The seller answers the request with a 402 and the buyer retries it, keeping its ID.
+    manager.beginPaidRequest(sellerPeerId);
+    manager.endPaidRequest(sellerPeerId, 'sent-once', true);
+    await sellerSends({ ...claim, requiredCumulativeAmount: '200000' });
+    expect(signed(), 'signed again for a retried request').toBe(100_000n);
+  });
+
+  it('counts a cost that arrives while a top-up is pending, so the seller is paid once it lands', async () => {
+    const claim = (requestId: string, cost: bigint, required: bigint): Partial<NeedAuthPayload> => ({
+      requestId, lastRequestCost: cost.toString(), inputTokens: cost.toString(), outputTokens: '0',
+      requiredCumulativeAmount: required.toString(),
+    });
+    // The top-up r1 calls for is prepared outside the signing lock; hold it at its balance read.
+    let releaseBalance!: () => void;
+    const balanceHeld = new Promise<void>((resolve) => { releaseBalance = resolve; });
+    vi.mocked(manager.getBalance).mockImplementationOnce(async () => {
+      await balanceHeld;
+      return { available: chain.available, reserved: chain.locked };
+    });
+    const topUpAsked = vi.spyOn(manager, 'topUpReserve');
+    manager.recordDeliveredResponse(sellerPeerId, 'r1', { costUsdc: 700_000n });
+    const first = sellerSends(claim('r1', 700_000n, RESERVE));
+    await vi.waitFor(() => expect(topUpAsked).toHaveBeenCalledTimes(1));
+    expect(signed()).toBe(RESERVE);
+
+    // r2 is charged before the top-up is signed: nothing more can be signed at the old ceiling.
+    manager.recordDeliveredResponse(sellerPeerId, 'r2', { costUsdc: 300_000n });
+    const second = sellerSends(claim('r2', 300_000n, 1_300_000n));
+    await vi.waitFor(() => expect(topUpAsked).toHaveBeenCalledTimes(2));
+    expect(signed()).toBe(RESERVE);
+
+    releaseBalance();
+    await Promise.all([first, second]);
+    expect(manager.getReserveCeiling(sellerPeerId), 'one top-up signed').toBe(2n * RESERVE);
+    // The seller's next prompt is signed up to what it served ...
+    await sellerSends({ requestId: 'r2', requiredCumulativeAmount: '1300000' });
+    expect(signed(), 'cost counted while the top-up was pending').toBe(1_300_000n);
+    // ... and r2 cannot be charged a second time.
+    await sellerSends(claim('r2', 300_000n, 1_600_000n));
+    expect(signed(), 'signed twice for one request').toBe(1_300_000n);
+    // ... nor by the buyer's own post-response signing before a close.
+    const empty = new Uint8Array(0);
+    await manager.signPerRequestAuth(sellerPeerId, { requestId: 'r2', sellerClaimedCost: 300_000n, inputBytes: empty, outputBytes: empty });
+    expect(signed(), 'paid again at close').toBe(1_300_000n);
+  });
+
+  it('refuses a cost claim for a request the buyer already paid at close, even after its counted record is evicted', async () => {
+    const empty = new Uint8Array(0);
+    const costClaim = (requestId: string, cost: bigint): Partial<NeedAuthPayload> => ({
+      requestId, lastRequestCost: cost.toString(), inputTokens: cost.toString(), outputTokens: '0',
+      requiredCumulativeAmount: (signed() + cost).toString(),
+    });
+    // The seller withholds its NeedAuth for 'paid-at-close', so the buyer's post-response signing pays it.
+    manager.recordDeliveredResponse(sellerPeerId, 'paid-at-close', { costUsdc: 100_000n });
+    await manager.signPerRequestAuth(sellerPeerId, {
+      requestId: 'paid-at-close', sellerClaimedCost: 100_000n, reportedInputTokens: 100_000n, reportedOutputTokens: 0n,
+      inputBytes: empty, outputBytes: empty,
+    });
+    expect(signed()).toBe(100_000n);
+    expect(manager.getVerifiedCost(sellerPeerId)).toBe(100_000n);
+
+    await sellerSends(costClaim('paid-at-close', 100_000n));
+    expect(signed(), 'paid twice').toBe(100_000n);
+    expect(manager.getVerifiedCost(sellerPeerId), 'counted twice').toBe(100_000n);
+
+    // Enough later requests, each charged by NeedAuth, to evict the buyer's record of counted requests.
+    for (let i = 0; i < 600; i += 1) {
+      manager.recordDeliveredResponse(sellerPeerId, `later-${i}`, { costUsdc: 1n });
+      await sellerSends(costClaim(`later-${i}`, 1n));
+    }
+    expect(signed()).toBe(100_600n);
+
+    await sellerSends(costClaim('paid-at-close', 100_000n));
+    expect(signed(), 'paid twice after the counted record was evicted').toBe(100_600n);
+    expect(manager.getVerifiedCost(sellerPeerId), 'counted twice after the counted record was evicted').toBe(100_600n);
+  });
+
+  it('refuses a cost claim for a request a free allowance covered, after the coverage record is gone', async () => {
+    manager.recordDeliveredResponse(sellerPeerId, 'covered', { costUsdc: 100_000n });
+    manager.markRequestCovered(sellerPeerId, 'covered');
+    manager.releaseRequestCoverage(sellerPeerId, 'covered');
+
+    await sellerSends({ requestId: 'covered', lastRequestCost: '100000', inputTokens: '100000', outputTokens: '0', requiredCumulativeAmount: '100000' });
+    expect(signed()).toBe(0n);
   });
 });
