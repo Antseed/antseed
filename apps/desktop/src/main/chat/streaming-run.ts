@@ -108,6 +108,7 @@ import {
 import type { AiChatMessage, AiMessageMeta } from './conversation-types.js';
 import type { ActiveRun, ChatStreamErrorPayload } from './engine-types.js';
 import type { GatewayEndpoint } from '../gateway/service.js';
+import { passPrivacyGate, type PrivacyGate } from './privacy-gate.js';
 
 /** What the engine knows about a gateway model, for one send. */
 export type ResolvedChatModel = {
@@ -124,8 +125,8 @@ export type ResolvedChatModel = {
 export type StreamingRunContext = {
   /** A seller's display name, when the model list has it. */
   sellerName: (peerId: string) => string | null;
-  /** Anonymous or Private as a send goes out now; null when the app doesn't own the policy. */
-  privacyMode?: () => 'anonymous' | 'private' | null;
+  /** Waits out a privacy switch and says which mode a send goes out under. */
+  privacy?: PrivacyGate;
   store: PiConversationStore;
   activeRunsByConversation: Map<string, ActiveRun>;
   configPath: string;
@@ -188,6 +189,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     modelOverride?: string,
     attachments?: PreparedChatAttachment[],
     permissionModeInput?: unknown,
+    options: { requirePrivate?: boolean } = {},
   ): Promise<StreamingRunResult> => {
     const trimmedMessage = userMessage.trim();
     const requestedPermissionMode: ChatPermissionMode | null = (
@@ -208,6 +210,11 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
       );
       await abortAndClearActiveRun(existingRun);
     }
+
+    // Nothing goes out under a policy that is still changing, and a chat sent
+    // in Private doesn't go out once Private is off.
+    const refused = await passPrivacyGate(ctx.privacy, options.requirePrivate === true);
+    if (refused) return { ok: false, error: refused };
 
     // Starts the local gateway on demand; a remote gateway without a URL or
     // key throws a readable error the renderer shows as-is.
@@ -388,8 +395,8 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     let finalAssistantCreatedAt: number | undefined;
     let replyCutOff = false;
     let servedPeer: { peerId: string; peerName?: string } | null = null;
-    // Read after the engine waited for any privacy switch to settle.
-    const sentUnder = ctx.privacyMode?.() ?? null;
+    // Read after the gate waited for any privacy switch to settle.
+    const sentUnder = ctx.privacy?.mode() ?? null;
     const routeMeta = (): AiMessageMeta => ({ ...(servedPeer ?? {}), ...(sentUnder ? { privacy: sentUnder } : {}) });
     const replyModel = splitPinnedModel(serviceId).modelId;
     const toolArgsById = new Map<string, Record<string, unknown>>();

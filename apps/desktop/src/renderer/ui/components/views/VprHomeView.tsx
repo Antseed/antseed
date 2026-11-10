@@ -10,7 +10,7 @@ import { ChatSellerPicker } from '../chat/ChatSellerPicker';
 import { joinPinnedModel } from '../../../../shared/pinned-model.js';
 import { HomeField } from '../vpr/HomeField';
 import { modelsForPrivacy, PrivacyNote, PrivacyToggle, usePrivacyControl } from '../vpr/PrivacyToggle';
-import { privacyResource, usePrivacySwitch } from '../../../modules/app/vpr-resources';
+import { privacyResource } from '../../../modules/app/vpr-resources';
 import { homeProgress, useHomeProgress } from '../../../modules/app/home-progress';
 import { HomeDashboard } from './HomeDashboard';
 import styles from './VprHomeView.module.scss';
@@ -35,7 +35,6 @@ export function VprHomeView({ onSelectView }: Props) {
   const [draft, setDraft] = useState('');
   const privacy = useCachedResource(privacyResource);
   const privateMode = privacy.data?.mode === 'private';
-  const { switching } = usePrivacySwitch();
   // Counts the user's switches, so a dismissed privacy note can flash back.
   const [privacySwitches, setPrivacySwitches] = useState(0);
   const privacyControl = usePrivacyControl((mode, choice) => {
@@ -61,8 +60,9 @@ export function VprHomeView({ onSelectView }: Props) {
 
   function submitDraft(): void {
     const text = draft.trim();
-    // The model may still move once Private's list is in. An image chat needs a text model too.
-    if (!text || switching || !snap.chatSelectedModelId || (privateMode && snap.chatModelsLoading)) return;
+    // A send during a privacy switch is held until it lands. The model may still
+    // move once Private's list is in. An image chat needs a text model too.
+    if (!text || !snap.chatSelectedModelId || (privateMode && snap.chatModelsLoading)) return;
     // Home always starts a new chat rather than continuing the open one.
     if (snap.chatActiveConversation) actions.startNewChatOnModel(snap.chatSelectedModelId);
     if (snap.chatImageModelId) {
@@ -146,7 +146,7 @@ export function VprHomeView({ onSelectView }: Props) {
                     className={styles.askSend}
                     aria-label="Send message"
                     title="Send message"
-                    disabled={draft.trim().length === 0 || switching || !snap.chatSelectedModelId}
+                    disabled={draft.trim().length === 0 || !snap.chatSelectedModelId}
                   >
                     <HugeiconsIcon icon={ArrowUp02Icon} size={20} strokeWidth={2} />
                   </button>

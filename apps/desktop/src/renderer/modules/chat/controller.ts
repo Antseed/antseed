@@ -1,5 +1,5 @@
 import { asErrorMessage } from '../../../shared/error-message.js';
-import { getPrivacySwitchState, privacyResource } from '../app/vpr-resources';
+import { getPrivacySwitchState, privacyResource, whenPrivacySwitchSettled } from '../app/vpr-resources';
 import { defaultStorage } from '../app/local-storage-flag';
 import { describeChatError } from './chat-errors';
 import { imageModelCanEdit, modelAcceptsImages, splitPinnedModel } from '../../../shared/pinned-model.js';
@@ -131,6 +131,7 @@ const MODEL_LIST_MAX_AUTO_RETRIES = 4;
 const FREE_MODEL_WAIT_MS = 45_000;
 const FREE_MODEL_POLL_MS = 2_000;
 const FINDING_FREE_MODEL = 'Finding a free model';
+const PRIVATE_HISTORY_REFUSAL = 'This chat was sent in Private. Carrying on here in Anonymous would send its history to providers that don\'t run in a TEE. Start a new chat, or switch back to Private.';
 
 type ImageRequest = { prompt: string; model: string; sourceImageAttachmentId?: string };
 
@@ -234,6 +235,8 @@ export function initChatModule({
   let modelMovedForPrivate: { from: string; to: string } | null = null;
   /** Chats the user chose to carry from Private into Anonymous. */
   const privateHistoryAllowed = new Set<string>();
+  /** A model the new chat was started on by hand (Home's), which the default must not replace. */
+  let draftModel: string | null = null;
   uiState.chatPrivateConversationIds = loadPrivateChats();
 
   /** Remembers that a prompt in this chat went out under Private, whatever came back. */
@@ -257,6 +260,7 @@ export function initChatModule({
     // once it is listed again, go back to what the user chose.
     // Private moved it for a reason; going back waits until Private ends.
     if (modelMovedForPrivate && current === modelMovedForPrivate.to && listed) return;
+    if (draftModel && current === draftModel && listed?.type === 'text') return;
     if (lastModel && current !== lastModel && findChatModel(uiState.chatModels, lastModel)?.type === 'text') {
       uiState.chatSelectedModelId = lastModel;
       void refreshPermissionModeForModel(lastModel);
@@ -396,6 +400,7 @@ export function initChatModule({
     uiState.chatSelectedModelId = id;
     // The user's own pick replaces whatever Private chose.
     modelMovedForPrivate = null;
+    draftModel = null;
     clearChatNotices();
     saveLastChatModel(id);
     saveOpenChatModel(id);
@@ -805,7 +810,9 @@ export function initChatModule({
   /** Home shows one model while a chat is open; the new chat must use what's on screen. */
   function startNewChatOnModel(modelId: string): void {
     startNewChat();
-    if (!modelId || uiState.chatSelectedModelId === modelId) return;
+    if (!modelId) return;
+    draftModel = modelId;
+    if (uiState.chatSelectedModelId === modelId) return;
     uiState.chatSelectedModelId = modelId;
     void refreshPermissionModeForModel(modelId);
     notifyUiStateChanged();
@@ -813,6 +820,7 @@ export function initChatModule({
 
   function startNewChat(): void {
     newChatDraftVersion += 1;
+    draftModel = null;
     uiState.chatActiveConversation = null;
     uiState.chatOpeningConversationId = null;
     uiState.chatMessages = [];
@@ -975,9 +983,19 @@ export function initChatModule({
       // A default nobody chose can predate the free sellers or the list's final
       // ids, and a sent chat keeps its model: settle it against the list now.
       applyDefaultModel();
-      const writtenWith = uiState.chatSelectedModelId;
+      let writtenWith = uiState.chatSelectedModelId;
       setDraftSending(true);
       void (async () => {
+        // A new chat keeps its model, and the mode being switched to can move it.
+        if (await holdForPrivacySwitch()) {
+          if (aborts !== draftAborts) return;
+          const mode = privacyResource.getSnapshot().data?.mode;
+          if (mode) await privacySwitchLanded(mode);
+          if (draftVersion === newChatDraftVersion) {
+            applyDefaultModel();
+            writtenWith = uiState.chatSelectedModelId;
+          }
+        }
         const waited = await waitForFreeModel(() => aborts === draftAborts);
         if (aborts !== draftAborts) return;
         // The draft's model is captured here: the user may switch before the
@@ -1006,7 +1024,7 @@ export function initChatModule({
   function needsFreeModel(): boolean {
     const current = uiState.chatSelectedModelId;
     return shouldWaitForFreeModel(uiState.chatModels, current, {
-      chosen: loadLastChatModel() !== null || Boolean(current && splitPinnedModel(current).peerId),
+      chosen: loadLastChatModel() !== null || draftModel !== null || Boolean(current && splitPinnedModel(current).peerId),
       funded: uiState.gatewayStatus?.mode === 'remote'
         || (uiState.creditsBalanceKnown && Number(uiState.creditsTotalOwnedUsdc) > 0),
     });
@@ -1035,15 +1053,11 @@ export function initChatModule({
       showChatError('This conversation already has a request in progress.');
       return;
     }
-    // However Private was turned off (the toggle, the console, another app), a
-    // chat sent privately doesn't go to non-TEE sellers unless the user chose so.
-    if (privacyResource.getSnapshot().data?.mode === 'anonymous'
-      && !privateHistoryAllowed.has(convId)
-      && conversationHasPrivateHistory(convId)) {
-      showChatError('This chat was sent in Private. Carrying on here in Anonymous would send its history to providers that don\'t run in a TEE. Start a new chat, or switch back to Private.');
+    // Refused at once when it plainly can't go; the send itself checks again.
+    if (privacyResource.getSnapshot().data?.mode === 'anonymous' && heldPrivate(convId)) {
+      showChatError(PRIVATE_HISTORY_REFUSAL);
       return;
     }
-    if (privacyResource.getSnapshot().data?.mode === 'private') markPrivateChat(convId);
     const content = text.trim();
     clearChatNotices();
     fundsNoticeByConversation.delete(convId);
@@ -1109,6 +1123,11 @@ export function initChatModule({
     // The model picked before Send, not whatever the summary says once its save lands.
     const modelUpdate = pendingModelUpdates.get(convId);
     if (modelUpdate) await modelUpdate.done;
+    const privacy = await clearForPrivacy(convId);
+    if (!privacy) {
+      setConversationSending(convId, false);
+      return;
+    }
     const modelId = modelUpdate?.modelId || findConversationSummary(convId)?.service || uiState.chatSelectedModelId;
     if (!modelId) {
       reportChatError('Choose a model for this chat.', 'Request failed');
@@ -1121,7 +1140,7 @@ export function initChatModule({
     streamFailedAtByConversation.delete(convId);
     // A newer text message supersedes an image request waiting on funds.
     imageRetryByConversation.delete(convId);
-    const send = () => bridge.chatAiSendStream!(convId, content || ' ', modelId, attachments, uiState.chatPermissionMode);
+    const send = () => bridge.chatAiSendStream!(convId, content || ' ', modelId, attachments, uiState.chatPermissionMode, privacy);
     try {
       let result = await send();
       if (!result.ok && String(result.error ?? '').toLowerCase().includes('already in progress') && bridge.chatAiAbort) {
@@ -1140,6 +1159,42 @@ export function initChatModule({
         setConversationSending(convId, false);
       }
     }
+  }
+
+  /** Its history went out in Private, and the user hasn't chosen to carry it into Anonymous. */
+  function heldPrivate(convId: string): boolean {
+    return !privateHistoryAllowed.has(convId) && conversationHasPrivateHistory(convId);
+  }
+
+  /**
+   * The last word before a request leaves: waits out a mode change still
+   * reaching the gateway (the send is held, not dropped), then refuses a chat
+   * sent in Private once Private is off. Null when it must not go out (refused,
+   * or stopped while held); otherwise whether the gateway must still be in
+   * Private when it sends, which the main process checks after its own wait.
+   */
+  async function clearForPrivacy(convId: string): Promise<{ requirePrivate: boolean } | null> {
+    if (await holdForPrivacySwitch() && !isConversationSending(convId)) return null;
+    const mode = privacyResource.getSnapshot().data?.mode;
+    const held = heldPrivate(convId);
+    if (mode === 'anonymous' && held) {
+      showChatError(PRIVATE_HISTORY_REFUSAL);
+      return null;
+    }
+    if (mode === 'private') markPrivateChat(convId);
+    return { requirePrivate: mode === 'private' || held };
+  }
+
+  /** Waits, showing why, while a mode change is reaching the gateway. True when it waited. */
+  async function holdForPrivacySwitch(): Promise<boolean> {
+    if (!getPrivacySwitchState().switching) return false;
+    const phase = privacyResource.getSnapshot().data?.mode === 'private' ? 'Switching to Private' : 'Switching to Anonymous';
+    uiState.chatThinkingPhase = phase;
+    notifyUiStateChanged();
+    await whenPrivacySwitchSettled();
+    if (uiState.chatThinkingPhase === phase) uiState.chatThinkingPhase = null;
+    notifyUiStateChanged();
+    return true;
   }
 
   /** A reply in this chat went out under Private (a failed one too: its prompt was sent). */
@@ -1174,8 +1229,6 @@ export function initChatModule({
   function retryAfterPayment(): void {
     const convId = uiState.chatActiveConversation;
     if (!convId || !fundsNoticeByConversation.has(convId) || isConversationSending(convId)) return;
-    // Nothing goes out under a policy the screen doesn't show.
-    if (getPrivacySwitchState().switching) return;
     const imageRequest = imageRetryByConversation.get(convId);
     if (imageRequest) {
       imageRetryByConversation.delete(convId);
@@ -1220,11 +1273,13 @@ export function initChatModule({
   async function runImageRequest(convId: string, request: ImageRequest): Promise<void> {
     if (!bridge?.chatGenerateImage) return;
     setConversationSending(convId, true);
-    uiState.chatThinkingPhase = request.sourceImageAttachmentId ? 'Editing image' : 'Generating image';
-    notifyUiStateChanged();
     queueScrollChatToBottom();
     try {
-      const result = await bridge.chatGenerateImage({ conversationId: convId, ...request });
+      const privacy = await clearForPrivacy(convId);
+      if (!privacy) return;
+      uiState.chatThinkingPhase = request.sourceImageAttachmentId ? 'Editing image' : 'Generating image';
+      notifyUiStateChanged();
+      const result = await bridge.chatGenerateImage({ conversationId: convId, ...request, ...privacy });
       const funds = fundsNoticeFromStopReason(result.stopReason);
       if (funds) {
         imageRetryByConversation.set(convId, request);
@@ -1280,6 +1335,11 @@ export function initChatModule({
       if (!convId) return;
       if (isConversationSending(convId)) {
         showChatError('This conversation already has a request in progress.');
+        return;
+      }
+      // An earlier image of a chat sent in Private would go out as the one to edit.
+      if (privacyResource.getSnapshot().data?.mode === 'anonymous' && heldPrivate(convId)) {
+        showChatError(PRIVATE_HISTORY_REFUSAL);
         return;
       }
 

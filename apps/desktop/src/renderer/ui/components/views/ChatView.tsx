@@ -42,7 +42,7 @@ import { VprHeaderActions } from '../vpr/VprHeaderActions';
 import { cancelVoiceRecording, startVoiceRecording, stopVoiceRecording } from '../../lib/voice-recorder';
 import { modelsForPrivacy, PrivacyDivider, PrivacyNote, PrivacyToggle, usePrivacyControl, usePrivateMode } from '../vpr/PrivacyToggle';
 import { homeProgress, useHomeProgress } from '../../../modules/app/home-progress';
-import { gatewayResource, usePrivacySwitch } from '../../../modules/app/vpr-resources';
+import { gatewayResource } from '../../../modules/app/vpr-resources';
 import { useCachedResource } from '../../../modules/app/cached-resource';
 import styles from './ChatView.module.scss';
 import bubbleStyles from '../chat/ChatBubble.module.scss';
@@ -215,8 +215,6 @@ const chatViewCache: ChatViewCache = {
 
 export function ChatView({ onSelectView }: ChatViewProps) {
   const privateMode = usePrivateMode();
-  // Nothing goes out until a mode change has reached the routing policy.
-  const { switching: privacySwitching } = usePrivacySwitch();
   const progress = useHomeProgress();
   // Counts the user's switches, so a dismissed privacy note can flash back.
   const [privacySwitches, setPrivacySwitches] = useState(0);
@@ -539,8 +537,6 @@ export function ChatView({ onSelectView }: ChatViewProps) {
     // jerking the pane mid-slide.
     if (inputRef.current) inputRef.current.focus({ preventScroll: true });
     if (activePendingQueue.length === 0) return;
-    // Nothing goes out under a policy the screen doesn't show.
-    if (privacySwitching) return;
     const head = activePendingQueue[0];
     if (!head) return;
     setPendingQueue((prev) => prev.filter((item) => item.id !== head.id));
@@ -551,7 +547,7 @@ export function ChatView({ onSelectView }: ChatViewProps) {
     } else {
       actions.sendMessage(head.text, head.attachments);
     }
-  }, [snap.chatInputDisabled, activePendingQueue, actions, privacySwitching]);
+  }, [snap.chatInputDisabled, activePendingQueue, actions]);
 
   // --- Divider drag (pointer capture — no orphaned listeners) ---
   const handleDividerPointerDown = useCallback((e: React.PointerEvent) => {
@@ -620,7 +616,8 @@ export function ChatView({ onSelectView }: ChatViewProps) {
   const handleSend = useCallback(() => {
     const text = inputValue.trim();
     if (!text && attachedFiles.length === 0) return;
-    if (noModelAvailable || privacySwitching) return;
+    // A send during a privacy switch is held until the switch lands.
+    if (noModelAvailable) return;
     // If the current turn is still streaming, park the draft as a pending
     // card above the composer and clear the input so the user can keep
     // typing the next one. The disabled→enabled effect flushes the queue
@@ -646,7 +643,7 @@ export function ChatView({ onSelectView }: ChatViewProps) {
       actions.sendMessage(text, filesToSend);
     }
     scrollChatToBottom('smooth');
-  }, [inputValue, attachedFiles, actions, snap.chatInputDisabled, snap.chatActiveConversation, resetComposer, noModelAvailable, privacySwitching, imageMode]);
+  }, [inputValue, attachedFiles, actions, snap.chatInputDisabled, snap.chatActiveConversation, resetComposer, noModelAvailable, imageMode]);
 
   const handleRemovePending = useCallback((id: string) => {
     setPendingQueue((prev) => prev.filter((item) => item.id !== id));
@@ -923,7 +920,6 @@ export function ChatView({ onSelectView }: ChatViewProps) {
   const imageRequestInProgress = showThinkingIndicator && isImageRequestPhase(snap.chatThinkingPhase);
   const chatComposerDisabled = noModelAvailable;
   const chatSendDisabled = chatComposerDisabled
-    || privacySwitching
     || (imageMode ? snap.chatSendDisabled || inputValue.trim().length === 0 : snap.chatSendDisabled && attachedFiles.length === 0);
 
   const workspacePath = snap.chatWorkspacePath || snap.chatWorkspaceDefaultPath;
@@ -1121,7 +1117,7 @@ export function ChatView({ onSelectView }: ChatViewProps) {
                   ...(fundsAction === 'console'
                     ? [{ label: 'Open gateway console', primary: true, onClick: () => { void window.antseedDesktop?.gatewayOpenConsole?.('/'); } }]
                     : []),
-                  ...(privacySwitching ? [] : [{ label: 'Try again', onClick: () => actions.retryAfterPayment() }]),
+                  { label: 'Try again', onClick: () => actions.retryAfterPayment() },
                   { label: 'Dismiss', onClick: () => actions.dismissFundsNotice() },
                 ]}
               >

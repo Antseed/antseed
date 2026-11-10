@@ -129,6 +129,18 @@ export function getPrivacySwitchState(): PrivacySwitchState {
   return privacySwitchState;
 }
 
+/** Settles once no mode change is reaching the gateway. */
+export function whenPrivacySwitchSettled(): Promise<void> {
+  if (!privacySwitchState.switching) return Promise.resolve();
+  return new Promise((resolve) => {
+    const unsubscribe = subscribePrivacySwitch(() => {
+      if (privacySwitchState.switching) return;
+      unsubscribe();
+      resolve();
+    });
+  });
+}
+
 /** Whether a mode change is still reaching the gateway. Sending waits for it. */
 export function usePrivacySwitch(): PrivacySwitchState {
   return useSyncExternalStore(subscribePrivacySwitch, getPrivacySwitchState, getPrivacySwitchState);

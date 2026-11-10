@@ -215,11 +215,11 @@ const api = {
   attachmentDownload(conversationId: string, attachmentId: string, suggestedName: string): Promise<{ ok: boolean; path?: string; error?: string }> {
     return ipcRenderer.invoke('attachment:download', conversationId, attachmentId, suggestedName);
   },
-  chatGenerateImage(payload: { conversationId: string; prompt: string; model: string; moderation?: 'auto' | 'low'; sourceImageAttachmentId?: string }): Promise<{ ok: boolean; user?: unknown; assistant?: unknown; error?: string; stopReason?: { kind: string; message: string; errorCode?: string } }> {
+  chatGenerateImage(payload: { conversationId: string; prompt: string; model: string; moderation?: 'auto' | 'low'; sourceImageAttachmentId?: string; requirePrivate?: boolean }): Promise<{ ok: boolean; user?: unknown; assistant?: unknown; error?: string; stopReason?: { kind: string; message: string; errorCode?: string } }> {
     return ipcRenderer.invoke('chat:generate-image', payload);
   },
-  chatAiSendStream(conversationId: string, message: string, model?: string, attachments?: PreparedChatAttachment[], permissionMode?: ChatPermissionMode): Promise<{ ok: boolean; error?: string; stopReason?: ChatAiStreamStopReason }> {
-    return ipcRenderer.invoke('chat:ai-send-stream', conversationId, message, model, attachments, permissionMode);
+  chatAiSendStream(conversationId: string, message: string, model?: string, attachments?: PreparedChatAttachment[], permissionMode?: ChatPermissionMode, options?: { requirePrivate?: boolean }): Promise<{ ok: boolean; error?: string; stopReason?: ChatAiStreamStopReason }> {
+    return ipcRenderer.invoke('chat:ai-send-stream', conversationId, message, model, attachments, permissionMode, options);
   },
   chatPermissionModeGet(modelId: string): Promise<{ ok: boolean; mode?: ChatPermissionMode; error?: string }> {
     return ipcRenderer.invoke('chat:permission-mode-get', modelId);
