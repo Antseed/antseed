@@ -124,6 +124,8 @@ export type ResolvedChatModel = {
 export type StreamingRunContext = {
   /** A seller's display name, when the model list has it. */
   sellerName: (peerId: string) => string | null;
+  /** Anonymous or Private as a send goes out now; null when the app doesn't own the policy. */
+  privacyMode?: () => 'anonymous' | 'private' | null;
   store: PiConversationStore;
   activeRunsByConversation: Map<string, ActiveRun>;
   configPath: string;
@@ -386,6 +388,9 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     let finalAssistantCreatedAt: number | undefined;
     let replyCutOff = false;
     let servedPeer: { peerId: string; peerName?: string } | null = null;
+    // Read after the engine waited for any privacy switch to settle.
+    const sentUnder = ctx.privacyMode?.() ?? null;
+    const routeMeta = (): AiMessageMeta => ({ ...(servedPeer ?? {}), ...(sentUnder ? { privacy: sentUnder } : {}) });
     const replyModel = splitPinnedModel(serviceId).modelId;
     const toolArgsById = new Map<string, Record<string, unknown>>();
 
@@ -496,7 +501,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     const unsubscribe = session.subscribe((event: AgentSessionEvent) => {
       if (event.type === 'turn_start') {
         sendToRenderer('chat:ai-stream-start', { conversationId, turn: turnIndex });
-        sendToRenderer('chat:ai-reply-meta', { conversationId, meta: { service: replyModel, ...(servedPeer ?? {}) } });
+        sendToRenderer('chat:ai-reply-meta', { conversationId, meta: { service: replyModel, ...routeMeta() } });
         turnIndex += 1;
         return;
       }
@@ -660,7 +665,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
         }
         if (message.role === 'assistant') {
           // Before it's saved, so a reply that was stopped still names its seller when reopened.
-          if (servedPeer) (message as AssistantMessage & { meta?: AiMessageMeta }).meta = { ...servedPeer };
+          (message as AssistantMessage & { meta?: AiMessageMeta }).meta = routeMeta();
           if (message.stopReason === 'error' || message.stopReason === 'aborted') {
             const errorMessage = typeof message.errorMessage === 'string' ? message.errorMessage : '';
             const rawContent = Array.isArray(message.content)
@@ -677,7 +682,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
           const assistantMessage = message as AssistantMessage & { meta?: AiMessageMeta };
           finalAssistantCreatedAt = assistantMessage.timestamp;
           replyCutOff = isReplyCutOff(assistantMessage);
-          assistantMessage.meta = { ...parseAssistantMetaFromSessionEvent(message, undefined), ...(servedPeer ?? {}) };
+          assistantMessage.meta = { ...parseAssistantMetaFromSessionEvent(message, undefined), ...routeMeta() };
           pendingAssistantMessage = mergeAssistantMessagesForUi(
             pendingAssistantMessage,
             convertAssistantMessageForUi(assistantMessage),
@@ -756,7 +761,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
         const peerName = sellerName(peerId);
         servedPeer = { peerId, ...(peerName ? { peerName } : {}) };
         answeringPeerId = peerId;
-        sendToRenderer('chat:ai-reply-meta', { conversationId, meta: { service: replyModel, ...servedPeer } });
+        sendToRenderer('chat:ai-reply-meta', { conversationId, meta: { service: replyModel, ...routeMeta() } });
       }, () => session.prompt(promptText || ' ', { images: effectiveAttachmentImages.length > 0 ? effectiveAttachmentImages : undefined }));
       await chatRun.result;
       // No tokens counted is the sign, but some sellers never report them, so the stream decides.

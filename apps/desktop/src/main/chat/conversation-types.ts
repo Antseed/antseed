@@ -41,6 +41,11 @@ export type AiMessageMeta = {
   /** The seller that answered, as the gateway reported it. */
   peerId?: string;
   peerName?: string;
+  /**
+   * The desktop key's mode when the reply was requested. A chat with a
+   * 'private' reply holds history only TEE sellers have seen.
+   */
+  privacy?: 'anonymous' | 'private';
   requestId?: string;
   latencyMs?: number;
   inputTokens?: number;

@@ -171,6 +171,7 @@ export type GenerateChatImageDependencies = {
   loadSourceAttachment?: (conversationId: string, attachmentId: string) => Promise<{ bytes: Buffer; fileName: string }>;
   signal?: AbortSignal;
   sellerName?: (peerId: string) => string | null;
+  privacyMode?: () => 'anonymous' | 'private' | null;
 };
 
 async function loadSourceAttachment(conversationId: string, attachmentId: string): Promise<{ bytes: Buffer; fileName: string }> {
@@ -228,6 +229,7 @@ export async function generateChatImage(
       });
     }
 
+    const privacy = dependencies.privacyMode?.() ?? null;
     const response = await fetch(`${endpoint.origin}${apiPath}`, {
       method: 'POST',
       headers,
@@ -296,6 +298,7 @@ export async function generateChatImage(
         outputImages: 1,
         ...(peerId ? { peerId } : {}),
         ...(peerName ? { peerName } : {}),
+        ...(privacy ? { privacy } : {}),
       },
     };
     return { ok: true, user, assistant };

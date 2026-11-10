@@ -45,7 +45,7 @@ import type { PiChatEngine } from './engine-types.js';
 import { recommendAppModels, toChatModel, toChatModels, type ChatModel } from '../gateway/catalog.js';
 import { fetchRoutePreview } from '../gateway/route-preview.js';
 import { splitPinnedModel } from '../../shared/pinned-model.js';
-import { getGatewayEndpoint, whenPrivacySettled, type GatewayEndpoint } from '../gateway/service.js';
+import { currentPrivacyMode, getGatewayEndpoint, whenPrivacySettled, type GatewayEndpoint } from '../gateway/service.js';
 import { clearGatewayModelCache, fetchGatewayModelEntries, type GatewayModelEntry } from '../gateway/models.js';
 import type {
   ActiveRun,
@@ -292,6 +292,7 @@ export function registerPiChatHandlers({
     clearActiveRun,
     abortAndClearActiveRun,
     sellerName,
+    privacyMode: currentPrivacyMode,
     ...(recordFirstChatStarted ? { recordFirstChatStarted } : {}),
     ...(recordChatRequestStarted ? { recordChatRequestStarted } : {}),
     ...(recordChatRequestFinished ? { recordChatRequestFinished } : {}),
@@ -449,7 +450,7 @@ export function registerPiChatHandlers({
         ...(moderation ? { moderation } : {}),
         service,
         ...(sourceImageAttachmentId ? { sourceImageAttachmentId } : {}),
-      }, { signal: controller.signal, sellerName });
+      }, { signal: controller.signal, sellerName, privacyMode: currentPrivacyMode });
     } catch (error) {
       return { ok: false, error: asErrorMessage(error) };
     } finally {
