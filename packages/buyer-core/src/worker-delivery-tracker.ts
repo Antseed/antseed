@@ -64,6 +64,13 @@ export class WorkerDeliveryTracker {
   private readonly _workerSellers = new Set<string>();
   /** pool seller -> requests the buyer sent it that went to an ordinary provider (not encrypted to a worker). */
   private readonly _poolSellerRequests = new Map<string, Set<string>>();
+  /**
+   * sellerPeerId -> its verified paid (not free) records: the only ones that
+   * can be owed, so the owed limits read these instead of every record. A
+   * record paid in full is usually retired at once, so they are few.
+   */
+  private readonly _verifiedPaid = new Map<string, Set<string>>();
+  private _verifiedPaidCount = 0;
 
   /**
    * `owes(requestId)` tells whether a request's cost is not yet fully signed:
@@ -77,6 +84,36 @@ export class WorkerDeliveryTracker {
   /** A verified paid answer whose cost is not yet fully signed. */
   private _owed(requestId: string, delivery: WorkerDelivery): boolean {
     return delivery.state === 'verified' && !delivery.free && this._owes(requestId);
+  }
+
+  /** Keep `_verifiedPaid` in step with a live record's state and free flag. */
+  private _index(requestId: string, delivery: WorkerDelivery, live = true): void {
+    const verifiedPaid = live && delivery.state === 'verified' && !delivery.free;
+    let ids = this._verifiedPaid.get(delivery.sellerPeerId);
+    if (verifiedPaid && !ids?.has(requestId)) {
+      if (!ids) {
+        ids = new Set();
+        this._verifiedPaid.set(delivery.sellerPeerId, ids);
+      }
+      ids.add(requestId);
+      this._verifiedPaidCount += 1;
+    } else if (!verifiedPaid && ids?.delete(requestId)) {
+      this._verifiedPaidCount -= 1;
+      if (ids.size === 0) this._verifiedPaid.delete(delivery.sellerPeerId);
+    }
+  }
+
+  private _countOwed(ids: Iterable<string>): number {
+    let owed = 0;
+    for (const id of ids) if (this._owes(id)) owed += 1;
+    return owed;
+  }
+
+  /** Records whose cost is not yet fully signed, across sellers. */
+  private _owedCount(): number {
+    let owed = 0;
+    for (const ids of this._verifiedPaid.values()) owed += this._countOwed(ids);
+    return owed;
   }
 
   get(requestId: string): WorkerDelivery | undefined {
@@ -102,6 +139,7 @@ export class WorkerDeliveryTracker {
       delete delivery.worker;
       delivery.state = 'pending';
       delete delivery.usage;
+      this._index(requestId, delivery);
       return;
     }
     if ((this._forgotten.get(sellerPeerId)?.size ?? 0) >= MAX_FORGOTTEN_WORKER_REQUESTS) {
@@ -110,14 +148,8 @@ export class WorkerDeliveryTracker {
         'buyer-session-state',
       );
     }
-    let owed = 0;
-    let sellerOwed = 0;
-    for (const [id, record] of this._deliveries) {
-      if (!this._owed(id, record)) continue;
-      owed += 1;
-      if (record.sellerPeerId === sellerPeerId) sellerOwed += 1;
-    }
-    if (sellerOwed >= MAX_OWED_WORKER_REQUESTS) {
+    const sellerVerifiedPaid = this._verifiedPaid.get(sellerPeerId);
+    if ((sellerVerifiedPaid?.size ?? 0) >= MAX_OWED_WORKER_REQUESTS && this._countOwed(sellerVerifiedPaid!) >= MAX_OWED_WORKER_REQUESTS) {
       throw buyerFault(
         `[BuyerPayment] Too many partly paid colony-pool requests to ${sellerPeerId.slice(0, 12)}...; refusing further worker requests to it until the reserve grows`,
         'buyer-session-state',
@@ -126,7 +158,10 @@ export class WorkerDeliveryTracker {
     // The same request retried through another seller: the first seller's record is retired, not dropped.
     if (delivery) this.retire(requestId);
     // Owed records don't take cache room: they are bounded per seller above.
-    if (this._deliveries.size - owed >= MAX_WORKER_DELIVERIES) this._evict();
+    if (
+      this._deliveries.size - this._verifiedPaidCount >= MAX_WORKER_DELIVERIES
+      || this._deliveries.size - this._owedCount() >= MAX_WORKER_DELIVERIES
+    ) this._evict();
     // The buyer is sending this id again: the new record gates its payment from here on.
     this._forgotten.get(sellerPeerId)?.delete(requestId);
     this._completed.get(sellerPeerId)?.delete(requestId);
@@ -140,7 +175,9 @@ export class WorkerDeliveryTracker {
    */
   markFree(sellerPeerId: string, requestId: string): void {
     const delivery = this._deliveries.get(requestId);
-    if (delivery?.sellerPeerId === sellerPeerId) delivery.free = true;
+    if (delivery?.sellerPeerId !== sellerPeerId) return;
+    delivery.free = true;
+    this._index(requestId, delivery);
   }
 
   /**
@@ -175,6 +212,7 @@ export class WorkerDeliveryTracker {
     if (!delivery) return;
     const verified = delivery.state === 'verified';
     if (!verified) this._settle(requestId, 'failed');
+    this._index(requestId, delivery, false);
     this._deliveries.delete(requestId);
     const sets = verified ? this._completed : this._forgotten;
     let ids = sets.get(delivery.sellerPeerId);
@@ -205,6 +243,7 @@ export class WorkerDeliveryTracker {
     const delivery = this._deliveries.get(requestId);
     if (delivery?.sellerPeerId === sellerPeerId) {
       this._settle(requestId, 'failed');
+      this._index(requestId, delivery, false);
       this._deliveries.delete(requestId);
     }
     this._forgotten.get(sellerPeerId)?.delete(requestId);
@@ -262,6 +301,7 @@ export class WorkerDeliveryTracker {
     delivery.state = state;
     if (usage) delivery.usage = usage;
     if (worker) delivery.worker = worker;
+    this._index(requestId, delivery);
     const waiters = delivery.waiters.splice(0);
     for (const waiter of waiters) waiter();
   }

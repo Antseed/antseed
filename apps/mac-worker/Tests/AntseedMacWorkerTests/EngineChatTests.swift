@@ -94,6 +94,37 @@ final class EngineChatTests: XCTestCase {
         XCTAssertNil(refused(["stop": NSNull(), "logprobs": NSNull(), "n": NSNull()]))
     }
 
+    func testReadsTheGenerationBudgetAndRefusesMalformedValues() throws {
+        let defaults = try EngineChat.generation(of: ["max_tokens": NSNull(), "temperature": NSNull()])
+        XCTAssertEqual(defaults.maxTokens, 512)
+        XCTAssertEqual(defaults.temperature, 0.7)
+        XCTAssertFalse(defaults.stream)
+        let set = try EngineChat.generation(of: ["max_completion_tokens": 64, "temperature": 0, "stream": true])
+        XCTAssertEqual(set.maxTokens, 64)
+        XCTAssertEqual(set.temperature, 0)
+        XCTAssertTrue(set.stream)
+        XCTAssertEqual(try EngineChat.generation(of: ["max_tokens": 2048.0]).maxTokens, 2048)
+
+        func refused(_ request: [String: Any]) -> String? {
+            do {
+                _ = try EngineChat.generation(of: request)
+                return nil
+            } catch {
+                return error.localizedDescription
+            }
+        }
+        XCTAssertEqual(refused(["max_tokens": "1000000"]), "`max_tokens` must be a whole number of at least 1")
+        XCTAssertEqual(refused(["max_tokens": 0]), "`max_tokens` must be a whole number of at least 1")
+        XCTAssertEqual(refused(["max_tokens": 1.5]), "`max_tokens` must be a whole number of at least 1")
+        XCTAssertEqual(refused(["max_tokens": true]), "`max_tokens` must be a whole number of at least 1")
+        XCTAssertEqual(refused(["max_completion_tokens": -1]), "`max_completion_tokens` must be a whole number of at least 1")
+        XCTAssertEqual(refused(["temperature": "invalid"]), "`temperature` must be a number from 0 to 2")
+        XCTAssertEqual(refused(["temperature": 3]), "`temperature` must be a number from 0 to 2")
+        XCTAssertEqual(refused(["temperature": Double.nan]), "`temperature` must be a number from 0 to 2")
+        XCTAssertEqual(refused(["stream": "yes"]), "`stream` must be true or false")
+        XCTAssertEqual(refused(["stream": 1]), "`stream` must be true or false")
+    }
+
     func testRefusesInputItCannotRead() {
         func refused(_ request: [String: Any]) -> String? {
             do {

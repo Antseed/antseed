@@ -23,7 +23,7 @@ enum EngineChat {
     /// The request fields that shape the answer, checked and in the engine's
     /// form: the prompt (`messages`, `tools`, `tool_choice`,
     /// `parallel_tool_calls`), `stop`, `response_format` and the sampling
-    /// fields. The token budget and temperature are read by the caller.
+    /// fields. The token budget, temperature and streaming are `generation(of:)`.
     static func fields(of request: [String: Any]) throws -> [String: Any] {
         guard let list = request["messages"] as? [[String: Any]], !list.isEmpty else {
             throw Unsupported(reason: "The request has no messages")
@@ -73,6 +73,34 @@ enum EngineChat {
             throw Unsupported(reason: "`n` must be 1; this worker returns one choice")
         }
         return fields
+    }
+
+    /// How much to generate and how: `max_tokens` (or `max_completion_tokens`,
+    /// default 512) as a whole number of at least 1, `temperature` (default
+    /// 0.7) from 0 to 2, and `stream`. A value of the wrong kind refuses the
+    /// request rather than falling back to the default.
+    static func generation(of request: [String: Any]) throws -> (maxTokens: Int, temperature: Float, stream: Bool) {
+        var maxTokens = 512
+        for name in ["max_completion_tokens", "max_tokens"] {
+            guard let value = present(request[name]) else { continue }
+            guard isNumber(value), let number = value as? NSNumber, let tokens = Int(exactly: number.doubleValue), tokens >= 1 else {
+                throw Unsupported(reason: "`\(name)` must be a whole number of at least 1")
+            }
+            maxTokens = tokens
+        }
+        var temperature = 0.7
+        if let value = present(request["temperature"]) {
+            guard isNumber(value), let number = value as? NSNumber, number.doubleValue.isFinite, (0...2).contains(number.doubleValue) else {
+                throw Unsupported(reason: "`temperature` must be a number from 0 to 2")
+            }
+            temperature = number.doubleValue
+        }
+        var stream = false
+        if let value = present(request["stream"]) {
+            guard isBool(value), let flag = value as? Bool else { throw Unsupported(reason: "`stream` must be true or false") }
+            stream = flag
+        }
+        return (maxTokens, Float(temperature), stream)
     }
 
     /// `{type: "text"}`, `{type: "json_object"}` or `{type: "json_schema", json_schema: {schema, ...}}`.

@@ -113,10 +113,10 @@ actor LocalModel {
             guard FileManager.default.fileExists(atPath: root.appendingPathComponent(relative).path, isDirectory: &isDirectory), !isDirectory.boolValue else { continue }
             paths.append(relative)
         }
-        var listing = ""
-        for relative in paths.sorted(by: { $0.utf8.lexicographicallyPrecedes($1.utf8) }) {
-            listing += "\(try fileSHA256(root.appendingPathComponent(relative)))  ./\(relative)\n"
-        }
+        let listing = try paths
+            .sorted { $0.utf8.lexicographicallyPrecedes($1.utf8) }
+            .map { "\(try fileSHA256(root.appendingPathComponent($0)))  ./\($0)\n" }
+            .joined()
         return SHA256.hash(data: Data(listing.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 

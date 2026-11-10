@@ -1,7 +1,7 @@
 import { COLONY_POOL_ABI, multicallRead, parseWorkerPayoutLink } from '@antseed/node/payments';
 import { Interface, ZeroAddress } from 'ethers';
 import type { WorkerPayoutLinkRequest, ColonyPoolClaimRequest, ColonyPoolForgetRequest, ColonyPoolsView } from '../api-types.js';
-import type { AntsContext } from './context.js';
+import type { AntsContext, ResolvedStack } from './context.js';
 import type { StepReporter } from './steps.js';
 
 /** AntseedColonyPool.MAX_EPOCHS_PER_CLAIM: epochs per claimAnts / claimEpochEmissions call. */
@@ -43,13 +43,13 @@ function batches<T>(items: T[], size: number): T[][] {
 export async function colonyPools(ctx: AntsContext): Promise<ColonyPoolsView> {
   const addresses = ctx.colonyPoolAddresses();
   if (addresses.length === 0 || ctx.address === ZeroAddress) return { pools: [] };
-  const { currentEpoch } = await ctx.stack();
-  const epochs = finishedEpochs(currentEpoch);
+  const stack = await ctx.stack();
+  const epochs = finishedEpochs(stack.currentEpoch);
   // One pool that can't be read (a bad link, an RPC error) must not hide the others.
   return {
     pools: await Promise.all(addresses.map(async (address) => {
       try {
-        return await readColonyPool(ctx, address, epochs);
+        return await readColonyPool(ctx, address, epochs, stack);
       } catch (error) {
         return {
           address, usdcOwed: '0', antsOwed: '0', antsEpochs: [], unfundedEpochs: [],
@@ -61,8 +61,8 @@ export async function colonyPools(ctx: AntsContext): Promise<ColonyPoolsView> {
   };
 }
 
-/** What one colony pool owes the connected wallet over `epochs`. */
-async function readColonyPool(ctx: AntsContext, address: string, epochs: number[]): Promise<ColonyPoolsView['pools'][number]> {
+/** What one colony pool owes the connected wallet over `epochs`, read against `stack`. */
+async function readColonyPool(ctx: AntsContext, address: string, epochs: number[], stack: ResolvedStack): Promise<ColonyPoolsView['pools'][number]> {
   const pool = ctx.colonyPool(address);
   // Only an epoch the wallet has weight in can owe it ANTS, so the rest cost one batched read each.
   const [usdcOwed, weights] = await Promise.all([
@@ -76,7 +76,7 @@ async function readColonyPool(ctx: AntsContext, address: string, epochs: number[
   ]);
   const perEpoch = weighted.map((epoch, index) => ({ epoch, owed: owedEach[index]!, unfunded: fundedEach[index] === 0n }));
   const antsEpochs = perEpoch.filter((entry) => entry.owed > 0n).map((entry) => entry.epoch);
-  const unfundedEpochs = await withUpstreamReward(ctx, address, perEpoch.filter((entry) => entry.unfunded).map((entry) => entry.epoch));
+  const unfundedEpochs = await withUpstreamReward(ctx, stack, address, perEpoch.filter((entry) => entry.unfunded).map((entry) => entry.epoch));
   const antsOwed = perEpoch.reduce((sum, entry) => sum + entry.owed, 0n);
   return { address, usdcOwed: usdcOwed.toString(), antsOwed: antsOwed.toString(), antsEpochs, unfundedEpochs, forgettable: ctx.isLinkedColonyPool(address) };
 }
@@ -86,11 +86,10 @@ async function readColonyPool(ctx: AntsContext, address: string, epochs: number[
  * no seller reward for would only spend gas. One whose reward can't be read
  * (or is locked) is kept, so the pull can say why.
  */
-async function withUpstreamReward(ctx: AntsContext, pool: string, epochs: number[]): Promise<number[]> {
+async function withUpstreamReward(ctx: AntsContext, stack: ResolvedStack, pool: string, epochs: number[]): Promise<number[]> {
   if (epochs.length === 0) return epochs;
-  const { registryPointers } = await ctx.stack();
   const pending = await multicallRead(ctx.provider(), epochs.map((epoch) => ({
-    target: registryPointers.emissions, iface: EMISSIONS_READS, method: 'pendingEmissions', args: [pool, [epoch]],
+    target: stack.registryPointers.emissions, iface: EMISSIONS_READS, method: 'pendingEmissions', args: [pool, [epoch]],
   })));
   return epochs.filter((_, index) => pending[index]?.[0] !== 0n);
 }
@@ -100,7 +99,8 @@ export async function claimColonyPool(ctx: AntsContext, request: ColonyPoolClaim
   const address = request.pool.toLowerCase();
   if (!ctx.colonyPoolAddresses().includes(address)) throw new Error('Unknown colony pool');
   const pool = ctx.colonyPool(request.pool);
-  const view = ctx.address === ZeroAddress ? undefined : await readColonyPool(ctx, address, finishedEpochs((await ctx.stack()).currentEpoch));
+  const stack = ctx.address === ZeroAddress ? undefined : await ctx.stack();
+  const view = stack && await readColonyPool(ctx, address, finishedEpochs(stack.currentEpoch), stack);
   const hashes: string[] = [];
   if (request.usdc && view && BigInt(view.usdcOwed) > 0n) {
     const hash = await pool.claimUsdc(signer);

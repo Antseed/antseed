@@ -415,11 +415,11 @@ final class WorkerController: ObservableObject {
         guard let request = try? JSONSerialization.jsonObject(with: opened.body) as? [String: Any] else {
             return fail(id, "Request body is not JSON")
         }
-        let requestedMax = request["max_tokens"] as? Int ?? request["max_completion_tokens"] as? Int ?? 512
-        let maxTokens = full ? max(1, requestedMax) : max(1, min(requestedMax, checkLimit))
         let chat: [String: Any]
+        let generation: (maxTokens: Int, temperature: Float, stream: Bool)
         do {
             chat = try EngineChat.fields(of: request)
+            generation = try EngineChat.generation(of: request)
         } catch {
             // The buyer's request, not this worker, is at fault: answered, never billed, never failed over.
             return refuse(id, status: 400, error.localizedDescription, sealer: opened.sealer)
@@ -427,8 +427,9 @@ final class WorkerController: ObservableObject {
         // Taken: the pool now gives it the full first-byte deadline instead of failing over.
         send(["t": "accepted", "id": id])
 
-        let stream = request["stream"] as? Bool ?? false
-        let temperature = Float(request["temperature"] as? Double ?? 0.7)
+        let maxTokens = full ? generation.maxTokens : min(generation.maxTokens, checkLimit)
+        let stream = generation.stream
+        let temperature = generation.temperature
         let created = Int(Date().timeIntervalSince1970)
         let completionId = "chatcmpl-\(UUID().uuidString.prefix(12).lowercased())"
         let service = config.service
