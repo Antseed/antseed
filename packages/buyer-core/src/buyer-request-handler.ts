@@ -316,6 +316,8 @@ export class BuyerRequestHandler {
     const workerE2E = needsWorkerE2E ? this._deps.workerE2E! : null;
     const plainReq = req;
     let sealed: SealedWorkerRequest | null = null;
+    // Workers were chosen (and reserved) for this request, though sealing it may still fail.
+    let reserved = false;
     let wireResponse: SerializedHttpResponse | null = null;
     const sealForAttempt = async (): Promise<void> => {
       if (!workerE2E || !workerService) return;
@@ -331,7 +333,10 @@ export class BuyerRequestHandler {
       const chooseRecipients = (assigned: string[]): string[] => {
         const recipients = isFreeService ? assigned : bpm?.creditableWorkers(peer.peerId, assigned) ?? assigned;
         // Only a worker it is encrypted for can answer it; the one that does is credited.
-        if (recipients.length > 0) bpm?.recordWorkerAttribution(peer.peerId, plainReq.requestId, recipients, isFreeService);
+        if (recipients.length > 0) {
+          bpm?.recordWorkerAttribution(peer.peerId, plainReq.requestId, recipients, isFreeService);
+          reserved = true;
+        }
         return recipients;
       };
       // The pool the request is for: the one it names, else the one it was routed to. A request
@@ -629,7 +634,8 @@ export class BuyerRequestHandler {
         try {
           await sealForAttempt();
         } catch (error) {
-          if (sealed) this._deps.negotiator?.bpm?.recordWorkerDelivery(plainReq.requestId, null);
+          // Its chosen workers are released even when sealing failed after choosing them.
+          if (sealed || reserved) this._deps.negotiator?.bpm?.recordWorkerDelivery(plainReq.requestId, null);
           throw error;
         }
         const session: SealedWorkerRequest | null = sealed;

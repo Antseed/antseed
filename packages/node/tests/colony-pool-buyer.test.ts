@@ -113,7 +113,7 @@ function deviceAttestation(kind: Device, worker: string, attestationKey: string,
   };
 }
 
-function fakePool(opts: { payments?: boolean; bpm?: Record<string, unknown>; now?: () => number; appleCa?: ReturnType<typeof createTestAppleCa>; deviceNotBefore?: Date; workers?: number; recipients?: number; certSeller?: string; unavailableOnce?: boolean; tamper?: 'ciphertext' | 'usage'; attest?: Attest | Attest[]; device?: Device; requireApple?: boolean; streamTamper?: 'no-end' | 'usage' | 'not-sse' | 'padding'; maxStreamBufferBytes?: number; failover?: boolean; forgeAnswer?: boolean; noHook?: boolean; assignFails?: boolean } = {}) {
+function fakePool(opts: { payments?: boolean; bpm?: Record<string, unknown>; failSigning?: boolean; now?: () => number; appleCa?: ReturnType<typeof createTestAppleCa>; deviceNotBefore?: Date; workers?: number; recipients?: number; certSeller?: string; unavailableOnce?: boolean; tamper?: 'ciphertext' | 'usage'; attest?: Attest | Attest[]; device?: Device; requireApple?: boolean; streamTamper?: 'no-end' | 'usage' | 'not-sse' | 'padding'; maxStreamBufferBytes?: number; failover?: boolean; forgeAnswer?: boolean; noHook?: boolean; assignFails?: boolean } = {}) {
   const workers = Array.from({ length: opts.workers ?? 1 }, () => ({ wallet: Wallet.createRandom(), key: generateWorkerEncryptionKey() }));
   let next = 0;
   let unavailable = opts.unavailableOnce === true;
@@ -223,7 +223,7 @@ function fakePool(opts: { payments?: boolean; bpm?: Record<string, unknown>; now
     getMux: vi.fn(() => proxyMux as any),
     getVerificationMux: vi.fn(() => ({} as any)),
     registerPaymentMux: vi.fn(),
-    workerE2E: opts.noHook ? undefined : new NodeWorkerE2EClient(buyer, {
+    workerE2E: opts.noHook ? undefined : new NodeWorkerE2EClient(opts.failSigning ? { address: buyer.address, signMessage: async () => { throw new Error('signer locked'); } } as never : buyer, {
       ...(opts.recipients ? { recipients: opts.recipients } : {}),
       requireAppleVerifiedWorkers: opts.requireApple === true,
       deviceAttestationRoots: [(opts.appleCa ?? appleCa).rootPem],
@@ -279,6 +279,15 @@ describe('buyer requests to colony pools', () => {
     creditable = (assigned) => assigned;
     await pool.handler.sendRequest(peer, chatRequest('c3'));
     expect(pool.assigned.length).toBe(assignments + 1);
+  });
+
+  it('releases the workers it chose when sealing then fails, so they hold no attribution slot', async () => {
+    const channel = `0x${'ab'.repeat(32)}`;
+    const pool = fakePool({ failSigning: true, bpm: { getActiveSession: () => ({ sessionId: channel }), creditableWorkers: (_seller: string, assigned: string[]) => assigned } });
+    await expect(pool.handler.sendRequest(peer, chatRequest('f1'))).rejects.toThrow(/signer locked/);
+    const recorded = pool.calls.filter((call) => call.method === 'recordWorkerAttribution' || call.method === 'recordWorkerDelivery').map((call) => [call.method, call.args[0], call.args[1]]);
+    expect(recorded).toEqual([['recordWorkerAttribution', peer.peerId, 'f1'], ['recordWorkerDelivery', 'f1', null]]);
+    expect(pool.wire.filter((req) => req.path !== WORKER_ASSIGN_PATH)).toHaveLength(0);
   });
 
   it('decrypts a streamed answer for the client', async () => {

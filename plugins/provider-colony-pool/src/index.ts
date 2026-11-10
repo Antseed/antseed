@@ -9,6 +9,7 @@ import {
   parseServiceCapabilitiesJson,
   parseServicePricingJson,
 } from '@antseed/provider-core';
+import { isChargeablePrice } from '@antseed/node/worker-e2e';
 import { WorkerLedger } from './ledger.js';
 import { NanoMdmAttestor } from './mdm.js';
 import { parseModelPins } from './model-pins.js';
@@ -88,10 +89,7 @@ const plugin: AntseedProviderPlugin = {
       ...(servicePricing ? { services: servicePricing } : {}),
     };
     // Workers are paid from what buyers pay, and a free request reaches them without a paid channel to bind.
-    const free = catalog.filter((service) => {
-      const price = pricing.services?.[service] ?? pricing.defaults;
-      return !price.inputUsdPerMillion && !price.outputUsdPerMillion && !price.cachedInputUsdPerMillion;
-    });
+    const free = catalog.filter((service) => !isChargeablePrice(pricing.services?.[service] ?? pricing.defaults));
     if (free.length > 0) {
       throw new Error(`A colony pool can't sell ${free.join(', ')} for free: set ANTSEED_INPUT_USD_PER_MILLION and ANTSEED_OUTPUT_USD_PER_MILLION, or ANTSEED_SERVICE_PRICING_JSON`);
     }
