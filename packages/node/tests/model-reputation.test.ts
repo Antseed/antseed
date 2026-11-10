@@ -125,4 +125,24 @@ describe('model reputation', () => {
       expect(modelB[i]).not.toBe(modelB[i - 1]);
     }
   });
+
+  it('rotates two seller pools of one model on their own', () => {
+    const pool = (left: string, right: string) => [left, right]
+      .map((peerId) => ({ peerId, effectiveReputationScore: 80 }))
+      .sort(compareEffectiveModelReputation);
+    const first = pool('a', 'b');
+    const second = pool('c', 'd');
+    const firstPicks: string[] = [];
+    const secondPicks: string[] = [];
+    for (let i = 0; i < 4; i += 1) {
+      firstPicks.push(rotateEqualReputationHead([...first], { key: 'model-a' })[0]?.peerId ?? '');
+      secondPicks.push(rotateEqualReputationHead([...second], { key: 'model-a' })[0]?.peerId ?? '');
+    }
+    expect(new Set(firstPicks)).toEqual(new Set(['a', 'b']));
+    expect(new Set(secondPicks)).toEqual(new Set(['c', 'd']));
+    for (let i = 1; i < firstPicks.length; i += 1) {
+      expect(firstPicks[i]).not.toBe(firstPicks[i - 1]);
+      expect(secondPicks[i]).not.toBe(secondPicks[i - 1]);
+    }
+  });
 });

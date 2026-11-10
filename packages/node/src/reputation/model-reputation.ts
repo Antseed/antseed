@@ -148,21 +148,23 @@ function reputationPoolKey<T extends { peerId: string }>(
   group: number,
   key: string | undefined,
 ): string {
-  if (key && key.length > 0) return `key:${key}`;
   const ids: string[] = [];
   for (let index = 0; index < group; index += 1) {
     const peerId = ordered[index]?.peerId;
     if (peerId) ids.push(peerId);
   }
   ids.sort();
-  return ids.length > 0 ? `peers:${ids.join('\n')}` : 'default';
+  const sellers = ids.join('\n');
+  if (key && key.length > 0) return sellers.length > 0 ? `key:${key}\n${sellers}` : `key:${key}`;
+  return sellers.length > 0 ? `peers:${sellers}` : 'default';
 }
 
 /**
  * Rotate the leading run of equal reputation. Peer id order underneath stays put.
  * `advance: false` peeks the next seller, which a route preview uses so it does
- * not spend the turn a live request should take. `key` keeps one model's
- * rotation from moving another's when they share the same sellers.
+ * not spend the turn a live request should take. A model key is combined with
+ * the tied seller ids, so one model does not share a counter across different
+ * seller pools, and two models that share sellers do not move each other.
  */
 export function rotateEqualReputationHead<
   T extends { peerId: string; effectiveReputationScore?: number | null },
