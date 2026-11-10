@@ -71,7 +71,7 @@ interface ConfigField {
 | `OPENAI_BASE_URL`, `OPENAI_API_KEY` | `baseUrl` and the variable named by `apiKeyEnv` |
 | `OPENAI_PATH_REWRITE_JSON` | `pathRewrite` |
 
-The last two rows use the `OPENAI_` prefix for any plugin other than the built-in `local-llm`, `typesafe`, `venice-video` and `fal-video`. To use a provider's `baseUrl` in your plugin, declare and read `OPENAI_BASE_URL`, or have sellers set your own variable in the environment.
+The last two rows use the `OPENAI_` prefix for any plugin other than the built-in `local-llm`, `typesafe`, `venice-video`, `fal-video`, `fal-image`, `alibaba-video` and `irp-router`. To use a provider's `baseUrl` in your plugin, declare and read `OPENAI_BASE_URL`, or have sellers set your own variable in the environment.
 
 `@antseed/provider-core` exports parsers for these values: `parseCsv`, `parseServicePricingJson`, `parseServiceAliasMap`, `parseServiceCapabilitiesJson` and `parseServiceUnitBillingModelsJson`.
 
