@@ -115,9 +115,11 @@ final class RequestGateTests: XCTestCase {
     }
 
     func testChannelsAreCheckedByDefault() {
-        // No --rpc still means a verifying worker: Base mainnet's public RPC.
-        XCTAssertEqual(WorkerConfig.fromCommandLine(["app"]).rpcURL?.absoluteString, GeneratedContractAddresses.defaultRPC)
-        XCTAssertEqual(WorkerConfig.fromCommandLine(["app", "--rpc", "http://127.0.0.1:8545"]).rpcURL?.absoluteString, "http://127.0.0.1:8545")
+        // No --rpc still means a verifying worker: Base mainnet's default RPC, then its fallbacks.
+        XCTAssertEqual(WorkerConfig.fromCommandLine(["app"]).rpcURLs.map(\.absoluteString), [GeneratedContractAddresses.defaultRPC] + GeneratedContractAddresses.fallbackRPCs)
+        XCTAssertFalse(GeneratedContractAddresses.fallbackRPCs.isEmpty)
+        // An operator's RPC replaces them all.
+        XCTAssertEqual(WorkerConfig.fromCommandLine(["app", "--rpc", "http://127.0.0.1:8545"]).rpcURLs.map(\.absoluteString), ["http://127.0.0.1:8545"])
     }
 }
 

@@ -12,10 +12,11 @@ struct WorkerConfig {
     var modelId = "mlx-community/Qwen3.5-2B-MLX-4bit@93760be4f1f69842a46bc13dbdc0f19e291392a3"
     /// The TensorFold engine; `scripts/build-app.sh` bundles it.
     var engineURL = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/tensorfold/bin/tensorfold-native")
-    /// RPC that request channels (and the payout wallet) are read on: Base
-    /// mainnet's public RPC unless `--rpc` names another. Buyer requests are
-    /// refused without one, so the pool can't buy work with made-up channels.
-    var rpcURL: URL? = URL(string: GeneratedContractAddresses.defaultRPC)
+    /// RPCs that request channels (and the payout wallet) are read on, in the
+    /// order tried: Base mainnet's default RPC and its fallbacks, unless `--rpc`
+    /// names one (which replaces them all). Buyer requests are refused without
+    /// one, so the pool can't buy work with made-up channels.
+    var rpcURLs: [URL] = ([GeneratedContractAddresses.defaultRPC] + GeneratedContractAddresses.fallbackRPCs).compactMap(URL.init(string:))
     /// The AntseedChannels contract to check request channels on (default: the
     /// deployment for the RPC's chain; required on other chains, such as a local one).
     var channelsAddress: String?
@@ -54,7 +55,7 @@ struct WorkerConfig {
             case "--service": config.service = value
             case "--model": config.modelId = value
             case "--engine": config.engineURL = URL(fileURLWithPath: value)
-            case "--rpc": config.rpcURL = URL(string: value)
+            case "--rpc": config.rpcURLs = URL(string: value).map { [$0] } ?? []
             case "--channels": config.channelsAddress = value
             case "--data-dir": config.dataDirectory = URL(fileURLWithPath: value, isDirectory: true)
             case "--snapshot": config.snapshotDirectory = URL(fileURLWithPath: value, isDirectory: true)

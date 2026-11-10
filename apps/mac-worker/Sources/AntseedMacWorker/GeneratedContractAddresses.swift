@@ -8,4 +8,10 @@ enum GeneratedContractAddresses {
     ]
     /// base-mainnet's `rpcUrl` in packages/node/src/payments/chain-config.ts.
     static let defaultRPC = "https://base.gateway.tenderly.co"
+    /// Its `fallbackRpcUrls`, tried in order when `defaultRPC` fails.
+    static let fallbackRPCs: [String] = [
+        "https://base.drpc.org",
+        "https://base-public.nodies.app",
+        "https://mainnet.base.org",
+    ]
 }

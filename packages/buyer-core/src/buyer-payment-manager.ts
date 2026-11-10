@@ -132,6 +132,10 @@ function workerDeliveryProblem(
   pricing: ServicePricing | null | undefined,
   unitBilled: boolean,
 ): string | null {
+  // Before anything is priced: a request sent free owes nothing, whatever the session's paid pricing says.
+  if (delivery.free && (hasPositiveCost(payload.lastRequestCost) || payload.billingUsage != null)) {
+    return 'it was sent as a free request, so its answer owes nothing';
+  }
   if (delivery.state === 'pending') return 'the worker\'s answer was not verified in time';
   if (delivery.state === 'failed' || !delivery.usage) return 'the worker\'s answer did not verify';
   const usage = delivery.usage;
@@ -1684,6 +1688,12 @@ export class BuyerPaymentManager {
     ) {
       throw buyerFault(
         `[BuyerPayment] Request ${stats.requestId} to a colony-pool worker has no verified answer to pay for`,
+        'buyer-session-state',
+      );
+    }
+    if (workerDelivery?.free) {
+      throw buyerFault(
+        `[BuyerPayment] Request ${stats.requestId} to a colony-pool worker was sent free: its answer owes nothing`,
         'buyer-session-state',
       );
     }

@@ -821,6 +821,24 @@ describe('BuyerPaymentManager', () => {
       expect(decodeWorkerTail(sent.metadata)).toEqual([{ worker, cumulativeAmount: 9000n }]);
     });
 
+    it('never charges a verified worker answer to a request sent free, on a channel with paid pricing', async () => {
+      const { sellerPeerId } = await setup('seller-pool-free-request');
+      manager.recordWorkerAttribution(sellerPeerId, 'req-free-worker', worker, true);
+      manager.recordWorkerDelivery('req-free-worker', usage);
+      const channelId = manager.getActiveSession(sellerPeerId)!.sessionId;
+      const signed = manager.getCumulativeAmount(sellerPeerId);
+      // Passes the paid pricing checks (1000 in + 400 out = 9000), so only the free flag refuses it.
+      await manager.handleNeedAuth(sellerPeerId, {
+        channelId, requiredCumulativeAmount: '19000', currentAcceptedCumulative: '10000', deposit: '1000000',
+        requestId: 'req-free-worker', inputTokens: '1000', outputTokens: '400', lastRequestCost: '9000',
+      }, mux);
+      expect(mux.sentSpendingAuths).toHaveLength(0);
+      await expect(manager.signPerRequestAuth(sellerPeerId, {
+        inputBytes: SAMPLE_INPUT, outputBytes: SAMPLE_OUTPUT, sellerClaimedCost: 9000n, requestId: 'req-free-worker', service: 'qwen',
+      })).rejects.toThrow(/sent free/);
+      expect(manager.getCumulativeAmount(sellerPeerId)).toBe(signed);
+    });
+
     it('refuses a NeedAuth that arrives before a tampered or truncated answer fails verification', async () => {
       const { needAuth } = await setup('seller-pool-fails-later');
       const pending = needAuth();

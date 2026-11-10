@@ -4,9 +4,13 @@ import Foundation
 /// buyer of this pool, the chain id the payout authorization is bound to, and
 /// the pool's payout records.
 struct Chain {
-    let rpcURL: URL
-    /// Per-request deadline; nil keeps URLSession's default.
+    /// Tried in order: a call that fails on one (unreachable, timed out, rate
+    /// limited, an error answer) is sent to the next, so one endpoint failing
+    /// doesn't refuse every request.
+    let rpcURLs: [URL]
+    /// Deadline for each endpoint's answer; nil keeps URLSession's default.
     var timeout: TimeInterval? = nil
+    var session: URLSession = .shared
 
     enum Failure: Error, LocalizedError {
         case rpc(String)
@@ -21,15 +25,33 @@ struct Chain {
     }
 
     func call(_ method: String, _ params: [Any]) async throws -> Any {
-        var request = URLRequest(url: rpcURL)
+        let body = try JSONSerialization.data(withJSONObject: ["jsonrpc": "2.0", "id": 1, "method": method, "params": params])
+        var lastError: Error = Failure.rpc("No RPC endpoint")
+        for url in rpcURLs {
+            try Task.checkCancellation()
+            do {
+                return try await call(url, body)
+            } catch {
+                lastError = error
+            }
+        }
+        throw lastError
+    }
+
+    private func call(_ url: URL, _ body: Data) async throws -> Any {
+        var request = URLRequest(url: url)
         request.httpMethod = "POST"
         if let timeout { request.timeoutInterval = timeout }
         request.setValue("application/json", forHTTPHeaderField: "content-type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: ["jsonrpc": "2.0", "id": 1, "method": method, "params": params])
-        let (data, _) = try await URLSession.shared.data(for: request)
-        let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+        request.httpBody = body
+        let (data, response) = try await session.data(for: request)
+        if let status = (response as? HTTPURLResponse)?.statusCode, !(200..<300).contains(status) {
+            throw Failure.rpc("RPC answered HTTP \(status)")
+        }
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw Failure.rpc("Malformed RPC answer") }
         if let error = object["error"] as? [String: Any] { throw Failure.rpc(error["message"] as? String ?? "RPC error") }
-        return object["result"] ?? NSNull()
+        guard let result = object["result"] else { throw Failure.rpc("Malformed RPC answer") }
+        return result
     }
 
     func ethCall(to: String, data: Data) async throws -> Data {

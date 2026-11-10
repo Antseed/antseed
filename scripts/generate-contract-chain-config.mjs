@@ -28,6 +28,12 @@ async function chainRpcUrl(network) {
   return match[1];
 }
 
+async function chainFallbackRpcUrls(network) {
+  const source = await readFile(chainConfigFile, 'utf8');
+  const match = source.match(new RegExp(`'${network}': \\{[\\s\\S]*?\\n    rpcUrl: '[^']+',\\n    fallbackRpcUrls: \\[([^\\]]*)\\]`));
+  return match ? [...match[1].matchAll(/'([^']+)'/g)].map((url) => url[1]) : [];
+}
+
 export const contractFields = {
   registry: 'registryContractAddress',
   usdc: 'usdcContractAddress',
@@ -136,7 +142,9 @@ export async function renderSwiftChannels() {
     + `/// AntseedChannels deployments by EVM chain id, and the RPC the app reads them on by default.\n`
     + `enum GeneratedContractAddresses {\n    static let channels: [UInt64: String] = [\n${entries.join('\n')}\n    ]\n`
     + `    /// base-mainnet's \`rpcUrl\` in packages/node/src/payments/chain-config.ts.\n`
-    + `    static let defaultRPC = "${await chainRpcUrl('base-mainnet')}"\n}\n`;
+    + `    static let defaultRPC = "${await chainRpcUrl('base-mainnet')}"\n`
+    + `    /// Its \`fallbackRpcUrls\`, tried in order when \`defaultRPC\` fails.\n`
+    + `    static let fallbackRPCs: [String] = [\n${(await chainFallbackRpcUrls('base-mainnet')).map((url) => `        "${url}",`).join('\n')}\n    ]\n}\n`;
 }
 
 export async function writeContractChainConfig() {

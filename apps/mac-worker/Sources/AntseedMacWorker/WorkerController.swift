@@ -89,8 +89,8 @@ final class WorkerController: ObservableObject {
 
     private func makeChannelVerdicts() -> ChannelVerdicts {
         let verdicts = ChannelVerdicts { [weak self] channel, buyer in
-            guard let self, let rpc = self.config.rpcURL, let pool = self.poolSeller, let trusted = self.trustedChannels else { return nil }
-            return try await Chain(rpcURL: rpc, timeout: 2).channelBelongs(channel: channel, buyer: buyer, pool: pool, channels: trusted)
+            guard let self, !self.config.rpcURLs.isEmpty, let pool = self.poolSeller, let trusted = self.trustedChannels else { return nil }
+            return try await Chain(rpcURLs: self.config.rpcURLs, timeout: 2).channelBelongs(channel: channel, buyer: buyer, pool: pool, channels: trusted)
         }
         verdicts.onVerdict = { [weak self] channel, buyer, verified in
             self?.log(verified
@@ -343,10 +343,10 @@ final class WorkerController: ObservableObject {
     /// deployment). Without an RPC, or with none for its chain, full requests
     /// are refused.
     private func channelCheck(channel: String, buyer: String) async -> ChannelCheck {
-        guard let rpc = config.rpcURL else { return .unavailable("This worker has no RPC to check request channels on, so it refuses buyer requests; start it with --rpc") }
+        guard !config.rpcURLs.isEmpty else { return .unavailable("This worker has no RPC to check request channels on, so it refuses buyer requests; start it with --rpc") }
         guard poolSeller != nil else { return .unavailable("Not joined to a pool yet; retry shortly") }
         if trustedChannels == nil {
-            guard let chainId = try? await Chain(rpcURL: rpc, timeout: 2).chainId() else {
+            guard let chainId = try? await Chain(rpcURLs: config.rpcURLs, timeout: 2).chainId() else {
                 return .unavailable("Could not read the chain id to check the request channel; retry shortly")
             }
             guard let address = TrustedChannels.address(chainId: chainId, override: config.channelsAddress) else {
@@ -553,10 +553,10 @@ final class WorkerController: ObservableObject {
     /// Read the payout wallet from the pool contract, and drop a pending link
     /// once the contract records it or its deadline passes.
     func refreshPayout() {
-        guard let rpc = config.rpcURL, let pool = poolSeller else { return }
+        guard !config.rpcURLs.isEmpty, let pool = poolSeller else { return }
         Task {
             do {
-                payout = try await Chain(rpcURL: rpc, timeout: 10).payoutOf(worker: address, pool: pool)
+                payout = try await Chain(rpcURLs: config.rpcURLs, timeout: 10).payoutOf(worker: address, pool: pool)
             } catch {
                 return
             }
@@ -594,13 +594,13 @@ final class WorkerController: ObservableObject {
             linkError = "Enter a wallet address (0x…)"
             return false
         }
-        guard let rpc = config.rpcURL, let pool = poolSeller else {
+        guard !config.rpcURLs.isEmpty, let pool = poolSeller else {
             linkError = "Join a pool first"
             return false
         }
         linkError = nil
         do {
-            let chain = Chain(rpcURL: rpc, timeout: 10)
+            let chain = Chain(rpcURLs: config.rpcURLs, timeout: 10)
             let chainId = try await chain.chainId()
             let nonce = try await chain.payoutNonce(worker: address, pool: pool)
             let deadline = UInt64(Date().timeIntervalSince1970) + 7 * 24 * 3600

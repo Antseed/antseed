@@ -111,7 +111,7 @@ actor LocalModel {
             .sorted { $0.utf8.lexicographicallyPrecedes($1.utf8) }
             .map { "\(try fileSHA256(root.appendingPathComponent($0)))  ./\($0)\n" }
             .joined()
-        return SHA256.hash(data: Data(listing.utf8)).map { String(format: "%02x", $0) }.joined()
+        return Data(SHA256.hash(data: Data(listing.utf8))).hex
     }
 
     private static func fileSHA256(_ url: URL) throws -> String {
@@ -119,7 +119,7 @@ actor LocalModel {
         defer { try? handle.close() }
         var hasher = SHA256()
         while let chunk = try handle.read(upToCount: 8 << 20), !chunk.isEmpty { hasher.update(data: chunk) }
-        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        return Data(hasher.finalize()).hex
     }
 
     /// Run a chat completion on `chat` (from `EngineChat.fields`), calling
@@ -327,6 +327,6 @@ actor LocalModel {
         guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
             throw EngineError.failed("Could not generate the engine key")
         }
-        return bytes.map { String(format: "%02x", $0) }.joined()
+        return Data(bytes).hex
     }
 }

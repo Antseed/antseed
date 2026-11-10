@@ -4,9 +4,9 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { Wallet } from 'ethers';
-import { CHAIN_CONFIGS, ChannelsClient } from '@antseed/node';
 import { generateWorkerEncryptionKey, type WorkerEncryptionKey } from '@antseed/node/worker-e2e';
-import { parseWorkerModels, PoolWorker, queryWorkerStats, trustedChannelVerifier, type ChannelVerifier } from './worker.js';
+import { parseWorkerModels, PoolWorker, queryWorkerStats } from './worker.js';
+import { workerChannelVerifier } from './worker-chain.js';
 
 const USAGE = `Usage: antseed-pool-worker --pool <wss://url> --services <service[=localModel],...> [options]
 
@@ -50,17 +50,6 @@ function loadOrCreateEncryptionKey(path: string): WorkerEncryptionKey {
   writeFileSync(path, `${JSON.stringify({ publicKey: Buffer.from(key.publicKey).toString('hex'), privateKey: Buffer.from(key.privateKey).toString('hex') })}\n`, { mode: 0o600 });
   chmodSync(path, 0o600);
   return key;
-}
-
-/**
- * Reads channels from the chain's Channels contract, as this worker's own
- * config names it: never through a contract the pool points at.
- */
-function channelVerifier(chainId: string, rpcUrl?: string, channelsAddress?: string): ChannelVerifier {
-  const chain = (CHAIN_CONFIGS as Record<string, { channelsContractAddress: string; evmChainId: number; rpcUrl: string } | undefined>)[chainId];
-  if (!chain) throw new Error(`Unknown --chain-id ${chainId}`);
-  const client = new ChannelsClient({ rpcUrl: rpcUrl ?? chain.rpcUrl, contractAddress: channelsAddress ?? chain.channelsContractAddress, evmChainId: chain.evmChainId });
-  return trustedChannelVerifier((channel) => client.getSession(channel));
 }
 
 function parseServices(raw: string): Record<string, string> {
@@ -110,7 +99,7 @@ async function main(): Promise<void> {
     ...(Object.keys(models).length > 0 ? { models } : {}),
     privateKey: loadOrCreateKey(values['key-file']!),
     encryptionKey: loadOrCreateEncryptionKey(`${values['key-file']!}.p256`),
-    channelVerifier: channelVerifier(values['chain-id']!, values['rpc-url'], values['channels-address']),
+    channelVerifier: workerChannelVerifier(values['chain-id']!, values['rpc-url'], values['channels-address']),
     maxConcurrency: concurrency,
     log: (line) => console.log(line),
   });

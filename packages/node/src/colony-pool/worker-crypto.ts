@@ -188,10 +188,10 @@ export function modelFilesDigest(files: readonly { path: string; sha256: string 
 }
 
 function attestedModelsLine(models: Record<string, AttestedModel> | undefined): string[] {
-  const services = Object.keys(models ?? {}).sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
+  const entries = Object.entries(models ?? {}).sort(([a], [b]) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
   // Absent and empty sign the same: no line, so attestations without models keep their message.
-  if (services.length === 0) return [];
-  return [`models:${services.map((service) => `${service}=${models![service]!.model}#${models![service]!.sha256}`).join(',')}`];
+  if (entries.length === 0) return [];
+  return [`models:${entries.map(([service, { model, sha256 }]) => `${service}=${model}#${sha256}`).join(',')}`];
 }
 
 function isAttestedModels(value: unknown): value is Record<string, AttestedModel> {
