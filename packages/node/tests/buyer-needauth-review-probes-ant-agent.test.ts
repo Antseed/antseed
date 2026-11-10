@@ -67,7 +67,7 @@ const cost = (body: Uint8Array): bigint => {
 };
 
 describe('review probe: ant-agent seller billing against what the buyer can price', () => {
-  it('FINDING: a streamed Anthropic request with an internal tool turn is billed above the cost tolerance of what the buyer receives', async () => {
+  it('a streamed Anthropic request with an internal tool turn bills every model call, and the buyer prices the same total', async () => {
     // Turn 1: 2,000 input tokens, the model loads a knowledge module. Turn 2: the
     // same prompt plus the 7,000-token module, then a 300-token answer.
     const upstream = streamingUpstream([
@@ -98,13 +98,15 @@ describe('review probe: ant-agent seller billing against what the buyer can pric
     console.log(
       `[probe] ant-agent Anthropic stream: seller bills in=${sellerUsage.inputTokens} out=${sellerUsage.outputTokens} cost=${sellerCost}; ` +
       `buyer prices in=${buyerUsage.inputTokens} out=${buyerUsage.outputTokens} cost=${buyerCost}; ` +
-      `verifiable (1.4x)=${verifiable}; unverified per request=${sellerCost - verifiable}; ` +
-      `requests until a 300,000 window is used up=${300_000n / (sellerCost - verifiable)}`,
+      `verifiable (1.4x)=${verifiable}`,
     );
-    // The buyer only sees turn 1's message_start (2,000 input tokens): turn 2's is suppressed.
-    expect(buyerUsage.inputTokens).toBe(2_000);
-    expect(sellerUsage.inputTokens).toBe(9_000);
-    expect(sellerCost > verifiable, 'the honest claim is above what counts as verified').toBe(true);
+    // The full tool loop is billed: 2,000 + 9,000 input and 40 + 300 output tokens,
+    // so 11,000 * 3 + 340 * 15 = 38,100. The buyer sees the same totals as the seller.
+    expect(buyerUsage.inputTokens).toBe(11_000);
+    expect(sellerUsage.inputTokens).toBe(11_000);
+    expect(buyerCost).toBe(sellerCost);
+    expect(sellerCost).toBe(38_100n);
+    expect(sellerCost <= verifiable, 'the claim is within what counts as verified').toBe(true);
   });
 
   it('an OpenAI chat stream with an internal tool turn prices the same on both sides', async () => {
@@ -136,6 +138,7 @@ describe('review probe: ant-agent seller billing against what the buyer can pric
       onResponseChunk: (chunk) => { received.push(chunk.data); },
     });
     expect(cost(Buffer.concat(received))).toBe(cost(response.body));
-    expect(cost(response.body)).toBe(31_500n);
+    // The full tool loop is billed: (2,000 + 9,000) * 3 + (40 + 300) * 15 = 38,100.
+    expect(cost(response.body)).toBe(38_100n);
   });
 });
