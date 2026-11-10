@@ -44,7 +44,15 @@ export interface SellerPaymentConfig {
   minSettleDelta?: string;
   /** Serve channels whose buyer already requested close on-chain, risking uncollectible work. Default: false. */
   serveWhileClosePending?: boolean;
+  /** Idle time before a channel's latest signed amount is settled (channel stays open). Default: 10 min. */
+  settlementIdleMs?: number;
+  /** Idle time before a channel is closed. Default: 12 hours. */
+  closeIdleMs?: number;
 }
+
+/** Idle timeouts for stored channels; the session tracker uses the same defaults for buyers it is serving. */
+const DEFAULT_SETTLEMENT_IDLE_MS = 600_000;
+const DEFAULT_CLOSE_IDLE_MS = 43_200_000;
 
 /** Default minimum budget per request: $0.50 USDC (base units). */
 const DEFAULT_MIN_BUDGET_PER_REQUEST = '500000';
@@ -222,6 +230,8 @@ export class SellerPaymentManager {
   private readonly _blockedChannels = new Set<string>();
   /** channelId -> close waiting for in-flight requests (closeSessionWhenIdle). */
   private readonly _idleCloses = new Map<string, Promise<void>>();
+  /** Channels with an idle settle() in flight. */
+  private readonly _idleSettles = new Set<string>();
 
   /**
    * channelId -> in-flight close() result. Every close path shares this map so
@@ -1898,7 +1908,8 @@ export class SellerPaymentManager {
       if (!auth || auth.metadata || !channel.latestSpendingAuthSig) continue;
       const metadata = await this._storedAuthMetadata(channel);
       auth.metadata = metadata;
-      this._channelStore.upsertChannel({ ...channel, latestMetadata: metadata, updatedAt: Date.now() });
+      // Not buyer activity: `updatedAt` stays, so the channel's idle time is unchanged.
+      this._channelStore.upsertChannel({ ...channel, latestMetadata: metadata });
     }
   }
 
@@ -1937,7 +1948,14 @@ export class SellerPaymentManager {
       if (settleOnly) return;
       debugLog(`[SellerPayment] Zero-cumulative channel ${channelId.slice(0, 18)}... — deferring to timeout checker`);
     } else if (settleOnly) {
-      await this._settleLatestAuth(channelId, 'idle settle', { respectMinSettleDelta: true });
+      // The session tracker's timer and the stored-channel check can both ask.
+      if (this._idleSettles.has(channelId)) return;
+      this._idleSettles.add(channelId);
+      try {
+        await this._settleLatestAuth(channelId, 'idle settle', { respectMinSettleDelta: true });
+      } finally {
+        this._idleSettles.delete(channelId);
+      }
       return;
     } else {
       const retries = this._closeRetryCount.get(channelId) ?? 0;
@@ -2092,7 +2110,9 @@ export class SellerPaymentManager {
 
   /**
    * Check for stale sessions and attempt to close them.
-   * - Channels with a buyer SpendingAuth go through `settleSession()`.
+   * - Channels with a buyer SpendingAuth go through `settleSession()`: at once
+   *   when the buyer disconnected, otherwise after the idle settle and idle
+   *   close timeouts.
    * - Zombie channels (buyer gone, no auth, deadline elapsed) can be closed
    *   on-chain with `finalAmount == channel.settled`, which intentionally
    *   skips SpendingAuth verification and lets the seller release the lock,
@@ -2133,6 +2153,10 @@ export class SellerPaymentManager {
           await this.settleSession(channel.peerId);
           continue;
         }
+        if (accepted > 0n) {
+          await this._settleOrCloseIdleChannel(channel, onChainState.channel.settled, onChainState.status === 'active');
+          continue;
+        }
         // No auths, buyer gone, deadline elapsed: close with the current
         // on-chain settled amount. The contract skips signature verification
         // when finalAmount == settled, so this safely cleans up zombie
@@ -2157,6 +2181,36 @@ export class SellerPaymentManager {
     }
 
     await this._retryTimedOutCloses();
+  }
+
+  /**
+   * Idle settle and idle close for a paid channel, judged from the stored
+   * channel: `updatedAt` moves with each accepted auth and recorded spend and
+   * survives restarts. The session tracker's timers cover only buyers that
+   * sent a request to this process, so a channel reloaded after a restart
+   * whose buyer never returns would otherwise stay open, and unsettled, for
+   * good.
+   */
+  private async _settleOrCloseIdleChannel(channel: StoredChannel, onChainSettled: bigint, activeOnChain: boolean): Promise<void> {
+    const channelId = channel.sessionId;
+    if (this.hasInFlightRequests(channel.peerId) || this._idleCloses.has(channelId)) return;
+    const idleMs = Date.now() - channel.updatedAt;
+    const idleText = `${channelId.slice(0, 18)}... idle for ${Math.floor(idleMs / 1000)}s`;
+    const { amount } = this._getSettleParams(channelId);
+    if (idleMs >= (this._config.closeIdleMs ?? DEFAULT_CLOSE_IDLE_MS)) {
+      debugLog(`[SellerPayment] Channel ${idleText}, past the close timeout — closing`);
+      if (amount <= onChainSettled && activeOnChain) {
+        // Nothing left to collect: closing at the settled amount needs no signature and releases the reserve.
+        await this._closeWithoutAuth(channelId, channel.peerId, onChainSettled);
+      } else {
+        await this.settleSession(channel.peerId, { cleanupOnFailure: true });
+      }
+      return;
+    }
+    if (idleMs < (this._config.settlementIdleMs ?? DEFAULT_SETTLEMENT_IDLE_MS)) return;
+    if (amount <= onChainSettled || amount <= (this._lastSettledCumulative.get(channelId) ?? 0n)) return;
+    debugLog(`[SellerPayment] Channel ${idleText}, past the settle timeout — settling`);
+    await this.settleSession(channel.peerId, { settleOnly: true });
   }
 
   /**

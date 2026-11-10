@@ -2796,6 +2796,27 @@ describe('SellerPaymentManager', () => {
         expect(mgr.hasSession(buyerIdentity.peerId)).toBe(true);
       });
 
+      it('uses the configured idle timeouts', async () => {
+        const channelId = makeChannelId(55);
+        seedChannel(store, channelId, buyerIdentity, sellerIdentity, { latestMetadata: metadata, updatedAt: Date.now() - 45_000 });
+        const getSession = () => Promise.resolve(makeOnChainChannel(buyerIdentity, sellerIdentity, { settled: 0n }));
+
+        const settling = makeFreshManager({ settlementIdleMs: 30_000, closeIdleMs: 60_000 });
+        vi.spyOn(settling.channelsClient, 'getSession').mockImplementation(getSession);
+        const settle = vi.spyOn(settling.channelsClient, 'settle').mockResolvedValue('0xsettle-hash');
+        const noClose = vi.spyOn(settling.channelsClient, 'close').mockResolvedValue('0xclose-hash');
+        await settling.checkTimeouts();
+        expect(settle).toHaveBeenCalledOnce();
+        expect(noClose).not.toHaveBeenCalled();
+
+        const closing = makeFreshManager({ settlementIdleMs: 10_000, closeIdleMs: 30_000 });
+        vi.spyOn(closing.channelsClient, 'getSession').mockImplementation(getSession);
+        const close = vi.spyOn(closing.channelsClient, 'close').mockResolvedValue('0xclose-hash');
+        await closing.checkTimeouts();
+        expect(close).toHaveBeenCalledOnce();
+        expect(store.getChannel(channelId)!.status).toBe(CHANNEL_STATUS.SETTLED);
+      });
+
       it('leaves an idle channel alone while a request is being served on it', async () => {
         const channelId = makeChannelId(56);
         const { mgr, settle, close } = await restartWithIdleChannel(channelId, 13 * HOUR);

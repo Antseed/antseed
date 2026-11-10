@@ -92,6 +92,7 @@ The CLI also reads `.env.local` and `.env` from the current directory, and the f
 | `ANTSEED_SELLER_OUTPUT_USD_PER_MILLION` | seller | Overrides every provider's default output price, USD per million tokens |
 | `ANTSEED_DEFAULT_DEPOSIT_USDC` | seller | Read by `seller start` but currently has no effect: the node does not use the value |
 | `ANTSEED_SETTLEMENT_IDLE_MS` | seller | Idle time before the seller settles a channel, in milliseconds (default 600000) |
+| `ANTSEED_CLOSE_IDLE_MS` | seller | Idle time before the seller closes a channel, in milliseconds (default 43200000, 12 hours) |
 | `ANTSEED_MAX_UPLOAD_BODY_BYTES` | seller | Largest accepted request body; overrides `seller.maxUploadBodyBytes` |
 | `ANTSEED_MAX_INBOUND_CONNECTIONS` | seller | Buyer connections held open at once; overrides `seller.maxInboundConnections` |
 | `ANTSEED_INBOUND_IDLE_TIMEOUT_MS` | seller | Idle time before a buyer connection with no channel open is closed, in milliseconds; `0` keeps them. Overrides `seller.inboundIdleTimeoutMs` |

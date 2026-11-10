@@ -2753,6 +2753,8 @@ export class AntseedNode extends EventEmitter {
         ...(payments.serveWhileClosePending !== undefined
           ? { serveWhileClosePending: payments.serveWhileClosePending }
           : {}),
+        ...(payments.settlementIdleMs !== undefined ? { settlementIdleMs: payments.settlementIdleMs } : {}),
+        ...(payments.closeIdleMs !== undefined ? { closeIdleMs: payments.closeIdleMs } : {}),
       };
       this._sellerPaymentManager = new SellerPaymentManager(this._identity, sellerConfig, this._channelStore);
       debugLog(`[Node] SellerPaymentManager initialized`);
