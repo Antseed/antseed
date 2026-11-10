@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef, type ReactNode } from 'react';
 import styles from './BottomNotice.module.scss';
+import { createBarHeights } from './bottom-notice-height.js';
 
 export interface BottomNoticeAction {
   label: ReactNode;
@@ -80,19 +81,24 @@ export function BottomNotice({
  * A bar lies over the window's last rows; its height goes to
  * `--bottom-notice-height` so the layout can end right above it.
  */
+const barHeights = createBarHeights((height) => {
+  const root = document.documentElement;
+  if (height === null) root.style.removeProperty('--bottom-notice-height');
+  else root.style.setProperty('--bottom-notice-height', `${height}px`);
+});
+
 function useBarHeight(enabled: boolean) {
   const ref = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     const element = ref.current;
     if (!enabled || !element) return undefined;
-    const root = document.documentElement;
-    const apply = () => root.style.setProperty('--bottom-notice-height', `${Math.ceil(element.getBoundingClientRect().height)}px`);
+    const apply = () => barHeights.set(element, Math.ceil(element.getBoundingClientRect().height));
     apply();
     const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(apply) : null;
     observer?.observe(element);
     return () => {
       observer?.disconnect();
-      root.style.removeProperty('--bottom-notice-height');
+      barHeights.remove(element);
     };
   }, [enabled]);
   return ref;
