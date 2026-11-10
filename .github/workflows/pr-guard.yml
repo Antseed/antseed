@@ -1,0 +1,49 @@
+name: PR guard
+
+# Checks a pull request's diff for the mechanical signs of a supply-chain attack (scripts/pr-guard.mjs).
+#
+# It runs on pull_request_target, so GitHub uses this workflow as it is on the base branch: a PR can't edit or remove
+# the check that reviews it. That event can see the repository's secrets and a write token, so this job is built to
+# never run anything from the PR: it checks out the base branch, fetches the PR's commits only as git objects that
+# `git diff` and `git show` read, runs the base branch's copy of the guard, uses no secrets, and its token can only
+# read. Never add a step here that installs, builds, tests or executes code from the PR.
+on:
+  pull_request_target:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-guard-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  guard:
+    name: PR guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+
+      - name: Check the PR's diff with the base branch's guard
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
+        run: |
+          if [ ! -f scripts/pr-guard.mjs ]; then
+            echo "::notice::The base branch has no scripts/pr-guard.mjs yet; nothing to run."
+            exit 0
+          fi
+          git fetch --no-tags --quiet origin "+refs/pull/${PR_NUMBER}/head:refs/pr-guard/head"
+          test "$(git rev-parse refs/pr-guard/head)" = "$HEAD_SHA"
+          node scripts/pr-guard.mjs --base "$BASE_SHA" --head "$HEAD_SHA" --author-association "$AUTHOR_ASSOCIATION"
