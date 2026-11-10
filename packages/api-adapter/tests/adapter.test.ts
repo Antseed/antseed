@@ -803,6 +803,66 @@ describe('createStreamingAdapter chat to anthropic', () => {
     expect(sseText).toContain('event: message_stop');
   });
 
+  it('reports input and cached tokens in message_delta from the final chat usage chunk', () => {
+    const adapter = createStreamAdapterForTest('openai-chat-completions', 'anthropic-messages', '');
+    const chunks = adapter.adaptChunk({
+      requestId: 'req-usage',
+      data: new TextEncoder().encode(
+        'data: {"id":"chatcmpl-usage","model":"gpt-4.1","choices":[{"delta":{"content":"Hello"},"finish_reason":null}]}\n\n'
+        + 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+        + 'data: {"choices":[],"usage":{"prompt_tokens":42,"completion_tokens":7,"total_tokens":49,"prompt_tokens_details":{"cached_tokens":10}}}\n\n'
+        + 'data: [DONE]\n\n',
+      ),
+      done: true,
+    });
+
+    const events = parseSseEvents(chunks.map((chunk) => new TextDecoder().decode(chunk.data)).join(''));
+    const messageDelta = events.find((event) => event.event === 'message_delta');
+    expect(messageDelta).toBeDefined();
+    expect((JSON.parse(messageDelta!.data) as { usage: unknown }).usage).toEqual({
+      input_tokens: 32,
+      output_tokens: 7,
+      cache_read_input_tokens: 10,
+    });
+  });
+
+  it('reports a full cache hit in message_delta as zero fresh input plus cache reads', () => {
+    const adapter = createStreamAdapterForTest('openai-chat-completions', 'anthropic-messages', '');
+    const chunks = adapter.adaptChunk({
+      requestId: 'req-full-cache',
+      data: new TextEncoder().encode(
+        'data: {"id":"chatcmpl-cache","model":"gpt-4.1","choices":[{"delta":{"content":"Hi"},"finish_reason":"stop"}]}\n\n'
+        + 'data: {"choices":[],"usage":{"prompt_tokens":42,"completion_tokens":7,"prompt_tokens_details":{"cached_tokens":42}}}\n\n'
+        + 'data: [DONE]\n\n',
+      ),
+      done: true,
+    });
+
+    const events = parseSseEvents(chunks.map((chunk) => new TextDecoder().decode(chunk.data)).join(''));
+    const messageDelta = events.find((event) => event.event === 'message_delta');
+    expect((JSON.parse(messageDelta!.data) as { usage: unknown }).usage).toEqual({
+      input_tokens: 0,
+      output_tokens: 7,
+      cache_read_input_tokens: 42,
+    });
+  });
+
+  it('does not invent input tokens in message_delta when the chat stream reports no usage', () => {
+    const adapter = createStreamAdapterForTest('openai-chat-completions', 'anthropic-messages', '');
+    const chunks = adapter.adaptChunk({
+      requestId: 'req-no-usage',
+      data: new TextEncoder().encode(
+        'data: {"id":"chatcmpl-none","model":"gpt-4.1","choices":[{"delta":{"content":"Hi"},"finish_reason":"stop"}]}\n\n'
+        + 'data: [DONE]\n\n',
+      ),
+      done: true,
+    });
+
+    const events = parseSseEvents(chunks.map((chunk) => new TextDecoder().decode(chunk.data)).join(''));
+    const messageDelta = events.find((event) => event.event === 'message_delta');
+    expect((JSON.parse(messageDelta!.data) as { usage: unknown }).usage).toEqual({ output_tokens: 0 });
+  });
+
   it('converts streamed tool call deltas into anthropic tool_use events', () => {
     const adapter = createStreamAdapterForTest('openai-chat-completions', 'anthropic-messages', '');
     const chunks = adapter.adaptChunk({
@@ -2300,6 +2360,67 @@ describe('createStreamingAdapter responses to anthropic', () => {
     expect(sseText).toContain('event: message_delta');
     expect(sseText).toContain('"stop_reason":"end_turn"');
     expect(sseText).toContain('event: message_stop');
+  });
+
+  it('reports input and cached tokens in message_delta from response.completed usage', () => {
+    const adapter = createStreamAdapterForTest('openai-responses', 'anthropic-messages', '');
+    const chunks = adapter.adaptChunk({
+      requestId: 'req-resp-usage',
+      data: new TextEncoder().encode(
+        'event: response.created\n'
+        + 'data: {"type":"response.created","response":{"id":"resp_u","object":"response","model":"gpt-4.1","status":"in_progress","output":[],"usage":null}}\n\n'
+        + 'event: response.output_text.delta\n'
+        + 'data: {"type":"response.output_text.delta","output_index":0,"item_id":"msg_1","content_index":0,"delta":"Hello"}\n\n'
+        + 'event: response.completed\n'
+        + 'data: {"type":"response.completed","response":{"id":"resp_u","object":"response","model":"gpt-4.1","status":"completed","output":[{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Hello","annotations":[]}]}],"usage":{"input_tokens":42,"input_tokens_details":{"cached_tokens":10},"output_tokens":7,"total_tokens":49}}}\n\n',
+      ),
+      done: true,
+    });
+
+    const events = parseSseEvents(chunks.map((chunk) => new TextDecoder().decode(chunk.data)).join(''));
+    const messageDelta = events.find((event) => event.event === 'message_delta');
+    expect(messageDelta).toBeDefined();
+    expect((JSON.parse(messageDelta!.data) as { usage: unknown }).usage).toEqual({
+      input_tokens: 32,
+      output_tokens: 7,
+      cache_read_input_tokens: 10,
+    });
+  });
+
+  it('takes the input split from response.completed when response.created also carried usage', () => {
+    const render = (createdUsage: string, completedUsage: string) => {
+      const adapter = createStreamAdapterForTest('openai-responses', 'anthropic-messages', '');
+      const chunks = adapter.adaptChunk({
+        requestId: 'req-resp-created-usage',
+        data: new TextEncoder().encode(
+          'event: response.created\n'
+          + `data: {"type":"response.created","response":{"id":"resp_c","model":"gpt-4.1","status":"in_progress","output":[],"usage":${createdUsage}}}\n\n`
+          + 'event: response.output_text.delta\n'
+          + 'data: {"type":"response.output_text.delta","output_index":0,"item_id":"msg_1","content_index":0,"delta":"Hi"}\n\n'
+          + 'event: response.completed\n'
+          + `data: {"type":"response.completed","response":{"id":"resp_c","model":"gpt-4.1","status":"completed","output":[{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Hi","annotations":[]}]}],"usage":${completedUsage}}}\n\n`,
+        ),
+        done: true,
+      });
+      const events = parseSseEvents(chunks.map((chunk) => new TextDecoder().decode(chunk.data)).join(''));
+      const messageDelta = events.find((event) => event.event === 'message_delta');
+      return (JSON.parse(messageDelta!.data) as { usage: unknown }).usage;
+    };
+
+    // A cache split that changes between the two events never mixes old and new counts.
+    expect(render(
+      '{"input_tokens":42,"input_tokens_details":{"cached_tokens":0},"output_tokens":0}',
+      '{"input_tokens":42,"input_tokens_details":{"cached_tokens":42},"output_tokens":7}',
+    )).toEqual({ input_tokens: 0, output_tokens: 7, cache_read_input_tokens: 42 });
+    expect(render(
+      '{"input_tokens":42,"input_tokens_details":{"cached_tokens":10},"output_tokens":0}',
+      '{"input_tokens":42,"input_tokens_details":{"cached_tokens":0},"output_tokens":7}',
+    )).toEqual({ input_tokens: 42, output_tokens: 7 });
+    // A completed event without input counts keeps the ones response.created reported.
+    expect(render(
+      '{"input_tokens":42,"input_tokens_details":{"cached_tokens":10},"output_tokens":0}',
+      '{"input_tokens":0,"output_tokens":7}',
+    )).toEqual({ input_tokens: 32, output_tokens: 7, cache_read_input_tokens: 10 });
   });
 
   it('uses contiguous anthropic block indices for mixed text and tool streams', () => {
