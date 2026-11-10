@@ -355,7 +355,13 @@ type JsonObject = Record<string, unknown>;
 export type ConfigPatchTarget = {
   /** Gateway origin without /v1 and without trailing slash, e.g. http://localhost:8379 or https://gw.example.com */
   origin: string;
-  /** Sent as the tool's API key / bearer token. */
+  /**
+   * Sent as the tool's API key / bearer token, written into its config
+   * wherever the tool reads one from there. Zed doesn't: it keeps keys only
+   * in its own keychain, so for Zed the caller has the user paste this key
+   * (the desktop's apps view shows Zed as "Paste key in Zed", with the key to
+   * copy, until the user confirms it is in).
+   */
   apiKey: string;
   /** Text models the gateway serves; tools that need a static model list get all of them. */
   models: ReadonlyArray<{ id: string; label?: string }>;
@@ -2119,8 +2125,10 @@ function removeHermesConfigPatch(patch: HermesConfigPatchDef): boolean {
 // keyed by provider name; the agent's default model references that name.
 // Zed has no settings field for the key: it asks for the provider's API key
 // once in its UI and keeps it in the OS keychain (or reads the
-// `<PROVIDER>_API_KEY` env var), so the gateway key is NOT written here — the
-// user pastes it into Zed. Any value satisfies the legacy keyless proxy.
+// `<PROVIDER>_API_KEY` env var), so the gateway key is NOT written here. The
+// caller provides that step: the desktop marks a connected Zed "Paste key in
+// Zed" and shows the key to copy until the user confirms it is pasted. Any
+// value satisfies the legacy keyless proxy the CLI connects Zed to.
 
 function applyZedConfigPatch(patch: ZedConfigPatchDef, t: ResolvedTarget): void {
   const filePath = expandTilde(patch.configPath);

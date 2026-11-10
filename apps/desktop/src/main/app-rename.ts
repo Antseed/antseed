@@ -215,7 +215,9 @@ export async function migrateEncryptedStores(options: MigrateOptions): Promise<M
       result.backups.push(backup);
       const values = [...entry.values];
       entry.unreadable.forEach((index, position) => {
-        values[index] = options.safeStorage.encryptString(plains[position]!).toString('base64');
+        const plain = plains[position];
+        if (plain == null) throw new Error(`Missing decrypted value for ${entry.store.file}`);
+        values[index] = options.safeStorage.encryptString(plain).toString('base64');
       });
       writeAtomic(entry.store.file, entry.store.write(entry.contents, values));
       // Read it back before calling it done.

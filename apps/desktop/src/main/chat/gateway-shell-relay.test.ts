@@ -4,13 +4,13 @@ import type { AddressInfo } from 'node:net';
 import test from 'node:test';
 import { grantShellGateway } from './gateway-shell-relay.js';
 
-async function withGateway(fn: (origin: string, seen: Array<{ auth?: string; url?: string; body: string }>) => Promise<void>): Promise<void> {
-  const seen: Array<{ auth?: string; url?: string; body: string }> = [];
+async function withGateway(fn: (origin: string, seen: Array<{ auth?: string; url?: string; body: string; tee?: string }>) => Promise<void>): Promise<void> {
+  const seen: Array<{ auth?: string; url?: string; body: string; tee?: string }> = [];
   const gateway = http.createServer((req, res) => {
     let body = '';
     req.on('data', (chunk) => { body += chunk; });
     req.on('end', () => {
-      seen.push({ auth: req.headers.authorization, url: req.url, body });
+      seen.push({ auth: req.headers.authorization, url: req.url, body, ...(req.headers['x-antseed-require-tee'] ? { tee: String(req.headers['x-antseed-require-tee']) } : {}) });
       res.writeHead(201, { 'x-from': 'gateway' });
       res.write('part one, ');
       res.end('part two');
@@ -106,4 +106,20 @@ test('a gateway that is down answers 502', async () => {
   const grant = await grantShellGateway({ origin: 'http://127.0.0.1:1', apiKey: 'k' });
   assert.equal((await fetch(`${grant.url}/v1/models`, { headers: { authorization: `Bearer ${grant.token}` } })).status, 502);
   grant.revoke();
+});
+
+test('a Private run\'s requests always ask for TEE sellers, whatever the shell sends', async () => {
+  await withGateway(async (origin, seen) => {
+    const grant = await grantShellGateway({ origin, apiKey: 'real-key', requireTee: true });
+    await fetch(`${grant.url}/v1/images/generations`, { method: 'POST', headers: { authorization: `Bearer ${grant.token}` }, body: 'a' });
+    await fetch(`${grant.url}/v1/images/generations`, { method: 'POST', headers: { authorization: `Bearer ${grant.token}`, 'x-antseed-require-tee': '0' }, body: 'b' });
+    assert.deepEqual(seen.map((request) => request.tee), ['1', '1']);
+    grant.revoke();
+
+    // An Anonymous run adds nothing of its own.
+    const open = await grantShellGateway({ origin, apiKey: 'real-key' });
+    await fetch(`${open.url}/v1/images/generations`, { method: 'POST', headers: { authorization: `Bearer ${open.token}` }, body: 'c' });
+    assert.equal(seen[2]?.tee, undefined);
+    open.revoke();
+  });
 });

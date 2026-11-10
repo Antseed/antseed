@@ -10,11 +10,13 @@ import { randomBytes } from 'node:crypto';
 import http from 'node:http';
 import https from 'node:https';
 import type { AddressInfo } from 'node:net';
+import { gatewayRequestHeaders, REQUIRE_TEE_HEADER } from '../gateway/request-headers.js';
 
 /** `/v1/...` for text and images; `/api/v1/video`, `/fal/...` for the video skill's retrievals. */
 const FORWARDED_PATH = /^\/(?:v1|api\/v1\/video|fal\/v1\/video)(?:\/|\?|$)/;
 
-type Gateway = { origin: string; apiKey: string };
+/** `requireTee`: the run is Private, so every request asks for TEE sellers whatever the shell sends. */
+type Gateway = { origin: string; apiKey: string; requireTee?: boolean };
 export type ShellGatewayGrant = { url: string; token: string; revoke: () => void };
 
 const grants = new Map<string, Gateway>();
@@ -51,7 +53,10 @@ function forward(req: http.IncomingMessage, res: http.ServerResponse): void {
     refuse(res, 403, 'This path is not available from the chat\'s shell.');
     return;
   }
-  const headers: http.OutgoingHttpHeaders = { ...req.headers, authorization: `Bearer ${gateway.apiKey}` };
+  const headers: http.OutgoingHttpHeaders = { ...req.headers };
+  // A Private run's requirement can't be dropped or set to "0" by the shell.
+  if (gateway.requireTee) delete headers[REQUIRE_TEE_HEADER];
+  Object.assign(headers, gatewayRequestHeaders(gateway));
   delete headers.host;
   delete headers.connection;
   delete headers['x-api-key'];
