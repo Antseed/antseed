@@ -61,7 +61,8 @@ When a scenario, a test file or a command named here changes, update its row.
    - Desktop scenarios: `pnpm --filter @antseed/desktop run build:main && pnpm --filter @antseed/desktop run build:renderer`, plus Playwright's ffmpeg once per machine (`pnpm exec playwright install ffmpeg`; `run` refuses a desktop scenario without it). On a headless Linux server, wrap the run in `xvfb-run -a`.
 3. Run `scripts/doctor.mjs` (below) and fix every `FAIL`.
 4. Start a run: `pnpm testbench run <scenario> --chain local`. It starts a testbench, runs the scenario, writes a report and stops. Scenarios assume a fresh testbench, so run `pnpm testbench down` before the next run after `--keep` or `up`.
-   - Give the command a timeout of at least 10 minutes, or run it in the background: the first `--chain local` run in a worktree compiles the contracts (about 2.5 minutes).
+   - Give the command a timeout of at least 13 minutes, or run it in the background: the first `--chain local` run in a worktree compiles the contracts (about 2.5 minutes), and a start that cannot finish fails by itself after 600 s (`--timeout SECONDS` changes that).
+   - A start that fails, stalls or runs out of time ends as `blocked` with the step in the error, and has already stopped what it started. Run the next command as usual; `pnpm testbench down` is not needed first and `--force` is not the way out.
    - Ready means the supervisor printed `READY proxy=http://127.0.0.1:<port> rpc=... control=...`.
    - To poke at a running network: `pnpm testbench up --chain local`, then `eval "$(pnpm -s testbench status --env)" && curl "$ANTSEED_PROXY_URL/v1/models"`.
 5. Teardown is `pnpm testbench down` (see [Cleanup](#cleanup)).
@@ -182,6 +183,7 @@ Report back per scenario: passed or failed, the failing checks with their `detai
 
 - Run `pnpm testbench down` in each worktree (and with each `--slot`) that ran a testbench. `run` without `--keep` stops its own testbench, and `down` on a stopped testbench is harmless.
 - Confirm with `pnpm testbench list`: every testbench you started shows `stopped`. `stopping` means channels are still settling: wait for it. `down` is still the teardown, even though a killed run's testbench now stops on its own.
+- `starting` for a testbench whose `run` or `up` is gone ends by itself within seconds, and `pnpm testbench down` stops it without `--force`. `down` refuses a start only while the command that started it is alive: wait for that command or stop it.
 - Never kill by process name, and never stop a testbench another worktree owns.
 - Remove a fix worktree only after its PR merges, with `git worktree remove <path>`. Reports live in `~/.antseed-testbench/`, outside the worktree, so they survive the removal.
 - Cleanup never deletes `reports/`. After teardown, `ls <report dir>` must still show `checks.log` and `index.html`.

@@ -174,12 +174,73 @@ export function expectedRegistryPointers(layout) {
 
 const CONTRACTS_DIR = 'packages/contracts';
 const SKIP_TESTS = ['--skip', 'test', '--skip', '*.t.sol'];
+/**
+ * One transaction at a time: forge sends the next only once the previous one has its receipt. Without it forge sends
+ * a script's transactions in one burst, and Anvil 1.3.5 can park one of them for good: it reads the sender's nonce,
+ * and when the block with the previous nonce is mined and pruned from the pool before the new transaction is added,
+ * that transaction waits for a predecessor nobody will provide again. Every later nonce queues behind it, automine
+ * has nothing ready, and forge polls for receipts forever. A transaction sent after its predecessor's receipt never
+ * names a predecessor, so it cannot park. Anvil 1.9.0 holds its mining lock across that read and insert.
+ */
+const FORGE_BROADCAST_ARGS = ['--broadcast', '--slow'];
+
+/** Signals a forge process and everything it spawned (its process group, see deployLocalStack); nothing if it is gone. */
+export function killForge(child, signal) {
+  try { process.kill(-child.pid, signal); } catch { /* already gone */ }
+}
+
+/** How often a broadcasting script's Anvil pool is looked at, and how many looks in a row must find it stuck. */
+export const POOL_WATCH_INTERVAL_MS = 1000;
+export const POOL_STALL_POLLS = 3;
+
+/**
+ * How many transactions Anvil holds without ever mining them, from its `txpool_status`: some are parked (`queued`)
+ * while none is ready (`pending`). The deploy sends one account's transactions in nonce order, so a parked one has
+ * nothing left to wait for; while Anvil is healthy a parked transaction always has a ready one ahead of it.
+ */
+export function parkedTransactions(status) {
+  return Number(status?.pending ?? 0) === 0 ? Number(status?.queued ?? 0) : 0;
+}
+
+/**
+ * Watches Anvil's pool while forge broadcasts. Calls `onStall({ parked, nonce, block })` once when `polls` looks in a
+ * row find transactions parked behind the same account nonce: forge would then wait for their receipts forever.
+ * Returns the function that stops watching. A look that fails is skipped: forge's own exit decides then.
+ */
+export function watchForParkedPool(provider, { onStall, account = LOCAL_DEPLOYER, intervalMs = POOL_WATCH_INTERVAL_MS, polls = POOL_STALL_POLLS }) {
+  let stuck = 0;
+  let stuckNonce = null;
+  let busy = false;
+  let stopped = false;
+  const timer = setInterval(async () => {
+    if (busy || stopped) return;
+    busy = true;
+    try {
+      const parked = parkedTransactions(await provider.send('txpool_status', []));
+      const nonce = parked ? await provider.getTransactionCount(account, 'latest') : null;
+      stuck = parked && (stuck === 0 || nonce === stuckNonce) ? stuck + 1 : parked ? 1 : 0;
+      stuckNonce = nonce;
+      if (stuck >= polls && !stopped) {
+        const block = await provider.getBlockNumber();
+        if (stopped) return;
+        stopped = true;
+        clearInterval(timer);
+        onStall({ parked, nonce, block });
+      }
+    } catch { /* Anvil busy or gone */ } finally {
+      busy = false;
+    }
+  }, intervalMs);
+  return () => { stopped = true; clearInterval(timer); };
+}
 
 /**
  * Deploys packages/contracts onto a fresh local Anvil. `toolHome` is the real HOME forge needs for its solc cache;
- * `broadcastDir` keeps forge's broadcast files out of the worktree. Returns the per-step timings (ms) and addresses.
+ * `broadcastDir` keeps forge's broadcast files out of the worktree. `onStep(label)` runs before each forge step and
+ * may throw to stop the deploy there; `onSpawn(child)` gets every forge process. Returns the per-step timings (ms) and
+ * addresses.
  */
-export async function deployLocalStack({ repo, rpcUrl, env = process.env, layout = DEFAULT_CONTRACT_LAYOUT, logPath, broadcastDir, toolHome, log = () => {}, onSpawn = () => {} }) {
+export async function deployLocalStack({ repo, rpcUrl, env = process.env, layout = DEFAULT_CONTRACT_LAYOUT, logPath, broadcastDir, toolHome, log = () => {}, onSpawn = () => {}, onStep = () => {} }) {
   assertContractLayout(layout);
   const logStream = createWriteStream(logPath, { flags: 'a' });
   const cwd = join(repo, CONTRACTS_DIR);
@@ -188,18 +249,30 @@ export async function deployLocalStack({ repo, rpcUrl, env = process.env, layout
     FOUNDRY_BROADCAST: broadcastDir, FOUNDRY_DISABLE_NIGHTLY_WARNING: '1',
   };
   const timings = {};
-  const forge = async (label, args, env = {}) => {
+  const forge = async (label, args, env = {}, { watchPool = false } = {}) => {
+    onStep(label);
     const started = Date.now();
     logStream.write(`\n===== [testbench] ${label} =====\n`);
-    const child = spawn('forge', args, { cwd, env: { ...baseEnv, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
-    onSpawn(child); // the supervisor's reaper stops forge too if the supervisor dies
+    // Its own process group, so stopping forge also stops the solc processes it is running (via_ir, minutes of CPU each).
+    const child = spawn('forge', args, { cwd, env: { ...baseEnv, ...env }, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+    onSpawn(child); // the supervisor stops forge too: when the start is aborted, and through its reaper if it dies
     child.stdout.pipe(logStream, { end: false });
     child.stderr.pipe(logStream, { end: false });
-    const [code, signal] = await once(child, 'exit');
+    const exited = once(child, 'exit');
+    let stall = null;
+    // A script whose transactions Anvil will never mine would wait for their receipts forever: stop it and say why.
+    const stopWatching = watchPool ? watchForParkedPool(provider, { onStall: (found) => { stall = found; killForge(child, 'SIGKILL'); } }) : () => {};
+    let code;
+    let signal;
+    try { [code, signal] = await exited; } finally { stopWatching(); }
+    if (stall) {
+      logStream.write(`\n[testbench] ${label} stalled; forge stopped\n`);
+      throw new Error(`${label} stalled: Anvil stopped mining with ${stall.parked} transaction${stall.parked === 1 ? '' : 's'} parked in its pool (deployer nonce ${stall.nonce}, block ${stall.block}), so forge would wait for their receipts forever; forge was stopped (see logs/forge.log and logs/anvil.log)`);
+    }
     if (code !== 0) throw new Error(`${label} failed with ${code ?? signal} (see logs/forge.log)${signal === 'SIGKILL' || code === 137 ? '; solc was likely killed for memory (via_ir needs ~6 GB)' : ''}`);
     timings[label] = Date.now() - started;
   };
-  const script = (label, path, env, extra = []) => forge(label, ['script', path, '--rpc-url', rpcUrl, '--broadcast', '--private-key', LOCAL_DEPLOYER_KEY, ...SKIP_TESTS, ...extra], env);
+  const script = (label, path, env, extra = []) => forge(label, ['script', path, '--rpc-url', rpcUrl, ...FORGE_BROADCAST_ARGS, '--private-key', LOCAL_DEPLOYER_KEY, ...SKIP_TESTS, ...extra], env, { watchPool: true });
   const provider = new JsonRpcProvider(rpcUrl, LOCAL_CHAIN_ID, { cacheTimeout: -1, batchMaxCount: 1, staticNetwork: true });
   provider.pollingInterval = 100;
   const nonce = () => provider.getTransactionCount(LOCAL_DEPLOYER, 'latest');

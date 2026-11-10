@@ -68,10 +68,11 @@ export function spawnCliNode({ who, args, env, logPath }) {
   };
 }
 
-/** Polls `ready` until it returns a value. Fails when the process exits first (EADDRINUSE when it lost its port). */
-export async function waitForCliReady(node, ready, { timeoutMs = 120_000, intervalMs = 200 } = {}) {
+/** Polls `ready` until it returns a value. Fails when the process exits first (EADDRINUSE when it lost its port), or at once on `signal`. */
+export async function waitForCliReady(node, ready, { timeoutMs = 120_000, intervalMs = 200, signal = null } = {}) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
+    signal?.throwIfAborted();
     const { exitCode, signalCode } = node.child;
     if (exitCode !== null || signalCode !== null) {
       const error = new Error(`${node.who} exited with ${exitCode ?? signalCode} before it was ready (see ${node.logPath})`);

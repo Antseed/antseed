@@ -8,7 +8,7 @@ import { describe, it } from 'node:test';
 import { controlClient, startControlServer } from '../lib/control.mjs';
 import { isOwnedProcessAlive, ownProcessEntry, processStartTime } from '../lib/lock.mjs';
 import { lifecycleState } from '../lib/manifest.mjs';
-import { DEFAULT_IDLE_MINUTES, IDLE_MINUTES_ENV, reattachDecision, resolveIdleMinutes, startHeartbeat, watchdogDecision, WATCHDOG_INTERVAL_MS } from '../lib/watchdog.mjs';
+import { DEFAULT_IDLE_MINUTES, DEFAULT_START_TIMEOUT_SECONDS, IDLE_MINUTES_ENV, reattachDecision, resolveIdleMinutes, startHeartbeat, startingDecision, startupDecision, watchdogDecision, WATCHDOG_INTERVAL_MS } from '../lib/watchdog.mjs';
 
 const MINUTE = 60_000;
 const base = { heartbeatAgeMs: 0, lastControlAgeMs: 0, idleMs: 120 * MINUTE };
@@ -34,6 +34,50 @@ describe('watchdogDecision', () => {
     assert.equal(watchdogDecision({ ...base, starter: 'none', lastControlAgeMs: 120 * MINUTE - 1 }), 'keep');
     assert.equal(watchdogDecision({ ...base, starter: 'none', lastControlAgeMs: 120 * MINUTE }), 'stop:idle');
     assert.equal(watchdogDecision({ ...base, starter: 'none', heartbeatAgeMs: 999 * MINUTE }), 'keep', 'a stale heartbeat means nothing without a starter');
+  });
+});
+
+describe('startupDecision', () => {
+  const timeoutMs = DEFAULT_START_TIMEOUT_SECONDS * 1000;
+
+  it('keeps a start that is within its timeout and has someone waiting for it', () => {
+    assert.equal(DEFAULT_START_TIMEOUT_SECONDS, 600);
+    assert.equal(startupDecision({ starter: 'alive', elapsedMs: 0, timeoutMs }), 'keep');
+    assert.equal(startupDecision({ starter: 'alive', elapsedMs: timeoutMs - 1, timeoutMs }), 'keep');
+    assert.equal(startupDecision({ starter: 'none', elapsedMs: timeoutMs - 1, timeoutMs }), 'keep', 'a supervisor started by hand has no starter to lose');
+  });
+
+  it('fails a start that outlives its timeout, whoever waits', () => {
+    for (const starter of ['alive', 'dead', 'none']) assert.equal(startupDecision({ starter, elapsedMs: timeoutMs, timeoutMs }), 'stop:start-timeout', starter);
+  });
+
+  it('stops a start whose starter is gone at once: nothing runs yet that a grace interval would protect', () => {
+    assert.equal(startupDecision({ starter: 'dead', elapsedMs: 0, timeoutMs }), 'stop:starter-died');
+  });
+});
+
+describe('startingDecision', () => {
+  const holder = { pid: 10, startedAt: 'a' };
+  const starter = { pid: 20, startedAt: 'b' };
+  const starting = { supervisor: holder, starting: true, starter };
+
+  it('stops a start nobody waits for, and refuses one whose starter is alive', () => {
+    assert.equal(startingDecision({ manifest: starting, holder, starterAlive: false }), 'stop');
+    assert.equal(startingDecision({ manifest: starting, holder, starterAlive: true }), 'refuse');
+  });
+
+  it('waits for a supervisor that is already on its way out', () => {
+    assert.equal(startingDecision({ manifest: { ...starting, startError: 'Deploy.s.sol stalled' }, holder, starterAlive: true }), 'wait');
+    assert.equal(startingDecision({ manifest: { supervisor: holder, running: false, stoppingAt: 't', starter: null }, holder, starterAlive: false }), 'wait');
+    assert.equal(startingDecision({ manifest: { ...starting, stoppedAt: 't' }, holder, starterAlive: false }), 'wait', 'stopped, lock not yet released');
+  });
+
+  it('never acts on a manifest another supervisor wrote, or on a start without a recorded starter', () => {
+    const earlier = { ...starting, supervisor: { pid: 10, startedAt: 'earlier' } };
+    assert.equal(startingDecision({ manifest: earlier, holder, starterAlive: false }), 'refuse', 'same pid, another process');
+    assert.equal(startingDecision({ manifest: null, holder, starterAlive: false }), 'refuse');
+    assert.equal(startingDecision({ manifest: { ...starting, starter: null }, holder, starterAlive: false }), 'refuse');
+    assert.equal(startingDecision({ manifest: starting, holder: null, starterAlive: false }), 'refuse');
   });
 });
 
@@ -79,6 +123,7 @@ describe('lifecycleState', () => {
     assert.equal(lifecycleState({ lock: held, manifest: { running: true }, running: true }), 'running');
     assert.equal(lifecycleState({ lock: held, manifest: { running: false, stoppingAt: 't' }, running: false }), 'stopping');
     assert.equal(lifecycleState({ lock: held, manifest: { starting: true }, running: false }), 'starting');
+    assert.equal(lifecycleState({ lock: held, manifest: { starting: true, startError: 'stalled' }, running: false }), 'stopping', 'a failed start is on its way out');
     assert.equal(lifecycleState({ lock: { state: 'stale' }, manifest: { running: true }, running: false }), 'stale');
     assert.equal(lifecycleState({ lock: { state: 'free' }, manifest: { running: false, stoppingAt: 't' }, running: false }), 'stopped');
     assert.equal(lifecycleState({ lock: { state: 'free' }, manifest: null, running: false }), 'stopped');
