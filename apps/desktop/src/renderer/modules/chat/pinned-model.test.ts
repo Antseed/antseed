@@ -1,7 +1,7 @@
 import { expect, test } from 'vitest';
 import { imageModelCanEdit, joinPinnedModel, modelAcceptsImages, routeModeOf, splitPinnedModel } from '../../../shared/pinned-model.js';
 
-const PEER = '1d90f467689d499dc435e5744b4613c3203eb0aa';
+const PEER = 'ab12cd34ef56ab12cd34ef56ab12cd34ef56ab12';
 
 test('splitPinnedModel separates a pinned seller from the model', () => {
   expect(splitPinnedModel(`${PEER}@deepseek-v4-flash`)).toEqual({ modelId: 'deepseek-v4-flash', peerId: PEER });

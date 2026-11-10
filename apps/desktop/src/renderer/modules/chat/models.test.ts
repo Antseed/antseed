@@ -89,7 +89,7 @@ test('with funds Private keeps a listed model, and replaces a missing one with a
 });
 
 test('a pin is dropped in Private, since its seller may not be allowed', () => {
-  const peer = '73b4c9335fa239f9c6df3d28d5bf5d3cdf4de736';
+  const peer = 'cd34ef56ab12cd34ef56ab12cd34ef56ab12cd34';
   assert.equal(chooseModelForPrivate([{ ...model('glm-5.2'), free: false, toolUse: true, sellers: 1 }], `${peer}@glm-5.2`, true), 'glm-5.2');
 });
 

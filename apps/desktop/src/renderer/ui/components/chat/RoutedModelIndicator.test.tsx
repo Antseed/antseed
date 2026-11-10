@@ -16,7 +16,7 @@ test('nothing is shown for user messages or replies without a model', () => {
 });
 
 test('names the seller next to the model, even for a pinned model', () => {
-  const reply = { role: 'assistant', content: [], meta: { service: '73b4c9335fa239f9c6df3d28d5bf5d3cdf4de736@glm-5.3-flash', peerId: '73b4c9335fa2', peerName: 'Apex Ant' } };
-  assert.equal(replyModelLabel(reply), 'glm-5.3-flash · Apex Ant');
-  assert.equal(replyModelLabel({ ...reply, meta: { service: 'glm-5.3-flash', peerId: '73b4c9335fa2' } }), 'glm-5.3-flash · 73b4c933');
+  const reply = { role: 'assistant', content: [], meta: { service: 'cd34ef56ab12cd34ef56ab12cd34ef56ab12cd34@glm-5.3-flash', peerId: 'cd34ef565fa2', peerName: 'Example Seller' } };
+  assert.equal(replyModelLabel(reply), 'glm-5.3-flash · Example Seller');
+  assert.equal(replyModelLabel({ ...reply, meta: { service: 'glm-5.3-flash', peerId: 'cd34ef565fa2' } }), 'glm-5.3-flash · cd34ef56');
 });
