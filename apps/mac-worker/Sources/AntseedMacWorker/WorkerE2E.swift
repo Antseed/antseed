@@ -124,7 +124,8 @@ enum WorkerE2E {
         var signedBinding: Data?
         if let claimed = envelope["buyer"] as? String, let channelHex = envelope["channel"] as? String,
            let sigHex = envelope["sig"] as? String, let sig = try? Data(hexString: sigHex),
-           let channelBytes = try? Data(hexString: channelHex),
+           // Exactly 32 bytes: a longer one would name the same on-chain channel under another key.
+           let channelBytes = try? Data(hexString: channelHex), channelBytes.count == 32,
            let exp = envelope["exp"] as? Int, exp >= 0 {
             // keccak256(info ‖ worker₁ ‖ … ‖ workerₙ ‖ channel ‖ uint64 exp ‖ keccak256(ct))
             var preimage = Array(info.utf8)
@@ -139,7 +140,7 @@ enum WorkerE2E {
                 if let recovered = try? recoverAddress(digest: personalMessageDigest(binding), signature: sig),
                    recovered.lowercased() == claimed.lowercased() {
                     buyer = claimed
-                    channel = channelHex
+                    channel = channelBytes.prefixedHex.lowercased()
                     expires = UInt64(exp)
                     signedBinding = Data(binding)
                 }

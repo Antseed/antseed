@@ -105,12 +105,14 @@ export class NodeWorkerE2EClient implements WorkerE2EClient {
   ): Promise<SealedWorkerRequest> {
     const provider = Object.entries(request.headers).find(([name]) => name.toLowerCase() === 'x-antseed-provider')?.[1].trim().toLowerCase() ?? '';
     const assigned = await this.assignment(peer, provider, service, assign);
-    const only = options.onlyWorkers ? new Set(options.onlyWorkers.map((w) => w.toLowerCase())) : null;
-    const workers = only ? assigned.filter((w) => only.has(w.worker.toLowerCase())) : assigned;
+    const chosen = options.chooseRecipients
+      ? new Set(options.chooseRecipients(assigned.map((w) => w.worker)).map((w) => w.toLowerCase()))
+      : null;
+    const workers = chosen ? assigned.filter((w) => chosen.has(w.worker.toLowerCase())) : assigned;
     if (workers.length === 0) {
-      // Assigned again next time: the pool may then rank a worker this channel already pays.
+      // Assigned again next time: the pool may then rank a worker this channel can credit.
       this.forget(peer.peerId, service);
-      throw new Error('This channel already pays the most workers one channel can, and the pool assigned none of them; retry once it settles');
+      throw new Error('This channel already credits the most workers one channel can, and the pool assigned none of them; retry once it settles');
     }
     const payment = options.payment;
     const sealed = await sealRequest({

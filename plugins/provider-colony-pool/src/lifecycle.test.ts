@@ -405,6 +405,25 @@ describe('worker lifecycle', () => {
     expect(upstream.bodies).toHaveLength(3);
   });
 
+  it('owes nothing for error answers without usage, so a buyer\'s corrected request still reaches the model', async () => {
+    let refuse = 2;
+    upstream = await startUpstream((_body, res) => {
+      if (refuse-- > 0) {
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'bad request' } }));
+        return;
+      }
+      answer(res);
+    });
+    start({ channelsDomain: { chainId: 8453, channelsAddress: '0x3000000000000000000000000000000000000003' } });
+    await waitFor(() => fakePool.frames.some((f) => f['t'] === 'hello'));
+    for (const id of ['e1', 'e2', 'e3']) {
+      await request(id);
+      await waitFor(() => fakePool.ended(id));
+    }
+    expect(upstream.bodies).toHaveLength(3);
+  });
+
   it('refuses buyers of a pool that declares zero prices, under which no answer would ever be owed', async () => {
     upstream = await startUpstream((_body, res) => answer(res));
     start();

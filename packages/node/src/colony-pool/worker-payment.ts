@@ -1,4 +1,5 @@
 import { computeCostUsdc, type ServicePricing } from '@antseed/buyer-core/pricing';
+import type { WorkerPaymentProof } from '@antseed/buyer-core/worker-e2e';
 import { makeChannelsDomain, SPENDING_AUTH_TYPES } from '@antseed/protocol/signatures';
 import { decodeWorkerTail } from '@antseed/protocol/worker-attribution';
 import { getAddress, keccak256, verifyTypedData } from 'ethers';
@@ -16,13 +17,7 @@ import { getAddress, keccak256, verifyTypedData } from 'ethers';
  */
 
 /** The buyer's latest SpendingAuth on a request's channel, as the request envelope carries it (`pay`). */
-export interface WorkerPayment {
-  /** Decimal string, USDC base units. */
-  cumulativeAmount: string;
-  /** The signed metadata bytes, hex, with the worker-attribution tail. */
-  metadata: string;
-  signature: string;
-}
+export type WorkerPayment = WorkerPaymentProof;
 
 /** Answers on one channel a worker serves before they are paid, the one being admitted included. */
 export const MAX_UNPAID_ANSWERS = 2;

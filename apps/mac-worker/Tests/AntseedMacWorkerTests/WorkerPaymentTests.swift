@@ -74,6 +74,34 @@ final class WorkerPaymentTests: XCTestCase {
         XCTAssertNil(ledger.admit(channel: channel, attributed: 1))
     }
 
+    /// An envelope addressed to `worker`, its binding to `channel` signed by `buyer`.
+    private func envelope(channel: [UInt8], buyer: EthereumKey, worker: String) throws -> Data {
+        let ct = Data(repeating: 7, count: 32)
+        let exp = UInt64(Date().timeIntervalSince1970) + 600
+        let expBytes = (0..<8).reversed().map { UInt8(truncatingIfNeeded: exp >> ($0 * 8)) }
+        let binding = keccak256(Array(WorkerE2E.info.utf8) + [UInt8](try Data(hexString: worker)) + channel + expBytes + keccak256(ct))
+        let signature = try buyer.sign(digest: personalMessageDigest(binding))
+        return try JSONSerialization.data(withJSONObject: ["model": "m", "antseed_e2e": [
+            "v": WorkerE2E.version, "ct": ct.base64EncodedString(),
+            "recipients": [["worker": worker, "epk": Data(repeating: 4, count: 65).base64EncodedString(), "wk": Data(repeating: 1, count: 48).base64EncodedString()]],
+            "buyer": buyer.address, "channel": Data(channel).prefixedHex.uppercased().replacingOccurrences(of: "0X", with: "0x"),
+            "exp": Int(exp), "sig": signature.prefixedHex,
+        ] as [String: Any]])
+    }
+
+    func testBindsOnlyA32ByteChannelSoOneChannelNeverHasTwoAccounts() throws {
+        let (buyer, _) = try EthereumKey.generate()
+        let id = [UInt8](repeating: 0xab, count: 32)
+        let bound = try WorkerE2E.inspectRequest(try envelope(channel: id, buyer: buyer, worker: worker), workerAddress: worker)
+        // Upper-case hex names the same channel: one canonical, lower-case key.
+        XCTAssertEqual(bound.channel, channel)
+        XCTAssertNotNil(bound.binding)
+        // The same channel with a byte appended, signed by the buyer: the chain would read the first 32 bytes.
+        let longer = try WorkerE2E.inspectRequest(try envelope(channel: id + [0], buyer: buyer, worker: worker), workerAddress: worker)
+        XCTAssertNil(longer.channel)
+        XCTAssertNil(longer.binding)
+    }
+
     func testIgnoresMalformedPayments() {
         XCTAssertNil(WorkerPayment.parse(nil))
         XCTAssertNil(WorkerPayment.parse(["cumulativeAmount": "-1", "metadata": metadata, "signature": signature]))

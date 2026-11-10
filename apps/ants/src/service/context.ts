@@ -135,7 +135,8 @@ export class AntsContext {
   private readonly configuredColonyPools: ReadonlySet<string>;
 
   constructor(options: AntsContextOptions) {
-    this.chain = options.chain;
+    // Its own copy: the pools linked through this dashboard are its own, though callers may share one chain config.
+    this.chain = { ...options.chain, ...(options.chain.colonyPoolAddresses ? { colonyPoolAddresses: [...options.chain.colonyPoolAddresses] } : {}) };
     this.configuredColonyPools = new Set((options.chain.colonyPoolAddresses ?? []).map((address) => address.toLowerCase()));
     this.address = options.address;
     this.buyerAddress = options.buyerAddress ?? options.address;

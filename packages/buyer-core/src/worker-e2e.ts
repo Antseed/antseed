@@ -55,10 +55,12 @@ export interface WorkerSealOptions {
   /** The buyer's latest SpendingAuth on `channelId`, if it signed one. */
   payment?: WorkerPaymentProof | null;
   /**
-   * Encrypt only for these workers: a channel whose metadata already credits
-   * the most workers it can (MAX_WORKERS_PER_CHANNEL) can pay no other.
+   * Given the assigned workers (in rank order), the ones to encrypt for. Called
+   * once, synchronously, right after the assignment is known, so the caller can
+   * reserve them before another request chooses: a channel can credit only so
+   * many workers. None left fails the request before anything is sent.
    */
-  onlyWorkers?: readonly string[];
+  chooseRecipients?: (assigned: string[]) => string[];
 }
 
 export interface WorkerE2EClient {

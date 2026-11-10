@@ -821,6 +821,22 @@ describe('BuyerPaymentManager', () => {
       expect(decodeWorkerTail(sent.metadata)).toEqual([{ worker, cumulativeAmount: 9000n }]);
     });
 
+    it('lets concurrent requests credit no more workers than a channel holds, counting ones still in flight', async () => {
+      const sellerPeerId = fakePeerId('seller-pool-slots');
+      const w = (i: number) => `0x${i.toString(16).padStart(40, '0')}`;
+      // Seven requests in flight, each to its own worker: one slot is left.
+      for (let i = 1; i <= 7; i++) manager.recordWorkerAttribution(sellerPeerId, `req-slot-${i}`, w(i));
+      // Two more, chosen before either is answered: the first takes the last slot, the second gets only known workers.
+      const first = manager.creditableWorkers(sellerPeerId, [w(8), w(9)]);
+      expect(first).toEqual([w(8)]);
+      manager.recordWorkerAttribution(sellerPeerId, 'req-slot-8', first);
+      expect(manager.creditableWorkers(sellerPeerId, [w(10), w(3)])).toEqual([w(3)]);
+      expect(manager.creditableWorkers(sellerPeerId, [w(10)])).toEqual([]);
+      // A request whose answer failed credits no one, so its worker's slot is free again.
+      manager.recordWorkerDelivery('req-slot-8', null);
+      expect(manager.creditableWorkers(sellerPeerId, [w(10)])).toEqual([w(10)]);
+    });
+
     it('never charges a verified worker answer to a request sent free, on a channel with paid pricing', async () => {
       const { sellerPeerId } = await setup('seller-pool-free-request');
       manager.recordWorkerAttribution(sellerPeerId, 'req-free-worker', worker, true);

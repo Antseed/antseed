@@ -126,6 +126,21 @@ export class WorkerDeliveryTracker {
     return delivery && delivery.sellerPeerId === sellerPeerId && delivery.state === 'verified' ? delivery.worker : undefined;
   }
 
+  /**
+   * Workers the seller's outstanding worker requests may still credit: every
+   * recipient of one awaiting its answer, and the worker of one answered but
+   * not yet retired. A failed one credits no one.
+   */
+  reservedWorkers(sellerPeerId: string): Set<string> {
+    const workers = new Set<string>();
+    for (const delivery of this._deliveries.values()) {
+      if (delivery.sellerPeerId !== sellerPeerId || delivery.free) continue;
+      if (delivery.state === 'pending') for (const worker of delivery.recipients) workers.add(worker);
+      else if (delivery.state === 'verified' && delivery.worker) workers.add(delivery.worker.toLowerCase());
+    }
+    return workers;
+  }
+
   /** A request was encrypted for these pool workers; it is pending until recordDelivery. */
   recordAttribution(sellerPeerId: string, requestId: string, workers: string | readonly string[], free = false): void {
     this._workerSellers.add(sellerPeerId);

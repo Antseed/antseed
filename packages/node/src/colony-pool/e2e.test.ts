@@ -1,7 +1,8 @@
-import { Wallet } from 'ethers';
+import { concat, getBytes, keccak256, toBeHex, toUtf8Bytes, Wallet, zeroPadValue } from 'ethers';
 import { describe, expect, it } from 'vitest';
 import {
   generateWorkerEncryptionKey,
+  inspectRequest,
   isSealedRequest,
   isWorkerAttestation,
   modelFilesDigest,
@@ -75,6 +76,21 @@ describe('worker end-to-end encryption', async () => {
     const forged = JSON.parse(dec((await sealRequest({ body: enc({ model: 'qwen' }), worker: worker.address, workerKey: key.publicKey, buyer: binding })).body));
     forged.antseed_e2e.buyer = Wallet.createRandom().address;
     expect(openRequest(enc(forged), worker.address, key).buyer).toBeNull();
+  });
+
+  it('binds only a 32-byte channel, so one on-chain channel never appears under two keys', async () => {
+    const { worker, key, buyer, binding } = setup();
+    const sealed = JSON.parse(dec((await sealRequest({ body: enc({ model: 'qwen' }), worker: worker.address, workerKey: key.publicKey, buyer: binding })).body));
+    // The buyer signs the same binding over the channel with a byte appended (the Mac app once read the first 32 on-chain).
+    const longer = `${CHANNEL}00`;
+    const ct = Buffer.from(sealed.antseed_e2e.ct, 'base64');
+    const hash = keccak256(concat([toUtf8Bytes('antseed-worker-e2e/v2'), worker.address, longer, zeroPadValue(toBeHex(sealed.antseed_e2e.exp), 8), keccak256(ct)]));
+    sealed.antseed_e2e.channel = longer;
+    sealed.antseed_e2e.sig = buyer.signMessageSync(getBytes(hash));
+    expect(inspectRequest(enc(sealed), worker.address).binding).toBeNull();
+    // Upper-case hex names the same channel as lower-case.
+    const upper = JSON.parse(dec((await sealRequest({ body: enc({ model: 'qwen' }), worker: worker.address, workerKey: key.publicKey, buyer: { ...binding, channel: `0x${'AB'.repeat(32)}` } })).body));
+    expect(inspectRequest(enc(upper), worker.address).binding?.channel).toBe(CHANNEL);
   });
 
   it('round-trips a non-streamed response and exposes usage in the clear for metering', async () => {

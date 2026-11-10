@@ -23,7 +23,7 @@ import {
   boundServiceMetadata,
 } from '@antseed/protocol/signatures';
 import type { SpendingAuthMessage, SpendingAuthMetadata } from '@antseed/protocol/signatures';
-import { decodeWorkerTail, withWorkerAttribution } from '@antseed/protocol/worker-attribution';
+import { decodeWorkerTail, MAX_WORKERS_PER_CHANNEL, withWorkerAttribution } from '@antseed/protocol/worker-attribution';
 import { debugLog, debugWarn } from './debug.js';
 import { peerIdToAddress, type PeerId } from '@antseed/protocol/peer-id';
 import type { SellerAddressResolver } from './seller-address-resolver.js';
@@ -611,10 +611,27 @@ export class BuyerPaymentManager {
     return { channelId: session.sessionId, cumulativeAmount: session.authMax, metadata: session.latestMetadata, signature: session.latestSpendingAuthSig };
   }
 
-  /** The workers the seller's active channel credits so far (its metadata's attribution tail). */
-  channelWorkers(sellerPeerId: string): string[] {
-    if (!this.getActiveSession(sellerPeerId)) return [];
-    return (this._metadata.get(sellerPeerId)?.workers ?? []).map((entry) => entry.worker);
+  /**
+   * Which of `assigned` (in order) a new paid request to the seller may be
+   * encrypted for, so every worker that could answer it can be credited: a
+   * channel's attribution names at most MAX_WORKERS_PER_CHANNEL workers.
+   * Workers it already credits, or that requests still outstanding may
+   * credit, take no new slot; new ones fill what is left. Callers record the
+   * request (recordWorkerAttribution) before anything else runs, so
+   * concurrent requests see each other's reservations.
+   */
+  creditableWorkers(sellerPeerId: string, assigned: readonly string[]): string[] {
+    const known = this._workerDeliveries.reservedWorkers(sellerPeerId);
+    if (this.getActiveSession(sellerPeerId)) {
+      for (const entry of this._metadata.get(sellerPeerId)?.workers ?? []) known.add(entry.worker.toLowerCase());
+    }
+    let slots = MAX_WORKERS_PER_CHANNEL - known.size;
+    return assigned.filter((worker) => {
+      if (known.has(worker.toLowerCase())) return true;
+      if (slots <= 0) return false;
+      slots--;
+      return true;
+    });
   }
 
   recordWorkerAttribution(sellerPeerId: string, requestId: string, workers: string | readonly string[], free = false): void {

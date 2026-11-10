@@ -1,5 +1,4 @@
 import { nativeVideoDelivered, nativeVideoRoute, requestService } from '@antseed/api-adapter';
-import { MAX_WORKERS_PER_CHANNEL } from '@antseed/protocol/worker-attribution';
 import {
   ANTSEED_FAULT_ATTRIBUTION_HEADER,
   ANTSEED_STREAMING_RESPONSE_HEADER,
@@ -327,9 +326,14 @@ export class BuyerRequestHandler {
       const payment = latest && latest.channelId === channelId
         ? { cumulativeAmount: latest.cumulativeAmount, metadata: latest.metadata, signature: latest.signature }
         : null;
-      // A channel that already credits the most workers it can pays only those: a new one's answer would go unattributed.
-      const credited = channelId ? bpm?.channelWorkers(peer.peerId) ?? [] : [];
-      const onlyWorkers = credited.length >= MAX_WORKERS_PER_CHANNEL ? credited : undefined;
+      // Only a worker the channel can credit may answer, and choosing reserves it: the request is
+      // recorded in the same step, so concurrent requests can't credit more workers than a channel holds.
+      const chooseRecipients = (assigned: string[]): string[] => {
+        const recipients = isFreeService ? assigned : bpm?.creditableWorkers(peer.peerId, assigned) ?? assigned;
+        // Only a worker it is encrypted for can answer it; the one that does is credited.
+        if (recipients.length > 0) bpm?.recordWorkerAttribution(peer.peerId, plainReq.requestId, recipients, isFreeService);
+        return recipients;
+      };
       // The pool the request is for: the one it names, else the one it was routed to. A request
       // that names an ordinary provider without that model is left to the seller to place.
       const provider = [explicitProvider, billingRoute?.provider].find((name) => name && isWorkerE2EProvider(peer, name));
@@ -340,10 +344,8 @@ export class BuyerRequestHandler {
         // Assigned by the pool the request goes to.
         headers: { 'content-type': 'application/json', ...(provider ? { 'x-antseed-provider': provider } : {}) },
         body,
-      }, undefined, { controlPlane: true, ...(options?.signal ? { signal: options.signal } : {}) }), channelId, { payment, ...(onlyWorkers ? { onlyWorkers } : {}) });
+      }, undefined, { controlPlane: true, ...(options?.signal ? { signal: options.signal } : {}) }), channelId, { payment, chooseRecipients });
       req = sealed.request;
-      // Only a worker it is encrypted for can answer it; the one that does is credited.
-      this._deps.negotiator?.bpm?.recordWorkerAttribution(peer.peerId, plainReq.requestId, sealed.recipients, isFreeService);
     };
 
     let startTime = Date.now();

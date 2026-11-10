@@ -76,7 +76,9 @@ struct Chain {
 
     /// `channelBelongs`, with the channel's reserve: what the buyer's payments on it can redeem.
     func channelState(channel: String, buyer: String, pool: String, channels: String) async throws -> (belongs: Bool?, deposit: UInt64) {
-        let result = try await ethCall(to: channels, data: Self.selector("channels(bytes32)") + (try Data(hexString: channel)))
+        let id = try Data(hexString: channel)
+        guard id.count == 32 else { throw Failure.rpc("A channel id is 32 bytes") }
+        let result = try await ethCall(to: channels, data: Self.selector("channels(bytes32)") + id)
         let deposit = result.count >= 96 ? WorkerPayment.saturating([UInt8](result[64..<96])) : 0
         return (Self.channelVerdict(result, buyer: buyer, pool: pool), deposit)
     }

@@ -596,10 +596,12 @@ export function inspectRequest(body: Uint8Array, workerAddress: string): Inspect
   const ciphertext = Buffer.from(envelope.ct, 'base64');
 
   let binding: RequestBinding | null = null;
-  if (envelope.buyer && envelope.sig && envelope.channel && Number.isSafeInteger(envelope.exp) && envelope.exp! >= 0) {
+  // A channel is exactly 32 bytes: a longer one would name the same on-chain channel under another key.
+  if (envelope.buyer && envelope.sig && typeof envelope.channel === 'string' && /^0x[0-9a-fA-F]{64}$/.test(envelope.channel)
+    && Number.isSafeInteger(envelope.exp) && envelope.exp! >= 0) {
     try {
       const hash = verifiedRequestBindingHash(workers, envelope.channel, envelope.exp!, ciphertext, envelope.sig, envelope.buyer);
-      if (hash) binding = { buyer: getAddress(envelope.buyer), channel: envelope.channel, expires: envelope.exp!, hash };
+      if (hash) binding = { buyer: getAddress(envelope.buyer), channel: envelope.channel.toLowerCase(), expires: envelope.exp!, hash };
     } catch {
       // Unsigned or forged binding: treated as an unbound (health check) request.
     }

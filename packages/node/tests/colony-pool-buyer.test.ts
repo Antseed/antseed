@@ -254,31 +254,31 @@ describe('buyer requests to colony pools', () => {
     }
   });
 
-  it('carries the latest payment, and sends a channel that already pays the most workers only to those', async () => {
+  it('carries the latest payment, encrypts only for the workers the channel can credit, and records them as it chooses', async () => {
     const channel = `0x${'ab'.repeat(32)}`;
     const latest = { channelId: channel, cumulativeAmount: '9000', metadata: '0x00', signature: `0x${'11'.repeat(65)}` };
-    let credited: string[] = [];
+    let creditable: (assigned: string[]) => string[] = (assigned) => assigned;
     const pool = fakePool({
       workers: 3, recipients: 3,
-      bpm: { getActiveSession: () => ({ sessionId: channel }), latestSpendingAuth: () => latest, channelWorkers: () => credited },
+      bpm: { getActiveSession: () => ({ sessionId: channel }), latestSpendingAuth: () => latest, creditableWorkers: (_seller: string, assigned: string[]) => creditable(assigned) },
     });
-    const others = Array.from({ length: 7 }, () => Wallet.createRandom().address);
-    // Eight credited, the third assigned worker among them: only it is sent the request.
-    credited = [...others, pool.workers[2]!.wallet.address];
+    const third = pool.workers[2]!.wallet.address;
+    creditable = (assigned) => assigned.filter((w) => w === third);
     expect((await pool.handler.sendRequest(peer, chatRequest('c1'))).statusCode).toBe(200);
-    expect(pool.encryptedFor).toEqual([[pool.workers[2]!.wallet.address]]);
+    expect(pool.encryptedFor).toEqual([[third]]);
+    expect(pool.calls.find((call) => call.method === 'recordWorkerAttribution')?.args.slice(1, 3)).toEqual(['c1', [third]]);
     const sent = pool.wire.filter((req) => req.path !== WORKER_ASSIGN_PATH);
     expect(JSON.parse(dec(sent[0]!.body)).antseed_e2e.pay).toEqual({ cumulativeAmount: '9000', metadata: '0x00', signature: latest.signature });
-    // Seven credited: room for a new one, so all three are.
-    credited = others;
-    await pool.handler.sendRequest(peer, chatRequest('c2'));
-    expect(pool.encryptedFor[1]).toHaveLength(3);
-    // Eight credited, none of them assigned: refused before anything is sent, and assigned afresh next time.
-    credited = [...others, Wallet.createRandom().address];
+    // None of the assigned workers can be credited: refused before anything is sent, and assigned afresh next time.
+    creditable = () => [];
     const requestsSent = () => pool.wire.filter((req) => req.path !== WORKER_ASSIGN_PATH).length;
     const before = requestsSent();
-    await expect(pool.handler.sendRequest(peer, chatRequest('c3'))).rejects.toThrow(/already pays the most workers/);
+    const assignments = pool.assigned.length;
+    await expect(pool.handler.sendRequest(peer, chatRequest('c2'))).rejects.toThrow(/already credits the most workers/);
     expect(requestsSent()).toBe(before);
+    creditable = (assigned) => assigned;
+    await pool.handler.sendRequest(peer, chatRequest('c3'));
+    expect(pool.assigned.length).toBe(assignments + 1);
   });
 
   it('decrypts a streamed answer for the client', async () => {

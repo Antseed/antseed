@@ -438,10 +438,12 @@ workers serve requests it never pays for.
   that never pays gets two answers per channel, and every channel is an
   on-chain reserve. Answers that did not reach the buyer whole are not owed.
 - **Eight workers per channel.** A channel's attribution names at most eight
-  workers, so once a buyer's channel credits eight, the buyer sends its
-  requests only to those of the pool's assigned workers it already credits.
-  When the pool assigned none of them, the request fails before anything is
-  sent, and the next one asks the pool for a fresh assignment.
+  workers. The buyer encrypts a request only for workers the channel can
+  credit: the ones it credits, the recipients of its requests still awaiting
+  payment, and new ones while slots are left. It reserves them as it chooses,
+  so concurrent requests can't credit more than eight. When the pool assigned
+  none it can credit, the request fails before anything is sent, and the next
+  one asks the pool for a fresh assignment.
 
 The account is kept in memory: a restarted worker starts every channel
 afresh. Settlement is still the operator's: the pool contract settles only
@@ -622,11 +624,12 @@ WORKER_TAIL_MAGIC = keccak256("antseed:worker-attribution:v1")
 
 - At most 8 entries (`MAX_WORKERS_PER_CHANNEL`). A buyer keeps using the
   workers it was assigned until a certificate or attestation nears expiry
-  or a request fails over, which also helps prompt caching, but nothing stops a channel
-  reaching more than 8 workers. Once it has 8 entries, a worker new to the
-  channel gets no entry: what the buyer pays for its answers is credited to
-  the pool's `remainderRecipient`, not to that worker. Existing entries are
-  never dropped, since each must only grow.
+  or a request fails over, which also helps prompt caching. It encrypts a
+  request only for workers the channel can credit: ones it already credits or
+  that its outstanding requests may credit, and new ones only while slots are
+  left. When the pool assigned none of those, it clears the assignment and
+  fails before sending ([Paid before served](#paid-before-served)). Existing
+  entries are never dropped, since each must only grow.
 - Entries are sorted by worker address, with no duplicates or zero addresses.
 - `cumulativeAmount` is the USDC (6 decimals) the buyer has paid on this
   channel for requests that worker served. Each entry only grows, and the sum

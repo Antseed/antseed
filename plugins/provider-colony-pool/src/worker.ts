@@ -510,14 +510,14 @@ export class PoolWorker {
     }
   }
 
-  /** Decrypt an admitted request and serve it; returns the answer's usage once it was sent whole. */
+  /** Decrypt an admitted request and serve it; returns the answer's usage once it was sent whole, null when it owes nothing. */
   private async serveOpened(
     frame: RequestFrame,
     inspected: InspectedRequest,
     bound: InspectedRequest['binding'],
     signal: AbortSignal,
     send: (out: WorkerFrame) => void,
-  ): Promise<UsageLike> {
+  ): Promise<UsageLike | null> {
     let opened: OpenedRequest;
     let body: Record<string, unknown>;
     try {
@@ -547,18 +547,19 @@ export class PoolWorker {
     this.log(bound
       ? `serving ${opened.model} for buyer ${bound.buyer} on channel ${bound.channel.slice(0, 18)}…`
       : `serving a pool check for ${opened.model}`);
-    await this.forwardUpstream(frame, body, opened.sealer, signal, send);
-    return opened.sealer.usage ?? {};
+    const status = await this.forwardUpstream(frame, body, opened.sealer, signal, send);
+    // An error answer with no usage (the model refused the request) owes nothing; an answer is owed even when its price rounds to nothing.
+    return opened.sealer.usage ?? (status < 400 ? {} : null);
   }
 
-  /** Run the request on the local model and send its answer back sealed, in chunks. */
+  /** Run the request on the local model and send its answer back sealed, in chunks; returns the model's HTTP status. */
   private async forwardUpstream(
     frame: RequestFrame,
     body: Record<string, unknown>,
     sealer: OpenedRequest['sealer'],
     signal: AbortSignal,
     send: (out: WorkerFrame) => void,
-  ): Promise<void> {
+  ): Promise<number> {
     // The local model gets its own deadlines: one to answer, then one per chunk.
     const upstreamAbort = new AbortController();
     const onAbort = (): void => upstreamAbort.abort();
@@ -599,6 +600,7 @@ export class PoolWorker {
         sendChunks(sealed);
       }
       send({ t: 'response-end', id: frame.id });
+      return upstream.status;
     } catch (err) {
       if (timedOut && !signal.aborted) throw new Error('Local model timed out');
       throw err;

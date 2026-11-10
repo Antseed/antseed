@@ -218,6 +218,32 @@ it('keeps a colony pool linked through the dashboard after a restart', async () 
   expect(restarted.context.colonyPoolAddresses()).toEqual([configured, linked.toLowerCase()]);
 });
 
+it('keeps each dashboard session\'s linked colony pools its own, though they share one chain config', async () => {
+  vi.spyOn(AntsContext.prototype, 'selectRpc').mockResolvedValue();
+  const dataDir = await mkdtemp(path.join(tmpdir(), 'ants-colony-pools-sessions-test-'));
+  directories.push(dataDir);
+  const configured = Wallet.createRandom().address.toLowerCase();
+  const linked = Wallet.createRandom().address;
+  // One chain object for every session, as the gateway console passes it.
+  const chain = { chainId: 'base-local' as const, evmChainId: 31337, rpcUrl: 'http://127.0.0.1:1', fallbackRpcUrls: [], explorerApiUrl: '', colonyPoolAddresses: [configured] };
+  const session = async (stateKey: string) => {
+    const server = await createAntsServer({ port: 0, dataDir, address: Wallet.createRandom().address, chain, stateKey });
+    servers.push(server);
+    return server;
+  };
+  const first = await session('member-a');
+  const second = await session('member-b');
+  await first.context.rememberColonyPool(linked);
+  expect(first.context.colonyPoolAddresses()).toEqual([configured, linked.toLowerCase()]);
+  expect(second.context.colonyPoolAddresses()).toEqual([configured]);
+  expect(chain.colonyPoolAddresses).toEqual([configured]);
+  // A session started later, and one restarted, see only what was linked under their own key.
+  expect((await session('member-c')).context.colonyPoolAddresses()).toEqual([configured]);
+  expect((await session('member-a')).context.colonyPoolAddresses()).toEqual([configured, linked.toLowerCase()]);
+  await second.context.forgetColonyPool(configured).catch(() => undefined);
+  expect(first.context.colonyPoolAddresses()).toEqual([configured, linked.toLowerCase()]);
+});
+
 it('forgets a linked colony pool, also after a restart, but never a configured one', async () => {
   vi.spyOn(AntsContext.prototype, 'selectRpc').mockResolvedValue();
   const dataDir = await mkdtemp(path.join(tmpdir(), 'ants-colony-pools-forget-test-'));
