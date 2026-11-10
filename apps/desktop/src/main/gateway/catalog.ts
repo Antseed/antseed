@@ -103,7 +103,7 @@ function record(value: unknown): Record<string, unknown> {
 }
 
 /** The offer summary the picker shows, worked out like the gateway console's chat. */
-function entryOfferSummary(entry: GatewayModelEntry, peers: Array<Record<string, unknown>>): Pick<ChatModel, 'sellers' | 'free' | 'minImageUsd' | 'freeSellerId' | 'freeForStakers' | 'stakersOnlyFreeSellerIds' | 'tee' | 'toolUse' | 'reasoning' | 'inputUsdPerMillion' | 'outputUsdPerMillion'> {
+function entryOfferSummary(entry: GatewayModelEntry, peers: Array<Record<string, unknown>>, options: CatalogOptions = {}): Pick<ChatModel, 'sellers' | 'free' | 'minImageUsd' | 'freeSellerId' | 'freeForStakers' | 'stakersOnlyFreeSellerIds' | 'tee' | 'toolUse' | 'reasoning' | 'inputUsdPerMillion' | 'outputUsdPerMillion'> {
   const declared = record(entry['capabilities']);
   // Coverage only counts sellers that reported at all, including those reporting false.
   const anyPeerDeclares = (capability: 'toolUse' | 'reasoning'): boolean => peers.some((peer) => record(peer['capabilities'])[capability] === true);
@@ -120,7 +120,10 @@ function entryOfferSummary(entry: GatewayModelEntry, peers: Array<Record<string,
   };
   // An image model's token prices are $0 too: it charges per image.
   const chargesPerImage = (peer: Record<string, unknown>): boolean => (finiteNumber(peer['minImageUsdPerImage']) ?? 0) > 0;
-  const freeSeller = peers.find((peer) => zeroPriced(peer) && !stakersOnly(peer) && !chargesPerImage(peer));
+  const isTee = (peer: Record<string, unknown>): boolean => strings(peer['advertisedVerifierIds']).includes(TEE_VERIFIER_ID);
+  // Under TEE-only routing (Private) a free seller outside a TEE never answers,
+  // so it can't make the model free.
+  const freeSeller = peers.find((peer) => zeroPriced(peer) && !stakersOnly(peer) && !chargesPerImage(peer) && (!options.teeOnly || isTee(peer)));
   const stakersOnlyFreeSellerIds = stakersOnlyFree.flatMap((peer) => typeof peer['peerId'] === 'string'
     ? [peer['peerId'].toLowerCase().replace(/^0x/, '')]
     : []);
@@ -131,7 +134,7 @@ function entryOfferSummary(entry: GatewayModelEntry, peers: Array<Record<string,
     freeSellerId: typeof freeSeller?.['peerId'] === 'string' ? freeSeller['peerId'] : null,
     freeForStakers: peers.some(stakersOnly),
     ...(stakersOnlyFreeSellerIds.length > 0 ? { stakersOnlyFreeSellerIds } : {}),
-    tee: peers.some((peer) => strings(peer['advertisedVerifierIds']).includes(TEE_VERIFIER_ID)),
+    tee: peers.some(isTee),
     toolUse: declared['tool_use'] === true || anyPeerDeclares('toolUse'),
     reasoning: declared['reasoning'] === true || anyPeerDeclares('reasoning'),
     inputUsdPerMillion: cheapest('inputUsdPerMillion', pricedPeers),
@@ -139,7 +142,10 @@ function entryOfferSummary(entry: GatewayModelEntry, peers: Array<Record<string,
   };
 }
 
-export function toChatModel(entry: GatewayModelEntry): ChatModel {
+/** How the listing will be routed: TEE-only routing (Private) changes what counts as free. */
+export type CatalogOptions = { teeOnly?: boolean };
+
+export function toChatModel(entry: GatewayModelEntry, options: CatalogOptions = {}): ChatModel {
   // Normalized once; every projection below reads the same peer list.
   const peers = records(entry['peers']);
   const protocols = entryProtocols(entry, peers);
@@ -155,7 +161,7 @@ export function toChatModel(entry: GatewayModelEntry): ChatModel {
     supportsImages: entrySupportsImages(entry, peers),
     ...(imageSellers.length > 0 ? { imageInputSellerIds: imageSellers } : {}),
     ...(contextWindow ? { contextWindow } : {}),
-    ...entryOfferSummary(entry, peers),
+    ...entryOfferSummary(entry, peers, options),
   };
 }
 
@@ -164,13 +170,13 @@ export function toChatModel(entry: GatewayModelEntry): ChatModel {
  * ordered like the gateway console's chat — models that can use tools first,
  * then the most sellers, then by name.
  */
-export function toChatModels(entries: GatewayModelEntry[]): ChatModel[] {
+export function toChatModels(entries: GatewayModelEntry[], options: CatalogOptions = {}): ChatModel[] {
   const seen = new Set<string>();
   const models: ChatModel[] = [];
   for (const entry of entries) {
     if (seen.has(entry.id)) continue;
     seen.add(entry.id);
-    models.push(toChatModel(entry));
+    models.push(toChatModel(entry, options));
   }
   return models.sort((left, right) => Number(right.toolUse) - Number(left.toolUse)
     || right.sellers - left.sellers

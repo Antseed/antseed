@@ -174,3 +174,22 @@ test('one seller declaring a capability is enough, even if another does not', ()
   });
   assert.equal(model.toolUse, true);
 });
+
+test('in Private only a free seller on sealed hardware makes a model free', async () => {
+  const { TEE_VERIFIER_ID } = await import('@antseed/node/tee-status');
+  const entry = {
+    id: 'm',
+    peers: [
+      { peerId: 'open-free', inputUsdPerMillion: 0, outputUsdPerMillion: 0 },
+      { peerId: 'tee-paid', inputUsdPerMillion: 1, outputUsdPerMillion: 2, advertisedVerifierIds: [TEE_VERIFIER_ID] },
+    ],
+  };
+  assert.equal(toChatModel(entry).free, true);
+  assert.equal(toChatModel(entry).freeSellerId, 'open-free');
+  const privateModel = toChatModel(entry, { teeOnly: true });
+  assert.equal(privateModel.free, false);
+  assert.equal(privateModel.freeSellerId, null);
+
+  const teeFree = { id: 't', peers: [{ peerId: 'tee-free', inputUsdPerMillion: 0, outputUsdPerMillion: 0, advertisedVerifierIds: [TEE_VERIFIER_ID] }] };
+  assert.equal(toChatModel(teeFree, { teeOnly: true }).freeSellerId, 'tee-free');
+});

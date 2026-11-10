@@ -245,7 +245,7 @@ export function registerPiChatHandlers({
       const endpoint = await getGatewayEndpoint();
       const entries = await fetchGatewayModelEntries(endpoint, { force: payload?.force === true });
       lastEntries = entries;
-      const models: ChatModel[] = toChatModels(entries);
+      const models: ChatModel[] = toChatModels(entries, { teeOnly: currentPrivacyMode() === 'private' });
       return { ok: true, data: models };
     } catch (error) {
       const message = asErrorMessage(error);
@@ -545,7 +545,7 @@ export function registerPiChatHandlers({
       await whenPrivacySettled();
       const entries = await fetchGatewayModelEntries(await getGatewayEndpoint(), { force: true });
       lastEntries = entries;
-      return recommendAppModels(toChatModels(entries));
+      return recommendAppModels(toChatModels(entries, { teeOnly: currentPrivacyMode() === 'private' }));
     },
   };
 }
