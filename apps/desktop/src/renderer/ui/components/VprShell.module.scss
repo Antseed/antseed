@@ -96,11 +96,6 @@
   margin: 0 0 8px;
 }
 
-.shellCollapsed   width: 40px;
-  padding: 0;
-  justify-content: center;
-}
-
 .shellCollapsed .navLabel,
 .shellCollapsed .statusItem,
 .shellCollapsed .statusVersion {
@@ -142,7 +137,6 @@
 .shellCollapsed .status:has(.statusWarn)::before {
   background: var(--accent-yellow);
 }
-
 
 /* On the rail, Chat's new-chat button becomes its own icon under Chat. */
 .shellCollapsed .navRow {
