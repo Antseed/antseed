@@ -88,8 +88,8 @@ export function createServer(deps: CreateServerDeps): { start(): Promise<void>; 
     const enrichedPeers = await Promise.all(
       snapshot.peers.map(async (peer) => {
         // peerId is the lowercased seller/operator EVM address without the 0x prefix.
-        // Contract-backed sellers (for example Venice's proxy) announce the
-        // settlement address separately; use that for on-chain volume lookup.
+        // Contract-backed sellers (a seller contract that lists the node as an operator)
+        // announce the settlement address separately; use that for on-chain volume lookup.
         const { peerId, sellerContract } = peer as { peerId?: string; sellerContract?: string };
         const address = normalizeAddress(sellerContract) ?? normalizeAddress(peerId);
         const agentId = await resolveAgentId(stakingClient, address);

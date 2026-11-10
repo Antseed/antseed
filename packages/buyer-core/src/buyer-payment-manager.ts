@@ -113,7 +113,7 @@ export interface BuyerPaymentConfig {
    * Default: 5000000 ($5.00).
    */
   maxVideoRequestUsdc?: bigint;
-  /** Max ratio of seller-claimed cost to buyer's bytes/4 estimate. Default: 1.4. */
+  /** Max ratio of seller-claimed cost to the buyer's own estimate. Default: 1.4. */
   costToleranceMultiplier?: number;
   /** Disable per-service attribution in metadata v2. Default: false. */
   disableMetadataV2Services?: boolean;
@@ -255,7 +255,8 @@ export type BuyerSpendListener = (event: BuyerSpendEvent) => void;
 
 /**
  * Manages buyer-side payment sessions using EIP-712 SpendingAuth
- * with cumulative authorization, bytes/4 cost verification, and overdraft control.
+ * with cumulative authorization, cost verification (reported tokens, or a tokenx
+ * estimate from response bytes), and overdraft control.
  */
 export class BuyerPaymentManager {
   private readonly _identity: BuyerIdentity;
@@ -279,7 +280,7 @@ export class BuyerPaymentManager {
   /** sellerPeerId -> cumulative metadata for SpendingAuth */
   private readonly _metadata = new Map<string, SpendingAuthMetadata>();
 
-  /** sellerPeerId -> buyer-verified cumulative cost from bytes/4 */
+  /** sellerPeerId -> buyer-verified cumulative cost (reported tokens, or a tokenx estimate) */
   private readonly _verifiedCost = new Map<string, bigint>();
   /** sellerPeerId -> paid requests dispatched and not yet answered */
   private readonly _inFlightPaidRequests = new Map<string, number>();
@@ -1542,7 +1543,8 @@ export class BuyerPaymentManager {
    * Sign an updated SpendingAuth after receiving a response.
    *
    * The buyer uses the seller's claimed cost to advance the cumulative amount,
-   * but validates it against the buyer's bytes/4 estimate. If the seller's claim
+   * but validates it against the buyer's own estimate (reported tokens, or tokenx
+   * over the request and response bytes). If the seller's claim
    * exceeds the buyer's estimate by more than the configured tolerance, the buyer
    * caps at tolerance * buyerEstimate. The cumulative is also capped at the
    * overdraft limit (verifiedCost + maxPerRequestUsdc) and the reserve ceiling.

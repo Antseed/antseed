@@ -6,9 +6,10 @@ name: Release Desktop
 #
 # macOS: DMG + zip, arm64 + x64, code-signed with Developer ID and
 #        notarized via Apple App Store Connect API key.
-# Windows: NSIS installer, x64 + arm64. Optional code signing via the
-#          CA's cloud signing API if the WIN_SIGN_* secrets are set
-#          (see apps/desktop/scripts/win-sign.cjs).
+# Windows: NSIS installer, x64 only (Windows on ARM runs it under
+#          emulation; see apps/desktop/electron-builder.yml). Optional
+#          code signing via the CA's cloud signing API if the WIN_SIGN_*
+#          secrets are set (see apps/desktop/scripts/win-sign.cjs).
 # Linux: AppImage + deb, x64 + arm64, unsigned. Each arch builds on a
 #        native runner (ubuntu-latest / ubuntu-24.04-arm) so native
 #        modules never need cross-compilation.

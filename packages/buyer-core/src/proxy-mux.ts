@@ -40,8 +40,8 @@ export interface ProxyMuxUploadLimits {
   maxUploadBodyBytes?: number;
   /**
    * Buyer-side chunked-upload threshold. Default: ANTSEED_UPLOAD_THRESHOLD_BYTES
-   * (512 KiB). Transports with smaller message ceilings (e.g. W3C WebRTC's
-   * ~256 KiB SCTP default against libdatachannel peers) lower this.
+   * (240 KiB). Transports that need more headroom under their message ceiling
+   * (e.g. W3C WebRTC's ~256 KiB SCTP default against libdatachannel peers) lower this.
    */
   uploadThresholdBytes?: number;
   /** Max bytes across ALL concurrent in-progress uploads. Default: 256 MiB. */
