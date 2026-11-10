@@ -1,0 +1,40 @@
+name: PR guard
+
+# Checks a pull request's diff for the mechanical signs of a supply-chain attack (scripts/pr-guard.mjs). It runs
+# the copy of the guard on the base branch, never the PR's own, installs nothing and has no secrets. Make "PR guard"
+# a required check: a PR that edits this workflow away then cannot merge.
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-guard-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  guard:
+    name: PR guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+
+      - name: Check the diff with the base branch's guard
+        env:
+          BASE_REF: origin/${{ github.base_ref }}
+          AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
+        run: |
+          if ! git show "$BASE_REF:scripts/pr-guard.mjs" > "$RUNNER_TEMP/pr-guard.mjs" 2>/dev/null; then
+            echo "::notice::The base branch has no scripts/pr-guard.mjs yet; nothing to run."
+            exit 0
+          fi
+          node "$RUNNER_TEMP/pr-guard.mjs" --base "$BASE_REF" --head HEAD --author-association "$AUTHOR_ASSOCIATION"
