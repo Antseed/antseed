@@ -1,10 +1,14 @@
 name: PR guard
 
-# Checks a pull request's diff for the mechanical signs of a supply-chain attack (scripts/pr-guard.mjs). It runs
-# the copy of the guard on the base branch, never the PR's own, installs nothing and has no secrets. Make "PR guard"
-# a required check: a PR that edits this workflow away then cannot merge.
+# Checks a pull request's diff for the mechanical signs of a supply-chain attack (scripts/pr-guard.mjs).
+#
+# It runs on pull_request_target, so GitHub uses this workflow as it is on the base branch: a PR can't edit or remove
+# the check that reviews it. That event can see the repository's secrets and a write token, so this job is built to
+# never run anything from the PR: it checks out the base branch, fetches the PR's commits only as git objects that
+# `git diff` and `git show` read, runs the base branch's copy of the guard, uses no secrets, and its token can only
+# read. Never add a step here that installs, builds, tests or executes code from the PR.
 on:
-  pull_request:
+  pull_request_target:
     branches: [main]
 
 permissions:
@@ -21,6 +25,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          ref: ${{ github.event.pull_request.base.sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -28,13 +33,17 @@ jobs:
         with:
           node-version: 24
 
-      - name: Check the diff with the base branch's guard
+      - name: Check the PR's diff with the base branch's guard
         env:
-          BASE_REF: origin/${{ github.base_ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
           AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
         run: |
-          if ! git show "$BASE_REF:scripts/pr-guard.mjs" > "$RUNNER_TEMP/pr-guard.mjs" 2>/dev/null; then
+          if [ ! -f scripts/pr-guard.mjs ]; then
             echo "::notice::The base branch has no scripts/pr-guard.mjs yet; nothing to run."
             exit 0
           fi
-          node "$RUNNER_TEMP/pr-guard.mjs" --base "$BASE_REF" --head HEAD --author-association "$AUTHOR_ASSOCIATION"
+          git fetch --no-tags --quiet origin "+refs/pull/${PR_NUMBER}/head:refs/pr-guard/head"
+          test "$(git rev-parse refs/pr-guard/head)" = "$HEAD_SHA"
+          node scripts/pr-guard.mjs --base "$BASE_SHA" --head "$HEAD_SHA" --author-association "$AUTHOR_ASSOCIATION"

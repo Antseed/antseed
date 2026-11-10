@@ -57,8 +57,8 @@ export function parseDiff(diff) {
   let line = 0;
   for (const raw of diff.split('\n')) {
     if (raw.startsWith('diff --git ')) {
-      const match = raw.match(/ b\/(.+)$/);
-      file = { path: match ? match[1] : '', status: 'modified', added: [] };
+      const match = raw.match(/ ("?)b\/(.+)\1$/);
+      file = { path: match ? gitPath(match[1] + 'b/' + match[2] + match[1]) : '', status: 'modified', added: [] };
       files.push(file);
     } else if (!file) {
       continue;
@@ -66,8 +66,12 @@ export function parseDiff(diff) {
       file.status = 'added';
     } else if (raw.startsWith('deleted file mode')) {
       file.status = 'deleted';
+    } else if (raw.startsWith('rename to ')) {
+      file.path = gitPath(raw.slice(10), false);
+    } else if (raw.startsWith('--- ') && raw !== '--- /dev/null' && file.status === 'deleted') {
+      file.path = gitPath(raw.slice(4));
     } else if (raw.startsWith('+++ ')) {
-      if (raw !== '+++ /dev/null') file.path = raw.slice(6);
+      if (raw !== '+++ /dev/null') file.path = gitPath(raw.slice(4));
     } else if (raw.startsWith('@@')) {
       line = Number(raw.match(/\+(\d+)/)?.[1] ?? 0);
     } else if (raw.startsWith('+')) {
@@ -76,6 +80,24 @@ export function parseDiff(diff) {
     }
   }
   return files;
+}
+
+/** A path as git prints it: maybe in C-style quotes (special characters, octal-escaped UTF-8 bytes), maybe with an
+ * `a/` or `b/` prefix. Unquoted here so a quoted name can't slip past the path rules. */
+export function gitPath(text, prefixed = true) {
+  let path = text;
+  if (path.startsWith('"') && path.endsWith('"')) {
+    const bytes = [];
+    const body = path.slice(1, -1);
+    const simple = { n: 10, t: 9, r: 13, a: 7, b: 8, f: 12, v: 11, '\\': 92, '"': 34 };
+    for (let i = 0; i < body.length; i += 1) {
+      if (body[i] !== '\\') { bytes.push(...Buffer.from(body[i])); continue; }
+      const next = body[i + 1];
+      if (/[0-7]/.test(next)) { bytes.push(parseInt(body.slice(i + 1, i + 4), 8)); i += 3; } else { bytes.push(simple[next] ?? next.charCodeAt(0)); i += 1; }
+    }
+    path = Buffer.from(bytes).toString('utf8');
+  }
+  return prefixed ? path.replace(/^[ab]\//, '') : path;
 }
 
 export function hiddenCharacters(file) {
@@ -104,8 +126,11 @@ export function installScriptChanges(path, before, after) {
     const now = scripts(after)[name];
     if (now !== undefined && now !== old) out.push({ path, message: `${old === undefined ? 'adds' : 'changes'} the "${name}" script: ${now}` });
   }
-  const allowed = (pkg) => new Set((pkg && pkg.pnpm && pkg.pnpm.onlyBuiltDependencies) || []);
+  const list = (pkg) => pkg && pkg.pnpm && pkg.pnpm.onlyBuiltDependencies;
+  const allowed = (pkg) => new Set(list(pkg) || []);
   const had = allowed(before);
+  // Without the list, pnpm 9 lets every dependency run install scripts: removing it lifts the restriction.
+  if (Array.isArray(list(before)) && !Array.isArray(list(after))) out.push({ path, message: 'removes pnpm.onlyBuiltDependencies, so every dependency could run install scripts' });
   for (const name of allowed(after)) if (!had.has(name)) out.push({ path, message: `lets "${name}" run install scripts (pnpm.onlyBuiltDependencies)` });
   return out;
 }
@@ -143,7 +168,11 @@ export function review({ files, readJson, base, head, external }) {
   const failures = [];
   const warnings = [];
   for (const file of files) {
-    if (file.status === 'deleted') continue;
+    if (file.status === 'deleted') {
+      const area = sensitiveArea(file.path);
+      if (area) warnings.push({ path: file.path, message: `deletes ${area}` });
+      continue;
+    }
     failures.push(...hiddenCharacters(file), ...lockfileSources(file));
     if (/(^|\/)package\.json$/.test(file.path)) {
       const before = file.status === 'added' ? null : readJson(base, file.path);
@@ -190,7 +219,7 @@ function main() {
   const association = String(arg('author-association', '')).toUpperCase();
   const external = !TEAM_ASSOCIATIONS.has(association);
   const mergeBase = git('merge-base', base, head).trim();
-  const files = parseDiff(git('diff', '--unified=0', '--no-color', '--no-ext-diff', '--find-renames', mergeBase, head));
+  const files = parseDiff(git('-c', 'core.quotePath=false', 'diff', '--unified=0', '--no-color', '--no-ext-diff', '--find-renames', mergeBase, head));
   const readJson = (ref, path) => {
     try { return JSON.parse(git('show', `${ref}:${path}`)); } catch { return null; }
   };

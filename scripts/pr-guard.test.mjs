@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { dependencyChanges, hiddenCharacters, installScriptChanges, lockfileSources, parseDiff, review, sensitiveArea, suspiciousLines } from './pr-guard.mjs';
+import { dependencyChanges, gitPath, hiddenCharacters, installScriptChanges, lockfileSources, parseDiff, review, sensitiveArea, suspiciousLines } from './pr-guard.mjs';
 
 const diff = (path, added, header = '') => [
   `diff --git a/${path} b/${path}`, header, `--- a/${path}`, `+++ b/${path}`, '@@ -1,0 +5,2 @@', ...added.map((l) => `+${l}`),
@@ -65,4 +65,23 @@ test('install script changes fail for outside authors and warn for the team', ()
   assert.equal(outside.failures.length, 1);
   assert.equal(team.failures.length, 0);
   assert.ok(team.warnings.some((w) => w.message.includes('postinstall')));
+});
+
+test('quoted, renamed and deleted paths are read as git means them', () => {
+  assert.equal(gitPath('"b/pkg\\303\\251/package.json"'), 'pkg\u00e9/package.json');
+  assert.equal(gitPath('"b/a\\"q\\".json"'), 'a"q".json');
+  const quoted = parseDiff(['diff --git "a/x\\tdir/package.json" "b/x\\tdir/package.json"', '--- "a/x\\tdir/package.json"',
+    '+++ "b/x\\tdir/package.json"', '@@ -1,0 +1 @@', '+"postinstall": "x"'].join('\n'));
+  assert.equal(quoted[0].path, 'x\tdir/package.json');
+  const deleted = parseDiff(['diff --git a/.github/CODEOWNERS b/.github/CODEOWNERS', 'deleted file mode 100644',
+    '--- a/.github/CODEOWNERS', '+++ /dev/null', '@@ -1 +0,0 @@', '-x'].join('\n'));
+  assert.deepEqual([deleted[0].path, deleted[0].status], ['.github/CODEOWNERS', 'deleted']);
+  const { warnings } = review({ files: deleted, readJson: () => null, base: 'b', head: 'h', external: true });
+  assert.deepEqual(warnings.map((w) => w.message), ['deletes CI and repository settings']);
+});
+
+test('removing the install-script allowlist is reported', () => {
+  const out = installScriptChanges('package.json', { pnpm: { onlyBuiltDependencies: ['esbuild'] } }, { pnpm: {} });
+  assert.deepEqual(out.map((c) => c.message), ['removes pnpm.onlyBuiltDependencies, so every dependency could run install scripts']);
+  assert.deepEqual(installScriptChanges('package.json', { pnpm: { onlyBuiltDependencies: ['a', 'b'] } }, { pnpm: { onlyBuiltDependencies: ['a'] } }), []);
 });
