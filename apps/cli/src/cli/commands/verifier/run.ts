@@ -57,6 +57,7 @@ import { findAdvertisedService } from '../../../verifier/service-discovery.js'
 import { configuredVerifierModels, resolveVerifierCommandModels, verifierModelServices } from '../../../verifier/model-config.js'
 import { describeAuditorSource, resolveAuditorAddress } from './auditor-identity.js'
 import { alreadyJudgedByOther, otherOpinions, type OtherOpinion } from '../../../verifier/third-opinion.js'
+import { auditorRemovedMessage, createAuditorApprovalGate } from '../../../verifier/auditor-approval.js'
 import { asError, normalized } from '../../../verifier/utils.js'
 import {
   classifyVerificationTargetServices,
@@ -605,8 +606,9 @@ export function registerVerifierRunCommand(verifier: Command): void {
         maxRunRounds(options),
         (round) => runVerifierRound(modelValue, round === 1 ? options : { ...options, fresh: false }, command),
       )
-      // A build that failed in an early round but succeeded later does not fail the command.
-      if ((last?.enrollmentFailures?.size ?? 0) > 0) process.exitCode = 1
+      // The last round decides: a build or an audit that failed in an early round and was finished, or left
+      // for its spaced retry, by a later one does not fail the command.
+      if ((last?.enrollmentFailures?.size ?? 0) > 0 || last?.failed) process.exitCode = 1
       console.log(`Next: antseed verifier submit`)
     })
 }
@@ -687,6 +689,8 @@ export interface VerifierRoundOutcome {
   epochChanged?: string
   /** Models that could not be audited this round, usually a failed build, with the reason; retried next round. */
   enrollmentFailures?: Map<string, string>
+  /** An audit failed in this round. The command exits with an error when its last round has one. */
+  failed?: boolean
 }
 
 /** The part of a model's plan that the run status counts. */
@@ -731,12 +735,24 @@ export async function runVerifierRound(
       const clock = chainClock(config)
       let assignedModels: string[] | null = null
       let approvedAuditors: string[] | undefined
+      // Whether the owner has removed this auditor since the epoch started (auditor-approval.ts). Only
+      // asked in assigned mode: `verifier run <model>` and `--all` are how an unapproved auditor tries an audit.
+      let auditorRemoved: () => Promise<boolean> = async () => false
       if (isAssignedMode(modelValue, options)) {
         const auditor = await resolveAuditorAddress({
           config: config.verifier, dataDir: globalOptions.dataDir, flag: options.auditor,
         })
         approvedAuditors = await loadApprovedAuditors(config, globalOptions.dataDir, epochWindow)
         const assignment = resolveAssignedAuditModels(config, auditor.address, epochWindow, approvedAuditors)
+        // The rotation is fixed at the epoch's start, so an auditor removed since then is still in it. The
+        // contract refuses everything it submits: stop before building questions or paying a seller.
+        const approvalClient = createVerifierClient(config)
+        const approvalGate = createAuditorApprovalGate({
+          read: () => approvalClient.approvedAuditor(auditor.address),
+          warn: (message) => console.warn(chalk.yellow(message)),
+        })
+        auditorRemoved = async () => (await approvalGate()) === 'revoked'
+        if (await auditorRemoved()) throw new Error(auditorRemovedMessage(auditor.address, epochWindow.epoch))
         printAuditAssignment(assignment, {
           auditorSource: describeAuditorSource(auditor.source),
           approvedAuditors,
@@ -826,6 +842,19 @@ export async function runVerifierRound(
       let status: VerifierStatusV1 | null = null
       let runProgress: VerifierRunProgress | null = null
       const enrollmentFailures = new Map<string, string>()
+      // Asked again before every paid step, so a removal during a run stops it within a minute or so
+      // instead of at the next tick. Said once.
+      let removalAnnounced = false
+      const stopIfAuditorRemoved = async (): Promise<boolean> => {
+        if (!(await auditorRemoved())) return false
+        if (!removalAnnounced) {
+          removalAnnounced = true
+          const text = chalk.yellow('This auditor was removed as an approved auditor during the run: no further question build or seller audit is started, and nothing more can be submitted.')
+          if (runProgress) runProgress.above(() => console.warn(text))
+          else console.warn(text)
+        }
+        return true
+      }
       try {
         const epoch = epochWindow.epoch
         if (requestedResumeManifest && requestedResumeManifest.epoch !== epoch) {
@@ -1126,7 +1155,10 @@ export async function runVerifierRound(
               : `peer ${peer.peerId.slice(0, 12)}… is skipped: ${eligibility.reason}`)
             return []
           })
-          return { model, skipped, targets, doneCount }
+          // A closed audit window audits nobody new (`auditsPeer`), so no seller is counted above: without a
+          // confirmation to audit, the model is finished for the epoch, not a model nobody advertises.
+          const windowClosed = auditWindows.get(model)?.state === 'closed'
+          return { model, skipped, targets, doneCount, windowClosed }
         }
         const plannedModels = runModels.map((model) => planModel(model, selectedPeers))
         // A confirmation that gets no audit stays waiting; say why instead of dropping it silently.
@@ -1156,9 +1188,9 @@ export async function runVerifierRound(
             ))
           }
         }
-        // A model whose sellers are all finished this epoch has nothing left to run.
-        const hasWorkLeft = (entry: { targets: unknown[]; skipped: unknown[]; doneCount: number }): boolean => (
-          entry.targets.length + entry.skipped.length > 0 || entry.doneCount === 0
+        // A model whose sellers are all finished this epoch, or whose audit window is closed, has nothing left to run.
+        const hasWorkLeft = (entry: { targets: unknown[]; skipped: unknown[]; doneCount: number; windowClosed: boolean }): boolean => (
+          entry.targets.length + entry.skipped.length > 0 || (entry.doneCount === 0 && !entry.windowClosed)
         )
         const preparedModels = plannedModels
           .filter(hasWorkLeft)
@@ -1330,6 +1362,11 @@ export async function runVerifierRound(
             sellerThinking,
           })
           const outcomes = await mapConcurrently(targets, maxConcurrentPeersPerModel, async (target) => {
+            if (await stopIfAuditorRemoved()) {
+              // Sellers not started yet are left alone; the ones already being audited finish.
+              await updateStatus((value) => { value.queuedAudits -= 1 })
+              return { result: null, failure: null, skipped: null }
+            }
             if (target.pendingExtension) {
               // The first check ran in an earlier run; only its extra questions are left.
               await updateStatus((value) => { value.queuedAudits -= 1 })
@@ -1734,6 +1771,7 @@ export async function runVerifierRound(
           try {
             let lane: ModelLane = { ...prepared, proxy }
             if (enrollmentBudget !== null) {
+              if (await stopIfAuditorRemoved()) return await leaveRun(model, statusPlan, 'auditor removed')
               runProgress!.setPhase(model, 'building questions')
               const built = await buildQuestionSet(model)
               const now = await resolveEpoch()
@@ -1787,6 +1825,7 @@ export async function runVerifierRound(
           const { model } = prepared
           let lane = prepared
           try {
+            if (await stopIfAuditorRemoved()) return await leaveRun(model, lane, 'auditor removed')
             const ready = await applyEpochCutoff(lane)
             if (!ready) return null
             lane = ready
@@ -1940,11 +1979,11 @@ export async function runVerifierRound(
         } else if (modelsPastCutoff.size === 0) {
           console.log(chalk.green(`Epoch ${epoch}: every eligible seller is finished.`))
         }
-        if (status.failures > 0) process.exitCode = 1
         return {
           left: remaining,
           secondsLeftInEpoch: epochWindow.endsAt - await clock(),
           enrollmentFailures,
+          failed: status.failures > 0,
           ...(epochChangedTo === undefined ? {} : { epochChanged: epochChangedTo }),
         }
       } catch (error) {

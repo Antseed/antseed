@@ -47,3 +47,21 @@ test('a submission made before the latest auditor revocation no longer stands', 
     submissions, 'unapproving an auditor that was never approved resets nothing',
   )
 })
+
+test('a submission that timed out says nothing is lost and what happens next', async () => {
+  const { describeSubmissionFailure } = await import('./submit.js')
+  const timeout = Object.assign(new Error('request timeout (code=TIMEOUT, version=6.16.0)'), { code: 'TIMEOUT' })
+  const text = describeSubmissionFailure(timeout)
+  assert.match(text, /^not confirmed: the RPC did not answer in time/)
+  assert.match(text, /checks the chain first and sends it only if it is not there/)
+  assert.match(text, /--rpc-url/)
+  assert.match(text, /request timeout \(code=TIMEOUT/)
+  assert.match(describeSubmissionFailure(new Error('on-chain epoch unavailable (timed out after 10000 ms)')), /^not confirmed/)
+})
+
+test('any other failed submission keeps its reason and says it is retried', async () => {
+  const { describeSubmissionFailure } = await import('./submit.js')
+  const text = describeSubmissionFailure(new Error('execution reverted: NotApprovedAuditor()'))
+  assert.match(text, /^submission failed \(continuing\): execution reverted: NotApprovedAuditor\(\)\./)
+  assert.match(text, /tries again/)
+})

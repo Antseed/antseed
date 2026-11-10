@@ -68,6 +68,21 @@ export interface EpochWindow {
 }
 
 /**
+ * What `submit` prints when a model's transaction did not go through. A timeout is the RPC not
+ * answering in time (often the gas estimate), and the transaction may or may not have been sent:
+ * the next `submit` looks for it on-chain first (`findSubmission`) and sends it only when it is not
+ * there, so nothing is lost and nothing is sent twice.
+ */
+export function describeSubmissionFailure(error: unknown): string {
+  const message = asError(error).message
+  const timedOut = (error as { code?: unknown } | null)?.code === 'TIMEOUT' || /\btime(d)? ?out\b/i.test(message)
+  if (!timedOut) return `submission failed (continuing): ${message}. The next \`antseed verifier submit\` or watch tick tries again.`
+  return 'not confirmed: the RPC did not answer in time, so it is unknown whether the transaction was sent. '
+    + 'Nothing is lost: the next `antseed verifier submit` or watch tick checks the chain first and sends it only if it is not there. '
+    + `If this repeats, use a faster RPC (\`--rpc-url\` or payments.crypto.rpcUrl). (${message})`
+}
+
+/**
  * A run can only be submitted in the on-chain epoch it was audited in: the contract rejects any
  * other `expectedEpoch`, and credits are counted per epoch.
  */
@@ -371,7 +386,7 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
           }
           await writeModelAuditLedger(ledgerPath, ledger)
           failed += 1
-          console.warn(chalk.yellow(`${audit.key}: submission failed (continuing): ${message}`))
+          console.warn(chalk.yellow(`${audit.key}: ${describeSubmissionFailure(error)}`))
         }
       }
 

@@ -727,3 +727,30 @@ test('a question set that can\'t be used is no failure once the model is past th
   assert.equal(outcome.left, 0)
   assert.equal(outcome.enrollmentFailures?.size, 0)
 }))
+
+test('a model whose window is closed is left out of a later run instead of failing as not advertised', LANE_TIMEOUT, () => withScenario(async (scenario) => {
+  const first = { ...seller('aa'.repeat(20), ['model-a', 'model-b']), onChainAgentId: 5 } as PeerInfo
+  scenario.snapshots = [snapshot([first])]
+  await scenario.run()
+  assert.equal((await readAuditWindow(scenario.evidenceDir, EPOCH, 'model-a'))?.state, 'closed')
+
+  // A later tick has other work: a confirmation on model-b for a seller that was not in its window.
+  scenario.log.length = 0
+  scenario.confirmations = [{ model: 'model-b', agentId: '6' }]
+  scenario.snapshots = [snapshot([first, { ...seller('bb'.repeat(20), ['model-b']), onChainAgentId: 6 } as PeerInfo])]
+
+  const outcome = await scenario.run({ confirm: true })
+
+  assert.ok(scenario.log.includes('audited model-b bb'), scenario.log.join('\n'))
+  assert.ok(!scenario.log.some((line) => line.includes('model-a')), scenario.log.join('\n'))
+  assert.equal(outcome.failed, false)
+  assert.equal((await status(scenario)).failures, 0)
+  assert.equal(outcome.left, 0)
+}))
+
+test('a round says whether an audit failed in it, for the command\'s exit code', LANE_TIMEOUT, () => withScenario(async (scenario) => {
+  scenario.snapshots = [snapshot([seller('aa'.repeat(20), ['model-a'])])]
+  scenario.audit = async () => { throw new Error('seller connection closed') }
+  assert.equal((await scenario.run()).failed, true)
+  assert.equal(process.exitCode, undefined, 'the round does not set the exit code; the last round of the command decides')
+}))
