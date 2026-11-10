@@ -175,4 +175,24 @@ final class EngineChatTests: XCTestCase {
         XCTAssertFalse(WorkerConfig.isPinned("mlx-community/Qwen3.5-2B-MLX-4bit@93760be"))
         XCTAssertFalse(WorkerConfig.isPinned("Qwen3.5-2B@93760be4f1f69842a46bc13dbdc0f19e291392a3"))
     }
+
+    func testFormatsStreamedChunksAndTheBufferedCompletion() throws {
+        let response = EngineChat.Response(id: "chatcmpl-1", created: 7, model: "qwen3.5-2b")
+        let text = response.chunk(.text("Hi"))
+        XCTAssertEqual(text["object"] as? String, "chat.completion.chunk")
+        XCTAssertEqual(((text["choices"] as? [[String: Any]])?.first?["delta"] as? [String: Any])?["content"] as? String, "Hi")
+        let result = LocalModel.Result(text: "", toolCalls: [["id": "call_1", "type": "function"]], finishReason: "tool_calls",
+                                       promptTokens: 10, completionTokens: 4, tokensPerSecond: 0)
+        let finish = try XCTUnwrap((response.finish(result)["choices"] as? [[String: Any]])?.first)
+        XCTAssertEqual(finish["finish_reason"] as? String, "tool_calls")
+        XCTAssertEqual((finish["delta"] as? [String: Any])?.count, 0)
+        let completion = response.completion(result)
+        let message = try XCTUnwrap(((completion["choices"] as? [[String: Any]])?.first)?["message"] as? [String: Any])
+        // A reply that only calls tools has null content.
+        XCTAssertTrue(message["content"] is NSNull)
+        XCTAssertEqual((message["tool_calls"] as? [[String: Any]])?.count, 1)
+        XCTAssertEqual((completion["usage"] as? [String: Any])?["total_tokens"] as? Int, 14)
+        XCTAssertEqual(completion["model"] as? String, "qwen3.5-2b")
+        XCTAssertEqual((EngineChat.Response.usageEvent(EngineChat.Response.usage(result))["choices"] as? [Any])?.count, 0)
+    }
 }

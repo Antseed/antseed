@@ -481,9 +481,8 @@ final class WorkerController: ObservableObject {
         let maxTokens = full ? generation.maxTokens : min(generation.maxTokens, checkLimit)
         let stream = generation.stream
         let temperature = generation.temperature
-        let created = Int(Date().timeIntervalSince1970)
-        let completionId = "chatcmpl-\(UUID().uuidString.prefix(12).lowercased())"
-        let service = config.service
+        let response = EngineChat.Response(id: "chatcmpl-\(UUID().uuidString.prefix(12).lowercased())",
+                                           created: Int(Date().timeIntervalSince1970), model: config.service)
         let sealer = opened.sealer
 
         defer { startedStreams.remove(id) }
@@ -491,45 +490,19 @@ final class WorkerController: ObservableObject {
             let result = try await model.generate(chat: chat, maxTokens: maxTokens, maxPromptTokens: promptLimit, temperature: temperature) { [weak self] output in
                 guard stream else { return }
                 await self?.startStream(id)
-                let delta: [String: Any]
-                switch output {
-                case .text(let piece): delta = ["content": piece]
-                case .toolCalls(let calls): delta = ["tool_calls": calls]
-                }
-                let chunk: [String: Any] = [
-                    "id": completionId, "object": "chat.completion.chunk", "created": created, "model": service,
-                    "choices": [["index": 0, "delta": delta]],
-                ]
-                guard let event = try? "data: " + jsonString(chunk), let sealed = try? sealer.sealEvent(event) else { return }
+                guard let event = try? "data: " + jsonString(response.chunk(output)), let sealed = try? sealer.sealEvent(event) else { return }
                 await self?.send(["t": "response-chunk", "id": id, "data": sealed.base64EncodedString()])
             }
-            let usage: [String: Any] = [
-                "prompt_tokens": result.promptTokens,
-                "completion_tokens": result.completionTokens,
-                "total_tokens": result.promptTokens + result.completionTokens,
-            ]
+            let usage = EngineChat.Response.usage(result)
             if stream {
                 startStream(id)
-                var tail = try sealer.sealEvent("data: " + jsonString([
-                    "id": completionId, "object": "chat.completion.chunk", "created": created, "model": service,
-                    "choices": [["index": 0, "delta": [String: Any](), "finish_reason": result.finishReason]],
-                ]))
-                tail += try sealer.sealEvent("data: " + jsonString(["choices": [Any](), "usage": usage]), usage: usage)
+                var tail = try sealer.sealEvent("data: " + jsonString(response.finish(result)))
+                tail += try sealer.sealEvent("data: " + jsonString(EngineChat.Response.usageEvent(usage)), usage: usage)
                 tail += try sealer.sealEvent("data: [DONE]")
                 tail += try sealer.finish()
                 send(["t": "response-chunk", "id": id, "data": tail.base64EncodedString()])
             } else {
-                var message: [String: Any] = ["role": "assistant", "content": result.text]
-                if !result.toolCalls.isEmpty {
-                    message["tool_calls"] = result.toolCalls
-                    if result.text.isEmpty { message["content"] = NSNull() }
-                }
-                let completion: [String: Any] = [
-                    "id": completionId, "object": "chat.completion", "created": created, "model": service,
-                    "choices": [["index": 0, "message": message, "finish_reason": result.finishReason]],
-                    "usage": usage,
-                ]
-                let sealed = try sealer.sealBody(Data(try jsonString(completion).utf8), usage: usage)
+                let sealed = try sealer.sealBody(Data(try jsonString(response.completion(result)).utf8), usage: usage)
                 sendBufferedBody(sealed, id: id, status: 200)
             }
             send(["t": "response-end", "id": id])

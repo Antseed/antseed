@@ -246,4 +246,58 @@ enum EngineChat {
             }
         }
     }
+
+    /// The OpenAI chat answer a worker sends: stream chunks, then a finish
+    /// chunk and a usage event, or one buffered completion.
+    struct Response {
+        let id: String
+        let created: Int
+        let model: String
+
+        /// One streamed piece of output: text, or tool-call deltas.
+        func chunk(_ output: LocalModel.Output) -> [String: Any] {
+            let delta: [String: Any]
+            switch output {
+            case .text(let piece): delta = ["content": piece]
+            case .toolCalls(let calls): delta = ["tool_calls": calls]
+            }
+            return event(["index": 0, "delta": delta])
+        }
+
+        /// The stream's last chunk: an empty delta with the engine's finish reason.
+        func finish(_ result: LocalModel.Result) -> [String: Any] {
+            event(["index": 0, "delta": [String: Any](), "finish_reason": result.finishReason])
+        }
+
+        /// The whole answer, not streamed. A reply that only calls tools has null content.
+        func completion(_ result: LocalModel.Result) -> [String: Any] {
+            var message: [String: Any] = ["role": "assistant", "content": result.text]
+            if !result.toolCalls.isEmpty {
+                message["tool_calls"] = result.toolCalls
+                if result.text.isEmpty { message["content"] = NSNull() }
+            }
+            return [
+                "id": id, "object": "chat.completion", "created": created, "model": model,
+                "choices": [["index": 0, "message": message, "finish_reason": result.finishReason]],
+                "usage": Self.usage(result),
+            ]
+        }
+
+        static func usage(_ result: LocalModel.Result) -> [String: Any] {
+            [
+                "prompt_tokens": result.promptTokens,
+                "completion_tokens": result.completionTokens,
+                "total_tokens": result.promptTokens + result.completionTokens,
+            ]
+        }
+
+        /// The stream's usage event, which the buyer is charged on.
+        static func usageEvent(_ usage: [String: Any]) -> [String: Any] {
+            ["choices": [Any](), "usage": usage]
+        }
+
+        private func event(_ choice: [String: Any]) -> [String: Any] {
+            ["id": id, "object": "chat.completion.chunk", "created": created, "model": model, "choices": [choice]]
+        }
+    }
 }
