@@ -4,13 +4,14 @@
  * connected apps use, and builds links into the gateway console where usage,
  * keys, limits and funding are managed.
  */
-import { parseGatewayKeyInfo } from './key-info.js';
+import { parseGatewayKeyInfo, withUsageOf } from './key-info.js';
 import { readConfig } from '../runtime/config-io.js';
 import type { GatewayKeyInfo, GatewayPrivacy, GatewayStatus } from '../../shared/gateway-types.js';
+import { applyPrivacyToKeys } from './privacy-keys.js';
 import { publishKeyWithPolicy } from './key-with-policy.js';
 import { assertKeyMayBeRecreated, keyIsUsable, rotateKeys, unusedAppKeyScopes, type KeyRecord } from './rotate-keys.js';
 import { createForeignBuyerGuard, foreignBuyerMessage, portInUse, restartForNewIdentity } from './restart-for-identity.js';
-import { createSerialQueue } from './serial-queue.js';
+import { createSerialQueue } from '../serial-queue.js';
 import { startUnlessClosing } from './start-guard.js';
 import { resolveConnectDataDir, DEFAULT_LOCAL_GATEWAY_PORT, type ProcessManager, type RuntimeMode } from '../runtime/process-manager.js';
 import { ACTIVE_CONFIG_PATH } from '../runtime/active-config.js';
@@ -293,10 +294,10 @@ async function ensureLocalKey(scope: string, appLabel?: string): Promise<StoredG
     if (existing && !(await keyRejected(localGatewayOrigin(), existing.secret))) return existing;
     if (existing) await assertKeyMayBeRecreated(existing, readKeyRecord);
     if (existing) deps().appendLog('gateway', 'system', `The gateway no longer accepts the "${existing.label}" key; creating a new one`);
-    // A new desktop key (first run, replaced, or the gateway forgot the old
-    // one) starts with no policy. In Private it can't be used until it has one,
-    // or requests could reach any seller while the app says Private.
-    const carryPrivate = scope === DESKTOP_KEY_SCOPE && getGatewaySettings().privacy === 'private';
+    // A new key (first run, an app's own, replaced, or the gateway forgot the
+    // old one) starts with no policy. In Private it can't be used until it has
+    // one, or requests could reach any seller while the app says Private.
+    const carryPrivate = getGatewaySettings().privacy === 'private';
     return publishKeyWithPolicy({
       create: () => createLocalKey(scopeLabel(scope, appLabel)),
       applyPolicy: carryPrivate
@@ -399,16 +400,32 @@ export async function gatewayConsoleUrl(pathname = ''): Promise<string> {
   return `${base}${suffix}`;
 }
 
-/** What the gateway reports for the desktop key (`GET /v1/key`): spend, caps, paying wallet. */
+async function readKeyInfo(origin: string, apiKey: string): Promise<GatewayKeyInfo | null> {
+  const response = await fetch(`${origin}/v1/key`, {
+    headers: { authorization: `Bearer ${apiKey}` },
+    signal: AbortSignal.timeout(5_000),
+  });
+  return response.ok ? parseGatewayKeyInfo(await response.json()) : null;
+}
+
+/**
+ * What the gateway reports for the desktop key (`GET /v1/key`): caps and
+ * paying wallet, with requests and spend over every local key the desktop
+ * made, so apps with a key of their own count too.
+ */
 export async function getGatewayKeyInfo(): Promise<GatewayKeyInfo | null> {
   try {
-    const { origin, apiKey } = await getGatewayEndpoint();
-    const response = await fetch(`${origin}/v1/key`, {
-      headers: { authorization: `Bearer ${apiKey}` },
-      signal: AbortSignal.timeout(5_000),
-    });
-    if (!response.ok) return null;
-    return parseGatewayKeyInfo(await response.json());
+    const { mode, origin, apiKey } = await getGatewayEndpoint();
+    const desktop = await readKeyInfo(origin, apiKey);
+    if (!desktop || mode !== 'local') return desktop;
+    const others = listLocalKeys()
+      .filter((entry) => entry.scope !== DESKTOP_KEY_SCOPE)
+      .flatMap((entry) => {
+        const secret = getLocalKey(entry.scope)?.secret;
+        return secret ? [secret] : [];
+      });
+    const infos = await Promise.all(others.map((secret) => readKeyInfo(origin, secret).catch(() => null)));
+    return withUsageOf(desktop, infos.filter((info): info is GatewayKeyInfo => info !== null));
   } catch {
     return null;
   }
@@ -493,7 +510,9 @@ async function applyGatewayPrivacy(mode: GatewayPrivacyMode): Promise<GatewayPri
   await ensureLocalGateway();
   const key = await ensureLocalKey(DESKTOP_KEY_SCOPE);
   if (!key.id) throw new Error('The desktop key has no id on the gateway');
-  await applyPrivacyToKey(key.id, mode);
+  // Every app's own key too: Private is promised for the whole gateway.
+  const appKeyIds = listLocalKeys().flatMap((entry) => (entry.id ? [entry.id] : []));
+  await applyPrivacyToKeys(mode, key.id, appKeyIds, (id) => applyPrivacyToKey(id, mode));
   updateGatewaySettings({ privacy: mode });
   return getGatewayPrivacy();
 }

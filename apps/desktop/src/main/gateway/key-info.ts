@@ -20,3 +20,18 @@ export function parseGatewayKeyInfo(payload: unknown): GatewayKeyInfo | null {
     limits,
   };
 }
+
+/**
+ * The desktop key's info with requests and spend summed over every key that
+ * shares its wallet (apps with a key of their own), so Home's usage counts
+ * the apps too. Limits stay the desktop key's own.
+ */
+export function withUsageOf(desktop: GatewayKeyInfo, others: GatewayKeyInfo[]): GatewayKeyInfo {
+  const micros = (value: string | null) => Math.round((Number(value) || 0) * 1_000_000);
+  const spent = [desktop, ...others].reduce((sum, info) => sum + micros(info.spentUsd), 0);
+  return {
+    ...desktop,
+    requests: [desktop, ...others].reduce((sum, info) => sum + info.requests, 0),
+    spentUsd: desktop.spentUsd === null && others.every((info) => info.spentUsd === null) ? null : (spent / 1_000_000).toFixed(6).replace(/\.?0+$/, ''),
+  };
+}
