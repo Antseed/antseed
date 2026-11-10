@@ -9,6 +9,7 @@
 | Discovery metadata is forwarded one field at a time, so a new `Provider` field needs its own line in `provider.ts`. | `src/provider.test.ts` |
 | Sellers run `runAgentLoopStream`, not the buffered loop: the node passes stream callbacks on every request, and each round sets `stream: true`. | review only |
 | Any path other than chat completions or responses is handled as Anthropic format. | review only |
+| A request is billed for every upstream call of its loop, each once: the returned response (what the seller meters) and the usage events the buyer receives report the sum. `LoopUsage` (`usage.ts`) wraps both loops; a new call to the inner provider must go through its `meter()`. | `src/usage.test.ts` |
 
 **Ask first:** the order or wrapping of the injected prompt (it changes every agent's answers); the `antseed_` prefix; a new request format, which touches `tools.ts`, `system-prompt.ts`, `agent-loop.ts` and `sse-parser.ts`.
 

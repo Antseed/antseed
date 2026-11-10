@@ -19,6 +19,7 @@ import {
 import { buildSystemPrompt, injectSystemPrompt } from './system-prompt.js';
 import { parseSSEResponse } from './sse-parser.js';
 import { TOOL_PREFIX } from './tools.js';
+import { LoopUsage, type LoopProvider } from './usage.js';
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -128,9 +129,20 @@ function prepareBody(
 
 /**
  * Non-streaming agent loop. Runs tool iterations buffered, returns final response.
+ * The response reports the token usage of every upstream call, not only the last.
  */
 export async function runAgentLoop(
   inner: Provider,
+  req: SerializedHttpRequest,
+  resolve: AgentResolver,
+  options?: AgentLoopOptions,
+): Promise<SerializedHttpResponse> {
+  const usage = new LoopUsage();
+  return usage.total(await bufferedLoop(usage.meter(inner), req, resolve, options));
+}
+
+async function bufferedLoop(
+  inner: LoopProvider,
   req: SerializedHttpRequest,
   resolve: AgentResolver,
   options?: AgentLoopOptions,
@@ -196,9 +208,23 @@ export async function runAgentLoop(
  * Tool calls are intercepted at the end of each stream, executed, and the
  * next iteration streams again — so the buyer sees tokens arriving live
  * throughout the entire conversation.
+ *
+ * The usage events the buyer receives and the returned response report the
+ * token usage of every upstream call, not only the last.
  */
 export async function runAgentLoopStream(
   inner: Provider,
+  req: SerializedHttpRequest,
+  resolve: AgentResolver,
+  callbacks: ProviderStreamCallbacks,
+  options?: AgentLoopOptions,
+): Promise<SerializedHttpResponse> {
+  const usage = new LoopUsage();
+  return usage.total(await streamingLoop(usage.meter(inner), req, resolve, usage.forward(callbacks), options));
+}
+
+async function streamingLoop(
+  inner: LoopProvider,
   req: SerializedHttpRequest,
   resolve: AgentResolver,
   callbacks: ProviderStreamCallbacks,
