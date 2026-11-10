@@ -2,6 +2,7 @@
  * IPC surface for the local gateway runtime: process control, logs, the peer
  * network, and config.
  */
+import { isAttachOnly, preserveTestbenchRouting } from '../runtime/attach-only.js';
 import { ipcMain } from 'electron';
 import type { LogEvent } from '../runtime/log-parser.js';
 import type { ProcessManager, RuntimeProcessState } from '../runtime/process-manager.js';
@@ -153,7 +154,8 @@ export function registerRuntimeIpc(deps: RuntimeIpcDeps): void {
   ipcMain.handle(
     'runtime:update-config',
     async (_event, config: Record<string, unknown>): Promise<ApiResult> => {
-      const safeConfig = sanitizeDashboardConfigPayload(config);
+      const existing = isAttachOnly() ? await readConfig(ACTIVE_CONFIG_PATH).catch(() => ({})) : {};
+      const safeConfig = preserveTestbenchRouting(sanitizeDashboardConfigPayload(config), existing);
       if (Object.keys(safeConfig).length === 0) {
         return { ok: false, data: null, error: 'No valid config keys provided', status: null };
       }

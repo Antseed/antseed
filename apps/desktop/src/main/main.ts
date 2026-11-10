@@ -21,6 +21,7 @@ import { createTelegramBridge } from './telegram/bridge.js';
 import { telegramSettingsPath } from './telegram/store.js';
 import { encryptedIdentityPath, ensureSecureIdentity, getSecureIdentity, hasStoredIdentity } from './identity.js';
 import type { LogEvent } from './runtime/log-parser.js';
+import { isAttachOnly } from './runtime/attach-only.js';
 import {
   setPluginAppendLog,
   ensureDefaultPlugin,
@@ -353,7 +354,9 @@ app.whenReady().then(async () => {
   }
   // Before anything reads an encrypted store under the new name.
   if (RENAMED_FROM_LEGACY) await migrateStoresAfterRename();
-  const hadExistingIdentity = hasStoredIdentity();
+  const hadExistingIdentity = !isAttachOnly() && hasStoredIdentity();
+  // Attach-only loads the testbench buyer key from its data dir (memory only,
+  // never the keychain) so balance and wallet views show the fork wallet.
   await ensureSecureIdentity();
   telemetryReady = initializeTelemetry(hadExistingIdentity);
   await telemetryReady;
@@ -399,10 +402,12 @@ app.whenReady().then(async () => {
   // local system proxy after a crash; nothing listens there any more.
   void releaseLegacySystemProxy();
 
+  // A testbench desktop (attach-only) uses the testbench's plugins as they are.
+  if (isAttachOnly()) setAppSetupStatus({ needed: false, complete: true });
   // The buyer loads the router plugin, and installing it replaces the plugins
   // folder, so the gateway only starts once the install has succeeded. Failure
   // is logged inside ensureDefaultPlugin, and every gateway start then says so.
-  const pluginReady = ensureDefaultPlugin('@antseed/router-local', {
+  const pluginReady = isAttachOnly() ? Promise.resolve() : ensureDefaultPlugin('@antseed/router-local', {
     getAppSetupNeeded: () => getAppSetupStatus().needed,
     setAppSetupNeeded: (v) => { setAppSetupStatus({ needed: v }); },
     getAppSetupComplete: () => getAppSetupStatus().complete,
@@ -436,9 +441,13 @@ app.whenReady().then(async () => {
 
   // Resume the Telegram bridge if a bot was connected in a previous session.
   // Needs app-ready because the token store decrypts via safeStorage.
-  void telegramBridge.start().catch((err) => {
-    appendLog('gateway', 'system', `[telegram] Bridge resume failed: ${err instanceof Error ? err.message : String(err)}`);
-  });
+  // A testbench desktop never resumes a bot: real Telegram users would get
+  // testbench replies.
+  if (!isAttachOnly()) {
+    void telegramBridge.start().catch((err) => {
+      appendLog('gateway', 'system', `[telegram] Bridge resume failed: ${err instanceof Error ? err.message : String(err)}`);
+    });
+  }
 
   // Payments portal starts lazily on first open (via payments:open-portal IPC)
 

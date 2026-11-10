@@ -17,6 +17,7 @@ import { unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { isWindowsProxyPointingAt, parseRegQueryValue, windowsProxyRestoreWrites } from './legacy-windows-proxy-state.js';
 import { connectedAppsDataDir } from './paths.js';
+import { machineWideChangesDisabled } from '../../runtime/attach-only.js';
 
 /** The port earlier releases' system proxy listened on. */
 const DEFAULT_SYSTEM_PROXY_PORT = 8378;
@@ -95,6 +96,7 @@ export function notifyWindowsProxyChanged(): void {
 }
 
 export function clearOsSystemProxy(port = DEFAULT_SYSTEM_PROXY_PORT): void {
+  if (machineWideChangesDisabled()) return;
   if (process.platform === 'darwin') {
     for (const service of getEnabledNetworkServices()) {
       try {
@@ -125,6 +127,7 @@ export function clearOsSystemProxy(port = DEFAULT_SYSTEM_PROXY_PORT): void {
 }
 
 export function restoreOsSystemProxySnapshot(rawSnapshot: unknown): boolean {
+  if (machineWideChangesDisabled()) return false;
   if (!rawSnapshot || typeof rawSnapshot !== 'object' || Array.isArray(rawSnapshot)) return false;
   const snapshot = rawSnapshot as Record<string, unknown>;
   if (snapshot['platform'] === 'darwin') {
@@ -166,6 +169,7 @@ export function restoreOsSystemProxySnapshot(rawSnapshot: unknown): boolean {
 }
 
 export async function restoreOsSystemProxy(port = DEFAULT_SYSTEM_PROXY_PORT): Promise<void> {
+  if (machineWideChangesDisabled()) return;
   try {
     const raw = readFileSync(systemProxySnapshotPath(), 'utf8');
     const restored = restoreOsSystemProxySnapshot(JSON.parse(raw) as unknown);

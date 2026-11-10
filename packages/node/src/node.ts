@@ -120,6 +120,7 @@ import { SellerPaymentManager, type SellerPaymentConfig } from "./payments/selle
 import { IdentityClient } from "./payments/evm/identity-client.js";
 import { SellerRequestHandler, assertSameNameUpstreamsAgree, assertSingleRoutingService } from "./seller-request-handler.js";
 import { ServicePerformanceTracker } from "./health/service-performance.js";
+import { announcedProviderName, withDefaultServiceApiProtocols } from "./discovery/provider-id.js";
 import {
   BuyerRequestHandler,
   type RequestStreamCallbacks,
@@ -338,7 +339,7 @@ export interface NodeVerificationConfig {
 export interface NodeConfig {
   role: 'seller' | 'buyer';
   displayName?: string;
-  /** Publicly reachable seller address override ("host:port") announced in metadata. */
+  /** Seller address ("host:port") announced in metadata; its port is announced alongside the listening port in the DHT. */
   publicAddress?: string;
   /** External ownership claims announced in signed peer metadata. */
   verifications?: PeerVerifications;
@@ -353,6 +354,13 @@ export interface NodeConfig {
   /** Seller only: inbound sockets from one IP at once (raise it behind a TLS gateway or forwarder). Default 64. */
   maxInboundConnectionsPerIp?: number;
   /**
+   * Seller only: announce each provider by an ID (see announcedProviderId)
+   * instead of its plugin name, so buyers do not learn the plugin. Off by
+   * default while buyers that predate it are in use: they refuse a pinned
+   * request naming a provider the peer does not announce.
+   */
+  announceProviderIds?: boolean;
+  /**
    * Seller only: close a buyer's connection after this long with no traffic,
    * unless the buyer has a paid channel or a free usage session open. 0 keeps
    * idle connections. Default 30 minutes.
@@ -361,6 +369,10 @@ export interface NodeConfig {
   dataDir?: string;           // Default: ~/.antseed
   dhtPort?: number;           // Default: 6881 for seller, 0 for buyer
   signalingPort?: number;     // Default: 6882 for seller
+  /** Local address the DHT (UDP) and seller signaling (TCP) sockets bind to. Default: all interfaces. */
+  bindHost?: string;
+  /** Map seller ports via UPnP/NAT-PMP on start. Default: true. Disable for isolated local testing. */
+  natTraversal?: boolean;
   bootstrapNodes?: Array<{ host: string; port: number }>;
   requestTimeoutMs?: number;  // Default: 300000
   /** Timeout in ms for each HTTP metadata fetch during peer discovery. Default: 1500 */
@@ -1980,6 +1992,7 @@ export class AntseedNode extends EventEmitter {
       reannounceIntervalMs: DEFAULT_DHT_CONFIG.reannounceIntervalMs,
       operationTimeoutMs: this._config.dhtOperationTimeoutMs ?? DEFAULT_DHT_CONFIG.operationTimeoutMs,
       allowPrivateIPs: this._config.allowPrivateIPs,
+      ...(this._config.bindHost ? { bindHost: this._config.bindHost } : {}),
     };
   }
 
@@ -2207,7 +2220,7 @@ export class AntseedNode extends EventEmitter {
     await this._connectionManager.startListening({
       peerId: identity.peerId,
       port: signalingPort,
-      host: "0.0.0.0",
+      host: this._config.bindHost ?? "0.0.0.0",
     });
 
     // Resolve actual bound port (important when port 0 is used for OS-assigned)
@@ -2215,18 +2228,20 @@ export class AntseedNode extends EventEmitter {
     const actualDhtPort = this._dht.getPort();
 
     // NAT traversal: automatically map ports via UPnP/NAT-PMP
-    this._nat = new NatTraversal();
-    const natResult = await this._nat.mapPorts([
-      { port: actualSignalingPort, protocol: "TCP" },
-      { port: actualDhtPort, protocol: "UDP" },
-    ]);
+    if (this._config.natTraversal !== false) {
+      this._nat = new NatTraversal();
+      const natResult = await this._nat.mapPorts([
+        { port: actualSignalingPort, protocol: "TCP" },
+        { port: actualDhtPort, protocol: "UDP" },
+      ]);
 
-    if (natResult.success) {
-      this.emit("nat:mapped", natResult);
-    } else {
-      debugWarn("[NAT] UPnP/NAT-PMP mapping failed — seller may not be reachable from the internet");
-      debugWarn("[NAT] Ensure port forwarding is configured manually, or peers on the same LAN can still connect");
-      this.emit("nat:failed");
+      if (natResult.success) {
+        this.emit("nat:mapped", natResult);
+      } else {
+        debugWarn("[NAT] UPnP/NAT-PMP mapping failed — seller may not be reachable from the internet");
+        debugWarn("[NAT] Ensure port forwarding is configured manually, or peers on the same LAN can still connect");
+        this.emit("nat:failed");
+      }
     }
 
     // Set up announcer for providers
@@ -2240,11 +2255,16 @@ export class AntseedNode extends EventEmitter {
       const announcerConfig: AnnouncerConfig = {
         identity,
         dht: this._dht,
-        providers: this._providers.map((p) => ({
-          provider: p.name,
+        providers: this._providers.map((p) => {
+          // With provider IDs, buyers get the protocols they used to infer from the provider's name.
+          const serviceApiProtocols = this._config.announceProviderIds
+            ? withDefaultServiceApiProtocols(p.name, p.services, p.serviceApiProtocols)
+            : p.serviceApiProtocols;
+          return {
+          provider: announcedProviderName(identity.privateKey, p.name, this._config.announceProviderIds === true),
           services: p.services,
           ...(p.serviceCategories ? { serviceCategories: { ...p.serviceCategories } } : {}),
-          ...(p.serviceApiProtocols ? { serviceApiProtocols: { ...p.serviceApiProtocols } } : {}),
+          ...(serviceApiProtocols ? { serviceApiProtocols: { ...serviceApiProtocols } } : {}),
           ...(p.serviceUnitBillingModels ? { serviceUnitBillingModels: { ...p.serviceUnitBillingModels } } : {}),
           ...(p.serviceCapabilities ? { serviceCapabilities: { ...p.serviceCapabilities } } : {}),
           // Read live: the model health checker updates it between refreshes.
@@ -2259,7 +2279,8 @@ export class AntseedNode extends EventEmitter {
             },
             ...(p.pricing.services ? { services: { ...p.pricing.services } } : {}),
           },
-        })),
+          };
+        }),
         ...(this._config.displayName ? { displayName: this._config.displayName } : {}),
         ...(this._config.publicAddress ? { publicAddress: this._config.publicAddress } : {}),
         ...(this._config.verifications ? { verifications: this._config.verifications } : {}),
@@ -2267,7 +2288,7 @@ export class AntseedNode extends EventEmitter {
         region: "unknown",
         pricing: new Map(
           this._providers.map((p) => [
-            p.name,
+            announcedProviderName(identity.privateKey, p.name, this._config.announceProviderIds === true),
             {
               defaults: {
                 inputUsdPerMillion: p.pricing.defaults.inputUsdPerMillion,
@@ -2278,7 +2299,9 @@ export class AntseedNode extends EventEmitter {
           ]),
         ),
         reannounceIntervalMs: DEFAULT_DHT_CONFIG.reannounceIntervalMs,
+        // Keep the listening endpoint discoverable when publicAddress names another host.
         signalingPort: actualSignalingPort,
+        publicSignalingPort: parsePublicAddress(this._config.publicAddress ?? "")?.port,
         ...(this._channelsClient ? { channelsClient: this._channelsClient } : {}),
         ...(this._stakingClient ? { stakingClient: this._stakingClient, paymentsEnabled: true } : {}),
         ...(this._config.sellerContract ? { sellerContract: this._config.sellerContract } : {}),
@@ -2317,6 +2340,7 @@ export class AntseedNode extends EventEmitter {
       sessionTracker: this._sessionTracker,
       channelsClient: this._channelsClient,
       announcer: this._announcer,
+      ...(this._config.announceProviderIds ? { announceProviderIds: true } : {}),
       maxUploadBodyBytes: this._config.maxUploadBodyBytes,
       resourceOwnershipStore: this._resourceOwnership,
       servicePerformance: this._servicePerformance,

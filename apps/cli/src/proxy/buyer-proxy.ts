@@ -3,6 +3,7 @@ import { ResourceRoutes } from './resource-routes.js'
 import { prepareVideoRequest, recordVideoAcceptance } from './native-video-proxy.js'
 import { downloadVideo } from './video-download.js'
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http'
+import { BUYER_SHUTDOWN_DRAIN_MS } from '../shutdown-timeouts.js'
 import { randomUUID } from 'node:crypto'
 import { buildRoutingServices, findPinnedRoutingService } from './routing-services.js'
 import { readFileSync, watchFile, unwatchFile } from 'node:fs'
@@ -205,11 +206,7 @@ import {
 export { selectCandidatePeersForRouting, type CandidatePeerRouteSelection } from './routing.js'
 export { parsePeerPinnedService, rewritePeerPinnedServiceInBody, substituteRoutedModelAlias, ROUTED_MODEL_ALIAS } from './request-utils.js'
 
-/** On shutdown, requests in flight get this long to finish before their connections are closed. */
-export const BUYER_SHUTDOWN_DRAIN_MS = 60_000
-
-/** How long a graceful buyer shutdown may take before the process exits anyway: the proxy's drain, then the node. */
-export const BUYER_SHUTDOWN_DEADLINE_MS = BUYER_SHUTDOWN_DRAIN_MS + 15_000
+export { BUYER_SHUTDOWN_DRAIN_MS, BUYER_SHUTDOWN_DEADLINE_MS } from '../shutdown-timeouts.js'
 
 /**
  * Why this daemon runs no hot-wallet deposit watcher — surfaced on
@@ -5238,27 +5235,10 @@ export class BuyerProxy {
     }
 
     if (routingPeers.length === 0) {
-      const pinnedPeer = discoveredPeers.find((peer) => peer.peerId.toLowerCase() === pinnedPeerId) ?? null
       const protocolLabel = requestProtocol ? `protocol=${requestProtocol}` : 'protocol=unknown'
       const providerLabel = explicitProvider ? `provider=${explicitProvider}` : 'provider=auto'
       const serviceLabel = requestedService ? `service=${requestedService}` : 'service=none'
       const diagnostics = this._formatPeerSelectionDiagnostics(discoveredPeers)
-
-      if (explicitProvider && pinnedPeer) {
-        const providers = pinnedPeer.providers
-          .map((provider) => provider.trim().toLowerCase())
-          .filter((provider) => provider.length > 0)
-        if (!providers.includes(explicitProvider)) {
-          const providerList = providers.length > 0 ? providers.join(', ') : 'none'
-          log(`Pinned peer ${pinnedPeerId.slice(0, 12)}... does not offer explicit provider=${explicitProvider}`)
-          return dispatchFailure(502, { 'content-type': 'text/plain' },
-            `Pinned peer ${pinnedPeerId.slice(0, 12)}... does not offer provider=${explicitProvider}. `
-            + `Available providers: ${providerList}. `
-            + 'Remove or change the x-antseed-provider header, or pick a different peer. '
-            + diagnostics,
-          )
-        }
-      }
 
       log(`Pinned peer ${pinnedPeerId.slice(0, 12)}... filtered out by protocol/service match`)
       return dispatchFailure(502, { 'content-type': 'text/plain' },

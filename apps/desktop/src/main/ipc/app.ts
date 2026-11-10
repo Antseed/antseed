@@ -5,6 +5,7 @@
 import { ipcMain } from 'electron';
 import { stopPaymentsPortal } from '../payments/portal.js';
 import { restartLocalGatewayForNewIdentity } from '../gateway/service.js';
+import { identityImportRefusal } from '../runtime/identity-import.js';
 import {
   getAppSetupStatus,
 } from '../app-context.js';
@@ -185,6 +186,9 @@ export function registerAppIpc(): void {
       if (typeof rawKey !== 'string') {
         return { ok: false, error: 'Private key must be a string' };
       }
+      // Before any staking reset or identity work: attach-only desktops never replace a signer.
+      const refused = identityImportRefusal();
+      if (refused) return refused;
       await ensureSecureIdentity();
       const result = await importIdentityPrivateKeyHex(rawKey);
       if (result.ok) {

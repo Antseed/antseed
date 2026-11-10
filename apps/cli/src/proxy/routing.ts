@@ -339,11 +339,15 @@ export function resolvePeerRoutePlan(
     return null
   }
 
-  if (explicitProvider && !providers.includes(explicitProvider)) {
+  const named = explicitProvider !== null && providers.includes(explicitProvider)
+  // A pinned request (lenient) naming a provider its peer does not announce,
+  // such as a plugin name from before sellers announced provider IDs, states
+  // no preference; automatic routing skips the peer.
+  if (explicitProvider && !named && serviceFilterMode !== 'lenient') {
     return null
   }
 
-  const candidates = explicitProvider ? [explicitProvider] : providers
+  const candidates = named ? [explicitProvider] : providers
   // Automatic routing skips services the seller's own health check announces
   // as failing. A pinned request (lenient) prefers a healthy provider and
   // otherwise still reaches the seller, which explains the failure if the

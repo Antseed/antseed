@@ -17,6 +17,7 @@ import { clearWslTargetsForTool, isWslTool, readWslTargets } from '@antseed/conn
 import type { AppLaunchTarget } from '../launch-settings.js';
 import { isAppTargetRunning, namedAppTarget, restartAppTarget } from '../launcher.js';
 import { isMultiInstanceDevelopment } from '../../dev-instance.js';
+import { machineWideChangesDisabled } from '../../runtime/attach-only.js';
 import type { RuntimeMode } from '../../runtime/process-manager.js';
 import { getGatewayEndpoint, localGatewayOrigin, type GatewayEndpoint } from '../../gateway/service.js';
 import { patchesComeOffAtQuit, relayTarget } from './relay-target.js';
@@ -245,8 +246,12 @@ async function applyPatches(names: string[], adding: string[] = []): Promise<voi
   if (addError) throw addError;
 }
 
+/** A testbench desktop runs next to the developer's own: it never edits their apps' configs. */
+const TESTBENCH_APPS_DISABLED = 'Connected-app changes are disabled in the isolated testbench desktop.';
+
 export function connectApp(name: string): Promise<ConnectedAppsState> {
   return serialized(async () => {
+    if (machineWideChangesDisabled()) throw new Error(TESTBENCH_APPS_DISABLED);
     if (!findConnectableProfile(name)) throw new Error(`Unknown app: ${name}`);
     const isNew = !connected.includes(name);
     if (isNew) connected = [...connected, name];
@@ -296,7 +301,7 @@ export function disconnectApp(name: string): Promise<ConnectedAppsState> {
  */
 export function reconnectAllApps(options: { restart?: boolean } = {}): Promise<ConnectedAppsState> {
   return serialized(async () => {
-    if (connected.length === 0) return getConnectedAppsState();
+    if (connected.length === 0 || machineWideChangesDisabled()) return getConnectedAppsState();
     await applyPatches(connected);
     await persist();
     if (options.restart) await restartApps(connected);
@@ -315,7 +320,7 @@ export async function releaseConnectedAppsOnQuit(): Promise<void> {
   try {
     const settings = getGatewaySettings();
     const relayedInWsl = readWslTargets(connectedAppsWslTargetsPath()).some((target) => target.needsRelay);
-    if (patchesComeOffAtQuit(settings, relayedInWsl) && !isMultiInstanceDevelopment()) {
+    if (patchesComeOffAtQuit(settings, relayedInWsl) && !isMultiInstanceDevelopment() && !machineWideChangesDisabled()) {
       removeAllConfigPatches(log);
     }
   } finally {

@@ -13,14 +13,19 @@ export type { SellerUpstream } from './seller-config-rules.js'
  * in hidden, as encrypted environment variables, and no secret can redirect prompts.
  *
  * The rules (anything not listed is rejected):
- *   - app-compose: runner docker-compose; no pre-launch or bash script; the allowed encrypted
+ *   - app-compose: runner docker-compose; no pre-launch, init or bash script (an empty init_script,
+ *     which Phala Cloud's CLI always writes, is allowed); the allowed encrypted
  *     variables are only the secrets the compose file uses. Logs may be public: the image runs
  *     the seller in content-free mode, so they hold no prompts or answers, nor upstream error text about a request.
  *     A launch token hash (launch_token_hash) is allowed: it only stops the CVM from booting
  *     without the matching token.
  *   - compose file: written as JSON; one service; image pinned by an approved digest; no command,
  *     entrypoint, user or other service options; the only volumes are the seller data volume and
- *     the dstack socket; the seller config is one inline config at /etc/antseed/config.json.
+ *     the dstack socket; the seller config is one inline config at /etc/antseed/config.json, named
+ *     seller-config-<SHA-256 of its content>. Docker compose recreates a container only when its
+ *     service definition changes, and inline config content isn't part of it, so with any other
+ *     name a config-only update could keep the old container running the old config while buyers
+ *     read the new one.
  *   - environment: the literal settings LITERAL_ENV allows; secrets only as `NAME: ${NAME}` for
  *     the names checkHiddenSecrets allows, plus `ANTSEED_VERIFIER_SIGNING_KEY: ${ANTSEED_IDENTITY_HEX}`.
  *     No `$` anywhere else, because compose substitutes variables in every value, the inline
@@ -37,13 +42,18 @@ const APP_COMPOSE_KEYS = new Set([
   'manifest_version', 'name', 'features', 'runner', 'docker_compose_file', 'docker_config',
   'public_logs', 'public_sysinfo', 'public_tcbinfo', 'kms_enabled', 'gateway_enabled', 'tproxy_enabled',
   'local_key_provider_enabled', 'key_provider', 'key_provider_id', 'allowed_envs', 'no_instance_id',
-  'secure_time', 'pre_launch_script', 'storage_fs', 'swap_size', 'launch_token_hash',
+  'secure_time', 'pre_launch_script', 'init_script', 'storage_fs', 'swap_size', 'launch_token_hash',
 ])
 const SERVICE_KEYS = new Set(['image', 'restart', 'ports', 'environment', 'volumes', 'configs', 'container_name'])
 const CONFIG_PATH = '/etc/antseed/config.json'
 const DATA_DIR = '/var/lib/antseed'
 const DSTACK_SOCKET = '/var/run/dstack.sock'
 const IMAGE = /^[a-z0-9][a-z0-9._/:-]*@(sha256:[0-9a-f]{64})$/
+
+/** The name a seller config must have in the compose file: it changes with every content change. */
+export function sellerConfigName(content: string): string {
+  return `seller-config-${createHash('sha256').update(content, 'utf8').digest('hex')}`
+}
 
 /** Whether any key or string anywhere in a value contains "$". */
 function hasVariableReference(value: unknown): boolean {
@@ -115,6 +125,7 @@ function checkComposeFile(compose: unknown, images: readonly ApprovedSellerImage
   check(isObj(top) && Object.keys(top).length === 1 && typeof ref['source'] === 'string', 'the seller config must be one inline config')
   const content = top[ref['source']]
   check(isObj(content) && Object.keys(content).length === 1 && typeof content['content'] === 'string', 'the seller config must be inline content')
+  check(ref['source'] === sellerConfigName(content['content']), 'the seller config must be named seller-config-<SHA-256 of its content> (regenerate the compose with compose.mjs)')
   const { upstreams, apiKeyEnvs } = checkSellerConfig(parseJson(content['content'], 'seller config'))
   checkHiddenSecrets(secrets, apiKeyEnvs)
   return { image, upstreams, secrets }
@@ -139,6 +150,8 @@ export function checkAppCompose(
     check(extra.length === 0, `app compose option ${extra[0]} is not allowed`)
     check(app['runner'] === 'docker-compose' && typeof app['docker_compose_file'] === 'string', 'app must run a docker compose file')
     check(!app['pre_launch_script'], 'app may not run a pre-launch script')
+    const initScript = app['init_script']
+    check(!initScript || (Array.isArray(initScript) && initScript.length === 0), 'app may not run an init script')
     const { image, upstreams, secrets } = checkComposeFile(parseJson(app['docker_compose_file'], 'compose file (write it as JSON)'), images)
     const allowed = app['allowed_envs'] ?? []
     check(Array.isArray(allowed) && allowed.every((n) => typeof n === 'string' && secrets.has(n)), 'app may only accept the encrypted variables its compose file uses as secrets')

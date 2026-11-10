@@ -211,9 +211,11 @@ export class BuyerRequestHandler {
     };
     const billingRoute = requestedService ? selectBillingRoute(peer, req, requestedService) : null;
     // Name the provider the request is billed under, so the seller serves it
-    // through the same upstream instead of choosing one by itself.
-    if (billingRoute && !extractRequestedProvider(req)) {
-      req = { ...req, headers: { ...req.headers, "x-antseed-provider": billingRoute.provider } };
+    // through the same upstream instead of choosing one by itself. This also
+    // replaces a provider the peer does not announce (see selectProviderForService).
+    if (billingRoute && extractRequestedProvider(req) !== billingRoute.provider.toLowerCase()) {
+      const headers = Object.fromEntries(Object.entries(req.headers).filter(([name]) => name.toLowerCase() !== "x-antseed-provider"));
+      req = { ...req, headers: { ...headers, "x-antseed-provider": billingRoute.provider } };
     }
     // Decide free vs paid from the resolved route (provider + protocol), mirroring
     // the seller's per-request gate so both sides classify the request the same way.
@@ -767,15 +769,14 @@ function selectProviderForService(
   request: SerializedHttpRequest,
 ): string | null {
   const providers = peer.providers ?? [];
-  if (requestedProvider) {
-    const provider = providers.find(
-      (candidate) => candidate.toLowerCase() === requestedProvider,
-    );
-    if (provider && providerOffersService(peer, provider, service)) {
-      return provider;
-    }
-    return null;
+  const named = requestedProvider
+    ? providers.find((candidate) => candidate.toLowerCase() === requestedProvider)
+    : undefined;
+  if (named) {
+    return providerOffersService(peer, named, service) ? named : null;
   }
+  // No provider named, or one the peer does not announce (a pin from before
+  // sellers announced provider IDs, or a plugin name): choose one.
 
   // Mirrors the seller's matchProvider: a native video request needs a
   // provider serving its protocol, and takes the first one, so a job's

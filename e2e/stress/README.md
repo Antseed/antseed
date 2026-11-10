@@ -46,8 +46,11 @@ After the load, the harness closes every channel and compares the seller's and b
 Needs Foundry (`anvil`, `forge`, `cast`) and a full build (`pnpm run build`, or tiers 0–3 plus `@antseed/cli`).
 
 ```bash
-# What CI runs: every gated scenario once, two at a time
+# Every gated scenario once, two at a time
 node e2e/stress/ci.mjs --parallel 2
+
+# What CI runs: the same, split over two jobs. Shards 1/N to N/N run each scenario exactly once
+node e2e/stress/ci.mjs --parallel 2 --shard 1/2
 
 # Some scenarios, or the gates against another built checkout's CLI
 node e2e/stress/ci.mjs --scenarios c64,restart-buyer

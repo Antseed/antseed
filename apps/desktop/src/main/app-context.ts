@@ -14,6 +14,7 @@ import { ASSETS_DIR, RENDERER_INDEX_PATH } from './paths.js';
 import { moveUserDataDir } from './app-rename.js';
 import { IS_SAFE_STORAGE_EXPORT } from './process-role.js';
 import { SAFE_STORAGE_EXPORT_NAME_ENV, SAFE_STORAGE_EXPORT_USER_DATA_ENV } from './safe-storage-export-protocol.js';
+import { isIsolatedProfile, secretStoreSwitches } from './runtime/attach-only.js';
 
 export const isDev = Boolean(process.env['VITE_DEV_SERVER_URL']);
 export const rendererUrl = process.env['VITE_DEV_SERVER_URL'] ?? `file://${RENDERER_INDEX_PATH}`;
@@ -126,6 +127,11 @@ export const TRAY_ICON_PATH = resolveAssetPath('antseed-mark.png', 'antseed-dock
 // Set the internal app name as early as possible — before any safeStorage use,
 // since it determines the macOS keychain entry. On macOS dev runs some surfaces
 // may still show "Electron" because the underlying bundle is Electron.app.
+// Must run before any safeStorage use: testbench desktops (isolated profile and
+// attach-only) never read or write the developer's login keychain or keyring.
+for (const [name, value] of secretStoreSwitches()) {
+  app.commandLine.appendSwitch(name, value);
+}
 const userDataDir = desktopUserDataDir();
 if (IS_SAFE_STORAGE_EXPORT) {
   // The export helper reads with the old name's key (app-rename.ts).
@@ -140,7 +146,7 @@ if (IS_SAFE_STORAGE_EXPORT) {
   }
   app.setName(INTERNAL_APP_NAME);
 }
-if (!IS_SAFE_STORAGE_EXPORT && isMultiInstanceDevelopment() && userDataDir) {
+if (!IS_SAFE_STORAGE_EXPORT && (isMultiInstanceDevelopment() || isIsolatedProfile()) && userDataDir) {
   mkdirSync(userDataDir, { recursive: true });
   app.setPath('userData', userDataDir);
 }

@@ -914,6 +914,10 @@ settled entries rather than pending checks. Timer-based garbage collection is
 disabled; the entry bound and buyer lifecycle own cleanup instead. There is no
 disk persistence and no per-inference-response proof in this cache.
 
+## fal image services
+
+Use `@antseed/provider-fal-image` to sell fal.ai image models through the OpenAI Images API (`/v1/images/generations` and `/v1/images/edits`), billed per output image. See the [plugin README](../../plugins/provider-fal-image/README.md).
+
 ## Native video services
 
 Use `@antseed/provider-venice-video` or `@antseed/provider-fal-video` (fal.ai models) to sell native video services. Buyers can discover them with `GET /v1/models?type=videos` and send native provider requests to the buyer proxy. See [native video integration](../../docs/protocol/spec/10-native-video.md).

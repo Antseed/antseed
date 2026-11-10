@@ -10,6 +10,8 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import type { Identity } from '@antseed/node';
 import { bytesToHex, identityFromPrivateKeyHex } from '@antseed/node';
+import { CONNECT_DATA_DIR_ENV, isAttachOnly, readAttachOnlyIdentityHex, usesPlainTextSecretStore } from './runtime/attach-only.js';
+import { importIdentityKey } from './runtime/identity-import.js';
 
 const ENCRYPTED_IDENTITY_PATH = path.join(homedir(), '.antseed', 'identity.enc');
 const PLAINTEXT_IDENTITY_PATH = path.join(homedir(), '.antseed', 'identity.key');
@@ -41,6 +43,8 @@ let _safeStorageReady: boolean | null = null;
 function safeStorageAvailable(): boolean {
   if (_safeStorageReady === null) {
     try {
+      // Testbench isolated profile on Linux: its basic password store, never the session keyring.
+      if (usesPlainTextSecretStore()) safeStorage.setUsePlainTextEncryption(true);
       _safeStorageReady = safeStorage.isEncryptionAvailable();
     } catch {
       _safeStorageReady = false;
@@ -113,6 +117,24 @@ export function secureIdentityEnv(): Record<string, string> {
 const MAX_IDENTITY_RETRIES = 3;
 let identityRetryCount = 0;
 
+// Isolated testbench desktops (ANTSEED_DESKTOP_ATTACH_ONLY=1) reuse the testbench
+// buyer's plaintext identity from its data dir. It is held in memory only and
+// never written to the OS keychain or ~/.antseed, so the testbench wallet cannot
+// leak into (or overwrite) the developer's real desktop identity.
+async function loadAttachOnlyIdentity(): Promise<void> {
+  const dataDir = process.env[CONNECT_DATA_DIR_ENV]?.trim();
+  if (!dataDir) {
+    console.warn('[desktop] attach-only mode without ANTSEED_DESKTOP_CONNECT_DATA_DIR; wallet views stay empty');
+    return;
+  }
+  try {
+    secureIdentity = identityFromHex(await readAttachOnlyIdentityHex(dataDir));
+    console.log(`[desktop] attach-only mode: using testbench buyer identity ${secureIdentity.peerId.slice(0, 12)}...`);
+  } catch (err) {
+    console.error(`[desktop] attach-only identity load failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 export async function ensureSecureIdentity(): Promise<void> {
   if (secureIdentity) return;
   if (secureIdentityPromise) {
@@ -120,6 +142,10 @@ export async function ensureSecureIdentity(): Promise<void> {
     return;
   }
   if (identityRetryCount >= MAX_IDENTITY_RETRIES) return;
+  if (isAttachOnly()) {
+    await loadAttachOnlyIdentity();
+    return;
+  }
 
   const attempt = (async () => {
     try {
@@ -228,23 +254,16 @@ export async function importIdentityPrivateKeyHex(rawKey: string): Promise<{
   backupPath?: string | null;
   error?: string;
 }> {
-  if (!safeStorageAvailable()) {
-    return { ok: false, error: 'Secure storage is not available on this system.' };
+  const { identity, ...result } = await importIdentityKey(rawKey, {
+    safeStorageAvailable,
+    toIdentity: identityFromHex,
+    backup: backupIdentityBeforeImport,
+    save: saveEncryptedIdentity,
+  });
+  if (identity) {
+    secureIdentity = identity;
+    // The unreadable file is gone, so nothing blocks the gateway any more.
+    identityUnreadable = false;
   }
-  const hex = rawKey.trim().replace(/^0x/i, '').toLowerCase();
-  if (!/^[0-9a-f]{64}$/.test(hex)) {
-    return { ok: false, error: 'Invalid private key: expected 64 hex characters (with or without a 0x prefix).' };
-  }
-  let identity: Identity;
-  try {
-    identity = identityFromHex(hex);
-  } catch (err) {
-    return { ok: false, error: `Invalid private key: ${err instanceof Error ? err.message : String(err)}` };
-  }
-  const backupPath = await backupIdentityBeforeImport();
-  await saveEncryptedIdentity(hex);
-  secureIdentity = identity;
-  // The unreadable file is gone, so nothing blocks the gateway any more.
-  identityUnreadable = false;
-  return { ok: true, address: identity.wallet.address, backupPath };
+  return result;
 }

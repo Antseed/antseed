@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { machineWideChangesDisabled } from './runtime/attach-only.js';
 
 const MULTI_INSTANCE_ENV = 'ANTSEED_DESKTOP_MULTI_INSTANCE';
 
@@ -6,7 +7,11 @@ export function isMultiInstanceDevelopment(): boolean {
   return process.env[MULTI_INSTANCE_ENV] === '1';
 }
 
+// Connected-app config patches live in other apps' files under HOME. A testbench
+// desktop never patched them (startup refuses), so its stop and quit must not
+// unpatch the real desktop's connections either.
 export function shouldRemoveSharedConfigPatches(reason: 'disconnect' | 'shutdown'): boolean {
+  if (machineWideChangesDisabled()) return false;
   return reason === 'disconnect' || !isMultiInstanceDevelopment();
 }
 
