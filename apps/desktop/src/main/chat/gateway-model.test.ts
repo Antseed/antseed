@@ -196,3 +196,11 @@ test('in Private only a free seller on sealed hardware makes a model free', asyn
   const teeFree = { id: 't', peers: [{ peerId: 'tee-free', inputUsdPerMillion: 0, outputUsdPerMillion: 0, advertisedVerifierIds: [TEE_VERIFIER_ID] }] };
   assert.equal(toChatModel(teeFree, { teeOnly: true }).freeSellerId, 'tee-free');
 });
+
+test('a model is TEE end to end only when a seller\'s model provider is attested too', () => {
+  const tee = (teeScope?: string) => ({ peerId: 'a', inputUsdPerMillion: 1, outputUsdPerMillion: 2, advertisedVerifierIds: ['antseed-verifier'], ...(teeScope ? { teeScope } : {}) });
+  assert.equal(toChatModel({ id: 'm', peers: [tee('seller-node')] }).teeEndToEnd, undefined);
+  assert.equal(toChatModel({ id: 'm', peers: [tee('seller-node'), { ...tee('end-to-end'), peerId: 'b' }] }).teeEndToEnd, true);
+  // Without the TEE verifier listed (an unproven seller) the scope says nothing.
+  assert.equal(toChatModel({ id: 'm', peers: [{ peerId: 'c', teeScope: 'end-to-end' }] }).teeEndToEnd, undefined);
+});

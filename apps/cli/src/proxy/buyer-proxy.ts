@@ -3947,7 +3947,7 @@ export class BuyerProxy {
     const models = buildNetworkModels(peers, this._now(), {
       routingPreferences: this._routingPreferences,
       peerHealth: this._peerHealth,
-      teeProven: (peer) => this._teeVerification.teeProven(peer),
+      teeScope: (peer) => this._teeVerification.teeProvenScope(peer),
       ...(listPolicy
         ? {
             offerFilter: (offer: NetworkServiceOffer) => this._policyAllowsOffer(listPolicy, peerById.get(offer.peerId), offer)

@@ -115,7 +115,9 @@ export function ChatModelDropdown({
         </span>
         <span className={styles.itemTags}>
           {model.type === 'image' && <span className={`${styles.tag} ${styles.tagBrand}`}>Image</span>}
-          {model.tee && <span className={`${styles.tag} ${styles.tagTee}`} title="Some sellers run it in a verified TEE">TEE</span>}
+          {model.tee && (model.teeEndToEnd
+            ? <span className={`${styles.tag} ${styles.tagTee}`} title="Sealed end to end: the seller and its model provider both run in a verified TEE">TEE end to end</span>
+            : <span className={`${styles.tag} ${styles.tagTee}`} title="The seller runs in a verified TEE; its model provider may not">TEE</span>)}
           {model.freeForStakers && <span className={styles.tag} title="Some sellers serve it free to their stakers">Free for stakers</span>}
           {model.type === 'text' && model.supportsImages && <span className={styles.tag}>Vision</span>}
           {model.reasoning && <span className={styles.tag}>Reasoning</span>}

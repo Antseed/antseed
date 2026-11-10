@@ -103,7 +103,7 @@ function record(value: unknown): Record<string, unknown> {
 }
 
 /** The offer summary the picker shows, worked out like the gateway console's chat. */
-function entryOfferSummary(entry: GatewayModelEntry, peers: Array<Record<string, unknown>>, options: CatalogOptions = {}): Pick<ChatModel, 'sellers' | 'free' | 'minImageUsd' | 'freeSellerId' | 'freeForStakers' | 'stakersOnlyFreeSellerIds' | 'tee' | 'toolUse' | 'reasoning' | 'inputUsdPerMillion' | 'outputUsdPerMillion'> {
+function entryOfferSummary(entry: GatewayModelEntry, peers: Array<Record<string, unknown>>, options: CatalogOptions = {}): Pick<ChatModel, 'sellers' | 'free' | 'minImageUsd' | 'freeSellerId' | 'freeForStakers' | 'stakersOnlyFreeSellerIds' | 'tee' | 'teeEndToEnd' | 'toolUse' | 'reasoning' | 'inputUsdPerMillion' | 'outputUsdPerMillion'> {
   const declared = record(entry['capabilities']);
   // Coverage only counts sellers that reported at all, including those reporting false.
   const anyPeerDeclares = (capability: 'toolUse' | 'reasoning'): boolean => peers.some((peer) => record(peer['capabilities'])[capability] === true);
@@ -135,6 +135,8 @@ function entryOfferSummary(entry: GatewayModelEntry, peers: Array<Record<string,
     freeForStakers: peers.some(stakersOnly),
     ...(stakersOnlyFreeSellerIds.length > 0 ? { stakersOnlyFreeSellerIds } : {}),
     tee: peers.some(isTee),
+    // Only the seller's own TEE is checked unless its model provider is attested too.
+    ...(peers.some((peer) => isTee(peer) && peer['teeScope'] === 'end-to-end') ? { teeEndToEnd: true } : {}),
     toolUse: declared['tool_use'] === true || anyPeerDeclares('toolUse'),
     reasoning: declared['reasoning'] === true || anyPeerDeclares('reasoning'),
     inputUsdPerMillion: cheapest('inputUsdPerMillion', pricedPeers),

@@ -24,7 +24,7 @@ import { canonicalModelKey, preferredModelDisplayName } from '@antseed/node/mode
 import { freeTierProgramForService, isPricedService, type FreeTierProgram } from '@antseed/node/free-tier-program'
 import type { RoutingProtocol, ServiceHealth, ServicePerformance } from '@antseed/node'
 import type { RouterOptionSpec } from '@antseed/router-core'
-import { TEE_VERIFIER_ID } from '@antseed/node/tee-status'
+import { TEE_VERIFIER_ID, type TeeScope } from '@antseed/node/tee-status'
 
 export { effectiveModelReputationScore } from '@antseed/node'
 
@@ -33,6 +33,8 @@ export type NetworkModelType = NetworkServiceOffer['type']
 export type NetworkModelPeerOffer = {
   unitBillingModels?: NetworkServiceOffer['unitBillingModels']
   advertisedVerifierIds?: string[]
+  /** For a proven TEE seller: whether its model provider is attested too (`end-to-end`) or only the seller (`seller-node`). */
+  teeScope?: TeeScope
   peerId: string
   displayName?: string
   provider: string
@@ -135,8 +137,21 @@ export type NetworkModelBuildOptions = {
   }>
   /** Only offers it accepts are listed (a gateway routing policy); a model left with none is omitted. */
   offerFilter?: (offer: NetworkServiceOffer) => boolean
-  /** Sellers whose TEE attestation passed; the others' offers don't list the TEE verifier. */
-  teeProven?: (peer: PeerInfo) => boolean
+  /** How far a seller's passed TEE attestation reaches (null when none passed); the others' offers don't list the TEE verifier. */
+  teeScope?: (peer: PeerInfo) => TeeScope | null
+}
+
+/** The offer's verifier list and TEE scope: the TEE verifier stays listed only for a seller whose attestation passed. */
+function teeFields(
+  offer: NetworkServiceOffer,
+  peer: PeerInfo | undefined,
+  scopeOf: NetworkModelBuildOptions['teeScope'],
+): Pick<NetworkModelPeerOffer, 'advertisedVerifierIds' | 'teeScope'> {
+  if (!scopeOf || !offer.advertisedVerifierIds?.includes(TEE_VERIFIER_ID)) return { advertisedVerifierIds: offer.advertisedVerifierIds }
+  const scope = peer ? scopeOf(peer) : null
+  return scope
+    ? { advertisedVerifierIds: offer.advertisedVerifierIds, teeScope: scope }
+    : { advertisedVerifierIds: offer.advertisedVerifierIds.filter((id) => id !== TEE_VERIFIER_ID) }
 }
 
 function normalizedModelAlias(serviceId: string): string {
@@ -316,9 +331,7 @@ export function buildNetworkModels(
     })
     const freeTier = freeTierProgramForService(peer?.capabilities, offer.serviceId, priced, { video: offer.type === 'video' })
     entry.peers.push({
-      advertisedVerifierIds: options.teeProven && !(peer && options.teeProven(peer))
-        ? offer.advertisedVerifierIds?.filter((id) => id !== TEE_VERIFIER_ID)
-        : offer.advertisedVerifierIds,
+      ...teeFields(offer, peer, options.teeScope),
       peerId: offer.peerId,
       ...(offer.displayName ? { displayName: offer.displayName } : {}),
       provider: offer.provider,

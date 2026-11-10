@@ -27,6 +27,8 @@ export type ChatModel = {
   stakersOnlyFreeSellerIds?: string[];
   /** Some seller runs it in a verified TEE. */
   tee: boolean;
+  /** Some seller runs it sealed end to end: the seller and its model provider are both in a verified TEE. */
+  teeEndToEnd?: boolean;
   toolUse: boolean;
   reasoning: boolean;
   /**

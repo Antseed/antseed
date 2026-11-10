@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { QueryClient } from '@tanstack/query-core'
-import { TEE_BADGE_MAX_AGE_MS, TEE_MAX_AGE_MS, TEE_VERIFIER_ID, type TeeEvidence, type TeeSnapshot } from '@antseed/node/tee-status'
+import { TEE_BADGE_MAX_AGE_MS, TEE_MAX_AGE_MS, TEE_VERIFIER_ID, teeScope, type TeeEvidence, type TeeScope, type TeeSnapshot } from '@antseed/node/tee-status'
 import { parseVerifierCapabilities } from '@antseed/node/verifier-capabilities'
 import { selectVerifier, verifierSupportFingerprint, type VerifierPolicy, type VerifyOutcome } from '../plugins/verifier.js'
 
@@ -112,17 +112,21 @@ export class TeeVerification {
   }
 
   /**
-   * Whether the seller's own TEE attestation passed and is still in date.
-   * Advertising the TEE verifier is only a claim: until a check passes (or
-   * when none can run) the seller isn't shown as one.
+   * How far the seller's TEE reaches, from its own attestation that passed and
+   * is still in date: `end-to-end` when its model provider is attested too,
+   * `seller-node` when only the seller is. Null until a check passes (or when
+   * none can run): advertising the TEE verifier is only a claim.
    */
-  teeProven(peer: Peer): boolean {
+  teeProvenScope(peer: Peer): TeeScope | null {
     const fingerprint = verifierSupportFingerprint(peer.capabilities)
-    return this.queries.getQueryCache().findAll({ queryKey: [peer.peerId, TEE_VERIFIER_ID, fingerprint] }).some((query) => {
+    let scope: TeeScope | null = null
+    for (const query of this.queries.getQueryCache().findAll({ queryKey: [peer.peerId, TEE_VERIFIER_ID, fingerprint] })) {
       const entry = query.state.data as Entry | undefined
-      return entry?.outcome?.sellerNodeVerified === true && !entry.outcome.transient
-        && this.cacheExpiry(entry, TEE_BADGE_MAX_AGE_MS) > this.now()
-    })
+      if (entry?.outcome?.sellerNodeVerified !== true || entry.outcome.transient || this.cacheExpiry(entry, TEE_BADGE_MAX_AGE_MS) <= this.now()) continue
+      if (teeScope({ claims: entry.outcome.claims ?? [] }) === 'end-to-end') return 'end-to-end'
+      scope = 'seller-node'
+    }
+    return scope
   }
 
   observePeers(peers: readonly Peer[]): void {

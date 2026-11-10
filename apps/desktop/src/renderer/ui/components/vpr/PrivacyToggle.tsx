@@ -35,7 +35,7 @@ const OPTIONS: PrivacyOption[] = [
     mode: 'private',
     label: 'Private',
     iconClass: styles.iconPrivate,
-    description: 'Providers can’t read your chats. Your app checks each one runs on sealed hardware (a TEE) before sending anything. Fewer models for now.',
+    description: 'Providers can’t read your chats. Your app checks each one runs on sealed hardware (a TEE) before sending anything. Fewer models for now. Some pass requests on to a model provider outside a TEE; models marked “TEE end to end” are sealed all the way.',
   },
 ];
 
