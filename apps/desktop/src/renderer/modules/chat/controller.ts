@@ -1,5 +1,6 @@
 import { asErrorMessage } from '../../../shared/error-message.js';
-import { getPrivacySwitchState } from '../app/vpr-resources';
+import { getPrivacySwitchState, privacyResource } from '../app/vpr-resources';
+import { defaultStorage } from '../app/local-storage-flag';
 import { describeChatError } from './chat-errors';
 import { imageModelCanEdit, modelAcceptsImages, splitPinnedModel } from '../../../shared/pinned-model.js';
 import { selectHasFunds } from '../../core/balance';
@@ -66,10 +67,38 @@ type ChatModuleOptions = {
   }) => void;
 };
 
+const PRIVATE_CHATS_KEY = 'antseed:privateChats';
+
+function loadPrivateChats(): string[] {
+  try {
+    const raw = defaultStorage()?.getItem(PRIVATE_CHATS_KEY);
+    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function savePrivateChats(ids: string[]): void {
+  try {
+    defaultStorage()?.setItem(PRIVATE_CHATS_KEY, JSON.stringify(ids.slice(-500)));
+  } catch {
+    // Storage unavailable: the replies' own privacy tags still mark the chat.
+  }
+}
+
+/** What the user chose when switching Anonymous / Private with a chat open. */
+export type PrivacySwitchChoice = {
+  /** Start a new chat instead of carrying on in the open one. */
+  newChat?: boolean;
+  /** Carry the open chat's private history into Anonymous anyway. */
+  keepPrivateHistory?: boolean;
+};
+
 export type ChatModuleApi = {
   /** Reload the gateway's model list (`force` skips main's one-minute cache). */
   refreshChatModels: (options?: { force?: boolean }) => Promise<void>;
-  privacyModeChosen: (mode: 'anonymous' | 'private') => void;
+  privacyModeChosen: (mode: 'anonymous' | 'private', choice?: PrivacySwitchChoice) => void;
   privacySwitchLanded: (mode: 'anonymous' | 'private') => Promise<void>;
   refreshChatConversations: () => Promise<void>;
   chooseWorkspace: () => Promise<void>;
@@ -196,6 +225,17 @@ export function initChatModule({
   /** The new-chat default: the last model used (if the gateway still lists it), else the first text model. */
   /** The model Private moved away from, for going back. Survives leaving Home. */
   let modelMovedForPrivate: { from: string; to: string } | null = null;
+  /** Chats the user chose to carry from Private into Anonymous. */
+  const privateHistoryAllowed = new Set<string>();
+  uiState.chatPrivateConversationIds = loadPrivateChats();
+
+  /** Remembers that a prompt in this chat went out under Private, whatever came back. */
+  function markPrivateChat(convId: string): void {
+    if (uiState.chatPrivateConversationIds.includes(convId)) return;
+    uiState.chatPrivateConversationIds = [...uiState.chatPrivateConversationIds, convId];
+    savePrivateChats(uiState.chatPrivateConversationIds);
+    notifyUiStateChanged();
+  }
 
   function applyDefaultModel(): void {
     if (activeConversation) return;
@@ -275,16 +315,23 @@ export function initChatModule({
   function moveModelForPrivate(next: string): void {
     const current = uiState.chatSelectedModelId;
     modelMovedForPrivate = { from: modelMovedForPrivate?.from ?? current, to: next };
-    if (activeConversation) startNewChat();
     uiState.chatImageModelId = null;
     uiState.chatSelectedModelId = next;
+    // The open chat carries on with the model Private can use.
+    if (activeConversation) saveOpenChatModel(next);
     clearChatNotices();
     void refreshPermissionModeForModel(next);
     notifyUiStateChanged();
   }
 
-  /** On the toggle, before the gateway has switched, so the model changes at once when it plainly must. */
-  function privacyModeChosen(mode: 'anonymous' | 'private'): void {
+  /**
+   * On the toggle, before the gateway has switched, so the model changes at once
+   * when it plainly must. The open chat stays open unless `newChat`; carrying a
+   * chat with private history into Anonymous needs `keepPrivateHistory`.
+   */
+  function privacyModeChosen(mode: 'anonymous' | 'private', choice: PrivacySwitchChoice = {}): void {
+    if (choice.newChat && activeConversation) startNewChat();
+    else if (choice.keepPrivateHistory && activeConversation) privateHistoryAllowed.add(activeConversation.id);
     if (mode === 'private') {
       const next = chooseModelForPrivate(uiState.chatModels.filter((model) => model.tee), uiState.chatSelectedModelId, selectHasFunds(uiState));
       if (next) moveModelForPrivate(next);
@@ -293,8 +340,8 @@ export function initChatModule({
     const previous = modelMovedForPrivate;
     modelMovedForPrivate = null;
     if (!previous || uiState.chatSelectedModelId !== previous.to) return;
-    if (activeConversation) startNewChat();
     uiState.chatSelectedModelId = previous.from;
+    if (activeConversation) saveOpenChatModel(previous.from);
     void refreshPermissionModeForModel(previous.from);
     notifyUiStateChanged();
   }
@@ -303,7 +350,7 @@ export function initChatModule({
   async function privacySwitchLanded(mode: 'anonymous' | 'private'): Promise<void> {
     const before = uiState.chatSelectedModelId;
     await refreshChatModels({ force: true });
-    if (mode !== 'private' || activeConversation) return;
+    if (mode !== 'private') return;
     // Judged from `before`: the refresh's own default for a model no longer listed prefers free.
     const next = chooseModelForPrivate(uiState.chatModels, before, selectHasFunds(uiState));
     if (next && next !== uiState.chatSelectedModelId) {
@@ -344,6 +391,13 @@ export function initChatModule({
     modelMovedForPrivate = null;
     clearChatNotices();
     saveLastChatModel(id);
+    saveOpenChatModel(id);
+    void refreshPermissionModeForModel(id);
+    notifyUiStateChanged();
+  }
+
+  /** The open chat continues on `id` (the model it is saved with, for its next send). */
+  function saveOpenChatModel(id: string): void {
     const convId = activeConversation?.id ?? null;
     if (convId) forgetFundsNotice(convId);
     if (activeConversation && convId) {
@@ -365,8 +419,6 @@ export function initChatModule({
         pendingModelUpdates.set(convId, entry);
       }
     }
-    void refreshPermissionModeForModel(id);
-    notifyUiStateChanged();
   }
 
   // ---------------------------------------------------------------------------
@@ -911,6 +963,9 @@ export function initChatModule({
     if (text.trim().length === 0 && !rawAttachments?.length) return;
 
     if (!uiState.chatActiveConversation) {
+      // A default nobody chose can predate the free sellers or the list's final
+      // ids, and a sent chat keeps its model: settle it against the list now.
+      applyDefaultModel();
       // Capture the draft's model now: the user may switch before the
       // conversation finishes creating.
       const draftVersion = newChatDraftVersion;
@@ -933,6 +988,15 @@ export function initChatModule({
       showChatError('This conversation already has a request in progress.');
       return;
     }
+    // However Private was turned off (the toggle, the console, another app), a
+    // chat sent privately doesn't go to non-TEE sellers unless the user chose so.
+    if (privacyResource.getSnapshot().data?.mode === 'anonymous'
+      && !privateHistoryAllowed.has(convId)
+      && conversationHasPrivateHistory(convId)) {
+      showChatError('This chat was sent in Private. Carrying on here in Anonymous would send its history to providers that don\'t run in a TEE. Start a new chat, or switch back to Private.');
+      return;
+    }
+    if (privacyResource.getSnapshot().data?.mode === 'private') markPrivateChat(convId);
     const content = text.trim();
     clearChatNotices();
     fundsNoticeByConversation.delete(convId);
@@ -1029,6 +1093,14 @@ export function initChatModule({
         setConversationSending(convId, false);
       }
     }
+  }
+
+  /** A reply in this chat went out under Private (a failed one too: its prompt was sent). */
+  function conversationHasPrivateHistory(convId: string): boolean {
+    const messages = getLocalConversationMessages(convId)
+      ?? (convId === uiState.chatActiveConversation ? (uiState.chatMessages as ChatMessage[]) : []);
+    return uiState.chatPrivateConversationIds.includes(convId)
+      || messages.some((message) => (message.meta as { privacy?: unknown } | undefined)?.privacy === 'private');
   }
 
   function lastUserMessage(convId: string): { content: string; attachments: PreparedChatAttachment[] } | null {

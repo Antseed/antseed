@@ -1,5 +1,6 @@
 import type { ConfigFormData } from '../core/state';
 import type { ChatPermissionMode, RawChatAttachment, ToolApprovalDecision } from '../types/bridge';
+import type { PrivacySwitchChoice } from '../modules/chat/controller';
 
 export type AppActions = {
   /** Restart the local gateway (and its buyer); connected apps stay connected across it. */
@@ -21,7 +22,7 @@ export type AppActions = {
   selectChatModel: (modelId: string) => void;
   /** Reload the gateway's model list; `force` bypasses the one-minute cache. */
   refreshChatModels: (force?: boolean) => Promise<void>;
-  privacyModeChosen: (mode: 'anonymous' | 'private') => void;
+  privacyModeChosen: (mode: 'anonymous' | 'private', choice?: PrivacySwitchChoice) => void;
   privacySwitchLanded: (mode: 'anonymous' | 'private') => Promise<void>;
   setChatPermissionMode: (mode: ChatPermissionMode) => void;
   decideToolApproval: (decision: ToolApprovalDecision, requestId?: string) => void;

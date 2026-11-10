@@ -168,3 +168,49 @@
 .notePlain {
   padding-left: 16px;
 }
+
+.switchDialog {
+  display: grid;
+  gap: 10px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+
+  p {
+    margin: 0;
+  }
+
+  b {
+    color: var(--text-primary);
+    font-weight: 600;
+  }
+}
+
+/* A quiet line between turns where Anonymous / Private changed. */
+.divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 14px 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.dividerRule {
+  flex: 1 1 0;
+  height: 1px;
+  background: var(--border);
+}
+
+.dividerText {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 80%;
+  text-align: center;
+
+  .badge {
+    width: 16px;
+    height: 16px;
+  }
+}

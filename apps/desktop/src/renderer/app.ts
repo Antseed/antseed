@@ -242,7 +242,7 @@ registerActions({
   renameConversation: (id, title) => { recordUserAction('conversation_rename', 'chats'); chatApi.renameConversation(id, title); },
   setConversationFlags: (id, flags) => chatApi.setConversationFlags(id, flags),
   selectChatModel: (modelId) => chatApi.selectChatModel(modelId),
-  privacyModeChosen: (mode) => { chatApi?.privacyModeChosen(mode); },
+  privacyModeChosen: (mode, choice) => { chatApi?.privacyModeChosen(mode, choice); },
   privacySwitchLanded: (mode) => chatApi?.privacySwitchLanded(mode) ?? Promise.resolve(),
   refreshChatModels: (force) => {
     if (!force) recordUserAction('model_picker_open', 'chat');

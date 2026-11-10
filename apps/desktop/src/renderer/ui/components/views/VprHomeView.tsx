@@ -38,8 +38,8 @@ export function VprHomeView({ onSelectView }: Props) {
   const { switching } = usePrivacySwitch();
   // Counts the user's switches, so a dismissed privacy note can flash back.
   const [privacySwitches, setPrivacySwitches] = useState(0);
-  const privacyControl = usePrivacyControl((mode) => {
-    actions.privacyModeChosen(mode);
+  const privacyControl = usePrivacyControl((mode, choice) => {
+    actions.privacyModeChosen(mode, choice);
     setPrivacySwitches((count) => count + 1);
   });
   const models = modelsForPrivacy(snap.chatModels, privateMode);

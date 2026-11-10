@@ -40,7 +40,7 @@ import { buildDisplayMessages } from '../chat/chat-shared';
 import type { ChatPermissionMode, RawChatAttachment } from '../../../types/bridge';
 import { VprHeaderActions } from '../vpr/VprHeaderActions';
 import { cancelVoiceRecording, startVoiceRecording, stopVoiceRecording } from '../../lib/voice-recorder';
-import { modelsForPrivacy, PrivacyNote, PrivacyToggle, usePrivacyControl, usePrivateMode } from '../vpr/PrivacyToggle';
+import { modelsForPrivacy, PrivacyDivider, PrivacyNote, PrivacyToggle, usePrivacyControl, usePrivateMode } from '../vpr/PrivacyToggle';
 import { homeProgress, useHomeProgress } from '../../../modules/app/home-progress';
 import { gatewayResource, usePrivacySwitch } from '../../../modules/app/vpr-resources';
 import { useCachedResource } from '../../../modules/app/cached-resource';
@@ -220,8 +220,8 @@ export function ChatView({ onSelectView }: ChatViewProps) {
   const progress = useHomeProgress();
   // Counts the user's switches, so a dismissed privacy note can flash back.
   const [privacySwitches, setPrivacySwitches] = useState(0);
-  const privacyControl = usePrivacyControl((mode) => {
-    actions.privacyModeChosen(mode);
+  const privacyControl = usePrivacyControl((mode, choice) => {
+    actions.privacyModeChosen(mode, choice);
     setPrivacySwitches((count) => count + 1);
   });
   const gatewayMode = useCachedResource(gatewayResource).data?.status.mode;
@@ -302,6 +302,24 @@ export function ChatView({ onSelectView }: ChatViewProps) {
     () => visibleMessages.map((message, index) => ({ message, key: getMessageKey(message, index) })),
     [visibleMessages],
   );
+  // Where replies changed between Anonymous and Private: a line after the last
+  // reply of the old mode. After a switch, the same line marks where the next
+  // reply will change, until it does.
+  const privacyLines = useMemo(() => {
+    const after = new Map<string, { mode: 'anonymous' | 'private'; pending: boolean }>();
+    let lastKey: string | null = null;
+    let lastMode: 'anonymous' | 'private' | null = null;
+    for (const { message, key } of keyedVisibleMessages) {
+      const mode = (message.meta as { privacy?: unknown } | undefined)?.privacy;
+      if (message.role !== 'assistant' || (mode !== 'anonymous' && mode !== 'private')) continue;
+      if (lastKey && lastMode && mode !== lastMode) after.set(lastKey, { mode, pending: false });
+      lastKey = key;
+      lastMode = mode;
+    }
+    const current = privateMode ? 'private' : 'anonymous';
+    if (lastKey && lastMode && lastMode !== current) after.set(lastKey, { mode: current, pending: true });
+    return after;
+  }, [keyedVisibleMessages, privateMode]);
   const normalizedMessageSearchQuery = getNormalizedSearchQuery(messageSearchQuery);
   const messageSearchResults = useMemo(() => {
     if (!normalizedMessageSearchQuery) return [];
@@ -1068,6 +1086,13 @@ export function ChatView({ onSelectView }: ChatViewProps) {
                       searchQuery={isSearchMatch ? messageSearchQuery : undefined}
                       searchActive={isActiveSearchMatch}
                     />
+                    {privacyLines.has(key) ? (
+                      <PrivacyDivider
+                        mode={privacyLines.get(key)!.mode}
+                        pending={privacyLines.get(key)!.pending}
+                        model={privacyLines.get(key)!.pending ? selectedTextModel?.label ?? null : null}
+                      />
+                    ) : null}
                   </div>
                 );
               })

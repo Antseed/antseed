@@ -132,6 +132,8 @@ export type RendererUiState = {
   chatSendingConversationId: string | null;
   /** IDs of all conversations currently running a request, across the whole app. */
   chatSendingConversationIds: string[];
+  /** Chats with a message sent under Private (failed sends too); kept across launches. */
+  chatPrivateConversationIds: string[];
   chatError: string | null;
   /**
    * The last request failed because the gateway could not pay for it (HTTP
@@ -240,6 +242,7 @@ export function createInitialUiState(): RendererUiState {
     chatSending: false,
     chatSendingConversationId: null,
     chatSendingConversationIds: [],
+    chatPrivateConversationIds: [],
     chatError: null,
     chatFundsNotice: null,
     chatModels: [],

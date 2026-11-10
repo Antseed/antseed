@@ -18,7 +18,7 @@ import { UpdateBanner } from './UpdateBanner';
 import { SidebarBalance } from './vpr/SidebarBalance';
 import { VprNavContext } from './vpr/VprNavContext';
 import { VprHeaderActions } from './vpr/VprHeaderActions';
-import { usePrivateMode } from './vpr/PrivacyToggle';
+import { PrivacySwitchDialog, usePrivateMode } from './vpr/PrivacyToggle';
 import { setPrivateNight } from '../lib/theme';
 import styles from './VprShell.module.scss';
 
@@ -274,6 +274,7 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
       <main className={styles.mainPane}>
         <div className={styles.content}>
           <VprNavContext.Provider value={navValue}>{children}</VprNavContext.Provider>
+          <PrivacySwitchDialog />
         </div>
         {/* The no-drag carve-out lives on this static wrapper: the toolbar
             itself runs a compositor scroll-timeline animation, and animated
