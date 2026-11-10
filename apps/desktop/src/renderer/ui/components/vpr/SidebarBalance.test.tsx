@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, expect, it } from 'vitest';
 import { createInitialUiState } from '../../../core/state';
 import { initStore } from '../../../core/store';
-import { SidebarBalance } from './SidebarBalance';
+import { compactAmount, SidebarBalance } from './SidebarBalance';
 
 function loadedState() {
   const state = createInitialUiState();
@@ -37,4 +37,19 @@ it('shows a placeholder, not $0.00, before the balance is read', () => {
   const markup = render('0');
   expect(markup).toContain('as-skeleton');
   expect(markup).not.toContain('0.00');
+});
+
+it('shrinks to a wallet icon and amount in the collapsed rail', () => {
+  const markup = renderToStaticMarkup(<SidebarBalance credits="25.55" onAddFunds={() => {}} compact />);
+  expect(markup).toContain('$25.55');
+  expect(markup).toContain('aria-label="Balance $25.55 · Add funds"');
+  expect(markup).not.toContain('>Add funds<');
+});
+
+it('fits large balances into the rail', () => {
+  expect(compactAmount('25.55')).toBe('25.55');
+  expect(compactAmount('<0.01')).toBe('<0.01');
+  expect(compactAmount('228.14')).toBe('228');
+  expect(compactAmount('1234.50')).toBe('1.2k');
+  expect(compactAmount('25000.00')).toBe('25k');
 });

@@ -60,3 +60,61 @@
 .addFunds:hover {
   opacity: 0.88;
 }
+
+.compact {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  width: 56px;
+  margin-top: 8px;
+  padding: 7px 0 6px;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.compact:hover,
+.compact:focus-visible {
+  background: var(--bg-sidebar-active);
+  color: var(--text-primary);
+  outline: none;
+}
+
+.compactIcon {
+  position: relative;
+  display: inline-flex;
+}
+
+.compactDot {
+  position: absolute;
+  top: -2px;
+  right: -4px;
+}
+
+.compactAmount {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+}
+
+.compact:hover .compactAmount {
+  color: var(--text-primary);
+}
+
+.compactSkeleton {
+  display: inline-block;
+  width: 32px;
+  min-height: 0;
+  height: 11px;
+}

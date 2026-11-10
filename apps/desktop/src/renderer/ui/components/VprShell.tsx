@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
-import { BubbleChatIcon, DashboardSquare01Icon, LinkSquare02Icon, PencilEdit02Icon } from '@hugeicons/core-free-icons';
-import { Logo } from '@antseed/ui';
+import { BubbleChatIcon, DashboardSquare01Icon, LinkSquare02Icon, PencilEdit02Icon, SidebarLeftIcon } from '@hugeicons/core-free-icons';
+import { Logo, LogoMark } from '@antseed/ui';
 import type { ViewName } from '../types';
 import { shallowEqual, useUiSelector } from '../hooks/useUiSelector';
 import { useActions } from '../hooks/useActions';
@@ -44,6 +44,24 @@ type VprShellProps = {
   onNavigateBack: (fallback: ViewName) => void;
   children: React.ReactNode;
 };
+
+const SIDEBAR_COLLAPSED_KEY = 'antseed.sidebarCollapsed';
+
+function readSidebarCollapsed(): boolean {
+  try {
+    return window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+function writeSidebarCollapsed(collapsed: boolean): void {
+  try {
+    window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(collapsed));
+  } catch {
+    // Storage unavailable; the sidebar opens expanded next launch.
+  }
+}
 
 const mainNavEntries = navViews('main');
 // Home leads the rail, then Chat with its new-chat button, then the rest.
@@ -123,20 +141,44 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
   const chatActive = activeView === 'chat';
   const isMac = globalThis.window?.antseedDesktop?.platform === 'darwin';
 
+  // Collapsed keeps a rail: the Antseed mark, nav icons and the balance.
+  const [collapsed, setCollapsed] = useState(readSidebarCollapsed);
+  const toggleSidebar = useCallback(() => {
+    setCollapsed((current) => {
+      writeSidebarCollapsed(!current);
+      return !current;
+    });
+  }, []);
+  const toggleLabel = collapsed ? 'Show sidebar' : 'Hide sidebar';
+
   return (
-    <div className={styles.shell}>
+    <div className={`${styles.shell}${collapsed ? ` ${styles.shellCollapsed}` : ''}`}>
       {/* Window-drag handle: the hidden-inset title bar has no native drag
           region, so this strip provides one. pointer-events: none keeps web
           clicks working; interactive elements overlapping it opt out with
           -webkit-app-region: no-drag. */}
       <div className={styles.dragStrip} aria-hidden="true" />
       <nav className={styles.sidebar} aria-label="Main navigation">
-        <Logo height={24} className={styles.logo} />
+        <div className={styles.brandRow}>
+          {collapsed ? <LogoMark size={26} className={styles.logo} /> : <Logo height={24} className={styles.logo} />}
+          <button
+            type="button"
+            className={styles.sidebarToggle}
+            onClick={toggleSidebar}
+            aria-label={toggleLabel}
+            aria-expanded={!collapsed}
+            title={toggleLabel}
+          >
+            <HugeiconsIcon icon={SidebarLeftIcon} size={18} strokeWidth={1.7} />
+          </button>
+        </div>
         {homeNavEntry ? (
           <button
             type="button"
             className={`${styles.navButton}${activeView === 'home' ? ` ${styles.navButtonActive}` : ''}`}
             aria-current={activeView === 'home' ? 'page' : undefined}
+            aria-label={collapsed ? homeNavEntry.nav.label : undefined}
+            title={collapsed ? homeNavEntry.nav.label : undefined}
             onClick={goHome}
           >
             <HugeiconsIcon icon={homeNavEntry.nav.icon} size={18} strokeWidth={1.7} />
@@ -148,6 +190,8 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
             type="button"
             className={`${styles.navButton} ${styles.navButtonWithAction}${chatActive ? ` ${styles.navButtonActive}` : ''}`}
             aria-current={chatActive ? 'page' : undefined}
+            aria-label={collapsed ? 'Chat' : undefined}
+            title={collapsed ? 'Chat' : undefined}
             onClick={openConversation}
           >
             <HugeiconsIcon icon={BubbleChatIcon} size={18} strokeWidth={1.7} />
@@ -173,6 +217,8 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
                 type="button"
                 className={`${styles.navButton}${active ? ` ${styles.navButtonActive}` : ''}`}
                 aria-current={active ? 'page' : undefined}
+                aria-label={collapsed ? nav.label : undefined}
+                title={collapsed ? nav.label : undefined}
                 onClick={() => onSelectView(view)}
               >
                 <HugeiconsIcon icon={nav.icon} size={18} strokeWidth={1.7} />
@@ -187,9 +233,19 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
             );
           })}
         </div>
-        <ChatListPanel onOpenConversation={openConversation} onOpenConversationDeleted={goHome} highlightActive={activeView === 'chat'} />
-        <SidebarBalance credits={snap.headlineBalanceUsdc} onAddFunds={() => onSelectView('deposit')} />
-        <button type="button" className={styles.navButton} onClick={openDashboard} title="Open your gateway dashboard in the browser">
+        {collapsed ? (
+          <div className={styles.railSpacer} />
+        ) : (
+          <ChatListPanel onOpenConversation={openConversation} onOpenConversationDeleted={goHome} highlightActive={activeView === 'chat'} />
+        )}
+        <SidebarBalance credits={snap.headlineBalanceUsdc} onAddFunds={() => onSelectView('deposit')} compact={collapsed} />
+        <button
+          type="button"
+          className={styles.navButton}
+          onClick={openDashboard}
+          aria-label={collapsed ? 'Dashboard' : undefined}
+          title="Open your gateway dashboard in the browser"
+        >
           <HugeiconsIcon icon={DashboardSquare01Icon} size={18} strokeWidth={1.7} />
           <span className={styles.navLabel}>Dashboard</span>
           <HugeiconsIcon icon={LinkSquare02Icon} size={14} strokeWidth={1.8} className={styles.navExternal} />
@@ -200,13 +256,15 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
             type="button"
             className={`${styles.navButton}${activeView === view ? ` ${styles.navButtonActive}` : ''}`}
             aria-current={activeView === view ? 'page' : undefined}
+            aria-label={collapsed ? nav.label : undefined}
+            title={collapsed ? nav.label : undefined}
             onClick={() => onSelectView(view)}
           >
             <HugeiconsIcon icon={nav.icon} size={18} strokeWidth={1.7} />
             <span className={styles.navLabel}>{nav.label}</span>
           </button>
         ))}
-        <p className={styles.status}>
+        <p className={styles.status} title={collapsed ? `${gatewayStatusText(gatewayStatus)} · v${appVersion}` : undefined}>
           <span className={gatewayStatus && !gatewayStatus.reachable && !gatewayStatus.starting ? `${styles.statusItem} ${styles.statusWarn}` : styles.statusItem}>
             {gatewayStatusText(gatewayStatus)}
           </span>
