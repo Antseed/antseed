@@ -32,7 +32,7 @@ describe('compose.mjs', () => {
     const out = compose(seller('A'))
     const [name] = Object.keys(out.configs)
     const content = out.configs[name].content
-    assert.equal(name, `seller-config-${createHash('sha256').update(content).digest('hex').slice(0, 12)}`)
+    assert.equal(name, `seller-config-${createHash('sha256').update(content).digest('hex')}`)
     assert.deepEqual(out.services.seller.configs, [{ source: name, target: '/etc/antseed/config.json' }])
   })
 
