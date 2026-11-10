@@ -144,8 +144,12 @@
 }
 
 
-/* The rail has no room for Chat's new-chat button or the external-link mark. */
+/* On the rail, Chat's new-chat button becomes its own icon under Chat. */
 .shellCollapsed .navRow {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
   width: 40px;
 }
 
@@ -153,7 +157,13 @@
   padding-right: 0;
 }
 
-.shellCollapsed .navAction,
+.shellCollapsed .navAction {
+  position: static;
+  width: 40px;
+  height: 40px;
+  transform: none;
+}
+
 .shellCollapsed .navExternal {
   display: none;
 }

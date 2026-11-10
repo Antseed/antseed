@@ -264,6 +264,11 @@ export type DesktopBridge = {
   chatAiSetModel?: (conversationId: string | null, model: string) => Promise<{ ok: boolean; error?: string }>;
   chatAiDeleteConversation?: (id: string) => Promise<{ ok: boolean }>;
   chatAiRenameConversation?: (id: string, title: string) => Promise<{ ok: boolean; error?: string }>;
+  /** Pin or archive a chat (pinning unarchives it, archiving unpins it). */
+  chatAiSetConversationFlags?: (
+    id: string,
+    flags: { pinned?: boolean; archived?: boolean },
+  ) => Promise<{ ok: boolean; data?: { pinnedAt?: number; archivedAt?: number }; error?: string }>;
   chatPrepareAttachments?: (conversationId: string, attachments: RawChatAttachment[]) => Promise<{ ok: boolean; data?: PreparedChatAttachment[]; error?: string }>;
   attachmentDownload?: (conversationId: string, attachmentId: string, suggestedName: string) => Promise<{ ok: boolean; path?: string; error?: string }>;
   chatGenerateImage?: (payload: { conversationId: string; prompt: string; model: string; moderation?: 'auto' | 'low'; sourceImageAttachmentId?: string }) => Promise<{ ok: boolean; user?: { role: string; content: unknown; createdAt?: number }; assistant?: { role: string; content: unknown; createdAt?: number; meta?: Record<string, unknown> }; error?: string; stopReason?: { kind: string; message: string; errorCode?: string } }>;

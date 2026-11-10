@@ -39,6 +39,9 @@ type ChatConversationSummary = {
   /** Gateway model id the conversation last used. */
   service?: string;
   workspacePath?: string;
+  pinnedAt?: number;
+  archivedAt?: number;
+  gitBranch?: string;
   createdAt?: number;
   updatedAt?: number;
   messageCount?: number;
@@ -74,6 +77,8 @@ export type ChatModuleApi = {
   startNewChatOnModel: (modelId: string) => void;
   deleteConversation: (convId?: string) => Promise<void>;
   renameConversation: (convId: string, newTitle: string) => void;
+  /** Pin, unpin, archive or unarchive a chat in the sidebar. */
+  setConversationFlags: (convId: string, flags: { pinned?: boolean; archived?: boolean }) => Promise<void>;
   openConversation: (convId: string) => Promise<void>;
   sendMessage: (text: string, attachments?: RawChatAttachment[]) => void;
   sendMessageToConversation: (convId: string, text: string, attachments?: RawChatAttachment[]) => void;
@@ -839,6 +844,34 @@ export function initChatModule({
     });
   }
 
+  async function setConversationFlags(
+    convId: string,
+    flags: { pinned?: boolean; archived?: boolean },
+  ): Promise<void> {
+    const previous = getConversationSummaries();
+    const now = Date.now();
+    // Shown at once; the list read after the write is the source of truth.
+    uiState.chatConversations = previous.map((conv) => {
+      if (conv.id !== convId) return conv;
+      const next: ChatConversationSummary = { ...conv };
+      if (flags.pinned === true) { next.pinnedAt = conv.pinnedAt ?? now; delete next.archivedAt; }
+      if (flags.pinned === false) delete next.pinnedAt;
+      if (flags.archived === true) { next.archivedAt = conv.archivedAt ?? now; delete next.pinnedAt; }
+      if (flags.archived === false) delete next.archivedAt;
+      return next;
+    });
+    notifyUiStateChanged();
+    try {
+      const result = await bridge?.chatAiSetConversationFlags?.(convId, flags);
+      if (result && !result.ok) throw new Error(result.error ?? 'Could not update the chat');
+      await refreshChatConversations();
+    } catch (err) {
+      uiState.chatConversations = previous;
+      notifyUiStateChanged();
+      reportChatError(err, 'Failed to update the chat');
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Sending
   // ---------------------------------------------------------------------------
@@ -1579,6 +1612,7 @@ export function initChatModule({
     startNewChatOnModel,
     deleteConversation,
     renameConversation,
+    setConversationFlags,
     openConversation,
     sendMessage,
     sendMessageToConversation,

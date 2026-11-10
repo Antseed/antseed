@@ -90,4 +90,10 @@ export type AiConversationSummary = {
   totalTokens: number;
   totalEstimatedCostUsd: number;
   workspacePath?: string;
+  /** When the chat was pinned (ms); absent when it isn't. */
+  pinnedAt?: number;
+  /** When the chat was archived (ms); absent when it isn't. */
+  archivedAt?: number;
+  /** Branch (or short commit) the workspace's git repository is on. */
+  gitBranch?: string;
 };

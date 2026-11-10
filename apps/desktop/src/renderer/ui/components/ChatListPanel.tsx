@@ -8,18 +8,45 @@ import {
   type RefObject,
 } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
-import { MoreVerticalIcon, Search01Icon } from '@hugeicons/core-free-icons';
+import {
+  ArrowRight01Icon,
+  Folder01Icon,
+  GitBranchIcon,
+  MoreVerticalIcon,
+  PinIcon,
+  Search01Icon,
+} from '@hugeicons/core-free-icons';
 import { formatCompactTokens } from '../../core/peer-utils';
 import { formatUsdcAmount } from '../../core/format';
 import { shallowEqual, useUiSelector } from '../hooks/useUiSelector';
 import { useActions } from '../hooks/useActions';
+import { buildChatSections, folderName, projectFolder, type ChatSection } from './chat-list-sections';
 import styles from './ChatListPanel.module.scss';
 
 type ConvRecord = Record<string, unknown>;
 
 const EMPTY_CONVERSATIONS: unknown[] = [];
-const RECENT_SESSION_WINDOW_MS = 24 * 60 * 60 * 1000;
 const RECENT_SESSION_CLOCK_MS = 60 * 1000;
+const COLLAPSED_SECTIONS_KEY = 'antseed.chatList.collapsedSections';
+
+type ChatFlags = { pinned?: boolean; archived?: boolean };
+
+function readCollapsedSections(): Set<string> {
+  try {
+    const parsed: unknown = JSON.parse(window.localStorage.getItem(COLLAPSED_SECTIONS_KEY) ?? '[]');
+    return new Set(Array.isArray(parsed) ? parsed.filter((key): key is string => typeof key === 'string') : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function writeCollapsedSections(keys: ReadonlySet<string>): void {
+  try {
+    window.localStorage.setItem(COLLAPSED_SECTIONS_KEY, JSON.stringify([...keys]));
+  } catch {
+    // Storage unavailable; sections open expanded next time.
+  }
+}
 
 function formatChatTime(timestamp: unknown): string {
   const ts = Number(timestamp);
@@ -63,11 +90,6 @@ function compareConversationsByActivity(left: ConvRecord, right: ConvRecord): nu
   return getConversationId(left).localeCompare(getConversationId(right));
 }
 
-function isRecentConversation(conv: ConvRecord, now: number): boolean {
-  const updatedAt = getConversationUpdatedAt(conv);
-  return updatedAt > 0 && now - updatedAt <= RECENT_SESSION_WINDOW_MS;
-}
-
 function conversationMatchesSearch(
   conv: ConvRecord,
   modelLabel: string,
@@ -95,14 +117,20 @@ function stopRowClick(event: MouseEvent<HTMLDivElement>) {
 function ConvContextMenu({
   convId,
   convTitle,
+  pinned,
+  archived,
   anchorRef,
   onDelete,
+  onSetFlags,
   onClose,
 }: {
   convId: string;
   convTitle: string;
+  pinned: boolean;
+  archived: boolean;
   anchorRef: RefObject<HTMLButtonElement | null>;
   onDelete: (id: string) => void;
+  onSetFlags: (id: string, flags: ChatFlags) => void;
   onClose: () => void;
 }) {
   const menuRef = useRef<HTMLDivElement>(null);
@@ -165,12 +193,33 @@ function ConvContextMenu({
   }
 
   return (
-    <div className={styles.contextMenu} ref={menuRef} onClick={stopRowClick}>
-      <button className={styles.contextItem} onClick={() => setRenaming(true)}>
+    <div className={styles.contextMenu} ref={menuRef} onClick={stopRowClick} role="menu">
+      <button
+        className={styles.contextItem}
+        role="menuitem"
+        onClick={() => {
+          onSetFlags(convId, { pinned: !pinned });
+          onClose();
+        }}
+      >
+        {pinned ? 'Unpin' : 'Pin'}
+      </button>
+      <button
+        className={styles.contextItem}
+        role="menuitem"
+        onClick={() => {
+          onSetFlags(convId, { archived: !archived });
+          onClose();
+        }}
+      >
+        {archived ? 'Unarchive' : 'Archive'}
+      </button>
+      <button className={styles.contextItem} role="menuitem" onClick={() => setRenaming(true)}>
         Rename
       </button>
       <button
         className={`${styles.contextItem} ${styles.contextItemDanger}`}
+        role="menuitem"
         onClick={() => {
           onDelete(convId);
           onClose();
@@ -188,8 +237,10 @@ function ConversationRow({
   sendingConvIds,
   approvalConvIds,
   modelLabelById,
+  defaultWorkspace,
   onSelectConv,
   onDeleteConv,
+  onSetFlags,
   menuOpenId,
   setMenuOpenId,
   menuBtnRefs,
@@ -199,8 +250,10 @@ function ConversationRow({
   sendingConvIds: ReadonlySet<string>;
   approvalConvIds: ReadonlySet<string>;
   modelLabelById: ReadonlyMap<string, string>;
+  defaultWorkspace: string;
   onSelectConv: (id: string) => void;
   onDeleteConv: (id: string) => void;
+  onSetFlags: (id: string, flags: ChatFlags) => void;
   menuOpenId: string | null;
   setMenuOpenId: (id: string | null) => void;
   menuBtnRefs: RefObject<Map<string, HTMLButtonElement | null>>;
@@ -217,12 +270,23 @@ function ConversationRow({
     : '';
   const modelLabel = modelName(conv.service, modelLabelById);
   const timeLabel = formatChatTime(getConversationUpdatedAt(conv));
+  const pinned = Number(conv.pinnedAt) > 0;
+  const archived = Number(conv.archivedAt) > 0;
+  const folder = projectFolder(conv, defaultWorkspace);
+  const gitBranch = typeof conv.gitBranch === 'string' ? conv.gitBranch : '';
+  // Like Codex's hover card: the chat, its folder and its branch.
+  const tooltip = [
+    title,
+    folder ? `Folder: ${folderName(folder)}` : '',
+    gitBranch ? `Branch: ${gitBranch}` : '',
+    [modelLabel, costLabel, timeLabel].filter(Boolean).join(' · '),
+  ].filter(Boolean).join('\n');
 
   return (
     <div
-      className={`${styles.convItem}${isActive ? ` ${styles.active}` : ''}`}
+      className={`${styles.convItem}${isActive ? ` ${styles.active}` : ''}${archived ? ` ${styles.archivedItem}` : ''}`}
       onClick={() => onSelectConv(id)}
-      title={[title, modelLabel, costLabel, timeLabel].filter(Boolean).join(' · ')}
+      title={tooltip}
     >
       <div className={styles.convTop}>
         <div className={styles.convTitle}>{title}</div>
@@ -235,6 +299,11 @@ function ConversationRow({
           />
         )}
         <div className={styles.convRight}>
+          {gitBranch && (
+            <span className={styles.branchIcon} aria-label={`Branch ${gitBranch}`} role="img">
+              <HugeiconsIcon icon={GitBranchIcon} size={13} strokeWidth={1.7} />
+            </span>
+          )}
           <button
             className={styles.menuBtn}
             aria-label="Conversation options"
@@ -252,8 +321,11 @@ function ConversationRow({
         <ConvContextMenu
           convId={id}
           convTitle={title}
+          pinned={pinned}
+          archived={archived}
           anchorRef={{ current: menuBtnRefs.current?.get(id) ?? null }}
           onDelete={onDeleteConv}
+          onSetFlags={onSetFlags}
           onClose={() => setMenuOpenId(null)}
         />
       )}
@@ -385,7 +457,7 @@ function ChatSearchModal({
   );
 }
 
-/** The sidebar's Recent section: every conversation, with search, rename and delete. */
+/** The sidebar's Recent section: pinned chats, project folders, other chats and archived ones, with search, pin, archive, rename and delete. */
 export function ChatListPanel({ onOpenConversation, onOpenConversationDeleted, highlightActive }: {
   onOpenConversation: () => void;
   /** The chat on screen was deleted, so there is nothing left to show. */
@@ -399,7 +471,9 @@ export function ChatListPanel({ onOpenConversation, onOpenConversationDeleted, h
     chatSendingConversationIds,
     chatToolApprovalRequests,
     chatModels,
+    chatWorkspaceDefaultPath,
   } = useUiSelector((state) => ({
+    chatWorkspaceDefaultPath: state.chatWorkspaceDefaultPath,
     chatConversations: state.chatConversations,
     chatActiveConversation: state.chatActiveConversation,
     chatSendingConversationIds: state.chatSendingConversationIds,
@@ -424,6 +498,24 @@ export function ChatListPanel({ onOpenConversation, onOpenConversationDeleted, h
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
   const [recentNow, setRecentNow] = useState(() => Date.now());
   const [chatSearchOpen, setChatSearchOpen] = useState(false);
+  // Archived starts folded; projects start open.
+  const [collapsedSections, setCollapsedSections] = useState<Set<string>>(() => {
+    const stored = readCollapsedSections();
+    if (!stored.has('!archived')) stored.add('archived');
+    return stored;
+  });
+  const toggleSection = useCallback((key: string) => {
+    setCollapsedSections((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      // '!archived' records that Archived was opened on purpose.
+      if (key === 'archived') {
+        if (next.has('archived')) next.delete('!archived'); else next.add('!archived');
+      }
+      writeCollapsedSections(next);
+      return next;
+    });
+  }, []);
   const menuBtnRefs = useRef<Map<string, HTMLButtonElement | null>>(new Map());
 
   useEffect(() => {
@@ -436,22 +528,70 @@ export function ChatListPanel({ onOpenConversation, onOpenConversationDeleted, h
     [chatModels],
   );
 
-  // Activity sort with "recent" (touched in the last 24 h) floated to the
-  // top so the active workstream stays one glance away; older chats sort
-  // by activity beneath them.
-  const sortedConversations = useMemo(() => {
-    return [...allConversations].sort((left, right) => {
-      const leftRecent = isRecentConversation(left, recentNow) ? 1 : 0;
-      const rightRecent = isRecentConversation(right, recentNow) ? 1 : 0;
-      if (leftRecent !== rightRecent) return rightRecent - leftRecent;
-      return compareConversationsByActivity(left, right);
-    });
-  }, [allConversations, recentNow]);
+  // Pinned, then one group per project folder, then other chats; each sorted
+  // with chats touched in the last day first. Archived chats sit folded below.
+  const sections = useMemo(
+    () => buildChatSections(allConversations, { defaultWorkspace: chatWorkspaceDefaultPath, now: recentNow }),
+    [allConversations, chatWorkspaceDefaultPath, recentNow],
+  );
+  // With nothing pinned, no projects and nothing archived, the list stays flat.
+  const flat = sections.length === 1 && sections[0]!.kind === 'chats';
 
   const handleSelectConv = useCallback((id: string) => {
     void actions.openConversation(id);
     onOpenConversation();
   }, [actions, onOpenConversation]);
+
+  const handleSetFlags = useCallback((id: string, flags: ChatFlags) => {
+    void actions.setConversationFlags(id, flags);
+  }, [actions]);
+
+  const renderRow = (conv: ConvRecord) => (
+    <ConversationRow
+      key={getConversationId(conv)}
+      conv={conv}
+      activeConvId={highlightActive ? chatActiveConversation : null}
+      sendingConvIds={sendingConvIds}
+      approvalConvIds={approvalConvIds}
+      modelLabelById={modelLabelById}
+      defaultWorkspace={chatWorkspaceDefaultPath}
+      onSelectConv={handleSelectConv}
+      onDeleteConv={handleDeleteConv}
+      onSetFlags={handleSetFlags}
+      menuOpenId={menuOpenId}
+      setMenuOpenId={setMenuOpenId}
+      menuBtnRefs={menuBtnRefs}
+    />
+  );
+
+  const renderSection = (section: ChatSection) => {
+    const collapsed = collapsedSections.has(section.key);
+    const icon = section.kind === 'pinned' ? PinIcon : section.kind === 'project' ? Folder01Icon : null;
+    const activity = section.conversations.some((conv) => sendingConvIds.has(getConversationId(conv))
+      || approvalConvIds.has(getConversationId(conv)));
+    return (
+      <section key={section.key} className={styles.section} aria-label={section.label}>
+        <button
+          type="button"
+          className={`${styles.sectionHeader}${section.kind === 'archived' ? ` ${styles.sectionHeaderArchived}` : ''}`}
+          aria-expanded={!collapsed}
+          onClick={() => toggleSection(section.key)}
+          title={section.path ?? section.label}
+        >
+          <span className={`${styles.sectionChevron}${collapsed ? '' : ` ${styles.sectionChevronOpen}`}`} aria-hidden="true">
+            <HugeiconsIcon icon={ArrowRight01Icon} size={12} strokeWidth={2} />
+          </span>
+          {icon && <HugeiconsIcon icon={icon} size={13} strokeWidth={1.7} className={styles.sectionIcon} />}
+          <span className={styles.sectionLabel}>{section.label}</span>
+          {collapsed && activity && <span className={styles.runningDot} aria-label="Chat activity" />}
+          {(collapsed || section.kind === 'archived') && (
+            <span className={styles.sectionCount}>{section.conversations.length}</span>
+          )}
+        </button>
+        {!collapsed && section.conversations.map(renderRow)}
+      </section>
+    );
+  };
 
   const handleDeleteConv = useCallback((id: string) => {
     const wasOnScreen = highlightActive && id === chatActiveConversation;
@@ -474,24 +614,12 @@ export function ChatListPanel({ onOpenConversation, onOpenConversationDeleted, h
         </button>
       </div>
       <div className={styles.list}>
-        {sortedConversations.length === 0 ? (
+        {sections.length === 0 ? (
           <div className={styles.empty}>No conversations yet</div>
+        ) : flat ? (
+          sections[0]!.conversations.map(renderRow)
         ) : (
-          sortedConversations.map((conv) => (
-            <ConversationRow
-              key={getConversationId(conv)}
-              conv={conv}
-              activeConvId={highlightActive ? chatActiveConversation : null}
-              sendingConvIds={sendingConvIds}
-              approvalConvIds={approvalConvIds}
-              modelLabelById={modelLabelById}
-              onSelectConv={handleSelectConv}
-              onDeleteConv={handleDeleteConv}
-              menuOpenId={menuOpenId}
-              setMenuOpenId={setMenuOpenId}
-              menuBtnRefs={menuBtnRefs}
-            />
-          ))
+          sections.map(renderSection)
         )}
       </div>
       {chatSearchOpen && (

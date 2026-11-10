@@ -15,6 +15,8 @@ export type AppActions = {
   abortChat: () => Promise<void>;
   deleteConversation: (convId?: string) => Promise<void>;
   renameConversation: (convId: string, newTitle: string) => void;
+  /** Pin or archive a chat; pinning unarchives it and archiving unpins it. */
+  setConversationFlags: (convId: string, flags: { pinned?: boolean; archived?: boolean }) => Promise<void>;
   /** Pick a gateway model in the chat dropdown (text: the chat's model; image: Send generates images). */
   selectChatModel: (modelId: string) => void;
   /** Reload the gateway's model list; `force` bypasses the one-minute cache. */
