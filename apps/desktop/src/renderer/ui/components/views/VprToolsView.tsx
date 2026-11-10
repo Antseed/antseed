@@ -174,7 +174,7 @@ export function VprToolsView() {
   );
   const modelRoutes = useMemo(() => routesForSelectedModel(snap.discoverRows, snap.selection.model), [snap.discoverRows, snap.selection.model]);
   const bestRoute = useMemo(
-    () => chooseBestVprRoute(modelRoutes, snap.preferences, Date.now(), snap.selection.model?.serviceId),
+    () => chooseBestVprRoute(modelRoutes, snap.preferences, Date.now(), snap.selection.model?.serviceId, false),
     [modelRoutes, snap.preferences, snap.selection.model?.serviceId],
   );
   const defaultPeerId = snap.selection.peerId || bestRoute?.peerId || peerOptions[0]?.peerId || '';

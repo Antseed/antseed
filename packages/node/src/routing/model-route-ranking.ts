@@ -220,9 +220,9 @@ function rememberRotation(key: string, step: number): void {
   }
 }
 
-function nextRotationOffset(key: string, group: number): number {
+function nextRotationOffset(key: string, group: number, advance: boolean): number {
   const step = ((equalHeadRotation.get(key) ?? 0) + 1) >>> 0;
-  rememberRotation(key, step);
+  if (advance) rememberRotation(key, step);
   return step % group;
 }
 
@@ -246,6 +246,7 @@ function rotateEqualHead<T extends ModelRouteCandidate>(
   preferences: ModelRoutingPreferences,
   now: number,
   rotationKey: string | undefined,
+  advance: boolean,
 ): ScoredModelRoute<T>[] {
   if (ranked.length < 2) return ranked;
   let group = 1;
@@ -257,7 +258,7 @@ function rotateEqualHead<T extends ModelRouteCandidate>(
     group += 1;
   }
   if (group < 2) return ranked;
-  const offset = nextRotationOffset(rotationPoolKey(ranked, group, rotationKey), group);
+  const offset = nextRotationOffset(rotationPoolKey(ranked, group, rotationKey), group, advance);
   if (offset === 0) return ranked;
   const head = ranked.slice(0, group);
   for (let index = 0; index < group; index += 1) {
@@ -272,11 +273,14 @@ export function rankModelRoutes<T extends ModelRouteCandidate>(
   preferences: ModelRoutingPreferences,
   now: number = Date.now(),
   rotationKey?: string,
+  // A route preview and a model list pass false. They show the next seller
+  // without spending the turn a live request should take.
+  advance = true,
 ): T[] {
   const ranked = routes
     .map((route) => scoreModelRoute(route, preferences, now))
     .sort((a, b) => compareScoredModelRoutes(a, b, preferences, now));
-  return rotateEqualHead(ranked, preferences, now, rotationKey).map(({ route }) => route);
+  return rotateEqualHead(ranked, preferences, now, rotationKey, advance).map(({ route }) => route);
 }
 
 export function chooseBestModelRoute<T extends ModelRouteCandidate>(
@@ -284,7 +288,8 @@ export function chooseBestModelRoute<T extends ModelRouteCandidate>(
   preferences: ModelRoutingPreferences,
   now: number = Date.now(),
   rotationKey?: string,
+  advance = true,
 ): T | null {
-  return rankModelRoutes(routes, preferences, now, rotationKey)
+  return rankModelRoutes(routes, preferences, now, rotationKey, advance)
     .find((route) => isModelRouteEligible(route, preferences)) ?? null;
 }

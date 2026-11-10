@@ -1923,6 +1923,7 @@ export class BuyerProxy {
     })
     let candidates: typeof ranked
     const routingPreferences = this._routingPreferences
+    const advanceRotation = input.deterministic !== true
     if (requestPolicy && effectivePolicy) {
       // Exclusions from the merged chain, reported per level: the gateway's
       // policy on raw trust, the buyer's preferences on the effective trust
@@ -1941,11 +1942,11 @@ export class BuyerProxy {
         return false
       })
       candidates = routingPreferences
-        ? rankModelRoutes(allowed, rankingPreferences(routingPreferences, effectivePolicy), now, requestedService)
+        ? rankModelRoutes(allowed, rankingPreferences(routingPreferences, effectivePolicy), now, requestedService, advanceRotation)
         : this._readyFirst(allowed, verdicts, now)
     } else if (routingPreferences) {
       candidates = []
-      for (const candidate of rankModelRoutes(ranked, routingPreferences, now, requestedService)) {
+      for (const candidate of rankModelRoutes(ranked, routingPreferences, now, requestedService, advanceRotation)) {
         if (isModelRouteEligible(candidate, routingPreferences)) {
           candidates.push(candidate)
         } else {

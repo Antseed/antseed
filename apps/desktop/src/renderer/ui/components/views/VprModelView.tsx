@@ -102,7 +102,7 @@ function VprModelDetails({ onSelectView }: Props) {
     return [...list].sort(compareModelRoutesByReputation);
   }, [model, snap.discoverRows]);
   const bestRoute = useMemo(
-    () => chooseBestVprRoute(routes, snap.preferences, Date.now(), model?.serviceId),
+    () => chooseBestVprRoute(routes, snap.preferences, Date.now(), model?.serviceId, false),
     [model?.serviceId, routes, snap.preferences],
   );
   const displayedRoutes = useMemo(() => filterTeeBrowseRows(routes, teeFilter), [routes, teeFilter]);

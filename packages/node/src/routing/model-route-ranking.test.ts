@@ -155,6 +155,18 @@ describe('model route ranking', () => {
     }
   });
 
+  it('lets a preview read the next seller without spending the turn', () => {
+    const alpha = route({ peerId: 'a'.repeat(40) });
+    const beta = route({ peerId: 'b'.repeat(40) });
+    const preview = rankModelRoutes([alpha, beta], preferences, 1, 'preview-model', false)[0]?.peerId;
+    const again = rankModelRoutes([beta, alpha], preferences, 1, 'preview-model', false)[0]?.peerId;
+    expect(again).toBe(preview);
+    const live = rankModelRoutes([alpha, beta], preferences, 1, 'preview-model')[0]?.peerId;
+    expect(live).toBe(preview);
+    const next = rankModelRoutes([alpha, beta], preferences, 1, 'preview-model')[0]?.peerId;
+    expect(next).not.toBe(live);
+  });
+
   it('keeps two models that share sellers on separate rotations', () => {
     const alpha = route({ peerId: 'a'.repeat(40) });
     const beta = route({ peerId: 'b'.repeat(40) });

@@ -361,7 +361,7 @@ export function buildNetworkModels(
           peerCooldownUntil: health?.cooldownUntil ?? null,
           peerFailureStreak: health?.failureStreak ?? 0,
         }
-      }), options.routingPreferences, nowMs, entry.id)
+      }), options.routingPreferences, nowMs, entry.id, false)
       entry.peers = ranked.map(({ sourceOffer }) => sourceOffer)
     } else {
       entry.peers.sort(compareEffectiveModelReputation)
