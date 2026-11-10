@@ -5,6 +5,8 @@
 
 End-to-end tests for the Antseed Network. These tests exercise the full P2P inference flow: DHT discovery, peer connection, request proxying, and SSE streaming -- all running against a local bootstrap node with mock providers.
 
+[docs/testing.md](../docs/testing.md) maps every kind of test in this repo: what each one proves and when it runs.
+
 ## Running Tests
 
 ```bash

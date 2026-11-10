@@ -9,6 +9,7 @@ import pkg from '../../../../package.json' with { type: 'json' }
 import { watchForUpdates } from '../../../update/watch.js'
 import { resolveConfigPath } from '../../../config/loader.js'
 import { configOverridesPath, loadSellerConfig } from '../../../config/overrides.js'
+import { networkNodeOptions } from '../../../config/network.js'
 import { DEFAULT_RESTRICTED_COUNTRIES } from '../../../config/defaults.js'
 import {
   AntseedNode,
@@ -403,6 +404,7 @@ export function buildSellerPluginRuntimeEnv(
   const serviceImageEditModelMap: Record<string, string> = {}
   const serviceCapabilities: Record<string, unknown> = {}
   const serviceUnitBillingModels: Record<string, unknown> = {}
+  const serviceExtraProtocols: Record<string, unknown> = {}
   for (const [serviceId, serviceCfg] of Object.entries(providerCfg.services)) {
     if (serviceCfg.pricing) {
       servicePricing[serviceId] = serviceCfg.pricing
@@ -419,6 +421,9 @@ export function buildSellerPluginRuntimeEnv(
     if (serviceCfg.unitBillingModels) {
       serviceUnitBillingModels[serviceId] = serviceCfg.unitBillingModels
     }
+    if (serviceCfg.extraProtocols !== undefined) {
+      serviceExtraProtocols[serviceId] = serviceCfg.extraProtocols
+    }
   }
   if (Object.keys(servicePricing).length > 0) {
     runtimeEnv['ANTSEED_SERVICE_PRICING_JSON'] = JSON.stringify(servicePricing)
@@ -434,6 +439,9 @@ export function buildSellerPluginRuntimeEnv(
   }
   if (Object.keys(serviceUnitBillingModels).length > 0) {
     runtimeEnv['ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON'] = JSON.stringify(serviceUnitBillingModels)
+  }
+  if (Object.keys(serviceExtraProtocols).length > 0) {
+    runtimeEnv['ANTSEED_SERVICE_EXTRA_PROTOCOLS_JSON'] = JSON.stringify(serviceExtraProtocols)
   }
   const pluginPackage = resolvePluginPackage(providerCfg.plugin)
   const envPrefix = PROVIDER_ENV_PREFIXES[pluginPackage] ?? 'OPENAI'
@@ -910,9 +918,6 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
 
       const nodeSpinner = ora('Starting seeding daemon...').start()
 
-      const dhtPort = options.dhtPort as number | undefined
-      const signalingPort = options.signalingPort as number | undefined
-
       const sellerContractCfg = config.payments?.sellerContract
       const announcerSellerContract = sellerContractCfg
         ? { sellerContract: sellerContractCfg.address }
@@ -959,8 +964,10 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         ...(announcedCapabilities.length > 0 ? { capabilities: announcedCapabilities } : {}),
         bootstrapNodes,
         dataDir: globalOpts.dataDir,
-        ...(dhtPort ? { dhtPort } : {}),
-        ...(signalingPort ? { signalingPort } : {}),
+        ...networkNodeOptions(config.network, {
+          dhtPort: options.dhtPort as number | undefined,
+          signalingPort: options.signalingPort as number | undefined,
+        }),
         ...(maxUploadBodyBytes !== undefined ? { maxUploadBodyBytes } : {}),
         ...(maxInboundConnections !== undefined ? { maxInboundConnections } : {}),
         ...(maxInboundConnectionsPerIp !== undefined ? { maxInboundConnectionsPerIp } : {}),
@@ -977,6 +984,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
           defaultDepositAmountUSDC: defaultDepositAmountUSDCBaseUnits,
           sellerWalletAddress,
           paymentConfig,
+          ...(config.payments.defaultAuthDurationSecs !== undefined ? { defaultAuthDurationSecs: config.payments.defaultAuthDurationSecs } : {}),
           minBudgetPerRequest: config.payments.minBudgetPerRequest ?? '10000',
           minSettleDelta,
           ...(config.payments.serveWhileClosePending !== undefined

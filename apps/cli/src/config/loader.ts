@@ -106,6 +106,9 @@ function normalizeSellerService(value: unknown): SellerServiceConfig | null {
   if (typeof value['imageEditModel'] === 'string' && value['imageEditModel'].trim().length > 0) {
     out.imageEditModel = value['imageEditModel'].trim();
   }
+  if (value['extraProtocols'] !== undefined) {
+    out.extraProtocols = value['extraProtocols'] as SellerServiceConfig['extraProtocols'];
+  }
   const categories = normalizeCategories(value['categories']);
   if (categories) {
     out.categories = categories;

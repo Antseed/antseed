@@ -85,6 +85,8 @@ export interface AnnouncerConfig {
   stakingClient?: StakingClient;
   reannounceIntervalMs: number;
   signalingPort: number;
+  /** Additional public TCP port to announce alongside the listening port. */
+  publicSignalingPort?: number;
   /** Extra peer capability strings to advertise (merged with the built-in set). */
   capabilities?: string[];
   /** Optional health monitor — if supplied, announce outcomes are recorded. */
@@ -466,7 +468,8 @@ export class PeerAnnouncer {
   private async _tryAnnounceTopic(topic: string): Promise<boolean> {
     try {
       const infoHash = topicToInfoHash(topic);
-      await this.config.dht.announce(infoHash, this.config.signalingPort);
+      const ports = new Set([this.config.signalingPort, this.config.publicSignalingPort ?? this.config.signalingPort]);
+      await Promise.all([...ports].map((port) => this.config.dht.announce(infoHash, port)));
       this.config.healthMonitor?.recordAnnounce(true);
       return true;
     } catch (err) {

@@ -19,9 +19,9 @@ If the prover fails to load at startup, the seller exits rather than advertising
 
 ## Prerequisites
 
-- A dstack confidential VM host with Intel TDX where you can deploy an app with KMS and encrypted environment variables, such as Phala Cloud. Phala Cloud exposes app ports only through its TLS gateway, without a public IP or UDP, so the seller also needs a public entry point: run `antseed seller forward --to <app-id>-6882.<cluster>.phala.network --peer <peerId>` on any small machine with a public IP, set `seller.publicAddress` to its `<ip>:6882`, and raise `seller.maxInboundConnectionsPerIp`, since every buyer then arrives from the gateway's address. The forwarder sees only ciphertext. To run on Google Cloud instead, see [Google Confidential Space](#google-confidential-space).
+- A dstack confidential VM host with Intel TDX where you can deploy an app with KMS and encrypted environment variables, such as Phala Cloud. If your deployment exposes app ports only through its TLS gateway, without a public IP or UDP, the seller also needs a public entry point: run `antseed seller forward --to <app-id>-6882.<cluster>.phala.network --peer <peerId>` on any small machine with a public IP, set `seller.publicAddress` to its `<ip>:6882`, and raise `seller.maxInboundConnectionsPerIp`, since every buyer then arrives from the gateway's address. The forwarder sees only ciphertext. To run on Google Cloud instead, see [Google Confidential Space](#google-confidential-space).
 - Your seller's identity key and peer ID, and API keys for its upstreams.
-- The signaling (TCP) and DHT (UDP) ports reachable from the internet at the same port numbers as in the container. Buyers attest over encrypted TCP; the connection binding is not available over WebRTC.
+- The signaling (TCP) and DHT (UDP) ports reachable from the internet. For public TCP `14532` → container `6882`, configure host forwarding and set `seller.publicAddress` to `<public-ip>:14532`; the seller announces both TCP ports in the DHT so metadata stays discoverable when the public address names a different host. Buyers attest over encrypted TCP; the connection binding is not available over WebRTC.
 - Node.js 20+ and a checkout of the [Antseed repository](https://github.com/Antseed/antseed) on your own machine, to generate the compose file.
 
 ## Approved seller builds
@@ -63,7 +63,16 @@ It writes a compose file (JSON, which compose also reads) with the image pinned 
 Deploy `docker-compose.json` as a dstack app with KMS enabled, on the dstack 0.6.1 OS image and a CPU instance type (`tdx.small` to `tdx.8xlarge` on Phala Cloud), the OS releases and VM shapes buyers accept:
 
 - set the printed variables as encrypted environment variables: `ANTSEED_IDENTITY_HEX` (your identity key, hex) and your API keys, and allow exactly those;
-- add no pre-launch script. Public logs may be on: the image runs the seller in content-free mode, so its logs and databases hold no prompts or answers, nor upstream error text about a request, only metadata such as status codes, token counts and buyer peer IDs.
+- add no pre-launch or init script. Public logs may be on: the image runs the seller in content-free mode, so its logs and databases hold no prompts or answers, nor upstream error text about a request, only metadata such as status codes, token counts and buyer peer IDs.
+
+With Phala Cloud's `phala` CLI:
+
+```bash
+phala deploy --compose docker-compose.json --kms phala --image dstack-0.6.1 \
+  --instance-type tdx.small --no-pre-launch-script --env <each printed secret>
+```
+
+The CLI always writes an empty `init_script` into the app compose. Buyers on verifier 0.1.5 or later accept it while it stays empty; earlier ones reject any `init_script` and report `app compose option init_script is not allowed`.
 
 The image starts `antseed seller start` with the verifier's prover, which mints its quotes through the dstack guest agent. Any change to the compose file (image, config, prices) gives a new compose hash, which buyers check against the same rules, so redeploying needs no approval.
 
@@ -99,7 +108,20 @@ node deploy/tee-seller/compose.mjs --image ghcr.io/antseed/tee-seller@sha256:<di
   --env ANTSEED_VERIFIER_PROVIDER_BINDING_PUBKEY_FIELD=e2e_pubkey > docker-compose.json
 ```
 
+Buyers count the provider's quote (and show **Full TEE**) only when the provider is where your node sends prompts: your config has one upstream origin, and your node fetched the quote from that same origin. The fetch doesn't follow redirects, and the node reports the origin it used (images with verifier 0.1.6 or later). A second upstream, such as a fallback to a non-TEE API, evidence from another host, or an older image fails `seller-provider-tee-genuine` with the reason. Your node's own attestation is unaffected.
+
 The SDK is provider-agnostic: no vendor hosts or schemas are built in, so pointing it at a different confidential-inference backend is configuration only. For a worked example against a live third-party TDX provider, see the [SDK's end-to-end guide](https://github.com/Antseed/antseed/blob/main/packages/antseed-verifier/docs/e2e-report-data-schemes.md).
+
+For an ACI-compatible provider, use the [`aci` adapter](https://github.com/Antseed/antseed/blob/main/packages/antseed-verifier/REDPILL.md):
+
+```bash
+node deploy/tee-seller/compose.mjs --image ghcr.io/antseed/tee-seller@sha256:<digest> \
+  --peer <peerId> --config config.json \
+  --env ANTSEED_VERIFIER_PROVIDER_ADAPTER=aci \
+  --env ANTSEED_VERIFIER_PROVIDER_ACI_URL=https://provider.example/v1/aci/attestation > docker-compose.json
+```
+
+`ANTSEED_VERIFIER_PROVIDER_ACI_URL` is allowed as a literal compose setting; the legacy fallback `ACI_ATTESTATION_URL` is not. Use a keyless endpoint: a separate hidden `ACI_API_KEY` is rejected unless the seller config names it as a provider's `apiKeyEnv`.
 
 ## 6. Test the full loop as a buyer
 

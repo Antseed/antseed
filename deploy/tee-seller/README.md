@@ -103,15 +103,27 @@ take effect from the verifier release that includes them.
    `--env ANTSEED_VERIFIER_PROVIDER_...=<value>` for provider attestation settings. It prints the
    encrypted variables to allow. [`docker-compose.json`](docker-compose.json) is an example.
 3. Deploy it as a dstack app with KMS enabled. Pass the printed secrets as encrypted environment
-   variables, allow exactly those, and add no pre-launch script. Public logs may be on (see
-   [Logs and data](#logs-and-data)).
+   variables, allow exactly those, and add no pre-launch or init script. Public logs may be on
+   (see [Logs and data](#logs-and-data)). With Phala Cloud's `phala` CLI:
+
+   ```bash
+   phala deploy --compose docker-compose.json --kms phala --image dstack-0.6.1 \
+     --instance-type tdx.small --no-pre-launch-script --env <each printed secret>
+   ```
+
+   The CLI always writes an empty `init_script` into the app compose, which buyers on verifier
+   0.1.5 or later accept; earlier ones reject any `init_script`.
 
 Any change to the compose file (image, config, prices) changes the compose hash; buyers
 re-check the new one against the same rules, so no approval is needed.
 
 Buyers reach a seller over raw TCP at its announced address and find it through the DHT (UDP).
-Phala Cloud exposes CVM ports only through its TLS gateway
-(`<app-id>-6882.<cluster>.phala.network:443`), without a public IP or UDP, so give the seller a
+For public TCP `14532` → container `6882`, configure host forwarding and set `seller.publicAddress`
+to `<public-ip>:14532`. The seller announces both TCP ports in the DHT, keeping metadata
+discoverable when the public address names a different host.
+
+If your Phala Cloud deployment exposes CVM ports only through its TLS gateway
+(`<app-id>-6882.<cluster>.phala.network:443`), without a public IP or UDP, give the seller a
 public entry point with `antseed seller forward` on any small machine with a public IP:
 
 ```bash
