@@ -121,7 +121,15 @@ The TEE seller image (`deploy/tee-seller`) installs an exact CLI from a committe
 3. Commit `deploy/tee-seller/package.json` and `package-lock.json`, open the PR and merge it right away, like the bump PR: it only pins published versions, and `check-lock.mjs` gates the image build.
 4. Run the **Publish TEE seller image** workflow on main: `gh workflow run tee-seller-image.yml --ref main`. It builds, pushes and signs the image; its run summary shows the digest.
 5. Verify the image before announcing it:
-   - its build record verifies with the verifier the CLI pins: `imageBuildRecord(<digest>)` then `verifyImageBuild(record)` from `@antseed/antseed-verifier/dist/image-provenance.js` must return the digest (or `gh attestation verify oci://ghcr.io/antseed/tee-seller@<digest> --repo Antseed/antseed`);
+   - its build record verifies with the verifier the CLI pins: `verifyImageBuild(await imageBuildRecord(<digest>))` must list the digest (or `gh attestation verify oci://ghcr.io/antseed/tee-seller@<digest> --repo Antseed/antseed`). The package's exports don't include `dist/image-provenance.js`, so import it by file path from an install of the lock:
+
+     ```bash
+     tmp=$(mktemp -d) && cp deploy/tee-seller/{package.json,package-lock.json} "$tmp" \
+       && (cd "$tmp" && npm ci --ignore-scripts && node --input-type=module -e '
+         const { imageBuildRecord, verifyImageBuild } = await import("./node_modules/@antseed/antseed-verifier/dist/image-provenance.js")
+         console.log(JSON.stringify(await verifyImageBuild(await imageBuildRecord(process.argv[1])), null, 2))' sha256:<digest>) \
+       && rm -rf "$tmp"
+     ```
    - it pulls without logging in (GHCR answers the manifest anonymously);
    - its config still exposes `6882/tcp` and `6881/udp` (Google Confidential Space opens only exposed ports).
 6. Report the digest so TEE sellers can move to it (docs: "Upgrade to a new image"). No approval PR is needed: buyers accept images the workflow builds from main by their build record.
