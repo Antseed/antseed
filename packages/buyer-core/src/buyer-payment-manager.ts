@@ -718,13 +718,10 @@ export class BuyerPaymentManager {
         + this._config.maxPerRequestUsdc * BigInt(Math.floor(inFlightRequests));
       maxSignable = catchUpMax < ceiling ? catchUpMax : ceiling;
     }
-    // Prefer the seller-supplied target when present — a raw
-    // `currentCumulative + minBudgetPerRequest` advance may still fall short
-    // of what the seller has already spent, producing an infinite 402 loop.
-    const minAdvance = currentCumulative + minBudgetPerRequest;
-    const requestedAmount = targetCumulative != null && targetCumulative > minAdvance
-      ? targetCumulative
-      : minAdvance;
+    // The seller's target is what it has delivered. Signing more would make
+    // undelivered work claimable on-chain, and signing less than the target
+    // would leave the seller rejecting us in a 402 loop.
+    const requestedAmount = targetCumulative ?? currentCumulative + minBudgetPerRequest;
 
     const nextCumulative = requestedAmount < maxSignable ? requestedAmount : maxSignable;
     const extendNeedsTopUp = this._needsCeilingAdvance(requestedAmount, maxSignable, ceiling);
