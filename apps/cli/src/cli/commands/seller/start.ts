@@ -53,7 +53,7 @@ import { AntAgentProvider, loadAntAgent, type AntAgentDefinition } from '@antsee
 import { resolvePluginPackage } from '../../../plugins/registry.js'
 import { startupReachabilityWarning } from './reachability.js'
 import { initializeProvider } from './provider-init.js'
-import { redact, sharedChainProvider } from '../../../proxy/chain-rpc.js'
+import { redact, redactUrlsIn, sharedChainProvider } from '../../../proxy/chain-rpc.js'
 import { rpcUsage, withRpcSource } from '../../../proxy/rpc-sources.js'
 import { DEFAULT_LOW_BALANCE_USD, SellerAlerts } from '../../../seller-alerts/alerts.js'
 import { UpstreamAlerts } from '../../../seller-alerts/upstream-alerts.js'
@@ -205,7 +205,7 @@ export async function assertSellerPrerequisites(input: {
     // A priced seller must not fall back to serving for free: fail closed.
     failures.push({
       title: 'Base RPC unreachable',
-      detail: `No answer from ${unreachableRpc.urls.join(', ')} after ${RPC_PROBE_ATTEMPTS} tries (${RPC_PROBE_TIMEOUT_MS / 1000} s each). `
+      detail: `No answer from ${unreachableRpc.urls.map(redact).join(', ')} after ${RPC_PROBE_ATTEMPTS} tries (${RPC_PROBE_TIMEOUT_MS / 1000} s each). `
         + `This seller charges for ${unreachableRpc.pricedServiceIds.join(', ')}, so it needs the chain to check registration and gas and to settle payments. `
         + 'Check the network, or set a working RPC with --base-rpc-url or payments.crypto.rpcUrl. To run without payments (local testing only), set ANTSEED_ENABLE_SETTLEMENT=false.',
     })
@@ -230,7 +230,7 @@ export async function assertSellerPrerequisites(input: {
       // silently skipping — that's what broke testnet-together earlier today.
       failures.push({
         title: 'On-chain readiness check failed',
-        detail: `Could not query the configured chain (${(err as Error).message}). Set payments.crypto.rpcUrl or pass --skip-prereq-check to bypass.`,
+        detail: `Could not query the configured chain (${redactUrlsIn((err as Error).message)}). Set payments.crypto.rpcUrl or pass --skip-prereq-check to bypass.`,
       })
     }
   }

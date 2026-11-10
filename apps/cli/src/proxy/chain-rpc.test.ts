@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { Contract, Interface, isError } from 'ethers'
 import { startFakeChainRpc } from './chain-rpc-test-support.js'
-import { ChainRpcProvider, MULTICALL3_ADDRESS, redact, resetSharedChainProviders, RpcUnavailableError, sharedChainProvider, type RpcTransport } from './chain-rpc.js'
+import { ChainRpcProvider, MULTICALL3_ADDRESS, redact, redactUrlsIn, resetSharedChainProviders, RpcUnavailableError, sharedChainProvider, type RpcTransport } from './chain-rpc.js'
 
 const USDC = '0x' + 'a1'.repeat(20)
 const ERC20 = ['function balanceOf(address owner) view returns (uint256)']
@@ -206,4 +206,11 @@ test('redact shows a fixed placeholder for malformed or non-http(s) input', () =
   for (const input of ['', 'not a url', 'lb.drpc.live/key', 'wss://host-key.example.test/key', 'custom://host-key/key', 'drpc:key']) {
     assert.equal(redact(input), '<invalid RPC URL>', input)
   }
+})
+
+test('redactUrlsIn masks every http(s) URL inside a message and leaves the rest', () => {
+  const message = 'server response 401 Unauthorized (request={  }, info={ "requestUrl": "https://lb.drpc.live/path-key?apikey=query-key", "responseStatus": "401" }) after HTTPS://User:Pass@Fallback.Example.Test/fallback-key tried'
+  const masked = redactUrlsIn(message)
+  assert.equal(masked, 'server response 401 Unauthorized (request={  }, info={ "requestUrl": "https://lb.drpc.live/…", "responseStatus": "401" }) after https://fallback.example.test/… tried')
+  assert.equal(redactUrlsIn('no answer from the chain'), 'no answer from the chain')
 })

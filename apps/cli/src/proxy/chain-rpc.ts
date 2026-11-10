@@ -455,6 +455,14 @@ export function redact(url: string): string {
   return `${parsed.origin}${hidden ? '/…' : ''}`
 }
 
+/**
+ * `text` with every http(s) URL in it passed through `redact`. For error messages that can quote
+ * an RPC URL, such as ethers' `info.requestUrl`. A URL runs to the next space, quote or angle bracket.
+ */
+export function redactUrlsIn(text: string): string {
+  return text.replace(/\bhttps?:\/\/[^\s"'<>`]+/gi, (url) => redact(url))
+}
+
 function retryAfter(value: string | null | undefined): number | null {
   if (!value) return null
   const seconds = Number(value)
