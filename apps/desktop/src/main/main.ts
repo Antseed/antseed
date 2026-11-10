@@ -97,6 +97,11 @@ import { cachedBuyerBalanceIsZero, refreshCreditsInfo } from './payments/credits
 // read them.
 // User-visible surfaces use APP_NAME.
 
+/** Launch switches that decide how safeStorage reaches its key (and whether Electron starts at all as root). */
+function keyStoreSwitches(argv: readonly string[]): string[] {
+  return argv.filter((arg) => arg === '--no-sandbox' || arg === '--use-mock-keychain' || arg.startsWith('--password-store='));
+}
+
 async function migrateStoresAfterRename(): Promise<void> {
   const log = (line: string) => console.log(`[desktop] rename: ${line}`);
   try {
@@ -112,7 +117,9 @@ async function migrateStoresAfterRename(): Promise<void> {
       // there, else the moved one.
       decryptWithOldName: (blobs) => exportWithOldName({
         execPath: process.execPath,
-        appArgs: app.isPackaged ? [] : [app.getAppPath()],
+        // The helper reads the key the way this launch would: the same sandbox
+        // and key store switches (Linux --no-sandbox, --password-store=...).
+        appArgs: [...(app.isPackaged ? [] : [app.getAppPath()]), ...keyStoreSwitches(process.argv)],
         oldName: LEGACY_INTERNAL_APP_NAME,
         userData: existsSync(oldUserData) ? oldUserData : app.getPath('userData'),
         blobs,
