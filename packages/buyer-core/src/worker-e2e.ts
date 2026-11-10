@@ -51,6 +51,16 @@ export interface WorkerPaymentProof {
   signature: string;
 }
 
+export interface WorkerSealOptions {
+  /** The buyer's latest SpendingAuth on `channelId`, if it signed one. */
+  payment?: WorkerPaymentProof | null;
+  /**
+   * Encrypt only for these workers: a channel whose metadata already credits
+   * the most workers it can (MAX_WORKERS_PER_CHANNEL) can pay no other.
+   */
+  onlyWorkers?: readonly string[];
+}
+
 export interface WorkerE2EClient {
   /**
    * Encrypt `request` for the workers assigned to this seller and service
@@ -63,7 +73,7 @@ export interface WorkerE2EClient {
     service: string,
     assign: (body: Uint8Array) => Promise<SerializedHttpResponse>,
     channelId: string | null,
-    payment?: WorkerPaymentProof | null,
+    options?: WorkerSealOptions,
   ): Promise<SealedWorkerRequest>;
   /** Drop a cached assignment (the pool said none of its workers could take the request). */
   forget(peerId: string, service: string): void;

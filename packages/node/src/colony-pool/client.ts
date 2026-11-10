@@ -1,5 +1,5 @@
 import type { BuyerPeerView, BuyerSigner } from '@antseed/buyer-core';
-import type { SealedWorkerRequest, WorkerE2EClient, WorkerPaymentProof, WorkerUsage } from '@antseed/buyer-core/worker-e2e';
+import type { SealedWorkerRequest, WorkerE2EClient, WorkerSealOptions, WorkerUsage } from '@antseed/buyer-core/worker-e2e';
 import { peerIdToAddress } from '@antseed/protocol/peer-id';
 import type { SerializedHttpRequest, SerializedHttpResponse } from '../types/http.js';
 import { DEVICE_ATTESTATION_MAX_AGE_S, isDeviceAttestation, verifyDeviceAttestation } from './apple-attestation.js';
@@ -101,10 +101,18 @@ export class NodeWorkerE2EClient implements WorkerE2EClient {
     service: string,
     assign: (body: Uint8Array) => Promise<SerializedHttpResponse>,
     channelId: string | null,
-    payment?: WorkerPaymentProof | null,
+    options: WorkerSealOptions = {},
   ): Promise<SealedWorkerRequest> {
     const provider = Object.entries(request.headers).find(([name]) => name.toLowerCase() === 'x-antseed-provider')?.[1].trim().toLowerCase() ?? '';
-    const workers = await this.assignment(peer, provider, service, assign);
+    const assigned = await this.assignment(peer, provider, service, assign);
+    const only = options.onlyWorkers ? new Set(options.onlyWorkers.map((w) => w.toLowerCase())) : null;
+    const workers = only ? assigned.filter((w) => only.has(w.worker.toLowerCase())) : assigned;
+    if (workers.length === 0) {
+      // Assigned again next time: the pool may then rank a worker this channel already pays.
+      this.forget(peer.peerId, service);
+      throw new Error('This channel already pays the most workers one channel can, and the pool assigned none of them; retry once it settles');
+    }
+    const payment = options.payment;
     const sealed = await sealRequest({
       body: request.body,
       recipients: workers.map((w) => ({ worker: w.worker, key: w.key })),

@@ -27,6 +27,9 @@ enum WorkerPayment {
         let output: Double
         let cachedInput: Double?
 
+        /// Some token costs something: at all-zero prices no payment could ever be owed.
+        var isChargeable: Bool { input > 0 || output > 0 || (cachedInput ?? 0) > 0 }
+
         init(input: Double, output: Double, cachedInput: Double? = nil) {
             self.input = input
             self.output = output
@@ -45,11 +48,12 @@ enum WorkerPayment {
     }
 
     enum Failure: Error, LocalizedError {
-        case notTheBuyer, beyondReserve
+        case notTheBuyer, beyondReserve, overAttributed
         var errorDescription: String? {
             switch self {
             case .notTheBuyer: "The payment is not signed by the channel's buyer"
             case .beyondReserve: "The payment exceeds the channel's reserve"
+            case .overAttributed: "The payment attributes more to workers than it authorizes"
             }
         }
     }
@@ -72,8 +76,18 @@ enum WorkerPayment {
                                             metadata: proof.metadata, chainId: chainId, channels: Data(hexString: channels))
         guard let signer = try? recoverAddress(digest: digest, signature: proof.signature),
               signer.lowercased() == buyer.lowercased() else { throw Failure.notTheBuyer }
-        guard saturating(proof.cumulativeAmount) <= deposit else { throw Failure.beyondReserve }
-        return attributedAmount(metadata: proof.metadata, worker: worker) ?? 0
+        let authorized = saturating(proof.cumulativeAmount)
+        guard authorized <= deposit else { throw Failure.beyondReserve }
+        guard let tail = attribution(metadata: proof.metadata) else { return 0 }
+        // The contract pays workers out of the settled amount: attribution beyond it is credit nothing funds.
+        var total: UInt64 = 0
+        for entry in tail {
+            let (sum, overflow) = total.addingReportingOverflow(entry.amount)
+            guard !overflow, sum <= authorized else { throw Failure.overAttributed }
+            total = sum
+        }
+        let wanted = worker.lowercased()
+        return tail.first { $0.worker == wanted }?.amount ?? 0
     }
 
     /// The EIP-712 digest AntseedChannels verifies a SpendingAuth against.
@@ -86,10 +100,10 @@ enum WorkerPayment {
         return keccak256([0x19, 0x01] + domain + auth)
     }
 
-    /// `worker`'s cumulative amount in the metadata's worker-attribution tail,
-    /// read by the rules AntseedColonyPool applies: nil for a malformed tail,
-    /// and for a worker it doesn't name.
-    static func attributedAmount(metadata: Data, worker: String) -> UInt64? {
+    /// The metadata's worker-attribution tail, read by the rules
+    /// AntseedColonyPool applies: nil when there is none or it is malformed.
+    /// Workers are lowercase 0x-hex.
+    static func attribution(metadata: Data) -> [(worker: String, amount: UInt64)]? {
         let bytes = [UInt8](metadata)
         let headBytes = 256, trailerBytes = 33, entryBytes = 36
         guard bytes.count >= headBytes + trailerBytes,
@@ -97,18 +111,23 @@ enum WorkerPayment {
         let count = Int(bytes[bytes.count - trailerBytes])
         guard (1...8).contains(count), bytes.count >= headBytes + trailerBytes + count * entryBytes else { return nil }
         let start = bytes.count - trailerBytes - count * entryBytes
-        guard let wanted = try? [UInt8](Data(hexString: worker)), wanted.count == 20 else { return nil }
         var previous = [UInt8](repeating: 0, count: 20)
-        var found: UInt64?
+        var entries: [(worker: String, amount: UInt64)] = []
         for i in 0..<count {
             let offset = start + i * entryBytes
             let address = Array(bytes[offset..<(offset + 20)])
             // Strictly ascending, never zero: anything else is not a tail at all.
             guard previous.lexicographicallyPrecedes(address) else { return nil }
             previous = address
-            if address == wanted { found = saturating(Array(bytes[(offset + 20)..<(offset + entryBytes)])) }
+            entries.append((Data(address).prefixedHex.lowercased(), saturating(Array(bytes[(offset + 20)..<(offset + entryBytes)]))))
         }
-        return found
+        return entries
+    }
+
+    /// `worker`'s cumulative amount in the metadata's attribution tail; nil when the tail is malformed or doesn't name it.
+    static func attributedAmount(metadata: Data, worker: String) -> UInt64? {
+        let wanted = worker.lowercased()
+        return attribution(metadata: metadata)?.first { $0.worker == wanted }?.amount
     }
 
     /// USDC base units an answer costs at `price`: the buyer's own formula (computeCostUsdc).
@@ -155,8 +174,8 @@ final class WorkerPaymentLedger {
     private struct Account {
         /// The most a buyer-signed payment attributed to this worker (a lower, older one never lowers it).
         var paid: UInt64 = 0
-        /// Costs of answers served, oldest first, not yet covered by `paid`.
-        var owed: [UInt64] = []
+        /// Answers served, oldest first, not yet covered by `paid`: each one's cost, and `paid` when it was served.
+        var owed: [(cost: UInt64, paidBefore: UInt64)] = []
         /// Cost of every answer served before `owed`.
         var settledCost: UInt64 = 0
         /// Requests admitted and still running.
@@ -181,10 +200,12 @@ final class WorkerPaymentLedger {
         }
         var account = accounts[key]!
         account.paid = max(account.paid, attributed)
-        // Answers paid for leave `owed`, oldest first.
+        // Answers paid for leave `owed`, oldest first. One that cost nothing (a few
+        // tokens at a low price) is paid once a payment grew after it: a buyer that
+        // never pays can't run past the limit on answers that cost nothing.
         while let first = account.owed.first {
-            let (settled, overflow) = account.settledCost.addingReportingOverflow(first)
-            guard !overflow, settled <= account.paid else { break }
+            let (settled, overflow) = account.settledCost.addingReportingOverflow(first.cost)
+            guard !overflow, settled <= account.paid, first.cost > 0 || account.paid > first.paidBefore else { break }
             account.settledCost = settled
             account.owed.removeFirst()
         }
@@ -202,7 +223,7 @@ final class WorkerPaymentLedger {
         let key = channel.lowercased()
         guard var account = accounts[key] else { return }
         account.running = max(0, account.running - 1)
-        account.owed.append(cost)
+        account.owed.append((cost, account.paid))
         accounts[key] = account
     }
 

@@ -1,4 +1,5 @@
 import { isWorkerAttestation, type WorkerAttestation, type WorkerKeyCertificate } from '@antseed/node/worker-e2e';
+import type { ServicePricing } from '@antseed/node';
 
 /**
  * Colony pool wire protocol (v1).
@@ -45,12 +46,8 @@ export interface WelcomeFrame {
   prices: Record<string, ServicePrice>;
 }
 
-/** A service's token prices, as buyers pay them (ServicePricing). */
-export interface ServicePrice {
-  inputUsdPerMillion: number;
-  outputUsdPerMillion: number;
-  cachedInputUsdPerMillion?: number;
-}
+/** A service's token prices, as buyers pay them. */
+export type ServicePrice = ServicePricing;
 
 export interface RequestFrame {
   t: 'request';

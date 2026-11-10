@@ -801,11 +801,8 @@ export class ColonyPool {
     ws.on('pong', () => { worker.missedPings = 0; });
     this.workers.set(address, worker);
     const { accepted, rejected } = this.setOffered(worker, hello.services);
-    const prices = Object.fromEntries(accepted.flatMap((service) => {
-      const price = this.opts.prices?.[service];
-      return price ? [[service, price]] : [];
-    }));
-    this.sendFrame(ws, { t: 'welcome', workerId: address, accepted, rejected, workerShareBps: this.opts.workerShareBps, prices });
+    // Every catalog price, not only the services offered now: a worker that joined paused offers none, and resumes on this welcome.
+    this.sendFrame(ws, { t: 'welcome', workerId: address, accepted, rejected, workerShareBps: this.opts.workerShareBps, prices: this.opts.prices ?? {} });
     this.log(`worker ${address} joined (${worker.agent}${hardened ? ', reports a hardened Mac' : ''}) offering ${accepted.join(', ') || 'nothing'}`);
     this.noteAttestedModels(worker, null);
     this.noteAttested();

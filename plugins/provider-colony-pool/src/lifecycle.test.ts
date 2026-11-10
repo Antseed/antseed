@@ -405,6 +405,21 @@ describe('worker lifecycle', () => {
     expect(upstream.bodies).toHaveLength(3);
   });
 
+  it('refuses buyers of a pool that declares zero prices, under which no answer would ever be owed', async () => {
+    upstream = await startUpstream((_body, res) => answer(res));
+    start();
+    await waitFor(() => fakePool.frames.some((f) => f['t'] === 'hello'));
+    const free = { inputUsdPerMillion: 0, outputUsdPerMillion: 0, cachedInputUsdPerMillion: 0 };
+    fakePool.send({ t: 'welcome', workerId: worker!.address, accepted: [SERVICE], rejected: [], workerShareBps: 9000, prices: { [SERVICE]: free } });
+    await sleep(50);
+    for (const id of ['z1', 'z2', 'z3']) {
+      await request(id);
+      await waitFor(() => fakePool.errorFor(id) !== undefined);
+      expect(fakePool.errorFor(id)).toMatch(/declared no price/);
+    }
+    expect(upstream.bodies).toHaveLength(0);
+  });
+
   it('shares one read between requests that arrive while it runs', async () => {
     upstream = await startUpstream((_body, res) => answer(res));
     let reads = 0;

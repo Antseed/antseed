@@ -611,6 +611,12 @@ export class BuyerPaymentManager {
     return { channelId: session.sessionId, cumulativeAmount: session.authMax, metadata: session.latestMetadata, signature: session.latestSpendingAuthSig };
   }
 
+  /** The workers the seller's active channel credits so far (its metadata's attribution tail). */
+  channelWorkers(sellerPeerId: string): string[] {
+    if (!this.getActiveSession(sellerPeerId)) return [];
+    return (this._metadata.get(sellerPeerId)?.workers ?? []).map((entry) => entry.worker);
+  }
+
   recordWorkerAttribution(sellerPeerId: string, requestId: string, workers: string | readonly string[], free = false): void {
     this._workerDeliveries.recordAttribution(sellerPeerId, requestId, workers, free);
   }

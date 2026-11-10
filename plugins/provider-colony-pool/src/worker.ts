@@ -7,6 +7,7 @@ import {
   decryptRequest,
   inspectRequest,
   type InspectedRequest,
+  isChargeablePrice,
   isSealedRequest,
   WORKER_REQUEST_TTL_SECONDS,
   type OpenedRequest,
@@ -470,7 +471,7 @@ export class PoolWorker {
       if (verdict === false) throw new Error('Request channel does not belong to a buyer of this pool');
       if (verdict === null) throw new Error('Request channel is not on-chain yet; retry shortly');
       const price = this.welcome?.prices?.[inspected.model];
-      if (!price) throw new Error(`The pool declared no price for ${inspected.model}, so this worker can't check it is paid`);
+      if (!isChargeablePrice(price)) throw new Error(`The pool declared no price for ${inspected.model}, so this worker can't check it is paid`);
       const channel = bound.channel.toLowerCase();
       // Paid before served: the buyer's signed payments must cover this worker's earlier answers on the channel.
       this.payments.admit(channel, this.attributed(inspected, verdict.deposit));

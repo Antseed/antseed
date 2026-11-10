@@ -65,7 +65,7 @@ function chatRequest(requestId: string, stream = false, model = 'qwen'): Seriali
 }
 
 /** A stand-in for the payment negotiator that records what the handler tells its payment manager. */
-function recordingNegotiator() {
+function recordingNegotiator(bpm: Record<string, unknown> = {}) {
   const calls: Array<{ method: string; args: unknown[] }> = [];
   const recorder = (target: Record<string, unknown> = {}) => new Proxy(target, {
     get: (object, prop) => {
@@ -74,7 +74,7 @@ function recordingNegotiator() {
       return (...args: unknown[]) => { calls.push({ method: String(prop), args }); return undefined; };
     },
   });
-  return { negotiator: recorder({ bpm: recorder() }), calls };
+  return { negotiator: recorder({ bpm: recorder(bpm) }), calls };
 }
 
 /** A pool with workers that really decrypt and encrypt, behind a fake mux. */
@@ -113,7 +113,7 @@ function deviceAttestation(kind: Device, worker: string, attestationKey: string,
   };
 }
 
-function fakePool(opts: { payments?: boolean; now?: () => number; appleCa?: ReturnType<typeof createTestAppleCa>; deviceNotBefore?: Date; workers?: number; recipients?: number; certSeller?: string; unavailableOnce?: boolean; tamper?: 'ciphertext' | 'usage'; attest?: Attest | Attest[]; device?: Device; requireApple?: boolean; streamTamper?: 'no-end' | 'usage' | 'not-sse' | 'padding'; maxStreamBufferBytes?: number; failover?: boolean; forgeAnswer?: boolean; noHook?: boolean; assignFails?: boolean } = {}) {
+function fakePool(opts: { payments?: boolean; bpm?: Record<string, unknown>; now?: () => number; appleCa?: ReturnType<typeof createTestAppleCa>; deviceNotBefore?: Date; workers?: number; recipients?: number; certSeller?: string; unavailableOnce?: boolean; tamper?: 'ciphertext' | 'usage'; attest?: Attest | Attest[]; device?: Device; requireApple?: boolean; streamTamper?: 'no-end' | 'usage' | 'not-sse' | 'padding'; maxStreamBufferBytes?: number; failover?: boolean; forgeAnswer?: boolean; noHook?: boolean; assignFails?: boolean } = {}) {
   const workers = Array.from({ length: opts.workers ?? 1 }, () => ({ wallet: Wallet.createRandom(), key: generateWorkerEncryptionKey() }));
   let next = 0;
   let unavailable = opts.unavailableOnce === true;
@@ -213,7 +213,7 @@ function fakePool(opts: { payments?: boolean; now?: () => number; appleCa?: Retu
     activeRequestCount: () => 0,
   };
   const buyer = Wallet.createRandom();
-  const payments = opts.payments ? recordingNegotiator() : null;
+  const payments = opts.payments || opts.bpm ? recordingNegotiator(opts.bpm) : null;
   const handler = new BuyerRequestHandler(opts.maxStreamBufferBytes ? { maxStreamBufferBytes: opts.maxStreamBufferBytes } : {}, {
     localPeerId: buyer.address.slice(2).toLowerCase() as PeerInfo['peerId'],
     negotiator: (payments?.negotiator ?? null) as any,
@@ -252,6 +252,33 @@ describe('buyer requests to colony pools', () => {
       expect(JSON.parse(dec(req.body)).antseed_e2e.recipients.map((r: { worker: string }) => r.worker)).toEqual([pool.workers[0]!.wallet.address]);
       expect(JSON.parse(dec(req.body)).model).toBe('qwen');
     }
+  });
+
+  it('carries the latest payment, and sends a channel that already pays the most workers only to those', async () => {
+    const channel = `0x${'ab'.repeat(32)}`;
+    const latest = { channelId: channel, cumulativeAmount: '9000', metadata: '0x00', signature: `0x${'11'.repeat(65)}` };
+    let credited: string[] = [];
+    const pool = fakePool({
+      workers: 3, recipients: 3,
+      bpm: { getActiveSession: () => ({ sessionId: channel }), latestSpendingAuth: () => latest, channelWorkers: () => credited },
+    });
+    const others = Array.from({ length: 7 }, () => Wallet.createRandom().address);
+    // Eight credited, the third assigned worker among them: only it is sent the request.
+    credited = [...others, pool.workers[2]!.wallet.address];
+    expect((await pool.handler.sendRequest(peer, chatRequest('c1'))).statusCode).toBe(200);
+    expect(pool.encryptedFor).toEqual([[pool.workers[2]!.wallet.address]]);
+    const sent = pool.wire.filter((req) => req.path !== WORKER_ASSIGN_PATH);
+    expect(JSON.parse(dec(sent[0]!.body)).antseed_e2e.pay).toEqual({ cumulativeAmount: '9000', metadata: '0x00', signature: latest.signature });
+    // Seven credited: room for a new one, so all three are.
+    credited = others;
+    await pool.handler.sendRequest(peer, chatRequest('c2'));
+    expect(pool.encryptedFor[1]).toHaveLength(3);
+    // Eight credited, none of them assigned: refused before anything is sent, and assigned afresh next time.
+    credited = [...others, Wallet.createRandom().address];
+    const requestsSent = () => pool.wire.filter((req) => req.path !== WORKER_ASSIGN_PATH).length;
+    const before = requestsSent();
+    await expect(pool.handler.sendRequest(peer, chatRequest('c3'))).rejects.toThrow(/already pays the most workers/);
+    expect(requestsSent()).toBe(before);
   });
 
   it('decrypts a streamed answer for the client', async () => {

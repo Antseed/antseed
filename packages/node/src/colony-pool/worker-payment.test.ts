@@ -2,9 +2,11 @@ import { computeCostUsdc } from '@antseed/buyer-core/pricing';
 import { encodeWorkerTail } from '@antseed/protocol/worker-attribution';
 import { hexlify, keccak256, Wallet } from 'ethers';
 import { describe, expect, it } from 'vitest';
+import { signTestWorkerPayment } from './apple-attestation-testing.js';
 import {
   answerCostUsdc,
   attributedPayment,
+  isChargeablePrice,
   MAX_UNPAID_ANSWERS,
   usageCounts,
   WorkerPaymentLedger,
@@ -51,6 +53,37 @@ describe('worker payments', () => {
     expect(() => attributedPayment(elsewhere, { ...check, domain: { ...domain, chainId: 1 } })).toThrow();
     const tooMuch = await payment(2_000_000n, [[worker, 2_000_000n]]);
     expect(() => attributedPayment(tooMuch, check)).toThrow(/exceeds the channel's reserve/);
+  });
+
+  it('refuses attribution the payment does not fund: on a zero authorization, one oversized entry, or entries that add up past it', async () => {
+    const sign = (amount: bigint, cumulativeAmount: bigint, others: Array<{ worker: string; cumulativeAmount: bigint }> = []) =>
+      signTestWorkerPayment({ signer: buyer, channel, worker, amount, domain, cumulativeAmount, others });
+    const onZero = await sign(9_000n, 0n);
+    const oversized = await sign(1_000_000n, 1n);
+    const pastIt = await sign(30_000n, 50_000n, [{ worker: other, cumulativeAmount: 30_000n }]);
+    expect(() => attributedPayment(onZero, check)).toThrow(/attributes more to workers than it authorizes/);
+    expect(() => attributedPayment(oversized, check)).toThrow(/attributes more/);
+    expect(() => attributedPayment(pastIt, check)).toThrow(/attributes more/);
+    // Exactly what it authorizes is fine.
+    expect(attributedPayment(await sign(30_000n, 50_000n, [{ worker: other, cumulativeAmount: 20_000n }]), check)).toBe(30_000n);
+  });
+
+  it('serves only pools whose prices charge something', () => {
+    expect(isChargeablePrice({ inputUsdPerMillion: 0, outputUsdPerMillion: 0 })).toBe(false);
+    expect(isChargeablePrice({ inputUsdPerMillion: 0, outputUsdPerMillion: 0, cachedInputUsdPerMillion: 0 })).toBe(false);
+    expect(isChargeablePrice(undefined)).toBe(false);
+    expect(isChargeablePrice({ inputUsdPerMillion: 0, outputUsdPerMillion: 0.6 })).toBe(true);
+  });
+
+  it('never lets answers that cost nothing clear the limit without a payment that grew after them', () => {
+    const ledger = new WorkerPaymentLedger();
+    for (let i = 0; i < MAX_UNPAID_ANSWERS; i++) {
+      ledger.admit(channel, 0n);
+      ledger.served(channel, 0n);
+    }
+    expect(() => ledger.admit(channel, 0n)).toThrow(/unpaid/);
+    // Any payment made after them pays for them: an honest buyer's next payment.
+    ledger.admit(channel, 1n);
   });
 
   it('prices an answer exactly as the buyer does', () => {

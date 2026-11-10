@@ -35,6 +35,45 @@ final class WorkerPaymentTests: XCTestCase {
         XCTAssertThrowsError(try WorkerPayment.attributed(proof, channel: channel, buyer: buyer, worker: worker, deposit: 123_455, chainId: 8453, channels: channels))
     }
 
+    /// A signed vector: `tail` after the 256-byte zero head, authorizing `cumulative`.
+    private func signed(_ cumulative: String, tail: String, signature: String) -> WorkerPayment.Proof {
+        WorkerPayment.parse(["cumulativeAmount": cumulative, "metadata": "0x" + String(repeating: "00", count: 256) + tail, "signature": signature])!
+    }
+
+    func testRefusesAttributionThePaymentDoesNotFund() throws {
+        let check = { (proof: WorkerPayment.Proof) in
+            try WorkerPayment.attributed(proof, channel: self.channel, buyer: self.buyer, worker: self.worker, deposit: 1_000_000, chainId: 8453, channels: self.channels)
+        }
+        // 1,000,000 attributed on an authorization of 1.
+        XCTAssertThrowsError(try check(signed("1",
+            tail: "1000000000000000000000000000000000000001000000000000000000000000000f4240018648a71dd010296ef21e85b13e8b14728f74bae957239f6c65e28db02dfe64e0",
+            signature: "0x795d065f963f99bf55e2a24e2911b8fb5df1418d41e636ed8efd6505f395e64a26660e679225f216273c0aa44e8a7dc05a5705bef6e0b0262ab1d8bceb4613f81c")))
+        // 30,000 to each of two workers on an authorization of 50,000.
+        XCTAssertThrowsError(try check(signed("50000",
+            tail: "100000000000000000000000000000000000000100000000000000000000000000007530200000000000000000000000000000000000000200000000000000000000000000007530028648a71dd010296ef21e85b13e8b14728f74bae957239f6c65e28db02dfe64e0",
+            signature: "0x4be5c9ae3e22afd585ee71a3a78a77ba8b27dd407d14f4ec1dfd7dd1d758af39536d407243917d0f1bfd7dad378aecf19979cdda30dd8c576f09f08d5741e8cd1b")))
+        // 30,000 and 20,000: exactly what it authorizes.
+        XCTAssertEqual(try check(signed("50000",
+            tail: "100000000000000000000000000000000000000100000000000000000000000000007530200000000000000000000000000000000000000200000000000000000000000000004e20028648a71dd010296ef21e85b13e8b14728f74bae957239f6c65e28db02dfe64e0",
+            signature: "0xb3cf4dc88cf5c77e22f9aa533bab06637c99b10112fbfc130e64f3282b619adb3ba34027f6572ca3535336bb4aa84e6e7f760249696e4867c34a9082c2c945a41b")), 30_000)
+    }
+
+    func testServesOnlyPricesThatChargeSomething() {
+        XCTAssertFalse(WorkerPayment.Price(input: 0, output: 0, cachedInput: 0).isChargeable)
+        XCTAssertTrue(WorkerPayment.Price(input: 0, output: 0.6).isChargeable)
+    }
+
+    @MainActor
+    func testAnswersThatCostNothingNeedAPaymentThatGrewAfterThem() {
+        let ledger = WorkerPaymentLedger()
+        for _ in 0..<WorkerPayment.maxUnpaidAnswers {
+            XCTAssertNil(ledger.admit(channel: channel, attributed: 0))
+            ledger.served(channel: channel, cost: 0)
+        }
+        XCTAssertNotNil(ledger.admit(channel: channel, attributed: 0))
+        XCTAssertNil(ledger.admit(channel: channel, attributed: 1))
+    }
+
     func testIgnoresMalformedPayments() {
         XCTAssertNil(WorkerPayment.parse(nil))
         XCTAssertNil(WorkerPayment.parse(["cumulativeAmount": "-1", "metadata": metadata, "signature": signature]))

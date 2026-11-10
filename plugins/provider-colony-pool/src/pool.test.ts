@@ -220,7 +220,7 @@ describe('colony pool', () => {
     poolUrl = `ws://127.0.0.1:${port}`;
   }
 
-  function startWorker(opts: { key?: string; channelVerifier?: ChannelVerifier; channelWaitMs?: number; attester?: WorkerAttester; models?: Record<string, string> } = {}): PoolWorker {
+  function startWorker(opts: { key?: string; channelVerifier?: ChannelVerifier; channelWaitMs?: number; attester?: WorkerAttester; models?: Record<string, string>; paused?: boolean } = {}): PoolWorker {
     const worker = new PoolWorker({
       poolUrl,
       baseUrl: upstream.url,
@@ -235,6 +235,7 @@ describe('colony pool', () => {
       ...(opts.models ? { models: opts.models } : {}),
     });
     workers.push(worker);
+    if (opts.paused) worker.setPaused(true);
     worker.start();
     return worker;
   }
@@ -524,6 +525,17 @@ describe('colony pool', () => {
     expect(refused.statusCode).toBe(WORKER_UNAVAILABLE);
     expect(dec(refused.body)).toContain('does not belong');
     expect(lookups).toEqual([buyer.address.toLowerCase(), buyer.address.toLowerCase()]);
+  });
+
+  it('serves buyers after resuming when it joined paused, so its welcome offered no services', async () => {
+    await setup({ verifyOnJoin: false });
+    const worker = startWorker({ paused: true });
+    await waitFor(() => pool.workerSummaries().length === 1);
+    expect(provider.services).not.toContain(SERVICE);
+    worker.setPaused(false);
+    await waitFor(() => provider.services.includes(SERVICE));
+    // The welcome carried every catalog price, so the resumed worker can check this buyer pays.
+    expect((await provider.handleRequest((await buyerSeal('r1', false)).request)).statusCode).toBe(200);
   });
 
   it('does not let another signer\'s refused check refuse the channel\'s buyer', async () => {

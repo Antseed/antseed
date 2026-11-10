@@ -1,4 +1,5 @@
 import { generateKeyPairSync, sign, type KeyObject } from 'node:crypto';
+import { makeChannelsDomain, SPENDING_AUTH_TYPES } from '@antseed/protocol/signatures';
 import { encodeWorkerTail } from '@antseed/protocol/worker-attribution';
 import { concat, hexlify, keccak256, type Wallet } from 'ethers';
 import type { ChannelsDomain, WorkerPayment } from './worker-payment.js';
@@ -96,7 +97,9 @@ export function createTestAppleCa(opts: { created?: Date } = {}): { rootPem: str
 /**
  * A buyer's SpendingAuth on `channel` attributing `amount` to `worker`, as a
  * request envelope carries it (`pay`): an eight-word metadata head, then the
- * attribution tail. For tests of workers' payment checks.
+ * attribution tail. `cumulativeAmount` (default `amount`) is what it
+ * authorizes, and `others` adds other workers' entries. For tests of workers'
+ * payment checks.
  */
 export async function signTestWorkerPayment(opts: {
   signer: { signTypedData: Wallet['signTypedData'] };
@@ -104,12 +107,16 @@ export async function signTestWorkerPayment(opts: {
   worker: string;
   amount: bigint;
   domain: ChannelsDomain;
+  cumulativeAmount?: bigint;
+  others?: Array<{ worker: string; cumulativeAmount: bigint }>;
 }): Promise<WorkerPayment> {
-  const metadata = hexlify(concat([new Uint8Array(256), encodeWorkerTail([{ worker: opts.worker, cumulativeAmount: opts.amount }])]));
+  const cumulativeAmount = opts.cumulativeAmount ?? opts.amount;
+  const tail = encodeWorkerTail([{ worker: opts.worker, cumulativeAmount: opts.amount }, ...(opts.others ?? [])]);
+  const metadata = hexlify(concat([new Uint8Array(256), tail]));
   const signature = await opts.signer.signTypedData(
-    { name: 'AntseedChannels', version: '1', chainId: opts.domain.chainId, verifyingContract: opts.domain.channelsAddress },
-    { SpendingAuth: [{ name: 'channelId', type: 'bytes32' }, { name: 'cumulativeAmount', type: 'uint256' }, { name: 'metadataHash', type: 'bytes32' }] },
-    { channelId: opts.channel, cumulativeAmount: opts.amount, metadataHash: keccak256(metadata) },
+    makeChannelsDomain(opts.domain.chainId, opts.domain.channelsAddress),
+    SPENDING_AUTH_TYPES,
+    { channelId: opts.channel, cumulativeAmount, metadataHash: keccak256(metadata) },
   );
-  return { cumulativeAmount: opts.amount.toString(), metadata, signature };
+  return { cumulativeAmount: cumulativeAmount.toString(), metadata, signature };
 }

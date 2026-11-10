@@ -415,23 +415,33 @@ workers serve requests it never pays for.
   metadata bytes with the [attribution tail](#attribution-in-spendingauth-metadata),
   the EIP-712 signature). It has its own signature, so it is outside the
   request binding, and only the buyer can make one.
-- **The pool declares its prices.** The `welcome` frame lists, per accepted
-  service, the token prices buyers pay (`prices`, USD per million input,
-  output and cached input tokens). A worker serves buyers no service without
-  a price.
+- **The pool declares its prices.** The `welcome` frame lists the token
+  prices buyers pay for every service the pool sells (`prices`, USD per
+  million input, output and cached input tokens), including ones the worker
+  doesn't offer yet, so a worker that joined paused can resume. A worker
+  serves buyers no service without a price, or at all-zero prices, under
+  which no answer would ever be owed.
 - **The worker checks the payment** before decrypting the request: the
   channel's buyer must have signed it for the worker's trusted Channels
   contract and chain, and its amount must be within the channel's on-chain
   reserve (the deposit the channel check reads). A payment that fails these
-  checks counts as none. What it attributes to this worker is the amount paid
-  for its answers on that channel; the highest amount a worker has seen on a
-  channel stands, so an older one the pool replays changes nothing.
+  checks counts as none, and so does one whose attribution tail adds up to
+  more than it authorizes (the contract pays workers only out of what
+  settles). What it attributes to this worker is the amount paid for its
+  answers on that channel; the highest amount a worker has seen on a channel
+  stands, so an older one the pool replays changes nothing.
 - **At most one answer behind.** The worker prices each answer it delivered
   on the channel at the declared prices, with the buyer's formula. It serves
   a request only while the answers not covered by the payment, plus the
-  requests still running there, number fewer than 2. A buyer that never pays
-  gets two answers per channel, and every channel is an on-chain reserve.
-  Answers that did not reach the buyer whole are not owed.
+  requests still running there, number fewer than 2. An answer whose price
+  rounds to nothing counts as paid only once a payment grows after it. A buyer
+  that never pays gets two answers per channel, and every channel is an
+  on-chain reserve. Answers that did not reach the buyer whole are not owed.
+- **Eight workers per channel.** A channel's attribution names at most eight
+  workers, so once a buyer's channel credits eight, the buyer sends its
+  requests only to those of the pool's assigned workers it already credits.
+  When the pool assigned none of them, the request fails before anything is
+  sent, and the next one asks the pool for a fresh assignment.
 
 The account is kept in memory: a restarted worker starts every channel
 afresh. Settlement is still the operator's: the pool contract settles only

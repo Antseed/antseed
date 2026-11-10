@@ -431,7 +431,7 @@ final class WorkerController: ObservableObject {
         var promptLimit: Int?
         switch await gate.admit(buyer: sealed.buyer, channel: sealed.channel, bodyBytes: sealed.bodyBytes, requestedMaxTokens: RequestGate.checkMaxTokens, check: check) {
         case .full:
-            guard let channel = sealed.channel, let buyer = sealed.buyer, let price = prices[sealed.model] else {
+            guard let channel = sealed.channel, let buyer = sealed.buyer, let price = prices[sealed.model], price.isChargeable else {
                 return fail(id, "The pool declared no price for \(sealed.model), so this worker can't check it is paid")
             }
             // Paid before served: the buyer's signed payments must cover this Mac's earlier answers on the channel.

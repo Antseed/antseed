@@ -1,4 +1,5 @@
 import { computeCostUsdc, type ServicePricing } from '@antseed/buyer-core/pricing';
+import { makeChannelsDomain, SPENDING_AUTH_TYPES } from '@antseed/protocol/signatures';
 import { decodeWorkerTail } from '@antseed/protocol/worker-attribution';
 import { getAddress, keccak256, verifyTypedData } from 'ethers';
 
@@ -29,14 +30,6 @@ export const MAX_UNPAID_ANSWERS = 2;
 /** Per-channel state kept by a worker; past this many channels the oldest is dropped. */
 const MAX_TRACKED_CHANNELS = 10_000;
 
-const SPENDING_AUTH_TYPES = {
-  SpendingAuth: [
-    { name: 'channelId', type: 'bytes32' },
-    { name: 'cumulativeAmount', type: 'uint256' },
-    { name: 'metadataHash', type: 'bytes32' },
-  ],
-};
-
 /** The trusted Channels deployment SpendingAuths are signed for. */
 export interface ChannelsDomain {
   chainId: number;
@@ -62,15 +55,20 @@ export function attributedPayment(
 ): bigint {
   const cumulativeAmount = BigInt(payment.cumulativeAmount);
   const signer = verifyTypedData(
-    { name: 'AntseedChannels', version: '1', chainId: opts.domain.chainId, verifyingContract: getAddress(opts.domain.channelsAddress) },
+    makeChannelsDomain(opts.domain.chainId, getAddress(opts.domain.channelsAddress)),
     SPENDING_AUTH_TYPES,
     { channelId: opts.channel, cumulativeAmount, metadataHash: keccak256(payment.metadata) },
     payment.signature,
   );
   if (signer.toLowerCase() !== opts.buyer.toLowerCase()) throw new Error('The payment is not signed by the channel\'s buyer');
   if (cumulativeAmount > opts.deposit) throw new Error('The payment exceeds the channel\'s reserve');
+  const entries = decodeWorkerTail(payment.metadata) ?? [];
+  // The contract pays workers out of the settled amount: attribution beyond it is credit nothing funds.
+  if (entries.reduce((sum, entry) => sum + entry.cumulativeAmount, 0n) > cumulativeAmount) {
+    throw new Error('The payment attributes more to workers than it authorizes');
+  }
   const worker = opts.worker.toLowerCase();
-  return decodeWorkerTail(payment.metadata)?.find((entry) => entry.worker.toLowerCase() === worker)?.cumulativeAmount ?? 0n;
+  return entries.find((entry) => entry.worker.toLowerCase() === worker)?.cumulativeAmount ?? 0n;
 }
 
 function count(value: unknown): bigint {
@@ -91,6 +89,14 @@ export function usageCounts(usage: Record<string, unknown> | null): { inputToken
   };
 }
 
+/**
+ * A price a worker serves at: some token costs something. At all-zero prices
+ * every answer would cost nothing, so no payment could ever be owed.
+ */
+export function isChargeablePrice(price: ServicePricing | undefined): price is ServicePricing {
+  return Boolean(price && (price.inputUsdPerMillion > 0 || price.outputUsdPerMillion > 0 || (price.cachedInputUsdPerMillion ?? 0) > 0));
+}
+
 /** USDC base units an answer costs at `price`: the buyer's own formula (computeCostUsdc). */
 export function answerCostUsdc(usage: { inputTokens: bigint; cachedInputTokens: bigint; outputTokens: bigint }, price: ServicePricing): bigint {
   const fresh = usage.inputTokens > usage.cachedInputTokens ? usage.inputTokens - usage.cachedInputTokens : 0n;
@@ -100,8 +106,8 @@ export function answerCostUsdc(usage: { inputTokens: bigint; cachedInputTokens: 
 interface ChannelAccount {
   /** The most a buyer-signed payment attributed to this worker (a lower, older one never lowers it). */
   paid: bigint;
-  /** Costs of answers served, oldest first, not yet covered by `paid`. */
-  owed: bigint[];
+  /** Answers served, oldest first, not yet covered by `paid`: each one's cost, and `paid` when it was served. */
+  owed: Array<{ cost: bigint; paidBefore: bigint }>;
   /** Cost of every answer served before `owed`. */
   settledCost: bigint;
   /** Requests admitted and still running. */
@@ -129,9 +135,14 @@ export class WorkerPaymentLedger {
       this.accounts.set(key, account);
     }
     if (attributed > account.paid) account.paid = attributed;
-    // Answers paid for leave `owed`, oldest first.
-    while (account.owed.length > 0 && account.settledCost + account.owed[0]! <= account.paid) {
-      account.settledCost += account.owed.shift()!;
+    // Answers paid for leave `owed`, oldest first. One that cost nothing (a few
+    // tokens at a low price) is paid once a payment grew after it: a buyer that
+    // never pays can't run past the limit on answers that cost nothing.
+    while (account.owed.length > 0) {
+      const { cost, paidBefore } = account.owed[0]!;
+      if (account.settledCost + cost > account.paid || (cost === 0n && account.paid <= paidBefore)) break;
+      account.settledCost += cost;
+      account.owed.shift();
     }
     if (account.owed.length + account.running + 1 > MAX_UNPAID_ANSWERS) {
       throw new Error(`Payment for this worker's earlier answers on this channel has not arrived (${account.owed.length} unpaid); retry once it is signed`);
@@ -144,7 +155,7 @@ export class WorkerPaymentLedger {
     const account = this.accounts.get(channel.toLowerCase());
     if (!account) return;
     account.running = Math.max(0, account.running - 1);
-    account.owed.push(cost);
+    account.owed.push({ cost, paidBefore: account.paid });
   }
 
   /** The admitted request on `channel` ended without an answer to pay for. */
