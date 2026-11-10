@@ -21,3 +21,13 @@ export const SCENARIOS = {
   // check every channel count before paying again on a fresh channel.
   'issue-1050': { ...BASE, concurrency: 4, requests: 24, stale1050: { reconcileWaitMs: 90_000 } },
 };
+
+// --shard I/N keeps every N-th scenario, starting at the I-th. N jobs with I = 1..N
+// run each scenario exactly once between them, including scenarios added later.
+export function shardOf(names, spec) {
+  if (spec === undefined) return names;
+  const match = /^(\d+)\/(\d+)$/.exec(spec);
+  const [index, count] = match ? [Number(match[1]), Number(match[2])] : [0, 0];
+  if (index < 1 || index > count) throw new Error(`--shard takes I/N with 1 <= I <= N, got ${spec}`);
+  return names.filter((_, i) => i % count === index - 1);
+}

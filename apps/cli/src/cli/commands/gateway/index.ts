@@ -19,6 +19,7 @@ import { registerGatewayMigrateCommands } from './migrate.js'
 import { registerGatewayPeerListCommands } from './peer-list.js'
 import { registerGatewayPresetCommands } from './preset.js'
 import { registerGatewayRoutingCommands } from './routing.js'
+import { registerGatewayServiceCommands } from './service.js'
 import { registerGatewayPeersCommand, registerGatewaySettingsCommands } from './settings.js'
 import { DEFAULT_GATEWAY_PORT, startGatewayBuyer, topupConfig } from './shared.js'
 import { registerGatewayWorkspaceCommands } from './workspace.js'
@@ -134,4 +135,5 @@ export function registerGatewayCommands(program: Command): void {
   registerGatewaySettingsCommands(gateway)
   registerGatewayPeersCommand(gateway)
   registerGatewayMigrateCommands(gateway)
+  registerGatewayServiceCommands(gateway)
 }

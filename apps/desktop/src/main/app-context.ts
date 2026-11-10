@@ -11,6 +11,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { desktopInstanceName, desktopUserDataDir, isMultiInstanceDevelopment } from './dev-instance.js';
 import { ASSETS_DIR, RENDERER_INDEX_PATH } from './paths.js';
+import { isIsolatedProfile, secretStoreSwitches } from './runtime/attach-only.js';
 
 export const isDev = Boolean(process.env['VITE_DEV_SERVER_URL']);
 export const rendererUrl = process.env['VITE_DEV_SERVER_URL'] ?? `file://${RENDERER_INDEX_PATH}`;
@@ -108,8 +109,13 @@ export const TRAY_ICON_PATH = resolveAssetPath('antseed-mark.png', 'antseed-dock
 // since it determines the macOS keychain entry. On macOS dev runs some surfaces
 // may still show "Electron" because the underlying bundle is Electron.app.
 app.setName(INTERNAL_APP_NAME);
+// Must run before any safeStorage use: testbench desktops (isolated profile and
+// attach-only) never read or write the developer's login keychain or keyring.
+for (const [name, value] of secretStoreSwitches()) {
+  app.commandLine.appendSwitch(name, value);
+}
 const userDataDir = desktopUserDataDir();
-if (isMultiInstanceDevelopment() && userDataDir) {
+if ((isMultiInstanceDevelopment() || isIsolatedProfile()) && userDataDir) {
   mkdirSync(userDataDir, { recursive: true });
   app.setPath('userData', userDataDir);
 }

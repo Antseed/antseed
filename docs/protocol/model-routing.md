@@ -32,8 +32,11 @@ Every routing protocol shares:
 
 ### Adding a routing protocol
 
-1. Append the protocol to `ROUTING_PROTOCOLS` in `@antseed/protocol/service-api`
-   (billing metadata encodes protocols by list position, so append only).
+1. Add the protocol in `@antseed/protocol/service-api` without moving any existing id.
+   Billing metadata writes each protocol's position in `WELL_KNOWN_SERVICE_API_PROTOCOLS`,
+   and that list spreads `ROUTING_PROTOCOLS` before `AUDIO_SPEECH_PROTOCOLS`, so appending
+   to `ROUTING_PROTOCOLS` alone shifts the speech id. The new id must land at the very end
+   of the combined list. Also update the copy in `packages/api-adapter/src/types.ts`.
 2. Add its wire binding (`RoutingWireProtocol`: which requests are the free catalog
    and the billed ranking, how to read candidate IDs and judge a ranking billable,
    and its error format) to `ROUTING_WIRES` in `@antseed/protocol/routing`.
