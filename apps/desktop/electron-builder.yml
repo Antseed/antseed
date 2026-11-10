@@ -81,34 +81,41 @@ extraResources:
     to: cli-dist/
     filter:
       - "**/*"
+  # Plugin dists ship their JSON too: modules import it at runtime
+  # (`import ... with { type: 'json' }`), and the plugin fails to load without it.
   - from: ../../packages/antseed-verifier/dist
     to: bundled-plugins/@antseed/antseed-verifier/dist
     filter:
       - "**/*.js"
+      - "**/*.json"
   - from: ../../packages/antseed-verifier/package.json
     to: bundled-plugins/@antseed/antseed-verifier/package.json
   - from: ../../plugins/router-local/dist
     to: bundled-plugins/@antseed/router-local/dist
     filter:
       - "**/*.js"
+      - "**/*.json"
   - from: ../../plugins/router-local/package.json
     to: bundled-plugins/@antseed/router-local/package.json
   - from: ../../plugins/router-local/node_modules/@antseed/router-core/dist
     to: bundled-plugins/@antseed/router-core/dist
     filter:
       - "**/*.js"
+      - "**/*.json"
   - from: ../../plugins/router-local/node_modules/@antseed/router-core/package.json
     to: bundled-plugins/@antseed/router-core/package.json
   - from: ../../packages/node/dist
     to: bundled-plugins/@antseed/node/dist
     filter:
       - "**/*.js"
+      - "**/*.json"
   - from: ../../packages/node/package.json
     to: bundled-plugins/@antseed/node/package.json
   - from: ../../packages/api-adapter/dist
     to: bundled-plugins/@antseed/api-adapter/dist
     filter:
       - "**/*.js"
+      - "**/*.json"
   - from: ../../packages/api-adapter/package.json
     to: bundled-plugins/@antseed/api-adapter/package.json
   # bundled-runtime contains the full transitive runtime dependency tree of
