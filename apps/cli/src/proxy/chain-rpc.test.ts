@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { Contract, Interface, isError } from 'ethers'
 import { startFakeChainRpc } from './chain-rpc-test-support.js'
-import { ChainRpcProvider, MULTICALL3_ADDRESS, resetSharedChainProviders, RpcUnavailableError, sharedChainProvider, type RpcTransport } from './chain-rpc.js'
+import { ChainRpcProvider, MULTICALL3_ADDRESS, redact, resetSharedChainProviders, RpcUnavailableError, sharedChainProvider, type RpcTransport } from './chain-rpc.js'
 
 const USDC = '0x' + 'a1'.repeat(20)
 const ERC20 = ['function balanceOf(address owner) view returns (uint256)']
@@ -187,4 +187,23 @@ test('one shared provider per chain and endpoint list', () => {
   assert.equal(a, b)
   assert.notEqual(a, c)
   resetSharedChainProviders()
+})
+
+test('redact keeps only the http(s) origin of an RPC URL', () => {
+  assert.equal(redact('https://mainnet.base.org'), 'https://mainnet.base.org')
+  assert.equal(redact('https://mainnet.base.org/'), 'https://mainnet.base.org')
+  assert.equal(redact('http://127.0.0.1:8545'), 'http://127.0.0.1:8545')
+  assert.equal(redact('https://lb.drpc.live/Z'), 'https://lb.drpc.live/…')
+  assert.equal(redact('https://base-mainnet.g.alchemy.com/v2/alchemy-key'), 'https://base-mainnet.g.alchemy.com/…')
+  assert.equal(redact('https://rpc.example.test/v1/base/path-key'), 'https://rpc.example.test/…')
+  assert.equal(redact('https://rpc.example.test/?apikey=query-key'), 'https://rpc.example.test/…')
+  assert.equal(redact('https://rpc.example.test/#fragment-key'), 'https://rpc.example.test/…')
+  assert.equal(redact('https://user:pass@rpc.example.test'), 'https://rpc.example.test/…')
+  assert.equal(redact('https://user@rpc.example.test'), 'https://rpc.example.test/…')
+})
+
+test('redact shows a fixed placeholder for malformed or non-http(s) input', () => {
+  for (const input of ['', 'not a url', 'lb.drpc.live/key', 'wss://host-key.example.test/key', 'custom://host-key/key', 'drpc:key']) {
+    assert.equal(redact(input), '<invalid RPC URL>', input)
+  }
 })
