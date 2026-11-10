@@ -45,6 +45,22 @@ export function chooseDefaultChatModel(models: ChatModel[], lastModelId: string 
 }
 
 /**
+ * Whether a first message should wait for a free model before it goes out.
+ * Just after launch the gateway lists only the sellers found so far, often
+ * paid ones first, so the default nobody chose can be paid and the chat would
+ * keep it. Only for a device not known to hold funds, while nothing listed is free.
+ */
+export function shouldWaitForFreeModel(
+  models: ChatModel[],
+  selectedId: string | null,
+  options: { chosen: boolean; funded: boolean },
+): boolean {
+  if (options.chosen || options.funded) return false;
+  if (selectedId && findChatModel(models, selectedId)?.free) return false;
+  return !models.some((model) => model.type === 'text' && model.free);
+}
+
+/**
  * Where a funds note can send the user. A remote gateway pays from its own
  * wallet, so funding this device's signer wouldn't help it.
  */

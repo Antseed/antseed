@@ -32,6 +32,7 @@ import {
   fundsNoticeFromStopReason,
   loadLastChatModel,
   saveLastChatModel,
+  shouldWaitForFreeModel,
 } from './models';
 
 type ChatConversationSummary = {
@@ -126,6 +127,10 @@ export type ChatModuleApi = {
 const MODEL_LIST_RETRY_MS = 15_000;
 /** Automatic retries after a failed model list; the dropdown's Retry and gateway changes reset them. */
 const MODEL_LIST_MAX_AUTO_RETRIES = 4;
+/** How long a first message waits for a free seller to be found, and how often it looks. */
+const FREE_MODEL_WAIT_MS = 45_000;
+const FREE_MODEL_POLL_MS = 2_000;
+const FINDING_FREE_MODEL = 'Finding a free model';
 
 type ImageRequest = { prompt: string; model: string; sourceImageAttachmentId?: string };
 
@@ -145,6 +150,8 @@ export function initChatModule({
   let permissionRefreshToken = 0;
   let desiredWorkspacePath: string | null = uiState.chatWorkspacePath || null;
   let newChatDraftVersion = 0;
+  /** Stops of a first message before its chat exists. */
+  let draftAborts = 0;
   let firstModelShownRecorded = false;
   const sendingConversationIds = new Set<string>();
   const streamStartedAtByConversation = new Map<string, number>();
@@ -963,15 +970,27 @@ export function initChatModule({
     if (text.trim().length === 0 && !rawAttachments?.length) return;
 
     if (!uiState.chatActiveConversation) {
+      const draftVersion = newChatDraftVersion;
+      const aborts = draftAborts;
       // A default nobody chose can predate the free sellers or the list's final
       // ids, and a sent chat keeps its model: settle it against the list now.
       applyDefaultModel();
-      // Capture the draft's model now: the user may switch before the
-      // conversation finishes creating.
-      const draftVersion = newChatDraftVersion;
-      const modelId = uiState.chatSelectedModelId;
+      const writtenWith = uiState.chatSelectedModelId;
       setDraftSending(true);
       void (async () => {
+        const waited = await waitForFreeModel(() => aborts === draftAborts);
+        if (aborts !== draftAborts) return;
+        // The draft's model is captured here: the user may switch before the
+        // conversation finishes creating. A wait that found a free model moves to it.
+        let modelId = writtenWith;
+        if (waited) {
+          if (draftVersion === newChatDraftVersion) {
+            applyDefaultModel();
+            modelId = uiState.chatSelectedModelId;
+          } else {
+            modelId = chooseDefaultChatModel(uiState.chatModels, loadLastChatModel()) ?? writtenWith;
+          }
+        }
         const convId = await createConversationForModel(modelId, { activate: false });
         setDraftSending(false);
         if (!convId) return;
@@ -981,6 +1000,34 @@ export function initChatModule({
       return;
     }
     sendMessageToConversation(uiState.chatActiveConversation, text, rawAttachments);
+  }
+
+  /** Whether a first message should hold until a free model is listed (see `shouldWaitForFreeModel`). */
+  function needsFreeModel(): boolean {
+    const current = uiState.chatSelectedModelId;
+    return shouldWaitForFreeModel(uiState.chatModels, current, {
+      chosen: loadLastChatModel() !== null || Boolean(current && splitPinnedModel(current).peerId),
+      funded: uiState.gatewayStatus?.mode === 'remote'
+        || (uiState.creditsBalanceKnown && Number(uiState.creditsTotalOwnedUsdc) > 0),
+    });
+  }
+
+  /**
+   * Re-reads the list until a free model shows up, the wait runs out, or the
+   * send is stopped. True when it waited at all.
+   */
+  async function waitForFreeModel(stillSending: () => boolean): Promise<boolean> {
+    if (!needsFreeModel()) return false;
+    uiState.chatThinkingPhase = FINDING_FREE_MODEL;
+    notifyUiStateChanged();
+    const deadline = Date.now() + FREE_MODEL_WAIT_MS;
+    for (;;) {
+      await refreshChatModels({ force: true });
+      if (!stillSending() || !needsFreeModel() || Date.now() >= deadline) break;
+      await new Promise((resolve) => setTimeout(resolve, FREE_MODEL_POLL_MS));
+    }
+    if (uiState.chatThinkingPhase === FINDING_FREE_MODEL) uiState.chatThinkingPhase = null;
+    return true;
   }
 
   function sendMessageToConversation(convId: string, text: string, rawAttachments?: RawChatAttachment[]): void {
@@ -1155,7 +1202,10 @@ export function initChatModule({
   async function abortChat(): Promise<void> {
     const convId = uiState.chatActiveConversation;
     if (convId) setConversationSending(convId, false);
-    else setDraftSending(false);
+    else {
+      draftAborts += 1;
+      setDraftSending(false);
+    }
     if (bridge?.chatAiAbort) await bridge.chatAiAbort(convId ?? undefined);
   }
 

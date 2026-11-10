@@ -6,8 +6,8 @@ type Handler = (data: never) => void;
 type Conv = { id: string; title: string; service: string; messages: unknown[]; createdAt: number; updatedAt: number; usage: { inputTokens: number; outputTokens: number }; workspacePath?: string };
 
 const tick = (ms = 5) => new Promise((resolve) => setTimeout(resolve, ms));
-async function waitFor(predicate: () => boolean): Promise<void> {
-  for (let i = 0; i < 200 && !predicate(); i++) await tick(2);
+async function waitFor(predicate: () => boolean, ms = 400): Promise<void> {
+  for (let i = 0; i < ms / 2 && !predicate(); i++) await tick(2);
   expect(predicate()).toBe(true);
 }
 function deferred<T>() {
@@ -22,6 +22,9 @@ function setup(conversations: Conv[] = [conv('conv-a', 'model-a'), conv('conv-b'
   const uiState = createInitialUiState();
   uiState.chatModels = [model('model-a'), model('model-b')] as never;
   uiState.chatSelectedModelId = 'model-a';
+  // Funded unless a test says otherwise: an unfunded first message waits for a free model.
+  uiState.creditsBalanceKnown = true;
+  uiState.creditsTotalOwnedUsdc = '5';
   const sends: Array<{ convId: string; content: string; modelId: string }> = [];
   const handlers: Record<string, Handler[]> = {};
   const on = (name: string) => (handler: Handler) => { (handlers[name] ??= []).push(handler); return () => undefined; };
@@ -128,6 +131,37 @@ describe('chat controller', () => {
     await waitFor(() => sends.length === 1);
     expect(sends[0]).toEqual({ convId: 'conv-new', content: 'first message', modelId: 'model-a' });
     expect(uiState.chatActiveConversation).toBeNull();
+  });
+
+  it('holds an unfunded first message until a free model is listed, then sends on it', async () => {
+    let listed = [model('model-a')];
+    const { api, uiState, sends } = setup(undefined, {
+      chatListModels: async () => ({ ok: true, data: listed }),
+    });
+    uiState.creditsTotalOwnedUsdc = '0';
+    await api.refreshChatConversations();
+    api.sendMessage('hello');
+    await waitFor(() => uiState.chatThinkingPhase === 'Finding a free model');
+    expect(sends).toEqual([]);
+    listed = [model('model-a'), { ...model('model-free'), free: true }];
+    // The list is read again every 2 seconds.
+    await waitFor(() => sends.length === 1, 3_000);
+    expect(sends[0]).toMatchObject({ content: 'hello', modelId: 'model-free' });
+  });
+
+  it('a stopped wait for a free model sends nothing', async () => {
+    const { api, uiState, sends } = setup(undefined, {
+      chatListModels: async () => ({ ok: true, data: [model('model-a')] }),
+      chatAiAbort: async () => undefined,
+    });
+    uiState.creditsTotalOwnedUsdc = '0';
+    await api.refreshChatConversations();
+    api.sendMessage('hello');
+    await waitFor(() => uiState.chatThinkingPhase === 'Finding a free model');
+    await api.abortChat();
+    await tick(2_100);
+    expect(sends).toEqual([]);
+    expect(uiState.chatSending).toBe(false);
   });
 
   it('waits for a model change to be saved, then sends on the new model', async () => {

@@ -9,6 +9,7 @@ import {
   fundsNoticeAction,
   fundsNoticeFromStopReason,
   offerPriceLabel,
+  shouldWaitForFreeModel,
 } from './models';
 
 function model(id: string, type = 'text', label = id): ChatModel {
@@ -28,6 +29,17 @@ test('with no last model, the default works without funds', () => {
   const free = { ...model('free', 'text'), free: true, toolUse: true, sellers: 2 } as ChatModel;
   assert.equal(chooseDefaultChatModel([paid, free], null), 'free');
   assert.equal(chooseDefaultChatModel([paid], null), 'paid');
+});
+
+test('a first message waits for a free model only while none is listed, for an unfunded user who chose nothing', () => {
+  const paid = { ...model('paid'), free: false } as ChatModel;
+  const free = { ...model('free'), free: true } as ChatModel;
+  const fresh = { chosen: false, funded: false };
+  assert.equal(shouldWaitForFreeModel([paid], 'paid', fresh), true, 'only paid sellers found so far');
+  assert.equal(shouldWaitForFreeModel([], null, fresh), true, 'nothing listed yet');
+  assert.equal(shouldWaitForFreeModel([paid, free], 'paid', fresh), false, 'a free model is listed: the default moves to it');
+  assert.equal(shouldWaitForFreeModel([paid], 'paid', { chosen: true, funded: false }), false, 'the user picked this model');
+  assert.equal(shouldWaitForFreeModel([paid], 'paid', { chosen: false, funded: true }), false, 'funds pay for it');
 });
 
 test('the dropdown lists free models first and can show only them', () => {
