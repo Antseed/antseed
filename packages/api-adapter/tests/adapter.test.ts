@@ -905,7 +905,55 @@ describe('createStreamingAdapter chat to anthropic', () => {
   });
 });
 
+/** A Messages stream as a seller's relay delivers it: the upstream's frames, then an empty final chunk. */
+const ANTHROPIC_STREAM_FRAMES = [
+  'event: message_start\n'
+  + 'data: {"type":"message_start","message":{"id":"msg_1","model":"claude-sonnet","usage":{"input_tokens":5,"output_tokens":0}}}\n\n',
+  'event: content_block_delta\n'
+  + 'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}\n\n',
+  'event: message_delta\n'
+  + 'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}\n\n',
+  'event: message_stop\n'
+  + 'data: {"type":"message_stop"}\n\n',
+];
+
+function relayStreamForTest(
+  adapter: ReturnType<typeof createStreamAdapterForTest>,
+  frames: string[],
+): Array<{ event: string | null; data: string }> {
+  const chunks = [
+    ...frames.map((frame) => ({ requestId: 'req-relay', data: new TextEncoder().encode(frame), done: false })),
+    { requestId: 'req-relay', data: new Uint8Array(0), done: true },
+  ];
+  const decoder = new TextDecoder();
+  return parseSseEvents(chunks.flatMap((chunk) => adapter.adaptChunk(chunk)).map((chunk) => decoder.decode(chunk.data)).join(''));
+}
+
 describe('createStreamingAdapter anthropic to chat', () => {
+  it('finishes once when the final chunk arrives empty after message_stop', () => {
+    const adapter = createStreamAdapterForTest('anthropic-messages', 'openai-chat-completions', '');
+    const events = relayStreamForTest(adapter, ANTHROPIC_STREAM_FRAMES);
+
+    const finishes = events
+      .filter((event) => event.data !== '[DONE]')
+      .map((event) => JSON.parse(event.data) as { choices?: Array<{ finish_reason?: string | null }> })
+      .filter((payload) => typeof payload.choices?.[0]?.finish_reason === 'string');
+    expect(finishes.map((payload) => payload.choices?.[0]?.finish_reason)).toEqual(['stop']);
+    expect(events.filter((event) => event.data === '[DONE]')).toHaveLength(1);
+  });
+
+  it('still finishes a stream that ends without message_stop', () => {
+    const adapter = createStreamAdapterForTest('anthropic-messages', 'openai-chat-completions', '');
+    const events = relayStreamForTest(adapter, ANTHROPIC_STREAM_FRAMES.slice(0, 3));
+
+    const finishes = events
+      .filter((event) => event.data !== '[DONE]')
+      .map((event) => JSON.parse(event.data) as { choices?: Array<{ finish_reason?: string | null }> })
+      .filter((payload) => typeof payload.choices?.[0]?.finish_reason === 'string');
+    expect(finishes).toHaveLength(1);
+    expect(events.filter((event) => event.data === '[DONE]')).toHaveLength(1);
+  });
+
   it('uses one fallback response id when message_start has not supplied an id yet', () => {
     const dateNow = vi.spyOn(Date, 'now')
       .mockReturnValueOnce(1000)
@@ -2379,6 +2427,14 @@ describe('createStreamingAdapter responses to chat', () => {
 });
 
 describe('createStreamingAdapter anthropic to responses', () => {
+  it('completes once when the final chunk arrives empty after message_stop', () => {
+    const adapter = createStreamAdapterForTest('anthropic-messages', 'openai-responses', '');
+    const events = relayStreamForTest(adapter, ANTHROPIC_STREAM_FRAMES);
+
+    expect(events.filter((event) => event.event === 'response.completed')).toHaveLength(1);
+    expect(events.filter((event) => event.data === '[DONE]')).toHaveLength(1);
+  });
+
   it('composes anthropic SSE frames into responses SSE frames incrementally', () => {
     const adapter = createStreamAdapterForTest('anthropic-messages', 'openai-responses', '');
     const start = adapter.adaptStart({

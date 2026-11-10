@@ -181,6 +181,8 @@ function createAnthropicStreamNormalizer(options: StreamTransformInternals): Pro
   let usage: TokenUsage = ZERO_USAGE;
   let finishReason: string | null = null;
   let responseStarted = false;
+  // A relay ends every stream with an empty final chunk, after message_stop has already finished the response.
+  let responseDone = false;
   const toolBlockIndexes = new Map<number, number>();
   const toolCalls = new Map<number, CanonicalStreamToolCall>();
 
@@ -274,6 +276,8 @@ function createAnthropicStreamNormalizer(options: StreamTransformInternals): Pro
         }
 
         if (type === 'message_stop') {
+          if (responseDone) continue;
+          responseDone = true;
           emitStart(emitted);
           emitted.push({
             type: 'response_done',
@@ -286,7 +290,8 @@ function createAnthropicStreamNormalizer(options: StreamTransformInternals): Pro
         }
       }
 
-      if (chunk.done && emitted.length === 0) {
+      if (chunk.done && !responseDone && emitted.length === 0) {
+        responseDone = true;
         return [{
           type: 'response_done',
           id: responseId,
