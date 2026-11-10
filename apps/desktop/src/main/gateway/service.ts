@@ -514,8 +514,10 @@ async function readGatewayPrivacy(): Promise<GatewayPrivacy> {
   const mode: GatewayPrivacyMode = effectiveTee ? 'private' : 'anonymous';
   // The console may have changed it; the key's policy is what routing follows.
   // Private covers every app, so their keys follow before it is saved or shown.
-  // (A requirement set above the owner is the admins' for this key alone.)
-  if (!requiredAbove && mode !== settings.privacy) await applyPrivacyToAllKeys(mode, key.id);
+  // A requirement the admins set on the desktop key alone is theirs to lift, so
+  // that key is left as it is, but the apps' keys still follow: the app shows
+  // Private, and Private covers every app.
+  if (mode !== settings.privacy) await applyPrivacyToAllKeys(mode, key.id, { desktopKey: !requiredAbove });
   return { mode, editable: true, requiredAbove };
 }
 
@@ -541,12 +543,12 @@ async function applyGatewayPrivacy(mode: GatewayPrivacyMode): Promise<GatewayPri
 }
 
 /** The desktop key and every app's own key: Private is promised for the whole gateway. Then saved. */
-function applyPrivacyToAllKeys(mode: GatewayPrivacyMode, desktopKeyId: string): Promise<void> {
+function applyPrivacyToAllKeys(mode: GatewayPrivacyMode, desktopKeyId: string, { desktopKey = true }: { desktopKey?: boolean } = {}): Promise<void> {
   return applyPrivacyToKeys(
     mode,
     desktopKeyId,
     () => listLocalKeys().flatMap((entry) => (entry.id ? [entry.id] : [])),
-    (id) => applyPrivacyToKey(id, mode),
+    (id) => (id === desktopKeyId && !desktopKey ? Promise.resolve() : applyPrivacyToKey(id, mode)),
     () => updateGatewaySettings({ privacy: mode }),
   );
 }

@@ -1368,12 +1368,20 @@ function readTomlTopLevelString(lines: readonly string[], key: string): string |
   if (literal) return literal[1]!;
   const match = line.match(/=\s*"((?:[^"\\]|\\.)*)"\s*(#.*)?$/);
   if (!match) return undefined;
-  try {
-    return JSON.parse(`"${match[1]!}"`) as string;
-  } catch {
-    // TOML-only escapes (\e, \UXXXXXXXX): keep the escaped character.
-    return match[1]!.replace(/\\(.)/g, '$1');
-  }
+  return unescapeTomlBasicString(match[1]!);
+}
+
+const TOML_SIMPLE_ESCAPES: Record<string, string> = { b: '\b', t: '\t', n: '\n', f: '\f', r: '\r', e: '\u001b', '"': '"', '\\': '\\' };
+
+/** A TOML basic string's escapes, `\uXXXX` and `\UXXXXXXXX` included (JSON has no eight-digit form). */
+export function unescapeTomlBasicString(raw: string): string {
+  return raw.replace(/\\(u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|.)/g, (escape, body: string) => {
+    if (body.length > 1) {
+      const code = Number.parseInt(body.slice(1), 16);
+      return code <= 0x10ffff ? String.fromCodePoint(code) : escape;
+    }
+    return TOML_SIMPLE_ESCAPES[body] ?? body;
+  });
 }
 
 function removeTomlTopLevelKey(lines: readonly string[], key: string): string[] {

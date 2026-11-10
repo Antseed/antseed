@@ -3944,10 +3944,15 @@ export class BuyerProxy {
       }
       return sellers
     }
+    const teeScopes = new Map<string, ReturnType<TeeVerification['teeProvenScope']>>()
     const models = buildNetworkModels(peers, this._now(), {
       routingPreferences: this._routingPreferences,
       peerHealth: this._peerHealth,
-      teeScope: (peer) => this._teeVerification.teeProvenScope(peer),
+      teeScope: (peer) => {
+        // Once per seller for this listing, not per model it offers.
+        if (!teeScopes.has(peer.peerId)) teeScopes.set(peer.peerId, this._teeVerification.teeProvenScope(peer))
+        return teeScopes.get(peer.peerId) ?? null
+      },
       ...(listPolicy
         ? {
             offerFilter: (offer: NetworkServiceOffer) => this._policyAllowsOffer(listPolicy, peerById.get(offer.peerId), offer)

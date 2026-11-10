@@ -12,6 +12,7 @@ import {
   removeConfigPatch,
   wslShareRoot,
   writeWslTargets,
+  unescapeTomlBasicString,
   writeConfigPatch,
   type ConfigPatchDef,
   type ConfigPatchTarget,
@@ -1038,4 +1039,11 @@ test('wsl: every target is remembered before any is written, so a failure partwa
   }), /read-only/);
   assert.deepEqual(events, ['save', 'write Ubuntu']);
   assert.deepEqual(saved.map((row) => row.distro), ['Arch', 'Ubuntu', 'Debian']);
+});
+
+test('TOML strings decode their own escapes, the eight-digit Unicode one included', () => {
+  assert.equal(unescapeTomlBasicString('\\U00000061.json'), 'a.json');
+  assert.equal(unescapeTomlBasicString('caf\\u00e9\\tx'), 'café\tx');
+  assert.equal(unescapeTomlBasicString('C:\\\\models\\"x\\".json'), 'C:\\models"x".json');
+  assert.equal(unescapeTomlBasicString('\\U0001F600'), '😀');
 });

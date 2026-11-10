@@ -259,4 +259,17 @@ describe('a model Private chose', () => {
     expect(uiState.chatSelectedModelId).toBe('model-x');
     expect(chatAiSetModel).toHaveBeenCalledWith('conv-1', 'model-x');
   });
+
+  it('a fallback for a saved model that is no longer listed moves to a free model once one appears', async () => {
+    const free = { ...model('model-free'), free: true };
+    const { api, uiState } = setup({ lastModel: 'model-gone', models: [model('model-paid')], conversations: [] });
+    privacyResource.setData(privacy('anonymous'));
+    uiState.creditsBalanceKnown = true;
+    uiState.creditsTotalOwnedUsdc = '0';
+    api.startNewChat();
+    expect(uiState.chatSelectedModelId).toBe('model-paid');
+    uiState.chatModels = [model('model-paid'), free] as never;
+    api.startNewChat();
+    expect(uiState.chatSelectedModelId).toBe('model-free');
+  });
 });

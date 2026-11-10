@@ -79,13 +79,20 @@ export async function syncInstalledAgentSkills(): Promise<void> {
   await syncAgentSkills(await getGatewayEndpoint(AGENT_SKILLS_APP));
 }
 
+/** The settings or keys changed, but the agents' installed skills still hold the old ones. */
+export function skillsNotUpdated(err: unknown): string {
+  const reason = err instanceof Error ? err.message : String(err);
+  return `Saved, but the Antseed skills installed in your agents couldn't be updated (${reason}). They still use the old key or address: add Antseed to those agents again in Agents & apps.`;
+}
+
 export function registerGatewayIpc(deps: GatewayIpcDeps): void {
-  const endpointChanged = async (restartApps: boolean) => {
+  /** Re-points every consumer; says why when the installed agent skills couldn't follow (null when they did). */
+  const endpointChanged = async (restartApps: boolean): Promise<string | null> => {
     clearGatewayModelCache();
     clearRoutePreviewCache();
     deps.onEndpointChanged();
     await reconnectAllApps({ restart: restartApps });
-    await syncInstalledAgentSkills().catch(() => undefined);
+    return syncInstalledAgentSkills().then(() => null, (err: unknown) => skillsNotUpdated(err));
   };
 
   ipcMain.handle('gateway:get-status', () => getGatewayStatus());
@@ -112,8 +119,9 @@ export function registerGatewayIpc(deps: GatewayIpcDeps): void {
       const cleanupFailure = after.mode === 'local'
         ? await revokeUnusedAppKeys().then(() => null, (err: unknown) => err)
         : null;
-      await endpointChanged(true);
+      const skillsFailure = await endpointChanged(true);
       if (cleanupFailure) return errorResult(cleanupFailure);
+      if (skillsFailure) return { ok: false, error: skillsFailure };
       return { ok: true, settings: { ...getGatewaySettings(), hasRemoteKey: hasRemoteKey() } };
     } catch (err) {
       return errorResult(err);
@@ -124,8 +132,9 @@ export function registerGatewayIpc(deps: GatewayIpcDeps): void {
     try {
       // Keys that were replaced before a failure still have to reach the apps.
       const failure = await rotateLocalKeys().then(() => null, (err: unknown) => err);
-      await endpointChanged(true);
-      return failure ? errorResult(failure) : { ok: true };
+      const skillsFailure = await endpointChanged(true);
+      if (failure) return errorResult(failure);
+      return skillsFailure ? { ok: false, error: skillsFailure } : { ok: true };
     } catch (err) {
       return errorResult(err);
     }

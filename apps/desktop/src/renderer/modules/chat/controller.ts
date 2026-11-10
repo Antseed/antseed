@@ -293,7 +293,9 @@ export function initChatModule({
       void refreshPermissionModeForModel(lastModel);
       return;
     }
-    const keep = listed?.type === 'text' && (lastModel !== null || listed.free || splitPinnedModel(current).peerId);
+    // The saved choice counts only while it is the model selected: a fallback
+    // picked because it went unlisted is still provisional.
+    const keep = listed?.type === 'text' && (current === lastModel || listed.free || splitPinnedModel(current).peerId);
     if (keep) return;
     const next = chooseDefaultChatModel(uiState.chatModels, lastModel);
     if (next && next !== current) {
@@ -1084,7 +1086,7 @@ export function initChatModule({
   function needsFreeModel(): boolean {
     const current = uiState.chatSelectedModelId;
     return shouldWaitForFreeModel(uiState.chatModels, current, {
-      chosen: loadLastChatModel() !== null || draftModel !== null || Boolean(current && splitPinnedModel(current).peerId),
+      chosen: (current !== null && current === loadLastChatModel()) || draftModel !== null || Boolean(current && splitPinnedModel(current).peerId),
       funded: uiState.gatewayStatus?.mode === 'remote'
         || (uiState.creditsBalanceKnown && Number(uiState.creditsTotalOwnedUsdc) > 0),
     });

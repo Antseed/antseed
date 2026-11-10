@@ -263,7 +263,9 @@ export function connectApp(name: string): Promise<ConnectedAppsState> {
     try {
       await applyPatches([name], [name]);
     } catch (err) {
-      if (isNew) connected = connected.filter((entry) => entry !== name);
+      // A write that landed before the failure (the native config, one WSL
+      // distro) stays connected, with its error, so Disconnect can take it out.
+      if (isNew && !partlyPatched(name)) connected = connected.filter((entry) => entry !== name);
       throw err;
     } finally {
       await persist();
@@ -271,6 +273,18 @@ export function connectApp(name: string): Promise<ConnectedAppsState> {
     if (isNew) await restartApps([name]);
     return getConnectedAppsState();
   });
+}
+
+/** Whether any of the app's config already carries the patch (a connect that failed partway). */
+function partlyPatched(name: string): boolean {
+  const patch = findConnectableProfile(name)?.configPatch;
+  if (!patch) return false;
+  try {
+    return isConfigPatchConnected(patch, connectedAppsWslTargetsPath());
+  } catch {
+    // Can't tell: keep it, so Disconnect can still try.
+    return true;
+  }
 }
 
 export function disconnectApp(name: string): Promise<ConnectedAppsState> {
