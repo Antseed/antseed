@@ -275,3 +275,19 @@ test('a failed TEE attestation is reported until it is due again; a pass or an u
   await passed.verify(peer, strict, async () => pass);
   assert.equal(passed.teeFailure(peer), null);
 });
+
+test('a seller counts as proven TEE only once its own attestation passed, while it is in date', async () => {
+  let now = 100;
+  const service = new TeeVerification(strict, () => now);
+  assert.equal(service.teeProven(peer), false, 'only advertised');
+  await service.verifyForDisplay(peer, async () => ({ ok: false, verified: false, transient: true, reason: 'verifier not prepared' }));
+  assert.equal(service.teeProven(peer), false, 'the check could not run');
+  await service.verifyForDisplay(peer, async () => pass);
+  assert.equal(service.teeProven(peer), true);
+  now += TEE_BADGE_MAX_AGE_MS + 1;
+  assert.equal(service.teeProven(peer), false, 'due for another check');
+
+  const failed = new TeeVerification(strict, () => now);
+  await failed.verifyForDisplay(peer, async () => ({ ok: false, verified: false, sellerNodeVerified: false, reason: 'not an approved TEE seller build' }));
+  assert.equal(failed.teeProven(peer), false);
+});

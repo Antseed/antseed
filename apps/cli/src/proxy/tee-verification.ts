@@ -111,6 +111,20 @@ export class TeeVerification {
     return null
   }
 
+  /**
+   * Whether the seller's own TEE attestation passed and is still in date.
+   * Advertising the TEE verifier is only a claim: until a check passes (or
+   * when none can run) the seller isn't shown as one.
+   */
+  teeProven(peer: Peer): boolean {
+    const fingerprint = verifierSupportFingerprint(peer.capabilities)
+    return this.queries.getQueryCache().findAll({ queryKey: [peer.peerId, TEE_VERIFIER_ID, fingerprint] }).some((query) => {
+      const entry = query.state.data as Entry | undefined
+      return entry?.outcome?.sellerNodeVerified === true && !entry.outcome.transient
+        && this.cacheExpiry(entry, TEE_BADGE_MAX_AGE_MS) > this.now()
+    })
+  }
+
   observePeers(peers: readonly Peer[]): void {
     const fingerprints = new Map(peers.map((peer) => [peer.peerId, verifierSupportFingerprint(peer.capabilities)]))
     for (const query of this.queries.getQueryCache().getAll()) {

@@ -135,8 +135,8 @@ export type NetworkModelBuildOptions = {
   }>
   /** Only offers it accepts are listed (a gateway routing policy); a model left with none is omitted. */
   offerFilter?: (offer: NetworkServiceOffer) => boolean
-  /** Sellers whose TEE attestation failed: their offers don't list the TEE verifier. */
-  teeFailed?: (peer: PeerInfo) => boolean
+  /** Sellers whose TEE attestation passed; the others' offers don't list the TEE verifier. */
+  teeProven?: (peer: PeerInfo) => boolean
 }
 
 function normalizedModelAlias(serviceId: string): string {
@@ -316,7 +316,7 @@ export function buildNetworkModels(
     })
     const freeTier = freeTierProgramForService(peer?.capabilities, offer.serviceId, priced, { video: offer.type === 'video' })
     entry.peers.push({
-      advertisedVerifierIds: peer && options.teeFailed?.(peer)
+      advertisedVerifierIds: options.teeProven && !(peer && options.teeProven(peer))
         ? offer.advertisedVerifierIds?.filter((id) => id !== TEE_VERIFIER_ID)
         : offer.advertisedVerifierIds,
       peerId: offer.peerId,

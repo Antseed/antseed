@@ -1758,6 +1758,22 @@ export class BuyerProxy {
     }
   }
 
+  /**
+   * Checks the TEE attestation of every seller that advertises one, as soon as
+   * it is found, so the model list can show which really are TEE sellers and a
+   * failing one drops out of Private before anything is sent. Cached, deduped
+   * and capped like any check; a busy or unrun one is tried on a later discovery.
+   */
+  private _checkTeeSellers(peers: readonly PeerInfo[]): void {
+    if (!this._verifier) return
+    for (const peer of peers) {
+      if (!parseVerifierCapabilities(peer.capabilities).supported.includes(TEE_VERIFIER_ID)) continue
+      void this._teeVerification.verifyForDisplay(peer,
+        () => this._runVerifier(peer, { require: false, prefer: [TEE_VERIFIER_ID] }, AbortSignal.timeout(31_000)))
+        .catch(() => undefined)
+    }
+  }
+
   /** Advertising the TEE verifier makes a seller TEE-capable until its attestation fails. */
   private _teeFacts(peer: PeerInfo): Pick<PolicyPeerFacts, 'teeCapable' | 'teeFailure'> {
     if (!parseVerifierCapabilities(peer.capabilities).supported.includes(TEE_VERIFIER_ID)) return { teeCapable: false }
@@ -2821,6 +2837,7 @@ export class BuyerProxy {
 
     this._cachedPeers = merged
     this._teeVerification.observePeers(merged)
+    this._checkTeeSellers(merged)
     this._cacheLastUpdatedAtMs = Date.now()
     this._cacheMutationEpoch += 1
     this._persistPeersToState()
@@ -3930,7 +3947,7 @@ export class BuyerProxy {
     const models = buildNetworkModels(peers, this._now(), {
       routingPreferences: this._routingPreferences,
       peerHealth: this._peerHealth,
-      teeFailed: (peer) => this._teeVerification.teeFailure(peer) !== null,
+      teeProven: (peer) => this._teeVerification.teeProven(peer),
       ...(listPolicy
         ? {
             offerFilter: (offer: NetworkServiceOffer) => this._policyAllowsOffer(listPolicy, peerById.get(offer.peerId), offer)
