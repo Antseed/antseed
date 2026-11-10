@@ -276,7 +276,11 @@ async function removeDefaultRouterRuntimePackages(): Promise<void> {
 }
 
 async function resetBundledPluginInstall(): Promise<void> {
-  await rm(path.join(DEFAULT_PLUGINS_DIR, 'node_modules'), { recursive: true, force: true });
+  // The CLI installs its plugins into this same directory, so keep
+  // node_modules. Each package the bundle ships is deleted and recopied whole
+  // in copyBundledPackage, so no stale files survive in those. Drop the
+  // lockfiles, which describe the tree before the copy.
+  await rm(path.join(DEFAULT_PLUGINS_DIR, 'node_modules', '.package-lock.json'), { force: true });
   await rm(path.join(DEFAULT_PLUGINS_DIR, 'package-lock.json'), { force: true });
   await rm(path.join(DEFAULT_PLUGINS_DIR, 'npm-shrinkwrap.json'), { force: true });
 }
