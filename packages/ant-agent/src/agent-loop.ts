@@ -314,19 +314,26 @@ export async function runAgentLoopStream(
     }
   }
 
-  // Final streaming call after max iterations (or maxIterations=0)
+  // Final streaming call after max iterations (or maxIterations=0).
+  // Its internal tool calls are never run, so they are suppressed like in the loop.
   const finalReq: SerializedHttpRequest = {
     ...req,
     body: encoder.encode(JSON.stringify({ ...body, stream: true })),
   };
-  return inner.handleRequestStream!(finalReq, {
+  let suppressingFinalChunks = false;
+  const finalResponse = await inner.handleRequestStream!(finalReq, {
     onResponseStart: (res) => {
       if (!headersSent) {
         callbacks.onResponseStart(res);
       }
     },
     onResponseChunk: (chunk) => {
+      if (suppressingFinalChunks) return;
       if (!chunk.done && chunk.data.length > 0) {
+        if (chunkHasInternalToolCall(chunk.data, format)) {
+          suppressingFinalChunks = true;
+          return;
+        }
         // Anthropic: suppress message_start if we already sent one (continuing the envelope)
         if (format === 'anthropic' && messageStartSent && chunkHasMessageStart(chunk.data)) return;
         // Responses API: suppress response.created if we already sent one
@@ -335,4 +342,8 @@ export async function runAgentLoopStream(
       callbacks.onResponseChunk(chunk);
     },
   });
+  if (suppressingFinalChunks) {
+    callbacks.onResponseChunk({ requestId: req.requestId, data: new Uint8Array(0), done: true });
+  }
+  return finalResponse;
 }
