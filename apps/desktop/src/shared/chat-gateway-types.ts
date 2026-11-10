@@ -72,3 +72,13 @@ export type ConversationFlags = {
   pinned?: boolean;
   archived?: boolean;
 };
+
+/**
+ * What a chat request needs from the privacy mode. `requirePrivate`: it must go
+ * out in Private (the renderer's own judgment). `allowPrivateHistory`: the user
+ * chose to carry this chat's Private history into Anonymous ("Keep this chat").
+ */
+export type OutgoingPrivacy = {
+  requirePrivate?: boolean;
+  allowPrivateHistory?: boolean;
+};

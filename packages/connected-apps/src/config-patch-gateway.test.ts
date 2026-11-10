@@ -11,6 +11,7 @@ import {
   isConfigPatchConnected,
   removeConfigPatch,
   wslShareRoot,
+  writeWslTargets,
   writeConfigPatch,
   type ConfigPatchDef,
   type ConfigPatchTarget,
@@ -1020,4 +1021,21 @@ test('an unread model list keeps every catalog and selection, and takes the new 
     assert.equal(provider['apiKey'], 'antseed_new_key');
     assert.equal((await readJson(settingsPath))['defaultModel'], picked);
   });
+});
+
+test('wsl: every target is remembered before any is written, so a failure partway can still be undone', () => {
+  const target = (distro: string) => ({ distro, configPath: `\\\\wsl.localhost\\${distro}\\home\\me\\.codex\\config.toml`, host: '172.20.0.1', needsRelay: true }) as never;
+  const events: string[] = [];
+  let saved: Array<{ distro: string }> = [];
+  assert.throws(() => writeWslTargets([target('Ubuntu'), target('Debian')], {
+    remembered: [target('Arch')],
+    save: (rows) => { saved = rows as never; events.push('save'); },
+    write: (t) => {
+      const { distro } = t as { distro: string };
+      if (distro === 'Debian') throw new Error('read-only');
+      events.push(`write ${distro}`);
+    },
+  }), /read-only/);
+  assert.deepEqual(events, ['save', 'write Ubuntu']);
+  assert.deepEqual(saved.map((row) => row.distro), ['Arch', 'Ubuntu', 'Debian']);
 });

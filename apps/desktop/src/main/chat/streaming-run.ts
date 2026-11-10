@@ -109,7 +109,8 @@ import {
 import type { AiChatMessage, AiMessageMeta } from './conversation-types.js';
 import type { ActiveRun, ChatStreamErrorPayload } from './engine-types.js';
 import type { GatewayEndpoint } from '../gateway/service.js';
-import { passPrivacyGate, type PrivacyGate } from './privacy-gate.js';
+import { passPrivacyGate, requiresPrivate, type PrivacyGate } from './privacy-gate.js';
+import type { OutgoingPrivacy } from '../../shared/chat-gateway-types.js';
 
 /** What the engine knows about a gateway model, for one send. */
 export type ResolvedChatModel = {
@@ -162,7 +163,7 @@ type StreamingRunArgs = [
   modelOverride?: string,
   attachments?: PreparedChatAttachment[],
   permissionModeInput?: unknown,
-  options?: { requirePrivate?: boolean },
+  options?: OutgoingPrivacy,
 ];
 export function createStreamingRunner(ctx: StreamingRunContext) {
   const {
@@ -199,7 +200,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     modelOverride?: string,
     attachments?: PreparedChatAttachment[],
     permissionModeInput?: unknown,
-    options: { requirePrivate?: boolean } = {},
+    options: OutgoingPrivacy = {},
   ): Promise<StreamingRunResult> => {
     const trimmedMessage = userMessage.trim();
     const requestedPermissionMode: ChatPermissionMode | null = (
@@ -223,14 +224,15 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
 
     // Nothing goes out under a policy that is still changing, and a chat sent
     // in Private doesn't go out once Private is off.
-    const refused = await passPrivacyGate(ctx.privacy, options.requirePrivate === true);
+    const mustBePrivate = requiresPrivate(options, (await store.get(conversationId))?.messages ?? []);
+    const refused = await passPrivacyGate(ctx.privacy, mustBePrivate);
     if (refused) return { ok: false, error: refused };
 
     // Starts the local gateway on demand; a remote gateway without a URL or
     // key throws a readable error the renderer shows as-is.
     // A Private run asks for TEE sellers with each of its requests (follow-ups
     // and the title too), so a switch to Anonymous mid-run can't widen it.
-    const protect = options.requirePrivate === true || ctx.privacy?.mode() === 'private';
+    const protect = mustBePrivate || ctx.privacy?.mode() === 'private';
     let endpoint: GatewayEndpoint;
     try {
       endpoint = { ...await getEndpoint(), ...(protect ? { requireTee: true } : {}) };

@@ -179,7 +179,7 @@ export type RawChatAttachment = {
 
 export type ChatPermissionMode = 'manual' | 'full';
 
-import type { ChatModel, ChatRoutePreview, ConversationFlags } from '../../shared/chat-gateway-types.js';
+import type { ChatModel, ChatRoutePreview, ConversationFlags, OutgoingPrivacy } from '../../shared/chat-gateway-types.js';
 export type { ChatModel, ChatRouteCandidate, ChatRoutePreview, ConversationFlags } from '../../shared/chat-gateway-types.js';
 
 export type ToolApprovalDecision = 'allow_once' | 'always_allow' | 'deny';
@@ -271,8 +271,8 @@ export type DesktopBridge = {
   ) => Promise<{ ok: boolean; data?: { pinnedAt?: number; archivedAt?: number }; error?: string }>;
   chatPrepareAttachments?: (conversationId: string, attachments: RawChatAttachment[]) => Promise<{ ok: boolean; data?: PreparedChatAttachment[]; error?: string }>;
   attachmentDownload?: (conversationId: string, attachmentId: string, suggestedName: string) => Promise<{ ok: boolean; path?: string; error?: string }>;
-  chatGenerateImage?: (payload: { conversationId: string; prompt: string; model: string; moderation?: 'auto' | 'low'; sourceImageAttachmentId?: string; requirePrivate?: boolean }) => Promise<{ ok: boolean; user?: { role: string; content: unknown; createdAt?: number }; assistant?: { role: string; content: unknown; createdAt?: number; meta?: Record<string, unknown> }; error?: string; stopReason?: { kind: string; message: string; errorCode?: string } }>;
-  chatAiSendStream?: (conversationId: string, message: string, model?: string, attachments?: PreparedChatAttachment[], permissionMode?: ChatPermissionMode, options?: { requirePrivate?: boolean }) => Promise<{ ok: boolean; error?: string; stopReason?: ChatAiStreamStopReason }>;
+  chatGenerateImage?: (payload: { conversationId: string; prompt: string; model: string; moderation?: 'auto' | 'low'; sourceImageAttachmentId?: string } & OutgoingPrivacy) => Promise<{ ok: boolean; user?: { role: string; content: unknown; createdAt?: number }; assistant?: { role: string; content: unknown; createdAt?: number; meta?: Record<string, unknown> }; error?: string; stopReason?: { kind: string; message: string; errorCode?: string } }>;
+  chatAiSendStream?: (conversationId: string, message: string, model?: string, attachments?: PreparedChatAttachment[], permissionMode?: ChatPermissionMode, options?: OutgoingPrivacy) => Promise<{ ok: boolean; error?: string; stopReason?: ChatAiStreamStopReason }>;
   chatPermissionModeGet?: (modelId: string) => Promise<{ ok: boolean; mode?: ChatPermissionMode; error?: string }>;
   chatPermissionModeSet?: (modelId: string, mode: ChatPermissionMode) => Promise<{ ok: boolean; mode?: ChatPermissionMode; error?: string }>;
   chatToolApprovalDecision?: (id: string, decision: ToolApprovalDecision) => Promise<{ ok: boolean; error?: string }>;

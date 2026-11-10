@@ -13,7 +13,7 @@ import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { isConfigPatchConnected, removeConfigPatch, writeConfigPatch, type ConfigPatchTarget } from '@antseed/connected-apps/config-patch';
 import { RETIRED_APP_PROFILES } from '@antseed/connected-apps/defaults';
-import { clearWslTargetsForTool, isWslTool, readWslTargets } from '@antseed/connected-apps/wsl';
+import { readWslTargets } from '@antseed/connected-apps/wsl';
 import type { AppLaunchTarget } from '../launch-settings.js';
 import { isAppTargetRunning, namedAppTarget, restartAppTarget } from '../launcher.js';
 import { isMultiInstanceDevelopment } from '../../dev-instance.js';
@@ -198,15 +198,9 @@ async function patchApp(name: string, modelsFor: (endpoint: GatewayEndpoint) => 
   const models = await modelsFor(endpoint);
   // The awaits above may have spanned the start of quit.
   if (shuttingDown) throw new Error('Antseed Desktop is closing');
-  try {
-    writeConfigPatch(profile.configPatch, patchTarget(endpoint, models), connectedAppsWslTargetsPath());
-  } catch (err) {
-    // Applied-target rows from an earlier session must not outlive a failed
-    // re-apply — they would keep the relay up for a tool no longer patched.
-    const installProbe = (profile.configPatch as { installProbe?: unknown }).installProbe;
-    if (isWslTool(installProbe)) clearWslTargetsForTool(connectedAppsWslTargetsPath(), installProbe);
-    throw err;
-  }
+  // A failed write keeps the WSL rows: a distro patched before the failure
+  // holds the gateway URL and key, and disconnect has to find it.
+  writeConfigPatch(profile.configPatch, patchTarget(endpoint, models), connectedAppsWslTargetsPath());
   log(`${profile.label}: connected to the gateway at ${endpoint.origin}`);
 }
 

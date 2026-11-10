@@ -50,7 +50,7 @@ import { recommendAppModels, toChatModel, toChatModels, type ChatModel } from '.
 import { fetchRoutePreview } from '../gateway/route-preview.js';
 import { splitPinnedModel } from '../../shared/pinned-model.js';
 import { currentPrivacyMode, getGatewayEndpoint, whenPrivacySettled, type GatewayEndpoint } from '../gateway/service.js';
-import { passPrivacyGate, type PrivacyGate } from './privacy-gate.js';
+import { passPrivacyGate, requiresPrivate, type PrivacyGate } from './privacy-gate.js';
 import { clearGatewayModelCache, fetchGatewayModelEntries, type GatewayModelEntry } from '../gateway/models.js';
 import type {
   ActiveRun,
@@ -446,7 +446,7 @@ export function registerPiChatHandlers({
 
   ipcMain.handle('chat:generate-image', async (_event, payload: unknown) => {
     const request = payload && typeof payload === 'object'
-      ? payload as { conversationId?: unknown; prompt?: unknown; model?: unknown; moderation?: unknown; sourceImageAttachmentId?: unknown; requirePrivate?: unknown }
+      ? payload as { conversationId?: unknown; prompt?: unknown; model?: unknown; moderation?: unknown; sourceImageAttachmentId?: unknown; requirePrivate?: unknown; allowPrivateHistory?: unknown }
       : {};
     const conversationId = typeof request.conversationId === 'string' ? request.conversationId.trim() : '';
     const prompt = typeof request.prompt === 'string' ? request.prompt.trim() : '';
@@ -473,9 +473,14 @@ export function registerPiChatHandlers({
     activeImageRunsByConversation.set(conversationId, controller);
     try {
       // An image goes out under whichever policy the switch settles on, like a text send.
-      const refused = await passPrivacyGate(privacyGate, request.requirePrivate === true);
+      // An image edit sends an earlier image of the chat, so its history counts too.
+      const mustBePrivate = requiresPrivate(
+        { requirePrivate: request.requirePrivate === true, allowPrivateHistory: request.allowPrivateHistory === true },
+        (await store.get(conversationId))?.messages ?? [],
+      );
+      const refused = await passPrivacyGate(privacyGate, mustBePrivate);
       if (refused) return { ok: false, error: refused };
-      const requireTee = request.requirePrivate === true || currentPrivacyMode() === 'private';
+      const requireTee = mustBePrivate || currentPrivacyMode() === 'private';
       const endpoint = { ...await getGatewayEndpoint(), ...(requireTee ? { requireTee } : {}) };
       return await generateChatImage(store, endpoint, {
         conversationId,
@@ -496,8 +501,11 @@ export function registerPiChatHandlers({
   ipcMain.handle(
     'chat:ai-send-stream',
     async (_event, conversationId: string, userMessage: string, model?: string, attachments?: PreparedChatAttachment[], permissionMode?: unknown, options?: unknown) => {
-      const requirePrivate = Boolean(options && typeof options === 'object' && (options as { requirePrivate?: unknown }).requirePrivate === true);
-      return await runStreamingPrompt(conversationId, userMessage, model, attachments, permissionMode, { requirePrivate });
+      const given = options && typeof options === 'object' ? options as { requirePrivate?: unknown; allowPrivateHistory?: unknown } : {};
+      return await runStreamingPrompt(conversationId, userMessage, model, attachments, permissionMode, {
+        requirePrivate: given.requirePrivate === true,
+        allowPrivateHistory: given.allowPrivateHistory === true,
+      });
     },
   );
 

@@ -1236,7 +1236,7 @@ export function initChatModule({
    * or stopped while held); otherwise whether the gateway must still be in
    * Private when it sends, which the main process checks after its own wait.
    */
-  async function clearForPrivacy(convId: string, token: number): Promise<{ requirePrivate: boolean } | null> {
+  async function clearForPrivacy(convId: string, token: number): Promise<{ requirePrivate: boolean; allowPrivateHistory: boolean } | null> {
     await holdForPrivacySwitch();
     if (!ownsSend(convId, token)) return null;
     const mode = privacyResource.getSnapshot().data?.mode;
@@ -1246,7 +1246,7 @@ export function initChatModule({
       return null;
     }
     if (mode === 'private') markPrivateChat(convId);
-    return { requirePrivate: mode === 'private' || held };
+    return { requirePrivate: mode === 'private' || held, allowPrivateHistory: privateHistoryAllowed.has(convId) };
   }
 
   /** Waits, showing why, while a mode change is reaching the gateway. True when it waited. */

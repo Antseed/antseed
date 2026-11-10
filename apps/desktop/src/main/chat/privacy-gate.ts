@@ -20,3 +20,18 @@ export async function passPrivacyGate(gate: PrivacyGate | undefined, requirePriv
   await gate.whenSettled();
   return requirePrivate && gate.mode() === 'anonymous' ? PRIVATE_REQUIRED_ERROR : null;
 }
+
+/**
+ * Whether a request on this chat must go out in Private: the caller says so,
+ * or the chat holds replies sent in Private and the user hasn't chosen to
+ * carry them into Anonymous. Read from the saved chat, so a caller that knows
+ * nothing of its history (the Telegram bridge) can't send it under Anonymous.
+ */
+export function requiresPrivate(
+  options: { requirePrivate?: boolean; allowPrivateHistory?: boolean },
+  messages: ReadonlyArray<{ meta?: { privacy?: unknown } | null }>,
+): boolean {
+  if (options.requirePrivate === true) return true;
+  if (options.allowPrivateHistory === true) return false;
+  return messages.some((message) => message.meta?.privacy === 'private');
+}

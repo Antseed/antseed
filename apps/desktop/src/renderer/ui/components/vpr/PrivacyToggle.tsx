@@ -1,7 +1,7 @@
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
 import { Tick02Icon } from '@hugeicons/core-free-icons';
-import { Button, Modal } from '@antseed/ui';
+import { Button, Modal, Segmented } from '@antseed/ui';
 import type { ChatModel, GatewayPrivacyMode } from '../../../types/bridge';
 import type { PrivacySwitchChoice } from '../../../modules/chat/controller';
 import { defaultStorage } from '../../../modules/app/local-storage-flag';
@@ -136,27 +136,25 @@ export function usePrivacyControl(onChange?: (mode: GatewayPrivacyMode, choice: 
 
 export function PrivacyToggle({ control, size = 'regular' }: { control: PrivacyControl; size?: 'regular' | 'small' }) {
   return (
-    <div className={`${styles.segment}${size === 'small' ? ` ${styles.segmentSmall}` : ''}`} role="radiogroup" aria-label="Privacy">
-      {OPTIONS.map((option) => {
-        const active = control.current === option.mode;
-        const activeClass = option.mode === 'private' ? styles.activePrivate : styles.activeAnonymous;
-        return (
-          <button
-            key={option.mode}
-            type="button"
-            role="radio"
-            aria-checked={active}
-            className={`${styles.option}${active ? ` ${activeClass}` : ''}`}
-            disabled={control.disabled}
-            onClick={() => control.select(option.mode)}
-            title={optionHint(option)}
-          >
+    <Segmented<GatewayPrivacyMode>
+      bare
+      label="Privacy"
+      value={control.current}
+      onChange={control.select}
+      className={`${styles.segment}${size === 'small' ? ` ${styles.segmentSmall}` : ''}`}
+      itemClassName={(mode, selected) => `${styles.option}${selected ? ` ${mode === 'private' ? styles.activePrivate : styles.activeAnonymous}` : ''}`}
+      options={OPTIONS.map((option) => ({
+        value: option.mode,
+        disabled: control.disabled,
+        title: optionHint(option),
+        label: (
+          <>
             <span className={`${styles.icon} ${option.iconClass}`} aria-hidden="true" />
             {option.label}
-          </button>
-        );
-      })}
-    </div>
+          </>
+        ),
+      }))}
+    />
   );
 }
 

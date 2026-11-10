@@ -788,22 +788,33 @@ function applyWithInstallProbe(opts: {
     );
   }
   if (nativeInstalled) opts.write(opts.native, opts.baseURL);
-  for (const target of wslTargets) {
+  const wslTargetsFile = opts.wslTargetsFile;
+  writeWslTargets(wslTargets, {
+    remembered: wslTargetsFile ? readWslTargetsForTool(wslTargetsFile, opts.tool) : [],
+    save: (rows) => { if (wslTargetsFile) saveWslTargetsForTool(wslTargetsFile, opts.tool, rows); },
     // Inside WSL, `localhost` is the distro's own VM under NAT networking —
     // a loopback config must carry the host the distro can actually reach the
     // Windows-side proxy/gateway on. A remote origin is reachable as-is.
-    opts.write(
+    write: (target) => opts.write(
       { configPath: target.configPath, ...(target.settingsPath ? { settingsPath: target.settingsPath } : {}) },
       wslBaseUrl(opts.baseURL, target.host, opts.rewriteWslHost),
-    );
-  }
-  if (opts.wslTargetsFile) {
-    // A distro that didn't answer this time keeps its row: its config may still
-    // hold the gateway URL and key, and disconnect has to find it.
-    const rediscovered = new Set(wslTargets.map((target) => target.distro));
-    const notSeen = readWslTargetsForTool(opts.wslTargetsFile, opts.tool).filter((target) => !rediscovered.has(target.distro));
-    saveWslTargetsForTool(opts.wslTargetsFile, opts.tool, [...notSeen, ...wslTargets]);
-  }
+    ),
+  });
+}
+
+/**
+ * Patches each WSL target, remembering them all before writing any: a write
+ * that fails partway leaves the ones already written (holding the gateway URL
+ * and key) where disconnect can find them. A distro that didn't answer this
+ * time keeps its row too, since its config may still hold them.
+ */
+export function writeWslTargets(
+  targets: readonly WslConfigTarget[],
+  opts: { remembered: readonly WslConfigTarget[]; save: (rows: WslConfigTarget[]) => void; write: (target: WslConfigTarget) => void },
+): void {
+  const rediscovered = new Set(targets.map((target) => target.distro));
+  opts.save([...opts.remembered.filter((target) => !rediscovered.has(target.distro)), ...targets]);
+  for (const target of targets) opts.write(target);
 }
 
 /** The distro's share (`\\\\wsl$\\Ubuntu\\`), or the config's folder for any other path. */

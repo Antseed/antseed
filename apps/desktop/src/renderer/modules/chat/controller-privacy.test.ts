@@ -73,7 +73,7 @@ describe('privacy at the moment a request leaves', () => {
     write.resolve({ ok: true, privacy: privacy('private') });
     await tick();
     expect(chatAiSendStream).toHaveBeenCalledTimes(1);
-    expect(chatAiSendStream.mock.calls[0]?.[5]).toEqual({ requirePrivate: true });
+    expect(chatAiSendStream.mock.calls[0]?.[5]).toEqual({ requirePrivate: true, allowPrivateHistory: false });
     expect(uiState.chatPrivateConversationIds).toContain('conv-1');
   });
 
@@ -171,7 +171,7 @@ describe('privacy at the moment a request leaves', () => {
     api.sendMessage('again');
     await tick();
     expect(chatAiSendStream).toHaveBeenCalledTimes(2);
-    expect(chatAiSendStream.mock.calls[1]?.[5]).toEqual({ requirePrivate: false });
+    expect(chatAiSendStream.mock.calls[1]?.[5]).toEqual({ requirePrivate: false, allowPrivateHistory: true });
   });
 });
 
