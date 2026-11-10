@@ -1,37 +1,25 @@
 // Smart VPR download URL — mirrors the hook at
 // `apps/website/src/lib/useLatestDesktopDownload.ts` so the "Download
 // VPR" links on diemantseed.com behave exactly like the ones on
-// antseed.com: when the visitor is on a Mac or Windows machine, resolve a
-// direct installer URL matching their CPU arch from the real release asset
-// list. On other platforms — or while the GitHub API lookup is in-flight —
-// fall back to the releases page.
+// antseed.com: when the visitor is on a Mac, Windows or Linux machine, link
+// the download proxy (download.antseed.com, see apps/download-proxy) for
+// their OS and CPU arch. The proxy resolves the latest release server-side,
+// streams the installer, and redirects to the releases page when no
+// matching installer is published. On other platforms, link the releases
+// page.
 //
 // This file and the docusaurus hook duplicate a small amount of logic on
-// purpose: they live in different frameworks (Vite SPA with react-query
-// here vs. Docusaurus SSR there), and extracting a shared package would
-// cost more than the dup is worth. If you change the asset-matching rules
-// in one, update the other.
-//
-// Asset matching is done by regex against `asset.name` rather than URL
-// construction so we self-correct when electron-builder shifts its
-// artifact naming between releases.
+// purpose: they live in different frameworks (Vite SPA here vs. Docusaurus
+// SSR there), and extracting a shared package would cost more than the dup
+// is worth. If you change the platform or arch rules in one, update the
+// other.
 import { useEffect, useMemo, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
 
 export const VPR_RELEASES_URL = 'https://github.com/Antseed/antseed/releases/latest';
-const GH_API_LATEST = 'https://api.github.com/repos/Antseed/antseed/releases/latest';
+const DOWNLOAD_BASE_URL = 'https://download.antseed.com';
 
 export type Platform = 'mac' | 'win' | 'linux' | 'unknown';
 export type Arch = 'arm64' | 'x64';
-
-interface GitHubAsset {
-  name: string;
-  browser_download_url: string;
-}
-interface GitHubRelease {
-  tag_name?: string;
-  assets?: GitHubAsset[];
-}
 
 function detectPlatform(): Platform {
   if (typeof navigator === 'undefined') return 'unknown';
@@ -80,35 +68,16 @@ function useArch(platform: Platform): Arch {
   return arch;
 }
 
-function matchAsset(assets: GitHubAsset[], platform: Platform, arch: Arch): GitHubAsset | null {
-  const isBlockmap = (n: string) => /\.blockmap$/i.test(n);
-  const hasArm64 = (n: string) => /arm64/i.test(n);
-
-  if (platform === 'mac') {
-    return (
-      assets.find((a) => {
-        if (isBlockmap(a.name)) return false;
-        if (!/\.dmg$/i.test(a.name)) return false;
-        return arch === 'arm64' ? hasArm64(a.name) : !hasArm64(a.name);
-      }) ?? null
-    );
-  }
-  if (platform === 'win') {
-    return (
-      assets.find((a) => {
-        if (isBlockmap(a.name)) return false;
-        if (!/\.exe$/i.test(a.name)) return false;
-        return arch === 'arm64' ? hasArm64(a.name) : !hasArm64(a.name);
-      }) ?? null
-    );
-  }
-  return null;
+/** Download proxy URL for a detected platform, or null for unknown ones. */
+export function vprDownloadUrlFor(platform: Platform, arch: Arch): string | null {
+  if (platform === 'unknown') return null;
+  return `${DOWNLOAD_BASE_URL}/vpr/${platform}-${arch}`;
 }
 
 export interface VprDownload {
-  /** URL to put on the `href`. Direct installer when resolvable, releases page otherwise. */
+  /** URL to put on the `href`. Download proxy URL when the OS is known, releases page otherwise. */
   href: string;
-  /** True when the resolved href points at a direct installer (click = real download). */
+  /** True when the href points at the download proxy (click = real download). */
   isDirectDownload: boolean;
   /** Detected OS — used by call-sites to swap icon + button label. */
   platform: Platform;
@@ -136,42 +105,14 @@ function labelFor(platform: Platform): string {
  * All call-sites on this page should use this in place of hardcoding
  * `VPR_RELEASES_URL` so the primary CTA always downloads the right
  * installer and gracefully falls back on unsupported platforms.
- *
- * Uses react-query so multiple call-sites share a single cached GitHub API
- * response (the QueryClient is already set up in `main.tsx`).
  */
 export function useVprDownload(): VprDownload {
   const platform = useMemo<Platform>(detectPlatform, []);
   const arch = useArch(platform);
-
-  const { data: release } = useQuery<GitHubRelease | null>({
-    queryKey: ['vpr-latest-release'],
-    // GitHub releases change on a ~weekly cadence at most; an hour of
-    // staleness is plenty and keeps us well under the unauthenticated API
-    // rate limit (60/hr per IP) even if the user opens many tabs.
-    staleTime: 60 * 60 * 1000,
-    gcTime: 24 * 60 * 60 * 1000,
-    // Skip the fetch on platforms we don't ship installers for — Linux /
-    // unknown visitors go straight to the releases page.
-    enabled: platform === 'mac' || platform === 'win',
-    retry: 1,
-    queryFn: async (): Promise<GitHubRelease | null> => {
-      const r = await fetch(GH_API_LATEST);
-      if (!r.ok) return null;
-      return ((await r.json()) as GitHubRelease) ?? null;
-    },
-  });
-
-  const matched = useMemo(() => {
-    const assets = release?.assets;
-    if (!assets || assets.length === 0) return null;
-    return matchAsset(assets, platform, arch);
-  }, [release, platform, arch]);
-
-  const href = matched?.browser_download_url ?? VPR_RELEASES_URL;
+  const url = vprDownloadUrlFor(platform, arch);
   return {
-    href,
-    isDirectDownload: !!matched,
+    href: url ?? VPR_RELEASES_URL,
+    isDirectDownload: url !== null,
     platform,
     label: labelFor(platform),
   };
