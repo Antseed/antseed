@@ -173,7 +173,7 @@ const verifierPlugin: AntseedVerifierPlugin = {
   type: 'verifier',
   name: VERIFIER_ID,
   displayName: 'TEE attestation verifier (Intel TDX / DCAP)',
-  version: '0.1.6',
+  version: '0.1.7',
   description:
     'Capability-based seller attestation: one claim per capability. Requires the seller node\'s genuine Intel TDX hardware running an approved seller build on the buyer\'s own connection (seller-node-tee-genuine) and a seller-identity binding over the whole bundle (seller-bound); also reports the provider TEE (seller-provider-tee-genuine), measured-image and gpu-cc when available.',
   verify: (ctx) => runVerify(ctx),

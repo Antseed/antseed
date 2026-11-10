@@ -9,6 +9,7 @@ import pkg from '../../../../package.json' with { type: 'json' }
 import { watchForUpdates } from '../../../update/watch.js'
 import { resolveConfigPath } from '../../../config/loader.js'
 import { configOverridesPath, loadSellerConfig } from '../../../config/overrides.js'
+import { networkNodeOptions } from '../../../config/network.js'
 import { DEFAULT_RESTRICTED_COUNTRIES } from '../../../config/defaults.js'
 import {
   AntseedNode,
@@ -916,9 +917,6 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
 
       const nodeSpinner = ora('Starting seeding daemon...').start()
 
-      const dhtPort = options.dhtPort as number | undefined
-      const signalingPort = options.signalingPort as number | undefined
-
       const sellerContractCfg = config.payments?.sellerContract
       const announcerSellerContract = sellerContractCfg
         ? { sellerContract: sellerContractCfg.address }
@@ -965,8 +963,10 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         ...(announcedCapabilities.length > 0 ? { capabilities: announcedCapabilities } : {}),
         bootstrapNodes,
         dataDir: globalOpts.dataDir,
-        ...(dhtPort ? { dhtPort } : {}),
-        ...(signalingPort ? { signalingPort } : {}),
+        ...networkNodeOptions(config.network, {
+          dhtPort: options.dhtPort as number | undefined,
+          signalingPort: options.signalingPort as number | undefined,
+        }),
         ...(maxUploadBodyBytes !== undefined ? { maxUploadBodyBytes } : {}),
         ...(maxInboundConnections !== undefined ? { maxInboundConnections } : {}),
         ...(maxInboundConnectionsPerIp !== undefined ? { maxInboundConnectionsPerIp } : {}),
@@ -983,6 +983,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
           defaultDepositAmountUSDC: defaultDepositAmountUSDCBaseUnits,
           sellerWalletAddress,
           paymentConfig,
+          ...(config.payments.defaultAuthDurationSecs !== undefined ? { defaultAuthDurationSecs: config.payments.defaultAuthDurationSecs } : {}),
           minBudgetPerRequest: config.payments.minBudgetPerRequest ?? '10000',
           minSettleDelta,
           ...(config.payments.serveWhileClosePending !== undefined
