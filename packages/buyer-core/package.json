@@ -71,6 +71,10 @@
       "import": "./dist/debug.js",
       "types": "./dist/debug.d.ts"
     },
+    "./failpoints": {
+      "import": "./dist/failpoints.js",
+      "types": "./dist/failpoints.d.ts"
+    },
     "./deposits-client": {
       "import": "./dist/deposits-client.js",
       "types": "./dist/deposits-client.d.ts"

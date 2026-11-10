@@ -45,6 +45,8 @@ The seed fixes everything the testbench draws. `derive(seed, label)` in `e2e/tes
 | `load` | the tags and shapes of `tb.load` requests, drawn per request index |
 | `warm-up` | the warm-up request's tag |
 | `rpc:seller:<sellerId>`, `rpc:buyer` | the Base-like RPC proxies' slow, stale and rate-limit decisions |
+| `failpoint` | the fail point, node and hit `stress-failpoint-crash` and `stress-failpoint-close` crash at |
+| `failpoints:buyer`, `failpoints:seller:<sellerId>` | the seed of a fail point spec armed on that node (its `p` draws), unless the spec names one |
 
 Changing `derive` or a label changes what every recorded seed means, so a unit test pins them.
 

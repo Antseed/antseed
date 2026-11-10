@@ -55,6 +55,7 @@
     "test:pr-guard": "node --test scripts/pr-guard.test.mjs",
     "testbench": "node e2e/testbench/cli.mjs",
     "testbench:attach": "node scripts/testbench-attach.mjs",
+    "testbench:sweep": "node e2e/testbench/sweep.mjs",
     "test:testbench:e2e": "node e2e/testbench/test/e2e-flow.mjs",
     "typecheck": "pnpm -r run typecheck",
     "contracts:deploy": "node scripts/deploy-contracts.mjs",

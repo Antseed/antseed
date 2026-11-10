@@ -2,6 +2,7 @@ export * from './interfaces.js';
 export * from './errors.js';
 export * from './channel-store-types.js';
 export * from './debug.js';
+export { FAILPOINTS, hitFailpoint, hitFailpointSync, type FailpointName } from './failpoints.js';
 export * from './pricing.js';
 export * from './unit-billing.js';
 export * from './usdc-utils.js';

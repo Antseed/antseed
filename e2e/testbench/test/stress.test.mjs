@@ -60,6 +60,10 @@ function fakeTb(fail = []) {
     waitFor: async (predicate) => predicate(),
     prng: () => Math.random,
     setMockFaults: async (id, faults) => { calls.push(faults.fault500Rate ? 'faults on' : 'faults off'); },
+    // What the evidence step reads: one upstream 500 in the ledger, no log counters.
+    deliveries: async () => ({ byTag: { a: { status: '500' } } }),
+    summary: () => ({ metrics }),
+    check: (name, ok) => assert(ok, name),
     load: step('load', { results: [], client: clientSummary([]), loadMs: 5 }),
     metric: (name, value) => { (metrics[name] = value); },
     assertDeliveredWorkPaid: step('oracle'),

@@ -20,7 +20,8 @@ function tokenMatches(header, token) {
 export async function startControlServer({ token, routes, log = () => {}, onRequest = () => {} }) {
   const compiled = Object.entries(routes).map(([key, handler]) => {
     const [method, pattern] = key.split(' ');
-    const regex = new RegExp(`^${pattern.replace(/:([a-z]+)/g, '(?<$1>[a-z0-9-]+)')}$`);
+    // A segment may hold one colon: a node is named `buyer` or `seller:<id>`.
+    const regex = new RegExp(`^${pattern.replace(/:([a-z]+)/g, '(?<$1>[a-z0-9-]+(?::[a-z0-9-]+)?)')}$`);
     return { method, regex, handler };
   });
   const server = createServer(async (request, response) => {
@@ -75,6 +76,7 @@ export function controlClient({ url, token }) {
     status: () => call('GET', '/status', undefined, 30_000),
     closeChannels: (sellerId) => call('POST', '/channels/close', sellerId ? { sellerId } : {}, 300_000),
     warp: (seconds) => call('POST', '/chain/warp', { seconds }),
+    setBlockTime: (seconds) => call('POST', '/chain/block-time', { seconds }),
     stopSeller: (id) => call('POST', `/sellers/${id}/stop`),
     crashSeller: (id) => call('POST', `/sellers/${id}/crash`),
     startSeller: (id) => call('POST', `/sellers/${id}/start`, {}, 180_000),
@@ -87,6 +89,9 @@ export function controlClient({ url, token }) {
     mockRequests: (id) => call('GET', `/sellers/${id}/mock`),
     loseNeedAuths: (count) => call('POST', '/faults/buyer/need-auth-loss', { count }),
     needAuthLoss: () => call('GET', '/faults/buyer/need-auth-loss'),
+    setFailpoints: (who, spec) => call('POST', `/failpoints/${who}`, { spec }),
+    clearFailpoints: (who) => call('POST', `/failpoints/${who}`, { clear: true }),
+    failpoints: (who) => call('GET', `/failpoints/${who}`),
     shutdown: () => call('POST', '/shutdown', {}, 10_000),
     heartbeat: (entry) => call('POST', '/heartbeat', entry, 5000),
     releaseStarter: (entry) => call('POST', '/starter/release', entry, 10_000),

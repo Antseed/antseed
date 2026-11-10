@@ -139,6 +139,7 @@ pnpm testbench scenarios [--json]       # every scenario with its targets and de
 pnpm testbench report [run] [--open]    # latest (or named) run: index.html, video, trace paths
 pnpm testbench report --serve [--port N] [--host H]   # serve reports/ over HTTP (loopback by default)
 pnpm testbench share [--idle MIN] [--fresh] [--no-tailscale] [--stop]   # Linux server: desktop in your browser over Tailscale
+pnpm testbench:sweep <scenario> --seeds 1-5 [run flags]   # seed search: one fresh testbench per seed, failures with their rerun lines
 ```
 
 `--slot NAME` on any command runs an additional testbench for the same worktree (for example two scenarios with different topologies side by side).
@@ -227,7 +228,7 @@ Inline secrets (any key that looks like a credential, anywhere in the file) are 
 
 - **Mock (default).** Each seller gets its own OpenAI-compatible mock that answers every model in its config: `/v1/models`, chat (JSON and SSE streaming with usage), and `/v1/images/generations` (a fixture PNG). Usage is fixed (10 input + 8 output tokens), so costs are exact. Only OpenAI-compatible plugins (`openai`) can be mocked.
   - `mock.usage: 'load'` sizes usage like real traffic instead (the payment stress mock): prompt tokens from the request size, a random completion within `outTokens` (default 100 to 4000), latency within `latencyRangeMs` (default 50 to 3000 ms), streams chunked over that time.
-  - `mock.fault500Rate` and `mock.disconnectRate` (0 to 1) answer that share of tagged requests with an upstream 500 or cut the response midway. `tb.setMockFaults(id, { ... })` changes them during a run.
+  - `mock.fault500Rate` and `mock.disconnectRate` (0 to 1) answer that share of tagged requests with an upstream 500 or cut the response midway. `mock.slowRate` makes that share take `mock.slowMs` (up to 60000) instead of their drawn latency: an upstream slower than the buyer waits. `tb.setMockFaults(id, { ... })` changes them during a run.
   - Every mock keeps a **delivery ledger** keyed by the `[req:TAG]` marker in the prompt (untagged requests get `untagged-N`): whether any byte reached the wire, how the response ended (`ok`, `500`, `disconnect`, `client-gone`) and what it cost at the seller's price. That ledger is the independent judge of what the buyer owes (`tb.deliveries(id)`, `tb.assertDeliveredWorkPaid`).
 - **Live (`--live`).** Sellers call the real upstream. Every provider needs `apiKeyEnv` (set in your shell or in `--env-file`) and an HTTPS `baseUrl`. Keys reach seller processes through their environment only. Settlement still happens on the fork, so no real funds move.
 
@@ -245,7 +246,7 @@ A scenario is a module in `e2e/testbench/scenarios/`. Feature tests live in `sce
 export const meta = {
   description: 'What this proves',
   targets: ['fork', 'local'],   // chains it can run on; the first is the default
-  requires: ['mockControl'],    // capabilities: warpTime, sellerControl, buyerControl, buyerFaults (sdk mode only), mockControl, liveUpstream, desktop, sourceContracts (local only)
+  requires: ['mockControl'],    // capabilities: warpTime, sellerControl, buyerControl, buyerFaults (sdk mode only), failpoints (cli mode only), mockControl, liveUpstream, desktop, sourceContracts (local only)
 };
 
 // Plain data. Sellers inherit the config's providers unless they bring their own.
@@ -263,9 +264,10 @@ export const topology = {
 
 // Payment stress shapes (see "Payment stress" below) add, all optional:
 //   chain:  { rpc: 'base', blockTimeSec: 2, topUpThresholdBps: 6500 }
-//   seller: { mock: { usage: 'load', latencyRangeMs: [50, 3000], outTokens: [100, 4000], fault500Rate: 0.05, disconnectRate: 0.05 } }
-//   buyer:  { depositUsdc: '500', maxReserveUsdc: '0.25', maxPerRequestUsdc: '0.15' }
+//   seller: { mock: { usage: 'load', latencyRangeMs: [50, 3000], outTokens: [100, 4000], fault500Rate: 0.05, disconnectRate: 0.05, slowRate: 0.08, slowMs: 40000 } }
+//   buyer:  { depositUsdc: '500', maxReserveUsdc: '0.25', maxPerRequestUsdc: '0.15', requestTimeoutMs: 20000 }   (requestTimeoutMs: cli mode only)
 //   seller or buyer: { env: { ANTSEED_DEBUG: '1' } }   (ANTSEED_* switches for that node; stressTopology() sets this one)
+//   failpoints: true   (cli mode only: every node gets the fail point handler, see "Fail points")
 
 export async function run(tb) {
   const reply = await tb.chat({ model: tb.sellers[0].models[0], sellerId: 'fast' });
@@ -284,10 +286,11 @@ The `tb` API:
 | Payments | `channels({ all })`, `signedBySeller()`, `closeAll()`, `closeChannel(id)`, `assertSettlementMatchesSigned(expected?)`, `buyerBalance()` |
 | Chain | `contracts` (every address, see [Local contract layouts](#local-contract-layouts)), `chainState()` (block, epoch clock, the buyer's deposit, USDC and ANTS, each seller's USDC, ANTS, eligibility and pool stake, the fee recipient's USDC; amounts as strings), `buyerBalance()`, `usdcBalance(address)`, `mintUsdc(address, micros)` and `usdcTransfer(from, to, micros)` (Anvil impersonation: MockUSDC locally, the master minter on the fork), `epoch()`, `epochClock()` (`{ epoch, startsAt, endsAt, now }` in chain time) and `warpToNextEpoch()` (the emissions gate's clock, legacy emissions' on `payments`), `delegateFreeTier({ from, to, amount, sellerId, epochs, expiresInDays })` (a staker stakes `amount` ANTS in the seller's pool and signs a free-tier delegation to the buyer; returns `{ staker, delegation, code, power }`, the stake counts from the next epoch), `settledEvents(sellerId)` (on-chain `ChannelSettled`), `channelState(channelId)`, `buyerRequestClose(channelId)` / `buyerWithdraw(channelId)` (the buyer's unilateral exit via Anvil impersonation; warp 15 min before withdraw; `buyer-withdraw-and-exit` does it through the CLI) |
 | CLI | `cli(args, { dataDir, configPath, home, env, timeoutMs, input, clock })` runs this worktree's `antseed --data-dir <buyer dir> --config <buyer config> ...args` once, isolated like the nodes (private HOME, official bootstrap list emptied, no update check, no debug logs on stdout), and returns `{ code, signal, stdout, stderr, json, durationMs, timedOut }` (`json`: stdout parsed, else `null`; a failing command does not throw). `sellerCli(id, args, options)` runs on a seller's data dir and config. Each call is a `cli` event in `events.jsonl` and the HTML report, with the first 2000 characters of each stream. `clock: 'chain'` shifts the command's clock to the chain's, for commands that compare chain timestamps with `Date.now()` after a `warp()` |
-| Control | `stopSeller(id)` (graceful: the seller settles and closes its channels), `crashSeller(id)` (SIGKILL: it leaves them open and unsettled, like a seller that loses power), `startSeller(id)`, `stopBuyer()` / `startBuyer()` (buyer node + proxy; sellers see a disconnect), `setMockLatency(id, ms)`, `mockRequests(id)`, `warp(seconds)`, `waitFor(fn, label, { timeoutMs })`, `waitForPaidChannels(sellerId, { requests, signed })` (the seller's open channels once the buyer has stored the SpendingAuths for the answered requests; the proxy answers before that) |
+| Control | `stopSeller(id)` (graceful: the seller settles and closes its channels), `crashSeller(id)` (SIGKILL: it leaves them open and unsettled, like a seller that loses power), `startSeller(id)`, `stopBuyer()` / `startBuyer()` (buyer node + proxy; sellers see a disconnect), `setMockLatency(id, ms)`, `mockRequests(id)`, `warp(seconds)`, `setBlockTime(seconds)` (Anvil mines every 1 to 30 s from now on), `waitFor(fn, label, { timeoutMs })`, `waitForPaidChannels(sellerId, { requests, signed })` (the seller's open channels once the buyer has stored the SpendingAuths for the answered requests; the proxy answers before that) |
 | Faults (sdk mode) | `faults.loseNeedAuths(count)` (the buyer drops its next `count` seller NeedAuth frames, as if lost), `faults.lostNeedAuths()` (the dropped payloads). Use only to reach a state no public path produces |
+| Fail points (cli mode, `failpoints: true`) | `faults.failpoints(who, spec)` (arms a running node: `who` is `'buyer'` or `'seller:<id>'`, `spec` is `{ seed, points: { '<name>': { action: 'crash' \| 'error' \| 'delay', ms, nth, p, count } } }`), `faults.clearFailpoints(who)`, `faults.failpointJournal(who)` (what the node reached and what fired), `faults.waitForFailpointRestart(who, { timeoutMs })` (the supervisor's crash record once the killed node is back up), `withFailpointRestart(run, crash)` (judges a load against a crash that came after it). See [Fail points](#fail-points) |
 | Desktop | `desktop()` → `ui.sendChat(prompt, { expect })`, `ui.openChat()`, `ui.text()`, `ui.screenshot(name)`, `ui.page` (Playwright), `ui.errors`, `ui.close()` |
-| Load and oracle | `load({ concurrency, requests, streamRatio, abortRatio, imageRatio, model, imageModel, sellerId, restart: { who, sellerId, atFraction }, gate })`, `checkGate(run)`, `paymentSnapshot()`, `assertDeliveredWorkPaid({ before, results, injected })`, `assertNoCrashes()`, `assertIsolated()`, `setMockFaults(id, { fault500Rate, disconnectRate })`, `deliveries(id)`, `health()`, `gates` |
+| Load and oracle | `load({ concurrency, requests, streamRatio, abortRatio, imageRatio, omitMaxTokensRatio, model, imageModel, sellerId, restart: { who, sellerId, atFraction, crash }, failpointCrash: { who }, gate })` (`crash` kills the seller with SIGKILL instead of stopping it; `omitMaxTokensRatio` sends that share of chats without `max_tokens`; `failpointCrash` makes the load wait while a node killed by a fail point is down and returns that restart), `checkGate(run)`, `paymentSnapshot()`, `assertDeliveredWorkPaid({ before, results, injected })`, `assertNoCrashes()`, `assertIsolated()`, `setMockFaults(id, { fault500Rate, disconnectRate, slowRate, slowMs })`, `deliveries(id)`, `health()`, `gates` |
 | Budgets | `budget(name, value, { max, unit = 'ms' })` (a ceiling: records the metric and, with `--budgets`, the check `budget: <name> <= <max> <unit>`), `timings(measured)` (holds measured values to `topology.budgets`), `budgets` (the declared ones). See [Performance budgets and drift](#performance-budgets-and-drift) |
 | Reporting | `check(name, ok, detail)`, `knownIssue(name, ok, detail, issue)`, `metric(name, value)`, `event(type, data)`, `mockCostPerChat(sellerId, model)`, `prng(label)` (a seeded random stream) |
 
@@ -307,6 +310,8 @@ Shipped scenarios:
 - `mainnet-smoke`: case 3 on the real network (needs `--chain mainnet --real-funds`). Live discovery, one paid desktop chat, spend within the cap, consistent on-chain reserve.
 - `routing-smoke`: two sellers with different mock latency; the buyer sees only testbench sellers, pinned and auto-routed chats stay inside the testbench, and per-seller settlement is exact.
 - `stress-smoke`, `stress-seq`, `stress-c8`, `stress-c32`, `stress-c64`, `stress-smallreserve`, `stress-images`, `stress-faults`, `stress-restart-buyer`, `stress-restart-seller`: the payment stress scenarios on the testbench (see [Payment stress](#payment-stress)).
+- `stress-crash-seller`, `stress-smallreserve-faults`, `stress-slow-topups`, `stress-buyer-timeout`, `stress-chaos`: the fault shapes (see [Fault shapes](#fault-shapes)).
+- `stress-failpoint-crash`, `stress-failpoint-close` (cli mode): a node killed at a drawn fail point in the payment path (see [Fail points](#fail-points)).
 - `issue-1050-stale-channel`: #1050. The buyer pays, stops, and the seller closes the channel on disconnect. After a restart the buyer must retire the closed channel in its store, `/_antseed/buyer-usage`, `/_antseed/channels` and `antseed buyer status` (all count 0), then pay again on a fresh channel; the payment oracle judges both phases.
 - `cli-buyer-commands` (cli mode): after two paid chats, `antseed buyer status`, `balance`, `channels` (and `channels list`), `connection get`, `identity list --balances`, `metering`, `activity` and `emissions info` run next to the running buyer; each transcript must match `/_antseed/channels`, `/_antseed/buyer-usage` and the chain, exit 0 and print no stack trace, and `emissions info` must report the chain's stack and epoch on both sides of `warpToNextEpoch()`. Every one of these commands is safe next to a running CLI buyer: they read the stores and the chain, and the reconciling ones leave the current channel to the buyer whose pid is alive. Records the ignored `--json` of `buyer channels` subcommands as a known issue.
 - `buyer-withdraw-and-exit` (cli mode, local): `antseed buyer withdraw` takes the free deposit and cannot take the reserve; the seller crashes with the channel open; `antseed buyer channels request-close`, a refused early withdraw, `warp(16 min)`, `antseed buyer channels withdraw` (with `clock: 'chain'`) times the channel out and returns the unsettled reserve. Each step is checked against `buyerBalance()` and `channelState()`, and the money adds up to the original deposit.
@@ -327,11 +332,11 @@ pnpm testbench run stress-restart-buyer --chain local --mode cli
 pnpm testbench logs buyer
 ```
 
-A seller that logs `Payments disabled` at startup fails `up` at once: on a priced topology that seller would serve every request for free and the buyer would never open a channel (the oracle caught exactly this; `main` fixed the slow-probe cause in `a962528cb`). In `cli` mode the supervisor writes each node's `config.json` and links the workspace plugins into `home/.antseed/plugins`. A stop is SIGTERM, then SIGKILL after 20 s, and a SIGKILL counts in `forcedStops`. Sellers and the buyer report exits in `unexpectedExits` (`who` is `seller:<id>` or `buyer`). A restarted seller keeps its DHT and signaling ports. Every node logs at `ANTSEED_DEBUG=1`, to `logs/seller-<id>.log` and `logs/buyer.log`. `tb` works the same in both modes, because it drives the buyer through the proxy's HTTP API.
+A seller that logs `Payments disabled` at startup fails `up` at once: on a priced topology that seller would serve every request for free and the buyer would never open a channel (the oracle caught exactly this; `main` fixed the slow-probe cause in `a962528cb`). In `cli` mode the supervisor writes each node's `config.json` and links the workspace plugins into `home/.antseed/plugins`. A stop is SIGTERM, then SIGKILL after 20 s, and a SIGKILL counts in `forcedStops`. Sellers and the buyer report exits in `unexpectedExits` (`who` is `seller:<id>` or `buyer`); a node killed by a fail point is in `failpointCrashes` instead. A restarted seller keeps its DHT and signaling ports. Every node logs at `ANTSEED_DEBUG=1`, to `logs/seller-<id>.log` and `logs/buyer.log`. `tb` works the same in both modes, because it drives the buyer through the proxy's HTTP API.
 
 A seller's model health checks, gas checks and gas refuel are off in `cli` mode, as in the stress harness: their requests would land in the mock's ledger. A topology without `payments.minBudgetPerRequestUsdc` gets the CLI default of 0.01 USDC instead of the SDK's 0.5.
 
-The `buyerFaults` capability needs an in-process buyer, so only `sdk` mode has it. `issue-1200-spendingauth-catchup` requires it: `--mode cli` refuses that scenario before anything starts, and `POST /faults/buyer/need-auth-loss` answers `409` on a `cli` testbench. Like `--chain`, `run` takes the running testbench's mode when `--mode` is not given. An explicit `--mode` that differs is refused; run `pnpm testbench down` first or use `--slot`.
+The `buyerFaults` capability needs an in-process buyer, so only `sdk` mode has it. `issue-1200-spendingauth-catchup` requires it: `--mode cli` refuses that scenario before anything starts, and `POST /faults/buyer/need-auth-loss` answers `409` on a `cli` testbench. The `failpoints` capability is the other way round: the handler is preloaded into a node's own process, so only `cli` mode has it, `--mode sdk` refuses a scenario that requires it, and `/failpoints/:who` answers `409` on an `sdk` testbench. Like `--chain`, `run` takes the running testbench's mode when `--mode` is not given. An explicit `--mode` that differs is refused; run `pnpm testbench down` first or use `--slot`.
 
 Mainnet scenarios (`targets: ['mainnet']`) get a smaller `tb`: `check`, `knownIssue`, `metric`, `event`, `waitFor`, `desktop()` (the full profile desktop), `waitForPeers({ min })`, `models()`, `channels({ all })`, `signedSnapshot()`, `spentSince(snapshot)`, `assertWithinCap(snapshot)`, `buyerBalance()` (on-chain deposit) and `capMicros`. There is no chain or seller control on the real network.
 
@@ -372,6 +377,67 @@ pnpm testbench run stress-restart-seller --chain local
 ```
 
 `e2e/stress` still runs in CI unchanged; the testbench imports its `rpc-proxy.mjs` and `analysis.mjs` rather than copying them, so both harnesses share one set of invariants.
+
+### Fault shapes
+
+These shapes inject a general fault and let the same oracle judge the money, instead of testing one feature each. They are meant to run across seeds (`pnpm testbench:sweep`).
+
+| Scenario | What it injects | Proof that it fired |
+| --- | --- | --- |
+| `stress-crash-seller` | the seller is killed (SIGKILL) 40% of the way through a 32-way load and started again: no settle, no close, channels left open | the load's restart record says the supervisor killed a running seller |
+| `stress-smallreserve-faults` | a 0.25 USDC reserve and 0.15 USDC per-request cap, with upstream 500s, mid-response disconnects, client aborts, and 40% of chats without `max_tokens` | the mock ledger's 500 and disconnect counts, the client's abort and no-`max_tokens` counts, and at least one top-up in the seller log |
+| `stress-slow-topups` | the same small reserve on 12 s blocks at 64-way load, so spend outruns each top-up and the next one is still mining when the seller reaches the ceiling | at least two top-ups, and the seller at the ceiling with a top-up mining (`stillAtCeiling`, `topUpPendingAtBudget` or a client `503 top_up_pending`) |
+| `stress-buyer-timeout` (cli mode) | a 20 s buyer request timeout and an upstream that takes 40 s for 8% of requests; a fault-free follow-up load then checks that later requests go through | the mock ledger's slow count and the buyer's `requestTimedOut` log counter |
+| `stress-chaos` | one plan per seed, drawn from `tb.prng('chaos')` (`lib/chaos.mjs`): any of the faults above, at drawn rates, plus a seller restart, seller crash or buyer restart at a drawn point | every fault in the plan, checked as above; the plan is `metrics.chaosPlan`, a `chaos-plan` event and a `[chaos] plan:` line |
+
+| `stress-failpoint-crash` (cli mode) | one node (seller or buyer) killed at one fail point the payment path reaches under load, at a drawn hit, during a 16-way load of 160 requests; the supervisor starts it again | the node's fail point journal holds the crash trigger, and the load's restart record names that point |
+| `stress-failpoint-close` (cli mode) | the seller killed at a fail point only settling or closing reaches (around the settle or close transaction, or a store write of the close), after a small load | the same, from the journal and the supervisor's crash record |
+
+Rules these follow, and a new fault shape must too:
+
+- **A fault must be seen firing.** `stressRun` records a `fault path ran: ...` check for everything the run injected (`injectedEvidence` in `lib/stress.mjs`: mock fault rates, aborts, chats without `max_tokens`, a restart or crash), and a scenario adds its own through `evidence`. A run whose fault never fired fails, so a scenario cannot pass without reaching its path.
+- **The oracle judges the money.** With any fault the oracle checks bounds, as before: served work accepted and settled, settlement at least what clients received in full and at most what reached the wire.
+- **Gates compose.** `composeGate([...])` takes the lowest floor and the failure kinds its parts allow. A gate with both a restart and allowed kinds lets anything fail inside the restart window and only those kinds outside it.
+
+The buyer's `requestTimeoutMs` bounds a non-streamed request. A streamed one waits at least 90 s for its first byte and 60 s between chunks (`packages/buyer-core/src/buyer-request-handler.ts`), longer than a mock may hold a response, so a slow streamed request is only slow. Only `antseed buyer start` reads the setting, so a topology with `buyer.requestTimeoutMs` needs cli mode.
+
+### Fail points
+
+A fail point is a named place in the payment code between two steps that must both happen for the books to stay consistent: right before or after a durable write or a send. A crash, an error or a delay exactly there is the case a test from outside cannot aim at. The points are declared in `packages/buyer-core/src/failpoints.ts` (`FAILPOINTS`, one line each naming the two steps):
+
+| Points | Where |
+| --- | --- |
+| `store.before-write`, `store.after-write` | every write of the sqlite channel store (seller and buyer); a transaction is one write |
+| `chain.<op>.before-send`, `.after-send`, `.after-receipt` for `reserve`, `top-up`, `settle`, `close`, `request-close`, `withdraw` | a channels transaction: nothing sent yet, broadcast with its receipt not yet awaited, mined with the result not yet recorded |
+| `seller.response.after-cost-recorded`, `seller.need-auth.before-send`, `seller.need-auth.after-send` | the seller's request path: a request's cost is in its books, and the NeedAuth for it |
+| `seller.spending-auth.after-verify`, `seller.spending-auth.after-store`, `seller.top-up.after-verify` | the seller accepting a SpendingAuth or a top-up ReserveAuth |
+| `buyer.spending-auth.after-sign`, `buyer.spending-auth.before-send`, `.after-send`, `buyer.reserve-auth.before-send`, `.after-send` | the buyer: signed (not yet persisted), then persisted and sent |
+
+**Inert in production.** The payment code only reaches a point (`hitFailpoint`, `hitFailpointSync`), which reads a handler from `globalThis[Symbol.for('antseed.failpoints')]` and returns at once when there is none. Nothing in `packages/`, `apps/` or `plugins/` installs a handler, exports a way to set one, or reads a switch for it: `test/failpoints.test.mjs` scans the source and build output for the key and fails if any file but `failpoints.ts` names it. Only a test process can install one.
+
+**Armed by the testbench.** A topology with `failpoints: true` (cli mode) starts every node with `lib/failpoint-preload.mjs`, which installs the handler and reads the node's spec from `failpoints/<node>.json` in the testbench directory (`ANTSEED_TESTBENCH_FAILPOINTS_FILE`, read only by the preload). The file is re-read when it changes, so `tb.faults.failpoints(who, spec)` arms a running node; other topologies start their nodes without the preload. A node from another tree (`--seller-tree`) that predates the points never calls the handler.
+
+```js
+await tb.faults.failpoints('seller:seller', { points: { 'chain.close.after-send': { action: 'crash', nth: 1 } } });
+```
+
+- `nth` triggers on exactly that hit of the point, counted from the arming; `p` on a seeded share of hits (a stream per point, from the spec's `seed`, which defaults to one derived from the run seed); `count` caps the triggers (default 1 for a crash).
+- `crash` is `SIGKILL` from inside the process: no exit handlers, no settle, no close. `error` throws a `FailpointError` from the point. `delay` waits `ms` at an async point; the points marked `(sync)` in `failpoints.ts` sit where the code must not yield, so a delay there is skipped and journaled as such.
+- Before it acts, the handler appends a line to `failpoints/<node>.journal.jsonl` and writes `[Failpoint] <point> hit=<n> action=<action>` to the node log. The journal also records the first hit of each point per process, and the hit counts when the spec changes or the node stops gracefully. A restarted node reads it, so a crash with `count: 1` does not fire again.
+- The supervisor reads the journal when a node exits. A process killed by a crash trigger goes to `health.failpointCrashes` (`{ who, point, hit, at, pid, restartedAt }`) instead of `unexpectedExits`, and is started again after a second, the way `POST /sellers/:id/start` and `POST /buyer/start` start one. `tb.assertNoCrashes()` still fails on any other exit, and on a killed node that did not come back (`restartError`).
+
+`lib/failpoints.mjs` holds the registry, the catalog (`POINT_CATALOG`: which node reaches each point, when, and how often in one measured load) and the seeded draws the two scenarios use. In that measured run (seed 1, the warm-up request and 160 requests 16-way on a 0.25 USDC reserve) the seller reached the store points 275 times, `seller.need-auth.*` 210, `seller.response.after-cost-recorded` 161, `seller.spending-auth.*` 105, `seller.top-up.after-verify` 10, `chain.top-up.*` 8 and `chain.reserve.*` once; the buyer reached the store points 388 times, `buyer.spending-auth.*` 212 and `buyer.reserve-auth.*` 11. A drawn hit lies in the first 60% of those. Settling and closing the channel then reached `chain.settle.*` and `chain.close.*` once each. `stress-failpoint-crash` arms before its warm-up request, so a `chain.reserve.*` crash lands on the request that opens the channel and the load runs on what the restart left; every other point fires under load. Each run prints its plan as a `[failpoint] plan:` line (a sweep shows it per seed) and records it as `metrics.failpointPlan` and a `failpoint-plan` event.
+
+After the restart both scenarios make the two nodes meet again before the oracle closes. `stress-failpoint-crash` sends one more paid request, because after a crash near the end of the load nothing else would reconnect them. `stress-failpoint-close` sends none, so that only the close path handles what the crash left: it repeats the close until the buyer reaches the seller (`metrics.closeAttemptsAfterRestart`). The buyer does not look up a seller it just failed to reach for about 30 s, and a cooperative close needs the seller found.
+
+### Seed sweep
+
+```bash
+pnpm testbench:sweep stress-chaos --seeds 1-10 --chain local                       # one fresh testbench per seed, one at a time
+pnpm testbench:sweep stress-slow-topups --seeds 1-5 --chain local --seller-tree ../other-tree
+```
+
+A sweep runs the scenario once per seed (`run`, then `down`), passes every other flag on to `run`, and ends with one line per seed and, for each seed that did not pass, its report, failed checks and `rerun:` line. It exits 1 when any seed failed. `--seeds` takes numbers and ranges (`1-5`, `3,7,11`), at most 200. It refuses `--keep`, `--live`, `--real-funds` and `--chain mainnet`. `ANTSEED_TESTBENCH_SWEEP_OUT=FILE` also writes the results as JSON.
 
 ### Performance budgets and drift
 
@@ -446,7 +512,9 @@ For agents: with `ANTSEED_TESTBENCH_SHARE_DEBUG_PORT=N`, the shared desktop list
 
 The supervisor exposes a loopback-only API with a bearer token stored in `control.json` (mode 0600). Scenarios use it through `tb`; you rarely need it directly.
 
-`GET /status`, `GET /health`, `POST /channels/close {sellerId?}`, `POST /chain/warp {seconds}`, `POST /buyer/stop`, `POST /buyer/start`, `POST /sellers/:id/stop`, `POST /sellers/:id/crash`, `POST /sellers/:id/start`, `GET|POST /sellers/:id/mock {latencyMs?, fault500Rate?, disconnectRate?}`, `GET /sellers/:id/deliveries`, `GET|POST /faults/buyer/need-auth-loss {count}`, `POST /shutdown`
+`GET /status`, `GET /health`, `POST /channels/close {sellerId?}`, `POST /chain/warp {seconds}`, `POST /chain/block-time {seconds}`, `POST /buyer/stop`, `POST /buyer/start`, `POST /sellers/:id/stop`, `POST /sellers/:id/crash`, `POST /sellers/:id/start`, `GET|POST /sellers/:id/mock {latencyMs?, fault500Rate?, disconnectRate?, slowRate?, slowMs?}`, `GET /sellers/:id/deliveries`, `GET|POST /faults/buyer/need-auth-loss {count}`, `GET /failpoints/:who` (the armed spec and the journal), `POST /failpoints/:who {spec}` or `{clear: true}` (`:who` is `buyer` or `seller:<id>`; cli mode with `failpoints: true`, else `409`), `POST /shutdown`
+
+`GET /health` returns `unexpectedExits`, `forcedStops`, `unhandledRejections`, `failpointCrashes` and the RPC counters.
 
 ## Fork cache
 
@@ -461,7 +529,7 @@ Applies to `--chain fork` only. Anvil's RPC cache makes a warm `up` take a few s
 ## Tests
 
 ```bash
-pnpm test:testbench       # fast unit tests (node --test): options, config, naming, locks, manifest, ports, cache, mock, control, stress load, gates and ledger
+pnpm test:testbench       # fast unit tests (node --test): options, config, naming, locks, manifest, ports, cache, mock, control, stress load, gates and ledger, fail points
 pnpm test:testbench:e2e   # full flow on a real fork: up, reattach, status, run chat-basic, down, isolation checks
 pnpm testbench run payment-flow --chain local   # payment lifecycle on source-deployed contracts, no RPC key
 ```
@@ -487,8 +555,8 @@ Deferred (not needed for the four cases):
 - multiple sellers from different configs in one testbench
 - a nightly CI job running the full `scenarios/stress/` set across several seeds (the per-PR `testbench` job already runs five scenarios, `stress-smoke` among them); then retire `e2e/stress`'s own chain, mock, bootstrap and config writers once the testbench scenarios match its results (`docs/testing.md`)
 - a `testbench-compat` CI job, modelled on Sui's split-cluster check (`scripts/compatibility/split-cluster-check.sh`, run by `.github/workflows/split-cluster-pr.yml` on every PR): a separate job that checks out and builds the last published release tag next to the PR, then runs `payment-flow` and `stress-smoke` in cli mode twice each, new buyer against the release seller (`--seller-tree`) and release buyer against the new seller (`--buyer-tree`), both with `--strict`. It is a smoke test of "do old and new peers still work together", not the full scenario set, which keeps running on one version. Follow-ups: `--seller-version <tag>` to fetch a published CLI instead of a checkout, and a bisect variant that finds the commit that broke compatibility
-- seed search: one scenario across many seeds (Sui's `seed-search.py`)
-- fail points in `packages/node` at payment boundaries (before a settle is sent, after a NeedAuth arrives, before a close), generalizing `faults.loseNeedAuths`
+- seed search in CI: `pnpm testbench:sweep` runs one scenario across many seeds by hand (Sui's `seed-search.py`); the nightly job should run `stress-chaos` and the fault shapes that way
+- more fail point scenarios: `error` and `delay` actions under load (a lost NeedAuth through `seller.need-auth.before-send` in cli mode, a slow settle), the buyer's unilateral exit (`chain.request-close.*`, `chain.withdraw.*`), and both fail point shapes in the nightly seed search
 - retiring `e2e/scripts/full-payment-flow.mjs` once local runs prove stable in CI
 - streaming the real-funds profile desktop with `share`
 - Anvil state snapshots, a Herdr tab launcher, rebasing the video harness onto this
