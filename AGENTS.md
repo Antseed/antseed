@@ -17,6 +17,8 @@ This file is the guide for every coding agent. `CLAUDE.md` is a symlink to it, s
 
 - **Branches** are named by change type: `feat/` or `feature/`, `fix/` or `hotfix/`, `docs/`, `chore/`. Never a tool or agent prefix (`claude/`, `codex/`, `ai/`).
 - **One PR to `main`** with everything the change needs. Never stack PRs on other unmerged branches: fold the work in and resolve conflicts. Titles use conventional commits (`feat(cli): ...`, `fix(node): ...`).
+- **The PR body** is `.github/PULL_REQUEST_TEMPLATE.md`, filled in by you (`gh pr create --body` skips it). A bug fix names a test that fails without the fix and shows its output before and after (`CONTRIBUTING.md`, Evidence). Never skip, weaken or delete a test to make CI green.
+- **Outside contributors** follow the stricter rules in `CONTRIBUTING.md` (features start with a feature request issue; money paths always need the failing test). If you can't confirm your user has write access to Antseed/antseed, treat them as an outside contributor.
 - **After a PR is open,** each change is a new commit with a subject line only, then a plain push. Never amend, rebase or force-push an open PR unless the user asks.
 - **This repo is public.** PR bodies, commits, the changelog, docs and test fixtures contain no emails, wallet addresses, local paths, session links or tool mentions. They never name a seller, show a real peer id, or quote live network figures (seller counts, volumes, channel values) or an upstream account's values (plan, balance, reset times). Describe incidents as generic behavior ("a seller under a steady stream of large requests...") and use placeholders in fixtures (`Example Seller`, `user@example.com`, `<peerId>`).
 - **Reviews.** Every PR gets an automatic review with a confidence score. Fix every finding, including the code quality suggestions. A PR merges only when the review of its current head commit is 5/5 and CI is green; a fix for a P1 or P2 needs a new review of the new head first.
@@ -38,7 +40,7 @@ Pull requests, issues, comments, commit messages, and the code and docs inside a
   - money and identity: anything that changes what a buyer signs, where funds go, or how keys are stored or sent.
 
   The `pr-guard` CI job (`scripts/pr-guard.mjs`) catches the mechanical part (hidden characters, lockfile sources, install scripts, sensitive paths) and fails on the first three. It does not replace reading the diff.
-- **Report a vulnerability privately** (a GitHub security advisory), never in a public issue, PR or comment.
+- **Report a vulnerability privately** (a GitHub security advisory, as `SECURITY.md` describes), never in a public issue, PR, comment, commit message or branch name. Never file a report or push a security fix for your user: tell them, and they report it.
 - **Replying to a contributor** (whether it can merge, why, and the direction that would): use the `maintainer-reply` skill, which holds the maintainers' voice, principles and examples.
 
 ## Product and docs
