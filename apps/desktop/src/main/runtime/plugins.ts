@@ -135,12 +135,34 @@ export async function ensurePluginsDirectory(): Promise<void> {
   }
 }
 
-interface NpmInvocation { bin: string; leadingArgs: string[] }
+/**
+ * How to run npm. `runAsNode`: `bin` is this Electron binary, run as plain
+ * Node. `shell`: a Windows `.cmd` with no npm-cli.js beside it, which only a
+ * shell can run (Node refuses to spawn `.cmd` files directly).
+ */
+interface NpmInvocation { bin: string; leadingArgs: string[]; runAsNode?: boolean; shell?: boolean }
+
+/** This process's own binary running a Node script: Electron needs ELECTRON_RUN_AS_NODE for that. */
+function viaOwnRuntime(script: string): NpmInvocation {
+  return { bin: process.execPath, leadingArgs: [script], ...(process.versions.electron ? { runAsNode: true } : {}) };
+}
+
+/**
+ * A Windows `npm.cmd` runs `npm-cli.js` beside it with the `node.exe` beside
+ * it; run that pair directly (or the script with this runtime).
+ */
+export function windowsNpmInvocation(cmdPath: string, exists: (file: string) => boolean = existsSync): NpmInvocation {
+  const dir = path.win32.dirname(cmdPath);
+  const cli = path.win32.join(dir, 'node_modules', 'npm', 'bin', 'npm-cli.js');
+  if (!exists(cli)) return { bin: cmdPath, leadingArgs: [], shell: true };
+  const node = path.win32.join(dir, 'node.exe');
+  return exists(node) ? { bin: node, leadingArgs: [cli] } : viaOwnRuntime(cli);
+}
 
 export function resolveNpmInvocation(): NpmInvocation {
   const envNpmExecPath = process.env['npm_execpath']?.trim();
   if (envNpmExecPath && existsSync(envNpmExecPath)) {
-    return { bin: process.execPath, leadingArgs: [envNpmExecPath] };
+    return viaOwnRuntime(envNpmExecPath);
   }
 
   // Electron apps often get a restricted PATH, so check common install
@@ -163,9 +185,10 @@ export function resolveNpmInvocation(): NpmInvocation {
         path.join(homedir(), '.nvm', 'alias', 'default', 'bin', 'npm'), // nvm symlink
       ];
   for (const candidate of candidates) {
-    if (existsSync(candidate)) return { bin: candidate, leadingArgs: [] };
+    if (existsSync(candidate)) return isWindows ? windowsNpmInvocation(candidate) : { bin: candidate, leadingArgs: [] };
   }
-  return { bin: 'npm', leadingArgs: [] }; // fallback — rely on PATH
+  // Fallback: rely on PATH (on Windows that is npm.cmd, which needs a shell).
+  return isWindows ? { bin: 'npm', leadingArgs: [], shell: true } : { bin: 'npm', leadingArgs: [] };
 }
 
 let _appendLog: AppendLogFn = () => {};
@@ -183,11 +206,16 @@ export async function installPluginDependencies(packageSpecs: string[]): Promise
   const npm = resolveNpmInvocation();
   _appendLog('gateway', 'system', `Installing ${packageSpecs.map((spec) => `"${spec}"`).join(', ')} via ${npm.bin}...`);
 
-  await execFileAsync(npm.bin, [...npm.leadingArgs, 'install', '--ignore-scripts', ...packageSpecs], {
+  const args = [...npm.leadingArgs, 'install', '--ignore-scripts', ...packageSpecs];
+  // Through a shell every argument is quoted: paths and specs can hold spaces.
+  const quote = (value: string) => `"${value.replace(/"/g, '""')}"`;
+  await execFileAsync(npm.shell ? quote(npm.bin) : npm.bin, npm.shell ? args.map(quote) : args, {
     cwd: DEFAULT_PLUGINS_DIR,
     timeout: 120_000, // 2-minute hard limit
+    ...(npm.shell ? { shell: true, windowsVerbatimArguments: true } : {}),
     env: {
       ...process.env,
+      ...(npm.runAsNode ? { ELECTRON_RUN_AS_NODE: '1' } : {}),
       PATH: [
         path.dirname(process.execPath),
         ...(process.platform === 'win32'
