@@ -7,7 +7,7 @@ import { composeHashFromEventLog, parseDstackEventLog, rtmr3Events, type DstackE
 import { collectViaHttp, collectTdxAndPubkey } from '../collect/http.js'
 import { antseedRdV1, verifyReportData, type BindingIngredients } from '../report-data.js'
 import type { ApprovedDstackOs, ApprovedNodeBuilds } from '../approved-node-measurements.js'
-import { DSTACK_LITE_OS_UNAVAILABLE, verifyTdxLiteOs } from '../dstack-lite-os.js'
+import { verifyTdxLiteOs } from '../dstack-lite-os.js'
 import { checkAppCompose, type CheckedAppCompose } from '../dstack-app-compose.js'
 import type { JWTPayload } from 'jose'
 import {
@@ -346,7 +346,6 @@ function approvedOs(
     return { error: `the CVM OS (MRTD ${base[0]!.slice(0, 16)}…) is not an approved dstack release` }
   }
   const lite = verifyTdxLiteOs({ mrtd: base[0]!, rtmr0: base[1]!, rtmr1: base[2]!, rtmr2: base[3]!, eventLog: rawEventLog, vmConfig })
-  if (!lite.ok && lite.reason === DSTACK_LITE_OS_UNAVAILABLE) return { error: DSTACK_LITE_OS_UNAVAILABLE }
   if (!lite.ok) return { error: `dstack lite OS check failed${lite.reason ? `: ${lite.reason}` : ''}` }
   const hash = lite.osImageHash?.toLowerCase()
   const image = typeof hash === 'string' ? (approved.osImages ?? []).find((item) => item.hash === hash) : undefined

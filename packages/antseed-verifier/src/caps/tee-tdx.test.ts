@@ -24,9 +24,9 @@ import type { Capability } from '../capability.js'
 import type { ClaimResult } from '../antseed-node-types.js'
 import { claimId, computeReportData } from '../shared.js'
 import { noncePubkeySha256V1 } from '../report-data.js'
+import { APPROVED_OS_IMAGES } from '../approved-node-measurements.js'
 import { appCompose, bootEvents, referenceCompose, testBuilds } from '../dstack-build.fixture.js'
 import {
-  DSTACK_LITE_OS_UNAVAILABLE,
   injectVerifyTdxLiteOs,
   type TdxLiteOsInput,
   type TdxLiteOsResult,
@@ -52,7 +52,7 @@ const dstackEvidence = (app = APP, eventLog = BOOT.eventLog, extra: { rawEventLo
   encodeTeeTdxEvidence(randomBytes(64), undefined, undefined, { eventLog, appCompose: app, ...extra })
 const liteEvidence = () => dstackEvidence(APP, BOOT.eventLog, { rawEventLog: RAW_EVENT_LOG, vmConfig: VM_CONFIG })
 const okLite = (over: Partial<TdxLiteOsResult> = {}): VerifyTdxLiteOs =>
-  () => ({ ok: true, osImageHash: LITE_HASH, acpiTablesVerified: true, reason: null, ...over })
+  () => ({ ok: true, osImageHash: LITE_HASH, reason: null, ...over })
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -244,7 +244,7 @@ describe('TDX cap verify — local lite OS path', () => {
     const seen: TdxLiteOsInput[] = []
     injectVerifyTdxLiteOs((input) => {
       seen.push(input)
-      return { ok: true, osImageHash: LITE_HASH, acpiTablesVerified: true, reason: null }
+      return { ok: true, osImageHash: LITE_HASH, reason: null }
     })
     const r = await run(nodeTeeCapability, stub, liteEvidence(), { approved: LITE_APPROVED })
     expect(r).toMatchObject({ claim: CLAIM, ok: true })
@@ -253,9 +253,16 @@ describe('TDX cap verify — local lite OS path', () => {
   })
 
   it('rejects when the lite check is not ok and propagates its reason', async () => {
-    injectVerifyTdxLiteOs(() => ({ ok: false, osImageHash: null, acpiTablesVerified: false, reason: 'acpi mismatch' }))
+    injectVerifyTdxLiteOs(() => ({ ok: false, osImageHash: null, reason: 'acpi mismatch' }))
     const r = await run(nodeTeeCapability, stub, liteEvidence(), { approved: LITE_APPROVED })
     expect(r).toMatchObject({ ok: false, detail: expect.stringMatching(/dstack lite OS check failed: acpi mismatch/) })
+  })
+
+  it('rejects a failed lite check even when the returned hash is an approved OS image', async () => {
+    const approved = APPROVED_OS_IMAGES[0]!
+    injectVerifyTdxLiteOs(() => ({ ok: false, osImageHash: approved.hash, reason: 'x' }))
+    const r = await run(nodeTeeCapability, stub, liteEvidence(), { approved: { ...LITE_APPROVED, osImages: [approved] } })
+    expect(r).toMatchObject({ ok: false, detail: expect.stringMatching(/dstack lite OS check failed: x/) })
   })
 
   it('rejects a lite-checked OS whose image hash is not approved', async () => {
@@ -276,10 +283,6 @@ describe('TDX cap verify — local lite OS path', () => {
     })
   })
 
-  it('rejects when the lite verifier is unavailable', async () => {
-    const r = await run(nodeTeeCapability, stub, liteEvidence(), { approved: LITE_APPROVED })
-    expect(r).toMatchObject({ ok: false, detail: expect.stringMatching(DSTACK_LITE_OS_UNAVAILABLE) })
-  })
 })
 
 // The provider cap verifies a foreign report_data scheme declared in the evidence (Chutes flow).

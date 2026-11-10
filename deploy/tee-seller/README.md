@@ -271,9 +271,10 @@ cargo build --release --manifest-path dstack/Cargo.toml -p dstack-mr-cli   # in 
 dstack-mr measure -c <vCPUs> -m <memory>G --qemu-version 8.2.2 --hotplug-off false metadata.json
 ```
 
-The QEMU version and hotplug setting are the hosts' (Phala Cloud's run QEMU 8.2.2 with hotplug
-on), and change MRTD and RTMR0, so recompute when the provider changes them. Check one shape
-against a real CVM's quote before approving the release.
+The built-in table was computed for QEMU 8.2.2 with hotplug on; other host configurations are
+handled by the lite path. QEMU version and hotplug change MRTD and RTMR0, so recompute table
+entries when those settings change. Check one shape against a real CVM's quote before approving
+the release.
 
 For the local lite path, also add the vetted 64-hex lowercase `os_image_hash` to `APPROVED_OS_IMAGES`
 in the same file, or locally with `ANTSEED_VERIFIER_NODE_BUILDS` using

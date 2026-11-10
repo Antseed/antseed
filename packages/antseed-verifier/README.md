@@ -71,8 +71,7 @@ passing with no extra service. When the table misses, the buyer runs a local lit
 seller's GetQuote `vmConfig` and `rawEventLog` against the quote's already-verified measurements
 and accepts the returned `osImageHash` if it is in `APPROVED_OS_IMAGES` / `osImages`. `eventLog`
 stays the RTMR3 events so older buyers are unaffected. The lite path needs an updated seller image
-that sends those fields; the lite verifier is not packaged yet, so that path reports unavailable
-until it is wired.
+that sends those fields.
 
 ## Appendix: provider adapters
 
