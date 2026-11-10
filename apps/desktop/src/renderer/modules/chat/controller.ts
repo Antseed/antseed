@@ -232,9 +232,12 @@ export function initChatModule({
 
   /** The new-chat default: the last model used (if the gateway still lists it), else the first text model. */
   /** The model Private moved away from, for going back. Survives leaving Home. */
-  let modelMovedForPrivate: { from: string; to: string } | null = null;
+  let modelMovedForPrivate: { from: string; to: string; conversationId: string | null } | null = null;
   /** Chats the user chose to carry from Private into Anonymous. */
   const privateHistoryAllowed = new Set<string>();
+  /** Stop presses per conversation: a request checks its count is unchanged after every wait. */
+  const stopsByConversation = new Map<string, number>();
+  const stopCount = (convId: string): number => stopsByConversation.get(convId) ?? 0;
   /** A model the new chat was started on by hand (Home's), which the default must not replace. */
   let draftModel: string | null = null;
   uiState.chatPrivateConversationIds = loadPrivateChats();
@@ -325,7 +328,9 @@ export function initChatModule({
   /** Not saved as the last model: nobody chose it, and it shouldn't outlive Private. */
   function moveModelForPrivate(next: string): void {
     const current = uiState.chatSelectedModelId;
-    modelMovedForPrivate = { from: modelMovedForPrivate?.from ?? current, to: next };
+    const conversationId = activeConversation?.id ?? null;
+    const sameChat = modelMovedForPrivate?.conversationId === conversationId;
+    modelMovedForPrivate = { from: (sameChat ? modelMovedForPrivate?.from : null) ?? current, to: next, conversationId };
     uiState.chatImageModelId = null;
     uiState.chatSelectedModelId = next;
     // The open chat carries on with the model Private can use.
@@ -351,6 +356,9 @@ export function initChatModule({
     const previous = modelMovedForPrivate;
     modelMovedForPrivate = null;
     if (!previous || uiState.chatSelectedModelId !== previous.to) return;
+    // Only the chat Private moved goes back; another one on that model chose it.
+    // A new chat isn't saved yet, so it can always go back.
+    if (activeConversation && activeConversation.id !== previous.conversationId) return;
     uiState.chatSelectedModelId = previous.from;
     if (activeConversation) saveOpenChatModel(previous.from);
     void refreshPermissionModeForModel(previous.from);
@@ -1062,6 +1070,7 @@ export function initChatModule({
     clearChatNotices();
     fundsNoticeByConversation.delete(convId);
     setConversationSending(convId, true);
+    const stops = stopCount(convId);
     void (async () => {
       let preparedAttachments: PreparedChatAttachment[];
       try {
@@ -1071,6 +1080,7 @@ export function initChatModule({
         setConversationSending(convId, false);
         return;
       }
+      if (stopCount(convId) !== stops) return;
 
       const readyAttachmentCount = preparedAttachments.filter((attachment) => attachment.status === 'ready').length;
       if (content.length === 0 && readyAttachmentCount === 0) {
@@ -1097,7 +1107,7 @@ export function initChatModule({
         activeConversation.updatedAt = Date.now();
       }
       notifyUiStateChanged();
-      void dispatchChatRequest(convId, content, preparedAttachments);
+      void dispatchChatRequest(convId, content, preparedAttachments, stops);
     })();
   }
 
@@ -1115,7 +1125,8 @@ export function initChatModule({
     }
   }
 
-  async function dispatchChatRequest(convId: string, content: string, attachments?: PreparedChatAttachment[]): Promise<void> {
+  /** `stops`: the conversation's stop count when this request was made; a Stop since cancels it. */
+  async function dispatchChatRequest(convId: string, content: string, attachments?: PreparedChatAttachment[], stops = stopCount(convId)): Promise<void> {
     if (!bridge?.chatAiSendStream) {
       setConversationSending(convId, false);
       return;
@@ -1123,9 +1134,11 @@ export function initChatModule({
     // The model picked before Send, not whatever the summary says once its save lands.
     const modelUpdate = pendingModelUpdates.get(convId);
     if (modelUpdate) await modelUpdate.done;
-    const privacy = await clearForPrivacy(convId);
+    if (stopCount(convId) !== stops) return;
+    const privacy = await clearForPrivacy(convId, stops);
     if (!privacy) {
-      setConversationSending(convId, false);
+      // A stopped request leaves the flag to whatever was sent after it.
+      if (stopCount(convId) === stops) setConversationSending(convId, false);
       return;
     }
     const modelId = modelUpdate?.modelId || findConversationSummary(convId)?.service || uiState.chatSelectedModelId;
@@ -1173,8 +1186,9 @@ export function initChatModule({
    * or stopped while held); otherwise whether the gateway must still be in
    * Private when it sends, which the main process checks after its own wait.
    */
-  async function clearForPrivacy(convId: string): Promise<{ requirePrivate: boolean } | null> {
-    if (await holdForPrivacySwitch() && !isConversationSending(convId)) return null;
+  async function clearForPrivacy(convId: string, stops: number): Promise<{ requirePrivate: boolean } | null> {
+    await holdForPrivacySwitch();
+    if (stopCount(convId) !== stops) return null;
     const mode = privacyResource.getSnapshot().data?.mode;
     const held = heldPrivate(convId);
     if (mode === 'anonymous' && held) {
@@ -1254,7 +1268,10 @@ export function initChatModule({
 
   async function abortChat(): Promise<void> {
     const convId = uiState.chatActiveConversation;
-    if (convId) setConversationSending(convId, false);
+    if (convId) {
+      stopsByConversation.set(convId, stopCount(convId) + 1);
+      setConversationSending(convId, false);
+    }
     else {
       draftAborts += 1;
       setDraftSending(false);
@@ -1273,9 +1290,10 @@ export function initChatModule({
   async function runImageRequest(convId: string, request: ImageRequest): Promise<void> {
     if (!bridge?.chatGenerateImage) return;
     setConversationSending(convId, true);
+    const stops = stopCount(convId);
     queueScrollChatToBottom();
     try {
-      const privacy = await clearForPrivacy(convId);
+      const privacy = await clearForPrivacy(convId, stops);
       if (!privacy) return;
       uiState.chatThinkingPhase = request.sourceImageAttachmentId ? 'Editing image' : 'Generating image';
       notifyUiStateChanged();
@@ -1307,7 +1325,8 @@ export function initChatModule({
         reportChatError(message, 'Image generation failed');
       }
     } finally {
-      setConversationSending(convId, false);
+      // Stopped: the flag now belongs to whatever was sent after it.
+      if (stopCount(convId) === stops) setConversationSending(convId, false);
     }
   }
 

@@ -9,12 +9,12 @@ function deferred<T>() {
   const promise = new Promise<T>((res) => { resolve = res; });
   return { promise, resolve };
 }
-const model = (id: string, type = 'text') => ({ id, label: id, type, protocol: type === 'text' ? 'openai-chat-completions' : null, supportsImages: false, sellers: 1, free: false, minImageUsd: null, freeSellerId: null, freeForStakers: false, tee: true, toolUse: true, reasoning: false, inputUsdPerMillion: null, outputUsdPerMillion: null });
+const model = (id: string, type = 'text', tee = true) => ({ id, label: id, type, protocol: type === 'text' ? 'openai-chat-completions' : null, supportsImages: false, sellers: 1, free: false, minImageUsd: null, freeSellerId: null, freeForStakers: false, tee, toolUse: true, reasoning: false, inputUsdPerMillion: null, outputUsdPerMillion: null });
 const conv = (id: string, service: string) => ({ id, title: id, service, messages: [], createdAt: 1, updatedAt: 1, usage: { inputTokens: 0, outputTokens: 0 } });
 const lowFunds = { ok: false, error: 'Too low.', stopReason: { kind: 'payment_required', message: 'Too low.' } };
 const privacy = (mode: 'anonymous' | 'private') => ({ mode, editable: true, requiredAbove: false });
 
-function setup(options: { lastModel?: string; send?: () => Promise<unknown>; image?: () => Promise<unknown> } = {}) {
+function setup(options: { lastModel?: string; send?: () => Promise<unknown>; image?: () => Promise<unknown>; models?: unknown[]; conversations?: Array<ReturnType<typeof conv>> } = {}) {
   vi.stubGlobal('window', {
     localStorage: { getItem: () => options.lastModel ?? null, setItem: () => undefined },
     setTimeout: globalThis.setTimeout,
@@ -22,11 +22,11 @@ function setup(options: { lastModel?: string; send?: () => Promise<unknown>; ima
     clearInterval: globalThis.clearInterval,
   });
   const uiState = createInitialUiState();
-  uiState.chatModels = [model('model-a'), model('model-b'), model('image-model', 'image')] as never;
+  uiState.chatModels = (options.models ?? [model('model-a'), model('model-b'), model('image-model', 'image')]) as never;
   uiState.chatSelectedModelId = 'model-a';
   uiState.creditsBalanceKnown = true;
   uiState.creditsTotalOwnedUsdc = '5';
-  const conversations = [conv('conv-1', 'model-b')];
+  const conversations = options.conversations ?? [conv('conv-1', 'model-b')];
   const chatAiSendStream = vi.fn(options.send ?? (async () => ({ ok: true })));
   const chatGenerateImage = vi.fn(options.image ?? (async () => ({ ok: true, user: { role: 'user', content: 'a cat' }, assistant: { role: 'assistant', content: 'done' } })));
   const chatAiCreateConversation = vi.fn(async (service: string) => {
@@ -38,13 +38,14 @@ function setup(options: { lastModel?: string; send?: () => Promise<unknown>; ima
     chatAiListConversations: async () => ({ ok: true, data: [...conversations] }),
     chatAiGetConversation: async (id: string) => ({ ok: true, data: { ...conversations.find((candidate) => candidate.id === id)! } }),
     chatAiCreateConversation,
-    chatAiSetModel: async () => ({ ok: true }),
+    chatAiSetModel: vi.fn(async () => ({ ok: true })),
+    chatAiAbort: async () => undefined,
     chatPrepareAttachments: async () => ({ ok: true, data: [] }),
     chatAiSendStream,
     chatGenerateImage,
   };
   const api = initChatModule({ bridge: bridge as never, uiState, appendSystemLog: () => undefined });
-  return { api, uiState, chatAiSendStream, chatGenerateImage, chatAiCreateConversation };
+  return { api, uiState, chatAiSendStream, chatGenerateImage, chatAiCreateConversation, chatAiSetModel: bridge.chatAiSetModel };
 }
 
 describe('privacy at the moment a request leaves', () => {
@@ -86,6 +87,24 @@ describe('privacy at the moment a request leaves', () => {
     write.resolve({ ok: true, privacy: privacy('private') });
     await tick();
     expect(chatAiSendStream).not.toHaveBeenCalled();
+  });
+
+  it('a held send that is stopped stays stopped when a new one is sent before the switch lands', async () => {
+    const { api, chatAiSendStream } = setup();
+    await api.openConversation('conv-1');
+    privacyResource.setData(privacy('anonymous'));
+    const write = deferred<unknown>();
+    (window as unknown as { antseedDesktop: unknown }).antseedDesktop = { gatewaySetPrivacy: () => write.promise };
+    void requestPrivacyMode('private');
+    api.sendMessage('first');
+    await tick();
+    await api.abortChat();
+    api.sendMessage('second');
+    await tick();
+    write.resolve({ ok: true, privacy: privacy('private') });
+    await tick();
+    expect(chatAiSendStream).toHaveBeenCalledTimes(1);
+    expect(chatAiSendStream.mock.calls[0]?.[1]).toBe('second');
   });
 
   it('Try again does not send a chat sent in Private once Private was turned off elsewhere', async () => {
@@ -149,5 +168,31 @@ describe('a new chat from Home', () => {
     api.sendMessage('hello');
     await tick();
     expect(chatAiCreateConversation).toHaveBeenCalledWith('model-b');
+  });
+});
+
+describe('a model Private chose', () => {
+  beforeEach(() => {
+    vi.stubGlobal('document', { querySelector: () => null });
+    vi.stubGlobal('requestAnimationFrame', (callback: () => void) => setTimeout(callback, 0));
+  });
+
+  it('goes back only in the chat it was chosen for', async () => {
+    const { api, uiState, chatAiSetModel } = setup({
+      models: [model('model-x', 'text', false), model('model-y')],
+      conversations: [conv('conv-a', 'model-x'), conv('conv-b', 'model-y')],
+    });
+    privacyResource.setData(privacy('anonymous'));
+    await api.openConversation('conv-a');
+    api.privacyModeChosen('private');
+    expect(uiState.chatSelectedModelId).toBe('model-y');
+    await tick();
+
+    await api.openConversation('conv-b');
+    chatAiSetModel.mockClear();
+    api.privacyModeChosen('anonymous');
+    await tick();
+    expect(uiState.chatSelectedModelId).toBe('model-y');
+    expect(chatAiSetModel).not.toHaveBeenCalled();
   });
 });

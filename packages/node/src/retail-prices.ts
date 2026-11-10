@@ -34,3 +34,16 @@ export function parseRetailPrices(body: unknown): RetailPriceMap | null {
   }
   return prices.size > 0 ? prices : null;
 }
+
+/**
+ * What the tokens would cost at a retail price, in USD. `totalInput` is all
+ * input, fresh plus cached; cached input uses its own price, or the input
+ * price when the list has none.
+ */
+export function retailTokenCostUsd(totalInput: number, cachedInput: number, output: number, price: RetailPrice): number {
+  const cached = Math.min(cachedInput, totalInput);
+  const inputPrice = price.input ?? 0;
+  return ((totalInput - cached) * inputPrice
+    + cached * (price.cachedInput ?? inputPrice)
+    + output * (price.output ?? 0)) / 1_000_000;
+}

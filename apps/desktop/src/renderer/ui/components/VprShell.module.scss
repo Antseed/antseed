@@ -17,8 +17,8 @@
 /* A bar notice (update, network, deposit) is fixed over the window's last
    rows; while one shows, the layout ends right above it (BottomNotice sets
    its height) so the composer's pickers and the sidebar's last buttons stay
-   reachable. */
-.shell:has([data-bottom-notice='bar']) {
+   reachable. Matched from the body: a deposit notice is portaled there, outside the shell. */
+:global(body):has([data-bottom-notice='bar']) .shell {
   box-sizing: border-box;
   padding-bottom: var(--bottom-notice-height, 0px);
 }

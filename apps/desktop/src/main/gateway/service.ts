@@ -7,7 +7,7 @@
 import { parseGatewayKeyInfo, withUsageOf } from './key-info.js';
 import { readConfig } from '../runtime/config-io.js';
 import type { GatewayKeyInfo, GatewayPrivacy, GatewayStatus } from '../../shared/gateway-types.js';
-import { applyPrivacyToKeys } from './privacy-keys.js';
+import { applyPrivacyToKeys, publishUnderCurrentPrivacy } from './privacy-keys.js';
 import { publishKeyWithPolicy } from './key-with-policy.js';
 import { assertKeyMayBeRecreated, keyIsUsable, rotateKeys, unusedAppKeyScopes, type KeyRecord } from './rotate-keys.js';
 import { createForeignBuyerGuard, foreignBuyerMessage, portInUse, restartForNewIdentity } from './restart-for-identity.js';
@@ -297,18 +297,29 @@ async function ensureLocalKey(scope: string, appLabel?: string): Promise<StoredG
     // A new key (first run, an app's own, replaced, or the gateway forgot the
     // old one) starts with no policy. In Private it can't be used until it has
     // one, or requests could reach any seller while the app says Private.
-    const carryPrivate = getGatewaySettings().privacy === 'private';
-    return publishKeyWithPolicy({
-      create: () => createLocalKey(scopeLabel(scope, appLabel)),
-      applyPolicy: carryPrivate
-        ? async (key) => {
-          if (!key.id) throw new Error('The new key has no id on the gateway');
-          await applyPrivacyToKey(key.id, 'private');
-        }
-        : null,
-      revoke: async (key) => { if (key.id) await revokeLocalKey(key.id); },
-      save: (key) => setLocalKey(scope, key),
-    });
+    const revoke = async (key: StoredGatewayKey) => { if (key.id) await revokeLocalKey(key.id); };
+    return publishUnderCurrentPrivacy(
+      (mode) => publishKeyWithPolicy({
+        create: () => createLocalKey(scopeLabel(scope, appLabel)),
+        applyPolicy: mode === 'private'
+          ? async (key) => {
+            if (!key.id) throw new Error('The new key has no id on the gateway');
+            await applyPrivacyToKey(key.id, 'private');
+          }
+          : null,
+        revoke,
+        save: (key) => setLocalKey(scope, key),
+      }),
+      () => getGatewaySettings().privacy,
+      async (key, mode) => {
+        if (!key.id) throw new Error('The new key has no id on the gateway');
+        await applyPrivacyToKey(key.id, mode);
+      },
+      async (key) => {
+        deleteLocalKey(scope);
+        await revoke(key);
+      },
+    );
   })().finally(() => keyPromises.delete(scope));
   keyPromises.set(scope, promise);
   return promise;
@@ -511,8 +522,12 @@ async function applyGatewayPrivacy(mode: GatewayPrivacyMode): Promise<GatewayPri
   const key = await ensureLocalKey(DESKTOP_KEY_SCOPE);
   if (!key.id) throw new Error('The desktop key has no id on the gateway');
   // Every app's own key too: Private is promised for the whole gateway.
-  const appKeyIds = listLocalKeys().flatMap((entry) => (entry.id ? [entry.id] : []));
-  await applyPrivacyToKeys(mode, key.id, appKeyIds, (id) => applyPrivacyToKey(id, mode));
-  updateGatewaySettings({ privacy: mode });
+  await applyPrivacyToKeys(
+    mode,
+    key.id,
+    () => listLocalKeys().flatMap((entry) => (entry.id ? [entry.id] : [])),
+    (id) => applyPrivacyToKey(id, mode),
+    () => updateGatewaySettings({ privacy: mode }),
+  );
   return getGatewayPrivacy();
 }

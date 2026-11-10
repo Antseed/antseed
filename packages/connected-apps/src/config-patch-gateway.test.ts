@@ -394,6 +394,20 @@ test('files holding the gateway key are readable only by their owner', { skip: p
   });
 });
 
+test('goose: moving from the gateway to the legacy proxy keeps the user\'s own selection for disconnect', async () => {
+  await withDir(async (dir) => {
+    const configPath = path.join(dir, 'config.yaml');
+    const providerPath = path.join(dir, 'custom_providers', 'custom_antseed.json');
+    await writeFile(configPath, 'GOOSE_PROVIDER: anthropic\nGOOSE_MODEL: claude-sonnet\n', 'utf8');
+    const patch: ConfigPatchDef = { format: 'goose', configPath, providerKey: 'openai', baseURL: 'http://localhost:{buyerPort}' };
+    writeConfigPatch(patch, LOCAL);
+    writeConfigPatch(patch, 8377);
+    assert.equal(existsSync(providerPath), false);
+    assert.equal(removeConfigPatch(patch), true);
+    assert.deepEqual(parse(await readFile(configPath, 'utf8')), { GOOSE_PROVIDER: 'anthropic', GOOSE_MODEL: 'claude-sonnet' });
+  });
+});
+
 test('goose: legacy patch still removes after the upgrade', async () => {
   await withDir(async (dir) => {
     const configPath = path.join(dir, 'config.yaml');

@@ -1916,16 +1916,22 @@ function applyGooseProviderToFile(filePath: string, patch: GooseConfigPatchDef, 
   const raw = existsSync(filePath) ? readFileSync(filePath, 'utf8') : '';
   let lines = raw.length > 0 ? raw.split('\n') : [];
   while (lines.length > 0 && lines[lines.length - 1]!.trim() === '') lines.pop();
-  const ownedSelection = readYamlTopLevelString(lines, 'GOOSE_PROVIDER') === patch.providerKey
+  const provider = readYamlTopLevelString(lines, 'GOOSE_PROVIDER');
+  // Coming from our gateway provider: the user's own selection was saved when
+  // that was written, and the pick in it is theirs.
+  const fromOurGateway = provider === GOOSE_CUSTOM_PROVIDER && readGooseCustomProvider(filePath).ours;
+  const ownedSelection = provider === patch.providerKey || fromOurGateway
     ? readYamlTopLevelString(lines, 'GOOSE_MODEL')
     : undefined;
   const selected = pickModel(t, ownedSelection);
-  if (readYamlTopLevelString(lines, 'GOOSE_PROVIDER') !== patch.providerKey) rememberGooseSelection(filePath, lines);
+  if (provider !== patch.providerKey && !fromOurGateway) rememberGooseSelection(filePath, lines);
   lines = setYamlTopLevelString(lines, 'GOOSE_PROVIDER', patch.providerKey);
   if (selected) lines = setYamlTopLevelString(lines, 'GOOSE_MODEL', selected);
   lines = setYamlTopLevelString(lines, 'OPENAI_HOST', baseURL);
   lines = setYamlTopLevelString(lines, 'OPENAI_API_KEY', t.apiKey);
   writeTextFile(filePath, `${lines.join('\n')}\n`);
+  // Only once nothing selects it any more.
+  if (fromOurGateway) removeGooseCustomProvider(filePath);
   deleteGoosePatchState(filePath);
 }
 

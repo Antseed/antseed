@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { getServiceMetadataId } from '@antseed/node'
 import { canonicalModelKey } from '@antseed/node/model-identity'
-import { parseRetailPrices, type RetailPriceMap } from '@antseed/node/retail-prices'
+import { parseRetailPrices, retailTokenCostUsd, type RetailPriceMap } from '@antseed/node/retail-prices'
 import { getGlobalOptions } from '../types.js'
 import { BAKED_COMPARABLE_PRICES_URL } from '../../../generated/baked-defaults.js'
 import { loadConfig } from '../../../config/loader.js'
@@ -264,14 +264,9 @@ function computeMeasuredSavings(
     if (!ref || (ref.input === null && ref.output === null)) continue
     // Buyer-side inputTokens are total logical input (fresh + cached).
     const totalInput = tokens(service.inputTokens)
-    const cached = Math.min(tokens(service.cachedInputTokens), totalInput)
-    const freshInput = totalInput - cached
     const output = tokens(service.outputTokens)
     if (totalInput === 0 && output === 0) continue
-    const inputPrice = ref.input ?? 0
-    const cachedPrice = ref.cachedInput ?? inputPrice
-    const outputPrice = ref.output ?? 0
-    const serviceBaseline = (freshInput * inputPrice + cached * cachedPrice + output * outputPrice) / 1_000_000
+    const serviceBaseline = retailTokenCostUsd(totalInput, tokens(service.cachedInputTokens), output, ref)
     if (serviceBaseline <= 0) continue
     baselineUsd += serviceBaseline
     actualUsd += tokens(service.amountUsdc) / 1_000_000

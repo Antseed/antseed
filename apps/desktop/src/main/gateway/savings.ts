@@ -10,7 +10,7 @@
  * comparison is like for like. Mirrors the CLI's `buyer activity` savings.
  */
 import { canonicalModelKey } from '@antseed/node/model-identity';
-import { parseRetailPrices, type RetailPriceMap } from '@antseed/node/retail-prices';
+import { parseRetailPrices, retailTokenCostUsd, type RetailPriceMap } from '@antseed/node/retail-prices';
 import type { GatewaySavings } from '../../shared/gateway-types.js';
 
 export type { GatewaySavings };
@@ -77,13 +77,7 @@ export function computeSavings(
     const price = name ? prices.get(canonicalModelKey(name)) : undefined;
     if (!price) continue;
     // The buyer's input tokens are fresh plus cached; cached ones are priced apart.
-    const totalInput = amount(service.inputTokens);
-    const cached = Math.min(amount(service.cachedInputTokens), totalInput);
-    const output = amount(service.outputTokens);
-    const inputPrice = price.input ?? 0;
-    const retail = ((totalInput - cached) * inputPrice
-      + cached * (price.cachedInput ?? inputPrice)
-      + output * (price.output ?? 0)) / 1_000_000;
+    const retail = retailTokenCostUsd(amount(service.inputTokens), amount(service.cachedInputTokens), amount(service.outputTokens), price);
     if (retail <= 0) continue;
     matched = true;
     retailUsd += retail;

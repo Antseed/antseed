@@ -157,7 +157,7 @@ export function VprHomeView({ onSelectView }: Props) {
               </div>
             </div>
 
-            <div data-glide-fade>
+            <div className={styles.setup} data-glide-fade>
               <HomeDashboard onSelectView={onSelectView} setupOnly />
             </div>
 

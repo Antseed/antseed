@@ -1,9 +1,9 @@
 @use '../../../theme-tokens' as tokens;
 
 /* Doubled class beats the global `.view` rule regardless of stylesheet
-   injection order. Home is one centred column over the living field that
-   always fits the window: heading, prompt and mode note, then the agent skills
-   and the apps, whose rows that don't fit are hidden whole. It never scrolls. */
+   injection order. Home is one centred column over the living field that fits
+   a normal window: heading, prompt and mode note, then the setup steps. In a
+   short window only the setup steps scroll (see `.setup`). */
 .view.view {
   position: relative;
   height: 100%;
@@ -56,6 +56,18 @@
   flex-direction: column;
   gap: 10px;
   min-width: 0;
+}
+
+/* Shrinks and scrolls on its own when a short window or a long prompt leaves
+   too little room. Outside the hero, so its model menus aren't clipped. The
+   padding keeps the card's ring and shadow inside the scroll box; it reaches
+   into the view's bottom padding so a normal window still doesn't scroll. */
+.setup {
+  flex: 0 1 auto;
+  min-height: 0;
+  margin: 0 -8px -16px;
+  padding: 0 8px 4px;
+  overflow-y: auto;
 }
 
 .hero {
