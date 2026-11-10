@@ -9,6 +9,7 @@
  * default). Models with no retail match are left out of both sides, so the
  * comparison is like for like. Mirrors the CLI's `buyer activity` savings.
  */
+import type { BuyerUsageServicePoint } from '@antseed/node';
 import { canonicalModelKey } from '@antseed/node/model-identity';
 import { parseRetailPrices, retailTokenCostUsd, type RetailPriceMap } from '@antseed/node/retail-prices';
 import type { GatewaySavings } from '../../shared/gateway-types.js';
@@ -18,14 +19,11 @@ export type { GatewaySavings };
 export { parseRetailPrices };
 export type { RetailPrice, RetailPriceMap } from '@antseed/node/retail-prices';
 
-export type ServiceUsage = {
-  serviceIdHash: string;
-  amountUsdc: string;
-  inputTokens: string;
-  cachedInputTokens: string;
-  outputTokens: string;
-  requestCount: number;
-};
+/** The buyer's per-service usage, as much of it as the savings need. */
+export type ServiceUsage = Pick<
+  BuyerUsageServicePoint,
+  'serviceIdHash' | 'amountUsdc' | 'inputTokens' | 'cachedInputTokens' | 'outputTokens' | 'requestCount'
+>;
 
 const USDC_BASE_UNITS_PER_USD = 1_000_000;
 const PRICES_TTL_MS = 10 * 60_000;

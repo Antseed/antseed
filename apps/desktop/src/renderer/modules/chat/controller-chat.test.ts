@@ -405,4 +405,28 @@ describe('chat controller', () => {
     await waitFor(() => sends.length === 1);
     expect(sends[0]!.modelId).toBe('model-b');
   });
+
+  it('an earlier request finishing late does not end a follow-up that is still preparing', async () => {
+    const firstSent = deferred<{ ok: boolean }>();
+    const attachments = deferred<{ ok: boolean; data: unknown[] }>();
+    let calls = 0;
+    const { api, uiState, emit } = setup(undefined, {
+      chatAiSendStream: () => (++calls === 1 ? firstSent.promise : Promise.resolve({ ok: true })),
+      chatPrepareAttachments: () => attachments.promise,
+    });
+    await api.refreshChatConversations();
+    await api.openConversation('conv-a');
+    api.sendMessage('first');
+    await waitFor(() => calls === 1);
+    emit('done', { conversationId: 'conv-a' });
+    expect(uiState.chatSendingConversationIds).toEqual([]);
+    // The follow-up waits on its attachment while the first IPC call returns.
+    api.sendMessage('second', [{ name: 'a.txt', mimeType: 'text/plain', data: 'aGk=' }] as never);
+    expect(uiState.chatSendingConversationIds).toEqual(['conv-a']);
+    firstSent.resolve({ ok: true });
+    await tick();
+    expect(uiState.chatSendingConversationIds).toEqual(['conv-a']);
+    attachments.resolve({ ok: true, data: [] });
+    await waitFor(() => calls === 2);
+  });
 });

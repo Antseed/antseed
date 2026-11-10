@@ -31,7 +31,7 @@ test('the offer summary has the cheapest prices, free and stakers-only offers, T
     id: 'deepseek-v4-flash',
     capabilities: { tool_use: true },
     peers: [
-      { peerId: 'a', inputUsdPerMillion: 0.3, outputUsdPerMillion: 0.9, advertisedVerifierIds: ['antseed-verifier'] },
+      { peerId: 'a', inputUsdPerMillion: 0.3, outputUsdPerMillion: 0.9, advertisedVerifierIds: ['antseed-verifier'], teeScope: 'seller-node' },
       { peerId: 'b', inputUsdPerMillion: 0.1, outputUsdPerMillion: 1.2, capabilities: { reasoning: true } },
       { peerId: 'c', inputUsdPerMillion: 0, outputUsdPerMillion: 0, freeTier: { base: { stakersOnly: true } } },
     ],
@@ -184,7 +184,7 @@ test('in Private only a free seller on sealed hardware makes a model free', asyn
     id: 'm',
     peers: [
       { peerId: 'open-free', inputUsdPerMillion: 0, outputUsdPerMillion: 0 },
-      { peerId: 'tee-paid', inputUsdPerMillion: 1, outputUsdPerMillion: 2, advertisedVerifierIds: [TEE_VERIFIER_ID] },
+      { peerId: 'tee-paid', inputUsdPerMillion: 1, outputUsdPerMillion: 2, advertisedVerifierIds: [TEE_VERIFIER_ID], teeScope: 'seller-node' },
     ],
   };
   assert.equal(toChatModel(entry).free, true);
@@ -193,7 +193,7 @@ test('in Private only a free seller on sealed hardware makes a model free', asyn
   assert.equal(privateModel.free, false);
   assert.equal(privateModel.freeSellerId, null);
 
-  const teeFree = { id: 't', peers: [{ peerId: 'tee-free', inputUsdPerMillion: 0, outputUsdPerMillion: 0, advertisedVerifierIds: [TEE_VERIFIER_ID] }] };
+  const teeFree = { id: 't', peers: [{ peerId: 'tee-free', inputUsdPerMillion: 0, outputUsdPerMillion: 0, advertisedVerifierIds: [TEE_VERIFIER_ID], teeScope: 'seller-node' }] };
   assert.equal(toChatModel(teeFree, { teeOnly: true }).freeSellerId, 'tee-free');
 });
 
@@ -203,4 +203,19 @@ test('a model is TEE end to end only when a seller\'s model provider is attested
   assert.equal(toChatModel({ id: 'm', peers: [tee('seller-node'), { ...tee('end-to-end'), peerId: 'b' }] }).teeEndToEnd, true);
   // Without the TEE verifier listed (an unproven seller) the scope says nothing.
   assert.equal(toChatModel({ id: 'm', peers: [{ peerId: 'c', teeScope: 'end-to-end' }] }).teeEndToEnd, undefined);
+});
+
+test('each desktop chat sends its own session id, so chats that open alike stay apart', () => {
+  const one = makeGatewayModel({ modelId: 'm', endpoint: ENDPOINT, protocol: 'openai-chat-completions', supportsImages: false, conversationId: 'conv-1' });
+  const two = makeGatewayModel({ modelId: 'm', endpoint: ENDPOINT, protocol: 'openai-chat-completions', supportsImages: false, conversationId: 'conv-2' });
+  assert.equal(one.headers?.['x-vpr-session-id'], 'conv-1');
+  assert.equal(two.headers?.['x-vpr-session-id'], 'conv-2');
+});
+
+test('a seller that only advertises the TEE verifier, unchecked, doesn\'t make a model TEE', () => {
+  const advertised = { peerId: 'a', inputUsdPerMillion: 1, outputUsdPerMillion: 2, advertisedVerifierIds: ['antseed-verifier'] };
+  assert.equal(toChatModel({ id: 'm', peers: [advertised] }).tee, false);
+  // Shared with a proven one, the model is TEE (some of its sellers are).
+  assert.equal(toChatModel({ id: 'm', peers: [advertised, { ...advertised, peerId: 'b', teeScope: 'seller-node' }] }).tee, true);
+  assert.equal(toChatModel({ id: 'm', peers: [{ peerId: 'c', inputUsdPerMillion: 1, outputUsdPerMillion: 2 }] }).tee, false);
 });

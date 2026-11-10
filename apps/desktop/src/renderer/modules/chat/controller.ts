@@ -243,8 +243,25 @@ export function initChatModule({
   /** Chats the user chose to carry from Private into Anonymous. */
   const privateHistoryAllowed = new Set<string>();
   /** Stop presses per conversation: a request checks its count is unchanged after every wait. */
-  const stopsByConversation = new Map<string, number>();
-  const stopCount = (convId: string): number => stopsByConversation.get(convId) ?? 0;
+  /**
+   * Which request owns each conversation's "sending" state. Only the owner may
+   * clear it, so an earlier request finishing late can't end a follow-up's;
+   * Stop takes ownership away, which also cancels a request still waiting.
+   */
+  const sendOwners = new Map<string, number>();
+  let sendSeq = 0;
+  function beginSend(convId: string): number {
+    const token = ++sendSeq;
+    sendOwners.set(convId, token);
+    setConversationSending(convId, true);
+    return token;
+  }
+  const ownsSend = (convId: string, token: number): boolean => sendOwners.get(convId) === token;
+  function endSend(convId: string, token: number): void {
+    if (!ownsSend(convId, token)) return;
+    sendOwners.delete(convId);
+    setConversationSending(convId, false);
+  }
   /** A model the new chat was started on by hand (Home's), which the default must not replace. */
   let draftModel: string | null = null;
   uiState.chatPrivateConversationIds = loadPrivateChats();
@@ -1104,24 +1121,23 @@ export function initChatModule({
     const content = text.trim();
     clearChatNotices();
     fundsNoticeByConversation.delete(convId);
-    setConversationSending(convId, true);
-    const stops = stopCount(convId);
+    const token = beginSend(convId);
     void (async () => {
       let preparedAttachments: PreparedChatAttachment[];
       try {
         preparedAttachments = await prepareAttachmentsForSend(convId, rawAttachments);
       } catch (err) {
         reportChatError(err, 'Attachment preparation failed');
-        setConversationSending(convId, false);
+        endSend(convId, token);
         return;
       }
-      if (stopCount(convId) !== stops) return;
+      if (!ownsSend(convId, token)) return;
 
       const readyAttachmentCount = preparedAttachments.filter((attachment) => attachment.status === 'ready').length;
       if (content.length === 0 && readyAttachmentCount === 0) {
         const firstError = preparedAttachments.find((attachment) => attachment.status === 'error')?.error;
         showChatError(firstError || 'No supported attachment content to send.');
-        setConversationSending(convId, false);
+        endSend(convId, token);
         return;
       }
 
@@ -1142,7 +1158,7 @@ export function initChatModule({
         activeConversation.updatedAt = Date.now();
       }
       notifyUiStateChanged();
-      void dispatchChatRequest(convId, content, preparedAttachments, stops);
+      void dispatchChatRequest(convId, token, content, preparedAttachments);
     })();
   }
 
@@ -1160,26 +1176,25 @@ export function initChatModule({
     }
   }
 
-  /** `stops`: the conversation's stop count when this request was made; a Stop since cancels it. */
-  async function dispatchChatRequest(convId: string, content: string, attachments?: PreparedChatAttachment[], stops = stopCount(convId)): Promise<void> {
+  /** `token`: the request's ownership of the conversation (see `beginSend`); losing it cancels the request. */
+  async function dispatchChatRequest(convId: string, token: number, content: string, attachments?: PreparedChatAttachment[]): Promise<void> {
     if (!bridge?.chatAiSendStream) {
-      setConversationSending(convId, false);
+      endSend(convId, token);
       return;
     }
     // The model picked before Send, not whatever the summary says once its save lands.
     const modelUpdate = pendingModelUpdates.get(convId);
     if (modelUpdate) await modelUpdate.done;
-    if (stopCount(convId) !== stops) return;
-    const privacy = await clearForPrivacy(convId, stops);
+    if (!ownsSend(convId, token)) return;
+    const privacy = await clearForPrivacy(convId, token);
     if (!privacy) {
-      // A stopped request leaves the flag to whatever was sent after it.
-      if (stopCount(convId) === stops) setConversationSending(convId, false);
+      endSend(convId, token);
       return;
     }
     const modelId = modelUpdate?.modelId || findConversationSummary(convId)?.service || uiState.chatSelectedModelId;
     if (!modelId) {
       reportChatError('Choose a model for this chat.', 'Request failed');
-      setConversationSending(convId, false);
+      endSend(convId, token);
       return;
     }
 
@@ -1203,9 +1218,9 @@ export function initChatModule({
     } catch (err) {
       reportChatError(err, 'Request failed');
     } finally {
-      if (isConversationSending(convId) && !hasConversationStreamingMessage(convId)) {
-        setConversationSending(convId, false);
-      }
+      // A request still streaming ends with its done event; a follow-up that
+      // started meanwhile owns the flag now.
+      if (!hasConversationStreamingMessage(convId)) endSend(convId, token);
     }
   }
 
@@ -1221,9 +1236,9 @@ export function initChatModule({
    * or stopped while held); otherwise whether the gateway must still be in
    * Private when it sends, which the main process checks after its own wait.
    */
-  async function clearForPrivacy(convId: string, stops: number): Promise<{ requirePrivate: boolean } | null> {
+  async function clearForPrivacy(convId: string, token: number): Promise<{ requirePrivate: boolean } | null> {
     await holdForPrivacySwitch();
-    if (stopCount(convId) !== stops) return null;
+    if (!ownsSend(convId, token)) return null;
     const mode = privacyResource.getSnapshot().data?.mode;
     const held = heldPrivate(convId);
     if (mode === 'anonymous' && held) {
@@ -1289,8 +1304,8 @@ export function initChatModule({
     if (!last) return;
     fundsNoticeByConversation.delete(convId);
     clearChatNotices();
-    setConversationSending(convId, true);
-    void dispatchChatRequest(convId, last.content, last.attachments.length > 0 ? last.attachments : undefined);
+    const token = beginSend(convId);
+    void dispatchChatRequest(convId, token, last.content, last.attachments.length > 0 ? last.attachments : undefined);
   }
 
   function dismissFundsNotice(): void {
@@ -1303,7 +1318,7 @@ export function initChatModule({
   async function abortChat(): Promise<void> {
     const convId = uiState.chatActiveConversation;
     if (convId) {
-      stopsByConversation.set(convId, stopCount(convId) + 1);
+      sendOwners.delete(convId);
       setConversationSending(convId, false);
     }
     else {
@@ -1323,11 +1338,10 @@ export function initChatModule({
   /** The prompt is already in the conversation, from the first attempt. */
   async function runImageRequest(convId: string, request: ImageRequest): Promise<void> {
     if (!bridge?.chatGenerateImage) return;
-    setConversationSending(convId, true);
-    const stops = stopCount(convId);
+    const token = beginSend(convId);
     queueScrollChatToBottom();
     try {
-      const privacy = await clearForPrivacy(convId, stops);
+      const privacy = await clearForPrivacy(convId, token);
       if (!privacy) return;
       uiState.chatThinkingPhase = request.sourceImageAttachmentId ? 'Editing image' : 'Generating image';
       notifyUiStateChanged();
@@ -1360,7 +1374,7 @@ export function initChatModule({
       }
     } finally {
       // Stopped: the flag now belongs to whatever was sent after it.
-      if (stopCount(convId) === stops) setConversationSending(convId, false);
+      endSend(convId, token);
     }
   }
 

@@ -120,7 +120,10 @@ function entryOfferSummary(entry: GatewayModelEntry, peers: Array<Record<string,
   };
   // An image model's token prices are $0 too: it charges per image.
   const chargesPerImage = (peer: Record<string, unknown>): boolean => (finiteNumber(peer['minImageUsdPerImage']) ?? 0) > 0;
-  const isTee = (peer: Record<string, unknown>): boolean => strings(peer['advertisedVerifierIds']).includes(TEE_VERIFIER_ID);
+  // Advertising the TEE verifier is only a claim: a buyer that checked the
+  // seller's attestation reports how far it reaches (`teeScope`).
+  const isTee = (peer: Record<string, unknown>): boolean => strings(peer['advertisedVerifierIds']).includes(TEE_VERIFIER_ID)
+    && (peer['teeScope'] === 'end-to-end' || peer['teeScope'] === 'seller-node');
   // Under TEE-only routing (Private) a free seller outside a TEE never answers,
   // so it can't make the model free.
   const freeSeller = peers.find((peer) => zeroPriced(peer) && !stakersOnly(peer) && !chargesPerImage(peer) && (!options.teeOnly || isTee(peer)));

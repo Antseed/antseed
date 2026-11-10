@@ -26,7 +26,12 @@ export type GatewayModelOptions = {
   protocol: ChatServiceProtocol;
   supportsImages: boolean;
   contextWindow?: number;
+  /** The desktop chat, sent as its session id so the buyer keeps chats apart (two can open the same way). */
+  conversationId?: string;
 };
+
+/** The desktop chat's session header (the buyer's `x-<tool>-session-id` convention). */
+export const DESKTOP_SESSION_HEADER = 'x-vpr-session-id';
 
 type GatewayChatModel =
   | Model<'openai-completions'>
@@ -39,7 +44,7 @@ type GatewayChatModel =
  * explicit bearer header: the Anthropic SDK otherwise only sends `x-api-key`,
  * which the gateway does not accept.
  */
-export function makeGatewayModel({ modelId, endpoint, protocol, supportsImages, contextWindow }: GatewayModelOptions): GatewayChatModel {
+export function makeGatewayModel({ modelId, endpoint, protocol, supportsImages, contextWindow, conversationId }: GatewayModelOptions): GatewayChatModel {
   // The OpenAI SDK appends /responses or /chat/completions to the base URL;
   // the Anthropic SDK appends /v1/messages itself.
   const baseUrl = protocol === 'anthropic-messages' ? endpoint.origin : `${endpoint.origin}/v1`;
@@ -53,7 +58,7 @@ export function makeGatewayModel({ modelId, endpoint, protocol, supportsImages, 
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: contextWindow ?? ANTSEED_MODEL_CONTEXT_WINDOW,
     maxTokens: ANTSEED_MODEL_MAX_OUTPUT_TOKENS,
-    headers: gatewayRequestHeaders(endpoint),
+    headers: { ...gatewayRequestHeaders(endpoint), ...(conversationId ? { [DESKTOP_SESSION_HEADER]: conversationId } : {}) },
   };
 
   if (protocol === 'openai-chat-completions') {

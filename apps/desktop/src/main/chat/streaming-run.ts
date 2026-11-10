@@ -285,6 +285,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
       endpoint,
       protocol,
       supportsImages,
+      conversationId,
       ...(chatModel?.contextWindow ? { contextWindow: chatModel.contextWindow } : {}),
     });
 
