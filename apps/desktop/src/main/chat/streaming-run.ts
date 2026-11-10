@@ -49,6 +49,7 @@ import {
   type ToolApprovalRequest,
 } from './permissions.js';
 import {
+  effectivePermissionMode,
   describeToolApproval,
   isToolPermissionAutoAllowed,
   requiresToolApproval,
@@ -269,9 +270,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     // Permissions belong to the model, whichever seller serves it.
     const permissionModel = splitPinnedModel(serviceId).modelId;
     const persistedPermissionMode = await getModelPermissionMode(permissionModel);
-    const permissionMode: ChatPermissionMode = persistedPermissionMode === 'full'
-      ? 'full'
-      : requestedPermissionMode ?? persistedPermissionMode;
+    const permissionMode: ChatPermissionMode = effectivePermissionMode(persistedPermissionMode, requestedPermissionMode);
 
     const droppedImageCount = supportsImages ? 0 : attachmentImages.length;
     if (droppedImageCount > 0) {

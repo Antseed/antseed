@@ -1,6 +1,6 @@
 import { usePrefersReducedMotion } from '../../hooks/usePrefersReducedMotion';
-import { usePrivateMode } from './PrivacyToggle';
 import styles from './AppsBanner.module.scss';
+import { usePrivateMode } from '../../hooks/usePrivateMode';
 
 const ART = {
   day: {

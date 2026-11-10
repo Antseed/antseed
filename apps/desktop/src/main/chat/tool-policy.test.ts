@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   describeToolApproval,
+  effectivePermissionMode,
   isToolPermissionAutoAllowed,
   requiresToolApproval,
 } from './tool-policy.js';
@@ -175,4 +176,12 @@ test('network and file-changing commands require explicit non-auto approval', ()
   assert.equal(isToolPermissionAutoAllowed(write.permissionKey), false);
   assert.equal(network.canAlwaysAllow, true);
   assert.equal(write.canAlwaysAllow, true);
+});
+
+test('a run\'s tool permissions are the model\'s saved mode, which a request can lower but not raise', () => {
+  assert.equal(effectivePermissionMode('manual', 'full'), 'manual');
+  assert.equal(effectivePermissionMode('manual', null), 'manual');
+  assert.equal(effectivePermissionMode('full', null), 'full');
+  assert.equal(effectivePermissionMode('full', 'full'), 'full');
+  assert.equal(effectivePermissionMode('full', 'manual'), 'manual');
 });

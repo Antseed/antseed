@@ -11,14 +11,6 @@ import { useUiSelector } from '../../hooks/useUiSelector';
 import { hasPrivateHistory } from '../../../modules/chat/private-history';
 import styles from './PrivacyToggle.module.scss';
 
-/** Private mode routes to TEE sellers only, so pickers list only models with one. */
-export function usePrivateMode(): boolean {
-  return useCachedResource(privacyResource).data?.mode === 'private';
-}
-
-export function modelsForPrivacy(models: ChatModel[], privateMode: boolean): ChatModel[] {
-  return privateMode ? models.filter((model) => model.tee) : models;
-}
 
 const PRIVACY_SCOPE_HINT = 'This applies to the chat and every app connected through Antseed.';
 

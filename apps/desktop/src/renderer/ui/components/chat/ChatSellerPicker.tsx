@@ -4,12 +4,12 @@ import { ArrowDown01Icon, ShuffleIcon } from '@hugeicons/core-free-icons';
 import type { ChatRouteCandidate, ChatRoutePreview } from '../../../types/bridge';
 import { offerPriceLabel } from '../../../modules/chat/models';
 import { splitPinnedModel } from '../../../../shared/pinned-model.js';
-import { usePrivateMode } from '../vpr/PrivacyToggle';
 import { useDropdownDismiss } from '../../hooks/useDropdownDismiss';
 import { usePrivacySwitch } from '../../../modules/app/vpr-resources';
 import { selectHasFunds } from '../../../core/balance';
 import { useUiSelector } from '../../hooks/useUiSelector';
 import styles from './ChatModelDropdown.module.scss';
+import { usePrivateMode } from '../../hooks/usePrivateMode';
 
 type ChatSellerPickerProps = {
   onOpenChange?: (open: boolean) => void;

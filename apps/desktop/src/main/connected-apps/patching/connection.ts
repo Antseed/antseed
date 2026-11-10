@@ -69,6 +69,8 @@ export function initConnectedApps(deps: ConnectedAppsDeps): void {
  * the update, so a later `antseed apps connect` isn't undone by opening the app.
  */
 function removeRetiredAppPatches(): void {
+  // A testbench desktop shares the developer's apps, and never edits them.
+  if (machineWideChangesDisabled()) return;
   const firstLaunchAfterUpdate = !existsSync(connectedAppsStatePath());
   const retired = [
     ...RETIRED_APP_PROFILES.map((raw, index) => normalizeDesktopSystemProxyProfile(raw, index)),

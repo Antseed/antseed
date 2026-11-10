@@ -18,9 +18,10 @@ import { UpdateBanner } from './UpdateBanner';
 import { SidebarBalance } from './vpr/SidebarBalance';
 import { VprNavContext } from './vpr/VprNavContext';
 import { VprHeaderActions } from './vpr/VprHeaderActions';
-import { PrivacySwitchDialog, usePrivateMode } from './vpr/PrivacyToggle';
+import { PrivacySwitchDialog } from './vpr/PrivacyToggle';
 import { setPrivateNight } from '../lib/theme';
 import styles from './VprShell.module.scss';
+import { usePrivateMode } from '../hooks/usePrivateMode';
 
 /* Views built on VprPage carry Help and API keys inside their pinned header,
    so the shell's floating toolbar would duplicate them. */

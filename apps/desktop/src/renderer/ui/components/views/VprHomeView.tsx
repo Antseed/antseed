@@ -9,11 +9,12 @@ import { ChatModelDropdown } from '../chat/ChatModelDropdown';
 import { ChatSellerPicker } from '../chat/ChatSellerPicker';
 import { joinPinnedModel } from '../../../../shared/pinned-model.js';
 import { HomeField } from '../vpr/HomeField';
-import { modelsForPrivacy, PrivacyNote, PrivacyToggle, usePrivacyControl } from '../vpr/PrivacyToggle';
+import { PrivacyNote, PrivacyToggle, usePrivacyControl } from '../vpr/PrivacyToggle';
 import { privacyResource } from '../../../modules/app/vpr-resources';
 import { homeProgress, useHomeProgress } from '../../../modules/app/home-progress';
 import { HomeDashboard } from './HomeDashboard';
 import styles from './VprHomeView.module.scss';
+import { modelsForPrivacy } from '../../hooks/usePrivateMode';
 
 type Props = { onSelectView?: (view: ViewName) => void };
 

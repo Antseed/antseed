@@ -12,6 +12,15 @@ type BashPermissionClass = {
   canAlwaysAllow: boolean;
 };
 
+/**
+ * The tool permissions a run gets: the model's saved mode, which only the
+ * request can lower. A request can't raise it: the renderer's value may come
+ * from another chat that was on screen when a held send went out.
+ */
+export function effectivePermissionMode(saved: ChatPermissionMode, requested: ChatPermissionMode | null): ChatPermissionMode {
+  return requested === 'manual' ? 'manual' : saved;
+}
+
 export function requiresToolApproval(mode: ChatPermissionMode, toolName: string): boolean {
   return mode === 'manual' && RISKY_TOOLS.has(toolName);
 }

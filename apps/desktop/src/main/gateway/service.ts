@@ -300,7 +300,7 @@ async function ensureLocalKey(scope: string, appLabel?: string): Promise<StoredG
     // old one) starts with no policy. In Private it can't be used until it has
     // one, or requests could reach any seller while the app says Private.
     const revoke = async (key: StoredGatewayKey) => { if (key.id) await revokeLocalKey(key.id); };
-    return publishUnderCurrentPrivacy(
+    const publish = () => publishUnderCurrentPrivacy(
       (mode) => publishKeyWithPolicy({
         create: () => createLocalKey(scopeLabel(scope, appLabel)),
         applyPolicy: mode === 'private'
@@ -322,6 +322,10 @@ async function ensureLocalKey(scope: string, appLabel?: string): Promise<StoredG
         await revoke(key);
       },
     );
+    // An app's key is made in turn with privacy switches, so it is never saved
+    // halfway through one: it starts under the mode the switch committed. The
+    // desktop key is made outside that turn, since a switch needs it first.
+    return scope === DESKTOP_KEY_SCOPE ? publish() : privacySwitches.run(publish);
   })().finally(() => keyPromises.delete(scope));
   keyPromises.set(scope, promise);
   return promise;

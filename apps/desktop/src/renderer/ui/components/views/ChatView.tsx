@@ -40,12 +40,13 @@ import { buildDisplayMessages } from '../chat/chat-shared';
 import type { ChatPermissionMode, RawChatAttachment } from '../../../types/bridge';
 import { VprHeaderActions } from '../vpr/VprHeaderActions';
 import { cancelVoiceRecording, startVoiceRecording, stopVoiceRecording } from '../../lib/voice-recorder';
-import { modelsForPrivacy, PrivacyDivider, PrivacyNote, PrivacyToggle, usePrivacyControl, usePrivateMode } from '../vpr/PrivacyToggle';
+import { PrivacyDivider, PrivacyNote, PrivacyToggle, usePrivacyControl } from '../vpr/PrivacyToggle';
 import { homeProgress, useHomeProgress } from '../../../modules/app/home-progress';
 import { gatewayResource } from '../../../modules/app/vpr-resources';
 import { useCachedResource } from '../../../modules/app/cached-resource';
 import styles from './ChatView.module.scss';
 import bubbleStyles from '../chat/ChatBubble.module.scss';
+import { usePrivateMode, modelsForPrivacy } from '../../hooks/usePrivateMode';
 
 const MAX_INPUT_HEIGHT = 220;
 const PREVIEW_MIN_WIDTH = 280;

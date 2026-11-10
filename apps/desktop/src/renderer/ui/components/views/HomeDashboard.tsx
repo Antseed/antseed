@@ -21,8 +21,8 @@ import { useAgentSkills } from '../../hooks/useAgentSkills';
 import { homeProgress, useHomeProgress } from '../../../modules/app/home-progress';
 import { daysSince, LOW_BALANCE_USD, pickHomePromo, promoDismissKey } from '../../../modules/app/home-promos';
 import { AppPillIcon } from '../vpr/AppPills';
-import { usePrivateMode } from '../vpr/PrivacyToggle';
 import styles from './HomeDashboard.module.scss';
+import { usePrivateMode } from '../../hooks/usePrivateMode';
 
 const NEXT_STEP_LABELS = [
   'Send your first prompt',
