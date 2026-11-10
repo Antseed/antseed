@@ -317,6 +317,38 @@ test('buildSellerPluginRuntimeEnv maps base URL and API key to TYPESAFE_* for th
   }
 });
 
+test('buildSellerPluginRuntimeEnv maps apiKeyEnv to ANTHROPIC_API_KEY and baseUrl to OPENAI_RESPONSES_BASE_URL', () => {
+  const config = createDefaultConfig();
+  config.seller.providers = {
+    claude: {
+      plugin: 'anthropic',
+      apiKeyEnv: 'TEST_CLAUDE_KEY',
+      services: {
+        'claude-sonnet-4-5': {},
+      },
+    },
+    codex: {
+      plugin: 'openai-responses',
+      baseUrl: 'https://codex.example.test',
+      services: {
+        'gpt-5.4': {},
+      },
+    },
+  };
+  process.env['TEST_CLAUDE_KEY'] = 'sk-ant-test';
+  try {
+    const anthropicEnv = buildSellerPluginRuntimeEnv(config.seller, 'claude');
+    assert.equal(anthropicEnv['ANTHROPIC_API_KEY'], 'sk-ant-test');
+    assert.equal(anthropicEnv['OPENAI_API_KEY'], undefined);
+
+    const responsesEnv = buildSellerPluginRuntimeEnv(config.seller, 'codex');
+    assert.equal(responsesEnv['OPENAI_RESPONSES_BASE_URL'], 'https://codex.example.test');
+    assert.equal(responsesEnv['OPENAI_BASE_URL'], undefined);
+  } finally {
+    delete process.env['TEST_CLAUDE_KEY'];
+  }
+});
+
 test('assertSellerPrerequisites fails when no services are configured', async () => {
   const config = createDefaultConfig();
   const seller = config.seller;

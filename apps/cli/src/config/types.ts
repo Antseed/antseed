@@ -85,8 +85,9 @@ export interface SellerProviderConfig {
    * Name of the environment variable holding this provider's API key.
    * Allows multiple providers on the same peer to use different credentials.
    * Example: `"ZAI_API_KEY"` reads `process.env.ZAI_API_KEY` and injects it
-   * as `OPENAI_API_KEY` into the plugin config. When omitted, the plugin's
-   * default env var (`OPENAI_API_KEY`) is used.
+   * as the plugin's API key setting (`OPENAI_API_KEY`, or the plugin's own
+   * prefix such as `ANTHROPIC_API_KEY`). When omitted, the plugin's default
+   * env var is used.
    */
   apiKeyEnv?: string;
   /**
