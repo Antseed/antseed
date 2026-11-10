@@ -83,7 +83,9 @@ async function cliRunAsync(home, ...args) {
 async function assertFreed(run) {
   const tools = [...run.foundry.started('anvil'), ...run.foundry.started('forge')];
   assert.ok(tools.length >= 2, 'anvil and forge both ran');
-  assert.deepEqual(tools.filter((tool) => isPidAlive(tool.pid)), [], 'anvil and forge are stopped');
+  // solc is forge's child, not the supervisor's: only stopping forge's whole process group stops it.
+  tools.push(...run.foundry.started('solc'));
+  assert.deepEqual(tools.filter((tool) => isPidAlive(tool.pid)), [], 'anvil, forge and the solc under forge are stopped');
   assert.equal((await inspectLock(run.paths.lock)).state, 'free', 'the slot lock is released');
   const manifest = await run.manifest();
   assert.equal(manifest.running, false);
@@ -160,6 +162,7 @@ describe('a start that cannot finish fails by itself', () => {
     await run.forgeStarted();
     run.child.kill('SIGTERM');
     assert.equal(await run.exit(60_000), 1, run.log());
+    assert.equal(run.foundry.started('solc').length, 1, 'forge build ran a solc for the shutdown to stop');
     const manifest = await assertFreed(run);
     assert.match(manifest.startError, /The start was stopped by SIGTERM \(it was deploying the contracts: forge build\)/);
   });

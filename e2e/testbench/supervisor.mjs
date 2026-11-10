@@ -240,8 +240,18 @@ async function startSellerWorker(seller) {
     child.once('exit', (code) => rejectReady(new Error(`seller ${seller.id} exited with ${code} (see logs/seller-${seller.id}.log)`)));
   });
   child.send({ type: 'start', id: seller.id, dataDir: seller.dataDir, configPath: seller.configPath, bootstrapNodes: seller.bootstrapNodes, payments: seller.payments });
-  const info = await Promise.race([ready, untilAborted(startup.abort.signal), new Promise((_, rejectTimeout) => setTimeout(() => rejectTimeout(new Error(`seller ${seller.id} start timeout`)), 120_000))]);
-  return trackSeller(seller.id, child, info);
+  let timer;
+  try {
+    const info = await Promise.race([ready, untilAborted(startup.abort.signal), new Promise((_, rejectTimeout) => { timer = setTimeout(() => rejectTimeout(new Error(`seller ${seller.id} start timeout`)), 120_000); })]);
+    return trackSeller(seller.id, child, info);
+  } catch (error) {
+    // Not in state.workers yet, so the shutdown would not see it: stop it here, before the start's failure is handled.
+    ready.catch(() => {});
+    await stopWithGrace(child, { graceMs: 5000, onForced: () => log(`Seller ${seller.id} did not stop within 5s of a failed start; SIGKILL`) });
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function trackSeller(id, child, info) {
@@ -900,6 +910,8 @@ async function main() {
 for (const signal of ['SIGTERM', 'SIGINT']) {
   process.on(signal, () => {
     if (startup.active) abortStartup(`The start was stopped by ${signal} (it was ${startup.step})`);
+    // The failed start's own shutdown follows its settle; starting one now would run it next to main().
+    else if (startupFailing && !shuttingDown) log(`${signal} received while the failed start ends; its shutdown follows`);
     else void shutdown(signal);
   });
 }
@@ -909,6 +921,8 @@ process.on('unhandledRejection', (error) => {
 });
 
 let starting = null;
+// Set once the start has failed: from then on the catch block below owns the shutdown.
+let startupFailing = false;
 try {
   watchStartup();
   starting = main();
@@ -916,12 +930,10 @@ try {
   starting.catch(() => {});
   await Promise.race([starting, new Promise((_, reject) => { startup.abort.signal.addEventListener('abort', () => reject(startup.abort.signal.reason), { once: true }); })]);
 } catch (error) {
+  startupFailing = true;
   startupDone();
   log(`FAILED: ${error.stack ?? error.message}`);
   if (manifest) await writeManifest({ startError: error.message, ...startup.patch }).catch(() => {});
-  // A failed start must free its slot. Should the shutdown itself hang, exit anyway: the reaper stops the children,
-  // and the next up or down cleans up the stale lock.
-  setTimeout(() => { log(`Shutdown after the failed start did not finish in ${FAILED_START_SHUTDOWN_MS / 1000} s; exiting`); process.exit(1); }, FAILED_START_SHUTDOWN_MS);
   if (startup.abort.signal.aborted) {
     // main() may be waiting for forge, which nothing will finish now; then let it end before anything is stopped, so the
     // shutdown sees everything it started. What it may still spawn after the settle is registered with the reaper.
@@ -929,6 +941,9 @@ try {
     const settled = await Promise.race([starting.then(() => true, () => true), new Promise((resolveWait) => setTimeout(() => resolveWait(false), ABORTED_START_SETTLE_MS))]);
     if (!settled) log(`The aborted start did not end within ${ABORTED_START_SETTLE_MS / 1000} s (it was ${startup.step}); stopping what it has started so far`);
   }
+  // A failed start must free its slot. Should the shutdown itself hang, exit anyway: the reaper stops the children,
+  // and the next up or down cleans up the stale lock. Counted from here, so a long settle does not eat the shutdown's time.
+  setTimeout(() => { log(`Shutdown after the failed start did not finish in ${FAILED_START_SHUTDOWN_MS / 1000} s; exiting`); process.exit(1); }, FAILED_START_SHUTDOWN_MS);
   await shutdown('startup failure');
   process.exitCode = 1;
 }

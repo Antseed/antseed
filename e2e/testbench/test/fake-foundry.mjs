@@ -1,6 +1,6 @@
 // Stand-ins for `anvil` and `forge` on PATH, for start-up tests that must not depend on Foundry or on a rare race.
 // The stand-in Anvil answers the few JSON-RPC calls the supervisor's local deploy makes; the stand-in forge can hang
-// in `build`, or "broadcast" a deploy that Anvil mines four transactions of and then parks the other twenty, which
+// in `build` (with a stand-in solc as its child), or "broadcast" a deploy that Anvil mines four transactions of and then parks the other twenty, which
 // is what the real pair did when the deploy stalled. Both record their pid and arguments, and exit by themselves
 // after two minutes so a failed test cannot leave them behind.
 import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
@@ -42,13 +42,20 @@ setTimeout(() => server.listen(Number(args[args.indexOf('--port') + 1]), '127.0.
 `;
 
 const FORGE = `#!/usr/bin/env node
+const { spawn } = require('node:child_process');
 const { appendFileSync } = require('node:fs');
 const { join } = require('node:path');
 const args = process.argv.slice(2);
 if (args.includes('--version')) { console.log('forge Version: 0.0.0-fake'); process.exit(0); }
+const mode = process.env.TB_FAKE_FORGE;
+if (args[0] === 'build' && mode === 'hang-build') {
+  // A compile runs solc as forge's child, in forge's process group; recorded before forge itself, so a test that sees
+  // forge started also knows this child's pid.
+  const solc = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000); setTimeout(() => process.exit(0), 120000);'], { stdio: 'ignore' });
+  appendFileSync(join(process.env.TB_FAKE_FOUNDRY_DIR, 'solc.jsonl'), JSON.stringify({ pid: solc.pid, args: ['fake-solc'] }) + '\\n');
+}
 appendFileSync(join(process.env.TB_FAKE_FOUNDRY_DIR, 'forge.jsonl'), JSON.stringify({ pid: process.pid, args }) + '\\n');
 setTimeout(() => process.exit(0), 120_000).unref();
-const mode = process.env.TB_FAKE_FORGE;
 const hang = () => setInterval(() => {}, 1000);
 (async () => {
   if (args[0] === 'build') {
@@ -70,7 +77,7 @@ const hang = () => setInterval(() => {}, 1000);
 
 /**
  * Writes the stand-ins into a fresh directory. `env(mode, anvil)` is the environment for a supervisor that should find
- * them (`mode`: 'park' parks the deploy's transactions, 'hang-build' never finishes `forge build`; `anvil`: 'slow' takes
+ * them (`mode`: 'park' parks the deploy's transactions, 'hang-build' never finishes `forge build` and runs a stand-in solc under it; `anvil`: 'slow' takes
  * 30 s to come up); `started(tool)` lists the `{ pid, args }` of every stand-in process that ran.
  */
 export function fakeFoundry() {
