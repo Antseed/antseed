@@ -47,12 +47,12 @@ for (const pair of values.env ?? []) {
   environment[pair.slice(0, at)] = pair.slice(at + 1)
 }
 
-// The config is named after its content: docker compose recreates a container only when its
-// service definition changes, and an inline config's content isn't part of it. With a fixed name,
-// a config-only update on Phala restarted the old container with the old config while buyers
-// attested the new one.
+// The config is named after its full content hash, which buyers require: docker compose recreates
+// a container only when its service definition changes, and an inline config's content isn't part
+// of it. With any other name, a config-only update could restart the old container with the old
+// config while buyers attest the new one.
 const configContent = JSON.stringify(config)
-const configName = `seller-config-${createHash('sha256').update(configContent).digest('hex').slice(0, 12)}`
+const configName = `seller-config-${createHash('sha256').update(configContent).digest('hex')}`
 
 const compose = {
   services: {
