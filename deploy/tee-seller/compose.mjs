@@ -5,6 +5,7 @@
 //
 //   node deploy/tee-seller/compose.mjs --image ghcr.io/antseed/tee-seller@sha256:<digest> \
 //     --peer <peer id> --config config.json [--env ANTSEED_VERIFIER_PROVIDER_...=value] > docker-compose.json
+import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { parseArgs } from 'node:util'
 
@@ -46,6 +47,13 @@ for (const pair of values.env ?? []) {
   environment[pair.slice(0, at)] = pair.slice(at + 1)
 }
 
+// The config is named after its content: docker compose recreates a container only when its
+// service definition changes, and an inline config's content isn't part of it. With a fixed name,
+// a config-only update on Phala restarted the old container with the old config while buyers
+// attested the new one.
+const configContent = JSON.stringify(config)
+const configName = `seller-config-${createHash('sha256').update(configContent).digest('hex').slice(0, 12)}`
+
 const compose = {
   services: {
     seller: {
@@ -55,10 +63,10 @@ const compose = {
       ports: ['6882:6882', '6881:6881/udp'],
       environment,
       volumes: ['/var/run/dstack.sock:/var/run/dstack.sock', 'seller-data:/var/lib/antseed'],
-      configs: [{ source: 'seller-config', target: '/etc/antseed/config.json' }],
+      configs: [{ source: configName, target: '/etc/antseed/config.json' }],
     },
   },
-  configs: { 'seller-config': { content: JSON.stringify(config) } },
+  configs: { [configName]: { content: configContent } },
   volumes: { 'seller-data': {} },
 }
 process.stdout.write(`${JSON.stringify(compose, null, 2)}\n`)
