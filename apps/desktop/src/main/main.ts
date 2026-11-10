@@ -93,7 +93,8 @@ import { cachedBuyerBalanceIsZero, refreshCreditsInfo } from './payments/credits
 // safeStorage encryption key lives in the "<app.setName value> Safe Storage"
 // keychain entry, and the default userData path derives from it too. Renaming
 // it rotates the key; app-rename.ts moves the userData folder and re-encrypts
-// identity.enc and the gateway key secrets the first time the new name runs.
+// identity.enc and the gateway key secrets whenever the new name's key can't
+// read them.
 // User-visible surfaces use APP_NAME.
 
 async function migrateStoresAfterRename(): Promise<void> {

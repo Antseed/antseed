@@ -11,9 +11,11 @@
  *    can't read with a helper started under the old name, and re-encrypts it
  *    under the new name.
  *
- * The old keychain entry and the backups are never deleted, so the previous
- * version can still read its backups. A store that can't be migrated is left
- * as it is and the migration runs again at the next launch.
+ * Step 2 runs at every launch for any store the new key can't read, not just
+ * the first: an older install still under the old name can write a store again
+ * after the rename. The old keychain entry and the backups are never deleted,
+ * so the previous version can still read its backups. A store neither key
+ * reads is left as it is, retried for a few launches, then given up on.
  */
 import { spawn } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
@@ -150,10 +152,17 @@ export async function migrateEncryptedStores(options: MigrateOptions): Promise<M
   const result: MigrateResult = { migrated: [], failed: [], backups: [], skipped: false };
   let attempts = 0;
   let helperUnavailable = false;
+  // Stores given up on by an earlier launch. Anything else the new key can't
+  // read is migrated again, even after a complete marker: the old name's app
+  // (an older install, a downgrade) can rewrite a store under its key later.
+  let givenUp = new Set<string>();
   try {
-    const previous = JSON.parse(readFileSync(marker, 'utf8')) as { complete?: unknown; attempts?: unknown };
-    if (previous.complete !== false) return { ...result, skipped: true };
-    attempts = typeof previous.attempts === 'number' ? previous.attempts : 0;
+    const previous = JSON.parse(readFileSync(marker, 'utf8')) as { complete?: unknown; attempts?: unknown; failed?: unknown };
+    if (previous.complete === false) {
+      attempts = typeof previous.attempts === 'number' ? previous.attempts : 0;
+    } else {
+      givenUp = new Set(Array.isArray(previous.failed) ? previous.failed.filter((file): file is string => typeof file === 'string') : []);
+    }
   } catch {
     // No marker yet: the first launch under the new name.
   }
@@ -164,7 +173,7 @@ export async function migrateEncryptedStores(options: MigrateOptions): Promise<M
 
   const pending: Array<{ store: EncryptedStore; contents: Buffer; values: string[]; unreadable: number[] }> = [];
   for (const store of options.stores) {
-    if (!existsSync(store.file)) continue;
+    if (!existsSync(store.file) || givenUp.has(store.file)) continue;
     try {
       const contents = readFileSync(store.file);
       const values = store.read(contents);
@@ -174,6 +183,10 @@ export async function migrateEncryptedStores(options: MigrateOptions): Promise<M
       log(`${store.file}: could not read it (${err instanceof Error ? err.message : String(err)})`);
       result.failed.push(store.file);
     }
+  }
+  if (pending.length === 0 && result.failed.length === 0 && existsSync(marker)) {
+    // Everything reads under the new name and the marker already says so.
+    return { ...result, skipped: true };
   }
 
   if (pending.length > 0) {
@@ -229,7 +242,7 @@ export async function migrateEncryptedStores(options: MigrateOptions): Promise<M
     complete,
     attempts,
     migrated: result.migrated,
-    failed: result.failed,
+    failed: complete ? [...givenUp, ...result.failed] : result.failed,
     backups: result.backups,
   }, null, 2));
   return result;

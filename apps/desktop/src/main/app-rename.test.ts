@@ -70,9 +70,44 @@ test('re-encrypts every store under the new name and keeps backups readable by t
   const marker = JSON.parse(readFileSync(path.join(env.markerDir, MIGRATION_MARKER), 'utf8'));
   assert.equal(marker.complete, true);
 
-  // Runs once.
+  // Nothing left for the old name to read: later launches don't start the helper.
   const again = await migrateEncryptedStores({ ...names, stores: env.stores, markerDir: env.markerDir, safeStorage: newKey, decryptWithOldName: async () => { throw new Error('should not run'); } });
   assert.equal(again.skipped, true);
+});
+
+test('migrates again when the old name rewrites a store after a complete migration', async () => {
+  const env = setup();
+  await migrateEncryptedStores({ ...names, stores: env.stores, markerDir: env.markerDir, safeStorage: newKey, decryptWithOldName: viaOldName });
+  // An older install (still under the old name) writes the signer again.
+  writeFileSync(env.identity, oldKey.encryptString('c'.repeat(64)));
+  const result = await migrateEncryptedStores({ ...names, stores: env.stores, markerDir: env.markerDir, safeStorage: newKey, decryptWithOldName: viaOldName });
+  assert.deepEqual(result.migrated, [env.identity]);
+  assert.equal(newKey.decryptString(readFileSync(env.identity)), 'c'.repeat(64));
+});
+
+test('a complete marker that migrated nothing still lets an old-key store through', async () => {
+  const env = setup();
+  mkdirSync(env.markerDir, { recursive: true });
+  writeFileSync(path.join(env.markerDir, MIGRATION_MARKER), JSON.stringify({ complete: true, attempts: 1, migrated: [], failed: [], backups: [] }));
+  const result = await migrateEncryptedStores({ ...names, stores: env.stores, markerDir: env.markerDir, safeStorage: newKey, decryptWithOldName: viaOldName });
+  assert.deepEqual(result.migrated, [env.identity, env.settings]);
+});
+
+test('a store given up on stays given up on, without blocking the others', async () => {
+  const env = setup();
+  writeFileSync(env.identity, Buffer.from('garbage'));
+  for (let attempt = 1; attempt <= MAX_MIGRATION_ATTEMPTS; attempt += 1) {
+    await migrateEncryptedStores({ ...names, stores: env.stores, markerDir: env.markerDir, safeStorage: newKey, decryptWithOldName: viaOldName });
+  }
+  const settings = JSON.parse(readFileSync(env.settings, 'utf8'));
+  settings.remoteKeyEnc = oldKey.encryptString('sk-remote-2').toString('base64');
+  writeFileSync(env.settings, JSON.stringify(settings));
+  let asked: string[] = [];
+  const result = await migrateEncryptedStores({ ...names, stores: env.stores, markerDir: env.markerDir, safeStorage: newKey, decryptWithOldName: async (blobs) => { asked = blobs; return viaOldName(blobs); } });
+  assert.equal(asked.length, 1, 'the given-up identity is not sent to the helper again');
+  assert.deepEqual(result.migrated, [env.settings]);
+  const marker = JSON.parse(readFileSync(path.join(env.markerDir, MIGRATION_MARKER), 'utf8'));
+  assert.deepEqual(marker.failed, [env.identity]);
 });
 
 test('leaves a store the new key already reads, and a fresh install, alone', async () => {
