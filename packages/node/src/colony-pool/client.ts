@@ -1,5 +1,5 @@
 import type { BuyerPeerView, BuyerSigner } from '@antseed/buyer-core';
-import type { SealedWorkerRequest, WorkerE2EClient, WorkerUsage } from '@antseed/buyer-core/worker-e2e';
+import type { SealedWorkerRequest, WorkerE2EClient, WorkerPaymentProof, WorkerUsage } from '@antseed/buyer-core/worker-e2e';
 import { peerIdToAddress } from '@antseed/protocol/peer-id';
 import type { SerializedHttpRequest, SerializedHttpResponse } from '../types/http.js';
 import { DEVICE_ATTESTATION_MAX_AGE_S, isDeviceAttestation, verifyDeviceAttestation } from './apple-attestation.js';
@@ -13,6 +13,7 @@ import {
   type WorkerAssignment,
   WORKER_CERTIFICATE_USABILITY_MARGIN_S,
 } from './worker-crypto.js';
+import { usageCounts } from './worker-payment.js';
 
 const MAX_CACHED_ASSIGNMENTS = 1024;
 /** Pools re-attest workers every 5 minutes; an older attestation means the pool stopped checking. */
@@ -69,22 +70,9 @@ function parseAssignment(raw: unknown): WorkerAssignment {
   return value as WorkerAssignment;
 }
 
-function count(value: unknown): bigint {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? BigInt(value) : 0n;
-}
-
 /** Token counts from an OpenAI-style (or Anthropic-style) usage object. */
 function workerUsage(usage: UsageLike | null): WorkerUsage {
-  if (!usage) return { inputTokens: 0n, cachedInputTokens: 0n, outputTokens: 0n };
-  const details = usage['prompt_tokens_details'] as { cached_tokens?: unknown } | undefined;
-  const cached = count(details?.cached_tokens) + count(usage['cache_read_input_tokens']);
-  // Anthropic-style input_tokens excludes cached tokens; prompt_tokens includes them.
-  const input = usage['prompt_tokens'] !== undefined ? count(usage['prompt_tokens']) : count(usage['input_tokens']) + cached;
-  return {
-    inputTokens: input,
-    cachedInputTokens: cached,
-    outputTokens: count(usage['completion_tokens'] ?? usage['output_tokens']),
-  };
+  return usageCounts(usage);
 }
 
 /**
@@ -113,6 +101,7 @@ export class NodeWorkerE2EClient implements WorkerE2EClient {
     service: string,
     assign: (body: Uint8Array) => Promise<SerializedHttpResponse>,
     channelId: string | null,
+    payment?: WorkerPaymentProof | null,
   ): Promise<SealedWorkerRequest> {
     const provider = Object.entries(request.headers).find(([name]) => name.toLowerCase() === 'x-antseed-provider')?.[1].trim().toLowerCase() ?? '';
     const workers = await this.assignment(peer, provider, service, assign);
@@ -122,6 +111,7 @@ export class NodeWorkerE2EClient implements WorkerE2EClient {
       buyer: {
         address: this.signer.address,
         ...(channelId ? { channel: channelId } : {}),
+        ...(channelId && payment ? { payment } : {}),
         signMessage: (message) => this.signer.signMessage(message),
       },
     });

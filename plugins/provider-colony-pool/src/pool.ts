@@ -31,6 +31,7 @@ import {
   parseWorkerFrame,
   workerAuthMessage,
   type PoolFrame,
+  type ServicePrice,
   type WorkerFrame,
 } from './protocol.js';
 
@@ -71,6 +72,11 @@ export interface ColonyPoolOptions {
   seller: string;
   /** Services this pool sells. Workers' other services are ignored. */
   catalog: string[];
+  /**
+   * What buyers pay for each catalog service; workers are told, to check they
+   * are paid at it. A worker serves buyers only services with a price.
+   */
+  prices?: Record<string, ServicePrice>;
   workerShareBps: number;
   ledger: WorkerLedger;
   port: number;
@@ -795,7 +801,11 @@ export class ColonyPool {
     ws.on('pong', () => { worker.missedPings = 0; });
     this.workers.set(address, worker);
     const { accepted, rejected } = this.setOffered(worker, hello.services);
-    this.sendFrame(ws, { t: 'welcome', workerId: address, accepted, rejected, workerShareBps: this.opts.workerShareBps });
+    const prices = Object.fromEntries(accepted.flatMap((service) => {
+      const price = this.opts.prices?.[service];
+      return price ? [[service, price]] : [];
+    }));
+    this.sendFrame(ws, { t: 'welcome', workerId: address, accepted, rejected, workerShareBps: this.opts.workerShareBps, prices });
     this.log(`worker ${address} joined (${worker.agent}${hardened ? ', reports a hardened Mac' : ''}) offering ${accepted.join(', ') || 'nothing'}`);
     this.noteAttestedModels(worker, null);
     this.noteAttested();

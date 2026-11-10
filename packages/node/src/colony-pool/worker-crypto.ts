@@ -27,6 +27,7 @@ export {
   WORKER_UNAVAILABLE_STATUS,
   WORKER_UNAVAILABLE_CODE,
 } from '@antseed/buyer-core/worker-e2e';
+import { isWorkerPayment, type WorkerPayment } from './worker-payment.js';
 export const WORKER_E2E_VERSION = 2;
 
 const INFO = 'antseed-worker-e2e/v2';
@@ -403,6 +404,8 @@ export interface RequestEnvelope {
   /** Unix seconds after which workers refuse the request. */
   exp?: number;
   sig?: string;
+  /** The buyer's latest SpendingAuth on `channel`: pays for the worker's earlier answers there (signed on its own). */
+  pay?: WorkerPayment;
 }
 
 /** The recipients a request envelope names, in order (empty for anything else). */
@@ -426,6 +429,8 @@ export interface BuyerBinding {
   channel?: string;
   /** Unix seconds; defaults to WORKER_REQUEST_TTL_SECONDS from now. */
   expires?: number;
+  /** The buyer's latest SpendingAuth on `channel`, if it signed one. */
+  payment?: WorkerPayment;
   signMessage(message: Uint8Array): string | Promise<string>;
 }
 
@@ -497,6 +502,7 @@ export async function sealRequest(opts: SealRequestOptions): Promise<SealedReque
     envelope.channel = channel;
     envelope.exp = expires;
     envelope.sig = await opts.buyer.signMessage(getBytes(requestBindingHash(workers, channel, expires, ct)));
+    if (opts.buyer.payment) envelope.pay = opts.buyer.payment;
   }
   const outer: Record<string, unknown> = { model };
   if (typeof parsed['stream'] === 'boolean') outer['stream'] = parsed['stream'];
@@ -562,6 +568,8 @@ export interface InspectedRequest {
   ciphertext: Buffer;
   /** Null without a valid buyer signature: an unbound (health check) request. */
   binding: RequestBinding | null;
+  /** The buyer's latest SpendingAuth the request carries (well-formed, not yet verified), with a binding only. */
+  payment: WorkerPayment | null;
 }
 
 /**
@@ -596,7 +604,8 @@ export function inspectRequest(body: Uint8Array, workerAddress: string): Inspect
       // Unsigned or forged binding: treated as an unbound (health check) request.
     }
   }
-  return { model, workers, worker: workerAddress, recipient: { epk: mine.epk, wk: mine.wk }, ciphertext, binding };
+  const payment = binding && isWorkerPayment(envelope.pay) ? envelope.pay : null;
+  return { model, workers, worker: workerAddress, recipient: { epk: mine.epk, wk: mine.wk }, ciphertext, binding, payment };
 }
 
 /**
@@ -665,6 +674,7 @@ export class ResponseSealer {
   private seq = 0;
   private buffer = '';
   private ended = false;
+  private lastUsage: UsageLike | null = null;
   private readonly key: Buffer;
   private readonly salt: string;
   private readonly decoder = new StringDecoder('utf8');
@@ -682,7 +692,13 @@ export class ResponseSealer {
     };
     const usage = usageOf(Buffer.from(body).toString('utf-8'));
     if (usage) envelope['usage'] = usage;
+    this.lastUsage = usage;
     return new TextEncoder().encode(JSON.stringify(envelope));
+  }
+
+  /** The usage the sealed answer reports (its last usage event, when streamed), or null before any. */
+  get usage(): UsageLike | null {
+    return this.lastUsage;
   }
 
   /** Seal upstream SSE bytes; returns the SSE bytes to send (possibly empty). */
@@ -712,7 +728,10 @@ export class ResponseSealer {
     let out = `data: ${JSON.stringify({ antseed_e2e: { seq, ct, ...this.saltFor(seq) } })}\n\n`;
     const data = eventData(event);
     const usage = data ? usageOf(data) : null;
-    if (usage) out += `data: ${JSON.stringify({ choices: [], usage })}\n\n`;
+    if (usage) {
+      this.lastUsage = usage;
+      out += `data: ${JSON.stringify({ choices: [], usage })}\n\n`;
+    }
     return out;
   }
 

@@ -83,6 +83,14 @@ final class WorkerController: ObservableObject {
     private let gate = RequestGate()
     /// The Channels contract channels are checked on, once the RPC's chain id is known.
     private var trustedChannels: String?
+    /// The chain `trustedChannels` is on: buyers sign SpendingAuths for that contract on it.
+    private var trustedChainId: UInt64?
+    /// Each checked channel's on-chain reserve, from its latest read.
+    private var channelDeposits: [String: UInt64] = [:]
+    /// What buyers pay for each service, as the pool's welcome declares it.
+    private var prices: [String: WorkerPayment.Price] = [:]
+    /// What each channel's buyer owes this Mac for its answers, and has paid.
+    private let payments = WorkerPaymentLedger()
     /// On-chain channel checks (when an RPC is set), each read bounded so a slow RPC can't hold a request.
     /// Its verdicts are for `poolSeller`; a challenge naming another pool starts a fresh one.
     private lazy var channels = makeChannelVerdicts()
@@ -90,7 +98,12 @@ final class WorkerController: ObservableObject {
     private func makeChannelVerdicts() -> ChannelVerdicts {
         let verdicts = ChannelVerdicts { [weak self] channel, buyer in
             guard let self, !self.config.rpcURLs.isEmpty, let pool = self.poolSeller, let trusted = self.trustedChannels else { return nil }
-            return try await Chain(rpcURLs: self.config.rpcURLs, timeout: 2).channelBelongs(channel: channel, buyer: buyer, pool: pool, channels: trusted)
+            let state = try await Chain(rpcURLs: self.config.rpcURLs, timeout: 2).channelState(channel: channel, buyer: buyer, pool: pool, channels: trusted)
+            if state.belongs == true {
+                if self.channelDeposits.count >= 10_000 { self.channelDeposits.removeAll() }
+                self.channelDeposits[channel.lowercased()] = state.deposit
+            }
+            return state.belongs
         }
         verdicts.onVerdict = { [weak self] channel, buyer, verified in
             self?.log(verified
@@ -298,6 +311,7 @@ final class WorkerController: ObservableObject {
         case "welcome":
             backoff = 1
             poolShareBps = frame["workerShareBps"] as? Int ?? 0
+            prices = ((frame["prices"] as? [String: Any]) ?? [:]).compactMapValues { WorkerPayment.Price($0) }
             status = sharing ? .serving : .paused
             log("joined pool \(config.poolURL.host ?? "") · encryption key certified for \(poolSeller ?? "") · attested \(protection.hardened ? "hardened" : "not hardened")")
             requestStats()
@@ -353,10 +367,26 @@ final class WorkerController: ObservableObject {
                 return .unavailable("No trusted Channels contract for chain \(chainId); start the worker with --channels")
             }
             trustedChannels = address
+            trustedChainId = chainId
         }
         return .verify { [weak self] in
             guard let self else { return nil }
             return await self.channels.verdict(channel: channel, buyer: buyer)
+        }
+    }
+
+    /// What the request's payment attributes to this Mac: 0 when it carries
+    /// none, or one that does not verify (unsigned by the buyer, for another
+    /// Channels contract, or beyond the channel's reserve).
+    private func attributed(_ sealed: WorkerE2E.SealedRequest, channel: String, buyer: String) -> UInt64 {
+        guard let payment = sealed.payment, let chainId = trustedChainId, let channels = trustedChannels else { return 0 }
+        do {
+            return try WorkerPayment.attributed(payment, channel: channel, buyer: buyer, worker: address,
+                                                deposit: channelDeposits[channel.lowercased()] ?? WorkerPayment.saturating(payment.cumulativeAmount),
+                                                chainId: chainId, channels: channels)
+        } catch {
+            log("ignoring the payment on channel \(channel.prefix(18))…: \(error.localizedDescription)")
+            return 0
         }
     }
 
@@ -383,16 +413,37 @@ final class WorkerController: ObservableObject {
         } else {
             check = .unavailable("No buyer binding") // never consulted: an unbound request is a pool check
         }
+        // The channel and price this request's answer is owed on, once admitted: settled when it ends.
+        var owed: (channel: String, price: WorkerPayment.Price)?
+        var answered: (promptTokens: Int, completionTokens: Int)?
+        defer {
+            if let owed {
+                if let answered {
+                    payments.served(channel: owed.channel, cost: WorkerPayment.cost(promptTokens: answered.promptTokens, completionTokens: answered.completionTokens, price: owed.price))
+                } else {
+                    payments.released(channel: owed.channel)
+                }
+            }
+        }
         // Pool checks are bounded by size here, before the body is even decrypted.
         var full = false
         var checkLimit = RequestGate.checkMaxTokens
         var promptLimit: Int?
         switch await gate.admit(buyer: sealed.buyer, channel: sealed.channel, bodyBytes: sealed.bodyBytes, requestedMaxTokens: RequestGate.checkMaxTokens, check: check) {
         case .full:
-            if let binding = sealed.binding, let expires = sealed.expires,
-               let refused = gate.claimOnce(binding: binding, expires: Date(timeIntervalSince1970: TimeInterval(expires))) {
+            guard let channel = sealed.channel, let buyer = sealed.buyer, let price = prices[sealed.model] else {
+                return fail(id, "The pool declared no price for \(sealed.model), so this worker can't check it is paid")
+            }
+            // Paid before served: the buyer's signed payments must cover this Mac's earlier answers on the channel.
+            if let refused = payments.admit(channel: channel, attributed: attributed(sealed, channel: channel, buyer: buyer)) {
                 return fail(id, refused)
             }
+            if let binding = sealed.binding, let expires = sealed.expires,
+               let refused = gate.claimOnce(binding: binding, expires: Date(timeIntervalSince1970: TimeInterval(expires))) {
+                payments.released(channel: channel)
+                return fail(id, refused)
+            }
+            owed = (channel, price)
             full = true
         case .check(let limit):
             checkLimit = limit
@@ -482,6 +533,8 @@ final class WorkerController: ObservableObject {
                 sendBufferedBody(sealed, id: id, status: 200)
             }
             send(["t": "response-end", "id": id])
+            // Only an answer that reached the buyer whole is owed; a failed one is never paid.
+            answered = (result.promptTokens, result.completionTokens)
             let calls = result.toolCalls.isEmpty ? "" : " · \(result.toolCalls.count) tool call(s)"
             log("answered with TensorFold: \(result.promptTokens) in / \(result.completionTokens) out\(calls) · \(Int(result.tokensPerSecond)) tok/s · sealed for the buyer")
             requestStats()

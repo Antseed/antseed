@@ -71,6 +71,6 @@ describe('worker channel verification RPCs', () => {
     expect(session.status).toBe(1);
     expect(fallback.calls()).toBeGreaterThan(0);
     // The verifier the CLI uses reads through the same client.
-    expect(await workerChannelVerifier('test', undefined, undefined, chains)(CHANNEL, BUYER, SELLER)).toBe(true);
+    expect(await workerChannelVerifier('test', undefined, undefined, chains)(CHANNEL, BUYER, SELLER)).toEqual({ deposit: 1_000_000n });
   });
 });

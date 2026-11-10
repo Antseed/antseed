@@ -197,7 +197,7 @@ describe('routing, failover and ranking in the pool', () => {
 
   async function setup(opts: { firstByteTimeoutMs?: number; acceptTimeoutMs?: number; workerPriority?: Map<string, number> } = {}): Promise<void> {
     pool = new ColonyPool({
-      poolId: 'test-pool', seller: SELLER, catalog: [SERVICE], workerShareBps: 9000, ledger, port: 0, host: '127.0.0.1',
+      poolId: 'test-pool', seller: SELLER, catalog: [SERVICE], prices: { [SERVICE]: { inputUsdPerMillion: 1, outputUsdPerMillion: 4 } }, workerShareBps: 9000, ledger, port: 0, host: '127.0.0.1',
       verifyOnJoin: false,
       firstByteTimeoutMs: opts.firstByteTimeoutMs ?? 300,
       ...(opts.acceptTimeoutMs ? { acceptTimeoutMs: opts.acceptTimeoutMs } : {}),

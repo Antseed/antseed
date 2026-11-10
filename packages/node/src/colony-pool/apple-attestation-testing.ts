@@ -1,4 +1,7 @@
 import { generateKeyPairSync, sign, type KeyObject } from 'node:crypto';
+import { encodeWorkerTail } from '@antseed/protocol/worker-attribution';
+import { concat, hexlify, keccak256, type Wallet } from 'ethers';
+import type { ChannelsDomain, WorkerPayment } from './worker-payment.js';
 
 /**
  * A stand-in for Apple's attestation CA, for tests only: issues chains shaped
@@ -88,4 +91,25 @@ export function createTestAppleCa(opts: { created?: Date } = {}): { rootPem: str
       return [leaf.toString('base64'), sub.cert.toString('base64')];
     },
   };
+}
+
+/**
+ * A buyer's SpendingAuth on `channel` attributing `amount` to `worker`, as a
+ * request envelope carries it (`pay`): an eight-word metadata head, then the
+ * attribution tail. For tests of workers' payment checks.
+ */
+export async function signTestWorkerPayment(opts: {
+  signer: { signTypedData: Wallet['signTypedData'] };
+  channel: string;
+  worker: string;
+  amount: bigint;
+  domain: ChannelsDomain;
+}): Promise<WorkerPayment> {
+  const metadata = hexlify(concat([new Uint8Array(256), encodeWorkerTail([{ worker: opts.worker, cumulativeAmount: opts.amount }])]));
+  const signature = await opts.signer.signTypedData(
+    { name: 'AntseedChannels', version: '1', chainId: opts.domain.chainId, verifyingContract: opts.domain.channelsAddress },
+    { SpendingAuth: [{ name: 'channelId', type: 'bytes32' }, { name: 'cumulativeAmount', type: 'uint256' }, { name: 'metadataHash', type: 'bytes32' }] },
+    { channelId: opts.channel, cumulativeAmount: opts.amount, metadataHash: keccak256(metadata) },
+  );
+  return { cumulativeAmount: opts.amount.toString(), metadata, signature };
 }

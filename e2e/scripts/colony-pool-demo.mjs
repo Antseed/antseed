@@ -58,7 +58,8 @@ const EXPECT_WORKERS = Number(process.env.DEMO_EXPECT_WORKERS ?? LOCAL_WORKERS);
 const VIDEO = process.env.DEMO_VIDEO === '1';
 const BUYERS = [
   { name: 'alice', prompts: ['In one sentence: why do bees dance?', 'Write a haiku about a Mac earning money while its owner sleeps.'] },
-  { name: 'bob', prompts: ['In one sentence: what is end-to-end encryption?', 'Name three uses for idle computers, comma separated, no explanation.'] },
+  // A third request on one channel: its workers serve it only once bob's signed payments cover their earlier answers.
+  { name: 'bob', prompts: ['In one sentence: what is end-to-end encryption?', 'Name three uses for idle computers, comma separated, no explanation.', 'In one word: is a sealed prompt readable by the pool?'] },
 ];
 
 const logDir = process.env.DEMO_LOG_DIR ?? await mkdtemp(join(tmpdir(), 'colony-pool-demo-'));
@@ -275,15 +276,17 @@ async function main() {
     depositsAddress: A.deposits, channelsAddress, usdcAddress: A.usdc, identityRegistryAddress: A.identity, stakingAddress: A.staking,
   });
   const ledger = new WorkerLedger(join(sellerDir, 'colony-pool.db'));
+  const PRICE = { inputUsdPerMillion: 20, outputUsdPerMillion: 80 };
   const colonyPool = new ColonyPool({
-    poolId: 'demo-pool', seller: poolAddress.toLowerCase(), catalog: [SERVICE], workerShareBps: 9000, ledger,
+    // Workers are told the price, to check buyers' payments cover their answers at it.
+    poolId: 'demo-pool', seller: poolAddress.toLowerCase(), catalog: [SERVICE], prices: { [SERVICE]: PRICE }, workerShareBps: 9000, ledger,
     port: POOL_PORT, host: BIND, verifyOnJoin: true, log: (line) => logTo('pool', line),
     // DEMO_ATTEST_INTERVAL_MS shortens re-attestation.
     ...(process.env.DEMO_ATTEST_INTERVAL_MS ? { attestationIntervalMs: Number(process.env.DEMO_ATTEST_INTERVAL_MS) } : {}),
   });
   const poolProvider = new ColonyPoolProvider({
     pool: colonyPool, ledger, workerShareBps: 9000, maxConcurrency: 16,
-    pricing: { defaults: { inputUsdPerMillion: 20, outputUsdPerMillion: 80 } },
+    pricing: { defaults: PRICE },
     serviceApiProtocols: { [SERVICE]: ['openai-chat-completions'] },
   });
   // Show exactly what the seller handles: ciphertext in, ciphertext out.
@@ -340,8 +343,11 @@ async function main() {
         // Only an Active channel (status 1) pays for work; a closed one keeps its buyer and seller.
         const ok = session.status === 1 && session.buyer.toLowerCase() === buyer.toLowerCase() && session.seller.toLowerCase() === seller.toLowerCase();
         logTo(name, `${ok ? C.green : C.yellow}on-chain check${C.reset}: channel ${channel.slice(0, 12)}… buyer=${session.buyer.slice(0, 10)}… seller=pool → ${ok ? 'genuine buyer' : 'MISMATCH'}`);
-        return ok;
+        // Its reserve bounds what the buyer's payments for this worker's answers can redeem.
+        return ok ? { deposit: session.deposit } : false;
       },
+      // Buyers sign SpendingAuths for this contract; the worker checks they pay for its earlier answers.
+      channelsDomain: { chainId: CHAIN_ID, channelsAddress: A.channels },
       log: (line) => logTo(name, line),
     });
     worker.start();

@@ -117,7 +117,8 @@ replaces the request body with:
     "buyer": "0x…",
     "channel": "0x…",
     "exp": <unix seconds>,
-    "sig": "0x…"
+    "sig": "0x…",
+    "pay": { "cumulativeAmount": "<decimal>", "metadata": "0x…", "signature": "0x…" }
   }
 }
 ```
@@ -155,7 +156,9 @@ big-endian uint64; buyers set it 10 minutes ahead). It proves the
 request came from a buyer of this pool, for exactly this set of workers, so an
 operator cannot feed a worker requests of its own and relay the results to a
 buyer under a different key. A worker that checks the chain verifies that
-`channel` belongs to `buyer` and to the pool seller.
+`channel` belongs to `buyer` and to the pool seller. `pay` is the buyer's
+latest SpendingAuth on `channel`, absent before its first one: workers check
+it pays for their earlier answers there ([Paid before served](#paid-before-served)).
 
 **Privacy with several recipients.** Any of the N recipient Macs could
 decrypt the request if the pool forwards it to them. The pool forwards to one
@@ -395,10 +398,45 @@ A request routed to a colony-pool provider is encrypted to its workers or not
 sent at all: a client without worker encryption, such as the web SDK, fails
 it locally before any bytes go to the seller.
 
-Workers are paid through the buyer's signed attribution. A pool operator who
-opens a real channel as a buyer could have workers serve requests it then
-never pays through that channel; the channel check proves a buyer exists, not
-that it will pay.
+A request to a worker sent free (a free service) is never charged: the buyer
+refuses any cost for it, from a NeedAuth or its own per-request signing, even
+on a channel with paid pricing.
+
+### Paid before served
+
+Workers are paid through the buyer's signed attribution, so a worker checks
+that a channel's buyer is paying for its answers before it serves more of
+them. Otherwise a pool operator could open a real channel as a buyer and have
+workers serve requests it never pays for.
+
+- **The payment travels with the request.** A buyer's request envelope carries
+  its latest SpendingAuth on the request's channel as `pay`:
+  `{ cumulativeAmount, metadata, signature }` (the decimal amount, the signed
+  metadata bytes with the [attribution tail](#attribution-in-spendingauth-metadata),
+  the EIP-712 signature). It has its own signature, so it is outside the
+  request binding, and only the buyer can make one.
+- **The pool declares its prices.** The `welcome` frame lists, per accepted
+  service, the token prices buyers pay (`prices`, USD per million input,
+  output and cached input tokens). A worker serves buyers no service without
+  a price.
+- **The worker checks the payment** before decrypting the request: the
+  channel's buyer must have signed it for the worker's trusted Channels
+  contract and chain, and its amount must be within the channel's on-chain
+  reserve (the deposit the channel check reads). A payment that fails these
+  checks counts as none. What it attributes to this worker is the amount paid
+  for its answers on that channel; the highest amount a worker has seen on a
+  channel stands, so an older one the pool replays changes nothing.
+- **At most one answer behind.** The worker prices each answer it delivered
+  on the channel at the declared prices, with the buyer's formula. It serves
+  a request only while the answers not covered by the payment, plus the
+  requests still running there, number fewer than 2. A buyer that never pays
+  gets two answers per channel, and every channel is an on-chain reserve.
+  Answers that did not reach the buyer whole are not owed.
+
+The account is kept in memory: a restarted worker starts every channel
+afresh. Settlement is still the operator's: the pool contract settles only
+for its operators, so a worker holds the buyer's payment but cannot redeem it
+itself.
 
 ## Hardened Macs
 

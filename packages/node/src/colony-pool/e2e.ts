@@ -4,6 +4,7 @@
  * buyer's client. Spec: docs/protocol/colony-pool.md.
  */
 export * from './worker-crypto.js';
+export * from './worker-payment.js';
 export {
   APPLE_ATTESTATION_REISSUE_S,
   APPLE_ENTERPRISE_ATTESTATION_ROOT_CA,

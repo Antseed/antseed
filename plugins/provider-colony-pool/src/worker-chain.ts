@@ -1,4 +1,5 @@
 import { CHAIN_CONFIGS, ChannelsClient } from '@antseed/node';
+import type { ChannelsDomain } from '@antseed/node/worker-e2e';
 import { trustedChannelVerifier, type ChannelVerifier } from './worker.js';
 
 export interface WorkerChain {
@@ -29,6 +30,17 @@ export function workerChannelsClient(
     evmChainId: chain.evmChainId,
     ...(fallbacks.length > 0 ? { fallbackRpcUrls: fallbacks } : {}),
   });
+}
+
+/** The Channels deployment buyers sign SpendingAuths for: the one this worker reads channels on. */
+export function workerChannelsDomain(
+  chainId: string,
+  channelsAddress?: string,
+  chains: Record<string, WorkerChain | undefined> = CHAIN_CONFIGS as Record<string, WorkerChain | undefined>,
+): ChannelsDomain {
+  const chain = chains[chainId];
+  if (!chain) throw new Error(`Unknown --chain-id ${chainId}`);
+  return { chainId: chain.evmChainId, channelsAddress: channelsAddress ?? chain.channelsContractAddress };
 }
 
 /**

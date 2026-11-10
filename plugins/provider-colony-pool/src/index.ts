@@ -153,6 +153,10 @@ const plugin: AntseedProviderPlugin = {
       poolId: config['COLONY_POOL_ID'] || 'antseed-pool',
       seller: seller.toLowerCase(),
       catalog,
+      prices: Object.fromEntries(catalog.map((service) => {
+        const { inputUsdPerMillion, outputUsdPerMillion, cachedInputUsdPerMillion } = pricing.services?.[service] ?? pricing.defaults;
+        return [service, { inputUsdPerMillion, outputUsdPerMillion, ...(cachedInputUsdPerMillion !== undefined ? { cachedInputUsdPerMillion } : {}) }];
+      })),
       workerShareBps,
       ledger,
       port,

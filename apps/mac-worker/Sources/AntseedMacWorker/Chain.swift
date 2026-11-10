@@ -71,8 +71,14 @@ struct Chain {
     /// the pool: a pool could otherwise name a contract of its own that
     /// vouches for any channel.
     func channelBelongs(channel: String, buyer: String, pool: String, channels: String) async throws -> Bool? {
+        try await channelState(channel: channel, buyer: buyer, pool: pool, channels: channels).belongs
+    }
+
+    /// `channelBelongs`, with the channel's reserve: what the buyer's payments on it can redeem.
+    func channelState(channel: String, buyer: String, pool: String, channels: String) async throws -> (belongs: Bool?, deposit: UInt64) {
         let result = try await ethCall(to: channels, data: Self.selector("channels(bytes32)") + (try Data(hexString: channel)))
-        return Self.channelVerdict(result, buyer: buyer, pool: pool)
+        let deposit = result.count >= 96 ? WorkerPayment.saturating([UInt8](result[64..<96])) : 0
+        return (Self.channelVerdict(result, buyer: buyer, pool: pool), deposit)
     }
 
     /// The payout wallet the pool records for `worker`; nil when none. Throws on a malformed answer.

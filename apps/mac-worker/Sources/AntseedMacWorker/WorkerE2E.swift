@@ -87,6 +87,8 @@ enum WorkerE2E {
         /// The signed expiry (unix seconds) and binding hash, set with `buyer`.
         let expires: UInt64?
         let binding: Data?
+        /// The buyer's latest SpendingAuth the request carries (well-formed, not yet verified), with a binding only.
+        let payment: WorkerPayment.Proof?
         /// The decrypted body's size (the ciphertext less its tag).
         let bodyBytes: Int
         fileprivate let worker: String
@@ -144,7 +146,8 @@ enum WorkerE2E {
             }
         }
         return SealedRequest(model: model, recipients: workers, buyer: buyer, channel: channel, expires: expires,
-                             binding: signedBinding, bodyBytes: ct.count - 16, worker: workerAddress, epk: epk, wrapped: wrapped, ct: ct)
+                             binding: signedBinding, payment: signedBinding == nil ? nil : WorkerPayment.parse(envelope["pay"]),
+                             bodyBytes: ct.count - 16, worker: workerAddress, epk: epk, wrapped: wrapped, ct: ct)
     }
 
     /// Decrypts an inspected request: unwraps the content key with this

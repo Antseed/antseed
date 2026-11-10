@@ -37,6 +37,19 @@ export interface WelcomeFrame {
   rejected: string[];
   /** Worker's share of what buyers pay for its requests, in basis points. */
   workerShareBps: number;
+  /**
+   * What buyers pay for each accepted service, USD per million tokens: the
+   * worker serves a channel only while the buyer's signed payments cover its
+   * earlier answers there at these prices.
+   */
+  prices: Record<string, ServicePrice>;
+}
+
+/** A service's token prices, as buyers pay them (ServicePricing). */
+export interface ServicePrice {
+  inputUsdPerMillion: number;
+  outputUsdPerMillion: number;
+  cachedInputUsdPerMillion?: number;
 }
 
 export interface RequestFrame {
@@ -211,6 +224,13 @@ type FieldCheck = (value: unknown) => boolean;
 const isString: FieldCheck = (value) => typeof value === 'string';
 const isNumber: FieldCheck = (value) => typeof value === 'number';
 const optional = (check: FieldCheck): FieldCheck => (value) => value === undefined || check(value);
+const isPrice = (value: unknown): boolean => {
+  if (!isRecord(value)) return false;
+  const finite = (v: unknown): boolean => typeof v === 'number' && Number.isFinite(v) && v >= 0;
+  return finite(value['inputUsdPerMillion']) && finite(value['outputUsdPerMillion'])
+    && (value['cachedInputUsdPerMillion'] === undefined || finite(value['cachedInputUsdPerMillion']));
+};
+const isPrices: FieldCheck = (value) => isRecord(value) && Object.values(value).every(isPrice);
 
 /** Each frame's fields (every field of its interface but `t`) and the check each must pass. */
 type FrameShapes<F extends { t: string }> = {
@@ -235,7 +255,7 @@ const WORKER_FRAMES: FrameShapes<WorkerFrame> = {
 
 const POOL_FRAMES: FrameShapes<PoolFrame> = {
   challenge: { version: isNumber, pool: isString, nonce: isString, seller: isString },
-  welcome: { workerId: isString, accepted: isStringArray, rejected: isStringArray, workerShareBps: isNumber },
+  welcome: { workerId: isString, accepted: isStringArray, rejected: isStringArray, workerShareBps: isNumber, prices: isPrices },
   request: { id: isString, method: isString, path: isString, headers: isStringRecord, body: isString },
   cancel: { id: isString },
   stats: { id: isString, stats: isRecord },

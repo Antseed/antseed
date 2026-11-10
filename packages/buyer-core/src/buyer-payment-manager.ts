@@ -600,6 +600,17 @@ export class BuyerPaymentManager {
    * attributed to the one whose sealed answer verifies (recordWorkerDelivery):
    * only a recipient can decrypt it, and each answers under its own key.
    */
+  /**
+   * The latest SpendingAuth signed on the seller's active channel, with its
+   * metadata (worker attribution included): a colony-pool request carries it
+   * so its worker can check its earlier answers were paid. Null before any.
+   */
+  latestSpendingAuth(sellerPeerId: string): { channelId: string; cumulativeAmount: string; metadata: string; signature: string } | null {
+    const session = this.getActiveSession(sellerPeerId);
+    if (!session?.latestSpendingAuthSig || !session.latestMetadata) return null;
+    return { channelId: session.sessionId, cumulativeAmount: session.authMax, metadata: session.latestMetadata, signature: session.latestSpendingAuthSig };
+  }
+
   recordWorkerAttribution(sellerPeerId: string, requestId: string, workers: string | readonly string[], free = false): void {
     this._workerDeliveries.recordAttribution(sellerPeerId, requestId, workers, free);
   }

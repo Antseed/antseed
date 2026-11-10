@@ -5,7 +5,8 @@ import { join } from 'node:path';
 import { getBytes, Wallet } from 'ethers';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { WebSocketServer, type WebSocket } from 'ws';
-import { generateWorkerEncryptionKey, requestBindingHash, sealRequest, workerKeyHex, type WorkerEncryptionKey } from '@antseed/node/worker-e2e';
+import { signTestWorkerPayment } from '@antseed/node/worker-e2e/testing';
+import { generateWorkerEncryptionKey, requestBindingHash, sealRequest, workerKeyHex, type WorkerEncryptionKey, type WorkerPayment } from '@antseed/node/worker-e2e';
 import { WorkerLedger } from './ledger.js';
 import { ColonyPool } from './pool.js';
 import { COLONY_POOL_PROTOCOL_VERSION, encodeBody } from './protocol.js';
@@ -77,7 +78,7 @@ async function startFakePool() {
       const frame = JSON.parse(data.toString()) as Record<string, unknown>;
       frames.push(frame);
       if (frame['t'] === 'hello') {
-        ws.send(JSON.stringify({ t: 'welcome', workerId: frame['address'], accepted: frame['services'], rejected: [], workerShareBps: 9000 }));
+        ws.send(JSON.stringify({ t: 'welcome', workerId: frame['address'], accepted: frame['services'], rejected: [], workerShareBps: 9000, prices: Object.fromEntries((frame['services'] as string[]).map((service) => [service, { inputUsdPerMillion: 1, outputUsdPerMillion: 4 }])) }));
       }
     });
     ws.send(JSON.stringify({ t: 'challenge', version: COLONY_POOL_PROTOCOL_VERSION, pool: 'fake', nonce: 'ab'.repeat(32), seller: SELLER }));
@@ -99,7 +100,7 @@ describe('worker lifecycle', () => {
   let key: WorkerEncryptionKey;
   const buyer = Wallet.createRandom();
 
-  function start(opts: { channelVerifier?: ChannelVerifier; maxConcurrency?: number; upstreamIdleMs?: number; upstreamTimeoutMs?: number; channelWaitMs?: number; poolSilenceMs?: number } = {}): PoolWorker {
+  function start(opts: { channelVerifier?: ChannelVerifier; channelsDomain?: { chainId: number; channelsAddress: string }; maxConcurrency?: number; upstreamIdleMs?: number; upstreamTimeoutMs?: number; channelWaitMs?: number; poolSilenceMs?: number } = {}): PoolWorker {
     key = generateWorkerEncryptionKey();
     worker = new PoolWorker({
       poolUrl: fakePool.url,
@@ -115,12 +116,12 @@ describe('worker lifecycle', () => {
   }
 
   /** Send the worker a sealed request, bound to a buyer's channel unless `unbound`. */
-  async function request(id: string, opts: { unbound?: boolean; content?: string; stream?: boolean } = {}): Promise<void> {
+  async function request(id: string, opts: { unbound?: boolean; content?: string; stream?: boolean; payment?: WorkerPayment } = {}): Promise<void> {
     const body = enc({ model: SERVICE, stream: opts.stream ?? false, messages: [{ role: 'user', content: opts.content ?? 'hi' }] });
     const target = { worker: worker!.address, workerKey: workerKeyHex(key.publicKey) };
     const sealed = opts.unbound
       ? await sealRequest({ body, ...target })
-      : await sealRequest({ body, ...target, buyer: { address: buyer.address, channel: CHANNEL, signMessage: (m) => buyer.signMessage(m) } });
+      : await sealRequest({ body, ...target, buyer: { address: buyer.address, channel: CHANNEL, ...(opts.payment ? { payment: opts.payment } : {}), signMessage: (m) => buyer.signMessage(m) } });
     fakePool.send({ t: 'request', id, method: 'POST', path: '/v1/chat/completions', headers: {}, body: encodeBody(sealed.body) });
   }
 
@@ -298,15 +299,15 @@ describe('worker lifecycle', () => {
 
   it('reads channels only through the trusted Channels contract', async () => {
     const reads: string[] = [];
-    const sessions: Record<string, { buyer: string; seller: string; status: number }> = {
-      [`0x${'01'.repeat(32)}`]: { buyer: buyer.address, seller: SELLER, status: 1 },
-      [`0x${'02'.repeat(32)}`]: { buyer: buyer.address, seller: '0x00000000000000000000000000000000000000bb', status: 1 },
-      [`0x${'03'.repeat(32)}`]: { buyer: '0x0000000000000000000000000000000000000000', seller: '0x0000000000000000000000000000000000000000', status: 0 },
-      [`0x${'04'.repeat(32)}`]: { buyer: buyer.address, seller: SELLER, status: 2 }, // settled
-      [`0x${'05'.repeat(32)}`]: { buyer: buyer.address, seller: SELLER, status: 3 }, // timed out
+    const sessions: Record<string, { buyer: string; seller: string; status: number; deposit: bigint }> = {
+      [`0x${'01'.repeat(32)}`]: { buyer: buyer.address, seller: SELLER, status: 1, deposit: 1_000_000n },
+      [`0x${'02'.repeat(32)}`]: { buyer: buyer.address, seller: '0x00000000000000000000000000000000000000bb', status: 1, deposit: 1_000_000n },
+      [`0x${'03'.repeat(32)}`]: { buyer: '0x0000000000000000000000000000000000000000', seller: '0x0000000000000000000000000000000000000000', status: 0, deposit: 1_000_000n },
+      [`0x${'04'.repeat(32)}`]: { buyer: buyer.address, seller: SELLER, status: 2, deposit: 1_000_000n }, // settled
+      [`0x${'05'.repeat(32)}`]: { buyer: buyer.address, seller: SELLER, status: 3, deposit: 1_000_000n }, // timed out
     };
     const verifier = trustedChannelVerifier(async (channel) => { reads.push(channel); return sessions[channel]!; });
-    expect(await verifier(`0x${'01'.repeat(32)}`, buyer.address.toLowerCase(), SELLER)).toBe(true);
+    expect(await verifier(`0x${'01'.repeat(32)}`, buyer.address.toLowerCase(), SELLER)).toEqual({ deposit: 1_000_000n });
     // The pool's own seller address must be the channel's seller on the trusted contract.
     expect(await verifier(`0x${'02'.repeat(32)}`, buyer.address, SELLER)).toBe(false);
     expect(await verifier(`0x${'03'.repeat(32)}`, buyer.address, SELLER)).toBeNull();
@@ -360,7 +361,7 @@ describe('worker lifecycle', () => {
     upstream = await startUpstream((_body, res) => answer(res));
     let status = 1;
     let reads = 0;
-    start({ channelVerifier: trustedChannelVerifier(async () => { reads++; return { buyer: buyer.address, seller: SELLER, status }; }) });
+    start({ channelVerifier: trustedChannelVerifier(async () => { reads++; return { buyer: buyer.address, seller: SELLER, status, deposit: 1_000_000n }; }) });
     await waitFor(() => fakePool.frames.some((f) => f['t'] === 'hello'));
     await request('v1');
     await waitFor(() => fakePool.ended('v1'));
@@ -378,6 +379,32 @@ describe('worker lifecycle', () => {
     expect(upstream.bodies).toHaveLength(2);
   });
 
+  it('serves a buyer that never pays only two answers on a channel, and serves it again once it pays', async () => {
+    upstream = await startUpstream((_body, res) => answer(res));
+    const domain = { chainId: 8453, channelsAddress: '0x3000000000000000000000000000000000000003' };
+    start({ channelsDomain: domain, channelVerifier: trustedChannelVerifier(async () => ({ buyer: buyer.address, seller: SELLER, status: 1, deposit: 1_000_000n })) });
+    await waitFor(() => fakePool.frames.some((f) => f['t'] === 'hello'));
+    /** The buyer's SpendingAuth attributing `amount` to this worker, signed by `signer`. */
+    const pay = (amount: bigint, signer: Wallet = buyer): Promise<WorkerPayment> =>
+      signTestWorkerPayment({ signer, channel: CHANNEL, worker: worker!.address, amount, domain });
+    // A pool operator's own buyer: fresh signed bindings on a real channel, never a payment.
+    for (const id of ['p1', 'p2']) {
+      await request(id);
+      await waitFor(() => fakePool.ended(id));
+    }
+    await request('p3');
+    await waitFor(() => fakePool.errorFor('p3') !== undefined);
+    expect(fakePool.errorFor('p3')).toMatch(/earlier answers on this channel has not arrived/);
+    // Paid by someone other than the channel's buyer: still refused, and never decrypted.
+    await request('p4', { payment: await pay(18n, Wallet.createRandom()) });
+    await waitFor(() => fakePool.errorFor('p4') !== undefined);
+    expect(upstream.bodies).toHaveLength(2);
+    // Each answer (5 in, 1 out at $1 / $4 per million) costs 9; the buyer pays for both.
+    await request('p5', { payment: await pay(18n) });
+    await waitFor(() => fakePool.ended('p5'));
+    expect(upstream.bodies).toHaveLength(3);
+  });
+
   it('shares one read between requests that arrive while it runs', async () => {
     upstream = await startUpstream((_body, res) => answer(res));
     let reads = 0;
@@ -386,12 +413,13 @@ describe('worker lifecycle', () => {
       channelVerifier: trustedChannelVerifier(async () => {
         reads++;
         await sleep(100);
-        return { buyer: buyer.address, seller: SELLER, status: 1 };
+        return { buyer: buyer.address, seller: SELLER, status: 1, deposit: 1_000_000n };
       }),
     });
     await waitFor(() => fakePool.frames.some((f) => f['t'] === 'hello'));
-    await Promise.all([request('s1'), request('s2'), request('s3')]);
-    await waitFor(() => ['s1', 's2', 's3'].every((id) => fakePool.ended(id)));
+    // Two: as many as a buyer may run ahead of paying on one channel.
+    await Promise.all([request('s1'), request('s2')]);
+    await waitFor(() => ['s1', 's2'].every((id) => fakePool.ended(id)));
     expect(reads).toBe(1);
   });
 });
@@ -407,7 +435,7 @@ describe('pool deadlines and capacity', () => {
   async function setup(handler: Parameters<typeof startUpstream>[0], opts: { responseIdleTimeoutMs?: number; verifyOnJoin?: boolean; heartbeatIntervalMs?: number } = {}): Promise<string> {
     upstream = await startUpstream(handler);
     pool = new ColonyPool({
-      poolId: 'test-pool', seller: SELLER, catalog: [SERVICE, 'other-model'], workerShareBps: 9000, ledger, port: 0, host: '127.0.0.1',
+      poolId: 'test-pool', seller: SELLER, catalog: [SERVICE, 'other-model'], prices: { [SERVICE]: { inputUsdPerMillion: 1, outputUsdPerMillion: 4 }, 'other-model': { inputUsdPerMillion: 1, outputUsdPerMillion: 4 } }, workerShareBps: 9000, ledger, port: 0, host: '127.0.0.1',
       verifyOnJoin: opts.verifyOnJoin ?? false,
       ...(opts.responseIdleTimeoutMs ? { responseIdleTimeoutMs: opts.responseIdleTimeoutMs } : {}),
       ...(opts.heartbeatIntervalMs ? { heartbeatIntervalMs: opts.heartbeatIntervalMs } : {}),

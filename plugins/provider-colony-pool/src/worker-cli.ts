@@ -6,7 +6,7 @@ import { parseArgs } from 'node:util';
 import { Wallet } from 'ethers';
 import { generateWorkerEncryptionKey, type WorkerEncryptionKey } from '@antseed/node/worker-e2e';
 import { parseWorkerModels, PoolWorker, queryWorkerStats } from './worker.js';
-import { workerChannelVerifier } from './worker-chain.js';
+import { workerChannelsDomain, workerChannelVerifier } from './worker-chain.js';
 
 const USAGE = `Usage: antseed-pool-worker --pool <wss://url> --services <service[=localModel],...> [options]
 
@@ -100,6 +100,7 @@ async function main(): Promise<void> {
     privateKey: loadOrCreateKey(values['key-file']!),
     encryptionKey: loadOrCreateEncryptionKey(`${values['key-file']!}.p256`),
     channelVerifier: workerChannelVerifier(values['chain-id']!, values['rpc-url'], values['channels-address']),
+    channelsDomain: workerChannelsDomain(values['chain-id']!, values['channels-address']),
     maxConcurrency: concurrency,
     log: (line) => console.log(line),
   });

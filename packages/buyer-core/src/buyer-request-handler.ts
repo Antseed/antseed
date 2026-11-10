@@ -319,7 +319,13 @@ export class BuyerRequestHandler {
     let wireResponse: SerializedHttpResponse | null = null;
     const sealForAttempt = async (): Promise<void> => {
       if (!workerE2E || !workerService) return;
-      const channelId = this._deps.negotiator?.bpm?.getActiveSession(peer.peerId)?.sessionId ?? null;
+      const bpm = this._deps.negotiator?.bpm;
+      const channelId = bpm?.getActiveSession(peer.peerId)?.sessionId ?? null;
+      // Pays the workers for their earlier answers on this channel; they serve only so far ahead of it.
+      const latest = channelId ? bpm?.latestSpendingAuth(peer.peerId) : null;
+      const payment = latest && latest.channelId === channelId
+        ? { cumulativeAmount: latest.cumulativeAmount, metadata: latest.metadata, signature: latest.signature }
+        : null;
       // The pool the request is for: the one it names, else the one it was routed to. A request
       // that names an ordinary provider without that model is left to the seller to place.
       const provider = [explicitProvider, billingRoute?.provider].find((name) => name && isWorkerE2EProvider(peer, name));
@@ -330,7 +336,7 @@ export class BuyerRequestHandler {
         // Assigned by the pool the request goes to.
         headers: { 'content-type': 'application/json', ...(provider ? { 'x-antseed-provider': provider } : {}) },
         body,
-      }, undefined, { controlPlane: true, ...(options?.signal ? { signal: options.signal } : {}) }), channelId);
+      }, undefined, { controlPlane: true, ...(options?.signal ? { signal: options.signal } : {}) }), channelId, payment);
       req = sealed.request;
       // Only a worker it is encrypted for can answer it; the one that does is credited.
       this._deps.negotiator?.bpm?.recordWorkerAttribution(peer.peerId, plainReq.requestId, sealed.recipients, isFreeService);

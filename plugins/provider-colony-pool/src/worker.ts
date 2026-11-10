@@ -1,16 +1,22 @@
 import { Wallet } from 'ethers';
 import WebSocket from 'ws';
 import {
+  answerCostUsdc,
+  attributedPayment,
+  type ChannelsDomain,
   decryptRequest,
   inspectRequest,
   type InspectedRequest,
   isSealedRequest,
   WORKER_REQUEST_TTL_SECONDS,
   type OpenedRequest,
+  type UsageLike,
+  usageCounts,
   workerKeyCertificateMessage,
   workerKeyHex,
   type WorkerAttestation,
   type WorkerEncryptionKey,
+  WorkerPaymentLedger,
 } from '@antseed/node/worker-e2e';
 import {
   decodeBody,
@@ -19,6 +25,7 @@ import {
   workerAuthMessage,
   type PoolFrame,
   type RequestFrame,
+  type ServicePrice,
   type WelcomeFrame,
   type WorkerFrame,
   type WorkerStats,
@@ -58,8 +65,23 @@ export interface WorkerAttester {
   attest(nonce: string, worker: string, encryptionKey: string): Promise<WorkerAttestation>;
 }
 
-/** Whether `channel` on-chain belongs to `buyer` and to the pool's `seller`. `null` = not on-chain (yet). */
-export type ChannelVerifier = (channel: string, buyer: string, seller: string) => Promise<boolean | null>;
+/** A channel verified on-chain: its reserve, which bounds what the buyer's payments can redeem. */
+export interface VerifiedChannel {
+  deposit: bigint;
+}
+
+/**
+ * Whether `channel` on-chain belongs to `buyer` and to the pool's `seller`:
+ * its facts when it does (`true` when they are unknown, as in tests), false
+ * when it does not, `null` = not on-chain (yet).
+ */
+export type ChannelVerifier = (channel: string, buyer: string, seller: string) => Promise<VerifiedChannel | boolean | null>;
+
+/** A channel check's outcome: verified (with its reserve, when known), refused, or not on-chain within the wait. */
+type ChannelVerdict = { deposit: bigint | null } | false | null;
+
+/** channelVerdict's answer when the worker has no verifier: buyer requests are refused. */
+const UNVERIFIABLE = Symbol('unverifiable');
 
 /**
  * A ChannelVerifier over `readChannel`, which must read the channel from the
@@ -67,16 +89,16 @@ export type ChannelVerifier = (channel: string, buyer: string, seller: string) =
  * contract the pool names: a pool could otherwise answer with a contract of
  * its own that vouches for any channel.
  */
-/** channelVerdict's answer when the worker has no verifier: buyer requests are refused. */
-const UNVERIFIABLE = Symbol('unverifiable');
-
-export function trustedChannelVerifier(readChannel: (channel: string) => Promise<{ buyer: string; seller: string; status: number }>): ChannelVerifier {
+export function trustedChannelVerifier(
+  readChannel: (channel: string) => Promise<{ buyer: string; seller: string; status: number; deposit: bigint }>,
+): ChannelVerifier {
   return async (channel, buyer, seller) => {
     const session = await readChannel(channel);
     if (/^0x0+$/.test(session.buyer)) return null; // not visible yet
     // A settled or timed-out channel keeps its buyer and seller but pays for nothing more.
     if (session.status !== CHANNEL_ACTIVE) return false;
-    return session.buyer.toLowerCase() === buyer.toLowerCase() && session.seller.toLowerCase() === seller.toLowerCase();
+    const belongs = session.buyer.toLowerCase() === buyer.toLowerCase() && session.seller.toLowerCase() === seller.toLowerCase();
+    return belongs ? { deposit: BigInt(session.deposit) } : false;
   };
 }
 
@@ -106,6 +128,12 @@ export interface PoolWorkerOptions {
   channelVerifier?: ChannelVerifier;
   /** How long a request waits for its channel to be verified before it is refused (default 5 s). */
   channelWaitMs?: number;
+  /**
+   * The Channels deployment the channel verifier reads: buyers' SpendingAuths
+   * are signed for it. Without it no payment verifies, so each channel gets
+   * only the answers a buyer may run ahead of payment (MAX_UNPAID_ANSWERS).
+   */
+  channelsDomain?: ChannelsDomain;
   /** How long the pool may send nothing (not even a ping) before the worker reconnects (default 45 s). */
   poolSilenceMs?: number;
   /** How long the local model has to start answering (default 5 min), and then to send each next chunk (default 60 s). */
@@ -195,7 +223,9 @@ export class PoolWorker {
   /** Refused: `channel|buyer` pairs the chain shows are not that buyer's channel with this pool. */
   private readonly refusedChannels = new Set<string>();
   /** Pending: one lookup per `channel|buyer`, shared by the requests waiting on it. */
-  private readonly verifying = new Map<string, Promise<boolean | null>>();
+  private readonly verifying = new Map<string, Promise<ChannelVerdict>>();
+  /** What each channel's buyer owes this worker for its answers, and has paid. */
+  private readonly payments = new WorkerPaymentLedger();
   /** Served buyer requests: binding hash → its signed expiry, kept until then so a replay is refused. */
   private readonly served = new Map<string, number>();
 
@@ -341,7 +371,7 @@ export class PoolWorker {
    * refuses that buyer without a read. An unknown channel is looked up again
    * by the next request.
    */
-  private channelVerdict(channel: string, buyer: string): Promise<boolean | null> | boolean | null | typeof UNVERIFIABLE {
+  private channelVerdict(channel: string, buyer: string): Promise<ChannelVerdict> | ChannelVerdict | typeof UNVERIFIABLE {
     const verifier = this.opts.channelVerifier;
     if (!verifier) return UNVERIFIABLE;
     if (!this.seller) return null;
@@ -360,15 +390,15 @@ export class PoolWorker {
     return pending;
   }
 
-  private async lookUpChannel(verifier: ChannelVerifier, channel: string, buyer: string, seller: string): Promise<boolean | null> {
+  private async lookUpChannel(verifier: ChannelVerifier, channel: string, buyer: string, seller: string): Promise<ChannelVerdict> {
     const deadline = Date.now() + (this.opts.channelWaitMs ?? DEFAULT_CHANNEL_WAIT_MS);
     for (;;) {
       const remaining = deadline - Date.now();
       const result = await withTimeout(verifier(channel, buyer, seller), Math.max(remaining, 1)).catch(() => null);
-      if (result === true) {
+      if (result === true || (typeof result === 'object' && result !== null)) {
         if (this.channelOwners.size >= MAX_CACHED_CHANNELS) this.channelOwners.clear();
         this.channelOwners.set(`${seller}|${channel}`, buyer);
-        return true;
+        return { deposit: result === true ? null : result.deposit };
       }
       if (result === false) {
         if (this.refusedChannels.size >= MAX_CACHED_CHANNELS) this.refusedChannels.clear();
@@ -431,14 +461,62 @@ export class PoolWorker {
     // A buyer's request is admitted on its clear binding before it is decrypted, so a refused one is never read.
     // A binding to no channel is a pool check.
     const bound = inspected.binding && !/^0x0+$/.test(inspected.binding.channel) ? inspected.binding : null;
+    // The channel and price this request's answer is owed on, once admitted.
+    let owed: { channel: string; price: ServicePrice } | null = null;
     if (bound) {
       if (!this.opts.services[inspected.model] || this.paused) throw new Error(`Not serving ${inspected.model}`);
       const verdict = await abortable(this.channelVerdict(bound.channel.toLowerCase(), bound.buyer), signal);
       if (verdict === UNVERIFIABLE) throw new Error('This worker has no channel verifier, so it refuses buyer requests; start it with an RPC endpoint');
       if (verdict === false) throw new Error('Request channel does not belong to a buyer of this pool');
       if (verdict === null) throw new Error('Request channel is not on-chain yet; retry shortly');
-      this.claimOnce(bound.hash, bound.expires);
+      const price = this.welcome?.prices?.[inspected.model];
+      if (!price) throw new Error(`The pool declared no price for ${inspected.model}, so this worker can't check it is paid`);
+      const channel = bound.channel.toLowerCase();
+      // Paid before served: the buyer's signed payments must cover this worker's earlier answers on the channel.
+      this.payments.admit(channel, this.attributed(inspected, verdict.deposit));
+      owed = { channel, price };
     }
+    let answered: UsageLike | null = null;
+    try {
+      if (bound) this.claimOnce(bound.hash, bound.expires);
+      answered = await this.serveOpened(frame, inspected, bound, signal, send);
+    } finally {
+      if (owed) {
+        // Only an answer that reached the buyer whole is owed; a failed one is never paid.
+        if (answered) this.payments.served(owed.channel, answerCostUsdc(usageCounts(answered), owed.price));
+        else this.payments.released(owed.channel);
+      }
+    }
+  }
+
+  /**
+   * What the request's payment attributes to this worker: 0 when it carries
+   * none, or one that does not verify (unsigned by the buyer, for another
+   * Channels contract, or beyond the channel's reserve).
+   */
+  private attributed(inspected: InspectedRequest, deposit: bigint | null): bigint {
+    const { payment, binding } = inspected;
+    const domain = this.opts.channelsDomain;
+    if (!payment || !binding || !domain) return 0n;
+    try {
+      return attributedPayment(payment, {
+        channel: binding.channel, buyer: binding.buyer, worker: this.wallet.address,
+        deposit: deposit ?? BigInt(payment.cumulativeAmount), domain,
+      });
+    } catch (err) {
+      this.log(`ignoring the payment on channel ${binding.channel.slice(0, 18)}…: ${err instanceof Error ? err.message : String(err)}`);
+      return 0n;
+    }
+  }
+
+  /** Decrypt an admitted request and serve it; returns the answer's usage once it was sent whole. */
+  private async serveOpened(
+    frame: RequestFrame,
+    inspected: InspectedRequest,
+    bound: InspectedRequest['binding'],
+    signal: AbortSignal,
+    send: (out: WorkerFrame) => void,
+  ): Promise<UsageLike> {
     let opened: OpenedRequest;
     let body: Record<string, unknown>;
     try {
@@ -469,6 +547,7 @@ export class PoolWorker {
       ? `serving ${opened.model} for buyer ${bound.buyer} on channel ${bound.channel.slice(0, 18)}…`
       : `serving a pool check for ${opened.model}`);
     await this.forwardUpstream(frame, body, opened.sealer, signal, send);
+    return opened.sealer.usage ?? {};
   }
 
   /** Run the request on the local model and send its answer back sealed, in chunks. */

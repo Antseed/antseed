@@ -42,6 +42,15 @@ export interface WorkerUsage {
   outputTokens: bigint;
 }
 
+/** The buyer's latest SpendingAuth on a channel: a worker checks it pays for its earlier answers there. */
+export interface WorkerPaymentProof {
+  /** Decimal string, USDC base units. */
+  cumulativeAmount: string;
+  /** Signed metadata bytes (hex), with the worker-attribution tail. */
+  metadata: string;
+  signature: string;
+}
+
 export interface WorkerE2EClient {
   /**
    * Encrypt `request` for the workers assigned to this seller and service
@@ -54,6 +63,7 @@ export interface WorkerE2EClient {
     service: string,
     assign: (body: Uint8Array) => Promise<SerializedHttpResponse>,
     channelId: string | null,
+    payment?: WorkerPaymentProof | null,
   ): Promise<SealedWorkerRequest>;
   /** Drop a cached assignment (the pool said none of its workers could take the request). */
   forget(peerId: string, service: string): void;

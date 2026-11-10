@@ -194,6 +194,7 @@ describe('colony pool', () => {
       poolId: 'test-pool',
       seller: SELLER,
       catalog: [SERVICE, 'other-model'],
+      prices: { [SERVICE]: { inputUsdPerMillion: 1, outputUsdPerMillion: 4 }, 'other-model': { inputUsdPerMillion: 1, outputUsdPerMillion: 4 } },
       workerShareBps: 9000,
       ledger,
       port: 0,
