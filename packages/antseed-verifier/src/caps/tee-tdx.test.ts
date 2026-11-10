@@ -25,6 +25,13 @@ import type { ClaimResult } from '../antseed-node-types.js'
 import { claimId, computeReportData } from '../shared.js'
 import { noncePubkeySha256V1 } from '../report-data.js'
 import { appCompose, bootEvents, referenceCompose, testBuilds } from '../dstack-build.fixture.js'
+import {
+  DSTACK_LITE_OS_UNAVAILABLE,
+  injectVerifyTdxLiteOs,
+  type TdxLiteOsInput,
+  type TdxLiteOsResult,
+  type VerifyTdxLiteOs,
+} from '../dstack-lite-os.js'
 
 const NONCE = randomBytes(32)
 const PEER = 'f'.repeat(40)
@@ -32,13 +39,25 @@ const PEER = 'f'.repeat(40)
 const BINDING = 'c'.repeat(64)
 /** The approved builds matching td()'s default measurements: the test dstack OS and seller image. */
 const APPROVED = testBuilds('aa'.repeat(48))
+const LITE_HASH = 'aa'.repeat(32)
+const LITE_OS_IMAGE = { name: 'dstack lite-test', hash: LITE_HASH }
+const LITE_APPROVED = { ...APPROVED, os: [], osImages: [LITE_OS_IMAGE] }
 /** A conforming app compose and the RTMR3 boot events that measure it. */
 const APP = appCompose(referenceCompose())
 const BOOT = bootEvents(APP)
+const RAW_EVENT_LOG = '[]'
+const VM_CONFIG = '{"cpu_count":1}'
 /** Node evidence from a dstack CVM: the quote plus its event log and app compose. */
-const dstackEvidence = (app = APP, eventLog = BOOT.eventLog) => encodeTeeTdxEvidence(randomBytes(64), undefined, undefined, { eventLog, appCompose: app })
+const dstackEvidence = (app = APP, eventLog = BOOT.eventLog, extra: { rawEventLog?: string; vmConfig?: string } = {}) =>
+  encodeTeeTdxEvidence(randomBytes(64), undefined, undefined, { eventLog, appCompose: app, ...extra })
+const liteEvidence = () => dstackEvidence(APP, BOOT.eventLog, { rawEventLog: RAW_EVENT_LOG, vmConfig: VM_CONFIG })
+const okLite = (over: Partial<TdxLiteOsResult> = {}): VerifyTdxLiteOs =>
+  () => ({ ok: true, osImageHash: LITE_HASH, acpiTablesVerified: true, reason: null, ...over })
 
-afterEach(() => vi.unstubAllGlobals())
+afterEach(() => {
+  vi.unstubAllGlobals()
+  injectVerifyTdxLiteOs(undefined)
+})
 
 /**
  * A TD10 measurement set. Override fields per test. report_data defaults to the node cap
@@ -106,6 +125,15 @@ describe('TDX cap verify (seller-node-tee-genuine)', () => {
     expect(r).toMatchObject({ ok: false, detail: expect.stringMatching(/not an approved TEE seller build: the CVM OS .* is not an approved dstack release/) })
     expect(await runAll(nodeTeeCapability, async () => ({ status: 'UpToDate', td: td() }), undefined, { approved: { os: [], images: [] } }))
       .toEqual([expect.objectContaining({ ok: false, detail: expect.stringMatching(/not an approved dstack release/) })])
+  })
+
+  it('accepts a table-matching OS without calling the lite verifier', async () => {
+    injectVerifyTdxLiteOs(() => {
+      throw new Error('lite should not run')
+    })
+    const r = await run(nodeTeeCapability, async () => ({ status: 'UpToDate', td: td() }))
+    expect(r.ok).toBe(true)
+    expect(r.detail).toMatch(/on dstack test/)
   })
 
   it('rejects an app that is not an approved image under the compose rules', async () => {
@@ -205,6 +233,52 @@ describe('TDX cap verify (seller-node-tee-genuine)', () => {
     const r = nodeTeeCapability.verify({ nonce: NONCE, peerId: PEER })
     expect(r).toMatchObject({ claim: CLAIM, ok: false })
     expect((r as { detail: string }).detail).toMatch(/no TDX quote/)
+  })
+})
+
+describe('TDX cap verify — local lite OS path', () => {
+  const CLAIM = claimId(NODE_TEE_CAP_ID)
+  const stub: VerifyQuoteFn = async () => ({ status: 'UpToDate', td: td() })
+
+  it('accepts when the lite check returns ok and an approved OS image hash', async () => {
+    const seen: TdxLiteOsInput[] = []
+    injectVerifyTdxLiteOs((input) => {
+      seen.push(input)
+      return { ok: true, osImageHash: LITE_HASH, acpiTablesVerified: true, reason: null }
+    })
+    const r = await run(nodeTeeCapability, stub, liteEvidence(), { approved: LITE_APPROVED })
+    expect(r).toMatchObject({ claim: CLAIM, ok: true })
+    expect(r.detail).toMatch(/on dstack lite-test/)
+    expect(seen).toEqual([{ mrtd: 'aa'.repeat(48), rtmr0: '00'.repeat(48), rtmr1: '00'.repeat(48), rtmr2: '00'.repeat(48), eventLog: RAW_EVENT_LOG, vmConfig: VM_CONFIG }])
+  })
+
+  it('rejects when the lite check is not ok and propagates its reason', async () => {
+    injectVerifyTdxLiteOs(() => ({ ok: false, osImageHash: null, acpiTablesVerified: false, reason: 'acpi mismatch' }))
+    const r = await run(nodeTeeCapability, stub, liteEvidence(), { approved: LITE_APPROVED })
+    expect(r).toMatchObject({ ok: false, detail: expect.stringMatching(/dstack lite OS check failed: acpi mismatch/) })
+  })
+
+  it('rejects a lite-checked OS whose image hash is not approved', async () => {
+    injectVerifyTdxLiteOs(okLite({ osImageHash: 'ff'.repeat(32) }))
+    const r = await run(nodeTeeCapability, stub, liteEvidence(), { approved: LITE_APPROVED })
+    expect(r).toMatchObject({ ok: false, detail: expect.stringMatching(/the CVM OS image hash is not an approved dstack release/) })
+  })
+
+  it('rejects when vmConfig or rawEventLog is missing', async () => {
+    injectVerifyTdxLiteOs(okLite())
+    const onlyVm = dstackEvidence(APP, BOOT.eventLog, { vmConfig: VM_CONFIG })
+    const onlyLog = dstackEvidence(APP, BOOT.eventLog, { rawEventLog: RAW_EVENT_LOG })
+    expect(await run(nodeTeeCapability, stub, onlyVm, { approved: LITE_APPROVED })).toMatchObject({
+      ok: false, detail: expect.stringMatching(/the CVM OS .* is not an approved dstack release/),
+    })
+    expect(await run(nodeTeeCapability, stub, onlyLog, { approved: LITE_APPROVED })).toMatchObject({
+      ok: false, detail: expect.stringMatching(/the CVM OS .* is not an approved dstack release/),
+    })
+  })
+
+  it('rejects when the lite verifier is unavailable', async () => {
+    const r = await run(nodeTeeCapability, stub, liteEvidence(), { approved: LITE_APPROVED })
+    expect(r).toMatchObject({ ok: false, detail: expect.stringMatching(DSTACK_LITE_OS_UNAVAILABLE) })
   })
 })
 
