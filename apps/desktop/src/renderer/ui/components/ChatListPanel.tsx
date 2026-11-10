@@ -20,6 +20,7 @@ import { formatCompactTokens } from '../../core/peer-utils';
 import { formatUsdcAmount } from '../../core/format';
 import { shallowEqual, useUiSelector } from '../hooks/useUiSelector';
 import { useActions } from '../hooks/useActions';
+import type { ConversationFlags } from '../../types/bridge';
 import { buildChatSections, folderName, projectFolder, type ChatSection } from './chat-list-sections';
 import styles from './ChatListPanel.module.scss';
 
@@ -29,7 +30,6 @@ const EMPTY_CONVERSATIONS: unknown[] = [];
 const RECENT_SESSION_CLOCK_MS = 60 * 1000;
 const COLLAPSED_SECTIONS_KEY = 'antseed.chatList.collapsedSections';
 
-type ChatFlags = { pinned?: boolean; archived?: boolean };
 
 function readCollapsedSections(): Set<string> {
   try {
@@ -130,7 +130,7 @@ function ConvContextMenu({
   archived: boolean;
   anchorRef: RefObject<HTMLButtonElement | null>;
   onDelete: (id: string) => void;
-  onSetFlags: (id: string, flags: ChatFlags) => void;
+  onSetFlags: (id: string, flags: ConversationFlags) => void;
   onClose: () => void;
 }) {
   const menuRef = useRef<HTMLDivElement>(null);
@@ -253,7 +253,7 @@ function ConversationRow({
   defaultWorkspace: string;
   onSelectConv: (id: string) => void;
   onDeleteConv: (id: string) => void;
-  onSetFlags: (id: string, flags: ChatFlags) => void;
+  onSetFlags: (id: string, flags: ConversationFlags) => void;
   menuOpenId: string | null;
   setMenuOpenId: (id: string | null) => void;
   menuBtnRefs: RefObject<Map<string, HTMLButtonElement | null>>;
@@ -542,7 +542,7 @@ export function ChatListPanel({ onOpenConversation, onOpenConversationDeleted, h
     onOpenConversation();
   }, [actions, onOpenConversation]);
 
-  const handleSetFlags = useCallback((id: string, flags: ChatFlags) => {
+  const handleSetFlags = useCallback((id: string, flags: ConversationFlags) => {
     void actions.setConversationFlags(id, flags);
   }, [actions]);
 

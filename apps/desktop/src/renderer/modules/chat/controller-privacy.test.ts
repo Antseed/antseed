@@ -14,9 +14,12 @@ const conv = (id: string, service: string) => ({ id, title: id, service, message
 const lowFunds = { ok: false, error: 'Too low.', stopReason: { kind: 'payment_required', message: 'Too low.' } };
 const privacy = (mode: 'anonymous' | 'private') => ({ mode, editable: true, requiredAbove: false });
 
-function setup(options: { lastModel?: string; send?: () => Promise<unknown>; image?: () => Promise<unknown>; models?: unknown[]; conversations?: Array<ReturnType<typeof conv>> } = {}) {
+function setup(options: { lastModel?: string; stored?: Record<string, string>; send?: () => Promise<unknown>; image?: () => Promise<unknown>; models?: unknown[]; conversations?: Array<ReturnType<typeof conv>> } = {}) {
   vi.stubGlobal('window', {
-    localStorage: { getItem: () => options.lastModel ?? null, setItem: () => undefined },
+    localStorage: {
+      getItem: (key: string) => options.stored?.[key] ?? (key === 'antseed:chat:lastModel' ? options.lastModel ?? null : null),
+      setItem: (key: string, value: string) => { if (options.stored) options.stored[key] = value; },
+    },
     setTimeout: globalThis.setTimeout,
     setInterval: globalThis.setInterval,
     clearInterval: globalThis.clearInterval,
@@ -105,6 +108,24 @@ describe('privacy at the moment a request leaves', () => {
     await tick();
     expect(chatAiSendStream).toHaveBeenCalledTimes(1);
     expect(chatAiSendStream.mock.calls[0]?.[1]).toBe('second');
+  });
+
+  it('remembers every chat sent in Private, not only the latest few hundred', async () => {
+    const ids = ['conv-1', ...Array.from({ length: 600 }, (_, index) => `other-${index}`)];
+    const stored: Record<string, string> = { 'antseed:privateChats': JSON.stringify(ids) };
+    const { api, uiState, chatAiSendStream } = setup({ stored, conversations: [conv('conv-1', 'model-b'), conv('conv-2', 'model-b')] });
+    privacyResource.setData(privacy('private'));
+    await api.openConversation('conv-2');
+    api.sendMessage('hello');
+    await tick();
+    expect(JSON.parse(stored['antseed:privateChats']!)).toContain('conv-1');
+
+    privacyResource.setData(privacy('anonymous'));
+    await api.openConversation('conv-1');
+    api.sendMessage('hello');
+    await tick();
+    expect(chatAiSendStream).toHaveBeenCalledTimes(1);
+    expect(uiState.chatError).toMatch(/sent in Private/);
   });
 
   it('Try again does not send a chat sent in Private once Private was turned off elsewhere', async () => {

@@ -179,8 +179,8 @@ export type RawChatAttachment = {
 
 export type ChatPermissionMode = 'manual' | 'full';
 
-import type { ChatModel, ChatRoutePreview } from '../../shared/chat-gateway-types.js';
-export type { ChatModel, ChatRouteCandidate, ChatRoutePreview } from '../../shared/chat-gateway-types.js';
+import type { ChatModel, ChatRoutePreview, ConversationFlags } from '../../shared/chat-gateway-types.js';
+export type { ChatModel, ChatRouteCandidate, ChatRoutePreview, ConversationFlags } from '../../shared/chat-gateway-types.js';
 
 export type ToolApprovalDecision = 'allow_once' | 'always_allow' | 'deny';
 // Mirrors TelegramBridgeStatus in apps/desktop/src/main/telegram/bridge.ts
@@ -267,7 +267,7 @@ export type DesktopBridge = {
   /** Pin or archive a chat (pinning unarchives it, archiving unpins it). */
   chatAiSetConversationFlags?: (
     id: string,
-    flags: { pinned?: boolean; archived?: boolean },
+    flags: ConversationFlags,
   ) => Promise<{ ok: boolean; data?: { pinnedAt?: number; archivedAt?: number }; error?: string }>;
   chatPrepareAttachments?: (conversationId: string, attachments: RawChatAttachment[]) => Promise<{ ok: boolean; data?: PreparedChatAttachment[]; error?: string }>;
   attachmentDownload?: (conversationId: string, attachmentId: string, suggestedName: string) => Promise<{ ok: boolean; path?: string; error?: string }>;

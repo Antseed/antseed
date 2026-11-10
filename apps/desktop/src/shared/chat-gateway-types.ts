@@ -64,3 +64,9 @@ export type ChatRoutePreview = {
   sort: string | null;
   candidates: ChatRouteCandidate[];
 };
+
+/** A pin/archive change for a chat; a field left out stays as it is. */
+export type ConversationFlags = {
+  pinned?: boolean;
+  archived?: boolean;
+};

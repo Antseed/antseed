@@ -10,6 +10,7 @@ import { notifyUiStateChanged, notifyUiStateChangedSync } from '../../core/store
 import type {
   ChatModel,
   ChatPermissionMode,
+  ConversationFlags,
   DesktopBridge,
   PreparedChatAttachment,
   RawChatAttachment,
@@ -81,9 +82,10 @@ function loadPrivateChats(): string[] {
   }
 }
 
+/** Kept for as long as the chat exists (deleting a chat drops it): a chat sent in Private stays one. */
 function savePrivateChats(ids: string[]): void {
   try {
-    defaultStorage()?.setItem(PRIVATE_CHATS_KEY, JSON.stringify(ids.slice(-500)));
+    defaultStorage()?.setItem(PRIVATE_CHATS_KEY, JSON.stringify(ids));
   } catch {
     // Storage unavailable: the replies' own privacy tags still mark the chat.
   }
@@ -109,7 +111,7 @@ export type ChatModuleApi = {
   deleteConversation: (convId?: string) => Promise<void>;
   renameConversation: (convId: string, newTitle: string) => void;
   /** Pin, unpin, archive or unarchive a chat in the sidebar. */
-  setConversationFlags: (convId: string, flags: { pinned?: boolean; archived?: boolean }) => Promise<void>;
+  setConversationFlags: (convId: string, flags: ConversationFlags) => Promise<void>;
   openConversation: (convId: string) => Promise<void>;
   sendMessage: (text: string, attachments?: RawChatAttachment[]) => void;
   sendMessageToConversation: (convId: string, text: string, attachments?: RawChatAttachment[]) => void;
@@ -901,6 +903,10 @@ export function initChatModule({
     streamStartedAtByConversation.delete(convId);
     fundsNoticeByConversation.delete(convId);
     imageRetryByConversation.delete(convId);
+    if (uiState.chatPrivateConversationIds.includes(convId)) {
+      uiState.chatPrivateConversationIds = uiState.chatPrivateConversationIds.filter((id) => id !== convId);
+      savePrivateChats(uiState.chatPrivateConversationIds);
+    }
     syncActiveConversationSendingState();
     if (convId === uiState.chatActiveConversation) startNewChat();
     else notifyUiStateChanged();
@@ -931,7 +937,7 @@ export function initChatModule({
 
   async function setConversationFlags(
     convId: string,
-    flags: { pinned?: boolean; archived?: boolean },
+    flags: ConversationFlags,
   ): Promise<void> {
     const previous = getConversationSummaries();
     const now = Date.now();

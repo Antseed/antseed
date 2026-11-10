@@ -14,7 +14,9 @@ export type ChatOrganization = {
   archived: Record<string, number>;
 };
 
-export type ConversationFlags = { pinned?: boolean; archived?: boolean };
+import type { ConversationFlags } from '../../shared/chat-gateway-types.js';
+
+export type { ConversationFlags };
 
 export type ChatFlagFields = { pinnedAt?: number; archivedAt?: number };
 

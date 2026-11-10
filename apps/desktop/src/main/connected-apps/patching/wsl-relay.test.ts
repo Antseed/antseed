@@ -45,10 +45,18 @@ test('a relay follows the gateway when only its upstream host changes', { skip: 
   }
 });
 
-test('stopping the relays drops open connections instead of waiting on them', async () => {
+test('stopping the relays drops open connections instead of waiting on them', async (t) => {
   // An upstream that never hangs up, like a gateway holding a keep-alive or a stream.
   const upstream = net.createServer(() => undefined);
-  await new Promise<void>((resolve) => upstream.listen(0, '::1', resolve));
+  const listening = await new Promise<boolean>((resolve) => {
+    upstream.once('error', () => resolve(false));
+    upstream.listen(0, '::1', () => resolve(true));
+  });
+  // It needs a second loopback address on the same port.
+  if (!listening) {
+    t.skip('no IPv6 loopback on this machine');
+    return;
+  }
   const port = (upstream.address() as net.AddressInfo).port;
   try {
     await syncWslRelays(['127.0.0.1'], port, undefined, '::1');

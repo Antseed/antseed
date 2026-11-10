@@ -3,7 +3,7 @@ import { contextBridge, ipcRenderer } from 'electron';
 import type { RuntimeMode, RuntimeProcessState } from './runtime/process-manager.js';
 import type { ConnectedAppsState } from './connected-apps/patching/connection.js';
 import type { TelegramBridgeStatus } from './telegram/bridge.js';
-import type { ChatModel, ChatRoutePreview } from '../shared/chat-gateway-types.js';
+import type { ChatModel, ChatRoutePreview, ConversationFlags } from '../shared/chat-gateway-types.js';
 import type {
   DepositStepSignal,
   FirstModelShownSignal,
@@ -205,7 +205,7 @@ const api = {
   },
   chatAiSetConversationFlags(
     id: string,
-    flags: { pinned?: boolean; archived?: boolean },
+    flags: ConversationFlags,
   ): Promise<{ ok: boolean; data?: { pinnedAt?: number; archivedAt?: number }; error?: string }> {
     return ipcRenderer.invoke('chat:ai-set-conversation-flags', id, flags);
   },

@@ -155,6 +155,14 @@ type StreamingRunContextTelemetry = Pick<
 >;
 
 export type StreamingRunResult = { ok: boolean; error?: string; stopReason?: ChatStreamStopReason };
+type StreamingRunArgs = [
+  conversationId: string,
+  userMessage: string,
+  modelOverride?: string,
+  attachments?: PreparedChatAttachment[],
+  permissionModeInput?: unknown,
+  options?: { requirePrivate?: boolean },
+];
 export function createStreamingRunner(ctx: StreamingRunContext) {
   const {
     store,
@@ -183,7 +191,8 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     stopReason: 'error' | 'aborted',
   ): ChatStreamStopReason => toGatewayStopReason(classifyChatStreamFailure({ error, message, stopReason }), message);
 
-  const runStreamingPrompt = async (
+  const runStreamingPromptOnce = async (
+    revokers: Array<() => void>,
     conversationId: string,
     userMessage: string,
     modelOverride?: string,
@@ -357,6 +366,8 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
 
     const shellGateway = await grantShellGateway(endpoint);
     revokeShellGateway = shellGateway.revoke;
+    // Revoked however the run ends, a failure while setting up the session included.
+    revokers.push(shellGateway.revoke);
     const { session } = await createAgentSession({
       cwd: chatWorkspaceDir,
       agentDir: CHAT_AGENT_DIR,
@@ -852,6 +863,15 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
       revokeShellGateway();
       clearActiveRun(run);
       store.markPersistedIfAvailable(conversationId);
+    }
+  };
+
+  const runStreamingPrompt = async (...args: StreamingRunArgs): Promise<StreamingRunResult> => {
+    const revokers: Array<() => void> = [];
+    try {
+      return await runStreamingPromptOnce(revokers, ...args);
+    } finally {
+      for (const revoke of revokers) revoke();
     }
   };
 

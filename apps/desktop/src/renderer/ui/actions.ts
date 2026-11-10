@@ -1,5 +1,5 @@
 import type { ConfigFormData } from '../core/state';
-import type { ChatPermissionMode, RawChatAttachment, ToolApprovalDecision } from '../types/bridge';
+import type { ChatPermissionMode, ConversationFlags, RawChatAttachment, ToolApprovalDecision } from '../types/bridge';
 import type { PrivacySwitchChoice } from '../modules/chat/controller';
 
 export type AppActions = {
@@ -17,7 +17,7 @@ export type AppActions = {
   deleteConversation: (convId?: string) => Promise<void>;
   renameConversation: (convId: string, newTitle: string) => void;
   /** Pin or archive a chat; pinning unarchives it and archiving unpins it. */
-  setConversationFlags: (convId: string, flags: { pinned?: boolean; archived?: boolean }) => Promise<void>;
+  setConversationFlags: (convId: string, flags: ConversationFlags) => Promise<void>;
   /** Pick a gateway model in the chat dropdown (text: the chat's model; image: Send generates images). */
   selectChatModel: (modelId: string) => void;
   /** Reload the gateway's model list; `force` bypasses the one-minute cache. */
