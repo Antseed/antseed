@@ -2712,6 +2712,120 @@ describe('SellerPaymentManager', () => {
       expect(mgr.hasSession(buyerIdentity.peerId)).toBe(true);
       expect(store.getChannel(channelId)!.status).toBe(CHANNEL_STATUS.ACTIVE);
     });
+
+    // #1509: the idle settle and close timers belong to buyers that sent a
+    // request to this process, so a channel reloaded from the store whose buyer
+    // never comes back had neither.
+    describe('idle channels reloaded after a restart', () => {
+      const MINUTE = 60_000;
+      const HOUR = 60 * MINUTE;
+      const SIGNED = 1_000_000n;
+      const metadata = encodeMetadata(ZERO_METADATA);
+
+      /** A paid channel in the store, last used `idleMs` ago, and a seller started after that. */
+      async function restartWithIdleChannel(channelId: string, idleMs: number, onChainSettled = 0n) {
+        seedChannel(store, channelId, buyerIdentity, sellerIdentity, {
+          authMax: SIGNED.toString(),
+          latestMetadata: metadata,
+          updatedAt: Date.now() - idleMs,
+        });
+        const mgr = makeFreshManager();
+        vi.spyOn(mgr.channelsClient, 'getSession').mockResolvedValue(
+          makeOnChainChannel(buyerIdentity, sellerIdentity, { settled: onChainSettled }),
+        );
+        const settle = vi.spyOn(mgr.channelsClient, 'settle').mockResolvedValue('0xsettle-hash');
+        const close = vi.spyOn(mgr.channelsClient, 'close').mockResolvedValue('0xclose-hash');
+        await mgr.validateHydratedChannels();
+        return { mgr, settle, close };
+      }
+
+      it('closes a reloaded paid channel at the signed amount once it was idle past the close timeout', async () => {
+        const channelId = makeChannelId(50);
+        const { mgr, close } = await restartWithIdleChannel(channelId, 13 * HOUR);
+
+        await mgr.checkTimeouts();
+
+        expect(close).toHaveBeenCalledOnce();
+        const [, closedChannel, amount, closeMetadata, sig] = close.mock.calls[0]!;
+        expect([closedChannel, amount, closeMetadata, sig]).toEqual([channelId, SIGNED, metadata, '0xdead']);
+        const stored = store.getChannel(channelId)!;
+        expect(stored.status).toBe(CHANNEL_STATUS.SETTLED);
+        expect(stored.settledAmount).toBe(SIGNED.toString());
+        expect(mgr.hasSession(buyerIdentity.peerId)).toBe(false);
+      });
+
+      it('settles a reloaded paid channel once it was idle past the settle timeout, and keeps it open', async () => {
+        const channelId = makeChannelId(51);
+        const { mgr, settle, close } = await restartWithIdleChannel(channelId, 11 * MINUTE);
+
+        await mgr.checkTimeouts();
+
+        expect(settle).toHaveBeenCalledOnce();
+        const [, settledChannel, amount, settleMetadata, sig] = settle.mock.calls[0]!;
+        expect([settledChannel, amount, settleMetadata, sig]).toEqual([channelId, SIGNED, metadata, '0xdead']);
+        expect(close).not.toHaveBeenCalled();
+        expect(store.getChannel(channelId)!.status).toBe(CHANNEL_STATUS.ACTIVE);
+        expect(mgr.hasSession(buyerIdentity.peerId)).toBe(true);
+
+        // The next periodic check has nothing new to settle.
+        await mgr.checkTimeouts();
+        expect(settle).toHaveBeenCalledOnce();
+      });
+
+      it('closes a reloaded channel that is already settled on-chain, releasing the reserve', async () => {
+        const channelId = makeChannelId(52);
+        const { mgr, settle, close } = await restartWithIdleChannel(channelId, 13 * HOUR, SIGNED);
+
+        await mgr.checkTimeouts();
+
+        expect(settle).not.toHaveBeenCalled();
+        expect(close).toHaveBeenCalledOnce();
+        expect(close.mock.calls[0]![2]).toBe(SIGNED);
+        expect(store.getChannel(channelId)!.status).toBe(CHANNEL_STATUS.SETTLED);
+      });
+
+      it('leaves a reloaded channel alone while it is within the settle timeout', async () => {
+        const channelId = makeChannelId(53);
+        const { mgr, settle, close } = await restartWithIdleChannel(channelId, MINUTE);
+
+        await mgr.checkTimeouts();
+
+        expect(settle).not.toHaveBeenCalled();
+        expect(close).not.toHaveBeenCalled();
+        expect(store.getChannel(channelId)!.status).toBe(CHANNEL_STATUS.ACTIVE);
+        expect(mgr.hasSession(buyerIdentity.peerId)).toBe(true);
+      });
+
+      it('leaves an idle channel alone while a request is being served on it', async () => {
+        const channelId = makeChannelId(56);
+        const { mgr, settle, close } = await restartWithIdleChannel(channelId, 13 * HOUR);
+        mgr.beginBillableRequest(buyerIdentity.peerId);
+
+        await mgr.checkTimeouts();
+        expect(settle).not.toHaveBeenCalled();
+        expect(close).not.toHaveBeenCalled();
+
+        mgr.endBillableRequest(buyerIdentity.peerId);
+        await mgr.checkTimeouts();
+        expect(close).toHaveBeenCalledOnce();
+      });
+
+      it('does not restart the idle clock when a restart fills in missing auth metadata', async () => {
+        const channelId = makeChannelId(54);
+        const lastUsed = Date.now() - 13 * HOUR;
+        seedChannel(store, channelId, buyerIdentity, sellerIdentity, { latestMetadata: null, updatedAt: lastUsed });
+        const mgr = makeFreshManager();
+        vi.spyOn(mgr.channelsClient, 'getSession').mockResolvedValue(
+          makeOnChainChannel(buyerIdentity, sellerIdentity, { settled: 0n }),
+        );
+
+        await mgr.validateHydratedChannels();
+
+        const stored = store.getChannel(channelId)!;
+        expect(stored.latestMetadata).not.toBeNull();
+        expect(stored.updatedAt).toBe(lastUsed);
+      });
+    });
   });
 
   describe('settleSession idle-settle skip logic', () => {

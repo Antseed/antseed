@@ -710,7 +710,7 @@ async function main() {
   });
   state.reader = chainReader(state.anvil.rpcUrl, chainState.chain);
   const chainTimestamp = Number((await state.reader.provider.getBlock('latest')).timestamp);
-  const paymentOptions = { chainTimestamp, ...(plan.topology.payments?.settlementIdleMs ? { settlementIdleMs: plan.topology.payments.settlementIdleMs } : {}) };
+  const paymentOptions = { chainTimestamp, ...(plan.topology.payments?.settlementIdleMs ? { settlementIdleMs: plan.topology.payments.settlementIdleMs } : {}), ...(plan.topology.payments?.closeIdleMs ? { closeIdleMs: plan.topology.payments.closeIdleMs } : {}) };
   // Setup ran on automine; Base-like runs then switch Anvil to fixed block times (Base: 2 s) for the rest of the testbench.
   if (plan.topology.chain?.blockTimeSec) {
     await state.reader.provider.send('evm_setIntervalMining', [plan.topology.chain.blockTimeSec]);
@@ -743,8 +743,9 @@ async function main() {
     const spec = { id: seller.id, dataDir: paths.seller(seller.id), configPath, bootstrapNodes, payments: { ...paymentsConfig(chainState.chain, sellerRpc, paymentOptions), ...(plan.topology.payments?.minBudgetPerRequestMicros ? { minBudgetPerRequest: plan.topology.payments.minBudgetPerRequestMicros } : {}) }, env: { ...seller.env, ...sellerEnv } };
     if (cliMode) {
       await saveJson(configPath, assertCliConfig(cliSellerConfig({ id: seller.id, providers, chain: chainState.chain, bootstrapNodes, payments: spec.payments, freeTier: seller.freeTier }), 'seller'));
-      // The CLI reads the idle-settle timer from this variable only.
+      // The CLI reads the idle-settle and idle-close timers from these variables only.
       if (paymentOptions.settlementIdleMs) spec.env = { ...spec.env, ANTSEED_SETTLEMENT_IDLE_MS: String(paymentOptions.settlementIdleMs) };
+      if (paymentOptions.closeIdleMs) spec.env = { ...spec.env, ANTSEED_CLOSE_IDLE_MS: String(paymentOptions.closeIdleMs) };
     } else {
       await saveJson(configPath, { seller: { providers }, payments: { crypto: { ...chainState.chain, rpcUrl: sellerRpc, networkStatsUrl: '', explorerApiUrl: '' } }, network: { bootstrapNodes: bootstrapNodes.map((n) => `${n.host}:${n.port}`) }, relayer: { enabled: false } });
     }

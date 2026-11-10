@@ -165,6 +165,8 @@ describe('topology', () => {
     assert.deepEqual(normalizeTopology({}, source).payments, {});
     assert.equal(normalizeTopology({ payments: { settlementIdleMs: 5000 } }, source).payments.settlementIdleMs, 5000);
     assert.throws(() => normalizeTopology({ payments: { settlementIdleMs: 10 } }, source), /settlementIdleMs/);
+    assert.equal(normalizeTopology({ payments: { closeIdleMs: 90_000 } }, source).payments.closeIdleMs, 90_000);
+    assert.throws(() => normalizeTopology({ payments: { closeIdleMs: 10 } }, source), /closeIdleMs/);
   });
 
   it('rejects bad topologies', () => {
@@ -195,6 +197,7 @@ describe('topology', () => {
       'buyer.maxPricing': { buyer: { maxPricing: { defaults: { inputUsdPerMillion: 1 } } } },
       'buyer.env': { buyer: { env: { ANTSEED_DEBUG: '1' } } },
       'payments.settlementIdleMs': { payments: { settlementIdleMs: 5000 } },
+      'payments.closeIdleMs': { payments: { closeIdleMs: 90_000 } },
       'payments.minBudgetPerRequestMicros': { payments: { minBudgetPerRequestUsdc: '0.01' } },
       'chain.topUpThresholdBps': { chain: { topUpThresholdBps: 5000 } },
       'chain.blockTimeSec': { chain: { blockTimeSec: 3 } },

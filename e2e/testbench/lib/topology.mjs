@@ -71,9 +71,11 @@ export function normalizeTopology(topology = {}, source, overrides = {}) {
   const block = overrides.block ?? chainIn.block;
   const mode = requestedMode(overrides.mode, topology);
   const settlementIdleMs = topology.payments?.settlementIdleMs;
+  const closeIdleMs = topology.payments?.closeIdleMs;
   // Sellers built on the SDK default to a 0.5 USDC minimum budget per request; `antseed seller start` uses 0.01.
   const minBudgetPerRequestUsdc = topology.payments?.minBudgetPerRequestUsdc;
   if (settlementIdleMs !== undefined && !(Number.isInteger(settlementIdleMs) && settlementIdleMs >= 1000 && settlementIdleMs <= 600_000)) throw new Error('payments.settlementIdleMs must be 1000-600000');
+  if (closeIdleMs !== undefined && !(Number.isInteger(closeIdleMs) && closeIdleMs >= 1000 && closeIdleMs <= 43_200_000)) throw new Error('payments.closeIdleMs must be 1000-43200000');
   if (block !== undefined && !(/^\d+$/.test(String(block)) && Number.isSafeInteger(Number(block)))) throw new Error('block must be a block number');
   const rpc = chainIn.rpc ?? 'direct';
   if (!RPC_PROFILES.has(rpc)) throw new Error(`chain.rpc must be one of ${[...RPC_PROFILES].join(', ')}`);
@@ -109,6 +111,7 @@ export function normalizeTopology(topology = {}, source, overrides = {}) {
     },
     payments: {
       ...(settlementIdleMs !== undefined ? { settlementIdleMs } : {}),
+      ...(closeIdleMs !== undefined ? { closeIdleMs } : {}),
       ...(minBudgetPerRequestUsdc !== undefined ? { minBudgetPerRequestMicros: String(microsFromUsdc(minBudgetPerRequestUsdc, 'payments.minBudgetPerRequestUsdc')) } : {}),
     },
   };
