@@ -52,7 +52,11 @@ function StatItem({ value, label }: { value: number; label: string }) {
   );
 }
 
-export function SetupScreen() {
+/**
+ * First-run setup, or with `startingGateway` the loader any launch shows while
+ * the local gateway comes up: the same screen, saying only that.
+ */
+export function SetupScreen({ startingGateway = false }: { startingGateway?: boolean } = {}) {
   const snap = useUiSelector((state) => {
     // Live discovery tallies from the dashboard poll — these move while the
     // service catalog is still loading, so the wait shows real progress. A
@@ -121,7 +125,9 @@ export function SetupScreen() {
   // from how far discovery has actually come — each phase hands off to the
   // next as its number becomes real.
   let activity: string;
-  if (!snap.appSetupComplete) {
+  if (startingGateway) {
+    activity = 'Starting Antseed on this computer…';
+  } else if (!snap.appSetupComplete) {
     activity = snap.appSetupStep || 'Installing the router plugin…';
   } else if (snap.dhtNodeCount === 0) {
     activity = 'Connecting to the peer-to-peer network…';
@@ -159,7 +165,7 @@ export function SetupScreen() {
             </div>
           </div>
 
-          {freeReady ? (
+          {freeReady && !startingGateway ? (
             <div className={styles.ready}>
               <span className={styles.readyDot} />
               {snap.routeModelLabel
@@ -179,7 +185,7 @@ export function SetupScreen() {
             </div>
           )}
           {/* The raw discovery tallies, small — proof of progress, not the pitch. */}
-          <p className={styles.statStrip}>
+          {startingGateway ? null : <p className={styles.statStrip}>
             <StatItem value={snap.dhtNodeCount} label="nodes" />
             <span className={styles.statSep} aria-hidden="true">·</span>
             <StatItem value={snap.peerCount} label="sellers" />
@@ -187,9 +193,9 @@ export function SetupScreen() {
             <StatItem value={snap.modelCount} label="models" />
             <span className={styles.statSep} aria-hidden="true">·</span>
             <StatItem value={snap.freeModelCount} label="free" />
-          </p>
+          </p>}
           <p className={styles.firstRunNote}>
-            Setting up — only on first run, takes 2 minutes max.
+            {startingGateway ? 'Usually takes a few seconds.' : 'Setting up — only on first run, takes 2 minutes max.'}
           </p>
 
           {/* networkAlert carries a startup grace period, so this only appears

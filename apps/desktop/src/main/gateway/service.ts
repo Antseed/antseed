@@ -51,6 +51,10 @@ type Deps = {
 let injected: Deps | null = null;
 let lastError: string | null = null;
 let startPromise: Promise<void> | null = null;
+/** Starts in flight (ensureLocalGateway calls, including their wait for the plugin install). */
+let startsInFlight = 0;
+/** Whether any start has finished, either way, since launch. */
+let startSettled = false;
 let closing = false;
 /** A buyer the app doesn't run, found on the port after a new signer was imported. */
 const foreignBuyerGuard = () => createForeignBuyerGuard(path.join(resolveConnectDataDir(), 'signer-change-pending.json'));
@@ -110,7 +114,10 @@ export async function getGatewayStatus(): Promise<GatewayStatus> {
   const running = settings.mode === 'remote' ? true : isLocalRunning();
   const reachable = origin ? await probe(origin) : false;
   const hasKey = settings.mode === 'remote' ? getRemoteKey() !== null : getLocalKeyEntry(DESKTOP_KEY_SCOPE) !== null;
-  return { mode: settings.mode, origin, keyMode: settings.keyMode, running, reachable, hasKey, lastError };
+  // Before the first start of this launch has settled, a silent gateway is one
+  // that hasn't come up yet, not one that is down.
+  const starting = settings.mode === 'local' && !reachable && (startsInFlight > 0 || !startSettled);
+  return { mode: settings.mode, origin, keyMode: settings.keyMode, running, reachable, starting, hasKey, lastError };
 }
 
 /** Starts the local gateway (and through it the buyer) and waits until it answers. No-op in remote mode. */
@@ -133,6 +140,16 @@ export function holdLocalGatewayUntil(gate: Promise<void>): void {
 export async function ensureLocalGateway(): Promise<void> {
   // A remote gateway needs neither the local start nor the plugin it waits for.
   if (getGatewaySettings().mode !== 'local') return;
+  startsInFlight += 1;
+  try {
+    await startLocalGateway();
+  } finally {
+    startsInFlight -= 1;
+    startSettled = true;
+  }
+}
+
+async function startLocalGateway(): Promise<void> {
   await startGate;
   if (closing) throw new Error('Antseed Desktop is closing');
   if (getGatewaySettings().mode !== 'local') return;
@@ -430,6 +447,15 @@ async function applyPrivacyToKey(id: string, mode: GatewayPrivacyMode): Promise<
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+}
+
+/**
+ * The mode a send goes out under right now, from the saved settings (no
+ * gateway round trip). Null for a remote gateway: its console owns the policy.
+ */
+export function currentPrivacyMode(): GatewayPrivacyMode | null {
+  const settings = getGatewaySettings();
+  return settings.mode === 'remote' ? null : settings.privacy;
 }
 
 /** Anonymous or Private, as the desktop key's routing policy has it. */

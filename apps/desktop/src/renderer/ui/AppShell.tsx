@@ -6,6 +6,8 @@ import { shallowEqual, useUiSelector } from './hooks/useUiSelector';
 import type { ViewName } from './types';
 import { VprShell } from './components/VprShell';
 import { recordUserAction, telemetrySurfaceForView } from '../modules/telemetry/actions';
+import { useCachedResource } from '../modules/app/cached-resource';
+import { gatewayResource } from '../modules/app/vpr-resources';
 
 type IdleCallbackHandle = ReturnType<typeof setTimeout> | number;
 
@@ -13,6 +15,35 @@ type IdleCallbackHandle = ReturnType<typeof setTimeout> | number;
     user gets in no matter how far discovery came. Only the plugin install may
     hold longer — the app is unusable without the router plugin. */
 const SETUP_MAX_VISIBLE_MS = 120_000;
+/** The launch loader waits this long at most for the gateway (its own start gives up after 90 s). */
+const GATEWAY_START_MAX_MS = 100_000;
+const GATEWAY_START_POLL_MS = 1_000;
+
+/**
+ * True once the gateway has answered at least once this launch, its start has
+ * failed (then the app shows why), or the wait ran out. Until then the app
+ * shows the launch loader instead of a "gateway unreachable" home.
+ */
+function useGatewayLaunchSettled(): boolean {
+  const status = useCachedResource(gatewayResource).data?.status;
+  const [settled, setSettled] = useState(false);
+  const mountedAtRef = useRef(Date.now());
+  const done = settled || (status !== undefined && (status.reachable || !status.starting));
+  useEffect(() => {
+    if (done) {
+      setSettled(true);
+      return undefined;
+    }
+    // The resource polls every few seconds; while starting, look every second.
+    const poll = setInterval(() => { void gatewayResource.refresh(); }, GATEWAY_START_POLL_MS);
+    const cap = setTimeout(() => setSettled(true), Math.max(0, GATEWAY_START_MAX_MS - (Date.now() - mountedAtRef.current)));
+    return () => {
+      clearInterval(poll);
+      clearTimeout(cap);
+    };
+  }, [done]);
+  return done;
+}
 
 function scheduleRoutePreload(callback: () => void): () => void {
   const win = window as unknown as {
@@ -38,6 +69,7 @@ export function AppShell() {
     // A model to chat with — what first-run setup is waiting for.
     freeDefaultReady: state.chatSelectedModelId !== null,
   }), shallowEqual);
+  const gatewaySettled = useGatewayLaunchSettled();
   const [activeView, setActiveView] = useState<ViewName>('home');
   const [setupVisible, setSetupVisible] = useState(false);
   const [setupDismissed, setSetupDismissed] = useState(false);
@@ -128,19 +160,23 @@ export function AppShell() {
   }, [snap.appSetupStatusKnown, snap.appSetupNeeded, snap.appSetupComplete, snap.freeDefaultReady, hasServices, setupDismissed]);
 
   const showSetup = setupVisible;
+  const showLaunchLoader = !showSetup && !gatewaySettled;
 
   useEffect(() => {
-    if (showSetup) return undefined;
+    if (showSetup || showLaunchLoader) return undefined;
 
     void preloadViews(viewsForPreload('eager'));
 
     return scheduleRoutePreload(() => {
       void preloadViews(viewsForPreload('idle'));
     });
-  }, [showSetup]);
+  }, [showSetup, showLaunchLoader]);
 
   if (showSetup) {
     return <SetupScreen />;
+  }
+  if (showLaunchLoader) {
+    return <SetupScreen startingGateway />;
   }
 
   return (

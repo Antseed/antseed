@@ -160,9 +160,9 @@ export function HomeDashboard({ onSelectView, setupOnly = false }: Props) {
       {setupOnly ? null : (
         <>
           <header className={styles.header}>
-            <span className={`${styles.status}${status && !status.reachable ? ` ${styles.statusWarn}` : ''}`}>
+            <span className={`${styles.status}${status && !status.reachable && !status.starting ? ` ${styles.statusWarn}` : ''}`}>
               <span className={styles.statusDot} />
-              {status ? `${remote ? 'Remote gateway' : 'Local gateway'} · ${status.reachable ? 'ready' : 'unreachable'}` : 'Gateway starting'}
+              {status ? `${remote ? 'Remote gateway' : 'Local gateway'} · ${status.reachable ? 'ready' : status.starting ? 'starting' : 'unreachable'}` : 'Gateway starting'}
             </span>
             <h1 className={styles.heading}>Welcome back</h1>
             <p className={styles.subline}>

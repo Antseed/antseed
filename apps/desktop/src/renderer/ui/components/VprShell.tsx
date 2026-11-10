@@ -51,10 +51,10 @@ const homeNavEntry = mainNavEntries.find(({ view }) => view === 'home') ?? null;
 const otherNavEntries = mainNavEntries.filter(({ view }) => view !== 'home');
 const bottomNavEntries = navViews('bottom');
 
-function gatewayStatusText(status: { mode: 'local' | 'remote'; reachable: boolean; origin: string | null } | undefined): string {
+function gatewayStatusText(status: { mode: 'local' | 'remote'; reachable: boolean; starting?: boolean; origin: string | null } | undefined): string {
   if (!status) return 'Gateway starting';
   const where = status.mode === 'local' ? 'Local gateway' : (status.origin?.replace(/^https?:\/\//, '') ?? 'Remote gateway');
-  return `${where} · ${status.reachable ? 'ready' : 'unreachable'}`;
+  return `${where} · ${status.reachable ? 'ready' : status.starting ? 'starting' : 'unreachable'}`;
 }
 
 export function VprShell({ activeView, onSelectView, onNavigateBack, children }: VprShellProps) {
@@ -207,7 +207,7 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
           </button>
         ))}
         <p className={styles.status}>
-          <span className={gatewayStatus && !gatewayStatus.reachable ? `${styles.statusItem} ${styles.statusWarn}` : styles.statusItem}>
+          <span className={gatewayStatus && !gatewayStatus.reachable && !gatewayStatus.starting ? `${styles.statusItem} ${styles.statusWarn}` : styles.statusItem}>
             {gatewayStatusText(gatewayStatus)}
           </span>
           <span className={styles.statusVersion}>v{appVersion}</span>

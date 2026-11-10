@@ -19,6 +19,12 @@ export type GatewayStatus = {
   running: boolean;
   /** The gateway answered the last health probe. */
   reachable: boolean;
+  /**
+   * Local: not answering yet because it is still starting (waiting for the
+   * router plugin, its buyer, or the first start of this launch). False once a
+   * start has failed: that is `lastError`.
+   */
+  starting: boolean;
   /** A key is configured for the chat / shared scope. */
   hasKey: boolean;
   lastError: string | null;
