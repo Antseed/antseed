@@ -10,13 +10,14 @@ import {
   Tick02Icon,
 } from '@hugeicons/core-free-icons';
 import { useCopyFeedback } from '@antseed/ui';
-import type { AgentSkillTarget, GatewayEndpointInfo, GatewayRewardsSummary, GatewaySavings } from '../../../types/bridge';
+import type { AgentSkillTarget, GatewayEndpointInfo, GatewayRewardsSummary } from '../../../types/bridge';
 import type { ViewName } from '../../types';
 import { shallowEqual, useUiSelector } from '../../hooks/useUiSelector';
 import { selectHeadlineBalanceUsdc } from '../../../core/balance';
 import { formatCredits } from '../../../core/format';
 import { useCachedResource } from '../../../modules/app/cached-resource';
-import { appsResource, gatewayResource } from '../../../modules/app/vpr-resources';
+import { appsResource, gatewayResource, savingsResource } from '../../../modules/app/vpr-resources';
+import { useAgentSkills } from '../../hooks/useAgentSkills';
 import { homeProgress, useHomeProgress } from '../../../modules/app/home-progress';
 import { daysSince, LOW_BALANCE_USD, pickHomePromo, promoDismissKey } from '../../../modules/app/home-promos';
 import { AppPillIcon } from '../vpr/AppPills';
@@ -59,11 +60,10 @@ export function HomeDashboard({ onSelectView, setupOnly = false }: Props) {
   const apps = useCachedResource(appsResource);
   const { balance } = useUiSelector((state) => ({ balance: selectHeadlineBalanceUsdc(state) }), shallowEqual);
   const privateMode = usePrivateMode();
-  const [skills, setSkills] = useState<AgentSkillTarget[]>([]);
   const [endpoint, setEndpoint] = useState<GatewayEndpointInfo | null>(null);
-  const [savings, setSavings] = useState<GatewaySavings | null>(null);
   const [rewards, setRewards] = useState<GatewayRewardsSummary | null>(null);
-  const [installing, setInstalling] = useState<string | null>(null);
+  const { targets: skills, busy: installing, update: updateSkills } = useAgentSkills();
+  const savings = useCachedResource(savingsResource).data;
   const [error, setError] = useState<string | null>(null);
   const appKey = endpoint?.ok ? endpoint.apiKey ?? '' : '';
   const { copied, copy } = useCopyFeedback(appKey, homeProgress.markKey);
@@ -71,9 +71,7 @@ export function HomeDashboard({ onSelectView, setupOnly = false }: Props) {
   useEffect(() => {
     let cancelled = false;
     const bridge = window.antseedDesktop;
-    bridge?.agentSkillsList?.().then((list) => { if (!cancelled) setSkills(list); }).catch(() => {});
     bridge?.gatewayGetEndpoint?.().then((info) => { if (!cancelled) setEndpoint(info); }).catch(() => {});
-    bridge?.gatewayGetSavings?.().then((result) => { if (!cancelled) setSavings(result); }).catch(() => {});
     bridge?.gatewayGetRewards?.().then((result) => { if (!cancelled && result.ok && result.data) setRewards(result.data); }).catch(() => {});
     return () => { cancelled = true; };
   }, []);
@@ -86,6 +84,11 @@ export function HomeDashboard({ onSelectView, setupOnly = false }: Props) {
 
   const status = gateway.data?.status;
   const remote = status?.mode === 'remote';
+  // Read again once the gateway answers: the buyer may still have been starting.
+  const reachable = status?.reachable === true;
+  useEffect(() => {
+    if (reachable) void savingsResource.refresh();
+  }, [reachable]);
   const keyInfo = gateway.data?.keyInfo ?? null;
   const balanceUsd = Number(balance);
   // A remote gateway pays from its own wallet, so this device's balance says nothing about it.
@@ -133,17 +136,13 @@ export function HomeDashboard({ onSelectView, setupOnly = false }: Props) {
 
   async function addSkills(target: AgentSkillTarget): Promise<void> {
     if (installing) return;
-    setInstalling(target.id);
     setError(null);
     try {
-      const result = await window.antseedDesktop?.agentSkillsInstall?.(target.id);
-      if (result?.targets) setSkills(result.targets);
+      const result = await updateSkills(target.id, 'install');
       if (result?.ok) homeProgress.markAgent(target.label);
       else setError(result?.error ?? `Could not add Antseed to ${target.label}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : `Could not add Antseed to ${target.label}`);
-    } finally {
-      setInstalling(null);
     }
   }
 

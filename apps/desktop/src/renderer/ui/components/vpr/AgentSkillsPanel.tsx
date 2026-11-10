@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
 import { ArrowUpRight01Icon, Copy01Icon } from '@hugeicons/core-free-icons';
 import type { AgentSkillTarget } from '../../../types/bridge';
+import { useAgentSkills } from '../../hooks/useAgentSkills';
 import { AppPillIcon, appPillStyles as pills } from './AppPills';
 import styles from './AgentSkillsPanel.module.scss';
 
@@ -12,29 +13,16 @@ import styles from './AgentSkillsPanel.module.scss';
  * is the card's main action.
  */
 export function AgentSkillsPanel() {
-  const [agents, setAgents] = useState<AgentSkillTarget[]>([]);
-  const [busy, setBusy] = useState<string | null>(null);
+  const { targets: agents, busy, update } = useAgentSkills();
   const [note, setNote] = useState<{ text: string; error: boolean; open?: AgentSkillTarget } | null>(null);
   const [opening, setOpening] = useState(false);
 
-  useEffect(() => {
-    let cancelled = false;
-    void window.antseedDesktop?.agentSkillsList?.()
-      .then((targets) => { if (!cancelled) setAgents(targets); })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, []);
-
   async function toggle(agent: AgentSkillTarget): Promise<void> {
     if (busy) return;
-    setBusy(agent.id);
     setNote(null);
     try {
       const bridge = window.antseedDesktop;
-      const result = agent.installed
-        ? await bridge?.agentSkillsRemove?.(agent.id)
-        : await bridge?.agentSkillsInstall?.(agent.id);
-      if (result?.targets) setAgents(result.targets);
+      const result = await update(agent.id, agent.installed ? 'remove' : 'install');
       if (!result?.ok) {
         setNote({ text: result?.error ?? 'Could not update the skills', error: true });
       } else if (!agent.installed) {
@@ -50,8 +38,6 @@ export function AgentSkillsPanel() {
       }
     } catch (error) {
       setNote({ text: error instanceof Error ? error.message : 'Could not update the skills', error: true });
-    } finally {
-      setBusy(null);
     }
   }
 

@@ -79,7 +79,7 @@ export type {
   GatewaySavings,
   GatewayStatus,
 } from '../../shared/gateway-types.js';
-export type { AgentSkillStatus as AgentSkillTarget, GatewaySettingsView as GatewaySettings } from '../../shared/gateway-types.js';
+export type { AgentSkillStatus as AgentSkillTarget, AgentSkillsResult, GatewaySettingsView as GatewaySettings } from '../../shared/gateway-types.js';
 
 export type RuntimeControlResult = {
   ok: boolean;

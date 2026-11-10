@@ -1,4 +1,5 @@
 import type { RendererUiState, BadgeTone, PeerEntry } from '../../core/state';
+import { connectionHealth } from './connection-health';
 import { notifyUiStateChanged } from '../../core/store';
 import { safeNumber, safeArray, safeString, safeObject } from '../../core/safe';
 import {
@@ -229,12 +230,11 @@ export function initDashboardRenderModule({
     const daemonChannelDetails = safeArray(daemonStateRoot?.activeChannelDetails);
     const daemonDetailsCount = daemonChannelDetails.length;
 
-    const buyerRuntimeState = isModeRunning('gateway') ? 'connected' : 'offline';
     const dht = networkHealth(stats, peers.length);
-    // Network stats are owned by the main process and keep the last DHT
-    // snapshot after the buyer runtime stops, so the footer would keep saying
-    // "Healthy" while disconnected. Report the network as offline instead.
-    const ovDhtHealth = buyerRuntimeState === 'offline' ? 'Offline' : dht.label;
+    const connection = connectionHealth(uiState.gatewayStatus, isModeRunning('gateway'), dht.label);
+    const buyerRuntimeState = connection.runtime;
+    const ovDhtHealth = connection.health;
+    const dhtNote = connection.localNetwork ? dht.label : 'not available for a remote gateway';
     const activeChannels = Math.max(
       safeNumber(statusPayload?.activeChannels, 0),
       daemonActiveChannels,
@@ -246,7 +246,8 @@ export function initDashboardRenderModule({
     const runtimeProxyPort = safeNumber(statusPayload?.proxyPort, 0);
     const proxyPort = runtimeProxyPort > 0 ? runtimeProxyPort : configuredProxyPort;
 
-    uiState.networkAlert = deriveNetworkAlert(stats, buyerRuntimeState === 'connected');
+    // A remote gateway's network isn't this machine's to judge.
+    uiState.networkAlert = connection.localNetwork ? deriveNetworkAlert(stats, buyerRuntimeState === 'connected') : 'none';
     uiState.dhtNodeCount = safeNumber(stats.dhtNodeCount, 0);
 
     // Overview stats
@@ -264,7 +265,7 @@ export function initDashboardRenderModule({
         activeChannels,
         peerCount: peers.length,
         dht: {
-          health: dht.label,
+          health: dhtNote,
           healthy: Boolean(stats.dhtHealthy),
           nodeCount: safeNumber(stats.dhtNodeCount, 0),
           lastScanAt: stats.lastScanAt,
@@ -297,7 +298,7 @@ export function initDashboardRenderModule({
       `Buyer runtime: ${buyerRuntimeState}`,
       `Proxy port: ${proxyPort > 0 ? proxyPort : 'not available'}`,
       `Active channels: ${formatInt(activeChannels)}`,
-      `DHT health: ${dht.label}`,
+      `DHT health: ${dhtNote}`,
       `DHT nodes: ${formatInt(stats.dhtNodeCount)}`,
       `Lookup success: ${formatPercent(safeNumber(stats.lookupSuccessRate, 0) * 100)}`,
       `Avg lookup latency: ${formatLatency(stats.averageLookupLatencyMs)}`,

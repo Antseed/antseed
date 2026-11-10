@@ -680,6 +680,8 @@ export function initChatModule({
   async function refreshChatConversations(): Promise<void> {
     if (!bridge?.chatAiListConversations) return;
     const revisionsAtRead = new Map([...modelChoices].map(([id, choice]) => [id, choice.revision]));
+    // A save still out when the read starts may land before the read answers.
+    const savingAtRead = new Map([...pendingModelUpdates].map(([id, update]) => [id, update.modelId]));
     try {
       const result = await bridge.chatAiListConversations();
       if (result.ok) {
@@ -690,7 +692,9 @@ export function initChatModule({
             const pending = pendingModelUpdates.get(summary.id);
             if (pending) return { ...summary, service: pending.modelId };
             const choice = modelChoices.get(summary.id);
-            return choice && choice.revision !== revisionsAtRead.get(summary.id) ? { ...summary, service: choice.modelId } : summary;
+            if (choice && choice.revision !== revisionsAtRead.get(summary.id)) return { ...summary, service: choice.modelId };
+            const saving = savingAtRead.get(summary.id);
+            return saving ? { ...summary, service: saving } : summary;
           });
         uiState.chatConversations = conversations;
         const activeId = uiState.chatActiveConversation;

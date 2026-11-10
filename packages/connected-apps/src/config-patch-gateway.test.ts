@@ -304,6 +304,14 @@ exit ${exitCode}
       assert.equal(existsSync(catalogPath), false);
       assert.equal(await readFile(configPath, 'utf8'), '');
 
+      // Moving to the legacy proxy (one alias) drops the gateway's catalog.
+      writeConfigPatch(patch, REMOTE);
+      assert.equal(existsSync(catalogPath), true);
+      writeConfigPatch(patch, 8377);
+      assert.ok(!(await readFile(configPath, 'utf8')).includes('model_catalog_json'));
+      assert.equal(existsSync(catalogPath), false);
+      assert.equal(removeConfigPatch(patch), true);
+
       await fakeCodex(1);
       writeConfigPatch(patch, REMOTE);
       assert.ok(!(await readFile(configPath, 'utf8')).includes('model_catalog_json'));

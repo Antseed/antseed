@@ -4,6 +4,7 @@ import type {
   GatewayKeyInfo,
   GatewayPrivacy,
   GatewayPrivacyMode,
+  GatewaySavings,
   GatewayStatus,
   InstalledAppEntry,
 } from '../../types/bridge';
@@ -33,6 +34,20 @@ export const gatewayResource = createCachedResource<GatewaySnapshot>({
     const status = await bridge.gatewayGetStatus();
     const keyInfo = status.reachable && status.hasKey ? (await bridge.gatewayGetKeyInfo?.()) ?? null : null;
     return { status, keyInfo };
+  },
+});
+
+/**
+ * What the buyer's usage would have cost at retail. Polled like the usage
+ * tiles beside it, since apps keep making requests; a read that fails (the
+ * buyer still starting) keeps the last figures.
+ */
+export const savingsResource = createCachedResource<GatewaySavings>({
+  pollMs: 30_000,
+  async load() {
+    const savings = await window.antseedDesktop?.gatewayGetSavings?.();
+    if (!savings) throw new Error('No savings to show yet');
+    return savings;
   },
 });
 

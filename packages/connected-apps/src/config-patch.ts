@@ -1424,9 +1424,15 @@ function applyCodexProviderToFile(filePath: string, patch: CodexConfigPatchDef, 
     'wire_api = "responses"',
     ...(t.legacy ? [] : [`experimental_bearer_token = ${tomlBasicString(t.apiKey)}`]),
   );
+  // The legacy proxy serves one alias, so a gateway's model catalog no longer applies.
+  if (t.legacy) {
+    writeTextFile(filePath, `${withoutManagedCodexCatalog(filePath, lines).join('\n')}\n`);
+    removeCodexModelCatalog(filePath);
+    return;
+  }
   writeTextFile(filePath, `${lines.join('\n')}\n`);
   // A catalog can only be built by the Codex on this machine, not one inside WSL.
-  if (t.legacy || t.models.length === 0 || filePath.startsWith('\\\\')) return;
+  if (t.models.length === 0 || filePath.startsWith('\\\\')) return;
   const catalog = buildCodexModelCatalog(filePath, t.models);
   if (!catalog) return;
   writeCodexModelCatalog(filePath, catalog);
@@ -1435,16 +1441,23 @@ function applyCodexProviderToFile(filePath: string, patch: CodexConfigPatchDef, 
   try {
     validateCodexModelCatalog(filePath);
   } catch {
-    // Back to the user's own catalog if they had one. Otherwise no reference at
-    // all, since an earlier patch's would name the file deleted here.
-    const userCatalog = readSelection(filePath)['model_catalog_json'];
-    const withoutOurs = readTomlTopLevelString(lines, 'model_catalog_json') === CODEX_MODEL_CATALOG_FILE
-      ? removeTomlTopLevelKey(lines, 'model_catalog_json')
-      : lines;
-    const restored = typeof userCatalog === 'string' ? setTomlTopLevelString(withoutOurs, 'model_catalog_json', userCatalog) : withoutOurs;
-    writeTextFile(filePath, `${restored.join('\n')}\n`);
+    writeTextFile(filePath, `${withoutManagedCodexCatalog(filePath, lines).join('\n')}\n`);
     removeCodexModelCatalog(filePath);
   }
+}
+
+/**
+ * The config without our catalog: back to the user's own if they had one,
+ * otherwise no reference at all, since ours names a file that is being deleted.
+ */
+function withoutManagedCodexCatalog(filePath: string, lines: string[]): string[] {
+  const userCatalog = readSelection(filePath)['model_catalog_json'];
+  const withoutOurs = readTomlTopLevelString(lines, 'model_catalog_json') === CODEX_MODEL_CATALOG_FILE
+    ? removeTomlTopLevelKey(lines, 'model_catalog_json')
+    : lines;
+  return typeof userCatalog === 'string' && readTomlTopLevelString(withoutOurs, 'model_catalog_json') === undefined
+    ? setTomlTopLevelString(withoutOurs, 'model_catalog_json', userCatalog)
+    : withoutOurs;
 }
 
 function removeCodexConfigPatch(patch: CodexConfigPatchDef, wslTargetsFile?: string): boolean {
