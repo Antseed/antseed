@@ -7,7 +7,7 @@ import { detectExposure, detectHostFacts, unencryptedWalletWarning } from '../..
 import { startGatewayRuntime, type GatewayRuntime } from '../../../gateway/runtime.js'
 import { createGatewayUpdates } from '../../../gateway/updates.js'
 import { requestShutdown, setupShutdownHandler } from '../../shutdown.js'
-import { stopWhenStdinCloses } from '../../../gateway/stop-on-stdin-close.js'
+import { stopWhenParentExits, stopWhenStdinCloses } from '../../../gateway/stop-on-stdin-close.js'
 import { walletPassphraseForStart } from '../../wallet-passphrase.js'
 import { getGlobalOptions } from '../types.js'
 import { parsePositiveInteger } from '../parse-positive-integer.js'
@@ -117,6 +117,7 @@ export function registerGatewayCommands(program: Command): void {
       if (walletWarning) console.log(chalk.yellow(walletWarning))
       updates.watch()
       stopWhenStdinCloses(process.stdin, requestShutdown)
+      stopWhenParentExits(requestShutdown)
       setupShutdownHandler(async () => {
         updates.stop()
         await runtime.stop()

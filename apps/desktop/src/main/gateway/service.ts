@@ -177,6 +177,8 @@ async function startLocalGateway(): Promise<void> {
             ...(isDesktopDebugEnabled() ? { ANTSEED_DEBUG: '1' } : {}),
             // How ProcessManager asks it to stop on Windows; also stops it if the app crashes.
             ANTSEED_GATEWAY_STOP_ON_STDIN_CLOSE: '1',
+            // A hard kill can leave that pipe open on Windows; the gateway also watches this process.
+            ANTSEED_GATEWAY_PARENT_PID: String(process.pid),
             ...secureIdentityEnv(),
           },
         }).catch((err: unknown) => {
