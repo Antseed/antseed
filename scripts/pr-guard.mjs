@@ -94,6 +94,7 @@ export function gitPath(text, prefixed = true) {
     const body = path.slice(1, -1);
     const simple = { n: 10, t: 9, r: 13, a: 7, b: 8, f: 12, v: 11, '\\': 92, '"': 34 };
     for (let i = 0; i < body.length; i += 1) {
+      // A raw character (core.quotePath=false keeps non-ASCII unescaped) becomes its UTF-8 bytes, like the escapes.
       if (body[i] !== '\\') { bytes.push(...Buffer.from(body[i])); continue; }
       const next = body[i + 1];
       if (/[0-7]/.test(next)) { bytes.push(parseInt(body.slice(i + 1, i + 4), 8)); i += 3; } else { bytes.push(simple[next] ?? next.charCodeAt(0)); i += 1; }
@@ -123,10 +124,11 @@ export function lockfileSources(file) {
 /** Install-time scripts and build allowlist entries a package.json change adds or alters. */
 export function installScriptChanges(path, before, after) {
   const out = [];
-  const scripts = (pkg) => (pkg && pkg.scripts) || {};
+  const beforeScripts = (before && before.scripts) || {};
+  const afterScripts = (after && after.scripts) || {};
   for (const name of INSTALL_SCRIPTS) {
-    const old = scripts(before)[name];
-    const now = scripts(after)[name];
+    const old = beforeScripts[name];
+    const now = afterScripts[name];
     if (now !== undefined && now !== old) out.push({ path, message: `${old === undefined ? 'adds' : 'changes'} the "${name}" script: ${now}` });
   }
   const list = (pkg) => pkg && pkg.pnpm && pkg.pnpm.onlyBuiltDependencies;
@@ -180,11 +182,12 @@ export function review({ files, readJson, base, head, external }) {
     if (/(^|\/)package\.json$/.test(file.path)) {
       const before = file.status === 'added' ? null : readJson(base, file.path);
       const after = readJson(head, file.path);
+      const installFindings = external ? failures : warnings;   // fail for outside authors, warn for the team
       if (file.symlink || after === null) {
         // A manifest the guard can't read can't be checked: a symlink, or a file that isn't JSON.
-        (external ? failures : warnings).push({ path: file.path, message: `${file.symlink ? 'is a symlink' : 'is not valid JSON'}, so its install scripts can't be checked` });
+        installFindings.push({ path: file.path, message: `${file.symlink ? 'is a symlink' : 'is not valid JSON'}, so its install scripts can't be checked` });
       } else {
-        (external ? failures : warnings).push(...installScriptChanges(file.path, before, after));
+        installFindings.push(...installScriptChanges(file.path, before, after));
         warnings.push(...dependencyChanges(file.path, before, after));
       }
     }
@@ -224,7 +227,7 @@ function main() {
     console.error('usage: pr-guard.mjs --base <ref> [--head HEAD] [--author-association MEMBER]');
     process.exit(2);
   }
-  const association = String(arg('author-association', '')).toUpperCase();
+  const association = (arg('author-association') ?? '').toUpperCase();
   const external = !TEAM_ASSOCIATIONS.has(association);
   const mergeBase = git('merge-base', base, head).trim();
   const files = parseDiff(git('-c', 'core.quotePath=false', 'diff', '--unified=0', '--no-color', '--no-ext-diff', '--find-renames', mergeBase, head));

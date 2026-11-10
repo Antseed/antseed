@@ -70,6 +70,7 @@ test('install script changes fail for outside authors and warn for the team', ()
 test('quoted, renamed and deleted paths are read as git means them', () => {
   assert.equal(gitPath('"b/pkg\\303\\251/package.json"'), 'pkg\u00e9/package.json');
   assert.equal(gitPath('"b/a\\"q\\".json"'), 'a"q".json');
+  assert.equal(gitPath('"b/caf\u00e9 \\"x\\"/package.json"'), 'caf\u00e9 "x"/package.json');   // raw non-ASCII inside quotes
   const quoted = parseDiff(['diff --git "a/x\\tdir/package.json" "b/x\\tdir/package.json"', '--- "a/x\\tdir/package.json"',
     '+++ "b/x\\tdir/package.json"', '@@ -1,0 +1 @@', '+"postinstall": "x"'].join('\n'));
   assert.equal(quoted[0].path, 'x\tdir/package.json');
