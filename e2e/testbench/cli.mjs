@@ -14,7 +14,7 @@ import { loadControlClient } from './lib/control.mjs';
 import { BUYER_KEY_ENV, isolatedEnv, parseEnvFile, resolveBuyerKey, resolveForkUrl, resolveLiveKeys, writeBuyerKey } from './lib/env.mjs';
 import { assertAttachOnlyPlatform, attachOnlyEnv, electronRootArgs, FFMPEG_INSTALL, playwrightFfmpeg } from './lib/desktop.mjs';
 import { inspectLock, isOwnedProcessAlive, killOwned, ownProcessEntry } from './lib/lock.mjs';
-import { scenarioFile, scenarioFiles, SCENARIOS_DIR } from './lib/scenarios.mjs';
+import { failpointPlanText, scenarioFile, scenarioFiles, SCENARIOS_DIR } from './lib/scenarios.mjs';
 import { cleanupStale, settleSlot } from './lib/stale.mjs';
 import { forgetAttachedDesktop, recordAttachedDesktop, stopAttachedDesktop, stopAttachedDesktops } from './lib/attached-desktop.mjs';
 import { lifecycleState, readJson, saveJson, shutdownProblems, validateManifest } from './lib/manifest.mjs';
@@ -791,7 +791,7 @@ export async function listScenarios() {
 
 async function scenariosCommand(options) {
   const scenarios = await listScenarios();
-  if (options.json) { console.log(JSON.stringify(scenarios.map(({ run, topology, ...rest }) => rest), null, 2)); return; }
+  if (options.json) { console.log(JSON.stringify(scenarios.map(({ run, topology, failpointPlan, ...rest }) => rest), null, 2)); return; }
   const groups = [...new Set(scenarios.map((scenario) => scenario.group))].sort((a, b) => (a === null ? -1 : b === null ? 1 : a.localeCompare(b)));
   for (const group of groups) {
     console.log(group === null ? 'scenarios/' : `\nscenarios/${group}/`);
@@ -838,6 +838,7 @@ async function main() {
     case 'logs': await logs(options, ctx); break;
     case 'list': await list(ctx); break;
     case 'scenarios': await scenariosCommand(options); break;
+    case 'plan': console.log(failpointPlanText(await scenarioModule(options.scenario), options.seed)); break;
     case 'report': await reportCommand(options, ctx); break;
     case 'share': await share(options, ctx); break;
     case 'mainnet': await mainnet(options, ctx); break;

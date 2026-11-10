@@ -1,4 +1,6 @@
-import { countsInJournal, crashSpec, drawLoadCrash, triggeredInJournal } from '../../lib/failpoints.mjs';
+import { failpointCoverage } from '../../lib/crashes-and-delays.mjs';
+import { armedSpec, countsInJournal, crashSpec, drawLoadCrash, triggeredInJournal } from '../../lib/failpoints.mjs';
+import { createPrng, derive } from '../../lib/prng.mjs';
 import { GATES, stressRun, stressTopology, warmUp } from '../../lib/stress.mjs';
 
 export const meta = {
@@ -11,22 +13,29 @@ export const topology = stressTopology({ failpoints: true, buyer: { maxReserveUs
 
 const NODES = { seller: 'seller:seller', buyer: 'buyer' };
 
+/** What this scenario arms for a run seed, without a testbench (`pnpm testbench plan`). */
+export function failpointPlan(seed) {
+  const plan = drawLoadCrash(createPrng(derive(seed, 'failpoint')));
+  return { plan, specs: { [NODES[plan.who]]: armedSpec(seed, NODES[plan.who], crashSpec(plan)) } };
+}
+
 export async function run(tb) {
-  const plan = drawLoadCrash(tb.prng('failpoint'));
+  const { plan, specs } = failpointPlan(tb.seed);
   const who = NODES[plan.who];
   tb.metric('failpointPlan', plan);
   await tb.event('failpoint-plan', plan);
   console.log(`[failpoint] plan: crash the ${plan.who} at ${plan.point} hit ${plan.nth}`);
   // Armed before the warm-up: a point reached once per channel (the reserve) fires there, the others under load.
-  await tb.faults.failpoints(who, crashSpec(plan));
+  // The arming's id scopes every piece of evidence below: a reused testbench keeps earlier crashes and journal lines.
+  const { id: specId } = await tb.faults.failpoints(who, specs[who]);
   try {
     await stressRun(tb, {
-      load: { concurrency: 16, requests: 160, failpointCrash: { who } },
+      load: { concurrency: 16, requests: 160, failpointCrash: { who, specIds: [specId] } },
       gate: GATES['failpoint-crash'],
       afterLoad: async (run) => {
         // A crash in the load's last payments, or before the load (the warm-up), is not in the load's own record yet.
         // No crash at all leaves the run as it is: the evidence below fails it.
-        const late = run.restart ? null : await tb.faults.waitForFailpointRestart(who, { timeoutMs: 30_000 }).catch(() => null);
+        const late = run.restart ? null : await tb.faults.waitForFailpointRestart(who, { specId, timeoutMs: 30_000 }).catch(() => null);
         // One more paid request once the node is back: after a crash near the end of the load nothing else would
         // reconnect the two, and the buyer and seller must be able to go on with each other, not only to close.
         if (run.restart || late) await warmUp(tb, undefined, 'after-restart');
@@ -34,8 +43,9 @@ export async function run(tb) {
       },
       evidence: async ({ run }) => {
         const journal = await tb.faults.failpointJournal(who);
+        tb.metric('failpointCoverage', failpointCoverage({ [plan.who]: [plan.point] }, await tb.faults.failpointCrashes({ specIds: [specId] })));
         return [
-          { name: `fault path ran: fail point ${plan.point} fired on the ${plan.who}`, ok: triggeredInJournal(journal, plan.point, 'crash'), detail: journal.filter((entry) => entry.action) },
+          { name: `fault path ran: fail point ${plan.point} fired on the ${plan.who}`, ok: triggeredInJournal(journal, plan.point, 'crash', specId), detail: journal.filter((entry) => entry.action && entry.spec === specId) },
           { name: `fault path ran: the ${plan.who} was killed at the fail point and started again`, ok: run.restart?.failpoint === plan.point && run.restart.crashed === true, detail: run.restart ?? 'no restart recorded' },
         ];
       },

@@ -1328,7 +1328,7 @@ export class BuyerPaymentManager {
    */
   private async _signSpendingAuth(message: SpendingAuthMessage): Promise<string> {
     const signature = await signSpendingAuth(this._signer, this._channelsDomain, message);
-    await hitFailpoint('buyer.spending-auth.after-sign');
+    await hitFailpoint('buyer.spending-auth.after-sign', `${message.channelId}:${message.cumulativeAmount}`);
     return signature;
   }
 

@@ -5,7 +5,7 @@ import { randomSeed } from './prng.mjs';
 export const CHAIN_TARGETS = new Set(['fork', 'local', 'mainnet']);
 /** `--run-timeout` default: a backstop against a scenario that hangs. */
 export const DEFAULT_RUN_TIMEOUT_SECONDS = 1800;
-export const COMMANDS = new Set(['up', 'down', 'status', 'desktop', 'run', 'logs', 'list', 'scenarios', 'report', 'share', 'mainnet', 'help']);
+export const COMMANDS = new Set(['up', 'down', 'status', 'desktop', 'run', 'logs', 'list', 'scenarios', 'plan', 'report', 'share', 'mainnet', 'help']);
 const VALUE_FLAGS = { '--seller-tree': 'sellerTree', '--buyer-tree': 'buyerTree', '--config': 'config', '--deposit-usdc': 'depositUsdc', '--block': 'block', '--slot': 'slot', '--scenario': 'scenario', '--timeout': 'timeout', '--env-file': 'envFile', '--port': 'port', '--host': 'host', '--chain': 'chain', '--mode': 'mode', '--idle': 'idle', '--seed': 'seed', '--run-timeout': 'runTimeout', '--contracts': 'contracts' };
 const BOOL_FLAGS = { '--live': 'live', '--verbose': 'verbose', '--json': 'json', '--env': 'env', '--follow': 'follow', '--keep': 'keep', '--force': 'force', '--strict': 'strict', '--serve': 'serve', '--trace': 'trace', '--open': 'open', '--stop': 'stop', '--fresh': 'fresh', '--no-tailscale': 'noTailscale', '--real-funds': 'realFunds', '--dev': 'dev', '--budgets': 'budgets', '--help': 'help', '-h': 'help' };
 
@@ -52,7 +52,7 @@ export function parseArgs(argv, env = process.env) {
   }
   if (options.timeout !== undefined && !(/^\d+$/.test(options.timeout) && Number(options.timeout) > 0)) throw new Error('--timeout must be a positive number of seconds');
   if (options.seed !== undefined) {
-    if (!['run', 'up'].includes(command)) throw new Error('--seed is only for pnpm testbench run and up');
+    if (!['run', 'up', 'plan'].includes(command)) throw new Error('--seed is only for pnpm testbench run and up, and for plan');
     if (!(/^\d+$/.test(options.seed) && Number(options.seed) < 2 ** 32)) throw new Error('--seed must be an integer from 0 to 4294967295');
     options.seedGiven = true;
     options.seed = Number(options.seed);
@@ -64,6 +64,11 @@ export function parseArgs(argv, env = process.env) {
   if (command === 'run') options.runTimeout = Number(options.runTimeout ?? DEFAULT_RUN_TIMEOUT_SECONDS);
   if (options.budgets && command !== 'run') throw new Error('--budgets is only for pnpm testbench run');
   if (command === 'run' && env.ANTSEED_TESTBENCH_BUDGETS === '1') options.budgets = true;
+  if (command === 'plan') {
+    if (options.positional.length !== 1 || !options.seedGiven) throw new Error('Usage: pnpm testbench plan <scenario> --seed N');
+    if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(options.positional[0])) throw new Error('Invalid scenario name');
+    options.scenario = options.positional[0];
+  }
   if (command === 'run') {
     if (options.positional.length !== 1) throw new Error('Usage: pnpm testbench run <scenario>');
     if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(options.positional[0])) throw new Error('Invalid scenario name');
@@ -121,6 +126,8 @@ export const HELP = `pnpm testbench <command> [options]
   logs      [component] [--follow]  (supervisor, anvil, seller-<id>, buyer in cli mode)
   list      All testbenches on this machine
   scenarios Every scenario with its targets, description and group (features, stress, issues, mainnet)  [--json]
+  plan      <scenario> --seed N  Print the fail point plan and specs a scenario arms for that seed, as JSON, without
+            starting anything: two prints of one seed are identical (diff them)
   report    [run] Print the latest (or named) run's index.html, report.json, video and trace paths
             --open   open the HTML report in the default browser
             --serve  serve this testbench's reports/ over HTTP  [--port N] [--host 127.0.0.1]

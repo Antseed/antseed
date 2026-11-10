@@ -9,8 +9,8 @@
 
 /** What a test process installs under `Symbol.for('antseed.failpoints')` on `globalThis`. */
 interface FailpointHandler {
-  hit(name: string): Promise<void> | void;
-  hitSync(name: string): void;
+  hit(name: string, key?: string): Promise<void> | void;
+  hitSync(name: string, key?: string): void;
 }
 
 const HANDLER_KEY = Symbol.for('antseed.failpoints');
@@ -70,20 +70,25 @@ export const FAILPOINTS = [
 
 export type FailpointName = typeof FAILPOINTS[number];
 
-/** Reaches a fail point in an async path. Without a handler it returns one shared resolved promise. */
-export function hitFailpoint(name: FailpointName): Promise<void> {
+/**
+ * Reaches a fail point in an async path. Without a handler it returns one shared resolved promise.
+ * `key` names the payment step the hit belongs to (a channel id and a cumulative amount), for a handler
+ * that decides per step instead of per hit. It is only handed to the handler: a call site passes values
+ * it already holds, and without a handler nothing is done with it.
+ */
+export function hitFailpoint(name: FailpointName, key?: string): Promise<void> {
   const handler = installedHandler();
   if (handler === undefined) return NOT_HIT;
   try {
-    return Promise.resolve(handler.hit(name));
+    return Promise.resolve(handler.hit(name, key));
   } catch (err) {
     return Promise.reject(err);
   }
 }
 
-/** Reaches a fail point where the code around it must not yield. Without a handler it returns at once. */
-export function hitFailpointSync(name: FailpointName): void {
+/** Reaches a fail point where the code around it must not yield. Without a handler it returns at once. `key` as in `hitFailpoint`. */
+export function hitFailpointSync(name: FailpointName, key?: string): void {
   const handler = installedHandler();
   if (handler === undefined) return;
-  handler.hitSync(name);
+  handler.hitSync(name, key);
 }

@@ -1,5 +1,7 @@
-import { crashSpec, drawCloseCrash, triggeredInJournal } from '../../lib/failpoints.mjs';
-import { GATES, runAll, stressTopology, STRESS_MODEL, warmUp } from '../../lib/stress.mjs';
+import { failpointCoverage } from '../../lib/crashes-and-delays.mjs';
+import { armedSpec, crashSpec, drawCloseCrash, triggeredInJournal } from '../../lib/failpoints.mjs';
+import { createPrng, derive } from '../../lib/prng.mjs';
+import { closeWhenReachable, GATES, runAll, stressTopology, STRESS_MODEL, warmUp } from '../../lib/stress.mjs';
 
 export const meta = {
   description: 'One seeded seller crash at a fail point that only settling or closing reaches, on a 0.25 USDC reserve: after a small load the seed draws a point (before or after the settle or close transaction is sent, after its receipt, or a store write of the close) and the seller is killed (SIGKILL) there, with the transaction unsent, in flight or mined but not yet recorded. The supervisor starts the seller again, the point must be seen firing, and the oracle then closes whatever is still open and judges the money (stress failpoint-close). Run it across seeds.',
@@ -14,8 +16,14 @@ const WHO = 'seller:seller';
 const QUIESCE_MS = 5000;
 const CLOSE_AFTER_RESTART_MS = 120_000;
 
+/** What this scenario arms for a run seed, without a testbench (`pnpm testbench plan`). */
+export function failpointPlan(seed) {
+  const plan = drawCloseCrash(createPrng(derive(seed, 'failpoint')));
+  return { plan, specs: { [WHO]: armedSpec(seed, WHO, crashSpec(plan)) } };
+}
+
 export async function run(tb) {
-  const plan = drawCloseCrash(tb.prng('failpoint'));
+  const { plan, specs } = failpointPlan(tb.seed);
   // settle() is what the seller's idle timer sends; close() and the store writes around it follow a close request.
   const trigger = plan.point.startsWith('chain.settle.') ? 'idle-settle' : 'close';
   tb.metric('failpointPlan', { ...plan, trigger });
@@ -29,11 +37,13 @@ export async function run(tb) {
 
   let crash = null;
   let closeError = null;
+  let specId;
   try {
-    await tb.faults.failpoints(WHO, crashSpec(plan));
+    // The arming's id scopes the evidence: a reused testbench keeps earlier crashes and journal lines.
+    ({ id: specId } = await tb.faults.failpoints(WHO, specs[WHO]));
     // The seller dies in the middle of this close, so the close request itself may fail; the oracle closes again below.
     if (trigger === 'close') await tb.closeAll().catch((error) => { closeError = error.message; });
-    crash = await tb.faults.waitForFailpointRestart(WHO, { timeoutMs: 90_000 }).catch(() => null);
+    crash = await tb.faults.waitForFailpointRestart(WHO, { specId, timeoutMs: 90_000 }).catch(() => null);
   } finally {
     await tb.faults.clearFailpoints(WHO);
   }
@@ -42,22 +52,23 @@ export async function run(tb) {
   // No request follows the restart, so the buyer has to find the seller again by itself, and it does not look for a
   // seller it just failed to reach for about 30 s. Close as soon as it can; if it never can, the oracle's own close
   // fails below and says why.
-  const attempts = [];
   if (crash) {
-    await tb.waitFor(() => tb.closeAll().then(() => true, (error) => { attempts.push(error.message); return false; }), 'the buyer to reach the restarted seller and close the channel', { timeoutMs: CLOSE_AFTER_RESTART_MS, intervalMs: 5000 }).catch(() => {});
-    tb.metric('closeAttemptsAfterRestart', attempts.length + 1);
-    if (attempts.length) await tb.event('close-after-restart-retried', { attempts: attempts.length, lastError: attempts.at(-1) });
+    const close = await closeWhenReachable(tb, { timeoutMs: CLOSE_AFTER_RESTART_MS });
+    tb.metric('closeAttemptsAfterRestart', close.attempts + (close.closed ? 0 : 1));
+    if (close.attempts > 1 || !close.closed) await tb.event('close-after-restart-retried', { attempts: close.attempts - (close.closed ? 1 : 0), lastError: close.lastError });
   }
 
   await runAll([
-    // The seller restarted between the load and the close: the oracle holds the money to its restart bounds.
-    () => tb.assertDeliveredWorkPaid({ before, results: load.results, injected: { restart: { who: 'seller', failpoint: plan.point } } }),
+    // The load was fault-free and over before the point was armed, so the oracle's exact rule holds: what the seller
+    // recorded as spent equals what was delivered. The crash only hits the settle or close of that finished work.
+    () => tb.assertDeliveredWorkPaid({ before, results: load.results }),
     () => tb.assertNoCrashes(),
+    async () => tb.metric('failpointCoverage', failpointCoverage({ seller: [plan.point] }, await tb.faults.failpointCrashes({ specIds: [specId] }))),
     async () => {
       const journal = await tb.faults.failpointJournal(WHO);
-      tb.check(`fault path ran: fail point ${plan.point} fired on the seller`, triggeredInJournal(journal, plan.point, 'crash'), journal.filter((entry) => entry.action));
+      tb.check(`fault path ran: fail point ${plan.point} fired on the seller`, triggeredInJournal(journal, plan.point, 'crash', specId), journal.filter((entry) => entry.action && entry.spec === specId));
     },
-    () => tb.check('fault path ran: the seller was killed at the fail point and started again', crash?.point === plan.point && Boolean(crash.restartedAt), crash ?? 'no fail point crash recorded'),
+    () => tb.check('fault path ran: the seller was killed at the fail point and started again', crash?.point === plan.point && crash.spec === specId && Boolean(crash.restartedAt), crash ?? 'no fail point crash recorded'),
     () => tb.checkGate(load),
   ]);
 }

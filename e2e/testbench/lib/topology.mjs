@@ -243,7 +243,8 @@ export function validateScenarioModule(mod, name) {
   if (!Array.isArray(requires)) throw new Error(`Scenario ${name} meta.requires must be an array`);
   const budgets = mod.topology?.budgets ?? {};
   for (const [key, max] of Object.entries(budgets)) if (!(Number.isFinite(max) && max > 0)) throw new Error(`Scenario ${name} topology.budgets.${key} must be a positive number`);
-  return { name, description: meta.description ?? '', targets, requires, topology: mod.topology, budgets, run: mod.run };
+  if (mod.failpointPlan !== undefined && typeof mod.failpointPlan !== 'function') throw new Error(`Scenario ${name} failpointPlan must be a function of the run seed`);
+  return { name, description: meta.description ?? '', targets, requires, topology: mod.topology, budgets, run: mod.run, ...(mod.failpointPlan ? { failpointPlan: mod.failpointPlan } : {}) };
 }
 
 export function assertScenarioSupported(scenario, target, mode = 'sdk') {

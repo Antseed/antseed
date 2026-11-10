@@ -4,8 +4,8 @@
 import assert from 'node:assert/strict';
 import { fork, spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { createWriteStream, readFileSync } from 'node:fs';
-import { chmod, copyFile, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { createWriteStream, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { chmod, copyFile, mkdir, readFile, rm } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createBuyerRouter } from './lib/buyer-router.mjs';
@@ -17,7 +17,7 @@ import { newToken, startControlServer } from './lib/control.mjs';
 import { startRpcRelay } from './lib/rpc-relay.mjs';
 import { DEFAULT_IDLE_MINUTES, DEFAULT_START_TIMEOUT_SECONDS, startupDecision, STARTUP_WATCH_INTERVAL_MS, watchdogDecision, WATCHDOG_INTERVAL_MS } from './lib/watchdog.mjs';
 import { assertSellerPaymentsOn, assertSingleBootstrap, buyerProxyListening, cliArgs, cliBuyerClient, cliNodeEnv, CLI_STOP_GRACE_MS, crashChild, linkPlugins, sellerReady, spawnCliNode, stopWithGrace, waitForCliReady } from './lib/cli-node.mjs';
-import { crashInJournal, failpointFileName, failpointJournalPath, normalizeFailpointSpec, parseJournal } from './lib/failpoints.mjs';
+import { crashStateAfterKill, crashStateAfterRestart, emptyCrashState, failpointCrashOfExit, failpointFileName, failpointJournalPath, failpointSharedStatePath, graceFor, normalizeFailpointSpec, parseJournal, restartDelayFor } from './lib/failpoints.mjs';
 import { anvilExitMessage, assertLocalUrl, freePort, isAddressInUse, isolatedEnv, listenWithRetry, redactingStream, supervisorEnvs } from './lib/env.mjs';
 import { acquireLock, isOwnedProcessAlive, ownProcessEntry, processStartTime, releaseLock } from './lib/lock.mjs';
 import { readJson, saveJson, validateManifest, MANIFEST_VERSION, TESTBENCH_CHAIN_IDS } from './lib/manifest.mjs';
@@ -77,7 +77,7 @@ const state = {
   sellerSpecs: new Map(),
   failpointRestarts: new Map(),
 };
-/** How long a node killed by a fail point stays down before the supervisor starts it again. */
+/** How long a node killed by a fail point stays down before the supervisor starts it again, unless its spec draws the time (restartDelayMs). */
 const FAILPOINT_RESTART_DELAY_MS = 1000;
 const failpointsOn = cliMode && plan.topology.failpoints === true;
 const failpointsDir = join(paths.dir, 'failpoints');
@@ -85,6 +85,20 @@ const failpointsDir = join(paths.dir, 'failpoints');
 const failpointsFile = (who) => (failpointsOn ? join(failpointsDir, failpointFileName(who)) : undefined);
 const readFailpointJournal = (who) => {
   try { return parseJournal(readFileSync(failpointJournalPath(failpointsFile(who)), 'utf8')); } catch { return []; }
+};
+/**
+ * The crash state all armed nodes share (lib/failpoints.mjs, crashBlocked): who a fail point killed and is not back
+ * yet, and until when the grace window after the latest restart runs. Written whole, then moved into place.
+ */
+let crashState = emptyCrashState();
+const noteCrashState = (next) => {
+  crashState = next;
+  if (!failpointsOn) return;
+  const file = failpointSharedStatePath(join(failpointsDir, 'x.json'));
+  try {
+    writeFileSync(`${file}.tmp`, `${JSON.stringify(crashState)}\n`, { mode: 0o600 });
+    renameSync(`${file}.tmp`, file);
+  } catch { /* the handlers then see the state before this change */ }
 };
 /** How long the shutdown after a failed start may take before the supervisor exits regardless. */
 const FAILED_START_SHUTDOWN_MS = 90_000;
@@ -280,18 +294,30 @@ function trackSeller(id, child, info) {
 }
 
 /**
- * A node exited on its own. When its fail point journal shows that a crash trigger killed this very process, the exit
- * is expected: it goes to health.failpointCrashes and the node is started again. Anything else is an unexpected exit.
+ * A node exited on its own. When it died of SIGKILL and its fail point journal holds a crash trigger of this very
+ * process that no earlier record stands for, the exit is expected: it goes to health.failpointCrashes (with `spec`,
+ * the id of the arming that killed it) and the node is started again. Anything else is an unexpected exit.
  */
 function nodeExited(who, pid, { code, signal }) {
-  const crash = failpointsOn ? crashInJournal(readFailpointJournal(who), pid) : null;
+  const crash = failpointsOn ? failpointCrashOfExit(readFailpointJournal(who), { pid, signal }, state.health.failpointCrashes) : null;
   if (!crash) {
     state.health.unexpectedExits.push({ who, code, signal, at: new Date().toISOString() });
     return;
   }
-  const record = { who, point: crash.point, hit: crash.hit, at: crash.at, pid };
+  const crashNumber = state.health.failpointCrashes.filter((entry) => entry.who === who).length + 1;
+  const armed = readFailpointSpec(failpointsFile(who));
+  const restartDelayMs = restartDelayFor(armed, { who, crashNumber, specId: crash.spec, fallbackMs: FAILPOINT_RESTART_DELAY_MS });
+  const graceMs = graceFor(armed, { who, crashNumber, specId: crash.spec });
+  // The handlers read the shared state before a crash, but two nodes can decide in the same instant (or a spec can
+  // ask for it): a crash while another node is down is recorded as such, never hidden.
+  const alsoDown = Object.keys(crashState.down).filter((other) => other !== who);
+  const record = {
+    who, point: crash.point, hit: crash.hit, at: crash.at, pid, ...(crash.spec !== undefined ? { spec: crash.spec } : {}), ...(crash.key !== undefined ? { key: crash.key } : {}),
+    restartDelayMs, graceMs, ...(alsoDown.length ? { overlapped: true, alsoDown } : {}),
+  };
   state.health.failpointCrashes.push(record);
-  log(`Fail point ${crash.point} (hit ${crash.hit}) killed ${who} (${pid}); restarting it in ${FAILPOINT_RESTART_DELAY_MS} ms`);
+  noteCrashState(crashStateAfterKill(crashState, who, crash.at));
+  log(`Fail point ${crash.point} (hit ${crash.hit}) killed ${who} (${pid})${alsoDown.length ? ` while ${alsoDown.join(', ')} was down` : ''}; restarting it in ${restartDelayMs} ms`);
   const restart = restartAfterFailpoint(who, record).finally(() => {
     if (state.failpointRestarts.get(who) === restart) state.failpointRestarts.delete(who);
   });
@@ -305,7 +331,7 @@ function nodeExited(who, pid, { code, signal }) {
  */
 async function restartAfterFailpoint(who, record) {
   try {
-    await new Promise((resolveWait) => setTimeout(resolveWait, FAILPOINT_RESTART_DELAY_MS));
+    await new Promise((resolveWait) => setTimeout(resolveWait, record.restartDelayMs));
     if (shuttingDown) return;
     if (who === 'buyer') {
       if (!state.buyer) await startBuyerAgain();
@@ -314,7 +340,8 @@ async function restartAfterFailpoint(who, record) {
       if (!state.workers.has(id)) await startSellerAgain(id);
     }
     record.restartedAt = new Date().toISOString();
-    log(`Restarted ${who} after fail point ${record.point}`);
+    noteCrashState(crashStateAfterRestart(crashState, who, Date.parse(record.restartedAt), record.graceMs));
+    log(`Restarted ${who} after fail point ${record.point}${record.graceMs ? `; no fail point crash for ${record.graceMs} ms` : ''}`);
   } catch (error) {
     record.restartError = error.message;
     log(`Restart of ${who} after fail point ${record.point} failed: ${error.message}`);
@@ -741,6 +768,7 @@ async function main() {
   // Specs and journals of an earlier run would arm this one's nodes and explain exits that are not theirs.
   await rm(failpointsDir, { recursive: true, force: true });
   if (failpointsOn) await mkdir(failpointsDir, { recursive: true, mode: 0o700 });
+  noteCrashState(emptyCrashState());
   log(`Fresh ${target} run: cleared ${wiped.length} stale state entries (identities kept)`);
   // Secrets (fork URL, live keys) were read above; sellers get their keys from bindUpstream, nobody else needs them.
   envs = supervisorEnvs(process.env, paths.home, { verbose: Boolean(plan.verbose), buyerEnv: plan.topology.buyer.env, liveKeys: plan.liveKeys, cliMode });
@@ -968,9 +996,8 @@ async function main() {
         const file = failpointTarget(params.who);
         const spec = body.clear === true ? null : { ...normalizeFailpointSpec(body.spec), id: `${Date.now()}-${(failpointArmings += 1)}` };
         // Written whole, then moved into place: the node re-reads the file when it changes and must never see half of it.
-        await writeFile(`${file}.tmp`, `${JSON.stringify(spec ?? { points: {} })}\n`, { mode: 0o600 });
-        await rename(`${file}.tmp`, file);
-        log(spec ? `Fail points armed on ${params.who}: ${JSON.stringify(spec.points)} seed=${spec.seed} (control request)` : `Fail points cleared on ${params.who} (control request)`);
+        await saveJson(file, spec ?? { points: {} });
+        log(spec ? `Fail points armed on ${params.who}: ${JSON.stringify(spec.points)} seed=${spec.seed} id=${spec.id}${spec.maxCrashes ? ` maxCrashes=${spec.maxCrashes}` : ''}${spec.graceMs !== undefined ? ` graceMs=${[spec.graceMs].flat().join('-')}` : ''}${spec.ignoreOthers ? ' ignoreOthers' : ''}${spec.restartDelayMs ? ` restartDelayMs=${spec.restartDelayMs.join('-')}` : ''} (control request)` : `Fail points cleared on ${params.who} (control request)`);
         return { spec };
       },
       'POST /sellers/:id/mock': ({ params, body }) => {

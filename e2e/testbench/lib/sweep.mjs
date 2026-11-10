@@ -32,6 +32,26 @@ export function parseSweepArgs(argv) {
   return { scenario, seeds, runArgs };
 }
 
+/** The `--slot NAME` of a sweep's run flags as arguments for `status` and `down`; nothing for the default slot. */
+export function sweepSlotArgs(runArgs) {
+  const at = runArgs.indexOf('--slot');
+  return at !== -1 && runArgs[at + 1] !== undefined ? ['--slot', runArgs[at + 1]] : [];
+}
+
+/**
+ * Why a sweep must not start, from what `pnpm testbench status --json` printed for its slot; null when the slot is
+ * free. A run reuses a testbench that is already up and keeps that testbench's seed, so the first seed would not be
+ * the one reported, and the sweep's `down` would stop a testbench it did not start. Output that cannot be read
+ * refuses too: the sweep only starts on a slot it knows to be free.
+ */
+export function sweepSlotProblem(statusOutput) {
+  let status;
+  // Notes the CLI prints ahead of the JSON are not part of it.
+  try { status = JSON.parse(String(statusOutput).slice(String(statusOutput).search(/^\{/m))); } catch { return 'could not read the testbench status of this slot'; }
+  if (status?.running === false) return null;
+  return `testbench ${status?.manifest?.name ?? status?.name ?? 'of this slot'} is already running: a sweep starts and stops its own testbench for every seed. Stop it with pnpm testbench down, or give the sweep a slot of its own (--slot NAME)`;
+}
+
 const RESULT_BY_CODE = Object.fromEntries(Object.entries(RESULT_EXIT_CODES).map(([result, code]) => [code, result]));
 
 /** What one run's exit code and output say: its result, the report path, and for anything but a pass the `rerun:` line and failed checks. */
@@ -59,5 +79,40 @@ export function sweepSummary(scenario, runs) {
     for (const check of run.failed.slice(0, 6)) lines.push(`    ${check}`);
     if (run.rerun) lines.push(`    rerun: ${run.rerun}`);
   }
+  return lines;
+}
+
+/**
+ * Fail point coverage of a sweep, from each run's `metrics.failpointCoverage` (`{ armed: { node: [point] }, crashes:
+ * [{ node, point }] }`; `coverages` is one entry per seed, null for a run without it): per node and point, how many
+ * seeds armed it and how many saw a crash there (`crashes` counts every crash), and the armed points no seed crashed
+ * at. Null when no run carried a fail point plan.
+ */
+export function sweepCoverage(coverages) {
+  const runs = coverages.filter((coverage) => coverage && typeof coverage.armed === 'object');
+  if (runs.length === 0) return null;
+  const points = {};
+  const entry = (node, point) => (points[`${node} ${point}`] ??= { node, point, armedSeeds: 0, crashedSeeds: 0, crashes: 0 });
+  for (const { armed, crashes = [] } of runs) {
+    for (const [node, names] of Object.entries(armed)) for (const point of new Set(names)) entry(node, point).armedSeeds += 1;
+    const seen = new Set();
+    for (const { node, point } of crashes) {
+      const at = entry(node, point);
+      at.crashes += 1;
+      if (!seen.has(`${node} ${point}`)) at.crashedSeeds += 1;
+      seen.add(`${node} ${point}`);
+    }
+  }
+  const all = Object.values(points).sort((a, b) => b.crashedSeeds - a.crashedSeeds || a.node.localeCompare(b.node) || a.point.localeCompare(b.point));
+  return { seeds: runs.length, points: all, neverTriggered: all.filter((at) => at.armedSeeds > 0 && at.crashedSeeds === 0).map(({ node, point }) => ({ node, point })) };
+}
+
+/** The coverage summary's lines for the end of a sweep; none without coverage. */
+export function coverageSummary(coverage) {
+  if (!coverage) return [];
+  const hit = coverage.points.filter((at) => at.crashedSeeds > 0);
+  const lines = [`Fail point coverage over ${coverage.seeds} seed${coverage.seeds === 1 ? '' : 's'}: a crash fired at ${hit.length} of ${coverage.points.length} armed points`];
+  for (const at of hit) lines.push(`  ${at.node} ${at.point}: ${at.crashedSeeds} seed${at.crashedSeeds === 1 ? '' : 's'}${at.crashes > at.crashedSeeds ? `, ${at.crashes} crashes` : ''}${at.armedSeeds === 0 ? ' (not in the armed list)' : ''}`);
+  if (coverage.neverTriggered.length) lines.push(`  never triggered (${coverage.neverTriggered.length}): ${coverage.neverTriggered.map(({ node, point }) => `${node} ${point}`).join(', ')}`);
   return lines;
 }

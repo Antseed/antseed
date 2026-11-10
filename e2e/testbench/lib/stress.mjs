@@ -42,6 +42,26 @@ export const GATES = {
   'issue-1050': { minOk: 0.95 },
 };
 
+/** Requests a run with fail point crashes may lose beyond the ones in flight at each crash. */
+export const CRASHES_GATE_SLACK = 8;
+
+/**
+ * The gate of a load that fail points crashed `crashes` times: nothing may fail outside a restart window, and the ok
+ * share must be at least `1 - (crashes x concurrency + slack) / requests`. A node killed mid-load fails the requests
+ * in flight, at most `concurrency` of them (measured: exactly that many per crash at 16-way), and `slack` covers a
+ * request that fails once more while the supervisor has not yet recorded the crash. No crash, no allowance but the
+ * slack. `crashes` counts the crashes that fired while the load ran.
+ */
+export function crashesGate({ crashes, concurrency, requests, slack = CRASHES_GATE_SLACK }) {
+  if (![crashes, concurrency, requests, slack].every((value) => Number.isInteger(value) && value >= 0) || requests === 0) throw new Error('crashesGate needs whole numbers: crashes, concurrency, slack and requests > 0');
+  return { minOk: Math.max(0, 1 - (crashes * concurrency + slack) / requests), restart: true, crashes };
+}
+
+/** The fail point crash records that fired while a load ran (from its first request to its last answer). */
+export function crashesDuringLoad(crashes, run) {
+  return crashes.filter((crash) => Date.parse(crash.at) >= run.startedAt && Date.parse(crash.at) <= run.startedAt + run.loadMs);
+}
+
 /** Log lines that mean a peer crashed (e2e/stress/harness.mjs SELLER_PATTERNS.crash / BUYER_PATTERNS.crash). */
 export const CRASH_PATTERN = /Unhandled|uncaught|UnhandledPromiseRejection|FATAL|Segmentation/i;
 
@@ -266,8 +286,9 @@ function okPerSecond(results, okCount) {
 /**
  * Outcome counts, throughput, estimated cost and latency percentiles over successful requests, overall and split into
  * streamed (with time to first byte) and non-streamed; with a restart, failures inside and outside its window (plus 15 s).
+ * `restarts` (a list) gives one window per restart: a failure is inside when it overlaps any of them.
  */
-export function clientSummary(results, { startedAt, restart } = {}) {
+export function clientSummary(results, { startedAt, restart, restarts } = {}) {
   const ok = results.filter((entry) => !entry.error && !entry.clientAborted);
   const latencies = (entries) => latencyPercentiles(entries.map((entry) => entry.ms));
   const streamed = ok.filter((entry) => entry.stream);
@@ -284,14 +305,14 @@ export function clientSummary(results, { startedAt, restart } = {}) {
     okPerSecond: okPerSecond(results, ok.length),
     estimatedCostUsd: estimatedCostUsd(results),
   };
-  if (restart && startedAt !== undefined) {
-    const windowStart = restart.stoppedAt;
-    const windowEnd = restart.stoppedAt + restart.downMs + 15_000;
-    const inWindow = results.filter((entry) => entry.error && entry.start - startedAt <= windowEnd && entry.start - startedAt + entry.ms >= windowStart);
+  const windows = (restarts ?? (restart ? [restart] : [])).map((entry) => ({ start: entry.stoppedAt, end: entry.stoppedAt + entry.downMs + 15_000 }));
+  if (windows.length && startedAt !== undefined) {
+    const inWindow = results.filter((entry) => entry.error && windows.some((window) => entry.start - startedAt <= window.end && entry.start - startedAt + entry.ms >= window.start));
     summary.failedInRestartWindow = inWindow.length;
     summary.failedOutsideRestartWindow = summary.failed - inWindow.length;
     summary.failuresOutsideRestartWindow = {};
-    for (const entry of results) if (entry.error && !inWindow.includes(entry)) summary.failuresOutsideRestartWindow[entry.error] = (summary.failuresOutsideRestartWindow[entry.error] ?? 0) + 1;
+    const inWindowSet = new Set(inWindow);
+    for (const entry of results) if (entry.error && !inWindowSet.has(entry)) summary.failuresOutsideRestartWindow[entry.error] = (summary.failuresOutsideRestartWindow[entry.error] ?? 0) + 1;
   }
   return summary;
 }
@@ -517,6 +538,18 @@ export async function warmUp(tb, model = STRESS_MODEL, label = 'warm-up') {
       return false;
     }
   }, 'a warm-up request to succeed', { timeoutMs: 120_000, intervalMs: 2000 });
+}
+
+/**
+ * Closes every channel, repeated until the buyer reaches the seller: after a seller restart no request reconnects the
+ * two, the buyer does not look up a seller it just failed to reach for about 30 s, and a cooperative close needs the
+ * seller found. Resolves with `{ closed, attempts, lastError }`; `closed` false when it never could within `timeoutMs`
+ * (the oracle's own close then fails and says why).
+ */
+export async function closeWhenReachable(tb, { timeoutMs = 120_000, intervalMs = 5000 } = {}) {
+  const errors = [];
+  const closed = await tb.waitFor(() => tb.closeAll().then(() => true, (error) => { errors.push(error.message); return false; }), 'the buyer to reach the restarted seller and close the channel', { timeoutMs, intervalMs }).catch(() => false);
+  return { closed, attempts: errors.length + (closed ? 1 : 0), lastError: errors.at(-1) ?? null };
 }
 
 /** What one load measured, flat, for tb.timings and drift. */

@@ -27,8 +27,22 @@ describe('fail points', () => {
     globals[KEY] = { hit, hitSync };
     await hitFailpoint('chain.top-up.after-send');
     hitFailpointSync('store.after-write');
-    expect(hit.mock.calls).toEqual([['chain.top-up.after-send']]);
-    expect(hitSync.mock.calls).toEqual([['store.after-write']]);
+    expect(hit.mock.calls).toEqual([['chain.top-up.after-send', undefined]]);
+    expect(hitSync.mock.calls).toEqual([['store.after-write', undefined]]);
+  });
+
+  it('hand the handler the key of the payment step, and do nothing with it without a handler', async () => {
+    const hit = vi.fn(async () => {});
+    const hitSync = vi.fn();
+    globals[KEY] = { hit, hitSync };
+    await hitFailpoint('buyer.spending-auth.after-sign', '0xchannel:1500');
+    hitFailpointSync('seller.spending-auth.after-verify', '0xchannel:1500');
+    expect(hit.mock.calls).toEqual([['buyer.spending-auth.after-sign', '0xchannel:1500']]);
+    expect(hitSync.mock.calls).toEqual([['seller.spending-auth.after-verify', '0xchannel:1500']]);
+    delete globals[KEY];
+    // A keyed point is as inert as an unkeyed one: the same shared promise, nothing returned.
+    expect(hitFailpoint('buyer.spending-auth.after-sign', '0xchannel:1500')).toBe(hitFailpoint('chain.close.after-receipt'));
+    expect(hitFailpointSync('seller.spending-auth.after-verify', '0xchannel:1500')).toBeUndefined();
   });
 
   it('wait for an async handler', async () => {
@@ -133,5 +147,13 @@ describe('fail points', () => {
     log.length = 0;
     mux.sendSpendingAuth({ ...auth, reserveSalt: CHANNEL, reserveMaxAmount: '100', reserveDeadline: 9 });
     expect(log).toEqual(['buyer.reserve-auth.before-send', 'frame sent', 'buyer.reserve-auth.after-send']);
+  });
+
+  it('the points around an auth frame carry the frame\'s channel and cumulative amount as their key', () => {
+    const keys: Array<[string, string | undefined]> = [];
+    globals[KEY] = { hit: async () => {}, hitSync: (name: string, key?: string) => { keys.push([name, key]); } };
+    const mux = new PaymentMux({ send: () => {} } as unknown as BuyerConnection);
+    mux.sendSpendingAuth({ channelId: CHANNEL, cumulativeAmount: '5', metadataHash: CHANNEL, metadata: '0x', spendingAuthSig: '0x' + '33'.repeat(65) });
+    expect(keys).toEqual([['buyer.spending-auth.before-send', `${CHANNEL}:5`], ['buyer.spending-auth.after-send', `${CHANNEL}:5`]]);
   });
 });

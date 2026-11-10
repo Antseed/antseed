@@ -803,7 +803,7 @@ export class SellerPaymentManager {
         // topUp() takes seconds, and every auth and request for this buyer
         // waits on the lock. Until it lands, serving uses the current ceiling.
         debugLog(`[SellerPayment] Top-up verified: channel=${channelId.slice(0, 18)}... ceiling ${currentReserveMax} → ${newMaxAmount}`);
-        hitFailpointSync('seller.top-up.after-verify');
+        hitFailpointSync('seller.top-up.after-verify', `${channelId}:${newMaxAmount}`);
         // A replay of the top-up being submitted right now adds nothing.
         if (newMaxAmount <= (this._topUpInFlight.get(channelId) ?? 0n)) return 'accepted';
         this._storePendingTopUp(channelId, {
@@ -883,7 +883,7 @@ export class SellerPaymentManager {
           return 'rejected';
         }
 
-        hitFailpointSync('seller.spending-auth.after-verify');
+        hitFailpointSync('seller.spending-auth.after-verify', `${channelId}:${cumulativeAmount}`);
         // Update tracking
         this._acceptedCumulative.set(channelId, cumulativeAmount);
         this._latestAuth.set(channelId, {
@@ -904,7 +904,7 @@ export class SellerPaymentManager {
           session.updatedAt = Date.now();
           this._channelStore.upsertChannel(session);
         }
-        hitFailpointSync('seller.spending-auth.after-store');
+        hitFailpointSync('seller.spending-auth.after-store', `${channelId}:${cumulativeAmount}`);
 
         debugLog(`[SellerPayment] Budget updated: channel=${channelId.slice(0, 18)}... cumulative=${cumulativeAmount}`);
 

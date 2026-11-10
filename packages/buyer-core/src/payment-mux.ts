@@ -97,9 +97,9 @@ export class PaymentMux {
    */
   sendSpendingAuth(payload: SpendingAuthPayload): void {
     const kind = payload.reserveMaxAmount !== undefined ? 'reserve-auth' : 'spending-auth';
-    hitFailpointSync(`buyer.${kind}.before-send`);
+    hitFailpointSync(`buyer.${kind}.before-send`, `${payload.channelId}:${payload.cumulativeAmount}`);
     this._send(MessageType.SpendingAuth, codec.encodeSpendingAuth(payload));
-    hitFailpointSync(`buyer.${kind}.after-send`);
+    hitFailpointSync(`buyer.${kind}.after-send`, `${payload.channelId}:${payload.cumulativeAmount}`);
   }
   sendAuthAck(payload: AuthAckPayload): void {
     this._send(MessageType.AuthAck, codec.encodeAuthAck(payload));

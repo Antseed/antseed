@@ -6,7 +6,7 @@ import { createRequire } from 'node:module';
 import { createCliRunner } from './cli-run.mjs';
 import { chainContracts } from './local-deploy.mjs';
 import { launchDesktop } from './desktop.mjs';
-import { restartFromCrash } from './failpoints.mjs';
+import { armedSpec, crashesOfArming, restartFromCrash } from './failpoints.mjs';
 import { assertLocalUrl } from './env.mjs';
 import { MOCK_USAGE } from './mock.mjs';
 import { createPrng, derive } from './prng.mjs';
@@ -39,6 +39,8 @@ function percentile(values, p) {
 const SETTLE_WATCH_MS = 90_000;
 /** A node re-reads its fail point spec at most every 200 ms; after this long it has what was just armed. */
 const FAILPOINT_ARM_MS = 300;
+/** How long after a failed request a load looks again for a fail point crash: the supervisor has seen the node's exit by then. */
+const FAILPOINT_EXIT_SEEN_MS = 400;
 
 /**
  * The object every scenario receives. Talks to the buyer proxy like a real client and to the
@@ -57,6 +59,7 @@ export function createTestbenchApi({ manifest, control, eventsPath, chain, stric
   const runner = createCliRunner({
     repo: repo ?? join(import.meta.dirname, '../../..'), manifest, event: (type, data) => event(type, data),
     chainNow: async () => Number((await reader.provider.getBlock('latest')).timestamp),
+    seed,
   });
   const stringify = (value) => (typeof value === 'bigint' ? String(value) : value);
   let delegations = 0;
@@ -94,34 +97,47 @@ export function createTestbenchApi({ manifest, control, eventsPath, chain, stric
   };
 
   /**
-   * Lets a load wait out a fail point crash of `who` instead of burning its requests on a node that is down: `hold` is
-   * runLoad's hook. A worker whose request just failed asks the supervisor whether a fail point killed the node; once
-   * one has, every worker waits until the node is back. `stop()` returns that crash's record, or null when none came.
+   * Lets a load wait out every fail point crash of the nodes `who` (one or a list) instead of burning its requests on
+   * a node that is down: `hold` is runLoad's hook. A worker whose request just failed asks the supervisor whether a
+   * fail point killed a watched node; while one is down every worker waits, then they go on, and that repeats for the
+   * next crash. Only crashes recorded after the watch began count, and with `specIds` only those of these armings.
+   * `stop()` returns the records of the crashes that were followed by a restart, oldest first.
    */
-  const failpointWatch = async (who) => {
+  const failpointWatch = async (who, specIds) => {
     const seen = ((await control.health()).failpointCrashes ?? []).length;
-    let crash = null;
+    const mine = async () => crashesOfArming(((await control.health()).failpointCrashes ?? []).slice(seen), { who, specIds });
+    // A node that did not come back (restartError) is not waited for: the load goes on and fails on its own.
+    const down = (crashes) => crashes.some((crash) => !crash.restartedAt && !crash.restartError);
+    let crashes = [];
     let waiting = null;
     let checking = null;
     const check = async () => {
-      const found = ((await control.health()).failpointCrashes ?? []).slice(seen).findLast((entry) => entry.who === who);
-      if (!found || crash) return;
-      crash = found;
-      waiting = tb.faults.waitForFailpointRestart(who).then((record) => { crash = record; }, () => {}).finally(() => { waiting = null; });
+      crashes = await mine();
+      if (waiting || !down(crashes)) return;
+      waiting = tb.waitFor(async () => { crashes = await mine(); return !down(crashes); }, 'the nodes a fail point killed to be started again', { timeoutMs: 180_000, intervalMs: 250 })
+        .catch(() => {}).finally(() => { waiting = null; });
     };
-    const timer = setInterval(() => { checking ??= check().catch(() => {}).finally(() => { checking = null; }); }, 500);
+    // A request fails the moment its node dies, and the supervisor records the crash only when it sees the exit: one
+    // look can come too early, and every worker would then send its next request into the dead node. Look twice.
+    const look = async () => {
+      await check();
+      if (waiting) return;
+      await sleep(FAILPOINT_EXIT_SEEN_MS);
+      await check();
+    };
+    const ask = () => (checking ??= look().catch(() => {}).finally(() => { checking = null; }));
+    const timer = setInterval(ask, 500);
     return {
       hold(last) {
         if (waiting) return waiting;
-        if (!last?.error || crash) return null;
-        return (checking ??= check().catch(() => {}).finally(() => { checking = null; }));
+        return last?.error ? ask() : null;
       },
       async stop() {
         clearInterval(timer);
         await checking;
         await check().catch(() => {});
         await waiting;
-        return crash?.restartedAt ? crash : null;
+        return crashes.filter((crash) => crash.restartedAt);
       },
     };
   };
@@ -142,6 +158,8 @@ export function createTestbenchApi({ manifest, control, eventsPath, chain, stric
     proxyUrl: manifest.proxyUrl,
     rpcUrl: manifest.rpcUrl,
     sellers: manifest.sellers.map(({ id, peerId, address, models }) => ({ id, peerId, address, models })),
+    /** The seed this run's streams derive from: what a scenario's plan function takes, so a plan can be printed without a run. */
+    seed,
     /** A seeded `() => number` in [0, 1) for a named stream; use it instead of Math.random so the run stays replayable. */
     prng: (label) => createPrng(derive(seed, label)),
     seller(id) {
@@ -353,13 +371,14 @@ export function createTestbenchApi({ manifest, control, eventsPath, chain, stric
       lostNeedAuths: async () => (await control.needAuthLoss()).lost,
       /**
        * Arms fail points on a running node (cli mode, a topology with `failpoints: true`). `who` is 'buyer' or
-       * 'seller:<id>'; `spec` is `{ seed, points: { '<name>': { action: 'crash' | 'error' | 'delay', ms, nth, p, count } } }`
-       * (lib/failpoints.mjs; `seed` defaults to one derived from the run seed and `who`). It replaces what was armed and
+       * 'seller:<id>'; `spec` is `{ seed, points: { '<name>': { action: 'crash' | 'error' | 'delay', ms, nth, p, count } },
+       * maxCrashes, graceMs, restartDelayMs, ignoreOthers }` (lib/failpoints.mjs; `seed` defaults to one derived from the
+       * run seed and `who`). It replaces what was armed and
        * restarts the hit counts. A node a crash kills is started again by the supervisor. Resolves once the node has
        * the spec: it re-reads its spec file at most every 200 ms.
        */
       async failpoints(who, spec) {
-        const armed = (await control.setFailpoints(who, { seed: derive(seed, `failpoints:${who}`), ...spec })).spec;
+        const armed = (await control.setFailpoints(who, armedSpec(seed, who, spec))).spec;
         await event('fault-failpoints', { who, ...armed });
         await sleep(FAILPOINT_ARM_MS);
         return armed;
@@ -378,16 +397,34 @@ export function createTestbenchApi({ manifest, control, eventsPath, chain, stric
       failpointJournal: async (who) => (await control.failpoints(who)).journal,
       /**
        * Resolves with the supervisor's record of the latest fail point crash of `who` once the node is back up:
-       * `{ who, point, hit, at, pid, restartedAt }`. Throws when none happened within `timeoutMs` or the restart failed.
+       * `{ who, point, hit, at, pid, spec, restartDelayMs, graceMs, restartedAt }`, with `overlapped: true` and `alsoDown`
+       * when another node was down at that moment. `specId` (the `id` of the spec
+       * faults.failpoints() returned) counts only crashes of that arming: pass it, because the supervisor keeps the
+       * crashes of its whole life and an earlier run's must not stand in for this one's. Throws when none happened
+       * within `timeoutMs` or the restart failed.
        */
-      async waitForFailpointRestart(who, { timeoutMs = 120_000 } = {}) {
+      async waitForFailpointRestart(who, { specId, timeoutMs = 120_000 } = {}) {
         const record = await tb.waitFor(async () => {
-          const crash = (await control.health()).failpointCrashes?.findLast((entry) => entry.who === who);
+          const crash = crashesOfArming((await control.health()).failpointCrashes, { who, ...(specId !== undefined ? { specIds: [specId] } : {}) }).at(-1);
           if (crash?.restartError) throw new Error(`${who} did not come back after fail point ${crash.point}: ${crash.restartError}`);
           return crash?.restartedAt ? crash : null;
         }, `${who} to be killed by a fail point and restarted`, { timeoutMs, intervalMs: 250 });
         await event('failpoint-restart', record);
         return record;
+      },
+      /** The supervisor's fail point crash records of the armings `specIds` (and nodes `who`, all when left out), oldest first. */
+      failpointCrashes: async ({ specIds, who } = {}) => crashesOfArming((await control.health()).failpointCrashes, { specIds, who }),
+      /**
+       * Resolves with failpointCrashes({ specIds, who }) once every node those crashes killed is back up (at once when
+       * there is none). Throws when a restart failed or one is still pending after `timeoutMs`.
+       */
+      async waitForFailpointRestarts({ specIds, who, timeoutMs = 120_000 } = {}) {
+        return tb.waitFor(async () => {
+          const crashes = await tb.faults.failpointCrashes({ specIds, who });
+          const failed = crashes.find((crash) => crash.restartError);
+          if (failed) throw new Error(`${failed.who} did not come back after fail point ${failed.point}: ${failed.restartError}`);
+          return crashes.every((crash) => crash.restartedAt) ? crashes : null;
+        }, 'every node a fail point killed to be started again', { timeoutMs, intervalMs: 250 });
       },
     },
     setMockLatency: async (id, latencyMs) => { await event('mock-latency', { id, latencyMs }); return control.setMockLatency(id, latencyMs); },
@@ -409,10 +446,12 @@ export function createTestbenchApi({ manifest, control, eventsPath, chain, stric
      * seller's first model, `sellerId` pins it, `imageModel` serves the image share. `restart: { who: 'buyer' |
      * 'seller', sellerId, atFraction, crash }` restarts a peer once that share is done; with `crash` the seller is
      * killed (SIGKILL, tb.crashSeller) instead of stopped, so it neither settles nor closes before it comes back.
-     * `omitMaxTokensRatio` sends that share of chats without `max_tokens`. `gate` (a GATES entry) is evaluated
+     * `omitMaxTokensRatio` sends that share of chats without `max_tokens`. `failpointCrash: { who, specIds }` makes the
+     * load wait out every fail point crash of `who` (a node or a list; with `specIds` only crashes of those armings):
+     * `restarts` then lists them as restart windows and `restart` is the first. `gate` (a GATES entry) is evaluated
      * but not recorded, so a failed gate cannot hide the money verdict: judge first, then pass the result to
      * checkGate(), or the gate never reaches the report. A buyer restart waits for the channels it dropped to
-     * settle (restart settleOnDisconnectMs). Returns { results, client, restart, loadMs, gate, gateProblems }.
+     * settle (restart settleOnDisconnectMs). Returns { results, client, restart, restarts, loadMs, gate, gateProblems }.
      */
     async load({ model, imageModel, sellerId, restart, gate, failpointCrash, ...shape } = {}) {
       if (restart?.crash && restart.who !== 'seller') throw new Error('restart.crash kills a seller: it needs who: \'seller\'');
@@ -438,35 +477,41 @@ export function createTestbenchApi({ manifest, control, eventsPath, chain, stric
         },
       } : null;
       await event('load-start', { model: chosen, sellerId: sellerId ?? null, ...shape, restart: restart ?? null, ...(failpointCrash ? { failpointCrash } : {}) });
-      const watch = failpointCrash ? await failpointWatch(failpointCrash.who) : null;
+      const watch = failpointCrash ? await failpointWatch(failpointCrash.who, failpointCrash.specIds) : null;
       const run = await runLoad({ proxyUrl: manifest.proxyUrl, model: pin(chosen), imageModel: pin(imageModel), load: { ...shape, restart: restartSpec, ...(watch ? { hold: watch.hold } : {}) }, random: loadRandom });
       if (settled) run.restart = { ...run.restart, settleOnDisconnectMs: await settled };
       if (watch) {
-        const crash = await watch.stop();
-        if (crash) Object.assign(run, { restart: restartFromCrash(crash, run.startedAt) });
-        if (crash) run.client = clientSummary(run.results, { startedAt: run.startedAt, restart: run.restart });
+        run.restarts = (await watch.stop()).map((crash) => restartFromCrash(crash, run.startedAt));
+        if (run.restarts.length) run.restart = run.restarts[0];
+        if (run.restarts.length) run.client = clientSummary(run.results, { startedAt: run.startedAt, restarts: run.restarts });
       }
-      metrics.load = [...(metrics.load ?? []), { ...run.client, loadMs: run.loadMs, restart: run.restart }];
-      await event('load', { client: run.client, restart: run.restart, loadMs: run.loadMs });
+      const several = run.restarts?.length > 1 ? { restarts: run.restarts } : {};
+      metrics.load = [...(metrics.load ?? []), { ...run.client, loadMs: run.loadMs, restart: run.restart, ...several }];
+      await event('load', { client: run.client, restart: run.restart, ...several, loadMs: run.loadMs });
       return { ...run, gate, gateProblems: gate ? gateProblems(run.client, gate) : [] };
     },
 
     /**
      * Adds a fail point crash that happened after a load ended (while its last payments were still moving) to that
      * load's result, as tb.load({ failpointCrash }) does for one during it: the restart record, the client summary
-     * with its restart window, and the gate judged again. `crash` is waitForFailpointRestart's record.
+     * with its restart window, and the gate judged again. `crash` is waitForFailpointRestart's record, or a list of
+     * records (every crash of the run, those during the load included): each becomes a restart window, `restarts`
+     * lists them all and `restart` is the first.
      */
     withFailpointRestart(run, crash) {
-      const restart = restartFromCrash(crash, run.startedAt);
-      const client = clientSummary(run.results, { startedAt: run.startedAt, restart });
-      if (metrics.load?.length) metrics.load[metrics.load.length - 1] = { ...client, loadMs: run.loadMs, restart };
-      return { ...run, restart, client, gateProblems: run.gate ? gateProblems(client, run.gate) : [] };
+      const restarts = [crash].flat().map((record) => restartFromCrash(record, run.startedAt));
+      if (restarts.length === 0) return run;
+      const restart = restarts[0];
+      const client = clientSummary(run.results, { startedAt: run.startedAt, restarts });
+      const several = restarts.length > 1 ? { restarts } : {};
+      if (metrics.load?.length) metrics.load[metrics.load.length - 1] = { ...client, loadMs: run.loadMs, restart, ...several };
+      return { ...run, restart, restarts, client, gateProblems: run.gate ? gateProblems(client, run.gate) : [] };
     },
 
     /** Records a load gate as a check: a load's result, or { client, gate, gateProblems } for several loads judged together. */
     checkGate({ client, gate, gateProblems: problems }) {
       assert(gate, 'checkGate needs a load run with a gate');
-      tb.check(`load gate: at least ${Math.round(gate.minOk * 100)}% ok${gate.allowedFailures ? ', only injected failures' : ''}${gate.restart ? ', no failures outside the restart window' : ''}`, problems.length === 0, problems.length ? problems : client);
+      tb.check(`load gate: at least ${Math.round(gate.minOk * 100)}% ok${gate.crashes !== undefined ? ` after ${gate.crashes} fail point crash${gate.crashes === 1 ? '' : 'es'} during the load` : ''}${gate.allowedFailures ? ', only injected failures' : ''}${gate.restart ? ', no failures outside the restart window' : ''}`, problems.length === 0, problems.length ? problems : client);
     },
 
     /**
@@ -611,7 +656,11 @@ export function createTestbenchApi({ manifest, control, eventsPath, chain, stric
      * testbench's isolated environment. Options: { dataDir, configPath, home, env, timeoutMs = 60000, input, clock }.
      * `clock: 'chain'` runs the command with its clock shifted to the chain's time, for commands that compare chain
      * timestamps with Date.now() after a tb.warp (e.g. `buyer channels withdraw` after the close grace).
-     * Returns { code, signal, stdout, stderr, json, durationMs, timedOut } (`json` is stdout parsed, else null) and
+     * `failpoints: spec` (lib/failpoints.mjs) runs the command with the fail point handler armed with that spec, a
+     * journal of its own, and adds `failpoint: { specId, journal, crash }` to the result: `crash` is the journal's
+     * trigger when a fail point killed the command (SIGKILL and the trigger in its journal), null when it ended any
+     * other way.
+     * Returns { code, signal, pid, stdout, stderr, json, durationMs, timedOut } (`json` is stdout parsed, else null) and
      * records a `cli` event with the first 2000 characters of each stream. Never throws for a failing command.
      */
     cli: (args, options) => runner.cli(args, options),
@@ -703,6 +752,8 @@ export function createTestbenchApi({ manifest, control, eventsPath, chain, stric
       return reader.sendAs(manifest.buyer.address, 'withdraw', [channelId]);
     },
     usdcBalance: (address) => reader.usdcBalance(address),
+    /** How many transactions an address has sent that are mined: its nonce on the testbench chain. */
+    transactionCount: (address) => reader.provider.getTransactionCount(address),
     /** On-chain ChannelSettled events between the buyer and a seller since the testbench started. */
     settledEvents: (sellerId) => reader.settledEvents(manifest.buyer.address, tb.seller(sellerId).address, manifest.chainStartBlock),
     /** Exact on-chain settlement against what the buyer signed; call after closeAll(). */

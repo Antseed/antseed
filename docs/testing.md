@@ -46,7 +46,13 @@ The seed fixes everything the testbench draws. `derive(seed, label)` in `e2e/tes
 | `warm-up` | the warm-up request's tag |
 | `rpc:seller:<sellerId>`, `rpc:buyer` | the Base-like RPC proxies' slow, stale and rate-limit decisions |
 | `failpoint` | the fail point, node and hit `stress-failpoint-crash` and `stress-failpoint-close` crash at |
-| `failpoints:buyer`, `failpoints:seller:<sellerId>` | the seed of a fail point spec armed on that node (its `p` draws), unless the spec names one |
+| `crashes-and-delays` | the plan of `stress-crashes-and-delays` and `stress-crashes-and-delays-both`: per node, how likely a crash is, the range of the time down, the range of the grace window and the delays |
+| `crashes-and-delays-close` | the chance per hit of a settle, close or store point while those scenarios close |
+| `crashes-correlated` | the seed both nodes of `stress-crashes-correlated` are armed with: which SpendingAuth they die at |
+| `failpoint-exit` | the two points `stress-failpoint-exit` kills the exit commands at |
+| `failpoints:buyer`, `failpoints:seller:<sellerId>` | the seed of a fail point spec armed on that node (its `p` draws, its delay lengths, how long a node it killed stays down and the grace window after), unless the spec names one |
+| `failpoints:seller:<sellerId>:close`, `failpoints:cli:<n>` | the same for the close phase's spec and for the spec of the n-th armed one-shot command |
+| `after-restart-<round>`, `after-restart` | the tag of the paid request a fail point scenario sends after a restart |
 
 Changing `derive` or a label changes what every recorded seed means, so a unit test pins them.
 
