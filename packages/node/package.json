@@ -61,6 +61,10 @@
       "import": "./dist/model-identity.js",
       "types": "./dist/model-identity.d.ts"
     },
+    "./retail-prices": {
+      "import": "./dist/retail-prices.js",
+      "types": "./dist/retail-prices.d.ts"
+    },
     "./model-metadata": {
       "import": "./dist/model-metadata.js",
       "types": "./dist/model-metadata.d.ts"

@@ -20,7 +20,7 @@ import { isMultiInstanceDevelopment } from '../../dev-instance.js';
 import type { RuntimeMode } from '../../runtime/process-manager.js';
 import { getGatewayEndpoint, localGatewayOrigin, type GatewayEndpoint } from '../../gateway/service.js';
 import { patchesComeOffAtQuit, relayTarget } from './relay-target.js';
-import { createSerialQueue } from '../../gateway/serial-queue.js';
+import { createSerialQueue } from '../../serial-queue.js';
 import { oncePerGatewayKey } from './once-per-key.js';
 import { fetchGatewayModelEntries, toGatewayModel, type GatewayModel } from '../../gateway/models.js';
 import { recommendAppModels, toChatModels, type ChatModel } from '../../gateway/catalog.js';

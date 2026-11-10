@@ -4,6 +4,7 @@
  */
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { createSerialQueue } from '../serial-queue.js';
 
 export type ChatOrganization = {
   version: 1;
@@ -85,7 +86,7 @@ export function flagsFor(organization: ChatOrganization, id: string): ChatFlagFi
 export class ChatOrganizationStore {
   private cached: ChatOrganization | null = null;
   private loading: Promise<ChatOrganization> | null = null;
-  private queue: Promise<unknown> = Promise.resolve();
+  private readonly queue = createSerialQueue();
 
   constructor(private readonly filePath: string) {}
 
@@ -112,14 +113,12 @@ export class ChatOrganizationStore {
   }
 
   private change<T>(update: (current: ChatOrganization) => Promise<{ next: ChatOrganization; result: T }>): Promise<T> {
-    const run = this.queue.then(async () => {
+    return this.queue.run(async () => {
       const current = await this.read();
       const { next, result } = await update(current);
       if (next !== current) await this.write(next);
       return result;
     });
-    this.queue = run.catch(() => {});
-    return run;
   }
 
   private async write(next: ChatOrganization): Promise<void> {

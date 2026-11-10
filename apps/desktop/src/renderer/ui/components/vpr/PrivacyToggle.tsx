@@ -19,20 +19,28 @@ export function modelsForPrivacy(models: ChatModel[], privateMode: boolean): Cha
   return privateMode ? models.filter((model) => model.tee) : models;
 }
 
-const OPTIONS: Array<{ mode: GatewayPrivacyMode; label: string; iconClass: string; hint: string }> = [
+const PRIVACY_SCOPE_HINT = 'This applies to the chat and every app connected through Antseed.';
+
+type PrivacyOption = { mode: GatewayPrivacyMode; label: string; iconClass: string; description: string };
+
+const OPTIONS: PrivacyOption[] = [
   {
     mode: 'anonymous',
     label: 'Anonymous',
     iconClass: styles.iconAnonymous,
-    hint: 'Providers never see your name or email, only an anonymous address. Every model is open to you. This applies to the chat and every app connected through Antseed.',
+    description: 'Providers never see your name or email, only an anonymous address. Every model is open to you.',
   },
   {
     mode: 'private',
     label: 'Private',
     iconClass: styles.iconPrivate,
-    hint: 'Providers can’t read your chats. Your app checks each one runs on sealed hardware (a TEE) before sending anything. Fewer models for now. This applies to the chat and every app connected through Antseed.',
+    description: 'Providers can’t read your chats. Your app checks each one runs on sealed hardware (a TEE) before sending anything. Fewer models for now.',
   },
 ];
+
+function optionHint(option: PrivacyOption): string {
+  return `${option.description} ${PRIVACY_SCOPE_HINT}`;
+}
 
 export type PrivacyControl = {
   current: GatewayPrivacyMode;
@@ -124,10 +132,11 @@ export function usePrivacyControl(onChange?: (mode: GatewayPrivacyMode, choice: 
     setPendingSwitch({ mode, explain, privateHistory: leaving, apply });
   }
 
+  const currentOption = OPTIONS.find((option) => option.mode === current);
   const hint = error
     ?? (!editable ? 'Your remote gateway sets its routing policy in its console.'
       : locked ? 'Your gateway requires TEE sellers for this key.'
-        : OPTIONS.find((option) => option.mode === current)?.hint);
+        : currentOption && optionHint(currentOption));
 
   return { current, disabled: !editable || locked, error, hint, select };
 }
@@ -147,7 +156,7 @@ export function PrivacyToggle({ control, size = 'regular' }: { control: PrivacyC
             className={`${styles.option}${active ? ` ${activeClass}` : ''}`}
             disabled={control.disabled}
             onClick={() => control.select(option.mode)}
-            title={option.hint}
+            title={optionHint(option)}
           >
             <span className={`${styles.icon} ${option.iconClass}`} aria-hidden="true" />
             {option.label}
@@ -287,7 +296,7 @@ export function PrivacySwitchDialog() {
       <div className={styles.switchDialog}>
         {pending.explain ? (
           <>
-            <p>{OPTIONS.find((option) => option.mode === pending.mode)?.hint.replace(/ This applies to .*$/, '')}</p>
+            <p>{OPTIONS.find((option) => option.mode === pending.mode)?.description}</p>
             <p>
               This is a setting for your whole gateway, not just this chat: it changes where requests from {reach} are sent.
               {toPrivate ? ' If your model has no seller on sealed hardware, the chat moves to one that does.' : ''}

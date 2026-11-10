@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { getServiceMetadataId } from '@antseed/node'
 import { canonicalModelKey } from '@antseed/node/model-identity'
+import { parseRetailPrices, type RetailPriceMap } from '@antseed/node/retail-prices'
 import { getGlobalOptions } from '../types.js'
 import { BAKED_COMPARABLE_PRICES_URL } from '../../../generated/baked-defaults.js'
 import { loadConfig } from '../../../config/loader.js'
@@ -194,8 +195,6 @@ interface MeasuredSavings {
   matchedServices: number
 }
 
-type ReferencePrice = { input: number | null; output: number | null; cachedInput: number | null }
-
 function comparablePricesUrl(): string | null {
   const raw = process.env[COMPARABLE_PRICES_URL_ENV]
   if (raw !== undefined) {
@@ -205,33 +204,13 @@ function comparablePricesUrl(): string | null {
   return BAKED_COMPARABLE_PRICES_URL
 }
 
-async function fetchComparableRetailPrices(): Promise<Map<string, ReferencePrice> | null> {
+async function fetchComparableRetailPrices(): Promise<RetailPriceMap | null> {
   const url = comparablePricesUrl()
   if (!url) return null
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(COMPARABLE_PRICES_TIMEOUT_MS) })
     if (!res.ok) return null
-    const body = await res.json() as { data?: Array<{ id?: unknown; name?: unknown; pricing?: { prompt?: unknown; completion?: unknown; input_cache_read?: unknown } | null }> }
-    if (!Array.isArray(body?.data)) return null
-    const perMillion = (pricePerToken: unknown): number | null => {
-      const numeric = Number(pricePerToken)
-      return Number.isFinite(numeric) && numeric > 0 ? numeric * 1_000_000 : null
-    }
-    const map = new Map<string, ReferencePrice>()
-    for (const model of body.data) {
-      const price: ReferencePrice = {
-        input: perMillion(model.pricing?.prompt),
-        output: perMillion(model.pricing?.completion),
-        cachedInput: perMillion(model.pricing?.input_cache_read),
-      }
-      if (price.input === null && price.output === null) continue
-      for (const rawName of [model.id, model.name]) {
-        if (typeof rawName !== 'string' || !rawName.trim()) continue
-        const key = canonicalModelKey(rawName)
-        if (key && !map.has(key)) map.set(key, price)
-      }
-    }
-    return map.size > 0 ? map : null
+    return parseRetailPrices(await res.json())
   } catch {
     return null
   }
@@ -269,7 +248,7 @@ async function resolveServiceNames(dataDir: string, hashes: string[]): Promise<M
 function computeMeasuredSavings(
   services: DaemonServiceUsage[],
   names: Map<string, string>,
-  referenceMap: Map<string, ReferencePrice>,
+  referenceMap: RetailPriceMap,
 ): MeasuredSavings | null {
   let actualUsd = 0
   let baselineUsd = 0
