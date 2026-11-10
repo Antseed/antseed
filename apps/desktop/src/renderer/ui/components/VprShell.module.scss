@@ -14,6 +14,15 @@
   grid-template-columns: var(--sidebar-collapsed-width, 80px) minmax(0, 1fr);
 }
 
+/* A bar notice (update, network, deposit) is fixed over the window's last
+   rows; while one shows, the layout ends right above it (BottomNotice sets
+   its height) so the composer's pickers and the sidebar's last buttons stay
+   reachable. */
+.shell:has([data-bottom-notice='bar']) {
+  box-sizing: border-box;
+  padding-bottom: var(--bottom-notice-height, 0px);
+}
+
 .dragStrip {
   position: fixed;
   top: 0;

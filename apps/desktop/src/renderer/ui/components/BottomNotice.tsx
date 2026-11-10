@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useLayoutEffect, useRef, type ReactNode } from 'react';
 import styles from './BottomNotice.module.scss';
 
 export interface BottomNoticeAction {
@@ -47,8 +47,10 @@ export function BottomNotice({
     priority === 'overlay' ? styles.overlay : '',
   ].filter(Boolean).join(' ');
 
+  const ref = useBarHeight(layout === 'bar');
+
   return (
-    <div className={className} role={role} aria-live={ariaLive}>
+    <div ref={ref} className={className} role={role} aria-live={ariaLive} data-bottom-notice={layout}>
       <span className={styles.icon} aria-hidden="true">{icon}</span>
       <div className={styles.text}>
         {title !== undefined && <span className={styles.title}>{title}</span>}
@@ -72,4 +74,26 @@ export function BottomNotice({
       )}
     </div>
   );
+}
+
+/**
+ * A bar lies over the window's last rows; its height goes to
+ * `--bottom-notice-height` so the layout can end right above it.
+ */
+function useBarHeight(enabled: boolean) {
+  const ref = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const element = ref.current;
+    if (!enabled || !element) return undefined;
+    const root = document.documentElement;
+    const apply = () => root.style.setProperty('--bottom-notice-height', `${Math.ceil(element.getBoundingClientRect().height)}px`);
+    apply();
+    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(apply) : null;
+    observer?.observe(element);
+    return () => {
+      observer?.disconnect();
+      root.style.removeProperty('--bottom-notice-height');
+    };
+  }, [enabled]);
+  return ref;
 }
