@@ -30,6 +30,8 @@ No API key configuration is required. The plugin reads credentials from the syst
 | `ANTSEED_OUTPUT_USD_PER_MILLION` | number | No | 10 | Output token price (USD per 1M) |
 | `ANTSEED_MAX_CONCURRENCY` | number | No | 10 | Max concurrent requests |
 | `ANTSEED_ALLOWED_SERVICES` | string[] | No | -- | Comma-separated service allowlist |
+| `ANTSEED_SERVICE_PRICING_JSON` | string | No | -- | Per-service pricing as JSON |
+| `ANTSEED_SERVICE_ALIAS_MAP_JSON` | string | No | -- | Optional JSON map of `announcedService -> upstreamService` |
 
 ## How It Works
 
