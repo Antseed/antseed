@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
 import { ArrowDown01Icon, ShuffleIcon } from '@hugeicons/core-free-icons';
 import type { ChatRouteCandidate, ChatRoutePreview } from '../../../types/bridge';
@@ -233,16 +233,7 @@ export function ChatSellerPicker({ modelId, disabled, onChange, onOpenChange, me
                 onClick={() => pick(candidate.peerId)}
                 title={candidate.reasons.join(', ')}
               >
-                <span className={styles.itemTopRow}>
-                  <span className={styles.itemNameGroup}>
-                    <span className={styles.sellerDot} style={{ background: sellerColor(candidate.peerId) }} aria-hidden="true" />
-                    <span className={styles.itemName}>{sellerName(candidate)}</span>
-                    {candidate.failing && <span className={styles.tag}>Failing</span>}
-                  </span>
-                  <span className={styles.itemPrice}>
-                    {priceTag(candidate)}
-                  </span>
-                </span>
+                <SellerHeading candidate={candidate} price={priceTag(candidate)} showFailing />
                 <span className={styles.itemMeta}>
                   {stats(candidate) || 'No traffic history yet'}
                   {candidate.trustScore !== null && <span>trust {Math.round(candidate.trustScore)}</span>}
@@ -254,18 +245,26 @@ export function ChatSellerPicker({ modelId, disabled, onChange, onOpenChange, me
           {excluded.length > 0 && <div className={styles.modelDropdownSection}>Not allowed by your routing policy · {excluded.length}</div>}
           {excluded.map((candidate) => (
             <div key={candidate.peerId} className={`${styles.modelDropdownItem} ${styles.itemDisabled}`} aria-disabled="true">
-              <span className={styles.itemTopRow}>
-                <span className={styles.itemNameGroup}>
-                  <span className={styles.sellerDot} style={{ background: sellerColor(candidate.peerId) }} aria-hidden="true" />
-                  <span className={styles.itemName}>{sellerName(candidate)}</span>
-                </span>
-                <span className={styles.itemPrice}>{priceTag(candidate)}</span>
-              </span>
+              <SellerHeading candidate={candidate} price={priceTag(candidate)} />
               <span className={styles.itemMeta}>{candidate.reasons[0] ?? 'Excluded by your routing policy'}</span>
             </div>
           ))}
         </div>
       )}
     </div>
+  );
+}
+
+/** A seller row's dot, name and price, shared by the sellers that can serve and those the policy leaves out. */
+function SellerHeading({ candidate, price, showFailing = false }: { candidate: ChatRouteCandidate; price: ReactNode; showFailing?: boolean }) {
+  return (
+    <span className={styles.itemTopRow}>
+      <span className={styles.itemNameGroup}>
+        <span className={styles.sellerDot} style={{ background: sellerColor(candidate.peerId) }} aria-hidden="true" />
+        <span className={styles.itemName}>{sellerName(candidate)}</span>
+        {showFailing && candidate.failing && <span className={styles.tag}>Failing</span>}
+      </span>
+      <span className={styles.itemPrice}>{price}</span>
+    </span>
   );
 }

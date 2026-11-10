@@ -1,7 +1,6 @@
 import { ANTSEED_MODEL_CONTEXT_WINDOW, ANTSEED_MODEL_MAX_OUTPUT_TOKENS } from '@antseed/protocol/service-api';
 import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { Document, parseDocument } from 'yaml';
@@ -20,13 +19,37 @@ import {
   type WslConfigTarget,
   type WslTool,
 } from './wsl.js';
+import {
+  ROUTED_MODEL_ALIAS,
+  backupConfigFile,
+  expandTilde,
+  forgetSelection,
+  parseJsoncObject,
+  pickModel,
+  readJsoncFile,
+  readSelection,
+  rememberSelection,
+  sha256Hex,
+  stripJsoncComments,
+  stripJsoncTrailingCommas,
+  tryReadConfigPatchFile,
+  writeJsonFile,
+  writePrivateFile,
+  writeTextFile,
+  type JsonObject,
+} from './config-patch-files.js';
+import {
+  GOOSE_CUSTOM_PROVIDER,
+  applyGooseProviderToFile,
+  isLoopbackHost,
+  readGooseCustomProvider,
+  readGoosePatchState,
+  readYamlTopLevelString,
+  removeGooseProviderFromFile,
+} from './config-patch/goose.js';
 
-/**
- * Model alias resolved by the buyer proxy at request time to the route
- * currently selected in Antseed Desktop. Must match
- * ROUTED_MODEL_ALIAS in apps/cli/src/proxy/request-utils.ts.
- */
-export const ROUTED_MODEL_ALIAS = 'antseed';
+export { ROUTED_MODEL_ALIAS, parseJsoncObject, stripJsoncComments, stripJsoncTrailingCommas };
+
 const ROUTED_MODEL_ALIAS_LABEL = 'Antseed Auto';
 // Droid requires the `custom:` namespace to resolve this through `customModels`;
 // an unprefixed value is treated as a Factory-managed model and triggers Factory authentication.
@@ -343,8 +366,6 @@ export function readConfigPatch(value: unknown, profileName: string): ConfigPatc
   };
 }
 
-type JsonObject = Record<string, unknown>;
-
 /**
  * Where a patched tool should send its requests: an Antseed gateway (local
  * `antseed gateway` or a remote https one) that authenticates with a real API
@@ -370,7 +391,7 @@ export type ConfigPatchTarget = {
 };
 
 /** A ConfigPatchTarget (or legacy buyer port) normalized for the writers. */
-type ResolvedTarget = {
+export type ResolvedTarget = {
   /** True for the numeric buyer-port form: writers keep their pre-gateway output byte for byte. */
   readonly legacy: boolean;
   readonly apiKey: string;
@@ -418,27 +439,8 @@ function resolveTarget(target: ConfigPatchTarget | number): ResolvedTarget {
   };
 }
 
-/**
- * The model a (re)patch should select: the tool's current selection when it
- * is still one of the target's models (the user picked it in the tool),
- * otherwise the target default. Undefined when the target serves no models,
- * in which case the selection is left alone.
- */
-function pickModel(target: ResolvedTarget, current: unknown): string | undefined {
-  if (typeof current === 'string' && target.modelIds.includes(current)) return current;
-  return target.defaultModel ?? target.models[0]?.id;
-}
-
 function modelLabel(model: { id: string; label?: string }): string {
   return model.label ?? model.id;
-}
-
-function sha256Hex(value: string): string {
-  return createHash('sha256').update(value).digest('hex');
-}
-
-function expandTilde(p: string): string {
-  return p.startsWith('~/') ? path.join(homedir(), p.slice(2)) : p;
 }
 
 function isBuyerProxyRoutablePeerId(peerId: string): boolean {
@@ -446,192 +448,11 @@ function isBuyerProxyRoutablePeerId(peerId: string): boolean {
   return /^[0-9a-f]{40}$/.test(normalized);
 }
 
-export function stripJsoncComments(raw: string): string {
-  let result = '';
-  let inString = false;
-  let quote = '';
-  let escaped = false;
-  for (let i = 0; i < raw.length; i++) {
-    const ch = raw[i]!;
-    const next = raw[i + 1];
-    if (inString) {
-      result += ch;
-      if (escaped) {
-        escaped = false;
-      } else if (ch === '\\') {
-        escaped = true;
-      } else if (ch === quote) {
-        inString = false;
-        quote = '';
-      }
-      continue;
-    }
-    if (ch === '"' || ch === "'") {
-      inString = true;
-      quote = ch;
-      result += ch;
-      continue;
-    }
-    if (ch === '/' && next === '/') {
-      while (i < raw.length && raw[i] !== '\n') i++;
-      if (i < raw.length) result += '\n';
-      continue;
-    }
-    if (ch === '/' && next === '*') {
-      i += 2;
-      while (i < raw.length && !(raw[i] === '*' && raw[i + 1] === '/')) {
-        result += raw[i] === '\n' ? '\n' : ' ';
-        i++;
-      }
-      i++;
-      continue;
-    }
-    result += ch;
-  }
-  return result;
-}
-
-export function stripJsoncTrailingCommas(raw: string): string {
-  let result = '';
-  let inString = false;
-  let quote = '';
-  let escaped = false;
-  for (let i = 0; i < raw.length; i++) {
-    const ch = raw[i]!;
-    if (inString) {
-      result += ch;
-      if (escaped) {
-        escaped = false;
-      } else if (ch === '\\') {
-        escaped = true;
-      } else if (ch === quote) {
-        inString = false;
-        quote = '';
-      }
-      continue;
-    }
-    if (ch === '"' || ch === "'") {
-      inString = true;
-      quote = ch;
-      result += ch;
-      continue;
-    }
-    if (ch === ',') {
-      let j = i + 1;
-      while (j < raw.length && /\s/.test(raw[j]!)) j++;
-      if (raw[j] === '}' || raw[j] === ']') {
-        continue;
-      }
-    }
-    result += ch;
-  }
-  return result;
-}
-
-export function parseJsoncObject(raw: string, filePath: string): JsonObject {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(stripJsoncTrailingCommas(stripJsoncComments(raw)));
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    throw new Error(`Unable to parse JSONC config at ${filePath}: ${message}`);
-  }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error(`JSONC config at ${filePath} must be an object`);
-  }
-  return parsed as JsonObject;
-}
-
-function readJsoncFile(filePath: string): JsonObject | null {
-  try {
-    const raw = readFileSync(filePath, 'utf8');
-    return parseJsoncObject(raw, filePath);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-      return null;
-    }
-    throw err;
-  }
-}
-
 function readConfigPatchFile(filePath: string): JsonObject {
   if (!existsSync(filePath)) {
     return {};
   }
   return readJsoncFile(filePath) ?? {};
-}
-
-function tryReadConfigPatchFile(filePath: string): JsonObject | null {
-  if (!existsSync(filePath)) {
-    return null;
-  }
-  return readJsoncFile(filePath);
-}
-
-function writeJsonFile(filePath: string, data: JsonObject): void {
-  const dir = path.dirname(filePath);
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-  }
-  writePrivateFile(filePath, JSON.stringify(data, null, 2) + '\n');
-}
-
-function restrictToOwner(filePath: string): void {
-  try {
-    chmodSync(filePath, 0o600);
-  } catch {
-    // Some filesystems (a WSL share, say) have no such permissions to set.
-  }
-}
-
-/**
- * These files hold a real gateway key, so only their owner may read them. The
- * mode only applies to a new file, so one that already exists is tightened too.
- */
-function writePrivateFile(filePath: string, content: string): void {
-  writeFileSync(filePath, content, { encoding: 'utf8', mode: 0o600 });
-  restrictToOwner(filePath);
-}
-
-function backupConfigFile(filePath: string): void {
-  if (!existsSync(filePath)) return;
-  const backupPath = `${filePath}.antseed.bak`;
-  if (existsSync(backupPath)) return;
-  copyFileSync(filePath, backupPath);
-  restrictToOwner(backupPath);
-}
-
-/**
- * The model the user had selected before Antseed took over, kept beside the
- * config so disconnecting (and quitting, with a local gateway) gives it back.
- * Written only while the selection isn't ours, so a re-apply never overwrites it.
- */
-function selectionPath(filePath: string): string {
-  return `${filePath}.antseed.selection.json`;
-}
-
-function readSelection(filePath: string): JsonObject {
-  try {
-    return tryReadConfigPatchFile(selectionPath(filePath)) ?? {};
-  } catch {
-    return {};
-  }
-}
-
-function rememberSelection(filePath: string, selection: JsonObject): void {
-  if (Object.keys(selection).length > 0) {
-    writeJsonFile(selectionPath(filePath), selection);
-  } else {
-    rmSync(selectionPath(filePath), { force: true });
-  }
-}
-
-/**
- * Drops the saved selection once the restored config is written. A disconnect
- * reads it first and forgets it last, so a failed write keeps it for a retry.
- */
-function forgetSelection(filePath: string): void {
-  rmSync(selectionPath(filePath), { force: true });
 }
 
 function pickKeys(source: JsonObject, keys: readonly string[]): JsonObject {
@@ -971,20 +792,6 @@ function removeOpencodeProviderFromFile(filePath: string, patch: OpencodeConfigP
   forgetSelection(filePath);
   return changed;
 }
-
-function writeTextFile(filePath: string, content: string): void {
-  const dir = path.dirname(filePath);
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-  }
-  writePrivateFile(filePath, content);
-}
-
-// --- Droid CLI + Factory Desktop (`~/.factory/settings.json`) ---
-//
-// Both clients watch this file and share its `customModels` catalog. The
-// sidecar remembers only the fields Antseed temporarily owns so disconnect
-// can restore the user's prior default without rolling back unrelated edits.
 
 type DroidPatchState = {
   readonly version: 1 | 2;
@@ -1739,57 +1546,7 @@ function removeCrushProviderFromFile(filePath: string, patch: CrushConfigPatchDe
   return true;
 }
 
-// --- goose (`~/.config/goose/config.yaml`) ---
-//
-// goose config is flat env-style YAML keys (GOOSE_PROVIDER, GOOSE_MODEL,
-// OPENAI_HOST, ...), edited line-based so user keys and comments survive.
-// OPENAI_HOST is the host root — goose appends the /v1 chat path itself.
-// The api key normally lives in the OS keyring; the config-file value covers
-// keyring-less setups, and the buyer proxy ignores the credential anyway.
-
-function yamlScalar(value: string): string {
-  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
-}
-
-function yamlTopLevelKeyIndex(lines: readonly string[], key: string): number {
-  const pattern = new RegExp(`^${key}\\s*:`);
-  return lines.findIndex((line) => pattern.test(line));
-}
-
-function setYamlTopLevelString(lines: readonly string[], key: string, value: string): string[] {
-  const assignment = `${key}: ${yamlScalar(value)}`;
-  const index = yamlTopLevelKeyIndex(lines, key);
-  if (index !== -1) {
-    const next = [...lines];
-    next[index] = assignment;
-    return next;
-  }
-  return [...lines, assignment];
-}
-
-function readYamlTopLevelString(lines: readonly string[], key: string): string | undefined {
-  const index = yamlTopLevelKeyIndex(lines, key);
-  if (index === -1) return undefined;
-  const raw = lines[index]!.slice(lines[index]!.indexOf(':') + 1).trim();
-  const quoted = raw.match(/^"((?:[^"\\]|\\.)*)"/) ?? raw.match(/^'([^']*)'/);
-  if (quoted) return quoted[1]!.replace(/\\(.)/g, '$1');
-  return raw.split('#')[0]!.trim();
-}
-
-function removeYamlTopLevelKey(lines: readonly string[], key: string): string[] {
-  const index = yamlTopLevelKeyIndex(lines, key);
-  if (index === -1) return [...lines];
-  return [...lines.slice(0, index), ...lines.slice(index + 1)];
-}
-
-/** True for host values only this patch would have written: a loopback root,
-    or one of the WSL-reachable hosts a recorded target carries. */
-function isLoopbackHost(value: string | undefined, extraHosts: readonly string[] = []): boolean {
-  if (!value) return false;
-  if (/^https?:\/\/(localhost|127\.0\.0\.1):\d+\/?$/.test(value)) return true;
-  return extraHosts.some((host) =>
-    new RegExp(`^https?://${host.replace(/[.$]/g, '\\$&')}:\\d+/?$`).test(value));
-}
+// --- goose (`~/.config/goose/config.yaml`): the writer lives in config-patch/goose.ts ---
 
 function applyGooseConfigPatch(patch: GooseConfigPatchDef, t: ResolvedTarget, wslTargetsFile?: string): void {
   const filePath = expandTilde(patch.configPath);
@@ -1809,177 +1566,6 @@ function applyGooseConfigPatch(patch: GooseConfigPatchDef, t: ResolvedTarget, ws
   });
 }
 
-// Gateway patches carry a real key and plain model ids, so the legacy
-// ownership checks (dummy 'antseed' key, alias model, loopback host) cannot
-// recognize them. A sidecar records the host written and a digest of the key.
-type GoosePatchState = { readonly version: 1; readonly host: string; readonly apiKeySha256: string };
-
-function goosePatchStatePath(filePath: string): string {
-  return `${filePath}.antseed.state.json`;
-}
-
-function readGoosePatchState(filePath: string): GoosePatchState | null {
-  let state: JsonObject | null;
-  try {
-    state = tryReadConfigPatchFile(goosePatchStatePath(filePath));
-  } catch {
-    return null;
-  }
-  if (!state || state['version'] !== 1 || typeof state['host'] !== 'string' || typeof state['apiKeySha256'] !== 'string') {
-    return null;
-  }
-  return { version: 1, host: state['host'], apiKeySha256: state['apiKeySha256'] };
-}
-
-function deleteGoosePatchState(filePath: string): void {
-  try {
-    unlinkSync(goosePatchStatePath(filePath));
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
-  }
-}
-
-/**
- * Goose reads API keys from its keyring, never from config.yaml. A custom
- * provider carries the key as a header, and is the only place that takes a
- * list of models.
- */
-const GOOSE_CUSTOM_PROVIDER = 'custom_antseed';
-/** Tells the provider file we wrote from one of the user's under the same name. */
-const GOOSE_CUSTOM_PROVIDER_DESCRIPTION = 'Models on your Antseed gateway';
-
-function gooseCustomProviderPath(filePath: string): string {
-  return path.join(path.dirname(filePath), 'custom_providers', `${GOOSE_CUSTOM_PROVIDER}.json`);
-}
-
-/** Where a provider the user already had under our name waits until disconnect. */
-function savedGooseUserProviderPath(filePath: string): string {
-  return `${filePath}.antseed.custom-provider.json`;
-}
-
-function readGooseCustomProvider(filePath: string): { exists: boolean; ours: boolean; models: unknown[] } {
-  const providerPath = gooseCustomProviderPath(filePath);
-  if (!existsSync(providerPath)) return { exists: false, ours: false, models: [] };
-  try {
-    const provider = tryReadConfigPatchFile(providerPath);
-    const ours = provider?.['description'] === GOOSE_CUSTOM_PROVIDER_DESCRIPTION;
-    return { exists: true, ours, models: ours && Array.isArray(provider?.['models']) ? provider['models'] : [] };
-  } catch {
-    return { exists: true, ours: false, models: [] };
-  }
-}
-
-function saveGooseUserProvider(filePath: string): void {
-  renameSync(gooseCustomProviderPath(filePath), savedGooseUserProviderPath(filePath));
-}
-
-/** Removes the provider only if we wrote it; one the user put there stays. */
-function removeGooseCustomProvider(filePath: string): boolean {
-  if (!readGooseCustomProvider(filePath).ours) return false;
-  unlinkSync(gooseCustomProviderPath(filePath));
-  return true;
-}
-
-function restoreGooseUserProvider(filePath: string): boolean {
-  const saved = savedGooseUserProviderPath(filePath);
-  if (!existsSync(saved)) return false;
-  if (readGooseCustomProvider(filePath).exists) {
-    // The user made a new one while connected, and that one is the current one.
-    unlinkSync(saved);
-    return false;
-  }
-  renameSync(saved, gooseCustomProviderPath(filePath));
-  return true;
-}
-
-function rememberGooseSelection(filePath: string, lines: readonly string[]): void {
-  const selection: JsonObject = {};
-  for (const key of ['GOOSE_PROVIDER', 'GOOSE_MODEL']) {
-    const value = readYamlTopLevelString(lines, key);
-    if (value !== undefined) selection[key] = value;
-  }
-  rememberSelection(filePath, selection);
-}
-
-/** What the old buyer-proxy patch wrote: a dummy key, or our alias or a pinned model. */
-function hasLegacyGooseSignature(apiKey: string | undefined, model: string | undefined): boolean {
-  return apiKey === 'antseed' || model === ROUTED_MODEL_ALIAS || (model?.includes('@') ?? false);
-}
-
-function applyGooseCustomProviderToFile(filePath: string, patch: GooseConfigPatchDef, baseURL: string, t: ResolvedTarget): void {
-  backupConfigFile(filePath);
-  const previous = existsSync(filePath) ? readFileSync(filePath, 'utf8').split('\n') : [];
-  const provider = readYamlTopLevelString(previous, 'GOOSE_PROVIDER');
-  // A pick from an earlier patch (which pointed goose's openai provider at the
-  // gateway) is still the user's. A legacy buyer-proxy patch is ours too, though
-  // its alias isn't a pick: the user's own selection was saved when it was written.
-  const previousModel = readYamlTopLevelString(previous, 'GOOSE_MODEL');
-  const legacyPatch = provider === patch.providerKey
-    && hasLegacyGooseSignature(readYamlTopLevelString(previous, 'OPENAI_API_KEY'), previousModel);
-  const existingProvider = readGooseCustomProvider(filePath);
-  const userProvider = existingProvider.exists && !existingProvider.ours;
-  const owned = (provider === GOOSE_CUSTOM_PROVIDER && !userProvider) || legacyPatch || (provider === patch.providerKey && readGoosePatchState(filePath) !== null);
-  // Model discovery failed for now: the pick and the list stay until it's back.
-  const selected = pickModel(t, owned ? previousModel : undefined) ?? (owned && !legacyPatch ? previousModel : undefined);
-  const models = t.models.length > 0
-    ? t.models.map((model) => ({ name: model.id, context_limit: ANTSEED_MODEL_CONTEXT_WINDOW }))
-    : existingProvider.models;
-  if (!owned) rememberGooseSelection(filePath, previous);
-  if (userProvider) saveGooseUserProvider(filePath);
-  // Only an earlier patch of ours has anything to clean up: a local endpoint the
-  // user set up for goose's own openai provider isn't ours, and stays.
-  if (owned || readGoosePatchState(filePath) !== null || readYamlTopLevelString(previous, 'OPENAI_API_KEY') === 'antseed') {
-    removeGooseProviderFromFile(filePath, patch, [], { keepSelection: true });
-  }
-  let lines = existsSync(filePath) ? readFileSync(filePath, 'utf8').split('\n') : [];
-  while (lines.length > 0 && lines[lines.length - 1]!.trim() === '') lines.pop();
-  lines = setYamlTopLevelString(lines, 'GOOSE_PROVIDER', GOOSE_CUSTOM_PROVIDER);
-  if (selected) lines = setYamlTopLevelString(lines, 'GOOSE_MODEL', selected);
-  // The provider first: if it can't be written, goose still selects what it
-  // had, rather than a provider that doesn't exist.
-  writeJsonFile(gooseCustomProviderPath(filePath), {
-    name: GOOSE_CUSTOM_PROVIDER,
-    engine: 'openai',
-    display_name: 'Antseed',
-    description: GOOSE_CUSTOM_PROVIDER_DESCRIPTION,
-    api_key_env: '',
-    base_url: `${baseURL}/v1/chat/completions`,
-    models,
-    headers: { Authorization: `Bearer ${t.apiKey}` },
-    supports_streaming: true,
-    requires_auth: false,
-  });
-  writeTextFile(filePath, `${lines.join('\n')}\n`);
-}
-
-function applyGooseProviderToFile(filePath: string, patch: GooseConfigPatchDef, baseURL: string, t: ResolvedTarget): void {
-  if (!t.legacy) {
-    applyGooseCustomProviderToFile(filePath, patch, baseURL, t);
-    return;
-  }
-  backupConfigFile(filePath);
-  const raw = existsSync(filePath) ? readFileSync(filePath, 'utf8') : '';
-  let lines = raw.length > 0 ? raw.split('\n') : [];
-  while (lines.length > 0 && lines[lines.length - 1]!.trim() === '') lines.pop();
-  const provider = readYamlTopLevelString(lines, 'GOOSE_PROVIDER');
-  // Coming from our gateway provider: the user's own selection was saved when
-  // that was written, and the pick in it is theirs.
-  const fromOurGateway = provider === GOOSE_CUSTOM_PROVIDER && readGooseCustomProvider(filePath).ours;
-  const ownedSelection = provider === patch.providerKey || fromOurGateway
-    ? readYamlTopLevelString(lines, 'GOOSE_MODEL')
-    : undefined;
-  const selected = pickModel(t, ownedSelection);
-  if (provider !== patch.providerKey && !fromOurGateway) rememberGooseSelection(filePath, lines);
-  lines = setYamlTopLevelString(lines, 'GOOSE_PROVIDER', patch.providerKey);
-  if (selected) lines = setYamlTopLevelString(lines, 'GOOSE_MODEL', selected);
-  lines = setYamlTopLevelString(lines, 'OPENAI_HOST', baseURL);
-  lines = setYamlTopLevelString(lines, 'OPENAI_API_KEY', t.apiKey);
-  writeTextFile(filePath, `${lines.join('\n')}\n`);
-  // Only once nothing selects it any more.
-  if (fromOurGateway) removeGooseCustomProvider(filePath);
-  deleteGoosePatchState(filePath);
-}
-
 function removeGooseConfigPatch(patch: GooseConfigPatchDef, wslTargetsFile?: string): boolean {
   let changed = removeGooseProviderFromFile(expandTilde(patch.configPath), patch, []);
   if (patch.installProbe === 'goose') {
@@ -1988,72 +1574,6 @@ function removeGooseConfigPatch(patch: GooseConfigPatchDef, wslTargetsFile?: str
     changed = removeWslInstalls('goose', wslTargetsFile, (target) => removeGooseProviderFromFile(target.configPath, patch, [target.host])) || changed;
   }
   return changed;
-}
-
-function removeGooseProviderFromFile(
-  filePath: string,
-  patch: GooseConfigPatchDef,
-  extraHosts: readonly string[],
-  { keepSelection = false }: { keepSelection?: boolean } = {},
-): boolean {
-  if (!existsSync(filePath)) return false;
-  let lines = readFileSync(filePath, 'utf8').split('\n');
-  const state = readGoosePatchState(filePath);
-  const provider = readGooseCustomProvider(filePath);
-  // A refresh keeps our provider and its selection: the replacement overwrites
-  // them, and a failed write in between must leave goose working.
-  let changed = keepSelection ? false : removeGooseCustomProvider(filePath);
-  // Selecting a provider of the user's own under that name isn't our patch.
-  if (!keepSelection && readYamlTopLevelString(lines, 'GOOSE_PROVIDER') === GOOSE_CUSTOM_PROVIDER && (provider.ours || !provider.exists)) {
-    lines = removeYamlTopLevelKey(lines, 'GOOSE_PROVIDER');
-    lines = removeYamlTopLevelKey(lines, 'GOOSE_MODEL');
-    changed = true;
-  }
-  const host = readYamlTopLevelString(lines, 'OPENAI_HOST');
-  const ownsGatewayHost = state !== null && host === state.host;
-  const apiKey = readYamlTopLevelString(lines, 'OPENAI_API_KEY');
-  const legacyModel = readYamlTopLevelString(lines, 'GOOSE_MODEL');
-  // The buyer-proxy patch wrote a loopback host with a dummy key and an alias
-  // model. A loopback host without those is the user's own local server.
-  const legacyProxyPatch = hasLegacyGooseSignature(apiKey, legacyModel);
-  if ((isLoopbackHost(host, extraHosts) && legacyProxyPatch) || ownsGatewayHost) {
-    lines = removeYamlTopLevelKey(lines, 'OPENAI_HOST');
-    changed = true;
-  }
-  if (apiKey === 'antseed' || (state !== null && apiKey !== undefined && sha256Hex(apiKey) === state.apiKeySha256)) {
-    lines = removeYamlTopLevelKey(lines, 'OPENAI_API_KEY');
-    changed = true;
-  }
-  const model = readYamlTopLevelString(lines, 'GOOSE_MODEL');
-  // A gateway-written provider still pointing at the recorded host is ours
-  // whatever model the user picked in goose since.
-  const ownsModel = model === ROUTED_MODEL_ALIAS || (model?.includes('@') ?? false) || ownsGatewayHost;
-  if (readYamlTopLevelString(lines, 'GOOSE_PROVIDER') === patch.providerKey && ownsModel) {
-    lines = removeYamlTopLevelKey(lines, 'GOOSE_PROVIDER');
-    lines = removeYamlTopLevelKey(lines, 'GOOSE_MODEL');
-    changed = true;
-  }
-  if (!keepSelection) {
-    // The user's own provider comes back only after the write below, so a failed write can be retried.
-    const restoresProvider = existsSync(savedGooseUserProviderPath(filePath)) && !readGooseCustomProvider(filePath).exists;
-    changed = restoresProvider || changed;
-    const saved = readSelection(filePath);
-    if (changed && readYamlTopLevelString(lines, 'GOOSE_PROVIDER') === undefined) {
-      for (const key of ['GOOSE_PROVIDER', 'GOOSE_MODEL']) {
-        if (typeof saved[key] === 'string') lines = setYamlTopLevelString(lines, key, saved[key]);
-      }
-    }
-  }
-  if (changed) {
-    backupConfigFile(filePath);
-    while (lines.length > 0 && lines[lines.length - 1]!.trim() === '') lines.pop();
-    writeTextFile(filePath, lines.length > 0 ? `${lines.join('\n')}\n` : '');
-  }
-  // Only after the write, so a failed one can be retried with them.
-  if (!keepSelection) restoreGooseUserProvider(filePath);
-  if (state) deleteGoosePatchState(filePath);
-  if (!keepSelection) forgetSelection(filePath);
-  return changed || state !== null;
 }
 
 // --- Hermes Agent (`~/.hermes/config.yaml`) ---

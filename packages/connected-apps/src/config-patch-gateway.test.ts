@@ -241,7 +241,7 @@ test('goose: gateway patch is a custom provider with the key and every model', a
   });
 });
 
-test('goose: a refresh whose config write fails leaves goose on a provider that exists', async () => {
+test('goose: a refresh whose config write fails puts the provider back, matching the kept selection', async () => {
   await withDir(async (dir) => {
     const configPath = path.join(dir, 'config.yaml');
     const providerPath = path.join(dir, 'custom_providers', 'custom_antseed.json');
@@ -254,11 +254,12 @@ test('goose: a refresh whose config write fails leaves goose on a provider that 
     const config = parse(await readFile(configPath, 'utf8')) as Record<string, unknown>;
     assert.equal(config['GOOSE_PROVIDER'], 'custom_antseed');
     assert.equal(config['GOOSE_MODEL'], 'kimi-k2');
-    // Goose still selects a provider that exists (the provider file is written
-    // first, so it already carries the new gateway and key).
+    // The provider went back with the config: the old gateway, key and models
+    // still match the model goose selects.
     const provider = JSON.parse(await readFile(providerPath, 'utf8'));
-    assert.equal(provider.base_url, 'https://other.example.com/v1/chat/completions');
-    assert.equal(provider.headers.Authorization, 'Bearer antseed_other_key');
+    assert.equal(provider.base_url, 'https://gw.example.com/v1/chat/completions');
+    assert.equal(provider.headers.Authorization, `Bearer ${KEY}`);
+    assert.ok(provider.models.some((model: { name: string }) => model.name === 'kimi-k2'));
     assert.equal(removeConfigPatch(patch), true);
     assert.deepEqual(parse(await readFile(configPath, 'utf8')), { keep_me: true });
     assert.equal(existsSync(providerPath), false);
