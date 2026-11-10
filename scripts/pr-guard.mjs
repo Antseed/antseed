@@ -64,6 +64,9 @@ export function parseDiff(diff) {
       continue;
     } else if (raw.startsWith('new file mode')) {
       file.status = 'added';
+      file.symlink = raw.endsWith(' 120000');
+    } else if (raw.startsWith('new mode')) {
+      file.symlink = raw.endsWith(' 120000');
     } else if (raw.startsWith('deleted file mode')) {
       file.status = 'deleted';
     } else if (raw.startsWith('rename to ')) {
@@ -177,8 +180,13 @@ export function review({ files, readJson, base, head, external }) {
     if (/(^|\/)package\.json$/.test(file.path)) {
       const before = file.status === 'added' ? null : readJson(base, file.path);
       const after = readJson(head, file.path);
-      (external ? failures : warnings).push(...installScriptChanges(file.path, before, after));
-      warnings.push(...dependencyChanges(file.path, before, after));
+      if (file.symlink || after === null) {
+        // A manifest the guard can't read can't be checked: a symlink, or a file that isn't JSON.
+        (external ? failures : warnings).push({ path: file.path, message: `${file.symlink ? 'is a symlink' : 'is not valid JSON'}, so its install scripts can't be checked` });
+      } else {
+        (external ? failures : warnings).push(...installScriptChanges(file.path, before, after));
+        warnings.push(...dependencyChanges(file.path, before, after));
+      }
     }
     const area = sensitiveArea(file.path);
     if (area) warnings.push({ path: file.path, message: `changes ${area}` });

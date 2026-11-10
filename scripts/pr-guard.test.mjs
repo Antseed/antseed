@@ -85,3 +85,16 @@ test('removing the install-script allowlist is reported', () => {
   assert.deepEqual(out.map((c) => c.message), ['removes pnpm.onlyBuiltDependencies, so every dependency could run install scripts']);
   assert.deepEqual(installScriptChanges('package.json', { pnpm: { onlyBuiltDependencies: ['a', 'b'] } }, { pnpm: { onlyBuiltDependencies: ['a'] } }), []);
 });
+
+test('a manifest the guard cannot read fails for outside authors', () => {
+  const linked = parseDiff(['diff --git a/x/package.json b/x/package.json', 'new file mode 120000', '--- /dev/null',
+    '+++ b/x/package.json', '@@ -0,0 +1 @@', '+../evil.json'].join('\n'));
+  assert.equal(linked[0].symlink, true);
+  const outside = review({ files: linked, readJson: () => null, base: 'b', head: 'h', external: true });
+  assert.deepEqual(outside.failures.map((f) => f.message), ["is a symlink, so its install scripts can't be checked"]);
+  const broken = parseDiff(['diff --git a/package.json b/package.json', '--- a/package.json', '+++ b/package.json',
+    '@@ -1 +1 @@', '+{ not json'].join('\n'));
+  const team = review({ files: broken, readJson: () => null, base: 'b', head: 'h', external: false });
+  assert.equal(team.failures.length, 0);
+  assert.ok(team.warnings.some((w) => w.message === "is not valid JSON, so its install scripts can't be checked"));
+});
