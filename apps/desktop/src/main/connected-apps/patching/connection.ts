@@ -72,7 +72,7 @@ function removeRetiredAppPatches(): void {
   const firstLaunchAfterUpdate = !existsSync(connectedAppsStatePath());
   const retired = [
     ...RETIRED_APP_PROFILES.map((raw, index) => normalizeDesktopSystemProxyProfile(raw, index)),
-    ...(firstLaunchAfterUpdate ? retiredDesktopProfiles() : []),
+    ...(firstLaunchAfterUpdate ? retiredDesktopProfiles(readLegacyDesktopConnected()) : []),
   ];
   retired.forEach((profile) => {
     if (!profile.configPatch) return;
@@ -106,6 +106,15 @@ function serialized<T>(task: () => Promise<T>): Promise<T> {
     if (shuttingDown) throw new Error('Antseed Desktop is closing');
     return task();
   });
+}
+
+/** The apps the old system-proxy desktop had connected, as its saved state lists them. */
+function readLegacyDesktopConnected(): string[] {
+  try {
+    return readStringArray((JSON.parse(readFileSync(legacyDesktopStatePath(), 'utf8')) as Record<string, unknown>)['activeProfileNames']);
+  } catch {
+    return [];
+  }
 }
 
 /** connected-apps.json, else (first launch after the update) the config-patched apps the old system-proxy state had connected. */

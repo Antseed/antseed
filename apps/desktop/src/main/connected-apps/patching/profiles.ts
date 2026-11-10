@@ -41,9 +41,13 @@ const SYSTEM_PROXY_PROFILES: readonly DesktopSystemProxyProfile[] = DEFAULT_APP_
  */
 const NOT_CONNECTED_BY_DESKTOP: ReadonlySet<string> = new Set(['claude-code']);
 
-/** Apps the desktop stopped connecting; a patch from an earlier version gets removed. */
-export function retiredDesktopProfiles(): DesktopSystemProxyProfile[] {
-  return SYSTEM_PROXY_PROFILES.filter((profile) => NOT_CONNECTED_BY_DESKTOP.has(profile.name));
+/**
+ * Apps the desktop stopped connecting whose patch an earlier desktop made
+ * (`connectedByOldDesktop`: the names its saved state lists). The CLI writes
+ * the same patch, so one the old desktop didn't make is the CLI's to keep.
+ */
+export function retiredDesktopProfiles(connectedByOldDesktop: readonly string[]): DesktopSystemProxyProfile[] {
+  return SYSTEM_PROXY_PROFILES.filter((profile) => NOT_CONNECTED_BY_DESKTOP.has(profile.name) && connectedByOldDesktop.includes(profile.name));
 }
 
 /** A profile the desktop connects by patching the app's own config. */

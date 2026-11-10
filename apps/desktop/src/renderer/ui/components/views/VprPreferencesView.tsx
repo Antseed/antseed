@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
 import { ArrowUpRight01Icon, Moon02Icon, Sun02Icon } from '@hugeicons/core-free-icons';
-import { Button, Segmented, TextField } from '@antseed/ui';
+import { Button, Modal, Segmented, TextField } from '@antseed/ui';
 import { activeThemeMode, applyThemeMode, type ThemeMode } from '../../lib/theme';
 import type { TelemetryStatus } from '../../../../shared/telemetry';
 import type { GatewayKeyMode, GatewayMode, GatewaySettings, GatewaySettingsPatch } from '../../../types/bridge';
@@ -69,10 +69,12 @@ function GatewaySection() {
     }
   };
 
+  // Asked in the app's own dialog: Electron has no native confirm().
+  const [confirmingRotate, setConfirmingRotate] = useState(false);
   const rotate = async () => {
+    setConfirmingRotate(false);
     const bridge = window.antseedDesktop;
     if (!bridge?.gatewayRotateKeys) return;
-    if (!window.confirm('Replace the desktop’s API keys? The old keys stop working, and connected apps get the new ones (running apps restart).')) return;
     setBusy('rotate');
     setMessage(null);
     try {
@@ -182,7 +184,7 @@ function GatewaySection() {
             Manage API keys
           </Button>
           {current === 'local' ? (
-            <Button variant="ghost" size="sm" disabled={busy !== null} onClick={() => { void rotate(); }}>
+            <Button variant="ghost" size="sm" disabled={busy !== null} onClick={() => setConfirmingRotate(true)}>
               {busy === 'rotate' ? 'Replacing…' : 'Replace keys'}
             </Button>
           ) : null}
@@ -192,6 +194,20 @@ function GatewaySection() {
         ) : null}
         {message ? <p className={styles.formNote} role="status">{message}</p> : null}
       </VprCard>
+      <Modal
+        isOpen={confirmingRotate}
+        onClose={() => setConfirmingRotate(false)}
+        size="sm"
+        title="Replace the desktop’s API keys?"
+        footer={(
+          <>
+            <Button variant="ghost" onClick={() => setConfirmingRotate(false)}>Cancel</Button>
+            <Button onClick={() => { void rotate(); }}>Replace keys</Button>
+          </>
+        )}
+      >
+        <p className={styles.formNote}>The old keys stop working, and connected apps get the new ones (running apps restart).</p>
+      </Modal>
     </div>
   );
 }

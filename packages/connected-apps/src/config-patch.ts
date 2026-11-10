@@ -1065,10 +1065,10 @@ function droidEntryId(value: unknown): unknown {
 
 /** A customModels entry Antseed wrote: the legacy alias entry (by `model`)
     or a gateway entry whose `id` the sidecar recorded. */
-function isManagedDroidModel(value: unknown, patch: DroidConfigPatchDef, managedIds: readonly string[]): boolean {
+function isManagedDroidModel(value: unknown, patch: DroidConfigPatchDef, managedIds: ReadonlySet<string>): boolean {
   if (isDroidModel(value, patch.providerKey)) return true;
   const id = droidEntryId(value);
-  return typeof id === 'string' && managedIds.includes(id);
+  return typeof id === 'string' && managedIds.has(id);
 }
 
 /** Droid's `custom:` namespace resolves ids through customModels; the index
@@ -1139,11 +1139,13 @@ function applyDroidModelToFile(filePath: string, patch: DroidConfigPatchDef, bas
       apiKey: t.apiKey,
     }));
   const newIds = entries.map((entry) => entry.id);
+  // Membership is checked per model; a gateway can list hundreds.
+  const newIdSet = new Set(newIds);
 
   if (!state) {
     const conflict = customModels.find((model) => {
       const id = droidEntryId(model);
-      return isDroidModel(model, patch.providerKey) || (typeof id === 'string' && newIds.includes(id));
+      return isDroidModel(model, patch.providerKey) || (typeof id === 'string' && newIdSet.has(id));
     });
     if (conflict) {
       throw new Error(
@@ -1152,11 +1154,12 @@ function applyDroidModelToFile(filePath: string, patch: DroidConfigPatchDef, bas
     }
   }
   const managedIds = state?.managedModelIds ?? [];
+  const managedIdSet = new Set(managedIds);
   // Model discovery failed for now: the selection still names our entries, so
   // keep them rather than lose the way back to the user's own default. They
   // still move to the current gateway and key.
   if (state && !t.legacy && newIds.length === 0) {
-    config['customModels'] = customModels.map((model) => (isManagedDroidModel(model, patch, managedIds)
+    config['customModels'] = customModels.map((model) => (isManagedDroidModel(model, patch, managedIdSet)
       ? { ...(model as JsonObject), baseUrl: baseURL, apiKey: t.apiKey, ...headerFields }
       : model));
     writeJsonFile(filePath, config);
@@ -1192,8 +1195,9 @@ function applyDroidModelToFile(filePath: string, patch: DroidConfigPatchDef, bas
   // The selection is an entry id; map it back to the model it named so a
   // model the user picked in Droid survives the rewrite.
   const currentId = existingSessionDefaultSettings?.['model'];
+  const recognizedIdSet = new Set([...managedIds, ...newIds]);
   const previousEntry = customModels.find((model) => droidEntryId(model) === currentId
-    && isManagedDroidModel(model, patch, [...managedIds, ...newIds]));
+    && isManagedDroidModel(model, patch, recognizedIdSet));
   const previousModel = previousEntry ? (previousEntry as JsonObject)['model'] : undefined;
   let selectedId: string | undefined;
   if (t.legacy) {
@@ -1205,9 +1209,9 @@ function applyDroidModelToFile(filePath: string, patch: DroidConfigPatchDef, bas
 
   config['customModels'] = [
     ...customModels.filter((model) => {
-      if (isManagedDroidModel(model, patch, managedIds)) return false;
+      if (isManagedDroidModel(model, patch, managedIdSet)) return false;
       const id = droidEntryId(model);
-      return !(typeof id === 'string' && newIds.includes(id));
+      return !(typeof id === 'string' && newIdSet.has(id));
     }),
     ...entries,
   ];
@@ -1243,7 +1247,8 @@ function removeDroidModelFromFile(filePath: string, patch: DroidConfigPatchDef):
   let changed = false;
   const customModels = config['customModels'];
   if (Array.isArray(customModels)) {
-    const filtered = customModels.filter((model) => !isManagedDroidModel(model, patch, state.managedModelIds));
+    const managed = new Set(state.managedModelIds);
+    const filtered = customModels.filter((model) => !isManagedDroidModel(model, patch, managed));
     if (filtered.length !== customModels.length) {
       if (filtered.length === 0 && !state.customModelsPresent) delete config['customModels'];
       else config['customModels'] = filtered;
