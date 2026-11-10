@@ -4,7 +4,8 @@ import Foundation
 import Security
 
 /// The model this Mac serves, running on the bundled TensorFold engine: a
-/// separate process on a private loopback port, behind a key made fresh for each launch.
+/// separate process on an owner-only Unix socket (never a network port), behind
+/// a key made fresh for each launch.
 actor LocalModel {
     /// Prompt plus reply tokens the engine is started with.
     static let contextTokens = 8192
@@ -17,9 +18,7 @@ actor LocalModel {
     let engine: URL
     let directory: URL
     private var server: Process?
-    private var baseURL: URL?
-    private var apiKey = ""
-    private let session: URLSession
+    private var socket: EngineSocket?
 
     struct Result {
         let text: String
@@ -55,11 +54,6 @@ actor LocalModel {
         self.modelId = modelId
         self.engine = engine
         self.directory = directory
-        let configuration = URLSessionConfiguration.ephemeral
-        // Decrypted prompts go straight to the engine, never through a system proxy.
-        configuration.connectionProxyDictionary = [:]
-        configuration.timeoutIntervalForRequest = 300
-        session = URLSession(configuration: configuration)
     }
 
     /// The checkpoint a worker attests it serves: `repo@revision` and the digest of its files.
@@ -154,8 +148,9 @@ actor LocalModel {
         body["temperature"] = temperature
         body["stream"] = true
         body["stream_options"] = ["include_usage": true]
-        let (bytes, response) = try await session.bytes(for: try request("/v1/chat/completions", body: body))
-        try Self.requireOK(response)
+        let reply = try await request("/v1/chat/completions", body: body)
+        defer { reply.close() }
+        try Self.requireOK(reply.status)
 
         var text = ""
         var toolCalls = EngineChat.ToolCalls()
@@ -163,7 +158,7 @@ actor LocalModel {
         var usage: (prompt: Int, completion: Int)?
         var tokensPerSecond = 0.0
         // Disconnecting (a cancelled task ends this loop) cancels the request in the engine.
-        for try await line in bytes.lines {
+        while let line = try await reply.nextLine() {
             try Task.checkCancellation()
             guard let event = EngineChat.parseEvent(line) else { continue }
             if let piece = event.content, !piece.isEmpty {
@@ -241,8 +236,10 @@ actor LocalModel {
         guard let snapshot else { throw EngineError.failed("Model not loaded") }
         server?.terminate()
         Self.stopEngine(in: directory, engine: engine)
-        let port = try Self.freeLoopbackPort()
-        apiKey = try Self.randomKey()
+        if let old = socket?.path { unlink(old) }
+        socket = nil
+        let socketPath = try Self.newSocketPath()
+        let apiKey = try Self.randomKey()
         let keyFile = directory.appendingPathComponent("engine.key")
         try? FileManager.default.removeItem(at: keyFile)
         guard FileManager.default.createFile(atPath: keyFile.path, contents: Data(apiKey.utf8), attributes: [.posixPermissions: 0o600]) else {
@@ -256,8 +253,8 @@ actor LocalModel {
         process.currentDirectoryURL = directory
         process.arguments = [
             "serve", snapshot.path,
-            "--host", "127.0.0.1",
-            "--port", String(port),
+            // Owner-only, and no TCP port at all: decrypted prompts never cross a network interface.
+            "--unix-socket", socketPath,
             "--api-key-file", keyFile.path,
             "--name", Self.servedName,
             "--context", String(Self.contextTokens),
@@ -271,14 +268,19 @@ actor LocalModel {
         try process.run()
         server = process
         try String(process.processIdentifier).write(to: directory.appendingPathComponent(Self.pidFile), atomically: true, encoding: .utf8)
-        baseURL = URL(string: "http://127.0.0.1:\(port)")
+        let candidate = EngineSocket(path: socketPath, enginePID: process.processIdentifier, apiKey: apiKey)
 
         for _ in 0..<600 {
             guard process.isRunning else { break }
-            var probe = URLRequest(url: baseURL!.appendingPathComponent("v1/models"))
-            probe.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-            probe.timeoutInterval = 2
-            if let (_, response) = try? await session.data(for: probe), (response as? HTTPURLResponse)?.statusCode == 200 { return }
+            var probe = candidate
+            probe.timeout = 2
+            if let reply = try? await probe.send("GET", "/v1/models") {
+                reply.close()
+                if reply.status == 200 {
+                    socket = candidate
+                    return
+                }
+            }
             try await Task.sleep(nanoseconds: 200_000_000)
         }
         process.terminate()
@@ -289,47 +291,35 @@ actor LocalModel {
         // The tools render into the prompt too.
         var body: [String: Any] = ["model": Self.servedName, "messages": chat["messages"] ?? [Any]()]
         if let tools = chat["tools"] { body["tools"] = tools }
-        let (data, response) = try await session.data(for: try request("/v1/tokenize", body: body))
-        try Self.requireOK(response)
-        guard let count = (try JSONSerialization.jsonObject(with: data) as? [String: Any])?["count"] as? Int else {
+        let reply = try await request("/v1/tokenize", body: body)
+        defer { reply.close() }
+        try Self.requireOK(reply.status)
+        guard let count = (try JSONSerialization.jsonObject(with: try await reply.data()) as? [String: Any])?["count"] as? Int else {
             throw EngineError.failed("The engine did not count the prompt")
         }
         return count
     }
 
-    private func request(_ path: String, body: [String: Any]) throws -> URLRequest {
-        guard let baseURL else { throw EngineError.failed("Model not loaded") }
-        var request = URLRequest(url: baseURL.appendingPathComponent(path))
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        return request
+    private func request(_ path: String, body: [String: Any]) async throws -> EngineSocket.Reply {
+        guard let socket else { throw EngineError.failed("Model not loaded") }
+        return try await socket.send("POST", path, body: try JSONSerialization.data(withJSONObject: body))
     }
 
     /// The engine's error body may quote the prompt and this error reaches the
     /// pool, so only the status is passed on.
-    private static func requireOK(_ response: URLResponse) throws {
-        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+    private static func requireOK(_ status: Int) throws {
         guard status == 200 else { throw EngineError.failed("The engine refused the request (HTTP \(status))") }
     }
 
-    private static func freeLoopbackPort() throws -> Int {
-        let fd = socket(AF_INET, SOCK_STREAM, 0)
-        guard fd >= 0 else { throw EngineError.failed("Could not find a free port") }
-        defer { close(fd) }
-        var address = sockaddr_in()
-        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-        address.sin_family = sa_family_t(AF_INET)
-        address.sin_addr.s_addr = inet_addr("127.0.0.1")
-        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
-        let found = withUnsafeMutablePointer(to: &address) { pointer in
-            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { generic in
-                bind(fd, generic, length) == 0 && getsockname(fd, generic, &length) == 0
-            }
+    /// A new socket path in this user's temporary directory, which only this user
+    /// can enter and whose path fits a socket address (104 bytes), unlike a long data directory.
+    static func newSocketPath() throws -> String {
+        var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
+        guard confstr(_CS_DARWIN_USER_TEMP_DIR, &buffer, buffer.count) > 0 else {
+            throw EngineError.failed("Could not find this user's temporary directory")
         }
-        guard found else { throw EngineError.failed("Could not find a free port") }
-        return Int(in_port_t(bigEndian: address.sin_port))
+        let directory = URL(fileURLWithPath: String(cString: buffer), isDirectory: true).resolvingSymlinksInPath()
+        return directory.appendingPathComponent("antseed-engine-\(try randomKey().prefix(12)).sock").path
     }
 
     private static func randomKey() throws -> String {

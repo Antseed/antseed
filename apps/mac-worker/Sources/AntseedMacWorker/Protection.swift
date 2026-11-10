@@ -94,8 +94,9 @@ enum Protection {
         let keyAppBound: Bool
 
         /// False while decrypted prompts leave this app for the TensorFold engine:
-        /// the app's protections don't cover that process, and the Mac's owner can
-        /// read its loopback traffic. Set true only once inference runs in the app.
+        /// they reach it over an owner-only Unix socket, not the network, but the
+        /// app's protections don't cover that process, so the Mac's owner can read
+        /// its memory. Set true only once inference runs in the app.
         static let promptsStayInApp = false
 
         /// What pools and buyers that require attestation accept.

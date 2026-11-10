@@ -7,15 +7,15 @@
 #   NOTARY_PROFILE=name                                    notarize (xcrun notarytool keychain profile) and staple
 #
 # Without SIGN_IDENTITY the app is ad-hoc signed. Every build attests not hardened for now:
-# decrypted prompts reach the bundled TensorFold engine over loopback (docs/protocol/colony-pool.md).
+# decrypted prompts leave the app for the bundled TensorFold engine (docs/protocol/colony-pool.md).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 BUNDLE_ID=com.antseed.macworker
 APP="${OUT:-build/Antseed Worker.app}"
 # The inference engine (https://github.com/ashhart/TensorFold), pinned by hash.
-TENSORFOLD_VERSION=1.2.3
-TENSORFOLD_SHA256=760a517dea45f83fc30257dc02921bf9c79fc7086f4e17e90fba2aaa510e3906
+TENSORFOLD_VERSION=1.2.6
+TENSORFOLD_SHA256=4b50317bfdc00cd34a2c43d02f06eefbdd537b847747bcfa0f6cef6d19386751
 
 swift build -c release --arch arm64 --product AntseedMacWorker
 PRODUCTS=$(swift build -c release --arch arm64 --show-bin-path)

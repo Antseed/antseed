@@ -403,9 +403,11 @@ that it will pay.
 ## Hardened Macs
 
 The Antseed Mac app runs models on the bundled TensorFold engine, a separate
-process it reaches over loopback. The decrypted prompt therefore leaves the app:
-the Mac's owner can read loopback traffic, and the app's protections below
-don't cover the engine. **Every current build attests `debuggerDenied: false`,
+process it reaches over an owner-only Unix socket, with no TCP port, and only
+after checking that the process on the other end is the engine it started. The
+decrypted prompt therefore never crosses a network interface, but it still
+leaves the app: the app's protections below don't cover the engine, so the
+Mac's owner can read its memory. **Every current build attests `debuggerDenied: false`,
 so it is not hardened** and never gets the hardened label. The rest of this section describes what the app enforces and what a build
 that keeps inference inside the app would attest.
 
