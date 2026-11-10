@@ -425,9 +425,18 @@ export function createVerifierClient(config: AntseedConfig, overrides?: CryptoCo
     ...(crypto.verificationResultsAddress ? { resultsAddress: crypto.verificationResultsAddress } : {}),
     evmChainId: crypto.evmChainId,
     logQueryChunkBlocks: VERIFIER_LOG_QUERY_CHUNK_BLOCKS,
+    receiptWaitLimitMs: VERIFIER_RECEIPT_WAIT_LIMIT_MS,
     ...(crypto.verificationDeployBlock !== undefined ? { deploymentBlock: crypto.verificationDeployBlock } : {}),
   });
 }
+
+/**
+ * Longest `verifier submit` waits for one audit's transaction to mine. Base mines every 2 s and a
+ * stalled transaction is re-sent with higher fees up to four times in its first two minutes, so one
+ * still pending after 10 minutes is stuck. Without a limit the submit, and the `verifier watch` tick
+ * running it, waited forever. The next submit sends nothing while it is pending.
+ */
+export const VERIFIER_RECEIPT_WAIT_LIMIT_MS = 10 * 60_000
 
 /**
  * Create a DepositRelayClient from the CLI config.

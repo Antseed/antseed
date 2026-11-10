@@ -65,3 +65,55 @@ test('any other failed submission keeps its reason and says it is retried', asyn
   assert.match(text, /^submission failed \(continuing\): execution reverted: NotApprovedAuditor\(\)\./)
   assert.match(text, /tries again/)
 })
+
+test('a transaction sent but not mined says it is not sent again while pending', async () => {
+  const { describeSubmissionFailure } = await import('./submit.js')
+  const { ReceiptWaitTimeoutError } = await import('@antseed/node/payments')
+  const text = describeSubmissionFailure(new ReceiptWaitTimeoutError(['0x01', '0x02'], 600_000))
+  assert.match(text, /^sent \(0x02\) but not mined within 10 min/)
+  assert.match(text, /Nothing is sent again while it is pending/)
+  assert.doesNotMatch(text, /unknown whether the transaction was sent/)
+})
+
+test('a wallet with a transaction still pending is told apart from one whose last transaction just mined', async () => {
+  const { pendingTransactionCount } = await import('./submit.js')
+  const counts = (...answers: Array<[number, number] | Error>) => {
+    let read = 0
+    return {
+      provider: {
+        getTransactionCount: async (_address: string, tag: string) => {
+          const answer = answers[Math.min(Math.floor(read++ / 2), answers.length - 1)]!
+          if (answer instanceof Error) throw answer
+          return tag === 'pending' ? answer[0] : answer[1]
+        },
+      },
+    } as never
+  }
+  assert.equal(await pendingTransactionCount(counts([5, 5]), '0x1', 0), 0)
+  assert.equal(await pendingTransactionCount(counts([6, 5], [6, 5]), '0x1', 0), 1)
+  assert.equal(await pendingTransactionCount(counts([6, 5], [6, 6]), '0x1', 0), 0, 'a node a block behind is read again')
+  assert.equal(await pendingTransactionCount(counts(new Error('rpc down')), '0x1', 0), null, 'unreadable is not "nothing pending"')
+})
+
+test('the first submit of an epoch warns once about the last epoch\'s runs that were never submitted', async () => {
+  const { mkdir, mkdtemp, rm, writeFile } = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const { warnUnsentPreviousEpoch } = await import('./submit.js')
+  const dir = await mkdtemp(join(tmpdir(), 'antseed-submit-unsent-'))
+  try {
+    await mkdir(join(dir, 'runs'), { recursive: true })
+    await writeFile(join(dir, 'runs', 'r1.json'), JSON.stringify({
+      kind: 'antseed-verifier-run-manifest', runId: `0x${'c'.repeat(64)}`, epoch: '4', completedAt: '2026-11-01T23:50:00.000Z', models: [],
+    }))
+    const warnings: string[] = []
+    await warnUnsentPreviousEpoch(dir, 5n, (text) => warnings.push(text))
+    await warnUnsentPreviousEpoch(dir, 5n, (text) => warnings.push(text))
+    assert.equal(warnings.length, 1)
+    assert.match(warnings[0]!, /^Epoch 4 ended before 1 of its run\(s\) were submitted/)
+    await warnUnsentPreviousEpoch(dir, 0n, (text) => warnings.push(text))
+    assert.equal(warnings.length, 1)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})

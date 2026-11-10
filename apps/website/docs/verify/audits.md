@@ -223,6 +223,15 @@ Submitting needs an **approved auditor address**. Ask in the [Antseed Telegram c
 - It needs a little ETH on Base for the transactions.
 - It can't audit sellers it owns.
 
+### Adding and removing auditors
+
+For the contract owner, and for anyone running several auditors:
+
+- **Approve a new auditor at least 72 hours before the epoch it should start in.** An auditor approved during an epoch joins the split from the next one. Sellers may limit buyers that are new to them, by default for 72 hours after their first payment channel (the seller's `buyerLimits.newBuyers`, see [Buyer limits](/docs/provide/config#buyer-limits)), so a brand-new buyer's first audits can end `UNDETERMINED` for sellers that throttle it. Have the new auditor start its buyer, fund it and try an audit (`verifier run --all`) before its first epoch.
+- **Give every auditor its own data dir, buyer and reference key.** Each auditor pays sellers through the buyer in its own data dir (see [Become a verifier](/docs/verify/become-a-verifier)), and its question sets are built with the API key its `verifier.referenceEndpoint` names (`apiKeyEnv`). Two auditors sharing a buyer look like one buyer to sellers and share its limits; two sharing a key share its rate limits and spend.
+- **Remove an auditor at an epoch boundary, not mid-epoch.** A revocation restarts every report still waiting for a second auditor, from every auditor, so the `DIFF`s waiting at that moment have to be audited and confirmed again. Right after an epoch starts, few reports are waiting. A removal mid-epoch still works: the removed auditor's `verifier run` stops paying (see [If an auditor goes missing](#if-an-auditor-goes-missing)), and its models are handed over at once.
+- **Run the same CLI release on every auditor.** Auditors on different releases can split the models differently or disagree on who confirms. A release that raises the verifier compat is published at the end of an epoch (see [Up-to-date CLI](#up-to-date-cli)); update every auditor before the next epoch starts, and don't rebuild or update one auditor in the middle of an epoch.
+
 ## Submitting
 
 ```bash
@@ -234,6 +243,10 @@ antseed verifier submit --yes
 `submit` sends the whole current epoch: every run of the epoch, merged, with the latest result per model and seller. `--run-id <id>` sends one run instead. The dry run checks everything, including your approval. `submit` makes the evidence public on IPFS, which needs `PINATA_JWT`; `--no-publish-ipfs` submits without publishing it. Audits can only be submitted in the epoch they ran in, and re-running `submit` is safe.
 
 `submit` only sends what changes your position on-chain: your first result for a seller service this epoch (including a confirmation of another auditor's report) and a result whose verdict changed. A result you already reported this epoch is left out, and the evidence lists only the results that are sent, so its result count matches the transaction. A model with nothing new is skipped (`claude-opus-5.5: nothing new to submit (23 already on-chain)`), and the preview's **On-chain** column counts what was left out. Two cases are sent again: a report that stopped counting because an auditor was revoked, and a fresh audit after the seller's verdict moved into or out of `DIFF`. A result audited before that change is not, because the contract only counts support given after it (see below). A retry after a failed transaction sends the same evidence again.
+
+`submit` waits up to 10 minutes for each transaction to be mined. A transaction still pending after that is left to mine, and `submit` says so and moves on. While any transaction from your address is still pending, `submit` sends nothing: it can't yet see whether that transaction carried the same audit, so sending again could send it twice. The next `submit` or `watch` tick checks again and records the audit once it is mined. If the RPC can't say whether a transaction is pending, `submit` also sends nothing that time.
+
+Results not submitted before the epoch ends are lost: the contract only takes them in the epoch they were audited in. The first `submit` of the next epoch says so once, naming the runs that never reached the chain (`Epoch 41 ended before 1 of its run(s) were submitted …`). Keep `verifier watch` running through the end of an epoch, or run `verifier submit` before it ends.
 
 ## Confirmations from other auditors
 
@@ -267,6 +280,7 @@ Every tick runs `verifier run` (your models, plus the confirmations you're respo
 - Set `PINATA_JWT` for the evidence, or pass `--no-publish-ipfs`.
 - `watch` takes `run`'s tuning options and passes them to every tick's run: `--max-rounds <n>`, `--max-enrollment-requests <n>`, `--no-enroll`, `--ignore-pre-run-checks` and `--no-confirm`. Without them, each tick uses `run`'s defaults (3 rounds, 2,000 requests per build and round). A build that keeps failing continues on the next tick until its total (`verifier.referenceMaxRequestsPerBuild`, default 3 times the per-round limit), so watch the reference spend.
 - Only one `watch` runs per data dir. Run it under systemd, pm2 or tmux to keep it up.
+- If the chain can't be read when a tick starts (a short RPC outage), the tick audits nothing, says so, and the next tick tries again. Nothing is lost. If it keeps happening, check `payments.crypto.rpcUrl` and add `payments.crypto.fallbackRpcUrls`.
 
 ## Running again in the same epoch
 

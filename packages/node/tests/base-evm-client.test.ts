@@ -1,10 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
 import { Interface, JsonRpcProvider, makeError, NonceManager, type AbstractSigner, type InterfaceAbi, type TransactionReceipt, type TransactionRequest, type TransactionResponse } from 'ethers';
-import { BaseEvmClient } from '../src/payments/evm/base-evm-client.js';
+import { BaseEvmClient, ReceiptWaitTimeoutError, type BaseEvmClientOptions } from '../src/payments/evm/base-evm-client.js';
 
 class TestEvmClient extends BaseEvmClient {
-  constructor() {
-    super('http://127.0.0.1:1', '0x' + 'aa'.repeat(20));
+  constructor(options?: BaseEvmClientOptions) {
+    super('http://127.0.0.1:1', '0x' + 'aa'.repeat(20), undefined, undefined, options);
     vi.spyOn(this.provider, 'getTransactionReceipt')
       .mockImplementation(async (hash) => ({ hash, status: 1 }) as unknown as TransactionReceipt);
   }
@@ -325,6 +325,47 @@ describe('BaseEvmClient._waitForReceipt', () => {
       const settled = expect(waiting).rejects.toThrow(/dropped or replaced/);
       await vi.advanceTimersByTimeAsync(10_000);
       await settled;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('with a receipt wait limit, gives up on a tx still pending and names every version sent', async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new TestEvmClient({ receiptWaitLimitMs: 60_000 });
+      vi.mocked(client.provider.getTransactionReceipt).mockResolvedValue(null);
+      vi.spyOn(client.provider, 'getTransactionCount').mockResolvedValue(tx.nonce);
+      const speedUp = vi.fn(async () => ({ hash: '0xfaster' }));
+
+      const waiting = client.waitFor(tx, speedUp);
+      const settled = waiting.then(() => null, (error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(58_000);
+      await vi.advanceTimersByTimeAsync(4_000);
+      const error = await settled;
+
+      expect(error).toBeInstanceOf(ReceiptWaitTimeoutError);
+      expect(error).toMatchObject({ code: 'TIMEOUT', hashes: [tx.hash, '0xfaster'] });
+      expect((error as Error).message).toMatch(/0xfaster was sent but not mined within 6\d s/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('without a limit keeps waiting for a pending tx, as payments must', async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new TestEvmClient();
+      vi.mocked(client.provider.getTransactionReceipt).mockResolvedValue(null);
+      vi.spyOn(client.provider, 'getTransactionCount').mockResolvedValue(tx.nonce);
+      let settled = false;
+      const waiting = client.waitFor(tx).finally(() => { settled = true; });
+      await vi.advanceTimersByTimeAsync(30 * 60_000);
+      expect(settled).toBe(false);
+
+      vi.mocked(client.provider.getTransactionReceipt).mockResolvedValue(receipt(1));
+      await vi.advanceTimersByTimeAsync(2_000);
+      await expect(waiting).resolves.toMatchObject({ status: 1 });
     } finally {
       vi.useRealTimers();
     }

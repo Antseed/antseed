@@ -8,7 +8,7 @@ import { requireCurrentVerifier } from '../../../verifier/release-check.js'
 import Table from 'cli-table3'
 import type { Command } from 'commander'
 import { getAddress } from 'ethers'
-import type { AuditorSetEvent, VerifierClient } from '@antseed/node/payments'
+import { ReceiptWaitTimeoutError, type AuditorSetEvent, type VerifierClient } from '@antseed/node/payments'
 import { loadConfig } from '../../../config/loader.js'
 import {
   canonicalEvidenceBytes,
@@ -41,6 +41,9 @@ import { alreadyOnChainFilter, revocationPositions } from '../../../verifier/sub
 import { opinionKey, thirdOpinionFilter } from '../../../verifier/third-opinion.js'
 import { approvedAuditorsAt, loadAuditorSetEvents, revokedSinceEpochStart } from '../../../verifier/auditor-set.js'
 import { configuredVerifierModels } from '../../../verifier/model-config.js'
+import {
+  markUnsentReported, recordSubmittedRuns, unsentEpochRuns, unsentEpochRunsMessage,
+} from '../../../verifier/epoch-submission-record.js'
 
 interface SubmitOptions {
   runId?: string
@@ -75,6 +78,11 @@ export interface EpochWindow {
  */
 export function describeSubmissionFailure(error: unknown): string {
   const message = asError(error).message
+  if (error instanceof ReceiptWaitTimeoutError) {
+    return `sent (${error.hashes.at(-1)}) but not mined within ${Math.round(error.waitedMs / 60_000)} min. `
+      + 'Nothing is sent again while it is pending: the next `antseed verifier submit` or watch tick waits for it, and records it once it is mined. '
+      + 'If it stays pending, the network is congested or the RPC dropped it.'
+  }
   const timedOut = (error as { code?: unknown } | null)?.code === 'TIMEOUT' || /\btime(d)? ?out\b/i.test(message)
   if (!timedOut) return `submission failed (continuing): ${message}. The next \`antseed verifier submit\` or watch tick tries again.`
   return 'not confirmed: the RPC did not answer in time, so it is unknown whether the transaction was sent. '
@@ -128,9 +136,18 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
       const evidenceDir = config.verifier?.evidenceDir ?? join(globalOptions.dataDir, 'verifier', 'evidence')
       const banksDir = config.verifier?.banksDir ?? join(globalOptions.dataDir, 'verifier', 'banks')
       const verifierClient = createVerifierClient(config, options.rpcUrl ? { rpcUrl: String(options.rpcUrl) } : {})
-      const manifest = options.runId
-        ? await readVerifierRunManifest(evidenceDir, options.runId)
-        : await epochSubmissionManifest(evidenceDir, (await verifierClient.currentEpochWindow()).epoch)
+      let manifest: VerifierRunManifestV1 | null
+      let sourceRunIds: string[]
+      if (options.runId) {
+        manifest = await readVerifierRunManifest(evidenceDir, options.runId)
+        sourceRunIds = [options.runId]
+      } else {
+        const currentEpoch = (await verifierClient.currentEpochWindow()).epoch
+        await warnUnsentPreviousEpoch(evidenceDir, currentEpoch)
+        const merged = await epochSubmissionManifest(evidenceDir, currentEpoch)
+        manifest = merged?.manifest ?? null
+        sourceRunIds = merged?.runIds ?? []
+      }
       if (!manifest) {
         // E.g. a confirmer with nothing to confirm yet: `verifier watch` calls submit every tick.
         console.log('Nothing to submit: no verifier run completed this epoch yet.')
@@ -299,6 +316,7 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
         return
       }
       if (toSubmit.length === 0) {
+        await recordSubmittedRuns(evidenceDir, manifest.epoch, sourceRunIds)
         console.log(chalk.dim('Nothing to submit.'))
         return
       }
@@ -330,10 +348,32 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
       if (!wallet) throw new Error('a signer is required to submit')
       if (!options.yes) await confirmSubmission(toSubmit.length)
 
+      // A transaction an earlier submit sent but did not see mined (its wait hit the deadline, or the
+      // process was stopped) is not on-chain yet, so `findSubmission` cannot see it: sending now could
+      // send the same audit twice. Wait for it instead; the next submit or watch tick checks again.
+      const stillPending = await pendingTransactionCount(verifierClient, address)
+      if (stillPending !== 0) {
+        console.warn(chalk.yellow(stillPending === null
+          ? `Could not read whether ${address} has a transaction still pending, so nothing is sent this time, `
+            + 'to be sure no audit goes out twice. The next `antseed verifier submit` or watch tick tries again.'
+          : `${stillPending} transaction(s) from ${address} are still pending, perhaps an earlier submit's. `
+            + 'Nothing is sent until they are mined or dropped, so no audit goes out twice; the next `antseed verifier submit` or watch tick checks again.'))
+        process.exitCode = 1
+        return
+      }
+
       let submitted = 0
       let recovered = 0
       let failed = 0
+      let notMined = 0
+      let deferred = 0
       for (const { audit, previous } of toSubmit) {
+        if (notMined > 0) {
+          // The nonce after an unmined transaction would not mine before it either.
+          deferred += 1
+          failed += 1
+          continue
+        }
         let publication = reusablePublication(previous, audit.evidenceHash)
         try {
           await writeModelAuditEvidence(audit)
@@ -378,17 +418,24 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
           console.log(chalk.green(`${audit.key}: submitted ${audit.results.length} seller result(s) (${transactionHash})`))
         } catch (error) {
           const message = asError(error).message
+          const unmined = error instanceof ReceiptWaitTimeoutError ? error : null
           ledger.models[audit.key] = {
             ...(ledger.models[audit.key] ?? ledgerEntry(audit, publication?.uri ?? '', publication)),
             status: 'failed',
             error: message,
+            ...(unmined ? { transactionHash: unmined.hashes.at(-1) ?? null } : {}),
             lastAttemptAt: new Date().toISOString(),
           }
           await writeModelAuditLedger(ledgerPath, ledger)
           failed += 1
+          if (unmined) notMined += 1
           console.warn(chalk.yellow(`${audit.key}: ${describeSubmissionFailure(error)}`))
         }
       }
+      if (deferred > 0) {
+        console.warn(chalk.yellow(`${deferred} model(s) were not sent after the unmined transaction; the next submit or watch tick sends them.`))
+      }
+      if (failed === 0) await recordSubmittedRuns(evidenceDir, manifest.epoch, sourceRunIds)
 
       await printConfirmations(verifierClient, window.startedAt, address, pending.map((entry) => entry.audit))
       const after = await verifierClient.auditCredits(address, window.epoch)
@@ -407,7 +454,9 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
  * The whole current epoch as one submission: for each model and seller, the latest result of any
  * run this epoch (see `writeEpochSubmissionManifest`).
  */
-async function epochSubmissionManifest(evidenceDir: string, epoch: bigint): Promise<VerifierRunManifestV1 | null> {
+async function epochSubmissionManifest(
+  evidenceDir: string, epoch: bigint,
+): Promise<{ manifest: VerifierRunManifestV1; runIds: string[] } | null> {
   const state = await loadEpochState(evidenceDir, epoch.toString())
   if (state.manifests.length === 0) return null
   const manifest = await writeEpochSubmissionManifest(evidenceDir, state)
@@ -415,7 +464,51 @@ async function epochSubmissionManifest(evidenceDir: string, epoch: bigint): Prom
     `Epoch ${epoch}: merging ${state.manifests.length} run(s) (${state.manifests.map((run) => run.runId.slice(0, 10)).join(', ')}); `
     + 'the latest result per model and seller is submitted.',
   ))
-  return manifest
+  return { manifest, runIds: state.manifests.map((run) => run.runId) }
+}
+
+/**
+ * Says once, in the first submit of an epoch, when the previous epoch ended with runs no submit
+ * covered: their results can no longer be sent (`epoch-submission-record.ts`). Never fails a submit.
+ */
+export async function warnUnsentPreviousEpoch(
+  evidenceDir: string, currentEpoch: bigint, warn: (text: string) => void = (text) => console.warn(chalk.yellow(text)),
+): Promise<void> {
+  if (currentEpoch === 0n) return
+  const previous = (currentEpoch - 1n).toString()
+  try {
+    const unsent = await unsentEpochRuns(evidenceDir, previous)
+    if (!unsent) return
+    warn(unsentEpochRunsMessage(unsent))
+    await markUnsentReported(evidenceDir, previous)
+  } catch {
+    // Only a warning: an unreadable record must not stop this epoch's submit.
+  }
+}
+
+/**
+ * Transactions from `address` that the RPC knows of but that are not mined yet: the pending nonce
+ * ahead of the latest one. Read twice a few seconds apart, so a load-balanced RPC whose nodes lag a
+ * block behind each other does not report a just-mined transaction as pending. Null when unreadable:
+ * the caller sends nothing then, as a guard that fails open is no guard.
+ */
+export async function pendingTransactionCount(
+  client: Pick<VerifierClient, 'provider'>, address: string, settleMs = 3_000,
+): Promise<number | null> {
+  const read = async (): Promise<number> => {
+    const [pending, latest] = await Promise.all([
+      client.provider.getTransactionCount(address, 'pending'),
+      client.provider.getTransactionCount(address, 'latest'),
+    ])
+    return Math.max(0, pending - latest)
+  }
+  try {
+    if (await read() === 0) return 0
+    await new Promise((resolve) => setTimeout(resolve, settleMs))
+    return await read()
+  } catch {
+    return null
+  }
 }
 
 /**

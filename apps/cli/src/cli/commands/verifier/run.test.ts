@@ -360,7 +360,13 @@ test('assigned mode gives the auditor its round-robin share of the models for th
   )
   assert.throws(
     () => resolveAssignedAuditModels(config, auditors[1]!, { epoch: '2026-10-28', startedAt: 0, endsAt: 1, source: 'utc-day' }, auditors),
-    /on-chain epoch is unavailable/,
+    (error: Error) => {
+      // A short RPC outage: watch retries it. Auditing a model by hand would not help, its evidence could not be submitted.
+      assert.match(error.message, /on-chain epoch unavailable/)
+      assert.match(error.message, /`verifier watch` tries again at its next tick/)
+      assert.doesNotMatch(error.message, /verifier run <model>|--all/)
+      return true
+    },
   )
 })
 

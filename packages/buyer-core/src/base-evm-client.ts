@@ -54,6 +54,12 @@ export interface BaseEvmClientOptions {
    * first, is otherwise answered from the first one and misses the transaction's events.
    */
   cacheTimeout?: number;
+  /**
+   * Longest a write waits for its transaction to mine, in milliseconds, before it throws
+   * `ReceiptWaitTimeoutError`. Unset (the default) waits until it mines, is dropped or reverts, as
+   * a buyer or seller payment must; a periodic job sets it so one stuck transaction cannot hang it.
+   */
+  receiptWaitLimitMs?: number;
 }
 
 function buildProvider(
@@ -85,6 +91,19 @@ function revertError(receipt: TransactionReceipt): CallExceptionError {
     transaction: { to: receipt.to, from: receipt.from, data: '' },
     receipt,
   });
+}
+
+/**
+ * A sent transaction that was not mined within the client's receipt wait limit
+ * (`receiptWaitLimitMs`). It may still mine: callers must not send the same
+ * operation again while the wallet has a pending transaction.
+ */
+export class ReceiptWaitTimeoutError extends Error {
+  readonly code = 'TIMEOUT';
+  constructor(readonly hashes: readonly string[], readonly waitedMs: number) {
+    super(`transaction ${hashes.at(-1)} was sent but not mined within ${Math.round(waitedMs / 1_000)} s`);
+    this.name = 'ReceiptWaitTimeoutError';
+  }
 }
 
 export const ERC20_ABI = [
@@ -122,6 +141,7 @@ export abstract class BaseEvmClient {
   protected _provider: AbstractProvider;
   protected readonly _contractAddress: string;
   private readonly _nonceScope: string;
+  private readonly _receiptWaitLimitMs: number | null;
 
   constructor(
     rpcUrl: string, contractAddress: string, fallbackRpcUrls?: string[], evmChainId?: number, options?: BaseEvmClientOptions,
@@ -129,6 +149,7 @@ export abstract class BaseEvmClient {
     this._provider = buildProvider(rpcUrl, fallbackRpcUrls, evmChainId, options);
     this._contractAddress = contractAddress;
     this._nonceScope = evmChainId ? `chain:${evmChainId}` : `rpc:${rpcUrl}`;
+    this._receiptWaitLimitMs = options?.receiptWaitLimitMs ?? null;
   }
 
   get provider(): AbstractProvider { return this._provider; }
@@ -229,9 +250,13 @@ export abstract class BaseEvmClient {
     speedUp?: () => Promise<Pick<TransactionResponse, 'hash'> | null>,
   ): Promise<TransactionReceipt> {
     const hashes = [tx.hash];
-    let lastSentAt = Date.now();
+    const startedAt = Date.now();
+    let lastSentAt = startedAt;
     let speedUps = 0;
     for (let poll = 1; ; poll += 1) {
+      if (this._receiptWaitLimitMs !== null && poll > 1 && Date.now() - startedAt >= this._receiptWaitLimitMs) {
+        throw new ReceiptWaitTimeoutError(hashes, Date.now() - startedAt);
+      }
       try {
         for (const hash of hashes) {
           const receipt = await this._provider.getTransactionReceipt(hash);

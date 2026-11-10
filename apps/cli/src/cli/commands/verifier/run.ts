@@ -265,6 +265,13 @@ export function auditEpochReader(config: AntseedConfig): OnchainEpochReader {
   }
 }
 
+/** Why an assigned run stops when the on-chain epoch cannot be read, and what happens next. */
+export function chainUnreachableMessage(): string {
+  return 'the chain could not be read (on-chain epoch unavailable), so this auditor\'s models for the epoch are unknown and nothing was audited. '
+    + 'Nothing is lost: `verifier watch` tries again at its next tick, and by hand you can run `antseed verifier run` again once the RPC answers. '
+    + 'If it keeps happening, check payments.crypto.rpcUrl and add payments.crypto.fallbackRpcUrls.'
+}
+
 /**
  * The auditor's share of the audited models this epoch, round robin over the approved auditors (see
  * `assignAuditModelsRoundRobin`). Needs the on-chain epoch: the UTC-day fallback has no epoch
@@ -277,7 +284,9 @@ export function resolveAssignedAuditModels(
   approvedAuditors: readonly string[],
 ): AuditAssignment {
   if (epoch.source !== 'onchain') {
-    throw new Error('the on-chain epoch is unavailable, so there is no model assignment; run `verifier run <model>` or `--all` instead')
+    // Usually a short RPC outage. Auditing a model by hand would not help: without the on-chain epoch
+    // its evidence cannot be submitted either.
+    throw new Error(chainUnreachableMessage())
   }
   const availableModels = configuredVerifierModels(config.verifier)
   if (availableModels.length === 0) throw new Error('no audited models are built into this CLI')

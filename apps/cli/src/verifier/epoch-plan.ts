@@ -488,14 +488,18 @@ export function epochModelRows(cells: Iterable<EpochCell>, models?: readonly str
  * each seller. Its summaries are written under `epochs/<epoch>/submission/<id>/`; the evidence
  * files they point to stay in their runs. The id changes whenever another run is added.
  */
+/** The run id of an epoch's merged submission: one per set of runs (in completion order). */
+export function epochSubmissionRunId(epoch: string, runIds: readonly string[]): string {
+  return canonicalHashBytes32({ domain: 'antseed-verifier-epoch-submission-v1', epoch, runIds: [...runIds] })
+}
+
 export async function writeEpochSubmissionManifest(
   evidenceDir: string,
   state: EpochState,
 ): Promise<VerifierRunManifestV1> {
   const { epoch, manifests } = state
   if (manifests.length === 0) throw new Error(`no completed verifier run found for epoch ${epoch}; run \`antseed verifier run\` first`)
-  const runIds = manifests.map((manifest) => manifest.runId)
-  const runId = canonicalHashBytes32({ domain: 'antseed-verifier-epoch-submission-v1', epoch, runIds })
+  const runId = epochSubmissionRunId(epoch, manifests.map((manifest) => manifest.runId))
   const directory = join(epochDirectory(evidenceDir, epoch), 'submission', safeServiceSlug(runId))
   const models: string[] = []
   for (const manifest of manifests) {

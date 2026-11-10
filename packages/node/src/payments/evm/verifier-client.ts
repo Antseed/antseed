@@ -28,6 +28,11 @@ export interface VerifierClientConfig {
   resultsAddress?: string;
   /** Max blocks per `eth_getLogs` window (defaults to 10k). */
   logQueryChunkBlocks?: number;
+  /**
+   * Longest `submitModelAudit` waits for its transaction to mine before it throws
+   * `ReceiptWaitTimeoutError` (see `BaseEvmClientOptions.receiptWaitLimitMs`). Unset waits until it mines.
+   */
+  receiptWaitLimitMs?: number;
 }
 
 /** Mirrors IAntseedVerificationResults.Verdict. */
@@ -282,7 +287,10 @@ export class VerifierClient extends BaseEvmClient {
   private readonly _logQueryChunkBlocks: number | undefined;
 
   constructor(config: VerifierClientConfig) {
-    super(config.rpcUrl, config.contractAddress, config.fallbackRpcUrls, config.evmChainId, NO_READ_CACHE);
+    super(config.rpcUrl, config.contractAddress, config.fallbackRpcUrls, config.evmChainId, {
+      ...NO_READ_CACHE,
+      ...(config.receiptWaitLimitMs === undefined ? {} : { receiptWaitLimitMs: config.receiptWaitLimitMs }),
+    });
     this._config = config;
     this._deploymentBlock = config.deploymentBlock;
     this._logQueryChunkBlocks = config.logQueryChunkBlocks;
