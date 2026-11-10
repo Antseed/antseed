@@ -451,11 +451,12 @@ export function initChatModule({
 
   /** The open chat continues on `id` (the model it is saved with, for its next send). */
   function saveOpenChatModel(id: string): void {
-    const convId = activeConversation?.id ?? null;
+    // The chat on screen, which may still be loading: not the last one loaded.
+    const convId = uiState.chatActiveConversation;
     if (convId) forgetFundsNotice(convId);
     if (convId) modelChoices.set(convId, { revision: (modelChoices.get(convId)?.revision ?? 0) + 1, modelId: id });
-    if (activeConversation && convId) {
-      activeConversation.service = id;
+    if (convId) {
+      if (activeConversation?.id === convId) activeConversation.service = id;
       const summary = getConversationSummaries().find((c) => c.id === convId);
       if (summary) summary.service = id;
     }

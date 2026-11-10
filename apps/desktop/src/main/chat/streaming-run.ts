@@ -232,7 +232,10 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     // key throws a readable error the renderer shows as-is.
     // A Private run asks for TEE sellers with each of its requests (follow-ups
     // and the title too), so a switch to Anonymous mid-run can't widen it.
-    const protect = mustBePrivate || ctx.privacy?.mode() === 'private';
+    // Read once: the request's TEE requirement and the privacy its replies are
+    // saved with come from the same moment, whatever a switch does meanwhile.
+    const modeAtSend = ctx.privacy?.mode() ?? null;
+    const protect = mustBePrivate || modeAtSend === 'private';
     let endpoint: GatewayEndpoint;
     try {
       endpoint = { ...await getEndpoint(), ...(protect ? { requireTee: true } : {}) };
@@ -411,8 +414,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     let finalAssistantCreatedAt: number | undefined;
     let replyCutOff = false;
     let servedPeer: { peerId: string; peerName?: string } | null = null;
-    // Read after the gate waited for any privacy switch to settle.
-    const sentUnder = ctx.privacy?.mode() ?? null;
+    const sentUnder = protect ? 'private' : modeAtSend;
     const routeMeta = (): AiMessageMeta => ({ ...(servedPeer ?? {}), ...(sentUnder ? { privacy: sentUnder } : {}) });
     const replyModel = splitPinnedModel(serviceId).modelId;
     const toolArgsById = new Map<string, Record<string, unknown>>();

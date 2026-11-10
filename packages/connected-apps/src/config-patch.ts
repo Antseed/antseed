@@ -1935,7 +1935,8 @@ function applyGooseCustomProviderToFile(filePath: string, patch: GooseConfigPatc
   while (lines.length > 0 && lines[lines.length - 1]!.trim() === '') lines.pop();
   lines = setYamlTopLevelString(lines, 'GOOSE_PROVIDER', GOOSE_CUSTOM_PROVIDER);
   if (selected) lines = setYamlTopLevelString(lines, 'GOOSE_MODEL', selected);
-  writeTextFile(filePath, `${lines.join('\n')}\n`);
+  // The provider first: if it can't be written, goose still selects what it
+  // had, rather than a provider that doesn't exist.
   writeJsonFile(gooseCustomProviderPath(filePath), {
     name: GOOSE_CUSTOM_PROVIDER,
     engine: 'openai',
@@ -1948,6 +1949,7 @@ function applyGooseCustomProviderToFile(filePath: string, patch: GooseConfigPatc
     supports_streaming: true,
     requires_auth: false,
   });
+  writeTextFile(filePath, `${lines.join('\n')}\n`);
 }
 
 function applyGooseProviderToFile(filePath: string, patch: GooseConfigPatchDef, baseURL: string, t: ResolvedTarget): void {

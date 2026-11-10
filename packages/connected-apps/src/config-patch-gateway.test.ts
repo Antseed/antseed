@@ -241,7 +241,7 @@ test('goose: gateway patch is a custom provider with the key and every model', a
   });
 });
 
-test('goose: a refresh whose config write fails leaves the working provider in place', async () => {
+test('goose: a refresh whose config write fails leaves goose on a provider that exists', async () => {
   await withDir(async (dir) => {
     const configPath = path.join(dir, 'config.yaml');
     const providerPath = path.join(dir, 'custom_providers', 'custom_antseed.json');
@@ -254,12 +254,33 @@ test('goose: a refresh whose config write fails leaves the working provider in p
     const config = parse(await readFile(configPath, 'utf8')) as Record<string, unknown>;
     assert.equal(config['GOOSE_PROVIDER'], 'custom_antseed');
     assert.equal(config['GOOSE_MODEL'], 'kimi-k2');
+    // Goose still selects a provider that exists (the provider file is written
+    // first, so it already carries the new gateway and key).
     const provider = JSON.parse(await readFile(providerPath, 'utf8'));
-    assert.equal(provider.base_url, 'https://gw.example.com/v1/chat/completions');
-    assert.equal(provider.headers.Authorization, `Bearer ${KEY}`);
+    assert.equal(provider.base_url, 'https://other.example.com/v1/chat/completions');
+    assert.equal(provider.headers.Authorization, 'Bearer antseed_other_key');
     assert.equal(removeConfigPatch(patch), true);
     assert.deepEqual(parse(await readFile(configPath, 'utf8')), { keep_me: true });
     assert.equal(existsSync(providerPath), false);
+  });
+});
+
+test('goose: a first connect whose provider file cannot be written leaves goose on its own provider', { skip: process.platform === 'win32' }, async () => {
+  await withDir(async (dir) => {
+    const configPath = path.join(dir, 'config.yaml');
+    const providers = path.join(dir, 'custom_providers');
+    await writeFile(configPath, 'GOOSE_PROVIDER: anthropic\nGOOSE_MODEL: claude-sonnet\n', 'utf8');
+    await mkdir(providers);
+    await chmod(providers, 0o555);
+    const patch: ConfigPatchDef = { format: 'goose', configPath, providerKey: 'openai', baseURL: 'http://localhost:{buyerPort}' };
+    try {
+      assert.throws(() => writeConfigPatch(patch, REMOTE), /EACCES|permission/i);
+    } finally {
+      await chmod(providers, 0o755);
+    }
+    const config = parse(await readFile(configPath, 'utf8')) as Record<string, unknown>;
+    assert.equal(config['GOOSE_PROVIDER'], 'anthropic');
+    assert.equal(config['GOOSE_MODEL'], 'claude-sonnet');
   });
 });
 

@@ -230,7 +230,8 @@ export async function generateChatImage(
       });
     }
 
-    const privacy = dependencies.privacyMode?.() ?? null;
+    // A request that requires TEE sellers went out as Private, whatever the mode reads now.
+    const privacy = endpoint.requireTee ? 'private' : dependencies.privacyMode?.() ?? null;
     const response = await fetch(`${endpoint.origin}${apiPath}`, {
       method: 'POST',
       headers,
@@ -277,7 +278,7 @@ export async function generateChatImage(
       prompt,
       persistedMarker,
       routedService,
-      peerId ? { peerId, ...(peerName ? { peerName } : {}) } : null,
+      { ...(peerId ? { peerId } : {}), ...(peerId && peerName ? { peerName } : {}), ...(privacy ? { privacy } : {}) },
     );
     const user: AiChatMessage = { role: 'user', content: prompt, createdAt: persisted.user.timestamp };
     const assistant: AiChatMessage = {

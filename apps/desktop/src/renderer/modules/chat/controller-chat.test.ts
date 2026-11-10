@@ -429,4 +429,27 @@ describe('chat controller', () => {
     attachments.resolve({ ok: true, data: [] });
     await waitFor(() => calls === 2);
   });
+
+  it('a model chosen while another chat is still opening goes to that chat, not the one before', async () => {
+    const opening = deferred<{ ok: boolean; data: Conv }>();
+    const saved: Array<[string | null, string]> = [];
+    const conversations = [conv('conv-a', 'model-a'), conv('conv-b', 'model-a')];
+    let holdB = false;
+    const { api, uiState, sends } = setup(conversations, {
+      chatAiGetConversation: async (id: string) => (id === 'conv-b' && holdB ? opening.promise : { ok: true, data: { ...conversations.find((c) => c.id === id)! } }),
+      chatAiSetModel: async (id: string | null, model: string) => { saved.push([id, model]); return { ok: true }; },
+    });
+    await api.refreshChatConversations();
+    await api.openConversation('conv-a');
+    holdB = true;
+    const openingB = api.openConversation('conv-b');
+    api.selectChatModel('model-b');
+    opening.resolve({ ok: true, data: { ...conversations[1]! } });
+    await openingB;
+    expect(saved).toEqual([['conv-b', 'model-b']]);
+    expect(uiState.chatSelectedModelId).toBe('model-b');
+    api.sendMessage('hello');
+    await waitFor(() => sends.length === 1);
+    expect(sends[0]).toMatchObject({ convId: 'conv-b', modelId: 'model-b' });
+  });
 });

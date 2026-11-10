@@ -300,23 +300,20 @@ async function ensureLocalKey(scope: string, appLabel?: string): Promise<StoredG
     // old one) starts with no policy. In Private it can't be used until it has
     // one, or requests could reach any seller while the app says Private.
     const revoke = async (key: StoredGatewayKey) => { if (key.id) await revokeLocalKey(key.id); };
+    const applyKeyPrivacy = async (key: StoredGatewayKey, mode: GatewayPrivacyMode): Promise<void> => {
+      if (!key.id) throw new Error('The new key has no id on the gateway');
+      await applyPrivacyToKey(key.id, mode);
+    };
     const publish = () => publishUnderCurrentPrivacy(
       (mode) => publishKeyWithPolicy({
         create: () => createLocalKey(scopeLabel(scope, appLabel)),
-        applyPolicy: mode === 'private'
-          ? async (key) => {
-            if (!key.id) throw new Error('The new key has no id on the gateway');
-            await applyPrivacyToKey(key.id, 'private');
-          }
-          : null,
+        // A new key starts Anonymous: only Private needs a policy written first.
+        applyPolicy: mode === 'private' ? (key) => applyKeyPrivacy(key, 'private') : null,
         revoke,
         save: (key) => setLocalKey(scope, key),
       }),
       () => getGatewaySettings().privacy,
-      async (key, mode) => {
-        if (!key.id) throw new Error('The new key has no id on the gateway');
-        await applyPrivacyToKey(key.id, mode);
-      },
+      applyKeyPrivacy,
       async (key) => {
         deleteLocalKey(scope);
         await revoke(key);

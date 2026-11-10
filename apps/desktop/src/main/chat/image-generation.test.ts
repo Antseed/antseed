@@ -352,3 +352,37 @@ test('no moderation option, no capability requirement', async () => {
     globalThis.fetch = originalFetch;
   }
 });
+
+test('an image made in Private is saved as Private, so a later edit in Anonymous needs Private too', async () => {
+  const originalFetch = globalThis.fetch;
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
+  globalThis.fetch = (async () => new Response(JSON.stringify({ data: [{ b64_json: png.toString('base64') }] }), {
+    status: 200, headers: { 'content-type': 'application/json' },
+  })) as typeof fetch;
+  const savedMeta: unknown[] = [];
+  const store = {
+    appendImageGeneration: async (_id: string, prompt: string, marker: string, service: string, meta?: unknown) => {
+      savedMeta.push(meta);
+      return {
+        user: { role: 'user' as const, content: prompt, timestamp: 10 },
+        assistant: {
+          role: 'assistant' as const, content: [{ type: 'text' as const, text: marker }], api: 'openai-completions' as const,
+          provider: 'antseed', model: service, usage: {
+            input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+          }, stopReason: 'stop' as const, timestamp: 11,
+        },
+      };
+    },
+  };
+  const request = { conversationId: 'conversation-1', prompt: 'A cat', service: 'image-model' };
+  const persistAttachment = async () => '/tmp/generated.png';
+  try {
+    // Sent with the TEE requirement: saved as Private even if the mode reads Anonymous by now.
+    await generateChatImage(store as never, { ...ENDPOINT, requireTee: true }, request, { persistAttachment, privacyMode: () => 'anonymous' });
+    await generateChatImage(store as never, ENDPOINT, request, { persistAttachment, privacyMode: () => 'anonymous' });
+    assert.deepEqual(savedMeta, [{ privacy: 'private' }, { privacy: 'anonymous' }]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
