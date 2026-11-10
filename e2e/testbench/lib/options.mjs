@@ -50,7 +50,7 @@ export function parseArgs(argv, env = process.env) {
     if (!['up', 'run'].includes(command)) throw new Error('--contracts is only for pnpm testbench up and run');
     if (options.chain && options.chain !== 'local') throw new Error('--contracts only applies to --chain local');
   }
-  if (options.timeout !== undefined && !/^\d+$/.test(options.timeout)) throw new Error('--timeout must be seconds');
+  if (options.timeout !== undefined && !(/^\d+$/.test(options.timeout) && Number(options.timeout) > 0)) throw new Error('--timeout must be a positive number of seconds');
   if (options.seed !== undefined) {
     if (!['run', 'up'].includes(command)) throw new Error('--seed is only for pnpm testbench run and up');
     if (!(/^\d+$/.test(options.seed) && Number(options.seed) < 2 ** 32)) throw new Error('--seed must be an integer from 0 to 4294967295');
@@ -89,6 +89,8 @@ export const HELP = `pnpm testbench <command> [options]
   up        Start this worktree's testbench (reattaches if it is already running)
             --config FILE  --live  --env-file FILE  --deposit-usdc N  --block N  --scenario NAME  --verbose
             --seed N  the run seed (0-4294967295, default random); same seed, same mock and load draws
+            --timeout SECONDS  fail the start, and stop what it started, if it is not ready by then (default 600;
+                                also for run when it starts the testbench)
             --chain fork|local  fork: Base mainnet fork (needs BASE_MAINNET_RPC_URL, default)
                                 local: plain Anvil + repo contracts deployed from source (needs forge, no RPC key)
             --mode sdk|cli      sdk: nodes built from the SDK, the buyer inside the supervisor (default)

@@ -30,7 +30,7 @@ import { createMainnetApi, mainnetReader } from './lib/mainnet-run.mjs';
 import { assertProfilePlatform, MAINNET_PROFILE, prepareMainnetProfile, profileDesktopEnv, walletAddress } from './lib/mainnet.mjs';
 import { cleanupShare, findNoVncDir, funnelEnabled, parseTailscaleStatus } from './lib/share.mjs';
 import { cliEntry } from './lib/cli-node.mjs';
-import { reattachDecision, resolveIdleMinutes, startHeartbeat } from './lib/watchdog.mjs';
+import { DEFAULT_START_TIMEOUT_SECONDS, reattachDecision, resolveIdleMinutes, startHeartbeat, startingDecision } from './lib/watchdog.mjs';
 import { assertScenarioSupported, assertUpstreamReusable, chooseMode, chooseTarget, normalizeTopology, requestedMode, requestedUpstream, topologyDifferences, topologyFingerprint, topologySummary, validateScenarioModule } from './lib/topology.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -50,10 +50,26 @@ async function runningState(paths) {
   return { lock, manifest, running: lock.state === 'held' && manifest?.running === true };
 }
 
-/** A testbench whose `run` died without `down` is not reused, whatever the watchdog has got to: returns the state after stopping it. */
+/** How long `up` waits past the start timeout for the supervisor to report its own failure. */
+const START_REPORT_GRACE_MS = 30_000;
+/** How long a supervisor gets to stop what a failed or abandoned start had started, before the command stops waiting. */
+const STARTING_STOP_GRACE_MS = 120_000;
+
+/**
+ * A testbench whose `run` died without `down` is not reused, whatever the watchdog has got to: returns the state after
+ * stopping it. That includes one the dead run left starting, and a failed start that is still shutting down.
+ */
 async function retireOrphan(ctx, state) {
   const starter = state.manifest?.starter ?? null;
-  if (reattachDecision({ running: state.running, starter, starterAlive: isOwnedProcessAlive(starter) }) !== 'restart') return state;
+  const starterAlive = isOwnedProcessAlive(starter);
+  const unfinished = !state.running && state.lock.state === 'held' ? startingDecision({ manifest: state.manifest, holder: state.lock.holder, starterAlive }) : 'refuse';
+  if (unfinished === 'stop' || (unfinished === 'wait' && state.manifest.startError)) {
+    say(`Testbench ${ctx.name} did not finish starting (${state.manifest.startError ?? `the run that started it, pid ${starter.pid}, is gone`}); stopping it and starting fresh`);
+    // It never ran, so problems of its shutdown are not this command's.
+    await down({}, ctx).catch((error) => say(`Warning: ${error.message}`));
+    return runningState(ctx.paths);
+  }
+  if (reattachDecision({ running: state.running, starter, starterAlive }) !== 'restart') return state;
   say(`Testbench ${ctx.name} was started by a run that is gone (pid ${starter.pid}); stopping it and starting fresh`);
   await down({}, ctx);
   return runningState(ctx.paths);
@@ -134,7 +150,7 @@ async function up(options, ctx, topologyOverride) {
     return current.manifest;
   }
   if (settled.action === 'wait') {
-    throw new Error(`Testbench ${ctx.name} is starting or stopping (${settled.reason ?? `pid ${current.lock.holder?.pid ?? 'unknown'}`}); wait, or run pnpm testbench down --force`);
+    throw new Error(`Testbench ${ctx.name} is starting or stopping (${settled.reason ?? `pid ${current.lock.holder?.pid ?? 'unknown'}`}); wait for it (a start fails by itself after its --timeout, and stops once the command that started it is gone), or stop it now with pnpm testbench down --force`);
   }
   const scenario = options.scenario ? await scenarioModule(options.scenario) : null;
   const startMode = requestedMode(options.mode, topologyOverride ?? scenario?.topology);
@@ -189,8 +205,9 @@ async function up(options, ctx, topologyOverride) {
   // `share` starts a testbench too, without a --seed of its own.
   const seed = options.seed ?? randomSeed();
   const idleMinutes = resolveIdleMinutes();
+  const startTimeoutSeconds = Number(options.timeout ?? DEFAULT_START_TIMEOUT_SECONDS);
   await saveJson(join(paths.config, 'plan.json'), {
-    worktree: ctx.worktree, trees, target, mode: topology.mode, seed, starter: ownProcessEntry(), idleMinutes, topology, upstream, liveKeys: [...new Set(liveKeys)], verbose: Boolean(options.verbose),
+    worktree: ctx.worktree, trees, target, mode: topology.mode, seed, starter: ownProcessEntry(), idleMinutes, startTimeoutSeconds, topology, upstream, liveKeys: [...new Set(liveKeys)], verbose: Boolean(options.verbose),
     configHash: config.hash, configOrigin: config.origin, cacheHome: sharedCacheHome(process.env, ctx.root), legacyCacheHome: legacyCacheHome(),
   });
   say(`Starting ${ctx.name} (chain: ${target}, mode: ${topology.mode}, seed: ${seed}, config: ${config.origin}, upstream: ${upstream}, sellers: ${topology.sellers.map((seller) => seller.id).join(', ')})`);
@@ -206,7 +223,8 @@ async function up(options, ctx, topologyOverride) {
   const child = spawn(process.execPath, [join(here, 'supervisor.mjs'), ctx.root, ctx.name], { cwd: repo, env, detached: true, stdio: ['ignore', out, out] });
   closeSync(out);
   child.unref();
-  const deadline = Date.now() + Number(options.timeout ?? 600) * 1000;
+  // The supervisor fails its own start at the timeout and says where it was stuck; this waits a little longer for that.
+  const deadline = Date.now() + startTimeoutSeconds * 1000 + START_REPORT_GRACE_MS;
   let offset = logOffset;
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 1000));
@@ -225,11 +243,16 @@ async function up(options, ctx, topologyOverride) {
       return manifest;
     }
     if (child.exitCode !== null || (manifest?.startError && manifest.supervisor?.pid === child.pid)) {
+      // The failed supervisor stops what it started and frees the slot; report once it has, so the next command can start.
+      const stopBy = Date.now() + STARTING_STOP_GRACE_MS;
+      while (child.exitCode === null && child.signalCode === null && Date.now() < stopBy) await new Promise((r) => setTimeout(r, 200));
       throw new Error(`Testbench failed to start: ${manifest?.startError ?? 'supervisor exited'} (see ${logPath})`);
     }
     try { process.kill(child.pid, 0); } catch { throw new Error(`Testbench supervisor exited during startup (see ${logPath})`); }
   }
-  throw new Error(`Timed out waiting for the testbench to start (see ${logPath}); run pnpm testbench down to clean up`);
+  // The supervisor did not even report its own timeout. It is this command's child, so stop it rather than leave it starting.
+  child.kill('SIGTERM');
+  throw new Error(`Timed out waiting for the testbench to start (see ${logPath}); told its supervisor (pid ${child.pid}) to stop, pnpm testbench down waits for it`);
 }
 
 async function down(options, ctx) {
@@ -242,15 +265,29 @@ async function down(options, ctx) {
     // Its shutdown may already have run (the watchdog, an earlier down) and failed; that still fails `down`.
     const problems = [...shutdownProblems(state.manifest), ...desktopProblems];
     if (problems.length) throw new Error(`Testbench ${ctx.name} is not running, but its last shutdown had problems: ${problems.join('; ')} (see ${join(paths.logs, 'supervisor.log')}; the next pnpm testbench up starts fresh)`);
-    say(`Testbench ${ctx.name} is not running`);
+    say(`Testbench ${ctx.name} is not running${state.manifest?.startError ? ` (its last start failed: ${state.manifest.startError})` : ''}`);
     return;
   }
   if (state.lock.state === 'held' && !options.force) {
-    say('Settling channels and stopping (Anvil stays up until channels close)...');
     const control = await loadControlClient(paths.control).catch(() => null);
-    if (!control) throw new Error('Testbench is still starting; wait, or use pnpm testbench down --force');
-    // The watchdog may have started the same shutdown and closed the control API already.
-    await control.shutdown().catch(async (error) => { if (!(await readJson(paths.manifest))?.stoppingAt) throw error; });
+    // No control API: the supervisor is still starting, or is already on its way out.
+    const starting = control ? null : startingDecision({ manifest: state.manifest, holder: state.lock.holder, starterAlive: isOwnedProcessAlive(state.manifest?.starter) });
+    if (starting === 'refuse') {
+      throw new Error(`Testbench ${ctx.name} is still starting; wait (the start fails by itself after its --timeout, and stops once the command that started it is gone), or use pnpm testbench down --force`);
+    }
+    if (starting === 'stop') {
+      // Nothing ran on it yet, so there is nothing to settle; its supervisor ends the start on SIGTERM.
+      say(`Testbench ${ctx.name} is still starting and the run that started it (pid ${state.manifest.starter.pid}) is gone; stopping it`);
+      if ((await killOwned(state.lock.holder, { graceMs: STARTING_STOP_GRACE_MS })) === 'killed') {
+        say(`Its supervisor did not stop and was killed; stopped what it left: ${(await cleanupStale(paths, await readJson(paths.manifest))).results.join(', ') || 'nothing'}`);
+      }
+    } else if (starting === 'wait') {
+      say(`Testbench ${ctx.name} is already stopping${state.manifest.startError ? ` (its start failed: ${state.manifest.startError})` : ''}; waiting for it`);
+    } else {
+      say('Settling channels and stopping (Anvil stays up until channels close)...');
+      // The watchdog may have started the same shutdown and closed the control API already.
+      await control.shutdown().catch(async (error) => { if (!(await readJson(paths.manifest))?.stoppingAt) throw error; });
+    }
     const deadline = Date.now() + 300_000;
     while (Date.now() < deadline && isOwnedProcessAlive(state.lock.holder)) await new Promise((r) => setTimeout(r, 500));
     if (isOwnedProcessAlive(state.lock.holder)) throw new Error('Supervisor did not stop in 5 minutes; use pnpm testbench down --force');

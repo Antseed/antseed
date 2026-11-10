@@ -161,7 +161,7 @@ const prover: Prover = {
   type: 'prover',
   name: VERIFIER_ID,
   displayName: 'TEE attestation prover (capability-based)',
-  version: '0.1.6',
+  version: '0.1.7',
   description: 'Produces per-capability seller attestation evidence (Intel TDX quote, seller-identity signature) for buyers to verify.',
 
   async prove(req: SellerRequest): Promise<SellerResponse> {

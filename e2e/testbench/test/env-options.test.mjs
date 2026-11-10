@@ -233,6 +233,8 @@ describe('parseArgs', () => {
     assert.throws(() => parseArgs(['down', '--seed', '7']), /only for pnpm testbench run and up/);
     for (const seconds of ['0', 'soon', '1.5']) assert.throws(() => parseArgs(['run', 'x', '--run-timeout', seconds]), /--run-timeout must be/);
     assert.throws(() => parseArgs(['up', '--run-timeout', '5']), /only for pnpm testbench run/);
+    assert.equal(parseArgs(['up', '--timeout', '900']).timeout, '900');
+    for (const seconds of ['0', 'soon', '1.5']) assert.throws(() => parseArgs(['up', '--timeout', seconds]), /--timeout must be a positive number of seconds/);
   });
 
   it('parses commands and flags', () => {

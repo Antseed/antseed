@@ -11,11 +11,11 @@
         "OPENAI_API_KEY": "${OPENAI_API_KEY}"
       },
       "volumes": ["/var/run/dstack.sock:/var/run/dstack.sock", "seller-data:/var/lib/antseed"],
-      "configs": [{ "source": "seller-config", "target": "/etc/antseed/config.json" }]
+      "configs": [{ "source": "seller-config-<sha256 of the content>", "target": "/etc/antseed/config.json" }]
     }
   },
   "configs": {
-    "seller-config": {
+    "seller-config-<sha256 of the content>": {
       "content": "{\"identity\":{\"displayName\":\"<seller name>\"},\"payments\":{\"preferredMethod\":\"crypto\",\"crypto\":{\"chainId\":\"base-mainnet\"}},\"seller\":{\"providers\":{\"inference\":{\"plugin\":\"openai\",\"baseUrl\":\"https://<upstream host>\",\"apiKeyEnv\":\"OPENAI_API_KEY\",\"defaults\":{\"inputUsdPerMillion\":0.5,\"outputUsdPerMillion\":2},\"services\":{\"<service-id>\":{\"upstreamModel\":\"<upstream-model-id>\",\"categories\":[\"chat\"]}}}}}}"
     }
   },
