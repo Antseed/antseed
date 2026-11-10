@@ -24,6 +24,7 @@ import { canonicalModelKey, preferredModelDisplayName } from '@antseed/node/mode
 import { freeTierProgramForService, isPricedService, type FreeTierProgram } from '@antseed/node/free-tier-program'
 import type { RoutingProtocol, ServiceHealth, ServicePerformance } from '@antseed/node'
 import type { RouterOptionSpec } from '@antseed/router-core'
+import { TEE_VERIFIER_ID } from '@antseed/node/tee-status'
 
 export { effectiveModelReputationScore } from '@antseed/node'
 
@@ -134,6 +135,8 @@ export type NetworkModelBuildOptions = {
   }>
   /** Only offers it accepts are listed (a gateway routing policy); a model left with none is omitted. */
   offerFilter?: (offer: NetworkServiceOffer) => boolean
+  /** Sellers whose TEE attestation failed: their offers don't list the TEE verifier. */
+  teeFailed?: (peer: PeerInfo) => boolean
 }
 
 function normalizedModelAlias(serviceId: string): string {
@@ -313,7 +316,9 @@ export function buildNetworkModels(
     })
     const freeTier = freeTierProgramForService(peer?.capabilities, offer.serviceId, priced, { video: offer.type === 'video' })
     entry.peers.push({
-      advertisedVerifierIds: offer.advertisedVerifierIds,
+      advertisedVerifierIds: peer && options.teeFailed?.(peer)
+        ? offer.advertisedVerifierIds?.filter((id) => id !== TEE_VERIFIER_ID)
+        : offer.advertisedVerifierIds,
       peerId: offer.peerId,
       ...(offer.displayName ? { displayName: offer.displayName } : {}),
       provider: offer.provider,

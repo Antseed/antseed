@@ -256,3 +256,22 @@ test('headless buyer checks do not pause for browser connectivity state', async 
     onlineManager.setOnline(wasOnline);
   }
 });
+
+test('a failed TEE attestation is reported until it is due again; a pass or an unrun check is not', async () => {
+  let now = 100;
+  const service = new TeeVerification(strict, () => now);
+  assert.equal(service.teeFailure(peer), null, 'never checked');
+  const unapproved = 'not an approved TEE seller build';
+  await service.verify(peer, strict, async () => ({ ok: false, verified: false, sellerNodeVerified: false, reason: unapproved }));
+  assert.equal(service.teeFailure(peer), unapproved);
+  now += TEE_MAX_AGE_MS;
+  assert.equal(service.teeFailure(peer), null, 'due for another check');
+
+  const transient = new TeeVerification(strict, () => now);
+  await transient.verify(peer, strict, async () => ({ ok: false, verified: false, transient: true, reason: 'timed out' }));
+  assert.equal(transient.teeFailure(peer), null, 'could not be run');
+
+  const passed = new TeeVerification(strict, () => now);
+  await passed.verify(peer, strict, async () => pass);
+  assert.equal(passed.teeFailure(peer), null);
+});

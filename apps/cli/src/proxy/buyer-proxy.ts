@@ -1757,8 +1757,15 @@ export class BuyerProxy {
       cachedInputUsdPerMillion: offer?.cachedInputUsdPerMillion ?? null,
       imageUsdPerImage: offer?.maxImageUsdPerImage ?? offer?.minImageUsdPerImage ?? null,
       unverifiedReason: this._unverifiedReason(peer),
-      teeCapable: parseVerifierCapabilities(peer.capabilities).supported.includes(TEE_VERIFIER_ID),
+      ...this._teeFacts(peer),
     }
+  }
+
+  /** Advertising the TEE verifier makes a seller TEE-capable until its attestation fails. */
+  private _teeFacts(peer: PeerInfo): Pick<PolicyPeerFacts, 'teeCapable' | 'teeFailure'> {
+    if (!parseVerifierCapabilities(peer.capabilities).supported.includes(TEE_VERIFIER_ID)) return { teeCapable: false }
+    const failure = this._teeVerification.teeFailure(peer)
+    return failure ? { teeCapable: false, teeFailure: failure } : { teeCapable: true }
   }
 
   /**
@@ -3926,6 +3933,7 @@ export class BuyerProxy {
     const models = buildNetworkModels(peers, this._now(), {
       routingPreferences: this._routingPreferences,
       peerHealth: this._peerHealth,
+      teeFailed: (peer) => this._teeVerification.teeFailure(peer) !== null,
       ...(listPolicy
         ? {
             offerFilter: (offer: NetworkServiceOffer) => this._policyAllowsOffer(listPolicy, peerById.get(offer.peerId), offer)

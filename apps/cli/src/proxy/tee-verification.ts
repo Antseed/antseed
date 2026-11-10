@@ -94,6 +94,23 @@ export class TeeVerification {
     return { ok: !policy.require && !this.closed, verified: false, transient: true, reason: 'Verification session or seller capabilities changed' }
   }
 
+  /**
+   * Why the seller's TEE attestation failed, from a settled check still in
+   * date; null when it passed, was never checked, or could not be run. A seller
+   * that advertises the TEE verifier but fails it (an unapproved build) is not
+   * one Private can send to.
+   */
+  teeFailure(peer: Peer): string | null {
+    const fingerprint = verifierSupportFingerprint(peer.capabilities)
+    for (const query of this.queries.getQueryCache().findAll({ queryKey: [peer.peerId, TEE_VERIFIER_ID, fingerprint] })) {
+      const entry = query.state.data as Entry | undefined
+      if (query.state.fetchStatus === 'fetching' || !entry?.outcome || entry.outcome.transient) continue
+      if (entry.outcome.sellerNodeVerified) return null
+      if (this.cacheExpiry(entry, TEE_MAX_AGE_MS) > this.now()) return entry.outcome.reason ?? 'TEE attestation did not pass'
+    }
+    return null
+  }
+
   observePeers(peers: readonly Peer[]): void {
     const fingerprints = new Map(peers.map((peer) => [peer.peerId, verifierSupportFingerprint(peer.capabilities)]))
     for (const query of this.queries.getQueryCache().getAll()) {
