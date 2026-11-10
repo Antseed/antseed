@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useId, useState, type ReactNode } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
 import {
   ArrowDown01Icon,
@@ -97,6 +97,15 @@ export function HomeDashboard({ onSelectView, setupOnly = false }: Props) {
   const doneCount = steps.filter(Boolean).length;
   const allDone = doneCount === steps.length;
   const nextStep = steps.findIndex((done) => !done);
+  // One step open at a time (the next one, unless the user opened another),
+  // so Home fits the window without scrolling.
+  const [chosenStep, setChosenStep] = useState<number | null>(null);
+  const openStep = chosenStep ?? nextStep;
+  const stepToggle = (index: number) => ({
+    open: openStep === index,
+    // Clicking the open step closes it; -1 means none open.
+    onToggle: () => setChosenStep(openStep === index ? -1 : index),
+  });
 
   useEffect(() => {
     if (allDone) homeProgress.markSetupDone();
@@ -244,6 +253,7 @@ export function HomeDashboard({ onSelectView, setupOnly = false }: Props) {
             <SetupStep
               n={1}
               done={steps[0]}
+              {...stepToggle(0)}
               title="Send your first prompt"
               caption="Ask anything in the box above. You start on a free model, no deposit needed."
               doneLine="Done. Your chats are under Recent in the sidebar whenever you want them."
@@ -251,6 +261,7 @@ export function HomeDashboard({ onSelectView, setupOnly = false }: Props) {
             <SetupStep
               n={2}
               done={steps[1]}
+              {...stepToggle(1)}
               title="Use Antseed in your agent or app"
               caption="Your agent keeps its own model and calls Antseed for images, video or a second opinion. Your coding apps can run on Antseed models too."
               doneLine={agent === 'prompt'
@@ -290,6 +301,7 @@ export function HomeDashboard({ onSelectView, setupOnly = false }: Props) {
             <SetupStep
               n={3}
               done={steps[2]}
+              {...stepToggle(2)}
               title="Make your first deposit"
               caption={freeSavings
                 ? `Free models have saved you ${savedUsd(freeSavings.savedUsd)} so far. Add funds to use paid models in chat, your agents and your apps, and earn ANTS on what you spend.`
@@ -303,6 +315,7 @@ export function HomeDashboard({ onSelectView, setupOnly = false }: Props) {
             <SetupStep
               n={4}
               done={steps[3]}
+              {...stepToggle(3)}
               title="Running more than one agent?"
               caption="Generate an API key for each one in your dashboard, with its own budget. They all share your balance."
               doneLine={(
@@ -384,29 +397,49 @@ function Tile({ label, value, unit, action }: {
   );
 }
 
-function SetupStep({ n, done, title, caption, doneLine, children }: {
+/**
+ * A setup step: its title opens and closes it, and open it explains itself and
+ * offers its actions. The body slides open; a step just done pops its tick.
+ */
+function SetupStep({ n, done, open, onToggle, title, caption, doneLine, children }: {
   n: number;
   done: boolean;
+  open: boolean;
+  onToggle: () => void;
   title: string;
   caption: string;
   doneLine: ReactNode;
   children?: ReactNode;
 }) {
+  const panelId = useId();
   return (
-    <li className={`${styles.step}${done ? ` ${styles.stepDone}` : ''}`}>
+    <li className={[styles.step, done ? styles.stepDone : '', open ? styles.stepOpen : ''].filter(Boolean).join(' ')}>
       <span className={styles.stepMark} aria-label={done ? 'Done' : `Step ${n}`}>
-        {done ? <HugeiconsIcon icon={Tick02Icon} size={14} strokeWidth={2.4} /> : n}
+        {done ? <HugeiconsIcon key="done" className={styles.stepTick} icon={Tick02Icon} size={14} strokeWidth={2.4} /> : n}
       </span>
       <div className={styles.stepBody}>
-        <p className={styles.stepTitle}>{title}</p>
-        {done ? (
-          <p className={styles.stepText} role="status">{doneLine}</p>
-        ) : (
-          <>
-            <p className={styles.stepText}>{caption}</p>
-            {children ? <div className={styles.stepActions}>{children}</div> : null}
-          </>
-        )}
+        <button
+          type="button"
+          className={`${styles.stepTitle} ${styles.stepToggle}`}
+          onClick={onToggle}
+          aria-expanded={open}
+          aria-controls={panelId}
+        >
+          {title}
+          <HugeiconsIcon className={styles.stepChevron} icon={ArrowDown01Icon} size={13} strokeWidth={2} />
+        </button>
+        <div id={panelId} className={styles.stepPanel} inert={!open}>
+          <div className={styles.stepPanelInner}>
+            {done ? (
+              <p className={styles.stepText} role="status">{doneLine}</p>
+            ) : (
+              <>
+                <p className={styles.stepText}>{caption}</p>
+                {children ? <div className={styles.stepActions}>{children}</div> : null}
+              </>
+            )}
+          </div>
+        </div>
       </div>
     </li>
   );

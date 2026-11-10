@@ -181,7 +181,7 @@
 
 .stepBody {
   display: grid;
-  gap: 6px;
+  gap: 0;
   min-width: 0;
   flex: 1 1 auto;
 }
@@ -192,6 +192,93 @@
   font-size: 14px;
   font-weight: 600;
   line-height: 20px;
+}
+
+.stepToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  justify-self: start;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: color .2s ease;
+
+  &:hover .stepChevron {
+    color: var(--text-primary);
+  }
+}
+
+.stepChevron {
+  color: var(--text-muted);
+  transition: transform .3s cubic-bezier(.2, .8, .2, 1), color .2s ease;
+}
+
+.stepOpen .stepChevron {
+  transform: rotate(180deg);
+}
+
+/* The body slides open: its row grows from 0fr to 1fr while it fades and settles in. */
+.stepPanel {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows .32s cubic-bezier(.2, .8, .2, 1);
+}
+
+.stepOpen .stepPanel {
+  grid-template-rows: 1fr;
+}
+
+.stepPanelInner {
+  display: grid;
+  gap: 6px;
+  min-height: 0;
+  overflow: hidden;
+  padding-top: 6px;
+  opacity: 0;
+  transform: translateY(-4px);
+  transition: opacity .2s ease, transform .32s cubic-bezier(.2, .8, .2, 1);
+}
+
+.stepOpen .stepPanelInner {
+  opacity: 1;
+  transform: none;
+  transition-delay: .06s;
+}
+
+.stepMark {
+  transition: border-color .25s ease, background-color .25s ease, box-shadow .25s ease;
+}
+
+/* The open step's number gets a soft ring. */
+.stepOpen:not(.stepDone) .stepMark {
+  border-color: var(--accent-green);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-green) 18%, transparent);
+}
+
+.stepTick {
+  animation: step-tick-pop .42s cubic-bezier(.3, 1.6, .5, 1);
+}
+
+@keyframes step-tick-pop {
+  from { transform: scale(0); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stepPanel,
+  .stepPanelInner,
+  .stepChevron,
+  .stepMark {
+    transition: none;
+  }
+
+  .stepTick {
+    animation: none;
+  }
 }
 
 .stepDone .stepTitle {
