@@ -64,6 +64,7 @@ console.log = () => undefined
 console.warn = () => undefined
 
 const EPOCH = '7'
+const AUDITOR = '0x1111111111111111111111111111111111111111'
 const nowSeconds = Math.floor(Date.now() / 1_000)
 const OUTCOME_REASON = { code: 'policy_rejected', summary: 'refused', retryable: false, source: 'policy', affectedBatchCount: 0, totalBatchCount: 0, nextAction: 'none' }
 
@@ -103,6 +104,13 @@ interface Scenario {
   brokenModels: Set<string>
   /** The confirmations waiting for this auditor, as model and seller agent id. Needs `confirm: true`. */
   confirmations: Array<{ model: string; agentId: string }>
+  /** Run the auditor's assigned models (no `--all`); the auditor is approved before the epoch starts. */
+  assigned: boolean
+  /** A KBF audits contract is configured even without confirmations. */
+  clientAvailable: boolean
+  /** `approvedAuditor` on the contract; counted in `approvalReads`. */
+  approved: () => Promise<boolean>
+  approvalReads: number
   run(options?: Partial<RunOptions>): Promise<VerifierRoundOutcome>
 }
 
@@ -120,22 +128,38 @@ async function withScenario(body: (scenario: Scenario) => Promise<void>): Promis
     questionSets: new Set(['model-a', 'model-b']),
     brokenModels: new Set(),
     confirmations: [],
+    assigned: false,
+    clientAvailable: false,
+    approved: async () => true,
+    approvalReads: 0,
     async run(options = {}) {
       const command = new Command().option('--data-dir <path>').option('--config <path>')
       command.setOptionValue('dataDir', dir)
       command.setOptionValue('config', join(dir, 'config.json'))
-      return runVerifierRound(undefined, { all: true, confirm: false, skipVersionCheck: true, ...options }, command)
+      return runVerifierRound(undefined, {
+        ...(scenario.assigned ? {} : { all: true }), confirm: false, skipVersionCheck: true, ...options,
+      }, command)
     },
   }
   let snapshotReads = 0
   const realNow = Date.now
   fakeHolder.laneFakes = {
     createVerifierClient: () => {
-      if (scenario.confirmations.length === 0) throw new Error('no KBF audits contract configured')
-      return { provider: { getBlock: async () => null }, requiredReports: async () => ({ DIFF: 2 }), deploymentBlock: 0 }
+      if (scenario.confirmations.length === 0 && !scenario.assigned && !scenario.clientAvailable) throw new Error('no KBF audits contract configured')
+      return {
+        provider: { getBlock: async () => null },
+        requiredReports: async () => ({ DIFF: 2 }),
+        deploymentBlock: 0,
+        approvedAuditor: async () => {
+          scenario.approvalReads += 1
+          return scenario.approved()
+        },
+      }
     },
-    resolveAuditorAddress: () => ({ address: '0x'.padEnd(42, '1'), source: 'flag' }),
-    loadAuditorSetEvents: () => [],
+    resolveAuditorAddress: () => ({ address: AUDITOR, source: 'flag' }),
+    loadAuditorSetEvents: () => (scenario.assigned
+      ? [{ auditor: AUDITOR, approved: true, blockNumber: 1, logIndex: 0, timestamp: scenario.window.startedAt - 100, transactionHash: '0x01' }]
+      : []),
     loadEpochAuditEvents: () => [],
     pendingConfirmations: () => [],
     confirmationTargetsByModel: () => {
@@ -754,3 +778,63 @@ test('a round says whether an audit failed in it, for the command\'s exit code',
   assert.equal((await scenario.run()).failed, true)
   assert.equal(process.exitCode, undefined, 'the round does not set the exit code; the last round of the command decides')
 }))
+
+test('assigned mode: an auditor removed before the run starts builds nothing and pays nobody', LANE_TIMEOUT, () => withScenario(async (scenario) => {
+  scenario.assigned = true
+  scenario.approved = async () => false
+  await assert.rejects(scenario.run(), /was removed as an approved auditor during epoch 7/)
+  assert.deepEqual(scenario.log, [])
+}))
+
+test('assigned mode: a removal during the run stops the next seller audit, and later models are not audited', LANE_TIMEOUT, () => withScenario(async (scenario) => {
+  scenario.assigned = true
+  scenario.maxConcurrentModels = 1
+  scenario.snapshots = [snapshot([seller('aa'.repeat(20), ['model-a']), seller('bb'.repeat(20), ['model-b'])])]
+  let approved = true
+  scenario.approved = async () => approved
+  const realNow = Date.now
+  scenario.audit = async (model) => {
+    if (model !== 'model-a') return
+    // The owner removes the auditor while model-a is audited; the gate reads it again after its minute.
+    approved = false
+    Date.now = () => realNow() + 120_000
+  }
+  await scenario.run()
+  const audited = scenario.log.filter((line) => line.startsWith('audit '))
+  assert.equal(audited.length, 1, scenario.log.join('\n'))
+  assert.ok(scenario.approvalReads >= 2, `approval read ${scenario.approvalReads} times`)
+}))
+
+test('assigned mode: an approval that cannot be read never stops a run', LANE_TIMEOUT, () => withScenario(async (scenario) => {
+  scenario.assigned = true
+  scenario.approved = async () => { throw new Error('rpc down') }
+  await scenario.run()
+  assert.ok(scenario.log.includes('audited model-a aa'), scenario.log.join('\n'))
+  assert.ok(scenario.log.includes('audited model-b aa'), scenario.log.join('\n'))
+}))
+
+test('--all never asks for the approval: an unapproved auditor can try an audit', LANE_TIMEOUT, () => withScenario(async (scenario) => {
+  scenario.clientAvailable = true
+  scenario.approved = async () => false
+  await scenario.run()
+  assert.equal(scenario.approvalReads, 0)
+  assert.ok(scenario.log.includes('audited model-a aa'), scenario.log.join('\n'))
+}))
+
+test('the command\'s exit code: a failure in round 1 that round 2 finishes is 0, a failure in the last round is 1', async () => {
+  const { runCommandExitCode, runVerifierRounds } = await import('./run.js')
+  const quiet = () => undefined
+  const rounds = (...outcomes: VerifierRoundOutcome[]) => (round: number) => Promise.resolve(outcomes[round - 1]!)
+  const finishedLater = await runVerifierRounds(3, rounds(
+    { left: 1, secondsLeftInEpoch: 86_400, failed: true, enrollmentFailures: new Map() },
+    { left: 0, secondsLeftInEpoch: 86_400, failed: false, enrollmentFailures: new Map() },
+  ), quiet)
+  assert.equal(runCommandExitCode(finishedLater), 0)
+  const failedLast = await runVerifierRounds(2, rounds(
+    { left: 1, secondsLeftInEpoch: 86_400, failed: false, enrollmentFailures: new Map() },
+    { left: 1, secondsLeftInEpoch: 86_400, failed: true, enrollmentFailures: new Map() },
+  ), quiet)
+  assert.equal(runCommandExitCode(failedLast), 1)
+  assert.equal(runCommandExitCode({ failed: false, enrollmentFailures: new Map([['model-a', 'out of credit']]) }), 1)
+  assert.equal(runCommandExitCode(null), 0)
+})

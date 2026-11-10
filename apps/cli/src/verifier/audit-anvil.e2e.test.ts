@@ -207,7 +207,9 @@ test('two auditors confirm each other\'s DIFFs: one SAME is recorded at once, a 
   const directory = await mkdtemp(join(tmpdir(), 'antseed-verifier-confirm-e2e-'))
   const port = await availablePort()
   const rpcUrl = `http://127.0.0.1:${port}`
-  const anvil = startAnvil(port)
+  // The chain starts two minutes before the epoch, so the auditors are approved when it starts: the
+  // rotation, and so who confirms whom, uses the auditors approved at the epoch's start.
+  const anvil = startAnvil(port, { timestamp: GENESIS + AUDIT_EPOCH * EPOCH_DURATION - 120 })
   try {
     await waitForRpcReady(rpcUrl, anvil)
     const registryAddress = deployContract(rpcUrl, 'core/AntseedRegistry.sol:AntseedRegistry')
@@ -230,7 +232,8 @@ test('two auditors confirm each other\'s DIFFs: one SAME is recorded at once, a 
       castSend(rpcUrl, poolsAddress, 'setPower(uint256,uint256,uint256)', [String(index + 1), String(AUDIT_EPOCH), '100'])
     }
 
-    // Seller 1 is honest; seller 2 does not serve either model. A audits model-a and B model-b.
+    // Seller 1 is honest; seller 2 does not serve either model. A audits claude-opus-5.5 and B gemini-4-argon:
+    // audited models, since only those have confirmers (a DIFF on another model waits for nobody).
     const sellers = [randomWallet(), randomWallet()]
     const audit = (agent: 1 | 2, model: string): FixtureAudit => ({
       agentId: String(agent),
@@ -277,43 +280,46 @@ test('two auditors confirm each other\'s DIFFs: one SAME is recorded at once, a 
       now: epochStartedAt + 60,
       auditor,
       auditors: [auditorA.address, auditorB.address],
-      auditedModels: ['model-a', 'model-b'],
+      auditedModels: ['claude-opus-5.5', 'gemini-4-argon'],
     }).map((entry) => ({
       model: entry.model, agentId: entry.agentId, waiting: entry.waiting, confirmer: entry.confirmer, mine: entry.mine,
     }))
 
     assert.deepEqual(await client.requiredReports(), { SAME: 1, DIFF: 2, UNDETERMINED: 1 })
+    // Into the epoch, so every report below is in the epoch's blocks.
+    await rpc(rpcUrl, 'evm_increaseTime', [180])
+    await rpc(rpcUrl, 'evm_mine', [])
 
-    await a.writeRun('a-model-a', [audit(1, 'model-a'), audit(2, 'model-a')])
-    await b.writeRun('b-model-b', [audit(1, 'model-b'), audit(2, 'model-b')])
-    const reportedA = submit(a, 'a-model-a')
+    await a.writeRun('a-claude-opus-5.5', [audit(1, 'claude-opus-5.5'), audit(2, 'claude-opus-5.5')])
+    await b.writeRun('b-gemini-4-argon', [audit(1, 'gemini-4-argon'), audit(2, 'gemini-4-argon')])
+    const reportedA = submit(a, 'a-claude-opus-5.5')
     assert.equal(reportedA.status, 0, reportedA.output)
-    assert.match(reportedA.output, /model-a: 1 recorded, 1 waiting for another auditor/)
+    assert.match(reportedA.output, /claude-opus-5.5: 1 recorded, 1 waiting for another auditor/)
     assert.match(reportedA.output, /agent 2: DIFF 1\/2/)
-    const reportedB = submit(b, 'b-model-b')
+    const reportedB = submit(b, 'b-gemini-4-argon')
     assert.equal(reportedB.status, 0, reportedB.output)
-    assert.match(reportedB.output, /model-b: 1 recorded, 1 waiting for another auditor/)
+    assert.match(reportedB.output, /gemini-4-argon: 1 recorded, 1 waiting for another auditor/)
     assert.equal(await client.isVerified(1n), true, 'one SAME verifies')
     assert.deepEqual(await client.agentStatus(2n), { verifiedCount: 0, diffCount: 0 }, 'one DIFF is only a report')
 
     // Each auditor is the confirmer of the other's DIFF.
     const waitingDiff = [{ verdict: 'DIFF', reports: 1, required: 2 }]
     assert.deepEqual(await pendingFor(auditorA.address), [
-      { model: 'model-a', agentId: 2n, waiting: waitingDiff, confirmer: auditorB.address, mine: false },
-      { model: 'model-b', agentId: 2n, waiting: waitingDiff, confirmer: auditorA.address, mine: true },
+      { model: 'claude-opus-5.5', agentId: 2n, waiting: waitingDiff, confirmer: auditorB.address, mine: false },
+      { model: 'gemini-4-argon', agentId: 2n, waiting: waitingDiff, confirmer: auditorA.address, mine: true },
     ])
     assert.deepEqual((await pendingFor(auditorB.address)).map((entry) => [entry.model, entry.mine]), [
-      ['model-a', true], ['model-b', false],
+      ['claude-opus-5.5', true], ['gemini-4-argon', false],
     ])
 
     // Each confirms with its own audit of the other's model.
-    await a.writeRun('a-confirm-model-b', [audit(2, 'model-b')])
-    await b.writeRun('b-confirm-model-a', [audit(2, 'model-a')])
-    const confirmedByB = submit(b, 'b-confirm-model-a')
+    await a.writeRun('a-confirm-gemini-4-argon', [audit(2, 'gemini-4-argon')])
+    await b.writeRun('b-confirm-claude-opus-5.5', [audit(2, 'claude-opus-5.5')])
+    const confirmedByB = submit(b, 'b-confirm-claude-opus-5.5')
     assert.equal(confirmedByB.status, 0, confirmedByB.output)
-    assert.match(confirmedByB.output, /model-a: 1 recorded, 0 waiting for another auditor/)
+    assert.match(confirmedByB.output, /claude-opus-5.5: 1 recorded, 0 waiting for another auditor/)
     assert.deepEqual(await client.agentStatus(2n), { verifiedCount: 0, diffCount: 1 })
-    const confirmedByA = submit(a, 'a-confirm-model-b')
+    const confirmedByA = submit(a, 'a-confirm-gemini-4-argon')
     assert.equal(confirmedByA.status, 0, confirmedByA.output)
     assert.deepEqual(await client.agentStatus(2n), { verifiedCount: 0, diffCount: 2 })
     assert.equal(await client.isVerified(2n), false)
@@ -348,7 +354,8 @@ test('an audit window submits its sellers together once it closes; a late seller
   const directory = await mkdtemp(join(tmpdir(), 'antseed-verifier-window-e2e-'))
   const port = await availablePort()
   const rpcUrl = `http://127.0.0.1:${port}`
-  const anvil = startAnvil(port)
+  // Approved before the epoch starts, as in the tests above: the confirmer comes from the epoch-start rotation.
+  const anvil = startAnvil(port, { timestamp: GENESIS + AUDIT_EPOCH * EPOCH_DURATION - 120 })
   try {
     await waitForRpcReady(rpcUrl, anvil)
     const registryAddress = deployContract(rpcUrl, 'core/AntseedRegistry.sol:AntseedRegistry')
@@ -372,12 +379,12 @@ test('an audit window submits its sellers together once it closes; a late seller
       castSend(rpcUrl, poolsAddress, 'setPower(uint256,uint256,uint256)', [String(index + 1), String(AUDIT_EPOCH), '100'])
     }
 
-    // Sellers 1 (honest) and 2 (not serving model-a) were online when A's model-a window opened;
+    // Sellers 1 (honest) and 2 (not serving claude-opus-5.5) were online when A's claude-opus-5.5 window opened;
     // seller 3 came online later. A manual run audited all three.
     const sellers = [randomWallet(), randomWallet(), randomWallet()]
     const audit = (agent: 1 | 2 | 3, verdict: FixtureAudit['verdict']): FixtureAudit => ({
-      agentId: String(agent), seller: sellers[agent - 1]!, model: 'model-a', service: 'model-a', verdict,
-      reference: referenceFixture('model-a'),
+      agentId: String(agent), seller: sellers[agent - 1]!, model: 'claude-opus-5.5', service: 'claude-opus-5.5', verdict,
+      reference: referenceFixture('claude-opus-5.5'),
     })
     const crypto = {
       chainId: 'base-local', rpcUrl, verificationContractAddress: verificationAddress, verificationDeployBlock: 0, identityRegistryAddress,
@@ -405,13 +412,16 @@ test('an audit window submits its sellers together once it closes; a late seller
       'submit', '--no-publish-ipfs', '--yes', '--skip-version-check',
     ])
     const client = new VerifierClient({ rpcUrl, contractAddress: verificationAddress, evmChainId: 31_337, deploymentBlock: 0 })
+    // Into the epoch, so every report below is in the epoch's blocks.
+    await rpc(rpcUrl, 'evm_increaseTime', [180])
+    await rpc(rpcUrl, 'evm_mine', [])
 
-    await a.writeRun('a-model-a', [audit(1, 'SAME'), audit(2, 'DIFF'), audit(3, 'SAME')])
+    await a.writeRun('a-claude-opus-5.5', [audit(1, 'SAME'), audit(2, 'DIFF'), audit(3, 'SAME')])
     await openAuditWindow({
-      evidenceDir: a.evidenceDir, epoch: EPOCH, model: 'model-a', runId: 'a-model-a',
+      evidenceDir: a.evidenceDir, epoch: EPOCH, model: 'claude-opus-5.5', runId: 'a-claude-opus-5.5',
       sellers: [sellers[0]!, sellers[1]!].map((seller) => seller.address.slice(2)),
     })
-    // While the window is open nothing of model-a is published or submitted (a dry run closes nothing).
+    // While the window is open nothing of claude-opus-5.5 is published or submitted (a dry run closes nothing).
     const whileOpen = runCli(a.dataDir, a.configPath, rpcUrl, ['submit', '--no-publish-ipfs', '--dry-run', '--skip-version-check'])
     assert.equal(whileOpen.status, 0, whileOpen.output)
     assert.match(whileOpen.output, /audit window is still open/)
@@ -420,15 +430,15 @@ test('an audit window submits its sellers together once it closes; a late seller
     // The real submit closes the finished window and sends its two sellers in one audit.
     const reportedA = submit(a)
     assert.equal(reportedA.status, 0, reportedA.output)
-    assert.match(reportedA.output, /model-a: audit window closed \(every seller of the window is finished\)/)
-    assert.match(reportedA.output, /model-a: 1 recorded, 1 waiting for another auditor/)
+    assert.match(reportedA.output, /claude-opus-5.5: audit window closed \(every seller of the window is finished\)/)
+    assert.match(reportedA.output, /claude-opus-5.5: 1 recorded, 1 waiting for another auditor/)
     assert.equal((await client.queryModelAudits()).length, 1)
     assert.equal(await client.isVerified(1n), true)
-    assert.equal((await client.serviceStatus(3n, 'model-a')).verdict, VERIFIER_VERDICT.NONE, 'the late seller has no record')
+    assert.equal((await client.serviceStatus(3n, 'claude-opus-5.5')).verdict, VERIFIER_VERDICT.NONE, 'the late seller has no record')
     assert.equal((await client.queryServiceAudits(3n)).length, 0)
 
-    // B has no window for model-a: its confirmation of seller 2's DIFF is submitted at once.
-    await b.writeRun('b-confirm-model-a', [audit(2, 'DIFF')])
+    // B has no window for claude-opus-5.5: its confirmation of seller 2's DIFF is submitted at once.
+    await b.writeRun('b-confirm-claude-opus-5.5', [audit(2, 'DIFF')])
     const confirmedByB = submit(b)
     assert.equal(confirmedByB.status, 0, confirmedByB.output)
     assert.deepEqual(await client.agentStatus(2n), { verifiedCount: 0, diffCount: 1 })
@@ -678,7 +688,7 @@ test('a DIFF whose confirmer never reports is confirmed by another auditor from 
   }
 })
 
-test('a model nobody took by three quarters goes to the second stand-in, and its own auditor\'s late audit still counts', {
+test('a model nobody took by three quarters goes to the second stand-in, and its own auditor\'s late audit sends nothing', {
   skip: !RUN_ANVIL_E2E,
   timeout: 300_000,
 }, async () => {
@@ -766,14 +776,16 @@ test('a model nobody took by three quarters goes to the second stand-in, and its
     assert.deepEqual(await client.auditCredits(second.address, AUDIT_EPOCH), { auditor: 2n, total: 3n })
     assert.deepEqual(handoversShown(), [[], [], []], 'once audited, the model is no longer handed over')
 
-    // The model's own auditor comes back in the last quarter: the contract takes and credits its audit too.
+    // The model's own auditor comes back in the last quarter. The stand-in already judged its sellers,
+    // and a seller gets no second opinion on a SAME, so its late audit sends nothing (never a third opinion).
     await dirs.late.writeRun('late-own', [audit(lateModel)])
     const lateRun = submit('late', 'late-own')
     assert.equal(lateRun.status, 0, lateRun.output)
-    assert.deepEqual(await client.auditCredits(late.address, AUDIT_EPOCH), { auditor: 1n, total: 4n })
-    assert.deepEqual(await client.auditCredits(second.address, AUDIT_EPOCH), { auditor: 2n, total: 4n }, 'the stand-in keeps its credit')
+    assert.match(lateRun.output, /already judged this epoch/)
+    assert.deepEqual(await client.auditCredits(late.address, AUDIT_EPOCH), { auditor: 0n, total: 3n })
+    assert.deepEqual(await client.auditCredits(second.address, AUDIT_EPOCH), { auditor: 2n, total: 3n }, 'the stand-in keeps its credit')
     const events = await client.queryModelAudits({ model: modelHash(lateModel) }, 0)
-    assert.deepEqual(events.map((event) => event.auditor), [second.address, late.address])
+    assert.deepEqual(events.map((event) => event.auditor), [second.address])
     assert.deepEqual(handoversShown(), [[], [], []])
     assert.equal(await client.isVerified(1n), true)
   } finally {
@@ -858,6 +870,59 @@ test('an all-UNDETERMINED audit does not end a model, and a revoked auditor is s
     await dirs.working.writeRun('working-stand-in', [audit(modelOf(throttled), 'SAME')])
     assert.equal(submit('working', 'working-stand-in').status, 0)
     assert.deepEqual(handoversShown('working'), atOnce)
+  } finally {
+    await stopProcess(anvil)
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('submit sends nothing while the auditor has a transaction pending, and sends once it is mined', {
+  skip: !RUN_ANVIL_E2E,
+  timeout: 300_000,
+}, async () => {
+  requireCommand('anvil')
+  requireCommand('cast')
+  requireCommand('forge')
+
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-verifier-pending-e2e-'))
+  const port = await availablePort()
+  const rpcUrl = `http://127.0.0.1:${port}`
+  const epochStartedAt = GENESIS + AUDIT_EPOCH * EPOCH_DURATION
+  const anvil = startAnvil(port, { timestamp: epochStartedAt - 120 })
+  try {
+    await waitForRpcReady(rpcUrl, anvil)
+    const wallets = [AUDITOR_PRIVATE_KEY, SECOND_AUDITOR_PRIVATE_KEY].map((key) => new Wallet(`0x${key}`))
+    const me = wallets[0]!
+    const chain = deployAuditChain(rpcUrl, wallets, 1)
+    const models = ['claude-opus-5.5', 'gemini-4-argon', 'glm-5.3']
+    const model = roundRobinAssignmentFor(me.address, { auditors: wallets.map((wallet) => wallet.address), epoch: AUDIT_EPOCH, availableModels: models }).models[0]!
+    const dirs = await auditorDataDir(directory, 'me', me, chain.crypto, models)
+    const submit = () => runCli(dirs.dataDir, dirs.configPath, rpcUrl, [
+      'submit', '--run-id', 'own', '--no-publish-ipfs', '--yes', '--skip-version-check',
+    ])
+    const client = new VerifierClient({ rpcUrl, contractAddress: chain.verificationAddress, evmChainId: 31_337, deploymentBlock: 0 })
+    await rpc(rpcUrl, 'evm_increaseTime', [180])
+    await rpc(rpcUrl, 'evm_mine', [])
+    await dirs.writeRun('own', [{
+      agentId: '1', seller: randomWallet(), model, service: model, verdict: 'SAME', reference: referenceFixture(model),
+    }])
+
+    // Another transaction from the auditor's wallet that has not mined, e.g. one an earlier submit sent
+    // and stopped waiting for: the submit cannot see whether it carried this audit, so it waits.
+    await rpc(rpcUrl, 'evm_setAutomine', [false])
+    await rpc(rpcUrl, 'eth_sendTransaction', [{ from: me.address, to: me.address, value: '0x0' }])
+    const blocked = submit()
+    assert.notEqual(blocked.status, 0, blocked.output)
+    assert.match(blocked.output, /1 transaction\(s\) from 0x[0-9a-fA-F]{40} are still pending/)
+    assert.match(blocked.output, /same nonce/, 'it says how to clear a stuck transaction')
+    assert.deepEqual(await client.auditCredits(me.address, AUDIT_EPOCH), { auditor: 0n, total: 0n })
+
+    await rpc(rpcUrl, 'evm_setAutomine', [true])
+    await rpc(rpcUrl, 'evm_mine', [])
+    const sent = submit()
+    assert.equal(sent.status, 0, sent.output)
+    assert.match(sent.output, /Submitted: 1; recovered: 0; already submitted: 0; failed: 0/)
+    assert.deepEqual(await client.auditCredits(me.address, AUDIT_EPOCH), { auditor: 1n, total: 1n })
   } finally {
     await stopProcess(anvil)
     await rm(directory, { recursive: true, force: true })

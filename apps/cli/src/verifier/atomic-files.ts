@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { link, mkdir, open, readFile, rename, rm, stat, unlink } from 'node:fs/promises'
+import { readFileSync, unlinkSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { canonicalJsonStringify } from '@antseed/fingerprints'
 
@@ -33,6 +34,8 @@ const UNREADABLE_LOCK_STALE_MS = 60_000
 
 export interface FileLock {
   release(): Promise<void>
+  /** `release` for a process's `exit` handler, which cannot wait. */
+  releaseSync(): void
 }
 
 export async function acquirePidFileLock(path: string): Promise<FileLock> {
@@ -52,6 +55,14 @@ export async function acquirePidFileLock(path: string): Promise<FileLock> {
               if (current.token === token) await unlink(path)
             } catch (error) {
               if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+            }
+          },
+          releaseSync() {
+            try {
+              const current = JSON.parse(readFileSync(path, 'utf8')) as { token?: unknown }
+              if (current.token === token) unlinkSync(path)
+            } catch {
+              // Gone already, or unreadable: a lock whose process has exited is stale for the next one anyway.
             }
           },
         }

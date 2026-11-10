@@ -43,6 +43,7 @@ import {
   createVerifierClient,
   loadCryptoContext,
   openChannelStore,
+  useVerifierEventCache,
 } from '../../payment-utils.js'
 import type { AntseedConfig } from '../../../config/types.js'
 import {
@@ -615,9 +616,8 @@ export function registerVerifierRunCommand(verifier: Command): void {
         maxRunRounds(options),
         (round) => runVerifierRound(modelValue, round === 1 ? options : { ...options, fresh: false }, command),
       )
-      // The last round decides: a build or an audit that failed in an early round and was finished, or left
-      // for its spaced retry, by a later one does not fail the command.
-      if ((last?.enrollmentFailures?.size ?? 0) > 0 || last?.failed) process.exitCode = 1
+      const exitCode = runCommandExitCode(last)
+      if (exitCode !== 0) process.exitCode = exitCode
       console.log(`Next: antseed verifier submit`)
     })
 }
@@ -629,6 +629,15 @@ export function registerVerifierRunCommand(verifier: Command): void {
  * continues from its checkpoint. Stops early when nothing is left, a round makes no progress, or the
  * epoch is nearly over.
  */
+/**
+ * The exit code of `verifier run` after its rounds. The last round decides: a build or an audit that
+ * failed in an early round and was finished, or left for its spaced retry, by a later one does not
+ * fail the command, and `verifier watch` does not report a finished tick as failed.
+ */
+export function runCommandExitCode(last: Pick<VerifierRoundOutcome, 'enrollmentFailures' | 'failed'> | null): number {
+  return (last?.enrollmentFailures?.size ?? 0) > 0 || last?.failed ? 1 : 0
+}
+
 export async function runVerifierRounds(
   maxRounds: number,
   runRound: (round: number) => Promise<VerifierRoundOutcome>,
@@ -715,6 +724,7 @@ export async function runVerifierRound(
       // up to its total (see `buildRequestLimits`).
       const enrollmentBudget = enrollmentRequestBudget(options)
       const globalOptions = getGlobalOptions(command)
+      useVerifierEventCache(globalOptions.dataDir)
       const config = await loadConfig(globalOptions.config)
       // An outdated CLI would audit other models, or score them differently, from other auditors.
       await requireCurrentVerifier({
@@ -795,13 +805,30 @@ export async function runVerifierRound(
       // is not audited again, unless the planner makes it a confirmation. Read once per run.
       let othersOpinions: ReadonlyMap<string, ReadonlyMap<string, OtherOpinion>> = new Map()
       if (epochWindow.source === 'onchain' && !requestedResumeManifest) {
+        let client: ReturnType<typeof createVerifierClient> | null = null
+        let me = ''
         try {
-          const client = createVerifierClient(config)
-          const me = (await resolveAuditorAddress({ config: config.verifier, dataDir: globalOptions.dataDir, flag: options.auditor })).address
-          const events = await loadEpochAuditEvents({ reader: client, epochStartedAt: epochWindow.startedAt, deploymentBlock: client.deploymentBlock })
-          othersOpinions = otherOpinions(events, me)
+          client = createVerifierClient(config)
+          me = (await resolveAuditorAddress({ config: config.verifier, dataDir: globalOptions.dataDir, flag: options.auditor })).address
         } catch (error) {
+          // No KBF audits contract or auditor identity configured: nothing this run audits can be submitted.
+          client = null
           console.warn(chalk.yellow(`Could not read other auditors' reports this epoch: ${asError(error).message}`))
+        }
+        if (client) {
+          try {
+            const events = await loadEpochAuditEvents({ reader: client, epochStartedAt: epochWindow.startedAt, deploymentBlock: client.deploymentBlock })
+            // A revoked auditor's reports no longer count, so they are no opinion (see `otherOpinions`).
+            const revoked = await loadRevokedAuditors(config, globalOptions.dataDir, epochWindow)
+            othersOpinions = otherOpinions(events, me, revoked)
+          } catch (error) {
+            // Going on without them would pay sellers another auditor already judged, whose results
+            // `submit` then drops. Stop the round instead: the next tick reads them again.
+            throw new Error(
+              `could not read other auditors' reports this epoch (${asError(error).message}), so nothing was audited: `
+              + 'a seller another auditor already judged would be paid for and its result left out at submit. `verifier watch` tries again at its next tick.',
+            )
+          }
         }
       }
       const judgedByOthers = new Map<string, number>()
@@ -1013,8 +1040,9 @@ export async function runVerifierRound(
         )
         for (const [model, reason] of priceCaps.unpriced) {
           console.warn(chalk.yellow(`SKIPPED ${model}: ${reason}`))
-          process.exitCode = 1
         }
+        // A model skipped for want of a price fails the round, and so the command if it is still skipped in the last.
+        const skippedUnpriced = priceCaps.unpriced.size > 0
         runModels = runModels.filter((model) => priceCaps.caps.has(model))
         if (runModels.length === 0) throw new Error('no audited model has a reference price; see the warnings above')
         // Audit requests go through the running buyer, which refuses sellers above its own cap.
@@ -1992,7 +2020,7 @@ export async function runVerifierRound(
           left: remaining,
           secondsLeftInEpoch: epochWindow.endsAt - await clock(),
           enrollmentFailures,
-          failed: status.failures > 0,
+          failed: status.failures > 0 || skippedUnpriced,
           ...(epochChangedTo === undefined ? {} : { epochChanged: epochChangedTo }),
         }
       } catch (error) {

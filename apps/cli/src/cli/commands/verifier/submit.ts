@@ -1,4 +1,5 @@
 import { join } from 'node:path'
+import { acquirePidFileLock, type FileLock } from '../../../verifier/atomic-files.js'
 import { createInterface } from 'node:readline/promises'
 import chalk from 'chalk'
 import pkg from '../../../../package.json' with { type: 'json' }
@@ -8,7 +9,7 @@ import { requireCurrentVerifier } from '../../../verifier/release-check.js'
 import Table from 'cli-table3'
 import type { Command } from 'commander'
 import { getAddress } from 'ethers'
-import { ReceiptWaitTimeoutError, type AuditorSetEvent, type VerifierClient } from '@antseed/node/payments'
+import { ReceiptWaitTimeoutError, type AuditorSetEvent, type ModelAuditedEvent, type ServiceAuditedEvent, type VerifierClient } from '@antseed/node/payments'
 import { loadConfig } from '../../../config/loader.js'
 import {
   canonicalEvidenceBytes,
@@ -29,10 +30,10 @@ import {
 import { readVerifierRunManifest, type VerifierRunManifestV1 } from '../../../verifier/audit-artifacts.js'
 import { prepareAuditPublication, publishVerificationToPinata } from '../../../verifier/ipfs-publication.js'
 import { asError, normalized } from '../../../verifier/utils.js'
-import { createVerifierClient } from '../../payment-utils.js'
+import { createVerifierClient, useVerifierEventCache } from '../../payment-utils.js'
 import { resolveAuditorAddress, resolveAuditorSigner } from './auditor-identity.js'
 import { writeEpochOverview } from '../../../verifier/epoch-overview.js'
-import { loadEpochState, writeEpochSubmissionManifest } from '../../../verifier/epoch-plan.js'
+import { heldForConfirmationRecheck, loadEpochState, writeEpochSubmissionManifest } from '../../../verifier/epoch-plan.js'
 import { getGlobalOptions } from '../types.js'
 import {
   epochReports, loadBlockTimestamps, loadDisputedSellers, loadEpochAuditEvents, loadEpochReports, ownResultTallies, pendingConfirmations, waitingReportBlocks,
@@ -42,7 +43,7 @@ import { opinionKey, thirdOpinionFilter } from '../../../verifier/third-opinion.
 import { approvedAuditorsAt, loadAuditorSetEvents, revokedSinceEpochStart } from '../../../verifier/auditor-set.js'
 import { configuredVerifierModels } from '../../../verifier/model-config.js'
 import {
-  markUnsentReported, recordSubmittedRuns, unsentEpochRuns, unsentEpochRunsMessage,
+  markUnsentReported, recordSubmitOutcome, unsentEpochRuns, unsentEpochRunsMessage,
 } from '../../../verifier/epoch-submission-record.js'
 
 interface SubmitOptions {
@@ -124,6 +125,7 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
     .option('--skip-version-check', 'submit even if the latest release audits differently from this CLI, or the check cannot be made')
     .action(async (options: SubmitOptions, command: Command) => {
       const globalOptions = getGlobalOptions(command)
+      useVerifierEventCache(globalOptions.dataDir)
       const config = await loadConfig(globalOptions.config)
       // Audits from a CLI that audits differently from the latest release are not submitted.
       await requireCurrentVerifier({
@@ -135,9 +137,25 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
       })
       const evidenceDir = config.verifier?.evidenceDir ?? join(globalOptions.dataDir, 'verifier', 'evidence')
       const banksDir = config.verifier?.banksDir ?? join(globalOptions.dataDir, 'verifier', 'banks')
+      // One submit per data dir at a time: the ledger is read once and rewritten after every model, so a
+      // submit by hand next to `verifier watch`'s would lose updates and could send a model twice.
+      if (!options.dryRun) {
+        const lock = await acquireSubmitLock(evidenceDir)
+        if (!lock) {
+          console.warn(chalk.yellow(
+            'Another `verifier submit` is running on this data dir, so this one sends nothing. '
+            + 'The next `antseed verifier submit` or watch tick tries again.',
+          ))
+          process.exitCode = 1
+          return
+        }
+        process.once('exit', () => lock.releaseSync())
+      }
       const verifierClient = createVerifierClient(config, options.rpcUrl ? { rpcUrl: String(options.rpcUrl) } : {})
       let manifest: VerifierRunManifestV1 | null
       let sourceRunIds: string[]
+      // Results the merged epoch leaves out for now (a DIFF confirmation held for its re-check).
+      let heldInEpoch: string[] = []
       if (options.runId) {
         manifest = await readVerifierRunManifest(evidenceDir, options.runId)
         sourceRunIds = [options.runId]
@@ -147,6 +165,7 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
         const merged = await epochSubmissionManifest(evidenceDir, currentEpoch)
         manifest = merged?.manifest ?? null
         sourceRunIds = merged?.runIds ?? []
+        heldInEpoch = merged?.held ?? []
       }
       if (!manifest) {
         // E.g. a confirmer with nothing to confirm yet: `verifier watch` calls submit every tick.
@@ -204,18 +223,19 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
       // Read at most once: the delta filter needs it only for results this auditor already reported.
       let auditorSetEventsRead: Promise<AuditorSetEvent[]> | null = null
       const auditorSetEvents = (): Promise<AuditorSetEvent[]> => (
-        auditorSetEventsRead ??= verifierClient.queryAuditorSetEvents()
+        // Cached in the data dir (`auditor-set.ts`): only blocks no earlier read covered are scanned.
+        auditorSetEventsRead ??= loadAuditorSetEvents(verifierClient, globalOptions.dataDir, (message) => console.log(chalk.dim(message)))
       )
-      const epochEvents = await loadEpochAuditEvents({
+      const readEpochEvents = () => loadEpochAuditEvents({
         reader: verifierClient, epochStartedAt: window.startedAt, deploymentBlock: verifierClient.deploymentBlock,
       })
       // The waiting DIFFs whose confirmer this auditor is right now, by the rotation (as `verifier run` plans
-      // them), so a result that answers one is sent even when the run that made it was not planned as a
-      // confirmation (an owner whose stand-in reported first). Read from the same cache `run` uses.
-      const myConfirmations = new Set<string>()
-      try {
-        const setEvents = await loadAuditorSetEvents(verifierClient, globalOptions.dataDir, (message) => console.log(chalk.dim(message)))
-        const reports = epochReports(epochEvents)
+      // them). Only these are answered, whether or not the run flagged the result as a confirmation: an
+      // owner whose stand-in reported first answers too, and a flagged result whose 12 hours are over does not.
+      const readMyConfirmations = async (events: readonly ServiceAuditedEvent[]): Promise<Set<string>> => {
+        const mine = new Set<string>()
+        const setEvents = await auditorSetEvents()
+        const reports = epochReports(events)
         const blockTimestamps = await loadBlockTimestamps({ getBlock: (block) => verifierClient.provider.getBlock(block) }, waitingReportBlocks(reports))
         for (const entry of pendingConfirmations({
           reports,
@@ -226,11 +246,31 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
           auditor: address,
           auditors: approvedAuditorsAt(setEvents, window.startedAt),
           auditedModels: configuredVerifierModels(config.verifier),
-        })) if (entry.mine) myConfirmations.add(opinionKey(entry.agentId, entry.serviceHash, entry.modelHash))
-      } catch (error) {
-        console.warn(chalk.yellow(`Could not work out this auditor's confirmations: ${asError(error).message}; only results the run flagged as confirmations are sent as second opinions`))
+        })) if (entry.mine) mine.add(opinionKey(entry.agentId, entry.serviceHash, entry.modelHash))
+        return mine
       }
-      const { audits: prepared, excluded, alreadyOnChain } = await prepareModelAudits({
+      const epochEvents = await readEpochEvents()
+      // Auditors revoked this epoch: their reports no longer count, so they are no opinion (`otherOpinions`).
+      // Unreadable, every report counts, which holds back more, never less.
+      const revoked = await auditorSetEvents()
+        .then((events) => revokedSinceEpochStart(events, window.startedAt))
+        .catch(() => new Set<string>())
+      let myConfirmations = new Set<string>()
+      try {
+        myConfirmations = await readMyConfirmations(epochEvents)
+      } catch (error) {
+        console.warn(chalk.yellow(`Could not work out this auditor's confirmations: ${asError(error).message}; no confirmation is sent this time, the next submit tries again`))
+      }
+      /**
+       * The third-opinion check again, on the events up to now, right before `audit` is sent. Between
+       * the first read and the send come the evidence, IPFS and the duplicate checks, and another
+       * auditor can report on the same seller meanwhile; or this auditor's confirmation turn can end.
+       * The reason not to send it now, or null. A failed read is a reason too: the check must not fail open.
+       */
+      const recheckBeforeSend = (audit: PreparedModelAudit): Promise<string | null> => recheckAuditBeforeSend({
+        audit, auditor: address, readEvents: readEpochEvents, readMyConfirmations, revoked,
+      })
+      const { audits: prepared, excluded, alreadyOnChain, heldBack } = await prepareModelAudits({
         evidenceDir,
         banksDir,
         manifest,
@@ -255,7 +295,7 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
         }),
         // Never a third opinion: a seller judged by another auditor this epoch is not reported on again,
         // except to confirm a DIFF this auditor is the confirmer of (third-opinion.ts).
-        thirdOpinion: thirdOpinionFilter({ events: epochEvents, auditor: address, myConfirmations }),
+        thirdOpinion: thirdOpinionFilter({ events: epochEvents, auditor: address, myConfirmations, revoked }),
       })
       const audits = await reuseLedgerEvidence(
         prepared.map((audit) => withLedgerKey(audit, ledger, evidenceDir, manifest.runId)), ledger,
@@ -269,7 +309,17 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
       const pending: PendingModelAudit[] = []
       for (const audit of audits) {
         const previous = ledger.models[audit.key] ?? null
-        const alreadySubmitted = submittedEvidence.has(normalized(audit.evidenceHash))
+        const onChain = submittedEvidence.get(normalized(audit.evidenceHash))
+        const alreadySubmitted = onChain !== undefined
+        if (onChain && previous && previous.status !== 'submitted') {
+          // Sent by an earlier submit that did not see it mined (its wait ran out): record it now.
+          ledger.models[audit.key] = {
+            ...previous, status: 'submitted', error: null,
+            transactionHash: onChain.transactionHash, blockNumber: onChain.blockNumber,
+          }
+          await writeModelAuditLedger(ledgerPath, ledger)
+          console.log(chalk.dim(`${audit.key}: mined after an earlier submit gave up waiting; ledger updated`))
+        }
         let expectsCredit = false
         if (!alreadySubmitted) {
           if (!modelAuditsLeft.has(audit.modelHash)) {
@@ -316,7 +366,7 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
         return
       }
       if (toSubmit.length === 0) {
-        await recordSubmittedRuns(evidenceDir, manifest.epoch, sourceRunIds)
+        await recordSubmitOutcome(evidenceDir, manifest.epoch, sourceRunIds, [...heldBack, ...heldInEpoch])
         console.log(chalk.dim('Nothing to submit.'))
         return
       }
@@ -357,7 +407,9 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
           ? `Could not read whether ${address} has a transaction still pending, so nothing is sent this time, `
             + 'to be sure no audit goes out twice. The next `antseed verifier submit` or watch tick tries again.'
           : `${stillPending} transaction(s) from ${address} are still pending, perhaps an earlier submit's. `
-            + 'Nothing is sent until they are mined or dropped, so no audit goes out twice; the next `antseed verifier submit` or watch tick checks again.'))
+            + 'Nothing is sent until they are mined or dropped, so no audit goes out twice; the next `antseed verifier submit` or watch tick checks again. '
+            + 'If one stays stuck, replace it: send 0 ETH to your own address on the same nonce (`cast nonce --block latest <address>`) with a higher fee, '
+            + 'or wait until the RPC drops it. Results not sent by the end of the epoch are lost.'))
         process.exitCode = 1
         return
       }
@@ -367,11 +419,15 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
       let failed = 0
       let notMined = 0
       let deferred = 0
+      let held = 0
+      /** What this submit did not send, for the record the next epoch reads (`recordSubmitOutcome`). */
+      const unsent: string[] = []
       for (const { audit, previous } of toSubmit) {
         if (notMined > 0) {
           // The nonce after an unmined transaction would not mine before it either.
           deferred += 1
           failed += 1
+          unsent.push(`${audit.key}: not sent after an unmined transaction`)
           continue
         }
         let publication = reusablePublication(previous, audit.evidenceHash)
@@ -395,6 +451,18 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
             await writeModelAuditLedger(ledgerPath, ledger)
             recovered += 1
             console.log(chalk.dim(`${audit.key}: already recorded on-chain; ledger updated`))
+            continue
+          }
+
+          const changed = await recheckBeforeSend(audit)
+          if (changed) {
+            // Its ledger entry goes, so the next submit builds the audit again from the results that may
+            // still be sent instead of re-sending this evidence (`reuseLedgerEvidence`).
+            delete ledger.models[audit.key]
+            await writeModelAuditLedger(ledgerPath, ledger)
+            held += 1
+            unsent.push(`${audit.key}: held for a new check (${changed})`)
+            console.warn(chalk.yellow(`${audit.key}: not sent: ${changed}. The next submit or watch tick prepares it again.`))
             continue
           }
 
@@ -429,20 +497,21 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
           await writeModelAuditLedger(ledgerPath, ledger)
           failed += 1
           if (unmined) notMined += 1
+          unsent.push(`${audit.key}: ${unmined ? 'sent but not mined' : `failed (${message.slice(0, 160)})`}`)
           console.warn(chalk.yellow(`${audit.key}: ${describeSubmissionFailure(error)}`))
         }
       }
       if (deferred > 0) {
         console.warn(chalk.yellow(`${deferred} model(s) were not sent after the unmined transaction; the next submit or watch tick sends them.`))
       }
-      if (failed === 0) await recordSubmittedRuns(evidenceDir, manifest.epoch, sourceRunIds)
+      await recordSubmitOutcome(evidenceDir, manifest.epoch, sourceRunIds, [...unsent, ...heldBack, ...heldInEpoch])
 
       await printConfirmations(verifierClient, window.startedAt, address, pending.map((entry) => entry.audit))
       const after = await verifierClient.auditCredits(address, window.epoch)
       console.log(chalk.bold('Model audit submission summary'))
       console.log(`  Auditor: ${address}`)
       console.log(`  Epoch: ${window.epoch}`)
-      console.log(`  Submitted: ${submitted}; recovered: ${recovered}; already submitted: ${pending.length - toSubmit.length}; failed: ${failed}`)
+      console.log(`  Submitted: ${submitted}; recovered: ${recovered}; already submitted: ${pending.length - toSubmit.length}; failed: ${failed}${held > 0 ? `; held for a new check: ${held}` : ''}`)
       console.log(`  Seller results left out as already on-chain: ${alreadyOnChain.reduce((total, entry) => total + entry.count, 0)}`)
       console.log(`  Credits this epoch: ${after.auditor} of ${after.total} total`)
       console.log(chalk.dim(`Ledger: ${ledgerPath}`))
@@ -456,7 +525,7 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
  */
 async function epochSubmissionManifest(
   evidenceDir: string, epoch: bigint,
-): Promise<{ manifest: VerifierRunManifestV1; runIds: string[] } | null> {
+): Promise<{ manifest: VerifierRunManifestV1; runIds: string[]; held: string[] } | null> {
   const state = await loadEpochState(evidenceDir, epoch.toString())
   if (state.manifests.length === 0) return null
   const manifest = await writeEpochSubmissionManifest(evidenceDir, state)
@@ -464,7 +533,49 @@ async function epochSubmissionManifest(
     `Epoch ${epoch}: merging ${state.manifests.length} run(s) (${state.manifests.map((run) => run.runId.slice(0, 10)).join(', ')}); `
     + 'the latest result per model and seller is submitted.',
   ))
-  return { manifest, runIds: state.manifests.map((run) => run.runId) }
+  // A DIFF confirmation that ended UNDETERMINED is held for its re-check (`heldForConfirmationRecheck`), not submitted yet.
+  const held = [...state.cells.values()]
+    .filter((cell) => heldForConfirmationRecheck(cell))
+    .map((cell) => `${cell.model} ${cell.peerId.slice(0, 12)}: confirmation held for its re-check`)
+  return { manifest, runIds: state.manifests.map((run) => run.runId), held }
+}
+
+/**
+ * Why `audit` must not be sent now, or null: the third-opinion check of `prepareModelAudits` again, on
+ * this epoch's reports read right before the send. Between the first read and the send come the
+ * evidence, IPFS and the duplicate checks, minutes on a slow RPC, and meanwhile another auditor can
+ * report on the same seller, or this auditor's confirmation turn can end. A read that fails is a reason
+ * too, so the check never fails open.
+ */
+export async function recheckAuditBeforeSend(input: {
+  audit: Pick<PreparedModelAudit, 'modelHash' | 'results'>
+  auditor: string
+  readEvents: () => Promise<readonly ServiceAuditedEvent[]>
+  readMyConfirmations: (events: readonly ServiceAuditedEvent[]) => Promise<ReadonlySet<string>>
+  revoked?: ReadonlySet<string>
+}): Promise<string | null> {
+  try {
+    const events = await input.readEvents()
+    const filter = thirdOpinionFilter({
+      events, auditor: input.auditor, myConfirmations: await input.readMyConfirmations(events), revoked: input.revoked,
+    })
+    const reasons = await filter(input.audit.modelHash, input.audit.results.map((result) => ({ ...result, auditedAt: 0 })))
+    const blocked = reasons.filter((reason): reason is string => reason !== null)
+    if (blocked.length === 0) return null
+    return `${blocked.length} of its ${input.audit.results.length} result(s) changed since it was prepared (${blocked[0]}${blocked.length > 1 ? ', …' : ''})`
+  } catch (error) {
+    return `could not re-read this epoch's reports right before sending (${asError(error).message})`
+  }
+}
+
+/** `<evidence>/.submit.lock`, or null while another live submit holds it (a dead one's lock is taken over). */
+export async function acquireSubmitLock(evidenceDir: string): Promise<FileLock | null> {
+  try {
+    return await acquirePidFileLock(join(evidenceDir, '.submit.lock'))
+  } catch (error) {
+    if (/already active/.test(asError(error).message)) return null
+    throw error
+  }
 }
 
 /**
@@ -546,9 +657,9 @@ async function submittedEvidenceHashes(
   client: VerifierClient,
   auditor: string,
   auditorSetEvents: () => Promise<readonly AuditorSetEvent[]>,
-): Promise<Set<string>> {
+): Promise<Map<string, ModelAuditedEvent>> {
   const events = standingSubmissions(await client.queryModelAudits({ auditor }), await auditorSetEvents())
-  return new Set(events.map((event) => normalized(event.evidenceHash)))
+  return new Map(events.map((event) => [normalized(event.evidenceHash), event]))
 }
 
 /** The submissions made after the latest auditor revocation (all of them when there was none). */
@@ -640,12 +751,14 @@ async function findSubmission(
   auditor: string,
   auditorSetEvents: () => Promise<readonly AuditorSetEvent[]>,
 ) {
+  // A read that fails is an error, not "not found": sending after a failed check could send twice.
+  let events
   try {
-    const events = standingSubmissions(await client.queryModelAudits({ model: audit.modelHash, auditor }), await auditorSetEvents())
-    return events.find((event) => normalized(event.evidenceHash) === normalized(audit.evidenceHash)) ?? null
-  } catch {
-    return null
+    events = standingSubmissions(await client.queryModelAudits({ model: audit.modelHash, auditor }), await auditorSetEvents())
+  } catch (error) {
+    throw new Error(`could not check whether this audit is already on-chain, so it is not sent (${asError(error).message})`)
   }
+  return events.find((event) => normalized(event.evidenceHash) === normalized(audit.evidenceHash)) ?? null
 }
 
 async function publish(

@@ -8,7 +8,7 @@ import { resolveAuditEpochWindow, type AuditEpochWindow } from '../../../verifie
 import { configuredVerifierModels } from '../../../verifier/model-config.js'
 import { getGlobalOptions } from '../types.js'
 import { approvedAuditorsAt, loadAuditorSetEvents, revokedSinceEpochStart } from '../../../verifier/auditor-set.js'
-import { createVerifierClient } from '../../payment-utils.js'
+import { createVerifierClient, useVerifierEventCache } from '../../payment-utils.js'
 import { auditEpochReader } from './run.js'
 import { auditHandovers, loadEpochModelAudits, type AuditHandover } from '../../../verifier/audit-handover.js'
 import { chainNow } from '../../../verifier/chain-clock.js'
@@ -49,6 +49,7 @@ export function registerVerifierAssignmentCommand(verifier: Command): void {
     .option('--json', 'print the assignment as JSON')
     .action(async (options: AssignmentOptions, command: Command) => {
       const globalOptions = getGlobalOptions(command)
+      useVerifierEventCache(globalOptions.dataDir)
       const config = await loadConfig(globalOptions.config)
       const resolved = await resolveAuditEpochWindow(() => auditEpochReader(config))
       if (resolved.window.source !== 'onchain') throw new Error(resolved.warning ?? 'the on-chain epoch is unavailable')

@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { epochSubmissionRunId } from './epoch-plan.js'
 import {
-  markUnsentReported, recordSubmittedRuns, unsentEpochRuns, unsentEpochRunsMessage,
+  markUnsentReported, recordSubmitOutcome, recordSubmittedRuns, unsentEpochRuns, unsentEpochRunsMessage,
 } from './epoch-submission-record.js'
 import { modelAuditLedgerPath } from './model-audit.js'
 
@@ -43,10 +43,10 @@ test('a run that finished after the last successful submit is reported as unsent
   await recordSubmittedRuns(dir, '7', [A])
 
   const unsent = await unsentEpochRuns(dir, '7')
-  assert.deepEqual(unsent, { epoch: '7', runIds: [B], lastCompletedAt: '2026-11-01T23:30:00.000Z' })
+  assert.deepEqual(unsent, { epoch: '7', runIds: [B], lastCompletedAt: '2026-11-01T23:30:00.000Z', outstanding: null })
   const message = unsentEpochRunsMessage(unsent!)
-  assert.match(message, /^Epoch 7 ended before 1 of its run\(s\) were submitted \(0xbbbbbbbb/)
-  assert.match(message, /is lost/)
+  assert.match(message, /^Epoch 7 ended with results that may never have reached the chain, and those are lost/)
+  assert.match(message, /1 run\(s\) were not covered by a submit that sent everything \(0xbbbbbbbb/)
   assert.match(message, /reported once/)
 
   await markUnsentReported(dir, '7')
@@ -72,4 +72,25 @@ test('a data dir from before the record counts as submitted when the merged subm
 
   await writeFile(ledger, JSON.stringify({ models: { 'model-a': { status: 'submitted' }, 'model-b': { status: 'submitted' } } }))
   assert.equal(await unsentEpochRuns(dir, '7'), null)
+}))
+
+test('what the last submit left unsent is named, and held-back results do not count as submitted', () => withEvidenceDir(async (dir) => {
+  await writeRun(dir, '7', A, '2026-11-01T10:00:00.000Z')
+  // A submit with nothing to send while the window is still open: the run is not covered.
+  await recordSubmitOutcome(dir, '7', [A], ['claude-opus-5.5 12: its audit window is still open'], new Date('2026-11-01T11:00:00.000Z'))
+  const held = await unsentEpochRuns(dir, '7')
+  assert.deepEqual(held?.runIds, [A])
+  assert.deepEqual(held?.outstanding, { at: '2026-11-01T11:00:00.000Z', items: ['claude-opus-5.5 12: its audit window is still open'] })
+  assert.match(unsentEpochRunsMessage(held!), /Its last submit \(2026-11-01T11:00:00.000Z\) did not send: claude-opus-5.5 12: its audit window is still open\./)
+
+  // The window closes and the next submit sends everything: nothing is outstanding.
+  await recordSubmitOutcome(dir, '7', [A], [])
+  assert.equal(await unsentEpochRuns(dir, '7'), null)
+
+  // A later run whose model fails to send names the model, and the earlier run stays covered.
+  await writeRun(dir, '7', B, '2026-11-01T20:00:00.000Z')
+  await recordSubmitOutcome(dir, '7', [A, B], ['gemini-4-argon: failed (execution reverted)'])
+  const failed = await unsentEpochRuns(dir, '7')
+  assert.deepEqual(failed?.runIds, [B])
+  assert.deepEqual(failed?.outstanding?.items, ['gemini-4-argon: failed (execution reverted)'])
 }))

@@ -162,6 +162,13 @@ jobs:
         run: node e2e/stress/ci.mjs --parallel 2 --out "$RUNNER_TEMP/antseed-stress"
         timeout-minutes: 30
 
+      # Several auditors on one chain: confirmations, stand-ins, revocation, never a third opinion.
+      # Each test starts its own Anvil on a free port with the KBF contracts compiled above.
+      - name: Verifier multi-auditor e2e (Anvil)
+        if: success() || failure()
+        run: ANTSEED_RUN_VERIFIER_ANVIL_E2E=1 node --test apps/cli/dist/verifier/audit-anvil.e2e.test.js
+        timeout-minutes: 15
+
       - name: Upload stress logs
         if: failure()
         uses: actions/upload-artifact@v4

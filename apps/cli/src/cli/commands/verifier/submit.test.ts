@@ -110,9 +110,59 @@ test('the first submit of an epoch warns once about the last epoch\'s runs that 
     await warnUnsentPreviousEpoch(dir, 5n, (text) => warnings.push(text))
     await warnUnsentPreviousEpoch(dir, 5n, (text) => warnings.push(text))
     assert.equal(warnings.length, 1)
-    assert.match(warnings[0]!, /^Epoch 4 ended before 1 of its run\(s\) were submitted/)
+    assert.match(warnings[0]!, /^Epoch 4 ended with results that may never have reached the chain/)
     await warnUnsentPreviousEpoch(dir, 0n, (text) => warnings.push(text))
     assert.equal(warnings.length, 1)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('right before a send, a result another auditor judged meanwhile, or whose confirmation turn ended, holds the model back', async () => {
+  const { recheckAuditBeforeSend } = await import('./submit.js')
+  const { VERIFIER_VERDICT, modelHash, serviceHash } = await import('@antseed/node/payments')
+  const { opinionKey } = await import('../../../verifier/third-opinion.js')
+  const ME = '0x' + '1'.repeat(40)
+  const OTHER = '0x' + '2'.repeat(40)
+  const model = modelHash('model-a')
+  const service = serviceHash('model-a')
+  const audit = { modelHash: model, results: [{ agentId: 7n, serviceHash: service, verdict: VERIFIER_VERDICT.SAME }] }
+  const report = (verdict: number, reports: number, required: number) => ({
+    agentId: 7n, serviceHash: service, auditor: OTHER, modelHash: model, verdict, round: 0, reports, required,
+    blockNumber: 10, logIndex: 0, transactionHash: '0x01',
+  }) as never
+  const none = async () => new Set<string>()
+
+  assert.equal(await recheckAuditBeforeSend({ audit, auditor: ME, readEvents: async () => [], readMyConfirmations: none }), null)
+  assert.match(
+    await recheckAuditBeforeSend({ audit, auditor: ME, readEvents: async () => [report(VERIFIER_VERDICT.SAME, 1, 1)], readMyConfirmations: none }) ?? '',
+    /^1 of its 1 result\(s\) changed since it was prepared \(already judged/,
+  )
+  const waiting = async () => [report(VERIFIER_VERDICT.DIFF, 1, 2)]
+  const mine = async () => new Set([opinionKey(7n, service, model)])
+  assert.equal(await recheckAuditBeforeSend({ audit, auditor: ME, readEvents: waiting, readMyConfirmations: mine }), null, 'still this auditor\'s turn')
+  assert.match(await recheckAuditBeforeSend({ audit, auditor: ME, readEvents: waiting, readMyConfirmations: none }) ?? '', /waits for its confirmer/)
+  assert.match(
+    await recheckAuditBeforeSend({ audit, auditor: ME, readEvents: async () => { throw new Error('rpc down') }, readMyConfirmations: none }) ?? '',
+    /could not re-read this epoch's reports right before sending \(rpc down\)/,
+    'a failed read holds the send back',
+  )
+})
+
+test('one submit per data dir: a second one gets no lock until the first releases it', async () => {
+  const { mkdtemp, rm } = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const { acquireSubmitLock } = await import('./submit.js')
+  const dir = await mkdtemp(join(tmpdir(), 'antseed-submit-lock-'))
+  try {
+    const first = await acquireSubmitLock(dir)
+    assert.ok(first)
+    assert.equal(await acquireSubmitLock(dir), null)
+    first.releaseSync()
+    const again = await acquireSubmitLock(dir)
+    assert.ok(again)
+    await again.release()
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

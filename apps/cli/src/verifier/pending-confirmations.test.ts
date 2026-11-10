@@ -368,7 +368,55 @@ test('a seller gets no third opinion when the verdict flips: reports from earlie
     assert.equal(entry!.disputed, true)
     assert.equal(entry!.mine, false)
   }
-  assert.deepEqual(waitingReportBlocks(epochReports(events)), [], 'a disputed report has no turns to work out')
+  // Its block is still read: an opinion of a revoked auditor does not count, so a report may not be disputed after all.
+  assert.deepEqual(waitingReportBlocks(epochReports(events)), [REPORT_BLOCK])
+})
+
+test('after a mid-epoch revocation the waiting DIFF gets exactly one more confirmer, whose result is sent', async () => {
+  const { otherOpinions, thirdOpinionReason, opinionKey } = await import('./third-opinion.js')
+  const auditors = [A, B, C, D, E]
+  const [revokedAuditor, first, second, third] = auditorRotationForModel('model-a', { auditors, epoch: 7, availableModels: MODELS }) as [string, string, string, string]
+  // The revoked auditor's DIFF stopped counting (the revocation moved the round on); the next auditor's DIFF waits.
+  const events = [
+    audited({ auditor: revokedAuditor, verdict: VERIFIER_VERDICT.DIFF, round: 0 }),
+    audited({ auditor: first, verdict: VERIFIER_VERDICT.DIFF, round: 1 }),
+  ]
+  const revoked = new Set([revokedAuditor])
+  const entry = (auditor: string, now = EARLY) => pendingConfirmations({
+    reports: epochReports(events), epoch: 7, blockTimestamps: new Map([[REPORT_BLOCK, REPORTED_AT]]),
+    revoked, now, auditor, auditors, auditedModels: MODELS,
+  })[0]!
+  assert.equal(entry(second).confirmer, second)
+  assert.equal(entry(second).mine, true)
+  assert.equal(entry(third, LATE).confirmer, third, 'an absent confirmer is still replaced after 12 hours')
+
+  const key = opinionKey(1n, serviceHash('model-a'), modelHash('model-a'))
+  assert.equal(thirdOpinionReason(otherOpinions(events, second, revoked).get(key), { confirmsDiff: true }, true), null, 'its confirmation is sent')
+  assert.match(
+    thirdOpinionReason(otherOpinions(events, second).get(key), { confirmsDiff: true }, true) ?? '',
+    /never a third/, 'counting the revoked auditor, it would be dropped as a third opinion',
+  )
+
+  // Once confirmed (2 of 2 in the new round), nothing waits and nobody else is asked.
+  events.push(audited({ auditor: second, verdict: VERIFIER_VERDICT.DIFF, round: 1, required: 2 }))
+  const after = pendingConfirmations({
+    reports: epochReports(events), epoch: 7, blockTimestamps: new Map([[REPORT_BLOCK, REPORTED_AT]]),
+    revoked, now: LATE, auditor: third, auditors, auditedModels: MODELS,
+  })
+  assert.equal(after.length, 0)
+})
+
+test('two agreeing opinions of approved auditors leave nobody to ask, also while a DIFF still waits in a later round', () => {
+  const auditors = [A, B, C, D]
+  const events = [
+    audited({ auditor: A, verdict: VERIFIER_VERDICT.DIFF, round: 0 }),
+    audited({ auditor: B, verdict: VERIFIER_VERDICT.DIFF, round: 1 }),
+  ]
+  for (const auditor of auditors) {
+    const [entry] = pendingFor(auditor, events, { auditors, now: LATE })
+    assert.equal(entry!.confirmer, null)
+    assert.equal(entry!.mine, false)
+  }
 })
 
 test('an UNDETERMINED confirmer gave no opinion: the next auditor is asked at once', () => {

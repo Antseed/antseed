@@ -43,10 +43,12 @@ test('no report by anyone else: the first look is sent', () => {
   assert.equal(thirdOpinionReason(opinions.get(key), { confirmsDiff: false }), null)
 })
 
-test('another auditor\'s waiting DIFF: only the planner\'s confirmation is sent', () => {
+test('another auditor\'s waiting DIFF: only the rotation\'s current confirmer sends, flagged or not', () => {
   const opinions = otherOpinions([event({ auditor: A, verdict: VERIFIER_VERDICT.DIFF, reports: 1, required: 2 })], ME)
-  assert.equal(thirdOpinionReason(opinions.get(key), { confirmsDiff: true }), null)
+  assert.equal(thirdOpinionReason(opinions.get(key), { confirmsDiff: true }, true), null)
   assert.match(thirdOpinionReason(opinions.get(key), { confirmsDiff: false }) ?? '', /waits for its confirmer/)
+  // The run flagged it while this auditor's 12 hours ran; they are over and the next auditor is asked.
+  assert.match(thirdOpinionReason(opinions.get(key), { confirmsDiff: true }, false) ?? '', /its turn is over/)
 })
 
 test('the rotation\'s current confirmer may send a result the run did not flag (an owner whose stand-in reported first)', () => {
@@ -83,7 +85,7 @@ test('UNDETERMINED is no opinion: it neither counts nor blocks', () => {
     event({ auditor: B, verdict: VERIFIER_VERDICT.UNDETERMINED, reports: 1, required: 1 }),
   ], ME)
   assert.equal(opinions.get(key)?.size, 1)
-  assert.equal(thirdOpinionReason(opinions.get(key), { confirmsDiff: true }), null, 'the next confirmer still confirms')
+  assert.equal(thirdOpinionReason(opinions.get(key), { confirmsDiff: true }, true), null, 'the next confirmer still confirms')
 })
 
 test('an auditor that changed its report counts once, with its latest verdict', () => {

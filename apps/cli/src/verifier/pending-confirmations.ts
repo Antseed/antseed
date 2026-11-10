@@ -198,7 +198,8 @@ function waitingSinceBlock(report: EpochReport): number {
 export function waitingReportBlocks(reports: ReadonlyMap<string, EpochReport>): number[] {
   const blocks = new Set<number>()
   for (const report of reports.values()) {
-    if (waitingTallies(report).length > 0 && !isDisputed(report)) blocks.add(waitingSinceBlock(report))
+    // Disputed reports too: an opinion of a revoked auditor does not count, so one may not be disputed after all.
+    if (waitingTallies(report).length > 0) blocks.add(waitingSinceBlock(report))
   }
   return [...blocks]
 }
@@ -273,7 +274,12 @@ export function pendingConfirmations(input: {
     if (waiting.length === 0) continue
     const reporters = [...report.byAuditor.keys()]
     const reported = new Set([...reporters, ...report.opinions.keys()])
-    const disputed = isDisputed(report)
+    // A revoked auditor's opinion does not count toward the two a seller gets: after a revocation the
+    // waiting report gets one more confirmer, instead of every remaining auditor being asked in turn
+    // for a result `submit` would then drop as a third opinion.
+    const counted = [...report.opinions].filter(([auditor]) => !input.revoked?.has(auditor)).map(([, verdict]) => verdict)
+    const disputed = new Set(counted).size > 1
+    const twoOpinions = counted.length >= 2
     // The rotation depends only on the model and the epoch's inputs, so it is computed once per model.
     let rotation = rotations.get(model)
     if (rotation === undefined) {
@@ -282,7 +288,7 @@ export function pendingConfirmations(input: {
       })
       rotations.set(model, rotation)
     }
-    const confirmer = disputed ? null : confirmerOnTurn(
+    const confirmer = disputed || twoOpinions ? null : confirmerOnTurn(
       rotation.filter((auditor) => !reported.has(auditor) && !input.revoked?.has(auditor)),
       input.blockTimestamps?.get(waitingSinceBlock(report)),
       input.now,

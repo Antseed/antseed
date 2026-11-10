@@ -24,7 +24,7 @@ export function createAuditorApprovalGate(input: {
   warn?: (message: string) => void
 }): () => Promise<AuditorApprovalState> {
   const ttlMs = input.ttlMs ?? AUDITOR_APPROVAL_TTL_MS
-  const now = input.now ?? Date.now
+  const now = input.now ?? (() => Date.now())
   let last: { state: AuditorApprovalState; at: number } | null = null
   let inFlight: Promise<AuditorApprovalState> | null = null
   let warned = false

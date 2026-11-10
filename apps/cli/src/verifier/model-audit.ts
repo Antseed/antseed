@@ -275,6 +275,11 @@ export async function prepareModelAudits(input: {
   excluded: Array<ExcludedSellerAuditV1 & { model: string }>
   /** Per model, results left out because the auditor already has them on-chain (models with none are omitted). */
   alreadyOnChain: Array<{ model: string; count: number }>
+  /**
+   * Results left out only for now, to be submitted later this epoch: an open audit window, or a close
+   * call still waiting for its extra questions. If the epoch ends first they are never sent.
+   */
+  heldBack: string[]
 }> {
   const auditor = getAddress(input.auditor)
   const maxResults = input.maxResultsPerSubmission ?? MAX_RESULTS_PER_MODEL_AUDIT
@@ -296,6 +301,7 @@ export async function prepareModelAudits(input: {
 
   const audits: PreparedModelAudit[] = []
   const allExcluded: Array<ExcludedSellerAuditV1 & { model: string }> = []
+  const heldBack: string[] = []
   const alreadyOnChain: Array<{ model: string; count: number }> = []
   for (const model of input.manifest.modelOrder) {
     const modelManifest = input.manifest.models.find((entry) => normalized(entry.model) === normalized(model))
@@ -354,6 +360,7 @@ export async function prepareModelAudits(input: {
       }
       if (window?.state === 'open') {
         exclude('its audit window is still open: the model\'s results are submitted together once every seller of the window is finished')
+        heldBack.push(`${model} ${result.agentId ?? result.peerId}: its audit window is still open`)
         continue
       }
       if (window && !result.confirmsDiff && !windowIncludesSeller(window, result.peerId)) {
@@ -363,6 +370,7 @@ export async function prepareModelAudits(input: {
       // A closed window asks no more extra questions: its open close calls are audited but undecided.
       const finalVerdict = finalAuditVerdict(result) ?? (window?.state === 'closed' ? 'UNDETERMINED' : null)
       if (finalVerdict === null) {
+        if (result.extensionPending) heldBack.push(`${model} ${result.agentId ?? result.peerId}: close call waiting for its extra questions`)
         exclude(result.extensionPending
           ? `close call waiting for its extra questions (${result.extensionPending.reason}); a later run this epoch asks them, so it is not submitted yet`
           : 'close call without its extra questions, so it is not submitted')
@@ -561,7 +569,7 @@ export async function prepareModelAudits(input: {
       })
     }
   }
-  return { audits, excluded: allExcluded, alreadyOnChain }
+  return { audits, excluded: allExcluded, alreadyOnChain, heldBack }
 }
 
 /** Unix seconds of the latest evidence file behind a result: its last extra set when it has one. */

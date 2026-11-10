@@ -34,12 +34,17 @@ export function opinionKey(agentId: bigint | number | string, service: string, m
  * Other auditors' latest SAME or DIFF per (agent, service, model) this epoch, keyed by `opinionKey`
  * with service and model hashes. Reports by `auditor` itself and UNDETERMINED reports are left out.
  */
-export function otherOpinions(events: readonly ServiceAuditedEvent[], auditor: string): Map<string, Map<string, OtherOpinion>> {
+export function otherOpinions(
+  events: readonly ServiceAuditedEvent[],
+  auditor: string,
+  /** Auditors revoked this epoch (`revokedSinceEpochStart`): their reports no longer count, so they are no opinion. */
+  revoked?: ReadonlySet<string>,
+): Map<string, Map<string, OtherOpinion>> {
   const me = getAddress(auditor)
   const latest = new Map<string, Map<string, ServiceAuditedEvent>>()
   for (const event of events) {
     const who = getAddress(event.auditor)
-    if (who === me) continue
+    if (who === me || revoked?.has(who)) continue
     const key = opinionKey(event.agentId, event.serviceHash, event.modelHash)
     let byAuditor = latest.get(key)
     if (!byAuditor) {
@@ -83,9 +88,13 @@ export function thirdOpinionReason(
   if (list.length === 1) {
     const [other] = list as [OtherOpinion]
     if (other.verdict === VERIFIER_VERDICT.DIFF && other.reports < other.required) {
-      // The run flagged the result as this auditor's confirmation, or the rotation makes this auditor the
-      // confirmer now (e.g. an owner whose stand-in reported first, its own window audited before that).
-      if (candidate.confirmsDiff || myConfirmation) return null
+      // Only the rotation's current confirmer answers, also for a result the run flagged as a
+      // confirmation: once this auditor's 12 hours are up the next auditor is asked, and sending the
+      // flagged result too would give the seller a third opinion if both land.
+      if (myConfirmation) return null
+      if (candidate.confirmsDiff) {
+        return `another auditor's DIFF waited for this auditor's confirmation (${describe(other)}), but its turn is over and the next auditor in the rotation is asked, so it is not sent`
+      }
       return `another auditor's DIFF waits for its confirmer (${describe(other)}); this result is not that confirmation, so it is not sent`
     }
     return `already judged this epoch (${describe(other)}); a seller gets one audit and, for a DIFF, one confirmation, never a second opinion on a SAME`
@@ -102,8 +111,10 @@ export function thirdOpinionFilter(input: {
   auditor: string
   /** `opinionKey`s of the waiting DIFFs whose current confirmer is this auditor (`pendingConfirmations().mine`). */
   myConfirmations?: ReadonlySet<string>
+  /** Auditors revoked this epoch, whose reports are no opinion (see `otherOpinions`). */
+  revoked?: ReadonlySet<string>
 }): (modelHashValue: string, candidates: readonly SubmissionCandidate[]) => Promise<Array<string | null>> {
-  const opinions = otherOpinions(input.events, input.auditor)
+  const opinions = otherOpinions(input.events, input.auditor, input.revoked)
   return async (modelHashValue, candidates) => candidates.map((candidate) => {
     const key = opinionKey(candidate.agentId, candidate.serviceHash, modelHashValue)
     return thirdOpinionReason(opinions.get(key), candidate, input.myConfirmations?.has(key) ?? false)
