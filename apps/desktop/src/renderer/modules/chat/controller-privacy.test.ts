@@ -234,4 +234,29 @@ describe('a model Private chose', () => {
     expect(uiState.chatSelectedModelId).toBe('model-x');
     expect(chatAiSetModel).toHaveBeenCalledWith('conv-1', 'model-x');
   });
+
+  it('goes back when Private\'s shorter list replaced it on its own', async () => {
+    const { api, uiState, chatAiSetModel } = setup({
+      models: [model('model-x', 'text', false), model('model-y')],
+      conversations: [],
+    });
+    privacyResource.setData(privacy('anonymous'));
+    uiState.chatSelectedModelId = 'model-x';
+    // No free model to move to without funds, so the toggle leaves it; the
+    // list read once Private lands no longer has it.
+    uiState.creditsTotalOwnedUsdc = '0';
+    api.privacyModeChosen('private');
+    privacyResource.setData(privacy('private'));
+    uiState.chatModels = [model('model-y')] as never;
+    api.startNewChat();
+    expect(uiState.chatSelectedModelId).toBe('model-y');
+    uiState.creditsTotalOwnedUsdc = '5';
+    api.sendMessage('hello');
+    await tick(20);
+    uiState.chatModels = [model('model-x', 'text', false), model('model-y')] as never;
+    api.privacyModeChosen('anonymous', { keepPrivateHistory: true });
+    await tick();
+    expect(uiState.chatSelectedModelId).toBe('model-x');
+    expect(chatAiSetModel).toHaveBeenCalledWith('conv-1', 'model-x');
+  });
 });

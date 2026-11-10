@@ -280,6 +280,11 @@ export function initChatModule({
     if (keep) return;
     const next = chooseDefaultChatModel(uiState.chatModels, lastModel);
     if (next && next !== current) {
+      // Private's shorter list left the model out: like a move Private makes
+      // itself, it is undone when Private ends.
+      if (current && privacyResource.getSnapshot().data?.mode === 'private') {
+        modelMovedForPrivate = { from: modelMovedForPrivate?.from ?? current, to: next };
+      }
       uiState.chatSelectedModelId = next;
       void refreshPermissionModeForModel(next);
     }
