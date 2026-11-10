@@ -132,6 +132,12 @@ the dependencies of that code. The list below is a minimum, not the full set:
 - "Tests pass" or a ticked checkbox alone is not evidence. Say what you could not check.
 - CI fails for a reason unrelated to your change: say so in the PR. Do not fix unrelated
   failures in the same PR.
+- The `PR guard` check reads every PR's diff for signs of a supply-chain attack. It fails on
+  invisible or bidirectional Unicode characters, packages resolved from anywhere but the npm
+  registry, and new install scripts (`preinstall`, `install`, `postinstall`, `prepare`) from
+  outside contributors. A dependency that needs an install script goes in
+  `pnpm.onlyBuiltDependencies` in its own PR, after a maintainer agrees in an issue. Changes to
+  CI, agent instructions, dependencies and build tooling get a maintainer's closer read.
 
 Use the test runner in the package's own `test` script. Most packages use vitest. A few, such
 as `apps/cli`, use `node --test` on built output, so run `pnpm run build` once first.
