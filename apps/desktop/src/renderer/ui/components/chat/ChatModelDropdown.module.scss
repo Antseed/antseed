@@ -318,6 +318,12 @@
   min-width: 320px;
 }
 
+/* A fixed width, so filtering (Free, search) doesn't resize the menu. */
+.model-menu {
+  width: 400px;
+  max-width: calc(100vw - 32px);
+}
+
 /* menuAnchor="container": the wrapper stops being the containing block, so
    the menu lines up with the positioned ancestor's edges. */
 .anchor-container {

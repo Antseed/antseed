@@ -149,7 +149,7 @@ export function ChatModelDropdown({
       </button>
       {open && (
         <div
-          className={`${styles.modelDropdownMenu}${menuAnchor === 'container' ? ` ${styles.menuFullWidth}` : ''}${menuPlacement === 'above' ? ` ${styles.menuAbove}` : ''}`}
+          className={`${styles.modelDropdownMenu}${menuAnchor === 'container' ? ` ${styles.menuFullWidth}` : ` ${styles.modelMenu}`}${menuPlacement === 'above' ? ` ${styles.menuAbove}` : ''}`}
           role="listbox"
           style={menuMaxHeight ? { maxHeight: menuMaxHeight } : undefined}
         >
