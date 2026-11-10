@@ -8,7 +8,6 @@ import { VprShell } from '../VprShell';
 import { VprPage } from './VprKit';
 
 vi.mock('../../hooks/useActions', () => ({ useActions: () => ({}) }));
-vi.mock('../../hooks/useTeeVerification', () => ({ useTeeBackgroundVerification: () => {} }));
 
 beforeEach(() => {
   const state = createInitialUiState();

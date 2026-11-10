@@ -140,6 +140,8 @@ export function HomeDashboard({ onSelectView, setupOnly = false }: Props) {
       if (result?.targets) setSkills(result.targets);
       if (result?.ok) homeProgress.markAgent(target.label);
       else setError(result?.error ?? `Could not add Antseed to ${target.label}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `Could not add Antseed to ${target.label}`);
     } finally {
       setInstalling(null);
     }
@@ -147,9 +149,13 @@ export function HomeDashboard({ onSelectView, setupOnly = false }: Props) {
 
   async function copyPrompt(): Promise<void> {
     setError(null);
-    const result = await window.antseedDesktop?.agentSkillsCopyPrompt?.();
-    if (result?.ok) homeProgress.markAgent('prompt');
-    else setError(result?.error ?? 'Could not copy the setup prompt');
+    try {
+      const result = await window.antseedDesktop?.agentSkillsCopyPrompt?.();
+      if (result?.ok) homeProgress.markAgent('prompt');
+      else setError(result?.error ?? 'Could not copy the setup prompt');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not copy the setup prompt');
+    }
   }
 
   const closeSetupButton = (

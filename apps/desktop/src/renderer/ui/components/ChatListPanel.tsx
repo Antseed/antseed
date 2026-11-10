@@ -21,13 +21,12 @@ import { formatUsdcAmount } from '../../core/format';
 import { shallowEqual, useUiSelector } from '../hooks/useUiSelector';
 import { useActions } from '../hooks/useActions';
 import type { ConversationFlags } from '../../types/bridge';
-import { buildChatSections, folderName, projectFolder, type ChatSection } from './chat-list-sections';
+import { buildChatSections, compareByActivity, folderName, projectFolder, updatedAt, type ChatSection } from './chat-list-sections';
 import styles from './ChatListPanel.module.scss';
 
 type ConvRecord = Record<string, unknown>;
 
 const EMPTY_CONVERSATIONS: unknown[] = [];
-const RECENT_SESSION_CLOCK_MS = 60 * 1000;
 const COLLAPSED_SECTIONS_KEY = 'antseed.chatList.collapsedSections';
 
 
@@ -67,27 +66,6 @@ function modelName(service: unknown, modelLabelById: ReadonlyMap<string, string>
 
 function getConversationId(conv: ConvRecord): string {
   return String(conv.id ?? '');
-}
-
-function getConversationCreatedAt(conv: ConvRecord): number {
-  const createdAt = Number(conv.createdAt);
-  return Number.isFinite(createdAt) && createdAt > 0 ? createdAt : 0;
-}
-
-function getConversationUpdatedAt(conv: ConvRecord): number {
-  const updatedAt = Number(conv.updatedAt);
-  if (Number.isFinite(updatedAt) && updatedAt > 0) return updatedAt;
-  return getConversationCreatedAt(conv);
-}
-
-function compareConversationsByActivity(left: ConvRecord, right: ConvRecord): number {
-  const updatedDelta = getConversationUpdatedAt(right) - getConversationUpdatedAt(left);
-  if (updatedDelta !== 0) return updatedDelta;
-
-  const createdDelta = getConversationCreatedAt(right) - getConversationCreatedAt(left);
-  if (createdDelta !== 0) return createdDelta;
-
-  return getConversationId(left).localeCompare(getConversationId(right));
 }
 
 function conversationMatchesSearch(
@@ -269,7 +247,7 @@ function ConversationRow({
     ? `$${formatUsdcAmount(totalCost)}/${formatCompactTokens(totalTokens)}`
     : '';
   const modelLabel = modelName(conv.service, modelLabelById);
-  const timeLabel = formatChatTime(getConversationUpdatedAt(conv));
+  const timeLabel = formatChatTime(updatedAt(conv));
   const pinned = Number(conv.pinnedAt) > 0;
   const archived = Number(conv.archivedAt) > 0;
   const folder = projectFolder(conv, defaultWorkspace);
@@ -366,7 +344,7 @@ function ChatSearchModal({
   const results = useMemo(() => {
     return conversations
       .filter((conv) => conversationMatchesSearch(conv, modelName(conv.service, modelLabelById), query))
-      .sort(compareConversationsByActivity);
+      .sort(compareByActivity);
   }, [conversations, modelLabelById, query]);
 
   return (
@@ -418,7 +396,7 @@ function ChatSearchModal({
               const costLabel = totalTokens > 0
                 ? `$${formatUsdcAmount(totalCost)}/${formatCompactTokens(totalTokens)}`
                 : '';
-              const timeLabel = formatChatTime(getConversationUpdatedAt(conv));
+              const timeLabel = formatChatTime(updatedAt(conv));
               const isActive = id === activeConvId;
               const isRunning = sendingConvIds.has(id);
 
@@ -496,7 +474,6 @@ export function ChatListPanel({ onOpenConversation, onOpenConversationDeleted, h
     return ids;
   }, [chatToolApprovalRequests]);
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
-  const [recentNow, setRecentNow] = useState(() => Date.now());
   const [chatSearchOpen, setChatSearchOpen] = useState(false);
   // Archived starts folded; projects start open.
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(() => {
@@ -518,21 +495,16 @@ export function ChatListPanel({ onOpenConversation, onOpenConversationDeleted, h
   }, []);
   const menuBtnRefs = useRef<Map<string, HTMLButtonElement | null>>(new Map());
 
-  useEffect(() => {
-    const timer = window.setInterval(() => setRecentNow(Date.now()), RECENT_SESSION_CLOCK_MS);
-    return () => window.clearInterval(timer);
-  }, []);
-
   const modelLabelById = useMemo(
     () => new Map(chatModels.map((model) => [model.id, model.label])),
     [chatModels],
   );
 
-  // Pinned, then one group per project folder, then other chats; each sorted
-  // with chats touched in the last day first. Archived chats sit folded below.
+  // Pinned, then one group per project folder, then other chats; each newest
+  // first. Archived chats sit folded below.
   const sections = useMemo(
-    () => buildChatSections(allConversations, { defaultWorkspace: chatWorkspaceDefaultPath, now: recentNow }),
-    [allConversations, chatWorkspaceDefaultPath, recentNow],
+    () => buildChatSections(allConversations, { defaultWorkspace: chatWorkspaceDefaultPath }),
+    [allConversations, chatWorkspaceDefaultPath],
   );
   // With nothing pinned, no projects and nothing archived, the list stays flat.
   const flat = sections.length === 1 && sections[0]!.kind === 'chats';

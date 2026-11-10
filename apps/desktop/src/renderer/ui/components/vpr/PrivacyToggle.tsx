@@ -138,7 +138,8 @@ export function usePrivacyControl(onChange?: (mode: GatewayPrivacyMode, choice: 
       : locked ? 'Your gateway requires TEE sellers for this key.'
         : currentOption && optionHint(currentOption));
 
-  return { current, disabled: !editable || locked, error, hint, select };
+  // Until the gateway has said which mode it is in, there is nothing to switch.
+  return { current, disabled: !privacy.data || !editable || locked, error, hint, select };
 }
 
 export function PrivacyToggle({ control, size = 'regular' }: { control: PrivacyControl; size?: 'regular' | 'small' }) {

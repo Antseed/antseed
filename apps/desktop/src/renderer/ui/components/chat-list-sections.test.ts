@@ -8,7 +8,7 @@ const ids = (list: Record<string, unknown>[]) => list.map((c) => c.id);
 
 describe('buildChatSections', () => {
   it('keeps a plain list when nothing is pinned, in a project or archived', () => {
-    const sections = buildChatSections([conv('a'), conv('b', { workspacePath: DEFAULT })], { defaultWorkspace: DEFAULT, now: NOW });
+    const sections = buildChatSections([conv('a'), conv('b', { workspacePath: DEFAULT })], { defaultWorkspace: DEFAULT });
     expect(sections.map((s) => s.kind)).toEqual(['chats']);
     expect(ids(sections[0]!.conversations)).toEqual(['a', 'b']);
   });
@@ -21,7 +21,7 @@ describe('buildChatSections', () => {
       conv('pin-old', { pinnedAt: 1, workspacePath: '/code/antseed' }),
       conv('pin-new', { pinnedAt: 2 }),
       conv('gone', { archivedAt: 5, workspacePath: '/code/motion' }),
-    ], { defaultWorkspace: DEFAULT, now: NOW });
+    ], { defaultWorkspace: DEFAULT });
 
     expect(sections.map((s) => [s.kind, s.label])).toEqual([
       ['pinned', 'Pinned'],
@@ -39,7 +39,7 @@ describe('buildChatSections', () => {
     const sections = buildChatSections([
       conv('a', { workspacePath: '/work/client-a/app' }),
       conv('b', { workspacePath: '/work/client-b/app' }),
-    ], { defaultWorkspace: DEFAULT, now: NOW });
+    ], { defaultWorkspace: DEFAULT });
     expect(sections.map((s) => s.label).sort()).toEqual(['app · client-a', 'app · client-b']);
   });
 
@@ -47,7 +47,7 @@ describe('buildChatSections', () => {
     const sections = buildChatSections([
       conv('old', { workspacePath: '/p', updatedAt: NOW - 3 * 24 * 60 * 60 * 1000 }),
       conv('today', { workspacePath: '/p', updatedAt: NOW - 60_000 }),
-    ], { defaultWorkspace: DEFAULT, now: NOW });
+    ], { defaultWorkspace: DEFAULT });
     expect(ids(sections[0]!.conversations)).toEqual(['today', 'old']);
   });
 });

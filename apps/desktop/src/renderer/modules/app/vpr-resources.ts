@@ -155,7 +155,12 @@ export function usePrivacySwitch(): PrivacySwitchState {
  */
 export async function requestPrivacyMode(mode: GatewayPrivacyMode): Promise<void> {
   const shown = privacyResource.getSnapshot().data;
-  if (!shown) return;
+  if (!shown) {
+    // The mode isn't known yet, so there is nothing to switch from; say so
+    // rather than look switched while requests go out as before.
+    publishPrivacySwitch({ switching: false, error: 'The privacy mode is still loading. Try again in a moment.' });
+    return;
+  }
   const alreadyRunning = requestedPrivacyMode !== null;
   requestedPrivacyMode = mode;
   privacyUnconfirmedError = null;

@@ -360,4 +360,25 @@ describe('chat controller', () => {
     await waitFor(() => sends.length === 1);
     expect(sends[0]!.modelId).toBe('model-b');
   });
+
+  it('a chat list read before a model change, answering after it saved, keeps the new model', async () => {
+    const listed = deferred<{ ok: boolean; data: Conv[] }>();
+    const conversations = [conv('conv-a', 'model-a'), conv('conv-b', 'model-b')];
+    let holdList = false;
+    const { api, uiState, sends } = setup(conversations, {
+      chatAiListConversations: () => (holdList ? listed.promise : Promise.resolve({ ok: true, data: [...conversations] })),
+    });
+    await api.refreshChatConversations();
+    await api.openConversation('conv-a');
+    holdList = true;
+    const refreshing = api.refreshChatConversations();
+    api.selectChatModel('model-b');
+    await tick();
+    listed.resolve({ ok: true, data: [conv('conv-a', 'model-a'), conv('conv-b', 'model-b')] });
+    await refreshing;
+    expect(uiState.chatSelectedModelId).toBe('model-b');
+    api.sendMessage('hello');
+    await waitFor(() => sends.length === 1);
+    expect(sends[0]!.modelId).toBe('model-b');
+  });
 });

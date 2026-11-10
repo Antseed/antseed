@@ -15,14 +15,13 @@ export type ChatSection = {
   conversations: ChatRecord[];
 };
 
-const RECENT_WINDOW_MS = 24 * 60 * 60 * 1000;
-
 function num(value: unknown): number {
   const n = Number(value);
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
-function updatedAt(conv: ChatRecord): number {
+/** When a chat was last active: its last update, else when it was made. */
+export function updatedAt(conv: ChatRecord): number {
   return num(conv.updatedAt) || num(conv.createdAt);
 }
 
@@ -43,11 +42,8 @@ export function folderName(folder: string): string {
   return parts[parts.length - 1] ?? folder;
 }
 
-/** Chats touched in the last day first, then by activity, newest first. */
-export function compareByActivity(left: ChatRecord, right: ChatRecord, now: number): number {
-  const leftRecent = now - updatedAt(left) <= RECENT_WINDOW_MS ? 1 : 0;
-  const rightRecent = now - updatedAt(right) <= RECENT_WINDOW_MS ? 1 : 0;
-  if (leftRecent !== rightRecent) return rightRecent - leftRecent;
+/** Newest activity first; ties by creation, then id. */
+export function compareByActivity(left: ChatRecord, right: ChatRecord): number {
   const delta = updatedAt(right) - updatedAt(left);
   if (delta !== 0) return delta;
   const created = num(right.createdAt) - num(left.createdAt);
@@ -64,7 +60,7 @@ export function projectFolder(conv: ChatRecord, defaultWorkspace: string): strin
 
 export function buildChatSections(
   conversations: readonly ChatRecord[],
-  options: { defaultWorkspace: string; now: number },
+  options: { defaultWorkspace: string },
 ): ChatSection[] {
   const pinned: ChatRecord[] = [];
   const archived: ChatRecord[] = [];
@@ -81,12 +77,11 @@ export function buildChatSections(
     projects.set(folder, list);
   }
 
-  const byActivity = (a: ChatRecord, b: ChatRecord) => compareByActivity(a, b, options.now);
   const sections: ChatSection[] = [];
 
   if (pinned.length > 0) {
     // Most recently pinned on top.
-    pinned.sort((a, b) => num(b.pinnedAt) - num(a.pinnedAt) || byActivity(a, b));
+    pinned.sort((a, b) => num(b.pinnedAt) - num(a.pinnedAt) || compareByActivity(a, b));
     sections.push({ kind: 'pinned', key: 'pinned', label: 'Pinned', conversations: pinned });
   }
 
@@ -97,22 +92,22 @@ export function buildChatSections(
     nameCounts.set(name, (nameCounts.get(name) ?? 0) + 1);
   }
   const projectSections = [...projects.entries()].map(([folder, list]): ChatSection => {
-    list.sort(byActivity);
+    list.sort(compareByActivity);
     const name = folderName(folder);
     const parent = folderName(folder.slice(0, Math.max(0, folder.length - name.length)).replace(/[\\/]+$/, ''));
     const label = (nameCounts.get(name) ?? 0) > 1 && parent ? `${name} · ${parent}` : name;
     return { kind: 'project', key: folder, label, path: folder, conversations: list };
   });
-  projectSections.sort((a, b) => byActivity(a.conversations[0]!, b.conversations[0]!));
+  projectSections.sort((a, b) => compareByActivity(a.conversations[0]!, b.conversations[0]!));
   sections.push(...projectSections);
 
   if (loose.length > 0) {
-    loose.sort(byActivity);
+    loose.sort(compareByActivity);
     sections.push({ kind: 'chats', key: 'chats', label: 'Chats', conversations: loose });
   }
 
   if (archived.length > 0) {
-    archived.sort((a, b) => num(b.archivedAt) - num(a.archivedAt) || byActivity(a, b));
+    archived.sort((a, b) => num(b.archivedAt) - num(a.archivedAt) || compareByActivity(a, b));
     sections.push({ kind: 'archived', key: 'archived', label: 'Archived', conversations: archived });
   }
 

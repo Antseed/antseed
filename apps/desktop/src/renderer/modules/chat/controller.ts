@@ -167,6 +167,8 @@ export function initChatModule({
   /** In-flight model rebinds, awaited before the conversation's next send. */
   /** A chat's model change still being saved: what was picked, and when it is stored. */
   const pendingModelUpdates = new Map<string, { modelId: string; done: Promise<void> }>();
+  /** Each chat's latest model choice and how many it has had, so a read that began before one can't undo it. */
+  const modelChoices = new Map<string, { revision: number; modelId: string }>();
   /** Conversations whose last send stopped for lack of funds, with the notice to show when reopened. */
   const fundsNoticeByConversation = new Map<string, { message: string; canAddFunds: boolean }>();
 
@@ -427,6 +429,7 @@ export function initChatModule({
   function saveOpenChatModel(id: string): void {
     const convId = activeConversation?.id ?? null;
     if (convId) forgetFundsNotice(convId);
+    if (convId) modelChoices.set(convId, { revision: (modelChoices.get(convId)?.revision ?? 0) + 1, modelId: id });
     if (activeConversation && convId) {
       activeConversation.service = id;
       const summary = getConversationSummaries().find((c) => c.id === convId);
@@ -671,14 +674,18 @@ export function initChatModule({
 
   async function refreshChatConversations(): Promise<void> {
     if (!bridge?.chatAiListConversations) return;
+    const revisionsAtRead = new Map([...modelChoices].map(([id, choice]) => [id, choice.revision]));
     try {
       const result = await bridge.chatAiListConversations();
       if (result.ok) {
-        // A list read before a model change was saved still names the old model.
+        // A list read before a model change was saved, or before it was even
+        // made, still names the old model.
         const conversations = (Array.isArray(result.data) ? (result.data as ChatConversationSummary[]) : [])
           .map((summary) => {
             const pending = pendingModelUpdates.get(summary.id);
-            return pending ? { ...summary, service: pending.modelId } : summary;
+            if (pending) return { ...summary, service: pending.modelId };
+            const choice = modelChoices.get(summary.id);
+            return choice && choice.revision !== revisionsAtRead.get(summary.id) ? { ...summary, service: choice.modelId } : summary;
           });
         uiState.chatConversations = conversations;
         const activeId = uiState.chatActiveConversation;
@@ -785,9 +792,10 @@ export function initChatModule({
     uiState.chatFundsNotice = fundsNoticeByConversation.get(convId) ?? null;
     notifyUiStateChanged();
 
-    // A model choice still being saved, or saved while this read was out, is
+    // A model choice still being saved, or made while this read was out, is
     // newer than what the read may return.
     const modelSaving = pendingModelUpdates.get(convId);
+    const revisionAtRead = modelChoices.get(convId)?.revision;
     try {
       const result = await bridge.chatAiGetConversation(convId);
       if (!isCurrentOpen()) return;
@@ -796,7 +804,9 @@ export function initChatModule({
         reportChatError(result.error, 'Failed to open conversation');
         return;
       }
-      const chosen = pendingModelUpdates.get(convId) ?? modelSaving;
+      const choice = modelChoices.get(convId);
+      const chosen = pendingModelUpdates.get(convId) ?? modelSaving
+        ?? (choice && choice.revision !== revisionAtRead ? choice : undefined);
       const conv = { ...(result.data as ChatConversation), ...(chosen ? { service: chosen.modelId } : {}) };
       const serverMessages = normalizeInlineThinkInMessages(Array.isArray(conv.messages) ? conv.messages : []);
       // A prompt waiting on funds may not be in the session yet; Try again needs it on screen.
