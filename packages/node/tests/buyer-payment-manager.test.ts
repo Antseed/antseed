@@ -2017,6 +2017,46 @@ describe('BuyerPaymentManager', () => {
     expect(reserveSecond.reserveMaxAmount).toBe('200000');
   });
 
+  it('extendCurrentSpendingAuth tops up the reserve when a catch-up signs exactly up to the ceiling', async () => {
+    // Signing the target fills the reserve: without a top-up the seller's spend
+    // then equals its reserve and it closes the channel as exhausted.
+    store.close();
+    store = new ChannelStore(tempDir);
+    manager = new BuyerPaymentManager(
+      identity,
+      makeConfig(tempDir, { maxReserveAmountUsdc: 100_000n, maxPerRequestUsdc: 100_000n }),
+      store,
+    );
+    manager.setSigner(Wallet.createRandom());
+    mux = createMockPaymentMux();
+
+    const sellerPeerId = fakePeerId('seller-catch-up-to-ceiling');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, 100_000n, TEST_PRICING);
+    manager.handleAuthAck(sellerPeerId, { channelId });
+    manager.recordDeliveredResponse(sellerPeerId, 'paid-request-60', { costUsdc: 60_000n });
+    await manager.handleNeedAuth(sellerPeerId, {
+      channelId,
+      requiredCumulativeAmount: '60000',
+      currentAcceptedCumulative: '0',
+      deposit: '100000',
+      requestId: 'paid-request-60',
+      lastRequestCost: '60000',
+    }, mux);
+    expect(manager.getCumulativeAmount(sellerPeerId)).toBe(60_000n);
+    mux.sentSpendingAuths.length = 0;
+
+    await manager.extendCurrentSpendingAuth(sellerPeerId, 50_000n, mux, 100_000n);
+
+    expect(mux.sentSpendingAuths.map((auth) => {
+      const { cumulativeAmount, reserveMaxAmount } = auth as Record<string, string | undefined>;
+      return { cumulativeAmount, reserveMaxAmount };
+    })).toEqual([
+      { cumulativeAmount: '100000', reserveMaxAmount: undefined },
+      { cumulativeAmount: '100000', reserveMaxAmount: '200000' },
+    ]);
+    expect(manager.getCumulativeAmount(sellerPeerId)).toBe(100_000n);
+  });
+
   it('topUpReserve sends new ReserveAuth with increased ceiling', async () => {
     const sellerPeerId = fakePeerId('seller-topup-rsv');
     await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
