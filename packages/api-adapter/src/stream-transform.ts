@@ -1,11 +1,14 @@
+import { extractErrorMessage } from './response-transform.js';
 import type { SerializedHttpResponseChunk, ServiceApiProtocol } from './types.js';
 import {
   createChatStreamParser,
   encodeSseEvents,
   extractUsage,
+  isSseFailure,
   RESPONSES_FINAL_ANSWER_TOOL,
   makeStreamingStartResponse,
   mapFinishReasonToAnthropicStopReason,
+  openAIResponsesEnding,
   openAIResponsesFunctionCallId,
   openAIResponsesMessageId,
   parseJsonSafe,
@@ -40,7 +43,9 @@ type CanonicalStreamEvent =
     endTurn?: boolean;
     usage: TokenUsage;
     toolCalls: CanonicalStreamToolCall[];
-  };
+  }
+  // The stream failed before the answer finished. `code` is the upstream's error code or type, if it names one.
+  | { type: 'response_error'; message: string; code: string | null };
 
 type CanonicalStreamNormalizer = (options: StreamTransformInternals) => ProtocolStreamNormalizer;
 type CanonicalStreamRenderer = (options: StreamTransformInternals) => ProtocolStreamRenderer;
@@ -61,6 +66,12 @@ interface ProtocolStreamRenderer {
 const ZERO_USAGE: TokenUsage = { inputTokens: 0, outputTokens: 0, freshInputTokens: 0, cachedInputTokens: 0 };
 
 const RESPONSES_CONTINUE_TOOL = 'exec_command';
+
+const STREAM_CUT_OFF: CanonicalStreamEvent = {
+  type: 'response_error',
+  message: 'The upstream ended the stream before the response finished',
+  code: null,
+};
 
 const STREAM_NORMALIZERS: Partial<Record<ServiceApiProtocol, CanonicalStreamNormalizer>> = {
   'anthropic-messages': createAnthropicStreamNormalizer,
@@ -90,11 +101,22 @@ export function createStreamingAdapter(
   const normalizer = createNormalizer(internals);
   const renderer = createRenderer(internals);
 
+  // A stream ends exactly once, and says how. Normalizers report what the source said;
+  // the first ending stands, and a source that stopped without one was cut off.
+  let ended = false;
+  const isFirstEnding = (event: CanonicalStreamEvent): boolean => {
+    if (event.type !== 'response_done' && event.type !== 'response_error') return true;
+    const first = !ended;
+    ended = true;
+    return first;
+  };
+
   return {
     adaptStart: makeStreamingStartResponse,
     adaptChunk(chunk) {
       const events = normalizer.feed(chunk);
-      return renderer.render(events, chunk);
+      if (chunk.done) events.push(STREAM_CUT_OFF);
+      return renderer.render(events.filter(isFirstEnding), chunk);
     },
   };
 }
@@ -159,6 +181,9 @@ function createChatStreamNormalizer(options: StreamTransformInternals): Protocol
         toolCalls,
       });
     },
+    onError(failure) {
+      emitted.push(responseError(failure));
+    },
   }, {
     id: '',
     model: options.fallbackModel ?? 'unknown',
@@ -181,8 +206,6 @@ function createAnthropicStreamNormalizer(options: StreamTransformInternals): Pro
   let usage: TokenUsage = ZERO_USAGE;
   let finishReason: string | null = null;
   let responseStarted = false;
-  // A relay ends every stream with an empty final chunk, after message_stop has already finished the response.
-  let responseDone = false;
   const toolBlockIndexes = new Map<number, number>();
   const toolCalls = new Map<number, CanonicalStreamToolCall>();
 
@@ -205,6 +228,15 @@ function createAnthropicStreamNormalizer(options: StreamTransformInternals): Pro
     });
   };
 
+  const responseDone = (): CanonicalStreamEvent => ({
+    type: 'response_done',
+    id: responseId,
+    model: responseModel,
+    finishReason: finishReason ?? 'stop',
+    usage,
+    toolCalls: sortedToolCalls(toolCalls),
+  });
+
   return {
     feed(chunk) {
       const emitted: CanonicalStreamEvent[] = [];
@@ -215,6 +247,11 @@ function createAnthropicStreamNormalizer(options: StreamTransformInternals): Pro
       for (const event of events) {
         if (event.data === '[DONE]') continue;
         const parsed = parseJsonSafe(event.data);
+        if (isSseFailure(event, parsed)) {
+          // The stop reason comes after the last content: a failure past it can't undo a whole answer.
+          if (finishReason === null) emitted.push(responseError(parsed));
+          continue;
+        }
         if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) continue;
         const data = parsed as Record<string, unknown>;
         const type = typeof data.type === 'string' ? data.type : event.event;
@@ -276,31 +313,13 @@ function createAnthropicStreamNormalizer(options: StreamTransformInternals): Pro
         }
 
         if (type === 'message_stop') {
-          if (responseDone) continue;
-          responseDone = true;
           emitStart(emitted);
-          emitted.push({
-            type: 'response_done',
-            id: responseId,
-            model: responseModel,
-            finishReason: finishReason ?? 'stop',
-            usage,
-            toolCalls: sortedToolCalls(toolCalls),
-          });
+          emitted.push(responseDone());
         }
       }
 
-      if (chunk.done && !responseDone && emitted.length === 0) {
-        responseDone = true;
-        return [{
-          type: 'response_done',
-          id: responseId,
-          model: responseModel,
-          finishReason: finishReason ?? 'stop',
-          usage,
-          toolCalls: sortedToolCalls(toolCalls),
-        }];
-      }
+      // A stream cut after its stop reason lost only the closing frame.
+      if (chunk.done && finishReason !== null) emitted.push(responseDone());
 
       return emitted;
     },
@@ -346,6 +365,10 @@ function createResponsesStreamNormalizer(options: StreamTransformInternals): Pro
       for (const event of events) {
         if (event.data === '[DONE]') continue;
         const parsed = parseJsonSafe(event.data);
+        if (isSseFailure(event, parsed)) {
+          emitted.push(responseError(parsed));
+          continue;
+        }
         if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) continue;
         const data = parsed as Record<string, unknown>;
         const type = typeof data.type === 'string' ? data.type : event.event;
@@ -390,7 +413,12 @@ function createResponsesStreamNormalizer(options: StreamTransformInternals): Pro
           continue;
         }
 
-        if (type === 'response.completed') {
+        if (type === 'response.failed') {
+          emitted.push(responseError(data.response));
+          continue;
+        }
+
+        if (type === 'response.completed' || type === 'response.incomplete') {
           const response = objectValue(data.response);
           if (typeof response.id === 'string') responseId = response.id;
           if (typeof response.model === 'string') responseModel = response.model;
@@ -475,6 +503,13 @@ function createChatStreamRenderer(options: StreamTransformInternals): ProtocolSt
         if (event.type === 'response_done') {
           chunks.push(renderChunk({}, event.finishReason ?? 'stop', openAIChatUsage(event.usage)));
           chunks.push('data: [DONE]\n\n');
+          continue;
+        }
+
+        if (event.type === 'response_error') {
+          // Chat Completions has no error event. The OpenAI SDKs raise on a data line with
+          // an `error`; a stream that only stopped looks finished to them.
+          chunks.push(`data: ${JSON.stringify({ error: { message: event.message, type: event.code ?? 'api_error' } })}\n\n`);
         }
       }
 
@@ -623,6 +658,11 @@ function createAnthropicStreamRenderer(options: StreamTransformInternals): Proto
             },
           });
           emitted.push({ event: 'message_stop', data: { type: 'message_stop' } });
+          continue;
+        }
+
+        if (event.type === 'response_error') {
+          emitted.push({ event: 'error', data: { type: 'error', error: { type: 'api_error', message: event.message } } });
         }
       }
 
@@ -774,6 +814,7 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
 
         if (event.type === 'response_done') {
           ensureResponseCreated(emitted, null);
+          const ending = openAIResponsesEnding(event.finishReason);
           const messagePhase = toolCalls.size > 0 ? 'commentary' : undefined;
           if (!outputDone) {
             outputDone = true;
@@ -798,7 +839,7 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
                   type: 'message',
                   id: msgId,
                   role: 'assistant',
-                  status: 'completed',
+                  status: ending.status,
                   content: [{ type: 'output_text', text: textBuffer, annotations: [] }],
                   ...(messagePhase ? { phase: messagePhase } : {}),
                 },
@@ -823,25 +864,25 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
                   call_id: toolCall.id,
                   name: toolCall.name,
                   arguments: toolCall.arguments,
-                  status: 'completed',
+                  status: ending.status,
                 },
               });
             }
           }
 
-          pushEvent(emitted, 'response.completed', {
+          pushEvent(emitted, `response.${ending.status}`, {
             response: {
               id: getResponseId(),
               object: 'response',
               model: responseModel,
-              status: 'completed',
+              ...ending,
               created_at: createdAt,
               output: [
                 ...(outputStarted ? [{
                   type: 'message' as const,
                   id: getMessageId(),
                   role: 'assistant' as const,
-                  status: 'completed' as const,
+                  status: ending.status,
                   content: [{ type: 'output_text' as const, text: textBuffer, annotations: [] }],
                   ...(messagePhase ? { phase: messagePhase } : {}),
                 }] : []),
@@ -851,7 +892,7 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
                   call_id: toolCall.id,
                   name: toolCall.name,
                   arguments: toolCall.arguments,
-                  status: 'completed' as const,
+                  status: ending.status,
                 })),
               ],
               output_text: textBuffer,
@@ -860,6 +901,25 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
             },
           });
           emitted.push({ data: '[DONE]' });
+          continue;
+        }
+
+        if (event.type === 'response_error') {
+          ensureResponseCreated(emitted, null);
+          // No `.done` events: the partial items never finished, and the client has their deltas.
+          pushEvent(emitted, 'response.failed', {
+            response: {
+              id: getResponseId(),
+              object: 'response',
+              model: responseModel,
+              status: 'failed',
+              created_at: createdAt,
+              error: { code: event.code ?? 'server_error', message: event.message },
+              output: [],
+              output_text: '',
+              usage: null,
+            },
+          });
         }
       }
 
@@ -872,6 +932,15 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
       return [];
     },
   };
+}
+
+/** A canonical failure from what the stream reported: the relay's plain text, or a vendor's JSON error. */
+function responseError(failure: unknown): CanonicalStreamEvent {
+  if (typeof failure === 'string' && failure.length > 0) return { type: 'response_error', message: failure, code: null };
+  const body = objectValue(failure);
+  const error = objectValue(body.error);
+  const code = error.code ?? error.type ?? body.code;
+  return { type: 'response_error', message: extractErrorMessage(body), code: typeof code === 'string' ? code : null };
 }
 
 function emitCompletedResponseOutput(

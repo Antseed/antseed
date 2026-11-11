@@ -1,6 +1,7 @@
 import {
   extractUsage,
   mapFinishReasonToAnthropicStopReason,
+  openAIResponsesEnding,
   openAIResponsesFunctionCallId,
   openAIResponsesMessageId,
   parseJsonSafe,
@@ -771,6 +772,7 @@ export function renderCanonicalResponseToOpenAIChatBody(response: CanonicalLlmRe
 }
 
 export function renderCanonicalResponseToOpenAIResponsesBody(response: CanonicalLlmResponse): Record<string, unknown> {
+  const ending = openAIResponsesEnding(response.stopReason);
   const output: unknown[] = [];
   const textItems = response.output
     .filter((item): item is Extract<CanonicalOutputItem, { type: 'text' }> => item.type === 'text');
@@ -782,7 +784,7 @@ export function renderCanonicalResponseToOpenAIResponsesBody(response: Canonical
       type: 'message',
       id: openAIResponsesMessageId(response.id),
       role: 'assistant',
-      status: 'completed',
+      status: ending.status,
       content: [{ type: 'output_text', text, annotations: [] }],
       ...(phase ? { phase } : {}),
     });
@@ -796,7 +798,7 @@ export function renderCanonicalResponseToOpenAIResponsesBody(response: Canonical
       call_id: item.id,
       name: item.name,
       arguments: stringifyToolArguments(item.arguments),
-      status: 'completed',
+      status: ending.status,
     });
   }
 
@@ -804,7 +806,7 @@ export function renderCanonicalResponseToOpenAIResponsesBody(response: Canonical
     id: response.id,
     object: 'response',
     model: response.model,
-    status: 'completed',
+    ...ending,
     created_at: Math.floor(Date.now() / 1000),
     output,
     output_text: text,

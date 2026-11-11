@@ -277,7 +277,7 @@ describe('a Responses stream that ends with response.incomplete', () => {
     expect(delta.usage).toMatchObject({ input_tokens: 100, output_tokens: 7 });
     const answer = notStreamed(reason, MESSAGES);
     expect(answer.stop_reason).toBe(stopReason);
-    expect(answer.usage).toMatchObject(delta.usage);
+    expect(delta.usage).toMatchObject(answer.usage);
   });
 
   it.each([

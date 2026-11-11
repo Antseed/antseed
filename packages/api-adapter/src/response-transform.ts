@@ -326,7 +326,7 @@ function buildOpenAIResponsesStream(body: Record<string, unknown>): Uint8Array {
     }
   }
 
-  pushEvent('response.completed', { response: body });
+  pushEvent(`response.${body.status}`, { response: body });
   sseEvents.push('data: [DONE]\n\n');
 
   return encodeText(sseEvents.join(''));
@@ -338,7 +338,7 @@ function fallbackResponseId(requestId: string, targetProtocol: ServiceApiProtoco
   return `chatcmpl-${requestId}`;
 }
 
-function extractErrorMessage(parsed: Record<string, unknown>): string {
+export function extractErrorMessage(parsed: Record<string, unknown>): string {
   const error = parsed.error;
   if (error && typeof error === 'object' && !Array.isArray(error)) {
     const message = (error as Record<string, unknown>).message;
