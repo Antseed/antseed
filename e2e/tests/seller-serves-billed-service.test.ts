@@ -42,7 +42,7 @@ async function modelFieldsSent({ url, init }: UpstreamCall): Promise<string[]> {
   const request = new Request(url, { method: 'POST', headers: init.headers, body: init.body });
   if (request.headers.get('content-type')?.startsWith('multipart/')) {
     const form = await request.formData();
-    return [...form.getAll('model'), ...form.getAll('modelId')].map(String);
+    return [...form.entries()].filter(([name]) => /^\s*(model|modelid)\s*$/i.test(name)).map(([, value]) => String(value));
   }
   return Object.entries(await request.json() as Record<string, string>)
     .filter(([name]) => /^(model|modelid)$/i.test(name))
@@ -132,6 +132,31 @@ describe('the seller serves exactly the service it bills', () => {
     expect(response.statusCode).toBe(400);
   });
 
+  it('forwards the rest of a multipart request unchanged', async () => {
+    const calls = stubUpstream();
+    const provider = await openaiPlugin.createProvider(CONFIG);
+    const form = new FormData();
+    form.append('model', 'aliased-model');
+    form.append('prompt', 'make it blue');
+    form.append('n', '2');
+    form.append('image', new Blob([new Uint8Array([1, 2, 3])], { type: 'image/png' }), 'a.png');
+    const encoded = new Response(form);
+    const response = await serve(provider, {
+      method: 'POST',
+      path: '/v1/images/edits',
+      headers: { 'content-type': encoded.headers.get('content-type')! },
+      body: new Uint8Array(await encoded.arrayBuffer()),
+    });
+    expect(response.statusCode).toBe(200);
+    const sent = await new Request(calls[0]!.url, { method: 'POST', headers: calls[0]!.init.headers, body: calls[0]!.init.body }).formData();
+    expect(sent.getAll('model')).toEqual(['upstream-alias']);
+    expect(sent.get('prompt')).toBe('make it blue');
+    expect(sent.get('n')).toBe('2');
+    const image = sent.get('image') as File;
+    expect(image.name).toBe('a.png');
+    expect([...new Uint8Array(await image.arrayBuffer())]).toEqual([1, 2, 3]);
+  });
+
   it('keeps a Venice multi-image edit on its native edit model and modelId field', async () => {
     const calls = stubUpstream(() => new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { 'content-type': 'image/png' } }));
     const provider = await openaiPlugin.createProvider({
@@ -157,5 +182,8 @@ describe('the seller serves exactly the service it bills', () => {
     const sent = await new Request(calls[0]!.url, { method: 'POST', headers: calls[0]!.init.headers, body: calls[0]!.init.body }).formData();
     expect(sent.getAll('modelId')).toEqual(['nano-banana-pro-edit']);
     expect(sent.has('model')).toBe(false);
+    expect(sent.get('prompt')).toBe('merge them');
+    const images = sent.getAll('images') as File[];
+    expect(await Promise.all(images.map(async (image) => [...new Uint8Array(await image.arrayBuffer())]))).toEqual([[1], [2]]);
   });
 });

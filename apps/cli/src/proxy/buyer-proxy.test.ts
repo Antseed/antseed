@@ -1701,6 +1701,7 @@ test('a multipart request reaches the seller naming the routed service', async (
   const boundary = 'form-boundary'
   const peer = makePeer('a', ['openai'])
   peer.providerServiceApiProtocols = { openai: { services: { 'image-model': ['openai-images'] } } }
+  peer.providerServiceCapabilities = { openai: { services: { 'image-model': { outputs: ['image'], supportedParameters: ['image'] } } } }
   for (const model of ['image-model', `${peer.peerId}@image-model`]) {
     const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
     let sent: SerializedHttpRequest | undefined

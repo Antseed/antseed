@@ -393,12 +393,11 @@ it('charges a multipart request the price of its own service, and nothing for a 
   };
 
   expect(await serve('priced')).toBe(200);
-  expect(recordSpend).toHaveBeenLastCalledWith('session-1', 3000n);
+  expect(recordSpend.mock.calls).toEqual([['session-1', 3000n]]);
   expect(await serve('at-default')).toBe(200);
-  expect(recordSpend).toHaveBeenLastCalledWith('session-1', 30000n);
-  recordSpend.mockClear();
+  expect(recordSpend.mock.calls).toEqual([['session-1', 3000n], ['session-1', 30000n]]);
   expect(await serve('free')).toBe(200);
-  expect(recordSpend).not.toHaveBeenCalled();
+  expect(recordSpend.mock.calls).toEqual([['session-1', 3000n], ['session-1', 30000n]]);
   expect(vi.mocked(provider.handleRequest).mock.calls.map(([request]) => request.headers['x-antseed-service'])).toEqual(['priced', 'at-default', 'free']);
 });
 
