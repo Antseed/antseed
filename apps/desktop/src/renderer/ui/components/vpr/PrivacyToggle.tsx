@@ -240,7 +240,7 @@ export function PrivacyNote({ control, className, switches = 0, plain = false }:
   return (
     <div
       aria-busy={pending || undefined}
-      className={`${styles.note}${isPrivate ? ` ${styles.notePrivate}` : ''}${plain ? ` ${styles.notePlain}` : ''}${dismissed && !control.error ? ` ${styles.noteReminder}` : ''}${className ? ` ${className}` : ''}`}
+      className={`${styles.note}${isPrivate ? ` ${styles.notePrivate}` : ''}${plain ? ` ${styles.notePlain}` : ''}${dismissed && !control.error && !pending ? ` ${styles.noteReminder}` : ''}${className ? ` ${className}` : ''}`}
     >
       {plain ? null : <span className={`${styles.badge} ${isPrivate ? styles.badgePrivate : styles.badgeAnonymous}`} aria-hidden="true" />}
       <p className={styles.noteText} role={control.error ? 'alert' : undefined}>

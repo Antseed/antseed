@@ -1120,6 +1120,10 @@ export function initChatModule({
       // ids, and a sent chat keeps its model: settle it against the list now.
       applyDefaultModel();
       let writtenWith = uiState.chatSelectedModelId;
+      // What this submission was written with, kept for when the user moves on
+      // to another chat: a model chosen there is that chat's, not this one's.
+      let submitted = { modelId: writtenWith, chosen: modelChosen(writtenWith) };
+      const needsFree = () => (draftVersion === newChatDraftVersion ? needsFreeModel() : needsFreeModel(submitted));
       setDraftSending(true);
       void (async () => {
         // A new chat keeps its model, and the mode being switched to can move it.
@@ -1130,9 +1134,10 @@ export function initChatModule({
           if (draftVersion === newChatDraftVersion) {
             applyDefaultModel();
             writtenWith = uiState.chatSelectedModelId;
+            submitted = { modelId: writtenWith, chosen: modelChosen(writtenWith) };
           }
         }
-        const waited = await waitForFreeModel(stillDraft);
+        const waited = await waitForFreeModel(stillDraft, needsFree);
         if (!stillDraft()) { stoppedDrafts.delete(draftToken); return; }
         // The draft's model is captured here: the user may switch before the
         // conversation finishes creating. A wait that found a free model moves to it.
@@ -1141,8 +1146,10 @@ export function initChatModule({
           if (draftVersion === newChatDraftVersion) {
             applyDefaultModel();
             modelId = uiState.chatSelectedModelId;
-          } else {
-            modelId = chooseDefaultChatModel(uiState.chatModels, loadLastChatModel()) ?? writtenWith;
+          } else if (!submitted.chosen && !needsFreeModel(submitted)) {
+            // Left behind: the free model the wait found, never the last model
+            // saved, which another chat may have chosen meanwhile.
+            modelId = chooseDefaultChatModel(uiState.chatModels, null) ?? writtenWith;
           }
         }
         const convId = await createConversationForModel(modelId, { activate: false });
@@ -1162,11 +1169,20 @@ export function initChatModule({
     sendMessageToConversation(uiState.chatActiveConversation, text, rawAttachments, { privateAtSubmit });
   }
 
-  /** Whether a first message should hold until a free model is listed (see `shouldWaitForFreeModel`). */
-  function needsFreeModel(): boolean {
-    const current = uiState.chatSelectedModelId;
+  /** Whether the user picked this model, rather than it being a default nobody chose. */
+  function modelChosen(modelId: string | null): boolean {
+    return (modelId !== null && modelId === loadLastChatModel()) || draftModel !== null || Boolean(modelId && splitPinnedModel(modelId).peerId);
+  }
+
+  /**
+   * Whether a first message should hold until a free model is listed (see
+   * `shouldWaitForFreeModel`): for the composer's selection, or for a
+   * submission's own model once it is no longer on screen.
+   */
+  function needsFreeModel(selection?: { modelId: string | null; chosen: boolean }): boolean {
+    const current = selection ? selection.modelId : uiState.chatSelectedModelId;
     return shouldWaitForFreeModel(uiState.chatModels, current, {
-      chosen: (current !== null && current === loadLastChatModel()) || draftModel !== null || Boolean(current && splitPinnedModel(current).peerId),
+      chosen: selection ? selection.chosen : modelChosen(current),
       // A remote gateway that doesn't report its balance counts as funded.
       funded: (uiState.gatewayStatus?.mode === 'remote' && !uiState.creditsBalanceKnown)
         || (uiState.creditsBalanceKnown && Number(uiState.creditsTotalOwnedUsdc) > 0),
@@ -1177,14 +1193,14 @@ export function initChatModule({
    * Re-reads the list until a free model shows up, the wait runs out, or the
    * send is stopped. True when it waited at all.
    */
-  async function waitForFreeModel(stillSending: () => boolean): Promise<boolean> {
-    if (!needsFreeModel()) return false;
+  async function waitForFreeModel(stillSending: () => boolean, needs: () => boolean = needsFreeModel): Promise<boolean> {
+    if (!needs()) return false;
     uiState.chatThinkingPhase = FINDING_FREE_MODEL;
     notifyUiStateChanged();
     const deadline = Date.now() + FREE_MODEL_WAIT_MS;
     for (;;) {
       await refreshChatModels({ force: true });
-      if (!stillSending() || !needsFreeModel() || Date.now() >= deadline) break;
+      if (!stillSending() || !needs() || Date.now() >= deadline) break;
       await new Promise((resolve) => setTimeout(resolve, FREE_MODEL_POLL_MS));
     }
     if (uiState.chatThinkingPhase === FINDING_FREE_MODEL) uiState.chatThinkingPhase = null;

@@ -219,6 +219,36 @@ describe('chat controller', () => {
     expect(sends[0]).toMatchObject({ content: 'hello', modelId: 'model-free' });
   });
 
+  it('a first message waiting for a free model keeps its own model when another chat picks a paid one', async () => {
+    // A real saved last model, so the other chat's pick is remembered the way the app does.
+    const saved = new Map<string, string>();
+    const previousWindow = (globalThis as { window?: unknown }).window;
+    (globalThis as { window?: unknown }).window = {
+      ...(previousWindow as object | undefined),
+      localStorage: { getItem: (key: string) => saved.get(key) ?? null, setItem: (key: string, value: string) => { saved.set(key, value); } },
+    };
+    try {
+      let listed = [model('model-a'), model('model-b')];
+      const { api, uiState, sends } = setup(undefined, {
+        chatListModels: async () => ({ ok: true, data: listed }),
+      });
+      uiState.creditsTotalOwnedUsdc = '0';
+      await api.refreshChatConversations();
+      api.sendMessage('draft A');
+      await waitFor(() => uiState.chatThinkingPhase === 'Finding a free model');
+      api.startNewChat();
+      api.selectChatModel('model-b');
+      await tick(300);
+      // Still waiting: the other chat's pick doesn't end draft A's wait.
+      expect(sends).toEqual([]);
+      listed = [model('model-a'), model('model-b'), { ...model('model-free'), free: true }];
+      await waitFor(() => sends.length === 1, 3_000);
+      expect(sends[0]).toMatchObject({ content: 'draft A', modelId: 'model-free' });
+    } finally {
+      (globalThis as { window?: unknown }).window = previousWindow;
+    }
+  });
+
   it('a stopped wait for a free model sends nothing', async () => {
     const { api, uiState, sends } = setup(undefined, {
       chatListModels: async () => ({ ok: true, data: [model('model-a')] }),

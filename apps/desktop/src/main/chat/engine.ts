@@ -3,6 +3,7 @@
  * gateway: it lists the gateway's models, sends each turn to the gateway with
  * the desktop's key, and persists conversations as pi sessions.
  */
+import { PendingRuns } from './pending-runs.js';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import {
@@ -103,6 +104,7 @@ export function registerPiChatHandlers({
   const organization = new ChatOrganizationStore(path.join(CHAT_DATA_DIR, 'organization.json'));
   const gitBranches = new GitBranchCache();
   const activeRunsByConversation = new Map<string, ActiveRun>();
+  const pendingRuns = new PendingRuns();
   const activeImageRunsByConversation = new Map<string, AbortController>();
   const pendingToolApprovals = new Map<string, { conversationId: string; resolve: (decision: ToolApprovalDecision) => void }>();
   /** Entries from the last successful `/v1/models` read, for telemetry context. */
@@ -290,6 +292,7 @@ export function registerPiChatHandlers({
   const runStreamingPrompt = createStreamingRunner({
     store,
     activeRunsByConversation,
+    pendingRuns,
     configPath,
     sendToRenderer,
     appendSystemLog,
@@ -518,6 +521,7 @@ export function registerPiChatHandlers({
       ? [activeImageRunsByConversation.get(trimmedConversationId)].filter((run): run is AbortController => Boolean(run))
       : Array.from(activeImageRunsByConversation.values());
     for (const controller of imageRuns) controller.abort();
+    pendingRuns.abort(trimmedConversationId || undefined);
     await Promise.all(activeRuns.map((run) => abortAndClearActiveRun(run)));
   };
 

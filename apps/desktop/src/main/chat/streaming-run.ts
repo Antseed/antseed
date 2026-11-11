@@ -9,6 +9,7 @@
  */
 import { isReplyCutOff, REPLY_CUT_OFF_MESSAGE } from './stream-stop.js';
 import { trackChatRun } from './served-peer.js';
+import { PendingRuns } from './pending-runs.js';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import type { AgentSessionEvent, ExtensionAPI } from '@mariozechner/pi-coding-agent';
@@ -131,6 +132,12 @@ export type StreamingRunContext = {
   privacy?: PrivacyGate;
   store: PiConversationStore;
   activeRunsByConversation: Map<string, ActiveRun>;
+  /**
+   * Runs still in preflight (privacy gate, gateway, model, session setup),
+   * before they are an ActiveRun. Abort cancels these too, so a Stop during
+   * preflight keeps the prompt from going out.
+   */
+  pendingRuns?: PendingRuns;
   configPath: string;
   sendToRenderer: (channel: string, payload: unknown) => void;
   appendSystemLog: (line: string) => void;
@@ -195,6 +202,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
 
   const runStreamingPromptOnce = async (
     revokers: Array<() => void>,
+    signal: AbortSignal,
     conversationId: string,
     userMessage: string,
     modelOverride?: string,
@@ -226,6 +234,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     // in Private doesn't go out once Private is off.
     const mustBePrivate = requiresPrivate(options, (await store.get(conversationId))?.messages ?? []);
     const refused = await passPrivacyGate(ctx.privacy, mustBePrivate);
+    if (signal.aborted) return stoppedBeforeSend(conversationId);
     if (refused) return { ok: false, error: refused };
 
     // Starts the local gateway on demand; a remote gateway without a URL or
@@ -240,10 +249,13 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     try {
       endpoint = { ...await getEndpoint(), ...(protect ? { requireTee: true } : {}) };
     } catch (error) {
+      if (signal.aborted) return stoppedBeforeSend(conversationId);
       const message = asErrorMessage(error);
       appendSystemLog(`Chat could not reach the gateway: ${message}`);
       return { ok: false, error: message };
     }
+
+    if (signal.aborted) return stoppedBeforeSend(conversationId);
 
     let revokeShellGateway = (): void => undefined;
     const sessionManager = await store.openSessionManager(conversationId);
@@ -781,6 +793,9 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     }
 
     try {
+      // The last check before anything is sent or any tool can run: a Stop
+      // during session setup lands here.
+      if (signal.aborted) throw Object.assign(new Error('Request aborted'), { name: 'AbortError' });
       const promptText = [trimmedMessage, attachmentPromptText].filter((part) => part.length > 0).join('\n\n');
       const chatRun = trackChatRun((peerId) => {
         const peerName = sellerName(peerId);
@@ -870,11 +885,21 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     }
   };
 
+  /** A run stopped while still in preflight: nothing was sent. */
+  const stoppedBeforeSend = (conversationId: string): StreamingRunResult => {
+    const reason = classifyChatStreamFailure({ error: null, message: 'Request aborted', stopReason: 'aborted' });
+    emitChatStreamError({ conversationId, error: 'Request aborted', stopReason: reason });
+    return { ok: false, error: 'Aborted', stopReason: reason };
+  };
+
   const runStreamingPrompt = async (...args: StreamingRunArgs): Promise<StreamingRunResult> => {
     const revokers: Array<() => void> = [];
+    // Registered before the first await, so an abort during preflight finds it.
+    const pending = (ctx.pendingRuns ?? new PendingRuns()).begin(args[0]);
     try {
-      return await runStreamingPromptOnce(revokers, ...args);
+      return await runStreamingPromptOnce(revokers, pending.signal, ...args);
     } finally {
+      pending.end();
       for (const revoke of revokers) revoke();
     }
   };

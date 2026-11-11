@@ -36,3 +36,18 @@ it('shows Private in effect once the gateway confirmed it', () => {
   expect(toggle).toContain(styles.activePrivate);
   expect(toggle).not.toContain(styles.pending);
 });
+
+it('keeps a pending note up after "Got it", without the reminder that fades it out', () => {
+  const store = new Map([['antseed:privacyNoteSeen', JSON.stringify({ anonymous: true, private: true })]]);
+  const previousWindow = (globalThis as { window?: unknown }).window;
+  (globalThis as { window?: unknown }).window = {
+    localStorage: { getItem: (key: string) => store.get(key) ?? null, setItem: (key: string, value: string) => { store.set(key, value); } },
+  };
+  try {
+    const note = renderToStaticMarkup(<PrivacyNote control={control({ current: 'anonymous', pending: 'private', hint: pendingHint('private') })} />);
+    expect(note).toContain('Turning on Private');
+    expect(note).not.toContain(styles.noteReminder);
+  } finally {
+    (globalThis as { window?: unknown }).window = previousWindow;
+  }
+});
