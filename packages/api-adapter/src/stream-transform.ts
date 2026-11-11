@@ -111,6 +111,8 @@ export function createStreamingAdapter(
   return {
     adaptStart: makeStreamingStartResponse,
     adaptChunk(chunk) {
+      // Once ended, the source is no longer read; the renderer still gets the final chunk.
+      if (ended) return renderer.render([], chunk);
       const reported = normalizer.feed(chunk);
       if (chunk.done) reported.push(STREAM_CUT_OFF);
       const events: CanonicalStreamEvent[] = [];
