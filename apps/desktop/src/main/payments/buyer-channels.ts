@@ -14,8 +14,9 @@ import { CHANNELS_FRESH_MS, cachedRead, readKeys, refreshFresh } from './read-ca
 import { readPendingSpend } from './pending-spend.js';
 import {
   applyChainToChannels,
+  buyerChannelsView,
+  type BuyerChannelsView,
   type ChannelChainRead,
-  normalizePaymentChannelSummary,
   requestCooperativeChannelCloseAtPort,
   readChannelsBatched,
   rowsToReadAlone,
@@ -186,12 +187,13 @@ const CHANNEL_ENRICH_CONCURRENCY = 12;
 const canonicalReadAloneAt = new Map<string, number>();
 const facadeReadAloneAt = new Map<string, number>();
 
-// Channels with a delegated seller live behind the seller's facade contract
-// (the row's `seller` is the contract, e.g. DiemStakingProxy) and have no
-// record on the canonical AntseedChannels. ChannelsClient probes
-// `channelsAddress()` on the facade to find the underlying deployment, so a
-// per-seller client resolves those rows. EOA sellers cache as non-facades and
-// simply keep returning status 0.
+// A delegated seller's facade contract (the row's `seller`, e.g.
+// DiemStakingProxy) forwards reserve() to the channels contract the registry
+// names, so its channels are recorded on the canonical AntseedChannels like
+// any other. A row with no record there is looked up once more on the
+// contract its facade names (ChannelsClient probes `channelsAddress()`),
+// which differs only when the configured channels address is not the one the
+// facade uses. EOA sellers cache as non-facades and keep returning status 0.
 const sellerFacadeClients = new Map<string, ChannelsClient>();
 
 /** Drop the per-seller facade clients so they rebuild on the current chain config. */
@@ -221,7 +223,9 @@ function facadeClientFor(
 
 // The buyer's store can disagree with the chain both ways: a seller's settle or
 // close is not always observed, and a row the buyer retired (it gave up on the
-// session) can still be open with its reserve locked. The chain decides.
+// session) can still be open with its reserve locked. The chain decides. The
+// buyer reports the chain's record with each row (see buyerChannelsView); this
+// read is only for an attached buyer that predates that.
 async function enrichChannelStatuses(channels: DesktopPaymentChannelSummary[], fresh = false): Promise<void> {
   const cc = await loadCachedCryptoConfig();
   if (!cc?.channelsAddress) return;
@@ -286,22 +290,26 @@ async function readChannelSessions(
   return sessions;
 }
 
-/** Fetch every buyer channel from the local proxy, retired rows included. */
-export async function loadBuyerChannels({ enrichOnChain = true, fresh = false }: {
+/**
+ * Fetch every buyer channel from the local proxy, retired rows included, with
+ * the on-chain reserve no listed channel accounts for.
+ */
+export async function loadBuyerChannelsView({ enrichOnChain = true, fresh = false }: {
   /** Let the chain decide each row's status (on by default). */
   enrichOnChain?: boolean;
-  /** Skip the short status cache, e.g. for an explicit refresh. */
+  /** Skip the short status caches, e.g. for an explicit refresh. */
   fresh?: boolean;
-} = {}): Promise<DesktopPaymentChannelSummary[] | null> {
-  const body = await fetchBuyerProxyJson('/_antseed/channels?all=1');
+} = {}): Promise<BuyerChannelsView | null> {
+  const body = await fetchBuyerProxyJson(`/_antseed/channels?all=1${fresh ? '&fresh=1' : ''}`);
   if (!body) return null;
-  const channels = Array.isArray(body['channels'])
-    ? body['channels']
-      .map((entry) => normalizePaymentChannelSummary(entry))
-      .filter((entry): entry is DesktopPaymentChannelSummary => entry !== null)
-    : [];
-  if (enrichOnChain) await enrichChannelStatuses(channels, fresh).catch(() => {});
-  return channels;
+  const view = buyerChannelsView(body, { applyChain: enrichOnChain });
+  if (enrichOnChain && !view.chainReported) await enrichChannelStatuses(view.channels, fresh).catch(() => {});
+  return view;
+}
+
+/** The channel rows of `loadBuyerChannelsView`. */
+export async function loadBuyerChannels(options: Parameters<typeof loadBuyerChannelsView>[0] = {}): Promise<DesktopPaymentChannelSummary[] | null> {
+  return (await loadBuyerChannelsView(options))?.channels ?? null;
 }
 
 /**

@@ -90,6 +90,7 @@ test('refreshPaymentSummary updates usage, spending history, channels, and rewar
         outputTokens: '22',
         cooperativeCloseSupported: true,
       }],
+      unaccountedReservedBaseUnits: '2940000',
       error: null,
     }),
     paymentsGetRewardsSummary: async () => ({
@@ -111,6 +112,8 @@ test('refreshPaymentSummary updates usage, spending history, channels, and rewar
   assert.equal(uiState.creditsBuyerUsage?.totalRequests, 3);
   assert.equal(uiState.creditsBuyerSpendHistory?.days[0]?.spentUsdc, '250000');
   assert.equal(uiState.creditsChannels[0]?.channelId, 'channel-1');
+  // The on-chain reserve no listed channel accounts for rides along with the channels.
+  assert.equal(uiState.creditsUnaccountedReservedBaseUnits, '2940000');
   assert.equal(uiState.creditsRewards?.pendingAnts, '1.5');
   assert.equal(uiState.creditsSummaryLoading, false);
 });

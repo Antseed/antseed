@@ -476,7 +476,8 @@ export type DesktopBridge = {
   paymentsGetPeerMetering?: (peerId: string) => Promise<Record<string, unknown> | null>;
   paymentsGetBuyerUsage?: () => Promise<{ ok: boolean; data: DesktopBuyerUsageTotals | null; error: string | null; lastActivityAt?: number | null }>;
   paymentsGetBuyerSpendHistory?: () => Promise<{ ok: boolean; data: DesktopBuyerSpendHistory | null; error: string | null }>;
-  paymentsGetChannels?: (opts?: { fresh?: boolean }) => Promise<{ ok: boolean; data: DesktopPaymentChannelSummary[]; error: string | null }>;
+  /** `unaccountedReservedBaseUnits`: on-chain reserve no listed channel accounts for; null or absent when the buyer did not judge it. */
+  paymentsGetChannels?: (opts?: { fresh?: boolean }) => Promise<{ ok: boolean; data: DesktopPaymentChannelSummary[]; unaccountedReservedBaseUnits?: string | null; error: string | null }>;
   paymentsRequestCooperativeClose?: (opts: { peerId: string; channelId?: string }) => Promise<{
     ok: boolean;
     result: CooperativeCloseResult | null;

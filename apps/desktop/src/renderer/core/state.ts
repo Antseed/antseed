@@ -393,6 +393,8 @@ export type RendererUiState = {
   creditsBuyerUsage: DesktopBuyerUsageTotals | null;
   creditsBuyerSpendHistory: DesktopBuyerSpendHistory | null;
   creditsChannels: DesktopPaymentChannelSummary[];
+  /** On-chain reserve (USDC base units) no listed channel accounts for; null when the buyer did not judge it. */
+  creditsUnaccountedReservedBaseUnits: string | null;
   creditsRewards: DesktopRewardsSummary | null;
   creditsSummaryLoading: boolean;
 
@@ -587,6 +589,7 @@ export function createInitialUiState(): RendererUiState {
     creditsBuyerUsage: null,
     creditsBuyerSpendHistory: null,
     creditsChannels: [],
+    creditsUnaccountedReservedBaseUnits: null,
     creditsRewards: null,
     creditsSummaryLoading: false,
 

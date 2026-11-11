@@ -10,13 +10,15 @@ import { formatCompactTokens, VprCard, VprPage, VprStatRow, VprStatTile } from '
 import { VprSpendingChart } from './VprSpendingChart';
 import {
   channelCloseAction,
-  channelRecoverableBaseUnits,
+  channelHeldBaseUnits,
   compareChannelsByLockedAmount,
   formatChannelLockedAmount,
   isFundedCurrentChannel,
   requestSellerAssistedClose,
+  unaccountedReserveLine,
   type ChannelCloseFeedback,
 } from './vpr-activity-close';
+import noticeStyles from './FundingStatusNotice.module.scss';
 import styles from './VprActivityView.module.scss';
 
 const PAYMENT_SUMMARY_POLL_MS = 60_000;
@@ -64,6 +66,7 @@ export function VprActivityView({ onSelectView }: Props) {
   const [closeFeedback, setCloseFeedback] = useState<Record<string, ChannelCloseFeedback>>({});
   const snap = useUiSelector((state) => ({
     channels: state.creditsChannels,
+    unaccountedReserved: state.creditsUnaccountedReservedBaseUnits,
     loading: state.creditsSummaryLoading,
     reserved: state.creditsReservedUsdc,
     spendHistory: state.creditsBuyerSpendHistory,
@@ -105,14 +108,14 @@ export function VprActivityView({ onSelectView }: Props) {
     [allRows],
   );
   const totalSpent = sumBaseUnits(allRows.map((row) => row.cumulativeSigned));
-  // Header total = what closing the displayed rows recovers for certain: each
-  // reserve less the spend signed away. The Deposits contract's raw `reserved`
-  // overstates this: it still counts spend that is signed but not yet settled
-  // by the seller, which a row with nothing else left shows as unsettled.
+  // Header total = what the chain holds for the displayed rows, the same
+  // money Profile shows as held in sessions. Each row says how much of it
+  // closing recovers for certain: its reserve less the spend signed away.
   const totalRowsLocked = useMemo(
-    () => rows.reduce((acc, row) => acc + channelRecoverableBaseUnits(row), 0n),
+    () => rows.reduce((acc, row) => acc + channelHeldBaseUnits(row), 0n),
     [rows],
   );
+  const unaccountedLine = unaccountedReserveLine(snap.unaccountedReserved);
   const measuredSavings = useMemo(
     () => computeMeasuredSavings(snap.usage?.services, referencePrices),
     [snap.usage?.services, referencePrices],
@@ -247,6 +250,13 @@ export function VprActivityView({ onSelectView }: Props) {
               );
             })}
           </VprCard>
+        )}
+
+        {unaccountedLine && (
+          <div className={noticeStyles.notice} role="status">
+            <span className={`${noticeStyles.dot} ${noticeStyles.dotInfo}`} aria-hidden="true" />
+            <span className={noticeStyles.text}>{unaccountedLine}</span>
+          </div>
         )}
 
         {rows.length > 0 && (

@@ -5,6 +5,7 @@ import { pendingSpendFromChannels } from '../billing/credits-balance.js';
 import {
   applyChainToChannels,
   applyChannelOnChainSnapshot,
+  buyerChannelsView,
   channelEndedOnChain,
   normalizePaymentChannelSummary,
   requestCooperativeChannelCloseAtPort,
@@ -239,6 +240,61 @@ test('the chain decides the status of every row it has not shown ended, whatever
   assert.deepEqual(rows.map((summary) => summary.status), ['active', 'active', 'ghost', 'settled', 'settled']);
   // The seller can still settle what was signed on the retired channel it holds open.
   assert.equal(pendingSpendFromChannels(rows), 100_000n + 200_000n);
+});
+
+test('a buyer that reports the chain\'s record with each row decides its status, with no read by the desktop', () => {
+  const now = Date.now();
+  const anHourAgo = now - 3_600_000;
+  const record = (status: number, deposit: string, settled: string, closeRequestedAt = 0) => ({ status, deposit, settled, closeRequestedAt, readAt: now });
+  const view = buyerChannelsView({
+    ok: true,
+    onChain: { readAt: now, reserved: '4690000', heldByChannels: '1750000', unaccountedReserved: '2940000' },
+    channels: [
+      { channelId: 'reported-active', status: 'active', cumulativeSigned: '100000', updatedAt: anHourAgo, live: true, cooperativeCloseSupported: true, onChain: record(1, '1000000', '250000') },
+      // Retired by the buyer (it gave up on the session), still open with its reserve locked.
+      { channelId: 'reported-retired-open', status: 'ghost', cumulativeSigned: '300000', updatedAt: anHourAgo, live: false, cooperativeCloseSupported: true, onChain: record(1, '1000000', '0') },
+      { channelId: 'reported-retired-closing', status: 'settled', cumulativeSigned: '0', updatedAt: anHourAgo, onChain: record(1, '1000000', '0', Math.floor(now / 1000) - 60) },
+      { channelId: 'reported-closed', status: 'active', cumulativeSigned: '500000', updatedAt: anHourAgo, onChain: record(2, '1000000', '500000') },
+      { channelId: 'reported-never-opened', status: 'ghost', cumulativeSigned: '0', updatedAt: anHourAgo, onChain: record(0, '0', '0') },
+      // The buyer could not read this one: the store's word stands and the amounts stay unknown.
+      { channelId: 'reported-unread', status: 'active', cumulativeSigned: '0', updatedAt: anHourAgo, onChain: null },
+    ],
+  });
+
+  assert.equal(view.chainReported, true);
+  assert.equal(view.unaccountedReserved, '2940000');
+  assert.deepEqual(
+    view.channels.map((row) => [row.channelId, row.status, row.onChainStateKnown, row.onChainDeposit, row.onChainSettled, row.cooperativeCloseSupported]),
+    [
+      ['reported-active', 'active', true, '1000000', '250000', true],
+      // Not the live session, so only the on-chain close is offered for it.
+      ['reported-retired-open', 'active', true, '1000000', '0', false],
+      ['reported-retired-closing', 'closing', true, '1000000', '0', false],
+      ['reported-closed', 'settled', true, '1000000', '500000', false],
+      ['reported-never-opened', 'ghost', false, '0', '0', false],
+      ['reported-unread', 'active', false, '0', '0', false],
+    ],
+  );
+  // The seller can still settle what was signed on the retired channel it holds open.
+  assert.equal(pendingSpendFromChannels(view.channels), 300_000n);
+});
+
+test('a buyer that predates the on-chain records leaves the chain read to the desktop', () => {
+  const view = buyerChannelsView({ ok: true, channels: [{ channelId: 'older-buyer-row', status: 'ghost', onChain: { status: 1, deposit: '1000000', settled: '0', closeRequestedAt: 0, readAt: Date.now() } }] });
+  assert.equal(view.chainReported, false);
+  assert.equal(view.unaccountedReserved, null);
+  // Nothing on the response says the buyer reports the chain, so a stray field on a row is not trusted.
+  assert.deepEqual(view.channels.map((row) => [row.status, row.onChainStateKnown]), [['ghost', false]]);
+});
+
+test('spend history takes the rows as the store has them', () => {
+  const view = buyerChannelsView({
+    ok: true,
+    onChain: { readAt: 1, reserved: '0', heldByChannels: '0', unaccountedReserved: null },
+    channels: [{ channelId: 'history-row', status: 'active', updatedAt: 1, onChain: { status: 2, deposit: '1000000', settled: '1', closeRequestedAt: 0, readAt: Date.now() } }],
+  }, { applyChain: false });
+  assert.deepEqual(view.channels.map((row) => [row.status, row.onChainStateKnown]), [['active', false]]);
+  assert.equal(view.unaccountedReserved, null);
 });
 
 test('a read from before the buyer retired a row, or just after, does not show it open', () => {

@@ -74,6 +74,62 @@ export function applyChannelOnChainSnapshot(
   }
 }
 
+/** The chain's record of a channel as the buyer reports it with the row (`onChain`), or undefined when it reports none. */
+function reportedSnapshot(value: unknown): ChannelOnChainSnapshot | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  const status = raw['status'];
+  if (typeof status !== 'number' || !Number.isInteger(status)) return undefined;
+  const readAtMs = readNumberField(raw, 'readAt');
+  return {
+    status,
+    deposit: readStringField(raw, 'deposit') || '0',
+    settled: readStringField(raw, 'settled') || '0',
+    closeRequestedAt: readNumberField(raw, 'closeRequestedAt'),
+    ...(readAtMs > 0 ? { readAtMs } : {}),
+  };
+}
+
+export type BuyerChannelsView = {
+  channels: DesktopPaymentChannelSummary[];
+  /**
+   * True when the buyer reports the chain's record with each row (the
+   * `onChain` fields of `GET /_antseed/channels?all=1`). The desktop then
+   * reads nothing itself; a buyer that predates them leaves this false.
+   */
+  chainReported: boolean;
+  /** On-chain reserve no listed channel accounts for (USDC base units); null when the buyer did not judge it. */
+  unaccountedReserved: string | null;
+};
+
+/**
+ * The buyer's `GET /_antseed/channels?all=1` answer as channel rows. With
+ * `applyChain`, a row takes the status and amounts of the on-chain record the
+ * buyer reports for it, so every host shows the chain's answer from one read.
+ */
+export function buyerChannelsView(
+  body: Record<string, unknown>,
+  { applyChain = true, nowSeconds = Math.floor(Date.now() / 1000) }: { applyChain?: boolean; nowSeconds?: number } = {},
+): BuyerChannelsView {
+  const summary = body['onChain'];
+  const chainReported = Boolean(summary) && typeof summary === 'object' && !Array.isArray(summary);
+  const unaccounted = chainReported ? (summary as Record<string, unknown>)['unaccountedReserved'] : null;
+  const channels: DesktopPaymentChannelSummary[] = [];
+  for (const entry of Array.isArray(body['channels']) ? body['channels'] : []) {
+    const row = normalizePaymentChannelSummary(entry);
+    if (!row) continue;
+    if (chainReported && applyChain) {
+      applyChannelOnChainSnapshot(row, reportedSnapshot((entry as Record<string, unknown>)['onChain']), nowSeconds);
+    }
+    channels.push(row);
+  }
+  return {
+    channels,
+    chainReported,
+    unaccountedReserved: typeof unaccounted === 'string' && /^\d+$/.test(unaccounted) ? unaccounted : null,
+  };
+}
+
 /** Whether the chain showed this channel Settled or TimedOut: final states, so it needs no further read. */
 export function channelEndedOnChain(channelId: string): boolean {
   const status = channelOnChainSnapshots.get(channelId)?.status;

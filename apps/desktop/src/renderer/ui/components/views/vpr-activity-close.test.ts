@@ -10,6 +10,7 @@ import {
   isFundedCurrentChannel,
   isCurrentChannelStatus,
   requestSellerAssistedClose,
+  unaccountedReserveLine,
 } from './vpr-activity-close';
 
 test('channelRecoverableBaseUnits counts signed-but-unsettled spend as spent', () => {
@@ -161,4 +162,14 @@ test('requestSellerAssistedClose reports transport failures without refreshing',
   assert.match(feedback.message, /channel is unchanged/i);
   assert.equal(credits.mock.calls.length, 0);
   assert.equal(summary.mock.calls.length, 0);
+});
+
+test('unaccountedReserveLine names an on-chain reserve no listed channel accounts for', () => {
+  assert.equal(unaccountedReserveLine('2940000'), '$2.94 is held by a session this app has no record of.');
+  assert.equal(unaccountedReserveLine('5000'), '<$0.01 is held by a session this app has no record of.');
+  // Nothing unaccounted, not judged by the buyer, or a buyer that predates the figure: no line.
+  assert.equal(unaccountedReserveLine('0'), null);
+  assert.equal(unaccountedReserveLine(null), null);
+  assert.equal(unaccountedReserveLine(undefined), null);
+  assert.equal(unaccountedReserveLine('not a number'), null);
 });

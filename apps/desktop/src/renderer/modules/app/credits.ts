@@ -164,6 +164,7 @@ export function initCreditsModule({
       }
       if (channels?.ok && Array.isArray(channels.data)) {
         uiState.creditsChannels = channels.data;
+        uiState.creditsUnaccountedReservedBaseUnits = channels.unaccountedReservedBaseUnits ?? null;
       }
       if (rewards?.ok && rewards.data) {
         uiState.creditsRewards = rewards.data;

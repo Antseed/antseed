@@ -88,6 +88,20 @@ export function formatChannelLockedAmount(row: {
   return held > 0n ? `${formatUsdBaseUnits(held)} unsettled` : 'No funds locked';
 }
 
+/**
+ * One calm line for an on-chain reserve no listed channel accounts for (the
+ * buyer reports it: a session opened from another data directory, or whose
+ * row was lost). Null when there is none, or the buyer did not judge it.
+ */
+export function unaccountedReserveLine(baseUnits: string | null | undefined): string | null {
+  try {
+    const amount = BigInt(baseUnits || '0');
+    return amount > 0n ? `${formatUsdBaseUnits(amount)} is held by a session this app has no record of.` : null;
+  } catch {
+    return null;
+  }
+}
+
 export function compareChannelsByLockedAmount(
   left: { onChainDeposit: string; onChainSettled: string; cumulativeSigned: string; reservedAt: number },
   right: { onChainDeposit: string; onChainSettled: string; cumulativeSigned: string; reservedAt: number },
