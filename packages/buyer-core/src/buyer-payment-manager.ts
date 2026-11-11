@@ -31,7 +31,6 @@ import type { PeerMetadata } from '@antseed/protocol/peer-metadata';
 import { BuyerChannelStore, CHANNEL_KIND, CHANNEL_ROLE, CHANNEL_STATUS, type StoredChannel } from './channel-store-types.js';
 import {
   advanceUsageMetadata,
-  CountedRequestTracker,
   normalizeRequestUsageDelta,
   RequestServiceTracker,
 } from './channel-usage-accounting.js';
@@ -205,6 +204,25 @@ export type PerRequestResponseStats = {
   requestId?: string;
 };
 
+/** What the buyer made of a seller's answer to a paid request. */
+export interface DeliveredResponse {
+  /**
+   * The buyer's own cost for the response: the usage in the response it
+   * received, at the pricing it agreed to. For an attempt the caller aborted,
+   * the most the seller may bill for it instead: its prompt plus the output it
+   * allows. 0 when nothing verifies what the seller bills: the attempt timed
+   * out, its connection closed, or the buyer cannot price it.
+   */
+  costUsdc: bigint;
+  /** The attempt ended after it was sent, with no answer. */
+  cutOff?: boolean;
+  /** Its cost is counted already (no claim can count it again); only its usage is still to be attributed. */
+  costCounted?: boolean;
+  /** A received response's service and usage, attributed to it if the buyer's signing before a close pays it. */
+  service?: string;
+  usage?: { inputTokens: bigint; cachedInputTokens: bigint; outputTokens: bigint; unitUsage?: UnitBillingUsage };
+}
+
 /** Result of signPerRequestAuth — includes the payload and whether a reserve top-up is needed. */
 export interface PerRequestAuthResult {
   payload: SpendingAuthPayload;
@@ -350,10 +368,13 @@ export class BuyerPaymentManager {
    *  without trusting the seller's claim of which service was used. */
   private readonly _requestService = new RequestServiceTracker();
   /** Colony-pool requests and their worker deliveries, for the node's lifetime (see WorkerDeliveryTracker). */
-  // A verified worker request is kept until its cost is counted and fully signed (not evicted as completed).
-  private readonly _workerDeliveries: WorkerDeliveryTracker = new WorkerDeliveryTracker(
-    (requestId: string): boolean => !this._serviceTokensCounted.has(requestId) || this._serviceTokensCounted.unpaid(requestId) > 0n,
-  );
+  // A verified worker request is kept while it is still owed: recorded but not
+  // counted yet, or counted with credit its worker has not been signed yet.
+  private readonly _workerDeliveries: WorkerDeliveryTracker = new WorkerDeliveryTracker((requestId: string): boolean => {
+    const seller = this._workerDeliveries.get(requestId)?.sellerPeerId;
+    return seller != null && (this._requestLedgers.get(seller)?.has(requestId) === true
+      || this._workerCreditDue.get(seller)?.has(requestId) === true);
+  });
   /**
    * requestId -> trusted buyer-owned billing identity, request facts, and mode.
    *
@@ -367,6 +388,23 @@ export class BuyerPaymentManager {
    * they were marked. Nothing is owed for them, so a NeedAuth naming one is refused.
    */
   private readonly _coveredRequests = new Map<string, number>();
+  /**
+   * sellerPeerId -> requestId -> what the seller can still be paid for on the
+   * active channel: a response the buyer received and priced, or an attempt it
+   * cut off. Counting a request toward verified cost removes it, and a request
+   * with no entry is owed nothing. Only the buyer's own request path adds
+   * entries, and the map is dropped with the seller's verified cost.
+   */
+  private readonly _requestLedgers = new Map<string, Map<string, DeliveredResponse>>();
+  /**
+   * sellerPeerId -> requestId -> the part of a verified worker answer's
+   * counted cost not yet credited to its worker in a signed SpendingAuth,
+   * oldest first. Every signed advance pays these down (_creditWorkers), so a
+   * worker is credited even when its answer's cost was counted without being
+   * signed at once (the reserve ceiling, a 402 reopen). Dropped with the
+   * request records.
+   */
+  private readonly _workerCreditDue = new Map<string, Map<string, bigint>>();
   private readonly _observedUsageWaiters = new Map<string, Array<(usage: UnitBillingUsage | undefined) => void>>();
 
   /** sellerPeerId -> full pricing map (defaults + per-service overrides from peer metadata / 402) */
@@ -486,6 +524,7 @@ export class BuyerPaymentManager {
     // Without this, maxSignable = 0 + maxPerRequestUsdc after restart, permanently capping
     // the cumulative and causing non-monotonic SpendingAuth rejections on the seller.
     this._verifiedCost.set(peerId, persistedCumulative);
+    this._dropRequestRecords(peerId);
     // Stores predating browser recovery (including the current sqlite node
     // store) omit these optional fields. Preserve their historical default
     // ceiling instead of interpreting missing recovery state as a confirmed
@@ -582,24 +621,64 @@ export class BuyerPaymentManager {
     previous: SpendingAuthMetadata | undefined,
     service: string | undefined,
     delta: Parameters<typeof advanceUsageMetadata>[2],
-    requestId?: string,
-    sellerPeerId?: string,
   ): SpendingAuthMetadata {
-    const next = advanceUsageMetadata(
+    return advanceUsageMetadata(
       this._sanitizeMetadata(previous),
       this._disableMetadataV2Services ? undefined : service,
       delta,
     );
-    // Only the seller the request went to, and only for an answer that verified.
-    const worker = this._workerDeliveries.verifiedWorker(requestId, sellerPeerId);
-    return worker ? { ...next, workers: withWorkerAttribution(next.workers, worker, delta.amount) } : next;
   }
 
   /**
-   * A request was encrypted for these pool workers. Its signed amount is
-   * attributed to the one whose sealed answer verifies (recordWorkerDelivery):
-   * only a recipient can decrypt it, and each answers under its own key.
+   * `metadata` with the worker credit a SpendingAuth signing `signedDelta`
+   * more pays, once the verified worker answers it counts (`counted`, with
+   * their cost) join what the seller's workers are still owed; oldest first.
+   * The advance may also pay the seller's own requests, so a worker is
+   * credited at most its answers' counted cost, and never more than is signed.
+   * Commit the returned `due` (_commitWorkerCredit) once the SpendingAuth is.
    */
+  private _creditWorkers(
+    sellerPeerId: string,
+    metadata: SpendingAuthMetadata,
+    signedDelta: bigint,
+    counted: Iterable<readonly [string, bigint]> = [],
+  ): { metadata: SpendingAuthMetadata; due: Map<string, bigint> } {
+    const due = new Map(this._workerCreditDue.get(sellerPeerId));
+    for (const [requestId, cost] of counted) {
+      // Only the seller the request went to, and only for an answer that verified.
+      if (cost > 0n && this._workerDeliveries.verifiedWorker(requestId, sellerPeerId)) {
+        due.set(requestId, (due.get(requestId) ?? 0n) + cost);
+      }
+    }
+    let workers = metadata.workers;
+    let left = signedDelta;
+    for (const [requestId, owed] of due) {
+      if (left <= 0n) break;
+      const worker = this._workerDeliveries.verifiedWorker(requestId, sellerPeerId);
+      const paid = !worker ? 0n : owed < left ? owed : left;
+      if (worker) workers = withWorkerAttribution(workers, worker, paid);
+      left -= paid;
+      if (paid === owed || !worker) due.delete(requestId);
+      else due.set(requestId, owed - paid);
+    }
+    return { metadata: workers === metadata.workers ? metadata : { ...metadata, workers }, due };
+  }
+
+  /** Keep `due` as the seller's worker credit still owed, and retire the worker requests now paid. */
+  private _commitWorkerCredit(sellerPeerId: string, due: Map<string, bigint>, counted: Iterable<readonly [string, bigint]> = []): void {
+    const before = [...this._workerCreditDue.get(sellerPeerId)?.keys() ?? []];
+    if (due.size > 0) this._workerCreditDue.set(sellerPeerId, due);
+    else this._workerCreditDue.delete(sellerPeerId);
+    for (const requestId of before) this._retireWorkerDeliveryIfPaid(sellerPeerId, requestId);
+    for (const [requestId] of counted) this._retireWorkerDeliveryIfPaid(sellerPeerId, requestId);
+  }
+
+  /** Forget what the seller can still charge for, and its workers' credit still owed: its verified cost was reset. */
+  private _dropRequestRecords(sellerPeerId: string): void {
+    this._requestLedgers.delete(sellerPeerId);
+    this._workerCreditDue.delete(sellerPeerId);
+  }
+
   /**
    * The latest SpendingAuth signed on the seller's active channel, with its
    * metadata (worker attribution included): a colony-pool request carries it
@@ -634,17 +713,22 @@ export class BuyerPaymentManager {
     });
   }
 
+  /**
+   * A request was encrypted for these pool workers. Its signed amount is
+   * attributed to the one whose sealed answer verifies (recordWorkerDelivery):
+   * only a recipient can decrypt it, and each answers under its own key.
+   */
   recordWorkerAttribution(sellerPeerId: string, requestId: string, workers: string | readonly string[], free = false): void {
     this._workerDeliveries.recordAttribution(sellerPeerId, requestId, workers, free);
   }
 
-  /** Retire a verified worker request once it has been counted and nothing of its cost is left unsigned. */
-  private _retireWorkerDeliveryIfPaid(requestId: string | undefined): void {
+  /** Retire a verified worker request once it is counted and its worker credited in full. */
+  private _retireWorkerDeliveryIfPaid(sellerPeerId: string, requestId: string | undefined): void {
     if (requestId == null) return;
     if (
-      this._workerDeliveries.get(requestId)?.state === 'verified'
-      && this._serviceTokensCounted.has(requestId)
-      && this._serviceTokensCounted.unpaid(requestId) === 0n
+      this._workerDeliveries.verifiedWorker(requestId, sellerPeerId)
+      && !this._requestLedgers.get(sellerPeerId)?.has(requestId)
+      && !this._workerCreditDue.get(sellerPeerId)?.has(requestId)
     ) {
       this._workerDeliveries.retire(requestId);
     }
@@ -689,6 +773,7 @@ export class BuyerPaymentManager {
     this._sellerAccepted.delete(sellerPeerId);
     this._metadata.delete(sellerPeerId);
     this._verifiedCost.delete(sellerPeerId);
+    this._dropRequestRecords(sellerPeerId);
     this._sessionPricing.delete(sellerPeerId);
     this._currentReserveCeiling.delete(sellerPeerId);
     this._initialReserveAmount.delete(sellerPeerId);
@@ -838,16 +923,21 @@ export class BuyerPaymentManager {
         + this._config.maxPerRequestUsdc * BigInt(Math.floor(inFlightRequests));
       maxSignable = catchUpMax < ceiling ? catchUpMax : ceiling;
     }
-    // Prefer the seller-supplied target when present — a raw
-    // `currentCumulative + minBudgetPerRequest` advance may still fall short
-    // of what the seller has already spent, producing an infinite 402 loop.
+    // The seller's target is what it has delivered. Signing more would make
+    // undelivered work claimable on-chain, and signing less than the target
+    // would leave the seller rejecting us in a 402 loop.
     const minAdvance = currentCumulative + minBudgetPerRequest;
-    const requestedAmount = targetCumulative != null && targetCumulative > minAdvance
-      ? targetCumulative
-      : minAdvance;
+    const requestedAmount = targetCumulative ?? minAdvance;
 
     const nextCumulative = requestedAmount < maxSignable ? requestedAmount : maxSignable;
-    const extendNeedsTopUp = this._needsCeilingAdvance(requestedAmount, maxSignable, ceiling);
+    // The top-up still asks for room for the next request: a target at the
+    // ceiling fills the reserve, and the seller closes a full channel as
+    // exhausted. A top-up locks more deposit but makes nothing claimable.
+    const extendNeedsTopUp = this._needsCeilingAdvance(
+      requestedAmount > minAdvance ? requestedAmount : minAdvance,
+      maxSignable,
+      ceiling,
+    );
     if (nextCumulative <= currentCumulative) {
       // Nothing to sign at current ceiling; a top-up still extends it for the next round.
       debugWarn(
@@ -857,16 +947,27 @@ export class BuyerPaymentManager {
       return { sessionId: session.sessionId, topUp: extendNeedsTopUp };
     }
 
-    const currentMeta = this._sanitizeMetadata(this._metadata.get(sellerPeerId));
+    // Reopening takes everything signed so far as verified. The seller's 402
+    // asked for all it had served, so the requests recorded before now are
+    // paid: counting one on top later would pay for it twice. Their workers
+    // are credited from this advance.
+    const paysRecorded = reopened.verifiedCost !== (this._verifiedCost.get(sellerPeerId) ?? 0n);
+    const counted = paysRecorded
+      ? [...this._requestLedgers.get(sellerPeerId) ?? []].filter(([, record]) => !record.cutOff).map(([id, record]) => [id, record.costUsdc] as const)
+      : [];
+    const credit = this._creditWorkers(sellerPeerId, this._sanitizeMetadata(this._metadata.get(sellerPeerId)), nextCumulative - currentCumulative, counted);
     const spendingAuth = await this._commitUpdatedSpendingAuth(
       session,
       sellerPeerId,
       nextCumulative,
-      currentMeta,
+      credit.metadata,
     );
     if (spendingAuth === 'retired') throw writeDropped(sellerPeerId);
     // A SpendingAuth committed while this one was signed already signed past the target.
     if (spendingAuth === 'superseded') return { sessionId: session.sessionId, topUp: extendNeedsTopUp };
+    this._metadata.set(sellerPeerId, credit.metadata);
+    if (paysRecorded) this._requestLedgers.delete(sellerPeerId);
+    this._commitWorkerCredit(sellerPeerId, credit.due, counted);
     this._verifiedCost.set(sellerPeerId, reopened.verifiedCost);
     this._reportSpend({
       sellerPeerId,
@@ -1084,18 +1185,6 @@ export class BuyerPaymentManager {
   private _needsCeilingAdvance(requestedAmount: bigint, maxSignable: bigint, ceiling: bigint): boolean {
     return requestedAmount > maxSignable && maxSignable >= ceiling;
   }
-
-  /**
-   * Both signPerRequestAuth (buyer-initiated) and handleNeedAuth (seller-initiated)
-   * can fire for the same delivered response. Whichever path accounts for the
-   * response first records its requestId here so the other path does not
-   * duplicate its service amount, token totals, or request count.
-   */
-  // A live worker request's remainder is never trimmed while its delivery record exists.
-  private readonly _serviceTokensCounted: CountedRequestTracker = new CountedRequestTracker(
-    undefined,
-    (requestId: string): boolean => this._workerDeliveries.get(requestId) !== undefined,
-  );
 
   private _spendListener: BuyerSpendListener | null = null;
 
@@ -1356,6 +1445,7 @@ export class BuyerPaymentManager {
     this._cumulativeAmount.set(sellerPeerId, 0n);
     this._metadata.set(sellerPeerId, initialMetadata);
     this._verifiedCost.set(sellerPeerId, 0n);
+    this._dropRequestRecords(sellerPeerId);
     this._currentReserveCeiling.set(sellerPeerId, 0n);
     this._initialReserveAmount.set(sellerPeerId, maxAmount);
     this._reserveSalt.set(sellerPeerId, salt);
@@ -1640,10 +1730,34 @@ export class BuyerPaymentManager {
     this._inFlightPaidRequests.set(sellerPeerId, (this._inFlightPaidRequests.get(sellerPeerId) ?? 0) + 1);
   }
 
-  endPaidRequest(sellerPeerId: string): void {
+  /**
+   * The attempt is over. Record what arrived (recordDeliveredResponse) before
+   * this: an attempt that ends with nothing recorded owes nothing when the
+   * seller `answered` it (an error answer, a 402 the buyer retries). When it
+   * did not, the attempt was cut off with nothing the buyer can price: the
+   * seller may still bill it, and only the overdraft window pays for that.
+   */
+  endPaidRequest(sellerPeerId: string, requestId?: string, answered = false): void {
+    if (requestId && !answered && !this._requestLedgers.get(sellerPeerId)?.has(requestId)) {
+      this.recordDeliveredResponse(sellerPeerId, requestId, { costUsdc: 0n, cutOff: true });
+    }
     const remaining = (this._inFlightPaidRequests.get(sellerPeerId) ?? 0) - 1;
     if (remaining > 0) this._inFlightPaidRequests.set(sellerPeerId, remaining);
     else this._inFlightPaidRequests.delete(sellerPeerId);
+  }
+
+  /**
+   * The buyer received `sellerPeerId`'s response to paid request `requestId`
+   * and priced it itself, or cut the attempt off (`cutOff`). The seller may
+   * charge for it once, up to that cost, on the channel live now (the ledger
+   * is dropped when a channel starts or ends).
+   */
+  recordDeliveredResponse(sellerPeerId: string, requestId: string, delivered: DeliveredResponse): void {
+    let ledger = this._requestLedgers.get(sellerPeerId);
+    if (!ledger) this._requestLedgers.set(sellerPeerId, ledger = new Map());
+    // Bounded like request billing: forgetting a request only ever pays the seller less.
+    if (ledger.size >= MAX_REQUEST_BILLING_ENTRIES && !ledger.has(requestId)) ledger.delete(ledger.keys().next().value!);
+    ledger.set(requestId, delivered);
   }
 
   /**
@@ -1762,9 +1876,6 @@ export class BuyerPaymentManager {
     let estimatedCachedInputTokens = 0n;
     let byteEstimatedTokens = false;
     let buyerEstimatedRequestCost: bigint;
-    let verifiedCostDelta = 0n;
-    // Set when the cost is the price of a worker's authenticated usage: then it is exact.
-    let workerPricedCost = false;
 
     const requestBilling = responseStats.requestId != null
       ? this.getRequestBilling(responseStats.requestId)
@@ -1786,7 +1897,6 @@ export class BuyerPaymentManager {
         : 0n;
       const unitCost = validateUnitNormalizedCost(unitBillingModel, requestBilling.context, responseStats.unitUsage);
       buyerEstimatedRequestCost = tokenCost + unitCost;
-      verifiedCostDelta += buyerEstimatedRequestCost;
       debugLog(
         `[BuyerPayment] Hybrid billing-estimated cost=${buyerEstimatedRequestCost} service=${responseStats.service ?? 'unknown'}`,
       );
@@ -1807,14 +1917,11 @@ export class BuyerPaymentManager {
       if (pricing) {
         const cost = computeCostUsdc(Number(freshInputTokens), Number(estimatedOutputTokens), pricing, Number(cachedInputTokens));
         buyerEstimatedRequestCost = cost;
-        verifiedCostDelta += cost;
-        workerPricedCost = workerUsage != null;
       } else if (responseStats.sellerClaimedCost != null && responseStats.sellerClaimedCost > 0n) {
         // No local pricing available (e.g. after buyer restart before session pricing is restored).
         // Use seller's claimed cost for verifiedCost accumulation so _maxSignable can grow.
         // The seller's claim is still validated against tolerance below.
         buyerEstimatedRequestCost = responseStats.sellerClaimedCost;
-        verifiedCostDelta += responseStats.sellerClaimedCost;
       } else {
         buyerEstimatedRequestCost = 0n;
       }
@@ -1828,9 +1935,6 @@ export class BuyerPaymentManager {
       estimatedInputTokens = estimate ? BigInt(estimate.inputTokens) : 0n;
       estimatedOutputTokens = estimate ? BigInt(estimate.outputTokens) : 0n;
       buyerEstimatedRequestCost = estimate ? estimate.cost : 0n;
-      if (estimate) {
-        verifiedCostDelta += estimate.cost;
-      }
       debugLog(
         `[BuyerPayment] Byte-estimated tokens (no reported): in=${estimatedInputTokens} out=${estimatedOutputTokens} cost=${buyerEstimatedRequestCost}`,
       );
@@ -1861,17 +1965,7 @@ export class BuyerPaymentManager {
     // buyer doesn't underpay due to minor parsing differences. Only cap when the seller's
     // claim exceeds the tolerance threshold.
     let acceptedCost: bigint;
-    if (workerPricedCost) {
-      // A worker's answer costs at most what its authenticated usage prices at,
-      // without the tolerance an estimate gets, as on the NeedAuth path.
-      const claimed = responseStats.sellerClaimedCost;
-      if (claimed != null && claimed > buyerEstimatedRequestCost) {
-        debugWarn(
-          `[BuyerPayment] Seller claimed ${claimed} for colony-pool request ${responseStats.requestId} — paying ${buyerEstimatedRequestCost} for the worker's authenticated usage`,
-        );
-      }
-      acceptedCost = claimed != null && claimed < buyerEstimatedRequestCost ? claimed : buyerEstimatedRequestCost;
-    } else if (responseStats.sellerClaimedCost != null && responseStats.sellerClaimedCost > 0n) {
+    if (responseStats.sellerClaimedCost != null && responseStats.sellerClaimedCost > 0n) {
       if (buyerEstimatedRequestCost > 0n) {
         const maxAcceptable = BigInt(Math.ceil(Number(buyerEstimatedRequestCost) * this._costToleranceFor(requestBilling)));
         if (responseStats.sellerClaimedCost > maxAcceptable) {
@@ -1893,25 +1987,29 @@ export class BuyerPaymentManager {
     // If cost is 0, the cumulative amount stays the same — no spending auth needed
     // but we still sign one to keep the seller's session alive.
 
-    // NeedAuth may have counted this response first; its cost is then already
-    // in the verified cost and (unless NeedAuth was capped at the reserve
-    // ceiling) the signed cumulative. Charge only the part it left unsigned,
-    // so the request is neither paid twice nor left short before a close.
-    // A worker request retired as paid stays counted even once the tracker has trimmed it.
-    const alreadyCounted = this._serviceTokensCounted.has(responseStats.requestId)
-      || this._workerDeliveries.isCompleted(sellerPeerId, responseStats.requestId);
-    if (alreadyCounted) {
-      acceptedCost = this._serviceTokensCounted.unpaid(responseStats.requestId);
-      verifiedCostDelta = 0n;
-    }
+    // A response with a request ID is owed only while the ledger holds it: with
+    // no open record it was counted already or nothing is owed for it. What is
+    // owed is every response the buyer received whose cost frame never
+    // arrived, each at the buyer's own cost; an attempt the buyer cut off is
+    // paid only through its NeedAuth. A response with no request ID cannot be
+    // recorded, and is paid as reported.
+    const ledger = this._requestLedgers.get(sellerPeerId);
+    const counted = [...ledger ?? []].filter(([, record]) => !record.cutOff);
+    const alreadyCounted = responseStats.requestId != null && !counted.some(([requestId]) => requestId === responseStats.requestId);
+    const reportedCost = responseStats.requestId != null ? 0n : acceptedCost;
+    acceptedCost = reportedCost;
+    for (const [, record] of counted) acceptedCost += record.costUsdc;
 
-    // Advance cumulative amount by the accepted cost.
+    // Sign up to the verified cost once these are counted. A cost a NeedAuth
+    // counted but could not sign (reserve ceiling, pending top-up) is signed
+    // here; what a seller prompt or a 402 retry already signed past verified
+    // cost is not signed again.
     // maxSignable already caps at reserve ceiling, so one cap is sufficient
     const prevAmount = this._cumulativeAmount.get(sellerPeerId) ?? 0n;
-    const previousVerifiedCost = this._verifiedCost.get(sellerPeerId) ?? 0n;
-    const nextVerifiedCost = previousVerifiedCost + verifiedCostDelta;
+    const nextVerifiedCost = (this._verifiedCost.get(sellerPeerId) ?? 0n) + acceptedCost;
     const maxSignable = this._maxSignableForVerified(sellerPeerId, nextVerifiedCost);
-    let newAmount = prevAmount + acceptedCost;
+    let newAmount = prevAmount + reportedCost;
+    if (newAmount < nextVerifiedCost) newAmount = nextVerifiedCost;
     if (newAmount > maxSignable) newAmount = maxSignable;
     // A conservative recovery ceiling may temporarily be below an amount we
     // already signed. SpendingAuth is cumulative and must never move backward.
@@ -1919,8 +2017,27 @@ export class BuyerPaymentManager {
     const signedDelta = newAmount - prevAmount;
 
     // Update cumulative metadata, deduplicating usage for a response NeedAuth already counted.
-    const newMeta = this._advanceUsageMetadata(
-      this._metadata.get(sellerPeerId),
+    // Each other response counted here goes to its own service, with its own usage.
+    let otherMeta = this._metadata.get(sellerPeerId);
+    let othersAmount = 0n;
+    for (const [requestId, { costUsdc, service, usage }] of counted) {
+      if (requestId === responseStats.requestId || !usage) continue;
+      const images = countUnits(usage.unitUsage, 'output_images');
+      otherMeta = this._advanceUsageMetadata(otherMeta, service, {
+        amount: costUsdc,
+        inputTokens: usage.inputTokens,
+        cachedInputTokens: usage.cachedInputTokens,
+        outputTokens: usage.outputTokens + images * OUTPUT_IMAGE_TOKEN_EQUIVALENT,
+        requests: 1n,
+        outputImages: images,
+        videoGenerations: countUnits(usage.unitUsage, 'video_generations'),
+        videoSeconds: countUnits(usage.unitUsage, 'video_seconds'),
+        inputCharacters: countUnits(usage.unitUsage, 'input_characters'),
+      });
+      othersAmount += costUsdc;
+    }
+    const usageMeta = this._advanceUsageMetadata(
+      otherMeta,
       responseStats.service,
       {
         ...normalizeRequestUsageDelta({
@@ -1934,12 +2051,15 @@ export class BuyerPaymentManager {
           videoSeconds: estimatedVideoSeconds,
           inputCharacters: estimatedInputCharacters,
         }, { deliveredResponse: true, alreadyCounted }),
-        // Any remainder of a NeedAuth-counted request is still this service's amount.
-        amount: signedDelta,
+        // Any remainder of a NeedAuth-counted request is still this service's amount,
+        // as is a cost counted here that a seller prompt had already signed for.
+        amount: (signedDelta > acceptedCost ? signedDelta : acceptedCost) - othersAmount,
       },
-      responseStats.requestId,
-      sellerPeerId,
     );
+    // The verified worker answers counted here are credited to their workers.
+    const countedCosts = counted.map(([requestId, record]) => [requestId, record.costUsdc] as const);
+    const credit = this._creditWorkers(sellerPeerId, usageMeta, signedDelta, countedCosts);
+    const newMeta = credit.metadata;
     debugLog(
       `[BuyerPayment] signPerRequestAuth #${newMeta.cumulativeRequestCount}: ` +
       `thisReq in=${estimatedInputTokens} out=${estimatedOutputTokens} | ` +
@@ -1975,13 +2095,9 @@ export class BuyerPaymentManager {
     this._cumulativeAmount.set(sellerPeerId, newAmount);
     this._verifiedCost.set(sellerPeerId, nextVerifiedCost);
     this._metadata.set(sellerPeerId, newMeta);
-    if (alreadyCounted) {
-      this._serviceTokensCounted.pay(responseStats.requestId, signedDelta);
-    } else {
-      // Capped at the ceiling: the rest is still this request's (and its worker's) to sign.
-      this._serviceTokensCounted.mark(responseStats.requestId, acceptedCost - signedDelta);
-    }
-    this._retireWorkerDeliveryIfPaid(responseStats.requestId);
+    // Counted: no later NeedAuth may claim a cost for them.
+    for (const [requestId] of counted) ledger!.delete(requestId);
+    this._commitWorkerCredit(sellerPeerId, credit.due, countedCosts);
     this._reportSpend({
       sellerPeerId,
       requestId: responseStats.requestId ?? null,
@@ -2112,6 +2228,35 @@ export class BuyerPaymentManager {
 
     const requiredCumulativeAmount = BigInt(payload.requiredCumulativeAmount);
     const currentCumulative = this._cumulativeAmount.get(sellerPeerId) ?? 0n;
+
+    // A cost counts toward verified cost only for a request the buyer holds an
+    // open record of, and only up to the buyer's own cost in that record. The
+    // token counts in the frame are the seller's own, so they prove nothing:
+    // without this any claimed cost would count as verified, for a request
+    // that failed, was never sent, or was already paid.
+    const ledger = this._requestLedgers.get(sellerPeerId);
+    let record = payload.lastRequestCost != null && payload.requestId ? ledger?.get(payload.requestId) : undefined;
+    if (record?.costCounted) record = undefined;
+    if (hasPositiveCost(payload.lastRequestCost) && !record) {
+      debugWarn(
+        `[BuyerPayment] Refusing NeedAuth from ${sellerPeerId.slice(0, 12)}... claiming a cost for request ` +
+        `${payload.requestId ?? '(none)'}: nothing is owed for it`,
+      );
+      return false;
+    }
+    if (record && hasPositiveCost(payload.lastRequestCost) !== record.costUsdc > 0n) {
+      // One side puts a cost on the request and the other none: the buyer cut
+      // the attempt off with nothing it can price, or the frame is for an
+      // earlier attempt (a retry keeps the request ID). Nothing counts as
+      // verified and the record stays: the frame is answered as a prompt,
+      // signed only while it fits the overdraft window.
+      payload = { ...payload, lastRequestCost: undefined, billingUsage: undefined };
+      record = undefined;
+    } else if (record?.costUsdc === 0n) {
+      // Both sides put no cost on it: nothing is owed for it.
+      ledger!.delete(payload.requestId!);
+      record = undefined;
+    }
 
     // Reject stale/lower NeedAuth (monotonicity guard)
     if (requiredCumulativeAmount <= currentCumulative) {
@@ -2265,47 +2410,51 @@ export class BuyerPaymentManager {
       verifiedCostDelta += sellerCost;
     }
 
-    // If post-response signing or an earlier NeedAuth counted this response,
-    // its cost is already verified: a repeated claim adds none, so it cannot
-    // grow the overdraft window, and only pays down the unsigned remainder below.
-    const alreadyCounted = this._serviceTokensCounted.has(payload.requestId);
-    if (alreadyCounted) verifiedCostDelta = 0n;
-
+    // The most of the claim that counts as verified. A seller can honestly
+    // claim more than the response shows (an agent's internal tool turns, a
+    // different usage report), so the frame is not refused: the rest is signed
+    // only while it fits the overdraft window, like any prompt.
+    const verifiableCost = record
+      ? BigInt(Math.ceil(Number(record.costUsdc) * this._costToleranceFor(requestBilling)))
+      : 0n;
+    if (verifiedCostDelta > verifiableCost) {
+      debugWarn(
+        `[BuyerPayment] NeedAuth from ${sellerPeerId.slice(0, 12)}... claims ${verifiedCostDelta} for request ${payload.requestId}; ` +
+        `the buyer's own cost for it is ${record?.costUsdc ?? 0n}: counting ${verifiableCost}`,
+      );
+      verifiedCostDelta = verifiableCost;
+      if (acceptedServiceCost > verifiableCost) acceptedServiceCost = verifiableCost;
+    }
     // Cap at overdraft limit: verifiedCost + maxPerRequestUsdc, then at reserve ceiling.
     // This prevents a malicious seller from claiming a small cost but requesting the full reserve.
     const previousVerifiedCost = this._verifiedCost.get(sellerPeerId) ?? 0n;
-    let nextVerifiedCost = previousVerifiedCost + verifiedCostDelta;
-    let maxSignable = this._maxSignableForVerified(sellerPeerId, nextVerifiedCost);
+    const nextVerifiedCost = previousVerifiedCost + verifiedCostDelta;
+    const maxSignable = this._maxSignableForVerified(sellerPeerId, nextVerifiedCost);
     const ceiling = this._getCeiling(sellerPeerId);
-    let needsTopUp = this._needsCeilingAdvance(requiredCumulativeAmount, maxSignable, ceiling);
+    const needsTopUp = this._needsCeilingAdvance(requiredCumulativeAmount, maxSignable, ceiling);
+    // A cost the buyer cannot sign for in this frame (the overdraft window is
+    // used up, or the reserve ceiling is reached and a top-up is pending)
+    // still counts, once, toward verified cost. The seller's next prompt, or
+    // the buyer's own signing before a close, signs up to it. The record stays,
+    // counted at no cost, so that close still attributes the response's usage.
+    const countUnsigned = (): void => {
+      if (!record) return;
+      ledger!.set(payload.requestId!, { ...record, costUsdc: 0n, costCounted: true });
+      this._verifiedCost.set(sellerPeerId, nextVerifiedCost);
+      // Its worker is credited from a later signed advance.
+      const counted = [[payload.requestId!, verifiedCostDelta] as const];
+      this._commitWorkerCredit(sellerPeerId, this._creditWorkers(sellerPeerId, this._sanitizeMetadata(this._metadata.get(sellerPeerId)), 0n, counted).due, counted);
+    };
+    // A NeedAuth never reopens a used-up overdraft window: the seller could
+    // repeat the frame and have the buyer sign one more window each time,
+    // with no work to show for it. Only the buyer's own 402 retry reopens it
+    // (extendCurrentSpendingAuth).
     if (maxSignable <= currentCumulative && !needsTopUp) {
-      // A colony-pool seller gets no new window from its own frames: its
-      // prepaid window is spent only by verified worker answers (which raise
-      // verifiedCost) or reopened by the buyer's next request (the 402 path).
-      // Otherwise repeated headroom prompts would each advance verifiedCost to
-      // what is already signed and buy another window with no answer behind it.
-      if (this._workerDeliveries.isWorkerSeller(sellerPeerId)) {
-        debugWarn(
-          `[BuyerPayment] NeedAuth: colony-pool seller ${sellerPeerId.slice(0, 12)}... reached its overdraft window (${currentCumulative}) without a verified answer — not reopening`,
-        );
-        return false;
-      }
-      const reopened = this._reopenOverdraftWindowIfCollapsed(
-        sellerPeerId,
-        currentCumulative,
-        maxSignable,
-        'handleNeedAuth',
-        nextVerifiedCost,
+      countUnsigned();
+      debugWarn(
+        `[BuyerPayment] NeedAuth: maxSignable=${maxSignable} <= currentCumulative=${currentCumulative} — overdraft limit reached`,
       );
-      maxSignable = reopened.maxSignable;
-      nextVerifiedCost = reopened.verifiedCost;
-      needsTopUp = this._needsCeilingAdvance(requiredCumulativeAmount, maxSignable, ceiling);
-      if (maxSignable <= currentCumulative && !needsTopUp) {
-        debugWarn(
-          `[BuyerPayment] NeedAuth: maxSignable=${maxSignable} <= currentCumulative=${currentCumulative} — overdraft limit reached`,
-        );
-        return false;
-      }
+      return false;
     }
 
     // When a topUp is needed, first sign at the current ceiling so the seller
@@ -2318,6 +2467,7 @@ export class BuyerPaymentManager {
       : (requiredCumulativeAmount < maxSignable ? requiredCumulativeAmount : maxSignable);
     if (effectiveAmount <= currentCumulative) {
       // Nothing to sign; a top-up still extends the ceiling for the next round.
+      countUnsigned();
       debugWarn(
         `[BuyerPayment] NeedAuth: effectiveAmount=${effectiveAmount} <= currentCumulative=${currentCumulative} — cannot advance`,
       );
@@ -2334,8 +2484,6 @@ export class BuyerPaymentManager {
     const serviceAmountDelta = acceptedServiceCost > 0n
       ? (acceptedServiceCost < signedDelta ? acceptedServiceCost : signedDelta)
       : 0n;
-    // A response counted before (alreadyCounted, above) deduplicates its
-    // service amount and usage together.
     // Attribution only — never cost; mirrors signPerRequestAuth.
     let attributedInputTokens = reportedInputTokens;
     let attributedOutputTokens = reportedOutputTokens;
@@ -2345,29 +2493,25 @@ export class BuyerPaymentManager {
         attributedInputTokens = BigInt(imagePromptTokens(requestBilling));
       }
     }
-    // Post-response signing counted this request first but left part of it
-    // unsigned (capped at the ceiling): what this signs of that part is still
-    // the request's amount, and its worker's, as in signPerRequestAuth.
-    const unpaidRemainder = alreadyCounted ? this._serviceTokensCounted.unpaid(payload.requestId) : 0n;
-    const remainderPaid = unpaidRemainder < signedDelta ? unpaidRemainder : signedDelta;
-    const usageDelta = normalizeRequestUsageDelta({
-      amount: serviceAmountDelta,
-      inputTokens: attributedInputTokens,
-      cachedInputTokens: reportedCachedInputTokens,
-      outputTokens: attributedOutputTokens,
-      requests: 1n,
-      outputImages: acceptedOutputImages,
-      videoGenerations: acceptedVideoGenerations,
-      videoSeconds: acceptedVideoSeconds,
-      inputCharacters: acceptedInputCharacters,
-    }, { deliveredResponse, alreadyCounted });
-    const newMeta = this._advanceUsageMetadata(
+    const usageMeta = this._advanceUsageMetadata(
       this._metadata.get(sellerPeerId),
       buyerService,
-      alreadyCounted ? { ...usageDelta, amount: remainderPaid } : usageDelta,
-      payload.requestId,
-      sellerPeerId,
+      normalizeRequestUsageDelta({
+        amount: serviceAmountDelta,
+        inputTokens: attributedInputTokens,
+        cachedInputTokens: reportedCachedInputTokens,
+        outputTokens: attributedOutputTokens,
+        requests: 1n,
+        outputImages: acceptedOutputImages,
+        videoGenerations: acceptedVideoGenerations,
+        videoSeconds: acceptedVideoSeconds,
+        inputCharacters: acceptedInputCharacters,
+      }, { deliveredResponse, alreadyCounted: false }),
     );
+    // A verified worker answer counted here is credited to its worker.
+    const countedCosts = record ? [[payload.requestId!, verifiedCostDelta] as const] : [];
+    const credit = this._creditWorkers(sellerPeerId, usageMeta, signedDelta, countedCosts);
+    const newMeta = credit.metadata;
     // Persistence and transport failures must propagate to the connection
     // owner. In particular, swallowing an IndexedDB failure leaves the browser
     // connected with advanced in-memory counters but no durable signature.
@@ -2380,19 +2524,16 @@ export class BuyerPaymentManager {
     if (typeof spendingAuth === 'string') return false;
     this._verifiedCost.set(sellerPeerId, nextVerifiedCost);
     this._metadata.set(sellerPeerId, newMeta);
-    if (deliveredResponse && !alreadyCounted) {
-      this._serviceTokensCounted.mark(payload.requestId, acceptedServiceCost - serviceAmountDelta);
-    } else if (alreadyCounted) {
-      this._serviceTokensCounted.pay(payload.requestId, remainderPaid);
-    }
+    if (record) ledger!.delete(payload.requestId!);
+    this._commitWorkerCredit(sellerPeerId, credit.due, countedCosts);
     this._reportSpend({
       sellerPeerId,
       requestId: payload.requestId ?? null,
       amountUsdc: signedDelta.toString(),
-      inputTokens: (deliveredResponse && !alreadyCounted ? attributedInputTokens : 0n).toString(),
-      cachedInputTokens: (deliveredResponse && !alreadyCounted ? reportedCachedInputTokens : 0n).toString(),
-      outputTokens: (deliveredResponse && !alreadyCounted ? attributedOutputTokens : 0n).toString(),
-      outputImages: (deliveredResponse && !alreadyCounted ? acceptedOutputImages : 0n).toString(),
+      inputTokens: (deliveredResponse ? attributedInputTokens : 0n).toString(),
+      cachedInputTokens: (deliveredResponse ? reportedCachedInputTokens : 0n).toString(),
+      outputTokens: (deliveredResponse ? attributedOutputTokens : 0n).toString(),
+      outputImages: (deliveredResponse ? acceptedOutputImages : 0n).toString(),
     });
     paymentMux.sendSpendingAuth(spendingAuth);
     debugLog(`[BuyerPayment] NeedAuth responded: new cumulativeAmount=${effectiveAmount}`);
@@ -2407,9 +2548,6 @@ export class BuyerPaymentManager {
     // billing context; a catch-up or headroom prompt may name a request that is
     // still being served.
     if (payload.requestId && deliveredResponse) this.clearRequestBilling(payload.requestId);
-    // A worker request is retired only once verified and paid in full; a
-    // capped NeedAuth keeps it (and its worker) for the remainder.
-    this._retireWorkerDeliveryIfPaid(payload.requestId);
     return needsTopUp || this._needsTopUp(sellerPeerId);
   }
 
@@ -3072,6 +3210,8 @@ export class BuyerPaymentManager {
     this.clearRequestBilling(requestId);
     // A covered worker answer is never signed for: it must not stay owed.
     this._workerDeliveries.markFree(sellerPeerId, requestId);
+    // Nothing is owed for it, even once the covered record below expires.
+    this._requestLedgers.get(sellerPeerId)?.delete(requestId);
     const key = coveredRequestKey(sellerPeerId, requestId);
     const now = Date.now();
     for (const [id, markedAt] of this._coveredRequests) {

@@ -596,6 +596,13 @@ describe('buyer requests to colony pools', () => {
     expect(retried.deliveries()).toEqual(['assigned', 'failed', 'assigned', { inputTokens: 10n, cachedInputTokens: 0n, outputTokens: 5n }]);
   });
 
+  it('prices a worker\'s answer before reporting it verified, so a NeedAuth waiting on it finds what is owed', async () => {
+    const pool = fakePool({ payments: true });
+    await pool.handler.sendRequest(peer, chatRequest('o1'));
+    const order = pool.calls.map((call) => call.method).filter((method) => method === 'estimateCostFromResponse' || method === 'recordWorkerDelivery');
+    expect(order).toEqual(['estimateCostFromResponse', 'recordWorkerDelivery']);
+  });
+
   it('encrypts each request for the pool\'s top worker by default, and for the top two when the buyer asks', async () => {
     const single = fakePool({ workers: 3 });
     await single.handler.sendRequest(peer, chatRequest('n1'));

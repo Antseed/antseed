@@ -14,7 +14,20 @@
     },
     "patchedDependencies": {
       "cli-highlight": "patches/cli-highlight.patch"
-    }
+    },
+    "onlyBuiltDependencies": [
+      "@parcel/watcher",
+      "better-sqlite3",
+      "bufferutil",
+      "electron",
+      "esbuild",
+      "keccak",
+      "keytar",
+      "koffi",
+      "node-datachannel",
+      "utf-8-validate",
+      "workerd"
+    ]
   },
   "packageManager": "pnpm@9.15.4",
   "volta": {
@@ -39,6 +52,7 @@
     "test": "pnpm -r --filter=!@antseed/e2e run test && pnpm run test:e2e",
     "test:e2e": "pnpm --filter=@antseed/e2e run test",
     "test:testbench": "node --test e2e/testbench/test/*.test.mjs",
+    "test:pr-guard": "node --test scripts/pr-guard.test.mjs",
     "testbench": "node e2e/testbench/cli.mjs",
     "testbench:attach": "node scripts/testbench-attach.mjs",
     "test:testbench:e2e": "node e2e/testbench/test/e2e-flow.mjs",

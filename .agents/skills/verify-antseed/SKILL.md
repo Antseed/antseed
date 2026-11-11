@@ -9,7 +9,7 @@ This skill says what to prove, when a scenario is required, how to run it, and w
 
 ## When to use it
 
-This skill is opt-in (see `CLAUDE.md`). Use it only when the user asks for testbench verification or their instructions for the task say to. Otherwise verify with builds, unit tests and typecheck, and at most mention which scenario would cover the change.
+This skill is opt-in (see `AGENTS.md`). Use it only when the user asks for testbench verification or their instructions for the task say to. Otherwise verify with builds, unit tests and typecheck, and at most mention which scenario would cover the change.
 
 Once the user has opted in, verify without asking again for each step. That covers builds, unit tests, new scenarios, `pnpm testbench run <scenario> --chain local`, `--chain fork` when doctor reports a fork RPC, and desktop QA runs (`tb.desktop()`, `xvfb-run`).
 
@@ -23,7 +23,7 @@ These rules hold in every run:
 - Never touch `~/.antseed`, the OS keychain, port 8377, or processes the testbench did not start.
 - Tear down only with `pnpm testbench down`. Use `--force` only with the user's approval.
 - Report a `KNOWN` result as known. Never turn a `knownIssue` into a pass, and never weaken a check to make a run pass.
-- Commit and push only as `CLAUDE.md` allows.
+- Commit and push only as `AGENTS.md` allows.
 
 ## Decide what to prove
 
@@ -42,7 +42,7 @@ When a scenario, a test file or a command named here changes, update its row.
 
 ### Gotchas
 
-- `issue-1200-spendingauth-catchup` needs `tb.faults.loseNeedAuths`, armed right before the chat it targets. Without it the scenario passes on buggy code. A delay of about 5 s on a 402 catch-up is the seller waiting (`DEFAULT_CATCH_UP_WAIT_MS`), not a timeout.
+- `issue-1200-spendingauth-catchup` needs `tb.faults.loseNeedAuths`, armed right before the chat it targets. The seller sends the catch-up NeedAuth twice for chat 3 (when the request arrives, and with its 402), so the scenario loses both. With either one delivered, NeedAuth signs the target, the 402 negotiator never signs, and the scenario passes on buggy code. A delay of about 5 s on a 402 catch-up is the seller waiting (`DEFAULT_CATCH_UP_WAIT_MS`), not a timeout.
 - Read `cumulativeSigned` from `tb.channels()` as `BigInt`: `payment:spend` events do not report the negotiator's catch-up.
 - Without `topology.payments.minBudgetPerRequestUsdc`, SDK sellers use 0.5 USDC, the amount the #1200 bug over-signs. `stressTopology()` sets the CLI seller's 0.01.
 - Waiting does not move Anvil's clock: use `tb.warp`, for example 15 min + 60 s before `withdraw()` after `tb.buyerRequestClose()`. CLI commands that check the time need `tb.cli(args, { clock: 'chain' })`.
@@ -111,7 +111,7 @@ Show each command, its exit code and the lines that matter. Someone other than t
   `scripts/prove.sh <first commit> fail "<test command>" "<red signature>" <owning package>`, then `scripts/prove.sh HEAD pass "<test command>" "" <owning package>`.
 - **Refactor.** Pin today's behavior with a test first, then check it with `prove.sh <first commit> pass ...` and `prove.sh HEAD pass ...`.
 - **User-visible change.** A change to what a user sees in the desktop or the CLI also gets review evidence for the operator. For the desktop, that is the run's screenshots and video, with a screenshot at each changed state (`ui.screenshot(name)` in the scenario). For the CLI, it is the transcript. Name the evidence in the PR's Verification.
-- **Every kind.** The matching row of [Decide what to prove](#decide-what-to-prove) passes, and so do the owning packages' checks named in their `CLAUDE.md`.
+- **Every kind.** The matching row of [Decide what to prove](#decide-what-to-prove) passes, and so do the owning packages' checks named in their `AGENTS.md`.
 - **Testbench rows.** Run each required scenario once without the change (a worktree at the base commit) and once with it, doctor first. A scenario that fails the same way without the change is pre-existing: report it, do not block on it, and say whether the change could be involved. A scenario that fails only with the change fails the verification.
 - **Blocked.** A doctor `FAIL`, a broken build or a run with `result: 'blocked'` (exit code 2) means the environment, not the change. Report it as blocked, not as failed.
 
@@ -144,10 +144,10 @@ The fix and its issue scenario ship in one PR from `origin/main`, so the regress
 2. **Write the scenario first.** Create `e2e/testbench/scenarios/issues/issue-<N>-<slug>.mjs`. Encode the bug as plain `tb.check`s, never `knownIssue`. Start with a fresh-testbench check, as `issue-1200-spendingauth-catchup.mjs` does.
 3. **Prove it fails.** Run `.claude/skills/verify-antseed/scripts/run-with-evidence.mjs issue-<N>-<slug> --chain local` on the unfixed code. It must fail on the check that states the issue, with the issue's numbers in `detail`. Keep the report directory. Its `checks.log` is the red evidence. If the scenario will not fail, stop and report why before you change product code.
 4. **Find the root cause**, not just the symptom. The runtime evidence here: `pnpm testbench logs supervisor`, `pnpm testbench logs seller-<id>`, the report's `events.jsonl` and `logs/`, and a `--keep` run inspected with `pnpm testbench status`.
-5. **Fix it.** Make the smallest fix the evidence justifies. Add a unit test only where one can pin the mechanism the scenario found (no test beats a bad test). Commit only if the user asked for a fix PR (`CLAUDE.md`): first the failing scenario and any failing unit test, then the fix.
+5. **Fix it.** Make the smallest fix the evidence justifies. Add a unit test only where one can pin the mechanism the scenario found (no test beats a bad test). Commit only if the user asked for a fix PR (`AGENTS.md`): first the failing scenario and any failing unit test, then the fix.
 6. **Prove it passes.** Rebuild the changed packages (doctor names them) and run `run-with-evidence.mjs issue-<N>-<slug> --chain local` again. It must pass.
 7. **Run the regressions:** the matching row of [Decide what to prove](#decide-what-to-prove), plus `chat-basic --chain local` for a payment bug.
-8. **Run the owning package's checks**, as its `CLAUDE.md` names them under Prove it.
+8. **Run the owning package's checks**, as its `AGENTS.md` names them under Prove it.
 9. **Tear down:** `pnpm testbench down` in every worktree that ran a testbench.
 
 Paste the red and green `checks.log` lines verbatim into the PR body (see [Evidence](#evidence)). If the bug is sensitive and not fixed yet, keep the scenario and its details out of public branches until the fix ships.

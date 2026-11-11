@@ -2278,6 +2278,147 @@ it('waits for a pending top-up to start, between two top-ups, before treating th
   }).toEqual({ status: 200, covering: 1_500_000n, closed: 0 });
 });
 
+describe('a channel at its ceiling while top-ups follow each other', () => {
+  /** One request against a seller whose payment manager is the given mock; returns what the buyer got. */
+  async function requestAtCeiling(requestId: string, spm: Record<string, unknown>) {
+    const settleSession = vi.fn(async () => {});
+    const handler = makeSellerRequestHandler({
+      providers: [makeProvider(1, 1, { name: 'openai', services: ['test-model'] })],
+      sellerPaymentManager: makeSpmMock({ settleSession, ...spm }),
+      channelsClient: {} as any, sessionTracker: null, announcer: null, emit: () => false,
+    });
+    const frames: Uint8Array[] = [];
+    const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any);
+    await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({
+      requestId, method: 'POST', path: '/v1/chat/completions',
+      headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ model: 'test-model', messages: [] })),
+    }) });
+    const response = decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload);
+    const body = response.statusCode === 200 ? {} : JSON.parse(new TextDecoder().decode(response.body));
+    return { status: response.statusCode, answer: body.code ?? body.error ?? null, closed: settleSession.mock.calls.length };
+  }
+
+  it('keeps the channel open when the next top-up starts mining while the ceiling is re-read after one lands', async () => {
+    // Parallel load over a slow RPC: the awaited top-up lands, and during the chain read that follows,
+    // requests that finish push the spend past the new ceiling while the next top-up, which covers it, starts.
+    let reserveMax = 1_000_000n;
+    let spent = 1_000_000n;
+    let running = true;
+    const waitForTopUp = vi.fn(async () => {
+      reserveMax += 1_000_000n;
+      running = false;
+      return true;
+    });
+    const result = await requestAtCeiling('next-top-up-mining', {
+      getCumulativeSpend: () => spent,
+      getAcceptedCumulative: () => (spent < reserveMax ? spent : reserveMax),
+      getReserveMax: () => reserveMax,
+      isTopUpRunning: () => running,
+      waitForTopUp,
+      async refreshReserveMaxFromChain() {
+        if (reserveMax === 2_000_000n && spent === 1_000_000n) {
+          spent = 2_300_000n;
+          running = true;
+        }
+        return reserveMax;
+      },
+    });
+
+    expect({ ...result, waits: waitForTopUp.mock.calls.length }).toEqual({ status: 200, answer: null, closed: 0, waits: 2 });
+  });
+
+  it('waits for a top-up that starts during the ceiling read when none was running on entry', async () => {
+    // Nothing is mining or queued when the request reaches the ceiling. During the chain read the buyer's
+    // next ReserveAuth arrives, its top-up starts, and requests that finish push the spend past the ceiling.
+    let reserveMax = 1_000_000n;
+    let spent = 1_000_000n;
+    let running = false;
+    const waitForTopUp = vi.fn(async () => {
+      reserveMax = 2_000_000n;
+      running = false;
+      return true;
+    });
+    const result = await requestAtCeiling('top-up-starts-during-read', {
+      getCumulativeSpend: () => spent,
+      getAcceptedCumulative: () => (spent < reserveMax ? spent : reserveMax),
+      getReserveMax: () => reserveMax,
+      isTopUpRunning: () => running,
+      waitForTopUp,
+      async refreshReserveMaxFromChain() {
+        if (spent === 1_000_000n) {
+          spent = 1_300_000n;
+          running = true;
+        }
+        return reserveMax;
+      },
+    });
+
+    expect({ ...result, waits: waitForTopUp.mock.calls.length }).toEqual({ status: 200, answer: null, closed: 0, waits: 1 });
+  });
+
+  it('answers a retryable 503, never exhausted, when a top-up is still mining at the end of the wait budget', async () => {
+    let now = 1_000_000;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      let reserveMax = 1_000_000n;
+      let spent = 1_000_000n;
+      // Each top-up takes 8 s to land, the spend is past the new ceiling by then, and the next one is mining.
+      const waitForTopUp = vi.fn(async () => {
+        now += 8_000;
+        reserveMax += 1_000_000n;
+        spent = reserveMax + 300_000n;
+        return true;
+      });
+      const result = await requestAtCeiling('top-ups-keep-mining', {
+        getCumulativeSpend: () => spent,
+        getAcceptedCumulative: () => (spent < reserveMax ? spent : reserveMax),
+        getReserveMax: () => reserveMax,
+        isTopUpRunning: () => true,
+        waitForTopUp,
+      });
+
+      expect({ ...result, waits: waitForTopUp.mock.calls.length }).toEqual({ status: 503, answer: 'top_up_pending', closed: 0, waits: 2 });
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('closes as exhausted after one wait when the spend is past the new ceiling and no top-up covers it', async () => {
+    let reserveMax = 1_000_000n;
+    let spent = 1_000_000n;
+    let running = true;
+    const waitForTopUp = vi.fn(async () => {
+      reserveMax = 2_000_000n;
+      spent = 2_300_000n;
+      running = false;
+      return true;
+    });
+    const result = await requestAtCeiling('nothing-covers-the-spend', {
+      getCumulativeSpend: () => spent,
+      getAcceptedCumulative: () => (spent < reserveMax ? spent : reserveMax),
+      getReserveMax: () => reserveMax,
+      isTopUpRunning: () => running,
+      waitForTopUp,
+    });
+
+    expect({ ...result, waits: waitForTopUp.mock.calls.length }).toEqual({ status: 402, answer: PAYMENT_CODE_CHANNEL_EXHAUSTED, closed: 1, waits: 1 });
+  });
+
+  it('waits once, not for the whole budget, for a queued top-up that never starts', async () => {
+    const waitForTopUp = vi.fn(async () => true);
+    const result = await requestAtCeiling('queued-top-up-never-starts', {
+      getCumulativeSpend: () => 1_500_000n,
+      getAcceptedCumulative: () => 1_000_000n,
+      getReserveMax: () => 1_000_000n,
+      isTopUpRunning: () => false,
+      isTopUpPendingFor: () => true,
+      waitForTopUp,
+    });
+
+    expect({ ...result, waits: waitForTopUp.mock.calls.length }).toEqual({ status: 402, answer: PAYMENT_CODE_CHANNEL_EXHAUSTED, closed: 1, waits: 1 });
+  });
+});
+
 
 /** A speech answer: three 417-byte MPEG-1 layer III frames (128 kbps, 44.1 kHz). */
 const SPEECH_MP3 = new Uint8Array(417 * 3);

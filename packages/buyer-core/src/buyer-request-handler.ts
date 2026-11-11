@@ -83,6 +83,10 @@ export const VIDEO_DELIVERY_UNRECORDED = 'unrecorded';
 const BUYER_ONLY_RESPONSE_HEADERS: ReadonlySet<string> = new Set([ANTSEED_FAULT_ATTRIBUTION_HEADER, VIDEO_PRICE_HEADER, VIDEO_JOB_RETIRED_HEADER, VIDEO_DELIVERED_HEADER]);
 
 export interface RequestExecutionOptions {
+  /**
+   * Ends the request. Aborted with the default reason, the caller gave the request up, and the seller may still
+   * bill it up to what it allows. Aborted with any other reason (a timeout), the caller gave up on the seller.
+   */
   signal?: AbortSignal;
   /** Skip payment/free-usage machinery for internal control-plane requests. */
   controlPlane?: boolean;
@@ -373,6 +377,7 @@ export class BuyerRequestHandler {
       let forwardStreamToCallbacks = false;
       const streamChunks: Uint8Array[] = [];
       const isDownload = videoRoute?.action === 'retrieve' && req.headers[VIDEO_DOWNLOAD_STREAM_HEADER] === VIDEO_DOWNLOAD_STREAM_VERSION;
+      let requestSent = false;
       let downloadHash: ReturnType<typeof createStreamingResponseHash> | undefined;
       let activeTimeout: ReturnType<typeof setTimeout> | null = null;
       let activeTimeoutMs = streamInitialResponseTimeoutMs;
@@ -415,6 +420,14 @@ export class BuyerRequestHandler {
         cleanupConnectionListener();
         debugWarn(`[BuyerRequest] Request ${req.requestId.slice(0, 8)} aborted by caller`);
         mux.cancelProxyRequest(req.requestId);
+        // The seller is not told, so it may finish the generation and bill it: bound that by what the request
+        // allows. Only when the caller gave the request up (see RequestExecutionOptions.signal): a timeout or a
+        // closed connection is the seller's to cause, and counting it would pay a seller for answering nothing.
+        const callerGaveUp = (abortSignal?.reason as { name?: unknown } | undefined)?.name === 'AbortError';
+        if (requestSent && callerGaveUp && negotiator && !isFreeService) {
+          const partial = { ...(streamStartResponse ?? { requestId: req.requestId, statusCode: 200, headers: {} }), body: concatChunks(streamChunks) };
+          if (!isCoveredByFreeAllowance(partial)) negotiator.estimateCostFromPartialResponse(peer, req, partial, requestedService);
+        }
         reject(new Error(`Request ${req.requestId} aborted`));
       };
 
@@ -471,6 +484,7 @@ export class BuyerRequestHandler {
         reject(error);
       };
 
+      requestSent = true;
       mux.sendProxyRequest(
         req,
         (response: SerializedHttpResponse, metadata) => {
@@ -626,11 +640,25 @@ export class BuyerRequestHandler {
 
     // Paid work in flight sizes the buyer's reserve top-ups (see beginPaidRequest).
     const bpm = isFreeService ? undefined : this._deps.negotiator?.bpm;
+    // A control-plane call is never charged, so it is not named to the payment manager.
+    const paidRequestId = negotiator ? req.requestId : undefined;
+    // Provider video APIs may use HTTP 402 for their own errors; only start
+    // Antseed payment negotiation when the response is our payment contract.
+    const startsPaymentNegotiation = (answer: SerializedHttpResponse): boolean => answer.statusCode === 402
+      && Boolean(negotiator)
+      && !externalSpendingAuth
+      && (!videoRoute || isPaymentRequired402(answer));
     const executeCountedRequest = async (): Promise<SerializedHttpResponse> => {
       bpm?.beginPaidRequest(peer.peerId);
+      let answered = false;
       // Tell the payment manager whether the worker's sealed answer verified:
       // a NeedAuth for the request waits for this before it is signed.
-      const attempt = async (): Promise<SerializedHttpResponse> => {
+      const delivered = (session: SealedWorkerRequest | null): void => {
+        if (!session) return;
+        const verified = session.verified && session.usageConsistent;
+        this._deps.negotiator?.bpm?.recordWorkerDelivery(plainReq.requestId, verified ? session.usage : null, session.worker);
+      };
+      const attempt = async (): Promise<{ answer: SerializedHttpResponse; session: SealedWorkerRequest | null }> => {
         try {
           await sealForAttempt();
         } catch (error) {
@@ -640,27 +668,38 @@ export class BuyerRequestHandler {
         }
         const session: SealedWorkerRequest | null = sealed;
         try {
-          const response = await executeRequest();
-          if (session) {
-            const verified = session.verified && session.usageConsistent;
-            this._deps.negotiator?.bpm?.recordWorkerDelivery(plainReq.requestId, verified ? session.usage : null, session.worker);
-          }
-          return response;
+          return { answer: await executeRequest(), session };
         } catch (error) {
           if (session) this._deps.negotiator?.bpm?.recordWorkerDelivery(plainReq.requestId, null);
           throw error;
         }
       };
       try {
-        const response = await attempt();
-        if (!sealed || !isWorkerUnavailable(response)) return response;
-        // None of the assigned workers could take it (the pool already tried each).
-        workerE2E!.forget(peer.peerId, workerService!);
-        // Take new ones, once, only if the buyer already lets several workers read a request.
-        if (!workerE2E!.failover) return response;
-        return await attempt();
+        let { answer, session } = await attempt();
+        if (session && isWorkerUnavailable(answer)) {
+          // None of the assigned workers could take it (the pool already tried each).
+          workerE2E!.forget(peer.peerId, workerService!);
+          // Take new ones, once, only if the buyer already lets several workers read a request.
+          if (workerE2E!.failover) {
+            delivered(session);
+            ({ answer, session } = await attempt());
+          }
+        }
+        answered = true;
+        try {
+          // Price what arrived before anything else runs: the seller's NeedAuth
+          // for it is the next frame, travels on another mux, and is judged
+          // against this. A 402 the buyer retries leaves nothing to charge.
+          if (negotiator && !isFreeService && !startsPaymentNegotiation(answer)) {
+            this._estimatePaidCost(negotiator, peer, answer, requestedService, plainReq.requestId);
+          }
+        } finally {
+          // Only after it is priced: a NeedAuth waiting on the verification must find what is owed for it.
+          delivered(session);
+        }
+        return answer;
       } finally {
-        bpm?.endPaidRequest(peer.peerId);
+        bpm?.endPaidRequest(peer.peerId, paidRequestId, answered);
       }
     };
     const response = await executeCountedRequest();
@@ -684,14 +723,7 @@ export class BuyerRequestHandler {
       return buyerPaymentsInactiveResponse(response, peer.peerId);
     }
 
-    // Provider video APIs may use HTTP 402 for their own errors; only start
-    // Antseed payment negotiation when the response is our payment contract.
-    if (
-      response.statusCode === 402
-      && negotiator
-      && !externalSpendingAuth
-      && (!videoRoute || isPaymentRequired402(response))
-    ) {
+    if (negotiator && startsPaymentNegotiation(response)) {
       // Parallel requests can leave the seller's spend several requests ahead
       // of the signed cumulative. Keep catching up while the gap shrinks or
       // the seller accepts more: other requests finishing can widen the gap
@@ -714,9 +746,6 @@ export class BuyerRequestHandler {
         }
         paymentResponse = retriedResponse;
       }
-      if (!isFreeService) {
-        this._estimatePaidCost(negotiator, peer, retriedResponse, requestedService, req.requestId);
-      }
       const retriedDelivered = this._recordVideoDelivery(peer, retriedResponse, trackedVideoRetrieve, videoDuration, videoRoute, videoJobId, req.requestId);
       this._recordResponseAuth(
         peer,
@@ -729,9 +758,6 @@ export class BuyerRequestHandler {
       return withVideoDelivered(adaptPeerResponse(retriedResponse), retriedDelivered);
     }
 
-    if (negotiator && !isFreeService) {
-      this._estimatePaidCost(negotiator, peer, response, requestedService, req.requestId);
-    }
     const videoDelivered = this._recordVideoDelivery(peer, response, trackedVideoRetrieve, videoDuration, videoRoute, videoJobId, req.requestId);
     this._recordResponseAuth(
       peer,
