@@ -3,6 +3,7 @@ import chalk from 'chalk';
 import Table from 'cli-table3';
 import { overview, rewards, formatAnts, type OverviewView } from '@antseed/ants';
 import { ants, epochDate, printJson, runRead } from './shared.js';
+import { redact } from '../../../proxy/chain-rpc.js';
 
 export function formatDuration(seconds: number): string {
   const days = Math.floor(seconds / 86_400);
@@ -32,7 +33,7 @@ export function registerAntsStatusCommand(antsCmd: Command): void {
       console.log(chalk.bold('ANTS status\n'));
       const table = new Table({ head: ['Metric', 'Value'], colWidths: [28, 64] });
       table.push(
-        ['Chain', `${view.chainId} (${view.rpcUrl})`],
+        ['Chain', `${view.chainId} (${redact(view.rpcUrl)})`],
         ['Protocol phase', phaseLabel(view)],
         ['Epoch', `${view.epoch.current} (next boundary ${epochDate(view.epoch.genesis, view.epoch.epochDuration, view.epoch.current + 1)}, in ${formatDuration(view.epoch.secondsToBoundary)})`],
         ['Wallet', view.wallet.address],
