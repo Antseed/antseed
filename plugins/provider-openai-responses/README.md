@@ -6,9 +6,7 @@ Provide OpenAI Responses API capacity on the Antseed P2P network using Codex aut
 
 ## Installation
 
-```bash
-antseed plugin add @antseed/provider-openai-responses
-```
+The CLI installs the plugin when you add a provider that uses it (see Usage below).
 
 ## Usage
 
