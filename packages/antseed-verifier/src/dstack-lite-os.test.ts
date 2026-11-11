@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { verifyTdxLiteOs as dstackVerifyTdxLiteOs } from '@phala/dstack-verifier-wasm'
 import {
   injectVerifyTdxLiteOs,
@@ -66,6 +67,21 @@ async function mrsFromQuoteHex(quoteHex: string): Promise<{ mrtd: string; rtmr0:
 }
 
 describe('dstack lite OS verifier (real wasm)', () => {
+  it('pins the sha256 of the embedded wasm binary', () => {
+    // Use Node's ESM resolver: this package exports only an import entry point.
+    const digest = execFileSync(process.execPath, ['--input-type=module', '--eval', `
+      import { createHash } from 'node:crypto'
+      const entry = import.meta.resolve('@phala/dstack-verifier-wasm')
+      const { wasmBase64 } = await import(new URL('./wasm-bytes.js', entry))
+      const bytes = Buffer.from(wasmBase64, 'base64')
+      process.stdout.write(createHash('sha256').update(bytes).digest('hex'))
+    `], { cwd: new URL('..', import.meta.url), encoding: 'utf8' })
+    // Review binary changes independently before updating this digest on a dependency bump.
+    expect(digest).toBe(
+      'f25a714e3d7e8febcf0bbfe1629e4801ef273f81034a675750bb98b6e9175c71',
+    )
+  })
+
   it('accepts the public TDX lite getquote fixture and returns its os_image_hash', async () => {
     const mrs = await mrsFromQuoteHex(fixture.quote)
     const result = verifyTdxLiteOs({ ...mrs, eventLog: fixture.event_log, vmConfig: fixture.vm_config })
