@@ -83,10 +83,10 @@ The most common cause is a gateway and a buyer that use different data directori
 
 ### Known gaps
 
-Two small gaps can make spend slightly under-counted:
+Two small gaps can make spend slightly miscounted:
 
 - The buyer keeps spend reports in memory until the gateway reads them, every couple of seconds. If the buyer crashes in between, that spend is not counted.
-- A provider can occasionally ask for payment without naming the request it is for. The gateway books that spend to a key only when exactly one key's requests are using that wallet with that provider; otherwise it is left uncounted. Giving each key its own wallet avoids this. See [Buyer identities](/docs/gateway/api#buyer-identities).
+- A provider can ask for payment without naming the request it is for, usually while several requests run on it at once. That spend is shared among the requests that used that wallet with that provider in the last five minutes, in proportion to what each spent (evenly if none had spent yet). After five minutes it goes to the last request that did. All of them pay from the same wallet, so the workspace total is exact, but a key's total is an estimate when several keys share the wallet. It is left uncounted only when no gateway request has used that wallet with that provider. Giving each key its own wallet keeps its total exact. See [Buyer identities](/docs/gateway/api#buyer-identities).
 
 ## From the command line
 
