@@ -740,6 +740,7 @@ export function transformRequestBody(
 
 export class ConversationSseAdapter {
   private buffer = ''
+  private readonly decoder = new TextDecoder()
   private text = ''
   private done = false
   private readonly createdAt: number
@@ -750,9 +751,7 @@ export class ConversationSseAdapter {
 
   feed(chunk: Buffer, done: boolean): Buffer[] {
     const out: Buffer[] = []
-    if (chunk.length > 0) {
-      this.buffer += chunk.toString('utf8')
-    }
+    this.buffer += this.decoder.decode(chunk, { stream: !done })
     const { blocks, remainder } = splitSseBlocks(this.buffer)
     this.buffer = remainder
 
@@ -859,6 +858,7 @@ export class ConversationSseAdapter {
 
 export class ResponsesSseNormalizer {
   private buffer = ''
+  private readonly decoder = new TextDecoder()
   private responseId: string | null = null
   private messageItemId: string | null = null
 
@@ -868,9 +868,7 @@ export class ResponsesSseNormalizer {
 
   feed(chunk: Buffer, done: boolean): Buffer[] {
     const out: Buffer[] = []
-    if (chunk.length > 0) {
-      this.buffer += chunk.toString('utf8')
-    }
+    this.buffer += this.decoder.decode(chunk, { stream: !done })
 
     const { blocks, remainder } = splitSseBlocks(this.buffer)
     this.buffer = remainder

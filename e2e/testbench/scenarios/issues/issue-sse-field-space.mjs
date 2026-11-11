@@ -17,12 +17,17 @@ export const topology = {
 
 const MESSAGES = [{ role: 'user', content: 'Say hello.' }];
 
-/** The JSON events of a translated stream, which the adapter writes with the space. */
+/** The JSON events of a translated stream, which the adapter writes with the space, each with its `event:` name. */
 function translatedEvents(text) {
-  return text.split('\n')
-    .filter((line) => line.startsWith('data: ') && line !== 'data: [DONE]')
-    .map((line) => JSON.parse(line.slice('data: '.length)));
+  return text.split('\n\n')
+    .filter((block) => block.length > 0 && block !== 'data: [DONE]')
+    .map((block) => {
+      const [, eventName, data] = /^(?:event: (.*)\n)?data: (.*)$/.exec(block);
+      return { eventName, ...JSON.parse(data) };
+    });
 }
+
+const everyFrameNamed = (events) => events.length > 0 && events.every((event) => event.eventName === event.type);
 
 export async function run(tb) {
   const [seller] = tb.sellers;
@@ -70,7 +75,9 @@ export async function run(tb) {
     () => tb.check('a Messages client read the whole answer', messageText === answer, { text: messageText, answer, settled }),
     () => tb.check('a Messages client read the stop reason', closing?.delta.stop_reason === 'end_turn', closing),
     () => tb.check('a Messages client read the usage', closing?.usage.input_tokens === MOCK_USAGE.prompt_tokens && closing?.usage.output_tokens === MOCK_USAGE.completion_tokens, closing),
+    () => tb.check('every Messages frame carries its event name', everyFrameNamed(messageEvents), messageEvents.map((event) => event.eventName)),
     () => tb.check('a Responses client read the whole answer', responseText === answer && completed?.output_text === answer, { text: responseText, final: completed?.output_text, answer, settled }),
     () => tb.check('a Responses client read the usage', completed?.usage.input_tokens === MOCK_USAGE.prompt_tokens && completed?.usage.output_tokens === MOCK_USAGE.completion_tokens, completed?.usage),
+    () => tb.check('every Responses frame carries its event name', everyFrameNamed(responseEvents), responseEvents.map((event) => event.eventName)),
   ]);
 }

@@ -93,7 +93,7 @@ function wire(frames: Frame[], { space = ' ', eol = '\n', noise = false, multiLi
       '',
     ].join(eol);
   }).join('');
-  return encoder.encode(`${bom ? '﻿' : ''}${body}`);
+  return encoder.encode(`${bom ? '\uFEFF' : ''}${body}`);
 }
 
 /** Feeds the chunks through a stream adapter the way a relay does, ending with an empty done chunk. */
@@ -231,6 +231,38 @@ describe('translated streams read SSE as the standard defines it', () => {
         expect(block).toMatch(/^(event: [\w.]+\n)?data: [^\n]+$/);
       }
       expect(answerOf(to, written)).toEqual(expectedAnswer(to, text));
+    });
+
+    it('name each frame as the target standard does', () => {
+      const written = translate(from, to, [wire(SOURCE_STREAMS[from](text))]);
+      for (const block of written.slice(0, -2).split('\n\n')) {
+        const [first, second] = block.split('\n');
+        if (to === 'openai-chat-completions' || first === 'data: [DONE]') {
+          expect(first).toMatch(/^data: /);
+          expect(second).toBeUndefined();
+        } else {
+          expect(first).toBe(`event: ${(JSON.parse(second!.slice('data: '.length)) as JsonObject).type}`);
+        }
+      }
+    });
+  });
+
+  describe.each(PAIRS)('from %s to %s, as the stream arrives', (from, to) => {
+    it.each([['LF', '\n'], ['CRLF', '\r\n'], ['CR', '\r']] as const)('delivers text once its frame is complete, with %s line ends', (_name, eol) => {
+      const adapter = createStreamingAdapter({ from, to, fallbackModel: 'm' })!;
+      const feed = (data: Uint8Array): string => adapter.adaptChunk({ requestId: 'r', data, done: false })
+        .map((out) => decoder.decode(out.data))
+        .join('');
+      const frames = SOURCE_STREAMS[from](ANSWER);
+      const textAt = frames.findIndex((frame) => JSON.stringify(frame.data).includes(ANSWER));
+      const textFrame = wire([frames[textAt]!], { space: '', eol });
+      const blankLine = textFrame.length - eol.length;
+
+      let written = frames.slice(0, textAt).map((frame) => feed(wire([frame], { space: '', eol }))).join('');
+      written += feed(textFrame.subarray(0, blankLine));
+      expect(answerOf(to, written).text).toBe('');
+      written += feed(textFrame.subarray(blankLine));
+      expect(answerOf(to, written).text).toBe(ANSWER);
     });
   });
 });

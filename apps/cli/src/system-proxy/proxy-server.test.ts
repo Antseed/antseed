@@ -550,6 +550,46 @@ test('ResponsesSseNormalizer: does not read a CRLF split across chunks as two li
   assert.equal(output, 'event: a\ndata: {"n":1}\n\n')
 })
 
+test('ConversationSseAdapter: keeps a character split across chunks', () => {
+  const adapter = new ConversationSseAdapter({
+    conversationId: 'conv-1',
+    parentMessageId: 'parent-1',
+    userMessageId: 'user-1',
+    assistantMessageId: 'assistant-1',
+  })
+  const bytes = Buffer.from('data: {"choices":[{"delta":{"content":"✓"}}]}\n\n')
+  const inside = bytes.indexOf(0xe2) + 1
+
+  const output = [...adapter.feed(bytes.subarray(0, inside), false), ...adapter.feed(bytes.subarray(inside), true)]
+    .map((chunk) => chunk.toString('utf8'))
+    .join('')
+  assert.ok(output.includes('"parts":["✓"]'), output)
+})
+
+test('ConversationSseAdapter: skips a byte order mark at the start of the stream', () => {
+  const adapter = new ConversationSseAdapter({
+    conversationId: 'conv-1',
+    parentMessageId: 'parent-1',
+    userMessageId: 'user-1',
+    assistantMessageId: 'assistant-1',
+  })
+  const input = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('data: {"choices":[{"delta":{"content":"hi"}}]}\n\n')])
+
+  const output = adapter.feed(input, true).map((chunk) => chunk.toString('utf8')).join('')
+  assert.ok(output.includes('"parts":["hi"]'), output)
+})
+
+test('ResponsesSseNormalizer: keeps a character split across chunks', () => {
+  const normalizer = new ResponsesSseNormalizer({ kind: 'responses-sse', stripDataType: true })
+  const bytes = Buffer.from('event: a\ndata: {"type":"a","delta":"✓"}\n\n')
+  const inside = bytes.indexOf(0xe2) + 1
+
+  const output = [...normalizer.feed(bytes.subarray(0, inside), false), ...normalizer.feed(bytes.subarray(inside), true)]
+    .map((chunk) => chunk.toString('utf8'))
+    .join('')
+  assert.equal(output, 'event: a\ndata: {"delta":"✓"}\n\n')
+})
+
 test('ResponsesSseNormalizer: passes a frame it cannot name through unchanged', () => {
   const normalizer = new ResponsesSseNormalizer({ kind: 'responses-sse', stripDataType: true })
   const input = ': keep-alive\n\ndata:{"type":"unnamed"}\n\ndata: [DONE]\n\n'
