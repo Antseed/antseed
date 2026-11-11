@@ -124,6 +124,32 @@ describe('instructions sent as Chat Completions messages', () => {
     ]);
   });
 
+  it('stay the turn to answer when they end the request after an assistant turn', () => {
+    const body = translate(CHAT, MESSAGES, {
+      model: 'm',
+      messages: [
+        { role: 'system', content: 'Rule.' },
+        { role: 'user', content: 'one' },
+        { role: 'assistant', content: 'two' },
+        { role: 'developer', content: 'Summarize.' },
+      ],
+    });
+
+    expect(body.system).toBe('Rule.');
+    expect(body.messages).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'one' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'two' }] },
+      { role: 'user', content: [{ type: 'text', text: 'Summarize.' }] },
+    ]);
+  });
+
+  it('stay the turn to answer when the request holds nothing else', () => {
+    const body = translate(CHAT, MESSAGES, { model: 'm', messages: [{ role: 'system', content: 'Write a greeting.' }] });
+
+    expect(body.system).toBeUndefined();
+    expect(body.messages).toEqual([{ role: 'user', content: [{ type: 'text', text: 'Write a greeting.' }] }]);
+  });
+
   it.each([
     ['developer', ''],
     ['developer', ' \n'],
@@ -246,6 +272,47 @@ describe('instructions sent as Responses input items', () => {
         { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call_1', content: 'done' }] },
       ]);
     });
+  });
+
+  it('stay the turn to answer when they end the request after an assistant turn', () => {
+    const body = translate(RESPONSES, MESSAGES, {
+      model: 'm',
+      instructions: 'Base.',
+      input: [
+        developerItem('Rule.'),
+        userItem('one'),
+        { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'two' }] },
+        developerItem('Summarize.'),
+      ],
+    });
+
+    expect(body.system).toBe('Base.\n\nRule.');
+    expect(body.messages).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'one' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'two' }] },
+      { role: 'user', content: [{ type: 'text', text: 'Summarize.' }] },
+    ]);
+  });
+
+  it('stay the turn to answer when the request holds nothing else', () => {
+    const body = translate(RESPONSES, MESSAGES, { model: 'm', input: [developerItem('Write a greeting.')] });
+
+    expect(body.system).toBeUndefined();
+    expect(body.messages).toEqual([{ role: 'user', content: [{ type: 'text', text: 'Write a greeting.' }] }]);
+  });
+
+  it.each([
+    ['a user turn', [userItem('hi')]],
+    ['a tool result', [
+      userItem('run it'),
+      { type: 'function_call', call_id: 'call_1', name: 'shell', arguments: '{}' },
+      { type: 'function_call_output', call_id: 'call_1', output: 'done' },
+    ]],
+  ])('join the instructions when they end the request after %s', (_, turns) => {
+    const body = translate(RESPONSES, MESSAGES, { model: 'm', input: [...turns, developerItem('Be brief.')] });
+
+    expect(body.system).toBe('Be brief.');
+    expect(body.messages).toEqual(translate(RESPONSES, MESSAGES, { model: 'm', input: turns }).messages);
   });
 
   it('come before what the translation adds for tools', () => {
