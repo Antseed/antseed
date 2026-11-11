@@ -1,15 +1,16 @@
 import { runAll } from '../../lib/stress.mjs';
 
 export const meta = {
-  description: 'A client whose streamed request is translated learns when the upstream is cut off mid-answer: a Messages client gets an error event and no message_stop, a Responses client gets response.failed and no response.completed, while whole answers still end normally. The mock upstream speaks only Chat Completions, so both clients go through the translation.',
+  description: 'A client whose streamed request is translated learns when the upstream is cut off mid-answer: a Messages client gets an error event and no message_stop, a Responses client gets response.failed and no response.completed, while whole answers still end normally. The mock upstream speaks only Chat Completions, so both clients go through the translation. The payment oracle then judges the money by the mock\'s delivery ledger: the whole answers paid in full, nothing beyond what reached the wire.',
   targets: ['local', 'fork'],
   requires: ['mockControl'],
 };
 
 // `load` usage streams an answer in pieces, so a cut lands in the middle of one, after some text has arrived.
+// ANTSEED_DEBUG gives the payment oracle the seller's own cost lines to compare with the settlement.
 export const topology = {
   mode: 'cli',
-  sellers: [{ id: 'seller', mock: { usage: 'load', latencyRangeMs: [200, 400], outTokens: [800, 1200] } }],
+  sellers: [{ id: 'seller', mock: { usage: 'load', latencyRangeMs: [200, 400], outTokens: [800, 1200] }, env: { ANTSEED_DEBUG: '1' } }],
 };
 
 /** One entry per SSE block, with its JSON parsed when it has any. */
@@ -36,8 +37,9 @@ export async function run(tb) {
   });
   const responses = (tag) => tb.request('/v1/responses', { stream: true, body: { model, stream: true, input: prompt(tag) } });
 
-  const before = await upstream();
-  tb.check('scenario starts on a fresh testbench (no upstream requests)', before.length === 0, before);
+  const earlier = await upstream();
+  tb.check('scenario starts on a fresh testbench (no upstream requests)', earlier.length === 0, earlier);
+  const before = await tb.paymentSnapshot();
 
   // Every request runs before any check: a failed check stops the scenario, and a failing run should record all four.
   const wholeMessages = await messages('whole-messages');
@@ -76,10 +78,13 @@ export async function run(tb) {
       tb.check('a cut answer reaches a Responses client as response.failed', cut.responses.at(-1)?.event === 'response.failed' && cut.responses.at(-1)?.json?.response?.status === 'failed', tail(cut.responses));
       tb.check('a cut answer never reaches a Responses client as finished', !eventNames(cut.responses).includes('response.completed') && !cut.responses.some((frame) => frame.data === '[DONE]'), tail(cut.responses));
     },
-    // Payment reads the seller's raw stream, so translating the failure changes nothing it settles.
-    async () => {
-      await tb.closeAll();
-      await tb.assertSettlementMatchesSigned(await tb.signedBySeller());
-    },
+    // Payment reads the seller's raw stream, so translating the failure changes nothing it settles. The mock's ledger
+    // is the judge, not what the buyer signed: the two whole answers were received in full and the cut ones were not,
+    // whatever the translated stream told the client.
+    () => tb.assertDeliveredWorkPaid({
+      before,
+      results: [{ tag: 'whole-messages' }, { tag: 'whole-responses' }, { tag: 'cut-messages', error: 'cut' }, { tag: 'cut-responses', error: 'cut' }],
+      injected: { disconnectRate: 1 },
+    }),
   ]);
 }
