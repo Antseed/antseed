@@ -15,7 +15,7 @@ type EcosystemProject = {
   color: string;
   colorSoft: string;
   logo?: string;
-  theme: 'stats' | 'scan' | 'diem' | 'antseedmarkets' | 'lants' | 'seedstore' | 'points';
+  theme: 'stats' | 'scan' | 'diem' | 'antseedmarkets' | 'lants' | 'seedstore' | 'points' | 'seedtunnel';
 };
 
 type Resource = {
@@ -142,6 +142,20 @@ const projects: EcosystemProject[] = [
     logo: 'https://sippar.network/seedstore/sippar-mark-diamond-512.png',
     theme: 'seedstore',
   },
+  {
+    name: 'SeedTunnel',
+    href: 'https://sippar.network/seedtunnel/',
+    category: 'Onboarding',
+    oneLiner: 'The easy way into Antseed for teams: top AI models and live data, in your own gateway or in the AI you already use.',
+    description:
+      "Run your team's own Antseed gateway: one API for your apps, and a console to give each person a key, set a spending limit and pay one bill for every model. Or use Antseed inside Claude, ChatGPT or Gemini through the Sippar MCP Connector, and start with the prepaid Antseed Unlock card.",
+    glyph: 'ST',
+    status: 'Live',
+    color: '#8a6242',
+    colorSoft: 'rgba(138, 98, 66, 0.18)',
+    logo: 'https://sippar.network/connector/sippar-mark-diamond-512.png',
+    theme: 'seedtunnel',
+  },
 ];
 
 const pillars = [
@@ -235,6 +249,20 @@ function ProductPreview({project}: {project: EcosystemProject}) {
           <span><b>✓</b>Finds sippar-flight-search</span>
           <span><b>✓</b>Pays for the answer</span>
           <span><b>✓</b>Source: Google Flights</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (project.theme === 'seedtunnel') {
+    return (
+      <div className={`${styles.preview} ${styles.previewTunnel}`}>
+        <div className={styles.previewTop}><span>SeedTunnel</span><i>Powered by Antseed</i></div>
+        <div className={styles.tunnelHead}>Unlock Shared Intelligence</div>
+        <div className={styles.tunnelRows}>
+          <span><b>As an API</b><em>Your own gateway</em></span>
+          <span><b>Inside your AI</b><em>Claude, ChatGPT, Gemini</em></span>
+          <span><b>Unlock card</b><em>Prepaid</em></span>
         </div>
       </div>
     );

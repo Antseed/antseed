@@ -1,0 +1,69 @@
+/* /apps — reuses agents.module.css for the shared page pieces. */
+
+/* Keep the hero copy above the homepage's animated console screen. */
+.hero.hero {
+  padding: 64px 16px;
+}
+
+.heroInner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  max-width: 1120px;
+  margin: 0 auto;
+  gap: 40px;
+}
+
+.hero .heroCopy {
+  align-items: center;
+  text-align: center;
+}
+
+.hero .heroTitle {
+  max-width: none;
+}
+
+.heroScreen {
+  width: 100%;
+  max-width: 900px;
+}
+
+/* Compact setup choices; full installation instructions live in the docs. */
+.setupGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  max-width: 840px;
+  margin: 28px auto 0;
+}
+
+.setupOption {
+  padding: 24px;
+  border: 1px solid var(--as-line);
+  border-radius: 18px;
+  background: var(--as-soil-2);
+}
+
+.setupOption h3 {
+  margin: 0 0 8px;
+  font-family: var(--as-font-display);
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--as-heading);
+}
+
+.setupOption p {
+  margin: 0 0 16px;
+  font-size: 15px;
+  line-height: 24px;
+  color: var(--as-text-2);
+}
+
+@media (max-width: 560px) {
+  .hero.hero { padding: 32px 16px 40px; }
+  .heroInner { gap: 28px; }
+  .heroCtas { width: 100%; max-width: 320px; }
+  .heroCtas > a { width: 100%; min-height: 48px; }
+  .setupOption a { min-height: 44px; display: inline-flex; align-items: center; }
+  .setupGrid { grid-template-columns: minmax(0, 1fr); }
+}
