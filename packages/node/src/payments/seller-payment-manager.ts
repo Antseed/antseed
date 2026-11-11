@@ -690,7 +690,7 @@ export class SellerPaymentManager {
         // A channel this seller already closed stays closed: a lagging RPC
         // node can still report it active, and recovering it would block the
         // buyer's replacement channel. No chain read is needed to say so.
-        if (this._channelStore.getChannel(channelId)?.status === CHANNEL_STATUS.SETTLED) {
+        if (sameChannel?.status === CHANNEL_STATUS.SETTLED) {
           debugLog(`[SellerPayment] SpendingAuth for closed channel ${channelId.slice(0, 18)}... — rejected`);
           return 'rejected';
         }

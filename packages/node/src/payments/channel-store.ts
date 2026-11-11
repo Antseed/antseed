@@ -329,8 +329,10 @@ export class ChannelStore {
     return row ? rowToChannel(row) : null;
   }
 
-  /** The channel with this id, however its hex digits are cased. */
+  /** The channel with this id, however its hex digits are cased. The exact spelling wins when it is stored. */
   getChannelIgnoringCase(sessionId: string): StoredChannel | null {
+    const exact = this.getChannel(sessionId);
+    if (exact) return exact;
     const row = this._stmts.getByIdIgnoringCase.get(sessionId) as ChannelRow | undefined;
     return row ? rowToChannel(row) : null;
   }
