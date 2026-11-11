@@ -86,4 +86,4 @@ scheme unchanged. Full setup: [CHUTES.md](./CHUTES.md) · [REDPILL.md](./REDPILL
 
 ---
 
-`v0.1.1` · GPL-3.0
+License: GPL-3.0-only
