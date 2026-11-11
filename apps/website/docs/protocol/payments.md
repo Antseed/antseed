@@ -120,6 +120,10 @@ When a channel settles, the metadata is forwarded to the `AntseedStats` contract
 
 A channel's reservation can grow. When the buyer's remaining headroom runs low, it signs a new ReserveAuth with a higher `maxAmount`, and the seller calls `topUp()`. `topUp()` settles the latest SpendingAuth first and succeeds only once the settled amount reaches `TOP_UP_SETTLED_THRESHOLD_BPS` of the current reservation. The source default is 8500 (85%); the value is owner-configurable and is 6500 (65%) on Base mainnet. Until a top-up lands, the seller cannot accept a cumulative amount above the current reservation.
 
+While a top-up is pending, a buyer whose signed total is still below the reservation does not sign past it in one step. If the next amount would go above the reservation, the buyer signs exactly the reservation first, which gives the seller a SpendingAuth it can settle to reach the threshold. The buyer signs the rest on the seller's next NeedAuth.
+
+The seller keeps the buyer's signed top-up in its channel store until it lands. A seller that restarts first resubmits it on the next start, unless it has already landed or its deadline has passed.
+
 If the buyer has not signed for work already served, the seller answers the next request with HTTP 402 and a PaymentRequired message carrying the cumulative amount needed to catch up. If that amount exceeds the channel's on-chain reservation, the channel is exhausted (`channel_exhausted`) and the buyer opens a new one.
 
 ## Closing a channel

@@ -26,6 +26,8 @@ Free requests are not paid, but your node records them on-chain so buyers earn u
 | Channel idle | After `ANTSEED_SETTLEMENT_IDLE_MS` without activity (default 10 minutes), the node settles what is owed, skipping amounts below `payments.minSettleDelta` (default $0.002) so gas doesn't exceed the payment. |
 | Budget running low | The node tops up the channel, settling the current total in the same transaction. |
 
+A top-up that hasn't landed survives a restart. When you stop the node, it waits up to 5 seconds for a top-up that is being mined. One that is still pending is saved with the channel and resubmitted on the next start, so work served above the old limit still gets paid. A top-up that already landed, or whose deadline has passed, is dropped instead.
+
 If a buyer has already asked the contract to close a channel, your node stops serving it, because work served after the buyer's grace period may never be collectible. `payments.serveWhileClosePending` overrides this; leave it off unless you understand the risk.
 
 ## Gas
