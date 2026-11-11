@@ -2438,6 +2438,36 @@ describe('createStreamingAdapter responses to anthropic', () => {
     expect((JSON.parse(messageDelta!.data) as { usage: unknown }).usage).toEqual({ output_tokens: 0 });
   });
 
+  it('reports cache reads from response.completed like the non-streamed answer when the input count is zero', () => {
+    const usage = { input_tokens: 0, input_tokens_details: { cached_tokens: 50 }, output_tokens: 7 };
+    const output = [{ type: 'message', id: 'msg_1', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'Hi', annotations: [] }] }];
+    const adapter = createStreamAdapterForTest('openai-responses', 'anthropic-messages', '');
+    const chunks = adapter.adaptChunk({
+      requestId: 'req-resp-cache-only',
+      data: new TextEncoder().encode(
+        'event: response.created\n'
+        + 'data: {"type":"response.created","response":{"id":"resp_co","model":"gpt-4.1","status":"in_progress","output":[],"usage":null}}\n\n'
+        + 'event: response.output_text.delta\n'
+        + 'data: {"type":"response.output_text.delta","output_index":0,"item_id":"msg_1","content_index":0,"delta":"Hi"}\n\n'
+        + 'event: response.completed\n'
+        + `data: ${JSON.stringify({ type: 'response.completed', response: { id: 'resp_co', model: 'gpt-4.1', status: 'completed', output, usage } })}\n\n`,
+      ),
+      done: true,
+    });
+    const events = parseSseEvents(chunks.map((chunk) => new TextDecoder().decode(chunk.data)).join(''));
+    const streamed = (JSON.parse(events.find((event) => event.event === 'message_delta')!.data) as { usage: unknown }).usage;
+
+    const nonStreamed = adaptResponseForTest('openai-responses', 'anthropic-messages', {
+      requestId: 'req-resp-cache-only',
+      statusCode: 200,
+      headers: { 'content-type': 'application/json' },
+      body: new TextEncoder().encode(JSON.stringify({ id: 'resp_co', model: 'gpt-4.1', status: 'completed', output, usage })),
+    }, { streamRequested: false, fallbackModel: 'claude-sonnet' });
+
+    expect(streamed).toEqual({ input_tokens: 0, output_tokens: 7, cache_read_input_tokens: 50 });
+    expect((JSON.parse(new TextDecoder().decode(nonStreamed.body)) as { usage: unknown }).usage).toEqual(streamed);
+  });
+
   it('takes the input split from response.completed when response.created also carried usage', () => {
     const render = (createdUsage: string, completedUsage: string) => {
       const adapter = createStreamAdapterForTest('openai-responses', 'anthropic-messages', '');
