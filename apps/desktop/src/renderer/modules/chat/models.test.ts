@@ -121,6 +121,13 @@ test('a $0 offer only stakers get is labeled for stakers, not Free', () => {
   assert.equal(offerPriceLabel({ inputUsdPerMillion: 0.1, outputUsdPerMillion: 0.9 }, true), '$0.10 / $0.90 per M');
 });
 
+test('a seller charging only for cache reads is not labeled Free, and names that price', () => {
+  const cachedOnly = { inputUsdPerMillion: 0, outputUsdPerMillion: 0, cachedInputUsdPerMillion: 0.05 };
+  assert.equal(offerPriceLabel(cachedOnly, false), '$0 / $0 per M · cache reads $0.0500');
+  assert.equal(offerPriceLabel(cachedOnly, true), '$0 / $0 per M · cache reads $0.0500');
+  assert.equal(offerPriceLabel({ ...cachedOnly, cachedInputUsdPerMillion: null }, false), 'Free');
+});
+
 test('a pin to a paid seller of a model with a free seller is not Free', () => {
   const free = 'a'.repeat(40);
   const model = { free: true, freeSellerId: `0x${free.toUpperCase()}` };

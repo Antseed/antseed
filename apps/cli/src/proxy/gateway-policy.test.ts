@@ -21,7 +21,7 @@ import {
 
 const SECRET = 'f'.repeat(64)
 
-function makePeer(seed: string, opts: { input: number; output: number; trust: number; capabilities?: string[] }): PeerInfo {
+function makePeer(seed: string, opts: { input: number; output: number; trust: number; cached?: number; capabilities?: string[] }): PeerInfo {
   return {
     peerId: seed.repeat(40) as PeerInfo['peerId'],
     lastSeen: Date.now(),
@@ -29,7 +29,10 @@ function makePeer(seed: string, opts: { input: number; output: number; trust: nu
     onChainReputationScore: opts.trust,
     displayName: `Test seller ${seed}`,
     ...(opts.capabilities ? { capabilities: opts.capabilities } : {}),
-    providerPricing: { openai: { defaults: { inputUsdPerMillion: opts.input, outputUsdPerMillion: opts.output } } },
+    providerPricing: { openai: { defaults: {
+      inputUsdPerMillion: opts.input, outputUsdPerMillion: opts.output,
+      ...(opts.cached !== undefined ? { cachedInputUsdPerMillion: opts.cached } : {}),
+    } } },
     providerServiceApiProtocols: { openai: { services: { 'gpt-5': ['openai-chat-completions'] } } },
   }
 }
@@ -243,7 +246,7 @@ test('strict and non-strict model routes on the automatic path', async (t) => {
 })
 
 test('route-preview shares routing logic and explains ineligible sellers', async (t) => {
-  const tee = makePeer('c', { input: 0.5, output: 0.5, trust: 40 })
+  const tee = makePeer('c', { input: 0.5, output: 0.5, trust: 40, cached: 0.05 })
   const h = await startHarness(t, [cheap, pricey, tee])
   ;(h.proxy as any)._peerHealth.set(cheap.peerId, { failureStreak: 3, cooldownUntil: Date.now() + 60_000, lastFailureAt: Date.now(), lastReason: 'seller-5xx', windowStartedAt: 0, episodeStartedAt: 0, lastSuccessAt: 0 })
 
@@ -258,8 +261,11 @@ test('route-preview shares routing logic and explains ineligible sellers', async
   assert.equal(body.model, 'gpt-5')
   const byId = new Map(body.candidates.map((candidate) => [candidate['peerId'], candidate]))
   assert.deepEqual(Object.keys(body.candidates[0]!).sort(), [
-    'displayName', 'eligible', 'health', 'inputUsdPerMillion', 'outputUsdPerMillion', 'peerId', 'rank', 'reasons', 'selection', 'trustScore',
+    'cachedInputUsdPerMillion', 'displayName', 'eligible', 'health', 'inputUsdPerMillion', 'outputUsdPerMillion', 'peerId', 'rank', 'reasons', 'selection', 'trustScore',
   ])
+  // Each seller's cache-read price, so a seller charging only for those isn't shown as free.
+  assert.equal(byId.get(tee.peerId)?.['cachedInputUsdPerMillion'], 0.05)
+  assert.equal(byId.get(cheap.peerId)?.['cachedInputUsdPerMillion'], null)
   // Only eligible sellers carry the numbers routing ranked them by.
   assert.equal(byId.get(pricey.peerId)?.['selection'], null)
   assert.equal((byId.get(cheap.peerId)?.['selection'] as { coolingDown?: boolean } | null)?.coolingDown, true)

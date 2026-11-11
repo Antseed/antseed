@@ -17,7 +17,7 @@ test('parseRoutePreview lists allowed sellers in Auto order, then the excluded o
     modelAllowed: true,
     candidates: [
       { peerId: C, displayName: 'Blocked', rank: null, eligible: false, reasons: ['blocked by workspace'], inputUsdPerMillion: 1, outputUsdPerMillion: 2, trustScore: 40, selection: null },
-      { peerId: `0x${B.toUpperCase()}`, displayName: '  ', rank: 2, eligible: true, reasons: [], inputUsdPerMillion: 0.1, outputUsdPerMillion: 0.2, trustScore: null, selection: { successRate: 0.9 }, health: { status: 'failing' } },
+      { peerId: `0x${B.toUpperCase()}`, displayName: '  ', rank: 2, eligible: true, reasons: [], inputUsdPerMillion: 0, outputUsdPerMillion: 0, cachedInputUsdPerMillion: 0.05, trustScore: null, selection: { successRate: 0.9 }, health: { status: 'failing' } },
       { peerId: A, displayName: 'Example Seller', rank: 1, eligible: true, reasons: ['free'], inputUsdPerMillion: 0, outputUsdPerMillion: 0, trustScore: 77, selection: { successRate: 0.98, firstTokenMs: 946, tokensPerSecond: 79 } },
     ],
   });
@@ -32,12 +32,15 @@ test('parseRoutePreview lists allowed sellers in Auto order, then the excluded o
     reasons: ['free'],
     inputUsdPerMillion: 0,
     outputUsdPerMillion: 0,
+    cachedInputUsdPerMillion: null,
     trustScore: 77,
     successRate: 0.98,
     firstTokenMs: 946,
     tokensPerSecond: 79,
     failing: false,
   });
+  // A seller charging only for cache reads keeps that price, so it isn't shown as free.
+  assert.equal(preview.candidates[1]!.cachedInputUsdPerMillion, 0.05);
   assert.equal(preview.candidates[1]!.name, null);
   assert.equal(preview.candidates[1]!.failing, true);
   assert.equal(preview.candidates[2]!.eligible, false);

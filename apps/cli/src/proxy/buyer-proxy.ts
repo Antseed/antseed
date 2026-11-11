@@ -360,6 +360,8 @@ interface RoutePreviewCandidate {
   reasons: string[]
   inputUsdPerMillion: number | null
   outputUsdPerMillion: number | null
+  /** Cache reads; a seller charging only for these is not free. Null when the seller doesn't price them. */
+  cachedInputUsdPerMillion: number | null
   /** Trust for this model: the buyer's score, cut to 10% by a live DIFF verdict. */
   trustScore: number | null
   /** The score before a DIFF cut; present only when one applies. */
@@ -2203,6 +2205,7 @@ export class BuyerProxy {
         reasons: [`self health check failing${offer.health?.reason ? ` (${offer.health.reason})` : ''}`],
         inputUsdPerMillion: offer.inputUsdPerMillion ?? null,
         outputUsdPerMillion: offer.outputUsdPerMillion ?? null,
+        cachedInputUsdPerMillion: offer.cachedInputUsdPerMillion ?? null,
         ...(peer ? previewTrust(this._modelTrust(peer, offer.serviceId ?? null)) : { trustScore: null }),
         selection: null,
         health: offer.health ?? null,
@@ -2217,6 +2220,7 @@ export class BuyerProxy {
         reasons: modelAllowed ? verdict.reasons : ['model not allowed', ...verdict.reasons],
         inputUsdPerMillion: verdict.offer.inputUsdPerMillion ?? null,
         outputUsdPerMillion: verdict.offer.outputUsdPerMillion ?? null,
+        cachedInputUsdPerMillion: verdict.offer.cachedInputUsdPerMillion ?? null,
         ...previewTrust(this._modelTrust(verdict.peer, verdict.serviceId)),
         selection: modelAllowed && verdict.eligible ? verdict.selection ?? null : null,
         health: verdict.offer.health ?? null,

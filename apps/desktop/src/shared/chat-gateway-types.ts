@@ -51,6 +51,8 @@ export type ChatRouteCandidate = {
   reasons: string[];
   inputUsdPerMillion: number | null;
   outputUsdPerMillion: number | null;
+  /** Cache reads; a seller charging only for these is not free. Null when not priced (or an older gateway). */
+  cachedInputUsdPerMillion: number | null;
   trustScore: number | null;
   successRate: number | null;
   firstTokenMs: number | null;

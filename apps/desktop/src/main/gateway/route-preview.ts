@@ -71,6 +71,7 @@ export function parseRoutePreview(body: unknown): RoutePreview {
         reasons: Array.isArray(candidate['reasons']) ? candidate['reasons'].filter((reason): reason is string => typeof reason === 'string') : [],
         inputUsdPerMillion: finiteNumber(candidate['inputUsdPerMillion']),
         outputUsdPerMillion: finiteNumber(candidate['outputUsdPerMillion']),
+        cachedInputUsdPerMillion: finiteNumber(candidate['cachedInputUsdPerMillion']),
         trustScore: finiteNumber(candidate['trustScore']),
         successRate: finiteNumber(selection['successRate']),
         firstTokenMs: finiteNumber(selection['firstTokenMs']),

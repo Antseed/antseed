@@ -172,15 +172,23 @@ export function formatUsdPerMillion(value: number | null | undefined): string {
   return value < 0.1 ? `$${value.toFixed(4)}` : `$${value.toFixed(2)}`;
 }
 
-/** "$0.14 / $0.28 per M" (input / output, per million tokens), or "Free". */
-export function formatPriceRange(offer: { inputUsdPerMillion: number | null; outputUsdPerMillion: number | null }): string {
+type OfferPrices = { inputUsdPerMillion: number | null; outputUsdPerMillion: number | null; cachedInputUsdPerMillion?: number | null };
+
+/**
+ * "$0.14 / $0.28 per M" (input / output, per million tokens), or "Free". An
+ * offer whose only charge is cache reads names that price, since "$0 / $0"
+ * alone would read as free.
+ */
+export function formatPriceRange(offer: OfferPrices): string {
   if (isFreeOffer(offer)) return 'Free';
-  return `${formatUsdPerMillion(offer.inputUsdPerMillion)} / ${formatUsdPerMillion(offer.outputUsdPerMillion)} per M`;
+  const range = `${formatUsdPerMillion(offer.inputUsdPerMillion)} / ${formatUsdPerMillion(offer.outputUsdPerMillion)} per M`;
+  const cachedOnly = offer.inputUsdPerMillion === 0 && offer.outputUsdPerMillion === 0;
+  return cachedOnly ? `${range} · cache reads ${formatUsdPerMillion(offer.cachedInputUsdPerMillion)}` : range;
 }
 
 /** "Free", "Free for stakers" for a $0 offer only a seller's stakers get, or the price range. */
 export function offerPriceLabel(
-  offer: { inputUsdPerMillion: number | null; outputUsdPerMillion: number | null },
+  offer: OfferPrices,
   stakersOnly: boolean,
 ): string {
   if (isFreeOffer(offer) && stakersOnly) return 'Free for stakers';
@@ -188,6 +196,6 @@ export function offerPriceLabel(
 }
 
 /** Every token price is $0, cached input included (absent counts as $0, as the buyer reads it). */
-export function isFreeOffer(offer: { inputUsdPerMillion: number | null; outputUsdPerMillion: number | null; cachedInputUsdPerMillion?: number | null }): boolean {
+export function isFreeOffer(offer: OfferPrices): boolean {
   return offer.inputUsdPerMillion === 0 && offer.outputUsdPerMillion === 0 && (offer.cachedInputUsdPerMillion ?? 0) === 0;
 }
