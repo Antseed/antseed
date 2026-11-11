@@ -914,10 +914,12 @@ function placeInstructionMessages(request: CanonicalLlmRequest, messages: Instru
   const last = request.input[end - 1];
   const answerable = last?.type === 'function_call_output' || (last?.type === 'message' && last.role === 'user');
   for (const { itemsBefore, content } of messages) {
-    const text = textFromCanonicalContent(content);
-    if (text.trim().length === 0) continue;
-    if (itemsBefore === end && !answerable) request.input.push({ type: 'message', role: 'user', content });
-    else appendInstructions(request, text);
+    if (itemsBefore < end || answerable) {
+      appendInstructions(request, textFromCanonicalContent(content));
+      continue;
+    }
+    const turn = content.filter((part) => part.type !== 'text' || part.text.trim().length > 0);
+    if (turn.length > 0) request.input.push({ type: 'message', role: 'user', content: turn });
   }
 }
 
