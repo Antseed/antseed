@@ -48,7 +48,7 @@ export interface SellerPaymentConfig {
 
 /** Default minimum budget per request: $0.50 USDC (base units). */
 const DEFAULT_MIN_BUDGET_PER_REQUEST = '500000';
-/** How long a channel close waits for requests already being served before it goes ahead. */
+/** How long a channel close waits for requests already being served before it gives up. */
 const IDLE_CLOSE_DRAIN_MS = 15 * 60_000;
 const IDLE_CLOSE_POLL_MS = 250;
 
@@ -2484,6 +2484,16 @@ export class SellerPaymentManager {
       const drainDeadline = Date.now() + IDLE_CLOSE_DRAIN_MS;
       while (this.hasInFlightRequests(buyerPeerId) && Date.now() < drainDeadline) {
         await new Promise((resolve) => setTimeout(resolve, IDLE_CLOSE_POLL_MS));
+      }
+      if (this.hasInFlightRequests(buyerPeerId)) {
+        // Still serving after the whole wait: give up rather than close under
+        // the answer. The channel closes on a later request for it, on the
+        // buyer's replacement or in the timeout check, once it is recorded.
+        debugWarn(
+          `[SellerPayment] Channel ${channelId.slice(0, 18)}... is still serving a request after ` +
+          `${IDLE_CLOSE_DRAIN_MS / 60_000} minutes — not closing it now`,
+        );
+        return;
       }
       // The buyer's auths for the work just finished are still on the wire or
       // queued behind the lock: close at them, not at what was accepted before.
