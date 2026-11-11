@@ -868,6 +868,23 @@ describe.each<AnswerKind>(['buffered', 'streamed'])('seller billing across a dis
     expect(h.manager.getCumulativeSpend(CHANNEL_A)).toBe(COST);
   });
 
+  it('bills nothing for an answer that ends after the stopping seller closed its connections', async () => {
+    const h = await setup(kind);
+    await h.openChannel(CHANNEL_A);
+
+    h.upstream.hold();
+    const answered = h.send('running');
+    await h.upstream.started(1);
+    h.disconnect();
+    h.manager.markConnectionsClosed();
+    h.upstream.release();
+    await answered;
+
+    expect(h.manager.getCumulativeSpend(CHANNEL_A)).toBe(0n);
+    expect(h.store.getChannel(CHANNEL_A)?.tokensDelivered).toBe('0');
+    expect(h.needAuths).not.toHaveBeenCalled();
+  });
+
   it('bills nothing for a free answer when the buyer disconnects before it ends', async () => {
     const h = await setup(kind);
     await h.openChannel(CHANNEL_A);
