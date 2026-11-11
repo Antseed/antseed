@@ -279,7 +279,7 @@ describe('topology mode', () => {
   it('issue-1200 asks for buyerFaults; the scenarios cli mode must run do not', async () => {
     const load = async (name) => validateScenarioModule(await import(pathToFileURL(scenarioFile(name)).href), name);
     assert.ok((await load('issue-1200-spendingauth-catchup')).requires.includes('buyerFaults'));
-    for (const name of ['chat-basic', 'payment-flow', 'routing-smoke', 'stress-smoke', 'stress-restart-buyer', 'stress-restart-seller', 'issue-1050-stale-channel']) {
+    for (const name of ['chat-basic', 'payment-flow', 'routing-smoke', 'stress-smoke', 'stress-restart-buyer', 'stress-restart-seller', 'issue-1050-stale-channel', 'issue-responses-instructions']) {
       const scenario = await load(name);
       assert.doesNotThrow(() => assertScenarioSupported(scenario, 'local', 'cli'), name);
     }
