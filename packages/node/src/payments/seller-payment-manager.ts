@@ -133,6 +133,13 @@ interface PendingOneOffPlan {
 }
 
 /** handleSpendingAuth's internal result: 'awaiting-top-up' asks it to wait for a mining top-up and retry. */
+/** A buyer's signed top-up the seller has verified and will submit with topUp(). */
+interface PendingTopUp {
+  newMaxAmount: bigint
+  deadline: number
+  reserveAuthSig: string
+}
+
 type SpendingAuthOutcome = 'accepted' | 'reserved' | 'rejected' | 'awaiting-top-up';
 type TopUpFailureKind = 'retryable-threshold' | 'retryable-tx-backpressure' | 'insufficient-balance' | 'non-retryable';
 /** `amount`/`txHash` describe the close actually submitted on-chain, which may
@@ -226,9 +233,13 @@ export class SellerPaymentManager {
    *  Latest / largest top-up intent wins: if multiple deferred ReserveAuths arrive
    *  before a retry succeeds, we keep the most recent higher ceiling because it
    *  subsumes the older request. */
-  private readonly _pendingTopUp = new Map<string, { newMaxAmount: bigint; deadline: number; reserveAuthSig: string }>();
+  private readonly _pendingTopUp = new Map<string, PendingTopUp>();
+  /** Channels whose stored top-up could not be checked at startup (RPC failed): the periodic check restores it. */
+  private readonly _topUpRestoreDeferred = new Set<string>();
   /** Channels with a background topUp() running, and those asked for another meanwhile. */
   private readonly _topUpsRunning = new Map<string, Promise<void>>();
+  /** Set once a stopping node closed its connections: nothing finished after it reaches a buyer. */
+  private _connectionsClosed = false;
   private readonly _topUpsWanted = new Set<string>();
   /** channelId -> ceiling of the topUp() being submitted now. */
   private readonly _topUpInFlight = new Map<string, bigint>();
@@ -413,9 +424,11 @@ export class SellerPaymentManager {
             debugLog(`[SellerPayment] Reconciled spent for ${channel.sessionId.slice(0, 18)}...: local=${localSpent} → on-chain=${onChainSettled}`);
           }
         }
+        this._restorePendingTopUp(channel, onChainState.channel.deposit);
       } catch (err) {
         debugWarn(`[SellerPayment] Failed to validate channel ${channel.sessionId.slice(0, 18)}...: ${err instanceof Error ? err.message : err}`);
         // Keep channel hydrated on RPC failure — periodic check will retry
+        if (channel.latestReserveAuthSig) this._topUpRestoreDeferred.add(channel.sessionId);
       }
     }
 
@@ -1514,12 +1527,86 @@ export class SellerPaymentManager {
 
   private _storePendingTopUp(
     channelId: string,
-    pending: { newMaxAmount: bigint; deadline: number; reserveAuthSig: string },
+    pending: PendingTopUp,
   ): void {
     const existing = this._pendingTopUp.get(channelId);
     if (!existing || pending.newMaxAmount >= existing.newMaxAmount) {
       this._pendingTopUp.set(channelId, pending);
+      this._persistPendingTopUp(channelId, pending);
     }
+  }
+
+  /**
+   * Keep the buyer's top-up ReserveAuth in the store. Requests admitted while
+   * the topUp() mines can take the spend past the on-chain deposit; if the
+   * seller stops before it lands, only this signature can still lift the
+   * ceiling so the buyer's auths for that work become settleable.
+   */
+  private _persistPendingTopUp(
+    channelId: string,
+    pending: PendingTopUp,
+  ): void {
+    const session = this._channelStore.getChannel(channelId);
+    if (!session || BigInt(session.reserveMaxAmount ?? '0') >= pending.newMaxAmount) return;
+    session.reserveMaxAmount = pending.newMaxAmount.toString();
+    session.latestReserveAuthSig = pending.reserveAuthSig;
+    session.latestReserveDeadline = pending.deadline;
+    session.updatedAt = Date.now();
+    this._channelStore.upsertChannel(session);
+  }
+
+  /**
+   * Forget the stored top-up once it landed or can no longer land. One stored
+   * since for a higher ceiling (`upTo` below it) is kept. A failed submission
+   * keeps it: that channel is closed, and if the seller stops first, the next
+   * start tries it once more (a timeout may not have been a revert).
+   */
+  private _clearPersistedTopUp(channelId: string, upTo: bigint): void {
+    const session = this._channelStore.getChannel(channelId);
+    if (!session?.latestReserveAuthSig || BigInt(session.reserveMaxAmount ?? '0') > upTo) return;
+    session.reserveMaxAmount = null;
+    session.latestReserveAuthSig = null;
+    session.latestReserveDeadline = null;
+    session.updatedAt = Date.now();
+    this._channelStore.upsertChannel(session);
+  }
+
+  /**
+   * After a restart: re-queue a stored top-up the chain has not applied, so
+   * spend served above the deposit before the stop can still be signed for
+   * and settled. Anything at or below the on-chain deposit has landed, and an
+   * expired one would only revert: both are forgotten.
+   */
+  private _restorePendingTopUp(channel: StoredChannel, onChainDeposit: bigint): void {
+    const channelId = channel.sessionId;
+    if (onChainDeposit > (this._reserveMax.get(channelId) ?? 0n)) {
+      this._updateReserveCeiling(channelId, onChainDeposit);
+    }
+    if (!channel.latestReserveAuthSig) return;
+    const newMaxAmount = BigInt(channel.reserveMaxAmount ?? '0');
+    const deadline = channel.latestReserveDeadline ?? 0;
+    if (newMaxAmount <= onChainDeposit || deadline <= Math.floor(Date.now() / 1000)) {
+      this._clearPersistedTopUp(channelId, newMaxAmount);
+      return;
+    }
+    // The buyer may have sent it again meanwhile: one queued or being submitted is not queued twice.
+    if (this._topUpsRunning.has(channelId) || (this._pendingTopUp.get(channelId)?.newMaxAmount ?? 0n) >= newMaxAmount) return;
+    this._pendingTopUp.set(channelId, { newMaxAmount, deadline, reserveAuthSig: channel.latestReserveAuthSig });
+    debugLog(`[SellerPayment] Restored pending topUp: channel=${channelId.slice(0, 18)}... deposit=${onChainDeposit} newMax=${newMaxAmount}`);
+    this._scheduleTopUp(channel.peerId, channelId);
+  }
+
+  /**
+   * Resolves once no background topUp() is running, or after `timeoutMs`:
+   * a stop waits briefly so one being mined can land before the process exits.
+   * One that does not is kept in the store and resubmitted on the next start.
+   */
+  async waitForRunningTopUps(timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    const results = await Promise.all(
+      [...this._topUpsRunning.keys()].map((channelId) => this.waitForTopUp(channelId, Math.max(0, deadline - Date.now()))),
+    );
+    return results.every(Boolean);
   }
 
   private _formatError(err: unknown): string {
@@ -1755,7 +1842,7 @@ export class SellerPaymentManager {
   private async _retryPendingTopUp(
     buyerPeerId: string,
     channelId: string,
-    pendingTopUp: { newMaxAmount: bigint; deadline: number; reserveAuthSig: string },
+    pendingTopUp: PendingTopUp,
     settleAmount: bigint,
     settleMetadata: string,
     settleSig: string,
@@ -1775,6 +1862,7 @@ export class SellerPaymentManager {
         pendingTopUp.reserveAuthSig,
       );
       this._updateReserveCeiling(channelId, pendingTopUp.newMaxAmount, pendingTopUp.deadline);
+      this._clearPersistedTopUp(channelId, pendingTopUp.newMaxAmount);
       debugLog(`[SellerPayment] Deferred topUp succeeded: channel=${channelId.slice(0, 18)}... new ceiling=${pendingTopUp.newMaxAmount}`);
       return 'succeeded';
     } catch (retryErr) {
@@ -1911,9 +1999,27 @@ export class SellerPaymentManager {
   // ── Spend tracking ──────────────────────────────────────────
 
   /**
+   * A stopping node closed every connection: a request that finishes after
+   * this cannot deliver its response, so its cost is not billed. Without it, a
+   * stop that waits (for a top-up being mined) bills in-flight work the buyer
+   * never received, and after the restart demands it before serving anything.
+   */
+  markConnectionsClosed(): void {
+    this._connectionsClosed = true;
+  }
+
+  get connectionsClosed(): boolean {
+    return this._connectionsClosed;
+  }
+
+  /**
    * Record USDC consumption after serving a request.
    */
   recordSpend(sessionId: string, costUsdc: bigint): void {
+    if (this._connectionsClosed) {
+      debugLog(`[SellerPayment] recordSpend skipped after connections closed: channel=${sessionId.slice(0, 18)}... cost=${costUsdc}`);
+      return;
+    }
     const current = this._spent.get(sessionId);
     if (current === undefined) {
       debugWarn(`[SellerPayment] recordSpend: unknown channelId ${sessionId.slice(0, 18)}...`);
@@ -2193,6 +2299,9 @@ export class SellerPaymentManager {
         if (!onChainState.exists || (onChainState.status !== 'active' && onChainState.status !== 'unknown')) {
           this._evictStaleChannel(channel.sessionId, channel.peerId, `periodic check: on-chain status=${onChainState.exists ? onChainState.status : 'missing'}`);
           continue;
+        }
+        if (this._topUpRestoreDeferred.delete(channel.sessionId)) {
+          this._restorePendingTopUp(channel, onChainState.channel.deposit);
         }
 
         const buyerDisconnected = !this._activeBuyers.has(channel.peerId);
