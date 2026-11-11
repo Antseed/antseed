@@ -5,7 +5,7 @@
  * writer decides when to reference, restore or drop it.
  */
 import { ANTSEED_MODEL_CONTEXT_WINDOW } from '@antseed/protocol/service-api';
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { readFileSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
 import { sha256Hex, writeTextFile } from './config-patch-files.js';
@@ -14,15 +14,21 @@ export const CODEX_MODEL_CATALOG_FILE = 'antseed-models.json';
 
 type JsonObject = Record<string, unknown>;
 
-function runCodexDebugModels(configPath: string, args: readonly string[] = []): string {
-  return execFileSync('codex', ['debug', 'models', ...args], {
-    env: { ...process.env, CODEX_HOME: path.dirname(configPath) },
-    encoding: 'utf8',
-    maxBuffer: 128 * 1024 * 1024,
-    stdio: ['ignore', 'pipe', 'ignore'],
-    timeout: 15_000,
-    windowsHide: true,
-    shell: process.platform === 'win32',
+/**
+ * Asynchronous so a slow Codex never blocks the caller's thread (the desktop
+ * runs this in its main process).
+ */
+function runCodexDebugModels(configPath: string, args: readonly string[] = []): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = execFile('codex', ['debug', 'models', ...args], {
+      env: { ...process.env, CODEX_HOME: path.dirname(configPath) },
+      encoding: 'utf8',
+      maxBuffer: 128 * 1024 * 1024,
+      timeout: 15_000,
+      windowsHide: true,
+      shell: process.platform === 'win32',
+    }, (error, stdout) => (error ? reject(error) : resolve(stdout)));
+    child.stdin?.end();
   });
 }
 
@@ -30,9 +36,9 @@ function runCodexDebugModels(configPath: string, args: readonly string[] = []): 
  * The catalog for `models`. Entries take their instructions and limits from
  * the installed Codex's bundled models. Null when Codex can't be asked.
  */
-export function buildCodexModelCatalog(configPath: string, models: ReadonlyArray<{ id: string; label?: string }>): string | null {
+export async function buildCodexModelCatalog(configPath: string, models: ReadonlyArray<{ id: string; label?: string }>): Promise<string | null> {
   try {
-    const bundled = JSON.parse(runCodexDebugModels(configPath, ['--bundled'])) as { models?: JsonObject[] };
+    const bundled = JSON.parse(await runCodexDebugModels(configPath, ['--bundled'])) as { models?: JsonObject[] };
     const base = bundled.models?.[0];
     if (!base) return null;
     return JSON.stringify({
@@ -98,8 +104,8 @@ export function writeCodexModelCatalog(configPath: string, catalog: string): boo
 }
 
 /** Throws when Codex can't load its models with the config as it now stands. */
-export function validateCodexModelCatalog(configPath: string): void {
-  runCodexDebugModels(configPath);
+export async function validateCodexModelCatalog(configPath: string): Promise<void> {
+  await runCodexDebugModels(configPath);
 }
 
 /** Deletes our catalog and its record; a catalog of the user's under that name stays. */

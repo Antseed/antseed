@@ -307,8 +307,17 @@ export function removeGooseProviderFromFile(
   extraHosts: readonly string[],
   { keepSelection = false }: { keepSelection?: boolean } = {},
 ): boolean {
-  if (!existsSync(filePath)) return false;
   const state = readGoosePatchState(filePath);
+  if (!existsSync(filePath)) {
+    // The config is gone (reset or deleted), so nothing selects our provider,
+    // but its file still holds the gateway key: remove it all the same.
+    if (keepSelection) return false;
+    const removed = removeGooseCustomProvider(filePath);
+    const restored = restoreGooseUserProvider(filePath);
+    if (state) deleteGoosePatchState(filePath);
+    forgetSelection(filePath);
+    return removed || restored || state !== null;
+  }
   const plan = planGooseCleanup(filePath, readFileSync(filePath, 'utf8').split('\n'), patch, extraHosts, keepSelection);
   if (plan.changed) {
     backupConfigFile(filePath);

@@ -57,9 +57,18 @@ function makeT3CodePatch(configPath: string): ConfigPatchDef {
 
 async function withTempConfig(fn: (dir: string, configPath: string) => Promise<void>): Promise<void> {
   const dir = await mkdtemp(path.join(tmpdir(), 'antseed-desktop-system-proxy-'));
+  // On Windows, Claude Desktop's targets come from %APPDATA% and %LOCALAPPDATA%,
+  // not the patch's paths: point both here so no test reaches a real install.
+  const saved = { APPDATA: process.env['APPDATA'], LOCALAPPDATA: process.env['LOCALAPPDATA'] };
+  process.env['APPDATA'] = dir;
+  process.env['LOCALAPPDATA'] = path.join(dir, 'Local');
   try {
     await fn(dir, path.join(dir, 'tool-config.jsonc'));
   } finally {
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
     await rm(dir, { recursive: true, force: true });
   }
 }

@@ -5,7 +5,8 @@
  * chat's seller picker shows it, so Auto and every pin stay inside the policy
  * (the gateway refuses a pinned seller the policy excludes anyway).
  */
-import { splitPinnedModel } from '../../shared/pinned-model.js';
+import { normalizeSellerId, splitPinnedModel } from '../../shared/pinned-model.js';
+import { finiteNumber, record } from './response-fields.js';
 import type { ChatRouteCandidate, ChatRoutePreview } from '../../shared/chat-gateway-types.js';
 import type { GatewayEndpoint } from './service.js';
 
@@ -18,14 +19,6 @@ const CACHE_TTL_MS = 30_000;
 
 let session: { key: string; cookie: string } | null = null;
 const cache = new Map<string, { at: number; preview: RoutePreview }>();
-
-function num(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) ? value : null;
-}
-
-function obj(value: unknown): Record<string, unknown> {
-  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
-}
 
 /** The `name=value` pairs of every Set-Cookie header, joined for a Cookie header. */
 function cookieHeader(response: Response): string {
@@ -59,29 +52,29 @@ async function sessionCookie(endpoint: GatewayEndpoint, renew: boolean): Promise
 }
 
 export function parseRoutePreview(body: unknown): RoutePreview {
-  const data = obj(body);
-  const policy = obj(data['policy']);
-  const sources = Array.isArray(data['sources']) ? data['sources'].map(obj) : [];
-  const buyerSort = obj(sources.find((source) => source['level'] === 'buyer')?.['policy'])['sort'];
+  const data = record(body);
+  const policy = record(data['policy']);
+  const sources = Array.isArray(data['sources']) ? data['sources'].map(record) : [];
+  const buyerSort = record(sources.find((source) => source['level'] === 'buyer')?.['policy'])['sort'];
   const sort = typeof policy['sort'] === 'string' ? policy['sort'] : typeof buyerSort === 'string' ? buyerSort : null;
-  const candidates = (Array.isArray(data['candidates']) ? data['candidates'] : []).map(obj)
+  const candidates = (Array.isArray(data['candidates']) ? data['candidates'] : []).map(record)
     .filter((candidate) => typeof candidate['peerId'] === 'string')
     .map((candidate): RouteCandidate => {
-      const selection = obj(candidate['selection']);
-      const health = obj(candidate['health']);
+      const selection = record(candidate['selection']);
+      const health = record(candidate['health']);
       const name = typeof candidate['displayName'] === 'string' && candidate['displayName'].trim() ? candidate['displayName'].trim() : null;
       return {
-        peerId: String(candidate['peerId']).toLowerCase().replace(/^0x/, ''),
+        peerId: normalizeSellerId(String(candidate['peerId'])),
         name,
-        rank: num(candidate['rank']),
+        rank: finiteNumber(candidate['rank']),
         eligible: candidate['eligible'] === true,
         reasons: Array.isArray(candidate['reasons']) ? candidate['reasons'].filter((reason): reason is string => typeof reason === 'string') : [],
-        inputUsdPerMillion: num(candidate['inputUsdPerMillion']),
-        outputUsdPerMillion: num(candidate['outputUsdPerMillion']),
-        trustScore: num(candidate['trustScore']),
-        successRate: num(selection['successRate']),
-        firstTokenMs: num(selection['firstTokenMs']),
-        tokensPerSecond: num(selection['tokensPerSecond']),
+        inputUsdPerMillion: finiteNumber(candidate['inputUsdPerMillion']),
+        outputUsdPerMillion: finiteNumber(candidate['outputUsdPerMillion']),
+        trustScore: finiteNumber(candidate['trustScore']),
+        successRate: finiteNumber(selection['successRate']),
+        firstTokenMs: finiteNumber(selection['firstTokenMs']),
+        tokensPerSecond: finiteNumber(selection['tokensPerSecond']),
         failing: selection['failing'] === true || health['status'] === 'failing',
       };
     })

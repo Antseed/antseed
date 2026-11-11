@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { spawn } from 'node:child_process';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { cliEntry } from '../lib/cli-node.mjs';
@@ -35,6 +36,47 @@ describe('startTestbenchGateway', () => {
       } finally {
         await gateway.stop();
       }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('stops once its launcher is killed before cleaning up', { skip: !existsSync(cliEntry(repo)) && 'the CLI is not built', timeout: 120_000 }, async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'tb-gateway-orphan-'));
+    try {
+      const home = join(dir, 'home');
+      const buyerDir = join(dir, 'buyer');
+      await mkdir(home, { recursive: true });
+      await mkdir(buyerDir, { recursive: true });
+      const buyerConfig = join(dir, 'config.json');
+      await writeFile(buyerConfig, '{}\n');
+      const manifest = { home, buyerDir, buyerConfig, proxyUrl: 'http://127.0.0.1:9' };
+      // A launcher that starts the gateway, prints its URL and waits to be killed.
+      const helper = new URL('../lib/desktop.mjs', import.meta.url).href;
+      const launcher = spawn(process.execPath, ['--input-type=module', '-e', `
+        const { startTestbenchGateway } = await import(${JSON.stringify(helper)});
+        const gateway = await startTestbenchGateway(${JSON.stringify({ repo, manifest, reportDir: dir })});
+        console.log(gateway.url);
+        setInterval(() => {}, 1000);
+      `], { stdio: ['ignore', 'pipe', 'inherit'] });
+      const url = await new Promise((resolveUrl, reject) => {
+        let out = '';
+        launcher.stdout.on('data', (chunk) => {
+          out += chunk;
+          const match = /http:\/\/127\.0\.0\.1:\d+/.exec(out);
+          if (match) resolveUrl(match[0]);
+        });
+        launcher.once('exit', (code) => reject(new Error(`launcher exited ${code}`)));
+      });
+      launcher.kill('SIGKILL');
+      const deadline = Date.now() + 30_000;
+      let up = true;
+      while (Date.now() < deadline) {
+        up = await fetch(`${url}/healthz`).then(() => true, () => false);
+        if (!up) break;
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      assert.equal(up, false, 'the gateway outlived its launcher');
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

@@ -583,6 +583,38 @@ function nativeToolInstalled(tool: WslTool, configFilePath: string): boolean {
 type PatchFilePaths = { configPath: string; settingsPath?: string };
 
 /**
+ * One tool's patch: straight to its native config when the patch doesn't probe
+ * for installs, otherwise wherever the tool is installed (natively and in WSL).
+ */
+function applyToolPatch(opts: {
+  tool: WslTool;
+  /** The patch's `installProbe`; probing applies only when it names this tool. */
+  probe: string | undefined;
+  /** The patch's base URL template. */
+  template: string;
+  native: PatchFilePaths;
+  posix: PatchFilePaths;
+  t: ResolvedTarget;
+  wslTargetsFile?: string;
+  write: (paths: PatchFilePaths, baseURL: string) => void;
+}): void {
+  const baseURL = opts.t.baseUrl(opts.template);
+  if (opts.probe !== opts.tool) {
+    opts.write(opts.native, baseURL);
+    return;
+  }
+  applyWithInstallProbe({
+    tool: opts.tool,
+    native: opts.native,
+    posix: opts.posix,
+    baseURL,
+    rewriteWslHost: opts.t.loopback,
+    wslTargetsFile: opts.wslTargetsFile,
+    write: opts.write,
+  });
+}
+
+/**
  * Shared install-probe patching: write the config to the native install only
  * when install signals exist, write it into every WSL distro carrying the
  * tool (with a base URL host that distro can reach), remember the WSL
@@ -690,18 +722,13 @@ function removeWslInstalls(
 }
 
 function applyOpencodeConfigPatch(patch: OpencodeConfigPatchDef, t: ResolvedTarget, wslTargetsFile?: string): void {
-  const filePath = expandTilde(patch.configPath);
-  const baseURL = t.baseUrl(patch.baseURL);
-  if (patch.installProbe !== 'opencode') {
-    applyOpencodeProviderToFile(filePath, patch, baseURL, t);
-    return;
-  }
-  applyWithInstallProbe({
+  applyToolPatch({
     tool: 'opencode',
-    native: { configPath: filePath },
+    probe: patch.installProbe,
+    template: patch.baseURL,
+    native: { configPath: expandTilde(patch.configPath) },
     posix: { configPath: patch.configPath },
-    baseURL,
-    rewriteWslHost: t.loopback,
+    t,
     wslTargetsFile,
     write: (paths, url) => applyOpencodeProviderToFile(paths.configPath, patch, url, t),
   });
@@ -918,18 +945,13 @@ function droidSessionDefaultSettings(config: JsonObject, filePath: string): Json
 }
 
 function applyDroidConfigPatch(patch: DroidConfigPatchDef, t: ResolvedTarget, wslTargetsFile?: string): void {
-  const filePath = expandTilde(patch.configPath);
-  const baseURL = t.baseUrl(patch.baseURL);
-  if (patch.installProbe !== 'droid') {
-    applyDroidModelToFile(filePath, patch, baseURL, t);
-    return;
-  }
-  applyWithInstallProbe({
+  applyToolPatch({
     tool: 'droid',
-    native: { configPath: filePath },
+    probe: patch.installProbe,
+    template: patch.baseURL,
+    native: { configPath: expandTilde(patch.configPath) },
     posix: { configPath: patch.configPath },
-    baseURL,
-    rewriteWslHost: t.loopback,
+    t,
     wslTargetsFile,
     write: (paths, url) => applyDroidModelToFile(paths.configPath, patch, url, t),
   });
@@ -972,19 +994,22 @@ function applyDroidModelToFile(filePath: string, patch: DroidConfigPatchDef, bas
   // Membership is checked per model; a gateway can list hundreds.
   const newIdSet = new Set(newIds);
 
-  if (!state) {
-    const conflict = customModels.find((model) => {
-      const id = droidEntryId(model);
-      return isDroidModel(model, patch.providerKey) || (typeof id === 'string' && newIdSet.has(id));
-    });
-    if (conflict) {
-      throw new Error(
-        `Droid already defines a custom model named ${String((conflict as JsonObject)['model'] ?? droidEntryId(conflict))} in ${filePath}; refusing to overwrite it.`,
-      );
-    }
-  }
   const managedIds = state?.managedModelIds ?? [];
   const managedIdSet = new Set(managedIds);
+  // Never replace a model the user defined: on a first connect that includes
+  // one named like Antseed's alias; on a refresh, any entry the last patch
+  // didn't write whose id a new gateway model would take. Disconnect couldn't
+  // give such an entry back.
+  const conflict = customModels.find((model) => {
+    if (state && isManagedDroidModel(model, patch, managedIdSet)) return false;
+    const id = droidEntryId(model);
+    return (!state && isDroidModel(model, patch.providerKey)) || (typeof id === 'string' && newIdSet.has(id));
+  });
+  if (conflict) {
+    throw new Error(
+      `Droid already defines a custom model named ${String((conflict as JsonObject)['model'] ?? droidEntryId(conflict))} in ${filePath}; refusing to overwrite it.`,
+    );
+  }
   // Model discovery failed for now: the selection still names our entries, so
   // keep them rather than lose the way back to the user's own default. They
   // still move to the current gateway and key.
@@ -1038,11 +1063,7 @@ function applyDroidModelToFile(filePath: string, patch: DroidConfigPatchDef, bas
   }
 
   config['customModels'] = [
-    ...customModels.filter((model) => {
-      if (isManagedDroidModel(model, patch, managedIdSet)) return false;
-      const id = droidEntryId(model);
-      return !(typeof id === 'string' && newIdSet.has(id));
-    }),
+    ...customModels.filter((model) => !isManagedDroidModel(model, patch, managedIdSet)),
     ...entries,
   ];
   if (selectedId) {
@@ -1210,18 +1231,13 @@ function removeTomlTopLevelKey(lines: readonly string[], key: string): string[] 
 }
 
 function applyCodexConfigPatch(patch: CodexConfigPatchDef, t: ResolvedTarget, wslTargetsFile?: string): void {
-  const filePath = expandTilde(patch.configPath);
-  const baseURL = t.baseUrl(patch.baseURL);
-  if (patch.installProbe !== 'codex') {
-    applyCodexProviderToFile(filePath, patch, baseURL, t);
-    return;
-  }
-  applyWithInstallProbe({
+  applyToolPatch({
     tool: 'codex',
-    native: { configPath: filePath },
+    probe: patch.installProbe,
+    template: patch.baseURL,
+    native: { configPath: expandTilde(patch.configPath) },
     posix: { configPath: patch.configPath },
-    baseURL,
-    rewriteWslHost: t.loopback,
+    t,
     wslTargetsFile,
     write: (paths, url) => applyCodexProviderToFile(paths.configPath, patch, url, t),
   });
@@ -1273,17 +1289,55 @@ function applyCodexProviderToFile(filePath: string, patch: CodexConfigPatchDef, 
     removeCodexModelCatalog(filePath);
     return;
   }
+  // The model catalog follows in finishConfigPatch: building it runs Codex,
+  // which must not block this synchronous write.
   writeTextFile(filePath, `${lines.join('\n')}\n`);
+}
+
+/**
+ * The part of a patch that runs other programs, awaited after
+ * `writeConfigPatch`: for Codex, the catalog listing the gateway's models,
+ * built and checked by the Codex on this machine. It lands only while the
+ * config is still the one `writeConfigPatch` wrote and `isCurrent()` holds, so
+ * a newer patch or a disconnect in the meantime wins. A no-op for other formats.
+ */
+export async function finishConfigPatch(
+  patch: ConfigPatchDef,
+  target: ConfigPatchTarget | number,
+  { isCurrent = () => true }: { isCurrent?: () => boolean } = {},
+): Promise<void> {
+  if (patch.format !== 'codex') return;
+  const t = resolveTarget(target);
+  const filePath = expandTilde(patch.configPath);
   // A catalog can only be built by the Codex on this machine, not one inside WSL.
-  if (t.models.length === 0 || filePath.startsWith('\\\\')) return;
-  const catalog = buildCodexModelCatalog(filePath, t.models);
+  if (t.legacy || t.models.length === 0 || filePath.startsWith('\\\\')) return;
+  let written: string;
+  try {
+    written = readFileSync(filePath, 'utf8');
+  } catch {
+    return;
+  }
+  const lines = written.endsWith('\n') ? written.slice(0, -1).split('\n') : written.split('\n');
+  // Only a config this patch points at the gateway (Codex may live only in WSL).
+  if (readTomlTopLevelString(lines, 'model_provider') !== patch.providerKey) return;
+  const fileIs = (expected: string) => {
+    try {
+      return readFileSync(filePath, 'utf8') === expected;
+    } catch {
+      return false;
+    }
+  };
+  const catalog = await buildCodexModelCatalog(filePath, t.models);
   // A catalog of the user's under our file name is never overwritten.
-  if (!catalog || !writeCodexModelCatalog(filePath, catalog)) return;
-  writeTextFile(filePath, `${setTomlTopLevelString(lines, 'model_catalog_json', CODEX_MODEL_CATALOG_FILE).join('\n')}\n`);
+  if (!catalog || !isCurrent() || !fileIs(written) || !writeCodexModelCatalog(filePath, catalog)) return;
+  const withCatalog = `${setTomlTopLevelString(lines, 'model_catalog_json', CODEX_MODEL_CATALOG_FILE).join('\n')}\n`;
+  writeTextFile(filePath, withCatalog);
   // Codex refuses to start on a catalog it can't parse, so never leave one behind.
   try {
-    validateCodexModelCatalog(filePath);
+    await validateCodexModelCatalog(filePath);
   } catch {
+    // Even when superseded: a config still naming the rejected catalog would stop Codex starting.
+    if (!fileIs(withCatalog)) return;
     writeTextFile(filePath, `${withoutManagedCodexCatalog(filePath, lines).join('\n')}\n`);
     removeCodexModelCatalog(filePath);
   }
@@ -1361,18 +1415,14 @@ function removeCodexProviderFromFile(filePath: string, patch: CodexConfigPatchDe
 // proxy is keyless, but pi hides models that have no credential at all.
 
 function applyPiConfigPatch(patch: PiConfigPatchDef, t: ResolvedTarget, wslTargetsFile?: string): void {
-  const baseURL = t.baseUrl(patch.baseURL);
   const native = { configPath: expandTilde(patch.configPath), settingsPath: expandTilde(patch.settingsPath) };
-  if (patch.installProbe !== 'pi') {
-    applyPiProviderToFiles(native.configPath, native.settingsPath, patch, baseURL, t);
-    return;
-  }
-  applyWithInstallProbe({
+  applyToolPatch({
     tool: 'pi',
+    probe: patch.installProbe,
+    template: patch.baseURL,
     native,
     posix: { configPath: patch.configPath, settingsPath: patch.settingsPath },
-    baseURL,
-    rewriteWslHost: t.loopback,
+    t,
     wslTargetsFile,
     write: (paths, url) => applyPiProviderToFiles(paths.configPath, paths.settingsPath ?? native.settingsPath, patch, url, t),
   });
@@ -1479,18 +1529,13 @@ function asObject(value: unknown): JsonObject {
 // `models.large` / `models.small` as `{ provider, model }`.
 
 function applyCrushConfigPatch(patch: CrushConfigPatchDef, t: ResolvedTarget, wslTargetsFile?: string): void {
-  const filePath = expandTilde(patch.configPath);
-  const baseURL = t.baseUrl(patch.baseURL);
-  if (patch.installProbe !== 'crush') {
-    applyCrushProviderToFile(filePath, patch, baseURL, t);
-    return;
-  }
-  applyWithInstallProbe({
+  applyToolPatch({
     tool: 'crush',
-    native: { configPath: filePath },
+    probe: patch.installProbe,
+    template: patch.baseURL,
+    native: { configPath: expandTilde(patch.configPath) },
     posix: { configPath: patch.wslConfigPath ?? patch.configPath },
-    baseURL,
-    rewriteWslHost: t.loopback,
+    t,
     wslTargetsFile,
     write: (paths, url) => applyCrushProviderToFile(paths.configPath, patch, url, t),
   });
@@ -1570,18 +1615,13 @@ function removeCrushProviderFromFile(filePath: string, patch: CrushConfigPatchDe
 // --- goose (`~/.config/goose/config.yaml`): the writer lives in config-patch/goose.ts ---
 
 function applyGooseConfigPatch(patch: GooseConfigPatchDef, t: ResolvedTarget, wslTargetsFile?: string): void {
-  const filePath = expandTilde(patch.configPath);
-  const baseURL = t.baseUrl(patch.baseURL);
-  if (patch.installProbe !== 'goose') {
-    applyGooseProviderToFile(filePath, patch, baseURL, t);
-    return;
-  }
-  applyWithInstallProbe({
+  applyToolPatch({
     tool: 'goose',
-    native: { configPath: filePath },
+    probe: patch.installProbe,
+    template: patch.baseURL,
+    native: { configPath: expandTilde(patch.configPath) },
     posix: { configPath: patch.wslConfigPath ?? patch.configPath },
-    baseURL,
-    rewriteWslHost: t.loopback,
+    t,
     wslTargetsFile,
     write: (paths, url) => applyGooseProviderToFile(paths.configPath, patch, url, t),
   });
@@ -1896,18 +1936,13 @@ function claudeCodeEnv(config: JsonObject, filePath: string): JsonObject | undef
 }
 
 function applyClaudeCodeConfigPatch(patch: ClaudeCodeConfigPatchDef, t: ResolvedTarget, wslTargetsFile?: string): void {
-  const filePath = expandTilde(patch.configPath);
-  const baseURL = t.baseUrl(patch.baseURL);
-  if (patch.installProbe !== 'claude') {
-    applyClaudeCodeSettingsToFile(filePath, patch, baseURL, t);
-    return;
-  }
-  applyWithInstallProbe({
+  applyToolPatch({
     tool: 'claude',
-    native: { configPath: filePath },
+    probe: patch.installProbe,
+    template: patch.baseURL,
+    native: { configPath: expandTilde(patch.configPath) },
     posix: { configPath: patch.configPath },
-    baseURL,
-    rewriteWslHost: t.loopback,
+    t,
     wslTargetsFile,
     write: (paths, url) => applyClaudeCodeSettingsToFile(paths.configPath, patch, url, t),
   });

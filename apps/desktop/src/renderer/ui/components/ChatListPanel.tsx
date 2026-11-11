@@ -514,8 +514,12 @@ export function ChatListPanel({ onOpenConversation, onOpenConversationDeleted, h
     onOpenConversation();
   }, [actions, onOpenConversation]);
 
+  // A pin, archive or delete that fails is undone; say why here, since the
+  // chat screen (which shows chat errors) may not be open.
+  const [actionError, setActionError] = useState<string | null>(null);
   const handleSetFlags = useCallback((id: string, flags: ConversationFlags) => {
-    void actions.setConversationFlags(id, flags);
+    setActionError(null);
+    void actions.setConversationFlags(id, flags).then(setActionError);
   }, [actions]);
 
   const renderRow = (conv: ConvRecord) => (
@@ -570,12 +574,14 @@ export function ChatListPanel({ onOpenConversation, onOpenConversationDeleted, h
   placeRef.current = { highlightActive, chatActiveConversation };
   const handleDeleteConv = useCallback((id: string) => {
     const wasOnScreen = highlightActive && id === chatActiveConversation;
+    setActionError(null);
     // Leave only once it's gone: a failure is shown in the chat, which must stay on screen.
-    void actions.deleteConversation(id).then((deleted) => {
+    void actions.deleteConversation(id).then((error) => {
+      setActionError(error);
       // The delete left the chat view on an empty new chat; once the user has
       // opened another chat or view meanwhile, they stay where they went.
       const still = placeRef.current;
-      if (deleted && wasOnScreen && still.highlightActive && still.chatActiveConversation === null) onOpenConversationDeleted();
+      if (error === null && wasOnScreen && still.highlightActive && still.chatActiveConversation === null) onOpenConversationDeleted();
     });
   }, [actions, chatActiveConversation, highlightActive, onOpenConversationDeleted]);
 
@@ -593,6 +599,16 @@ export function ChatListPanel({ onOpenConversation, onOpenConversationDeleted, h
           <HugeiconsIcon icon={Search01Icon} size={13} strokeWidth={1.8} />
         </button>
       </div>
+      {/* The chat screen shows chat errors itself; elsewhere they show here. */}
+      {actionError && !highlightActive ? (
+        <div className={styles.actionError} role="alert">
+          <span className={styles.actionErrorDot} aria-hidden="true" />
+          <span className={styles.actionErrorText}>{actionError}</span>
+          <button type="button" className={styles.actionErrorDismiss} onClick={() => setActionError(null)} aria-label="Dismiss">
+            ×
+          </button>
+        </div>
+      ) : null}
       <div className={styles.list}>
         {sections.length === 0 ? (
           <div className={styles.empty}>No conversations yet</div>

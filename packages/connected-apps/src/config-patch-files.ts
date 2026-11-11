@@ -173,10 +173,21 @@ export function writePrivateFile(filePath: string, content: string): void {
   restrictToOwner(filePath);
 }
 
+/**
+ * Copies the user's config aside once, before Antseed first changes it. A
+ * config Antseed creates has no original, so that is recorded instead: a later
+ * refresh or disconnect would otherwise back up Antseed's own config, gateway
+ * key included, as if it were the user's.
+ */
 export function backupConfigFile(filePath: string): void {
-  if (!existsSync(filePath)) return;
   const backupPath = `${filePath}.antseed.bak`;
-  if (existsSync(backupPath)) return;
+  const absentPath = `${filePath}.antseed.absent`;
+  if (existsSync(backupPath) || existsSync(absentPath)) return;
+  if (!existsSync(filePath)) {
+    mkdirSync(path.dirname(filePath), { recursive: true });
+    writePrivateFile(absentPath, '');
+    return;
+  }
   copyFileSync(filePath, backupPath);
   restrictToOwner(backupPath);
 }

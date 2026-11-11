@@ -1,5 +1,5 @@
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import net from 'node:net';
+import { portInUse as sharedPortInUse } from '@antseed/node/gateway-process';
 import path from 'node:path';
 
 /** A buyer the app doesn't run signs with its own key, so a new signer can't reach it. */
@@ -33,14 +33,9 @@ export async function restartForNewIdentity(ops: {
   return null;
 }
 
+/** Whether a buyer still listens on this port (a second's grace: it may be busy). */
 export function portInUse(port: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const socket = net.connect({ port, host: '127.0.0.1' });
-    socket.setTimeout(1_000);
-    socket.once('connect', () => { socket.destroy(); resolve(true); });
-    socket.once('timeout', () => { socket.destroy(); resolve(false); });
-    socket.once('error', () => { resolve(false); });
-  });
+  return sharedPortInUse(port, 1_000);
 }
 
 /**

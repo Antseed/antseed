@@ -10,10 +10,15 @@ export function splitPinnedModel(value: string | null | undefined): { modelId: s
   return parsePinnedModel(text) ?? { modelId: text, peerId: null };
 }
 
+/** A seller id as pins carry it: lowercase, without `0x`. Compare ids in this form. */
+export function normalizeSellerId(id: string): string {
+  return id.toLowerCase().replace(/^0x/, '');
+}
+
 /** `<peerId>@<model>`, or the model alone when no seller is pinned. */
 export function joinPinnedModel(modelId: string, peerId: string | null | undefined): string {
   const { modelId: bare } = splitPinnedModel(modelId);
-  return peerId ? `${peerId.toLowerCase().replace(/^0x/, '')}@${bare}` : bare;
+  return peerId ? `${normalizeSellerId(peerId)}@${bare}` : bare;
 }
 
 /** How a request on `modelId` reaches a seller: the one it names, or whichever the gateway picks. */

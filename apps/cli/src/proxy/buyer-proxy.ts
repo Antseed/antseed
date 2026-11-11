@@ -3924,15 +3924,16 @@ export class BuyerProxy {
     // Each model is planned once, among only the sellers offering it: a list
     // holds hundreds of models, so planning across all peers takes over a second.
     const offers = buildNetworkServiceOffers(peers)
-    const sellersByModel = new Map<string, PeerInfo[]>()
+    // Sets keep first-seen order and dedupe by peer.
+    const sellersByModel = new Map<string, Set<PeerInfo>>()
     if (listPolicy) {
       for (const offer of offers) {
         const peer = peerById.get(offer.peerId)
         if (!peer) continue
         const key = canonicalModelKey(offer.serviceId)
         const sellers = sellersByModel.get(key)
-        if (!sellers) sellersByModel.set(key, [peer])
-        else if (!sellers.includes(peer)) sellers.push(peer)
+        if (!sellers) sellersByModel.set(key, new Set([peer]))
+        else sellers.add(peer)
       }
     }
     const routable = new Map<string, Set<string>>()
@@ -3940,7 +3941,7 @@ export class BuyerProxy {
       const key = canonicalModelKey(serviceId)
       let sellers = routable.get(key)
       if (!sellers) {
-        sellers = this._routableChatSellers(sellersByModel.get(key) ?? [], serviceId, policy)
+        sellers = this._routableChatSellers([...(sellersByModel.get(key) ?? [])], serviceId, policy)
         routable.set(key, sellers)
       }
       return sellers

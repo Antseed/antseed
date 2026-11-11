@@ -74,6 +74,18 @@ describe('chat controller', () => {
     await deleting;
   });
 
+  it('hands back why an archive or delete failed, so the sidebar can say it outside Chat', async () => {
+    const { api, uiState } = setup(undefined, {
+      chatAiSetConversationFlags: async () => ({ ok: false, error: 'disk full' }),
+      chatAiDeleteConversation: async () => ({ ok: false, error: 'locked' }),
+    });
+    await api.refreshChatConversations();
+    expect(await api.setConversationFlags('conv-b', { archived: true })).toBe('disk full');
+    expect((uiState.chatConversations as Array<Conv & { archivedAt?: number }>).find((c) => c.id === 'conv-b')?.archivedAt).toBeUndefined();
+    expect(await api.deleteConversation('conv-b')).toBe('locked');
+    expect((uiState.chatConversations as Conv[]).map((c) => c.id)).toContain('conv-b');
+  });
+
   it('clears the sending state of an aborted chat before the abort settles', async () => {
     const abort = deferred<void>();
     const { api, uiState } = setup(undefined, { chatAiAbort: () => abort.promise });
@@ -131,6 +143,64 @@ describe('chat controller', () => {
     await waitFor(() => sends.length === 1);
     expect(sends[0]).toEqual({ convId: 'conv-new', content: 'first message', modelId: 'model-a' });
     expect(uiState.chatActiveConversation).toBeNull();
+  });
+
+  it('sends both first messages when a second new chat is sent while the first is still being made', async () => {
+    const conversations = [conv('conv-a', 'model-a'), conv('conv-b', 'model-b')];
+    const creations: Array<{ resolve: () => void }> = [];
+    const { api, uiState, sends } = setup(conversations, {
+      chatAiCreateConversation: (service: string) => new Promise((resolve) => {
+        creations.push({
+          resolve: () => {
+            const created = conv(`conv-new-${creations.length}-${conversations.length}`, service);
+            conversations.push(created);
+            resolve({ ok: true, data: created });
+          },
+        });
+      }),
+    });
+    await api.refreshChatConversations();
+    api.sendMessage('draft A');
+    await waitFor(() => creations.length === 1);
+    api.startNewChat();
+    api.sendMessage('draft B');
+    await waitFor(() => creations.length === 2);
+    creations[0]!.resolve();
+    creations[1]!.resolve();
+    await waitFor(() => sends.length === 2);
+    expect(sends.map((send) => send.content).sort()).toEqual(['draft A', 'draft B']);
+    expect(new Set(sends.map((send) => send.convId)).size).toBe(2);
+    // The chat on screen is the second one's.
+    expect(uiState.chatActiveConversation).toBe(sends.find((send) => send.content === 'draft B')?.convId);
+  });
+
+  it('Stop cancels only the draft on screen, not one a new chat left running', async () => {
+    const conversations = [conv('conv-a', 'model-a')];
+    const creations: Array<{ resolve: () => void }> = [];
+    const { api, sends } = setup(conversations, {
+      chatAiCreateConversation: (service: string) => new Promise((resolve) => {
+        const index = creations.length;
+        creations.push({
+          resolve: () => {
+            const created = conv(`conv-new-${index}`, service);
+            conversations.push(created);
+            resolve({ ok: true, data: created });
+          },
+        });
+      }),
+    });
+    await api.refreshChatConversations();
+    api.sendMessage('draft A');
+    await waitFor(() => creations.length === 1);
+    api.startNewChat();
+    api.sendMessage('draft B');
+    await waitFor(() => creations.length === 2);
+    await api.abortChat();
+    creations[0]!.resolve();
+    creations[1]!.resolve();
+    await waitFor(() => sends.length === 1);
+    await tick(20);
+    expect(sends.map((send) => send.content)).toEqual(['draft A']);
   });
 
   it('holds an unfunded first message until a free model is listed, then sends on it', async () => {

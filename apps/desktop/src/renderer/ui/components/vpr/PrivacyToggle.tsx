@@ -35,8 +35,20 @@ function optionHint(option: PrivacyOption): string {
   return `${option.description} ${PRIVACY_SCOPE_HINT}`;
 }
 
+/** While a switch reaches the chat's key and each connected app's, it isn't in effect yet. */
+export function pendingHint(mode: GatewayPrivacyMode): string {
+  return mode === 'private'
+    ? 'Turning on Private for the chat and every connected app… Until it’s on, apps may still reach any seller.'
+    : 'Switching to Anonymous for the chat and every connected app…';
+}
+
 export type PrivacyControl = {
   current: GatewayPrivacyMode;
+  /**
+   * The mode being applied to the chat's key and every connected app's, not
+   * yet in effect everywhere; null once the gateway has confirmed it.
+   */
+  pending: GatewayPrivacyMode | null;
   disabled: boolean;
   error: string | null;
   hint: string | undefined;
@@ -105,7 +117,7 @@ function useOpenChatHasPrivateHistory(): boolean {
  */
 export function usePrivacyControl(onChange?: (mode: GatewayPrivacyMode, choice: PrivacySwitchChoice) => void): PrivacyControl {
   const privacy = useCachedResource(privacyResource);
-  const { error } = usePrivacySwitch();
+  const { error, switching, target } = usePrivacySwitch();
   const privateHistory = useOpenChatHasPrivateHistory();
   const openChat = useUiSelector((state) => state.chatActiveConversation);
   const current = privacy.data?.mode ?? 'anonymous';
@@ -127,14 +139,16 @@ export function usePrivacyControl(onChange?: (mode: GatewayPrivacyMode, choice: 
     setPendingSwitch({ mode, explain, privateHistory: leaving, conversationId: openChat, apply });
   }
 
+  const pending = switching && !error && target ? target : null;
   const currentOption = OPTIONS.find((option) => option.mode === current);
   const hint = error
-    ?? (!editable ? 'Your remote gateway sets its routing policy in its console.'
+    ?? (pending ? pendingHint(pending)
+      : !editable ? 'Your remote gateway sets its routing policy in its console.'
       : locked ? 'Your gateway requires TEE sellers for this key.'
         : currentOption && optionHint(currentOption));
 
   // Until the gateway has said which mode it is in, there is nothing to switch.
-  return { current, disabled: !privacy.data || !editable || locked, error, hint, select };
+  return { current, pending, disabled: !privacy.data || !editable || locked, error, hint, select };
 }
 
 export function PrivacyToggle({ control, size = 'regular' }: { control: PrivacyControl; size?: 'regular' | 'small' }) {
@@ -145,7 +159,10 @@ export function PrivacyToggle({ control, size = 'regular' }: { control: PrivacyC
       value={control.current}
       onChange={control.select}
       className={`${styles.segment}${size === 'small' ? ` ${styles.segmentSmall}` : ''}`}
-      itemClassName={(mode, selected) => `${styles.option}${selected ? ` ${mode === 'private' ? styles.activePrivate : styles.activeAnonymous}` : ''}`}
+      // A mode still being applied shows as pending, not in effect.
+      itemClassName={(mode, selected) => `${styles.option}${selected
+        ? control.pending === mode ? ` ${styles.pending}` : ` ${mode === 'private' ? styles.activePrivate : styles.activeAnonymous}`
+        : ''}`}
       options={OPTIONS.map((option) => ({
         value: option.mode,
         disabled: control.disabled,
@@ -206,9 +223,12 @@ export function PrivacyNote({ control, className, switches = 0, plain = false }:
   }, [switches]);
 
   if (!control.hint) return null;
-  const isPrivate = control.current === 'private';
+  // A mode still being applied isn't in effect: no Private styling until it is,
+  // and the note stays up so the user knows apps aren't covered yet.
+  const pending = control.pending !== null && !control.error;
+  const isPrivate = control.current === 'private' && !pending;
   const dismissed = seen[control.current] === true;
-  if (dismissed && !reminding && !control.error) return null;
+  if (dismissed && !reminding && !control.error && !pending) return null;
 
   function dismiss(): void {
     const next = { ...seen, [control.current]: true };
@@ -219,14 +239,15 @@ export function PrivacyNote({ control, className, switches = 0, plain = false }:
 
   return (
     <div
+      aria-busy={pending || undefined}
       className={`${styles.note}${isPrivate ? ` ${styles.notePrivate}` : ''}${plain ? ` ${styles.notePlain}` : ''}${dismissed && !control.error ? ` ${styles.noteReminder}` : ''}${className ? ` ${className}` : ''}`}
     >
       {plain ? null : <span className={`${styles.badge} ${isPrivate ? styles.badgePrivate : styles.badgeAnonymous}`} aria-hidden="true" />}
       <p className={styles.noteText} role={control.error ? 'alert' : undefined}>
-        {plain ? null : <><b>{isPrivate ? 'Private.' : 'Anonymous.'}</b>{' '}</>}
+        {plain || pending ? null : <><b>{isPrivate ? 'Private.' : 'Anonymous.'}</b>{' '}</>}
         {control.hint}
       </p>
-      {!control.error && !dismissed ? (
+      {!control.error && !dismissed && !pending ? (
         <button
           type="button"
           className={styles.noteDismiss}

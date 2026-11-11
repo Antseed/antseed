@@ -57,6 +57,10 @@
       "import": "./dist/verification/tee-status.js",
       "types": "./dist/verification/tee-status.d.ts"
     },
+    "./gateway-process": {
+      "import": "./dist/gateway-process.js",
+      "types": "./dist/gateway-process.d.ts"
+    },
     "./model-identity": {
       "import": "./dist/model-identity.js",
       "types": "./dist/model-identity.d.ts"

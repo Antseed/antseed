@@ -4,6 +4,7 @@
  * connected apps use, and builds links into the gateway console where usage,
  * keys, limits and funding are managed.
  */
+import { PARENT_PID_ENV, STOP_ON_STDIN_CLOSE_ENV } from '@antseed/node/gateway-process';
 import { parseGatewayKeyInfo, withUsageOf } from './key-info.js';
 import { readConfig } from '../runtime/config-io.js';
 import type { GatewayKeyInfo, GatewayPrivacy, GatewayStatus } from '../../shared/gateway-types.js';
@@ -187,9 +188,9 @@ async function startLocalGateway(): Promise<void> {
           env: {
             ...(isDesktopDebugEnabled() ? { ANTSEED_DEBUG: '1' } : {}),
             // How ProcessManager asks it to stop on Windows; also stops it if the app crashes.
-            ANTSEED_GATEWAY_STOP_ON_STDIN_CLOSE: '1',
+            [STOP_ON_STDIN_CLOSE_ENV]: '1',
             // A hard kill can leave that pipe open on Windows; the gateway also watches this process.
-            ANTSEED_GATEWAY_PARENT_PID: String(process.pid),
+            [PARENT_PID_ENV]: String(process.pid),
             ...secureIdentityEnv(),
           },
         }).catch((err: unknown) => {
@@ -303,10 +304,16 @@ async function runGatewayJson<T>(args: string[]): Promise<T> {
   return JSON.parse(await runGatewayCli([...args, '--json'])) as T;
 }
 
-async function createLocalKey(label: string): Promise<StoredGatewayKey> {
-  const parsed = await runGatewayJson<{ id?: unknown; apiKey?: unknown }>(['key', 'create', '--label', label]);
+/** `key create` / `key rotate`: the new secret, and the key's id when the CLI gives one. */
+async function runGatewayKeyCommand(args: string[]): Promise<{ id: string | null; secret: string }> {
+  const parsed = await runGatewayJson<{ id?: unknown; apiKey?: unknown }>(args);
   if (typeof parsed.apiKey !== 'string' || !parsed.apiKey) throw new Error('The gateway did not return an API key');
-  return { id: typeof parsed.id === 'string' ? parsed.id : null, label, secret: parsed.apiKey };
+  return { id: typeof parsed.id === 'string' ? parsed.id : null, secret: parsed.apiKey };
+}
+
+async function createLocalKey(label: string): Promise<StoredGatewayKey> {
+  const { id, secret } = await runGatewayKeyCommand(['key', 'create', '--label', label]);
+  return { id, label, secret };
 }
 
 async function revokeLocalKey(id: string): Promise<void> {
@@ -413,9 +420,7 @@ export async function rotateLocalKeys(): Promise<void> {
         await revokeLocalKey(id);
         return null;
       }
-      const parsed = await runGatewayJson<{ apiKey?: unknown }>(['key', 'rotate', id]);
-      if (typeof parsed.apiKey !== 'string' || !parsed.apiKey) throw new Error('The gateway did not return an API key');
-      return parsed.apiKey;
+      return (await runGatewayKeyCommand(['key', 'rotate', id])).secret;
     },
     save: (target, secret) => {
       const existing = getLocalKeyEntry(target);
@@ -457,8 +462,7 @@ export async function gatewayConsoleUrl(pathname = ''): Promise<string> {
     return `${settings.remoteUrl}/console${suffix}`;
   }
   await ensureLocalGateway();
-  const stdout = await runGatewayCli(['console-link', '--json', '--port', String(DEFAULT_LOCAL_GATEWAY_PORT)]);
-  const parsed = JSON.parse(stdout) as { url?: unknown; setupRequired?: unknown; setupLink?: unknown };
+  const parsed = await runGatewayJson<{ url?: unknown; setupRequired?: unknown; setupLink?: unknown }>(['console-link', '--port', String(DEFAULT_LOCAL_GATEWAY_PORT)]);
   if (parsed.setupRequired === true && typeof parsed.setupLink === 'string') return parsed.setupLink;
   const base = typeof parsed.url === 'string' ? parsed.url.replace(/\/$/, '') : `${localGatewayOrigin()}/console`;
   return `${base}${suffix}`;

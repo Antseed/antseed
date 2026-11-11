@@ -7,6 +7,8 @@ import type { ChatModel, ChatServiceProtocol } from '../../shared/chat-gateway-t
 import { compareDefaultModels } from '../../shared/chat-model-ranking.js';
 import { TEE_VERIFIER_ID } from '@antseed/node/tee-status';
 import type { GatewayModelEntry } from './models.js';
+import { finiteNumber, record } from './response-fields.js';
+import { normalizeSellerId } from '../../shared/pinned-model.js';
 
 export type { ChatModel };
 
@@ -83,7 +85,7 @@ function peerTakesImages(peer: Record<string, unknown>): boolean {
 function imageInputSellerIds(peers: Array<Record<string, unknown>>): string[] {
   return peers
     .filter(peerTakesImages)
-    .flatMap((peer) => (typeof peer['peerId'] === 'string' ? [peer['peerId'].toLowerCase().replace(/^0x/, '')] : []));
+    .flatMap((peer) => (typeof peer['peerId'] === 'string' ? [normalizeSellerId(peer['peerId'])] : []));
 }
 
 function entryContextWindow(entry: GatewayModelEntry): number | undefined {
@@ -92,14 +94,6 @@ function entryContextWindow(entry: GatewayModelEntry): number | undefined {
     if (Number.isFinite(value) && value > 0) return Math.floor(value);
   }
   return undefined;
-}
-
-function finiteNumber(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) ? value : null;
-}
-
-function record(value: unknown): Record<string, unknown> {
-  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
 /** The offer summary the picker shows, worked out like the gateway console's chat. */
@@ -128,7 +122,7 @@ function entryOfferSummary(entry: GatewayModelEntry, peers: Array<Record<string,
   // so it can't make the model free.
   const freeSeller = peers.find((peer) => zeroPriced(peer) && !stakersOnly(peer) && !chargesPerImage(peer) && (!options.teeOnly || isTee(peer)));
   const stakersOnlyFreeSellerIds = stakersOnlyFree.flatMap((peer) => typeof peer['peerId'] === 'string'
-    ? [peer['peerId'].toLowerCase().replace(/^0x/, '')]
+    ? [normalizeSellerId(peer['peerId'])]
     : []);
   return {
     sellers: peers.length,

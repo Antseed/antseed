@@ -110,10 +110,11 @@ export type ChatModuleApi = {
   chooseWorkspace: () => Promise<void>;
   startNewChat: () => void;
   startNewChatOnModel: (modelId: string) => void;
-  deleteConversation: (convId?: string) => Promise<boolean>;
+  /** Null once the chat is gone; otherwise why it couldn't be deleted (the list is restored). */
+  deleteConversation: (convId?: string) => Promise<string | null>;
   renameConversation: (convId: string, newTitle: string) => void;
-  /** Pin, unpin, archive or unarchive a chat in the sidebar. */
-  setConversationFlags: (convId: string, flags: ConversationFlags) => Promise<void>;
+  /** Pin, unpin, archive or unarchive a chat in the sidebar. Null when saved; otherwise why not (the change is undone). */
+  setConversationFlags: (convId: string, flags: ConversationFlags) => Promise<string | null>;
   openConversation: (convId: string) => Promise<void>;
   sendMessage: (text: string, attachments?: RawChatAttachment[], options?: { privateAtSubmit?: boolean }) => void;
   sendMessageToConversation: (convId: string, text: string, attachments?: RawChatAttachment[], options?: { privateAtSubmit?: boolean }) => void;
@@ -160,11 +161,14 @@ export function initChatModule({
   let desiredWorkspacePath: string | null = uiState.chatWorkspacePath || null;
   let newChatDraftVersion = 0;
   /**
-   * The first message of a new chat, before its chat exists: only the draft
-   * that owns this may send or clear the sending state, and Stop takes it away.
+   * First messages of new chats, before their chats exist. Each submission has
+   * its own token: `shownDraft` is the one on screen (it owns the composer's
+   * sending state, and Stop cancels only it); starting another chat detaches it
+   * without cancelling, so it still sends in the background.
    */
-  let draftOwner = 0;
+  let shownDraft = 0;
   let draftSeq = 0;
+  const stoppedDrafts = new Set<number>();
   let firstModelShownRecorded = false;
   const sendingConversationIds = new Set<string>();
   const streamStartedAtByConversation = new Map<string, number>();
@@ -933,6 +937,8 @@ export function initChatModule({
 
   function startNewChat(): void {
     newChatDraftVersion += 1;
+    // A first message still being prepared goes on in the background.
+    shownDraft = 0;
     draftModel = null;
     uiState.chatActiveConversation = null;
     uiState.chatOpeningConversationId = null;
@@ -990,9 +996,9 @@ export function initChatModule({
   }
 
   /** True once the chat is gone; false when it couldn't be deleted (the error is shown in the chat). */
-  async function deleteConversation(targetId?: string): Promise<boolean> {
+  async function deleteConversation(targetId?: string): Promise<string | null> {
     const convId = targetId || uiState.chatActiveConversation;
-    if (!convId || !bridge?.chatAiDeleteConversation) return false;
+    if (!convId || !bridge?.chatAiDeleteConversation) return 'Could not delete the chat';
     const previousConversations = [...getConversationSummaries()];
     uiState.chatConversations = previousConversations.filter((conv) => conv.id !== convId);
     localConversationMessages.delete(convId);
@@ -1013,13 +1019,12 @@ export function initChatModule({
       const result = await bridge.chatAiDeleteConversation(convId) as { ok?: boolean; error?: string } | undefined;
       if (result && result.ok === false) throw new Error(result.error ?? 'Could not delete the chat');
       await refreshChatConversations();
-      return true;
+      return null;
     } catch (err) {
       uiState.chatConversations = previousConversations;
       notifyUiStateChanged();
       void refreshChatConversations();
-      reportChatError(err, 'Failed to delete conversation');
-      return false;
+      return reportChatError(err, 'Failed to delete conversation');
     }
   }
 
@@ -1039,7 +1044,7 @@ export function initChatModule({
   async function setConversationFlags(
     convId: string,
     flags: ConversationFlags,
-  ): Promise<void> {
+  ): Promise<string | null> {
     const previous = getConversationSummaries();
     const now = Date.now();
     // Shown at once; the list read after the write is the source of truth.
@@ -1057,10 +1062,11 @@ export function initChatModule({
       const result = await bridge?.chatAiSetConversationFlags?.(convId, flags);
       if (result && !result.ok) throw new Error(result.error ?? 'Could not update the chat');
       await refreshChatConversations();
+      return null;
     } catch (err) {
       uiState.chatConversations = previous;
       notifyUiStateChanged();
-      reportChatError(err, 'Failed to update the chat');
+      return reportChatError(err, 'Failed to update the chat');
     }
   }
 
@@ -1108,8 +1114,8 @@ export function initChatModule({
     if (!uiState.chatActiveConversation) {
       const draftVersion = newChatDraftVersion;
       const draftToken = ++draftSeq;
-      draftOwner = draftToken;
-      const stillDraft = () => draftOwner === draftToken;
+      shownDraft = draftToken;
+      const stillDraft = () => !stoppedDrafts.has(draftToken);
       // A default nobody chose can predate the free sellers or the list's final
       // ids, and a sent chat keeps its model: settle it against the list now.
       applyDefaultModel();
@@ -1118,7 +1124,7 @@ export function initChatModule({
       void (async () => {
         // A new chat keeps its model, and the mode being switched to can move it.
         if (await holdForPrivacySwitch()) {
-          if (!stillDraft()) return;
+          if (!stillDraft()) { stoppedDrafts.delete(draftToken); return; }
           const mode = privacyResource.getSnapshot().data?.mode;
           if (mode) await privacySwitchLanded(mode);
           if (draftVersion === newChatDraftVersion) {
@@ -1127,7 +1133,7 @@ export function initChatModule({
           }
         }
         const waited = await waitForFreeModel(stillDraft);
-        if (!stillDraft()) return;
+        if (!stillDraft()) { stoppedDrafts.delete(draftToken); return; }
         // The draft's model is captured here: the user may switch before the
         // conversation finishes creating. A wait that found a free model moves to it.
         let modelId = writtenWith;
@@ -1141,9 +1147,12 @@ export function initChatModule({
         }
         const convId = await createConversationForModel(modelId, { activate: false });
         // Stopped while the chat was being made: it stays, empty, and nothing is sent.
-        if (!stillDraft()) return;
-        draftOwner = 0;
-        setDraftSending(false);
+        if (!stillDraft()) { stoppedDrafts.delete(draftToken); return; }
+        // Only the draft on screen owns the composer's sending state.
+        if (shownDraft === draftToken) {
+          shownDraft = 0;
+          if (uiState.chatActiveConversation === null) setDraftSending(false);
+        }
         if (!convId) return;
         if (draftVersion === newChatDraftVersion) await openConversation(convId);
         sendMessageToConversation(convId, text, rawAttachments, { privateAtSubmit });
@@ -1409,8 +1418,10 @@ export function initChatModule({
     }
     else {
       // A draft has no run in the main process yet: stopping it must not abort
-      // every chat's run, which is what an abort without a chat id does.
-      draftOwner = 0;
+      // every chat's run, which is what an abort without a chat id does. Only
+      // the draft on screen stops; one detached by a new chat keeps going.
+      if (shownDraft) stoppedDrafts.add(shownDraft);
+      shownDraft = 0;
       setDraftSending(false);
       return;
     }

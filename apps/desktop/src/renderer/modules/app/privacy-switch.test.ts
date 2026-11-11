@@ -36,6 +36,16 @@ describe('requestPrivacyMode', () => {
     expect(getPrivacySwitchState()).toEqual({ switching: false, error: null });
   });
 
+  it('marks the asked-for mode as pending until every key has it', async () => {
+    const { requestPrivacyMode, getPrivacySwitchState, calls } = await setup();
+    const done = requestPrivacyMode('private');
+    // The gateway is still applying it to the connected apps' keys.
+    expect(getPrivacySwitchState()).toMatchObject({ switching: true, target: 'private' });
+    calls[0].settle({ ok: true, privacy: privacy('private') });
+    await done;
+    expect(getPrivacySwitchState().target ?? null).toBeNull();
+  });
+
   it('drops a failed switch\'s error once the gateway changes', async () => {
     const { requestPrivacyMode, clearPrivacySwitchError, getPrivacySwitchState, calls } = await setup();
     const done = requestPrivacyMode('private');

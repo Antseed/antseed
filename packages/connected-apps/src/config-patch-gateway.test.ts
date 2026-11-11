@@ -13,6 +13,7 @@ import {
   wslShareRoot,
   writeWslTargets,
   unescapeTomlBasicString,
+  finishConfigPatch,
   writeConfigPatch,
   type ConfigPatchDef,
   type ConfigPatchTarget,
@@ -38,6 +39,31 @@ async function withDir(fn: (dir: string) => Promise<void>): Promise<void> {
 }
 
 const readJson = async (file: string): Promise<Record<string, any>> => JSON.parse(await readFile(file, 'utf8'));
+
+/** A whole patch as the desktop applies it: the write, then the Codex catalog. */
+async function patchAndFinish(patch: ConfigPatchDef, target: ConfigPatchTarget | number): Promise<void> {
+  writeConfigPatch(patch, target);
+  await finishConfigPatch(patch, target);
+}
+
+/**
+ * On Windows, Claude Desktop's targets come from %APPDATA% and %LOCALAPPDATA%,
+ * not the patch's paths: point both at the temp dir so a test never reaches a
+ * real installation.
+ */
+async function withIsolatedAppData(dir: string, fn: () => Promise<void>): Promise<void> {
+  const saved = { APPDATA: process.env['APPDATA'], LOCALAPPDATA: process.env['LOCALAPPDATA'] };
+  process.env['APPDATA'] = dir;
+  process.env['LOCALAPPDATA'] = path.join(dir, 'Local');
+  try {
+    await fn();
+  } finally {
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+}
 
 test('configPatchBaseUrl swaps the origin in and only rewrites loopback hosts for WSL', () => {
   assert.equal(configPatchBaseUrl('http://localhost:{buyerPort}/v1', LOCAL), 'http://localhost:8379/v1');
@@ -88,6 +114,59 @@ test('opencode: gateway target writes key, every model, preserves a user pick an
     config = await readJson(configPath);
     assert.equal(config['provider']['antseed'], undefined);
     assert.equal(config['model'], undefined);
+  });
+});
+
+test('a config Antseed created is never backed up, so no backup holds the gateway key', async () => {
+  await withDir(async (dir) => {
+    const configPath = path.join(dir, 'opencode.json');
+    const patch: ConfigPatchDef = {
+      configPath, providerKey: 'antseed', npm: '@ai-sdk/openai-compatible', providerName: 'Antseed',
+      baseURL: 'http://localhost:{buyerPort}/v1',
+    };
+    writeConfigPatch(patch, LOCAL);
+    writeConfigPatch(patch, REMOTE);
+    assert.equal(removeConfigPatch(patch), true);
+    assert.equal(existsSync(`${configPath}.antseed.bak`), false);
+  });
+});
+
+test('a config the user already had is backed up once, before Antseed changes it', async () => {
+  await withDir(async (dir) => {
+    const configPath = path.join(dir, 'opencode.json');
+    await writeFile(configPath, JSON.stringify({ theme: 'dark' }), 'utf8');
+    const patch: ConfigPatchDef = {
+      configPath, providerKey: 'antseed', npm: '@ai-sdk/openai-compatible', providerName: 'Antseed',
+      baseURL: 'http://localhost:{buyerPort}/v1',
+    };
+    writeConfigPatch(patch, LOCAL);
+    writeConfigPatch(patch, REMOTE);
+    removeConfigPatch(patch);
+    const backup = await readFile(`${configPath}.antseed.bak`, 'utf8');
+    assert.deepEqual(JSON.parse(backup), { theme: 'dark' });
+    assert.equal(backup.includes(KEY), false);
+  });
+});
+
+test('droid: a refresh never replaces a model the user added under an id a new gateway model would take', async () => {
+  await withDir(async (dir) => {
+    const configPath = path.join(dir, 'settings.json');
+    const patch: ConfigPatchDef = {
+      format: 'droid', configPath, providerKey: 'antseed', providerName: 'Antseed Auto',
+      baseURL: 'http://127.0.0.1:{buyerPort}/v1',
+    };
+    writeConfigPatch(patch, LOCAL);
+    const config = await readJson(configPath);
+    const mine = { id: 'custom:Antseed-New-Model-3', model: 'my-own', displayName: 'Mine', baseUrl: 'http://example.test/v1', provider: 'generic-chat-completion-api' };
+    config['customModels'].push(mine);
+    await writeFile(configPath, JSON.stringify(config), 'utf8');
+
+    assert.throws(() => writeConfigPatch(patch, { ...LOCAL, models: [...MODELS, { id: 'new-model', label: 'New Model' }] }), /refusing to overwrite/);
+    assert.deepEqual((await readJson(configPath))['customModels'].find((m: { id: string }) => m.id === mine.id), mine);
+
+    // Disconnect leaves it too.
+    removeConfigPatch(patch);
+    assert.deepEqual((await readJson(configPath))['customModels'], [mine]);
   });
 });
 
@@ -211,6 +290,20 @@ test('pi and crush: key, full model list, per-slot selection', async () => {
   });
 });
 
+test('goose: disconnect removes the provider holding the key even after the config was reset', async () => {
+  await withDir(async (dir) => {
+    const configPath = path.join(dir, 'config.yaml');
+    const providerPath = path.join(dir, 'custom_providers', 'custom_antseed.json');
+    await writeFile(configPath, 'keep_me: true\n', 'utf8');
+    const patch: ConfigPatchDef = { format: 'goose', configPath, providerKey: 'openai', baseURL: 'http://localhost:{buyerPort}' };
+    writeConfigPatch(patch, REMOTE);
+    assert.ok(existsSync(providerPath));
+    await rm(configPath);
+    assert.equal(removeConfigPatch(patch), true);
+    assert.equal(existsSync(providerPath), false);
+  });
+});
+
 test('goose: gateway patch is a custom provider with the key and every model', async () => {
   await withDir(async (dir) => {
     const configPath = path.join(dir, 'config.yaml');
@@ -318,7 +411,7 @@ exit ${exitCode}
       const patch: ConfigPatchDef = { format: 'codex', configPath, providerKey: 'antseed', providerName: 'Antseed', baseURL: 'http://localhost:{buyerPort}/v1' };
 
       await fakeCodex(0);
-      writeConfigPatch(patch, REMOTE);
+      await patchAndFinish(patch, REMOTE);
       assert.ok((await readFile(configPath, 'utf8')).includes('model_catalog_json = "antseed-models.json"'));
       const catalog = JSON.parse(await readFile(catalogPath, 'utf8'));
       assert.deepEqual(catalog.models.map((m: { slug: string }) => m.slug), REMOTE.models.map((m) => m.id));
@@ -329,16 +422,51 @@ exit ${exitCode}
       assert.equal(await readFile(configPath, 'utf8'), '');
 
       // Moving to the legacy proxy (one alias) drops the gateway's catalog.
-      writeConfigPatch(patch, REMOTE);
+      await patchAndFinish(patch, REMOTE);
       assert.equal(existsSync(catalogPath), true);
-      writeConfigPatch(patch, 8377);
+      await patchAndFinish(patch, 8377);
       assert.ok(!(await readFile(configPath, 'utf8')).includes('model_catalog_json'));
       assert.equal(existsSync(catalogPath), false);
       assert.equal(removeConfigPatch(patch), true);
 
       await fakeCodex(1);
-      writeConfigPatch(patch, REMOTE);
+      await patchAndFinish(patch, REMOTE);
       assert.ok(!(await readFile(configPath, 'utf8')).includes('model_catalog_json'));
+      assert.equal(existsSync(catalogPath), false);
+    } finally {
+      process.env['PATH'] = originalPath;
+    }
+  });
+});
+
+test('codex: a catalog finishing after a newer patch or a disconnect never lands', { skip: process.platform === 'win32' }, async () => {
+  await withDir(async (dir) => {
+    const bin = path.join(dir, 'bin');
+    await mkdir(bin);
+    await writeFile(path.join(bin, 'codex'), `#!/bin/sh
+echo '{"models":[{"base_instructions":"be good","truncation_policy":{"mode":"tokens","limit":1}}]}'
+`, { mode: 0o755 });
+    const originalPath = process.env['PATH'];
+    process.env['PATH'] = `${bin}${path.delimiter}${originalPath}`;
+    try {
+      const home = path.join(dir, 'home');
+      await mkdir(home);
+      const configPath = path.join(home, 'config.toml');
+      const catalogPath = path.join(home, 'antseed-models.json');
+      const patch: ConfigPatchDef = { format: 'codex', configPath, providerKey: 'antseed', providerName: 'Antseed', baseURL: 'http://localhost:{buyerPort}/v1' };
+
+      // The caller says it's no longer current (a newer patch was queued).
+      writeConfigPatch(patch, REMOTE);
+      await finishConfigPatch(patch, REMOTE, { isCurrent: () => false });
+      assert.ok(!(await readFile(configPath, 'utf8')).includes('model_catalog_json'));
+      assert.equal(existsSync(catalogPath), false);
+
+      // Disconnected while Codex was building the catalog.
+      writeConfigPatch(patch, REMOTE);
+      const finishing = finishConfigPatch(patch, REMOTE);
+      assert.equal(removeConfigPatch(patch), true);
+      await finishing;
+      assert.equal(await readFile(configPath, 'utf8'), '');
       assert.equal(existsSync(catalogPath), false);
     } finally {
       process.env['PATH'] = originalPath;
@@ -718,7 +846,7 @@ test('zed: every model listed, user pick kept', async () => {
 });
 
 test('claude-desktop: gateway key is written as inferenceGatewayApiKey', async () => {
-  await withDir(async (dir) => {
+  await withDir((dir) => withIsolatedAppData(dir, async () => {
     await mkdir(path.join(dir, 'Claude'), { recursive: true });
     const patch: ConfigPatchDef = {
       format: 'claude-desktop',
@@ -730,7 +858,7 @@ test('claude-desktop: gateway key is written as inferenceGatewayApiKey', async (
     const profile = (await readJson(path.join(dir, 'Claude-3p', 'configLibrary', '00000000-0000-4000-8000-0000a4753eed.json')));
     assert.equal(profile['inferenceGatewayApiKey'], KEY);
     assert.match(profile['inferenceGatewayBaseUrl'], /^http:\/\/127\.0\.0\.1:\d+$/);
-  });
+  }));
 });
 
 test('disconnecting gives the user their own model selection back', async () => {
@@ -951,10 +1079,10 @@ exit ${rejecting ? 1 : 0}
     try {
       const configPath = path.join(dir, 'config.toml');
       const patch = { format: 'codex', configPath, providerKey: 'antseed', providerName: 'Antseed', baseURL: 'http://localhost:{buyerPort}/v1' } as ConfigPatchDef;
-      writeConfigPatch(patch, LOCAL);
+      await patchAndFinish(patch, LOCAL);
       const applied = (await readFile(configPath, 'utf8')).includes('model_catalog_json');
       await writeFile(codex, fake(true), { mode: 0o755 });
-      writeConfigPatch(patch, LOCAL);
+      await patchAndFinish(patch, LOCAL);
       const after = await readFile(configPath, 'utf8');
       assert.equal(after.includes('model_catalog_json'), false, `applied first: ${String(applied)}`);
       assert.equal(existsSync(path.join(dir, 'antseed-models.json')), false);
@@ -999,13 +1127,13 @@ exit ${code}
       const patch = { format: 'codex', configPath, providerKey: 'antseed', providerName: 'Antseed', baseURL: 'http://localhost:{buyerPort}/v1' } as ConfigPatchDef;
       await writeFile(configPath, 'model_catalog_json = "my-models.json"\n');
       await fake(0);
-      writeConfigPatch(patch, LOCAL);
+      await patchAndFinish(patch, LOCAL);
       assert.ok((await readFile(configPath, 'utf8')).includes('model_catalog_json = "antseed-models.json"'));
       removeConfigPatch(patch);
       assert.ok((await readFile(configPath, 'utf8')).includes('model_catalog_json = "my-models.json"'));
 
       await fake(1);
-      writeConfigPatch(patch, LOCAL);
+      await patchAndFinish(patch, LOCAL);
       assert.ok((await readFile(configPath, 'utf8')).includes('model_catalog_json = "my-models.json"'));
     } finally {
       process.env['PATH'] = originalPath;
@@ -1044,9 +1172,9 @@ test('an unread model list keeps every catalog and selection, and takes the new 
       },
     ];
     for (const { patch, file, read, catalog, picked } of cases) {
-      writeConfigPatch(patch, LOCAL);
+      await patchAndFinish(patch, LOCAL);
       const before = read(await readFile(path.join(dir, file), 'utf8'));
-      writeConfigPatch(patch, unread);
+      await patchAndFinish(patch, unread);
       const raw = await readFile(path.join(dir, file), 'utf8');
       const after = read(raw);
       assert.deepEqual(catalog(after), MODELS.map((model) => model.id), patch.format);
@@ -1058,9 +1186,9 @@ test('an unread model list keeps every catalog and selection, and takes the new 
     const modelsPath = path.join(dir, 'models.json');
     const settingsPath = path.join(dir, 'settings.json');
     const pi: ConfigPatchDef = { format: 'pi', configPath: modelsPath, settingsPath, providerKey: 'antseed', baseURL: 'http://localhost:{buyerPort}/v1', api: 'openai-completions' };
-    writeConfigPatch(pi, LOCAL);
+    await patchAndFinish(pi, LOCAL);
     const picked = (await readJson(settingsPath))['defaultModel'];
-    writeConfigPatch(pi, unread);
+    await patchAndFinish(pi, unread);
     const provider = (await readJson(modelsPath))['providers']['antseed'];
     assert.deepEqual(provider['models'].map((model: { id: string }) => model.id), MODELS.map((model) => model.id));
     assert.equal(provider['apiKey'], 'antseed_new_key');
@@ -1176,9 +1304,9 @@ exit 0
       await writeFile(catalogPath, mine, 'utf8');
       await writeFile(configPath, 'model_catalog_json = "antseed-models.json"\n', 'utf8');
       const patch: ConfigPatchDef = { format: 'codex', configPath, providerKey: 'antseed', providerName: 'Antseed', baseURL: 'http://localhost:{buyerPort}/v1' };
-      writeConfigPatch(patch, REMOTE);
+      await patchAndFinish(patch, REMOTE);
       assert.equal(await readFile(catalogPath, 'utf8'), mine);
-      writeConfigPatch(patch, 8377);
+      await patchAndFinish(patch, 8377);
       assert.equal(await readFile(catalogPath, 'utf8'), mine);
       assert.ok((await readFile(configPath, 'utf8')).includes('model_catalog_json = "antseed-models.json"'));
       removeConfigPatch(patch);

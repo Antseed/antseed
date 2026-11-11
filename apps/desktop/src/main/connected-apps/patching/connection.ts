@@ -11,7 +11,7 @@
  */
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { isConfigPatchConnected, removeConfigPatch, writeConfigPatch, type ConfigPatchDef, type ConfigPatchTarget } from '@antseed/connected-apps/config-patch';
+import { finishConfigPatch, isConfigPatchConnected, removeConfigPatch, writeConfigPatch, type ConfigPatchDef, type ConfigPatchTarget } from '@antseed/connected-apps/config-patch';
 import { RETIRED_APP_PROFILES } from '@antseed/connected-apps/defaults';
 import { readWslTargets } from '@antseed/connected-apps/wsl';
 import type { AppLaunchTarget } from '../launch-settings.js';
@@ -214,7 +214,11 @@ async function patchApp(name: string, modelsFor: (endpoint: GatewayEndpoint) => 
   if (shuttingDown) throw new Error('Antseed Desktop is closing');
   // A failed write keeps the WSL rows: a distro patched before the failure
   // holds the gateway URL and key, and disconnect has to find it.
-  writeConfigPatch(profile.configPatch, patchTarget(endpoint, models), connectedAppsWslTargetsPath());
+  const target = patchTarget(endpoint, models);
+  writeConfigPatch(profile.configPatch, target, connectedAppsWslTargetsPath());
+  // Codex's model catalog runs Codex itself: awaited here, off the main
+  // thread, and dropped if quit starts before it lands.
+  await finishConfigPatch(profile.configPatch, target, { isCurrent: () => !shuttingDown });
   log(`${profile.label}: connected to the gateway at ${endpoint.origin}`);
 }
 

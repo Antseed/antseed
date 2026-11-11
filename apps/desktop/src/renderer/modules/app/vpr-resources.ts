@@ -95,7 +95,17 @@ export const privacyResource = createCachedResource<GatewayPrivacy>({
   },
 });
 
-type PrivacySwitchState = { switching: boolean; error: string | null };
+type PrivacySwitchState = {
+  switching: boolean;
+  error: string | null;
+  /**
+   * The mode a switch the user asked for is applying (the chat's key and every
+   * connected app's), until the gateway confirms it. The screen shows the mode
+   * as pending meanwhile, not in effect: an app can still be routed under the
+   * old policy.
+   */
+  target?: GatewayPrivacyMode | null;
+};
 
 let privacySwitchState: PrivacySwitchState = { switching: false, error: null };
 const privacySwitchListeners = new Set<() => void>();
@@ -181,7 +191,7 @@ export async function requestPrivacyMode(mode: GatewayPrivacyMode): Promise<void
   privacyUnconfirmedError = null;
   privacyGeneration += 1;
   privacyResource.setData({ ...shown, mode });
-  publishPrivacySwitch({ switching: true, error: null });
+  publishPrivacySwitch({ switching: true, error: null, target: mode });
   if (alreadyRunning) return;
 
   let confirmed: GatewayPrivacy | null = null;

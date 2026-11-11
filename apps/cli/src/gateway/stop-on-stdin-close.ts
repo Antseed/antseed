@@ -1,7 +1,7 @@
-/** Set by a parent (Antseed Desktop) that stops the gateway by closing its stdin. */
-export const STOP_ON_STDIN_CLOSE_ENV = 'ANTSEED_GATEWAY_STOP_ON_STDIN_CLOSE'
-/** The parent's process id; the gateway stops once that process is gone. */
-export const PARENT_PID_ENV = 'ANTSEED_GATEWAY_PARENT_PID'
+import { PARENT_PID_ENV, STOP_ON_STDIN_CLOSE_ENV } from '@antseed/node/gateway-process'
+
+// Shared with the hosts that set them (Antseed Desktop).
+export { PARENT_PID_ENV, STOP_ON_STDIN_CLOSE_ENV }
 
 /**
  * A way to ask for a clean stop that works on every OS. On Windows a signal

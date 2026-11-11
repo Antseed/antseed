@@ -109,9 +109,11 @@ async function freePort() {
  * `antseed gateway start --no-buyer` on the testbench buyer's data dir (so it
  * shares the buyer's control secret), on a free port, plus one API key for the
  * desktop. The key is created first: a gateway without its console refuses to
- * start with no active keys. Never starts a second buyer.
+ * start with no active keys. Never starts a second buyer. The gateway watches
+ * the launcher (`parentPid`) and stops once it is gone, so a launcher killed
+ * before its cleanup doesn't leave the gateway running.
  */
-export async function startTestbenchGateway({ repo, manifest, reportDir }) {
+export async function startTestbenchGateway({ repo, manifest, reportDir, parentPid = process.pid }) {
   const buyerPort = Number(new URL(manifest.proxyUrl).port);
   const port = await freePort();
   const env = cliNodeEnv(process.env, manifest.home);
@@ -122,7 +124,7 @@ export async function startTestbenchGateway({ repo, manifest, reportDir }) {
   const node = spawnCliNode({
     who: 'desktop-gateway',
     args: gatewayStartArgs({ entry, manifest, buyerPort, port }),
-    env,
+    env: { ...env, ANTSEED_GATEWAY_PARENT_PID: String(parentPid) },
     logPath: join(reportDir, 'desktop-gateway.log'),
   });
   const url = `http://127.0.0.1:${port}`;

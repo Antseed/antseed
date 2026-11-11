@@ -101,8 +101,7 @@ export class TeeVerification {
    * one Private can send to.
    */
   teeFailure(peer: Peer): string | null {
-    const fingerprint = verifierSupportFingerprint(peer.capabilities)
-    for (const query of this.queries.getQueryCache().findAll({ queryKey: [peer.peerId, TEE_VERIFIER_ID, fingerprint] })) {
+    for (const query of this.teeQueries(peer)) {
       const entry = query.state.data as Entry | undefined
       if (query.state.fetchStatus === 'fetching' || !entry?.outcome || entry.outcome.transient) continue
       if (entry.outcome.sellerNodeVerified) return null
@@ -118,15 +117,20 @@ export class TeeVerification {
    * none can run): advertising the TEE verifier is only a claim.
    */
   teeProvenScope(peer: Peer): TeeScope | null {
-    const fingerprint = verifierSupportFingerprint(peer.capabilities)
     let scope: TeeScope | null = null
-    for (const query of this.queries.getQueryCache().findAll({ queryKey: [peer.peerId, TEE_VERIFIER_ID, fingerprint] })) {
+    for (const query of this.teeQueries(peer)) {
       const entry = query.state.data as Entry | undefined
       if (entry?.outcome?.sellerNodeVerified !== true || entry.outcome.transient || this.cacheExpiry(entry, TEE_BADGE_MAX_AGE_MS) <= this.now()) continue
       if (teeScope({ claims: entry.outcome.claims ?? [] }) === 'end-to-end') return 'end-to-end'
       scope = 'seller-node'
     }
     return scope
+  }
+
+  /** The cached TEE checks for the seller's current capabilities. */
+  private teeQueries(peer: Peer) {
+    const fingerprint = verifierSupportFingerprint(peer.capabilities)
+    return this.queries.getQueryCache().findAll({ queryKey: [peer.peerId, TEE_VERIFIER_ID, fingerprint] })
   }
 
   observePeers(peers: readonly Peer[]): void {

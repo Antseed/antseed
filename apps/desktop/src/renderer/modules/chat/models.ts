@@ -3,7 +3,7 @@
  */
 import type { ChatModel } from '../../types/bridge';
 import { compareDefaultModels } from '../../../shared/chat-model-ranking.js';
-import { splitPinnedModel } from '../../../shared/pinned-model.js';
+import { normalizeSellerId, splitPinnedModel } from '../../../shared/pinned-model.js';
 
 const LAST_MODEL_STORAGE_KEY = 'antseed:chat:lastModel';
 
@@ -69,8 +69,7 @@ export function selectionIsFree(model: Pick<ChatModel, 'free' | 'freeSellerId'> 
   if (!model?.free) return false;
   const { peerId } = splitPinnedModel(selectedId);
   if (!peerId) return true;
-  const bare = (id: string) => id.toLowerCase().replace(/^0x/, '');
-  return model.freeSellerId !== null && bare(model.freeSellerId) === bare(peerId);
+  return model.freeSellerId !== null && normalizeSellerId(model.freeSellerId) === normalizeSellerId(peerId);
 }
 
 /**

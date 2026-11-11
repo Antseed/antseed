@@ -14,10 +14,12 @@ export type AppActions = {
   sendMessageToConversation: (convId: string, text: string, attachments?: RawChatAttachment[], options?: { privateAtSubmit?: boolean }) => void;
   generateImage: (prompt: string, options?: { privateAtSubmit?: boolean }) => void;
   abortChat: () => Promise<void>;
-  deleteConversation: (convId?: string) => Promise<boolean>;
+  /** Null once deleted; otherwise why not. */
+  deleteConversation: (convId?: string) => Promise<string | null>;
   renameConversation: (convId: string, newTitle: string) => void;
   /** Pin or archive a chat; pinning unarchives it and archiving unpins it. */
-  setConversationFlags: (convId: string, flags: ConversationFlags) => Promise<void>;
+  /** Null once saved; otherwise why not. */
+  setConversationFlags: (convId: string, flags: ConversationFlags) => Promise<string | null>;
   /** Pick a gateway model in the chat dropdown (text: the chat's model; image: Send generates images). */
   selectChatModel: (modelId: string) => void;
   /** Reload the gateway's model list; `force` bypasses the one-minute cache. */
