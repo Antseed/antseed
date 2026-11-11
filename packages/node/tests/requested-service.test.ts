@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { requestBodyFields, requestBodyService } from '../src/requested-service.js';
+import { readRequestBodyService, requestBodyFields, requestBodyService } from '../src/requested-service.js';
 import { relayMultipartBody } from './helpers/frozen-relay-multipart.js';
 
 const encoder = new TextEncoder();
@@ -116,6 +116,19 @@ describe('requestBodyService', () => {
         multipart(model, [`Content-Disposition: form-data; name="${name}"\r\nContent-Transfer-Encoding: base64`, 'Zmlyc3Q=']),
       ];
       for (const request of requests) expect(requestBodyService(request)).toBeNull();
+    });
+
+    // Billing reads these from JSON bodies only, so a form may carry them as a file or as long text.
+    it.each(['audio', 'reference_video', 'input', 'prompt', 'duration', 'aspect_ratio', 'generate_audio', 'video_urls'])('reads a form with one file or one long text part named %s', (name) => {
+      expect(requestBodyService(multipart(model, [`Content-Disposition: form-data; name="${name}"; filename="clip.bin"\r\nContent-Type: application/octet-stream`, 'RIFF']))).toBe('svc');
+      expect(requestBodyService(multipart(model, field(name, 'x'.repeat(5000))))).toBe('svc');
+    });
+
+    it.each(['audio', 'reference_video', 'input'])('refuses a form with %s spelled another way or sent twice as a file', (name) => {
+      const upload = (as: string): Part => [`Content-Disposition: form-data; name="${as}"; filename="clip.bin"`, 'RIFF'];
+      expect(requestBodyService(multipart(model, upload(name.toUpperCase())))).toBeNull();
+      expect(requestBodyService(multipart(model, upload(`${name}[]`)))).toBeNull();
+      expect(requestBodyService(multipart(model, upload(name), upload(name)))).toBeNull();
     });
 
     it('allows repeated files and collection fields alongside single billing values', async () => {
@@ -240,17 +253,102 @@ describe('requestBodyService', () => {
     expect(requestBodyService(rawJson(text))).toBeNull();
   });
 
-  it.each<[string, string]>([
-    ['a form', 'application/x-www-form-urlencoded'],
-    ['a form with a charset', 'application/x-www-form-urlencoded; charset=utf-8'],
-    ['text', 'text/plain'],
-    ['another multipart', 'multipart/mixed; boundary=x'],
-    ['JSON followed by another type', 'application/json, application/x-www-form-urlencoded'],
-    ['JSON in UTF-7', 'application/json; charset=utf-7'],
-    ['JSON in another charset', 'application/json; charset=cp037'],
-    ['JSON with an unknown parameter', 'application/json; x=y'],
-  ])('names no service when a JSON body is labelled %s', (_name, contentType) => {
-    expect(requestBodyService(json({ model: 'svc', prompt: '&model=other&' }, contentType))).toBeNull();
+  describe('reads a body as JSON under any content type but multipart/form-data', () => {
+    // The seller labels what it read as JSON for its provider, so the label a buyer sent decides nothing.
+    it.each<[string, string]>([
+      ['a form, as curl -d sends', 'application/x-www-form-urlencoded'],
+      ['a form with a charset', 'application/x-www-form-urlencoded; charset=utf-8'],
+      ['text', 'text/plain'],
+      ['text with a charset, as a browser fetch sends', 'text/plain;charset=UTF-8'],
+      ['another multipart', 'multipart/mixed; boundary=x'],
+      ['JSON followed by another type', 'application/json, application/x-www-form-urlencoded'],
+      ['JSON in UTF-7', 'application/json; charset=utf-7'],
+      ['JSON in another charset', 'application/json; charset=cp037'],
+      ['JSON with an unknown parameter', 'application/json; x=y'],
+    ])('a JSON body labelled %s', (_name, contentType) => {
+      expect(readRequestBodyService(json({ model: 'svc', prompt: '&model=other&' }, contentType))).toEqual({ service: 'svc', format: 'json' });
+    });
+
+    it.each<[string, string, string]>([
+      ['a form', 'model=svc&prompt=x', 'application/x-www-form-urlencoded'],
+      ['text', 'model: svc', 'text/plain'],
+    ])('names no service for a body under such a label that is not JSON: %s', (_name, text, contentType) => {
+      expect(readRequestBodyService(raw(text, { 'content-type': contentType }))).toMatchObject({ service: null, refusal: { code: 'model_required' } });
+    });
+
+    it('names no service for JSON written in UTF-16, which is not what the label it sets says', () => {
+      const body = new Uint8Array([0xff, 0xfe, ...[...'{"model":"svc"}'].flatMap((character) => [character.charCodeAt(0), 0])]);
+      expect(readRequestBodyService({ headers: { 'content-type': 'application/json; charset=utf-16' }, body })).toMatchObject({ service: null, refusal: { code: 'model_required' } });
+    });
+
+    it.each(['multipart/form-data; boundary=x', 'Multipart/Form-Data', ' multipart/form-data;boundary=x'])('reads a JSON body labelled %j as a form, and refuses it', (contentType) => {
+      expect(readRequestBodyService(json({ model: 'svc' }, contentType))).toMatchObject({ service: null, refusal: { code: 'unsupported_multipart_body' } });
+    });
+
+    it('says a multipart body was read as a form', () => {
+      expect(readRequestBodyService(multipart(model))).toEqual({ service: 'svc', format: 'multipart' });
+    });
+  });
+
+  describe('names no service when any top-level JSON key is repeated', () => {
+    it.each<[string, string]>([
+      ['n', '{"model":"svc","n":1,"n":10}'],
+      ['quality', '{"model":"svc","quality":"low","quality":"high"}'],
+      ['a key with equal values', '{"model":"svc","size":"1024x1024","size":"1024x1024"}'],
+      ['a key through an escape', '{"model":"svc","\\u006e":1,"n":10}'],
+      ['a key no reader here prices by', '{"model":"svc","messages":[],"messages":[{"role":"user","content":"x"}]}'],
+      ['a key after nested objects', '{"n":1,"tools":[{"n":{"n":2}}],"model":"svc","n":10}'],
+    ])('%s', (_name, text) => {
+      expect(readRequestBodyService(rawJson(text))).toMatchObject({ service: null, refusal: { code: 'repeated_field' } });
+    });
+
+    it.each<[string, string]>([
+      ['the same key at another depth', '{"model":"svc","n":1,"tools":[{"n":2}],"metadata":{"n":3}}'],
+      ['a repeated key inside a nested object', '{"model":"svc","metadata":{"a":1,"a":2}}'],
+      ['text that looks like a repeated key', '{"model":"svc","n":1,"prompt":"\\"n\\":10,\\"n\\":11"}'],
+    ])('reads %s', (_name, text) => {
+      expect(requestBodyService(rawJson(text))).toBe('svc');
+    });
+  });
+
+  describe('says why a body names no one service', () => {
+    const file = (name: string): Part => [`Content-Disposition: form-data; name="${name}"; filename="value.txt"`, 'first'];
+    it.each<[string, ReturnType<typeof raw>, string, string?]>([
+      ['no service field', json({ messages: [] }), 'model_required'],
+      ['an empty body', { headers: {}, body: new Uint8Array(0) }, 'model_required'],
+      ['a JSON array', json([]), 'model_required'],
+      ['a service that is not text', json({ service: 5 }), 'model_required'],
+      ['an empty model', json({ model: '' }), 'model_required'],
+      ['a form with no service field', multipart(field('prompt', 'x')), 'model_required'],
+      ['JSON service and model that differ', json({ service: 'svc', model: 'other' }), 'ambiguous_service'],
+      ['a JSON model in another case', json({ model: 'svc', MODEL: 'svc' }), 'ambiguous_service', '"MODEL"'],
+      ['a JSON modelId', json({ model: 'svc', modelId: 'svc' }), 'ambiguous_service', '"modelId"'],
+      ['a padded JSON model', json({ model: ' svc' }), 'ambiguous_service'],
+      ['an empty service beside a model', json({ service: '', model: 'svc' }), 'ambiguous_service'],
+      ['multipart service and model that differ', multipart(field('service', 'svc'), field('model', 'other')), 'ambiguous_service'],
+      ['a multipart model sent as a file', multipart(file('model')), 'ambiguous_service', '"model"'],
+      ['a multipart modelId alone', multipart(field('modelId', 'svc')), 'ambiguous_service', '"modelId"'],
+      ['a repeated JSON model', rawJson('{"model":"other","model":"svc"}'), 'repeated_field', '"model"'],
+      ['a repeated JSON quality', rawJson('{"model":"svc","quality":"low","quality":"high"}'), 'repeated_field', '"quality"'],
+      ['a repeated multipart model', multipart(model, model), 'repeated_field', '"model"'],
+      ['a repeated multipart quality', multipart(model, field('quality', 'low'), field('quality', 'high')), 'repeated_field', '"quality"'],
+      ['a repeated multipart prompt', multipart(model, field('prompt', 'x'), field('prompt', 'y')), 'repeated_field', '"prompt"'],
+      ['a JSON model list', json({ model: 'svc', models: ['other'] }), 'unsupported_model_selector', '"models"'],
+      ['a JSON route', json({ model: 'svc', route: 'fallback' }), 'unsupported_model_selector', '"route"'],
+      ['a multipart fallback list', multipart(model, field('fallbacks', 'other')), 'unsupported_model_selector', '"fallbacks"'],
+      ['a multipart quality in upper case', multipart(model, field('QUALITY', 'high')), 'invalid_billing_field', '"QUALITY"'],
+      ['a multipart quality sent as a file', multipart(model, file('quality')), 'invalid_billing_field', '"quality"'],
+      ['a multipart size over the field limit', multipart(model, field('size', 'x'.repeat(4097))), 'invalid_billing_field', '"size"'],
+      ['a multipart n in array form', multipart(model, field('n[]', '2')), 'invalid_billing_field', '"n[]"'],
+      ['a multipart preamble', raw(`This is a multipart message.\r\n${frame([model])}${closing}`), 'unsupported_multipart_body'],
+      ['a multipart header quoting a disposition line', multipart(model, ['X-Note: content-disposition: form-data; name="model"\r\nContent-Disposition: form-data; name="image"; filename="a.png"', 'PNG']), 'unsupported_multipart_body'],
+      ['two Content-Type headers', raw(`${frame([model])}${closing}`, { 'content-type': `multipart/form-data; boundary=${boundary}`, 'Content-Type': 'application/json' }), 'ambiguous_content_type'],
+    ])('%s', (_name, request, code, named) => {
+      const read = readRequestBodyService(request);
+      expect(read).toMatchObject({ service: null, refusal: { code } });
+      if (read.service === null && named) expect(read.refusal.message).toContain(named);
+      expect(requestBodyService(request)).toBeNull();
+    });
   });
 
   describe('names no service when a multipart body could read as another', () => {

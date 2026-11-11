@@ -162,6 +162,16 @@ export function extractProviderResponseFacts(parsed: Record<string, unknown>): P
   };
 }
 
+/** The request fields an image is priced by, beside its service and the number of images. */
+const IMAGE_PRICE_ATTRIBUTES = ['size', 'quality', 'resolution'] as const;
+
+/**
+ * The fields `extractImageRequestFacts` prices a multipart form by, beside the
+ * service it names. Each is a short text value; a seller checks that every
+ * reader of the form finds the same one.
+ */
+export const MULTIPART_PRICED_FIELDS: readonly string[] = [...IMAGE_PRICE_ATTRIBUTES, 'n'];
+
 export function extractImageRequestFacts(input: {
   path?: string;
   method?: string;
@@ -174,7 +184,7 @@ export function extractImageRequestFacts(input: {
     || normalizedPath === '/v1/images/edits';
 
   setStringAttr(facts, 'model', body.model ?? body.service);
-  for (const key of ['size', 'quality', 'resolution'] as const) {
+  for (const key of IMAGE_PRICE_ATTRIBUTES) {
     setStringAttr(facts, key, body[key] ?? body[toCamelCase(key)]);
   }
   if (isOpenAiImageEndpoint) {
@@ -302,14 +312,6 @@ const PLAIN_MULTIPART_TYPE = new RegExp(
   String.raw`^multipart\/form-data\s*;\s*(?:${ASCII_CHARSET}\s*;\s*)?boundary=(?:"[\w'()+,./:=?-]+"|[\w'+.-]+)\s*(?:;\s*${ASCII_CHARSET}\s*)?$`,
   'i',
 );
-
-/** A JSON content type, with at most a charset from the list. */
-const PLAIN_JSON_TYPE = new RegExp(String.raw`^application\/(?:[\w.+-]+\+)?json\s*(?:;\s*${ASCII_CHARSET}\s*)?$`, 'i');
-
-/** Whether a content type labels a body as JSON the same way to every reader. */
-export function isPlainJsonContentType(contentType: string): boolean {
-  return PLAIN_JSON_TYPE.test(contentType.trim());
-}
 
 /** Headers beside the disposition that leave a text part's bytes reading the same to every reader. */
 const PLAIN_TEXT_HEADER = new RegExp(

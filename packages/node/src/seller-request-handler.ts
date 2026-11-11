@@ -62,7 +62,7 @@ import {
   selectTargetProtocolForRequest,
 } from '@antseed/api-adapter';
 import { parseResponseUsage } from './utils/response-usage.js';
-import { requestBodyService } from './requested-service.js';
+import { readRequestBodyService, type ServiceRefusal } from './requested-service.js';
 import { buildSelfHealthErrorResponse, buildUpstreamRateLimitedResponse, buildUpstreamUnavailableResponse, isUpstreamAccountError, isUpstreamFailureStatus } from './health/self-health-error.js';
 import type { ServicePerformanceTracker } from './health/service-performance.js';
 import { StreamOutcome } from './health/stream-outcome.js';
@@ -152,6 +152,16 @@ function isZeroTokenPricing(pricing: ProviderTokenPricing): boolean {
  */
 /** What a buyer is told when the provider throws; the exception itself stays in the seller's log. */
 const PROVIDER_FAILURE_MESSAGE = 'The seller could not complete the request upstream';
+
+/**
+ * The service a request is priced and billed as, or why it names none. `format` is set when the
+ * service was read from the body: the format the seller read, which its provider must read too.
+ */
+type RequestedService =
+  | { service: string; format?: 'json' | 'multipart' }
+  | { service: null; refusal: ServiceRefusal };
+
+const SERVICE_REQUIRED: ServiceRefusal = { code: 'model_required', message: 'Request must name a published service.' };
 
 function setTrustedHeader(headers: Record<string, string>, name: string, value: string): void {
   for (const key of Object.keys(headers)) {
@@ -244,7 +254,7 @@ export class SellerRequestHandler {
   /** Provider name → its ID (see announcedProviderId). */
   private readonly _providerIds = new Map<string, string>();
   /** The service each request in flight is priced and billed as: read once, since a body can be large. */
-  private readonly _requestedServices = new WeakMap<SerializedHttpRequest, string | null>();
+  private readonly _requestedServices = new WeakMap<SerializedHttpRequest, RequestedService>();
   /** Per channel: the highest spend a catch-up NeedAuth was already sent for, so parked requests ask once. */
   private readonly _catchUpPrompted = new Map<string, bigint>();
   private readonly _attestRateWindows = new Map<string, { start: number; count: number }>();
@@ -389,21 +399,22 @@ export class SellerRequestHandler {
       // and surfaces a clear error instead of an opaque upstream 4xx.
       const provider = this.matchProvider(request);
       if (!provider) {
-        const requestedService = this._extractRequestedService(request);
+        const requested = this._requestedService(request);
         const allServices = this._deps.providers.flatMap((p) => p.services);
-        const errorMessage = requestedService === null
-          ? 'Request must name one service, in a single "service" or "model" field of a JSON or standard multipart body, matching a published service.'
-          : `Service "${requestedService}" is not served by this peer.`;
-        debugWarn(`[SellerHandler] Rejecting: ${errorMessage} available=[${allServices.join(', ')}]`);
+        // A request that names no one service is told why, so a buyer can see what this seller does not accept.
+        const refusal: { code: string; message: string } = requested.service === null
+          ? requested.refusal
+          : { code: 'model_not_found', message: `Service "${requested.service}" is not served by this peer.` };
+        debugWarn(`[SellerHandler] Rejecting: ${refusal.message} available=[${allServices.join(', ')}]`);
         mux.sendProxyResponse({
           requestId: request.requestId,
           statusCode: 400,
           headers: { 'content-type': 'application/json' },
           body: new TextEncoder().encode(JSON.stringify({
             error: {
-              message: errorMessage,
+              message: refusal.message,
               type: 'invalid_request_error',
-              code: requestedService === null ? 'model_required' : 'model_not_found',
+              code: refusal.code,
             },
           })),
         });
@@ -411,7 +422,11 @@ export class SellerRequestHandler {
       }
 
       // The service this request is priced and billed as, which the provider serves.
-      setTrustedHeader(request.headers, 'x-antseed-service', this._extractRequestedService(request)!);
+      const billed = this._requestedService(request);
+      setTrustedHeader(request.headers, 'x-antseed-service', billed.service!);
+      // The seller read this body as JSON to price it, so the provider and its upstream are told it is
+      // JSON, whatever label the buyer gave it: a form reader would take other fields from the same bytes.
+      if (billed.service !== null && billed.format === 'json') setTrustedHeader(request.headers, 'content-type', 'application/json');
 
       // A request the provider refuses anyway is answered before any payment step.
       let refusal: ProviderRequestRefusal | null;
@@ -1597,25 +1612,32 @@ export class SellerRequestHandler {
   }
 
   private _extractRequestedService(request: SerializedHttpRequest): string | null {
-    let service = this._requestedServices.get(request);
-    if (service === undefined) {
-      service = this._readRequestedService(request);
-      this._requestedServices.set(request, service);
-    }
-    return service;
+    return this._requestedService(request).service;
   }
 
-  private _readRequestedService(request: SerializedHttpRequest): string | null {
+  private _requestedService(request: SerializedHttpRequest): RequestedService {
+    let requested = this._requestedServices.get(request);
+    if (!requested) {
+      requested = this._readRequestedService(request);
+      this._requestedServices.set(request, requested);
+    }
+    return requested;
+  }
+
+  private _readRequestedService(request: SerializedHttpRequest): RequestedService {
+    const named = (service: string | undefined): RequestedService => (service ? { service } : { service: null, refusal: SERVICE_REQUIRED });
     // Routing protocols whose paths name no service address this seller's single service of that protocol.
     const routingProtocol = routingProtocolForPath(request.path);
     if (routingProtocol && routingWireProtocol(routingProtocol).oneServicePerSeller) {
-      return routingServices(this._deps.providers, routingProtocol)[0]?.service ?? null;
+      return named(routingServices(this._deps.providers, routingProtocol)[0]?.service);
     }
     const videoRoute = nativeVideoRoute(request);
-    if (videoRoute?.action === 'retrieve') return requestService(request) ?? null;
-    const service = requestBodyService(request);
+    if (videoRoute?.action === 'retrieve') return named(requestService(request));
+    const requested = readRequestBodyService(request);
     // A video create is billed by its `model` alone, so a `service` beside it has to say the same.
-    return videoRoute && service !== requestService(request) ? null : service;
+    return videoRoute && requested.service !== null && requested.service !== requestService(request)
+      ? { service: null, refusal: { code: 'model_required', message: 'A video request must name its service in a "model" field.' } }
+      : requested;
   }
 
   private _extractRequestedProvider(request: SerializedHttpRequest): string | null {

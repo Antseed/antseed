@@ -88,7 +88,7 @@ describe('the seller serves the service it bills', () => {
     const target = provider(PAID);
     const refused = await serve(target, jsonRequest({ service: 'billed-model', model: 'other-model' }), payments);
     expect(refused.response.statusCode).toBe(400);
-    expect(refused.error.code).toBe('model_required');
+    expect(refused.error.code).toBe('ambiguous_service');
     expect(refused.paymentMux.sendPaymentRequired).not.toHaveBeenCalled();
     expect(target.received).toEqual([]);
   });
@@ -119,7 +119,8 @@ describe('the seller serves the service it bills', () => {
       },
     });
     expect(result.response.statusCode).toBe(400);
-    expect(result.error.code).toBe('model_required');
+    expect(result.error.code).toBe('unsupported_model_selector');
+    expect(result.error.message).toMatch(/^Field "(models|fallbacks)" selects an upstream model/);
     expect(result.paymentMux.sendNeedAuth).not.toHaveBeenCalled();
     expect(result.paymentMux.sendPaymentRequired).not.toHaveBeenCalled();
     expect(target.received).toEqual([]);
@@ -136,9 +137,73 @@ describe('the seller serves the service it bills', () => {
       },
     });
     expect(result.response.statusCode).toBe(400);
-    expect(result.error.code).toBe('model_required');
+    expect(result.error).toEqual({ type: 'invalid_request_error', code: 'repeated_field', message: `Field "${name}" must appear once.` });
     expect(result.paymentMux.sendPaymentRequired).not.toHaveBeenCalled();
     expect(target.received).toEqual([]);
+  });
+
+  it.each<[string, SerializedHttpRequest, string]>([
+    ['a body naming no service', jsonRequest({ messages: [] }), 'model_required'],
+    ['a service this seller does not publish', jsonRequest({ model: 'unpublished-model' }), 'model_not_found'],
+    ['a JSON modelId', jsonRequest({ model: 'billed-model', modelId: 'billed-model' }), 'ambiguous_service'],
+    ['a repeated JSON n', request({ 'content-type': 'application/json' }, new TextEncoder().encode('{"model":"billed-model","n":1,"n":10}')), 'repeated_field'],
+    ['a multipart quality in another case', multipartRequest([['model', 'billed-model'], ['QUALITY', 'high']]), 'invalid_billing_field'],
+    ['a multipart body with a preamble', { ...multipartRequest([['model', 'billed-model']]), body: new TextEncoder().encode(`preamble\r\n--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\nbilled-model\r\n--${boundary}--\r\n`) }, 'unsupported_multipart_body'],
+    ['two Content-Type headers', jsonRequest({ model: 'billed-model' }, { 'Content-Type': 'text/plain' }), 'ambiguous_content_type'],
+  ])('answers %s with its own error code, before payment', async (_name, sent, code) => {
+    const target = provider(PAID);
+    const result = await serve(target, sent, {
+      channelsClient: {},
+      sellerPaymentManager: {
+        hasSession: () => false,
+        getPaymentRequirements: () => ({ minBudgetPerRequest: '10000', suggestedAmount: '1000000' }),
+      },
+    });
+    expect(result.response.statusCode).toBe(400);
+    expect(result.error.code).toBe(code);
+    expect(result.error.type).toBe('invalid_request_error');
+    expect(result.paymentMux.sendNeedAuth).not.toHaveBeenCalled();
+    expect(result.paymentMux.sendPaymentRequired).not.toHaveBeenCalled();
+    expect(target.received).toEqual([]);
+  });
+
+  const contentTypes = (received: SerializedHttpRequest) =>
+    Object.entries(received.headers).filter(([name]) => name.toLowerCase() === 'content-type');
+
+  it.each<[string, Record<string, string>]>([
+    ['a form, as curl -d sends', { 'content-type': 'application/x-www-form-urlencoded' }],
+    ['text, as a browser fetch sends', { 'content-type': 'text/plain;charset=UTF-8' }],
+    ['text under a capitalized header', { 'Content-Type': 'text/plain' }],
+    ['another multipart', { 'content-type': 'multipart/mixed; boundary=x' }],
+    ['JSON followed by a form', { 'content-type': 'application/json, application/x-www-form-urlencoded' }],
+    ['JSON in UTF-7', { 'content-type': 'application/json; charset=utf-7' }],
+    ['JSON in UTF-16', { 'content-type': 'application/json; charset=utf-16' }],
+    ['JSON with a charset', { 'Content-Type': 'application/json; charset=utf-8' }],
+    ['a JSON suffix type', { 'content-type': 'application/vnd.api+json' }],
+    ['nothing', {}],
+  ])('hands a provider a JSON body the buyer labelled %s as JSON, bytes unchanged', async (_name, headers) => {
+    // The same bytes read as a form would name another model, so the label must not survive.
+    const sent = request(headers, new TextEncoder().encode(JSON.stringify({ model: 'billed-model', prompt: '&model=other-model&' })));
+    const target = provider();
+    expect((await serve(target, sent)).response.statusCode).toBe(200);
+    const received = target.received[0]!;
+    expect(contentTypes(received)).toEqual([['content-type', 'application/json']]);
+    expect(received.body).toEqual(sent.body);
+    expect(serviceHeaders(received)).toEqual([['x-antseed-service', 'billed-model']]);
+  });
+
+  it('refuses a body under such a label that is not JSON, and leaves a form\'s content type as the buyer sent it', async () => {
+    const form = provider();
+    const refused = await serve(form, request({ 'content-type': 'application/x-www-form-urlencoded' }, new TextEncoder().encode('model=billed-model&prompt=x')));
+    expect(refused.response.statusCode).toBe(400);
+    expect(refused.error.code).toBe('model_required');
+    expect(form.received).toEqual([]);
+
+    const target = provider();
+    const sent = multipartRequest([['model', 'billed-model']], {});
+    expect((await serve(target, { ...sent, headers: { 'Content-Type': sent.headers['content-type']! } })).response.statusCode).toBe(200);
+    expect(contentTypes(target.received[0]!)).toEqual([['Content-Type', `multipart/form-data; boundary=${boundary}`]]);
+    expect(target.received[0]!.body).toEqual(sent.body);
   });
 
   it.each<[string, Record<string, string>]>([
@@ -225,6 +290,7 @@ describe('the seller serves the service it bills', () => {
       const target = provider(PAID);
       const result = await serve(target, sent, payments);
       expect(result.response.statusCode).toBe(400);
+      expect(result.error.code).toBe('unsupported_multipart_body');
       expect(result.paymentMux.sendNeedAuth).not.toHaveBeenCalled();
       expect(result.paymentMux.sendPaymentRequired).not.toHaveBeenCalled();
       expect(target.received).toEqual([]);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isPlainJsonContentType, parseMultipartFormFields, readPlainMultipartParts } from '../src/utils.js';
+import { MULTIPART_PRICED_FIELDS, extractImageRequestFacts, parseMultipartFormFields, readPlainMultipartParts } from '../src/utils.js';
 
 const boundary = 'b0undary';
 const contentType = `multipart/form-data; boundary=${boundary}`;
@@ -107,16 +107,6 @@ describe('readPlainMultipartParts', () => {
   });
 });
 
-describe('isPlainJsonContentType', () => {
-  it.each(['application/json', 'application/json; charset=utf-8', 'Application/JSON;charset=UTF-8', 'application/vnd.api+json', ' application/json '])('accepts %s', (type) => {
-    expect(isPlainJsonContentType(type)).toBe(true);
-  });
-
-  it.each(['application/x-www-form-urlencoded', 'text/plain', 'application/json; charset=utf-7', 'application/json; x=y', 'application/json, text/plain', 'application/jsonx'])('refuses %s', (type) => {
-    expect(isPlainJsonContentType(type)).toBe(false);
-  });
-});
-
 describe('parseMultipartFormFields', () => {
   it('reads disposition headers only at the start of their own line', () => {
     const prompt = part('X-Note: content-disposition: form-data; name="model"\r\nContent-Disposition: form-data; name="prompt"', 'keep this prompt');
@@ -132,5 +122,28 @@ describe('parseMultipartFormFields', () => {
   it('still reads the fields of a body written another way', () => {
     expect(parseMultipartFormFields(body(`x${named('model', 'svc')}${closing}`), contentType)).toEqual({ model: 'svc' });
     expect(parseMultipartFormFields(body(`${named('model', 'svc')}${closing}`), `${contentType}; boundary=other`)).toEqual({ model: 'svc' });
+  });
+});
+
+describe('MULTIPART_PRICED_FIELDS', () => {
+  it('lists every form field an image request is priced by, beside its service', () => {
+    const read = new Set<string>();
+    const form = new Proxy({} as Record<string, unknown>, {
+      get: (_fields, name) => { read.add(String(name)); return undefined; },
+    });
+    for (const path of ['/v1/images/edits', '/v1/images/generations', '/v1/chat/completions']) {
+      extractImageRequestFacts({ path, method: 'POST', body: form });
+    }
+    // `prompt` only sizes the buyer's own estimate, and `model` and `service` have their own check.
+    for (const name of ['model', 'service', 'prompt']) read.delete(name);
+    expect([...read].sort()).toEqual([...MULTIPART_PRICED_FIELDS].sort());
+  });
+
+  it('prices a form by those fields as it prices JSON', () => {
+    const contentType = 'multipart/form-data; boundary=b';
+    const text = ['model', 'size', 'quality', 'resolution', 'n'].map((name, index) => `--b\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${['svc', '1024x1024', 'high', '2K', '3'][index]}\r\n`).join('');
+    const fields = parseMultipartFormFields(new TextEncoder().encode(`${text}--b--\r\n`), contentType)!;
+    expect(extractImageRequestFacts({ path: '/v1/images/edits', body: fields }))
+      .toEqual(extractImageRequestFacts({ path: '/v1/images/edits', body: { model: 'svc', size: '1024x1024', quality: 'high', resolution: '2K', n: 3 } }));
   });
 });
