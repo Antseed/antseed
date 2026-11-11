@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { requestBodyService } from '../src/requested-service.js';
+import { requestBodyFields, requestBodyService } from '../src/requested-service.js';
+import { relayMultipartBody } from './helpers/frozen-relay-multipart.js';
 
 const encoder = new TextEncoder();
 const boundary = 'form-boundary';
@@ -362,6 +363,70 @@ describe('requestBodyService', () => {
     expect(accepted).toBeGreaterThan(50);
     expect(accepted).toBeLessThan(2500);
     expect(read).toBeGreaterThan(50);
+  });
+
+  it('never admits a multipart body that billing, another parser or a relay installed earlier would read differently', async () => {
+    let seed = 20261111;
+    const random = (limit: number) => {
+      seed = (seed + 0x6d2b79f5) >>> 0;
+      let mixed = Math.imul(seed ^ (seed >>> 15), seed | 1);
+      mixed ^= mixed + Math.imul(mixed ^ (mixed >>> 7), mixed | 61);
+      return ((mixed ^ (mixed >>> 14)) >>> 0) % limit;
+    };
+    const file: Part = ['Content-Disposition: form-data; name="image"; filename="a.png"\r\nContent-Type: image/png', 'PNG'];
+    const seeds = [
+      frame([file, model, field('quality', 'high'), field('n', '2')]) + closing,
+      frame([field('prompt', 'x'), file, model, field('size', '1024x1024')]) + closing,
+      frame([field('service', 'svc'), file, field('resolution', '2K')]) + closing,
+    ];
+    const pieces = [
+      'X-Note: content-disposition: form-data; name="model"\r\n', 'X-Note: Content-Disposition: form-data; name="quality"\r\n',
+      'X-Note: CONTENT-DISPOSITION:\tFORM-DATA;NAME="n"\r\n', 'Content-Type: image/png; content-disposition: form-data; name="modelId"\r\n',
+      '\r\nX-Note: content-disposition: form-data; name="model"', '; content-disposition: form-data; name="size"', 'content-disposition:', 'form-data; name="model"',
+      '\r\nContent-Type: text/plain', '\r\nContent-Length: 4', '; filename=""', '; filename="b"', 'name="quality"', 'name="n"', 'name="image"', '\r\n', ' ', '"', ';',
+      `--${boundary}\r\nContent-Disposition: form-data; name="quality"\r\n\r\nlow\r\n`, `--${boundary}\r\nContent-Disposition: form-data; name="n"\r\n\r\n9\r\n`,
+      `--${boundary}\r\nContent-Disposition: form-data; name="size"; filename=""\r\n\r\n512x512\r\n`, `--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\nother\r\n`,
+    ];
+    const read = async (body: Uint8Array) => {
+      const form = await new Response(body, { headers: multipartHeaders }).formData().catch(() => null);
+      if (!form) return null;
+      return Promise.all([...form.entries()].map(async ([name, value]) => [name, typeof value === 'string' ? value : `file:${value.name}:${await value.text()}`]));
+    };
+    let accepted = 0;
+    let compared = 0;
+    for (let round = 0; round < 6000; round += 1) {
+      let text = seeds[random(seeds.length)]!;
+      for (let edit = random(3) + 1; edit > 0; edit -= 1) {
+        // Most edits land at the start of a line, where a part's headers are.
+        const lines = [...text.matchAll(/\r\n/g)].map((match) => match.index + 2);
+        const at = random(3) === 0 ? random(text.length + 1) : lines[random(lines.length)]!;
+        text = random(6) === 0
+          ? text.slice(0, at) + text.slice(Math.min(text.length, at + 1 + random(6)))
+          : text.slice(0, at) + pieces[random(pieces.length)]! + text.slice(at);
+      }
+      const request = raw(text);
+      const service = requestBodyService(request);
+      // Any other name is not a service this seller would serve.
+      if (service !== 'svc') continue;
+      accepted += 1;
+      // A parser that refuses the body serves nothing, so only one that reads it can disagree.
+      const before = await read(request.body);
+      if (!before) continue;
+      compared += 1;
+      const context = JSON.stringify(text);
+      // Billing reads each priced field as the one value every reader finds.
+      const billed = requestBodyFields(request) ?? {};
+      for (const name of ['n', 'size', 'quality', 'resolution']) {
+        expect(before.filter(([field]) => field === name).map(([, value]) => value), context).toEqual(name in billed ? [billed[name]] : []);
+      }
+      // A relay installed before this change writes its upstream model into the model part, and nowhere else.
+      const sent = relayMultipartBody({ headers: { ...request.headers, 'x-antseed-service': service }, body: request.body }, { svc: 'upstream' });
+      const named = before.some(([name]) => name === 'model');
+      const expected = named ? before.map(([name, value]) => (name === 'model' ? [name, 'upstream'] : [name, value])) : [...before, ['model', 'upstream']];
+      expect(await read(sent), context).toEqual(expected);
+    }
+    expect(accepted).toBeGreaterThan(200);
+    expect(compared).toBeGreaterThan(200);
   });
 
   it('names no service for a body with no usable name', () => {

@@ -11,6 +11,7 @@ import type { Provider } from '../src/interfaces/seller-provider.js';
 import type { SerializedHttpRequest } from '../src/types/http.js';
 import { ResourceOwnershipStore } from '../src/resources/resource-ownership-store.js';
 import { VerificationMux } from '../src/verification/index.js';
+import { relayMultipartBody } from './helpers/frozen-relay-multipart.js';
 
 const FREE = { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } };
 const PAID = { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 } };
@@ -181,6 +182,72 @@ describe('the seller serves the service it bills', () => {
     }
     expect(read).toEqual(expected);
     expect(serviceHeaders(received)).toEqual([['x-antseed-service', 'billed-model']]);
+  });
+
+  // Installed plugins pin their own relay, so these run a copy frozen before this change (see the helper).
+  describe('in front of a relay installed before this change', () => {
+    type Part = [headers: string, content: string];
+    const ALIASES = { 'billed-model': 'upstream-model' };
+    const text = (name: string, value: string): Part => [`Content-Disposition: form-data; name="${name}"`, value];
+    const image: Part = ['Content-Disposition: form-data; name="image"; filename="a.png"\r\nContent-Type: image/png', 'PNG'];
+    const form = (parts: Part[]) => request(
+      { 'content-type': `multipart/form-data; boundary=${boundary}` },
+      new TextEncoder().encode(`${parts.map(([headers, content]) => `--${boundary}\r\n${headers}\r\n\r\n${content}\r\n`).join('')}--${boundary}--\r\n`),
+      '/v1/images/edits',
+    );
+    /** What an upstream reads from the body that relay sends it, by a parser sharing none of the seller's or the relay's code. */
+    const upstreamReads = async (handed: Pick<SerializedHttpRequest, 'headers' | 'body'>) => {
+      const sent = relayMultipartBody(handed, ALIASES);
+      const read = await new Response(sent, { headers: { 'content-type': handed.headers['content-type']! } }).formData();
+      return Promise.all([...read.entries()].map(async ([name, value]) => [name, typeof value === 'string' ? value : `file:${await value.text()}`]));
+    };
+    const payments = {
+      channelsClient: {},
+      sellerPaymentManager: {
+        hasSession: () => false,
+        getPaymentRequirements: () => ({ minBudgetPerRequest: '10000', suggestedAmount: '1000000' }),
+      },
+    };
+    const quoted = 'content-disposition: form-data; name="model"';
+
+    it.each<[string, Part[]]>([
+      ['on a file part', [[`X-Note: ${quoted}\r\n${image[0]}`, 'PNG'], text('model', 'billed-model')]],
+      ['on a prompt part', [[`X-Note: ${quoted}\r\n${text('prompt', '')[0]}`, 'keep this prompt'], text('model', 'billed-model')]],
+      ['in upper case', [[`X-Note: ${quoted.toUpperCase().replace('"MODEL"', '"model"')}\r\n${image[0]}`, 'PNG'], text('model', 'billed-model')]],
+      ['in a Content-Type parameter', [[`Content-Type: image/png; ${quoted}\r\nContent-Disposition: form-data; name="image"; filename="a.png"`, 'PNG'], text('model', 'billed-model')]],
+      ['naming modelId beside a service field', [[`X-Note: ${quoted.replace('model', 'modelId')}\r\n${image[0]}`, 'PNG'], text('service', 'billed-model')]],
+    ])('refuses a part whose other header quotes a disposition line, before that relay could rewrite it: %s', async (_name, parts) => {
+      const sent = form(parts);
+      // Why it is refused: that relay takes the quoting part for the model field and writes the upstream model into it.
+      const rewritten = await upstreamReads({ headers: { ...sent.headers, 'x-antseed-service': 'billed-model' }, body: sent.body });
+      expect(rewritten.some(([name, value]) => /^(image|prompt)$/.test(name!) && String(value).includes('upstream-model'))).toBe(true);
+
+      const target = provider(PAID);
+      const result = await serve(target, sent, payments);
+      expect(result.response.statusCode).toBe(400);
+      expect(result.paymentMux.sendNeedAuth).not.toHaveBeenCalled();
+      expect(result.paymentMux.sendPaymentRequired).not.toHaveBeenCalled();
+      expect(target.received).toEqual([]);
+    });
+
+    it.each<[string, Part[], Array<[string, string]>]>([
+      ['a model, a prompt and a file', [text('model', 'billed-model'), text('prompt', 'make it blue'), image],
+        [['model', 'upstream-model'], ['prompt', 'make it blue'], ['image', 'file:PNG']]],
+      ['a file before the model', [image, text('model', 'billed-model')],
+        [['image', 'file:PNG'], ['model', 'upstream-model']]],
+      ['a prompt quoting a disposition line in its text', [text('prompt', quoted), text('model', 'billed-model')],
+        [['prompt', quoted], ['model', 'upstream-model']]],
+      ['a file with the type before the disposition', [['Content-Type: image/png\r\nContent-Disposition: form-data; name="image"; filename="model"', 'PNG'], text('model', 'billed-model')],
+        [['image', 'file:PNG'], ['model', 'upstream-model']]],
+      ['a file with another header', [[`${image[0]}\r\nX-Note: taken today`, 'PNG'], text('model', 'billed-model')],
+        [['image', 'file:PNG'], ['model', 'upstream-model']]],
+      ['lower-case part headers', [['content-disposition: form-data; name="model"', 'billed-model'], image],
+        [['model', 'upstream-model'], ['image', 'file:PNG']]],
+    ])('hands that relay a body it rewrites only in the model part: %s', async (_name, parts, expected) => {
+      const target = provider();
+      expect((await serve(target, form(parts))).response.statusCode).toBe(200);
+      expect(await upstreamReads(target.received[0]!)).toEqual(expected);
+    });
   });
 
   it('serves a video by the model it bills and passes its body through unchanged', async () => {
