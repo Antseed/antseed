@@ -1,5 +1,6 @@
 import { request as httpRequest } from 'node:http';
-import { NO_USAGE_MARKER } from '../../lib/mock.mjs';
+import { estimateTokensFromText } from '@antseed/node';
+import { MOCK_USAGE, NO_USAGE_MARKER } from '../../lib/mock.mjs';
 import { parseSse } from '../../lib/tb.mjs';
 
 export const meta = {
@@ -35,10 +36,8 @@ export async function run(tb) {
   const upstreamChats = async () => (await tb.mockRequests(seller.id)).filter((entry) => entry.path === '/v1/chat/completions');
   const channel = async () => ((await tb.channels())[seller.id] ?? [])[0];
   const signed = async () => BigInt((await channel())?.cumulativeSigned ?? '0');
-  const streamChat = (content, extra = {}) => tb.request('/v1/chat/completions', {
-    stream: true,
-    body: { model, messages: [{ role: 'user', content }], stream: true, ...extra },
-  });
+  const chatBody = (content, extra = {}) => ({ model, messages: [{ role: 'user', content }], stream: true, ...extra });
+  const streamChat = (content, extra) => tb.request('/v1/chat/completions', { stream: true, body: chatBody(content, extra) });
   tb.metric('costPerChatMicroUsdc', String(cost));
 
   const fresh = { chats: (await upstreamChats()).length, channel: await channel() };
@@ -58,7 +57,8 @@ export async function run(tb) {
   const chatsAfterDotPath = (await upstreamChats()).length;
 
   // An upstream that reports no usage even when asked.
-  const silent = await streamChat(`${NO_USAGE_MARKER} paid request to an upstream that reports no usage`);
+  const silentPrompt = `${NO_USAGE_MARKER} paid request to an upstream that reports no usage`;
+  const silent = await streamChat(silentPrompt);
   await tb.waitForPaidChannels(seller.id, { requests: 1, signed: signedAfterOptOut + 1n, timeoutMs: 15_000 });
   const signedAfterSilent = await signed();
   const estimate = signedAfterSilent - signedAfterOptOut;
@@ -75,13 +75,18 @@ export async function run(tb) {
     observed,
   );
 
-  tb.check('the request that asks for no usage was answered', optedOut.status === 200, optedOut.status);
+  const optedOutAnswer = parseSse(optedOut.text);
+  tb.check('the request that asks for no usage was answered in full, with the closing usage chunk', optedOut.status === 200 && optedOutAnswer.done && optedOutAnswer.content.includes('Hello from') && JSON.stringify(optedOutAnswer.usage) === JSON.stringify(MOCK_USAGE), { status: optedOut.status, ...optedOutAnswer });
   tb.check('the upstream was asked for usage anyway', askedUpstream?.includeUsage === true, askedUpstream);
   tb.check('the path with a dot segment was refused', dotPath.status === 400 && JSON.parse(dotPath.text).error?.code === 'invalid_request_path', { status: dotPath.status, body: dotPath.text.slice(0, 300) });
   const silentAnswer = parseSse(silent.text);
   tb.check('the answer without usage was delivered in full, with no usage in it', silent.status === 200 && silentAnswer.done && silentAnswer.content.includes('Hello from') && silentAnswer.usage === null, { status: silent.status, ...silentAnswer });
-  // A chat with a usage figure costs exactly `cost`; the estimate is the prompt's and the answer's size, framing included.
-  tb.check('the estimate is not a reported figure and is in proportion to the answer', estimate > cost && estimate < cost * 50n, { estimate: String(estimate), costPerChat: String(cost) });
+  // Worked out here from what was sent and received, at the service's price: the prompt's tokens plus the answer's.
+  const provider = Object.values(tb.manifest.topology.sellers.find((entry) => entry.id === seller.id).providers).find((entry) => entry.services?.[model]);
+  const price = { ...(provider.defaults ?? {}), ...(provider.services[model].pricing ?? {}) };
+  const [promptTokens, answerTokens] = [estimateTokensFromText(JSON.stringify(chatBody(silentPrompt))), estimateTokensFromText(silentAnswer.content)];
+  const expectedEstimate = BigInt(Math.round(promptTokens * price.inputUsdPerMillion + answerTokens * price.outputUsdPerMillion));
+  tb.check('the charge is the estimate of the prompt and the answer', estimate === expectedEstimate, { estimate: String(estimate), expected: String(expectedEstimate), promptTokens, answerTokens, price });
   tb.metric('estimateMicroUsdc', String(estimate));
 
   await tb.closeAll();

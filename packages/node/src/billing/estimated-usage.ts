@@ -1,5 +1,5 @@
 import { parseJsonObject } from '@antseed/api-adapter';
-import { StreamOutcome } from '../health/stream-outcome.js';
+import { isStreamError } from '../health/stream-outcome.js';
 import { estimateTokensFromBytesSampled } from '../payments/pricing.js';
 import type { ResponseUsage } from '../utils/response-usage.js';
 
@@ -30,17 +30,23 @@ function choicesText(event: Record<string, unknown>): string | null {
   return event.choices.map((choice: Record<string, unknown> | null) => generatedText(choice?.delta ?? choice?.message ?? choice?.text)).join('');
 }
 
-/** The text of a chat answer, sent whole or as an event stream; null for any other body. */
+/** The text of a chat answer, sent whole or as an event stream; null for any other body or a stream that failed. */
 function chatAnswerText(body: Uint8Array): string | null {
   const whole = parseJsonObject(body);
   if (whole) return choicesText(whole);
   let answer: string | null = null;
-  for (const event of decoder.decode(body).split(/\r?\n\r?\n/)) {
-    const data = event.split(/\r?\n/).filter((line) => line.startsWith('data:')).map((line) => line.slice(5)).join('\n');
+  for (const block of decoder.decode(body).split(/\r?\n\r?\n/)) {
+    const lines = block.split(/\r?\n/);
+    if (lines.some((line) => line.startsWith('event:') && line.slice(6).trim() === 'error')) return null;
+    let event: Record<string, unknown>;
     try {
-      const text = choicesText(JSON.parse(data) as Record<string, unknown>);
-      if (text !== null) answer = (answer ?? '') + text;
-    } catch { /* skip events that are not JSON, such as [DONE] */ }
+      event = JSON.parse(lines.filter((line) => line.startsWith('data:')).map((line) => line.slice(5)).join('\n')) as Record<string, unknown>;
+    } catch {
+      continue; // Not JSON, such as [DONE].
+    }
+    if (isStreamError(event)) return null;
+    const text = choicesText(event);
+    if (text !== null) answer = (answer ?? '') + text;
   }
   return answer;
 }
@@ -65,9 +71,6 @@ function estimatePromptTokens(requestBody: Uint8Array): number {
  * chat answer, and for a stream that reports it failed: neither is billed.
  */
 export function estimateChatAnswerUsage(requestBody: Uint8Array, responseBody: Uint8Array): ResponseUsage | null {
-  const outcome = new StreamOutcome();
-  outcome.observe(responseBody);
-  if (outcome.failed) return null;
   const text = chatAnswerText(responseBody);
   if (text === null) return null;
   const inputTokens = estimatePromptTokens(requestBody);

@@ -679,6 +679,16 @@ describe('HttpRelay', () => {
       expect(upstreamBody().stream_options).toEqual({ include_usage: true });
     });
 
+    it('judges the path alone, not a query string that names a completions path', async () => {
+      fetchMock.mockResolvedValueOnce(new Response('{}', { status: 200 }));
+      const { relay } = relayWith();
+      await relay.handleRequest(makeRequest({
+        path: '/v1/messages?next=/chat/completions',
+        body: new TextEncoder().encode(JSON.stringify({ model: 'minimax-m2.7-highspeed', messages: [], stream: true })),
+      }));
+      expect(upstreamBody().stream_options).toBeUndefined();
+    });
+
     it('keeps the query string of a chat path it normalizes', async () => {
       fetchMock.mockResolvedValueOnce(new Response('{}', { status: 200 }));
       const { relay } = relayWith();

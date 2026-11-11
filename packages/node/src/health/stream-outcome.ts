@@ -62,7 +62,8 @@ function nonEmpty(value: unknown): boolean {
   return typeof value === 'string' ? value.length > 0 : Array.isArray(value) && value.length > 0;
 }
 
-function isStreamError(event: Record<string, unknown>): boolean {
+/** Whether a parsed stream event reports a failure: an error event in any of the three stream formats. */
+export function isStreamError(event: Record<string, unknown>): boolean {
   return event.type === 'error' || event.type === 'response.failed' || isRecord(event.error);
 }
 

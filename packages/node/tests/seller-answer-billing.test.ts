@@ -188,8 +188,11 @@ describe('seller billing of an answer without a usage report', () => {
 
   it('charges a legacy completion that reports no usage', async () => {
     const text = 'Seeds store a young plant.';
-    const { needAuth } = await serve(plainProvider(200, { id: 'x', object: 'text_completion', choices: [{ index: 0, text, finish_reason: 'stop' }] }), { path: '/v1/completions' });
-    expect(needAuth?.outputTokens).toBe(String(estimateTokensFromText(text)));
+    const body = encoder.encode(JSON.stringify({ model: 'test-model', prompt: 'Tell me about seeds, at some length, please.' }));
+    const { needAuth, spent } = await serve(plainProvider(200, { id: 'x', object: 'text_completion', choices: [{ index: 0, text, finish_reason: 'stop' }] }), { path: '/v1/completions', body });
+    const [inputTokens, outputTokens] = [estimateTokensFromBytesSampled(body), estimateTokensFromText(text)];
+    expect(needAuth).toMatchObject({ inputTokens: String(inputTokens), outputTokens: String(outputTokens) });
+    expect(spent).toBe(BigInt(inputTokens + outputTokens));
   });
 
   it('bills the reported usage, never an estimate, when the answer has one', async () => {
@@ -211,6 +214,12 @@ describe('seller billing of an answer without a usage report', () => {
 
   it('charges nothing by estimate for a stream that failed', async () => {
     const { spent, needAuth } = await serve(streamingProvider([textDelta('Seeds store'), 'event: error\ndata: upstream dropped\n\n']));
+    expect(needAuth?.lastRequestCost).toBe('0');
+    expect(spent).toBe(0n);
+  });
+
+  it('charges nothing by estimate for a stream whose error event spans several data lines', async () => {
+    const { spent, needAuth } = await serve(streamingProvider([textDelta('Seeds store'), 'data: {"error":\ndata: {"message":"failed"}}\n\n']));
     expect(needAuth?.lastRequestCost).toBe('0');
     expect(spent).toBe(0n);
   });

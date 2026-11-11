@@ -9,7 +9,7 @@ import { pinnedUpstreamModel } from './pinned-upstream-model.js';
 export const DEFAULT_HTTP_TIMEOUT_MS = 5 * 60_000;
 
 /** OpenAI Chat Completions or legacy Completions, at whatever prefix an upstream serves them. */
-const COMPLETIONS_PATH = /\/(?:chat\/)?completions\/?(?:\?|$)/i;
+const COMPLETIONS_PATH = /^[^?]*\/(?:chat\/)?completions\/?(?:\?|$)/i;
 
 export interface RelayConfig {
   /**
