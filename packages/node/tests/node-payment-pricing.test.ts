@@ -2420,31 +2420,32 @@ describe('a channel at its ceiling while top-ups follow each other', () => {
     }));
   });
 
-  it('prompts the catch-up before parking for spend a queued top-up will cover', async () => {
-    const sendNeedAuth = vi.fn();
+  it('still answers exhausted for a blocked channel, even one restored after a restart', async () => {
+    const askAfterRestart = vi.fn(async () => 900_000n);
     const handler = makeSellerRequestHandler({
       providers: [makeProvider(1, 1, { name: 'openai', services: ['test-model'] })],
       sellerPaymentManager: makeSpmMock({
         getCumulativeSpend: () => 1_500_000n,
-        getAcceptedCumulative: () => 1_000_000n,
+        getAcceptedCumulative: () => 900_000n,
         getReserveMax: () => 1_000_000n,
-        isTopUpPendingFor: (_channelId: string, amount: bigint) => amount === 1_500_000n,
+        isChannelBlocked: () => true,
+        askAfterRestart,
       }),
       channelsClient: {} as any, sessionTracker: null, announcer: null, emit: () => false,
     });
     const frames: Uint8Array[] = [];
-    const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), { sendNeedAuth, sendPaymentRequired: vi.fn() } as any);
+    const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any);
     await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({
-      requestId: 'parked-behind-queued-top-up', method: 'POST', path: '/v1/chat/completions',
+      requestId: 'blocked-past-ceiling', method: 'POST', path: '/v1/chat/completions',
       headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ model: 'test-model', messages: [] })),
     }) });
 
-    expect(sendNeedAuth.mock.calls[0]?.[0]).toEqual({
-      channelId: 'session-1', requiredCumulativeAmount: '1500000', currentAcceptedCumulative: '1000000', deposit: '1000000',
-    });
+    const response = decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload);
+    expect({ status: response.statusCode, code: JSON.parse(new TextDecoder().decode(response.body)).code, asked: askAfterRestart.mock.calls.length })
+      .toEqual({ status: 402, code: PAYMENT_CODE_CHANNEL_EXHAUSTED, asked: 0 });
   });
 
-  it('prompts the catch-up before parking for spend a top-up on its way will cover', async () => {
+  it('prompts the catch-up before parking for spend the top-up being submitted will cover', async () => {
     const sendNeedAuth = vi.fn();
     let reserveMax = 1_000_000n;
     let accepted = 1_000_000n;

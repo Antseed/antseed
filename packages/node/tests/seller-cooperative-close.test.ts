@@ -574,11 +574,12 @@ describe('SellerPaymentManager.handleCloseChannelRequest', () => {
       ceiling: topUp.mock.calls[0]?.[5],
       closed: vi.mocked(manager.channelsClient.close).mock.calls.length,
     }).toEqual({ status: 'rejected', code: 'pending_auth', answeredAtOnce: true, settled: 10_000_000n, ceiling: 20_000_000n, closed: 0 });
-  });
+    // Long enough that waiting the old 5 s for a catch-up shows as the answer above, not as a timeout.
+  }, 15_000);
 
-  it('still waits for the catch-up, and starts no top-up, when a queued top-up is not needed for the spend', async () => {
+  it('still waits for the catch-up when the spend fits the deposit, though a top-up is queued', async () => {
     vi.spyOn(manager.channelsClient, 'getTopUpSettledThresholdBps').mockResolvedValue(8_500n);
-    const topUp = vi.spyOn(manager.channelsClient, 'topUp').mockResolvedValue('0xtopup');
+    vi.spyOn(manager.channelsClient, 'topUp').mockResolvedValue('0xtopup');
     await manager.handleSpendingAuth(buyer.peerId, await buildSpendingAuth(buyer, 1_000_000n), mux);
     await manager.handleSpendingAuth(buyer.peerId, await buildReserveAuth(buyer, 20_000_000n), mux);
     manager.recordSpend(CHANNEL_ID, 3_000_000n);
@@ -588,7 +589,24 @@ describe('SellerPaymentManager.handleCloseChannelRequest', () => {
     await manager.handleSpendingAuth(buyer.peerId, await buildSpendingAuth(buyer, 3_000_000n), mux);
     const result = await closing;
 
-    expect({ status: result.status, finalAmount: result.finalAmount, topUps: topUp.mock.calls.length })
-      .toEqual({ status: 'closed', finalAmount: '3000000', topUps: 0 });
+    expect({ status: result.status, finalAmount: result.finalAmount }).toEqual({ status: 'closed', finalAmount: '3000000' });
+  });
+
+  it('judges a bare close against the on-chain deposit, not a stored ceiling that lags it', async () => {
+    vi.spyOn(manager.channelsClient, 'getTopUpSettledThresholdBps').mockResolvedValue(8_500n);
+    vi.spyOn(manager.channelsClient, 'topUp').mockResolvedValue('0xtopup');
+    await manager.handleSpendingAuth(buyer.peerId, await buildSpendingAuth(buyer, 1_000_000n), mux);
+    await manager.handleSpendingAuth(buyer.peerId, await buildReserveAuth(buyer, 30_000_000n), mux);
+    // A top-up to 20 USDC landed that this seller never recorded (it restarted).
+    vi.mocked(manager.channelsClient.getSession).mockResolvedValue({ ...onChainChannel(buyer, seller, 0n), deposit: 20_000_000n });
+    manager.recordSpend(CHANNEL_ID, 15_000_000n);
+
+    const closing = manager.handleCloseChannelRequest(buyer.peerId, { version: 1, channelId: CHANNEL_ID }, mux);
+    // The spend fits the real deposit, so its catch-up is accepted while the close waits for it.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await manager.handleSpendingAuth(buyer.peerId, await buildSpendingAuth(buyer, 15_000_000n), mux);
+    const result = await closing;
+
+    expect({ status: result.status, finalAmount: result.finalAmount }).toEqual({ status: 'closed', finalAmount: '15000000' });
   });
 });

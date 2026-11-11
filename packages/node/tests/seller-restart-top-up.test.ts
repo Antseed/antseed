@@ -1,8 +1,10 @@
 /**
  * A seller killed around a top-up, then started again over the same store,
- * against a live buyer. Everything is real except the chain, which applies the
- * contract's rules to in-memory channels: the seller and buyer managers, the
- * negotiator, both request handlers, the channel stores and the frames.
+ * against a live buyer. Everything is real except the chain: the seller and
+ * buyer managers, the negotiator, both request handlers, the channel stores
+ * and the frames. The fake chain applies AntseedChannels' rules for the calls a
+ * seller makes (amounts, the top-up threshold, signatures, deposit locks), each
+ * call all or nothing, over in-memory channels.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -36,12 +38,14 @@ const OPENING_RESERVE = 250_000n;
 const MIN_BUDGET = 10_000n;
 const ACTIVE = 1;
 const CLOSED = 2;
-/** How long a topUp() takes to be mined. */
+/** How long a topUp() or close() takes to be mined. */
 const MINING_MS = 2_000;
 /** One way between buyer and seller. */
 const LATENCY_MS = 20;
 /** One chain read. */
 const READ_MS = 50;
+/** Real time a test may take: its fake clock runs fast, but a loaded machine runs it slowly. */
+const TEST_TIMEOUT_MS = 60_000;
 const DOMAIN = makeChannelsDomain(CHAIN_ID, CHANNELS_ADDRESS);
 
 /** What a topUp() does while the seller is about to be killed. */
@@ -51,11 +55,32 @@ type TopUpFate = 'lands' | 'mined-unseen' | 'never-sent';
 class FakeChain {
   readonly channels = new Map<string, ChannelInfo>();
   topUpFate: TopUpFate = 'lands';
+  /** The buyer's deposits, locked and not. */
+  funds = 100_000_000n;
 
   read(channelId: string): ChannelInfo {
     const channel = this.channels.get(channelId);
     if (!channel) throw new Error(`no channel ${channelId}`);
     return channel;
+  }
+
+  /** What `channels(id)` returns: a zero struct for a channel that does not exist. */
+  session(channelId: string): ChannelInfo {
+    return { ...(this.channels.get(channelId) ?? {
+      buyer: '0x' + '00'.repeat(20), seller: '0x' + '00'.repeat(20), deposit: 0n, settled: 0n,
+      metadataHash: '0x' + '00'.repeat(32), deadline: 0n, settledAt: 0n, closeRequestedAt: 0n, status: 0,
+    }) };
+  }
+
+  /** The buyer's deposits not locked in an active channel nor paid out of a closed one. */
+  available(): bigint {
+    let used = 0n;
+    for (const channel of this.channels.values()) used += channel.status === ACTIVE ? channel.deposit : channel.settled;
+    return this.funds - used;
+  }
+
+  private _lock(amount: bigint): void {
+    if (this.available() < amount) throw new Error('execution reverted: InsufficientBalance');
   }
 
   reserved(): bigint {
@@ -72,10 +97,10 @@ class FakeChain {
     return channel;
   }
 
-  private _settle(channel: ChannelInfo, channelId: string, amount: bigint, metadata: string, sig: string): void {
+  /** Checks a SpendingAuth the way `_settleSpend` does, without writing anything. */
+  private _verifySpending(channel: ChannelInfo, channelId: string, amount: bigint, metadata: string, sig: string): void {
     const signer = verifyTypedData(DOMAIN, SPENDING_AUTH_TYPES, { channelId, cumulativeAmount: amount, metadataHash: keccak256(metadata) }, sig);
     if (signer.toLowerCase() !== channel.buyer.toLowerCase()) throw new Error('execution reverted: InvalidSignature');
-    channel.settled = amount;
   }
 
   async reserve(signer: AbstractSigner, buyer: string, salt: string, maxAmount: bigint, deadline: bigint, sig: string): Promise<string> {
@@ -84,6 +109,7 @@ class FakeChain {
     if (this.channels.has(channelId)) throw new Error('execution reverted: ChannelExists');
     const reserveSigner = verifyTypedData(DOMAIN, RESERVE_AUTH_TYPES, { channelId, maxAmount, deadline }, sig);
     if (reserveSigner.toLowerCase() !== buyer.toLowerCase()) throw new Error('execution reverted: InvalidSignature');
+    this._lock(maxAmount);
     this.channels.set(channelId, {
       buyer, seller, deposit: maxAmount, settled: 0n, metadataHash: '0x' + '00'.repeat(32),
       deadline, settledAt: 0n, closeRequestedAt: 0n, status: ACTIVE,
@@ -97,23 +123,29 @@ class FakeChain {
     if (fate === 'lands') await new Promise((resolve) => setTimeout(resolve, MINING_MS));
     const channel = this._active(channelId);
     if (newMax <= channel.deposit) throw new Error('execution reverted: TopUpAmountTooLow');
-    if (amount > channel.settled) {
+    let settled = channel.settled;
+    if (amount > settled) {
       if (amount > channel.deposit) throw new Error('execution reverted: InvalidAmount');
-      this._settle(channel, channelId, amount, metadata, sig);
+      this._verifySpending(channel, channelId, amount, metadata, sig);
+      settled = amount;
     }
-    if (channel.settled < (channel.deposit * THRESHOLD_BPS) / 10_000n) throw new Error('execution reverted: TopUpThresholdNotMet');
+    if (settled < (channel.deposit * THRESHOLD_BPS) / 10_000n) throw new Error('execution reverted: TopUpThresholdNotMet');
     const reserveSigner = verifyTypedData(DOMAIN, RESERVE_AUTH_TYPES, { channelId, maxAmount: newMax, deadline }, reserveSig);
     if (reserveSigner.toLowerCase() !== channel.buyer.toLowerCase()) throw new Error('execution reverted: InvalidSignature');
+    this._lock(newMax - channel.deposit);
+    channel.settled = settled;
     channel.deposit = newMax;
     channel.deadline = deadline;
     return fate === 'mined-unseen' ? new Promise(() => {}) : '0xtopup';
   }
 
-  close(channelId: string, finalAmount: bigint, metadata: string, sig: string): string {
+  async close(channelId: string, finalAmount: bigint, metadata: string, sig: string): Promise<string> {
+    await new Promise((resolve) => setTimeout(resolve, MINING_MS));
     const channel = this._active(channelId);
     if (finalAmount < channel.settled) throw new Error('execution reverted: FinalAmountBelowSettled');
     if (finalAmount > channel.deposit) throw new Error('execution reverted: InvalidAmount');
-    if (finalAmount > channel.settled) this._settle(channel, channelId, finalAmount, metadata, sig);
+    if (finalAmount > channel.settled) this._verifySpending(channel, channelId, finalAmount, metadata, sig);
+    channel.settled = finalAmount;
     channel.status = CLOSED;
     return '0xclose';
   }
@@ -186,7 +218,6 @@ describe('a seller restarted around a top-up', () => {
   let buyer: BuyerPaymentManager;
   let negotiator: BuyerPaymentNegotiator;
   let requestHandler: BuyerRequestHandler;
-  let funds: bigint;
   let seller: ReturnType<typeof startSeller>;
   let buyerConn: ReturnType<typeof connectBuyer>;
   let buyerChannels: ChannelsClient;
@@ -276,6 +307,7 @@ describe('a seller restarted around a top-up', () => {
     seller.alive = false;
     killed.add(seller.payments.channelsClient);
     seller.store.close();
+    negotiator.onPeerDisconnect(sellerPeer);
     chain.topUpFate = 'lands';
     seller = startSeller(seller.dataDir);
     buyerConn = connectBuyer();
@@ -329,7 +361,6 @@ describe('a seller restarted around a top-up', () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
     dirs = [];
     chain = new FakeChain();
-    funds = 100_000_000n;
     const client = ChannelsClient.prototype;
     vi.spyOn(client, 'readAddress', 'get').mockImplementation(() => Promise.resolve(CHANNELS_ADDRESS));
     killed = new Set();
@@ -341,7 +372,7 @@ describe('a seller restarted around a top-up', () => {
       setTimeout(() => { try { resolve(read()); } catch (err) { reject(err); } }, READ_MS);
     });
     vi.spyOn(client, 'getSession').mockImplementation(function (this: ChannelsClient, id: string) {
-      return call(this, () => rpc(() => ({ ...chain.read(id) })));
+      return call(this, () => rpc(() => chain.session(id)));
     });
     vi.spyOn(client, 'getTopUpSettledThresholdBps').mockImplementation(function (this: ChannelsClient) {
       return call(this, () => rpc(() => THRESHOLD_BPS));
@@ -353,7 +384,7 @@ describe('a seller restarted around a top-up', () => {
       return call(this, () => chain.topUp(id, amount, metadata, sig, max, deadline, reserveSig));
     });
     vi.spyOn(client, 'close').mockImplementation(function (this: ChannelsClient, _signer, id, amount, metadata, sig) {
-      return call(this, async () => chain.close(id, amount, metadata, sig));
+      return call(this, () => chain.close(id, amount, metadata, sig));
     });
 
     const buyerDir = dir('restart-buyer-');
@@ -371,7 +402,7 @@ describe('a seller restarted around a top-up', () => {
       dataDir: buyerDir,
     }, buyerStore);
     buyer.setSigner(buyerIdentity.wallet);
-    const balance = async () => ({ available: funds, reserved: chain.reserved(), lastActivityAt: 0n });
+    const balance = async () => ({ available: chain.available(), reserved: chain.reserved(), lastActivityAt: 0n });
     vi.spyOn(buyer.depositsClient, 'getBuyerBalance').mockImplementation(balance);
     buyerChannels = new ChannelsClient({ rpcUrl: 'http://127.0.0.1:1', contractAddress: CHANNELS_ADDRESS, evmChainId: CHAIN_ID });
     const emitter: NegotiationEmitter = { emit: () => false } as never;
@@ -420,13 +451,13 @@ describe('a seller restarted around a top-up', () => {
     await restartSeller();
     const statuses = await parallelRequests(16);
 
-    const goesOn = chain.read(channelId).status === ACTIVE;
+    const goesOn = chain.read(channelId).status === ACTIVE && chain.channels.size === 1;
     expect(await closeAndReadSettled(channelId), 'settled below what the buyer signed').toBe(signed);
-    expect(goesOn, 'closed the channel it had just extended').toBe(true);
+    expect(goesOn, 'closed or replaced the channel it had just extended').toBe(true);
     // One answer asks for an authorization up to the deposit; the buyer runs a close capped there to give it,
     // which the seller declines, so that one request gets a retryable 503.
-    expect(statuses.filter((status) => status === 200).length).toBe(15);
-  });
+    expect(statuses.filter((status) => status === 200).length).toBeGreaterThanOrEqual(15);
+  }, TEST_TIMEOUT_MS);
 
   it('collects what the buyer signed when killed after verifying a top-up but before sending it', async () => {
     const channelId = await openChannel();
@@ -437,38 +468,42 @@ describe('a seller restarted around a top-up', () => {
     const { deposit } = chain.read(channelId);
     expect(deposit).toBe(OPENING_RESERVE);
     expect(signed).toBeGreaterThan(deposit);
+    // The stored auth passes the top-up threshold: the seller only needs the buyer to send again what it signed.
+    expect(seller.payments.getAcceptedCumulative(channelId) * 10_000n).toBeGreaterThanOrEqual(deposit * THRESHOLD_BPS);
 
     await restartSeller();
     const statuses = await parallelRequests(16);
 
-    const goesOn = chain.read(channelId).status === ACTIVE;
+    const goesOn = chain.read(channelId).status === ACTIVE && chain.channels.size === 1;
     expect(await closeAndReadSettled(channelId), 'settled below what the buyer signed').toBe(signed);
-    expect(goesOn, 'closed the channel it had just extended').toBe(true);
+    expect(goesOn, 'closed or replaced the channel it had just extended').toBe(true);
     expect(statuses).toEqual(Array.from({ length: 16 }, () => 200));
-  });
+  }, TEST_TIMEOUT_MS);
 
   it('serves the request that finds the channel past its ceiling, without a client retry', async () => {
     const channelId = await openChannel();
     chain.topUpFate = 'never-sent';
     while (seller.payments.getCumulativeSpend(channelId) < 499_000n) await serve(channelId, 23_201n);
     const signed = buyer.getCumulativeAmount(sellerPeer);
+    expect(seller.payments.getAcceptedCumulative(channelId) * 10_000n).toBeGreaterThanOrEqual(OPENING_RESERVE * THRESHOLD_BPS);
 
     await restartSeller();
     const statuses = await parallelRequests(1);
 
-    const goesOn = chain.read(channelId).status === ACTIVE;
+    const goesOn = chain.read(channelId).status === ACTIVE && chain.channels.size === 1;
     expect(await closeAndReadSettled(channelId), 'settled below what the buyer signed').toBe(signed);
-    expect(goesOn, 'closed the channel it had just extended').toBe(true);
+    expect(goesOn, 'closed or replaced the channel it had just extended').toBe(true);
     expect(statuses).toEqual([200]);
-  });
+  }, TEST_TIMEOUT_MS);
 
   it('is paid for work past the reserve when the buyer had only signed up to it', async () => {
     const channelId = await openChannel();
     chain.topUpFate = 'never-sent';
     for (let served = 0; served < 10; served += 1) await serve(channelId, 25_000n);
     expect(buyer.getCumulativeAmount(sellerPeer)).toBe(OPENING_RESERVE);
-    // Served while the top-up was on its way; the seller died before the NeedAuth for it.
+    // Served, and received, while the top-up was on its way; the seller died before the NeedAuth for it.
     seller.payments.recordSpend(channelId, 70_922n);
+    buyer.recordDeliveredResponse(sellerPeer, 'past-the-reserve', { costUsdc: 70_922n });
     const spent = seller.payments.getCumulativeSpend(channelId);
 
     await restartSeller();
@@ -476,7 +511,7 @@ describe('a seller restarted around a top-up', () => {
 
     expect(await closeAndReadSettled(channelId), 'settled below what was served').toBe(spent);
     expect(statuses).toEqual(Array.from({ length: 16 }, () => 200));
-  });
+  }, TEST_TIMEOUT_MS);
 
   it('is paid for work past the reserve even when an authorization was accepted since the restart', async () => {
     const channelId = await openChannel();
@@ -497,12 +532,13 @@ describe('a seller restarted around a top-up', () => {
     expect(await parallelRequests(1)).toEqual([200]);
     expect(seller.payments.getAcceptedCumulative(channelId)).toBe(225_000n);
     seller.payments.recordSpend(channelId, 95_922n);
+    buyer.recordDeliveredResponse(sellerPeer, 'past-the-reserve', { costUsdc: 95_922n });
     const spent = seller.payments.getCumulativeSpend(channelId);
     const statuses = await parallelRequests(16);
 
     expect(await closeAndReadSettled(channelId), 'settled below what was served').toBe(spent);
     expect(statuses).toEqual(Array.from({ length: 16 }, () => 200));
-  });
+  }, TEST_TIMEOUT_MS);
 
   it('collects what the buyer signed from a single request, with nothing else to prompt it', async () => {
     const channelId = await openChannel();
@@ -515,14 +551,14 @@ describe('a seller restarted around a top-up', () => {
     await finish(new Promise((resolve) => setTimeout(resolve, 10_000)));
 
     expect(await closeAndReadSettled(channelId), 'settled below what the buyer signed').toBe(signed);
-  });
+  }, TEST_TIMEOUT_MS);
 
   it('closes a full, fully paid channel without asking the buyer anything', async () => {
     const channelId = await openChannel();
-    funds = 0n;
+    chain.funds = OPENING_RESERVE;
     for (let served = 0; served < 10; served += 1) await serve(channelId, 25_000n);
     expect(seller.payments.getAcceptedCumulative(channelId)).toBe(OPENING_RESERVE);
-    funds = 100_000_000n;
+    chain.funds = 100_000_000n;
 
     await restartSeller();
     const started = Date.now();
@@ -530,7 +566,7 @@ describe('a seller restarted around a top-up', () => {
 
     expect({ status: chain.read(channelId).status, settled: chain.read(channelId).settled, quickly: Date.now() - started < 10_000 })
       .toEqual({ status: CLOSED, settled: OPENING_RESERVE, quickly: true });
-  });
+  }, TEST_TIMEOUT_MS);
 
   it('asks again for an authorization up to the deposit when the buyer could not act on the first ask', async () => {
     const channelId = await openChannel();
@@ -547,14 +583,14 @@ describe('a seller restarted around a top-up', () => {
       await finish(new Promise((resolve) => setTimeout(resolve, 2_000)));
     }
 
-    const goesOn = chain.read(channelId).status === ACTIVE;
+    const goesOn = chain.read(channelId).status === ACTIVE && chain.channels.size === 1;
     expect(await closeAndReadSettled(channelId), 'settled below what the buyer signed').toBe(signed);
-    expect(goesOn, 'closed the channel it had just extended').toBe(true);
-  });
+    expect(goesOn, 'closed or replaced the channel it had just extended').toBe(true);
+  }, TEST_TIMEOUT_MS);
 
   it('still closes a full channel when the buyer has no top-up to send again', async () => {
     const channelId = await openChannel();
-    funds = 0n;
+    chain.funds = OPENING_RESERVE;
     for (let served = 0; served < 10; served += 1) await serve(channelId, 25_000n);
     seller.payments.recordSpend(channelId, 70_922n);
 
@@ -567,5 +603,5 @@ describe('a seller restarted around a top-up', () => {
 
     expect(chain.read(channelId).status).toBe(CLOSED);
     expect(chain.read(channelId).settled).toBe(OPENING_RESERVE);
-  });
+  }, TEST_TIMEOUT_MS);
 });

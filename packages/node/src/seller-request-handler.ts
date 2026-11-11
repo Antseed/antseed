@@ -713,10 +713,9 @@ export class SellerRequestHandler {
             // Ask for the catch-up now instead of only after the wait: after a
             // restart (or a lost NeedAuth) nothing else would prompt the buyer,
             // and every parked request would end in a 402. Once per spend level,
-            // and only for spend the reserve can cover, now or once a top-up on
-            // its way lands (beyond it the channel is closed below).
-            const signable = reserveMax <= 0n || spent <= reserveMax
-              || spm.isTopUpRunning(session.sessionId) || spm.isTopUpPendingFor(session.sessionId, spent);
+            // and only for spend the reserve can cover, now or once the top-up
+            // being submitted lands (beyond it the channel is closed below).
+            const signable = reserveMax <= 0n || spent <= reserveMax || spm.isTopUpRunning(session.sessionId);
             if (signable && spent > (this._catchUpPrompted.get(session.sessionId) ?? 0n)) {
               this._catchUpPrompted.delete(session.sessionId);
               this._catchUpPrompted.set(session.sessionId, spent);
@@ -867,7 +866,7 @@ export class SellerRequestHandler {
               }
             } else {
               const comparator = spent > accepted ? '>' : '==';
-              debugLog(`[SellerHandler] Budget exhausted for ${buyerPeerId.slice(0, 12)}... (spent=${spent} ${comparator} accepted=${accepted}) — returning 402 with requiredCumulativeAmount=${target}, awaiting higher SpendingAuth`);
+              debugLog(`[SellerHandler] Budget exhausted for ${buyerPeerId.slice(0, 12)}... (spent=${spent} ${comparator} accepted=${accepted}) — returning 402 with requiredCumulativeAmount=${target}, ${restartCatchUp == null ? 'awaiting higher SpendingAuth' : 'asking the buyer to send again what a restart lost'}`);
             }
             mux.sendProxyResponse({
               requestId: request.requestId,
