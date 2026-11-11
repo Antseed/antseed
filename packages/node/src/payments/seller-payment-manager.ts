@@ -2051,14 +2051,15 @@ export class SellerPaymentManager {
   }
 
   /**
-   * Whether a close transaction is in flight for this buyer's active channel.
-   * Request admission refuses new billable work while this is true: the close
-   * would remove the session mid-request and its spend would never be recorded.
+   * Whether a close is in flight or waiting to go ahead on this buyer's active
+   * channel. Request admission refuses new billable work while this is true:
+   * the close would remove the session mid-request and its spend would never be
+   * recorded.
    */
   hasClosingChannel(buyerPeerId: string): boolean {
-    if (this._closingChannels.size === 0) return false;
+    if (this._closingChannels.size === 0 && this._idleCloses.size === 0) return false;
     const session = this._channelStore.getActiveChannelByPeer(buyerPeerId, CHANNEL_ROLE.SELLER);
-    return session != null && this._closingChannels.has(session.sessionId);
+    return session != null && (this._closingChannels.has(session.sessionId) || this._idleCloses.has(session.sessionId));
   }
 
   /**
@@ -2067,7 +2068,9 @@ export class SellerPaymentManager {
    */
   async waitForClosingChannel(buyerPeerId: string, timeoutMs: number): Promise<boolean> {
     const session = this._channelStore.getActiveChannelByPeer(buyerPeerId, CHANNEL_ROLE.SELLER);
-    const closing = session ? this._closingChannels.get(session.sessionId) : undefined;
+    const closing: Promise<unknown> | undefined = session
+      ? this._idleCloses.get(session.sessionId) ?? this._closingChannels.get(session.sessionId)
+      : undefined;
     if (!closing) return true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timedOut = new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), timeoutMs); });

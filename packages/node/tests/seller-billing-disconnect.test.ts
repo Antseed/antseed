@@ -10,6 +10,7 @@ import { randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Wallet } from 'ethers';
+import { AntseedNode } from '../src/node.js';
 import { SellerPaymentManager, type SellerPaymentConfig } from '../src/payments/seller-payment-manager.js';
 import { ChannelStore, CHANNEL_STATUS } from '../src/payments/channel-store.js';
 import {
@@ -157,6 +158,10 @@ async function setup(kind: AnswerKind, config: Partial<SellerPaymentConfig> = {}
     });
     return created;
   };
+  // The node's own handler for the tracker's idle events.
+  const node = new AntseedNode({ role: 'seller' }) as unknown as {
+    _settleIdleSession(spm: SellerPaymentManager, info: { buyerPeerId: string; reason: string }): void;
+  };
   const makeTracker = (): SellerSessionTracker => new SellerSessionTracker(
     seller,
     metering,
@@ -164,10 +169,7 @@ async function setup(kind: AnswerKind, config: Partial<SellerPaymentConfig> = {}
     {},
     {
       onSessionUpdated: () => {},
-      // As node.ts wires the idle close.
-      onSessionFinalized: (info) => {
-        if (info.reason === 'idle-timeout') void manager.settleSession(info.buyerPeerId, { cleanupOnFailure: true, onlyIfIdle: true });
-      },
+      onSessionFinalized: (info) => node._settleIdleSession(manager, info),
     },
   );
   const makeHandler = (created: SellerPaymentManager, sessionTracker: SellerSessionTracker): SellerRequestHandler => new SellerRequestHandler({
@@ -716,6 +718,30 @@ describe.each<AnswerKind>(['buffered', 'streamed'])('seller billing across a dis
     await answered;
     expect(h.manager.getCumulativeSpend(CHANNEL_A)).toBe(2n * COST);
     await h.manager.checkTimeouts();
+    expect(h.close()).toHaveBeenCalledOnce();
+    expect(h.close().mock.calls[0]![2]).toBe(COST);
+  });
+
+  it('starts no new paid request on a channel that is about to close', async () => {
+    const h = await setup(kind);
+    await h.openChannel(CHANNEL_A);
+    await h.serve('paid');
+    await h.sign(CHANNEL_A, COST);
+
+    h.upstream.hold();
+    const running = h.send('running');
+    await h.upstream.started(2);
+    h.ignoreCatchUps();
+    const closing = h.manager.closeSessionWhenIdle(h.buyerPeerId);
+    const late = h.send('late');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    h.upstream.release();
+    await running;
+    await closing;
+    await late;
+
+    expect(h.upstream.calls, 'upstream calls for a request made after the close was scheduled').toBe(2);
+    expect(h.responseTo('late').statusCode).toBe(402);
     expect(h.close()).toHaveBeenCalledOnce();
     expect(h.close().mock.calls[0]![2]).toBe(COST);
   });
