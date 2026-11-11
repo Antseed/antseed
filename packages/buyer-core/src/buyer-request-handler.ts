@@ -74,6 +74,10 @@ export const VIDEO_DELIVERY_UNRECORDED = 'unrecorded';
 const BUYER_ONLY_RESPONSE_HEADERS: ReadonlySet<string> = new Set([ANTSEED_FAULT_ATTRIBUTION_HEADER, VIDEO_PRICE_HEADER, VIDEO_JOB_RETIRED_HEADER, VIDEO_DELIVERED_HEADER]);
 
 export interface RequestExecutionOptions {
+  /**
+   * Ends the request. Aborted with the default reason, the caller gave the request up, and the seller may still
+   * bill it up to what it allows. Aborted with any other reason (a timeout), the caller gave up on the seller.
+   */
   signal?: AbortSignal;
   /** Skip payment/free-usage machinery for internal control-plane requests. */
   controlPlane?: boolean;
@@ -287,6 +291,7 @@ export class BuyerRequestHandler {
       let forwardStreamToCallbacks = false;
       const streamChunks: Uint8Array[] = [];
       const isDownload = videoRoute?.action === 'retrieve' && req.headers[VIDEO_DOWNLOAD_STREAM_HEADER] === VIDEO_DOWNLOAD_STREAM_VERSION;
+      let requestSent = false;
       let downloadHash: ReturnType<typeof createStreamingResponseHash> | undefined;
       let activeTimeout: ReturnType<typeof setTimeout> | null = null;
       let activeTimeoutMs = streamInitialResponseTimeoutMs;
@@ -329,6 +334,14 @@ export class BuyerRequestHandler {
         cleanupConnectionListener();
         debugWarn(`[BuyerRequest] Request ${req.requestId.slice(0, 8)} aborted by caller`);
         mux.cancelProxyRequest(req.requestId);
+        // The seller is not told, so it may finish the generation and bill it: bound that by what the request
+        // allows. Only when the caller gave the request up (see RequestExecutionOptions.signal): a timeout or a
+        // closed connection is the seller's to cause, and counting it would pay a seller for answering nothing.
+        const callerGaveUp = (abortSignal?.reason as { name?: unknown } | undefined)?.name === 'AbortError';
+        if (requestSent && callerGaveUp && negotiator && !isFreeService) {
+          const partial = { ...(streamStartResponse ?? { requestId: req.requestId, statusCode: 200, headers: {} }), body: concatChunks(streamChunks) };
+          if (!isCoveredByFreeAllowance(partial)) negotiator.estimateCostFromPartialResponse(peer, req, partial, requestedService);
+        }
         reject(new Error(`Request ${req.requestId} aborted`));
       };
 
@@ -384,6 +397,7 @@ export class BuyerRequestHandler {
         reject(error);
       };
 
+      requestSent = true;
       mux.sendProxyRequest(
         req,
         (response: SerializedHttpResponse, metadata) => {
@@ -492,12 +506,29 @@ export class BuyerRequestHandler {
 
     // Paid work in flight sizes the buyer's reserve top-ups (see beginPaidRequest).
     const bpm = isFreeService ? undefined : this._deps.negotiator?.bpm;
+    // A control-plane call is never charged, so it is not named to the payment manager.
+    const paidRequestId = negotiator ? req.requestId : undefined;
+    // Provider video APIs may use HTTP 402 for their own errors; only start
+    // Antseed payment negotiation when the response is our payment contract.
+    const startsPaymentNegotiation = (answer: SerializedHttpResponse): boolean => answer.statusCode === 402
+      && Boolean(negotiator)
+      && !externalSpendingAuth
+      && (!videoRoute || isPaymentRequired402(answer));
     const executeCountedRequest = async (): Promise<SerializedHttpResponse> => {
       bpm?.beginPaidRequest(peer.peerId);
+      let answered = false;
       try {
-        return await executeRequest();
+        const answer = await executeRequest();
+        answered = true;
+        // Price what arrived before anything else runs: the seller's NeedAuth
+        // for it is the next frame, travels on another mux, and is judged
+        // against this. A 402 the buyer retries leaves nothing to charge.
+        if (negotiator && !isFreeService && !startsPaymentNegotiation(answer)) {
+          this._estimatePaidCost(negotiator, peer, answer, requestedService, req.requestId);
+        }
+        return answer;
       } finally {
-        bpm?.endPaidRequest(peer.peerId);
+        bpm?.endPaidRequest(peer.peerId, paidRequestId, answered);
       }
     };
     const response = await executeCountedRequest();
@@ -521,14 +552,7 @@ export class BuyerRequestHandler {
       return buyerPaymentsInactiveResponse(response, peer.peerId);
     }
 
-    // Provider video APIs may use HTTP 402 for their own errors; only start
-    // Antseed payment negotiation when the response is our payment contract.
-    if (
-      response.statusCode === 402
-      && negotiator
-      && !externalSpendingAuth
-      && (!videoRoute || isPaymentRequired402(response))
-    ) {
+    if (negotiator && startsPaymentNegotiation(response)) {
       // Parallel requests can leave the seller's spend several requests ahead
       // of the signed cumulative. Keep catching up while the gap shrinks or
       // the seller accepts more: other requests finishing can widen the gap
@@ -551,9 +575,6 @@ export class BuyerRequestHandler {
         }
         paymentResponse = retriedResponse;
       }
-      if (!isFreeService) {
-        this._estimatePaidCost(negotiator, peer, retriedResponse, requestedService, req.requestId);
-      }
       const retriedDelivered = this._recordVideoDelivery(peer, retriedResponse, trackedVideoRetrieve, videoDuration, videoRoute, videoJobId, req.requestId);
       this._recordResponseAuth(
         peer,
@@ -566,9 +587,6 @@ export class BuyerRequestHandler {
       return withVideoDelivered(adaptPeerResponse(retriedResponse), retriedDelivered);
     }
 
-    if (negotiator && !isFreeService) {
-      this._estimatePaidCost(negotiator, peer, response, requestedService, req.requestId);
-    }
     const videoDelivered = this._recordVideoDelivery(peer, response, trackedVideoRetrieve, videoDuration, videoRoute, videoJobId, req.requestId);
     this._recordResponseAuth(
       peer,
