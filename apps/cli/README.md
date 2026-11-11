@@ -626,7 +626,7 @@ Use `base-sepolia` for testing with MockUSDC.
 - `ANTSEED_DEFAULT_DEPOSIT_USDC=1` — default lock amount per session
 - `ANTSEED_IDENTITY_HEX=<hex>` — inject identity via env (supports 0x prefix)
 
-Provider-specific options are configured via each plugin's config schema (see `antseed plugin add --help`).
+Provider-specific options are configured via each plugin's config schema (see the plugin's README). `antseed config seller add-provider <name> --plugin <plugin>` installs the plugin.
 
 ## Assigned Model Audits
 
