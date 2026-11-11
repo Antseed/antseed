@@ -226,6 +226,15 @@ describe('the failure a client is told', () => {
     expect(failedResponse(translate(CHAT, RESPONSES, [RELAY_ERROR_FRAME])).error).toEqual({ code: 'server_error', message: 'terminated' });
   });
 
+  it('keeps a string error type when the code is a number', () => {
+    const chunk = frame({ error: { code: 429, type: 'rate_limit_error', message: 'slow down' } });
+    expect(failedResponse(translate(CHAT, RESPONSES, [chunk])).error).toEqual({ code: 'rate_limit_error', message: 'slow down' });
+  });
+
+  it('keeps relay error text that reads as JSON', () => {
+    EXPECT_FAILED[MESSAGES](translate(CHAT, MESSAGES, ['event: error\ndata: 404\n\n']), '404');
+  });
+
   it('reads an error chunk whose error is a plain string', () => {
     EXPECT_FAILED[MESSAGES](translate(CHAT, MESSAGES, [frame({ error: 'model crashed' })]), 'model crashed');
   });
@@ -418,18 +427,20 @@ describe('an answer that finished stays finished', () => {
     typed('message_delta', { delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 7 } }),
   ];
 
-  const expectFinished = (to: StreamProtocol, events: SseEvent[]): void => {
+  /** Asserts the stream ended once, as finished, with the reason it reported (end_turn, stop, completed by default). */
+  const expectFinished = (to: StreamProtocol, events: SseEvent[], reason: string | null = to === MESSAGES ? 'end_turn' : 'stop'): void => {
     if (to === MESSAGES) {
       expect(names(events)).not.toContain('error');
       expect(names(events).filter((name) => name === 'message_stop')).toHaveLength(1);
       expect(events.at(-1)?.event).toBe('message_stop');
+      expect(jsonFrames(events).find((body) => body.type === 'message_delta')?.delta.stop_reason).toBe(reason);
       return;
     }
     expect(doneMarkers(events)).toHaveLength(1);
     expect(events.at(-1)?.data).toBe('[DONE]');
     if (to === CHAT) {
       expect(jsonFrames(events).filter((chunk) => chunk.error)).toEqual([]);
-      expect(finishChunks(events)).toHaveLength(1);
+      expect(finishChunks(events).map((chunk) => chunk.choices[0].finish_reason)).toEqual([reason]);
       return;
     }
     expect(names(events)).not.toContain('response.failed');
@@ -456,8 +467,10 @@ describe('an answer that finished stays finished', () => {
     expectFinished(to, translate(CHAT, to, [...chatFinished, RELAY_ERROR_FRAME]));
   });
 
+  // [DONE] is the stream's own end marker, so the stream finished. It never said why: a Messages client gets no
+  // stop reason, as the not-streamed translation of a Chat answer without a finish_reason does.
   it.each([MESSAGES, RESPONSES] as const)('a Chat stream that ends with [DONE] and no finish_reason to %s', (to) => {
-    expectFinished(to, translate(CHAT, to, [...SOURCES[CHAT].text, frame('[DONE]')]));
+    expectFinished(to, translate(CHAT, to, [...SOURCES[CHAT].text, frame('[DONE]')]), to === MESSAGES ? null : 'stop');
   });
 
   it.each([MESSAGES, RESPONSES] as const)('a Chat stream that failed after [DONE] to %s', (to) => {
@@ -488,6 +501,12 @@ describe('an answer that finished stays finished', () => {
     const adapter = createStreamingAdapter({ from: MESSAGES, to: CHAT, fallbackModel: 'm' })!;
     const chunks = adapter.adaptChunk({ requestId: 'req', data: encoder.encode(messagesFinished.join('')), done: true });
     expectFinished(CHAT, parseSse(chunks.map((chunk) => decoder.decode(chunk.data)).join('')));
+  });
+
+  it('a final chunk that carries [DONE] finishes once', () => {
+    const adapter = createStreamingAdapter({ from: CHAT, to: MESSAGES, fallbackModel: 'm' })!;
+    const data = encoder.encode([...chatFinished, CHAT_USAGE, frame('[DONE]')].join(''));
+    expectFinished(MESSAGES, parseSse(adapter.adaptChunk({ requestId: 'req', data, done: true }).map((chunk) => decoder.decode(chunk.data)).join('')));
   });
 
   it('a final chunk that carries a cut answer reports it', () => {

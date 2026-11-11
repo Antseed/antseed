@@ -104,19 +104,21 @@ export function createStreamingAdapter(
   // A stream ends exactly once, and says how. Normalizers report what the source said;
   // the first ending stands, and a source that stopped without one was cut off.
   let ended = false;
-  const isFirstEnding = (event: CanonicalStreamEvent): boolean => {
-    if (event.type !== 'response_done' && event.type !== 'response_error') return true;
-    const first = !ended;
-    ended = true;
-    return first;
-  };
 
   return {
     adaptStart: makeStreamingStartResponse,
     adaptChunk(chunk) {
-      const events = normalizer.feed(chunk);
-      if (chunk.done) events.push(STREAM_CUT_OFF);
-      return renderer.render(events.filter(isFirstEnding), chunk);
+      const reported = normalizer.feed(chunk);
+      if (chunk.done) reported.push(STREAM_CUT_OFF);
+      const events: CanonicalStreamEvent[] = [];
+      for (const event of reported) {
+        if (event.type === 'response_done' || event.type === 'response_error') {
+          if (ended) continue;
+          ended = true;
+        }
+        events.push(event);
+      }
+      return renderer.render(events, chunk);
     },
   };
 }
@@ -414,7 +416,7 @@ function createResponsesStreamNormalizer(options: StreamTransformInternals): Pro
         }
 
         if (type === 'response.failed') {
-          emitted.push(responseError(data.response));
+          emitted.push(responseError(objectValue(data.response)));
           continue;
         }
 
@@ -936,10 +938,12 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
 
 /** A canonical failure from what the stream reported: the relay's plain text, or a vendor's JSON error. */
 function responseError(failure: unknown): CanonicalStreamEvent {
-  if (typeof failure === 'string' && failure.length > 0) return { type: 'response_error', message: failure, code: null };
-  const body = objectValue(failure);
+  if (failure === null || typeof failure !== 'object') {
+    return { type: 'response_error', message: String(failure ?? '') || 'Upstream error', code: null };
+  }
+  const body = failure as Record<string, unknown>;
   const error = objectValue(body.error);
-  const code = error.code ?? error.type ?? body.code;
+  const code = [error.code, error.type, body.code].find((value) => typeof value === 'string');
   return { type: 'response_error', message: extractErrorMessage(body), code: typeof code === 'string' ? code : null };
 }
 
