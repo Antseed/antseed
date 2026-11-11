@@ -365,7 +365,7 @@ const piChatEngine = registerPiChatHandlers({
       ...(isDesktopDebugEnabled() ? { verbose: true } : {}),
       env: {
         ...(isDesktopDebugEnabled() ? { ANTSEED_DEBUG: '1' } : {}),
-        ...processManager.requireForStart('connect', secureIdentityEnv),
+        ...secureIdentityEnv(),
       },
     };
 

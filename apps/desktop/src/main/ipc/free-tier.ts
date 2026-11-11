@@ -4,7 +4,7 @@ import { acceptFreeTierDelegationCode, verifyFreeTierDelegations, withFileLock, 
 import type { FreeTierStakeView } from '@antseed/node/free-tier-program';
 import { freeTierStake } from '@antseed/ants/service';
 import { sharedChainContext } from '../payments/shared-chain.js';
-import { ensureSecureIdentity, getSecureIdentity } from '../identity.js';
+import { ensureSecureIdentity, getSecureIdentity, identityUnavailableReason } from '../identity.js';
 import { ACTIVE_CONFIG_PATH } from '../runtime/active-config.js';
 import { mergeConfig, readConfig } from '../runtime/config-io.js';
 import { resolveStakingChain } from '../staking/configuration.js';
@@ -18,7 +18,7 @@ interface FreeTierSharing {
 async function buyerAddress(): Promise<string> {
   await ensureSecureIdentity();
   const identity = getSecureIdentity();
-  if (!identity) throw new Error('Your VPR wallet is unavailable.');
+  if (!identity) throw new Error(identityUnavailableReason('Your VPR wallet is unavailable.'));
   return identity.wallet.address;
 }
 

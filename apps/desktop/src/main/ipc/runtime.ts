@@ -161,13 +161,21 @@ export function registerRuntimeIpc(deps: RuntimeIpcDeps): void {
 
     await ensureSecureIdentity();
 
+    let identityEnv: Record<string, string>;
+    try {
+      identityEnv = secureIdentityEnv();
+    } catch (err) {
+      processManager.recordStartFailure(options.mode, err instanceof Error ? err.message : String(err));
+      throw err;
+    }
+
     const startOptions: StartOptions = {
       ...options,
       ...(isDesktopDebugEnabled() ? { verbose: true } : {}),
       env: {
         ...(options.env ?? {}),
         ...(isDesktopDebugEnabled() ? { ANTSEED_DEBUG: '1' } : {}),
-        ...processManager.requireForStart(options.mode, secureIdentityEnv),
+        ...identityEnv,
       },
     };
     if (isDesktopDebugEnabled()) {

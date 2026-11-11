@@ -55,6 +55,12 @@ const UNDECRYPTABLE = Symbol('undecryptable-identity');
 
 class IdentityReadError extends Error {}
 
+// How messages name a key file. They can leave the machine (the Telegram bridge
+// forwards chat errors), so they don't include the home directory.
+function displayPath(filePath: string): string {
+  return path.join('~', '.antseed', path.basename(filePath));
+}
+
 // A key file's content, or null when the file does not exist. Only that means
 // there is no key: any other failure (I/O, permissions, too many open files)
 // says nothing about what is stored, so it stops the load.
@@ -62,10 +68,10 @@ async function readIdentityFile(filePath: string): Promise<Buffer | null> {
   try {
     return await readFile(filePath);
   } catch (err) {
-    const { code } = err as NodeJS.ErrnoException;
+    const { code = 'unknown error' } = err as NodeJS.ErrnoException;
     if (code === 'ENOENT') return null;
     throw new IdentityReadError(
-      `Your signer key at ${filePath} can't be read (${code}). It was left as it is and no new wallet was created. Check the file and its folder, then try again.`,
+      `Your signer key at ${displayPath(filePath)} can't be read (${code}). It was left as it is and no new wallet was created. Check the file and its folder, then try again.`,
       { cause: err },
     );
   }
@@ -241,6 +247,11 @@ export function getSecureIdentity(): Identity | null {
   return secureIdentity;
 }
 
+/** Why no key is loaded, for the user: the read failure if there is one, else the caller's own words. */
+export function identityUnavailableReason(fallback: string): string {
+  return identityReadError ?? fallback;
+}
+
 export function exportIdentityPrivateKeyHex(): string | null {
   return loadedKeyHex();
 }
@@ -253,10 +264,10 @@ async function backupIdentityBeforeImport(): Promise<string | null> {
     await copyFile(ENCRYPTED_IDENTITY_PATH, backupPath);
     return backupPath;
   } catch (err) {
-    const { code } = err as NodeJS.ErrnoException;
+    const { code = 'unknown error' } = err as NodeJS.ErrnoException;
     if (code === 'ENOENT') return null; // No existing identity file — nothing to back up.
     throw new Error(
-      `Your signer key at ${ENCRYPTED_IDENTITY_PATH} couldn't be backed up (${code}), so the new key wasn't imported and your key was left as it is. Check the file and its folder, then try again.`,
+      `Your signer key at ${displayPath(ENCRYPTED_IDENTITY_PATH)} couldn't be backed up (${code}), so the new key wasn't imported and your key was left as it is. Check the file and its folder, then try again.`,
       { cause: err },
     );
   }

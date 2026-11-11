@@ -16,6 +16,7 @@ import {
 import {
   ensureSecureIdentity,
   getSecureIdentity,
+  identityUnavailableReason,
 } from '../identity.js';
 import {
   BYTES32_RE,
@@ -140,7 +141,7 @@ export function registerPaymentsIpc(): void {
     try {
       await ensureSecureIdentity();
       const identity = getSecureIdentity();
-      if (!identity) return { ok: false, error: 'Identity not available' };
+      if (!identity) return { ok: false, error: identityUnavailableReason('Identity not available') };
       const providers = await readCardProviders();
       // The chooser's fixed lineup (Meridian, Antseed Pay, Peer Pay) must resolve even
       // when a legacy config overrides the provider list with other entries.
@@ -241,7 +242,7 @@ export function registerPaymentsIpc(): void {
     try {
       await ensureSecureIdentity();
       const identity = getSecureIdentity();
-      if (!identity) return { ok: false, error: 'Identity not available' };
+      if (!identity) return { ok: false, error: identityUnavailableReason('Identity not available') };
       const cc = await loadCachedCryptoConfig();
       if (!cc) return { ok: false, error: 'No payment chain configured' };
       const client = await getDepositsClient(cc);
@@ -302,7 +303,7 @@ export function registerPaymentsIpc(): void {
       await ensureSecureIdentity();
       const identity = getSecureIdentity();
       if (!identity) {
-        return { ok: false, error: 'Identity not available' };
+        return { ok: false, error: identityUnavailableReason('Identity not available') };
       }
 
       const cc = await loadCachedCryptoConfig();

@@ -245,10 +245,18 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
         appendSystemLog(`Buyer runtime auto-start failed: ${startFailure}`);
       }
     }
+    if (startFailure) {
+      // A local problem: another peer or an automatic retry can't help, so show it at once.
+      return {
+        ok: false,
+        error: startFailure,
+        stopReason: { kind: 'unknown', source: 'unknown', retryable: false, message: startFailure },
+      };
+    }
     if (!proxyAvailable) {
       return {
         ok: false,
-        error: startFailure ?? `Buyer proxy is not reachable on port ${proxyPort}. Start Buyer runtime or fix buyer.proxyPort in config.`,
+        error: `Buyer proxy is not reachable on port ${proxyPort}. Start Buyer runtime or fix buyer.proxyPort in config.`,
       };
     }
 

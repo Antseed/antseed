@@ -3,7 +3,7 @@ import { app, shell } from 'electron';
 import path from 'node:path';
 import { resolveStakingChain } from './configuration.js';
 import { readConfig } from '../runtime/config-io.js';
-import { ensureSecureIdentity, getSecureIdentity } from '../identity.js';
+import { ensureSecureIdentity, getSecureIdentity, identityUnavailableReason } from '../identity.js';
 import { ACTIVE_CONFIG_PATH } from '../runtime/active-config.js';
 import { getMainWindow } from '../ui/window.js';
 import { invalidateCreditsCache } from '../payments/credits.js';
@@ -14,7 +14,7 @@ import { StakingSessionManager } from './session.js';
 export const stakingSessions = new StakingSessionManager(async () => {
   await ensureSecureIdentity();
   const identity = getSecureIdentity();
-  if (!identity) throw new Error('Your VPR wallet is unavailable. Restore access to your wallet before opening Staking.');
+  if (!identity) throw new Error(identityUnavailableReason('Your VPR wallet is unavailable. Restore access to your wallet before opening Staking.'));
   // Use VPR's selected config, without the CLI-only environment RPC override.
   const chain = resolveStakingChain(await readConfig(ACTIVE_CONFIG_PATH));
   return createStakingWindowSession({

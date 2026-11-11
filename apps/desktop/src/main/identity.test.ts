@@ -54,7 +54,7 @@ const orAnything = <T extends object>(target: T): T => new Proxy(target, {
 Object.assign(globalThis, {
   identityTestElectron: orAnything({
     safeStorage,
-    app: orAnything({ getPath: () => home, getAppPath: () => home, getVersion: () => '0.0.0', getName: () => 'test', isPackaged: false }),
+    app: orAnything({ getPath: () => home, getAppPath: () => home, getVersion: () => '0.0.0', getName: () => 'test', isPackaged: false, whenReady: () => new Promise(() => {}) }),
     ipcMain: orAnything({ handle: (channel: string, handler: IpcHandler) => { ipcHandlers.set(channel, handler); } }),
     shell: orAnything({ openExternal: async (url: string) => { openedUrls.push(url); } }),
   }),
@@ -125,8 +125,10 @@ beforeEach(() => {
   home = mkdtempSync(path.join(tmpdir(), 'antseed-identity-'));
   process.env['HOME'] = home;
   process.env['USERPROFILE'] = home;
-  delete process.env['ANTSEED_DESKTOP_ATTACH_ONLY'];
-  delete process.env['ANTSEED_DESKTOP_ISOLATED_PROFILE'];
+  // A developer's shell must not point these tests at a real buyer or config.
+  for (const name of ['ANTSEED_DESKTOP_ATTACH_ONLY', 'ANTSEED_DESKTOP_ISOLATED_PROFILE', 'ANTSEED_DESKTOP_MULTI_INSTANCE', 'ANTSEED_DESKTOP_CONNECT_DATA_DIR', 'ANTSEED_CONFIG_PATH']) {
+    delete process.env[name];
+  }
   dir = path.join(home, '.antseed');
   mkdirSync(dir);
   encryptedPath = path.join(dir, 'identity.enc');
@@ -161,10 +163,11 @@ function assertClearToUser(message: unknown, expected: RegExp): void {
   assert.equal(typeof message, 'string', 'the user must get a message');
   assert.match(message as string, expected);
   assert.doesNotMatch(message as string, /\n|\bat .+:\d+|simulated failure/);
+  assert.equal((message as string).includes(home), false, 'messages can leave the machine, so they name no home directory');
 }
 
-const UNREADABLE = /^Your signer key at .*identity\.enc can't be read \(EIO\)\./;
-const NOT_BACKED_UP = /^Your signer key at .*identity\.enc couldn't be backed up \(EIO\)/;
+const UNREADABLE = /^Your signer key at ~.\.antseed.identity\.enc can't be read \(EIO\)\./;
+const NOT_BACKED_UP = /^Your signer key at ~.\.antseed.identity\.enc couldn't be backed up \(EIO\)/;
 
 for (const code of ['EIO', 'EACCES', 'EPERM', 'EMFILE', 'EBUSY']) {
   test(`a stored signer that can't be read (${code}) stays on disk and no new signer is made`, async () => {
@@ -402,7 +405,12 @@ test('a chat that can\'t start the buyer shows why', async () => {
     ensureBuyerRuntimeStarted: async () => { throw new Error(reason); },
   } as unknown as StreamingRunContext;
 
-  assert.deepEqual(await createStreamingRunner(context)('conversation', 'hello'), { ok: false, error: reason });
+  const result = await createStreamingRunner(context)('conversation', 'hello');
+
+  assert.equal(result.ok, false);
+  assert.equal(result.error, reason);
+  assert.equal(result.stopReason?.message, reason);
+  assert.equal(result.stopReason?.retryable, false, 'a retry or another peer can\'t help with a local problem');
   assert.equal(logged.some((line) => line.includes(reason)), true, 'the reason is in the runtime log');
 });
 
@@ -421,6 +429,7 @@ test('a chat whose buyer did not come up keeps the generic message', async () =>
 
   assert.equal(result.ok, false);
   assert.match(result.error ?? '', /Buyer proxy is not reachable/);
+  assert.equal(result.stopReason, undefined, 'this one stays retryable');
 });
 
 // Runs once: the handlers share one identity module for the whole process.
@@ -428,8 +437,8 @@ test('through the app\'s own handlers, a failed read or backup is explained and 
   writeFileSync(encryptedPath, sealed(KEY));
   failRead(encryptedPath, 'EIO');
   failBackup(encryptedPath, 'EIO');
-  // A port the portal can't bind, so it could never take a real one or hold this process open.
-  process.env['ANTSEED_PAYMENTS_PORT'] = '1';
+  // Not a valid port, so the portal could never take a real one or hold this process open.
+  process.env['ANTSEED_PAYMENTS_PORT'] = '70000';
 
   const [{ registerAppIpc }, { registerPaymentsIpc }, { registerRuntimeIpc }, { ProcessManager }] = await Promise.all([
     import('./ipc/app.js'),
@@ -479,6 +488,12 @@ test('through the app\'s own handlers, a failed read or backup is explained and 
   assert.equal(payPage.ok, false);
   assertClearToUser(payPage.error, UNREADABLE);
   assert.deepEqual(openedUrls, [], 'no payment page may open');
+
+  for (const channel of ['deposits:watch-start', 'payments:open-card-provider']) {
+    const refused = await invoke(channel);
+    assert.equal(refused.ok, false);
+    assertClearToUser(refused.error, UNREADABLE);
+  }
 
   const imported = await invoke('identity:import-key', OTHER_KEY);
   assert.equal(imported.ok, false);

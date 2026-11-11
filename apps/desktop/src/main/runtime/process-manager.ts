@@ -453,19 +453,10 @@ export class ProcessManager {
     return { ...state };
   }
 
-  /**
-   * Reads something a start can't go without. If that throws, nothing is
-   * spawned, so no process reports it: the status and the log say why instead.
-   */
-  requireForStart<T>(mode: RuntimeMode, read: () => T): T {
-    try {
-      return read();
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
-      this.states.get(mode)!.lastError = reason;
-      this.onLog(mode, 'system', reason);
-      throw err;
-    }
+  /** For a start refused before anything was spawned: no process reports it, so the status and the log say why. */
+  recordStartFailure(mode: RuntimeMode, reason: string): void {
+    this.states.get(mode)!.lastError = reason;
+    this.onLog(mode, 'system', reason);
   }
 
   getDaemonStateSnapshot(): DaemonStateSnapshot {
