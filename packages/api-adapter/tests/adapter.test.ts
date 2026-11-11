@@ -200,8 +200,13 @@ function replayResponsesStream(sseText: string): {
     if (item.id !== event.item_id) throw new Error(`expected item_id '${item.id}', got '${event.item_id}'`);
     return item;
   };
+  const contentOf = (event: ResponsesStreamEvent): ResponsesStreamPart[] => {
+    const { content } = itemOf(event);
+    if (!content) throw new Error(`missing content at index ${event.content_index}`);
+    return content;
+  };
   const partOf = (event: ResponsesStreamEvent): ResponsesStreamPart => {
-    const part = itemOf(event).content?.[event.content_index];
+    const part = contentOf(event)[event.content_index];
     if (!part) throw new Error(`missing content at index ${event.content_index}`);
     return part;
   };
@@ -214,7 +219,7 @@ function replayResponsesStream(sseText: string): {
         append(output, event.output_index, structuredClone(event.item), 'output');
         break;
       case 'response.content_part.added':
-        append(itemOf(event).content ?? [], event.content_index, structuredClone(event.part), 'content');
+        append(contentOf(event), event.content_index, structuredClone(event.part), 'content');
         break;
       case 'response.output_text.delta':
         partOf(event).text += event.delta;
