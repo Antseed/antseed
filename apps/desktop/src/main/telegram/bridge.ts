@@ -30,6 +30,7 @@ import {
 } from './store.js';
 import { asErrorMessage } from '../utils.js';
 import { TurnSlot } from './turn-slot.js';
+import { setUpTurnConversation } from './conversation-setup.js';
 
 function telegramModelPickerText(hasModels: boolean): string {
   return hasModels
@@ -451,26 +452,22 @@ export function createTelegramBridge({ engine, appendLog, onStatusChanged }: Tel
     void sendToOwner(`${modelId} isn't available with your current privacy setting, so this chat now uses ${label}.`);
   };
 
-  const ensureConversation = async (): Promise<string> => {
-    const active = settings?.activeConversationId;
-    // The chat may have been deleted in the app since the last message.
-    if (active && await engine.hasConversation(active)) {
-      await moveOffUnlistedModel(active).catch((err: unknown) => {
-        log(`Could not check this chat's model: ${asErrorMessage(err)}`);
-      });
-      bridgeConversationIds.add(active);
-      return active;
-    }
-    const model = await resolveModel();
-    if (!model) throw new Error('no models are available yet. Try again in a moment.');
-    const conversation = await engine.createConversation(model);
-    bridgeConversationIds.add(conversation.id);
-    if (settings) {
-      settings.activeConversationId = conversation.id;
+  const ensureConversation = (owns: () => boolean): Promise<string | null> => setUpTurnConversation({
+    active: () => settings?.activeConversationId,
+    exists: (conversationId) => engine.hasConversation(conversationId),
+    prepareExisting: (conversationId) => moveOffUnlistedModel(conversationId).catch((err: unknown) => {
+      log(`Could not check this chat's model: ${asErrorMessage(err)}`);
+    }),
+    resolveModel,
+    create: (model) => engine.createConversation(model),
+    saveActive: async (conversationId) => {
+      if (!settings) return;
+      settings.activeConversationId = conversationId;
       await persistSettings();
-    }
-    return conversation.id;
-  };
+    },
+    owns,
+    remember: (conversationId) => { bridgeConversationIds.add(conversationId); },
+  });
 
   const runUserText = async (chatId: number, text: string): Promise<void> => {
     draftCounter += 1;
@@ -493,15 +490,16 @@ export function createTelegramBridge({ engine, appendLog, onStatusChanged }: Tel
       void sendToOwner('Still working on the previous message — send /stop to cancel it first.');
       return;
     }
-    let conversationId: string;
+    let conversationId: string | null;
     try {
-      conversationId = await ensureConversation();
+      // A turn cancelled while this waits (/new, /stop) saves nothing.
+      conversationId = await ensureConversation(() => turnSlot.owns(turn));
     } catch (err) {
       if (turnSlot.owns(turn)) void sendToOwner(`Couldn't start a conversation: ${asErrorMessage(err)}`);
       clearTurn(turn);
       return;
     }
-    if (!turnSlot.owns(turn)) {
+    if (!conversationId || !turnSlot.owns(turn)) {
       clearTurn(turn);
       return;
     }

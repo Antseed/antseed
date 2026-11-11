@@ -20,6 +20,7 @@ import { ACTIVE_CONFIG_PATH } from '../runtime/active-config.js';
 import { asRecord, asString } from '../utils.js';
 import { gatewayCreditsInfo, type DepositRulesUsdc } from './gateway-credits.js';
 import { LastCredits } from './last-credits.js';
+import { BackgroundRead } from './background-read.js';
 import { resetSharedChain, withSharedProvider } from './shared-chain.js';
 import { clearChainReads, invalidateChainReads } from './read-cache.js';
 
@@ -58,7 +59,6 @@ export type CreditsInfo = {
 const DEFAULT_MIN_FIRST_DEPOSIT = 1_000_000n;
 const DEFAULT_DEPOSIT_FEE = 50_000n;
 type DepositRules = { minFirstDeposit: bigint; fee: bigint };
-let cachedDepositRules: DepositRules | null = null;
 
 // Use shared formatUsdc from @antseed/node
 const formatUsdc6 = formatUsdc;
@@ -130,8 +130,7 @@ export async function loadCachedCryptoConfig(): Promise<CryptoConfig | null> {
   return cachedCryptoConfig;
 }
 
-async function readDepositRules(cc: CryptoConfig, depositsClient: DepositsClient): Promise<DepositRules | null> {
-  if (cachedDepositRules) return cachedDepositRules;
+async function readDepositRules(cc: CryptoConfig, depositsClient: DepositsClient): Promise<{ rules: DepositRules; final: boolean } | null> {
   try {
     const relay = cc.depositRelayAddress
       ? await withSharedProvider(new DepositRelayClient({
@@ -145,14 +144,19 @@ async function readDepositRules(cc: CryptoConfig, depositsClient: DepositsClient
       depositsClient.getMinBuyerDeposit(),
       relay ? relay.fee() : Promise.resolve(DEFAULT_DEPOSIT_FEE),
     ]);
-    const rules = { minFirstDeposit, fee };
     // Without a relay the fee is only the default; re-read once it's configured.
-    if (relay) cachedDepositRules = rules;
-    return rules;
+    return { rules: { minFirstDeposit, fee }, final: relay !== null };
   } catch {
     return null; // keep the defaults; retried on the next poll
   }
 }
+
+// Read in the background: a slow or unreachable RPC never holds up the
+// balance, which is served with the defaults until the rules land.
+const depositRules = new BackgroundRead(async () => {
+  const cc = await loadCachedCryptoConfig();
+  return cc ? readDepositRules(cc, await getDepositsClient(cc)) : null;
+}, (read) => read.final);
 
 /**
  * The deposit contract's rules for a first deposit into this computer's
@@ -160,12 +164,10 @@ async function readDepositRules(cc: CryptoConfig, depositsClient: DepositsClient
  * which sweeps into this computer's own wallet, so they are read from that
  * contract and cached; the mainnet defaults stand in until then.
  */
-export async function readLocalDepositRules(): Promise<DepositRulesUsdc> {
+export function localDepositRules(): DepositRulesUsdc {
   const fallback = { minFirstDepositUsdc: formatUsdc6(DEFAULT_MIN_FIRST_DEPOSIT), depositFeeUsdc: formatUsdc6(DEFAULT_DEPOSIT_FEE) };
   if (getGatewaySettings().mode !== 'local') return fallback;
-  const cc = await loadCachedCryptoConfig();
-  if (!cc) return fallback;
-  const rules = cachedDepositRules ?? await readDepositRules(cc, await getDepositsClient(cc)).catch(() => null);
+  const rules = depositRules.current()?.rules;
   return rules ? { minFirstDepositUsdc: formatUsdc6(rules.minFirstDeposit), depositFeeUsdc: formatUsdc6(rules.fee) } : fallback;
 }
 
@@ -176,10 +178,8 @@ export async function readLocalDepositRules(): Promise<DepositRulesUsdc> {
  * gateway to re-read the chain. The last answer is kept for cheap reads.
  */
 export async function refreshCreditsInfo(options: { fresh?: boolean } = {}): Promise<CreditsInfo> {
-  const [read, rules] = await Promise.all([
-    getGatewayBalanceInfo(options).catch(() => null),
-    readLocalDepositRules(),
-  ]);
+  const read = await getGatewayBalanceInfo(options).catch(() => null);
+  const rules = localDepositRules();
   // A failed read keeps the last known balance rather than showing zero, but
   // only that same gateway and key's: no gateway answering has no scope.
   return lastCredits.settle(gatewayCreditsInfo(read?.info ?? null, rules), read?.scope ?? null);
@@ -213,7 +213,7 @@ export function invalidateChainClients(): void {
   cachedCryptoConfig = null;
   cachedDepositsClient = null;
   cachedChannelsClient = null;
-  cachedDepositRules = null;
+  depositRules.clear();
   lastCredits.clear();
 }
 

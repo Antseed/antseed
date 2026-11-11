@@ -7,18 +7,8 @@
  */
 import { totalRetailUsage, type RetailPriceMap } from '@antseed/node/retail-prices'
 import type { KeySavings } from './server.js'
-import type { GatewayStore } from './store.js'
+import type { GatewayStore, ModelUsage } from './store.js'
 import { usdcToDecimalString } from './money.js'
-
-/** One model's usage under a key: spend in USDC base units, tokens as the buyer metered them. */
-export interface ModelUsage {
-  model: string
-  amountUsdc: number
-  inputTokens: number
-  cachedInputTokens: number
-  outputTokens: number
-  requests: number
-}
 
 export function keySavings(rows: readonly ModelUsage[], prices: RetailPriceMap): KeySavings | null {
   const totals = totalRetailUsage(rows.map((row) => ({ ...row, serviceName: row.model, requestCount: row.requests })), prices)
@@ -42,12 +32,16 @@ export function savingsJson(savings: KeySavings | null) {
  * longer read. Unknown ids are skipped.
  */
 export function keysUsage(store: GatewayStore, ids: readonly string[], prices: RetailPriceMap | null) {
-  const keys = [...new Set(ids.map((id) => id.trim()))].filter((id) => store.getKey(id))
-  const spent = keys.reduce((sum, id) => sum + store.spendByPeriod({ keyId: id }).total, 0)
+  const uniqueIds = [...new Set(ids.map((id) => id.trim()))]
+  const existing = store.existingKeyIds(uniqueIds)
+  const keys = uniqueIds.filter((id) => existing.has(id))
+  // Lifetime requests and spend for every key in one batched read.
+  const summaries = store.keyUsageSummaries(keys, 0)
+  const spent = keys.reduce((sum, id) => sum + (summaries.get(id)?.spentUsdc ?? 0), 0)
   return {
-    requests: keys.reduce((sum, id) => sum + store.usageStats(id).requests, 0),
+    requests: keys.reduce((sum, id) => sum + (summaries.get(id)?.requests ?? 0), 0),
     spent_usd: usdcToDecimalString(spent),
-    savings: prices ? savingsJson(keySavings(keys.flatMap((id) => store.usageByModel(id)), prices)) : null,
+    savings: prices ? savingsJson(keySavings(store.usageByModelForKeys(keys), prices)) : null,
   }
 }
 

@@ -50,6 +50,8 @@ function setup(conversations: Conv[] = [conv('conv-a', 'model-a'), conv('conv-b'
     onChatAiStreamDelta: on('delta'),
     onChatAiStreamDone: on('done'),
     onChatAiStreamError: on('error'),
+    onChatAiDone: on('aiDone'),
+    onChatAiUserPersisted: on('userPersisted'),
     ...overrides,
   };
   const api = initChatModule({ bridge: bridge as never, uiState, appendSystemLog: () => undefined });
@@ -86,6 +88,86 @@ describe('chat controller', () => {
     expect((uiState.chatConversations as Conv[]).map((c) => c.id)).toContain('conv-b');
   });
 
+  it('a chat whose delete fails keeps its image prompt and Try again', async () => {
+    const chatGenerateImage = vi.fn().mockResolvedValue({ ok: false, stopReason: { kind: 'payment_required', message: 'Add funds' } });
+    const { api, uiState } = setup(undefined, { chatGenerateImage, chatAiDeleteConversation: async () => ({ ok: false, error: 'locked' }) });
+    uiState.chatModels = [...uiState.chatModels, { ...model('image-model'), type: 'image' }] as never;
+    await api.refreshChatConversations();
+    await api.openConversation('conv-b');
+    uiState.chatImageModelId = 'image-model';
+    api.generateImage('a cat');
+    await waitFor(() => uiState.chatFundsNotice !== null);
+    expect(await api.deleteConversation('conv-b')).toBe('locked');
+    await api.openConversation('conv-b');
+    expect(uiState.chatFundsNotice).not.toBeNull();
+    expect(JSON.stringify(uiState.chatMessages)).toContain('a cat');
+    api.retryAfterPayment();
+    await waitFor(() => chatGenerateImage.mock.calls.length === 2);
+    expect(chatGenerateImage.mock.calls[1]![0]).toMatchObject({ conversationId: 'conv-b', prompt: 'a cat' });
+  });
+
+  it('an image prompt sent while a chat opens edits that chat\'s image, never the previous chat\'s', async () => {
+    const generated = (attachmentId: string) => ({ role: 'assistant', content: [{ type: 'file', generated: true, attachmentId, mimeType: 'image/png', name: `${attachmentId}.png` }], createdAt: 2 });
+    const convA = { ...conv('conv-a', 'model-a'), messages: [generated('img-a')] };
+    const convB = { ...conv('conv-b', 'model-b'), messages: [generated('img-b')] };
+    const bOpened = deferred<void>();
+    const chatGenerateImage = vi.fn().mockResolvedValue({ ok: false, stopReason: { kind: 'payment_required', message: 'Add funds' } });
+    const { api, uiState } = setup([convA, convB], {
+      chatGenerateImage,
+      chatAiGetConversation: async (id: string) => {
+        if (id === 'conv-b') await bOpened.promise;
+        const found = id === 'conv-a' ? convA : id === 'conv-b' ? convB : null;
+        return found ? { ok: true, data: { ...found, messages: [...found.messages] } } : { ok: false, error: 'not found' };
+      },
+    });
+    uiState.chatModels = [...uiState.chatModels, { ...model('image-model'), type: 'image', supportsImages: true }] as never;
+    await api.refreshChatConversations();
+    await api.openConversation('conv-a');
+    uiState.chatImageModelId = 'image-model';
+    // Chat B is opening for the first time; A's image is still on screen.
+    const opening = api.openConversation('conv-b', { keepImageModel: true });
+    expect(uiState.chatActiveConversation).toBe('conv-b');
+    api.generateImage('make it blue');
+    await tick(10);
+    bOpened.resolve();
+    await opening;
+    await waitFor(() => chatGenerateImage.mock.calls.length === 1);
+    const request = chatGenerateImage.mock.calls[0]![0] as { conversationId: string; sourceImageAttachmentId?: string };
+    expect(request.conversationId).toBe('conv-b');
+    expect(request.sourceImageAttachmentId).toBe('img-b');
+  });
+
+  it('a second image prompt while the first one\'s history loads is refused, and the first keeps its chat', async () => {
+    const convB = { ...conv('conv-b', 'model-b'), messages: [] as unknown[] };
+    const historyRead = deferred<void>();
+    let reads = 0;
+    const chatGenerateImage = vi.fn().mockResolvedValue({ ok: false, stopReason: { kind: 'payment_required', message: 'Add funds' } });
+    const { api, uiState } = setup([conv('conv-a', 'model-a'), convB], {
+      chatGenerateImage,
+      chatAiGetConversation: async (id: string) => {
+        // The first opening reads freely; the image's own history read waits.
+        if (id === 'conv-b' && ++reads > 1) await historyRead.promise;
+        return id === 'conv-b' ? { ok: true, data: { ...convB, messages: [] } } : { ok: false, error: 'not found' };
+      },
+    });
+    uiState.chatModels = [...uiState.chatModels, { ...model('image-model'), type: 'image', supportsImages: true }] as never;
+    await api.refreshChatConversations();
+    // Chat B is open, but still opening as far as the image history goes.
+    const opening = api.openConversation('conv-b', { keepImageModel: true });
+    uiState.chatImageModelId = 'image-model';
+    api.generateImage('first');
+    await tick(5);
+    api.generateImage('second');
+    await tick(5);
+    expect(uiState.chatError).toBe('This conversation already has a request in progress.');
+    historyRead.resolve();
+    await opening;
+    await waitFor(() => chatGenerateImage.mock.calls.length === 1);
+    await tick(20);
+    expect(chatGenerateImage).toHaveBeenCalledTimes(1);
+    expect(chatGenerateImage.mock.calls[0]![0]).toMatchObject({ conversationId: 'conv-b', prompt: 'first' });
+  });
+
   it('clears the sending state of an aborted chat before the abort settles', async () => {
     const abort = deferred<void>();
     const { api, uiState } = setup(undefined, { chatAiAbort: () => abort.promise });
@@ -99,6 +181,166 @@ describe('chat controller', () => {
     expect(uiState.chatAbortVisible).toBe(false);
     abort.resolve();
     await aborting;
+  });
+
+  it('a stopped send\'s late abort event leaves a follow-up in the same chat sending', async () => {
+    const sendIds: Array<number | undefined> = [];
+    const answers: Array<(value: { ok: boolean }) => void> = [];
+    const { api, uiState, emit } = setup(undefined, {
+      chatAiSendStream: (_convId: string, _content: string, _modelId: string, _attachments: unknown, _mode: unknown, options?: { sendId?: number }) => {
+        sendIds.push(options?.sendId);
+        return new Promise<{ ok: boolean }>((resolve) => { answers.push(resolve); });
+      },
+      chatAiAbort: async () => undefined,
+    });
+    await api.refreshChatConversations();
+    await api.openConversation('conv-a');
+    api.sendMessage('first');
+    await waitFor(() => sendIds.length === 1);
+    await api.abortChat();
+    api.sendMessage('second');
+    await waitFor(() => sendIds.length === 2);
+    expect(uiState.chatSending).toBe(true);
+    // The first send, stopped while still in preflight, reports its abort only now.
+    emit('error', { conversationId: 'conv-a', error: 'Request aborted', stopReason: { kind: 'aborted', message: 'Request aborted' }, sendId: sendIds[0] });
+    answers[0]!({ ok: false });
+    await tick(20);
+    expect(uiState.chatSending).toBe(true);
+    expect(uiState.chatSendingConversationIds).toContain('conv-a');
+    expect(uiState.chatAbortVisible).toBe(true);
+    // The follow-up's own end still clears it.
+    emit('error', { conversationId: 'conv-a', error: 'Request aborted', stopReason: { kind: 'aborted', message: 'Request aborted' }, sendId: sendIds[1] });
+    answers[1]!({ ok: false });
+    await waitFor(() => !uiState.chatSending);
+  });
+
+  it('a reply stopped mid-stream stays its own message when a follow-up starts before its abort arrives', async () => {
+    const sendIds: Array<number | undefined> = [];
+    const answers: Array<(value: { ok: boolean }) => void> = [];
+    const { api, uiState, emit } = setup(undefined, {
+      chatAiSendStream: (_convId: string, _content: string, _modelId: string, _attachments: unknown, _mode: unknown, options?: { sendId?: number }) => {
+        sendIds.push(options?.sendId);
+        return new Promise<{ ok: boolean }>((resolve) => { answers.push(resolve); });
+      },
+      chatAiAbort: async () => undefined,
+    });
+    await api.refreshChatConversations();
+    await api.openConversation('conv-a');
+    api.sendMessage('first');
+    await waitFor(() => sendIds.length === 1);
+    emit('start', { conversationId: 'conv-a', turn: 0 });
+    emit('blockStart', { conversationId: 'conv-a', index: 0, blockType: 'text' });
+    emit('delta', { conversationId: 'conv-a', index: 0, blockType: 'text', text: 'First partial' });
+    await api.abortChat();
+    api.sendMessage('second');
+    await waitFor(() => sendIds.length === 2);
+    // The stopped run's abort arrives only now, after the follow-up took the chat.
+    emit('error', { conversationId: 'conv-a', error: 'Request aborted', stopReason: { kind: 'aborted', message: 'Request aborted' }, sendId: sendIds[0] });
+    answers[0]!({ ok: false });
+    emit('start', { conversationId: 'conv-a', turn: 0 });
+    emit('blockStart', { conversationId: 'conv-a', index: 0, blockType: 'text' });
+    emit('delta', { conversationId: 'conv-a', index: 0, blockType: 'text', text: 'Second answer' });
+    emit('done', { conversationId: 'conv-a', sendId: sendIds[1] });
+    answers[1]!({ ok: true });
+    await waitFor(() => !uiState.chatSending);
+    const texts = (uiState.chatMessages as Array<{ role: string; content: unknown }>).map((message) => `${message.role}:${JSON.stringify(message.content)}`);
+    const first = texts.findIndex((text) => text.startsWith('assistant:') && text.includes('First partial'));
+    const second = texts.findIndex((text) => text.startsWith('assistant:') && text.includes('Second answer'));
+    expect(first).toBeGreaterThanOrEqual(0);
+    expect(second).toBeGreaterThan(first);
+    expect(texts[second]).not.toContain('First partial');
+    // The follow-up's prompt sits between the two replies.
+    expect(texts.slice(first + 1, second).some((text) => text.startsWith('user:') && text.includes('second'))).toBe(true);
+  });
+
+  it('a stopped run\'s late output never reaches the follow-up\'s reply', async () => {
+    const sendIds: Array<number | undefined> = [];
+    const answers: Array<(value: { ok: boolean }) => void> = [];
+    const { api, uiState, emit } = setup(undefined, {
+      chatAiSendStream: (_convId: string, _content: string, _modelId: string, _attachments: unknown, _mode: unknown, options?: { sendId?: number }) => {
+        sendIds.push(options?.sendId);
+        return new Promise<{ ok: boolean }>((resolve) => { answers.push(resolve); });
+      },
+      chatAiAbort: async () => undefined,
+    });
+    await api.refreshChatConversations();
+    await api.openConversation('conv-a');
+    api.sendMessage('first');
+    await waitFor(() => sendIds.length === 1);
+    const first = sendIds[0];
+    emit('start', { conversationId: 'conv-a', turn: 0, sendId: first });
+    emit('blockStart', { conversationId: 'conv-a', index: 0, blockType: 'text', sendId: first });
+    emit('delta', { conversationId: 'conv-a', index: 0, blockType: 'text', text: 'First partial', sendId: first });
+    await api.abortChat();
+    api.sendMessage('second');
+    await waitFor(() => sendIds.length === 2);
+    const second = sendIds[1];
+    emit('start', { conversationId: 'conv-a', turn: 0, sendId: second });
+    emit('blockStart', { conversationId: 'conv-a', index: 0, blockType: 'text', sendId: second });
+    // The stopped run is still winding down: its late output arrives mid-follow-up.
+    emit('delta', { conversationId: 'conv-a', index: 0, blockType: 'text', text: ' LATE', sendId: first });
+    emit('blockStart', { conversationId: 'conv-a', index: 1, blockType: 'text', sendId: first });
+    emit('delta', { conversationId: 'conv-a', index: 0, blockType: 'text', text: 'Second answer', sendId: second });
+    emit('error', { conversationId: 'conv-a', error: 'Request aborted', stopReason: { kind: 'aborted', message: 'Request aborted' }, sendId: first });
+    answers[0]!({ ok: false });
+    emit('done', { conversationId: 'conv-a', sendId: second });
+    answers[1]!({ ok: true });
+    await waitFor(() => !uiState.chatSending);
+    const replies = (uiState.chatMessages as Array<{ role: string; content: unknown }>)
+      .filter((message) => message.role === 'assistant')
+      .map((message) => JSON.stringify(message.content));
+    const followUp = replies.find((text) => text.includes('Second answer'));
+    expect(followUp).toBeDefined();
+    expect(followUp).not.toContain('LATE');
+    expect(replies.some((text) => text.includes('LATE'))).toBe(false);
+  });
+
+  it('a stopped run\'s final message neither replaces its kept reply nor ends a follow-up', async () => {
+    const sendIds: Array<number | undefined> = [];
+    const answers: Array<(value: { ok: boolean }) => void> = [];
+    const { api, uiState, emit } = setup(undefined, {
+      chatAiSendStream: (_convId: string, _content: string, _modelId: string, _attachments: unknown, _mode: unknown, options?: { sendId?: number }) => {
+        sendIds.push(options?.sendId);
+        return new Promise<{ ok: boolean }>((resolve) => { answers.push(resolve); });
+      },
+      chatAiAbort: async () => undefined,
+    });
+    await api.refreshChatConversations();
+    await api.openConversation('conv-a');
+    api.sendMessage('first');
+    await waitFor(() => sendIds.length === 1);
+    const first = sendIds[0];
+    emit('start', { conversationId: 'conv-a', turn: 0, sendId: first });
+    emit('blockStart', { conversationId: 'conv-a', index: 0, blockType: 'text', sendId: first });
+    emit('delta', { conversationId: 'conv-a', index: 0, blockType: 'text', text: 'First partial', sendId: first });
+    await api.abortChat();
+    const finalOfFirst = { role: 'assistant', content: [{ type: 'text', text: 'First FULL reply' }], createdAt: 5, meta: { service: 'stale-model' } };
+    // Its completion was already on the way when Stop was pressed.
+    emit('aiDone', { conversationId: 'conv-a', message: finalOfFirst, sendId: first });
+    emit('userPersisted', { conversationId: 'conv-a', message: { role: 'user', content: 'first', createdAt: 4 }, sendId: first });
+
+    api.sendMessage('second');
+    await waitFor(() => sendIds.length === 2);
+    const second = sendIds[1];
+    // The same late final message arrives while the follow-up waits for its stream.
+    emit('aiDone', { conversationId: 'conv-a', message: finalOfFirst, sendId: first });
+    expect(uiState.chatSending).toBe(true);
+    emit('start', { conversationId: 'conv-a', turn: 0, sendId: second });
+    emit('blockStart', { conversationId: 'conv-a', index: 0, blockType: 'text', sendId: second });
+    emit('delta', { conversationId: 'conv-a', index: 0, blockType: 'text', text: 'Second answer', sendId: second });
+    emit('aiDone', { conversationId: 'conv-a', message: finalOfFirst, sendId: first });
+    expect(uiState.chatSending).toBe(true);
+    emit('done', { conversationId: 'conv-a', sendId: second });
+    answers[0]!({ ok: false });
+    answers[1]!({ ok: true });
+    await waitFor(() => !uiState.chatSending);
+    const replies = (uiState.chatMessages as Array<{ role: string; content: unknown; meta?: { service?: string } }>)
+      .filter((message) => message.role === 'assistant');
+    const texts = replies.map((message) => JSON.stringify(message.content));
+    expect(texts.some((text) => text.includes('First partial'))).toBe(true);
+    expect(texts.some((text) => text.includes('First FULL reply'))).toBe(false);
+    const followUp = replies.find((message) => JSON.stringify(message.content).includes('Second answer'));
+    expect(followUp?.meta?.service).not.toBe('stale-model');
   });
 
   it('sends a queued message to the chat it was written in, on that chat\'s model', async () => {
@@ -465,6 +707,59 @@ describe('chat controller', () => {
     await waitFor(() => chatGenerateImage.mock.calls.length === 1);
     await tick(20);
     expect(uiState.chatActiveConversation).toBe('conv-a');
+  });
+
+  it('a first message keeps its new chat busy while the chat opens, so a second submit cannot displace it', async () => {
+    const opening = deferred<void>();
+    const conversations = [conv('conv-a', 'model-a')];
+    const base = (id: string) => {
+      const found = conversations.find((candidate) => candidate.id === id);
+      return found ? { ok: true, data: { ...found, messages: [...found.messages] } } : { ok: false, error: 'not found' };
+    };
+    const { api, uiState, sends } = setup(conversations, {
+      chatAiGetConversation: async (id: string) => {
+        if (id !== 'conv-a') await opening.promise;
+        return base(id);
+      },
+    });
+    await api.refreshChatConversations();
+    api.sendMessage('first');
+    await waitFor(() => uiState.chatActiveConversation !== null && uiState.chatActiveConversation !== 'conv-a');
+    // The chat is still loading: the composer stays busy and a second submit is refused.
+    expect(uiState.chatSending).toBe(true);
+    api.sendMessage('second');
+    opening.resolve();
+    await waitFor(() => sends.length >= 1);
+    await tick(20);
+    expect(sends.map((send) => send.content)).toEqual(['first']);
+  });
+
+  it('a first image keeps its new chat busy while the chat opens, so a second submit cannot displace it', async () => {
+    const opening = deferred<void>();
+    const conversations = [conv('conv-a', 'model-a')];
+    const base = (id: string) => {
+      const found = conversations.find((candidate) => candidate.id === id);
+      return found ? { ok: true, data: { ...found, messages: [...found.messages] } } : { ok: false, error: 'not found' };
+    };
+    const chatGenerateImage = vi.fn().mockResolvedValue({ ok: true, user: { role: 'user', content: 'a cat' }, assistant: { role: 'assistant', content: 'done' } });
+    const { api, uiState } = setup(conversations, {
+      chatGenerateImage,
+      chatAiGetConversation: async (id: string) => {
+        if (id !== 'conv-a') await opening.promise;
+        return base(id);
+      },
+    });
+    uiState.chatModels = [...uiState.chatModels, { ...model('image-model'), type: 'image' }] as never;
+    uiState.chatImageModelId = 'image-model';
+    await api.refreshChatConversations();
+    api.generateImage('a cat');
+    await waitFor(() => uiState.chatActiveConversation !== null && uiState.chatActiveConversation !== 'conv-a');
+    expect(uiState.chatSending).toBe(true);
+    api.generateImage('a dog');
+    opening.resolve();
+    await waitFor(() => chatGenerateImage.mock.calls.length >= 1);
+    await tick(20);
+    expect(chatGenerateImage.mock.calls.map(([request]) => request.prompt)).toEqual(['a cat']);
   });
 
   it('a background chat finishing keeps Sending and Stop on a new chat\'s first message still being prepared', async () => {

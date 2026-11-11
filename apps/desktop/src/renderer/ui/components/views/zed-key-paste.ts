@@ -24,6 +24,39 @@ export async function loadZedKey(getEndpoint: GetEndpoint | undefined): Promise<
   }
 }
 
+type ZedKey = { apiKey: string; fingerprint: string };
+type ZedKeyRead = ZedKey | { error: string };
+
+/**
+ * Reads of Zed's key for its settings dialog. Each read first clears what was
+ * shown, so a failed one never leaves a key the console has since revoked or
+ * replaced, and an answer a newer read or a close has overtaken is dropped.
+ */
+export function createZedKeyReads(load: () => Promise<ZedKeyRead>, show: (read: ZedKeyRead | null) => void) {
+  let current = 0;
+  return {
+    /** Reads and shows Zed's key; resolves to it, or null when a newer read or a close overtook this one. */
+    async refresh(): Promise<ZedKeyRead | null> {
+      const id = ++current;
+      show(null);
+      const read = await load();
+      if (id !== current) return null;
+      show(read);
+      return read;
+    },
+    /** Drops any read in flight. */
+    close(): void {
+      current += 1;
+    },
+  };
+}
+
+/** The key to copy, read again at that moment; null when that read failed or was overtaken. */
+export async function readZedKeyToCopy(reads: { refresh: () => Promise<ZedKeyRead | null> }): Promise<string | null> {
+  const read = await reads.refresh();
+  return read && 'apiKey' in read ? read.apiKey : null;
+}
+
 function readPasted(): string | null {
   try {
     return window.localStorage.getItem(STORAGE_KEY);
@@ -50,26 +83,39 @@ export function useZedKeyPaste(connected: boolean, reload: unknown): {
   markPasted: () => void;
   error: string | null;
   retry: () => void;
+  /** Reads the key again and returns it for copying: it may have been replaced in the console meanwhile. */
+  keyToCopy: () => Promise<string | null>;
 } {
-  const [key, setKey] = useState<{ apiKey: string; fingerprint: string } | null>(null);
+  const [key, setKey] = useState<ZedKey | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
   const [pastedFingerprint, setPastedFingerprint] = useState(readPasted);
+  const [reads] = useState(() => createZedKeyReads(
+    () => loadZedKey(window.antseedDesktop?.gatewayGetEndpoint),
+    (read) => {
+      setKey(read && 'apiKey' in read ? read : null);
+      setError(read && 'error' in read ? read.error : null);
+    },
+  ));
 
   useEffect(() => {
-    // Forget the last key first: a reload that fails must not keep offering a
-    // key the gateway may have revoked.
-    setKey(null);
-    setError(null);
-    if (!connected) return;
-    let cancelled = false;
-    void loadZedKey(window.antseedDesktop?.gatewayGetEndpoint).then((result) => {
-      if (cancelled) return;
-      if ('error' in result) setError(result.error);
-      else setKey(result);
-    });
-    return () => { cancelled = true; };
-  }, [connected, reload, attempt]);
+    if (!connected) {
+      reads.close();
+      setKey(null);
+      setError(null);
+      return;
+    }
+    void reads.refresh();
+    // Back from the console (where the key may have been replaced): read again.
+    const onFocus = () => { void reads.refresh(); };
+    window.addEventListener('focus', onFocus);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      reads.close();
+    };
+  }, [connected, reload, attempt, reads]);
+
+  const keyToCopy = useCallback(() => readZedKeyToCopy(reads), [reads]);
 
   const retry = useCallback(() => setAttempt((value) => value + 1), []);
 
@@ -81,5 +127,5 @@ export function useZedKeyPaste(connected: boolean, reload: unknown): {
   }, [fingerprint]);
 
   // Until the key is read there is nothing to paste, so the row stays calm.
-  return { apiKey: key?.apiKey ?? null, pasted: !key || key.fingerprint === pastedFingerprint, markPasted, error, retry };
+  return { apiKey: key?.apiKey ?? null, pasted: !key || key.fingerprint === pastedFingerprint, markPasted, error, retry, keyToCopy };
 }

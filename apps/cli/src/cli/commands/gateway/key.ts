@@ -10,7 +10,7 @@ import { resolvePolicy } from '../../../gateway/policy-resolver.js'
 import { createKey, revokeKey, rotateKey, updateKey, type UpdateKeyInput } from '../../../gateway/services/keys.js'
 import type { ApiKeyRecord, GatewayStore } from '../../../gateway/store.js'
 import { keysUsage } from '../../../gateway/key-savings.js'
-import { fetchComparableRetailPrices } from '../buyer/activity.js'
+import { fetchComparableRetailPrices } from '../../../retail-prices.js'
 import { parsePositiveInteger } from '../parse-positive-integer.js'
 import { addConfirmOptions, addPolicyOptions, confirmFlags, describePolicy, policyFromOptions } from './policy-options.js'
 import {

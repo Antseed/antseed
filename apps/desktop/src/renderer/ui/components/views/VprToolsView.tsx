@@ -15,7 +15,8 @@ import { BrandIcon, isThemeAwareAppBrand, Modal, resolveBrandKey, useCopyFeedbac
 import type { ConnectedAppProfile, GatewayEndpointInfo, InstalledAppEntry } from '../../../types/bridge';
 import { ZED_APP, useZedKeyPaste } from './zed-key-paste';
 import { offersConnectAnyway } from './app-card-actions';
-import { appsResource, installedAppsResource } from '../../../modules/app/vpr-resources';
+import { appsResource, gatewayResource, installedAppsResource } from '../../../modules/app/vpr-resources';
+import { copyFreshKey, createEndpointReads, readKeyToCopy } from './endpoint-reads';
 import { useCachedResource } from '../../../modules/app/cached-resource';
 import { TelegramBotCard } from './TelegramBotCard';
 import { VprCard, VprPage, VprSearch, VprSection } from '../vpr/VprKit';
@@ -88,13 +89,23 @@ function maskKey(key: string): string {
   return key.length > 16 ? `${key.slice(0, 12)}…${key.slice(-4)}` : key;
 }
 
-function CopyRow({ label, value, display }: { label: string; value: string; display?: string }) {
+function CopyRow({ label, value, display, readValue }: {
+  label: string;
+  value: string;
+  display?: string;
+  /** Reads the value again when copying (a key that may have been replaced); nothing is copied when it fails. */
+  readValue?: () => Promise<string | null>;
+}) {
   const { copied, copy } = useCopyFeedback(value);
+  const onCopy = async () => {
+    if (!readValue) return copy();
+    await copyFreshKey(readValue, copy);
+  };
   return (
     <button
       type="button"
       className={styles.endpointValue}
-      onClick={() => void copy()}
+      onClick={() => void onCopy()}
       title={`Copy ${label}`}
     >
       <code>{display ?? value}</code>
@@ -108,13 +119,34 @@ function CopyRow({ label, value, display }: { label: string; value: string; disp
  * Base URL + key for any OpenAI- or Anthropic-compatible tool the list does
  * not cover.
  */
+/**
+ * A gateway API key to copy. The key is always read again when copying (it
+ * may have been revoked or replaced in the console), so a key row can't be
+ * built without that read.
+ */
+function KeyCopyRow({ apiKey, readKey }: { apiKey: string; readKey: () => Promise<string | null> }) {
+  return <CopyRow label="Copy key" value={apiKey} display={maskKey(apiKey)} readValue={readKey} />;
+}
+
 function GatewayEndpointCard({ onOpenConsole }: { onOpenConsole: (path: string) => void }) {
   const [open, setOpen] = useState(false);
   const [endpoint, setEndpoint] = useState<GatewayEndpointInfo | null>(null);
+  const status = useCachedResource(gatewayResource).data?.status;
+  // Which gateway the card would read: a switch reads the key again.
+  const gatewayKey = status ? `${status.mode} ${status.origin ?? ''}` : '';
+  const reads = useMemo(() => createEndpointReads(() => window.antseedDesktop?.gatewayGetEndpoint?.(), setEndpoint), []);
   useEffect(() => {
-    if (!open || endpoint?.ok) return;
-    void window.antseedDesktop?.gatewayGetEndpoint?.()?.then(setEndpoint);
-  }, [endpoint?.ok, open]);
+    if (!open) {
+      reads.close();
+      return undefined;
+    }
+    // Every opening, focus return and gateway switch reads the key again: it
+    // may have been rotated in the console meanwhile.
+    void reads.refresh();
+    const onFocus = () => { void reads.refresh(); };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [open, gatewayKey, reads]);
   return (
     <div className={styles.endpointCard}>
       <button type="button" className={styles.endpointHead} aria-expanded={open} onClick={() => setOpen(!open)}>
@@ -136,7 +168,7 @@ function GatewayEndpointCard({ onOpenConsole }: { onOpenConsole: (path: string) 
           {endpoint?.ok && endpoint.baseUrl && endpoint.apiKey ? (
             <div className={styles.endpointRows}>
               <CopyRow label="Copy URL" value={endpoint.baseUrl} />
-              <CopyRow label="Copy key" value={endpoint.apiKey} display={maskKey(endpoint.apiKey)} />
+              <KeyCopyRow apiKey={endpoint.apiKey} readKey={() => readKeyToCopy(reads)} />
             </div>
           ) : (
             <p className={styles.endpointHint}>{endpoint?.error ?? 'Loading…'}</p>
@@ -661,7 +693,7 @@ export function VprToolsView() {
                       the Antseed provider in Zed’s AI settings.
                     </p>
                     <div className={styles.endpointRows}>
-                      <CopyRow label="Copy key" value={zedKey.apiKey} display={maskKey(zedKey.apiKey)} />
+                      <KeyCopyRow apiKey={zedKey.apiKey} readKey={zedKey.keyToCopy} />
                     </div>
                     {zedKey.pasted ? null : (
                       <button type="button" className={styles.settingTextLink} onClick={zedKey.markPasted}>

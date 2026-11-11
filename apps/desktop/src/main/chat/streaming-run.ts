@@ -112,6 +112,7 @@ import type { ActiveRun, ChatStreamErrorPayload } from './engine-types.js';
 import type { GatewayEndpoint } from '../gateway/service.js';
 import { passPrivacyGate, requiresPrivate, type PrivacyGate } from './privacy-gate.js';
 import type { OutgoingPrivacy } from '../../shared/chat-gateway-types.js';
+import { runEventEmitter, sendTagOf } from './send-options.js';
 
 /** What the engine knows about a gateway model, for one send. */
 export type ResolvedChatModel = {
@@ -172,6 +173,7 @@ type StreamingRunArgs = [
   permissionModeInput?: unknown,
   options?: OutgoingPrivacy,
 ];
+
 export function createStreamingRunner(ctx: StreamingRunContext) {
   const {
     store,
@@ -182,7 +184,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     getEndpoint,
     resolveModel,
     requestToolApproval,
-    emitChatStreamError,
+    emitChatStreamError: emitStreamError,
     clearActiveRun,
     abortAndClearActiveRun,
     recordFirstChatStarted,
@@ -210,6 +212,12 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     permissionModeInput?: unknown,
     options: OutgoingPrivacy = {},
   ): Promise<StreamingRunResult> => {
+    // Terminal events name the send they end, so a late one can't end a newer send.
+    const sendTag = sendTagOf(options);
+    const emitChatStreamError = (payload: ChatStreamErrorPayload): void => emitStreamError({ ...payload, ...sendTag });
+    // Every event of this run's reply names its send too, so a stopped run's
+    // late block, delta or tool event can't land in a newer send's reply.
+    const emitRunEvent = runEventEmitter(sendToRenderer, options);
     const trimmedMessage = userMessage.trim();
     const requestedPermissionMode: ChatPermissionMode | null = (
       permissionModeInput === 'manual' || permissionModeInput === 'full'
@@ -234,7 +242,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     // in Private doesn't go out once Private is off.
     const mustBePrivate = requiresPrivate(options, (await store.get(conversationId))?.messages ?? []);
     const refused = await passPrivacyGate(ctx.privacy, mustBePrivate);
-    if (signal.aborted) return stoppedBeforeSend(conversationId);
+    if (signal.aborted) return stoppedBeforeSend(conversationId, options);
     if (refused) return { ok: false, error: refused };
 
     // Starts the local gateway on demand; a remote gateway without a URL or
@@ -249,13 +257,13 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     try {
       endpoint = { ...await getEndpoint(), ...(protect ? { requireTee: true } : {}) };
     } catch (error) {
-      if (signal.aborted) return stoppedBeforeSend(conversationId);
+      if (signal.aborted) return stoppedBeforeSend(conversationId, options);
       const message = asErrorMessage(error);
       appendSystemLog(`Chat could not reach the gateway: ${message}`);
       return { ok: false, error: message };
     }
 
-    if (signal.aborted) return stoppedBeforeSend(conversationId);
+    if (signal.aborted) return stoppedBeforeSend(conversationId, options);
 
     let revokeShellGateway = (): void => undefined;
     const sessionManager = await store.openSessionManager(conversationId);
@@ -537,8 +545,8 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
 
     const unsubscribe = session.subscribe((event: AgentSessionEvent) => {
       if (event.type === 'turn_start') {
-        sendToRenderer('chat:ai-stream-start', { conversationId, turn: turnIndex });
-        sendToRenderer('chat:ai-reply-meta', { conversationId, meta: { service: replyModel, ...routeMeta() } });
+        emitRunEvent('chat:ai-stream-start', { conversationId, turn: turnIndex });
+        emitRunEvent('chat:ai-reply-meta', { conversationId, meta: { service: replyModel, ...routeMeta() } });
         turnIndex += 1;
         return;
       }
@@ -550,7 +558,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
         }
         const update = event.assistantMessageEvent as AssistantMessageEvent;
         if (update.type === 'text_start') {
-          sendToRenderer('chat:ai-stream-block-start', {
+          emitRunEvent('chat:ai-stream-block-start', {
             conversationId,
             index: update.contentIndex,
             blockType: 'text',
@@ -562,7 +570,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
             hadPartialOutput = true;
             markFirstToken();
           }
-          sendToRenderer('chat:ai-stream-delta', {
+          emitRunEvent('chat:ai-stream-delta', {
             conversationId,
             index: update.contentIndex,
             blockType: 'text',
@@ -571,7 +579,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
           return;
         }
         if (update.type === 'text_end') {
-          sendToRenderer('chat:ai-stream-block-stop', {
+          emitRunEvent('chat:ai-stream-block-stop', {
             conversationId,
             index: update.contentIndex,
             blockType: 'text',
@@ -579,7 +587,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
           return;
         }
         if (update.type === 'thinking_start') {
-          sendToRenderer('chat:ai-stream-block-start', {
+          emitRunEvent('chat:ai-stream-block-start', {
             conversationId,
             index: update.contentIndex,
             blockType: 'thinking',
@@ -588,7 +596,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
         }
         if (update.type === 'thinking_delta') {
           if (update.delta.length > 0) markFirstToken();
-          sendToRenderer('chat:ai-stream-delta', {
+          emitRunEvent('chat:ai-stream-delta', {
             conversationId,
             index: update.contentIndex,
             blockType: 'thinking',
@@ -597,7 +605,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
           return;
         }
         if (update.type === 'thinking_end') {
-          sendToRenderer('chat:ai-stream-block-stop', {
+          emitRunEvent('chat:ai-stream-block-stop', {
             conversationId,
             index: update.contentIndex,
             blockType: 'thinking',
@@ -610,7 +618,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
           if (isToolArgumentsObject(tool.arguments)) {
             toolArgsById.set(tool.id, tool.arguments);
           }
-          sendToRenderer('chat:ai-stream-block-start', {
+          emitRunEvent('chat:ai-stream-block-start', {
             conversationId,
             index: update.contentIndex,
             blockType: 'tool_use',
@@ -624,7 +632,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
             ? update.toolCall.arguments
             : {};
           toolArgsById.set(update.toolCall.id, toolInput);
-          sendToRenderer('chat:ai-stream-block-stop', {
+          emitRunEvent('chat:ai-stream-block-stop', {
             conversationId,
             index: update.contentIndex,
             blockType: 'tool_use',
@@ -641,7 +649,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
         if (eventArgs) {
           toolArgsById.set(event.toolCallId, eventArgs);
         }
-        sendToRenderer('chat:ai-tool-executing', {
+        emitRunEvent('chat:ai-tool-executing', {
           conversationId,
           toolUseId: event.toolCallId,
           name: event.toolName,
@@ -652,7 +660,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
 
       if (event.type === 'tool_execution_update') {
         const eventArgs = isToolArgumentsObject(event.args) ? event.args : undefined;
-        sendToRenderer('chat:ai-tool-update', {
+        emitRunEvent('chat:ai-tool-update', {
           conversationId,
           toolUseId: event.toolCallId,
           name: event.toolName,
@@ -680,7 +688,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
           typeof event.result.details === 'object'
             ? (event.result.details as Record<string, unknown>)
             : undefined;
-        sendToRenderer('chat:ai-tool-result', {
+        emitRunEvent('chat:ai-tool-result', {
           conversationId,
           toolUseId: event.toolCallId,
           output: toToolOutputString(event.result),
@@ -694,7 +702,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
         const message = event.message as Message | (AssistantMessage & { meta?: AiMessageMeta });
         if (message.role === 'user' && !userPersisted) {
           userPersisted = true;
-          sendToRenderer('chat:ai-user-persisted', {
+          emitRunEvent('chat:ai-user-persisted', {
             conversationId,
             message: convertUserMessageForUi(message),
           });
@@ -777,7 +785,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
         // Ignore disposal races.
       }
       revokeShellGateway();
-      return stoppedBeforeSend(conversationId);
+      return stoppedBeforeSend(conversationId, options);
     }
 
     if (recordChatRequestStarted) {
@@ -816,7 +824,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
         const peerName = sellerName(peerId);
         servedPeer = { peerId, ...(peerName ? { peerName } : {}) };
         answeringPeerId = peerId;
-        sendToRenderer('chat:ai-reply-meta', { conversationId, meta: { service: replyModel, ...routeMeta() } });
+        emitRunEvent('chat:ai-reply-meta', { conversationId, meta: { service: replyModel, ...routeMeta() } });
       }, () => session.prompt(promptText || ' ', { images: effectiveAttachmentImages.length > 0 ? effectiveAttachmentImages : undefined }));
       await chatRun.result;
       // No tokens counted is the sign, but some sellers never report them, so the stream decides.
@@ -840,7 +848,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
         if (finalAssistantCreatedAt && !completedAssistantMessage.createdAt) {
           completedAssistantMessage.createdAt = finalAssistantCreatedAt;
         }
-        sendToRenderer('chat:ai-done', {
+        emitRunEvent('chat:ai-done', {
           conversationId,
           message: completedAssistantMessage,
         });
@@ -848,7 +856,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
       }
       if (!streamDone) {
         streamDone = true;
-        sendToRenderer('chat:ai-stream-done', { conversationId });
+        emitRunEvent('chat:ai-stream-done', { conversationId });
       }
       // After done, which clears notes.
       if (replyCutOff) {
@@ -870,7 +878,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
           });
           if (title) {
             session.setSessionName(title);
-            sendToRenderer('chat:conversation-title-updated', { conversationId, title });
+            emitRunEvent('chat:conversation-title-updated', { conversationId, title });
           }
         } catch (error) {
           appendSystemLog(`Conversation title generation failed: ${asErrorMessage(error)}`);
@@ -901,9 +909,9 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
   };
 
   /** A run stopped while still in preflight: nothing was sent. */
-  const stoppedBeforeSend = (conversationId: string): StreamingRunResult => {
+  const stoppedBeforeSend = (conversationId: string, options: OutgoingPrivacy): StreamingRunResult => {
     const reason = classifyChatStreamFailure({ error: null, message: 'Request aborted', stopReason: 'aborted' });
-    emitChatStreamError({ conversationId, error: 'Request aborted', stopReason: reason });
+    emitStreamError({ conversationId, error: 'Request aborted', stopReason: reason, ...sendTagOf(options) });
     return { ok: false, error: 'Aborted', stopReason: reason };
   };
 

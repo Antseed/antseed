@@ -3,9 +3,9 @@ import chalk from 'chalk'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { getServiceMetadataId } from '@antseed/node'
-import { parseRetailPrices, totalRetailUsage, type RetailPriceMap } from '@antseed/node/retail-prices'
+import { totalRetailUsage, type RetailPriceMap } from '@antseed/node/retail-prices'
 import { getGlobalOptions } from '../types.js'
-import { BAKED_COMPARABLE_PRICES_URL } from '../../../generated/baked-defaults.js'
+import { COMPARABLE_PRICES_URL_ENV, comparablePricesUrl, fetchComparableRetailPrices } from '../../../retail-prices.js'
 import { loadConfig } from '../../../config/loader.js'
 import type { AntseedConfig } from '../../../config/types.js'
 import {
@@ -22,17 +22,6 @@ import { daemonJson } from './daemon.js'
 import { pastEpochs } from '../emissions.js'
 
 const HISTORY_WINDOWS = [7, 30, 90]
-/**
- * Endpoint serving comparable retail prices for the Saved tile, in the
- * OpenRouter-compatible models schema:
- * `{ data: [{ id, name, pricing: { prompt, completion, input_cache_read } }] }`
- * with prices in USD per token (e.g. set it to OpenRouter's models endpoint).
- * Release builds bake a default via scripts/bake-comparable-prices-url.mjs;
- * with neither env nor baked value, the savings baseline is off. Setting the
- * env to an empty string disables a baked default.
- */
-const COMPARABLE_PRICES_URL_ENV = 'ANTSEED_COMPARABLE_PRICES_URL'
-const COMPARABLE_PRICES_TIMEOUT_MS = 8_000
 const CHART_WIDTH = 24
 const ONCHAIN_READ_CONCURRENCY = 8
 const MAX_CHANNEL_ROWS = 12
@@ -192,28 +181,6 @@ interface MeasuredSavings {
   actualUsd: number
   baselineUsd: number
   matchedServices: number
-}
-
-function comparablePricesUrl(): string | null {
-  const raw = process.env[COMPARABLE_PRICES_URL_ENV]
-  if (raw !== undefined) {
-    // A set-but-empty env explicitly disables a baked release default.
-    return raw.trim() || null
-  }
-  return BAKED_COMPARABLE_PRICES_URL
-}
-
-/** Retail reference prices for the savings comparison; null when off or unreadable. */
-export async function fetchComparableRetailPrices(): Promise<RetailPriceMap | null> {
-  const url = comparablePricesUrl()
-  if (!url) return null
-  try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(COMPARABLE_PRICES_TIMEOUT_MS) })
-    if (!res.ok) return null
-    return parseRetailPrices(await res.json())
-  } catch {
-    return null
-  }
 }
 
 /**

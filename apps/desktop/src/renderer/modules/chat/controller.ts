@@ -36,6 +36,7 @@ import {
   saveLastChatModel,
   shouldWaitForFreeModel,
 } from './models';
+import { staleReplyEvent, staleStreamEvent } from './send-events';
 
 type ChatConversationSummary = {
   id: string;
@@ -274,6 +275,12 @@ export function initChatModule({
     return token;
   }
   const ownsSend = (convId: string, token: number): boolean => sendOwners.get(convId) === token;
+  /** A done or error event from a send that a newer one has replaced: it must not touch the chat. */
+  const isStaleStreamEvent = (data: { conversationId: string; sendId?: number }): boolean =>
+    staleStreamEvent(sendOwners.get(data.conversationId), data.sendId);
+  /** Output of a send that no longer holds the chat (stopped, or replaced): it must not reach the chat's reply. */
+  const isStaleReplyEvent = (data: { conversationId: string; sendId?: number }): boolean =>
+    staleReplyEvent(sendOwners.get(data.conversationId), data.sendId);
   function endSend(convId: string, token: number): void {
     if (!ownsSend(convId, token)) return;
     sendOwners.delete(convId);
@@ -672,6 +679,16 @@ export function initChatModule({
     localConversationMessages.set(convId, messages.map(cloneChatMessage));
   }
 
+  /** Shows `messages` as the chat's: its cache, the open chat's list and the active conversation. */
+  function projectConversationMessages(convId: string, messages: ChatMessage[], updatedAt: number): void {
+    setLocalConversationMessages(convId, messages);
+    if (convId === uiState.chatActiveConversation) uiState.chatMessages = messages;
+    if (activeConversation?.id === convId) {
+      activeConversation.messages = messages;
+      activeConversation.updatedAt = updatedAt;
+    }
+  }
+
   function getLocalConversationMessages(convId: string): ChatMessage[] | null {
     const cached = localConversationMessages.get(convId);
     return cached ? cached.map(cloneChatMessage) : null;
@@ -744,6 +761,22 @@ export function initChatModule({
       }
     }
     return cloned;
+  }
+
+  /**
+   * Ends the chat's streaming reply where it stands: what already streamed
+   * becomes a reply of its own, and the buffer is emptied for the next run.
+   */
+  function keepStreamedPart(convId: string): void {
+    const finalized = materializeStreamingMessage(getConversationStreamingMessage(convId));
+    const outputAlreadyStarted = Boolean(
+      finalized && (Array.isArray(finalized.content) ? finalized.content.length > 0 : Boolean(finalized.content)),
+    );
+    if (finalized && outputAlreadyStarted) {
+      if (convId === uiState.chatActiveConversation) commitAssistantMessage(finalized);
+      else appendAssistantMessageToConversation(convId, finalized);
+    }
+    setConversationStreamingMessage(convId, null);
   }
 
   function commitAssistantMessage(message: ChatMessage): void {
@@ -895,6 +928,9 @@ export function initChatModule({
     uiState.chatOpeningConversationId = convId;
     clearChatNotices();
     uiState.chatFundsNotice = fundsNoticeByConversation.get(convId) ?? null;
+    // Its sending state shows while it loads: a prompt already on its way to
+    // it (a new chat's first) keeps the composer busy.
+    syncActiveConversationSendingState();
     notifyUiStateChanged();
 
     // A model choice still being saved, or made while this read was out, is
@@ -1023,16 +1059,9 @@ export function initChatModule({
     if (!convId || !bridge?.chatAiDeleteConversation) return 'Could not delete the chat';
     const previousConversations = [...getConversationSummaries()];
     uiState.chatConversations = previousConversations.filter((conv) => conv.id !== convId);
-    localConversationMessages.delete(convId);
     streamingMessagesByConversation.delete(convId);
     sendingConversationIds.delete(convId);
     streamStartedAtByConversation.delete(convId);
-    fundsNoticeByConversation.delete(convId);
-    imageRetryByConversation.delete(convId);
-    if (uiState.chatPrivateConversationIds.includes(convId)) {
-      uiState.chatPrivateConversationIds = uiState.chatPrivateConversationIds.filter((id) => id !== convId);
-      savePrivateChats(uiState.chatPrivateConversationIds);
-    }
     syncActiveConversationSendingState();
     if (convId === uiState.chatActiveConversation) startNewChat();
     else notifyUiStateChanged();
@@ -1040,6 +1069,15 @@ export function initChatModule({
     try {
       const result = await bridge.chatAiDeleteConversation(convId) as { ok?: boolean; error?: string } | undefined;
       if (result && result.ok === false) throw new Error(result.error ?? 'Could not delete the chat');
+      // Only now: a chat whose delete fails comes back with its unsaved
+      // messages, its funds notice and the request Try again would resend.
+      localConversationMessages.delete(convId);
+      fundsNoticeByConversation.delete(convId);
+      imageRetryByConversation.delete(convId);
+      if (uiState.chatPrivateConversationIds.includes(convId)) {
+        uiState.chatPrivateConversationIds = uiState.chatPrivateConversationIds.filter((id) => id !== convId);
+        savePrivateChats(uiState.chatPrivateConversationIds);
+      }
       await refreshChatConversations();
       return null;
     } catch (err) {
@@ -1177,14 +1215,18 @@ export function initChatModule({
         const convId = await createConversationForModel(modelId, { activate: false });
         // Stopped while the chat was being made: it stays, empty, and nothing is sent.
         if (!stillDraft()) { stoppedDrafts.delete(draftToken); return; }
+        // The new chat's send is this prompt's from here on, before it opens:
+        // a second submit while it loads finds it busy, and Stop there cancels this.
+        const reserved = convId ? beginSend(convId) : null;
         // Only the draft on screen owns the composer's sending state.
         if (shownDraft === draftToken) {
           shownDraft = 0;
           if (uiState.chatActiveConversation === null) setDraftSending(false);
         }
-        if (!convId) return;
+        if (!convId || reserved === null) return;
         if (draftVersion === newChatDraftVersion) await openConversation(convId);
-        sendMessageToConversation(convId, text, rawAttachments, { privateAtSubmit });
+        if (!ownsSend(convId, reserved)) return;
+        sendMessageToConversation(convId, text, rawAttachments, { privateAtSubmit, reservedToken: reserved });
       })();
       return;
     }
@@ -1230,21 +1272,30 @@ export function initChatModule({
   }
 
   /** `privateAtSubmit`: Private was on screen when Send was pressed (read now when not given). */
-  function sendMessageToConversation(convId: string, text: string, rawAttachments?: RawChatAttachment[], options: { privateAtSubmit?: boolean } = {}): void {
+  /**
+   * `reservedToken`: the send a new chat's first prompt took before the chat
+   * opened (see `sendMessage`); it goes out under that ownership, and not at
+   * all if Stop took it meanwhile.
+   */
+  function sendMessageToConversation(convId: string, text: string, rawAttachments?: RawChatAttachment[], options: { privateAtSubmit?: boolean; reservedToken?: number } = {}): void {
     const privateAtSubmit = options.privateAtSubmit ?? privacyResource.getSnapshot().data?.mode === 'private';
-    if (isConversationSending(convId)) {
+    const reserved = options.reservedToken;
+    if (reserved !== undefined) {
+      if (!ownsSend(convId, reserved)) return;
+    } else if (isConversationSending(convId)) {
       showChatError('This conversation already has a request in progress.');
       return;
     }
     // Refused at once when it plainly can't go; the send itself checks again.
     if (privacyResource.getSnapshot().data?.mode === 'anonymous' && heldPrivate(convId)) {
       showChatError(PRIVATE_HISTORY_REFUSAL);
+      if (reserved !== undefined) endSend(convId, reserved);
       return;
     }
     const content = text.trim();
     clearChatNotices();
     fundsNoticeByConversation.delete(convId);
-    const token = beginSend(convId);
+    const token = reserved ?? beginSend(convId);
     void (async () => {
       let preparedAttachments: PreparedChatAttachment[];
       try {
@@ -1274,12 +1325,7 @@ export function initChatModule({
       const localMessages = getLocalConversationMessages(convId)
         ?? (convId === uiState.chatActiveConversation ? (uiState.chatMessages as ChatMessage[]) : []);
       const nextMessages = [...localMessages, { role: 'user' as const, content: buildUserMessageContent(content, preparedAttachments), createdAt: Date.now() }];
-      setLocalConversationMessages(convId, nextMessages);
-      if (convId === uiState.chatActiveConversation) uiState.chatMessages = nextMessages;
-      if (activeConversation?.id === convId) {
-        activeConversation.messages = nextMessages;
-        activeConversation.updatedAt = Date.now();
-      }
+      projectConversationMessages(convId, nextMessages, Date.now());
       notifyUiStateChanged();
       void dispatchChatRequest(convId, token, content, preparedAttachments, privateAtSubmit);
     })();
@@ -1326,7 +1372,8 @@ export function initChatModule({
     streamFailedAtByConversation.delete(convId);
     // A newer text message supersedes an image request waiting on funds.
     imageRetryByConversation.delete(convId);
-    const send = () => bridge.chatAiSendStream!(convId, content || ' ', modelId, attachments, uiState.chatPermissionMode, privacy);
+    // `sendId` comes back on the run's done and error events (see `isStaleStreamEvent`).
+    const send = () => bridge.chatAiSendStream!(convId, content || ' ', modelId, attachments, uiState.chatPermissionMode, { ...privacy, sendId: token });
     try {
       let result = await send();
       if (!result.ok && String(result.error ?? '').toLowerCase().includes('already in progress') && bridge.chatAiAbort) {
@@ -1451,6 +1498,10 @@ export function initChatModule({
   async function abortChat(): Promise<void> {
     const convId = uiState.chatActiveConversation;
     if (convId) {
+      // What already streamed is kept as its own reply, and the buffer is
+      // emptied, before the chat is free: a follow-up sent before this run's
+      // abort arrives starts a reply of its own instead of continuing this one.
+      keepStreamedPart(convId);
       sendOwners.delete(convId);
       setConversationSending(convId, false);
     }
@@ -1474,9 +1525,10 @@ export function initChatModule({
   const imageRetryByConversation = new Map<string, ImageRequest>();
 
   /** The prompt is already in the conversation, from the first attempt. */
-  async function runImageRequest(convId: string, request: ImageRequest, privateAtSubmit = false): Promise<void> {
+  async function runImageRequest(convId: string, request: ImageRequest, privateAtSubmit = false, reservedToken?: number): Promise<void> {
     if (!bridge?.chatGenerateImage) return;
-    const token = beginSend(convId);
+    if (reservedToken !== undefined && !ownsSend(convId, reservedToken)) return;
+    const token = reservedToken ?? beginSend(convId);
     queueScrollChatToBottom();
     try {
       const privacy = await clearForPrivacy(convId, token, privateAtSubmit);
@@ -1496,12 +1548,7 @@ export function initChatModule({
       // The prompt was projected optimistically; append only the reply.
       const current = getLocalConversationMessages(convId) ?? (convId === uiState.chatActiveConversation ? uiState.chatMessages as ChatMessage[] : []);
       const messages = [...current, result.assistant as ChatMessage];
-      setLocalConversationMessages(convId, messages);
-      if (convId === uiState.chatActiveConversation) uiState.chatMessages = messages;
-      if (activeConversation?.id === convId) {
-        activeConversation.messages = messages;
-        activeConversation.updatedAt = Date.now();
-      }
+      projectConversationMessages(convId, messages, Date.now());
       scheduleChatConversationsRefresh();
       notifyUiStateChanged();
       queueScrollChatToBottom();
@@ -1513,6 +1560,26 @@ export function initChatModule({
     } finally {
       // Stopped: the flag now belongs to whatever was sent after it.
       endSend(convId, token);
+    }
+  }
+
+  /**
+   * The chat's own history for an image request. While the chat is still
+   * opening, the screen shows the previous chat's messages, so they're never
+   * used for it: the history is read from the chat itself instead.
+   */
+  async function imageRequestHistory(convId: string): Promise<ChatMessage[]> {
+    const local = getLocalConversationMessages(convId);
+    if (local) return local;
+    if (convId === uiState.chatActiveConversation && uiState.chatOpeningConversationId !== convId) {
+      return uiState.chatMessages as ChatMessage[];
+    }
+    try {
+      const result = await bridge?.chatAiGetConversation?.(convId);
+      const messages = result?.ok ? (result.data as ChatConversation | undefined)?.messages : undefined;
+      return Array.isArray(messages) ? normalizeInlineThinkInMessages(messages) : [];
+    } catch {
+      return [];
     }
   }
 
@@ -1532,6 +1599,8 @@ export function initChatModule({
     if (!uiState.chatActiveConversation && shownDraft) return;
     void (async () => {
       let convId = uiState.chatActiveConversation;
+      // A new chat's send, taken before it opens (as for a first text message).
+      let reserved: number | undefined;
       if (!convId) {
         const textModelId = uiState.chatSelectedModelId;
         if (!textModelId) {
@@ -1547,6 +1616,7 @@ export function initChatModule({
         setDraftSending(true);
         convId = await createConversationForModel(textModelId, { activate: false });
         if (!stillDraft()) { stoppedDrafts.delete(draftToken); return; }
+        if (convId) reserved = beginSend(convId);
         if (shownDraft === draftToken) {
           shownDraft = 0;
           if (uiState.chatActiveConversation === null) setDraftSending(false);
@@ -1554,15 +1624,23 @@ export function initChatModule({
         if (!convId) return;
         // Follow-ups in this chat are image requests too.
         if (draftVersion === newChatDraftVersion) await openConversation(convId, { keepImageModel: true });
+        // Stopped while the chat opened: nothing is sent.
+        if (reserved !== undefined && !ownsSend(convId, reserved)) return;
       }
       if (!convId) return;
-      if (isConversationSending(convId)) {
-        showChatError('This conversation already has a request in progress.');
-        return;
+      if (reserved === undefined) {
+        if (isConversationSending(convId)) {
+          showChatError('This conversation already has a request in progress.');
+          return;
+        }
+        // Owned from here, before any wait: a second submit while the
+        // history below loads is refused instead of replacing this one.
+        reserved = beginSend(convId);
       }
       // An earlier image of a chat sent in Private would go out as the one to edit.
       if (privacyResource.getSnapshot().data?.mode === 'anonymous' && heldPrivate(convId)) {
         showChatError(PRIVATE_HISTORY_REFUSAL);
+        if (reserved !== undefined) endSend(convId, reserved);
         return;
       }
 
@@ -1570,8 +1648,9 @@ export function initChatModule({
       // This prompt supersedes one waiting on funds.
       fundsNoticeByConversation.delete(convId);
       imageRetryByConversation.delete(convId);
-      const existingBeforeRequest = getLocalConversationMessages(convId)
-        ?? (convId === uiState.chatActiveConversation ? uiState.chatMessages as ChatMessage[] : []);
+      const existingBeforeRequest = await imageRequestHistory(convId);
+      // Stopped while the history loaded: nothing is sent.
+      if (!ownsSend(convId, reserved)) return;
       // Edit the last generated image when the model takes image input;
       // otherwise regenerate from the accumulated prompts.
       let sourceImageAttachmentId = '';
@@ -1601,18 +1680,13 @@ export function initChatModule({
         : content;
       const optimisticUserMessage: ChatMessage = { role: 'user', content: requestPrompt, createdAt: Date.now() };
       const pendingMessages = [...existingBeforeRequest, optimisticUserMessage];
-      setLocalConversationMessages(convId, pendingMessages);
-      if (convId === uiState.chatActiveConversation) uiState.chatMessages = pendingMessages;
-      if (activeConversation?.id === convId) {
-        activeConversation.messages = pendingMessages;
-        activeConversation.updatedAt = optimisticUserMessage.createdAt;
-      }
+      projectConversationMessages(convId, pendingMessages, optimisticUserMessage.createdAt ?? Date.now());
 
       await runImageRequest(convId, {
         prompt: requestPrompt,
         model: imageModelId,
         ...(editing ? { sourceImageAttachmentId } : {}),
-      }, privateAtSubmit);
+      }, privateAtSubmit, reserved);
     })();
   }
 
@@ -1629,6 +1703,12 @@ export function initChatModule({
     });
 
     bridge.onChatAiDone?.((data) => {
+      // A stopped send's reply was already kept as it stood, and a newer send
+      // owns the chat's Sending state: its final message must touch neither.
+      if (isStaleReplyEvent(data)) {
+        scheduleChatConversationsRefresh();
+        return;
+      }
       const incomingMessage = data.message as ChatMessage;
       if (hasConversationStreamingMessage(data.conversationId)) {
         updateStreamingMessage(data.conversationId, (message) => {
@@ -1645,6 +1725,8 @@ export function initChatModule({
     });
 
     bridge.onChatAiUserPersisted?.((data) => {
+      // Its prompt's timestamp must not land on a newer send's prompt.
+      if (isStaleStreamEvent(data)) return;
       if (data.conversationId !== uiState.chatActiveConversation) return;
       const last = (uiState.chatMessages[uiState.chatMessages.length - 1] || null) as ChatMessage | null;
       if (last && last.role === 'user' && !last.createdAt) {
@@ -1655,6 +1737,8 @@ export function initChatModule({
     });
 
     bridge.onChatConversationTitleUpdated?.((data) => {
+      // Tagged like every run event, but always taken: the title names the
+      // conversation, not the reply, and stays right after Stop or a follow-up.
       const title = String(data.title || '').trim();
       if (!title) return;
       const conversations = getConversationSummaries();
@@ -1713,12 +1797,14 @@ export function initChatModule({
 
     // What a reply came from, known before it finishes, so one that gets stopped or cut off still says.
     bridge.onChatAiReplyMeta?.((data) => {
+      if (isStaleReplyEvent(data)) return;
       const streaming = getConversationStreamingMessage(data.conversationId);
       if (!streaming) return;
       setConversationStreamingMessage(data.conversationId, { ...streaming, meta: { ...(streaming.meta ?? {}), ...data.meta } });
     });
 
     bridge.onChatAiStreamStart?.((data) => {
+      if (isStaleReplyEvent(data)) return;
       if (data.conversationId === uiState.chatActiveConversation) {
         clearChatNotices();
         notifyUiStateChanged();
@@ -1733,6 +1819,7 @@ export function initChatModule({
     });
 
     bridge.onChatAiStreamBlockStart?.((data) => {
+      if (isStaleReplyEvent(data)) return;
       if (!hasConversationStreamingMessage(data.conversationId)) return;
       if (data.conversationId === uiState.chatActiveConversation && uiState.chatWaitingForStream) {
         uiState.chatWaitingForStream = false;
@@ -1776,6 +1863,7 @@ export function initChatModule({
     });
 
     bridge.onChatAiStreamDelta?.((data) => {
+      if (isStaleReplyEvent(data)) return;
       if (!hasConversationStreamingMessage(data.conversationId)) return;
       if (data.blockType === 'text') {
         updateStreamingMessage(data.conversationId, (message) => {
@@ -1798,6 +1886,7 @@ export function initChatModule({
     });
 
     bridge.onChatAiStreamBlockStop?.((data) => {
+      if (isStaleReplyEvent(data)) return;
       if (!hasConversationStreamingMessage(data.conversationId)) return;
       if (data.blockType === 'text') {
         updateStreamingMessage(data.conversationId, (message) => {
@@ -1829,6 +1918,7 @@ export function initChatModule({
     });
 
     bridge.onChatAiToolExecuting?.((data) => {
+      if (isStaleReplyEvent(data)) return;
       if (!hasConversationStreamingMessage(data.conversationId)) return;
       updateStreamingMessage(data.conversationId, (message) => {
         const toolBlock = findToolBlock(message.content as ContentBlock[], data.toolUseId, data.name);
@@ -1841,6 +1931,7 @@ export function initChatModule({
     });
 
     bridge.onChatAiToolUpdate?.((data) => {
+      if (isStaleReplyEvent(data)) return;
       if (!hasConversationStreamingMessage(data.conversationId)) return;
       updateStreamingMessage(data.conversationId, (message) => {
         const toolBlock = findToolBlock(message.content as ContentBlock[], data.toolUseId, data.name);
@@ -1857,6 +1948,7 @@ export function initChatModule({
     });
 
     bridge.onChatAiToolResult?.((data) => {
+      if (isStaleReplyEvent(data)) return;
       if (!hasConversationStreamingMessage(data.conversationId)) return;
       updateStreamingMessage(data.conversationId, (message) => {
         const toolBlock = findToolBlock(message.content as ContentBlock[], data.toolUseId);
@@ -1902,6 +1994,7 @@ export function initChatModule({
     }
 
     bridge.onChatAiStreamDone?.((data) => {
+      if (isStaleStreamEvent(data)) return;
       const shouldClearSending = isConversationSending(data.conversationId);
       const startedAt = streamStartedAtByConversation.get(data.conversationId) ?? 0;
       const elapsedMs = startedAt > 0 && shouldClearSending ? Date.now() - startedAt : 0;
@@ -1936,20 +2029,15 @@ export function initChatModule({
     });
 
     bridge.onChatAiStreamError?.((data) => {
+      // Stop frees the chat at once, so a stopped send's abort can arrive
+      // after a follow-up started: it is that send's, not the follow-up's.
+      if (isStaleStreamEvent(data)) return;
       const shouldClearSending = isConversationSending(data.conversationId);
       const stopReason = data.stopReason;
       const isAbort = data.error === 'Request aborted' || stopReason?.kind === 'aborted';
       // Keep whatever already streamed in — users never lose visible content
       // because the stream didn't finish; the error shows below it.
-      const finalized = materializeStreamingMessage(getConversationStreamingMessage(data.conversationId));
-      const outputAlreadyStarted = Boolean(
-        finalized && (Array.isArray(finalized.content) ? finalized.content.length > 0 : Boolean(finalized.content)),
-      );
-      if (finalized && outputAlreadyStarted) {
-        if (data.conversationId === uiState.chatActiveConversation) commitAssistantMessage(finalized);
-        else appendAssistantMessageToConversation(data.conversationId, finalized);
-      }
-      setConversationStreamingMessage(data.conversationId, null);
+      keepStreamedPart(data.conversationId);
       streamFailedAtByConversation.set(data.conversationId, Date.now());
 
       if (data.conversationId === uiState.chatActiveConversation) {

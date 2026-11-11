@@ -30,8 +30,7 @@ import { antseedPayLinkAmount, resolveCardProviderUrl, signAntseedPayUrl } from 
 import { createPeerPayCheckout } from '../payments/peer-pay.js';
 import { getMainWindow } from '../ui/window.js';
 import { getTelemetryService } from '../telemetry/runtime.js';
-import { localFundingBlock } from '../gateway/service.js';
-import { getGatewaySettings } from '../gateway/settings.js';
+import { currentBalanceScope, localFundingBlock } from '../gateway/service.js';
 
 export function registerPaymentsIpc(): void {
   // Slim payment pages: only actions that need an external wallet signature
@@ -168,8 +167,9 @@ export function registerPaymentsIpc(): void {
       // the wallet paying for its key. Display polls share one read; a caller
       // deciding whether a payment can proceed passes `fresh`, and the
       // gateway re-reads the chain.
-      const settings = getGatewaySettings();
-      const key = readKeys.credits(`${settings.mode}:${settings.mode === 'remote' ? settings.remoteUrl ?? '' : 'local'}`);
+      // Keyed by the gateway and its key, so a read made for one key is
+      // never answered (or joined) for another on the same gateway.
+      const key = readKeys.credits(currentBalanceScope());
       const info = opts?.fresh === true
         ? await refreshFresh(key, () => refreshCreditsInfo({ fresh: true }))
         : await cachedRead(key, CREDITS_FRESH_MS, () => refreshCreditsInfo());

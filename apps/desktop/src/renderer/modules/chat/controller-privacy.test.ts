@@ -75,7 +75,7 @@ describe('privacy at the moment a request leaves', () => {
     write.resolve({ ok: true, privacy: privacy('private') });
     await tick();
     expect(chatAiSendStream).toHaveBeenCalledTimes(1);
-    expect(chatAiSendStream.mock.calls[0]?.[5]).toEqual({ requirePrivate: true, allowPrivateHistory: false });
+    expect(chatAiSendStream.mock.calls[0]?.[5]).toEqual({ requirePrivate: true, allowPrivateHistory: false, sendId: expect.any(Number) });
     expect(uiState.chatPrivateConversationIds).toContain('conv-1');
   });
 
@@ -208,7 +208,7 @@ describe('privacy at the moment a request leaves', () => {
     api.sendMessage('again');
     await tick();
     expect(chatAiSendStream).toHaveBeenCalledTimes(2);
-    expect(chatAiSendStream.mock.calls[1]?.[5]).toEqual({ requirePrivate: false, allowPrivateHistory: true });
+    expect(chatAiSendStream.mock.calls[1]?.[5]).toEqual({ requirePrivate: false, allowPrivateHistory: true, sendId: expect.any(Number) });
   });
 
   it('keeping a chat covers its history so far: a later Private turn needs asking again', async () => {

@@ -64,6 +64,8 @@ export type ChatStreamErrorPayload = {
   conversationId: string;
   error: string;
   stopReason: ChatStreamStopReason;
+  /** The renderer's id for the send this run serves (see `OutgoingPrivacy.sendId`). */
+  sendId?: number;
 };
 
 /** A streaming run currently in flight for one conversation. */

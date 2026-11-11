@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useId, useMemo, useState, type ReactNode } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
 import {
   ArrowDown01Icon,
@@ -22,6 +22,7 @@ import { useAgentSkills } from '../../hooks/useAgentSkills';
 import { homeProgress, useHomeProgress } from '../../../modules/app/home-progress';
 import { daysSince, LOW_BALANCE_USD, pickHomePromo, promoDismissKey } from '../../../modules/app/home-promos';
 import { AppPillIcon } from '../vpr/AppPills';
+import { createEndpointReads, readKeyToCopy } from './endpoint-reads';
 import styles from './HomeDashboard.module.scss';
 import { usePrivateMode } from '../../hooks/usePrivateMode';
 
@@ -78,15 +79,29 @@ export function HomeDashboard({ onSelectView, setupOnly = false }: Props) {
   // starting) and after switching gateways: these figures are the gateway's.
   const reachable = status?.reachable === true;
   const origin = status?.origin ?? null;
+  // The key shown for copying is read again on a gateway switch and when the
+  // window regains focus (it may have been replaced in the console), and once
+  // more when copied, so a revoked key is never what lands on the clipboard.
+  const endpointReads = useMemo(() => createEndpointReads(() => window.antseedDesktop?.gatewayGetEndpoint?.(), setEndpoint), []);
   useEffect(() => {
     let cancelled = false;
     const bridge = window.antseedDesktop;
     setRewards(null);
-    bridge?.gatewayGetEndpoint?.().then((info) => { if (!cancelled) setEndpoint(info); }).catch(() => {});
+    void endpointReads.refresh();
+    const onFocus = () => { void endpointReads.refresh(); };
+    window.addEventListener('focus', onFocus);
     bridge?.gatewayGetRewards?.().then((result) => { if (!cancelled && result.ok && result.data) setRewards(result.data); }).catch(() => {});
     if (reachable) void savingsResource.refresh();
-    return () => { cancelled = true; };
-  }, [reachable, origin]);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('focus', onFocus);
+    };
+  }, [reachable, origin, endpointReads]);
+  useEffect(() => () => endpointReads.close(), [endpointReads]);
+  const copyKey = useCallback(async () => {
+    const key = await readKeyToCopy(endpointReads);
+    if (key) await copy(key);
+  }, [endpointReads, copy]);
 
   // A failure reaches the shell's notice (with Try again), whether or not
   // the setup card is open.
@@ -353,7 +368,7 @@ export function HomeDashboard({ onSelectView, setupOnly = false }: Props) {
                 type="button"
                 className={styles.link}
                 disabled={!appKey}
-                onClick={() => { void copy(); }}
+                onClick={() => { void copyKey(); }}
                 title={appKey ? 'Copy the key this app uses' : endpoint && !endpoint.ok ? endpoint.error : 'Your gateway is starting'}
               >
                 <HugeiconsIcon icon={copied ? Tick02Icon : Copy01Icon} size={13} strokeWidth={2} />

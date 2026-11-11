@@ -116,6 +116,20 @@ function isInstalledIn(skillsDir: string): boolean {
   return AGENT_SKILL_NAMES.every((name) => existsSync(path.join(skillsDir, name, MARKER_FILE)));
 }
 
+/**
+ * Whether any skill the app installed is still in `skillsDir`. A partly
+ * removed agent still reads the shared key file, so it is re-pointed (and its
+ * missing skills put back) with the others, and keeps the key file alive.
+ */
+function holdsManagedSkill(skillsDir: string): boolean {
+  return AGENT_SKILL_NAMES.some((name) => existsSync(path.join(skillsDir, name, MARKER_FILE)));
+}
+
+/** Every agent's skills folder that still holds a skill the app installed. */
+function managedSkillDirs(options: Options): string[] {
+  return AGENT_SKILL_TARGETS.map((target) => skillsDirOf(target, options)).filter(holdsManagedSkill);
+}
+
 export function listAgentSkillTargets(options: Options = {}): AgentSkillStatus[] {
   const home = homeOf(options);
   return AGENT_SKILL_TARGETS.map((target) => {
@@ -216,17 +230,27 @@ async function commitInstalls(staged: readonly StagedInstall[], apiKey: string, 
   }
 }
 
-async function installInto(skillsDir: string, endpoint: AgentSkillsEndpoint, options: Options): Promise<void> {
-  const staged = await stageInstall(skillsDir, endpoint, options);
+/**
+ * Puts `skillsDirs` on `endpoint` together with every agent that still holds
+ * any of the app's skills (fully or partly installed): they all read the one
+ * key file, so writing a new key for one agent while another still names the
+ * previous gateway would send that key there. Every copy is built first; if
+ * any can't be, nothing changes.
+ */
+async function installAll(skillsDirs: readonly string[], endpoint: AgentSkillsEndpoint, options: Options): Promise<void> {
+  const dirs = [...new Set([...skillsDirs, ...managedSkillDirs(options)])];
+  if (dirs.length === 0) return;
+  const staged: StagedInstall[] = [];
   try {
-    await commitInstalls([staged], endpoint.apiKey, options);
+    for (const dir of dirs) staged.push(await stageInstall(dir, endpoint, options));
+    await commitInstalls(staged, endpoint.apiKey, options);
   } finally {
-    await staged.discard();
+    for (const copy of staged) await copy.discard();
   }
 }
 
 export async function installAgentSkills(id: string, endpoint: AgentSkillsEndpoint, options: Options = {}): Promise<void> {
-  await installInto(skillsDirOf(targetById(id), options), endpoint, options);
+  await installAll([skillsDirOf(targetById(id), options)], endpoint, options);
 }
 
 export async function removeAgentSkills(id: string, options: Options = {}): Promise<void> {
@@ -235,25 +259,16 @@ export async function removeAgentSkills(id: string, options: Options = {}): Prom
     const dest = path.join(skillsDir, name);
     if (existsSync(path.join(dest, MARKER_FILE))) await rm(dest, { recursive: true, force: true });
   }
-  // The key file goes with the last agent that used it.
-  if (!listAgentSkillTargets(options).some((target) => target.installed)) {
+  // The key file goes with the last agent that used it, even partly.
+  if (managedSkillDirs(options).length === 0) {
     await rm(agentSkillsKeyFile(options), { force: true });
   }
 }
 
 /** Re-points every installed copy at the current gateway and key (after a key replacement or a gateway switch). */
 export async function syncAgentSkills(endpoint: AgentSkillsEndpoint, options: Options = {}): Promise<void> {
-  const installed = listAgentSkillTargets(options).filter((target) => target.installed);
-  if (installed.length === 0) return;
-  // Every copy is built before anything changes, then all of them and the key
-  // land together: a failure on any agent leaves all of them on the old gateway and key.
-  const staged: StagedInstall[] = [];
-  try {
-    for (const target of installed) staged.push(await stageInstall(target.skillsDir, endpoint, options));
-    await commitInstalls(staged, endpoint.apiKey, options);
-  } finally {
-    for (const copy of staged) await copy.discard();
-  }
+  // A failure on any agent leaves all of them on the old gateway and key.
+  await installAll([], endpoint, options);
 }
 
 /** For any other agent: what to paste so it can call the gateway. Holds the key, so it is only built on request. */

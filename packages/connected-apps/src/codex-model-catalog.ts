@@ -125,6 +125,15 @@ export function writeCodexModelCatalog(configPath: string, catalog: string): boo
   return true;
 }
 
+/** Whether the catalog on disk is still `catalog` (one a newer refresh replaced is not). */
+export function codexModelCatalogIs(configPath: string, catalog: string): boolean {
+  try {
+    return readFileSync(catalogPath(configPath), 'utf8') === catalog;
+  } catch {
+    return false;
+  }
+}
+
 /** Throws when Codex can't load its models with the config as it now stands. */
 export async function validateCodexModelCatalog(configPath: string): Promise<void> {
   await runCodexDebugModels(configPath);
