@@ -46,6 +46,7 @@ import {
   speechOfferUsdPerCharacter,
   speechVoiceProblem,
   type AntseedNode,
+  type BuyerChannelSummary,
   type FaultAttribution,
   type BuyerSpendEvent,
   type ServiceHealth,
@@ -169,6 +170,7 @@ import { parseServiceFreeTierProgram } from '@antseed/node/free-tier-program'
 import { TeeVerification } from './tee-verification.js'
 import { TeeControl } from './tee-control.js'
 import { ChainReadCache } from './chain-read-cache.js'
+import type { BuyerChannelChainView, ChannelsOnChainView } from './channel-chain.js'
 import { isClientCredentialHeader } from './credential-headers.js'
 import { nonLocalRequestReason } from './local-request-guard.js'
 import { loadConfig } from '../config/loader.js'
@@ -270,6 +272,8 @@ export interface BuyerProxyConfig {
   maxReserveAmountUsdc?: string
   /** Chain reads behind `GET /_antseed/balances`; absent when payments are disabled. */
   balanceReader?: BuyerBalanceReader
+  /** The chain's view of stored channels behind `GET /_antseed/channels?all=1`; absent when payments are disabled. */
+  channelChain?: BuyerChannelChainView
   /**
    * Runs `buyer start`'s graceful shutdown for `POST /_antseed/restart`. The
    * handler exits the process (code 75) once shutdown completes.
@@ -321,6 +325,8 @@ const BALANCE_CACHE_TTL_MS = 15_000
 const BALANCE_REVALIDATE_MS = 45_000
 /** `fresh=1` re-reads the chain at most this often per address. */
 const BALANCE_FRESH_FLOOR_MS = 5_000
+/** The channel list never waits longer than this for the chain: hosts time the request out at 5 to 10 s. */
+const CHANNEL_CHAIN_MAX_WAIT_MS = 3_000
 const CONTROL_SECRET_RECHECK_MS = 1_000
 /** Floor between forced re-reads on a secret mismatch, so a stream of bad secrets can't hammer the disk. */
 const CONTROL_SECRET_FORCED_RECHECK_MS = 100
@@ -1464,6 +1470,9 @@ export class BuyerProxy {
   private _controlSecretForcedAt = 0
   private _loggedUnauthenticatedPolicy = false
   private readonly _balanceReader: BuyerBalanceReader | null
+  private readonly _channelChain: BuyerChannelChainView | null
+  /** Buyer addresses whose unaccounted reserve was already logged, with the amount. */
+  private readonly _loggedUnaccountedReserve = new Map<string, string>()
   private readonly _balanceCache = new ChainReadCache()
   private readonly _restartHandler: (() => void | Promise<void>) | null
   private readonly _settingOverrides: string[]
@@ -1477,6 +1486,7 @@ export class BuyerProxy {
     this._maxPricing = config.maxPricing ? { ...config.maxPricing } : null
     this._maxReserveAmountUsdc = config.maxReserveAmountUsdc ?? null
     this._balanceReader = config.balanceReader ?? null
+    this._channelChain = config.channelChain ?? null
     this._restartHandler = config.onRestartRequested ?? null
     this._restartAllowedAt = Date.now() + (config.minRestartIntervalMs ?? MIN_RESTART_INTERVAL_MS)
     this._settingOverrides = [...(config.settingOverrides ?? [])]
@@ -2215,6 +2225,39 @@ export class BuyerProxy {
       })), ...failing]
       .sort((a, b) => (a.rank ?? Number.POSITIVE_INFINITY) - (b.rank ?? Number.POSITIVE_INFINITY)
         || a.peerId.localeCompare(b.peerId))
+  }
+
+  /**
+   * The chain's record of an identity's stored channels and its reserve
+   * against them, for `GET /_antseed/channels?all=1`. Null when payments are
+   * disabled or the identity has no address: the response then has no
+   * `onChain` fields, as before they existed.
+   */
+  private async _channelsOnChain(identity: string | null, channels: readonly BuyerChannelSummary[], fresh: boolean): Promise<ChannelsOnChainView | null> {
+    if (!this._channelChain) return null
+    const name = identity ?? DEFAULT_BUYER_IDENTITY
+    const address = this._node.buyerIdentities?.().find((entry) => entry.name === name)?.address
+    if (!address) return null
+    const view = await this._channelChain.describe(address, channels, { fresh, maxWaitMs: CHANNEL_CHAIN_MAX_WAIT_MS })
+    const unaccounted = view.summary.unaccountedReserved
+    const key = address.toLowerCase()
+    if (unaccounted !== null && BigInt(unaccounted) > 0n) {
+      if (this._loggedUnaccountedReserve.get(key) !== unaccounted) {
+        this._loggedUnaccountedReserve.set(key, unaccounted)
+        log(`${formatUsdcBaseUnits(BigInt(unaccounted))} USDC is reserved on-chain by a payment channel this buyer has no record of. `
+          + 'With its channel id: antseed buyer channels request-close <channelId>, then withdraw after the grace period.')
+      }
+    } else if (unaccounted !== null) {
+      this._loggedUnaccountedReserve.delete(key)
+    }
+    return view
+  }
+
+  /** A channel of this identity just closed: the next channel view reads the chain again. */
+  private _invalidateChannelChain(identity: string | null): void {
+    const name = identity ?? DEFAULT_BUYER_IDENTITY
+    const address = this._node.buyerIdentities?.().find((entry) => entry.name === name)?.address
+    if (address) this._channelChain?.invalidate(address)
   }
 
   /** Forget cached balances of an address, e.g. once a deposit sweep is credited. */
@@ -3654,16 +3697,19 @@ export class BuyerProxy {
         : this._node.getActiveBuyerChannels(identity ?? undefined)
       const peers = await this._getPeers()
       const peersById = new Map<string, PeerInfo>(peers.map((peer) => [peer.peerId, peer]))
+      // The store's status is a hint; with `all=1` the chain's record rides along (see channel-chain.ts).
+      const onChain = all ? await this._channelsOnChain(identity, channels, /[?&]fresh=1/.test(path)) : null
       const channelsWithCapabilities = channels.map((channel) => {
         const peer = peersById.get(channel.peerId)
         return {
           ...channel,
           sellerDisplayName: peer?.displayName?.trim() || null,
           cooperativeCloseSupported: peer ? peerSupportsCooperativeClose(peer) : false,
+          ...(onChain ? { onChain: onChain.channels.get(channel.channelId) ?? null } : {}),
         }
       })
       res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ ok: true, channels: channelsWithCapabilities }))
+      res.end(JSON.stringify({ ok: true, channels: channelsWithCapabilities, ...(onChain ? { onChain: onChain.summary } : {}) }))
       return
     }
 
@@ -3789,6 +3835,7 @@ export class BuyerProxy {
           `Cooperative close of ${result.channelId.slice(0, 18)}... with ${peerId.slice(0, 12)}...: ` +
           `${result.status}${result.code ? ` (${result.code})` : ''}`,
         )
+        if (result.status === 'closed') this._invalidateChannelChain(identity)
         res.writeHead(200, { 'content-type': 'application/json' })
         res.end(JSON.stringify({ ok: true, result }))
       } catch (err) {
