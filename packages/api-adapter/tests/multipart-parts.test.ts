@@ -56,6 +56,8 @@ describe('readPlainMultipartParts', () => {
     ['a backslash in a filename', `${part('Content-Disposition: form-data; name="image"; filename="dir\\file.png"', 'PNG')}${closing}`],
     ['an escaped quote in a filename', `${part('Content-Disposition: form-data; name="image"; filename="a\\"b.png"', 'PNG')}${closing}`],
     ['another disposition parameter', `${part('Content-Disposition: form-data; name="a"; size=1', 'svc')}${closing}`],
+    ['another header on a file part', `${part('Content-Disposition: form-data; name="image"; filename="a.png"\r\nContent-Type: image/png\r\nX-Note: taken today', 'PNG')}${closing}`],
+    ['a disposition line quoted in a part\'s content', `${named('prompt', 'Content-Disposition: form-data; name="model"')}${closing}`],
   ])('reads %s', (_name, text, type = contentType) => {
     expect(readPlainMultipartParts(body(text), type)).not.toBeNull();
   });
@@ -94,6 +96,12 @@ describe('readPlainMultipartParts', () => {
     ['an unknown content type parameter', `${named('model', 'svc')}${closing}`, `${contentType}; x=y`],
     ['a nested multipart', `${part('Content-Disposition: form-data; name="a"\r\nContent-Type: multipart/mixed; boundary=c', '--c--')}${closing}`],
     ['a field setting the charset of the others', `${named('_charset_', 'utf-16')}${closing}`],
+    ['another header quoting a disposition line', `${part('X-Note: content-disposition: form-data; name="model"\r\nContent-Disposition: form-data; name="image"; filename="a.png"', 'PNG')}${closing}`],
+    ['a quoted disposition line after the real one', `${part('Content-Disposition: form-data; name="image"; filename="a.png"\r\nX-Note: Content-Disposition: form-data; name="model"', 'PNG')}${closing}`],
+    ['a disposition line quoted in a Content-Type parameter', `${part('Content-Type: image/png; content-disposition: form-data; name="model"\r\nContent-Disposition: form-data; name="image"; filename="a.png"', 'PNG')}${closing}`],
+    ['a disposition line quoted in upper case', `${part('X-Note: CONTENT-DISPOSITION:\tFORM-DATA;NAME="model"\r\nContent-Disposition: form-data; name="prompt"', 'x')}${closing}`],
+    ['the header name alone in another header', `${part('X-Note: see content-disposition\r\nContent-Disposition: form-data; name="prompt"', 'x')}${closing}`],
+    ['the header name in a filename', `${part('Content-Disposition: form-data; name="image"; filename="content-disposition.png"', 'PNG')}${closing}`],
   ])('refuses %s', (_name, text, type = contentType) => {
     expect(readPlainMultipartParts(body(text), type)).toBeNull();
   });

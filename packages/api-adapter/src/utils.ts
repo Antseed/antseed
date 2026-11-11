@@ -345,8 +345,14 @@ function plainDispositionName(value: string): string | undefined {
   return end === value.length ? name : undefined;
 }
 
-/** The field name in a part's headers, when they are one to a line and name it plainly. */
+/**
+ * The field name in a part's headers, when they are one to a line and name it plainly.
+ * The words `content-disposition` may appear only as that header's own name: a reader
+ * that searches the whole header block for them, as relays in plugins installed before
+ * this rule do, would otherwise take a line quoted in another header for the part's own.
+ */
 function plainPartName(headers: string): string | undefined {
+  if (headers.match(/content-disposition/gi)?.length !== 1) return undefined;
   let name: string | undefined;
   for (const line of headers.split('\r\n').slice(1)) {
     const header = /^([!-9;-~]+):[ \t]*(.*)$/.exec(line);
@@ -377,8 +383,8 @@ function isPlainText({ headers, content }: MultipartPart): boolean {
  * encoder writes it; null for any other. Plain means a simple boundary, found
  * only where it frames a part, with each delimiter starting its line and only
  * whitespace before the first and after the last, and part headers one to a line, each with a
- * simply written name. Readers agree on such a body, where they can disagree
- * on one written any other way.
+ * simply written name and no other mention of `Content-Disposition`. Readers
+ * agree on such a body, where they can disagree on one written any other way.
  */
 export function readPlainMultipartParts(body: Uint8Array, contentType: string | undefined): PlainMultipartPart[] | null {
   if (!contentType || !PLAIN_MULTIPART_TYPE.test(contentType.trim())) return null;
