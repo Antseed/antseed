@@ -56,15 +56,15 @@ function renderTokens(tokens: TToken[], typed: number, cursor: ReactNode) {
   return nodes;
 }
 
-function TerminalCard({blocks}: {blocks: TBlock[]}) {
+function TerminalCard({blocks, status, animate}: {blocks: TBlock[]; status: string; animate: boolean}) {
   const ref = useRef<HTMLDivElement>(null);
   const [blockIndex, setBlockIndex] = useState(0);
-  const [phase, setPhase] = useState<'comment' | 'command' | 'done'>('comment');
+  const [phase, setPhase] = useState<'comment' | 'command' | 'done'>(animate ? 'comment' : 'done');
   const [typed, setTyped] = useState(0);
 
   useEffect(() => {
     const el = ref.current;
-    if (!el) return undefined;
+    if (!el || !animate) return undefined;
 
     const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     if (reduced || typeof IntersectionObserver === 'undefined') {
@@ -127,7 +127,7 @@ function TerminalCard({blocks}: {blocks: TBlock[]}) {
       clearTimeout(timer);
       observer.disconnect();
     };
-  }, [blocks]);
+  }, [blocks, animate]);
 
   return (
     <div className={styles.terminal} ref={ref}>
@@ -139,11 +139,26 @@ function TerminalCard({blocks}: {blocks: TBlock[]}) {
         </span>
         <span className={styles.terminalStatus}>
           <span className={styles.statusDot} aria-hidden="true" />
-          Connected Localhost:8377
+          {status}
         </span>
         <span className={styles.terminalTagline}>ONE ENDPOINT · EVERY TOOL</span>
       </div>
-      {blocks.map((block, i) => {
+      {!animate ? (
+        <>
+          <p className={styles.terminalScrollHint}>Scroll sideways to read the full example →</p>
+          <pre className={styles.terminalCode} tabIndex={0} aria-label="Python gateway connection example"><code>
+            {blocks.map((block, i) => (
+              <span key={i}>
+                <span className={styles.tComment}>{block.comment}</span>{'\n'}
+                {block.tokens.map((token, j) => (
+                  <span key={j} className={token.cls ? styles[token.cls] : undefined}>{token.text}</span>
+                ))}
+                {i < blocks.length - 1 ? '\n\n' : ''}
+              </span>
+            ))}
+          </code></pre>
+        </>
+      ) : blocks.map((block, i) => {
         const isCurrent = i === blockIndex && phase !== 'done';
         const showCommentCursor = isCurrent && phase === 'comment';
         const showCommandCursor = isCurrent && phase === 'command';
@@ -169,9 +184,9 @@ function TerminalCard({blocks}: {blocks: TBlock[]}) {
           </div>
         );
       })}
-      <Cursor
+      {animate && <Cursor
         style={{visibility: phase === 'done' && blockIndex === blocks.length - 1 ? 'visible' : 'hidden'}}
-      />
+      />}
     </div>
   );
 }
@@ -189,7 +204,7 @@ function FlowChips() {
       <span className={styles.flowLine} aria-hidden="true" />
       {FLOW_CHIPS.map((chip) => (
         <span key={chip.label} className={styles.flowChip}>
-          <img src={`/img/home/${chip.icon}.svg`} alt="" width="20" height="20" />
+          <img src={`/img/home/${chip.icon}.svg`} alt="" width="20" height="20" loading="lazy" decoding="async" />
           {chip.label}
         </span>
       ))}
@@ -205,6 +220,8 @@ export function LocalhostSection({
   blocks,
   ctaLabel,
   ctaTo,
+  status = 'Connected Localhost:8377',
+  animateTerminal = true,
 }: {
   /** Anchor id so in-page links (hero "use it from the CLI") can jump here. */
   id?: string;
@@ -214,10 +231,14 @@ export function LocalhostSection({
   blocks: TBlock[];
   ctaLabel: string;
   ctaTo: string;
+  /** the terminal's connection label (the gateway page shows its own host) */
+  status?: string;
+  /** Static code is readable in the initial HTML without typing timers. */
+  animateTerminal?: boolean;
 }) {
   return (
     <section className={styles.darkSection} id={id}>
-      <img className={styles.darkAnt} src="/img/home/antdots-green.png" alt="" aria-hidden="true" />
+      <img className={styles.darkAnt} src="/img/home/antdots-green.webp" alt="" aria-hidden="true" width={860} height={960} loading="lazy" decoding="async" />
       <div className={styles.sectionInner}>
         <div className={styles.localhostGrid}>
           <Reveal className={styles.localhostCopy}>
@@ -227,7 +248,7 @@ export function LocalhostSection({
               {points.map((p) => (
                 <li key={p.icon}>
                   <span className={styles.pointIcon}>
-                    <img src={`/img/home/${p.icon}.svg`} alt="" width="24" height="24" />
+                    <img src={`/img/home/${p.icon}.svg`} alt="" width="24" height="24" loading="lazy" decoding="async" />
                   </span>
                   {p.text}
                 </li>
@@ -236,7 +257,7 @@ export function LocalhostSection({
             <Button to={ctaTo} variant="light" arrow>{ctaLabel}</Button>
           </Reveal>
           <Reveal delay={140}>
-            <TerminalCard blocks={blocks} />
+            <TerminalCard blocks={blocks} status={status} animate={animateTerminal} />
             <FlowChips />
           </Reveal>
         </div>
