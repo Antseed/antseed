@@ -251,6 +251,7 @@ curl -s http://localhost:8377/_antseed/status     # DHT node count, peer count, 
 curl -s http://localhost:8377/_antseed/peers      # cached peers with pricing and reputation
 curl -s -X POST http://localhost:8377/_antseed/peers/refresh
 curl -s http://localhost:8377/_antseed/channels   # your open payment channels
+curl -s 'http://localhost:8377/_antseed/channels?all=1'   # every channel, each with the chain's record of it (onChain)
 ```
 
 For Prometheus metrics, see [Metrics](/docs/provide/metrics).

@@ -13,7 +13,7 @@ import { createRequire } from 'node:module';
 import { join } from 'node:path';
 
 export const meta = {
-  description: '#1463: a channel the buyer retired locally, or signed in full, but the chain still holds open stays reachable: Activity lists it with a close action that hands it to the wallet page, the balance counts its signed spend, `buyer channels request-close` accepts it, and the reserve comes back after the grace.',
+  description: '#1463: a channel the buyer retired locally, or signed in full, but the chain still holds open stays reachable: the buyer reports the chain\'s record of it, Activity and `buyer activity` list it, Activity with a close action that hands it to the wallet page, the balance counts its signed spend, `buyer channels request-close` accepts it, and the reserve comes back after the grace.',
   targets: ['local'],
   requires: ['desktop', 'mockControl', 'sellerControl', 'buyerControl', 'warpTime'],
 };
@@ -146,6 +146,23 @@ async function strandAndRecover(tb, retired, spent) {
   const listed = ((await tb.request('/_antseed/channels')).json?.channels ?? []).map((row) => row.channelId);
   tb.check('the buyer no longer calls the retired channel active', !listed.includes(retired.channelId) && listed.includes(spent.channelId), { listed });
 
+  // The buyer reports the chain's record of every stored row, so the desktop, the gateway console and
+  // `antseed buyer activity` show one answer without each joining the store with the chain.
+  const view = await tb.waitFor(async () => {
+    const body = (await tb.request('/_antseed/channels?all=1')).json;
+    return body?.onChain?.unaccountedReserved != null ? body : null;
+  }, 'the buyer to report the chain view of its channels', { timeoutMs: 30_000 }).catch(() => ({}));
+  const reported = (channelId) => (view.channels ?? []).find((row) => row.channelId === channelId);
+  tb.check('the buyer reports both channels open on-chain, the retired one under its retired status', reported(retired.channelId)?.status === 'ghost' && reported(retired.channelId)?.onChain?.status === 1 && reported(spent.channelId)?.onChain?.status === 1, { retired: reported(retired.channelId), spent: reported(spent.channelId) });
+  tb.check('the buyer reports the whole reserve as held by channels it has a row for', view.onChain?.reserved === String(heldOnChain) && view.onChain?.heldByChannels === String(heldOnChain) && view.onChain?.unaccountedReserved === '0', view.onChain);
+  const summary = await tb.cli(['buyer', 'activity', '--json']);
+  const summaryRows = new Map((summary.json?.channels ?? []).map((row) => [row.channelId, row]));
+  tb.check('buyer activity lists both channels as active, with what the chain holds for each', summary.code === 0
+    && [retired, spent].every((channel) => summaryRows.get(channel.channelId)?.status === 'active')
+    && summaryRows.get(retired.channelId)?.onChainReserveBaseUnits === String(held(stranded.retired))
+    && summaryRows.get(spent.channelId)?.onChainReserveBaseUnits === String(held(stranded.spent))
+    && summary.json?.unaccountedReservedBaseUnits === '0', { code: summary.code, stderr: summary.stderr.slice(-300), channels: summary.json?.channels, unaccounted: summary.json?.unaccountedReservedBaseUnits });
+
   const ui = await tb.desktop();
   const { page } = ui;
   const openProfile = () => page.getByRole('button', { name: 'Profile', exact: true }).click();
@@ -167,6 +184,9 @@ async function strandAndRecover(tb, retired, spent) {
   // The retired row is not the live session, so the seller cannot close it: only the on-chain close can.
   tb.check('the retired channel shows what closing it recovers, with the on-chain close', activity.includes(`${rowUsd(recoverable)} locked Request on-chain close`), { expected: `${rowUsd(recoverable)} locked Request on-chain close` });
   tb.check('the fully signed channel shows what the chain still holds', activity.includes(`${rowUsd(held(stranded.spent))} unsettled`), { expected: `${rowUsd(held(stranded.spent))} unsettled` });
+  // The header is the same money the balance calls held in sessions; each row says what closing it recovers.
+  tb.check('the Activity header totals what the chain holds for the listed channels', activity.toLowerCase().includes(`active channels ${rowUsd(heldOnChain)} locked`), { expected: `Active channels ${rowUsd(heldOnChain)} locked`, screen: activity.slice(0, 400) });
+  tb.check('Activity reports no reserve beyond the listed channels', !activity.includes('no record of'), { screen: activity.slice(0, 600) });
 
   const credits = (await page.evaluate(() => window.antseedDesktop.creditsGetInfo({ fresh: true }))).data;
   const pending = claimable(retired.cumulativeSigned, stranded.retired) + claimable(stranded.spent.deposit, stranded.spent);
