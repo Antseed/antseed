@@ -309,6 +309,33 @@ describe('stress load and gates', () => {
     }
   });
 
+  it('restarts once when `when` resolves during the load, and never after it', async () => {
+    const mock = await startMock({ models: ['m'], pricing: { m: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 } } });
+    try {
+      let restarts = 0;
+      let trigger;
+      const when = new Promise((resolve) => { trigger = resolve; });
+      const run = await runLoad({
+        proxyUrl: mock.url, model: 'm',
+        load: { concurrency: 2, requests: 6, streamRatio: 0, minInTokens: 1, maxInTokens: 2, restart: { when, run: async () => { restarts += 1; return { trigger: 'when' }; } } },
+        onRequest: (record) => { if (record.i === 1) trigger(); },
+      });
+      assert.equal(run.results.length, 6);
+      assert.equal(restarts, 1);
+      assert.equal(run.restart?.trigger, 'when');
+
+      let late;
+      const lateWhen = new Promise((resolve) => { late = resolve; });
+      const quiet = await runLoad({ proxyUrl: mock.url, model: 'm', load: { concurrency: 1, requests: 2, streamRatio: 0, minInTokens: 1, maxInTokens: 2, restart: { when: lateWhen, run: async () => { restarts += 1; } } } });
+      late();
+      await new Promise((r) => setImmediate(r));
+      assert.equal(quiet.restart, null);
+      assert.equal(restarts, 1, 'a trigger after the load does not restart');
+    } finally {
+      await mock.stop();
+    }
+  });
+
   it('runs tagged load against an OpenAI-compatible endpoint and restarts once mid-load', async () => {
     const mock = await startMock({ models: ['m'], pricing: { m: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 } } });
     try {
