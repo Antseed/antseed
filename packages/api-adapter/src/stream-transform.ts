@@ -696,7 +696,7 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
         id: msgId,
         role: 'assistant',
         status: 'in_progress',
-        content: [{ type: 'output_text', text: '', annotations: [] }],
+        content: [],
       },
     });
     pushEvent(emitted, 'response.content_part.added', {

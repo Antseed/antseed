@@ -269,7 +269,7 @@ function buildOpenAIResponsesStream(body: Record<string, unknown>): Uint8Array {
         : [];
       pushEvent('response.output_item.added', {
         output_index: outputIndex,
-        item: { ...outputItem, status: 'in_progress', content: content.map((part) => ({ ...part, text: '' })) },
+        item: { ...outputItem, status: 'in_progress', content: [] },
       });
       for (const [contentIndex, part] of content.entries()) {
         pushEvent('response.content_part.added', {
